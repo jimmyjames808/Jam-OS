@@ -284,6 +284,10 @@ bool t_nettcp_malformed(void);
 bool t_nettcp_fuzz(void);
 bool t_nettcp_hostile_ring(void);
 bool t_nettcp_card_full(void);
+/* nettcpscale.c: window scaling and lwIP's memory shared out. */
+bool t_nettcp_window_scale(void);
+bool t_nettcp_listen_scale(void);
+bool t_nettcp_heap_shares(void);
 /* nettcpsock.c: programs' TCP calls on bin/netstack over the fake driver. */
 bool t_nettcp_limits(void);
 bool t_netctl_set_and_clear(void);

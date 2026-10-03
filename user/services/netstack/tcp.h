@@ -20,7 +20,9 @@
  *   more), copies it into lwIP and frees the ring room
  *   (SOCKRING_SIG_TX_ROOM if the program waits). The rest stays in the
  *   ring. SOCKRING_END on the tx ring, once every byte before it is in
- *   lwIP, sends a FIN.
+ *   lwIP, sends a FIN. lwIP keeps at most the tx ring's size unacked (the
+ *   connection's send buffer, at least STACK_TCP_SND_MIN), so a program
+ *   that asks for a big tx ring keeps as much in flight.
  * - the status line: CONNECTING, OPEN, then CLOSED, with `error` OK when
  *   both FINs went and ours was acked, else why it failed (net.idl's TCP
  *   methods name them: ERR_NOT_FOUND refused, ERR_PEER_CLOSED reset,
@@ -53,7 +55,8 @@ struct ntcp_conn {
     struct ntcp_listener  *queued_on;   /* accepted by lwIP, not yet by the program */
     struct sockring        r;           /* netstack's side of its rings (r.page NULL: none) */
     struct sockring_status st;          /* the status line, netstack's copy */
-    uint32_t               window;      /* its receive window: min(STACK_TCP_WND, rx ring) */
+    uint32_t               window;      /* its receive window: its rx ring, at most
+                                         * stack_tcp_window (settled once connected) */
     uint64_t               given_back;  /* rx bytes given back to the window */
     bool                   connected;   /* the handshake finished */
     bool                   fin_sent;    /* the tx ring's END reached lwIP */

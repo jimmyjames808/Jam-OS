@@ -80,7 +80,7 @@ void tp_refix(uint8_t *f, size_t n)
 
 size_t tp_frame(uint8_t *f, const struct tp *p, uint8_t flags, const void *data, size_t len)
 {
-    size_t opt = (flags & TP_SYN) ? 4 : 0;
+    size_t opt = (flags & TP_SYN) ? (p->wscale ? 8 : 4) : 0;
     pkt_eth(f, pkt_our_mac, p->mac, ETH_IPV4);
     uint8_t *t = f + 34;
     pkt_put16(t, p->port);
@@ -96,6 +96,12 @@ size_t tp_frame(uint8_t *f, const struct tp *p, uint8_t flags, const void *data,
         t[20] = 2;
         t[21] = 4;
         pkt_put16(t + 22, 1460);
+    }
+    if (opt == 8) {   /* NOP, then the window scale (RFC 7323 2.2) */
+        t[24] = 1;
+        t[25] = 3;
+        t[26] = 3;
+        t[27] = (uint8_t)(p->wscale - 1);
     }
     if (len)
         memcpy(t + TCP_HDR + opt, data, len);
@@ -139,7 +145,7 @@ static bool parse(unsigned i, const struct tp *p, struct tp_seg *s, bool *bad)
     *s = (struct tp_seg){ .sport = (uint16_t)pkt_get16(t), .dport = (uint16_t)pkt_get16(t + 2),
                           .seq = pkt_get32(t + 4), .ack = pkt_get32(t + 8), .flags = t[13] & 0x3f,
                           .win = (uint16_t)pkt_get16(t + 14), .data = t + hl, .len = len - hl };
-    for (size_t k = TCP_HDR; k + 1 < hl;) {   /* the options: MSS, padding */
+    for (size_t k = TCP_HDR; k + 1 < hl;) {   /* the options: MSS, window scale, padding */
         if (t[k] == 0)
             break;
         if (t[k] == 1) {
@@ -149,6 +155,8 @@ static bool parse(unsigned i, const struct tp *p, struct tp_seg *s, bool *bad)
         CHECK(t[k + 1] >= 2 && k + t[k + 1] <= hl);
         if (t[k] == 2 && t[k + 1] == 4)
             s->mss = (uint16_t)pkt_get16(t + k + 2);
+        if (t[k] == 3 && t[k + 1] == 3)
+            s->wscale = (uint8_t)(t[k + 2] + 1);
         k += t[k + 1];
     }
     *bad = false;

@@ -39,7 +39,17 @@
 
 _Static_assert(PBUF_POOL_BUFSIZE >= STACK_FRAME_MAX, "a received frame must fit one pbuf");
 _Static_assert(STACK_TCP_MSS == TCP_MSS && STACK_TCP_WND == TCP_WND, "stack.h's TCP sizes");
-_Static_assert(STACK_TCP_WND <= 0xffff, "a window without scaling");
+_Static_assert(STACK_TCP_SND_MAX == TCP_SND_BUF, "the largest send buffer is lwIP's");
+_Static_assert(LWIP_WND_SCALE && STACK_TCP_WND_PLAIN <= 0xffff, "an unscaled window fits 16 bits");
+/* lwIP's sanity checks that still hold (lwipopts.h turns its own off). */
+_Static_assert(TCP_SND_BUF >= 2 * TCP_MSS && STACK_TCP_SND_MIN >= 2 * TCP_MSS, "two segments");
+_Static_assert(TCP_SND_QUEUELEN >= 2 * (TCP_SND_BUF / TCP_MSS), "a queue for a send buffer");
+_Static_assert(TCP_WND >= TCP_MSS, "a window of a segment at least");
+_Static_assert(MEMP_NUM_TCP_SEG > STACK_SEGS_KEEP_BULK + 4 * (STACK_TCP_SND_MIN / TCP_MSS),
+               "segments for bulk senders");
+_Static_assert(MEM_SIZE == STACK_HEAP, "stack.h's heap size");
+_Static_assert(MEM_SIZE > STACK_HEAP_KEEP + STACK_HEAP_KEEP_BULK + STACK_TCP_SND_MAX,
+               "a heap for one bulk sender at least");
 _Static_assert(STACK_TCP_LISTENERS == MEMP_NUM_TCP_PCB_LISTEN, "a listener's pcb each");
 _Static_assert(STACK_TCP_BACKLOG == TCP_DEFAULT_LISTEN_BACKLOG && STACK_TCP_BACKLOG <= 0xff,
                "lwIP's backlog is a byte");
@@ -552,15 +562,21 @@ void stack_tcp_set_hooks(const struct stack_tcp_hooks *h)
     tcp_hooks = h;
 }
 
-/* The window a connection announces from now on: min(TCP_WND, w). lwIP
- * starts every connection at TCP_WND and gives bytes back up to it; set
+/* The window a connection announces from now on: w, at most TCP_WND when
+ * its peer scales and STACK_TCP_WND_PLAIN when not. lwIP starts every
+ * connection at the largest it may and gives bytes back up to it; set
  * before any byte can come, the smaller window is where the counting
- * starts, and stack_tcp_recved never gives back more than came. */
+ * starts, and stack_tcp_recved never gives back more than came. Only once
+ * scaling is settled (its SYN parsed: lwIP's option parser checks that the
+ * window was left alone until then). The window is kept in the pcb's ext
+ * arg slot for stack_tcp_window. */
 static void window_set(struct tcp_pcb *pcb, uint32_t w)
 {
-    if (w > TCP_WND)
-        w = TCP_WND;
+    uint32_t max = (pcb->flags & TF_WND_SCALE) ? TCP_WND : STACK_TCP_WND_PLAIN;
+    if (w > max)
+        w = max;
     pcb->rcv_wnd = pcb->rcv_ann_wnd = (tcpwnd_size_t)w;
+    tcp_ext_arg_set(pcb, tcp_ext, (void *)(uintptr_t)w);
 }
 
 /* Drop the first n bytes of a received chain in place, so that what lwIP
@@ -611,10 +627,12 @@ static err_t tcp_sent_cb(void *ctx, struct tcp_pcb *pcb, u16_t len)
     return ERR_OK;
 }
 
+/* The SYN-ACK came: its options are parsed (scaling settled), and the
+ * handshake's ACK goes after this, with the connection's own window. */
 static err_t tcp_connected_cb(void *ctx, struct tcp_pcb *pcb, err_t err)
 {
-    (void)pcb;
     (void)err;   /* always ERR_OK: a failure comes to tcp_err_cb */
+    window_set(pcb, (uint32_t)(uintptr_t)tcp_ext_arg_get(pcb, tcp_ext));
     tcp_hooks->connected(ctx);
     return ERR_OK;
 }
@@ -656,6 +674,9 @@ status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ct
         return ERR_NO_RESOURCES;
     tcp_nagle_disable(pcb);   /* publishing is the push: send what the ring has */
     callbacks_set(pcb, ctx);
+    /* The SYN goes with lwIP's 65535 and the scaling option; the window
+     * waits here until the SYN-ACK settles scaling (tcp_connected_cb). */
+    tcp_ext_arg_set(pcb, tcp_ext, (void *)(uintptr_t)window);
     ip4_addr_t dst = to_lwip(to);
     err_t e = tcp_connect(pcb, &dst, port, tcp_connected_cb);
     if (e != ERR_OK) {
@@ -663,9 +684,6 @@ status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ct
         tcp_abort(pcb);   /* never connected: nothing is sent */
         return e == ERR_RTE ? ERR_BAD_STATE : e == ERR_MEM ? ERR_NO_MEMORY : ERR_NO_RESOURCES;
     }
-    /* The SYN went with TCP_WND; the handshake's ACK, before any byte can
-     * come, carries this one. */
-    window_set(pcb, window);
     *out = (struct stack_tcp *)pcb;
     return OK;
 }
@@ -740,17 +758,87 @@ void stack_tcp_taken(struct stack_tcp *t)
     tcp_backlog_accepted(pcb_of(t));
 }
 
-size_t stack_tcp_room(struct stack_tcp *t)
+uint32_t stack_tcp_window(struct stack_tcp *t)
 {
-    struct tcp_pcb *pcb = pcb_of(t);
+    return (uint32_t)(uintptr_t)tcp_ext_arg_get(pcb_of(t), tcp_ext);
+}
+
+void stack_tcp_send_buffer(struct stack_tcp *t, uint32_t bytes)
+{
+    if (bytes < STACK_TCP_SND_MIN)
+        bytes = STACK_TCP_SND_MIN;
+    if (bytes > STACK_TCP_SND_MAX)
+        bytes = STACK_TCP_SND_MAX;
+    /* lwIP's free room in the buffer: it takes from it as bytes are given
+     * and gives back as they are acked, never past what was taken. */
+    pcb_of(t)->snd_buf = (tcpwnd_size_t)bytes;
+}
+
+static uint32_t min_u32(uint32_t a, uint32_t b)
+{
+    return a < b ? a : b;
+}
+
+/* Heap bytes left for TCP's bytes above `keep`, less a segment's overhead
+ * on them (a 16th: a pbuf and headers on each 1460 bytes, about 6%). */
+static uint32_t heap_above(uint32_t keep)
+{
+    uint32_t used = (uint32_t)lwip_stats.mem.used;
+    uint32_t left = MEM_SIZE > used + keep ? MEM_SIZE - used - keep : 0;
+    return left - left / 16;
+}
+
+/* Of the bytes a connection with `queued` unacked could take, how many
+ * lwIP's memory may hold under the shares (stack.h): up to its first
+ * STACK_TCP_SND_MIN from all but STACK_HEAP_KEEP of the heap, the rest
+ * only from the bulk senders' part. */
+static uint32_t shares_room(uint32_t queued)
+{
+    uint32_t segs_free = MEMP_NUM_TCP_SEG - lwip_stats.memp[MEMP_TCP_SEG]->used;
+    uint32_t bulk = segs_free > STACK_SEGS_KEEP_BULK
+                        ? heap_above(STACK_HEAP_KEEP + STACK_HEAP_KEEP_BULK) : 0;
+    uint32_t first = queued < STACK_TCP_SND_MIN ? STACK_TCP_SND_MIN - queued : 0;
+    uint32_t most = heap_above(STACK_HEAP_KEEP);
+    return first > most || bulk > most - first ? most : first + bulk;
+}
+
+/* stack_tcp_room in two parts: what the peer's window and the connection's
+ * send buffer take (*wnd), and what lwIP's memory may hold for it (*mem). */
+static void room_parts(const struct tcp_pcb *pcb, uint32_t *wnd, uint32_t *mem)
+{
+    *wnd = *mem = 0;
     if ((pcb->state != ESTABLISHED && pcb->state != CLOSE_WAIT) || (pcb->flags & TF_FIN))
-        return 0;
+        return;
     uint32_t queued = pcb->snd_lbb - pcb->lastack;   /* given and not yet acked */
     uint32_t allowed = (uint32_t)pcb->snd_wnd + pcb->mss;
-    uint32_t room = allowed > queued ? allowed - queued : 0;
-    if (room > tcp_sndbuf(pcb))
-        room = tcp_sndbuf(pcb);
-    return room;
+    *wnd = min_u32(allowed > queued ? allowed - queued : 0, tcp_sndbuf(pcb));
+    uint32_t buffer = queued + tcp_sndbuf(pcb);      /* its send buffer */
+    if (pcb->snd_queuelen < 4 * (buffer / TCP_MSS))  /* its share of the segments */
+        *mem = shares_room(queued);
+}
+
+size_t stack_tcp_room(struct stack_tcp *t)
+{
+    uint32_t wnd, mem;
+    room_parts(pcb_of(t), &wnd, &mem);
+    return min_u32(wnd, mem);
+}
+
+bool stack_tcp_mem_short(struct stack_tcp *t)
+{
+    uint32_t wnd, mem;
+    room_parts(pcb_of(t), &wnd, &mem);
+    return wnd && !mem;
+}
+
+bool stack_tcp_mem_freed(void)
+{
+    static uint32_t heap_seen, segs_seen;   /* what was in use at the last call */
+    uint32_t heap = (uint32_t)lwip_stats.mem.used, segs = lwip_stats.memp[MEMP_TCP_SEG]->used;
+    bool less = heap < heap_seen || segs < segs_seen;
+    heap_seen = heap;
+    segs_seen = segs;
+    return less;
 }
 
 status_t stack_tcp_send(struct stack_tcp *t, const void *data, size_t n)
@@ -772,11 +860,16 @@ void stack_tcp_push(struct stack_tcp *t)
 
 void stack_tcp_recved(struct stack_tcp *t, size_t n)
 {
-    while (n) {
-        u16_t k = (u16_t)(n < 0xffff ? n : 0xffff);
-        tcp_recved(pcb_of(t), k);   /* it sends the window update when one is worth it */
-        n -= k;
+    struct tcp_pcb *pcb = pcb_of(t);
+    /* tcp_recved takes 16 bits and may send a window update each time: all
+     * but the last 0xffff go straight into the window (never past its
+     * largest, as tcp_recved would clamp), then one call for the rest. */
+    if (n > 0xffff) {
+        uint32_t room = TCP_WND_MAX(pcb) - pcb->rcv_wnd, k = (uint32_t)(n - 0xffff);
+        pcb->rcv_wnd += k < room ? k : room;
+        n = 0xffff;
     }
+    tcp_recved(pcb, (u16_t)n);   /* it sends the window update when one is worth it */
 }
 
 status_t stack_tcp_shutdown(struct stack_tcp *t)

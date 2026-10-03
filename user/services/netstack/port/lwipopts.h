@@ -29,15 +29,21 @@
 /* ---- memory: static, bounded ----------------------------------------------- */
 #define MEM_ALIGNMENT           8
 /* The heap holds what lwIP builds to send (PBUF_RAM: ARP, an echo reply's
- * copy, a port-unreachable, UDP sends) until the netif's output has
- * copied it to the device, which it does at once; with ARP_QUEUEING off,
- * one waiting packet per ARP entry (16 x 1.5 KiB); and TCP's copies of
- * the bytes it sent until the peer acks them, at most TCP_SND_BUF a
- * connection. 1 MiB is 64 KiB for the rest and 15 connections sending at
- * full speed at once; past that a connection's bytes wait in its tx ring
- * until acks free the heap (tcp.c retries), so the heap bounds lwIP's
- * memory, not the number of connections. */
-#define MEM_SIZE                (1024 * 1024)
+ * copy, a port-unreachable, UDP sends, TCP's bare ACKs) until the netif's
+ * output has copied it to the device, which it does at once; with
+ * ARP_QUEUEING off, one waiting packet per ARP entry (16 x 1.5 KiB); and
+ * TCP's copies of the bytes it sent until the peer acks them: a
+ * connection's send buffer at most (stack.c, stack_tcp_room: its tx ring's
+ * size, at least STACK_TCP_SND_MIN). stack_tcp_room splits it in three
+ * (stack.h has the numbers): TCP never takes the last STACK_HEAP_KEEP
+ * bytes (the rest of the stack's), and a connection's bytes past
+ * STACK_TCP_SND_MIN (a bulk sender's) never the last STACK_HEAP_KEEP_BULK
+ * (every connection's first 64240 bytes: 15 at full speed at once). What
+ * is left, about 5 MiB, is the bulk senders': two of them with 2 MiB in
+ * flight at once. Past that a connection's bytes wait in its tx ring until
+ * acks free the heap (tcp.c retries), so the heap bounds lwIP's memory,
+ * not the number of connections. */
+#define MEM_SIZE                (6 * 1024 * 1024)
 /* Received frames: one pbuf each, a whole frame (1514 bytes) in one
  * buffer, so a frame is never a chain. They live only while lwIP looks at
  * them (a frame is handled to the end before the next is read), unless a
@@ -108,17 +114,37 @@
  * (the heap, above), and its pcbs. */
 #define LWIP_TCP                1
 #define TCP_MSS                 1460  /* a 1500-byte frame: never fragmented (IP_FRAG is off) */
-/* The largest window without window scaling in whole segments (44 MSS,
- * what Linux announces unscaled): ~1.3 Gb/s at a LAN's 0.4 ms, ~170 Mb/s
- * over Wi-Fi's 3 ms. A connection with a smaller rx ring gets a smaller
- * one. Scaling stays off: one less option to parse from a peer. */
-#define TCP_WND                 (44 * TCP_MSS)
-/* Bytes a connection may have queued and unacked in lwIP's heap: as much
- * as a peer's window of the same size. tcp.c takes from the tx ring only
- * what the peer's window allows (and a segment more, for zero-window
- * probes), so a peer that stops reading holds no more than that. */
-#define TCP_SND_BUF             (44 * TCP_MSS)
-#define TCP_SND_QUEUELEN        (4 * TCP_SND_BUF / TCP_MSS)   /* segments a connection queues */
+/* Window scaling (RFC 7323): a connection whose peer scales too may
+ * announce up to TCP_WND, a whole 2 MiB rx ring (1 Gb/s at 16 ms, a Wi-Fi
+ * link's whole rate at its 6 ms); one whose peer doesn't, the largest
+ * unscaled window in whole segments (stack.h's STACK_TCP_WND_PLAIN, 44
+ * MSS, what Linux announces unscaled). Either way a connection with a
+ * smaller rx ring gets a smaller one. TCP_RCV_SCALE 6 is the smallest
+ * shift that holds TCP_WND (0xffff << 6 is 4 MiB); the window is counted
+ * in 64-byte units, rounded down, so what is announced never exceeds the
+ * ring's room. A peer's shift is lwIP's to parse (one byte, capped at 14). */
+#define LWIP_WND_SCALE          1
+#define TCP_RCV_SCALE           6
+#define TCP_WND                 (2 * 1024 * 1024)
+/* Bytes a connection may have queued and unacked in lwIP's heap, at most:
+ * a bulk sender's 2 MiB in flight. Each connection's own limit is its tx
+ * ring's size, at least STACK_TCP_SND_MIN (stack_tcp_send_buffer: a
+ * program's 16 KiB ring still keeps 64240 bytes in flight, as before
+ * scaling), and tcp.c takes from the tx ring only what the peer's window
+ * allows (and a segment more, for zero-window probes), so a peer that
+ * stops reading holds no more than that. */
+#define TCP_SND_BUF             (2 * 1024 * 1024)
+/* Segments a connection may queue, at most; stack_tcp_room holds each to
+ * four times its own send buffer in segments (176 for 64240 bytes), as
+ * this is for TCP_SND_BUF. */
+#define TCP_SND_QUEUELEN        (4 * (TCP_SND_BUF / TCP_MSS))
+/* lwIP's sanity checks ask for a receive window that its own receive
+ * buffers (PBUF_POOL) could hold, and a segment pool as long as one
+ * connection's queue. Neither fits this design: received bytes never wait
+ * in lwIP (they go to the rx ring as they come), and stack_tcp_room keeps
+ * every connection's queue within the pool. stack.c asserts the checks
+ * that still hold. */
+#define LWIP_DISABLE_TCP_SANITY_CHECKS 1
 /* Announce a window as soon as it opened by a segment since the peer last
  * heard of it (RFC 1122's receiver rule: min(MSS, half the buffer), and a
  * ring is at least 4 KiB). lwIP's default, a quarter of TCP_WND, is most
@@ -133,7 +159,11 @@
  * connection, and a flood of SYNs can never take a program's pcb. */
 #define MEMP_NUM_TCP_PCB        (256 + 128)
 #define MEMP_NUM_TCP_PCB_LISTEN 16    /* stack.h's STACK_TCP_LISTENERS */
-#define MEMP_NUM_TCP_SEG        1024  /* queued segments, every connection's (15 full sends) */
+/* Queued segments, every connection's: the bulk senders' part of the heap
+ * in full ones (about 3500) and the last STACK_SEGS_KEEP_BULK (1024, as
+ * many as 15 connections at 64240 bytes queue), which stack_tcp_room keeps
+ * from bulk senders. */
+#define MEMP_NUM_TCP_SEG        4608
 #define TCP_LISTEN_BACKLOG      1     /* half-open and not yet accepted count against a listener */
 #define TCP_DEFAULT_LISTEN_BACKLOG 16 /* stack.h's STACK_TCP_BACKLOG, the most a listener has */
 /* An out-of-order segment is dropped, not queued: the peer resends it
@@ -141,7 +171,6 @@
  * little, and nothing a peer sends can pin receive buffers. */
 #define TCP_QUEUE_OOSEQ         0
 #define LWIP_TCP_SACK_OUT       0
-#define LWIP_WND_SCALE          0
 #define LWIP_TCP_TIMESTAMPS     0
 #define LWIP_TCP_KEEPALIVE      0     /* an idle connection is its program's to close */
 /* TIME_WAIT is 2 x TCP_MSL: 60 s, as Linux. Their number is bounded by
@@ -149,7 +178,9 @@
 #define TCP_MSL                 30000
 #define LWIP_TCP_RTO_TIME       1000  /* the first retransmission after 1 s (RFC 6298) */
 /* One slot of per-pcb data: a listener's window for its connections,
- * which stack.c sets on each new one before its SYN-ACK goes. */
+ * which stack.c sets on each new one before its SYN-ACK goes; and a
+ * connection's own window while its SYN waits for the answer that says
+ * whether the peer scales. */
 #define LWIP_TCP_PCB_NUM_EXT_ARGS 1
 /* Initial sequence numbers from the kernel's random source (RFC 6528):
  * lwIP's own is a counter anyone can guess, and a guessed one lets a

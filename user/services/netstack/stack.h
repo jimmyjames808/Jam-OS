@@ -171,15 +171,24 @@ status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size);
  *   see the window). What it doesn't take stays in lwIP (lwIP's "refused
  *   data", offered again on lwIP's next look, at most every 250 ms) and
  *   lwIP takes no more bytes on that connection meanwhile;
- * - the window: each connection announces min(STACK_TCP_WND, the window it
- *   was given) from its first SYN or SYN-ACK on, less what was received
- *   and not yet given back with stack_tcp_recved. tcp.c gives bytes back
- *   as the program takes them from the rx ring, so the window is the
- *   ring's free room and a slow reader stops its sender at once, without
- *   any byte held in lwIP;
+ * - the window: each connection announces at most the window it was given
+ *   (its rx ring), and at most STACK_TCP_WND when the peer scales windows
+ *   (RFC 7323: both SYNs carry the option), STACK_TCP_WND_PLAIN when it
+ *   doesn't: stack_tcp_window says which, once the handshake has. Less
+ *   what was received and not yet given back with stack_tcp_recved. tcp.c
+ *   gives bytes back as the program takes them from the rx ring, so the
+ *   window is the ring's free room and a slow reader stops its sender at
+ *   once, without any byte held in lwIP. A scaled window is counted in
+ *   2^6-byte units, rounded down: never more than the room. A connection
+ *   netstack opens sends its SYN with lwIP's unscaled 65535 (lwIP sets it
+ *   for the scaling option's sake) and announces its own window from the
+ *   handshake's ACK on, before any byte can come; a listener's
+ *   connections announce theirs from the SYN-ACK on;
  * - bytes to send are copied into lwIP (stack_tcp_send, all or nothing),
  *   at most stack_tcp_room at a time: what the peer's window takes now,
- *   and one segment more (a zero window is probed only while bytes wait);
+ *   and one segment more (a zero window is probed only while bytes wait),
+ *   within the connection's send buffer (stack_tcp_send_buffer) and lwIP's
+ *   memory as its shares allow (below);
  * - hooks.gone says a connection is over for lwIP's reasons (reset, timed
  *   out, the address went away, or both sides closed and the last ACK
  *   came): its stack_tcp is freed by then and must not be used again.
@@ -190,10 +199,30 @@ status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size);
  * connection on it: gone, ERR_BAD_STATE); never inside a stack_tcp_* call. */
 
 #define STACK_TCP_MSS       1460u   /* a segment's bytes: one frame */
-#define STACK_TCP_WND       (44u * STACK_TCP_MSS)   /* the largest window (no scaling) */
+#define STACK_TCP_WND       (2u << 20)   /* the largest window, when the peer scales too */
+#define STACK_TCP_WND_PLAIN (44u * STACK_TCP_MSS)   /* ... when it doesn't (64240 bytes) */
 #define STACK_TCP_CONNS     256u    /* connections netstack holds at most (lwIP keeps more pcbs) */
 #define STACK_TCP_LISTENERS 16u     /* listening sockets at most */
 #define STACK_TCP_BACKLOG   16u     /* a listener's half-open and not-yet-accepted, at most */
+/* A connection's send buffer (bytes lwIP keeps until acked): what tcp.c
+ * gives it (its tx ring), at least STACK_TCP_SND_MIN and at most
+ * STACK_TCP_SND_MAX; its queue at most four times that in segments. */
+#define STACK_TCP_SND_MIN   (44u * STACK_TCP_MSS)
+#define STACK_TCP_SND_MAX   (2u << 20)
+/* lwIP's heap and segments, shared out by stack_tcp_room so that no
+ * connection, nor all of them, can take what the rest needs: TCP's bytes
+ * never use the last STACK_HEAP_KEEP heap bytes (UDP datagrams, ARP's
+ * waiting packets, ICMP, TCP's own ACKs and FINs), and a connection's bytes
+ * past its first STACK_TCP_SND_MIN (a bulk sender's) never the last
+ * STACK_HEAP_KEEP_BULK bytes beyond those, nor the last STACK_SEGS_KEEP_BULK
+ * segments: they are every connection's first 64240 bytes (15 of them at
+ * full speed at once, as before window scaling). The bulk senders share
+ * the rest. A segment costs about 6% more heap than its bytes (its pbuf
+ * and headers): counted. */
+#define STACK_HEAP           (6u << 20)   /* lwIP's heap (lwipopts.h MEM_SIZE) */
+#define STACK_HEAP_KEEP      (64u * 1024)
+#define STACK_HEAP_KEEP_BULK (1u << 20)
+#define STACK_SEGS_KEEP_BULK 1024u
 
 /* A connection and a listener, opaque outside stack.c. */
 struct stack_tcp;
@@ -202,7 +231,8 @@ struct stack_tcp_listen;
 /* What lwIP tells tcp.c; ctx is the connection's (stack_tcp_connect, or
  * the one `accepted` returned), lctx a listener's. A hook never calls
  * stack_tcp_release or stack_tcp_abort (lwIP is in the middle of that
- * connection): it notes the work for the loop. */
+ * connection): it notes the work for the loop. `connected` and `accepted`
+ * set the connection up (stack_tcp_window, stack_tcp_send_buffer). */
 struct stack_tcp_hooks {
     /* n (> 0) bytes from the peer, in order: how many it took (0..n). */
     size_t (*rx)(void *ctx, const uint8_t *data, size_t n);
@@ -226,17 +256,18 @@ struct stack_tcp_hooks {
 /* Where lwIP's TCP events go (NULL: none; nothing can be opened then). */
 void     stack_tcp_set_hooks(const struct stack_tcp_hooks *h);
 /* Open a connection to to:port from a port lwIP picks, announcing a window
- * of min(STACK_TCP_WND, window): its SYN goes now, hooks.connected or
- * hooks.gone come later. The caller checked `to`. ERR_BAD_STATE: no
- * address, no route or the link down; ERR_NO_RESOURCES: no pcb free or
- * no local port; ERR_NO_MEMORY: lwIP's heap is full. */
+ * of at most `window` (the largest the peer's answer allows, above): its
+ * SYN goes now, hooks.connected or hooks.gone come later. The caller
+ * checked `to`. ERR_BAD_STATE: no address, no route or the link down;
+ * ERR_NO_RESOURCES: no pcb free or no local port; ERR_NO_MEMORY: lwIP's
+ * heap is full. */
 status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ctx,
                            struct stack_tcp **out);
 /* Listen on `port` (0: lwIP picks one) on any local address, backlog
  * half-open and not-yet-accepted connections at most (1..STACK_TCP_BACKLOG),
- * each announcing min(STACK_TCP_WND, window). ERR_ALREADY_BOUND: the port
- * is taken; ERR_NO_RESOURCES: no listener free; ERR_INVALID_ARGS: a bad
- * backlog. */
+ * each announcing at most `window` (the largest its SYN allows, above).
+ * ERR_ALREADY_BOUND: the port is taken; ERR_NO_RESOURCES: no listener free;
+ * ERR_INVALID_ARGS: a bad backlog. */
 status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, void *lctx,
                           struct stack_tcp_listen **out, uint16_t *out_port);
 /* Stop listening. Half-open connections are dropped; those already given
@@ -245,9 +276,23 @@ void     stack_tcp_unlisten(struct stack_tcp_listen *l);
 /* The program took an accepted connection: it no longer counts against its
  * listener's backlog. */
 void     stack_tcp_taken(struct stack_tcp *t);
+/* The window a connected one announces at most: the one it was given, and
+ * at most STACK_TCP_WND if the peer scales, else STACK_TCP_WND_PLAIN. Known
+ * from hooks.connected and hooks.accepted on. */
+uint32_t stack_tcp_window(struct stack_tcp *t);
+/* Its send buffer: bytes, clamped to STACK_TCP_SND_MIN..STACK_TCP_SND_MAX.
+ * From hooks.connected or hooks.accepted, before any byte is given. */
+void     stack_tcp_send_buffer(struct stack_tcp *t, uint32_t bytes);
 /* Bytes stack_tcp_send would take now (above), 0 when none or after
  * stack_tcp_shutdown. */
 size_t   stack_tcp_room(struct stack_tcp *t);
+/* Is it 0 for lwIP's memory (its shares, or its queue of segments) while
+ * the peer's window would take bytes? Then only an ack anywhere (hooks.sent,
+ * hooks.gone) frees some: try again after one. */
+bool     stack_tcp_mem_short(struct stack_tcp *t);
+/* Has lwIP's heap or segment pool less in use than at the last call? (A
+ * connection netstack let go of frees memory with no hook.) */
+bool     stack_tcp_mem_freed(void);
 /* Copy n bytes (at most stack_tcp_room, at most 65535) into lwIP to send,
  * all or none.
  * ERR_NO_MEMORY: no heap or segment free now (try after hooks.sent);

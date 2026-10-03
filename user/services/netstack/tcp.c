@@ -10,8 +10,9 @@
  * keep the loop awake: a connection whose FIN is out but not yet acked
  * after the peer's came (lwIP says nothing when an ACK only moves it from
  * CLOSING to TIME_WAIT), looked at after every turn; and one whose bytes
- * found lwIP's heap or segments full, looked at again after the next ack
- * anywhere freed some.
+ * found lwIP's heap or segments full, or its share of them taken
+ * (stack_tcp_mem_short), looked at again after the next turn that found
+ * some freed (an ack anywhere, or a connection lwIP finishes alone).
  *
  * Every count the program writes is read through sockring.c's clamps; one
  * out of range (sockring_end's `errors`) means the stream's bytes can't be
@@ -194,8 +195,10 @@ static void pump_tx(struct ntcp_conn *c)
     bool moved = false;
     while (budget) {
         uint32_t n = min32(min32(budget, stack_tcp_room(c->t)), sizeof(chunk));
-        if (!n)
+        if (!n) {
+            retry_set(c, stack_tcp_mem_short(c->t));   /* lwIP's memory, not the peer */
             break;
+        }
         n = sockring_stream_read(&c->r.tx, chunk, n);
         status_t st = stack_tcp_send(c->t, chunk, n);
         if (st != OK) {
@@ -259,10 +262,20 @@ static void conn_work(struct ntcp_conn *c)
     closed_check(c);
 }
 
+/* The window lwIP settled on (the peer's SYN said whether it scales), and
+ * the send buffer: the tx ring's size, so a program that asked for a big
+ * ring keeps as much in flight. */
+static void buffers_set(struct ntcp_conn *c)
+{
+    c->window = stack_tcp_window(c->t);
+    stack_tcp_send_buffer(c->t, c->r.tx.size);
+}
+
 static void on_connected(void *ctx)
 {
     struct ntcp_conn *c = ctx;
     c->connected = true;
+    buffers_set(c);
     state_set(c, SOCKRING_STATE_OPEN, OK);
     note(c);
 }
@@ -332,7 +345,7 @@ static void *on_accepted(void *lctx, struct stack_tcp *t)
         return NULL;
     }
     c->connected = true;
-    c->window = min32(l->req.rx_size, STACK_TCP_WND);
+    buffers_set(c);
     state_set(c, SOCKRING_STATE_OPEN, OK);
     c->queued_on = l;
     l->q[(l->head + l->n++) % STACK_TCP_BACKLOG] = c;
@@ -480,7 +493,7 @@ void ntcp_init(void)
 
 void ntcp_work(void)
 {
-    if (freed && nretry) {
+    if (nretry && (stack_tcp_mem_freed() || freed)) {
         for (unsigned i = 0; i < TCP_CONNS; i++) {
             if (conns[i].retry) {
                 retry_set(&conns[i], false);

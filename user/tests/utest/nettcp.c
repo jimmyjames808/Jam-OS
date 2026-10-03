@@ -131,7 +131,7 @@ bool fix_connect(struct cx *x, uint16_t port, uint32_t tx, uint32_t rx)
     CHECK_EQ(n, 1);
     CHECK_EQ(s[0].flags, TP_ACK);
     CHECK_EQ(s[0].ack, x->p.snd);
-    CHECK_EQ(s[0].win, rx < STACK_TCP_WND ? rx : STACK_TCP_WND);   /* the ring's window */
+    CHECK_EQ(s[0].win, rx < STACK_TCP_WND_PLAIN ? rx : STACK_TCP_WND_PLAIN);   /* the ring's */
     struct sockring_status st = fix_status(x);
     CHECK_EQ(st.state, SOCKRING_STATE_OPEN);
     CHECK_EQ(st.error, OK);
