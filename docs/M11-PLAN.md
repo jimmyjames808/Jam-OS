@@ -24,6 +24,10 @@ included, or write to the interrupt window and raise any vector on any CPU
 
 ## Questions for the owner
 
+**Answered 2026-10-03: the owner took every recommendation (1-8).**
+Stage 0's PC run may still reopen 2 and 3 if the firmware's tables
+say something unexpected.
+
 Each has a recommendation; the plan assumes it until you say otherwise.
 Stage 0's PC run (below) may change some of them: it shows what the
 board's firmware really describes.
