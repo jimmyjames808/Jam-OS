@@ -100,8 +100,8 @@ status_t disk_release(void)
             st = release_run(r);
         if (st == OK)
             h->out_sectors += h->run_len[r];
-        else
-            cache_forget(h->run_first[r], h->run_len[r]);   /* (part of) it never reached the disk */
+        else   /* (part of) it never reached the disk */
+            cache_forget(h->run_first[r], h->run_len[r]);
     }
     h->held = h->runs = 0;
     if (st != OK && !kept->disk.hold_failed) {

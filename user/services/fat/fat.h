@@ -14,7 +14,8 @@
  * hold.c the writes of an FS_GATHER file, held back and sent together;
  * cache.c the write-through block cache under them;
  * fsops.c the `fs` methods; dirs.c the cursors that make listing a
- * directory linear; fileops.c the open-file table and the `file` methods; views.c the narrower `fs` channels (fs.view); path.c paths,
+ * directory linear; fileops.c the open-file table and the `file`
+ * methods; views.c the narrower `fs` channels (fs.view); path.c paths,
  * names, times and the FRESULT -> ERR_* mapping. */
 #pragma once
 
