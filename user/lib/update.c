@@ -344,7 +344,7 @@ const char *update_write_step_str(uint32_t step)
         [UPDATE_WRITE_NONE] = "no stick write",
         [UPDATE_WRITE_OPEN] = "making the ESP writable",
         [UPDATE_WRITE_ROOM] = "making room",
-        [UPDATE_WRITE_PREV] = "keeping the stick's build as the previous one",
+        [UPDATE_WRITE_PREV] = "keeping the old build as the previous one",
         [UPDATE_WRITE_NEW] = "writing the new build",
         [UPDATE_WRITE_SWITCH] = "switching the names",
         [UPDATE_WRITE_DONE] = "done",
@@ -360,7 +360,9 @@ const char *update_stick_str(uint32_t stick)
         [UPDATE_STICK_NEW] = "the stick boots the new build (the old one is \"Jam OS (previous "
                              "build)\")",
         [UPDATE_STICK_PREVIOUS] = "the stick's default entry may not boot: pick \"Jam OS "
-                                  "(previous build)\" (the old build)",
+                                  "(previous build)\"",
+        [UPDATE_STICK_NEW_ALONE] = "the stick boots the new build, but \"Jam OS (previous "
+                                   "build)\" may not",
     };
     return stick < UPDATE_STICK_STATES ? words[stick] : "?";
 }

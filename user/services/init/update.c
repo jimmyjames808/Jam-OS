@@ -256,16 +256,20 @@ static bool check_manifest(struct check *c, const uint8_t key[UPDATE_KEY_BYTES])
     return true;
 }
 
-/* CHECK_ONLY, or WRITE (with a test's FAIL at a step that has one), or
- * neither, and FORCE with any of them; nothing else. */
+/* CHECK_ONLY, or WRITE (with a test's FAIL at a step that has one, or its
+ * STOP after a change of names of the swap), or neither, and FORCE with any
+ * of them; nothing else. */
 static bool flags_ok(uint32_t flags)
 {
     uint32_t fail = (flags & UPDATE_OFFER_FAIL_MASK) >> UPDATE_OFFER_FAIL_SHIFT;
-    uint32_t rest = flags & ~UPDATE_OFFER_FAIL_MASK;
+    uint32_t stop = (flags & UPDATE_OFFER_STOP_MASK) >> UPDATE_OFFER_STOP_SHIFT;
+    uint32_t rest = flags & ~(UPDATE_OFFER_FAIL_MASK | UPDATE_OFFER_STOP_MASK);
     bool write = rest & UPDATE_OFFER_WRITE;
     if (rest & ~(UPDATE_OFFER_CHECK_ONLY | UPDATE_OFFER_WRITE | UPDATE_OFFER_FORCE))
         return false;
     if (write && (rest & UPDATE_OFFER_CHECK_ONLY))
+        return false;
+    if (stop && (!write || fail || stop > UPDATE_SWAP_OPS))
         return false;
     return !fail || (write && fail >= UPDATE_WRITE_ROOM && fail <= UPDATE_WRITE_SWITCH);
 }
@@ -388,6 +392,7 @@ static bool start_write(struct check *c)
     struct esp_write *w = &c->w;
     *w = (struct esp_write){
         .fail_at = (c->o->flags & UPDATE_OFFER_FAIL_MASK) >> UPDATE_OFFER_FAIL_SHIFT,
+        .stop_at = (c->o->flags & UPDATE_OFFER_STOP_MASK) >> UPDATE_OFFER_STOP_SHIFT,
     };
     for (uint32_t f = 0; f < UPDATE_FILES; f++) {
         w->vmo[f] = c->mine[f];

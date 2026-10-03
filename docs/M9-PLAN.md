@@ -1843,16 +1843,16 @@ the boot stick's ESP, so it survives a power-off.
   while it is writable, so the writable channel is in no namespace; back
   to read-only the same way. A crash of that fat restarts it the way it
   was; a pulled stick ends it. The writer is `user/services/init/espwrite.c`.
-- **The order** (each step whole before the next): room (an earlier
-  write's `*.new` leftovers removed, free space for two builds checked);
-  the previous build (the older one removed, the stick's kernel and boot
-  image copied, not moved, to `/esp/boot/prev-jamos.elf.new` and
-  `prev-bootfs.img.new`, read back and compared, renamed); the new build
-  (from init's own checked copies, as `/esp/boot/jamos.elf.new` and
-  `bootfs.img.new`, synced, read back, each SHA-256 compared with the
-  signed manifest's); the switch (`jamos.elf` removed and the new one
-  renamed to it, then the boot image: FAT has no rename over a file). Then
-  the stick's two files are noted for `reboot` (they are the stored
+- **The order** (each step whole before the next; since 2026-10-03 the
+  stick's build is renamed, not copied, below): room (an earlier write's
+  renames finished or undone, its `*.new` leftovers removed, free space
+  for the new build checked); the new build (from init's own checked
+  copies, as `/esp/boot/jamos.elf.new` and `bootfs.img.new`, synced, read
+  back, each SHA-256 compared with the signed manifest's); the switch (the
+  stick's two files renamed to `*.old`, then the `*.new` to their names);
+  the previous build (the older one removed, the `*.old` renamed to
+  `prev-jamos.elf` and `prev-bootfs.img`), each pair of renames synced.
+  Then the stick's two files are noted for `reboot` (they are the stored
   kernel's), and the ESP goes back to read-only. The previous build's
   names end in `jamos.elf` and `bootfs.img` because the kernel finds its
   modules by those endings; the boot menu's "Jam OS (previous build)"
@@ -1860,18 +1860,35 @@ the boot stick's ESP, so it survives a power-off.
 - **Failures**: any error stops the write where it is and removes the
   temporary files; the answer is `UPDATE_NOT_WRITTEN` with the step, the
   error and what the stick boots, the build stays loaded (`reboot` runs
-  it), and the shell doesn't reboot. A failure during the switch puts the
-  old build back under the default names, copied again from the previous
-  build's files, if the ESP's fat still answers; if it doesn't (the stick
-  pulled, the power cut), "Jam OS (previous build)" boots the old build,
-  which is whole and checked before the switch begins. Only during the
-  switch's few directory writes can the default entry be without a kernel
-  or have the new kernel with the old boot image.
+  it), and the shell doesn't reboot. A failure once the switch has begun
+  renames the old build back under the default names if the ESP's fat
+  still answers (after the older previous build was removed, the stick
+  then has none until the next write copies one); if it doesn't (the stick pulled, the power cut), one of
+  the two entries still boots a whole build (below).
+- **Renames, not a copy** (the owner's call, 2026-10-03: the copy of the
+  stick's build was 14.7 s of the PC's 31 s `update -w`; the accepted
+  risk: a power cut in the sub-second swap boots "Jam OS (previous
+  build)" once). The swap's eight changes of names, each pair synced:
+  (1) `jamos.elf`, `bootfs.img` to `*.old`; (2) `*.new` to `jamos.elf`,
+  `bootfs.img`; (3) `prev-jamos.elf`, `prev-bootfs.img` removed; (4)
+  `*.old` to `prev-jamos.elf`, `prev-bootfs.img`. A FAT rename can't
+  replace a file, so moving a build from one pair of names to the other
+  has a moment when neither pair holds it, whatever the order (the order
+  first asked for, the stick's build renamed to the previous build's names
+  and then the new one into its own, leaves neither entry bootable in that
+  moment); this order puts the moment where the other pair holds a whole
+  build: in (1) and (2) the previous-build entry boots the build before
+  the old one, in (3) and (4) the default entry boots the new build. A
+  stick with no whole previous build (none ever written, or a failure after
+  (3) removed it) gets a copy of its build as the previous one first, read
+  back (the old step, now only then), so (1) and (2) keep a whole build
+  too; a stick whose build isn't whole keeps its previous build.
+  The next `update -w` settles a write that stopped in its swap: with both
+  default names there it finishes (the `*.old` become the previous build),
+  else it undoes (the `*.old` back to the default names).
 - **What is skipped**: nothing is written if the stick's build is the new
-  one already (`update -w` of the same build again), and the previous
-  build isn't copied again if it is the stick's build already (a write
-  that stopped after that step). Both are found by sizes first, then read
-  and hashed.
+  one already (`update -w` of the same build again), found by sizes
+  first, then read and hashed.
 - **What the read-back proves**: it reads through fat. fat's cache keeps
   only lines a read made (a write never makes one, held writes included),
   so for files this size the read-back is mostly the stick's own answer,
@@ -1884,10 +1901,13 @@ the boot stick's ESP, so it survives a power-off.
   time is "not written" (`ERR_TIMED_OUT`), with the stick booting its old
   build. Each step and file logs its time (`init: update: write: ...`),
   and a long file how far it is every 2 s.
-- **Tests**: `tools/update-write-test.sh` (four cold boots of one stick
+- **Tests**: `tools/update-write-test.sh` (cold boots of one stick
   image: each step's failure injected by updtest's test flag,
-  `UPDATE_OFFER_FAIL`; `update -w` over the network; the written stick
-  booting B, its previous-build entry booting A),
+  `UPDATE_OFFER_FAIL`; a stop dead after each of the swap's eight
+  changes, `UPDATE_OFFER_STOP`, as a power cut, each leaving one entry
+  with a whole build, and that stick booting both its entries; `update
+  -w` over the network; the written stick booting B, its previous-build
+  entry booting A),
   `tools/update-pc-test.sh` (the PC's setup: a throttled stick, a second
   stick at `/usb0`; fast, again, stuck and reboot-while-writing runs) and
   `tools/update-test.sh` (a keyless build refuses `-w`);

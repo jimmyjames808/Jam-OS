@@ -186,16 +186,31 @@ struct update_offer {
 #define UPDATE_OFFER_FAIL_SHIFT 8u
 #define UPDATE_OFFER_FAIL_MASK  (0xffu << UPDATE_OFFER_FAIL_SHIFT)
 #define UPDATE_OFFER_FAIL(s)    ((uint32_t)(s) << UPDATE_OFFER_FAIL_SHIFT)
+/* A test's too: the stick write stops dead right after the n-th change of
+ * names of its swap (1..UPDATE_SWAP_OPS), with no clean-up and no sync, as
+ * a power cut there would leave it: flags |= UPDATE_OFFER_STOP(n). Only
+ * with WRITE, not with FAIL. */
+#define UPDATE_OFFER_STOP_SHIFT 16u
+#define UPDATE_OFFER_STOP_MASK  (0xffu << UPDATE_OFFER_STOP_SHIFT)
+#define UPDATE_OFFER_STOP(n)    ((uint32_t)(n) << UPDATE_OFFER_STOP_SHIFT)
+/* The swap's changes of names (init's espwrite.c has the order): the
+ * stick's two files renamed aside, the new two into their names, the
+ * older previous build's two removed, the stick's old two renamed as the
+ * previous build. */
+#define UPDATE_SWAP_OPS         8u
 
 /* How far a stick write got (struct update_answer's write_step): DONE, or
- * the step that failed. Each step is whole before the next begins. */
+ * the step that failed. Each step is whole before the next begins; they
+ * run in the order ROOM, NEW, SWITCH, PREV (the numbers are older). */
 enum update_write_step {
     UPDATE_WRITE_NONE,    /* no stick write asked for */
     UPDATE_WRITE_OPEN,    /* the ESP made writable for init (devmgr's ESP_WRITE) */
-    UPDATE_WRITE_ROOM,    /* an earlier write's leftovers removed; room for two builds */
-    UPDATE_WRITE_PREV,    /* the stick's build copied as the previous build, read back */
+    UPDATE_WRITE_ROOM,    /* an earlier write's renames finished or undone, its leftovers
+                           * removed; room for the new build */
+    UPDATE_WRITE_PREV,    /* the older previous build removed, the stick's old build
+                           * renamed to be the previous one */
     UPDATE_WRITE_NEW,     /* the new build written under temporary names, read back */
-    UPDATE_WRITE_SWITCH,  /* the names switched: the stick's build is the new one */
+    UPDATE_WRITE_SWITCH,  /* the stick's build renamed aside, the new one into its names */
     UPDATE_WRITE_DONE,    /* all of it, and the ESP read-only again */
     UPDATE_WRITE_STEPS,
 };
@@ -205,7 +220,8 @@ enum update_stick {
     UPDATE_STICK_NONE,      /* no stick write asked for */
     UPDATE_STICK_OLD,       /* its build, as before (untouched, or put back) */
     UPDATE_STICK_NEW,       /* the new build; the old one as "Jam OS (previous build)" */
-    UPDATE_STICK_PREVIOUS,  /* only "Jam OS (previous build)" (the old build) is sure to */
+    UPDATE_STICK_PREVIOUS,  /* only "Jam OS (previous build)" is sure to boot */
+    UPDATE_STICK_NEW_ALONE, /* the new build; "Jam OS (previous build)" may not boot */
     UPDATE_STICK_STATES,
 };
 

@@ -331,6 +331,7 @@ struct esp_write {
     uint64_t       size[UPDATE_FILES];         /* their sizes in bytes */
     const uint8_t *sha256[UPDATE_FILES];       /* the signed manifest's SHA-256s */
     uint32_t       fail_at;                    /* a test's: fail at this step, once (NONE: no) */
+    uint32_t       stop_at;                    /* a test's: stop after this swap change (0: no) */
     /* Answered. */
     uint32_t       step;                       /* enum update_write_step: DONE, or the failed one */
     status_t       st;                         /* OK, or why it failed */

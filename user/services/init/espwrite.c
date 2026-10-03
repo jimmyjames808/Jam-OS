@@ -14,31 +14,45 @@
  * made read-only again (its service stops in order: everything on the
  * stick, the volume marked clean), and comes back as /esp.
  *
- * The order, so that the stick boots whenever it is pulled or the power
- * goes (or the ESP's service dies):
- *   ROOM    an earlier write's leftovers (*.new) removed; room for the
- *           stick's build and the new one checked (else nothing changes);
- *   PREV    the older previous build removed; the stick's build copied
- *           (not moved) as boot/prev-jamos.elf.new and prev-bootfs.img.new,
- *           read back and compared with what was read, then renamed: the
- *           boot menu's "Jam OS (previous build)" boots the stick's build
- *           now, and the default entry still does. Not copied if the
- *           previous build is the stick's already (the same bytes: an
- *           earlier write stopped after this step); and if the stick's
- *           build is the new one already, nothing at all is written;
+ * The order, so that one of the boot menu's two entries boots a whole
+ * build whenever the stick is pulled or the power goes (or the ESP's
+ * service dies): its default entry (boot/jamos.elf with boot/bootfs.img)
+ * or "Jam OS (previous build)" (boot/prev-jamos.elf with prev-bootfs.img).
+ * The stick's build is renamed, not copied (but below): a rename is a
+ * directory write, a copy most of a write's time on a USB 2 stick.
+ *   ROOM    an earlier write's renames settled (one that stopped part way:
+ *           finished if the new build had both its names, else undone,
+ *           settle()); its leftovers (*.new) removed; if the stick's build
+ *           is the new one already, nothing is written; room for the new
+ *           build checked (else nothing changes);
  *   NEW     the new build written from init's own checked copies as
  *           boot/jamos.elf.new and bootfs.img.new, synced, read back, and
  *           their SHA-256s compared with the manifest's;
- *   SWITCH  boot/jamos.elf removed and jamos.elf.new renamed to it, then
- *           the same for bootfs.img. A FAT rename can't replace a file, so
- *           for those few directory writes the default entry has no
- *           kernel, or the new kernel with the old boot image; the
- *           previous-build entry boots the old build throughout.
- * A failure stops the write where it is and removes its temporary files.
- * After the switch has begun, the default entry is put back to the old
- * build (copied again from the previous build's files) if the ESP's
- * service still answers; if it doesn't, the old build boots from "Jam OS
- * (previous build)". The answer says which (enum update_stick).
+ *   SWITCH  1. boot/jamos.elf and bootfs.img renamed to *.old, synced: the
+ *              default entry boots nothing now, the previous-build entry
+ *              still boots the build before;
+ *           2. the *.new renamed to jamos.elf and bootfs.img, synced: the
+ *              default entry boots the new build;
+ *   PREV    3. prev-jamos.elf and prev-bootfs.img removed, synced: the
+ *              default entry still boots the new build;
+ *           4. the *.old renamed to prev-jamos.elf and prev-bootfs.img,
+ *              synced: the previous-build entry boots the old build.
+ * A FAT rename can't replace a file, so a build can't move from one pair
+ * of names to the other without a moment when neither pair holds it; the
+ * order puts that moment where the other pair holds a whole build (1, 2:
+ * the build before; 3, 4: the new one). The cost: a power cut in 1 or 2
+ * leaves the stick to boot the build before the old one, from "Jam OS
+ * (previous build)", until the next `update -w` settles it. A stick with
+ * no whole previous build (none was ever written, or a failure removed it)
+ * gets a copy of its build as the previous one first (copy_previous: the
+ * one copy left, and only then). A stick whose build isn't whole keeps its
+ * previous build (3 and 4 are skipped).
+ * A failure stops the write where it is and removes its temporary files;
+ * after the switch has begun, the stick's old build is renamed back into
+ * the default entry's names (put_back), so the stick boots it as before
+ * (with no previous build, if the failure came after 3); if the ESP's
+ * service doesn't answer for that, the answer says which entry boots
+ * (enum update_stick).
  *
  * The read-back goes through the ESP's service. Its cache keeps only lines
  * a read made (a write never makes one), so for files this size it is
@@ -64,9 +78,16 @@
 #define SLACK      (1u << 20)         /* room kept spare per file: clusters, directory */
 #define SAY_EVERY  (2 * NS_PER_S)     /* a long file's progress: a line at most this often */
 
-/* The ESP's files, by the paths fat takes (the mount's root is "/"). */
+/* The ESP's files, by the paths fat takes (the mount's root is "/"), and
+ * the suffixes of the new build's while it is written and the old build's
+ * while the swap moves it. */
 static const char *const cur[UPDATE_FILES] = { "/boot/jamos.elf", "/boot/bootfs.img" };
 static const char *const prev[UPDATE_FILES] = { "/boot/prev-jamos.elf", "/boot/prev-bootfs.img" };
+#define NEW ".new"
+#define OLD ".old"
+
+/* Where the old build's file is while the swap moves it. */
+enum { AT_NONE, AT_CUR, AT_OLD, AT_PREV };
 
 /* A write under way. */
 struct writer {
@@ -78,6 +99,9 @@ struct writer {
     uint64_t said;                        /* uptime ns of the last progress line */
     uint64_t deadline;                    /* no call may wait past this (uptime ns) */
     bool     already;                     /* the stick has the new build: nothing to write */
+    uint8_t  old_at[UPDATE_FILES];        /* AT_*: where the old build's files are */
+    uint32_t ops;                         /* changes of names the swap made (swap_op) */
+    bool     stopped;                     /* a test's stop came: no clean-up, no sync */
 };
 
 /* A call's deadline: FS_CALL_TIMEOUT from now, never past the write's. A
@@ -148,15 +172,16 @@ static status_t unlink_file(struct writer *w, const char *path, const char *suff
     return st == ERR_NOT_FOUND ? OK : st;
 }
 
-static status_t rename_to(struct writer *w, const char *path, const char *suffix,
-                          const char *to)
+static status_t rename_file(struct writer *w, const char *path, const char *suffix,
+                            const char *to, const char *to_suffix)
 {
     uint8_t from[FS_PATH_MAX], dst[FS_PATH_MAX];
     field(from, path, suffix);
-    field(dst, to, "");
+    field(dst, to, to_suffix);
     uint64_t t0 = now();
     status_t st = fs_rename_until(w->fs, until(w), from, dst);
-    say("%s%s renamed %s in %lu ms (%s)", path + 1, suffix, to + 1, ms_since(t0), status_str(st));
+    say("%s%s renamed %s%s in %lu ms (%s)", path + 1, suffix, to + 1, to_suffix, ms_since(t0),
+        status_str(st));
     return st;
 }
 
@@ -256,13 +281,13 @@ static status_t write_file(struct writer *w, const char *path, uint64_t size, ui
     struct jfile f;
     /* FS_GATHER: fat sends the file in 64 KiB writes, not a write per
      * sector (a cluster, on the ESP): what makes a real stick quick. */
-    status_t st = open_file(w, path, ".new", FS_WRITE | FS_CREATE | FS_TRUNCATE | FS_GATHER, &f);
+    status_t st = open_file(w, path, NEW, FS_WRITE | FS_CREATE | FS_TRUNCATE | FS_GATHER, &f);
     if (st != OK)
         return st;
     uint64_t t0 = now(), done = 0;
     for (uint64_t off = 0; st == OK && off < size; off += CHUNK) {
         size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK;
-        say_progress(w, path, ".new", "written", off, size, t0);
+        say_progress(w, path, NEW, "written", off, size, t0);
         if (off >= size / 2 && off < size / 2 + CHUNK)
             st = inject(w, step);   /* half of it written: a test's failure */
         if (st == OK)
@@ -303,10 +328,9 @@ static status_t from_file(struct writer *w, void *ctx, uint64_t off, uint8_t *bu
     return st;
 }
 
-/* The file at src copied to dst + ".new" and read back: *size its bytes,
- * sha the SHA-256 of what was read, which the copy must have. */
-static status_t copy_file(struct writer *w, const char *src, const char *dst, uint32_t step,
-                          uint64_t *size, uint8_t sha[SHA256_BYTES])
+/* The file at src copied to dst + NEW and read back: the copy must have
+ * the SHA-256 of what was read. */
+static status_t copy_file(struct writer *w, const char *src, const char *dst)
 {
     struct from_file s;
     status_t st = open_file(w, src, "", FS_READ, &s.f);
@@ -314,126 +338,158 @@ static status_t copy_file(struct writer *w, const char *src, const char *dst, ui
         return st;
     uint64_t n = s.f.size;
     sha256_init(&s.h);
-    st = n && n <= UPDATE_FILE_MAX ? write_file(w, dst, n, step, from_file, &s) : ERR_IO;
+    st = n && n <= UPDATE_FILE_MAX ? write_file(w, dst, n, UPDATE_WRITE_NONE, from_file, &s)
+                                   : ERR_IO;
     file_close(&s.f);
-    uint8_t back[SHA256_BYTES];
+    uint8_t sha[SHA256_BYTES], back[SHA256_BYTES];
     if (st == OK) {
         sha256_done(&s.h, sha);
-        st = hash_file(w, dst, ".new", n, back);
+        st = hash_file(w, dst, NEW, n, back);
     }
     if (st == OK && memcmp(back, sha, SHA256_BYTES))
         st = ERR_IO;   /* the stick didn't keep what was written */
-    if (st == OK)
-        *size = n;
     return st;
 }
 
-/* ROOM: an earlier write's leftovers gone; room for two builds (the new
- * one, and a copy of the stick's) once the older previous build goes. */
-static status_t room(struct writer *w)
-{
-    status_t st = inject(w, UPDATE_WRITE_ROOM);
-    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
-        st = unlink_file(w, cur[f], ".new");
-        if (st == OK)
-            st = unlink_file(w, prev[f], ".new");
-    }
-    uint64_t total = 0, free_bytes = 0, need = 0, have = 0;
-    uint8_t ro = 0, label[16];
-    if (st == OK)
-        st = fs_statfs_until(w->fs, until(w), &total, &free_bytes, &ro, label);
-    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
-        uint64_t size = 0, mtime;
-        uint8_t dir;
-        uint8_t p[FS_PATH_MAX];
-        field(p, prev[f], "");
-        if (fs_stat_until(w->fs, until(w), p, &size, &dir, &mtime) == OK)
-            have += size;   /* the older previous build: it goes first */
-        field(p, cur[f], "");
-        st = fs_stat_until(w->fs, until(w), p, &size, &dir, &mtime);
-        need += size + w->job->size[f] + 2 * SLACK;
-    }
-    if (st == OK && ro)
-        st = ERR_ACCESS_DENIED;   /* devmgr said writable, the volume says not */
-    if (st == OK && free_bytes + have < need)
-        st = ERR_NO_SPACE;
-    say("%lu KiB free, %lu KiB more from the older previous build, %lu KiB needed",
-        (unsigned long)(free_bytes >> 10), (unsigned long)(have >> 10),
-        (unsigned long)(need >> 10));
-    return st;
-}
-
-/* The size of the file at path (ERR_NOT_FOUND: none). */
-static status_t size_of(struct writer *w, const char *path, uint64_t *size)
+/* The size of the file at path + suffix (ERR_NOT_FOUND: none). */
+static status_t size_of(struct writer *w, const char *path, const char *suffix, uint64_t *size)
 {
     uint8_t p[FS_PATH_MAX], dir = 0;
     uint64_t mtime;
-    field(p, path, "");
+    field(p, path, suffix);
     status_t st = fs_stat_until(w->fs, until(w), p, size, &dir, &mtime);
     return st == OK && dir ? ERR_WRONG_TYPE : st;
 }
 
-/* Do the files at paths hold exactly these sizes and SHA-256s? They are
- * read only if every size is right. */
-static bool holds(struct writer *w, const char *const paths[UPDATE_FILES],
-                  const uint64_t size[UPDATE_FILES], const uint8_t *const sha[UPDATE_FILES])
+static bool exists(struct writer *w, const char *path, const char *suffix)
 {
+    uint64_t size;
+    return size_of(w, path, suffix, &size) == OK;
+}
+
+/* Do both of the pair's names (cur or prev) hold a file? */
+static bool whole(struct writer *w, const char *const pair[UPDATE_FILES])
+{
+    return exists(w, pair[UPDATE_KERNEL], "") && exists(w, pair[UPDATE_BOOTFS], "");
+}
+
+/* Does the stick's build hold exactly the new build (sizes, then SHA-256s)? */
+static bool has_new(struct writer *w)
+{
+    struct esp_write *j = w->job;
     for (unsigned f = 0; f < UPDATE_FILES; f++) {
         uint64_t n = 0;
-        if (size_of(w, paths[f], &n) != OK || n != size[f])
+        if (size_of(w, cur[f], "", &n) != OK || n != j->size[f])
             return false;
     }
     for (unsigned f = 0; f < UPDATE_FILES; f++) {
         uint8_t got[SHA256_BYTES];
-        if (hash_file(w, paths[f], "", size[f], got) != OK || memcmp(got, sha[f], SHA256_BYTES))
+        if (hash_file(w, cur[f], "", j->size[f], got) != OK ||
+            memcmp(got, j->sha256[f], SHA256_BYTES))
             return false;
     }
     return true;
 }
 
-/* Is the stick's build its previous one already (an earlier write that
- * stopped after this step)? w->old_size and old_sha get the stick's build
- * if the sizes match. */
-static bool previous_is_current(struct writer *w)
+/* One change of names of the swap: path + suffix renamed to + to_suffix,
+ * or removed (to NULL; not there is fine). Counted: the test's stop
+ * (UPDATE_OFFER_STOP) ends the write right after the stop_at-th, with
+ * ERR_CANCELED and no clean-up, as a power cut there would. */
+static status_t swap_op(struct writer *w, const char *path, const char *suffix, const char *to,
+                        const char *to_suffix)
 {
-    const uint8_t *sha[UPDATE_FILES];
-    for (unsigned f = 0; f < UPDATE_FILES; f++) {
-        uint64_t p = 0;
-        if (size_of(w, cur[f], &w->old_size[f]) != OK || size_of(w, prev[f], &p) != OK ||
-            p != w->old_size[f])
-            return false;
+    status_t st = to ? rename_file(w, path, suffix, to, to_suffix) : unlink_file(w, path, suffix);
+    if (st == OK && ++w->ops == w->job->stop_at) {
+        say("stopping dead after change %u of the swap, as the test asked", w->ops);
+        w->stopped = true;
+        return ERR_CANCELED;
     }
-    for (unsigned f = 0; f < UPDATE_FILES; f++) {
-        if (hash_file(w, cur[f], "", w->old_size[f], w->old_sha[f]) != OK)
-            return false;
-        sha[f] = w->old_sha[f];
-    }
-    return holds(w, prev, w->old_size, sha);
+    return st;
 }
 
-/* PREV: the stick's build kept as the previous one (copied, unless it is
- * that already). The stick may have the new build already (`update -w`
- * of the build it was given before): then nothing is written at all. */
-static status_t keep_previous(struct writer *w)
+/* The old build's file f back at its own name, from wherever the swap had
+ * moved it (the new build's file there, if any, removed). */
+static status_t old_back(struct writer *w, unsigned f)
 {
-    struct esp_write *j = w->job;
-    if (holds(w, cur, j->size, j->sha256)) {
+    if (w->old_at[f] == AT_CUR || w->old_at[f] == AT_NONE)
+        return OK;
+    const char *from = w->old_at[f] == AT_OLD ? cur[f] : prev[f];
+    const char *sfx = w->old_at[f] == AT_OLD ? OLD : "";
+    status_t st = unlink_file(w, cur[f], "");
+    if (st == OK)
+        st = rename_file(w, from, sfx, cur[f], "");
+    if (st == OK)
+        w->old_at[f] = AT_CUR;
+    return st;
+}
+
+/* An earlier write that stopped part way through its swap (a power cut,
+ * a test's stop) left *.old files: with both the default entry's names
+ * there the new build was in, so its renames are finished (the old files
+ * become the previous build); else they are undone (the old files back
+ * in the default entry's names). Either way a whole build per pair. */
+static status_t settle(struct writer *w)
+{
+    bool old[UPDATE_FILES], whole = true, any = false;
+    for (unsigned f = 0; f < UPDATE_FILES; f++) {
+        old[f] = exists(w, cur[f], OLD);
+        any |= old[f];
+        whole &= exists(w, cur[f], "");
+    }
+    if (!any)
+        return OK;
+    say("an earlier write stopped in its swap: %s it", whole ? "finishing" : "undoing");
+    status_t st = OK;
+    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
+        if (!old[f])
+            continue;
+        if (whole) {
+            st = unlink_file(w, prev[f], "");
+            if (st == OK)
+                st = rename_file(w, cur[f], OLD, prev[f], "");
+        } else {
+            w->old_at[f] = AT_OLD;
+            st = old_back(w, f);
+        }
+    }
+    return st == OK ? sync_esp(w) : st;
+}
+
+/* ROOM: an earlier write settled and its leftovers gone; nothing to write
+ * if the stick has the new build already; room for the new build. */
+static status_t room(struct writer *w)
+{
+    status_t st = inject(w, UPDATE_WRITE_ROOM);
+    if (st == OK)
+        st = settle(w);
+    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
+        st = unlink_file(w, cur[f], NEW);
+        if (st == OK)
+            st = unlink_file(w, prev[f], NEW);
+    }
+    if (st == OK && has_new(w)) {
         say("the stick has this build already: nothing to write");
         w->already = true;
         return OK;
     }
-    if (previous_is_current(w)) {
-        say("the previous build is the stick's build already: kept as it is");
-        return OK;
+    uint64_t total = 0, free_bytes = 0, need = 0;
+    uint8_t ro = 0, label[16];
+    if (st == OK)
+        st = fs_statfs_until(w->fs, until(w), &total, &free_bytes, &ro, label);
+    bool copy = st == OK && !whole(w, prev) && whole(w, cur);   /* copy_previous's */
+    for (unsigned f = 0; f < UPDATE_FILES; f++) {
+        uint64_t n = 0;
+        need += w->job->size[f] + SLACK;
+        if (copy && size_of(w, cur[f], "", &n) == OK)
+            need += n + SLACK;
     }
-    status_t st = OK;
-    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
-        st = unlink_file(w, prev[f], "");
-    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
-        st = copy_file(w, cur[f], prev[f], UPDATE_WRITE_PREV, &w->old_size[f], w->old_sha[f]);
-    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
-        st = rename_to(w, prev[f], ".new", prev[f]);
-    return st == OK ? sync_esp(w) : st;
+    if (st == OK && ro)
+        st = ERR_ACCESS_DENIED;   /* devmgr said writable, the volume says not */
+    if (st == OK && free_bytes < need)
+        st = ERR_NO_SPACE;
+    say("%lu KiB free, %lu KiB needed", (unsigned long)(free_bytes >> 10),
+        (unsigned long)(need >> 10));
+    return st;
 }
 
 /* NEW: the new build under temporary names, each checked against the
@@ -448,84 +504,147 @@ static status_t write_new(struct writer *w)
         st = sync_esp(w);
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
         uint8_t back[SHA256_BYTES];
-        st = hash_file(w, cur[f], ".new", j->size[f], back);
+        st = hash_file(w, cur[f], NEW, j->size[f], back);
         if (st == OK && memcmp(back, j->sha256[f], SHA256_BYTES))
             st = ERR_IO;   /* the stick didn't keep what was written */
     }
     return st;
 }
 
-/* SWITCH: the new files take the names the boot menu's default entry reads. */
+/* No whole previous build (none was ever written, or a failure after its
+ * removal): the stick's build is copied as it first, and read back, so
+ * that the previous-build entry boots a whole build while the renames move
+ * the stick's (the one case the renames alone can't keep bootable). */
+static status_t copy_previous(struct writer *w)
+{
+    if (whole(w, prev) || !whole(w, cur))
+        return OK;
+    say("no whole previous build: the stick's build copied as it first");
+    status_t st = OK;
+    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
+        st = unlink_file(w, prev[f], "");   /* half a previous build */
+        if (st == OK)
+            st = copy_file(w, cur[f], prev[f]);
+    }
+    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
+        st = rename_file(w, prev[f], NEW, prev[f], "");
+    return st == OK ? sync_esp(w) : st;
+}
+
+/* SWITCH: the stick's build renamed aside (1), the new one into its names
+ * (2); copied as the previous build first if there is none (copy_previous). */
 static status_t switch_names(struct writer *w)
 {
-    status_t st = OK;
+    status_t st = copy_previous(w);
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
-        st = unlink_file(w, cur[f], "");
-        if (st == OK)
-            st = rename_to(w, cur[f], ".new", cur[f]);
+        w->old_at[f] = exists(w, cur[f], "") ? AT_CUR : AT_NONE;
+        if (w->old_at[f] == AT_CUR)
+            st = swap_op(w, cur[f], "", cur[f], OLD);
+        if (st == OK && w->old_at[f] == AT_CUR)
+            w->old_at[f] = AT_OLD;
+    }
+    if (st == OK)
+        st = sync_esp(w);
+    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
+        st = swap_op(w, cur[f], NEW, cur[f], "");
         if (st == OK && f == UPDATE_KERNEL)
-            st = inject(w, UPDATE_WRITE_SWITCH);   /* the new kernel, the old boot image */
+            st = inject(w, UPDATE_WRITE_SWITCH);   /* the new kernel, no boot image */
     }
     return st == OK ? sync_esp(w) : st;
 }
 
-/* After a failed switch: the default entry's files put back to the old
- * build, copied again from the previous build's (checked against what was
- * read from the stick before). */
-static status_t put_back(struct writer *w)
+/* PREV: the older previous build removed (3), the old build renamed into
+ * its names (4). Only if the old build was whole: else the previous build
+ * stays as it is. */
+static status_t keep_previous(struct writer *w)
 {
-    status_t st = OK;
-    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
-        uint64_t size = 0;
-        uint8_t sha[SHA256_BYTES];
-        st = copy_file(w, prev[f], cur[f], UPDATE_WRITE_NONE, &size, sha);
-        if (st == OK && (size != w->old_size[f] || memcmp(sha, w->old_sha[f], SHA256_BYTES)))
-            st = ERR_IO;
+    if (w->old_at[UPDATE_KERNEL] != AT_OLD || w->old_at[UPDATE_BOOTFS] != AT_OLD) {
+        say("the stick had no whole build to keep: the previous build stays");
+        for (unsigned f = 0; f < UPDATE_FILES; f++)
+            (void)unlink_file(w, cur[f], OLD);   /* half a build: nothing boots it */
+        return OK;
     }
+    status_t st = OK;
+    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
+        st = swap_op(w, prev[f], "", NULL, NULL);
+    if (st == OK)
+        st = sync_esp(w);
+    if (st == OK)
+        st = inject(w, UPDATE_WRITE_PREV);   /* no previous build now, the new one in */
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
-        st = unlink_file(w, cur[f], "");
+        st = swap_op(w, cur[f], OLD, prev[f], "");
         if (st == OK)
-            st = rename_to(w, cur[f], ".new", cur[f]);
+            w->old_at[f] = AT_PREV;
     }
     return st == OK ? sync_esp(w) : st;
 }
 
-/* The steps from ROOM on, in order; j->step and j->st say where it
- * stopped; j->stick what the stick boots now. */
+/* After a failure in the swap: the old build back in the default entry's
+ * names (what the stick boots then is the answer's). */
+static uint32_t put_back(struct writer *w)
+{
+    bool new_in = w->ops >= 2 * UPDATE_FILES;   /* the swap's step 2 was done */
+    status_t st = OK;
+    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
+        st = old_back(w, f);
+    if (st == OK)
+        st = sync_esp(w);
+    printf("init: update: the stick write failed in its swap (%s): the old build %s\n",
+           status_str(w->job->st), st == OK ? "is back as the stick's" : "couldn't be put back");
+    if (st == OK)
+        return UPDATE_STICK_OLD;
+    return new_in ? UPDATE_STICK_NEW_ALONE : UPDATE_STICK_PREVIOUS;
+}
+
+/* What the stick boots after a stop with no clean-up (a test's), by how
+ * far the swap got: the default entry from change 4 on (the new build),
+ * the previous-build entry before. */
+static uint32_t stopped_stick(const struct writer *w)
+{
+    if (w->ops >= 2 * UPDATE_FILES)
+        return w->ops >= 4 * UPDATE_FILES ? UPDATE_STICK_NEW : UPDATE_STICK_NEW_ALONE;
+    return w->ops ? UPDATE_STICK_PREVIOUS : UPDATE_STICK_OLD;
+}
+
+/* The steps in order (ROOM, NEW, SWITCH, PREV); j->step and j->st say
+ * where it stopped; j->stick what the stick boots now. */
 static void steps(struct writer *w)
 {
     struct esp_write *j = w->job;
-    static status_t (*const step[])(struct writer *) = {
-        [UPDATE_WRITE_ROOM] = room, [UPDATE_WRITE_PREV] = keep_previous,
-        [UPDATE_WRITE_NEW] = write_new, [UPDATE_WRITE_SWITCH] = switch_names,
+    static const struct {
+        uint32_t step;
+        status_t (*fn)(struct writer *);
+    } order[] = {
+        { UPDATE_WRITE_ROOM, room }, { UPDATE_WRITE_NEW, write_new },
+        { UPDATE_WRITE_SWITCH, switch_names }, { UPDATE_WRITE_PREV, keep_previous },
     };
     j->stick = UPDATE_STICK_OLD;
-    for (j->step = UPDATE_WRITE_ROOM; j->step <= UPDATE_WRITE_SWITCH; j->step++) {
+    for (unsigned i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
         uint64_t t0 = now();
+        j->step = order[i].step;
         say("%s ...", update_write_step_str(j->step));
-        j->st = step[j->step](w);
+        j->st = order[i].fn(w);
         say("%s: %s in %lu ms", update_write_step_str(j->step), status_str(j->st), ms_since(t0));
-        if (j->st != OK || w->already)
+        if (j->st != OK || w->already || w->stopped)
             break;
     }
     if (j->st == OK) {
         j->stick = UPDATE_STICK_NEW;
         return;
     }
+    if (w->stopped) {   /* a test's power cut: nothing more is written */
+        j->stick = stopped_stick(w);
+        return;
+    }
     if (j->st == ERR_TIMED_OUT)
         say("no time left (the write may take %lu s): stopping here",
             (unsigned long)(WRITE_LIMIT / NS_PER_S));
     w->deadline = now() + RECOVER_LIMIT;   /* the clean-up's own time */
-    if (j->step == UPDATE_WRITE_SWITCH) {
-        status_t back = put_back(w);
-        j->stick = back == OK ? UPDATE_STICK_OLD : UPDATE_STICK_PREVIOUS;
-        printf("init: update: the stick write failed while switching the names (%s): the old "
-               "build %s\n", status_str(j->st),
-               back == OK ? "is back as the stick's" : "boots from \"Jam OS (previous build)\"");
-    }
+    if (j->step == UPDATE_WRITE_SWITCH || j->step == UPDATE_WRITE_PREV)
+        j->stick = put_back(w);
     for (unsigned f = 0; f < UPDATE_FILES; f++) {   /* best effort: ROOM removes them anyway */
-        (void)unlink_file(w, cur[f], ".new");
-        (void)unlink_file(w, prev[f], ".new");
+        (void)unlink_file(w, cur[f], NEW);
+        (void)unlink_file(w, prev[f], NEW);
     }
     (void)sync_esp(w);
 }

@@ -51,15 +51,30 @@
  *                  with check-only, a failure without a write and a
  *                  failure at no step refused. tools/update-write-test.sh
  *                  then boots the stick from cold.
+ *   updtest writestop <n> b|c
+ *                  the build (b: DIR, c: a second one in DIR "c/") offered
+ *                  to be written with a test's stop (UPDATE_OFFER_STOP)
+ *                  right after change n of the swap (1 to UPDATE_SWAP_OPS;
+ *                  0: none), as a power cut there: answered "not written"
+ *                  (n 0: accepted).
+ *   updtest espcheck
+ *                  which build /esp's default entry and its previous-build
+ *                  entry each hold whole (A, B, C: their files in DIR
+ *                  "a/", DIR and DIR "c/"); one of them must.
+ *                  tools/update-write-test.sh runs a writestop and an
+ *                  espcheck for each change of the swap, each its own
+ *                  program, so each sees /esp as it came back.
  * Exit 0 when each case went as expected. */
 #include <idl/initctl.h>
 #include <os.h>
+#include <sha256.h>
 #include <update.h>
 #include <wants.h>
 
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc init\n"
-          "mount /data r\n");
+          "mount /data r\n"
+          "mount /esp r\n");
 
 #define DIR         "/data/update/"
 #define ANSWER_WAIT (300 * NS_PER_S)  /* init copies and hashes ~10 MB, and may write the stick */
@@ -103,23 +118,30 @@ static status_t clone(handle_t src, uint64_t keep, uint64_t size, handle_t *out)
     return OK;
 }
 
-static status_t load(struct build *b)
+/* The build whose files are in folder dir ("/data/update/", ...). */
+static status_t load_dir(struct build *b, const char *dir)
 {
+    char p[80];
     handle_t m;
     uint64_t n = 0;
-    status_t st = file_read_vmo(DIR "manifest", UPDATE_MANIFEST_MAX, &m, &n);
+    snprintf(p, sizeof(p), "%smanifest", dir);
+    status_t st = file_read_vmo(p, UPDATE_MANIFEST_MAX, &m, &n);
     if (st != OK)
         return st;
     st = jam_vmo_read(m, 0, b->manifest, n);
     jam_handle_close(m);
     b->manifest_len = (uint32_t)n;
-    if (st == OK)
-        st = file_read_vmo(DIR "jamos.elf", UPDATE_FILE_MAX, &b->vmo[UPDATE_KERNEL],
-                           &b->bytes[UPDATE_KERNEL]);
-    if (st == OK)
-        st = file_read_vmo(DIR "bootfs.img", UPDATE_FILE_MAX, &b->vmo[UPDATE_BOOTFS],
-                           &b->bytes[UPDATE_BOOTFS]);
+    static const char *const names[UPDATE_FILES] = { "jamos.elf", "bootfs.img" };
+    for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
+        snprintf(p, sizeof(p), "%s%s", dir, names[f]);
+        st = file_read_vmo(p, UPDATE_FILE_MAX, &b->vmo[f], &b->bytes[f]);
+    }
     return st;
+}
+
+static status_t load(struct build *b)
+{
+    return load_dir(b, DIR);
 }
 
 /* Offer b (its VMOs duplicated: b keeps its own) with `handles` of them
@@ -444,6 +466,140 @@ static void write_failures(struct build *b)
     b->flags = 0;
 }
 
+/* ---- writestop: a stop at each change of the swap --------------------------------- */
+
+/* A build's two files, as their SHA-256s. */
+struct sums {
+    uint8_t sha[UPDATE_FILES][SHA256_BYTES];
+};
+
+static status_t sum_vmo(handle_t v, uint64_t n, uint8_t out[SHA256_BYTES])
+{
+    static uint8_t buf[CHUNK];
+    struct sha256 h;
+    sha256_init(&h);
+    for (uint64_t off = 0; off < n; off += CHUNK) {
+        uint64_t k = n - off < CHUNK ? n - off : CHUNK;
+        status_t st = jam_vmo_read(v, off, buf, k);
+        if (st != OK)
+            return st;
+        sha256_add(&h, buf, k);
+    }
+    sha256_done(&h, out);
+    return OK;
+}
+
+/* /esp's file at path into *v (n bytes): ERR_NOT_FOUND if /esp is there and
+ * the file isn't. /esp comes back a moment after a stick write: waited for. */
+static status_t esp_file(const char *path, handle_t *v, uint64_t *n)
+{
+    status_t st = ERR_NOT_FOUND;
+    for (uint64_t end = now() + 10 * NS_PER_S; now() < end;) {   /* bounded: /esp's return */
+        st = file_read_vmo(path, UPDATE_FILE_MAX, v, n);
+        if (st == OK)
+            return OK;
+        handle_t c;
+        uint64_t cn;
+        if (file_read_vmo("/esp/boot/limine/limine.conf", 1u << 20, &c, &cn) == OK) {
+            jam_handle_close(c);   /* /esp is there: the file isn't */
+            return st;
+        }
+        jam_nanosleep(now() + 100 * NS_PER_MS);
+    }
+    return st;
+}
+
+/* The pair of /esp files kernel, bootfs as sums (false: one is missing or
+ * unreadable). */
+static bool esp_pair(const char *kernel, const char *bootfs, struct sums *out)
+{
+    const char *paths[UPDATE_FILES] = { kernel, bootfs };
+    for (unsigned f = 0; f < UPDATE_FILES; f++) {
+        handle_t v;
+        uint64_t n = 0;
+        if (esp_file(paths[f], &v, &n) != OK)
+            return false;
+        status_t st = sum_vmo(v, n, out->sha[f]);
+        jam_handle_close(v);
+        if (st != OK)
+            return false;
+    }
+    return true;
+}
+
+/* Which of the n builds the pair is (-1: none, or no whole pair). */
+static int which(bool whole, const struct sums *pair, const struct sums *builds, unsigned n)
+{
+    for (unsigned i = 0; whole && i < n; i++)
+        if (!memcmp(pair, &builds[i], sizeof(*pair)))
+            return (int)i;
+    return -1;
+}
+
+/* /esp now: which build each entry boots (-1: none). */
+static void entries(const struct sums *builds, unsigned n, int *def, int *prev)
+{
+    struct sums p;
+    bool whole = esp_pair("/esp/boot/jamos.elf", "/esp/boot/bootfs.img", &p);
+    *def = which(whole, &p, builds, n);
+    whole = esp_pair("/esp/boot/prev-jamos.elf", "/esp/boot/prev-bootfs.img", &p);
+    *prev = which(whole, &p, builds, n);
+}
+
+/* A build's sums from its files on /data (dir: DIR "a/", DIR, DIR "c/"). */
+static bool sums_of(const char *dir, struct sums *out)
+{
+    struct build x;
+    memset(&x, 0, sizeof(x));
+    bool ok = load_dir(&x, dir) == OK;
+    for (unsigned f = 0; ok && f < UPDATE_FILES; f++)
+        ok = sum_vmo(x.vmo[f], x.bytes[f], out->sha[f]) == OK;
+    for (unsigned f = 0; f < UPDATE_FILES; f++)
+        if (x.vmo[f])
+            jam_handle_close(x.vmo[f]);
+    return ok;
+}
+
+/* writestop <n> <b|c>: that build offered to be written, stopped dead after
+ * change n of its swap (0: no stop): answered "not written" (n 0:
+ * accepted). */
+static void write_stop(uint32_t n, const char *which)
+{
+    struct build x;
+    struct update_answer a;
+    memset(&x, 0, sizeof(x));
+    memset(&a, 0, sizeof(a));
+    status_t st = load_dir(&x, which[0] == 'c' ? DIR "c/" : DIR);
+    x.flags = UPDATE_OFFER_WRITE | (n ? UPDATE_OFFER_STOP(n) : 0);
+    if (st == OK)
+        st = offer(&x, 2, UPDATE_OFFER_MAGIC, &a);
+    bool good = st == OK && a.why == (n ? UPDATE_NOT_WRITTEN : UPDATE_ACCEPTED);
+    failures += !good;
+    printf("updtest: %s written, stopped after change %u of the swap (0: none): %s (%s), %s: %s\n",
+           which, n, st == OK ? update_why_str(a.why) : "-", status_str(st == OK ? a.status : st),
+           update_stick_str(a.stick), good ? "as expected" : "FAILED");
+}
+
+/* espcheck: which build (A, B, C: DIR "a/", DIR, DIR "c/") each of /esp's
+ * two entries holds whole; one of them must. */
+static void esp_check(void)
+{
+    static const char names[] = "ABC";
+    static const char *const dirs[3] = { DIR "a/", DIR, DIR "c/" };
+    struct sums s[3];
+    int def = -1, prev = -1;
+    bool ok = true;
+    for (unsigned i = 0; ok && i < 3; i++)
+        ok = sums_of(dirs[i], &s[i]);
+    if (ok)
+        entries(s, 3, &def, &prev);
+    bool good = ok && (def >= 0 || prev >= 0);
+    failures += !good;
+    printf("updtest: the default entry boots %c, the previous build %c%s: %s\n",
+           def >= 0 ? names[def] : '-', prev >= 0 ? names[prev] : '-',
+           ok ? "" : " (no " DIR "a/, b or c build)", good ? "as expected" : "FAILED");
+}
+
 /* Every refusal, each on an offer channel of its own; the build offered
  * check-only (accepted, not loaded). */
 static void bad(struct build *b)
@@ -473,35 +629,46 @@ static void bad(struct build *b)
 
 int main(int argc, char **argv)
 {
-    enum { GOOD, BAD, NOKEY, WRITEFAIL, MODES };
-    static const char *const modes[MODES] = { "good", "bad", "nokey", "writefail" };
+    enum { GOOD, BAD, NOKEY, WRITEFAIL, WRITESTOP, ESPCHECK, MODES };
+    static const char *const modes[MODES] = { "good",      "bad",       "nokey",
+                                              "writefail", "writestop", "espcheck" };
     unsigned mode = 0;
-    while (argc == 2 && mode < MODES && strcmp(argv[1], modes[mode]))
+    while (argc >= 2 && mode < MODES && strcmp(argv[1], modes[mode]))
         mode++;
-    if (argc != 2 || mode == MODES) {
-        printf("usage: updtest good|bad|nokey|writefail\n");
+    bool stop_args = argc == 4 && strlen(argv[2]) == 1 && argv[2][0] >= '0' &&
+                     (unsigned)(argv[2][0] - '0') <= UPDATE_SWAP_OPS &&
+                     (!strcmp(argv[3], "b") || !strcmp(argv[3], "c"));
+    if (mode == MODES || (mode == WRITESTOP ? !stop_args : argc != 2)) {
+        printf("usage: updtest good|bad|nokey|writefail|espcheck | writestop <0-%u> b|c\n",
+               UPDATE_SWAP_OPS);
         return 2;
     }
     initctl = svc_get(SVC_INIT);
-    struct build b;
-    memset(&b, 0, sizeof(b));
-    status_t st = initctl ? load(&b) : ERR_NOT_FOUND;
-    if (st != OK) {
-        printf("updtest: no init channel, or no " DIR " files (%s)\n", status_str(st));
-        return 1;
-    }
-    if (mode == GOOD) {
-        expect("the build", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
-    } else if (mode == NOKEY) {
-        expect("no key", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
-        b.flags = UPDATE_OFFER_CHECK_ONLY;
-        expect("no key, check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
-        b.flags = UPDATE_OFFER_WRITE;
-        expect("no key, written to the stick", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
-    } else if (mode == WRITEFAIL) {
-        write_failures(&b);   /* each loads the build: the stored kernel is it afterwards */
+    if (mode == ESPCHECK) {
+        esp_check();
+    } else if (mode == WRITESTOP) {
+        write_stop(initctl ? (uint32_t)(argv[2][0] - '0') : 0, argv[3]);
     } else {
-        bad(&b);
+        struct build b;
+        memset(&b, 0, sizeof(b));
+        status_t st = initctl ? load(&b) : ERR_NOT_FOUND;
+        if (st != OK) {
+            printf("updtest: no init channel, or no " DIR " files (%s)\n", status_str(st));
+            return 1;
+        }
+        if (mode == GOOD) {
+            expect("the build", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+        } else if (mode == NOKEY) {
+            expect("no key", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+            b.flags = UPDATE_OFFER_CHECK_ONLY;
+            expect("no key, check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+            b.flags = UPDATE_OFFER_WRITE;
+            expect("no key, written to the stick", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+        } else if (mode == WRITEFAIL) {
+            write_failures(&b);   /* each loads the build: the stored kernel is it afterwards */
+        } else {
+            bad(&b);
+        }
     }
     printf("updtest: %s: %s\n", argv[1], failures ? "FAILED" : "PASS");
     return failures ? 1 : 0;

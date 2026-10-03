@@ -1049,7 +1049,7 @@ with the rest) isn't the running build's is refused (`update -f` takes
 it), so `update` never moves a PC from VLAN 21 to untagged or back by
 accident. By default only RAM changes: a power-off brings back the stick's build.
 `update -w` has init also write the build to the stick's ESP once it is
-loaded (the stick's own build kept as the previous one), so it survives a
+loaded (the stick's own build renamed to be the previous one), so it survives a
 power-off ([Storage](#storage) has who may write the ESP and in what
 order); if the write fails, the build stays loaded, the stick still boots,
 and the answer says how far it got. The key's secret
@@ -1553,16 +1553,29 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   no `/esp` meanwhile, so the writable channel is in no namespace, the
   shell's included; then the same back to read-only (the volume marked
   clean), and `/esp` comes back. init's writer (`user/services/init/espwrite.c`,
-  on update.c's worker thread) keeps the stick bootable at every step:
-  the stick's build is copied, not moved, to the previous-build files and
-  read back first; the new build goes under `*.new` names and is read
-  back and checked against the signed manifest's SHA-256s; only then do
-  the names switch, one directory entry at a time, during which the
-  previous-build entry still boots the old build. A failure stops it
-  there, and after the switch has begun puts the old build back under
-  the default names (copied again from the previous build) while the
-  ESP's fat still answers. The read-back goes through fat, whose cache
-  may answer it. Every call of the write ends by one deadline (120 s for
+  on update.c's worker thread) keeps one of the boot menu's two entries
+  booting a whole build at every moment: the new build goes under `*.new`
+  names and is read back and checked against the signed manifest's
+  SHA-256s; then the names change, each pair of renames synced before the
+  next: (1) the stick's `jamos.elf` and `bootfs.img` renamed to `*.old`
+  (the previous-build entry still boots the build before), (2) the `*.new`
+  to `jamos.elf` and `bootfs.img` (the default entry boots the new
+  build), (3) the older `prev-jamos.elf` and `prev-bootfs.img` removed,
+  (4) the `*.old` renamed to them (the previous-build entry boots the old
+  build). Nothing of the stick's build is copied (the copy was 14.7 s of a
+  31 s write on the PC). A FAT rename can't replace a file, so a build
+  can't change names without a moment when neither of its names' pairs
+  holds it; this order puts that moment where the other pair holds a
+  whole build. A power cut in (1) or (2) leaves the default entry without
+  a whole build and "Jam OS (previous build)" booting the build before the
+  old one, until the next `update -w`, which first finishes or undoes an
+  earlier write's renames. A stick with no whole previous build (none
+  ever written, or a failure removed it) gets a copy of its build as the
+  previous one before (1), the one copy left. A failure stops the write
+  there, and after (1) renames the old build back under the default names
+  while the ESP's fat still answers (after (3) the stick then has no
+  previous build until the next write). The read-back goes
+  through fat, whose cache may answer it. Every call of the write ends by one deadline (120 s for
   the steps, 60 s for the clean-up after a failure), so `update -w`
   always gets an answer; each step logs its time.
 - Write ordering: file data, then both FATs, then the directory entry.

@@ -92,7 +92,7 @@ esp() {
 
 # stick <run> <build> <prev> <new>: the run's stick image boots <build> (A
 # or B) from its default entry and, if <prev> is A, A from its previous-
-# build entry; with <new> = none, no .new file is left.
+# build entry; with <new> = none, no .new or .old file is left.
 stick() {
     i="$out/$1-done.img" k=build/jamos.elf b="$out/bootfs-A.img"
     [ "$2" = B ] && k="$out/jamos-B.elf" b="$out/bootfs-B.img"
@@ -101,8 +101,8 @@ stick() {
         esp "$i" prev-jamos.elf build/jamos.elf && esp "$i" prev-bootfs.img "$out/bootfs-A.img" ||
             fail "$1: the previous build isn't A"
     fi
-    if [ "$4" = none ] && mdir -i "$i@@1M" ::/boot 2>/dev/null | grep -qi "new"; then
-        fail "$1: a .new file is left"
+    if [ "$4" = none ] && mdir -i "$i@@1M" ::/boot 2>/dev/null | grep -qiE "\.(new|old)"; then
+        fail "$1: a .new or .old file is left"
     fi
     rm -f "$i"
 }

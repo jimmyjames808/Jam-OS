@@ -4,15 +4,26 @@
 # key (tools/update-test-key.sh); build B is A's kernel with another version
 # string and A's boot image with `build.txt` saying git b0b0b0b and one
 # more file, update-marker.txt (as tools/update-net-test.sh makes them),
-# signed with the test key. Four QEMU runs on one stick image, each a cold
-# boot of the image the last one left (QEMU_SAVE, QEMU_IMAGE):
+# signed with the test key; build C the same with another version string
+# and git c0c0c0c. QEMU runs on one stick image, each a cold boot of the
+# image the last one left (QEMU_SAVE, QEMU_IMAGE):
 #   1. wfail: `run updtest writefail`: B offered to be written with a
-#      test's failure at each step (room, the previous build, half way
-#      through the new kernel, between the two renames): each answered
-#      "not written", the stick left booting A (put back after the
-#      renames). Then a firmware reset (`reboot -f`, the power cycle). On
-#      the Mac the ESP holds A as jamos.elf/bootfs.img and as the previous
-#      build, and no .new file.
+#      test's failure at each step (room; once the older previous build is
+#      removed; half way through the new kernel; between the two renames
+#      of the new build): each answered "not written", the stick left
+#      booting A (renamed back after the swap began; the second failure
+#      leaves no previous build, so the fourth write copies A as it first).
+#      Then a firmware reset (`reboot -f`, the power cycle). On the Mac the
+#      ESP holds A as jamos.elf/bootfs.img and as the previous build, and no
+#      .new or .old file.
+#   1b. wstop (on a copy of run 1's stick): B and C written in turn
+#      (`run updtest writestop <n> b|c`), each stopped dead after change n
+#      of names of its swap, n = 1 to 8, as a power cut there, and after
+#      each `run updtest espcheck`: one of the stick's two entries holds a
+#      whole build (A, B or C). A build is written again after a stop
+#      before its change 4 (it isn't in yet), the other one after; then a
+#      last write of C with no stop. Cold boots of that stick: its default
+#      entry runs C, its previous-build entry B.
 #   2. wnet: a cold boot runs A; `update -w` (QEMU_NET, the peer serving B,
 #      signed): B fetched, checked, stored and written; the shell reboots
 #      (kexec) into B: `version` is B's, the marker is there. On the Mac the
@@ -62,15 +73,40 @@ python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
     { echo "update-write-test: can't make build B's boot image"; exit 1; }
 python3 tools/update-server.py --manifest "$out/jamos-B.elf" "$out/bootfs-B.img" --key "$key" \
     > "$out/manifest" || { echo "update-write-test: no manifest"; exit 1; }
+# Build C: A's kernel with a third version string, A's boot image with git c0c0c0c.
+vc=$(python3 - build/jamos.elf "$out/jamos-C.elf" "$va" <<'EOF'
+import sys
+data, old = open(sys.argv[1], "rb").read(), sys.argv[3].encode()
+new = old[:-1] + (b"E" if old.endswith(b"D") else b"D")
+open(sys.argv[2], "wb").write(data.replace(old + b"\0", new + b"\0"))
+print(new.decode())
+EOF
+) || { echo "update-write-test: can't make build C's kernel"; exit 1; }
+printf 'git c0c0c0c\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" > "$out/wtest-build-C.txt"
+python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-C.img" \
+    "build.txt=$out/wtest-build-C.txt" ||
+    { echo "update-write-test: can't make build C's boot image"; exit 1; }
+python3 tools/update-server.py --manifest "$out/jamos-C.elf" "$out/bootfs-C.img" --key "$key" \
+    > "$out/manifest-C" || { echo "update-write-test: no manifest for C"; exit 1; }
 mmd -i "$img@@64M" ::/update &&
     mcopy -i "$img@@64M" "$out/manifest" ::/update/manifest &&
     mcopy -i "$img@@64M" "$out/jamos-B.elf" ::/update/jamos.elf &&
-    mcopy -i "$img@@64M" "$out/bootfs-B.img" ::/update/bootfs.img ||
+    mcopy -i "$img@@64M" "$out/bootfs-B.img" ::/update/bootfs.img &&
+    mmd -i "$img@@64M" ::/update/c &&
+    mcopy -i "$img@@64M" "$out/manifest-C" ::/update/c/manifest &&
+    mcopy -i "$img@@64M" "$out/jamos-C.elf" ::/update/c/jamos.elf &&
+    mcopy -i "$img@@64M" "$out/bootfs-C.img" ::/update/c/bootfs.img &&
+    mmd -i "$img@@64M" ::/update/a &&
+    mcopy -i "$img@@1M" ::/boot/jamos.elf "$out/jamos-A.elf" &&
+    mcopy -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A0.img" &&
+    mcopy -i "$img@@64M" "$out/jamos-A.elf" ::/update/a/jamos.elf &&
+    mcopy -i "$img@@64M" "$out/bootfs-A0.img" ::/update/a/bootfs.img &&
+    cp "$out/manifest" "$out/manifest-A0" && mcopy -i "$img@@64M" "$out/manifest-A0" ::/update/a/manifest ||
     { echo "update-write-test: can't write the stick's /data"; exit 1; }
 cat > "$out/wtest.spec.json" <<EOF
 {"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img", "key": "$key", "plan": []}
 EOF
-echo "update-write-test: build A $va, build B $vb"
+echo "update-write-test: build A $va, build B $vb, build C $vc"
 
 # esp <image> <name> <file>: does the image's ESP have boot/<name>, the
 # same bytes as <file>?
@@ -78,9 +114,9 @@ esp() {
     rm -f "$out/wtest-got"
     mcopy -i "$1@@1M" "::/boot/$2" "$out/wtest-got" 2>/dev/null && cmp -s "$out/wtest-got" "$3"
 }
-# no_new <image>: no .new file left on its ESP.
+# no_new <image>: no .new or .old file left on its ESP.
 no_new() {
-    ! mdir -i "$1@@1M" ::/boot 2>/dev/null | grep -qi "new"
+    ! mdir -i "$1@@1M" ::/boot 2>/dev/null | grep -qiE "\.(new|old)"
 }
 mcopy -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
 
@@ -102,8 +138,8 @@ log="$out/wfail.log"
 grep -aq "updtest: writefail: PASS" "$log" || fail "run 1: a failed write didn't end as it should"
 [ "$(grep -ac "init: update: the stick write fails here, as the test asked" "$log")" -eq 4 ] ||
     fail "run 1: not 4 failures injected"
-grep -aq "the old build is back as the stick's" "$log" ||
-    fail "run 1: the failure between the renames wasn't put back"
+[ "$(grep -ac "the old build is back as the stick's" "$log")" -eq 2 ] ||
+    fail "run 1: the two failures in the swap weren't put back"
 [ "$(grep -ac "init: update: .* stored, but the stick write failed" "$log")" -eq 4 ] ||
     fail "run 1: not 4 writes said to have failed"
 grep -a "updtest: write\|init: update: .*stick" "$log" | sed 's/^/update-write-test: /'
@@ -112,8 +148,41 @@ esp "$out/wtest-1.img" jamos.elf build/jamos.elf &&
     fail "run 1: the stick's build isn't A any more"
 esp "$out/wtest-1.img" prev-jamos.elf build/jamos.elf &&
     esp "$out/wtest-1.img" prev-bootfs.img "$out/bootfs-A.img" ||
-    fail "run 1: the previous build isn't A"
-no_new "$out/wtest-1.img" || fail "run 1: a .new file is left on the ESP"
+    fail "run 1: the previous build isn't A (copied again after the failure that removed it)"
+no_new "$out/wtest-1.img" || fail "run 1: a .new or .old file is left on the ESP"
+
+# Run 1b: a stop at each change of the swap, on a copy of run 1's stick.
+{
+    printf 'wait 120 Jam OS shell\nwait jam>\nseen 60 init: /data mounted\n'
+    for step in 1:b 2:b 3:b 4:b 5:c 6:b 7:c 8:b 0:c; do
+        printf 'send run updtest writestop %s %s\nwait 300 updtest: writestop:\nwait jam>\n' \
+            "${step%:*}" "${step#*:}"
+        printf 'send run updtest espcheck\nwait 120 updtest: espcheck:\nwait jam>\n'
+    done
+    printf 'send reboot -f\nwait reboot: resetting\n'
+} > "$out/wstop.txt"
+QEMU_IMAGE="$out/wtest-1.img" QEMU_SAVE="$out/wtest-stop.img" QEMU_TIMEOUT=${QEMU_TIMEOUT:-1500} \
+    QEMU_INPUT="$out/wstop.txt" tools/qemu-test.sh "$out" wstop shell > "$out/wstop.out" 2>&1 ||
+    fail "run 1b, the script (see $out/wstop.log)"
+[ "$(grep -ac "updtest: writestop: PASS" "$out/wstop.log")" -eq 9 ] ||
+    fail "run 1b: a write wasn't answered as it should"
+[ "$(grep -ac "updtest: espcheck: PASS" "$out/wstop.log")" -eq 9 ] ||
+    fail "run 1b: a stop left neither entry with a whole build"
+grep -a "updtest: [bc] written\|updtest: the default entry" "$out/wstop.log" | tr -d '\r' |
+    sed 's/^.*updtest/update-write-test: updtest/'
+esp "$out/wtest-stop.img" jamos.elf "$out/jamos-C.elf" &&
+    esp "$out/wtest-stop.img" prev-jamos.elf "$out/jamos-B.elf" ||
+    fail "run 1b: the stick isn't C with B as the previous build"
+no_new "$out/wtest-stop.img" || fail "run 1b: a .new or .old file is left on the ESP"
+for run in wstopcold wstopprev; do
+    want=$vc prev=0
+    [ $run = wstopprev ] && want=$vb prev=1
+    printf 'wait 120 Jam OS shell\nwait jam>\nsend version\nwait Jam OS %s, git\nwait jam>\nsend reboot -f\nwait reboot: resetting\n' \
+        "$want" > "$out/$run.txt"
+    QEMU_IMAGE="$out/wtest-stop.img" QEMU_BOOT_PREV=$prev QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
+        QEMU_INPUT="$out/$run.txt" tools/qemu-test.sh "$out" $run shell > "$out/$run.out" 2>&1 ||
+        fail "$run: the stopped-and-written stick didn't boot build $want (see $out/$run.log)"
+done
 
 # Run 2: a cold boot (A), then `update -w` over the network.
 cat > "$out/wnet.txt" <<EOF
@@ -156,7 +225,7 @@ esp "$out/wtest-2.img" jamos.elf "$out/jamos-B.elf" &&
 esp "$out/wtest-2.img" prev-jamos.elf build/jamos.elf &&
     esp "$out/wtest-2.img" prev-bootfs.img "$out/bootfs-A.img" ||
     fail "run 2: the previous build isn't A"
-no_new "$out/wtest-2.img" || fail "run 2: a .new file is left on the ESP"
+no_new "$out/wtest-2.img" || fail "run 2: a .new or .old file is left on the ESP"
 
 # Runs 3 and 4: cold boots of the written stick, its default entry (B)
 # and its previous-build entry (A).
@@ -179,7 +248,7 @@ EOF
         QEMU_INPUT="$out/$run.txt" tools/qemu-test.sh "$out" $run shell > "$out/$run.out" 2>&1 ||
         fail "$run: the stick didn't boot build $want from cold (see $out/$run.log)"
 done
-rm -f "$img" "$out/wtest-1.img" "$out/wtest-2.img" "$out/wtest-got"
+rm -f "$img" "$out/wtest-1.img" "$out/wtest-2.img" "$out/wtest-stop.img" "$out/wtest-got"
 if [ $fails -eq 0 ]; then
     echo "update-write-test: PASS"
     exit 0
