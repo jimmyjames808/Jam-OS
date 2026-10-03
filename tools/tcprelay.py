@@ -26,15 +26,20 @@ to a port nothing is relayed to is answered with a reset, as a closed port
 on the Mac would be (`speed` to such a port says it was refused). Counted
 in the peer's summary: relay_conns, relay_bytes_to_guest,
 relay_bytes_from_guest, relay_resets, relay_refused, relay_dgrams_in,
-relay_dgrams_out.
+relay_dgrams_out; relay_scaled (connections whose windows scaled), and the
+most seen: relay_window (the guest's window, scaled), relay_out_flight (our
+bytes the guest had not acked), relay_in_flight (the guest's bytes past
+our last ACK).
 
 The TCP is a test peer's, like tools/tcppeer.py's: in-order receiving (a
 segment out of order is dropped and answered with a duplicate ACK), every
 segment acked at once, our window the room left in the bytes waiting for
-the Mac's socket (so a slow program on the Mac slows the guest's sender);
-sending up to the guest's window in segments of its MSS, go-back-N after
-RTO seconds without an ACK, a one-byte probe of a zero window at that
-pace. A reset from either side resets the other."""
+the Mac's socket (so a slow program on the Mac slows the guest's sender),
+window scaling (RFC 7323: offered on our SYNs, used when both SYNs carry
+it; then the window is up to HOST_READ_MAX); sending up to the guest's
+window (at most FLIGHT_MAX in flight) in segments of its MSS, go-back-N
+after RTO seconds without an ACK, a one-byte probe of a zero window at
+that pace. A reset from either side resets the other."""
 import errno
 import random
 import select
@@ -45,7 +50,9 @@ import time
 import types
 
 MSS = 1460
-WINDOW = 65535          # our window at most (no window scaling)
+WINDOW = 65535          # our window at most unscaled (and in every SYN)
+WSHIFT = 7              # our window scale, offered on every SYN we send
+FLIGHT_MAX = 262144     # our bytes in flight at most: few enough frames for the guest's rings
 RTO = 0.25              # seconds without an ACK before sending again
 SYN_EVERY = 1.0         # an active open's SYN, again, until answered
 HOST_READ_MAX = 262144  # bytes from the Mac's socket waiting for the guest, at most
@@ -71,6 +78,9 @@ class Stream:
         self.snd_una = self.snd_nxt = self.iss
         self.rcv_nxt, self.peer_wnd, self.peer_mss = 0, 0, 536
         self.state = "SYN_SENT" if active else "SYN_RCVD"
+        self.offer_ws = active       # we offer scaling as a client; as a server, if offered
+        self.scaled, self.snd_shift = False, 0   # both SYNs had it; the guest's shift
+        self.acked_out = 0           # the last ACK number we sent
         self.out = bytearray()       # bytes from the Mac, from snd_una on
         self.to_host = bytearray()   # bytes from the guest, not yet written to the Mac
         self.host_eof = False        # the Mac's program shut down its side
@@ -82,14 +92,28 @@ class Stream:
 
     # the wire
     def window(self):
-        return max(0, min(WINDOW, HOST_READ_MAX - len(self.to_host)))
+        return max(0, min(HOST_READ_MAX if self.scaled else WINDOW,
+                          HOST_READ_MAX - len(self.to_host)))
 
     def seg(self, flags, seq, data=b"", syn_opts=False):
         opts = struct.pack("!BBH", 2, 4, MSS) if syn_opts else b""
+        if syn_opts and self.offer_ws:   # NOP, then the window scale (RFC 7323 2.2)
+            opts += struct.pack("!BBBB", 1, 3, 3, WSHIFT)
+        wnd = self.window()
+        wnd = min(wnd, WINDOW) if flags & F_SYN or not self.scaled else wnd >> WSHIFT
+        if flags & F_ACK:
+            self.acked_out = self.rcv_nxt
         hdr = struct.pack("!HHIIBBHHH", self.mine[1], self.theirs[1], seq & M32,
                           self.rcv_nxt & M32 if flags & F_ACK else 0, (20 + len(opts)) // 4 << 4,
-                          flags, self.window(), 0, 0) + opts
+                          flags, min(wnd, 0xFFFF), 0, 0) + opts
         self.relay.send_segment(self, hdr, data)
+
+    def scale(self, opts):
+        """The guest's SYN (or SYN-ACK) said whether it scales: both must."""
+        self.scaled = self.offer_ws and 3 in opts
+        self.snd_shift = min(opts.get(3, 0), 14)
+        if self.scaled:
+            self.relay.count("relay_scaled")
 
     def ack(self):
         self.seg(F_ACK, self.snd_nxt)
@@ -120,13 +144,14 @@ class Stream:
             return
         end = (self.snd_una + len(self.out)) & M32
         while diff(end, self.snd_nxt) > 0:
-            room = self.peer_wnd - diff(self.snd_nxt, self.snd_una)
+            room = min(self.peer_wnd, FLIGHT_MAX) - diff(self.snd_nxt, self.snd_una)
             if room <= 0:
                 break
             off = diff(self.snd_nxt, self.snd_una)
             n = min(self.peer_mss, room, len(self.out) - off)
             self.seg(F_ACK | F_PSH, self.snd_nxt, bytes(self.out[off:off + n]))
             self.snd_nxt = (self.snd_nxt + n) & M32
+        self.relay.most("relay_out_flight", diff(self.snd_nxt, self.snd_una))
         if self.host_eof and self.snd_nxt == end and not self.fin_sent:
             self.seg(F_ACK | F_FIN, self.snd_nxt)
             self.snd_nxt = (self.snd_nxt + 1) & M32
@@ -160,8 +185,11 @@ class Stream:
         if self.state == "SYN_SENT":
             if flags & F_SYN and flags & F_ACK and ack == (self.iss + 1) & M32:
                 self.rcv_nxt, self.state = (seq + 1) & M32, "ESTABLISHED"
+                self.scale(opts)
                 self.established(ack, wnd, opts)
             return
+        if self.scaled and not flags & F_SYN:   # a SYN's window is never scaled
+            wnd <<= self.snd_shift
         if self.state == "SYN_RCVD":
             if flags & F_ACK and ack == (self.iss + 1) & M32:
                 self.state = "ESTABLISHED"
@@ -175,6 +203,7 @@ class Stream:
             self.snd_una, self.last = ack, time.monotonic()
         if flags & F_ACK:
             self.peer_wnd = wnd
+            self.relay.most("relay_window", wnd)
         self.take(flags, seq, data)
         self.pump()
 
@@ -198,6 +227,7 @@ class Stream:
             self.to_host += kept
             self.relay.count("relay_bytes_from_guest", len(kept))
             self.rcv_nxt = (self.rcv_nxt + len(kept)) & M32
+            self.relay.most("relay_in_flight", diff(self.rcv_nxt, self.acked_out))
         if flags & F_FIN and len(kept) == len(data):   # the FIN comes after every byte
             self.rcv_nxt = (self.rcv_nxt + 1) & M32
             self.guest_fin = True
@@ -289,6 +319,11 @@ class Relay:
     def count(self, what, n=1):
         self.peer.counts[what] = self.peer.counts.get(what, 0) + n
 
+    def most(self, what, n):
+        """The summary's `what`: the most n seen."""
+        if n > self.peer.counts.get(what, 0):
+            self.peer.counts[what] = n
+
     def send_segment(self, c, hdr, data):
         seg = hdr + data
         pseudo = c.mine[0] + c.theirs[0] + struct.pack("!BBH", 0, 6, len(seg))
@@ -327,8 +362,10 @@ class Relay:
                 continue
             if body[k + 1] < 2:
                 break
-            if body[k] == 2 and body[k + 1] == 4:
+            if body[k] == 2 and body[k + 1] == 4 and k + 4 <= hl:
                 opts[2] = struct.unpack_from("!H", body, k + 2)[0]
+            if body[k] == 3 and body[k + 1] == 3 and k + 3 <= hl:
+                opts[3] = body[k + 2]
             k += body[k + 1]
         return opts
 
@@ -352,6 +389,8 @@ class Relay:
         except OSError as e:
             self.peer.log("relay: connecting to 127.0.0.1:%d: %s" % (self.relays[dport], e))
         c = Stream(self, (dst, dport), (src, sport), mac, s, False, connecting=True)
+        c.offer_ws = 3 in opts   # answered in kind
+        c.scale(opts)
         c.rcv_nxt, c.peer_wnd = (seq + 1) & M32, wnd
         c.peer_mss = opts.get(2, 536)
         self.streams[(src, sport, dport)] = c
@@ -535,7 +574,7 @@ def selftest(np, tcp, nbytes=300000, drop=0.02, limit=30.0):
     # --tcp-forward: a program connects; the guest serves (tcppeer's server)
     a, b, result = _Wire(), _Wire(), []
     relay = Relay(a, np, {}, [(lport, gip, 5030)])
-    guest = tcp.Tcp(b, np, serve=(5030, nbytes))
+    guest = tcp.Tcp(b, np, serve=[(5030, nbytes, 0.0)])
     t = threading.Thread(target=_host_side, args=("client", lport, tcp.SERVE_RX_SEED,
                                                   tcp.SERVE_TX_SEED, nbytes, result, tcp))
     t.start()
@@ -556,4 +595,6 @@ def selftest(np, tcp, nbytes=300000, drop=0.02, limit=30.0):
     t.join(1)
     if result != ["ok"] or b.counts["tcp_ok"] != 1:
         return "relay selftest, relay: %s, %s" % (result, b.counts)
+    if a.counts.get("relay_scaled") != 1 or a.counts.get("relay_window", 0) <= WINDOW:
+        return "relay selftest: windows not scaled (%s)" % a.counts
     return None

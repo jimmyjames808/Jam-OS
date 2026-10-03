@@ -98,13 +98,25 @@ static status_t recv_all(struct net_sock *s, uint64_t bytes, uint64_t deadline)
     return got == bytes ? OK : ERR_OUT_OF_RANGE;
 }
 
-static int do_send(uint32_t addr, uint16_t port, uint64_t bytes)
+/* A connection to addr:port with rings of `ring` bytes each way (0: the
+ * defaults), open. */
+static status_t open_conn(uint32_t addr, uint16_t port, uint32_t ring, uint64_t deadline,
+                          struct net_sock *s)
+{
+    status_t st = net_wait_up(net_svc(), deadline, NULL);
+    if (st == OK && !ring)
+        return net_tcp_connect(net_svc(), addr, port, deadline, s);
+    if (st == OK && (st = net_tcp_open(net_svc(), addr, port, ring, ring, s)) == OK &&
+        (st = net_tcp_wait_open(s, deadline)) != OK)
+        net_close(s);
+    return st;
+}
+
+static int do_send(uint32_t addr, uint16_t port, uint64_t bytes, uint32_t ring)
 {
     struct net_sock s;
     uint64_t deadline = now() + TT_WAIT, t0 = now();
-    status_t st = net_wait_up(net_svc(), deadline, NULL);
-    if (st == OK)
-        st = net_tcp_connect(net_svc(), addr, port, deadline, &s);
+    status_t st = open_conn(addr, port, ring, deadline, &s);
     if (st != OK)
         return fail("connect", st);
     uint64_t t1 = now();
@@ -130,14 +142,17 @@ static int do_send(uint32_t addr, uint16_t port, uint64_t bytes)
 
 int main(int argc, char **argv)
 {
-    uint64_t port, n, bytes;
+    uint64_t port, n, bytes, ring = 0;
     uint32_t addr;
-    if (argc == 5 && !strcmp(argv[1], "send") && ipv4_parse(argv[2], &addr, NULL) &&
-        number(argv[3], 65535, &port) && number(argv[4], 1ull << 40, &bytes))
-        return do_send(addr, (uint16_t)port, bytes);
+    if ((argc == 5 || argc == 6) && !strcmp(argv[1], "send") &&
+        ipv4_parse(argv[2], &addr, NULL) && number(argv[3], 65535, &port) &&
+        number(argv[4], 1ull << 40, &bytes) &&
+        (argc == 5 || (number(argv[5], SOCKRING_MAX, &ring) && sockring_size_ok((uint32_t)ring))))
+        return do_send(addr, (uint16_t)port, bytes, (uint32_t)ring);
     if (argc == 5 && !strcmp(argv[1], "serve") && number(argv[2], 65535, &port) &&
         number(argv[3], 200, &n) && number(argv[4], 1ull << 40, &bytes))
         return tt_serve((uint16_t)port, (uint32_t)n, bytes);
-    printf("usage: tcptest send <address> <port> <bytes> | serve <port> <conns> <bytes>\n");
+    printf("usage: tcptest send <address> <port> <bytes> [<ring bytes>] | "
+           "serve <port> <conns> <bytes>\n");
     return 2;
 }

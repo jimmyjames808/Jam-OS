@@ -1,8 +1,10 @@
 /* tcptest: TCP end to end through netstack, against tools/netpeer.py's
  * TCP side (tools/tcppeer.py) in tools/tcp-test.sh:
  *
- *   tcptest send <address> <port> <bytes>
- *       connect; send <bytes> of stream 0xa1 and shut down; read the
+ *   tcptest send <address> <port> <bytes> [<ring bytes>]
+ *       connect (with rings of <ring bytes> each way, a <sockring.h> ring
+ *       size: NET_TCP_BULK for a scaled window; else the defaults);
+ *       send <bytes> of stream 0xa1 and shut down; read the
  *       peer's <bytes> of stream 0xb2 to its end, every byte checked (and
  *       their SHA-256 said); then wait until the connection is CLOSED with
  *       no error (both FINs acked). The speeds both ways are said.

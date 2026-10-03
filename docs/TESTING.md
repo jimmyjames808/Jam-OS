@@ -159,16 +159,23 @@ requests for other hosts and for the guest, broadcast and multicast
 datagrams, UDP to the guest's closed ports, IPv4 to the guest's MAC for
 another address, echo requests from another host, frames for another MAC,
 IPv6; off it untagged, VLAN 10 and 20, priority-tagged and QinQ frames
-(`flood_sent`, `flood_vlan`). `--tcp-serve <port>:<bytes>` and
+(`flood_sent`, `flood_vlan`). `--tcp-serve <port>:<bytes>[:<ms>],...` and
 `--tcp-connect <addr>:<port>:<conns>:<bytes>` add a small TCP of the
 peer's own (`tools/tcppeer.py`: in-order receiving, every segment acked,
-a 64 KiB window, go-back-N after 0.25 s without an ACK, zero-window
-probes, FIN both ways): a server the guest connects to (it reads the
-guest's bytes to its FIN, then sends as many and its FIN) and clients that
-connect to a guest listener (each sends its bytes and FIN, then reads the
-guest's to its FIN), every byte checked against bin/tcptest's patterns
-(`tcp_ok`, `tcp_bad`, `tcp_bytes_in`, `tcp_bytes_out`,
-`tcp_retransmits`; a connection not done is described in the log). Its
+at once or `<ms>` later as over a link with that round trip, a 64 KiB
+window or, with window scaling (offered on its SYNs, answered when the
+guest offers), 4 MiB; at most 256 KiB in flight, go-back-N after 0.25 s
+without an ACK, zero-window probes, FIN both ways): servers the guest
+connects to (each reads the guest's bytes to its FIN, then sends as many
+and its FIN) and clients that connect to a guest listener (each sends its
+bytes and FIN, then reads the guest's to its FIN), every byte checked
+against bin/tcptest's patterns (`tcp_ok`, `tcp_bad`, `tcp_bytes_in`,
+`tcp_bytes_out`, `tcp_retransmits`, and for each server port P the most
+seen: `tcp_P_window` the guest's window, `tcp_P_in_flight` its bytes past
+our last ACK, `tcp_P_out_flight` ours it had not acked, `tcp_P_scaled`;
+a connection not done is described in the log). The relay
+(`tools/tcprelay.py`) scales the same way and counts `relay_scaled`,
+`relay_window`, `relay_in_flight` and `relay_out_flight`. Its
 own test, a server and a client of it over a lossy wire, is part of
 `--selftest`. Its log is `<outdir>/<name>.peer.log`, its counts
 `<name>.peer.json`.
@@ -675,7 +682,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/ping-test.sh <outdir>` | the shell's `net` and `ping` (`net.txt`) with QEMU's e1000e and the network peer: `ping 1.1.1.1` answered through the gateway, Ctrl+C, `net stats` ([netstack](#netstack)) |
 | `tools/rxsoak-test.sh <outdir>` | the receive path over a long run (`rxsoak.txt`, about 4 minutes): the peer floods ~10 000 frames (a trunk port's mix, on VLAN 21 and off it) while it pings every 0.2 s; the late pings must be answered and the guest's own `ping 10.2.21.1` too ([netstack](#netstack)) |
 | `tools/dns-test.sh <outdir>` | bin/dhcp and bin/dns end to end with QEMU's e1000e and the peer's DHCP and DNS servers, two boots ([DHCP and DNS](#dhcp-and-dns-end-to-end)) |
-| `tools/tcp-test.sh <outdir>` | TCP end to end (`tcp.txt`, [M9.5-PLAN](M9.5-PLAN.md#track-c-part-2-built-tcp-for-programs)): with `net.address` in the stick's settings and the peer's TCP side, `run tcptest send 10.2.21.174 5030 10485760` (10 MiB to the peer and 10 MiB back on one connection, every byte checked on both sides, the SHA-256 said, then CLOSED with no error; the speeds both ways) and `run tcptest serve 5031 20 262144` (the peer's 20 connections at once to a guest listener, served from one wait set holding the listener and every connection, 256 KiB each way each); PASS needs the peer's 21 connections right and none wrong, and the run's VLAN checks. `QEMU_NET_VLAN=none` runs it untagged. About 2 minutes |
+| `tools/tcp-test.sh <outdir>` | TCP end to end (`tcp.txt`, [M9.5-PLAN](M9.5-PLAN.md#track-c-part-2-built-tcp-for-programs)): with `net.address` in the stick's settings and the peer's TCP side, `run tcptest send 10.2.21.174 5030 10485760` (10 MiB to the peer and 10 MiB back on one connection, every byte checked on both sides, the SHA-256 said, then CLOSED with no error; the speeds both ways) `run tcptest send 10.2.21.174 5032 8388608 2097152` (8 MiB each way with 2 MiB rings, to a server whose ACKs come 20 ms after their segments: window scaling), and `run tcptest serve 5031 20 262144` (the peer's 20 connections at once to a guest listener, served from one wait set holding the listener and every connection, 256 KiB each way each); PASS needs the peer's 22 connections right and none wrong, on the 2 MiB rings' connection a scaled window over 64 KiB and more than 64 KiB in flight both ways (the peer's `tcp_5032_*` counts), on the default rings' one no window and no flight over 64 KiB, and the run's VLAN checks. `QEMU_NET_VLAN=none` runs it untagged. About 2 minutes |
 | `tools/fetch-test.sh <outdir>` | `fetch` end to end (`fetch.txt`, [M9.5-PLAN](M9.5-PLAN.md#track-e-as-built-fetch-serve-and-speed)): with `net.address` in the stick's settings, `tools/httptest.py` on the Mac and the peer's `--tcp-relay 8000:<its port>`, fetch saves a 6 MiB file by Content-Length, the same chunked, a body ended by the connection, a file by name (`mac.jam`) and one at the end of three redirects (301, a relative 302, an absolute 307), and writes one into a pipe (`| wc -c`); it refuses four redirects, https typed and redirected to, a head over 16 KiB (one giant line, and lines that never end), a head dripping a byte a second (given up at 20 s), a body cut short, a broken chunk size and a 404, each with exit 1 and nothing left on `/data`; Ctrl+C stops it (130). Afterwards, with mtools, the saved files' SHA-256 must be the server's and no `x`, `x.part`, `y` or `y.part` may be on the stick. About 2 minutes |
 | `tools/serve-test.sh <outdir>` | `serve` end to end (`serve.txt`): a 5 MiB file and a page copied onto `/data`, served on 8080 and 8081 in the background while the shell goes on; `tools/servecheck.py` on the Mac fetches through the peer's `--tcp-forward` (two Mac ports to the guest's two) with a silent connection held open all along: two curls at once (two paths, the same file; their SHA-256), `curl -I`, a range, the page (text/html), a request that isn't HTTP (400) and a head over 8 KiB (431), then nothing served after `serve stop`; the shell's side refuses a port served already, a folder and port 80, the request lines and `serve`'s list are checked, and `run nolisten` (a program whose list has `svc net` without `listen`) must be refused a listener (ERR_ACCESS_DENIED, no `/svc/net-listen`). About 1 minute |
 | `tools/speed-test.sh <outdir>` | the throughput tester (`speed.txt`): `tools/speed.py server` on the Mac behind the peer's `--tcp-relay` and `--udp-relay 5201`, and a `--tcp-forward` to the guest's 5202: `speed 10.2.21.174 -t 3` (TCP out), `speed mac.jam -r -t 3` (TCP in), `speed 10.2.21.174 -u -t 2` (UDP out, the losses counted), a port nobody serves (refused: the relay resets a SYN to a port it doesn't relay, as a closed port does), then `speed -l 5202` with `speed.py client` sending and receiving, stopped with Ctrl+C (exit 130), and a 30 s send stopped after 2 s the same way; both sides' lines printed. QEMU's numbers, through a relay in Python (2026-10-02, 2 CPUs: TCP out 58, in 70, UDP 109 MB/s; the Mac's client 69 out, 47 in), not the PC's. About 1 minute |

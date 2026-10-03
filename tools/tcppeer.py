@@ -6,11 +6,17 @@ outside (tools/tcp-test.sh, bin/tcptest in the guest).
 A stream is bytes of a known pattern: byte i of stream `seed` is
 (i * 131 + (i >> 8) * 7 + seed) & 0xff, as bin/tcptest makes and checks
 them.
-  --tcp-serve PORT:BYTES      a server on PORT of any address (10.2.21.174,
+  --tcp-serve PORT:BYTES[:MS][,...]
+                              a server on PORT of any address (10.2.21.174,
                               the Mac's, is where the guest connects): each
                               connection's BYTES of stream 0xa1 read to the
                               guest's FIN and checked byte by byte, then
-                              BYTES of stream 0xb2 sent and a FIN.
+                              BYTES of stream 0xb2 sent and a FIN. With MS,
+                              each ACK goes MS milliseconds after the
+                              segment it acks, as over a link with that
+                              round trip, so the guest's bytes in flight
+                              can be seen (below). Several servers: a
+                              comma-separated list.
   --tcp-connect ADDR:PORT:CONNS:BYTES
                               CONNS connections to the guest's listener at
                               ADDR:PORT, all at once from ports 40000 and up
@@ -20,20 +26,31 @@ them.
                               read to the guest's FIN and checked.
 Counted in the peer's summary: tcp_ok (connections whose bytes both ways
 were right and whose FINs were both acked), tcp_bad (wrong bytes, a reset,
-a bad checksum), tcp_bytes_in, tcp_bytes_out, tcp_retransmits.
+a bad checksum), tcp_bytes_in, tcp_bytes_out, tcp_retransmits; and for
+each server port P, the most seen on its connections: tcp_P_window (the
+guest's window, scaled), tcp_P_in_flight (the guest's bytes past the last
+ACK we had sent: what it had in flight, at least), tcp_P_out_flight (ours
+not yet acked by the guest), tcp_P_scaled (connections that scaled).
 
 The TCP is a test peer's, not a general one: in-order receiving (an
 out-of-order segment is dropped and answered with a duplicate ACK), every
-segment acked at once, a window of 65535 bytes; sending up to the guest's
-window in segments of its MSS, go-back-N when nothing was acked for RTO
-seconds, and a one-byte probe of a zero window at that pace; FIN both
-ways."""
+segment acked at once (or after MS), a window of 65535 bytes, or of
+WINDOW_SCALED with window scaling (RFC 7323: offered on our SYNs, used
+when both SYNs carry it); sending up to the guest's window (at most
+FLIGHT_MAX in flight) in segments of its MSS, go-back-N when nothing was
+acked for RTO seconds, and a one-byte probe of a zero window at that
+pace; FIN both ways."""
+import collections
 import random
 import struct
 import time
 
 MSS = 1460
-WINDOW = 65535
+WINDOW = 65535       # our window, unscaled (and in every SYN)
+WSHIFT = 7           # our window scale (RFC 7323), offered on every SYN we send
+WINDOW_SCALED = 4 << 20   # our window once scaled: the bytes are checked as they come
+FLIGHT_MAX = 256 * 1024   # our bytes in flight at most: more than any unscaled window, and
+                          # few enough frames for the guest's rings in one burst
 RTO = 0.25           # seconds without an ACK before sending again
 SYN_EVERY = 1.0      # a client's SYN, again, until it is answered
 F_FIN, F_SYN, F_RST, F_PSH, F_ACK = 0x01, 0x02, 0x04, 0x08, 0x10
@@ -71,28 +88,52 @@ def diff(a, b):
 class Conn:
     """One connection: the peer's half."""
 
-    def __init__(self, tcp, mine, theirs, mac, seeds, nbytes, active):
+    def __init__(self, tcp, mine, theirs, mac, seeds, nbytes, active, ack_delay=0.0):
         self.tcp, self.mine, self.theirs, self.mac = tcp, mine, theirs, mac   # (addr, port) pairs
         self.rx_seed, self.tx_seed = seeds
         self.nbytes, self.active = nbytes, active
+        self.ack_delay = ack_delay           # seconds each ACK waits (0: at once)
+        self.acks = collections.deque()      # (when, ack number): ACKs waiting for their time
         self.iss = random.getrandbits(32)
         self.snd_una = self.snd_nxt = self.iss
         self.rcv_nxt, self.peer_wnd, self.peer_mss = 0, 0, 536
+        self.offer_ws = active     # a client offers scaling; a server answers an offer
+        self.scaled, self.snd_shift = False, 0   # both SYNs had it; the guest's shift
+        self.acked_out = 0         # the last ACK number we sent
+        self.server_port = theirs[1] if active else mine[1]
         self.state = "SYN_SENT" if active else "SYN_RCVD"
         self.got, self.peer_fin, self.fin_sent, self.done, self.bad = 0, False, False, False, ""
         self.sending = active      # a client sends at once; the server after the guest's FIN
         self.last = time.monotonic()
 
     # the wire
-    def seg(self, flags, seq, data=b"", syn_opts=False):
-        opts = struct.pack("!BBH", 2, 4, MSS) if syn_opts else b""
+    def seg(self, flags, seq, data=b"", syn_opts=False, ack=None):
+        opts = b""
+        if syn_opts:
+            opts = struct.pack("!BBH", 2, 4, MSS)
+            if self.offer_ws:   # NOP, then the window scale (RFC 7323 2.2)
+                opts += struct.pack("!BBBB", 1, 3, 3, WSHIFT)
+        if flags & F_SYN or not self.scaled:
+            wnd = WINDOW
+        else:
+            wnd = min(WINDOW_SCALED >> WSHIFT, 0xFFFF)
+        ackno = (self.rcv_nxt if ack is None else ack) & M32
         hdr = struct.pack("!HHIIBBHHH", self.mine[1], self.theirs[1], seq & M32,
-                          self.rcv_nxt & M32 if flags & F_ACK else 0, (20 + len(opts)) // 4 << 4,
-                          flags, WINDOW, 0, 0) + opts
+                          ackno if flags & F_ACK else 0, (20 + len(opts)) // 4 << 4,
+                          flags, wnd, 0, 0) + opts
+        if flags & F_ACK:
+            self.acked_out = ackno
         self.tcp.send_segment(self, hdr, data)
 
     def ack(self):
         self.seg(F_ACK, self.snd_nxt)
+
+    def ack_soon(self):
+        """An ACK for what has come: now, or after ack_delay."""
+        if not self.ack_delay:
+            self.ack()
+        else:
+            self.acks.append((time.monotonic() + self.ack_delay, self.rcv_nxt))
 
     def data_end(self):
         return (self.iss + 1 + self.nbytes) & M32
@@ -102,7 +143,7 @@ class Conn:
         if self.state != "ESTABLISHED" or not self.sending:
             return
         while diff(self.data_end(), self.snd_nxt) > 0:
-            room = self.peer_wnd - diff(self.snd_nxt, self.snd_una)
+            room = min(self.peer_wnd, FLIGHT_MAX) - diff(self.snd_nxt, self.snd_una)
             if room <= 0:
                 break
             off = diff(self.snd_nxt, self.iss + 1)
@@ -110,12 +151,15 @@ class Conn:
             self.seg(F_ACK | F_PSH, self.snd_nxt, stream(self.tx_seed, off, n))
             self.tcp.count("tcp_bytes_out", n)
             self.snd_nxt = (self.snd_nxt + n) & M32
+        self.tcp.most(self.server_port, "out_flight", diff(self.snd_nxt, self.snd_una))
         if self.snd_nxt == self.data_end() and not self.fin_sent:
             self.seg(F_ACK | F_FIN, self.snd_nxt)
             self.snd_nxt = (self.snd_nxt + 1) & M32
             self.fin_sent = True
 
     def tick(self, now):
+        while self.acks and self.acks[0][0] <= now:   # bounded by the ACKs queued
+            self.seg(F_ACK, self.snd_nxt, ack=self.acks.popleft()[1])
         if self.done or now - self.last < (SYN_EVERY if self.state == "SYN_SENT" else RTO):
             return
         self.last = now
@@ -142,9 +186,12 @@ class Conn:
         if self.state == "SYN_SENT":
             if flags & F_SYN and flags & F_ACK and ack == (self.iss + 1) & M32:
                 self.rcv_nxt, self.state = (seq + 1) & M32, "ESTABLISHED"
+                self.scale(opts)
                 self.syn_done(ack, wnd, opts)
                 self.pump()
             return
+        if self.scaled and not flags & F_SYN:   # a SYN's window is never scaled
+            wnd <<= self.snd_shift
         if self.state == "SYN_RCVD":
             if flags & F_ACK and ack == (self.iss + 1) & M32:
                 self.state = "ESTABLISHED"
@@ -156,9 +203,17 @@ class Conn:
             self.snd_una, self.last = ack, time.monotonic()
         if flags & F_ACK:
             self.peer_wnd = wnd
+            self.tcp.most(self.server_port, "window", wnd)
         self.take(flags, seq, data)
         self.pump()
         self.check_done()
+
+    def scale(self, opts):
+        """The guest's SYN (or SYN-ACK) said whether it scales: both must."""
+        self.scaled = self.offer_ws and 3 in opts
+        self.snd_shift = min(opts.get(3, 0), 14)
+        if self.scaled:
+            self.tcp.count("tcp_%d_scaled" % self.server_port)
 
     def syn_done(self, ack, wnd, opts):
         self.snd_una = self.snd_nxt = ack
@@ -179,13 +234,14 @@ class Conn:
             self.got += len(data)
             self.tcp.count("tcp_bytes_in", len(data))
             self.rcv_nxt = (self.rcv_nxt + len(data)) & M32
+            self.tcp.most(self.server_port, "in_flight", diff(self.rcv_nxt, self.acked_out))
         if flags & F_FIN:
             self.rcv_nxt = (self.rcv_nxt + 1) & M32
             self.peer_fin = True
             if self.got != self.nbytes:
                 self.fail("a FIN after %d of %d bytes" % (self.got, self.nbytes))
             self.sending = True
-        self.ack()
+        self.ack_soon()
 
     def check_done(self):
         acked = self.fin_sent and self.snd_una == self.snd_nxt
@@ -202,19 +258,26 @@ class Conn:
 
 
 class Tcp:
-    """The peer's TCP: a server (serve = (port, bytes)) and clients
-    (connect = (addr, port, conns, bytes)) over a netpeer.Peer."""
+    """The peer's TCP: servers (serve = [(port, bytes, ack delay in s), ...])
+    and clients (connect = (addr, port, conns, bytes)) over a netpeer.Peer."""
 
     def __init__(self, peer, np, serve=None, connect=None):
         self.peer, self.np = peer, np
-        self.serve, self.connect = serve, connect
+        self.serve = {p: (n, d) for p, n, d in (serve or [])}
+        self.connect = connect
         self.conns = {}                       # (their addr, their port, our port) -> Conn
         self.connect_started = False
         for k in ("tcp_ok", "tcp_bad", "tcp_bytes_in", "tcp_bytes_out", "tcp_retransmits"):
             peer.counts[k] = 0
 
     def count(self, what, n=1):
-        self.peer.counts[what] += n
+        self.peer.counts[what] = self.peer.counts.get(what, 0) + n
+
+    def most(self, port, what, n):
+        """The summary's tcp_<port>_<what>: the most n seen."""
+        k = "tcp_%d_%s" % (port, what)
+        if n > self.peer.counts.get(k, 0):
+            self.peer.counts[k] = n
 
     def ip_str(self, b):
         return self.np.ip_str(b)
@@ -227,6 +290,23 @@ class Tcp:
         self.peer.send(self.np.eth(c.mac, self.np.PEER_MAC, self.np.ETH_IPV4,
                                    self.np.ipv4(c.mine[0], c.theirs[0], 6, seg)))
 
+    @staticmethod
+    def options(body, hl):
+        """A segment's options we know: {2: MSS, 3: window scale shift}."""
+        opts, k = {}, 20
+        while k + 1 < hl and body[k] != 0:   # each turn moves k on by at least 1
+            if body[k] == 1:
+                k += 1
+                continue
+            if body[k + 1] < 2:
+                break
+            if body[k] == 2 and body[k + 1] == 4 and k + 4 <= hl:
+                opts[2] = struct.unpack_from("!H", body, k + 2)[0]
+            if body[k] == 3 and body[k + 1] == 3 and k + 3 <= hl:
+                opts[3] = body[k + 2]
+            k += body[k + 1]
+        return opts
+
     def input(self, mac, src, dst, body):
         """A TCP segment from the guest (body: from the TCP header on)."""
         pseudo = src + dst + struct.pack("!BBH", 0, 6, len(body))
@@ -238,21 +318,14 @@ class Tcp:
         if hl < 20 or hl > len(body):
             self.count("tcp_bad")
             return
-        opts, k = {}, 20
-        while k + 1 < hl and body[k] != 0:
-            if body[k] == 1:
-                k += 1
-                continue
-            if body[k + 1] < 2:
-                break
-            if body[k] == 2 and body[k + 1] == 4:
-                opts[2] = struct.unpack_from("!H", body, k + 2)[0]
-            k += body[k + 1]
+        opts = self.options(body, hl)
         c = self.conns.get((src, sport, dport))
-        if c is None and self.serve and dport == self.serve[0] and flags & F_SYN \
-                and not flags & F_ACK:
+        if c is None and dport in self.serve and flags & F_SYN and not flags & F_ACK:
+            nbytes, delay = self.serve[dport]
             c = Conn(self, (dst, dport), (src, sport), mac, (SERVE_RX_SEED, SERVE_TX_SEED),
-                     self.serve[1], False)
+                     nbytes, False, delay)
+            c.offer_ws = 3 in opts   # answered in kind
+            c.scale(opts)
             c.rcv_nxt, c.peer_wnd, c.peer_mss = (seq + 1) & M32, wnd, opts.get(2, 536)
             self.conns[(src, sport, dport)] = c
             c.seg(F_SYN | F_ACK, c.iss, syn_opts=True)
@@ -288,7 +361,7 @@ class Tcp:
                                   ", " + c.bad if c.bad else ""))
 
     def busy(self):
-        return any(not c.done for c in self.conns.values()) or \
+        return any(not c.done or c.acks for c in self.conns.values()) or \
             (self.connect and not self.connect_started)
 
 
@@ -305,12 +378,12 @@ class _Wire:
         pass
 
 
-def selftest(np, nbytes=60000, drop=0.02, limit=20.0):
+def selftest(np, nbytes=200000, drop=0.02, limit=20.0):
     """A server and a client of this TCP against each other, frames dropped
-    at random: both ends' bytes right, both FINs acked. Returns a problem
-    or None."""
+    at random: both ends' bytes right, both FINs acked, windows scaled.
+    Returns a problem or None."""
     a, b = _Wire(), _Wire()
-    server, client = Tcp(a, np, serve=(5030, nbytes)), Tcp(b, np)
+    server, client = Tcp(a, np, serve=[(5030, nbytes, 0.0)]), Tcp(b, np)
     sa, ca = np.ip_bytes("10.2.21.174"), np.ip_bytes("10.2.21.5")
     c = Conn(client, (ca, CLIENT_PORT0), (sa, 5030), bytes(6), (SERVE_TX_SEED, SERVE_RX_SEED),
              nbytes, True)
@@ -333,4 +406,7 @@ def selftest(np, nbytes=60000, drop=0.02, limit=20.0):
         return "tcp selftest: not done in %d s (%s, %s)" % (limit, a.counts, b.counts)
     if a.counts["tcp_bytes_in"] != nbytes or b.counts["tcp_bytes_in"] != nbytes:
         return "tcp selftest: byte counts %s %s" % (a.counts, b.counts)
+    if a.counts.get("tcp_5030_scaled") != 1 or b.counts.get("tcp_5030_scaled") != 1 or \
+            a.counts.get("tcp_5030_window", 0) <= WINDOW:
+        return "tcp selftest: windows not scaled (%s, %s)" % (a.counts, b.counts)
     return None

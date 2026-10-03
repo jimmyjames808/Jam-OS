@@ -56,10 +56,13 @@ What it does with each frame from the guest:
     mac.jam, router.jam, the CNAME www.jam, fastN.jam = 10.9.0.N;
     slow.jam is never answered, every other name is NXDOMAIN), counted
     as dhcp_* and dns_* in the summary.
-  - TCP (--tcp-serve PORT:BYTES, --tcp-connect ADDR:PORT:CONNS:BYTES):
-    tools/tcppeer.py's small TCP: a server the guest connects to and
-    clients that connect to the guest's listener, every byte checked;
-    counted as tcp_* in the summary (tools/tcp-test.sh).
+  - TCP (--tcp-serve PORT:BYTES[:MS],..., --tcp-connect ADDR:PORT:CONNS:BYTES):
+    tools/tcppeer.py's small TCP, with window scaling: servers the guest
+    connects to (each ACK MS ms after its segment, as over a link with
+    that round trip) and clients that connect to the guest's listener,
+    every byte checked; counted as tcp_* in the summary, with the largest
+    window and bytes in flight seen on each server port
+    (tools/tcp-test.sh).
   - a relay (--tcp-relay PORT:HOSTPORT, --tcp-forward LPORT:ADDR:PORT,
     --udp-relay PORT:HOSTPORT):
     tools/tcprelay.py joins TCP connections on the VLAN to real sockets on
@@ -79,7 +82,7 @@ Run (one of):
                [--duration S] [--stdin] [--summary FILE] [--ready FILE] [--ping ADDR]
                [--log FILE] [--dhcp-lease S] [--netlog FOLDER [--netlog-late S] [--netlog-pause BYTES:S]]
                [--update SPEC] [--flood N] [--ping-every S] [--late-after S]
-               [--ntp UNIX [--ntp-forge]] [--tcp-serve PORT:BYTES]
+               [--ntp UNIX [--ntp-forge]] [--tcp-serve PORT:BYTES[:MS],...]
                [--tcp-connect ADDR:PORT:CONNS:BYTES] [--tcp-relay PORT:HOSTPORT,...]
                [--tcp-forward LPORT:ADDR:PORT,...] [--udp-relay PORT:HOSTPORT,...]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
@@ -1044,8 +1047,10 @@ def tcp_side(peer, a):
     mod = tcp_module()
     serve = connect = None
     if a.tcp_serve:
-        port, nbytes = a.tcp_serve.split(":")
-        serve = (int(port), int(nbytes))
+        serve = []
+        for spec in a.tcp_serve.split(","):
+            port, nbytes, ms = (spec.split(":") + ["0"])[:3]
+            serve.append((int(port), int(nbytes), int(ms) / 1000.0))
     if a.tcp_connect:
         addr, port, conns, nbytes = a.tcp_connect.split(":")
         connect = (ip_bytes(addr), int(port), int(conns), int(nbytes))
@@ -1147,7 +1152,8 @@ def main():
     ap.add_argument("--update", metavar="SPEC")
     ap.add_argument("--ntp", type=float, metavar="UNIX", help="answer SNTP with this time")
     ap.add_argument("--ntp-forge", action="store_true", help="a forged SNTP reply first")
-    ap.add_argument("--tcp-serve", metavar="PORT:BYTES", help="a TCP server (tools/tcppeer.py)")
+    ap.add_argument("--tcp-serve", metavar="PORT:BYTES[:MS],...",
+                    help="TCP servers (tools/tcppeer.py), each ACK MS ms late")
     ap.add_argument("--tcp-connect", metavar="ADDR:PORT:CONNS:BYTES",
                     help="TCP clients of the guest's listener (tools/tcppeer.py)")
     ap.add_argument("--tcp-relay", metavar="PORT:HOSTPORT,...",
