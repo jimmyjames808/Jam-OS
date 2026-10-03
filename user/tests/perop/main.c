@@ -265,8 +265,8 @@ static const struct op reads[] = {
     { "user: stat of a file", op_stat, false },
     { "user: open + close a file", op_open, false },
     { "user: 4 KiB block read via usb-storage", op_block, true },
-    { "user: read 4 KiB, cached in fat", op_small, false },
-    { "user: read 64 KiB, cached in fat", op_big, false },
+    { "user: read 4 KiB, cached", op_small, false },
+    { "user: read 64 KiB, cached", op_big, false },
 };
 
 static const struct op write_op = { "user: write 64 KiB through to the stick", op_write, true };

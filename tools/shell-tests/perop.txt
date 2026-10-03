@@ -15,8 +15,8 @@ wait 30 perop: writing /data/perop.tmp
 wait 120 bench: user: stat of a file (/data)
 wait 120 bench: user: open + close a file (/data)
 wait 300 bench: user: 4 KiB block read via usb-storage (/data)
-wait 120 bench: user: read 4 KiB, cached in fat (/data)
-wait 120 bench: user: read 64 KiB, cached in fat (/data)
+wait 120 bench: user: read 4 KiB, cached (/data)
+wait 120 bench: user: read 64 KiB, cached (/data)
 wait 300 bench: user: write 64 KiB through to the stick (/data)
 wait 60 perop: done
 wait st-p=0
