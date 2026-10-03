@@ -36,8 +36,12 @@
  * every 5 s at worst (said once a minute). The console's clients (serialin,
  * the shell) end when it does, often before init has seen the console's
  * own end: an end of theirs while the console is gone doesn't count, and
- * they start again at once with the new console. init itself never
- * returns in this mode. */
+ * they start again at once with the new console.
+ * The mixer outlives its process (spare.c: init keeps its state VMO, what
+ * it hands its keeper, and a warm spare to promote), and has a rule of its
+ * own: a deliberate kill (initctl.kill) neither counts nor waits, and the
+ * first crash in a minute is restarted at once; later crashes count and
+ * back off as above. init itself never returns in this mode. */
 #include <os.h>
 #include "init.h"
 
@@ -90,54 +94,83 @@ static bool mounted(const char *path)
     return false;
 }
 
-/* Start svc i with these arguments and extra handles (consumed). A
- * follower gets its part of init's namespace. */
-status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_handle *x,
-                   unsigned nx)
+/* Svc i runs as proc in job (both ours now): its end comes to the loop. */
+static status_t watch(unsigned i, handle_t proc, handle_t job)
+{
+    struct svc *s = &svcs[i];
+    status_t st = jam_port_bind(port, proc, i, SIG_TERMINATED, PORT_BIND_ONCE);
+    if (st != OK) {
+        jam_job_kill(job);
+        jam_handle_close(proc);
+        jam_handle_close(job);
+        return st;
+    }
+    s->proc = proc;
+    s->job = job;
+    s->running = true;
+    s->started = now();
+    s->kill_at = 0;
+    writers_started(i, proc);
+    return OK;
+}
+
+status_t svc_start_args(unsigned i, const struct svc_args *sa)
 {
     struct svc *s = &svcs[i];
     struct follower *f = &followers[i];
-    handle_t ns = HANDLE_INVALID, back = HANDLE_INVALID;
-    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &s->job);
+    handle_t ns = HANDLE_INVALID, back = HANDLE_INVALID, job, proc = HANDLE_INVALID;
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK) {
-        for (unsigned k = 0; k < nx; k++)
-            if (x[k].h)
-                jam_handle_close(x[k].h);
+        for (unsigned k = 0; k < sa->nx; k++)
+            if (sa->x[k].h)
+                jam_handle_close(sa->x[k].h);
         return st;
     }
     struct spawn_args a = {
-        .path = s->path, .argc = argc, .argv = argv, .job = s->job, .extra = x, .nextra = nx,
-        .ns = f->only, .ns_out = f->only ? &ns : NULL, .ns_back_out = f->only ? &back : NULL,
+        .path = s->path, .argc = sa->argc, .argv = sa->argv, .job = job, .extra = sa->x,
+        .nextra = sa->nx, .extra_rights = sa->rights, .ns = f->only,
+        .ns_out = f->only ? &ns : NULL, .ns_back_out = f->only ? &back : NULL,
     };
-    st = spawn(&a, &s->proc);
-    if (st == OK)
-        st = jam_port_bind(port, s->proc, i, SIG_TERMINATED, PORT_BIND_ONCE);
+    st = spawn(&a, &proc);
     if (st != OK) {
-        if (s->proc) {
-            jam_job_kill(s->job);
-            jam_handle_close(s->proc);
-            s->proc = HANDLE_INVALID;
-        }
-        jam_handle_close(s->job);
-        s->job = HANDLE_INVALID;
+        jam_handle_close(job);
+        return st;
+    }
+    st = watch(i, proc, job);
+    if (st != OK) {
         if (ns)
             jam_handle_close(ns);
         if (back)
             jam_handle_close(back);
         return st;
     }
-    s->running = true;
-    s->started = now();
-    writers_started(i, s->proc);
     f->ns = ns;
     f->back = back;
     return OK;
+}
+
+status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_handle *x,
+                   unsigned nx)
+{
+    struct svc_args a = { .argc = argc, .argv = argv, .x = x, .rights = NULL, .nx = nx };
+    return svc_start_args(i, &a);
 }
 
 status_t svc_start1(unsigned i, struct spawn_handle *x, unsigned nx)
 {
     const char *argv[] = { svcs[i].path };
     return svc_start(i, 1, argv, x, nx);
+}
+
+status_t svc_adopt(unsigned i, handle_t proc, handle_t job)
+{
+    if (followers[i].only) {   /* a namespace comes only with a spawn */
+        jam_job_kill(job);
+        jam_handle_close(proc);
+        jam_handle_close(job);
+        return ERR_NOT_SUPPORTED;
+    }
+    return watch(i, proc, job);
 }
 
 /* Svc i's namespace follows init's: the whole of it that its grants
@@ -177,10 +210,13 @@ status_t shell_kill_service(const char *name, uint64_t *koid)
             continue;
         struct process_info info;
         status_t st = jam_process_get_info(s->proc, &info);
+        s->kill_at = now();   /* a deliberate end (ended() reads it), from this moment */
         if (st == OK)
             st = jam_process_kill(s->proc);   /* the loop sees it end: its job, the restart */
         if (st == OK)
             *koid = info.koid;
+        else
+            s->kill_at = 0;
         return st;
     }
     return ERR_NOT_FOUND;
@@ -223,6 +259,26 @@ static bool count_end(unsigned i, uint64_t t)
     return true;
 }
 
+/* The restart rule of a service that outlives its process (spare_kept),
+ * ended at t: a deliberate kill neither counts nor waits; a crash counts
+ * as any service's (ended() has counted it), and the first in its minute
+ * starts again at once (from the spare), later ones back off as any
+ * service's. true: it is scheduled; false: back off (ended() goes on). */
+static bool kept_restart(unsigned i, uint64_t t)
+{
+    struct svc *s = &svcs[i];
+    if (!spare_kept(i))
+        return false;
+    if (s->kill_at)
+        printf("init: %s: killed on purpose: not counted, started again at once\n", s->path);
+    else if (s->ends > 1)
+        return false;
+    else
+        s->backoff = 0;   /* the next crash in this minute waits the first step */
+    s->next_try = t;
+    return true;
+}
+
 /* Svc i ended: say how, clean up, schedule the restart. */
 static void ended(unsigned i)
 {
@@ -237,6 +293,7 @@ static void ended(unsigned i)
     s->proc = s->job = HANDLE_INVALID;
     s->running = false;
     uint64_t t = now();
+    s->ended_at = t;
     services_closed(i);
     net_ended(i);
     if (followers[i].ns) {
@@ -253,7 +310,10 @@ static void ended(unsigned i)
         return;
     }
     bool took = went_with_console(i);
-    if (!took && !count_end(i, t))
+    bool counted = !took && !(spare_kept(i) && s->kill_at);
+    if (counted && !count_end(i, t))
+        return;
+    if (kept_restart(i, t))
         return;
     /* Ran for a while (or went with its console): start again soon; else
      * back off. */
@@ -354,6 +414,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     }
     writers_init();
     services_init(port, no_usb, splash, shell_arg);
+    spare_init(port, !init_nospare);
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);
     printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
@@ -362,8 +423,11 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
            no_usb ? " (safe mode: nousb)" : "", splash ? " the boot splash," : "");
     for (;;) {
         uint64_t t = now(), deadline = start_due(t), net = net_due(t);
+        uint64_t spare = spare_due(t);   /* after the starts: a promoted spare runs first */
         if (net < deadline)
             deadline = net;
+        if (spare < deadline)
+            deadline = spare;
         struct port_packet pkt;
         st = jam_port_wait(port, deadline, &pkt);
         if (st != OK && st != ERR_TIMED_OUT)
@@ -386,6 +450,10 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             update_event();
         } else if (pkt.key == KEY_NETCTL) {
             net_netctl_event();
+        } else if (pkt.key == KEY_SPARE) {
+            spare_event();
+        } else if (pkt.key == KEY_KEEP) {
+            kept_event();
         }
     }
 }

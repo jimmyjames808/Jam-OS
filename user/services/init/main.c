@@ -56,6 +56,7 @@ bool init_net;
 const char *init_bootdisk;
 const char *init_vlan;
 bool init_splashhang;
+bool init_nospare;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -422,7 +423,8 @@ int main(int argc, char **argv)
     /* The option words after the mode (argv[2] on): "splash" (the kernel's
      * choice: a plain boot without `verbose` or `nosplash`: the boot splash
      * plays first), "hidboot", "netprobe", "netsend", "net", "vlan=<id>"
-     * or "vlan=none", "bootdisk=0x<id>", "splashhang". */
+     * or "vlan=none", "bootdisk=0x<id>", "splashhang", "nospare" (no warm
+     * spare mixer: spare.c). */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");
@@ -435,6 +437,7 @@ int main(int argc, char **argv)
         if (!strncmp(argv[i], "vlan=", 5))
             init_vlan = argv[i];
         init_splashhang |= !strcmp(argv[i], "splashhang");
+        init_nospare |= !strcmp(argv[i], "nospare");
     }
     /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain
      * boot: the console, devmgr (connected to it), serial input and the

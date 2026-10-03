@@ -57,7 +57,10 @@
  *             restarted mixer serves the same channels (calls made while
  *             it is down wait for it) and nobody needs new client ends;
  *             init closes them only if it gives up on the mixer. The mixer
- *             ends when devmgr does and is started again with the new one
+ *             ends when devmgr does and is started again with the new one.
+ *             It also gets its state VMO (SR_STATE) and a keep channel
+ *             (SR_KEEP), and is started from a warm spare when one waits
+ *             (spare.c)
  *   music     bin/music, the background music player, after the mixer: the
  *             server end of the `music` channel (SR_USER + 0;
  *             abi/idl/music.idl) and a namespace of every mount
@@ -536,8 +539,9 @@ static status_t start_mixer(void)
         svcs[MIXER].given_up = true;
         return OK;
     }
-    struct spawn_handle x[2 + INIT_MAX_CLAIMED] = { { SR_AUDIO, dup_of(audio_srv[0]) },
-                                                    { SR_AUDIO_CTL, dup_of(audio_srv[1]) } };
+    struct spawn_handle x[2 + INIT_MAX_CLAIMED + KEPT_EXTRA] = {
+        { SR_AUDIO, dup_of(audio_srv[0]) }, { SR_AUDIO_CTL, dup_of(audio_srv[1]) },
+    };
     unsigned n = 2;
     for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++)
         if (devmgr_hda[k] && (x[n].h = dup_of(devmgr_hda[k])) != HANDLE_INVALID)
@@ -548,7 +552,12 @@ static status_t start_mixer(void)
                 jam_handle_close(x[k].h);
         return ERR_NO_RESOURCES;
     }
-    return svc_start1(MIXER, x, n);
+    return kept_start(MIXER, x, n);   /* + its state and keep channel; a spare if one waits */
+}
+
+handle_t services_audioctl(void)
+{
+    return audio_cli[1];
 }
 
 /* The music player: its server end again (the same channel as any player
@@ -726,6 +735,7 @@ void services_given_up(unsigned i)
         jam_handle_close(audio_srv[k]);   /* calls waiting for a mixer fail now */
         audio_srv[k] = HANDLE_INVALID;
     }
+    kept_given_up(i);   /* the mixer's spare, what it kept, its state */
     if (i == MUSIC && music_srv) {
         jam_handle_close(music_srv);   /* the shell's `music` fails now */
         music_srv = HANDLE_INVALID;

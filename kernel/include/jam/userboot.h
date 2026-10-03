@@ -37,7 +37,7 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
  * of handles and threads). The caller gets the only reference. */
 status_t userboot_root_job(struct job **out);
 
-#define USERBOOT_MAX_WORDS 6   /* option words init can be given */
+#define USERBOOT_MAX_WORDS 7   /* option words init can be given */
 
 /* Boot: run bin/init under a new root job, wait up to timeout_s seconds
  * for it to exit, and report how it went. Returns true if it exited 0 and

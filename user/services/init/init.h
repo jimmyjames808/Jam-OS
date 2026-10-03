@@ -125,6 +125,8 @@ enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, DHCP, 
 #define KEY_LASTBOOT 0x400u   /* logd's answer about the last boot's log (lastboot.c) */
 #define KEY_UPDATE   0x500u   /* an update's offer channel (update.c) */
 #define KEY_NETCTL   0x600u   /* netstack's answers to init's netctl calls (net.c) */
+#define KEY_SPARE    0x700u   /* the warm spare's process ended (spare.c) */
+#define KEY_KEEP     0x800u   /* the kept service wrote to its keeper (spare.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -136,18 +138,38 @@ struct svc {
     uint64_t    started;       /* uptime ns */
     uint64_t    window_start;  /* the minute its ends are counted in (uptime ns) */
     unsigned    ends;          /* in the current window */
+    uint64_t    kill_at;       /* a deliberate kill (initctl.kill), uptime ns, until the next
+                                * start; 0: none */
+    uint64_t    ended_at;      /* when its last end was seen (uptime ns; 0: never) */
 };
 
 /* Every service's state (shell.c's; services.c reads the paths and marks
  * one given up when its program isn't in bootfs). */
 extern struct svc svcs[NSVC];
 
-/* shell.c: start svc i with these arguments and extra handles (consumed);
- * a service that follows init's namespace gets its part of it. */
+/* How svc_start_args starts a service. */
+struct svc_args {
+    int                        argc;     /* entries in argv */
+    const char *const         *argv;     /* argv[0]: its path */
+    struct spawn_handle       *x;        /* extra handles, consumed */
+    const rights_t            *rights;   /* NULL, or nx entries: what each arrives with */
+    unsigned                   nx;       /* entries in x */
+};
+
+/* shell.c: start svc i as a new process with a's arguments and extra
+ * handles (consumed, whatever happens); a service that follows init's
+ * namespace gets its part of it. */
+status_t svc_start_args(unsigned i, const struct svc_args *a);
+/* The same with these arguments and handles, each as it is. */
 status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_handle *x,
                    unsigned nx);
 /* The same with argv = { its path }. */
 status_t svc_start1(unsigned i, struct spawn_handle *x, unsigned nx);
+/* Svc i runs as proc, in job (a promoted spare: spare.c), both consumed:
+ * supervised from now on like one svc_start_args started.
+ * ERR_NOT_SUPPORTED (and proc killed): svc i follows init's namespace,
+ * which only a spawn hands over. */
+status_t svc_adopt(unsigned i, handle_t proc, handle_t job);
 /* writers.c: the table of log writers the console trusts (<logwriters.h>):
  * made once, before the first console; a started devmgr's or logd's koid
  * goes in (any other i is ignored); a read-only handle to it for a new
@@ -174,6 +196,9 @@ bool     services_console_up(void);
  * mixer's master volume, the music player's volume. */
 void     services_settings(unsigned i);
 bool     services_devmgr_up(void);
+/* The mixer's shared audioctl channel, init's client end (0: none): the
+ * one /svc/audioctl's openers connect through. */
+handle_t services_audioctl(void);
 /* devmgr's device channels (<devmgr.h> DEVMGR_DEVICE_CHANNEL, asked on its
  * control channel devmgr_ctl) for every PCI function of class `cls` that
  * has a driver, at most `max`, into out[]: init gives them to the class's
@@ -219,6 +244,36 @@ void     settings_master(handle_t audioctl);
 void     settings_music(handle_t music);
 /* /data has no settings file: write one with the defaults, commented. */
 void     settings_first_file(void);
+
+/* ---- spare.c: a service that outlives its process (the mixer) ------------------- */
+
+/* Handles kept_start adds to a start's: the state VMO and the keep channel. */
+#define KEPT_EXTRA 2u
+
+/* Set up once before the loop: the loop's port, and whether a warm spare
+ * is kept ready (false: the boot word `nospare`). */
+void     spare_init(handle_t port, bool spares);
+/* Svc i outlives its process (a keeper, a state VMO, a spare: the mixer):
+ * a deliberate kill of it neither counts nor waits, and its first crash in
+ * a minute is restarted at once (shell.c). */
+bool     spare_kept(unsigned i);
+/* Start kept svc i with handles x[0..nx) (consumed; x has room for
+ * KEPT_EXTRA more): its state VMO (SR_STATE) and a new keep channel
+ * (SR_KEEP) are added, the spare is promoted if one waits (else a process
+ * is started), then the keeper hands over what it kept. Says in the log
+ * how long a restart took. Errors as svc_start_args's. */
+status_t kept_start(unsigned i, struct spawn_handle *x, unsigned nx);
+/* Start the spare if one is due: the next time one is, or DEADLINE_NEVER. */
+uint64_t spare_due(uint64_t t);
+/* KEY_SPARE: the spare's process ended (or an old packet of one). */
+void     spare_event(void);
+/* KEY_KEEP: what the kept service wrote to its keeper. */
+void     kept_event(void);
+/* Svc i is given up on: its spare is dismissed, what its keeper held is
+ * closed (its clients see ERR_PEER_CLOSED) and its state VMO dropped. */
+void     kept_given_up(unsigned i);
+/* The boot word `nospare` (main.c): no warm spares. */
+extern bool init_nospare;
 
 /* ---- net.c: the network services ------------------------------------------------ */
 
