@@ -61,7 +61,8 @@
 static struct {
     handle_t ch;      /* our end of its `file` channel */
     handle_t vmo;     /* its transfer buffer, FAT_FILE_BUF bytes: never mapped here */
-    bool     armed;   /* ch is bound to the port (ONCE) */
+    bool     armed;   /* ch is bound to the port (ONCE) ... */
+    uint32_t gen;     /* ... with this generation in its key */
 } fh[FAT_MAX_FILES];
 
 static FIL probe;   /* files_is_open's look at a path's entry */
@@ -293,20 +294,32 @@ const struct file_ops fat_file_ops = {
 
 /* ---- open and close ------------------------------------------------------------------- */
 
-/* Give the slot back: the buffer, the channel, the binding. */
-static void release(struct fat_file *f)
+/* Slot i's handles go: the buffer, the channel, the binding. */
+static void release_handles(unsigned i)
 {
-    unsigned i = slot_of(f);
     if (fh[i].vmo != HANDLE_INVALID)
         jam_handle_close(fh[i].vmo);
     if (fh[i].ch != HANDLE_INVALID) {
         if (fh[i].armed)
-            (void)jam_port_unbind(vol.port, fh[i].ch, FAT_KEY_FILE(i, f->gen));
+            (void)jam_port_unbind(vol.port, fh[i].ch, FAT_KEY_FILE(i, fh[i].gen));
         jam_handle_close(fh[i].ch);
     }
     fh[i].vmo = fh[i].ch = HANDLE_INVALID;
     fh[i].armed = false;
+}
+
+/* Give the slot back. */
+static void release(struct fat_file *f)
+{
+    release_handles(slot_of(f));
     f->used = false;
+}
+
+void files_drop_unknown(void)
+{
+    for (unsigned i = 0; i < FAT_MAX_FILES; i++)
+        if (!kept->files[i].used && (fh[i].ch != HANDLE_INVALID || fh[i].vmo != HANDLE_INVALID))
+            release_handles(i);
 }
 
 /* The slot goes; its file is closed with its last slot. A writer that
@@ -338,6 +351,9 @@ static void close_op(struct fat_file *f)
 {
     op_close_begin(f);
     close_file(f);
+#ifdef FAT_RERUN_CHECK
+    op_close_again(f, close_file);
+#endif
     op_close_end();
 }
 
@@ -348,6 +364,7 @@ static status_t arm(struct fat_file *f)
     status_t st = jam_port_bind(vol.port, fh[i].ch, FAT_KEY_FILE(i, f->gen),
                                 SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_ONCE);
     fh[i].armed = st == OK;
+    fh[i].gen = f->gen;
     return st;
 }
 

@@ -50,6 +50,15 @@ status_t views_add(void *host, handle_t ch, uint32_t flags)
     return ERR_NO_RESOURCES;
 }
 
+void views_drop_unknown(void)
+{
+    for (unsigned i = 0; i < FAT_VIEWS; i++)
+        if (!kept->views[i].used && view_ch[i] != HANDLE_INVALID) {
+            jam_handle_close(view_ch[i]);   /* its binding goes with it */
+            view_ch[i] = HANDLE_INVALID;
+        }
+}
+
 void views_event(uint64_t key)
 {
     unsigned i = FAT_KEY_SLOT(key);

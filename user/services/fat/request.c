@@ -234,6 +234,72 @@ static enum fat_op kind_of(const struct fat_chan *c)
     return c->proto == FAT_PROTO_FILE ? FAT_OP_FILE : FAT_OP_FS;
 }
 
+#ifdef FAT_RERUN_CHECK
+/* A test build's check of the undo copy (make EXTRA_CFLAGS_fat="-Ibuild/fatfs
+ * -Iuser/services/fat/ffport -DFAT_RERUN_CHECK"): every request is run,
+ * undone (undo_restore, and the handles an undone open or view made
+ * closed) and run again from its slot, before its commit, as a successor
+ * runs a request it finds uncommitted. The second run must answer as the
+ * first did and leave as much held and the same send to do; a difference
+ * is logged ("rerun check FAILED"). The client gets the second run's
+ * answer. A close (op_close_again) is undone and run again the same way. A
+ * request that went out in steps can't be undone: not checked. */
+static uint32_t rerun(const struct fat_chan *c, const void *req, uint32_t n, uint32_t rn,
+                      handle_t *rhs, uint32_t *rhn)
+{
+    static uint8_t first[FS_REP_MAX];   /* the biggest reply fat gives */
+    static uint64_t checked;
+    uint8_t *rep = svcstate_reply_area(state_slots(), op.slot);
+    if (op.stepped || rn > sizeof(first))
+        return rn;
+    if (!checked++)
+        printf("fat %s: rerun check: every request is run twice\n", vol.name);
+    memcpy(first, rep, rn);
+    uint32_t held = kept->hold.held, runs = kept->hold.runs;
+    struct fat_post post = kept->post;
+    bool wrote = op.wrote, gather = op.gather;
+    idl_close_all(rhs, *rhn);
+    *rhn = 0;
+    if (!undo_restore()) {
+        printf("fat %s: rerun check FAILED: nothing to undo\n", vol.name);
+        return rn;
+    }
+    files_drop_unknown();
+    views_drop_unknown();
+    begin(kind_of(c), op.seq, c->file, op.slot);
+    uint32_t rn2 = dispatch(c, req, n, rep, rhs, rhn);
+    if (rn2 != rn || memcmp(first, rep, rn) || held != kept->hold.held ||
+        runs != kept->hold.runs || memcmp(&post, &kept->post, sizeof(post)) ||
+        wrote != op.wrote || gather != op.gather)
+        printf("fat %s: rerun check FAILED: request %u (ordinal %u, channel %x): reply %u/%u "
+               "bytes, status %d/%d, held %u/%u in %u/%u runs\n", vol.name,
+               (unsigned)op.seq, ((const struct idl_req_hdr *)req)->ordinal, c->id, rn, rn2,
+               rn >= 8 ? ((const struct idl_rep_hdr *)first)->status : 0,
+               rn2 >= 8 ? ((const struct idl_rep_hdr *)rep)->status : 0, held,
+               kept->hold.held, runs, kept->hold.runs);
+    return rn2;
+}
+
+void op_close_again(struct fat_file *f, void (*close)(struct fat_file *f))
+{
+    if (op.stepped)
+        return;
+    uint32_t held = kept->hold.held, runs = kept->hold.runs;
+    struct fat_post post = kept->post;
+    bool wrote = op.wrote;
+    if (!undo_restore()) {
+        printf("fat %s: rerun check FAILED: a close with nothing to undo\n", vol.name);
+        return;
+    }
+    begin(FAT_OP_CLOSE, 0, f, 0);
+    close(f);
+    if (held != kept->hold.held || runs != kept->hold.runs || wrote != op.wrote ||
+        memcmp(&post, &kept->post, sizeof(post)))
+        printf("fat %s: rerun check FAILED: a close: held %u/%u in %u/%u runs\n", vol.name,
+               held, kept->hold.held, runs, kept->hold.runs);
+}
+#endif
+
 status_t serve_one(const struct fat_chan *c)
 {
     struct svcstate *s = state_slots();
@@ -255,6 +321,9 @@ status_t serve_one(const struct fat_chan *c)
     uint32_t rhn = 0;
     begin(kind_of(c), s->h->slot[slot].seq, c->file, slot);
     uint32_t rn = dispatch(c, req, n, svcstate_reply_area(s, slot), rhs, &rhn);
+#ifdef FAT_RERUN_CHECK
+    rn = rerun(c, req, n, rn, rhs, &rhn);
+#endif
     plan_send();
     (void)svcstate_commit(s, slot, rn);   /* the dispatch's reply fits rep_cap: the commit */
     committed();

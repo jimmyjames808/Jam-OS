@@ -272,6 +272,9 @@ status_t serve_one(const struct fat_chan *c);
  * send. */
 void     op_close_begin(const struct fat_file *f);
 void     op_close_end(void);
+/* Built with FAT_RERUN_CHECK only (request.c): the close just run is
+ * undone and run again (close(f)), and must do the same. */
+void     op_close_again(struct fat_file *f, void (*close)(struct fat_file *f));
 /* Is an operation running (begun, not yet committed)? Then disk writes are
  * held, and a flush or the clean mark waits for the send (disk.c). */
 bool     op_running(void);
@@ -455,6 +458,9 @@ uint64_t dirs_entries_read(void);
 status_t views_add(void *host, handle_t ch, uint32_t flags);
 /* The port said a view's channel has news (key's slot and gen): serve it. */
 void     views_event(uint64_t key);
+/* Close the channel of every view the state doesn't know (after an undo:
+ * views an undone fs.view made). */
+void     views_drop_unknown(void);
 
 /* ---- fileops.c ------------------------------------------------------------------- */
 
@@ -475,6 +481,9 @@ status_t files_sync_all(void);
 bool     files_unsynced(void);
 /* Close every open file, flushing what it wrote. */
 void     files_close_all(void);
+/* Close the handles of every slot the state doesn't know (after an undo:
+ * files an undone fs.open made). */
+void     files_drop_unknown(void);
 /* Is the file at `path` (resolved) open? Told by its directory entry, so
  * that an 8.3 alias of an open file's path is that file (FatFs's own lock
  * is off: ffport/ffconf.h). An open file can't be removed or renamed. */
