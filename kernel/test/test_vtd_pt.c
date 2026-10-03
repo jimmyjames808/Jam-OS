@@ -93,10 +93,10 @@ static bool dev_translate(struct tctx *t, uint64_t iova, uint64_t *out)
             *out = e & VTD_PTE_ADDR;
             return true;
         }
-        d = dev_of(t, e & VTD_PTE_ADDR);
+        uint64_t next = e & VTD_PTE_ADDR;
+        d = dev_of(t, next);
         if (!d)
-            ktest_fail("the unit walks from level %u into %lx, not a table", l, (uint64_t)(
-                       e & VTD_PTE_ADDR));
+            ktest_fail("the unit walks from level %u into %lx, not a table", l, next);
     }
     return false;
 }
@@ -127,11 +127,11 @@ static unsigned dev_scan(struct tctx *t, uint64_t target, bool *hit)
             idx[l]++;
             continue;
         }
-        uint64_t *d = dev_of(t, e & VTD_PTE_ADDR);
+        uint64_t next = e & VTD_PTE_ADDR, *d = dev_of(t, next);
         if (!d)
-            ktest_fail("the unit reaches %lx at level %u, not a table", (uint64_t)(e & VTD_PTE_ADDR), l);
+            ktest_fail("the unit reaches %lx at level %u, not a table", next, l);
         n++;
-        *hit = *hit || (e & VTD_PTE_ADDR) == target;
+        *hit = *hit || next == target;
         l--;
         tbl[l] = d;
         idx[l] = 0;

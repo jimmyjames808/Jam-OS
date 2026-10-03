@@ -74,7 +74,9 @@ struct vtd_pt_ops {
     void (*flush)(void *ctx, const void *va, size_t len);
     /* Invalidate the unit's caches for g's ranges in this domain (all of
      * the domain's entries when g->whole) and wait for it: OK, or the
-     * error (ERR_TIMED_OUT). */
+     * error (ERR_TIMED_OUT). With g->ntables != 0 tables were unlinked,
+     * so the paging-structure caches go too (IH = 0); every unlinked
+     * table's span contains one of g's ranges. */
     status_t (*invalidate)(void *ctx, const struct vtd_pt_gather *g);
 };
 
