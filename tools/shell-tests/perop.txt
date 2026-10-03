@@ -1,0 +1,29 @@
+# perop, the per-operation lines (user/tests/perop): run from the shell on
+# the stick's /data with a tenth of the samples (-q), every line printed
+# and none FAILED, its scratch file gone afterwards; a usage error.
+# Command line "shell". The numbers are QEMU's (TCG): meaningless, the PC
+# gives them. The text waited for is built from $T, so it never appears in
+# the typed line.
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+send T=p
+wait jam>
+send perop -q /data/; echo st-$T=$?
+wait 60 bench: per-operation lines (bin/perop)
+wait 30 perop: writing /data/perop.tmp
+wait 120 bench: user: stat of a file (/data)
+wait 120 bench: user: open + close a file (/data)
+wait 300 bench: user: 4 KiB block read via usb-storage (/data)
+wait 120 bench: user: read 4 KiB, cached in fat (/data)
+wait 120 bench: user: read 64 KiB, cached in fat (/data)
+wait 300 bench: user: write 64 KiB through to the stick (/data)
+wait 60 perop: done
+wait st-p=0
+send ls /data | grep -c perop | grep ^0$ && echo ok-$T-gone
+wait ok-p-gone
+send perop -x y; echo st-$T=$?
+wait usage: perop
+wait st-p=2
+send reboot -f
+wait reboot: resetting
