@@ -615,6 +615,45 @@ KTEST(vtd_pt_unit_flags)
     kfree(t);
 }
 
+/* The entries exactly as VT-d 4.1 9.8 lays them out (Tables 37-43), with
+ * the spec's numbers written as literals, not through vtd_pt.h: R bit 0,
+ * W bit 1, PS bit 7 (0 here), SNP bit 11 in leaves only (reserved in
+ * table entries), the address in 51:12, bits 61:52 ignored by the unit (the
+ * pin and use counts), 62 reserved and 63 ignored (both 0 here). */
+KTEST(vtd_pt_entry_bits_literal)
+{
+    KT_EQ(VTD_PTE_R, 0x1);
+    KT_EQ(VTD_PTE_W, 0x2);
+    KT_EQ(VTD_PTE_PS, 0x80);
+    KT_EQ(VTD_PTE_SNP, 0x800);
+    KT_EQ(VTD_PTE_ADDR, 0x000ffffffffff000ull);
+    KT_EQ(VTD_PTE_SW_MASK, 0x3ff0000000000000ull);
+    struct tctx *t = new_ctx();
+    struct vtd_pt_geom geom = geom_of(4);
+    geom.snoop = true;
+    start(t, &geom, NULL, 64);
+    uint64_t iova = 0x123456789000ull;   /* indices 0x24, 0xd1, 0xb3, 0x189 (levels 4 to 1) */
+    KT_EQ(map1(t, iova, 1), OK);
+    KT_EQ(map1(t, iova, 1), OK);   /* a second pin: count 2 */
+    /* The CPU's copy: the counts in the ignored bits are stored without a
+     * flush, so the unit's copy may not have them yet. */
+    static const unsigned idx[5] = { 0, 0x189, 0xb3, 0xd1, 0x24 };
+    uint64_t *d = phys_to_virt(t->pt.root);
+    for (unsigned l = 4; l > 1; l--) {
+        uint64_t e = d[idx[l]];
+        uint64_t next = e & 0x000ffffffffff000ull;
+        /* A table entry: R, W, its table's address, one entry in use. */
+        KT_EQ(e, next | 1ull << 52 | 0x3);
+        KT_ASSERT(dev_of(t, next));
+        d = phys_to_virt(next);
+    }
+    KT_EQ(d[idx[1]], 0x123456789000ull | 2ull << 52 | 0x800 | 0x3);
+    KT_EQ(vtd_pt_aw(&t->pt), 2);   /* context entry AW 010b: 48-bit, 4 levels (9.3) */
+    KT_EQ(unmap1(t, iova, 1), OK);
+    KT_EQ(unmap1(t, iova, 1), OK);
+    finish(t, NULL);
+}
+
 /* Separate ranges fill the gather's runs, then it asks for the whole
  * domain. */
 KTEST(vtd_pt_gather_runs)

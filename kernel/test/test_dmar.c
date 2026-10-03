@@ -419,3 +419,104 @@ KTEST(vtd_describe_fault_per_spec)
     vtd_describe_fault(buf, sizeof(buf), 0xdeadbeef000ull, f | 0x25ull << 32 | hda);
     KT_ASSERT(!strcmp(buf, "00:1f.3 interrupt in compatibility format, reason 25"));
 }
+
+/* Every register offset and field of <jam/vtd.h> against VT-d 4.1 chapter
+ * 11 (the Register Descriptions table, Figures 11-1 to 11-30), with the
+ * spec's bit numbers written as literals: a wrong constant can't pass by
+ * agreeing with itself. FIELD(m, lo, n): m extracts n bits from lo. */
+#define FIELD(m, lo, n)                                                       \
+    do {                                                                      \
+        uint64_t in_ = (((uint64_t)1 << (n)) - 1) << (lo);                    \
+        KT_EQ(m(in_), ((uint64_t)1 << (n)) - 1);                              \
+        KT_EQ(m(~in_), 0);                                                    \
+    } while (0)
+
+KTEST(vtd_spec_bits_literal)
+{
+    KT_EQ(VTD_VER, 0x000);
+    KT_EQ(VTD_CAP, 0x008);
+    KT_EQ(VTD_ECAP, 0x010);
+    KT_EQ(VTD_GCMD, 0x018);
+    KT_EQ(VTD_GSTS, 0x01c);
+    KT_EQ(VTD_RTADDR, 0x020);
+    KT_EQ(VTD_CCMD, 0x028);
+    KT_EQ(VTD_FSTS, 0x034);
+    KT_EQ(VTD_FECTL, 0x038);
+    KT_EQ(VTD_FEDATA, 0x03c);
+    KT_EQ(VTD_FEADDR, 0x040);
+    KT_EQ(VTD_FEUADDR, 0x044);
+    KT_EQ(VTD_PMEN, 0x064);
+    KT_EQ(VTD_PLMBASE, 0x068);
+    KT_EQ(VTD_PLMLIMIT, 0x06c);
+    KT_EQ(VTD_PHMBASE, 0x070);
+    KT_EQ(VTD_PHMLIMIT, 0x078);
+    KT_EQ(VTD_IQH, 0x080);
+    KT_EQ(VTD_IQT, 0x088);
+    KT_EQ(VTD_IQA, 0x090);
+    KT_EQ(VTD_ICS, 0x09c);
+    KT_EQ(VTD_IRTA, 0x0b8);
+    /* Capability Register (11.4.2). */
+    FIELD(VTD_CAP_ND, 0, 3);
+    FIELD(VTD_CAP_RWBF, 4, 1);
+    FIELD(VTD_CAP_PLMR, 5, 1);
+    FIELD(VTD_CAP_PHMR, 6, 1);
+    FIELD(VTD_CAP_CM, 7, 1);
+    FIELD(VTD_CAP_SAGAW, 8, 5);
+    FIELD(VTD_CAP_MGAW, 16, 6);
+    FIELD(VTD_CAP_ZLR, 22, 1);
+    FIELD(VTD_CAP_FRO, 24, 10);
+    FIELD(VTD_CAP_SLLPS, 34, 4);
+    FIELD(VTD_CAP_PSI, 39, 1);
+    FIELD(VTD_CAP_NFR, 40, 8);
+    FIELD(VTD_CAP_MAMV, 48, 6);
+    FIELD(VTD_CAP_DWD, 54, 1);
+    FIELD(VTD_CAP_DRD, 55, 1);
+    FIELD(VTD_CAP_FL1GP, 56, 1);
+    FIELD(VTD_CAP_PI, 59, 1);
+    FIELD(VTD_CAP_FL5LP, 60, 1);
+    FIELD(VTD_CAP_ESIRTPS, 62, 1);
+    FIELD(VTD_CAP_ESRTPS, 63, 1);
+    /* Extended Capability Register (11.4.3). */
+    FIELD(VTD_ECAP_C, 0, 1);
+    FIELD(VTD_ECAP_QI, 1, 1);
+    FIELD(VTD_ECAP_DT, 2, 1);
+    FIELD(VTD_ECAP_IR, 3, 1);
+    FIELD(VTD_ECAP_EIM, 4, 1);
+    FIELD(VTD_ECAP_PT, 6, 1);
+    FIELD(VTD_ECAP_SC, 7, 1);
+    FIELD(VTD_ECAP_IRO, 8, 10);
+    FIELD(VTD_ECAP_MHMV, 20, 4);
+    FIELD(VTD_ECAP_NEST, 26, 1);
+    FIELD(VTD_ECAP_PRS, 29, 1);
+    FIELD(VTD_ECAP_PASID, 40, 1);
+    FIELD(VTD_ECAP_SMTS, 43, 1);
+    FIELD(VTD_ECAP_SLTS, 46, 1);
+    /* Global Status (11.4.4.2), Fault Status (11.4.7.1), PMEN (11.4.8.1),
+     * IRTA (11.4.10). */
+    KT_EQ(VTD_GSTS_TES, 0x80000000u);
+    KT_EQ(VTD_GSTS_RTPS, 0x40000000u);
+    KT_EQ(VTD_GSTS_WBFS, 0x08000000u);
+    KT_EQ(VTD_GSTS_QIES, 0x04000000u);
+    KT_EQ(VTD_GSTS_IRES, 0x02000000u);
+    KT_EQ(VTD_GSTS_IRTPS, 0x01000000u);
+    KT_EQ(VTD_GSTS_CFIS, 0x00800000u);
+    KT_EQ(VTD_FSTS_PFO, 0x01);
+    KT_EQ(VTD_FSTS_PPF, 0x02);
+    KT_EQ(VTD_FSTS_IQE, 0x10);
+    KT_EQ(VTD_FSTS_ICE, 0x20);
+    KT_EQ(VTD_FSTS_ITE, 0x40);
+    FIELD(VTD_FSTS_FRI, 8, 8);
+    KT_EQ(VTD_PMEN_EPM, 0x80000000u);
+    KT_EQ(VTD_PMEN_PRS, 0x1);
+    KT_EQ(VTD_IRTA_EIME, 0x800);
+    FIELD(VTD_IRTA_S, 0, 4);
+    /* A Fault Recording Register's upper half (bits 127:64, 11.4.7.6):
+     * F 127, T1 126, FR 103:96, T2 92, SID 79:64; lower half FI 63:12 with
+     * an interrupt index in 63:48. */
+    KT_EQ(VTD_FRCD_F, 0x8000000000000000ull);
+    FIELD(VTD_FRCD_TYPE1, 62, 1);
+    FIELD(VTD_FRCD_REASON, 32, 8);
+    FIELD(VTD_FRCD_TYPE2, 28, 1);
+    FIELD(VTD_FRCD_SID, 0, 16);
+    FIELD(VTD_FRCD_INDEX, 48, 16);
+}
