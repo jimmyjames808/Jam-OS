@@ -2,7 +2,7 @@
  * IRTE, a remappable MSI and a remappable I/O APIC entry, and the table
  * with its index allocator.
  *
- * Writing an entry the unit may read at any moment (VT-d 9.10; the
+ * Writing an entry the unit may read at any moment (VT-d 9.9 and 5.1.4; the
  * invalidation is 6.5.2's interrupt entry cache descriptor):
  *   - making one present: the upper half (source validation) first, then
  *     the lower half with P. x86 stores are seen in program order, so the

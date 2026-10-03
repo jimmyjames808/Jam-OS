@@ -1,6 +1,6 @@
 /* Tests for the VT-d interrupt remapping entries (kernel/dev/vtd_ir.c):
  * every encoder's exact bits against values worked out by hand from the
- * specification's figures (VT-d 4.1, 5.1.2.2, 5.1.5 and 9.10), its
+ * specification's figures (VT-d 4.1, 5.1.2.2, 5.1.5 and 9.9), its
  * refusals, and the table: allocation, entry 0 never handed out, the
  * index reused only after a completed invalidation, and each change
  * flushed before it is invalidated. As in test_vtd_pt.c the test's flush

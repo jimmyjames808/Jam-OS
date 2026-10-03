@@ -1,6 +1,6 @@
 /* VT-d interrupt remapping: the remapping table, its entries, and the
  * remappable message formats a device or an I/O APIC is programmed with
- * (Intel VT-d specification 4.1, 5.1 and 9.10).
+ * (Intel VT-d specification 4.1, 5.1 and 9.9).
  *
  * The model: with interrupt remapping on, a device's MSI (a 4-byte write to
  * 0xfee00000-0xfeefffff) carries no vector and no CPU, only an index into
@@ -41,7 +41,7 @@
 
 struct dmar_scope;
 
-/* ---- the entry (VT-d 9.10, an IRTE for remapped interrupts) ----------------- */
+/* ---- the entry (VT-d 9.9, an IRTE for remapped interrupts) ------------------ */
 
 struct vtd_irte {
     uint64_t lo;   /* present, modes, vector, destination */
