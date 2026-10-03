@@ -626,6 +626,7 @@ static const struct {
     { "fat_dir_cursors", t_fat_dir_cursors },
     { "fat_cache", t_fat_cache },
     { "fat_gather", t_fat_gather },
+    { "fat_layout", t_fat_layout },
     { "ns_boot_mount", t_ns_boot_mount },
     { "ns_boot_read_only", t_ns_boot_read_only },
     { "ns_path_rules", t_ns_path_rules },

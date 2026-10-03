@@ -6,7 +6,8 @@
  * FatFs flushes its own state at the end of mkdir, unlink and rename; the
  * volume is then settled (marked clean, disk.c) unless an open file still
  * has unwritten changes. An unlink's writes are held (hold.c) and go out
- * together before it is answered. */
+ * together before it is answered. An open file can't be removed or
+ * renamed (ERR_BAD_STATE: fat's lock, fileops.c). */
 #include "fat.h"
 
 /* A changing method on a read-only volume. */
@@ -127,7 +128,7 @@ static status_t op_unlink(void *ctx, const uint8_t path[256])
      * otherwise (on the ESP's one-sector clusters, 200 for a boot image).
      * The directory entry still goes out first, as FatFs wrote it. */
     disk_hold(true);
-    FRESULT fr = f_unlink(p);
+    FRESULT fr = files_is_open(p) ? FR_LOCKED : f_unlink(p);   /* fat's lock (fileops.c) */
     disk_hold(false);
     status_t held = disk_release();
     /* FR_DENIED: a directory that is not empty, or a read-only file. */
@@ -152,7 +153,7 @@ static status_t op_rename(void *ctx, const uint8_t from[256], const uint8_t to[2
     if (path_is_root(pf) || path_is_root(pt) || path_inside(pt, pf))
         return ERR_INVALID_ARGS;
     dirs_forget();
-    FRESULT fr = f_rename(pf, pt);
+    FRESULT fr = files_is_open(pf) ? FR_LOCKED : f_rename(pf, pt);   /* fat's lock (fileops.c) */
     /* FR_DENIED: no room for the new entry. */
     return settled(fr == FR_DENIED ? ERR_NO_SPACE : fr_status(fr));
 }
