@@ -183,7 +183,12 @@ Same in 5.20.
 | Mapping without invalidation when CM = 0 | yes | 11.4.2 CM: with 0, "invalidations are not required for modifications to individual not present" entries; required when permissions decrease | OK |
 | Unmap with tables unlinked: IH = 0 | told to the caller (ops->invalidate) | 6.5.2.3: IH = 1 keeps paging-structure caches | OK |
 
-The PC's expected unit (Linux's "cap d2008c40660462 ecap f050da", as the plan says) decodes by hand to: ND 2 (256), SAGAW 4-level only, MGAW 39, CM 0, RWBF 0, FRO 0x40 (0x400), NFR 0 (1 record), PSI 1, MAMV 18, SLLPS 3; ECAP C 0, QI 1, IR 1, EIM 1, PT 1, SC 1, IRO 0x50 (0x500). vtd_pt picks 4 levels with addr_bits 39, AW 2. The ktest strings for it and for QEMU's unit match this hand decode.
+The PC's expected unit (Linux's "cap d2008c40660462 ecap f050da", as the
+plan says) decodes by hand to: ND 2 (256), SAGAW 4-level only, MGAW 39,
+CM 0, RWBF 0, FRO 0x40 (0x400), NFR 0 (1 record), PSI 1, MAMV 18, SLLPS 3;
+ECAP C 0, QI 1, IR 1, EIM 1, PT 1, SC 1, IRO 0x50 (0x500). vtd_pt picks 4
+levels with addr_bits 39, AW 2. The ktest strings for it and for QEMU's unit
+match this hand decode.
 
 ## Interrupt remapping (`vtd_ir`)
 
@@ -279,13 +284,16 @@ Same in 5.20 (only DLM's NMI text changed).
 
 | # | What | Commit | Test |
 |---|---|---|---|
-| 1 | STALE AFLOG/AFL/FLS/AFLS removed from vtd.h | (filled in below) | none practical: unused definitions deleted; the build is the check |
-| 2 | IRTE citations 9.10 -> 9.9 | | comments only |
-| 3 | Fault-record decode: interrupt index for reasons 20h-2Fh, the 2-bit request type | | `vtd_describe_fault_per_spec` (exact strings) |
+| 1 | STALE AFLOG/AFL/FLS/AFLS removed from vtd.h | 379d199 | none practical: unused definitions deleted; the build is the check |
+| 2 | IRTE citations 9.10 -> 9.9 (vtd_ir.c, vtd_ir.h, test_vtd_ir.c) | 811f81b | comments only |
+| 3 | Fault-record decode: interrupt index for reasons 20h-2Fh, nothing for 25h, the 2-bit request type | 4f87f9e (refactor: pure `vtd_describe_fault`, same output), 6655734 (the fix) | `vtd_describe_fault_per_spec` (exact strings; failed without the fix on "page request") |
 
-Also added: `vtd_spec_bits_literal` pins every vtd.h, vtd_pt.h and vtd_ir.h
-constant and a raw leaf entry to the spec's numbers written as literals, so a
-wrong constant can no longer pass by agreeing with itself.
+Also added (b91e027): `vtd_spec_bits_literal` pins every register offset and
+field of vtd.h, and `vtd_pt_entry_bits_literal` the vtd_pt.h constants and a
+raw table entry and leaf, to the spec's numbers written as literals, so a
+wrong constant can no longer pass by agreeing with itself. (vtd_ir's tests
+already compared with literals: the IRTE, MSI and RTE values, checked by
+hand above.)
 
 ## Notes for the later stages (not errors here)
 
@@ -297,9 +305,10 @@ wrong constant can no longer pass by agreeing with itself.
   round each run up to an aligned power of two (or go domain-wide).
 - **D1, context entries**: updating a present legacy context entry's
   SSPTPTR or TT needs a 16-byte aligned atomic write that changes DID with
-  it (6.2.2.1, Context-Entry Programming Considerations). The plan's "switch the context entry to
-  the new domain" changes DID and SSPTPTR of a present entry: use
-  CMPXCHG16B, or go through not-present with its invalidation.
+  it (6.2.2.1, Context-Entry Programming Considerations). The plan's
+  "switch the context entry to the new domain" changes DID and SSPTPTR of a
+  present entry: use CMPXCHG16B, or go through not-present with its
+  invalidation.
 - **D1, PMEN**: 4.1 says new software should not use the protected memory
   registers (deprecated); turning them off at handover, as planned, is
   what it allows.
