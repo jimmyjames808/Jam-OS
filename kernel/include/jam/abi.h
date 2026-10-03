@@ -209,10 +209,17 @@ struct channel_call_args {
     uint64_t ractual;          /* user address of a uint32_t, or 0 */
     uint64_t rh;               /* user address: rhcap handle_t for the reply */
     uint32_t rhcap;            /* entries in the reply handle buffer */
-    uint32_t reserved;         /* 0 */
+    uint32_t flags;            /* CHANNEL_CALL_*; any other bit: ERR_INVALID_ARGS */
     uint64_t rhactual;         /* user address of a uint32_t, or 0 */
-    uint64_t deadline_ns;      /* absolute, uptime clock; UINT64_MAX = forever */
+    uint64_t deadline_ns;      /* absolute, uptime clock; UINT64_MAX = forever.
+                                * With CHANNEL_CALL_TIMEOUT: ns from now */
 };
+
+/* channel_call flags. TIMEOUT: deadline_ns is a timeout, which the kernel
+ * turns into a deadline from its own clock when the call starts, so a
+ * caller needs no clock_get first. UINT64_MAX (or a sum past it) is still
+ * forever; 0 times out at once unless the reply is already there. */
+#define CHANNEL_CALL_TIMEOUT (1u << 0)
 
 /* hardware -------------------------------------------------------------------
  * Resources are the authority over hardware: userboot gives init the root,

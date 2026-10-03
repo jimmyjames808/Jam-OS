@@ -478,7 +478,10 @@ Every driver and service is a userspace process from the start.
   reply; a reply arriving after a timeout stays queued as a normal message;
   closing your own endpoint mid-call returns `ERR_CANCELED`; calling on a
   closed endpoint returns `ERR_BAD_STATE`. The request hands the server
-  the caller's CPU (wake-affine, see [Scheduler](#scheduler)).
+  the caller's CPU (wake-affine, see [Scheduler](#scheduler)). The
+  deadline is absolute, or with `CHANNEL_CALL_TIMEOUT` in `flags` a
+  timeout the kernel adds to its own clock, so a caller needs no
+  `clock_get` first.
 - **Port**: bind many handles and wait on all of them; matching signals queue
   packets. `ONCE` bindings fire once; `PERSISTENT` ones stay and coalesce
   into one queued packet with a count. Limits: 4096 user packets, 4096

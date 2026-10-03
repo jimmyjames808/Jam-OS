@@ -119,6 +119,9 @@ bool t_fpu_state_survives_preemption(void);
  * system call ABI"). */
 bool t_fpu_call_keeps_control_words(void);
 bool t_fpu_ring3_switch_keeps_all(void);
+
+/* calltimeout.c: channel_call with CHANNEL_CALL_TIMEOUT. */
+bool t_call_timeout_relative(void);
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_kill_spinning_and_unstarted(void);

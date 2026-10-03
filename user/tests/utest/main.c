@@ -565,6 +565,7 @@ static const struct {
     { "wx", t_wx },
     { "ping_pong", t_ping_pong },
     { "kill_in_channel_call", t_kill_in_channel_call },
+    { "call_timeout_relative", t_call_timeout_relative },
     { "runaway_hits_job_limits", t_runaway_hits_job_limits },
     { "kernel_objects_are_charged", t_kernel_objects_are_charged },
     { "kill_spinning_and_unstarted", t_kill_spinning_and_unstarted },
