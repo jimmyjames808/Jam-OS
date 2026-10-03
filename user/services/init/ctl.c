@@ -13,7 +13,10 @@
  * asked for theirs (GET_DRIVER) until one matches, and that binding is
  * killed. devmgr's PCI drivers ("usb-bus", "hda") are found the
  * same way among the functions with a driver bound (GET_DRIVER
- * 0xffff/0xffff); devmgr restarts them like any driver that dies.
+ * 0xffff/0xffff); devmgr restarts them like any driver that dies. A
+ * filesystem service is asked for by its mount first (DEVMGR_FS_MOUNT:
+ * "fat-data" is /data's), whatever its process is called: a restarted one
+ * is devmgr's warm spare promoted, which keeps the name "fat-spare".
  *
  * reboot is a kexec into a fresh copy of the system: the kernel's stored
  * one, or the files on /esp if they changed (reboot.c); if that can't be
@@ -156,15 +159,60 @@ static status_t kill_pci_driver(handle_t dm, uint64_t koid)
     return ERR_NOT_FOUND;
 }
 
+/* "fat-data", "fat-esp", "fat-usb0", each maybe ending "-test": the
+ * filesystem service of that mount, as devmgr names it by mount
+ * (DEVMGR_FS_MOUNT). False: not such a name. */
+static bool fs_mount_named(const char *name, uint16_t *which, uint32_t *flags)
+{
+    char m[NAME_MAX];
+    if (strncmp(name, "fat-", 4))
+        return false;
+    snprintf(m, sizeof(m), "%s", name + 4);
+    size_t n = strlen(m);
+    *flags = n > 5 && !strcmp(m + n - 5, "-test") ? DEVMGR_MOUNT_TEST : 0;
+    if (*flags)
+        m[n - 5] = '\0';
+    if (!strcmp(m, "data"))
+        *which = DEVMGR_MOUNT_DATA;
+    else if (!strcmp(m, "esp"))
+        *which = DEVMGR_MOUNT_ESP;
+    else if (!strncmp(m, "usb", 3) && m[3] >= '0' && m[3] <= '9' && !m[4])   /* /usb0../usb9 */
+        *which = (uint16_t)(DEVMGR_MOUNT_USB + (unsigned)(m[3] - '0'));
+    else
+        return false;
+    return true;
+}
+
+/* Kill the filesystem service of the mount `name` names ("fat-data"),
+ * found by its mount rather than its process name: a restarted one is a
+ * promoted spare, still called "fat-spare". ERR_NOT_FOUND: not such a
+ * name, or no such mount. */
+static status_t kill_fs_mount(handle_t dm, const char *name, uint64_t *koid)
+{
+    uint16_t which;
+    uint32_t flags;
+    if (!fs_mount_named(name, &which, &flags))
+        return ERR_NOT_FOUND;
+    status_t st = binding_koid(dm, DEVMGR_FS_MOUNT, which, flags, koid);
+    if (st == ERR_BAD_STATE || st == ERR_NOT_FOUND)
+        return ERR_NOT_FOUND;   /* none runs */
+    struct devmgr_rep r;
+    return st != OK ? st : devmgr_call(dm, DEVMGR_KILL, DEVMGR_FS_MOUNT, which, flags, &r, NULL,
+                                       0, NULL, now() + KILL_WAIT);
+}
+
 /* Kill the process called name if devmgr runs it: a PCI function's
  * driver ("hda"), or for a USB device a class driver ("hid-6.1:0",
  * "usb-storage-1:0") or a disk's filesystem service ("fat-data"). */
 static status_t kill_devmgr_process(const char *name, uint64_t *koid)
 {
     handle_t dm = shell_devmgr();
-    if (!dm || !koid_named(name, koid))
+    if (!dm)
         return ERR_NOT_FOUND;
-    status_t st = kill_pci_driver(dm, *koid);
+    status_t st = kill_fs_mount(dm, name, koid);
+    if (st != ERR_NOT_FOUND || !koid_named(name, koid))
+        return st;
+    st = kill_pci_driver(dm, *koid);
     if (st != ERR_NOT_FOUND)
         return st;
     handle_t bus = find_usb_bus(dm);
