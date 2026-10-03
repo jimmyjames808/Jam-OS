@@ -109,9 +109,19 @@
 
 /* A Fault Recording Register's upper 64 bits (VT-d chapter 11). */
 #define VTD_FRCD_F         (1ull << 63)           /* the record holds a fault */
-#define VTD_FRCD_TYPE1(h)  VTD_BITS(h, 62, 1)     /* T1: 0 write, 1 read (T2, bit 28: a page request) */
+#define VTD_FRCD_TYPE1(h)  VTD_BITS(h, 62, 1)     /* T1 (bit 126) */
+#define VTD_FRCD_TYPE2(h)  VTD_BITS(h, 28, 1)     /* T2 (bit 92): T1 T2 = 00 write, 01 page
+                                                   * request, 10 read, 11 atomic */
 #define VTD_FRCD_REASON(h) VTD_BITS(h, 32, 8)     /* the fault reason */
 #define VTD_FRCD_SID(h)    VTD_BITS(h, 0, 16)     /* the requester: bus 15:8, dev 7:3, fn 2:0 */
+/* The lower 64 bits hold the fault info: for a DMA fault the page address
+ * (63:12); for an interrupt-remapping fault (reasons 20h-2Fh) the interrupt
+ * index in 63:48, except 25h (a compatibility-format interrupt blocked),
+ * where it is undefined (VT-d 11.4.7.6 and 5.1.4.1). */
+#define VTD_FRCD_IR_FIRST  0x20
+#define VTD_FRCD_IR_LAST   0x2f
+#define VTD_FRCD_IR_COMPAT 0x25
+#define VTD_FRCD_INDEX(l)  VTD_BITS(l, 48, 16)
 
 /* ---- the probe -------------------------------------------------------------- */
 

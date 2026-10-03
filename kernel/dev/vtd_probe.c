@@ -116,8 +116,18 @@ void vtd_describe_fault(char *buf, size_t n, uint64_t lo, uint64_t hi)
     if (n)
         buf[0] = '\0';
     uint32_t sid = (uint32_t)VTD_FRCD_SID(hi);
-    add(&l, "%02x:%02x.%x %s at %lx, reason %lx", sid >> 8, (sid >> 3) & 0x1f, sid & 7,
-        VTD_FRCD_TYPE1(hi) ? "read" : "write", lo & ~(uint64_t)0xfff, VTD_FRCD_REASON(hi));
+    uint64_t reason = VTD_FRCD_REASON(hi);
+    add(&l, "%02x:%02x.%x ", sid >> 8, (sid >> 3) & 0x1f, sid & 7);
+    if (reason == VTD_FRCD_IR_COMPAT)
+        add(&l, "interrupt in compatibility format");
+    else if (reason >= VTD_FRCD_IR_FIRST && reason <= VTD_FRCD_IR_LAST)
+        add(&l, "interrupt, index %lx", VTD_FRCD_INDEX(lo));
+    else
+        add(&l, "%s at %lx",
+            VTD_FRCD_TYPE1(hi) ? (VTD_FRCD_TYPE2(hi) ? "atomic" : "read")
+                               : (VTD_FRCD_TYPE2(hi) ? "page request" : "write"),
+            lo & ~(uint64_t)0xfff);
+    add(&l, ", reason %lx", reason);
 }
 
 /* ---- the table ------------------------------------------------------------------- */

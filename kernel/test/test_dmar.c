@@ -392,3 +392,30 @@ KTEST(vtd_describe_status_says_what_is_on)
         "irq table set, compat irqs -, protected memory ON, faults RECORDED, invalidation "
         "errors 40"));
 }
+
+/* A fault recording register decoded as VT-d 11.4.7.6 lays it out (F 127,
+ * T1 126, FR 103:96, T2 92, SID 79:64, FI 63:12), with the interrupt
+ * index of an interrupt-remapping fault in FI 63:48 (5.1.4.1). The values
+ * are written as the spec's bits, not through vtd.h's macros. */
+KTEST(vtd_describe_fault_per_spec)
+{
+    char buf[96];
+    uint64_t f = 1ull << 63, t1 = 1ull << 62, t2 = 1ull << 28;
+    uint64_t hda = 0x00fb;   /* 00:1f.3 */
+    /* DMA faults: the page address, the low 12 bits left out. */
+    vtd_describe_fault(buf, sizeof(buf), 0x12345abcull, f | 0x05ull << 32 | hda);
+    KT_ASSERT(!strcmp(buf, "00:1f.3 write at 12345000, reason 5"));
+    vtd_describe_fault(buf, sizeof(buf), 0x7f000ull, f | t1 | 0x06ull << 32 | hda);
+    KT_ASSERT(!strcmp(buf, "00:1f.3 read at 7f000, reason 6"));
+    vtd_describe_fault(buf, sizeof(buf), 0x7f000ull, f | t2 | 0x05ull << 32 | hda);
+    KT_ASSERT(!strcmp(buf, "00:1f.3 page request at 7f000, reason 5"));
+    vtd_describe_fault(buf, sizeof(buf), 0x7f000ull, f | t1 | t2 | 0x06ull << 32 | hda);
+    KT_ASSERT(!strcmp(buf, "00:1f.3 atomic at 7f000, reason 6"));
+    /* Interrupt-remapping faults: the index, never read or write. */
+    vtd_describe_fault(buf, sizeof(buf), 0x1234ull << 48, f | t1 | 0x22ull << 32 | 0xf0f8);
+    KT_ASSERT(!strcmp(buf, "f0:1f.0 interrupt, index 1234, reason 22"));
+    vtd_describe_fault(buf, sizeof(buf), 0xffffull << 48, f | 0x26ull << 32 | hda);
+    KT_ASSERT(!strcmp(buf, "00:1f.3 interrupt, index ffff, reason 26"));
+    vtd_describe_fault(buf, sizeof(buf), 0xdeadbeef000ull, f | 0x25ull << 32 | hda);
+    KT_ASSERT(!strcmp(buf, "00:1f.3 interrupt in compatibility format, reason 25"));
+}
