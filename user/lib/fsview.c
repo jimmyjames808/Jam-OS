@@ -75,25 +75,52 @@ status_t fs_view_check(uint32_t flags, const void *req, uint32_t n)
     }
 }
 
-/* fs.view on a channel with `flags`: a new channel, served by the host. */
-static void answer_view(handle_t ch, uint32_t flags, const struct fs_view_req *q, uint32_t n,
-                        status_t (*add)(void *host, handle_t ch, uint32_t flags), void *host)
+/* A bare status for the request at req (n bytes) into rep: its length
+ * (0: no txid, no reply). */
+static uint32_t status_reply(const void *req, uint32_t n, void *rep, status_t st)
 {
-    if (n != sizeof(*q) || (q->flags & ~FS_VIEW_FLAGS)) {
-        idl_reply_status(ch, q, n, ERR_INVALID_ARGS);
-        return;
-    }
+    if (n < sizeof(uint32_t))
+        return 0;
+    struct idl_rep_hdr *r = rep;
+    r->txid = ((const struct idl_req_hdr *)req)->txid;
+    r->status = st;
+    return sizeof(*r);
+}
+
+/* fs.view on a channel with v's flags: a new channel, served by the host;
+ * the client's end goes with the reply. */
+static uint32_t answer_view(const struct fs_view_server *v, const struct fs_view_req *q,
+                            uint32_t n, void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    if (n != sizeof(*q) || (q->flags & ~FS_VIEW_FLAGS))
+        return status_reply(q, n, rep, ERR_INVALID_ARGS);
     handle_t mine, theirs;
     status_t st = jam_channel_create(&mine, &theirs);
-    if (st == OK && (st = add(host, mine, flags | q->flags)) != OK)
+    if (st == OK && (st = v->add(v->host, mine, v->flags | q->flags)) != OK)
         jam_handle_close(theirs);   /* add took mine */
-    if (st != OK) {
-        idl_reply_status(ch, q, n, st);
-        return;
-    }
-    struct fs_view_rep r = { .txid = q->txid, .status = OK };
-    if (jam_channel_write(ch, &r, sizeof(r), &theirs, 1) != OK)
-        jam_handle_close(theirs);   /* the client is gone */
+    if (st != OK)
+        return status_reply(q, n, rep, st);
+    *(struct fs_view_rep *)rep = (struct fs_view_rep){ .txid = q->txid, .status = OK };
+    rhs[0] = theirs;
+    *rhn = 1;
+    return sizeof(struct fs_view_rep);
+}
+
+uint32_t fs_view_dispatch(const struct fs_view_server *v, const void *req, uint32_t n, void *rep,
+                          handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    const struct idl_req_hdr *h = req;
+    if (n >= sizeof(*h) && h->ordinal == FS_VIEW)
+        return answer_view(v, req, n, rep, rhs, rhn);
+    status_t st = fs_view_check(v->flags, req, n);
+    if (st != OK)
+        return status_reply(req, n, rep, st);
+    uint32_t rn = fs_dispatch(v->ops, v->ctx, req, n, rep, rhs, rhn);
+    if (h->ordinal == FS_STATFS && rn == sizeof(struct fs_statfs_rep) &&
+        (v->flags & FS_VIEW_READ_ONLY))
+        ((struct fs_statfs_rep *)rep)->read_only = 1;
+    return rn;
 }
 
 status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops, void *ctx,
@@ -113,22 +140,12 @@ status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops
         idl_reply_status(ch, q, n, ERR_INVALID_ARGS);
         return OK;
     }
-    const struct idl_req_hdr *h = (const struct idl_req_hdr *)q;
-    if (n >= sizeof(*h) && h->ordinal == FS_VIEW) {
-        answer_view(ch, flags, (const struct fs_view_req *)q, n, add, host);
-        return OK;
-    }
-    st = fs_view_check(flags, q, n);
-    if (st != OK) {
-        idl_reply_status(ch, q, n, st);
-        return OK;
-    }
+    const struct fs_view_server v = {
+        .flags = flags, .ops = ops, .ctx = ctx, .add = add, .host = host,
+    };
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
-    uint32_t rn = fs_dispatch(ops, ctx, q, n, r, rhs, &rhn);
-    if (h->ordinal == FS_STATFS && rn == sizeof(struct fs_statfs_rep) &&
-        (flags & FS_VIEW_READ_ONLY))
-        ((struct fs_statfs_rep *)r)->read_only = 1;
+    uint32_t rn = fs_view_dispatch(&v, q, n, r, rhs, &rhn);
     if (!rn || drv_channel_write(ch, r, rn, rhs, rhn) != OK)
         idl_close_all(rhs, rhn);   /* not sent: still ours */
     return OK;
