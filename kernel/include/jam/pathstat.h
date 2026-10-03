@@ -56,6 +56,7 @@ enum path_ev {
     PATH_WAKE,           /* wakes that made a thread READY and queued it */
     PATH_IPI,            /* reschedule IPIs sent by a wake */
     PATH_FPU_SAVE,       /* user FPU state saved (XSAVE/XSAVEOPT/FXSAVE) */
+    PATH_FPU_CALLED,     /* ... only its control words kept: switched out in a call */
     PATH_FPU_RESTORE,    /* user FPU state restored */
     PATH_FPU_KEPT,       /* restores skipped: the CPU still held the state */
     PATH_CR3,            /* address-space switches (CR3 loads) */

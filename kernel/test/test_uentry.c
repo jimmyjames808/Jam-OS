@@ -466,7 +466,10 @@ KTEST(uentry_preempt_and_cancel)
 }
 
 /* Two user threads on ONE CPU with distinct SSE registers: each writes
- * xmm0-3, yields to the other, and must read its own values back. */
+ * xmm0-3, yields to the other, and must never read the other's values. A
+ * yield is a system call, so a thread switched out in it comes back with
+ * zeroed registers (the system call rule, fpu.c); one that wasn't
+ * switched out, or with the rule off, keeps its own. */
 KTEST(uentry_fpu_switch)
 {
     if (cpu_count < 2)
@@ -500,8 +503,10 @@ KTEST(uentry_fpu_switch)
         user_join(t[i]);
     for (int i = 0; i < N; i++) {
         KT_EQ(prog[i].reported, 4);
-        for (unsigned x = 0; x < 4; x++)
-            KT_EQ(prog[i].report[x], base[i] + x);
+        for (unsigned x = 0; x < 4; x++) {
+            uint64_t got = prog[i].report[x];
+            KT_ASSERT(got == base[i] + x || (got == 0 && fpu_call_drop()));
+        }
         uspace_destroy(&u[i]);
     }
 }

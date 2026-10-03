@@ -126,6 +126,10 @@ struct thread {
     void             *ustate;        /* XSAVE area (fpu_ustate_alloc) */
     uint32_t          fpu_cpu;       /* CPU whose registers were last loaded
                                       * from ustate (fpu.c) */
+    bool              in_syscall;    /* inside a system call, so its vector registers
+                                      * are not live (fpu.c keeps only the control
+                                      * words). Written only by the thread itself,
+                                      * with interrupts off; read by its own switches */
 
     /* Set once by thread_cancel, never cleared: every cancellable wait
      * returns ERR_CANCELED from then on. */

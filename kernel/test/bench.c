@@ -236,11 +236,11 @@ static uint64_t *samples, *samples_off, *samples_on;
  * them at once (the word "m55": none of them against all of them). */
 enum sw {
     SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_FPUOPT,
-    SW_PCID, SW_COUNT, SW_ALL = SW_COUNT
+    SW_PCID, SW_FPUCALL, SW_COUNT, SW_ALL = SW_COUNT
 };
 static const char *const sw_name[SW_COUNT + 1] = {
     "spinidle", "placeorder", "affinepair", "kmcache", "oneshot", "serialirq", "fpuopt", "pcid",
-    "m55"
+    "fpucall", "m55"
 };
 static uint64_t sw_boot[SW_COUNT];
 
@@ -255,6 +255,7 @@ static uint64_t sw_get(enum sw s)
     case SW_SERIALIRQ:  return __atomic_load_n(&serial_async, __ATOMIC_RELAXED);
     case SW_FPUOPT:     return __atomic_load_n(&fpu_opt, __ATOMIC_RELAXED);
     case SW_PCID:       return pcid_is_on();
+    case SW_FPUCALL:    return __atomic_load_n(&fpu_call, __ATOMIC_RELAXED);
     default:            break;
     }
     return 0;
@@ -271,11 +272,12 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_SERIALIRQ:  serial_set_async(v); break;
     case SW_FPUOPT:     __atomic_store_n(&fpu_opt, (bool)v, __ATOMIC_RELAXED); break;
     case SW_PCID:       pcid_set(v); break;   /* no-op without PCIDs */
+    case SW_FPUCALL:    __atomic_store_n(&fpu_call, (bool)v, __ATOMIC_RELAXED); break;
     default:            break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1, 1, 1 };
 
 static void sw_save(void)
 {
@@ -1310,6 +1312,8 @@ static void user_benches(void)
                           "user: process->process channel_call, same CPU (P)");
     else
         user_bench("call", cpu_p, cpu_p, "user: process->process channel_call, same CPU (P)");
+    user_bench_off_on(SW_FPUCALL, "call", cpu_p, cpu_p,
+                      "user: process->process channel_call, same CPU, FPU call rule (P)");
     user_bench("dcall", cpu_p, cpu_p, "user: the same with a 5 s deadline per call (P)");
     user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1,
                       "user: thread->thread channel_call, 1 process (P)");

@@ -36,7 +36,7 @@
  * not kept). */
 static const char *const kept_words[] = {
     "shell", "verbose", "nosplash", "nousb", "smp=loader", "nopcid", "forcepcid",
-    "nodeadline", "noserialirq", "nooneshot", "nofpuopt", "nokmcache", "nospinidle",
+    "nodeadline", "noserialirq", "nooneshot", "nofpuopt", "nofpucall", "nokmcache", "nospinidle",
     "noplaceorder", "noaffinepair", "hidboot", "net",
 };
 /* ... and key=value words. */

@@ -13,6 +13,7 @@
 #include <jam/mm.h>
 #include <jam/sys.h>
 #include <jam/syscall_impl.h>
+#include <jam/time.h>
 #include "sysc.h"
 
 #define SMALL 512   /* bytes: messages up to this size never touch the heap */
@@ -140,10 +141,20 @@ int64_t sysc_channel_read(const struct channel_read_args *a)
     return st;
 }
 
+/* The call's deadline: deadline_ns itself, or with CHANNEL_CALL_TIMEOUT
+ * that many ns from now (a sum past the clock's end is forever). */
+static uint64_t call_deadline(const struct channel_call_args *a)
+{
+    uint64_t d;
+    if (!(a->flags & CHANNEL_CALL_TIMEOUT))
+        return a->deadline_ns;
+    return __builtin_add_overflow(uptime_ns(), a->deadline_ns, &d) ? DEADLINE_NEVER : d;
+}
+
 int64_t sysc_channel_call(const struct channel_call_args *a)
 {
     SYSC_TABLE(t);
-    if (a->reserved)
+    if (a->flags & ~CHANNEL_CALL_TIMEOUT)
         return ERR_INVALID_ARGS;
     if (a->wn < 4)
         return ERR_INVALID_ARGS;
@@ -164,7 +175,7 @@ int64_t sysc_channel_call(const struct channel_call_args *a)
     uint32_t nb = 0, nh = 0;
     if (st == OK)
         st = sys_channel_call(t, a->h, wb, a->wn, wh, a->whn, rb, rcap, &nb, rh, rhcap, &nh,
-                              a->deadline_ns);
+                              call_deadline(a));
     if (st == OK) {
         if (copy_out(a->rbytes, rb, nb) != OK ||
             copy_out(a->rh, rh, nh * sizeof(handle_t)) != OK ||

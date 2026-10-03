@@ -21,7 +21,9 @@ _Static_assert(sizeof(struct channel_read_args) == 48, "channel_read_args layout
 _Static_assert(offsetof(struct channel_read_args, actual_handles) == 40,
                "channel_read_args layout");
 _Static_assert(sizeof(struct channel_call_args) == 80, "channel_call_args layout");
-_Static_assert(offsetof(struct channel_call_args, deadline_ns) == 72, "channel_call_args layout");
+_Static_assert(offsetof(struct channel_call_args, flags) == 60 &&
+                   offsetof(struct channel_call_args, deadline_ns) == 72,
+               "channel_call_args layout");
 
 _Static_assert(sizeof(struct startup_msg) == 92, "startup_msg layout");
 _Static_assert(sizeof(struct bootfs_header) == 24, "bootfs header layout");

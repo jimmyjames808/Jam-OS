@@ -15,7 +15,9 @@
  * thread that blocks with a deadline goes on the queue of the CPU it blocks
  * on, sorted by deadline, and that CPU's timer is armed for the queue's
  * head (lapic_timer_set), so it is woken within microseconds of its
- * deadline instead of at the next 10 ms tick. Races:
+ * deadline instead of at the next 10 ms tick. A head due at or after the
+ * next tick is left to the tick, which re-arms for it (after_next_tick).
+ * Races:
  *   - Only the owning CPU adds to its queue and arms its timer (the
  *     blocking thread has preemption off; the timer interrupt runs there),
  *     always under the queue lock with interrupts off.
@@ -36,6 +38,18 @@ struct sleepq {
     struct list_node list;   /* struct thread, by wake_at_tsc */
 } __attribute__((aligned(64)));
 static struct sleepq sleepqs[MAX_CPUS];
+
+/* Interrupts off: does a deadline come at or after this CPU's next tick?
+ * Then it needs no timer of its own: every tick expires the queue and
+ * re-arms the timer for the head (sched_timer_expire, from lapic.c's
+ * on_timer), so the deadline is met to the microsecond all the same, and
+ * the far deadlines most waits carry (a call's 5 s) cost no timer write.
+ * This relies on the tick never stopping (there is no tickless idle). In
+ * the periodic mode tick_deadline stays 0: nothing is armed there anyway. */
+static bool after_next_tick(uint64_t wake_at_tsc)
+{
+    return wake_at_tsc >= this_cpu()->tick_deadline;
+}
 
 /* The owning CPU, queue lock held: arm the timer for the head. */
 static void sleepq_arm(const struct sleepq *q)
@@ -83,7 +97,7 @@ static bool block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t deadli
             pos = pos->prev;
         list_add(pos, &t->sleep_node);
         PATH_COUNT(PATH_SLEEPQ);
-        if (q->list.next == &t->sleep_node) {
+        if (q->list.next == &t->sleep_node && !after_next_tick(t->wake_at_tsc)) {
             PATH_COUNT(PATH_TIMER_ARM);
             sleepq_arm(q);   /* the new head */
         }

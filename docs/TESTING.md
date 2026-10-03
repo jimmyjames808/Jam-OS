@@ -294,7 +294,9 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   off to compare: `nopcid` (and `forcepcid`: PCIDs on even where the kernel
   leaves them off for the INVLPG erratum), `nospinidle` (or `idlespin=<us>`),
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
-  `nofpuopt`.
+  `nofpuopt`, `nofpucall` (a switch inside a system call saves the full
+  FPU state again; utest's `fpu_call_keeps_control_words` then reports
+  its rounds as kept, not zeroed).
 - `vlan=<id>`, `vlan=none`, `vlan=off`: the network's mode
   ([ARCHITECTURE](../ARCHITECTURE.md#networking)). `vlan=<id>` (1..4094):
   every frame Jam OS sends is tagged with that VLAN and only frames tagged
