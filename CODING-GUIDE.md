@@ -89,7 +89,7 @@ syscall path returns an error.
 | Drivers | `drivers/<name>/` (test drivers in `drivers/test/<name>/`); either way `drv/<name>` in bootfs |
 | System services (bootfs, console, devmgr, dhcp, dns, fat, init, logd, mixer, music, netstack, serialin, serve, shell, sntp, update) | `user/services/<name>/` |
 | Apps (fractal, life, tetris, snake, mines, sysmon, jamjar, jamcover, demo, splash, play, fetch, speed) | `user/apps/<name>/`; the apps library (libfun) is `user/apps/fun/` |
-| Test programs (utest, usbtest, hdatest, mixtest, nettest, dnstest, tcptest, contest, ramfs, soakload, wantdebug, wantlisten, nolisten) | `user/tests/<name>/` |
+| Test programs (utest, usbtest, hdatest, mixtest, mixramp, nettest, dnstest, tcptest, contest, ramfs, soakload, wantdebug, wantlisten, nolisten) | `user/tests/<name>/` |
 | Shared user code | `user/lib/` (libos, headers in `user/include/`), libfun (`<fun.h>`) |
 | ABI sources | `abi/syscalls.def`, `abi/idl/*.idl` |
 | Build tools and test scripts | `tools/` (QEMU shell scripts in `tools/shell-tests/`) |

@@ -1,0 +1,17 @@
+# The mixer killed again and again while a ramp plays (bin/mixramp: 20
+# kills, 300 ms apart); use tools/mixer-restart-test.sh (it adds the sound
+# card, boots once with the warm spare and once with `nospare`, and checks
+# the WAV and the log). (The markers are echoed as mr-""1 so the typed
+# line itself never matches.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 1 codec(s) answered; 0 verb(s) timed out
+send mixramp 20 300; echo mr-""1
+wait 120 mr-1
+wait jam>
+send vol; echo mr-""2
+wait no streams
+wait mr-2
+wait jam>
+send reboot -f
+wait reboot: resetting
