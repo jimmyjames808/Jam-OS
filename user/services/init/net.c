@@ -419,9 +419,11 @@ void net_given_up(void)
         jam_handle_close(net_srv);
     if (listen_srv)
         jam_handle_close(listen_srv);
+    if (low_srv)
+        jam_handle_close(low_srv);
     if (sys_srv)
         jam_handle_close(sys_srv);
-    ctl_srv = net_srv = listen_srv = sys_srv = HANDLE_INVALID;
+    ctl_srv = net_srv = listen_srv = low_srv = sys_srv = HANDLE_INVALID;
 }
 
 /* The kernel's start in UTC ns: the wall clock now less the uptime; 0 if
