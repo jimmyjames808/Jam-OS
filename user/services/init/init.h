@@ -142,12 +142,29 @@ struct svc {
  * one given up when its program isn't in bootfs). */
 extern struct svc svcs[NSVC];
 
-/* shell.c: start svc i with these arguments and extra handles (consumed);
- * a service that follows init's namespace gets its part of it. */
+/* How svc_start_args starts a service. */
+struct svc_args {
+    int                        argc;     /* entries in argv */
+    const char *const         *argv;     /* argv[0]: its path */
+    struct spawn_handle       *x;        /* extra handles, consumed */
+    const rights_t            *rights;   /* NULL, or nx entries: what each arrives with */
+    unsigned                   nx;       /* entries in x */
+};
+
+/* shell.c: start svc i as a new process with a's arguments and extra
+ * handles (consumed, whatever happens); a service that follows init's
+ * namespace gets its part of it. */
+status_t svc_start_args(unsigned i, const struct svc_args *a);
+/* The same with these arguments and handles, each as it is. */
 status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_handle *x,
                    unsigned nx);
 /* The same with argv = { its path }. */
 status_t svc_start1(unsigned i, struct spawn_handle *x, unsigned nx);
+/* Svc i runs as proc, in job (a promoted spare: spare.c), both consumed:
+ * supervised from now on like one svc_start_args started.
+ * ERR_NOT_SUPPORTED (and proc killed): svc i follows init's namespace,
+ * which only a spawn hands over. */
+status_t svc_adopt(unsigned i, handle_t proc, handle_t job);
 /* writers.c: the table of log writers the console trusts (<logwriters.h>):
  * made once, before the first console; a started devmgr's or logd's koid
  * goes in (any other i is ignored); a read-only handle to it for a new

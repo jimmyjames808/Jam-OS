@@ -90,54 +90,82 @@ static bool mounted(const char *path)
     return false;
 }
 
-/* Start svc i with these arguments and extra handles (consumed). A
- * follower gets its part of init's namespace. */
-status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_handle *x,
-                   unsigned nx)
+/* Svc i runs as proc in job (both ours now): its end comes to the loop. */
+static status_t watch(unsigned i, handle_t proc, handle_t job)
+{
+    struct svc *s = &svcs[i];
+    status_t st = jam_port_bind(port, proc, i, SIG_TERMINATED, PORT_BIND_ONCE);
+    if (st != OK) {
+        jam_job_kill(job);
+        jam_handle_close(proc);
+        jam_handle_close(job);
+        return st;
+    }
+    s->proc = proc;
+    s->job = job;
+    s->running = true;
+    s->started = now();
+    writers_started(i, proc);
+    return OK;
+}
+
+status_t svc_start_args(unsigned i, const struct svc_args *sa)
 {
     struct svc *s = &svcs[i];
     struct follower *f = &followers[i];
-    handle_t ns = HANDLE_INVALID, back = HANDLE_INVALID;
-    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &s->job);
+    handle_t ns = HANDLE_INVALID, back = HANDLE_INVALID, job, proc = HANDLE_INVALID;
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK) {
-        for (unsigned k = 0; k < nx; k++)
-            if (x[k].h)
-                jam_handle_close(x[k].h);
+        for (unsigned k = 0; k < sa->nx; k++)
+            if (sa->x[k].h)
+                jam_handle_close(sa->x[k].h);
         return st;
     }
     struct spawn_args a = {
-        .path = s->path, .argc = argc, .argv = argv, .job = s->job, .extra = x, .nextra = nx,
-        .ns = f->only, .ns_out = f->only ? &ns : NULL, .ns_back_out = f->only ? &back : NULL,
+        .path = s->path, .argc = sa->argc, .argv = sa->argv, .job = job, .extra = sa->x,
+        .nextra = sa->nx, .extra_rights = sa->rights, .ns = f->only,
+        .ns_out = f->only ? &ns : NULL, .ns_back_out = f->only ? &back : NULL,
     };
-    st = spawn(&a, &s->proc);
-    if (st == OK)
-        st = jam_port_bind(port, s->proc, i, SIG_TERMINATED, PORT_BIND_ONCE);
+    st = spawn(&a, &proc);
     if (st != OK) {
-        if (s->proc) {
-            jam_job_kill(s->job);
-            jam_handle_close(s->proc);
-            s->proc = HANDLE_INVALID;
-        }
-        jam_handle_close(s->job);
-        s->job = HANDLE_INVALID;
+        jam_handle_close(job);
+        return st;
+    }
+    st = watch(i, proc, job);
+    if (st != OK) {
         if (ns)
             jam_handle_close(ns);
         if (back)
             jam_handle_close(back);
         return st;
     }
-    s->running = true;
-    s->started = now();
-    writers_started(i, s->proc);
     f->ns = ns;
     f->back = back;
     return OK;
+}
+
+status_t svc_start(unsigned i, int argc, const char *const *argv, struct spawn_handle *x,
+                   unsigned nx)
+{
+    struct svc_args a = { .argc = argc, .argv = argv, .x = x, .rights = NULL, .nx = nx };
+    return svc_start_args(i, &a);
 }
 
 status_t svc_start1(unsigned i, struct spawn_handle *x, unsigned nx)
 {
     const char *argv[] = { svcs[i].path };
     return svc_start(i, 1, argv, x, nx);
+}
+
+status_t svc_adopt(unsigned i, handle_t proc, handle_t job)
+{
+    if (followers[i].only) {   /* a namespace comes only with a spawn */
+        jam_job_kill(job);
+        jam_handle_close(proc);
+        jam_handle_close(job);
+        return ERR_NOT_SUPPORTED;
+    }
+    return watch(i, proc, job);
 }
 
 /* Svc i's namespace follows init's: the whole of it that its grants
