@@ -49,17 +49,19 @@ QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2 \
     tools/qemu-test.sh "$out" "$name" init || true
 log="$out/$name.log"
 ok=1
-grep -q "usbtest: 17 passed, 6 skipped" "$log" || ok=0
+grep -q "usbtest: 18 passed, 6 skipped" "$log" || ok=0
 grep -q "run complete: no problems" "$log" || ok=0
-for t in bulk stall bind esp range write stop disk2 apart unplug timeout; do
+for t in bulk stall bind esp range write fence stop disk2 apart unplug timeout; do
     grep -q "usbtest: storage_$t ok" "$log" || { echo "$name: storage_$t did not pass"; ok=0; }
 done
-# usb-storage's own lines: the takeover's reset recovery, both disks'
-# RESULTS lines, and the unplugged disk's driver seeing the device go
+# usb-storage's own lines: the takeover's reset recovery, the fence
+# dropping the WRITEs of the client that left, both disks' RESULTS lines,
+# and the unplugged disk's driver seeing the device go
 want() {
     grep -qE "$1" "$log" || { echo "$name: no line matching '$1'"; ok=0; }
 }
 want "\[usb-storage-test\] usb-storage 46f4:0001: the CBW was not taken: reset recovery 1 "
+want "\[usb-storage-test\] usb-storage 46f4:0001: partition 2: its client left with 4 request\(s\) queued: dropped"
 want "usb-storage-test: usb-storage 46f4:0001: QEMU QEMU HARDDISK, 128 MiB, 2 partition\(s\) \(ef 63 MiB, 0c 64 MiB\)"
 want "usb-storage-disk2: usb-storage 46f4:0001: QEMU QEMU HARDDISK, 128 MiB, 2 partition\(s\) \(ef 63 MiB, 0c 64 MiB\)"
 want "\[usb-storage-disk2\] usb-storage 46f4:0001: the device is gone"
