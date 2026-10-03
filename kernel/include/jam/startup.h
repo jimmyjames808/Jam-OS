@@ -40,6 +40,15 @@ enum startup_role {
     SR_DEVMGR_DEVICE,/* a devmgr channel scoped to one device (a client
                      * end, from init only: the mixer's, for the HD Audio
                      * controller; <devmgr.h> DEVMGR_DEVICE_CHANNEL) */
+    SR_STATE,       /* a service's state VMO, made and kept by its
+                     * supervisor, handed to each instance with read, write
+                     * and map only (<svcstate.h>) */
+    SR_KEEP,        /* a service's end of its keep channel (<keep.h>):
+                     * duplicates of what clients hold go to the keeper */
+    SR_STANDBY,     /* a warm spare's promotion channel: libos waits on it
+                     * before main for one struct standby_msg (below),
+                     * which brings the handles and arguments the program
+                     * then starts with */
 
     SR_USER = 64,   /* SR_USER + n: program-specific */
 };
@@ -55,6 +64,36 @@ struct startup_msg {
     uint32_t strings_len;                 /* bytes of strings after the struct */
     /* then strings_len bytes: argc argv strings, then envc "KEY=value"
      * strings, each NUL-terminated */
+};
+
+/* The promotion message: the one message on SR_STANDBY, from the
+ * supervisor that started the spare. Its handles join the startup
+ * message's (by role, as if they had come in it; SR_STANDBY itself is
+ * closed and goes), and its strings replace the spare's argv and
+ * environment, so a promoted program can't tell it was a spare but by
+ * standby_kill_ns() (<svcstate.h>). A malformed one ends the spare (exit
+ * code STANDBY_BAD_PROMOTION); its peer closed without one, a dismissal,
+ * ends it with code 0. Neither runs main. */
+#define STANDBY_MAGIC         0x4d4f5250u   /* "PROM" */
+#define STANDBY_VERSION       1
+#define STANDBY_MAX_HANDLES   64            /* a channel message's most */
+#define STANDBY_MAX_BYTES     8192          /* the whole message, strings included */
+#define STANDBY_MAX_STRINGS   128           /* argv and environment strings together */
+#define STANDBY_BAD_PROMOTION 3             /* the exit code of a spare given a bad one */
+
+struct standby_msg {
+    uint32_t txid;                          /* channel convention: first 4 bytes; 0 here */
+    uint32_t magic;                         /* STANDBY_MAGIC */
+    uint32_t version;                       /* STANDBY_VERSION */
+    uint32_t argc;                          /* argv strings after the struct */
+    uint32_t envc;                          /* environment strings after them */
+    uint32_t nhandles;                      /* handles carried, in order */
+    uint32_t roles[STANDBY_MAX_HANDLES];    /* enum startup_role of handle i */
+    uint64_t kill_ns;                       /* when the instance this one replaces was
+                                             * killed or found dead (uptime ns); 0: none */
+    uint32_t strings_len;                   /* bytes of strings after the struct */
+    uint32_t reserved;                      /* 0 */
+    /* then strings_len bytes, as in struct startup_msg */
 };
 
 /* SR_CRASHLOG's VMO: this header, then text_len bytes of log text, the
