@@ -13,8 +13,9 @@
  *
  * At most DEVICE_QUEUE requests wait for the thread; more are answered
  * ERR_NO_RESOURCES at once. What the thread touches of struct mixer:
- * m->cards, set before it starts and never changed after; `waiting` is
- * the one variable both threads change (atomics). */
+ * m->cards, set before it starts and never changed after (never the
+ * state: the loop's thread owns it); `waiting` is the one variable both
+ * threads change (atomics). */
 #include <devmgr.h>
 #include <idl/audioctl.h>
 #include "internal.h"
@@ -91,21 +92,21 @@ void device_init(struct mixer *m)
     to_thread = thread_end = HANDLE_INVALID;
 }
 
-void device_ask(struct mixer *m, handle_t ch, const struct audioctl_device_req *q)
+status_t device_ask(struct mixer *m, handle_t ch, const struct audioctl_device_req *q)
 {
     if (!to_thread) {
         answer(m, ch, q->txid, q->index);
-        return;
+        return OK;
     }
     struct device_req d = { q->txid, q->index };
     handle_t dup = HANDLE_INVALID;
     bool sent = __atomic_add_fetch(&waiting, 1, __ATOMIC_RELAXED) <= DEVICE_QUEUE &&
                 jam_handle_duplicate(ch, RIGHT_SAME, &dup) == OK &&
                 jam_channel_write(to_thread, &d, sizeof(d), &dup, 1) == OK;   /* dup goes too */
-    if (!sent) {
-        if (dup)
-            jam_handle_close(dup);
-        __atomic_sub_fetch(&waiting, 1, __ATOMIC_RELAXED);
-        idl_reply_status(ch, q, sizeof(*q), ERR_NO_RESOURCES);
-    }
+    if (sent)
+        return OK;
+    if (dup)
+        jam_handle_close(dup);
+    __atomic_sub_fetch(&waiting, 1, __ATOMIC_RELAXED);
+    return ERR_NO_RESOURCES;
 }

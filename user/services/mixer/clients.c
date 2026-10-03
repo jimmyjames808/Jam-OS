@@ -11,15 +11,18 @@
  * At most MIXER_CLIENTS openers at once: a connect past that is
  * ERR_NO_RESOURCES. An opener's channel is bound PERSISTENT on the port and
  * served a budget at a time, like the shared ones; once its client end is
- * gone it is closed and its slot (with a new generation) is free again. */
+ * gone it is closed and its slot (with a new generation) is free again.
+ * A slot's numbers (used, ctl, gen) are in the state, its channel and
+ * flag the process's own, at the same index. */
 #include <idl/svc.h>
 #include "internal.h"
 
 status_t clients_connect(struct mixer *m, bool ctl, handle_t *out)
 {
     for (unsigned i = 0; i < MIXER_CLIENTS; i++) {
-        struct client *c = &m->c[i];
-        if (c->ch)
+        struct client *c = &m->nums->c[i];
+        struct client_own *w = &m->own_c[i];
+        if (c->used)
             continue;
         handle_t mine, theirs;
         status_t st = jam_channel_create(&mine, &theirs);
@@ -33,36 +36,40 @@ status_t clients_connect(struct mixer *m, bool ctl, handle_t *out)
             jam_handle_close(theirs);
             return st;
         }
-        c->ch = mine;
+        c->used = true;
         c->ctl = ctl;
-        c->pending = true;   /* a request may come before the first packet is read */
+        w->ch = mine;
+        w->pending = true;   /* a request may come before the first packet is read */
         *out = theirs;
         return OK;
     }
     return ERR_NO_RESOURCES;
 }
 
-void clients_connect_reply(struct mixer *m, handle_t ch, uint32_t txid, bool ctl)
+void clients_connect_reply(struct mixer *m, handle_t ch, unsigned slot, bool ctl)
 {
+    const struct idl_req_hdr *q = svcstate_request(&m->state, slot, NULL);
+    struct svc_connect_rep *r = svcstate_reply_area(&m->state, slot);
     handle_t h = HANDLE_INVALID;
-    struct svc_connect_rep r = { .txid = txid, .status = clients_connect(m, ctl, &h) };
-    if (jam_channel_write(ch, &r, sizeof(r), &h, r.status == OK ? 1 : 0) != OK && h)
-        jam_handle_close(h);   /* the caller is gone: the new channel goes with it */
+    status_t st = clients_connect(m, ctl, &h);
+    *r = (struct svc_connect_rep){ .txid = q->txid, .status = st };
+    /* The caller gone: the new channel goes with it (req_answer closes it). */
+    req_answer(m, slot, ch, sizeof(*r), &h, st == OK ? 1 : 0);
 }
 
-struct client *clients_keyed(struct mixer *m, uint64_t key)
+struct client_own *clients_keyed(struct mixer *m, uint64_t key)
 {
     uint32_t slot = (uint32_t)(key & 0xff) - KEY_CLIENT;
     if (slot >= MIXER_CLIENTS)
         return NULL;
-    struct client *c = &m->c[slot];
-    return c->ch && (uint32_t)(key >> 8) == c->gen ? c : NULL;
+    const struct client *c = &m->nums->c[slot];
+    return c->used && (uint32_t)(key >> 8) == c->gen ? &m->own_c[slot] : NULL;
 }
 
 bool clients_pending(const struct mixer *m)
 {
     for (unsigned i = 0; i < MIXER_CLIENTS; i++)
-        if (m->c[i].ch && m->c[i].pending)
+        if (m->own_c[i].ch && m->own_c[i].pending)
             return true;
     return false;
 }
@@ -70,16 +77,19 @@ bool clients_pending(const struct mixer *m)
 void clients_serve(struct mixer *m)
 {
     for (unsigned i = 0; i < MIXER_CLIENTS; i++) {
-        struct client *c = &m->c[i];
-        if (!c->ch || !c->pending)
+        struct client *c = &m->nums->c[i];
+        struct client_own *w = &m->own_c[i];
+        if (!w->ch || !w->pending)
             continue;
-        c->pending = false;
-        status_t st = c->ctl ? serve_control(m, c->ch) : serve_audio(m, c->ch, i + 1);
+        w->pending = false;
+        status_t st = c->ctl ? serve_control(m, w->ch, (KEY_CLIENT + i) | c->gen << 8)
+                             : serve_audio(m, w->ch, i + 1);
         if (st == OK) {
-            c->pending = true;   /* its budget is spent: more may be queued */
+            w->pending = true;   /* its budget is spent: more may be queued */
         } else if (st == ERR_PEER_CLOSED) {
-            jam_handle_close(c->ch);   /* its persistent binding goes with our only handle */
-            c->ch = HANDLE_INVALID;
+            jam_handle_close(w->ch);   /* its persistent binding goes with our only handle */
+            w->ch = HANDLE_INVALID;
+            c->used = false;
         } else if (st != ERR_SHOULD_WAIT) {
             printf("mixer: reading an opener's channel: %s\n", status_str(st));
         }

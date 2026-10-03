@@ -12,7 +12,11 @@
  *
  * `played` for a stream comes from its period history (output.c's
  * remember): the driver frames each period's frames went to, so the play
- * position says how many of its frames have been heard. */
+ * position says how many of its frames have been heard.
+ *
+ * Each request is read into a request slot of the state (req_take) and
+ * answered from the slot's reply area after a commit (req_answer); a
+ * drain answered later commits before its answer too (drain_reply). */
 #include <idl/audio.h>
 #include <idl/audioctl.h>
 #include <idl/svc.h>
@@ -42,7 +46,7 @@ struct opener {
 bool any_playing(const struct mixer *m)
 {
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
-        if (m->s[i].used && m->s[i].playing)
+        if (m->nums->s[i].used && m->nums->s[i].playing)
             return true;
     return false;
 }
@@ -57,17 +61,19 @@ uint64_t stream_played(const struct stream *s, uint64_t pos)
     return s->read;
 }
 
-void stream_set_idle(struct stream *s, bool idle)
+void stream_set_idle(struct mixer *m, struct stream *s, bool idle)
 {
     uint32_t v = idle;
     s->idle = idle;
-    (void)jam_vmo_write(s->vmo, MIXER_RING_MIXER + 8, &v, sizeof(v));   /* the `idle` field */
+    (void)jam_vmo_write(stream_own(m, s)->vmo, MIXER_RING_MIXER + 8, &v,
+                        sizeof(v));   /* the `idle` field */
     if (!idle)
         s->empty = 0;
 }
 
-/* Answer the stream's waiting drain: st, and OK with its frames. */
-static void drain_reply(struct stream *s, status_t st)
+/* Answer the stream's waiting drain: st, and OK with its frames; the
+ * drain's end committed first. */
+static void drain_reply(struct mixer *m, struct stream *s, status_t st)
 {
     struct audio_stream_drain_rep r = { .txid = s->drain_txid, .status = st };
     uint32_t n = sizeof(struct idl_rep_hdr);
@@ -76,35 +82,38 @@ static void drain_reply(struct stream *s, status_t st)
         n = sizeof(r);
     }
     s->draining = false;
-    (void)jam_channel_write(s->ch, &r, n, NULL, 0);   /* the client gone: nobody waits */
+    state_commit(m);
+    /* The client gone: nobody waits. */
+    (void)jam_channel_write(stream_own(m, s)->ch, &r, n, NULL, 0);
 }
 
 void drain_check(struct mixer *m, struct stream *s, uint64_t pos, status_t st)
 {
-    (void)m;
     if (!s->draining)
         return;
     if (st != OK)
-        drain_reply(s, st);
+        drain_reply(m, s, st);
     else if (stream_played(s, pos) >= s->drain_to)
-        drain_reply(s, OK);
+        drain_reply(m, s, OK);
 }
 
 void stream_drop(struct mixer *m, struct stream *s, const char *why)
 {
+    struct stream_own *w = stream_own(m, s);
     if (s->draining)
-        drain_reply(s, ERR_BAD_STATE);
+        drain_reply(m, s, ERR_BAD_STATE);
     uint64_t key = (uint64_t)s->gen << 8;
-    (void)jam_port_unbind(m->port, s->event, (KEY_EVENT + (uint32_t)(s - m->s)) | key);
-    jam_handle_close(s->ch);   /* its persistent binding goes with our only handle */
-    jam_handle_close(s->vmo);
-    jam_handle_close(s->event);
+    (void)jam_port_unbind(m->port, w->event, (KEY_EVENT + (uint32_t)(s - m->nums->s)) | key);
+    jam_handle_close(w->ch);   /* its persistent binding goes with our only handle */
+    jam_handle_close(w->vmo);
+    jam_handle_close(w->event);
     printf("mixer: stream %u (%s) closed (%s): %lu frames taken, %u underrun(s), %u late "
            "period(s), least ahead %u ms, %u limited period(s)\n", s->id, s->name, why,
            (unsigned long)s->read, s->underruns, s->late,
            s->min_lead == UINT32_MAX ? 0 : s->min_lead * 1000 / MIXER_RATE, s->limited);
     uint32_t gen = s->gen;
     *s = (struct stream){ .gen = gen };
+    *w = (struct stream_own){ 0 };
 }
 
 /* ---- the service channel: open_output --------------------------------------------- */
@@ -122,13 +131,14 @@ static void set_name(struct stream *s, const uint8_t name[16])
 static status_t make_stream(struct mixer *m, struct stream *s, handle_t *theirs)
 {
     struct mixer_ring h = { .magic = MIXER_RING_MAGIC, .frames = RING_FRAMES };
+    struct stream_own *w = stream_own(m, s);
     handle_t ours = HANDLE_INVALID, peer = HANDLE_INVALID;
-    uint32_t slot = (uint32_t)(s - m->s);
-    status_t st = jam_vmo_create(RING_BYTES, 0, HANDLE_INVALID, &s->vmo);
+    uint32_t slot = (uint32_t)(s - m->nums->s);
+    status_t st = jam_vmo_create(RING_BYTES, 0, HANDLE_INVALID, &w->vmo);
     if (st == OK)
-        st = jam_vmo_write(s->vmo, 0, &h, sizeof(h));
+        st = jam_vmo_write(w->vmo, 0, &h, sizeof(h));
     if (st == OK)
-        st = jam_event_create(&s->event);
+        st = jam_event_create(&w->event);
     if (st == OK)
         st = jam_channel_create(&ours, &peer);
     s->gen++;
@@ -136,30 +146,30 @@ static status_t make_stream(struct mixer *m, struct stream *s, handle_t *theirs)
         st = jam_port_bind(m->port, ours, (KEY_STREAM + slot) | (uint64_t)s->gen << 8,
                            SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT);
     if (st == OK)
-        st = jam_port_bind(m->port, s->event, (KEY_EVENT + slot) | (uint64_t)s->gen << 8,
+        st = jam_port_bind(m->port, w->event, (KEY_EVENT + slot) | (uint64_t)s->gen << 8,
                            MIXER_SIG_DATA, PORT_BIND_ONCE);
     if (st != OK) {
-        if (s->event)   /* a binding holds its object: let go of it first */
-            (void)jam_port_unbind(m->port, s->event, (KEY_EVENT + slot) | (uint64_t)s->gen << 8);
-        handle_t left[] = { s->vmo, s->event, ours, peer };
+        if (w->event)   /* a binding holds its object: let go of it first */
+            (void)jam_port_unbind(m->port, w->event, (KEY_EVENT + slot) | (uint64_t)s->gen << 8);
+        handle_t left[] = { w->vmo, w->event, ours, peer };
         for (unsigned k = 0; k < 4; k++)
             if (left[k])
                 jam_handle_close(left[k]);   /* the channel's binding goes with our end */
-        s->vmo = s->event = HANDLE_INVALID;
+        w->vmo = w->event = HANDLE_INVALID;
         return st;
     }
-    s->ch = ours;
+    w->ch = ours;
     *theirs = peer;
     return OK;
 }
 
 /* Duplicates of the stream's ring and event with the client's rights. */
-static status_t client_handles(const struct stream *s, handle_t *ring, handle_t *event)
+static status_t client_handles(const struct stream_own *w, handle_t *ring, handle_t *event)
 {
-    status_t st = jam_handle_duplicate(s->vmo, CLIENT_RING, ring);
+    status_t st = jam_handle_duplicate(w->vmo, CLIENT_RING, ring);
     if (st != OK)
         return st;
-    st = jam_handle_duplicate(s->event, CLIENT_EVENT, event);
+    st = jam_handle_duplicate(w->event, CLIENT_EVENT, event);
     if (st != OK)
         jam_handle_close(*ring);
     return st;
@@ -172,7 +182,7 @@ static struct stream *free_slot(struct mixer *m, const struct opener *o)
     struct stream *slot = NULL;
     unsigned held = 0;
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
-        struct stream *s = &m->s[i];
+        struct stream *s = &m->nums->s[i];
         if (!s->used && !slot)
             slot = s;
         if (s->used && s->owner == o->owner && s->owner_gen == o->gen)
@@ -196,23 +206,25 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     status_t st = out_find(m);
     if (st != OK)
         return ERR_NOT_FOUND;   /* no driver with a path: nothing could ever be heard */
+    struct stream_own *w = stream_own(m, s);
     handle_t theirs = HANDLE_INVALID, ring = HANDLE_INVALID, event = HANDLE_INVALID;
     st = make_stream(m, s, &theirs);
-    if (st == OK && (st = client_handles(s, &ring, &event)) != OK) {
-        (void)jam_port_unbind(m->port, s->event,
-                              (KEY_EVENT + (uint32_t)(s - m->s)) | (uint64_t)s->gen << 8);
+    if (st == OK && (st = client_handles(w, &ring, &event)) != OK) {
+        (void)jam_port_unbind(m->port, w->event,
+                              (KEY_EVENT + (uint32_t)(s - m->nums->s)) | (uint64_t)s->gen << 8);
         jam_handle_close(theirs);
-        jam_handle_close(s->ch);
-        jam_handle_close(s->vmo);
-        jam_handle_close(s->event);
+        jam_handle_close(w->ch);
+        jam_handle_close(w->vmo);
+        jam_handle_close(w->event);
     }
     if (st != OK) {
         uint32_t gen = s->gen;
         *s = (struct stream){ .gen = gen };
+        *w = (struct stream_own){ 0 };
         return st;
     }
     s->used = true;
-    s->id = m->next_id++;
+    s->id = m->nums->next_id++;
     s->owner = o->owner;
     s->owner_gen = o->gen;
     s->gain = MIX_UNITY;
@@ -223,7 +235,8 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     *out_event = event;
     *out_id = s->id;
     *out_frames = RING_FRAMES;
-    *out_lead = OUT_LEAD * (m->out.period ? m->out.period : PERIOD_GUESS) + MIX_LOOKAHEAD;
+    *out_lead = OUT_LEAD * (m->nums->out.period ? m->nums->out.period : PERIOD_GUESS) +
+                MIX_LOOKAHEAD;
     printf("mixer: stream %u (%s) opened\n", s->id, s->name);
     return OK;
 }
@@ -240,13 +253,13 @@ static status_t do_start(void *ctx)
         return OK;
     s->playing = true;
     s->empty = 0;
-    stream_set_idle(s, false);
+    stream_set_idle(c->m, s, false);
     status_t st = out_need(c->m);
     /* No driver at all, or another program has its output (a test):
      * nothing would be heard, so say so. Anything else is tried again. */
     if (st == ERR_NOT_FOUND || st == ERR_BAD_STATE) {
         s->playing = false;
-        c->m->out.retry_at = 0;
+        c->m->nums->out.retry_at = 0;
         return st;
     }
     return OK;
@@ -258,16 +271,16 @@ static status_t do_stop(void *ctx)
     struct stream *s = c->s;
     s->playing = false;
     if (s->idle)
-        stream_set_idle(s, false);
+        stream_set_idle(c->m, s, false);
     drain_check(c->m, s, 0, ERR_BAD_STATE);
     return OK;
 }
 
 /* The header's `write` now (the client's, so only a number to report). */
-static uint64_t header_write(const struct stream *s)
+static uint64_t header_write(struct mixer *m, const struct stream *s)
 {
     uint64_t w = s->written;
-    (void)jam_vmo_read(s->vmo, MIXER_RING_CLIENT, &w, sizeof(w));
+    (void)jam_vmo_read(stream_own(m, s)->vmo, MIXER_RING_CLIENT, &w, sizeof(w));
     return w;
 }
 
@@ -275,7 +288,7 @@ static status_t do_position(void *ctx, uint64_t *out_written, uint64_t *out_cons
                             uint64_t *out_played)
 {
     struct call *c = ctx;
-    *out_written = header_write(c->s);
+    *out_written = header_write(c->m, c->s);
     *out_consumed = c->s->read;
     *out_played = stream_played(c->s, out_position(c->m));
     return OK;
@@ -295,7 +308,7 @@ static status_t do_levels(void *ctx, int32_t *out_volume, int32_t *out_master,
 {
     struct call *c = ctx;
     *out_volume = c->s->volume;
-    *out_master = c->m->master;
+    *out_master = c->m->nums->master;
     *out_device = out_device_gain(c->m);
     return OK;
 }
@@ -305,12 +318,13 @@ static status_t do_stats(void *ctx, uint32_t *out_underruns, uint32_t *out_late,
                          uint64_t *out_played)
 {
     struct call *c = ctx;
+    bool open = c->m->own_out.ch != HANDLE_INVALID;
     *out_underruns = c->s->underruns;
     *out_late = c->s->late;
     *out_min_lead = c->s->min_lead;
     *out_limited = c->s->limited;
-    *out_bits = c->m->out.ch ? c->m->out.bits : 0;
-    *out_played = stream_played(c->s, c->m->out.ch ? c->m->out.played : 0);
+    *out_bits = open ? c->m->nums->out.bits : 0;
+    *out_played = stream_played(c->s, open ? c->m->nums->out.played : 0);
     return OK;
 }
 
@@ -323,65 +337,60 @@ static const struct audio_ops stream_ops = {
     .stream_stats = do_stats,
 };
 
-/* stream_drain: answered from drain_check once the frames are heard. */
-static void drain_begin(struct mixer *m, struct stream *s, const struct audio_stream_drain_req *q)
+/* stream_drain (the request in slot): answered from drain_check once the
+ * frames are heard. */
+static void drain_begin(struct mixer *m, struct stream *s, unsigned slot,
+                        const struct audio_stream_drain_req *q)
 {
+    handle_t ch = stream_own(m, s)->ch;
     if (!s->playing || s->draining) {
-        idl_reply_status(s->ch, q, sizeof(*q), ERR_BAD_STATE);
+        req_status(m, slot, ch, ERR_BAD_STATE);
         return;
     }
-    uint64_t w = header_write(s);
+    uint64_t w = header_write(m, s);
     s->draining = true;
     s->drain_txid = q->txid;
     /* A client that says it wrote more than its ring holds past what was
      * taken can't have: those frames are never coming. */
     s->drain_to = w > s->read + RING_FRAMES ? s->read + RING_FRAMES : w < s->read ? s->read : w;
-    drain_check(m, s, m->out.ch ? m->out.played : 0, OK);
+    req_answer(m, slot, ch, 0, NULL, 0);   /* answered later, by drain_reply */
+    drain_check(m, s, m->own_out.ch ? m->nums->out.played : 0, OK);
 }
 
-/* One message from ch with these ops (a stream: drain handled here). */
-static status_t serve_one(struct mixer *m, handle_t ch, const struct audio_ops *ops, void *ctx,
-                          struct stream *s)
+/* One message from ch (port key `key`) with these ops (a stream: drain
+ * handled here). */
+static status_t serve_one(struct mixer *m, handle_t ch, uint32_t key, const struct audio_ops *ops,
+                          void *ctx, struct stream *s)
 {
-    _Alignas(8) uint8_t q[AUDIO_REQ_MAX + 8];
-    _Alignas(8) uint8_t r[AUDIO_REP_MAX];
-    handle_t hs[IDL_READ_HANDLES];
-    uint32_t n = 0, nh = 0;
-    status_t st = jam_channel_read(&(struct channel_read_args){
-        .h = ch, .bytes_cap = sizeof(q), .bytes = (uint64_t)(uintptr_t)q,
-        .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)hs,
-        .handles_cap = IDL_READ_HANDLES, .actual_handles = (uint64_t)(uintptr_t)&nh });
-    if (st == ERR_BUFFER_TOO_SMALL)
-        return idl_drain(ch, n, nh);
-    if (st != OK)
+    unsigned slot;
+    status_t st = req_take(m, ch, key, REQ_CAP_AUDIO, &slot);
+    if (st != OK || slot == REQ_NONE)
         return st;
-    if (nh) {
-        idl_close_all(hs, nh);
-        idl_reply_status(ch, q, n, ERR_INVALID_ARGS);
-        return OK;
-    }
-    const struct idl_req_hdr *hdr = (const void *)q;
+    uint32_t n = 0;
+    const void *q = svcstate_request(&m->state, slot, &n);
+    const struct idl_req_hdr *hdr = q;
     if (s && n == sizeof(struct audio_stream_drain_req) && hdr->ordinal == AUDIO_STREAM_DRAIN) {
-        drain_begin(m, s, (const void *)q);
+        drain_begin(m, s, slot, q);
         return OK;
     }
     if (!s && n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
-        clients_connect_reply(m, ch, hdr->txid, false);
+        clients_connect_reply(m, ch, slot, false);
         return OK;
     }
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
-    uint32_t rn = audio_dispatch(ops, ctx, q, n, r, rhs, &rhn);
-    if (!rn || jam_channel_write(ch, r, rn, rhs, rhn) != OK)
-        idl_close_all(rhs, rhn);   /* not sent: they're still ours */
+    uint32_t rn = audio_dispatch(ops, ctx, q, n, svcstate_reply_area(&m->state, slot), rhs, &rhn);
+    req_answer(m, slot, ch, rn, rhs, rhn);
     return OK;
 }
 
 status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner)
 {
-    struct opener o = { m, owner, owner ? m->c[owner - 1].gen : 0 };
+    uint32_t gen = owner ? m->nums->c[owner - 1].gen : 0;
+    struct opener o = { m, owner, gen };
+    uint32_t key = owner ? (KEY_CLIENT + owner - 1) | gen << 8 : KEY_SVC;
     for (int i = 0; i < BUDGET; i++) {
-        status_t st = serve_one(m, ch, &svc_ops, &o, NULL);
+        status_t st = serve_one(m, ch, key, &svc_ops, &o, NULL);
         if (st != OK)
             return st;
     }
@@ -399,9 +408,11 @@ void serve_svc(struct mixer *m)
 void serve_stream(struct mixer *m, struct stream *s)
 {
     struct call c = { m, s };
-    s->pending = false;
+    struct stream_own *w = stream_own(m, s);
+    uint32_t key = (KEY_STREAM + (uint32_t)(s - m->nums->s)) | s->gen << 8;
+    w->pending = false;
     for (int i = 0; i < BUDGET; i++) {
-        status_t st = serve_one(m, s->ch, &stream_ops, &c, s);
+        status_t st = serve_one(m, w->ch, key, &stream_ops, &c, s);
         if (st == OK)
             continue;
         if (st == ERR_PEER_CLOSED)
@@ -410,20 +421,21 @@ void serve_stream(struct mixer *m, struct stream *s)
             printf("mixer: reading stream %u's channel: %s\n", s->id, status_str(st));
         return;
     }
-    s->pending = true;
+    w->pending = true;
 }
 
 void stream_event(struct mixer *m, struct stream *s)
 {
-    uint32_t slot = (uint32_t)(s - m->s);
-    (void)jam_event_signal(s->event, MIXER_SIG_DATA, 0);
-    status_t st = jam_port_bind(m->port, s->event, (KEY_EVENT + slot) | (uint64_t)s->gen << 8,
+    uint32_t slot = (uint32_t)(s - m->nums->s);
+    handle_t event = stream_own(m, s)->event;
+    (void)jam_event_signal(event, MIXER_SIG_DATA, 0);
+    status_t st = jam_port_bind(m->port, event, (KEY_EVENT + slot) | (uint64_t)s->gen << 8,
                                 MIXER_SIG_DATA, PORT_BIND_ONCE);
     if (st != OK)
         printf("mixer: stream %u's event isn't watched any more (%s)\n", s->id,
                status_str(st));
     if (s->playing && s->idle) {
-        stream_set_idle(s, false);
+        stream_set_idle(m, s, false);
         (void)out_need(m);
     }
 }
@@ -439,7 +451,7 @@ static status_t do_streams(void *ctx, uint32_t *out_count, int32_t *out_master, 
     for (; n < MIXER_MAX_STREAMS; n++) {
         const struct stream *best = NULL;
         for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
-            const struct stream *s = &m->s[i];
+            const struct stream *s = &m->nums->s[i];
             if (s->used && s->id > last && (!best || s->id < best->id))
                 best = s;
         }
@@ -456,7 +468,7 @@ static status_t do_streams(void *ctx, uint32_t *out_count, int32_t *out_master, 
         last = best->id;
     }
     *out_count = n;
-    *out_master = m->master;
+    *out_master = m->nums->master;
     return OK;
 }
 
@@ -464,7 +476,7 @@ static status_t do_set_volume(void *ctx, uint32_t id, int32_t cb, int32_t *out)
 {
     struct mixer *m = ctx;
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
-        struct stream *s = &m->s[i];
+        struct stream *s = &m->nums->s[i];
         if (s->used && s->id == id) {
             s->volume = mix_clamp_volume(cb);
             s->gain = mix_gain(s->volume);
@@ -478,9 +490,9 @@ static status_t do_set_volume(void *ctx, uint32_t id, int32_t cb, int32_t *out)
 static status_t do_set_master(void *ctx, int32_t cb, int32_t *out)
 {
     struct mixer *m = ctx;
-    m->master = mix_clamp_volume(cb);
-    m->master_gain = mix_gain(m->master);
-    *out = m->master;
+    m->nums->master = mix_clamp_volume(cb);
+    m->nums->master_gain = mix_gain(m->nums->master);
+    *out = m->nums->master;
     return OK;
 }
 
@@ -490,46 +502,42 @@ static const struct audioctl_ops ctl_ops = {
     .set_master = do_set_master,
 };   /* device: device.c, on a thread of its own */
 
-/* One message from a control channel (ch: the shared one or an
- * opener's); `device` goes to its thread (device.c), the rest are
+/* One message from a control channel (ch, port key `key`: the shared one
+ * or an opener's); `device` goes to its thread (device.c), the rest are
  * answered here. */
-static status_t ctl_serve_one(struct mixer *m, handle_t ch)
+static status_t ctl_serve_one(struct mixer *m, handle_t ch, uint32_t key)
 {
-    _Alignas(8) uint8_t q[AUDIOCTL_REQ_MAX];
-    _Alignas(8) uint8_t r[AUDIOCTL_REP_MAX];
-    handle_t hs[IDL_READ_HANDLES];
-    uint32_t n = 0, nh = 0;
-    status_t st = drv_channel_read(ch, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
-    if (st == ERR_BUFFER_TOO_SMALL)
-        return idl_drain(ch, n, nh);
-    if (st != OK)
+    unsigned slot;
+    status_t st = req_take(m, ch, key, REQ_CAP_CTL, &slot);
+    if (st != OK || slot == REQ_NONE)
         return st;
-    if (nh) {
-        idl_close_all(hs, nh);
-        idl_reply_status(ch, q, n, ERR_INVALID_ARGS);
-        return OK;
-    }
-    const struct idl_req_hdr *hdr = (const void *)q;
+    uint32_t n = 0;
+    const void *q = svcstate_request(&m->state, slot, &n);
+    const struct idl_req_hdr *hdr = q;
     if (n == sizeof(struct audioctl_device_req) && hdr->ordinal == AUDIOCTL_DEVICE) {
-        device_ask(m, ch, (const void *)q);
+        st = device_ask(m, ch, q);
+        if (st == OK)
+            req_answer(m, slot, ch, 0, NULL, 0);   /* answered by the thread */
+        else
+            req_status(m, slot, ch, st);
         return OK;
     }
     if (n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
-        clients_connect_reply(m, ch, hdr->txid, true);
+        clients_connect_reply(m, ch, slot, true);
         return OK;
     }
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
-    uint32_t rn = audioctl_dispatch(&ctl_ops, m, q, n, r, rhs, &rhn);
-    if (!rn || jam_channel_write(ch, r, rn, rhs, rhn) != OK)
-        idl_close_all(rhs, rhn);   /* not sent: they're still ours */
+    uint32_t rn = audioctl_dispatch(&ctl_ops, m, q, n, svcstate_reply_area(&m->state, slot), rhs,
+                                    &rhn);
+    req_answer(m, slot, ch, rn, rhs, rhn);
     return OK;
 }
 
-status_t serve_control(struct mixer *m, handle_t ch)
+status_t serve_control(struct mixer *m, handle_t ch, uint32_t key)
 {
     for (int i = 0; i < BUDGET; i++) {
-        status_t st = ctl_serve_one(m, ch);
+        status_t st = ctl_serve_one(m, ch, key);
         if (st != OK)
             return st;
     }
@@ -538,7 +546,7 @@ status_t serve_control(struct mixer *m, handle_t ch)
 
 void serve_ctl(struct mixer *m)
 {
-    status_t st = serve_control(m, m->ctl);
+    status_t st = serve_control(m, m->ctl, KEY_CTL);
     m->ctl_pending = st == OK;
     if (st != OK && st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED)
         printf("mixer: reading the control channel: %s\n", status_str(st));
