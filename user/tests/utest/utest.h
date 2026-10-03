@@ -86,6 +86,14 @@ bool t_os_random(void);
 bool t_tasks_yield_and_wait(void);
 bool t_tasks_start_slots_cap(void);
 
+/* keep.c: the keep channel (<keep.h>), a fake service and successor
+ * against libos's keeper. */
+bool t_keep_put_drop_restore(void);
+bool t_keep_restore_batches(void);
+bool t_keep_unknown_slots(void);
+bool t_keep_refusals(void);
+bool t_keep_restore_refusals(void);
+
 /* idl.c: answering later and calls that don't wait (tools/genidl.py), on
  * the test protocol idltest. */
 bool t_idl_answer_later(void);
