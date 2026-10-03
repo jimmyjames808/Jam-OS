@@ -1,14 +1,15 @@
 /* fat: views (fs.view, <fsview.h>): narrower `fs` channels onto the
  * volume, for programs that get less than the whole of it (read-only, or
  * with the top-level `etc` left alone). Each is served like the fs
- * channel devmgr gave us, with its flags checked first (fs_view_serve_one),
+ * channel devmgr gave us, with its flags checked first (fs_view_dispatch),
  * FAT_BATCH requests per wakeup. A view goes when its client closes it,
  * and every view goes when fat ends: a view never keeps the volume served
  * (main.c ends when the fs channel's clients are gone).
  *
  * Each slot's flags and generation are in the state (kept->views); its
- * channel, a handle, is here, by the same index. */
-#include <fsview.h>
+ * channel, a handle, is here, by the same index. A view's requests are
+ * served as the fs channel's are (request.c: serve_one, fs_view_dispatch),
+ * its flags taken from the state, never from a request. */
 #include "fat.h"
 
 static handle_t view_ch[FAT_VIEWS];   /* our end of slot i's channel */
@@ -52,11 +53,14 @@ void views_event(uint64_t key)
     unsigned i = FAT_KEY_SLOT(key);
     if (i >= FAT_VIEWS || !kept->views[i].used || kept->views[i].gen != FAT_KEY_GEN(key))
         return;   /* a closed slot's packet, or a reused one's old one */
+    const struct fat_chan c = {
+        .ch = view_ch[i], .id = FAT_CHAN_VIEW(i, kept->views[i].gen), .proto = FAT_PROTO_FS,
+        .flags = kept->views[i].flags,
+    };
     status_t st = OK;
     for (unsigned k = 0; k < FAT_BATCH && st == OK && !vol.disk_gone; k++) {
         files_reap();
-        st = fs_view_serve_one(view_ch[i], kept->views[i].flags, &fat_fs_ops, NULL, views_add,
-                               NULL);
+        st = serve_one(&c);
     }
     if (st == OK || st == ERR_SHOULD_WAIT)
         st = arm(i);

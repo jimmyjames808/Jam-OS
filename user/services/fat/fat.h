@@ -9,7 +9,8 @@
  * not re-entrant and needs no locks here: nothing else runs in fat.
  *
  * Files: main.c the startup, mount and event loop; state.c the state
- * VMO that holds struct fat_state (what fat knows); disk.c FatFs's disk
+ * VMO that holds struct fat_state (what fat knows); request.c each request
+ * read into a slot of it and run from there; disk.c FatFs's disk
  * callbacks over `block`, the volume's dirty flag and get_fattime;
  * hold.c the writes of an FS_GATHER file, held back and sent together;
  * cache.c the write-through block cache under them;
@@ -24,7 +25,9 @@
 #include <fatsvc.h>
 #include <ff.h>
 #include <fs_idl.h>
+#include <idl/fsctl.h>
 #include <os.h>
+#include <svcstate.h>
 
 #define FAT_MAX_FILES  32          /* open files at once */
 #define FAT_DIR_CURSORS 8          /* directories being listed at once (dirs.c) */
@@ -49,6 +52,14 @@
 #define FAT_KEY_VIEW(s, g)  (FAT_KEY_VIEW_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define FAT_KEY_SLOT(k)     ((unsigned)((k) & 0xffff))
 #define FAT_KEY_GEN(k)      ((uint32_t)((k) >> 16 & 0xffffffffu))
+
+/* Which channel a request was read from, as its slot records it (32 bits:
+ * svcstate's `channel`): the fs channel, fsctl, open file `slot` or view
+ * `slot` (with the low 16 bits of its generation). */
+#define FAT_CHAN_FS         1u
+#define FAT_CHAN_CTL        2u
+#define FAT_CHAN_FILE(s, g) (1u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
+#define FAT_CHAN_VIEW(s, g) (2u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
 
 
 /* The volume: fat serves exactly one. What this instance has of it: its
@@ -96,6 +107,9 @@ extern struct fat_vol vol;
 #define FAT_HOLD_MAX  2304u   /* sectors held at most: a MiB of a file, the FAT sectors
                                * that chain it (on one-sector clusters, 16 per copy) */
 #define FAT_HOLD_RUNS 32u     /* runs of consecutive sectors held at most */
+/* A request slot's request area: the request message, then from
+ * FAT_SLOT_DATA on its data (request.c: the bounce buffer). */
+#define FAT_SLOT_DATA 4096u
 
 /* The dirty flag (FAT[1]'s clean-shutdown bit) and what is on the medium:
  * disk.c's. */
@@ -172,6 +186,34 @@ status_t state_open(void);
  * running out of memory fails now instead of faulting later. vmo_commit's
  * errors (ERR_NO_MEMORY). */
 status_t state_commit(const void *p, size_t len);
+/* The request slots (svcstate's mapping of the state). */
+struct svcstate *state_slots(void);
+
+/* ---- request.c -------------------------------------------------------------------- */
+
+/* The protocol a channel speaks. */
+enum fat_proto {
+    FAT_PROTO_FS,             /* fs (the mount's channel, or a view) */
+    FAT_PROTO_FILE,           /* file (an open file) */
+    FAT_PROTO_CTL,            /* fsctl */
+};
+
+/* One channel fat serves, as serve_one takes it. */
+struct fat_chan {
+    handle_t        ch;       /* fat's end */
+    uint32_t        id;       /* FAT_CHAN_*: what the slot records */
+    enum fat_proto  proto;
+    uint32_t        flags;    /* FAT_PROTO_FS: the view's FS_VIEW_* (0: the whole volume) */
+    struct fat_file *file;    /* FAT_PROTO_FILE: its slot */
+};
+
+/* Read one request from c->ch into a slot and answer it from there. OK
+ * once a message was handled (answered, or thrown away); otherwise the
+ * read's status (ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the
+ * client is gone). */
+status_t serve_one(const struct fat_chan *c);
+/* The running request's data buffer (FAT_FILE_BUF bytes, in its slot). */
+uint8_t *op_bounce(void);
 
 /* ---- disk.c ---------------------------------------------------------------------- */
 
@@ -283,6 +325,10 @@ uint64_t fat_unix_time(WORD date, WORD time);
 
 extern const struct fs_ops fat_fs_ops;
 
+/* ---- main.c ---------------------------------------------------------------------- */
+
+extern const struct fsctl_ops fat_ctl_ops;
+
 /* ---- dirs.c ---------------------------------------------------------------------- */
 
 /* Entry `index` of directory `path` (resolved) into *fi, as a walk from
@@ -305,6 +351,8 @@ status_t views_add(void *host, handle_t ch, uint32_t flags);
 void     views_event(uint64_t key);
 
 /* ---- fileops.c ------------------------------------------------------------------- */
+
+extern const struct file_ops fat_file_ops;   /* ctx: the file's struct fat_file */
 
 /* Open `path` (resolved) with FS_* flags: a new slot, its channel (bound to
  * the port) and buffer. *out_ch and *out_vmo are the client's ends. */
