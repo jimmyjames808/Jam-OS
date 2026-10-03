@@ -18,9 +18,12 @@
  * - FAT32's FSInfo free-cluster count is not trusted (a volume that was
  *   not shut down cleanly has a stale one, and there is no fsck): the
  *   first statfs after a mount counts the FAT instead;
- * - FatFs's file lock on, so a file open for writing can't be opened again,
- *   removed or renamed; FAT_MAX_FILES open files plus the one directory a
- *   readdir holds;
+ * - FatFs's file lock off (FF_FS_LOCK 0): its table of open objects is
+ *   state FatFs keeps on its own, outside the structs fat keeps in its
+ *   state VMO (docs/M11.6-PLAN.md, "FatFs without re-mounting"). fat
+ *   applies the same rule itself, by directory entry (fileops.c): a file
+ *   open for writing can't be opened again, and an open file can't be
+ *   removed or renamed;
  * - no re-entrancy (one thread). */
 #pragma once
 
@@ -71,6 +74,6 @@
 #define FF_NORTC_YEAR  2026
 #define FF_FS_CRTIME   0
 #define FF_FS_NOFSINFO 1     /* count the free clusters, don't trust FSInfo's number */
-#define FF_FS_LOCK     42    /* FAT_MAX_FILES + FAT_DIR_CURSORS (fat.h) + 2 */
+#define FF_FS_LOCK     0     /* fat's own rule instead (fileops.c) */
 #define FF_FS_REENTRANT 0
 #define FF_FS_TIMEOUT  1000

@@ -26,8 +26,7 @@
 #include <os.h>
 
 #define FAT_MAX_FILES  32          /* open files at once */
-#define FAT_DIR_CURSORS 8          /* directories being listed at once (dirs.c); FF_FS_LOCK
-                                      is FAT_MAX_FILES + this + 2 */
+#define FAT_DIR_CURSORS 8          /* directories being listed at once (dirs.c) */
 #define FAT_FILE_BUF   (64u << 10) /* each open file's transfer buffer, bytes */
 #define FAT_SECTOR     512u        /* the only sector size (FF_MAX_SS) */
 #define FAT_FILE_MAX   0xffffffffull /* FAT's largest file, bytes */
@@ -321,3 +320,7 @@ status_t files_sync_all(void);
 bool     files_unsynced(void);
 /* Close every open file, flushing what it wrote. */
 void     files_close_all(void);
+/* Is the file at `path` (resolved) open? Told by its directory entry, so
+ * that an 8.3 alias of an open file's path is that file (FatFs's own lock
+ * is off: ffport/ffconf.h). An open file can't be removed or renamed. */
+bool     files_is_open(const char *path);

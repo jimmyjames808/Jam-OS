@@ -15,11 +15,8 @@
  * change to what a directory holds (an entry made, removed or renamed:
  * fs.mkdir, fs.unlink, fs.rename, fs.open with FS_CREATE) closes every
  * cursor first, so a cursor never lists a directory that changed since it
- * was opened. Closing them first also gives back FatFs's lock on each
- * directory (FF_FS_LOCK), which would refuse to remove or rename one a
- * cursor holds open; FF_FS_LOCK counts the cursors in. A file's size and
- * date change its entry in place, not the order: writes leave cursors
- * alone.
+ * was opened, nor one that was removed or renamed. A file's size and date
+ * change its entry in place, not the order: writes leave cursors alone.
  *
  * The cursors are fat's own memory, not its state (fat.h): a fat that
  * takes over from another starts with none, and a listing in progress goes
@@ -43,7 +40,7 @@ static uint64_t entries_read;     /* f_readdir calls, ever (fsctl.stats) */
 static void forget(struct dir_cursor *c)
 {
     if (c->open)
-        (void)f_closedir(&c->dir);   /* it only gives FatFs's lock back */
+        (void)f_closedir(&c->dir);   /* it only marks the DIR closed (no FatFs lock) */
     c->open = false;
 }
 

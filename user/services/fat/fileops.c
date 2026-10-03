@@ -21,15 +21,22 @@
  * call, and reads never seek past the end.
  *
  * One file, one FIL. FatFs gives every f_open a FIL of its own, with its
- * own cached sector and its own idea of the file's size, and so refuses a
- * second open of a file open for writing. Here every fs.open of one file
- * shares one FIL (struct fat_open, counted): a file being written can be
- * opened again to read, and the reader sees what the writer has written so
- * far, flushed or not. Every request seeks first, so the shared position
- * is nobody's. Still refused (ERR_BAD_STATE): opening for writing a file
- * that is open at all. Two opens are of one file when their resolved paths
- * are equal without case; a file reached by its 8.3 alias as well is two
- * to fat and one to FatFs, whose own lock then refuses the second.
+ * own cached sector and its own idea of the file's size. Here every
+ * fs.open of one path shares one FIL (struct fat_open, counted): a file
+ * being written can be opened again to read, and the reader sees what the
+ * writer has written so far, flushed or not. Every request seeks first,
+ * so the shared position is nobody's. Two opens are of one path when their
+ * resolved paths are equal without case.
+ *
+ * The lock. FatFs's own lock (its table of open objects) is off, since it
+ * is state FatFs keeps outside the structs in kept (ffconf.h); fat keeps
+ * its rule instead, by directory entry (where a FIL's entry is: its sector
+ * and offset), so that a file reached by its 8.3 alias too is still one
+ * file: an entry open for writing can't be opened again (but by the same
+ * path, to read: the shared FIL above), an entry open at all can't be
+ * opened for writing, and an open file can't be removed or renamed
+ * (files_is_open, fsops.c). Each is refused with ERR_BAD_STATE, as
+ * FatFs's FR_LOCKED was.
  *
  * A file is `unsynced` from its first change until its next f_sync; when
  * the last unsynced file is flushed the volume is settled (marked clean,
@@ -52,6 +59,7 @@ static struct {
 } fh[FAT_MAX_FILES];
 
 static uint8_t bounce[FAT_FILE_BUF];   /* between FatFs and a file's buffer VMO */
+static FIL     probe;                  /* files_is_open's look at a path's entry */
 
 static unsigned slot_of(const struct fat_file *f)
 {
@@ -96,6 +104,42 @@ status_t files_sync_all(void)
             st = s;
     }
     return st;
+}
+
+/* ---- the lock ------------------------------------------------------------------------ */
+
+/* The open file (refs > 0) whose directory entry is fil's, or NULL. Both
+ * point into the one volume's window (kept->fs.win). */
+static struct fat_open *open_at_entry(const FIL *fil)
+{
+    size_t at = (size_t)(fil->dir_ptr - kept->fs.win);
+    for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
+        struct fat_open *o = &kept->opens[i];
+        if (o->refs && o->fil.dir_sect == fil->dir_sect &&
+            (size_t)(o->fil.dir_ptr - kept->fs.win) == at)
+            return o;
+    }
+    return NULL;
+}
+
+bool files_is_open(const char *path)
+{
+    bool any = false;
+    for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
+        if (!kept->opens[i].refs)
+            continue;
+        if (path_same(kept->opens[i].path, path))
+            return true;
+        any = true;
+    }
+    /* Another path may reach an open file's entry (an 8.3 alias): look at
+     * where the path's entry is. Not a file (a directory, nothing): FatFs
+     * says what it is. */
+    if (!any || f_open(&probe, path, FA_READ) != FR_OK)
+        return false;
+    bool open = open_at_entry(&probe) != NULL;
+    (void)f_close(&probe);   /* read-only: nothing to write */
+    return open;
 }
 
 /* ---- the file protocol ---------------------------------------------------------------- */
@@ -205,7 +249,8 @@ static status_t op_stat(void *ctx, uint64_t *out_size, uint64_t *out_mtime)
     FILINFO fi;
     *out_size = f_size(&f->fil);
     /* The directory entry's time: that of the last sync or close that
-     * followed a write. FatFs's lock keeps the path ours while it is open. */
+     * followed a write. The lock (above) keeps the path ours while it is
+     * open. */
     *out_mtime = f_stat(f->path, &fi) == FR_OK ? fat_unix_time(fi.fdate, fi.ftime) : 0;
     return OK;
 }
@@ -304,9 +349,18 @@ static status_t attach(struct fat_file *f, handle_t *out_ch, handle_t *out_vmo)
     return OK;
 }
 
+/* Another path's open of the entry f has just opened (an 8.3 alias), if
+ * the lock refuses the two together: one of them writes. */
+static bool locked_out(const struct fat_open *f)
+{
+    const struct fat_open *other = open_at_entry(&f->fil);
+    return other && ((f->fil.flag & FA_WRITE) || (other->fil.flag & FA_WRITE));
+}
+
 /* f_open for FS_* flags. FatFs's FR_DENIED: an existing file is read-only
  * (its attribute); a new one found no room (the volume or a fixed root
- * directory is full). */
+ * directory is full). The lock comes before the attribute, as FatFs's
+ * own did. */
 static status_t open_fil(struct fat_open *f, const char *path, uint32_t flags, bool exists)
 {
     /* Always readable: a later reader shares this FIL. */
@@ -315,10 +369,16 @@ static status_t open_fil(struct fat_open *f, const char *path, uint32_t flags, b
     if (!exists)
         dirs_forget();   /* a new entry: listings start again */
     FRESULT fr = f_open(&f->fil, path, mode);
+    if (fr == FR_DENIED && exists && files_is_open(path))
+        return ERR_BAD_STATE;
     if (fr == FR_DENIED)
         return exists ? ERR_ACCESS_DENIED : ERR_NO_SPACE;
     if (fr != FR_OK)
         return fr_status(fr);
+    if (exists && locked_out(f)) {
+        (void)f_close(&f->fil);   /* nothing changed yet: nothing to write */
+        return ERR_BAD_STATE;
+    }
     f->unsynced = !exists;
     if ((flags & FS_TRUNCATE) && f_size(&f->fil) > 0) {
         fr = f_truncate(&f->fil);   /* the file pointer is 0 after f_open */
