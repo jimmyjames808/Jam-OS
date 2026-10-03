@@ -606,9 +606,11 @@ port, so while it handles one request every other client waits behind it.
   the next thread creation or exit, since the reaper runs with interrupts
   off and can't shoot down TLBs). **Sleepers** (every wait with a
   deadline, and so the timer-object service) go on a deadline-ordered
-  queue of the CPU they block on, whose LAPIC timer is armed for its head.
-  Only the owning CPU adds and arms; removal from anywhere under that
-  queue's lock. Switch `lapic_oneshot`, boot `nooneshot` (then each CPU's
+  queue of the CPU they block on, whose LAPIC timer is armed for its head,
+  unless the head is due at or after the CPU's next tick: the tick expires
+  the queue and re-arms for it, so the far deadlines most calls carry cost
+  no timer write. Only the owning CPU adds and arms; removal from anywhere
+  under that queue's lock. Switch `lapic_oneshot`, boot `nooneshot` (then each CPU's
   tick expires its own queue, 10 ms resolution).
 - User FPU state: XSAVEOPT where available, and no XRSTOR when the
   CPU's registers still hold the incoming thread's state (last restored

@@ -208,7 +208,9 @@ KTEST(pathstat_user_call_counts)
 }
 
 /* The same call with a deadline, as libos gives every file call: one more
- * system call (the clock) and one sleeper-queue entry per call. */
+ * system call (the clock) and one sleeper-queue entry per call. The 5 s
+ * deadline is after the CPU's next tick, so it never re-arms the timer
+ * (the tick looks after it: wait.c). */
 KTEST(pathstat_user_deadline_call_counts)
 {
     struct path_result r;
@@ -220,5 +222,6 @@ KTEST(pathstat_user_deadline_call_counts)
     KT_EQ(sys100(&r, SYS_clock_get), 100);
     KT_EQ(sys100(&r, SYS_channel_call), 100);
     KT_EQ(per100(&r, PATH_SLEEPQ), 100);
+    KT_EQ(per100(&r, PATH_TIMER_ARM), 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 200);
 }
