@@ -32,6 +32,10 @@
  *                  disk its last 64 KiB are overwritten with a pattern,
  *                  read back and restored; on a real stick one block is
  *                  written back unchanged (nothing on it is altered)
+ *   storage_fence  a client queues WRITEs and leaves (its channel closes)
+ *                  while usb-storage is busy with another channel's READs:
+ *                  the WRITEs are dropped, never performed (QEMU disks
+ *                  only: a failure would write a pattern, put back after)
  *   storage_stop   DR_SERVE closed: the driver exits 0 and its block
  *                  channels close
  * and with tools/storage-test.sh's two more disks, behind the hub (so at
@@ -625,6 +629,118 @@ static bool t_storage_write(void)
     return ok;
 }
 
+/* ---- storage_fence ------------------------------------------------------------------------- */
+
+#define FENCE_READS  32   /* READs of 64 KiB that keep usb-storage busy */
+#define FENCE_WRITES 4    /* WRITEs the client that leaves has queued */
+#define FENCE_TRIES  5    /* tries before "never kept busy long enough" fails the check */
+
+/* A READ or WRITE of count blocks at lba, from `offset` in p's buffer,
+ * sent without waiting for its answer. */
+static status_t rw_send(const struct pch *p, uint32_t ordinal, uint32_t txid, uint64_t lba,
+                        uint32_t count, uint32_t offset)
+{
+    struct block_write_req q = { .txid = txid, .ordinal = ordinal, .lba = lba, .count = count,
+                                 .offset = offset };
+    return jam_channel_write(p->ch, &q, sizeof(q), NULL, 0);
+}
+
+static status_t read_answer(const struct pch *p, uint64_t deadline);
+
+/* The race itself. usb-storage's loop serves a channel's queued requests
+ * one after another and looks at its port (where another channel's new
+ * requests are announced) only when every channel it knows to be pending
+ * is empty. So once busy's first READ is answered, it reads nothing of
+ * dead's until all of busy's READs are done: dead's WRITEs are queued and
+ * dead's end closed (what a client's death does to its channels) inside
+ * that time. *valid: busy still had answers to come after the close, so
+ * the WRITEs were still queued, unread, when the client left. */
+static bool fence_race(const struct drive *v, const struct pch *busy, struct pch *dead,
+                       uint64_t lba, bool *valid)
+{
+    uint32_t per = BUF_SIZE / v->bs, n = per / FENCE_WRITES;
+    pattern(dead->buf, 0xa5);
+    for (uint32_t i = 0; i < FENCE_READS; i++)
+        CHECK_ST(rw_send(busy, BLOCK_READ, i + 1, 0, per, 0), OK);
+    CHECK_ST(read_answer(busy, in(BLK_WAIT)), OK);
+    for (uint32_t i = 0; i < FENCE_WRITES; i++)
+        CHECK_ST(rw_send(dead, BLOCK_WRITE, i + 1, lba + i * n, n, i * n * v->bs), OK);
+    jam_handle_close(dead->ch);
+    dead->ch = HANDLE_INVALID;
+    unsigned got = 1;
+    while (got < FENCE_READS && read_answer(busy, 0) == OK)
+        got++;
+    *valid = got < FENCE_READS;
+    unsigned at_close = got;
+    for (; got < FENCE_READS; got++)
+        CHECK_ST(read_answer(busy, in(BLK_WAIT)), OK);
+    printf("usbtest: %s: %u WRITEs queued and their client gone with %u of %u READs still to "
+           "answer\n", cur, FENCE_WRITES, FENCE_READS - at_close, FENCE_READS);
+    return true;
+}
+
+/* One try, on fresh channels: busy reads the ESP, dead is the data
+ * partition read-write. */
+static bool fence_try(const struct drive *v, int e, uint64_t lba, bool *valid)
+{
+    struct pch busy = { 0 }, dead = { 0 };
+    bool ok = part_open(v, 0, true, &busy) && part_open(v, (uint8_t)e, false, &dead) &&
+              fence_race(v, &busy, &dead, lba, valid);
+    part_close(&busy);
+    part_close(&dead);
+    return ok;
+}
+
+/* The tries, and what is on the disk after each, read through rw: the
+ * same 64 KiB as before, or (the WRITEs landed) put back. */
+static bool fence(const struct drive *v, int e, const struct pch *rw)
+{
+    uint32_t per = BUF_SIZE / v->bs;
+    uint64_t lba = rw->blocks - per;
+    CHECK_ST(rd(rw, lba, per, 0), OK);
+    memcpy(save, rw->buf, BUF_SIZE);
+    bool valid = false, landed = false;
+    unsigned tries = 0;
+    while (!valid && tries < FENCE_TRIES) {
+        tries++;
+        if (!fence_try(v, e, lba, &valid))
+            return false;
+        CHECK_ST(rd(rw, lba, per, 0), OK);
+        landed = memcmp(save, rw->buf, BUF_SIZE) != 0;
+        if (landed) {
+            memcpy(rw->buf, save, BUF_SIZE);
+            CHECK_ST(wr(rw, lba, per, 0), OK);
+        }
+    }
+    if (valid)
+        printf("usbtest: %s: the WRITEs of a client that left %s (try %u)\n", cur,
+               landed ? "LANDED on the disk" : "never landed", tries);
+    if (!valid)
+        FAIL("usb-storage was never kept busy until the client had left (%u tries)", tries);
+    CHECK(!landed);
+    return true;
+}
+
+/* A client queues WRITEs and leaves before usb-storage has read them: they
+ * must never be performed, or a dying fat's last write could land after
+ * its successor's writes to the same blocks. Needs a disk image (QEMU):
+ * if the check fails, its pattern is written to the data partition (and
+ * put back after). */
+static bool t_storage_fence(void)
+{
+    const struct drive *v = &boot_drive;
+    int e = part_of_type(v, 0x0c, 0x0b);
+    if (!v->qemu || e < 0 || v->parts[e].blocks < BUF_SIZE / v->bs) {
+        printf("usbtest: %s: no QEMU disk with a FAT32 data partition: skipped\n", cur);
+        skipped++;
+        return true;
+    }
+    struct pch rw = { 0 };
+    bool ok = part_open(v, (uint8_t)e, false, &rw) && fence(v, e, &rw);
+    part_close(&rw);
+    return ok;
+}
+
 static bool peer_closed(handle_t h, uint64_t deadline)
 {
     signals_t seen = 0;
@@ -847,17 +963,18 @@ void storage_tests(void)
 {
     if (load() != OK || !find_disk(NULL, &boot_raw)) {
         printf("usbtest: storage: no mass-storage device: skipped\n");
-        skipped += 7;
+        skipped += 8;
     } else {
         run("storage_bulk", t_storage_bulk);
         if (!boot_raw.buf) {
-            skipped += 6;   /* it said why */
+            skipped += 7;   /* it said why */
         } else {
             run("storage_stall", t_storage_stall);
             run("storage_bind", t_storage_bind);
             run("storage_esp", t_storage_esp);
             run("storage_range", t_storage_range);
             run("storage_write", t_storage_write);
+            run("storage_fence", t_storage_fence);
             run("storage_stop", t_storage_stop);
         }
         raw_close(&boot_raw);

@@ -29,7 +29,25 @@
  * partition of type PART_WHOLE covering the whole disk. That is the one
  * case in which a channel reaches block 0: there is no table to protect.
  * The table is looked for first (mbr_table): block 0 of a partitioned
- * stick may look like a FAT boot sector too. */
+ * stick may look like a FAT boot sector too.
+ *
+ * The fence: a request whose client has gone is dropped, never performed.
+ * A channel's queued messages can still be read after its peer has
+ * closed, so without it a write that a dying client (fat) queued, but
+ * that we had not read yet, would run later, possibly after its
+ * successor's writes to the same blocks, and put an older FAT sector back
+ * over a newer one. So every read, write and sync looks at the channel's
+ * peer first (client_gone), before any command for it goes to the disk.
+ * Why that is enough: a process's handles are closed before it is
+ * reported dead, and its successor is started only after that, so every
+ * request of the successor comes after the death. This loop runs one
+ * request at a time; if the client was still there when a request
+ * started, none of the successor's had run yet, and none can run until
+ * this one ends. So a request that has started finishes even if the
+ * client dies meanwhile (its commands may already be on the wire, and
+ * what is left of it still comes before anything of the successor's); its
+ * answer just goes nowhere. Reads are dropped too: nobody would see the
+ * data, and the disk has better things to do. */
 #include <idl/block.h>
 #include "storage.h"
 
@@ -43,6 +61,7 @@ struct blk {
     uint16_t gen;        /* bumped at every open and close: in its port key */
     handle_t vmo;        /* the client's buffer (map_buffer), HANDLE_INVALID: not made yet */
     uint8_t *map;        /* that buffer, mapped here (NULL: not made yet) */
+    uint32_t dropped;    /* requests dropped because the client had gone (the fence) */
 };
 
 static struct blk blks[MAX_BLKS];
@@ -221,9 +240,29 @@ static status_t transfer(struct blk *b, bool write, uint64_t lba, uint32_t count
     return OK;
 }
 
+/* Has b's client closed its end (or died, which closes it)? Asked before
+ * each request touches the disk: see the fence in the header. A wait that
+ * fails for any other reason than "not yet" counts as gone: dropping a
+ * request is always safe, running one for a client that left is not. */
+static bool client_gone(const struct blk *b)
+{
+    signals_t seen = 0;
+    return drv_object_wait_one(b->ch, SIG_PEER_CLOSED, 0, &seen) != ERR_TIMED_OUT;
+}
+
+/* Drop the request instead of running it; its answer would go nowhere. */
+static status_t drop(struct blk *b)
+{
+    b->dropped++;
+    b->k->dropped++;
+    return ERR_PEER_CLOSED;
+}
+
 static status_t b_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
 {
     struct blk *b = ctx;
+    if (client_gone(b))
+        return drop(b);
     status_t st = check_range(b, lba, count, offset);
     return st == OK ? transfer(b, false, lba, count, offset) : st;
 }
@@ -231,6 +270,8 @@ static status_t b_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
 static status_t b_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
 {
     struct blk *b = ctx;
+    if (client_gone(b))
+        return drop(b);
     if (b->ro)
         return ERR_ACCESS_DENIED;
     status_t st = check_range(b, lba, count, offset);
@@ -240,6 +281,8 @@ static status_t b_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset
 static status_t b_sync(void *ctx)
 {
     struct blk *b = ctx;
+    if (client_gone(b))
+        return drop(b);
     return scsi_sync(b->k);
 }
 
@@ -265,6 +308,7 @@ static void blk_close(struct blk *b)
         drv_handle_close(b->vmo);
     b->ch = b->vmo = HANDLE_INVALID;
     b->pending = false;
+    b->dropped = 0;
     b->gen++;
 }
 
@@ -296,6 +340,7 @@ status_t blk_open(struct disk *k, handle_t port, uint8_t index, bool read_only, 
     b->ro = read_only;
     b->vmo = HANDLE_INVALID;
     b->map = NULL;
+    b->dropped = 0;
     b->pending = true;   /* look once: a request may be there already */
     *out = theirs;
     return OK;
@@ -321,10 +366,15 @@ bool blk_serve(void)
         status_t st = OK;
         for (int guard = 0; guard < 16 && st == OK && !b->k->gone; guard++)
             st = block_serve_one(b->ch, &block_ops, b);
-        if (st == OK)
+        if (st == OK) {
             b->pending = true;   /* maybe more: the port won't say so again */
-        else if (st != ERR_SHOULD_WAIT)
-            blk_close(b);        /* the client is gone */
+        } else if (st != ERR_SHOULD_WAIT) {
+            if (b->dropped)      /* the client is gone */
+                drv_log("usb-storage %04x:%04x: partition %u: its client left with %u "
+                        "request(s) queued: dropped, never performed", b->k->vid, b->k->pid,
+                        b->part + 1, b->dropped);
+            blk_close(b);
+        }
     }
     return any;
 }

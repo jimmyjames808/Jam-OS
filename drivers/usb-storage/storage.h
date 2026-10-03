@@ -51,6 +51,7 @@ struct disk {
     uint32_t silent;          /* commands in a row the device didn't answer */
     uint8_t  key, asc, ascq;  /* the last failed command's sense (key 0xff: unknown) */
     bool     no_sync;         /* the device refused SYNCHRONIZE CACHE: not sent again */
+    uint32_t dropped;         /* requests of clients that had gone, never performed (block.c) */
 
     uint8_t  vendor[8], product[16];   /* INQUIRY's, space-padded */
     uint32_t block_size;      /* bytes per block (0: no medium) */

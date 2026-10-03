@@ -272,9 +272,10 @@ static int run(struct disk *k)
         }
         packet(k, &p);
     }
-    drv_log("usb-storage %04x:%04x: %s; %u reset recover%s, %u failed command(s)", k->vid,
-            k->pid, k->gone ? "the device is gone" : "stopped", k->resets,
-            k->resets == 1 ? "y" : "ies", k->failures);
+    drv_log("usb-storage %04x:%04x: %s; %u reset recover%s, %u failed command(s), %u request(s) "
+            "of gone clients dropped", k->vid, k->pid,
+            k->gone ? "the device is gone" : "stopped", k->resets, k->resets == 1 ? "y" : "ies",
+            k->failures, k->dropped);
     return 0;
 }
 
