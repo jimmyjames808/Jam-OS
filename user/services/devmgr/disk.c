@@ -59,9 +59,10 @@
  * is supervised like a driver (supervise.c): a crash or an error exit is
  * restarted with backoff, and given up on when it keeps ending (a data
  * partition that holds no FAT volume and isn't blank makes fat exit 1
- * every time). Each start opens a new `block` channel on its partition and
- * makes a new `fs` channel, so the mounts' generation moves on when it
- * dies and again when it is back.
+ * every time). Each start opens a new `block` channel on its partition;
+ * its `fs` channel is kept from one instance to the next (spare.c), so it
+ * stays a mount while it restarts, and the mounts' generation moves on
+ * once, when the next instance runs (it makes its own views).
  *
  * A disk whose driver is gone (the stick unplugged, usb-storage crashed,
  * a test disk's channel closed) loses its services at once: their `block`
@@ -386,8 +387,9 @@ void disk_detach(struct binding *b)
 void disk_started(struct binding *b)
 {
     status_t st;
-    if (b->kind == BIND_FS && b->other) {
-        b->ready = false;   /* a mount once it answers (fs_answers) */
+    if (b->kind == BIND_FS && b->other && !b->ready) {
+        /* A mount once it answers (fs_answers). One that restarts on the
+         * channel it kept is one still (disk_stopped). */
         b->probe = ask_stat(b, "/", &st);
     } else if (b->kind == BIND_FS) {
         mounts_update();
@@ -402,7 +404,10 @@ void disk_stopped(struct binding *b)
     if (!d)
         return;
     if (b->kind == BIND_FS) {
-        b->ready = false;
+        /* Its kept `fs` channel stays a mount while it restarts: calls on
+         * it wait for the next instance. */
+        if (!fs_channel_kept(b))
+            b->ready = false;
         mounts_update();
     } else {
         drop_services(d, DISK_DOWN);
@@ -515,7 +520,10 @@ unsigned disk_mounts(struct mount *out)
             if (!disks[i].fs[part] || n == DEVMGR_MAX_MOUNTS)
                 continue;
             const struct binding *b = &devs[disks[i].fs[part] - 1];
-            if (b->state != DEVMGR_SUP_RUNNING || !b->proc || !b->client)
+            /* Running, or between two instances on the channel it kept
+             * (its death is being handled, or its restart is due). */
+            bool alive = b->state == DEVMGR_SUP_RUNNING || b->state == DEVMGR_SUP_RESTARTING;
+            if (!alive || !b->client || (!b->proc && !fs_channel_kept(b)))
                 continue;
             if (b->other && !b->ready)
                 continue;   /* no volume mounted yet (or none at all) */

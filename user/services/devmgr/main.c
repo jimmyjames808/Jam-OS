@@ -56,7 +56,9 @@
  * boot's network mode, from the kernel through init) is passed on to the
  * driver of every network card (PCI class 02): the one way a network
  * driver learns the mode; without it (or with one that isn't valid) the
- * drivers start without one and keep the network off.
+ * drivers start without one and keep the network off. The argument
+ * "nospare" (the boot word, through init) keeps no warm spare fat
+ * (spare.c): a filesystem service's restart starts a process.
  *
  * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
@@ -291,6 +293,10 @@ static status_t wait_event(void)
         usb_if_closed(pkt.key);
     } else if (pkt.key & KEY_DISK) {
         disk_key(pkt.key);
+    } else if (pkt.key == KEY_SPARE) {
+        spare_event();
+    } else if (pkt.key & KEY_KEEP) {
+        spare_keep_event(pkt.key);
     }
     return OK;
 }
@@ -333,6 +339,7 @@ static bool stop_all(void)
     static const int order[] = { BIND_FS, BIND_USB, -1 /* every other kind */ };
     bool ok = true;
     unsigned stopped = 0;
+    spare_stop();      /* the warm spare, and the `block` channel it had */
     disk_sync_all();   /* before the drivers under the filesystems go */
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
@@ -396,7 +403,9 @@ static uint32_t hex32(const char *s)
 int main(int argc, char **argv)
 {
     devmgr_started = now();
+    bool nospare = false;
     for (int i = 1; i < argc; i++) {
+        nospare |= !strcmp(argv[i], "nospare");
         nousb |= !strcmp(argv[i], "nousb");
         hidboot |= !strcmp(argv[i], "hidboot");
         netprobe |= !strcmp(argv[i], "netprobe");
@@ -426,6 +435,7 @@ int main(int argc, char **argv)
         say(true, "devmgr: no port (%s)", status_str(st));
         return 1;
     }
+    spare_init(!nospare);
     /* With a console, class drivers send their input to it. */
     if (startup_handle(SR_CONSOLE))
         usb_new_console(startup_handle(SR_CONSOLE));

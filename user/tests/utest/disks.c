@@ -3,7 +3,7 @@
  * on its partitions: the boot disk's two partitions become mounts, a disk
  * that isn't the boot disk gets read-only /usbN mounts for its FAT volumes
  * and is never formatted, a killed filesystem service comes
- * back as a new generation with a new channel, and a disk that goes takes
+ * back on the channel devmgr kept, and a disk that goes takes
  * its mounts with it. A test disk's mounts are /esp-test and /data-test;
  * whatever the real stick has mounted is left alone and ignored here.
  *
@@ -417,9 +417,29 @@ bool t_disk_other(void)
     return wait_usb(dm, &v, -1);
 }
 
-/* Killing a filesystem service: the mount goes, then comes back under a
- * new generation with a new channel on a new `block` channel; the old
- * channel is dead; what was on the volume is still there; the other mount
+/* Follow DEVMGR_MOUNTS from v's generation until it moves on, for 15 s at
+ * most. */
+static bool wait_new_generation(handle_t dm, struct view *v)
+{
+    uint64_t until = now() + 15 * NS_PER_S;
+    for (;;) {
+        struct view next;
+        CHECK(now() < until);
+        status_t st = devmgr_mounts(dm, v->rep.generation, &next.rep, next.hs);
+        if (st == ERR_TIMED_OUT)
+            continue;
+        CHECK_ST(st, OK);
+        view_close(v);
+        *v = next;
+        return true;
+    }
+}
+
+/* Killing a filesystem service (a deliberate kill: restarted at once, not
+ * counted): devmgr kept its `fs` channel, so the mount never went and the
+ * channel clients had still works, served by the new instance (on a new
+ * `block` channel); the generation moves on once (the new instance makes
+ * its own views); what was on the volume is still there; the other mount
  * never moved. */
 bool t_disk_fs_restart(void)
 {
@@ -434,7 +454,6 @@ bool t_disk_fs_restart(void)
         return skip;
     if (!wait_mounts(dm, &v, true, true))
         return false;
-    uint32_t gen = v.rep.generation;
     struct fatrun data = mount_of(&v, DATA), before = { 0 };
     CHECK_ST(jam_handle_duplicate(data.fs, RIGHT_SAME, &old), OK);
     before.fs = old;
@@ -442,15 +461,13 @@ bool t_disk_fs_restart(void)
     CHECK_ST(t_sync(&data), OK);
     CHECK_ST(devmgr_call(dm, DEVMGR_KILL, DEVMGR_FS_SVC, DEVMGR_PART_DATA, id, &r, NULL, 0, NULL,
                          now() + 30 * NS_PER_S), OK);
-    if (!wait_mounts(dm, &v, true, false))   /* gone ... */
+    /* the channel we had: a call on it waits for the next instance */
+    CHECK_ST(t_stat(&before, "/kept", NULL, &is_dir, NULL), OK);
+    CHECK(is_dir);
+    if (!wait_new_generation(dm, &v))
         return false;
-    CHECK(v.rep.generation != gen);
-    gen = v.rep.generation;
-    if (!wait_mounts(dm, &v, true, true))    /* ... and back */
-        return false;
-    CHECK(v.rep.generation != gen);
+    CHECK(mounted(&v, ESP) && mounted(&v, DATA));
     data = mount_of(&v, DATA);
-    CHECK_ST(t_stat(&before, "/kept", NULL, NULL, NULL), ERR_PEER_CLOSED);
     CHECK_ST(t_stat(&data, "/kept", NULL, &is_dir, NULL), OK);
     CHECK(is_dir);
     /* a second `block` channel on the data partition; the first was closed
@@ -462,6 +479,12 @@ bool t_disk_fs_restart(void)
                          NULL, now() + 10 * NS_PER_S), OK);
     CHECK_EQ(r.a, DEVMGR_SUP_RUNNING);
     CHECK_EQ(r.b, 1);   /* one restart */
+    CHECK_EQ(r.c, 0);   /* at once */
+    CHECK(r.d <= 1);    /* from the warm spare, if one waited */
+    /* the same service by its mount (init's `kill fat-data-test`) */
+    CHECK_ST(devmgr_call(dm, DEVMGR_SUPERVISION, DEVMGR_FS_MOUNT, DEVMGR_MOUNT_DATA,
+                         DEVMGR_MOUNT_TEST, &r, NULL, 0, NULL, now() + 10 * NS_PER_S), OK);
+    CHECK_EQ(r.b, 1);
     CHECK_ST(jam_handle_close(old), OK);
     return detach(dm, &v);
 }

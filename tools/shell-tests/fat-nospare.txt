@@ -1,0 +1,43 @@
+# fat without a warm spare (the boot word `nospare`); use
+# tools/fat-spare-test.sh. No spare is started; `kill fat-data` starts a
+# new process (said with the time it took and the kill to the first
+# answer), on the channel devmgr kept, and the files are there.
+# devmgr's lines reach the serial port through the kernel log, the
+# shell's through the console: their order isn't fixed, hence `seen`.
+# Each file is synced before the kill (fat-spare.txt says why).
+# (The markers are echoed as np-""1 so the typed line itself never matches.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+seen 60 devmgr: nospare: no warm spare
+send write /data/nospare-0.txt written before the kills; echo np-""1
+wait np-1
+wait jam>
+send sync && kill fat-data && cat /data/nospare-0.txt; echo np-""2
+wait shell: killed process
+wait written before the kills
+wait np-2
+wait jam>
+seen 10 devmgr: fat-data: new process started (no spare waited)
+send write /data/nospare-1.txt k-""1 && sync && kill fat-data && cat /data/nospare-1.txt; echo np-""3
+wait k-1
+wait np-3
+send write /data/nospare-2.txt k-""2 && sync && kill fat-data && cat /data/nospare-2.txt; echo np-""4
+wait k-2
+wait np-4
+send write /data/nospare-3.txt k-""3 && sync && kill fat-data && cat /data/nospare-3.txt; echo np-""5
+wait k-3
+wait np-5
+send write /data/nospare-4.txt k-""4 && sync && kill fat-data && cat /data/nospare-4.txt; echo np-""6
+wait k-4
+wait np-6
+wait jam>
+send sleep 2; ls /data | grep -c "^nospare-" | grep ^5$ && echo ok-""five; echo np-""7
+wait ok-five
+wait np-7
+wait jam>
+send ps; echo np-""8
+wait np-8
+wait jam>
+send reboot -f
+wait reboot: resetting
