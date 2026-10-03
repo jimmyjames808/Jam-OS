@@ -58,9 +58,15 @@ fi
 state=$(echo "$trace" | tail -1)
 [ "$state" = "state untagged 0 released 0 left 0" ] ||
     { echo "beep: the path was open outside the stream ($state)"; ok=0; }
-# The output stage: on before any stream, never off, still on at the end.
+# The output stage: on before any stream, never off while the system runs,
+# still on at the end; or switched off once at the very end, when the
+# script's closing `reboot -f` stops every driver first (init's "firmware
+# reset: devmgr stopped" line), as hda does on its way out.
 power=$(echo "$trace" | grep "^power on " || true)
-echo "$power" | awk '{ g = $3 >= 1 && $5 == 0 && $7 >= 1 && $9 >= 1 } END { exit !g }' ||
+stopped=0
+grep -qaF "init: firmware reset: devmgr stopped" "$log" && stopped=1
+echo "$power" | awk -v stopped=$stopped '{ g = $3 >= 1 && $7 >= 1 &&
+        (($5 == 0 && $9 >= 1) || (stopped && $5 == 1 && $9 == 0)) } END { exit !g }' ||
     { echo "beep: the output stage was not on before the stream and left on ($power)"; ok=0; }
 settled=$(grep -aoE "output: unmuted .* with the output stage on for [0-9]+ ms" "$log" |
           head -1 | sed -E 's/.* on for ([0-9]+) ms/\1/')

@@ -102,7 +102,9 @@ KTEST(pathstat_leaves_out_interrupt_handlers)
     struct path_result r;
     path_end(&r);
     KT_EQ(r.count[PATH_KMALLOC], 1);
-    KT_EQ(r.count[PATH_IRQ], 1);
+    /* The pretend interrupt, and any real one (a tick) that came while
+     * the window was open: its handler's work is left out all the same. */
+    KT_ASSERT(r.count[PATH_IRQ] >= 1);
 }
 
 KTEST(pathstat_one_trace_at_a_time)
