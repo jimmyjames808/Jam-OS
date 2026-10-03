@@ -120,7 +120,8 @@ void spare_init(handle_t loop_port, bool spares)
 
 /* ---- the spare ----------------------------------------------------------------------- */
 
-/* The spare goes: its standby channel closed (it ends with code 0), its job killed. */
+/* The spare goes (dismissed, or found dead): its standby channel closed
+ * and its job killed. */
 static void spare_drop(void)
 {
     if (!spare.proc)
@@ -362,10 +363,10 @@ static void probe_start(unsigned i, uint64_t from, bool killed, bool promoted)
     probe.killed = killed;
     probe.promoted = promoted;
     probe.path = svcs[i].path;
-    probe.busy = true;   /* before the thread exists: nothing else reads it yet */
+    __atomic_store_n(&probe.busy, true, __ATOMIC_RELAXED);   /* no probe thread runs now */
     if (thread_spawn("restart probe", probe_main, NULL, probe_stack, sizeof(probe_stack),
                      &probe.thread) != OK) {
-        probe.busy = false;
+        __atomic_store_n(&probe.busy, false, __ATOMIC_RELAXED);
         probe.thread = HANDLE_INVALID;
         jam_handle_close(probe.ch);
     }
