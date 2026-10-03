@@ -86,6 +86,23 @@ bool t_os_random(void);
 bool t_tasks_yield_and_wait(void);
 bool t_tasks_start_slots_cap(void);
 
+/* keep.c: the keep channel (<keep.h>), a fake service and successor
+ * against libos's keeper. */
+bool t_keep_put_drop_restore(void);
+bool t_keep_restore_batches(void);
+bool t_keep_unknown_slots(void);
+bool t_keep_refusals(void);
+bool t_keep_restore_refusals(void);
+
+/* svcstate.c: the state VMO (<svcstate.h>), warm spares, and the
+ * "utest svcstate-..." child modes (a spare, a promoted spare, and the
+ * reader of the kernel's chanread_* test). */
+bool t_svcstate_fresh_and_adopted(void);
+bool t_svcstate_slots(void);
+bool t_svcstate_refused(void);
+bool t_svcstate_standby(void);
+int  svcstate_child(int argc, char **argv);
+
 /* idl.c: answering later and calls that don't wait (tools/genidl.py), on
  * the test protocol idltest. */
 bool t_idl_answer_later(void);
