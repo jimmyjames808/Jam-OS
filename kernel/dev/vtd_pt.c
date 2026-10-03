@@ -3,7 +3,7 @@
  * leaves' software bits, empty tables freed only after the caller's
  * invalidation, the per-domain cap and the job's charge.
  *
- * Shape (VT-d 4.1, 3.7.1 and 9.8): a table is one page of 512 64-bit
+ * Shape (VT-d 4.1, 3.7 and 9.8): a table is one page of 512 64-bit
  * entries, the same radix tree as the CPU's page tables. Level 1 holds the
  * leaves (4 KiB pages); levels 2 to `levels` hold entries that point at the
  * next table down. An entry is present when it allows read or write. The
