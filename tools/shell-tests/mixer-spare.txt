@@ -1,0 +1,69 @@
+# The mixer's warm spare (user/services/init/spare.c); use
+# tools/mixer-spare-test.sh (it adds the sound card and checks the log).
+# A spare waits from the boot; `ps` shows it next to the mixer; `kill
+# mixer` promotes it (said with the time it took and the kill to the first
+# answer) and a new spare starts; twelve kills in a row are never given up
+# (a deliberate kill doesn't count); `kill devmgr` makes the mixer end by
+# itself (a crash, as init counts it), which is restarted at once from the
+# spare once devmgr is back. The mixer answers after each.
+# (The markers are echoed as sp-""1 so the typed line itself never matches.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: a warm spare bin/mixer waits
+send ps; echo sp-""1
+wait sp-1
+wait jam>
+send vol; echo sp-""2
+wait master 0.0 dB
+wait sp-2
+wait jam>
+send kill mixer
+wait init: bin/mixer: killed on purpose
+wait init: bin/mixer: spare promoted
+wait init: a warm spare bin/mixer waits
+seen 10 init: bin/mixer: kill to first answer
+send vol; echo sp-""4
+wait master 0.0 dB
+wait sp-4
+wait jam>
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send kill mixer
+wait init: a warm spare bin/mixer waits
+send vol; echo sp-""5
+wait master 0.0 dB
+wait sp-5
+wait jam>
+send ps; echo sp-""6
+wait sp-6
+wait jam>
+send kill devmgr
+wait init: bin/mixer exited with code 3
+wait 60 init: bin/mixer: spare promoted
+seen 30 init: bin/mixer: end to first answer
+send vol; echo sp-""8
+wait master 0.0 dB
+wait sp-8
+wait jam>
+send reboot -f
+wait reboot: resetting

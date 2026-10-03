@@ -298,8 +298,9 @@ static bool run_tests(void)
  * vlan=none (only when the network is on: boot_vlan), which init passes
  * on to devmgr and devmgr to every network driver; bootdisk=0x<id>, which init passes on
  * to devmgr (the boot disk); `splashhang` (a test's: the splash never
- * finishes, and init must start the shell anyway). */
-#define INIT_WORDS_MAX 6
+ * finishes, and init must start the shell anyway); `nospare` (init keeps
+ * no warm spare of the mixer: a restart starts a process). */
+#define INIT_WORDS_MAX 7
 
 static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
 {
@@ -323,6 +324,8 @@ static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
     }
     if (shell && splash_boot() && cmdline_has("splashhang"))
         words[n++] = "splashhang";
+    if (cmdline_has("nospare"))
+        words[n++] = "nospare";
     return n;
 }
 

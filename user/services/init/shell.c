@@ -36,8 +36,12 @@
  * every 5 s at worst (said once a minute). The console's clients (serialin,
  * the shell) end when it does, often before init has seen the console's
  * own end: an end of theirs while the console is gone doesn't count, and
- * they start again at once with the new console. init itself never
- * returns in this mode. */
+ * they start again at once with the new console.
+ * The mixer outlives its process (spare.c: init keeps its state VMO, what
+ * it hands its keeper, and a warm spare to promote), and has a rule of its
+ * own: a deliberate kill (initctl.kill) neither counts nor waits, and the
+ * first crash in a minute is restarted at once; later crashes count and
+ * back off as above. init itself never returns in this mode. */
 #include <os.h>
 #include "init.h"
 
@@ -105,6 +109,7 @@ static status_t watch(unsigned i, handle_t proc, handle_t job)
     s->job = job;
     s->running = true;
     s->started = now();
+    s->kill_at = 0;
     writers_started(i, proc);
     return OK;
 }
@@ -205,10 +210,13 @@ status_t shell_kill_service(const char *name, uint64_t *koid)
             continue;
         struct process_info info;
         status_t st = jam_process_get_info(s->proc, &info);
+        s->kill_at = now();   /* a deliberate end (ended() reads it), from this moment */
         if (st == OK)
             st = jam_process_kill(s->proc);   /* the loop sees it end: its job, the restart */
         if (st == OK)
             *koid = info.koid;
+        else
+            s->kill_at = 0;
         return st;
     }
     return ERR_NOT_FOUND;
@@ -251,6 +259,26 @@ static bool count_end(unsigned i, uint64_t t)
     return true;
 }
 
+/* The restart rule of a service that outlives its process (spare_kept),
+ * ended at t: a deliberate kill neither counts nor waits; a crash counts
+ * as any service's (ended() has counted it), and the first in its minute
+ * starts again at once (from the spare), later ones back off as any
+ * service's. true: it is scheduled; false: back off (ended() goes on). */
+static bool kept_restart(unsigned i, uint64_t t)
+{
+    struct svc *s = &svcs[i];
+    if (!spare_kept(i))
+        return false;
+    if (s->kill_at)
+        printf("init: %s: killed on purpose: not counted, started again at once\n", s->path);
+    else if (s->ends > 1)
+        return false;
+    else
+        s->backoff = 0;   /* the next crash in this minute waits the first step */
+    s->next_try = t;
+    return true;
+}
+
 /* Svc i ended: say how, clean up, schedule the restart. */
 static void ended(unsigned i)
 {
@@ -265,6 +293,7 @@ static void ended(unsigned i)
     s->proc = s->job = HANDLE_INVALID;
     s->running = false;
     uint64_t t = now();
+    s->ended_at = t;
     services_closed(i);
     net_ended(i);
     if (followers[i].ns) {
@@ -281,7 +310,10 @@ static void ended(unsigned i)
         return;
     }
     bool took = went_with_console(i);
-    if (!took && !count_end(i, t))
+    bool counted = !took && !(spare_kept(i) && s->kill_at);
+    if (counted && !count_end(i, t))
+        return;
+    if (kept_restart(i, t))
         return;
     /* Ran for a while (or went with its console): start again soon; else
      * back off. */
@@ -382,6 +414,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     }
     writers_init();
     services_init(port, no_usb, splash, shell_arg);
+    spare_init(port, !init_nospare);
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);
     printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
@@ -390,8 +423,11 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
            no_usb ? " (safe mode: nousb)" : "", splash ? " the boot splash," : "");
     for (;;) {
         uint64_t t = now(), deadline = start_due(t), net = net_due(t);
+        uint64_t spare = spare_due(t);   /* after the starts: a promoted spare runs first */
         if (net < deadline)
             deadline = net;
+        if (spare < deadline)
+            deadline = spare;
         struct port_packet pkt;
         st = jam_port_wait(port, deadline, &pkt);
         if (st != OK && st != ERR_TIMED_OUT)
@@ -414,6 +450,10 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             update_event();
         } else if (pkt.key == KEY_NETCTL) {
             net_netctl_event();
+        } else if (pkt.key == KEY_SPARE) {
+            spare_event();
+        } else if (pkt.key == KEY_KEEP) {
+            kept_event();
         }
     }
 }
