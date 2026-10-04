@@ -1,0 +1,76 @@
+# `storm` (user/services/shell/cmd/storm.c): a file copied from a second
+# stick to /data while both filesystem services are killed in turn; use
+# tools/fat-storm-test.sh (it makes the file and the stick, adds the sound
+# card and a WAV for the music player, then checks the copies, the log and
+# both disks afterwards).
+#   1. the second stick plugged in, /usb0 made writable (the PC's SanDisk
+#      is, for the demonstration);
+#   2. the copy at 0, 1 and 10 kills a second, each MATCH, each copy then
+#      removed (/data holds one at a time);
+#   3. a copy at 100 kills a second stopped with Ctrl+C: said, 130; removed;
+#   4. the copy at 100 kills a second, kept (the host compares it);
+#   5. a rate too high: 2;
+#   6. the music player on a WAV in /data/music, `storm mixer 2 10` while
+#      it plays, then the music stopped (its stream's close line has the
+#      late periods and the least written ahead);
+#   7. sync, `reboot -f`.
+# devmgr's, fat's and the mixer's lines reach the serial port through the
+# kernel log, the shell's through the console: their order isn't fixed,
+# hence `seen`. Ctrl+C ends the whole line, so `$?` is asked on the next.
+# (The markers are echoed as st-""1 so the typed line itself never matches.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+monitor device_add usb-storage,id=s0,bus=xhci.0,port=2,drive=s0img
+seen 60 init: /usb0 mounted
+seen 60 devmgr: a warm spare bin/fat waits
+send mount -w /usb0; echo st-""1 $?
+wait mount: /usb0 is now read-write
+wait st-1 0
+wait jam>
+
+# ---- the copies -------------------------------------------------------------------------------
+send sleep 2; storm /usb0/big.bin /data/s0.bin 0; echo st-""2 $?
+wait 300 st-2 0
+wait jam>
+send rm /data/s0.bin; sleep 1; storm /usb0/big.bin /data/s1.bin 1; echo st-""3 $?
+wait 300 st-3 0
+wait jam>
+send rm /data/s1.bin; sleep 1; storm /usb0/big.bin /data/s10.bin 10; echo st-""4 $?
+wait 300 st-4 0
+wait jam>
+
+# ---- Ctrl+C in the middle of a copy -----------------------------------------------------------
+send rm /data/s10.bin; sleep 1; storm /usb0/big.bin /data/cut.bin 100
+sleep 2.5
+type \x03
+wait 60 stopped by Ctrl+C
+wait jam>
+send echo st-""5 $?
+wait st-5 130
+wait jam>
+send rm /data/cut.bin; sleep 1; storm /usb0/big.bin /data/s100.bin 100; echo st-""6 $?
+wait 300 st-6 0
+wait jam>
+send storm /usb0/big.bin /data/x.bin 2000; echo st-""7 $?
+wait st-7 2
+wait jam>
+
+# ---- the mixer, while music plays -------------------------------------------------------------
+seen 60 music: ready
+send music start /data/music; echo st-""8 $?
+wait st-8 0
+wait jam>
+seen 30 music: track
+send sleep 2; storm mixer 2 10; echo st-""9 $?
+wait 120 st-9 0
+wait jam>
+send music stop; echo st-""10 $?
+wait st-10 0
+wait jam>
+seen 30 mixer: stream
+send sleep 1; sync; echo st-""11 $?
+wait st-11 0
+wait jam>
+send reboot -f
+wait reboot: resetting

@@ -374,6 +374,7 @@ SH_CMD(host); SH_CMD(fetch); SH_CMD(serve); SH_CMD(speed);
 SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
 SH_CMD(reboot); SH_CMD(kernel); SH_CMD(update); SH_CMD(run); SH_CMD(allow);
 /* tests */
-SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(utest); SH_CMD(usbtest); SH_CMD(hdatest);
+SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(storm); SH_CMD(utest);
+SH_CMD(usbtest); SH_CMD(hdatest);
 SH_CMD(mixtest);
 SH_CMD(demo); SH_CMD(crash); SH_CMD(panic);
