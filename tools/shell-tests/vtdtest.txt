@@ -1,0 +1,18 @@
+# The IOMMU checks boot (tools/hda-test.sh adds QEMU's VT-d unit and the
+# boot words iommu=on vtdtest): drv/hda runs its deliberate DMA faults at
+# bind (drivers/hda/vtdtest.c) and logs a "vtdtest:" line; the `iommu`
+# command shows the units and their state. QEMU gives drivers pass-through
+# (M11 D1 without D2), so the controller reads the unpinned address and the
+# check skips, which is what this boot confirms. (Markers echoed split so
+# the typed line itself never matches the wait.)
+wait 120 Jam OS shell
+wait jam>
+send iommu | grep -E "translation|unit 0"; echo iommu-""1
+wait iommu-1
+wait jam>
+send hda | grep answered; echo hda-""1
+wait codec(s) answered; 0 verb(s) timed out
+wait hda-1
+wait jam>
+send reboot -f
+wait reboot: resetting

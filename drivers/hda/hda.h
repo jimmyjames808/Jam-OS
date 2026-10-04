@@ -64,6 +64,8 @@
 #define HDA_SD_STRIDE  0x20
 #define HDA_SD_CTL     0x00   /* 24 bits (read as 32 with STS in the top byte) */
 
+#define HDA_RIRB_OFF   2048u  /* the RIRB's offset in the ring page (256 CORB entries) */
+
 #define GCTL_CRST      (1u << 0)   /* 0: the controller and the link in reset */
 #define GCTL_UNSOL     (1u << 8)   /* accept unsolicited responses */
 #define CORBRP_RST     (1u << 15)
@@ -73,6 +75,7 @@
 #define RIRBCTL_DMAEN  (1u << 1)
 #define RIRBSTS_RINTFL (1u << 0)
 #define RIRBSTS_OIS    (1u << 2)
+#define CORBSTS_CMEI   (1u << 0)   /* CORB memory error (a fetch was aborted; RW1C) */
 #define ICIS_ICB       (1u << 0)   /* busy: a command is out */
 #define ICIS_IRV       (1u << 1)   /* a response is in ICII (RW1C) */
 #define SDCTL_RUN      (1u << 1)
@@ -208,6 +211,7 @@ struct hda {
     handle_t dma;              /* DR_DMA */
     handle_t ring_vmo;         /* one DMA32 page: CORB at 0, RIRB at RIRB_OFF */
     uint64_t ring_pin;         /* its pin id; ring_pinned says whether it is held */
+    uint64_t ring_addr;        /* its device address (CORB; RIRB at + RIRB_OFF) */
     bool     ring_pinned;
     volatile uint32_t *corb;   /* the CORB, mapped */
     volatile uint64_t *rirb;   /* the RIRB, mapped */
@@ -250,6 +254,18 @@ status_t hda_command(struct hda *h, unsigned cad, uint32_t cmd, uint32_t *out);
 /* Stop the rings, put the controller back in reset, unpin the ring page.
  * Safe to call more than once and after a failed start. */
 void     hda_ctrl_stop(struct hda *h);
+
+/* The IOMMU checks (vtdtest.c, M11 stage 5), run only on a `vtdtest` boot
+ * once the controller is up and the command rings run: point the CORB at
+ * an unpinned address (a DMA read the IOMMU should block, so no codec
+ * answers) and the RIRB at the interrupt window 0xfee00000 (a DMA write
+ * the IOMMU should block without raising an interrupt), each logged, then
+ * the rings restored for ordinary use. When the device is not translated
+ * with only its pinned pages mapped (iommu=off, or on pass-through: the
+ * controller does read the unpinned address), it says so and does neither:
+ * the kernel fault records are what the checks look for, and there would
+ * be none. The rings are left as they were found. */
+void     hda_vtdtest(struct hda *h, unsigned cad);
 
 /* The RIRB's demultiplexer (ctrl.c). Every entry the controller writes
  * goes through hda_rirb_sort, whoever reads it (a command waiting for its
