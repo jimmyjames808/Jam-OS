@@ -229,6 +229,13 @@ static status_t mark(bool clean)
     status_t held = !clean ? OK : d->hold_failed ? ERR_IO : disk_release();
     if (held != OK)
         return held;
+    /* The state may say "clean" before the medium does, never after: a
+     * successor (adopt.c) that found the bit written and the state still
+     * saying dirty would write without marking the volume dirty first. The
+     * other way round costs only a dirty mark written again, or a volume
+     * left called dirty: a false alarm. */
+    if (clean)
+        d->clean_on_disk = true;
     for (unsigned i = 0; i < d->nfats; i++) {
         status_t st = block_read_until(vol.block, deadline(), d->fat0[i], 1, 0);
         if (st != OK)

@@ -231,11 +231,14 @@ int main(int argc, char **argv)
     vol.ctl = startup_handle(FAT_SR_CTL);
     vol.keep = startup_handle(SR_KEEP);
     vol.rtc_root = startup_handle(SR_RESOURCE);
+    vol.at[FAT_AT_MAIN] = now();
     status_t st = jam_port_create(&vol.port);
     if (st == OK)
         st = disk_open(block);
+    vol.at[FAT_AT_DISK] = now();
     if (st == OK)   /* everything fat knows lives there; it is bound to the partition */
         st = state_open(&adopted);
+    vol.at[FAT_AT_STATE] = now();
     if (st == OK)
         st = adopt(adopted, &no_volume);
     if (st != OK && vol.disk_gone) {

@@ -3,9 +3,13 @@
  * a dead instance's state (devmgr's SR_STATE, accepted by svcstate)
  * carries on where it stopped:
  *
- *   1. the state is checked (check_volume, check_views): every count,
- *      index and pointer, and the flags views and open files were given
- *      (they are authority: a view's read-only bit);
+ *   1. the operation in progress is put back as it was before it began
+ *      (undo_restore) if it hadn't committed: a request (svcstate's
+ *      RERUN) or the close of a file whose client had gone. Then the state
+ *      is checked (check_views first, check_volume after the undo, since
+ *      an operation cut short leaves it half changed): every count, index
+ *      and pointer, and the flags views and open files were given (they
+ *      are authority: a view's read-only bit);
  *   2. FatFs is told the volume is mounted, without reading the disk:
  *      f_mount(&kept->fs, "", 0) only records the pointer (and clears
  *      fs_type), and the committed FATFS is copied back over it, with the
@@ -13,9 +17,7 @@
  *      own mount counter (Fsid) starts again at 0 in this instance; it is
  *      used only by a real mount, which is never made over adopted FILs
  *      (a state given up on is set up empty first);
- *   3. the operation in progress is put back as it was before it began
- *      (undo_restore) if it hadn't committed: a request (svcstate's
- *      RERUN) or the close of a file whose client had gone;
+ *   3. a committed close whose send hadn't finished: its send done again;
  *   4. the keeper's handles are taken back (keep_restore), each only if
  *      the state knows its slot: a slot an undone open or view made is
  *      refused, and so closed and dropped; a slot the state knows and the
@@ -333,12 +335,18 @@ static const char *finish(enum svcstate_case k, unsigned slot)
 
 static void say(const struct found *f)
 {
-    uint64_t kill = standby_kill_ns(), t = now();
-    char since[48] = "";
-    if (kill && t > kill)
-        snprintf(since, sizeof(since), "; %lu us after the %s",
-                 (unsigned long)((t - kill) / NS_PER_US),
-                 vol.ended && !strcmp(vol.ended, FAT_ARG_KILLED) ? "kill" : "end");
+    uint64_t kill = standby_kill_ns(), promoted = standby_promoted_ns(), t = now();
+    char since[160] = "";
+    /* Where the time went, from the kill (a promoted spare is told it). */
+    if (kill && t > kill && promoted >= kill && vol.at[FAT_AT_HANDLES] >= vol.at[FAT_AT_STATE])
+        snprintf(since, sizeof(since), "; %lu us after the %s (promoted %lu, main %lu, block "
+                 "channel %lu, state %lu, handles %lu)", (unsigned long)((t - kill) / NS_PER_US),
+                 vol.ended && !strcmp(vol.ended, FAT_ARG_KILLED) ? "kill" : "end",
+                 (unsigned long)((promoted - kill) / NS_PER_US),
+                 (unsigned long)((vol.at[FAT_AT_MAIN] - kill) / NS_PER_US),
+                 (unsigned long)((vol.at[FAT_AT_DISK] - kill) / NS_PER_US),
+                 (unsigned long)((vol.at[FAT_AT_STATE] - kill) / NS_PER_US),
+                 (unsigned long)((vol.at[FAT_AT_HANDLES] - kill) / NS_PER_US));
     if (f->fresh) {
         printf("fat %s: restart (%s, adoption %lu): starting fresh (%s): mounted from the "
                "disk, open files closed%s%s\n", vol.name, vol.ended ? vol.ended : "?",
@@ -396,17 +404,21 @@ status_t adopt(bool adopted, bool *no_volume)
     }
     find_request(&f);
     f.keep_views = check_views();
-    f.why = !f.keep_views ? "a view out of range" : check_volume();
+    /* An operation in progress may have left the state half changed: it
+     * is put back first (undo.c checks its own copy), then checked. */
+    f.why = !f.keep_views ? "a view out of range" : undo_in_progress(&f);
+    if (!f.why)
+        f.why = check_volume();
     if (f.why)
         return start_fresh(&f, no_volume);
     FATFS committed = kept->fs;
     (void)f_mount(&kept->fs, "", 0);   /* only records the pointer: never fails for "" */
     kept->fs = committed;
-    f.why = undo_in_progress(&f);
-    if (!f.why && !restore(&f, (struct taking){ .files = true, .views = true }))
+    if (!restore(&f, (struct taking){ .files = true, .views = true }))
         f.why = "the keeper's restore failed";
     if (f.why)
         return start_fresh(&f, no_volume);
+    vol.at[FAT_AT_HANDLES] = now();
     if (f.forget)
         files_forget(kept->undo.closing);
     /* A close that committed and didn't finish its send: before anything

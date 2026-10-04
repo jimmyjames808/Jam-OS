@@ -84,13 +84,15 @@ status_t state_open(bool *adopted)
 
 void state_reset(bool keep_views)
 {
-    static struct fat_view views[FAT_VIEWS];
-    if (keep_views)
-        memcpy(views, kept->views, sizeof(views));
-    /* Everything but the hold's data, which nothing reads past `held`. */
-    memset(kept, 0, offsetof(struct fat_state, hold.data));
-    if (keep_views)
-        memcpy(kept->views, views, sizeof(views));
+    /* Everything but the hold's data, which nothing reads past `held`, and
+     * the views if they stay: never copied out and back, so a death in the
+     * middle leaves them as they were. */
+    size_t views = offsetof(struct fat_state, views), after = views + sizeof(kept->views);
+    uint8_t *p = (uint8_t *)kept;
+    memset(p, 0, views);
+    memset(p + after, 0, offsetof(struct fat_state, hold.data) - after);
+    if (!keep_views)
+        memset(kept->views, 0, sizeof(kept->views));
 }
 
 status_t state_commit(const void *p, size_t len)

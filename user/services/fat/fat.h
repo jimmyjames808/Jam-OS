@@ -64,6 +64,15 @@
 #define FAT_CHAN_VIEW(s, g) (2u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
 
 
+/* The steps of a start, timed for a restart's log line (adopt.c). */
+enum fat_at {
+    FAT_AT_MAIN,              /* main ran */
+    FAT_AT_DISK,              /* the block channel taken (disk_open) */
+    FAT_AT_STATE,             /* the state mapped and its header checked */
+    FAT_AT_HANDLES,           /* the state checked, the kept handles taken back */
+    FAT_AT_COUNT,
+};
+
 /* The volume: fat serves exactly one. What this instance has of it: its
  * handles, its mapping of the block buffer, what block.info and argv
  * said. What fat knows of it that must outlive the process is in the
@@ -86,6 +95,7 @@ struct fat_vol {
      * NULL for a first start. Only a crash counts against the request in
      * progress (adopt.c: the bad-request rule). */
     const char *ended;
+    uint64_t    at[FAT_AT_COUNT];   /* when each step of the start was done (uptime ns) */
 };
 
 extern struct fat_vol vol;
