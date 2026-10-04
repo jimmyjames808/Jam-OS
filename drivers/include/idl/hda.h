@@ -178,9 +178,11 @@ static inline status_t hda_dump_call(handle_t ch, bool idl_within, uint64_t idl_
     idl_q.txid = 0;
     idl_q.ordinal = HDA_DUMP;
     handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               1, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -286,9 +288,11 @@ static inline status_t hda_open_output_call(handle_t ch, bool idl_within, uint64
     idl_q.channels = channels;
     idl_q.bits = bits;
     handle_t idl_rh[2];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               2, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 2, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 2)
@@ -666,9 +670,11 @@ static inline status_t hda_query_call(handle_t ch, bool idl_within, uint64_t idl
     idl_q.txid = 0;
     idl_q.ordinal = HDA_QUERY;
     handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               1, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)

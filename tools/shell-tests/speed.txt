@@ -4,7 +4,8 @@
 # server on the Mac, and a port on the Mac to the guest's 5202, where
 # tools/speed.py's client connects to `speed -l`. bin/speed sends, then
 # receives, then sends UDP datagrams, and a port nobody serves is refused;
-# then it listens, the Mac's client sends and receives, and Ctrl+C stops
+# then it listens, the Mac's client sends and receives, sends again over
+# a lossy relay (tools/speed-test.sh's SPEED_LOSS), and Ctrl+C stops
 # it (exit 130), as it does a 30 s send after 2 s. The numbers are QEMU's.
 wait 120 Jam OS shell
 seen 60 netstack: link up
@@ -30,11 +31,14 @@ wait st=1
 wait jam>
 send speed -l 5202
 wait 30 speed: listening on 10.2.21.5 port 5202
-# tools/speed.py client connects now: sends 3 s, then receives 3 s
+# tools/speed.py client connects now: sends 3 s, then receives 3 s, then
+# sends 3 s through the port whose relay drops segments
 wait 120 speed: 10.2.21.174: receiving for 3 s
 wait 60 speed: received
 wait 120 speed: 10.2.21.174: sending for 3 s
 wait 60 speed: the other side got
+wait 120 speed: 10.2.21.174: receiving for 3 s
+wait 60 speed: received
 sleep 2
 type \x03
 wait speed: stopped

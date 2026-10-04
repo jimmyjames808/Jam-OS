@@ -35,7 +35,8 @@
 JAM_WANTS("svc devmgr\n"
           "svc devmgr-ctl\n"
           "mount * rw\n"
-          "right klog\n");
+          "right klog\n"
+          "right sysinfo\n");
 
 const char *utest_cur;   /* the test running */
 
@@ -816,6 +817,8 @@ static const struct {
     { "nettcp_window_scale", t_nettcp_window_scale },
     { "nettcp_listen_scale", t_nettcp_listen_scale },
     { "nettcp_heap_shares", t_nettcp_heap_shares },
+    { "nettcp_ooseq_sack", t_nettcp_ooseq_sack },
+    { "nettcp_ooseq_bounds", t_nettcp_ooseq_bounds },
     { "nettcp_limits", t_nettcp_limits },
     { "nettcp_bulk_rings", t_nettcp_bulk_rings },
     { "netctl_set_and_clear", t_netctl_set_and_clear },

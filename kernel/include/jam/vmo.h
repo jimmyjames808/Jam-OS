@@ -110,18 +110,29 @@ status_t vmo_unmap_kernel(struct vmo *v, void *va);
 status_t dma_cap_create(struct kobject **out);
 /* Pin [offset, offset+len) (both page-aligned, len > 0) for device DMA:
  * commits the pages, forbids decommitting or shrinking them away, and
- * writes each page's physical address to phys_out[0..len/PAGE_SIZE).
+ * writes each page's physical address to phys_out[0..len/PAGE_SIZE) (on
+ * a failure too: its contents mean nothing then). With a cap that has an
+ * IOMMU domain (dma_cap_translated) each page is also mapped there at
+ * that same address, so the device can reach it.
  * ERR_WRONG_TYPE if dma_cap isn't a DMA capability, ERR_BUFFER_TOO_SMALL
  * if phys_cap (entries) is too small, ERR_BAD_STATE if the cap is bound to
  * a function whose Bus Master Enable is off, or that has a newer cap,
- * or its last handle is gone. The pin holds references on the VMO
- * and the capability until vmo_unpin or until the cap's last handle
- * closes (which releases every pin made with it, or for a cap bound to a
- * function quarantines them: dma_cap.c). */
+ * or its last handle is gone. From the domain: ERR_OUT_OF_RANGE (a page
+ * past the unit's address width), ERR_NO_RESOURCES (the domain's table
+ * cap, or a page pinned 1023 times), ERR_NO_MEMORY, and ERR_TIMED_OUT /
+ * ERR_IO (the unit didn't confirm an invalidation: the pages stay pinned
+ * for good). The pin holds references on the VMO and the capability until
+ * vmo_unpin or until the cap's last handle closes (which releases every
+ * pin made with it, or for a cap bound to a function hands them to
+ * dma_cap.c: freed once the IOMMU took them away, else quarantined).
+ * Thread context, no spinlock held. */
 status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
                  uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id);
 /* Undo a pin. Only the capability it was made with may: ERR_NOT_FOUND if
  * pin_id isn't a live pin of v, ERR_ACCESS_DENIED if it was made with
  * another dma_cap (a client sharing the VMO must not free a page a device
- * still writes to). */
+ * still writes to). With an IOMMU domain the pages are unmapped and the
+ * unit's invalidation waited for before they may go; ERR_TIMED_OUT /
+ * ERR_IO: it didn't confirm, so the pin is gone but its pages stay pinned
+ * for good. Thread context, no spinlock held. */
 status_t vmo_unpin(struct vmo *v, struct kobject *dma_cap, uint64_t pin_id);

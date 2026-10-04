@@ -564,4 +564,6 @@ void tcpsock_counts(struct net_counters *c)
         if (tl[i].ch)
             c->tcp_refused += tl[i].l->refused;
     c->tcp_dropped = s.dropped + s.bad_acks + s.no_acks;
+    c->tcp_ooseq_held = s.ooseq_held;
+    c->tcp_ooseq_cut = s.ooseq_cut;
 }

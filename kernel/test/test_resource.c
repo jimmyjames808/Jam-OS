@@ -695,7 +695,7 @@ KTEST(resource_pin_needs_bus_master)
     if (!d)
         return;
     struct kobject *cap;
-    KT_EQ(dma_cap_create_for(d, &cap), OK);
+    KT_EQ(dma_cap_create_for(d, NULL, &cap), OK);
     KT_ASSERT(dma_cap_device(cap) == d);
     struct vmo *v;
     KT_EQ(vmo_create(PG, VMO_CONTIGUOUS | VMO_DMA32, &v), OK);
@@ -791,8 +791,10 @@ KTEST(resource_dma_close_clears_bus_master)
     KT_EQ(dma_cap_pin_count(capobj), 0);
     struct dma_quarantine_stats q;
     dma_quarantine_stats(d, &q);
-    KT_EQ(q.pins, 1);
-    KT_EQ(q.pages, 2);
+    if (!dma_cap_translated(capobj)) {   /* (the IOMMU's frees them at once: test_dma*.c) */
+        KT_EQ(q.pins, 1);
+        KT_EQ(q.pages, 2);
+    }
     KT_EQ(sys_vmo_unpin(&t, vh, cap, id), ERR_BAD_HANDLE);   /* the cap's handle is gone */
     struct kobject *vo;
     KT_EQ(handle_get(&t, vh, OBJ_VMO, 0, &vo, NULL), OK);

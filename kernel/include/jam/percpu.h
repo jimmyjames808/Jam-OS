@@ -149,6 +149,16 @@ static inline bool cpu_need_resched(const struct cpu *c)
     return __atomic_load_n(&c->need_resched, __ATOMIC_RELAXED);
 }
 
+/* need_resched of the CPU this runs on, in one GS-relative load: it is
+ * that CPU's flag whatever happens next, since a migration can only come
+ * before or after the one instruction (as percpu_preempt_dec). */
+static inline bool percpu_need_resched(void)
+{
+    uint8_t v;
+    __asm__ volatile("movb %%gs:%c1, %0" : "=r"(v) : "i"(PERCPU_OFF(need_resched)));
+    return v;
+}
+
 static inline void cpu_set_need_resched(struct cpu *c, bool v)
 {
     __atomic_store_n(&c->need_resched, v, __ATOMIC_RELAXED);

@@ -88,6 +88,15 @@ static void show_stats(const struct net_counters *c)
     ROW("datagrams out", c->dgrams_out);
     ROW("pings sent", c->echoes_sent);
     ROW("  answered", c->echoes_answered);
+    sh_say("TCP:\n");
+    ROW("connections", c->tcp_conns);
+    ROW("listeners", c->tcp_listeners);
+    ROW("bytes in", c->tcp_bytes_in);
+    ROW("bytes out", c->tcp_bytes_out);
+    ROW("refused by a listener", c->tcp_refused);
+    ROW("segments dropped", c->tcp_dropped);
+    ROW("held past a hole now", c->tcp_ooseq_held);
+    ROW("  queue at its limit", c->tcp_ooseq_cut);
 }
 
 static void show_chip(handle_t net)

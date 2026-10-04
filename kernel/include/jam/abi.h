@@ -195,7 +195,8 @@ struct channel_read_args {
     uint64_t handles;          /* user address: handles_cap handle_t */
     uint32_t handles_cap;      /* entries in the handles buffer */
     uint32_t reserved;         /* 0 */
-    uint64_t actual_handles;   /* user address of a uint32_t, or 0 */
+    uint64_t actual_handles;   /* user address of a uint32_t, or 0. At actual_bytes + 4
+                                * (one struct), the two go out in one copy */
 };
 
 struct channel_call_args {
@@ -210,7 +211,8 @@ struct channel_call_args {
     uint64_t rh;               /* user address: rhcap handle_t for the reply */
     uint32_t rhcap;            /* entries in the reply handle buffer */
     uint32_t flags;            /* CHANNEL_CALL_*; any other bit: ERR_INVALID_ARGS */
-    uint64_t rhactual;         /* user address of a uint32_t, or 0 */
+    uint64_t rhactual;         /* user address of a uint32_t, or 0. At ractual + 4 (one
+                                * struct), the two go out in one copy */
     uint64_t deadline_ns;      /* absolute, uptime clock; UINT64_MAX = forever.
                                 * With CHANNEL_CALL_TIMEOUT: ns from now */
 };
@@ -235,7 +237,9 @@ struct channel_reply_wait_args {
     uint64_t mark;             /* user address of a uint64_t set to 1 once the reply went
                                 * out, before the wait; 0: none */
     uint64_t reply_status;     /* user address of an int32_t: the reply's status, written
-                                * when there was a reply to send; 0: none */
+                                * as the call returns when there was a reply to send;
+                                * 0: none. At actual_bytes - 4, with actual_handles
+                                * at actual_bytes + 4, the three go out in one copy */
     uint64_t bytes;            /* channel: user address of room for the request */
     uint32_t bytes_cap;        /* channel: its size */
     uint32_t handles_cap;      /* channel: entries in the handles buffer */
@@ -409,6 +413,10 @@ struct fb_info {
 
 #define SYSINFO_HYBRID  (1u << 0)   /* the CPU has P-cores and E-cores */
 #define SYSINFO_KTESTS  (1u << 1)   /* the kernel was built with its tests */
+/* An IOMMU translates DMA (the boot word iommu=on): a driver's device
+ * reaches only what the driver pinned, and a dead driver's pins are freed
+ * once the IOMMU took them away, not quarantined. */
+#define SYSINFO_IOMMU   (1u << 2)
 
 struct sys_info {
     char     version[32];        /* "0.0.20-m7" */

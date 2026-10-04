@@ -281,6 +281,7 @@ static const char *const ev_names[PATH_EV_N] = {
     [PATH_SLEEPQ] = "sleeper inserts",  [PATH_TIMER_ARM] = "timer arms",
     [PATH_EMPTY_READ] = "empty reads",  [PATH_OBSERVER] = "observers",
     [PATH_CLOCK] = "clock reads",       [PATH_LOCK_SLOW] = "checker irq-offs",
+    [PATH_RESCHED_IRQ] = "resched irq-offs",
     [PATH_CALLS] = "calls",
 };
 

@@ -15,11 +15,13 @@
  *     functions with nothing of their own): any DMA is blocked and logged;
  *   - or, for a function the DMAR table lists in a reserved memory region
  *     (RMRR), its BOOT domain: that region mapped, nothing else;
- *   - or, once a driver holds a dma_cap for it (iommu_device_driven), the
- *     unit's PASS-THROUGH domain: all of RAM, as without an IOMMU, until
- *     dma_cap makes a domain of its own per cap (iommu_domain_create).
+ *   - or, while a driver holds a dma_cap for it, that cap's own domain
+ *     (iommu_domain_create, iommu_attach: kernel/object/dma_cap.c): what
+ *     the cap pinned (vmo_pin's iommu_map) and the function's RMRRs.
  * A function's "home" is the blocking domain or its boot domain: where
- * iommu_detach puts it back.
+ * iommu_detach puts it back. Each unit also has a PASS-THROUGH domain
+ * (all of RAM, as without an IOMMU: iommu_device_driven); no driver's
+ * function is put there any more, only the tests use it.
  *
  * IOVA = physical address: iommu_map maps each page at its own address
  * (docs/M11-PLAN.md, question 1), so a driver's numbers don't change.
@@ -85,10 +87,10 @@ bool iommu_translating(void);
  * each unit's context mutex while it reads. */
 void iommu_report(void);
 
-/* A driver holds a dma_cap for dev: until dma_cap makes a domain per cap,
- * dev's context entry goes to its unit's pass-through domain (all of RAM).
- * OK at once when dev isn't translated. ERR_TIMED_OUT, ERR_IO (the
- * invalidation failed: dev stays where it was). */
+/* dev's context entry to its unit's pass-through domain (all of RAM). For
+ * the tests only: a driver's function gets its dma_cap's own domain. OK at
+ * once when dev isn't translated. ERR_TIMED_OUT, ERR_IO (the invalidation
+ * failed: dev stays where it was). */
 status_t iommu_device_driven(struct pci_dev *dev);
 
 /* ---- domains (for dma_cap and vmo_pin) ---------------------------------------------- */

@@ -299,15 +299,10 @@ status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out)
     status_t st = get_dev(t, dev, RIGHT_MANAGE, &obj, &d);
     if (st != OK)
         return st;
-    st = dma_cap_create_for(d, &cap);
+    st = dma_cap_create_for(d, t->job, &cap);
     kobject_unref(obj);
     if (st != OK)
         return st;
-    st = dma_cap_set_job(cap, t->job);
-    if (st != OK) {
-        kobject_unref(cap);
-        return st;
-    }
     return insert_new(t, cap, DMA_CAP_RIGHTS, out);
 }
 

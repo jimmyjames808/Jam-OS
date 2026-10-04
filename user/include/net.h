@@ -153,7 +153,9 @@ struct net_counters {
     uint64_t tcp_bytes_out;    /* bytes taken from connections' tx rings into lwIP */
     uint32_t tcp_refused;      /* connections a listener reset: no room for them under the limits */
     uint32_t tcp_dropped;      /* segments lwIP dropped (malformed, out of the window, no room) */
-    uint64_t reserved[4];      /* 0 */
+    uint32_t tcp_ooseq_held;   /* receive buffers holding segments that came past a hole, now */
+    uint32_t tcp_ooseq_cut;    /* times such a queue reached its limit and its top was dropped */
+    uint64_t reserved[3];      /* 0 */
 };
 #define NET_COUNTERS_SIZE 256u
 

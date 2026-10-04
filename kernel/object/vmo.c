@@ -67,6 +67,13 @@
  * range covers. A range is `busy` while it is being set up or torn down,
  * and unmap/unpin ignore busy ranges.
  *
+ * Pins and the IOMMU: with a dma_cap that has an IOMMU domain, a pin's
+ * pages are mapped there before the pin is published and unmapped (the
+ * unit's invalidation waited for) before they may go; a pin whose unmap
+ * the unit didn't confirm keeps its pages for good ("pins through the
+ * IOMMU" below). No VMO lock is held across either: the IOMMU's locks are
+ * mutexes, and the range, busy, keeps the pages in place meanwhile.
+ *
  * Sealing (vmo_seal, for vmo_make_exec): a sealed VMO's bytes and size
  * never change again. Every call that could change them (vmo_write,
  * vmo_commit, vmo_decommit, vmo_set_size) enters as a writer under the
@@ -80,9 +87,11 @@
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/dbghook.h>
+#include <jam/iommu.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
 #include <jam/process.h>
+#include <jam/report.h>
 #include <jam/resource_impl.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
@@ -1075,6 +1084,81 @@ static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end,
     return OK;
 }
 
+/* ---- pins through the IOMMU ------------------------------------------------
+ * A pin made with a cap that has an IOMMU domain (dma_cap.c) is mapped
+ * there, each page at its own address, before the pin is published, and
+ * unmapped before its pages may go: iommu_unmap returns only once the unit
+ * has dropped what it cached. If the unit doesn't confirm that (an
+ * invalidation failed), the device may still reach the pages, so they are
+ * never given back (pin_keep). A closed cap's pins are not unmapped one by
+ * one: dma_cap.c takes the whole domain away first. */
+
+#define UNMAP_STACK_PAGES 32   /* addresses per iommu_unmap without a buffer from the heap */
+
+/* The physical addresses of pages [first, first + n) of v into pa[]. A
+ * range covers them and they are committed: they can't move. */
+static void range_addrs(struct vmo *v, uint64_t first, uint64_t n, uint64_t *pa)
+{
+    uint64_t f = vlock(v);
+    for (uint64_t i = 0; i < n; i++) {
+        pa[i] = phys_locked(v, first + i);
+        ASSERT(pa[i] != 0 || v->kind != VMO_PAGED);
+    }
+    vunlock(v, f);
+}
+
+/* r's pages out of dom: in one call (one invalidation) when the heap
+ * gives a buffer for their addresses, else UNMAP_STACK_PAGES at a time. */
+static status_t pin_unmap(struct vmo *v, const struct vmo_range *r, struct iommu_domain *dom)
+{
+    uint64_t n = r->end - r->first;
+    uint64_t small[UNMAP_STACK_PAGES];
+    uint64_t *pa = n > UNMAP_STACK_PAGES ? kmalloc(n * sizeof(uint64_t)) : NULL;
+    uint64_t chunk = pa ? n : UNMAP_STACK_PAGES;
+    if (!pa)
+        pa = small;
+    status_t st = OK;
+    for (uint64_t i = 0; i < n && st == OK; i += chunk) {
+        uint64_t k = n - i < chunk ? n - i : chunk;
+        range_addrs(v, r->first + i, k, pa);
+        st = iommu_unmap(dom, pa, k);
+    }
+    if (pa != small)
+        kfree(pa);
+    return st;
+}
+
+/* The unit didn't confirm that the device lost r's pages (why): keep them
+ * for good. r stays on v, busy (nobody finds it; decommit and shrink
+ * refuse its pages), holding v and its charge; only its cap lets go of
+ * it, so the cap can still close. */
+static void pin_keep(struct vmo *v, struct vmo_range *r, status_t why)
+{
+    uint64_t f = spin_lock_irqsave(&r->cap->lock);
+    if (r->cap_linked) {
+        list_del(&r->cap_node);
+        r->cap_linked = false;
+    }
+    spin_unlock_irqrestore(&r->cap->lock, f);
+    kobject_unref(r->cap);
+    r->cap = NULL;
+    report("vmo: koid %lu: pages %lu-%lu stay pinned for good: the IOMMU did not confirm that "
+           "the device lost them (%d)", v->base.koid, r->first, r->end - 1, why);
+}
+
+/* Undo a pin (busy, so nobody else can find it): out of dom (if any),
+ * then its pages may go. Returns the unmap's result: on an error the
+ * pages are kept (pin_keep). */
+static status_t pin_drop(struct vmo *v, struct vmo_range *r, struct iommu_domain *dom)
+{
+    status_t st = dom ? pin_unmap(v, r, dom) : OK;
+    if (st != OK)
+        pin_keep(v, r, st);
+    else
+        range_remove(v, r);
+    return st;
+}
+
 /* The pin takes a reference on the cap and goes on the cap's list from
  * the start (busy until published), unless its last handle is already
  * gone (ERR_BAD_STATE). */
@@ -1096,22 +1180,19 @@ static status_t pin_link_cap(struct vmo_range *r, struct kobject *dma_cap)
 }
 
 /* Publish the pin, unless the cap was closed meanwhile: its close path ran
- * (or is running) and skipped this busy pin, so the pin goes here. */
+ * (or is running) and skipped this busy pin, so the pin goes here (out of
+ * dom first: the domain lives until every such pin is gone). */
 static status_t pin_publish(struct vmo *v, struct vmo_range *r, struct kobject *dma_cap,
-                            uint64_t *phys_out, uint64_t *pin_id)
+                            struct iommu_domain *dom, uint64_t *pin_id)
 {
     struct dma_cap *c = dma_cap_from_kobject(dma_cap);
     uint64_t cf = spin_lock_irqsave(&dma_cap->lock);
     if (c->closed) {
         spin_unlock_irqrestore(&dma_cap->lock, cf);
-        range_remove(v, r);
+        (void)pin_drop(v, r, dom);   /* on an error its pages are kept: nothing more to do */
         return ERR_BAD_STATE;
     }
     uint64_t f = vlock(v);
-    for (uint64_t idx = r->first; idx < r->end; idx++) {
-        phys_out[idx - r->first] = phys_locked(v, idx);
-        ASSERT(phys_out[idx - r->first] != 0 || v->kind != VMO_PAGED);
-    }
     r->busy = false;
     *pin_id = r->key;
     vunlock(v, f);
@@ -1150,7 +1231,20 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
         range_remove(v, r);
         return st;
     }
-    return pin_publish(v, r, dma_cap, phys_out, pin_id);
+    /* The cap's domain, if it has one, is fixed from its creation, and
+     * stays until this pin (on the cap's list) is gone. */
+    struct iommu_domain *dom = dma_cap_from_kobject(dma_cap)->dom;
+    range_addrs(v, first, end - first, phys_out);
+    if (dom && (st = iommu_map(dom, phys_out, end - first)) != OK) {
+        /* All or nothing; but a failed invalidation leaves the unit's
+         * caches unknown: then the pages are kept. */
+        if (st == ERR_TIMED_OUT || st == ERR_IO)
+            pin_keep(v, r, st);
+        else
+            range_remove(v, r);
+        return st;
+    }
+    return pin_publish(v, r, dma_cap, dom, pin_id);
 }
 
 /* The last pin may hold the cap's last reference; this runs from the cap's
@@ -1278,6 +1372,5 @@ status_t vmo_unpin(struct vmo *v, struct kobject *dma_cap, uint64_t pin_id)
     vunlock(v, f);
     if (st != OK)
         return st;
-    range_remove(v, r);
-    return OK;
+    return pin_drop(v, r, dma_cap_from_kobject(dma_cap)->dom);
 }
