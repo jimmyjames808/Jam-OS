@@ -21,10 +21,11 @@
  * given up on, or stopped in order (a remount: fsvc.c's fs_restart): then
  * the kept objects close and their clients see ERR_PEER_CLOSED.
  *
- * A fat that reads neither SR_STATE nor SR_KEEP (fat does not adopt state
- * yet: it makes its own state VMO and mounts afresh) works as before:
- * nothing of the state is committed, and the keeper's restore is one
- * KEEP_DONE on an end that closes with the process.
+ * fat carries on from the state a dead instance left (user/services/fat/
+ * adopt.c): the volume as it was, its open files and views (the keeper's
+ * handles), the request in progress finished exactly once. Each instance
+ * is told how the last one ended (fs_end_arg: "killed" or "crashed"), for
+ * its rule against a request that crashes it again and again.
  *
  * **The warm spare** is one bin/fat started with nothing but SR_STANDBY
  * (process name "fat-spare"), waiting in libos before main, having opened
@@ -466,8 +467,13 @@ static status_t promote(struct binding *b)
     }
     char mount[16];
     snprintf(mount, sizeof(mount), "%s", fs_mount_path(b));
-    const char *argv[3] = { b->name, mount, fs_format_arg(b) };
-    struct standby_args a = { .hs = x, .rights = xr, .n = n, .argc = argv[2] ? 3 : 2,
+    const char *argv[4] = { b->name, mount };
+    int argc = 2;
+    if (fs_format_arg(b))
+        argv[argc++] = fs_format_arg(b);
+    if (fs_end_arg(b))   /* how the last instance ended: fat counts only crashes */
+        argv[argc++] = fs_end_arg(b);
+    struct standby_args a = { .hs = x, .rights = xr, .n = n, .argc = argc,
                               .argv = argv, .kill_ns = b->kill_at ? b->kill_at : b->ended_at };
     handle_t proc = spare.proc, job = spare.job;
     (void)jam_port_unbind(port, proc, KEY_SPARE);   /* b's from now on */

@@ -417,30 +417,25 @@ bool t_disk_other(void)
     return wait_usb(dm, &v, -1);
 }
 
-/* Follow DEVMGR_MOUNTS from v's generation until it moves on, for 15 s at
- * most. */
-static bool wait_new_generation(handle_t dm, struct view *v)
+/* DEVMGR_MOUNTS from v's generation doesn't move: the call waits its
+ * DEVMGR_MOUNTS_WAIT and says ERR_TIMED_OUT. */
+static bool generation_stays(handle_t dm, const struct view *v)
 {
-    uint64_t until = now() + 15 * NS_PER_S;
-    for (;;) {
-        struct view next;
-        CHECK(now() < until);
-        status_t st = devmgr_mounts(dm, v->rep.generation, &next.rep, next.hs);
-        if (st == ERR_TIMED_OUT)
-            continue;
-        CHECK_ST(st, OK);
-        view_close(v);
-        *v = next;
-        return true;
-    }
+    struct view next;
+    status_t st = devmgr_mounts(dm, v->rep.generation, &next.rep, next.hs);
+    if (st == OK)
+        view_close(&next);
+    CHECK_ST(st, ERR_TIMED_OUT);
+    return true;
 }
 
 /* Killing a filesystem service (a deliberate kill: restarted at once, not
  * counted): devmgr kept its `fs` channel, so the mount never went and the
  * channel clients had still works, served by the new instance (on a new
- * `block` channel); the generation moves on once (the new instance makes
- * its own views); what was on the volume is still there; the other mount
- * never moved. */
+ * `block` channel), which carries on from the dead one's state: a file it
+ * had open stays open, what was written to it and not synced is there,
+ * and the generation doesn't move (namespaces need nothing new); what was
+ * on the volume is still there; the other mount never moved. */
 bool t_disk_fs_restart(void)
 {
     handle_t dm = devmgr(), old;
@@ -459,17 +454,25 @@ bool t_disk_fs_restart(void)
     before.fs = old;
     CHECK_ST(t_mkdir(&data, "/kept"), OK);
     CHECK_ST(t_sync(&data), OK);
+    struct tfile f;
+    uint32_t done = 0;
+    char got[8] = { 0 };
+    CHECK_ST(t_open(&data, "/unsynced.txt", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
+    CHECK_ST(t_write(&f, 0, "kept", 4, &done), OK);   /* no sync: fat holds it */
     CHECK_ST(devmgr_call(dm, DEVMGR_KILL, DEVMGR_FS_SVC, DEVMGR_PART_DATA, id, &r, NULL, 0, NULL,
                          now() + 30 * NS_PER_S), OK);
     /* the channel we had: a call on it waits for the next instance */
     CHECK_ST(t_stat(&before, "/kept", NULL, &is_dir, NULL), OK);
     CHECK(is_dir);
-    if (!wait_new_generation(dm, &v))
+    /* the file is still open, its unsynced write there */
+    CHECK_ST(t_read(&f, 0, got, 4, &done), OK);
+    CHECK_EQ(done, 4);
+    CHECK(!memcmp(got, "kept", 4));
+    t_close(&f);
+    if (!generation_stays(dm, &v))
         return false;
     CHECK(mounted(&v, ESP) && mounted(&v, DATA));
-    data = mount_of(&v, DATA);
-    CHECK_ST(t_stat(&data, "/kept", NULL, &is_dir, NULL), OK);
-    CHECK(is_dir);
+    CHECK(file_is(&data, "/unsynced.txt", "kept"));
     /* a second `block` channel on the data partition; the first was closed
      * by the death; the ESP's was never touched */
     CHECK_EQ(dm_count(&mock.opened[1]), 2);

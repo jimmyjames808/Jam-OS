@@ -133,6 +133,10 @@ struct binding {
     uint64_t            kill_at;    /* when DEVMGR_KILL asked for its end (uptime ns; 0: none) */
     uint64_t            ended_at;   /* when its last instance's end was seen (uptime ns) */
     uint32_t            promoted;   /* restarts that promoted the warm spare, since boot */
+    /* Bumped with every new `fs` channel (fs_serve_end): the mount's
+     * generation in DEVMGR_MOUNTS. A restart on the kept channel doesn't
+     * move it: fat keeps its views (and open files) across its deaths. */
+    uint32_t            chan_gen;
 };
 
 extern struct binding devs[MAX_DEVS];
@@ -297,6 +301,10 @@ bool fs_check_ended(struct binding *b, bool no_volume);
 /* FAT_ARG_FORMAT for the one service that may format a blank partition
  * (the boot disk's data partition), NULL for every other. */
 const char *fs_format_arg(const struct binding *b);
+/* For an instance that replaces one that ended: FAT_ARG_KILLED after a
+ * deliberate kill, FAT_ARG_CRASHED after any other end; NULL for a first
+ * start (fat counts only crashes against the request in progress). */
+const char *fs_end_arg(const struct binding *b);
 /* DEVMGR_REMOUNT: /usbN (a test disk's: /usbN-test) read-write or
  * read-only. ERR_NOT_FOUND: no such mount; ERR_BAD_STATE: its service
  * isn't serving. */
@@ -343,7 +351,8 @@ uint64_t disk_next_deadline(void);
 struct mount {
     char     path[16];   /* the mount point */
     uint32_t bind;       /* devs index of its filesystem service */
-    uint32_t gen;        /* that binding's start generation: a restart is a new mount */
+    uint32_t gen;        /* that binding's `fs` channel's generation (chan_gen): a new
+                          * channel is a new mount, a restart on the kept one isn't */
 };
 /* The mounts as they are now into out (DEVMGR_MAX_MOUNTS slots). Returns
  * how many. */

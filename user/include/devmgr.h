@@ -177,13 +177,13 @@
  * ERR_NO_RESOURCES: too many calls are waiting already.
  *
  * The generation changes whenever the list does: a mount appears, its disk
- * goes away (unplugged, or its usb-storage died), its fat service is
- * started again after a death (the same channel: devmgr keeps it while no
- * instance runs, the mount stays listed, and calls on it wait for the
- * next instance; but each instance makes its own views and files, so the
- * generation moves on and namespaces are sent again), or is remounted
+ * goes away (unplugged, or its usb-storage died), or it is remounted
  * (REMOUNT, ESP_WRITE: a new channel, calls on the old one fail
- * ERR_PEER_CLOSED). /esp and /data are the disk Jam OS booted from:
+ * ERR_PEER_CLOSED). A fat service started again after a death is not a
+ * change: devmgr keeps its channel while no instance runs (the mount stays
+ * listed, and calls on it wait for the next instance), and the next
+ * instance carries on with the views and files the dead one made.
+ * /esp and /data are the disk Jam OS booted from:
  * partition 1 of type 0xEF holding boot/jamos.elf, partition 2 of type
  * 0x0C. Any other disk's FAT partitions (MBR types 01 04 06 0B 0C 0E EF,
  * or a disk with no table that is one FAT volume) take the lowest free

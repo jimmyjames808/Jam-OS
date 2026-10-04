@@ -61,8 +61,9 @@
  * partition that holds no FAT volume and isn't blank makes fat exit 1
  * every time). Each start opens a new `block` channel on its partition;
  * its `fs` channel is kept from one instance to the next (spare.c), so it
- * stays a mount while it restarts, and the mounts' generation moves on
- * once, when the next instance runs (it makes its own views).
+ * stays a mount while it restarts, and the mounts' generation doesn't
+ * move (the next instance carries on with the views and files the dead
+ * one made: user/services/fat/adopt.c).
  *
  * A disk whose driver is gone (the stick unplugged, usb-storage crashed,
  * a test disk's channel closed) loses its services at once: their `block`
@@ -529,7 +530,7 @@ unsigned disk_mounts(struct mount *out)
                 continue;   /* no volume mounted yet (or none at all) */
             if (!b->other && b->part == PART_ESP && b->rw)
                 continue;   /* init's while it writes the stick (ESP_WRITE): nobody else's */
-            out[n] = (struct mount){ .bind = (uint32_t)(b - devs), .gen = b->gen };
+            out[n] = (struct mount){ .bind = (uint32_t)(b - devs), .gen = b->chan_gen };
             snprintf(out[n].path, sizeof(out[n].path), "%s", fs_mount_path(b));
             n++;
         }

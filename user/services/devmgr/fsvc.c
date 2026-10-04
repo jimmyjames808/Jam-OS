@@ -98,6 +98,7 @@ status_t fs_serve_end(struct binding *b, struct spawn_handle *x, rights_t *xr, u
             jam_handle_close(b->serve);
         b->client = client;
         b->serve = serve;
+        b->chan_gen++;   /* a new mount for DEVMGR_MOUNTS */
     }
     handle_t h;
     status_t st = jam_handle_duplicate(b->serve, RIGHT_SAME, &h);
@@ -145,6 +146,13 @@ const char *fs_format_arg(const struct binding *b)
     const struct disk *d = disk_of(b);
     bool boot_data = d && d->state == DISK_BOOT && !b->other && b->part == PART_DATA;
     return boot_data ? FAT_ARG_FORMAT : NULL;
+}
+
+const char *fs_end_arg(const struct binding *b)
+{
+    if (!b->ended_at)
+        return NULL;
+    return b->kill_at ? FAT_ARG_KILLED : FAT_ARG_CRASHED;
 }
 
 /* The lowest N no running or restarting service has as its /usbN (test
