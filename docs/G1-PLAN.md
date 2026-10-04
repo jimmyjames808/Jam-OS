@@ -54,6 +54,27 @@ becomes a client: a terminal window.**
 
 ## Questions for the owner
 
+**The owner's answers (2026-10-05).** The plan follows them; where one
+differs from the recommendation below, this note wins:
+- Q1 (A) real Wayland on the wire; Q2 (A) the kernel "pages stay" VMO
+  flag; Q3 (A) every libfun program a window; Q4 (A) `nocomp` kept until
+  the PC sign-off; Q6 (A) one layout file, two outputs, US only;
+  Q8 (A) clients reconnect.
+- **Q5: both arrangements, switchable.** Floating windows with the
+  compositor's title bars, AND a tiling mode, with a key that switches the
+  whole screen between them (and the choice kept in /data/etc/settings).
+  In tiling mode a window that can't resize sits centred in its tile at its
+  own size (with the background around it), never stretched; resizable ones
+  (the terminal, jamjar) take the tile. Track C3 owns both.
+- **Q7: both in G1.** `&`, `jobs` and `kill %n` in the shell (track S1),
+  AND more terminal windows, each with its own shell (a key or a command
+  opens one; init supervises each shell as it does the first). That adds
+  work in init, the console's window mode (T1) and the shell's supervision:
+  the plan's stages gain it, sized as one more track.
+- **Q9: (B) a smaller terminal window.** After the splash, the first
+  terminal opens as a centred window (not maximised), with the desktop
+  background (the splash's dark colour) around it; text stays 8x16 pixels.
+
 Each question stands on its own, says what it decides and why it
 matters, and ends with a recommendation. The plan assumes the
 recommendation until you say otherwise. Q1 to Q4 shape everything; Q5 to
