@@ -12,9 +12,8 @@
 # devmgr's lines reach the serial port through the kernel log, the
 # shell's through the console: their order isn't fixed, hence `seen`.
 # A `sleep 1` before each kill gives the next spare time to start. Each
-# file is synced before the kill: fat doesn't adopt its state yet (stage
-# F3 of the plan), so a successor mounts afresh, and what the dead one had
-# not put on the stick is lost, as before.
+# file is synced before the kill, which a successor no longer needs (it
+# carries on from the dead one's state: fat-restart.txt tests that).
 # (The markers are echoed as fs-""1 so the typed line itself never matches.)
 wait 120 Jam OS shell
 wait jam>

@@ -249,6 +249,11 @@ bool t_fat_dir_linear(void);
 bool t_fat_dir_cursors(void);
 bool t_fat_cache(void);
 bool t_fat_gather(void);
+/* fat_restart.c: fat ended at each step of a request and carrying on from
+ * its state (the test plays devmgr: state VMO, keeper, restarts). */
+bool t_fat_restart_steps(void);
+bool t_fat_restart_handles(void);
+bool t_fat_restart_bad_request(void);
 /* fatlayout.c: FatFs's structs, as fat's state relies on them. */
 bool t_fat_layout(void);
 
