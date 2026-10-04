@@ -10,7 +10,8 @@
  * (vtd_qi.c) and its fault interrupt (vtd_fault.c), in that order, so a
  * queue error found while the fault interrupt is set up is already
  * handled. A unit that fails to start is reported and left alone; the
- * others start anyway.
+ * others start anyway. Then interrupt remapping is turned on (vtd_irq.c),
+ * only if every unit started.
  *
  * The units' register pages stay the kernel's (vtd_regs_overlap): every
  * unit the DMAR table lists, whether it answered or not. */
@@ -23,6 +24,7 @@
 #include <jam/x86.h>
 
 #include "vtd_internal.h"
+#include "vtd_irq.h"
 
 static struct vtd_unit units[VTD_MAX_UNITS];   /* by the DMAR's unit number */
 static bool mapped[VTD_MAX_UNITS];             /* the probe read this unit's registers */
@@ -321,8 +323,10 @@ void vtd_units_start(void)
         n++;
         ok += start_unit(&units[i]) == OK;
     }
-    kprintf("vtd:         iommu=on: %u of %u unit%s started (queue and faults; translation "
-            "and interrupt remapping not turned on)\n", ok, n, n == 1 ? "" : "s");
+    kprintf("vtd:         iommu=on: %u of %u unit%s started (queue and faults)\n", ok, n,
+            n == 1 ? "" : "s");
     if (n == 0)
         report("vtd: iommu=on, but there is no VT-d unit to start");
+    else
+        vtd_irq_start(ok, n);   /* interrupt remapping (vtd_irq.c) */
 }

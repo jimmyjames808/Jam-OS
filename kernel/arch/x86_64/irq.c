@@ -25,10 +25,13 @@
  * freed vector is reused last.
  *
  * A device's message (msi_message) is made here too: the compatibility
- * format (address 0xfee00000 with the APIC id, data = the vector). */
+ * format (address 0xfee00000 with the APIC id, data = the vector), or with
+ * interrupt remapping on (<jam/irq_remap.h>) a remapping entry for that
+ * (cpu, vector) and the remappable message naming it. */
 #include <jam/cpu.h>
 #include <jam/interrupt.h>
 #include <jam/irq.h>
+#include <jam/irq_remap.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
@@ -252,16 +255,25 @@ uint32_t msi_data(uint8_t vec)
     return vec;
 }
 
+/* Remapping is turned on at boot before any device's message is made, and
+ * never off while devices run, so the format can't change under a caller. */
 status_t msi_message(const struct pci_dev *d, uint32_t cpu, uint8_t vec, struct msi_msg *out)
 {
-    (void)d;   /* who sends it: what interrupt remapping (not built yet) needs */
     if (cpu >= cpu_count || !cpus[cpu])
         return ERR_INVALID_ARGS;
-    *out = (struct msi_msg){ msi_address(cpu), msi_data(vec), 0 };
-    return OK;
+    if (!irq_remap_on()) {
+        *out = (struct msi_msg){ msi_address(cpu), msi_data(vec), 0 };
+        return OK;
+    }
+    struct msi_msg m;
+    status_t st = irq_remap_alloc_pci(d, cpus[cpu]->lapic_id, vec, &m.remap, &m.address, &m.data);
+    if (st == OK)
+        *out = m;
+    return st;
 }
 
 void msi_message_free(struct msi_msg *m)
 {
+    irq_remap_free(m->remap);
     m->remap = 0;
 }

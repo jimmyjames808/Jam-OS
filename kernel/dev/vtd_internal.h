@@ -23,7 +23,7 @@
  *     each fault record into a ring and clears it; a kernel thread logs
  *     them ("vtd: fault: ..."), counts them per device, and puts the first
  *     per device in the RESULTS box.
- * Translation and interrupt remapping are not turned on here.
+ * Translation is not turned on here; interrupt remapping is vtd_irq.c's.
  *
  * Locks, in order: "vtd queue" (one per unit: the queue's tail, slots and
  * owners; never taken in an interrupt handler) before "vtd gcmd" (one per

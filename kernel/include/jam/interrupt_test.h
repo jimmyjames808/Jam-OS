@@ -16,6 +16,8 @@ status_t interrupt_create_virtual_ex(struct job *job, bool maskable, struct kobj
 /* The (cpu, vector) the object owns: an IPI with that vector to that CPU
  * goes down the same path as its MSI. False once it is torn down. */
 bool interrupt_vector_of(struct kobject *irq, uint32_t *cpu, uint8_t *vec);
+/* The interrupt remapping entry its device's message names (0: none). */
+uint32_t interrupt_remap_of(struct kobject *irq);
 /* Fires that arrived after teardown started (ignored), and whether the
  * object is masked right now. */
 uint64_t interrupt_late_fires(struct kobject *irq);

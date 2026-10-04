@@ -2,8 +2,9 @@
  *
  * An interrupt object owns one (cpu, vector) from vector_alloc and, for a
  * device, one MSI or MSI-X vector of a PCI function programmed to deliver
- * there (the message from msi_message). Its handler (fire) runs in
- * interrupt context on that CPU:
+ * there: with interrupt remapping on, through a remapping entry of its own
+ * (msi_message), which only that function's requester id may use. Its
+ * handler (fire) runs in interrupt context on that CPU:
  *
  *   - no allocation and no sleeping: it takes the object's lock (irqsave)
  *     and raises SIG_INTERRUPT, which runs the observers under that lock:
@@ -27,9 +28,9 @@
  *
  * Teardown (last handle closed, or last reference for an object that
  * never had a handle), once: mark it dead under the lock (later fires are
- * only counted), mask/disable it at the device, give its message back
- * (msi_message_free), then vector_free, which returns only when no CPU is
- * still inside fire() for it. The memory goes
+ * only counted), mask/disable it at the device, free its remapping entry
+ * (the device no longer sends it), then vector_free, which returns only
+ * when no CPU is still inside fire() for it. The memory goes
  * with the last reference; a fire() that finds the magic gone panics
  * rather than use freed memory.
  *
@@ -42,8 +43,9 @@
  * (resource.c's pci_cmd_lock, around pci_msi_enable only) -> "pci" (pci.c's
  * leaf); "interrupt" (the object) -> "pci" (mask in fire/ack) and -> "port"
  * -> "port waiters" -> run queues (observers). The vector allocator's lock
- * is a leaf and is never held with these. The message is made before
- * dev_lock is taken and given back with no lock held. pci_msi.c's pci_msi_set /
+ * is a leaf and is never held with these. The remapping entry is made
+ * before dev_lock is taken and freed with no lock held: both wait for the
+ * VT-d units. pci_msi.c's pci_msi_set /
  * pci_msi_enable / pci_msi_mask must therefore not sleep,
  * and pci_msi_mask must be callable from an interrupt handler.
  *
@@ -79,7 +81,8 @@ struct kinterrupt {
     uint32_t          cpu;        /* the CPU the vector is on */
     struct pci_dev   *dev;        /* the device (MSI, MSI-X), else NULL */
     uint32_t          index;      /* MSI-X table entry, 0 for MSI */
-    struct msi_msg    msg;        /* what the function sends (MSI, MSI-X) */
+    struct msi_msg    msg;        /* what the function sends (MSI, MSI-X); msg.remap is
+                                   * its remapping entry until teardown */
     struct list_node  dev_node;   /* on dev_irqs (dev_lock) */
     struct job       *job;        /* charged one JOB_LIMIT_HANDLES unit (a reference) */
     uint64_t          fires;      /* times delivered (statistics); base.lock */
@@ -144,7 +147,8 @@ static status_t dev_claim_locked(struct kinterrupt *o)
 }
 
 /* The message for (o->cpu, o->vec), then the function programmed with it.
- * On a failure the message goes back at once: the function never sent it. */
+ * On a failure the message's remapping entry goes back at once: the
+ * function never sent it. */
 static status_t dev_claim(struct kinterrupt *o)
 {
     status_t st = msi_message(o->dev, o->cpu, o->vec, &o->msg);
@@ -385,6 +389,12 @@ bool interrupt_vector_of(struct kobject *irq, uint32_t *cpu, uint8_t *vec)
     *cpu = o->cpu;
     *vec = o->vec;
     return true;
+}
+
+uint32_t interrupt_remap_of(struct kobject *irq)
+{
+    struct kinterrupt *o = to_irq(irq);
+    return o ? o->msg.remap : 0;
 }
 
 uint64_t interrupt_late_fires(struct kobject *irq)

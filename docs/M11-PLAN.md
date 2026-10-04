@@ -345,10 +345,15 @@ takes over whatever is left on.
 
 ### Interrupt remapping
 
-- **One table** per unit (one page per 256 entries; planned 1024 entries,
+- **One table, shared by every unit** (as built, stage 4: 1024 entries,
   16 KiB, since every live interrupt object needs one and Jam OS has
-  dozens). Entries are allocated with the interrupt object and freed
-  with it, after an interrupt-entry-cache invalidation.
+  dozens). VT-d allows it (5.1.3: units "may be configured to share
+  interrupt-remapping table"; 6.10: a change is invalidated on each unit),
+  and it means an entry's index is the same whichever unit a device sits
+  behind, so no device-to-unit lookup is needed; remapping goes on only
+  when every unit the probe read started and offers it (ECAP.IR), on all
+  of them. Entries are allocated with the interrupt object and freed with
+  it, after an interrupt-entry-cache invalidation on every unit.
 - **One entry per MSI or MSI-X vector**: present, fixed delivery, edge,
   physical destination = the CPU's APIC id (x2APIC ids, 32 bits, when the
   unit has ECAP.EIM; the PC runs in x2APIC mode), the vector, and **source
@@ -376,7 +381,22 @@ takes over whatever is left on.
   the compatibility format is blocked (fault reason 0x25 in VT-d's table),
   and a remappable one naming an entry that isn't its own fails source
   validation (0x26) or finds no entry (0x22): no interrupt, a fault
-  recorded. That is the done-when's second half.
+  recorded. That is the done-when's second half. **QEMU 10.0 can show only
+  part of it** (found building stage 4): it passes compatibility-format
+  writes through even with remapping on (it never looks at CFIS or EIME),
+  and a DMA engine's write carries no requester id there, so its faults
+  name ff:1f.7 and source validation can't apply to it. The QEMU tests
+  therefore write the window in remappable format (an entry never present,
+  one past the table: blocked, recorded) and check source validation with
+  edu's real MSI (another function's entry: 0x26; a freed one: 0x22); the
+  literal 0xfee00000 write blocked with fault 0x25 is the PC's check
+  (stage 5).
+- **Kexec and panic**: `irq_remap_off` (jam/irq_remap.h) masks the I/O
+  APIC's routed pins, then turns remapping off on every unit, taking no
+  lock (bounded waits, short on a panic). D1's IOMMU off path calls it.
+  A unit found with remapping on at boot (a kexec that didn't turn it off)
+  gets its table pointer replaced while on (6.7 allows it: nothing is in
+  flight then).
 
 ### Faults
 
@@ -552,7 +572,7 @@ once on the merged milestone. "New" files are planned names.
 | **1C. Interrupt entries** | C | the remapping table (allocate, zero, free entries), the entry format (x2APIC and xAPIC destinations, source validation), the remappable MSI address/data and I/O APIC entry encoders, all pure and tested on their own | new kernel/dev/vtd_ir.c, vtd_ir.h, new kernel/test/test_vtd_ir.c | nothing (beside 1A) |
 | **2. Domains and translation on** | D1 | root and context tables, domain ids, the blocking domain, RMRR boot domains (and RMRRs in RAM out of the memory map), attach and detach with their invalidations, the fault-processing-disable mute, the boot handover (off, on, queue on), protected memory off, translation on at boot; off before a kexec and on the panic path; the planned jam/iommu.h interface | new kernel/dev/vtd_domain.c, vtd_boot.c, new kernel/include/jam/iommu.h, new kernel/test/test_vtd_domain.c; `kernel/main.c` (the call); `kernel/kexec/jump.c` and `kernel/dev/reboot.c` (one call each) | 1A, 1B |
 | **3. Pins through the IOMMU** | D2 | `dma_cap` makes and switches domains; `vmo_pin` maps, `vmo_unpin` unmaps and waits; the close blocks then frees at once (the quarantine only with `iommu=off`); edu tests: an unpinned page is never written and the fault names edu, a pinned one is; `dma_stale_write_after_rebind` per mode | `kernel/object/dma_cap.c`, `kernel/object/vmo.c` (the pin paths), `kernel/test/test_dma.c`, `drivers/test/edu/edu.c` if a test needs a command | D1 |
-| **4. Interrupt remapping on** | E | interrupt objects allocate entries (`irq.c`'s message address and data from them), the I/O APIC's entries remapped, the enable sequence, EIM with x2APIC; tests: every device's interrupts in QEMU with `QEMU_IOMMU=eim`, edu's write to 0xfee00000 raises nothing and is recorded | `kernel/object/interrupt.c`, `kernel/arch/x86_64/irq.c`, `kernel/arch/x86_64/ioapic.c`, vtd_ir.c (wiring), new kernel/test/test_vtd_irq.c | 1A, 1C (beside D1/D2) |
+| **4. Interrupt remapping on** | E | interrupt objects allocate entries (`irq.c`'s message address and data from them), the I/O APIC's entries remapped, the enable sequence, EIM with x2APIC; tests: every device's interrupts in QEMU with `QEMU_IOMMU=eim`, edu's write to 0xfee00000 raises nothing and is recorded | `kernel/object/interrupt.c`, `kernel/arch/x86_64/irq.c`, `kernel/arch/x86_64/ioapic.c`, vtd_ir.c (wiring), new kernel/test/test_vtd_irq.c (as built: the wiring is kernel/dev/vtd_irq.c, its interface `kernel/include/jam/irq_remap.h`) | 1A, 1C (beside D1/D2) |
 | **5. The PC checks** | F | drv/hda's test word `vtdtest`: before its normal start, the controller's command ring read from an address that isn't pinned (a read fault naming 00:1f.3) and its response ring written to 0xfee00000 (blocked, no interrupt), then a reset and the normal start; the boot entry "Jam OS (IOMMU)" (question 6) and its test entry; the `iommu` debug command; the bench lines | `drivers/hda/` (a test file), devmgr's word passing, `boot/limine.conf`, `kernel/debug/dbgcmd.c`, `kernel/test/bench.c`, `docs/BENCH.md` | 3, 4 |
 | **6. The join** | J | every device area test with `QEMU_IOMMU=1` and `cm0`; the docs: ARCHITECTURE (the IOMMU row, the threat model: drivers contained, Memory's DMA line, the drivers' rules), SECURITY.md, README, HARDWARE (the PC's DMAR from stage 0), TESTING, ROADMAP; default on after the PC (question 6) | `tools/vtd-test.sh`, the docs | 5 |
 | **7. Review and fix** | | the independent review-and-fix agent over all of M11 (the standing rule): findings first, then High and Medium fixed one commit each with a test | what its findings touch | 6 |
