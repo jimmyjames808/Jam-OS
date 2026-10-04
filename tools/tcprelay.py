@@ -53,7 +53,9 @@ are sent again as a sender like the Mac's would: on the third duplicate
 ACK, fast retransmit (RFC 5681). With SACK (RFC 2018: offered on our SYNs,
 used when both SYNs carry it) only the guest's holes below its highest
 SACK block are resent, each once a recovery, and again as later ACKs
-show more (RFC 6675's idea, without its pipe count); without SACK the
+show more (RFC 6675's idea, without its pipe count), and all of them again
+once the guest SACKs bytes sent after them (a resend lost too, as RACK,
+RFC 8985, finds it); without SACK the
 first segment, and a partial ACK then means the guest dropped the rest:
 everything from it on goes again (go-back-N). After RTO seconds without
 an ACK: with SACK, the holes below the guest's latest blocks again (as
@@ -109,6 +111,8 @@ class Stream:
         self.dupacks = 0             # duplicate ACKs in a row
         self.recover = None          # in fast recovery until this is acked (snd_nxt then)
         self.resent_to = 0           # this recovery resent holes up to here
+        self.resent_mark = None      # self.high at the last pass of resends (lost again if
+                                     # the guest SACKs bytes past it with the holes still open)
         self.high = self.iss         # past the highest byte ever sent
         self.loss = loss             # the share of data segments to drop (--tcp-forward's LOSS)
         self.last_blocks = []        # the SACK blocks of the guest's latest ACK
@@ -248,7 +252,12 @@ class Stream:
         top = self.sacked[-1][1] if self.sacked else (self.snd_una + self.peer_mss) & M32
         if diff(top, self.snd_nxt) > 0:
             top = self.snd_nxt
-        seq = self.resent_to if diff(self.resent_to, self.snd_una) > 0 else self.snd_una
+        if self.resent_mark is not None and diff(top, self.resent_mark) > 0:
+            seq = self.snd_una   # bytes sent after the last pass arrived, its resends didn't
+        else:
+            seq = self.resent_to if diff(self.resent_to, self.snd_una) > 0 else self.snd_una
+        if diff(top, seq) > 0:
+            self.resent_mark = self.high
         for l, r in self.sacked + [(top, top)]:
             while diff(l, seq) > 0 and diff(top, seq) > 0:   # the hole before this block
                 off = diff(seq, self.snd_una)
@@ -270,7 +279,7 @@ class Stream:
             self.snd_una, self.last, self.dupacks, self.rtos = ack, time.monotonic(), 0, 0
             self.note_sacks([])
             if self.recover is not None and diff(ack, self.recover) >= 0:
-                self.recover = None
+                self.recover = self.resent_mark = None
             elif self.recover is not None and self.sack:
                 self.resend_holes()   # a partial ACK: the next holes
             elif self.recover is not None:   # no SACK: the guest dropped the rest
@@ -282,7 +291,7 @@ class Stream:
         self.dupacks += 1
         if self.dupacks == 3 and self.recover is None:
             self.relay.count("relay_fast_retransmits")
-            self.recover, self.resent_to = self.snd_nxt, self.snd_una
+            self.recover, self.resent_to, self.resent_mark = self.snd_nxt, self.snd_una, None
             self.resend_holes()
         elif self.recover is not None and self.sack:
             self.resend_holes()   # more of the guest's blocks: more holes known
