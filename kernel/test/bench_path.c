@@ -353,14 +353,14 @@ static void print_counts(const struct case_info *ci, const struct path_result *r
     static const enum path_ev arch[] = { PATH_FPU_SAVE, PATH_FPU_CALLED, PATH_FPU_RESTORE,
                                          PATH_FPU_KEPT, PATH_CR3, PATH_CR3_FLUSH };
     static const enum path_ev other[] = { PATH_EMPTY_READ, PATH_OBSERVER, PATH_CLOCK,
-                                          PATH_LOCK_SLOW };
+                                          PATH_LOCK_SLOW, PATH_RESCHED_IRQ };
     print_group(r, units, "kernel entries", entries, 3);
     print_sys(r, units);
     print_group(r, units, "copies", copies, 6);
     print_group(r, units, "memory, handles, locks", memory, 6);
     print_group(r, units, "scheduler", sched, 7);
     print_group(r, units, "FPU and address space", arch, 6);
-    print_group(r, units, "other", other, 4);
+    print_group(r, units, "other", other, 5);
 }
 
 /* "1.5": v / div with one decimal, rounded (the RESULTS box is narrow). */
