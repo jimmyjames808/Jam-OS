@@ -100,7 +100,7 @@ struct vtd_dom {
 #define VTD_TT_MAX_DIDS 65536u   /* CAP.ND's largest */
 
 struct vtd_ctl {
-    struct vtd_unit *unit;
+    struct vtd_unit *unit;            /* the started unit; NULL: no tables */
     bool             live;            /* tables in use, translation on (release/acquire) */
     struct mutex     lock;            /* "vtd context": everything below */
     uint64_t         root_phys;       /* the root table */
@@ -115,7 +115,7 @@ struct vtd_ctl {
 
 /* Per PCI function (pci_dev.index). */
 struct vtd_fn {
-    struct pci_dev  *dev;
+    struct pci_dev  *dev;          /* the function */
     struct vtd_ctl  *ctl;          /* its unit's tables; NULL: not translated */
     uint16_t         sid;          /* requester id: bus 15:8, device 7:3, function 2:0 */
     bool             muted;        /* FPD set in its entry; "vtd context" */

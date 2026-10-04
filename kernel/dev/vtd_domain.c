@@ -28,8 +28,8 @@ static uint32_t nfns;
 
 /* What <jam/iommu.h> hands out: a domain of the function it was made for. */
 struct iommu_domain {
-    struct vtd_dom *dom;
-    struct vtd_fn  *fn;
+    struct vtd_dom *dom;   /* the domain itself */
+    struct vtd_fn  *fn;    /* the function it is for (fixed) */
 };
 
 /* ---- the entries (pure) ------------------------------------------------------------------- */
@@ -499,8 +499,8 @@ void vtd_domain_fault_seen(uint32_t unit, uint16_t sid, uint32_t reason)
     }
     mutex_unlock(&ctl->lock);
     if (mute)
-        kprintf("vtd: unit %u: %02x:%02x.%x: %u DMA faults: its faults are no longer recorded "
-                "(fault processing disabled in its context entry)\n", unit, sid >> 8,
+        kprintf("vtd: fault: unit %u: %02x:%02x.%x muted after %u DMA faults: its faults are no "
+                "longer recorded (fault processing disabled in its context entry)\n", unit, sid >> 8,
                 (sid >> 3) & 0x1f, sid & 7, VTD_FAULT_LOGGED);
 }
 
