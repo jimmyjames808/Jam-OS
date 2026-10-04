@@ -272,6 +272,7 @@ static const char *const ev_names[PATH_EV_N] = {
     [PATH_KFREE] = "kfrees",            [PATH_HANDLE] = "handle ops",
     [PATH_LOCK] = "locks",              [PATH_SCHED] = "sched passes",
     [PATH_SWITCH] = "switches",         [PATH_WAKE] = "wakes",
+    [PATH_HANDOFF] = "hand-offs",
     [PATH_IPI] = "IPIs",                [PATH_FPU_SAVE] = "FPU saves",
     [PATH_FPU_CALLED] = "FPU call saves",
     [PATH_FPU_RESTORE] = "FPU restores", [PATH_FPU_KEPT] = "FPU kept",

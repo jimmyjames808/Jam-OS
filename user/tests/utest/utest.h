@@ -139,6 +139,13 @@ bool t_fpu_ring3_switch_keeps_all(void);
 
 /* calltimeout.c: channel_call with CHANNEL_CALL_TIMEOUT. */
 bool t_call_timeout_relative(void);
+/* replywait.c: channel_reply_wait, and its child modes ("utest rw-..."). */
+bool t_reply_wait_mark_before_wait(void);
+bool t_reply_wait_gone_caller(void);
+bool t_reply_wait_second_process(void);
+bool t_reply_wait_port(void);
+bool t_reply_wait_refusals(void);
+int  replywait_child(int argc, char **argv);
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_kill_spinning_and_unstarted(void);

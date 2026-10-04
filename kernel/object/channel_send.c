@@ -90,10 +90,37 @@ static struct chan_waiter *find_caller_locked(struct channel *peer, uint32_t txi
 {
     for (struct list_node *n = peer->callers.next; n != &peer->callers; n = n->next) {
         struct chan_waiter *c = container_of(n, struct chan_waiter, node);
-        if (c->txid == txid)
+        if (c->txid == txid && !c->any)
             return c;
     }
     return NULL;
+}
+
+/* peer's lock held: the reader (channel_read_wait) that has waited on
+ * peer longest, or NULL. */
+static struct chan_waiter *find_reader_locked(struct channel *peer)
+{
+    for (struct list_node *n = peer->callers.next; n != &peer->callers; n = n->next) {
+        struct chan_waiter *c = container_of(n, struct chan_waiter, node);
+        if (c->any)
+            return c;
+    }
+    return NULL;
+}
+
+/* peer's lock held, a message just queued on it: unlist and wake every
+ * reader waiting there, so each reads the queue in order instead of
+ * waiting for a later message (chan_waiter's rule). */
+static void wake_readers_locked(struct channel *peer)
+{
+    for (struct list_node *n = peer->callers.next; n != &peer->callers;) {
+        struct chan_waiter *c = container_of(n, struct chan_waiter, node);
+        n = n->next;
+        if (!c->any)
+            continue;
+        chan_waiter_unlist_locked(peer, c);
+        thread_wake(c->thread);
+    }
 }
 
 /* A slot message goes to waiter w: take w's free slot for ours, so each
@@ -108,8 +135,18 @@ static void swap_slots_locked(struct chan_waiter *w)
     w->slot = NULL;
 }
 
+/* peer's lock held: give m to waiter w and take w off the list. */
+static void hand_to_locked(struct channel *peer, struct chan_waiter *w, struct chan_msg *m)
+{
+    w->reply = m;
+    if (m->slot)
+        swap_slots_locked(w);
+    chan_waiter_unlist_locked(peer, w);
+}
+
 /* peer's lock held (and the pair lock): give m to the caller waiting for
- * its txid, or queue it. *filled: the queue just became full. A slot
+ * its txid; else, if nothing is queued, to the reader waiting longest, if
+ * it fits; else queue it. *filled: the queue just became full. A slot
  * message is never queued: *must_queue instead (and nothing changes). */
 static status_t hand_over_locked(struct channel *ch, struct channel *peer, struct chan_msg *m,
                                  bool *filled, bool *must_queue)
@@ -117,10 +154,7 @@ static status_t hand_over_locked(struct channel *ch, struct channel *peer, struc
     uint32_t txid = msg_txid(m);
     struct chan_waiter *w = txid ? find_caller_locked(peer, txid) : NULL;
     if (w) {
-        w->reply = m;
-        if (m->slot)
-            swap_slots_locked(w);
-        chan_waiter_unlist_locked(peer, w);
+        hand_to_locked(peer, w, m);
         /* A reply to a channel_call. If no other request is queued for us,
          * we (the server) are most likely about to block for the next one,
          * so the caller may take our CPU (wake-affine; a guess: a server
@@ -133,6 +167,14 @@ static status_t hand_over_locked(struct channel *ch, struct channel *peer, struc
             thread_wake(w->thread);
         return OK;
     }
+    w = peer->nqueued ? NULL : find_reader_locked(peer);
+    if (w && m->nbytes <= w->bytes_cap && m->nhandles <= w->handles_cap) {
+        hand_to_locked(peer, w, m);
+        /* A plain wake: wake-affine only for a writer that blocks next and
+         * said so (channel_call's request, thread_set_wake_sync). */
+        thread_wake(w->thread);
+        return OK;
+    }
     if (m->slot) {
         *must_queue = true;
         return OK;
@@ -141,6 +183,8 @@ static status_t hand_over_locked(struct channel *ch, struct channel *peer, struc
         return ERR_SHOULD_WAIT;
     list_add_tail(&peer->queue, &m->node);
     *filled = ++peer->nqueued == CHANNEL_MAX_QUEUED;
+    if (w)
+        wake_readers_locked(peer);   /* it didn't fit the reader: it reads it from the queue */
     kobject_signal_locked(&peer->base, 0, SIG_READABLE);
     return OK;
 }
@@ -256,9 +300,12 @@ static status_t send_request(struct channel *ch, struct chan_waiter *w, struct c
     spin_unlock_irqrestore(&ch->base.lock, f);
 
     /* We block for the reply right after sending, so the server this wakes
-     * (through whatever observer it waits with) may run on our CPU. */
+     * (through whatever observer it waits with) may run on our CPU, handed
+     * it straight (channel_call_with ends the hand-off). */
     thread_set_wake_sync(true);
+    thread_set_handoff(true);
     status_t st = send_msg(ch, mp);
+    thread_set_handoff(false);
     thread_set_wake_sync(false);
     if (st != OK) {
         f = spin_lock_irqsave(&ch->base.lock);
@@ -335,6 +382,7 @@ status_t channel_call_with(struct channel *ch, struct chan_call *c, uint64_t dea
         return st;
     st = send_request(ch, &w, &m);
     if (st != OK) {
+        sched_handoff_done();
         chan_msg_free(m);   /* its handle copies were never the message's */
         return st;
     }
@@ -342,6 +390,7 @@ status_t channel_call_with(struct channel *ch, struct chan_call *c, uint64_t dea
         c->req_h[i].obj = NULL;   /* moved into the message */
 
     st = wait_reply(ch, &w, deadline_ns);
+    sched_handoff_done();   /* a reply that was there at once: we never blocked */
     struct chan_msg *r = w.reply;
     if (st != OK)
         return st;

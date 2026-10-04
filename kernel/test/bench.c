@@ -238,11 +238,11 @@ static uint64_t *samples, *samples_off, *samples_on;
  * the lock checker, which is no optimisation. */
 enum sw {
     SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_FPUOPT,
-    SW_PCID, SW_FPUCALL, SW_LOCKDEP, SW_COUNT, SW_ALL = SW_COUNT
+    SW_PCID, SW_FPUCALL, SW_LOCKDEP, SW_HANDOFF, SW_COUNT, SW_ALL = SW_COUNT
 };
 static const char *const sw_name[SW_COUNT + 1] = {
     "spinidle", "placeorder", "affinepair", "kmcache", "oneshot", "serialirq", "fpuopt", "pcid",
-    "fpucall", "lockdep", "m55"
+    "fpucall", "lockdep", "handoff", "m55"
 };
 static uint64_t sw_boot[SW_COUNT];
 
@@ -259,6 +259,7 @@ static uint64_t sw_get(enum sw s)
     case SW_PCID:       return pcid_is_on();
     case SW_FPUCALL:    return __atomic_load_n(&fpu_call, __ATOMIC_RELAXED);
     case SW_LOCKDEP:    return lockdep_is_on();
+    case SW_HANDOFF:    return __atomic_load_n(&sched_handoff, __ATOMIC_RELAXED);
     default:            break;
     }
     return 0;
@@ -277,11 +278,13 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_PCID:       pcid_set(v); break;   /* no-op without PCIDs */
     case SW_FPUCALL:    __atomic_store_n(&fpu_call, (bool)v, __ATOMIC_RELAXED); break;
     case SW_LOCKDEP:    lockdep_set(v); break;
+    case SW_HANDOFF:    __atomic_store_n(&sched_handoff, (bool)v, __ATOMIC_RELAXED); break;
     default:            break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                                  1 };
 
 static void sw_save(void)
 {
@@ -1212,18 +1215,20 @@ bool bench_user_run(const char *what, int cpu, int server_cpu, const char *label
     };
     unsigned nex = 1;
     struct process *server = NULL;
+    /* "rwcall": bench-call against the reply-and-wait server. */
+    bool rw = !strcmp(what, "rwcall");
     if (server_cpu >= 0 && channel_create(&call_c, &call_s) == OK) {
         struct userboot_handle sx = {
             SR_USER, khandle_from_new((struct kobject *)call_s, RIGHTS_BASIC | RIGHTS_IO)
         };
-        server = uspawn(j, "bench-echo", server_cpu, &sx, 1);
+        server = uspawn(j, rw ? "bench-rwecho" : "bench-echo", server_cpu, &sx, 1);
         ex[1] = (struct userboot_handle){
             SR_USER + 1, khandle_from_new((struct kobject *)call_c, RIGHTS_BASIC | RIGHTS_IO)
         };
         nex = 2;
     }
     char mode[24];
-    ksnprintf(mode, sizeof(mode), "bench-%s", what);
+    ksnprintf(mode, sizeof(mode), "bench-%s", rw ? "call" : what);
     struct process *client = uspawn(j, mode, cpu, ex, nex);
     if (trace) {
         /* The client is the lead: its calls are what the window counts. */
@@ -1322,6 +1327,10 @@ static void user_benches(void)
                       "user: process->process channel_call, same CPU, FPU call rule (P)");
     user_bench_off_on(SW_LOCKDEP, "call", cpu_p, cpu_p,
                       "user: process->process channel_call, same CPU, lock checker (P)");
+    user_bench_off_on(SW_HANDOFF, "call", cpu_p, cpu_p,
+                      "user: process->process channel_call, same CPU, hand-off (P)");
+    user_bench_off_on(SW_HANDOFF, "rwcall", cpu_p, cpu_p,
+                      "user: call to a reply-and-wait server, same CPU (P)");
     user_bench("dcall", cpu_p, cpu_p, "user: the same with a 5 s deadline per call (P)");
     user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1,
                       "user: thread->thread channel_call, 1 process (P)");

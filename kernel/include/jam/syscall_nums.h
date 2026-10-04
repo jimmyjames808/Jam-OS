@@ -17,6 +17,7 @@
 #define SYS_channel_write        21
 #define SYS_channel_read         22
 #define SYS_channel_call         23
+#define SYS_channel_reply_wait   24
 #define SYS_event_create         30
 #define SYS_event_signal         31
 #define SYS_timer_create         32

@@ -14,6 +14,9 @@
  *                committing a zeroed page, installing it, returning
  *   bench-call   channel_call to a bench-echo server on SR_USER + 1
  *   bench-echo   the server: read, write the same bytes back
+ *   bench-rwecho the same server on channel_reply_wait: one system call
+ *                per request (the reply to the last and the wait for the
+ *                next), where bench-echo makes four
  *   bench-dcall  bench-call with a deadline on every call, made as libos
  *                makes one for a file call (now() + FS_CALL_TIMEOUT): the
  *                clock read and the kernel's sleeper queue are in the time
@@ -176,6 +179,29 @@ static int b_echo(void)
     return echo_on(startup_handle(SR_USER));
 }
 
+/* bench-echo's server on channel_reply_wait: each request is read straight
+ * into buf, and goes back from buf in the next call (the reply's bytes are
+ * copied in before the next request is copied out). */
+static int b_rwecho(void)
+{
+    handle_t ch = startup_handle(SR_USER);
+    uint8_t buf[256];
+    uint32_t nb = 0;
+    struct channel_reply_wait_args a = {
+        .h = HANDLE_INVALID, .wait = ch, .bytes = (uint64_t)(uintptr_t)buf,
+        .bytes_cap = sizeof(buf), .actual_bytes = (uint64_t)(uintptr_t)&nb,
+        .deadline_ns = DEADLINE_NEVER,
+    };
+    for (;;) {
+        status_t st = jam_channel_reply_wait(&a);
+        if (st != OK)
+            return st == ERR_PEER_CLOSED ? 0 : 3;
+        a.h = ch;   /* from now on, answer the request just taken */
+        a.rbytes = (uint64_t)(uintptr_t)buf;
+        a.rn = nb;
+    }
+}
+
 static uint8_t echo_stack[16384] __attribute__((aligned(16)));
 
 static void echo_thread(void *arg)
@@ -219,6 +245,7 @@ int bench_child(int argc, char **argv)
         return b_call();
     }
     if (!strcmp(w, "echo"))  return b_echo();
+    if (!strcmp(w, "rwecho")) return b_rwecho();
     if (!strcmp(w, "tcall")) return b_tcall();
     return 127;
 }

@@ -7,12 +7,12 @@
  * copied once, straight into or out of the message). */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <jam/channel.h>
 #include <jam/handle.h>
 #include <jam/object.h>
 #include <jam/status.h>
-
-struct chan_bytes;   /* <jam/channel.h> */
 
 /* channels ------------------------------------------------------------------
  * (kernel/abi/channel_sys.c; semantics as in <jam/channel.h>) */
@@ -62,6 +62,38 @@ status_t sys_channel_call_from(struct handle_table *t, handle_t h, const struct 
                                const handle_t *wh, uint32_t whn, const struct chan_bytes *r,
                                uint32_t *ractual, handle_t *rh, uint32_t rhcap,
                                uint32_t *rhactual, uint64_t deadline_ns);
+/* One channel_reply_wait (abi/syscalls.def has the rules): the reply,
+ * where the next request comes from, and the results. */
+struct chan_reply_wait {
+    handle_t           h;             /* reply on it; HANDLE_INVALID: no reply */
+    struct chan_bytes  reply;         /* the reply's bytes */
+    const handle_t    *reply_h;       /* its handles: they leave t once it is sent */
+    uint32_t           reply_nh;      /* how many */
+    handle_t           wait;          /* a channel end (read from it) or a port */
+    struct chan_bytes  status_out;    /* room for the reply's status_t (len 0: none) */
+    struct chan_bytes  mark;          /* room for a uint64_t 1 once the reply went out
+                                       * (len 0: none) */
+    struct chan_bytes  req;           /* channel: room for the request */
+    handle_t          *req_h;         /* channel: room for its handles' values */
+    uint32_t           req_hcap;      /* channel: how many */
+    bool               want_request;  /* the caller gave room for a channel's request
+                                       * (any of its fields set: wrong for a port) */
+    bool               want_packet;   /* the caller has room for a port packet (wrong
+                                       * for a channel) */
+    uint64_t           deadline_ns;   /* absolute */
+    /* Results. */
+    bool               is_port;       /* wait was a port: pkt holds its packet */
+    uint32_t           req_nb;        /* channel: the request's bytes (also with
+                                       * ERR_BUFFER_TOO_SMALL) */
+    uint32_t           req_nh;        /* channel: its handles (ditto) */
+    struct port_packet pkt;           /* port: the packet */
+};
+/* Needs RIGHT_WRITE on rw->h and RIGHT_READ on rw->wait. Reply handles as
+ * for sys_channel_write; slots for the request's handles are reserved
+ * before the reply goes out (ERR_NO_RESOURCES up front, nothing sent).
+ * The reply's wake may hand this CPU straight to its caller (the direct
+ * hand-off, <jam/sched.h>): the wait that follows blocks. */
+status_t sys_channel_reply_wait(struct handle_table *t, struct chan_reply_wait *rw);
 /* end channels */
 
 /* ports, events, timers, waiting ---------------------------------------------
