@@ -68,7 +68,9 @@
  * crash or give-up also makes devmgr's exit code 1). Each restart makes
  * the device's handles from scratch: a new dma_cap (Bus Master Enable
  * off until the new driver has quiesced the device), a new interrupt
- * object, the function woken to D0.
+ * object, the function woken to D0. Filesystem services follow the rule
+ * of a service that outlives its process instead (below, "A filesystem
+ * service gets").
  *
  * THE RECONNECT RULE for clients of any driver devmgr runs: when a call
  * on the service channel fails with ERR_PEER_CLOSED (the driver died),
@@ -124,7 +126,8 @@
 #define DEVMGR_GET_DRIVER   0x00030003u
 /* (dev) -> (): kill the driver's job and answer once it is dead. That is
  * a death like any other: supervision restarts it (not counted as a
- * problem). */
+ * problem). A filesystem service's is a deliberate kill: not counted
+ * toward giving up, and restarted at once (the warm spare promoted). */
 #define DEVMGR_KILL         0x00030004u
 /* (dev) -> (): kill the driver if it still runs, then bind the device
  * again from scratch (new interrupt object, dma_cap, channel), with a
@@ -137,7 +140,8 @@
 #define DEVMGR_DRIVER_VIEW  0x00030006u
 /* (dev) -> u32 state (DEVMGR_SUP_*), restarts (since boot), the last
  * backoff in ms, and for a PCI function its DMA quarantine: pages held now
- * and pages found written while held since boot. */
+ * and pages found written while held since boot (for a filesystem
+ * service: see DEVMGR_FS_MOUNT). */
 #define DEVMGR_SUPERVISION  0x00030007u
 /* () -> (): start the crash-test driver (drv/crasher) as a supervised
  * driver of the software device DEVMGR_TEST_VENDOR:DEVMGR_TEST_DEVICE
@@ -173,10 +177,13 @@
  * ERR_NO_RESOURCES: too many calls are waiting already.
  *
  * The generation changes whenever the list does: a mount appears, its disk
- * goes away (unplugged, or its usb-storage died), its fat service dies
- * (the mount is gone until the restart) or is restarted (it is back, with
- * a new channel: calls on the old one fail ERR_PEER_CLOSED; REMOUNT is
- * such a restart). /esp and /data are the disk Jam OS booted from:
+ * goes away (unplugged, or its usb-storage died), or it is remounted
+ * (REMOUNT, ESP_WRITE: a new channel, calls on the old one fail
+ * ERR_PEER_CLOSED). A fat service started again after a death is not a
+ * change: devmgr keeps its channel while no instance runs (the mount stays
+ * listed, and calls on it wait for the next instance), and the next
+ * instance carries on with the views and files the dead one made.
+ * /esp and /data are the disk Jam OS booted from:
  * partition 1 of type 0xEF holding boot/jamos.elf, partition 2 of type
  * 0x0C. Any other disk's FAT partitions (MBR types 01 04 06 0B 0C 0E EF,
  * or a disk with no table that is one FAT volume) take the lowest free
@@ -296,11 +303,33 @@ struct devmgr_mounts_rep {
  * fixed): FAT_SR_BLOCK, a `block` channel from storage.open_partition
  * (opened read-only for the ESP and for every /usbN not remounted),
  * FAT_SR_SERVE, its mount point as argv[1], and FAT_ARG_FORMAT as argv[2]
- * for the boot disk's data partition only. It is supervised like a driver:
- * exit 0 is the end of it; a crash, a kill or any other exit is restarted
- * with backoff, each time
- * with a new `block` channel and a new `fs` channel, and given up on after
- * 5 restarts in a minute. */
+ * for the boot disk's data partition only; and SR_STATE (its state VMO)
+ * and SR_KEEP (its keep channel), which outlive it (<fatsvc.h>). It is
+ * supervised like a driver, but by the rule of a service that outlives
+ * its process (docs/M11.6-PLAN.md, Q5): exit 0 is the end of it; a
+ * deliberate kill (KILL) is not counted and is restarted at once; a crash
+ * or any other exit is counted, the first in a minute restarted at once,
+ * later ones with backoff (100 ms doubling to 5 s), and the 6th counted
+ * death in a minute gives up. Each restart gets a new `block` channel and
+ * the same `fs` channel. A restart is the warm spare, promoted: one fat
+ * started with nothing but SR_STANDBY (process name "fat-spare"), waiting
+ * for whichever mount needs it first; a new spare starts shortly after.
+ * Without one (the boot word `nospare`, or none ready yet) a new process
+ * is started. */
+
+/* A filesystem service named by its mount rather than its disk, for
+ * GET_DRIVER, KILL and SUPERVISION (a promoted spare keeps its process
+ * name, "fat-spare", so init's `kill fat-data` asks this way): vendor
+ * DEVMGR_FS_MOUNT, device DEVMGR_MOUNT_ESP, DEVMGR_MOUNT_DATA (the boot
+ * disk's /esp, /data) or DEVMGR_MOUNT_USB + N (/usbN), instance 0, or
+ * DEVMGR_MOUNT_TEST for a test disk's (/esp-test, /data-test,
+ * /usbN-test). For a filesystem service SUPERVISION's d is the restarts
+ * that promoted the warm spare and e is 1 while a spare waits. */
+#define DEVMGR_FS_MOUNT     0xfffau
+#define DEVMGR_MOUNT_ESP    0u
+#define DEVMGR_MOUNT_DATA   1u
+#define DEVMGR_MOUNT_USB    0x100u
+#define DEVMGR_MOUNT_TEST   1u
 
 /* USB class drivers are named by DEVMGR_USB_IFACE as the vendor, the
  * interface number as the device and usb-bus's device id (usbbus.device's

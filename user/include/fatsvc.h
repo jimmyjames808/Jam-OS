@@ -14,10 +14,30 @@
  *   SR_RESOURCE    optional: the root resource, used only to read the
  *                  real-time clock for file timestamps. Without it every
  *                  timestamp is 2026-01-01 00:00:00.
+ *   SR_STATE       optional: its state VMO (<svcstate.h>), FAT_STATE_SIZE
+ *                  bytes, made and kept by devmgr across its restarts, with
+ *                  SVCSTATE_SERVICE_RIGHTS. An instance that finds a dead
+ *                  one's state in it carries on from it: the volume as it
+ *                  was (no mount), its open files and views, the request
+ *                  in progress finished exactly once (user/services/fat/
+ *                  adopt.c). Without it fat makes a state of its own.
+ *   SR_KEEP        optional: its end of the keep channel (<keep.h>); devmgr
+ *                  is the keeper, fat puts every open file's and view's
+ *                  handles with it, and a successor is handed them back.
  *
- * argv[1], if given, names the instance in its log lines ("/data").
+ * devmgr also starts one fat with nothing but SR_STANDBY, the warm spare
+ * (<svcstate.h>), and promotes it with the handles above when a mount's
+ * fat dies.
  *
- * Formatting is off unless argv[2] is FAT_ARG_FORMAT. Only then, and only
+ * argv[1], if given, names the instance in its log lines ("/data"). The
+ * words after it may be, in any order: FAT_ARG_FORMAT (below), and for an
+ * instance that replaces one that ended, FAT_ARG_KILLED (a deliberate
+ * kill) or FAT_ARG_CRASHED (any other end): only a crash counts against
+ * the request in progress (docs/M11.6-PLAN.md, Q1: a request in progress
+ * at two crashes is answered ERR_IO and dropped). A test that starts fat
+ * itself may add test powers (user/services/fat/test.c).
+ *
+ * Formatting is off unless a word is FAT_ARG_FORMAT. Only then, and only
  * on a writable channel, is a blank partition (no boot signature in its
  * first sector) formatted, label JAMOS-DATA. devmgr passes the flag for
  * one partition only: the data partition of the disk Jam OS booted from.
@@ -28,7 +48,7 @@
  * or the disk went away); 1 the volume can't be served and a restart may
  * help (a disk error); FAT_EXIT_NO_VOLUME there is no FAT volume fat can
  * serve on the partition (and nothing to format): a restart would find
- * the same. */
+ * the same; FAT_EXIT_TEST a test power ended it (test.c). */
 #pragma once
 
 #include <jam/startup.h>
@@ -37,5 +57,13 @@
 #define FAT_SR_SERVE (SR_USER + 2)   /* SR_DRIVER(DR_SERVE) */
 #define FAT_SR_CTL   (SR_USER + 3)
 
+/* SR_STATE's size: room for fat's layout (svcstate_size of it, about
+ * 1.3 MiB) and its growth. Pages are committed only as fat uses them, so
+ * room to spare costs nothing; svcstate_open refuses a smaller VMO. */
+#define FAT_STATE_SIZE (4ull << 20)
+
 #define FAT_ARG_FORMAT     "format-if-blank"
+#define FAT_ARG_KILLED     "killed"
+#define FAT_ARG_CRASHED    "crashed"
 #define FAT_EXIT_NO_VOLUME 2
+#define FAT_EXIT_TEST      3

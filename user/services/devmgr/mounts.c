@@ -5,10 +5,13 @@
  * services). This file keeps the list as it was last handed out: whenever
  * something may have changed it (a service started or ended, a disk came
  * or went) mounts_update compares, and only a real difference moves the
- * generation on. A restarted service differs by its start generation, so a
- * restart is always a new generation even though the path is the same: its
- * channel is a new one. Generations count up from a number taken from the
- * clock (first_generation says why).
+ * generation on. A mount with a new `fs` channel (a remount, a service
+ * started again after it was given up on) differs by its channel's
+ * generation, so it is a new generation even though the path is the same;
+ * a filesystem service restarted on the channel devmgr kept is not (fat
+ * keeps its views and files across its deaths: namespaces need nothing
+ * new). Generations count up from a number taken from the clock
+ * (first_generation says why).
  *
  * A call whose caller already has the current generation is kept in
  * waiters[] (its channel and transaction id) and answered by the next

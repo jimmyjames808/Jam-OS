@@ -1,0 +1,92 @@
+# devmgr's warm spare fat (user/services/devmgr/spare.c); use
+# tools/fat-spare-test.sh (it counts the log's lines and prints the
+# numbers). A spare waits once the stick's filesystems are up; `ps` shows
+# it as fat-spare. fat-data is killed again and again while files are
+# written and read through /data (and logd writes the boot's log there all
+# the while): each kill promotes the spare (said with the time it took and
+# the kill to the first answer), a new spare starts, the mount never goes
+# (the shell's /data is the channel devmgr kept), and the files are there.
+# Then fat-esp once, and a burst of ten kills in a row, faster than a new
+# spare starts (some start a process instead); nothing is given up on (a
+# deliberate kill doesn't count).
+# devmgr's lines reach the serial port through the kernel log, the
+# shell's through the console: their order isn't fixed, hence `seen`.
+# A `sleep 1` before each kill gives the next spare time to start. Each
+# file is synced before the kill, which a successor no longer needs (it
+# carries on from the dead one's state: fat-restart.txt tests that).
+# (The markers are echoed as fs-""1 so the typed line itself never matches.)
+wait 120 Jam OS shell
+wait jam>
+seen 60 init: /data mounted
+seen 60 devmgr: a warm spare bin/fat waits
+send ps; echo fs-""1
+wait fs-1
+wait jam>
+send write /data/spare-0.txt written before the kills; echo fs-""2
+wait fs-2
+wait jam>
+send sync && kill fat-data && cat /data/spare-0.txt; echo fs-""3
+wait shell: killed process
+wait written before the kills
+wait fs-3
+wait jam>
+seen 10 devmgr: fat-data: spare promoted
+seen 10 devmgr: fat-data: kill to first answer
+
+# ---- eight more: a file written before each kill, read after it ------------------------------
+send sleep 1; write /data/spare-1.txt k-""1 && sync && kill fat-data && cat /data/spare-1.txt; echo fs-""4
+wait k-1
+wait fs-4
+send sleep 1; write /data/spare-2.txt k-""2 && sync && kill fat-data && cat /data/spare-2.txt; echo fs-""5
+wait k-2
+wait fs-5
+send sleep 1; write /data/spare-3.txt k-""3 && sync && kill fat-data && cat /data/spare-3.txt; echo fs-""6
+wait k-3
+wait fs-6
+send sleep 1; write /data/spare-4.txt k-""4 && sync && kill fat-data && cat /data/spare-4.txt; echo fs-""7
+wait k-4
+wait fs-7
+send sleep 1; write /data/spare-5.txt k-""5 && sync && kill fat-data && cat /data/spare-5.txt; echo fs-""8
+wait k-5
+wait fs-8
+send sleep 1; write /data/spare-6.txt k-""6 && sync && kill fat-data && cat /data/spare-6.txt; echo fs-""9
+wait k-6
+wait fs-9
+send sleep 1; write /data/spare-7.txt k-""7 && sync && kill fat-data && cat /data/spare-7.txt; echo fs-""10
+wait k-7
+wait fs-10
+send sleep 1; write /data/spare-8.txt k-""8 && sync && kill fat-data && cat /data/spare-8.txt; echo fs-""11
+wait k-8
+wait fs-11
+wait jam>
+send cat /data/spare-0.txt /data/spare-1.txt /data/spare-8.txt | wc -l | grep ^3$ && echo ok-""three; echo fs-""12
+wait ok-three
+wait fs-12
+wait jam>
+
+# ---- /esp's service too ------------------------------------------------------------------------
+send sleep 1; kill fat-esp && ls /esp/boot | grep -c jamos.elf | grep ^1$ && echo ok-""esp; echo fs-""13
+wait ok-esp
+wait fs-13
+wait jam>
+seen 10 devmgr: fat-esp: spare promoted
+
+# ---- a burst: ten kills in a row, then the mount still answers -----------------------------------
+send sleep 1; repeat 10 kill fat-data; cat /data/spare-5.txt; echo fs-""14
+wait k-5
+wait fs-14
+wait jam>
+send sleep 2; ls /data | grep -c "^spare-" | grep ^9$ && echo ok-""nine; echo fs-""15
+wait ok-nine
+wait fs-15
+wait jam>
+# logd carried on: the kills' own lines are in the boot's log on /data
+send sleep 3; grep -c "fat-data: spare promoted" /data/logs/boot-0001.txt | grep -v ^0$ && echo ok-""logd; echo fs-""16
+wait ok-logd
+wait fs-16
+wait jam>
+send ps; echo fs-""17
+wait fs-17
+wait jam>
+send reboot -f
+wait reboot: resetting

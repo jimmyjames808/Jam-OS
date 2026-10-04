@@ -2,10 +2,17 @@
  * off the exception vectors and masked, and every I/O APIC pin is masked;
  * ioapic_route_isa then unmasks single legacy ISA lines (COM1), applying
  * the MADT's interrupt source overrides. Each I/O APIC is reached through
- * its index/data register pair (IOREGSEL, IOWIN). */
+ * its index/data register pair (IOREGSEL, IOWIN).
+ *
+ * Every routed pin is kept in routes[], so interrupt remapping can rewrite
+ * it in remappable format when it is turned on, and irq_remap_off can mask
+ * it before a kexec. The entry's remappable format is the remapping code's
+ * business: this file gets the entry ready made (irq_remap_alloc_ioapic)
+ * and only writes, masks and unmasks it. */
 #include <jam/acpi.h>
 #include <jam/ioapic.h>
 #include <jam/irq.h>
+#include <jam/irq_remap.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/x86.h>
@@ -22,6 +29,10 @@ struct ioapic {
 };
 
 static struct ioapic ioapics[ACPI_MAX_IOAPICS];
+
+/* The routed pins (see ioapic.h: written at boot only). */
+static struct ioapic_route routes[IOAPIC_MAX_ROUTES];
+static uint32_t nroutes;
 
 static uint32_t io_read(const struct ioapic *io, uint32_t reg)
 {
@@ -65,37 +76,193 @@ void ioapic_init(void)
     }
 }
 
+/* ---- one pin's entry ------------------------------------------------------ */
+
 /* MADT interrupt-source-override flags: bits 0-1 polarity (0 = bus
  * default, 1 = active high, 3 = active low), bits 2-3 trigger (0 = bus
  * default, 1 = edge, 3 = level). ISA's default is edge, active high. */
 #define REDIR_ACTIVE_LOW (1u << 13)
 #define REDIR_LEVEL      (1u << 15)
 
+static const struct ioapic *ioapic_of(const struct ioapic_route *r)
+{
+    for (uint32_t i = 0; i < acpi.ioapic_count; i++)
+        if (acpi.ioapics[i].id == r->ioapic_id)
+            return &ioapics[i];
+    return NULL;
+}
+
+static uint64_t read_entry(const struct ioapic *io, uint8_t pin)
+{
+    uint32_t lo = io_read(io, REG_REDIR + pin * 2u);
+    return (uint64_t)io_read(io, REG_REDIR + pin * 2u + 1) << 32 | lo;
+}
+
+/* Write a pin's whole entry: the low half (vector, mask) first with the
+ * mask set, so the pin never sends with a half-written entry; then the
+ * high half (the destination, or the remappable index); then the low half
+ * as asked. */
+static void write_entry(const struct ioapic *io, uint8_t pin, uint64_t e)
+{
+    io_write(io, REG_REDIR + pin * 2u, (uint32_t)e | REDIR_MASKED);
+    io_write(io, REG_REDIR + pin * 2u + 1, (uint32_t)(e >> 32));
+    io_write(io, REG_REDIR + pin * 2u, (uint32_t)e);
+}
+
+static void set_masked(const struct ioapic *io, uint8_t pin, bool masked)
+{
+    uint32_t lo = io_read(io, REG_REDIR + pin * 2u);
+    io_write(io, REG_REDIR + pin * 2u, masked ? lo | REDIR_MASKED : lo & ~REDIR_MASKED);
+}
+
+/* The compatibility-format entry, unmasked: fixed delivery, physical
+ * destination (the APIC id in bits 63:56). */
+static uint64_t compat_entry(const struct ioapic_route *r)
+{
+    uint64_t lo = r->vector | (r->active_low ? REDIR_ACTIVE_LOW : 0) |
+                  (r->level ? REDIR_LEVEL : 0);
+    return (uint64_t)r->apic_id << 56 | lo;
+}
+
+/* r's entry in remappable format, masked, with a fresh remapping entry
+ * (r->remap). */
+static status_t remap_entry(struct ioapic_route *r, uint64_t *out)
+{
+    struct irq_remap_pin p = { r->apic_id, r->vector, r->level, r->active_low };
+    uint32_t index;
+    status_t st = irq_remap_alloc_ioapic(r->ioapic_id, &p, &index, out);
+    if (st == OK)
+        r->remap = index;
+    return st;
+}
+
+/* The route for gsi (on ioapics[io_index]): the one there, or a new one. */
+static struct ioapic_route *route_slot(uint32_t io_index, uint32_t gsi)
+{
+    for (uint32_t i = 0; i < nroutes; i++)
+        if (routes[i].gsi == gsi)
+            return &routes[i];
+    if (nroutes == IOAPIC_MAX_ROUTES)
+        return NULL;
+    struct ioapic_route *r = &routes[nroutes++];
+    *r = (struct ioapic_route){ .ioapic_id = acpi.ioapics[io_index].id, .gsi = gsi,
+                                .pin = (uint8_t)(gsi - ioapics[io_index].gsi_base) };
+    return r;
+}
+
+/* Route r (its fields set) on io: masked while it changes, then unmasked.
+ * The pin's old remapping entry, if any, is freed once the new entry is in. */
+static bool program(const struct ioapic *io, struct ioapic_route *r)
+{
+    set_masked(io, r->pin, true);
+    uint32_t old = r->remap;
+    r->remap = 0;
+    uint64_t e = compat_entry(r);
+    bool ok = !irq_remap_on() || remap_entry(r, &e) == OK;
+    if (ok)
+        write_entry(io, r->pin, e & ~(uint64_t)REDIR_MASKED);
+    irq_remap_free(old);   /* the pin is masked or names its new entry */
+    return ok;
+}
+
 bool ioapic_route_isa(uint8_t irq, uint8_t vector, uint32_t dest_apic_id)
 {
-    uint32_t gsi = irq, low = vector;   /* fixed delivery, physical destination */
+    uint32_t gsi = irq;
+    bool active_low = false, level = false;
     for (uint32_t i = 0; i < acpi.iso_count; i++) {
         if (acpi.isos[i].irq != irq)
             continue;
         gsi = acpi.isos[i].gsi;
-        if ((acpi.isos[i].flags & 3) == 3)
-            low |= REDIR_ACTIVE_LOW;
-        if (((acpi.isos[i].flags >> 2) & 3) == 3)
-            low |= REDIR_LEVEL;
+        active_low = (acpi.isos[i].flags & 3) == 3;
+        level = ((acpi.isos[i].flags >> 2) & 3) == 3;
     }
-    if (dest_apic_id > 0xff)
-        return false;   /* the redirection entry holds an 8-bit APIC id */
+    if (!irq_remap_on() && dest_apic_id > 0xff)
+        return false;   /* the compatibility entry holds an 8-bit APIC id */
     for (uint32_t i = 0; i < acpi.ioapic_count; i++) {
         struct ioapic *io = &ioapics[i];
         if (gsi < io->gsi_base || gsi >= io->gsi_base + io->pins)
             continue;
-        uint32_t pin = gsi - io->gsi_base;
-        io_write(io, REG_REDIR + pin * 2 + 1, dest_apic_id << 24);
-        io_write(io, REG_REDIR + pin * 2, low);
-        kprintf("ioapic: ISA IRQ %u -> GSI %u -> vector 0x%x on lapic %u (%s, active %s)\n", irq,
-                gsi, vector, dest_apic_id, low & REDIR_LEVEL ? "level" : "edge",
-                low & REDIR_ACTIVE_LOW ? "low" : "high");
+        struct ioapic_route *r = route_slot(i, gsi);
+        if (!r)
+            return false;
+        r->vector = vector;
+        r->level = level;
+        r->active_low = active_low;
+        r->apic_id = dest_apic_id;
+        if (!program(io, r))
+            return false;   /* left masked */
+        kprintf("ioapic: ISA IRQ %u -> GSI %u -> vector 0x%x on lapic %u (%s, active %s%s)\n",
+                irq, gsi, vector, dest_apic_id, level ? "level" : "edge",
+                active_low ? "low" : "high", r->remap ? ", remapped" : "");
         return true;
     }
     return false;
+}
+
+uint32_t ioapic_route_count(void)
+{
+    return nroutes;
+}
+
+bool ioapic_route_get(uint32_t i, struct ioapic_route *out, uint64_t *out_entry)
+{
+    if (i >= nroutes)
+        return false;
+    *out = routes[i];
+    const struct ioapic *io = ioapic_of(&routes[i]);
+    *out_entry = io ? read_entry(io, routes[i].pin) : 0;
+    return true;
+}
+
+/* ---- interrupt remapping turned on, and off --------------------------------- */
+
+status_t ioapic_remap_prepare(void)
+{
+    for (uint32_t i = 0; i < nroutes; i++) {
+        struct ioapic_route *r = &routes[i];
+        const struct ioapic *io = ioapic_of(r);
+        if (!io)
+            continue;
+        set_masked(io, r->pin, true);
+        uint64_t e;
+        status_t st = remap_entry(r, &e);
+        if (st != OK) {
+            set_masked(io, r->pin, false);   /* this one is still as it was */
+            ioapic_remap_undo();
+            return st;
+        }
+        write_entry(io, r->pin, e);   /* masked: remapping is not on yet */
+    }
+    return OK;
+}
+
+void ioapic_remap_unmask(void)
+{
+    for (uint32_t i = 0; i < nroutes; i++) {
+        const struct ioapic *io = ioapic_of(&routes[i]);
+        if (io && routes[i].remap)
+            set_masked(io, routes[i].pin, false);
+    }
+}
+
+void ioapic_remap_undo(void)
+{
+    for (uint32_t i = 0; i < nroutes; i++) {
+        struct ioapic_route *r = &routes[i];
+        const struct ioapic *io = ioapic_of(r);
+        if (!io || !r->remap)
+            continue;
+        write_entry(io, r->pin, compat_entry(r));
+        irq_remap_free(r->remap);
+        r->remap = 0;
+    }
+}
+
+void ioapic_mask_routed(void)
+{
+    for (uint32_t i = 0; i < nroutes; i++) {
+        const struct ioapic *io = ioapic_of(&routes[i]);
+        if (io)
+            set_masked(io, routes[i].pin, true);
+    }
 }

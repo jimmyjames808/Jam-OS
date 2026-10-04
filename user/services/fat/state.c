@@ -12,13 +12,17 @@
  * the header and both slots at the start (a request is read straight into
  * a slot, which must never fault): two slots of 68 KiB plus a page each.
  *
- * Today fat makes the VMO itself, at every start, before anything else:
- * a new VMO is zeros, as fat's tables were when they were its own static
- * memory, so fat starts exactly as it did. Its pages are committed as they
- * are touched, but for two areas committed ahead, so that running out of
- * memory is a refusal and never a fault: the undo copy's (at the start:
- * every operation writes it) and the hold's data (hold.c, a chunk at a time
- * as it grows).
+ * The VMO is devmgr's (SR_STATE), made once per mount and handed to each
+ * instance, or, without SR_STATE (a test's RAM disk), one fat makes itself:
+ * a new VMO is zeros. The state is bound to the instance's name and the
+ * partition's size (the binding svcstate checks), so a state can't be
+ * taken for another mount's. A state that isn't adopted (new, refused by
+ * svcstate, or given up on by adopt.c) is set up empty (state_reset)
+ * before anything else uses it: a refused one holds whatever it held.
+ * Its pages are committed as they are touched, but for two areas committed
+ * ahead, so that running out of memory is a refusal and never a fault: the
+ * undo copy's (at the start: every operation writes it) and the hold's
+ * data (hold.c, a chunk at a time as it grows).
  *
  * Its handle and mapping are this instance's own: fat never closes or
  * unmaps them; they go with the process. */
@@ -45,21 +49,50 @@ struct fat_state *kept;
 static handle_t state_vmo;     /* ours: the VMO under kept */
 static struct svcstate svc;    /* its mapping */
 
-status_t state_open(void)
+/* What the state belongs to: the instance's name ("/data") and the
+ * partition's size in sectors. */
+static void binding(uint8_t out[SVCSTATE_BINDING])
 {
-    const struct svcstate_layout layout = {
+    memset(out, 0, SVCSTATE_BINDING);
+    size_t n = strnlen(vol.name, SVCSTATE_BINDING - 9);
+    memcpy(out, vol.name, n);
+    memcpy(out + SVCSTATE_BINDING - 8, &vol.blocks, 8);
+}
+
+status_t state_open(bool *adopted)
+{
+    struct svcstate_layout layout = {
         .kind = FAT_STATE_KIND, .layout = FAT_STATE_LAYOUT,
         .req_cap = FAT_REQ_CAP, .rep_cap = FAT_REP_CAP,
         .user_size = sizeof(struct fat_state),
     };
-    enum svcstate_start how;
-    status_t st = svcstate_create(svcstate_size(&layout), &state_vmo);
+    binding(layout.binding);
+    enum svcstate_start how = SVCSTATE_FRESH;
+    state_vmo = startup_handle(SR_STATE);
+    status_t st = state_vmo ? OK : svcstate_create(svcstate_size(&layout), &state_vmo);
     if (st == OK)
         st = svcstate_open(state_vmo, &layout, &svc, &how);
     if (st != OK)
         return st;
-    kept = svcstate_user(&svc);   /* a new VMO: zeros, fresh */
-    return state_commit(&kept->undo, sizeof(kept->undo));
+    kept = svcstate_user(&svc);
+    *adopted = how == SVCSTATE_ADOPTED;
+    st = state_commit(&kept->undo, sizeof(kept->undo));
+    if (st == OK && !*adopted)
+        state_reset(false);
+    return st;
+}
+
+void state_reset(bool keep_views)
+{
+    /* Everything but the hold's data, which nothing reads past `held`, and
+     * the views if they stay: never copied out and back, so a death in the
+     * middle leaves them as they were. */
+    size_t views = offsetof(struct fat_state, views), after = views + sizeof(kept->views);
+    uint8_t *p = (uint8_t *)kept;
+    memset(p, 0, views);
+    memset(p + after, 0, offsetof(struct fat_state, hold.data) - after);
+    if (!keep_views)
+        memset(kept->views, 0, sizeof(kept->views));
 }
 
 status_t state_commit(const void *p, size_t len)

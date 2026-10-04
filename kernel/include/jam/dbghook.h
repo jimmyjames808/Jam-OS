@@ -25,6 +25,9 @@ enum {
                               sending endpoint) */
     DBG_VMO_WRITE_COPY,    /* vmo_write, a page got, before the bytes are copied into it; no
                               lock held (arg: the VMO) */
+    DBG_VTD_FAULT,         /* vtd_fault.c's log thread, a fault record taken from a unit's
+                              ring, before it is logged; no lock held (arg: struct
+                              vtd_fault_rec, vtd_internal.h) */
     DBG_N
 };
 

@@ -89,6 +89,7 @@ void undo_begin(enum fat_op kind, uint64_t op, uint64_t seq, const struct fat_fi
     struct fat_undo *u = &kept->undo;
     __atomic_store_n(&u->op, 0, __ATOMIC_RELEASE);   /* no copy while it is being made */
     u->seq = seq;
+    u->closing = kind == FAT_OP_CLOSE ? (uint32_t)(f - kept->files) : 0;
     u->used = 0;
     u->opens = 0;
     u->held = kept->hold.held;
@@ -194,6 +195,7 @@ bool undo_restore(void)
     }
     restore_hold(u);
     memset(&kept->post, 0, sizeof(kept->post));
+    kept_cancel();   /* slots it closed are the state's again */
     cache_forget(0, UINT32_MAX);   /* FatFs's sectors are 32 bits */
     dirs_forget();
     return true;

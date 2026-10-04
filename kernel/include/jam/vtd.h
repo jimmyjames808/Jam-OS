@@ -11,9 +11,10 @@
  * (kernel/dev/vtd_unit.c).
  *
  * With the boot word `iommu=on` (off by default), vtd_units_start then
- * runs each unit's invalidation queue and its fault reporting, and
- * iommu_boot (<jam/iommu.h>) turns DMA translation on. Without it no
- * VT-d register is ever written. The design for the IOMMU itself is docs/M11-PLAN.md. */
+ * runs each unit's invalidation queue and its fault reporting and turns
+ * interrupt remapping on (kernel/dev/vtd_irq.c), and iommu_boot
+ * (<jam/iommu.h>) turns DMA translation on. Without it no VT-d register
+ * is ever written. The design for the IOMMU itself is docs/M11-PLAN.md. */
 #pragma once
 
 #include <stdbool.h>
@@ -194,10 +195,10 @@ bool vtd_iommu_wanted(const char *cmdline);
 
 /* With `iommu=on`: start every unit the probe could read: its invalidation
  * queue, its fault interrupt and the thread that logs faults ("vtd:"
- * lines; a problem goes to the RESULTS box). Translation and interrupt
- * remapping stay as the firmware left them. Without the word it does
- * nothing at all. Once, at boot, after vtd_probe; interrupts on, no lock
- * held. */
+ * lines; a problem goes to the RESULTS box); then interrupt remapping
+ * (<jam/irq_remap.h>). Translation stays as the firmware left it. Without
+ * the word it does nothing at all. Once, at boot, after vtd_probe and
+ * before any MSI is programmed; interrupts on, no lock held. */
 void vtd_units_start(void);
 
 /* Does [phys, phys + len) touch any unit's register set (from the DMAR

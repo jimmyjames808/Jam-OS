@@ -34,6 +34,8 @@ static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
     bool usb = q->vendor == DEVMGR_USB_IFACE;
     if (q->vendor == DEVMGR_FS_SVC)
         return fs_find(q->instance, q->device);
+    if (q->vendor == DEVMGR_FS_MOUNT)
+        return fs_find_mount(q->device, q->instance);
     if (q->vendor == DEVMGR_PCI_CLASS)
         return class_find(q->instance, q->device);
     for (unsigned i = 0; i < ndevs; i++) {
@@ -77,6 +79,7 @@ static status_t kill_request(struct binding *b)
 {
     if (b->state != DEVMGR_SUP_RUNNING)
         return OK;   /* nothing runs */
+    b->kill_at = now();   /* a filesystem service's restart is timed from here (spare.c) */
     kill_driver(b);
     signals_t seen;
     status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED,
@@ -195,6 +198,10 @@ static void supervision(const struct binding *b, struct devmgr_rep *r)
     r->a = b->state;
     r->b = b->restarts;
     r->c = b->backoff_ms;
+    if (b->kind == BIND_FS) {
+        r->d = b->promoted;
+        r->e = spare_waits();
+    }
     if (b->kind == BIND_PCI) {
         struct pci_dev_info now;
         if (jam_pci_enum(pci_res, b->index, &now) == OK) {
