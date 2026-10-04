@@ -37,7 +37,7 @@
 static const char *const kept_words[] = {
     "shell", "verbose", "nosplash", "nousb", "smp=loader", "nopcid", "forcepcid",
     "nodeadline", "noserialirq", "nooneshot", "nofpuopt", "nofpucall", "nokmcache", "nospinidle",
-    "noplaceorder", "noaffinepair", "hidboot", "net", "nospare",
+    "noplaceorder", "noaffinepair", "hidboot", "net", "nospare", "nolockdep",
 };
 /* ... and key=value words. */
 static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=", "reset=" };

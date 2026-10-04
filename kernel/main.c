@@ -437,6 +437,7 @@ _Noreturn void kmain(struct boot_info *bi)
     percpu_set_gs(&cpu0);   /* spinlocks need this_cpu() from here on */
     boot = bi;
     cmdline_set(bi->cmdline);
+    lockdep_boot();         /* `nolockdep`: no lock is checked from here on */
     bool has_serial = serial_init();
     fbcon_init(&bi->fb, splash_boot());
 

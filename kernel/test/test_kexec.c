@@ -273,6 +273,8 @@ KTEST(kexec_next_cmdline_words)
     KT_ASSERT(!strcmp(buf, "hidboot"));
     kexec_next_cmdline("nospare init", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "nospare"));
+    kexec_next_cmdline("bench nolockdep", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "nolockdep"));
     /* The disk the machine booted from goes on from kernel to kernel. */
     kexec_next_cmdline("shell bootdisk=3792991605 init", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "shell bootdisk=3792991605"));
