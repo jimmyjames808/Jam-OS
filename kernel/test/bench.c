@@ -1215,18 +1215,20 @@ bool bench_user_run(const char *what, int cpu, int server_cpu, const char *label
     };
     unsigned nex = 1;
     struct process *server = NULL;
+    /* "rwcall": bench-call against the reply-and-wait server. */
+    bool rw = !strcmp(what, "rwcall");
     if (server_cpu >= 0 && channel_create(&call_c, &call_s) == OK) {
         struct userboot_handle sx = {
             SR_USER, khandle_from_new((struct kobject *)call_s, RIGHTS_BASIC | RIGHTS_IO)
         };
-        server = uspawn(j, "bench-echo", server_cpu, &sx, 1);
+        server = uspawn(j, rw ? "bench-rwecho" : "bench-echo", server_cpu, &sx, 1);
         ex[1] = (struct userboot_handle){
             SR_USER + 1, khandle_from_new((struct kobject *)call_c, RIGHTS_BASIC | RIGHTS_IO)
         };
         nex = 2;
     }
     char mode[24];
-    ksnprintf(mode, sizeof(mode), "bench-%s", what);
+    ksnprintf(mode, sizeof(mode), "bench-%s", rw ? "call" : what);
     struct process *client = uspawn(j, mode, cpu, ex, nex);
     if (trace) {
         /* The client is the lead: its calls are what the window counts. */
@@ -1325,6 +1327,10 @@ static void user_benches(void)
                       "user: process->process channel_call, same CPU, FPU call rule (P)");
     user_bench_off_on(SW_LOCKDEP, "call", cpu_p, cpu_p,
                       "user: process->process channel_call, same CPU, lock checker (P)");
+    user_bench_off_on(SW_HANDOFF, "call", cpu_p, cpu_p,
+                      "user: process->process channel_call, same CPU, hand-off (P)");
+    user_bench_off_on(SW_HANDOFF, "rwcall", cpu_p, cpu_p,
+                      "user: call to a reply-and-wait server, same CPU (P)");
     user_bench("dcall", cpu_p, cpu_p, "user: the same with a 5 s deadline per call (P)");
     user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1,
                       "user: thread->thread channel_call, 1 process (P)");

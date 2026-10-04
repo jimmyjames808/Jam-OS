@@ -249,6 +249,49 @@ KTEST(pathstat_user_call_counts)
     KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
+/* The same call against a server on channel_reply_wait (utest
+ * bench-rwecho): 2 system calls a round trip (the call; the server's one
+ * reply-and-wait) where bench-echo makes 5, 2 handle lookups (the server's
+ * reply and wait share one), and no read that finds nothing: the server's
+ * call looks at the queue before it blocks. Each message goes to a thread
+ * already waiting for it, in its writer's slot: no allocation, no job
+ * charge. Each wake hands the CPU straight to the thread it wakes, which
+ * then runs: 2 hand-offs, no queueing. */
+KTEST(pathstat_user_reply_wait_counts)
+{
+    struct path_result r;
+    if (!bench_path_ucall("rwcall", test_cpu(), test_cpu(), 16, &r)) {
+        KT_SKIP_LIVE("no bin/utest or no trace free");
+        KT_ASSERT(!"bench_path_ucall failed");
+    }
+    KT_ASSERT(r.calls > 0);
+    KT_EQ(sys100(&r, SYS_channel_call), 100);
+    KT_EQ(sys100(&r, SYS_channel_reply_wait), 100);
+    KT_ASSERT(per100(&r, PATH_SYSCALL) >= 200 && per100(&r, PATH_SYSCALL) <= 202);
+    KT_EQ(per100(&r, PATH_EMPTY_READ), 0);
+    KT_EQ(per100(&r, PATH_KMALLOC), 0);
+    KT_EQ(per100(&r, PATH_KFREE), 0);
+    KT_EQ(per100(&r, PATH_JOB), 0);
+    KT_EQ(per100(&r, PATH_KCOPY), 0);
+    KT_EQ(per100(&r, PATH_UCOPY_IN_B), 22400);   /* the two argument structs, 16 bytes each way */
+    KT_EQ(per100(&r, PATH_HANDLE), 200);
+    KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
+    KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
+    KT_IDLE_EQ(per100(&r, PATH_HANDOFF), 2 * handoffs());
+    KT_IDLE_EQ(per100(&r, PATH_FPU_RESTORE), 200);
+    KT_IDLE_EQ(per100(&r, PATH_CR3), 200);
+    /* 15 a round trip: per side the handle table, the pair and the peer's
+     * endpoint for the send, the run queue for the hand-off, its own
+     * endpoint (twice: before and after it blocks) and the scheduler's;
+     * the caller also lists itself on its endpoint first. (A rare extra
+     * one in the trace's window: not exact.) */
+    KT_IDLE_ASSERT(per100(&r, PATH_LOCK) >= 1500 && per100(&r, PATH_LOCK) <= 1510);
+    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
+    /* No deadline, no clock read, but the client's: its warm-up (calls
+     * this quick may fill the whole window) reads the clock every 64. */
+    KT_ASSERT(per100(&r, PATH_CLOCK) <= 2);
+}
+
 /* The same call with a deadline, as libos gives every file call: one more
  * system call (the clock) and one sleeper-queue entry per call. Clock
  * reads: the clock_get and the call's wait, which has a deadline (the

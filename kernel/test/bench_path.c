@@ -16,6 +16,7 @@
  *           switches, so the counts are printed per switch
  *   kcall   channel_call between two kernel threads on P
  *   ucall   process->process channel_call, both on P (utest bench-call)
+ *   rwcall  the same against a server on channel_reply_wait (bench-rwecho)
  *   dcall   the same with a deadline on every call, as libos's file calls
  *           have (bench-dcall)
  *   tcall   thread->thread channel_call inside one process on P (bench-tcall)
@@ -394,6 +395,7 @@ static const char *sys_name(uint32_t nr)
 {
     switch (nr) {
     case SYS_channel_call:    return "call";
+    case SYS_channel_reply_wait: return "reply_wait";
     case SYS_channel_read:    return "read";
     case SYS_channel_write:   return "write";
     case SYS_object_wait_one: return "wait_one";
@@ -479,6 +481,8 @@ void bench_path_run(void)
           { "client", "server" } },
         { "ucall", "user process->process channel_call, same CPU (P)", "call", 1, PATH_MK_CALL,
           { "client", "server" } },
+        { "rwcall", "user process->process channel_call, reply-and-wait server, same CPU (P)",
+          "call", 1, PATH_MK_CALL, { "client", "server" } },
         { "dcall", "user process->process channel_call with a deadline, same CPU (P)", "call",
           1, PATH_MK_CALL, { "client", "server" } },
         { "tcall", "user thread->thread channel_call, 1 process (P)", "call", 1, PATH_MK_CALL,
@@ -493,10 +497,12 @@ void bench_path_run(void)
         print_case(&cases[1], &r, mark_ps, true);
     if (bench_path_ucall("call", p, p, PATH_MARKED, &r))
         print_case(&cases[2], &r, mark_ps, true);
-    if (bench_path_ucall("dcall", p, p, PATH_MARKED, &r))
+    if (bench_path_ucall("rwcall", p, p, PATH_MARKED, &r))
         print_case(&cases[3], &r, mark_ps, true);
-    if (bench_path_ucall("tcall", p, -1, PATH_MARKED, &r))
+    if (bench_path_ucall("dcall", p, p, PATH_MARKED, &r))
         print_case(&cases[4], &r, mark_ps, true);
+    if (bench_path_ucall("tcall", p, -1, PATH_MARKED, &r))
+        print_case(&cases[5], &r, mark_ps, true);
     if (p2 >= 0 && bench_path_ucall("call", p, p2, 0, &r))
-        print_case(&cases[5], &r, mark_ps, false);
+        print_case(&cases[6], &r, mark_ps, false);
 }

@@ -14,7 +14,8 @@ void bench_cpus(int *p, int *p2);
 /* TSC cycles to picoseconds. */
 uint64_t bench_cycles_to_ps(uint64_t c);
 /* Run "utest bench-<what>" pinned to cpu (with a bench-echo server pinned
- * to server_cpu for "call"; -1: none) and wait for its result. Without
+ * to server_cpu for "call"; -1: none; "rwcall" is bench-call against
+ * bench-rwecho, the server on channel_reply_wait) and wait for its result. Without
  * `trace` its samples go into the benchmark's sample buffer; with it the
  * caller has path_begin'd a trace, which gets the client process as its
  * lead and the server as its second member and is armed once both run

@@ -55,6 +55,28 @@
 21  channel_write     status    handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, uint32_t nhandles
 22  channel_read      status    @channel_read_args
 23  channel_call      status    @channel_call_args
+# A server's reply and its wait for the next request, in one call (struct
+# channel_reply_wait_args, <jam/abi.h>). First the reply: a channel_write
+# of rbytes and rh on h (HANDLE_INVALID: none, a server's first call),
+# which goes to the channel_call waiting for its txid on the peer,
+# whichever thread or process holding h sends it. Its status goes into
+# *reply_status, and once it went out, 1 into *mark (8 bytes), before
+# anything else. Then the request: with `wait` a channel end, its next
+# message read straight into bytes and handles (the sizes as channel_read
+# gives them), waiting for one if none is queued; with a port, its next
+# packet into *packet (the server reads the channel it names). Needs
+# RIGHT_WRITE on h and RIGHT_READ on wait (one lookup when they are the
+# same handle). Errors in the arguments (flags, reserved, sizes, handles,
+# rights, types, the other form's fields) come before anything is sent.
+# A reply that fails with ERR_PEER_CLOSED (its caller's end is gone) is
+# no reason not to wait; any other reply error ends the call there with
+# that error, nothing read. So *reply_status neither OK nor
+# ERR_PEER_CLOSED: the reply failed; otherwise the result is the wait's:
+# as channel_read's (ERR_BUFFER_TOO_SMALL leaves the message queued) or
+# port_wait's, ERR_TIMED_OUT, ERR_CANCELED, ERR_PEER_CLOSED (nothing
+# queued, the peer gone). A fault writing reply_status or the mark ends
+# the call too (ERR_INVALID_ARGS), after the reply.
+24  channel_reply_wait status   @channel_reply_wait_args
 
 # events and timers ---------------------------------------------------------
 30  event_create      status    handle_t *out
