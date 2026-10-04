@@ -117,6 +117,14 @@ struct thread {
     uint64_t          partner_id;
     uint32_t          partner_streak;
     uint64_t          pair_wakes;
+    /* The direct hand-off (sched.c). handoff_ok is set by the thread itself
+     * around a wake it blocks right after (see thread_set_handoff).
+     * handoff_offers counts the times a waker handed its CPU to THIS
+     * thread, handoffs the times it was then switched to directly (the
+     * rest were queued); each written under that CPU's run queue lock. */
+    bool              handoff_ok;
+    uint64_t          handoff_offers;
+    uint64_t          handoffs;
 
     /* User state. NULL for kernel threads, which run on the kernel's
      * page tables and never touch the FPU. */
@@ -218,6 +226,21 @@ void thread_wake_sync(struct thread *t);
  * e.g. through an object observer) is woken as by thread_wake_sync; that
  * wake turns it off. channel_call turns it on around sending its request. */
 void thread_set_wake_sync(bool on);
+/* The direct hand-off. While the current thread's flag is on, a wake it
+ * makes that wake-affine placement would put on this very CPU, with
+ * nothing queued here, records the wakee as this CPU's next thread
+ * instead of queueing it. The next
+ * schedule() here switches straight to it, without the run queues, if the
+ * waker is leaving the CPU (it blocked), has some of its time slice left
+ * and nothing queued outranks the wakee; the wakee runs on the rest of
+ * that slice. Otherwise it is queued then, as the wake would have queued
+ * it. Turn the flag on only around a wake the thread blocks right after
+ * (channel_call's request, channel_reply_wait's reply), and call
+ * sched_handoff_done once the wait is over: if the thread never blocked,
+ * that queues the wakee. Switch sched_handoff, boot "nohandoff". */
+extern bool sched_handoff;
+void thread_set_handoff(bool on);
+void sched_handoff_done(void);
 
 /* Boot: turn the running boot code into thread "main" and give the BSP an
  * idle thread. APs turn their own startup context into their idle thread. */

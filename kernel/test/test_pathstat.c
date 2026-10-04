@@ -31,6 +31,13 @@ static uint64_t sys100(const struct path_result *r, unsigned nr)
     return r->calls ? (r->sys[nr] * 100 + r->calls / 2) / r->calls : 0;
 }
 
+/* Hand-offs per call x100 when only the request's wake is handed over
+ * (the server answers with a plain write): 1, or 0 with the switch off. */
+static uint64_t handoffs(void)
+{
+    return __atomic_load_n(&sched_handoff, __ATOMIC_RELAXED) ? 100 : 0;
+}
+
 static spinlock_t test_lock = SPINLOCK_INIT("pathstat test");
 
 static void alloc_one(void)
@@ -145,6 +152,7 @@ KTEST(pathstat_switch_counts)
     KT_EQ(per100(&r, PATH_CR3), 0);
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
     KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
+    KT_EQ(per100(&r, PATH_HANDOFF), 0);
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* the checker's fast path */
     KT_EQ(per100(&r, PATH_CLOCK), 0);
@@ -190,6 +198,9 @@ KTEST(pathstat_kernel_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
     KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
     KT_IDLE_EQ(per100(&r, PATH_WAKE), 200);
+    /* The request's wake hands the server our CPU (the direct hand-off);
+     * the reply's is queued: the server's plain write doesn't block. */
+    KT_IDLE_EQ(per100(&r, PATH_HANDOFF), handoffs());
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 1400);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* every release is the top lock */
     KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
@@ -227,6 +238,7 @@ KTEST(pathstat_user_call_counts)
     KT_EQ(per100(&r, PATH_HANDLE), 500);
     KT_EQ(per100(&r, PATH_JOB), 200);
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
+    KT_IDLE_EQ(per100(&r, PATH_HANDOFF), handoffs());   /* the request's, as kcall */
     KT_IDLE_EQ(per100(&r, PATH_FPU_SAVE), fpu_call_drop() ? 0 : 200);
     KT_IDLE_EQ(per100(&r, PATH_FPU_CALLED), fpu_call_drop() ? 200 : 0);
     KT_IDLE_EQ(per100(&r, PATH_FPU_RESTORE), 200);

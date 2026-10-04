@@ -51,6 +51,11 @@ struct runqueue {
     int              cur_prio;
     struct thread   *idle;
     struct thread   *prev;                  /* handed from schedule to finish_switch */
+    /* The direct hand-off: a READY thread on no queue that a waker running
+     * here (handoff_from) handed this CPU to; the next schedule() here
+     * runs or queues it (take_handoff). Only this CPU touches them. */
+    struct thread   *handoff;
+    struct thread   *handoff_from;
 };
 
 /* The racy reads: nr_ready, busy and cur_prio change only under the lock,
@@ -440,6 +445,94 @@ uint64_t sched_cpu_idle_tsc(uint32_t i)
     return v;
 }
 
+/* ---- the direct hand-off ------------------------------------------------------ */
+
+/* A thread inside channel_call or channel_reply_wait wakes the thread it
+ * then waits for (the server, or the caller it answered), and wake-affine
+ * placement would queue that wakee here, where it runs as soon as the
+ * waker blocks. The hand-off does the same in one step: the wake records
+ * the wakee in rq->handoff instead of queueing it, and the waker's
+ * schedule() switches to it without enqueue, pick or placement. It is
+ * made only while nothing is queued here, and keeps the run queue's
+ * rules: a thread queued here meanwhile with a higher
+ * priority runs first (the wakee is queued then), a waker that doesn't
+ * block queues its wakee (sched_handoff_done, or its next schedule() if it
+ * is preempted first), and the wakee runs on the rest of the waker's slice
+ * (a waker with none left queues it), so a pair passing the CPU back and
+ * forth is sliced like one thread. Same CPU only: a wakee placed anywhere
+ * else is woken as usual. Off: every such wake queues its wakee. */
+bool sched_handoff = true;
+
+void thread_set_handoff(bool on)
+{
+    current_thread()->handoff_ok = on;   /* only ever written by its own thread */
+}
+
+/* t, just made READY by a wake-affine wake from `me`, running here on
+ * `cpu`: record it as this CPU's next thread. False (queue it as usual) if
+ * the switch is off, one is recorded already, or anything is queued here:
+ * the wakee would wait behind it (placement may still pick this CPU for a
+ * thread allowed nowhere else, and then it must queue, or a pair handing
+ * the CPU back and forth would starve what waits there). */
+static bool hand_off(struct thread *t, struct thread *me, uint32_t cpu)
+{
+    if (!__atomic_load_n(&sched_handoff, __ATOMIC_RELAXED))
+        return false;
+    struct runqueue *rq = &rqs[cpu];
+    uint64_t f = spin_lock_irqsave(&rq->lock);
+    struct cpu *c = this_cpu();
+    bool ok = c->index == cpu && c->current == me && !rq->handoff && !rq->bitmap;
+    if (ok) {
+        PATH_COUNT(PATH_WAKE);
+        thread_set_cpu(t, cpu);
+        COUNTER_ADD(&t->handoff_offers, 1);
+        rq->handoff = t;
+        rq->handoff_from = me;
+    }
+    spin_unlock_irqrestore(&rq->lock, f);
+    return ok;
+}
+
+/* rq->lock held, a hand-off recorded: the thread to switch to, or NULL
+ * with it queued as its wake would have queued it. prev is the thread
+ * leaving the CPU (state already set): the hand-off is taken only when
+ * prev is the waker, is really leaving (not preempted), and has slice
+ * left, and nothing queued has a higher priority than the wakee (one of
+ * the same priority was queued after the wake, so it goes after). */
+static struct thread *take_handoff(struct runqueue *rq, struct thread *prev, uint32_t cpu)
+{
+    struct thread *h = rq->handoff;
+    rq->handoff = NULL;
+    int top = rq->bitmap ? 31 - __builtin_clz(rq->bitmap) : -1;
+    if (rq->handoff_from == prev && thread_state(prev) != T_RUNNING && prev->slice &&
+        top <= h->prio)
+        return h;
+    enqueue(rq, h, cpu);
+    return NULL;
+}
+
+void sched_handoff_done(void)
+{
+    uint64_t f = irq_save();
+    struct cpu *c = this_cpu();
+    struct runqueue *rq = &rqs[c->index];
+    struct thread *t = NULL;
+    /* Plain reads: only this CPU touches the hand-off, and interrupts are
+     * off. Normally the wait's schedule() has taken it already. */
+    if (rq->handoff && rq->handoff_from == c->current) {
+        spin_lock(&rq->lock);
+        t = rq->handoff;
+        rq->handoff = NULL;
+        enqueue(rq, t, c->index);
+        if (t->prio > rq_cur_prio(rq))
+            cpu_set_need_resched(c, true);
+        spin_unlock_no_resched(&rq->lock);
+    }
+    irq_restore(f);
+    if (t)
+        preempt_check();
+}
+
 void schedule(void)
 {
     PATH_COUNT(PATH_SCHED);
@@ -465,6 +558,9 @@ void schedule(void)
     struct thread *prev = c->current;
     /* A boost lasts one turn on the CPU. */
     prev->prio = __atomic_load_n(&prev->base_prio, __ATOMIC_RELAXED);
+    /* Queued (if refused) before prev: the wake that made it READY came
+     * first. */
+    struct thread *handed = rq->handoff ? take_handoff(rq, prev, c->index) : NULL;
     if (thread_state(prev) == T_RUNNING && !prev->is_idle) {
         if (cpumask_has(&prev->affinity, c->index))
             enqueue(rq, prev, c->index);
@@ -485,7 +581,7 @@ void schedule(void)
         __atomic_store_n(&rq->busy, 1, __ATOMIC_RELAXED);
         __atomic_thread_fence(__ATOMIC_RELEASE);
     }
-    struct thread *next = pick_best(rq);
+    struct thread *next = handed ? handed : pick_best(rq);
     DBG_HOOK(DBG_SCHED_PICKED, next);
     if (!next)
         next = rq->idle;
@@ -510,7 +606,13 @@ void schedule(void)
     thread_set_state(next, T_RUNNING);
     __atomic_store_n(&next->on_cpu, true, __ATOMIC_RELAXED);
     thread_set_cpu(next, c->index);
-    next->slice = SLICE_TICKS;
+    /* A handed thread runs on its waker's slice, so a pair handing the CPU
+     * back and forth is sliced like one thread. */
+    next->slice = handed ? prev->slice : SLICE_TICKS;
+    if (handed) {
+        COUNTER_ADD(&handed->handoffs, 1);
+        PATH_SW_COUNT(prev, next, PATH_HANDOFF);
+    }
     next->switches_in++;
     account_switch(c, prev, next);
     c->current = next;
@@ -700,12 +802,16 @@ static void thread_wake_common(struct thread *t, bool sync)
         w = waker_now(!sync);
     if (w.me)
         note_waker(t, w.me);
-    if (w.me && w.sync)
+    if (w.me && w.sync) {
         cpu = select_cpu_affine(t, w.cpu);
-    else if (w.me && __atomic_load_n(&sched_affine_pair, __ATOMIC_RELAXED) && is_pair(t, w.me))
+        if (cpu == w.cpu && w.me->handoff_ok && hand_off(t, w.me, cpu))
+            return;   /* the direct hand-off: the waker's schedule() runs it */
+    } else if (w.me && __atomic_load_n(&sched_affine_pair, __ATOMIC_RELAXED) &&
+               is_pair(t, w.me)) {
         cpu = select_cpu_pair(t, w.cpu);
-    else
+    } else {
         cpu = select_cpu(t);
+    }
     place_on(t, cpu);
 }
 
@@ -887,6 +993,7 @@ void sched_init_bsp(void)
     __atomic_store_n(&sched_idle_spin_ns, spin_ns, __ATOMIC_RELAXED);
     __atomic_store_n(&sched_place_order, !cmdline_has("noplaceorder"), __ATOMIC_RELAXED);
     __atomic_store_n(&sched_affine_pair, !cmdline_has("noaffinepair"), __ATOMIC_RELAXED);
+    __atomic_store_n(&sched_handoff, !cmdline_has("nohandoff"), __ATOMIC_RELAXED);
 
     /* The code running now becomes thread "main". */
     struct thread *main = thread_alloc("main", PRIO_DEFAULT);

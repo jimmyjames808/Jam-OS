@@ -256,9 +256,12 @@ static status_t send_request(struct channel *ch, struct chan_waiter *w, struct c
     spin_unlock_irqrestore(&ch->base.lock, f);
 
     /* We block for the reply right after sending, so the server this wakes
-     * (through whatever observer it waits with) may run on our CPU. */
+     * (through whatever observer it waits with) may run on our CPU, handed
+     * it straight (channel_call_with ends the hand-off). */
     thread_set_wake_sync(true);
+    thread_set_handoff(true);
     status_t st = send_msg(ch, mp);
+    thread_set_handoff(false);
     thread_set_wake_sync(false);
     if (st != OK) {
         f = spin_lock_irqsave(&ch->base.lock);
@@ -335,6 +338,7 @@ status_t channel_call_with(struct channel *ch, struct chan_call *c, uint64_t dea
         return st;
     st = send_request(ch, &w, &m);
     if (st != OK) {
+        sched_handoff_done();
         chan_msg_free(m);   /* its handle copies were never the message's */
         return st;
     }
@@ -342,6 +346,7 @@ status_t channel_call_with(struct channel *ch, struct chan_call *c, uint64_t dea
         c->req_h[i].obj = NULL;   /* moved into the message */
 
     st = wait_reply(ch, &w, deadline_ns);
+    sched_handoff_done();   /* a reply that was there at once: we never blocked */
     struct chan_msg *r = w.reply;
     if (st != OK)
         return st;

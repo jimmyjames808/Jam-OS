@@ -238,11 +238,11 @@ static uint64_t *samples, *samples_off, *samples_on;
  * the lock checker, which is no optimisation. */
 enum sw {
     SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_FPUOPT,
-    SW_PCID, SW_FPUCALL, SW_LOCKDEP, SW_COUNT, SW_ALL = SW_COUNT
+    SW_PCID, SW_FPUCALL, SW_LOCKDEP, SW_HANDOFF, SW_COUNT, SW_ALL = SW_COUNT
 };
 static const char *const sw_name[SW_COUNT + 1] = {
     "spinidle", "placeorder", "affinepair", "kmcache", "oneshot", "serialirq", "fpuopt", "pcid",
-    "fpucall", "lockdep", "m55"
+    "fpucall", "lockdep", "handoff", "m55"
 };
 static uint64_t sw_boot[SW_COUNT];
 
@@ -259,6 +259,7 @@ static uint64_t sw_get(enum sw s)
     case SW_PCID:       return pcid_is_on();
     case SW_FPUCALL:    return __atomic_load_n(&fpu_call, __ATOMIC_RELAXED);
     case SW_LOCKDEP:    return lockdep_is_on();
+    case SW_HANDOFF:    return __atomic_load_n(&sched_handoff, __ATOMIC_RELAXED);
     default:            break;
     }
     return 0;
@@ -277,11 +278,13 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_PCID:       pcid_set(v); break;   /* no-op without PCIDs */
     case SW_FPUCALL:    __atomic_store_n(&fpu_call, (bool)v, __ATOMIC_RELAXED); break;
     case SW_LOCKDEP:    lockdep_set(v); break;
+    case SW_HANDOFF:    __atomic_store_n(&sched_handoff, (bool)v, __ATOMIC_RELAXED); break;
     default:            break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                                  1 };
 
 static void sw_save(void)
 {

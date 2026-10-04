@@ -53,7 +53,8 @@ enum path_ev {
     PATH_LOCK,           /* spinlock acquisitions */
     PATH_SCHED,          /* schedule() passes */
     PATH_SWITCH,         /* thread switches (a pass that picked another thread) */
-    PATH_WAKE,           /* wakes that made a thread READY and queued it */
+    PATH_WAKE,           /* wakes that made a thread READY and queued it (or handed it a CPU) */
+    PATH_HANDOFF,        /* switches straight to a thread a waker handed its CPU to */
     PATH_IPI,            /* reschedule IPIs sent by a wake */
     PATH_FPU_SAVE,       /* user FPU state saved (XSAVE/XSAVEOPT/FXSAVE) */
     PATH_FPU_CALLED,     /* ... only its control words kept: switched out in a call */
