@@ -70,7 +70,6 @@ struct chan_reply_wait {
     const handle_t    *reply_h;       /* its handles: they leave t once it is sent */
     uint32_t           reply_nh;      /* how many */
     handle_t           wait;          /* a channel end (read from it) or a port */
-    struct chan_bytes  status_out;    /* room for the reply's status_t (len 0: none) */
     struct chan_bytes  mark;          /* room for a uint64_t 1 once the reply went out
                                        * (len 0: none) */
     struct chan_bytes  req;           /* channel: room for the request */
@@ -82,6 +81,8 @@ struct chan_reply_wait {
                                        * for a channel) */
     uint64_t           deadline_ns;   /* absolute */
     /* Results. */
+    bool               replied;       /* there was a reply to send: reply_st is its status */
+    status_t           reply_st;
     bool               is_port;       /* wait was a port: pkt holds its packet */
     uint32_t           req_nb;        /* channel: the request's bytes (also with
                                        * ERR_BUFFER_TOO_SMALL) */

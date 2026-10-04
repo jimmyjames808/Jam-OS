@@ -354,6 +354,10 @@ KTEST(pathstat_user_generated_call_counts)
     KT_EQ(per100(&r, PATH_EMPTY_READ), 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 0);
     KT_EQ(per100(&r, PATH_SLEEPQ), 100);
+    /* Copies out: the reply and its size to the client; the request to
+     * the server, then the reply's status and the request's two sizes in
+     * one copy (the generated loop keeps the three in a row). */
+    KT_EQ(per100(&r, PATH_UCOPY_OUT), 400);
     /* Two a call, and now and then one of the warm-up's (above). */
     KT_IDLE_ASSERT(per100(&r, PATH_CLOCK) >= 200 && per100(&r, PATH_CLOCK) <= 202);
 }
