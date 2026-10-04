@@ -574,7 +574,7 @@ status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khan
             st = ERR_PEER_CLOSED;
             break;
         }
-        if (uptime_ns() >= deadline_ns) {
+        if (deadline_ns != DEADLINE_NEVER && uptime_ns() >= deadline_ns) {
             st = ERR_TIMED_OUT;
             break;
         }

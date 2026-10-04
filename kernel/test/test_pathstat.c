@@ -146,7 +146,7 @@ KTEST(pathstat_switch_counts)
     KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 400);
-    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 0);
+    KT_EQ(per100(&r, PATH_CLOCK), 0);
     struct path_shape *sh = kmalloc(sizeof(*sh));
     KT_ASSERT(sh);
     bool ok = path_shape_of(&r, PATH_MK_YIELD, sh);
@@ -178,7 +178,7 @@ KTEST(pathstat_kernel_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_WAKE), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 1400);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 2800);
-    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 100);
+    KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
 /* utest bench-call against bench-echo, both on one CPU: today's 5 system
@@ -213,7 +213,7 @@ KTEST(pathstat_user_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_CR3), 200);
     /* The checker turns interrupts off for every acquisition and release. */
     KT_IDLE_EQ(r.count[PATH_LOCK_SLOW], 2 * r.count[PATH_LOCK]);
-    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 100);
+    KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
 /* The same call with a deadline, as libos gives every file call: one more
