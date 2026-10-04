@@ -2,13 +2,17 @@
  * caller's handle table and handle values, checks each handle's type and
  * rights, and calls the object layer. Pointers are kernel pointers: the
  * system calls (kernel/abi/sysc_*.c) copy user memory in and out around
- * these, and kernel tests call them directly. */
+ * these, and kernel tests call them directly. The exception is a
+ * struct chan_bytes, which may name user memory (channels' message bytes,
+ * copied once, straight into or out of the message). */
 #pragma once
 
 #include <stdint.h>
 #include <jam/handle.h>
 #include <jam/object.h>
 #include <jam/status.h>
+
+struct chan_bytes;   /* <jam/channel.h> */
 
 /* channels ------------------------------------------------------------------
  * (kernel/abi/channel_sys.c; semantics as in <jam/channel.h>) */
@@ -43,6 +47,21 @@ status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint
                           const handle_t *wh, uint32_t whn, void *rbytes, uint32_t rcap,
                           uint32_t *ractual, handle_t *rh, uint32_t rhcap, uint32_t *rhactual,
                           uint64_t deadline_ns);
+/* The same four with the bytes as a struct chan_bytes (<jam/channel.h>):
+ * how the system calls pass user buffers, which the object layer copies
+ * straight into and out of the message. */
+status_t sys_channel_write_from(struct handle_table *t, handle_t h, const struct chan_bytes *b,
+                                const handle_t *handles, uint32_t nhandles);
+status_t sys_channel_write_rights_from(struct handle_table *t, handle_t h,
+                                       const struct chan_bytes *b, const handle_t *handles,
+                                       const rights_t *rights, uint32_t nhandles);
+status_t sys_channel_read_into(struct handle_table *t, handle_t h, const struct chan_bytes *b,
+                               uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
+                               uint32_t *actual_handles);
+status_t sys_channel_call_from(struct handle_table *t, handle_t h, const struct chan_bytes *w,
+                               const handle_t *wh, uint32_t whn, const struct chan_bytes *r,
+                               uint32_t *ractual, handle_t *rh, uint32_t rhcap,
+                               uint32_t *rhactual, uint64_t deadline_ns);
 /* end channels */
 
 /* ports, events, timers, waiting ---------------------------------------------

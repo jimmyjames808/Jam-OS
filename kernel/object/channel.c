@@ -25,6 +25,7 @@
 #include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/string.h>
+#include <jam/usercopy.h>
 
 #include "channel_internal.h"
 
@@ -51,12 +52,39 @@ void chan_msg_free(struct chan_msg *m)
     kfree(m);
 }
 
-status_t chan_msg_new(const void *bytes, uint32_t nbytes, const struct khandle *handles,
+/* Copy n bytes from b, at offset off, to dst. */
+static status_t bytes_in(void *dst, const struct chan_bytes *b, uint32_t off, uint32_t n)
+{
+    if (!n)
+        return OK;
+    if (b->user)
+        return copy_from_user(dst, b->addr + off, n);
+    PATH_COUNT(PATH_KCOPY);
+    PATH_ADD(PATH_KCOPY_B, n);
+    memcpy(dst, (const uint8_t *)(uintptr_t)b->addr + off, n);
+    return OK;
+}
+
+/* Copy n bytes from src to b. */
+static status_t bytes_out(const struct chan_bytes *b, const void *src, uint32_t n)
+{
+    if (!n)
+        return OK;
+    if (b->user)
+        return copy_to_user(b->addr, src, n);
+    PATH_COUNT(PATH_KCOPY);
+    PATH_ADD(PATH_KCOPY_B, n);
+    memcpy((void *)(uintptr_t)b->addr, src, n);
+    return OK;
+}
+
+status_t chan_msg_new(const struct chan_bytes *b, uint32_t txid, const struct khandle *handles,
                       uint32_t nhandles, struct chan_msg **out)
 {
+    uint32_t nbytes = b->len;
     if (nbytes > CHANNEL_MAX_BYTES || nhandles > CHANNEL_MAX_HANDLES)
         return ERR_OUT_OF_RANGE;
-    if ((nbytes && !bytes) || (nhandles && !handles))
+    if ((nbytes && !b->user && !b->addr) || (nhandles && !handles) || (txid && nbytes < 4))
         return ERR_INVALID_ARGS;
     for (uint32_t i = 0; i < nhandles; i++)
         if (!handles[i].obj)
@@ -80,13 +108,16 @@ status_t chan_msg_new(const void *bytes, uint32_t nbytes, const struct khandle *
     m->node.next = m->node.prev = NULL;
     m->nbytes = nbytes;
     m->nhandles = nhandles;
+    /* No lock is held: a copy from user memory may fault and sleep. */
+    if (bytes_in(msg_bytes(m), b, 0, nbytes) != OK) {
+        chan_msg_free(m);
+        return ERR_INVALID_ARGS;
+    }
+    /* Over whatever the writer had there, which is never looked at. */
+    if (txid)
+        memcpy(msg_bytes(m), &txid, 4);
     if (nhandles)
         memcpy(msg_handles(m), handles, nhandles * sizeof(struct khandle));
-    if (nbytes) {
-        PATH_COUNT(PATH_KCOPY);
-        PATH_ADD(PATH_KCOPY_B, nbytes);
-        memcpy(msg_bytes(m), bytes, nbytes);
-    }
     PATH_MARK(PATH_MK_MSG_MADE);
     *out = m;
     return OK;
@@ -99,16 +130,16 @@ void chan_msg_drop(struct chan_msg *m)
     chan_msg_free(m);
 }
 
-void chan_msg_deliver_to(struct chan_msg *m, void *bytes, struct khandle *handles)
+status_t chan_msg_deliver(struct chan_msg *m, const struct chan_bytes *b, struct khandle *handles)
 {
-    if (m->nbytes) {
-        PATH_COUNT(PATH_KCOPY);
-        PATH_ADD(PATH_KCOPY_B, m->nbytes);
-        memcpy(bytes, msg_bytes(m), m->nbytes);
+    if (bytes_out(b, msg_bytes(m), m->nbytes) != OK) {
+        chan_msg_drop(m);
+        return ERR_INVALID_ARGS;
     }
     if (m->nhandles)
         memcpy(handles, msg_handles(m), m->nhandles * sizeof(struct khandle));
     chan_msg_free(m);
+    return OK;
 }
 
 /* ---- closing ---------------------------------------------------------------- */
@@ -236,10 +267,12 @@ static void refresh_writable(struct channel *ch)
     spin_unlock_irqrestore(&pair->lock, f);
 }
 
-status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint32_t *actual_bytes,
-                      struct khandle *handles, uint32_t handles_cap, uint32_t *actual_handles)
+status_t channel_read_into(struct channel *ch, const struct chan_bytes *b, uint32_t *actual_bytes,
+                           struct khandle *handles, uint32_t handles_cap,
+                           uint32_t *actual_handles)
 {
-    if ((bytes_cap && !bytes) || (handles_cap && !handles))
+    uint32_t bytes_cap = b->len;
+    if ((bytes_cap && !b->user && !b->addr) || (handles_cap && !handles))
         return ERR_INVALID_ARGS;
     struct chan_msg *m = NULL;
     uint32_t nb = 0, nh = 0;
@@ -272,11 +305,18 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
     if (was_full)
         refresh_writable(ch);
     if (m)
-        chan_msg_deliver_to(m, bytes, handles);
+        st = chan_msg_deliver(m, b, handles);   /* off the queue: no lock held */
     if (st == ERR_SHOULD_WAIT)
         PATH_COUNT(PATH_EMPTY_READ);
     PATH_MARK_ARG(PATH_MK_READ, st == ERR_SHOULD_WAIT);
     return st;
+}
+
+status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint32_t *actual_bytes,
+                      struct khandle *handles, uint32_t handles_cap, uint32_t *actual_handles)
+{
+    struct chan_bytes b = chan_kbytes(bytes, bytes_cap);
+    return channel_read_into(ch, &b, actual_bytes, handles, handles_cap, actual_handles);
 }
 
 void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged)

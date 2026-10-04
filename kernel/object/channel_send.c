@@ -173,11 +173,11 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
     return st;
 }
 
-status_t channel_write(struct channel *ch, const void *bytes, uint32_t nbytes,
-                       struct khandle *handles, uint32_t nhandles)
+status_t channel_write_from(struct channel *ch, const struct chan_bytes *b,
+                            struct khandle *handles, uint32_t nhandles)
 {
     struct chan_msg *m;
-    status_t st = chan_msg_new(bytes, nbytes, handles, nhandles, &m);
+    status_t st = chan_msg_new(b, 0, handles, nhandles, &m);
     if (st != OK)
         return st;
     st = send_msg(ch, m);
@@ -190,54 +190,51 @@ status_t channel_write(struct channel *ch, const void *bytes, uint32_t nbytes,
     return OK;
 }
 
+status_t channel_write(struct channel *ch, const void *bytes, uint32_t nbytes,
+                       struct khandle *handles, uint32_t nhandles)
+{
+    struct chan_bytes b = chan_kbytes(bytes, nbytes);
+    return channel_write_from(ch, &b, handles, nhandles);
+}
+
 /* ---- call ---------------------------------------------------------------------- */
 
-status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khandle *wh,
-                      uint32_t whn, void *rbytes, uint32_t rcap, uint32_t *ractual,
-                      struct khandle *rh, uint32_t rhcap, uint32_t *rhactual,
-                      uint64_t deadline_ns)
+/* Send the request with w listed on ch first, so even an instant reply
+ * finds it. On failure nothing was sent and w is unlisted. */
+static status_t send_request(struct channel *ch, struct chan_waiter *w, struct chan_msg *m)
 {
-    PATH_MARK(PATH_MK_CALL);
-    if (!wbytes || wn < 4 || (rcap && !rbytes) || (rhcap && !rh))
-        return ERR_INVALID_ARGS;
-    struct chan_waiter w = { .txid = new_txid(), .thread = current_thread(), .reply = NULL };
-    memcpy(wbytes, &w.txid, 4);
-    struct chan_msg *m;
-    status_t st = chan_msg_new(wbytes, wn, wh, whn, &m);
-    if (st != OK)
-        return st;
-
-    /* Wait on our endpoint before the request goes out, so even an instant
-     * reply finds us. */
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
     if (ch->closed) {
         spin_unlock_irqrestore(&ch->base.lock, f);
-        chan_msg_free(m);
         return ERR_BAD_STATE;
     }
-    list_add_tail(&ch->callers, &w.node);
+    list_add_tail(&ch->callers, &w->node);
     spin_unlock_irqrestore(&ch->base.lock, f);
 
     /* We block for the reply right after sending, so the server this wakes
      * (through whatever observer it waits with) may run on our CPU. */
     thread_set_wake_sync(true);
-    st = send_msg(ch, m);
+    status_t st = send_msg(ch, m);
     thread_set_wake_sync(false);
     if (st != OK) {
         f = spin_lock_irqsave(&ch->base.lock);
-        if (w.node.next)
-            list_del(&w.node);
+        if (w->node.next)
+            list_del(&w->node);
         spin_unlock_irqrestore(&ch->base.lock, f);
-        chan_msg_free(m);
-        if (w.reply)   /* the peer guessed our txid before we even sent */
-            chan_msg_drop(w.reply);
-        return st;
+        if (w->reply) {   /* the peer guessed our txid before we even sent */
+            chan_msg_drop(w->reply);
+            w->reply = NULL;
+        }
     }
-    for (uint32_t i = 0; i < whn; i++)
-        wh[i].obj = NULL;
+    return st;
+}
 
-    f = spin_lock_irqsave(&ch->base.lock);
-    while (!w.reply) {
+/* Wait for w's reply. OK: it is in w->reply. */
+static status_t wait_reply(struct channel *ch, struct chan_waiter *w, uint64_t deadline_ns)
+{
+    status_t st = OK;
+    uint64_t f = spin_lock_irqsave(&ch->base.lock);
+    while (!w->reply) {
         if (ch->closed) {
             st = ERR_CANCELED;
             break;
@@ -250,27 +247,68 @@ status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khan
             st = ERR_TIMED_OUT;
             break;
         }
-        if (thread_block_cancellable(&ch->base.lock, &f, deadline_ns) != OK && !w.reply) {
+        if (thread_block_cancellable(&ch->base.lock, &f, deadline_ns) != OK && !w->reply) {
             st = ERR_CANCELED;
             break;
         }
     }
-    if (w.node.next)   /* not answered: still listed */
-        list_del(&w.node);
+    if (w->node.next)   /* not answered: still listed */
+        list_del(&w->node);
     spin_unlock_irqrestore(&ch->base.lock, f);
     PATH_MARK(PATH_MK_REPLY);
+    return w->reply ? OK : st;
+}
 
-    struct chan_msg *r = w.reply;
-    if (!r)
+status_t channel_call_with(struct channel *ch, struct chan_call *c, uint64_t deadline_ns)
+{
+    PATH_MARK(PATH_MK_CALL);
+    const struct chan_bytes *q = &c->req;
+    if ((!q->user && !q->addr) || q->len < 4 || (c->rep.len && !c->rep.user && !c->rep.addr) ||
+        (c->rep_hcap && !c->rep_h))
+        return ERR_INVALID_ARGS;
+    struct chan_waiter w = { .txid = new_txid(), .thread = current_thread(), .reply = NULL };
+    if (!q->user)
+        memcpy((void *)(uintptr_t)q->addr, &w.txid, 4);   /* kernel callers read it back */
+    struct chan_msg *m;
+    status_t st = chan_msg_new(q, w.txid, c->req_h, c->req_nh, &m);
+    if (st != OK)
         return st;
-    if (ractual)
-        *ractual = r->nbytes;
-    if (rhactual)
-        *rhactual = r->nhandles;
-    if (r->nbytes > rcap || r->nhandles > rhcap) {
+    st = send_request(ch, &w, m);
+    if (st != OK) {
+        chan_msg_free(m);   /* its handle copies were never the message's */
+        return st;
+    }
+    for (uint32_t i = 0; i < c->req_nh; i++)
+        c->req_h[i].obj = NULL;   /* moved into the message */
+
+    st = wait_reply(ch, &w, deadline_ns);
+    struct chan_msg *r = w.reply;
+    if (st != OK)
+        return st;
+    c->rep_nb = r->nbytes;
+    c->rep_nh = r->nhandles;
+    if (r->nbytes > c->rep.len || r->nhandles > c->rep_hcap) {
         chan_msg_drop(r);
         return ERR_BUFFER_TOO_SMALL;
     }
-    chan_msg_deliver_to(r, rbytes, rh);
-    return OK;
+    return chan_msg_deliver(r, &c->rep, c->rep_h);   /* no lock held */
+}
+
+status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khandle *wh,
+                      uint32_t whn, void *rbytes, uint32_t rcap, uint32_t *ractual,
+                      struct khandle *rh, uint32_t rhcap, uint32_t *rhactual,
+                      uint64_t deadline_ns)
+{
+    struct chan_call c = {
+        .req = chan_kbytes(wbytes, wn), .req_h = wh, .req_nh = whn,
+        .rep = chan_kbytes(rbytes, rcap), .rep_h = rh, .rep_hcap = rhcap,
+    };
+    status_t st = channel_call_with(ch, &c, deadline_ns);
+    if (st == OK || st == ERR_BUFFER_TOO_SMALL) {
+        if (ractual)
+            *ractual = c.rep_nb;
+        if (rhactual)
+            *rhactual = c.rep_nh;
+    }
+    return st;
 }

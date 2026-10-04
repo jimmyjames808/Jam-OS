@@ -180,7 +180,10 @@ KTEST(pathstat_kernel_call_counts)
 /* utest bench-call against bench-echo, both on one CPU: today's 5 system
  * calls (the call; the server's read, write, a read that finds nothing,
  * and its wait), 5 handle lookups, 2 messages, 2 job charges and 2
- * credits, and per switch one restore and one CR3 load. Both threads
+ * credits, and per switch one restore and one CR3 load. The bytes go
+ * straight from user memory into each message and out of it again, so
+ * the kernel makes no copy of its own (4 user copies of the bytes a round
+ * trip, no stack buffers in between). Both threads
  * switch out inside a system call, so no switch saves the FPU state: each
  * keeps only its control words (the system call rule, fpu.c). */
 KTEST(pathstat_user_call_counts)
@@ -199,7 +202,8 @@ KTEST(pathstat_user_call_counts)
     KT_EQ(per100(&r, PATH_EMPTY_READ), 100);
     KT_EQ(per100(&r, PATH_KMALLOC), 200);
     KT_EQ(per100(&r, PATH_KFREE), 200);
-    KT_EQ(per100(&r, PATH_KCOPY), 400);
+    KT_EQ(per100(&r, PATH_KCOPY), 0);
+    KT_EQ(per100(&r, PATH_UCOPY_IN_B), 20800);
     KT_EQ(per100(&r, PATH_HANDLE), 500);
     KT_EQ(per100(&r, PATH_JOB), 400);
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);

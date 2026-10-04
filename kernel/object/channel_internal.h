@@ -58,16 +58,19 @@ struct channel {
 
 /* channel.c: messages. */
 
-/* Copy bytes and handles into a new message, charged to the current job.
- * The handles are copied, not taken: the caller clears its own array once
- * the message is delivered. */
-status_t chan_msg_new(const void *bytes, uint32_t nbytes, const struct khandle *handles,
+/* A new message of b's bytes (copied straight in; no lock may be held)
+ * and the handles, charged to the current job. txid, unless 0, replaces
+ * the first 4 bytes. The handles are copied, not taken: the caller clears
+ * its own array once the message is delivered. */
+status_t chan_msg_new(const struct chan_bytes *b, uint32_t txid, const struct khandle *handles,
                       uint32_t nhandles, struct chan_msg **out);
 /* Free a message's memory and credit its sender's job. Its handles are
  * the caller's business. No locks held (the job reference may be the last). */
 void chan_msg_free(struct chan_msg *m);
 /* Free a message and every handle it still owns. No locks held. */
 void chan_msg_drop(struct chan_msg *m);
-/* Hand a message's contents to a reader, which now owns the handles, and
- * free it. */
-void chan_msg_deliver_to(struct chan_msg *m, void *bytes, struct khandle *handles);
+/* Hand a message's contents to a reader: its bytes straight into b (no
+ * lock may be held), its handles into handles (the reader owns them now);
+ * then free it. A fault writing b: the message and its handles are
+ * dropped, ERR_INVALID_ARGS. */
+status_t chan_msg_deliver(struct chan_msg *m, const struct chan_bytes *b, struct khandle *handles);

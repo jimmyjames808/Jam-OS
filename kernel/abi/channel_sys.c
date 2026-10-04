@@ -1,4 +1,7 @@
-/* Handle-level channel calls (the system calls' sys_* layer). */
+/* Handle-level channel calls (the system calls' sys_* layer). The _from /
+ * _into forms take the bytes as a struct chan_bytes, so a system call
+ * passes its user buffer and the object layer copies straight between it
+ * and the message; the plain forms are the same on kernel memory. */
 #include <jam/channel.h>
 #include <jam/panic.h>
 #include <jam/sys.h>
@@ -84,8 +87,8 @@ status_t sys_channel_create(struct handle_table *t, handle_t *a, handle_t *b)
     return st;
 }
 
-status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes, uint32_t nbytes,
-                           const handle_t *handles, uint32_t nhandles)
+status_t sys_channel_write_from(struct handle_table *t, handle_t h, const struct chan_bytes *b,
+                                const handle_t *handles, uint32_t nhandles)
 {
     struct channel *ch;
     status_t st = get_channel(t, h, RIGHT_WRITE, &ch);
@@ -94,7 +97,7 @@ status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes
     struct khandle khs[CHANNEL_MAX_HANDLES];
     st = take_all(t, handles, khs, nhandles);
     if (st == OK) {
-        st = channel_write(ch, bytes, nbytes, khs, nhandles);
+        st = channel_write_from(ch, b, khs, nhandles);
         if (st != OK)
             untake_all(t, handles, khs, nhandles);
         else
@@ -104,11 +107,18 @@ status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes
     return st;
 }
 
+status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes, uint32_t nbytes,
+                           const handle_t *handles, uint32_t nhandles)
+{
+    struct chan_bytes b = chan_kbytes(bytes, nbytes);
+    return sys_channel_write_from(t, h, &b, handles, nhandles);
+}
+
 /* Write the taken handles khs with their new rights: each arrives with
  * rights[i], a subset of what it has (as handle_duplicate), or RIGHT_SAME.
  * Checked before anything changes, restored if the write fails. */
-static status_t write_narrowed(struct channel *ch, const void *bytes, uint32_t nbytes,
-                               struct khandle *khs, const rights_t *rights, uint32_t nhandles)
+static status_t write_narrowed(struct channel *ch, const struct chan_bytes *b, struct khandle *khs,
+                               const rights_t *rights, uint32_t nhandles)
 {
     rights_t had[CHANNEL_MAX_HANDLES];
     status_t st = OK;
@@ -122,16 +132,16 @@ static status_t write_narrowed(struct channel *ch, const void *bytes, uint32_t n
     for (uint32_t i = 0; i < nhandles; i++)
         if (rights[i] != RIGHT_SAME)
             khs[i].rights = rights[i];
-    st = channel_write(ch, bytes, nbytes, khs, nhandles);
+    st = channel_write_from(ch, b, khs, nhandles);
     if (st != OK)
         for (uint32_t i = 0; i < nhandles; i++)
             khs[i].rights = had[i];
     return st;
 }
 
-status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void *bytes,
-                                  uint32_t nbytes, const handle_t *handles,
-                                  const rights_t *rights, uint32_t nhandles)
+status_t sys_channel_write_rights_from(struct handle_table *t, handle_t h,
+                                       const struct chan_bytes *b, const handle_t *handles,
+                                       const rights_t *rights, uint32_t nhandles)
 {
     if (nhandles && !rights)
         return ERR_INVALID_ARGS;
@@ -142,7 +152,7 @@ status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void
     struct khandle khs[CHANNEL_MAX_HANDLES];
     st = take_all(t, handles, khs, nhandles);
     if (st == OK) {
-        st = write_narrowed(ch, bytes, nbytes, khs, rights, nhandles);
+        st = write_narrowed(ch, b, khs, rights, nhandles);
         if (st != OK)
             untake_all(t, handles, khs, nhandles);
         else
@@ -152,9 +162,17 @@ status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void
     return st;
 }
 
-status_t sys_channel_read(struct handle_table *t, handle_t h, void *bytes, uint32_t bytes_cap,
-                          uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
-                          uint32_t *actual_handles)
+status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void *bytes,
+                                  uint32_t nbytes, const handle_t *handles,
+                                  const rights_t *rights, uint32_t nhandles)
+{
+    struct chan_bytes b = chan_kbytes(bytes, nbytes);
+    return sys_channel_write_rights_from(t, h, &b, handles, rights, nhandles);
+}
+
+status_t sys_channel_read_into(struct handle_table *t, handle_t h, const struct chan_bytes *b,
+                               uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
+                               uint32_t *actual_handles)
 {
     if (handles_cap && !handles)
         return ERR_INVALID_ARGS;
@@ -171,8 +189,8 @@ status_t sys_channel_read(struct handle_table *t, handle_t h, void *bytes, uint3
      * the caller has room for them), reserve the rest and try again. The
      * message stays queued until its handles are guaranteed a slot. */
     for (;;) {
-        st = channel_read(ch, bytes, bytes_cap, &nb, khs, nrsv, &nh);
-        if (st != ERR_BUFFER_TOO_SMALL || nb > bytes_cap || nh > cap || nh <= nrsv)
+        st = channel_read_into(ch, b, &nb, khs, nrsv, &nh);
+        if (st != ERR_BUFFER_TOO_SMALL || nb > b->len || nh > cap || nh <= nrsv)
             break;
         st = handle_reserve(t, nh - nrsv, &rsv[nrsv]);
         if (st != OK)
@@ -188,10 +206,18 @@ status_t sys_channel_read(struct handle_table *t, handle_t h, void *bytes, uint3
     return st;
 }
 
-status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint32_t wn,
-                          const handle_t *wh, uint32_t whn, void *rbytes, uint32_t rcap,
-                          uint32_t *ractual, handle_t *rh, uint32_t rhcap, uint32_t *rhactual,
-                          uint64_t deadline_ns)
+status_t sys_channel_read(struct handle_table *t, handle_t h, void *bytes, uint32_t bytes_cap,
+                          uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
+                          uint32_t *actual_handles)
+{
+    struct chan_bytes b = chan_kbytes(bytes, bytes_cap);
+    return sys_channel_read_into(t, h, &b, actual_bytes, handles, handles_cap, actual_handles);
+}
+
+status_t sys_channel_call_from(struct handle_table *t, handle_t h, const struct chan_bytes *w,
+                               const handle_t *wh, uint32_t whn, const struct chan_bytes *r,
+                               uint32_t *ractual, handle_t *rh, uint32_t rhcap,
+                               uint32_t *rhactual, uint64_t deadline_ns)
 {
     if (rhcap && !rh)
         return ERR_INVALID_ARGS;
@@ -213,9 +239,10 @@ status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint
     if (st != OK)
         fill_reserved(t, rsv, cap, rkhs, rh, 0);
     if (st == OK) {
-        uint32_t nh = 0;
-        st = channel_call(ch, wbytes, wn, wkhs, whn, rbytes, rcap, ractual, rkhs, cap, &nh,
-                          deadline_ns);
+        struct chan_call c = {
+            .req = *w, .req_h = wkhs, .req_nh = whn, .rep = *r, .rep_h = rkhs, .rep_hcap = cap,
+        };
+        st = channel_call_with(ch, &c, deadline_ns);
         /* channel_call clears the request's khandles only once it is sent, so
          * a non-NULL first obj means the send failed: put them back. Otherwise
          * the send consumed them and their reserved slots are freed. */
@@ -223,10 +250,22 @@ status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint
             untake_all(t, wh, wkhs, whn);
         else if (whn)
             commit_all(t, wh, whn);
+        if (ractual && (st == OK || st == ERR_BUFFER_TOO_SMALL))
+            *ractual = c.rep_nb;
         if (rhactual)
-            *rhactual = nh;
-        fill_reserved(t, rsv, cap, rkhs, rh, st == OK ? nh : 0);
+            *rhactual = st == OK || st == ERR_BUFFER_TOO_SMALL ? c.rep_nh : 0;
+        fill_reserved(t, rsv, cap, rkhs, rh, st == OK ? c.rep_nh : 0);
     }
     kobject_unref((struct kobject *)ch);
     return st;
+}
+
+status_t sys_channel_call(struct handle_table *t, handle_t h, void *wbytes, uint32_t wn,
+                          const handle_t *wh, uint32_t whn, void *rbytes, uint32_t rcap,
+                          uint32_t *ractual, handle_t *rh, uint32_t rhcap, uint32_t *rhactual,
+                          uint64_t deadline_ns)
+{
+    struct chan_bytes w = chan_kbytes(wbytes, wn), r = chan_kbytes(rbytes, rcap);
+    return sys_channel_call_from(t, h, &w, wh, whn, &r, ractual, rh, rhcap, rhactual,
+                                 deadline_ns);
 }
