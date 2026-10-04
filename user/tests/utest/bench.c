@@ -129,11 +129,12 @@ static status_t call_once(handle_t ch)
 }
 
 /* One null.ping through the generated client, with a time limit as
- * libos's file calls have. */
+ * libos's file calls have: a timeout the kernel starts from its own
+ * clock (_within). */
 static status_t gcall_once(handle_t ch)
 {
     uint64_t v = 0;
-    return null_ping_until(ch, now() + FS_CALL_TIMEOUT, 42, &v);
+    return null_ping_within(ch, FS_CALL_TIMEOUT, 42, &v);
 }
 
 /* Calls on ch for WARM_NS, untimed. The clock is read once every 64

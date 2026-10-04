@@ -6,9 +6,10 @@
  * Reads go through the write-through block cache (cache.c), and every
  * write is copied into it once it is on the disk.
  *
- * Every block call has a deadline (BLOCK_WAIT, longer than usb-storage's
- * own command timeouts), so a disk that stops answering fails the request
- * with ERR_IO instead of hanging fat. A call that finds the channel closed
+ * Every block call has a time limit (BLOCK_WAIT, longer than usb-storage's
+ * own command timeouts; given to the kernel as a timeout, so no clock read
+ * first), so a disk that stops answering fails the request with ERR_IO
+ * instead of hanging fat. A call that finds the channel closed
  * (the stick was pulled) sets vol.disk_gone; main.c then winds fat down.
  *
  * A read-only channel: disk_write answers "write protected" without
@@ -69,11 +70,6 @@ static uint8_t boot[FAT_SECTOR];
 static bool    boot_holding;   /* writes of sector 0 go into boot[] */
 static bool    boot_held;      /* boot[] holds one */
 
-static uint64_t deadline(void)
-{
-    return now() + BLOCK_WAIT;
-}
-
 /* A failed block call: remember a vanished disk, log the rest. */
 static status_t failed(const char *what, uint64_t lba, uint32_t count, status_t st)
 {
@@ -89,7 +85,7 @@ static status_t failed(const char *what, uint64_t lba, uint32_t count, status_t 
 status_t disk_block_write(uint64_t sector, uint32_t count)
 {
     kept->disk.unflushed = true;
-    status_t st = block_write_until(vol.block, deadline(), sector, count, 0);
+    status_t st = block_write_within(vol.block, BLOCK_WAIT, sector, count, 0);
     if (st != OK)
         return failed("write", sector, count, st);
     cache_wrote(sector, count, vol.bbuf);   /* as written: the dirty bit patched */
@@ -101,13 +97,13 @@ status_t disk_open(handle_t block)
     uint32_t bs = 0, size = 0;
     uint8_t ro = 0;
     handle_t vmo = HANDLE_INVALID;
-    status_t st = block_info_until(block, deadline(), &bs, &vol.blocks, &ro);
+    status_t st = block_info_within(block, BLOCK_WAIT, &bs, &vol.blocks, &ro);
     if (st == OK && bs != FAT_SECTOR) {
         printf("fat %s: %u-byte sectors are not supported (only %u)\n", vol.name, bs, FAT_SECTOR);
         return ERR_NOT_SUPPORTED;
     }
     if (st == OK)
-        st = block_map_buffer_until(block, deadline(), &vmo, &size);
+        st = block_map_buffer_within(block, BLOCK_WAIT, &vmo, &size);
     if (st == ERR_PEER_CLOSED)
         vol.disk_gone = true;   /* pulled (or its driver stopped) before we got going */
     if (st != OK)
@@ -133,7 +129,7 @@ status_t disk_flush(void)
     status_t st = disk_release();
     if (st != OK || !kept->disk.unflushed)
         return st;
-    st = block_sync_until(vol.block, deadline());
+    st = block_sync_within(vol.block, BLOCK_WAIT);
     if (st != OK)
         return failed("sync", 0, 0, st);
     kept->disk.unflushed = false;
@@ -142,7 +138,7 @@ status_t disk_flush(void)
 
 status_t disk_is_blank(bool *out)
 {
-    status_t st = block_read_until(vol.block, deadline(), 0, 1, 0);
+    status_t st = block_read_within(vol.block, BLOCK_WAIT, 0, 1, 0);
     if (st != OK)
         return failed("read", 0, 1, st);
     *out = !(vol.bbuf[510] == 0x55 && vol.bbuf[511] == 0xaa);
@@ -191,7 +187,7 @@ status_t disk_commit_boot(const char *label)
             continue;
         memcpy(vol.bbuf, boot, FAT_SECTOR);
         kept->disk.unflushed = true;
-        st = block_write_until(vol.block, deadline(), sector, 1, 0);
+        st = block_write_within(vol.block, BLOCK_WAIT, sector, 1, 0);
         if (st != OK)
             return failed("write", sector, 1, st);
         cache_wrote(sector, 1, vol.bbuf);
@@ -237,12 +233,12 @@ static status_t mark(bool clean)
     if (clean)
         d->clean_on_disk = true;
     for (unsigned i = 0; i < d->nfats; i++) {
-        status_t st = block_read_until(vol.block, deadline(), d->fat0[i], 1, 0);
+        status_t st = block_read_within(vol.block, BLOCK_WAIT, d->fat0[i], 1, 0);
         if (st != OK)
             return failed("read", d->fat0[i], 1, st);
         patch(vol.bbuf, clean);
         d->unflushed = true;
-        st = block_write_until(vol.block, deadline(), d->fat0[i], 1, 0);
+        st = block_write_within(vol.block, BLOCK_WAIT, d->fat0[i], 1, 0);
         if (st != OK)
             return failed("write", d->fat0[i], 1, st);
         cache_wrote(d->fat0[i], 1, vol.bbuf);
@@ -267,7 +263,7 @@ void disk_watch(void)
     d->nfats = kept->fs.n_fats == 2 ? 2 : 1;
     d->fat0[0] = kept->fs.fatbase;
     d->fat0[1] = kept->fs.fatbase + kept->fs.fsize;
-    status_t st = block_read_until(vol.block, deadline(), d->fat0[0], 1, 0);
+    status_t st = block_read_within(vol.block, BLOCK_WAIT, d->fat0[0], 1, 0);
     if (st != OK) {
         (void)failed("read", d->fat0[0], 1, st);   /* logged; the flag stays unknown */
         return;
@@ -321,7 +317,7 @@ DSTATUS disk_status(BYTE pdrv)
 
 status_t disk_block_read(uint64_t sector, uint32_t count)
 {
-    status_t st = block_read_until(vol.block, deadline(), sector, count, 0);
+    status_t st = block_read_within(vol.block, BLOCK_WAIT, sector, count, 0);
     if (st != OK)
         return failed("read", sector, count, st);
     hold_overlay(sector, count, vol.bbuf);   /* held sectors are newer than the disk's */
