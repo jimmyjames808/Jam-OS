@@ -67,11 +67,14 @@
 #   1     caching mode on (CAP.CM = 1: new mappings are invalidated too)
 #   cm0   caching mode off (the PC's case)
 #   eim   caching mode on, x2APIC destination ids (ECAP.EIM)
+# QEMU_WORDS: more boot words after the script's own, e.g. "iommu=on" (an
+# area test run with DMA translation on: QEMU_IOMMU=1 QEMU_WORDS=iommu=on).
 # Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 set -eu
 out=$1 name=$2
 shift 2
 cmdline="$*"
+[ -z "${QEMU_WORDS:-}" ] || cmdline="$cmdline $QEMU_WORDS"
 [ "${QEMU_SPLASH:-0}" = 1 ] || cmdline="$cmdline nosplash"
 net_vlan=${QEMU_NET_VLAN:-21}
 if [ -n "${QEMU_NET:-}" ] && [ "${QEMU_NET_WORD:-1}" != 0 ]; then
