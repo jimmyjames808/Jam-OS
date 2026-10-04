@@ -25,6 +25,7 @@
 #include <jam/string.h>
 #include <jam/vtd.h>
 
+#include "vtd_domain.h"
 #include "vtd_internal.h"
 
 #define PCI_COMMAND     0x04
@@ -35,6 +36,11 @@
 #define MAX_FAULT_RECS  8    /* fault records read per unit */
 
 static struct dmar_info info;   /* the parsed table; written once, at boot */
+
+const struct dmar_info *vtd_dmar_info(void)
+{
+    return &info;
+}
 
 /* What the firmware left on, over all units, for the summary. */
 static struct {
@@ -152,7 +158,7 @@ static struct pci_dev *find_fn(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t f
  * bridge whose secondary bus the next step is on). The function it names,
  * or NULL (not present: a disabled device, or a path that leads nowhere);
  * *bus gets the last step's bus either way, or -1 if a bridge was missing. */
-static struct pci_dev *scope_fn(uint16_t seg, const struct dmar_scope *s, int *bus)
+struct pci_dev *vtd_scope_fn(uint16_t seg, const struct dmar_scope *s, int *bus)
 {
     uint8_t b = s->start_bus;
     *bus = -1;
@@ -198,7 +204,7 @@ static void add_pci_path(struct line *l, uint16_t seg, const struct dmar_scope *
     if (s->path_full > s->path_len)
         add(l, " ... (%u steps: too long to follow)", s->path_full);
     int bus;
-    struct pci_dev *d = scope_fn(seg, s, &bus);
+    struct pci_dev *d = vtd_scope_fn(seg, s, &bus);
     if (d)
         add(l, " = %02x:%02x.%x %04x:%04x class %02x%02x", d->info.bus, d->info.dev,
             d->info.fn, d->info.vendor, d->info.device, d->info.class_code, d->info.subclass);

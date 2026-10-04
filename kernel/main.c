@@ -15,6 +15,7 @@
 #include <jam/cpu.h>
 #include <jam/fbcon.h>
 #include <jam/ioapic.h>
+#include <jam/iommu.h>
 #include <jam/ipi.h>
 #include <jam/irq.h>
 #include <jam/kexec.h>
@@ -419,6 +420,7 @@ _Noreturn static void kmain_stage2(void *arg)
     pci_init();
     vtd_probe();   /* reads and logs the IOMMU's table and registers; writes nothing */
     vtd_units_start();   /* only with iommu=on: the units' queues and fault reporting */
+    iommu_boot();        /* only with iommu=on: DMA translation on */
     resource_init();
     if (cmdline_has("pcilist"))
         pci_report();
@@ -452,6 +454,7 @@ _Noreturn void kmain(struct boot_info *bi)
     idt_init();
     print_boot_info(bi);
     kexec_reserve(bi);   /* before the memory managers: the stored kernel's region */
+    iommu_reserve_early(bi);   /* iommu=on: RMRRs in usable RAM made reserved */
     if (cmdline_has("memmap"))
         kmain_print_memmap();
 

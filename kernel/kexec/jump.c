@@ -38,6 +38,7 @@
 #include <stddef.h>
 #include <jam/console_svc.h>
 #include <jam/fbcon.h>
+#include <jam/iommu.h>
 #include <jam/ipi.h>
 #include <jam/klog.h>
 #include <jam/kprintf.h>
@@ -219,6 +220,7 @@ _Noreturn static void give_up(const char *why)
 _Noreturn static void jump(void)
 {
     pci_panic_bus_master_off();
+    iommu_jump_off();   /* the next kernel's memory must not be translated by our tables */
     if (lapic_is_bsp())
         jump_here();
     if (__atomic_load_n(&test_break, __ATOMIC_RELAXED) != KEXEC_TEST_STALL)

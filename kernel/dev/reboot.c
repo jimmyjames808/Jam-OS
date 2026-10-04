@@ -28,6 +28,7 @@
 #include <jam/cmdline.h>
 #include <jam/console_svc.h>
 #include <jam/fbcon.h>
+#include <jam/iommu.h>
 #include <jam/ipi.h>
 #include <jam/kexec.h>
 #include <jam/klog.h>
@@ -167,6 +168,7 @@ static void quiet_machine(void)
     fbcon_force_unlock();
     fbcon_release();
     uint32_t off = pci_panic_bus_master_off();
+    iommu_jump_off();   /* a reset that fails half-way leaves no table of ours in use */
     kprintf("reboot: %u other CPU(s) halted, bus mastering off on %u PCI function(s)\n", halted,
             off);
 }
