@@ -178,7 +178,7 @@ KTEST(pathstat_kernel_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_WAKE), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 1400);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 2800);
-    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 200);
+    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 100);
 }
 
 /* utest bench-call against bench-echo, both on one CPU: today's 5 system
@@ -213,11 +213,13 @@ KTEST(pathstat_user_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_CR3), 200);
     /* The checker turns interrupts off for every acquisition and release. */
     KT_IDLE_EQ(r.count[PATH_LOCK_SLOW], 2 * r.count[PATH_LOCK]);
-    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 200);
+    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 100);
 }
 
 /* The same call with a deadline, as libos gives every file call: one more
- * system call (the clock) and one sleeper-queue entry per call. The 5 s
+ * system call (the clock) and one sleeper-queue entry per call. Clock
+ * reads: the clock_get and the call's wait, which has a deadline (the
+ * server's wait has none, and reads no clock). The 5 s
  * deadline is after the CPU's next tick, so it never re-arms the timer
  * (the tick looks after it: wait.c). */
 KTEST(pathstat_user_deadline_call_counts)
@@ -233,5 +235,5 @@ KTEST(pathstat_user_deadline_call_counts)
     KT_EQ(per100(&r, PATH_SLEEPQ), 100);
     KT_EQ(per100(&r, PATH_TIMER_ARM), 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 200);
-    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 300);
+    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 200);
 }
