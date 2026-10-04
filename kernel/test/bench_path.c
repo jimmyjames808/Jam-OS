@@ -34,6 +34,7 @@
 #include <jam/string.h>
 #include <jam/syscall_nums.h>
 #include <jam/time.h>
+#include <jam/x86.h>
 
 #include "bench_internal.h"
 
@@ -41,6 +42,14 @@
 #define PATH_CALLS_N 1024          /* calls counted */
 #define PATH_MARKED  64            /* of those, calls with a timeline */
 #define PATH_RUN_NS  5000000000ull /* a kernel case gives up after this long */
+
+/* The TSC at which a kernel case started now gives up: the loops compare
+ * it with rdtsc, not uptime_ns, so the harness adds no clock reads to the
+ * counts (PATH_CLOCK is the path's own). */
+static uint64_t give_up_tsc(void)
+{
+    return uptime_to_tsc(uptime_ns() + PATH_RUN_NS);
+}
 
 /* ---- the kernel-thread cases ------------------------------------------------ */
 
@@ -63,8 +72,8 @@ static void sw_partner(void *arg)
 static void sw_lead(void *arg)
 {
     (void)arg;
-    uint64_t until = uptime_ns() + PATH_RUN_NS;
-    while (!path_window_done() && uptime_ns() < until)
+    uint64_t until = give_up_tsc();
+    while (!path_window_done() && rdtsc() < until)
         thread_yield();
     __atomic_store_n(&sw_stop, true, __ATOMIC_RELEASE);
 }
@@ -105,8 +114,8 @@ static void kc_server(void *arg)
 static void kc_lead(void *arg)
 {
     struct channel *ep = arg;
-    uint64_t until = uptime_ns() + PATH_RUN_NS;
-    while (!path_window_done() && uptime_ns() < until) {
+    uint64_t until = give_up_tsc();
+    while (!path_window_done() && rdtsc() < until) {
         uint64_t req[2] = { 0, 42 }, rep[2];
         uint32_t n = 0;
         if (channel_call(ep, req, sizeof(req), NULL, 0, rep, sizeof(rep), &n, NULL, 0, NULL,
@@ -340,14 +349,15 @@ static void print_counts(const struct case_info *ci, const struct path_result *r
                                           PATH_SLEEPQ, PATH_TIMER_ARM };
     static const enum path_ev arch[] = { PATH_FPU_SAVE, PATH_FPU_CALLED, PATH_FPU_RESTORE,
                                          PATH_FPU_KEPT, PATH_CR3, PATH_CR3_FLUSH };
-    static const enum path_ev other[] = { PATH_EMPTY_READ, PATH_OBSERVER };
+    static const enum path_ev other[] = { PATH_EMPTY_READ, PATH_OBSERVER, PATH_CLOCK,
+                                          PATH_LOCK_SLOW };
     print_group(r, units, "kernel entries", entries, 3);
     print_sys(r, units);
     print_group(r, units, "copies", copies, 6);
     print_group(r, units, "memory, handles, locks", memory, 6);
     print_group(r, units, "scheduler", sched, 6);
     print_group(r, units, "FPU and address space", arch, 6);
-    print_group(r, units, "other", other, 2);
+    print_group(r, units, "other", other, 4);
 }
 
 /* "1.5": v / div with one decimal, rounded (the RESULTS box is narrow). */

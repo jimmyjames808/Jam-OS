@@ -243,6 +243,7 @@ static void acquire_checks(spinlock_t *l, unsigned subclass)
         return;
     bool irqs_on = irqs_enabled();   /* as the caller had them */
     uint64_t f = irq_save();
+    PATH_COUNT(PATH_LOCK_SLOW);
     acquire_checks_locked(l, subclass, irqs_on);
     irq_restore(f);
 }
@@ -286,6 +287,7 @@ static void release_checks(const spinlock_t *l)
     if (__atomic_load_n(&disabled, __ATOMIC_RELAXED))
         return;
     uint64_t f = irq_save();
+    PATH_COUNT(PATH_LOCK_SLOW);
     struct cpu *c = this_cpu();
     for (unsigned i = c->held_depth; i-- > 0;) {
         if (c->held[i] != l)
