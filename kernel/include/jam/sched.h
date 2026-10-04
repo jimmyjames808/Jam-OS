@@ -135,6 +135,12 @@ struct thread {
      * returns ERR_CANCELED from then on. */
     bool              cancel_pending;
 
+    /* A free message buffer of the channels' (kernel/object/channel.c: its
+     * slot), or NULL. A small message for a reader that waits for it is
+     * built in its writer's slot and handed over without an allocation.
+     * Touched only by the thread itself; freed when it is reaped. */
+    void             *msg_slot;
+
     /* Lock checker: mutexes this thread holds, innermost last. */
     uint32_t          sleep_depth;
     const void       *sleep_held[MAX_HELD_MUTEXES];

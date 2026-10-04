@@ -18,6 +18,7 @@
  *
  * Each endpoint's object lock guards its message queue, its list of
  * channel_call waiters and its closed / peer_closed flags. */
+#include <jam/atomic.h>
 #include <jam/channel.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
@@ -38,15 +39,80 @@ uint64_t channel_live_count(void)
 
 /* ---- messages ------------------------------------------------------------- */
 
-/* Every message (its whole allocation, handles included, plus
- * JOB_OBJECT_BYTES per handle for the object it may keep alive) is charged
- * to the SENDER's job (JOB_LIMIT_MSG_BYTES) from creation until it is freed, so a
- * process can't pin kernel memory by filling a peer's queues beyond its
- * job's limit; the charge follows the message, not the queue it sits on.
- * Messages made by kernel threads have no job. */
+/* Every message that can be queued (its whole allocation, handles
+ * included, plus JOB_OBJECT_BYTES per handle for the object it may keep
+ * alive) is charged to the SENDER's job (JOB_LIMIT_MSG_BYTES) before it is
+ * allocated and until it is freed, so a process can't pin kernel memory
+ * by filling a peer's queues beyond its job's limit; the charge follows
+ * the message, not the queue it sits on. Messages made by kernel threads
+ * have no job.
+ *
+ * Slots. A small message for a reader that is already waiting for it (a
+ * reply to a channel_call) is built in its writer's slot instead: one
+ * free CHAN_SLOT_SIZE buffer per thread (struct thread's msg_slot), kept
+ * from one message to the next. Handing it over swaps slots: the writer
+ * takes the waiting reader's free slot (chan_waiter.slot), and the reader
+ * keeps the message's once it has read it. So a ping-pong pair allocates
+ * nothing after its first round trips, and a slot is never charged:
+ * nothing piles up, as a slot message is never queued (one that finds
+ * nobody waiting after all is copied into a charged message first:
+ * chan_msg_unslot) and each thread holds at most one free slot, like its
+ * FPU area. */
+
+bool channel_slots = true;
+
+static uint64_t msg_size(uint32_t nbytes, uint32_t nhandles)
+{
+    return sizeof(struct chan_msg) + nhandles * sizeof(struct khandle) + nbytes;
+}
+
+/* A message of `size` bytes for nhandles handles, allocated and charged:
+ * only its header is set. */
+static status_t msg_alloc(uint64_t size, uint32_t nhandles, struct chan_msg **out)
+{
+    /* Each handle also pays for the object it names: once the sender closes
+     * its own handles, the message may be all that keeps it alive. */
+    uint64_t charge = size + (uint64_t)nhandles * JOB_OBJECT_BYTES;
+    struct job *job = job_current();
+    status_t st = job_charge(job, JOB_LIMIT_MSG_BYTES, charge);
+    if (st != OK)
+        return st;
+    struct chan_msg *m = kmalloc(size);
+    if (!m) {
+        job_uncharge(job, JOB_LIMIT_MSG_BYTES, charge);
+        return ERR_NO_MEMORY;
+    }
+    job_ref(job);
+    m->job = job;
+    m->charge = charge;
+    m->slot = false;
+    m->node.next = m->node.prev = NULL;
+    *out = m;
+    return OK;
+}
+
+/* The current thread's slot as a message (a new one if it has none):
+ * only its header is set. NULL when out of memory. */
+static struct chan_msg *slot_alloc(void)
+{
+    struct chan_msg *m = chan_slot_take();
+    if (!m)
+        m = kmalloc(CHAN_SLOT_SIZE);
+    if (!m)
+        return NULL;
+    m->job = NULL;
+    m->charge = 0;
+    m->slot = true;
+    m->node.next = m->node.prev = NULL;
+    return m;
+}
 
 void chan_msg_free(struct chan_msg *m)
 {
+    if (m->slot) {
+        chan_slot_keep(m);
+        return;
+    }
     job_uncharge(m->job, JOB_LIMIT_MSG_BYTES, m->charge);
     job_unref(m->job);
     kfree(m);
@@ -78,8 +144,9 @@ static status_t bytes_out(const struct chan_bytes *b, const void *src, uint32_t 
     return OK;
 }
 
-status_t chan_msg_new(const struct chan_bytes *b, uint32_t txid, const struct khandle *handles,
-                      uint32_t nhandles, struct chan_msg **out)
+/* chan_msg_new's work: in a slot if `handed` allows and it fits. */
+static status_t msg_make(const struct chan_bytes *b, uint32_t txid, const struct khandle *handles,
+                         uint32_t nhandles, bool handed, struct chan_msg **out)
 {
     uint32_t nbytes = b->len;
     if (nbytes > CHANNEL_MAX_BYTES || nhandles > CHANNEL_MAX_HANDLES)
@@ -89,23 +156,17 @@ status_t chan_msg_new(const struct chan_bytes *b, uint32_t txid, const struct kh
     for (uint32_t i = 0; i < nhandles; i++)
         if (!handles[i].obj)
             return ERR_INVALID_ARGS;
-    uint64_t size = sizeof(struct chan_msg) + nhandles * sizeof(struct khandle) + nbytes;
-    /* Each handle also pays for the object it names: once the sender closes
-     * its own handles, the message may be all that keeps it alive. */
-    uint64_t charge = size + (uint64_t)nhandles * JOB_OBJECT_BYTES;
-    struct job *job = job_current();
-    status_t st = job_charge(job, JOB_LIMIT_MSG_BYTES, charge);
-    if (st != OK)
-        return st;
-    struct chan_msg *m = kmalloc(size);
-    if (!m) {
-        job_uncharge(job, JOB_LIMIT_MSG_BYTES, charge);
-        return ERR_NO_MEMORY;
+    uint64_t size = msg_size(nbytes, nhandles);
+    struct chan_msg *m = NULL;
+    if (handed && size <= CHAN_SLOT_SIZE && __atomic_load_n(&channel_slots, __ATOMIC_RELAXED)) {
+        m = slot_alloc();
+        if (!m)
+            return ERR_NO_MEMORY;
+    } else {
+        status_t st = msg_alloc(size, nhandles, &m);
+        if (st != OK)
+            return st;
     }
-    job_ref(job);
-    m->job = job;
-    m->charge = charge;
-    m->node.next = m->node.prev = NULL;
     m->nbytes = nbytes;
     m->nhandles = nhandles;
     /* No lock is held: a copy from user memory may fault and sleep. */
@@ -121,6 +182,74 @@ status_t chan_msg_new(const struct chan_bytes *b, uint32_t txid, const struct kh
     PATH_MARK(PATH_MK_MSG_MADE);
     *out = m;
     return OK;
+}
+
+status_t chan_msg_new(const struct chan_bytes *b, uint32_t txid, const struct khandle *handles,
+                      uint32_t nhandles, struct chan_msg **out)
+{
+    return msg_make(b, txid, handles, nhandles, false, out);
+}
+
+status_t chan_msg_new_handed(const struct chan_bytes *b, uint32_t txid,
+                             const struct khandle *handles, uint32_t nhandles,
+                             struct chan_msg **out)
+{
+    return msg_make(b, txid, handles, nhandles, true, out);
+}
+
+status_t chan_msg_unslot(struct chan_msg *m, struct chan_msg **out)
+{
+    struct chan_msg *q;
+    status_t st = msg_alloc(msg_size(m->nbytes, m->nhandles), m->nhandles, &q);
+    if (st != OK)
+        return st;
+    q->nbytes = m->nbytes;
+    q->nhandles = m->nhandles;
+    /* The handles and the bytes are one run after the header. */
+    PATH_COUNT(PATH_KCOPY);
+    PATH_ADD(PATH_KCOPY_B, m->nbytes);
+    memcpy(msg_handles(q), msg_handles(m), m->nhandles * sizeof(struct khandle) + m->nbytes);
+    chan_slot_keep(m);
+    *out = q;
+    return OK;
+}
+
+/* ---- slots and waiters -------------------------------------------------------- */
+
+struct chan_msg *chan_slot_take(void)
+{
+    struct thread *t = current_thread();
+    struct chan_msg *m = t->msg_slot;
+    t->msg_slot = NULL;
+    return m;
+}
+
+void chan_slot_keep(struct chan_msg *m)
+{
+    struct thread *t = current_thread();
+    if (!m)
+        return;
+    if (!t->msg_slot)
+        t->msg_slot = m;
+    else
+        kfree(m);
+}
+
+void chan_waiter_list_locked(struct channel *ch, struct chan_waiter *w)
+{
+    list_add_tail(&ch->callers, &w->node);
+    COUNTER_ADD(&ch->pair->waiting[ch->side], 1);
+}
+
+void chan_waiter_unlist_locked(struct channel *ch, struct chan_waiter *w)
+{
+    list_del(&w->node);
+    COUNTER_SUB(&ch->pair->waiting[ch->side], 1);
+}
+
+bool chan_peer_waits(const struct channel *ch)
+{
+    return __atomic_load_n(&ch->pair->waiting[!ch->side], __ATOMIC_RELAXED) != 0;
 }
 
 void chan_msg_drop(struct chan_msg *m)

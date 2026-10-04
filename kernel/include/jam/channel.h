@@ -44,6 +44,12 @@
 
 struct channel;   /* embeds struct kobject first, type OBJ_CHANNEL */
 
+/* Switch (the benchmark's off/on): a small reply to a channel_call that
+ * is waiting for it is built in its writer's per-thread slot and handed
+ * over with no allocation and no job charge (channel.c). Off, every
+ * message is allocated and charged. Atomic loads and stores. */
+extern bool channel_slots;
+
 /* Where a message's bytes come from, or go to. A user address is copied
  * with copy_from_user / copy_to_user, outside every lock; a fault there
  * is ERR_INVALID_ARGS. */

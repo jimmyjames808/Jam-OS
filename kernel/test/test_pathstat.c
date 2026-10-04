@@ -8,6 +8,7 @@
  * update the number with it and say so in the commit. Counts that a
  * preemption can raise (locks, scheduler passes, switches, FPU and CR3
  * work) are checked only on an idle machine; the rest hold under load. */
+#include <jam/channel.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/pathstat.h>
@@ -158,14 +159,27 @@ KTEST(pathstat_switch_counts)
 }
 
 /* channel_call between two kernel threads on one CPU: two messages, each
- * allocated once, copied in and out of it once; no job, no handles. */
+ * copied in and out once; no job, no handles. The request is allocated
+ * (the server isn't waiting in a read: it waits on the endpoint, then
+ * reads); the reply goes to the waiting caller in the server's slot, so
+ * it allocates nothing (channel.c's "Slots"). With the slots off (the
+ * benchmark's switch), both are allocated. */
 KTEST(pathstat_kernel_call_counts)
 {
     struct path_result r;
-    KT_ASSERT(bench_path_kcall(test_cpu(), 16, &r));
-    KT_ASSERT(r.calls > 0);
+    bool slots = __atomic_load_n(&channel_slots, __ATOMIC_RELAXED);
+    __atomic_store_n(&channel_slots, false, __ATOMIC_RELAXED);
+    bool ok = bench_path_kcall(test_cpu(), 16, &r);
+    __atomic_store_n(&channel_slots, slots, __ATOMIC_RELAXED);
+    KT_ASSERT(ok && r.calls > 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 200);
     KT_EQ(per100(&r, PATH_KFREE), 200);
+    if (!slots)
+        return;   /* booted with them off: nothing more to compare */
+    KT_ASSERT(bench_path_kcall(test_cpu(), 16, &r));
+    KT_ASSERT(r.calls > 0);
+    KT_EQ(per100(&r, PATH_KMALLOC), 100);
+    KT_EQ(per100(&r, PATH_KFREE), 100);
     KT_EQ(per100(&r, PATH_KCOPY), 400);
     KT_EQ(per100(&r, PATH_KCOPY_B), 6400);
     KT_EQ(per100(&r, PATH_SYSCALL), 0);
@@ -179,13 +193,15 @@ KTEST(pathstat_kernel_call_counts)
 
 /* utest bench-call against bench-echo, both on one CPU: today's 5 system
  * calls (the call; the server's read, write, a read that finds nothing,
- * and its wait), 5 handle lookups, 2 messages, 2 job charges and 2
- * credits, and per switch one restore and one CR3 load. The bytes go
- * straight from user memory into each message and out of it again, so
- * the kernel makes no copy of its own (4 user copies of the bytes a round
- * trip, no stack buffers in between). Both threads
- * switch out inside a system call, so no switch saves the FPU state: each
- * keeps only its control words (the system call rule, fpu.c). */
+ * and its wait), 5 handle lookups, 2 messages, and per switch one restore
+ * and one CR3 load. The bytes go straight from user memory into each
+ * message and out of it again, so the kernel makes no copy of its own (4
+ * user copies of the bytes a round trip, no stack buffers in between).
+ * The request is queued: allocated, one job charge and one credit. The
+ * reply is handed to the waiting caller in the server's slot: no
+ * allocation, no charge. Both threads switch out inside a system call, so
+ * no switch saves the FPU state: each keeps only its control words (the
+ * system call rule, fpu.c). */
 KTEST(pathstat_user_call_counts)
 {
     struct path_result r;
@@ -200,12 +216,12 @@ KTEST(pathstat_user_call_counts)
     KT_EQ(sys100(&r, SYS_object_wait_one), 100);
     KT_ASSERT(per100(&r, PATH_SYSCALL) >= 500 && per100(&r, PATH_SYSCALL) <= 502);
     KT_EQ(per100(&r, PATH_EMPTY_READ), 100);
-    KT_EQ(per100(&r, PATH_KMALLOC), 200);
-    KT_EQ(per100(&r, PATH_KFREE), 200);
+    KT_EQ(per100(&r, PATH_KMALLOC), 100);
+    KT_EQ(per100(&r, PATH_KFREE), 100);
     KT_EQ(per100(&r, PATH_KCOPY), 0);
     KT_EQ(per100(&r, PATH_UCOPY_IN_B), 20800);
     KT_EQ(per100(&r, PATH_HANDLE), 500);
-    KT_EQ(per100(&r, PATH_JOB), 400);
+    KT_EQ(per100(&r, PATH_JOB), 200);
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
     KT_IDLE_EQ(per100(&r, PATH_FPU_SAVE), fpu_call_drop() ? 0 : 200);
     KT_IDLE_EQ(per100(&r, PATH_FPU_CALLED), fpu_call_drop() ? 200 : 0);
@@ -229,5 +245,5 @@ KTEST(pathstat_user_deadline_call_counts)
     KT_EQ(sys100(&r, SYS_channel_call), 100);
     KT_EQ(per100(&r, PATH_SLEEPQ), 100);
     KT_EQ(per100(&r, PATH_TIMER_ARM), 0);
-    KT_EQ(per100(&r, PATH_KMALLOC), 200);
+    KT_EQ(per100(&r, PATH_KMALLOC), 100);
 }

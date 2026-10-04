@@ -96,16 +96,31 @@ static struct chan_waiter *find_caller_locked(struct channel *peer, uint32_t txi
     return NULL;
 }
 
+/* A slot message goes to waiter w: take w's free slot for ours, so each
+ * thread still has one (we have none now: the message was built in it).
+ * The peer's lock is held, so w (still listed) is not looking at w->slot. */
+static void swap_slots_locked(struct chan_waiter *w)
+{
+    struct thread *me = current_thread();
+    if (me->msg_slot)
+        return;   /* we have one already: w keeps its own */
+    me->msg_slot = w->slot;
+    w->slot = NULL;
+}
+
 /* peer's lock held (and the pair lock): give m to the caller waiting for
- * its txid, or queue it. *filled: the queue just became full. */
+ * its txid, or queue it. *filled: the queue just became full. A slot
+ * message is never queued: *must_queue instead (and nothing changes). */
 static status_t hand_over_locked(struct channel *ch, struct channel *peer, struct chan_msg *m,
-                                 bool *filled)
+                                 bool *filled, bool *must_queue)
 {
     uint32_t txid = msg_txid(m);
     struct chan_waiter *w = txid ? find_caller_locked(peer, txid) : NULL;
     if (w) {
         w->reply = m;
-        list_del(&w->node);
+        if (m->slot)
+            swap_slots_locked(w);
+        chan_waiter_unlist_locked(peer, w);
         /* A reply to a channel_call. If no other request is queued for us,
          * we (the server) are most likely about to block for the next one,
          * so the caller may take our CPU (wake-affine; a guess: a server
@@ -116,6 +131,10 @@ static status_t hand_over_locked(struct channel *ch, struct channel *peer, struc
             thread_wake_sync(w->thread);
         else
             thread_wake(w->thread);
+        return OK;
+    }
+    if (m->slot) {
+        *must_queue = true;
         return OK;
     }
     if (peer->nqueued >= CHANNEL_MAX_QUEUED)
@@ -135,9 +154,10 @@ static bool carries_channel(struct chan_msg *m)
 }
 
 /* Queue m on ch's peer, or hand it to the channel_call there waiting for
- * its txid. On success the message belongs to the peer; on failure it is
- * still the caller's. */
-static status_t send_msg(struct channel *ch, struct chan_msg *m)
+ * its txid. On success the message belongs to the peer, unless
+ * *must_queue: a slot message nobody waits for, still the caller's, as it
+ * is on failure. */
+static status_t send_once(struct channel *ch, struct chan_msg *m, bool *must_queue)
 {
     struct chan_pair *pair = ch->pair;
     status_t st;
@@ -155,7 +175,7 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
     if (st == OK) {
         DBG_HOOK(DBG_CHANNEL_CARRIED, ch);
         spin_lock(&peer->base.lock);
-        st = hand_over_locked(ch, peer, m, &filled);
+        st = hand_over_locked(ch, peer, m, &filled, must_queue);
         spin_unlock(&peer->base.lock);
     }
     if (filled) {
@@ -173,14 +193,32 @@ static status_t send_msg(struct channel *ch, struct chan_msg *m)
     return st;
 }
 
+/* send_once, and if *mp is a slot message whose reader stopped waiting
+ * (or waits for another txid), queue a charged copy of it in its place
+ * (*mp becomes that copy). On failure *mp is still the caller's. */
+static status_t send_msg(struct channel *ch, struct chan_msg **mp)
+{
+    bool must_queue = false;
+    status_t st = send_once(ch, *mp, &must_queue);
+    if (st != OK || !must_queue)
+        return st;
+    struct chan_msg *q;
+    st = chan_msg_unslot(*mp, &q);
+    if (st != OK)
+        return st;
+    *mp = q;
+    return send_once(ch, q, &must_queue);   /* q is no slot: never must_queue */
+}
+
 status_t channel_write_from(struct channel *ch, const struct chan_bytes *b,
                             struct khandle *handles, uint32_t nhandles)
 {
     struct chan_msg *m;
-    status_t st = chan_msg_new(b, 0, handles, nhandles, &m);
+    status_t st = chan_peer_waits(ch) ? chan_msg_new_handed(b, 0, handles, nhandles, &m)
+                                      : chan_msg_new(b, 0, handles, nhandles, &m);
     if (st != OK)
         return st;
-    st = send_msg(ch, m);
+    st = send_msg(ch, &m);
     if (st != OK) {
         chan_msg_free(m);   /* its handle copies were never the message's */
         return st;
@@ -199,28 +237,37 @@ status_t channel_write(struct channel *ch, const void *bytes, uint32_t nbytes,
 
 /* ---- call ---------------------------------------------------------------------- */
 
-/* Send the request with w listed on ch first, so even an instant reply
- * finds it. On failure nothing was sent and w is unlisted. */
-static status_t send_request(struct channel *ch, struct chan_waiter *w, struct chan_msg *m)
+/* Send the request *mp with w listed on ch first, so even an instant
+ * reply finds it, and our free slot on offer with it (see channel.c's
+ * "Slots"; none if the request was built in it). On failure nothing was
+ * sent, w is unlisted, the slot is ours again and *mp (send_msg may have
+ * replaced it) is still the caller's. */
+static status_t send_request(struct channel *ch, struct chan_waiter *w, struct chan_msg **mp)
 {
+    struct chan_msg *mine = chan_slot_take();
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
     if (ch->closed) {
         spin_unlock_irqrestore(&ch->base.lock, f);
+        chan_slot_keep(mine);
         return ERR_BAD_STATE;
     }
-    list_add_tail(&ch->callers, &w->node);
+    w->slot = mine;
+    chan_waiter_list_locked(ch, w);
     spin_unlock_irqrestore(&ch->base.lock, f);
 
     /* We block for the reply right after sending, so the server this wakes
      * (through whatever observer it waits with) may run on our CPU. */
     thread_set_wake_sync(true);
-    status_t st = send_msg(ch, m);
+    status_t st = send_msg(ch, mp);
     thread_set_wake_sync(false);
     if (st != OK) {
         f = spin_lock_irqsave(&ch->base.lock);
         if (w->node.next)
-            list_del(&w->node);
+            chan_waiter_unlist_locked(ch, w);
+        mine = w->slot;   /* NULL if a writer took it */
+        w->slot = NULL;
         spin_unlock_irqrestore(&ch->base.lock, f);
+        chan_slot_keep(mine);
         if (w->reply) {   /* the peer guessed our txid before we even sent */
             chan_msg_drop(w->reply);
             w->reply = NULL;
@@ -229,11 +276,19 @@ static status_t send_request(struct channel *ch, struct chan_waiter *w, struct c
     return st;
 }
 
-/* Wait for w's reply. OK: it is in w->reply. */
+/* Wait for w's reply. OK: it is in w->reply. Our free slot stays on offer
+ * to a writer that hands us a reply built in its own; if the request was
+ * built in ours, the slot its reader gave us in exchange is offered now.
+ * Whatever is left of the offer comes back to us after. */
 static status_t wait_reply(struct channel *ch, struct chan_waiter *w, uint64_t deadline_ns)
 {
     status_t st = OK;
+    struct chan_msg *mine = chan_slot_take();
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
+    if (!w->slot && !w->reply) {
+        w->slot = mine;
+        mine = NULL;
+    }
     while (!w->reply) {
         if (ch->closed) {
             st = ERR_CANCELED;
@@ -253,8 +308,12 @@ static status_t wait_reply(struct channel *ch, struct chan_waiter *w, uint64_t d
         }
     }
     if (w->node.next)   /* not answered: still listed */
-        list_del(&w->node);
+        chan_waiter_unlist_locked(ch, w);
+    struct chan_msg *offered = w->slot;   /* NULL if a writer took it */
+    w->slot = NULL;
     spin_unlock_irqrestore(&ch->base.lock, f);
+    chan_slot_keep(mine);
+    chan_slot_keep(offered);
     PATH_MARK(PATH_MK_REPLY);
     return w->reply ? OK : st;
 }
@@ -266,14 +325,15 @@ status_t channel_call_with(struct channel *ch, struct chan_call *c, uint64_t dea
     if ((!q->user && !q->addr) || q->len < 4 || (c->rep.len && !c->rep.user && !c->rep.addr) ||
         (c->rep_hcap && !c->rep_h))
         return ERR_INVALID_ARGS;
-    struct chan_waiter w = { .txid = new_txid(), .thread = current_thread(), .reply = NULL };
+    struct chan_waiter w = { .txid = new_txid(), .thread = current_thread() };
     if (!q->user)
         memcpy((void *)(uintptr_t)q->addr, &w.txid, 4);   /* kernel callers read it back */
     struct chan_msg *m;
-    status_t st = chan_msg_new(q, w.txid, c->req_h, c->req_nh, &m);
+    status_t st = chan_peer_waits(ch) ? chan_msg_new_handed(q, w.txid, c->req_h, c->req_nh, &m)
+                                      : chan_msg_new(q, w.txid, c->req_h, c->req_nh, &m);
     if (st != OK)
         return st;
-    st = send_request(ch, &w, m);
+    st = send_request(ch, &w, &m);
     if (st != OK) {
         chan_msg_free(m);   /* its handle copies were never the message's */
         return st;

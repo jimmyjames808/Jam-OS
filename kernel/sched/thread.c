@@ -158,6 +158,8 @@ void thread_reap(struct thread *t)
         t->aspace = NULL;
     }
     fpu_ustate_free(t);   /* switched out for good: nothing saves into it now */
+    kfree(t->msg_slot);   /* the channels' message slot, if it had one */
+    t->msg_slot = NULL;
     stack_put(t->stack_top);
     thread_put(t);   /* the thread's reference to itself */
 }
