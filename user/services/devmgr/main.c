@@ -347,9 +347,15 @@ static bool stop_all(void)
         if (b->kind == BIND_FS || b->kind == BIND_USB || !b->proc)
             continue;
         signals_t seen;
+        uint64_t t0 = now();
         close_client(b);
         /* One that doesn't end is reported, and killed, by stop_driver below. */
-        (void)jam_object_wait_one(b->proc, SIG_TERMINATED, now() + STOP_WAIT, &seen);
+        status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED, t0 + STOP_WAIT, &seen);
+        /* Said for each: a driver that waits out STOP_WAIT here is one
+         * whose client end someone else still holds (a duplicate kept for
+         * a service's restart), and a reboot's whole delay. */
+        say(false, "devmgr: stopping: %s %s %s %lu ms after its client end closed", bdf(b),
+            b->path, st == OK ? "ended" : "still runs", (unsigned long)((now() - t0) / NS_PER_MS));
     }
     for (unsigned k = 0; k < sizeof(order) / sizeof(order[0]); k++)
         for (unsigned i = 0; i < ndevs; i++) {

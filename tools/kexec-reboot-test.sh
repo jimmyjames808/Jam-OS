@@ -87,6 +87,12 @@ run_kexec() {
     ms=$(grep -ao "devmgr stopped in [0-9]* ms" "$log" | head -1 | tr -dc 0-9)
     [ -n "$ms" ] && [ "$ms" -lt 2000 ] ||
         fail kexec "devmgr took ${ms:-?} ms to stop (a driver left waiting for its clients?)"
+    # devmgr names each driver it waited for: none may outlive its client end
+    # (a duplicate still held: the mixer's keeper once kept hda's 30 s).
+    grep -a "devmgr: stopping: .* still runs" "$log" &&
+        fail kexec "a driver didn't end when its client end closed"
+    grep -aq "devmgr: stopping: .* ended" "$log" ||
+        fail kexec "devmgr didn't say how long its drivers took to stop"
     [ "$(grep -ac "smp: $cpus of $cpus CPUs online" "$log")" -ge 2 ] ||
         fail kexec "the kexec'd kernel didn't bring up all $cpus CPUs"
     mtype -i "$out/kexec-kexec-stick.img@@64M" ::/logs/boot-0001.txt 2>/dev/null |
