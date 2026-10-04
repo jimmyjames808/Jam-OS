@@ -50,11 +50,13 @@ send write -a /data/logs/boot-0001.txt mine; echo st-$T=$?
 wait write: /data/logs/boot-0001.txt: in use
 wait st-a=1
 
-# ---- a filesystem service that dies is mounted again, and logd carries on ---------------
+# ---- a filesystem service that dies is started again on the channel devmgr
+# kept (the mount never goes: no "is gone", no "mounted") and carries on from
+# the dead one's state: logd's file stays open (it never opens it again) ----
 send kill fat-data
 wait shell: killed process
-wait 20 init: /data mounted
-wait 20 logd: writing /data/logs/boot-0001.txt
+seen 20 devmgr: fat-data: spare promoted
+seen 20 fat /data: restart (killed
 send cat "/data/My Notes/first boot.txt"
 wait kept across a reboot-a
 # devmgr dies: its drivers and both filesystems go with it, and come back

@@ -107,11 +107,14 @@ static status_t pci_handles(struct binding *b, struct spawn_handle *x, rights_t 
  * already), else a new channel whose other end becomes b->client. A USB
  * class driver serves nobody, unless it is a disk's (usb-storage serves
  * devmgr `storage`). A filesystem service serves `fs` under the same role
- * (<fatsvc.h>: FAT_SR_SERVE). */
+ * (<fatsvc.h>: FAT_SR_SERVE), on a channel devmgr keeps both ends of
+ * across its restarts (fs_serve_end). */
 static status_t add_serve(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
     if (b->kind == BIND_USB && !b->disk)
         return OK;
+    if (b->kind == BIND_FS)
+        return fs_serve_end(b, x, xr, n);
     if (!b->serve) {
         handle_t client;
         status_t st = jam_channel_create(&client, &b->serve);
@@ -153,6 +156,7 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
         snprintf(mount, sizeof(mount), "%s", fs_mount_path(b));
         add_arg(argv, &argc, mount);
         add_arg(argv, &argc, fs_format_arg(b));
+        add_arg(argv, &argc, fs_end_arg(b));   /* "killed", "crashed" or none */
     }
     if (b->kind == BIND_USB)
         add_arg(argv, &argc, usb_driver_arg(b));   /* "hidboot" or none */

@@ -64,6 +64,15 @@
 #define FAT_CHAN_VIEW(s, g) (2u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
 
 
+/* The steps of a start, timed for a restart's log line (adopt.c). */
+enum fat_at {
+    FAT_AT_MAIN,              /* main ran */
+    FAT_AT_DISK,              /* the block channel taken (disk_open) */
+    FAT_AT_STATE,             /* the state mapped and its header checked */
+    FAT_AT_HANDLES,           /* the state checked, the kept handles taken back */
+    FAT_AT_COUNT,
+};
+
 /* The volume: fat serves exactly one. What this instance has of it: its
  * handles, its mapping of the block buffer, what block.info and argv
  * said. What fat knows of it that must outlive the process is in the
@@ -79,6 +88,14 @@ struct fat_vol {
     bool        may_format;   /* started with FAT_ARG_FORMAT: a blank partition is formatted */
     bool        disk_gone;    /* a block call saw ERR_PEER_CLOSED */
     handle_t    rtc_root;     /* SR_RESOURCE or HANDLE_INVALID */
+    handle_t    keep;         /* SR_KEEP: the keep channel (keeper.c), or HANDLE_INVALID */
+    handle_t    serve;        /* the fs channel (FAT_SR_SERVE) */
+    handle_t    ctl;          /* this instance's fsctl channel, or HANDLE_INVALID */
+    /* How the last instance ended, from argv (FAT_ARG_KILLED, FAT_ARG_CRASHED):
+     * NULL for a first start. Only a crash counts against the request in
+     * progress (adopt.c: the bad-request rule). */
+    const char *ended;
+    uint64_t    at[FAT_AT_COUNT];   /* when each step of the start was done (uptime ns) */
 };
 
 extern struct fat_vol vol;
@@ -102,12 +119,12 @@ extern struct fat_vol vol;
  *
  * Every request is run as one operation on it (request.c): an undo copy
  * first (undo.c), every disk write held (hold.c), then the commit word.
- * Today fat makes this VMO itself at every start (state.c), so it always
- * starts fresh and nothing outlives the process yet: stage F3 of the plan,
- * and devmgr's S3a, which hands it in, make use of it. */
+ * devmgr makes the VMO and keeps it across fat's deaths (SR_STATE); a fat
+ * started with a used one carries on from it (adopt.c). Without SR_STATE
+ * (a test's RAM disk) fat makes one of its own and always starts fresh. */
 
 #define FAT_STATE_KIND 0x20746166u   /* "fat ": svcstate's kind */
-#define FAT_STATE_LAYOUT 2u          /* bump on any change to struct fat_state */
+#define FAT_STATE_LAYOUT 3u          /* bump on any change to struct fat_state */
 #define FAT_HOLD_MAX  2304u   /* sectors held at most: a MiB of a file, the FAT sectors
                                * that chain it (on one-sector clusters, 16 per copy) */
 #define FAT_HOLD_RUNS 255u    /* runs of consecutive sectors held at most (run_of is a byte) */
@@ -196,6 +213,7 @@ struct fat_post {
 struct fat_undo {
     uint64_t op;              /* the operation it undoes (set last, released); 0: none */
     uint64_t seq;             /* its request's slot number; 0: a close, which has no slot */
+    uint32_t closing;         /* a close's: the slot of files[] it closes */
     uint32_t used;            /* bytes of log in use (each record, then this, released) */
     uint32_t opens;           /* bit i: opens[i] is in the log */
     uint32_t held;            /* the hold's sectors when it began ... */
@@ -208,14 +226,30 @@ struct fat_undo {
     _Alignas(PAGE_SIZE) uint8_t sect[FAT_UNDO_SECTORS][FAT_SECTOR];
 };
 
+/* What the request numbered `seq` made that its reply hands out (fs.open's
+ * file, fs.view's view): a successor that finds the request committed
+ * tells by that slot's channel whether the reply arrived (adopt.c). */
+#define FAT_MADE_FILE 1u
+#define FAT_MADE_VIEW 2u
+struct fat_made {
+    uint64_t seq;             /* the request (a slot's seq); 0: none */
+    uint32_t kind;            /* FAT_MADE_FILE or FAT_MADE_VIEW */
+    uint32_t index;           /* its slot of files[] or views[] */
+};
+
 struct fat_state {
     FATFS           fs;                    /* FatFs's volume */
     struct fat_disk disk;
+    bool            mounted;               /* fs is a mounted volume, its dirty flag
+                                            * found (disk_watch): what a successor adopts */
+    uint32_t        close_crashes;         /* crashes while operation ops_done + 1, a
+                                            * close, was in progress (adopt.c) */
     struct fat_open opens[FAT_MAX_FILES];  /* at most one per slot of files[] */
     struct fat_file files[FAT_MAX_FILES];
     struct fat_view views[FAT_VIEWS];
     uint64_t        ops_done;              /* operations committed: a close's commit word */
     struct fat_post post;                  /* the committed request's send */
+    struct fat_made made;                  /* what the last request that made a slot made */
     uint64_t        data_seq[2];           /* slot i's data holds request data_seq[i]'s bytes
                                             * (a file.write's, all of them: set after the copy) */
     _Alignas(PAGE_SIZE) struct fat_undo undo;
@@ -225,9 +259,16 @@ struct fat_state {
 /* The state, mapped (state_open); NULL before. */
 extern struct fat_state *kept;
 
-/* Make the state VMO, map it at SVCSTATE_ADDR and set it up empty: before
- * anything else. Errors as svcstate_create's and svcstate_open's. */
-status_t state_open(void);
+/* Map the state VMO (SR_STATE, or one made now) at SVCSTATE_ADDR, after
+ * disk_open (the state is bound to vol.name and vol.blocks). *adopted: a
+ * dead instance's state that svcstate accepted (adopt.c checks the rest);
+ * otherwise it is set up empty. Errors as svcstate_create's and
+ * svcstate_open's. */
+status_t state_open(bool *adopted);
+/* Set the state up empty, as a first start has it: everything but the
+ * views' table if keep_views (adopt.c: their channels outlive a volume
+ * that is read again from the disk). */
+void     state_reset(bool keep_views);
 /* Commit the state's pages under [p, p + len), inside *kept: so that
  * running out of memory fails now instead of faulting later. vmo_commit's
  * errors (ERR_NO_MEMORY). */
@@ -297,6 +338,68 @@ void     op_wrote(void);
  * goes out now, in steps (hold.c's header): logged once, and the undo copy
  * spent. Called before that release. */
 void     op_steps(void);
+/* The running request made slot `index` of files[] or views[]
+ * (FAT_MADE_*), which its reply hands out: into kept->made. */
+void     op_made(uint32_t kind, uint32_t index);
+/* Run the request in `slot` (taken already) as serve_one does: for a
+ * successor's request in progress (adopt.c). */
+void     serve_slot(const struct fat_chan *c, unsigned slot);
+/* Commit and answer the request in `slot` with a bare status, on c (NULL:
+ * its caller is gone: only marked answered). */
+void     answer_status(const struct fat_chan *c, unsigned slot, status_t status);
+/* The committed reply in `slot` (rn bytes), with handles rhs[0..rhn)
+ * (moved; closed if the client is gone). */
+void     answer(const struct fat_chan *c, unsigned slot, uint32_t rn, handle_t *rhs,
+                uint32_t rhn);
+/* The send of a committed operation (kept->post), done again (adopt.c). */
+status_t op_resend(void);
+
+/* ---- adopt.c ---------------------------------------------------------------------- */
+
+/* Carry on from a dead instance's state (state_open said adopted): check
+ * it, FatFs told the volume is mounted, the kept handles taken back, the
+ * request or close in progress undone or finished, the restart logged.
+ * When the state can't be carried on from, the volume is mounted afresh
+ * from the disk (views kept if their table can be trusted), as main's
+ * mount would. *no_volume as main.c's mount. */
+status_t adopt(bool adopted, bool *no_volume);
+/* Mount from the disk (main.c): a first start, or a state not adopted. */
+status_t mount(bool *no_volume);
+
+/* ---- keeper.c --------------------------------------------------------------------- */
+
+#define FAT_KEEP_FILE(i) ((uint32_t)(i))                  /* files[i]'s keep slot */
+#define FAT_KEEP_VIEW(i) ((uint32_t)(FAT_MAX_FILES + (i)))  /* views[i]'s */
+
+/* Put duplicates of hs[0..n) with the keeper as slot `slot`: before the
+ * request that made them commits. keep_put's errors. */
+status_t kept_put(uint32_t slot, const handle_t *hs, unsigned n);
+/* The state has forgotten slot `slot`: the keeper is told now, or after
+ * the commit if an operation runs (kept_flush). */
+void     kept_drop(uint32_t slot);
+/* The drops owed by the operation just committed, sent. */
+void     kept_flush(void);
+/* The drops owed are forgotten: the operation was undone. */
+void     kept_cancel(void);
+
+/* ---- test.c ----------------------------------------------------------------------- */
+
+/* Where a test power may end the process (test.c). */
+enum fat_die {
+    FAT_DIE_HELD,             /* a write being held (hold_put) */
+    FAT_DIE_COMMIT,           /* right after a commit */
+    FAT_DIE_SEND,             /* after a block write of what was held went out */
+    FAT_DIE_REPLY,            /* sent, not answered */
+    FAT_DIE_ANSWERED,         /* answered, the next request not taken */
+    FAT_DIE_COUNT,
+};
+/* An argv word that is a test power: taken (true), or not one. */
+bool     test_word(const char *w);
+void     test_die(enum fat_die point);
+/* fs.stat of `path` (resolved): crash-on's crash. */
+void     test_crash(const char *path);
+/* fixed-time: get_fattime gives 2026-01-01 00:00:00 only. */
+bool     test_fixed_time(void);
 
 /* ---- undo.c ----------------------------------------------------------------------- */
 
@@ -461,6 +564,19 @@ void     views_event(uint64_t key);
 /* Close the channel of every view the state doesn't know (after an undo:
  * views an undone fs.view made). */
 void     views_drop_unknown(void);
+/* A successor's views (adopt.c): keep_restore's slot i handed back (true:
+ * the state knows it, the handle is taken); then every view the state
+ * knows and got its channel back waited on again, the rest dropped (the
+ * number kept is returned). Did the reply that handed out view i arrive
+ * (its client's end alive)? Its channel made again, the client's end into
+ * *out (consumed by the reply): one that never arrived. */
+bool     views_take(uint32_t i, const handle_t *hs, unsigned n);
+unsigned views_adopt(void);
+bool     views_reply_arrived(uint32_t i);
+status_t views_remake(uint32_t i, handle_t *out);
+/* View i's channel, as serve_one takes it, if the state has view i with
+ * generation gen16 (its low 16 bits) and its channel came back. */
+bool     views_chan(uint32_t i, uint32_t gen16, struct fat_chan *out);
 
 /* ---- fileops.c ------------------------------------------------------------------- */
 
@@ -488,3 +604,15 @@ void     files_drop_unknown(void);
  * that an 8.3 alias of an open file's path is that file (FatFs's own lock
  * is off: ffport/ffconf.h). An open file can't be removed or renamed. */
 bool     files_is_open(const char *path);
+/* A successor's files, as views_take and the rest (adopt.c): files_adopt
+ * closes (as operations) the files whose handles didn't come back. */
+bool     files_take(uint32_t i, const handle_t *hs, unsigned n);
+unsigned files_adopt(void);
+bool     files_reply_arrived(uint32_t i);
+status_t files_remake(uint32_t i, handle_t *out_ch, handle_t *out_vmo);
+/* Slot i forgotten without FatFs (its close crashed fat twice): its file's
+ * unsynced changes are lost, the slot and its handles go. */
+void     files_forget(uint32_t i);
+/* Slot i's channel and the file it is, as serve_one takes it (adopt.c);
+ * false if the state has no such open file or its handles are gone. */
+bool     files_chan(uint32_t i, uint32_t gen16, struct fat_chan *out);

@@ -5,7 +5,9 @@
  * give up), usb.c (the USB interfaces usb-bus reports), disk.c (the disks
  * usb-storage serves: which one is the boot disk) and fsvc.c (their
  * filesystem services; disk.h between the two), mounts.c (DEVMGR_MOUNTS: the list of mounts, its generation
- * and the calls waiting for it to change). The protocol is in <devmgr.h>. */
+ * and the calls waiting for it to change), spare.c (what outlives a
+ * filesystem service's process: its keeper and state VMO, and the warm
+ * spare fat). The protocol is in <devmgr.h>. */
 #pragma once
 
 #include <devmgr.h>
@@ -46,6 +48,12 @@
  * its slot and the slot's generation. */
 #define KEY_CHAN           (1ull << 36)
 #define KEY_CHAN_OF(i, gen) (KEY_CHAN | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
+/* The warm spare fat's process terminated (spare.c). */
+#define KEY_SPARE          (1ull << 37)
+/* A filesystem service's keep channel has something to read (spare.c):
+ * binding index and the keeper's generation. */
+#define KEY_KEEP           (1ull << 38)
+#define KEY_KEEP_OF(i, gen) (KEY_KEEP | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 #define KEY_INDEX(k)       ((uint32_t)((k) >> 16) & 0xffffu)
 #define KEY_GEN(k)         ((uint32_t)(k) & 0xffffu)
 
@@ -117,6 +125,18 @@ struct binding {
     bool                ready;      /* it answered its first fs.stat: a mount */
     uint8_t             usbn;       /* the N of /usbN */
     uint32_t            probe;      /* that fs.stat's transaction id */
+    /* BIND_FS: what outlives its process (spare.c). Its `fs` channel is
+     * kept too: client and serve stay devmgr's from one instance to the
+     * next (fs_serve_end), so a restart is not a new channel. */
+    struct fs_kept     *kept;       /* its keeper and state VMO; NULL until its first start */
+    bool                deliberate; /* the restart due is a deliberate kill's: not counted */
+    uint64_t            kill_at;    /* when DEVMGR_KILL asked for its end (uptime ns; 0: none) */
+    uint64_t            ended_at;   /* when its last instance's end was seen (uptime ns) */
+    uint32_t            promoted;   /* restarts that promoted the warm spare, since boot */
+    /* Bumped with every new `fs` channel (fs_serve_end): the mount's
+     * generation in DEVMGR_MOUNTS. A restart on the kept channel doesn't
+     * move it: fat keeps its views (and open files) across its deaths. */
+    uint32_t            chan_gen;
 };
 
 extern struct binding devs[MAX_DEVS];
@@ -281,6 +301,10 @@ bool fs_check_ended(struct binding *b, bool no_volume);
 /* FAT_ARG_FORMAT for the one service that may format a blank partition
  * (the boot disk's data partition), NULL for every other. */
 const char *fs_format_arg(const struct binding *b);
+/* For an instance that replaces one that ended: FAT_ARG_KILLED after a
+ * deliberate kill, FAT_ARG_CRASHED after any other end; NULL for a first
+ * start (fat counts only crashes against the request in progress). */
+const char *fs_end_arg(const struct binding *b);
 /* DEVMGR_REMOUNT: /usbN (a test disk's: /usbN-test) read-write or
  * read-only. ERR_NOT_FOUND: no such mount; ERR_BAD_STATE: its service
  * isn't serving. */
@@ -303,6 +327,16 @@ void fs_retire(struct binding *b);
 /* DEVMGR_FS_SVC: the filesystem service on partition `part` of disk `id`,
  * or NULL. */
 struct binding *fs_find(uint32_t id, uint32_t part);
+/* DEVMGR_FS_MOUNT: the filesystem service of mount `which`
+ * (DEVMGR_MOUNT_*; flags DEVMGR_MOUNT_TEST: a test disk's), or NULL. */
+struct binding *fs_find_mount(uint32_t which, uint32_t flags);
+/* b's (BIND_FS) DR_SERVE: a duplicate of the `fs` server end devmgr keeps
+ * across its restarts (a new channel only when there is none, or its
+ * client end was closed). */
+status_t fs_serve_end(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
+/* Does b (BIND_FS) keep its `fs` channel while no instance runs? Then it
+ * stays a mount meanwhile, and calls on it wait for the next instance. */
+bool     fs_channel_kept(const struct binding *b);
 /* devmgr is stopping: fs.sync each mounted data partition while its disk
  * still works (the services are killed when their disk's driver goes). */
 void disk_sync_all(void);
@@ -317,7 +351,8 @@ uint64_t disk_next_deadline(void);
 struct mount {
     char     path[16];   /* the mount point */
     uint32_t bind;       /* devs index of its filesystem service */
-    uint32_t gen;        /* that binding's start generation: a restart is a new mount */
+    uint32_t gen;        /* that binding's `fs` channel's generation (chan_gen): a new
+                          * channel is a new mount, a restart on the kept one isn't */
 };
 /* The mounts as they are now into out (DEVMGR_MAX_MOUNTS slots). Returns
  * how many. */
@@ -346,3 +381,36 @@ uint64_t sup_next_deadline(void);
 /* Forget b's supervision: no restart is due any more, the kept channel
  * end goes; the restart history is cleared. */
 void sup_reset(struct binding *b);
+
+/* spare.c: a filesystem service that outlives its process
+ * (docs/M11.6-PLAN.md): per BIND_FS binding a keeper and a state VMO, and
+ * one warm spare fat for every mount. */
+/* `on`: keep a warm spare (no boot word `nospare`). */
+void     spare_init(bool on);
+/* Start b (BIND_FS): for a `restart` after a death, the warm spare if one
+ * waits, else (and for any other start) a new process (start_driver);
+ * either way with its state and a new keep channel, whose keeper then
+ * hands it what was kept. A restart is measured: the log says when it ran
+ * and when it first answered. Errors as start_driver's. */
+status_t fs_run(struct binding *b, bool restart);
+/* b's state VMO (made the first time) and a new keep channel into x
+ * (SR_STATE, SR_KEEP), for its next instance. One that can't be made is
+ * said and left out: that instance starts fresh. */
+void     fs_kept_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
+/* The `block` channel opened in advance for b (the boot disk's /data)
+ * into *out, if there is one and its disk still answers: true. */
+bool     fs_block_prepared(const struct binding *b, handle_t *out);
+/* b won't run again as it was (retired, given up on, stopped in order):
+ * what its keeper kept closes (its clients see ERR_PEER_CLOSED), its state
+ * VMO goes, and a `block` channel opened in advance for it. */
+void     fs_kept_release(struct binding *b);
+/* Start the warm spare (and open /data's `block` channel for it) when due. */
+void     spare_due(void);
+uint64_t spare_next_deadline(void);   /* DEADLINE_NEVER: nothing due */
+/* The port's packets: KEY_SPARE (the spare ended), KEY_KEEP (a keep channel). */
+void     spare_event(void);
+void     spare_keep_event(uint64_t key);
+/* SUPERVISION: is a warm spare waiting now? */
+bool     spare_waits(void);
+/* devmgr is stopping: the spare goes, and the `block` channel it had. */
+void     spare_stop(void);

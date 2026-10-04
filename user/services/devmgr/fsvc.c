@@ -4,7 +4,13 @@
  * that aren't the boot disk (one started at a time, so the numbers follow
  * the order the volumes were found in), a service that ended,
  * DEVMGR_REMOUNT, and DEVMGR_ESP_WRITE (the boot disk's ESP read-write
- * for init alone: the same stop and restart, and no mount meanwhile). */
+ * for init alone: the same stop and restart, and no mount meanwhile).
+ *
+ * A service's `fs` channel is devmgr's, both ends, from its first start
+ * until it is retired, given up on or stopped in order (a remount): each
+ * instance is handed a duplicate of the server end (fs_serve_end), so a
+ * restart after a death (spare.c) is the same channel and the same mount.
+ * A remount is a new channel: the service stopped in order. */
 #include <fatsvc.h>
 #include <fs_idl.h>
 #include <idl/fsctl.h>
@@ -35,6 +41,7 @@ void fs_ctl_close(struct binding *b)
 void fs_retire(struct binding *b)
 {
     fs_ctl_close(b);
+    fs_kept_release(b);
     struct disk *d = disk_of(b);
     if (d && d->fs[b->part] == (uint32_t)(b - devs) + 1)
         d->fs[b->part] = 0;
@@ -54,6 +61,54 @@ struct binding *fs_find(uint32_t id, uint32_t part)
     return NULL;
 }
 
+struct binding *fs_find_mount(uint32_t which, uint32_t flags)
+{
+    bool test = flags & DEVMGR_MOUNT_TEST;
+    if (flags & ~DEVMGR_MOUNT_TEST)
+        return NULL;
+    for (unsigned i = 0; i < ndevs; i++) {
+        struct binding *b = &devs[i];
+        if (b->kind != BIND_FS || !b->path || b->test != test)
+            continue;
+        bool hit = which >= DEVMGR_MOUNT_USB ? b->other && b->usbn == which - DEVMGR_MOUNT_USB
+                   : which == DEVMGR_MOUNT_ESP ? !b->other && b->part == PART_ESP
+                   : which == DEVMGR_MOUNT_DATA && !b->other && b->part == PART_DATA;
+        if (hit)
+            return b;
+    }
+    return NULL;
+}
+
+bool fs_channel_kept(const struct binding *b)
+{
+    return b->kind == BIND_FS && b->client && b->serve;
+}
+
+status_t fs_serve_end(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
+{
+    if (!fs_channel_kept(b)) {
+        /* The first start, or the last one failed after its client end
+         * went (start_driver closes it): a new channel. */
+        handle_t client, serve;
+        status_t st = jam_channel_create(&client, &serve);
+        if (st != OK)
+            return st;
+        close_client(b);
+        if (b->serve)
+            jam_handle_close(b->serve);
+        b->client = client;
+        b->serve = serve;
+        b->chan_gen++;   /* a new mount for DEVMGR_MOUNTS */
+    }
+    handle_t h;
+    status_t st = jam_handle_duplicate(b->serve, RIGHT_SAME, &h);
+    if (st != OK)
+        return st;
+    x[*n] = (struct spawn_handle){ FAT_SR_SERVE, h };
+    xr[(*n)++] = RIGHT_SAME;
+    return OK;
+}
+
 status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
     const struct disk *d = disk_of(b);
@@ -64,8 +119,10 @@ status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, uns
      * disk's partition after `mount -w`, or the boot disk's ESP while init
      * writes it (ESP_WRITE). */
     bool read_only = !b->other && b->part == PART_DATA ? false : !b->rw;
-    status_t st = storage_open_partition_until(disk_ch(d), now() + CALL_WAIT, b->part, read_only,
-                                               &blk);
+    status_t st = OK;
+    if (!fs_block_prepared(b, &blk))
+        st = storage_open_partition_until(disk_ch(d), now() + CALL_WAIT, b->part, read_only,
+                                          &blk);
     if (st != OK)
         return st;
     x[*n] = (struct spawn_handle){ FAT_SR_BLOCK, blk };
@@ -80,6 +137,7 @@ status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, uns
     } else {
         b->ctl = HANDLE_INVALID;
     }
+    fs_kept_handles(b, x, xr, n);   /* SR_STATE, SR_KEEP */
     return OK;
 }
 
@@ -88,6 +146,13 @@ const char *fs_format_arg(const struct binding *b)
     const struct disk *d = disk_of(b);
     bool boot_data = d && d->state == DISK_BOOT && !b->other && b->part == PART_DATA;
     return boot_data ? FAT_ARG_FORMAT : NULL;
+}
+
+const char *fs_end_arg(const struct binding *b)
+{
+    if (!b->ended_at)
+        return NULL;
+    return b->kill_at ? FAT_ARG_KILLED : FAT_ARG_CRASHED;
 }
 
 /* The lowest N no running or restarting service has as its /usbN (test
@@ -142,7 +207,7 @@ status_t fs_start(struct disk *d, unsigned part, bool other)
         say(false, "devmgr: %s partition %u: no room for another mount", disk_name(d), part + 1);
         return ERR_NO_RESOURCES;
     }
-    b->last = start_driver(b);
+    b->last = fs_run(b, false);
     status_t st = b->last;
     say(false, "devmgr: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1, FAT_PATH,
         fs_mount_path(b), other || part == PART_ESP ? ", read-only" : "", status_str(st));
@@ -272,8 +337,11 @@ static status_t fs_restart(struct binding *b, bool writable)
     stop_driver(b, stopped != OK, true);
     b->state = DEVMGR_SUP_NONE;
     sup_reset(b);
+    /* Stopped in order: it kept nothing, and the next one starts fresh on a
+     * new `fs` channel (the old one's clients see ERR_PEER_CLOSED). */
+    fs_kept_release(b);
     b->rw = writable;
-    b->last = start_driver(b);   /* a new `block` channel, opened the new way */
+    b->last = fs_run(b, false);   /* a new `block` channel, opened the new way */
     status_t st = b->last;
     say(false, "devmgr: %s: its filesystem service started again, %s (%s), %lu ms after "
         "the remount was asked for", path, writable ? "read-write" : "read-only",

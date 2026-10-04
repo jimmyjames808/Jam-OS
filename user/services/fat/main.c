@@ -15,11 +15,16 @@
  * a read-only one, and nothing at all on someone else's stick. format()
  * is reached from one place, mount_blank, behind vol.may_format.
  *
+ * A restart: an instance started with a dead one's state (devmgr's
+ * SR_STATE) carries on from it instead of mounting (adopt.c); its clients
+ * see nothing but a slower answer.
+ *
  * Exit: 0 once there is nothing left to serve (the fs channel's client
  * closed it, after every file is closed and the volume settled; or the
  * disk went away, mounted or not yet); 1 when the volume can't be served but might be later
  * (no handles, a disk that doesn't answer); FAT_EXIT_NO_VOLUME when the
- * partition holds no FAT volume fat can serve and nothing was formatted. */
+ * partition holds no FAT volume fat can serve and nothing was formatted;
+ * FAT_EXIT_TEST a test power ended it (test.c). */
 #include <idl/fsctl.h>
 #include "fat.h"
 
@@ -95,9 +100,7 @@ static status_t mount_blank(void)
     return fr_status(fr);
 }
 
-/* Mount the volume. *no_volume: the partition holds none fat can serve
- * (the exit code FAT_EXIT_NO_VOLUME). */
-static status_t mount(bool *no_volume)
+status_t mount(bool *no_volume)
 {
     FRESULT fr = f_mount(&kept->fs, "", 1);
     status_t st = fr == FR_NO_FILESYSTEM ? mount_blank() : fr_status(fr);
@@ -114,6 +117,7 @@ static status_t mount(bool *no_volume)
         return ERR_IO;
     }
     disk_watch();
+    kept->mounted = true;   /* what a successor adopts */
     printf("fat %s: mounted %s, %lu MiB%s\n", vol.name, type_name(),
            (unsigned long)((uint64_t)(kept->fs.n_fatent - 2) * kept->fs.csize / 2048),
            vol.read_only ? ", read-only" : "");
@@ -199,25 +203,44 @@ static status_t run(handle_t serve, handle_t ctl)
     return st;
 }
 
+/* The words after the name (<fatsvc.h>). */
+static void words(int argc, char **argv)
+{
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], FAT_ARG_FORMAT))
+            vol.may_format = true;
+        else if (!strcmp(argv[i], FAT_ARG_KILLED) || !strcmp(argv[i], FAT_ARG_CRASHED))
+            vol.ended = argv[i];
+        else if (!test_word(argv[i]))
+            printf("fat %s: an argument it doesn't know: %s\n", vol.name, argv[i]);
+    }
+}
+
 int main(int argc, char **argv)
 {
     vol.name = argc >= 2 ? argv[1] : "fat";
-    vol.may_format = argc >= 3 && !strcmp(argv[2], FAT_ARG_FORMAT);
-    bool no_volume = false;
+    words(argc, argv);
+    bool no_volume = false, adopted = false;
     handle_t serve = startup_handle(FAT_SR_SERVE), block = startup_handle(FAT_SR_BLOCK);
     if (serve == HANDLE_INVALID || block == HANDLE_INVALID) {
         printf("fat %s: no %s channel: nothing to do\n", vol.name,
                serve == HANDLE_INVALID ? "fs" : "block");
         return 1;
     }
+    vol.serve = serve;
+    vol.ctl = startup_handle(FAT_SR_CTL);
+    vol.keep = startup_handle(SR_KEEP);
     vol.rtc_root = startup_handle(SR_RESOURCE);
-    status_t st = state_open();   /* first: everything fat knows lives there */
-    if (st == OK)
-        st = jam_port_create(&vol.port);
+    vol.at[FAT_AT_MAIN] = now();
+    status_t st = jam_port_create(&vol.port);
     if (st == OK)
         st = disk_open(block);
+    vol.at[FAT_AT_DISK] = now();
+    if (st == OK)   /* everything fat knows lives there; it is bound to the partition */
+        st = state_open(&adopted);
+    vol.at[FAT_AT_STATE] = now();
     if (st == OK)
-        st = mount(&no_volume);
+        st = adopt(adopted, &no_volume);
     if (st != OK && vol.disk_gone) {
         /* As a disk gone while serving: nothing is left to serve, and
          * nothing failed (devmgr stops usb-bus first at shutdown, which
@@ -229,7 +252,7 @@ int main(int argc, char **argv)
         printf("fat %s: not serving: %s\n", vol.name, status_str(st));
         return no_volume ? FAT_EXIT_NO_VOLUME : 1;
     }
-    st = run(serve, startup_handle(FAT_SR_CTL));
+    st = run(serve, vol.ctl);
     files_close_all();
     struct fat_cache_stats cs;
     cache_stats(&cs);

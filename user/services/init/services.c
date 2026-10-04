@@ -385,10 +385,12 @@ static status_t start_devmgr(void)
                 jam_handle_close(left[k]);
         return st;
     }
-    const char *argv[6] = { "bin/devmgr" };
+    const char *argv[7] = { "bin/devmgr" };
     int argc = 1;
     if (nousb)
         argv[argc++] = "nousb";
+    if (init_nospare)
+        argv[argc++] = "nospare";   /* no warm spare fat either */
     if (init_hidboot)
         argv[argc++] = "hidboot";
     if (init_netprobe)

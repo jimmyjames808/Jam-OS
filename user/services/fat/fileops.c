@@ -294,18 +294,27 @@ const struct file_ops fat_file_ops = {
 
 /* ---- open and close ------------------------------------------------------------------- */
 
-/* Slot i's handles go: the buffer, the channel, the binding. */
-static void release_handles(unsigned i)
+/* Slot i's channel goes, and its binding. */
+static void close_channel(unsigned i)
 {
-    if (fh[i].vmo != HANDLE_INVALID)
-        jam_handle_close(fh[i].vmo);
     if (fh[i].ch != HANDLE_INVALID) {
         if (fh[i].armed)
             (void)jam_port_unbind(vol.port, fh[i].ch, FAT_KEY_FILE(i, fh[i].gen));
         jam_handle_close(fh[i].ch);
     }
-    fh[i].vmo = fh[i].ch = HANDLE_INVALID;
+    fh[i].ch = HANDLE_INVALID;
     fh[i].armed = false;
+}
+
+/* Slot i's handles go: the buffer, the channel, the binding, and the
+ * keeper's (after the commit, if an operation runs: keeper.c). */
+static void release_handles(unsigned i)
+{
+    if (fh[i].vmo != HANDLE_INVALID)
+        jam_handle_close(fh[i].vmo);
+    fh[i].vmo = HANDLE_INVALID;
+    close_channel(i);
+    kept_drop(FAT_KEEP_FILE(i));
 }
 
 /* Give the slot back. */
@@ -368,7 +377,9 @@ static status_t arm(struct fat_file *f)
     return st;
 }
 
-/* The slot's buffer and channel; the client's ends into *out_ch, *out_vmo. */
+/* The slot's buffer and channel (put with the keeper before the request
+ * that made them commits: keeper.c); the client's ends into *out_ch,
+ * *out_vmo. */
 static status_t attach(struct fat_file *f, handle_t *out_ch, handle_t *out_vmo)
 {
     unsigned i = slot_of(f);
@@ -378,6 +389,8 @@ static status_t attach(struct fat_file *f, handle_t *out_ch, handle_t *out_vmo)
         st = jam_handle_duplicate(fh[i].vmo, CLIENT_BUF_RIGHTS, &buf);
     if (st == OK)
         st = jam_channel_create(&fh[i].ch, &client);
+    if (st == OK)
+        st = kept_put(FAT_KEEP_FILE(i), (const handle_t[]){ fh[i].ch, fh[i].vmo }, 2);
     if (st == OK)
         st = arm(f);
     if (st != OK) {
@@ -488,6 +501,7 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
         close_file(f);
         return st;
     }
+    op_made(FAT_MADE_FILE, slot_of(f));
     *out_size = f_size(&o->fil);
     return OK;
 }
@@ -537,4 +551,87 @@ void files_event(uint64_t key)
         st = arm(f);   /* fires at once if more is queued */
     if (st != OK)
         close_op(f);   /* the client closed it (ERR_PEER_CLOSED), or we can't go on */
+}
+
+/* ---- a successor's files (adopt.c) ------------------------------------------------- */
+
+bool files_take(uint32_t i, const handle_t *hs, unsigned n)
+{
+    if (i >= FAT_MAX_FILES || !kept->files[i].used || n != 2 || fh[i].ch || fh[i].vmo)
+        return false;
+    fh[i].ch = hs[0];
+    fh[i].vmo = hs[1];
+    fh[i].armed = false;
+    return true;
+}
+
+unsigned files_adopt(void)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
+        struct fat_file *f = &kept->files[i];
+        if (!f->used)
+            continue;
+        /* Not handed back (the keeper refused its put): its client's end
+         * is closed, so the file is too. */
+        if (!fh[i].ch || !fh[i].vmo || arm(f) != OK) {
+            close_op(f);
+            continue;
+        }
+        n++;
+    }
+    return n;
+}
+
+bool files_reply_arrived(uint32_t i)
+{
+    if (i >= FAT_MAX_FILES || !kept->files[i].used || !fh[i].ch)
+        return true;   /* closed since: its reply had arrived, or it is gone anyway */
+    signals_t seen = 0;
+    return jam_object_wait_one(fh[i].ch, SIG_PEER_CLOSED, 0, &seen) == ERR_TIMED_OUT;
+}
+
+status_t files_remake(uint32_t i, handle_t *out_ch, handle_t *out_vmo)
+{
+    handle_t client = HANDLE_INVALID, buf = HANDLE_INVALID;
+    if (fh[i].ch)
+        jam_handle_close(fh[i].ch);   /* not bound yet: files_adopt comes after */
+    fh[i].ch = HANDLE_INVALID;
+    status_t st = jam_handle_duplicate(fh[i].vmo, CLIENT_BUF_RIGHTS, &buf);
+    if (st == OK)
+        st = jam_channel_create(&fh[i].ch, &client);
+    if (st == OK)
+        st = kept_put(FAT_KEEP_FILE(i), (const handle_t[]){ fh[i].ch, fh[i].vmo }, 2);
+    if (st != OK) {
+        if (buf)
+            jam_handle_close(buf);
+        if (client)
+            jam_handle_close(client);
+        if (fh[i].ch)
+            jam_handle_close(fh[i].ch);
+        fh[i].ch = HANDLE_INVALID;   /* files_adopt closes the file */
+        return st;
+    }
+    *out_ch = client;
+    *out_vmo = buf;
+    return OK;
+}
+
+bool files_chan(uint32_t i, uint32_t gen16, struct fat_chan *out)
+{
+    if (i >= FAT_MAX_FILES || !kept->files[i].used || !fh[i].ch || !fh[i].vmo ||
+        (kept->files[i].gen & 0xffffu) != gen16)
+        return false;
+    *out = chan_of(&kept->files[i]);
+    return true;
+}
+
+void files_forget(uint32_t i)
+{
+    if (i >= FAT_MAX_FILES || !kept->files[i].used)
+        return;
+    struct fat_open *o = open_of(&kept->files[i]);
+    if (o->refs && --o->refs == 0)
+        memset(o, 0, sizeof(*o));   /* its FIL with it, never closed through FatFs */
+    release(&kept->files[i]);
 }
