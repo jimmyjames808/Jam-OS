@@ -1,5 +1,10 @@
 /* DMA capabilities and safe rebind (kernel/object/dma_cap.c). QEMU only:
- * they need the edu device; each skips itself without it.
+ * they need the edu device; each skips itself without it. They run in
+ * both modes, each checking what its mode promises: with the IOMMU
+ * translating edu (QEMU's intel-iommu and iommu=on) a closed cap's pages
+ * are freed at once once its domain is gone; without it they are
+ * quarantined. The IOMMU's own (edu blocked, pin cost) are in
+ * test_dma_iommu.c.
  *
  *   dma_stale_write_after_rebind
  *       A driver dies while its device has a device -> RAM transfer queued
@@ -7,20 +12,23 @@
  *       nobody rebinds (control); the next driver quiesces the device (its
  *       DMA engine idle) before it turns bus mastering on, as drivers must;
  *       a careless next driver turns it on at once. The first two must
- *       write 0 bytes; the third's stale write lands, but in pages the
- *       quarantine still holds (never in released memory), and the
- *       quarantine's release sees the changed page.
+ *       write 0 bytes. Without the IOMMU the third's stale write lands, but
+ *       in pages the quarantine still holds (never in released memory),
+ *       and the quarantine's release sees the changed page; with it the
+ *       third writes nothing either (the new driver's domain is empty) and
+ *       every round's pages are freed at once, unchanged.
  *   dma_cap_owner_rules
  *       Only the function's current (newest) cap turns bus mastering on or
  *       pins; an older cap's close leaves Bus Master Enable alone; a new cap
  *       starts with it off.
  *   dma_quarantine_phys_and_clean_close
- *       A clean close (nothing pinned) quarantines nothing; pins of a
- *       physical VMO (no RAM) are released at once.
+ *       A clean close (nothing pinned) holds nothing; pins of a physical
+ *       VMO (no RAM) are released at once, the RAM one quarantined (or
+ *       freed once the IOMMU took it away).
  *   dma_quarantine_stats_consistent
  *       A reader of the stats in the middle of a release (forced with the
  *       DBG_DMA_RELEASED hook) sees the batch either still held or already
- *       released, never gone from `pages` but not yet in `released`.
+ *       released (or freed), never gone from `pages` but not yet counted.
  *   m6r_pins_are_charged
  *       Every pin is a kernel allocation, so it is charged: otherwise a
  *       driver pins one page over and over and fills the kernel heap.
@@ -45,65 +53,27 @@
 #define PG      PAGE_SIZE
 #define CMD_BME 0x04
 
-#define EDU_DMA_SRC 0x80
-#define EDU_DMA_DST 0x88
-#define EDU_DMA_CNT 0x90
-#define EDU_DMA_CMD 0x98
-#define EDU_BUF     0x40000u
-#define DMA_RUN     0x1u
-#define DMA_TO_RAM  0x2u
-
-static struct pci_dev *edu(void)
-{
-    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
-    if (!d)
-        kprintf("ktest %s: no edu, skipped\n", ktest_current);
-    return d;
-}
-
 static bool bme(struct pci_dev *d)
 {
     return pci_cfg_read(d, 0x04, 2) & CMD_BME;
-}
-
-static bool edu_wait_idle(volatile uint8_t *r)
-{
-    uint64_t end = uptime_ns() + 2 * NS_PER_S;
-    while (*(volatile uint64_t *)(r + EDU_DMA_CMD) & DMA_RUN) {
-        if (uptime_ns() > end)
-            return false;
-        thread_sleep_ms(1);
-    }
-    return true;
-}
-
-static void edu_dma(volatile uint8_t *r, uint64_t src, uint64_t dst, uint32_t len, uint32_t dir)
-{
-    *(volatile uint64_t *)(r + EDU_DMA_SRC) = src;
-    *(volatile uint64_t *)(r + EDU_DMA_DST) = dst;
-    *(volatile uint64_t *)(r + EDU_DMA_CNT) = len;
-    *(volatile uint64_t *)(r + EDU_DMA_CMD) = DMA_RUN | dir;
 }
 
 /* A driver's dma_cap: a handle to a fresh cap for d (the function's new
  * current one); *cap is an extra reference to look at it afterwards. */
 static struct khandle new_cap(struct pci_dev *d, struct kobject **cap)
 {
-    KT_EQ(dma_cap_create_for(d, cap), OK);
+    KT_EQ(dma_cap_create_for(d, NULL, cap), OK);
     kobject_ref(*cap);
     return khandle_from_new(*cap, DMA_CAP_RIGHTS);
 }
 
 KTEST(dma_stale_write_after_rebind)
 {
-    struct pci_dev *d = edu();
+    struct pci_dev *d = kt_edu();
     if (!d)
         return;
-    uint64_t cf = pci_cmd_lock();
-    KT_EQ(pci_enable_memory(d), OK);
-    pci_cmd_unlock(cf);
-    volatile uint8_t *r = vmm_map_mmio(d->info.bar[0].phys, PG);
-    KT_ASSERT(edu_wait_idle(r));
+    volatile uint8_t *r = kt_edu_regs(d);
+    KT_ASSERT(kt_edu_idle(r));
     dma_quarantine_flush(d);
     struct dma_quarantine_stats q0, q;
     dma_quarantine_stats(d, &q0);
@@ -121,47 +91,53 @@ KTEST(dma_stale_write_after_rebind)
     struct kobject *cap;
     struct khandle kh = new_cap(d, &cap);
     KT_ASSERT(!bme(d));   /* a new cap starts with bus mastering off */
+    bool tr = dma_cap_translated(cap);   /* the IOMMU translates edu: the mode under test */
     KT_EQ(dma_cap_bus_master(cap, true), OK);
     uint64_t pa[2], id;
     KT_EQ(vmo_pin(v, cap, 0, 2 * PG, pa, 2, &id), OK);
-    edu_dma(r, pa[0], EDU_BUF, PG, 0);
-    KT_ASSERT(edu_wait_idle(r));
+    KT_ASSERT(kt_edu_dma(r, pa[0], 0, PG, false));
     KT_EQ(vmo_unpin(v, cap, id), OK);
     khandle_release(&kh);
     kobject_unref(cap);
+    dma_quarantine_flush(d);   /* (with the IOMMU: its domain gone) */
     dma_quarantine_stats(d, &q);
     KT_EQ(q.pins, q0.pins);
+    KT_EQ(q.freed, q0.freed);   /* unpinned: nothing left to free */
 
     static const char *const what[3] = { "no rebind (control)", "rebind, driver quiesced first",
                                          "rebind, bus mastering on at once" };
     uint32_t hit[3];
     bool idle[3], held[3];
-    uint64_t changed[3];
+    uint64_t changed[3], freed[3];
     for (int round = 0; round < 3; round++) {
         /* A driver (one dma_cap handle, bus mastering on) with a transfer
-         * to its page 1 queued when it dies: BME off, pin quarantined. */
+         * to its page 1 queued when it dies: BME off, the pin handed to
+         * the release thread (quarantined, or freed once the IOMMU has
+         * taken the domain away). */
         kh = new_cap(d, &cap);
         KT_EQ(dma_cap_bus_master(cap, true), OK);
         KT_EQ(vmo_pin(v, cap, 0, 2 * PG, pa, 2, &id), OK);
-        edu_dma(r, EDU_BUF, pa[1], PG, DMA_TO_RAM);
+        kt_edu_dma_start(r, 0, pa[1], PG, true);
         khandle_release(&kh);
         KT_ASSERT(!bme(d));
         KT_EQ(dma_cap_pin_count(cap), 0);
         KT_EQ(vmo_unpin(v, cap, id), ERR_NOT_FOUND);   /* not the cap's any more */
         kobject_unref(cap);
         dma_quarantine_stats(d, &q);
-        KT_EQ(q.pins, q0.pins + 1);
-        KT_EQ(q.pages, q0.pages + 2);
+        if (!tr) {   /* (with the IOMMU the release thread may be done already) */
+            KT_EQ(q.pins, q0.pins + 1);
+            KT_EQ(q.pages, q0.pages + 2);
+        }
 
         struct khandle kh2 = { 0 };
         struct kobject *cap2 = NULL;
         if (round) {
             kh2 = new_cap(d, &cap2);
             if (round == 1)
-                KT_ASSERT(edu_wait_idle(r));   /* quiesce first, as a driver must */
+                KT_ASSERT(kt_edu_idle(r));   /* quiesce first, as a driver must */
             KT_EQ(dma_cap_bus_master(cap2, true), OK);
         }
-        idle[round] = edu_wait_idle(r);
+        idle[round] = kt_edu_idle(r);
         dma_quarantine_stats(d, &q);
         held[round] = q.pins == q0.pins + 1;   /* the pages were still quarantined */
         if (round) {
@@ -173,7 +149,7 @@ KTEST(dma_stale_write_after_rebind)
         hit[round] = 0;
         for (uint32_t i = 0; i < PG; i++)
             hit[round] += buf[i] && buf[i] == (uint8_t)(0xa5 ^ i);   /* (16 bytes of it are 0) */
-        if (round == 1) {
+        if (round == 1 && !tr) {
             /* The reaper lets it go a grace period after bus mastering
              * went on (no flush: this is its path). */
             uint64_t until = uptime_ns() + DMA_QUARANTINE_GRACE_NS + 5 * NS_PER_S;
@@ -188,29 +164,44 @@ KTEST(dma_stale_write_after_rebind)
         struct dma_quarantine_stats after;
         dma_quarantine_stats(d, &after);
         changed[round] = after.changed - q0.changed;
+        freed[round] = after.freed - q0.freed;
         q0 = after;
         memset(buf, 0, sizeof(buf));
         KT_EQ(vmo_write(v, PG, buf, PG), OK);
     }
     for (int round = 0; round < 3; round++)
-        kprintf("ktest %s: %s: the stale transfer wrote %u bytes (of %u), %s; quarantine saw "
-                "%lu changed page(s)\n", ktest_current, what[round], hit[round],
-                (unsigned)PG - 16, held[round] ? "the pages still quarantined" : "RELEASED",
-                changed[round]);
+        kprintf("ktest %s: %s: the stale transfer wrote %u bytes (of %u), %s; %lu page(s) "
+                "freed at once, %lu found changed\n", ktest_current, what[round], hit[round],
+                (unsigned)PG - 16,
+                tr ? "the IOMMU translating" : held[round] ? "the pages still quarantined"
+                                                           : "RELEASED",
+                freed[round], changed[round]);
     kobject_unref(vmo_kobject(v));
     KT_ASSERT(idle[0] && idle[1] && idle[2]);
-    KT_ASSERT(held[0] && held[1] && held[2]);
     KT_EQ(hit[0], 0);          /* BME off stops it */
     KT_EQ(hit[1], 0);          /* ... and a driver that quiesces first keeps it stopped */
     KT_EQ(changed[0], 0);
     KT_EQ(changed[1], 0);
+    if (tr) {
+        /* Nothing quarantined: the dead driver's pages were freed at once,
+         * and the careless driver's device, in its own empty domain,
+         * reached none of them. */
+        KT_EQ(hit[2], 0);
+        KT_EQ(changed[2], 0);
+        for (int round = 0; round < 3; round++)
+            KT_EQ(freed[round], 2);
+        return;
+    }
+    KT_ASSERT(held[0] && held[1] && held[2]);
+    for (int round = 0; round < 3; round++)
+        KT_EQ(freed[round], 0);
     KT_ASSERT(hit[2] > 0);     /* a careless driver lets it through ... */
     KT_EQ(changed[2], 1);      /* ... into its quarantined page 1, seen at release */
 }
 
 KTEST(dma_cap_owner_rules)
 {
-    struct pci_dev *d = edu();
+    struct pci_dev *d = kt_edu();
     if (!d)
         return;
     struct kobject *a, *b, *u;
@@ -266,7 +257,7 @@ KTEST(dma_cap_bus_master_refuses_other_values)
 
 KTEST(dma_quarantine_phys_and_clean_close)
 {
-    struct pci_dev *d = edu();
+    struct pci_dev *d = kt_edu();
     if (!d)
         return;
     dma_quarantine_flush(d);
@@ -285,14 +276,20 @@ KTEST(dma_quarantine_phys_and_clean_close)
     KT_EQ(pa, d->info.bar[0].phys);
     KT_EQ(vmo_pin(ram, cap, 0, PG, &pa, 1, &id), OK);
     uint32_t prefs = __atomic_load_n(&vmo_kobject(phys)->refs, __ATOMIC_RELAXED);
+    bool tr = dma_cap_translated(cap);
     khandle_release(&kh);
     dma_quarantine_stats(d, &q);
-    KT_EQ(q.pins, q0.pins + 1);   /* the RAM pin only */
-    KT_EQ(q.pages, q0.pages + 1);
     KT_EQ(__atomic_load_n(&vmo_kobject(phys)->refs, __ATOMIC_RELAXED), prefs - 1);   /* released */
-    KT_EQ(vmo_decommit(ram, 0, PG), ERR_BAD_STATE);   /* still held */
+    if (!tr) {   /* (with the IOMMU the release thread may be done already) */
+        KT_EQ(q.pins, q0.pins + 1);   /* the RAM pin only */
+        KT_EQ(q.pages, q0.pages + 1);
+        KT_EQ(vmo_decommit(ram, 0, PG), ERR_BAD_STATE);   /* still held */
+    }
     dma_quarantine_flush(d);
     KT_EQ(vmo_decommit(ram, 0, PG), OK);
+    dma_quarantine_stats(d, &q);
+    KT_EQ(q.freed, q0.freed + (tr ? 1 : 0));   /* the RAM page: freed at once, or released */
+    KT_EQ(q.released, q0.released + (tr ? 0 : 1));
     kobject_unref(cap);
 
     /* A clean close: everything unpinned first. */
@@ -300,9 +297,14 @@ KTEST(dma_quarantine_phys_and_clean_close)
     KT_EQ(dma_cap_bus_master(cap, true), OK);
     KT_EQ(vmo_pin(ram, cap, 0, PG, &pa, 1, &id), OK);
     KT_EQ(vmo_unpin(ram, cap, id), OK);
+    dma_quarantine_stats(d, &q0);
     khandle_release(&kh);
     dma_quarantine_stats(d, &q);
     KT_EQ(q.pins, q0.pins);
+    dma_quarantine_flush(d);   /* (with the IOMMU: its domain gone, nothing to free) */
+    dma_quarantine_stats(d, &q);
+    KT_EQ(q.freed, q0.freed);
+    KT_EQ(q.released, q0.released);
     kobject_unref(cap);
     kobject_unref(vmo_kobject(phys));
     kobject_unref(vmo_kobject(ram));
@@ -326,7 +328,7 @@ static void mid_release_hook(void *arg)
 
 KTEST(dma_quarantine_stats_consistent)
 {
-    struct pci_dev *d = edu();
+    struct pci_dev *d = kt_edu();
     if (!d)
         return;
     dma_quarantine_flush(d);
@@ -336,32 +338,44 @@ KTEST(dma_quarantine_stats_consistent)
     KT_EQ(vmo_create(2 * PG, VMO_CONTIGUOUS | VMO_DMA32, &v), OK);
     struct kobject *cap;
     struct khandle kh = new_cap(d, &cap);
+    bool tr = dma_cap_translated(cap);
     KT_EQ(dma_cap_bus_master(cap, true), OK);
     uint64_t pa[2], id;
     KT_EQ(vmo_pin(v, cap, 0, 2 * PG, pa, 2, &id), OK);
-    khandle_release(&kh);   /* closed with the pin held: one batch of 2 pages */
-    kobject_unref(cap);
-    dma_quarantine_stats(d, &q1);
-    KT_EQ(q1.pins, q0.pins + 1);
-    KT_EQ(q1.pages, q0.pages + 2);
-
+    /* With the IOMMU the batch is due at once and the release thread may
+     * take it before this test does, so the hook goes in before the close
+     * (and q1, "held, not yet released", is what it must be then). */
     mid_dev = d;
     mid_calls = 0;
     __atomic_store_n(&dbg_hooks[DBG_DMA_RELEASED], mid_release_hook, __ATOMIC_RELEASE);
+    khandle_release(&kh);   /* closed with the pin held: one batch of 2 pages */
+    kobject_unref(cap);
+    q1 = q0;
+    q1.pins++;
+    q1.pages += 2;
+    if (!tr) {
+        struct dma_quarantine_stats now;
+        dma_quarantine_stats(d, &now);
+        KT_EQ(now.pins, q1.pins);
+        KT_EQ(now.pages, q1.pages);
+    }
     dma_quarantine_flush(d);
     __atomic_store_n(&dbg_hooks[DBG_DMA_RELEASED], NULL, __ATOMIC_RELEASE);
     dma_quarantine_stats(d, &q2);
     kobject_unref(vmo_kobject(v));
-    kprintf("ktest %s: mid-release: %lu pin(s), %lu held + %lu released page(s); before: %lu + "
-            "%lu\n", ktest_current, mid_seen.pins, mid_seen.pages, mid_seen.released, q1.pages,
-            q1.released);
+    kprintf("ktest %s: mid-release: %lu pin(s), %lu held + %lu released + %lu freed page(s); "
+            "before: %lu + %lu + %lu\n", ktest_current, mid_seen.pins, mid_seen.pages,
+            mid_seen.released, mid_seen.freed, q1.pages, q1.released, q1.freed);
     KT_EQ(mid_calls, 1);
-    /* Held pages move to `released` in one step: their sum never dips. */
-    KT_EQ(mid_seen.pages + mid_seen.released, q1.pages + q1.released);
+    /* Held pages move to `released` (or `freed`) in one step: the sum
+     * never dips. */
+    KT_EQ(mid_seen.pages + mid_seen.released + mid_seen.freed,
+          q1.pages + q1.released + q1.freed);
     KT_EQ(mid_seen.pins, q1.pins);   /* still counted: not all released yet */
     KT_EQ(q2.pins, q0.pins);
     KT_EQ(q2.pages, q0.pages);
-    KT_EQ(q2.released, q1.released + 2);
+    KT_EQ(q2.released, q1.released + (tr ? 0 : 2));
+    KT_EQ(q2.freed, q1.freed + (tr ? 2 : 0));
     KT_EQ(q2.changed, q1.changed);
 }
 
@@ -369,11 +383,9 @@ KTEST(dma_quarantine_stats_consistent)
 
 KTEST(m6r_pins_are_charged)
 {
-    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
-    if (!d) {
-        kprintf("ktest %s: no edu, skipped\n", ktest_current);
+    struct pci_dev *d = kt_edu();
+    if (!d)
         return;
-    }
     struct job *j = kt_fresh_job();
     struct handle_table t;
     handle_table_init(&t);
@@ -396,12 +408,20 @@ KTEST(m6r_pins_are_charged)
     }
     kprintf("ktest %s: %u pins with 64 handle units to spare\n", ktest_current, ok);
     KT_ASSERT(ok <= 64);
-    handle_table_destroy(&t);   /* closes the cap: BME off, every pin quarantined */
+    struct kobject *capobj;
+    KT_EQ(handle_get(&t, cap, OBJ_DMA_CAP, 0, &capobj, NULL), OK);
+    bool tr = dma_cap_translated(capobj);
+    kobject_unref(capobj);
+    struct dma_quarantine_stats q0, q;
+    dma_quarantine_stats(d, &q0);
+    handle_table_destroy(&t);   /* closes the cap: BME off, every pin to the release thread */
     KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & 0x04));
-    struct dma_quarantine_stats q;
     dma_quarantine_stats(d, &q);
-    KT_EQ(q.pins, ok);
-    dma_quarantine_flush(d);   /* ... still charged until released */
+    if (!tr)   /* (with the IOMMU the release thread may be done already) */
+        KT_EQ(q.pins, q0.pins + ok);
+    dma_quarantine_flush(d);   /* ... still charged until released (or freed) */
+    dma_quarantine_stats(d, &q);
+    KT_EQ(q.pins, q0.pins);
     kt_job_is_empty(j);
     job_unref(j);
 }
@@ -415,11 +435,9 @@ KTEST(m6r_pins_are_charged)
  * still has it as a DMA target and Bus Master Enable is on. */
 KTEST(m6r_unpin_by_other_holder)
 {
-    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
-    if (!d) {
-        kprintf("ktest %s: no edu, skipped\n", ktest_current);
+    struct pci_dev *d = kt_edu();
+    if (!d)
         return;
-    }
     struct job *j = kt_fresh_job();
     struct handle_table td, tc;
     handle_table_init(&td);

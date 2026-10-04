@@ -412,9 +412,24 @@ static bool quarantine_released(handle_t dm, struct devmgr_rep *sup)
     }
 }
 
+/* Does an IOMMU translate DMA (SYSINFO_IOMMU: iommu=on)? Then a dead
+ * driver's pins are freed as soon as the IOMMU took them away, not
+ * quarantined. */
+static bool iommu_on(void)
+{
+    handle_t h;
+    struct sys_info si;
+    if (jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHT_ROOT_SYSINFO, &h) != OK)
+        return false;
+    status_t st = jam_sys_info(h, &si);
+    jam_handle_close(h);
+    return st == OK && (si.flags & SYSINFO_IOMMU);
+}
+
 /* Killing the edu driver process while its DMA runs, and supervision
  * bringing it back: Bus Master Enable goes off, its pinned buffer is
- * quarantined (still charged to its job), its MSI vector is free; devmgr
+ * quarantined (still charged to its job; with the IOMMU, freed as soon as
+ * its domain is gone instead), its MSI vector is free; devmgr
  * restarts it at once (a KILL is a death like a crash) with a new vector
  * and dma_cap; the client reconnects through GET_SERVICE and factorial and
  * DMA work; once the new driver has turned bus mastering on, the
@@ -459,13 +474,17 @@ bool t_edu_killed_mid_dma(void)
     CHECK_ST(jam_process_get_info(proc, &info), OK);
     CHECK_EQ(info.state, PROCESS_DEAD);
     CHECK(info.killed);
-    /* Its pinned buffer is quarantined, still charged to its job. */
+    /* Its pinned buffer is quarantined, still charged to its job (with
+     * the IOMMU it may be freed already: the kernel's dma_iommu_* tests
+     * check that order). */
     if (!supervision(dm, EDU_VENDOR, EDU_DEVICE, &sup))
         return false;
     CHECK(sup.a == DEVMGR_SUP_RESTARTING || sup.a == DEVMGR_SUP_RUNNING);
-    CHECK(sup.d >= 2);
-    CHECK_ST(info_of(job, &ji), OK);
-    CHECK(ji.used[JOB_LIMIT_PAGES] > 0);
+    if (!iommu_on()) {
+        CHECK(sup.d >= 2);
+        CHECK_ST(info_of(job, &ji), OK);
+        CHECK(ji.used[JOB_LIMIT_PAGES] > 0);
+    }
     CHECK_ST(edu_factorial_until(ch, now() + 5 * NS_PER_S, 3, &f), ERR_PEER_CLOSED);
     CHECK_ST(jam_pci_config_write(dev, 0x3c, 1, 0), ERR_ACCESS_DENIED);   /* a read-only view */
     CHECK_ST(jam_process_kill(proc), ERR_ACCESS_DENIED);

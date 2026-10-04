@@ -703,7 +703,11 @@ Rules for userspace drivers:
   leaves it alone); pins still held then are *quarantined*, not freed
   (Fuchsia's BTI quarantine): the pages stay, charged to their VMO's job,
   until 1 s after the function's next driver turned bus mastering on, or
-  30 s if none does; a page the device wrote meanwhile is logged.
+  30 s if none does; a page the device wrote meanwhile is logged. With
+  the boot word `iommu=on` (not yet the default: [M11-PLAN](docs/M11-PLAN.md))
+  each cap has an IOMMU domain of its own instead, holding only what it
+  pinned, and a dead driver's pins are freed as soon as the IOMMU confirms
+  its domain is gone.
 - MSI/MSI-X and MMIO only: no port I/O and no INTx for userspace drivers.
 - **Supervision**: devmgr restarts a driver process that dies
   unexpectedly (crash, kill, error exit; an exit 0 by itself means the

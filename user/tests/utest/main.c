@@ -35,7 +35,8 @@
 JAM_WANTS("svc devmgr\n"
           "svc devmgr-ctl\n"
           "mount * rw\n"
-          "right klog\n");
+          "right klog\n"
+          "right sysinfo\n");
 
 const char *utest_cur;   /* the test running */
 

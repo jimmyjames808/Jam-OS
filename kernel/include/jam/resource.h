@@ -14,9 +14,10 @@
 #include <jam/object.h>
 #include <jam/status.h>
 
+struct job;
 struct pci_dev;
 
-struct kobject *resource_root(void);       /* made by resource_init; a reference */
+struct kobject *resource_root(void);      /* made by resource_init; a reference */
 void resource_init(void);                  /* after pmm and pci_init */
 
 status_t resource_create(struct kobject *parent, uint32_t kind, uint64_t base, uint64_t size,
@@ -34,8 +35,17 @@ status_t resource_pci_bar(struct kobject *dev, uint32_t bar, struct kobject **ou
  * unbound one, for kernel tests). A new cap becomes the function's current
  * one and turns its Bus Master Enable off; the driver turns it on with
  * dma_cap_bus_master (<jam/resource_impl.h>) once its device is quiet.
+ * When a VT-d unit translates the function (iommu=on), the cap gets an
+ * IOMMU domain of its own and the function is switched to it before this
+ * returns: the device reaches only what the cap pins (and its RMRRs).
  * Closing the last handle to the current cap clears Bus Master Enable and
- * reads config back; pins still held then are quarantined, not dropped
- * (see kernel/object/dma_cap.c). */
-status_t dma_cap_create_for(struct pci_dev *d, struct kobject **out);
+ * reads config back; pins still held then are freed once the IOMMU took
+ * them away, or quarantined without one, never dropped (see
+ * kernel/object/dma_cap.c). job (may be NULL) is charged one handle unit
+ * for the cap and a page for each of its domain's table pages.
+ * ERR_INVALID_ARGS, ERR_ACCESS_DENIED (a bridge or display function),
+ * ERR_NO_MEMORY, ERR_NO_RESOURCES (the unit has no domain id left),
+ * ERR_TIMED_OUT / ERR_IO (the unit didn't confirm the switch).
+ * Thread context, interrupts on, no spinlock held. */
+status_t dma_cap_create_for(struct pci_dev *d, struct job *job, struct kobject **out);
 struct pci_dev *dma_cap_device(struct kobject *cap);   /* NULL if unbound */

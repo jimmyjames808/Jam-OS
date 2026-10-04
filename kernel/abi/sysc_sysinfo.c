@@ -6,6 +6,7 @@
  * sysc_console.c, sysc_kexec.c, vmo_sys.c). The structs are in
  * <jam/abi.h>; the rules every sysc_* follows are in sysc.h. */
 #include <jam/cpu.h>
+#include <jam/iommu.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
 #include <jam/process.h>
@@ -60,6 +61,8 @@ void sysinfo_fill(struct sys_info *s)
     for (uint32_t i = 0; i < cpu_count; i++)
         s->cpu_count += cpus[i] && cpu_online(cpus[i]);
     s->flags = cpu_features.hybrid ? SYSINFO_HYBRID : 0;
+    if (iommu_translating())
+        s->flags |= SYSINFO_IOMMU;
 #ifndef JAM_NO_KTESTS
     s->flags |= SYSINFO_KTESTS;
 #endif

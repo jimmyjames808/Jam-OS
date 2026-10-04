@@ -215,6 +215,10 @@ static int64_t dm_stop(struct dm *m, struct pci_dev *d)
  * driver job below it) must be charged for nothing. */
 static void dm_job_empty(const struct dm *m)
 {
+    /* Closed dma_caps (charged to devmgr's job) the release thread may
+     * still be taking the IOMMU domain from: wait for them. */
+    for (uint32_t i = 0; i < pci_count(); i++)
+        dma_quarantine_flush(pci_get(i));
     kt_job_is_empty(m->job);
     job_unref(m->job);
 }
@@ -302,6 +306,10 @@ static void check_nothing_left(const struct dm *m, struct pci_dev *d, const stru
                                uint32_t kind, uint64_t headroom)
 {
     dm_wait_idle(m);
+    /* With the IOMMU the refused start's dma_cap (charged to devmgr's
+     * job, with its domain's tables) goes on the release thread a moment
+     * after its close: wait for it. */
+    dma_quarantine_flush(d);
     uint64_t used[JOB_LIMIT_COUNT];
     for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
         used[k] = job_used(m->job, k);

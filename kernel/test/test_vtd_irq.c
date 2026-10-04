@@ -60,13 +60,6 @@
 #define EDU_STATUS  0x24   /* interrupt status */
 #define EDU_RAISE   0x60   /* ORs the value into the status and sends the MSI */
 #define EDU_ACK     0x64   /* clears those status bits */
-#define EDU_DMA_SRC 0x80
-#define EDU_DMA_DST 0x88
-#define EDU_DMA_CNT 0x90
-#define EDU_DMA_CMD 0x98
-#define EDU_BUF     0x40000u
-#define DMA_RUN     0x1u
-#define DMA_TO_RAM  0x2u
 
 #define MSI_CTL_ENABLE 1u
 #define SID_NONE       0xffffu   /* QEMU's requester id for a write with none (see below) */
@@ -75,15 +68,11 @@
  * (an MSI is a memory write by the device). NULL, said, without one. */
 static struct pci_dev *edu_up(volatile uint32_t **regs)
 {
-    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
-    if (!d) {
-        kprintf("ktest %s: no free edu (QEMU -device edu only; from the shell its driver "
-                "has it), skipped\n", ktest_current);
+    struct pci_dev *d = kt_edu();
+    if (!d)
         return NULL;
-    }
-    KT_EQ(pci_enable_memory(d), OK);
+    *regs = (volatile uint32_t *)kt_edu_regs(d);
     KT_EQ(pci_set_bus_master(d, true), OK);
-    *regs = vmm_map_mmio(d->info.bar[0].phys, PAGE_SIZE);
     KT_EQ((*regs)[0] & 0xff, 0xed);
     (*regs)[EDU_ACK / 4] = 0xffffffff;
     return d;
@@ -115,48 +104,29 @@ static uint64_t hits_now(void)
     return __atomic_load_n(&hits, __ATOMIC_RELAXED);
 }
 
-/* ---- the faults the units record (the fault log thread's hook) -------------------- */
+/* ---- the faults the units record (kt_vtd_faults_watch) ---------------------------- */
 
-#define SEEN_MAX 16
-static struct vtd_fault_rec seen[SEEN_MAX];
-static uint32_t nseen;   /* the hook (one thread) publishes with release */
+/* An interrupt-remapping fault with `reason` and `index` from requester
+ * sid (or from sid_alt). */
+struct ir_fault {
+    uint32_t reason, index;
+    uint16_t sid, sid_alt;
+};
 
-static void on_fault(void *arg)
+static bool ir_fault_is(const struct vtd_fault_rec *r, const void *arg)
 {
-    uint32_t n = __atomic_load_n(&nseen, __ATOMIC_RELAXED);
-    if (n == SEEN_MAX)
-        return;
-    seen[n] = *(const struct vtd_fault_rec *)arg;
-    __atomic_store_n(&nseen, n + 1, __ATOMIC_RELEASE);
+    const struct ir_fault *w = arg;
+    uint16_t s = (uint16_t)VTD_FRCD_SID(r->hi);
+    return VTD_FRCD_REASON(r->hi) == w->reason && VTD_FRCD_INDEX(r->lo) == w->index &&
+           (s == w->sid || s == w->sid_alt);
 }
 
-static void watch_faults(bool on)
-{
-    __atomic_store_n(&nseen, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&dbg_hooks[DBG_VTD_FAULT], on ? on_fault : NULL, __ATOMIC_RELEASE);
-}
-
-/* Wait for an interrupt-remapping fault with `reason` and `index` from
- * requester sid (or from sid_alt); copy it to *out. */
+/* Wait for such a fault; copy it to *out. */
 static bool wait_fault(uint32_t reason, uint32_t index, uint16_t sid, uint16_t sid_alt,
                        struct vtd_fault_rec *out)
 {
-    uint64_t until = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
-    uint32_t from = 0;
-    do {
-        uint32_t n = __atomic_load_n(&nseen, __ATOMIC_ACQUIRE);
-        for (; from < n; from++) {
-            const struct vtd_fault_rec *r = &seen[from];
-            uint16_t s = (uint16_t)VTD_FRCD_SID(r->hi);
-            if (VTD_FRCD_REASON(r->hi) == reason && VTD_FRCD_INDEX(r->lo) == index &&
-                (s == sid || s == sid_alt)) {
-                *out = *r;
-                return true;
-            }
-        }
-        thread_sleep_ms(2);
-    } while (uptime_ns() < until);
-    return false;
+    const struct ir_fault w = { reason, index, sid, sid_alt };
+    return kt_vtd_fault_wait(ir_fault_is, &w, out);
 }
 
 /* The log line for an interrupt-remapping fault (the probe's corrected
@@ -335,7 +305,7 @@ static void raise_refused(struct pci_dev *d, volatile uint32_t *regs, uint64_t a
 {
     KT_EQ(pci_msi_set(d, false, 0, addr, 0), OK);
     uint64_t h0 = hits_now();
-    __atomic_store_n(&nseen, 0, __ATOMIC_RELAXED);
+    kt_vtd_faults_watch(true);   /* afresh */
     regs[EDU_RAISE / 4] = 1;
     struct vtd_fault_rec r;
     KT_ASSERT(wait_fault(reason, index, rid_of(d), rid_of(d), &r));
@@ -361,7 +331,7 @@ KTEST(vtd_irq_foreign_and_stale_source_refused)
     uint8_t vec;
     KT_EQ(vector_alloc(count_hit, NULL, &cpu, &vec), OK);
     uint32_t apic = cpus[cpu]->lapic_id;
-    watch_faults(true);
+    kt_vtd_faults_watch(true);
     KT_EQ(pci_msi_enable(d, false, true), OK);
 
     /* Control: edu's own entry for the vector delivers. */
@@ -389,43 +359,20 @@ KTEST(vtd_irq_foreign_and_stale_source_refused)
     raise_refused(d, regs, 0xfee00000u | 0x7fffu << 5 | 0x10, 0x21, 0x7fff);
 
     KT_EQ(pci_msi_enable(d, false, false), OK);
-    watch_faults(false);
+    kt_vtd_faults_watch(false);
     vector_free(cpu, vec);
     KT_EQ(pci_set_bus_master(d, false), OK);
 }
 
 /* ---- the interrupt window, written by a device's DMA ---------------------------------------- */
 
-static bool edu_wait_idle(volatile uint32_t *regs)
-{
-    volatile uint64_t *cmd = (volatile uint64_t *)((volatile uint8_t *)regs + EDU_DMA_CMD);
-    uint64_t end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
-    while (*cmd & DMA_RUN) {
-        if (uptime_ns() > end)
-            return false;
-        thread_sleep_ms(1);
-    }
-    return true;
-}
-
-static void edu_dma(volatile uint32_t *regs, uint64_t src, uint64_t dst, uint32_t len,
-                    uint32_t dir)
-{
-    volatile uint8_t *r = (volatile uint8_t *)regs;
-    *(volatile uint64_t *)(r + EDU_DMA_SRC) = src;
-    *(volatile uint64_t *)(r + EDU_DMA_DST) = dst;
-    *(volatile uint64_t *)(r + EDU_DMA_CNT) = len;
-    *(volatile uint64_t *)(r + EDU_DMA_CMD) = DMA_RUN | dir;
-    KT_ASSERT(edu_wait_idle(regs));
-}
-
 /* edu's buffer (4 bytes: the data of an old-format MSI, our vector) to
  * `addr` in the interrupt window; whether the vector was hit. */
 static bool window_write(volatile uint32_t *regs, uint64_t addr)
 {
     uint64_t h0 = hits_now();
-    __atomic_store_n(&nseen, 0, __ATOMIC_RELAXED);
-    edu_dma(regs, EDU_BUF, addr, 4, DMA_TO_RAM);
+    kt_vtd_faults_watch(true);   /* afresh */
+    KT_ASSERT(kt_edu_dma((volatile uint8_t *)regs, 0, addr, 4, true));
     thread_sleep_ms(10);
     return hits_now() != h0;
 }
@@ -455,14 +402,14 @@ KTEST(vtd_irq_window_write_blocked)
     uint32_t word = vec;
     KT_EQ(vmo_write(v, 0, &word, sizeof(word)), OK);
     struct kobject *cap;
-    KT_EQ(dma_cap_create_for(d, &cap), OK);
+    KT_EQ(dma_cap_create_for(d, NULL, &cap), OK);
     kobject_ref(cap);
     struct khandle kh = khandle_from_new(cap, DMA_CAP_RIGHTS);
     KT_EQ(dma_cap_bus_master(cap, true), OK);
     uint64_t pa, id;
     KT_EQ(vmo_pin(v, cap, 0, PAGE_SIZE, &pa, 1, &id), OK);
-    edu_dma(regs, pa, EDU_BUF, 4, 0);   /* the word into edu's buffer */
-    watch_faults(true);
+    KT_ASSERT(kt_edu_dma((volatile uint8_t *)regs, pa, 0, 4, false));   /* the word into edu's buffer */
+    kt_vtd_faults_watch(true);
 
     struct vtd_fault_rec r;
     KT_ASSERT(!window_write(regs, 0xfee00010));   /* remappable, entry 0 */
@@ -474,12 +421,12 @@ KTEST(vtd_irq_window_write_blocked)
     uint64_t compat = 0xfee00000ull | (uint64_t)cpus[cpu]->lapic_id << 12;
     bool hit = window_write(regs, compat);
     thread_sleep_ms(20);   /* a fault, if any, reaches the log thread */
-    bool fault = __atomic_load_n(&nseen, __ATOMIC_ACQUIRE) > 0;
+    bool fault = kt_vtd_faults_seen() > 0;
     kprintf("ktest %s: old-format write to %lx: %s, %s (VT-d: blocked, fault 25h; QEMU 10.0 "
             "passes it)\n", ktest_current, compat, hit ? "DELIVERED" : "blocked",
             fault ? "fault recorded" : "no fault");
 
-    watch_faults(false);
+    kt_vtd_faults_watch(false);
     KT_EQ(vmo_unpin(v, cap, id), OK);
     khandle_release(&kh);
     kobject_unref(cap);
