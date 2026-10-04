@@ -201,7 +201,8 @@ KTEST(pathstat_kernel_call_counts)
     /* The request's wake hands the server our CPU (the direct hand-off);
      * the reply's is queued: the server's plain write doesn't block. */
     KT_IDLE_EQ(per100(&r, PATH_HANDOFF), handoffs());
-    KT_IDLE_EQ(per100(&r, PATH_LOCK), 1400);
+    /* 14 a round trip, less the run queue lock a handed wake never takes. */
+    KT_IDLE_EQ(per100(&r, PATH_LOCK), 1400 - handoffs());
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* every release is the top lock */
     KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
@@ -280,12 +281,14 @@ KTEST(pathstat_user_reply_wait_counts)
     KT_IDLE_EQ(per100(&r, PATH_HANDOFF), 2 * handoffs());
     KT_IDLE_EQ(per100(&r, PATH_FPU_RESTORE), 200);
     KT_IDLE_EQ(per100(&r, PATH_CR3), 200);
-    /* 15 a round trip: per side the handle table, the pair and the peer's
-     * endpoint for the send, the run queue for the hand-off, its own
-     * endpoint (twice: before and after it blocks) and the scheduler's;
-     * the caller also lists itself on its endpoint first. (A rare extra
-     * one in the trace's window: not exact.) */
-    KT_IDLE_ASSERT(per100(&r, PATH_LOCK) >= 1500 && per100(&r, PATH_LOCK) <= 1510);
+    /* 13 a round trip: per side the handle table, the pair and the peer's
+     * endpoint for the send, its own endpoint (twice: before and after it
+     * blocks) and the scheduler's; the caller also lists itself on its
+     * endpoint first. A handed wake takes no lock (with the hand-off off,
+     * each wake takes the run queue's: 15). A rare extra one in the
+     * trace's window: not exact. */
+    uint64_t locks = 1500 - 2 * handoffs();
+    KT_IDLE_ASSERT(per100(&r, PATH_LOCK) >= locks && per100(&r, PATH_LOCK) <= locks + 10);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
     /* No deadline, no clock read, but the client's: its warm-up (calls
      * this quick may fill the whole window) reads the clock every 64. */

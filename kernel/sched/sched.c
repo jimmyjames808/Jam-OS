@@ -53,7 +53,8 @@ struct runqueue {
     struct thread   *prev;                  /* handed from schedule to finish_switch */
     /* The direct hand-off: a READY thread on no queue that a waker running
      * here (handoff_from) handed this CPU to; the next schedule() here
-     * runs or queues it (take_handoff). Only this CPU touches them. */
+     * runs or queues it (take_handoff). Only this CPU touches them, with
+     * interrupts off (no lock needed to record one: hand_off). */
     struct thread   *handoff;
     struct thread   *handoff_from;
 };
@@ -473,23 +474,29 @@ void thread_set_handoff(bool on)
  * the switch is off, one is recorded already, or anything is queued here:
  * the wakee would wait behind it (placement may still pick this CPU for a
  * thread allowed nowhere else, and then it must queue, or a pair handing
- * the CPU back and forth would starve what waits there). */
+ * the CPU back and forth would starve what waits there).
+ * No run queue lock: only this CPU ever reads or writes its hand-off (here,
+ * in schedule() and in sched_handoff_done), each time with interrupts off,
+ * so nothing can come between; and "nothing queued" is read as placement
+ * reads it, a hint that take_handoff checks again under the lock. That
+ * saves a lock, and the checker's work on it, on every wake handed over:
+ * the rest of a wake (the state change, the placement check) and the
+ * schedule() pass were all the queueing it replaces cost anyway. */
 static bool hand_off(struct thread *t, struct thread *me, uint32_t cpu)
 {
     if (!__atomic_load_n(&sched_handoff, __ATOMIC_RELAXED))
         return false;
     struct runqueue *rq = &rqs[cpu];
-    uint64_t f = spin_lock_irqsave(&rq->lock);
+    uint64_t f = irq_save();
     struct cpu *c = this_cpu();
-    bool ok = c->index == cpu && c->current == me && !rq->handoff && !rq->bitmap;
+    bool ok = c->index == cpu && c->current == me && !rq->handoff && !rq_ready(rq);
     if (ok) {
         PATH_COUNT(PATH_WAKE);
-        thread_set_cpu(t, cpu);
-        COUNTER_ADD(&t->handoff_offers, 1);
+        COUNTER_ADD(&t->handoff_offers, 1);   /* we own t's placement: we made it READY */
         rq->handoff = t;
         rq->handoff_from = me;
     }
-    spin_unlock_irqrestore(&rq->lock, f);
+    irq_restore(f);
     return ok;
 }
 

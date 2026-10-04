@@ -121,7 +121,8 @@ struct thread {
      * around a wake it blocks right after (see thread_set_handoff).
      * handoff_offers counts the times a waker handed its CPU to THIS
      * thread, handoffs the times it was then switched to directly (the
-     * rest were queued); each written under that CPU's run queue lock. */
+     * rest were queued); written by the waker that made it READY and by
+     * schedule() under the run queue lock, never at once. */
     bool              handoff_ok;
     uint64_t          handoff_offers;
     uint64_t          handoffs;
