@@ -22,7 +22,10 @@
  * vector_free: it finds no owner and is counted (irq_device_unowned). To
  * make it unlikely that such a straggler hits a NEW owner of the same
  * vector, each CPU hands vectors out next-fit (a cursor that wraps), so a
- * freed vector is reused last. */
+ * freed vector is reused last.
+ *
+ * A device's message (msi_message) is made here too: the compatibility
+ * format (address 0xfee00000 with the APIC id, data = the vector). */
 #include <jam/cpu.h>
 #include <jam/interrupt.h>
 #include <jam/irq.h>
@@ -247,4 +250,18 @@ uint64_t msi_address(uint32_t cpu)
 uint32_t msi_data(uint8_t vec)
 {
     return vec;
+}
+
+status_t msi_message(const struct pci_dev *d, uint32_t cpu, uint8_t vec, struct msi_msg *out)
+{
+    (void)d;   /* who sends it: what interrupt remapping (not built yet) needs */
+    if (cpu >= cpu_count || !cpus[cpu])
+        return ERR_INVALID_ARGS;
+    *out = (struct msi_msg){ msi_address(cpu), msi_data(vec), 0 };
+    return OK;
+}
+
+void msi_message_free(struct msi_msg *m)
+{
+    m->remap = 0;
 }

@@ -2,7 +2,8 @@
  *
  * An interrupt object owns one (cpu, vector) from vector_alloc and, for a
  * device, one MSI or MSI-X vector of a PCI function programmed to deliver
- * there. Its handler (fire) runs in interrupt context on that CPU:
+ * there (the message from msi_message). Its handler (fire) runs in
+ * interrupt context on that CPU:
  *
  *   - no allocation and no sleeping: it takes the object's lock (irqsave)
  *     and raises SIG_INTERRUPT, which runs the observers under that lock:
@@ -26,8 +27,9 @@
  *
  * Teardown (last handle closed, or last reference for an object that
  * never had a handle), once: mark it dead under the lock (later fires are
- * only counted), mask/disable it at the device, then vector_free, which
- * returns only when no CPU is still inside fire() for it. The memory goes
+ * only counted), mask/disable it at the device, give its message back
+ * (msi_message_free), then vector_free, which returns only when no CPU is
+ * still inside fire() for it. The memory goes
  * with the last reference; a fire() that finds the magic gone panics
  * rather than use freed memory.
  *
@@ -40,7 +42,8 @@
  * (resource.c's pci_cmd_lock, around pci_msi_enable only) -> "pci" (pci.c's
  * leaf); "interrupt" (the object) -> "pci" (mask in fire/ack) and -> "port"
  * -> "port waiters" -> run queues (observers). The vector allocator's lock
- * is a leaf and is never held with these. pci_msi.c's pci_msi_set /
+ * is a leaf and is never held with these. The message is made before
+ * dev_lock is taken and given back with no lock held. pci_msi.c's pci_msi_set /
  * pci_msi_enable / pci_msi_mask must therefore not sleep,
  * and pci_msi_mask must be callable from an interrupt handler.
  *
@@ -76,6 +79,7 @@ struct kinterrupt {
     uint32_t          cpu;        /* the CPU the vector is on */
     struct pci_dev   *dev;        /* the device (MSI, MSI-X), else NULL */
     uint32_t          index;      /* MSI-X table entry, 0 for MSI */
+    struct msi_msg    msg;        /* what the function sends (MSI, MSI-X) */
     struct list_node  dev_node;   /* on dev_irqs (dev_lock) */
     struct job       *job;        /* charged one JOB_LIMIT_HANDLES unit (a reference) */
     uint64_t          fires;      /* times delivered (statistics); base.lock */
@@ -99,31 +103,26 @@ static void dev_mask(const struct kinterrupt *o, bool masked)
         pci_msi_mask(o->dev, o->kind == IK_MSIX, o->index, masked);
 }
 
-/* Program the function to send (o->cpu, o->vec) and turn it on. */
-static status_t dev_claim(struct kinterrupt *o)
+/* Program the function to send o->msg and turn it on. dev_lock held. */
+static status_t dev_claim_locked(struct kinterrupt *o)
 {
     bool msix = o->kind == IK_MSIX;
     struct pci_dev *d = o->dev;
-    uint64_t f = spin_lock_irqsave(&dev_lock);
     uint32_t same = 0;
     for (struct list_node *n = dev_irqs.next; n != &dev_irqs; n = n->next) {
         struct kinterrupt *x = container_of(n, struct kinterrupt, dev_node);
         if (x->dev != d)
             continue;
-        if (x->kind != o->kind) {   /* MSI and MSI-X never on together */
-            spin_unlock_irqrestore(&dev_lock, f);
+        if (x->kind != o->kind)   /* MSI and MSI-X never on together */
             return ERR_BAD_STATE;
-        }
-        if (x->index == o->index) {
-            spin_unlock_irqrestore(&dev_lock, f);
+        if (x->index == o->index)
             return ERR_ALREADY_BOUND;
-        }
         same++;
     }
     status_t st = OK;
     if (msix)
         pci_msi_mask(d, true, o->index, true);   /* quiet while it changes */
-    st = pci_msi_set(d, msix, o->index, msi_address(o->cpu), msi_data(o->vec));
+    st = pci_msi_set(d, msix, o->index, o->msg.address, o->msg.data);
     if (st == OK && same == 0) {
         /* MSI enable also sets INTx Disable in the command register: take
          * the command-filter lock, so a driver's filtered config write (a
@@ -141,7 +140,21 @@ static status_t dev_claim(struct kinterrupt *o)
     } else if (msix) {
         pci_msi_mask(d, true, o->index, true);
     }
+    return st;
+}
+
+/* The message for (o->cpu, o->vec), then the function programmed with it.
+ * On a failure the message goes back at once: the function never sent it. */
+static status_t dev_claim(struct kinterrupt *o)
+{
+    status_t st = msi_message(o->dev, o->cpu, o->vec, &o->msg);
+    if (st != OK)
+        return st;
+    uint64_t f = spin_lock_irqsave(&dev_lock);
+    st = dev_claim_locked(o);
     spin_unlock_irqrestore(&dev_lock, f);
+    if (st != OK)
+        msi_message_free(&o->msg);
     return st;
 }
 
@@ -260,8 +273,10 @@ static void teardown(struct kinterrupt *o, bool wait)
     o->masked = false;
     o->pending = false;
     spin_unlock_irqrestore(&o->base.lock, f);
-    if (o->kind != IK_VIRTUAL)
+    if (o->kind != IK_VIRTUAL) {
         dev_release(o);
+        msi_message_free(&o->msg);   /* nothing sends it any more */
+    }
     vector_free(o->cpu, o->vec);   /* no CPU is in fire() for it after this */
     __atomic_store_n(&o->torn, TORN_DONE, __ATOMIC_RELEASE);
 }

@@ -36,9 +36,24 @@ status_t vector_alloc(vector_fn_t fn, void *ctx, uint32_t *cpu, uint8_t *vec);
 /* Unroute it and wait until no CPU is still running its handler. Thread
  * context only. */
 void vector_free(uint32_t cpu, uint8_t vec);
-/* The MSI address and data that deliver `vec` to `cpu` (fixed, edge). */
+/* The MSI address and data that deliver `vec` to `cpu` (fixed, edge), in
+ * the compatibility format: what a device is programmed with, and what the
+ * VT-d units' own fault event interrupt uses. */
 uint64_t msi_address(uint32_t cpu);
 uint32_t msi_data(uint8_t vec);
+
+/* A device's MSI or MSI-X message for `vec` on `cpu`. */
+struct msi_msg {
+    uint64_t address;
+    uint32_t data;
+    uint32_t remap;   /* its interrupt remapping entry: 0 (not built yet) */
+};
+/* The compatibility format (msi_address, msi_data) for function d. Thread
+ * context, interrupts on, no spinlock held. */
+status_t msi_message(const struct pci_dev *d, uint32_t cpu, uint8_t vec, struct msi_msg *out);
+/* The device has stopped sending m (masked or disabled): m is done with.
+ * Context as msi_message. */
+void msi_message_free(struct msi_msg *m);
 
 /* Interrupt objects (OBJ_INTERRUPT). flags: IRQ_MSIX from <jam/abi.h>. */
 status_t interrupt_create_msi(struct pci_dev *d, uint32_t index, uint32_t flags,
