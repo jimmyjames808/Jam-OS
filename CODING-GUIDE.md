@@ -496,7 +496,11 @@ fractions. User programs may use floating point and SIMD freely.
    (or `<name>_serve_one` in a loop of your own). A method the server may
    answer after its handler returned is marked `later`: its handler gets
    the request's `struct idl_txn` and may return `IDL_LATER`, then answers
-   with `<name>_reply_<method>`. Client: `<name>_<method>` or `_until`
+   with `<name>_reply_<method>`. A service whose requests must outlive
+   it reads each into a slot of its state (`<name>_take_slot`, which also
+   sends the last reply, then `<name>_run_slot`; `<svcstate.h>`). A method
+   that can run twice with the same result is marked `idempotent`
+   (`<name>_idempotent`). Client: `<name>_<method>` or `_until`
    with a deadline; from a loop that serves others,
    `<name>_<method>_send` and `<name>_<method>_result`
    ([a loop that serves never blocks](#a-loop-that-serves-never-blocks)).
