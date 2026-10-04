@@ -55,6 +55,7 @@ WSHIFT = 7              # our window scale, offered on every SYN we send
 FLIGHT_MAX = 262144     # our bytes in flight at most: few enough frames for the guest's rings
 RTO = 0.25              # seconds without an ACK before sending again
 SYN_EVERY = 1.0         # an active open's SYN, again, until answered
+LINGER = 1.0            # seconds a connection closed both ways is kept, to ack a FIN again
 HOST_READ_MAX = 262144  # bytes from the Mac's socket waiting for the guest, at most
 F_FIN, F_SYN, F_RST, F_PSH, F_ACK = 0x01, 0x02, 0x04, 0x08, 0x10
 M32 = 0xFFFFFFFF
@@ -88,6 +89,7 @@ class Stream:
         self.host_shut = False       # we shut down the Mac's socket's write side
         self.fin_sent = False
         self.done = False
+        self.linger_until = None     # closed both ways: forgotten at this time
         self.last = 0.0 if active else time.monotonic()
 
     # the wire
@@ -125,6 +127,20 @@ class Stream:
             self.relay.peer.log("relay %s: reset: %s" % (self.name(), why))
         self.finish()
 
+    def linger(self):
+        """Closed both ways: the Mac's socket goes now, the connection
+        LINGER seconds later (TIME_WAIT's job): if our ACK of the guest's
+        FIN was lost, its FIN comes again and is acked again, where a
+        connection already forgotten would leave the guest resending it."""
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+        if self.linger_until is None:
+            self.linger_until = time.monotonic() + LINGER
+
     def finish(self):
         self.done = True
         if self.sock is not None:
@@ -158,7 +174,11 @@ class Stream:
             self.fin_sent = True
 
     def tick(self, now):
-        if self.done or now - self.last < (SYN_EVERY if self.state == "SYN_SENT" else RTO):
+        if self.linger_until is not None and now >= self.linger_until:
+            self.done = True
+        if self.done or self.linger_until is not None:
+            return
+        if now - self.last < (SYN_EVERY if self.state == "SYN_SENT" else RTO):
             return
         self.last = now
         if self.state == "SYN_SENT":
@@ -280,7 +300,7 @@ class Stream:
         acked = self.fin_sent and self.snd_una == self.snd_nxt
         if acked and self.host_shut:
             self.relay.peer.log("relay %s: closed, both ways" % self.name())
-            self.finish()
+            self.linger()
 
     def wants_read(self):
         return (self.sock is not None and not self.connecting and not self.host_eof and
