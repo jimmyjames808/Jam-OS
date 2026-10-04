@@ -41,6 +41,7 @@ import sys
 EOC = 0x0FFFFFF8      # this and above: the end of a chain
 BAD = 0x0FFFFFF7      # a bad cluster
 MASK = 0x0FFFFFFF     # FAT32 uses 28 bits of each entry
+ALIGN = 4096          # reads are whole blocks of this, aligned (raw devices)
 CLEAN_BIT = 0x08000000   # FAT[1]: the volume was unmounted cleanly
 HARD_ERR_BIT = 0x04000000   # FAT[1]: no disk error was seen
 ATTR_RO, ATTR_HIDDEN, ATTR_SYSTEM, ATTR_VOLUME, ATTR_DIR, ATTR_ARCHIVE = 1, 2, 4, 8, 16, 32
@@ -98,8 +99,18 @@ class Volume:
         self.fat = self.fats[0]
 
     def read(self, off, n):
-        self.f.seek(self.base + off)
-        return self.f.read(n)
+        """n bytes at off, read in whole 4 KiB-aligned blocks: a raw device
+        (/dev/rdisk*) refuses any other read."""
+        start = (self.base + off) // ALIGN * ALIGN
+        end = -(-(self.base + off + n) // ALIGN) * ALIGN
+        self.f.seek(start)
+        data, want = b"", end - start
+        while len(data) < want:
+            got = self.f.read(min(want - len(data), 1 << 20))
+            if not got:
+                break
+            data += got
+        return data[self.base + off - start:][:n]
 
     def cluster(self, c):
         return self.read((self.data_start + (c - 2) * self.spc) * self.bps, self.csize)
@@ -357,7 +368,7 @@ def parse_offset(spec):
 
 def partition_offset(f, n):
     f.seek(0)
-    mbr = f.read(512)
+    mbr = f.read(4096)[:512]   # a whole block: raw devices refuse less
     if len(mbr) < 512 or mbr[510:512] != b"\x55\xaa" or not 1 <= n <= 4:
         raise NotFat("no MBR with a partition %d" % n)
     ptype, start = mbr[446 + 16 * (n - 1) + 4], struct.unpack_from("<I", mbr, 446 + 16 * (n - 1) + 8)[0]
@@ -627,7 +638,7 @@ def main(argv):
         return 3
     path, _, off = args[0].partition("@@")
     try:
-        with open(path, "rb") as f:
+        with open(path, "rb", buffering=0) as f:
             base = partition_offset(f, part) if part else parse_offset(off) if off else 0
             return check(f, base, listmax, require_clean, quiet)
     except (OSError, NotFat, ValueError) as e:
