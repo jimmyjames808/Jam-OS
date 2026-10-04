@@ -44,12 +44,14 @@
 #include <jam/cpu.h>
 #include <jam/interrupt.h>
 #include <jam/interrupt_test.h>
+#include <jam/iommu.h>
 #include <jam/ipi.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/pathstat.h>
+#include <jam/pci.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
 #include <jam/port.h>
@@ -1432,6 +1434,59 @@ static void cross_cpu_benches(void)
 
 /* Serial output, sleep accuracy, TLB shootdown, address-space switches,
  * FPU state and the ring-3 benchmarks. */
+/* The IOMMU's own cost (M11), where it matters: mapping a page in a
+ * device's domain, and the invalidation its unmap waits for. With
+ * translation on (iommu=on) it maps and unmaps pages in a throwaway domain
+ * (created for the first translated device, never attached, so no device
+ * is disturbed); with iommu=off there is nothing to measure. This is what
+ * vmo_pin / vmo_unpin add once a driver's pins go through its domain; a
+ * driver pins when it starts and unpins when it stops, never per transfer,
+ * so it is paid rarely. */
+static void iommu_bench(void)
+{
+    if (!iommu_translating()) {
+        report("bench: iommu map/unmap:                       translation off (iommu=off): "
+               "pins add no IOMMU cost");
+        return;
+    }
+    struct iommu_domain *dom = NULL;
+    for (uint32_t i = 0; i < pci_count() && !dom; i++) {
+        struct pci_dev *d = pci_get(i);
+        if (d && iommu_domain_create(d, NULL, &dom) != OK)
+            dom = NULL;
+    }
+    if (!dom) {
+        report("bench: iommu map/unmap:                       no translated device to measure on");
+        return;
+    }
+    enum { N1 = 2000, N64 = 400, PAGES = 64 };
+    static uint64_t pg[PAGES];
+    unsigned got = 0;
+    while (got < PAGES && (pg[got] = pmm_alloc_page_phys(PMM_DMA32)))
+        got++;
+    if (got >= 1) {
+        for (unsigned i = 0; i < N1; i++) {
+            uint64_t t0 = stamp();
+            (void)iommu_map(dom, pg, 1);
+            (void)iommu_unmap(dom, pg, 1);
+            samples[i] = span_ps(t0, stamp(), 1);
+        }
+        result("iommu map + unmap + invalidate, 1 page", samples, N1);
+    }
+    if (got >= PAGES) {
+        for (unsigned i = 0; i < N64; i++) {
+            uint64_t t0 = stamp();
+            (void)iommu_map(dom, pg, PAGES);
+            (void)iommu_unmap(dom, pg, PAGES);
+            samples[i] = span_ps(t0, stamp(), 1);
+        }
+        result("iommu map + unmap + invalidate, 64 pages", samples, N64);
+    }
+    for (unsigned i = 0; i < got; i++)
+        pmm_free_page_phys(pg[i]);
+    (void)iommu_domain_destroy(dom);
+}
+
 static void system_benches(void)
 {
     serial_output();
@@ -1449,6 +1504,7 @@ static void system_benches(void)
     }
     as_switch();
     fpu_state();
+    iommu_bench();
     user_benches();
 }
 

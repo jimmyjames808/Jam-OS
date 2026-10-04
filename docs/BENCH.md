@@ -23,6 +23,20 @@ pinned. A line an optimisation should move is measured with its switch
 off and then on in the same run. The `path:` lines are counts
 ([below](#path-breakdown-m115-stage-0-qemu-2026-10-02)).
 
+**The IOMMU lines** (M11): with DMA translation on (the `iommu=on` boot,
+[HARDWARE.md](HARDWARE.md#the-iommu-vt-d)), `bench` maps and unmaps a page
+(and 64 pages) in a device's VT-d domain and times the round trip; the
+unmap waits for the unit's invalidation, which is most of the cost, so the
+line measures the invalidation's real latency. It uses a throwaway domain
+built for the first translated device and never attached, so no device is
+disturbed; coherence (the table-line flushes) and the real invalidation
+timing are things only the PC shows, so these numbers mean nothing in
+QEMU. This is what `vmo_pin` / `vmo_unpin` add once a driver's pins go
+through its own domain; a driver pins when it starts and unpins when it
+stops, never per transfer. With `iommu=off` the line says so and there is
+nothing to measure; the other lines (context switch, calls, interrupts)
+are measured both ways to show the IOMMU leaves the IPC path alone.
+
 **Per-operation lines** (`perop` from the shell; `user/tests/perop/main.c`
 explains each line): what one file operation costs a program, with the
 same TSC method in ring 3: a `stat`, an open and close, a 4 KiB and a
