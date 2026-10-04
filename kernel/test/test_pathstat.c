@@ -31,6 +31,12 @@ static uint64_t sys100(const struct path_result *r, unsigned nr)
     return r->calls ? (r->sys[nr] * 100 + r->calls / 2) / r->calls : 0;
 }
 
+/* Releases of a lock (or of preemption) look at need_resched with one
+ * load and touch the interrupt flag only when a reschedule is pending
+ * (sched.c's preempt_check): PATH_RESCHED_IRQ is 0 on every path below,
+ * where it was one per release with interrupts on (switch 0, kernel call
+ * 7, user call 13, reply-and-wait 7, generated call 8 a round trip). */
+
 /* Hand-offs per call x100 when only the request's wake is handed over
  * (the server answers with a plain write): 1, or 0 with the switch off. */
 static uint64_t handoffs(void)
@@ -155,6 +161,7 @@ KTEST(pathstat_switch_counts)
     KT_EQ(per100(&r, PATH_HANDOFF), 0);
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* the checker's fast path */
+    KT_IDLE_EQ(per100(&r, PATH_RESCHED_IRQ), 0);   /* nothing pending at any release */
     KT_EQ(per100(&r, PATH_CLOCK), 0);
     struct path_shape *sh = kmalloc(sizeof(*sh));
     KT_ASSERT(sh);
@@ -206,6 +213,7 @@ KTEST(pathstat_kernel_call_counts)
      * take its endpoint's lock again: chan_handed.) */
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 1300 - handoffs());
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* every release is the top lock */
+    KT_IDLE_EQ(per100(&r, PATH_RESCHED_IRQ), 0);   /* nothing pending at any release */
     KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
@@ -249,6 +257,7 @@ KTEST(pathstat_user_call_counts)
     /* The checker never turns interrupts off: each release is of the top
      * lock, and every lock pair has been seen before the window. */
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
+    KT_IDLE_EQ(per100(&r, PATH_RESCHED_IRQ), 0);   /* nothing pending at any release */
     KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
@@ -296,6 +305,7 @@ KTEST(pathstat_user_reply_wait_counts)
     uint64_t locks = 1300 - 2 * handoffs();
     KT_IDLE_ASSERT(per100(&r, PATH_LOCK) >= locks && per100(&r, PATH_LOCK) <= locks + 10);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
+    KT_IDLE_EQ(per100(&r, PATH_RESCHED_IRQ), 0);   /* nothing pending at any release */
     /* No deadline, no clock read, but the client's: its warm-up (calls
      * this quick may fill the whole window) reads the clock every 64. */
     KT_ASSERT(per100(&r, PATH_CLOCK) <= 2);
@@ -322,6 +332,7 @@ KTEST(pathstat_user_deadline_call_counts)
     KT_EQ(per100(&r, PATH_KMALLOC), 100);
     KT_IDLE_EQ(per100(&r, PATH_CLOCK), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
+    KT_IDLE_EQ(per100(&r, PATH_RESCHED_IRQ), 0);   /* nothing pending at any release */
 }
 
 /* The call through generated code (tools/genidl.py), as a program makes
@@ -358,6 +369,7 @@ KTEST(pathstat_user_generated_call_counts)
      * the server, then the reply's status and the request's two sizes in
      * one copy (the generated loop keeps the three in a row). */
     KT_EQ(per100(&r, PATH_UCOPY_OUT), 400);
+    KT_IDLE_EQ(per100(&r, PATH_RESCHED_IRQ), 0);
     /* Two a call, and now and then one of the warm-up's (above). */
     KT_IDLE_ASSERT(per100(&r, PATH_CLOCK) >= 200 && per100(&r, PATH_CLOCK) <= 202);
 }

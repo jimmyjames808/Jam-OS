@@ -131,7 +131,7 @@ void preempt_enable_no_resched(void)
 
 void preempt_enable(void)
 {
-    if (percpu_preempt_dec() != 0 || !irqs_enabled())
+    if (percpu_preempt_dec() != 0)
         return;
     preempt_check();
 }
@@ -143,13 +143,24 @@ void preempt_enable(void)
  * same CPU waits for the next tick), so spin_unlock_irqrestore calls this
  * again once interrupts are back on. The scheduler itself never routes
  * through here (it uses the no_resched unlock variants), so this cannot
- * recurse into schedule(). (test: repro_local_wake_latency) */
+ * recurse into schedule(). (test: repro_local_wake_latency)
+ *
+ * Every spinlock release comes through here, so the usual case, nothing
+ * pending, costs one GS-relative load and no change of the interrupt flag
+ * (pushf, cli, sti cost more than the whole test). That load reads the
+ * flag of the CPU it runs on, as the careful look below does: a flag set
+ * just after it is acted on as one set just after that look would be (the
+ * kick's interrupt on its way out, the tick, the next check). Only a flag
+ * seen set goes the careful way. (test: preempt_resched_at_unlock) */
 void preempt_check(void)
 {
+    if (!percpu_need_resched())
+        return;
     if (!irqs_enabled())
         return;
-    /* Look at need_resched with interrupts off so the CPU we test is the CPU
-     * we act on. */
+    /* Look again with interrupts off so the CPU we test is the CPU we act
+     * on. */
+    PATH_COUNT(PATH_RESCHED_IRQ);
     uint64_t f = irq_save();
     struct cpu *c = this_cpu();
     bool go = cpu_need_resched(c) && c->irq_depth == 0 && c->preempt_count == 0 && c->current;

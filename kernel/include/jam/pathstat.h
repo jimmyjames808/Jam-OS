@@ -70,6 +70,7 @@ enum path_ev {
     PATH_OBSERVER,       /* observer callbacks fired by a signal change */
     PATH_CLOCK,          /* clock reads (uptime_ns) */
     PATH_LOCK_SLOW,      /* lock checker steps that turned interrupts off */
+    PATH_RESCHED_IRQ,    /* reschedule checks (preempt_check) that turned interrupts off */
     PATH_CALLS,          /* boundaries the lead passed in the window (= calls) */
     PATH_EV_N
 };
