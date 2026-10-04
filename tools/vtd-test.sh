@@ -19,11 +19,18 @@
 #      the "started" line, every vtd_unit_* test passed (every
 #      invalidation kind, the vtd_pt and vtd_ir callbacks, a refused
 #      descriptor reported and the queue going on, the queue wrapping,
-#      every CPU at once, QI off and on), and nothing in the RESULTS box
-#      but the refusal the test provokes;
+#      every CPU at once, QI off and on); interrupt remapping on
+#      (kernel/dev/vtd_irq.c) and every vtd_irq_* test passed (COM1's pin
+#      remapped, an MSI through its own entry, entries freed on close, a
+#      foreign, freed or out-of-range entry refused and recorded, the
+#      interrupt window written by edu's DMA blocked, the timer, IPIs and
+#      COM1 unaffected, remapping off and on again); nothing in the RESULTS
+#      box but the refusal and the interrupt faults the tests provoke
+#      (edu's, 00:04.0, and its DMA's, which QEMU sends with no requester
+#      id: ff:1f.7);
 #   6. a shell boot with iommu=on, `reboot` (kexec): the next kernel takes
-#      the queue over (drained, off, its own set up) and starts the unit;
-#      nothing reported.
+#      the queue over (drained, off, its own set up), starts the unit and
+#      turns interrupt remapping on again; nothing reported.
 # Run 1 has no iommu word: it must start nothing (no write traced).
 # VTD_TEST_INIT=1 adds the `init` run (utest, usbtest) twice, with the
 # intel-iommu present: left off, and started with iommu=on (its queue and
@@ -115,8 +122,18 @@ on() {
         "ktest: vtd_unit_many_cpus_at_once       ok" \
         "ktest: vtd_unit_queue_off_and_on        ok" \
         "ktest: vtd_unit_registers_kept          ok" \
+        "vtd:         interrupt remapping on: 1 unit, one table at" \
+        "ktest: vtd_irq_check_units_pure         ok" \
+        "ktest: vtd_irq_on_and_ioapic            ok" \
+        "ktest: vtd_irq_msi_through_entry        ok" \
+        "ktest: vtd_irq_entries_freed_on_close   ok" \
+        "ktest: vtd_irq_foreign_and_stale_source_refused ok" \
+        "ktest: vtd_irq_window_write_blocked     ok" \
+        "ktest: vtd_irq_timer_ipis_and_com1_unaffected ok" \
+        "ktest: vtd_irq_off_and_on_again         ok" \
         "run complete: no problems"
-    if grep -E "vtd: [^ ]" "$out/$1.log" | grep -vF "the queue refused descriptor"; then
+    if grep -E "vtd: [^ ]" "$out/$1.log" | grep -vF "the queue refused descriptor" |
+        grep -vE "vtd: fault: unit 0: (00:04\.0|ff:1f\.7) interrupt, index"; then
         echo "$1: a VT-d problem reported (above)"
         ok=0
     fi
@@ -132,7 +149,8 @@ on vtd-on-cm0 cm0
 # drains it, turns it off and sets its own up (6.5.2's takeover).
 printf '%s\n' "wait 180 init: the shell is up" "wait jam>" "send reboot" \
     "wait 60 kexec: starting the stored kernel" "wait 60 queued invalidation was on" \
-    "wait 60 iommu=on: 1 of 1 unit started" "wait 180 init: the shell is up" "wait jam>" \
+    "wait 60 iommu=on: 1 of 1 unit started" "wait 60 interrupt remapping on: 1 unit" \
+    "wait 180 init: the shell is up" "wait jam>" \
     "send reboot -f" "wait reboot: resetting" > "$out/vtd-kexec.txt"
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_IOMMU=1 QEMU_INPUT="$out/vtd-kexec.txt" \
     tools/qemu-test.sh "$out" vtd-kexec shell iommu=on > "$out/vtd-kexec.out" 2>&1 ||

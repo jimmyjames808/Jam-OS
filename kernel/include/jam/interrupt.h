@@ -2,8 +2,9 @@
  * (kernel/object/interrupt.c, vector allocator in kernel/arch/x86_64/irq.c).
  *
  * Vectors 0x31-0xef on every CPU are allocated per (cpu, vector) pair; 0x30
- * stays COM1's. An MSI targets one CPU (xAPIC format: APIC ID < 256, no
- * interrupt remapping yet). The allocator prefers E-cores, then the
+ * stays COM1's. An MSI targets one CPU, whose APIC id fits 8 bits (what the
+ * compatibility format holds; with interrupt remapping the entry would hold
+ * 32, not used yet). The allocator prefers E-cores, then the
  * CPU with the fewest vectors; CPU 0 only when nothing else is online.
  *
  * An interrupt object owns one vector. When it fires (IRQ context: no
@@ -36,9 +37,29 @@ status_t vector_alloc(vector_fn_t fn, void *ctx, uint32_t *cpu, uint8_t *vec);
 /* Unroute it and wait until no CPU is still running its handler. Thread
  * context only. */
 void vector_free(uint32_t cpu, uint8_t vec);
-/* The MSI address and data that deliver `vec` to `cpu` (fixed, edge). */
+/* The MSI address and data that deliver `vec` to `cpu` (fixed, edge), in
+ * the compatibility format: what a device is programmed with when
+ * interrupt remapping is off, and what the VT-d units' own fault event
+ * interrupt always uses (it is never remapped). */
 uint64_t msi_address(uint32_t cpu);
 uint32_t msi_data(uint8_t vec);
+
+/* A device's MSI or MSI-X message for `vec` on `cpu`. */
+struct msi_msg {
+    uint64_t address;
+    uint32_t data;
+    uint32_t remap;   /* its interrupt remapping entry; 0: none (compatibility format) */
+};
+/* With interrupt remapping off: the compatibility format (msi_address,
+ * msi_data). With it on: a remapping entry that delivers vec to cpu and
+ * only for d's requester id, and the remappable message that names it
+ * (<jam/irq_remap.h>, whose errors it returns). Thread context, interrupts
+ * on, no spinlock held. */
+status_t msi_message(const struct pci_dev *d, uint32_t cpu, uint8_t vec, struct msi_msg *out);
+/* Give m's remapping entry back (none: nothing to do) and clear m->remap.
+ * The device has stopped sending m (masked or disabled). Context as
+ * msi_message. */
+void msi_message_free(struct msi_msg *m);
 
 /* Interrupt objects (OBJ_INTERRUPT). flags: IRQ_MSIX from <jam/abi.h>. */
 status_t interrupt_create_msi(struct pci_dev *d, uint32_t index, uint32_t flags,

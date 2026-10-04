@@ -24,6 +24,7 @@
  *
  * Counts per device are the log thread's alone (struct vtd_fault_counts);
  * the ring is "vtd fault ring" (irqsave: the handler takes it). */
+#include <jam/dbghook.h>
 #include <jam/interrupt.h>
 #include <jam/kprintf.h>
 #include <jam/report.h>
@@ -182,6 +183,7 @@ static void service(struct vtd_unit *u)
             vtd_qi_check_errors(u);
         if (!have)
             return;
+        DBG_HOOK(DBG_VTD_FAULT, &r);   /* the tests' look at each fault */
         log_one(u->index, r);
     }
 }
