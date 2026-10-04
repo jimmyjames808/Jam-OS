@@ -38,6 +38,19 @@ static inline status_t idl_rep_status(const void *rep, uint32_t n, uint32_t want
     return n == want ? OK : ERR_INTERNAL;
 }
 
+/* Client: one call on ch: the request q (qn bytes) out, the reply into r
+ * (rcap bytes, *rn of them) and its handles into rh (rhcap slots, *rhn of
+ * them). t is a deadline, or with `within` a timeout from when the call
+ * starts, by the kernel's clock (no clock read here). */
+static inline status_t idl_call(handle_t ch, void *q, uint32_t qn, void *r, uint32_t rcap,
+                                uint32_t *rn, handle_t *rh, uint32_t rhcap, uint32_t *rhn,
+                                bool within, uint64_t t)
+{
+    if (within)
+        return drv_channel_call_within(ch, q, qn, r, rcap, rn, rh, rhcap, rhn, t);
+    return drv_channel_call_h(ch, q, qn, r, rcap, rn, rh, rhcap, rhn, t);
+}
+
 static inline void idl_close_all(const handle_t *hs, uint32_t n)
 {
     for (uint32_t idl_i = 0; idl_i < n; idl_i++)
@@ -98,6 +111,72 @@ static inline status_t idl_drain(handle_t ch, uint32_t n, uint32_t nh)
         idl_st = OK;   /* another reader took it meanwhile: look again */
     }
     return idl_st;
+}
+
+/* ---- serving ----------------------------------------------------------- */
+
+/* A <proto>_serve loop between its system calls: the reply waiting to go
+ * out, and the request just taken. */
+struct idl_serve {
+    handle_t  ch;     /* the channel served (not owned) */
+    void     *q;      /* the request buffer: qcap bytes */
+    uint32_t  qcap;
+    uint32_t  n;      /* the request's bytes, once taken */
+    void     *r;      /* the reply: rn bytes, 0 when there is none to send */
+    uint32_t  rn;
+    handle_t *rhs;    /* the reply's handles: rhn of them, moved once it is sent */
+    uint32_t  rhn;
+};
+
+/* Server: send the reply waiting in s, if any, and take the next request
+ * into s->q, in one system call (drv_channel_reply_wait), waiting for one
+ * if none is queued. OK: s->n bytes of a request without handles are in
+ * s->q. A request carrying handles, or too big for s->q, is answered
+ * ERR_INVALID_ARGS (idl_drain) and the next one taken. A reply that can't
+ * go out (the client is gone, or never called) is dropped and its
+ * handles closed, as idl_reply_write's. Otherwise the wait's status:
+ * ERR_PEER_CLOSED when the client is gone for good and nothing is
+ * queued, ERR_CANCELED when the thread is being killed. */
+static inline status_t idl_serve_next(struct idl_serve *s)
+{
+    for (;;) {
+        bool idl_reply = s->rn != 0;
+        status_t idl_rs = 1;   /* never a status: the reply wasn't tried */
+        uint32_t idl_n = 0, idl_nh = 0;
+        /* No room for handles: a request that carries any stays queued
+         * (ERR_BUFFER_TOO_SMALL) for idl_drain. */
+        struct channel_reply_wait_args idl_a = {
+            .h = idl_reply ? s->ch : HANDLE_INVALID,
+            .wait = s->ch,
+            .bytes = (uint64_t)(uintptr_t)s->q,
+            .bytes_cap = s->qcap,
+            .actual_bytes = (uint64_t)(uintptr_t)&idl_n,
+            .actual_handles = (uint64_t)(uintptr_t)&idl_nh,
+            .deadline_ns = DEADLINE_NEVER,
+        };
+        if (idl_reply) {
+            idl_a.rbytes = (uint64_t)(uintptr_t)s->r;
+            idl_a.rn = s->rn;
+            idl_a.rh = (uint64_t)(uintptr_t)s->rhs;
+            idl_a.rhn = s->rhn;
+            idl_a.reply_status = (uint64_t)(uintptr_t)&idl_rs;
+        }
+        status_t idl_st = drv_channel_reply_wait(&idl_a);
+        if (idl_rs != OK)
+            idl_close_all(s->rhs, s->rhn);   /* not sent: they're still ours */
+        s->rn = s->rhn = 0;
+        if (idl_reply && idl_rs != 1 && idl_rs != OK && idl_rs != ERR_PEER_CLOSED)
+            continue;   /* the reply failed and nothing was read: wait again */
+        if (idl_st == ERR_BUFFER_TOO_SMALL) {
+            idl_st = idl_drain(s->ch, idl_n, idl_nh);
+            if (idl_st == OK)
+                continue;
+        }
+        if (idl_st != OK)
+            return idl_st;
+        s->n = idl_n;
+        return OK;
+    }
 }
 
 /* ---- answering later (a `later` method, or a loop of your own) ------- */

@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `input` (id 11). Client: input_<method>(ch, args..., &results...)
- * (and input_<method>_until with a deadline) over drv_channel_call, or
+ * (and input_<method>_until with a deadline, _within with a timeout), or
  * input_<method>_send and input_<method>_result without waiting. Server:
  * fill a struct input_ops and run input_serve(ch, &ops, ctx), or
  * input_serve_one / input_dispatch_on for a loop of your own;
@@ -69,7 +69,9 @@ struct input_ready_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-static inline status_t input_key_until(handle_t ch, uint64_t deadline_ns, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
+/* input_key_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t input_key_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
 {
     struct input_key_req idl_q;
     struct input_key_rep idl_r;
@@ -80,19 +82,28 @@ static inline status_t input_key_until(handle_t ch, uint64_t deadline_ns, uint16
     idl_q.state = state;
     idl_q.mods = mods;
     idl_q.codepoint = codepoint;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+static inline status_t input_key_until(handle_t ch, uint64_t deadline_ns, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
+{
+    return input_key_call(ch, false, deadline_ns, usage, state, mods, codepoint);
+}
+static inline status_t input_key_within(handle_t ch, uint64_t timeout_ns, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
+{
+    return input_key_call(ch, true, timeout_ns, usage, state, mods, codepoint);
+}
 static inline status_t input_key(handle_t ch, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
 {
-    return input_key_until(ch, DEADLINE_NEVER, usage, state, mods, codepoint);
+    return input_key_call(ch, false, DEADLINE_NEVER, usage, state, mods, codepoint);
 }
 
-/* buttons: bit 0 left, 1 right, 2 middle. */
-static inline status_t input_mouse_until(handle_t ch, uint64_t deadline_ns, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
+/* input_mouse_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t input_mouse_call(handle_t ch, bool idl_within, uint64_t idl_t, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
 {
     struct input_mouse_req idl_q;
     struct input_mouse_rep idl_r;
@@ -103,21 +114,29 @@ static inline status_t input_mouse_until(handle_t ch, uint64_t deadline_ns, int1
     idl_q.dy = dy;
     idl_q.wheel = wheel;
     idl_q.buttons = buttons;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* buttons: bit 0 left, 1 right, 2 middle. */
+static inline status_t input_mouse_until(handle_t ch, uint64_t deadline_ns, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
+{
+    return input_mouse_call(ch, false, deadline_ns, dx, dy, wheel, buttons);
+}
+static inline status_t input_mouse_within(handle_t ch, uint64_t timeout_ns, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
+{
+    return input_mouse_call(ch, true, timeout_ns, dx, dy, wheel, buttons);
+}
 static inline status_t input_mouse(handle_t ch, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
 {
-    return input_mouse_until(ch, DEADLINE_NEVER, dx, dy, wheel, buttons);
+    return input_mouse_call(ch, false, DEADLINE_NEVER, dx, dy, wheel, buttons);
 }
 
-/* Raw bytes from a terminal (the serial source): printable text and VT100
- * escape sequences (arrows: ESC [ A..D), CR or LF for Enter, 0x7f or 0x08
- * for Backspace. */
-static inline status_t input_text_until(handle_t ch, uint64_t deadline_ns, uint16_t length, const uint8_t bytes[64])
+/* input_text_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t input_text_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t length, const uint8_t bytes[64])
 {
     struct input_text_req idl_q;
     struct input_text_rep idl_r;
@@ -127,23 +146,31 @@ static inline status_t input_text_until(handle_t ch, uint64_t deadline_ns, uint1
     idl_q.length = length;
     for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
         idl_q.bytes[idl_i] = bytes[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Raw bytes from a terminal (the serial source): printable text and VT100
+ * escape sequences (arrows: ESC [ A..D), CR or LF for Enter, 0x7f or 0x08
+ * for Backspace. */
+static inline status_t input_text_until(handle_t ch, uint64_t deadline_ns, uint16_t length, const uint8_t bytes[64])
+{
+    return input_text_call(ch, false, deadline_ns, length, bytes);
+}
+static inline status_t input_text_within(handle_t ch, uint64_t timeout_ns, uint16_t length, const uint8_t bytes[64])
+{
+    return input_text_call(ch, true, timeout_ns, length, bytes);
+}
 static inline status_t input_text(handle_t ch, uint16_t length, const uint8_t bytes[64])
 {
-    return input_text_until(ch, DEADLINE_NEVER, length, bytes);
+    return input_text_call(ch, false, DEADLINE_NEVER, length, bytes);
 }
 
-/* The source is ready: a keyboard (INPUT_READY_KEYBOARD) or a mouse
- * (INPUT_READY_MOUSE), its USB vendor and product id; its reports flow
- * from now on. hid calls it once per start; the console logs each with
- * the time since the kernel started, so the boot log says when the first
- * keyboard and mouse could be used. */
-static inline status_t input_ready_until(handle_t ch, uint64_t deadline_ns, uint8_t kind, uint16_t vendor, uint16_t product)
+/* input_ready_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t input_ready_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t kind, uint16_t vendor, uint16_t product)
 {
     struct input_ready_req idl_q;
     struct input_ready_rep idl_r;
@@ -153,15 +180,28 @@ static inline status_t input_ready_until(handle_t ch, uint64_t deadline_ns, uint
     idl_q.kind = kind;
     idl_q.vendor = vendor;
     idl_q.product = product;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* The source is ready: a keyboard (INPUT_READY_KEYBOARD) or a mouse
+ * (INPUT_READY_MOUSE), its USB vendor and product id; its reports flow
+ * from now on. hid calls it once per start; the console logs each with
+ * the time since the kernel started, so the boot log says when the first
+ * keyboard and mouse could be used. */
+static inline status_t input_ready_until(handle_t ch, uint64_t deadline_ns, uint8_t kind, uint16_t vendor, uint16_t product)
+{
+    return input_ready_call(ch, false, deadline_ns, kind, vendor, product);
+}
+static inline status_t input_ready_within(handle_t ch, uint64_t timeout_ns, uint8_t kind, uint16_t vendor, uint16_t product)
+{
+    return input_ready_call(ch, true, timeout_ns, kind, vendor, product);
+}
 static inline status_t input_ready(handle_t ch, uint8_t kind, uint16_t vendor, uint16_t product)
 {
-    return input_ready_until(ch, DEADLINE_NEVER, kind, vendor, product);
+    return input_ready_call(ch, false, DEADLINE_NEVER, kind, vendor, product);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -500,21 +540,23 @@ static inline status_t input_serve_one(handle_t ch, const struct input_ops *ops,
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t input_serve(handle_t ch, const struct input_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[INPUT_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[INPUT_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = input_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = input_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

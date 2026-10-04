@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `fsctl` (id 20). Client: fsctl_<method>(ch, args..., &results...)
- * (and fsctl_<method>_until with a deadline) over drv_channel_call, or
+ * (and fsctl_<method>_until with a deadline, _within with a timeout), or
  * fsctl_<method>_send and fsctl_<method>_result without waiting. Server:
  * fill a struct fsctl_ops and run fsctl_serve(ch, &ops, ctx), or
  * fsctl_serve_one / fsctl_dispatch_on for a loop of your own;
@@ -43,6 +43,21 @@ struct fsctl_stats_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
+/* fsctl_stop_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fsctl_stop_call(handle_t ch, bool idl_within, uint64_t idl_t)
+{
+    struct fsctl_stop_req idl_q;
+    struct fsctl_stop_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = FSCTL_STOP;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
 /* Stop serving, in order: every open file is closed with what it wrote
  * flushed, the volume is marked clean and the medium flushed, then this
  * answers (the flush's status) and the service exits 0. A request that came
@@ -51,36 +66,28 @@ struct fsctl_stats_rep {
  * followed by a kill can't promise. */
 static inline status_t fsctl_stop_until(handle_t ch, uint64_t deadline_ns)
 {
-    struct fsctl_stop_req idl_q;
-    struct fsctl_stop_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = FSCTL_STOP;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
+    return fsctl_stop_call(ch, false, deadline_ns);
+}
+static inline status_t fsctl_stop_within(handle_t ch, uint64_t timeout_ns)
+{
+    return fsctl_stop_call(ch, true, timeout_ns);
 }
 static inline status_t fsctl_stop(handle_t ch)
 {
-    return fsctl_stop_until(ch, DEADLINE_NEVER);
+    return fsctl_stop_call(ch, false, DEADLINE_NEVER);
 }
 
-/* What the service has done so far, for tests and diagnostics (it changes
- * nothing): directory entries read (fs.readdir's work: one per entry
- * listed when listings go forward), and its block cache's sector reads
- * answered from a line, lines read from the disk, big reads past it and
- * sectors written that a line held. */
-static inline status_t fsctl_stats_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_entries_read, uint64_t *out_cache_hits, uint64_t *out_cache_fills, uint64_t *out_cache_bypassed, uint64_t *out_cache_updated)
+/* fsctl_stats_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fsctl_stats_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_entries_read, uint64_t *out_cache_hits, uint64_t *out_cache_fills, uint64_t *out_cache_bypassed, uint64_t *out_cache_updated)
 {
     struct fsctl_stats_req idl_q;
     struct fsctl_stats_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = FSCTL_STATS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_entries_read)
@@ -95,9 +102,22 @@ static inline status_t fsctl_stats_until(handle_t ch, uint64_t deadline_ns, uint
         *out_cache_updated = idl_r.cache_updated;
     return idl_st;
 }
+/* What the service has done so far, for tests and diagnostics (it changes
+ * nothing): directory entries read (fs.readdir's work: one per entry
+ * listed when listings go forward), and its block cache's sector reads
+ * answered from a line, lines read from the disk, big reads past it and
+ * sectors written that a line held. */
+static inline status_t fsctl_stats_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_entries_read, uint64_t *out_cache_hits, uint64_t *out_cache_fills, uint64_t *out_cache_bypassed, uint64_t *out_cache_updated)
+{
+    return fsctl_stats_call(ch, false, deadline_ns, out_entries_read, out_cache_hits, out_cache_fills, out_cache_bypassed, out_cache_updated);
+}
+static inline status_t fsctl_stats_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_entries_read, uint64_t *out_cache_hits, uint64_t *out_cache_fills, uint64_t *out_cache_bypassed, uint64_t *out_cache_updated)
+{
+    return fsctl_stats_call(ch, true, timeout_ns, out_entries_read, out_cache_hits, out_cache_fills, out_cache_bypassed, out_cache_updated);
+}
 static inline status_t fsctl_stats(handle_t ch, uint64_t *out_entries_read, uint64_t *out_cache_hits, uint64_t *out_cache_fills, uint64_t *out_cache_bypassed, uint64_t *out_cache_updated)
 {
-    return fsctl_stats_until(ch, DEADLINE_NEVER, out_entries_read, out_cache_hits, out_cache_fills, out_cache_bypassed, out_cache_updated);
+    return fsctl_stats_call(ch, false, DEADLINE_NEVER, out_entries_read, out_cache_hits, out_cache_fills, out_cache_bypassed, out_cache_updated);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -321,21 +341,23 @@ static inline status_t fsctl_serve_one(handle_t ch, const struct fsctl_ops *ops,
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t fsctl_serve(handle_t ch, const struct fsctl_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[FSCTL_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[FSCTL_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = fsctl_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = fsctl_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

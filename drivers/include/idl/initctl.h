@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `initctl` (id 18). Client: initctl_<method>(ch, args..., &results...)
- * (and initctl_<method>_until with a deadline) over drv_channel_call, or
+ * (and initctl_<method>_until with a deadline, _within with a timeout), or
  * initctl_<method>_send and initctl_<method>_result without waiting. Server:
  * fill a struct initctl_ops and run initctl_serve(ch, &ops, ctx), or
  * initctl_serve_one / initctl_dispatch_on for a loop of your own;
@@ -99,6 +99,25 @@ struct initctl_update_offer_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
+/* initctl_kill_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_kill_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t name[32], uint64_t *out_koid)
+{
+    struct initctl_kill_req idl_q;
+    struct initctl_kill_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_KILL;
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_q.name[idl_i] = name[idl_i];
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_koid)
+        *out_koid = idl_r.koid;
+    return idl_st;
+}
 /* Kill the process called `name` (NUL-terminated, no spaces) and answer
  * with its kernel object id once it is dead: a service init runs ("console",
  * "serialin", "devmgr", "bootfs", "mixer", "music", "serve", "logd",
@@ -111,46 +130,62 @@ struct initctl_update_offer_rep {
  * name; ERR_ACCESS_DENIED: "init" itself. */
 static inline status_t initctl_kill_until(handle_t ch, uint64_t deadline_ns, const uint8_t name[32], uint64_t *out_koid)
 {
-    struct initctl_kill_req idl_q;
-    struct initctl_kill_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INITCTL_KILL;
-    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
-        idl_q.name[idl_i] = name[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_koid)
-        *out_koid = idl_r.koid;
-    return idl_st;
+    return initctl_kill_call(ch, false, deadline_ns, name, out_koid);
+}
+static inline status_t initctl_kill_within(handle_t ch, uint64_t timeout_ns, const uint8_t name[32], uint64_t *out_koid)
+{
+    return initctl_kill_call(ch, true, timeout_ns, name, out_koid);
 }
 static inline status_t initctl_kill(handle_t ch, const uint8_t name[32], uint64_t *out_koid)
 {
-    return initctl_kill_until(ch, DEADLINE_NEVER, name, out_koid);
+    return initctl_kill_call(ch, false, DEADLINE_NEVER, name, out_koid);
 }
 
-/* Everything written to /data, and to every /usbN, is on its stick
- * (fs.sync), waiting at most 2 s in all. OK also when there is no /data. */
-static inline status_t initctl_sync_until(handle_t ch, uint64_t deadline_ns)
+/* initctl_sync_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_sync_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct initctl_sync_req idl_q;
     struct initctl_sync_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = INITCTL_SYNC;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Everything written to /data, and to every /usbN, is on its stick
+ * (fs.sync), waiting at most 2 s in all. OK also when there is no /data. */
+static inline status_t initctl_sync_until(handle_t ch, uint64_t deadline_ns)
+{
+    return initctl_sync_call(ch, false, deadline_ns);
+}
+static inline status_t initctl_sync_within(handle_t ch, uint64_t timeout_ns)
+{
+    return initctl_sync_call(ch, true, timeout_ns);
+}
 static inline status_t initctl_sync(handle_t ch)
 {
-    return initctl_sync_until(ch, DEADLINE_NEVER);
+    return initctl_sync_call(ch, false, DEADLINE_NEVER);
 }
 
+/* initctl_reboot_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_reboot_call(handle_t ch, bool idl_within, uint64_t idl_t)
+{
+    struct initctl_reboot_req idl_q;
+    struct initctl_reboot_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_REBOOT;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
 /* Restart: by kexec into a fresh copy of the system (the kernel's stored
  * copy, or /esp's boot/jamos.elf and boot/bootfs.img if they changed since
  * this boot noted them; everything synced, devmgr's drivers stopped, then
@@ -159,22 +194,35 @@ static inline status_t initctl_sync(handle_t ch)
  * (console.blank): nothing is drawn until the next boot's splash. */
 static inline status_t initctl_reboot_until(handle_t ch, uint64_t deadline_ns)
 {
-    struct initctl_reboot_req idl_q;
-    struct initctl_reboot_rep idl_r;
+    return initctl_reboot_call(ch, false, deadline_ns);
+}
+static inline status_t initctl_reboot_within(handle_t ch, uint64_t timeout_ns)
+{
+    return initctl_reboot_call(ch, true, timeout_ns);
+}
+static inline status_t initctl_reboot(handle_t ch)
+{
+    return initctl_reboot_call(ch, false, DEADLINE_NEVER);
+}
+
+/* initctl_mount_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_mount_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[16], uint8_t writable)
+{
+    struct initctl_mount_req idl_q;
+    struct initctl_mount_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
-    idl_q.ordinal = INITCTL_REBOOT;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    idl_q.ordinal = INITCTL_MOUNT;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_q.path[idl_i] = path[idl_i];
+    idl_q.writable = writable;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
-static inline status_t initctl_reboot(handle_t ch)
-{
-    return initctl_reboot_until(ch, DEADLINE_NEVER);
-}
-
 /* Make the mount `path` ("/usb0"; NUL-terminated) writable (1) or read-only
  * again (0): devmgr restarts its filesystem service on a `block` channel
  * opened that way (DEVMGR_REMOUNT), so the mount goes and comes back, and
@@ -185,84 +233,90 @@ static inline status_t initctl_reboot(handle_t ch)
  * ERR_BAD_STATE: its service isn't serving; ERR_INVALID_ARGS: not a path. */
 static inline status_t initctl_mount_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[16], uint8_t writable)
 {
-    struct initctl_mount_req idl_q;
-    struct initctl_mount_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INITCTL_MOUNT;
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    idl_q.writable = writable;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
+    return initctl_mount_call(ch, false, deadline_ns, path, writable);
+}
+static inline status_t initctl_mount_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[16], uint8_t writable)
+{
+    return initctl_mount_call(ch, true, timeout_ns, path, writable);
 }
 static inline status_t initctl_mount(handle_t ch, const uint8_t path[16], uint8_t writable)
 {
-    return initctl_mount_until(ch, DEADLINE_NEVER, path, writable);
+    return initctl_mount_call(ch, false, DEADLINE_NEVER, path, writable);
 }
 
-/* The shell is up: it has written its banner and reads its keys. init
- * tells the boot splash (bin/splash) to hand the screen back to the
- * console; nothing to do if no splash is waiting (a later shell's call). */
-static inline status_t initctl_shell_ready_until(handle_t ch, uint64_t deadline_ns)
+/* initctl_shell_ready_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_shell_ready_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct initctl_shell_ready_req idl_q;
     struct initctl_shell_ready_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = INITCTL_SHELL_READY;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* The shell is up: it has written its banner and reads its keys. init
+ * tells the boot splash (bin/splash) to hand the screen back to the
+ * console; nothing to do if no splash is waiting (a later shell's call). */
+static inline status_t initctl_shell_ready_until(handle_t ch, uint64_t deadline_ns)
+{
+    return initctl_shell_ready_call(ch, false, deadline_ns);
+}
+static inline status_t initctl_shell_ready_within(handle_t ch, uint64_t timeout_ns)
+{
+    return initctl_shell_ready_call(ch, true, timeout_ns);
+}
 static inline status_t initctl_shell_ready(handle_t ch)
 {
-    return initctl_shell_ready_until(ch, DEADLINE_NEVER);
+    return initctl_shell_ready_call(ch, false, DEADLINE_NEVER);
 }
 
-/* A reset through the firmware, never kexec (the shell's `reboot -f`):
- * sync, the log flushed, devmgr's drivers stopped in order (as for
- * reboot), then the kernel's reset. Answers only if the reset failed. */
-static inline status_t initctl_reboot_firmware_until(handle_t ch, uint64_t deadline_ns)
+/* initctl_reboot_firmware_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_reboot_firmware_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct initctl_reboot_firmware_req idl_q;
     struct initctl_reboot_firmware_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = INITCTL_REBOOT_FIRMWARE;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* A reset through the firmware, never kexec (the shell's `reboot -f`):
+ * sync, the log flushed, devmgr's drivers stopped in order (as for
+ * reboot), then the kernel's reset. Answers only if the reset failed. */
+static inline status_t initctl_reboot_firmware_until(handle_t ch, uint64_t deadline_ns)
+{
+    return initctl_reboot_firmware_call(ch, false, deadline_ns);
+}
+static inline status_t initctl_reboot_firmware_within(handle_t ch, uint64_t timeout_ns)
+{
+    return initctl_reboot_firmware_call(ch, true, timeout_ns);
+}
 static inline status_t initctl_reboot_firmware(handle_t ch)
 {
-    return initctl_reboot_firmware_until(ch, DEADLINE_NEVER);
+    return initctl_reboot_firmware_call(ch, false, DEADLINE_NEVER);
 }
 
-/* Read /esp's boot/jamos.elf and boot/bootfs.img now and make them the
- * kernel's stored copy (kexec_load), the one `reboot` and a panic start:
- * a freshly flashed stick is loaded before the reboot, which then reads
- * nothing. Answers their sizes and how long the read took, once loaded.
- * ERR_NOT_FOUND: no /esp, or not both files; the kernel's kexec_load
- * errors (ERR_NOT_SUPPORTED: no stored kernel's region, crashkernel=0;
- * ERR_INVALID_ARGS: not a kernel and a boot image); the stored copy is
- * then unchanged. The shell's channel only. */
-static inline status_t initctl_kernel_load_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms)
+/* initctl_kernel_load_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_kernel_load_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms)
 {
     struct initctl_kernel_load_req idl_q;
     struct initctl_kernel_load_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = INITCTL_KERNEL_LOAD;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_kernel_bytes)
@@ -273,11 +327,54 @@ static inline status_t initctl_kernel_load_until(handle_t ch, uint64_t deadline_
         *out_read_ms = idl_r.read_ms;
     return idl_st;
 }
+/* Read /esp's boot/jamos.elf and boot/bootfs.img now and make them the
+ * kernel's stored copy (kexec_load), the one `reboot` and a panic start:
+ * a freshly flashed stick is loaded before the reboot, which then reads
+ * nothing. Answers their sizes and how long the read took, once loaded.
+ * ERR_NOT_FOUND: no /esp, or not both files; the kernel's kexec_load
+ * errors (ERR_NOT_SUPPORTED: no stored kernel's region, crashkernel=0;
+ * ERR_INVALID_ARGS: not a kernel and a boot image); the stored copy is
+ * then unchanged. The shell's channel only. */
+static inline status_t initctl_kernel_load_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms)
+{
+    return initctl_kernel_load_call(ch, false, deadline_ns, out_kernel_bytes, out_bootfs_bytes, out_read_ms);
+}
+static inline status_t initctl_kernel_load_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms)
+{
+    return initctl_kernel_load_call(ch, true, timeout_ns, out_kernel_bytes, out_bootfs_bytes, out_read_ms);
+}
 static inline status_t initctl_kernel_load(handle_t ch, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms)
 {
-    return initctl_kernel_load_until(ch, DEADLINE_NEVER, out_kernel_bytes, out_bootfs_bytes, out_read_ms);
+    return initctl_kernel_load_call(ch, false, DEADLINE_NEVER, out_kernel_bytes, out_bootfs_bytes, out_read_ms);
 }
 
+/* initctl_update_offer_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_update_offer_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_offer)
+{
+    struct initctl_update_offer_req idl_q;
+    struct initctl_update_offer_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_UPDATE_OFFER;
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_offer)
+            *out_offer = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    return idl_st;
+}
 /* A channel for one offer of a fetched build (<update.h>): the caller
  * writes one struct update_offer on it with the kernel's and the boot
  * image's VMOs; init checks the manifest's signature with the update key
@@ -298,32 +395,15 @@ static inline status_t initctl_kernel_load(handle_t ch, uint64_t *out_kernel_byt
  * bin/update, the fetcher, which holds nothing else of init's. */
 static inline status_t initctl_update_offer_until(handle_t ch, uint64_t deadline_ns, handle_t *out_offer)
 {
-    struct initctl_update_offer_req idl_q;
-    struct initctl_update_offer_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INITCTL_UPDATE_OFFER;
-    handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && idl_rhn != 1)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK)
-        idl_close_all(idl_rh, idl_rhn);
-    if (idl_st == OK) {
-        if (out_offer)
-            *out_offer = idl_rh[0];
-        else
-            drv_handle_close(idl_rh[0]);
-    }
-    return idl_st;
+    return initctl_update_offer_call(ch, false, deadline_ns, out_offer);
+}
+static inline status_t initctl_update_offer_within(handle_t ch, uint64_t timeout_ns, handle_t *out_offer)
+{
+    return initctl_update_offer_call(ch, true, timeout_ns, out_offer);
 }
 static inline status_t initctl_update_offer(handle_t ch, handle_t *out_offer)
 {
-    return initctl_update_offer_until(ch, DEADLINE_NEVER, out_offer);
+    return initctl_update_offer_call(ch, false, DEADLINE_NEVER, out_offer);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -933,21 +1013,23 @@ static inline status_t initctl_serve_one(handle_t ch, const struct initctl_ops *
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t initctl_serve(handle_t ch, const struct initctl_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[INITCTL_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[INITCTL_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = initctl_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = initctl_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

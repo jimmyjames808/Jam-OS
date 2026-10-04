@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `console` (id 12). Client: console_<method>(ch, args..., &results...)
- * (and console_<method>_until with a deadline) over drv_channel_call, or
+ * (and console_<method>_until with a deadline, _within with a timeout), or
  * console_<method>_send and console_<method>_result without waiting. Server:
  * fill a struct console_ops and run console_serve(ch, &ops, ctx), or
  * console_serve_one / console_dispatch_on for a loop of your own;
@@ -116,8 +116,9 @@ struct console_show_log_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* Write text (UTF-8; \n, \r, \b, \t and ESC [ ... m colours understood). */
-static inline status_t console_write_until(handle_t ch, uint64_t deadline_ns, uint16_t length, const uint8_t text[2048])
+/* console_write_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_write_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t length, const uint8_t text[2048])
 {
     struct console_write_req idl_q;
     struct console_write_rep idl_r;
@@ -127,26 +128,37 @@ static inline status_t console_write_until(handle_t ch, uint64_t deadline_ns, ui
     idl_q.length = length;
     for (uint32_t idl_i = 0; idl_i < 2048; idl_i++)
         idl_q.text[idl_i] = text[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Write text (UTF-8; \n, \r, \b, \t and ESC [ ... m colours understood). */
+static inline status_t console_write_until(handle_t ch, uint64_t deadline_ns, uint16_t length, const uint8_t text[2048])
+{
+    return console_write_call(ch, false, deadline_ns, length, text);
+}
+static inline status_t console_write_within(handle_t ch, uint64_t timeout_ns, uint16_t length, const uint8_t text[2048])
+{
+    return console_write_call(ch, true, timeout_ns, length, text);
+}
 static inline status_t console_write(handle_t ch, uint16_t length, const uint8_t text[2048])
 {
-    return console_write_until(ch, DEADLINE_NEVER, length, text);
+    return console_write_call(ch, false, DEADLINE_NEVER, length, text);
 }
 
-static inline status_t console_size_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_cols, uint16_t *out_rows)
+/* console_size_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_size_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t *out_cols, uint16_t *out_rows)
 {
     struct console_size_req idl_q;
     struct console_size_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = CONSOLE_SIZE;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_cols)
@@ -155,34 +167,50 @@ static inline status_t console_size_until(handle_t ch, uint64_t deadline_ns, uin
         *out_rows = idl_r.rows;
     return idl_st;
 }
+static inline status_t console_size_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_cols, uint16_t *out_rows)
+{
+    return console_size_call(ch, false, deadline_ns, out_cols, out_rows);
+}
+static inline status_t console_size_within(handle_t ch, uint64_t timeout_ns, uint16_t *out_cols, uint16_t *out_rows)
+{
+    return console_size_call(ch, true, timeout_ns, out_cols, out_rows);
+}
 static inline status_t console_size(handle_t ch, uint16_t *out_cols, uint16_t *out_rows)
 {
-    return console_size_until(ch, DEADLINE_NEVER, out_cols, out_rows);
+    return console_size_call(ch, false, DEADLINE_NEVER, out_cols, out_rows);
 }
 
-static inline status_t console_clear_until(handle_t ch, uint64_t deadline_ns)
+/* console_clear_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_clear_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct console_clear_req idl_q;
     struct console_clear_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = CONSOLE_CLEAR;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+static inline status_t console_clear_until(handle_t ch, uint64_t deadline_ns)
+{
+    return console_clear_call(ch, false, deadline_ns);
+}
+static inline status_t console_clear_within(handle_t ch, uint64_t timeout_ns)
+{
+    return console_clear_call(ch, true, timeout_ns);
+}
 static inline status_t console_clear(handle_t ch)
 {
-    return console_clear_until(ch, DEADLINE_NEVER);
+    return console_clear_call(ch, false, DEADLINE_NEVER);
 }
 
-/* A channel on which the console sends this client the keys typed while it
- * is the focused client (the most recent open_keys wins; closing the
- * channel gives focus back). Each message is one struct input_key_event
- * (<jam/abi.h>). */
-static inline status_t console_open_keys_until(handle_t ch, uint64_t deadline_ns, handle_t *out_keys)
+/* console_open_keys_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_open_keys_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_keys)
 {
     struct console_open_keys_req idl_q;
     struct console_open_keys_rep idl_r;
@@ -191,8 +219,8 @@ static inline status_t console_open_keys_until(handle_t ch, uint64_t deadline_ns
     idl_q.ordinal = CONSOLE_OPEN_KEYS;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -207,16 +235,26 @@ static inline status_t console_open_keys_until(handle_t ch, uint64_t deadline_ns
     }
     return idl_st;
 }
+/* A channel on which the console sends this client the keys typed while it
+ * is the focused client (the most recent open_keys wins; closing the
+ * channel gives focus back). Each message is one struct input_key_event
+ * (<jam/abi.h>). */
+static inline status_t console_open_keys_until(handle_t ch, uint64_t deadline_ns, handle_t *out_keys)
+{
+    return console_open_keys_call(ch, false, deadline_ns, out_keys);
+}
+static inline status_t console_open_keys_within(handle_t ch, uint64_t timeout_ns, handle_t *out_keys)
+{
+    return console_open_keys_call(ch, true, timeout_ns, out_keys);
+}
 static inline status_t console_open_keys(handle_t ch, handle_t *out_keys)
 {
-    return console_open_keys_until(ch, DEADLINE_NEVER, out_keys);
+    return console_open_keys_call(ch, false, DEADLINE_NEVER, out_keys);
 }
 
-/* A new input source: the console serves the `input` protocol on its end;
- * the caller (devmgr, for a HID driver; or the serial source) gets the
- * other end and hands it to the source, which calls `input` on it. ADMIN
- * channels only (see new_client). */
-static inline status_t console_connect_input_until(handle_t ch, uint64_t deadline_ns, handle_t *out_source)
+/* console_connect_input_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_connect_input_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_source)
 {
     struct console_connect_input_req idl_q;
     struct console_connect_input_rep idl_r;
@@ -225,8 +263,8 @@ static inline status_t console_connect_input_until(handle_t ch, uint64_t deadlin
     idl_q.ordinal = CONSOLE_CONNECT_INPUT;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -241,19 +279,26 @@ static inline status_t console_connect_input_until(handle_t ch, uint64_t deadlin
     }
     return idl_st;
 }
+/* A new input source: the console serves the `input` protocol on its end;
+ * the caller (devmgr, for a HID driver; or the serial source) gets the
+ * other end and hands it to the source, which calls `input` on it. ADMIN
+ * channels only (see new_client). */
+static inline status_t console_connect_input_until(handle_t ch, uint64_t deadline_ns, handle_t *out_source)
+{
+    return console_connect_input_call(ch, false, deadline_ns, out_source);
+}
+static inline status_t console_connect_input_within(handle_t ch, uint64_t timeout_ns, handle_t *out_source)
+{
+    return console_connect_input_call(ch, true, timeout_ns, out_source);
+}
 static inline status_t console_connect_input(handle_t ch, handle_t *out_source)
 {
-    return console_connect_input_until(ch, DEADLINE_NEVER, out_source);
+    return console_connect_input_call(ch, false, DEADLINE_NEVER, out_source);
 }
 
-/* Lend the screen to a program that draws on it itself (the shell's `demo`):
- * the framebuffer as a write-combining VMO (READ | WRITE | MAP, not
- * duplicable) with its geometry (<jam/abi.h> struct fb_info's fields), and
- * a lease channel. The console stops drawing (it keeps its text, the kernel
- * log and the serial mirror going) until the lease's peer closes: the
- * borrower closing it, or dying; then it redraws the whole screen. One
- * lease at a time: ERR_BAD_STATE while lent, ERR_NOT_FOUND with no screen. */
-static inline status_t console_lend_screen_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
+/* console_lend_screen_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_lend_screen_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
 {
     struct console_lend_screen_req idl_q;
     struct console_lend_screen_rep idl_r;
@@ -262,8 +307,8 @@ static inline status_t console_lend_screen_until(handle_t ch, uint64_t deadline_
     idl_q.ordinal = CONSOLE_LEND_SCREEN;
     handle_t idl_rh[2];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 2, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               2, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 2)
@@ -298,23 +343,29 @@ static inline status_t console_lend_screen_until(handle_t ch, uint64_t deadline_
         *out_size = idl_r.size;
     return idl_st;
 }
+/* Lend the screen to a program that draws on it itself (the shell's `demo`):
+ * the framebuffer as a write-combining VMO (READ | WRITE | MAP, not
+ * duplicable) with its geometry (<jam/abi.h> struct fb_info's fields), and
+ * a lease channel. The console stops drawing (it keeps its text, the kernel
+ * log and the serial mirror going) until the lease's peer closes: the
+ * borrower closing it, or dying; then it redraws the whole screen. One
+ * lease at a time: ERR_BAD_STATE while lent, ERR_NOT_FOUND with no screen. */
+static inline status_t console_lend_screen_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
+{
+    return console_lend_screen_call(ch, false, deadline_ns, out_width, out_height, out_pitch, out_red_shift, out_green_shift, out_blue_shift, out_size, out_screen, out_lease);
+}
+static inline status_t console_lend_screen_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
+{
+    return console_lend_screen_call(ch, true, timeout_ns, out_width, out_height, out_pitch, out_red_shift, out_green_shift, out_blue_shift, out_size, out_screen, out_lease);
+}
 static inline status_t console_lend_screen(handle_t ch, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
 {
-    return console_lend_screen_until(ch, DEADLINE_NEVER, out_width, out_height, out_pitch, out_red_shift, out_green_shift, out_blue_shift, out_size, out_screen, out_lease);
+    return console_lend_screen_call(ch, false, DEADLINE_NEVER, out_width, out_height, out_pitch, out_red_shift, out_green_shift, out_blue_shift, out_size, out_screen, out_lease);
 }
 
-/* A new client channel with less authority. Levels: 0 ADMIN
- * (the channels init hands the console at start: init's, and devmgr's
- * copy), 1 SHELL (no connect_input), 2 PROGRAM (write, size, clear,
- * open_keys, lend_screen: what the shell gives a program it runs; the
- * shell kills the program's job when it ends, so the channel lives only
- * while the program is in the foreground). A caller may only make a level
- * above its own: ERR_ACCESS_DENIED otherwise, ERR_INVALID_ARGS for a level
- * > 2. connect_input needs ADMIN (every input source is devmgr's or
- * init's, so Ctrl+Alt+Del only comes from real input). While a PROGRAM
- * client has the focus, Ctrl+C also goes to the SHELL or ADMIN client
- * below it (the shell that ran it kills it): a program can't trap the keys. */
-static inline status_t console_new_client_until(handle_t ch, uint64_t deadline_ns, uint8_t level, handle_t *out_client)
+/* console_new_client_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_new_client_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t level, handle_t *out_client)
 {
     struct console_new_client_req idl_q;
     struct console_new_client_rep idl_r;
@@ -324,8 +375,8 @@ static inline status_t console_new_client_until(handle_t ch, uint64_t deadline_n
     idl_q.level = level;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -340,17 +391,33 @@ static inline status_t console_new_client_until(handle_t ch, uint64_t deadline_n
     }
     return idl_st;
 }
+/* A new client channel with less authority. Levels: 0 ADMIN
+ * (the channels init hands the console at start: init's, and devmgr's
+ * copy), 1 SHELL (no connect_input), 2 PROGRAM (write, size, clear,
+ * open_keys, lend_screen: what the shell gives a program it runs; the
+ * shell kills the program's job when it ends, so the channel lives only
+ * while the program is in the foreground). A caller may only make a level
+ * above its own: ERR_ACCESS_DENIED otherwise, ERR_INVALID_ARGS for a level
+ * > 2. connect_input needs ADMIN (every input source is devmgr's or
+ * init's, so Ctrl+Alt+Del only comes from real input). While a PROGRAM
+ * client has the focus, Ctrl+C also goes to the SHELL or ADMIN client
+ * below it (the shell that ran it kills it): a program can't trap the keys. */
+static inline status_t console_new_client_until(handle_t ch, uint64_t deadline_ns, uint8_t level, handle_t *out_client)
+{
+    return console_new_client_call(ch, false, deadline_ns, level, out_client);
+}
+static inline status_t console_new_client_within(handle_t ch, uint64_t timeout_ns, uint8_t level, handle_t *out_client)
+{
+    return console_new_client_call(ch, true, timeout_ns, level, out_client);
+}
 static inline status_t console_new_client(handle_t ch, uint8_t level, handle_t *out_client)
 {
-    return console_new_client_until(ch, DEADLINE_NEVER, level, out_client);
+    return console_new_client_call(ch, false, DEADLINE_NEVER, level, out_client);
 }
 
-/* Blank the screen (on 1): fill it with the boot splash's background and
- * draw nothing more (the text, the kernel log and the serial mirror keep
- * going), or draw again (on 0). For a reboot by kexec: the screen stays
- * that colour until the next boot's splash. ADMIN and SHELL channels
- * only: ERR_ACCESS_DENIED for a PROGRAM one. */
-static inline status_t console_blank_until(handle_t ch, uint64_t deadline_ns, uint8_t on)
+/* console_blank_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_blank_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t on)
 {
     struct console_blank_req idl_q;
     struct console_blank_rep idl_r;
@@ -358,17 +425,48 @@ static inline status_t console_blank_until(handle_t ch, uint64_t deadline_ns, ui
     idl_q.txid = 0;
     idl_q.ordinal = CONSOLE_BLANK;
     idl_q.on = on;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Blank the screen (on 1): fill it with the boot splash's background and
+ * draw nothing more (the text, the kernel log and the serial mirror keep
+ * going), or draw again (on 0). For a reboot by kexec: the screen stays
+ * that colour until the next boot's splash. ADMIN and SHELL channels
+ * only: ERR_ACCESS_DENIED for a PROGRAM one. */
+static inline status_t console_blank_until(handle_t ch, uint64_t deadline_ns, uint8_t on)
+{
+    return console_blank_call(ch, false, deadline_ns, on);
+}
+static inline status_t console_blank_within(handle_t ch, uint64_t timeout_ns, uint8_t on)
+{
+    return console_blank_call(ch, true, timeout_ns, on);
+}
 static inline status_t console_blank(handle_t ch, uint8_t on)
 {
-    return console_blank_until(ch, DEADLINE_NEVER, on);
+    return console_blank_call(ch, false, DEADLINE_NEVER, on);
 }
 
+/* console_show_log_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_show_log_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t on, const uint8_t only[32])
+{
+    struct console_show_log_req idl_q;
+    struct console_show_log_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = CONSOLE_SHOW_LOG;
+    idl_q.on = on;
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_q.only[idl_i] = only[idl_i];
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
 /* Ask for the kernel log on the screen (on 1), or stop asking (on 0). A
  * console started with the argument "nolog" (init's, on a plain boot with
  * the splash) keeps the log off the screen but for a few notices, and
@@ -382,23 +480,15 @@ static inline status_t console_blank(handle_t ch, uint8_t on)
  * SHELL channels only: ERR_ACCESS_DENIED for a PROGRAM one. */
 static inline status_t console_show_log_until(handle_t ch, uint64_t deadline_ns, uint8_t on, const uint8_t only[32])
 {
-    struct console_show_log_req idl_q;
-    struct console_show_log_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = CONSOLE_SHOW_LOG;
-    idl_q.on = on;
-    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
-        idl_q.only[idl_i] = only[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
+    return console_show_log_call(ch, false, deadline_ns, on, only);
+}
+static inline status_t console_show_log_within(handle_t ch, uint64_t timeout_ns, uint8_t on, const uint8_t only[32])
+{
+    return console_show_log_call(ch, true, timeout_ns, on, only);
 }
 static inline status_t console_show_log(handle_t ch, uint8_t on, const uint8_t only[32])
 {
-    return console_show_log_until(ch, DEADLINE_NEVER, on, only);
+    return console_show_log_call(ch, false, DEADLINE_NEVER, on, only);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -1158,21 +1248,23 @@ static inline status_t console_serve_one(handle_t ch, const struct console_ops *
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t console_serve(handle_t ch, const struct console_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[CONSOLE_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[CONSOLE_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = console_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = console_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

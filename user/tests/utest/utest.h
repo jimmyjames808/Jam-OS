@@ -109,6 +109,11 @@ bool t_idl_answer_later(void);
 bool t_idl_later_blocking_clients(void);
 bool t_idl_later_handles(void);
 bool t_idl_async_through_port(void);
+/* idlserve.c: the generated server loop (on channel_reply_wait) and the
+ * generated clients' timeouts (_within), on the test protocol null. */
+bool t_idl_serve_reply_wait(void);
+bool t_idl_serve_gone_client(void);
+bool t_idl_within_times_out(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;

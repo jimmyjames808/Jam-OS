@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `dns` (id 30). Client: dns_<method>(ch, args..., &results...)
- * (and dns_<method>_until with a deadline) over drv_channel_call, or
+ * (and dns_<method>_until with a deadline, _within with a timeout), or
  * dns_<method>_send and dns_<method>_result without waiting. Server:
  * fill a struct dns_ops and run dns_serve(ch, &ops, ctx), or
  * dns_serve_one / dns_dispatch_on for a loop of your own;
@@ -37,18 +37,9 @@ struct dns_resolve_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* On an opener's channel: the IPv4 addresses of `name` (NUL-terminated in
- * its 256 bytes; a host name, or a dotted IPv4 address, answered as it
- * is), at most four, and how many seconds the answer may be kept (`ttl`).
- * Answered when the answer comes, from the cache at once. Errors:
- * ERR_NOT_FOUND (no such name, or it has no IPv4 address), ERR_TIMED_OUT
- * (no server answered within the resolver's 10 s, or timeout_ms passed:
- * 1..60000), ERR_IO (the servers failed), ERR_NOT_SUPPORTED (the answer
- * needs TCP), ERR_OUT_OF_RANGE (more than 8 CNAMEs); at once:
- * ERR_INVALID_ARGS (not a name, or no NUL; timeout_ms out of range),
- * ERR_BAD_STATE (no DNS servers yet: see `net`), ERR_NO_RESOURCES (too
- * many in flight). */
-static inline status_t dns_resolve_until(handle_t ch, uint64_t deadline_ns, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
+/* dns_resolve_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t dns_resolve_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
 {
     struct dns_resolve_req idl_q;
     struct dns_resolve_rep idl_r;
@@ -58,8 +49,8 @@ static inline status_t dns_resolve_until(handle_t ch, uint64_t deadline_ns, cons
     for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
         idl_q.name[idl_i] = name[idl_i];
     idl_q.timeout_ms = timeout_ms;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_count)
@@ -76,9 +67,28 @@ static inline status_t dns_resolve_until(handle_t ch, uint64_t deadline_ns, cons
         *out_ttl = idl_r.ttl;
     return idl_st;
 }
+/* On an opener's channel: the IPv4 addresses of `name` (NUL-terminated in
+ * its 256 bytes; a host name, or a dotted IPv4 address, answered as it
+ * is), at most four, and how many seconds the answer may be kept (`ttl`).
+ * Answered when the answer comes, from the cache at once. Errors:
+ * ERR_NOT_FOUND (no such name, or it has no IPv4 address), ERR_TIMED_OUT
+ * (no server answered within the resolver's 10 s, or timeout_ms passed:
+ * 1..60000), ERR_IO (the servers failed), ERR_NOT_SUPPORTED (the answer
+ * needs TCP), ERR_OUT_OF_RANGE (more than 8 CNAMEs); at once:
+ * ERR_INVALID_ARGS (not a name, or no NUL; timeout_ms out of range),
+ * ERR_BAD_STATE (no DNS servers yet: see `net`), ERR_NO_RESOURCES (too
+ * many in flight). */
+static inline status_t dns_resolve_until(handle_t ch, uint64_t deadline_ns, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
+{
+    return dns_resolve_call(ch, false, deadline_ns, name, timeout_ms, out_count, out_addr0, out_addr1, out_addr2, out_addr3, out_ttl);
+}
+static inline status_t dns_resolve_within(handle_t ch, uint64_t timeout_ns, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
+{
+    return dns_resolve_call(ch, true, timeout_ns, name, timeout_ms, out_count, out_addr0, out_addr1, out_addr2, out_addr3, out_ttl);
+}
 static inline status_t dns_resolve(handle_t ch, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
 {
-    return dns_resolve_until(ch, DEADLINE_NEVER, name, timeout_ms, out_count, out_addr0, out_addr1, out_addr2, out_addr3, out_ttl);
+    return dns_resolve_call(ch, false, DEADLINE_NEVER, name, timeout_ms, out_count, out_addr0, out_addr1, out_addr2, out_addr3, out_ttl);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -251,21 +261,23 @@ static inline status_t dns_serve_one(handle_t ch, const struct dns_ops *ops, voi
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t dns_serve(handle_t ch, const struct dns_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[DNS_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[DNS_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = dns_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = dns_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

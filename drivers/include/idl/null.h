@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `null` (id 1). Client: null_<method>(ch, args..., &results...)
- * (and null_<method>_until with a deadline) over drv_channel_call, or
+ * (and null_<method>_until with a deadline, _within with a timeout), or
  * null_<method>_send and null_<method>_result without waiting. Server:
  * fill a struct null_ops and run null_serve(ch, &ops, ctx), or
  * null_serve_one / null_dispatch_on for a loop of your own;
@@ -66,7 +66,9 @@ struct null_make_vmo_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-static inline status_t null_ping_until(handle_t ch, uint64_t deadline_ns, uint64_t value, uint64_t *out_value)
+/* null_ping_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t null_ping_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t value, uint64_t *out_value)
 {
     struct null_ping_req idl_q;
     struct null_ping_rep idl_r;
@@ -74,20 +76,30 @@ static inline status_t null_ping_until(handle_t ch, uint64_t deadline_ns, uint64
     idl_q.txid = 0;
     idl_q.ordinal = NULL_PING;
     idl_q.value = value;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_value)
         *out_value = idl_r.value;
     return idl_st;
 }
+static inline status_t null_ping_until(handle_t ch, uint64_t deadline_ns, uint64_t value, uint64_t *out_value)
+{
+    return null_ping_call(ch, false, deadline_ns, value, out_value);
+}
+static inline status_t null_ping_within(handle_t ch, uint64_t timeout_ns, uint64_t value, uint64_t *out_value)
+{
+    return null_ping_call(ch, true, timeout_ns, value, out_value);
+}
 static inline status_t null_ping(handle_t ch, uint64_t value, uint64_t *out_value)
 {
-    return null_ping_until(ch, DEADLINE_NEVER, value, out_value);
+    return null_ping_call(ch, false, DEADLINE_NEVER, value, out_value);
 }
 
-static inline status_t null_add_until(handle_t ch, uint64_t deadline_ns, uint32_t a, uint32_t b, uint32_t *out_sum)
+/* null_add_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t null_add_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t a, uint32_t b, uint32_t *out_sum)
 {
     struct null_add_req idl_q;
     struct null_add_rep idl_r;
@@ -96,21 +108,30 @@ static inline status_t null_add_until(handle_t ch, uint64_t deadline_ns, uint32_
     idl_q.ordinal = NULL_ADD;
     idl_q.a = a;
     idl_q.b = b;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_sum)
         *out_sum = idl_r.sum;
     return idl_st;
 }
+static inline status_t null_add_until(handle_t ch, uint64_t deadline_ns, uint32_t a, uint32_t b, uint32_t *out_sum)
+{
+    return null_add_call(ch, false, deadline_ns, a, b, out_sum);
+}
+static inline status_t null_add_within(handle_t ch, uint64_t timeout_ns, uint32_t a, uint32_t b, uint32_t *out_sum)
+{
+    return null_add_call(ch, true, timeout_ns, a, b, out_sum);
+}
 static inline status_t null_add(handle_t ch, uint32_t a, uint32_t b, uint32_t *out_sum)
 {
-    return null_add_until(ch, DEADLINE_NEVER, a, b, out_sum);
+    return null_add_call(ch, false, DEADLINE_NEVER, a, b, out_sum);
 }
 
-/* A fixed-size byte array each way: the reply is the request reversed. */
-static inline status_t null_reverse_until(handle_t ch, uint64_t deadline_ns, const uint8_t data[16], uint8_t out_data[16])
+/* null_reverse_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t null_reverse_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t data[16], uint8_t out_data[16])
 {
     struct null_reverse_req idl_q;
     struct null_reverse_rep idl_r;
@@ -119,23 +140,31 @@ static inline status_t null_reverse_until(handle_t ch, uint64_t deadline_ns, con
     idl_q.ordinal = NULL_REVERSE;
     for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
         idl_q.data[idl_i] = data[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     for (uint32_t idl_i = 0; idl_st == OK && out_data && idl_i < 16; idl_i++)
         out_data[idl_i] = idl_r.data[idl_i];
     return idl_st;
 }
+/* A fixed-size byte array each way: the reply is the request reversed. */
+static inline status_t null_reverse_until(handle_t ch, uint64_t deadline_ns, const uint8_t data[16], uint8_t out_data[16])
+{
+    return null_reverse_call(ch, false, deadline_ns, data, out_data);
+}
+static inline status_t null_reverse_within(handle_t ch, uint64_t timeout_ns, const uint8_t data[16], uint8_t out_data[16])
+{
+    return null_reverse_call(ch, true, timeout_ns, data, out_data);
+}
 static inline status_t null_reverse(handle_t ch, const uint8_t data[16], uint8_t out_data[16])
 {
-    return null_reverse_until(ch, DEADLINE_NEVER, data, out_data);
+    return null_reverse_call(ch, false, DEADLINE_NEVER, data, out_data);
 }
 
-/* A handle result: a new VMO of `size` bytes (1..65536) whose first
- * byte is `fill`, and its size back. size 0 or too big: ERR_INVALID_ARGS
- * and no handle. */
-static inline status_t null_make_vmo_until(handle_t ch, uint64_t deadline_ns, uint32_t size, uint8_t fill, handle_t *out_vmo, uint64_t *out_size_back)
+/* null_make_vmo_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t null_make_vmo_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t size, uint8_t fill, handle_t *out_vmo, uint64_t *out_size_back)
 {
     struct null_make_vmo_req idl_q;
     struct null_make_vmo_rep idl_r;
@@ -146,8 +175,8 @@ static inline status_t null_make_vmo_until(handle_t ch, uint64_t deadline_ns, ui
     idl_q.fill = fill;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -164,9 +193,20 @@ static inline status_t null_make_vmo_until(handle_t ch, uint64_t deadline_ns, ui
         *out_size_back = idl_r.size_back;
     return idl_st;
 }
+/* A handle result: a new VMO of `size` bytes (1..65536) whose first
+ * byte is `fill`, and its size back. size 0 or too big: ERR_INVALID_ARGS
+ * and no handle. */
+static inline status_t null_make_vmo_until(handle_t ch, uint64_t deadline_ns, uint32_t size, uint8_t fill, handle_t *out_vmo, uint64_t *out_size_back)
+{
+    return null_make_vmo_call(ch, false, deadline_ns, size, fill, out_vmo, out_size_back);
+}
+static inline status_t null_make_vmo_within(handle_t ch, uint64_t timeout_ns, uint32_t size, uint8_t fill, handle_t *out_vmo, uint64_t *out_size_back)
+{
+    return null_make_vmo_call(ch, true, timeout_ns, size, fill, out_vmo, out_size_back);
+}
 static inline status_t null_make_vmo(handle_t ch, uint32_t size, uint8_t fill, handle_t *out_vmo, uint64_t *out_size_back)
 {
-    return null_make_vmo_until(ch, DEADLINE_NEVER, size, fill, out_vmo, out_size_back);
+    return null_make_vmo_call(ch, false, DEADLINE_NEVER, size, fill, out_vmo, out_size_back);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -532,21 +572,23 @@ static inline status_t null_serve_one(handle_t ch, const struct null_ops *ops, v
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t null_serve(handle_t ch, const struct null_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[NULL_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[NULL_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = null_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = null_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

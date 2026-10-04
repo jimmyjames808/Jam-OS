@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `hda` (id 21). Client: hda_<method>(ch, args..., &results...)
- * (and hda_<method>_until with a deadline) over drv_channel_call, or
+ * (and hda_<method>_until with a deadline, _within with a timeout), or
  * hda_<method>_send and hda_<method>_result without waiting. Server:
  * fill a struct hda_ops and run hda_serve(ch, &ops, ctx), or
  * hda_serve_one / hda_dispatch_on for a loop of your own;
@@ -168,10 +168,9 @@ struct hda_query_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* The dump, read from the codecs now: the same lines the driver printed
- * to the kernel log at start, as text in a new VMO of `length` bytes
- * (lines end in \n). codecs: how many codecs answered. */
-static inline status_t hda_dump_until(handle_t ch, uint64_t deadline_ns, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs)
+/* hda_dump_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_dump_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs)
 {
     struct hda_dump_req idl_q;
     struct hda_dump_rep idl_r;
@@ -180,8 +179,8 @@ static inline status_t hda_dump_until(handle_t ch, uint64_t deadline_ns, handle_
     idl_q.ordinal = HDA_DUMP;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -200,30 +199,33 @@ static inline status_t hda_dump_until(handle_t ch, uint64_t deadline_ns, handle_
         *out_codecs = idl_r.codecs;
     return idl_st;
 }
+/* The dump, read from the codecs now: the same lines the driver printed
+ * to the kernel log at start, as text in a new VMO of `length` bytes
+ * (lines end in \n). codecs: how many codecs answered. */
+static inline status_t hda_dump_until(handle_t ch, uint64_t deadline_ns, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs)
+{
+    return hda_dump_call(ch, false, deadline_ns, out_text, out_length, out_codecs);
+}
+static inline status_t hda_dump_within(handle_t ch, uint64_t timeout_ns, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs)
+{
+    return hda_dump_call(ch, true, timeout_ns, out_text, out_length, out_codecs);
+}
 static inline status_t hda_dump(handle_t ch, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs)
 {
-    return hda_dump_until(ch, DEADLINE_NEVER, out_text, out_length, out_codecs);
+    return hda_dump_call(ch, false, DEADLINE_NEVER, out_text, out_length, out_codecs);
 }
 
-/* What the driver chose and set up. codec, pin, dac: the path's codec
- * address and its two ends (pin 0: there is no path, and the rest is 0).
- * pcm and formats: the DAC's Supported PCM Size/Rates and Stream Formats
- * parameters (spec 7.3: 20:16 sample sizes, 11:0 rates). amp: its output
- * amplifier's capabilities (bit 31 mute, 22:16 step size in quarter dB
- * minus 1, 14:8 steps, 6:0 the step that is 0 dB; 0: it has none). jack:
- * the path's pin as `jacks` tracks it: 0 unknown (not a jack with presence
- * detection, or not read yet), 1 unplugged, 2 plugged in. nodes: the path's node ids
- * from the DAC to the pin, `count` of them. text: what is set on each
- * node, read back from the codec, as one line (NUL-terminated). */
-static inline status_t hda_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+/* hda_info_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
 {
     struct hda_info_req idl_q;
     struct hda_info_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = HDA_INFO;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_codec)
@@ -248,33 +250,32 @@ static inline status_t hda_info_until(handle_t ch, uint64_t deadline_ns, uint32_
         out_text[idl_i] = idl_r.text[idl_i];
     return idl_st;
 }
+/* What the driver chose and set up. codec, pin, dac: the path's codec
+ * address and its two ends (pin 0: there is no path, and the rest is 0).
+ * pcm and formats: the DAC's Supported PCM Size/Rates and Stream Formats
+ * parameters (spec 7.3: 20:16 sample sizes, 11:0 rates). amp: its output
+ * amplifier's capabilities (bit 31 mute, 22:16 step size in quarter dB
+ * minus 1, 14:8 steps, 6:0 the step that is 0 dB; 0: it has none). jack:
+ * the path's pin as `jacks` tracks it: 0 unknown (not a jack with presence
+ * detection, or not read yet), 1 unplugged, 2 plugged in. nodes: the path's node ids
+ * from the DAC to the pin, `count` of them. text: what is set on each
+ * node, read back from the codec, as one line (NUL-terminated). */
+static inline status_t hda_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+{
+    return hda_info_call(ch, false, deadline_ns, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
+}
+static inline status_t hda_info_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+{
+    return hda_info_call(ch, true, timeout_ns, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
+}
 static inline status_t hda_info(handle_t ch, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
 {
-    return hda_info_until(ch, DEADLINE_NEVER, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
+    return hda_info_call(ch, false, DEADLINE_NEVER, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
 }
 
-/* ---- the output stream (docs/history/A1-PLAN.md) ----
- * One output stream, 48 kHz, 2 channels: rate 48000, channels 2, bits 16,
- * 20, 24 or 32, as the DAC takes them (info's `pcm`, bits 17-20; anything
- * else: ERR_NOT_SUPPORTED); a second open while one is open:
- * ERR_BAD_STATE. Results: `stream`, a new channel that speaks this
- * protocol for start/stop/position/wait_period (they are refused on the
- * driver's own channel, which devmgr shares among clients); `ring`, the
- * sample ring as a VMO to map (read, write, map: nothing else), `size`
- * bytes (16384 frames, 341 ms: 65536 at 16-bit, 131072 otherwise) in
- * `period`-byte periods (2048 frames, 42.7 ms). Frames are left, right:
- * little-endian s16 at 16 bits (4 bytes), else s32 with the sample
- * left-justified (the DAC takes the top `bits` bits; 8 bytes). The
- * stream starts stopped at frame 0, offset 0, with the ring all zeros.
- * Closing `stream`
- * (or dying) stops the stream and releases it. The driver zeroes the ring
- * behind the play position, so a client may write any frame in
- * [frames, frames + size / 4) (from the last position it was given) and
- * one that stops writing plays silence within one ring. Write a period or
- * more ahead: the controller fetches a little ahead of the position.
- * Reconnect: when the driver dies, `stream` reports ERR_PEER_CLOSED and
- * the stream is gone; get the service again and open a new one. */
-static inline status_t hda_open_output_until(handle_t ch, uint64_t deadline_ns, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
+/* hda_open_output_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_open_output_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
 {
     struct hda_open_output_req idl_q;
     struct hda_open_output_rep idl_r;
@@ -286,8 +287,8 @@ static inline status_t hda_open_output_until(handle_t ch, uint64_t deadline_ns, 
     idl_q.bits = bits;
     handle_t idl_rh[2];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 2, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               2, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 2)
@@ -312,66 +313,115 @@ static inline status_t hda_open_output_until(handle_t ch, uint64_t deadline_ns, 
         *out_period = idl_r.period;
     return idl_st;
 }
+/* ---- the output stream (docs/history/A1-PLAN.md) ----
+ * One output stream, 48 kHz, 2 channels: rate 48000, channels 2, bits 16,
+ * 20, 24 or 32, as the DAC takes them (info's `pcm`, bits 17-20; anything
+ * else: ERR_NOT_SUPPORTED); a second open while one is open:
+ * ERR_BAD_STATE. Results: `stream`, a new channel that speaks this
+ * protocol for start/stop/position/wait_period (they are refused on the
+ * driver's own channel, which devmgr shares among clients); `ring`, the
+ * sample ring as a VMO to map (read, write, map: nothing else), `size`
+ * bytes (16384 frames, 341 ms: 65536 at 16-bit, 131072 otherwise) in
+ * `period`-byte periods (2048 frames, 42.7 ms). Frames are left, right:
+ * little-endian s16 at 16 bits (4 bytes), else s32 with the sample
+ * left-justified (the DAC takes the top `bits` bits; 8 bytes). The
+ * stream starts stopped at frame 0, offset 0, with the ring all zeros.
+ * Closing `stream`
+ * (or dying) stops the stream and releases it. The driver zeroes the ring
+ * behind the play position, so a client may write any frame in
+ * [frames, frames + size / 4) (from the last position it was given) and
+ * one that stops writing plays silence within one ring. Write a period or
+ * more ahead: the controller fetches a little ahead of the position.
+ * Reconnect: when the driver dies, `stream` reports ERR_PEER_CLOSED and
+ * the stream is gone; get the service again and open a new one. */
+static inline status_t hda_open_output_until(handle_t ch, uint64_t deadline_ns, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
+{
+    return hda_open_output_call(ch, false, deadline_ns, rate, channels, bits, out_stream, out_ring, out_size, out_period);
+}
+static inline status_t hda_open_output_within(handle_t ch, uint64_t timeout_ns, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
+{
+    return hda_open_output_call(ch, true, timeout_ns, rate, channels, bits, out_stream, out_ring, out_size, out_period);
+}
 static inline status_t hda_open_output(handle_t ch, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
 {
-    return hda_open_output_until(ch, DEADLINE_NEVER, rate, channels, bits, out_stream, out_ring, out_size, out_period);
+    return hda_open_output_call(ch, false, DEADLINE_NEVER, rate, channels, bits, out_stream, out_ring, out_size, out_period);
 }
 
-/* On the stream channel: the path is unmuted at the gain (get_gain), then
- * the DMA engine runs (RUN set) from where it was. If a step of the
- * unmuting fails, the path is muted again, the stream stays stopped and
- * start fails with that step's status (the log names the step). */
-static inline status_t hda_start_until(handle_t ch, uint64_t deadline_ns)
+/* hda_start_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_start_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct hda_start_req idl_q;
     struct hda_start_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = HDA_START;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* On the stream channel: the path is unmuted at the gain (get_gain), then
+ * the DMA engine runs (RUN set) from where it was. If a step of the
+ * unmuting fails, the path is muted again, the stream stays stopped and
+ * start fails with that step's status (the log names the step). */
+static inline status_t hda_start_until(handle_t ch, uint64_t deadline_ns)
+{
+    return hda_start_call(ch, false, deadline_ns);
+}
+static inline status_t hda_start_within(handle_t ch, uint64_t timeout_ns)
+{
+    return hda_start_call(ch, true, timeout_ns);
+}
 static inline status_t hda_start(handle_t ch)
 {
-    return hda_start_until(ch, DEADLINE_NEVER);
+    return hda_start_call(ch, false, DEADLINE_NEVER);
 }
 
-/* On the stream channel: the DMA engine stops (RUN clear, waited for),
- * then the path is muted again (every amp on it muted; the pin's output
- * off too where no amp can mute); the position stays. A wait_period in progress is answered
- * ERR_BAD_STATE. */
-static inline status_t hda_stop_until(handle_t ch, uint64_t deadline_ns)
+/* hda_stop_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_stop_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct hda_stop_req idl_q;
     struct hda_stop_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = HDA_STOP;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* On the stream channel: the DMA engine stops (RUN clear, waited for),
+ * then the path is muted again (every amp on it muted; the pin's output
+ * off too where no amp can mute); the position stays. A wait_period in progress is answered
+ * ERR_BAD_STATE. */
+static inline status_t hda_stop_until(handle_t ch, uint64_t deadline_ns)
+{
+    return hda_stop_call(ch, false, deadline_ns);
+}
+static inline status_t hda_stop_within(handle_t ch, uint64_t timeout_ns)
+{
+    return hda_stop_call(ch, true, timeout_ns);
+}
 static inline status_t hda_stop(handle_t ch)
 {
-    return hda_stop_until(ch, DEADLINE_NEVER);
+    return hda_stop_call(ch, false, DEADLINE_NEVER);
 }
 
-/* On the stream channel: frames played since the open, and the play
- * position as a byte offset into the ring. */
-static inline status_t hda_position_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_frames, uint32_t *out_offset)
+/* hda_position_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_position_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_frames, uint32_t *out_offset)
 {
     struct hda_position_req idl_q;
     struct hda_position_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = HDA_POSITION;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_frames)
@@ -380,17 +430,24 @@ static inline status_t hda_position_until(handle_t ch, uint64_t deadline_ns, uin
         *out_offset = idl_r.offset;
     return idl_st;
 }
+/* On the stream channel: frames played since the open, and the play
+ * position as a byte offset into the ring. */
+static inline status_t hda_position_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_position_call(ch, false, deadline_ns, out_frames, out_offset);
+}
+static inline status_t hda_position_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_position_call(ch, true, timeout_ns, out_frames, out_offset);
+}
 static inline status_t hda_position(handle_t ch, uint64_t *out_frames, uint32_t *out_offset)
 {
-    return hda_position_until(ch, DEADLINE_NEVER, out_frames, out_offset);
+    return hda_position_call(ch, false, DEADLINE_NEVER, out_frames, out_offset);
 }
 
-/* On the stream channel: answers once the period holding frame `after`
- * has played (frames >= the next multiple of period / 4 above `after`),
- * with position's results. ERR_BAD_STATE if the stream is stopped (or is
- * stopped meanwhile), ERR_TIMED_OUT if it makes no progress for four
- * periods (the DMA engine stalled). */
-static inline status_t hda_wait_period_until(handle_t ch, uint64_t deadline_ns, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
+/* hda_wait_period_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_wait_period_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
 {
     struct hda_wait_period_req idl_q;
     struct hda_wait_period_rep idl_r;
@@ -398,8 +455,8 @@ static inline status_t hda_wait_period_until(handle_t ch, uint64_t deadline_ns, 
     idl_q.txid = 0;
     idl_q.ordinal = HDA_WAIT_PERIOD;
     idl_q.after = after;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_frames)
@@ -408,11 +465,48 @@ static inline status_t hda_wait_period_until(handle_t ch, uint64_t deadline_ns, 
         *out_offset = idl_r.offset;
     return idl_st;
 }
+/* On the stream channel: answers once the period holding frame `after`
+ * has played (frames >= the next multiple of period / 4 above `after`),
+ * with position's results. ERR_BAD_STATE if the stream is stopped (or is
+ * stopped meanwhile), ERR_TIMED_OUT if it makes no progress for four
+ * periods (the DMA engine stalled). */
+static inline status_t hda_wait_period_until(handle_t ch, uint64_t deadline_ns, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_wait_period_call(ch, false, deadline_ns, after, out_frames, out_offset);
+}
+static inline status_t hda_wait_period_within(handle_t ch, uint64_t timeout_ns, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_wait_period_call(ch, true, timeout_ns, after, out_frames, out_offset);
+}
 static inline status_t hda_wait_period(handle_t ch, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
 {
-    return hda_wait_period_until(ch, DEADLINE_NEVER, after, out_frames, out_offset);
+    return hda_wait_period_call(ch, false, DEADLINE_NEVER, after, out_frames, out_offset);
 }
 
+/* hda_set_gain_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_set_gain_call(handle_t ch, bool idl_within, uint64_t idl_t, int32_t centibels, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
+{
+    struct hda_set_gain_req idl_q;
+    struct hda_set_gain_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_SET_GAIN;
+    idl_q.centibels = centibels;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_gain)
+        *out_gain = idl_r.gain;
+    if (idl_st == OK && out_step)
+        *out_step = idl_r.step;
+    if (idl_st == OK && out_min)
+        *out_min = idl_r.min;
+    if (idl_st == OK && out_max)
+        *out_max = idl_r.max;
+    return idl_st;
+}
 /* ---- the gain (docs/history/A1-PLAN.md, stage 3) ----
  * The path's volume: the output amp of the first node on the path that
  * has gain steps (the DAC's on the PC's ALC897 and QEMU's codecs), in
@@ -426,40 +520,28 @@ static inline status_t hda_wait_period(handle_t ch, uint64_t after, uint64_t *ou
  * begins at -30 dB (-300), whatever was set before. */
 static inline status_t hda_set_gain_until(handle_t ch, uint64_t deadline_ns, int32_t centibels, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
 {
-    struct hda_set_gain_req idl_q;
-    struct hda_set_gain_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = HDA_SET_GAIN;
-    idl_q.centibels = centibels;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_gain)
-        *out_gain = idl_r.gain;
-    if (idl_st == OK && out_step)
-        *out_step = idl_r.step;
-    if (idl_st == OK && out_min)
-        *out_min = idl_r.min;
-    if (idl_st == OK && out_max)
-        *out_max = idl_r.max;
-    return idl_st;
+    return hda_set_gain_call(ch, false, deadline_ns, centibels, out_gain, out_step, out_min, out_max);
+}
+static inline status_t hda_set_gain_within(handle_t ch, uint64_t timeout_ns, int32_t centibels, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
+{
+    return hda_set_gain_call(ch, true, timeout_ns, centibels, out_gain, out_step, out_min, out_max);
 }
 static inline status_t hda_set_gain(handle_t ch, int32_t centibels, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
 {
-    return hda_set_gain_until(ch, DEADLINE_NEVER, centibels, out_gain, out_step, out_min, out_max);
+    return hda_set_gain_call(ch, false, DEADLINE_NEVER, centibels, out_gain, out_step, out_min, out_max);
 }
 
-static inline status_t hda_get_gain_until(handle_t ch, uint64_t deadline_ns, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
+/* hda_get_gain_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_get_gain_call(handle_t ch, bool idl_within, uint64_t idl_t, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
 {
     struct hda_get_gain_req idl_q;
     struct hda_get_gain_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = HDA_GET_GAIN;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_gain)
@@ -472,18 +554,22 @@ static inline status_t hda_get_gain_until(handle_t ch, uint64_t deadline_ns, int
         *out_max = idl_r.max;
     return idl_st;
 }
+static inline status_t hda_get_gain_until(handle_t ch, uint64_t deadline_ns, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
+{
+    return hda_get_gain_call(ch, false, deadline_ns, out_gain, out_step, out_min, out_max);
+}
+static inline status_t hda_get_gain_within(handle_t ch, uint64_t timeout_ns, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
+{
+    return hda_get_gain_call(ch, true, timeout_ns, out_gain, out_step, out_min, out_max);
+}
 static inline status_t hda_get_gain(handle_t ch, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max)
 {
-    return hda_get_gain_until(ch, DEADLINE_NEVER, out_gain, out_step, out_min, out_max);
+    return hda_get_gain_call(ch, false, DEADLINE_NEVER, out_gain, out_step, out_min, out_max);
 }
 
-/* The largest sample size open_output takes from now on: 16, 20, 24 or 32
- * (0: just answer). It caps the DAC's sizes, so info's `pcm` and the
- * streams opened afterwards use at most `bits` (the shell's `hda bits`, to
- * compare 16-bit output with 24-bit by ear). Answers the cap and the
- * sizes left (`pcm` as info's). Every driver start begins at 32 (the
- * DAC's best). ERR_INVALID_ARGS: another number. */
-static inline status_t hda_set_bits_until(handle_t ch, uint64_t deadline_ns, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm)
+/* hda_set_bits_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_set_bits_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm)
 {
     struct hda_set_bits_req idl_q;
     struct hda_set_bits_rep idl_r;
@@ -491,8 +577,8 @@ static inline status_t hda_set_bits_until(handle_t ch, uint64_t deadline_ns, uin
     idl_q.txid = 0;
     idl_q.ordinal = HDA_SET_BITS;
     idl_q.bits = bits;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_bits)
@@ -501,30 +587,36 @@ static inline status_t hda_set_bits_until(handle_t ch, uint64_t deadline_ns, uin
         *out_pcm = idl_r.pcm;
     return idl_st;
 }
+/* The largest sample size open_output takes from now on: 16, 20, 24 or 32
+ * (0: just answer). It caps the DAC's sizes, so info's `pcm` and the
+ * streams opened afterwards use at most `bits` (the shell's `hda bits`, to
+ * compare 16-bit output with 24-bit by ear). Answers the cap and the
+ * sizes left (`pcm` as info's). Every driver start begins at 32 (the
+ * DAC's best). ERR_INVALID_ARGS: another number. */
+static inline status_t hda_set_bits_until(handle_t ch, uint64_t deadline_ns, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm)
+{
+    return hda_set_bits_call(ch, false, deadline_ns, bits, out_bits, out_pcm);
+}
+static inline status_t hda_set_bits_within(handle_t ch, uint64_t timeout_ns, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm)
+{
+    return hda_set_bits_call(ch, true, timeout_ns, bits, out_bits, out_pcm);
+}
 static inline status_t hda_set_bits(handle_t ch, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm)
 {
-    return hda_set_bits_until(ch, DEADLINE_NEVER, bits, out_bits, out_pcm);
+    return hda_set_bits_call(ch, false, DEADLINE_NEVER, bits, out_bits, out_pcm);
 }
 
-/* ---- the jacks (docs/history/A1-PLAN.md, stage 4) ----
- * Every pin the codecs describe as a jack with presence detection, as the
- * driver tracks it (debounced; not read anew for this call). count: how
- * many (at most 16); pins and states: each one's node and state, in the
- * driver's order (its unsolicited response tag is its index + 1): 0
- * unknown, 1 unplugged, 2 plugged in. state and changes: the path's pin
- * (info's jack) and how often it changed since the driver started. text:
- * a line on how changes are found (unsolicited responses or polling),
- * then a line per jack ("pin 1b headphones (front): plugged in, ..."),
- * each ending in \n, NUL-terminated. */
-static inline status_t hda_jacks_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+/* hda_jacks_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_jacks_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
 {
     struct hda_jacks_req idl_q;
     struct hda_jacks_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = HDA_JACKS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_count)
@@ -541,20 +633,32 @@ static inline status_t hda_jacks_until(handle_t ch, uint64_t deadline_ns, uint32
         out_text[idl_i] = idl_r.text[idl_i];
     return idl_st;
 }
+/* ---- the jacks (docs/history/A1-PLAN.md, stage 4) ----
+ * Every pin the codecs describe as a jack with presence detection, as the
+ * driver tracks it (debounced; not read anew for this call). count: how
+ * many (at most 16); pins and states: each one's node and state, in the
+ * driver's order (its unsolicited response tag is its index + 1): 0
+ * unknown, 1 unplugged, 2 plugged in. state and changes: the path's pin
+ * (info's jack) and how often it changed since the driver started. text:
+ * a line on how changes are found (unsolicited responses or polling),
+ * then a line per jack ("pin 1b headphones (front): plugged in, ..."),
+ * each ending in \n, NUL-terminated. */
+static inline status_t hda_jacks_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+{
+    return hda_jacks_call(ch, false, deadline_ns, out_count, out_state, out_changes, out_pins, out_states, out_text);
+}
+static inline status_t hda_jacks_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+{
+    return hda_jacks_call(ch, true, timeout_ns, out_count, out_state, out_changes, out_pins, out_states, out_text);
+}
 static inline status_t hda_jacks(handle_t ch, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
 {
-    return hda_jacks_until(ch, DEADLINE_NEVER, out_count, out_state, out_changes, out_pins, out_states, out_text);
+    return hda_jacks_call(ch, false, DEADLINE_NEVER, out_count, out_state, out_changes, out_pins, out_states, out_text);
 }
 
-/* ---- query channels ----
- * A new channel the driver serves with every method above but open_output
- * and query (ERR_ACCESS_DENIED on it): the dump, info, the gain, the bits
- * and the jacks, so its holder can look and turn the gain but never take
- * the one output stream. Closing it is the end of it; it does not keep the
- * driver running (devmgr's channel does), and dies with the driver
- * (ERR_PEER_CLOSED: ask for a new one). At most 8 at once
- * (ERR_NO_RESOURCES). ERR_ACCESS_DENIED on a query channel. */
-static inline status_t hda_query_until(handle_t ch, uint64_t deadline_ns, handle_t *out_channel)
+/* hda_query_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_query_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_channel)
 {
     struct hda_query_req idl_q;
     struct hda_query_rep idl_r;
@@ -563,8 +667,8 @@ static inline status_t hda_query_until(handle_t ch, uint64_t deadline_ns, handle
     idl_q.ordinal = HDA_QUERY;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -579,9 +683,25 @@ static inline status_t hda_query_until(handle_t ch, uint64_t deadline_ns, handle
     }
     return idl_st;
 }
+/* ---- query channels ----
+ * A new channel the driver serves with every method above but open_output
+ * and query (ERR_ACCESS_DENIED on it): the dump, info, the gain, the bits
+ * and the jacks, so its holder can look and turn the gain but never take
+ * the one output stream. Closing it is the end of it; it does not keep the
+ * driver running (devmgr's channel does), and dies with the driver
+ * (ERR_PEER_CLOSED: ask for a new one). At most 8 at once
+ * (ERR_NO_RESOURCES). ERR_ACCESS_DENIED on a query channel. */
+static inline status_t hda_query_until(handle_t ch, uint64_t deadline_ns, handle_t *out_channel)
+{
+    return hda_query_call(ch, false, deadline_ns, out_channel);
+}
+static inline status_t hda_query_within(handle_t ch, uint64_t timeout_ns, handle_t *out_channel)
+{
+    return hda_query_call(ch, true, timeout_ns, out_channel);
+}
 static inline status_t hda_query(handle_t ch, handle_t *out_channel)
 {
-    return hda_query_until(ch, DEADLINE_NEVER, out_channel);
+    return hda_query_call(ch, false, DEADLINE_NEVER, out_channel);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -1642,21 +1762,23 @@ static inline status_t hda_serve_one(handle_t ch, const struct hda_ops *ops, voi
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t hda_serve(handle_t ch, const struct hda_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[HDA_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[HDA_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = hda_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = hda_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

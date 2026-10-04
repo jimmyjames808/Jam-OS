@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `edu` (id 2). Client: edu_<method>(ch, args..., &results...)
- * (and edu_<method>_until with a deadline) over drv_channel_call, or
+ * (and edu_<method>_until with a deadline, _within with a timeout), or
  * edu_<method>_send and edu_<method>_result without waiting. Server:
  * fill a struct edu_ops and run edu_serve(ch, &ops, ctx), or
  * edu_serve_one / edu_dispatch_on for a loop of your own;
@@ -62,9 +62,9 @@ struct edu_dma_start_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* n! computed by the device (32 bits, wrapping like the device does),
- * waiting for its completion interrupt. */
-static inline status_t edu_factorial_until(handle_t ch, uint64_t deadline_ns, uint32_t n, uint32_t *out_result)
+/* edu_factorial_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t edu_factorial_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t n, uint32_t *out_result)
 {
     struct edu_factorial_req idl_q;
     struct edu_factorial_rep idl_r;
@@ -72,22 +72,32 @@ static inline status_t edu_factorial_until(handle_t ch, uint64_t deadline_ns, ui
     idl_q.txid = 0;
     idl_q.ordinal = EDU_FACTORIAL;
     idl_q.n = n;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_result)
         *out_result = idl_r.result;
     return idl_st;
 }
+/* n! computed by the device (32 bits, wrapping like the device does),
+ * waiting for its completion interrupt. */
+static inline status_t edu_factorial_until(handle_t ch, uint64_t deadline_ns, uint32_t n, uint32_t *out_result)
+{
+    return edu_factorial_call(ch, false, deadline_ns, n, out_result);
+}
+static inline status_t edu_factorial_within(handle_t ch, uint64_t timeout_ns, uint32_t n, uint32_t *out_result)
+{
+    return edu_factorial_call(ch, true, timeout_ns, n, out_result);
+}
 static inline status_t edu_factorial(handle_t ch, uint32_t n, uint32_t *out_result)
 {
-    return edu_factorial_until(ch, DEADLINE_NEVER, n, out_result);
+    return edu_factorial_call(ch, false, DEADLINE_NEVER, n, out_result);
 }
 
-/* RAM -> device -> RAM through a pinned DMA32 VMO, len bytes (1..4096):
- * the call's status says whether the data came back intact. */
-static inline status_t edu_dma_roundtrip_until(handle_t ch, uint64_t deadline_ns, uint32_t len)
+/* edu_dma_roundtrip_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t edu_dma_roundtrip_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t len)
 {
     struct edu_dma_roundtrip_req idl_q;
     struct edu_dma_roundtrip_rep idl_r;
@@ -95,43 +105,62 @@ static inline status_t edu_dma_roundtrip_until(handle_t ch, uint64_t deadline_ns
     idl_q.txid = 0;
     idl_q.ordinal = EDU_DMA_ROUNDTRIP;
     idl_q.len = len;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* RAM -> device -> RAM through a pinned DMA32 VMO, len bytes (1..4096):
+ * the call's status says whether the data came back intact. */
+static inline status_t edu_dma_roundtrip_until(handle_t ch, uint64_t deadline_ns, uint32_t len)
+{
+    return edu_dma_roundtrip_call(ch, false, deadline_ns, len);
+}
+static inline status_t edu_dma_roundtrip_within(handle_t ch, uint64_t timeout_ns, uint32_t len)
+{
+    return edu_dma_roundtrip_call(ch, true, timeout_ns, len);
+}
 static inline status_t edu_dma_roundtrip(handle_t ch, uint32_t len)
 {
-    return edu_dma_roundtrip_until(ch, DEADLINE_NEVER, len);
+    return edu_dma_roundtrip_call(ch, false, DEADLINE_NEVER, len);
 }
 
-/* Raise the device's interrupt and wait for it: the time from the raise to
- * the driver thread waking. */
-static inline status_t edu_raise_irq_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_latency_ns)
+/* edu_raise_irq_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t edu_raise_irq_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_latency_ns)
 {
     struct edu_raise_irq_req idl_q;
     struct edu_raise_irq_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = EDU_RAISE_IRQ;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_latency_ns)
         *out_latency_ns = idl_r.latency_ns;
     return idl_st;
 }
+/* Raise the device's interrupt and wait for it: the time from the raise to
+ * the driver thread waking. */
+static inline status_t edu_raise_irq_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_latency_ns)
+{
+    return edu_raise_irq_call(ch, false, deadline_ns, out_latency_ns);
+}
+static inline status_t edu_raise_irq_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_latency_ns)
+{
+    return edu_raise_irq_call(ch, true, timeout_ns, out_latency_ns);
+}
 static inline status_t edu_raise_irq(handle_t ch, uint64_t *out_latency_ns)
 {
-    return edu_raise_irq_until(ch, DEADLINE_NEVER, out_latency_ns);
+    return edu_raise_irq_call(ch, false, DEADLINE_NEVER, out_latency_ns);
 }
 
-/* Pin a buffer and start a RAM -> device DMA of len bytes, then answer at
- * once: the transfer is still running (QEMU's edu takes ~100 ms) and the
- * pin is held until the driver's next call. For the kill-mid-DMA tests. */
-static inline status_t edu_dma_start_until(handle_t ch, uint64_t deadline_ns, uint32_t len, uint64_t *out_device_addr)
+/* edu_dma_start_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t edu_dma_start_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t len, uint64_t *out_device_addr)
 {
     struct edu_dma_start_req idl_q;
     struct edu_dma_start_rep idl_r;
@@ -139,17 +168,28 @@ static inline status_t edu_dma_start_until(handle_t ch, uint64_t deadline_ns, ui
     idl_q.txid = 0;
     idl_q.ordinal = EDU_DMA_START;
     idl_q.len = len;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_device_addr)
         *out_device_addr = idl_r.device_addr;
     return idl_st;
 }
+/* Pin a buffer and start a RAM -> device DMA of len bytes, then answer at
+ * once: the transfer is still running (QEMU's edu takes ~100 ms) and the
+ * pin is held until the driver's next call. For the kill-mid-DMA tests. */
+static inline status_t edu_dma_start_until(handle_t ch, uint64_t deadline_ns, uint32_t len, uint64_t *out_device_addr)
+{
+    return edu_dma_start_call(ch, false, deadline_ns, len, out_device_addr);
+}
+static inline status_t edu_dma_start_within(handle_t ch, uint64_t timeout_ns, uint32_t len, uint64_t *out_device_addr)
+{
+    return edu_dma_start_call(ch, true, timeout_ns, len, out_device_addr);
+}
 static inline status_t edu_dma_start(handle_t ch, uint32_t len, uint64_t *out_device_addr)
 {
-    return edu_dma_start_until(ch, DEADLINE_NEVER, len, out_device_addr);
+    return edu_dma_start_call(ch, false, DEADLINE_NEVER, len, out_device_addr);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -486,21 +526,23 @@ static inline status_t edu_serve_one(handle_t ch, const struct edu_ops *ops, voi
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t edu_serve(handle_t ch, const struct edu_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[EDU_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[EDU_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = edu_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = edu_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

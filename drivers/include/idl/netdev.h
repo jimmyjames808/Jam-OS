@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `netdev` (id 27). Client: netdev_<method>(ch, args..., &results...)
- * (and netdev_<method>_until with a deadline) over drv_channel_call, or
+ * (and netdev_<method>_until with a deadline, _within with a timeout), or
  * netdev_<method>_send and netdev_<method>_result without waiting. Server:
  * fill a struct netdev_ops and run netdev_serve(ch, &ops, ctx), or
  * netdev_serve_one / netdev_dispatch_on for a loop of your own;
@@ -55,25 +55,17 @@ struct netdev_open_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* The card. mac: its address (6 bytes, as on the wire). vlan: the mode,
- * the VLAN every frame is tagged with and the only one received
- * (1..4094), or 0x1000 (NETFRAME_MODE_UNTAGGED, <jam/netframe.h>): no
- * frame tagged, only untagged ones received (a driver with the network
- * off doesn't serve). mtu: the largest payload, 1500
- * (NETDEV_MTU: frames of 14..1514 bytes). link: NETDEV_LINK_* bits (up,
- * full duplex). speed: Mb/s, 0 while down. changes: link changes since
- * the driver started (each also signals NETDEV_SIG_LINK on the session's
- * to_stack event): compare with the count you saw last. chip: its name
- * (printable ASCII, NUL-padded), e.g. "RTL8125B", "82574L". */
-static inline status_t netdev_info_until(handle_t ch, uint64_t deadline_ns, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
+/* netdev_info_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netdev_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
 {
     struct netdev_info_req idl_q;
     struct netdev_info_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NETDEV_INFO;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     for (uint32_t idl_i = 0; idl_st == OK && out_mac && idl_i < 6; idl_i++)
@@ -92,45 +84,64 @@ static inline status_t netdev_info_until(handle_t ch, uint64_t deadline_ns, uint
         out_chip[idl_i] = idl_r.chip[idl_i];
     return idl_st;
 }
+/* The card. mac: its address (6 bytes, as on the wire). vlan: the mode,
+ * the VLAN every frame is tagged with and the only one received
+ * (1..4094), or 0x1000 (NETFRAME_MODE_UNTAGGED, <jam/netframe.h>): no
+ * frame tagged, only untagged ones received (a driver with the network
+ * off doesn't serve). mtu: the largest payload, 1500
+ * (NETDEV_MTU: frames of 14..1514 bytes). link: NETDEV_LINK_* bits (up,
+ * full duplex). speed: Mb/s, 0 while down. changes: link changes since
+ * the driver started (each also signals NETDEV_SIG_LINK on the session's
+ * to_stack event): compare with the count you saw last. chip: its name
+ * (printable ASCII, NUL-padded), e.g. "RTL8125B", "82574L". */
+static inline status_t netdev_info_until(handle_t ch, uint64_t deadline_ns, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
+{
+    return netdev_info_call(ch, false, deadline_ns, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip);
+}
+static inline status_t netdev_info_within(handle_t ch, uint64_t timeout_ns, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
+{
+    return netdev_info_call(ch, true, timeout_ns, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip);
+}
 static inline status_t netdev_info(handle_t ch, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
 {
-    return netdev_info_until(ch, DEADLINE_NEVER, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip);
+    return netdev_info_call(ch, false, DEADLINE_NEVER, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip);
 }
 
-/* The counts, as <jam/netdev.h>'s struct netdev_stats (little-endian, its
- * reserved fields 0): the driver's since it started, and the chip's own. */
-static inline status_t netdev_stats_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256])
+/* netdev_stats_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netdev_stats_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256])
 {
     struct netdev_stats_req idl_q;
     struct netdev_stats_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NETDEV_STATS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     for (uint32_t idl_i = 0; idl_st == OK && out_counts && idl_i < 256; idl_i++)
         out_counts[idl_i] = idl_r.counts[idl_i];
     return idl_st;
 }
+/* The counts, as <jam/netdev.h>'s struct netdev_stats (little-endian, its
+ * reserved fields 0): the driver's since it started, and the chip's own. */
+static inline status_t netdev_stats_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256])
+{
+    return netdev_stats_call(ch, false, deadline_ns, out_counts);
+}
+static inline status_t netdev_stats_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256])
+{
+    return netdev_stats_call(ch, true, timeout_ns, out_counts);
+}
 static inline status_t netdev_stats(handle_t ch, uint8_t out_counts[256])
 {
-    return netdev_stats_until(ch, DEADLINE_NEVER, out_counts);
+    return netdev_stats_call(ch, false, DEADLINE_NEVER, out_counts);
 }
 
-/* A session: the rings and events of <jam/netdev.h>. Results: `session`,
- * a channel of its own (closing it ends the session; info and stats work
- * on it too, open is refused there with ERR_NOT_SUPPORTED); `tx` and `rx`,
- * the two ring VMOs (NETDEV_RING_BYTES each, NETDEV_RING_RIGHTS: map them
- * read-write and check their headers, netdev_end_attach); `to_driver`
- * (NETDEV_TO_DRIVER_RIGHTS: signal NETDEV_SIG_TX on it) and `to_stack`
- * (NETDEV_TO_STACK_RIGHTS: wait on it for NETDEV_SIG_RX, _TX_ROOM and
- * _LINK, and clear them). Both rings start empty, counts 0. One session at
- * a time: ERR_BAD_STATE while another's channel is open (the driver looks
- * first: a session whose opener has gone is ended then, so a restarted
- * netstack can open at once). ERR_NO_MEMORY: no memory for the rings. */
-static inline status_t netdev_open_until(handle_t ch, uint64_t deadline_ns, handle_t *out_session, handle_t *out_tx, handle_t *out_rx, handle_t *out_to_driver, handle_t *out_to_stack)
+/* netdev_open_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netdev_open_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_session, handle_t *out_tx, handle_t *out_rx, handle_t *out_to_driver, handle_t *out_to_stack)
 {
     struct netdev_open_req idl_q;
     struct netdev_open_rep idl_r;
@@ -139,8 +150,8 @@ static inline status_t netdev_open_until(handle_t ch, uint64_t deadline_ns, hand
     idl_q.ordinal = NETDEV_OPEN;
     handle_t idl_rh[5];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 5, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               5, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 5)
@@ -179,9 +190,28 @@ static inline status_t netdev_open_until(handle_t ch, uint64_t deadline_ns, hand
     }
     return idl_st;
 }
+/* A session: the rings and events of <jam/netdev.h>. Results: `session`,
+ * a channel of its own (closing it ends the session; info and stats work
+ * on it too, open is refused there with ERR_NOT_SUPPORTED); `tx` and `rx`,
+ * the two ring VMOs (NETDEV_RING_BYTES each, NETDEV_RING_RIGHTS: map them
+ * read-write and check their headers, netdev_end_attach); `to_driver`
+ * (NETDEV_TO_DRIVER_RIGHTS: signal NETDEV_SIG_TX on it) and `to_stack`
+ * (NETDEV_TO_STACK_RIGHTS: wait on it for NETDEV_SIG_RX, _TX_ROOM and
+ * _LINK, and clear them). Both rings start empty, counts 0. One session at
+ * a time: ERR_BAD_STATE while another's channel is open (the driver looks
+ * first: a session whose opener has gone is ended then, so a restarted
+ * netstack can open at once). ERR_NO_MEMORY: no memory for the rings. */
+static inline status_t netdev_open_until(handle_t ch, uint64_t deadline_ns, handle_t *out_session, handle_t *out_tx, handle_t *out_rx, handle_t *out_to_driver, handle_t *out_to_stack)
+{
+    return netdev_open_call(ch, false, deadline_ns, out_session, out_tx, out_rx, out_to_driver, out_to_stack);
+}
+static inline status_t netdev_open_within(handle_t ch, uint64_t timeout_ns, handle_t *out_session, handle_t *out_tx, handle_t *out_rx, handle_t *out_to_driver, handle_t *out_to_stack)
+{
+    return netdev_open_call(ch, true, timeout_ns, out_session, out_tx, out_rx, out_to_driver, out_to_stack);
+}
 static inline status_t netdev_open(handle_t ch, handle_t *out_session, handle_t *out_tx, handle_t *out_rx, handle_t *out_to_driver, handle_t *out_to_stack)
 {
-    return netdev_open_until(ch, DEADLINE_NEVER, out_session, out_tx, out_rx, out_to_driver, out_to_stack);
+    return netdev_open_call(ch, false, DEADLINE_NEVER, out_session, out_tx, out_rx, out_to_driver, out_to_stack);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -548,21 +578,23 @@ static inline status_t netdev_serve_one(handle_t ch, const struct netdev_ops *op
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t netdev_serve(handle_t ch, const struct netdev_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[NETDEV_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[NETDEV_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = netdev_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = netdev_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

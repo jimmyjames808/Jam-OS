@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `audio` (id 22). Client: audio_<method>(ch, args..., &results...)
- * (and audio_<method>_until with a deadline) over drv_channel_call, or
+ * (and audio_<method>_until with a deadline, _within with a timeout), or
  * audio_<method>_send and audio_<method>_result without waiting. Server:
  * fill a struct audio_ops and run audio_serve(ch, &ops, ctx), or
  * audio_serve_one / audio_dispatch_on for a loop of your own;
@@ -114,21 +114,9 @@ struct audio_stream_stats_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* On /svc/audio: a new stream, stopped, with an empty ring. Only rate 48000,
- * channels 2, bits 16 (anything else: ERR_NOT_SUPPORTED; the client
- * library converts). name: a label for `vol` (NUL-padded, printable ASCII;
- * anything else is replaced by '?'). Results: `stream`, a channel of its own
- * that speaks the methods below (closing it ends the stream; refused on
- * /svc/audio); `ring`, the VMO to map (read, write, map) with <mixer.h>'s
- * header page and then `frames` frames of samples (left, right:
- * little-endian s16); `event`, its wake-ups (wait, signal: the SPACE and
- * DATA bits of <mixer.h>); `id`, the stream's number for `vol`; `lead`,
- * how many frames ahead of what is heard the mixer takes samples (a
- * write is heard about `lead` frames after the mixer took it, at most).
- * ERR_NO_RESOURCES: 16 streams are open already, or this opener's channel
- * holds MIXER_STREAMS_PER_CLIENT (4) of them. ERR_NOT_FOUND: there is
- * no audio output (no hda driver with a path to a jack). */
-static inline status_t audio_open_output_until(handle_t ch, uint64_t deadline_ns, uint32_t rate, uint8_t channels, uint8_t bits, const uint8_t name[16], handle_t *out_stream, handle_t *out_ring, handle_t *out_event, uint32_t *out_id, uint32_t *out_frames, uint32_t *out_lead)
+/* audio_open_output_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audio_open_output_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t rate, uint8_t channels, uint8_t bits, const uint8_t name[16], handle_t *out_stream, handle_t *out_ring, handle_t *out_event, uint32_t *out_id, uint32_t *out_frames, uint32_t *out_lead)
 {
     struct audio_open_output_req idl_q;
     struct audio_open_output_rep idl_r;
@@ -142,8 +130,8 @@ static inline status_t audio_open_output_until(handle_t ch, uint64_t deadline_ns
         idl_q.name[idl_i] = name[idl_i];
     handle_t idl_rh[3];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 3, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               3, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 3)
@@ -176,89 +164,140 @@ static inline status_t audio_open_output_until(handle_t ch, uint64_t deadline_ns
         *out_lead = idl_r.lead;
     return idl_st;
 }
+/* On /svc/audio: a new stream, stopped, with an empty ring. Only rate 48000,
+ * channels 2, bits 16 (anything else: ERR_NOT_SUPPORTED; the client
+ * library converts). name: a label for `vol` (NUL-padded, printable ASCII;
+ * anything else is replaced by '?'). Results: `stream`, a channel of its own
+ * that speaks the methods below (closing it ends the stream; refused on
+ * /svc/audio); `ring`, the VMO to map (read, write, map) with <mixer.h>'s
+ * header page and then `frames` frames of samples (left, right:
+ * little-endian s16); `event`, its wake-ups (wait, signal: the SPACE and
+ * DATA bits of <mixer.h>); `id`, the stream's number for `vol`; `lead`,
+ * how many frames ahead of what is heard the mixer takes samples (a
+ * write is heard about `lead` frames after the mixer took it, at most).
+ * ERR_NO_RESOURCES: 16 streams are open already, or this opener's channel
+ * holds MIXER_STREAMS_PER_CLIENT (4) of them. ERR_NOT_FOUND: there is
+ * no audio output (no hda driver with a path to a jack). */
+static inline status_t audio_open_output_until(handle_t ch, uint64_t deadline_ns, uint32_t rate, uint8_t channels, uint8_t bits, const uint8_t name[16], handle_t *out_stream, handle_t *out_ring, handle_t *out_event, uint32_t *out_id, uint32_t *out_frames, uint32_t *out_lead)
+{
+    return audio_open_output_call(ch, false, deadline_ns, rate, channels, bits, name, out_stream, out_ring, out_event, out_id, out_frames, out_lead);
+}
+static inline status_t audio_open_output_within(handle_t ch, uint64_t timeout_ns, uint32_t rate, uint8_t channels, uint8_t bits, const uint8_t name[16], handle_t *out_stream, handle_t *out_ring, handle_t *out_event, uint32_t *out_id, uint32_t *out_frames, uint32_t *out_lead)
+{
+    return audio_open_output_call(ch, true, timeout_ns, rate, channels, bits, name, out_stream, out_ring, out_event, out_id, out_frames, out_lead);
+}
 static inline status_t audio_open_output(handle_t ch, uint32_t rate, uint8_t channels, uint8_t bits, const uint8_t name[16], handle_t *out_stream, handle_t *out_ring, handle_t *out_event, uint32_t *out_id, uint32_t *out_frames, uint32_t *out_lead)
 {
-    return audio_open_output_until(ch, DEADLINE_NEVER, rate, channels, bits, name, out_stream, out_ring, out_event, out_id, out_frames, out_lead);
+    return audio_open_output_call(ch, false, DEADLINE_NEVER, rate, channels, bits, name, out_stream, out_ring, out_event, out_id, out_frames, out_lead);
 }
 
-/* On a stream channel: from the next period the mixer mixes, it takes the
- * stream's frames as they come (from `read` up to `write`); one with too
- * few gives silence for the rest of that period (an underrun, counted). */
-static inline status_t audio_stream_start_until(handle_t ch, uint64_t deadline_ns)
+/* audio_stream_start_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audio_stream_start_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct audio_stream_start_req idl_q;
     struct audio_stream_start_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = AUDIO_STREAM_START;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* On a stream channel: from the next period the mixer mixes, it takes the
+ * stream's frames as they come (from `read` up to `write`); one with too
+ * few gives silence for the rest of that period (an underrun, counted). */
+static inline status_t audio_stream_start_until(handle_t ch, uint64_t deadline_ns)
+{
+    return audio_stream_start_call(ch, false, deadline_ns);
+}
+static inline status_t audio_stream_start_within(handle_t ch, uint64_t timeout_ns)
+{
+    return audio_stream_start_call(ch, true, timeout_ns);
+}
 static inline status_t audio_stream_start(handle_t ch)
 {
-    return audio_stream_start_until(ch, DEADLINE_NEVER);
+    return audio_stream_start_call(ch, false, DEADLINE_NEVER);
 }
 
-/* On a stream channel: the mixer stops taking frames (what it took is
- * still heard, at most `lead` frames of it); those in the ring stay for a
- * later start. A stream_drain in progress is answered ERR_BAD_STATE. */
-static inline status_t audio_stream_stop_until(handle_t ch, uint64_t deadline_ns)
+/* audio_stream_stop_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audio_stream_stop_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct audio_stream_stop_req idl_q;
     struct audio_stream_stop_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = AUDIO_STREAM_STOP;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* On a stream channel: the mixer stops taking frames (what it took is
+ * still heard, at most `lead` frames of it); those in the ring stay for a
+ * later start. A stream_drain in progress is answered ERR_BAD_STATE. */
+static inline status_t audio_stream_stop_until(handle_t ch, uint64_t deadline_ns)
+{
+    return audio_stream_stop_call(ch, false, deadline_ns);
+}
+static inline status_t audio_stream_stop_within(handle_t ch, uint64_t timeout_ns)
+{
+    return audio_stream_stop_call(ch, true, timeout_ns);
+}
 static inline status_t audio_stream_stop(handle_t ch)
 {
-    return audio_stream_stop_until(ch, DEADLINE_NEVER);
+    return audio_stream_stop_call(ch, false, DEADLINE_NEVER);
 }
 
-/* On a stream channel: answers once every frame written before the call
- * (the header's `write` then) has been heard, with that count.
- * ERR_BAD_STATE: the stream is stopped (or is stopped meanwhile), or a
- * drain is already waiting. */
-static inline status_t audio_stream_drain_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_frames)
+/* audio_stream_drain_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audio_stream_drain_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_frames)
 {
     struct audio_stream_drain_req idl_q;
     struct audio_stream_drain_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = AUDIO_STREAM_DRAIN;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_frames)
         *out_frames = idl_r.frames;
     return idl_st;
 }
+/* On a stream channel: answers once every frame written before the call
+ * (the header's `write` then) has been heard, with that count.
+ * ERR_BAD_STATE: the stream is stopped (or is stopped meanwhile), or a
+ * drain is already waiting. */
+static inline status_t audio_stream_drain_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_frames)
+{
+    return audio_stream_drain_call(ch, false, deadline_ns, out_frames);
+}
+static inline status_t audio_stream_drain_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_frames)
+{
+    return audio_stream_drain_call(ch, true, timeout_ns, out_frames);
+}
 static inline status_t audio_stream_drain(handle_t ch, uint64_t *out_frames)
 {
-    return audio_stream_drain_until(ch, DEADLINE_NEVER, out_frames);
+    return audio_stream_drain_call(ch, false, DEADLINE_NEVER, out_frames);
 }
 
-/* On a stream channel: frames written (the header's `write`, as the mixer
- * reads it now), taken by the mixer, and heard: estimated from the
- * driver's play position, so it moves smoothly within a period. */
-static inline status_t audio_stream_position_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_written, uint64_t *out_consumed, uint64_t *out_played)
+/* audio_stream_position_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audio_stream_position_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_written, uint64_t *out_consumed, uint64_t *out_played)
 {
     struct audio_stream_position_req idl_q;
     struct audio_stream_position_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = AUDIO_STREAM_POSITION;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_written)
@@ -269,16 +308,25 @@ static inline status_t audio_stream_position_until(handle_t ch, uint64_t deadlin
         *out_played = idl_r.played;
     return idl_st;
 }
+/* On a stream channel: frames written (the header's `write`, as the mixer
+ * reads it now), taken by the mixer, and heard: estimated from the
+ * driver's play position, so it moves smoothly within a period. */
+static inline status_t audio_stream_position_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_written, uint64_t *out_consumed, uint64_t *out_played)
+{
+    return audio_stream_position_call(ch, false, deadline_ns, out_written, out_consumed, out_played);
+}
+static inline status_t audio_stream_position_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_written, uint64_t *out_consumed, uint64_t *out_played)
+{
+    return audio_stream_position_call(ch, true, timeout_ns, out_written, out_consumed, out_played);
+}
 static inline status_t audio_stream_position(handle_t ch, uint64_t *out_written, uint64_t *out_consumed, uint64_t *out_played)
 {
-    return audio_stream_position_until(ch, DEADLINE_NEVER, out_written, out_consumed, out_played);
+    return audio_stream_position_call(ch, false, DEADLINE_NEVER, out_written, out_consumed, out_played);
 }
 
-/* On a stream channel: this stream's volume in centibels (tenths of a dB),
- * clamped to [-960, 0]: 0 is the samples as written, -960 (-96 dB) and
- * below is silence. Answers the volume set. Applies from the next period
- * mixed. */
-static inline status_t audio_stream_set_volume_until(handle_t ch, uint64_t deadline_ns, int32_t centibels, int32_t *out_centibels)
+/* audio_stream_set_volume_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audio_stream_set_volume_call(handle_t ch, bool idl_within, uint64_t idl_t, int32_t centibels, int32_t *out_centibels)
 {
     struct audio_stream_set_volume_req idl_q;
     struct audio_stream_set_volume_rep idl_r;
@@ -286,32 +334,42 @@ static inline status_t audio_stream_set_volume_until(handle_t ch, uint64_t deadl
     idl_q.txid = 0;
     idl_q.ordinal = AUDIO_STREAM_SET_VOLUME;
     idl_q.centibels = centibels;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_centibels)
         *out_centibels = idl_r.centibels;
     return idl_st;
 }
+/* On a stream channel: this stream's volume in centibels (tenths of a dB),
+ * clamped to [-960, 0]: 0 is the samples as written, -960 (-96 dB) and
+ * below is silence. Answers the volume set. Applies from the next period
+ * mixed. */
+static inline status_t audio_stream_set_volume_until(handle_t ch, uint64_t deadline_ns, int32_t centibels, int32_t *out_centibels)
+{
+    return audio_stream_set_volume_call(ch, false, deadline_ns, centibels, out_centibels);
+}
+static inline status_t audio_stream_set_volume_within(handle_t ch, uint64_t timeout_ns, int32_t centibels, int32_t *out_centibels)
+{
+    return audio_stream_set_volume_call(ch, true, timeout_ns, centibels, out_centibels);
+}
 static inline status_t audio_stream_set_volume(handle_t ch, int32_t centibels, int32_t *out_centibels)
 {
-    return audio_stream_set_volume_until(ch, DEADLINE_NEVER, centibels, out_centibels);
+    return audio_stream_set_volume_call(ch, false, DEADLINE_NEVER, centibels, out_centibels);
 }
 
-/* On a stream channel: the levels it is heard at, in centibels: its own
- * volume, the mixer's master volume, and the device's gain below the
- * mixer (the hda driver's get_gain: `hda gain`; 0 if the driver has no
- * gain or can't be asked now). Heard at their sum, below full scale. */
-static inline status_t audio_stream_levels_until(handle_t ch, uint64_t deadline_ns, int32_t *out_volume, int32_t *out_master, int32_t *out_device)
+/* audio_stream_levels_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audio_stream_levels_call(handle_t ch, bool idl_within, uint64_t idl_t, int32_t *out_volume, int32_t *out_master, int32_t *out_device)
 {
     struct audio_stream_levels_req idl_q;
     struct audio_stream_levels_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = AUDIO_STREAM_LEVELS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_volume)
@@ -322,30 +380,34 @@ static inline status_t audio_stream_levels_until(handle_t ch, uint64_t deadline_
         *out_device = idl_r.device;
     return idl_st;
 }
+/* On a stream channel: the levels it is heard at, in centibels: its own
+ * volume, the mixer's master volume, and the device's gain below the
+ * mixer (the hda driver's get_gain: `hda gain`; 0 if the driver has no
+ * gain or can't be asked now). Heard at their sum, below full scale. */
+static inline status_t audio_stream_levels_until(handle_t ch, uint64_t deadline_ns, int32_t *out_volume, int32_t *out_master, int32_t *out_device)
+{
+    return audio_stream_levels_call(ch, false, deadline_ns, out_volume, out_master, out_device);
+}
+static inline status_t audio_stream_levels_within(handle_t ch, uint64_t timeout_ns, int32_t *out_volume, int32_t *out_master, int32_t *out_device)
+{
+    return audio_stream_levels_call(ch, true, timeout_ns, out_volume, out_master, out_device);
+}
 static inline status_t audio_stream_levels(handle_t ch, int32_t *out_volume, int32_t *out_master, int32_t *out_device)
 {
-    return audio_stream_levels_until(ch, DEADLINE_NEVER, out_volume, out_master, out_device);
+    return audio_stream_levels_call(ch, false, DEADLINE_NEVER, out_volume, out_master, out_device);
 }
 
-/* On a stream channel: how its playing has gone, for `play -s` (the owner
- * judging the sound on real hardware): `underruns`, periods it had too
- * few frames for (it wrote too slowly); `late`, periods the mixer itself
- * was late for while it played (scheduled too late: the device may have
- * played silence); `min_lead`, the least the mixer had written ahead of
- * the play position at a period's end while it played (frames;
- * 0xffffffff: no period ended yet); `limited`, periods the mixer's
- * limiter turned down to keep the sum inside full scale; `bits`, the
- * output's sample size now (0: the output is closed); `played`, its
- * frames heard (estimated, as stream_position). */
-static inline status_t audio_stream_stats_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_underruns, uint32_t *out_late, uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits, uint64_t *out_played)
+/* audio_stream_stats_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audio_stream_stats_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_underruns, uint32_t *out_late, uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits, uint64_t *out_played)
 {
     struct audio_stream_stats_req idl_q;
     struct audio_stream_stats_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = AUDIO_STREAM_STATS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_underruns)
@@ -362,9 +424,27 @@ static inline status_t audio_stream_stats_until(handle_t ch, uint64_t deadline_n
         *out_played = idl_r.played;
     return idl_st;
 }
+/* On a stream channel: how its playing has gone, for `play -s` (the owner
+ * judging the sound on real hardware): `underruns`, periods it had too
+ * few frames for (it wrote too slowly); `late`, periods the mixer itself
+ * was late for while it played (scheduled too late: the device may have
+ * played silence); `min_lead`, the least the mixer had written ahead of
+ * the play position at a period's end while it played (frames;
+ * 0xffffffff: no period ended yet); `limited`, periods the mixer's
+ * limiter turned down to keep the sum inside full scale; `bits`, the
+ * output's sample size now (0: the output is closed); `played`, its
+ * frames heard (estimated, as stream_position). */
+static inline status_t audio_stream_stats_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_underruns, uint32_t *out_late, uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits, uint64_t *out_played)
+{
+    return audio_stream_stats_call(ch, false, deadline_ns, out_underruns, out_late, out_min_lead, out_limited, out_bits, out_played);
+}
+static inline status_t audio_stream_stats_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_underruns, uint32_t *out_late, uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits, uint64_t *out_played)
+{
+    return audio_stream_stats_call(ch, true, timeout_ns, out_underruns, out_late, out_min_lead, out_limited, out_bits, out_played);
+}
 static inline status_t audio_stream_stats(handle_t ch, uint32_t *out_underruns, uint32_t *out_late, uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits, uint64_t *out_played)
 {
-    return audio_stream_stats_until(ch, DEADLINE_NEVER, out_underruns, out_late, out_min_lead, out_limited, out_bits, out_played);
+    return audio_stream_stats_call(ch, false, DEADLINE_NEVER, out_underruns, out_late, out_min_lead, out_limited, out_bits, out_played);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -1054,21 +1134,23 @@ static inline status_t audio_serve_one(handle_t ch, const struct audio_ops *ops,
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t audio_serve(handle_t ch, const struct audio_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[AUDIO_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[AUDIO_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = audio_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = audio_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

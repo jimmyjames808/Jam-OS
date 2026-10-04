@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `logctl` (id 19). Client: logctl_<method>(ch, args..., &results...)
- * (and logctl_<method>_until with a deadline) over drv_channel_call, or
+ * (and logctl_<method>_until with a deadline, _within with a timeout), or
  * logctl_<method>_send and logctl_<method>_result without waiting. Server:
  * fill a struct logctl_ops and run logctl_serve(ch, &ops, ctx), or
  * logctl_serve_one / logctl_dispatch_on for a loop of your own;
@@ -29,25 +29,35 @@ struct logctl_flush_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* Everything logged so far is in the boot log's file and on the medium
- * (file.sync). ERR_NOT_FOUND: there is no /data to write to; else the
- * filesystem's error. */
-static inline status_t logctl_flush_until(handle_t ch, uint64_t deadline_ns)
+/* logctl_flush_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t logctl_flush_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct logctl_flush_req idl_q;
     struct logctl_flush_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = LOGCTL_FLUSH;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Everything logged so far is in the boot log's file and on the medium
+ * (file.sync). ERR_NOT_FOUND: there is no /data to write to; else the
+ * filesystem's error. */
+static inline status_t logctl_flush_until(handle_t ch, uint64_t deadline_ns)
+{
+    return logctl_flush_call(ch, false, deadline_ns);
+}
+static inline status_t logctl_flush_within(handle_t ch, uint64_t timeout_ns)
+{
+    return logctl_flush_call(ch, true, timeout_ns);
+}
 static inline status_t logctl_flush(handle_t ch)
 {
-    return logctl_flush_until(ch, DEADLINE_NEVER);
+    return logctl_flush_call(ch, false, DEADLINE_NEVER);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -186,21 +196,23 @@ static inline status_t logctl_serve_one(handle_t ch, const struct logctl_ops *op
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t logctl_serve(handle_t ch, const struct logctl_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[LOGCTL_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[LOGCTL_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = logctl_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = logctl_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }
