@@ -221,6 +221,38 @@ struct channel_call_args {
  * forever; 0 times out at once unless the reply is already there. */
 #define CHANNEL_CALL_TIMEOUT (1u << 0)
 
+/* channel_reply_wait: a server's reply to one call and its wait for the
+ * next request in one system call (abi/syscalls.def has the rules). The
+ * fields marked "channel" are for a channel end in `wait`, "port" for a
+ * port there; the other form's must be 0. */
+struct channel_reply_wait_args {
+    handle_t h;                /* the channel end to reply on; HANDLE_INVALID: no reply */
+    uint32_t rn;               /* reply bytes (the call's txid first, as every reply) */
+    uint64_t rbytes;           /* user address of the reply */
+    uint64_t rh;               /* user address: rhn handle_t sent with the reply */
+    uint32_t rhn;              /* handles sent with it */
+    handle_t wait;             /* where the next request comes from: a channel end or a port */
+    uint64_t mark;             /* user address of a uint64_t set to 1 once the reply went
+                                * out, before the wait; 0: none */
+    uint64_t reply_status;     /* user address of an int32_t: the reply's status, written
+                                * when there was a reply to send; 0: none */
+    uint64_t bytes;            /* channel: user address of room for the request */
+    uint32_t bytes_cap;        /* channel: its size */
+    uint32_t handles_cap;      /* channel: entries in the handles buffer */
+    uint64_t handles;          /* channel: user address: handles_cap handle_t */
+    uint64_t actual_bytes;     /* channel: user address of a uint32_t, or 0 */
+    uint64_t actual_handles;   /* channel: user address of a uint32_t, or 0 */
+    uint64_t packet;           /* port: user address of a struct port_packet */
+    uint32_t flags;            /* CHANNEL_REPLY_WAIT_*; any other bit: ERR_INVALID_ARGS */
+    uint32_t reserved;         /* 0 */
+    uint64_t deadline_ns;      /* absolute, uptime clock; UINT64_MAX = forever. With
+                                * CHANNEL_REPLY_WAIT_TIMEOUT: ns from now */
+};
+
+/* channel_reply_wait flags. TIMEOUT: deadline_ns is a timeout, as
+ * CHANNEL_CALL_TIMEOUT's. */
+#define CHANNEL_REPLY_WAIT_TIMEOUT (1u << 0)
+
 /* hardware -------------------------------------------------------------------
  * Resources are the authority over hardware: userboot gives init the root,
  * which slices it (resource_create) for devmgr; devmgr turns RES_PCI into

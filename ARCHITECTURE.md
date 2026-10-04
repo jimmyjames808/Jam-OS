@@ -484,6 +484,19 @@ Every driver and service is a userspace process from the start.
   deadline is absolute, or with `CHANNEL_CALL_TIMEOUT` in `flags` a
   timeout the kernel adds to its own clock, so a caller needs no
   `clock_get` first.
+- **`channel_reply_wait`**: a server's reply and its wait for the next
+  request in one call: a write on one end (none on a first call), then
+  the next message read from a channel end straight into the server's
+  buffer, or the next packet of a port. Replies stay addressed by
+  (channel end, txid), so any thread or process holding the server's end
+  may answer, a successor too. An optional mark (8 bytes set to 1) is
+  written once the reply went out, before the wait. The reader looks at
+  the queue before it blocks (no read comes back empty), and while it
+  waits a writer hands it the next message that fits directly, in the
+  writer's per-thread slot when small (no allocation, no charge: one per
+  waiting thread). A reply's `ERR_PEER_CLOSED` doesn't stop the wait;
+  `reply_status` says which half failed. The rules are in
+  `abi/syscalls.def`.
 - **Port**: bind many handles and wait on all of them; matching signals queue
   packets. `ONCE` bindings fire once; `PERSISTENT` ones stay and coalesce
   into one queued packet with a count. Limits: 4096 user packets, 4096
@@ -584,6 +597,16 @@ port, so while it handles one request every other client waits behind it.
   allowed and nothing else is queued there, else on its idle HT sibling,
   else as usual. `channel_call` uses it for the request, and a server's
   reply uses it when nothing else is queued for the server.
+- **Direct hand-off**: when such a wake lands on the waker's own CPU with
+  nothing queued there and the waker is one that blocks right after
+  (`channel_call`'s request, `channel_reply_wait`'s reply; the thread's
+  `thread_set_handoff`), the wakee is recorded as the CPU's next thread
+  (`rq->handoff`) instead of queued, and the waker's `schedule()` switches
+  straight to it. A higher-priority thread queued meanwhile runs first, a
+  waker that doesn't block queues its wakee (`sched_handoff_done`, or its
+  next `schedule()`), and the wakee runs on the rest of the waker's time
+  slice, so a pair passing the CPU back and forth is sliced like one
+  thread. Same CPU only. Switch `sched_handoff`, boot `nohandoff`.
 - **Client/server pairs**: every wake from thread context records
   the waker in the wakee; two threads that each woke the other twice
   running are a pair, and a plain wake (the waker keeps running) puts the

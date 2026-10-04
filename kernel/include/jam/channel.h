@@ -44,10 +44,11 @@
 
 struct channel;   /* embeds struct kobject first, type OBJ_CHANNEL */
 
-/* Switch (the benchmark's off/on): a small reply to a channel_call that
- * is waiting for it is built in its writer's per-thread slot and handed
- * over with no allocation and no job charge (channel.c). Off, every
- * message is allocated and charged. Atomic loads and stores. */
+/* Switch (the benchmark's off/on): a small message for a reader already
+ * waiting for it (a reply to a channel_call, a request to a
+ * channel_read_wait reader) is built in its writer's per-thread slot and
+ * handed over with no allocation and no job charge (channel.c). Off,
+ * every message is allocated and charged. Atomic loads and stores. */
 extern bool channel_slots;
 
 /* Where a message's bytes come from, or go to. A user address is copied
@@ -139,6 +140,31 @@ struct chan_call {
  * reading the request: ERR_INVALID_ARGS, nothing sent. A fault writing
  * the reply: it is lost, its handles released, ERR_INVALID_ARGS. */
 status_t channel_call_with(struct channel *ch, struct chan_call *c, uint64_t deadline_ns);
+
+/* One channel_read_wait: room for the message, and its sizes. */
+struct chan_read {
+    struct chan_bytes buf;    /* room for its bytes */
+    struct khandle   *h;      /* room for its handles: the reader owns them once read */
+    uint32_t          hcap;   /* how many */
+    uint32_t          nb;     /* out: its bytes (with ERR_BUFFER_TOO_SMALL too) */
+    uint32_t          nh;     /* out: its handles (ditto) */
+};
+
+/* channel_read_into, waiting for a message if none is queued: until one
+ * comes, deadline_ns passes (ERR_TIMED_OUT), the peer closes with nothing
+ * queued (ERR_PEER_CLOSED), ch itself closes (ERR_BAD_STATE) or the thread
+ * is cancelled (ERR_CANCELED). The queue is looked at before blocking, so
+ * no read ever comes back empty-handed for a message that is there. While
+ * it waits the thread is listed on ch with its free message slot on
+ * offer, and a writer hands it the next message that fits r directly
+ * (bypassing the queue; a small one built in the writer's slot is neither
+ * allocated nor charged). A message that doesn't fit is queued, and read as
+ * channel_read_into does: ERR_BUFFER_TOO_SMALL with its sizes, and it stays
+ * queued. A message the reader was handed or took is wholly in r->buf
+ * when this returns, even if the thread was cancelled meanwhile. No lock
+ * held; a fault writing user memory is ERR_INVALID_ARGS, the message lost
+ * (as channel_read_into). */
+status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t deadline_ns);
 
 /* The messages queued on ch now and what they are charged (bytes, plus
  * JOB_OBJECT_BYTES per carried handle): for debug_command "ps". */
