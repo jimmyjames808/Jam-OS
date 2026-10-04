@@ -396,6 +396,28 @@ static void refresh_writable(struct channel *ch)
     spin_unlock_irqrestore(&pair->lock, f);
 }
 
+/* ch's lock held, its queue not empty: take the oldest message for a
+ * reader with room for bytes_cap bytes and handles_cap handles. *nb, *nh:
+ * its sizes. If it doesn't fit: ERR_BUFFER_TOO_SMALL, and it stays queued.
+ * *was_full: the queue was full before (the writer may be writable again:
+ * refresh_writable, once unlocked). */
+static status_t take_first_locked(struct channel *ch, uint32_t bytes_cap, uint32_t handles_cap,
+                                  struct chan_msg **out, uint32_t *nb, uint32_t *nh,
+                                  bool *was_full)
+{
+    struct chan_msg *m = list_first(&ch->queue, struct chan_msg, node);
+    *nb = m->nbytes;
+    *nh = m->nhandles;
+    if (m->nbytes > bytes_cap || m->nhandles > handles_cap)
+        return ERR_BUFFER_TOO_SMALL;
+    list_del(&m->node);
+    *was_full = ch->nqueued == CHANNEL_MAX_QUEUED;
+    if (--ch->nqueued == 0)
+        kobject_signal_locked(&ch->base, SIG_READABLE, 0);
+    *out = m;
+    return OK;
+}
+
 status_t channel_read_into(struct channel *ch, const struct chan_bytes *b, uint32_t *actual_bytes,
                            struct khandle *handles, uint32_t handles_cap,
                            uint32_t *actual_handles)
@@ -408,24 +430,12 @@ status_t channel_read_into(struct channel *ch, const struct chan_bytes *b, uint3
     status_t st = OK;
     bool was_full = false;
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
-    if (ch->closed) {
+    if (ch->closed)
         st = ERR_BAD_STATE;
-    } else if (list_empty(&ch->queue)) {
+    else if (list_empty(&ch->queue))
         st = ch->peer_closed ? ERR_PEER_CLOSED : ERR_SHOULD_WAIT;
-    } else {
-        m = list_first(&ch->queue, struct chan_msg, node);
-        nb = m->nbytes;
-        nh = m->nhandles;
-        if (nb > bytes_cap || nh > handles_cap) {
-            st = ERR_BUFFER_TOO_SMALL;   /* stays queued */
-            m = NULL;
-        } else {
-            list_del(&m->node);
-            was_full = ch->nqueued == CHANNEL_MAX_QUEUED;
-            if (--ch->nqueued == 0)
-                kobject_signal_locked(&ch->base, SIG_READABLE, 0);
-        }
-    }
+    else
+        st = take_first_locked(ch, bytes_cap, handles_cap, &m, &nb, &nh, &was_full);
     spin_unlock_irqrestore(&ch->base.lock, f);
     if (actual_bytes)
         *actual_bytes = nb;
