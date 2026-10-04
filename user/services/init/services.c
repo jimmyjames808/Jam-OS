@@ -472,9 +472,12 @@ static status_t start_logd(void)
 
 status_t shell_stop_devmgr(uint64_t deadline)
 {
-    /* The sound's clients first: the mixer holds a channel to the hda
+    /* The sound's clients first: the mixer holds channels to the hda
      * driver, which ends only once every client has gone, so devmgr would
-     * wait its whole STOP_WAIT for it (the PC's 30 s reboot). They are
+     * wait its whole STOP_WAIT for it, twice (the PC's 30 s reboot). The
+     * keeper holds duplicates of them too (the mixer's driver channel,
+     * stream channel and ring, so they outlive a restart): those go with
+     * it (kept_given_up), or the driver never sees its client go. They are
      * stopped for good: the machine is about to restart. Not the console:
      * when it ends the kernel takes the screen back and redraws its log,
      * which flashed text over the blank screen. */
@@ -482,11 +485,12 @@ status_t shell_stop_devmgr(uint64_t deadline)
     for (unsigned i = 0; i < sizeof(clients) / sizeof(clients[0]); i++) {
         struct svc *c = &svcs[clients[i]];
         c->given_up = true;
-        if (!c->running)
-            continue;
-        signals_t seen;
-        jam_job_kill(c->job);
-        (void)jam_object_wait_one(c->proc, SIG_TERMINATED, deadline, &seen);
+        if (c->running) {
+            signals_t seen;
+            jam_job_kill(c->job);
+            (void)jam_object_wait_one(c->proc, SIG_TERMINATED, deadline, &seen);
+        }
+        kept_given_up(clients[i]);   /* the spare and what the keeper held (the mixer's) */
     }
     struct svc *s = &svcs[DEVMGR];
     if (!devmgr || !s->running || s->given_up)

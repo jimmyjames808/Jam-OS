@@ -175,7 +175,7 @@ uint64_t spare_due(uint64_t t)
 {
     struct svc *s = &svcs[mixer.svc];
     if (s->given_up)
-        spare_drop();   /* shell_stop_devmgr gives the mixer up without a word to us */
+        spare_drop();   /* a guard: every give-up calls kept_given_up too */
     if (!spares_on || spare.proc || s->given_up || !s->started)
         return DEADLINE_NEVER;   /* off, one waits, or the mixer never started */
     if (t < spare.next_try)
