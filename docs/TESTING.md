@@ -291,6 +291,11 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   before spares (it still hands the new mixer its state and keep channel,
   and keeps the restart rule for a deliberate kill): the switch for
   comparing restart times. A reboot keeps it.
+- `nolockdep`: the lock-order checker (`kernel/debug/lockdep.c`) checks
+  no spinlock or mutex this boot: the switch for the benchmark's
+  checker-off column (`bench` also flips it for spinlocks within one run,
+  as the `lockdep` switch). The everyday boot checks every lock. A reboot
+  keeps it.
 - `test<name>`: a crash test at boot (`testpf`, `testlockorder`, ...; the
   names are in `kernel/debug/selftest.c`). Each must panic with the right
   message; `testbp` must come back. The early ones run before the stored

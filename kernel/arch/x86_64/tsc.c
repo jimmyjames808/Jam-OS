@@ -5,6 +5,7 @@
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/pathstat.h>
 #include <jam/time.h>
 #include <jam/x86.h>
 
@@ -124,6 +125,7 @@ uint64_t tsc_to_ns(uint64_t d)
 
 uint64_t uptime_ns(void)
 {
+    PATH_COUNT(PATH_CLOCK);
     return tsc_to_ns(rdtsc() - tsc_boot);
 }
 

@@ -357,7 +357,7 @@ status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out
     /* The queue is checked before the deadline: a waiter woken for a packet
      * just as it timed out still takes it, so no wakeup is wasted. */
     while (list_empty(&p->queue)) {
-        if (uptime_ns() >= deadline_ns) {
+        if (deadline_ns != DEADLINE_NEVER && uptime_ns() >= deadline_ns) {
             spin_unlock_irqrestore(&p->base.lock, f);
             return ERR_TIMED_OUT;
         }

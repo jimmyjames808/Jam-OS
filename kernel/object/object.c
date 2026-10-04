@@ -225,7 +225,7 @@ status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_
     if (!(obj->signals & mask)) {
         list_add_tail(&obj->observers, &w.obs.node);
         while (!w.hit) {
-            if (uptime_ns() >= deadline_ns) {
+            if (deadline_ns != DEADLINE_NEVER && uptime_ns() >= deadline_ns) {
                 st = ERR_TIMED_OUT;
                 break;
             }

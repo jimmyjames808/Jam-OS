@@ -51,4 +51,7 @@ uint64_t pcid_flushed_loads(uint32_t cpu);
 uint32_t pcid_test_decide(uint32_t cpu, uint64_t id, uint64_t gen, bool sw);
 /* The fake CPUs as new: a test starts from empty slots every time it runs. */
 void     pcid_test_reset(void);
+/* Loads on fake CPU `cpu` whose slot hint was wrong, so they searched. */
+uint64_t pcid_test_searches(uint32_t cpu);
+#define PCID_HINTS_PER_CPU 16
 #endif

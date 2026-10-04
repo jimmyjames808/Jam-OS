@@ -30,7 +30,8 @@
  *     The address-space switch line is the kernel alone: two CR3 loads
  *     (and their active-CPU mask updates) timed with interrupts off.
  * The other lines are kernel threads. The lock-order checker is on for
- * every lock, as it always is.
+ * every lock (as in every boot without `nolockdep`), except where a line
+ * flips it (switch lockdep: spinlocks unchecked).
  *   - The optimisations each have a run-time switch. A line that one of
  *     them should move is measured twice in the same run, switch off and
  *     then on, and printed as "<switch> off median/p99 on median/p99"
@@ -233,14 +234,15 @@ static uint64_t *samples, *samples_off, *samples_on;
 /* The switches, each flipped between its off and on setting for one
  * measurement and put back afterwards (on = the boot setting, or the
  * default if the boot turned the feature off). SW_ALL flips every one of
- * them at once (the word "m55": none of them against all of them). */
+ * them at once (the word "m55": none of them against all of them), except
+ * the lock checker, which is no optimisation. */
 enum sw {
     SW_SPINIDLE, SW_PLACEORDER, SW_AFFINEPAIR, SW_KMCACHE, SW_ONESHOT, SW_SERIALIRQ, SW_FPUOPT,
-    SW_PCID, SW_FPUCALL, SW_COUNT, SW_ALL = SW_COUNT
+    SW_PCID, SW_FPUCALL, SW_LOCKDEP, SW_COUNT, SW_ALL = SW_COUNT
 };
 static const char *const sw_name[SW_COUNT + 1] = {
     "spinidle", "placeorder", "affinepair", "kmcache", "oneshot", "serialirq", "fpuopt", "pcid",
-    "fpucall", "m55"
+    "fpucall", "lockdep", "m55"
 };
 static uint64_t sw_boot[SW_COUNT];
 
@@ -256,6 +258,7 @@ static uint64_t sw_get(enum sw s)
     case SW_FPUOPT:     return __atomic_load_n(&fpu_opt, __ATOMIC_RELAXED);
     case SW_PCID:       return pcid_is_on();
     case SW_FPUCALL:    return __atomic_load_n(&fpu_call, __ATOMIC_RELAXED);
+    case SW_LOCKDEP:    return lockdep_is_on();
     default:            break;
     }
     return 0;
@@ -273,11 +276,12 @@ static void sw_put(enum sw s, uint64_t v)
     case SW_FPUOPT:     __atomic_store_n(&fpu_opt, (bool)v, __ATOMIC_RELAXED); break;
     case SW_PCID:       pcid_set(v); break;   /* no-op without PCIDs */
     case SW_FPUCALL:    __atomic_store_n(&fpu_call, (bool)v, __ATOMIC_RELAXED); break;
+    case SW_LOCKDEP:    lockdep_set(v); break;
     default:            break;
     }
 }
 
-static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1, 1, 1 };
+static const uint64_t sw_default_on[SW_COUNT] = { SCHED_IDLE_SPIN_NS, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
 
 static void sw_save(void)
 {
@@ -289,7 +293,8 @@ static void sw_set(enum sw s, bool on)
 {
     if (s == SW_ALL) {
         for (unsigned i = 0; i < SW_COUNT; i++)
-            sw_set((enum sw)i, on);
+            if (i != SW_LOCKDEP)
+                sw_set((enum sw)i, on);
         return;
     }
     sw_put(s, on ? (sw_boot[s] ? sw_boot[s] : sw_default_on[s]) : 0);
@@ -299,7 +304,8 @@ static void sw_restore(enum sw s)
 {
     if (s == SW_ALL) {
         for (unsigned i = 0; i < SW_COUNT; i++)
-            sw_restore((enum sw)i);
+            if (i != SW_LOCKDEP)
+                sw_restore((enum sw)i);
         return;
     }
     sw_put(s, sw_boot[s]);
@@ -854,8 +860,8 @@ static void chan_call(int server_cpu)
 {
     char what[64];
     if (server_cpu == cpu_p) {
-        chan_call_measure(server_cpu);
-        result("channel_call round trip, same CPU (P)", samples, SAMPLES);
+        off_on(SW_LOCKDEP, "channel_call round trip, same CPU (P)", chan_call_measure,
+               server_cpu, SAMPLES);
         return;
     }
     ksnprintf(what, sizeof(what), "channel_call round trip P->%s, 1 client", kind(server_cpu));
@@ -1314,6 +1320,8 @@ static void user_benches(void)
         user_bench("call", cpu_p, cpu_p, "user: process->process channel_call, same CPU (P)");
     user_bench_off_on(SW_FPUCALL, "call", cpu_p, cpu_p,
                       "user: process->process channel_call, same CPU, FPU call rule (P)");
+    user_bench_off_on(SW_LOCKDEP, "call", cpu_p, cpu_p,
+                      "user: process->process channel_call, same CPU, lock checker (P)");
     user_bench("dcall", cpu_p, cpu_p, "user: the same with a 5 s deadline per call (P)");
     user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1,
                       "user: thread->thread channel_call, 1 process (P)");
@@ -1345,8 +1353,8 @@ static void print_header(void)
         brand++;
     report("bench: %s, TSC %lu MHz, %u CPUs; P=cpu%d P2=cpu%d HT=cpu%d E=cpu%d", brand,
            tsc_hz / 1000000, cpu_count, cpu_p, cpu_p2, cpu_ht, cpu_e);
-    report("bench: kernel threads, then ring 3 ('user:' lines, bin/utest), lock checker on, "
-           "median and p99 of %u samples", SAMPLES);
+    report("bench: kernel threads, then ring 3 ('user:' lines, bin/utest), lock checker %s, "
+           "median and p99 of %u samples", lockdep_is_on() ? "on" : "off", SAMPLES);
     kprintf("bench: running (about 10 s); nothing is printed while measuring\n");
 }
 
@@ -1360,7 +1368,8 @@ static void local_benches(void)
         report("bench: WARNING: TSC steps are %lu ns (emulated?): single-shot "
                "results under ~%lu ns mean nothing", step_ps / 1000, step_ps / 100);
 
-    batch("spin_lock + spin_unlock, uncontended (P)", op_lock);
+    batch_op = op_lock;
+    off_on(SW_LOCKDEP, "spin_lock + spin_unlock, uncontended (P)", batch_measure, 0, SAMPLES);
     /* A live kmalloc(64) object keeps its slab from emptying: without the
      * magazines, an empty slab goes straight back to the page allocator,
      * and a lone alloc+free pair would build and free a slab every time. */

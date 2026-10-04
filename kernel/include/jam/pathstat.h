@@ -9,7 +9,7 @@
  *                           calls, user and kernel copies and their
  *                           bytes, kmallocs, handle-table operations,
  *                           spinlock acquisitions, scheduler passes, FPU
- *                           saves, CR3 loads, ...;
+ *                           saves, CR3 loads, clock reads, ...;
  *   PATH_MARK / PATH_MARK_ARG  records a TSC timestamp at a named point
  *                           of the path (enum path_mark).
  * Counts are exact, so they mean the same in QEMU as on the PC; the
@@ -67,6 +67,8 @@ enum path_ev {
     PATH_TIMER_ARM,      /* one-shot timer re-arms for a new earliest sleeper */
     PATH_EMPTY_READ,     /* channel reads that found nothing (ERR_SHOULD_WAIT) */
     PATH_OBSERVER,       /* observer callbacks fired by a signal change */
+    PATH_CLOCK,          /* clock reads (uptime_ns) */
+    PATH_LOCK_SLOW,      /* lock checker steps that turned interrupts off */
     PATH_CALLS,          /* boundaries the lead passed in the window (= calls) */
     PATH_EV_N
 };

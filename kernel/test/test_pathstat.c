@@ -146,6 +146,8 @@ KTEST(pathstat_switch_counts)
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
     KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 200);
+    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* the checker's fast path */
+    KT_EQ(per100(&r, PATH_CLOCK), 0);
     struct path_shape *sh = kmalloc(sizeof(*sh));
     KT_ASSERT(sh);
     bool ok = path_shape_of(&r, PATH_MK_YIELD, sh);
@@ -189,6 +191,8 @@ KTEST(pathstat_kernel_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
     KT_IDLE_EQ(per100(&r, PATH_WAKE), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 1400);
+    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* every release is the top lock */
+    KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
 /* utest bench-call against bench-echo, both on one CPU: today's 5 system
@@ -227,10 +231,16 @@ KTEST(pathstat_user_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_FPU_CALLED), fpu_call_drop() ? 200 : 0);
     KT_IDLE_EQ(per100(&r, PATH_FPU_RESTORE), 200);
     KT_IDLE_EQ(per100(&r, PATH_CR3), 200);
+    /* The checker never turns interrupts off: each release is of the top
+     * lock, and every lock pair has been seen before the window. */
+    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
+    KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
 /* The same call with a deadline, as libos gives every file call: one more
- * system call (the clock) and one sleeper-queue entry per call. The 5 s
+ * system call (the clock) and one sleeper-queue entry per call. Clock
+ * reads: the clock_get and the call's wait, which has a deadline (the
+ * server's wait has none, and reads no clock). The 5 s
  * deadline is after the CPU's next tick, so it never re-arms the timer
  * (the tick looks after it: wait.c). */
 KTEST(pathstat_user_deadline_call_counts)
@@ -246,4 +256,6 @@ KTEST(pathstat_user_deadline_call_counts)
     KT_EQ(per100(&r, PATH_SLEEPQ), 100);
     KT_EQ(per100(&r, PATH_TIMER_ARM), 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 100);
+    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 200);
+    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
 }
