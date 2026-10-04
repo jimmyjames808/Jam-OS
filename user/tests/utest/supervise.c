@@ -85,6 +85,33 @@ static bool crash_it(handle_t ch, handle_t proc, uint64_t *t)
     return true;
 }
 
+/* The crash-test driver's channel once a new instance answers on it; the
+ * ping's `started` into *started. We saw the old one die, but devmgr may
+ * not have yet: until it has, GET_SERVICE still hands out a channel to the
+ * dead instance, whose call fails at once with ERR_PEER_CLOSED. Ask again
+ * then (devmgr's answer is the truth once it has seen the death), until
+ * `deadline`. */
+static bool reconnect(handle_t dm, handle_t *ch, uint64_t deadline, uint64_t *started)
+{
+    struct devmgr_rep r;
+    handle_t hs[DEVMGR_MAX_HANDLES];
+    uint32_t nh = 0;
+    for (unsigned stale = 0;; stale++) {
+        CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), OK);
+        status_t st = crasher_ping(hs[0], deadline, started);   /* waits for the restart */
+        if (st != ERR_PEER_CLOSED || now() >= deadline) {
+            *ch = hs[0];
+            CHECK_ST(st, OK);
+            if (stale)
+                printf("utest: %s: %u channel(s) to the dead instance first\n", utest_cur,
+                       stale);
+            return true;
+        }
+        CHECK_ST(jam_handle_close(hs[0]), OK);
+        jam_nanosleep(now() + 2 * NS_PER_MS);
+    }
+}
+
 /* Crash once, reconnect: *delay_ms from the crash to the new instance's
  * start (the backoff, and a start). */
 static bool crash_and_reconnect(handle_t dm, handle_t *ch, handle_t *proc, uint64_t *delay_ms)
@@ -97,9 +124,8 @@ static bool crash_and_reconnect(handle_t dm, handle_t *ch, handle_t *proc, uint6
         return false;
     CHECK_ST(jam_handle_close(*ch), OK);
     CHECK_ST(jam_handle_close(*proc), OK);
-    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), OK);   /* the new channel */
-    *ch = hs[0];
-    CHECK_ST(crasher_ping(*ch, now() + 15 * NS_PER_S, &started), OK);   /* waits for the restart */
+    if (!reconnect(dm, ch, now() + 15 * NS_PER_S, &started))
+        return false;
     CHECK(started > t);
     *delay_ms = (started - t) / NS_PER_MS;
     CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, TV, TD, &r, hs, &nh), OK);
