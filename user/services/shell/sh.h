@@ -39,6 +39,7 @@
 #pragma once
 
 #include <os.h>
+#include <sha256.h>
 #include <wallclock.h>
 
 /* ---- output and input (sh_io.c) ---------------------------------------------------- */
@@ -333,6 +334,13 @@ status_t    sh_read(const char *abs, const void **data, uint64_t *size);
 /* n bytes into the file at abs, created if missing. how: FS_TRUNCATE (its
  * new contents), FS_APPEND (after what it has), or 0 (over its start). */
 status_t    sh_write(const char *abs, const void *data, size_t n, uint32_t how);
+/* Everything in `in` into `out` from offset 0, a piece at a time (any
+ * size); *copied: the bytes written, also after a failure. ERR_CANCELED:
+ * Ctrl+C; ERR_NO_SPACE: a write came up short; else the files' errors. */
+status_t    sh_copy(struct jfile *in, struct jfile *out, uint64_t *copied);
+/* The SHA-256 of the file at abs, read a piece at a time (any size).
+ * ERR_CANCELED: Ctrl+C; else the file's errors. */
+status_t    sh_sha256_file(const char *abs, uint8_t digest[SHA256_BYTES]);
 /* The bootfs name of a file on /boot ("/boot/bin/x" -> "bin/x"), or NULL
  * if abs is elsewhere. */
 const char *sh_bootfs_name(const char *abs);

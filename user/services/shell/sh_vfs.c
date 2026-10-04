@@ -8,6 +8,9 @@
  * "/"), so what reaches libos is always absolute and free of "..". */
 #include "sh.h"
 
+#define COPY_CHUNK (64u << 10)    /* sh_copy's piece: one call to the service each way */
+#define HASH_CHUNK (256u << 10)   /* sh_sha256_file's piece */
+
 static char cwd[SH_PATH_MAX] = "/boot";
 static void *held;   /* the file sh_read last handed out */
 
@@ -202,6 +205,59 @@ status_t sh_write(const char *abs, const void *data, size_t n, uint32_t how)
     if (st == OK && done < n)
         st = ERR_NO_SPACE;
     file_close(&f);
+    return st;
+}
+
+status_t sh_copy(struct jfile *in, struct jfile *out, uint64_t *copied)
+{
+    *copied = 0;
+    uint8_t *buf = malloc(COPY_CHUNK);
+    if (!buf)
+        return ERR_NO_MEMORY;
+    status_t st = OK;
+    size_t got = 0, put = 0;
+    for (uint64_t off = 0; st == OK; off += got) {
+        if (sh_interrupted())
+            st = ERR_CANCELED;
+        else
+            st = file_read(in, off, buf, COPY_CHUNK, &got);
+        if (st != OK || !got)
+            break;
+        st = file_write(out, off, buf, got, &put);
+        *copied += put;
+        if (st == OK && put < got)
+            st = ERR_NO_SPACE;
+    }
+    free(buf);
+    return st;
+}
+
+status_t sh_sha256_file(const char *abs, uint8_t digest[SHA256_BYTES])
+{
+    struct jfile f;
+    char *buf = malloc(HASH_CHUNK);
+    status_t st = buf ? file_open(abs, FS_READ, &f) : ERR_NO_MEMORY;
+    if (st != OK) {
+        free(buf);
+        return st;
+    }
+    struct sha256 s;
+    sha256_init(&s);
+    size_t got = 0;
+    for (uint64_t off = 0;; off += got) {
+        if (sh_interrupted()) {
+            st = ERR_CANCELED;
+            break;
+        }
+        st = file_read(&f, off, buf, HASH_CHUNK, &got);
+        if (st != OK || !got)
+            break;
+        sha256_add(&s, buf, got);
+    }
+    file_close(&f);
+    free(buf);
+    if (st == OK)
+        sha256_done(&s, digest);
     return st;
 }
 
