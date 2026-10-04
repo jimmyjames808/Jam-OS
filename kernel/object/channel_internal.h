@@ -16,8 +16,9 @@ struct chan_pair {
     struct channel   *ep[2];   /* NULL once that endpoint has closed */
     uint32_t          refs;    /* one per endpoint not yet destroyed */
     /* Threads waiting on ep[i] to be handed a message (its channel_call
-     * callers). Written under ep[i]'s lock, read without it by writers as
-     * a hint: whether a small message should be built in a slot. */
+     * callers and channel_read_wait readers). Written under ep[i]'s lock,
+     * read without it by writers as a hint: whether a small message should
+     * be built in a slot. */
     uint32_t          waiting[2];
 };
 
@@ -46,16 +47,25 @@ static inline uint8_t *msg_bytes(struct chan_msg *m)
     return (uint8_t *)(msg_handles(m) + m->nhandles);
 }
 
-/* A thread inside channel_call, waiting on its own endpoint for the reply
- * carrying txid. The writer that delivers the reply unlinks it. */
+/* A thread waiting on an endpoint to be handed a message: inside
+ * channel_call, for the reply carrying txid; or inside channel_read_wait
+ * (`any`), for whatever message comes next, if it fits. The writer that
+ * hands one over unlinks it. While a reader is listed, its endpoint's
+ * queue is empty: a writer that queues a message there instead (it
+ * didn't fit) unlinks and wakes every reader, so they read the queue in
+ * order. */
 struct chan_waiter {
-    struct list_node node;     /* on the endpoint's callers list */
-    uint32_t         txid;     /* the reply it waits for */
-    struct thread   *thread;   /* the caller */
-    struct chan_msg *reply;    /* set by the writer that delivers it */
-    struct chan_msg *slot;     /* the caller's free slot while it waits, or NULL: a
-                                * writer that hands over a reply built in its own slot
-                                * takes this one in exchange (the endpoint's lock) */
+    struct list_node node;          /* on the endpoint's callers list */
+    uint32_t         txid;          /* the reply it waits for; 0 for a reader */
+    bool             any;           /* a reader: takes any message that fits */
+    uint32_t         bytes_cap;     /* a reader's room for bytes... */
+    uint32_t         handles_cap;   /* ...and handles */
+    struct thread   *thread;        /* the waiting thread */
+    struct chan_msg *reply;         /* set by the writer that hands it a message (or, for
+                                     * a reader, the one it took off the queue itself) */
+    struct chan_msg *slot;          /* its free slot while it waits, or NULL: a writer
+                                     * that hands over a message built in its own slot
+                                     * takes this one in exchange (the endpoint's lock) */
 };
 
 struct channel {
