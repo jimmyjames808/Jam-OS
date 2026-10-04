@@ -39,6 +39,7 @@
 #pragma once
 
 #include <os.h>
+#include <sha256.h>
 #include <wallclock.h>
 
 /* ---- output and input (sh_io.c) ---------------------------------------------------- */
@@ -333,6 +334,13 @@ status_t    sh_read(const char *abs, const void **data, uint64_t *size);
 /* n bytes into the file at abs, created if missing. how: FS_TRUNCATE (its
  * new contents), FS_APPEND (after what it has), or 0 (over its start). */
 status_t    sh_write(const char *abs, const void *data, size_t n, uint32_t how);
+/* Everything in `in` into `out` from offset 0, a piece at a time (any
+ * size); *copied: the bytes written, also after a failure. ERR_CANCELED:
+ * Ctrl+C; ERR_NO_SPACE: a write came up short; else the files' errors. */
+status_t    sh_copy(struct jfile *in, struct jfile *out, uint64_t *copied);
+/* The SHA-256 of the file at abs, read a piece at a time (any size).
+ * ERR_CANCELED: Ctrl+C; else the file's errors. */
+status_t    sh_sha256_file(const char *abs, uint8_t digest[SHA256_BYTES]);
 /* The bootfs name of a file on /boot ("/boot/bin/x" -> "bin/x"), or NULL
  * if abs is elsewhere. */
 const char *sh_bootfs_name(const char *abs);
@@ -366,6 +374,7 @@ SH_CMD(host); SH_CMD(fetch); SH_CMD(serve); SH_CMD(speed);
 SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
 SH_CMD(reboot); SH_CMD(kernel); SH_CMD(update); SH_CMD(run); SH_CMD(allow);
 /* tests */
-SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(utest); SH_CMD(usbtest); SH_CMD(hdatest);
+SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(storm); SH_CMD(utest);
+SH_CMD(usbtest); SH_CMD(hdatest);
 SH_CMD(mixtest);
 SH_CMD(demo); SH_CMD(crash); SH_CMD(panic);

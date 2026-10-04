@@ -167,6 +167,16 @@ static const struct sh_cmd cmds[] = {
       "  Ctrl+C ends it after the step in progress"),
     C(bench, C_TESTS, "bench", "kernel benchmark"),
     C(stress, C_TESTS, "stress <seconds>", "stress test (1..600)"),
+    C(storm, C_TESTS, "storm <from> <to> <kills/s> [service...] | storm mixer <kills/s> <seconds>",
+      "copy a file while services are killed at a fixed rate, then say whether the\n"
+      "  copy is whole: the bytes, MB/s, the kills, kill to first answer (median, p99,\n"
+      "  worst: from the kill to the killed service's first answer to a call), both\n"
+      "  files' SHA-256 read back, MATCH or DIFFERENT. Killed by default: each side's\n"
+      "  filesystem service (fat-usb0, fat-data), taking turns; 0 kills/s: none, the\n"
+      "  baseline. e.g. storm /usb0/big.bin /data/big.bin 10. storm mixer 2 60: the\n"
+      "  mixer twice a second for a minute while music plays, then the kills and the\n"
+      "  mixer's own restart lines (the least audio left written ahead, late periods).\n"
+      "  The result line goes to the log too. Ctrl+C stops it"),
     C(utest, C_TESTS, "utest", "the user-space test suite (bin/utest) and its result line"),
     C(usbtest, C_TESTS, "usbtest", "the USB checks (bin/usbtest) and their result line"),
     C(hdatest, C_TESTS, "hdatest",

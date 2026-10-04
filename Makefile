@@ -453,6 +453,7 @@ check: all
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
 	python3 tools/checkwants.py --selftest
+	python3 tools/fatcheck.py --selftest
 	$(SIGN_TOOL) self-test
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the

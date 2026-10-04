@@ -1,31 +1,6 @@
 /* cp: copy a file, to a new name or into a directory (on any mount). */
 #include "sh.h"
 
-#define CHUNK (64u << 10)
-
-/* Everything from in to out. */
-static status_t copy(struct jfile *in, struct jfile *out)
-{
-    uint8_t *buf = malloc(CHUNK);
-    if (!buf)
-        return ERR_NO_MEMORY;
-    status_t st = OK;
-    size_t got = 0, put = 0;
-    for (uint64_t off = 0; st == OK; off += got) {
-        if (sh_interrupted())
-            st = ERR_CANCELED;
-        else
-            st = file_read(in, off, buf, CHUNK, &got);
-        if (st != OK || !got)
-            break;
-        st = file_write(out, off, buf, got, &put);
-        if (st == OK && put < got)
-            st = ERR_NO_SPACE;
-    }
-    free(buf);
-    return st;
-}
-
 SH_CMD(cp)
 {
     char from[SH_PATH_MAX], to[SH_PATH_MAX];
@@ -57,7 +32,8 @@ SH_CMD(cp)
     }
     st = file_open(to, FS_WRITE | FS_CREATE | FS_TRUNCATE, &out);
     if (st == OK) {
-        st = copy(&in, &out);
+        uint64_t copied;
+        st = sh_copy(&in, &out, &copied);
         file_close(&out);
     }
     file_close(&in);
