@@ -3,7 +3,9 @@
  * planned from facts. It READS ONLY: no VT-d register is written, nothing
  * the firmware left on is turned off, no PCI register is written. The one
  * thing it changes is the kernel's own page tables: each unit's register
- * page is mapped uncached (vmm_map_mmio), and stays mapped for the IOMMU.
+ * page is mapped uncached (vmm_map_mmio), and stays mapped for the IOMMU:
+ * the mapping and the registers' range go to vtd_unit.c (vtd_unit_found,
+ * vtd_unit_mapped), which starts the units only with `iommu=on`.
  *
  * Every line starts "vtd:" (grep 'vtd:' in a boot log). In order: the
  * table's header, each unit with its device scopes, each reserved memory
@@ -22,6 +24,8 @@
 #include <jam/report.h>
 #include <jam/string.h>
 #include <jam/vtd.h>
+
+#include "vtd_internal.h"
 
 #define PCI_COMMAND     0x04
 #define PCI_CMD_MASTER  (1u << 2)
@@ -354,6 +358,7 @@ static void probe_unit(uint32_t idx, const struct dmar_unit *u)
         return;
     }
     seen.units_read++;
+    vtd_unit_mapped(idx, r, span, info.haw);
     uint64_t cap = rd64(r, VTD_CAP), ecap = rd64(r, VTD_ECAP);
     uint32_t gsts = rd32(r, VTD_GSTS), pmen = rd32(r, VTD_PMEN), fsts = rd32(r, VTD_FSTS);
     char buf[480];
@@ -428,6 +433,8 @@ void vtd_probe(void)
         return;
     }
     log_table(h);
+    for (uint32_t i = 0; i < info.nunits; i++)
+        vtd_unit_found(i, info.units[i].base, (1ull << info.units[i].size) * PAGE_SIZE);
     for (uint32_t i = 0; i < info.nunits; i++)
         probe_unit(i, &info.units[i]);
     log_bus_masters();

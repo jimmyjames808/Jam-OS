@@ -1,12 +1,19 @@
 /* Intel VT-d remapping hardware: the register map and its bits (Intel
- * VT-d specification 4.1, chapter 11), and the boot-time probe.
+ * VT-d specification 4.1, chapter 11), the boot-time probe, and the
+ * units' start.
  *
  * The probe (kernel/dev/vtd_probe.c) reads the DMAR table (<jam/dmar.h>)
  * and each unit's registers and logs what it finds, every line starting
  * "vtd:". It only READS: no VT-d register is written, so a machine runs
  * exactly as before it. What the firmware left on (translation, interrupt
  * remapping, protected memory regions, recorded faults) is reported, not
- * changed. The design for the IOMMU itself is docs/M11-PLAN.md. */
+ * changed. Each unit's register mapping is kept for the units' code
+ * (kernel/dev/vtd_unit.c).
+ *
+ * With the boot word `iommu=on` (off by default), vtd_units_start then
+ * runs each unit's invalidation queue and its fault reporting: no
+ * translation and no interrupt remapping yet. Without it no VT-d register
+ * is ever written. The design for the IOMMU itself is docs/M11-PLAN.md. */
 #pragma once
 
 #include <stdbool.h>
@@ -38,7 +45,10 @@
 #define VTD_IQT      0x088   /* 64: invalidation queue tail */
 #define VTD_IQA      0x090   /* 64: invalidation queue address */
 #define VTD_ICS      0x09c   /* 32: invalidation completion status */
+#define VTD_IQERCD   0x0b0   /* 64: invalidation queue error record */
 #define VTD_IRTA     0x0b8   /* 64: interrupt remapping table address */
+/* The IOTLB Invalidate Register is at ECAP.IRO * 16 + 8 (11.4.6.3). */
+#define VTD_IOTLB_REG_OFF 8
 
 /* ---- the Capability Register ------------------------------------------------ */
 
@@ -92,6 +102,39 @@
 #define VTD_GSTS_IRTPS (1u << 24)   /* interrupt remapping table pointer set */
 #define VTD_GSTS_CFIS  (1u << 23)   /* compatibility-format interrupts pass */
 
+/* ---- the Global Command Register (11.4.4.1) --------------------------------- */
+/* One command per write: GCMD = (GSTS & VTD_GSTS_KEEP) with one bit changed,
+ * then wait until GSTS shows it. VTD_GSTS_KEEP drops the one-shot status
+ * bits (RTPS 30, WBFS 27, IRTPS 24) and the reserved 29:28, which must not
+ * be written back as commands. */
+
+#define VTD_GCMD_TE    (1u << 31)   /* translation enable */
+#define VTD_GCMD_SRTP  (1u << 30)   /* set root table pointer */
+#define VTD_GCMD_WBF   (1u << 27)   /* write-buffer flush (only with CAP.RWBF) */
+#define VTD_GCMD_QIE   (1u << 26)   /* queued invalidation enable */
+#define VTD_GCMD_IRE   (1u << 25)   /* interrupt remapping enable */
+#define VTD_GCMD_SIRTP (1u << 24)   /* set interrupt remapping table pointer */
+#define VTD_GCMD_CFI   (1u << 23)   /* compatibility-format interrupts pass */
+#define VTD_GSTS_KEEP  0x96ffffffu
+
+/* ---- register-based invalidation (11.4.6), only waited for, never used ------ */
+
+#define VTD_CCMD_ICC   (1ull << 63) /* a context-cache invalidation is in progress */
+#define VTD_IOTLB_IVT  (1ull << 63) /* an IOTLB invalidation is in progress */
+
+/* ---- the invalidation queue registers (11.4.9) ------------------------------- */
+
+#define VTD_IQ_SHIFT   4            /* IQH/IQT hold the descriptor index << 4 (18:4) */
+#define VTD_IQA_DW     (1ull << 11) /* 256-bit descriptors (scalable mode only: never set) */
+#define VTD_IQA_QS(v)  VTD_BITS(v, 0, 3)   /* 2^QS pages, 2^(QS + 8) 128-bit entries */
+#define VTD_IQERCD_IQEI(v) VTD_BITS(v, 0, 4)   /* why IQE was set (1-6), 0 unknown */
+
+/* ---- the Fault Event Control Register (11.4.7.2) ----------------------------- */
+
+#define VTD_FECTL_IM   (1u << 31)   /* interrupt masked (the reset value) */
+#define VTD_FECTL_IP   (1u << 30)   /* an interrupt is held pending (read only) */
+/* Bits 29:0 are RsvdP: written back as read. */
+
 /* ---- Fault Status, Protected Memory Enable, Interrupt Remapping Table Address */
 
 #define VTD_FSTS_PFO   (1u << 0)    /* a fault was lost: the records were full */
@@ -142,3 +185,23 @@ void vtd_describe_status(char *buf, size_t n, uint32_t gsts, uint32_t pmen, uint
 /* One fault recording register (lo: bits 63:0, hi: bits 127:64), described
  * for the log: the requester, what it did and the reason. Pure. */
 void vtd_describe_fault(char *buf, size_t n, uint64_t lo, uint64_t hi);
+
+/* ---- the units (kernel/dev/vtd_unit.c) -------------------------------------- */
+
+/* The boot words: true with `iommu=on` and no `iommu=off` (off wins).
+ * Off by default. kexec keeps either word. */
+bool vtd_iommu_wanted(const char *cmdline);
+
+/* With `iommu=on`: start every unit the probe could read: its invalidation
+ * queue, its fault interrupt and the thread that logs faults ("vtd:"
+ * lines; a problem goes to the RESULTS box). Translation and interrupt
+ * remapping stay as the firmware left them. Without the word it does
+ * nothing at all. Once, at boot, after vtd_probe; interrupts on, no lock
+ * held. */
+void vtd_units_start(void);
+
+/* Does [phys, phys + len) touch any unit's register set (from the DMAR
+ * table, every unit, started or not)? The kernel keeps those pages: they
+ * are never mapped for a process (resource.c). Lock-free: the set is
+ * written once at boot, before user space. */
+bool vtd_regs_overlap(uint64_t phys, uint64_t len);

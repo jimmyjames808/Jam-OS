@@ -18,7 +18,8 @@
  *
  * Mapping is refused (resource_phys_mappable) for RAM, for any page that
  * holds an MSI-X table or PBA, and for MMIO the kernel itself drives: the
- * local APIC / MSI window, the I/O APICs, the HPET and the ECAM windows.
+ * local APIC / MSI window, the I/O APICs, the HPET, the ECAM windows and
+ * the VT-d units' registers.
  * Holding the root doesn't change that.
  *
  * Config space (pci_config_read/write on a RES_PCI_DEV): reads are free;
@@ -39,6 +40,7 @@
 #include <jam/resource.h>
 #include <jam/resource_impl.h>
 #include <jam/spinlock.h>
+#include <jam/vtd.h>
 
 struct resource {
     struct kobject  base;          /* OBJ_RESOURCE */
@@ -166,6 +168,8 @@ static bool kernel_owned(uint64_t phys, uint64_t len)
             return true;
     if (acpi.hpet_phys && overlaps(phys, len, ALIGN_DOWN(acpi.hpet_phys, PAGE_SIZE), PAGE_SIZE))
         return true;
+    if (vtd_regs_overlap(phys, len))
+        return true;   /* every DMAR unit's, started or not */
     /* ECAM: from the base (bus 0) up to the last bus, whichever way the
      * firmware meant the base. */
     for (uint32_t i = 0; i < acpi.ecam_count && i < ACPI_MAX_ECAM; i++)
