@@ -284,9 +284,11 @@ Every driver and service is a userspace process from the start.
   acquisition that closes a cycle (ABBA), on taking a lock twice, on nesting
   two locks of the same class (unless taken with `spin_lock_nested(subclass)`),
   on a class used both in interrupt handlers and with interrupts on, and on
-  any lock spinning for 5 s (naming the holder). Always on, with a
-  lockless fast path (edges and IRQ flags only ever get set, so only a new
-  edge takes the graph lock); it tracks sleeping mutexes too.
+  any lock spinning for 5 s (naming the holder). On unless the boot word
+  `nolockdep` turns it off (for the benchmark's checker-off column), with a lockless fast path: edges and IRQ flags only ever get
+  set, so only a new edge takes the graph lock, and each CPU's list of
+  held locks is a stack updated without turning interrupts off. It tracks
+  sleeping mutexes too.
 - IPIs: reschedule, cross-CPU calls (`smp_call_on/others/all`, which refuse
   to run with interrupts off), TLB shootdown, and NMI halt of all other
   CPUs on panic.

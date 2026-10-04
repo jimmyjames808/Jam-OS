@@ -15,7 +15,7 @@
 set -u
 out=$1
 shift
-all="bp panic pf ro rohhdm stack lockorder locknest lockirq mutexorder mutexspin stuck watchdog
+all="bp panic pf ro rohhdm stack lockorder lockself locknest lockirq mutexorder mutexspin stuck watchdog
      smap smep kexecread kexecbad kexecstall kexecfault"
 names=${*:-$all}
 mkdir -p "$out"

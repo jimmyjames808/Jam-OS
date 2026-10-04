@@ -19,7 +19,8 @@
 typedef struct spinlock {
     uint16_t          next;    /* next ticket to hand out */
     uint16_t          owner;   /* ticket now being served */
-    uint16_t          holder;  /* CPU index + 1 of the holder, 0 if free */
+    uint16_t          holder;  /* CPU index + 1 of the holder, 0 if free; top bit:
+                                  the checker saw it taken (lockdep.c) */
     uint16_t          cls;     /* lock class index + 1, resolved lazily */
     const char       *name;    /* lock class name */
 } spinlock_t;
@@ -90,7 +91,18 @@ void preempt_enable_no_resched(void);
 
 /* Turn the checker off (the panic path, where rules no longer matter). */
 void lockdep_off(void);
-#define LOCKDEP_MAX_CLASSES 256
+/* The boot word `nolockdep` (kmain, once the command line is known): no
+ * spinlock or mutex is checked this boot. The everyday boot checks. */
+void lockdep_boot(void);
+/* The benchmark's switch: spinlock acquisitions checked (on) or not, from
+ * now on, with locks held anywhere (a release is checked exactly when its
+ * acquisition was). Mutexes keep the boot's setting. No-op after
+ * lockdep_off. */
+void lockdep_set(bool on);
+/* Are spinlock acquisitions checked now? */
+bool lockdep_is_on(void);
+/* At most 255 classes: a CPU's held list stores class + 1 in a byte. */
+#define LOCKDEP_MAX_CLASSES 255
 /* How many lock classes the checker has seen (at most LOCKDEP_MAX_CLASSES). */
 unsigned lockdep_class_count(void);
 /* Sleeping locks (mutexes): tracked per thread. `cache` holds the lock's

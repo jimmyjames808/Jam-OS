@@ -415,6 +415,13 @@ static void crash_lockorder(void)
     spin_lock(&lock_a);
 }
 
+static void crash_lockself(void)
+{
+    /* The same lock twice on one CPU: it would spin forever. */
+    spin_lock(&lock_a);
+    spin_lock(&lock_a);
+}
+
 static void crash_locknest(void)
 {
     /* Two locks of one class, nested without spin_lock_nested. */
@@ -576,6 +583,7 @@ static const struct crash_test {
     { "rohhdm",     crash_rohhdm,     true,  false, "write to kernel code through the HHDM alias" },
     { "stack",      crash_stack,      true,  false, "stack overflow into the guard page" },
     { "lockorder",  crash_lockorder,  false, false, "lock order inversion (must be caught)" },
+    { "lockself",   crash_lockself,   false, false, "one lock taken twice (self-deadlock)" },
     { "locknest",   crash_locknest,   false, false, "two locks of one class nested" },
     { "lockirq",    crash_lockirq,    false, true,  "lock used in and out of interrupts" },
     { "mutexorder", crash_mutexorder, false, false, "mutex order inversion" },

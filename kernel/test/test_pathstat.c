@@ -145,7 +145,7 @@ KTEST(pathstat_switch_counts)
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
     KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 200);
-    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 400);
+    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* the checker's fast path */
     KT_EQ(per100(&r, PATH_CLOCK), 0);
     struct path_shape *sh = kmalloc(sizeof(*sh));
     KT_ASSERT(sh);
@@ -177,7 +177,7 @@ KTEST(pathstat_kernel_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
     KT_IDLE_EQ(per100(&r, PATH_WAKE), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK), 1400);
-    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 2800);
+    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* every release is the top lock */
     KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
@@ -211,8 +211,9 @@ KTEST(pathstat_user_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_FPU_CALLED), fpu_call_drop() ? 200 : 0);
     KT_IDLE_EQ(per100(&r, PATH_FPU_RESTORE), 200);
     KT_IDLE_EQ(per100(&r, PATH_CR3), 200);
-    /* The checker turns interrupts off for every acquisition and release. */
-    KT_IDLE_EQ(r.count[PATH_LOCK_SLOW], 2 * r.count[PATH_LOCK]);
+    /* The checker never turns interrupts off: each release is of the top
+     * lock, and every lock pair has been seen before the window. */
+    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
     KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
@@ -236,4 +237,5 @@ KTEST(pathstat_user_deadline_call_counts)
     KT_EQ(per100(&r, PATH_TIMER_ARM), 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 200);
     KT_IDLE_EQ(per100(&r, PATH_CLOCK), 200);
+    KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
 }
