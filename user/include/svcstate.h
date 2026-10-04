@@ -37,14 +37,19 @@
  * run it, put the reply in the slot's reply area and commit
  * (svcstate_commit: the reply's length, then the commit word, a single
  * released store, so a death leaves it either old or new), send what was
- * held for the disk, mark it sent (svcstate_sent), reply (svcstate_reply).
- * The two slots alternate; a request found in the other slot proves the
+ * held for the disk, mark it sent (svcstate_sent), reply: svcstate_answer
+ * makes the reply wait for the service's next system call (the next take,
+ * or its wait on its port: <idl/common.h> struct idl_reply), which sends
+ * it and sets the slot's `replied` mark in the kernel, once it went out,
+ * before it reads or waits. So whether the reply went out is known
+ * exactly: the window in which a successor answered again is gone
+ * (svcstate_reply, a plain write, sets the mark itself just after). The
+ * two slots alternate; a request found in the other slot proves the
  * previous reply went out. A successor asks svcstate_pending what it
- * found: nothing in progress; taken and not committed (re-run it from the
- * slot's bytes on the state as committed); committed and not sent (send
- * the held writes again, then reply); sent (reply only: the client may
- * get a second reply with a txid it no longer waits for, which is
- * harmless).
+ * found: nothing in progress (nothing taken, or answered and its reply
+ * out); taken and not committed (re-run it from the slot's bytes on the
+ * state as committed); committed and not sent (send the held writes
+ * again, then reply); sent and its reply not out (reply).
  *
  * **Warm spares.** A program started with SR_STANDBY waits in libos's
  * startup, before main, holding nothing but that channel, until its
@@ -62,7 +67,7 @@
 #define SVCSTATE_ADDR      0x0000600000000000ull   /* where a service maps its state VMO */
 #define SVCSTATE_MAX_SIZE  (64ull << 20)           /* the most it reserves there */
 #define SVCSTATE_MAGIC     0x4554415453435653ull   /* "SVCSTATE" */
-#define SVCSTATE_VERSION   1                       /* struct svcstate_header's layout */
+#define SVCSTATE_VERSION   2                       /* struct svcstate_header's layout */
 #define SVCSTATE_BINDING   32                      /* bytes naming what a state belongs to */
 #define SVCSTATE_REQ_MAX   (128u << 10)            /* largest request or reply area, bytes */
 #define SVCSTATE_SLOT_HANDLES 4                    /* handles a request may carry */
@@ -81,6 +86,8 @@ struct svcstate_slot {
     uint32_t phase;       /* SVCSTATE_RUN or SVCSTATE_SENT */
     uint32_t reply_len;   /* reply bytes in the reply area, set at the commit */
     uint32_t runs;        /* the service's count of its runs of it (0 at the take) */
+    uint64_t replied;     /* 1 once its reply went out (the kernel's mark: struct
+                           * idl_reply), 0 before; a reply of 0 bytes never goes */
 };
 
 struct svcstate_header {
@@ -210,9 +217,18 @@ status_t svcstate_commit(struct svcstate *s, unsigned slot, uint32_t reply_len);
 void     svcstate_sent(struct svcstate *s, unsigned slot);
 /* Write the slot's reply on ch, with hs[0..nh) (moved), marking it
  * committed and sent first if it isn't yet (a request that changed
- * nothing). Errors as channel_write's. */
+ * nothing), and replied once it went. Errors as channel_write's. */
 status_t svcstate_reply(struct svcstate *s, unsigned slot, handle_t ch, const handle_t *hs,
                         uint32_t nh);
+/* The slot's reply made to wait for the service's next system call, into
+ * *out (<idl/common.h> struct idl_reply, empty before: nothing else may
+ * wait), with hs[0..nh) (moved; at most IDL_REP_HANDLES), on ch, and the
+ * slot's `replied` word as the mark the kernel sets once it went out; it
+ * is marked committed and sent first if it isn't yet, as svcstate_reply.
+ * A reply of 0 bytes (answered later, or no txid) waits for nothing:
+ * *out stays empty and the handles are closed. */
+void     svcstate_answer(struct svcstate *s, unsigned slot, handle_t ch, const handle_t *hs,
+                         uint32_t nh, struct idl_reply *out);
 /* An adopted state's request in progress (*slot: its slot). */
 enum svcstate_case svcstate_pending(const struct svcstate *s, unsigned *slot);
 

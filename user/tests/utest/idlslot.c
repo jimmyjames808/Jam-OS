@@ -88,10 +88,10 @@ static bool take_and_run(handle_t c, handle_t sv, struct room *rm, unsigned *cal
 {
     struct idl_slot slot = slot_in(rm, sizeof(rm->q));
     rm->n = 99;
-    CHECK_ST(idltest_take_slot(sv, &slot), ERR_SHOULD_WAIT);
+    CHECK_ST(idltest_take_slot(sv, &slot, NULL), ERR_SHOULD_WAIT);
     CHECK_EQ(rm->n, 0);   /* zeroed before the read */
     CHECK_ST(idltest_echo_send(c, 21, 41), OK);
-    CHECK_ST(idltest_take_slot(sv, &slot), OK);
+    CHECK_ST(idltest_take_slot(sv, &slot, NULL), OK);
     CHECK(rm->n == sizeof(struct idltest_echo_req) && rm->nh == 0);
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 9;
@@ -117,7 +117,7 @@ static bool refusals(handle_t c, handle_t sv, struct room *rm, unsigned *calls)
     /* A request with a handle: taken (the handle the taker's to close),
      * refused by run without its handler. */
     CHECK(raw(c, 22, sizeof(struct idltest_echo_req), 1, peers));
-    CHECK_ST(idltest_take_slot(sv, &slot), OK);
+    CHECK_ST(idltest_take_slot(sv, &slot, NULL), OK);
     CHECK(rm->n == sizeof(struct idltest_echo_req) && rm->nh == 1);
     uint32_t rn = idltest_run_slot(sv, &slot, &ops, calls, rhs, &rhn);
     CHECK(rn == sizeof(struct idl_rep_hdr) && *calls == 2);
@@ -127,17 +127,17 @@ static bool refusals(handle_t c, handle_t sv, struct room *rm, unsigned *calls)
     CHECK(reply_is(c, 22, ERR_INVALID_ARGS, &v));
     /* Too big for the slot, then too many handles: answered at the take. */
     CHECK(raw(c, 23, sizeof(rm->q) + 8, 0, peers));
-    CHECK_ST(idltest_take_slot(sv, &slot), OK);
+    CHECK_ST(idltest_take_slot(sv, &slot, NULL), OK);
     CHECK(rm->n == 0 && rm->nh == 0);
     CHECK(reply_is(c, 23, ERR_INVALID_ARGS, &v));
     CHECK(raw(c, 24, sizeof(struct idltest_echo_req), SLOT_HANDLES + 1, peers));
-    CHECK_ST(idltest_take_slot(sv, &slot), OK);
+    CHECK_ST(idltest_take_slot(sv, &slot, NULL), OK);
     CHECK(rm->n == 0 && rm->nh == 0);
     CHECK(reply_is(c, 24, ERR_INVALID_ARGS, &v));
     CHECK(closed(peers, SLOT_HANDLES + 1));
     /* No txid: dropped, its handle closed, nothing answered. */
     CHECK(raw(c, 25, 3, 1, peers));
-    CHECK_ST(idltest_take_slot(sv, &slot), OK);
+    CHECK_ST(idltest_take_slot(sv, &slot, NULL), OK);
     CHECK(rm->n == 0 && rm->nh == 0);
     CHECK(closed(peers, 1));
     _Alignas(8) uint8_t rep[IDLTEST_REP_MAX];
@@ -157,11 +157,11 @@ bool t_idl_slot_take_run(void)
     /* A slot too small for the protocol: refused, the request left queued. */
     struct idl_slot small = slot_in(&rm, IDLTEST_REQ_MAX - 1), slot = slot_in(&rm, sizeof(rm.q));
     CHECK_ST(idltest_echo_send(c, 26, 7), OK);
-    CHECK_ST(idltest_take_slot(sv, &small), ERR_INVALID_ARGS);
-    CHECK_ST(idltest_take_slot(sv, &slot), OK);
+    CHECK_ST(idltest_take_slot(sv, &small, NULL), ERR_INVALID_ARGS);
+    CHECK_ST(idltest_take_slot(sv, &slot, NULL), OK);
     CHECK_EQ(rm.n, sizeof(struct idltest_echo_req));
     CHECK_ST(jam_handle_close(c), OK);
-    CHECK_ST(idltest_take_slot(sv, &slot), ERR_PEER_CLOSED);
+    CHECK_ST(idltest_take_slot(sv, &slot, NULL), ERR_PEER_CLOSED);
     CHECK_EQ(rm.n, 0);
     CHECK_ST(jam_handle_close(sv), OK);
     return true;
@@ -178,5 +178,87 @@ bool t_idl_slot_idempotent(void)
     CHECK(!null_idempotent(NULL_PING));   /* nothing marked */
     CHECK(!block_idempotent(IDLTEST_ECHO));   /* another protocol's ordinal */
     CHECK(!block_idempotent(BLOCK_PROTOCOL_ID << 16));   /* no method 0 */
+    return true;
+}
+
+/* A reply that waits for the server's next system call (struct
+ * idl_reply): sent by a take on another channel, which reads that
+ * channel's request in the same call; by a port wait; by idl_reply_flush,
+ * which leaves a request queued where it was. Its mark is set by the
+ * kernel once it went out. A reply that fails (a handle that is no
+ * handle) is dropped and the take made again without it; one to a client
+ * that has gone has its handles closed and stops nothing. */
+bool t_idl_slot_reply_after(void)
+{
+    handle_t c1, s1, c2, s2, port, ev, gone;
+    CHECK_ST(jam_channel_create(&c1, &s1), OK);
+    CHECK_ST(jam_channel_create(&c2, &s2), OK);
+    CHECK_ST(jam_port_create(&port), OK);
+    static struct room rm;
+    struct idl_slot slot = slot_in(&rm, sizeof(rm.q));
+    struct idl_reply rep = { .ch = HANDLE_INVALID };
+    handle_t rhs[IDL_REP_HANDLES];
+    uint32_t rhn = 0, v = 0;
+    uint64_t mark = 0;
+    unsigned calls = 0;
+
+    CHECK_ST(idltest_echo_send(c1, 31, 1), OK);
+    CHECK_ST(idltest_take_slot(s1, &slot, &rep), OK);
+    uint32_t rn = idltest_run_slot(s1, &slot, &ops, &calls, rhs, &rhn);
+    rep = (struct idl_reply){ .ch = s1, .r = rm.r, .rn = rn, .mark = &mark };
+    CHECK_ST(idltest_echo_send(c2, 32, 2), OK);
+    CHECK_ST(idltest_take_slot(s2, &slot, &rep), OK);   /* c1's reply, c2's request */
+    CHECK(rep.ch == HANDLE_INVALID && mark == 1 && rm.n == sizeof(struct idltest_echo_req));
+    CHECK(reply_is(c1, 31, OK, &v) && v == 2);
+
+    rn = idltest_run_slot(s2, &slot, &ops, &calls, rhs, &rhn);
+    mark = 0;
+    rep = (struct idl_reply){ .ch = s2, .r = rm.r, .rn = rn, .mark = &mark };
+    struct port_packet pk = { .key = 5, .type = PORT_PACKET_USER }, got;
+    CHECK_ST(jam_port_queue(port, &pk), OK);
+    CHECK_ST(idl_wait_after(port, now() + NS_PER_S, &got, &rep), OK);
+    CHECK(got.key == 5 && mark == 1 && rep.ch == HANDLE_INVALID);
+    CHECK(reply_is(c2, 32, OK, &v) && v == 3);
+
+    /* Flushed: nothing queued, then a request left queued. */
+    mark = 0;
+    rep = (struct idl_reply){ .ch = s1, .r = rm.r, .rn = rn, .mark = &mark };
+    CHECK(!idl_reply_flush(&rep) && mark == 1 && rep.ch == HANDLE_INVALID);
+    CHECK(reply_is(c1, 32, OK, &v));
+    CHECK(!idl_reply_flush(&rep));   /* nothing waits */
+    mark = 0;
+    rep = (struct idl_reply){ .ch = s1, .r = rm.r, .rn = rn, .mark = &mark };
+    CHECK_ST(idltest_echo_send(c1, 33, 5), OK);
+    CHECK(idl_reply_flush(&rep) && mark == 1);
+    CHECK(reply_is(c1, 32, OK, &v));
+    CHECK_ST(idltest_take_slot(s1, &slot, NULL), OK);
+    CHECK_EQ(((const struct idl_req_hdr *)rm.q)->txid, 33);
+
+    /* A reply that fails: dropped, the take made again without it. */
+    CHECK_ST(jam_event_create(&gone), OK);
+    CHECK_ST(jam_handle_close(gone), OK);
+    mark = 0;
+    rep = (struct idl_reply){ .ch = s1, .r = rm.r, .rn = rn, .nh = 1, .hs = { gone },
+                              .mark = &mark };
+    CHECK_ST(idltest_echo_send(c1, 34, 6), OK);
+    CHECK_ST(idltest_take_slot(s1, &slot, &rep), OK);
+    CHECK(mark == 0 && rep.ch == HANDLE_INVALID && rm.n == sizeof(struct idltest_echo_req));
+    _Alignas(8) uint8_t r[IDLTEST_REP_MAX];
+    struct idl_msg msg;
+    CHECK_ST(idl_reply_read(c1, r, sizeof(r), &msg), ERR_SHOULD_WAIT);
+
+    /* A reply to a client that has gone: its handle closed, the take made. */
+    CHECK_ST(jam_event_create(&ev), OK);
+    rep = (struct idl_reply){ .ch = s2, .r = rm.r, .rn = rn, .nh = 1, .hs = { ev },
+                              .mark = &mark };
+    CHECK_ST(jam_handle_close(c2), OK);
+    CHECK_ST(idltest_take_slot(s1, &slot, &rep), ERR_SHOULD_WAIT);
+    CHECK(mark == 0 && rep.ch == HANDLE_INVALID);
+    CHECK(jam_handle_close(ev) != OK);   /* closed with the reply that couldn't go */
+
+    CHECK_ST(jam_handle_close(c1), OK);
+    CHECK_ST(jam_handle_close(s1), OK);
+    CHECK_ST(jam_handle_close(s2), OK);
+    CHECK_ST(jam_handle_close(port), OK);
     return true;
 }

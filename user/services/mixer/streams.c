@@ -427,7 +427,7 @@ status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner)
         if (st != OK)
             return st;
     }
-    return OK;
+    return req_budget_spent(m);
 }
 
 void serve_svc(struct mixer *m)
@@ -453,7 +453,7 @@ void serve_stream(struct mixer *m, struct stream *s)
             printf("mixer: reading stream %u's channel: %s\n", s->id, status_str(st));
         return;
     }
-    w->pending = true;
+    w->pending = req_budget_spent(m) == OK;
 }
 
 void stream_event(struct mixer *m, struct stream *s)
@@ -578,7 +578,7 @@ status_t serve_control(struct mixer *m, handle_t ch, uint32_t key)
         if (st != OK)
             return st;
     }
-    return OK;
+    return req_budget_spent(m);
 }
 
 void serve_ctl(struct mixer *m)

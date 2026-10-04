@@ -227,6 +227,8 @@ struct mixer {
     struct stream_own own_s[MIXER_MAX_STREAMS];  /* by the index of nums->s */
     struct out_own    own_out;
     handle_t      keep;            /* our end of the keep channel (SR_KEEP), or 0: nothing kept */
+    struct idl_reply reply;        /* the last request's reply, waiting for the loop's next
+                                    * take or port wait (req_answer) */
     unsigned      cur_slot;        /* the request slot being run (do_open_output's) */
     int32_t       acc[2 * (MIX_LOOKAHEAD + PERIOD_MAX)];
     int16_t       buf[2 * PERIOD_MAX];
@@ -269,9 +271,15 @@ status_t req_take(struct mixer *m, handle_t ch, uint32_t key, bool ctl, unsigned
 /* Answer the request in slot on ch: the numbers committed (the request
  * counted), the slot committed, then the reply in the slot's reply area
  * (rn bytes with hs[0..nh), moved; nothing if rn is 0: answered later or
- * never). A reply that can't be written has its handles closed. */
+ * never), made to wait in m->reply for the loop's next take (req_take) or
+ * port wait, which sends it and marks it out in the slot. A reply that
+ * can't be written has its handles closed. */
 void     req_answer(struct mixer *m, unsigned slot, handle_t ch, uint32_t rn, handle_t *hs,
                     uint32_t nh);
+/* A channel's budget is spent: the reply waiting goes out now, on that
+ * channel (idl_reply_flush). OK: more may be queued there; ERR_SHOULD_WAIT:
+ * nothing is. */
+status_t req_budget_spent(struct mixer *m);
 /* Answer the request in slot on ch with a bare status. */
 void     req_status(struct mixer *m, unsigned slot, handle_t ch, status_t st);
 

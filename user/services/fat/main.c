@@ -161,10 +161,12 @@ static status_t op_stats(void *ctx, uint64_t *out_entries_read, uint64_t *out_ca
 const struct fsctl_ops fat_ctl_ops = { .stop = op_stop, .stats = op_stats };
 
 /* Serve until the fs channel's client is gone, the disk is, or fsctl.stop
- * was asked (OK), or something fails (its status). Each channel gets
- * FAT_BATCH requests per turn, so one busy client can't starve the others.
- * Every request is read into a slot of the state and run as an operation
- * (request.c). */
+ * was asked (OK), or something fails (its status). Each packet serves one
+ * request, and its channel's binding fires again at once if more is
+ * queued, so one busy client can't starve the others. Every request is
+ * read into a slot of the state and run as an operation (request.c); its
+ * reply goes out with the next port wait (fat_wait), in that same system
+ * call, or with the next take. */
 static status_t run(handle_t serve, handle_t ctl)
 {
     const struct fat_chan fs = { .ch = serve, .id = FAT_CHAN_FS, .proto = FAT_PROTO_FS };
@@ -178,7 +180,7 @@ static status_t run(handle_t serve, handle_t ctl)
         st = jam_port_bind(vol.port, ctl, FAT_KEY_CTL, SIG_READABLE, PORT_BIND_PERSISTENT);
     while (st == OK && !vol.disk_gone && !stopping) {
         struct port_packet pkt;
-        st = jam_port_wait(vol.port, DEADLINE_NEVER, &pkt);
+        st = fat_wait(&pkt);
         if (st != OK)
             break;
         if (pkt.key == FAT_KEY_CTL) {
@@ -190,10 +192,8 @@ static status_t run(handle_t serve, handle_t ctl)
         } else if (pkt.key & FAT_KEY_VIEW_BIT) {
             views_event(pkt.key);
         } else if (pkt.key == FAT_KEY_FS) {
-            for (unsigned i = 0; i < FAT_BATCH && st == OK && !vol.disk_gone; i++) {
-                files_reap();
-                st = serve_one(&fs);
-            }
+            files_reap();
+            st = serve_one(&fs);
             if (st == ERR_PEER_CLOSED)
                 return OK;
             if (st == OK || st == ERR_SHOULD_WAIT)
@@ -241,6 +241,8 @@ int main(int argc, char **argv)
     vol.at[FAT_AT_STATE] = now();
     if (st == OK)
         st = adopt(adopted, &no_volume);
+    if (st != OK)
+        reply_flush();   /* what adopt answered goes out before fat ends */
     if (st != OK && vol.disk_gone) {
         /* As a disk gone while serving: nothing is left to serve, and
          * nothing failed (devmgr stops usb-bus first at shutdown, which
@@ -253,6 +255,7 @@ int main(int argc, char **argv)
         return no_volume ? FAT_EXIT_NO_VOLUME : 1;
     }
     st = run(serve, vol.ctl);
+    reply_flush();   /* the last request's answer (fsctl.stop's) before anything else */
     files_close_all();
     struct fat_cache_stats cs;
     cache_stats(&cs);

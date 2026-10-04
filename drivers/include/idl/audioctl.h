@@ -555,11 +555,17 @@ static inline uint32_t audioctl_dispatch(const struct audioctl_ops *ops, void *c
 }
 
 /* Take the next message on ch into slot (idl_take), a slot with room for
- * the protocol's biggest request: ERR_INVALID_ARGS if it has less. */
-static inline status_t audioctl_take_slot(handle_t ch, const struct idl_slot *slot)
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t audioctl_take_slot(handle_t ch, const struct idl_slot *slot,
+                                          struct idl_reply *rep)
 {
     if (slot->qcap < AUDIOCTL_REQ_MAX)
         return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
     return idl_take(ch, slot);
 }
 

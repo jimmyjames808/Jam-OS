@@ -16,8 +16,8 @@
 #include <os.h>
 #include <svcstate.h>
 
-_Static_assert(sizeof(struct svcstate_slot) == 32, "no padding in a slot");
-_Static_assert(sizeof(struct svcstate_header) == 160, "no padding in the header");
+_Static_assert(sizeof(struct svcstate_slot) == 40, "no padding in a slot");
+_Static_assert(sizeof(struct svcstate_header) == 176, "no padding in the header");
 _Static_assert(sizeof(struct svcstate_header) <= PAGE_SIZE, "the header fits its page");
 
 static uint64_t page_up(uint64_t n)
@@ -85,6 +85,8 @@ static const char *check_slots(const struct svcstate_header *h)
             return "a reply longer than its area";
         if (s->phase == SVCSTATE_SENT && s->seq > h->commit)
             return "a request sent before its commit";
+        if (s->replied > 1 || (s->replied && s->phase != SVCSTATE_SENT))
+            return "a reply out before it was ready";
     }
     uint64_t a = h->slot[0].seq, b = h->slot[1].seq;
     uint64_t hi = a > b ? a : b, lo = a > b ? b : a;
@@ -250,6 +252,7 @@ void *svcstate_reply_area(const struct svcstate *s, unsigned slot)
 static void set_up_slot(struct svcstate_slot *sl, uint64_t seq, uint32_t key)
 {
     __atomic_store_n(&sl->len, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&sl->replied, 0, __ATOMIC_RELEASE);
     sl->nhandles = 0;
     sl->phase = SVCSTATE_RUN;
     sl->reply_len = 0;
@@ -324,18 +327,41 @@ void svcstate_sent(struct svcstate *s, unsigned slot)
     __atomic_store_n(&s->h->slot[slot & 1].phase, SVCSTATE_SENT, __ATOMIC_RELEASE);
 }
 
+/* Committed (if it isn't yet: a request that changed nothing) and sent. */
+static void ready(struct svcstate *s, unsigned slot)
+{
+    struct svcstate_slot *sl = &s->h->slot[slot & 1];
+    if (s->h->commit < sl->seq)
+        (void)svcstate_commit(s, slot, sl->reply_len);   /* reply_len was checked at its commit */
+    if (sl->phase != SVCSTATE_SENT)
+        svcstate_sent(s, slot);
+}
+
 status_t svcstate_reply(struct svcstate *s, unsigned slot, handle_t ch, const handle_t *hs,
                         uint32_t nh)
 {
     struct svcstate_slot *sl = &s->h->slot[slot & 1];
-    if (s->h->commit < sl->seq) {
-        status_t st = svcstate_commit(s, slot, sl->reply_len);
-        if (st != OK)
-            return st;
+    ready(s, slot);
+    status_t st = jam_channel_write(ch, svcstate_reply_area(s, slot), sl->reply_len, hs, nh);
+    if (st == OK)
+        __atomic_store_n(&sl->replied, 1, __ATOMIC_RELEASE);
+    return st;
+}
+
+void svcstate_answer(struct svcstate *s, unsigned slot, handle_t ch, const handle_t *hs,
+                     uint32_t nh, struct idl_reply *out)
+{
+    struct svcstate_slot *sl = &s->h->slot[slot & 1];
+    ready(s, slot);
+    if (!sl->reply_len || nh > IDL_REP_HANDLES) {
+        idl_close_all(hs, nh);
+        return;
     }
-    if (sl->phase != SVCSTATE_SENT)
-        svcstate_sent(s, slot);
-    return jam_channel_write(ch, svcstate_reply_area(s, slot), sl->reply_len, hs, nh);
+    *out = (struct idl_reply){
+        .ch = ch, .r = svcstate_reply_area(s, slot), .rn = sl->reply_len, .nh = nh,
+        .mark = &sl->replied,
+    };
+    memcpy(out->hs, hs, nh * sizeof(handle_t));
 }
 
 enum svcstate_case svcstate_pending(const struct svcstate *s, unsigned *slot)
@@ -343,12 +369,22 @@ enum svcstate_case svcstate_pending(const struct svcstate *s, unsigned *slot)
     const struct svcstate_header *h = s->h;
     unsigned i = h->slot[1].seq > h->slot[0].seq;
     const struct svcstate_slot *cur = &h->slot[i];
+    if (cur->seq && !taken(h, cur)) {
+        /* Set up and nothing read: the take that would have sent the other
+         * slot's reply may never have been made (the reply waits for the
+         * next system call: svcstate_answer). The other slot is committed
+         * (check_slots). */
+        i ^= 1;
+        cur = &h->slot[i];
+    }
     if (!cur->seq || !taken(h, cur))
         return SVCSTATE_IDLE;
     *slot = i;
     if (h->commit < cur->seq)
         return SVCSTATE_RERUN;
-    return cur->phase == SVCSTATE_SENT ? SVCSTATE_REPLY : SVCSTATE_RESEND;
+    if (cur->phase != SVCSTATE_SENT)
+        return SVCSTATE_RESEND;
+    return cur->replied || !cur->reply_len ? SVCSTATE_IDLE : SVCSTATE_REPLY;
 }
 
 /* ---- promoting a spare ------------------------------------------------------------------ */

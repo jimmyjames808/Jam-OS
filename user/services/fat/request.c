@@ -16,7 +16,12 @@
  *      (svcstate_commit), which also makes the undo copy stale; from here
  *      the request counts as done;
  *   4. send: kept->post, done (disk_release, disk_flush, disk_settle);
- *   5. answer: the slot's reply (svcstate_reply).
+ *   5. answer: the slot's reply, made to wait for fat's next system call
+ *      (svcstate_answer): the port wait that follows (fat_wait) or the
+ *      next take sends it (channel_reply_wait), and the kernel sets the
+ *      slot's mark once it went out, so a successor knows whether it did.
+ *      A request costs fat three system calls: the port wait (which sends
+ *      the last reply), the take, and the port binding again.
  * A send that fails turns a successful reply into the failure (its
  * handles are closed: the client never gets them), as a write that failed
  * on the spot would have been answered.
@@ -182,16 +187,31 @@ void op_close_end(void)
 
 /* ---- a request in a slot ------------------------------------------------------------ */
 
+/* The reply of the request answered last, waiting for fat's next system
+ * call that can carry it: a take, or the port wait. One at a time. */
+static struct idl_reply reply;
+
 /* The next message on c into the slot set up as is, by c's protocol's
  * generated take (<idl/common.h> idl_take: one too big for the slot is
- * answered ERR_INVALID_ARGS, one without a txid dropped). */
+ * answered ERR_INVALID_ARGS, one without a txid dropped), the waiting
+ * reply sent first in the same system call. */
 static status_t take(const struct fat_chan *c, const struct idl_slot *is)
 {
     if (c->proto == FAT_PROTO_FILE)
-        return file_take_slot(c->ch, is);
+        return file_take_slot(c->ch, is, &reply);
     if (c->proto == FAT_PROTO_CTL)
-        return fsctl_take_slot(c->ch, is);
-    return fs_take_slot(c->ch, is);
+        return fsctl_take_slot(c->ch, is, &reply);
+    return fs_take_slot(c->ch, is, &reply);
+}
+
+void reply_flush(void)
+{
+    (void)idl_reply_flush(&reply);   /* whether more is queued: the port says */
+}
+
+status_t fat_wait(struct port_packet *pkt)
+{
+    return idl_wait_after(vol.port, DEADLINE_NEVER, pkt, &reply);
 }
 
 /* Run the request in `slot` with c's protocol's generated run (fs: through
@@ -233,8 +253,8 @@ void answer(const struct fat_chan *c, unsigned slot, uint32_t rn, handle_t *rhs,
         idl_close_all(rhs, rhn);
         return;
     }
-    if (svcstate_reply(s, slot, c->ch, rhs, rhn) != OK)
-        idl_close_all(rhs, rhn);   /* the client is gone */
+    reply_flush();   /* one waits at a time: a take sent the last one already */
+    svcstate_answer(s, slot, c->ch, rhs, rhn, &reply);
 }
 
 void answer_status(const struct fat_chan *c, unsigned slot, status_t status)
