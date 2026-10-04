@@ -123,6 +123,7 @@ bool fix_connect(struct cx *x, uint16_t port, uint32_t tx, uint32_t rx)
     CHECK_EQ(n, 1);
     CHECK_EQ(s[0].flags, TP_SYN);
     CHECK_EQ(s[0].mss, STACK_TCP_MSS);
+    CHECK(s[0].sack_ok);   /* netstack offers SACK */
     CHECK_EQ(s[0].len, 0);
     x->p.our = s[0].sport;
     x->p.rcv = s[0].seq + 1;
@@ -229,13 +230,17 @@ static size_t peer_fill(struct cx *x, uint32_t id, size_t sent, size_t total)
 
 /* The peer sends `total` bytes of stream `id`, the program reading
  * `chunk` at a time; checked at every step: the bytes, nothing past the
- * ring, no receive buffer held in lwIP. */
+ * ring, no receive buffer held in lwIP for it (other connections' held
+ * ones, past a hole, stay as they were). */
 bool fix_receive(struct cx *x, uint32_t id, size_t total, uint32_t chunk)
 {
     static uint8_t tmp[64 * 1024];
     static struct tp_seg s[TP_CAP];
     size_t sent = 0, read = 0;
     unsigned ticks = 0;
+    struct stack_counts c;
+    stack_get_counts(&c);
+    uint32_t held = c.rx_buffers_used;
     for (unsigned round = 0; read < total; round++) {
         CHECK(round < 6000);
         size_t was_sent = sent, was_read = read;
@@ -244,9 +249,8 @@ bool fix_receive(struct cx *x, uint32_t id, size_t total, uint32_t chunk)
         CHECK(fix_turn(x, s, TP_CAP, &k, false));
         for (unsigned i = 0; i < k; i++)
             CHECK_EQ(s[i].len, 0);
-        struct stack_counts c;
         stack_get_counts(&c);
-        CHECK_EQ(c.rx_buffers_used, 0);
+        CHECK_EQ(c.rx_buffers_used, held);
         CHECK_EQ(sent - read, sockring_ready(&x->prog.rx));   /* every byte sent is in the ring */
         uint32_t want = chunk < sizeof(tmp) ? chunk : sizeof(tmp);
         uint32_t n = sockring_stream_read(&x->prog.rx, tmp, want);

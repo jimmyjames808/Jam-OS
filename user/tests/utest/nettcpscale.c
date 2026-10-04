@@ -19,7 +19,8 @@
  *                        connection with an ordinary ring still sends its
  *                        bytes, and the heap's last part is left
  *
- * Rings this big don't fit the fixture's slots: they are VMOs here. */
+ * Rings this big don't fit the fixture's slots: they are VMOs here
+ * (nettcp.h's fix_big_*, which the out-of-order tests share). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -35,16 +36,12 @@
 #define OUR_SHIFT  6u           /* lwipopts.h TCP_RCV_SCALE */
 #define PEER_SHIFT 7u           /* the peer's: 0xffff << 7, an 8 MiB window */
 #define BIG        (2u << 20)   /* a bulk ring: a whole scaled window */
+/* The peer fix_open_big connects to on port n: scaling (PEER_SHIFT), or not. */
+#define SCALING(n) (&(struct tp){ .port = (n), .wscale = PEER_SHIFT + 1 })
+#define PLAIN(n)   (&(struct tp){ .port = (n) })
 
-/* A connection's rings in a VMO of their own. */
-struct big {
-    handle_t vmo;
-    uint8_t *map;
-    uint64_t len;
-};
-
-static bool big_make(uint32_t tx, uint32_t rx, struct sockring *ss, struct sockring *prog,
-                     struct big *b)
+bool fix_big_make(uint32_t tx, uint32_t rx, struct sockring *ss, struct sockring *prog,
+                  struct fix_big *b)
 {
     uint64_t va = 0;
     b->len = sockring_bytes(tx, rx);
@@ -57,20 +54,20 @@ static bool big_make(uint32_t tx, uint32_t rx, struct sockring *ss, struct sockr
     return true;
 }
 
-static void big_free(struct big *b)
+void fix_big_free(struct fix_big *b)
 {
     if (b->map)
         (void)jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)b->map,
                              b->len);   /* ours: nothing to do if it fails */
     if (b->vmo)
         jam_handle_close(b->vmo);
-    *b = (struct big){ 0 };
+    *b = (struct fix_big){ 0 };
 }
 
-static void conn_free(struct cx *x, struct big *b)
+void fix_free_big(struct cx *x, struct fix_big *b)
 {
     ntcp_conn_free(x->c);
-    big_free(b);
+    fix_big_free(b);
 }
 
 /* The window netstack announced last, in bytes. */
@@ -88,26 +85,26 @@ static bool wnd_is_room(struct cx *x)
     return true;
 }
 
-/* netstack opens a connection to the peer (which scales: pshift + 1 in
- * p.wscale, or 0) with rings of tx and rx bytes; the handshake answered
- * and, with scaling, the peer's whole window told in an ACK of its own
- * (a SYN's window is never scaled). */
-static bool connect_to(struct cx *x, struct big *b, uint16_t port, uint32_t tx, uint32_t rx,
-                       uint8_t wscale)
+bool fix_open_big(struct cx *x, struct fix_big *b, const struct tp *peer, uint32_t tx,
+                  uint32_t rx)
 {
     struct sockring ss;
     struct tp_seg s[4];
     unsigned n;
-    *x = (struct cx){ .p = { .ip = PEER_IP, .mac = pkt_peer_mac, .port = port, .snd = PEER_ISN,
-                             .win = 0xffff, .wscale = wscale } };
-    CHECK(big_make(tx, rx, &ss, &x->prog, b));
+    *x = (struct cx){ .p = *peer };
+    x->p.ip = PEER_IP;
+    x->p.mac = pkt_peer_mac;
+    x->p.snd = PEER_ISN;
+    x->p.win = 0xffff;
+    CHECK(fix_big_make(tx, rx, &ss, &x->prog, b));
     CHECK_ST(ntcp_conn_new(x, &x->c), OK);
     ntcp_conn_rings(x->c, &ss);
-    CHECK_ST(ntcp_connect(x->c, PEER_IP, port), OK);
+    CHECK_ST(ntcp_connect(x->c, PEER_IP, x->p.port), OK);
     CHECK(fix_turn(x, s, 4, &n, false));
     CHECK_EQ(n, 1);
     CHECK_EQ(s[0].flags, TP_SYN);
     CHECK_EQ(s[0].wscale, OUR_SHIFT + 1);   /* netstack offers scaling */
+    CHECK(s[0].sack_ok);                    /* and SACK */
     CHECK_EQ(s[0].win, 0xffff);             /* lwIP's, until the handshake settles it */
     x->p.our = s[0].sport;
     x->p.rcv = s[0].seq + 1;
@@ -116,15 +113,15 @@ static bool connect_to(struct cx *x, struct big *b, uint16_t port, uint32_t tx, 
     CHECK_EQ(n, 1);
     CHECK_EQ(s[0].flags, TP_ACK);
     CHECK_EQ(fix_status(x).state, SOCKRING_STATE_OPEN);
-    if (wscale)
-        tp_send(&x->p, TP_ACK, NULL, 0);   /* the scaled window: 0xffff << PEER_SHIFT */
+    if (x->p.wscale)
+        tp_send(&x->p, TP_ACK, NULL, 0);   /* the scaled window: 0xffff << the peer's shift */
     return true;
 }
 
 /* netstack's turn, and its ACKs read; the last segment's ACK may be
  * delayed (lwIP acks every second one at once): then lwIP's timer sends
  * it. All the peer sent is acked, the window as it is now. */
-static bool acked_all(struct cx *x)
+bool fix_acked_all(struct cx *x)
 {
     static struct tp_seg s[TP_CAP];
     unsigned n;
@@ -150,7 +147,7 @@ static bool peer_burst(struct cx *x, uint32_t id, uint64_t from, unsigned segs, 
         tp_fill(id, from + (uint64_t)i * STACK_TCP_MSS, seg, STACK_TCP_MSS);
         tp_send(&x->p, TP_ACK | TP_PSH, seg, STACK_TCP_MSS);
     }
-    CHECK(acked_all(x));
+    CHECK(fix_acked_all(x));
     CHECK_EQ(sockring_ready(&x->prog.rx), before + segs * STACK_TCP_MSS);
     if (scaled)
         CHECK(wnd_is_room(x));
@@ -201,7 +198,7 @@ static bool in_flight(struct cx *x, uint32_t id, unsigned rounds, uint32_t stop,
 }
 
 /* Close a connection the test is done with: the peer resets it. */
-static void reset_by_peer(struct cx *x)
+void fix_reset_by_peer(struct cx *x)
 {
     tp_send(&x->p, TP_RST | TP_ACK, NULL, 0);
     tp_forget();
@@ -212,8 +209,8 @@ static void reset_by_peer(struct cx *x)
 static bool scaled_rx(void)
 {
     struct cx x;
-    struct big b = { 0 };
-    CHECK(connect_to(&x, &b, 8080, 4096, BIG, PEER_SHIFT + 1));
+    struct fix_big b = { 0 };
+    CHECK(fix_open_big(&x, &b, SCALING(8080), 4096, BIG));
     CHECK_EQ(wnd_bytes(&x, true), BIG);    /* the handshake's ACK: the ring's 2 MiB */
     CHECK(peer_burst(&x, 5, 0, 100, true));        /* 146000 bytes: more than 64 KiB in flight */
     CHECK(peer_burst(&x, 5, 146000, 1, true));     /* what was read is given back: */
@@ -222,43 +219,43 @@ static bool scaled_rx(void)
     tp_fill(6, 0, seg, sizeof(seg));
     for (unsigned i = 0; i < 2; i++)
         tp_send(&x.p, TP_ACK | TP_PSH, seg, sizeof(seg));
-    CHECK(acked_all(&x));
+    CHECK(fix_acked_all(&x));
     CHECK(wnd_is_room(&x));
     CHECK_EQ(sockring_ready(&x.prog.rx), 2 * STACK_TCP_MSS);
-    reset_by_peer(&x);
-    conn_free(&x, &b);
+    fix_reset_by_peer(&x);
+    fix_free_big(&x, &b);
     return true;
 }
 
 static bool scaled_tx(void)
 {
     struct cx x;
-    struct big b = { 0 };
+    struct fix_big b = { 0 };
     uint32_t most;
-    CHECK(connect_to(&x, &b, 8081, 256 * 1024, 4096, PEER_SHIFT + 1));
+    CHECK(fix_open_big(&x, &b, SCALING(8081), 256 * 1024, 4096));
     CHECK(in_flight(&x, 7, 40, 0xffff, &most));
     CHECK(most > 0xffff);   /* a 256 KiB send buffer: more than an unscaled window */
-    reset_by_peer(&x);
-    conn_free(&x, &b);
-    CHECK(connect_to(&x, &b, 8082, 64 * 1024, 4096, PEER_SHIFT + 1));
+    fix_reset_by_peer(&x);
+    fix_free_big(&x, &b);
+    CHECK(fix_open_big(&x, &b, SCALING(8082), 64 * 1024, 4096));
     CHECK(in_flight(&x, 8, 40, 64 * 1024, &most));
     CHECK(most <= 64 * 1024);   /* its send buffer is its 64 KiB ring */
     CHECK(most > 32 * 1024);
-    reset_by_peer(&x);
-    conn_free(&x, &b);
+    fix_reset_by_peer(&x);
+    fix_free_big(&x, &b);
     return true;
 }
 
 static bool plain_peer(void)
 {
     struct cx x;
-    struct big b = { 0 };
-    CHECK(connect_to(&x, &b, 8083, 4096, BIG, 0));
+    struct fix_big b = { 0 };
+    CHECK(fix_open_big(&x, &b, PLAIN(8083), 4096, BIG));
     CHECK_EQ(x.window, STACK_TCP_WND_PLAIN);   /* unscaled: the 44 segments, not the ring */
     CHECK(peer_burst(&x, 9, 0, 44, false));
     CHECK_EQ(x.window, 0);   /* all of it used */
-    reset_by_peer(&x);
-    conn_free(&x, &b);
+    fix_reset_by_peer(&x);
+    fix_free_big(&x, &b);
     return true;
 }
 
@@ -273,14 +270,14 @@ bool t_nettcp_window_scale(void)
 
 /* ---- a listener's connections ------------------------------------------------------ */
 
-static struct big lst_big[2];
+static struct fix_big lst_big[2];
 static struct sockring lst_prog[2];
 
 static status_t big_lst_rings(struct ntcp_listener *l, struct ntcp_conn *c)
 {
     unsigned i = lst_big[0].map ? 1 : 0;
     struct sockring ss;
-    if (lst_big[i].map || !big_make(4096, l->req.rx_size, &ss, &lst_prog[i], &lst_big[i]))
+    if (lst_big[i].map || !fix_big_make(4096, l->req.rx_size, &ss, &lst_prog[i], &lst_big[i]))
         return ERR_NO_RESOURCES;
     ntcp_conn_rings(c, &ss);
     c->owner = &lst_big[i];
@@ -290,7 +287,7 @@ static status_t big_lst_rings(struct ntcp_listener *l, struct ntcp_conn *c)
 static void big_lst_drop(struct ntcp_listener *l, struct ntcp_conn *c)
 {
     (void)l;
-    big_free(c->owner);
+    fix_big_free(c->owner);
 }
 
 /* The peer (scaling or not) opens a connection to l: the SYN-ACK checked,
@@ -311,7 +308,7 @@ static bool lst_open(struct ntcp_listener *l, struct cx *x, uint16_t from, uint8
     x->p.rcv = s[0].seq + 1;
     tp_send(&x->p, TP_ACK, NULL, 0);
     CHECK_ST(ntcp_accept(l, &x->c), OK);
-    x->prog = lst_prog[(struct big *)x->c->owner - lst_big];
+    x->prog = lst_prog[(struct fix_big *)x->c->owner - lst_big];
     x->acked = x->p.rcv;
     x->window = win;
     return true;
@@ -331,12 +328,12 @@ bool t_nettcp_listen_scale(void)
     CHECK(lst_open(l, &y, 31001, 0, STACK_TCP_WND_PLAIN));   /* a peer that doesn't scale */
     CHECK(peer_burst(&y, 12, 0, 44, false));
     CHECK_EQ(y.window, 0);               /* its 64240, all of it used: none left */
-    reset_by_peer(&x);
-    reset_by_peer(&y);
+    fix_reset_by_peer(&x);
+    fix_reset_by_peer(&y);
     ntcp_conn_free(x.c);
     ntcp_conn_free(y.c);
-    big_free(&lst_big[0]);
-    big_free(&lst_big[1]);
+    fix_big_free(&lst_big[0]);
+    fix_big_free(&lst_big[1]);
     ntcp_unlisten(l);
     CHECK(fix_down());
     return true;
@@ -367,15 +364,15 @@ static uint32_t stuff(struct cx *x, uint32_t id)
 bool t_nettcp_heap_shares(void)
 {
     static struct cx bulk[3];
-    static struct big bb[3];
+    static struct fix_big bb[3];
     struct cx small;
-    struct big sb = { 0 };
+    struct fix_big sb = { 0 };
     uint32_t took = 0;
     CHECK(fix_up());
     tp_room(0);   /* the card takes nothing: every byte stays in lwIP */
     for (unsigned i = 0; i < 3; i++) {
         tp_room(TP_CAP);
-        CHECK(connect_to(&bulk[i], &bb[i], (uint16_t)(8100 + i), BIG, 4096, PEER_SHIFT + 1));
+        CHECK(fix_open_big(&bulk[i], &bb[i], SCALING((uint16_t)(8100 + i)), BIG, 4096));
         tp_room(0);
         took += stuff(&bulk[i], 20 + i);
     }
@@ -390,17 +387,17 @@ bool t_nettcp_heap_shares(void)
     CHECK(STACK_HEAP - c.heap_used >=
           STACK_HEAP_KEEP + STACK_HEAP_KEEP_BULK - 3 * (STACK_TCP_SND_MIN + STACK_TCP_SND_MIN / 8));
     tp_room(TP_CAP);
-    CHECK(connect_to(&small, &sb, 8110, 16 * 1024, 4096, 0));
+    CHECK(fix_open_big(&small, &sb, PLAIN(8110), 16 * 1024, 4096));
     tp_room(0);
     CHECK_EQ(stuff(&small, 30), 16 * 1024);   /* an ordinary connection still sends */
     stack_get_counts(&c);
     CHECK(c.heap_used + STACK_HEAP_KEEP <= STACK_HEAP);   /* and the stack's own part is left */
     tp_room(TP_CAP);
-    reset_by_peer(&small);
-    conn_free(&small, &sb);
+    fix_reset_by_peer(&small);
+    fix_free_big(&small, &sb);
     for (unsigned i = 0; i < 3; i++) {
-        reset_by_peer(&bulk[i]);
-        conn_free(&bulk[i], &bb[i]);
+        fix_reset_by_peer(&bulk[i]);
+        fix_free_big(&bulk[i], &bb[i]);
     }
     CHECK(fix_down());
     return true;
