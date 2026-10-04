@@ -462,28 +462,45 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
     return channel_read_into(ch, &b, actual_bytes, handles, handles_cap, actual_handles);
 }
 
-/* channel_read_wait's wait, ch's lock held (*f its flags): OK once w has
- * a message for r (handed over by a writer, or taken off the queue here),
- * else the error that ends the wait. A handed message wins over every
- * error: it is no longer queued anywhere, so it must reach the reader. */
-static status_t read_wait_locked(struct channel *ch, struct chan_waiter *w, struct chan_read *r,
-                                 uint64_t *f, uint64_t deadline_ns, bool *was_full)
+/* channel_read_wait's state through its wait. */
+struct read_wait {
+    struct chan_waiter w;          /* us: listed on the endpoint while we sleep */
+    uint64_t           f;          /* the endpoint lock's saved flags */
+    bool               locked;     /* the endpoint lock is held */
+    bool               was_full;   /* we took a message off a full queue (refresh_writable) */
+};
+
+/* channel_read_wait's wait, ch's lock held: OK once rw->w has a message
+ * for r (handed over by a writer, or taken off the queue here), else the
+ * error that ends the wait. A handed message wins over every error: it is
+ * no longer queued anywhere, so it must reach the reader. One handed over
+ * while we slept is found without taking the lock again (chan_handed),
+ * and then the lock is not held on return. */
+static status_t read_wait_locked(struct channel *ch, struct read_wait *rw, struct chan_read *r,
+                                 uint64_t deadline_ns)
 {
+    struct chan_waiter *w = &rw->w;
     for (;;) {
-        if (w->reply)
+        if (chan_handed(w))
             return OK;
         if (ch->closed)
             return ERR_BAD_STATE;
         if (!list_empty(&ch->queue))
             return take_first_locked(ch, r->buf.len, r->hcap, &w->reply, &r->nb, &r->nh,
-                                     was_full);
+                                     &rw->was_full);
         if (ch->peer_closed)
             return ERR_PEER_CLOSED;
         if (deadline_ns != DEADLINE_NEVER && uptime_ns() >= deadline_ns)
             return ERR_TIMED_OUT;
         if (!w->node.next)
             chan_waiter_list_locked(ch, w);   /* the queue is empty: see chan_waiter */
-        if (thread_block_cancellable(&ch->base.lock, f, deadline_ns) != OK && !w->reply)
+        status_t bs = thread_block_cancellable_unlocked(&ch->base.lock, rw->f, deadline_ns);
+        if (chan_handed(w)) {
+            rw->locked = false;
+            return OK;
+        }
+        rw->f = spin_lock_irqsave(&ch->base.lock);
+        if (bs != OK && !chan_handed(w))
             return ERR_CANCELED;
     }
 }
@@ -495,22 +512,23 @@ status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t dea
     PATH_MARK(PATH_MK_WAIT_IN);
     /* Our free slot is on offer while we are listed (channel_send.c's
      * hand_over_locked takes it for a message built in its writer's). */
-    struct chan_waiter w = {
-        .thread = current_thread(), .any = true, .bytes_cap = r->buf.len,
-        .handles_cap = r->hcap, .slot = chan_slot_take(),
+    struct read_wait rw = {
+        .w = { .thread = current_thread(), .any = true, .bytes_cap = r->buf.len,
+               .handles_cap = r->hcap, .slot = chan_slot_take() },
+        .locked = true,
     };
-    bool was_full = false;
     r->nb = r->nh = 0;
-    uint64_t f = spin_lock_irqsave(&ch->base.lock);
-    status_t st = read_wait_locked(ch, &w, r, &f, deadline_ns, &was_full);
-    if (w.node.next)
-        chan_waiter_unlist_locked(ch, &w);
-    struct chan_msg *offered = w.slot;   /* NULL if a writer took it */
-    spin_unlock_irqrestore(&ch->base.lock, f);
+    rw.f = spin_lock_irqsave(&ch->base.lock);
+    status_t st = read_wait_locked(ch, &rw, r, deadline_ns);
+    if (rw.locked && rw.w.node.next)
+        chan_waiter_unlist_locked(ch, &rw.w);
+    struct chan_msg *offered = rw.w.slot;   /* NULL if a writer took it */
+    if (rw.locked)
+        spin_unlock_irqrestore(&ch->base.lock, rw.f);
     chan_slot_keep(offered);
-    if (was_full)
+    if (rw.was_full)
         refresh_writable(ch);
-    struct chan_msg *m = w.reply;
+    struct chan_msg *m = rw.w.reply;
     if (m) {
         r->nb = m->nbytes;
         r->nh = m->nhandles;

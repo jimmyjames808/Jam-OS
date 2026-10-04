@@ -192,6 +192,14 @@ void thread_block(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns);
  * woken) once thread_cancel has been called on this thread; OK otherwise.
  * Use for every wait a process could be killed in. */
 status_t thread_block_cancellable(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns);
+/* As thread_block_cancellable, but `lock` is not taken again on return
+ * (irqflags, what spin_lock_irqsave gave for it, are in force again): for
+ * a waiter whose waker publishes what it waits for with a release store
+ * after its last touch of the waiter's memory, so the waiter can look at
+ * it with an acquire load first and take the lock itself only when it is
+ * not there (channel.c's handed messages). */
+status_t thread_block_cancellable_unlocked(spinlock_t *lock, uint64_t irqflags,
+                                           uint64_t deadline_ns);
 status_t thread_sleep_cancellable(uint64_t ns);
 /* Ask t to stop waiting: set its cancel flag (for good) and wake it. Its
  * cancellable waits return ERR_CANCELED; plain waits just see a spurious

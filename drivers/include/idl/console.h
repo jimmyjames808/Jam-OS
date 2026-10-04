@@ -218,9 +218,11 @@ static inline status_t console_open_keys_call(handle_t ch, bool idl_within, uint
     idl_q.txid = 0;
     idl_q.ordinal = CONSOLE_OPEN_KEYS;
     handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               1, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -262,9 +264,11 @@ static inline status_t console_connect_input_call(handle_t ch, bool idl_within, 
     idl_q.txid = 0;
     idl_q.ordinal = CONSOLE_CONNECT_INPUT;
     handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               1, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -306,9 +310,11 @@ static inline status_t console_lend_screen_call(handle_t ch, bool idl_within, ui
     idl_q.txid = 0;
     idl_q.ordinal = CONSOLE_LEND_SCREEN;
     handle_t idl_rh[2];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               2, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 2, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 2)
@@ -374,9 +380,11 @@ static inline status_t console_new_client_call(handle_t ch, bool idl_within, uin
     idl_q.ordinal = CONSOLE_NEW_CLIENT;
     idl_q.level = level;
     handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               1, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)

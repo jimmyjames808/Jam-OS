@@ -59,9 +59,8 @@
 # channel_reply_wait_args, <jam/abi.h>). First the reply: a channel_write
 # of rbytes and rh on h (HANDLE_INVALID: none, a server's first call),
 # which goes to the channel_call waiting for its txid on the peer,
-# whichever thread or process holding h sends it. Its status goes into
-# *reply_status, and once it went out, 1 into *mark (8 bytes), before
-# anything else. Then the request: with `wait` a channel end, its next
+# whichever thread or process holding h sends it. Once it went out, 1
+# goes into *mark (8 bytes), before anything else. Then the request: with `wait` a channel end, its next
 # message read straight into bytes and handles (the sizes as channel_read
 # gives them), waiting for one if none is queued; with a port, its next
 # packet into *packet (the server reads the channel it names). Needs
@@ -74,8 +73,11 @@
 # ERR_PEER_CLOSED: the reply failed; otherwise the result is the wait's:
 # as channel_read's (ERR_BUFFER_TOO_SMALL leaves the message queued) or
 # port_wait's, ERR_TIMED_OUT, ERR_CANCELED, ERR_PEER_CLOSED (nothing
-# queued, the peer gone). A fault writing reply_status or the mark ends
-# the call too (ERR_INVALID_ARGS), after the reply.
+# queued, the peer gone). *reply_status is written as the call returns,
+# with the sizes (after the request's bytes and handles), in one copy
+# when the three follow each other in memory; a fault there loses the
+# request, as channel_read's. A fault writing the mark ends the call
+# after the reply (ERR_INVALID_ARGS), nothing read.
 24  channel_reply_wait status   @channel_reply_wait_args
 
 # events and timers ---------------------------------------------------------

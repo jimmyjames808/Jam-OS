@@ -201,8 +201,10 @@ KTEST(pathstat_kernel_call_counts)
     /* The request's wake hands the server our CPU (the direct hand-off);
      * the reply's is queued: the server's plain write doesn't block. */
     KT_IDLE_EQ(per100(&r, PATH_HANDOFF), handoffs());
-    /* 14 a round trip, less the run queue lock a handed wake never takes. */
-    KT_IDLE_EQ(per100(&r, PATH_LOCK), 1400 - handoffs());
+    /* 13 a round trip, less the run queue lock a handed wake never takes.
+     * (The caller finds its reply handed over when it wakes, and doesn't
+     * take its endpoint's lock again: chan_handed.) */
+    KT_IDLE_EQ(per100(&r, PATH_LOCK), 1300 - handoffs());
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);   /* every release is the top lock */
     KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
@@ -276,18 +278,22 @@ KTEST(pathstat_user_reply_wait_counts)
     KT_EQ(per100(&r, PATH_KCOPY), 0);
     KT_EQ(per100(&r, PATH_UCOPY_IN_B), 22400);   /* the two argument structs, 16 bytes each way */
     KT_EQ(per100(&r, PATH_HANDLE), 200);
-    KT_IDLE_EQ(per100(&r, PATH_SCHED), 200);
+    /* The pair runs on one time slice (the hand-off doesn't refresh it):
+     * when it runs out, a tick preempts whichever runs, a pass that picks it
+     * again. One every 20 ms: a few in a slow window. */
+    KT_IDLE_ASSERT(per100(&r, PATH_SCHED) >= 200 && per100(&r, PATH_SCHED) <= 205);
     KT_IDLE_EQ(per100(&r, PATH_SWITCH), 200);
     KT_IDLE_EQ(per100(&r, PATH_HANDOFF), 2 * handoffs());
     KT_IDLE_EQ(per100(&r, PATH_FPU_RESTORE), 200);
     KT_IDLE_EQ(per100(&r, PATH_CR3), 200);
-    /* 13 a round trip: per side the handle table, the pair and the peer's
-     * endpoint for the send, its own endpoint (twice: before and after it
-     * blocks) and the scheduler's; the caller also lists itself on its
-     * endpoint first. A handed wake takes no lock (with the hand-off off,
-     * each wake takes the run queue's: 15). A rare extra one in the
-     * trace's window: not exact. */
-    uint64_t locks = 1500 - 2 * handoffs();
+    /* 11 a round trip: per side the handle table, the pair and the peer's
+     * endpoint for the send, its own endpoint before it blocks (not after:
+     * it finds its message handed over, chan_handed) and the scheduler's;
+     * the caller also lists itself on its endpoint first. A handed wake
+     * takes no lock (with the hand-off off, each wake takes the run
+     * queue's: 13). A rare extra one (a slice's end) in the trace's window:
+     * not exact. */
+    uint64_t locks = 1300 - 2 * handoffs();
     KT_IDLE_ASSERT(per100(&r, PATH_LOCK) >= locks && per100(&r, PATH_LOCK) <= locks + 10);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
     /* No deadline, no clock read, but the client's: its warm-up (calls
@@ -348,6 +354,10 @@ KTEST(pathstat_user_generated_call_counts)
     KT_EQ(per100(&r, PATH_EMPTY_READ), 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 0);
     KT_EQ(per100(&r, PATH_SLEEPQ), 100);
+    /* Copies out: the reply and its size to the client; the request to
+     * the server, then the reply's status and the request's two sizes in
+     * one copy (the generated loop keeps the three in a row). */
+    KT_EQ(per100(&r, PATH_UCOPY_OUT), 400);
     /* Two a call, and now and then one of the warm-up's (above). */
     KT_IDLE_ASSERT(per100(&r, PATH_CLOCK) >= 200 && per100(&r, PATH_CLOCK) <= 202);
 }

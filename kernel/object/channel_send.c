@@ -135,13 +135,27 @@ static void swap_slots_locked(struct chan_waiter *w)
     w->slot = NULL;
 }
 
-/* peer's lock held: give m to waiter w and take w off the list. */
-static void hand_to_locked(struct channel *peer, struct chan_waiter *w, struct chan_msg *m)
+/* peer's lock held: give m to waiter w, take w off the list and wake it
+ * (`sync`: wake-affine). The message is published last, with a release
+ * store, after the wake: a waiter that finds it there returns without
+ * taking the endpoint's lock again (thread_block_cancellable_unlocked), and
+ * then its chan_waiter (on its stack) and maybe the thread itself are gone,
+ * so nothing here may touch either after that store. A waiter woken
+ * before it (by the wake, a deadline or a cancel) doesn't find it and takes
+ * the lock, which we hold until it is there. */
+static void hand_to_locked(struct channel *peer, struct chan_waiter *w, struct chan_msg *m,
+                           bool sync)
 {
-    w->reply = m;
+    struct thread *t = w->thread;
     if (m->slot)
         swap_slots_locked(w);
     chan_waiter_unlist_locked(peer, w);
+    if (sync)
+        thread_wake_sync(t);
+    else
+        thread_wake(t);
+    DBG_HOOK(DBG_CHANNEL_HANDED, t);
+    __atomic_store_n(&w->reply, m, __ATOMIC_RELEASE);
 }
 
 /* peer's lock held (and the pair lock): give m to the caller waiting for
@@ -154,25 +168,20 @@ static status_t hand_over_locked(struct channel *ch, struct channel *peer, struc
     uint32_t txid = msg_txid(m);
     struct chan_waiter *w = txid ? find_caller_locked(peer, txid) : NULL;
     if (w) {
-        hand_to_locked(peer, w, m);
         /* A reply to a channel_call. If no other request is queued for us,
          * we (the server) are most likely about to block for the next one,
          * so the caller may take our CPU (wake-affine; a guess: a server
          * that goes on to other work instead just delays it until the next
          * tick or steal). Our queue count is read without our lock: a stale
          * answer only changes the placement. */
-        if (!__atomic_load_n(&ch->nqueued, __ATOMIC_RELAXED))
-            thread_wake_sync(w->thread);
-        else
-            thread_wake(w->thread);
+        hand_to_locked(peer, w, m, !__atomic_load_n(&ch->nqueued, __ATOMIC_RELAXED));
         return OK;
     }
     w = peer->nqueued ? NULL : find_reader_locked(peer);
     if (w && m->nbytes <= w->bytes_cap && m->nhandles <= w->handles_cap) {
-        hand_to_locked(peer, w, m);
         /* A plain wake: wake-affine only for a writer that blocks next and
          * said so (channel_call's request, thread_set_wake_sync). */
-        thread_wake(w->thread);
+        hand_to_locked(peer, w, m, false);
         return OK;
     }
     if (m->slot) {
@@ -315,12 +324,41 @@ static status_t send_request(struct channel *ch, struct chan_waiter *w, struct c
         w->slot = NULL;
         spin_unlock_irqrestore(&ch->base.lock, f);
         chan_slot_keep(mine);
-        if (w->reply) {   /* the peer guessed our txid before we even sent */
-            chan_msg_drop(w->reply);
+        struct chan_msg *r = chan_handed(w);
+        if (r) {   /* the peer guessed our txid before we even sent */
+            chan_msg_drop(r);
             w->reply = NULL;
         }
     }
     return st;
+}
+
+/* wait_reply's loop, ch's lock held (*f its flags): OK once w has its
+ * reply, else the error that ends the wait. *locked: whether the lock is
+ * still held on return. A reply handed over while we slept is found
+ * without taking the lock again (chan_handed: the writer published it
+ * last, and had taken us off the list already). */
+static status_t wait_reply_locked(struct channel *ch, struct chan_waiter *w, uint64_t *f,
+                                  uint64_t deadline_ns, bool *locked)
+{
+    *locked = true;
+    while (!chan_handed(w)) {
+        if (ch->closed)
+            return ERR_CANCELED;
+        if (ch->peer_closed)
+            return ERR_PEER_CLOSED;
+        if (deadline_ns != DEADLINE_NEVER && uptime_ns() >= deadline_ns)
+            return ERR_TIMED_OUT;
+        status_t bs = thread_block_cancellable_unlocked(&ch->base.lock, *f, deadline_ns);
+        if (chan_handed(w)) {
+            *locked = false;
+            return OK;
+        }
+        *f = spin_lock_irqsave(&ch->base.lock);
+        if (bs != OK && !chan_handed(w))
+            return ERR_CANCELED;
+    }
+    return OK;
 }
 
 /* Wait for w's reply. OK: it is in w->reply. Our free slot stays on offer
@@ -329,40 +367,24 @@ static status_t send_request(struct channel *ch, struct chan_waiter *w, struct c
  * Whatever is left of the offer comes back to us after. */
 static status_t wait_reply(struct channel *ch, struct chan_waiter *w, uint64_t deadline_ns)
 {
-    status_t st = OK;
     struct chan_msg *mine = chan_slot_take();
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
-    if (!w->slot && !w->reply) {
+    if (!w->slot && !chan_handed(w)) {
         w->slot = mine;
         mine = NULL;
     }
-    while (!w->reply) {
-        if (ch->closed) {
-            st = ERR_CANCELED;
-            break;
-        }
-        if (ch->peer_closed) {
-            st = ERR_PEER_CLOSED;
-            break;
-        }
-        if (deadline_ns != DEADLINE_NEVER && uptime_ns() >= deadline_ns) {
-            st = ERR_TIMED_OUT;
-            break;
-        }
-        if (thread_block_cancellable(&ch->base.lock, &f, deadline_ns) != OK && !w->reply) {
-            st = ERR_CANCELED;
-            break;
-        }
-    }
-    if (w->node.next)   /* not answered: still listed */
+    bool locked;
+    status_t st = wait_reply_locked(ch, w, &f, deadline_ns, &locked);
+    if (locked && w->node.next)   /* not answered: still listed */
         chan_waiter_unlist_locked(ch, w);
     struct chan_msg *offered = w->slot;   /* NULL if a writer took it */
     w->slot = NULL;
-    spin_unlock_irqrestore(&ch->base.lock, f);
+    if (locked)
+        spin_unlock_irqrestore(&ch->base.lock, f);
     chan_slot_keep(mine);
     chan_slot_keep(offered);
     PATH_MARK(PATH_MK_REPLY);
-    return w->reply ? OK : st;
+    return chan_handed(w) ? OK : st;
 }
 
 status_t channel_call_with(struct channel *ch, struct chan_call *c, uint64_t deadline_ns)
