@@ -262,9 +262,9 @@ void     hda_ctrl_stop(struct hda *h);
  * the IOMMU should block without raising an interrupt), each logged, then
  * the rings restored for ordinary use. When the device is not translated
  * with only its pinned pages mapped (iommu=off, or on pass-through: the
- * controller does read the unpinned address), it says so and does neither:
- * the kernel fault records are what the checks look for, and there would
- * be none. The rings are left as they were found. */
+ * controller does read the unpinned address), it says so and stops: the
+ * kernel fault records are what the checks look for, and there would be
+ * none. The rings are left as they were found. */
 void     hda_vtdtest(struct hda *h, unsigned cad);
 
 /* The RIRB's demultiplexer (ctrl.c). Every entry the controller writes

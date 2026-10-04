@@ -6,10 +6,10 @@
 #      every driver at the end, and each hda must end cleanly (its
 #      controller back in reset, exit 0, nothing left in init's root job);
 #   3. a shell boot with QEMU's VT-d unit and `iommu=on vtdtest`, so
-#      drv/hda runs its IOMMU checks (drivers/hda/vtdtest.c): QEMU gives
-#      drivers pass-through (M11 D1 without D2), so the unpinned read is not
-#      blocked and the check skips, the driver serves on, and `iommu` shows
-#      the unit with translation and interrupt remapping on.
+#      drv/hda runs its IOMMU checks (drivers/hda/vtdtest.c): each
+#      controller's read of a page it unpinned is blocked and faulted at
+#      that address, the response ring is pointed into the interrupt window,
+#      the driver serves on, and `iommu` shows the domains and faults.
 # The devices: intel-hda (ICH6, 8086:2668) with hda-duplex (codec 0) and
 # hda-output (codec 1), and ich9-intel-hda (8086:293e) with hda-micro.
 # Each driver runs the path and jack self-tests on its fixtures (the jack
@@ -124,32 +124,43 @@ else
 fi
 
 # The IOMMU checks: a shell boot with QEMU's VT-d unit and iommu=on vtdtest,
-# so drv/hda runs drivers/hda/vtdtest.c at bind. QEMU puts driven devices
-# on pass-through (M11 D1 without D2), so the controller reads the unpinned
-# address and the check skips; the driver says so and serves normally, and
-# the `iommu` command shows the unit with translation on.
+# so each drv/hda runs drivers/hda/vtdtest.c at bind. Each controller is
+# translated with only its pins mapped (a domain per dma_cap), so its CORB
+# read from the page it unpinned is blocked: QEMU hands the controller a 0
+# instead, its codec answers 0, and the driver says the read was blocked;
+# the kernel logs a fault naming that controller, a read at that very
+# address. Then the RIRB write into the interrupt window (QEMU passes the
+# old format through: the PC's half). Afterwards `hda` must still answer
+# with no timeout (the rings were put back), and `iommu` shows each
+# controller in a domain of its own with its fault counted.
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$devs" QEMU_IOMMU=eim \
     QEMU_WORDS="iommu=on vtdtest" QEMU_INPUT=tools/shell-tests/vtdtest.txt \
     tools/qemu-test.sh "$out" hda-vtd shell > "$out/hda-vtd.out" 2>&1 ||
     { echo "hda-vtd: the script failed"; grep "serial-feed: .*no '" "$out/hda-vtd.out"; ok=0; }
 log="$out/hda-vtd.log"
-for want in "answered: DMA not restricted: skipped" \
-            "codec(s) answered; 0 verb(s) timed out" \
+for want in "codec(s) answered; 0 verb(s) timed out" \
             "iommu: DMA translation on, interrupt remapping on" \
-            "controller 8086:2668"; do
+            "(driver), 1 DMA fault(s)" "controller 8086:2668"; do
     grep -qF -- "$want" "$log" || { echo "hda-vtd: no line with \"$want\""; ok=0; }
 done
-if grep -E "vtdtest: unpinned read at .* blocked|vtd: fault: " "$log"; then
-    echo "hda-vtd: a fault was provoked, but QEMU's drivers are on pass-through"
-    ok=0
-fi
-if grep -qE "drv/hda crashed|PANIC" "$log"; then
-    echo "hda-vtd: the hda driver crashed or the kernel panicked after the checks"
+# Both controllers: the read blocked, a fault at that address, the window.
+blocked=$(grep -oE "vtdtest: unpinned read at 0x[0-9a-f]+ blocked" "$log" |
+          sed -E 's/.*at 0x([0-9a-f]+) .*/\1/' | sort -u)
+nb=$(echo "$blocked" | grep -c . || true)
+[ "$nb" = 2 ] || { echo "hda-vtd: $nb controller(s) saw the unpinned read blocked, want 2"; ok=0; }
+for a in $blocked; do
+    grep -qE "vtd: fault: unit 0: 00:0[0-9a-f]\.0 read at $a, reason 6" "$log" ||
+        { echo "hda-vtd: no read fault at $a"; ok=0; }
+done
+nw=$(grep -c "vtdtest: RIRB write to 0xfee00000 sent" "$log" || true)
+[ "$nw" = 2 ] || { echo "hda-vtd: $nw interrupt-window write(s), want 2"; ok=0; }
+if grep -E "DMA not restricted|window check skipped|drv/hda crashed|PANIC" "$log"; then
+    echo "hda-vtd: a check was skipped, or the driver crashed or the kernel panicked"
     ok=0
 fi
 
 if [ $ok = 1 ]; then
-    echo "hda: PASS ($verbs verbs: all GETs or silent SETs; $counts; vtdtest skipped on pass-through)"
+    echo "hda: PASS ($verbs verbs: all GETs or silent SETs; $counts; vtdtest: reads blocked and faulted)"
     exit 0
 fi
 echo "hda: FAIL (see $out/hda-shell.log, $out/hda-init.log, $out/hda-vtd.log)"

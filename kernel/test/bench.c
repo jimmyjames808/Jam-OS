@@ -1432,16 +1432,14 @@ static void cross_cpu_benches(void)
         placement();
 }
 
-/* Serial output, sleep accuracy, TLB shootdown, address-space switches,
- * FPU state and the ring-3 benchmarks. */
 /* The IOMMU's own cost (M11), where it matters: mapping a page in a
  * device's domain, and the invalidation its unmap waits for. With
  * translation on (iommu=on) it maps and unmaps pages in a throwaway domain
  * (created for the first translated device, never attached, so no device
  * is disturbed); with iommu=off there is nothing to measure. This is what
- * vmo_pin / vmo_unpin add once a driver's pins go through its domain; a
- * driver pins when it starts and unpins when it stops, never per transfer,
- * so it is paid rarely. */
+ * a driver's vmo_pin / vmo_unpin add (each pin is mapped in its dma_cap's
+ * domain); a driver pins when it starts and unpins when it stops, never
+ * per transfer, so it is paid rarely. */
 static void iommu_bench(void)
 {
     if (!iommu_translating()) {
@@ -1487,6 +1485,8 @@ static void iommu_bench(void)
     (void)iommu_domain_destroy(dom);
 }
 
+/* Serial output, sleep accuracy, TLB shootdown, address-space switches,
+ * FPU state, the IOMMU and the ring-3 benchmarks. */
 static void system_benches(void)
 {
     serial_output();

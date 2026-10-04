@@ -31,9 +31,9 @@ line measures the invalidation's real latency. It uses a throwaway domain
 built for the first translated device and never attached, so no device is
 disturbed; coherence (the table-line flushes) and the real invalidation
 timing are things only the PC shows, so these numbers mean nothing in
-QEMU. This is what `vmo_pin` / `vmo_unpin` add once a driver's pins go
-through its own domain; a driver pins when it starts and unpins when it
-stops, never per transfer. With `iommu=off` the line says so and there is
+QEMU. This is what a driver's `vmo_pin` / `vmo_unpin` add (each pin is
+mapped in its DMA capability's domain); a driver pins when it starts and
+unpins when it stops, never per transfer. With `iommu=off` the line says so and there is
 nothing to measure; the other lines (context switch, calls, interrupts)
 are measured both ways to show the IOMMU leaves the IPC path alone.
 

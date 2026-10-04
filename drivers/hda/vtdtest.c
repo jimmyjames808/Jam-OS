@@ -25,12 +25,17 @@
  * the real page at the end, so the driver serves sound normally after.
  *
  * Whether the device is translated with only its pinned pages mapped is
- * not asked of the kernel (a driver has no such call): it is read from the
- * controller's own behaviour in phase A. On a kernel with DMA translation
- * but drivers still on pass-through (M11 D1 without D2), the read is not
- * blocked, so the checks say so and stop: there is nothing to see in the
- * fault log, and provoking the interrupt-window write would be unsafe
- * where the write is not blocked. */
+ * read from the controller's own behaviour in phase A: the codec's answer
+ * to the command in the unpinned page is compared with the answer the same
+ * command got through the real rings just before. The same answer means
+ * the read went through (iommu=off, or the device on pass-through): the
+ * checks say so and stop, since there is nothing to see in the fault log.
+ *
+ * Phase B is made only where an unblocked write would be harmless:
+ * QEMU passes the old-format write through as a real interrupt, whose
+ * vector is the response's low byte (window_write_safe). The RIRB's first
+ * entry always lands at the window's +8, an old-format address, so the
+ * literal 0xfee00000 check needs no special alignment. */
 #include "hda.h"
 
 #define PAGE          4096u
@@ -81,10 +86,13 @@ static void corb_point(struct hda *h, uint64_t addr)
     (void)wait8(h, HDA_CORBCTL, CORBCTL_RUN, CORBCTL_RUN);
 }
 
-/* Phase A: the CORB at `scaddr` (unpinned), its entry 1 a valid command;
- * true if a codec answered (a response advanced the RIRB) within the
- * deadline, i.e. the controller could read the unpinned address. */
-static bool corb_unpinned_answered(struct hda *h, uint64_t scaddr)
+/* Phase A: the CORB at `scaddr` (unpinned), its entry 1 a valid command.
+ * True if a codec answered within the deadline (*out its response), false
+ * if nothing came. Only an answer equal to the command's real response
+ * proves the controller read the page: a fetch that was blocked can still
+ * reach the codec as some other word (QEMU sends a failed read's 0 on,
+ * as verb 0, and its codec answers it with 0). */
+static bool corb_unpinned_answer(struct hda *h, uint64_t scaddr, uint32_t *out)
 {
     wr8(h, HDA_RIRBSTS, RIRBSTS_RINTFL | RIRBSTS_OIS);   /* QEMU pauses the CORB until clear */
     uint8_t wp0 = (uint8_t)(rd16(h, HDA_RIRBWP) & 0xffu);
@@ -92,13 +100,29 @@ static bool corb_unpinned_answered(struct hda *h, uint64_t scaddr)
     wr16(h, HDA_CORBWP, 1);   /* fetch entry 1 -> the codec -> a RIRB write */
     uint64_t deadline = drv_clock_ns() + ANSWER_WAIT;
     while (drv_clock_ns() < deadline) {
-        if ((uint8_t)(rd16(h, HDA_RIRBWP) & 0xffu) != wp0) {
+        uint8_t wp = (uint8_t)(rd16(h, HDA_RIRBWP) & 0xffu);
+        if (wp != wp0) {
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);   /* the entry after the pointer */
+            *out = (uint32_t)h->rirb[wp % h->rirb_entries];
             wr8(h, HDA_RIRBSTS, RIRBSTS_RINTFL);
             return true;
         }
         drv_sleep_until(drv_clock_ns() + 100 * NS_PER_US);
     }
     return false;
+}
+
+/* What the RIRB's first entry in the window would be as a message, if a
+ * write there were not blocked: an old-format MSI to APIC id 0 whose data
+ * is the response, so its vector is the response's low byte and its
+ * delivery mode bits 10:8. A vector below 32 would be taken as a CPU
+ * exception, so phase B is only made when the response is a plain fixed
+ * interrupt on a vector the kernel counts and ignores if nobody owns it.
+ * (The entry's high word, the codec address, lands at +4: a logical-mode
+ * message to destination 0, which no CPU accepts.) */
+static bool window_write_safe(uint32_t response)
+{
+    return (response & 0xffu) >= 32 && ((response >> 8) & 7u) == 0;
 }
 
 /* Phase B: the RIRB at the interrupt window, a command sent so the
@@ -200,30 +224,44 @@ void hda_vtdtest(struct hda *h, unsigned cad)
         drv_report("vtdtest: no command rings or no codec: skipped");
         return;
     }
+    /* The command's real answer, through the real rings first. */
+    uint32_t expect;
+    status_t st = hda_command(h, cad, vendor_cmd(cad), &expect);
+    if (st != OK) {
+        drv_report("vtdtest: codec %u doesn't answer (%s): skipped", cad, status_str(st));
+        return;
+    }
     uint64_t scaddr;
     handle_t vmo;
     void *m;
-    status_t st = scratch_page(h, &scaddr, &vmo, &m);
-    if (st != OK) {
+    if ((st = scratch_page(h, &scaddr, &vmo, &m)) != OK) {
         drv_report("vtdtest: no scratch page (%s): skipped", status_str(st));
         return;
     }
-    bool answered = corb_unpinned_answered(h, scaddr);
+    uint32_t got = 0;
+    bool answered = corb_unpinned_answer(h, scaddr, &got);
     rings_restore(h);   /* the CORB is back on the real ring for phase B */
-    /* The RESULTS box and the log show about 120 characters of a line. */
-    if (answered) {
-        drv_log("vtdtest: the controller read an unpinned page: its device is not translated "
-                "with only its pins mapped (iommu=off, or pass-through until per-device "
-                "domains, M11 D2), so there is no fault to provoke");
-        drv_report("vtdtest: unpinned read at %#lx answered: DMA not restricted: skipped", scaddr);
-    } else {
-        drv_report("vtdtest: unpinned read at %#lx blocked: look for 'vtd: fault:' (a read)",
-                   scaddr);
-        rirb_into_window(h, cad);
-        rings_restore(h);
-        drv_report("vtdtest: RIRB write to %#llx sent: PC: blocked, fault 25h, no interrupt",
-                   IRQ_WINDOW);
-    }
     drv_vmo_unmap(m, PAGE);
     drv_handle_close(vmo);
+    /* The RESULTS box and the log show about 120 characters of a line. */
+    if (answered && got == expect) {
+        drv_log("vtdtest: the controller read an unpinned page: its device is not translated "
+                "with only its pins mapped (iommu=off, or pass-through), so there is no fault "
+                "to provoke");
+        drv_report("vtdtest: unpinned read at %#lx answered: DMA not restricted: skipped", scaddr);
+        return;
+    }
+    if (answered)
+        drv_log("vtdtest: the codec answered %#x where the command's answer is %#x: the "
+                "controller fetched something else (the blocked read's stand-in)", got, expect);
+    drv_report("vtdtest: unpinned read at %#lx blocked: look for 'vtd: fault:' (a read)", scaddr);
+    if (!window_write_safe(expect)) {
+        drv_report("vtdtest: window check skipped: the response %#x would be vector %u", expect,
+                   expect & 0xffu);
+        return;
+    }
+    rirb_into_window(h, cad);
+    rings_restore(h);
+    drv_report("vtdtest: RIRB write to %#llx sent: PC: blocked, fault 25h, no interrupt",
+               IRQ_WINDOW);
 }
