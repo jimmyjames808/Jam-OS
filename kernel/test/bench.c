@@ -1215,13 +1215,17 @@ bool bench_user_run(const char *what, int cpu, int server_cpu, const char *label
     };
     unsigned nex = 1;
     struct process *server = NULL;
-    /* "rwcall": bench-call against the reply-and-wait server. */
+    /* "rwcall": bench-call against the reply-and-wait server; "gcall": the
+     * generated client against the generated server. */
     bool rw = !strcmp(what, "rwcall");
+    const char *srv = rw                      ? "bench-rwecho"
+                      : !strcmp(what, "gcall") ? "bench-gecho"
+                                               : "bench-echo";
     if (server_cpu >= 0 && channel_create(&call_c, &call_s) == OK) {
         struct userboot_handle sx = {
             SR_USER, khandle_from_new((struct kobject *)call_s, RIGHTS_BASIC | RIGHTS_IO)
         };
-        server = uspawn(j, rw ? "bench-rwecho" : "bench-echo", server_cpu, &sx, 1);
+        server = uspawn(j, srv, server_cpu, &sx, 1);
         ex[1] = (struct userboot_handle){
             SR_USER + 1, khandle_from_new((struct kobject *)call_c, RIGHTS_BASIC | RIGHTS_IO)
         };
@@ -1332,6 +1336,8 @@ static void user_benches(void)
     user_bench_off_on(SW_HANDOFF, "rwcall", cpu_p, cpu_p,
                       "user: call to a reply-and-wait server, same CPU (P)");
     user_bench("dcall", cpu_p, cpu_p, "user: the same with a 5 s deadline per call (P)");
+    user_bench("gcall", cpu_p, cpu_p,
+               "user: generated client and server (null.ping), same CPU (P)");
     user_bench_off_on(SW_FPUOPT, "tcall", cpu_p, -1,
                       "user: thread->thread channel_call, 1 process (P)");
     int others[] = { cpu_p2, cpu_ht, cpu_e };
