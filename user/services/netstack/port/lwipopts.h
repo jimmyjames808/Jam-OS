@@ -18,6 +18,8 @@
  * a full pool drops the frame (and counts it) instead. */
 #pragma once
 
+#include <stdint.h>   /* for the hooks' declarations below */
+
 /* ---- the system: one thread, no OS layer ---------------------------------- */
 #define NO_SYS                  1
 #define SYS_LIGHTWEIGHT_PROT    0    /* nothing runs beside the loop: no critical sections */
@@ -45,10 +47,15 @@
  * not the number of connections. */
 #define MEM_SIZE                (6 * 1024 * 1024)
 /* Received frames: one pbuf each, a whole frame (1514 bytes) in one
- * buffer, so a frame is never a chain. They live only while lwIP looks at
- * them (a frame is handled to the end before the next is read), unless a
- * socket queues one: 128 is a socket's queue (64) twice over. */
-#define PBUF_POOL_SIZE          128
+ * buffer, so a frame is never a chain. A frame lives while lwIP looks at
+ * it (handled to the end before the next is read), or, a TCP segment past
+ * a hole, on its connection's out-of-order queue until the hole is filled
+ * (below, TCP_QUEUE_OOSEQ). The last 128 (stack.h's STACK_RX_KEEP) are
+ * never held out of order, so every frame still finds one; the other 1024
+ * (STACK_OOSEQ_MAX) are what out-of-order queues may hold, all of them
+ * together, shared out by stack_ooseq_pbufs. All of it is touched at
+ * start (lwIP links the free buffers): about 1.7 MiB. */
+#define PBUF_POOL_SIZE          (128 + 1024)
 #define PBUF_POOL_BUFSIZE       1536
 #define MEMP_NUM_PBUF           16   /* pbufs pointing at memory lwIP doesn't own (PBUF_REF) */
 #define MEMP_NUM_RAW_PCB        4    /* raw ICMP for programs' pings (one is used) */
@@ -109,9 +116,10 @@
  * announces is the ring's free room (stack.c sets each connection's
  * window to min(TCP_WND, its rx ring) before its SYN or SYN-ACK, and
  * tcp.c gives window back only as the program reads). So lwIP holds no
- * received bytes, and a slow reader shrinks its own window, nobody
- * else's. What lwIP does hold is the bytes it sent until they are acked
- * (the heap, above), and its pcbs. */
+ * received bytes in order, and a slow reader shrinks its own window,
+ * nobody else's. What lwIP does hold is the bytes it sent until they are
+ * acked (the heap, above), segments that came past a hole (the
+ * out-of-order queue, below, in receive buffers), and its pcbs. */
 #define LWIP_TCP                1
 #define TCP_MSS                 1460  /* a 1500-byte frame: never fragmented (IP_FRAG is off) */
 /* Window scaling (RFC 7323): a connection whose peer scales too may
@@ -159,18 +167,42 @@
  * connection, and a flood of SYNs can never take a program's pcb. */
 #define MEMP_NUM_TCP_PCB        (256 + 128)
 #define MEMP_NUM_TCP_PCB_LISTEN 16    /* stack.h's STACK_TCP_LISTENERS */
-/* Queued segments, every connection's: the bulk senders' part of the heap
- * in full ones (about 3500) and the last STACK_SEGS_KEEP_BULK (1024, as
- * many as 15 connections at 64240 bytes queue), which stack_tcp_room keeps
- * from bulk senders. */
-#define MEMP_NUM_TCP_SEG        4608
+/* Queued segments, every connection's: to send, the bulk senders' part of
+ * the heap in full ones (about 3500) and the last STACK_SEGS_KEEP_BULK
+ * (1024, as many as 15 connections at 64240 bytes queue), which
+ * stack_tcp_room keeps from bulk senders; and one for each segment held
+ * out of order, at most STACK_OOSEQ_MAX (each holds a receive buffer), which
+ * stack_tcp_room keeps from the senders' shares. */
+#define MEMP_NUM_TCP_SEG        (4608 + 1024)
 #define TCP_LISTEN_BACKLOG      1     /* half-open and not yet accepted count against a listener */
 #define TCP_DEFAULT_LISTEN_BACKLOG 16 /* stack.h's STACK_TCP_BACKLOG, the most a listener has */
-/* An out-of-order segment is dropped, not queued: the peer resends it
- * (fast retransmit after three duplicate ACKs). On a LAN that costs
- * little, and nothing a peer sends can pin receive buffers. */
-#define TCP_QUEUE_OOSEQ         0
-#define LWIP_TCP_SACK_OUT       0
+/* Out-of-order segments are kept: a segment past a hole (a frame lost on
+ * the way, which Wi-Fi does) waits on its connection's queue until the
+ * hole is filled, and every ACK says which ranges past the hole are kept
+ * (SACK, RFC 2018, when the peer's SYN offered it: the four newest, all an
+ * ACK's options have room for), so the peer resends only what was lost and
+ * not everything from the hole on. With a 2 MiB window and no queue, one
+ * lost frame cost the whole flight behind it.
+ * What a peer can pin this way is bounded (stack.c, stack_ooseq_pbufs):
+ * a connection's queue holds no byte past its window (lwIP's own rule:
+ * the window is its rx ring's room, so the ring takes the queue whole
+ * once the hole is filled), at most its window in full segments of
+ * receive buffers (a peer sending tiny segments fills buffers, not bytes),
+ * and its share of the STACK_OOSEQ_MAX buffers the queues may hold
+ * together; past a limit lwIP drops the queue's highest segments. A
+ * connection nobody reads (netstack let go of it) keeps none. lwIP also
+ * drops a queue nothing was added to for six retransmission timeouts, and
+ * PBUF_POOL_FREE_OOSEQ frees one if a frame ever finds no buffer (the
+ * shares keep that from happening: stack_poll runs the check every turn). */
+#define TCP_QUEUE_OOSEQ         1
+#define LWIP_TCP_SACK_OUT       1
+#define LWIP_TCP_MAX_SACK_NUM   4
+#define PBUF_POOL_FREE_OOSEQ    1
+struct tcp_pcb;
+uint32_t stack_ooseq_bytes(const struct tcp_pcb *pcb);   /* stack.c */
+uint16_t stack_ooseq_pbufs(const struct tcp_pcb *pcb);
+#define TCP_OOSEQ_BYTES_LIMIT(pcb) stack_ooseq_bytes(pcb)
+#define TCP_OOSEQ_PBUFS_LIMIT(pcb) stack_ooseq_pbufs(pcb)
 #define LWIP_TCP_TIMESTAMPS     0
 #define LWIP_TCP_KEEPALIVE      0     /* an idle connection is its program's to close */
 /* TIME_WAIT is 2 x TCP_MSL: 60 s, as Linux. Their number is bounded by
@@ -185,7 +217,6 @@
 /* Initial sequence numbers from the kernel's random source (RFC 6528):
  * lwIP's own is a counter anyone can guess, and a guessed one lets a
  * blind attacker inject into or reset a connection. */
-#include <stdint.h>
 uint32_t lwport_tcp_isn(void);   /* port/sys_arch.c */
 #define LWIP_HOOK_TCP_ISN(local_ip, local_port, remote_ip, remote_port) lwport_tcp_isn()
 

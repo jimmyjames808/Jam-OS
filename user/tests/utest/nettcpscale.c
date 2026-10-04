@@ -104,6 +104,7 @@ bool fix_open_big(struct cx *x, struct fix_big *b, const struct tp *peer, uint32
     CHECK_EQ(n, 1);
     CHECK_EQ(s[0].flags, TP_SYN);
     CHECK_EQ(s[0].wscale, OUR_SHIFT + 1);   /* netstack offers scaling */
+    CHECK(s[0].sack_ok);                    /* and SACK */
     CHECK_EQ(s[0].win, 0xffff);             /* lwIP's, until the handshake settles it */
     x->p.our = s[0].sport;
     x->p.rcv = s[0].seq + 1;

@@ -891,9 +891,10 @@ one loop on one port (the receive event, every client's channel, lwIP's
 timers as the wait's deadline), so nothing locks. In: IPv4, ARP, ICMP
 (echo replies: the PC answers pings), UDP, TCP. Out: IPv6, fragments and
 reassembly, IP options, IGMP, and lwIP's own DHCP, DNS and VLAN code. Its
-memory is static (lwIP's 6 MiB heap, mostly TCP's unacked bytes, 128
-receive buffers, fixed pools: 384 TCP pcbs, 4608 segments); a full pool
-drops the frame and counts it. `stack.c` is the only
+memory is static (lwIP's 6 MiB heap, mostly TCP's unacked bytes, 1152
+receive buffers, 1024 of them for TCP segments that came past a hole,
+fixed pools: 384 TCP pcbs, 5632 segments); a full pool drops the frame
+and counts it. `stack.c` is the only
 file that sees lwIP. The calls that may wait (devmgr's GET_SERVICE,
 `netdev.info` and `open`, 2 s each) run on a thread of its own that
 serves nothing (`connect.c`), which hands the session to the loop; a
@@ -950,8 +951,15 @@ restarts:
   is a FIN after the last byte, on the rx ring the peer's FIN. **The
   receive window is the rx ring's free room**: bytes go into the ring as
   they arrive and are given back to the window only as the program reads
-  them, so a slow reader stops its own sender and lwIP holds no received
-  byte; bytes go from the tx ring into lwIP only as the peer's window takes
+  them, so a slow reader stops its own sender and lwIP holds no byte
+  received in order. A segment that comes past a hole (a frame lost on
+  the way) waits in lwIP until the hole is filled, and the ACKs say which
+  ranges are kept (**SACK**, RFC 2018), so the peer resends only what was
+  lost; what a peer can pin that way is bounded (its window, its window
+  in full segments of receive buffers, and its share of the 1024 buffers
+  all connections' kept segments may hold: the last 128 are always left
+  for frames; [M9.5-PLAN](docs/M9.5-PLAN.md#out-of-order-segments-and-sack-as-built)).
+  Bytes go from the tx ring into lwIP only as the peer's window takes
   them (and a segment more), so a peer that stops reading holds no more
   than its window. **Window scaling** (RFC 7323, shift 6) is on: with a
   peer that scales too the window is the ring's room up to 2 MiB, counted

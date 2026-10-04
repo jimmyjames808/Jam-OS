@@ -28,6 +28,7 @@ struct tp {
     uint32_t       rcv;     /* the next it expects from netstack (what it acks) */
     uint16_t       win;     /* the window it announces (in its scale's units once scaled) */
     uint8_t        wscale;  /* the window scale option it sends on a SYN: shift + 1 (0: none) */
+    bool           sack;    /* it sends SACK-permitted on a SYN (RFC 2018) */
 };
 
 /* A segment netstack sent, as read back. `data` points into tp_read's
@@ -39,6 +40,9 @@ struct tp_seg {
     uint16_t       win;
     uint16_t       mss;     /* its MSS option (0: none) */
     uint8_t        wscale;  /* its window scale option: shift + 1 (0: none) */
+    bool           sack_ok; /* its SACK-permitted option */
+    uint8_t        nsack;   /* SACK blocks it carries (RFC 2018: [left, right) each) */
+    uint32_t       sack[4][2];
     const uint8_t *data;
     size_t         len;
 };
@@ -56,8 +60,8 @@ void     tp_forget(void);
 void     tp_arp(const uint8_t *mac, uint32_t ip);
 
 /* A segment from p: seq p->snd, ack p->rcv (when TP_ACK), window p->win,
- * len bytes of data; an MSS option of 1460 on a SYN, and a window scale
- * option of p->wscale - 1 when p->wscale is set. Into f (the frame's
+ * len bytes of data; on a SYN an MSS option of 1460, a window scale option
+ * of p->wscale - 1 when p->wscale is set, and SACK-permitted when p->sack. Into f (the frame's
  * length returned) or, with tp_send, straight into netstack, after which
  * p->snd moves on by len (and one for a SYN or FIN). */
 size_t   tp_frame(uint8_t *f, const struct tp *p, uint8_t flags, const void *data, size_t len);
