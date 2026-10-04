@@ -62,6 +62,11 @@
 # QEMU_NET_PEER: more netpeer flags (e.g. "--noise 2").
 # QEMU_NET=<peer port>:<qemu port>: the same card and pcap, with a peer
 # the caller runs (and checks) itself.
+# QEMU_IOMMU adds QEMU's VT-d unit (intel-iommu, interrupt remapping
+# offered; the guest uses it only with the boot word iommu=on):
+#   1     caching mode on (CAP.CM = 1: new mappings are invalidated too)
+#   cm0   caching mode off (the PC's case)
+#   eim   caching mode on, x2APIC destination ids (ECAP.EIM)
 # Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 set -eu
 out=$1 name=$2
@@ -75,6 +80,14 @@ if [ -n "${QEMU_NET:-}" ] && [ "${QEMU_NET_WORD:-1}" != 0 ]; then
     *) cmdline="$cmdline vlan=$net_vlan" ;;
     esac
 fi
+iommu=
+case ${QEMU_IOMMU:-} in
+'') ;;
+1) iommu="-device intel-iommu,intremap=on,caching-mode=on" ;;
+cm0) iommu="-device intel-iommu,intremap=on,caching-mode=off" ;;
+eim) iommu="-device intel-iommu,intremap=on,caching-mode=on,eim=on" ;;
+*) echo "QEMU_IOMMU=$QEMU_IOMMU: want 1, cm0 or eim"; exit 1 ;;
+esac
 ovmf=$(brew --prefix qemu)/share/qemu
 mkdir -p "$out"
 
@@ -141,7 +154,7 @@ qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEM
     -blockdev driver=file,node-name=stickfile,filename="$img" \
     $stick \
     -device usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick,bootindex=0 \
-    ${QEMU_USB:-} ${QEMU_EXTRA:-} \
+    ${QEMU_USB:-} $iommu ${QEMU_EXTRA:-} \
     -device edu,dma_mask=0xffffffff \
     $nic \
     $serial -display none -no-reboot \

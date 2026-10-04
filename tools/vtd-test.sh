@@ -1,6 +1,7 @@
 #!/bin/sh
-# The boot-time VT-d probe (kernel/dev/vtd_probe.c) in QEMU, three boots
-# of the `pcilist` entry (PCI, the probe, the Devices list, no user space):
+# VT-d in QEMU: the boot-time probe (kernel/dev/vtd_probe.c) in three boots
+# of the `pcilist` entry (PCI, the probe, the Devices list, no user space),
+# then the units themselves in two ktest boots:
 #   1. with QEMU's intel-iommu (interrupt remapping on, caching mode on, as
 #      M11's tests will run it): the DMAR table's lines (one unit at
 #      fed90000, its I/O APIC scope matched with the MADT's, an endpoint
@@ -11,10 +12,23 @@
 #      own trace of the unit's registers proves the probe only READ them:
 #      some vtd_reg_read lines and not one vtd_reg_write;
 #   2. the same with eim=on: the unit takes x2APIC destination ids;
-#   3. without an IOMMU: one line, "no DMAR table".
-# VTD_TEST_INIT=1 adds a fourth: the `init` run (utest, usbtest) with the
-# intel-iommu present and left off, so every device's DMA and interrupts
-# still work around it (about 30 s more).
+#   3. without an IOMMU: one line, "no DMAR table";
+#   4. and 5. the units started with the boot word iommu=on (kernel/dev/
+#      vtd_unit.c, vtd_qi.c, vtd_fault.c) and their ktests (ktest=vtd),
+#      with caching mode on (QEMU_IOMMU=1) and off (cm0, the PC's case):
+#      the "started" line, every vtd_unit_* test passed (every
+#      invalidation kind, the vtd_pt and vtd_ir callbacks, a refused
+#      descriptor reported and the queue going on, the queue wrapping,
+#      every CPU at once, QI off and on), and nothing in the RESULTS box
+#      but the refusal the test provokes;
+#   6. a shell boot with iommu=on, `reboot` (kexec): the next kernel takes
+#      the queue over (drained, off, its own set up) and starts the unit;
+#      nothing reported.
+# Run 1 has no iommu word: it must start nothing (no write traced).
+# VTD_TEST_INIT=1 adds the `init` run (utest, usbtest) twice, with the
+# intel-iommu present: left off, and started with iommu=on (its queue and
+# fault interrupt running: translation is not on yet), so every device's
+# DMA and interrupts still work around it (about a minute more).
 # The parser's own tests are the ktests dmar_* and vtd_* (kernel/test/test_dmar.c).
 # QEMU_SMP passes through. Usage: tools/vtd-test.sh <outdir>; exit 0 on PASS.
 set -eu
@@ -66,6 +80,10 @@ have vtd-iommu \
     "vtd:         CPUs: highest APIC id" \
     "vtd:         handover: 1 of 1 unit answered; translation on in 0, interrupt remapping on in 0"
 clean vtd-iommu
+if grep -qF "started: invalidation queue" "$out/vtd-iommu.log"; then
+    echo "vtd-iommu: a unit was started without iommu=on"
+    ok=0
+fi
 reads=$(grep -c "vtd_reg_read" "$out/vtd-iommu.out" || true)
 writes=$(grep -c "vtd_reg_write" "$out/vtd-iommu.out" || true)
 [ "$reads" -ge 8 ] || { echo "vtd-iommu: $reads register reads traced, want 8 or more"; ok=0; }
@@ -83,12 +101,58 @@ if grep -E "vtd:         (DMAR|unit)" "$out/vtd-none.log"; then
     ok=0
 fi
 
+# on <name> <QEMU_IOMMU>: the units started, their ktests.
+on() {
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_IOMMU=$2 \
+        tools/qemu-test.sh "$out" "$1" ktest=vtd iommu=on > "$out/$1.out" 2>&1 ||
+        { echo "$1: QEMU run failed (see $out/$1.out)"; ok=0; }
+    have "$1" "vtd:         unit 0: started: invalidation queue at" \
+        "vtd:         iommu=on: 1 of 1 unit started" \
+        "ktest: vtd_unit_every_invalidation_completes ok" \
+        "ktest: vtd_unit_callbacks_invalidate    ok" \
+        "ktest: vtd_unit_refused_descriptor_reported ok" \
+        "ktest: vtd_unit_queue_wraps             ok" \
+        "ktest: vtd_unit_many_cpus_at_once       ok" \
+        "ktest: vtd_unit_queue_off_and_on        ok" \
+        "ktest: vtd_unit_registers_kept          ok" \
+        "run complete: no problems"
+    if grep -E "vtd: [^ ]" "$out/$1.log" | grep -vF "the queue refused descriptor"; then
+        echo "$1: a VT-d problem reported (above)"
+        ok=0
+    fi
+    if grep -q "skipped" "$out/$1.log"; then
+        echo "$1: a test skipped itself"
+        ok=0
+    fi
+}
+on vtd-on 1
+on vtd-on-cm0 cm0
+
+# A reboot (kexec) with iommu=on: the next kernel finds the queue on,
+# drains it, turns it off and sets its own up (6.5.2's takeover).
+printf '%s\n' "wait 180 init: the shell is up" "wait jam>" "send reboot" \
+    "wait 60 kexec: starting the stored kernel" "wait 60 queued invalidation was on" \
+    "wait 60 iommu=on: 1 of 1 unit started" "wait 180 init: the shell is up" "wait jam>" \
+    "send reboot -f" "wait reboot: resetting" > "$out/vtd-kexec.txt"
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_IOMMU=1 QEMU_INPUT="$out/vtd-kexec.txt" \
+    tools/qemu-test.sh "$out" vtd-kexec shell iommu=on > "$out/vtd-kexec.out" 2>&1 ||
+    { echo "vtd-kexec: QEMU run failed (see $out/vtd-kexec.out)"; ok=0; }
+if grep -E "vtd: [^ ]" "$out/vtd-kexec.log"; then
+    echo "vtd-kexec: a VT-d problem reported (above)"
+    ok=0
+fi
+
 if [ "${VTD_TEST_INIT:-0}" = 1 ]; then
     QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$iommu" \
         tools/qemu-test.sh "$out" vtd-init init > "$out/vtd-init.out" 2>&1 ||
         { echo "vtd-init: QEMU run failed"; ok=0; }
     have vtd-init "vtd:         handover: 1 of 1 unit answered"
     clean vtd-init
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$iommu" \
+        tools/qemu-test.sh "$out" vtd-init-on init iommu=on > "$out/vtd-init-on.out" 2>&1 ||
+        { echo "vtd-init-on: QEMU run failed"; ok=0; }
+    have vtd-init-on "vtd:         iommu=on: 1 of 1 unit started"
+    clean vtd-init-on
 fi
 
 if [ $ok = 1 ]; then
