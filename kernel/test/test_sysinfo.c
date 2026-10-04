@@ -5,6 +5,7 @@
 #include <jam/abi.h>
 #include <jam/event.h>
 #include <jam/handle.h>
+#include <jam/iommu.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
@@ -100,6 +101,7 @@ KTEST(sysinfo_fill_sane)
     KT_EQ(s.tsc_hz, tsc_hz);
     KT_ASSERT(s.uptime_ns > 0);
     KT_ASSERT(s.flags & SYSINFO_KTESTS);
+    KT_EQ(!!(s.flags & SYSINFO_IOMMU), iommu_translating());
     struct cpu_stat c;
     sysinfo_cpu(0, &c);
     KT_EQ(c.index, 0);

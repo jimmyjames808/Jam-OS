@@ -409,6 +409,10 @@ struct fb_info {
 
 #define SYSINFO_HYBRID  (1u << 0)   /* the CPU has P-cores and E-cores */
 #define SYSINFO_KTESTS  (1u << 1)   /* the kernel was built with its tests */
+/* An IOMMU translates DMA (the boot word iommu=on): a driver's device
+ * reaches only what the driver pinned, and a dead driver's pins are freed
+ * once the IOMMU took them away, not quarantined. */
+#define SYSINFO_IOMMU   (1u << 2)
 
 struct sys_info {
     char     version[32];        /* "0.0.20-m7" */
