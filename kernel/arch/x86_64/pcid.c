@@ -54,7 +54,13 @@
  *
  * The run-time switch (the benchmark) bumps an epoch; each CPU compares it
  * on every load and, when it changed, forgets every slot and flush-loads,
- * so entries cached under the other setting are never used. */
+ * so entries cached under the other setting are never used.
+ *
+ * Finding the slot: each CPU remembers, per address-space id modulo
+ * PCID_HINTS, the slot that id last had here. A load checks that slot
+ * first and searches all of them only when the hint is wrong (another id
+ * with the same remainder came since, or the slot was reused): a server
+ * and its clients switching back and forth on one CPU never search. */
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
 #include <jam/kprintf.h>
@@ -65,6 +71,7 @@
 #include <jam/x86.h>
 
 #define PCID_SLOTS 8
+#define PCID_HINTS 16   /* hint entries per CPU, indexed by id % PCID_HINTS */
 
 struct pcid_cpu {
     uint64_t id[PCID_SLOTS];   /* address-space id each slot holds, 0 = empty */
@@ -76,7 +83,9 @@ struct pcid_cpu {
      * must flush, or kernel threads would keep translations to user pages
      * that later unmaps no longer shoot down here. */
     bool     zero_dirty;
+    uint8_t  hint[PCID_HINTS]; /* id % PCID_HINTS -> the slot it last had (checked) */
     uint64_t flushed;          /* statistics: loads that flushed */
+    uint64_t searched;         /* statistics: loads whose hint was wrong (searched) */
 } __attribute__((aligned(64)));
 
 static struct pcid_cpu pcpu[MAX_CPUS];
@@ -181,6 +190,19 @@ bool pcid_is_on(void)
     return pcid_usable() && __atomic_load_n(&on, __ATOMIC_SEQ_CST);
 }
 
+/* The slot that holds `id` on this CPU, or PCID_SLOTS: the hint first. */
+static unsigned find_slot(struct pcid_cpu *pc, uint64_t id)
+{
+    unsigned h = pc->hint[id % PCID_HINTS];
+    if (pc->id[h] == id)
+        return h;
+    pc->searched++;
+    for (unsigned i = 0; i < PCID_SLOTS; i++)
+        if (pc->id[i] == id)
+            return i;
+    return PCID_SLOTS;
+}
+
 /* The decision for one load on the CPU whose slots are *pc: the PCID to
  * use and whether its entries may be kept. `gen` is only read (after the
  * caller's active-bit RMW) when a user slot is involved. */
@@ -207,15 +229,13 @@ static uint32_t decide(struct pcid_cpu *pc, bool sw, uint64_t id, const uint64_t
         return 0;
     }
     uint64_t g = __atomic_load_n(gen, __ATOMIC_SEQ_CST);
-    unsigned slot = PCID_SLOTS;
-    for (unsigned i = 0; i < PCID_SLOTS; i++)
-        if (pc->id[i] == id)
-            slot = i;
+    unsigned slot = find_slot(pc, id);
     *keep = slot < PCID_SLOTS && pc->gen[slot] == g;
     if (slot == PCID_SLOTS) {
         slot = pc->victim++ % PCID_SLOTS;
         pc->id[slot] = id;
     }
+    pc->hint[id % PCID_HINTS] = (uint8_t)slot;
     pc->gen[slot] = g;
     if (!*keep)
         pc->flushed++;
@@ -254,6 +274,11 @@ uint32_t pcid_test_decide(uint32_t cpu, uint64_t id, uint64_t gen, bool sw)
     bool keep;
     uint32_t pcid = decide(&fake[cpu % 4], sw, id, &gen, &keep);
     return pcid | (keep ? PCID_TEST_KEEP : 0);
+}
+
+uint64_t pcid_test_searches(uint32_t cpu)
+{
+    return fake[cpu % 4].searched;
 }
 #endif
 

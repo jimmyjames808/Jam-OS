@@ -62,6 +62,36 @@ KTEST(pcid_slot_bookkeeping)
     }
 }
 
+/* The slot hint: a client and a server switching back and forth on one
+ * CPU find their slots without a search; two ids that share a hint entry
+ * search, and still get their own slots and keep their entries. */
+KTEST(pcid_slot_hint)
+{
+    pcid_test_reset();
+    KT_EQ(pcid_test_decide(0, 1000, 1, true), 1);   /* new: searched, then a slot */
+    KT_EQ(pcid_test_decide(0, 1001, 1, true), 2);
+    uint64_t s0 = pcid_test_searches(0);
+    KT_EQ(s0, 2);
+    for (int i = 0; i < 100; i++) {
+        KT_EQ(pcid_test_decide(0, 1000, 1, true), 1 | KEEP);
+        KT_EQ(pcid_test_decide(0, 1001, 1, true), 2 | KEEP);
+    }
+    KT_EQ(pcid_test_searches(0), s0);   /* the hints were right every time */
+    /* 1000 + PCID_HINTS_PER_CPU shares 1000's hint entry. */
+    uint64_t other = 1000 + PCID_HINTS_PER_CPU;
+    KT_EQ(pcid_test_decide(0, other, 1, true), 3);
+    KT_EQ(pcid_test_decide(0, 1000, 1, true), 1 | KEEP);
+    KT_EQ(pcid_test_decide(0, other, 1, true), 3 | KEEP);
+    KT_EQ(pcid_test_searches(0), s0 + 3);   /* the new id, then each hint was the other's */
+    /* A slot taken over by another id: the stale hint is caught. */
+    pcid_test_reset();
+    for (uint64_t id = 2000; id < 2000 + PCID_SLOTS_PER_CPU; id++)
+        pcid_test_decide(1, id, 1, true);
+    KT_EQ(pcid_test_decide(1, 2000, 1, true), 1 | KEEP);
+    KT_EQ(pcid_test_decide(1, 3000, 1, true), 1);   /* the victim is slot 1: 2000's */
+    KT_EQ(pcid_test_decide(1, 2000, 1, true) & KEEP, 0);   /* hint says 1: not 2000's now */
+}
+
 /* Whether PCIDs are used: the CPU, the boot words, and the models whose
  * INVLPG may leave global entries while PCIDs are on. */
 KTEST(pcid_decision_table)
