@@ -67,9 +67,10 @@
 #   1     caching mode on (CAP.CM = 1: new mappings are invalidated too)
 #   cm0   caching mode off (the PC's case)
 #   eim   caching mode on, x2APIC destination ids (ECAP.EIM)
-# Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 # QEMU_WORDS: more boot words after the caller's, e.g. "iommu=on" to run
-# an area test with QEMU_IOMMU's unit started (interrupt remapping on).
+# an area test with QEMU_IOMMU's unit started (DMA translation and
+# interrupt remapping on).
+# Usage: tools/qemu-test.sh <outdir> <name> [cmdline...]
 set -eu
 out=$1 name=$2
 shift 2

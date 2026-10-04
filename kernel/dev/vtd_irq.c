@@ -39,6 +39,7 @@
 #include <jam/vtd.h>
 #include <jam/x86.h>
 
+#include "vtd_domain.h"
 #include "vtd_irq.h"
 
 #define OFF_WAIT_PANIC_NS (10 * NS_PER_MS)   /* irq_remap_off's wait per unit on a panic */
@@ -50,7 +51,7 @@ static struct vtd_unit *units[VTD_MAX_UNITS];   /* the units that remap */
 static uint32_t nunits;
 static bool coherent;                           /* every one of them snoops the table */
 
-static struct dmar_info info;                   /* the DMAR table, parsed again here */
+static const struct dmar_info *info;           /* the probe's DMAR table */
 static struct {
     uint8_t              id;                    /* the MADT's I/O APIC id */
     struct vtd_ir_source src;                   /* its requester id */
@@ -112,7 +113,7 @@ static status_t gather_units(uint32_t started, uint32_t mapped, bool *eim, const
         struct vtd_unit *u = vtd_unit_get(i);
         if (!u)
             continue;
-        if (u->index >= info.nunits || info.units[u->index].segment != 0) {
+        if (u->index >= info->nunits || info->units[u->index].segment != 0) {
             *why = "a unit on a PCI segment other than 0";
             return ERR_NOT_SUPPORTED;
         }
@@ -128,10 +129,10 @@ static status_t gather_units(uint32_t started, uint32_t mapped, bool *eim, const
 /* The scope that names the I/O APIC with MADT id `id`, in any unit. */
 static const struct dmar_scope *ioapic_scope(uint8_t id)
 {
-    for (uint32_t u = 0; u < info.nunits; u++) {
-        const struct dmar_scopes *l = &info.units[u].scopes;
-        for (uint32_t k = 0; k < l->count && l->first + k < info.nscopes; k++) {
-            const struct dmar_scope *s = &info.scopes[l->first + k];
+    for (uint32_t u = 0; u < info->nunits; u++) {
+        const struct dmar_scopes *l = &info->units[u].scopes;
+        for (uint32_t k = 0; k < l->count && l->first + k < info->nscopes; k++) {
+            const struct dmar_scope *s = &info->scopes[l->first + k];
             if (s->type == DMAR_SCOPE_IOAPIC && s->enum_id == id)
                 return s;
         }
@@ -144,9 +145,9 @@ static const struct dmar_scope *ioapic_scope(uint8_t id)
  * mode they can't be sent in the old format either. A firmware bug. */
 static status_t find_ioapics(const char **why)
 {
-    const struct acpi_header *h = acpi_find("DMAR", 0);
+    info = vtd_dmar_info();   /* the probe's: no units when it found no valid table */
     *why = "no valid DMAR table";
-    if (!h || dmar_parse(h, h->length, &info) != OK)
+    if (!info->nunits)
         return ERR_NOT_FOUND;
     nioapic_src = 0;
     for (uint32_t i = 0; i < acpi.ioapic_count && i < ACPI_MAX_IOAPICS; i++) {
@@ -303,8 +304,8 @@ status_t irq_remap_alloc_pci(const struct pci_dev *d, uint32_t apic_id, uint8_t 
 {
     if (!irq_remap_on())
         return ERR_BAD_STATE;
-    if (d->info.segment != 0)
-        return ERR_NOT_SUPPORTED;   /* no unit covers it */
+    if (d->info.segment != 0 || !vtd_fn_covered(d))
+        return ERR_NOT_SUPPORTED;   /* no unit covers it: its messages reach none */
     struct vtd_irte_spec s = {
         .dest = apic_id, .vector = vector, .level = false,
         .src = vtd_ir_source_device(d->info.bus, d->info.dev, d->info.fn),
@@ -359,23 +360,6 @@ uint32_t irq_remap_used(void)
 
 /* ---- turning it off (kexec, panic) ---------------------------------------------------- */
 
-/* One Global Command without the unit's lock (11.4.4.1), for the kexec and
- * panic paths, where another CPU may have stopped holding it. True when
- * GSTS agreed within wait_ns. */
-static bool gcmd_nolock(struct vtd_unit *u, uint32_t bit, bool on, uint32_t status,
-                        uint64_t wait_ns)
-{
-    uint32_t cmd = vtd_rd32(u, VTD_GSTS) & VTD_GSTS_KEEP;
-    vtd_wr32(u, VTD_GCMD, on ? cmd | bit : cmd & ~bit);
-    uint64_t deadline = uptime_ns() + wait_ns;
-    while ((vtd_rd32(u, VTD_GSTS) & status) != (on ? status : 0)) {
-        if (uptime_ns() > deadline)
-            return false;
-        cpu_relax();
-    }
-    return true;
-}
-
 void irq_remap_off(bool panic)
 {
     if (!irq_remap_on())
@@ -386,7 +370,7 @@ void irq_remap_off(bool panic)
     ioapic_mask_routed();
     uint64_t wait = panic ? OFF_WAIT_PANIC_NS : VTD_REG_WAIT_NS;
     for (uint32_t i = 0; i < nunits; i++)
-        (void)gcmd_nolock(units[i], VTD_GCMD_IRE, false, VTD_GSTS_IRES, wait);   /* skipped */
+        (void)vtd_gcmd_nolock(units[i], VTD_GCMD_IRE, false, VTD_GSTS_IRES, wait);   /* skipped */
     __atomic_store_n(&remap_on, false, __ATOMIC_RELEASE);
 }
 

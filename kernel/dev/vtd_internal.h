@@ -182,6 +182,11 @@ void     vtd_wr64(const struct vtd_unit *u, uint32_t off, uint64_t v);
  * after VTD_REG_WAIT_NS (logged with GSTS). Interrupts on or off; takes
  * "vtd gcmd". */
 status_t vtd_gcmd(struct vtd_unit *u, uint32_t bit, bool on, uint32_t status);
+/* The same without the unit's lock, for the kexec and panic paths (another
+ * CPU may have stopped holding it). True when GSTS agreed within wait_ns.
+ * Takes no lock; interrupts on or off. */
+bool vtd_gcmd_nolock(struct vtd_unit *u, uint32_t bit, bool on, uint32_t status,
+                     uint64_t wait_ns);
 
 /* The write-buffer flush (VT-d 6.8): needed only with CAP.RWBF, after a
  * table change that is followed by no invalidation (a not-present entry

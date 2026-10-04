@@ -55,6 +55,7 @@
  * sees every one of its batches finished: pages given back (and uncharged
  * from their job once their VMO goes) and counted as released. */
 #include <jam/dbghook.h>
+#include <jam/iommu.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
@@ -355,7 +356,11 @@ status_t dma_cap_create_for(struct pci_dev *d, struct kobject **out)
     if (d->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
         return ERR_ACCESS_DENIED;
     dma_quarantine_start();
-    status_t st = cap_new(d, out);
+    /* With the IOMMU on: the function leaves the blocking domain for
+     * all of RAM (until each cap gets a domain of its own). */
+    status_t st = iommu_device_driven(d);
+    if (st == OK)
+        st = cap_new(d, out);
     if (st != OK)
         return st;
     /* The function's new owner, starting with bus mastering off. */

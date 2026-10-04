@@ -32,6 +32,7 @@
 #include <jam/string.h>
 #include <jam/vtd.h>
 
+#include "vtd_domain.h"
 #include "vtd_internal.h"
 
 #define FAULT_POLL_NS (1000 * NS_PER_MS)   /* the thread's look at every unit */
@@ -157,6 +158,7 @@ static void log_one(uint32_t unit, struct vtd_fault_rec r)
     vtd_fault_line(line, sizeof(line), unit, r.lo, r.hi);
     uint16_t sid = (uint16_t)VTD_FRCD_SID(r.hi);
     uint64_t n = vtd_fault_counts_add(&counts, unit, sid);
+    vtd_domain_fault_seen(unit, sid, (uint32_t)VTD_FRCD_REASON(r.hi));   /* the mute */
     if (n == 1)
         report("%s (the first from %02x:%02x.%x)", line, sid >> 8, (sid >> 3) & 0x1f, sid & 7);
     else if (n <= VTD_FAULT_LOGGED)

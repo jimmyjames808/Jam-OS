@@ -11,9 +11,9 @@
  * (kernel/dev/vtd_unit.c).
  *
  * With the boot word `iommu=on` (off by default), vtd_units_start then
- * runs each unit's invalidation queue and its fault reporting, and turns
- * interrupt remapping on (kernel/dev/vtd_irq.c); no translation yet.
- * Without it no VT-d register
+ * runs each unit's invalidation queue and its fault reporting and turns
+ * interrupt remapping on (kernel/dev/vtd_irq.c), and iommu_boot
+ * (<jam/iommu.h>) turns DMA translation on. Without it no VT-d register
  * is ever written. The design for the IOMMU itself is docs/M11-PLAN.md. */
 #pragma once
 

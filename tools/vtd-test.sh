@@ -24,13 +24,22 @@
 #      remapped, an MSI through its own entry, entries freed on close, a
 #      foreign, freed or out-of-range entry refused and recorded, the
 #      interrupt window written by edu's DMA blocked, the timer, IPIs and
-#      COM1 unaffected, remapping off and on again); nothing in the RESULTS
-#      box but the refusal and the interrupt faults the tests provoke
-#      (edu's, 00:04.0, and its DMA's, which QEMU sends with no requester
-#      id: ff:1f.7);
-#   6. a shell boot with iommu=on, `reboot` (kexec): the next kernel takes
-#      the queue over (drained, off, its own set up), starts the unit and
-#      turns interrupt remapping on again; nothing reported.
+#      COM1 unaffected, remapping off and on again); DMA translation on
+#      (kernel/dev/vtd_domain.c, vtd_boot.c): every function in its home
+#      (blocking) domain, and every vtd_domain_* test passed (edu blocked
+#      and its fault seen, passed through, in a domain of its own, muted,
+#      the handover in flight); nothing in the RESULTS box but the refusal
+#      and the faults the tests provoke (edu's, 00:04.0, and its DMA's
+#      into the interrupt window, which QEMU sends with no requester id:
+#      ff:1f.7);
+#   6. the domain tests with pass-through off (pt=off): drivers' devices
+#      get an identity map of all RAM instead;
+#   7. a shell boot with iommu=on, `reboot` (kexec): the jump turns
+#      interrupt remapping, translation and the queue off, and the next
+#      kernel finds them all off, starts the unit and turns interrupt
+#      remapping and translation on again; nothing reported;
+#   8. the same with a panic (`crash panic yes`): the panic's jump does the
+#      same, and the next kernel comes up with both on.
 # Run 1 has no iommu word: it must start nothing (no write traced).
 # VTD_TEST_INIT=1 adds the `init` run (utest, usbtest) twice, with the
 # intel-iommu present: left off, and started with iommu=on (its queue and
@@ -108,11 +117,34 @@ if grep -E "vtd:         (DMAR|unit)" "$out/vtd-none.log"; then
     ok=0
 fi
 
-# on <name> <QEMU_IOMMU>: the units started, their ktests.
+# domain_ok <name>: every vtd_domain_* test passed in <name>'s log.
+domain_ok() {
+    have "$1" "vtd:         unit 0: 00:04.0 1234:11e8 class 00ff: blocking, domain 1" \
+        "ktest: vtd_domain_entry_bits_literal    ok" \
+        "ktest: vtd_domain_rmrr_carve            ok" \
+        "ktest: vtd_domain_did_alloc             ok" \
+        "ktest: vtd_domain_translation_on        ok" \
+        "ktest: vtd_domain_blocked_dma_faults    ok" \
+        "ktest: vtd_domain_pass_dma_lands        ok" \
+        "ktest: vtd_domain_own_domain            ok" \
+        "ktest: vtd_domain_mute_after_faults     ok" \
+        "ktest: vtd_domain_handover_while_on     ok"
+}
+
+# problems <name>: the VT-d problems reported, but for the refusal and
+# edu's faults the tests provoke.
+problems() {
+    grep -E "vtd: [^ ]" "$out/$1.log" | grep -vF "the queue refused descriptor" |
+        grep -vE "vtd: fault: unit 0: (00:04\.0 |ff:1f\.7 interrupt, index)"
+}
+
+# on <name> <QEMU_IOMMU>: the units started, translation on, their ktests.
 on() {
     QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_IOMMU=$2 \
         tools/qemu-test.sh "$out" "$1" ktest=vtd iommu=on > "$out/$1.out" 2>&1 ||
         { echo "$1: QEMU run failed (see $out/$1.out)"; ok=0; }
+    domain_ok "$1"
+    have "$1" "vtd:         unit 0: translation on (it was off): " "domain 2 (pass-through)"
     have "$1" "vtd:         unit 0: started: invalidation queue at" \
         "vtd:         iommu=on: 1 of 1 unit started" \
         "ktest: vtd_unit_every_invalidation_completes ok" \
@@ -132,8 +164,7 @@ on() {
         "ktest: vtd_irq_timer_ipis_and_com1_unaffected ok" \
         "ktest: vtd_irq_off_and_on_again         ok" \
         "run complete: no problems"
-    if grep -E "vtd: [^ ]" "$out/$1.log" | grep -vF "the queue refused descriptor" |
-        grep -vE "vtd: fault: unit 0: (00:04\.0|ff:1f\.7) interrupt, index"; then
+    if problems "$1"; then
         echo "$1: a VT-d problem reported (above)"
         ok=0
     fi
@@ -145,20 +176,40 @@ on() {
 on vtd-on 1
 on vtd-on-cm0 cm0
 
-# A reboot (kexec) with iommu=on: the next kernel finds the queue on,
-# drains it, turns it off and sets its own up (6.5.2's takeover).
-printf '%s\n' "wait 180 init: the shell is up" "wait jam>" "send reboot" \
-    "wait 60 kexec: starting the stored kernel" "wait 60 queued invalidation was on" \
-    "wait 60 iommu=on: 1 of 1 unit started" "wait 60 interrupt remapping on: 1 unit" \
-    "wait 180 init: the shell is up" "wait jam>" \
-    "send reboot -f" "wait reboot: resetting" > "$out/vtd-kexec.txt"
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_IOMMU=1 QEMU_INPUT="$out/vtd-kexec.txt" \
-    tools/qemu-test.sh "$out" vtd-kexec shell iommu=on > "$out/vtd-kexec.out" 2>&1 ||
-    { echo "vtd-kexec: QEMU run failed (see $out/vtd-kexec.out)"; ok=0; }
-if grep -E "vtd: [^ ]" "$out/vtd-kexec.log"; then
-    echo "vtd-kexec: a VT-d problem reported (above)"
+# Without pass-through (pt=off): the identity domain of all RAM.
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="-device intel-iommu,intremap=on,caching-mode=on,pt=off" \
+    tools/qemu-test.sh "$out" vtd-nopt ktest=vtd_domain iommu=on > "$out/vtd-nopt.out" 2>&1 ||
+    { echo "vtd-nopt: QEMU run failed (see $out/vtd-nopt.out)"; ok=0; }
+domain_ok vtd-nopt
+have vtd-nopt "pt 0," "driven ones go to domain 2 (identity (all RAM))" "run complete: no problems"
+if problems vtd-nopt; then
+    echo "vtd-nopt: a VT-d problem reported (above)"
     ok=0
 fi
+
+# jump <name> <command> <what the old kernel says>: a shell boot with
+# iommu=on, then <command> into the stored kernel (kexec). The jump turned
+# translation and the queue off, so the next kernel finds the unit as a
+# cold boot leaves it, starts it and turns translation on again; the
+# devices (the stick, the shell) work in both kernels.
+jump() {
+    printf '%s\n' "wait 180 init: the shell is up" "wait jam>" "send $2" "wait 60 $3" \
+        "wait 60 loader:      Jam OS kexec" "wait 60 iommu=on: 1 of 1 unit started" \
+        "wait 60 interrupt remapping on: 1 unit" "wait 60 unit 0: translation on (it was off)" "wait 180 init: the shell is up" \
+        "wait jam>" "send reboot -f" "wait reboot: resetting" > "$out/$1.txt"
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_IOMMU=1 QEMU_INPUT="$out/$1.txt" \
+        tools/qemu-test.sh "$out" "$1" shell iommu=on > "$out/$1.out" 2>&1 ||
+        { echo "$1: QEMU run failed (see $out/$1.out)"; ok=0; }
+    n=$(grep -c "unit 0 status: translation off, interrupt remapping off, queued invalidation off" \
+        "$out/$1.log" || true)
+    [ "$n" -eq 2 ] || { echo "$1: $n boots found the unit all off, want 2"; ok=0; }
+    if grep -E "vtd: [^ ]" "$out/$1.log"; then
+        echo "$1: a VT-d problem reported (above)"
+        ok=0
+    fi
+}
+jump vtd-kexec reboot "kexec: starting the stored kernel"
+jump vtd-panic "crash panic yes" "KERNEL PANIC"
 
 if [ "${VTD_TEST_INIT:-0}" = 1 ]; then
     QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$iommu" \

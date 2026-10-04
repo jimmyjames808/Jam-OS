@@ -124,6 +124,20 @@ status_t vtd_gcmd(struct vtd_unit *u, uint32_t bit, bool on, uint32_t status)
     return OK;
 }
 
+bool vtd_gcmd_nolock(struct vtd_unit *u, uint32_t bit, bool on, uint32_t status,
+                     uint64_t wait_ns)
+{
+    uint32_t cmd = vtd_rd32(u, VTD_GSTS) & VTD_GSTS_KEEP;
+    vtd_wr32(u, VTD_GCMD, on ? cmd | bit : cmd & ~bit);
+    uint64_t deadline = uptime_ns() + wait_ns;
+    while ((vtd_rd32(u, VTD_GSTS) & status) != (on ? status : 0)) {
+        if (uptime_ns() > deadline)
+            return false;
+        cpu_relax();
+    }
+    return true;
+}
+
 status_t vtd_unit_flush_write_buffer(struct vtd_unit *u)
 {
     if (!VTD_CAP_RWBF(u->cap))
