@@ -63,12 +63,14 @@ What it does with each frame from the guest:
     every byte checked; counted as tcp_* in the summary, with the largest
     window and bytes in flight seen on each server port
     (tools/tcp-test.sh).
-  - a relay (--tcp-relay PORT:HOSTPORT, --tcp-forward LPORT:ADDR:PORT,
+  - a relay (--tcp-relay PORT:HOSTPORT, --tcp-forward LPORT:ADDR:PORT[:LOSS],
     --udp-relay PORT:HOSTPORT):
     tools/tcprelay.py joins TCP connections on the VLAN to real sockets on
     127.0.0.1, so programs on the Mac (curl, python3 -m http.server,
     tools/speed.py) talk to the guest (tools/fetch-test.sh, serve-test.sh,
-    speed-test.sh); counted as relay_* in the summary.
+    speed-test.sh); a forward's LOSS drops that percentage of the bytes'
+    segments it sends the guest (a lossy link: speed-test.sh); counted as
+    relay_* in the summary.
   - SNTP (--ntp UNIX): an SNTP server on port 123 of any address (so the
     gateway 10.2.21.1 answers): a client request is answered with the
     time UNIX seconds (fractions allowed), counted from the peer's start,
@@ -84,7 +86,7 @@ Run (one of):
                [--update SPEC] [--flood N] [--ping-every S] [--late-after S]
                [--ntp UNIX [--ntp-forge]] [--tcp-serve PORT:BYTES[:MS],...]
                [--tcp-connect ADDR:PORT:CONNS:BYTES] [--tcp-relay PORT:HOSTPORT,...]
-               [--tcp-forward LPORT:ADDR:PORT,...] [--udp-relay PORT:HOSTPORT,...]
+               [--tcp-forward LPORT:ADDR:PORT[:LOSS],...] [--udp-relay PORT:HOSTPORT,...]
     netpeer.py --free-ports N     print N free UDP ports on 127.0.0.1
     netpeer.py --selftest         the peer against a fake guest, host only
 
@@ -1158,8 +1160,9 @@ def main():
                     help="TCP clients of the guest's listener (tools/tcppeer.py)")
     ap.add_argument("--tcp-relay", metavar="PORT:HOSTPORT,...",
                     help="the guest's connections to PORT go to 127.0.0.1:HOSTPORT")
-    ap.add_argument("--tcp-forward", metavar="LPORT:ADDR:PORT,...",
-                    help="connections to 127.0.0.1:LPORT go to the guest's ADDR:PORT")
+    ap.add_argument("--tcp-forward", metavar="LPORT:ADDR:PORT[:LOSS],...",
+                    help="connections to 127.0.0.1:LPORT go to the guest's ADDR:PORT "
+                         "(LOSS: percent of data segments to it dropped)")
     ap.add_argument("--udp-relay", metavar="PORT:HOSTPORT,...",
                     help="the guest's datagrams to PORT go to 127.0.0.1:HOSTPORT")
     ap.add_argument("--free-ports", type=int, default=0)

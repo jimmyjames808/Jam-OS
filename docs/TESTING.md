@@ -188,19 +188,30 @@ guest as if the Mac were on the VLAN: `--tcp-relay <port>:<hostport>`
 takes the guest's connections to `<port>` of any address (10.2.21.174 in
 the tests) and joins each to a connection to 127.0.0.1:`<hostport>` (a
 Python web server, `tools/speed.py`); `--tcp-forward
-<lport>:<addr>:<port>` listens on 127.0.0.1:`<lport>` and joins each
+<lport>:<addr>:<port>[:<loss>]` listens on 127.0.0.1:`<lport>` and joins each
 connection made there (curl, `tools/speed.py client`) to one from
-10.2.21.174 to the guest's `<addr>:<port>`; `--udp-relay
-<port>:<hostport>` passes datagrams both ways the same way. Each takes
-several, comma-separated. Its TCP is the test peer's kind (in order,
-go-back-N after 0.25 s, its window the room left for the Mac's socket),
-FIN for FIN, a reset for a reset, and a reset for a SYN to a port
+10.2.21.174 to the guest's `<addr>:<port>`, dropping `<loss>` percent of
+the segments with bytes it sends the guest (a lossy link; a fixed seed);
+`--udp-relay <port>:<hostport>` passes datagrams both ways the same way.
+Each takes several, comma-separated. Its TCP receives in order (its
+window the room left for the Mac's socket) and sends as the Mac would:
+fast retransmit on three duplicate ACKs; with SACK (offered on its SYNs,
+used when the guest's SYN offers it too) only the guest's holes are
+resent, and a timeout (0.25 s) resends the holes below the guest's latest
+blocks, then goes back if a second one comes first; without SACK a
+partial ACK, or a timeout, goes back to what was acked (go-back-N). FIN
+for FIN (a connection closed both ways is kept a second, to ack a FIN of
+the guest's again), a reset for a reset, and a reset for a SYN to a port
 nothing is relayed to, as a closed port on the Mac answers
 (`relay_conns`, `relay_bytes_to_guest`, `relay_bytes_from_guest`,
 `relay_resets`, `relay_refused`, `relay_retransmits`, `relay_dgrams_in`,
-`relay_dgrams_out`). `--selftest` runs it both ways
-against `tools/tcppeer.py`'s TCP as the guest over a lossy wire, with real
-sockets as the Mac's programs.
+`relay_dgrams_out`, `relay_sack`, `relay_sack_acks`, `relay_lost`,
+`relay_lost_bytes`, `relay_resent_bytes`, `relay_fast_retransmits`,
+`relay_go_back`). `--selftest` runs it both ways against
+`tools/tcppeer.py`'s TCP as the guest over a lossy wire, with real sockets
+as the Mac's programs, and its recovery by hand (20 segments, two holes:
+with SACK exactly the two resent and nothing after a partial ACK; without,
+the first, then all past the partial ACK).
 
 It also serves DHCP and DNS on VLAN 21 (always; `add_dhcp_dns`): a DHCP
 server on port 67 (an address per MAC from 10.2.21.100, mask /24, router
