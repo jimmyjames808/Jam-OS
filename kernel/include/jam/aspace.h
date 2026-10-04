@@ -18,9 +18,9 @@
  * the ones mapped now). sys_vmar_map sets them from the VMO handle's
  * rights, so a mapping can be made RW, filled, then flipped to RX, but
  * never gain a permission the handle didn't carry. */
-#define ASPACE_CAN_READ  (1u << 4)
-#define ASPACE_CAN_WRITE (1u << 5)
-#define ASPACE_CAN_EXEC  (1u << 6)
+#define ASPACE_CAN_READ  (1u << 8)
+#define ASPACE_CAN_WRITE (1u << 9)
+#define ASPACE_CAN_EXEC  (1u << 10)
 
 struct aspace;
 struct job;
