@@ -43,6 +43,11 @@ static bool kicked;                    /* something for the thread; log_lock */
 static bool thread_started;            /* only at boot (vtd_units_start), one CPU */
 static struct vtd_fault_counts counts; /* the log thread's */
 
+const struct vtd_fault_counts *vtd_fault_counts_get(void)
+{
+    return &counts;   /* the log thread writes it; a reader (the iommu command) races benignly */
+}
+
 /* ---- counting and the words (pure) ---------------------------------------------- */
 
 const char *vtd_fault_reason_words(uint32_t reason)

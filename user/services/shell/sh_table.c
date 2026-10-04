@@ -117,6 +117,10 @@ static const struct sh_cmd cmds[] = {
       "  numbers are QEMU's"),
     C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
+    C(iommu, C_SYSTEM, "iommu",
+      "the IOMMU (VT-d): the units, DMA translation, interrupt remapping and the\n"
+      "  invalidation queue, each device's domain and mapped pages, the DMA fault\n"
+      "  counts and the interrupt remapping table. Empty-looking without iommu=on"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
     C(mem, C_SYSTEM, "mem", "physical memory from the kernel, and the shell's job"),
     C(kill, C_SYSTEM, "kill <name>",
