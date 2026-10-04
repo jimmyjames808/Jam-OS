@@ -32,8 +32,12 @@
 #      and the faults the tests provoke (edu's, 00:04.0, and its DMA's
 #      into the interrupt window, which QEMU sends with no requester id:
 #      ff:1f.7);
-#   6. the domain tests with pass-through off (pt=off): drivers' devices
-#      get an identity map of all RAM instead;
+#   5b. ktest=dma with translation on, both caching modes: every dma_*
+#      test passed and none skipped (edu reaches only what its dma_cap
+#      pinned, a killed driver's pages freed once its domain is gone, the
+#      quarantine's tests in their translated form, the pin cost printed);
+#   6. the domain tests with pass-through off (pt=off): the tests'
+#      pass-through domain is an identity map of all RAM instead;
 #   7. a shell boot with iommu=on, `reboot` (kexec): the jump turns
 #      interrupt remapping, translation and the queue off, and the next
 #      kernel finds them all off, starts the unit and turns interrupt
@@ -144,7 +148,7 @@ on() {
         tools/qemu-test.sh "$out" "$1" ktest=vtd iommu=on > "$out/$1.out" 2>&1 ||
         { echo "$1: QEMU run failed (see $out/$1.out)"; ok=0; }
     domain_ok "$1"
-    have "$1" "vtd:         unit 0: translation on (it was off): " "domain 2 (pass-through)"
+    have "$1" "vtd:         unit 0: translation on (it was off): " "(the tests' pass-through: domain 2, pass-through)"
     have "$1" "vtd:         unit 0: started: invalidation queue at" \
         "vtd:         iommu=on: 1 of 1 unit started" \
         "ktest: vtd_unit_every_invalidation_completes ok" \
@@ -176,12 +180,36 @@ on() {
 on vtd-on 1
 on vtd-on-cm0 cm0
 
+# dma_on <name> <QEMU_IOMMU>: the pins through the IOMMU (kernel/object/
+# dma_cap.c, vmo.c) with translation on: every dma_* test passed, none
+# skipped, nothing reported but edu's provoked faults.
+dma_on() {
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_IOMMU=$2 \
+        tools/qemu-test.sh "$out" "$1" ktest=dma iommu=on > "$out/$1.out" 2>&1 ||
+        { echo "$1: QEMU run failed (see $out/$1.out)"; ok=0; }
+    have "$1" "ktest: dma_iommu_pin_cost" "ktest: dma_iommu_kill_mid_dma" \
+        "ktest: dma_iommu_unpinned_page_blocked" "ktest: dma_quarantine_stats_consistent" \
+        "ktest: dma_quarantine_phys_and_clean_close" "ktest: dma_cap_owner_rules" \
+        "ktest: dma_stale_write_after_rebind" "the IOMMU translating; 2 page(s) freed at once" \
+        "run complete: no problems"
+    if problems "$1"; then
+        echo "$1: a VT-d problem reported (above)"
+        ok=0
+    fi
+    if grep -q "skipped" "$out/$1.log"; then
+        echo "$1: a test skipped itself"
+        ok=0
+    fi
+}
+dma_on vtd-dma 1
+dma_on vtd-dma-cm0 cm0
+
 # Without pass-through (pt=off): the identity domain of all RAM.
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="-device intel-iommu,intremap=on,caching-mode=on,pt=off" \
     tools/qemu-test.sh "$out" vtd-nopt ktest=vtd_domain iommu=on > "$out/vtd-nopt.out" 2>&1 ||
     { echo "vtd-nopt: QEMU run failed (see $out/vtd-nopt.out)"; ok=0; }
 domain_ok vtd-nopt
-have vtd-nopt "pt 0," "driven ones go to domain 2 (identity (all RAM))" "run complete: no problems"
+have vtd-nopt "pt 0," "(the tests' pass-through: domain 2, identity (all RAM))" "run complete: no problems"
 if problems vtd-nopt; then
     echo "vtd-nopt: a VT-d problem reported (above)"
     ok=0

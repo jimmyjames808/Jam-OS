@@ -26,8 +26,9 @@
  *     event masked, translation and queued invalidation off, with no lock
  *     taken (other CPUs may be halted holding any).
  *
- * The functions a driver holds a dma_cap for go to the pass-through domain
- * (iommu_device_driven, vtd_domain.c): everything else stays blocked. */
+ * A function a driver holds a dma_cap for gets that cap's own domain
+ * (kernel/object/dma_cap.c): everything else stays blocked. The
+ * pass-through domain is built for the tests (iommu_device_driven). */
 #include <jam/acpi.h>
 #include <jam/boot.h>
 #include <jam/cmdline.h>
@@ -415,7 +416,8 @@ static void start_unit(struct vtd_ctl *ctl)
     __atomic_store_n(&ctl->live, true, __ATOMIC_RELEASE);
     log_functions(ctl);
     kprintf("vtd:         unit %u: translation on (%s): %u function%s, %u with an RMRR boot "
-            "domain, the rest blocked; driven ones go to domain %u (%s)\n", u->index,
+            "domain, the rest blocked; a driver's gets its dma_cap's domain (the tests' "
+            "pass-through: domain %u, %s)\n", u->index,
             was_on ? "it was on: taken over" : "it was off", ctl->nfn, ctl->nfn == 1 ? "" : "s",
             ctl->nboot, ctl->pass->ud.did, ctl->pass->what);
     if (was_on)

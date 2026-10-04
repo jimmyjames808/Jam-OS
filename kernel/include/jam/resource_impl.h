@@ -11,8 +11,10 @@
 #include <jam/object.h>
 #include <jam/status.h>
 
+struct iommu_domain;
 struct job;
 struct pci_dev;
+struct q_batch;
 struct vmo;
 
 /* The highest physical address the architecture allows (MAXPHYADDR <= 52):
@@ -66,11 +68,21 @@ void     pci_cmd_unlock(uint64_t flags);
 /* ---- DMA capabilities ------------------------------------------------------ */
 
 struct dma_cap {
-    struct kobject   base;      /* its lock guards `pins` and `closed` */
-    struct pci_dev  *dev;       /* the function it is bound to; NULL: unbound */
-    struct job      *job;       /* charged one handle unit, or NULL */
-    struct list_node pins;      /* vmo.c's struct vmo_range (cap_node) */
-    bool             closed;    /* last handle gone: no new pins */
+    struct kobject       base;    /* its lock guards `pins` and `closed` */
+    struct pci_dev      *dev;     /* the function it is bound to; NULL: unbound */
+    struct job          *job;     /* charged one handle unit and its domain's tables, or NULL */
+    struct list_node     pins;    /* vmo.c's struct vmo_range (cap_node) */
+    bool                 closed;  /* last handle gone: no new pins */
+    /* The IOMMU domain the device sees memory through (a bound cap of a
+     * function a VT-d unit translates), or NULL. Set before the cap is
+     * handed out and never changed: vmo_pin maps into it, vmo_unpin
+     * unmaps. dma_cap.c's release thread destroys it once the cap has
+     * closed and no pin is still being made or undone with it. */
+    struct iommu_domain *dom;
+    /* Bound: the batch its close (or its destroy, if it never had a
+     * handle) hands its pins and domain over in, made with the cap so that
+     * closing allocates nothing; NULL once handed over. */
+    struct q_batch      *batch;
 };
 
 static inline struct dma_cap *dma_cap_from_kobject(struct kobject *o)
@@ -95,10 +107,16 @@ void vmo_quarantine_cap_pins(struct dma_cap *c, struct list_node *out, uint64_t 
  * the VMO had no other writer -- wrote them in between). Interrupts on,
  * no spinlock held. */
 void vmo_release_quarantined(struct list_node *list, uint64_t *pages, uint64_t *changed);
-/* Pins currently recorded on the cap (tests). */
+/* Pins currently recorded on the cap (tests, and the release thread). */
 uint64_t dma_cap_pin_count(struct kobject *cap);
-/* As resource_set_job, for a dma_cap. */
+/* As resource_set_job, for a dma_cap made with no job (dma_cap_create's
+ * unbound ones, in the tests): ERR_BAD_STATE if it has one. A bound cap's
+ * domain is charged to the job given to dma_cap_create_for, not this. */
 status_t dma_cap_set_job(struct kobject *cap, struct job *job);
+/* Does the cap have an IOMMU domain (its pins mapped there, its device
+ * reaching nothing else)? False for an unbound cap, with iommu=off or a
+ * function no VT-d unit translates: then its close quarantines. */
+bool dma_cap_translated(struct kobject *cap);
 /* May the cap pin right now? Unbound: always; bound: it is its function's
  * current cap (the last one made for it, not closed) and the function's
  * Bus Master Enable is on (read from config space; all-ones counts as
@@ -108,14 +126,17 @@ bool dma_cap_bus_master_on(struct kobject *cap);
 /* ---- DMA ownership and the quarantine (dma_cap.c) ----------------------------
  * Each function has at most one CURRENT dma_cap: the last one made for it
  * (dma_cap_create_for), until it closes. Making one turns the function's
- * Bus Master Enable off; only the current cap turns it on again
+ * Bus Master Enable off (and, with the IOMMU, points the function at the
+ * new cap's empty domain); only the current cap turns it on again
  * (dma_cap_bus_master), which its driver does once it has quiesced the
  * device; the current cap's close turns it off, an older cap's close
- * doesn't touch it. A bound cap closing with pins still held quarantines
- * them (see vmo_quarantine_cap_pins): they are released
- * DMA_QUARANTINE_GRACE_NS after the function's current cap next turns bus
- * mastering on, or DMA_QUARANTINE_TIMEOUT_NS after the close if nobody
- * does. A kernel thread ("dma quarantine") releases them. */
+ * doesn't touch it. A bound cap closing with pins still held: with an
+ * IOMMU domain, a kernel thread ("dma quarantine") takes the domain away
+ * from the device, waits for the unit to confirm it, and frees the pages
+ * at once; without one it quarantines them (see vmo_quarantine_cap_pins):
+ * they are released DMA_QUARANTINE_GRACE_NS after the function's current
+ * cap next turns bus mastering on, or DMA_QUARANTINE_TIMEOUT_NS after the
+ * close if nobody does. The same thread releases them. */
 #define DMA_QUARANTINE_GRACE_NS   1000000000ull    /* 1 s */
 #define DMA_QUARANTINE_TIMEOUT_NS 30000000000ull   /* 30 s */
 
@@ -127,14 +148,18 @@ status_t dma_cap_bus_master(struct kobject *cap, bool on);
  * it, the ktest runner too, before its leak baseline). */
 void dma_quarantine_start(void);
 struct dma_quarantine_stats {
-    uint64_t pins, pages;     /* held now (a batch being released counts until it is) */
-    uint64_t released;        /* pages released so far (since boot) */
-    uint64_t changed;         /* of those, found changed at release */
+    uint64_t pins, pages;     /* held now: quarantined, or waiting for their domain to go
+                               * (a batch being released counts until it is) */
+    uint64_t released;        /* pages released from the quarantine so far (since boot) */
+    uint64_t freed;           /* pages freed at once after the IOMMU took them away */
+    uint64_t changed;         /* of released and freed, found changed at release */
 };
 /* One consistent snapshot: a batch leaves pins/pages in the same step it
- * enters released/changed, so pins at 0 means all of d's pages are back. */
+ * enters released or freed (and changed), so pins at 0 means all of d's
+ * pages are back. */
 void dma_quarantine_stats(struct pci_dev *d, struct dma_quarantine_stats *out);
-/* Tests: release d's quarantine now, whatever its deadlines; returns once
+/* Tests: release d's batches now (quarantined ones whatever their
+ * deadlines; a closed cap's domain taken away first); returns once
  * nothing of d's is held (it also waits for a batch the release thread is
  * in the middle of). Interrupts on, no spinlock held. */
 void dma_quarantine_flush(struct pci_dev *d);

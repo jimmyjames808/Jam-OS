@@ -402,7 +402,7 @@ KTEST(vtd_irq_window_write_blocked)
     uint32_t word = vec;
     KT_EQ(vmo_write(v, 0, &word, sizeof(word)), OK);
     struct kobject *cap;
-    KT_EQ(dma_cap_create_for(d, &cap), OK);
+    KT_EQ(dma_cap_create_for(d, NULL, &cap), OK);
     kobject_ref(cap);
     struct khandle kh = khandle_from_new(cap, DMA_CAP_RIGHTS);
     KT_EQ(dma_cap_bus_master(cap, true), OK);
