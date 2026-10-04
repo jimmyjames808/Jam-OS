@@ -36,8 +36,12 @@
  * why a slot is a little over 64 KiB (state.c): one buffer, the one copy it
  * always was, now in the state.
  *
- * There is no restart yet: a request is never run twice, and the undo
- * copy is made but never used (stage F3 adopts a dead fat's state). */
+ * A successor finds the request in progress in its slot, and the undo
+ * copy, and finishes it exactly once (adopt.c, with serve_slot and
+ * answer_status here).
+ *
+ * Test powers (test.c) end the process at each step: a held write, the
+ * commit, the send, before and after the answer. */
 #include <fsview.h>
 #include "fat.h"
 
@@ -95,6 +99,12 @@ void op_wrote(void)
     op.wrote = true;
 }
 
+void op_made(uint32_t kind, uint32_t index)
+{
+    if (op.phase == OP_RUNNING && op.seq)
+        kept->made = (struct fat_made){ .seq = op.seq, .kind = kind, .index = index };
+}
+
 void op_steps(void)
 {
     if (!op.stepped)
@@ -144,7 +154,13 @@ static status_t send(void)
         st = disk_settle(p->settle == FAT_SETTLE_SYNC);
     memset(p, 0, sizeof(*p));
     op.phase = OP_IDLE;
+    kept_flush();   /* the slots it closed, now that the state has forgotten them */
     return st;
+}
+
+status_t op_resend(void)
+{
+    return send();
 }
 
 void op_close_begin(const struct fat_file *f)
@@ -156,6 +172,8 @@ void op_close_end(void)
 {
     plan_send();
     committed();   /* a close's commit word */
+    kept->close_crashes = 0;
+    test_die(FAT_DIE_COMMIT);
     status_t st = send();
     if (st != OK && !vol.disk_gone)
         printf("fat %s: closing a file: its writes: %s\n", vol.name, status_str(st));
@@ -202,9 +220,7 @@ static void reply_failed(unsigned slot, uint32_t *rn, status_t st, handle_t *rhs
     (void)svcstate_commit(s, slot, *rn);   /* within rep_cap */
 }
 
-/* The reply, with its handles; those that can't be sent are closed. */
-static void answer(const struct fat_chan *c, unsigned slot, uint32_t rn, handle_t *rhs,
-                   uint32_t rhn)
+void answer(const struct fat_chan *c, unsigned slot, uint32_t rn, handle_t *rhs, uint32_t rhn)
 {
     struct svcstate *s = state_slots();
     if (!rn) {   /* no txid: nothing to answer */
@@ -216,17 +232,26 @@ static void answer(const struct fat_chan *c, unsigned slot, uint32_t rn, handle_
         idl_close_all(rhs, rhn);   /* the client is gone */
 }
 
+void answer_status(const struct fat_chan *c, unsigned slot, status_t status)
+{
+    struct svcstate *s = state_slots();
+    const struct idl_req_hdr *q = svcstate_request(s, slot, NULL);
+    struct idl_rep_hdr *r = svcstate_reply_area(s, slot);
+    r->txid = q->txid;
+    r->status = status;
+    (void)svcstate_commit(s, slot, sizeof(*r));   /* within rep_cap */
+    if (c)
+        answer(c, slot, sizeof(*r), NULL, 0);
+    else
+        svcstate_sent(s, slot);   /* its caller is gone */
+}
+
 /* A request that carried handles: refused, as the generated servers do. */
 static void refuse(const struct fat_chan *c, unsigned slot)
 {
     struct svcstate *s = state_slots();
     idl_close_all(s->handles, s->h->slot[slot].nhandles);
-    const struct idl_req_hdr *q = svcstate_request(s, slot, NULL);
-    struct idl_rep_hdr *r = svcstate_reply_area(s, slot);
-    r->txid = q->txid;
-    r->status = ERR_INVALID_ARGS;
-    (void)svcstate_commit(s, slot, sizeof(*r));   /* within rep_cap */
-    answer(c, slot, sizeof(*r), NULL, 0);
+    answer_status(c, slot, ERR_INVALID_ARGS);
 }
 
 static enum fat_op kind_of(const struct fat_chan *c)
@@ -243,7 +268,34 @@ static enum fat_op kind_of(const struct fat_chan *c)
  * first did and leave as much held and the same send to do; a difference
  * is logged ("rerun check FAILED"). The client gets the second run's
  * answer. A close (op_close_again) is undone and run again the same way. A
- * request that went out in steps can't be undone: not checked. */
+ * request that went out in steps can't be undone: not checked. The hold
+ * is compared byte by byte too: every held sector's place and bytes,
+ * those of earlier requests it overwrote in place included. */
+static struct {
+    uint64_t lba[FAT_HOLD_MAX];
+    uint8_t  data[FAT_HOLD_MAX * FAT_SECTOR];
+} first_hold;
+
+static void hold_snapshot(void)
+{
+    const struct fat_hold *h = &kept->hold;
+    memcpy(first_hold.lba, h->lba, h->held * sizeof(h->lba[0]));
+    memcpy(first_hold.data, h->data, (size_t)h->held * FAT_SECTOR);
+}
+
+/* The first held sector that differs from the snapshot of `held` sectors,
+ * or `held` if none does. */
+static uint32_t hold_differs(uint32_t held)
+{
+    const struct fat_hold *h = &kept->hold;
+    for (uint32_t i = 0; i < held && i < h->held; i++)
+        if (h->lba[i] != first_hold.lba[i] ||
+            memcmp(h->data + (size_t)i * FAT_SECTOR, first_hold.data + (size_t)i * FAT_SECTOR,
+                   FAT_SECTOR))
+            return i;
+    return held;
+}
+
 static uint32_t rerun(const struct fat_chan *c, const void *req, uint32_t n, uint32_t rn,
                       handle_t *rhs, uint32_t *rhn)
 {
@@ -258,6 +310,7 @@ static uint32_t rerun(const struct fat_chan *c, const void *req, uint32_t n, uin
     uint32_t held = kept->hold.held, runs = kept->hold.runs;
     struct fat_post post = kept->post;
     bool wrote = op.wrote, gather = op.gather;
+    hold_snapshot();
     idl_close_all(rhs, *rhn);
     *rhn = 0;
     if (!undo_restore()) {
@@ -277,6 +330,10 @@ static uint32_t rerun(const struct fat_chan *c, const void *req, uint32_t n, uin
                rn >= 8 ? ((const struct idl_rep_hdr *)first)->status : 0,
                rn2 >= 8 ? ((const struct idl_rep_hdr *)rep)->status : 0, held,
                kept->hold.held, runs, kept->hold.runs);
+    else if (hold_differs(held) != held)
+        printf("fat %s: rerun check FAILED: request %u (ordinal %u): held sector %u differs\n",
+               vol.name, (unsigned)op.seq, ((const struct idl_req_hdr *)req)->ordinal,
+               hold_differs(held));
     return rn2;
 }
 
@@ -287,6 +344,7 @@ void op_close_again(struct fat_file *f, void (*close)(struct fat_file *f))
     uint32_t held = kept->hold.held, runs = kept->hold.runs;
     struct fat_post post = kept->post;
     bool wrote = op.wrote;
+    hold_snapshot();
     if (!undo_restore()) {
         printf("fat %s: rerun check FAILED: a close with nothing to undo\n", vol.name);
         return;
@@ -297,6 +355,9 @@ void op_close_again(struct fat_file *f, void (*close)(struct fat_file *f))
         memcmp(&post, &kept->post, sizeof(post)))
         printf("fat %s: rerun check FAILED: a close: held %u/%u in %u/%u runs\n", vol.name,
                held, kept->hold.held, runs, kept->hold.runs);
+    else if (hold_differs(held) != held)
+        printf("fat %s: rerun check FAILED: a close: held sector %u differs\n", vol.name,
+               hold_differs(held));
 }
 #endif
 
@@ -315,6 +376,13 @@ status_t serve_one(const struct fat_chan *c)
         refuse(c, slot);
         return OK;
     }
+    serve_slot(c, slot);
+    return OK;
+}
+
+void serve_slot(const struct fat_chan *c, unsigned slot)
+{
+    struct svcstate *s = state_slots();
     uint32_t n = 0;
     const void *req = svcstate_request(s, slot, &n);
     handle_t rhs[IDL_REP_HANDLES];
@@ -327,9 +395,11 @@ status_t serve_one(const struct fat_chan *c)
     plan_send();
     (void)svcstate_commit(s, slot, rn);   /* the dispatch's reply fits rep_cap: the commit */
     committed();
-    st = send();
+    test_die(FAT_DIE_COMMIT);
+    status_t st = send();
     if (st != OK)
         reply_failed(slot, &rn, st, rhs, &rhn);
+    test_die(FAT_DIE_REPLY);
     answer(c, slot, rn, rhs, rhn);
-    return OK;
+    test_die(FAT_DIE_ANSWERED);
 }

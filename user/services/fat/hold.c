@@ -74,6 +74,7 @@ static status_t put_out(uint64_t *first, uint32_t *k)
     if (st == OK) {
         *first += *k;
         kept->hold.out_writes++;
+        test_die(FAT_DIE_SEND);
     }
     *k = 0;
     return st;
@@ -224,6 +225,7 @@ static status_t place(uint64_t sector, bool again, uint32_t *at)
 status_t hold_put(const uint8_t *buff, uint64_t sector, uint32_t count)
 {
     struct fat_hold *h = &kept->hold;
+    test_die(FAT_DIE_HELD);
     op_wrote();
     for (uint32_t c = 0; c < count; c++, sector++, buff += FAT_SECTOR) {
         uint32_t i = find(sector);

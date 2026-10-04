@@ -60,6 +60,7 @@ static status_t op_stat(void *ctx, const uint8_t path[256], uint64_t *out_size,
     status_t st = path_resolve(path, p);
     if (st != OK)
         return st;
+    test_crash(p);
     if (path_is_root(p)) {   /* FatFs has no entry for the root */
         *out_size = 0;
         *out_is_dir = 1;
