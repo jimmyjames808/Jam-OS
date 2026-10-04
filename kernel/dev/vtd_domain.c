@@ -85,6 +85,12 @@ struct vtd_fn *vtd_fn_of(const struct pci_dev *dev)
     return f && f->ctl && live(f->ctl) ? f : NULL;
 }
 
+bool vtd_fn_covered(const struct pci_dev *dev)
+{
+    const struct vtd_fn *f = vtd_fn_at(dev->index);
+    return !f || f->ctl;
+}
+
 status_t vtd_fns_init(void)
 {
     uint32_t n = pci_count();

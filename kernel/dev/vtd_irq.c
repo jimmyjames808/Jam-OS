@@ -304,8 +304,8 @@ status_t irq_remap_alloc_pci(const struct pci_dev *d, uint32_t apic_id, uint8_t 
 {
     if (!irq_remap_on())
         return ERR_BAD_STATE;
-    if (d->info.segment != 0)
-        return ERR_NOT_SUPPORTED;   /* no unit covers it */
+    if (d->info.segment != 0 || !vtd_fn_covered(d))
+        return ERR_NOT_SUPPORTED;   /* no unit covers it: its messages reach none */
     struct vtd_irte_spec s = {
         .dest = apic_id, .vector = vector, .level = false,
         .src = vtd_ir_source_device(d->info.bus, d->info.dev, d->info.fn),

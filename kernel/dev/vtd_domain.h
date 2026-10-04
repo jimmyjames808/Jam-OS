@@ -124,6 +124,11 @@ struct vtd_fn {
     struct vtd_dom  *cur;          /* what its entry names; "vtd context" */
 };
 
+/* Does a started unit cover dev (its context entry is that unit's)?
+ * True before iommu_boot has looked (nothing known yet). Lock-free:
+ * written at boot. */
+bool vtd_fn_covered(const struct pci_dev *dev);
+
 /* The unit number i's tables (live or being built), or NULL. */
 struct vtd_ctl *vtd_ctl_get(uint32_t i);
 /* The function's state, or NULL (iommu=off, or no unit covers it). */

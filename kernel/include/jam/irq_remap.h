@@ -78,5 +78,5 @@ uint32_t irq_remap_used(void);
  * that doesn't answer is skipped). Takes no lock and allocates nothing:
  * other CPUs may be halted holding anything. The next kernel builds its
  * own table and takes over a unit left on. No-op when remapping is off.
- * Called from the IOMMU's own off path (kexec/jump.c, dev/reboot.c). */
+ * Called by iommu_jump_off (<jam/iommu.h>), the one off path. */
 void irq_remap_off(bool panic);

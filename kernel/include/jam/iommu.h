@@ -61,10 +61,10 @@ void iommu_reserve_early(struct boot_info *bi);
 void iommu_boot(void);
 
 /* Before a jump into another kernel (kexec, the panic path) and before a
- * firmware reset: per started unit, the fault event masked, interrupt
- * remapping off, translation off, queued invalidation off (VT-d 11.4.4.1,
- * 6.5.2), each with a short bounded wait; a unit that doesn't answer is
- * skipped. Bus mastering must be off on every function first
+ * firmware reset: interrupt remapping off (irq_remap_off: the one place
+ * that does it), then per started unit the fault event masked,
+ * translation off, queued invalidation off (VT-d 11.4.4.1, 6.5.2), each
+ * with a short bounded wait; a unit that doesn't answer is skipped. Bus mastering must be off on every function first
  * (pci_panic_bus_master_off): then no device can use the window with
  * translation off. Takes no lock (other CPUs may be halted holding any),
  * allocates nothing; interrupts may be off. */

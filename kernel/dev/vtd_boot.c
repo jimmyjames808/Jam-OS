@@ -21,9 +21,10 @@
  *     device); any other request in flight is blocked and logged, the
  *     state the boot is going to anyway.
  *   - Before a jump into another kernel or a firmware reset
- *     (iommu_jump_off): per started unit, the fault event masked,
- *     interrupt remapping, translation and queued invalidation off, with
- *     no lock taken (other CPUs may be halted holding any).
+ *     (iommu_jump_off): interrupt remapping off (irq_remap_off, which
+ *     masks the I/O APIC's pins first), then per started unit the fault
+ *     event masked, translation and queued invalidation off, with no lock
+ *     taken (other CPUs may be halted holding any).
  *
  * The functions a driver holds a dma_cap for go to the pass-through domain
  * (iommu_device_driven, vtd_domain.c): everything else stays blocked. */
@@ -32,6 +33,7 @@
 #include <jam/cmdline.h>
 #include <jam/dmar.h>
 #include <jam/iommu.h>
+#include <jam/irq_remap.h>
 #include <jam/kexec.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
@@ -48,7 +50,7 @@
 #define PCI_SECONDARY    0x19
 #define PCI_SUBORDINATE  0x1a
 #define RMRR_MAX_PAGES   (1ull << 18)   /* 1 GiB: a larger RMRR is refused as nonsense */
-#define JUMP_WAIT_MS     10             /* per step at the jump: the panic path can't wait long */
+#define JUMP_WAIT_NS     (10 * NS_PER_MS)   /* per step at the jump: a panic can't wait long */
 
 static struct dmar_info early_info;   /* the DMAR table as read before the memory managers */
 static bool early_read;               /* that pass read it (its RMRRs are reserved) */
@@ -481,45 +483,27 @@ void iommu_boot(void)
 
 /* ---- the jump ------------------------------------------------------------------------- */
 
-/* Has a wait at the jump that started at `start` (the TSC) run out? No
- * lock, no clock but the TSC; before it is calibrated, a spin count. */
-static bool jump_wait_over(uint64_t start, uint32_t spins)
-{
-    if (!tsc_hz)
-        return spins > 10000000u;
-    return rdtsc() - start > JUMP_WAIT_MS * (tsc_hz / 1000);
-}
-
-/* One Global Command turning `cmd` off (11.4.4.1's steps) if `status`
- * says it is on. */
-static void command_off(struct vtd_unit *u, uint32_t cmd, uint32_t status)
-{
-    uint32_t g = vtd_rd32(u, VTD_GSTS);
-    if (!(g & status))
-        return;
-    vtd_wr32(u, VTD_GCMD, (g & VTD_GSTS_KEEP) & ~cmd);
-    /* A unit that doesn't answer is left: the next kernel takes it over. */
-    uint64_t start = rdtsc();
-    for (uint32_t spins = 0; (vtd_rd32(u, VTD_GSTS) & status) && !jump_wait_over(start, spins);
-         spins++)
-        cpu_relax();
-}
-
 void iommu_jump_off(void)
 {
+    /* Interrupt remapping first: it masks the I/O APIC's pins before the
+     * units stop reading its remappable entries (vtd_irq.c). The short
+     * waits suit both a reboot and a panic. */
+    irq_remap_off(true);
     for (uint32_t i = 0; i < VTD_MAX_UNITS; i++) {
         struct vtd_unit *u = vtd_unit_get(i);
         if (!u)
             continue;
         vtd_fault_mask(u);
-        command_off(u, VTD_GCMD_IRE, VTD_GSTS_IRES);
-        command_off(u, VTD_GCMD_TE, VTD_GSTS_TES);
+        /* A unit that doesn't answer is left: the next kernel takes it over. */
+        if (vtd_rd32(u, VTD_GSTS) & VTD_GSTS_TES)
+            (void)vtd_gcmd_nolock(u, VTD_GCMD_TE, false, VTD_GSTS_TES, JUMP_WAIT_NS);
+        if (!(vtd_rd32(u, VTD_GSTS) & VTD_GSTS_QIES))
+            continue;
         /* 6.5.2: the queue must be empty before it goes off. */
-        uint64_t start = rdtsc();
-        for (uint32_t spins = 0;
-             vtd_rd64(u, VTD_IQH) != vtd_rd64(u, VTD_IQT) && !jump_wait_over(start, spins); spins++)
+        uint64_t deadline = uptime_ns() + JUMP_WAIT_NS;
+        while (vtd_rd64(u, VTD_IQH) != vtd_rd64(u, VTD_IQT) && uptime_ns() < deadline)
             cpu_relax();
         if (vtd_rd64(u, VTD_IQH) == vtd_rd64(u, VTD_IQT))
-            command_off(u, VTD_GCMD_QIE, VTD_GSTS_QIES);
+            (void)vtd_gcmd_nolock(u, VTD_GCMD_QIE, false, VTD_GSTS_QIES, JUMP_WAIT_NS);
     }
 }
