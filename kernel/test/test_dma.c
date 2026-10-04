@@ -45,44 +45,9 @@
 #define PG      PAGE_SIZE
 #define CMD_BME 0x04
 
-#define EDU_DMA_SRC 0x80
-#define EDU_DMA_DST 0x88
-#define EDU_DMA_CNT 0x90
-#define EDU_DMA_CMD 0x98
-#define EDU_BUF     0x40000u
-#define DMA_RUN     0x1u
-#define DMA_TO_RAM  0x2u
-
-static struct pci_dev *edu(void)
-{
-    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
-    if (!d)
-        kprintf("ktest %s: no edu, skipped\n", ktest_current);
-    return d;
-}
-
 static bool bme(struct pci_dev *d)
 {
     return pci_cfg_read(d, 0x04, 2) & CMD_BME;
-}
-
-static bool edu_wait_idle(volatile uint8_t *r)
-{
-    uint64_t end = uptime_ns() + 2 * NS_PER_S;
-    while (*(volatile uint64_t *)(r + EDU_DMA_CMD) & DMA_RUN) {
-        if (uptime_ns() > end)
-            return false;
-        thread_sleep_ms(1);
-    }
-    return true;
-}
-
-static void edu_dma(volatile uint8_t *r, uint64_t src, uint64_t dst, uint32_t len, uint32_t dir)
-{
-    *(volatile uint64_t *)(r + EDU_DMA_SRC) = src;
-    *(volatile uint64_t *)(r + EDU_DMA_DST) = dst;
-    *(volatile uint64_t *)(r + EDU_DMA_CNT) = len;
-    *(volatile uint64_t *)(r + EDU_DMA_CMD) = DMA_RUN | dir;
 }
 
 /* A driver's dma_cap: a handle to a fresh cap for d (the function's new
@@ -96,14 +61,11 @@ static struct khandle new_cap(struct pci_dev *d, struct kobject **cap)
 
 KTEST(dma_stale_write_after_rebind)
 {
-    struct pci_dev *d = edu();
+    struct pci_dev *d = kt_edu();
     if (!d)
         return;
-    uint64_t cf = pci_cmd_lock();
-    KT_EQ(pci_enable_memory(d), OK);
-    pci_cmd_unlock(cf);
-    volatile uint8_t *r = vmm_map_mmio(d->info.bar[0].phys, PG);
-    KT_ASSERT(edu_wait_idle(r));
+    volatile uint8_t *r = kt_edu_regs(d);
+    KT_ASSERT(kt_edu_idle(r));
     dma_quarantine_flush(d);
     struct dma_quarantine_stats q0, q;
     dma_quarantine_stats(d, &q0);
@@ -124,8 +86,7 @@ KTEST(dma_stale_write_after_rebind)
     KT_EQ(dma_cap_bus_master(cap, true), OK);
     uint64_t pa[2], id;
     KT_EQ(vmo_pin(v, cap, 0, 2 * PG, pa, 2, &id), OK);
-    edu_dma(r, pa[0], EDU_BUF, PG, 0);
-    KT_ASSERT(edu_wait_idle(r));
+    KT_ASSERT(kt_edu_dma(r, pa[0], 0, PG, false));
     KT_EQ(vmo_unpin(v, cap, id), OK);
     khandle_release(&kh);
     kobject_unref(cap);
@@ -143,7 +104,7 @@ KTEST(dma_stale_write_after_rebind)
         kh = new_cap(d, &cap);
         KT_EQ(dma_cap_bus_master(cap, true), OK);
         KT_EQ(vmo_pin(v, cap, 0, 2 * PG, pa, 2, &id), OK);
-        edu_dma(r, EDU_BUF, pa[1], PG, DMA_TO_RAM);
+        kt_edu_dma_start(r, 0, pa[1], PG, true);
         khandle_release(&kh);
         KT_ASSERT(!bme(d));
         KT_EQ(dma_cap_pin_count(cap), 0);
@@ -158,10 +119,10 @@ KTEST(dma_stale_write_after_rebind)
         if (round) {
             kh2 = new_cap(d, &cap2);
             if (round == 1)
-                KT_ASSERT(edu_wait_idle(r));   /* quiesce first, as a driver must */
+                KT_ASSERT(kt_edu_idle(r));   /* quiesce first, as a driver must */
             KT_EQ(dma_cap_bus_master(cap2, true), OK);
         }
-        idle[round] = edu_wait_idle(r);
+        idle[round] = kt_edu_idle(r);
         dma_quarantine_stats(d, &q);
         held[round] = q.pins == q0.pins + 1;   /* the pages were still quarantined */
         if (round) {
@@ -210,7 +171,7 @@ KTEST(dma_stale_write_after_rebind)
 
 KTEST(dma_cap_owner_rules)
 {
-    struct pci_dev *d = edu();
+    struct pci_dev *d = kt_edu();
     if (!d)
         return;
     struct kobject *a, *b, *u;
@@ -266,7 +227,7 @@ KTEST(dma_cap_bus_master_refuses_other_values)
 
 KTEST(dma_quarantine_phys_and_clean_close)
 {
-    struct pci_dev *d = edu();
+    struct pci_dev *d = kt_edu();
     if (!d)
         return;
     dma_quarantine_flush(d);
@@ -326,7 +287,7 @@ static void mid_release_hook(void *arg)
 
 KTEST(dma_quarantine_stats_consistent)
 {
-    struct pci_dev *d = edu();
+    struct pci_dev *d = kt_edu();
     if (!d)
         return;
     dma_quarantine_flush(d);
@@ -369,11 +330,9 @@ KTEST(dma_quarantine_stats_consistent)
 
 KTEST(m6r_pins_are_charged)
 {
-    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
-    if (!d) {
-        kprintf("ktest %s: no edu, skipped\n", ktest_current);
+    struct pci_dev *d = kt_edu();
+    if (!d)
         return;
-    }
     struct job *j = kt_fresh_job();
     struct handle_table t;
     handle_table_init(&t);
@@ -415,11 +374,9 @@ KTEST(m6r_pins_are_charged)
  * still has it as a DMA target and Bus Master Enable is on. */
 KTEST(m6r_unpin_by_other_holder)
 {
-    struct pci_dev *d = pci_find(0x1234, 0x11e8, 0);
-    if (!d) {
-        kprintf("ktest %s: no edu, skipped\n", ktest_current);
+    struct pci_dev *d = kt_edu();
+    if (!d)
         return;
-    }
     struct job *j = kt_fresh_job();
     struct handle_table td, tc;
     handle_table_init(&td);

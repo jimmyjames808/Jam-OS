@@ -177,14 +177,7 @@ KTEST(vtd_domain_translation_on)
 
 /* ---- live: edu ---------------------------------------------------------------------------- */
 
-#define EDU_DMA_SRC 0x80
-#define EDU_DMA_DST 0x88
-#define EDU_DMA_CNT 0x90
-#define EDU_DMA_CMD 0x98
-#define EDU_BUF     0x40000u
-#define DMA_RUN     0x1u
-#define DMA_TO_RAM  0x2u
-#define LEN         64u
+#define LEN 64u   /* bytes per transfer */
 
 /* edu, its registers mapped, bus mastering on, and its function's state
  * (f->cur saved in *saved, the mute and counts reset); NULL to skip. */
@@ -197,18 +190,18 @@ struct edu {
 
 static bool edu_open(struct edu *e)
 {
-    e->d = pci_find(0x1234, 0x11e8, 0);
-    e->f = e->d ? vtd_fn_of(e->d) : NULL;
+    e->d = kt_edu();
+    if (!e->d)
+        return false;
+    e->f = vtd_fn_of(e->d);
     if (!e->f) {
-        kprintf("ktest %s: no edu under translation, skipped\n", ktest_current);
+        kprintf("ktest %s: edu is not under translation, skipped\n", ktest_current);
         return false;
     }
+    e->r = kt_edu_regs(e->d);
     uint64_t cf = pci_cmd_lock();
-    status_t st = pci_enable_memory(e->d);
-    if (st == OK)
-        st = pci_set_bus_master(e->d, true);
+    status_t st = pci_set_bus_master(e->d, true);
     pci_cmd_unlock(cf);
-    e->r = vmm_map_mmio(e->d->info.bar[0].phys, PAGE_SIZE);
     mutex_lock(&e->f->ctl->lock);
     e->saved = e->f->cur;
     e->f->muted = false;
@@ -229,20 +222,15 @@ static void edu_close(struct edu *e)
     mutex_unlock(&e->f->ctl->lock);
 }
 
-/* One transfer, waited for (edu starts it after a timer: ~100 ms). */
-static bool edu_dma(struct edu *e, uint64_t src, uint64_t dst, uint32_t dir)
+/* One transfer of LEN bytes, waited for: RAM -> edu's buffer, or back. */
+static bool edu_in(struct edu *e, uint64_t src)
 {
-    *(volatile uint64_t *)(e->r + EDU_DMA_SRC) = src;
-    *(volatile uint64_t *)(e->r + EDU_DMA_DST) = dst;
-    *(volatile uint64_t *)(e->r + EDU_DMA_CNT) = LEN;
-    *(volatile uint64_t *)(e->r + EDU_DMA_CMD) = DMA_RUN | dir;
-    uint64_t end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
-    while (*(volatile uint64_t *)(e->r + EDU_DMA_CMD) & DMA_RUN) {
-        if (uptime_ns() > end)
-            return false;
-        thread_sleep_ms(1);
-    }
-    return true;
+    return kt_edu_dma(e->r, src, 0, LEN, false);
+}
+
+static bool edu_out(struct edu *e, uint64_t dst)
+{
+    return kt_edu_dma(e->r, 0, dst, LEN, true);
 }
 
 /* Wait (bounded) until edu's DMA faults reach n: the fault interrupt, then
@@ -291,7 +279,7 @@ KTEST(vtd_domain_blocked_dma_faults)
     KT_ASSERT(pa);
     KT_EQ(to_home(&e), OK);
     KT_ASSERT(e.f->home == ctl->blocking);   /* QEMU has no RMRR */
-    KT_ASSERT(edu_dma(&e, EDU_BUF, pa, DMA_TO_RAM));
+    KT_ASSERT(edu_out(&e, pa));
     bool kept = page_is(pa, 0x5a);
     bool seen = faults_reach(&e, 1);
     uint32_t sid = e.f->sid;
@@ -312,7 +300,7 @@ KTEST(vtd_domain_pass_dma_lands)
     KT_ASSERT(a && b);
     KT_EQ(iommu_device_driven(e.d), OK);
     KT_ASSERT(e.f->cur == ctl->pass);
-    bool ok = edu_dma(&e, a, EDU_BUF, 0) && edu_dma(&e, EDU_BUF, b, DMA_TO_RAM);
+    bool ok = edu_in(&e, a) && edu_out(&e, b);
     bool landed = page_is(b, 0xa5);
     uint32_t faults = e.f->dma_faults;
     edu_close(&e);
@@ -346,14 +334,14 @@ KTEST(vtd_domain_own_domain)
     KT_EQ(ent.lo & VTD_CTX_SSPTPTR, vtd_pt_root(&e.f->cur->pt));
     KT_EQ((ent.lo >> VTD_CTX_TT_SHIFT) & 3, VTD_CTX_TT_SS);
     /* Mapped: a -> edu -> b lands. Not mapped: c stays. */
-    bool ok = edu_dma(&e, a, EDU_BUF, 0) && edu_dma(&e, EDU_BUF, b, DMA_TO_RAM);
+    bool ok = edu_in(&e, a) && edu_out(&e, b);
     bool landed = page_is(b, 0xc3);
-    ok = ok && edu_dma(&e, EDU_BUF, c, DMA_TO_RAM);
+    ok = ok && edu_out(&e, c);
     bool c_kept = page_is(c, 0x11), c_fault = faults_reach(&e, 1);
     /* Unmapped: b is no longer reached. */
     KT_EQ(iommu_unmap(dom, &b, 1), OK);
     memset(phys_to_virt(b), 0x22, PAGE_SIZE);
-    ok = ok && edu_dma(&e, EDU_BUF, b, DMA_TO_RAM);
+    ok = ok && edu_out(&e, b);
     bool b_kept = page_is(b, 0x22), b_fault = faults_reach(&e, 2);
     KT_EQ(iommu_detach(dom), OK);
     KT_ASSERT(e.f->cur == e.f->home);
@@ -381,7 +369,7 @@ KTEST(vtd_domain_mute_after_faults)
     KT_EQ(to_home(&e), OK);
     bool ok = true, counted = true;
     for (uint32_t i = 1; i <= VTD_FAULT_LOGGED && ok && counted; i++) {
-        ok = edu_dma(&e, EDU_BUF, pa, DMA_TO_RAM);
+        ok = edu_out(&e, pa);
         counted = faults_reach(&e, i);
     }
     mutex_lock(&ctl->lock);   /* the log thread mutes under it, after counting */
@@ -390,7 +378,7 @@ KTEST(vtd_domain_mute_after_faults)
     mutex_unlock(&ctl->lock);
     /* Muted: the next blocked write records nothing (and still doesn't land). */
     uint64_t before = __atomic_load_n(&ctl->unit->stats.faults, __ATOMIC_RELAXED);
-    ok = ok && edu_dma(&e, EDU_BUF, pa, DMA_TO_RAM);
+    ok = ok && edu_out(&e, pa);
     thread_sleep_ms(50);
     uint64_t after = __atomic_load_n(&ctl->unit->stats.faults, __ATOMIC_RELAXED);
     bool kept = page_is(pa, 0x77);
@@ -449,13 +437,13 @@ KTEST(vtd_domain_handover_while_on)
     bool on = vtd_rd32(u, VTD_GSTS) & VTD_GSTS_TES;
     uint64_t rt = vtd_rd64(u, VTD_RTADDR) & ~0xfffull;
     /* Through the copy: edu (pass-through) reaches RAM. */
-    bool ok = st == OK && edu_dma(&e, a, EDU_BUF, 0) && edu_dma(&e, EDU_BUF, b, DMA_TO_RAM);
+    bool ok = st == OK && edu_in(&e, a) && edu_out(&e, b);
     bool landed = page_is(b, 0x3c);
     status_t back = vtd_boot_handover(u, ctl->root_phys);
     mutex_unlock(&ctl->lock);
     /* And back on the real tables: blocked again once home. */
     KT_EQ(to_home(&e), OK);
-    ok = ok && edu_dma(&e, EDU_BUF, c, DMA_TO_RAM);
+    ok = ok && edu_out(&e, c);
     bool kept = page_is(c, 0x44);
     edu_close(&e);
     for (uint32_t i = 0; i < n; i++)

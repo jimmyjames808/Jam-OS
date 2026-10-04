@@ -211,6 +211,40 @@ signals_t kt_signals_of(struct handle_table *t, handle_t h);
 /* A RES_PCI_DEV resource for d (a new reference). */
 struct kobject *kt_pci_dev_res(struct pci_dev *d);
 
+/* QEMU's edu device (1234:11e8, hw/misc/edu.c): the tests' DMA engine.
+ * One transfer copies up to 4 KiB between RAM (any bus address below
+ * 4 GiB: qemu-test.sh sets its dma_mask) and the device's own buffer, at
+ * bus address KT_EDU_BUF, about 100 ms after the command. */
+#define KT_EDU_BUF 0x40000u
+/* The first free edu (pci_find), or NULL, said in the log: the test
+ * skips itself then. */
+struct pci_dev *kt_edu(void);
+/* Its registers: memory decode on, BAR 0's first page mapped uncached. */
+volatile uint8_t *kt_edu_regs(struct pci_dev *d);
+/* Start one transfer of len bytes: RAM at src into the buffer (to_ram
+ * false, dst is ignored), or the buffer to RAM at dst (src ignored). */
+void kt_edu_dma_start(volatile uint8_t *r, uint64_t src, uint64_t dst, uint32_t len,
+                      bool to_ram);
+/* Wait (kt_patience_ms(2000) at most) until the engine is idle: false if
+ * it isn't by then. */
+bool kt_edu_idle(volatile uint8_t *r);
+/* kt_edu_dma_start, then kt_edu_idle. */
+bool kt_edu_dma(volatile uint8_t *r, uint64_t src, uint64_t dst, uint32_t len, bool to_ram);
+
+/* The faults the VT-d units record, as the fault log thread takes them
+ * (its DBG_VTD_FAULT hook; the record is kernel/dev/vtd_internal.h's).
+ * kt_vtd_faults_watch(true) starts watching afresh (the first 16 are
+ * kept); false stops it: a test that watches must stop. */
+struct vtd_fault_rec;
+void kt_vtd_faults_watch(bool on);
+/* How many were kept since the watch started. */
+uint32_t kt_vtd_faults_seen(void);
+/* Wait (kt_patience_ms(2000) at most) for a kept fault that match(r, arg)
+ * accepts, looking at every one kept since the watch started; copied to
+ * *out (may be NULL). False if none came. */
+bool kt_vtd_fault_wait(bool (*match)(const struct vtd_fault_rec *r, const void *arg),
+                       const void *arg, struct vtd_fault_rec *out);
+
 /* Benchmarks ("bench" on the command line); results go to the RESULTS box. */
 void bench_run(void);
 
