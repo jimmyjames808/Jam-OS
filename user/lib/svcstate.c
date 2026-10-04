@@ -258,34 +258,53 @@ static void set_up_slot(struct svcstate_slot *sl, uint64_t seq, uint32_t key)
     __atomic_store_n(&sl->seq, seq, __ATOMIC_RELEASE);
 }
 
-status_t svcstate_take(struct svcstate *s, uint32_t key, handle_t ch, unsigned *slot)
+void svcstate_slot(struct svcstate *s, unsigned slot, struct idl_slot *out)
+{
+    struct svcstate_slot *sl = &s->h->slot[slot & 1];
+    *out = (struct idl_slot){
+        .q = svcstate_request(s, slot, NULL), .qcap = s->h->req_cap, .n = &sl->len,
+        .nh = &sl->nhandles, .hs = s->handles, .hcap = SVCSTATE_SLOT_HANDLES,
+        .r = svcstate_reply_area(s, slot),
+    };
+}
+
+void svcstate_prepare(struct svcstate *s, uint32_t key, unsigned *slot, struct idl_slot *out)
 {
     unsigned i = (unsigned)(s->next_seq & 1);
-    struct svcstate_slot *sl = &s->h->slot[i];
-    set_up_slot(sl, s->next_seq, key);
-    struct channel_read_args a = {
-        .h = ch,
-        .bytes_cap = s->h->req_cap,
-        .bytes = (uint64_t)(uintptr_t)svcstate_request(s, i, NULL),
-        .actual_bytes = (uint64_t)(uintptr_t)&sl->len,
-        .handles = (uint64_t)(uintptr_t)s->handles,
-        .handles_cap = SVCSTATE_SLOT_HANDLES,
-        .actual_handles = (uint64_t)(uintptr_t)&sl->nhandles,
-    };
-    status_t st = jam_channel_read(&a);
-    if (st == OK && sl->len < 4) {
-        for (unsigned j = 0; j < sl->nhandles; j++)
+    set_up_slot(&s->h->slot[i], s->next_seq, key);
+    svcstate_slot(s, i, out);
+    *slot = i;
+}
+
+bool svcstate_taken(struct svcstate *s, unsigned slot)
+{
+    struct svcstate_slot *sl = &s->h->slot[slot & 1];
+    if (sl->seq != s->next_seq || sl->len < 4 || !taken(s->h, sl)) {
+        /* Nothing taken (a read that found the request too big wrote its
+         * length): the slot stays set up for the next prepare. */
+        __atomic_store_n(&sl->len, 0, __ATOMIC_RELEASE);
+        sl->nhandles = 0;
+        return false;
+    }
+    s->next_seq++;
+    return true;
+}
+
+status_t svcstate_take(struct svcstate *s, uint32_t key, handle_t ch, unsigned *slot)
+{
+    unsigned i;
+    struct idl_slot is;
+    svcstate_prepare(s, key, &i, &is);
+    status_t st = drv_channel_read(ch, is.q, is.qcap, is.n, is.hs, is.hcap, is.nh);
+    if (st == OK && *is.n < 4) {
+        for (unsigned j = 0; j < *is.nh; j++)
             jam_handle_close(s->handles[j]);
         st = ERR_INVALID_ARGS;
     }
-    if (st != OK) {
-        /* Nothing taken (a read that found the request too big wrote its
-         * length): the slot stays set up for the next take. */
-        __atomic_store_n(&sl->len, 0, __ATOMIC_RELEASE);
-        sl->nhandles = 0;
-        return st;
-    }
-    s->next_seq++;
+    /* A failed read left no request to take (a too big one's length is
+     * past req_cap, or its handles past the slot's): the slot is set back. */
+    if (!svcstate_taken(s, i) || st != OK)
+        return st == OK ? ERR_INTERNAL : st;
     *slot = i;
     return OK;
 }

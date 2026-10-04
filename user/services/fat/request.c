@@ -2,9 +2,10 @@
  * request in progress" and "Held writes become the write-ahead buffer").
  *
  * Every request fat serves (fs on the mount's channel or a view, file,
- * fsctl) is read into a slot of the state VMO (svcstate_take) and run
- * from there with the protocol's dispatch (<proto>_dispatch_on, or
- * fs_view_dispatch for fs), in five steps:
+ * fsctl) is read into a slot of the state VMO (svcstate_prepare, then the
+ * protocol's generated <proto>_take_slot) and run from there with its
+ * generated <proto>_run_slot (fs_view_dispatch for fs, which checks the
+ * view's flags first), in five steps:
  *   1. begin: if the hold lacks room for a whole request, what it holds
  *      (all of it committed) goes out first; then the undo copy (undo.c);
  *   2. run, with every disk write held (hold.c): nothing of it reaches the
@@ -181,28 +182,32 @@ void op_close_end(void)
 
 /* ---- a request in a slot ------------------------------------------------------------ */
 
-/* The next message on ch has more handles than a slot takes: off the
- * queue, answered ERR_INVALID_ARGS (idl_drain). */
-static status_t drain(handle_t ch)
-{
-    uint32_t n = 0, nh = 0;
-    status_t st = drv_channel_read(ch, NULL, 0, &n, NULL, 0, &nh);
-    if (st != ERR_BUFFER_TOO_SMALL)
-        return st;   /* OK: an empty message, taken; or nothing there any more */
-    return idl_drain(ch, n, nh);
-}
-
-static uint32_t dispatch(const struct fat_chan *c, const void *req, uint32_t n, void *rep,
-                         handle_t *rhs, uint32_t *rhn)
+/* The next message on c into the slot set up as is, by c's protocol's
+ * generated take (<idl/common.h> idl_take: one too big for the slot is
+ * answered ERR_INVALID_ARGS, one without a txid dropped). */
+static status_t take(const struct fat_chan *c, const struct idl_slot *is)
 {
     if (c->proto == FAT_PROTO_FILE)
-        return file_dispatch_on(c->ch, &fat_file_ops, c->file, req, n, rep, rhs, rhn);
+        return file_take_slot(c->ch, is);
     if (c->proto == FAT_PROTO_CTL)
-        return fsctl_dispatch_on(c->ch, &fat_ctl_ops, NULL, req, n, rep, rhs, rhn);
+        return fsctl_take_slot(c->ch, is);
+    return fs_take_slot(c->ch, is);
+}
+
+/* Run the request in `slot` with c's protocol's generated run (fs: through
+ * the view's checks, fs_view_dispatch), its reply into the slot. */
+static uint32_t dispatch(const struct fat_chan *c, unsigned slot, handle_t *rhs, uint32_t *rhn)
+{
+    struct idl_slot is;
+    svcstate_slot(state_slots(), slot, &is);
+    if (c->proto == FAT_PROTO_FILE)
+        return file_run_slot(c->ch, &is, &fat_file_ops, c->file, rhs, rhn);
+    if (c->proto == FAT_PROTO_CTL)
+        return fsctl_run_slot(c->ch, &is, &fat_ctl_ops, NULL, rhs, rhn);
     const struct fs_view_server v = {
         .flags = c->flags, .ops = &fat_fs_ops, .add = views_add,
     };
-    return fs_view_dispatch(&v, req, n, rep, rhs, rhn);
+    return fs_view_dispatch(&v, is.q, *is.n, is.r, rhs, rhn);
 }
 
 /* The send failed: a successful reply becomes the failure (committed
@@ -296,8 +301,8 @@ static uint32_t hold_differs(uint32_t held)
     return held;
 }
 
-static uint32_t rerun(const struct fat_chan *c, const void *req, uint32_t n, uint32_t rn,
-                      handle_t *rhs, uint32_t *rhn)
+static uint32_t rerun(const struct fat_chan *c, const void *req, uint32_t rn, handle_t *rhs,
+                      uint32_t *rhn)
 {
     static uint8_t first[FS_REP_MAX];   /* the biggest reply fat gives */
     static uint64_t checked;
@@ -320,7 +325,7 @@ static uint32_t rerun(const struct fat_chan *c, const void *req, uint32_t n, uin
     files_drop_unknown();
     views_drop_unknown();
     begin(kind_of(c), op.seq, c->file, op.slot);
-    uint32_t rn2 = dispatch(c, req, n, rep, rhs, rhn);
+    uint32_t rn2 = dispatch(c, op.slot, rhs, rhn);
     if (rn2 != rn || memcmp(first, rep, rn) || held != kept->hold.held ||
         runs != kept->hold.runs || memcmp(&post, &kept->post, sizeof(post)) ||
         wrote != op.wrote || gather != op.gather)
@@ -365,12 +370,11 @@ status_t serve_one(const struct fat_chan *c)
 {
     struct svcstate *s = state_slots();
     unsigned slot = 0;
-    status_t st = svcstate_take(s, c->id, c->ch, &slot);
-    if (st == ERR_BUFFER_TOO_SMALL)
-        return drain(c->ch);
-    if (st == ERR_INVALID_ARGS)
-        return OK;   /* under 4 bytes: no txid, nothing to answer; thrown away */
-    if (st != OK)
+    struct idl_slot is;
+    svcstate_prepare(s, c->id, &slot, &is);
+    status_t st = take(c, &is);
+    /* OK and nothing taken: a message thrown away or answered by the take. */
+    if (!svcstate_taken(s, slot) || st != OK)
         return st;
     if (s->h->slot[slot].nhandles) {
         refuse(c, slot);
@@ -383,14 +387,12 @@ status_t serve_one(const struct fat_chan *c)
 void serve_slot(const struct fat_chan *c, unsigned slot)
 {
     struct svcstate *s = state_slots();
-    uint32_t n = 0;
-    const void *req = svcstate_request(s, slot, &n);
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
     begin(kind_of(c), s->h->slot[slot].seq, c->file, slot);
-    uint32_t rn = dispatch(c, req, n, svcstate_reply_area(s, slot), rhs, &rhn);
+    uint32_t rn = dispatch(c, slot, rhs, &rhn);
 #ifdef FAT_RERUN_CHECK
-    rn = rerun(c, req, n, rn, rhs, &rhn);
+    rn = rerun(c, svcstate_request(s, slot, NULL), rn, rhs, &rhn);
 #endif
     plan_send();
     (void)svcstate_commit(s, slot, rn);   /* the dispatch's reply fits rep_cap: the commit */

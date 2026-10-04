@@ -56,6 +56,7 @@
  * None of this is thread-safe: one thread owns a state. */
 #pragma once
 
+#include <idl/common.h>
 #include <os.h>
 
 #define SVCSTATE_ADDR      0x0000600000000000ull   /* where a service maps its state VMO */
@@ -186,6 +187,18 @@ void    *svcstate_user(const struct svcstate *s);
  * under 4 bytes (no txid), thrown away. The request's handles, if any,
  * are in s->handles. */
 status_t svcstate_take(struct svcstate *s, uint32_t key, handle_t ch, unsigned *slot);
+/* svcstate_take in two halves, around a read of the caller's own (a
+ * protocol's generated <proto>_take_slot, <idl/common.h>): set up the next
+ * slot for a request from channel `key` (its length zeroed, then its
+ * number set), *slot its index and *out where the read goes (its request
+ * area, length word, handles: s->handles); then, after the read, whether
+ * a request is in it (its length 4 or more, which the read wrote). A slot
+ * that got none stays set up for the next prepare. */
+void     svcstate_prepare(struct svcstate *s, uint32_t key, unsigned *slot, struct idl_slot *out);
+bool     svcstate_taken(struct svcstate *s, unsigned slot);
+/* Slot `slot` as <idl/common.h> describes one (for a protocol's
+ * <proto>_run_slot): its request, length, handles and reply area. */
+void     svcstate_slot(struct svcstate *s, unsigned slot, struct idl_slot *out);
 /* The request in a slot (*len bytes), and its reply area (rep_cap bytes). */
 void    *svcstate_request(const struct svcstate *s, unsigned slot, uint32_t *len);
 void    *svcstate_reply_area(const struct svcstate *s, unsigned slot);

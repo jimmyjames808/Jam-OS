@@ -28,8 +28,9 @@
  * then each stream's new `read` is published in its ring header; every
  * answer (a request's, a drain's, a wait_period sent to the driver) goes
  * out after a commit; and the loop commits before it waits. Requests are
- * read into the state's two request slots (svcstate_take) and answered
- * from the slot's reply area.
+ * read into the state's two request slots (svcstate_prepare and the
+ * protocol's generated <proto>_take_slot), run with <proto>_run_slot and
+ * answered from the slot's reply area.
  *
  * **A restart is not seen by clients** (adopt.c; docs/M11.6-PLAN.md): init
  * keeps the state VMO (SR_STATE) and, through the keep channel (SR_KEEP,
@@ -256,14 +257,15 @@ const char *state_check(const struct mixer_state *n);
 status_t keep_slot_put(struct mixer *m, uint32_t slot, const handle_t *hs, unsigned n);
 /* The keeper forgets slot (after the state has). */
 void     keep_slot_drop(struct mixer *m, uint32_t slot);
-/* Read the next request from ch (whose port key is `key`, and which
- * takes requests of `cap` bytes at most) into a request slot. OK with
- * *slot set: a request to run (svcstate_request); OK with *slot
- * REQ_NONE: a message was taken and answered or dropped as today's
- * generated server does (handles, too long, under 4 bytes); else the
- * read's status (ERR_SHOULD_WAIT: empty; ERR_PEER_CLOSED). */
+/* Read the next request from ch (whose port key is `key`: an `audioctl`
+ * channel if ctl, else an `audio` one) into a request slot, with the
+ * protocol's generated take (<proto>_take_slot). OK with *slot set: a
+ * request to run (svcstate_request); OK with *slot REQ_NONE: a message
+ * was taken and answered or dropped as the generated server does
+ * (handles, too long, under 4 bytes); else the read's status
+ * (ERR_SHOULD_WAIT: empty; ERR_PEER_CLOSED). */
 #define REQ_NONE (~0u)
-status_t req_take(struct mixer *m, handle_t ch, uint32_t key, uint32_t cap, unsigned *slot);
+status_t req_take(struct mixer *m, handle_t ch, uint32_t key, bool ctl, unsigned *slot);
 /* Answer the request in slot on ch: the numbers committed (the request
  * counted), the slot committed, then the reply in the slot's reply area
  * (rn bytes with hs[0..nh), moved; nothing if rn is 0: answered later or

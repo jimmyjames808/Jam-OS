@@ -5,8 +5,9 @@
  * (and netdev_<method>_until with a deadline, _within with a timeout), or
  * netdev_<method>_send and netdev_<method>_result without waiting. Server:
  * fill a struct netdev_ops and run netdev_serve(ch, &ops, ctx), or
- * netdev_serve_one / netdev_dispatch_on for a loop of your own;
- * netdev_reply_<method> answers a request later. */
+ * netdev_serve_one / netdev_dispatch_on for a loop of your own, or
+ * netdev_take_slot / netdev_run_slot for requests read into slots that outlive
+ * the server; netdev_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -546,6 +547,43 @@ static inline uint32_t netdev_dispatch(const struct netdev_ops *ops, void *ctx, 
                                        void *rep, handle_t *rhs, uint32_t *rhn)
 {
     return netdev_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request: ERR_INVALID_ARGS if it has less. */
+static inline status_t netdev_take_slot(handle_t ch, const struct idl_slot *slot)
+{
+    if (slot->qcap < NETDEV_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by netdev_take_slot, or found there by a
+ * successor), which came on ch: as netdev_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it can't. */
+static inline uint32_t netdev_run_slot(handle_t ch, const struct idl_slot *slot,
+                                       const struct netdev_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return netdev_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. */
+static inline bool netdev_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
 }
 
 /* Take one message off ch and answer it. OK once a message was handled

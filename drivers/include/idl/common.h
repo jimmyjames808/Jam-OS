@@ -179,6 +179,66 @@ static inline status_t idl_serve_next(struct idl_serve *s)
     }
 }
 
+/* ---- requests in slots (a server whose requests outlive it) ------------ */
+
+/* A request slot: memory the server chooses (a service's state VMO,
+ * <svcstate.h>), which one request is read into and its reply built in,
+ * so that the request in progress outlives the process: a successor finds
+ * it there and runs it again with the same code (<proto>_run_slot). */
+struct idl_slot {
+    void     *q;      /* the request: qcap bytes of room, the protocol's REQ_MAX or more */
+    uint32_t  qcap;
+    uint32_t *n;      /* its length: written by the kernel after its bytes, 0 before */
+    uint32_t *nh;     /* how many handles it carried ... */
+    handle_t *hs;     /* ... into room for hcap of them (no method takes any) */
+    uint32_t  hcap;
+    void     *r;      /* its reply: the protocol's REP_MAX bytes of room */
+};
+
+/* Server: read the next message on ch into slot. Its length (*slot->n) is
+ * zeroed first and written by the kernel after the bytes, in the one
+ * system call that takes the message off the queue, and a thread finishes
+ * the system call it is in before it dies: so a process killed at any
+ * point leaves the message either still queued or wholly in the slot.
+ * OK: a message was taken. *slot->n 4 or more: a request to run
+ * (<proto>_run_slot), with *slot->nh handles in slot->hs, the caller's to
+ * close (no method takes any: <proto>_run_slot refuses it). *slot->n 0:
+ * nothing to run, the message dealt with as <proto>_serve_one deals with
+ * it: one too big for the slot or with more than hcap handles answered
+ * ERR_INVALID_ARGS (idl_drain), one under 4 bytes (no txid) dropped, its
+ * handles closed. Otherwise channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t idl_take(handle_t ch, const struct idl_slot *slot)
+{
+    __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);
+    *slot->nh = 0;
+    status_t idl_st = drv_channel_read(ch, slot->q, slot->qcap, slot->n, slot->hs,
+                                       slot->hcap, slot->nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL) {
+        /* The kernel wrote the size of what stays queued: no request here. */
+        uint32_t idl_n = *slot->n, idl_nh = *slot->nh;
+        __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);
+        *slot->nh = 0;
+        return idl_drain(ch, idl_n, idl_nh);
+    }
+    if (idl_st == OK && *slot->n < sizeof(uint32_t)) {
+        idl_close_all(slot->hs, *slot->nh);
+        __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);
+        *slot->nh = 0;
+    }
+    return idl_st;
+}
+
+/* Server: the request in slot carried handles: answered ERR_INVALID_ARGS
+ * into slot->r without its handler seeing it. The reply's length. */
+static inline uint32_t idl_refuse(const struct idl_slot *slot)
+{
+    struct idl_rep_hdr *idl_r = (struct idl_rep_hdr *)slot->r;
+    idl_r->txid = ((const struct idl_req_hdr *)slot->q)->txid;
+    idl_r->status = ERR_INVALID_ARGS;
+    return sizeof(*idl_r);
+}
+
 /* ---- answering later (a `later` method, or a loop of your own) ------- */
 
 /* A request to be answered later: the channel it came on (not owned:

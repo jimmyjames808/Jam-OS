@@ -114,6 +114,10 @@ bool t_idl_async_through_port(void);
 bool t_idl_serve_reply_wait(void);
 bool t_idl_serve_gone_client(void);
 bool t_idl_within_times_out(void);
+/* idlslot.c: requests read into slots (<proto>_take_slot, _run_slot) and
+ * the `idempotent` keyword, on the test protocol idltest. */
+bool t_idl_slot_take_run(void);
+bool t_idl_slot_idempotent(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;

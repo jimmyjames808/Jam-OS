@@ -176,31 +176,19 @@ void keep_slot_drop(struct mixer *m, uint32_t slot)
 
 /* ---- requests in slots ------------------------------------------------------------ */
 
-/* The message that didn't fit the slot (too long, or too many handles):
- * its sizes, then dropped as the generated server drops one. */
-static status_t drop_big(handle_t ch)
-{
-    uint32_t n = 0, nh = 0;
-    status_t st = jam_channel_read(&(struct channel_read_args){
-        .h = ch, .actual_bytes = (uint64_t)(uintptr_t)&n,
-        .actual_handles = (uint64_t)(uintptr_t)&nh });
-    return st == ERR_BUFFER_TOO_SMALL ? idl_drain(ch, n, nh) : st;
-}
-
-status_t req_take(struct mixer *m, handle_t ch, uint32_t key, uint32_t cap, unsigned *slot)
+status_t req_take(struct mixer *m, handle_t ch, uint32_t key, bool ctl, unsigned *slot)
 {
     unsigned i;
-    status_t st = svcstate_take(&m->state, key, ch, &i);
+    struct idl_slot is;
+    svcstate_prepare(&m->state, key, &i, &is);
+    /* The protocol's generated take: a message too long for the slot is
+     * answered ERR_INVALID_ARGS there, one under 4 bytes (no txid) dropped. */
+    status_t st = ctl ? audioctl_take_slot(ch, &is) : audio_take_slot(ch, &is);
     *slot = REQ_NONE;
-    if (st == ERR_BUFFER_TOO_SMALL)
-        return drop_big(ch);
-    if (st == ERR_INVALID_ARGS)
-        return OK;   /* under 4 bytes: taken, no txid to answer */
-    if (st != OK)
+    if (!svcstate_taken(&m->state, i) || st != OK)
         return st;
-    uint32_t n = 0, nh = m->state.h->slot[i].nhandles;
-    (void)svcstate_request(&m->state, i, &n);
-    if (nh || n > cap) {
+    uint32_t n = *is.n, nh = *is.nh;
+    if (nh || n > (ctl ? REQ_CAP_CTL : REQ_CAP_AUDIO)) {
         idl_close_all(m->state.handles, nh);
         req_status(m, i, ch, ERR_INVALID_ARGS);
         return OK;

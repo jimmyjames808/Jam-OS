@@ -788,6 +788,8 @@ static const struct {
     { "idl_serve_reply_wait", t_idl_serve_reply_wait },
     { "idl_serve_gone_client", t_idl_serve_gone_client },
     { "idl_within_times_out", t_idl_within_times_out },
+    { "idl_slot_take_run", t_idl_slot_take_run },
+    { "idl_slot_idempotent", t_idl_slot_idempotent },
     { "keep_put_drop_restore", t_keep_put_drop_restore },
     { "keep_restore_batches", t_keep_restore_batches },
     { "keep_unknown_slots", t_keep_unknown_slots },

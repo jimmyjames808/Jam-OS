@@ -19,7 +19,7 @@ The language, one statement per line, `#` starts a comment (comment lines
 right above a method are copied into the header):
 
     protocol <name> <id>
-    <ordinal> <method> (<type> <arg>, ...) -> (<type> <result>, ...) [later]
+    <ordinal> <method> (<type> <arg>, ...) -> (<type> <result>, ...) [later] [idempotent]
 
 name, method, arg, result   C identifiers (lower case by convention)
 id                          1..65535, unique over all protocols
@@ -43,6 +43,21 @@ system call that waits for the next request (drv_channel_reply_wait, in
 idl_serve_next), one system call per request. <proto>_serve_one reads,
 answers and writes one request, for a loop of the server's own (one that
 waits on a port for many channels).
+
+A server whose requests must outlive it (a service with a state VMO,
+<svcstate.h>) reads each one into a slot of memory it chooses (struct
+idl_slot): <proto>_take_slot(ch, slot) reads one request there, its
+length written last in the same system call, so a death leaves it either
+queued or wholly in the slot; <proto>_run_slot(ch, slot, &ops, ctx, ...)
+runs the request in a slot, its reply built in the slot too. The loop and a
+successor's re-run of the request in progress are then the same code.
+<PROTO>_REQ_MAX and <PROTO>_REP_MAX size the slots.
+
+`idempotent`: running the method again on the state its first run left
+gives the same result and the same answer (a read, a write at an explicit
+offset, a stat). Recorded in <proto>_idempotent(wire ordinal), for a server
+that keeps no state across a restart: it may run such a request again and
+answers any other with an error. The client's side doesn't change.
 
 `later`: the server may answer the method later, after its handler has
 returned and the loop has served other requests (a `recv` that waits for
@@ -107,6 +122,10 @@ ARRAY_MAX = 4096
 MSG_MAX = 8192          # bytes of one request or reply: both sit on a kernel stack
 HDR = 8                 # txid + ordinal / txid + status
 RESERVED = {"ch", "deadline_ns", "timeout_ns", "ctx", "ops"}
+# Names of the protocol's own functions (<proto>_<name>): no method may take one.
+RESERVED_METHODS = ("dispatch", "dispatch_on", "serve", "serve_one", "take_slot", "run_slot",
+                    "idempotent", "ops")
+KEYWORDS = ("later", "idempotent")   # after a method's results
 C_KEYWORDS = set("""auto break case char const continue default do double else enum extern
     float for goto if inline int long register restrict return short signed sizeof static
     struct switch typedef union unsigned void volatile while _Bool _Alignas _Alignof _Atomic
@@ -137,10 +156,11 @@ class Field:
 
 
 class Method:
-    def __init__(self, ordinal, name, args, results, doc, later):
+    def __init__(self, ordinal, name, args, results, doc, later, idempotent):
         self.ordinal, self.name, self.args, self.results, self.doc = \
             ordinal, name, args, results, doc
         self.later = later    # the server may answer after its handler returned
+        self.idempotent = idempotent   # running it again changes nothing more
 
 
 class Protocol:
@@ -224,11 +244,18 @@ def parse(src):
             continue
         if name is None:
             fail(src, lineno, "the first statement must be 'protocol <name> <id>'")
-        m = re.match(r"(\d+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(.*?\))\s*->\s*(\(.*\))"
-                     r"(\s+later)?$", line)
+        m = re.match(r"(\d+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(.*?\))\s*->\s*(\(.*?\))"
+                     r"((?:\s+[a-z]+)*)$", line)
         if not m:
-            fail(src, lineno, "want '<ordinal> <method> (<args>) -> (<results>) [later]'")
+            fail(src, lineno, "want '<ordinal> <method> (<args>) -> (<results>) [later] "
+                              "[idempotent]'")
         ordinal, mname = int(m.group(1)), m.group(2)
+        words = m.group(5).split()
+        for w in words:
+            if w not in KEYWORDS:
+                fail(src, lineno, f"unknown keyword '{w}' (want {' or '.join(KEYWORDS)})")
+            if words.count(w) > 1:
+                fail(src, lineno, f"'{w}' twice")
         if mname in C_KEYWORDS:
             fail(src, lineno, f"bad method name '{mname}'")
         if not 1 <= ordinal <= 65535:
@@ -237,13 +264,12 @@ def parse(src):
             fail(src, lineno, f"ordinal {ordinal} used twice")
         if mname in names:
             fail(src, lineno, f"method '{mname}' defined twice")
-        if mname in ("dispatch", "dispatch_on", "serve", "serve_one", "ops") or \
-                mname.startswith("reply_") or \
+        if mname in RESERVED_METHODS or mname.startswith("reply_") or \
                 any(mname.endswith(x) for x in ("_until", "_within", "_call", "_send",
                                                 "_result")):
-            fail(src, lineno, f"method name '{mname}' is reserved (dispatch, dispatch_on, "
-                              "serve, serve_one, ops, reply_*, *_until, *_within, *_call, "
-                              "*_send, *_result)")
+            fail(src, lineno, f"method name '{mname}' is reserved "
+                              f"({', '.join(RESERVED_METHODS)}, reply_*, *_until, *_within, "
+                              "*_call, *_send, *_result)")
         ordinals.add(ordinal)
         names.add(mname)
         args = parse_fields(src, lineno, m.group(3), f"{mname} arguments")
@@ -254,7 +280,8 @@ def parse(src):
                            (sum(f.size for f in results), "reply")):
             if HDR + size > MSG_MAX:
                 fail(src, lineno, f"{mname}: {what} is {HDR + size} bytes (max {MSG_MAX})")
-        methods.append(Method(ordinal, mname, args, results, doc, bool(m.group(5))))
+        methods.append(Method(ordinal, mname, args, results, doc, "later" in words,
+                              "idempotent" in words))
         doc = []
     if name is None:
         sys.exit(f"{src}: no 'protocol' line")
@@ -455,6 +482,66 @@ def gen_common():
         "        s->n = idl_n;",
         "        return OK;",
         "    }",
+        "}",
+        "",
+        "/* ---- requests in slots (a server whose requests outlive it) ------------ */",
+        "",
+        "/* A request slot: memory the server chooses (a service's state VMO,",
+        " * <svcstate.h>), which one request is read into and its reply built in,",
+        " * so that the request in progress outlives the process: a successor finds",
+        " * it there and runs it again with the same code (<proto>_run_slot). */",
+        "struct idl_slot {",
+        "    void     *q;      /* the request: qcap bytes of room, the protocol's REQ_MAX or more */",
+        "    uint32_t  qcap;",
+        "    uint32_t *n;      /* its length: written by the kernel after its bytes, 0 before */",
+        "    uint32_t *nh;     /* how many handles it carried ... */",
+        "    handle_t *hs;     /* ... into room for hcap of them (no method takes any) */",
+        "    uint32_t  hcap;",
+        "    void     *r;      /* its reply: the protocol's REP_MAX bytes of room */",
+        "};",
+        "",
+        "/* Server: read the next message on ch into slot. Its length (*slot->n) is",
+        " * zeroed first and written by the kernel after the bytes, in the one",
+        " * system call that takes the message off the queue, and a thread finishes",
+        " * the system call it is in before it dies: so a process killed at any",
+        " * point leaves the message either still queued or wholly in the slot.",
+        " * OK: a message was taken. *slot->n 4 or more: a request to run",
+        " * (<proto>_run_slot), with *slot->nh handles in slot->hs, the caller's to",
+        " * close (no method takes any: <proto>_run_slot refuses it). *slot->n 0:",
+        " * nothing to run, the message dealt with as <proto>_serve_one deals with",
+        " * it: one too big for the slot or with more than hcap handles answered",
+        " * ERR_INVALID_ARGS (idl_drain), one under 4 bytes (no txid) dropped, its",
+        " * handles closed. Otherwise channel_read's status: ERR_SHOULD_WAIT when",
+        " * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */",
+        "static inline status_t idl_take(handle_t ch, const struct idl_slot *slot)",
+        "{",
+        "    __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);",
+        "    *slot->nh = 0;",
+        "    status_t idl_st = drv_channel_read(ch, slot->q, slot->qcap, slot->n, slot->hs,",
+        "                                       slot->hcap, slot->nh);",
+        "    if (idl_st == ERR_BUFFER_TOO_SMALL) {",
+        "        /* The kernel wrote the size of what stays queued: no request here. */",
+        "        uint32_t idl_n = *slot->n, idl_nh = *slot->nh;",
+        "        __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);",
+        "        *slot->nh = 0;",
+        "        return idl_drain(ch, idl_n, idl_nh);",
+        "    }",
+        "    if (idl_st == OK && *slot->n < sizeof(uint32_t)) {",
+        "        idl_close_all(slot->hs, *slot->nh);",
+        "        __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);",
+        "        *slot->nh = 0;",
+        "    }",
+        "    return idl_st;",
+        "}",
+        "",
+        "/* Server: the request in slot carried handles: answered ERR_INVALID_ARGS",
+        " * into slot->r without its handler seeing it. The reply's length. */",
+        "static inline uint32_t idl_refuse(const struct idl_slot *slot)",
+        "{",
+        "    struct idl_rep_hdr *idl_r = (struct idl_rep_hdr *)slot->r;",
+        "    idl_r->txid = ((const struct idl_req_hdr *)slot->q)->txid;",
+        "    idl_r->status = ERR_INVALID_ARGS;",
+        "    return sizeof(*idl_r);",
         "}",
         "",
         "/* ---- answering later (a `later` method, or a loop of your own) ------- */",
@@ -799,8 +886,9 @@ def gen_protocol(p):
            f" * (and {P}_<method>_until with a deadline, _within with a timeout), or",
            f" * {P}_<method>_send and {P}_<method>_result without waiting. Server:",
            f" * fill a struct {P}_ops and run {P}_serve(ch, &ops, ctx), or",
-           f" * {P}_serve_one / {P}_dispatch_on for a loop of your own;",
-           f" * {P}_reply_<method> answers a request later. */",
+           f" * {P}_serve_one / {P}_dispatch_on for a loop of your own, or",
+           f" * {P}_take_slot / {P}_run_slot for requests read into slots that outlive",
+           f" * the server; {P}_reply_<method> answers a request later. */",
            "#pragma once", "", "#include <idl/common.h>", "",
            f"#define {U}_PROTOCOL_ID {p.pid}u"]
     for m in p.methods:
@@ -892,6 +980,53 @@ def gen_protocol(p):
         "void *rep, handle_t *rhs, uint32_t *rhn)",
         "{",
         f"    return {P}_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);",
+        "}",
+        "",
+        f"/* Take the next message on ch into slot (idl_take), a slot with room for",
+        f" * the protocol's biggest request: ERR_INVALID_ARGS if it has less. */",
+        f"static inline status_t {P}_take_slot(handle_t ch, const struct idl_slot *slot)",
+        "{",
+        f"    if (slot->qcap < {U}_REQ_MAX)",
+        "        return ERR_INVALID_ARGS;",
+        "    return idl_take(ch, slot);",
+        "}",
+        "",
+        f"/* Run the request in slot (taken by {P}_take_slot, or found there by a",
+        f" * successor), which came on ch: as {P}_dispatch_on, its reply built",
+        " * in slot->r and the handles that reply carries put into rhs",
+        " * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is",
+        " * answered ERR_INVALID_ARGS without its handler seeing it. Returns the",
+        " * reply's length: 0 means no reply (no txid, or a `later` handler",
+        " * answers it itself). No I/O; the caller sends the reply with the handles,",
+        " * or closes them if it can't. */",
+        f"static inline uint32_t {P}_run_slot(handle_t ch, const struct idl_slot *slot,",
+        " " * len(f"static inline uint32_t {P}_run_slot(") +
+        f"const struct {P}_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)",
+        "{",
+        "    *rhn = 0;",
+        "    if (*slot->n >= sizeof(uint32_t) && *slot->nh)",
+        "        return idl_refuse(slot);",
+        f"    return {P}_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);",
+        "}",
+        "",
+    ]
+    idem = [m for m in p.methods if m.idempotent]
+    out += [
+        "/* Is the method with this wire ordinal idempotent (its keyword in the",
+        " * .idl): run again on the state its first run left, it gives the same",
+        " * result and the same answer? A server that keeps nothing across a",
+        " * restart may run such a request again; any other it answers with an",
+        " * error. */",
+        f"static inline bool {P}_idempotent(uint32_t ordinal)",
+        "{",
+    ]
+    if idem:
+        out.append("    switch (ordinal) {")
+        out += [f"    case {U}_{m.name.upper()}:" for m in idem]
+        out += ["        return true;", "    default:", "        return false;", "    }"]
+    else:
+        out += ["    (void)ordinal;", "    return false;   /* no method is marked */"]
+    out += [
         "}",
         "",
         "/* Take one message off ch and answer it. OK once a message was handled",
