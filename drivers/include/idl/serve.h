@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `serve` (id 31). Client: serve_<method>(ch, args..., &results...)
- * (and serve_<method>_until with a deadline) over drv_channel_call, or
+ * (and serve_<method>_until with a deadline, _within with a timeout), or
  * serve_<method>_send and serve_<method>_result without waiting. Server:
  * fill a struct serve_ops and run serve_serve(ch, &ops, ctx), or
  * serve_serve_one / serve_dispatch_on for a loop of your own;
@@ -58,6 +58,36 @@ struct serve_stop_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
+/* serve_share_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t serve_share_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t port, const uint8_t name[128], handle_t *out_give)
+{
+    struct serve_share_req idl_q;
+    struct serve_share_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = SERVE_SHARE;
+    idl_q.port = port;
+    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
+        idl_q.name[idl_i] = name[idl_i];
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_give)
+            *out_give = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    return idl_st;
+}
 /* Serve a file on `port` (SERVE_PORT_MIN and up: any port, the server has
  * the permission for those below 1024 too). `name` is the file's path
  * as the owner gave it (NUL-terminated): for `info`, the log and the
@@ -77,42 +107,20 @@ struct serve_stop_rep {
  * no name. */
 static inline status_t serve_share_until(handle_t ch, uint64_t deadline_ns, uint16_t port, const uint8_t name[128], handle_t *out_give)
 {
-    struct serve_share_req idl_q;
-    struct serve_share_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = SERVE_SHARE;
-    idl_q.port = port;
-    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-        idl_q.name[idl_i] = name[idl_i];
-    handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && idl_rhn != 1)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK)
-        idl_close_all(idl_rh, idl_rhn);
-    if (idl_st == OK) {
-        if (out_give)
-            *out_give = idl_rh[0];
-        else
-            drv_handle_close(idl_rh[0]);
-    }
-    return idl_st;
+    return serve_share_call(ch, false, deadline_ns, port, name, out_give);
+}
+static inline status_t serve_share_within(handle_t ch, uint64_t timeout_ns, uint16_t port, const uint8_t name[128], handle_t *out_give)
+{
+    return serve_share_call(ch, true, timeout_ns, port, name, out_give);
 }
 static inline status_t serve_share(handle_t ch, uint16_t port, const uint8_t name[128], handle_t *out_give)
 {
-    return serve_share_until(ch, DEADLINE_NEVER, port, name, out_give);
+    return serve_share_call(ch, false, DEADLINE_NEVER, port, name, out_give);
 }
 
-/* What is served: the `index`-th file (0, 1, ...): its port, its name as
- * `share` was given it, its size, the clients connected now, and the
- * requests answered and file bytes sent since it was shared.
- * ERR_NOT_FOUND: past the last. */
-static inline status_t serve_info_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
+/* serve_info_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t serve_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
 {
     struct serve_info_req idl_q;
     struct serve_info_rep idl_r;
@@ -120,8 +128,8 @@ static inline status_t serve_info_until(handle_t ch, uint64_t deadline_ns, uint3
     idl_q.txid = 0;
     idl_q.ordinal = SERVE_INFO;
     idl_q.index = index;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_port)
@@ -138,14 +146,26 @@ static inline status_t serve_info_until(handle_t ch, uint64_t deadline_ns, uint3
         *out_bytes = idl_r.bytes;
     return idl_st;
 }
+/* What is served: the `index`-th file (0, 1, ...): its port, its name as
+ * `share` was given it, its size, the clients connected now, and the
+ * requests answered and file bytes sent since it was shared.
+ * ERR_NOT_FOUND: past the last. */
+static inline status_t serve_info_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
+{
+    return serve_info_call(ch, false, deadline_ns, index, out_port, out_name, out_size, out_clients, out_requests, out_bytes);
+}
+static inline status_t serve_info_within(handle_t ch, uint64_t timeout_ns, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
+{
+    return serve_info_call(ch, true, timeout_ns, index, out_port, out_name, out_size, out_clients, out_requests, out_bytes);
+}
 static inline status_t serve_info(handle_t ch, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
 {
-    return serve_info_until(ch, DEADLINE_NEVER, index, out_port, out_name, out_size, out_clients, out_requests, out_bytes);
+    return serve_info_call(ch, false, DEADLINE_NEVER, index, out_port, out_name, out_size, out_clients, out_requests, out_bytes);
 }
 
-/* Stop serving the file on `port` (0: every file): its listener closed and
- * its clients cut off. Answers how many stopped (0: none was served there). */
-static inline status_t serve_stop_until(handle_t ch, uint64_t deadline_ns, uint16_t port, uint32_t *out_stopped)
+/* serve_stop_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t serve_stop_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t port, uint32_t *out_stopped)
 {
     struct serve_stop_req idl_q;
     struct serve_stop_rep idl_r;
@@ -153,17 +173,27 @@ static inline status_t serve_stop_until(handle_t ch, uint64_t deadline_ns, uint1
     idl_q.txid = 0;
     idl_q.ordinal = SERVE_STOP;
     idl_q.port = port;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_stopped)
         *out_stopped = idl_r.stopped;
     return idl_st;
 }
+/* Stop serving the file on `port` (0: every file): its listener closed and
+ * its clients cut off. Answers how many stopped (0: none was served there). */
+static inline status_t serve_stop_until(handle_t ch, uint64_t deadline_ns, uint16_t port, uint32_t *out_stopped)
+{
+    return serve_stop_call(ch, false, deadline_ns, port, out_stopped);
+}
+static inline status_t serve_stop_within(handle_t ch, uint64_t timeout_ns, uint16_t port, uint32_t *out_stopped)
+{
+    return serve_stop_call(ch, true, timeout_ns, port, out_stopped);
+}
 static inline status_t serve_stop(handle_t ch, uint16_t port, uint32_t *out_stopped)
 {
-    return serve_stop_until(ch, DEADLINE_NEVER, port, out_stopped);
+    return serve_stop_call(ch, false, DEADLINE_NEVER, port, out_stopped);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -482,21 +512,23 @@ static inline status_t serve_serve_one(handle_t ch, const struct serve_ops *ops,
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t serve_serve(handle_t ch, const struct serve_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[SERVE_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[SERVE_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = serve_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = serve_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `storage` (id 14). Client: storage_<method>(ch, args..., &results...)
- * (and storage_<method>_until with a deadline) over drv_channel_call, or
+ * (and storage_<method>_until with a deadline, _within with a timeout), or
  * storage_<method>_send and storage_<method>_result without waiting. Server:
  * fill a struct storage_ops and run storage_serve(ch, &ops, ctx), or
  * storage_serve_one / storage_dispatch_on for a loop of your own;
@@ -68,18 +68,17 @@ struct storage_disk_id_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* The disk: SCSI INQUIRY's vendor and product (space-padded ASCII), block
- * size (512 on every stick seen so far), block count, and how many
- * partitions its partition table (MBR) lists. */
-static inline status_t storage_info_until(handle_t ch, uint64_t deadline_ns, uint8_t out_vendor[8], uint8_t out_product[16], uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_partitions)
+/* storage_info_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t storage_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_vendor[8], uint8_t out_product[16], uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_partitions)
 {
     struct storage_info_req idl_q;
     struct storage_info_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = STORAGE_INFO;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     for (uint32_t idl_i = 0; idl_st == OK && out_vendor && idl_i < 8; idl_i++)
@@ -94,16 +93,25 @@ static inline status_t storage_info_until(handle_t ch, uint64_t deadline_ns, uin
         *out_partitions = idl_r.partitions;
     return idl_st;
 }
+/* The disk: SCSI INQUIRY's vendor and product (space-padded ASCII), block
+ * size (512 on every stick seen so far), block count, and how many
+ * partitions its partition table (MBR) lists. */
+static inline status_t storage_info_until(handle_t ch, uint64_t deadline_ns, uint8_t out_vendor[8], uint8_t out_product[16], uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_partitions)
+{
+    return storage_info_call(ch, false, deadline_ns, out_vendor, out_product, out_block_size, out_blocks, out_partitions);
+}
+static inline status_t storage_info_within(handle_t ch, uint64_t timeout_ns, uint8_t out_vendor[8], uint8_t out_product[16], uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_partitions)
+{
+    return storage_info_call(ch, true, timeout_ns, out_vendor, out_product, out_block_size, out_blocks, out_partitions);
+}
 static inline status_t storage_info(handle_t ch, uint8_t out_vendor[8], uint8_t out_product[16], uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_partitions)
 {
-    return storage_info_until(ch, DEADLINE_NEVER, out_vendor, out_product, out_block_size, out_blocks, out_partitions);
+    return storage_info_call(ch, false, DEADLINE_NEVER, out_vendor, out_product, out_block_size, out_blocks, out_partitions);
 }
 
-/* Partition `index` (0-based, in table order): the MBR type byte (0xEF: EFI
- * System; 0x0C / 0x0B: FAT32; 0x00: no table, the whole disk is one FAT
- * volume), its first block and length. Past the last:
- * ERR_OUT_OF_RANGE. */
-static inline status_t storage_partition_until(handle_t ch, uint64_t deadline_ns, uint8_t index, uint8_t *out_type, uint64_t *out_start, uint64_t *out_blocks)
+/* storage_partition_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t storage_partition_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t index, uint8_t *out_type, uint64_t *out_start, uint64_t *out_blocks)
 {
     struct storage_partition_req idl_q;
     struct storage_partition_rep idl_r;
@@ -111,8 +119,8 @@ static inline status_t storage_partition_until(handle_t ch, uint64_t deadline_ns
     idl_q.txid = 0;
     idl_q.ordinal = STORAGE_PARTITION;
     idl_q.index = index;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_type)
@@ -123,16 +131,26 @@ static inline status_t storage_partition_until(handle_t ch, uint64_t deadline_ns
         *out_blocks = idl_r.blocks;
     return idl_st;
 }
+/* Partition `index` (0-based, in table order): the MBR type byte (0xEF: EFI
+ * System; 0x0C / 0x0B: FAT32; 0x00: no table, the whole disk is one FAT
+ * volume), its first block and length. Past the last:
+ * ERR_OUT_OF_RANGE. */
+static inline status_t storage_partition_until(handle_t ch, uint64_t deadline_ns, uint8_t index, uint8_t *out_type, uint64_t *out_start, uint64_t *out_blocks)
+{
+    return storage_partition_call(ch, false, deadline_ns, index, out_type, out_start, out_blocks);
+}
+static inline status_t storage_partition_within(handle_t ch, uint64_t timeout_ns, uint8_t index, uint8_t *out_type, uint64_t *out_start, uint64_t *out_blocks)
+{
+    return storage_partition_call(ch, true, timeout_ns, index, out_type, out_start, out_blocks);
+}
 static inline status_t storage_partition(handle_t ch, uint8_t index, uint8_t *out_type, uint64_t *out_start, uint64_t *out_blocks)
 {
-    return storage_partition_until(ch, DEADLINE_NEVER, index, out_type, out_start, out_blocks);
+    return storage_partition_call(ch, false, DEADLINE_NEVER, index, out_type, out_start, out_blocks);
 }
 
-/* A `block` channel limited to partition `index`: every request outside
- * its blocks fails ERR_OUT_OF_RANGE. `read_only` 1 makes it refuse writes
- * (ERR_ACCESS_DENIED); devmgr opens the ESP that way, and every
- * partition of a disk that isn't the boot disk until `mount -w` asks. */
-static inline status_t storage_open_partition_until(handle_t ch, uint64_t deadline_ns, uint8_t index, uint8_t read_only, handle_t *out_block)
+/* storage_open_partition_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t storage_open_partition_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t index, uint8_t read_only, handle_t *out_block)
 {
     struct storage_open_partition_req idl_q;
     struct storage_open_partition_rep idl_r;
@@ -143,8 +161,8 @@ static inline status_t storage_open_partition_until(handle_t ch, uint64_t deadli
     idl_q.read_only = read_only;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -159,32 +177,54 @@ static inline status_t storage_open_partition_until(handle_t ch, uint64_t deadli
     }
     return idl_st;
 }
+/* A `block` channel limited to partition `index`: every request outside
+ * its blocks fails ERR_OUT_OF_RANGE. `read_only` 1 makes it refuse writes
+ * (ERR_ACCESS_DENIED); devmgr opens the ESP that way, and every
+ * partition of a disk that isn't the boot disk until `mount -w` asks. */
+static inline status_t storage_open_partition_until(handle_t ch, uint64_t deadline_ns, uint8_t index, uint8_t read_only, handle_t *out_block)
+{
+    return storage_open_partition_call(ch, false, deadline_ns, index, read_only, out_block);
+}
+static inline status_t storage_open_partition_within(handle_t ch, uint64_t timeout_ns, uint8_t index, uint8_t read_only, handle_t *out_block)
+{
+    return storage_open_partition_call(ch, true, timeout_ns, index, read_only, out_block);
+}
 static inline status_t storage_open_partition(handle_t ch, uint8_t index, uint8_t read_only, handle_t *out_block)
 {
-    return storage_open_partition_until(ch, DEADLINE_NEVER, index, read_only, out_block);
+    return storage_open_partition_call(ch, false, DEADLINE_NEVER, index, read_only, out_block);
 }
 
-/* The disk's MBR disk id (bytes 440-443 of block 0, little-endian): what
- * the boot loader names the disk it booted from by (devmgr's boot disk).
- * 0 when the disk has no partition table, or its id is 0. */
-static inline status_t storage_disk_id_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_mbr_id)
+/* storage_disk_id_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t storage_disk_id_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_mbr_id)
 {
     struct storage_disk_id_req idl_q;
     struct storage_disk_id_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = STORAGE_DISK_ID;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_mbr_id)
         *out_mbr_id = idl_r.mbr_id;
     return idl_st;
 }
+/* The disk's MBR disk id (bytes 440-443 of block 0, little-endian): what
+ * the boot loader names the disk it booted from by (devmgr's boot disk).
+ * 0 when the disk has no partition table, or its id is 0. */
+static inline status_t storage_disk_id_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_mbr_id)
+{
+    return storage_disk_id_call(ch, false, deadline_ns, out_mbr_id);
+}
+static inline status_t storage_disk_id_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_mbr_id)
+{
+    return storage_disk_id_call(ch, true, timeout_ns, out_mbr_id);
+}
 static inline status_t storage_disk_id(handle_t ch, uint32_t *out_mbr_id)
 {
-    return storage_disk_id_until(ch, DEADLINE_NEVER, out_mbr_id);
+    return storage_disk_id_call(ch, false, DEADLINE_NEVER, out_mbr_id);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -575,21 +615,23 @@ static inline status_t storage_serve_one(handle_t ch, const struct storage_ops *
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t storage_serve(handle_t ch, const struct storage_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[STORAGE_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[STORAGE_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = storage_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = storage_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

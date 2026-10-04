@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `fs` (id 16). Client: fs_<method>(ch, args..., &results...)
- * (and fs_<method>_until with a deadline) over drv_channel_call, or
+ * (and fs_<method>_until with a deadline, _within with a timeout), or
  * fs_<method>_send and fs_<method>_result without waiting. Server:
  * fill a struct fs_ops and run fs_serve(ch, &ops, ctx), or
  * fs_serve_one / fs_dispatch_on for a loop of your own;
@@ -122,11 +122,9 @@ struct fs_view_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* Open a file (not a directory). flags: FS_READ 1, FS_WRITE 2, FS_CREATE 4,
- * FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32 (<os.h>). `file` speaks the file protocol;
- * `buffer` is the VMO its reads and writes go through; `size` is the file's
- * size now. Closing `file` closes the file. */
-static inline status_t fs_open_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+/* fs_open_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_open_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
 {
     struct fs_open_req idl_q;
     struct fs_open_rep idl_r;
@@ -138,8 +136,8 @@ static inline status_t fs_open_until(handle_t ch, uint64_t deadline_ns, const ui
     idl_q.flags = flags;
     handle_t idl_rh[2];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 2, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               2, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 2)
@@ -162,14 +160,26 @@ static inline status_t fs_open_until(handle_t ch, uint64_t deadline_ns, const ui
         *out_size = idl_r.size;
     return idl_st;
 }
+/* Open a file (not a directory). flags: FS_READ 1, FS_WRITE 2, FS_CREATE 4,
+ * FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32 (<os.h>). `file` speaks the file protocol;
+ * `buffer` is the VMO its reads and writes go through; `size` is the file's
+ * size now. Closing `file` closes the file. */
+static inline status_t fs_open_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+{
+    return fs_open_call(ch, false, deadline_ns, path, flags, out_file, out_buffer, out_size);
+}
+static inline status_t fs_open_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+{
+    return fs_open_call(ch, true, timeout_ns, path, flags, out_file, out_buffer, out_size);
+}
 static inline status_t fs_open(handle_t ch, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
 {
-    return fs_open_until(ch, DEADLINE_NEVER, path, flags, out_file, out_buffer, out_size);
+    return fs_open_call(ch, false, DEADLINE_NEVER, path, flags, out_file, out_buffer, out_size);
 }
 
-/* A file or directory: its size (0 for a directory), 1 if a directory,
- * the modification time (Unix seconds, 0 if unknown). */
-static inline status_t fs_stat_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
+/* fs_stat_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_stat_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
 {
     struct fs_stat_req idl_q;
     struct fs_stat_rep idl_r;
@@ -178,8 +188,8 @@ static inline status_t fs_stat_until(handle_t ch, uint64_t deadline_ns, const ui
     idl_q.ordinal = FS_STAT;
     for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
         idl_q.path[idl_i] = path[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_size)
@@ -190,16 +200,24 @@ static inline status_t fs_stat_until(handle_t ch, uint64_t deadline_ns, const ui
         *out_mtime = idl_r.mtime;
     return idl_st;
 }
+/* A file or directory: its size (0 for a directory), 1 if a directory,
+ * the modification time (Unix seconds, 0 if unknown). */
+static inline status_t fs_stat_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
+{
+    return fs_stat_call(ch, false, deadline_ns, path, out_size, out_is_dir, out_mtime);
+}
+static inline status_t fs_stat_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
+{
+    return fs_stat_call(ch, true, timeout_ns, path, out_size, out_is_dir, out_mtime);
+}
 static inline status_t fs_stat(handle_t ch, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
 {
-    return fs_stat_until(ch, DEADLINE_NEVER, path, out_size, out_is_dir, out_mtime);
+    return fs_stat_call(ch, false, DEADLINE_NEVER, path, out_size, out_is_dir, out_mtime);
 }
 
-/* Entry `index` (0-based) of directory `path`, "." and ".." left out.
- * Past the last: ERR_NOT_FOUND. Entries may shift if the directory changes
- * between calls. Asked in order (0, 1, 2, ...), a listing costs the service
- * one entry read per entry: fat keeps a cursor per directory being listed. */
-static inline status_t fs_readdir_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+/* fs_readdir_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_readdir_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
 {
     struct fs_readdir_req idl_q;
     struct fs_readdir_rep idl_r;
@@ -209,8 +227,8 @@ static inline status_t fs_readdir_until(handle_t ch, uint64_t deadline_ns, const
     for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
         idl_q.path[idl_i] = path[idl_i];
     idl_q.index = index;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     for (uint32_t idl_i = 0; idl_st == OK && out_name && idl_i < 256; idl_i++)
@@ -221,12 +239,26 @@ static inline status_t fs_readdir_until(handle_t ch, uint64_t deadline_ns, const
         *out_size = idl_r.size;
     return idl_st;
 }
+/* Entry `index` (0-based) of directory `path`, "." and ".." left out.
+ * Past the last: ERR_NOT_FOUND. Entries may shift if the directory changes
+ * between calls. Asked in order (0, 1, 2, ...), a listing costs the service
+ * one entry read per entry: fat keeps a cursor per directory being listed. */
+static inline status_t fs_readdir_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+{
+    return fs_readdir_call(ch, false, deadline_ns, path, index, out_name, out_is_dir, out_size);
+}
+static inline status_t fs_readdir_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+{
+    return fs_readdir_call(ch, true, timeout_ns, path, index, out_name, out_is_dir, out_size);
+}
 static inline status_t fs_readdir(handle_t ch, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
 {
-    return fs_readdir_until(ch, DEADLINE_NEVER, path, index, out_name, out_is_dir, out_size);
+    return fs_readdir_call(ch, false, DEADLINE_NEVER, path, index, out_name, out_is_dir, out_size);
 }
 
-static inline status_t fs_mkdir_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256])
+/* fs_mkdir_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_mkdir_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256])
 {
     struct fs_mkdir_req idl_q;
     struct fs_mkdir_rep idl_r;
@@ -235,19 +267,28 @@ static inline status_t fs_mkdir_until(handle_t ch, uint64_t deadline_ns, const u
     idl_q.ordinal = FS_MKDIR;
     for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
         idl_q.path[idl_i] = path[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+static inline status_t fs_mkdir_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256])
+{
+    return fs_mkdir_call(ch, false, deadline_ns, path);
+}
+static inline status_t fs_mkdir_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256])
+{
+    return fs_mkdir_call(ch, true, timeout_ns, path);
+}
 static inline status_t fs_mkdir(handle_t ch, const uint8_t path[256])
 {
-    return fs_mkdir_until(ch, DEADLINE_NEVER, path);
+    return fs_mkdir_call(ch, false, DEADLINE_NEVER, path);
 }
 
-/* Remove a file, or an empty directory. */
-static inline status_t fs_unlink_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256])
+/* fs_unlink_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_unlink_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256])
 {
     struct fs_unlink_req idl_q;
     struct fs_unlink_rep idl_r;
@@ -256,19 +297,29 @@ static inline status_t fs_unlink_until(handle_t ch, uint64_t deadline_ns, const 
     idl_q.ordinal = FS_UNLINK;
     for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
         idl_q.path[idl_i] = path[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Remove a file, or an empty directory. */
+static inline status_t fs_unlink_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256])
+{
+    return fs_unlink_call(ch, false, deadline_ns, path);
+}
+static inline status_t fs_unlink_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256])
+{
+    return fs_unlink_call(ch, true, timeout_ns, path);
+}
 static inline status_t fs_unlink(handle_t ch, const uint8_t path[256])
 {
-    return fs_unlink_until(ch, DEADLINE_NEVER, path);
+    return fs_unlink_call(ch, false, DEADLINE_NEVER, path);
 }
 
-/* Rename or move within this filesystem. */
-static inline status_t fs_rename_until(handle_t ch, uint64_t deadline_ns, const uint8_t from[256], const uint8_t to[256])
+/* fs_rename_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_rename_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t from[256], const uint8_t to[256])
 {
     struct fs_rename_req idl_q;
     struct fs_rename_rep idl_r;
@@ -279,47 +330,66 @@ static inline status_t fs_rename_until(handle_t ch, uint64_t deadline_ns, const 
         idl_q.from[idl_i] = from[idl_i];
     for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
         idl_q.to[idl_i] = to[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Rename or move within this filesystem. */
+static inline status_t fs_rename_until(handle_t ch, uint64_t deadline_ns, const uint8_t from[256], const uint8_t to[256])
+{
+    return fs_rename_call(ch, false, deadline_ns, from, to);
+}
+static inline status_t fs_rename_within(handle_t ch, uint64_t timeout_ns, const uint8_t from[256], const uint8_t to[256])
+{
+    return fs_rename_call(ch, true, timeout_ns, from, to);
+}
 static inline status_t fs_rename(handle_t ch, const uint8_t from[256], const uint8_t to[256])
 {
-    return fs_rename_until(ch, DEADLINE_NEVER, from, to);
+    return fs_rename_call(ch, false, DEADLINE_NEVER, from, to);
 }
 
-/* Everything written through this filesystem is on the medium. */
-static inline status_t fs_sync_until(handle_t ch, uint64_t deadline_ns)
+/* fs_sync_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_sync_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct fs_sync_req idl_q;
     struct fs_sync_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = FS_SYNC;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Everything written through this filesystem is on the medium. */
+static inline status_t fs_sync_until(handle_t ch, uint64_t deadline_ns)
+{
+    return fs_sync_call(ch, false, deadline_ns);
+}
+static inline status_t fs_sync_within(handle_t ch, uint64_t timeout_ns)
+{
+    return fs_sync_call(ch, true, timeout_ns);
+}
 static inline status_t fs_sync(handle_t ch)
 {
-    return fs_sync_until(ch, DEADLINE_NEVER);
+    return fs_sync_call(ch, false, DEADLINE_NEVER);
 }
 
-/* Bytes in the filesystem and bytes free, 1 if read-only, and the volume
- * label (NUL-terminated). */
-static inline status_t fs_statfs_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16])
+/* fs_statfs_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_statfs_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16])
 {
     struct fs_statfs_req idl_q;
     struct fs_statfs_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = FS_STATFS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_total)
@@ -332,20 +402,24 @@ static inline status_t fs_statfs_until(handle_t ch, uint64_t deadline_ns, uint64
         out_label[idl_i] = idl_r.label[idl_i];
     return idl_st;
 }
+/* Bytes in the filesystem and bytes free, 1 if read-only, and the volume
+ * label (NUL-terminated). */
+static inline status_t fs_statfs_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16])
+{
+    return fs_statfs_call(ch, false, deadline_ns, out_total, out_free, out_read_only, out_label);
+}
+static inline status_t fs_statfs_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16])
+{
+    return fs_statfs_call(ch, true, timeout_ns, out_total, out_free, out_read_only, out_label);
+}
 static inline status_t fs_statfs(handle_t ch, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16])
 {
-    return fs_statfs_until(ch, DEADLINE_NEVER, out_total, out_free, out_read_only, out_label);
+    return fs_statfs_call(ch, false, DEADLINE_NEVER, out_total, out_free, out_read_only, out_label);
 }
 
-/* A narrower channel onto this filesystem (a "view"), for a program that
- * should have less of it than the caller: flags FS_VIEW_READ_ONLY 1 (every
- * request that would change the volume is ERR_ACCESS_DENIED, and statfs
- * says read-only) and FS_VIEW_GUARD_ETC 2 (the same for anything at or
- * under the volume's top-level `etc` directory) (<fsview.h>). The new
- * channel keeps this channel's own flags too, so a view is never wider
- * than the channel it came from. ERR_INVALID_ARGS: an unknown flag;
- * ERR_NO_RESOURCES: the service serves as many channels as it can. */
-static inline status_t fs_view_until(handle_t ch, uint64_t deadline_ns, uint32_t flags, handle_t *out_fs)
+/* fs_view_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_view_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t flags, handle_t *out_fs)
 {
     struct fs_view_req idl_q;
     struct fs_view_rep idl_r;
@@ -355,8 +429,8 @@ static inline status_t fs_view_until(handle_t ch, uint64_t deadline_ns, uint32_t
     idl_q.flags = flags;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -371,9 +445,25 @@ static inline status_t fs_view_until(handle_t ch, uint64_t deadline_ns, uint32_t
     }
     return idl_st;
 }
+/* A narrower channel onto this filesystem (a "view"), for a program that
+ * should have less of it than the caller: flags FS_VIEW_READ_ONLY 1 (every
+ * request that would change the volume is ERR_ACCESS_DENIED, and statfs
+ * says read-only) and FS_VIEW_GUARD_ETC 2 (the same for anything at or
+ * under the volume's top-level `etc` directory) (<fsview.h>). The new
+ * channel keeps this channel's own flags too, so a view is never wider
+ * than the channel it came from. ERR_INVALID_ARGS: an unknown flag;
+ * ERR_NO_RESOURCES: the service serves as many channels as it can. */
+static inline status_t fs_view_until(handle_t ch, uint64_t deadline_ns, uint32_t flags, handle_t *out_fs)
+{
+    return fs_view_call(ch, false, deadline_ns, flags, out_fs);
+}
+static inline status_t fs_view_within(handle_t ch, uint64_t timeout_ns, uint32_t flags, handle_t *out_fs)
+{
+    return fs_view_call(ch, true, timeout_ns, flags, out_fs);
+}
 static inline status_t fs_view(handle_t ch, uint32_t flags, handle_t *out_fs)
 {
-    return fs_view_until(ch, DEADLINE_NEVER, flags, out_fs);
+    return fs_view_call(ch, false, DEADLINE_NEVER, flags, out_fs);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -1124,21 +1214,23 @@ static inline status_t fs_serve_one(handle_t ch, const struct fs_ops *ops, void 
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t fs_serve(handle_t ch, const struct fs_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[FS_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[FS_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = fs_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = fs_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

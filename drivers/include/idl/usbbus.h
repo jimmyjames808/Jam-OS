@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `usbbus` (id 13). Client: usbbus_<method>(ch, args..., &results...)
- * (and usbbus_<method>_until with a deadline) over drv_channel_call, or
+ * (and usbbus_<method>_until with a deadline, _within with a timeout), or
  * usbbus_<method>_send and usbbus_<method>_result without waiting. Server:
  * fill a struct usbbus_ops and run usbbus_serve(ch, &ops, ctx), or
  * usbbus_serve_one / usbbus_dispatch_on for a loop of your own;
@@ -136,18 +136,17 @@ struct usbbus_interface_attached_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* Counts over the configured devices (hubs included). settled 1: no port
- * or hub work pending and nothing attached or detached for 500 ms.
- * problems: devices that failed to enumerate or configure. */
-static inline status_t usbbus_status_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
+/* usbbus_status_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usbbus_status_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
 {
     struct usbbus_status_req idl_q;
     struct usbbus_status_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = USBBUS_STATUS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_devices)
@@ -166,14 +165,25 @@ static inline status_t usbbus_status_until(handle_t ch, uint64_t deadline_ns, ui
         *out_settled = idl_r.settled;
     return idl_st;
 }
+/* Counts over the configured devices (hubs included). settled 1: no port
+ * or hub work pending and nothing attached or detached for 500 ms.
+ * problems: devices that failed to enumerate or configure. */
+static inline status_t usbbus_status_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
+{
+    return usbbus_status_call(ch, false, deadline_ns, out_devices, out_hubs, out_interfaces, out_hid_interfaces, out_problems, out_generation, out_settled);
+}
+static inline status_t usbbus_status_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
+{
+    return usbbus_status_call(ch, true, timeout_ns, out_devices, out_hubs, out_interfaces, out_hid_interfaces, out_problems, out_generation, out_settled);
+}
 static inline status_t usbbus_status(handle_t ch, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
 {
-    return usbbus_status_until(ch, DEADLINE_NEVER, out_devices, out_hubs, out_interfaces, out_hid_interfaces, out_problems, out_generation, out_settled);
+    return usbbus_status_call(ch, false, DEADLINE_NEVER, out_devices, out_hubs, out_interfaces, out_hid_interfaces, out_problems, out_generation, out_settled);
 }
 
-/* The same, answered once the bus has settled or after timeout_ms
- * (settled 0 then). The only method whose reply can come later. */
-static inline status_t usbbus_wait_settled_until(handle_t ch, uint64_t deadline_ns, uint32_t timeout_ms, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
+/* usbbus_wait_settled_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usbbus_wait_settled_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t timeout_ms, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
 {
     struct usbbus_wait_settled_req idl_q;
     struct usbbus_wait_settled_rep idl_r;
@@ -181,8 +191,8 @@ static inline status_t usbbus_wait_settled_until(handle_t ch, uint64_t deadline_
     idl_q.txid = 0;
     idl_q.ordinal = USBBUS_WAIT_SETTLED;
     idl_q.timeout_ms = timeout_ms;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_devices)
@@ -201,15 +211,24 @@ static inline status_t usbbus_wait_settled_until(handle_t ch, uint64_t deadline_
         *out_settled = idl_r.settled;
     return idl_st;
 }
+/* The same, answered once the bus has settled or after timeout_ms
+ * (settled 0 then). The only method whose reply can come later. */
+static inline status_t usbbus_wait_settled_until(handle_t ch, uint64_t deadline_ns, uint32_t timeout_ms, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
+{
+    return usbbus_wait_settled_call(ch, false, deadline_ns, timeout_ms, out_devices, out_hubs, out_interfaces, out_hid_interfaces, out_problems, out_generation, out_settled);
+}
+static inline status_t usbbus_wait_settled_within(handle_t ch, uint64_t timeout_ns, uint32_t timeout_ms, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
+{
+    return usbbus_wait_settled_call(ch, true, timeout_ns, timeout_ms, out_devices, out_hubs, out_interfaces, out_hid_interfaces, out_problems, out_generation, out_settled);
+}
 static inline status_t usbbus_wait_settled(handle_t ch, uint32_t timeout_ms, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
 {
-    return usbbus_wait_settled_until(ch, DEADLINE_NEVER, timeout_ms, out_devices, out_hubs, out_interfaces, out_hid_interfaces, out_problems, out_generation, out_settled);
+    return usbbus_wait_settled_call(ch, false, DEADLINE_NEVER, timeout_ms, out_devices, out_hubs, out_interfaces, out_hid_interfaces, out_problems, out_generation, out_settled);
 }
 
-/* The index-th device (0 .. devices - 1; ERR_OUT_OF_RANGE after). parent_id
- * 0: on a root port. tt_slot / tt_port: the Transaction Translator a
- * full/low-speed device behind a high-speed hub uses (0: none). */
-static inline status_t usbbus_device_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
+/* usbbus_device_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usbbus_device_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
 {
     struct usbbus_device_req idl_q;
     struct usbbus_device_rep idl_r;
@@ -217,8 +236,8 @@ static inline status_t usbbus_device_until(handle_t ch, uint64_t deadline_ns, ui
     idl_q.txid = 0;
     idl_q.ordinal = USBBUS_DEVICE;
     idl_q.index = index;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_id)
@@ -273,15 +292,25 @@ static inline status_t usbbus_device_until(handle_t ch, uint64_t deadline_ns, ui
         out_serial[idl_i] = idl_r.serial[idl_i];
     return idl_st;
 }
+/* The index-th device (0 .. devices - 1; ERR_OUT_OF_RANGE after). parent_id
+ * 0: on a root port. tt_slot / tt_port: the Transaction Translator a
+ * full/low-speed device behind a high-speed hub uses (0: none). */
+static inline status_t usbbus_device_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
+{
+    return usbbus_device_call(ch, false, deadline_ns, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_product_name, out_serial);
+}
+static inline status_t usbbus_device_within(handle_t ch, uint64_t timeout_ns, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
+{
+    return usbbus_device_call(ch, true, timeout_ns, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_product_name, out_serial);
+}
 static inline status_t usbbus_device(handle_t ch, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
 {
-    return usbbus_device_until(ch, DEADLINE_NEVER, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_product_name, out_serial);
+    return usbbus_device_call(ch, false, DEADLINE_NEVER, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_product_name, out_serial);
 }
 
-/* Interface `index` (0 .. num_interfaces - 1) of device `id`, as it is
- * now (its current alternate setting). endpoints: addresses, num_endpoints
- * of them. */
-static inline status_t usbbus_interface_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
+/* usbbus_interface_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usbbus_interface_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
 {
     struct usbbus_interface_req idl_q;
     struct usbbus_interface_rep idl_r;
@@ -290,8 +319,8 @@ static inline status_t usbbus_interface_until(handle_t ch, uint64_t deadline_ns,
     idl_q.ordinal = USBBUS_INTERFACE;
     idl_q.id = id;
     idl_q.index = index;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_number)
@@ -312,14 +341,25 @@ static inline status_t usbbus_interface_until(handle_t ch, uint64_t deadline_ns,
         out_endpoints[idl_i] = idl_r.endpoints[idl_i];
     return idl_st;
 }
+/* Interface `index` (0 .. num_interfaces - 1) of device `id`, as it is
+ * now (its current alternate setting). endpoints: addresses, num_endpoints
+ * of them. */
+static inline status_t usbbus_interface_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
+{
+    return usbbus_interface_call(ch, false, deadline_ns, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_endpoints);
+}
+static inline status_t usbbus_interface_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
+{
+    return usbbus_interface_call(ch, true, timeout_ns, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_endpoints);
+}
 static inline status_t usbbus_interface(handle_t ch, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
 {
-    return usbbus_interface_until(ch, DEADLINE_NEVER, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_endpoints);
+    return usbbus_interface_call(ch, false, DEADLINE_NEVER, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_endpoints);
 }
 
-/* A new `usb` channel to interface `interface_number` of device `id` (the
- * same thing devmgr is handed; for tests and administration). */
-static inline status_t usbbus_open_interface_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint8_t interface_number, handle_t *out_channel)
+/* usbbus_open_interface_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usbbus_open_interface_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint8_t interface_number, handle_t *out_channel)
 {
     struct usbbus_open_interface_req idl_q;
     struct usbbus_open_interface_rep idl_r;
@@ -330,8 +370,8 @@ static inline status_t usbbus_open_interface_until(handle_t ch, uint64_t deadlin
     idl_q.interface_number = interface_number;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -346,18 +386,24 @@ static inline status_t usbbus_open_interface_until(handle_t ch, uint64_t deadlin
     }
     return idl_st;
 }
+/* A new `usb` channel to interface `interface_number` of device `id` (the
+ * same thing devmgr is handed; for tests and administration). */
+static inline status_t usbbus_open_interface_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint8_t interface_number, handle_t *out_channel)
+{
+    return usbbus_open_interface_call(ch, false, deadline_ns, id, interface_number, out_channel);
+}
+static inline status_t usbbus_open_interface_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint8_t interface_number, handle_t *out_channel)
+{
+    return usbbus_open_interface_call(ch, true, timeout_ns, id, interface_number, out_channel);
+}
 static inline status_t usbbus_open_interface(handle_t ch, uint32_t id, uint8_t interface_number, handle_t *out_channel)
 {
-    return usbbus_open_interface_until(ch, DEADLINE_NEVER, id, interface_number, out_channel);
+    return usbbus_open_interface_call(ch, false, DEADLINE_NEVER, id, interface_number, out_channel);
 }
 
-/* NOT a call: the message usb-bus WRITES on DR_SERVE (txid 0, so it is
- * queued on devmgr's end rather than answering anyone) when a configured
- * device's interface appears, with ONE handle: that interface's `usb`
- * channel. devmgr starts a class driver with it (role DR_USB) or keeps it.
- * When the device goes away usb-bus closes its end (PEER_CLOSED); there is
- * no detach message. usb-bus answers a call of it ERR_NOT_SUPPORTED. */
-static inline status_t usbbus_interface_attached_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
+/* usbbus_interface_attached_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usbbus_interface_attached_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
 {
     struct usbbus_interface_attached_req idl_q;
     struct usbbus_interface_attached_rep idl_r;
@@ -374,15 +420,29 @@ static inline status_t usbbus_interface_attached_until(handle_t ch, uint64_t dea
     idl_q.speed = speed;
     for (uint32_t idl_i = 0; idl_i < 24; idl_i++)
         idl_q.path[idl_i] = path[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* NOT a call: the message usb-bus WRITES on DR_SERVE (txid 0, so it is
+ * queued on devmgr's end rather than answering anyone) when a configured
+ * device's interface appears, with ONE handle: that interface's `usb`
+ * channel. devmgr starts a class driver with it (role DR_USB) or keeps it.
+ * When the device goes away usb-bus closes its end (PEER_CLOSED); there is
+ * no detach message. usb-bus answers a call of it ERR_NOT_SUPPORTED. */
+static inline status_t usbbus_interface_attached_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
+{
+    return usbbus_interface_attached_call(ch, false, deadline_ns, id, vendor, product, interface_number, class_code, subclass, protocol, speed, path);
+}
+static inline status_t usbbus_interface_attached_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
+{
+    return usbbus_interface_attached_call(ch, true, timeout_ns, id, vendor, product, interface_number, class_code, subclass, protocol, speed, path);
+}
 static inline status_t usbbus_interface_attached(handle_t ch, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
 {
-    return usbbus_interface_attached_until(ch, DEADLINE_NEVER, id, vendor, product, interface_number, class_code, subclass, protocol, speed, path);
+    return usbbus_interface_attached_call(ch, false, DEADLINE_NEVER, id, vendor, product, interface_number, class_code, subclass, protocol, speed, path);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -1106,21 +1166,23 @@ static inline status_t usbbus_serve_one(handle_t ch, const struct usbbus_ops *op
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t usbbus_serve(handle_t ch, const struct usbbus_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[USBBUS_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[USBBUS_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = usbbus_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = usbbus_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

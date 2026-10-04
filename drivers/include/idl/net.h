@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `net` (id 29). Client: net_<method>(ch, args..., &results...)
- * (and net_<method>_until with a deadline) over drv_channel_call, or
+ * (and net_<method>_until with a deadline, _within with a timeout), or
  * net_<method>_send and net_<method>_result without waiting. Server:
  * fill a struct net_ops and run net_serve(ch, &ops, ctx), or
  * net_serve_one / net_dispatch_on for a loop of your own;
@@ -196,23 +196,17 @@ struct net_accept_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* On an opener's channel (or the shared one): the interface. Its address,
- * mask and gateway (0: none), the DNS servers (0: none), its MAC address;
- * `device` 1 while a network card's driver has a session with netstack,
- * `link` 1 while its link is up; the VLAN every frame is tagged with (0
- * without a card; 0x1000, NET_VLAN_UNTAGGED, on an untagged network), the
- * link speed in Mb/s (0 while down); `version` counts
- * the changes to the address, gateway and DNS servers since netstack
- * started (1 at the start): pass it to wait_change. */
-static inline status_t net_iface_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_version)
+/* net_iface_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_iface_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_version)
 {
     struct net_iface_req idl_q;
     struct net_iface_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NET_IFACE;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_address)
@@ -239,16 +233,30 @@ static inline status_t net_iface_until(handle_t ch, uint64_t deadline_ns, uint32
         *out_version = idl_r.version;
     return idl_st;
 }
+/* On an opener's channel (or the shared one): the interface. Its address,
+ * mask and gateway (0: none), the DNS servers (0: none), its MAC address;
+ * `device` 1 while a network card's driver has a session with netstack,
+ * `link` 1 while its link is up; the VLAN every frame is tagged with (0
+ * without a card; 0x1000, NET_VLAN_UNTAGGED, on an untagged network), the
+ * link speed in Mb/s (0 while down); `version` counts
+ * the changes to the address, gateway and DNS servers since netstack
+ * started (1 at the start): pass it to wait_change. */
+static inline status_t net_iface_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_version)
+{
+    return net_iface_call(ch, false, deadline_ns, out_address, out_mask, out_gateway, out_dns1, out_dns2, out_mac, out_device, out_link, out_vlan, out_speed, out_version);
+}
+static inline status_t net_iface_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_version)
+{
+    return net_iface_call(ch, true, timeout_ns, out_address, out_mask, out_gateway, out_dns1, out_dns2, out_mac, out_device, out_link, out_vlan, out_speed, out_version);
+}
 static inline status_t net_iface(handle_t ch, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_version)
 {
-    return net_iface_until(ch, DEADLINE_NEVER, out_address, out_mask, out_gateway, out_dns1, out_dns2, out_mac, out_device, out_link, out_vlan, out_speed, out_version);
+    return net_iface_call(ch, false, DEADLINE_NEVER, out_address, out_mask, out_gateway, out_dns1, out_dns2, out_mac, out_device, out_link, out_vlan, out_speed, out_version);
 }
 
-/* On an opener's channel: answered when iface's `version` is no longer
- * `version` (at once if it isn't), with the new one; ERR_TIMED_OUT after
- * timeout_ms (NET_WAIT_FOREVER: no timeout). How a program waits for an
- * address (<net.h> net_wait_up) or for new DNS servers. */
-static inline status_t net_wait_change_until(handle_t ch, uint64_t deadline_ns, uint32_t version, uint32_t timeout_ms, uint32_t *out_version)
+/* net_wait_change_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_wait_change_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t version, uint32_t timeout_ms, uint32_t *out_version)
 {
     struct net_wait_change_req idl_q;
     struct net_wait_change_rep idl_r;
@@ -257,77 +265,100 @@ static inline status_t net_wait_change_until(handle_t ch, uint64_t deadline_ns, 
     idl_q.ordinal = NET_WAIT_CHANGE;
     idl_q.version = version;
     idl_q.timeout_ms = timeout_ms;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_version)
         *out_version = idl_r.version;
     return idl_st;
 }
+/* On an opener's channel: answered when iface's `version` is no longer
+ * `version` (at once if it isn't), with the new one; ERR_TIMED_OUT after
+ * timeout_ms (NET_WAIT_FOREVER: no timeout). How a program waits for an
+ * address (<net.h> net_wait_up) or for new DNS servers. */
+static inline status_t net_wait_change_until(handle_t ch, uint64_t deadline_ns, uint32_t version, uint32_t timeout_ms, uint32_t *out_version)
+{
+    return net_wait_change_call(ch, false, deadline_ns, version, timeout_ms, out_version);
+}
+static inline status_t net_wait_change_within(handle_t ch, uint64_t timeout_ns, uint32_t version, uint32_t timeout_ms, uint32_t *out_version)
+{
+    return net_wait_change_call(ch, true, timeout_ns, version, timeout_ms, out_version);
+}
 static inline status_t net_wait_change(handle_t ch, uint32_t version, uint32_t timeout_ms, uint32_t *out_version)
 {
-    return net_wait_change_until(ch, DEADLINE_NEVER, version, timeout_ms, out_version);
+    return net_wait_change_call(ch, false, DEADLINE_NEVER, version, timeout_ms, out_version);
 }
 
-/* On an opener's channel (or the shared one): netstack's counts, as
- * <net.h>'s struct net_counters (little-endian, its reserved fields 0). */
-static inline status_t net_counts_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256])
+/* net_counts_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_counts_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256])
 {
     struct net_counts_req idl_q;
     struct net_counts_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NET_COUNTS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     for (uint32_t idl_i = 0; idl_st == OK && out_counts && idl_i < 256; idl_i++)
         out_counts[idl_i] = idl_r.counts[idl_i];
     return idl_st;
 }
+/* On an opener's channel (or the shared one): netstack's counts, as
+ * <net.h>'s struct net_counters (little-endian, its reserved fields 0). */
+static inline status_t net_counts_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256])
+{
+    return net_counts_call(ch, false, deadline_ns, out_counts);
+}
+static inline status_t net_counts_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256])
+{
+    return net_counts_call(ch, true, timeout_ns, out_counts);
+}
 static inline status_t net_counts(handle_t ch, uint8_t out_counts[256])
 {
-    return net_counts_until(ch, DEADLINE_NEVER, out_counts);
+    return net_counts_call(ch, false, DEADLINE_NEVER, out_counts);
 }
 
-/* On an opener's channel: the network card's own counts, as the driver
- * answers netdev.stats (<jam/netdev.h> struct netdev_stats). ERR_NOT_FOUND:
- * no session with a card's driver; ERR_PEER_CLOSED: the session ended
- * before the driver answered. */
-static inline status_t net_chip_counts_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256])
+/* net_chip_counts_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_chip_counts_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256])
 {
     struct net_chip_counts_req idl_q;
     struct net_chip_counts_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NET_CHIP_COUNTS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     for (uint32_t idl_i = 0; idl_st == OK && out_counts && idl_i < 256; idl_i++)
         out_counts[idl_i] = idl_r.counts[idl_i];
     return idl_st;
 }
+/* On an opener's channel: the network card's own counts, as the driver
+ * answers netdev.stats (<jam/netdev.h> struct netdev_stats). ERR_NOT_FOUND:
+ * no session with a card's driver; ERR_PEER_CLOSED: the session ended
+ * before the driver answered. */
+static inline status_t net_chip_counts_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256])
+{
+    return net_chip_counts_call(ch, false, deadline_ns, out_counts);
+}
+static inline status_t net_chip_counts_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256])
+{
+    return net_chip_counts_call(ch, true, timeout_ns, out_counts);
+}
 static inline status_t net_chip_counts(handle_t ch, uint8_t out_counts[256])
 {
-    return net_chip_counts_until(ch, DEADLINE_NEVER, out_counts);
+    return net_chip_counts_call(ch, false, DEADLINE_NEVER, out_counts);
 }
 
-/* On an opener's channel: a UDP socket on local port `port`, any local
- * address, without its rings yet (sock_rings gives them). port 0: netstack
- * picks one (49152 and up). Results: `socket`, a channel of its own that
- * speaks the sock_* methods (closing it closes the socket), and its port.
- * ERR_ACCESS_DENIED: a port below 1024 on an opener that didn't come
- * through /svc/net-low (and 67 or 68 on any: netctl's DHCP socket
- * has one), or one below 49152 on an opener that came through neither it
- * nor /svc/net-listen (the listen permissions, netstack's listen.h);
- * ERR_ALREADY_BOUND: the port is taken; ERR_NO_RESOURCES: the opener has
- * NET_SOCKETS_PER_OPENER sockets, NET_SOCKETS_MAX are open, or an
- * ordinary opener's NET_PROG_SOCKETS are. */
-static inline status_t net_udp_until(handle_t ch, uint64_t deadline_ns, uint16_t port, handle_t *out_socket, uint16_t *out_port)
+/* net_udp_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_udp_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t port, handle_t *out_socket, uint16_t *out_port)
 {
     struct net_udp_req idl_q;
     struct net_udp_rep idl_r;
@@ -337,8 +368,8 @@ static inline status_t net_udp_until(handle_t ch, uint64_t deadline_ns, uint16_t
     idl_q.port = port;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -355,11 +386,55 @@ static inline status_t net_udp_until(handle_t ch, uint64_t deadline_ns, uint16_t
         *out_port = idl_r.port;
     return idl_st;
 }
+/* On an opener's channel: a UDP socket on local port `port`, any local
+ * address, without its rings yet (sock_rings gives them). port 0: netstack
+ * picks one (49152 and up). Results: `socket`, a channel of its own that
+ * speaks the sock_* methods (closing it closes the socket), and its port.
+ * ERR_ACCESS_DENIED: a port below 1024 on an opener that didn't come
+ * through /svc/net-low (and 67 or 68 on any: netctl's DHCP socket
+ * has one), or one below 49152 on an opener that came through neither it
+ * nor /svc/net-listen (the listen permissions, netstack's listen.h);
+ * ERR_ALREADY_BOUND: the port is taken; ERR_NO_RESOURCES: the opener has
+ * NET_SOCKETS_PER_OPENER sockets, NET_SOCKETS_MAX are open, or an
+ * ordinary opener's NET_PROG_SOCKETS are. */
+static inline status_t net_udp_until(handle_t ch, uint64_t deadline_ns, uint16_t port, handle_t *out_socket, uint16_t *out_port)
+{
+    return net_udp_call(ch, false, deadline_ns, port, out_socket, out_port);
+}
+static inline status_t net_udp_within(handle_t ch, uint64_t timeout_ns, uint16_t port, handle_t *out_socket, uint16_t *out_port)
+{
+    return net_udp_call(ch, true, timeout_ns, port, out_socket, out_port);
+}
 static inline status_t net_udp(handle_t ch, uint16_t port, handle_t *out_socket, uint16_t *out_port)
 {
-    return net_udp_until(ch, DEADLINE_NEVER, port, out_socket, out_port);
+    return net_udp_call(ch, false, DEADLINE_NEVER, port, out_socket, out_port);
 }
 
+/* net_echo_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_echo_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t address, uint16_t seq, uint16_t size, uint32_t timeout_ms, uint32_t *out_rtt_us, uint8_t *out_ttl, uint16_t *out_size)
+{
+    struct net_echo_req idl_q;
+    struct net_echo_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = NET_ECHO;
+    idl_q.address = address;
+    idl_q.seq = seq;
+    idl_q.size = size;
+    idl_q.timeout_ms = timeout_ms;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_rtt_us)
+        *out_rtt_us = idl_r.rtt_us;
+    if (idl_st == OK && out_ttl)
+        *out_ttl = idl_r.ttl;
+    if (idl_st == OK && out_size)
+        *out_size = idl_r.size;
+    return idl_st;
+}
 /* On an opener's channel: an ICMP echo request (a ping) to `address` with
  * `size` bytes of data (0..NET_DGRAM_MAX) and sequence number `seq`, from
  * the opener's own echo id (netstack picks it: no opener sees another's
@@ -372,38 +447,20 @@ static inline status_t net_udp(handle_t ch, uint16_t port, handle_t *out_socket,
  * flight), ERR_NO_RESOURCES (NET_LATER_PER_OPENER in flight already). */
 static inline status_t net_echo_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint16_t seq, uint16_t size, uint32_t timeout_ms, uint32_t *out_rtt_us, uint8_t *out_ttl, uint16_t *out_size)
 {
-    struct net_echo_req idl_q;
-    struct net_echo_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = NET_ECHO;
-    idl_q.address = address;
-    idl_q.seq = seq;
-    idl_q.size = size;
-    idl_q.timeout_ms = timeout_ms;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_rtt_us)
-        *out_rtt_us = idl_r.rtt_us;
-    if (idl_st == OK && out_ttl)
-        *out_ttl = idl_r.ttl;
-    if (idl_st == OK && out_size)
-        *out_size = idl_r.size;
-    return idl_st;
+    return net_echo_call(ch, false, deadline_ns, address, seq, size, timeout_ms, out_rtt_us, out_ttl, out_size);
+}
+static inline status_t net_echo_within(handle_t ch, uint64_t timeout_ns, uint32_t address, uint16_t seq, uint16_t size, uint32_t timeout_ms, uint32_t *out_rtt_us, uint8_t *out_ttl, uint16_t *out_size)
+{
+    return net_echo_call(ch, true, timeout_ns, address, seq, size, timeout_ms, out_rtt_us, out_ttl, out_size);
 }
 static inline status_t net_echo(handle_t ch, uint32_t address, uint16_t seq, uint16_t size, uint32_t timeout_ms, uint32_t *out_rtt_us, uint8_t *out_ttl, uint16_t *out_size)
 {
-    return net_echo_until(ch, DEADLINE_NEVER, address, seq, size, timeout_ms, out_rtt_us, out_ttl, out_size);
+    return net_echo_call(ch, false, DEADLINE_NEVER, address, seq, size, timeout_ms, out_rtt_us, out_ttl, out_size);
 }
 
-/* On an opener's channel: udp(port) and the socket's sock_rings(tx_bytes,
- * rx_bytes) in one call: the socket's channel, its rings' VMO and events
- * (<sockring.h>: SOCKRING_VMO_RIGHTS, SOCKRING_TO_STACK_RIGHTS,
- * SOCKRING_TO_PROG_RIGHTS; datagram framing), its port and the rings'
- * sizes. The errors of both. */
-static inline status_t net_udp_rings_until(handle_t ch, uint64_t deadline_ns, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+/* net_udp_rings_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_udp_rings_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
     struct net_udp_rings_req idl_q;
     struct net_udp_rings_rep idl_r;
@@ -415,8 +472,8 @@ static inline status_t net_udp_rings_until(handle_t ch, uint64_t deadline_ns, ui
     idl_q.rx_bytes = rx_bytes;
     handle_t idl_rh[4];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 4, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               4, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 4)
@@ -455,17 +512,27 @@ static inline status_t net_udp_rings_until(handle_t ch, uint64_t deadline_ns, ui
         *out_rx_bytes = idl_r.rx_bytes;
     return idl_st;
 }
+/* On an opener's channel: udp(port) and the socket's sock_rings(tx_bytes,
+ * rx_bytes) in one call: the socket's channel, its rings' VMO and events
+ * (<sockring.h>: SOCKRING_VMO_RIGHTS, SOCKRING_TO_STACK_RIGHTS,
+ * SOCKRING_TO_PROG_RIGHTS; datagram framing), its port and the rings'
+ * sizes. The errors of both. */
+static inline status_t net_udp_rings_until(handle_t ch, uint64_t deadline_ns, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    return net_udp_rings_call(ch, false, deadline_ns, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
+}
+static inline status_t net_udp_rings_within(handle_t ch, uint64_t timeout_ns, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    return net_udp_rings_call(ch, true, timeout_ns, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
+}
 static inline status_t net_udp_rings(handle_t ch, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
-    return net_udp_rings_until(ch, DEADLINE_NEVER, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
+    return net_udp_rings_call(ch, false, DEADLINE_NEVER, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
 }
 
-/* On a socket's channel: from now on only datagrams from address:port go
- * into its rx ring (others are dropped, not counted as dropped), and a tx
- * record to 0:0 goes there. Address 0 and port 0: any sender again.
- * Datagrams in the ring already stay. ERR_INVALID_ARGS: an address a
- * program can't send to; ERR_NOT_SUPPORTED on the DHCP socket. */
-static inline status_t net_sock_connect_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint16_t port)
+/* net_sock_connect_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_sock_connect_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t address, uint16_t port)
 {
     struct net_sock_connect_req idl_q;
     struct net_sock_connect_rep idl_r;
@@ -474,29 +541,41 @@ static inline status_t net_sock_connect_until(handle_t ch, uint64_t deadline_ns,
     idl_q.ordinal = NET_SOCK_CONNECT;
     idl_q.address = address;
     idl_q.port = port;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* On a socket's channel: from now on only datagrams from address:port go
+ * into its rx ring (others are dropped, not counted as dropped), and a tx
+ * record to 0:0 goes there. Address 0 and port 0: any sender again.
+ * Datagrams in the ring already stay. ERR_INVALID_ARGS: an address a
+ * program can't send to; ERR_NOT_SUPPORTED on the DHCP socket. */
+static inline status_t net_sock_connect_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint16_t port)
+{
+    return net_sock_connect_call(ch, false, deadline_ns, address, port);
+}
+static inline status_t net_sock_connect_within(handle_t ch, uint64_t timeout_ns, uint32_t address, uint16_t port)
+{
+    return net_sock_connect_call(ch, true, timeout_ns, address, port);
+}
 static inline status_t net_sock_connect(handle_t ch, uint32_t address, uint16_t port)
 {
-    return net_sock_connect_until(ch, DEADLINE_NEVER, address, port);
+    return net_sock_connect_call(ch, false, DEADLINE_NEVER, address, port);
 }
 
-/* On a socket's channel: its local port, the peer sock_connect set (0: none),
- * bytes waiting in its rx ring now, and datagrams dropped since it opened
- * (its rx ring was full; also the status line's rx_dropped). */
-static inline status_t net_sock_state_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+/* net_sock_state_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_sock_state_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
 {
     struct net_sock_state_req idl_q;
     struct net_sock_state_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NET_SOCK_STATE;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_port)
@@ -511,22 +590,25 @@ static inline status_t net_sock_state_until(handle_t ch, uint64_t deadline_ns, u
         *out_dropped = idl_r.dropped;
     return idl_st;
 }
+/* On a socket's channel: its local port, the peer sock_connect set (0: none),
+ * bytes waiting in its rx ring now, and datagrams dropped since it opened
+ * (its rx ring was full; also the status line's rx_dropped). */
+static inline status_t net_sock_state_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+{
+    return net_sock_state_call(ch, false, deadline_ns, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+}
+static inline status_t net_sock_state_within(handle_t ch, uint64_t timeout_ns, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+{
+    return net_sock_state_call(ch, true, timeout_ns, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+}
 static inline status_t net_sock_state(handle_t ch, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
 {
-    return net_sock_state_until(ch, DEADLINE_NEVER, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+    return net_sock_state_call(ch, false, DEADLINE_NEVER, out_port, out_peer, out_peer_port, out_queued, out_dropped);
 }
 
-/* On a socket's channel: the socket's rings (<sockring.h>, datagram
- * framing): their VMO and events with the rights the header names, and
- * the rings' sizes. tx_bytes and rx_bytes: 0 for SOCKRING_UDP_TX and
- * SOCKRING_UDP_RX, else a ring size (sockring_size_ok). After it the
- * socket's datagrams go only through the rings: a tx record netstack
- * refuses (an address a program can't send to, port 0, no route) counts in
- * the status line's tx_refused, with its reason in `error`, and a datagram
- * that doesn't fit the rx ring in rx_dropped. Once a socket: ERR_BAD_STATE
- * for a second. ERR_INVALID_ARGS: a size not allowed; ERR_NO_RESOURCES:
- * over the opener's or all sockets' ring bytes; ERR_NO_MEMORY: no memory. */
-static inline status_t net_sock_rings_until(handle_t ch, uint64_t deadline_ns, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+/* net_sock_rings_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_sock_rings_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
     struct net_sock_rings_req idl_q;
     struct net_sock_rings_rep idl_r;
@@ -537,8 +619,8 @@ static inline status_t net_sock_rings_until(handle_t ch, uint64_t deadline_ns, u
     idl_q.rx_bytes = rx_bytes;
     handle_t idl_rh[3];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 3, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               3, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 3)
@@ -569,31 +651,32 @@ static inline status_t net_sock_rings_until(handle_t ch, uint64_t deadline_ns, u
         *out_rx_bytes = idl_r.rx_bytes;
     return idl_st;
 }
+/* On a socket's channel: the socket's rings (<sockring.h>, datagram
+ * framing): their VMO and events with the rights the header names, and
+ * the rings' sizes. tx_bytes and rx_bytes: 0 for SOCKRING_UDP_TX and
+ * SOCKRING_UDP_RX, else a ring size (sockring_size_ok). After it the
+ * socket's datagrams go only through the rings: a tx record netstack
+ * refuses (an address a program can't send to, port 0, no route) counts in
+ * the status line's tx_refused, with its reason in `error`, and a datagram
+ * that doesn't fit the rx ring in rx_dropped. Once a socket: ERR_BAD_STATE
+ * for a second. ERR_INVALID_ARGS: a size not allowed; ERR_NO_RESOURCES:
+ * over the opener's or all sockets' ring bytes; ERR_NO_MEMORY: no memory. */
+static inline status_t net_sock_rings_until(handle_t ch, uint64_t deadline_ns, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    return net_sock_rings_call(ch, false, deadline_ns, tx_bytes, rx_bytes, out_ring, out_to_stack, out_to_prog, out_tx_bytes, out_rx_bytes);
+}
+static inline status_t net_sock_rings_within(handle_t ch, uint64_t timeout_ns, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    return net_sock_rings_call(ch, true, timeout_ns, tx_bytes, rx_bytes, out_ring, out_to_stack, out_to_prog, out_tx_bytes, out_rx_bytes);
+}
 static inline status_t net_sock_rings(handle_t ch, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
-    return net_sock_rings_until(ch, DEADLINE_NEVER, tx_bytes, rx_bytes, out_ring, out_to_stack, out_to_prog, out_tx_bytes, out_rx_bytes);
+    return net_sock_rings_call(ch, false, DEADLINE_NEVER, tx_bytes, rx_bytes, out_ring, out_to_stack, out_to_prog, out_tx_bytes, out_rx_bytes);
 }
 
-/* On an opener's channel: a TCP connection to address:port from a port
- * netstack picks, with its rings (<sockring.h>, byte-stream framing;
- * tx_bytes and rx_bytes 0 for NET_TCP_TX and NET_TCP_RX, else a ring size):
- * its socket's channel, the rings' VMO and events (as udp_rings'), its
- * local port and the rings' sizes. Answered at once, CONNECTING: the
- * status line says when it is OPEN, or CLOSED and why (SOCKRING_SIG_STATE):
- * ERR_NOT_FOUND refused (a reset for our SYN), ERR_TIMED_OUT no answer or
- * the peer stopped answering, ERR_PEER_CLOSED reset by the peer,
- * ERR_BAD_STATE our address went away, ERR_OUT_OF_RANGE a count the program
- * wrote in its rings was out of range (the connection is reset); OK when
- * both directions ended and our FIN was acked. The bytes go only through
- * the rings: SOCKRING_END on the tx ring is a FIN after the last byte (the
- * program shut its sending down), on the rx ring the peer's FIN. Closing
- * the channel closes the connection: with a FIN after what netstack took
- * from the tx ring, or a reset if bytes the program never read are left
- * in the rx ring. At once: ERR_INVALID_ARGS (an address a program can't
- * send to, port 0, a ring size not allowed); ERR_BAD_STATE (no address, no
- * route or the link down); ERR_NO_RESOURCES (the opener's, all openers' or
- * an ordinary opener's share of connections or ring bytes; no local port). */
-static inline status_t net_tcp_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+/* net_tcp_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_tcp_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t address, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
     struct net_tcp_req idl_q;
     struct net_tcp_rep idl_r;
@@ -606,8 +689,8 @@ static inline status_t net_tcp_until(handle_t ch, uint64_t deadline_ns, uint32_t
     idl_q.rx_bytes = rx_bytes;
     handle_t idl_rh[4];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 4, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               4, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 4)
@@ -646,11 +729,71 @@ static inline status_t net_tcp_until(handle_t ch, uint64_t deadline_ns, uint32_t
         *out_rx_bytes = idl_r.rx_bytes;
     return idl_st;
 }
+/* On an opener's channel: a TCP connection to address:port from a port
+ * netstack picks, with its rings (<sockring.h>, byte-stream framing;
+ * tx_bytes and rx_bytes 0 for NET_TCP_TX and NET_TCP_RX, else a ring size):
+ * its socket's channel, the rings' VMO and events (as udp_rings'), its
+ * local port and the rings' sizes. Answered at once, CONNECTING: the
+ * status line says when it is OPEN, or CLOSED and why (SOCKRING_SIG_STATE):
+ * ERR_NOT_FOUND refused (a reset for our SYN), ERR_TIMED_OUT no answer or
+ * the peer stopped answering, ERR_PEER_CLOSED reset by the peer,
+ * ERR_BAD_STATE our address went away, ERR_OUT_OF_RANGE a count the program
+ * wrote in its rings was out of range (the connection is reset); OK when
+ * both directions ended and our FIN was acked. The bytes go only through
+ * the rings: SOCKRING_END on the tx ring is a FIN after the last byte (the
+ * program shut its sending down), on the rx ring the peer's FIN. Closing
+ * the channel closes the connection: with a FIN after what netstack took
+ * from the tx ring, or a reset if bytes the program never read are left
+ * in the rx ring. At once: ERR_INVALID_ARGS (an address a program can't
+ * send to, port 0, a ring size not allowed); ERR_BAD_STATE (no address, no
+ * route or the link down); ERR_NO_RESOURCES (the opener's, all openers' or
+ * an ordinary opener's share of connections or ring bytes; no local port). */
+static inline status_t net_tcp_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    return net_tcp_call(ch, false, deadline_ns, address, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
+}
+static inline status_t net_tcp_within(handle_t ch, uint64_t timeout_ns, uint32_t address, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    return net_tcp_call(ch, true, timeout_ns, address, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
+}
 static inline status_t net_tcp(handle_t ch, uint32_t address, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
-    return net_tcp_until(ch, DEADLINE_NEVER, address, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
+    return net_tcp_call(ch, false, DEADLINE_NEVER, address, port, tx_bytes, rx_bytes, out_socket, out_ring, out_to_stack, out_to_prog, out_port, out_tx_bytes, out_rx_bytes);
 }
 
+/* net_tcp_listener_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_tcp_listener_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
+{
+    struct net_tcp_listener_req idl_q;
+    struct net_tcp_listener_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = NET_TCP_LISTENER;
+    idl_q.port = port;
+    idl_q.backlog = backlog;
+    idl_q.tx_bytes = tx_bytes;
+    idl_q.rx_bytes = rx_bytes;
+    handle_t idl_rh[1];
+    uint32_t idl_rhn = 0;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_listener)
+            *out_listener = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK && out_port)
+        *out_port = idl_r.port;
+    return idl_st;
+}
 /* On an opener's channel that came through /svc/net-listen or
  * /svc/net-low (the listen permissions, netstack's listen.h;
  * ERR_ACCESS_DENIED on any other): listen on TCP port `port` (NET_PORT_LOW
@@ -669,50 +812,20 @@ static inline status_t net_tcp(handle_t ch, uint32_t address, uint16_t port, uin
  * share of listeners or of backlog. */
 static inline status_t net_tcp_listener_until(handle_t ch, uint64_t deadline_ns, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
 {
-    struct net_tcp_listener_req idl_q;
-    struct net_tcp_listener_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = NET_TCP_LISTENER;
-    idl_q.port = port;
-    idl_q.backlog = backlog;
-    idl_q.tx_bytes = tx_bytes;
-    idl_q.rx_bytes = rx_bytes;
-    handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && idl_rhn != 1)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK)
-        idl_close_all(idl_rh, idl_rhn);
-    if (idl_st == OK) {
-        if (out_listener)
-            *out_listener = idl_rh[0];
-        else
-            drv_handle_close(idl_rh[0]);
-    }
-    if (idl_st == OK && out_port)
-        *out_port = idl_r.port;
-    return idl_st;
+    return net_tcp_listener_call(ch, false, deadline_ns, port, backlog, tx_bytes, rx_bytes, out_listener, out_port);
+}
+static inline status_t net_tcp_listener_within(handle_t ch, uint64_t timeout_ns, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
+{
+    return net_tcp_listener_call(ch, true, timeout_ns, port, backlog, tx_bytes, rx_bytes, out_listener, out_port);
 }
 static inline status_t net_tcp_listener(handle_t ch, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
 {
-    return net_tcp_listener_until(ch, DEADLINE_NEVER, port, backlog, tx_bytes, rx_bytes, out_listener, out_port);
+    return net_tcp_listener_call(ch, false, DEADLINE_NEVER, port, backlog, tx_bytes, rx_bytes, out_listener, out_port);
 }
 
-/* On a listener's channel: the oldest connection waiting, now the
- * caller's: tcp's results (its status OPEN, or CLOSED already if
- * the peer closed it meanwhile; its rx ring holds what came), and its
- * peer's address and port. Answered when there is one: timeout_ms 0 at
- * once (ERR_SHOULD_WAIT: none waiting), else ERR_TIMED_OUT after timeout_ms
- * (NET_WAIT_FOREVER: never). One at a time a listener: ERR_BAD_STATE while
- * another waits. A loop or a wait set sends it without waiting
- * (net_accept_send) and watches the channel for SIG_READABLE: the
- * answer is there. */
-static inline status_t net_accept_until(handle_t ch, uint64_t deadline_ns, uint32_t timeout_ms, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+/* net_accept_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_accept_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t timeout_ms, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
     struct net_accept_req idl_q;
     struct net_accept_rep idl_r;
@@ -722,8 +835,8 @@ static inline status_t net_accept_until(handle_t ch, uint64_t deadline_ns, uint3
     idl_q.timeout_ms = timeout_ms;
     handle_t idl_rh[4];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 4, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               4, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 4)
@@ -764,9 +877,26 @@ static inline status_t net_accept_until(handle_t ch, uint64_t deadline_ns, uint3
         *out_rx_bytes = idl_r.rx_bytes;
     return idl_st;
 }
+/* On a listener's channel: the oldest connection waiting, now the
+ * caller's: tcp's results (its status OPEN, or CLOSED already if
+ * the peer closed it meanwhile; its rx ring holds what came), and its
+ * peer's address and port. Answered when there is one: timeout_ms 0 at
+ * once (ERR_SHOULD_WAIT: none waiting), else ERR_TIMED_OUT after timeout_ms
+ * (NET_WAIT_FOREVER: never). One at a time a listener: ERR_BAD_STATE while
+ * another waits. A loop or a wait set sends it without waiting
+ * (net_accept_send) and watches the channel for SIG_READABLE: the
+ * answer is there. */
+static inline status_t net_accept_until(handle_t ch, uint64_t deadline_ns, uint32_t timeout_ms, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    return net_accept_call(ch, false, deadline_ns, timeout_ms, out_socket, out_ring, out_to_stack, out_to_prog, out_peer, out_peer_port, out_tx_bytes, out_rx_bytes);
+}
+static inline status_t net_accept_within(handle_t ch, uint64_t timeout_ns, uint32_t timeout_ms, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
+{
+    return net_accept_call(ch, true, timeout_ns, timeout_ms, out_socket, out_ring, out_to_stack, out_to_prog, out_peer, out_peer_port, out_tx_bytes, out_rx_bytes);
+}
 static inline status_t net_accept(handle_t ch, uint32_t timeout_ms, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)
 {
-    return net_accept_until(ch, DEADLINE_NEVER, timeout_ms, out_socket, out_ring, out_to_stack, out_to_prog, out_peer, out_peer_port, out_tx_bytes, out_rx_bytes);
+    return net_accept_call(ch, false, DEADLINE_NEVER, timeout_ms, out_socket, out_ring, out_to_stack, out_to_prog, out_peer, out_peer_port, out_tx_bytes, out_rx_bytes);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -2082,21 +2212,23 @@ static inline status_t net_serve_one(handle_t ch, const struct net_ops *ops, voi
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t net_serve(handle_t ch, const struct net_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[NET_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[NET_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = net_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = net_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

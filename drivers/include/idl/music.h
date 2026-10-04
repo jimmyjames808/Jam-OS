@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `music` (id 24). Client: music_<method>(ch, args..., &results...)
- * (and music_<method>_until with a deadline) over drv_channel_call, or
+ * (and music_<method>_until with a deadline, _within with a timeout), or
  * music_<method>_send and music_<method>_result without waiting. Server:
  * fill a struct music_ops and run music_serve(ch, &ops, ctx), or
  * music_serve_one / music_dispatch_on for a loop of your own;
@@ -179,6 +179,27 @@ struct music_stereo_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
+/* music_start_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_start_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
+{
+    struct music_start_req idl_q;
+    struct music_start_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = MUSIC_START;
+    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
+        idl_q.folder[idl_i] = folder[idl_i];
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_found)
+        *out_found = idl_r.found;
+    if (idl_st == OK && out_reading)
+        *out_reading = idl_r.reading;
+    return idl_st;
+}
 /* Play `folder` (an absolute path, NUL-terminated): every .mp3 and .wav
  * file under it (any depth; case-insensitive; names starting with '.'
  * left out) in shuffle, back to back, until `stop`. Answers once the
@@ -195,88 +216,89 @@ struct music_stereo_rep {
  * errors from opening a stream. */
 static inline status_t music_start_until(handle_t ch, uint64_t deadline_ns, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
 {
-    struct music_start_req idl_q;
-    struct music_start_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = MUSIC_START;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.folder[idl_i] = folder[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_found)
-        *out_found = idl_r.found;
-    if (idl_st == OK && out_reading)
-        *out_reading = idl_r.reading;
-    return idl_st;
+    return music_start_call(ch, false, deadline_ns, folder, out_found, out_reading);
+}
+static inline status_t music_start_within(handle_t ch, uint64_t timeout_ns, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
+{
+    return music_start_call(ch, true, timeout_ns, folder, out_found, out_reading);
 }
 static inline status_t music_start(handle_t ch, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
 {
-    return music_start_until(ch, DEADLINE_NEVER, folder, out_found, out_reading);
+    return music_start_call(ch, false, DEADLINE_NEVER, folder, out_found, out_reading);
 }
 
-/* Stop playing, with the 5 ms fade. `was_playing`: 1 if it was. */
-static inline status_t music_stop_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_was_playing)
+/* music_stop_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_stop_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_was_playing)
 {
     struct music_stop_req idl_q;
     struct music_stop_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = MUSIC_STOP;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_was_playing)
         *out_was_playing = idl_r.was_playing;
     return idl_st;
 }
+/* Stop playing, with the 5 ms fade. `was_playing`: 1 if it was. */
+static inline status_t music_stop_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_was_playing)
+{
+    return music_stop_call(ch, false, deadline_ns, out_was_playing);
+}
+static inline status_t music_stop_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_was_playing)
+{
+    return music_stop_call(ch, true, timeout_ns, out_was_playing);
+}
 static inline status_t music_stop(handle_t ch, uint8_t *out_was_playing)
 {
-    return music_stop_until(ch, DEADLINE_NEVER, out_was_playing);
+    return music_stop_call(ch, false, DEADLINE_NEVER, out_was_playing);
 }
 
-/* Skip the track being heard now: the next one starts from its beginning.
- * ERR_BAD_STATE: not playing. */
-static inline status_t music_next_until(handle_t ch, uint64_t deadline_ns)
+/* music_next_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_next_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct music_next_req idl_q;
     struct music_next_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = MUSIC_NEXT;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Skip the track being heard now: the next one starts from its beginning.
+ * ERR_BAD_STATE: not playing. */
+static inline status_t music_next_until(handle_t ch, uint64_t deadline_ns)
+{
+    return music_next_call(ch, false, deadline_ns);
+}
+static inline status_t music_next_within(handle_t ch, uint64_t timeout_ns)
+{
+    return music_next_call(ch, true, timeout_ns);
+}
 static inline status_t music_next(handle_t ch)
 {
-    return music_next_until(ch, DEADLINE_NEVER);
+    return music_next_call(ch, false, DEADLINE_NEVER);
 }
 
-/* What the player is doing. `playing`: 1, 0, 2 while it reads the
- * folder `start` was given (`tracks` then counts so far), or 3 while it is
- * paused (`pause`). `tracks`: files in the
- * folder's list; `bad`: how many of them were refused (not WAV or MP3
- * inside) and are skipped; `started`: tracks started since `start`.
- * The track heard now: `elapsed_ms` into it, `length_ms` (0: unknown),
- * `path` (absolute), `title` ("Artist - Title" from the path, see the
- * player's main.c). `folder`: the last one started. `volume`: the
- * player's own, in centibels. `note`: why it stopped by itself, if it did
- * ("" otherwise). */
-static inline status_t music_status_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
+/* music_status_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_status_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
 {
     struct music_status_req idl_q;
     struct music_status_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = MUSIC_STATUS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_playing)
@@ -303,15 +325,32 @@ static inline status_t music_status_until(handle_t ch, uint64_t deadline_ns, uin
         out_note[idl_i] = idl_r.note[idl_i];
     return idl_st;
 }
+/* What the player is doing. `playing`: 1, 0, 2 while it reads the
+ * folder `start` was given (`tracks` then counts so far), or 3 while it is
+ * paused (`pause`). `tracks`: files in the
+ * folder's list; `bad`: how many of them were refused (not WAV or MP3
+ * inside) and are skipped; `started`: tracks started since `start`.
+ * The track heard now: `elapsed_ms` into it, `length_ms` (0: unknown),
+ * `path` (absolute), `title` ("Artist - Title" from the path, see the
+ * player's main.c). `folder`: the last one started. `volume`: the
+ * player's own, in centibels. `note`: why it stopped by itself, if it did
+ * ("" otherwise). */
+static inline status_t music_status_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
+{
+    return music_status_call(ch, false, deadline_ns, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_path, out_title, out_note);
+}
+static inline status_t music_status_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
+{
+    return music_status_call(ch, true, timeout_ns, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_path, out_title, out_note);
+}
 static inline status_t music_status(handle_t ch, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
 {
-    return music_status_until(ch, DEADLINE_NEVER, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_path, out_title, out_note);
+    return music_status_call(ch, false, DEADLINE_NEVER, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_path, out_title, out_note);
 }
 
-/* The player's volume in centibels (its mixer stream's), clamped to
- * [-960, 0]; kept across tracks, stops and starts (not across a restart
- * of the player). Answers the volume set. */
-static inline status_t music_set_volume_until(handle_t ch, uint64_t deadline_ns, int32_t centibels, int32_t *out_centibels)
+/* music_set_volume_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_set_volume_call(handle_t ch, bool idl_within, uint64_t idl_t, int32_t centibels, int32_t *out_centibels)
 {
     struct music_set_volume_req idl_q;
     struct music_set_volume_rep idl_r;
@@ -319,19 +358,45 @@ static inline status_t music_set_volume_until(handle_t ch, uint64_t deadline_ns,
     idl_q.txid = 0;
     idl_q.ordinal = MUSIC_SET_VOLUME;
     idl_q.centibels = centibels;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_centibels)
         *out_centibels = idl_r.centibels;
     return idl_st;
 }
+/* The player's volume in centibels (its mixer stream's), clamped to
+ * [-960, 0]; kept across tracks, stops and starts (not across a restart
+ * of the player). Answers the volume set. */
+static inline status_t music_set_volume_until(handle_t ch, uint64_t deadline_ns, int32_t centibels, int32_t *out_centibels)
+{
+    return music_set_volume_call(ch, false, deadline_ns, centibels, out_centibels);
+}
+static inline status_t music_set_volume_within(handle_t ch, uint64_t timeout_ns, int32_t centibels, int32_t *out_centibels)
+{
+    return music_set_volume_call(ch, true, timeout_ns, centibels, out_centibels);
+}
 static inline status_t music_set_volume(handle_t ch, int32_t centibels, int32_t *out_centibels)
 {
-    return music_set_volume_until(ch, DEADLINE_NEVER, centibels, out_centibels);
+    return music_set_volume_call(ch, false, DEADLINE_NEVER, centibels, out_centibels);
 }
 
+/* music_prev_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_prev_call(handle_t ch, bool idl_within, uint64_t idl_t)
+{
+    struct music_prev_req idl_q;
+    struct music_prev_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = MUSIC_PREV;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
 /* Back: more than 3 s into the track heard now, it starts over from its
  * beginning; otherwise the track heard before it plays (the player keeps
  * the last 64), and the one skipped back from plays after it, then the
@@ -339,29 +404,20 @@ static inline status_t music_set_volume(handle_t ch, int32_t centibels, int32_t 
  * as playing: it plays on from the track chosen). */
 static inline status_t music_prev_until(handle_t ch, uint64_t deadline_ns)
 {
-    struct music_prev_req idl_q;
-    struct music_prev_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = MUSIC_PREV;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
+    return music_prev_call(ch, false, deadline_ns);
+}
+static inline status_t music_prev_within(handle_t ch, uint64_t timeout_ns)
+{
+    return music_prev_call(ch, true, timeout_ns);
 }
 static inline status_t music_prev(handle_t ch)
 {
-    return music_prev_until(ch, DEADLINE_NEVER);
+    return music_prev_call(ch, false, DEADLINE_NEVER);
 }
 
-/* `start` with options. `first`: an absolute path (NUL-terminated) of a
- * file under `folder` that plays first ("" for none; a file that is not in
- * the folder's list is ignored, with a line in the log); `order` 1: the
- * files play in the order of their paths (byte order), over and over,
- * instead of in shuffle; 0: shuffle, as `start`. The answer and the
- * errors are `start`'s; ERR_INVALID_ARGS also for an `order` above 1. */
-static inline status_t music_play_until(handle_t ch, uint64_t deadline_ns, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
+/* music_play_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_play_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
 {
     struct music_play_req idl_q;
     struct music_play_rep idl_r;
@@ -373,8 +429,8 @@ static inline status_t music_play_until(handle_t ch, uint64_t deadline_ns, const
     for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
         idl_q.first[idl_i] = first[idl_i];
     idl_q.order = order;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_found)
@@ -383,32 +439,36 @@ static inline status_t music_play_until(handle_t ch, uint64_t deadline_ns, const
         *out_reading = idl_r.reading;
     return idl_st;
 }
+/* `start` with options. `first`: an absolute path (NUL-terminated) of a
+ * file under `folder` that plays first ("" for none; a file that is not in
+ * the folder's list is ignored, with a line in the log); `order` 1: the
+ * files play in the order of their paths (byte order), over and over,
+ * instead of in shuffle; 0: shuffle, as `start`. The answer and the
+ * errors are `start`'s; ERR_INVALID_ARGS also for an `order` above 1. */
+static inline status_t music_play_until(handle_t ch, uint64_t deadline_ns, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
+{
+    return music_play_call(ch, false, deadline_ns, folder, first, order, out_found, out_reading);
+}
+static inline status_t music_play_within(handle_t ch, uint64_t timeout_ns, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
+{
+    return music_play_call(ch, true, timeout_ns, folder, first, order, out_found, out_reading);
+}
 static inline status_t music_play(handle_t ch, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
 {
-    return music_play_until(ch, DEADLINE_NEVER, folder, first, order, out_found, out_reading);
+    return music_play_call(ch, false, DEADLINE_NEVER, folder, first, order, out_found, out_reading);
 }
 
-/* What a view asks many times a second (a cheap call): `playing` as in
- * `status` (3: paused); `serial`, a number that changes whenever the track
- * heard changes (a new one, or the same one from its start: then `status`
- * says which); `elapsed_ms` and `length_ms` of it as `status`; `volume`
- * as `set_volume`; `sleep_s`, the seconds until the sleep timer stops the
- * player (0: off); and what is heard now: `bands`, its loudness in
- * sixteen frequency bands log-spaced from 40 Hz to 16 kHz (low first),
- * each 0..255 (about 0: -76 dB, 255: -16 dB below full scale, with a tilt
- * of +3 dB an octave so that every band of ordinary music moves), and
- * `level`, its overall loudness (RMS, 0: -60 dBFS or less, 255: full
- * scale). All zero while nothing is heard. (`spectrum` has the same in 64
- * bands; each of these is the loudest of four of those.) */
-static inline status_t music_levels_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level)
+/* music_levels_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_levels_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level)
 {
     struct music_levels_req idl_q;
     struct music_levels_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = MUSIC_LEVELS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_playing)
@@ -429,16 +489,34 @@ static inline status_t music_levels_until(handle_t ch, uint64_t deadline_ns, uin
         *out_level = idl_r.level;
     return idl_st;
 }
+/* What a view asks many times a second (a cheap call): `playing` as in
+ * `status` (3: paused); `serial`, a number that changes whenever the track
+ * heard changes (a new one, or the same one from its start: then `status`
+ * says which); `elapsed_ms` and `length_ms` of it as `status`; `volume`
+ * as `set_volume`; `sleep_s`, the seconds until the sleep timer stops the
+ * player (0: off); and what is heard now: `bands`, its loudness in
+ * sixteen frequency bands log-spaced from 40 Hz to 16 kHz (low first),
+ * each 0..255 (about 0: -76 dB, 255: -16 dB below full scale, with a tilt
+ * of +3 dB an octave so that every band of ordinary music moves), and
+ * `level`, its overall loudness (RMS, 0: -60 dBFS or less, 255: full
+ * scale). All zero while nothing is heard. (`spectrum` has the same in 64
+ * bands; each of these is the loudest of four of those.) */
+static inline status_t music_levels_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level)
+{
+    return music_levels_call(ch, false, deadline_ns, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
+}
+static inline status_t music_levels_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level)
+{
+    return music_levels_call(ch, true, timeout_ns, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
+}
 static inline status_t music_levels(handle_t ch, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level)
 {
-    return music_levels_until(ch, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
+    return music_levels_call(ch, false, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
 }
 
-/* Pause (`on` 1): the mixer stops taking the stream's frames where it is
- * (what it took is still heard, about 0.1 s) and the player stops reading;
- * `on` 0 goes on from there. Answers whether it is paused now.
- * ERR_BAD_STATE: not playing; ERR_INVALID_ARGS: `on` above 1. */
-static inline status_t music_pause_until(handle_t ch, uint64_t deadline_ns, uint8_t on, uint8_t *out_paused)
+/* music_pause_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_pause_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t on, uint8_t *out_paused)
 {
     struct music_pause_req idl_q;
     struct music_pause_rep idl_r;
@@ -446,24 +524,34 @@ static inline status_t music_pause_until(handle_t ch, uint64_t deadline_ns, uint
     idl_q.txid = 0;
     idl_q.ordinal = MUSIC_PAUSE;
     idl_q.on = on;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_paused)
         *out_paused = idl_r.paused;
     return idl_st;
 }
+/* Pause (`on` 1): the mixer stops taking the stream's frames where it is
+ * (what it took is still heard, about 0.1 s) and the player stops reading;
+ * `on` 0 goes on from there. Answers whether it is paused now.
+ * ERR_BAD_STATE: not playing; ERR_INVALID_ARGS: `on` above 1. */
+static inline status_t music_pause_until(handle_t ch, uint64_t deadline_ns, uint8_t on, uint8_t *out_paused)
+{
+    return music_pause_call(ch, false, deadline_ns, on, out_paused);
+}
+static inline status_t music_pause_within(handle_t ch, uint64_t timeout_ns, uint8_t on, uint8_t *out_paused)
+{
+    return music_pause_call(ch, true, timeout_ns, on, out_paused);
+}
 static inline status_t music_pause(handle_t ch, uint8_t on, uint8_t *out_paused)
 {
-    return music_pause_until(ch, DEADLINE_NEVER, on, out_paused);
+    return music_pause_call(ch, false, DEADLINE_NEVER, on, out_paused);
 }
 
-/* The sleep timer: stop playing `seconds` from now, the last 30 s fading
- * out; 0 turns it off. `stop` and a restart of the player turn it off too;
- * a new `start` or `play` keeps it. Answers the seconds set.
- * ERR_OUT_OF_RANGE: more than 86400 (a day). */
-static inline status_t music_sleep_until(handle_t ch, uint64_t deadline_ns, uint32_t seconds, uint32_t *out_seconds)
+/* music_sleep_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_sleep_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t seconds, uint32_t *out_seconds)
 {
     struct music_sleep_req idl_q;
     struct music_sleep_rep idl_r;
@@ -471,33 +559,42 @@ static inline status_t music_sleep_until(handle_t ch, uint64_t deadline_ns, uint
     idl_q.txid = 0;
     idl_q.ordinal = MUSIC_SLEEP;
     idl_q.seconds = seconds;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_seconds)
         *out_seconds = idl_r.seconds;
     return idl_st;
 }
+/* The sleep timer: stop playing `seconds` from now, the last 30 s fading
+ * out; 0 turns it off. `stop` and a restart of the player turn it off too;
+ * a new `start` or `play` keeps it. Answers the seconds set.
+ * ERR_OUT_OF_RANGE: more than 86400 (a day). */
+static inline status_t music_sleep_until(handle_t ch, uint64_t deadline_ns, uint32_t seconds, uint32_t *out_seconds)
+{
+    return music_sleep_call(ch, false, deadline_ns, seconds, out_seconds);
+}
+static inline status_t music_sleep_within(handle_t ch, uint64_t timeout_ns, uint32_t seconds, uint32_t *out_seconds)
+{
+    return music_sleep_call(ch, true, timeout_ns, seconds, out_seconds);
+}
 static inline status_t music_sleep(handle_t ch, uint32_t seconds, uint32_t *out_seconds)
 {
-    return music_sleep_until(ch, DEADLINE_NEVER, seconds, out_seconds);
+    return music_sleep_call(ch, false, DEADLINE_NEVER, seconds, out_seconds);
 }
 
-/* `levels` with the finer picture a spectrum display wants: `bands`, what
- * is heard in 64 bands log-spaced from 40 Hz to 16 kHz (a sixth of an
- * octave each, low first), each 0..255 as in `levels` (about 0: -76 dB,
- * 255: -16 dB below full scale, the same tilt); the rest as `levels`.
- * (`levels`' sixteen bands are these, the loudest of each four.) */
-static inline status_t music_spectrum_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[64], uint8_t *out_level)
+/* music_spectrum_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_spectrum_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[64], uint8_t *out_level)
 {
     struct music_spectrum_req idl_q;
     struct music_spectrum_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = MUSIC_SPECTRUM;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_playing)
@@ -518,24 +615,35 @@ static inline status_t music_spectrum_until(handle_t ch, uint64_t deadline_ns, u
         *out_level = idl_r.level;
     return idl_st;
 }
+/* `levels` with the finer picture a spectrum display wants: `bands`, what
+ * is heard in 64 bands log-spaced from 40 Hz to 16 kHz (a sixth of an
+ * octave each, low first), each 0..255 as in `levels` (about 0: -76 dB,
+ * 255: -16 dB below full scale, the same tilt); the rest as `levels`.
+ * (`levels`' sixteen bands are these, the loudest of each four.) */
+static inline status_t music_spectrum_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[64], uint8_t *out_level)
+{
+    return music_spectrum_call(ch, false, deadline_ns, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
+}
+static inline status_t music_spectrum_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[64], uint8_t *out_level)
+{
+    return music_spectrum_call(ch, true, timeout_ns, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
+}
 static inline status_t music_spectrum(handle_t ch, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[64], uint8_t *out_level)
 {
-    return music_spectrum_until(ch, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
+    return music_spectrum_call(ch, false, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_bands, out_level);
 }
 
-/* `spectrum` for each channel: `left` and `right`, what each of the two
- * channels has in the same 64 bands (0..255 as `spectrum`'s, the same
- * tilt; a mono file gives both the same); the rest as `levels` (`level`
- * is the mono mix's). A stereo view asks this instead of `spectrum`. */
-static inline status_t music_stereo_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level)
+/* music_stereo_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_stereo_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level)
 {
     struct music_stereo_req idl_q;
     struct music_stereo_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = MUSIC_STEREO;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_playing)
@@ -558,9 +666,21 @@ static inline status_t music_stereo_until(handle_t ch, uint64_t deadline_ns, uin
         *out_level = idl_r.level;
     return idl_st;
 }
+/* `spectrum` for each channel: `left` and `right`, what each of the two
+ * channels has in the same 64 bands (0..255 as `spectrum`'s, the same
+ * tilt; a mono file gives both the same); the rest as `levels` (`level`
+ * is the mono mix's). A stereo view asks this instead of `spectrum`. */
+static inline status_t music_stereo_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level)
+{
+    return music_stereo_call(ch, false, deadline_ns, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_left, out_right, out_level);
+}
+static inline status_t music_stereo_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level)
+{
+    return music_stereo_call(ch, true, timeout_ns, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_left, out_right, out_level);
+}
 static inline status_t music_stereo(handle_t ch, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level)
 {
-    return music_stereo_until(ch, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_left, out_right, out_level);
+    return music_stereo_call(ch, false, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_left, out_right, out_level);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -1623,21 +1743,23 @@ static inline status_t music_serve_one(handle_t ch, const struct music_ops *ops,
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t music_serve(handle_t ch, const struct music_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[MUSIC_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[MUSIC_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = music_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = music_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

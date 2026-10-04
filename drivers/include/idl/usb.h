@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `usb` (id 10). Client: usb_<method>(ch, args..., &results...)
- * (and usb_<method>_until with a deadline) over drv_channel_call, or
+ * (and usb_<method>_until with a deadline, _within with a timeout), or
  * usb_<method>_send and usb_<method>_result without waiting. Server:
  * fill a struct usb_ops and run usb_serve(ch, &ops, ctx), or
  * usb_serve_one / usb_dispatch_on for a loop of your own;
@@ -170,16 +170,17 @@ struct usb_clear_halt_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* The interface this channel is for, and its device. */
-static inline status_t usb_info_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_vendor, uint16_t *out_product, uint8_t *out_speed, uint8_t *out_interface_number, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t *out_alt_setting, uint8_t *out_address)
+/* usb_info_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t *out_vendor, uint16_t *out_product, uint8_t *out_speed, uint8_t *out_interface_number, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t *out_alt_setting, uint8_t *out_address)
 {
     struct usb_info_req idl_q;
     struct usb_info_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = USB_INFO;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_vendor)
@@ -204,17 +205,23 @@ static inline status_t usb_info_until(handle_t ch, uint64_t deadline_ns, uint16_
         *out_address = idl_r.address;
     return idl_st;
 }
+/* The interface this channel is for, and its device. */
+static inline status_t usb_info_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_vendor, uint16_t *out_product, uint8_t *out_speed, uint8_t *out_interface_number, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t *out_alt_setting, uint8_t *out_address)
+{
+    return usb_info_call(ch, false, deadline_ns, out_vendor, out_product, out_speed, out_interface_number, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_alt_setting, out_address);
+}
+static inline status_t usb_info_within(handle_t ch, uint64_t timeout_ns, uint16_t *out_vendor, uint16_t *out_product, uint8_t *out_speed, uint8_t *out_interface_number, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t *out_alt_setting, uint8_t *out_address)
+{
+    return usb_info_call(ch, true, timeout_ns, out_vendor, out_product, out_speed, out_interface_number, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_alt_setting, out_address);
+}
 static inline status_t usb_info(handle_t ch, uint16_t *out_vendor, uint16_t *out_product, uint8_t *out_speed, uint8_t *out_interface_number, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t *out_alt_setting, uint8_t *out_address)
 {
-    return usb_info_until(ch, DEADLINE_NEVER, out_vendor, out_product, out_speed, out_interface_number, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_alt_setting, out_address);
+    return usb_info_call(ch, false, DEADLINE_NEVER, out_vendor, out_product, out_speed, out_interface_number, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_alt_setting, out_address);
 }
 
-/* GET_DESCRIPTOR from the device (standard request, recipient device,
- * wIndex = `lang`) or, with `interface_recipient` 1, from this interface
- * (HID report descriptors): usb-bus then sets wIndex to this interface's
- * number itself and ignores `lang`. `length` <= 1024; `actual` bytes of
- * `data` are valid. */
-static inline status_t usb_get_descriptor_until(handle_t ch, uint64_t deadline_ns, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
+/* usb_get_descriptor_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_get_descriptor_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
 {
     struct usb_get_descriptor_req idl_q;
     struct usb_get_descriptor_rep idl_r;
@@ -226,8 +233,8 @@ static inline status_t usb_get_descriptor_until(handle_t ch, uint64_t deadline_n
     idl_q.lang = lang;
     idl_q.length = length;
     idl_q.interface_recipient = interface_recipient;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_actual)
@@ -236,17 +243,27 @@ static inline status_t usb_get_descriptor_until(handle_t ch, uint64_t deadline_n
         out_data[idl_i] = idl_r.data[idl_i];
     return idl_st;
 }
+/* GET_DESCRIPTOR from the device (standard request, recipient device,
+ * wIndex = `lang`) or, with `interface_recipient` 1, from this interface
+ * (HID report descriptors): usb-bus then sets wIndex to this interface's
+ * number itself and ignores `lang`. `length` <= 1024; `actual` bytes of
+ * `data` are valid. */
+static inline status_t usb_get_descriptor_until(handle_t ch, uint64_t deadline_ns, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
+{
+    return usb_get_descriptor_call(ch, false, deadline_ns, type, index, lang, length, interface_recipient, out_actual, out_data);
+}
+static inline status_t usb_get_descriptor_within(handle_t ch, uint64_t timeout_ns, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
+{
+    return usb_get_descriptor_call(ch, true, timeout_ns, type, index, lang, length, interface_recipient, out_actual, out_data);
+}
 static inline status_t usb_get_descriptor(handle_t ch, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
 {
-    return usb_get_descriptor_until(ch, DEADLINE_NEVER, type, index, lang, length, interface_recipient, out_actual, out_data);
+    return usb_get_descriptor_call(ch, false, DEADLINE_NEVER, type, index, lang, length, interface_recipient, out_actual, out_data);
 }
 
-/* A control transfer on endpoint 0 addressed to THIS interface: usb-bus
- * refuses (ERR_ACCESS_DENIED) a recipient other than the interface or one
- * of its endpoints, and a wIndex naming another interface. Class requests
- * (HID: SET_PROTOCOL, SET_IDLE, GET_REPORT, SET_REPORT) go through here.
- * IN: bmRequestType bit 7 set, `length` <= 1024 bytes come back. */
-static inline status_t usb_control_in_until(handle_t ch, uint64_t deadline_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024])
+/* usb_control_in_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_control_in_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024])
 {
     struct usb_control_in_req idl_q;
     struct usb_control_in_rep idl_r;
@@ -258,8 +275,8 @@ static inline status_t usb_control_in_until(handle_t ch, uint64_t deadline_ns, u
     idl_q.value = value;
     idl_q.index = index;
     idl_q.length = length;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_actual)
@@ -268,13 +285,27 @@ static inline status_t usb_control_in_until(handle_t ch, uint64_t deadline_ns, u
         out_data[idl_i] = idl_r.data[idl_i];
     return idl_st;
 }
+/* A control transfer on endpoint 0 addressed to THIS interface: usb-bus
+ * refuses (ERR_ACCESS_DENIED) a recipient other than the interface or one
+ * of its endpoints, and a wIndex naming another interface. Class requests
+ * (HID: SET_PROTOCOL, SET_IDLE, GET_REPORT, SET_REPORT) go through here.
+ * IN: bmRequestType bit 7 set, `length` <= 1024 bytes come back. */
+static inline status_t usb_control_in_until(handle_t ch, uint64_t deadline_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024])
+{
+    return usb_control_in_call(ch, false, deadline_ns, request_type, request, value, index, length, out_actual, out_data);
+}
+static inline status_t usb_control_in_within(handle_t ch, uint64_t timeout_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024])
+{
+    return usb_control_in_call(ch, true, timeout_ns, request_type, request, value, index, length, out_actual, out_data);
+}
 static inline status_t usb_control_in(handle_t ch, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024])
 {
-    return usb_control_in_until(ch, DEADLINE_NEVER, request_type, request, value, index, length, out_actual, out_data);
+    return usb_control_in_call(ch, false, DEADLINE_NEVER, request_type, request, value, index, length, out_actual, out_data);
 }
 
-/* OUT: up to 64 bytes of data (`length` of `data`). */
-static inline status_t usb_control_out_until(handle_t ch, uint64_t deadline_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
+/* usb_control_out_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_control_out_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
 {
     struct usb_control_out_req idl_q;
     struct usb_control_out_rep idl_r;
@@ -288,24 +319,29 @@ static inline status_t usb_control_out_until(handle_t ch, uint64_t deadline_ns, 
     idl_q.length = length;
     for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
         idl_q.data[idl_i] = data[idl_i];
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* OUT: up to 64 bytes of data (`length` of `data`). */
+static inline status_t usb_control_out_until(handle_t ch, uint64_t deadline_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
+{
+    return usb_control_out_call(ch, false, deadline_ns, request_type, request, value, index, length, data);
+}
+static inline status_t usb_control_out_within(handle_t ch, uint64_t timeout_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
+{
+    return usb_control_out_call(ch, true, timeout_ns, request_type, request, value, index, length, data);
+}
 static inline status_t usb_control_out(handle_t ch, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
 {
-    return usb_control_out_until(ch, DEADLINE_NEVER, request_type, request, value, index, length, data);
+    return usb_control_out_call(ch, false, DEADLINE_NEVER, request_type, request, value, index, length, data);
 }
 
-/* Start polling interrupt-IN endpoint `endpoint` (address with bit 7 set,
- * one of this interface's). Each completed transfer arrives as one message
- * on `reports` holding exactly the bytes the device sent (<= max_packet);
- * if the queue is full usb-bus drops reports and counts them (`dropped`
- * in the next `endpoint_stats`). Closing `reports` stops the endpoint;
- * usb-bus closes it when the device goes away. */
-static inline status_t usb_open_interrupt_in_until(handle_t ch, uint64_t deadline_ns, uint8_t endpoint, handle_t *out_reports, uint16_t *out_max_packet, uint8_t *out_interval_ms)
+/* usb_open_interrupt_in_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_open_interrupt_in_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t endpoint, handle_t *out_reports, uint16_t *out_max_packet, uint8_t *out_interval_ms)
 {
     struct usb_open_interrupt_in_req idl_q;
     struct usb_open_interrupt_in_rep idl_r;
@@ -315,8 +351,8 @@ static inline status_t usb_open_interrupt_in_until(handle_t ch, uint64_t deadlin
     idl_q.endpoint = endpoint;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -335,14 +371,28 @@ static inline status_t usb_open_interrupt_in_until(handle_t ch, uint64_t deadlin
         *out_interval_ms = idl_r.interval_ms;
     return idl_st;
 }
+/* Start polling interrupt-IN endpoint `endpoint` (address with bit 7 set,
+ * one of this interface's). Each completed transfer arrives as one message
+ * on `reports` holding exactly the bytes the device sent (<= max_packet);
+ * if the queue is full usb-bus drops reports and counts them (`dropped`
+ * in the next `endpoint_stats`). Closing `reports` stops the endpoint;
+ * usb-bus closes it when the device goes away. */
+static inline status_t usb_open_interrupt_in_until(handle_t ch, uint64_t deadline_ns, uint8_t endpoint, handle_t *out_reports, uint16_t *out_max_packet, uint8_t *out_interval_ms)
+{
+    return usb_open_interrupt_in_call(ch, false, deadline_ns, endpoint, out_reports, out_max_packet, out_interval_ms);
+}
+static inline status_t usb_open_interrupt_in_within(handle_t ch, uint64_t timeout_ns, uint8_t endpoint, handle_t *out_reports, uint16_t *out_max_packet, uint8_t *out_interval_ms)
+{
+    return usb_open_interrupt_in_call(ch, true, timeout_ns, endpoint, out_reports, out_max_packet, out_interval_ms);
+}
 static inline status_t usb_open_interrupt_in(handle_t ch, uint8_t endpoint, handle_t *out_reports, uint16_t *out_max_packet, uint8_t *out_interval_ms)
 {
-    return usb_open_interrupt_in_until(ch, DEADLINE_NEVER, endpoint, out_reports, out_max_packet, out_interval_ms);
+    return usb_open_interrupt_in_call(ch, false, DEADLINE_NEVER, endpoint, out_reports, out_max_packet, out_interval_ms);
 }
 
-/* Counts since the device was configured; open 1 while a report channel
- * is attached to the endpoint (someone -- the class driver -- polls it). */
-static inline status_t usb_endpoint_stats_until(handle_t ch, uint64_t deadline_ns, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open)
+/* usb_endpoint_stats_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_endpoint_stats_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open)
 {
     struct usb_endpoint_stats_req idl_q;
     struct usb_endpoint_stats_rep idl_r;
@@ -350,8 +400,8 @@ static inline status_t usb_endpoint_stats_until(handle_t ch, uint64_t deadline_n
     idl_q.txid = 0;
     idl_q.ordinal = USB_ENDPOINT_STATS;
     idl_q.endpoint = endpoint;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_reports)
@@ -364,14 +414,24 @@ static inline status_t usb_endpoint_stats_until(handle_t ch, uint64_t deadline_n
         *out_open = idl_r.open;
     return idl_st;
 }
+/* Counts since the device was configured; open 1 while a report channel
+ * is attached to the endpoint (someone -- the class driver -- polls it). */
+static inline status_t usb_endpoint_stats_until(handle_t ch, uint64_t deadline_ns, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open)
+{
+    return usb_endpoint_stats_call(ch, false, deadline_ns, endpoint, out_reports, out_dropped, out_errors, out_open);
+}
+static inline status_t usb_endpoint_stats_within(handle_t ch, uint64_t timeout_ns, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open)
+{
+    return usb_endpoint_stats_call(ch, true, timeout_ns, endpoint, out_reports, out_dropped, out_errors, out_open);
+}
 static inline status_t usb_endpoint_stats(handle_t ch, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open)
 {
-    return usb_endpoint_stats_until(ch, DEADLINE_NEVER, endpoint, out_reports, out_dropped, out_errors, out_open);
+    return usb_endpoint_stats_call(ch, false, DEADLINE_NEVER, endpoint, out_reports, out_dropped, out_errors, out_open);
 }
 
-/* SET_INTERFACE: select an alternate setting of this interface (closes its
- * open endpoints first). */
-static inline status_t usb_set_interface_until(handle_t ch, uint64_t deadline_ns, uint8_t alt_setting)
+/* usb_set_interface_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_set_interface_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t alt_setting)
 {
     struct usb_set_interface_req idl_q;
     struct usb_set_interface_rep idl_r;
@@ -379,27 +439,30 @@ static inline status_t usb_set_interface_until(handle_t ch, uint64_t deadline_ns
     idl_q.txid = 0;
     idl_q.ordinal = USB_SET_INTERFACE;
     idl_q.alt_setting = alt_setting;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* SET_INTERFACE: select an alternate setting of this interface (closes its
+ * open endpoints first). */
+static inline status_t usb_set_interface_until(handle_t ch, uint64_t deadline_ns, uint8_t alt_setting)
+{
+    return usb_set_interface_call(ch, false, deadline_ns, alt_setting);
+}
+static inline status_t usb_set_interface_within(handle_t ch, uint64_t timeout_ns, uint8_t alt_setting)
+{
+    return usb_set_interface_call(ch, true, timeout_ns, alt_setting);
+}
 static inline status_t usb_set_interface(handle_t ch, uint8_t alt_setting)
 {
-    return usb_set_interface_until(ch, DEADLINE_NEVER, alt_setting);
+    return usb_set_interface_call(ch, false, DEADLINE_NEVER, alt_setting);
 }
 
-/* ---- bulk endpoints (mass storage) ---------------------------------------
- * Open a bulk-IN / bulk-OUT pair of this interface (addresses with and
- * without bit 7; each one of this interface's bulk endpoints). usb-bus makes
- * a `size`-byte buffer (64 KiB), pins it for DMA with its own dma_cap and
- * hands the class driver a VMO of it to map: transfers move data in and out
- * of this buffer, never through messages. One pair per interface: a second
- * call on the SAME channel replaces the pair (a restarted class driver gets
- * a duplicate of the old channel, which never closes); on another channel
- * it is ERR_BAD_STATE. */
-static inline status_t usb_open_bulk_until(handle_t ch, uint64_t deadline_ns, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size)
+/* usb_open_bulk_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_open_bulk_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size)
 {
     struct usb_open_bulk_req idl_q;
     struct usb_open_bulk_rep idl_r;
@@ -410,8 +473,8 @@ static inline status_t usb_open_bulk_until(handle_t ch, uint64_t deadline_ns, ui
     idl_q.ep_out = ep_out;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -428,17 +491,31 @@ static inline status_t usb_open_bulk_until(handle_t ch, uint64_t deadline_ns, ui
         *out_size = idl_r.size;
     return idl_st;
 }
+/* ---- bulk endpoints (mass storage) ---------------------------------------
+ * Open a bulk-IN / bulk-OUT pair of this interface (addresses with and
+ * without bit 7; each one of this interface's bulk endpoints). usb-bus makes
+ * a `size`-byte buffer (64 KiB), pins it for DMA with its own dma_cap and
+ * hands the class driver a VMO of it to map: transfers move data in and out
+ * of this buffer, never through messages. One pair per interface: a second
+ * call on the SAME channel replaces the pair (a restarted class driver gets
+ * a duplicate of the old channel, which never closes); on another channel
+ * it is ERR_BAD_STATE. */
+static inline status_t usb_open_bulk_until(handle_t ch, uint64_t deadline_ns, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size)
+{
+    return usb_open_bulk_call(ch, false, deadline_ns, ep_in, ep_out, out_buffer, out_size);
+}
+static inline status_t usb_open_bulk_within(handle_t ch, uint64_t timeout_ns, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size)
+{
+    return usb_open_bulk_call(ch, true, timeout_ns, ep_in, ep_out, out_buffer, out_size);
+}
 static inline status_t usb_open_bulk(handle_t ch, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size)
 {
-    return usb_open_bulk_until(ch, DEADLINE_NEVER, ep_in, ep_out, out_buffer, out_size);
+    return usb_open_bulk_call(ch, false, DEADLINE_NEVER, ep_in, ep_out, out_buffer, out_size);
 }
 
-/* One bulk-IN transfer of up to `length` bytes into the buffer at `offset`
- * (offset + length <= size). `actual` bytes arrived (a short packet ends it
- * early). A STALL is ERR_IO with the endpoint halted: clear_halt, then go
- * on. No completion within timeout_ms (at most 60000): the transfer is
- * stopped and removed, ERR_TIMED_OUT. */
-static inline status_t usb_bulk_in_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+/* usb_bulk_in_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_bulk_in_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
 {
     struct usb_bulk_in_req idl_q;
     struct usb_bulk_in_rep idl_r;
@@ -448,22 +525,35 @@ static inline status_t usb_bulk_in_until(handle_t ch, uint64_t deadline_ns, uint
     idl_q.offset = offset;
     idl_q.length = length;
     idl_q.timeout_ms = timeout_ms;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_actual)
         *out_actual = idl_r.actual;
     return idl_st;
 }
+/* One bulk-IN transfer of up to `length` bytes into the buffer at `offset`
+ * (offset + length <= size). `actual` bytes arrived (a short packet ends it
+ * early). A STALL is ERR_IO with the endpoint halted: clear_halt, then go
+ * on. No completion within timeout_ms (at most 60000): the transfer is
+ * stopped and removed, ERR_TIMED_OUT. */
+static inline status_t usb_bulk_in_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+{
+    return usb_bulk_in_call(ch, false, deadline_ns, offset, length, timeout_ms, out_actual);
+}
+static inline status_t usb_bulk_in_within(handle_t ch, uint64_t timeout_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+{
+    return usb_bulk_in_call(ch, true, timeout_ns, offset, length, timeout_ms, out_actual);
+}
 static inline status_t usb_bulk_in(handle_t ch, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
 {
-    return usb_bulk_in_until(ch, DEADLINE_NEVER, offset, length, timeout_ms, out_actual);
+    return usb_bulk_in_call(ch, false, DEADLINE_NEVER, offset, length, timeout_ms, out_actual);
 }
 
-/* One bulk-OUT transfer of `length` bytes from the buffer at `offset`;
- * errors as bulk_in. */
-static inline status_t usb_bulk_out_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+/* usb_bulk_out_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_bulk_out_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
 {
     struct usb_bulk_out_req idl_q;
     struct usb_bulk_out_rep idl_r;
@@ -473,22 +563,32 @@ static inline status_t usb_bulk_out_until(handle_t ch, uint64_t deadline_ns, uin
     idl_q.offset = offset;
     idl_q.length = length;
     idl_q.timeout_ms = timeout_ms;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_actual)
         *out_actual = idl_r.actual;
     return idl_st;
 }
+/* One bulk-OUT transfer of `length` bytes from the buffer at `offset`;
+ * errors as bulk_in. */
+static inline status_t usb_bulk_out_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+{
+    return usb_bulk_out_call(ch, false, deadline_ns, offset, length, timeout_ms, out_actual);
+}
+static inline status_t usb_bulk_out_within(handle_t ch, uint64_t timeout_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+{
+    return usb_bulk_out_call(ch, true, timeout_ns, offset, length, timeout_ms, out_actual);
+}
 static inline status_t usb_bulk_out(handle_t ch, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
 {
-    return usb_bulk_out_until(ch, DEADLINE_NEVER, offset, length, timeout_ms, out_actual);
+    return usb_bulk_out_call(ch, false, DEADLINE_NEVER, offset, length, timeout_ms, out_actual);
 }
 
-/* CLEAR_FEATURE(ENDPOINT_HALT) on one of the pair (its address) and reset
- * the endpoint's ring and data toggle. */
-static inline status_t usb_clear_halt_until(handle_t ch, uint64_t deadline_ns, uint8_t endpoint)
+/* usb_clear_halt_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t usb_clear_halt_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t endpoint)
 {
     struct usb_clear_halt_req idl_q;
     struct usb_clear_halt_rep idl_r;
@@ -496,15 +596,25 @@ static inline status_t usb_clear_halt_until(handle_t ch, uint64_t deadline_ns, u
     idl_q.txid = 0;
     idl_q.ordinal = USB_CLEAR_HALT;
     idl_q.endpoint = endpoint;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* CLEAR_FEATURE(ENDPOINT_HALT) on one of the pair (its address) and reset
+ * the endpoint's ring and data toggle. */
+static inline status_t usb_clear_halt_until(handle_t ch, uint64_t deadline_ns, uint8_t endpoint)
+{
+    return usb_clear_halt_call(ch, false, deadline_ns, endpoint);
+}
+static inline status_t usb_clear_halt_within(handle_t ch, uint64_t timeout_ns, uint8_t endpoint)
+{
+    return usb_clear_halt_call(ch, true, timeout_ns, endpoint);
+}
 static inline status_t usb_clear_halt(handle_t ch, uint8_t endpoint)
 {
-    return usb_clear_halt_until(ch, DEADLINE_NEVER, endpoint);
+    return usb_clear_halt_call(ch, false, DEADLINE_NEVER, endpoint);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -1435,21 +1545,23 @@ static inline status_t usb_serve_one(handle_t ch, const struct usb_ops *ops, voi
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t usb_serve(handle_t ch, const struct usb_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[USB_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[USB_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = usb_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = usb_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `audioctl` (id 23). Client: audioctl_<method>(ch, args..., &results...)
- * (and audioctl_<method>_until with a deadline) over drv_channel_call, or
+ * (and audioctl_<method>_until with a deadline, _within with a timeout), or
  * audioctl_<method>_send and audioctl_<method>_result without waiting. Server:
  * fill a struct audioctl_ops and run audioctl_serve(ch, &ops, ctx), or
  * audioctl_serve_one / audioctl_dispatch_on for a loop of your own;
@@ -65,18 +65,17 @@ struct audioctl_device_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* Every stream open now, in the order opened: `count` entries of struct
- * mixer_stream_info (<mixer.h>, 40 bytes each) at the start of `list`,
- * the rest zero; `master`, the master volume in centibels. */
-static inline status_t audioctl_streams_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_count, int32_t *out_master, uint8_t out_list[640])
+/* audioctl_streams_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audioctl_streams_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_count, int32_t *out_master, uint8_t out_list[640])
 {
     struct audioctl_streams_req idl_q;
     struct audioctl_streams_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = AUDIOCTL_STREAMS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_count)
@@ -87,15 +86,25 @@ static inline status_t audioctl_streams_until(handle_t ch, uint64_t deadline_ns,
         out_list[idl_i] = idl_r.list[idl_i];
     return idl_st;
 }
+/* Every stream open now, in the order opened: `count` entries of struct
+ * mixer_stream_info (<mixer.h>, 40 bytes each) at the start of `list`,
+ * the rest zero; `master`, the master volume in centibels. */
+static inline status_t audioctl_streams_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_count, int32_t *out_master, uint8_t out_list[640])
+{
+    return audioctl_streams_call(ch, false, deadline_ns, out_count, out_master, out_list);
+}
+static inline status_t audioctl_streams_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_count, int32_t *out_master, uint8_t out_list[640])
+{
+    return audioctl_streams_call(ch, true, timeout_ns, out_count, out_master, out_list);
+}
 static inline status_t audioctl_streams(handle_t ch, uint32_t *out_count, int32_t *out_master, uint8_t out_list[640])
 {
-    return audioctl_streams_until(ch, DEADLINE_NEVER, out_count, out_master, out_list);
+    return audioctl_streams_call(ch, false, DEADLINE_NEVER, out_count, out_master, out_list);
 }
 
-/* Stream `id`'s volume in centibels, clamped to [-960, 0] (-960 and below:
- * silence), as audio.set_volume on its own channel. Answers the volume
- * set. ERR_NOT_FOUND: no such stream. */
-static inline status_t audioctl_set_volume_until(handle_t ch, uint64_t deadline_ns, uint32_t id, int32_t centibels, int32_t *out_centibels)
+/* audioctl_set_volume_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audioctl_set_volume_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, int32_t centibels, int32_t *out_centibels)
 {
     struct audioctl_set_volume_req idl_q;
     struct audioctl_set_volume_rep idl_r;
@@ -104,21 +113,33 @@ static inline status_t audioctl_set_volume_until(handle_t ch, uint64_t deadline_
     idl_q.ordinal = AUDIOCTL_SET_VOLUME;
     idl_q.id = id;
     idl_q.centibels = centibels;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_centibels)
         *out_centibels = idl_r.centibels;
     return idl_st;
 }
+/* Stream `id`'s volume in centibels, clamped to [-960, 0] (-960 and below:
+ * silence), as audio.set_volume on its own channel. Answers the volume
+ * set. ERR_NOT_FOUND: no such stream. */
+static inline status_t audioctl_set_volume_until(handle_t ch, uint64_t deadline_ns, uint32_t id, int32_t centibels, int32_t *out_centibels)
+{
+    return audioctl_set_volume_call(ch, false, deadline_ns, id, centibels, out_centibels);
+}
+static inline status_t audioctl_set_volume_within(handle_t ch, uint64_t timeout_ns, uint32_t id, int32_t centibels, int32_t *out_centibels)
+{
+    return audioctl_set_volume_call(ch, true, timeout_ns, id, centibels, out_centibels);
+}
 static inline status_t audioctl_set_volume(handle_t ch, uint32_t id, int32_t centibels, int32_t *out_centibels)
 {
-    return audioctl_set_volume_until(ch, DEADLINE_NEVER, id, centibels, out_centibels);
+    return audioctl_set_volume_call(ch, false, DEADLINE_NEVER, id, centibels, out_centibels);
 }
 
-/* The master volume, applied after the streams are summed, the same way. */
-static inline status_t audioctl_set_master_until(handle_t ch, uint64_t deadline_ns, int32_t centibels, int32_t *out_centibels)
+/* audioctl_set_master_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audioctl_set_master_call(handle_t ch, bool idl_within, uint64_t idl_t, int32_t centibels, int32_t *out_centibels)
 {
     struct audioctl_set_master_req idl_q;
     struct audioctl_set_master_rep idl_r;
@@ -126,26 +147,31 @@ static inline status_t audioctl_set_master_until(handle_t ch, uint64_t deadline_
     idl_q.txid = 0;
     idl_q.ordinal = AUDIOCTL_SET_MASTER;
     idl_q.centibels = centibels;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_centibels)
         *out_centibels = idl_r.centibels;
     return idl_st;
 }
+/* The master volume, applied after the streams are summed, the same way. */
+static inline status_t audioctl_set_master_until(handle_t ch, uint64_t deadline_ns, int32_t centibels, int32_t *out_centibels)
+{
+    return audioctl_set_master_call(ch, false, deadline_ns, centibels, out_centibels);
+}
+static inline status_t audioctl_set_master_within(handle_t ch, uint64_t timeout_ns, int32_t centibels, int32_t *out_centibels)
+{
+    return audioctl_set_master_call(ch, true, timeout_ns, centibels, out_centibels);
+}
 static inline status_t audioctl_set_master(handle_t ch, int32_t centibels, int32_t *out_centibels)
 {
-    return audioctl_set_master_until(ch, DEADLINE_NEVER, centibels, out_centibels);
+    return audioctl_set_master_call(ch, false, DEADLINE_NEVER, centibels, out_centibels);
 }
 
-/* The index-th sound card's HD Audio driver (from 0, in the order of the
- * devmgr device channels init gave the mixer), as a query channel
- * (hda.idl's `query`): everything the driver answers but open_output, so
- * the shell's `hda` can look and set the gain without taking the output
- * stream the mixer plays through. The caller closes it. ERR_NOT_FOUND: no
- * such driver (index past the last card, or its driver not running). */
-static inline status_t audioctl_device_until(handle_t ch, uint64_t deadline_ns, uint32_t index, handle_t *out_device)
+/* audioctl_device_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audioctl_device_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t index, handle_t *out_device)
 {
     struct audioctl_device_req idl_q;
     struct audioctl_device_rep idl_r;
@@ -155,8 +181,8 @@ static inline status_t audioctl_device_until(handle_t ch, uint64_t deadline_ns, 
     idl_q.index = index;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -171,9 +197,23 @@ static inline status_t audioctl_device_until(handle_t ch, uint64_t deadline_ns, 
     }
     return idl_st;
 }
+/* The index-th sound card's HD Audio driver (from 0, in the order of the
+ * devmgr device channels init gave the mixer), as a query channel
+ * (hda.idl's `query`): everything the driver answers but open_output, so
+ * the shell's `hda` can look and set the gain without taking the output
+ * stream the mixer plays through. The caller closes it. ERR_NOT_FOUND: no
+ * such driver (index past the last card, or its driver not running). */
+static inline status_t audioctl_device_until(handle_t ch, uint64_t deadline_ns, uint32_t index, handle_t *out_device)
+{
+    return audioctl_device_call(ch, false, deadline_ns, index, out_device);
+}
+static inline status_t audioctl_device_within(handle_t ch, uint64_t timeout_ns, uint32_t index, handle_t *out_device)
+{
+    return audioctl_device_call(ch, true, timeout_ns, index, out_device);
+}
 static inline status_t audioctl_device(handle_t ch, uint32_t index, handle_t *out_device)
 {
-    return audioctl_device_until(ch, DEADLINE_NEVER, index, out_device);
+    return audioctl_device_call(ch, false, DEADLINE_NEVER, index, out_device);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -541,21 +581,23 @@ static inline status_t audioctl_serve_one(handle_t ch, const struct audioctl_ops
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t audioctl_serve(handle_t ch, const struct audioctl_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[AUDIOCTL_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[AUDIOCTL_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = audioctl_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = audioctl_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

@@ -314,3 +314,37 @@ KTEST(pathstat_user_deadline_call_counts)
     KT_IDLE_EQ(per100(&r, PATH_CLOCK), 200);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
 }
+
+/* The call through generated code (tools/genidl.py), as a program makes
+ * one: null.ping's client stub with a time limit, as libos's file calls
+ * have, against null_serve (utest bench-gcall, bench-gecho). The time
+ * limit goes to the kernel as a timeout (_within), so the client makes
+ * no clock_get first; the generated server loop answers each request in
+ * the call that takes the next one (channel_reply_wait). 2 system calls a
+ * round trip (6 when the client read the clock for a deadline and the
+ * loop read, wrote, read again to find nothing and waited), no read that
+ * finds nothing (1). Still two clock reads, both the kernel's now: the
+ * call turning its timeout into a deadline, and its wait (which has one). */
+KTEST(pathstat_user_generated_call_counts)
+{
+    struct path_result r;
+    if (!bench_path_ucall("gcall", test_cpu(), test_cpu(), 0, &r)) {
+        KT_SKIP_LIVE("no bin/utest or no trace free");
+        KT_ASSERT(!"bench_path_ucall failed");
+    }
+    KT_ASSERT(r.calls > 0);
+    /* The warm-up reads the clock every 64 calls (calls this quick may
+     * fill the whole window): at most 2 in 100. */
+    KT_ASSERT(sys100(&r, SYS_clock_get) <= 2);
+    KT_EQ(sys100(&r, SYS_channel_call), 100);
+    KT_EQ(sys100(&r, SYS_channel_reply_wait), 100);
+    KT_EQ(sys100(&r, SYS_channel_read), 0);
+    KT_EQ(sys100(&r, SYS_channel_write), 0);
+    KT_EQ(sys100(&r, SYS_object_wait_one), 0);
+    KT_ASSERT(per100(&r, PATH_SYSCALL) >= 200 && per100(&r, PATH_SYSCALL) <= 202);
+    KT_EQ(per100(&r, PATH_EMPTY_READ), 0);
+    KT_EQ(per100(&r, PATH_KMALLOC), 0);
+    KT_EQ(per100(&r, PATH_SLEEPQ), 100);
+    /* Two a call, and now and then one of the warm-up's (above). */
+    KT_IDLE_ASSERT(per100(&r, PATH_CLOCK) >= 200 && per100(&r, PATH_CLOCK) <= 202);
+}

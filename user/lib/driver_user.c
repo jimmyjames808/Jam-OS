@@ -206,6 +206,31 @@ status_t drv_channel_call_h(handle_t h, void *wbytes, uint32_t wn, void *rbytes,
     return jam_channel_call(&a);
 }
 
+status_t drv_channel_call_within(handle_t h, void *wbytes, uint32_t wn, void *rbytes,
+                                 uint32_t rcap, uint32_t *ractual, handle_t *rh, uint32_t rhcap,
+                                 uint32_t *rhactual, uint64_t timeout_ns)
+{
+    struct channel_call_args a = {
+        .h = h,
+        .wn = wn,
+        .wbytes = (uint64_t)(uintptr_t)wbytes,
+        .rcap = rcap,
+        .rbytes = (uint64_t)(uintptr_t)rbytes,
+        .ractual = (uint64_t)(uintptr_t)ractual,
+        .rh = (uint64_t)(uintptr_t)rh,
+        .rhcap = rhcap,
+        .rhactual = (uint64_t)(uintptr_t)rhactual,
+        .flags = CHANNEL_CALL_TIMEOUT,
+        .deadline_ns = timeout_ns,
+    };
+    return jam_channel_call(&a);
+}
+
+status_t drv_channel_reply_wait(const struct channel_reply_wait_args *a)
+{
+    return jam_channel_reply_wait(a);
+}
+
 status_t drv_port_create(handle_t *out)
 {
     return jam_port_create(out);

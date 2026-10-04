@@ -23,7 +23,12 @@
  *   bench-tcall  channel_call to an echo THREAD of this process on a
  *                channel of its own: the same work as bench-call without
  *                the address-space switches (both threads share our CR3),
- *                for the process->process breakdown in BENCH.md */
+ *                for the process->process breakdown in BENCH.md
+ *   bench-gcall  the same call through generated code (tools/genidl.py):
+ *                null.ping with a time limit, made as libos makes a file
+ *                call, against
+ *   bench-gecho  null_serve, the generated server loop */
+#include <idl/null.h>
 #include <os.h>
 #include "utest.h"
 
@@ -123,28 +128,38 @@ static status_t call_once(handle_t ch)
     return jam_channel_call(&a);
 }
 
+/* One null.ping through the generated client, with a time limit as
+ * libos's file calls have: a timeout the kernel starts from its own
+ * clock (_within). */
+static status_t gcall_once(handle_t ch)
+{
+    uint64_t v = 0;
+    return null_ping_within(ch, FS_CALL_TIMEOUT, 42, &v);
+}
+
 /* Calls on ch for WARM_NS, untimed. The clock is read once every 64
  * calls, so a warm-up call looks like a timed one to the kernel's path
  * trace (kernel/test/bench_path.c), which counts some of them. */
-static void warm_calls(handle_t ch)
+static void warm_calls(handle_t ch, status_t (*once)(handle_t))
 {
     uint64_t end = now() + WARM_NS;
     for (unsigned k = 0;; k++) {
-        call_once(ch);
+        once(ch);
         if (k % 64 == 0 && now() >= end)
             return;
     }
 }
 
-static int b_call(void)
+/* SAMPLES calls to the server on SR_USER + 1, each made by `once`. */
+static int b_call(status_t (*once)(handle_t))
 {
     handle_t ch = startup_handle(SR_USER + 1);
-    if (call_once(ch) != OK)
+    if (once(ch) != OK)
         return 3;
-    warm_calls(ch);
+    warm_calls(ch, once);
     for (unsigned i = 0; i < SAMPLES; i++) {
         uint64_t t0 = cpu_tsc();
-        call_once(ch);
+        once(ch);
         res.cycles[i] = cpu_tsc() - t0;
     }
     return send(1);
@@ -202,6 +217,20 @@ static int b_rwecho(void)
     }
 }
 
+static status_t g_ping(void *ctx, uint64_t value, uint64_t *out_value)
+{
+    (void)ctx;
+    *out_value = value;
+    return OK;
+}
+
+/* bench-echo's server as genidl writes it: null_serve. */
+static int b_gecho(void)
+{
+    static const struct null_ops ops = { .ping = g_ping };
+    return null_serve(startup_handle(SR_USER), &ops, NULL) == OK ? 0 : 3;
+}
+
 static uint8_t echo_stack[16384] __attribute__((aligned(16)));
 
 static void echo_thread(void *arg)
@@ -220,7 +249,7 @@ static int b_tcall(void)
     jam_thread_set_priority(t, THREAD_PRIO_USER_MAX);
     if (call_once(mine) != OK)
         return 3;
-    warm_calls(mine);
+    warm_calls(mine, call_once);
     for (unsigned i = 0; i < SAMPLES; i++) {
         uint64_t t0 = cpu_tsc();
         call_once(mine);
@@ -239,11 +268,13 @@ int bench_child(int argc, char **argv)
     if (!strcmp(w, "null"))  return b_null();
     if (!strcmp(w, "clock")) return b_clock();
     if (!strcmp(w, "fault")) return b_fault();
-    if (!strcmp(w, "call"))  return b_call();
+    if (!strcmp(w, "call"))  return b_call(call_once);
     if (!strcmp(w, "dcall")) {
         call_deadline = true;
-        return b_call();
+        return b_call(call_once);
     }
+    if (!strcmp(w, "gcall")) return b_call(gcall_once);
+    if (!strcmp(w, "gecho")) return b_gecho();
     if (!strcmp(w, "echo"))  return b_echo();
     if (!strcmp(w, "rwecho")) return b_rwecho();
     if (!strcmp(w, "tcall")) return b_tcall();

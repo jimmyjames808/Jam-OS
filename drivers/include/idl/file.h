@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `file` (id 17). Client: file_<method>(ch, args..., &results...)
- * (and file_<method>_until with a deadline) over drv_channel_call, or
+ * (and file_<method>_until with a deadline, _within with a timeout), or
  * file_<method>_send and file_<method>_result without waiting. Server:
  * fill a struct file_ops and run file_serve(ch, &ops, ctx), or
  * file_serve_one / file_dispatch_on for a loop of your own;
@@ -74,9 +74,9 @@ struct file_sync_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* Read up to `length` bytes (<= the buffer's size) at `offset` into the
- * buffer; `actual` < length only at the end of the file. */
-static inline status_t file_read_until(handle_t ch, uint64_t deadline_ns, uint64_t offset, uint32_t length, uint32_t *out_actual)
+/* file_read_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_read_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t offset, uint32_t length, uint32_t *out_actual)
 {
     struct file_read_req idl_q;
     struct file_read_rep idl_r;
@@ -85,23 +85,32 @@ static inline status_t file_read_until(handle_t ch, uint64_t deadline_ns, uint64
     idl_q.ordinal = FILE_READ;
     idl_q.offset = offset;
     idl_q.length = length;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_actual)
         *out_actual = idl_r.actual;
     return idl_st;
 }
+/* Read up to `length` bytes (<= the buffer's size) at `offset` into the
+ * buffer; `actual` < length only at the end of the file. */
+static inline status_t file_read_until(handle_t ch, uint64_t deadline_ns, uint64_t offset, uint32_t length, uint32_t *out_actual)
+{
+    return file_read_call(ch, false, deadline_ns, offset, length, out_actual);
+}
+static inline status_t file_read_within(handle_t ch, uint64_t timeout_ns, uint64_t offset, uint32_t length, uint32_t *out_actual)
+{
+    return file_read_call(ch, true, timeout_ns, offset, length, out_actual);
+}
 static inline status_t file_read(handle_t ch, uint64_t offset, uint32_t length, uint32_t *out_actual)
 {
-    return file_read_until(ch, DEADLINE_NEVER, offset, length, out_actual);
+    return file_read_call(ch, false, DEADLINE_NEVER, offset, length, out_actual);
 }
 
-/* Write `length` bytes from the buffer at `offset` (FS_APPEND: at the end,
- * whatever `offset` says); the file grows as needed. Not opened FS_WRITE:
- * ERR_ACCESS_DENIED. */
-static inline status_t file_write_until(handle_t ch, uint64_t deadline_ns, uint64_t offset, uint32_t length, uint32_t *out_actual)
+/* file_write_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_write_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t offset, uint32_t length, uint32_t *out_actual)
 {
     struct file_write_req idl_q;
     struct file_write_rep idl_r;
@@ -110,20 +119,33 @@ static inline status_t file_write_until(handle_t ch, uint64_t deadline_ns, uint6
     idl_q.ordinal = FILE_WRITE;
     idl_q.offset = offset;
     idl_q.length = length;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_actual)
         *out_actual = idl_r.actual;
     return idl_st;
 }
+/* Write `length` bytes from the buffer at `offset` (FS_APPEND: at the end,
+ * whatever `offset` says); the file grows as needed. Not opened FS_WRITE:
+ * ERR_ACCESS_DENIED. */
+static inline status_t file_write_until(handle_t ch, uint64_t deadline_ns, uint64_t offset, uint32_t length, uint32_t *out_actual)
+{
+    return file_write_call(ch, false, deadline_ns, offset, length, out_actual);
+}
+static inline status_t file_write_within(handle_t ch, uint64_t timeout_ns, uint64_t offset, uint32_t length, uint32_t *out_actual)
+{
+    return file_write_call(ch, true, timeout_ns, offset, length, out_actual);
+}
 static inline status_t file_write(handle_t ch, uint64_t offset, uint32_t length, uint32_t *out_actual)
 {
-    return file_write_until(ch, DEADLINE_NEVER, offset, length, out_actual);
+    return file_write_call(ch, false, DEADLINE_NEVER, offset, length, out_actual);
 }
 
-static inline status_t file_truncate_until(handle_t ch, uint64_t deadline_ns, uint64_t size)
+/* file_truncate_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_truncate_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t size)
 {
     struct file_truncate_req idl_q;
     struct file_truncate_rep idl_r;
@@ -131,26 +153,36 @@ static inline status_t file_truncate_until(handle_t ch, uint64_t deadline_ns, ui
     idl_q.txid = 0;
     idl_q.ordinal = FILE_TRUNCATE;
     idl_q.size = size;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+static inline status_t file_truncate_until(handle_t ch, uint64_t deadline_ns, uint64_t size)
+{
+    return file_truncate_call(ch, false, deadline_ns, size);
+}
+static inline status_t file_truncate_within(handle_t ch, uint64_t timeout_ns, uint64_t size)
+{
+    return file_truncate_call(ch, true, timeout_ns, size);
+}
 static inline status_t file_truncate(handle_t ch, uint64_t size)
 {
-    return file_truncate_until(ch, DEADLINE_NEVER, size);
+    return file_truncate_call(ch, false, DEADLINE_NEVER, size);
 }
 
-static inline status_t file_stat_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_size, uint64_t *out_mtime)
+/* file_stat_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_stat_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_size, uint64_t *out_mtime)
 {
     struct file_stat_req idl_q;
     struct file_stat_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = FILE_STAT;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_size)
@@ -159,27 +191,45 @@ static inline status_t file_stat_until(handle_t ch, uint64_t deadline_ns, uint64
         *out_mtime = idl_r.mtime;
     return idl_st;
 }
+static inline status_t file_stat_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_size, uint64_t *out_mtime)
+{
+    return file_stat_call(ch, false, deadline_ns, out_size, out_mtime);
+}
+static inline status_t file_stat_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_size, uint64_t *out_mtime)
+{
+    return file_stat_call(ch, true, timeout_ns, out_size, out_mtime);
+}
 static inline status_t file_stat(handle_t ch, uint64_t *out_size, uint64_t *out_mtime)
 {
-    return file_stat_until(ch, DEADLINE_NEVER, out_size, out_mtime);
+    return file_stat_call(ch, false, DEADLINE_NEVER, out_size, out_mtime);
 }
 
-static inline status_t file_sync_until(handle_t ch, uint64_t deadline_ns)
+/* file_sync_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_sync_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct file_sync_req idl_q;
     struct file_sync_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = FILE_SYNC;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+static inline status_t file_sync_until(handle_t ch, uint64_t deadline_ns)
+{
+    return file_sync_call(ch, false, deadline_ns);
+}
+static inline status_t file_sync_within(handle_t ch, uint64_t timeout_ns)
+{
+    return file_sync_call(ch, true, timeout_ns);
+}
 static inline status_t file_sync(handle_t ch)
 {
-    return file_sync_until(ch, DEADLINE_NEVER);
+    return file_sync_call(ch, false, DEADLINE_NEVER);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -585,21 +635,23 @@ static inline status_t file_serve_one(handle_t ch, const struct file_ops *ops, v
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t file_serve(handle_t ch, const struct file_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[FILE_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[FILE_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = file_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = file_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

@@ -30,6 +30,20 @@ type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
 
 Either list may be empty: `()`.
 
+A client calls a method four ways:
+    <proto>_<method>(ch, args..., &results...)    waits for ever
+    <proto>_<method>_until(ch, deadline_ns, ...)  until a deadline
+    <proto>_<method>_within(ch, timeout_ns, ...)  for a timeout from when the
+        call starts, by the kernel's clock: no clock read first
+    <proto>_<method>_call(ch, within, t, ...)     the body of the two before
+        (t a deadline, or a timeout if `within`)
+
+A server runs <proto>_serve(ch, &ops, ctx): each reply goes out in the
+system call that waits for the next request (drv_channel_reply_wait, in
+idl_serve_next), one system call per request. <proto>_serve_one reads,
+answers and writes one request, for a loop of the server's own (one that
+waits on a port for many channels).
+
 `later`: the server may answer the method later, after its handler has
 returned and the loop has served other requests (a `recv` that waits for
 data, a wait for a device). The handler gets the request's `struct
@@ -92,7 +106,7 @@ ARRAY = re.compile(r"u8\[(\d+)\]$")
 ARRAY_MAX = 4096
 MSG_MAX = 8192          # bytes of one request or reply: both sit on a kernel stack
 HDR = 8                 # txid + ordinal / txid + status
-RESERVED = {"ch", "deadline_ns", "ctx", "ops"}
+RESERVED = {"ch", "deadline_ns", "timeout_ns", "ctx", "ops"}
 C_KEYWORDS = set("""auto break case char const continue default do double else enum extern
     float for goto if inline int long register restrict return short signed sizeof static
     struct switch typedef union unsigned void volatile while _Bool _Alignas _Alignof _Atomic
@@ -225,9 +239,11 @@ def parse(src):
             fail(src, lineno, f"method '{mname}' defined twice")
         if mname in ("dispatch", "dispatch_on", "serve", "serve_one", "ops") or \
                 mname.startswith("reply_") or \
-                any(mname.endswith(x) for x in ("_until", "_send", "_result")):
+                any(mname.endswith(x) for x in ("_until", "_within", "_call", "_send",
+                                                "_result")):
             fail(src, lineno, f"method name '{mname}' is reserved (dispatch, dispatch_on, "
-                              "serve, serve_one, ops, reply_*, *_until, *_send, *_result)")
+                              "serve, serve_one, ops, reply_*, *_until, *_within, *_call, "
+                              "*_send, *_result)")
         ordinals.add(ordinal)
         names.add(mname)
         args = parse_fields(src, lineno, m.group(3), f"{mname} arguments")
@@ -299,6 +315,19 @@ def gen_common():
         "    return n == want ? OK : ERR_INTERNAL;",
         "}",
         "",
+        "/* Client: one call on ch: the request q (qn bytes) out, the reply into r",
+        " * (rcap bytes, *rn of them) and its handles into rh (rhcap slots, *rhn of",
+        " * them). t is a deadline, or with `within` a timeout from when the call",
+        " * starts, by the kernel's clock (no clock read here). */",
+        "static inline status_t idl_call(handle_t ch, void *q, uint32_t qn, void *r, uint32_t rcap,",
+        "                                uint32_t *rn, handle_t *rh, uint32_t rhcap, uint32_t *rhn,",
+        "                                bool within, uint64_t t)",
+        "{",
+        "    if (within)",
+        "        return drv_channel_call_within(ch, q, qn, r, rcap, rn, rh, rhcap, rhn, t);",
+        "    return drv_channel_call_h(ch, q, qn, r, rcap, rn, rh, rhcap, rhn, t);",
+        "}",
+        "",
         "static inline void idl_close_all(const handle_t *hs, uint32_t n)",
         "{",
         "    for (uint32_t idl_i = 0; idl_i < n; idl_i++)",
@@ -360,6 +389,72 @@ def gen_common():
         "        idl_st = OK;   /* another reader took it meanwhile: look again */",
         "    }",
         "    return idl_st;",
+        "}",
+        "",
+        "/* ---- serving ----------------------------------------------------------- */",
+        "",
+        "/* A <proto>_serve loop between its system calls: the reply waiting to go",
+        " * out, and the request just taken. */",
+        "struct idl_serve {",
+        "    handle_t  ch;     /* the channel served (not owned) */",
+        "    void     *q;      /* the request buffer: qcap bytes */",
+        "    uint32_t  qcap;",
+        "    uint32_t  n;      /* the request's bytes, once taken */",
+        "    void     *r;      /* the reply: rn bytes, 0 when there is none to send */",
+        "    uint32_t  rn;",
+        "    handle_t *rhs;    /* the reply's handles: rhn of them, moved once it is sent */",
+        "    uint32_t  rhn;",
+        "};",
+        "",
+        "/* Server: send the reply waiting in s, if any, and take the next request",
+        " * into s->q, in one system call (drv_channel_reply_wait), waiting for one",
+        " * if none is queued. OK: s->n bytes of a request without handles are in",
+        " * s->q. A request carrying handles, or too big for s->q, is answered",
+        " * ERR_INVALID_ARGS (idl_drain) and the next one taken. A reply that can't",
+        " * go out (the client is gone, or never called) is dropped and its",
+        " * handles closed, as idl_reply_write's. Otherwise the wait's status:",
+        " * ERR_PEER_CLOSED when the client is gone for good and nothing is",
+        " * queued, ERR_CANCELED when the thread is being killed. */",
+        "static inline status_t idl_serve_next(struct idl_serve *s)",
+        "{",
+        "    for (;;) {",
+        "        bool idl_reply = s->rn != 0;",
+        "        status_t idl_rs = 1;   /* never a status: the reply wasn't tried */",
+        "        uint32_t idl_n = 0, idl_nh = 0;",
+        "        /* No room for handles: a request that carries any stays queued",
+        "         * (ERR_BUFFER_TOO_SMALL) for idl_drain. */",
+        "        struct channel_reply_wait_args idl_a = {",
+        "            .h = idl_reply ? s->ch : HANDLE_INVALID,",
+        "            .wait = s->ch,",
+        "            .bytes = (uint64_t)(uintptr_t)s->q,",
+        "            .bytes_cap = s->qcap,",
+        "            .actual_bytes = (uint64_t)(uintptr_t)&idl_n,",
+        "            .actual_handles = (uint64_t)(uintptr_t)&idl_nh,",
+        "            .deadline_ns = DEADLINE_NEVER,",
+        "        };",
+        "        if (idl_reply) {",
+        "            idl_a.rbytes = (uint64_t)(uintptr_t)s->r;",
+        "            idl_a.rn = s->rn;",
+        "            idl_a.rh = (uint64_t)(uintptr_t)s->rhs;",
+        "            idl_a.rhn = s->rhn;",
+        "            idl_a.reply_status = (uint64_t)(uintptr_t)&idl_rs;",
+        "        }",
+        "        status_t idl_st = drv_channel_reply_wait(&idl_a);",
+        "        if (idl_rs != OK)",
+        "            idl_close_all(s->rhs, s->rhn);   /* not sent: they're still ours */",
+        "        s->rn = s->rhn = 0;",
+        "        if (idl_reply && idl_rs != 1 && idl_rs != OK && idl_rs != ERR_PEER_CLOSED)",
+        "            continue;   /* the reply failed and nothing was read: wait again */",
+        "        if (idl_st == ERR_BUFFER_TOO_SMALL) {",
+        "            idl_st = idl_drain(s->ch, idl_n, idl_nh);",
+        "            if (idl_st == OK)",
+        "                continue;",
+        "        }",
+        "        if (idl_st != OK)",
+        "            return idl_st;",
+        "        s->n = idl_n;",
+        "        return OK;",
+        "    }",
         "}",
         "",
         "/* ---- answering later (a `later` method, or a loop of your own) ------- */",
@@ -482,11 +577,12 @@ def copy_results(m, cond, r):
 
 def gen_client_sync(p, m):
     P, U = p.name, p.name.upper()
-    params = ["handle_t ch", "uint64_t deadline_ns"] + [f.in_param() for f in m.args] + \
-             [f.out_param() for f in m.results]
+    params = ["handle_t ch", "bool idl_within", "uint64_t idl_t"] + \
+             [f.in_param() for f in m.args] + [f.out_param() for f in m.results]
     out = [""]
-    out += c_comment(m.doc)
-    out.append(f"static inline status_t {P}_{m.name}_until({', '.join(params)})")
+    out.append(f"/* {P}_{m.name}_until and _within: idl_t is a deadline, or with idl_within a")
+    out.append(" * timeout from when the call starts (the kernel's clock). */")
+    out.append(f"static inline status_t {P}_{m.name}_call({', '.join(params)})")
     out.append("{")
     out.append(f"    struct {P}_{m.name}_req idl_q;")
     out.append(f"    struct {P}_{m.name}_rep idl_r;")
@@ -497,10 +593,9 @@ def gen_client_sync(p, m):
     if hres:
         out.append(f"    handle_t idl_rh[{len(hres)}];")
         out.append("    uint32_t idl_rhn = 0;")
-        out.append("    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), "
-                   "&idl_r, sizeof(idl_r), &idl_n,")
-        out.append(f"                                         idl_rh, {len(hres)}, &idl_rhn, "
-                   "deadline_ns);")
+        out.append("    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), "
+                   "&idl_n, idl_rh,")
+        out.append(f"                               {len(hres)}, &idl_rhn, idl_within, idl_t);")
         out.append("    if (idl_st == OK)")
         out.append("        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));")
         out.append(f"    if (idl_st == OK && idl_rhn != {len(hres)})")
@@ -508,9 +603,9 @@ def gen_client_sync(p, m):
         out.append("    if (idl_st != OK)")
         out.append("        idl_close_all(idl_rh, idl_rhn);")
     else:
-        out.append("    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, "
-                   "sizeof(idl_r), &idl_n,")
-        out.append("                                       deadline_ns);")
+        out.append("    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), "
+                   "&idl_n, NULL, 0,")
+        out.append("                               NULL, idl_within, idl_t);")
         out.append("    if (idl_st == OK)")
         out.append("        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));")
     for k, f in enumerate(hres):
@@ -523,14 +618,18 @@ def gen_client_sync(p, m):
     out += copy_results(m, "idl_st == OK", "idl_r.")
     out.append("    return idl_st;")
     out.append("}")
-    plain = (["handle_t ch"] + [f.in_param() for f in m.args] +
-             [f.out_param() for f in m.results])
-    names = ["ch", "DEADLINE_NEVER"] + [f.name for f in m.args] + \
-            [f"out_{f.name}" for f in m.results]
-    out.append(f"static inline status_t {P}_{m.name}({', '.join(plain)})")
-    out.append("{")
-    out.append(f"    return {P}_{m.name}_until({', '.join(names)});")
-    out.append("}")
+    rest = [f.in_param() for f in m.args] + [f.out_param() for f in m.results]
+    names = [f.name for f in m.args] + [f"out_{f.name}" for f in m.results]
+    for suffix, time, call in (("_until", "uint64_t deadline_ns", "false, deadline_ns"),
+                               ("_within", "uint64_t timeout_ns", "true, timeout_ns"),
+                               ("", None, "false, DEADLINE_NEVER")):
+        if suffix == "_until":
+            out += c_comment(m.doc)
+        params = ["handle_t ch"] + ([time] if time else []) + rest
+        out.append(f"static inline status_t {P}_{m.name}{suffix}({', '.join(params)})")
+        out.append("{")
+        out.append(f"    return {P}_{m.name}_call({', '.join(['ch', call] + names)});")
+        out.append("}")
     return out
 
 
@@ -697,7 +796,7 @@ def gen_protocol(p):
     out = [f"/* {BANNER.format(src=src)}",
            " *",
            f" * Protocol `{P}` (id {p.pid}). Client: {P}_<method>(ch, args..., &results...)",
-           f" * (and {P}_<method>_until with a deadline) over drv_channel_call, or",
+           f" * (and {P}_<method>_until with a deadline, _within with a timeout), or",
            f" * {P}_<method>_send and {P}_<method>_result without waiting. Server:",
            f" * fill a struct {P}_ops and run {P}_serve(ch, &ops, ctx), or",
            f" * {P}_serve_one / {P}_dispatch_on for a loop of your own;",
@@ -827,22 +926,25 @@ def gen_protocol(p):
         "}",
         "",
         "/* Serve ch until the client closes it (OK), or a wait or read fails",
-        " * (that status: ERR_CANCELED when the driver is being killed). */",
+        " * (that status: ERR_CANCELED when the driver is being killed). Each reply",
+        " * goes out in the system call that takes the next request",
+        " * (idl_serve_next). */",
         f"static inline status_t {P}_serve(handle_t ch, const struct {P}_ops *ops, void *ctx)",
         "{",
+        f"    _Alignas(8) uint8_t idl_q[{U}_REQ_MAX];",
+        f"    _Alignas(8) uint8_t idl_r[{U}_REP_MAX];",
+        "    handle_t idl_rhs[IDL_REP_HANDLES];",
+        "    struct idl_serve idl_s = {",
+        "        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,",
+        "    };",
         "    for (;;) {",
-        f"        status_t idl_st = {P}_serve_one(ch, ops, ctx);",
-        "        if (idl_st == OK)",
-        "            continue;",
+        "        status_t idl_st = idl_serve_next(&idl_s);",
         "        if (idl_st == ERR_PEER_CLOSED)",
         "            return OK;",
-        "        if (idl_st != ERR_SHOULD_WAIT)",
-        "            return idl_st;",
-        "        signals_t idl_seen = 0;",
-        "        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,",
-        "                                     &idl_seen);",
         "        if (idl_st != OK)",
         "            return idl_st;",
+        f"        idl_s.rn = {P}_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, "
+        "&idl_s.rhn);",
         "    }",
         "}",
         "",

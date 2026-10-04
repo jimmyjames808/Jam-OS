@@ -103,6 +103,17 @@ status_t drv_channel_call(handle_t h, void *wbytes, uint32_t wn, void *rbytes, u
 status_t drv_channel_call_h(handle_t h, void *wbytes, uint32_t wn, void *rbytes, uint32_t rcap,
                             uint32_t *ractual, handle_t *rh, uint32_t rhcap, uint32_t *rhactual,
                             uint64_t deadline_ns);
+/* drv_channel_call_h with a timeout in place of the deadline: timeout_ns
+ * from when the call starts, by the kernel's own clock
+ * (CHANNEL_CALL_TIMEOUT), so the caller reads no clock first. Generated
+ * clients' <proto>_<method>_within use it. */
+status_t drv_channel_call_within(handle_t h, void *wbytes, uint32_t wn, void *rbytes,
+                                 uint32_t rcap, uint32_t *ractual, handle_t *rh, uint32_t rhcap,
+                                 uint32_t *rhactual, uint64_t timeout_ns);
+/* A server's reply and its wait for the next request in one call
+ * (channel_reply_wait; the rules are in abi/syscalls.def). Generated
+ * <proto>_serve loops use it. */
+status_t drv_channel_reply_wait(const struct channel_reply_wait_args *a);
 status_t drv_port_create(handle_t *out);
 status_t drv_port_bind(handle_t port, handle_t obj, uint64_t key, signals_t mask, uint32_t flags);
 status_t drv_port_wait(handle_t port, uint64_t deadline_ns, struct port_packet *out);

@@ -6,17 +6,13 @@
  * channel, mapped here for as long as the file is open: a read has the
  * service fill it and copies out, a write copies in and has the service
  * take it. Transfers larger than the buffer are split. Every call has a
- * deadline (FS_CALL_TIMEOUT), and a service that died closes its channels,
- * so none of these can hang on a broken mount. */
+ * time limit (FS_CALL_TIMEOUT, given to the kernel as a timeout: no clock
+ * read first), and a service that died closes its channels, so none of
+ * these can hang on a broken mount. */
 #include <fs_idl.h>
 #include "ns.h"
 
 #define BUF_MAX (1u << 20)   /* a bigger transfer buffer than this is a broken service */
-
-static uint64_t deadline(void)
-{
-    return now() + FS_CALL_TIMEOUT;
-}
 
 /* ---- open files --------------------------------------------------------------- */
 
@@ -50,7 +46,7 @@ status_t file_open(const char *path, uint32_t flags, struct jfile *out)
     if (!fs)
         return ERR_WRONG_TYPE;   /* "/" is a directory */
     struct jfile f = { 0 };
-    st = fs_open_until(fs, deadline(), rel, flags, &f.ch, &f.buf_vmo, &f.size);
+    st = fs_open_within(fs, FS_CALL_TIMEOUT, rel, flags, &f.ch, &f.buf_vmo, &f.size);
     jam_handle_close(fs);
     if (st != OK)
         return st;
@@ -112,7 +108,7 @@ status_t file_read(struct jfile *f, uint64_t offset, void *dst, size_t n, size_t
     size_t got = 0;
     while (got < n) {
         uint32_t want = piece(f, n, got), actual = 0;
-        status_t st = file_read_until(f->ch, deadline(), offset + got, want, &actual);
+        status_t st = file_read_within(f->ch, FS_CALL_TIMEOUT, offset + got, want, &actual);
         if (st == OK && actual > want)
             st = ERR_INTERNAL;
         if (st != OK)
@@ -136,7 +132,7 @@ status_t file_write(struct jfile *f, uint64_t offset, const void *src, size_t n,
     while (put < n) {
         uint32_t want = piece(f, n, put), actual = 0;
         memcpy(f->buf, (const uint8_t *)src + put, want);
-        status_t st = file_write_until(f->ch, deadline(), offset + put, want, &actual);
+        status_t st = file_write_within(f->ch, FS_CALL_TIMEOUT, offset + put, want, &actual);
         if (st == OK && actual > want)
             st = ERR_INTERNAL;
         if (st != OK)
@@ -151,17 +147,17 @@ status_t file_write(struct jfile *f, uint64_t offset, const void *src, size_t n,
 
 status_t file_sync(struct jfile *f)
 {
-    return file_sync_until(f->ch, deadline());
+    return file_sync_within(f->ch, FS_CALL_TIMEOUT);
 }
 
 status_t file_stat(struct jfile *f, uint64_t *size, uint64_t *mtime)
 {
-    return file_stat_until(f->ch, deadline(), size, mtime);
+    return file_stat_within(f->ch, FS_CALL_TIMEOUT, size, mtime);
 }
 
 status_t file_truncate(struct jfile *f, uint64_t size)
 {
-    return file_truncate_until(f->ch, deadline(), size);
+    return file_truncate_within(f->ch, FS_CALL_TIMEOUT, size);
 }
 
 void file_close(struct jfile *f)
@@ -193,7 +189,7 @@ status_t file_read_vmo(const char *path, uint64_t max_size, handle_t *vmo, uint6
     while (st == OK && off < total) {
         uint32_t want = total - off < f.buf_size ? (uint32_t)(total - off) : f.buf_size;
         uint32_t actual = 0;
-        st = file_read_until(f.ch, deadline(), off, want, &actual);
+        st = file_read_within(f.ch, FS_CALL_TIMEOUT, off, want, &actual);
         if (st == OK && (!actual || actual > want))
             st = ERR_IO;   /* the file shrank under us, or a broken service */
         if (st == OK)
@@ -232,7 +228,7 @@ status_t fs_stat(const char *path, uint64_t *size, bool *is_dir, uint64_t *mtime
     unsigned mount;
     status_t st = ns_resolve(path, rel, &fs, &mount);
     if (st == OK && fs) {   /* else "/" or "/svc": directories; a service is neither */
-        st = fs_stat_until(fs, deadline(), rel, &sz, &dir, &mt);
+        st = fs_stat_within(fs, FS_CALL_TIMEOUT, rel, &sz, &dir, &mt);
         jam_handle_close(fs);
     } else if (st == OK && mount == NS_AT_SVC && rel[1]) {
         dir = 0;
@@ -291,7 +287,7 @@ status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out)
         return rel[1] ? ERR_WRONG_TYPE : svc_entry(index, out);
     if (!fs)
         return root_entry(index, out);
-    st = fs_readdir_until(fs, deadline(), rel, index, (uint8_t *)out->name, &dir, &size);
+    st = fs_readdir_within(fs, FS_CALL_TIMEOUT, rel, index, (uint8_t *)out->name, &dir, &size);
     jam_handle_close(fs);
     if (st == OK && out->name[FS_PATH_MAX - 1])
         st = ERR_INTERNAL;   /* a name without its NUL */
@@ -308,7 +304,7 @@ status_t fs_mkdir(const char *path)
     status_t st = on_mount(path, rel, &fs, &mount, ERR_ALREADY_EXISTS);
     if (st != OK)
         return st;
-    st = fs_mkdir_until(fs, deadline(), rel);
+    st = fs_mkdir_within(fs, FS_CALL_TIMEOUT, rel);
     jam_handle_close(fs);
     return st;
 }
@@ -321,7 +317,7 @@ status_t fs_unlink(const char *path)
     status_t st = on_mount(path, rel, &fs, &mount, ERR_ACCESS_DENIED);
     if (st != OK)
         return st;
-    st = fs_unlink_until(fs, deadline(), rel);
+    st = fs_unlink_within(fs, FS_CALL_TIMEOUT, rel);
     jam_handle_close(fs);
     return st;
 }
@@ -337,14 +333,15 @@ status_t fs_rename(const char *from, const char *to)
     st = on_mount(to, rel_to, &fs_to, &mount_to, ERR_ACCESS_DENIED);
     if (st == OK) {
         jam_handle_close(fs_to);
-        st = mount == mount_to ? fs_rename_until(fs, deadline(), rel_from, rel_to)
+        st = mount == mount_to ? fs_rename_within(fs, FS_CALL_TIMEOUT, rel_from, rel_to)
                                : ERR_NOT_SUPPORTED;
     }
     jam_handle_close(fs);
     return st;
 }
 
-status_t fs_sync_by(const char *path, uint64_t deadline_ns)
+/* fs.sync on path's mount: t is a deadline, or with `within` a timeout. */
+static status_t sync_mount(const char *path, bool within, uint64_t t)
 {
     uint8_t rel[FS_PATH_MAX];
     handle_t fs;
@@ -352,14 +349,19 @@ status_t fs_sync_by(const char *path, uint64_t deadline_ns)
     status_t st = on_mount(path, rel, &fs, &mount, ERR_INVALID_ARGS);
     if (st != OK)
         return st;
-    st = fs_sync_until(fs, deadline_ns);
+    st = within ? fs_sync_within(fs, t) : fs_sync_until(fs, t);
     jam_handle_close(fs);
     return st;
 }
 
+status_t fs_sync_by(const char *path, uint64_t deadline_ns)
+{
+    return sync_mount(path, false, deadline_ns);
+}
+
 status_t fs_sync(const char *path)
 {
-    return fs_sync_by(path, deadline());
+    return sync_mount(path, true, FS_CALL_TIMEOUT);
 }
 
 status_t fs_statfs(const char *path, uint64_t *total, uint64_t *free_bytes, bool *read_only,
@@ -372,7 +374,7 @@ status_t fs_statfs(const char *path, uint64_t *total, uint64_t *free_bytes, bool
     status_t st = on_mount(path, rel, &fs, &mount, ERR_INVALID_ARGS);
     if (st != OK)
         return st;
-    st = fs_statfs_until(fs, deadline(), &tot, &fr, &ro, name);
+    st = fs_statfs_within(fs, FS_CALL_TIMEOUT, &tot, &fr, &ro, name);
     jam_handle_close(fs);
     if (st != OK)
         return st;

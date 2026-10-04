@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `netctl` (id 28). Client: netctl_<method>(ch, args..., &results...)
- * (and netctl_<method>_until with a deadline) over drv_channel_call, or
+ * (and netctl_<method>_until with a deadline, _within with a timeout), or
  * netctl_<method>_send and netctl_<method>_result without waiting. Server:
  * fill a struct netctl_ops and run netctl_serve(ch, &ops, ctx), or
  * netctl_serve_one / netctl_dispatch_on for a loop of your own;
@@ -119,14 +119,9 @@ struct netctl_dhcp_open_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* Give the interface an address, replacing any it had. `mask` is a
- * subnet mask of 1 to 30 leading one bits (a /31 or /32 has no room for a
- * gateway or a peer); `address` a unicast address inside it, neither the
- * subnet's own address nor its broadcast; `gateway` 0 (none: only the
- * subnet is reachable) or another such address in the same subnet.
- * ERR_INVALID_ARGS otherwise (0.0.0.0/8, 127.0.0.0/8, multicast and
- * 240.0.0.0/4 are never valid). The ARP table is kept. */
-static inline status_t netctl_set_ipv4_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint32_t mask, uint32_t gateway)
+/* netctl_set_ipv4_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netctl_set_ipv4_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t address, uint32_t mask, uint32_t gateway)
 {
     struct netctl_set_ipv4_req idl_q;
     struct netctl_set_ipv4_rep idl_r;
@@ -136,21 +131,35 @@ static inline status_t netctl_set_ipv4_until(handle_t ch, uint64_t deadline_ns, 
     idl_q.address = address;
     idl_q.mask = mask;
     idl_q.gateway = gateway;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Give the interface an address, replacing any it had. `mask` is a
+ * subnet mask of 1 to 30 leading one bits (a /31 or /32 has no room for a
+ * gateway or a peer); `address` a unicast address inside it, neither the
+ * subnet's own address nor its broadcast; `gateway` 0 (none: only the
+ * subnet is reachable) or another such address in the same subnet.
+ * ERR_INVALID_ARGS otherwise (0.0.0.0/8, 127.0.0.0/8, multicast and
+ * 240.0.0.0/4 are never valid). The ARP table is kept. */
+static inline status_t netctl_set_ipv4_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint32_t mask, uint32_t gateway)
+{
+    return netctl_set_ipv4_call(ch, false, deadline_ns, address, mask, gateway);
+}
+static inline status_t netctl_set_ipv4_within(handle_t ch, uint64_t timeout_ns, uint32_t address, uint32_t mask, uint32_t gateway)
+{
+    return netctl_set_ipv4_call(ch, true, timeout_ns, address, mask, gateway);
+}
 static inline status_t netctl_set_ipv4(handle_t ch, uint32_t address, uint32_t mask, uint32_t gateway)
 {
-    return netctl_set_ipv4_until(ch, DEADLINE_NEVER, address, mask, gateway);
+    return netctl_set_ipv4_call(ch, false, DEADLINE_NEVER, address, mask, gateway);
 }
 
-/* The DNS servers netstack hands out (net.idl's iface), in order; 0:
- * none. Each is a unicast address (as for set_ipv4's gateway, but any
- * subnet). ERR_INVALID_ARGS otherwise. */
-static inline status_t netctl_set_dns_until(handle_t ch, uint64_t deadline_ns, uint32_t first, uint32_t second)
+/* netctl_set_dns_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netctl_set_dns_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t first, uint32_t second)
 {
     struct netctl_set_dns_req idl_q;
     struct netctl_set_dns_rep idl_r;
@@ -159,50 +168,70 @@ static inline status_t netctl_set_dns_until(handle_t ch, uint64_t deadline_ns, u
     idl_q.ordinal = NETCTL_SET_DNS;
     idl_q.first = first;
     idl_q.second = second;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* The DNS servers netstack hands out (net.idl's iface), in order; 0:
+ * none. Each is a unicast address (as for set_ipv4's gateway, but any
+ * subnet). ERR_INVALID_ARGS otherwise. */
+static inline status_t netctl_set_dns_until(handle_t ch, uint64_t deadline_ns, uint32_t first, uint32_t second)
+{
+    return netctl_set_dns_call(ch, false, deadline_ns, first, second);
+}
+static inline status_t netctl_set_dns_within(handle_t ch, uint64_t timeout_ns, uint32_t first, uint32_t second)
+{
+    return netctl_set_dns_call(ch, true, timeout_ns, first, second);
+}
 static inline status_t netctl_set_dns(handle_t ch, uint32_t first, uint32_t second)
 {
-    return netctl_set_dns_until(ch, DEADLINE_NEVER, first, second);
+    return netctl_set_dns_call(ch, false, DEADLINE_NEVER, first, second);
 }
 
-/* Forget the address, the gateway, the DNS servers and every ARP entry
- * (the lease ended). Until an address is set again nothing is sent and
- * no ARP request or ping is answered. */
-static inline status_t netctl_clear_until(handle_t ch, uint64_t deadline_ns)
+/* netctl_clear_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netctl_clear_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct netctl_clear_req idl_q;
     struct netctl_clear_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NETCTL_CLEAR;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Forget the address, the gateway, the DNS servers and every ARP entry
+ * (the lease ended). Until an address is set again nothing is sent and
+ * no ARP request or ping is answered. */
+static inline status_t netctl_clear_until(handle_t ch, uint64_t deadline_ns)
+{
+    return netctl_clear_call(ch, false, deadline_ns);
+}
+static inline status_t netctl_clear_within(handle_t ch, uint64_t timeout_ns)
+{
+    return netctl_clear_call(ch, true, timeout_ns);
+}
 static inline status_t netctl_clear(handle_t ch)
 {
-    return netctl_clear_until(ch, DEADLINE_NEVER);
+    return netctl_clear_call(ch, false, DEADLINE_NEVER);
 }
 
-/* The interface: its address, mask and gateway (0 if none), the DNS
- * servers, its MAC address; `device` 1 when a NIC is attached, `link` 1
- * when its link is up. */
-static inline status_t netctl_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link)
+/* netctl_info_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netctl_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link)
 {
     struct netctl_info_req idl_q;
     struct netctl_info_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NETCTL_INFO;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_address)
@@ -223,25 +252,33 @@ static inline status_t netctl_info_until(handle_t ch, uint64_t deadline_ns, uint
         *out_link = idl_r.link;
     return idl_st;
 }
+/* The interface: its address, mask and gateway (0 if none), the DNS
+ * servers, its MAC address; `device` 1 when a NIC is attached, `link` 1
+ * when its link is up. */
+static inline status_t netctl_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link)
+{
+    return netctl_info_call(ch, false, deadline_ns, out_address, out_mask, out_gateway, out_dns1, out_dns2, out_mac, out_device, out_link);
+}
+static inline status_t netctl_info_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link)
+{
+    return netctl_info_call(ch, true, timeout_ns, out_address, out_mask, out_gateway, out_dns1, out_dns2, out_mac, out_device, out_link);
+}
 static inline status_t netctl_info(handle_t ch, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link)
 {
-    return netctl_info_until(ch, DEADLINE_NEVER, out_address, out_mask, out_gateway, out_dns1, out_dns2, out_mac, out_device, out_link);
+    return netctl_info_call(ch, false, DEADLINE_NEVER, out_address, out_mask, out_gateway, out_dns1, out_dns2, out_mac, out_device, out_link);
 }
 
-/* Counts since netstack started (stack.h's struct stack_counts has what
- * each one means): frames in, of them refused before lwIP, frames out,
- * frames the device refused; echo replies and ICMP errors sent, ICMP
- * errors held back by the rate limit; lwIP's drops by layer and the bad
- * checksums; lwIP's receive buffers and heap bytes in use now. */
-static inline status_t netctl_stats_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_rx_frames, uint64_t *out_rx_refused, uint64_t *out_tx_frames, uint64_t *out_tx_dropped, uint64_t *out_echo_replies, uint64_t *out_icmp_errors, uint64_t *out_icmp_limited, uint32_t *out_link_dropped, uint32_t *out_arp_dropped, uint32_t *out_ip_dropped, uint32_t *out_icmp_dropped, uint32_t *out_udp_dropped, uint32_t *out_bad_checksums, uint32_t *out_rx_buffers_used, uint32_t *out_heap_used)
+/* netctl_stats_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netctl_stats_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_rx_frames, uint64_t *out_rx_refused, uint64_t *out_tx_frames, uint64_t *out_tx_dropped, uint64_t *out_echo_replies, uint64_t *out_icmp_errors, uint64_t *out_icmp_limited, uint32_t *out_link_dropped, uint32_t *out_arp_dropped, uint32_t *out_ip_dropped, uint32_t *out_icmp_dropped, uint32_t *out_udp_dropped, uint32_t *out_bad_checksums, uint32_t *out_rx_buffers_used, uint32_t *out_heap_used)
 {
     struct netctl_stats_req idl_q;
     struct netctl_stats_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NETCTL_STATS;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_rx_frames)
@@ -276,28 +313,35 @@ static inline status_t netctl_stats_until(handle_t ch, uint64_t deadline_ns, uin
         *out_heap_used = idl_r.heap_used;
     return idl_st;
 }
+/* Counts since netstack started (stack.h's struct stack_counts has what
+ * each one means): frames in, of them refused before lwIP, frames out,
+ * frames the device refused; echo replies and ICMP errors sent, ICMP
+ * errors held back by the rate limit; lwIP's drops by layer and the bad
+ * checksums; lwIP's receive buffers and heap bytes in use now. */
+static inline status_t netctl_stats_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_rx_frames, uint64_t *out_rx_refused, uint64_t *out_tx_frames, uint64_t *out_tx_dropped, uint64_t *out_echo_replies, uint64_t *out_icmp_errors, uint64_t *out_icmp_limited, uint32_t *out_link_dropped, uint32_t *out_arp_dropped, uint32_t *out_ip_dropped, uint32_t *out_icmp_dropped, uint32_t *out_udp_dropped, uint32_t *out_bad_checksums, uint32_t *out_rx_buffers_used, uint32_t *out_heap_used)
+{
+    return netctl_stats_call(ch, false, deadline_ns, out_rx_frames, out_rx_refused, out_tx_frames, out_tx_dropped, out_echo_replies, out_icmp_errors, out_icmp_limited, out_link_dropped, out_arp_dropped, out_ip_dropped, out_icmp_dropped, out_udp_dropped, out_bad_checksums, out_rx_buffers_used, out_heap_used);
+}
+static inline status_t netctl_stats_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_rx_frames, uint64_t *out_rx_refused, uint64_t *out_tx_frames, uint64_t *out_tx_dropped, uint64_t *out_echo_replies, uint64_t *out_icmp_errors, uint64_t *out_icmp_limited, uint32_t *out_link_dropped, uint32_t *out_arp_dropped, uint32_t *out_ip_dropped, uint32_t *out_icmp_dropped, uint32_t *out_udp_dropped, uint32_t *out_bad_checksums, uint32_t *out_rx_buffers_used, uint32_t *out_heap_used)
+{
+    return netctl_stats_call(ch, true, timeout_ns, out_rx_frames, out_rx_refused, out_tx_frames, out_tx_dropped, out_echo_replies, out_icmp_errors, out_icmp_limited, out_link_dropped, out_arp_dropped, out_ip_dropped, out_icmp_dropped, out_udp_dropped, out_bad_checksums, out_rx_buffers_used, out_heap_used);
+}
 static inline status_t netctl_stats(handle_t ch, uint64_t *out_rx_frames, uint64_t *out_rx_refused, uint64_t *out_tx_frames, uint64_t *out_tx_dropped, uint64_t *out_echo_replies, uint64_t *out_icmp_errors, uint64_t *out_icmp_limited, uint32_t *out_link_dropped, uint32_t *out_arp_dropped, uint32_t *out_ip_dropped, uint32_t *out_icmp_dropped, uint32_t *out_udp_dropped, uint32_t *out_bad_checksums, uint32_t *out_rx_buffers_used, uint32_t *out_heap_used)
 {
-    return netctl_stats_until(ch, DEADLINE_NEVER, out_rx_frames, out_rx_refused, out_tx_frames, out_tx_dropped, out_echo_replies, out_icmp_errors, out_icmp_limited, out_link_dropped, out_arp_dropped, out_ip_dropped, out_icmp_dropped, out_udp_dropped, out_bad_checksums, out_rx_buffers_used, out_heap_used);
+    return netctl_stats_call(ch, false, DEADLINE_NEVER, out_rx_frames, out_rx_refused, out_tx_frames, out_tx_dropped, out_echo_replies, out_icmp_errors, out_icmp_limited, out_link_dropped, out_arp_dropped, out_ip_dropped, out_icmp_dropped, out_udp_dropped, out_bad_checksums, out_rx_buffers_used, out_heap_used);
 }
 
-/* The network card netstack runs on: `session` 1 while it has a session
- * with the card's driver (netdev.idl), the VLAN the driver tags with
- * (0x1000: untagged, netdev.idl's info), the
- * link speed in Mb/s (0 while down), sessions opened since netstack
- * started (one more after each driver restart), the driver's ring counts
- * found out of range, rx slots refused (a bad length or flags), frames
- * dropped because the tx ring was full, and the chip's name
- * (NUL-padded). All 0 without a card. */
-static inline status_t netctl_device_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
+/* netctl_device_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netctl_device_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
 {
     struct netctl_device_req idl_q;
     struct netctl_device_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = NETCTL_DEVICE;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_session)
@@ -318,19 +362,30 @@ static inline status_t netctl_device_until(handle_t ch, uint64_t deadline_ns, ui
         out_chip[idl_i] = idl_r.chip[idl_i];
     return idl_st;
 }
+/* The network card netstack runs on: `session` 1 while it has a session
+ * with the card's driver (netdev.idl), the VLAN the driver tags with
+ * (0x1000: untagged, netdev.idl's info), the
+ * link speed in Mb/s (0 while down), sessions opened since netstack
+ * started (one more after each driver restart), the driver's ring counts
+ * found out of range, rx slots refused (a bad length or flags), frames
+ * dropped because the tx ring was full, and the chip's name
+ * (NUL-padded). All 0 without a card. */
+static inline status_t netctl_device_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
+{
+    return netctl_device_call(ch, false, deadline_ns, out_session, out_vlan, out_speed, out_sessions, out_ring_errors, out_rx_bad, out_tx_full, out_chip);
+}
+static inline status_t netctl_device_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
+{
+    return netctl_device_call(ch, true, timeout_ns, out_session, out_vlan, out_speed, out_sessions, out_ring_errors, out_rx_bad, out_tx_full, out_chip);
+}
 static inline status_t netctl_device(handle_t ch, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
 {
-    return netctl_device_until(ch, DEADLINE_NEVER, out_session, out_vlan, out_speed, out_sessions, out_ring_errors, out_rx_bad, out_tx_full, out_chip);
+    return netctl_device_call(ch, false, DEADLINE_NEVER, out_session, out_vlan, out_speed, out_sessions, out_ring_errors, out_rx_bad, out_tx_full, out_chip);
 }
 
-/* The DHCP client's socket (user/services/dhcp): a socket channel that
- * speaks net.idl's sock_* methods, bound to port 68, which may send to
- * port 67 only, of 255.255.255.255 or a unicast address, from the
- * interface's address or from 0.0.0.0 while it has none, and receives
- * every datagram to port 68, broadcasts included. Programs on /svc/net
- * can do none of this. One at a time: ERR_ALREADY_BOUND while the last
- * one's channel is open. Closing the channel closes the socket. */
-static inline status_t netctl_dhcp_open_until(handle_t ch, uint64_t deadline_ns, handle_t *out_socket)
+/* netctl_dhcp_open_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netctl_dhcp_open_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_socket)
 {
     struct netctl_dhcp_open_req idl_q;
     struct netctl_dhcp_open_rep idl_r;
@@ -339,8 +394,8 @@ static inline status_t netctl_dhcp_open_until(handle_t ch, uint64_t deadline_ns,
     idl_q.ordinal = NETCTL_DHCP_OPEN;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -355,9 +410,24 @@ static inline status_t netctl_dhcp_open_until(handle_t ch, uint64_t deadline_ns,
     }
     return idl_st;
 }
+/* The DHCP client's socket (user/services/dhcp): a socket channel that
+ * speaks net.idl's sock_* methods, bound to port 68, which may send to
+ * port 67 only, of 255.255.255.255 or a unicast address, from the
+ * interface's address or from 0.0.0.0 while it has none, and receives
+ * every datagram to port 68, broadcasts included. Programs on /svc/net
+ * can do none of this. One at a time: ERR_ALREADY_BOUND while the last
+ * one's channel is open. Closing the channel closes the socket. */
+static inline status_t netctl_dhcp_open_until(handle_t ch, uint64_t deadline_ns, handle_t *out_socket)
+{
+    return netctl_dhcp_open_call(ch, false, deadline_ns, out_socket);
+}
+static inline status_t netctl_dhcp_open_within(handle_t ch, uint64_t timeout_ns, handle_t *out_socket)
+{
+    return netctl_dhcp_open_call(ch, true, timeout_ns, out_socket);
+}
 static inline status_t netctl_dhcp_open(handle_t ch, handle_t *out_socket)
 {
-    return netctl_dhcp_open_until(ch, DEADLINE_NEVER, out_socket);
+    return netctl_dhcp_open_call(ch, false, DEADLINE_NEVER, out_socket);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -1046,21 +1116,23 @@ static inline status_t netctl_serve_one(handle_t ch, const struct netctl_ops *op
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t netctl_serve(handle_t ch, const struct netctl_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[NETCTL_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[NETCTL_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = netctl_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = netctl_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

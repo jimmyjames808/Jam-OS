@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `svc` (id 25). Client: svc_<method>(ch, args..., &results...)
- * (and svc_<method>_until with a deadline) over drv_channel_call, or
+ * (and svc_<method>_until with a deadline, _within with a timeout), or
  * svc_<method>_send and svc_<method>_result without waiting. Server:
  * fill a struct svc_ops and run svc_serve(ch, &ops, ctx), or
  * svc_serve_one / svc_dispatch_on for a loop of your own;
@@ -29,9 +29,9 @@ struct svc_connect_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* A new channel to this service, for the caller alone.
- * ERR_NO_RESOURCES: the service serves as many as it can. */
-static inline status_t svc_connect_until(handle_t ch, uint64_t deadline_ns, handle_t *out_channel)
+/* svc_connect_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t svc_connect_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_channel)
 {
     struct svc_connect_req idl_q;
     struct svc_connect_rep idl_r;
@@ -40,8 +40,8 @@ static inline status_t svc_connect_until(handle_t ch, uint64_t deadline_ns, hand
     idl_q.ordinal = SVC_CONNECT;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -56,9 +56,19 @@ static inline status_t svc_connect_until(handle_t ch, uint64_t deadline_ns, hand
     }
     return idl_st;
 }
+/* A new channel to this service, for the caller alone.
+ * ERR_NO_RESOURCES: the service serves as many as it can. */
+static inline status_t svc_connect_until(handle_t ch, uint64_t deadline_ns, handle_t *out_channel)
+{
+    return svc_connect_call(ch, false, deadline_ns, out_channel);
+}
+static inline status_t svc_connect_within(handle_t ch, uint64_t timeout_ns, handle_t *out_channel)
+{
+    return svc_connect_call(ch, true, timeout_ns, out_channel);
+}
 static inline status_t svc_connect(handle_t ch, handle_t *out_channel)
 {
-    return svc_connect_until(ch, DEADLINE_NEVER, out_channel);
+    return svc_connect_call(ch, false, DEADLINE_NEVER, out_channel);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -213,21 +223,23 @@ static inline status_t svc_serve_one(handle_t ch, const struct svc_ops *ops, voi
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t svc_serve(handle_t ch, const struct svc_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[SVC_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[SVC_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = svc_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = svc_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

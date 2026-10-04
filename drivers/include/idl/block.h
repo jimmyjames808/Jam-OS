@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * Protocol `block` (id 15). Client: block_<method>(ch, args..., &results...)
- * (and block_<method>_until with a deadline) over drv_channel_call, or
+ * (and block_<method>_until with a deadline, _within with a timeout), or
  * block_<method>_send and block_<method>_result without waiting. Server:
  * fill a struct block_ops and run block_serve(ch, &ops, ctx), or
  * block_serve_one / block_dispatch_on for a loop of your own;
@@ -75,16 +75,17 @@ struct block_sync_rep {
 
 /* ---- client ---------------------------------------------------------- */
 
-/* Block size in bytes, blocks in the partition, 1 if writes are refused. */
-static inline status_t block_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_read_only)
+/* block_info_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t block_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_read_only)
 {
     struct block_info_req idl_q;
     struct block_info_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = BLOCK_INFO;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_block_size)
@@ -95,14 +96,23 @@ static inline status_t block_info_until(handle_t ch, uint64_t deadline_ns, uint3
         *out_read_only = idl_r.read_only;
     return idl_st;
 }
+/* Block size in bytes, blocks in the partition, 1 if writes are refused. */
+static inline status_t block_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_read_only)
+{
+    return block_info_call(ch, false, deadline_ns, out_block_size, out_blocks, out_read_only);
+}
+static inline status_t block_info_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_read_only)
+{
+    return block_info_call(ch, true, timeout_ns, out_block_size, out_blocks, out_read_only);
+}
 static inline status_t block_info(handle_t ch, uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_read_only)
 {
-    return block_info_until(ch, DEADLINE_NEVER, out_block_size, out_blocks, out_read_only);
+    return block_info_call(ch, false, DEADLINE_NEVER, out_block_size, out_blocks, out_read_only);
 }
 
-/* The buffer transfers use: a VMO of `size` bytes (64 KiB) for the client to
- * map. Once per channel (a second call: ERR_BAD_STATE). */
-static inline status_t block_map_buffer_until(handle_t ch, uint64_t deadline_ns, handle_t *out_buffer, uint32_t *out_size)
+/* block_map_buffer_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t block_map_buffer_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_buffer, uint32_t *out_size)
 {
     struct block_map_buffer_req idl_q;
     struct block_map_buffer_rep idl_r;
@@ -111,8 +121,8 @@ static inline status_t block_map_buffer_until(handle_t ch, uint64_t deadline_ns,
     idl_q.ordinal = BLOCK_MAP_BUFFER;
     handle_t idl_rh[1];
     uint32_t idl_rhn = 0;
-    status_t idl_st = drv_channel_call_h(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                         idl_rh, 1, &idl_rhn, deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
+                               1, &idl_rhn, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -129,14 +139,24 @@ static inline status_t block_map_buffer_until(handle_t ch, uint64_t deadline_ns,
         *out_size = idl_r.size;
     return idl_st;
 }
+/* The buffer transfers use: a VMO of `size` bytes (64 KiB) for the client to
+ * map. Once per channel (a second call: ERR_BAD_STATE). */
+static inline status_t block_map_buffer_until(handle_t ch, uint64_t deadline_ns, handle_t *out_buffer, uint32_t *out_size)
+{
+    return block_map_buffer_call(ch, false, deadline_ns, out_buffer, out_size);
+}
+static inline status_t block_map_buffer_within(handle_t ch, uint64_t timeout_ns, handle_t *out_buffer, uint32_t *out_size)
+{
+    return block_map_buffer_call(ch, true, timeout_ns, out_buffer, out_size);
+}
 static inline status_t block_map_buffer(handle_t ch, handle_t *out_buffer, uint32_t *out_size)
 {
-    return block_map_buffer_until(ch, DEADLINE_NEVER, out_buffer, out_size);
+    return block_map_buffer_call(ch, false, DEADLINE_NEVER, out_buffer, out_size);
 }
 
-/* Read `count` blocks from `lba` into the buffer at `offset` (bytes).
- * lba + count past the partition: ERR_OUT_OF_RANGE; a disk error: ERR_IO. */
-static inline status_t block_read_until(handle_t ch, uint64_t deadline_ns, uint64_t lba, uint32_t count, uint32_t offset)
+/* block_read_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t block_read_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t lba, uint32_t count, uint32_t offset)
 {
     struct block_read_req idl_q;
     struct block_read_rep idl_r;
@@ -146,20 +166,30 @@ static inline status_t block_read_until(handle_t ch, uint64_t deadline_ns, uint6
     idl_q.lba = lba;
     idl_q.count = count;
     idl_q.offset = offset;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Read `count` blocks from `lba` into the buffer at `offset` (bytes).
+ * lba + count past the partition: ERR_OUT_OF_RANGE; a disk error: ERR_IO. */
+static inline status_t block_read_until(handle_t ch, uint64_t deadline_ns, uint64_t lba, uint32_t count, uint32_t offset)
+{
+    return block_read_call(ch, false, deadline_ns, lba, count, offset);
+}
+static inline status_t block_read_within(handle_t ch, uint64_t timeout_ns, uint64_t lba, uint32_t count, uint32_t offset)
+{
+    return block_read_call(ch, true, timeout_ns, lba, count, offset);
+}
 static inline status_t block_read(handle_t ch, uint64_t lba, uint32_t count, uint32_t offset)
 {
-    return block_read_until(ch, DEADLINE_NEVER, lba, count, offset);
+    return block_read_call(ch, false, DEADLINE_NEVER, lba, count, offset);
 }
 
-/* Write `count` blocks from the buffer at `offset` to `lba`. Read-only:
- * ERR_ACCESS_DENIED. */
-static inline status_t block_write_until(handle_t ch, uint64_t deadline_ns, uint64_t lba, uint32_t count, uint32_t offset)
+/* block_write_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t block_write_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t lba, uint32_t count, uint32_t offset)
 {
     struct block_write_req idl_q;
     struct block_write_rep idl_r;
@@ -169,34 +199,54 @@ static inline status_t block_write_until(handle_t ch, uint64_t deadline_ns, uint
     idl_q.lba = lba;
     idl_q.count = count;
     idl_q.offset = offset;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Write `count` blocks from the buffer at `offset` to `lba`. Read-only:
+ * ERR_ACCESS_DENIED. */
+static inline status_t block_write_until(handle_t ch, uint64_t deadline_ns, uint64_t lba, uint32_t count, uint32_t offset)
+{
+    return block_write_call(ch, false, deadline_ns, lba, count, offset);
+}
+static inline status_t block_write_within(handle_t ch, uint64_t timeout_ns, uint64_t lba, uint32_t count, uint32_t offset)
+{
+    return block_write_call(ch, true, timeout_ns, lba, count, offset);
+}
 static inline status_t block_write(handle_t ch, uint64_t lba, uint32_t count, uint32_t offset)
 {
-    return block_write_until(ch, DEADLINE_NEVER, lba, count, offset);
+    return block_write_call(ch, false, DEADLINE_NEVER, lba, count, offset);
 }
 
-/* Everything written so far is on the medium (SCSI SYNCHRONIZE CACHE). */
-static inline status_t block_sync_until(handle_t ch, uint64_t deadline_ns)
+/* block_sync_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t block_sync_call(handle_t ch, bool idl_within, uint64_t idl_t)
 {
     struct block_sync_req idl_q;
     struct block_sync_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = BLOCK_SYNC;
-    status_t idl_st = drv_channel_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n,
-                                       deadline_ns);
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
+/* Everything written so far is on the medium (SCSI SYNCHRONIZE CACHE). */
+static inline status_t block_sync_until(handle_t ch, uint64_t deadline_ns)
+{
+    return block_sync_call(ch, false, deadline_ns);
+}
+static inline status_t block_sync_within(handle_t ch, uint64_t timeout_ns)
+{
+    return block_sync_call(ch, true, timeout_ns);
+}
 static inline status_t block_sync(handle_t ch)
 {
-    return block_sync_until(ch, DEADLINE_NEVER);
+    return block_sync_call(ch, false, DEADLINE_NEVER);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -623,21 +673,23 @@ static inline status_t block_serve_one(handle_t ch, const struct block_ops *ops,
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
- * (that status: ERR_CANCELED when the driver is being killed). */
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
 static inline status_t block_serve(handle_t ch, const struct block_ops *ops, void *ctx)
 {
+    _Alignas(8) uint8_t idl_q[BLOCK_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[BLOCK_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
     for (;;) {
-        status_t idl_st = block_serve_one(ch, ops, ctx);
-        if (idl_st == OK)
-            continue;
+        status_t idl_st = idl_serve_next(&idl_s);
         if (idl_st == ERR_PEER_CLOSED)
             return OK;
-        if (idl_st != ERR_SHOULD_WAIT)
-            return idl_st;
-        signals_t idl_seen = 0;
-        idl_st = drv_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
-                                     &idl_seen);
         if (idl_st != OK)
             return idl_st;
+        idl_s.rn = block_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }
