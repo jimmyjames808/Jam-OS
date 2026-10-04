@@ -418,6 +418,7 @@ _Noreturn static void kmain_stage2(void *arg)
      * (the vector allocator spreads MSIs over them). */
     pci_init();
     vtd_probe();   /* reads and logs the IOMMU's table and registers; writes nothing */
+    vtd_units_start();   /* only with iommu=on: the units' queues and fault reporting */
     resource_init();
     if (cmdline_has("pcilist"))
         pci_report();
