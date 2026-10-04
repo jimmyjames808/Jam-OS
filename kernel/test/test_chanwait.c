@@ -6,6 +6,7 @@
  * do (the peer closing, a deadline, a cancel). The system call on top of
  * it is utest's replywait.c; a reader killed inside it is test_chanrw.c. */
 #include <jam/channel.h>
+#include <jam/dbghook.h>
 #include <jam/event.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
@@ -13,6 +14,7 @@
 #include <jam/sched.h>
 #include <jam/string.h>
 #include <jam/time.h>
+#include <jam/x86.h>
 
 /* A reader on its own thread: one channel_read_wait into buf. */
 struct reader {
@@ -206,6 +208,61 @@ KTEST(chanwait_ends)
     thread_join(t);
     KT_EQ(rp.st, ERR_PEER_CLOSED);
     kobject_unref((struct kobject *)b);
+}
+
+/* A reader woken before its message is published (the writer is held
+ * between its wake and the store: DBG_CHANNEL_HANDED), and cancelled too,
+ * takes the endpoint's lock and finds the message there: it is delivered,
+ * not lost to the cancel. */
+static struct thread *late_reader;   /* atomic: the hook acts only for it */
+static bool late_saw_running;
+
+static void late_hook(void *arg)
+{
+    struct thread *t = arg;
+    if (t != __atomic_load_n(&late_reader, __ATOMIC_ACQUIRE))
+        return;
+    uint64_t end = rdtsc() + 50 * (tsc_hz / 1000);   /* at most 50 ms: interrupts are off */
+    while (thread_state(t) != T_RUNNING && rdtsc() < end)
+        cpu_relax();
+    late_saw_running = thread_state(t) == T_RUNNING;
+    thread_cancel(t);
+}
+
+KTEST(chanwait_handed_after_wake)
+{
+    if (cpu_count < 2)
+        return;   /* the reader must run while we hold the lock */
+    kt_pin_self(0);
+    struct channel *a, *b;
+    KT_EQ(channel_create(&a, &b), OK);
+    struct reader rd = { 0 };
+    rd.ch = b;
+    rd.deadline = uptime_ns() + kt_patience_ms(10000) * NS_PER_MS;
+    cpumask_t m;
+    cpumask_one(&m, 1);
+    struct thread *t = thread_create_on("chanwait late", reader_main, &rd, PRIO_DEFAULT, &m);
+    uint64_t d = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    while (thread_state(t) != T_BLOCKED) {
+        KT_ASSERT(uptime_ns() < d);
+        thread_sleep_ms(1);
+    }
+    late_saw_running = false;
+    __atomic_store_n(&late_reader, t, __ATOMIC_RELEASE);
+    __atomic_store_n(&dbg_hooks[DBG_CHANNEL_HANDED], late_hook, __ATOMIC_RELEASE);
+    uint32_t msg[2] = { 31, 32 };
+    status_t st = channel_write(a, msg, sizeof(msg), NULL, 0);
+    __atomic_store_n(&dbg_hooks[DBG_CHANNEL_HANDED], NULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&late_reader, NULL, __ATOMIC_RELEASE);
+    KT_EQ(st, OK);
+    thread_join(t);
+    KT_EQ(rd.st, OK);   /* the message, not ERR_CANCELED */
+    KT_EQ(rd.r.nb, sizeof(msg));
+    KT_ASSERT(!memcmp(rd.buf, msg, sizeof(msg)));
+    KT_IDLE_ASSERT(late_saw_running);   /* it really woke before the message was there */
+    kobject_unref((struct kobject *)a);
+    kobject_unref((struct kobject *)b);
+    kt_unpin_self();
 }
 
 /* A request from channel_call to a reader waiting for it: the reply comes

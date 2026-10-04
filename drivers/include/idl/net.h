@@ -368,9 +368,11 @@ static inline status_t net_udp_call(handle_t ch, bool idl_within, uint64_t idl_t
     idl_q.ordinal = NET_UDP;
     idl_q.port = port;
     handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               1, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -472,9 +474,11 @@ static inline status_t net_udp_rings_call(handle_t ch, bool idl_within, uint64_t
     idl_q.tx_bytes = tx_bytes;
     idl_q.rx_bytes = rx_bytes;
     handle_t idl_rh[4];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               4, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 4, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 4)
@@ -619,9 +623,11 @@ static inline status_t net_sock_rings_call(handle_t ch, bool idl_within, uint64_
     idl_q.tx_bytes = tx_bytes;
     idl_q.rx_bytes = rx_bytes;
     handle_t idl_rh[3];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               3, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 3, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 3)
@@ -689,9 +695,11 @@ static inline status_t net_tcp_call(handle_t ch, bool idl_within, uint64_t idl_t
     idl_q.tx_bytes = tx_bytes;
     idl_q.rx_bytes = rx_bytes;
     handle_t idl_rh[4];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               4, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 4, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 4)
@@ -776,9 +784,11 @@ static inline status_t net_tcp_listener_call(handle_t ch, bool idl_within, uint6
     idl_q.tx_bytes = tx_bytes;
     idl_q.rx_bytes = rx_bytes;
     handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               1, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)
@@ -835,9 +845,11 @@ static inline status_t net_accept_call(handle_t ch, bool idl_within, uint64_t id
     idl_q.ordinal = NET_ACCEPT;
     idl_q.timeout_ms = timeout_ms;
     handle_t idl_rh[4];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               4, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 4, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 4)

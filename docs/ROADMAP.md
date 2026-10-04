@@ -31,7 +31,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M11 | IOMMU | later |
 | M11.5 | Performance pass: the IPC fast path, a Linux column in BENCH.md | later |
 | M11.6 | Services that outlive their process | later |
-| G1 | A compositor that speaks Wayland | after M11.6, before M12 (the owner, 2026-10-05) |
+| G1 | A compositor that speaks Wayland | after M11.6, before M12 (the owner, 2026-10-05); the plan, waiting for the owner's answers: [G1-PLAN.md](G1-PLAN.md) |
 | M12 | Interface review, before anything is frozen | later |
 | M12.1 | Code check after the interface review | after M12 (the owner, 2026-10-05) |
 | M12.5 | User-space pagers: mapped files, programs loaded on demand | later |

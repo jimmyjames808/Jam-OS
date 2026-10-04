@@ -6,7 +6,9 @@
  * stack_input says why) and handed to lwIP's Ethernet input, which
  * deals with them to the end: an ARP request for our address or an echo
  * request answered, a UDP datagram queued on its socket or answered with
- * a port unreachable, anything else dropped and counted by lwIP. Frames
+ * a port unreachable, anything else dropped and counted by lwIP; only a
+ * TCP segment that came past a hole keeps its buffer, on its connection's
+ * out-of-order queue (bounded: stack_ooseq_pbufs). Frames
  * out come from lwIP as a pbuf chain; they are flattened into one buffer,
  * padded to 60 bytes with zeros (so a short frame never carries old
  * bytes), and given to the edge. ICMP errors are rate-limited on the way
@@ -54,6 +56,14 @@ _Static_assert(STACK_TCP_LISTENERS == MEMP_NUM_TCP_PCB_LISTEN, "a listener's pcb
 _Static_assert(STACK_TCP_BACKLOG == TCP_DEFAULT_LISTEN_BACKLOG && STACK_TCP_BACKLOG <= 0xff,
                "lwIP's backlog is a byte");
 _Static_assert(MEMP_NUM_TCP_PCB == STACK_TCP_CONNS + 128, "netstack's connections and 128 more");
+/* Out-of-order queues (stack_ooseq_pbufs): each queued segment holds one
+ * receive buffer (a frame is never a chain) and one pool segment. */
+_Static_assert(TCP_QUEUE_OOSEQ && LWIP_TCP_SACK_OUT, "segments past a hole kept, SACK sent");
+_Static_assert(PBUF_POOL_SIZE == STACK_RX_BUFS, "stack.h's receive buffers");
+_Static_assert(MEMP_NUM_TCP_SEG == STACK_SEGS_SEND + STACK_OOSEQ_MAX, "a segment a queued buffer");
+_Static_assert(STACK_OOSEQ_MAX > STACK_OOSEQ_KEEP_BULK + STACK_OOSEQ_FIRST, "a bulk receiver's");
+_Static_assert(STACK_OOSEQ_FIRST * TCP_MSS >= 64 * 1024, "a default rx ring's window, whole");
+_Static_assert(TCP_WND / TCP_MSS + 1 <= 0xffff, "lwIP's limit on a queue's buffers is 16 bits");
 
 static struct netif       nif;          /* the interface: lwIP's netif_default */
 static bool               lwip_ready;   /* lwip_init has run (it may only run once) */
@@ -70,6 +80,7 @@ static uint8_t            tcp_ext = LWIP_TCP_PCB_NUM_EXT_ARG_ID_INVALID;   /* ou
 static bool               addr_going;   /* the address is changing: lwIP aborts its connections */
 static uint32_t           tcp_bad_acks; /* segments dropped by tcp_drop: a bad ACK */
 static uint32_t           tcp_no_acks;  /* ... no ACK flag */
+static uint32_t           ooseq_cut;    /* out-of-order queues cut to their limit (lwIP drops) */
 static bool               tx_blocked;   /* a frame found the edge full (stack_tx_blocked) */
 static unsigned           resume_from;  /* the active pcb stack_tx_resume starts with */
 
@@ -788,13 +799,26 @@ static uint32_t heap_above(uint32_t keep)
     return left - left / 16;
 }
 
+/* The pool's segments free for sending: of its STACK_SEGS_SEND, those
+ * the out-of-order queues don't hold (they have STACK_OOSEQ_MAX more of
+ * their own). A queued segment holds a receive buffer, so the buffers in
+ * use bound the queues' segments; never more than the pool has free. */
+static uint32_t send_segs_free(void)
+{
+    uint32_t used = lwip_stats.memp[MEMP_TCP_SEG]->used;
+    uint32_t held = min_u32(used, lwip_stats.memp[MEMP_PBUF_POOL]->used);
+    uint32_t sending = used - held;
+    uint32_t share = STACK_SEGS_SEND > sending ? STACK_SEGS_SEND - sending : 0;
+    return min_u32(share, MEMP_NUM_TCP_SEG - used);
+}
+
 /* Of the bytes a connection with `queued` unacked could take, how many
  * lwIP's memory may hold under the shares (stack.h): up to its first
  * STACK_TCP_SND_MIN from all but STACK_HEAP_KEEP of the heap, the rest
  * only from the bulk senders' part. */
 static uint32_t shares_room(uint32_t queued)
 {
-    uint32_t segs_free = MEMP_NUM_TCP_SEG - lwip_stats.memp[MEMP_TCP_SEG]->used;
+    uint32_t segs_free = send_segs_free();
     uint32_t bulk = segs_free > STACK_SEGS_KEEP_BULK
                         ? heap_above(STACK_HEAP_KEEP + STACK_HEAP_KEEP_BULK) : 0;
     uint32_t first = queued < STACK_TCP_SND_MIN ? STACK_TCP_SND_MIN - queued : 0;
@@ -815,6 +839,56 @@ static void room_parts(const struct tcp_pcb *pcb, uint32_t *wnd, uint32_t *mem)
     uint32_t buffer = queued + tcp_sndbuf(pcb);      /* its send buffer */
     if (pcb->snd_queuelen < 4 * (buffer / TCP_MSS))  /* its share of the segments */
         *mem = shares_room(queued);
+}
+
+/* ---- out-of-order queues (lwipopts.h TCP_QUEUE_OOSEQ, stack.h's shares) ---------- */
+
+/* The window a connection's queue may hold bytes of: its own (window_set),
+ * 0 for one nobody reads (netstack let go of it: its bytes would be
+ * thrown away). */
+static uint32_t ooseq_window(const struct tcp_pcb *pcb)
+{
+    if (!pcb->callback_arg)
+        return 0;
+    return (uint32_t)(uintptr_t)tcp_ext_arg_get(pcb, tcp_ext);
+}
+
+/* Receive buffers free above `keep`, when `others` are in use. */
+static uint32_t bufs_above(uint32_t others, uint32_t keep)
+{
+    return STACK_RX_BUFS > others + keep ? STACK_RX_BUFS - others - keep : 0;
+}
+
+/* lwIP's TCP_OOSEQ_BYTES_LIMIT: the window. lwIP already takes no byte
+ * past it (rcv_wnd is never more), so this only says the bound out loud. */
+uint32_t stack_ooseq_bytes(const struct tcp_pcb *pcb)
+{
+    return ooseq_window(pcb);
+}
+
+/* lwIP's TCP_OOSEQ_PBUFS_LIMIT, asked after it queued a segment: the
+ * receive buffers pcb's queue may hold, past which lwIP drops its top. At
+ * most its window in full segments; of the pool, its first
+ * STACK_OOSEQ_FIRST from all but the last STACK_RX_KEEP, more only from
+ * what is free past STACK_OOSEQ_KEEP_BULK beyond those. Counted against
+ * the buffers in use but its own (the segment just queued is its own; a
+ * frame lwIP is still looking at counts as another's, on the safe side),
+ * so a queue at the edge loses its newest top instead of creeping in. */
+uint16_t stack_ooseq_pbufs(const struct tcp_pcb *pcb)
+{
+    uint32_t window = ooseq_window(pcb);
+    uint32_t own = 0;
+    for (const struct tcp_seg *s = pcb->ooseq; s; s = s->next)   /* bounded by the limit */
+        own += pbuf_clen(s->p);
+    uint32_t used = lwip_stats.memp[MEMP_PBUF_POOL]->used;
+    uint32_t others = used > own ? used - own : 0;
+    uint32_t most = bufs_above(others, STACK_RX_KEEP);
+    uint32_t bulk = bufs_above(others, STACK_RX_KEEP + STACK_OOSEQ_KEEP_BULK);
+    uint32_t share = min_u32(most, bulk > STACK_OOSEQ_FIRST ? bulk : STACK_OOSEQ_FIRST);
+    uint32_t limit = min_u32((window + TCP_MSS - 1) / TCP_MSS, share);
+    if (own > limit)
+        ooseq_cut++;
+    return (uint16_t)limit;   /* at most TCP_WND / TCP_MSS + 1: asserted to fit */
 }
 
 size_t stack_tcp_room(struct stack_tcp *t)
@@ -889,6 +963,7 @@ void stack_tcp_release(struct stack_tcp *t)
     struct tcp_pcb *pcb = pcb_of(t);
     callbacks_set(pcb, NULL);
     tcp_setprio(pcb, TCP_PRIO_MIN);   /* lwIP may recycle it now */
+    tcp_free_ooseq(pcb);   /* nobody will read past the hole: its buffers back now */
     /* tcp_close resets a connection whose received bytes were not all
      * given back to a window of TCP_WND; this one's window is its ring's,
      * and every byte was read (stack.h). */
@@ -936,4 +1011,8 @@ void stack_tcp_get_counts(struct stack_tcp_counts *out)
     out->pcbs_none = lwip_stats.memp[MEMP_TCP_PCB]->err;
     out->bad_acks = tcp_bad_acks;
     out->no_acks = tcp_no_acks;
+    for (const struct tcp_pcb *pcb = tcp_active_pcbs; pcb; pcb = pcb->next)
+        for (const struct tcp_seg *s = pcb->ooseq; s; s = s->next)   /* STACK_OOSEQ_MAX at most */
+            out->ooseq_held += pbuf_clen(s->p);
+    out->ooseq_cut = ooseq_cut;
 }

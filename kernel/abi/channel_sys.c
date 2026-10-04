@@ -331,10 +331,9 @@ static bool rw_form_ok(const struct chan_reply_wait *rw)
 
 /* The reply half: send the reply on ch (its handles leave t only if it
  * goes) as a wake that may hand this CPU to its caller (we wait right
- * after), then its status and, once it went out, the mark. OK to go on to
- * the wait, else the error that ends the call. */
-static status_t rw_reply(struct handle_table *t, struct channel *ch,
-                         const struct chan_reply_wait *rw)
+ * after), then, once it went out, the mark. rw->reply_st gets its status.
+ * OK to go on to the wait, else the error that ends the call. */
+static status_t rw_reply(struct handle_table *t, struct channel *ch, struct chan_reply_wait *rw)
 {
     struct khandle khs[CHANNEL_MAX_HANDLES];
     status_t st = take_all(t, rw->reply_h, khs, rw->reply_nh);
@@ -347,9 +346,10 @@ static status_t rw_reply(struct handle_table *t, struct channel *ch,
         else
             commit_all(t, rw->reply_h, rw->reply_nh);
     }
+    rw->replied = true;
+    rw->reply_st = st;
     uint64_t one = 1;
-    if (put_bytes(&rw->status_out, &st, sizeof(st)) != OK ||
-        (st == OK && put_bytes(&rw->mark, &one, sizeof(one)) != OK))
+    if (st == OK && put_bytes(&rw->mark, &one, sizeof(one)) != OK)
         return ERR_INVALID_ARGS;
     return st == ERR_PEER_CLOSED ? OK : st;   /* a caller that has gone stops nothing */
 }
@@ -378,6 +378,7 @@ status_t sys_channel_reply_wait(struct handle_table *t, struct chan_reply_wait *
     if (st != OK)
         return st;
     rw->is_port = wait->type == OBJ_PORT;
+    rw->replied = false;
     rw->req_nb = rw->req_nh = 0;
     /* The request's handles get table slots before the reply goes out, so
      * a full table fails here, with nothing sent. */

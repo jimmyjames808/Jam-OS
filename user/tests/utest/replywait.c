@@ -125,12 +125,12 @@ bool t_reply_wait_mark_before_wait(void)
     while (!__atomic_load_n(&rw_mark, __ATOMIC_ACQUIRE) && now() < end)
         jam_nanosleep(now() + NS_PER_MS);
     CHECK_EQ(__atomic_load_n(&rw_mark, __ATOMIC_ACQUIRE), 1);
-    CHECK_EQ(rw_rstatus, OK);
     CHECK(!__atomic_load_n(&rw_server_back, __ATOMIC_ACQUIRE));
     CHECK_ST(jam_handle_close(a), OK);   /* its wait ends: nothing queued, the peer gone */
     if (!wait_threads(&srv, 1))
         return false;
     CHECK_ST(rw_server_st, ERR_PEER_CLOSED);
+    CHECK_EQ(rw_rstatus, OK);   /* the reply's status: written as the call returned */
     CHECK_ST(jam_handle_close(b), OK);
     return true;
 }

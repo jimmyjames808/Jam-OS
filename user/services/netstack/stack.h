@@ -170,7 +170,10 @@ status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size);
  *   and the hook copies what it takes (all of it, when the program reads:
  *   see the window). What it doesn't take stays in lwIP (lwIP's "refused
  *   data", offered again on lwIP's next look, at most every 250 ms) and
- *   lwIP takes no more bytes on that connection meanwhile;
+ *   lwIP takes no more bytes on that connection meanwhile. Segments past
+ *   a hole wait in lwIP (its out-of-order queue, within the window and
+ *   the shares below; the ACKs say which ranges with SACK blocks when the
+ *   peer offered SACK) and come to hooks.rx in order once it is filled;
  * - the window: each connection announces at most the window it was given
  *   (its rx ring), and at most STACK_TCP_WND when the peer scales windows
  *   (RFC 7323: both SYNs carry the option), STACK_TCP_WND_PLAIN when it
@@ -223,6 +226,22 @@ status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size);
 #define STACK_HEAP_KEEP      (64u * 1024)
 #define STACK_HEAP_KEEP_BULK (1u << 20)
 #define STACK_SEGS_KEEP_BULK 1024u
+/* Segments that come past a hole wait on their connection's out-of-order
+ * queue (lwipopts.h TCP_QUEUE_OOSEQ), each in its frame's receive buffer,
+ * shared out the same way: the queues never hold the last STACK_RX_KEEP
+ * of lwIP's STACK_RX_BUFS buffers (every frame needs one while lwIP looks
+ * at it), so together at most STACK_OOSEQ_MAX; and a connection's buffers
+ * past its first STACK_OOSEQ_FIRST (a 64 KiB window's segments, a default
+ * rx ring's) never the last STACK_OOSEQ_KEEP_BULK beyond those. On top, a
+ * connection's queue holds at most its window in bytes and in full
+ * segments. lwIP's segment pool has STACK_OOSEQ_MAX more for them, which
+ * stack_tcp_room keeps out of the senders' shares. */
+#define STACK_RX_BUFS         (128u + 1024u)   /* lwipopts.h PBUF_POOL_SIZE */
+#define STACK_RX_KEEP         128u
+#define STACK_OOSEQ_MAX       (STACK_RX_BUFS - STACK_RX_KEEP)
+#define STACK_OOSEQ_FIRST     45u
+#define STACK_OOSEQ_KEEP_BULK 256u
+#define STACK_SEGS_SEND       4608u            /* the segment pool less STACK_OOSEQ_MAX */
 
 /* A connection and a listener, opaque outside stack.c. */
 struct stack_tcp;
@@ -332,6 +351,8 @@ struct stack_tcp_counts {
                               * acked, dropped before lwIP (RFC 5961 section 5) */
     uint32_t no_acks;        /* segments with no ACK, RST or SYN flag to a connection past
                               * SYN_SENT, dropped before lwIP (RFC 9293 3.10.7.4) */
+    uint32_t ooseq_held;     /* receive buffers on out-of-order queues now, every connection's */
+    uint32_t ooseq_cut;      /* times a queue went past its limits and lwIP dropped its top */
 };
 void     stack_tcp_get_counts(struct stack_tcp_counts *out);
 /* A frame found the edge full (its tx said ERR_NO_RESOURCES) since the

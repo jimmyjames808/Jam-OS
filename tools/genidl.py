@@ -446,8 +446,10 @@ def gen_common():
         "{",
         "    for (;;) {",
         "        bool idl_reply = s->rn != 0;",
-        "        status_t idl_rs = 1;   /* never a status: the reply wasn't tried */",
-        "        uint32_t idl_n = 0, idl_nh = 0;",
+        "        /* The reply's status (1: never a status, the reply wasn't tried)",
+        "         * and the request's sizes, in a row: the kernel writes them in one",
+        "         * copy. */",
+        "        struct { status_t rs; uint32_t n, nh; } idl_o = { 1, 0, 0 };",
         "        /* No room for handles: a request that carries any stays queued",
         "         * (ERR_BUFFER_TOO_SMALL) for idl_drain. */",
         "        struct channel_reply_wait_args idl_a = {",
@@ -455,8 +457,8 @@ def gen_common():
         "            .wait = s->ch,",
         "            .bytes = (uint64_t)(uintptr_t)s->q,",
         "            .bytes_cap = s->qcap,",
-        "            .actual_bytes = (uint64_t)(uintptr_t)&idl_n,",
-        "            .actual_handles = (uint64_t)(uintptr_t)&idl_nh,",
+        "            .actual_bytes = (uint64_t)(uintptr_t)&idl_o.n,",
+        "            .actual_handles = (uint64_t)(uintptr_t)&idl_o.nh,",
         "            .deadline_ns = DEADLINE_NEVER,",
         "        };",
         "        if (idl_reply) {",
@@ -464,22 +466,22 @@ def gen_common():
         "            idl_a.rn = s->rn;",
         "            idl_a.rh = (uint64_t)(uintptr_t)s->rhs;",
         "            idl_a.rhn = s->rhn;",
-        "            idl_a.reply_status = (uint64_t)(uintptr_t)&idl_rs;",
+        "            idl_a.reply_status = (uint64_t)(uintptr_t)&idl_o.rs;",
         "        }",
         "        status_t idl_st = drv_channel_reply_wait(&idl_a);",
-        "        if (idl_rs != OK)",
+        "        if (idl_o.rs != OK)",
         "            idl_close_all(s->rhs, s->rhn);   /* not sent: they're still ours */",
         "        s->rn = s->rhn = 0;",
-        "        if (idl_reply && idl_rs != 1 && idl_rs != OK && idl_rs != ERR_PEER_CLOSED)",
+        "        if (idl_reply && idl_o.rs != 1 && idl_o.rs != OK && idl_o.rs != ERR_PEER_CLOSED)",
         "            continue;   /* the reply failed and nothing was read: wait again */",
         "        if (idl_st == ERR_BUFFER_TOO_SMALL) {",
-        "            idl_st = idl_drain(s->ch, idl_n, idl_nh);",
+        "            idl_st = idl_drain(s->ch, idl_o.n, idl_o.nh);",
         "            if (idl_st == OK)",
         "                continue;",
         "        }",
         "        if (idl_st != OK)",
         "            return idl_st;",
-        "        s->n = idl_n;",
+        "        s->n = idl_o.n;",
         "        return OK;",
         "    }",
         "}",
@@ -679,10 +681,13 @@ def gen_client_sync(p, m):
     hres = [f for f in m.results if f.handle]
     if hres:
         out.append(f"    handle_t idl_rh[{len(hres)}];")
-        out.append("    uint32_t idl_rhn = 0;")
+        out.append("    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */")
         out.append("    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), "
-                   "&idl_n, idl_rh,")
-        out.append(f"                               {len(hres)}, &idl_rhn, idl_within, idl_t);")
+                   "&idl_got[0],")
+        out.append(f"                               idl_rh, {len(hres)}, &idl_got[1], idl_within, "
+                   "idl_t);")
+        out.append("    uint32_t idl_rhn = idl_got[1];")
+        out.append("    idl_n = idl_got[0];")
         out.append("    if (idl_st == OK)")
         out.append("        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));")
         out.append(f"    if (idl_st == OK && idl_rhn != {len(hres)})")

@@ -67,6 +67,31 @@ bool fix_receive(struct cx *x, uint32_t id, size_t total, uint32_t chunk);
  * listener's rx_size from the fixture's slots. */
 status_t fix_lst_rings(struct ntcp_listener *l, struct ntcp_conn *c);
 void     fix_lst_drop(struct ntcp_listener *l, struct ntcp_conn *c);
+/* Rings too big for the fixture's slots: in a VMO of their own
+ * (nettcpscale.c). fix_big_make makes them as netstack does, the
+ * program's side attached into *prog. */
+struct fix_big {
+    handle_t vmo;
+    uint8_t *map;
+    uint64_t len;
+};
+bool fix_big_make(uint32_t tx, uint32_t rx, struct sockring *stack_side, struct sockring *prog,
+                  struct fix_big *b);
+void fix_big_free(struct fix_big *b);
+/* netstack opens a connection with rings of tx and rx bytes (in b) to the
+ * peer `peer` describes (its port, and its SYN-ACK's options: wscale, and
+ * the rest of struct tp's); the handshake answered and, with scaling, the
+ * peer's whole window told in an ACK of its own (a SYN's is never
+ * scaled). */
+bool fix_open_big(struct cx *x, struct fix_big *b, const struct tp *peer, uint32_t tx,
+                  uint32_t rx);
+/* Free x's connection and its big rings. */
+void fix_free_big(struct cx *x, struct fix_big *b);
+/* netstack's turn, and its ACKs read (lwIP's timer run for a delayed
+ * one): everything the peer sent is acked. */
+bool fix_acked_all(struct cx *x);
+/* The peer resets x's connection (the test is done with it). */
+void fix_reset_by_peer(struct cx *x);
 /* The peer (port `from`) opens a connection to listener port `port`: its
  * SYN-ACK checked (window `win`), the ACK not sent yet. */
 bool fix_handshake(struct cx *x, uint16_t port, uint16_t from, uint32_t win);

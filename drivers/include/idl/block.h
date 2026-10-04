@@ -121,9 +121,11 @@ static inline status_t block_map_buffer_call(handle_t ch, bool idl_within, uint6
     idl_q.txid = 0;
     idl_q.ordinal = BLOCK_MAP_BUFFER;
     handle_t idl_rh[1];
-    uint32_t idl_rhn = 0;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, idl_rh,
-                               1, &idl_rhn, idl_within, idl_t);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && idl_rhn != 1)

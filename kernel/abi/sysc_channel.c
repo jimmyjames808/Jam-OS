@@ -23,9 +23,42 @@ static void close_all(struct handle_table *t, const handle_t *hs, uint32_t n)
         handle_close(t, hs[i]);
 }
 
-static status_t put_u32(uint64_t uaddr, uint32_t v)
+/* A word a call returns to the caller: the user address it goes to (0:
+ * none wanted) and its value. */
+struct out_word {
+    uint64_t addr;
+    uint32_t v;
+};
+
+/* Write n out words, in order. Words whose addresses follow each other
+ * (a caller that keeps its sizes in one struct, in the order the call
+ * names them) go in one copy: each copy costs its own trip into user
+ * memory, whatever its length. ERR_INVALID_ARGS on a fault. */
+static status_t put_words(const struct out_word *w, unsigned n)
 {
-    return uaddr ? copy_to_user(uaddr, &v, sizeof(v)) : OK;
+    uint32_t run[3];
+    unsigned i = 0;
+    while (i < n) {
+        if (!w[i].addr) {
+            i++;
+            continue;
+        }
+        uint64_t start = w[i].addr;
+        unsigned k = 0;
+        do
+            run[k++] = w[i++].v;
+        while (i < n && k < 3 && w[i].addr && w[i].addr == start + 4 * k);
+        if (copy_to_user(start, run, 4 * k) != OK)
+            return ERR_INVALID_ARGS;
+    }
+    return OK;
+}
+
+/* A message's sizes: actual bytes, then actual handles. */
+static status_t put_sizes(uint64_t ub, uint32_t nb, uint64_t uh, uint32_t nh)
+{
+    const struct out_word w[2] = { { ub, nb }, { uh, nh } };
+    return put_words(w, 2);
 }
 
 int64_t sysc_channel_create(uint64_t a, uint64_t b)
@@ -86,12 +119,12 @@ int64_t sysc_channel_read(const struct channel_read_args *a)
         /* The bytes are in place already: the length goes last, so a
          * reader that finds it set finds the whole message (svcstate). */
         if (copy_out(a->handles, hs, nh * sizeof(handle_t)) != OK ||
-            put_u32(a->actual_bytes, nb) != OK || put_u32(a->actual_handles, nh) != OK) {
+            put_sizes(a->actual_bytes, nb, a->actual_handles, nh) != OK) {
             close_all(t, hs, nh);   /* the message is gone; its handles must not leak */
             st = ERR_INVALID_ARGS;
         }
     } else if (st == ERR_BUFFER_TOO_SMALL) {
-        if (put_u32(a->actual_bytes, nb) != OK || put_u32(a->actual_handles, nh) != OK)
+        if (put_sizes(a->actual_bytes, nb, a->actual_handles, nh) != OK)
             st = ERR_INVALID_ARGS;   /* the message stays queued */
     }
     return st;
@@ -129,34 +162,41 @@ int64_t sysc_channel_call(const struct channel_call_args *a)
                                                     a->flags & CHANNEL_CALL_TIMEOUT));
     if (st == OK) {
         if (copy_out(a->rh, rh, nh * sizeof(handle_t)) != OK ||
-            put_u32(a->ractual, nb) != OK || put_u32(a->rhactual, nh) != OK) {
+            put_sizes(a->ractual, nb, a->rhactual, nh) != OK) {
             close_all(t, rh, nh);
             st = ERR_INVALID_ARGS;
         }
     } else if (st == ERR_BUFFER_TOO_SMALL) {
-        if (put_u32(a->ractual, nb) != OK || put_u32(a->rhactual, nh) != OK)
+        if (put_sizes(a->ractual, nb, a->rhactual, nh) != OK)
             st = ERR_INVALID_ARGS;
     }
     return st;
 }
 
-/* channel_reply_wait's results for a channel end: as channel_read's. */
-static status_t request_out(struct handle_table *t, const struct channel_reply_wait_args *a,
-                            const struct chan_reply_wait *rw, status_t st)
+/* channel_reply_wait's results: the reply's status, then for a channel
+ * end the request's sizes as channel_read's (after its bytes and handles:
+ * the length goes last, as sysc_channel_read), all three in one copy when
+ * the caller keeps them in a row; for a port, the packet. */
+static status_t reply_wait_out(struct handle_table *t, const struct channel_reply_wait_args *a,
+                               const struct chan_reply_wait *rw, status_t st)
 {
-    if (st == OK) {
-        /* The bytes are in place already: the length goes last (as
-         * sysc_channel_read). */
-        if (copy_out(a->handles, rw->req_h, rw->req_nh * sizeof(handle_t)) != OK ||
-            put_u32(a->actual_bytes, rw->req_nb) != OK ||
-            put_u32(a->actual_handles, rw->req_nh) != OK) {
-            close_all(t, rw->req_h, rw->req_nh);   /* the message is gone: no handle leaks */
-            st = ERR_INVALID_ARGS;
-        }
-    } else if (st == ERR_BUFFER_TOO_SMALL) {
-        if (put_u32(a->actual_bytes, rw->req_nb) != OK ||
-            put_u32(a->actual_handles, rw->req_nh) != OK)
-            st = ERR_INVALID_ARGS;   /* the message stays queued */
+    bool sizes = !rw->is_port && (st == OK || st == ERR_BUFFER_TOO_SMALL);
+    uint32_t nh = st == OK && !rw->is_port ? rw->req_nh : 0;   /* handles in t now */
+    status_t cst = OK;
+    if (st == OK && rw->is_port)
+        cst = copy_to_user(a->packet, &rw->pkt, sizeof(rw->pkt));
+    else
+        cst = copy_out(a->handles, rw->req_h, nh * sizeof(handle_t));
+    const struct out_word w[3] = {
+        { rw->replied ? a->reply_status : 0, (uint32_t)rw->reply_st },
+        { sizes ? a->actual_bytes : 0, rw->req_nb },
+        { sizes ? a->actual_handles : 0, rw->req_nh },
+    };
+    if (cst != OK || put_words(w, 3) != OK) {
+        /* What left its queue is lost (as sysc_channel_read's, and a
+         * packet as port_wait's), but its handles must not leak. */
+        close_all(t, rw->req_h, nh);
+        return ERR_INVALID_ARGS;
     }
     return st;
 }
@@ -181,7 +221,6 @@ int64_t sysc_channel_reply_wait(const struct channel_reply_wait_args *a)
     struct chan_reply_wait rw = {
         .h = a->h, .reply = chan_ubytes(a->rbytes, a->rn), .reply_h = rh, .reply_nh = a->rhn,
         .wait = a->wait,
-        .status_out = chan_ubytes(a->reply_status, a->reply_status ? sizeof(status_t) : 0),
         .mark = chan_ubytes(a->mark, a->mark ? sizeof(uint64_t) : 0),
         .req = chan_ubytes(a->bytes, a->bytes_cap < CHANNEL_MAX_BYTES ? a->bytes_cap
                                                                        : CHANNEL_MAX_BYTES),
@@ -193,11 +232,5 @@ int64_t sysc_channel_reply_wait(const struct channel_reply_wait_args *a)
         .deadline_ns = deadline_of(a->deadline_ns, a->flags & CHANNEL_REPLY_WAIT_TIMEOUT),
     };
     status_t st = sys_channel_reply_wait(t, &rw);
-    if (!rw.is_port)
-        return request_out(t, a, &rw, st);
-    /* A packet taken off the port can't be put back: a bad `packet` loses
-     * it (as port_wait's `out`). */
-    if (st == OK && copy_to_user(a->packet, &rw.pkt, sizeof(rw.pkt)) != OK)
-        st = ERR_INVALID_ARGS;
-    return st;
+    return reply_wait_out(t, a, &rw, st);
 }

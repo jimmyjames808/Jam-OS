@@ -61,8 +61,9 @@ struct chan_waiter {
     uint32_t         bytes_cap;     /* a reader's room for bytes... */
     uint32_t         handles_cap;   /* ...and handles */
     struct thread   *thread;        /* the waiting thread */
-    struct chan_msg *reply;         /* set by the writer that hands it a message (or, for
-                                     * a reader, the one it took off the queue itself) */
+    struct chan_msg *reply;         /* set by the writer that hands it a message, last
+                                     * (chan_handed), or, for a reader, the one it took
+                                     * off the queue itself */
     struct chan_msg *slot;          /* its free slot while it waits, or NULL: a writer
                                      * that hands over a message built in its own slot
                                      * takes this one in exchange (the endpoint's lock) */
@@ -78,6 +79,15 @@ struct channel {
     bool              closed;        /* we left the pair */
     bool              peer_closed;   /* the peer left the pair */
 };
+
+/* The message handed to w, or NULL. Writers store it last, with release
+ * (channel_send.c's hand_to_locked), so a waiter may read it without the
+ * endpoint's lock once it has woken: when it is there, w is off the list
+ * and nothing else of w changes any more. */
+static inline struct chan_msg *chan_handed(const struct chan_waiter *w)
+{
+    return __atomic_load_n(&w->reply, __ATOMIC_ACQUIRE);
+}
 
 /* channel.c: messages. */
 

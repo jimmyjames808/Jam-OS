@@ -342,6 +342,9 @@ bool t_nettcp_card_full(void);
 bool t_nettcp_window_scale(void);
 bool t_nettcp_listen_scale(void);
 bool t_nettcp_heap_shares(void);
+/* nettcpooseq.c: segments past a hole kept (bounded), SACK. */
+bool t_nettcp_ooseq_sack(void);
+bool t_nettcp_ooseq_bounds(void);
 /* nettcpsock.c: programs' TCP calls on bin/netstack over the fake driver. */
 bool t_nettcp_limits(void);
 bool t_nettcp_bulk_rings(void);

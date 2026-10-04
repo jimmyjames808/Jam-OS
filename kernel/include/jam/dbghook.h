@@ -28,6 +28,9 @@ enum {
     DBG_VTD_FAULT,         /* vtd_fault.c's log thread, a fault record taken from a unit's
                               ring, before it is logged; no lock held (arg: struct
                               vtd_fault_rec, vtd_internal.h) */
+    DBG_CHANNEL_HANDED,    /* channel_send.c hand_to_locked, the waiter woken, before its
+                              message is published; the endpoint's lock held, interrupts
+                              off (arg: the waiting thread) */
     DBG_N
 };
 
