@@ -26,7 +26,7 @@ for run in spare nospare; do
     QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-restart.txt \
         QEMU_SAVE="$out/fr-$run-stick.img" \
         tools/qemu-test.sh "$out" "fr-$run" $words > "$out/fr-$run.out" 2>&1 ||
-        { echo "fat-restart: the $run script failed"; grep "serial-feed: .*no '" "$out/fr-$run.out"; ok=0; }
+        { echo "fat-restart: the $run script failed"; grep "serial-feed: .*no '" "$out/fr-$run.out" || true; ok=0; }
 done
 
 count() { grep -ac -- "$1" "$2" || true; }

@@ -44,7 +44,7 @@ ok=1
 
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$devs" QEMU_INPUT=tools/shell-tests/hda.txt \
     tools/qemu-test.sh "$out" hda-shell shell > "$out/hda-shell.out" 2>&1 ||
-    { echo "hda-shell: the script failed"; grep "serial-feed: .*no '" "$out/hda-shell.out"; ok=0; }
+    { echo "hda-shell: the script failed"; grep "serial-feed: .*no '" "$out/hda-shell.out" || true; ok=0; }
 log="$out/hda-shell.log"
 for want in "controller 8086:2668" "controller 8086:293e" \
             "codec 0: 1af4:0022" "codec 1: 1af4:0012" "codec 0: 1af4:0032" \
@@ -136,7 +136,7 @@ fi
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$devs" QEMU_IOMMU=eim \
     QEMU_WORDS="iommu=on vtdtest" QEMU_INPUT=tools/shell-tests/vtdtest.txt \
     tools/qemu-test.sh "$out" hda-vtd shell > "$out/hda-vtd.out" 2>&1 ||
-    { echo "hda-vtd: the script failed"; grep "serial-feed: .*no '" "$out/hda-vtd.out"; ok=0; }
+    { echo "hda-vtd: the script failed"; grep "serial-feed: .*no '" "$out/hda-vtd.out" || true; ok=0; }
 log="$out/hda-vtd.log"
 for want in "codec(s) answered; 0 verb(s) timed out" \
             "iommu: DMA translation on, interrupt remapping on" \
