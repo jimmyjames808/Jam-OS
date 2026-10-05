@@ -8,10 +8,11 @@
 # circle closing it; Super+T's tiling saved and kept across a reboot.
 #
 # Where things are at OVMF's 1280x800: the first terminal's window is
-# centred, its surface 960x592 at (160, 104) under a 28-pixel title bar;
+# centred in the room under the desktop's strip (40 pixels and a 6-pixel
+# gap), its surface 960x592 at (160, 128) under a 28-pixel title bar;
 # terminal 2's is cascaded 30 pixels down and right (its surface at (190,
-# 134)). A title bar's close circle is its first, on the left: centre (203,
-# 119) on terminal 2's. `pointer` puts the mouse there exactly
+# 158)). A title bar's close circle is its first, on the left: centre (203,
+# 143) on terminal 2's. `pointer` puts the mouse there exactly
 # (serial-feed.py: 1:1 steps).
 wait 120 Jam OS shell
 wait jam>
@@ -48,7 +49,7 @@ sleep 0.2
 monitor mouse_button 0
 sleep 0.5
 # its close circle: its console ends, init closes the terminal
-pointer 203 119
+pointer 203 143
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
