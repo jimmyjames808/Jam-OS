@@ -208,8 +208,8 @@ static bool hovered_checks(const struct cp_run *r)
     CHECK_EQ(btn_px(r, c.x1, c.y1, 5, 5), LOOK_CLOSE_INK);
     CHECK_EQ(btn_px(r, c.x1, c.y1, 6, 6), LOOK_CLOSE_INK);
     CHECK_EQ(btn_px(r, m.x1, m.y1, 6, 5), mix(LOOK_MINIMISE, LOOK_MINIMISE_INK, 191));
-    CHECK_EQ(btn_px(r, f.x1, f.y1, 4, 4), LOOK_FULLSCREEN_INK);
-    CHECK_EQ(btn_px(r, f.x1, f.y1, 7, 7), LOOK_FULLSCREEN_INK);
+    CHECK_EQ(btn_px(r, f.x1, f.y1, 3, 3), LOOK_FULLSCREEN_INK);
+    CHECK_EQ(btn_px(r, f.x1, f.y1, 8, 8), LOOK_FULLSCREEN_INK);
     return true;
 }
 

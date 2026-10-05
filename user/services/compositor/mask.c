@@ -94,10 +94,10 @@ static bool in_symbol(enum title_button b, struct pt p)
     case TITLE_MINIMISE:
         return p.x >= 3.0f && p.x <= LOOK_BTN_D - 3.0f && p.y >= mid - 0.75f && p.y <= mid + 0.75f;
     default:   /* full screen: one arrowhead to the top left, one to the bottom right */
-        return in_triangle(p, (struct pt){ 3.2f, 3.2f }, (struct pt){ 7.6f, 3.2f },
-                           (struct pt){ 3.2f, 7.6f }) ||
-               in_triangle(p, (struct pt){ 8.8f, 8.8f }, (struct pt){ 4.4f, 8.8f },
-                           (struct pt){ 8.8f, 4.4f });
+        return in_triangle(p, (struct pt){ 3.0f, 3.0f }, (struct pt){ 6.8f, 3.0f },
+                           (struct pt){ 3.0f, 6.8f }) ||
+               in_triangle(p, (struct pt){ 9.0f, 9.0f }, (struct pt){ 5.2f, 9.0f },
+                           (struct pt){ 9.0f, 5.2f });
     }
 }
 
