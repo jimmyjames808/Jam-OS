@@ -106,8 +106,9 @@ static bool configured(struct xc *x, const struct tl *t, struct cfg *c)
     const struct ct_event *te = last(&x->k, &jwl_xdg_toplevel_interface,
                                      JWL_XDG_TOPLEVEL_EV_CONFIGURE, t->top);
     CHECK(e && te);
-    *c = (struct cfg){ (int32_t)te->u[0], (int32_t)te->u[1], e->u[0], { 0 }, te->na / 4 };
-    memcpy(c->states, te->a, te->na);
+    uint32_t n = te->na < 4 ? te->na : 4;   /* words: we send at most four states */
+    *c = (struct cfg){ (int32_t)te->u[0], (int32_t)te->u[1], e->u[0], { 0 }, n };
+    memcpy(c->states, te->a, n * sizeof(c->states[0]));
     ct_clear(&x->k);
     return true;
 }
@@ -174,6 +175,10 @@ static bool map_floating(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK(ack_commit(x, t, &c, buffer(x, 0, 64, 64, RED)));
     CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, RED));   /* centred */
     CHECK(pixel(p, (W - 64) / 2 - 1, (H - 64) / 2 + 32, SPLASH_BG));
+    /* its client's first window took the keys: it is told it is activated */
+    CHECK(configured(x, t, &c));
+    CHECK(c.w == 64 && c.h == 64 && c.nstates == 1);
+    CHECK(has_state(&c, JWL_XDG_TOPLEVEL_STATE_ACTIVATED));
     return true;
 }
 
@@ -183,14 +188,15 @@ static bool maximise_and_back(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK_ST(jwl_xdg_toplevel_set_maximized(x->k.c, t->top), OK);
     CHECK(configured(x, t, &c));
     CHECK(c.w == W && c.h == H - TITLE);
-    CHECK(c.nstates == 1 && has_state(&c, JWL_XDG_TOPLEVEL_STATE_MAXIMIZED));
+    CHECK(c.nstates == 2 && has_state(&c, JWL_XDG_TOPLEVEL_STATE_MAXIMIZED));
+    CHECK(has_state(&c, JWL_XDG_TOPLEVEL_STATE_ACTIVATED));
     CHECK(ack_commit(x, t, &c, buffer(x, 16384, W, H - TITLE, GREEN)));
     CHECK(pixel(p, 0, TITLE, GREEN));
     CHECK(pixel(p, W - 1, H - 1, GREEN));
     CHECK(pixel(p, 0, TITLE - 1, SPLASH_BG));
     CHECK_ST(jwl_xdg_toplevel_unset_maximized(x->k.c, t->top), OK);
     CHECK(configured(x, t, &c));
-    CHECK(c.w == 64 && c.h == 64 && c.nstates == 0);   /* the size it had */
+    CHECK(c.w == 64 && c.h == 64 && c.nstates == 1);   /* the size it had, activated */
     CHECK(ack_commit(x, t, &c, buffer(x, 0, 64, 64, RED)));
     CHECK(pixel(p, 0, TITLE, SPLASH_BG));
     CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, RED));
@@ -202,7 +208,7 @@ static bool maximise_and_back(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK(pixel(p, 0, 0, BLUE));
     CHECK_ST(jwl_xdg_toplevel_unset_fullscreen(x->k.c, t->top), OK);
     CHECK(configured(x, t, &c));
-    CHECK(c.w == 64 && c.h == 64 && c.nstates == 0);
+    CHECK(c.w == 64 && c.h == 64 && c.nstates == 1);
     CHECK(ack_commit(x, t, &c, buffer(x, 0, 64, 64, RED)));
     CHECK(pixel(p, 0, 0, SPLASH_BG));
     return true;

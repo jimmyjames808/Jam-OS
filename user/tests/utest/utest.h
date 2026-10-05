@@ -280,6 +280,11 @@ bool t_fat_dir_linear(void);
 bool t_fat_dir_cursors(void);
 bool t_fat_cache(void);
 bool t_fat_gather(void);
+/* fat_trunc.c: a truncate to 0 that goes out in steps keeps its chain's head
+ * until the end (the disk watched write by write). */
+bool t_fat_truncate_steps(void);
+/* fat_ctl.c: every fsctl request queued together is answered. */
+bool t_fat_ctl_queued(void);
 /* fat_restart.c: fat ended at each step of a request and carrying on from
  * its state (the test plays devmgr: state VMO, keeper, restarts). */
 bool t_fat_restart_steps(void);
@@ -436,10 +441,43 @@ bool t_jwl_conn_new_ids(void);
 bool t_jwl_fuzz_decode(void);
 bool t_jwl_fuzz_conn(void);
 
+/* jwlc_window.c, jwlc_seat.c and jwlc_reconnect.c, over the fake
+ * compositor of jwlc_fake.c (jwlcfake.h): libjwl's client side
+ * (<jwl_client.h>). */
+bool t_jwlc_setup(void);
+bool t_jwlc_window(void);
+bool t_jwlc_window_sizes(void);
+bool t_jwlc_keyboard(void);
+bool t_jwlc_pointer(void);
+bool t_jwlc_reconnect(void);
+bool t_jwlc_protocol_error(void);
+bool t_jwlc_blocking(void);
+
 /* comp.c, comp_bad.c: bin/compositor headless, driven by Wayland clients
  * over real channels (comptest.h). */
 bool t_comp_globals(void);
 bool t_comp_surface(void);
+bool t_comp_bad_requests(void);
+bool t_comp_caps(void);
+bool t_comp_connections(void);
+bool t_comp_client_crash(void);
+bool t_comp_never_reads(void);
+bool t_comp_regions(void);
+/* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
+ * a pool, a buffer and a surface, then crashes. */
+int  comp_child(int argc, char **argv);
+/* jwlc_real.c: libjwl's client side against the real compositor, headless. */
+bool t_jwlc_real_compositor(void);
+/* compseat.c, compinput.c: the compositor's seat (input sources, compctl,
+ * focus, the keyboard and the pointer; compseat.h), and <termkeys.h>. */
+bool t_comp_seat_keymap(void);
+bool t_comp_seat_focus(void);
+bool t_comp_seat_grab(void);
+bool t_comp_seat_reserved(void);
+bool t_comp_seat_text(void);
+bool t_comp_seat_ctl(void);
+bool t_comp_seat_move(void);
+bool t_termkeys(void);
 
 /* compwm.c: the compositor's window manager, linked in and driven by fake
  * toplevels and pointer calls: floating, tiling, the switch, focus, the
@@ -529,6 +567,7 @@ bool t_dnsd_shares(void);
  * window against a fake server (<updfetch.h>); netlog.c: netlog's
  * datagrams and sender (<netlog.h>). */
 bool t_update_manifest(void);
+bool t_update_manifest_menu(void);
 bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
 bool t_update_build_net(void);
@@ -539,6 +578,12 @@ bool t_updfetch_clean(void);
 bool t_updfetch_lossy(void);
 bool t_updfetch_snapshot_gone(void);
 bool t_updfetch_failures(void);
+bool t_updfetch_menu(void);
+/* bootmenu.c: the boot menu's check (<bootmenu.h>). */
+bool t_bootmenu_good(void);
+bool t_bootmenu_refusals(void);
+bool t_bootmenu_files(void);
+bool t_bootmenu_fuzz(void);
 bool t_netlog_golden(void);
 bool t_netlog_hostile(void);
 bool t_netlog_whole_log(void);

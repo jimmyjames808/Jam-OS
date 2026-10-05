@@ -56,6 +56,11 @@ IMAGE   := $(BUILD)/jamos.img
 BOOTFS  := $(BUILD)/bootfs.img
 # The Mac's signing tool (tools/jamos-sign.c, below): one for both builds.
 SIGN_TOOL := build/host/jamos-sign
+# The PC's check of a boot menu, on the Mac (tools/menucheck.c, below).
+MENU_TOOL := build/host/menucheck
+# The files a stick has once `update -w` has written a build: its own and
+# the previous one (what boot/limine.conf may name; `make check`).
+STICK_FILES := /boot/jamos.elf /boot/bootfs.img /boot/prev-jamos.elf /boot/prev-bootfs.img
 IMAGE_MIB := 128
 # The ESP ends at 64 MiB (it starts at 1 MiB); the data partition (/data,
 # FAT32 "JAMOS-DATA") fills the rest of the image: 64 MiB in QEMU, the
@@ -104,7 +109,7 @@ endif
 
 .PHONY: all image run debug clean font usb flash syscalls idl wl keymap check compdb includes FORCE
 
-all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL)
+all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL) $(MENU_TOOL)
 
 # kernel/main.c gets the network's default (JAMOS_NET_DEFAULT, above) and
 # is built again whenever it changes: the stamp is rewritten only then.
@@ -360,8 +365,9 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # guard.c and the files it calls, built as user code), and FatFs's structs
 # as fat's build sees them (utest/fatlayout.c: "ff.h" with fat's
 # ffconf.h, on the quote path only, so ffport's <string.h> stays fat's),
-# and the compositor's window manager on its scene (utest/compwm.c: wm.h,
-# no protocol in those files).
+# and the compositor's boxes and regions (utest/comp_region.c: region.c
+# and its comp.h), and its window manager on its scene (utest/compwm.c:
+# wm.h, no protocol in those files; the test plays the seat).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -374,8 +380,8 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
                       $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile \
                         wmgrab deco)
-EXTRA_CFLAGS_utest := -iquote user/services/compositor \
-                      -iquote user/services/music -iquote drivers/rtl8125 \
+EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
+                      -iquote user/services/compositor \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
                       -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT)
@@ -492,6 +498,7 @@ check: all
 	python3 tools/checkwants.py --selftest
 	python3 tools/fatcheck.py --selftest
 	$(SIGN_TOOL) self-test
+	$(MENU_TOOL) boot/limine.conf $(STICK_FILES)
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
@@ -595,6 +602,13 @@ $(SIGN_TOOL): tools/jamos-sign.c $(MONO_SRCS) $(MONO_HDRS) \
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -I$(MONO_DIR) -I$(MONO_DIR)/optional \
 	    -o $@ tools/jamos-sign.c $(MONO_SRCS)
+
+# menucheck (tools/menucheck.c): init's boot menu check (user/lib/bootmenu.c,
+# the same file), on the Mac.
+$(MENU_TOOL): tools/menucheck.c user/lib/bootmenu.c user/include/bootmenu.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -Iuser/include \
+	    -o $@ tools/menucheck.c user/lib/bootmenu.c
 
 # Write the image to a USB stick. Refuses anything that isn't external.
 usb: $(IMAGE)

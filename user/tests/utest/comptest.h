@@ -29,15 +29,15 @@ uint64_t ct_handles(const struct ct_comp *p);
 bool ct_handles_back(const struct ct_comp *p, uint64_t want);
 
 /* One event a client got (the first four non-string arguments' words, its
- * first string argument, and the first bytes of its first array). */
+ * first string argument, and its first array's first words). */
 struct ct_event {
     const struct jwl_interface *iface;
     uint16_t op;
     uint32_t id;
     uint32_t u[4];
     char     s[128];
-    uint32_t a[4];
-    uint32_t na;                   /* bytes of the array in a[] */
+    uint32_t a[8];             /* the array's first words (wl_keyboard.enter: the keys held) */
+    uint32_t na;               /* the array's size in words (only the first 8 kept) */
 };
 
 #define CT_EVENTS 128
@@ -48,10 +48,14 @@ struct ct_client {
     unsigned nev;
     bool     errored;                             /* wl_display.error came */
     struct ct_event err;
+    handle_t kept;                                /* the first handle an event carried (the
+                                                     test closes it), else they are closed */
 };
 
-/* A new connection to p (svc.connect on /svc/wayland). */
+/* A new connection to p (svc.connect on /svc/wayland), or a client on a
+ * connection's channel ch (consumed). */
 bool     ct_open(struct ct_comp *p, struct ct_client *k);
+bool     ct_adopt(handle_t ch, struct ct_client *k);
 void     ct_close(struct ct_client *k);
 /* get_registry, then wl_compositor 4, wl_shm 1 and wl_output 3 bound by
  * their names (1, 2, 3), and a round trip. */
@@ -76,6 +80,8 @@ uint32_t ct_new(struct ct_client *k, const struct jwl_interface *iface, uint32_t
  * a request (read and map, and transfer). HANDLE_INVALID on failure. */
 handle_t ct_kept_vmo(uint64_t size);
 handle_t ct_dup_for_pool(handle_t vmo);
+/* The job's use of kind (JOB_LIMIT_*) now. */
+uint64_t ct_job_used(handle_t job, unsigned kind);
 /* A pool of size bytes on k (wl_shm.create_pool): its id; the VMO's
  * handle (ours) in *vmo if vmo isn't NULL, else closed. 0 on failure. */
 uint32_t ct_pool(struct ct_client *k, uint32_t size, handle_t *vmo);

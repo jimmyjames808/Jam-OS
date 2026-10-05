@@ -66,7 +66,6 @@ struct wm_window {
     struct comp_window *win;       /* while mapped; win->wm is this */
     const struct wm_ops *ops;
     void *ctx;                     /* the ops' own */
-    uint32_t *client_maps;         /* its client's windows mapped so far (the first takes focus) */
     char title[WM_TEXT_MAX], app_id[WM_TEXT_MAX];
     int32_t min_w, min_h, max_w, max_h;   /* the client's limits; 0: none */
     enum wm_mode want;             /* asked for */
@@ -85,10 +84,8 @@ struct wm_window {
 
 /* No windows, no focus, no grab, the given layout: the start (and each test). */
 void wm_init(enum comp_layout layout);
-/* A toplevel on s, told things through ops (with ctx), its client's map
- * count at client_maps. NULL: no memory. */
-struct wm_window *wm_create(struct comp_surface *s, const struct wm_ops *ops, void *ctx,
-                            uint32_t *client_maps);
+/* A toplevel on s, told things through ops (with ctx). NULL: no memory. */
+struct wm_window *wm_create(struct comp_surface *s, const struct wm_ops *ops, void *ctx);
 /* The toplevel goes: unmapped, forgotten, freed. Nothing is sent to it. */
 void wm_destroy(struct wm_window *ww);
 /* The configure ww should have now. */
@@ -96,8 +93,8 @@ void wm_wanted(const struct wm_window *ww, struct wm_config *out);
 /* wm_wanted handed to ww's ops. */
 void wm_reconfigure(struct wm_window *ww);
 /* A commit with a buffer, drawn for states (the configure it acked): ww is
- * mapped (the first time: placed, and the seat told) and placed for those
- * states. ERR_NO_MEMORY. */
+ * mapped (the first time: placed, and the seat told by the scene) and
+ * placed for those states. ERR_NO_MEMORY. */
 status_t wm_commit(struct wm_window *ww, uint32_t states);
 /* A commit without a buffer: ww is unmapped and back where get_toplevel
  * left it (its requested states and floating place forgotten). */
@@ -134,6 +131,8 @@ struct comp_box wm_tile(const struct wm_window *ww);
 
 /* ww is going or unmapping: a grab on it ends, a double-click forgets it. */
 void wm_grab_forget(const struct wm_window *ww);
+/* Any grab of ours ends where it is (the layout switched; a fresh start). */
+void wm_grab_cancel(void);
 /* The time between a double-click's two presses, at most. */
 #define WM_DOUBLE_CLICK_NS (400 * NS_PER_MS)
 #define WM_MIN_SIDE        32   /* a resize never asks for less than this */

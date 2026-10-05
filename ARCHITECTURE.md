@@ -1550,7 +1550,14 @@ accident. By default only RAM changes: a power-off brings back the stick's build
 loaded (the stick's own build renamed to be the previous one), so it survives a
 power-off ([Storage](#storage) has who may write the ESP and in what
 order); if the write fails, the build stays loaded, the stick still boots,
-and the answer says how far it got. The key's secret
+and the answer says how far it got. The build comes with its boot menu
+(the server's `boot/limine.conf`, named in the manifest by its size and
+SHA-256 and fetched as a third file): every `update` checks its SHA-256
+like the other two (one that isn't the signed one refuses the whole
+update), and only `update -w` writes it, after the build, as the stick's
+`/esp/boot/limine/limine.conf`, once init's own check of it passes
+([Storage](#storage)); a menu that fails is not written, and the build is.
+The key's secret
 half stays on the Mac (`build/host/jamos-sign`, from the same Monocypher,
 makes it and signs each manifest the server hands out), so a device on
 VLAN 21 posing as the Mac can serve only builds the owner signed; an
@@ -1570,7 +1577,9 @@ manifest and `update` moves it forward. A line the running build must
 act on to run the new one right is a must-understand line (its key
 starts with `!`): a build that doesn't know it refuses the update, once
 the signature has checked out, and says which line it needs ("needs a
-newer build"); it never skips one. Each update request carries the
+newer build"); it never skips one. The first extension line is `menu
+<size> <SHA-256>`, the boot menu: a build older than it skips it and
+updates the build alone. Each update request carries the
 manifest format the asking build reads (an older build's says nothing:
 format 2), and the server makes the manifest in the newest format that
 build reads, so a newer server always serves an older build. Only a
@@ -2103,6 +2112,40 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   through fat, whose cache may answer it. Every call of the write ends by one deadline (120 s for
   the steps, 60 s for the clean-up after a failure), so `update -w`
   always gets an answer; each step logs its time.
+- **The boot menu** (`user/services/init/espmenu.c`), written after the
+  build when the update carries one, under the same deadline. A menu
+  Limine can't read leaves a stick that boots only from an entry typed by
+  hand (Limine shows "config file not found" and its B, Blank Entry, key),
+  so: nothing is written if the stick has that menu already; the menu must
+  pass init's check first (`<bootmenu.h>`: the part of Limine's syntax Jam
+  OS's menu uses, nothing else; `timeout` 1..600 or `no`; every entry a
+  Jam OS kernel with its own boot image beside it, each file on the stick
+  as it is after the build's swap; the first entry, Limine's default,
+  boots `/esp/boot/jamos.elf`; "Jam OS (previous build)" boots
+  `/esp/boot/prev-jamos.elf`), and Limine on the stick must have no menu
+  checksum enrolled (its `BOOTX64.EFI`'s `++CONFIG_B2SUM_SIGNATURE++` all
+  zeros); `make check` runs the same check on `boot/limine.conf`
+  (`build/host/menucheck`). Then, each step whole before the next: (1) the
+  new menu as `limine.conf.new`, synced, read back, its SHA-256 the
+  manifest's; (2) the stick's menu copied as the spare,
+  `/esp/boot/limine.conf`, synced, read back; (3) the older
+  `limine.conf.prev` removed; (4) `limine.conf` renamed `limine.conf.prev`
+  (the stick's menu kept, to put back by hand); (5) `limine.conf.new`
+  renamed `limine.conf`, synced; (6) the spare removed. Limine 11 reads the
+  first config it finds of `/esp/EFI/BOOT/limine.conf`,
+  `/esp/boot/limine/limine.conf`, ..., `/esp/boot/limine.conf`
+  (`tools/update-menu-test.sh` boots each case), so the spare is read only
+  while `/esp/boot/limine/limine.conf` is missing: between
+  (4) and (5), one rename (about a second on the PC's stick), a power cut
+  boots the old menu from the spare. At every moment the stick has a
+  whole menu Limine reads; the one exception is a stick that had no menu
+  at all (nothing to copy as the spare), which has none until (5). Why
+  after the build: the check sees the files the stick really has, and a
+  cut between the two leaves the new build with the old menu, whose
+  entries name the same four files. A failure puts the stick's menu back
+  in its place if it isn't, and removes the temporary files (the spare
+  only once a menu is in place); the next `update -w` first settles what
+  a cut left the same way.
 - Write ordering: file data, then both FATs, then the directory entry.
 - fat keeps a write-through block cache (`user/services/fat/cache.c`):
   a miss reads 4 KiB, and twice as much as the last one when it carries
@@ -2130,7 +2173,9 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   hold (an unlink or truncate of a file over about 2 GiB on `/data`, or a
   grow by more than the hold) goes out in steps, says so in the log, and
   can't be undone: a death between steps can leave clusters no file
-  reaches (lost space, never a damaged file).
+  reaches (lost space, never a damaged file: the first FAT sector to go
+  out cuts the file off from what it frees, a truncate to 0 being made a
+  truncate to one cluster first).
 - A file opened `FS_GATHER` (`<os.h>`), which only init's ESP write uses,
   keeps its writes held across requests: FatFs writes a file a cluster at
   a time, one sector on the ESP, and a cheap stick takes milliseconds per

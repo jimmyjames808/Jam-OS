@@ -36,7 +36,11 @@
  *   PREV    3. prev-jamos.elf and prev-bootfs.img removed, synced: the
  *              default entry still boots the new build;
  *           4. the *.old renamed to prev-jamos.elf and prev-bootfs.img,
- *              synced: the previous-build entry boots the old build.
+ *              synced: the previous-build entry boots the old build;
+ *   MENU    the boot menu, if the build came with one, once the build is
+ *           written (or was there already): espmenu.c, whose header has
+ *           its own order; ROOM settles what an earlier one left first.
+ *           It never fails the build's write.
  * A FAT rename can't replace a file, so a build can't move from one pair
  * of names to the other without a moment when neither pair holds it; the
  * order puts that moment where the other pair holds a whole build (1, 2:
@@ -59,22 +63,21 @@
  * mostly the stick's answer; it can't tell the stick's own cache from its
  * flash cells.
  *
- * Time. Every call waits at most until the write's deadline (until()):
+ * Time. Every call waits at most until the write's deadline (esp_until()):
  * the steps get WRITE_LIMIT in all, the clean-up after a failure
  * RECOVER_LIMIT more, and making the ESP read-only again ESP_WAIT, so a
  * stick that stops answering ends in "not written" well inside the 300 s
- * bin/update waits. Each step and file logs its time as it goes (say(),
+ * bin/update waits. Each step and file logs its time as it goes (esp_say(),
  * a long file every SAY_EVERY), so a slow stick shows in the log. */
 #include <devmgr.h>
 #include <fs_idl.h>
 #include <update.h>
+#include "espwrite.h"
 #include "init.h"
 
-#define CHUNK      (1u << 20)         /* bytes read, then written, at a time: as much as
-                                       * fat holds of an FS_GATHER file (its hold.c) */
+#define CHUNK      ESP_CHUNK
 #define ESP_WAIT   (30 * NS_PER_S)    /* devmgr's ESP_WRITE: a stop in order, then a start */
 #define WRITE_LIMIT   (120 * NS_PER_S)   /* the steps, all of them */
-#define RECOVER_LIMIT (60 * NS_PER_S)    /* after a failure: put back, leftovers removed */
 #define SLACK      (1u << 20)         /* room kept spare per file: clusters, directory */
 #define SAY_EVERY  (2 * NS_PER_S)     /* a long file's progress: a line at most this often */
 
@@ -89,27 +92,12 @@ static const char *const prev[UPDATE_FILES] = { "/boot/prev-jamos.elf", "/boot/p
 /* Where the old build's file is while the swap moves it. */
 enum { AT_NONE, AT_CUR, AT_OLD, AT_PREV };
 
-/* A write under way. */
-struct writer {
-    struct esp_write *job;
-    handle_t fs;                          /* the ESP's writable `fs` channel */
-    uint8_t *buf;                         /* CHUNK bytes */
-    uint64_t old_size[UPDATE_FILES];      /* the stick's build: its files' sizes */
-    uint8_t  old_sha[UPDATE_FILES][SHA256_BYTES];   /* ... and SHA-256s, as read */
-    uint64_t said;                        /* uptime ns of the last progress line */
-    uint64_t deadline;                    /* no call may wait past this (uptime ns) */
-    bool     already;                     /* the stick has the new build: nothing to write */
-    uint8_t  old_at[UPDATE_FILES];        /* AT_*: where the old build's files are */
-    uint32_t ops;                         /* changes of names the swap made (swap_op) */
-    bool     stopped;                     /* a test's stop came: no clean-up, no sync */
-};
-
 /* A call's deadline: FS_CALL_TIMEOUT from now, never past the write's. A
  * stick (or ESP service) that stops answering ends the write within
  * WRITE_LIMIT, then the clean-up within RECOVER_LIMIT, then the remount
  * back within ESP_WAIT: `update -w` (bin/update waits 300 s) always gets
  * its answer, and the answer says the write failed. */
-static uint64_t until(const struct writer *w)
+uint64_t esp_until(const struct writer *w)
 {
     uint64_t d = now() + FS_CALL_TIMEOUT;
     return d < w->deadline ? d : w->deadline;
@@ -118,8 +106,7 @@ static uint64_t until(const struct writer *w)
 /* A progress line. Every step and file says how long it took, and a long
  * file how far it is every SAY_EVERY, so the log (streamed to the Mac on
  * the PC) always shows where a slow write is. */
-static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static void say(const char *fmt, ...)
+void esp_say(const char *fmt, ...)
 {
     char line[200];
     va_list ap;
@@ -129,7 +116,7 @@ static void say(const char *fmt, ...)
     printf("init: update: write: %s\n", line);
 }
 
-static unsigned long ms_since(uint64_t t0)
+unsigned long esp_ms_since(uint64_t t0)
 {
     return (unsigned long)((now() - t0) / NS_PER_MS);
 }
@@ -142,8 +129,8 @@ static void say_progress(struct writer *w, const char *path, const char *suffix,
     if (now() - w->said < SAY_EVERY)
         return;
     w->said = now();
-    say("%s%s: %lu of %lu KiB %s, %lu ms so far", path + 1, suffix, (unsigned long)(off >> 10),
-        (unsigned long)(size >> 10), what, ms_since(t0));
+    esp_say("%s%s: %lu of %lu KiB %s, %lu ms so far", path + 1, suffix,
+            (unsigned long)(off >> 10), (unsigned long)(size >> 10), what, esp_ms_since(t0));
 }
 
 /* fs.idl's path field for path, with suffix (".new" or ""). */
@@ -153,8 +140,7 @@ static void field(uint8_t out[FS_PATH_MAX], const char *path, const char *suffix
     snprintf((char *)out, FS_PATH_MAX, "%s%s", path, suffix);
 }
 
-/* The test's injected failure (UPDATE_OFFER_FAIL): ERR_IO once, at that step. */
-static status_t inject(struct writer *w, uint32_t step)
+status_t esp_inject(struct writer *w, uint32_t step)
 {
     if (step == UPDATE_WRITE_NONE || w->job->fail_at != step)
         return OK;
@@ -164,54 +150,53 @@ static status_t inject(struct writer *w, uint32_t step)
     return ERR_IO;
 }
 
-static status_t unlink_file(struct writer *w, const char *path, const char *suffix)
+status_t esp_unlink(struct writer *w, const char *path, const char *suffix)
 {
     uint8_t p[FS_PATH_MAX];
     field(p, path, suffix);
-    status_t st = fs_unlink_until(w->fs, until(w), p);
+    status_t st = fs_unlink_until(w->fs, esp_until(w), p);
     return st == ERR_NOT_FOUND ? OK : st;
 }
 
-static status_t rename_file(struct writer *w, const char *path, const char *suffix,
-                            const char *to, const char *to_suffix)
+status_t esp_rename(struct writer *w, const char *path, const char *suffix, const char *to,
+                    const char *to_suffix)
 {
     uint8_t from[FS_PATH_MAX], dst[FS_PATH_MAX];
     field(from, path, suffix);
     field(dst, to, to_suffix);
     uint64_t t0 = now();
-    status_t st = fs_rename_until(w->fs, until(w), from, dst);
-    say("%s%s renamed %s%s in %lu ms (%s)", path + 1, suffix, to + 1, to_suffix, ms_since(t0),
-        status_str(st));
+    status_t st = fs_rename_until(w->fs, esp_until(w), from, dst);
+    esp_say("%s%s renamed %s%s in %lu ms (%s)", path + 1, suffix, to + 1, to_suffix,
+            esp_ms_since(t0), status_str(st));
     return st;
 }
 
-static status_t sync_esp(struct writer *w)
+status_t esp_sync(struct writer *w)
 {
     uint64_t t0 = now();
-    status_t st = fs_sync_until(w->fs, until(w));
-    say("the ESP synced in %lu ms (%s)", ms_since(t0), status_str(st));
+    status_t st = fs_sync_until(w->fs, esp_until(w));
+    esp_say("the ESP synced in %lu ms (%s)", esp_ms_since(t0), status_str(st));
     return st;
 }
 
-/* path + suffix opened with flags into *f. */
-static status_t open_file(struct writer *w, const char *path, const char *suffix, uint32_t flags,
-                          struct jfile *f)
+status_t esp_open(struct writer *w, const char *path, const char *suffix, uint32_t flags,
+                  struct jfile *f)
 {
     uint8_t p[FS_PATH_MAX];
     handle_t ch, buf;
     uint64_t size;
     field(p, path, suffix);
-    status_t st = fs_open_until(w->fs, until(w), p, flags, &ch, &buf, &size);
+    status_t st = fs_open_until(w->fs, esp_until(w), p, flags, &ch, &buf, &size);
     return st == OK ? file_adopt(ch, buf, flags, f) : st;
 }
 
 /* Exactly n bytes of f at off into dst (ERR_IO: the file is shorter), a
- * transfer buffer's worth per call, each call by until(w). */
-static status_t read_at(struct writer *w, struct jfile *f, uint64_t off, uint8_t *dst, size_t n)
+ * transfer buffer's worth per call, each call by esp_until(w). */
+status_t esp_read_at(struct writer *w, struct jfile *f, uint64_t off, uint8_t *dst, size_t n)
 {
     for (size_t done = 0; done < n;) {
         uint32_t want = n - done < f->buf_size ? (uint32_t)(n - done) : f->buf_size, got = 0;
-        status_t st = file_read_until(f->ch, until(w), off + done, want, &got);
+        status_t st = file_read_until(f->ch, esp_until(w), off + done, want, &got);
         if (st == OK && got != want)
             st = ERR_IO;
         if (st != OK)
@@ -229,7 +214,7 @@ static status_t write_at(struct writer *w, struct jfile *f, uint64_t off, const 
     for (size_t done = 0; done < n;) {
         uint32_t want = n - done < f->buf_size ? (uint32_t)(n - done) : f->buf_size, put = 0;
         memcpy(f->buf, src + done, want);
-        status_t st = file_write_until(f->ch, until(w), off + done, want, &put);
+        status_t st = file_write_until(f->ch, esp_until(w), off + done, want, &put);
         if (st == OK && put != want)
             st = ERR_IO;
         if (st != OK)
@@ -239,12 +224,11 @@ static status_t write_at(struct writer *w, struct jfile *f, uint64_t off, const 
     return OK;
 }
 
-/* path + suffix, which must be exactly size bytes: its SHA-256. */
-static status_t hash_file(struct writer *w, const char *path, const char *suffix, uint64_t size,
-                          uint8_t digest[SHA256_BYTES])
+status_t esp_hash(struct writer *w, const char *path, const char *suffix, uint64_t size,
+                  uint8_t digest[SHA256_BYTES])
 {
     struct jfile f;
-    status_t st = open_file(w, path, suffix, FS_READ, &f);
+    status_t st = esp_open(w, path, suffix, FS_READ, &f);
     if (st != OK)
         return st;
     struct sha256 h;
@@ -253,43 +237,38 @@ static status_t hash_file(struct writer *w, const char *path, const char *suffix
     for (uint64_t off = 0; st == OK && off < size; off += CHUNK) {
         size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK;
         say_progress(w, path, suffix, "read", off, size, t0);
-        st = read_at(w, &f, off, w->buf, n);   /* ERR_IO: shorter than it was written */
+        st = esp_read_at(w, &f, off, w->buf, n);   /* ERR_IO: shorter than it was written */
         if (st == OK)
             sha256_add(&h, w->buf, n);
     }
     uint64_t now_size = 0;
     if (st == OK)
-        st = file_stat_until(f.ch, until(w), &now_size, NULL);
+        st = file_stat_until(f.ch, esp_until(w), &now_size, NULL);
     if (st == OK && now_size != size)
         st = ERR_IO;   /* longer than it was written */
     file_close(&f);
     if (st == OK)
         sha256_done(&h, digest);
-    say("%s%s: %lu KiB read and hashed in %lu ms (%s)", path + 1, suffix,
-        (unsigned long)(size >> 10), ms_since(t0), status_str(st));
+    esp_say("%s%s: %lu KiB read and hashed in %lu ms (%s)", path + 1, suffix,
+            (unsigned long)(size >> 10), esp_ms_since(t0), status_str(st));
     return st;
 }
 
-/* Where write_file's bytes come from: next(w, ctx, off, buf, n) fills buf. */
-typedef status_t (*source_t)(struct writer *, void *, uint64_t, uint8_t *, size_t);
-
-/* The bytes `next` gives, size of them, written to path + ".new" (created
- * or emptied first) and synced. */
-static status_t write_file(struct writer *w, const char *path, uint64_t size, uint32_t step,
-                           source_t next, void *ctx)
+status_t esp_write_file(struct writer *w, const char *path, const char *suffix, uint64_t size,
+                        uint32_t step, source_t next, void *ctx)
 {
     struct jfile f;
     /* FS_GATHER: fat sends the file in 64 KiB writes, not a write per
      * sector (a cluster, on the ESP): what makes a real stick quick. */
-    status_t st = open_file(w, path, NEW, FS_WRITE | FS_CREATE | FS_TRUNCATE | FS_GATHER, &f);
+    status_t st = esp_open(w, path, suffix, FS_WRITE | FS_CREATE | FS_TRUNCATE | FS_GATHER, &f);
     if (st != OK)
         return st;
     uint64_t t0 = now(), done = 0;
     for (uint64_t off = 0; st == OK && off < size; off += CHUNK) {
         size_t n = size - off < CHUNK ? (size_t)(size - off) : CHUNK;
-        say_progress(w, path, NEW, "written", off, size, t0);
+        say_progress(w, path, suffix, "written", off, size, t0);
         if (off >= size / 2 && off < size / 2 + CHUNK)
-            st = inject(w, step);   /* half of it written: a test's failure */
+            st = esp_inject(w, step);   /* half of it written: a test's failure */
         if (st == OK)
             st = next(w, ctx, off, w->buf, n);
         if (st == OK)
@@ -298,22 +277,21 @@ static status_t write_file(struct writer *w, const char *path, uint64_t size, ui
     }
     uint64_t written = now();
     if (st == OK)
-        st = file_sync_until(f.ch, until(w));
+        st = file_sync_until(f.ch, esp_until(w));
     file_close(&f);
-    say("%s.new: %lu of %lu KiB written in %lu ms, synced and closed in %lu ms (%s)", path + 1,
-        (unsigned long)(done >> 10), (unsigned long)(size >> 10),
-        (unsigned long)((written - t0) / NS_PER_MS), ms_since(written), status_str(st));
+    esp_say("%s%s: %lu of %lu KiB written in %lu ms, synced and closed in %lu ms (%s)", path + 1,
+            suffix, (unsigned long)(done >> 10), (unsigned long)(size >> 10),
+            (unsigned long)((written - t0) / NS_PER_MS), esp_ms_since(written), status_str(st));
     return st;
 }
 
-/* write_file's source: one of init's checked copies. */
-static status_t from_vmo(struct writer *w, void *ctx, uint64_t off, uint8_t *buf, size_t n)
+status_t esp_from_vmo(struct writer *w, void *ctx, uint64_t off, uint8_t *buf, size_t n)
 {
     (void)w;
     return jam_vmo_read(*(handle_t *)ctx, off, buf, n);
 }
 
-/* write_file's source: a file on the stick, hashed as it is read. */
+/* esp_write_file's source: a file on the stick, hashed as it is read. */
 struct from_file {
     struct jfile  f;
     struct sha256 h;
@@ -322,7 +300,7 @@ struct from_file {
 static status_t from_file(struct writer *w, void *ctx, uint64_t off, uint8_t *buf, size_t n)
 {
     struct from_file *s = ctx;
-    status_t st = read_at(w, &s->f, off, buf, n);
+    status_t st = esp_read_at(w, &s->f, off, buf, n);
     if (st == OK)
         sha256_add(&s->h, buf, n);
     return st;
@@ -333,44 +311,44 @@ static status_t from_file(struct writer *w, void *ctx, uint64_t off, uint8_t *bu
 static status_t copy_file(struct writer *w, const char *src, const char *dst)
 {
     struct from_file s;
-    status_t st = open_file(w, src, "", FS_READ, &s.f);
+    status_t st = esp_open(w, src, "", FS_READ, &s.f);
     if (st != OK)
         return st;
     uint64_t n = s.f.size;
     sha256_init(&s.h);
-    st = n && n <= UPDATE_FILE_MAX ? write_file(w, dst, n, UPDATE_WRITE_NONE, from_file, &s)
-                                   : ERR_IO;
+    st = n && n <= UPDATE_FILE_MAX
+             ? esp_write_file(w, dst, NEW, n, UPDATE_WRITE_NONE, from_file, &s)
+             : ERR_IO;
     file_close(&s.f);
     uint8_t sha[SHA256_BYTES], back[SHA256_BYTES];
     if (st == OK) {
         sha256_done(&s.h, sha);
-        st = hash_file(w, dst, NEW, n, back);
+        st = esp_hash(w, dst, NEW, n, back);
     }
     if (st == OK && memcmp(back, sha, SHA256_BYTES))
         st = ERR_IO;   /* the stick didn't keep what was written */
     return st;
 }
 
-/* The size of the file at path + suffix (ERR_NOT_FOUND: none). */
-static status_t size_of(struct writer *w, const char *path, const char *suffix, uint64_t *size)
+status_t esp_size_of(struct writer *w, const char *path, const char *suffix, uint64_t *size)
 {
     uint8_t p[FS_PATH_MAX], dir = 0;
     uint64_t mtime;
     field(p, path, suffix);
-    status_t st = fs_stat_until(w->fs, until(w), p, size, &dir, &mtime);
+    status_t st = fs_stat_until(w->fs, esp_until(w), p, size, &dir, &mtime);
     return st == OK && dir ? ERR_WRONG_TYPE : st;
 }
 
-static bool exists(struct writer *w, const char *path, const char *suffix)
+bool esp_exists(struct writer *w, const char *path, const char *suffix)
 {
     uint64_t size;
-    return size_of(w, path, suffix, &size) == OK;
+    return esp_size_of(w, path, suffix, &size) == OK;
 }
 
 /* Do both of the pair's names (cur or prev) hold a file? */
 static bool whole(struct writer *w, const char *const pair[UPDATE_FILES])
 {
-    return exists(w, pair[UPDATE_KERNEL], "") && exists(w, pair[UPDATE_BOOTFS], "");
+    return esp_exists(w, pair[UPDATE_KERNEL], "") && esp_exists(w, pair[UPDATE_BOOTFS], "");
 }
 
 /* Does the stick's build hold exactly the new build (sizes, then SHA-256s)? */
@@ -379,12 +357,12 @@ static bool has_new(struct writer *w)
     struct esp_write *j = w->job;
     for (unsigned f = 0; f < UPDATE_FILES; f++) {
         uint64_t n = 0;
-        if (size_of(w, cur[f], "", &n) != OK || n != j->size[f])
+        if (esp_size_of(w, cur[f], "", &n) != OK || n != j->size[f])
             return false;
     }
     for (unsigned f = 0; f < UPDATE_FILES; f++) {
         uint8_t got[SHA256_BYTES];
-        if (hash_file(w, cur[f], "", j->size[f], got) != OK ||
+        if (esp_hash(w, cur[f], "", j->size[f], got) != OK ||
             memcmp(got, j->sha256[f], SHA256_BYTES))
             return false;
     }
@@ -398,9 +376,9 @@ static bool has_new(struct writer *w)
 static status_t swap_op(struct writer *w, const char *path, const char *suffix, const char *to,
                         const char *to_suffix)
 {
-    status_t st = to ? rename_file(w, path, suffix, to, to_suffix) : unlink_file(w, path, suffix);
+    status_t st = to ? esp_rename(w, path, suffix, to, to_suffix) : esp_unlink(w, path, suffix);
     if (st == OK && ++w->ops == w->job->stop_at) {
-        say("stopping dead after change %u of the swap, as the test asked", w->ops);
+        esp_say("stopping dead after change %u of the swap, as the test asked", w->ops);
         w->stopped = true;
         return ERR_CANCELED;
     }
@@ -415,9 +393,9 @@ static status_t old_back(struct writer *w, unsigned f)
         return OK;
     const char *from = w->old_at[f] == AT_OLD ? cur[f] : prev[f];
     const char *sfx = w->old_at[f] == AT_OLD ? OLD : "";
-    status_t st = unlink_file(w, cur[f], "");
+    status_t st = esp_unlink(w, cur[f], "");
     if (st == OK)
-        st = rename_file(w, from, sfx, cur[f], "");
+        st = esp_rename(w, from, sfx, cur[f], "");
     if (st == OK)
         w->old_at[f] = AT_CUR;
     return st;
@@ -432,63 +410,65 @@ static status_t settle(struct writer *w)
 {
     bool old[UPDATE_FILES], whole = true, any = false;
     for (unsigned f = 0; f < UPDATE_FILES; f++) {
-        old[f] = exists(w, cur[f], OLD);
+        old[f] = esp_exists(w, cur[f], OLD);
         any |= old[f];
-        whole &= exists(w, cur[f], "");
+        whole &= esp_exists(w, cur[f], "");
     }
     if (!any)
         return OK;
-    say("an earlier write stopped in its swap: %s it", whole ? "finishing" : "undoing");
+    esp_say("an earlier write stopped in its swap: %s it", whole ? "finishing" : "undoing");
     status_t st = OK;
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
         if (!old[f])
             continue;
         if (whole) {
-            st = unlink_file(w, prev[f], "");
+            st = esp_unlink(w, prev[f], "");
             if (st == OK)
-                st = rename_file(w, cur[f], OLD, prev[f], "");
+                st = esp_rename(w, cur[f], OLD, prev[f], "");
         } else {
             w->old_at[f] = AT_OLD;
             st = old_back(w, f);
         }
     }
-    return st == OK ? sync_esp(w) : st;
+    return st == OK ? esp_sync(w) : st;
 }
 
 /* ROOM: an earlier write settled and its leftovers gone; nothing to write
  * if the stick has the new build already; room for the new build. */
 static status_t room(struct writer *w)
 {
-    status_t st = inject(w, UPDATE_WRITE_ROOM);
+    status_t st = esp_inject(w, UPDATE_WRITE_ROOM);
     if (st == OK)
         st = settle(w);
+    if (st == OK)
+        (void)esp_menu_settle(w);   /* best effort: a menu step that can't settle fails there */
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
-        st = unlink_file(w, cur[f], NEW);
+        st = esp_unlink(w, cur[f], NEW);
         if (st == OK)
-            st = unlink_file(w, prev[f], NEW);
+            st = esp_unlink(w, prev[f], NEW);
     }
     if (st == OK && has_new(w)) {
-        say("the stick has this build already: nothing to write");
+        esp_say("the stick has this build already: nothing to write");
         w->already = true;
         return OK;
     }
     uint64_t total = 0, free_bytes = 0, need = 0;
     uint8_t ro = 0, label[16];
     if (st == OK)
-        st = fs_statfs_until(w->fs, until(w), &total, &free_bytes, &ro, label);
+        st = fs_statfs_until(w->fs, esp_until(w), &total, &free_bytes, &ro, label);
     bool copy = st == OK && !whole(w, prev) && whole(w, cur);   /* copy_previous's */
     for (unsigned f = 0; f < UPDATE_FILES; f++) {
         uint64_t n = 0;
         need += w->job->size[f] + SLACK;
-        if (copy && size_of(w, cur[f], "", &n) == OK)
+        if (copy && esp_size_of(w, cur[f], "", &n) == OK)
             need += n + SLACK;
     }
     if (st == OK && ro)
         st = ERR_ACCESS_DENIED;   /* devmgr said writable, the volume says not */
     if (st == OK && free_bytes < need)
         st = ERR_NO_SPACE;
-    say("%lu KiB free, %lu KiB needed", (unsigned long)(free_bytes >> 10),
-        (unsigned long)(need >> 10));
+    esp_say("%lu KiB free, %lu KiB needed", (unsigned long)(free_bytes >> 10),
+            (unsigned long)(need >> 10));
     return st;
 }
 
@@ -499,12 +479,13 @@ static status_t write_new(struct writer *w)
     struct esp_write *j = w->job;
     status_t st = OK;
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
-        st = write_file(w, cur[f], j->size[f], UPDATE_WRITE_NEW, from_vmo, &j->vmo[f]);
+        st = esp_write_file(w, cur[f], NEW, j->size[f], UPDATE_WRITE_NEW, esp_from_vmo,
+                            &j->vmo[f]);
     if (st == OK)
-        st = sync_esp(w);
+        st = esp_sync(w);
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
         uint8_t back[SHA256_BYTES];
-        st = hash_file(w, cur[f], NEW, j->size[f], back);
+        st = esp_hash(w, cur[f], NEW, j->size[f], back);
         if (st == OK && memcmp(back, j->sha256[f], SHA256_BYTES))
             st = ERR_IO;   /* the stick didn't keep what was written */
     }
@@ -519,16 +500,16 @@ static status_t copy_previous(struct writer *w)
 {
     if (whole(w, prev) || !whole(w, cur))
         return OK;
-    say("no whole previous build: the stick's build copied as it first");
+    esp_say("no whole previous build: the stick's build copied as it first");
     status_t st = OK;
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
-        st = unlink_file(w, prev[f], "");   /* half a previous build */
+        st = esp_unlink(w, prev[f], "");   /* half a previous build */
         if (st == OK)
             st = copy_file(w, cur[f], prev[f]);
     }
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
-        st = rename_file(w, prev[f], NEW, prev[f], "");
-    return st == OK ? sync_esp(w) : st;
+        st = esp_rename(w, prev[f], NEW, prev[f], "");
+    return st == OK ? esp_sync(w) : st;
 }
 
 /* SWITCH: the stick's build renamed aside (1), the new one into its names
@@ -537,20 +518,20 @@ static status_t switch_names(struct writer *w)
 {
     status_t st = copy_previous(w);
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
-        w->old_at[f] = exists(w, cur[f], "") ? AT_CUR : AT_NONE;
+        w->old_at[f] = esp_exists(w, cur[f], "") ? AT_CUR : AT_NONE;
         if (w->old_at[f] == AT_CUR)
             st = swap_op(w, cur[f], "", cur[f], OLD);
         if (st == OK && w->old_at[f] == AT_CUR)
             w->old_at[f] = AT_OLD;
     }
     if (st == OK)
-        st = sync_esp(w);
+        st = esp_sync(w);
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
         st = swap_op(w, cur[f], NEW, cur[f], "");
         if (st == OK && f == UPDATE_KERNEL)
-            st = inject(w, UPDATE_WRITE_SWITCH);   /* the new kernel, no boot image */
+            st = esp_inject(w, UPDATE_WRITE_SWITCH);   /* the new kernel, no boot image */
     }
-    return st == OK ? sync_esp(w) : st;
+    return st == OK ? esp_sync(w) : st;
 }
 
 /* PREV: the older previous build removed (3), the old build renamed into
@@ -559,24 +540,24 @@ static status_t switch_names(struct writer *w)
 static status_t keep_previous(struct writer *w)
 {
     if (w->old_at[UPDATE_KERNEL] != AT_OLD || w->old_at[UPDATE_BOOTFS] != AT_OLD) {
-        say("the stick had no whole build to keep: the previous build stays");
+        esp_say("the stick had no whole build to keep: the previous build stays");
         for (unsigned f = 0; f < UPDATE_FILES; f++)
-            (void)unlink_file(w, cur[f], OLD);   /* half a build: nothing boots it */
+            (void)esp_unlink(w, cur[f], OLD);   /* half a build: nothing boots it */
         return OK;
     }
     status_t st = OK;
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
         st = swap_op(w, prev[f], "", NULL, NULL);
     if (st == OK)
-        st = sync_esp(w);
+        st = esp_sync(w);
     if (st == OK)
-        st = inject(w, UPDATE_WRITE_PREV);   /* no previous build now, the new one in */
+        st = esp_inject(w, UPDATE_WRITE_PREV);   /* no previous build now, the new one in */
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
         st = swap_op(w, cur[f], OLD, prev[f], "");
         if (st == OK)
             w->old_at[f] = AT_PREV;
     }
-    return st == OK ? sync_esp(w) : st;
+    return st == OK ? esp_sync(w) : st;
 }
 
 /* After a failure in the swap: the old build back in the default entry's
@@ -588,7 +569,7 @@ static uint32_t put_back(struct writer *w)
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++)
         st = old_back(w, f);
     if (st == OK)
-        st = sync_esp(w);
+        st = esp_sync(w);
     printf("init: update: the stick write failed in its swap (%s): the old build %s\n",
            status_str(w->job->st), st == OK ? "is back as the stick's" : "couldn't be put back");
     if (st == OK)
@@ -622,14 +603,16 @@ static void steps(struct writer *w)
     for (unsigned i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
         uint64_t t0 = now();
         j->step = order[i].step;
-        say("%s ...", update_write_step_str(j->step));
+        esp_say("%s ...", update_write_step_str(j->step));
         j->st = order[i].fn(w);
-        say("%s: %s in %lu ms", update_write_step_str(j->step), status_str(j->st), ms_since(t0));
+        esp_say("%s: %s in %lu ms", update_write_step_str(j->step), status_str(j->st),
+                esp_ms_since(t0));
         if (j->st != OK || w->already || w->stopped)
             break;
     }
     if (j->st == OK) {
         j->stick = UPDATE_STICK_NEW;
+        esp_menu_write(w);   /* the build is in its place: now the menu (espmenu.c) */
         return;
     }
     if (w->stopped) {   /* a test's power cut: nothing more is written */
@@ -637,16 +620,16 @@ static void steps(struct writer *w)
         return;
     }
     if (j->st == ERR_TIMED_OUT)
-        say("no time left (the write may take %lu s): stopping here",
-            (unsigned long)(WRITE_LIMIT / NS_PER_S));
+        esp_say("no time left (the write may take %lu s): stopping here",
+                (unsigned long)(WRITE_LIMIT / NS_PER_S));
     w->deadline = now() + RECOVER_LIMIT;   /* the clean-up's own time */
     if (j->step == UPDATE_WRITE_SWITCH || j->step == UPDATE_WRITE_PREV)
         j->stick = put_back(w);
     for (unsigned f = 0; f < UPDATE_FILES; f++) {   /* best effort: ROOM removes them anyway */
-        (void)unlink_file(w, cur[f], NEW);
-        (void)unlink_file(w, prev[f], NEW);
+        (void)esp_unlink(w, cur[f], NEW);
+        (void)esp_unlink(w, prev[f], NEW);
     }
-    (void)sync_esp(w);
+    (void)esp_sync(w);
 }
 
 /* The stick's kernel and boot image as they are now: noted for reboot.c,
@@ -659,7 +642,7 @@ static void note_files(struct writer *w)
     for (unsigned f = 0; f < UPDATE_FILES && j->noted; f++) {
         uint8_t p[FS_PATH_MAX], dir = 0;
         field(p, cur[f], "");
-        j->noted = fs_stat_until(w->fs, until(w), p, &j->file_size[f], &dir,
+        j->noted = fs_stat_until(w->fs, esp_until(w), p, &j->file_size[f], &dir,
                                  &j->mtime[f]) == OK && !dir;
     }
 }
@@ -688,10 +671,13 @@ void esp_write_build(struct esp_write *j)
     j->step = UPDATE_WRITE_OPEN;
     j->stick = UPDATE_STICK_OLD;
     j->noted = false;
-    say("asking devmgr for the ESP read-write ...");
+    j->menu = j->menu_vmo ? UPDATE_MENU_SKIPPED : UPDATE_MENU_NONE;   /* until the menu's turn */
+    j->menu_status = OK;
+    j->menu_why[0] = '\0';
+    esp_say("asking devmgr for the ESP read-write ...");
     j->st = j->esp ? esp_mode(j->esp, true, &w.fs) : ERR_NOT_FOUND;
-    say("the ESP is %s (%s) in %lu ms", j->st == OK ? "writable" : "not writable",
-        status_str(j->st), ms_since(t0));
+    esp_say("the ESP is %s (%s) in %lu ms", j->st == OK ? "writable" : "not writable",
+            status_str(j->st), esp_ms_since(t0));
     w.buf = j->st == OK ? malloc(CHUNK) : NULL;
     if (j->st == OK && !w.buf)
         j->st = ERR_NO_MEMORY;
@@ -705,7 +691,7 @@ void esp_write_build(struct esp_write *j)
         jam_handle_close(w.fs);   /* ours is the only other end: nobody else has it */
         uint64_t t1 = now();
         status_t st = esp_mode(j->esp, false, NULL);
-        say("the ESP read-only again in %lu ms (%s)", ms_since(t1), status_str(st));
+        esp_say("the ESP read-only again in %lu ms (%s)", esp_ms_since(t1), status_str(st));
         if (st != OK)
             printf("init: update: the ESP didn't go back to read-only (%s): /esp stays away "
                    "until the next boot\n", status_str(st));

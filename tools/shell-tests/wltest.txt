@@ -1,0 +1,14 @@
+# wltest's scripted checks (user/tests/wltest) against bin/compositor run
+# headless by wltest itself (--spawn), until init starts the compositor:
+#   QEMU_INPUT=tools/shell-tests/wltest.txt tools/qemu-test.sh build/test wltest shell
+# The compositor is killed half way and libjwl connects again by itself.
+wait 120 Jam OS shell
+wait jam>
+send run wltest --spawn --script
+wait 10 wltest: connected:
+wait 30 wltest: connected again (connection 2)
+wait 30 wltest: PASS
+wait jam>
+
+send reboot -f
+wait reboot: resetting

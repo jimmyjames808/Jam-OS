@@ -23,6 +23,10 @@
 #     expect <text>    wait (up to the timeout) until the serial log has <text>
 #     send <command>   a monitor command: sendkey a, device_del kbd2, ...
 #     sleep <seconds>
+# QEMU_MENU_AT=efi puts the run's own one-entry menu at EFI/BOOT/limine.conf
+# (which Limine 11 reads first) instead of over boot/limine/limine.conf, so
+# the stick keeps its own boot menu (tools/update-menu-test.sh: `update -w`
+# writes that one); the saved image has the run's menu there too.
 # QEMU_SAVE=<file> keeps the run's stick image, with what the guest wrote
 # to it, as <file> (for a later run's QEMU_IMAGE: a second boot of the
 # same stick). QEMU_BOOT_PREV=1 boots the stick's previous build
@@ -105,7 +109,13 @@ fi
     printf '    module_path: boot():/boot/%s\n' "$bfile"
     printf '    module_path: boot():/boot/%s\n    cmdline: %s\n' "$kfile" "$cmdline"
 } > "$out/$name.conf"
-mcopy -o -i "$img@@1M" "$out/$name.conf" ::/boot/limine/limine.conf
+if [ "${QEMU_MENU_AT:-}" = efi ]; then
+    # The stick's own menu stays as it is (`update -w` writes it): Limine
+    # reads EFI/BOOT/limine.conf, beside itself, before boot/limine/.
+    mcopy -o -i "$img@@1M" "$out/$name.conf" ::/EFI/BOOT/limine.conf
+else
+    mcopy -o -i "$img@@1M" "$out/$name.conf" ::/boot/limine/limine.conf
+fi
 cp "$ovmf/edk2-i386-vars.fd" "$out/$name.vars"
 
 log="$out/$name.log" mon="build/.qemu-$name.sock"   # unix socket paths max out at 104 bytes

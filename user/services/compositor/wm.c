@@ -15,21 +15,22 @@
  *     output, moved down and right by a title bar's height while another
  *     window's top-left corner is already there (the cascade).
  *
- * The first-window rule (G1-PLAN, "Focus"): a client's first window takes
- * the keys when it appears; its later ones don't, so a program can't keep
- * stealing them. The count is the client's (client_maps), so a client
- * that closed its first window doesn't get the rule again. */
+ * The focus is the seat's (focus.c: a click, Alt+Tab, a client's first
+ * window, the next one down when one goes); it tells us when it moves
+ * (wm_focus_changed), and we raise the window and keep the toplevels'
+ * activated state. Alt+Tab's order is ours: the order the toplevels
+ * opened (stable, unlike the stacking order a raise changes), then
+ * windows that are no toplevel (testwin's) from the bottom up. */
 #include "wm.h"
 
 #define CASCADE_STEP  (DECO_TITLE_H + DECO_BORDER)   /* one cascade step, both ways */
 #define CASCADE_MAX   16u                            /* steps before it starts over */
 #define REACH_MIN     48   /* a floating title bar keeps this much on the output */
-
-struct comp_wm_hooks comp_wm_hooks;
+#define CYCLE_MAX     (COMP_CLIENTS_MAX * COMP_SURFACES_MAX)   /* windows there can be */
 
 static struct {
     struct wm_window *first, *last;   /* every toplevel, oldest first */
-    struct wm_window *focused;        /* the seat's focus, as wm_focus_changed said */
+    struct wm_window *focused;        /* the toplevel with the seat's focus, or NULL */
 } wm;
 
 void wm_init(enum comp_layout layout)
@@ -46,8 +47,7 @@ struct wm_window *wm_first(void)
 
 /* ---- making and losing toplevels ---------------------------------------------------- */
 
-struct wm_window *wm_create(struct comp_surface *s, const struct wm_ops *ops, void *ctx,
-                            uint32_t *client_maps)
+struct wm_window *wm_create(struct comp_surface *s, const struct wm_ops *ops, void *ctx)
 {
     struct wm_window *ww = calloc(1, sizeof(*ww));
     if (!ww)
@@ -55,7 +55,6 @@ struct wm_window *wm_create(struct comp_surface *s, const struct wm_ops *ops, vo
     ww->surface = s;
     ww->ops = ops;
     ww->ctx = ctx;
-    ww->client_maps = client_maps;
     ww->prev = wm.last;
     if (wm.last)
         wm.last->next = ww;
@@ -293,12 +292,9 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
     note_floating_size(ww);
     if (!first)
         return OK;
-    window_map(ww->win, true);
-    bool take_focus = (*ww->client_maps)++ == 0;
     if (scene.layout == COMP_TILING)
         wm_relayout();   /* the others make room */
-    if (comp_wm_hooks.mapped)
-        comp_wm_hooks.mapped(ww->win, take_focus);
+    window_map(ww->win, true);   /* the seat hears (a client's first window takes the keys) */
     return OK;
 }
 
@@ -306,12 +302,10 @@ void wm_unmap(struct wm_window *ww)
 {
     if (!ww->win)
         return;
-    if (comp_wm_hooks.unmapping)
-        comp_wm_hooks.unmapping(ww->win);
     wm_grab_forget(ww);
     if (wm.focused == ww)
         wm.focused = NULL;
-    window_destroy(ww->win);
+    window_destroy(ww->win);   /* the seat hears first, while it is in the order */
     ww->win = NULL;
     /* back to what get_toplevel made (xdg-shell's "unmapping") */
     ww->want = ww->before_fs = WM_NORMAL;
@@ -419,8 +413,13 @@ void wm_toggle_layout(void)
 {
     enum comp_layout l = scene.layout == COMP_TILING ? COMP_FLOATING : COMP_TILING;
     wm_set_layout(l);
-    if (comp_wm_hooks.layout_changed)
-        comp_wm_hooks.layout_changed(l);
+    ctl_layout_changed(l);
+}
+
+/* Until compctl can tell init (comp.h): nobody saves the switch. */
+__attribute__((weak)) void ctl_layout_changed(enum comp_layout layout)
+{
+    (void)layout;
 }
 
 const char *wm_layout_name(enum comp_layout layout)
@@ -444,43 +443,53 @@ bool wm_layout_parse(const char *s, enum comp_layout *out)
 void wm_focus_changed(struct comp_window *w)
 {
     struct wm_window *now = w ? w->wm : NULL, *old = wm.focused;
+    if (w)
+        window_raise(w);   /* Alt+Tab and a first window come up too, not only a click */
     if (now == old)
         return;
     wm.focused = now;
-    if (old && old->win) {
-        scene_damage(deco_title_bar(old->win));   /* its title bar dims */
-        wm_reconfigure(old);
-    }
-    if (now && now->win) {
-        window_raise(now->win);
+    if (old && old->win)
+        wm_reconfigure(old);   /* activated no more (the seat damaged its title bar) */
+    if (now && now->win)
         wm_reconfigure(now);
-    }
 }
 
-struct comp_window *wm_cycle(const struct comp_window *from, bool backwards)
+void wm_clicked(struct comp_window *w)
 {
-    const struct wm_window *start = from ? from->wm : NULL;
-    const struct wm_window *ww = start;
-    for (unsigned n = 0; n <= COMP_CLIENTS_MAX * COMP_SURFACES_MAX; n++) {
-        if (backwards)
-            ww = ww && ww->prev ? ww->prev : wm.last;
-        else
-            ww = ww && ww->next ? ww->next : wm.first;
-        if (!ww || (ww == start && n))
-            return NULL;   /* round once: nothing else is mapped */
-        if (ww->win && ww != start)
-            return ww->win;
-    }
-    return NULL;
+    window_raise(w);   /* wm_focus_changed did, if the focus moved; a click raises anyway */
 }
 
-struct comp_window *wm_focus_successor(const struct comp_window *w)
+/* Can the keys go to w: mapped, and its client still there. */
+static bool cyclable(const struct comp_window *w)
 {
-    for (struct comp_window *b = w ? w->below : NULL; b; b = b->below)
-        if (b->flags & COMP_WIN_MAPPED)
-            return b;
-    for (struct comp_window *t = scene.top; t; t = t->below)
-        if (t != w && (t->flags & COMP_WIN_MAPPED))
-            return t;
-    return NULL;
+    const struct jwl_conn *c = w->surface->client->conn;
+    return (w->flags & COMP_WIN_MAPPED) && c && c->status == OK;
+}
+
+/* Alt+Tab's order into order[]: the toplevels as they opened, then the
+ * other windows bottom up. Its length. */
+static unsigned cycle_order(struct comp_window **order)
+{
+    unsigned n = 0;
+    for (struct wm_window *ww = wm.first; ww && n < CYCLE_MAX; ww = ww->next)
+        if (ww->win && cyclable(ww->win))
+            order[n++] = ww->win;
+    for (struct comp_window *w = scene.bottom; w && n < CYCLE_MAX; w = w->above)
+        if (!w->wm && cyclable(w))
+            order[n++] = w;
+    return n;
+}
+
+struct comp_window *wm_cycle(struct comp_window *from, bool backward)
+{
+    static struct comp_window *order[CYCLE_MAX];
+    unsigned n = cycle_order(order), at = n;
+    for (unsigned i = 0; i < n; i++)
+        if (order[i] == from)
+            at = i;
+    if (at == n)   /* from isn't in it (none focused): the first, or the last */
+        return n ? order[backward ? n - 1 : 0] : NULL;
+    if (n < 2)
+        return NULL;   /* nothing else to go to */
+    return order[backward ? (at + n - 1) % n : (at + 1) % n];
 }

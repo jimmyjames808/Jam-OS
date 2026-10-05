@@ -225,6 +225,7 @@ enum comp_role {
     COMP_ROLE_XDG_TOPLEVEL,
     COMP_ROLE_XDG_POPUP,
     COMP_ROLE_CURSOR,
+    COMP_ROLE_TEST,                /* the `testwin` test power's windows (testwin.c) */
 };
 
 struct comp_role_ops {
@@ -359,6 +360,8 @@ struct comp {
     handle_t vmar;                 /* our address space: pools are mapped into it */
     handle_t svc;                  /* /svc/wayland's server end (init keeps it) */
     bool headless;                 /* no framebuffer: compose into memory */
+    bool blanked;                  /* compctl.blank: the background only, no window drawn */
+    bool testwin;                  /* the test power `testwin` (testwin.c): never set by init */
     uint32_t serial;               /* the last event serial handed out */
     uint64_t period_ns;            /* the paint clock's period */
     struct comp_stats stats;
@@ -430,9 +433,9 @@ void display_teardown(struct comp_client *cl);
 
 /* ---- surfaces, buffers and painting (surface.c, shm.c, headless.c) ----------------- */
 
-/* wl_compositor.create_surface: a surface for cl at the new id. OK, or a
- * protocol error posted (the cap, no memory). */
-status_t surface_create(struct comp_client *cl, uint32_t id);
+/* wl_compositor.create_surface on compositor: a surface for cl at the new
+ * id. OK, or a protocol error posted (the cap, no memory). */
+status_t surface_create(struct comp_client *cl, uint32_t compositor, uint32_t id);
 /* s gets role, with ops and data. ERR_BAD_STATE: it has a role object
  * now, or had another role (the caller posts the role's error). */
 status_t surface_set_role(struct comp_surface *s, enum comp_role role,
@@ -463,6 +466,117 @@ bool     surfaces_waiting_paint(void);
 /* Compose the scene's damage into scene.pixels (headless), and clear it. */
 void     headless_compose(void);
 
+/* ---- the seat: input, focus and compctl (seat.c, keyboard.c, pointer.c, focus.c,
+ * sources.c, ctl.c, testwin.c) ----------------------------------------------------------
+ *
+ * Input sources (HID drivers, serialin) connect through compctl and speak
+ * the `input` protocol; the loop serves them first in every turn, so
+ * typing never waits behind a client. Keys go to the window with the
+ * keyboard focus only; the pointer to the window under it, or, while a
+ * button is held, to the one the press started in (the implicit grab).
+ * The keys a client never sees (Ctrl+Alt+Del, Alt+Tab, the window keys)
+ * are taken before any focus is looked at. */
+
+/* Port keys COMP_KEY_SEAT .. COMP_KEY_SEAT + 0xffff are the seat's: compctl
+ * channels, input sources, init's answer to a reboot. */
+#define COMP_KEY_SEAT     0x20000u
+#define COMP_KEY_SEAT_END 0x30000u
+
+/* At start, after the port exists: the keymap, compctl's channel (SR_USER
+ * + 2, optional), the pointer in the middle of the output. */
+status_t seat_init(void);
+/* A port packet with a key of the seat's came. */
+void     seat_packet(uint64_t key);
+/* Each turn, first: every input source and compctl channel with work, a
+ * budget each. */
+void     seat_serve(void);
+/* Each turn, after the clients: the pointer's focus checked against the
+ * scene (a window that appeared, moved or went under it), motion a busy
+ * client was owed. */
+void     seat_turn(void);
+/* When the loop must turn again for the seat: 0 if a source's budget left
+ * work, DEADLINE_NEVER if nothing waits. */
+uint64_t seat_deadline(void);
+
+/* The globals' wl_seat, and its objects' requests (the dispatch table). */
+status_t seat_bind(struct comp_client *cl, uint32_t id, uint32_t version);
+status_t seat_request(struct comp_client *cl, struct jwl_msg *m);
+status_t keyboard_request(struct comp_client *cl, struct jwl_msg *m);
+status_t pointer_request(struct comp_client *cl, struct jwl_msg *m);
+/* cl went: its seat objects, and every focus, grab and serial it had. */
+void     seat_teardown(struct comp_client *cl);
+
+/* scene.c calls these: w was mapped (a client's first window takes the
+ * keyboard focus), or is unmapped or going (whatever focus or grab it had
+ * moves on: the keyboard to the next window down). */
+void     seat_window_mapped(struct comp_window *w);
+void     seat_window_gone(struct comp_window *w);
+
+/* For the window manager (C3: wm.c, xdg.c). */
+/* The keyboard focus to w (NULL: none): leave and enter sent. */
+void     seat_focus(struct comp_window *w);
+/* The window with the keyboard focus, or NULL. */
+struct comp_window *seat_focused(void);
+/* Is serial that of a button press sent to cl whose button is still held?
+ * (xdg_toplevel.move and resize are honoured only then.) */
+bool     seat_button_serial_ok(const struct comp_client *cl, uint32_t serial);
+/* A grab of the compositor's own (a move or resize): until the last
+ * button is released, motion goes to ops->motion with the pointer's
+ * position on the output and no client sees the pointer (the one that had
+ * it gets leave); then ops->end. ERR_BAD_STATE if no button is held or a
+ * grab is on already. */
+struct comp_grab_ops {
+    void (*motion)(void *data, int32_t x, int32_t y);
+    void (*end)(void *data);
+};
+status_t seat_grab_begin(const struct comp_grab_ops *ops, void *data);
+/* The grab ends now (its window went): ops->end is not called. */
+void     seat_grab_cancel(void);
+
+/* The pointer, for painting the cursor (C2: cursor.c): where it is, and
+ * what to draw there. surface is the cursor surface of the client under
+ * the pointer (wl_pointer.set_cursor), or NULL for the default arrow;
+ * hidden: that client asked for no cursor at all. */
+struct comp_cursor {
+    int32_t x, y;                  /* the pointer's tip, output pixels */
+    struct comp_surface *surface;  /* COMP_ROLE_CURSOR, or NULL: the arrow */
+    int32_t hot_x, hot_y;          /* the surface's point drawn at (x, y) */
+    bool hidden;
+};
+extern struct comp_cursor cursor;
+
+/* Hooks the seat calls; the painting and window-manager tracks define
+ * them (until they do, focus.c's weak defaults stand in). */
+/* The pointer moved from (old_x, old_y), or the cursor's picture changed:
+ * damage what the cursor covered and covers. Default: nothing. */
+void cursor_moved(int32_t old_x, int32_t old_y);
+/* Alt+Tab (Alt+Shift+Tab: backward): the window to focus after from (NULL:
+ * none focused), or NULL for none. Default: the next mapped window down
+ * the stacking order, wrapping. */
+struct comp_window *wm_cycle(struct comp_window *from, bool backward);
+/* A click (a button press) focused w: raise it, as the arrangement wants.
+ * Default: window_raise. */
+void wm_clicked(struct comp_window *w);
+/* A button press at output (x, y) that the window manager may take for
+ * itself (a title bar, a close box, a frame's edge): true if it did; the
+ * press and its release then reach no client. Default: false. */
+bool wm_press(int32_t x, int32_t y, uint32_t button);
+/* Super+F: w full screen, or back. Default: nothing. */
+void wm_toggle_fullscreen(struct comp_window *w);
+/* The layout key (Super+T): the screen floating, or tiling, or back.
+ * Default: nothing. */
+void wm_toggle_layout(void);
+/* The keyboard focus moved to w (NULL: none), COMP_WIN_FOCUSED already set
+ * (seat_focus calls it last, whatever moved it): the window manager raises
+ * w and tells both toplevels whether they are activated. Default: nothing. */
+void wm_focus_changed(struct comp_window *w);
+
+/* The test power `testwin` (testwin.c): a surface without a role that
+ * commits a buffer becomes a window at the attach's x and y, mapped while
+ * it has a buffer. For tests that need windows without xdg-shell; init
+ * never passes it. surface.c calls this at commit. */
+status_t testwin_commit(struct comp_surface *s);
+
 /* ---- window management (wm.c, wmtile.c, wmgrab.c, deco.c) -------------------------------
  *
  * Every toplevel is a window the window manager places: floating (new
@@ -470,7 +584,11 @@ void     headless_compose(void);
  * by the edges when the client allows) or tiling (the master and stack
  * layout: the oldest window on the left half, the others stacked on the
  * right; a window that can't resize sits centred in its tile at its own
- * size). scene.layout says which; a key switches all windows at once. */
+ * size). scene.layout says which; Super+T switches all windows at once.
+ * The seat's hooks above (wm_cycle, wm_clicked, wm_press, wm_toggle_*,
+ * wm_focus_changed) are defined in wm.c and wmgrab.c. A window without a
+ * toplevel (testwin's: w->wm is NULL) is the seat's alone: no
+ * decorations, never placed, cycled after the toplevels. */
 
 /* Decorations: the title bar (its close box at the right end) above the
  * surface and a border on the other sides; maximised, the title bar only;
@@ -487,78 +605,34 @@ struct comp_box deco_close_box(const struct comp_window *w);
 const char     *window_title(const struct comp_window *w);
 bool            window_not_responding(const struct comp_window *w);
 
-/* For the pointer: the topmost mapped window whose frame holds output (x,
- * y), or NULL (the background). *on_surface: the point is in its surface's
- * input region (the client's); else it is on the decorations (the window
- * manager's). A point in a surface but outside its input region looks at
- * the windows below. */
+/* The topmost mapped window whose frame holds output (x, y), or NULL (the
+ * background). *on_surface: the point is in its surface's input region
+ * (the client's); else it is on the decorations (the window manager's). A
+ * point in a surface but outside its input region looks at the windows
+ * below. (window_at sees surfaces only: a title bar over another window's
+ * surface hides it here, not there.) */
 struct comp_window *wm_window_at(int32_t x, int32_t y, bool *on_surface);
 
-/* The seat's calls (focus.c, pointer.c):
- * - wm_pointer_press, before a press is delivered: true when the window
- *   manager takes it (it was on a window's decorations: no client sees it).
- *   Until wm_grabbing() is false again, motion and the release go to
- *   wm_pointer_motion and wm_pointer_release, not to a client. button is
- *   the evdev code (BTN_LEFT 0x110 moves, resizes and closes; others are
- *   taken and do nothing); t ns of uptime (double-clicks).
- * - wm_begin_move, wm_begin_resize: the compositor's grab for a client's
- *   xdg_toplevel.move or resize, from (x, y), the pointer now (edges:
- *   xdg_toplevel.resize_edge). ERR_BAD_STATE: w can't be moved or resized
- *   now (tiling, maximised, a grab already on); ERR_INVALID_ARGS: edges.
- * - wm_grab_cancel: the grab ends where it is (the pointer went away).
- * - wm_focus_changed, after the seat set COMP_WIN_FOCUSED on w (NULL: no
- *   window has the keys): w is raised and told it is activated, the one
- *   before told it isn't.
- * - wm_cycle: Alt+Tab's next window after from (NULL: the first) in the
- *   order windows opened, backwards for Shift; skips unmapped ones; NULL
- *   if there is none.
- * - wm_focus_successor: who gets the keys when w goes (the next one down
- *   in the stacking order, else the top); NULL if none.
- * - wm_toggle_fullscreen (Super+F on the focused window), wm_toggle_layout
- *   (the layout key). */
-#define WM_BTN_LEFT 0x110u
-bool     wm_pointer_press(int32_t x, int32_t y, uint32_t button, uint64_t t);
-void     wm_pointer_motion(int32_t x, int32_t y);
-void     wm_pointer_release(int32_t x, int32_t y);
-bool     wm_grabbing(void);
+/* The compositor's grabs for a client's xdg_toplevel.move and resize, once
+ * seat_button_serial_ok said yes, from (x, y), the pointer now (edges:
+ * xdg_toplevel.resize_edge's bits). Started with seat_grab_begin.
+ * ERR_BAD_STATE: w can't be moved or resized now (tiling, maximised,
+ * no button held, a grab on already); ERR_INVALID_ARGS: edges. */
 status_t wm_begin_move(struct comp_window *w, int32_t x, int32_t y);
 status_t wm_begin_resize(struct comp_window *w, uint32_t edges, int32_t x, int32_t y);
-void     wm_grab_cancel(void);
-void     wm_focus_changed(struct comp_window *w);
-struct comp_window *wm_cycle(const struct comp_window *from, bool backwards);
-struct comp_window *wm_focus_successor(const struct comp_window *w);
-void     wm_toggle_fullscreen(struct comp_window *w);
-void     wm_toggle_layout(void);
 /* Every window placed again for layout (the start: init's saved choice). */
 void     wm_set_layout(enum comp_layout layout);
 
 /* The layout's setting in /data/etc/settings (<settings.h>): `display.layout
  * = floating` or `tiling`. The compositor reads no files: init reads it and
- * hands it over (the `layout=` argument, compctl), and writes it when the
- * layout_changed hook below reports the user switched. */
+ * hands it over (the `layout=` argument), and saves it when told the user
+ * switched (ctl_layout_changed). */
 #define WM_LAYOUT_SETTING "display.layout"
 const char *wm_layout_name(enum comp_layout layout);
 bool        wm_layout_parse(const char *s, enum comp_layout *out);
-
-/* What the window manager tells the seat (focus.c fills these at the
- * start; NULL: nobody listens, as in tests without a seat). */
-struct comp_wm_hooks {
-    /* A toplevel was mapped. take_focus: the plan's rule says it gets the
-     * keys (its client's first window). */
-    void (*mapped)(struct comp_window *w, bool take_focus);
-    /* w is about to be unmapped or destroyed (still in the stacking order:
-     * wm_focus_successor works): move the keys off it, end its grabs. */
-    void (*unmapping)(struct comp_window *w);
-    /* The user pressed on w's decorations: give it the keys. */
-    void (*focus)(struct comp_window *w);
-    /* Was serial a button press sent to cl and still held? Then true with
-     * the pointer's position (output coordinates), and the press is the
-     * compositor's from now (cl gets a pointer leave). */
-    bool (*take_press)(struct comp_client *cl, uint32_t serial, int32_t *x, int32_t *y);
-    /* The user switched the layout: init saves it (WM_LAYOUT_SETTING). */
-    void (*layout_changed)(enum comp_layout layout);
-};
-extern struct comp_wm_hooks comp_wm_hooks;
+/* The user switched the layout: compctl tells init, which saves it. Not
+ * built yet (a compctl method for I1): wm.c's weak default does nothing. */
+void        ctl_layout_changed(enum comp_layout layout);
 
 /* ---- xdg-shell (xdg.c, xdgtop.c) -------------------------------------------------- */
 

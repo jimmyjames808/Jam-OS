@@ -184,7 +184,11 @@ static status_t run(handle_t serve, handle_t ctl)
         if (st != OK)
             break;
         if (pkt.key == FAT_KEY_CTL) {
-            (void)serve_one(&fc);   /* nothing queued: nothing to do */
+            /* Its binding fires only when a request comes to an empty
+             * queue: whatever is queued is served now (devmgr alone holds
+             * the other end, a call at a time, so this is short). */
+            while (!stopping && !vol.disk_gone && serve_one(&fc) == OK)
+                ;
         } else if (pkt.key == FAT_KEY_BLOCK) {
             vol.disk_gone = true;
         } else if (pkt.key & FAT_KEY_FILE_BIT) {

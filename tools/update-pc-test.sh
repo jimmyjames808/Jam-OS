@@ -5,18 +5,22 @@
 # MBR and one FAT32 partition, type 0b). The boot stick here is QEMU's
 # with throttled writes (QEMU_STICK_THROTTLE); the network peer serves
 # build B, signed with the test key (as tools/update-write-test.sh makes
-# it). Four runs, each a cold boot of the stick image A (`again`: of the
-# one `fast` left):
+# it), and the boot menu boot/limine.conf; the stick's own menu is that
+# with a line more (an older menu), and every run keeps it
+# (QEMU_MENU_AT=efi). Four runs, each a cold boot of the stick image A
+# (`again`: of the one `fast` left):
 #   fast    100 write commands a second and 10 MB/s (a cheap stick's
 #           small-write speed; PC_THROTTLE overrides it, "" for none):
 #           `update -w` answers "written" within PC_WAIT seconds (150);
-#           the stick holds B, with A as the previous build, no .new file;
+#           the stick holds B, with A as the previous build, no .new file,
+#           and the new menu, the old as limine.conf.prev;
 #   again   that stick boots B, and `update -w` of B again writes nothing
-#           ("the stick has this build already") and answers "written";
+#           ("the stick has this build already", "... this boot menu
+#           already") and answers "written";
 #   stuck   3 write commands a second: the write can't finish in its time
 #           (espwrite.c WRITE_LIMIT), and `update -w` still answers, "not
 #           written", within 280 s; /esp is back read-only, and the stick
-#           still boots A with no .new file left;
+#           still boots A, with its old menu, no .new file left;
 #   reboot  the same slow stick; `update -w` stopped with Ctrl+C while init
 #           writes, then `reboot`: the write doesn't hold the reboot up
 #           (kexec within 60 s), and the next boot runs B (the stored
@@ -65,8 +69,14 @@ printf 'git b0b0b0b\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" \
 python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
     "build.txt=$out/pctest-build.txt" ||
     { echo "update-pc-test: can't make build B's boot image"; exit 1; }
+# The boot menus: the stick's (boot/limine.conf with a line more, as an
+# older menu), and the one served with B (boot/limine.conf).
+cp boot/limine.conf "$out/pctest-new.conf"
+{ cat boot/limine.conf; echo "# the stick's menu before the update"; } > "$out/pctest-old.conf"
+mcopy -o -i "$img@@1M" "$out/pctest-old.conf" ::/boot/limine/limine.conf
 cat > "$out/pctest.spec.json" <<EOF
-{"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img", "key": "$key", "plan": []}
+{"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img", "key": "$key",
+ "menu": "$out/pctest-new.conf", "plan": []}
 EOF
 mcopy -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
 echo "update-pc-test: build A $va, build B $vb"
@@ -101,8 +111,16 @@ stick() {
         esp "$i" prev-jamos.elf build/jamos.elf && esp "$i" prev-bootfs.img "$out/bootfs-A.img" ||
             fail "$1: the previous build isn't A"
     fi
-    if [ "$4" = none ] && mdir -i "$i@@1M" ::/boot 2>/dev/null | grep -qiE "\.(new|old)"; then
+    if [ "$4" = none ] && mdir -i "$i@@1M" ::/boot ::/boot/limine 2>/dev/null |
+            grep -qiE "\.(new|old)"; then
         fail "$1: a .new or .old file is left"
+    fi
+    m=old
+    [ "$2" = B ] && m=new
+    esp "$i" limine/limine.conf "$out/pctest-$m.conf" || fail "$1: the boot menu isn't the $m one"
+    if [ $m = new ]; then
+        esp "$i" limine/limine.conf.prev "$out/pctest-old.conf" ||
+            fail "$1: limine.conf.prev isn't the stick's old menu"
     fi
     rm -f "$i"
 }
@@ -111,6 +129,7 @@ stick() {
 # the script <run>.txt.
 boot() {
     QEMU_IMAGE="${3:-$img}" QEMU_SAVE="$out/$1-done.img" QEMU_NET=1 QEMU_USB="$usb" \
+        QEMU_MENU_AT=efi \
         QEMU_STICK_THROTTLE="$2" QEMU_NET_PEER="--update $out/pctest.spec.json" \
         QEMU_TIMEOUT=$((limit + 420)) QEMU_INPUT="$out/$1.txt" \
         tools/qemu-test.sh "$out" "$1" shell > "$out/$1.out" 2>&1 ||
@@ -148,7 +167,12 @@ EOF
             rm -f "$out/again-stick.img"
             grep -aq "init: update: write: the stick has this build already" "$out/again.log" ||
                 fail "again: the stick's build was written again"
+            grep -aq "init: update: write: the stick has this boot menu already" "$out/again.log" ||
+                fail "again: the stick's boot menu was written again"
         fi
+        [ $run = again ] ||
+            grep -aq "init: update: its boot menu written" "$out/$run.log" ||
+            fail "$run: init didn't say it wrote the boot menu"
         grep -aq "init: update: .* and stored, and written to the stick" "$out/$run.log" ||
             fail "$run: init didn't say it wrote the stick"
         stick $run B A none ;;

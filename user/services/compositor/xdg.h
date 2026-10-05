@@ -85,7 +85,6 @@ struct xdg_surf {
 struct xdg_client {
     struct comp_client *cl;
     uint32_t nbases, npositioners, nsurfs;
-    uint32_t maps;                 /* windows mapped so far (the first takes focus) */
     struct xdg_base *bases;
     struct xdg_pos *positioners;
     struct xdg_surf *surfs;

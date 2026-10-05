@@ -2,7 +2,7 @@
  * real channels by test clients speaking Wayland through libjwl.
  *
  * t_comp_globals: the registry (wl_compositor 4, wl_shm 1, wl_output 3,
- * xdg_wm_base 1; the seat not offered yet), binding them (wl_shm's two
+ * wl_seat 5, xdg_wm_base 1), binding them (wl_shm's two
  * formats, wl_output's geometry, mode, scale and done), sync, and the
  * headless image composed with the background.
  * t_comp_surface: a surface with a shm buffer from a kept pool: commit,
@@ -25,7 +25,7 @@
 
 /* ---- the compositor ---------------------------------------------------------------- */
 
-static uint64_t job_used(handle_t job, unsigned kind)
+uint64_t ct_job_used(handle_t job, unsigned kind)
 {
     struct job_info ji;
     return info_of(job, &ji) == OK ? ji.used[kind] : ~0ull;
@@ -33,7 +33,7 @@ static uint64_t job_used(handle_t job, unsigned kind)
 
 uint64_t ct_handles(const struct ct_comp *p)
 {
-    return job_used(p->job, JOB_LIMIT_HANDLES);
+    return ct_job_used(p->job, JOB_LIMIT_HANDLES);
 }
 
 bool ct_handles_back(const struct ct_comp *p, uint64_t want)
@@ -95,35 +95,44 @@ bool ct_stop(struct ct_comp *p)
     CHECK_ST(jam_handle_close(p->proc), OK);
     uint64_t until = now() + CT_WAIT;   /* dead is not yet freed */
     for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++) {
-        while (job_used(p->job, k) && now() < until)
+        while (ct_job_used(p->job, k) && now() < until)
             jam_nanosleep(now() + NS_PER_MS);
-        if (job_used(p->job, k))
+        if (ct_job_used(p->job, k))
             FAIL("the compositor left %lu units of job kind %u",
-                 (unsigned long)job_used(p->job, k), k);
+                 (unsigned long)ct_job_used(p->job, k), k);
     }
     CHECK_ST(jam_handle_close(p->job), OK);
-    CHECK_ST(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)p->image,
-                            p->image_size), OK);
+    if (p->image)   /* none if the compositor was started with an image of its own */
+        CHECK_ST(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)p->image,
+                                p->image_size), OK);
     return true;
 }
 
 /* ---- clients ----------------------------------------------------------------------- */
 
-bool ct_open(struct ct_comp *p, struct ct_client *k)
+bool ct_adopt(handle_t ch, struct ct_client *k)
 {
     memset(k, 0, sizeof(*k));
-    handle_t ch;
-    CHECK_ST(svc_connect_within(p->svc, CT_WAIT, &ch), OK);
     struct jwl_conn_config cfg = { .ch = ch, .side = JWL_CLIENT,
                                    .display = &jwl_wl_display_interface };
     CHECK_ST(jwl_conn_create(&cfg, &k->c), OK);
     return true;
 }
 
+bool ct_open(struct ct_comp *p, struct ct_client *k)
+{
+    handle_t ch;
+    CHECK_ST(svc_connect_within(p->svc, CT_WAIT, &ch), OK);
+    return ct_adopt(ch, k);
+}
+
 void ct_close(struct ct_client *k)
 {
     jwl_conn_destroy(k->c);
     k->c = NULL;
+    if (k->kept != HANDLE_INVALID)
+        jam_handle_close(k->kept);
+    k->kept = HANDLE_INVALID;
 }
 
 void ct_clear(struct ct_client *k)
@@ -143,6 +152,13 @@ uint32_t ct_new(struct ct_client *k, const struct jwl_interface *iface, uint32_t
     return jwl_conn_make(k->c, iface, version, NULL, &id) == OK ? id : 0;
 }
 
+static void record_array(struct ct_event *e, const struct jwl_array *a)
+{
+    e->na = a->size / 4;
+    if (e->na)
+        memcpy(e->a, a->data, (e->na < 8 ? e->na : 8) * 4);
+}
+
 static void record(struct ct_client *k, struct jwl_msg *m)
 {
     struct ct_event e = { .iface = m->iface, .op = m->opcode, .id = m->id };
@@ -150,14 +166,15 @@ static void record(struct ct_client *k, struct jwl_msg *m)
     unsigned nu = 0;
     if (jwl_sig_parse(m->msg->signature, &sig) == OK) {
         for (unsigned i = 0; i < sig.n && i < m->nargs; i++) {
-            if (sig.type[i] == 's' && m->args[i].s && !e.s[0]) {
+            if (sig.type[i] == 's' && m->args[i].s && !e.s[0])
                 snprintf(e.s, sizeof(e.s), "%s", m->args[i].s);
-            } else if (sig.type[i] == 'a' && !e.na && m->args[i].a.size) {
-                uint32_t n = m->args[i].a.size;
-                e.na = n < sizeof(e.a) ? n : (uint32_t)sizeof(e.a);
-                memcpy(e.a, m->args[i].a.data, e.na);
-            } else if (sig.type[i] != 's' && sig.type[i] != 'a' && nu < 4) {
+            else if (sig.type[i] == 'a' && !e.na)
+                record_array(&e, &m->args[i].a);
+            else if (sig.type[i] != 's' && sig.type[i] != 'a' && nu < 4)
                 e.u[nu++] = m->args[i].u;
+            if (sig.type[i] == 'h' && k->kept == HANDLE_INVALID) {
+                k->kept = m->args[i].h;   /* the test's now */
+                m->args[i].h = HANDLE_INVALID;
             }
         }
     }
@@ -319,8 +336,9 @@ static bool globals_and_binds(struct ct_client *k)
     CHECK(has_global(k, 1, "wl_compositor", 4));
     CHECK(has_global(k, 2, "wl_shm", 1));
     CHECK(has_global(k, 3, "wl_output", 3));
+    CHECK(has_global(k, 4, "wl_seat", 5));
     CHECK(has_global(k, 5, "xdg_wm_base", 1));
-    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 4);
+    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 5);
     CHECK_EQ(count(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT), 2);
     CHECK(ct_find(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT, k->shm)->u[0] ==
           JWL_WL_SHM_FORMAT_ARGB8888);
@@ -352,7 +370,7 @@ bool t_comp_globals(void)
     uint32_t reg2 = ct_new(&k, &jwl_wl_registry_interface, 1);
     CHECK_ST(jwl_wl_display_get_registry(k.c, JWL_DISPLAY_ID, reg2), OK);
     CHECK_ST(ct_roundtrip(&k), OK);
-    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 4);
+    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 5);
     ct_close(&k);
     CHECK(ct_stop(&p));
     return true;
@@ -421,7 +439,7 @@ bool t_comp_surface(void)
     CHECK(ct_open(&p, &k));
     CHECK(ct_bind_all(&k));
     uint64_t base = ct_handles(&p);
-    uint64_t pages0 = job_used(own_job(), JOB_LIMIT_PAGES);
+    uint64_t pages0 = ct_job_used(own_job(), JOB_LIMIT_PAGES);
     handle_t vmo;
     uint32_t pool = ct_pool(&k, 65536, &vmo);
     CHECK(pool);
@@ -443,7 +461,7 @@ bool t_comp_surface(void)
     CHECK_ST(ct_roundtrip(&k), OK);
     CHECK(!k.errored);
     CHECK(ct_handles_back(&p, base));   /* the pool's VMO handle closed */
-    CHECK(job_used(own_job(), JOB_LIMIT_PAGES) <= pages0 + 4);   /* its 16 pages freed */
+    CHECK(ct_job_used(own_job(), JOB_LIMIT_PAGES) <= pages0 + 4);   /* its 16 pages freed */
     ct_close(&k);
     CHECK(ct_stop(&p));
     return true;

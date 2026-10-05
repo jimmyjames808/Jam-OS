@@ -288,7 +288,7 @@ static status_t on_get_toplevel(void *data, uint32_t self, uint32_t id)
     if (st != OK)
         return st;
     struct comp_surface *s = x->surface;
-    x->ww = wm_create(s, &ops, x, &x->xc->maps);
+    x->ww = wm_create(s, &ops, x);
     if (!x->ww)
         return comp_no_memory(s->client, self, "no memory for a toplevel");
     x->constructed = true;
@@ -423,17 +423,17 @@ static status_t on_show_window_menu(void *data, uint32_t self, uint32_t seat, ui
     return OK;   /* no window menu in G1: ignored, as the protocol allows */
 }
 
-/* move and resize: only for a press the seat says is the client's and held. */
+/* move and resize: only for a press the seat says is the client's and
+ * still held, from where the pointer is now. Anything else is ignored, as
+ * the protocol allows. */
 static status_t grab_for(struct xdg_surf *x, uint32_t serial, uint32_t edges)
 {
-    int32_t px, py;
-    if (!x->ww || !x->ww->win || !comp_wm_hooks.take_press ||
-        !comp_wm_hooks.take_press(client_of(x), serial, &px, &py))
-        return OK;   /* ignored, as the protocol allows */
+    if (!x->ww || !x->ww->win || !seat_button_serial_ok(client_of(x), serial))
+        return OK;
     if (edges)
-        (void)wm_begin_resize(x->ww->win, edges, px, py);   /* refused: nothing happens */
+        (void)wm_begin_resize(x->ww->win, edges, cursor.x, cursor.y);   /* refused: nothing */
     else
-        (void)wm_begin_move(x->ww->win, px, py);
+        (void)wm_begin_move(x->ww->win, cursor.x, cursor.y);
     return OK;
 }
 

@@ -25,13 +25,13 @@
 
 /* ---- making and losing surfaces ---------------------------------------------------- */
 
-status_t surface_create(struct comp_client *cl, uint32_t id)
+status_t surface_create(struct comp_client *cl, uint32_t compositor, uint32_t id)
 {
     if (cl->nsurfaces >= COMP_SURFACES_MAX)
-        return comp_no_memory(cl, id, "too many surfaces (64)");
+        return comp_no_memory(cl, compositor, "too many surfaces (64)");
     struct comp_surface *s = calloc(1, sizeof(*s));
     if (!s)
-        return comp_no_memory(cl, id, "no memory for a surface");
+        return comp_no_memory(cl, compositor, "no memory for a surface");
     s->client = cl;
     s->id = id;
     s->input_all = s->pending.input_all = true;
@@ -264,7 +264,9 @@ static status_t on_commit(void *data, uint32_t self)
     s->nframes += s->npending;   /* committed: answered after the next paint */
     s->npending = 0;
     s->commits++;
-    return s->role_ops && s->role_ops->commit ? s->role_ops->commit(s) : OK;
+    if (!s->role_ops)
+        return testwin_commit(s);   /* nothing without the test power */
+    return s->role_ops->commit ? s->role_ops->commit(s) : OK;
 }
 
 static const struct jwl_wl_surface_requests surface_ops = {
