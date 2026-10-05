@@ -550,8 +550,10 @@ status_t iommu_device_driven(struct pci_dev *dev)
     return st;
 }
 
-/* The domain cap for one driver's domain: 512 table pages, 1 GiB of
- * scattered pins (docs/M11-PLAN.md). */
+/* The domain cap for one driver's domain: 512 table pages (docs/M11-PLAN.md).
+ * A leaf table maps 2 MiB of IOVA = physical addresses, so that is up to
+ * 1 GiB of pins dense within 2 MiB blocks, but only ~500 pages spread one
+ * per block (review finding 6, design question C). */
 #define DRIVER_MAX_TABLES 512
 
 status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_domain **out)

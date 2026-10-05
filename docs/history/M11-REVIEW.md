@@ -26,7 +26,7 @@ narrower path, a broken VT-d rule that can open such a hole, or a device
 that can take a CPU away; **Low** is a narrow case, a wrong claim, a gap in
 a check, or a design point.
 
-**Nothing High was found.** What held up under a careful read:
+**Nothing High was found** (3 Medium, 11 Low). What held up under a careful read:
 
 - **Only what is pinned is mapped.** A domain holds the cap's pins and the
   function's RMRRs, nothing else; IOVA = physical address. `vmo_pin` maps
@@ -103,6 +103,7 @@ a check, or a design point.
 | 11 | Low (judgement) | `kernel/dev/vtd_boot.c:367` (`vtd_boot_handover`), deviation D1 b | **The 6.6 deviation is acceptable.** 6.6 asks the new tables to translate in-flight requests as the old did; Jam OS's give only the RMRRs, so another in-flight DMA is blocked and logged: the safe direction, and the invalidations that follow end the mixed period. One residual: when a kexec'd kernel left translation on (its jump couldn't turn it off in 10 ms), the old tables live in RAM the new kernel reuses before the takeover; only Bus Master Enable being off (and the display and bridges, never touched, not mastering) makes that window safe. On the PC everything is off at a cold boot. |
 | 12 | Low | `drivers/hda/vtdtest.c:258` | Phase B (the RIRB pointed at 0xfee00000) runs whenever phase A was blocked, without knowing whether interrupt remapping is on; with translation on but remapping off (an I/O APIC without a DMAR scope) the write is a real interrupt. `window_write_safe` keeps it to a fixed-delivery vector of 32 or more to APIC id 0, counted and ignored. Test-only. |
 | 13 | Low (judgement) | `kernel/test/test_dma_iommu.c:60` (`edu_translated`) | The join's note is right: the reset of edu's `dma_faults` is redundant, since every `dma_iommu_*` test makes a new cap before it provokes a fault and the cap's attach starts the count (and clears the mute) itself. Remove it. |
+| 14 | Low (found while fixing 2) | `kernel/dev/vtd_qi.c:399` (`log_error`) | Every refused descriptor after the first is a log line, with no limit (the faults stop at 8 per device). Only the kernel can make the queue refuse one, but `vtd_unit_fault_storm_masked`'s 1500 refusals flooded the soak's log until lines cut into each other. |
 
 ### Design questions for the owner
 
@@ -130,10 +131,56 @@ a check, or a design point.
 
 ## Outcomes
 
-(Filled in as the fixes land.)
+| # | Outcome |
+|---|---------|
+| 1 | **Fixed** (27df4a7 refactor: `vtd_root_table_new`; 643b2ca fix): the cleared root page is flushed whole when the unit doesn't snoop. Test `vtd_domain_root_table_flushed` (pure, runs in every ktest): a new `DBG_VTD_FLUSH` hook records what `vtd_flush_lines` flushes, and every line of the new root page must be in it; failed without the fix ("flushed failed"). The PC is the only place the flush itself matters. |
+| 2 | **Fixed** (c319fae): the storm guard. The handler counts its interrupts; past 32 in 100 ms it masks FECTL.IM, the log thread polls the unit every 10 ms (draining records) until a look finds no new event (records, overflow, queue errors), then unmasks; the first storm goes to the RESULTS box, the `iommu` command shows the count. Test `vtd_unit_fault_storm_masked`: 1500 refused descriptors (each one a fault event, 7.3: QEMU's fastest real source; a device's window writes are the same interrupt): 1490 interrupts without the fix (failed), 33-45 with it; unmasked after, and the next single event heard. |
+| 3 | **Fixed** (b7e50b1): a batch whose domain the unit didn't confirm gone keeps its domain, its cap (until its pins in flight are done) and its pages, and is retried every second; only a confirmed domain-id invalidation frees them. `dma_quarantine_flush` tries each listed batch once. Test `dma_iommu_unconfirmed_close_keeps_pages` (`KT_SKIP_LIVE`): queue off, close with a page pinned, flush: held (without the fix: released, failed); queue on, flush: freed. Design question E. (c319fae also carries this fix's shortened report line.) |
+| 4 | Not fixed: no such bridge on the PC; design question D. |
+| 5 | **Fixed** (22b5e88): `vtd_irte_encode` and `vtd_ir_rte_encode` refuse vectors below 32 (`VTD_IR_VECTOR_MIN`). Tests `vtd_ir_irte_refuses`, `vtd_ir_rte_exact_bits` refuse 16, 18, 31; failed without the fix. |
+| 6 | Claim corrected in ARCHITECTURE and `vtd_domain.c` (this commit); the cap itself is design question C. |
+| 7 | Design question B; no change. |
+| 8 | Design question A; no change. |
+| 9 | Not fixed: moving kept table pages off the caller's list breaks `vtd_dom_map`'s retry with the same gather in caching mode; harmless as it stands. |
+| 10 | Not fixed (harmless, as said). |
+| 11 | Accepted as built. |
+| 12 | Not fixed (test-only; a driver can't see whether interrupt remapping is on: SYSINFO_IOMMU is translation only). |
+| 13 | **Done** (f074617): the reset removed, the comment says why it isn't needed. No test (test-only change). |
+| 14 | **Fixed** (2e5593b): the first refusal in the RESULTS box, the next 7 logged, the rest counted, as faults are. No test fails without it: checked by a `vtd_unit` run's line count (1500 lines before, 8 after). |
+
+Also: `tools/vtd-test.sh` knows the two new tests and the lines they
+provoke on purpose (9f2ff59).
 
 ## Tests run (QEMU)
 
 Baseline at 1f93f4d before any change: `make`, `make KTESTS=0`,
 `make check`; `QEMU_SMP=4 tools/qemu-test.sh <out> kt ktest` 378 passed;
 the same with `QEMU_IOMMU=eim QEMU_WORDS=iommu=on` 378 passed.
+
+After the fixes: `make`, `make KTESTS=0`, `make check` clean; full ktest
+at 4 CPUs 381 passed, and 381 with `QEMU_IOMMU=eim QEMU_WORDS=iommu=on`;
+`tools/vtd-test.sh` PASS (both caching modes, pt=off, kexec, panic);
+with `QEMU_IOMMU=cm0 QEMU_WORDS=iommu=on`: hda-test (its IOMMU checks
+boot included), usb-test, storage-test, net-test PASS, and no `vtd:
+fault:` line but hda's provoked reads; the `init` run at 2 CPUs PASS
+without and with `QEMU_IOMMU=1 iommu=on`; soak-test at 4 CPUs with
+`QEMU_IOMMU=1 QEMU_WORDS=iommu=on` PASS (383 s, 5 loops, 1797 passed, 108
+skipped, 0 FAILED; 3 utest runs, 3325 file cycles, 0 FAILED); it showed
+finding 14, fixed after it (`ktest=vtd_unit` and `tools/vtd-test.sh` run
+again after that fix: PASS, the second time; the first ended in a host-side
+QEMU segmentation fault during `vtd_domain_handover_while_on` with
+caching mode off, which didn't come back in six more runs of the
+`vtd_domain` tests or a full `vtd-test.sh`: QEMU's, not the guest's,
+since nothing a guest does should crash QEMU; noted in case it returns).
+
+## What only the PC can show
+
+- Finding 1's flush matters only on a unit that doesn't snoop: the PC's.
+  Nothing to see unless something was wrong (a DMA from a requester id on
+  an unused bus); `iommu` should show no fault but the checks'.
+- Finding 2 on real hardware: the "All tests" boot with `iommu=on` runs
+  `vtd_unit_fault_storm_masked` against the real unit (1500 refused
+  descriptors, as `vtd_unit_refused_descriptor_reported` does 2); expect its
+  line "N fault interrupt(s)" with N about 33 and "unmasked after: yes".
+  A real device storm: not provoked by any test (`vtdtest` makes 1-2
+  faults).
