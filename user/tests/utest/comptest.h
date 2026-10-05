@@ -26,14 +26,16 @@ uint64_t ct_handles(const struct ct_comp *p);
 /* Wait (up to CT_WAIT) for the compositor's handles to be back at want. */
 bool ct_handles_back(const struct ct_comp *p, uint64_t want);
 
-/* One event a client got (the first four non-string arguments' words, and
- * its first string argument). */
+/* One event a client got (the first four non-string arguments' words, its
+ * first string argument, and its first array's first words). */
 struct ct_event {
     const struct jwl_interface *iface;
     uint16_t op;
     uint32_t id;
     uint32_t u[4];
     char     s[128];
+    uint32_t a[8];             /* the array's first words (wl_keyboard.enter: the keys held) */
+    uint32_t na;               /* the array's size in words (only the first 8 kept) */
 };
 
 #define CT_EVENTS 128
@@ -44,6 +46,8 @@ struct ct_client {
     unsigned nev;
     bool     errored;                             /* wl_display.error came */
     struct ct_event err;
+    handle_t kept;                                /* the first handle an event carried (the
+                                                     test closes it), else they are closed */
 };
 
 /* A new connection to p (svc.connect on /svc/wayland), or a client on a

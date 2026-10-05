@@ -911,6 +911,14 @@ static const struct {
     { "comp_never_reads", t_comp_never_reads },
     { "comp_regions", t_comp_regions },
     { "jwlc_real_compositor", t_jwlc_real_compositor },
+    { "comp_seat_keymap", t_comp_seat_keymap },
+    { "comp_seat_focus", t_comp_seat_focus },
+    { "comp_seat_grab", t_comp_seat_grab },
+    { "comp_seat_reserved", t_comp_seat_reserved },
+    { "comp_seat_text", t_comp_seat_text },
+    { "comp_seat_ctl", t_comp_seat_ctl },
+    { "comp_seat_move", t_comp_seat_move },
+    { "termkeys", t_termkeys },
 };
 
 int main(int argc, char **argv)
