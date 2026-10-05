@@ -7,17 +7,7 @@
  *   bootfs    bin/bootfs: the boot image as a mount, with the server end of
  *             its `fs` channel (SR_USER + 0); init mounts the client end at
  *             /boot in its own namespace, the one the shell is given
- *   console   bin/console: root with CONSOLE_ROOT (klog, the screen,
- *             serial output; reboot on Ctrl+Alt+Del), the server end of a
- *             console channel (SR_USER + 0) and a control channel of init's
- *             that answers only `reboot` (SR_USER + 8, ctl.c: Ctrl+Alt+Del
- *             goes through init, which syncs /data first), and the log
- *             writers' table read-only (CONSOLE_WRITERS_ROLE, writers.c);
- *             init keeps the client end. With the splash (the argument
- *             "quiet") it draws nothing until the splash has borrowed the
- *             screen and given it back; on a boot with the splash every
- *             console also gets "nolog": the kernel log off the screen
- *             but for its notices
+ *   console   bin/console, and the shell: terms.c
  *   splash    bin/splash, once, on a plain boot (argv "splash" from the
  *             kernel): a PROGRAM-level console channel (SR_CONSOLE), a
  *             channel of init's (SR_USER + 0, <splash.h>) and a namespace
@@ -85,19 +75,7 @@
  *             its answer (lastboot.c), and saves that log first
  *   netlog    bin/netlog, once /data is mounted, if its settings say so:
  *             net.c says with what
- *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
- *             console.new_client; no connect_input), root with SHELL_ROOT,
- *             RES_PCI with RIGHTS_BASIC (SR_USER + 1), a channel from
- *             init (SR_USER + 2) and init's whole namespace as it is
- *             (SR_NS, followed: every mount, /data's etc included, and
- *             every service: devmgr's channels, init's control channel
- *             /svc/init, made anew for each shell (ctl.c: kill, sync,
- *             reboot, mount), the mixer's, the music player's, logd's,
- *             netstack's /svc/net).
- *             On the boot after a panic the first shell waits for logd's
- *             answer (lastboot.c) and finds its one line queued on the
- *             SR_USER + 2 channel (INIT_SHELL_NOTE) when it starts
- * None of the console, serialin and the shell gets RIGHT_MAP or
+ * Neither serialin nor the console nor the shell gets RIGHT_MAP or
  * RIGHT_SLICE on the root: they can't reach hardware beyond the calls made
  * for them.
  *
@@ -124,26 +102,17 @@
 #include "init.h"
 
 /* The root's powers each service gets (<jam/abi.h> RIGHT_ROOT_*; none can
- * map or slice): the console reads the log, draws on the screen, mirrors
- * it to the serial port's output and reboots on Ctrl+Alt+Del if init doesn't
- * answer; serialin reads the serial port; logd the log; the shell the
- * log, the system's figures, the clock, the kernel's debug commands, a
- * reboot when init doesn't answer, and programs from /data (VMEX). Only
- * init keeps RIGHT_ROOT_KEXEC. */
-#define CONSOLE_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SCREEN | RIGHT_ROOT_SERIAL_OUT | \
-                      RIGHT_ROOT_REBOOT)
-#define SHELL_ROOT   (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_DEBUG | \
-                      RIGHT_ROOT_REBOOT | RIGHT_ROOT_VMEX)
+ * map or slice): serialin reads the serial port; logd the log; the
+ * console's and the shell's are terms.c's. Only init keeps
+ * RIGHT_ROOT_KEXEC. */
 
 static handle_t root, port;
-static handle_t cons;       /* the console client end (0: none) */
 static handle_t devmgr;     /* devmgr's control channel, client end (0: none running) */
 static handle_t devmgr_q;   /* its query channel, client end */
 static handle_t devmgr_esp; /* its ESP channel, client end: never handed on (update.c's) */
 /* Its device channels for the HD Audio controllers, the mixer's, and for
  * the network cards, held for netstack (0: none). */
 static handle_t devmgr_hda[INIT_MAX_CLAIMED], devmgr_net[INIT_MAX_CLAIMED];
-static handle_t to_shell;   /* init's end of the shell's SR_USER + 2 channel */
 static handle_t logd_ctl;   /* logd's control channel, client end (0: no logd) */
 /* The mixer's channels, made once: server ends (each mixer gets
  * duplicates) and client ends (the shell gets duplicates). [0] `audio`,
@@ -154,10 +123,6 @@ static handle_t music_srv, music_cli;
 /* The file server's, the same. */
 static handle_t serve_srv, serve_cli;
 static bool nousb;
-static bool quiet_console;   /* the next console starts quiet (the splash's first one) */
-static bool nolog_console;   /* every console keeps the log off the screen (a splash boot) */
-/* An argument for the first shell started ("soak=3": run the soak test), or NULL. */
-static const char *first_arg;
 
 handle_t shell_root(void)
 {
@@ -174,11 +139,6 @@ handle_t shell_devmgr_esp(void)
     return devmgr_esp;
 }
 
-handle_t shell_console(void)
-{
-    return cons;
-}
-
 void services_settings(unsigned i)
 {
     if (i == MIXER && svcs[MIXER].running)
@@ -189,17 +149,12 @@ void services_settings(unsigned i)
         net_settings();
 }
 
-bool services_console_up(void)
-{
-    return cons != HANDLE_INVALID;
-}
-
 bool services_devmgr_up(void)
 {
     return devmgr != HANDLE_INVALID;
 }
 
-static handle_t root_with(rights_t rights)
+handle_t services_root_with(rights_t rights)
 {
     handle_t h = HANDLE_INVALID;
     if (jam_handle_duplicate(root, rights, &h) != OK)
@@ -215,32 +170,10 @@ static handle_t dup_of(handle_t h)
     return d;
 }
 
-/* devmgr takes a new console (after the console restarted): its HID
- * drivers come back connected to it. */
-static void tell_devmgr(void)
-{
-    handle_t c = HANDLE_INVALID;
-    if (!devmgr || jam_handle_duplicate(cons, RIGHT_SAME, &c) != OK)
-        return;
-    struct devmgr_req q = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
-    struct devmgr_rep r;
-    uint32_t n = 0, got = 0;
-    struct channel_call_args a = {
-        .h = devmgr, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)&q,
-        .wh = (uint64_t)(uintptr_t)&c, .whn = 1, .rcap = sizeof(r),
-        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
-        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * NS_PER_S,
-    };
-    status_t st = jam_channel_call(&a);   /* c goes with the request either way */
-    if (st != OK || n < DEVMGR_REP_HDR || r.status != OK)
-        printf("init: devmgr didn't take the new console (%s)\n",
-               status_str(st != OK ? st : r.status));
-}
-
 /* Publish h (a duplicate is taken; h stays ours) as /svc/<name> in our
  * namespace, the one the shell and the other followers get; HANDLE_INVALID
  * takes the name away. Followers hear of it with the next tell_mounts. */
-static void publish(const char *name, handle_t h, bool connect)
+void services_publish(const char *name, handle_t h, bool connect)
 {
     handle_t d = dup_of(h);
     status_t st = d ? ns_svc_set(name, d, connect) : ns_svc_remove(name);
@@ -265,50 +198,12 @@ static status_t start_bootfs(void)
     return st;
 }
 
-static status_t start_console(void)
-{
-    handle_t a, b, ctl = HANDLE_INVALID;
-    status_t st = jam_channel_create(&a, &b);
-    if (st != OK)
-        return st;
-    /* Without it the console still reboots, without the sync. */
-    if (ctl_new(CTL_CONSOLE, port, KEY_CTL + CTL_CONSOLE, &ctl) != OK)
-        ctl = HANDLE_INVALID;
-    struct spawn_handle x[4] = {
-        { SR_RESOURCE, root_with(RIGHTS_BASIC | CONSOLE_ROOT) },
-        { SR_USER + 0, b },
-    };
-    unsigned nx = 2;
-    handle_t writers = writers_for_console();   /* without it no process makes notices */
-    if (writers)
-        x[nx++] = (struct spawn_handle){ CONSOLE_WRITERS_ROLE, writers };
-    if (ctl)
-        x[nx++] = (struct spawn_handle){ SR_USER + 8, ctl };
-    const char *argv[3] = { svcs[CONSOLE].path };
-    int argc = 1;
-    if (nolog_console)
-        argv[argc++] = "nolog";
-    if (quiet_console)
-        argv[argc++] = "quiet";
-    st = svc_start(CONSOLE, argc, argv, x, nx);
-    quiet_console = false;   /* a restarted console draws at once */
-    if (st != OK) {
-        jam_handle_close(a);
-        return st;
-    }
-    if (cons)
-        jam_handle_close(cons);
-    cons = a;
-    tell_devmgr();   /* a restart: devmgr reconnects its HID drivers */
-    return OK;
-}
-
 /* The boot splash: a PROGRAM-level console channel (the screen and the
  * keys, as any app), init's channel, and the mixer's `audio` channel. */
 static status_t start_splash(void)
 {
     handle_t c = HANDLE_INVALID, theirs = HANDLE_INVALID;
-    status_t st = console_new_client_until(cons, now() + 5 * NS_PER_S, 2, &c);
+    status_t st = console_new_client_until(shell_console(), now() + 5 * NS_PER_S, 2, &c);
     if (st == OK && (st = splash_channel(port, KEY_SPLASH, &theirs)) != OK)
         jam_handle_close(c);
     if (st != OK)
@@ -321,11 +216,11 @@ static status_t start_splash(void)
 static status_t start_serialin(void)
 {
     handle_t src;
-    status_t st = console_connect_input_until(cons, now() + 5 * NS_PER_S, &src);
+    status_t st = console_connect_input_until(shell_console(), now() + 5 * NS_PER_S, &src);
     if (st != OK)
         return st;
     struct spawn_handle x[] = {
-        { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_ROOT_SERIAL) }, { SR_USER + 0, src },
+        { SR_RESOURCE, services_root_with(RIGHTS_BASIC | RIGHT_ROOT_SERIAL) }, { SR_USER + 0, src },
     };
     return svc_start1(SERIALIN, x, 2);
 }
@@ -377,7 +272,7 @@ static status_t start_devmgr(void)
     if (st == OK)
         st = jam_channel_create(&ea, &eb);
     if (st == OK)
-        st = jam_handle_duplicate(cons, RIGHT_SAME, &c);
+        st = jam_handle_duplicate(shell_console(), RIGHT_SAME, &c);
     if (st != OK) {
         handle_t left[] = { pci, a, b, qa, qb, ea, eb };
         for (unsigned k = 0; k < 7; k++)
@@ -431,8 +326,8 @@ static status_t start_devmgr(void)
     unsigned nics = services_claim_class(devmgr, DEVMGR_CLASS_NET, devmgr_net, INIT_MAX_CLAIMED);
     if (nics)
         printf("init: %u network card(s): held for netstack\n", nics);
-    publish(SVC_DEVMGR, devmgr_q, true);   /* a channel per opener (svc.connect) */
-    publish(SVC_DEVMGR_CTL, devmgr, false);
+    services_publish(SVC_DEVMGR, devmgr_q, true);   /* a channel per opener (svc.connect) */
+    services_publish(SVC_DEVMGR_CTL, devmgr, false);
     tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
     handle_t watch;
     st = jam_handle_duplicate(devmgr, RIGHT_SAME, &watch);
@@ -459,7 +354,7 @@ static status_t start_logd(void)
     status_t st = jam_channel_create(&mine, &theirs);
     if (st != OK)
         return st;
-    struct spawn_handle x[4] = { { SR_RESOURCE, root_with(RIGHTS_BASIC | RIGHT_ROOT_KLOG) },
+    struct spawn_handle x[4] = { { SR_RESOURCE, services_root_with(RIGHTS_BASIC | RIGHT_ROOT_KLOG) },
                                  { SR_USER + 2, theirs } };
     unsigned nx = 2 + lastboot_logd_handles(&x[2]);   /* after a panic: its log first */
     st = svc_start1(LOGD, x, nx);
@@ -468,7 +363,7 @@ static status_t start_logd(void)
         return st;
     }
     logd_ctl = mine;
-    publish(SVC_LOGD, logd_ctl, true);   /* a channel per opener (svc.connect) */
+    services_publish(SVC_LOGD, logd_ctl, true);   /* a channel per opener (svc.connect) */
     return OK;
 }
 
@@ -607,75 +502,10 @@ static status_t start_serve(void)
     return svc_start1(SERVE, x, 1);
 }
 
-/* The line the boot's first shell prints after a panic (lastboot.c), queued
- * on its init channel before it starts. */
-static void queue_banner(handle_t to)
-{
-    const char *b = lastboot_banner();
-    size_t n = strlen(b);
-    if (!to || !n)
-        return;
-    struct { uint32_t kind; char text[INIT_SHELL_NOTE_MAX]; } m = { INIT_SHELL_NOTE, { 0 } };
-    if (n > sizeof(m.text))
-        n = sizeof(m.text);
-    memcpy(m.text, b, n);
-    if (jam_channel_write(to, &m, (uint32_t)(sizeof(m.kind) + n), NULL, 0) != OK)
-        printf("init: the shell can't be given the last boot's line\n");
-}
-
-static status_t start_shell(void)
-{
-    handle_t c = HANDLE_INVALID, pci = HANDLE_INVALID, p2 = HANDLE_INVALID;
-    handle_t mine = HANDLE_INVALID, theirs = HANDLE_INVALID, ctl = HANDLE_INVALID;
-    /* A SHELL-level console channel: no input sources of its own. */
-    status_t st = console_new_client_until(cons, now() + 5 * NS_PER_S, 1, &c);
-    if (st != OK)
-        return st;
-    if (jam_resource_create(root, RES_PCI, 0, 0, &pci) == OK &&
-        jam_handle_replace(pci, RIGHTS_BASIC, &p2) != OK)
-        p2 = HANDLE_INVALID;
-    if (jam_channel_create(&mine, &theirs) != OK)
-        mine = theirs = HANDLE_INVALID;
-    queue_banner(mine);
-    /* Its control channel of init's: /svc/init, published before the
-     * shell is given our namespace (a new one each time: the old one's
-     * holders see ERR_PEER_CLOSED). */
-    if (ctl_new(CTL_SHELL, port, KEY_CTL + CTL_SHELL, &ctl) == OK) {
-        publish(SVC_INIT, ctl, false);
-        jam_handle_close(ctl);
-    }
-    struct spawn_handle x[] = {
-        { SR_CONSOLE, c },
-        { SR_RESOURCE, root_with(RIGHTS_BASIC | SHELL_ROOT) },
-        { SR_USER + 1, p2 },
-        { SR_USER + 2, theirs },
-    };
-    /* Leave out the ones we don't have. */
-    struct spawn_handle y[4];
-    unsigned n = 0;
-    for (unsigned k = 0; k < 4; k++)
-        if (x[k].h)
-            y[n++] = x[k];
-    /* The boot's first shell gets the boot word's command (shell_first_arg);
-     * one init restarts later is an ordinary shell. */
-    const char *argv[] = { svcs[SHELL].path, first_arg };
-    st = svc_start(SHELL, first_arg ? 2 : 1, argv, y, n);
-    first_arg = NULL;
-    if (st != OK) {
-        if (mine)
-            jam_handle_close(mine);
-        return st;
-    }
-    if (to_shell)
-        jam_handle_close(to_shell);
-    to_shell = mine;
-    return OK;
-}
-
 status_t services_start(unsigned i)
 {
     return i == BOOTFS     ? start_bootfs()
-           : i == CONSOLE  ? start_console()
+           : i == CONSOLE  ? terms_start_console()
            : i == SPLASH   ? start_splash()
            : i == SERIALIN ? start_serialin()
            : i == DEVMGR   ? start_devmgr()
@@ -688,15 +518,12 @@ status_t services_start(unsigned i)
            : i == NETLOG   ? net_netlog_start()
            : i == SNTP     ? net_sntp_start()
            : i == SERVE    ? start_serve()
-                           : start_shell();
+                           : terms_start_shell();
 }
 
 void services_closed(unsigned i)
 {
-    if (i == CONSOLE && cons) {
-        jam_handle_close(cons);   /* the shell and serialin see PEER_CLOSED */
-        cons = HANDLE_INVALID;
-    }
+    terms_closed(i);
     if (i == DEVMGR && devmgr) {
         jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(devmgr_q);
@@ -710,8 +537,8 @@ void services_closed(unsigned i)
         memset(devmgr_hda, 0, sizeof(devmgr_hda));
         memset(devmgr_net, 0, sizeof(devmgr_net));
         devmgr = devmgr_q = devmgr_esp = HANDLE_INVALID;
-        publish(SVC_DEVMGR, HANDLE_INVALID, false);
-        publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);
+        services_publish(SVC_DEVMGR, HANDLE_INVALID, false);
+        services_publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);
         mounts_unwatch();       /* its fat services went with its job */
         net_devmgr_gone();
         tell_mounts();
@@ -720,11 +547,7 @@ void services_closed(unsigned i)
     if (i == LOGD && logd_ctl) {
         jam_handle_close(logd_ctl);
         logd_ctl = HANDLE_INVALID;
-        publish(SVC_LOGD, HANDLE_INVALID, false);
-    }
-    if (i == SHELL && to_shell) {
-        jam_handle_close(to_shell);
-        to_shell = HANDLE_INVALID;
+        services_publish(SVC_LOGD, HANDLE_INVALID, false);
     }
 }
 
@@ -733,10 +556,10 @@ void services_given_up(unsigned i)
     net_service_given_up(i);   /* the DHCP client's and the resolver's */
     if (i == NETSTACK) {
         net_given_up();
-        publish(SVC_NET, HANDLE_INVALID, false);   /* nobody new gets them */
-        publish(SVC_NET_LISTEN, HANDLE_INVALID, false);
-        publish(SVC_NET_LISTEN_LOW, HANDLE_INVALID, false);
-        publish(SVC_NET_SYS, HANDLE_INVALID, false);
+        services_publish(SVC_NET, HANDLE_INVALID, false);   /* nobody new gets them */
+        services_publish(SVC_NET_LISTEN, HANDLE_INVALID, false);
+        services_publish(SVC_NET_LISTEN_LOW, HANDLE_INVALID, false);
+        services_publish(SVC_NET_SYS, HANDLE_INVALID, false);
         tell_mounts();
     }
     for (unsigned k = 0; i == MIXER && k < 2; k++) {
@@ -751,13 +574,13 @@ void services_given_up(unsigned i)
     if (i == SERVE && serve_srv) {
         jam_handle_close(serve_srv);   /* the shell's `serve` fails now */
         serve_srv = HANDLE_INVALID;
-        publish(SVC_SERVE, HANDLE_INVALID, false);
+        services_publish(SVC_SERVE, HANDLE_INVALID, false);
         tell_mounts();
     }
     if (i == MIXER || i == MUSIC) {   /* and nobody new gets them */
-        publish(i == MIXER ? SVC_AUDIO : SVC_MUSIC, HANDLE_INVALID, false);
+        services_publish(i == MIXER ? SVC_AUDIO : SVC_MUSIC, HANDLE_INVALID, false);
         if (i == MIXER)
-            publish(SVC_AUDIOCTL, HANDLE_INVALID, false);
+            services_publish(SVC_AUDIOCTL, HANDLE_INVALID, false);
         tell_mounts();
     }
 }
@@ -767,20 +590,19 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     root = startup_handle(SR_RESOURCE);
     port = loop_port;
     nousb = no_usb;
-    first_arg = shell_arg;
-    quiet_console = nolog_console = splash;
+    terms_init(port, splash, shell_arg);
     make_audio_channels();
     net_init(port);
     if (jam_channel_create(&music_cli, &music_srv) != OK)
         music_cli = music_srv = HANDLE_INVALID;
-    publish(SVC_AUDIO, audio_cli[0], true);      /* each a channel per opener */
-    publish(SVC_AUDIOCTL, audio_cli[1], true);
-    publish(SVC_MUSIC, music_cli, true);   /* a channel per opener (svc.connect) */
+    services_publish(SVC_AUDIO, audio_cli[0], true);      /* each a channel per opener */
+    services_publish(SVC_AUDIOCTL, audio_cli[1], true);
+    services_publish(SVC_MUSIC, music_cli, true);   /* a channel per opener (svc.connect) */
     if (jam_channel_create(&serve_cli, &serve_srv) != OK)
         serve_cli = serve_srv = HANDLE_INVALID;
-    publish(SVC_SERVE, serve_cli, true);
-    publish(SVC_NET, net_svc_channel(), true);
-    publish(SVC_NET_LISTEN, net_listen_channel(), true);   /* the shell's to give */
-    publish(SVC_NET_LISTEN_LOW, net_listen_low_channel(), true);   /* ... to bin/serve */
-    publish(SVC_NET_SYS, net_sys_channel(), true);   /* the network's services' */
+    services_publish(SVC_SERVE, serve_cli, true);
+    services_publish(SVC_NET, net_svc_channel(), true);
+    services_publish(SVC_NET_LISTEN, net_listen_channel(), true);   /* the shell's to give */
+    services_publish(SVC_NET_LISTEN_LOW, net_listen_low_channel(), true);   /* ... to bin/serve */
+    services_publish(SVC_NET_SYS, net_sys_channel(), true);   /* the network's services' */
 }

@@ -183,6 +183,26 @@ void     writers_started(unsigned i, handle_t proc);
 handle_t writers_for_console(void);
 /* shell.c: every service that follows init's namespace gets it as it is now. */
 void     tell_mounts(void);
+/* services.c: a duplicate of the root resource with these rights only
+ * (HANDLE_INVALID if that fails). */
+handle_t services_root_with(rights_t rights);
+/* services.c: publish h (a duplicate is taken; h stays the caller's) as
+ * /svc/<name> in init's namespace, the one the shell and the other
+ * followers get, a channel per opener if connect; HANDLE_INVALID takes
+ * the name away. Followers hear of it with the next tell_mounts. */
+void     services_publish(const char *name, handle_t h, bool connect);
+
+/* ---- terms.c: the terminal: the console and the shell ------------------------------ */
+
+/* Set up once before the loop: the loop's port, whether the splash plays
+ * first (the first console starts quiet, every console with "nolog"),
+ * the first shell's argument. */
+void     terms_init(handle_t port, bool splash, const char *shell_arg);
+/* Start the console, the shell (services_start's, for CONSOLE and SHELL). */
+status_t terms_start_console(void);
+status_t terms_start_shell(void);
+/* Service i ended: the console's or the shell's ends that init kept go. */
+void     terms_closed(unsigned i);
 
 /* services.c: what shell mode's services share, set up once before the
  * loop: the loop's port, the safe mode word, whether the splash plays
