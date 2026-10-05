@@ -1080,10 +1080,11 @@ out for troubleshooting.
   bits), so drivers and their numbers are unchanged. `vmo_unpin` unmaps,
   invalidates and waits, and only then lets the pages go. A domain's
   table pages are charged to the job that made the cap (devmgr's: it
-  makes its drivers' caps) and capped at 512 per domain: a leaf table
-  maps 2 MiB, so that is up to 1 GiB of pins dense within 2 MiB blocks,
-  but only ~500 pages spread one per block; past either limit the pin
-  fails `ERR_NO_RESOURCES`.
+  makes its drivers' caps) and capped at 2048 per domain (8 MiB): a leaf
+  table maps 2 MiB, so that is up to 4 GiB of pins dense within 2 MiB
+  blocks, but only about 2040 pages spread one per block (usb-bus pins
+  about 450 on the PC); past either limit the pin fails
+  `ERR_NO_RESOURCES`.
 - **Safe rebind with the IOMMU.** Making a cap turns the function's Bus
   Master Enable off and points its context entry at the new, empty domain
   in one step: whatever the previous driver left queued reaches nothing.

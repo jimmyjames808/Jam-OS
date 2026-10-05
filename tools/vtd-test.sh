@@ -132,6 +132,7 @@ domain_ok() {
         "ktest: vtd_domain_translation_on        ok" \
         "ktest: vtd_domain_blocked_dma_faults    ok" \
         "ktest: vtd_domain_own_domain            ok" \
+        "ktest: vtd_domain_driver_cap_spread_pins ok" \
         "ktest: vtd_domain_mute_after_faults     ok" \
         "ktest: vtd_domain_new_driver_fresh_count ok" \
         "ktest: vtd_domain_handover_while_on     ok"

@@ -379,6 +379,63 @@ KTEST(vtd_domain_own_domain)
     KT_ASSERT(b_kept && b_fault);
 }
 
+/* Table pages a domain of `levels` levels holds for n pages mapped one per
+ * 2 MiB block from 0 up: a leaf table each, a directory per 512 of them,
+ * one per 512 directories with 4 levels, and the root. */
+static uint32_t spread_tables(unsigned levels, uint32_t n)
+{
+    uint32_t dirs = (n + 511) / 512;
+    return 1 + (levels == 4 ? (dirs + 511) / 512 : 0) + dirs + n;
+}
+
+#define SPREAD_FIRST 1024u   /* spread pins mapped first: twice the old cap's worth */
+
+/* A driver's domain takes pins spread one per 2 MiB block (a leaf table
+ * each: what a fragmented machine gives usb-bus's pool) up to its cap of
+ * VTD_DRIVER_MAX_TABLES table pages, well past 512, and refuses the next
+ * one with nothing changed. The domain is never attached: the addresses
+ * are only written into its tables, no device uses them. Review finding
+ * 6, design question C. */
+KTEST(vtd_domain_driver_cap_spread_pins)
+{
+    NEED_LIVE(ctl);
+    struct pci_dev *d = kt_edu();
+    if (!d || !vtd_fn_of(d)) {
+        kprintf("ktest %s: no translated edu, skipped\n", ktest_current);
+        return;
+    }
+    struct iommu_domain *dom;
+    KT_EQ(iommu_domain_create(d, NULL, &dom), OK);
+    struct vtd_pt *pt = &dom->dom->pt;
+    uint32_t n = 0;
+    while (spread_tables(pt->geom.levels, n + 1) <= VTD_DRIVER_MAX_TABLES)
+        n++;
+    if (n < SPREAD_FIRST)
+        n = SPREAD_FIRST;   /* a cap too small: the first map fails, as it should */
+    uint64_t *pages = kmalloc((n + 1) * sizeof(*pages));
+    KT_ASSERT(pages);
+    for (uint32_t i = 0; i <= n; i++)
+        pages[i] = (uint64_t)i * 0x200000 + PAGE_SIZE;   /* page 1 of block i */
+    /* Twice the old cap's worth first, then the rest up to the cap. */
+    status_t first = iommu_map(dom, pages, SPREAD_FIRST);
+    status_t all = first == OK ? iommu_map(dom, &pages[SPREAD_FIRST], n - SPREAD_FIRST) : first;
+    uint32_t tables = pt->tables;
+    status_t more = all == OK ? iommu_map(dom, &pages[n], 1) : all;
+    uint32_t tables_after = pt->tables;
+    uint64_t mapped = pt->mapped;
+    status_t unmapped = all == OK ? iommu_unmap(dom, pages, n) : OK;
+    status_t gone = iommu_domain_destroy(dom);
+    kfree(pages);
+    KT_EQ(first, OK);
+    KT_EQ(all, OK);
+    KT_EQ(tables, VTD_DRIVER_MAX_TABLES);
+    KT_EQ(more, ERR_NO_RESOURCES);
+    KT_EQ(tables_after, VTD_DRIVER_MAX_TABLES);
+    KT_EQ(mapped, n);
+    KT_EQ(unmapped, OK);
+    KT_EQ(gone, OK);
+}
+
 KTEST(vtd_domain_mute_after_faults)
 {
     NEED_LIVE(ctl);

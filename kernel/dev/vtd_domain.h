@@ -86,12 +86,12 @@ struct vtd_dom {
     uint32_t               users;  /* context entries naming it; "vtd context" */
 };
 
-/* The cap on one driver's domain (iommu_domain_create): 512 table pages
- * (docs/M11-PLAN.md). A leaf table maps 2 MiB of IOVA = physical
- * addresses, so that is up to 1 GiB of pins dense within 2 MiB blocks, but
- * only ~500 pages spread one per block (review finding 6, design question
- * C). */
-#define VTD_DRIVER_MAX_TABLES 512u
+/* The cap on one driver's domain (iommu_domain_create): 2048 table pages,
+ * 8 MiB at most. A leaf table maps 2 MiB of IOVA = physical addresses, so
+ * pins dense within 2 MiB blocks reach 4 GiB, but pins spread one per
+ * block need a leaf table each: about 2040 pages that way. usb-bus pins
+ * about 450 pages on the PC, which a fragmented machine may well spread. */
+#define VTD_DRIVER_MAX_TABLES 2048u
 
 /* ---- a unit's tables ---------------------------------------------------------------------- */
 

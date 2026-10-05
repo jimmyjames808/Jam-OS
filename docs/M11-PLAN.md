@@ -236,8 +236,9 @@ APIC, the I/O APICs or, from stage 1, the VT-d registers).
 - Page-table pages are kernel memory a driver makes the kernel hold by
   pinning, so they are **charged** to the cap's job (pages) and capped
   per domain (enough for every driver's pins today with room to spare,
-  planned 512 table pages = 1 GiB of scattered pins); over the cap the
-  pin fails `ERR_NO_RESOURCES`.
+  planned 512 table pages = 1 GiB of scattered pins; as built after the
+  review, 2048 per domain, since pins spread one per 2 MiB need a table
+  page each); over the cap the pin fails `ERR_NO_RESOURCES`.
 
 ### Invalidation: the queue, and what it costs
 
@@ -637,7 +638,7 @@ by default until the PC passes (question 6).
   close hands its domain to the "dma quarantine" thread, which may wait;
   `SYSINFO_IOMMU`). Deviations: (a) **the table pages are charged to
   devmgr's job**, the job that makes a driver's cap (`dma_cap_create`),
-  not the driver's; still bounded (512 pages per domain), and M12's
+  not the driver's; still bounded (2048 pages per domain), and M12's
   review may move the charge to the driver; (b) a function's DMA fault
   count, which decides the mute, was **not reset per attach**: a new
   driver after one that had faulted 8 times was muted at its first fault.
@@ -678,7 +679,8 @@ by default until the PC passes (question 6).
   time. Two Lows fixed (vectors 16-31 refused in an entry; a redundant test
   reset dropped); the "512 table pages = 1 GiB of scattered pins" claim
   corrected (fully scattered pins hit it at ~500 pages); design questions
-  A-E for the owner there.
+  A-E for the owner there, answered and built or recorded in the same file
+  (the pass-through domain removed, the cap raised to 2048 table pages).
 
 **Left for the PC** ([What only the PC can show](#what-only-the-pc-can-show)),
 then the default.
