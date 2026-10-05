@@ -209,6 +209,8 @@ static bool named(unsigned i, const char *name)
     unsigned t;
     if (terms_named(name, &t))
         return t == i;
+    if (term_of(i) > 0)
+        return false;   /* "console" is the first terminal's alone */
     const char *last = svcs[i].path;
     for (const char *p = svcs[i].path; *p; p++)
         if (*p == '/')

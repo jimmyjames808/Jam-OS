@@ -159,19 +159,23 @@ static void open_window(void)
         return;
     }
     win = NULL;
-    no_windows = st == ERR_NOT_SUPPORTED;
+    no_windows = true;   /* tried again with the next connection, not at every event */
     printf("console: window mode: no window (%s)%s\n", status_str(st),
-           no_windows ? ": the compositor offers no xdg_wm_base; the text goes to the serial "
-                        "port only until it does" : "");
+           st == ERR_NOT_SUPPORTED ? ": the compositor offers no xdg_wm_base; the text goes to "
+                                     "the serial port only until it does" : "");
 }
 
-/* The compositor's size for the window (resized, tiled, maximised). */
+/* The compositor's size for the window (resized, tiled, maximised), or
+ * only its states (the focus): a new size re-grids (and has new buffers,
+ * which winpaint.c draws in full); the first configure after a reconnect
+ * draws everything again. */
 static void configured(const struct jwl_event *ev)
 {
     uint32_t c, r;
     grid_of_size(ev->configure.width, ev->configure.height, &c, &r);
     (void)regrid(c, r);
-    paint_forget();   /* drawn in full: a new size has new buffers */
+    if (ev->configure.rebuilt)
+        paint_forget();
     dirty = true;
 }
 
