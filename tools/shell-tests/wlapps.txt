@@ -1,0 +1,40 @@
+# libfun's apps as windows (user/tests/wlapps, tools/wlapps-test.sh): from
+# the shell, `run wlapps` starts a headless compositor of its own and two
+# apps on it, each with only /svc/wayland in its namespace and no console
+# (so an app that got no window can't borrow the screen instead), checks
+# that they run and that the composition has their pixels, prints its
+# verdict, and then shows the composition on the borrowed screen while
+# the screenshot is taken. Without a window manager in the compositor
+# (no xdg_wm_base) each verdict is SKIP and nothing is shown.
+wait 120 Jam OS shell
+wait jam>
+# two games side by side in the window manager's tiles
+send run wlapps tile win=600x400 life tetris
+wait 60 wlapps: verdict:
+sleep 1.5
+shot wlapps-life-tetris
+wait 30 wlapps: done
+wait jam>
+# the mouse's apps floating (each new window centred: the second on top)
+send run wlapps win=560x360 mines snake
+wait 60 wlapps: verdict:
+sleep 1.5
+shot wlapps-mines-snake
+wait 30 wlapps: done
+wait jam>
+# a resizable app (jamjar takes its tile's size) beside a fixed one
+send run wlapps tile win=480x320 jamjar fractal
+wait 90 wlapps: verdict:
+sleep 1.5
+shot wlapps-jamjar-fractal
+wait 30 wlapps: done
+wait jam>
+# full screen: the demo asks for it
+send run wlapps win=400x300 demo
+wait 60 wlapps: verdict:
+sleep 1.5
+shot wlapps-demo
+wait 30 wlapps: done
+wait jam>
+send reboot -f
+wait reboot: resetting
