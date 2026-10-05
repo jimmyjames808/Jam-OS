@@ -506,6 +506,7 @@ bool t_dnsd_shares(void);
  * window against a fake server (<updfetch.h>); netlog.c: netlog's
  * datagrams and sender (<netlog.h>). */
 bool t_update_manifest(void);
+bool t_update_manifest_menu(void);
 bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
 bool t_update_build_net(void);
@@ -516,6 +517,12 @@ bool t_updfetch_clean(void);
 bool t_updfetch_lossy(void);
 bool t_updfetch_snapshot_gone(void);
 bool t_updfetch_failures(void);
+bool t_updfetch_menu(void);
+/* bootmenu.c: the boot menu's check (<bootmenu.h>). */
+bool t_bootmenu_good(void);
+bool t_bootmenu_refusals(void);
+bool t_bootmenu_files(void);
+bool t_bootmenu_fuzz(void);
 bool t_netlog_golden(void);
 bool t_netlog_hostile(void);
 bool t_netlog_whole_log(void);

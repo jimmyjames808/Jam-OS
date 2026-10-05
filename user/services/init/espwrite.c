@@ -36,7 +36,11 @@
  *   PREV    3. prev-jamos.elf and prev-bootfs.img removed, synced: the
  *              default entry still boots the new build;
  *           4. the *.old renamed to prev-jamos.elf and prev-bootfs.img,
- *              synced: the previous-build entry boots the old build.
+ *              synced: the previous-build entry boots the old build;
+ *   MENU    the boot menu, if the build came with one, once the build is
+ *           written (or was there already): espmenu.c, whose header has
+ *           its own order; ROOM settles what an earlier one left first.
+ *           It never fails the build's write.
  * A FAT rename can't replace a file, so a build can't move from one pair
  * of names to the other without a moment when neither pair holds it; the
  * order puts that moment where the other pair holds a whole build (1, 2:
@@ -436,6 +440,8 @@ static status_t room(struct writer *w)
     status_t st = esp_inject(w, UPDATE_WRITE_ROOM);
     if (st == OK)
         st = settle(w);
+    if (st == OK)
+        (void)esp_menu_settle(w);   /* best effort: a menu step that can't settle fails there */
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
         st = esp_unlink(w, cur[f], NEW);
         if (st == OK)
@@ -606,6 +612,7 @@ static void steps(struct writer *w)
     }
     if (j->st == OK) {
         j->stick = UPDATE_STICK_NEW;
+        esp_menu_write(w);   /* the build is in its place: now the menu (espmenu.c) */
         return;
     }
     if (w->stopped) {   /* a test's power cut: nothing more is written */
@@ -664,6 +671,9 @@ void esp_write_build(struct esp_write *j)
     j->step = UPDATE_WRITE_OPEN;
     j->stick = UPDATE_STICK_OLD;
     j->noted = false;
+    j->menu = j->menu_vmo ? UPDATE_MENU_SKIPPED : UPDATE_MENU_NONE;   /* until the menu's turn */
+    j->menu_status = OK;
+    j->menu_why[0] = '\0';
     esp_say("asking devmgr for the ESP read-write ...");
     j->st = j->esp ? esp_mode(j->esp, true, &w.fs) : ERR_NOT_FOUND;
     esp_say("the ESP is %s (%s) in %lu ms", j->st == OK ? "writable" : "not writable",

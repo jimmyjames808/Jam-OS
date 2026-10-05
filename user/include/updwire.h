@@ -50,9 +50,11 @@
 #define UPDWIRE_REP_MAX   (UPDWIRE_REP_HDR + UPDWIRE_CHUNK_MAX)
 
 enum { UPDWIRE_REQUEST = 1, UPDWIRE_REPLY = 2 };
-/* The files: the manifest, then <update.h>'s UPDATE_KERNEL + 1 and
- * UPDATE_BOOTFS + 1. */
-enum { UPDWIRE_MANIFEST, UPDWIRE_KERNEL, UPDWIRE_BOOTFS, UPDWIRE_FILES };
+/* The files: the manifest, then <update.h>'s UPDATE_KERNEL + 1,
+ * UPDATE_BOOTFS + 1 and UPDATE_MENU + 1 (the boot menu: asked for only
+ * when the manifest has a `menu` line, so a server older than it is never
+ * asked). */
+enum { UPDWIRE_MANIFEST, UPDWIRE_KERNEL, UPDWIRE_BOOTFS, UPDWIRE_MENU, UPDWIRE_FILES };
 
 enum updwire_status {
     UPDWIRE_OK,        /* the bytes follow */

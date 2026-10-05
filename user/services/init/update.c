@@ -24,6 +24,10 @@
  * holds the ESP writable, through devmgr's ESP channel that only init
  * has), and the answer comes when that is done. A failed stick write
  * leaves the build loaded and the stick bootable (UPDATE_NOT_WRITTEN).
+ * A manifest with a `menu` line comes with a third VMO, the boot menu,
+ * copied and hashed with the other two (one that isn't the signed one
+ * refuses the offer); only a stick write uses it, after the build
+ * (espmenu.c: checked again there, then written, or not).
  *
  * The network's default is kept: a build whose manifest says another
  * `net` than this build's build.txt (VLAN 21 against untagged, say) is
@@ -60,9 +64,12 @@
  * read `done` (ACQUIRE). */
 struct check {
     struct update_offer   *o;                    /* the message (heap) */
-    handle_t               hs[UPDATE_FILES];     /* the sender's VMOs */
+    handle_t               hs[UPDATE_PARTS];     /* the sender's VMOs, nh of them */
+    uint32_t               nh;
     struct update_manifest m;                    /* parsed by the loop */
-    handle_t               mine[UPDATE_FILES];   /* init's copies (0: not made) */
+    uint32_t               parts;                /* the files it names: UPDATE_FILES, and the
+                                                  * menu if it has one */
+    handle_t               mine[UPDATE_PARTS];   /* init's copies (0: not made) */
     struct update_answer   a;
     uint64_t               t0;                   /* uptime ns: the offer read */
     uint64_t               hash_ms;              /* the worker's copy and hash */
@@ -168,11 +175,13 @@ static void refuse(struct update_answer *a, uint32_t why, uint32_t file, status_
     a->status = st;
 }
 
-/* The worker's job: both files copied into c->mine and their SHA-256s
- * compared with the manifest's (a refusal goes in c->a). */
+/* The worker's job: every file (the menu too, if the manifest names one)
+ * copied into c->mine and its SHA-256 compared with the manifest's (a
+ * refusal goes in c->a: a menu that isn't the signed one refuses the
+ * whole offer, as a kernel that isn't does). */
 static void hash_files(struct check *c)
 {
-    for (uint32_t f = 0; f < UPDATE_FILES; f++) {
+    for (uint32_t f = 0; f < c->parts; f++) {
         uint8_t digest[SHA256_BYTES];
         status_t st = copy_and_hash(c->hs[f], c->m.file[f].size, &c->mine[f], digest);
         if (st != OK) {
@@ -257,8 +266,8 @@ static bool check_manifest(struct check *c, const uint8_t key[UPDATE_KEY_BYTES])
 }
 
 /* CHECK_ONLY, or WRITE (with a test's FAIL at a step that has one, or its
- * STOP after a change of names of the swap), or neither, and FORCE with any
- * of them; nothing else. */
+ * STOP after a change of the swaps), or neither, and FORCE with any of
+ * them; nothing else. */
 static bool flags_ok(uint32_t flags)
 {
     uint32_t fail = (flags & UPDATE_OFFER_FAIL_MASK) >> UPDATE_OFFER_FAIL_SHIFT;
@@ -269,9 +278,31 @@ static bool flags_ok(uint32_t flags)
         return false;
     if (write && (rest & UPDATE_OFFER_CHECK_ONLY))
         return false;
-    if (stop && (!write || fail || stop > UPDATE_SWAP_OPS))
+    if (stop && (!write || fail || stop > UPDATE_STOP_MAX))
         return false;
-    return !fail || (write && fail >= UPDATE_WRITE_ROOM && fail <= UPDATE_WRITE_SWITCH);
+    bool step = (fail >= UPDATE_WRITE_ROOM && fail <= UPDATE_WRITE_SWITCH) ||
+                fail == UPDATE_WRITE_MENU;
+    return !fail || (write && step);
+}
+
+/* The files the offer carries are the ones its manifest names: a VMO each
+ * (the menu's only with a `menu` line), each length the manifest's (none
+ * for a menu it doesn't name). False (c->a filled in) if not. */
+static bool files_match(struct check *c, uint32_t nh)
+{
+    const struct update_offer *o = c->o;
+    c->parts = UPDATE_FILES + (c->m.has_menu ? 1 : 0);
+    if (nh != c->parts || (!c->m.has_menu && o->bytes[UPDATE_MENU])) {
+        refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
+        return false;
+    }
+    for (uint32_t f = 0; f < c->parts; f++) {
+        if (o->bytes[f] != c->m.file[f].size) {
+            refuse(&c->a, UPDATE_BAD_SIZE, f, ERR_INVALID_ARGS);
+            return false;
+        }
+    }
+    return true;
 }
 
 /* The quick checks of an offer of n bytes with nh handles, in the loop:
@@ -280,8 +311,9 @@ static bool flags_ok(uint32_t flags)
 static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
 {
     const struct update_offer *o = c->o;
-    if (n != sizeof(*o) || nh != UPDATE_FILES || o->txid || o->magic != UPDATE_OFFER_MAGIC ||
-        !flags_ok(o->flags) || o->manifest_len > UPDATE_MANIFEST_MAX) {
+    if (n != sizeof(*o) || nh < UPDATE_FILES || nh > UPDATE_PARTS || o->txid ||
+        o->magic != UPDATE_OFFER_MAGIC || !flags_ok(o->flags) ||
+        o->manifest_len > UPDATE_MANIFEST_MAX) {
         refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
         return false;
     }
@@ -302,13 +334,7 @@ static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
         refuse(&c->a, UPDATE_NET_CHANGE, 0, ERR_ACCESS_DENIED);
         return false;
     }
-    for (uint32_t f = 0; f < UPDATE_FILES; f++) {
-        if (o->bytes[f] != c->m.file[f].size) {
-            refuse(&c->a, UPDATE_BAD_SIZE, f, ERR_INVALID_ARGS);
-            return false;
-        }
-    }
-    return true;
+    return files_match(c, nh);
 }
 
 /* An accepted build whose network default isn't this build's (forced). */
@@ -319,23 +345,40 @@ static void say_forced(const struct update_answer *a)
                a->net, a->net_running[0] ? a->net_running : "not known");
 }
 
+/* What became of the boot menu, for a stick write that carried one. */
+static void say_menu(const struct update_answer *a)
+{
+    if (a->menu == UPDATE_MENU_NONE)
+        return;
+    if (a->menu == UPDATE_MENU_REFUSED)
+        printf("init: update: %s (%s)\n", update_menu_str(a->menu), a->menu_why);
+    else if (a->menu == UPDATE_MENU_NOT_WRITTEN)
+        printf("init: update: %s (%s)\n", update_menu_str(a->menu), status_str(a->menu_status));
+    else
+        printf("init: update: %s\n", update_menu_str(a->menu));
+}
+
 static void say(const struct check *c)
 {
     const struct update_answer *a = &c->a;
     const struct update_offer *o = c->o;
     if (a->why == UPDATE_ACCEPTED) {
         bool only = o->flags & UPDATE_OFFER_CHECK_ONLY, wrote = o->flags & UPDATE_OFFER_WRITE;
+        char menu[32] = "";
+        if (c->m.has_menu)
+            snprintf(menu, sizeof(menu), " + menu %lu", (unsigned long)o->bytes[UPDATE_MENU]);
         printf("init: update: %s (%s) checked in %u ms (signature %lu us; kernel %lu + bootfs "
-               "%lu bytes hashed in %lu ms off the loop) %s\n",
+               "%lu%s bytes hashed in %lu ms off the loop) %s\n",
                a->version, a->git, a->check_ms, (unsigned long)c->verify_us,
                (unsigned long)o->bytes[UPDATE_KERNEL], (unsigned long)o->bytes[UPDATE_BOOTFS],
-               (unsigned long)c->hash_ms,
+               menu, (unsigned long)c->hash_ms,
                only    ? "and not loaded (check only)"
                : wrote ? "and stored, and written to the stick"
                        : "and stored: `reboot` starts it");
         if (wrote)
             printf("init: update: the stick write took %u ms: `reboot` and a power-on start "
                    "the new build\n", a->write_ms);
+        say_menu(a);
         say_forced(a);
         return;
     }
@@ -344,6 +387,7 @@ static void say(const struct check *c)
                "`reboot` starts the new build until the power goes off\n", a->version, a->git,
                update_write_step_str(a->write_step), status_str(a->status),
                update_stick_str(a->stick));
+        say_menu(a);
         say_forced(a);
         return;
     }
@@ -367,14 +411,14 @@ static void say(const struct check *c)
 }
 
 /* The answer said and written, everything let go: the end of an offer. */
-static void answer(struct check *c, uint32_t nh)
+static void answer(struct check *c)
 {
     uint64_t ms = (now() - c->t0) / NS_PER_MS;
     c->a.check_ms = ms > UINT32_MAX ? UINT32_MAX : (uint32_t)ms;
     say(c);
     (void)jam_channel_write(offer, &c->a, sizeof(c->a), NULL, 0);   /* a gone sender reads nothing */
-    for (uint32_t f = 0; f < UPDATE_FILES; f++) {
-        if (f < nh && c->hs[f])
+    for (uint32_t f = 0; f < UPDATE_PARTS; f++) {
+        if (f < c->nh && c->hs[f])
             jam_handle_close(c->hs[f]);
         if (c->mine[f])
             jam_handle_close(c->mine[f]);
@@ -399,6 +443,11 @@ static bool start_write(struct check *c)
         w->size[f] = c->m.file[f].size;
         w->sha256[f] = c->m.file[f].sha256;
     }
+    if (c->m.has_menu) {   /* hashed with the rest: the signed one */
+        w->menu_vmo = c->mine[UPDATE_MENU];
+        w->menu_size = c->m.file[UPDATE_MENU].size;
+        w->menu_sha256 = c->m.file[UPDATE_MENU].sha256;
+    }
     handle_t esp = shell_devmgr_esp();
     status_t st = worker_stuck ? ERR_BAD_STATE : esp ? OK : ERR_NOT_FOUND;
     if (st == OK)
@@ -420,6 +469,7 @@ static bool start_write(struct check *c)
     refuse(&c->a, UPDATE_NOT_WRITTEN, 0, st);
     c->a.write_step = UPDATE_WRITE_OPEN;
     c->a.stick = UPDATE_STICK_OLD;
+    c->a.menu = c->m.has_menu ? UPDATE_MENU_SKIPPED : UPDATE_MENU_NONE;
     return false;
 }
 
@@ -434,15 +484,18 @@ static void write_done(struct check *c)
     c->a.write_step = w->step;
     c->a.stick = w->stick;
     c->a.write_ms = w->write_ms;
+    c->a.menu = w->menu;
+    c->a.menu_status = w->menu_status;
+    memcpy(c->a.menu_why, w->menu_why, sizeof(c->a.menu_why));
     if (w->st != OK)
         refuse(&c->a, UPDATE_NOT_WRITTEN, 0, w->st);
-    answer(c, UPDATE_FILES);
+    answer(c);
 }
 
 /* The end of a check, in the loop: the copies loaded unless refused or
  * check-only (and then, for UPDATE_OFFER_WRITE, the stick write started:
  * answered when it is done), else the answer now. */
-static void finish(struct check *c, uint32_t nh)
+static void finish(struct check *c)
 {
     uint32_t flags = c->o->flags;
     if (c->a.why == UPDATE_ACCEPTED && !(flags & UPDATE_OFFER_CHECK_ONLY)) {
@@ -455,7 +508,7 @@ static void finish(struct check *c, uint32_t nh)
         if (st == OK && (flags & UPDATE_OFFER_WRITE) && start_write(c))
             return;
     }
-    answer(c, nh);
+    answer(c);
 }
 
 /* The worker said it is done: wait for its thread to end (its stack is
@@ -476,17 +529,17 @@ static void worker_done(void)
     if (c->writing)
         write_done(c);
     else
-        finish(c, UPDATE_FILES);
+        finish(c);
 }
 
 /* The offer message into o (a whole one, or what there was of it). */
-static status_t read_offer(struct update_offer *o, uint32_t *n, handle_t hs[UPDATE_FILES + 1],
+static status_t read_offer(struct update_offer *o, uint32_t *n, handle_t hs[UPDATE_PARTS + 1],
                            uint32_t *nh)
 {
     struct channel_read_args r = {
         .h = offer, .bytes_cap = sizeof(*o), .bytes = (uint64_t)(uintptr_t)o,
         .actual_bytes = (uint64_t)(uintptr_t)n, .handles = (uint64_t)(uintptr_t)hs,
-        .handles_cap = UPDATE_FILES + 1, .actual_handles = (uint64_t)(uintptr_t)nh,
+        .handles_cap = UPDATE_PARTS + 1, .actual_handles = (uint64_t)(uintptr_t)nh,
     };
     status_t st = jam_channel_read(&r);
     if (st == ERR_BUFFER_TOO_SMALL)
@@ -500,12 +553,12 @@ static void start_check(struct check *c, const handle_t *hs, uint32_t n, uint32_
 {
     c->t0 = now();
     c->a.magic = UPDATE_ANSWER_MAGIC;
-    for (uint32_t i = UPDATE_FILES; i < nh; i++)
+    for (uint32_t i = UPDATE_PARTS; i < nh; i++)
         jam_handle_close(hs[i]);   /* one too many: refused below */
-    for (uint32_t i = 0; i < UPDATE_FILES && i < nh; i++)
-        c->hs[i] = hs[i];
+    for (uint32_t i = 0; i < UPDATE_PARTS && i < nh; i++)
+        c->hs[c->nh++] = hs[i];
     if (!check_offer(c, n, nh)) {
-        finish(c, nh);
+        finish(c);
         return;
     }
     busy = c;
@@ -514,7 +567,7 @@ static void start_check(struct check *c, const handle_t *hs, uint32_t n, uint32_
         return;
     busy = NULL;
     worker_main(c);   /* its packet comes, and finds nothing busy: ignored */
-    finish(c, UPDATE_FILES);
+    finish(c);
 }
 
 void update_event(void)
@@ -528,7 +581,7 @@ void update_event(void)
         return;
     struct check *c = calloc(1, sizeof(*c));
     struct update_offer *o = calloc(1, sizeof(*o));
-    handle_t hs[UPDATE_FILES + 1];
+    handle_t hs[UPDATE_PARTS + 1];
     uint32_t n = 0, nh = 0;
     status_t st = c && o ? read_offer(o, &n, hs, &nh) : ERR_NO_MEMORY;
     if (st == OK) {

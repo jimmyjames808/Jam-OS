@@ -69,3 +69,15 @@ status_t      esp_from_vmo(struct writer *w, void *ctx, uint64_t off, uint8_t *b
 status_t      esp_size_of(struct writer *w, const char *path, const char *suffix,
                           uint64_t *size);
 bool          esp_exists(struct writer *w, const char *path, const char *suffix);
+
+/* ---- espmenu.c: the boot menu --------------------------------------------------- */
+
+/* What an earlier menu write that stopped part way left, settled (the
+ * stick's menu back in its place if it isn't, the temporary files
+ * removed); part of the build's ROOM step, whether or not this write
+ * carries a menu. */
+status_t esp_menu_settle(struct writer *w);
+/* The job's boot menu (w->job->menu_vmo; none: UPDATE_MENU_NONE) checked
+ * and written, once the build is: the job's menu, menu_status and
+ * menu_why say what became of it. Never changes the job's st. */
+void     esp_menu_write(struct writer *w);

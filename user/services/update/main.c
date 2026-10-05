@@ -2,7 +2,8 @@
  * build from the Mac"). It asks tools/update-server.py on the Mac for the
  * build it serves, over a UDP socket of its own to the server's port
  * UPDWIRE_PORT, with the fetcher's window (<updfetch.h>); stores the
- * kernel and the boot image in two VMOs; and offers them to init, which
+ * kernel and the boot image in two VMOs (and the boot menu in a third,
+ * when the manifest names one); and offers them to init, which
  * checks the manifest's signature, then the files against it, and loads
  * them (<update.h>). It doesn't check the signature itself: only init's
  * check counts.
@@ -45,8 +46,10 @@ _Static_assert(UPDFETCH_WINDOW * (SOCKRING_DGRAM_HDR + NET_DGRAM_MAX) <= UPDATE_
 /* The fetch's side of the io (<updfetch.h>). */
 struct fetch {
     struct net_sock sock;                         /* connected to the server */
-    handle_t        vmo[UPDATE_FILES];            /* the files as they come */
-    uint64_t        size[UPDATE_FILES];           /* their sizes, the manifest's */
+    handle_t        vmo[UPDATE_PARTS];            /* the files as they come (the menu's: 0
+                                                   * if the manifest names none) */
+    uint64_t        size[UPDATE_PARTS];           /* their sizes, the manifest's */
+    unsigned        parts;                        /* how many: UPDATE_FILES, + 1 with a menu */
     uint8_t         manifest[UPDATE_MANIFEST_MAX];
     uint32_t        manifest_len;
 };
@@ -73,12 +76,14 @@ static status_t io_begin(void *ctx, const struct update_manifest *m, const uint8
                          size_t len)
 {
     struct fetch *f = ctx;
-    for (unsigned i = 0; i < UPDATE_FILES; i++) {
+    for (unsigned i = 0; i < UPDATE_PARTS; i++) {
         if (f->vmo[i])
             jam_handle_close(f->vmo[i]);   /* a restart: the snapshot was gone */
         f->vmo[i] = HANDLE_INVALID;
+        f->size[i] = 0;
     }
-    for (unsigned i = 0; i < UPDATE_FILES; i++) {
+    f->parts = UPDATE_FILES + (m->has_menu ? 1u : 0u);
+    for (unsigned i = 0; i < f->parts; i++) {
         uint64_t pages = (m->file[i].size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
         status_t st = jam_vmo_create(pages, 0, HANDLE_INVALID, &f->vmo[i]);
         if (st != OK)
@@ -87,8 +92,13 @@ static status_t io_begin(void *ctx, const struct update_manifest *m, const uint8
     }
     memcpy(f->manifest, text, len);   /* len <= a datagram's, <= UPDATE_MANIFEST_MAX: parsed */
     f->manifest_len = (uint32_t)len;
-    printf("update: the server has %s (git %s): kernel %lu.%u MB, boot image %lu.%u MB\n",
-           m->version, m->git, MB(m->file[UPDATE_KERNEL].size), MB(m->file[UPDATE_BOOTFS].size));
+    char menu[40] = ", no boot menu";
+    if (m->has_menu)
+        snprintf(menu, sizeof(menu), ", boot menu %lu bytes",
+                 (unsigned long)m->file[UPDATE_MENU].size);
+    printf("update: the server has %s (git %s): kernel %lu.%u MB, boot image %lu.%u MB%s\n",
+           m->version, m->git, MB(m->file[UPDATE_KERNEL].size), MB(m->file[UPDATE_BOOTFS].size),
+           menu);
     return OK;
 }
 
@@ -185,17 +195,17 @@ static status_t offer(handle_t ch, uint32_t flags, struct update_answer *a)
     o->flags = flags;
     o->manifest_len = fetch.manifest_len;
     memcpy(o->manifest, fetch.manifest, fetch.manifest_len);
-    handle_t hs[UPDATE_FILES];
+    handle_t hs[UPDATE_PARTS];
     unsigned nh = 0;
     status_t st = OK;
-    for (; st == OK && nh < UPDATE_FILES; nh++) {
+    for (; st == OK && nh < fetch.parts; nh++) {
         o->bytes[nh] = fetch.size[nh];
         st = jam_handle_duplicate(fetch.vmo[nh], RIGHT_READ | RIGHT_TRANSFER, &hs[nh]);
         if (st != OK)
             break;
     }
     if (st == OK)
-        st = jam_channel_write(ch, o, sizeof(*o), hs, UPDATE_FILES);   /* moves the handles */
+        st = jam_channel_write(ch, o, sizeof(*o), hs, fetch.parts);   /* moves the handles */
     for (unsigned i = 0; st != OK && i < nh; i++)
         jam_handle_close(hs[i]);
     free(o);
@@ -216,9 +226,24 @@ static status_t offer(handle_t ch, uint32_t flags, struct update_answer *a)
     return st;
 }
 
-/* init's answer to an offer with flags, in words; the exit status. */
-static int say_answer(const struct update_answer *a, uint32_t flags, const char *from_version,
-                      const char *from_git)
+/* What became of the boot menu (a stick write that carried one). */
+static void say_menu(const struct update_answer *a)
+{
+    if (a->menu == UPDATE_MENU_NONE)
+        return;
+    if (a->menu == UPDATE_MENU_REFUSED)
+        printf("update: %s:\n  %.*s\n", update_menu_str(a->menu), (int)UPDATE_MENU_WHY_MAX,
+               a->menu_why);
+    else if (a->menu == UPDATE_MENU_NOT_WRITTEN)
+        printf("update: %s (%s)\n", update_menu_str(a->menu), status_str(a->menu_status));
+    else
+        printf("update: %s\n", update_menu_str(a->menu));
+}
+
+/* init's answer to an offer with flags, in words (but the menu's); the
+ * exit status. */
+static int say_verdict(const struct update_answer *a, uint32_t flags, const char *from_version,
+                       const char *from_git)
 {
     if (a->why == UPDATE_ACCEPTED && a->status == OK) {
         printf("update: %s (%s) -> %.*s (%.*s): checked by init in %u ms, %s\n", from_version,
@@ -258,6 +283,16 @@ static int say_answer(const struct update_answer *a, uint32_t flags, const char 
            update_why_str(a->why), per_file ? ": " : "", per_file ? update_file_name(a->file) : "",
            status_str(a->status));
     return 1;
+}
+
+/* init's answer, in words; the exit status (the menu's fate doesn't
+ * change it: the build is what was asked for). */
+static int say_answer(const struct update_answer *a, uint32_t flags, const char *from_version,
+                      const char *from_git)
+{
+    int rc = say_verdict(a, flags, from_version, from_git);
+    say_menu(a);
+    return rc;
 }
 
 /* The socket to host's update port, once the network has an address. */

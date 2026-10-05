@@ -51,10 +51,17 @@ void updfetch_start(struct updfetch *f, const struct updfetch_io *io)
     ask_manifest(f);
 }
 
+/* The files the manifest names: the build's two, and the boot menu if it
+ * has a `menu` line. */
+static unsigned parts(const struct updfetch *f)
+{
+    return UPDATE_FILES + (f->m.has_menu ? 1u : 0u);
+}
+
 /* Free slots get the next pieces of the files, in order. */
 static void fill(struct updfetch *f, uint64_t now)
 {
-    for (unsigned i = 0; i < UPDFETCH_WINDOW && f->file < UPDATE_FILES; i++) {
+    for (unsigned i = 0; i < UPDFETCH_WINDOW && f->file < parts(f); i++) {
         struct updfetch_slot *s = &f->slots[i];
         if (s->used)
             continue;
@@ -140,7 +147,9 @@ static void took_manifest(struct updfetch *f, const struct updwire_rep *r)
     f->state = UPDFETCH_FILES;
     f->file = UPDATE_KERNEL;
     f->next = f->stored = 0;
-    f->total = m.file[UPDATE_KERNEL].size + m.file[UPDATE_BOOTFS].size;
+    f->total = 0;
+    for (unsigned i = 0; i < parts(f); i++)
+        f->total += m.file[i].size;
 }
 
 static void took_piece(struct updfetch *f, struct updfetch_slot *s, const struct updwire_rep *r)

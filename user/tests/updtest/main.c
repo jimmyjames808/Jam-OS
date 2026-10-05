@@ -64,6 +64,28 @@
  *                  tools/update-write-test.sh runs a writestop and an
  *                  espcheck for each change of the swap, each its own
  *                  program, so each sees /esp as it came back.
+ *   updtest menuwrite <dir> [n]
+ *                  the build in DIR offered with the manifest in folder
+ *                  <dir> (signed for that build and <dir>'s limine.conf,
+ *                  its boot menu, which is offered too if the manifest
+ *                  has a `menu` line), to be written to the stick, and
+ *                  stopped after change n of the swaps (UPDATE_OFFER_STOP,
+ *                  1 to UPDATE_STOP_MAX; 0 or none: no stop): its answer
+ *                  in one line ("build ..., menu written" ...), which
+ *                  tools/update-menu-test.sh reads.
+ *   updtest menubad <dir>
+ *                  the same build and menu offered as init must refuse
+ *                  them: a byte of the menu changed (its SHA-256), the
+ *                  menu 1 byte longer than its manifest says (its length),
+ *                  the menu's VMO missing, a menu VMO with a manifest
+ *                  that names none, a menu length with no menu; then the
+ *                  offer check-only and plain (RAM only): accepted, the
+ *                  stick's menu untouched (menucheck shows it).
+ *   updtest menucheck <old> <new>
+ *                  which boot menu Limine reads on /esp now
+ *                  (boot/limine/limine.conf, or boot/limine.conf, the
+ *                  spare, when that is missing), and that it is whole:
+ *                  exactly the file <old> or <new> on /data.
  * Exit 0 when each case went as expected. */
 #include <idl/initctl.h>
 #include <os.h>
@@ -119,6 +141,7 @@ status_t load_dir(struct build *b, const char *dir)
     st = jam_vmo_read(m, 0, b->manifest, n);
     jam_handle_close(m);
     b->manifest_len = (uint32_t)n;
+    b->parts = UPDATE_FILES;
     static const char *const names[UPDATE_FILES] = { "jamos.elf", "bootfs.img" };
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
         snprintf(p, sizeof(p), "%s%s", dir, names[f]);
@@ -139,7 +162,7 @@ status_t offer(const struct build *b, unsigned handles, uint32_t magic, struct u
     if (st != OK)
         return st;
     struct update_offer *o = calloc(1, sizeof(*o));
-    handle_t hs[UPDATE_FILES];
+    handle_t hs[UPDATE_PARTS];
     unsigned nh = 0;
     st = o ? OK : ERR_NO_MEMORY;
     for (; st == OK && nh < handles; nh++)
@@ -614,6 +637,8 @@ int main(int argc, char **argv)
     enum { GOOD, BAD, NOKEY, WRITEFAIL, WRITESTOP, ESPCHECK, MODES };
     static const char *const modes[MODES] = { "good",      "bad",       "nokey",
                                               "writefail", "writestop", "espcheck" };
+    if (argc >= 2 && !strncmp(argv[1], "menu", 4))
+        return menu_main(argc, argv);   /* menu.c */
     unsigned mode = 0;
     while (argc >= 2 && mode < MODES && strcmp(argv[1], modes[mode]))
         mode++;
@@ -621,8 +646,9 @@ int main(int argc, char **argv)
                      (unsigned)(argv[2][0] - '0') <= UPDATE_SWAP_OPS &&
                      (!strcmp(argv[3], "b") || !strcmp(argv[3], "c"));
     if (mode == MODES || (mode == WRITESTOP ? !stop_args : argc != 2)) {
-        printf("usage: updtest good|bad|nokey|writefail|espcheck | writestop <0-%u> b|c\n",
-               UPDATE_SWAP_OPS);
+        printf("usage: updtest good|bad|nokey|writefail|espcheck | writestop <0-%u> b|c | "
+               "menuwrite <dir> [<0-%u>] | menubad <dir> | menucheck <old> <new>\n",
+               UPDATE_SWAP_OPS, UPDATE_STOP_MAX);
         return 2;
     }
     initctl = svc_get(SVC_INIT);

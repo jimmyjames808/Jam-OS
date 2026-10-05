@@ -143,6 +143,9 @@ cmp "$conf" "$mnt/boot/limine/limine.conf.new"
 $SUDO mv -f "$mnt/boot/jamos.elf.new" "$mnt/boot/jamos.elf"
 $SUDO mv -f "$mnt/boot/bootfs.img.new" "$mnt/boot/bootfs.img"
 $SUDO mv -f "$mnt/boot/limine/limine.conf.new" "$mnt/boot/limine/limine.conf"
+# The spare menu a PC's `update -w` cut short may have left (Limine reads
+# it only while boot/limine/limine.conf is missing): stale now.
+$SUDO rm -f "$mnt/boot/limine.conf"
 sync
 cmp "$elf" "$mnt/boot/jamos.elf"
 cmp "$bootfs" "$mnt/boot/bootfs.img"
