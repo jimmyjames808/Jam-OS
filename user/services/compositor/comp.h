@@ -433,9 +433,9 @@ void display_teardown(struct comp_client *cl);
 
 /* ---- surfaces, buffers and painting (surface.c, shm.c, headless.c) ----------------- */
 
-/* wl_compositor.create_surface: a surface for cl at the new id. OK, or a
- * protocol error posted (the cap, no memory). */
-status_t surface_create(struct comp_client *cl, uint32_t id);
+/* wl_compositor.create_surface on compositor: a surface for cl at the new
+ * id. OK, or a protocol error posted (the cap, no memory). */
+status_t surface_create(struct comp_client *cl, uint32_t compositor, uint32_t id);
 /* s gets role, with ops and data. ERR_BAD_STATE: it has a role object
  * now, or had another role (the caller posts the role's error). */
 status_t surface_set_role(struct comp_surface *s, enum comp_role role,

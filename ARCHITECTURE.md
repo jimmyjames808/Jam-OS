@@ -2130,7 +2130,9 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   hold (an unlink or truncate of a file over about 2 GiB on `/data`, or a
   grow by more than the hold) goes out in steps, says so in the log, and
   can't be undone: a death between steps can leave clusters no file
-  reaches (lost space, never a damaged file).
+  reaches (lost space, never a damaged file: the first FAT sector to go
+  out cuts the file off from what it frees, a truncate to 0 being made a
+  truncate to one cluster first).
 - A file opened `FS_GATHER` (`<os.h>`), which only init's ESP write uses,
   keeps its writes held across requests: FatFs writes a file a cluster at
   a time, one sector on the ESP, and a cheap stick takes milliseconds per

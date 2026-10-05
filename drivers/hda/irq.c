@@ -169,11 +169,14 @@ static status_t do_query(void *ctx, handle_t *out_channel)
     return OK;
 }
 
-static void query_close(struct query_ch *q)
+static void query_close(struct loop *l, struct query_ch *q)
 {
     if (q->ch == HANDLE_INVALID)
         return;
-    drv_handle_close(q->ch);   /* its port binding goes with it */
+    /* A binding holds a reference on the channel end it watches: closing
+     * our handle alone would leave both, for the life of the driver. */
+    (void)drv_port_unbind(l->port, q->ch, q->key);   /* ours: bound in do_query */
+    drv_handle_close(q->ch);
     *q = (struct query_ch){ .ch = HANDLE_INVALID };
 }
 
@@ -294,7 +297,7 @@ static void serve_some(struct loop *l, enum chan_kind kind, struct query_ch *q)
         if (st == ERR_PEER_CLOSED && kind == CH_STREAM)
             stream_ch_close(l, "the client closed its channel");
         else if (st == ERR_PEER_CLOSED && kind == CH_QUERY)
-            query_close(q);
+            query_close(l, q);
         else if (st == ERR_PEER_CLOSED)
             l->serve_closed = true;
         else if (st != ERR_SHOULD_WAIT)
@@ -421,7 +424,7 @@ status_t hda_loop(struct hda *h, const struct driver_start *ds, const struct hda
     }
     stream_ch_close(l, "the driver is stopping");
     for (unsigned i = 0; i < QUERY_MAX; i++)
-        query_close(&l->query[i]);   /* their holders see ERR_PEER_CLOSED */
+        query_close(l, &l->query[i]);   /* their holders see ERR_PEER_CLOSED */
     if (l->io.set)
         hda_jacks_stop(js, &l->io);
     hda_unsol_enable(h, false);

@@ -398,9 +398,12 @@ status_t jwl_conn_next(struct jwl_conn *c, struct jwl_msg *out);
  * that message is sent. Make it right before the jwl_send, and if that
  * send refuses the id itself, jwl_conn_delete it: a pending id the peer
  * never hears of leaves a gap, and the peer refuses the ids after it.
- * (A send that fails for any other reason frees it.) Errors as
- * jwl_map_new's, ERR_INVALID_ARGS for a version outside 1 to
- * iface->version, or a dead connection's status. */
+ * (A send that fails for any other reason frees it.) version may be
+ * above iface->version: an object a request makes has the version of the
+ * object the request goes on, whatever its own table's newest (a
+ * wl_callback of a version 4 wl_surface is version 4). Errors as
+ * jwl_map_new's, ERR_INVALID_ARGS for a version of 0, or a dead
+ * connection's status. */
 status_t jwl_conn_make(struct jwl_conn *c, const struct jwl_interface *iface, uint32_t version,
                        void *data, uint32_t *out);
 
@@ -410,7 +413,8 @@ status_t jwl_conn_make(struct jwl_conn *c, const struct jwl_interface *iface, ui
  * announced; each 'o' argument too, of its type; each 'n' argument a
  * pending object of ours of the type the message makes (for a typed one,
  * at id's version; for an untyped one, the interface its 's' names at the
- * version its 'u' gives), announced from now on. A destructor forgets id
+ * version its 'u' gives, which the interface's table must reach, as its
+ * events must decode), announced from now on. A destructor forgets id
  * once sent (on the compositor, a client's id with delete_id). Every
  * handle in args is consumed, whatever happens. The message joins the
  * batch being filled; nothing is written until it fills or

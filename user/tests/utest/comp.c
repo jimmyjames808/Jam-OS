@@ -25,7 +25,7 @@
 
 /* ---- the compositor ---------------------------------------------------------------- */
 
-static uint64_t job_used(handle_t job, unsigned kind)
+uint64_t ct_job_used(handle_t job, unsigned kind)
 {
     struct job_info ji;
     return info_of(job, &ji) == OK ? ji.used[kind] : ~0ull;
@@ -33,7 +33,7 @@ static uint64_t job_used(handle_t job, unsigned kind)
 
 uint64_t ct_handles(const struct ct_comp *p)
 {
-    return job_used(p->job, JOB_LIMIT_HANDLES);
+    return ct_job_used(p->job, JOB_LIMIT_HANDLES);
 }
 
 bool ct_handles_back(const struct ct_comp *p, uint64_t want)
@@ -90,11 +90,11 @@ bool ct_stop(struct ct_comp *p)
     CHECK_ST(jam_handle_close(p->proc), OK);
     uint64_t until = now() + CT_WAIT;   /* dead is not yet freed */
     for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++) {
-        while (job_used(p->job, k) && now() < until)
+        while (ct_job_used(p->job, k) && now() < until)
             jam_nanosleep(now() + NS_PER_MS);
-        if (job_used(p->job, k))
+        if (ct_job_used(p->job, k))
             FAIL("the compositor left %lu units of job kind %u",
-                 (unsigned long)job_used(p->job, k), k);
+                 (unsigned long)ct_job_used(p->job, k), k);
     }
     CHECK_ST(jam_handle_close(p->job), OK);
     if (p->image)   /* none if the compositor was started with an image of its own */
@@ -105,15 +105,20 @@ bool ct_stop(struct ct_comp *p)
 
 /* ---- clients ----------------------------------------------------------------------- */
 
-bool ct_open(struct ct_comp *p, struct ct_client *k)
+bool ct_adopt(handle_t ch, struct ct_client *k)
 {
     memset(k, 0, sizeof(*k));
-    handle_t ch;
-    CHECK_ST(svc_connect_within(p->svc, CT_WAIT, &ch), OK);
     struct jwl_conn_config cfg = { .ch = ch, .side = JWL_CLIENT,
                                    .display = &jwl_wl_display_interface };
     CHECK_ST(jwl_conn_create(&cfg, &k->c), OK);
     return true;
+}
+
+bool ct_open(struct ct_comp *p, struct ct_client *k)
+{
+    handle_t ch;
+    CHECK_ST(svc_connect_within(p->svc, CT_WAIT, &ch), OK);
+    return ct_adopt(ch, k);
 }
 
 void ct_close(struct ct_client *k)
@@ -416,7 +421,7 @@ bool t_comp_surface(void)
     CHECK(ct_open(&p, &k));
     CHECK(ct_bind_all(&k));
     uint64_t base = ct_handles(&p);
-    uint64_t pages0 = job_used(own_job(), JOB_LIMIT_PAGES);
+    uint64_t pages0 = ct_job_used(own_job(), JOB_LIMIT_PAGES);
     handle_t vmo;
     uint32_t pool = ct_pool(&k, 65536, &vmo);
     CHECK(pool);
@@ -438,7 +443,7 @@ bool t_comp_surface(void)
     CHECK_ST(ct_roundtrip(&k), OK);
     CHECK(!k.errored);
     CHECK(ct_handles_back(&p, base));   /* the pool's VMO handle closed */
-    CHECK(job_used(own_job(), JOB_LIMIT_PAGES) <= pages0 + 4);   /* its 16 pages freed */
+    CHECK(ct_job_used(own_job(), JOB_LIMIT_PAGES) <= pages0 + 4);   /* its 16 pages freed */
     ct_close(&k);
     CHECK(ct_stop(&p));
     return true;

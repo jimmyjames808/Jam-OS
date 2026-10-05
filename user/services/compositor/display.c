@@ -104,8 +104,7 @@ static status_t bind_compositor(struct comp_client *cl, uint32_t id, uint32_t ve
 
 static status_t on_create_surface(void *data, uint32_t self, uint32_t id)
 {
-    (void)self;
-    return surface_create(data, id);
+    return surface_create(data, self, id);
 }
 
 static status_t on_create_region(void *data, uint32_t self, uint32_t id)
@@ -213,10 +212,10 @@ static status_t output_describe(struct comp_client *cl, uint32_t id, uint32_t ve
 static status_t bind_output(struct comp_client *cl, uint32_t id, uint32_t version)
 {
     if (cl->noutputs >= COMP_OUTPUTS_MAX)
-        return comp_no_memory(cl, id, "too many wl_output objects (16)");
+        return comp_no_memory(cl, JWL_DISPLAY_ID, "too many wl_output objects (16)");
     struct comp_outres *o = calloc(1, sizeof(*o));
     if (!o)
-        return comp_no_memory(cl, id, "no memory for a wl_output");
+        return comp_no_memory(cl, JWL_DISPLAY_ID, "no memory for a wl_output");
     o->client = cl;
     o->id = id;
     o->next = cl->outputs;
