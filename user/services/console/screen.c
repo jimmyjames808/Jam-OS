@@ -19,7 +19,11 @@
  *
  * Blank (console.blank, for a reboot by kexec): the whole framebuffer the
  * splash's background and nothing drawn, until blank is turned off, so
- * the screen goes straight from the shell to the next boot's splash. */
+ * the screen goes straight from the shell to the next boot's splash.
+ *
+ * In window mode (window.c) there is no framebuffer here: render() hands
+ * over to winpaint.c, nothing is lent (ERR_NOT_SUPPORTED) and blank does
+ * nothing (the compositor owns the screen). */
 #include <splash.h>
 #include "console.h"
 
@@ -98,6 +102,8 @@ static void forget_shadow(void)
 
 void screen_blank(bool on)
 {
+    if (window_mode)
+        return;   /* the compositor's screen: it blanks it */
     if (!on) {
         if (blanked && shadow)
             forget_shadow();
@@ -154,6 +160,10 @@ void render(void)
         return;   /* mid-frame: stay dirty, draw once the frame is complete */
     if (quiet_until && now() < quiet_until)
         return;   /* stay dirty: drawn once the splash is done */
+    if (window_mode) {
+        window_render();   /* stays dirty while both of its buffers are busy */
+        return;
+    }
     dirty = false;
     if (!fbp || lease)
         return;   /* no screen, or lent: drawn in full when it comes back */
@@ -210,6 +220,8 @@ status_t op_lend_screen(void *ctx, uint32_t *w, uint32_t *h, uint32_t *pitch, ui
                         handle_t *out_lease)
 {
     (void)ctx;
+    if (window_mode)
+        return ERR_NOT_SUPPORTED;   /* the screen is the compositor's: a program opens a window */
     if (!fbp || !fb_vmo)
         return ERR_NOT_FOUND;
     if (lease)
