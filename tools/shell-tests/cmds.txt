@@ -154,8 +154,9 @@ send grep zzz init.cfg || echo ok-$T-p11
 wait ok-x-p11
 send | grep a
 wait a command is missing
-send echo a & echo b
-wait not supported
+send echo a & echo b-$T-after
+wait only a program runs in the background (& after echo, a shell command)
+wait b-x-after
 send echo "abc
 wait no closing
 wait jam>

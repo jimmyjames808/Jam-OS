@@ -14,15 +14,15 @@ wait 10 [1]
 wait utest: in the background (jobs lists it, kill %1 ends it)
 seen 10 hello-x-bg
 send echo after-$T-start
-wait after-x-start
 wait 10 [1] done: utest (exit 0)
+seen 10 after-x-start
 wait jam>
 # Its exit code, and the number free again.
 send run utest exit7 &
 wait 10 [1]
 send echo st$? ok-$T-started
-wait st0 ok-x-started
 wait 10 [1] done: utest (exit 7)
+seen 10 st0 ok-x-started
 wait jam>
 
 # ---- a background program outlives a foreground one, and Ctrl+C is not its -------------
@@ -95,11 +95,21 @@ send tetris &
 wait 10 [1]
 seen 10 tetris: can't borrow the screen
 send echo after-$T-tetris
-wait after-x-tetris
 wait 10 [1] done: tetris (exit 1)
+seen 10 after-x-tetris
 wait jam>
 
 # ---- the limit: 8 at once ----------------------------------------------------------------
+# Eight that ended within one line hold their numbers until their notices,
+# which a ninth brings out at once to take a number.
+send repeat 8 'run utest exit7 &'; sleep 1; run utest say ninth-$T-bg &
+wait 10 [8] done: utest (exit 7)
+wait 10 [1]
+seen 10 ninth-x-bg
+send echo after-$T-ninth
+wait 10 [1] done: utest (exit 0)
+seen 10 after-x-ninth
+wait jam>
 send repeat 8 'run utest spin &'
 wait 10 [8]
 wait jam>

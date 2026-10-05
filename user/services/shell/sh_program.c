@@ -346,6 +346,8 @@ int sh_run_program(int argc, char **argv)
 
 int sh_start_background(int argc, char **argv)
 {
+    if (sh_jobs_full())
+        sh_jobs_report();   /* ended ones (repeat 9 'x &') free their numbers now */
     if (sh_jobs_full()) {
         sh_tty("sh: %d programs already run in the background (the most): end one first "
                "(jobs, kill %%n)\n", SH_MAX_JOBS);
