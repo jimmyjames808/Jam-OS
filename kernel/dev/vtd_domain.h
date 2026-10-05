@@ -86,6 +86,13 @@ struct vtd_dom {
     uint32_t               users;  /* context entries naming it; "vtd context" */
 };
 
+/* The cap on one driver's domain (iommu_domain_create): 512 table pages
+ * (docs/M11-PLAN.md). A leaf table maps 2 MiB of IOVA = physical
+ * addresses, so that is up to 1 GiB of pins dense within 2 MiB blocks, but
+ * only ~500 pages spread one per block (review finding 6, design question
+ * C). */
+#define VTD_DRIVER_MAX_TABLES 512u
+
 /* ---- a unit's tables ---------------------------------------------------------------------- */
 
 #define VTD_TT_MAX_DIDS 65536u   /* CAP.ND's largest */
@@ -101,6 +108,12 @@ struct vtd_ctl {
     uint32_t         ndid;            /* domain ids the unit has (CAP.ND) */
     struct vtd_dom  *blocking;        /* empty table: every driverless function */
     uint32_t         nfn, nboot;      /* functions covered; boot domains made */
+};
+
+/* What <jam/iommu.h> hands out: a domain of the function it was made for. */
+struct iommu_domain {
+    struct vtd_dom *dom;   /* the domain itself */
+    struct vtd_fn  *fn;    /* the function it is for (fixed) */
 };
 
 /* Per PCI function (pci_dev.index). */

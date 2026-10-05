@@ -26,12 +26,6 @@ static struct vtd_ctl ctls[VTD_MAX_UNITS];   /* by the DMAR's unit number */
 static struct vtd_fn *fns;                   /* one per PCI function; written at boot */
 static uint32_t nfns;
 
-/* What <jam/iommu.h> hands out: a domain of the function it was made for. */
-struct iommu_domain {
-    struct vtd_dom *dom;   /* the domain itself */
-    struct vtd_fn  *fn;    /* the function it is for (fixed) */
-};
-
 /* ---- the entries (pure) ------------------------------------------------------------------- */
 
 struct vtd_ctx vtd_root_entry(uint64_t ctx_table)
@@ -508,12 +502,6 @@ bool iommu_translating(void)
     return false;
 }
 
-/* The domain cap for one driver's domain: 512 table pages (docs/M11-PLAN.md).
- * A leaf table maps 2 MiB of IOVA = physical addresses, so that is up to
- * 1 GiB of pins dense within 2 MiB blocks, but only ~500 pages spread one
- * per block (review finding 6, design question C). */
-#define DRIVER_MAX_TABLES 512
-
 status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_domain **out)
 {
     struct vtd_fn *f = vtd_fn_of(dev);
@@ -524,7 +512,7 @@ status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_
         return ERR_NO_MEMORY;
     mutex_lock(&f->ctl->lock);
     struct vtd_dom *d = NULL;
-    status_t st = vtd_dom_new(f->ctl, job, DRIVER_MAX_TABLES, "driver", &d);
+    status_t st = vtd_dom_new(f->ctl, job, VTD_DRIVER_MAX_TABLES, "driver", &d);
     mutex_unlock(&f->ctl->lock);
     if (st == OK) {
         st = vtd_boot_map_rmrrs(f, d);   /* the function keeps its RMRRs in every domain */
