@@ -39,7 +39,10 @@ that a bug fix comes with a test is in
 - `make` builds with `-Werror`; `make KTESTS=0` builds a kernel without
   the in-kernel tests, benchmark and test hooks (into `build/noktests/`).
 - `make check`: the generated syscall and IDL code matches `abi/`
-  (`tools/gensyscalls.py check`, `tools/genidl.py check`); the driver
+  (`tools/gensyscalls.py check`, `tools/genidl.py check`), the generated
+  Wayland code matches the vendored XML (`tools/genwl.py check`) and the
+  Wayland generator passes its own tests (`tools/genwl.py selftest`:
+  tools/genwl-tests/, built and run with the Mac's compiler); the driver
   isolation check still rejects what it must (`tools/checkdriver-selftest.sh`
   over `tools/checkdriver-tests/`); the docs match the tree
   (`tools/checkdocs.py`: links, anchors, and the repo paths, file names,
@@ -258,6 +261,7 @@ machine halt ([ARCHITECTURE.md](../ARCHITECTURE.md#kexec-reboot-and-panic)).
 |---|---|---|
 | Jam OS | (empty) | the boot splash ([AS-PLAN.md](history/AS-PLAN.md)): the screen dark from the kernel's start, the logo animation with its sound (played to the end; what is typed meanwhile reaches the shell), then the shell; meanwhile init starts the bootfs server (`/boot`), the console, serialin, devmgr (with the USB and PCI drivers; it mounts the stick's `/esp` and `/data`), the mixer, the music player, netstack, dhcp (without `net.address`), dns, logd and netlog (with `net.host`). devmgr binds the PC's network chip as the netdev service on the kernel's VLAN (21), so the shell has `net`, `ping`, `host` and `update`; QEMU's e1000e, when there is one, is bound the same way. "Jam OS (no network)" (below) keeps both off. `reboot` and a panic look like switching the PC on: the splash background at once, then the next boot's splash; after a panic the shell's first line says what it was and where its log went |
 | Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash, and in the shell as it comes (a plain boot keeps it off the shell's screen but for notices and the commands whose output it is: [ARCHITECTURE.md](../ARCHITECTURE.md#debugging)) |
+| Jam OS (IOMMU) | `iommu=on` | the everyday boot with the IOMMU on (`iommu=on`, below): DMA translation and interrupt remapping. An entry of its own while it is new ([M11-PLAN.md](M11-PLAN.md#questions-for-the-owner), question 6); once the PC checks pass it becomes the default and `iommu=off` turns it off |
 | Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
 | Jam OS (network: listen only) | `netprobe` | the everyday boot, plus the RTL8125's listen-only probe ([M9-PLAN.md](M9-PLAN.md#the-first-pc-stage-listen-only)): devmgr binds `drv/rtl8125`, which sends nothing, listens for 60 s after the link comes up, logs its `[rtl8125]` lines and one RESULTS line, and exits. A `reboot` doesn't keep the word (the next boot is the everyday one, on the network) |
 | Jam OS (network: send test) | `netsend` | the everyday boot, plus the RTL8125's ARP send test ([M9-PLAN.md](M9-PLAN.md#r1-progress-the-full-driver)): devmgr binds `drv/rtl8125` in full mode on the kernel's VLAN (none: "no VLAN: the network stays off", nothing touched), which waits for the link, sends twenty ARP probes for 10.2.21.1, 200 ms apart, tagged with the VLAN, logs for each when it was queued, when the chip handed its descriptor back and when the reply came, compares the chip's count of frames sent with its own, logs its `[rtl8125]` lines and one RESULTS line, and exits. Nothing else is ever sent; a `reboot` doesn't keep the word |
@@ -268,6 +272,7 @@ machine halt ([ARCHITECTURE.md](../ARCHITECTURE.md#kexec-reboot-and-panic)).
 | Tests / Stress test (10 minutes) | `selftest stress=600` | the same for 10 minutes (it signed off the milestones up to M8; from A1 on the soak does) |
 | Tests / Soak test (3 minutes) | `soak=3` | a plain boot whose shell runs `soak 3 halt` by itself ([Soak](#soak)): the first failure panics, and the next boot's shell names it (the log is on the stick); a pass ends with the SOAK RESULTS box and a prompt |
 | Tests / Benchmark | `bench` | about 10 s; results go to [BENCH.md](BENCH.md) |
+| Tests / IOMMU checks | `iommu=on vtdtest` | a plain boot with the IOMMU on in which drv/hda provokes its faults on purpose before it serves (`drivers/hda/vtdtest.c`): its command ring pointed at a page it doesn't hold pinned (a read the IOMMU blocks: a `vtd: fault:` line naming 00:1f.3), then its response ring at the interrupt window 0xfee00000 (a write blocked with fault 25h, no interrupt), then the rings back and sound as usual. `hda: vtdtest:` lines say what happened; if the controller could read the page anyway (no translation), it says so and provokes nothing. `iommu` in the shell shows the units, domains and fault counts |
 | Tests / init + utest + usbtest | `init` | the user-space regression run: init runs `boot/init.cfg` (utest, then usbtest) and the RESULTS box says whether init's root job ended with nothing charged |
 | Tests / Timer fallback | `nodeadline selftest` | the periodic LAPIC timer instead of TSC-deadline |
 
@@ -316,6 +321,9 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   mode the boot is in. A reboot keeps either
   word; the jump into the next kernel (a reboot or a panic) turns
   interrupt remapping, translation and the queue off first.
+- `vtdtest`: devmgr passes it to drv/hda, which runs its IOMMU checks
+  (`drivers/hda/vtdtest.c`; the "IOMMU checks" entry above) before it
+  serves; only in shell mode, and a reboot doesn't keep it.
 - `nospare`: init keeps no warm spare of the mixer
   (`user/services/init/spare.c`), and devmgr none of fat
   (`user/services/devmgr/spare.c`), so a restart starts a process, as
@@ -337,7 +345,10 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`, `nofpucall` (a switch inside a system call saves the full
   FPU state again; utest's `fpu_call_keeps_control_words` then reports
-  its rounds as kept, not zeroed).
+  its rounds as kept, not zeroed), `nohandoff` (a wake that would hand
+  the CPU straight to the woken thread queues it instead). The message slots
+  (`channel_slots`) have no boot word: the benchmark's `slots` switch and
+  the path tests turn them off for a moment.
 - `vlan=<id>`, `vlan=none`, `vlan=off`: the network's mode
   ([ARCHITECTURE](../ARCHITECTURE.md#networking)). `vlan=<id>` (1..4094):
   every frame Jam OS sends is tagged with that VLAN and only frames tagged
@@ -502,6 +513,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `console-restart.txt` | a console started again after about 550 KiB of log (the klog gap test, 8 loops) draws only the last 256 KiB of it, and the shell comes back | |
 | `commands.txt` | utest, usbtest, pci, memmap, the crash list, demo, Ctrl+C past a program, orphans killed with their job, devmgr restarted by init; ends with a real crash, and the next boot's line about it | |
 | `extras.txt` | bench and a short stress from the shell, scrollback, clear; ends with a panic, and the next boot's line about it | |
+| `perop.txt` | `perop -q /data/` (the per-operation lines, a tenth of the samples): every line printed (stat, open + close, a 4 KiB block read through usb-storage, cached 4 KiB and 64 KiB reads, a 64 KiB write through to the stick), its scratch file gone afterwards; a usage error (2). QEMU's numbers mean nothing: the PC gives them ([BENCH.md](BENCH.md#method)) | |
 | `files.txt` | the file namespace: `/boot` as a read-only mount, `run` with a path, the file commands (mkdir touch write cp mv rm df sync) on a writable mount (the tests' RAM filesystem, `run ramfs shell`), a mount that reaches a running shell, the bootfs server killed and mounted again | |
 | `files-fat.txt` | the file commands on a real FAT volume (`run utest fat-shell`: bin/fat over a RAM disk): names with spaces and lower case, big copies, rm -r | |
 | `unplug.txt` | the stick pulled while the system runs and plugged back in (the monitor's `device_del` / `device_add`): `/data` and `/esp` go, nothing hangs, they come back in the running shell, logd carries on | |
@@ -531,6 +543,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `allow.txt` | programs on `/data`: a copy of bin/soakload refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, a changed file refused, a list asking for devmgr or init (a copy of bin/utest) or for `right debug` (a copy of bin/wantdebug) or for the ports below 1024 (a copy of bin/serve, `svc net listen low`) refused, approval or not, `svc net listen` (bin/wantlisten: port 5000 refused on `/svc/net`, taken on `/svc/net-listen`, a TCP listener on port 80 refused there, from `/boot`, and from `/data` once `allow` showed "accepting connections from the network"), `allow -r`, a file off `/data` and a second shell refused | |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
 | `hda.txt` | the HD Audio driver's dump, `hda`, `kill hda`, `hda jacks`, `hda gain` and `hda bits` set and read back (all through the mixer's query channels) | use `tools/hda-test.sh` |
+| `vtdtest.txt` | the IOMMU checks boot (`iommu=on vtdtest`): `iommu`, then `hda` still answering after drv/hda's checks | use `tools/hda-test.sh` |
 | `hdastream.txt` | `hdatest`: the HD Audio output stream (open, a pattern played, a running stream closed, the driver killed mid-stream) | use `tools/hda-stream-test.sh` |
 | `play.txt` | `play` of six WAV files on `/data` (four played, garbage/cut/float refused, Ctrl+C) | use `tools/play-test.sh` |
 | `quality.txt` | `play -s` of known signals on `/data` | use `tools/audio-quality-test.sh` |
@@ -716,7 +729,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/data-test.sh <outdir>` | the stick's filesystems end to end, three boots of one stick image (`data-1.txt` to `data-3.txt`): written, rebooted, read back; QEMU quit in the middle of writes and the dirty volume mounted again; then the boot logs read off the image with mtools, as the Mac reads the real stick |
 | `tools/soak-test.sh <outdir>` | the soak test (`soak-plug.txt`): `soak loops=3` at a fixed seed (`SOAK_LOOPS`, `SOAK_SEED`), under the kernel's and `bin/soakload`'s load, with a second stick (made writable) pulled in the middle of writes and plugged back and then the boot stick pulled and plugged back (`SOAK_LOAD`: the kernel load workers, default one per CPU); PASS needs 0 FAILED kernel tests, utest runs and file checks, the job tree's message bytes grown by at most 32 KiB (unread messages piling up), and the second stick's own files unchanged |
 | `tools/ktest-keep-test.sh <outdir>` | the test runner's own failure paths, with three tests that exist for it (`ktest=review_ktest`): with `keep` both failures are recorded and the run goes on; without it (and `crashkernel=0`, so the panic screen stays up) the first panics and the panic screen names loop, seed and test |
-| `tools/hda-test.sh <outdir>` | the HD Audio driver (`hda.txt`): two emulated controllers (intel-hda with hda-duplex and hda-output, ich9-intel-hda with hda-micro), each codec's graph in the log, `hda` from the shell, `kill hda` and devmgr's restart; the path self-test passes and every codec's path is DAC 02 -> pin 03, set up muted; the jack self-test passes (the ALC897's jack table and tags, the RIRB's demultiplexer on a fake RIRB, the debounce, unsolicited responses and the polling fallback against a fake codec that allows jack code only SET_UNSOLICITED_ENABLE, SET_PIN_SENSE and GET_PIN_SENSE; QEMU's codecs have no presence detection, so the real jack path runs only on the PC); QEMU's codecs trace every verb they get and every one must be a GET or a silent SET (power D0, a connection select, pin control with the output off, an amp mute), and none a jack verb (0x708, 0x709); `hda` opens no stream, so no converter format or stream tag either; `hda jacks` shows the RIRB interrupt taken (it is on for unsolicited responses while the dumps' commands are polled, and the dumps must still see no timeout); then the `init` run with the same devices, where each driver must stop cleanly and the run end "run complete: no problems" |
+| `tools/hda-test.sh <outdir>` | the HD Audio driver (`hda.txt`): two emulated controllers (intel-hda with hda-duplex and hda-output, ich9-intel-hda with hda-micro), each codec's graph in the log, `hda` from the shell, `kill hda` and devmgr's restart; the path self-test passes and every codec's path is DAC 02 -> pin 03, set up muted; the jack self-test passes (the ALC897's jack table and tags, the RIRB's demultiplexer on a fake RIRB, the debounce, unsolicited responses and the polling fallback against a fake codec that allows jack code only SET_UNSOLICITED_ENABLE, SET_PIN_SENSE and GET_PIN_SENSE; QEMU's codecs have no presence detection, so the real jack path runs only on the PC); QEMU's codecs trace every verb they get and every one must be a GET or a silent SET (power D0, a connection select, pin control with the output off, an amp mute), and none a jack verb (0x708, 0x709); `hda` opens no stream, so no converter format or stream tag either; `hda jacks` shows the RIRB interrupt taken (it is on for unsolicited responses while the dumps' commands are polled, and the dumps must still see no timeout); then the `init` run with the same devices, where each driver must stop cleanly and the run end "run complete: no problems"; then a shell boot with `QEMU_IOMMU=eim` and `iommu=on vtdtest` (`vtdtest.txt`): each drv/hda's read of a page it unpinned is blocked (QEMU hands the controller a 0, so the codec's answer is not the command's) and the kernel logs a read fault naming that controller at that address, then its response ring is pointed into the interrupt window (QEMU passes old-format writes through: blocked only on the PC), `hda` still answers with no timeout (the rings were put back), and `iommu` shows each controller in a domain of its own with its fault counted |
 | `tools/vtd-test.sh <outdir>` | the boot-time VT-d probe ([M11-PLAN](M11-PLAN.md#stage-0-the-read-only-probe)), three `pcilist` boots: with QEMU's `intel-iommu` (interrupt remapping and caching mode on) the DMAR table's lines (the unit, its I/O APIC scope matched with the MADT's, each endpoint scope named by its ids), the unit's registers decoded, translation and interrupt remapping off as the firmware left them, the handover line, nothing in the RESULTS box, and QEMU's trace of the unit's registers: reads, not one write; with `eim=on`: x2APIC ids; without an IOMMU: "no DMAR table". Then two `ktest=vtd iommu=on` boots, caching mode on and off: the unit started and every `vtd_unit_*` test passed (every invalidation kind, the page-table and interrupt-entry callbacks, a refused descriptor reported with the queue going on, the queue wrapping, every CPU submitting at once, the queue turned off and on), interrupt remapping on and every `vtd_irq_*` test passed (COM1's pin remapped, an MSI through its own entry, entries freed on close, another function's, a freed and an out-of-range entry refused and recorded, edu's DMA into the interrupt window blocked, the timer, IPIs and COM1 unaffected, remapping off and on again), translation on (every function in its home domain) and every `vtd_domain_*` test passed (edu blocked with its fault seen, passed through, in a domain of its own, muted after its faults, the tables switched while translating), nothing else in the RESULTS box but the faults those tests provoke; two `ktest=dma iommu=on` boots, caching mode on and off: every `dma_*` test passed, none skipped (edu reaches only what its DMA capability pinned, a killed driver's pages freed once its domain is gone, the quarantine's tests in their translated form, the pin and unpin cost in invalidation waits printed); the same `vtd_domain_*` tests with pass-through off (`pt=off`: an identity map of all RAM instead); then two shell boots with `iommu=on` jumping into the stored kernel, by `reboot` and by `crash panic yes`: the jump turns interrupt remapping, translation and the queue off, so both boots find the unit all off, and the next kernel turns interrupt remapping and translation on again. `VTD_TEST_INIT=1` adds the `init` run with the IOMMU present, left off and then started with `iommu=on`. About a minute (two more with the init runs) |
 | `tools/hda-stream-test.sh <outdir>` | the HD Audio output stream (`hdastream.txt`): intel-hda with an hda-output codec (`mixer=off`) whose samples go to a WAV file through QEMU's wav backend at 48 kHz 16-bit stereo; `hdatest` passes (the position's rate within 2 %, a closed stream released, a kill mid-stream: restart, the dead driver's pins out of the DMA quarantine unwritten); the WAV holds `hdatest`'s one-second pattern sample for sample after the leading silence, then most of a ring of silence (the driver's clear-behind); the codec got only allow-listed verbs, and the path opened only while the converter has the stream's tag and closed again before it is released (`tools/hda-verbs.awk` follows the state the SETs leave; hdatest turns the gain down while it plays) |
 | `tools/beep-test.sh <outdir>` | `beep` (`beep.txt`): intel-hda with an hda-output codec with its mixer on (its DAC amp scales what the WAV gets) through QEMU's wav backend; `beep 440 500` at the default -30 dB: the tone's frequency from its zero crossings within 1 %, its length within 30 ms, the fades (first and last 2.5 ms well under the peak), no clicks, silence after, the peak at QEMU's volume for step 44 within 5 %; the codec's verbs: the path opened only while the converter has the stream's tag and muted again before it is released, the DAC's amp opened at step 44 only; the output stage (pin output, EAPD) on before the first stream and never off, the first unmute at least 400 ms after it went on; the driver's lines in order (stream open, unmuted, muted again, stream closed); `hda gain` set and clamped |
@@ -840,6 +853,55 @@ pcap's VLAN checks.
   `dhcp:` line in the log, no DHCP message at the peer), and `host
   www.jam` works with the settings' DNS server.
 
+## The call path
+
+The IPC fast path ([ARCHITECTURE.md](../ARCHITECTURE.md#ipc),
+[M11.5-PLAN.md](M11.5-PLAN.md)) has tests at three levels, all in the
+quick tiers:
+
+- **Counts** (`ktest=pathstat`, `kernel/test/test_pathstat.c`): the path
+  trace's own rules (members only, the window, interrupt handlers left
+  out, one trace at a time), then what one call costs, exactly: a context
+  switch (1 lock, 1 pass), a kernel `channel_call`, the user call against
+  a server that reads, writes and waits (5 system calls, 1 read that
+  finds nothing, 1 allocation), the same against a reply-and-wait server
+  (2 system calls, 0 empty reads, 0 allocations, 0 job charges, 2
+  hand-offs, 11 locks), with a deadline (a `clock_get`, a sleeper entry,
+  no timer write), and through generated code (2 system calls, the
+  kernel's two clock reads). A change that moves a count updates its
+  number in the same commit and says so; the benchmark prints the same
+  counts (`bench: path` lines, [BENCH.md](BENCH.md)).
+- **Kernel behaviour**: `chanslot_*` (a slot reused call after call, a
+  big reply allocated, a slot message nobody waits for queued whole,
+  handles in a slot, a user caller killed at every point losing nothing),
+  `chanwait_*` (a waiting reader handed the next message that fits, in
+  order, with handles, two readers, closed ends, no relock after the
+  wake), `chanread_kill_loses_nothing` and
+  `chanread_reply_wait_kill_loses_nothing` (a server killed inside its
+  read or its reply-and-wait: each request still queued or wholly in its
+  buffer), `handoff_*` (a higher-priority thread queued meanwhile runs
+  first, a waker that doesn't block queues its wakee, a ping-pong pair
+  shares one slice), `preempt_resched_*` (a reschedule pending at the
+  last unlock still happens, and waits for interrupts to be on),
+  `lockdep_*` (the checker's fast path: an empty top slot seen by an
+  interrupt handler, a release out of order, the switch with locks
+  held); that the checker still refuses a bad order, a lock taken twice,
+  a nested class and a class used in and out of interrupts is shown by
+  the crash tests `lockorder`, `lockself`, `locknest` and `lockirq`
+  (`tools/crash-test.sh`), since each one panics.
+- **From user space** (utest): `reply_wait_*` (the mark written before
+  the wait and not after a failed reply, a reply to a caller that has
+  gone, a second process answering on the same end, the port form, bad
+  pointers, rights and handle types), `call_timeout_relative`
+  (`CHANNEL_CALL_TIMEOUT`), `fpu_call_keeps_control_words` (MXCSR and the
+  x87 control word survive a blocking call, the vector registers come
+  back zero, never another thread's), `idl_serve_*` and
+  `idl_within_times_out` (the generated server on reply-and-wait, a
+  client that went away, `_within`).
+
+The times are the PC's: `bench` ([BENCH.md](BENCH.md)) prints every
+switch's line off and on in one run, and `perop` the per-operation lines.
+
 ## Random numbers
 
 The kernel's generator ([ARCHITECTURE.md](../ARCHITECTURE.md#random-numbers))
@@ -875,6 +937,7 @@ of them. Each file's header says more.
 | `tools/checkdriver.py`, `tools/checkdriver-selftest.sh` | the driver build check, and the proof that it still rejects what it must (`tools/checkdriver-tests/`) |
 | `tools/sortincludes.py` | the include-order check of `make check`; `make includes` runs it with `--fix` |
 | `tools/gensyscalls.py`, `tools/genidl.py`, `tools/gensyms.py` | the syscall glue, the IDL headers and the kernel symbol table |
+| `tools/genwl.py` | the Wayland tables and typed stubs from upstream's XML (`gen`, `check`, `selftest`) |
 | `tools/mkbootfs.py`, `tools/mkimage.py` | the boot image and the two-partition disk image |
 | `tools/bootfs-edit.py <in> <out> name=file...` | a boot image with files added, replaced or (`name=`) left out (the update tests' build B, and their builds with or without a test key) |
 | `tools/update-test-key.sh <outdir> <in.img> <out.img> [nokey]` | for the update tests: two throwaway keys in `<outdir>/testkey` (made once by `build/host/jamos-sign keygen`) and a copy of the image whose build has the first one's public half (or none) |

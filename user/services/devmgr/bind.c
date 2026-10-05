@@ -147,10 +147,11 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
      * "hidboot" when devmgr was; a PCI driver, its match-table row's word
      * ("netprobe"), and a network card's (class 02) the network mode when
      * there is one ("vlan=21", "vlan=none": without it the driver keeps
-     * the network off). */
+     * the network off); drv/hda, "vtdtest" when devmgr was (the IOMMU
+     * checks entry). */
     const char *name = b->kind == BIND_USB || b->kind == BIND_FS ? b->name : NULL;
     char mount[16] = "", vlan[NETDEV_MODE_TEXT] = "";
-    const char *argv[4] = { name ? name : b->path };
+    const char *argv[5] = { name ? name : b->path };
     int argc = 1;
     if (b->kind == BIND_FS) {
         snprintf(mount, sizeof(mount), "%s", fs_mount_path(b));
@@ -166,6 +167,8 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
             netdev_mode_word(net_vlan, vlan);
             add_arg(argv, &argc, vlan);
         }
+        if (vtdtest && b->path && !strcmp(b->path, "drv/hda"))
+            add_arg(argv, &argc, "vtdtest");   /* its deliberate DMA faults */
     }
     struct spawn_args a = {
         .path = b->path, .name = name, .argc = argc, .argv = argv,

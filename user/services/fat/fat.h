@@ -39,7 +39,6 @@
 /* The most one write or truncate may grow a file past its end (the gap is
  * filled with zeros, and nothing else is served meanwhile): grow in steps. */
 #define FAT_GROW_MAX   (16u << 20)
-#define FAT_BATCH      16          /* messages served per wakeup on one channel */
 #define FAT_VIEWS      32          /* views (fs.view) served at once */
 
 /* Port keys: the fs channel, the block channel, open file `slot`
@@ -348,11 +347,17 @@ void     serve_slot(const struct fat_chan *c, unsigned slot);
  * its caller is gone: only marked answered). */
 void     answer_status(const struct fat_chan *c, unsigned slot, status_t status);
 /* The committed reply in `slot` (rn bytes), with handles rhs[0..rhn)
- * (moved; closed if the client is gone). */
+ * (moved; closed if the client is gone): it waits for fat's next take or
+ * port wait, which sends it and marks the slot's reply out. */
 void     answer(const struct fat_chan *c, unsigned slot, uint32_t rn, handle_t *rhs,
                 uint32_t rhn);
 /* The send of a committed operation (kept->post), done again (adopt.c). */
 status_t op_resend(void);
+/* The reply waiting for fat's next system call (answer's) out now: before
+ * fat ends, or before it does something long with nothing to carry it. */
+void     reply_flush(void);
+/* fat's port wait, which sends the reply waiting first (main.c's loop). */
+status_t fat_wait(struct port_packet *pkt);
 
 /* ---- adopt.c ---------------------------------------------------------------------- */
 
@@ -390,7 +395,7 @@ enum fat_die {
     FAT_DIE_COMMIT,           /* right after a commit */
     FAT_DIE_SEND,             /* after a block write of what was held went out */
     FAT_DIE_REPLY,            /* sent, not answered */
-    FAT_DIE_ANSWERED,         /* answered, the next request not taken */
+    FAT_DIE_ANSWERED,         /* answered: its reply waits for the next take or port wait */
     FAT_DIE_COUNT,
 };
 /* An argv word that is a test power: taken (true), or not one. */
@@ -567,12 +572,11 @@ void     views_drop_unknown(void);
 /* A successor's views (adopt.c): keep_restore's slot i handed back (true:
  * the state knows it, the handle is taken); then every view the state
  * knows and got its channel back waited on again, the rest dropped (the
- * number kept is returned). Did the reply that handed out view i arrive
- * (its client's end alive)? Its channel made again, the client's end into
- * *out (consumed by the reply): one that never arrived. */
+ * number kept is returned). Its channel made again, the client's end into
+ * *out (consumed by the reply): the reply that handed out view i never
+ * went out (its slot's mark). */
 bool     views_take(uint32_t i, const handle_t *hs, unsigned n);
 unsigned views_adopt(void);
-bool     views_reply_arrived(uint32_t i);
 status_t views_remake(uint32_t i, handle_t *out);
 /* View i's channel, as serve_one takes it, if the state has view i with
  * generation gen16 (its low 16 bits) and its channel came back. */
@@ -608,7 +612,6 @@ bool     files_is_open(const char *path);
  * closes (as operations) the files whose handles didn't come back. */
 bool     files_take(uint32_t i, const handle_t *hs, unsigned n);
 unsigned files_adopt(void);
-bool     files_reply_arrived(uint32_t i);
 status_t files_remake(uint32_t i, handle_t *out_ch, handle_t *out_vmo);
 /* Slot i forgotten without FatFs (its close crashed fat twice): its file's
  * unsynced changes are lost, the slot and its handles go. */

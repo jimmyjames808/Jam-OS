@@ -106,6 +106,7 @@ bool t_keep_restore_refusals(void);
  * reader of the kernel's chanread_* test). */
 bool t_svcstate_fresh_and_adopted(void);
 bool t_svcstate_slots(void);
+bool t_svcstate_answer_mark(void);
 bool t_svcstate_refused(void);
 bool t_svcstate_standby(void);
 int  svcstate_child(int argc, char **argv);
@@ -121,6 +122,12 @@ bool t_idl_async_through_port(void);
 bool t_idl_serve_reply_wait(void);
 bool t_idl_serve_gone_client(void);
 bool t_idl_within_times_out(void);
+/* idlslot.c: requests read into slots (<proto>_take_slot, _run_slot), a
+ * reply that waits for the next system call (struct idl_reply) and the
+ * `idempotent` keyword, on the test protocol idltest. */
+bool t_idl_slot_take_run(void);
+bool t_idl_slot_idempotent(void);
+bool t_idl_slot_reply_after(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;

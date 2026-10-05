@@ -181,6 +181,192 @@ static inline status_t idl_serve_next(struct idl_serve *s)
     }
 }
 
+/* ---- requests in slots (a server whose requests outlive it) ------------ */
+
+/* A request slot: memory the server chooses (a service's state VMO,
+ * <svcstate.h>), which one request is read into and its reply built in,
+ * so that the request in progress outlives the process: a successor finds
+ * it there and runs it again with the same code (<proto>_run_slot). */
+struct idl_slot {
+    void     *q;      /* the request: qcap bytes of room, the protocol's REQ_MAX or more */
+    uint32_t  qcap;
+    uint32_t *n;      /* its length: written by the kernel after its bytes, 0 before */
+    uint32_t *nh;     /* how many handles it carried ... */
+    handle_t *hs;     /* ... into room for hcap of them (no method takes any) */
+    uint32_t  hcap;
+    void     *r;      /* its reply: the protocol's REP_MAX bytes of room */
+};
+
+/* idl_take's end: what a read into slot that returned st leaves there. */
+static inline status_t idl_taken(handle_t ch, const struct idl_slot *slot, status_t st)
+{
+    if (st == ERR_BUFFER_TOO_SMALL) {
+        /* The kernel wrote the size of what stays queued: no request here. */
+        uint32_t idl_n = *slot->n, idl_nh = *slot->nh;
+        __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);
+        *slot->nh = 0;
+        return idl_drain(ch, idl_n, idl_nh);
+    }
+    if (st == OK && *slot->n < sizeof(uint32_t)) {
+        idl_close_all(slot->hs, *slot->nh);
+        __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);
+        *slot->nh = 0;
+    }
+    return st;
+}
+
+/* Server: read the next message on ch into slot. Its length (*slot->n) is
+ * zeroed first and written by the kernel after the bytes, in the one
+ * system call that takes the message off the queue, and a thread finishes
+ * the system call it is in before it dies: so a process killed at any
+ * point leaves the message either still queued or wholly in the slot.
+ * OK: a message was taken. *slot->n 4 or more: a request to run
+ * (<proto>_run_slot), with *slot->nh handles in slot->hs, the caller's to
+ * close (no method takes any: <proto>_run_slot refuses it). *slot->n 0:
+ * nothing to run, the message dealt with as <proto>_serve_one deals with
+ * it: one too big for the slot or with more than hcap handles answered
+ * ERR_INVALID_ARGS (idl_drain), one under 4 bytes (no txid) dropped, its
+ * handles closed. Otherwise channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t idl_take(handle_t ch, const struct idl_slot *slot)
+{
+    __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);
+    *slot->nh = 0;
+    status_t idl_st = drv_channel_read(ch, slot->q, slot->qcap, slot->n, slot->hs,
+                                       slot->hcap, slot->nh);
+    return idl_taken(ch, slot, idl_st);
+}
+
+/* A reply that waits to go out with the server's next system call (a
+ * take, idl_take_after; a wait on its port, idl_wait_after; or
+ * idl_reply_flush), so that answering costs no system call of its own.
+ * The kernel sets *mark (a slot's, <svcstate.h>) once the reply went
+ * out, in that same call: a successor knows exactly whether it did. */
+struct idl_reply {
+    handle_t    ch;      /* the request's channel; HANDLE_INVALID: nothing waits */
+    const void *r;       /* the reply (a slot's reply area): rn bytes */
+    uint32_t    rn;
+    uint32_t    nh;      /* handles in hs: moved once the reply is tried */
+    handle_t    hs[IDL_REP_HANDLES];
+    uint64_t   *mark;    /* set to 1 by the kernel once it went out; NULL: none */
+};
+
+/* The reply half of a channel_reply_wait for the reply waiting in rep (its
+ * status into *rs). false: nothing waits (a->h HANDLE_INVALID). */
+static inline bool idl_reply_args(const struct idl_reply *rep, struct channel_reply_wait_args *a,
+                                  status_t *rs)
+{
+    a->h = HANDLE_INVALID;
+    if (!rep || rep->ch == HANDLE_INVALID)
+        return false;
+    a->h = rep->ch;
+    a->rbytes = (uint64_t)(uintptr_t)rep->r;
+    a->rn = rep->rn;
+    a->rh = (uint64_t)(uintptr_t)rep->hs;
+    a->rhn = rep->nh;
+    a->reply_status = (uint64_t)(uintptr_t)rs;
+    a->mark = (uint64_t)(uintptr_t)rep->mark;
+    return true;
+}
+
+/* After a channel_reply_wait that tried rep's reply (its status rs: 1 if
+ * the kernel never got to it): nothing waits any more, and handles that
+ * didn't go are closed (as idl_reply_write's: a client that is gone, or
+ * whose queue is full, loses its reply). true: the reply failed and the
+ * call ended there, nothing taken: make it again without the reply. */
+static inline bool idl_reply_tried(struct idl_reply *rep, status_t rs)
+{
+    if (rs != OK)
+        idl_close_all(rep->hs, rep->nh);
+    rep->ch = HANDLE_INVALID;
+    rep->nh = 0;
+    return rs != 1 && rs != OK && rs != ERR_PEER_CLOSED;
+}
+
+/* Server: idl_take, sending the reply waiting in *rep first in the same
+ * system call (channel_reply_wait, its wait 0: it never waits), whatever
+ * channel that reply is for. The reply's mark is set once it went out,
+ * before the read. Results as idl_take's (ERR_SHOULD_WAIT: nothing is
+ * queued, and the reply went out); *rep is empty after. */
+static inline status_t idl_take_after(handle_t ch, const struct idl_slot *slot,
+                                      struct idl_reply *rep)
+{
+    for (;;) {
+        status_t idl_rs = 1;   /* never a status: the reply wasn't tried */
+        __atomic_store_n(slot->n, 0, __ATOMIC_RELEASE);
+        *slot->nh = 0;
+        struct channel_reply_wait_args idl_a = {
+            .wait = ch,
+            .bytes = (uint64_t)(uintptr_t)slot->q,
+            .bytes_cap = slot->qcap,
+            .handles = (uint64_t)(uintptr_t)slot->hs,
+            .handles_cap = slot->hcap,
+            .actual_bytes = (uint64_t)(uintptr_t)slot->n,
+            .actual_handles = (uint64_t)(uintptr_t)slot->nh,
+            .flags = CHANNEL_REPLY_WAIT_TIMEOUT,
+            .deadline_ns = 0,
+        };
+        bool idl_reply = idl_reply_args(rep, &idl_a, &idl_rs);
+        status_t idl_st = drv_channel_reply_wait(&idl_a);
+        if (idl_reply && idl_reply_tried(rep, idl_rs))
+            continue;
+        if (idl_st == ERR_TIMED_OUT)
+            idl_st = ERR_SHOULD_WAIT;   /* a wait of 0: nothing was queued */
+        return idl_taken(ch, slot, idl_st);
+    }
+}
+
+/* Server: drv_port_wait, sending the reply waiting in *rep first in the
+ * same system call (channel_reply_wait on the port). Results as
+ * port_wait's; *rep is empty after. */
+static inline status_t idl_wait_after(handle_t port, uint64_t deadline_ns,
+                                      struct port_packet *pkt, struct idl_reply *rep)
+{
+    for (;;) {
+        status_t idl_rs = 1;
+        struct channel_reply_wait_args idl_a = {
+            .wait = port, .packet = (uint64_t)(uintptr_t)pkt, .deadline_ns = deadline_ns,
+        };
+        if (!idl_reply_args(rep, &idl_a, &idl_rs))
+            return drv_port_wait(port, deadline_ns, pkt);
+        status_t idl_st = drv_channel_reply_wait(&idl_a);
+        if (!idl_reply_tried(rep, idl_rs))
+            return idl_st;
+    }
+}
+
+/* Server: the reply waiting in *rep (if any) out now, in a system call of
+ * its own: a channel_reply_wait on the reply's own channel with no room
+ * for a message and a wait of 0, so a request queued there stays queued
+ * (but one of 0 bytes and no handles, which no protocol answers, is taken
+ * and so dropped). The reply's mark is set once it went out. true: a
+ * message may be queued on that channel (or it can't be told: the reply
+ * failed); false: nothing is, or nothing waited. */
+static inline bool idl_reply_flush(struct idl_reply *rep)
+{
+    status_t idl_rs = 1;
+    struct channel_reply_wait_args idl_a = {
+        .flags = CHANNEL_REPLY_WAIT_TIMEOUT, .deadline_ns = 0,
+    };
+    if (!idl_reply_args(rep, &idl_a, &idl_rs))
+        return false;
+    idl_a.wait = rep->ch;
+    status_t idl_st = drv_channel_reply_wait(&idl_a);
+    if (idl_reply_tried(rep, idl_rs))
+        return true;
+    return idl_st == OK || idl_st == ERR_BUFFER_TOO_SMALL;
+}
+
+/* Server: the request in slot carried handles: answered ERR_INVALID_ARGS
+ * into slot->r without its handler seeing it. The reply's length. */
+static inline uint32_t idl_refuse(const struct idl_slot *slot)
+{
+    struct idl_rep_hdr *idl_r = (struct idl_rep_hdr *)slot->r;
+    idl_r->txid = ((const struct idl_req_hdr *)slot->q)->txid;
+    idl_r->status = ERR_INVALID_ARGS;
+    return sizeof(*idl_r);
+}
+
 /* ---- answering later (a `later` method, or a loop of your own) ------- */
 
 /* A request to be answered later: the channel it came on (not owned:

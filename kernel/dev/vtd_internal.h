@@ -308,3 +308,6 @@ struct vtd_fault_counts {
 /* Count one fault of (unit, sid): its count now (1 = the first), or 0 when
  * it has no entry and dev[] is full (counted in `other`). Pure. */
 uint64_t vtd_fault_counts_add(struct vtd_fault_counts *c, uint32_t unit, uint16_t sid);
+/* The log thread's per-requester fault counts, for the `iommu` command. A
+ * reader races benignly with the thread that writes it. */
+const struct vtd_fault_counts *vtd_fault_counts_get(void);

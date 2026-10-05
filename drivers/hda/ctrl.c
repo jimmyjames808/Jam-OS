@@ -170,6 +170,7 @@ static status_t ring_page(struct hda *h, uint64_t *addr)
         return st;
     }
     h->ring_pinned = true;
+    h->ring_addr = *addr;
     h->corb = m;
     h->rirb = (volatile uint64_t *)((uint8_t *)m + RIRB_OFF);
     return OK;

@@ -145,7 +145,7 @@ int main(int argc, char **argv)
             continue;
         state_commit(m);
         struct port_packet p;
-        status_t st = jam_port_wait(m->port, deadline, &p);
+        status_t st = idl_wait_after(m->port, deadline, &p, &m->reply);   /* a reply goes first */
         if (st == OK)
             packet(m, &p);
         else if (st != ERR_TIMED_OUT)

@@ -77,6 +77,16 @@ void iommu_jump_off(void);
 /* Does any unit translate (iommu_boot turned it on)? Lock-free. */
 bool iommu_translating(void);
 
+/* Print, through kprintf, the state of the IOMMU for the `iommu` debug
+ * command (kernel/debug/dbgcmd.c): each started unit (its registers,
+ * translation/interrupt-remapping/queue state, the invalidation queue's
+ * counters and faults), the domains each covered function's context entry
+ * names and their mapped page counts, the per-requester DMA fault counts,
+ * and the interrupt remapping table's entries in use. Says so and stops
+ * when no unit translates (booted without iommu=on). Thread context; takes
+ * each unit's context mutex while it reads. */
+void iommu_report(void);
+
 /* dev's context entry to its unit's pass-through domain (all of RAM). For
  * the tests only: a driver's function gets its dma_cap's own domain. OK at
  * once when dev isn't translated. ERR_TIMED_OUT, ERR_IO (the invalidation

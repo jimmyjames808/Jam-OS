@@ -103,6 +103,36 @@ macOS runs gets their files (`System Volume Information`, `.Spotlight-V100`,
 | 02:00.0 | Crucial NVMe, c0a9:5421 (MSI 8, MSI-X 9) | not used: storage is the USB stick; no driver planned |
 | | SATA, SMBus, I2C/SPI functions, 6 bridges | |
 
+## The IOMMU (VT-d)
+
+From the read-only probe at a cold boot (2026-10-04, build b7713bd,
+boot-2026-10-04_21-\*; `dmesg | grep -E 'vtd:|acpi:'`), the facts M11
+([docs/M11-PLAN.md](M11-PLAN.md)) is built against:
+
+- **One remapping unit**, registers at **0xfed91000** (one page), segment
+  0, with INCLUDE_PCI_ALL: it covers every PCI function (the iGPU is
+  disabled in the firmware, so there is no second unit for it). Its device
+  scopes name the PCH's **I/O APIC (id 2, requester 00:1e.7)** and **HPET
+  (0, 00:1e.6)**. **No RMRR**, ATSR, SATC or ANDD: no device keeps a
+  reserved region across the handover.
+- **CAP d2008c40660462, ECAP f050da**: 256 domain ids, 4-level page tables
+  (48-bit), 39-bit guest addresses (MGAW), caching mode **off** (CM 0),
+  write-buffer flush **off** (RWBF 0), page-selective invalidation (PSI 1,
+  MAMV 18), interrupt-entry mask MHMV 15, page walks **not coherent** with
+  the CPU's caches (so the kernel flushes every table line it writes),
+  queued invalidation, interrupt remapping with x2APIC ids (EIM),
+  pass-through and snoop control all present; one fault-recording register
+  at offset 0x400.
+- At a cold boot the firmware leaves **translation, interrupt remapping
+  and queued invalidation all off**, no fault recorded, the fault event
+  masked; the highest APIC id is 86 (under 255, so the fault event's own
+  interrupt needs no remapping). So Jam OS builds its own tables from
+  scratch on an `iommu=on` boot.
+
+QEMU's emulated unit differs (registers at 0xfed90000, caching mode on, an
+explicit endpoint scope per function instead of INCLUDE_PCI_ALL, no RMRR):
+what only the PC proves is in [M11-PLAN.md](M11-PLAN.md#what-only-the-pc-can-show).
+
 ## The network
 
 **The chip** (05:00.0, 10ec:8125 rev 05): a Realtek RTL8125B, by its own
