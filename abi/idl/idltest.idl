@@ -1,7 +1,7 @@
 # idltest: the test protocol of answering later and of calls that don't
 # wait (tools/genidl.py's `later` methods, <proto>_<method>_send and
 # _result, <proto>_reply_<method>), and of requests in slots
-# (<proto>_take, <proto>_run, `idempotent`). Only utest serves and calls
+# (<proto>_take_slot, <proto>_run_slot, `idempotent`). Only utest serves and calls
 # it, in one process (user/tests/utest/idl.c, idlslot.c).
 #
 # Reconnect: a test server keeps nothing; a client whose call fails with

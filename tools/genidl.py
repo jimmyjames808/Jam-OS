@@ -30,6 +30,15 @@ type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
 
 Either list may be empty: `()`.
 
+The file's own comment, above the `protocol` line, must state the
+protocol's restart rule: what a client sees when the server dies and is
+started again, in a paragraph that begins `Restart:` or `Reconnect:`
+(also with a note in brackets before the colon: `Reconnect (devmgr's
+supervision):`). Either the restart is not seen (a service that outlives
+its process, ARCHITECTURE.md "Services that outlive their process"), or
+it is ERR_PEER_CLOSED and the paragraph says what to open again and what
+is lost. A file without one is refused.
+
 A client calls a method four ways:
     <proto>_<method>(ch, args..., &results...)    waits for ever
     <proto>_<method>_until(ch, deadline_ns, ...)  until a deadline
@@ -118,6 +127,8 @@ import sys
 IDL_DIR = "abi/idl"
 OUT_DIR = "drivers/include/idl"
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
+# The start of a file comment's restart rule ("Restart:", "Reconnect (note):").
+RESTART_RULE = re.compile(r"(Restart|Reconnect)( \([^)]*\))?:")
 SCALARS = {"u8": ("uint8_t", 1), "u16": ("uint16_t", 2), "u32": ("uint32_t", 4),
            "u64": ("uint64_t", 8), "i8": ("int8_t", 1), "i16": ("int16_t", 2),
            "i32": ("int32_t", 4), "i64": ("int64_t", 8)}
@@ -223,10 +234,13 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
 def parse(src):
     name, pid, methods, doc = None, None, [], []
     ordinals, names = set(), set()
+    restart_rule = False
     for lineno, raw in enumerate(open(src), 1):
         line = raw.strip()
         if line.startswith("#"):
             doc.append(line[1:].strip())
+            if name is None and RESTART_RULE.match(line[1:].strip()):
+                restart_rule = True
             continue
         line = line.split("#", 1)[0].strip()
         if not line:
@@ -244,6 +258,9 @@ def parse(src):
                 fail(src, lineno, f"protocol id {pid} not in 1..65535")
             if os.path.basename(src) != name + ".idl":
                 fail(src, lineno, f"protocol '{name}' must live in {name}.idl")
+            if not restart_rule:
+                fail(src, lineno, "the comment above 'protocol' states no restart rule "
+                                  "(a paragraph beginning 'Restart:' or 'Reconnect:')")
             doc = []
             continue
         if name is None:

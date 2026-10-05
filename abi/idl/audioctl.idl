@@ -6,11 +6,12 @@
 # connect, as for `audio`).
 # Format: see tools/genidl.py. The plan is docs/history/A2-PLAN.md.
 #
-# Reconnect: an opener's channel ends with the mixer that made it
-# (ERR_PEER_CLOSED); open /svc/audioctl again (svc_get does), whose
-# connect waits on the shared channel init holds across mixer restarts.
-# Volumes are not kept across a restart: a new mixer starts with every
-# volume at 0 dB.
+# Restart: as audio's: the mixer's restart is not seen, every opener's
+# channel is kept and the volumes are in the state the successor carries
+# on from. After ERR_PEER_CLOSED (init gave up on the mixer, or a fresh
+# start) open /svc/audioctl again (svc_get does), whose connect waits on
+# the shared channel init holds; a fresh mixer knows none of the old
+# one's streams.
 
 protocol audioctl 23
 

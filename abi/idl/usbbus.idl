@@ -4,6 +4,11 @@
 # `usb` command). Class drivers never see it: they get one `usb`
 # interface channel each (usb.idl). Format: see tools/genidl.py.
 #
+# Restart: usb-bus keeps nothing across a restart. ERR_PEER_CLOSED: it
+# ended; get the channel from devmgr again (DEVMGR_GET_SERVICE, which
+# hands out the one the restart will serve). Every device is enumerated
+# again with a new id.
+#
 # Devices are named by `id`, unique for the driver's run (a device
 # unplugged and plugged back gets a new one). speed as in usb.idl: 1 full,
 # 2 low, 3 high, 4 super, 5 super+. path: the root port, then the hub port
