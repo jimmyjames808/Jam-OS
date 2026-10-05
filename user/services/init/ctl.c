@@ -1,8 +1,12 @@
 /* init's control channels: the initctl protocol (abi/idl/initctl.idl).
  *
- * Two holders, two channels: the shell's answers everything, the
- * console's only `reboot` (Ctrl+Alt+Del). Which requests a channel takes
- * is a property of the channel, never of who is asking.
+ * A channel per holder: the shell's answers everything, each terminal's
+ * console's only `reboot` (Ctrl+Alt+Del) and `terminal` (Super+Enter).
+ * Which requests a channel takes is a property of the channel, never of
+ * who is asking.
+ *
+ * terminal opens another terminal (terms.c): a console in a window of
+ * its own with a shell of its own, if a compositor runs.
  *
  * kill <name> reaches the processes init has authority over: its own
  * services (shell.c: their jobs are init's), and, through devmgr's KILL,
@@ -342,10 +346,19 @@ static status_t op_update_offer(void *ctx, handle_t *out_offer)
     return update_offer_new(ctl_port, KEY_UPDATE, out_offer);
 }
 
+static status_t op_terminal(void *ctx, uint8_t *out_number)
+{
+    (void)ctx;   /* every holder: the shell's and the consoles' */
+    status_t st = terms_open(out_number);
+    if (st != OK)
+        printf("init: no new terminal: %s\n", status_str(st));
+    return st;
+}
+
 static const struct initctl_ops ops = {
     .kill = op_kill, .sync = op_sync, .reboot = op_reboot, .mount = op_mount,
     .shell_ready = op_shell_ready, .reboot_firmware = op_reboot_firmware,
-    .kernel_load = op_kernel_load, .update_offer = op_update_offer,
+    .kernel_load = op_kernel_load, .update_offer = op_update_offer, .terminal = op_terminal,
 };
 
 static void ctl_close(struct ctl *c)

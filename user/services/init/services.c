@@ -504,21 +504,22 @@ static status_t start_serve(void)
 
 status_t services_start(unsigned i)
 {
-    return i == BOOTFS     ? start_bootfs()
-           : i == CONSOLE  ? terms_start_console()
-           : i == SPLASH   ? start_splash()
-           : i == SERIALIN ? start_serialin()
-           : i == DEVMGR   ? start_devmgr()
-           : i == MIXER    ? start_mixer()
-           : i == MUSIC    ? start_music()
-           : i == NETSTACK ? net_start()
-           : i == DHCP     ? net_dhcp_start()
-           : i == DNS      ? net_dns_start()
-           : i == LOGD     ? start_logd()
-           : i == NETLOG   ? net_netlog_start()
-           : i == SNTP     ? net_sntp_start()
-           : i == SERVE    ? start_serve()
-                           : terms_start_shell();
+    if (term_of(i) >= 0)
+        return terms_start(i);
+    return i == BOOTFS       ? start_bootfs()
+           : i == COMPOSITOR ? comp_start()
+           : i == SPLASH     ? start_splash()
+           : i == SERIALIN   ? start_serialin()
+           : i == DEVMGR     ? start_devmgr()
+           : i == MIXER      ? start_mixer()
+           : i == MUSIC      ? start_music()
+           : i == NETSTACK   ? net_start()
+           : i == DHCP       ? net_dhcp_start()
+           : i == DNS        ? net_dns_start()
+           : i == LOGD       ? start_logd()
+           : i == NETLOG     ? net_netlog_start()
+           : i == SNTP       ? net_sntp_start()
+                             : start_serve();
 }
 
 void services_closed(unsigned i)
@@ -553,6 +554,7 @@ void services_closed(unsigned i)
 
 void services_given_up(unsigned i)
 {
+    terms_given_up(i);   /* an extra terminal closes */
     net_service_given_up(i);   /* the DHCP client's and the resolver's */
     if (i == NETSTACK) {
         net_given_up();
@@ -591,6 +593,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     port = loop_port;
     nousb = no_usb;
     terms_init(port, splash, shell_arg);
+    comp_init(init_comp);
     make_audio_channels();
     net_init(port);
     if (jam_channel_create(&music_cli, &music_srv) != OK)

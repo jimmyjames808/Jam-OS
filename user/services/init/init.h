@@ -81,9 +81,10 @@ void     mounts_settle(void);
 
 /* ---- ctl.c ----------------------------------------------------------------------- */
 
-/* Who holds a control channel: the shell may ask everything, the console
- * only reboot. */
-enum { CTL_SHELL, CTL_CONSOLE, CTL_COUNT };
+/* Who holds a control channel: the shell may ask everything, each
+ * terminal's console (CTL_CONSOLE + its index) only reboot and terminal. */
+#define TERM_MAX 8   /* terminals at most, the first included (terms.c) */
+enum { CTL_SHELL, CTL_CONSOLE, CTL_COUNT = CTL_CONSOLE + TERM_MAX };
 
 /* A new control channel for holder `who`, replacing its old one (whose
  * client ends see ERR_PEER_CLOSED). *client: the end to hand over. Its
@@ -117,9 +118,14 @@ void     splash_shell_ready(void);
 
 /* ---- shell.c and services.c: shell mode's services --------------------------------- */
 
-/* The services, in the order they are started. */
-enum { BOOTFS, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, DHCP, DNS, LOGD, NETLOG,
-       SNTP, SERVE, SHELL, NSVC };
+/* The services, in the order they are started; then the other terminals'
+ * consoles and shells (terms.c), a pair each, started only when one is
+ * opened. */
+enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, DHCP, DNS,
+       LOGD, NETLOG, SNTP, SERVE, SHELL, TERMS, NSVC = TERMS + 2 * (TERM_MAX - 1) };
+/* Terminal k's (0: the first, the system's) console and shell. */
+#define TERM_CONSOLE(k) ((k) ? TERMS + 2 * ((k) - 1) : CONSOLE)
+#define TERM_SHELL(k)   ((k) ? TERMS + 2 * ((k) - 1) + 1 : SHELL)
 
 /* Port keys of shell mode's loop: a service's index (its process ended),
  * or one of these. */
@@ -192,17 +198,49 @@ handle_t services_root_with(rights_t rights);
  * the name away. Followers hear of it with the next tell_mounts. */
 void     services_publish(const char *name, handle_t h, bool connect);
 
-/* ---- terms.c: the terminal: the console and the shell ------------------------------ */
+/* ---- terms.c: the terminals: a console and a shell each --------------------------- */
 
 /* Set up once before the loop: the loop's port, whether the splash plays
  * first (the first console starts quiet, every console with "nolog"),
- * the first shell's argument. */
+ * the first shell's argument; the other terminals' services, closed. */
 void     terms_init(handle_t port, bool splash, const char *shell_arg);
-/* Start the console, the shell (services_start's, for CONSOLE and SHELL). */
-status_t terms_start_console(void);
-status_t terms_start_shell(void);
+/* Which terminal service i belongs to (0: the first), -1 for none. */
+int      term_of(unsigned i);
+/* Start service i, a terminal's console or shell (services_start's). */
+status_t terms_start(unsigned i);
+/* The console of service i's terminal runs (its shell may start). */
+bool     terms_console_up(unsigned i);
+/* A terminal other than the first is open (or closing). */
+bool     terms_extra_open(void);
 /* Service i ended: the console's or the shell's ends that init kept go. */
 void     terms_closed(unsigned i);
+/* Service i ended (after terms_closed), killed or with code: true if its
+ * terminal closes (an extra one's window closed, or its shell's `exit`)
+ * or is closing: it is not started again. */
+bool     terms_ended(unsigned i, bool killed, int64_t code);
+/* Service i is given up on: an extra terminal closes. */
+void     terms_given_up(unsigned i);
+/* initctl.terminal: open another terminal; *number: its number (2 and
+ * up). ERR_NOT_SUPPORTED: no compositor; ERR_NO_RESOURCES: TERM_MAX are
+ * open. Its console and shell start at the loop's next turn. */
+status_t terms_open(uint8_t *number);
+/* "console-<n>", "shell-<n>" (n 2 to TERM_MAX): terminal n's service i. */
+bool     terms_named(const char *name, unsigned *i);
+
+/* ---- comp.c: the compositor (the boot word `comp`) ---------------------------------- */
+
+/* Set up once before the loop: on (the word given): /svc/wayland's
+ * channel made; off: the compositor is not started this boot. */
+void     comp_init(bool on);
+/* A compositor draws the screen this boot. */
+bool     comp_on(void);
+/* Start it (services_start's, for COMPOSITOR). */
+status_t comp_start(void);
+/* A duplicate of /svc/wayland's client end for a console, HANDLE_INVALID
+ * without a compositor. */
+handle_t comp_wayland(void);
+/* The boot word `comp` (main.c). */
+extern bool init_comp;
 
 /* services.c: what shell mode's services share, set up once before the
  * loop: the loop's port, the safe mode word, whether the splash plays

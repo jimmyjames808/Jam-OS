@@ -4,11 +4,12 @@
  * init starts and then supervises fifteen services, each in a job of its
  * own under init's: the bootfs server, the console, the boot splash,
  * serialin, devmgr, the mixer, the music player, netstack, the DHCP
- * client, the resolver, logd, netlog, sntp, the file server and the shell.
- * How each one is
- * started and what it is given is in services.c (the network's in net.c);
- * this file is the order,
- * the namespace they follow and the restarts.
+ * client, the resolver, logd, netlog, sntp, the file server and the shell;
+ * with the boot word `comp`, the compositor first (comp.c), and then
+ * each terminal opened later, a console and a shell (terms.c). How each
+ * one is started and what it is given is in services.c (the network's in
+ * net.c, the terminals' in terms.c); this file is the order, the
+ * namespace they follow and the restarts.
  *
  * init's own namespace holds its mounts (/boot, and what devmgr mounts:
  * mounts.c) and the services it publishes under /svc (services.c). The
@@ -31,9 +32,11 @@
  *     their ends change for the others.
  * Restarts back off from 100 ms to 5 s; one that ends more than 10 times
  * in a minute (from its first end) is given up on (a line in the log and
- * the RESULTS box), but for the console and the shell: without them nobody
- * can use the machine until a reset, so they are started again for good,
- * every 5 s at worst (said once a minute). The console's clients (serialin,
+ * the RESULTS box), but for the first terminal's console and shell, and
+ * the compositor they show in: without them nobody can use the machine
+ * until a reset, so they are started again for good, every 5 s at worst
+ * (said once a minute). Another terminal given up on closes (terms.c),
+ * as one does whose window is closed or whose shell ends with `exit`. The console's clients (serialin,
  * the shell) end when it does, often before init has seen the console's
  * own end: an end of theirs while the console is gone doesn't count, and
  * they start again at once with the new console.
@@ -49,7 +52,8 @@
 #define GIVE_UP_WINDOW (60 * NS_PER_S)
 
 struct svc svcs[NSVC] = {
-    [BOOTFS] = { BOOTFS_PATH }, [CONSOLE] = { "bin/console" }, [SPLASH] = { "bin/splash" },
+    [BOOTFS] = { BOOTFS_PATH }, [COMPOSITOR] = { "bin/compositor" },
+    [CONSOLE] = { "bin/console" }, [SPLASH] = { "bin/splash" },
     [SERIALIN] = { "bin/serialin" },
     [DEVMGR] = { "bin/devmgr" }, [MIXER] = { "bin/mixer" }, [MUSIC] = { "bin/music" },
     [NETSTACK] = { "bin/netstack" }, [DHCP] = { "bin/dhcp" }, [DNS] = { "bin/dns" },
@@ -198,15 +202,25 @@ void tell_mounts(void)
             tell_follower(i);
 }
 
+/* Service i is called name: its program's ("console": the first that
+ * runs), or an extra terminal's ("console-2", terms_named). */
+static bool named(unsigned i, const char *name)
+{
+    unsigned t;
+    if (terms_named(name, &t))
+        return t == i;
+    const char *last = svcs[i].path;
+    for (const char *p = svcs[i].path; *p; p++)
+        if (*p == '/')
+            last = p + 1;
+    return !strcmp(last, name);
+}
+
 status_t shell_kill_service(const char *name, uint64_t *koid)
 {
     for (unsigned i = 0; i < NSVC; i++) {
         struct svc *s = &svcs[i];
-        const char *last = s->path;
-        for (const char *p = s->path; *p; p++)
-            if (*p == '/')
-                last = p + 1;
-        if (strcmp(last, name) || !s->running)
+        if (!named(i, name) || !s->running)
             continue;
         struct process_info info;
         status_t st = jam_process_get_info(s->proc, &info);
@@ -222,21 +236,24 @@ status_t shell_kill_service(const char *name, uint64_t *koid)
     return ERR_NOT_FOUND;
 }
 
-/* The services init never gives up on, however often they end. */
+/* The services init never gives up on, however often they end: the first
+ * terminal and, when there is one, the compositor it shows in. */
 static bool never_given_up(unsigned i)
 {
-    return i == CONSOLE || i == SHELL;
+    return i == CONSOLE || i == SHELL || i == COMPOSITOR;
 }
 
-/* Svc i is one of the console's clients and the console has ended (its
- * end may still be on its way to us): i went with it, no fault of its own. */
+/* Svc i is one of a console's clients (serialin, the first's; a shell,
+ * its terminal's) and that console has ended (its end may still be on
+ * its way to us): i went with it, no fault of its own. */
 static bool went_with_console(unsigned i)
 {
-    if (i != SERIALIN && i != SHELL)
+    int k = term_of(i);
+    if (i != SERIALIN && (k < 0 || (unsigned)TERM_SHELL(k) != i))
         return false;
+    struct svc *c = &svcs[i == SERIALIN ? CONSOLE : TERM_CONSOLE(k)];
     signals_t seen;
-    return !svcs[CONSOLE].running ||
-           jam_object_wait_one(svcs[CONSOLE].proc, SIG_TERMINATED, 0, &seen) == OK;
+    return !c->running || jam_object_wait_one(c->proc, SIG_TERMINATED, 0, &seen) == OK;
 }
 
 /* Count svc i's end at t in its minute: true if it may start again. */
@@ -284,9 +301,13 @@ static void ended(unsigned i)
 {
     struct svc *s = &svcs[i];
     struct process_info info;
-    if (jam_process_get_info(s->proc, &info) == OK)
-        printf("init: %s %s %ld\n", s->path, info.killed ? "was killed, code" : "exited with code",
-               (long)info.exit_code);
+    bool got = jam_process_get_info(s->proc, &info) == OK;
+    char term[16] = "";   /* another terminal's: which */
+    if (term_of(i) > 0)
+        snprintf(term, sizeof(term), " (terminal %d)", term_of(i) + 1);
+    if (got)
+        printf("init: %s%s %s %ld\n", s->path, term,
+               info.killed ? "was killed, code" : "exited with code", (long)info.exit_code);
     jam_job_kill(s->job);   /* anything it started (devmgr: every driver) */
     jam_handle_close(s->proc);
     jam_handle_close(s->job);
@@ -309,6 +330,8 @@ static void ended(unsigned i)
         s->given_up = true;
         return;
     }
+    if (terms_ended(i, got && info.killed, got ? info.exit_code : -1))
+        return;   /* an extra terminal closes */
     bool took = went_with_console(i);
     bool counted = !took && !(spare_kept(i) && s->kill_at);
     if (counted && !count_end(i, t))
@@ -350,8 +373,10 @@ static uint64_t start_due(uint64_t t)
         struct svc *s = &svcs[i];
         if (s->running || s->given_up)
             continue;
-        if (i != CONSOLE && i != BOOTFS && i != LOGD && !services_console_up())
+        if (i != CONSOLE && i != BOOTFS && i != COMPOSITOR && i != LOGD && !services_console_up())
             continue;   /* waits for the console */
+        if (term_of(i) > 0 && (unsigned)TERM_SHELL(term_of(i)) == i && !terms_console_up(i))
+            continue;   /* an extra terminal's shell waits for its console */
         if ((i == LOGD || i == NETLOG || i == SNTP) && !mounted(DATA_MOUNT))
             continue;   /* waits for /data (netlog, sntp: their settings): a mount's packet
                          * wakes the loop */
@@ -414,6 +439,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     }
     writers_init();
     services_init(port, no_usb, splash, shell_arg);
+    for (unsigned k = 1; k < TERM_MAX; k++)
+        followers[TERM_SHELL(k)].only = NS_ALL;   /* every terminal's shell: all of it */
     spare_init(port, !init_nospare);
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);
