@@ -1,8 +1,10 @@
 # input: an input source (a HID driver, the serial port) feeding the
 # console. The console serves it on each channel console.connect_input
-# hands out; the source calls it. If the channel's peer closes (the
-# console restarted), a HID driver exits 0 and devmgr rebinds it, which
-# connects it to the new console. Format: see tools/genidl.py.
+# hands out; the source calls it. Format: see tools/genidl.py.
+#
+# Restart: if the channel's peer closes (the console restarted), a HID
+# driver exits 0 and devmgr rebinds it, which connects it to the new
+# console. Keys sent to the old console and not yet taken are lost.
 #
 # usage: the HID Keyboard/Keypad page (0x07) usage id (4 = a ... 0x39 =
 # Caps Lock, 0x4c = Delete, 0x50..0x52 arrows, 0xe0..0xe7 modifiers).

@@ -7,7 +7,9 @@
 # protocol's method. The music player does (user/services/music).
 # Reconnect: a channel from connect sees ERR_PEER_CLOSED when the service
 # ends; open the service again (svc_open), which calls connect on the
-# shared channel the restarted service serves.
+# shared channel the restarted service serves. A service that outlives
+# its process (the mixer) keeps each connect's channel across its
+# restarts instead: its clients see nothing.
 # Format: see tools/genidl.py.
 
 protocol svc 25

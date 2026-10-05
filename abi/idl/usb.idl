@@ -1,9 +1,12 @@
 # usb: one USB interface, as usb-bus (drivers/usb-bus) serves it to the
 # class driver devmgr bound to that interface. The class driver can
-# only reach its own interface through this channel. When the device is
-# unplugged (or usb-bus restarts) the channel's peer closes: the class
-# driver exits 0, and devmgr binds a new one when the interface comes back.
+# only reach its own interface through this channel.
 # Format: see tools/genidl.py.
+#
+# Restart: when the device is unplugged (or usb-bus restarts, which
+# keeps nothing: every device is enumerated again) the channel's peer
+# closes: the class driver exits 0, and devmgr binds a new one when the
+# interface comes back.
 #
 # speed: 1 full (12 Mb/s), 2 low (1.5), 3 high (480), 4 super (5 Gb/s),
 # 5 super+ (10). Descriptor and control data are at most 1024 bytes.

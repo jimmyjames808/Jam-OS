@@ -11,12 +11,19 @@
 # The stream methods are named stream_* so the generated audio_stream_*
 # calls stay clear of the client library's audio_* (<audio.h>).
 #
-# Reconnect: an opener's channel ends with the mixer that made it
-# (ERR_PEER_CLOSED); open /svc/audio again (svc_get does), whose connect
-# waits (bounded by the caller's deadline) on the shared channel, which
-# init holds across mixer restarts, for the restarted mixer. A stream does
-# not survive the mixer either: its channel reports ERR_PEER_CLOSED; close
-# the stream and open a new one.
+# Restart: the mixer's restart is not seen (ARCHITECTURE.md, "Services
+# that outlive their process"): init keeps the shared channel, and init's
+# keeper every opener's channel and every stream's channel, ring and
+# event, so a client's handles never change; the successor carries on
+# from the last committed period (the same samples, at the same place in
+# the driver's ring, before the sound written ahead runs out) and
+# finishes the request in progress exactly once (one in progress at two
+# crashes is answered ERR_INTERNAL). A call made meanwhile waits in its
+# channel. ERR_PEER_CLOSED means init gave up on the mixer (ten crashes
+# in a minute) or a successor couldn't carry on from the state and
+# started fresh (said in the log): then open /svc/audio again (svc_get
+# does), whose connect waits (bounded by the caller's deadline) on the
+# shared channel for the next mixer, and open a new stream.
 
 protocol audio 22
 

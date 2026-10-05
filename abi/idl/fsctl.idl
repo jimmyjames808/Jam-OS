@@ -1,9 +1,14 @@
 # fsctl: a filesystem service's control channel, served by fat
 # (user/services/fat) to whoever started it with one (<fatsvc.h>:
 # FAT_SR_CTL): devmgr, which keeps the client end to itself. What it allows
-# is not for a filesystem's clients, so it is not part of `fs`. After
-# ERR_PEER_CLOSED the service is gone; its next start has a new channel.
+# is not for a filesystem's clients, so it is not part of `fs`.
 # Format: see tools/genidl.py.
+#
+# Restart: this channel is not kept: devmgr makes a new one for each
+# instance, a successor too, so after ERR_PEER_CLOSED the instance is gone
+# and the next has a new channel. A stop in order also ends what devmgr
+# keeps for the mount (the `fs` channel, the state, the keeper's handles),
+# so the next start is a fresh one.
 
 protocol fsctl 20
 

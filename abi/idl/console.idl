@@ -1,9 +1,12 @@
 # console: the console process (user/services/console) serves this to
 # programs (the shell), devmgr and init. It owns the screen after boot (the
 # kernel draws until the console takes the framebuffer, and again while it
-# is gone; a panic always draws). If the channel's peer closes (the console
-# restarted), clients ask devmgr/init for the new one. Format: see
-# tools/genidl.py.
+# is gone; a panic always draws). Format: see tools/genidl.py.
+#
+# Restart: if the channel's peer closes (the console restarted), clients
+# ask devmgr/init for the new one. The console keeps nothing across a
+# restart: what was on the screen, a lent screen and input connections
+# are made again.
 
 protocol console 12
 

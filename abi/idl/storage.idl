@@ -3,9 +3,13 @@
 # listed here, and each is opened as its own `block` channel: nothing is
 # ever given the whole disk, with one exception: a disk with no partition
 # table whose block 0 is a FAT boot sector (a "superfloppy") is listed as
-# one partition of type 0x00 that covers it. When the stick goes away the channel's peer
-# closes, and so does every `block` channel opened from it.
+# one partition of type 0x00 that covers it.
 # Format: see tools/genidl.py.
+#
+# Restart: when the stick goes away, or usb-storage ends, the channel's
+# peer closes, and so does every `block` channel opened from it.
+# usb-storage keeps nothing across a restart: devmgr finds the disk again
+# as a new one (its partitions listed and opened again).
 
 protocol storage 14
 

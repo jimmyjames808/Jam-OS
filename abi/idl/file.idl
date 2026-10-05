@@ -3,9 +3,16 @@
 # offset 0, write takes what the client put there. Transfers larger than
 # the buffer (64 KiB) are split by the client (libos does). Closing the
 # channel closes the file (a written file's directory entry is updated
-# then, as by sync). ERR_PEER_CLOSED: the filesystem service ended; the
-# file is closed, and is opened again through the mount's new `fs` channel.
-# Format: see tools/genidl.py.
+# then, as by sync). Format: see tools/genidl.py.
+#
+# Restart: fat's restart is not seen: devmgr's keeper holds this channel
+# and the buffer VMO across fat's death, the successor carries on with
+# the file as the last answered request left it (an answered write is
+# never lost, synced or not), and the request in progress is finished
+# exactly once. ERR_PEER_CLOSED: the mount went (fs.idl says when), or a
+# successor couldn't carry on from the dead one's state and started
+# fresh (said in the log); the file is closed, and is opened again
+# through the mount's `fs` channel.
 
 protocol file 17
 

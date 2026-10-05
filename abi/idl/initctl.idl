@@ -4,10 +4,11 @@
 # and the test programs whose lists ask for it, <wants.h>). The console
 # holds another (startup role SR_USER + 8: reboot only; the rest
 # ERR_ACCESS_DENIED), so what a holder may ask is decided by which channel
-# it holds. After ERR_PEER_CLOSED there is nothing to
-# reconnect to: init is gone, and with it whoever would restart anything;
-# `reboot` callers fall back to the reboot system call.
-# Format: see tools/genidl.py.
+# it holds. Format: see tools/genidl.py.
+#
+# Restart: none. After ERR_PEER_CLOSED there is nothing to reconnect to:
+# init is gone, and with it whoever would restart anything; `reboot`
+# callers fall back to the reboot system call.
 
 protocol initctl 18
 
