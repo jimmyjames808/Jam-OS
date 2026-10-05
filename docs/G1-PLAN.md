@@ -98,7 +98,12 @@ differs from the recommendation below, this note wins:
   double-click) slides onto a new screen of its own next to the one it
   came from, with no top bar, frame or wallpaper; leaving full screen
   slides it back to its place, and that screen goes away. The top bar
-  lists the current screen's windows. Tracks D1 (the look) and D2 (minimise,
+  lists the current screen's windows. The top bar floats with rounded
+  ends over a blurred copy of the wallpaper (made once per screen size,
+  so it costs nothing per frame); windows never go under it: the space
+  it takes (with the gap below it) is outside every window's reach, in
+  floating moves, maximise and tiling alike (full screen has no bar).
+  Tracks D1 (the look) and D2 (minimise,
   the top bar, virtual screens, animations) build these after C3 (added to the stages
   when they start).
 
