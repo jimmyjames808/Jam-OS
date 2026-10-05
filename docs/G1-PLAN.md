@@ -130,6 +130,16 @@ differs from the recommendation below, this note wins:
   animation that is interrupted (another key, a second click) jumps to
   its end. Animations run at the compositor's paint rate and only damage
   the boxes they touch.
+  The status icons and the clock open frosted popovers under the strip,
+  each popover's right edge lined up with the right edge of what opened
+  it (clicking elsewhere closes it): volume (a slider on the mixer's
+  volume, the output, what's playing), network (link state, address,
+  NIC and speed, live rates), the clock (time, full date, a month
+  calendar, weeks starting Monday). Notifications: frosted cards stacked
+  in the top right under the strip (icon tile, title, one line), fading
+  after about 5 s unless they carry buttons (e.g. "Update written ...
+  Reboot / Later"), which stay until answered; every notice still goes
+  to the first terminal too. No overview of all screens in G1.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
