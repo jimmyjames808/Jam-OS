@@ -640,6 +640,7 @@ static const struct {
     { "fat_cache", t_fat_cache },
     { "fat_gather", t_fat_gather },
     { "fat_truncate_steps", t_fat_truncate_steps },
+    { "fat_ctl_queued", t_fat_ctl_queued },
     { "fat_restart_steps", t_fat_restart_steps },
     { "fat_restart_handles", t_fat_restart_handles },
     { "fat_restart_bad_request", t_fat_restart_bad_request },
