@@ -21,6 +21,11 @@
 
 #define MASK_SAMPLES 16   /* each way: 256 points a pixel */
 
+_Static_assert(LOOK_RADIUS <= MASK_CORNER_MAX && LOOK_TILE_RADIUS <= MASK_CORNER_MAX,
+               "room for each corner mask");
+_Static_assert(DECO_OUTLINE < LOOK_RADIUS && DECO_BORDER < LOOK_TILE_RADIUS,
+               "an edge band inside its corner");
+
 struct corner_mask mask_float, mask_tile;
 uint8_t mask_disc[LOOK_BTN_D * LOOK_BTN_D];
 uint8_t mask_symbol[TITLE_BUTTONS][LOOK_BTN_D * LOOK_BTN_D];

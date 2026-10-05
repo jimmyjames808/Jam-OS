@@ -27,6 +27,15 @@
 
 #define T_ONE 65536u   /* the edge profile's 1 */
 
+/* An odd box keeps the kernel centred on a pixel; a reach past the
+ * kernel's half (plus the centre) would have nothing to sum. */
+_Static_assert(LOOK_SHADOW_BOX % 2 == 1 && LOOK_SHADOW_F_BOX % 2 == 1, "odd box blurs");
+_Static_assert(LOOK_SHADOW_REACH <= (3 * LOOK_SHADOW_BOX - 2) / 2 + 1 &&
+               LOOK_SHADOW_F_REACH <= (3 * LOOK_SHADOW_F_BOX - 2) / 2 + 1,
+               "each shadow's reach within its kernel");
+_Static_assert(LOOK_SHADOW_REACH <= LOOK_SHADOW_REACH_MAX &&
+               LOOK_SHADOW_F_REACH <= LOOK_SHADOW_REACH_MAX, "room for each profile");
+
 /* One shadow's numbers and its edge profile. */
 struct shadow {
     int32_t  reach, dy;
