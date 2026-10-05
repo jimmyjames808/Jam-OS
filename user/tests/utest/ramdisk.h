@@ -35,6 +35,10 @@ struct ramdisk {
     uint32_t reads;         /* requests served, by kind */
     uint32_t writes;
     uint32_t syncs;
+    /* Called on the serving thread after each write has landed in mem
+     * (NULL: none; ramdisk_on_write sets it): a test watching the disk
+     * change write by write, as a death between two of them would leave it. */
+    void   (*on_write)(struct ramdisk *rd, uint64_t lba, uint32_t count);
 
     uint8_t  stack[16384] __attribute__((aligned(16)));   /* the thread's */
 };
@@ -55,6 +59,9 @@ uint32_t ramdisk_syncs(const struct ramdisk *rd);
 void     ramdisk_fail_writes(struct ramdisk *rd, bool on);
 /* Writes fail ERR_IO once `writes` of them were served in all (0: never). */
 void     ramdisk_fail_after(struct ramdisk *rd, uint32_t writes);
+/* fn(rd, lba, count) after every write the server makes (NULL: none). */
+void     ramdisk_on_write(struct ramdisk *rd,
+                          void (*fn)(struct ramdisk *rd, uint64_t lba, uint32_t count));
 /* Every later session ends from the server's side once it has answered
  * `requests` requests (0: never), as a stick pulled at that moment. */
 void     ramdisk_pull_after(struct ramdisk *rd, uint32_t requests);
