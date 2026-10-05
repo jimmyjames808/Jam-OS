@@ -82,6 +82,9 @@ void     keyboard_key(unsigned src, uint16_t usage, uint8_t state, uint8_t mods)
 void     keyboard_text(unsigned src, struct termkeys *t, const uint8_t *bytes, unsigned n);
 /* Source src went: the keys and modifiers it held are released. */
 void     keyboard_source_gone(unsigned src);
+/* KEYMAP_MOD_* for hid's modifier byte, with the locks on now (what a key
+ * types: the desktop's search box). */
+uint32_t keyboard_mods(uint8_t hid_mods);
 /* The focus left w's client's keyboards / arrived on w (enter with the keys held). */
 void     keyboard_leave(struct comp_window *w);
 void     keyboard_enter(struct comp_window *w);

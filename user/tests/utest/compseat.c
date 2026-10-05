@@ -31,9 +31,9 @@ bool cs_start(struct cs *t)
     CHECK_ST(jam_channel_create(&t->ctl, &ctl), OK);
     CHECK_ST(jam_channel_create(&t->init, &init), OK);
     CHECK_ST(new_job(&t->p.job), OK);
-    const char *argv[] = { "bin/compositor", "headless", "size=640x480", "testwin" };
+    const char *argv[] = { "bin/compositor", "headless", "size=640x480", "testwin", "nodesk" };
     struct spawn_handle x[] = { { SR_USER + 0, svc }, { SR_USER + 2, ctl }, { SR_USER + 3, init } };
-    struct spawn_args a = { .path = "bin/compositor", .argc = 4, .argv = argv, .job = t->p.job,
+    struct spawn_args a = { .path = "bin/compositor", .argc = 5, .argv = argv, .job = t->p.job,
                             .extra = x, .nextra = 3 };
     CHECK_ST(spawn(&a, &t->p.proc), OK);
     t->p.w = OUT_W;

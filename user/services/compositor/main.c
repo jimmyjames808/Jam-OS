@@ -23,7 +23,8 @@
  * paint clock, display.hz: 60 by default), `threads=<n>` (painting
  * threads, the loop's included: a few by default), `layout=floating|tiling`
  * (the window layout to start with: init's `display.layout` setting, comp.h
- * WM_LAYOUT_SETTING), and two test powers, which only the starter can
+ * WM_LAYOUT_SETTING), `nodesk` (the window manager alone: no top bar, no
+ * cards, no animations; desk.h), and two test powers, which only the starter can
  * give, never a client, and init never does: `testwin` (testwin.c: a
  * client's surface becomes a window without xdg-shell) and `testscene`
  * followed by its commands (testscene.c: windows with no client).
@@ -42,7 +43,7 @@
  * this one waits for them. */
 #include <fun.h>
 #include <idl/svc.h>
-#include "paint.h"
+#include "desk.h"
 
 #define DEFAULT_W  1280
 #define DEFAULT_H  800
@@ -100,6 +101,7 @@ struct args {
     uint32_t hz, threads;
     int scene_at;
     enum comp_layout layout;       /* layout=: the window layout to start with */
+    bool nodesk;                   /* the desktop off */
 };
 
 static void parse_args(int argc, char **argv, struct args *a)
@@ -113,6 +115,8 @@ static void parse_args(int argc, char **argv, struct args *a)
             comp.testwin = true;
         else if (!strcmp(s, "testscene"))
             a->scene_at = i;
+        else if (!strcmp(s, "nodesk"))
+            a->nodesk = true;
         else if (!strncmp(s, "layout=", 7) && wm_layout_parse(s + 7, &a->layout))
             continue;
         else if (!(!strncmp(s, "size=", 5) && parse_size(s + 5, &a->w, &a->h)) &&
@@ -134,7 +138,8 @@ static status_t setup(int argc, char **argv, struct args *a)
         return st;
     comp.headless = !output.screen;
     scene_init(output.width, output.height, LOOK_WALL_BASE);   /* if the wallpaper fails */
-    wm_set_layout(a->layout);
+    desk_init(!a->nodesk && !a->scene_at, true);   /* the test scene turns it on itself */
+    wm_init(a->layout);
     st = paint_init(a->threads);
     if (st == OK)
         st = jam_port_create(&comp.port);
@@ -179,6 +184,8 @@ static uint64_t next_deadline(void)
         d = r < d ? r : d;
     }
     uint64_t x = xdg_deadline();   /* a ping going late */
+    d = x < d ? x : d;
+    x = desk_deadline();           /* an animation's next frame, the clock's minute */
     return x < d ? x : d;
 }
 
@@ -222,6 +229,7 @@ int main(int argc, char **argv)
         conn_serve_all();
         seat_turn();        /* the pointer's focus after the clients changed the scene */
         xdg_tick(now());    /* pings gone unanswered */
+        desk_tick(now());   /* animations, the strip's clock, notifications */
         clock_turn();
         conn_flush_all();   /* the frame callbacks the paint answered */
         st = take_packets(next_deadline());

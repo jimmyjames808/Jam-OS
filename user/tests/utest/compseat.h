@@ -65,7 +65,7 @@ struct sc {
     uint32_t seat, kb, ptr;
 };
 
-/* The compositor (headless, 640x480, testwin) with compctl, init's end and
+/* The compositor (headless, 640x480, testwin, nodesk) with compctl, init's end and
  * a source that said it is a keyboard and a mouse; cs_stop: all of it gone
  * and the compositor's job empty (ct_stop). */
 bool cs_start(struct cs *t);

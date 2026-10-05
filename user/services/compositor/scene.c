@@ -6,8 +6,13 @@
  *
  * Every change damages the window's whole extent (its frame and its
  * shadow) before and after it (moving, mapping, raising, going): cheap,
- * since it is one box, and never wrong. */
-#include "look.h"
+ * since it is one box, and never wrong. Damage from windows is also
+ * `under` damage: what the desktop's frosted cards must blur again
+ * (frost.c); the cursor's and the cards' own is not (scene_damage_over).
+ *
+ * A window sliding with its screen (anim.c) is at x + slide_x for
+ * everything: painting, damage and what is under a point. */
+#include "desk.h"
 
 struct comp_scene scene;
 
@@ -25,17 +30,25 @@ void scene_init(int32_t w, int32_t h, uint32_t background)
     scene.nwindows = 0;
     scene.layout = COMP_FLOATING;
     damage_init(&scene.damage, scene.damage_boxes, COMP_OUTPUT_DAMAGE_MAX);
+    damage_init(&scene.under, scene.under_boxes, COMP_OUTPUT_DAMAGE_MAX);
     scene_damage(output_box());
 }
 
 void scene_damage(struct comp_box b)
+{
+    b = box_intersect(b, output_box());
+    damage_add(&scene.damage, b);
+    damage_add(&scene.under, b);
+}
+
+void scene_damage_over(struct comp_box b)
 {
     damage_add(&scene.damage, box_intersect(b, output_box()));
 }
 
 struct comp_box window_surface_box(const struct comp_window *w)
 {
-    return box_make(w->x, w->y, w->surface->width, w->surface->height);
+    return box_make(w->x + w->slide_x, w->y, w->surface->width, w->surface->height);
 }
 
 struct comp_box window_frame(const struct comp_window *w)
@@ -68,7 +81,7 @@ void window_damage_surface(struct comp_window *w, struct comp_box b)
     if (!(w->flags & COMP_WIN_MAPPED))
         return;
     struct comp_box s = box_make(0, 0, w->surface->width, w->surface->height);
-    scene_damage(box_translate(box_intersect(b, s), w->x, w->y));
+    scene_damage(box_translate(box_intersect(b, s), w->x + w->slide_x, w->y));
 }
 
 /* Take w out of the stacking order. */
@@ -114,6 +127,7 @@ status_t window_create(struct comp_surface *s, int32_t x, int32_t y, struct comp
 
 void window_destroy(struct comp_window *w)
 {
+    anim_forget(w);        /* an animation drawing it ends */
     seat_window_gone(w);   /* its focus moves on while it is still in the order */
     window_damage(w);
     unlink(w);
@@ -160,7 +174,7 @@ static bool takes_input(const struct comp_window *w, int32_t x, int32_t y)
     const struct comp_surface *s = w->surface;
     if (!box_contains(window_surface_box(w), x, y))
         return false;
-    return s->input_all || region_contains(&s->input, x - w->x, y - w->y);
+    return s->input_all || region_contains(&s->input, x - w->x - w->slide_x, y - w->y);
 }
 
 struct comp_window *window_at(int32_t x, int32_t y)

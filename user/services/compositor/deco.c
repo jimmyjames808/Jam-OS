@@ -29,27 +29,27 @@
 
 #define DECO_CORNER 16   /* this close to a corner, an edge is a corner */
 
-struct deco_sizes deco_sizes(uint32_t states)
+struct deco_sizes deco_sizes(uint32_t states, enum comp_layout layout)
 {
     if (states & WM_ST_FULLSCREEN)
         return (struct deco_sizes){ 0, 0, 0, 0 };
-    if (scene.layout == COMP_TILING)   /* no title bar: a border all round */
+    if (layout == COMP_TILING)   /* no title bar: a border all round */
         return (struct deco_sizes){ DECO_BORDER, DECO_BORDER, DECO_BORDER, DECO_BORDER };
     if (states & WM_ST_MAXIMIZED)
         return (struct deco_sizes){ COMP_TITLE_H, 0, 0, 0 };
     return (struct deco_sizes){ COMP_TITLE_H, DECO_OUTLINE, DECO_OUTLINE, DECO_OUTLINE };
 }
 
-struct comp_box deco_inner(struct comp_box frame, uint32_t states)
+struct comp_box deco_inner(struct comp_box frame, uint32_t states, enum comp_layout layout)
 {
-    struct deco_sizes d = deco_sizes(states);
+    struct deco_sizes d = deco_sizes(states, layout);
     return (struct comp_box){ frame.x1 + d.left, frame.y1 + d.top, frame.x2 - d.right,
                               frame.y2 - d.bottom };
 }
 
 void deco_set(struct comp_window *w, uint32_t states)
 {
-    struct deco_sizes d = deco_sizes(states);
+    struct deco_sizes d = deco_sizes(states, wm_layout_of(w->wm));
     if (w->deco_top == d.top && w->deco_left == d.left && w->deco_right == d.right &&
         w->deco_bottom == d.bottom)
         return;
@@ -65,8 +65,8 @@ void deco_set(struct comp_window *w, uint32_t states)
 static bool has_edges(const struct comp_window *w)
 {
     const struct wm_window *ww = w->wm;
-    return ww && w->deco_left > 0 && scene.layout == COMP_FLOATING && ww->want == WM_NORMAL &&
-           wm_resizable(ww);
+    return ww && w->deco_left > 0 && wm_layout_of(ww) == COMP_FLOATING &&
+           ww->want == WM_NORMAL && wm_resizable(ww);
 }
 
 /* The box presses on w's decorations land in: its frame, and the grab
@@ -126,7 +126,7 @@ enum deco_part deco_hit(const struct comp_window *w, int32_t x, int32_t y, uint3
 static bool takes_input(const struct comp_window *w, int32_t x, int32_t y)
 {
     const struct comp_surface *s = w->surface;
-    return s->input_all || region_contains(&s->input, x - w->x, y - w->y);
+    return s->input_all || region_contains(&s->input, x - w->x - w->slide_x, y - w->y);
 }
 
 struct comp_window *wm_window_at(int32_t x, int32_t y, bool *on_surface)

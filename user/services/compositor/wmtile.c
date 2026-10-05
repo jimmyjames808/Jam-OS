@@ -1,6 +1,8 @@
 /* Tiling's layout (wm.h): master and stack.
  *
- * One window takes the whole output. With more, the oldest (the master)
+ * Each screen is tiled on its own (screens.c), in its room: the output
+ * less the strip while the desktop is on. One window takes all of it.
+ * With more, the oldest (the master)
  * takes the left half and the others share the right half, stacked top to
  * bottom in the order they opened; a new window joins at the bottom of
  * the stack. Every tile is a frame box: the window's decorations go
@@ -14,7 +16,7 @@
  * where master and stack keeps the first window half the screen however
  * many join, and gives the stack's fixed-size windows tiles they are
  * centred in. dwm and xmonad's default layouts are the same idea. */
-#include "wm.h"
+#include "desk.h"
 
 #define WM_GAP 6   /* background between tiles, and around them */
 
@@ -46,13 +48,14 @@ struct comp_box wm_tile_box(struct comp_box area, unsigned n, unsigned i)
 
 struct comp_box wm_tile(const struct wm_window *ww)
 {
+    const struct desk_screen *s = ww->screen ? ww->screen : screens_cur();
     unsigned n = 0, i = 0;
     for (const struct wm_window *t = wm_first(); t; t = t->next) {
-        if (!t->win && t != ww)
-            continue;   /* not tiled: unmapped */
+        if (t != ww && (!t->win || t->minimised || (t->screen ? t->screen : screens_cur()) != s))
+            continue;   /* not tiled here: unmapped, minimised, or on another screen */
         if (t == ww)
             i = n;
         n++;
     }
-    return wm_tile_box((struct comp_box){ 0, 0, scene.width, scene.height }, n, i);
+    return wm_tile_box(screens_room(s), n, i);
 }

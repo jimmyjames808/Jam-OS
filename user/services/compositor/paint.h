@@ -118,6 +118,10 @@ bool shape_corner_meets(const struct comp_window *w, struct comp_box b);
 /* w's shadow where it meets t (floating windows only; outside the
  * window's shape only: under the window it would never show). */
 void shadow_draw(const struct comp_window *w, const struct tile_buf *t);
+/* A card's: the focused window's shadow of box b (corners of radius r),
+ * its darkness scaled by a (of 255), where it meets t. What it reaches
+ * past b: LOOK_SHADOW_SIDE, _ABOVE and _BELOW. */
+void shadow_box(const struct tile_buf *t, struct comp_box b, int32_t r, uint32_t a);
 /* Around drawing w into t: the pixels below its corners kept first
  * (save: room for 4 * MASK_CORNER_MAX^2), then w's corners cut round, its
  * outline or border along the curve. */
@@ -132,6 +136,16 @@ void shape_clip(const struct comp_window *w, const struct tile_buf *t, const uin
 status_t wallpaper_init(int32_t w, int32_t h);
 /* t all wallpaper. */
 void wallpaper_fill(const struct tile_buf *t);
+/* The wallpaper's row y, or NULL (none made, or no such row). */
+const uint32_t *wallpaper_row(int32_t y);
+
+/* What paint.c lends the desktop's drawing (desk.h): */
+/* Everything under the desktop's cards where it meets t (the wallpaper,
+ * the windows, the strip): a card's backdrop. worker: the pool's. */
+void paint_under(const struct tile_buf *t, uint32_t worker);
+/* w's frame (decorations, its buffer, corners cut round over what t has
+ * there), with no shadow: an animation's picture. save: SHAPE_SAVE_PX. */
+void paint_window(const struct comp_window *w, const struct tile_buf *t, uint32_t *save);
 
 /* ---- cursor.c ---------------------------------------------------------------------- */
 
@@ -154,3 +168,10 @@ void clock_init(uint32_t hz);
 /* The `testscene` argument's commands (argv[first] on), with no clients:
  * the exit code. */
 int testscene_run(int argc, char **argv, int first);
+/* testdesk.c: a desktop command (1 done, 0 refused, -1 not one of its
+ * own), and the desktop's layout to the log after a paint. */
+int  testdesk_command(const char *c);
+void testdesk_report(void);
+/* One kind of frame timed (testscene.c's `bench`): damage() before each
+ * of a few paints, the median and worst in a `compositor: bench:` line. */
+void testscene_bench(const char *what, void (*damage)(void));

@@ -62,6 +62,11 @@ status_t keyboard_init(void)
     return st;
 }
 
+uint32_t keyboard_mods(uint8_t hid_mods)
+{
+    return keymap_mods_of_hid(hid_mods) | locked;
+}
+
 static uint32_t depressed(void)
 {
     uint8_t all = 0;
@@ -234,6 +239,7 @@ void keyboard_key(unsigned src, uint16_t usage, uint8_t state, uint8_t mods)
     if (state == INPUT_KEY_DOWN)
         press(src, usage, mods);
     else if (state == INPUT_KEY_UP) {
+        desk_key_up(usage);   /* Alt let go: Alt+Tab's window takes the focus first */
         int i = find_held(src, usage);
         if (i >= 0)
             release_at((unsigned)i);

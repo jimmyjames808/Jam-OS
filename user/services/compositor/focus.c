@@ -20,7 +20,11 @@
  * (the press and its release both go nowhere):
  *   Ctrl+Alt+Del   init reboots the machine (ctl.c asks it, as the console
  *                  did);
- *   Alt+Tab        the next window (Alt+Shift+Tab: the one before);
+ *   the desktop's  (desk.c) every key while the search box is open, Alt+Tab
+ *                  and Esc for its list, Esc for a popover, Super with the
+ *                  arrows and digits for the virtual screens;
+ *   Alt+Tab        with the desktop off: the next window (Alt+Shift+Tab: the
+ *                  one before);
  *   Super+F        the focused window full screen, or back;
  *   Super+T        the screen's arrangement: floating or tiling;
  *   Super+Q        the focused window asked to close (as its close circle).
@@ -120,7 +124,9 @@ bool focus_reserved_key(uint16_t usage, uint8_t mods)
         ctl_reboot();
         return true;
     }
-    if (usage == U_TAB && alt && !ctrl) {
+    if (desk_key(usage, mods, keyboard_mods(mods)))
+        return true;   /* the search box, Alt+Tab's list, the screens' keys */
+    if (usage == U_TAB && alt && !ctrl) {   /* the desktop off: the next window at once */
         struct comp_window *w = wm_cycle(focused, shift);
         if (w)
             seat_focus(w);

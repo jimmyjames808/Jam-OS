@@ -118,6 +118,138 @@ static const struct look_glow look_glows[LOOK_GLOWS] = {
  * between a reboot's request and the next boot's splash). */
 #define LOOK_BLANK 0x000000u
 
+/* ---- the desktop: the strip along the top (strip.c, stripdraw.c) ------------------------
+ *
+ * A full-width strip LOOK_STRIP_H high, frosted: a blur of the wallpaper
+ * under it (three box blurs LOOK_STRIP_BLUR wide, about CSS's blur(16px)),
+ * a little more saturated, under a dark tint, with a faint line along its
+ * bottom; made once for the output's size (frost.c), so it costs a copy a
+ * pixel. On it three islands, slightly lighter (white at
+ * LOOK_ISLAND_ALPHA), rounded: left "Jam OS", the screens' dots and "+";
+ * centre the screen's windows as chips; right the layout, network and
+ * volume icons and the clock. Windows never go under the strip: they
+ * start LOOK_STRIP_GAP below it. Colours are the owner's prototype's
+ * (rgba() values there are the alphas here, of 255). */
+#define LOOK_STRIP_H          40
+#define LOOK_STRIP_GAP        6          /* the strip's bottom to the windows' top */
+#define LOOK_STRIP_BLUR       33         /* each box blur's width: sigma about 16 */
+#define LOOK_STRIP_SAT        333        /* saturation, in 256ths (1.3) */
+#define LOOK_STRIP_TINT       0x181b22u  /* rgba(24, 27, 34, .42) */
+#define LOOK_STRIP_TINT_A     107
+#define LOOK_STRIP_LINE_A     20         /* the bottom line: white at 8% */
+#define LOOK_ISLAND_TOP       7
+#define LOOK_ISLAND_H         26
+#define LOOK_ISLAND_R         10
+#define LOOK_ISLAND_EDGE      8          /* the outer islands from the output's sides */
+#define LOOK_ISLAND_PAD       8          /* inside an island, at either end */
+#define LOOK_ISLAND_GAP       6          /* between the things in an island */
+#define LOOK_ISLAND_A         20         /* white at 8% */
+#define LOOK_ISLAND_MIDDLE    520        /* the centre island is at most the output less this */
+#define LOOK_STRIP_PX         12         /* the strip's text */
+#define LOOK_BTN_H            20         /* a button on the strip ("Jam OS", a chip, the clock) */
+#define LOOK_BTN_R            6
+#define LOOK_BTN_PAD          7          /* text buttons' sides */
+#define LOOK_JAM_INK          0xffb340u  /* "Jam OS" */
+#define LOOK_JAM_OPEN         0xef9f27u  /* ... its button while the search box is open: */
+#define LOOK_JAM_OPEN_A       56         /* apricot at 22% */
+#define LOOK_INK              0xe3e8eeu  /* text */
+#define LOOK_MUTED            0x8b98a6u  /* quieter text, labels */
+#define LOOK_DIM              0x59616cu  /* "No windows", the search box's hint */
+#define LOOK_DOT              0x8b939eu  /* a screen's dot; a minimised chip's text */
+#define LOOK_DOT_D            7
+#define LOOK_DOT_GAP          5
+#define LOOK_DOT_CUR_W        18         /* the current screen's pill */
+#define LOOK_DOT_CUR_R        4
+#define LOOK_DOT_FULL_R       2          /* a full-screen screen's square */
+#define LOOK_PLUS             9          /* the "+" across */
+#define LOOK_CHIP_PAD         8
+#define LOOK_CHIP_MAX         150        /* a chip's width at most */
+#define LOOK_CHIP_MIN         40         /* ... and at least (past what fits: hidden) */
+#define LOOK_CHIP_FOCUS_A     97         /* the focused chip: raspberry at 38% */
+#define LOOK_CHIP_FOCUS_INK   0xffffffu
+#define LOOK_CHIP_MIN_DOT     6          /* a minimised chip's apricot dot */
+#define LOOK_ICON_W           22         /* the right island's icon buttons */
+#define LOOK_ICON_R           5
+#define LOOK_ICON_INK         0xc2cbd5u
+#define LOOK_ICON_ON_A        115        /* an icon whose popover is open: blackcurrant at 45% */
+
+/* ---- frosted glass: the search box, Alt+Tab, popovers, notifications --------------------
+ *
+ * A card over a blur of what is behind it, windows included (frost.c: made
+ * while the card is open, of its box only, again when what is behind it
+ * changes), tinted dark, a 1-pixel light outline, rounded, with the focused
+ * window's shadow. Sections inside are split by inset dividers: 1 pixel,
+ * white at 10%, stopping at the card's padding. */
+#define LOOK_GLASS_TINT       0x1e222au  /* rgba(30, 34, 42, .76) */
+#define LOOK_GLASS_TINT_A     194
+#define LOOK_GLASS_LINE_A     26         /* the outline and the dividers: white at 10% */
+#define LOOK_GLASS_R          12
+#define LOOK_GLASS_BLUR       37         /* each box blur's width: sigma about 18 */
+#define LOOK_ROW_H            36         /* a row of a list: a letter tile and a name */
+#define LOOK_ROW_R            8
+#define LOOK_ROW_PAD          10
+#define LOOK_ROW_SEL_A        92         /* the selected row: blackcurrant at 36% */
+#define LOOK_TILE_D           24         /* a letter tile */
+#define LOOK_TILE_R           7
+#define LOOK_MENU_PX          13         /* rows' text */
+#define LOOK_LABEL_PX         11         /* small labels: "Screen 2", "Output" */
+/* The search box: centred, its top at LOOK_SEARCH_TOP thousandths of the
+ * output's height, LOOK_SEARCH_W wide (less on a narrow output). */
+#define LOOK_SEARCH_W         560
+#define LOOK_SEARCH_TOP       150
+#define LOOK_SEARCH_PAD       8
+#define LOOK_SEARCH_IN_H      36         /* the line typed into */
+#define LOOK_SEARCH_PX        16
+#define LOOK_SEARCH_LIST      420        /* the list's height at most (and 52% of the output) */
+#define LOOK_ALTTAB_W         270
+#define LOOK_ALTTAB_PAD       6
+#define LOOK_ALTTAB_ROWS      16         /* rows shown at most; the list scrolls past them */
+#define LOOK_GROUP_H          22         /* a group's label ("Screen 2") */
+/* Popovers: their top 2 pixels below the strip, their right edge on the
+ * right edge of what opened them. */
+#define LOOK_POP_W            220
+#define LOOK_POP_PAD          12
+#define LOOK_POP_GAP          2
+#define LOOK_POP_DIV          9          /* space above and below a divider */
+#define LOOK_POP_LINE         20         /* a line of a popover's text */
+#define LOOK_POP_BIG_PX       17         /* the clock's time */
+#define LOOK_SLIDER_ON        0xd4537eu  /* the volume slider's filled part: raspberry */
+#define LOOK_SLIDER_OFF       0x4a5058u
+#define LOOK_LIVE             0x97c459u  /* "Connected": leaf green */
+#define LOOK_TODAY            0xef9f27u  /* the calendar's today, apricot, */
+#define LOOK_TODAY_INK        0x3a1f00u  /* ... its number dark */
+/* Notifications: cards stacked down the top right, under the strip. */
+#define LOOK_NOTE_W           300
+#define LOOK_NOTE_RIGHT       10
+#define LOOK_NOTE_TOP         (LOOK_STRIP_H + 8)
+#define LOOK_NOTE_GAP         8
+#define LOOK_NOTE_PAD_X       12
+#define LOOK_NOTE_PAD_Y       10
+#define LOOK_NOTE_TILE        28
+#define LOOK_NOTE_TILE_R      8
+#define LOOK_NOTE_BTN_H       22
+#define LOOK_NOTE_BTN_A       23         /* a button: white at 9% */
+#define LOOK_NOTE_PRI         0xef9f27u  /* the first button: apricot at 25%, */
+#define LOOK_NOTE_PRI_A       64
+#define LOOK_NOTE_PRI_INK     0xffb340u  /* ... its text */
+
+/* ---- animations (anim.c): the owner's timings, ease-out ---------------------------------- */
+#define LOOK_ANIM_OPEN_MS     150        /* grow from 92% and fade in; closing the reverse */
+#define LOOK_ANIM_OPEN_FROM   920        /* thousandths of the size */
+#define LOOK_ANIM_MIN_MS      260        /* shrink into the chip, and out of it */
+#define LOOK_ANIM_MIN_TO      80         /* thousandths of the size, in the chip */
+#define LOOK_ANIM_MIN_ALPHA   38         /* ... and its alpha there (15%) */
+#define LOOK_ANIM_SLIDE_MS    260        /* screens sliding sideways */
+#define LOOK_NOTE_IN_MS       200        /* a notification comes in, */
+#define LOOK_NOTE_OUT_MS      180        /* ... and fades out */
+#define LOOK_NOTE_SHOW_MS     5000       /* ... after this, unless it has buttons */
+#define LOOK_ALTTAB_SHOW_MS   120        /* Alt held this long before the list shows */
+
+/* The jam colours of letter tiles and window chips. */
+#define LOOK_JAM_RASPBERRY    LOOK_CLOSE
+#define LOOK_JAM_APRICOT      LOOK_MINIMISE
+#define LOOK_JAM_BLACKCURRANT LOOK_FULLSCREEN
+
 /* ---- which look a window has ------------------------------------------------------------ */
 
 enum look_kind {

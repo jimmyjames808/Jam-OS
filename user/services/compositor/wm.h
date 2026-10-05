@@ -78,6 +78,13 @@ struct wm_window {
     int32_t anchor_x2, anchor_y2;  /* ... that side: the surface's right or bottom edge */
     bool resizing;                 /* a resize grab is on it */
     bool not_responding;           /* asked to close, no pong since: the title bar says so */
+    /* The desktop's (screens.c): the virtual screen it is on while mapped,
+     * the one a full-screen window came from, minimised or not, and when it
+     * last had the focus (Alt+Tab's order, most recent first). */
+    struct desk_screen *screen;
+    struct desk_screen *home;
+    bool minimised;
+    uint64_t focused_at;           /* a count, not a time: 0 never */
 };
 
 /* ---- wm.c --------------------------------------------------------------------------- */
@@ -119,12 +126,18 @@ void wm_place(struct wm_window *ww);
 /* The oldest toplevel (then ->next), for walking them. */
 struct wm_window *wm_first(void);
 
+/* The arrangement of ww's screen (the default's before it has one). */
+enum comp_layout wm_layout_of(const struct wm_window *ww);
+/* The toplevel with the keyboard focus, or NULL. */
+struct wm_window *wm_focused(void);
+
 /* ---- wmtile.c ----------------------------------------------------------------------- */
 
 /* Tile i of n (frame boxes, decorations included) in area: the master and stack layout. */
 struct comp_box wm_tile_box(struct comp_box area, unsigned n, unsigned i);
 /* The tile ww has in tiling, or will have once mapped: counted among the
- * mapped toplevels, oldest first. */
+ * mapped toplevels of its screen that aren't minimised, oldest first, in
+ * the screen's room for windows (screens_room). */
 struct comp_box wm_tile(const struct wm_window *ww);
 
 /* ---- wmgrab.c ----------------------------------------------------------------------- */
@@ -139,14 +152,14 @@ void wm_grab_cancel(void);
 
 /* ---- deco.c ------------------------------------------------------------------------- */
 
-/* Decorations for a buffer drawn for states, in the layout now (tiling: no
- * title bar, a border all round): sizes around the surface. */
+/* Decorations for a buffer drawn for states, in layout (tiling: no title
+ * bar, a border all round): sizes around the surface. */
 struct deco_sizes {
     int32_t top, left, right, bottom;
 };
-struct deco_sizes deco_sizes(uint32_t states);
-/* The surface's box inside a frame box for states. */
-struct comp_box deco_inner(struct comp_box frame, uint32_t states);
+struct deco_sizes deco_sizes(uint32_t states, enum comp_layout layout);
+/* The surface's box inside a frame box for states in layout. */
+struct comp_box deco_inner(struct comp_box frame, uint32_t states, enum comp_layout layout);
 /* w's decorations set for states (its frame damaged if they change). */
 void deco_set(struct comp_window *w, uint32_t states);
 

@@ -18,6 +18,9 @@ struct ct_comp {
     int32_t w, h;
 };
 
+/* bin/compositor headless at w x h with the desktop off (`nodesk`: the
+ * window manager alone, the whole output the windows'; compdesk.c tests the
+ * desktop). */
 bool ct_start(struct ct_comp *p, int32_t w, int32_t h);
 /* The same with one more argument for the compositor (NULL: none). */
 bool ct_start_arg(struct ct_comp *p, int32_t w, int32_t h, const char *arg);

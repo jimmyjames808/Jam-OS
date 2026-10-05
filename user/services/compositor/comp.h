@@ -302,6 +302,8 @@ enum comp_layout {
 #define COMP_WIN_FULLSCREEN (1u << 2)
 #define COMP_WIN_FOCUSED    (1u << 3)   /* has the keyboard focus (focus.c sets it) */
 #define COMP_WIN_UNRESPONSIVE (1u << 4) /* didn't answer a ping: its title bar says so */
+#define COMP_WIN_ANIMATED   (1u << 5)   /* mapped, but an animation draws it (anim.c): painting
+                                         * skips it and nothing below it is taken as hidden */
 
 /* A floating window's title bar: deco_top, in pixels (title.c draws it,
  * the window manager sets it; look.h has the rest of its look). */
@@ -318,6 +320,8 @@ struct comp_window {
     struct comp_box tile;          /* tiling: the tile it was given (wm.c) */
     void *wm;                      /* the window manager's own (struct wm_window, wm.h) */
     const char *title;             /* its title bar's text (the window manager's), or NULL */
+    int32_t slide_x;               /* a screen slide's sideways offset (anim.c): the window is
+                                    * painted, damaged and hit there; 0 at rest */
 };
 
 struct comp_scene {
@@ -329,6 +333,11 @@ struct comp_scene {
     uint32_t  nwindows;
     struct comp_damage damage;     /* output coordinates: to compose at the next paint */
     struct comp_box damage_boxes[COMP_OUTPUT_DAMAGE_MAX];
+    /* The part of that damage below the desktop's cards (all but the
+     * cursor's and the cards' own): what makes a card's blurred backdrop
+     * stale (frost.c). */
+    struct comp_damage under;
+    struct comp_box under_boxes[COMP_OUTPUT_DAMAGE_MAX];
     enum comp_layout layout;
     uint64_t  paints;              /* paints done */
     uint64_t  last_paint_ns;       /* when the last one began (clock.c) */
@@ -341,6 +350,9 @@ extern struct comp_scene scene;
 void scene_init(int32_t w, int32_t h, uint32_t background);
 /* b (output coordinates, clipped to the output) to compose again. */
 void scene_damage(struct comp_box b);
+/* The same for something drawn over everything (the cursor, the desktop's
+ * cards): it isn't `under` damage. */
+void scene_damage_over(struct comp_box b);
 /* The window's frame on the output: the surface's box and its decorations. */
 struct comp_box window_frame(const struct comp_window *w);
 /* All a window paints: its frame and its shadow (look.h), the larger
@@ -642,8 +654,8 @@ void wm_toggle_layout(void);
 /* Super+Q: ask w's client to close it (xdg_toplevel.close), as its close
  * circle does; tiling's windows have none. Default: nothing. */
 void wm_close(struct comp_window *w);
-/* The minimise circle on w. Minimising is not built yet: wm.c's weak
- * default does nothing (the circle is drawn and pressed all the same). */
+/* The minimise circle on w: it shrinks into its chip on the top bar and
+ * is hidden until it is brought back (its chip, Alt+Tab). Default: nothing. */
 void wm_minimise(struct comp_window *w);
 /* The keyboard focus moved to w (NULL: none), COMP_WIN_FOCUSED already set
  * (seat_focus calls it last, whatever moved it): the window manager raises
@@ -714,6 +726,49 @@ bool        wm_layout_parse(const char *s, enum comp_layout *out);
 /* The user switched the layout: compctl tells init, which saves it. Not
  * built yet (a compctl method for I1): wm.c's weak default does nothing. */
 void        ctl_layout_changed(enum comp_layout layout);
+
+/* ---- the desktop (desk.h has its inside) --------------------------------------------------
+ *
+ * The top bar, virtual screens, minimising, Alt+Tab's list, the search
+ * box, the popovers, notifications and the animations (docs/G1-PLAN.md
+ * "The look"). The seat offers it every key press and button press first,
+ * the loop its clock, and painting draws it over the windows. */
+
+/* At start: on (the strip and the cards) or not (the window manager
+ * alone: the `nodesk` argument, the test scene), animations or not. */
+void     desk_init(bool on, bool animate);
+bool     desk_on(void);
+/* A key press (HID usage, the source's modifier byte, the xkb modifiers
+ * with the locks): true if the desktop took it (no client sees it, nor its
+ * release). A key's release, seen before any client sees it. */
+bool     desk_key(uint16_t usage, uint8_t mods, uint32_t xkb_mods);
+void     desk_key_up(uint16_t usage);
+/* A button press at (x, y), before the window manager's: true if taken. */
+bool     desk_press(int32_t x, int32_t y, uint32_t button);
+/* Is the strip or a card at (x, y), so no window is under the pointer there? */
+bool     desk_covers(int32_t x, int32_t y);
+/* The loop's clock: animations, the clock on the strip, notifications
+ * fading, Alt+Tab's list showing. When it next needs a turn. */
+void     desk_tick(uint64_t t);
+uint64_t desk_deadline(void);
+
+/* Hooks for the plumbing (track D2b defines them; desk.c's weak defaults
+ * do what a desktop with nothing behind it can). */
+/* Run app (a desk_apps name in lower case: "jamjar"), or cmd in a new terminal. */
+void     ctl_launch(const char *app);
+void     ctl_run_in_terminal(const char *cmd);
+/* Button `button` (0 the first) of notification id was pressed (the card
+ * goes). */
+void     ctl_notify_answered(uint32_t id, uint32_t button);
+/* The mixer's volume (0..100): read (false: unknown), and set. */
+bool     ctl_volume(uint32_t *percent);
+void     ctl_set_volume(uint32_t percent);
+/* The output's name, and what is playing (false: nothing). */
+bool     ctl_audio_output(char *buf, size_t n);
+bool     ctl_now_playing(char *buf, size_t n);
+/* The network's state (false: unknown). */
+struct desk_net;
+bool     ctl_network(struct desk_net *out);
 
 /* ---- xdg-shell (xdg.c, xdgtop.c) -------------------------------------------------- */
 

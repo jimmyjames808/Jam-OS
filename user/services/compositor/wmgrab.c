@@ -24,6 +24,9 @@
  * A circle acts when the press that began on it is released on it too
  * (pressed and dragged away: nothing), as buttons do.
  *
+ * The desktop (desk.c) sees every first press before the window manager:
+ * the strip and its cards are over every window.
+ *
  * A double-click is two presses on one title bar within
  * WM_DOUBLE_CLICK_NS, the first released without the pointer moving
  * further than WM_CLICK_SLOP (a drag is not a click). */
@@ -62,7 +65,7 @@ static const struct comp_grab_ops grab_ops = { grab_motion, grab_end };
 
 static bool can_move(const struct wm_window *ww)
 {
-    return ww->win && scene.layout == COMP_FLOATING && ww->want == WM_NORMAL &&
+    return ww->win && wm_layout_of(ww) == COMP_FLOATING && ww->want == WM_NORMAL &&
            !(ww->shown & (WM_ST_MAXIMIZED | WM_ST_FULLSCREEN));
 }
 
@@ -175,6 +178,8 @@ static void title_press(struct wm_window *ww, int32_t x, int32_t y)
 
 bool wm_press(int32_t x, int32_t y, uint32_t button)
 {
+    if (desk_press(x, y, button))
+        return true;   /* the strip, a card, or a click that closed a menu on the strip */
     bool on_surface;
     struct comp_window *w = wm_window_at(x, y, &on_surface);
     struct wm_window *ww = w ? w->wm : NULL;

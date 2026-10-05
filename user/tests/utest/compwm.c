@@ -11,38 +11,70 @@
  *
  * The output is 1280x800 in every test; decorations are COMP_TITLE_H (28)
  * above and DECO_OUTLINE (1) around (tiling: DECO_BORDER, 2, all round),
- * so the numbers below can be checked by hand. */
+ * so the numbers below can be checked by hand. The desktop is off here
+ * (no strip: the whole output is the windows'); compdesk.c tests it on.
+ * The harness (compwm.h) is shared with compdesk.c and compdesk2.c. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <settings.h>
+#include "compwm.h"
 #include "fattest.h"
-#include "look.h"
 #include "utest.h"
-#include "wm.h"
 
-#define OUT_W 1280
-#define OUT_H 800
-#define FK_MAX 6
-#define BTN   0x110u   /* evdev's left button */
 #define WF    "/w/etc/settings"
 
 /* ---- the seat, played here --------------------------------------------------------- */
 
 struct comp_cursor cursor;
+struct comp comp = { .period_ns = NS_PER_S / 60 };
 static struct jwl_conn fake_conn;   /* a live connection: status OK */
-static struct comp_client fake_client = { .conn = &fake_conn };
+struct comp_client fake_client = { .conn = &fake_conn };
+struct fake_seat seat;
+struct fake_desk fdesk;
 
-static struct {
-    const struct comp_grab_ops *ops;   /* the grab the window manager began */
-    void *data;
-    bool held;                         /* a button is down */
-    struct comp_window *focused;
-    unsigned nmapped, ngone, nlayout;
-    struct comp_window *gone;          /* the last window gone */
-    enum comp_layout layout;           /* the last switch reported */
-    bool save;                         /* reported switches go to WF, as init would write them */
-} seat;
+/* The painting the desktop's logic calls, played here: snapshots are
+ * counted (no pixels), the cursor's damage dropped. */
+status_t anim_snapshot(const struct comp_window *w, struct anim_snap *out)
+{
+    struct comp_box f = window_frame(w);
+    fdesk.snaps++;
+    *out = (struct anim_snap){ (uint32_t *)(uintptr_t)1, f.x2 - f.x1, f.y2 - f.y1, 0 };
+    return OK;
+}
+
+void anim_snapshot_free(struct anim_snap *s)
+{
+    if (s->px)
+        fdesk.snaps_freed++;
+    *s = (struct anim_snap){ 0 };
+}
+
+void cursor_moved(int32_t old_x, int32_t old_y)
+{
+    (void)old_x;
+    (void)old_y;
+}
+
+/* The plumbing's hooks, played here. */
+void ctl_launch(const char *app)
+{
+    snprintf(fdesk.launched, sizeof(fdesk.launched), "%s", app);
+    fdesk.nlaunch++;
+}
+
+void ctl_run_in_terminal(const char *cmd)
+{
+    snprintf(fdesk.ran, sizeof(fdesk.ran), "%s", cmd);
+    fdesk.nrun++;
+}
+
+void ctl_notify_answered(uint32_t id, uint32_t button)
+{
+    fdesk.answered_id = id;
+    fdesk.answered_button = button;
+    fdesk.nanswered++;
+}
 
 status_t seat_grab_begin(const struct comp_grab_ops *ops, void *data)
 {
@@ -81,9 +113,10 @@ void seat_window_gone(struct comp_window *w)
 {
     seat.ngone++;
     seat.gone = w;
-    if (w == seat.focused) {
+    if (w == seat.focused) {   /* the real seat moves it on; here to none */
         w->flags &= ~COMP_WIN_FOCUSED;
         seat.focused = NULL;
+        wm_focus_changed(NULL);
     }
 }
 
@@ -102,8 +135,7 @@ void ctl_layout_changed(enum comp_layout layout)
         (void)settings_set(WF, WM_LAYOUT_SETTING, wm_layout_name(layout));   /* read back */
 }
 
-/* A press at (x, y) with button: did the window manager take it? */
-static bool press_btn(int32_t x, int32_t y, uint32_t button)
+bool press_btn(int32_t x, int32_t y, uint32_t button)
 {
     cursor.x = x;
     cursor.y = y;
@@ -111,7 +143,7 @@ static bool press_btn(int32_t x, int32_t y, uint32_t button)
     return wm_press(x, y, button);
 }
 
-static void move_to(int32_t x, int32_t y)
+void move_to(int32_t x, int32_t y)
 {
     cursor.x = x;
     cursor.y = y;
@@ -119,8 +151,7 @@ static void move_to(int32_t x, int32_t y)
         seat.ops->motion(seat.data, x, y);
 }
 
-/* The pointer to (x, y), and the button up: a grab ends. */
-static void release_at(int32_t x, int32_t y)
+void release_at(int32_t x, int32_t y)
 {
     move_to(x, y);
     seat.held = false;
@@ -130,8 +161,7 @@ static void release_at(int32_t x, int32_t y)
         ops->end(seat.data);
 }
 
-/* A whole drag: press at (x, y), move by (dx, dy), release there. */
-static bool drag(int32_t x, int32_t y, int32_t dx, int32_t dy)
+bool drag(int32_t x, int32_t y, int32_t dx, int32_t dy)
 {
     CHECK(press_btn(x, y, BTN));
     CHECK(seat.ops);
@@ -152,17 +182,7 @@ static bool double_click_title(int32_t x, int32_t y)
 
 /* ---- fake toplevels --------------------------------------------------------------------- */
 
-/* A fake toplevel: its surface, the last configure it got, closes asked. */
-struct fk {
-    struct comp_surface s;
-    struct wm_window *ww;
-    struct wm_config cfg;
-    unsigned nconf, closes;
-    int32_t own_w, own_h;          /* what it draws when the configure says 0 */
-    bool fixed;                    /* min = max = its own size */
-};
-
-static struct fk fks[FK_MAX];
+struct fk fks[FK_MAX];
 
 static void fk_configure(void *ctx, const struct wm_config *c)
 {
@@ -178,16 +198,17 @@ static void fk_close(void *ctx)
 
 static const struct wm_ops fk_ops = { fk_configure, fk_close };
 
-static void start(enum comp_layout layout)
+void wm_test_start(enum comp_layout layout)
 {
+    desk_init(false, false);
     scene_init(OUT_W, OUT_H, 0);
     wm_init(layout);
     memset(fks, 0, sizeof(fks));
     memset(&seat, 0, sizeof(seat));
+    memset(&fdesk, 0, sizeof(fdesk));
 }
 
-/* The client answers its last configure: draws, commits. */
-static bool fk_draw(struct fk *f)
+bool fk_draw(struct fk *f)
 {
     f->s.width = f->cfg.width && !f->fixed ? f->cfg.width : f->own_w;
     f->s.height = f->cfg.height && !f->fixed ? f->cfg.height : f->own_h;
@@ -195,9 +216,7 @@ static bool fk_draw(struct fk *f)
     return true;
 }
 
-/* A toplevel w by h of its own: the initial configure, then its first
- * buffer. */
-static bool fk_open(struct fk *f, int32_t w, int32_t h, bool fixed)
+bool fk_open(struct fk *f, int32_t w, int32_t h, bool fixed)
 {
     memset(f, 0, sizeof(*f));
     f->s.client = &fake_client;
@@ -212,7 +231,7 @@ static bool fk_open(struct fk *f, int32_t w, int32_t h, bool fixed)
     return fk_draw(f);
 }
 
-static void fk_close_all(void)
+void fk_close_all(void)
 {
     for (unsigned i = 0; i < FK_MAX; i++)
         if (fks[i].ww)
@@ -220,7 +239,7 @@ static void fk_close_all(void)
     memset(fks, 0, sizeof(fks));
 }
 
-static struct comp_window *win(unsigned i)
+struct comp_window *win(unsigned i)
 {
     return fks[i].ww->win;
 }
@@ -269,7 +288,7 @@ static bool floating_place_steps(void)
 
 bool t_wm_floating_place(void)
 {
-    start(COMP_FLOATING);
+    wm_test_start(COMP_FLOATING);
     bool ok = floating_place_steps();
     fk_close_all();
     return ok;
@@ -300,11 +319,18 @@ static bool close_box_steps(void)
     release_at(cx - 100, cy + 100);
     CHECK_EQ(fks[0].closes, 1);
     AT(0, 580, COMP_TITLE_H);            /* a circle's press never moves it */
-    /* minimise: not built yet, so nothing at all */
+    /* minimise: hidden (its place kept), the focus gone with it; brought
+     * back focused where it was */
     unsigned n = fks[0].nconf;
     CHECK(click_button(TITLE_MINIMISE));
-    CHECK_EQ(fks[0].nconf, n);
+    CHECK(fks[0].ww->minimised && !(win(0)->flags & COMP_WIN_MAPPED));
+    CHECK_EQ(seat.focused, NULL);
+    CFG(0, 320, 200, 0);                 /* activated no more */
+    CHECK_EQ(fks[0].nconf, n + 1);
     CHECK_EQ(fks[0].closes, 1);
+    screens_restore(fks[0].ww);
+    CHECK(!fks[0].ww->minimised && (win(0)->flags & COMP_WIN_MAPPED));
+    CHECK_EQ(seat.focused, win(0));
     AT(0, 580, COMP_TITLE_H);
     /* full screen, and back with Super+F */
     CHECK(click_button(TITLE_FULLSCREEN));
@@ -340,7 +366,7 @@ static bool floating_move_steps(void)
 
 bool t_wm_floating_move(void)
 {
-    start(COMP_FLOATING);
+    wm_test_start(COMP_FLOATING);
     bool ok = floating_move_steps();
     fk_close_all();
     return ok;
@@ -420,7 +446,7 @@ static bool floating_resize_steps(void)
 
 bool t_wm_floating_resize(void)
 {
-    start(COMP_FLOATING);
+    wm_test_start(COMP_FLOATING);
     bool ok = floating_resize_steps();
     fk_close_all();
     return ok;
@@ -503,7 +529,7 @@ static bool fullscreen_steps(void)
 
 bool t_wm_states(void)
 {
-    start(COMP_FLOATING);
+    wm_test_start(COMP_FLOATING);
     bool ok = maximise_steps() && fullscreen_steps();
     fk_close_all();
     return ok;
@@ -514,7 +540,7 @@ bool t_wm_states(void)
 /* The surface box tile i of n gives a resizable window. */
 static struct comp_box inner(unsigned n, unsigned i)
 {
-    return deco_inner(wm_tile_box((struct comp_box){ 0, 0, OUT_W, OUT_H }, n, i), 0);
+    return deco_inner(wm_tile_box((struct comp_box){ 0, 0, OUT_W, OUT_H }, n, i), 0, COMP_TILING);
 }
 
 /* f was asked to fill tile i of n, draws, and sits in it. */
@@ -607,7 +633,7 @@ static bool tiling_rules_steps(void)
 
 bool t_wm_tiling(void)
 {
-    start(COMP_TILING);
+    wm_test_start(COMP_TILING);
     bool ok = tiling_join_steps() && tiling_rules_steps();
     fk_close_all();
     return ok;
@@ -674,7 +700,7 @@ static bool switch_steps(void)
 
 bool t_wm_switch(void)
 {
-    start(COMP_FLOATING);
+    wm_test_start(COMP_FLOATING);
     bool ok = switch_steps();
     fk_close_all();
     return ok;
@@ -745,7 +771,7 @@ static bool focus_steps(void)
 
 bool t_wm_focus(void)
 {
-    start(COMP_FLOATING);
+    wm_test_start(COMP_FLOATING);
     bool ok = focus_steps();
     fk_close_all();
     return ok;
@@ -837,7 +863,7 @@ static bool window_at_steps(void)
 
 bool t_wm_window_at(void)
 {
-    start(COMP_FLOATING);
+    wm_test_start(COMP_FLOATING);
     bool ok = window_at_steps();
     fk_close_all();
     return ok;
@@ -859,7 +885,7 @@ static bool layout_setting_steps(void)
     char v[SETTINGS_VALUE_MAX];
     CHECK_ST(settings_get(WF, WM_LAYOUT_SETTING, v, sizeof(v)), OK);
     CHECK(!strcmp(v, "tiling"));
-    start(COMP_FLOATING);   /* the next boot */
+    wm_test_start(COMP_FLOATING);   /* the next boot */
     CHECK_ST(settings_get(WF, WM_LAYOUT_SETTING, v, sizeof(v)), OK);
     CHECK(wm_layout_parse(v, &l));
     wm_set_layout(l);
@@ -882,7 +908,7 @@ bool t_wm_layout_setting(void)
         return false;
     CHECK_ST(jam_handle_duplicate(r.fs, RIGHT_SAME, &fs), OK);
     CHECK_ST(ns_mount("/w", fs), OK);
-    start(COMP_FLOATING);
+    wm_test_start(COMP_FLOATING);
     bool ok = layout_setting_steps();
     fk_close_all();
     CHECK_ST(ns_unmount("/w"), OK);

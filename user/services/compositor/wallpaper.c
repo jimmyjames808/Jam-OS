@@ -106,3 +106,10 @@ void wallpaper_fill(const struct tile_buf *t)
             dst[i] = LOOK_WALL_BASE;
     }
 }
+
+const uint32_t *wallpaper_row(int32_t y)
+{
+    if (!wall.px || y < 0 || y >= wall.h)
+        return NULL;
+    return wall.px + (uint64_t)y * (uint32_t)wall.w;
+}

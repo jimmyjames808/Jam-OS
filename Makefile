@@ -386,7 +386,10 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # and its comp.h), and its window manager on its scene (utest/compwm.c:
 # wm.h, no protocol in those files; the test plays the seat), with
 # title.c's title bar boxes and the masks (mask.c) and libfun they draw
-# with, and the console's window mode's pure parts (utest/conwin.c:
+# with, and the desktop's logic around them (utest/compdesk*.c: screens,
+# the animations' clock, the strip's layout, the menus, popovers and
+# notifications, desk.c; none of their drawing), and the console's window
+# mode's pure parts (utest/conwin.c:
 # wlinput.c and its console.h).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
@@ -399,7 +402,8 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/sntp/ntp.c.o \
                       $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
                       $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile \
-                        wmgrab deco title mask) $(UOBJ)/user/services/console/wlinput.c.o \
+                        wmgrab deco title mask screens anim strip menus popover notify desk) \
+                      $(UOBJ)/user/services/console/wlinput.c.o \
                       $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \

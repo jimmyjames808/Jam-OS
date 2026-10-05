@@ -9,8 +9,10 @@
  * window's place, exactly. A client learns where the pointer is only
  * while it is over one of its windows.
  *
- * Focus: the window under the pointer (window_at: its surface's input
- * region) gets wl_pointer.enter, motion, buttons and the wheel; leaving it
+ * Focus: the window under the pointer (wm_window_at on its surface's input
+ * region, so another window's title bar or frame over it hides it; the
+ * desktop's strip and cards too) gets wl_pointer.enter, motion, buttons
+ * and the wheel; leaving it
  * sends leave. While a button is held the window the press went to keeps
  * every pointer event, even outside it (the implicit grab), until the last
  * button is released; then the window under the pointer gets the focus
@@ -145,11 +147,17 @@ static void set_over(struct comp_window *w)
     cursor_update();
 }
 
-/* The window under the pointer, if its client is alive. */
+/* The window whose surface is under the pointer, if its client is alive:
+ * none over another window's decorations (wm_window_at sees title bars and
+ * frames, which hide what is below them), nor over the desktop's strip or
+ * cards. */
 static struct comp_window *under_pointer(void)
 {
-    struct comp_window *w = window_at(cursor.x, cursor.y);
-    return w && client_alive(w->surface->client) ? w : NULL;
+    bool on_surface;
+    if (desk_covers(cursor.x, cursor.y))
+        return NULL;
+    struct comp_window *w = wm_window_at(cursor.x, cursor.y, &on_surface);
+    return w && on_surface && client_alive(w->surface->client) ? w : NULL;
 }
 
 /* ---- what the mice send -------------------------------------------------------------- */

@@ -60,9 +60,9 @@ void cursor_moved(int32_t old_x, int32_t old_y)
 {
     if (old_x != cursor.x || old_y != cursor.y)
         cur.shown = true;   /* a pointer exists */
-    scene_damage(cur.box);
+    scene_damage_over(cur.box);
     cur.box = cursor_box();
-    scene_damage(cur.box);
+    scene_damage_over(cur.box);
 }
 
 void cursor_show(bool on)

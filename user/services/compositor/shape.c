@@ -193,19 +193,18 @@ static void shadow_span(const struct shadow *sh, uint32_t *row, int32_t x1, int3
     }
 }
 
-void shadow_draw(const struct comp_window *w, const struct tile_buf *t)
+/* Frame f's shadow sh where it meets t, outside f less its corner squares
+ * of radius r, its darkness scaled by a (of 255). */
+static void shadow_of(const struct shadow *sh, struct comp_box f, int32_t r, uint32_t a,
+                      const struct tile_buf *t)
 {
-    if (look_of(w) != LOOK_FLOATING)
-        return;
-    const struct shadow *sh = &shadows[(w->flags & COMP_WIN_FOCUSED) != 0];
-    struct comp_box f = window_frame(w), m = box_translate(f, 0, sh->dy);
+    struct comp_box m = box_translate(f, 0, sh->dy);
     struct comp_box all = { m.x1 - sh->reach, m.y1 - sh->reach, m.x2 + sh->reach,
                             m.y2 + sh->reach };
     struct comp_box in = box_intersect(all, t->b);
-    const struct corner_mask *cm = shape_corners(w);
-    int32_t r = cm ? cm->r : 0;
+    uint64_t alpha = (uint64_t)sh->alpha * a / 255;
     for (int32_t y = in.y1; y < in.y2; y++) {
-        uint64_t ry = (uint64_t)sh->alpha * (edge(sh, y - m.y1) - edge(sh, y - m.y2));
+        uint64_t ry = alpha * (edge(sh, y - m.y1) - edge(sh, y - m.y2));
         if (!ry)
             continue;
         uint32_t *row = tile_row(t, y) - t->b.x1;
@@ -220,4 +219,19 @@ void shadow_draw(const struct comp_window *w, const struct tile_buf *t)
         shadow_span(sh, row, in.x1, hx1 < in.x2 ? hx1 : in.x2, ry, m);
         shadow_span(sh, row, hx2 > in.x1 ? hx2 : in.x1, in.x2, ry, m);
     }
+}
+
+void shadow_draw(const struct comp_window *w, const struct tile_buf *t)
+{
+    if (look_of(w) != LOOK_FLOATING)
+        return;
+    const struct corner_mask *cm = shape_corners(w);
+    shadow_of(&shadows[(w->flags & COMP_WIN_FOCUSED) != 0], window_frame(w), cm ? cm->r : 0, 255,
+              t);
+}
+
+void shadow_box(const struct tile_buf *t, struct comp_box b, int32_t r, uint32_t a)
+{
+    if (a)
+        shadow_of(&shadows[1], b, r, a, t);
 }

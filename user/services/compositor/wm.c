@@ -4,17 +4,23 @@
  * keeps and damages, xdg-shell (xdgtop.c) speaks to the client, the seat
  * (focus.c) owns the keyboard focus and tells us when it moves.
  *
- * Placement, for the states the shown buffer was drawn for:
+ * Each toplevel is on a virtual screen (screens.c), whose arrangement,
+ * floating or tiling, is its own; the room a screen has for windows is the
+ * output less the strip along the top while the desktop is on, and no
+ * window goes into the strip or the LOOK_STRIP_GAP below it, whatever the
+ * arrangement (its floor). Placement, for the states the shown buffer was
+ * drawn for:
  *   - full screen: centred on the output (a smaller buffer shows the
- *     background around it, never stretched);
- *   - maximised: centred in the output below its title bar (tiling: in
- *     the whole output, inside its border);
+ *     background around it, never stretched), on a screen of its own;
+ *   - maximised: centred in the room below the floor, under its title bar
+ *     (tiling: inside its border instead);
  *   - tiling: centred in its tile (a resizable window was asked to fill
- *     it; one that can't resize keeps its own size, wholly on the screen
+ *     it; one that can't resize keeps its own size, wholly in the room
  *     where it fits);
- *   - floating: at its floating place. The first time it is centred on the
- *     output, moved down and right by a title bar's height while another
- *     window's top-left corner is already there (the cascade).
+ *   - floating: at its floating place. The first time it is centred in the
+ *     room, moved down and right by a title bar's height while another
+ *     window's top-left corner is already there (the cascade); its title
+ *     bar never goes above the floor.
  *
  * The focus is the seat's (focus.c: a click, Alt+Tab, a client's first
  * window, the next one down when one goes); it tells us when it moves
@@ -22,7 +28,7 @@
  * activated state. Alt+Tab's order is ours: the order the toplevels
  * opened (stable, unlike the stacking order a raise changes), then
  * windows that are no toplevel (testwin's) from the bottom up. */
-#include "wm.h"
+#include "desk.h"
 
 #define CASCADE_STEP  (COMP_TITLE_H + DECO_BORDER)   /* one cascade step, both ways */
 #define CASCADE_MAX   16u                            /* steps before it starts over */
@@ -32,18 +38,45 @@
 static struct {
     struct wm_window *first, *last;   /* every toplevel, oldest first */
     struct wm_window *focused;        /* the toplevel with the seat's focus, or NULL */
+    uint64_t focus_count;             /* focus changes: each window's focused_at */
 } wm;
 
 void wm_init(enum comp_layout layout)
 {
     wm_grab_cancel();
+    anim_finish();
     wm.first = wm.last = wm.focused = NULL;
-    scene.layout = layout;
+    wm.focus_count = 0;
+    screens_init(layout);
 }
 
 struct wm_window *wm_first(void)
 {
     return wm.first;
+}
+
+struct wm_window *wm_focused(void)
+{
+    return wm.focused;
+}
+
+enum comp_layout wm_layout_of(const struct wm_window *ww)
+{
+    const struct desk_screen *s = ww && ww->screen ? ww->screen : screens_cur();
+    return s->kind == SCREEN_NORMAL ? s->layout : COMP_FLOATING;
+}
+
+/* The room ww's windows have (its screen's, or the current one's). */
+static struct comp_box room_of(const struct wm_window *ww)
+{
+    return screens_room(ww->screen ? ww->screen : screens_cur());
+}
+
+/* The top a window's frame may reach: the floor under the strip. */
+static int32_t floor_of(const struct wm_window *ww)
+{
+    struct comp_box r = room_of(ww);
+    return r.y1 > 0 ? r.y1 + LOOK_STRIP_GAP : r.y1;
 }
 
 /* ---- making and losing toplevels ---------------------------------------------------- */
@@ -103,24 +136,33 @@ static struct comp_box output_box(void)
     return (struct comp_box){ 0, 0, scene.width, scene.height };
 }
 
+/* A maximised window's frame: the room below the floor. */
+static struct comp_box max_box(const struct wm_window *ww)
+{
+    struct comp_box r = room_of(ww);
+    r.y1 = floor_of(ww);
+    return r;
+}
+
 void wm_wanted(const struct wm_window *ww, struct wm_config *out)
 {
     *out = (struct wm_config){ 0, 0, ww == wm.focused ? WM_ST_ACTIVATED : 0 };
+    enum comp_layout layout = wm_layout_of(ww);
     struct comp_box b;
     switch (ww->want) {
     case WM_FULLSCREEN:
         out->states |= WM_ST_FULLSCREEN;
-        b = deco_inner(output_box(), WM_ST_FULLSCREEN);
+        b = deco_inner(output_box(), WM_ST_FULLSCREEN, layout);
         break;
     case WM_MAXIMIZED:
         out->states |= WM_ST_MAXIMIZED;
-        b = deco_inner(output_box(), WM_ST_MAXIMIZED);
+        b = deco_inner(max_box(ww), WM_ST_MAXIMIZED, layout);
         break;
     default:
-        if (scene.layout == COMP_TILING) {
+        if (layout == COMP_TILING) {
             if (!wm_resizable(ww))
                 return;   /* 0 by 0: it keeps its own size */
-            b = deco_inner(wm_tile(ww), 0);
+            b = deco_inner(wm_tile(ww), 0, layout);
             out->width = limit(b.x2 - b.x1, ww->min_w, ww->max_w);
             out->height = limit(b.y2 - b.y1, ww->min_h, ww->max_h);
             return;
@@ -155,26 +197,27 @@ void wm_relayout(void)
 /* ---- placing ------------------------------------------------------------------------ */
 
 /* One axis: the surface's start for a side of `side` pixels centred in
- * [lo, hi), then kept on [0, out) with its decorations (before, after)
- * where the frame fits, else at the start. */
+ * [lo, hi), then kept on [min, max) with its decorations (before, after)
+ * where the frame fits, else at min. */
 static int32_t centre(int32_t lo, int32_t hi, int32_t side, int32_t before, int32_t after,
-                      int32_t out)
+                      int32_t min, int32_t max)
 {
     int32_t v = lo + (hi - lo - side) / 2;
-    if (side + before + after > out)
-        return before;
-    if (v - before < 0)
-        v = before;
-    if (v + side + after > out)
-        v = out - side - after;
+    if (side + before + after > max - min)
+        return min + before;
+    if (v - before < min)
+        v = min + before;
+    if (v + side + after > max)
+        v = max - side - after;
     return v;
 }
 
-static void centre_in(struct comp_window *w, struct comp_box b)
+/* w centred in b, its frame kept on the output below floor. */
+static void centre_in(struct comp_window *w, struct comp_box b, int32_t floor)
 {
     const struct comp_surface *s = w->surface;
-    window_move(w, centre(b.x1, b.x2, s->width, w->deco_left, w->deco_right, scene.width),
-                centre(b.y1, b.y2, s->height, w->deco_top, w->deco_bottom, scene.height));
+    window_move(w, centre(b.x1, b.x2, s->width, w->deco_left, w->deco_right, 0, scene.width),
+                centre(b.y1, b.y2, s->height, w->deco_top, w->deco_bottom, floor, scene.height));
 }
 
 /* Is another mapped window's surface at (x, y) already? */
@@ -186,13 +229,15 @@ static bool corner_taken(const struct wm_window *self, int32_t x, int32_t y)
     return false;
 }
 
-/* The first floating place: centred, then down the cascade. */
+/* The first floating place: centred in the room, then down the cascade. */
 static void first_place(struct wm_window *ww)
 {
     struct comp_window *w = ww->win;
     const struct comp_surface *s = ww->surface;
-    int32_t x0 = centre(0, scene.width, s->width, w->deco_left, w->deco_right, scene.width);
-    int32_t y0 = centre(0, scene.height, s->height, w->deco_top, w->deco_bottom, scene.height);
+    int32_t fl = floor_of(ww);
+    int32_t x0 = centre(0, scene.width, s->width, w->deco_left, w->deco_right, 0, scene.width);
+    int32_t y0 = centre(fl, scene.height, s->height, w->deco_top, w->deco_bottom, fl,
+                        scene.height);
     int32_t x = x0, y = y0;
     for (unsigned i = 1; i < CASCADE_MAX && corner_taken(ww, x, y); i++) {
         x = x0 + (int32_t)i * CASCADE_STEP;
@@ -210,12 +255,12 @@ static void first_place(struct wm_window *ww)
 }
 
 /* A floating place the user can always get back to: the title bar's top
- * on the output and at least REACH_MIN of it across. */
-static void keep_reachable(const struct comp_window *w, int32_t *x, int32_t *y)
+ * on the output below the floor and at least REACH_MIN of it across. */
+static void keep_reachable(const struct comp_window *w, int32_t floor, int32_t *x, int32_t *y)
 {
     int32_t width = w->surface->width;
-    if (*y - w->deco_top < 0)
-        *y = w->deco_top;
+    if (*y - w->deco_top < floor)
+        *y = floor + w->deco_top;
     if (*y > scene.height - 1)
         *y = scene.height - 1;
     if (*x + width < REACH_MIN)
@@ -234,24 +279,26 @@ static void place_floating(struct wm_window *ww)
         ww->float_x = ww->anchor_x2 - s->width;
     if (ww->anchor & WM_EDGE_TOP)
         ww->float_y = ww->anchor_y2 - s->height;
-    keep_reachable(w, &ww->float_x, &ww->float_y);
+    keep_reachable(w, floor_of(ww), &ww->float_x, &ww->float_y);
     window_move(w, ww->float_x, ww->float_y);
 }
 
 void wm_place(struct wm_window *ww)
 {
     struct comp_window *w = ww->win;
+    enum comp_layout layout = wm_layout_of(ww);
     deco_set(w, ww->shown);
     w->flags &= ~(COMP_WIN_MAXIMIZED | COMP_WIN_FULLSCREEN);
     if (ww->shown & WM_ST_FULLSCREEN) {
         w->flags |= COMP_WIN_FULLSCREEN;
-        centre_in(w, deco_inner(output_box(), WM_ST_FULLSCREEN));
+        centre_in(w, deco_inner(output_box(), WM_ST_FULLSCREEN, layout), 0);
     } else if (ww->shown & WM_ST_MAXIMIZED) {
         w->flags |= COMP_WIN_MAXIMIZED;
-        centre_in(w, deco_inner(output_box(), WM_ST_MAXIMIZED));
-    } else if (scene.layout == COMP_TILING) {
+        struct comp_box b = max_box(ww);
+        centre_in(w, deco_inner(b, WM_ST_MAXIMIZED, layout), b.y1);
+    } else if (layout == COMP_TILING) {
         w->tile = wm_tile(ww);
-        centre_in(w, deco_inner(w->tile, 0));
+        centre_in(w, deco_inner(w->tile, 0, layout), room_of(ww).y1);
     } else {
         place_floating(ww);
     }
@@ -266,7 +313,7 @@ void wm_place(struct wm_window *ww)
 static void note_floating_size(struct wm_window *ww)
 {
     const struct comp_surface *s = ww->surface;
-    if (scene.layout != COMP_FLOATING || ww->want != WM_NORMAL ||
+    if (wm_layout_of(ww) != COMP_FLOATING || ww->want != WM_NORMAL ||
         (ww->shown & (WM_ST_MAXIMIZED | WM_ST_FULLSCREEN)) || ww->resizing)
         return;
     if (ww->anchor && (s->width != ww->float_w || s->height != ww->float_h))
@@ -288,15 +335,23 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
             return st;
         ww->win->wm = ww;
         ww->win->title = ww->title;   /* ours: it outlives the window */
+        screens_window_new(ww);
     }
     ww->shown = states;
     wm_place(ww);
     note_floating_size(ww);
     if (!first)
         return OK;
-    if (scene.layout == COMP_TILING)
+    if (wm_layout_of(ww) == COMP_TILING)
         wm_relayout();   /* the others make room */
-    window_map(ww->win, true);   /* the seat hears (a client's first window takes the keys) */
+    window_map(ww->win, screens_shown(ww));   /* the seat hears (a client's first window
+                                               * takes the keys) */
+    if (ww->want == WM_FULLSCREEN)
+        screens_fullscreen(ww, true);   /* asked before its first buffer */
+    else
+        anim_open(ww->win);
+    desk_window_mapped(ww);
+    strip_dirty();
     return OK;
 }
 
@@ -307,8 +362,13 @@ void wm_unmap(struct wm_window *ww)
     wm_grab_forget(ww);
     if (wm.focused == ww)
         wm.focused = NULL;
+    if (ww->surface->buffer && screens_shown(ww))
+        anim_close(ww->win);   /* its picture, while its pixels are still there */
+    bool tiled = wm_layout_of(ww) == COMP_TILING;
     window_destroy(ww->win);   /* the seat hears first, while it is in the order */
     ww->win = NULL;
+    screens_window_gone(ww);
+    strip_dirty();
     /* back to what get_toplevel made (xdg-shell's "unmapping") */
     ww->want = ww->before_fs = WM_NORMAL;
     ww->shown = 0;
@@ -316,7 +376,7 @@ void wm_unmap(struct wm_window *ww)
     ww->float_w = ww->float_h = 0;
     ww->anchor = 0;
     ww->not_responding = false;
-    if (scene.layout == COMP_TILING)
+    if (tiled)
         wm_relayout();   /* the others take its room */
 }
 
@@ -332,6 +392,7 @@ void wm_set_title(struct wm_window *ww, const char *title)
     copy_text(ww->title, title);
     if (ww->win)
         window_damage(ww->win);   /* its title bar */
+    strip_dirty();                /* its chip */
 }
 
 void wm_set_app_id(struct wm_window *ww, const char *app_id)
@@ -351,17 +412,21 @@ void wm_set_limits(struct wm_window *ww, int32_t min_w, int32_t min_h, int32_t m
     wm_reconfigure(ww);   /* a tile's size depends on them */
 }
 
-/* ww is asked to be mode now. */
+/* ww is asked to be mode now: full screen takes it to a screen of its
+ * own, and back. */
 static void request(struct wm_window *ww, enum wm_mode mode)
 {
     if (ww->want == mode)
         return;
+    bool was_full = ww->want == WM_FULLSCREEN;
     wm_grab_forget(ww);
     ww->anchor = 0;
     ww->want = mode;
     if (ww->win && mode != WM_NORMAL)
         window_raise(ww->win);
     wm_reconfigure(ww);
+    if (was_full != (mode == WM_FULLSCREEN))
+        screens_fullscreen(ww, mode == WM_FULLSCREEN);
 }
 
 void wm_request_maximized(struct wm_window *ww, bool on)
@@ -412,26 +477,34 @@ void wm_toggle_fullscreen(struct comp_window *w)
 
 void wm_set_layout(enum comp_layout layout)
 {
-    if (scene.layout == layout)
+    struct desk_screen *s = screens_cur();
+    bool same = s->kind != SCREEN_NORMAL || s->layout == layout;
+    screens_set_default(layout);
+    if (same)
         return;
     wm_grab_cancel();
-    scene.layout = layout;
     for (struct wm_window *ww = wm.first; ww; ww = ww->next)
         ww->anchor = 0;
     wm_relayout();
+    strip_dirty();   /* its icon */
 }
 
+/* Super+T: the current screen's arrangement, which new screens take too. */
 void wm_toggle_layout(void)
 {
-    enum comp_layout l = scene.layout == COMP_TILING ? COMP_FLOATING : COMP_TILING;
+    struct desk_screen *s = screens_cur();
+    if (s->kind != SCREEN_NORMAL)
+        return;   /* a full-screen screen has none */
+    enum comp_layout l = s->layout == COMP_TILING ? COMP_FLOATING : COMP_TILING;
     wm_set_layout(l);
     ctl_layout_changed(l);
 }
 
-/* Minimising is not built yet (comp.h): the circle does nothing. */
-__attribute__((weak)) void wm_minimise(struct comp_window *w)
+void wm_minimise(struct comp_window *w)
 {
-    (void)w;
+    struct wm_window *ww = w ? w->wm : NULL;
+    if (ww)
+        screens_minimise(ww);
 }
 
 /* Until compctl can tell init (comp.h): nobody saves the switch. */
@@ -463,9 +536,12 @@ void wm_focus_changed(struct comp_window *w)
     struct wm_window *now = w ? w->wm : NULL, *old = wm.focused;
     if (w)
         window_raise(w);   /* Alt+Tab and a first window come up too, not only a click */
+    if (now)
+        now->focused_at = ++wm.focus_count;
     if (now == old)
         return;
     wm.focused = now;
+    strip_dirty();   /* the focused chip */
     if (old && old->win)
         wm_reconfigure(old);   /* activated no more (the seat damaged its title bar) */
     if (now && now->win)

@@ -20,16 +20,26 @@
  *     buffer: copied (xrgb8888, or inside its opaque region), or blended
  *     over what is below (argb8888, premultiplied, with libfun's
  *     px_over_row: px_over's exact rounding), then its corners cut round;
+ *   - the desktop over the windows (deskpaint.c): animations, the
+ *     strip, then the cards;
  *   - the cursor last (cursor.c);
  *   - the tile's rows to the output (output_put), which is never read.
+ * A tile wholly inside the strip starts with it (desk_hides): nothing
+ * under it shows. A window an animation draws (COMP_WIN_ANIMATED) is
+ * skipped, and hides nothing.
  * The wallpaper is copied only where nothing opaque is, so a tile under
  * one opaque window costs one copy in and one write out.
  *
  * Before a paint, the window whose title bar circles the pointer is over
  * is looked up (title_hovered), and the circles damaged when it changes.
  *
+ * Before the tiles, the desktop lays out its strip and remakes the
+ * blurred backdrops of its cards that went stale (frost.c), on the same
+ * workers. The `under` damage is cleared with the rest.
+ *
  * The full-screen path: when the topmost visible window is opaque and its
- * surface covers the whole output (the splash, a full-screen game), its
+ * surface covers the whole output (the splash, a full-screen game), and
+ * the desktop draws nothing over the windows, its
  * damage is copied straight from its buffer to the output, row by row,
  * with no tile buffer: today's libfun present, one copy. The cursor's box
  * still goes through a tile, so the arrow is drawn over it.
@@ -41,7 +51,7 @@
  * from it decides anything here. */
 #include <fun.h>
 #include <jwl/wayland.h>
-#include "paint.h"
+#include "desk.h"
 
 #define THREADS_DEFAULT 4   /* the framebuffer saturates at two (fbbench); blends want a few */
 
@@ -85,7 +95,7 @@ bool paint_opaque_over(const struct comp_window *w, struct comp_box in)
         return false;
     if (s->buffer->format != JWL_WL_SHM_FORMAT_ARGB8888)
         return true;
-    struct comp_box rel = box_translate(in, -w->x, -w->y);
+    struct comp_box rel = box_translate(in, -w->x - w->slide_x, -w->y);
     for (uint32_t i = 0; i < s->opaque.n; i++)
         if (inside(rel, s->opaque.b[i]))
             return true;
@@ -97,8 +107,8 @@ bool paint_opaque_over(const struct comp_window *w, struct comp_box in)
  * always are). */
 static bool hides(const struct comp_window *w, struct comp_box b)
 {
-    if (!(w->flags & COMP_WIN_MAPPED) || !w->surface->buffer || !inside(b, window_frame(w)) ||
-        shape_corner_meets(w, b))
+    if (!(w->flags & COMP_WIN_MAPPED) || (w->flags & COMP_WIN_ANIMATED) || !w->surface->buffer ||
+        !inside(b, window_frame(w)) || shape_corner_meets(w, b))
         return false;
     struct comp_box in = box_intersect(b, window_surface_box(w));
     return box_empty(in) || paint_opaque_over(w, in);
@@ -130,11 +140,13 @@ bool window_covered(const struct comp_window *w)
 static const struct comp_window *full_screen(void)
 {
     struct comp_box out = { 0, 0, scene.width, scene.height };
-    if (comp.blanked)
+    if (comp.blanked || desk_over_windows())
         return NULL;
     for (const struct comp_window *w = scene.top; w; w = w->below) {
         if (!(w->flags & COMP_WIN_MAPPED) || box_empty(box_intersect(window_extent(w), out)))
             continue;
+        if (w->flags & COMP_WIN_ANIMATED)
+            return NULL;
         bool all = inside(out, window_surface_box(w)) && paint_opaque_over(w, out) &&
                    !shape_corner_meets(w, out);
         return all ? w : NULL;
@@ -157,10 +169,11 @@ static const uint32_t *buffer_at(const struct comp_window *w, int32_t x, int32_t
 {
     const struct comp_buffer *b = w->surface->buffer;
     return (const uint32_t *)(const void *)(comp_buffer_data(b) +
-                                            (uint64_t)(y - w->y) * b->stride) + (x - w->x);
+                                            (uint64_t)(y - w->y) * b->stride) +
+           (x - w->x - w->slide_x);
 }
 
-/* Window w's buffer where it meets t. */
+/* Window w's buffer where it meets t (me: the worker, counting; ~0u: none). */
 static void draw_buffer(const struct comp_window *w, const struct tile_buf *t, uint32_t me)
 {
     struct comp_box in = box_intersect(window_surface_box(w), t->b);
@@ -176,14 +189,24 @@ static void draw_buffer(const struct comp_window *w, const struct tile_buf *t, u
         else
             px_over_row(dst, src, n);
     }
-    pt.count[me].layer_px += (uint64_t)n * (uint64_t)(in.y2 - in.y1);
+    if (me < FUN_MAX_THREADS)
+        pt.count[me].layer_px += (uint64_t)n * (uint64_t)(in.y2 - in.y1);
+}
+
+void paint_window(const struct comp_window *w, const struct tile_buf *t, uint32_t *save)
+{
+    shape_save(w, t, save);
+    title_draw(w, t);
+    draw_buffer(w, t, ~0u);
+    shape_clip(w, t, save);
 }
 
 /* Window w where it meets t: its shadow, decorations and buffer, its
  * corners cut round. */
 static void draw_window(const struct comp_window *w, const struct tile_buf *t, uint32_t me)
 {
-    if (!(w->flags & COMP_WIN_MAPPED) || box_empty(box_intersect(window_extent(w), t->b)))
+    if (!(w->flags & COMP_WIN_MAPPED) || (w->flags & COMP_WIN_ANIMATED) ||
+        box_empty(box_intersect(window_extent(w), t->b)))
         return;
     shadow_draw(w, t);
     if (box_empty(box_intersect(window_frame(w), t->b)))
@@ -203,17 +226,26 @@ static void fill_tile(const struct tile_buf *t, uint32_t c)
         t->px[i] = c;
 }
 
+void paint_under(const struct tile_buf *t, uint32_t me)
+{
+    if (!desk_hides(t->b)) {
+        const struct comp_window *from = cull(t->b);
+        if (!from)
+            wallpaper_fill(t);
+        for (const struct comp_window *w = from ? from : scene.bottom; w; w = w->above)
+            draw_window(w, t, me);
+    }
+    desk_draw_low(t);
+}
+
 static void compose(const struct tile_buf *t, uint32_t me)
 {
     if (comp.blanked) {
         fill_tile(t, LOOK_BLANK);
         return;
     }
-    const struct comp_window *from = cull(t->b);
-    if (!from)
-        wallpaper_fill(t);
-    for (const struct comp_window *w = from ? from : scene.bottom; w; w = w->above)
-        draw_window(w, t, me);
+    paint_under(t, me);
+    desk_draw_high(t);
     cursor_draw(t);
 }
 
@@ -341,9 +373,13 @@ uint64_t paint_frame(void)
     uint64_t t0 = now();
     memset(&paint_last, 0, sizeof(paint_last));
     hover_update();
-    if (damage_empty(&scene.damage))
+    desk_paint_prepare();
+    if (damage_empty(&scene.damage)) {
+        damage_clear(&scene.under);
         return 0;
+    }
     plan();
+    desk_paint_backdrops();
     for (uint32_t i = 0; i < pt.threads; i++)
         pt.count[i].layer_px = 0;
     if (pt.n)
@@ -358,6 +394,7 @@ uint64_t paint_frame(void)
         paint_last.layer_px += pt.count[i].layer_px;
     paint_last.tiles = pt.n;
     damage_clear(&scene.damage);
+    damage_clear(&scene.under);
     paint_last.ns = now() - t0;
     comp.stats.painted_px += paint_last.px;
     return paint_last.px;
@@ -379,8 +416,11 @@ status_t paint_init(uint32_t threads)
     (void)text_width(1, "");   /* libfun's glyph tables, made now: the workers only read them */
     mask_init();
     shape_init();
+    ui_init();
     cursor_init();
     if (wallpaper_init(output.width, output.height) != OK)
         printf("compositor: no memory for the wallpaper: a flat background\n");
+    if (desk_on() && frost_init(output.width, output.height) != OK)
+        printf("compositor: no memory for the strip's frosting: a flat strip\n");
     return OK;
 }
