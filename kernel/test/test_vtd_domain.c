@@ -21,7 +21,8 @@
  *     page stops being reached, the entry carries the domain's id and
  *     table, detach puts edu back home;
  *   - edu muted after VTD_FAULT_LOGGED faults: FPD in its entry, no more
- *     faults recorded;
+ *     faults recorded; a domain attached after that starts its count at 0
+ *     and isn't muted at its first fault;
  *   - the handover with translation on (what a boot finds after the
  *     firmware's DMA protection or a kexec that couldn't turn it off): the
  *     unit is pointed at a copy of the tables while it translates, and
@@ -391,6 +392,62 @@ KTEST(vtd_domain_mute_after_faults)
     KT_IDLE_EQ(after, before);   /* another device may fault meanwhile */
     KT_ASSERT(kept);
     KT_ASSERT(unmuted);
+}
+
+/* A driver attached after its function was muted starts with a count of
+ * its own: muted at home after VTD_FAULT_LOGGED faults, then attached to a
+ * domain of its own, edu has 0 faults and FPD clear, and its next blocked
+ * write is recorded and counted 1 without muting it again (with the old
+ * count it would have been muted at its first fault). */
+KTEST(vtd_domain_new_driver_fresh_count)
+{
+    NEED_LIVE(ctl);
+    struct edu e;
+    if (!edu_open(&e))
+        return;
+    uint64_t pa = page_of(0x66);
+    KT_ASSERT(pa);
+    KT_EQ(to_home(&e), OK);
+    bool ok = true, counted = true;
+    for (uint32_t i = 1; i <= VTD_FAULT_LOGGED && ok && counted; i++) {
+        ok = edu_out(&e, pa);
+        counted = faults_reach(&e, i);
+    }
+    mutex_lock(&ctl->lock);
+    bool muted = e.f->muted;
+    mutex_unlock(&ctl->lock);
+    struct iommu_domain *dom = NULL;
+    status_t made = iommu_domain_create(e.d, NULL, &dom);
+    status_t attached = made == OK ? iommu_attach(dom) : made;
+    mutex_lock(&ctl->lock);
+    uint32_t after_attach = e.f->dma_faults;
+    bool fpd_after_attach = vtd_fn_read(e.f).lo & VTD_CTX_FPD;
+    mutex_unlock(&ctl->lock);
+    /* pa isn't mapped in the new domain: blocked, and recorded this time. */
+    ok = ok && attached == OK && edu_out(&e, pa);
+    bool seen = attached == OK && faults_reach(&e, 1);
+    thread_sleep_ms(20);   /* the log thread has decided on the mute by now */
+    mutex_lock(&ctl->lock);
+    uint32_t faults = e.f->dma_faults;
+    bool muted_again = e.f->muted || (vtd_fn_read(e.f).lo & VTD_CTX_FPD);
+    mutex_unlock(&ctl->lock);
+    bool kept = page_is(pa, 0x66);
+    if (attached == OK)
+        (void)iommu_detach(dom);
+    if (made == OK)
+        (void)iommu_domain_destroy(dom);
+    edu_close(&e);
+    pmm_free_page_phys(pa);
+    KT_ASSERT(ok);
+    KT_ASSERT(counted && muted);
+    KT_EQ(made, OK);
+    KT_EQ(attached, OK);
+    KT_EQ(after_attach, 0);
+    KT_ASSERT(!fpd_after_attach);
+    KT_ASSERT(seen);
+    KT_EQ(faults, 1);
+    KT_ASSERT(!muted_again);
+    KT_ASSERT(kept);
 }
 
 /* A copy of ctl's root and context tables in fresh pages (the same

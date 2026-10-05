@@ -35,7 +35,7 @@ ok=1
 
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$devs" QEMU_INPUT=tools/shell-tests/beep.txt \
     tools/qemu-test.sh "$out" beep shell > "$out/beep.out" 2>&1 ||
-    { echo "beep: the script failed"; grep "serial-feed: .*no '" "$out/beep.out"; ok=0; }
+    { echo "beep: the script failed"; grep "serial-feed: .*no '" "$out/beep.out" || true; ok=0; }
 log="$out/beep.log"
 for want in "path: plays at -30.0 dB (node 02's output amp, step 44; -74.0 to 0.0 dB)" \
             "output: unmuted at -30.0 dB (node 02 step 44)" "output: muted again" \

@@ -112,7 +112,8 @@ status_t iommu_domain_destroy(struct iommu_domain *d);
 /* Point d's function's context entry at d (a 16-byte atomic write that
  * changes the domain id with the table, VT-d 6.2.2.1), then invalidate
  * what the unit cached for the entry it replaced and wait. The faults
- * muted on the function (its home domain's storm) are heard again.
+ * muted on the function (its home domain's storm) are heard again, and
+ * its DMA fault count (the mute's, and the `iommu` command's) starts at 0.
  * ERR_TIMED_OUT, ERR_IO. */
 status_t iommu_attach(struct iommu_domain *d);
 

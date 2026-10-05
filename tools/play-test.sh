@@ -91,7 +91,7 @@ devs="-audiodev wav,id=snd0,path=$wav,out.frequency=48000,out.channels=2,out.for
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_IMAGE="$stick" QEMU_EXTRA="$devs" \
     QEMU_INPUT=tools/shell-tests/play.txt \
     tools/qemu-test.sh "$out" play shell > "$out/play.out" 2>&1 ||
-    { echo "play: the script failed"; grep "serial-feed: .*no '" "$out/play.out"; ok=0; }
+    { echo "play: the script failed"; grep "serial-feed: .*no '" "$out/play.out" || true; ok=0; }
 rm -f "$stick"
 
 drops=$(grep -ac "hda_audio_overrun" "$out/play.out" || true)

@@ -100,7 +100,7 @@ devs="-audiodev wav,id=snd0,path=$wav,out.frequency=48000,out.channels=2,out.for
 -device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0,mixer=off"
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-200} QEMU_IMAGE="$stick" QEMU_EXTRA="$devs" QEMU_INPUT="$script" \
     tools/qemu-test.sh "$out" quality shell > "$out/quality.out" 2>&1 ||
-    { echo "quality: the script failed"; grep "serial-feed: .*no '" "$out/quality.out"; ok=0; }
+    { echo "quality: the script failed"; grep "serial-feed: .*no '" "$out/quality.out" || true; ok=0; }
 rm -f "$stick"
 log="$out/quality.log"
 

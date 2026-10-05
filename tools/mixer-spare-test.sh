@@ -24,10 +24,10 @@ ok=1
 
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$devs" QEMU_INPUT=tools/shell-tests/mixer-spare.txt \
     tools/qemu-test.sh "$out" spare shell > "$out/spare.out" 2>&1 ||
-    { echo "mixer-spare: the spare script failed"; grep "serial-feed: .*no '" "$out/spare.out"; ok=0; }
+    { echo "mixer-spare: the spare script failed"; grep "serial-feed: .*no '" "$out/spare.out" || true; ok=0; }
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$devs" QEMU_INPUT=tools/shell-tests/mixer-nospare.txt \
     tools/qemu-test.sh "$out" nospare shell nospare > "$out/nospare.out" 2>&1 ||
-    { echo "mixer-spare: the nospare script failed"; grep "serial-feed: .*no '" "$out/nospare.out"; ok=0; }
+    { echo "mixer-spare: the nospare script failed"; grep "serial-feed: .*no '" "$out/nospare.out" || true; ok=0; }
 log="$out/spare.log"
 nolog="$out/nospare.log"
 

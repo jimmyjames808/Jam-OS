@@ -22,10 +22,10 @@ ok=1
 
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-spare.txt \
     tools/qemu-test.sh "$out" fatspare shell > "$out/fatspare.out" 2>&1 ||
-    { echo "fat-spare: the spare script failed"; grep "serial-feed: .*no '" "$out/fatspare.out"; ok=0; }
+    { echo "fat-spare: the spare script failed"; grep "serial-feed: .*no '" "$out/fatspare.out" || true; ok=0; }
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-nospare.txt \
     tools/qemu-test.sh "$out" fatnospare shell nospare > "$out/fatnospare.out" 2>&1 ||
-    { echo "fat-spare: the nospare script failed"; grep "serial-feed: .*no '" "$out/fatnospare.out"; ok=0; }
+    { echo "fat-spare: the nospare script failed"; grep "serial-feed: .*no '" "$out/fatnospare.out" || true; ok=0; }
 log="$out/fatspare.log"
 nolog="$out/fatnospare.log"
 # Up to the `reboot -f` at the end: the shutdown takes every mount away.

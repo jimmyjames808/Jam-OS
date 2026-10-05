@@ -1,10 +1,12 @@
 # M11 plan: the IOMMU (VT-d) and interrupt remapping
 
-Status (2026-10-02): the plan, and stage 0 built (a read-only probe of
-the PC's VT-d hardware: [below](#stage-0-the-read-only-probe)). Waiting
-for the owner's answers to the questions below and for stage 0's PC run
-before any stage 1 code. M11 runs beside M11.5 and M11.6
-([PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-1-m11-m115-and-m116-together)).
+Status (2026-10-05): **built and tested in QEMU**, stages 0 to 6
+([as built](#as-built)); behind the boot word `iommu=on`, off by default.
+Next: the PC run (the IOMMU checks entry, then every device, All tests and
+`soak 10` with `iommu=on`), then the default turned on, then the
+independent review (stage 7). The design as built is
+[ARCHITECTURE.md](../ARCHITECTURE.md#the-iommu). M11 runs beside M11.5 and
+M11.6 ([PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-1-m11-m115-and-m116-together)).
 
 Goal ([roadmap](ROADMAP.md#later)): **a device can reach only the memory
 its driver pinned for it, and can't send an interrupt it wasn't given.**
@@ -301,7 +303,8 @@ RMRR naming a device that isn't there (the iGPU) is ignored.
 Every function the unit covers (INCLUDE_PCI_ALL: all of segment 0 that
 no other unit lists) gets a context entry from the start: the blocking
 domain, or its RMRR boot domain. Its faults are recorded; after the
-first 8 from one device, that device's context entry gets the
+first 8 from one device (as built: 8 since its last attach, so a new
+driver's domain starts the count again), that device's context entry gets the
 fault-processing-disable bit, so a device stuck retrying can't flood the
 fault registers (the log says it was muted, and the count still shows in
 the `iommu` command from the context's last state).
@@ -401,7 +404,8 @@ takes over whatever is left on.
 ### Faults
 
 - The unit's fault event interrupt (FECTL, FEDATA, FEADDR and, in x2APIC
-  mode, FEUADDR) goes to CPU 0 through a vector of its own; fault events
+  mode, FEUADDR) goes to one CPU through a vector of its own (as built:
+  the CPU `vector_alloc` picks, one whose APIC id fits 8 bits); fault events
   are not themselves remapped. The handler reads the fault status, walks
   the recording registers from the first full one (bounded by their
   count), copies each fault (requester id, address, read or write, reason)
@@ -424,7 +428,9 @@ vmo.c, interrupt.c and ioapic.c don't know VT-d's formats: `iommu_on()`,
 `iommu_map(domain, addr, pages, n)` and `iommu_unmap(...)` (both with a
 batch that ends in one invalidation and wait), `iommu_irq_alloc(pci_dev
 or I/O APIC, cpu, vector, out msi_address, out msi_data)` and
-`iommu_irq_free`. With the IOMMU off every call is a no-op returning
+`iommu_irq_free` (as built: the interrupt calls are a header of their
+own, `kernel/include/jam/irq_remap.h`: `irq_remap_alloc_pci`,
+`irq_remap_alloc_ioapic`, `irq_remap_free`). With the IOMMU off every call is a no-op returning
 the old behaviour (physical addresses, compatibility-format messages).
 The VT-d code itself lives in kernel/dev/ next to the probe (planned
 vtd_unit.c, vtd_qi.c, vtd_fault.c, vtd_pt.c, vtd_domain.c, vtd_boot.c,
@@ -567,14 +573,14 @@ once on the merged milestone. "New" files are planned names.
 | Stage | Track | What | Files it owns | Needs |
 |---|---|---|---|---|
 | **0. The probe** (built) | | above | kernel/acpi/dmar.c, kernel/dev/vtd_probe.c, `kernel/include/jam/dmar.h`, `kernel/include/jam/vtd.h`, kernel/test/test_dmar.c, `tools/vtd-test.sh` | nothing |
-| **1A. The unit** | A | per unit: the register mapping kept from the probe, the invalidation queue (enable, submit, the wait slots, errors), the invalidations (context global/domain/device, IOTLB global/domain/page-selective, interrupt entry cache global/index), the fault interrupt, ring and log thread, the boot words `iommu=on/off`, the VT-d register pages added to the MMIO the kernel keeps (resource.c), `QEMU_IOMMU` in qemu-test.sh. Tests in QEMU: every invalidation completes, an error is reported, the queue wraps | new kernel/dev/vtd_unit.c, vtd_qi.c, vtd_fault.c, vtd_internal.h, new kernel/test/test_vtd_unit.c; `kernel/include/jam/vtd.h`; `kernel/object/resource.c` (one check); `tools/qemu-test.sh`; `docs/TESTING.md` (the variable) | 0's PC run |
-| **1B. Page tables** | B | the second-level tables as a module that takes its page allocator and its flush as functions, so it is tested without hardware: map and unmap runs of pages, pin counts in the software bits, empty tables freed only after the caller's invalidation, the per-domain cap, the charge; the address and width checks (MGAW) | new kernel/dev/vtd_pt.c, vtd_pt.h, new kernel/test/test_vtd_pt.c | nothing (beside 1A) |
-| **1C. Interrupt entries** | C | the remapping table (allocate, zero, free entries), the entry format (x2APIC and xAPIC destinations, source validation), the remappable MSI address/data and I/O APIC entry encoders, all pure and tested on their own | new kernel/dev/vtd_ir.c, vtd_ir.h, new kernel/test/test_vtd_ir.c | nothing (beside 1A) |
-| **2. Domains and translation on** | D1 | root and context tables, domain ids, the blocking domain, RMRR boot domains (and RMRRs in RAM out of the memory map), attach and detach with their invalidations, the fault-processing-disable mute, the boot handover (off, on, queue on), protected memory off, translation on at boot; off before a kexec and on the panic path; the planned jam/iommu.h interface | new kernel/dev/vtd_domain.c, vtd_boot.c, new kernel/include/jam/iommu.h, new kernel/test/test_vtd_domain.c; `kernel/main.c` (the call); `kernel/kexec/jump.c` and `kernel/dev/reboot.c` (one call each) | 1A, 1B |
-| **3. Pins through the IOMMU** | D2 | `dma_cap` makes and switches domains; `vmo_pin` maps, `vmo_unpin` unmaps and waits; the close blocks then frees at once (the quarantine only with `iommu=off`); edu tests: an unpinned page is never written and the fault names edu, a pinned one is; `dma_stale_write_after_rebind` per mode | `kernel/object/dma_cap.c`, `kernel/object/vmo.c` (the pin paths), `kernel/test/test_dma.c`, `drivers/test/edu/edu.c` if a test needs a command (as built: the IOMMU's own tests in new kernel/test/test_dma_iommu.c, the edu and fault-watch helpers shared in kernel/test/ktest_util.c, `dma_cap_create_for` takes the job its domain is charged to; a closed cap's domain is taken away by the "dma quarantine" thread, since the close can't wait; the pass-through domain stays, for the tests only) | D1 |
-| **4. Interrupt remapping on** | E | interrupt objects allocate entries (`irq.c`'s message address and data from them), the I/O APIC's entries remapped, the enable sequence, EIM with x2APIC; tests: every device's interrupts in QEMU with `QEMU_IOMMU=eim`, edu's write to 0xfee00000 raises nothing and is recorded | `kernel/object/interrupt.c`, `kernel/arch/x86_64/irq.c`, `kernel/arch/x86_64/ioapic.c`, vtd_ir.c (wiring), new kernel/test/test_vtd_irq.c (as built: the wiring is kernel/dev/vtd_irq.c, its interface `kernel/include/jam/irq_remap.h`) | 1A, 1C (beside D1/D2) |
-| **5. The PC checks** | F | drv/hda's test word `vtdtest`: before its normal start, the controller's command ring read from an address that isn't pinned (a read fault naming 00:1f.3) and its response ring written to 0xfee00000 (blocked, no interrupt), then a reset and the normal start; the boot entry "Jam OS (IOMMU)" (question 6) and its test entry; the `iommu` debug command; the bench lines | `drivers/hda/` (a test file), devmgr's word passing, `boot/limine.conf`, `kernel/debug/dbgcmd.c`, `kernel/test/bench.c`, `docs/BENCH.md` | 3, 4 |
-| **6. The join** | J | every device area test with `QEMU_IOMMU=1` and `cm0`; the docs: ARCHITECTURE (the IOMMU row, the threat model: drivers contained, Memory's DMA line, the drivers' rules), SECURITY.md, README, HARDWARE (the PC's DMAR from stage 0), TESTING, ROADMAP; default on after the PC (question 6) | `tools/vtd-test.sh`, the docs | 5 |
+| **1A. The unit** (built) | A | per unit: the register mapping kept from the probe, the invalidation queue (enable, submit, the wait slots, errors), the invalidations (context global/domain/device, IOTLB global/domain/page-selective, interrupt entry cache global/index), the fault interrupt, ring and log thread, the boot words `iommu=on/off`, the VT-d register pages added to the MMIO the kernel keeps (resource.c), `QEMU_IOMMU` in qemu-test.sh. Tests in QEMU: every invalidation completes, an error is reported, the queue wraps | new kernel/dev/vtd_unit.c, vtd_qi.c, vtd_fault.c, vtd_internal.h, new kernel/test/test_vtd_unit.c; `kernel/include/jam/vtd.h`; `kernel/object/resource.c` (one check); `tools/qemu-test.sh`; `docs/TESTING.md` (the variable) | 0's PC run |
+| **1B. Page tables** (built) | B | the second-level tables as a module that takes its page allocator and its flush as functions, so it is tested without hardware: map and unmap runs of pages, pin counts in the software bits, empty tables freed only after the caller's invalidation, the per-domain cap, the charge; the address and width checks (MGAW) | new kernel/dev/vtd_pt.c, vtd_pt.h, new kernel/test/test_vtd_pt.c | nothing (beside 1A) |
+| **1C. Interrupt entries** (built) | C | the remapping table (allocate, zero, free entries), the entry format (x2APIC and xAPIC destinations, source validation), the remappable MSI address/data and I/O APIC entry encoders, all pure and tested on their own | new kernel/dev/vtd_ir.c, vtd_ir.h, new kernel/test/test_vtd_ir.c | nothing (beside 1A) |
+| **2. Domains and translation on** (built) | D1 | root and context tables, domain ids, the blocking domain, RMRR boot domains (and RMRRs in RAM out of the memory map), attach and detach with their invalidations, the fault-processing-disable mute, the boot handover (off, on, queue on), protected memory off, translation on at boot; off before a kexec and on the panic path; the planned jam/iommu.h interface | new kernel/dev/vtd_domain.c, vtd_boot.c, new kernel/include/jam/iommu.h, new kernel/test/test_vtd_domain.c; `kernel/main.c` (the call); `kernel/kexec/jump.c` and `kernel/dev/reboot.c` (one call each) | 1A, 1B |
+| **3. Pins through the IOMMU** (built) | D2 | `dma_cap` makes and switches domains; `vmo_pin` maps, `vmo_unpin` unmaps and waits; the close blocks then frees at once (the quarantine only with `iommu=off`); edu tests: an unpinned page is never written and the fault names edu, a pinned one is; `dma_stale_write_after_rebind` per mode | `kernel/object/dma_cap.c`, `kernel/object/vmo.c` (the pin paths), `kernel/test/test_dma.c`, `drivers/test/edu/edu.c` if a test needs a command (as built: the IOMMU's own tests in new kernel/test/test_dma_iommu.c, the edu and fault-watch helpers shared in kernel/test/ktest_util.c, `dma_cap_create_for` takes the job its domain is charged to; a closed cap's domain is taken away by the "dma quarantine" thread, since the close can't wait; the pass-through domain stays, for the tests only) | D1 |
+| **4. Interrupt remapping on** (built) | E | interrupt objects allocate entries (`irq.c`'s message address and data from them), the I/O APIC's entries remapped, the enable sequence, EIM with x2APIC; tests: every device's interrupts in QEMU with `QEMU_IOMMU=eim`, edu's write to 0xfee00000 raises nothing and is recorded | `kernel/object/interrupt.c`, `kernel/arch/x86_64/irq.c`, `kernel/arch/x86_64/ioapic.c`, vtd_ir.c (wiring), new kernel/test/test_vtd_irq.c (as built: the wiring is kernel/dev/vtd_irq.c, its interface `kernel/include/jam/irq_remap.h`) | 1A, 1C (beside D1/D2) |
+| **5. The PC checks** (built) | F | drv/hda's test word `vtdtest`: before its normal start, the controller's command ring read from an address that isn't pinned (a read fault naming 00:1f.3) and its response ring written to 0xfee00000 (blocked, no interrupt), then a reset and the normal start; the boot entry "Jam OS (IOMMU)" (question 6) and its test entry; the `iommu` debug command; the bench lines | `drivers/hda/` (a test file), devmgr's word passing, `boot/limine.conf`, `kernel/debug/dbgcmd.c`, `kernel/test/bench.c`, `docs/BENCH.md` | 3, 4 |
+| **6. The join** (built) | J | every device area test with `QEMU_IOMMU=1` and `cm0`; the docs: ARCHITECTURE (the IOMMU row, the threat model: drivers contained, Memory's DMA line, the drivers' rules), SECURITY.md, README, HARDWARE (the PC's DMAR from stage 0), TESTING, ROADMAP; default on after the PC (question 6) | `tools/vtd-test.sh`, the docs | 5 |
 | **7. Review and fix** | | the independent review-and-fix agent over all of M11 (the standing rule): findings first, then High and Medium fixed one commit each with a test | what its findings touch | 6 |
 
 **Order** (wave 1 runs M11.5 and M11.6 beside it, so at most three of
@@ -586,6 +592,82 @@ M11's agents testing at once):
 4. F, then the PC session: the IOMMU entry, the test entry, every device,
    All tests and `soak 10`; then the join and the default; then the
    review.
+
+## As built
+
+Stages 0 to 6 are merged (2026-10-05). The design as it stands is
+[ARCHITECTURE.md](../ARCHITECTURE.md#the-iommu); the tests are in
+[TESTING.md](TESTING.md#the-iommu). Everything is behind `iommu=on`, off
+by default until the PC passes (question 6).
+
+- **0, the probe**: as planned; its PC run (2026-10-04, build b7713bd,
+  [HARDWARE.md](HARDWARE.md#the-iommu-vt-d)) found one unit with
+  INCLUDE_PCI_ALL, no RMRR, CAP/ECAP exactly as guessed above, everything
+  off at a cold boot, the highest APIC id 86. Questions 2 and 3 stayed as
+  answered.
+- **Spec check** (between 1B/1C and 1A, [M11-SPEC-CHECK.md](history/M11-SPEC-CHECK.md)):
+  every layout the IOMMU writes checked against VT-d 4.1 bit by bit, and
+  5.20; fixed: stale advanced-fault-logging definitions, a section
+  citation, the probe's decode of an interrupt fault record.
+- **1A, the unit**: the invalidation queue (one page, a status slot per
+  waiter, waits with no lock held, 100 ms), every invalidation kind, the
+  write-buffer flush where CAP.RWBF, the fault interrupt, ring and log
+  thread, `iommu=on` / `iommu=off` (kept by a reboot), `QEMU_IOMMU` (`1`,
+  `cm0`, `eim`).
+- **1B, page tables** and **1C, interrupt entries**: pure modules
+  (`kernel/dev/vtd_pt.c`, `kernel/dev/vtd_ir.c`) as planned, tested
+  without hardware.
+- **2 (D1), domains and translation on**: root and context tables, domain
+  ids, the blocking domain, RMRR boot domains and RMRRs in RAM reserved
+  early, context entries by one 16-byte atomic write, the mute, the
+  handover (off: build and turn on; on: take over while translating), the
+  jump off. Deviations: (a) until D2, a driven function went to the
+  unit's **pass-through domain**; D2 replaced that with per-cap domains,
+  and the pass-through domain stays for the tests only; (b) **the takeover
+  while translating** honours only the RMRRs for requests in flight: VT-d
+  6.6 asks the new tables to give the old ones' results for those, and any
+  other in-flight DMA (the firmware's) is blocked and logged instead, the
+  state the boot is going to anyway; (c) interrupt remapping is turned on
+  before translation (E's order), so an `iommu=on` boot logs
+  "interrupt remapping on" before "translation on".
+- **3 (D2), pins**: as planned, with the notes in the table above (the
+  close hands its domain to the "dma quarantine" thread, which may wait;
+  `SYSINFO_IOMMU`). Deviations: (a) **the table pages are charged to
+  devmgr's job**, the job that makes a driver's cap (`dma_cap_create`),
+  not the driver's; still bounded (512 pages per domain), and M12's
+  review may move the charge to the driver; (b) a function's DMA fault
+  count, which decides the mute, was **not reset per attach**: a new
+  driver after one that had faulted 8 times was muted at its first fault.
+  Fixed in the join (the count starts again at each attach;
+  `vtd_domain_new_driver_fresh_count`).
+- **4 (E), interrupt remapping**: **one table shared by every unit**
+  (1024 entries) instead of one per unit (see
+  [Interrupt remapping](#interrupt-remapping)); 8-bit destinations when a
+  unit lacks EIM or the CPUs aren't in x2APIC mode; QEMU shows only part
+  of the window check (it passes old-format writes through), so the
+  0xfee00000 write blocked with 25h is the PC's.
+- **5 (F), the PC checks**: drv/hda's `vtdtest` (the command ring read
+  from a page it unpinned, then its response ring pointed at the
+  interrupt window), the boot entries "Jam OS (IOMMU)" and "Tests > IOMMU
+  checks", the `iommu` command (shell and debug), `bench`'s IOMMU lines,
+  HARDWARE's section.
+- **6, the join**: every device area test with the IOMMU on (the matrix
+  in [TESTING.md](TESTING.md#the-iommu)): on 2026-10-05 with
+  `QEMU_IOMMU=1` usb, storage, net, hda, play, mouse, mixer, data, sticks,
+  fetch, serve, tcp, music, kexec-reboot, reboot-firmware and the `init`
+  run all passed, with `cm0` usb, storage, net and hda, and
+  `tools/vtd-test.sh` with its `init` runs; not one `vtd: fault:` line in
+  any of their logs but those the tests provoke (each sound controller's
+  one read in hda-test's IOMMU checks; edu's in vtd-test). No device
+  needed a change and no IOMMU bug turned up (two first runs ended "with
+  problems" only for a loaded Mac's timer check, and passed again). The docs as
+  built (ARCHITECTURE's section and threat model, SECURITY.md, README,
+  HARDWARE, TESTING, ROADMAP); the two small leftovers: the fault count
+  per attach (above) and the test scripts that stopped at their first
+  failure report under `set -e`.
+
+**Left for the PC** ([What only the PC can show](#what-only-the-pc-can-show)),
+then the default, then stage 7's review.
 
 ## Where M11 meets the rest of wave 1
 

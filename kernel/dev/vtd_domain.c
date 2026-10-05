@@ -529,6 +529,7 @@ status_t iommu_device_driven(struct pci_dev *dev)
     status_t st = OK;
     if (f->cur != f->ctl->pass) {
         f->muted = false;
+        f->dma_faults = 0;
         st = vtd_fn_switch_locked(f, f->ctl->pass);
     }
     mutex_unlock(&f->ctl->lock);
@@ -584,6 +585,7 @@ status_t iommu_attach(struct iommu_domain *id)
     struct vtd_fn *f = id->fn;
     mutex_lock(&f->ctl->lock);
     f->muted = false;
+    f->dma_faults = 0;   /* the mute counts this driver's faults, not its predecessors' */
     status_t st = vtd_fn_switch_locked(f, id->dom);
     mutex_unlock(&f->ctl->lock);
     return st;

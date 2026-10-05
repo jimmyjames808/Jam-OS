@@ -30,7 +30,7 @@ ok=1
 
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-200} QEMU_EXTRA="$devs" QEMU_INPUT=tools/shell-tests/hdastream.txt \
     tools/qemu-test.sh "$out" hda-stream shell > "$out/hda-stream.out" 2>&1 ||
-    { echo "hda-stream: the script failed"; grep "serial-feed: .*no '" "$out/hda-stream.out"; ok=0; }
+    { echo "hda-stream: the script failed"; grep "serial-feed: .*no '" "$out/hda-stream.out" || true; ok=0; }
 log="$out/hda-stream.log"
 grep -E "hdatest: [0-9]+ passed" "$log" | tail -1
 grep -qE "hdatest: 4 passed$|hdatest: 4 passed\r" "$log" ||

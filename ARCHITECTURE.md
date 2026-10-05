@@ -33,7 +33,7 @@ built yet, it says so.
 | Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP); uACPI when power management lands |
 | Executables | Static ELF64 |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
-| IOMMU | Not yet (M11). `dma_cap` gates pinning and bus mastering, not where a device writes: until VT-d a driver's device can reach all of RAM. The PC's firmware has a DMAR table |
+| IOMMU | Intel VT-d, DMA and interrupt remapping ([The IOMMU](#the-iommu)): each `dma_cap` has a domain holding only what it pinned, and a device raises only its own interrupts. Built (M11), but on only with the boot word `iommu=on` until the PC has signed it off; without it a driver's device can reach all of RAM |
 | Users | Single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 can't store owners anyway) |
 | Networking | The board's own NIC, driven natively; every frame in the configured mode only: tagged with one VLAN (the owner's builds: VLAN 21), or untagged and never tagged (a public build's default) ([Networking](#networking)) |
 
@@ -60,18 +60,29 @@ What the design defends against today:
   reach only what it was given: it can't program MSI, change another
   device's config, or keep its device mastering after it died
   ([the rules](#drivers-and-services)).
+- **A driver that misprograms its device, on a boot with `iommu=on`**,
+  by a bug or on purpose: drivers are then *contained*, not only
+  crash-isolated. Its device reaches only the pages its `dma_cap` holds
+  pinned (a DMA anywhere else, the kernel included, is blocked and
+  logged), and it can raise only the interrupts its interrupt objects
+  were given (a write to the interrupt window that isn't its own entry is
+  blocked) ([The IOMMU](#the-iommu)). **This is off by default** until the
+  PC has signed it off (M11 in [ROADMAP.md](docs/ROADMAP.md)); the boot
+  entry "Jam OS (IOMMU)" turns it on.
 
 Not yet:
 
-- **A driver that misprograms its device**, by a bug or on purpose. A
-  device does what its driver tells it, and until the IOMMU (M11: VT-d
-  and interrupt remapping) a DMA address the driver writes can be
-  anywhere in RAM, the kernel included, or the interrupt window (any
-  vector to any CPU). Drivers are crash-isolated, not contained: they are
-  trusted.
+- **A driver that misprograms its device, on a boot without `iommu=on`**
+  (today's default, and a machine with no VT-d). A device does what its
+  driver tells it: a DMA address the driver writes can be anywhere in RAM,
+  the kernel included, or the interrupt window (any vector to any CPU).
+  Drivers are crash-isolated, not contained: they are trusted.
 - **A USB device that exploits usb-bus.** usb-bus holds the xHCI's
   `dma_cap` and parses every USB device's descriptors, so a bug there
-  gives a hostile device DMA over all of RAM: the largest exposure today.
+  gives a hostile device DMA through the xHCI: over all of RAM without
+  the IOMMU, the largest exposure on a default boot; with `iommu=on` over
+  usb-bus's own pinned buffers (every USB device shares the xHCI's
+  requester id, so they share usb-bus's domain), and nothing else.
   The other parsers of what comes from outside (usb-storage, fat, hid,
   `play`, `jamcover`) hold no `dma_cap`, and neither do the processes
   that parse what the network sends (netstack, dhcp, dns, netlog,
@@ -95,8 +106,9 @@ Every driver and service is a userspace process from the start.
   never touches kernel structs.
 - **Bring-up happens as a process.** A crashing process reports why and
   where (`process "x" killed: ... at rip ...`) and can't take the kernel
-  down (a driver still can, through its device's DMA, until the IOMMU:
-  M11), and a stuck process can always be killed. Bringing a driver up in
+  down (a driver still can, through its device's DMA, on a boot without
+  the IOMMU: [The IOMMU](#the-iommu)), and a stuck process can always be
+  killed. Bringing a driver up in
   the kernel first was tried and bought nothing
   ([HISTORY.md](docs/HISTORY.md#lessons-that-keep-coming-back)).
 - **One build.** `<jam/driver.h>` has one implementation, over system
@@ -106,11 +118,13 @@ Every driver and service is a userspace process from the start.
   the PCI core (ECAM, BAR sizing, MSI/MSI-X programming, Bus Master
   Enable), vector allocation and interrupt objects, resources, DMA pins and
   the config-write filter, so one driver can never configure another
-  device's interrupts or turn DMA back on after it was killed. What this
-  does not cover yet: a device does what its driver tells it, and until
-  the IOMMU (M11) a DMA address the driver writes can be anywhere in RAM,
-  the kernel included, or the interrupt window. So these rules keep a
-  driver's own code in its box and a dead driver's device quiet; they
+  device's interrupts or turn DMA back on after it was killed. The IOMMU
+  ([The IOMMU](#the-iommu)) is enforcement too, and stays in the kernel:
+  with `iommu=on` a device reaches only what its driver pinned and raises
+  only its own interrupts. Without it a device does what its driver tells
+  it, and a DMA address the driver writes can be anywhere in RAM, the
+  kernel included, or the interrupt window: these rules then keep a
+  driver's own code in its box and a dead driver's device quiet, but
   don't contain a driver that misprograms its device, by a bug or on
   purpose ([what Jam OS defends against](#what-jam-os-defends-against)).
 
@@ -130,6 +144,7 @@ Every driver and service is a userspace process from the start.
  ───────────── <jam/driver.h> boundary (handles only) ────────
  Kernel core: objects & handles · channels · ports             ring 0
    scheduler · VMOs & address spaces · PCI core · IRQ routing
+   IOMMU (VT-d: DMA and interrupt remapping)
    PMM · VMM · per-CPU · LAPIC/IOAPIC · timers · panic/klog
    later: uACPI
  ─────────────────────────────────────────────────────────────
@@ -274,7 +289,11 @@ Every driver and service is a userspace process from the start.
   (a mapping of an ordinary VMO dies on a read past a shrunk end, or on a
   decommitted page whose new commit the client's job refuses). Its length
   is what was mapped; a pool that grew is mapped again.
-- **DMA**: `vmo_pin` needs a `dma_cap`. The IOMMU goes behind the same API.
+- **DMA**: `vmo_pin` needs a `dma_cap`. With the IOMMU on (`iommu=on`) a
+  pin also maps its pages in the cap's IOMMU domain, and an unpin waits
+  for the unit's invalidation before the pages may go; the addresses a
+  driver gets are the same physical ones either way
+  ([The IOMMU](#the-iommu)).
 - **TLB**: a kernel unmap does a synchronous range shootdown to all CPUs (a
   full flush above 64 pages). User address spaces keep a mask of the CPUs
   running them, so a shootdown interrupts only those, and a "gather" frees
@@ -774,7 +793,14 @@ Rules for userspace drivers:
 - The kernel's PCI core programs MSI/MSI-X. A driver never gets raw ECAM
   access, and its BAR mapping never includes the MSI-X table page.
 - A `dma_cap` is bound to one device (PCI bus/device/function). `vmo_pin`
-  returns *device addresses* (physical until the IOMMU arrives).
+  returns *device addresses*: the pages' physical addresses, with the
+  IOMMU too (it maps each pinned page at its own address:
+  [The IOMMU](#the-iommu)).
+- **With `iommu=on`** each `dma_cap` has an IOMMU domain of its own,
+  holding only what it pinned: its device reaches nothing else, and an
+  MSI it sends is validated against its own requester id. A driver's code
+  doesn't change; a driver that programs an address it didn't pin gets a
+  blocked DMA and a `vtd: fault:` line, not memory.
 - **Safe rebind**: the newest `dma_cap` of a function is its *current*
   one; making it turns Bus Master Enable off, and only it turns it back on
   (`dma_cap_bus_master`, `drv_dma_bus_master`), which a driver does only
@@ -786,10 +812,11 @@ Rules for userspace drivers:
   (Fuchsia's BTI quarantine): the pages stay, charged to their VMO's job,
   until 1 s after the function's next driver turned bus mastering on, or
   30 s if none does; a page the device wrote meanwhile is logged. With
-  the boot word `iommu=on` (not yet the default: [M11-PLAN](docs/M11-PLAN.md))
-  each cap has an IOMMU domain of its own instead, holding only what it
-  pinned, and a dead driver's pins are freed as soon as the IOMMU confirms
-  its domain is gone.
+  the boot word `iommu=on` (not yet the default) there is no quarantine:
+  a new cap points its function at its own empty domain in the same step
+  that turns Bus Master Enable off, and a closed cap's pins are freed as
+  soon as the IOMMU confirms its domain is gone
+  ([The IOMMU](#the-iommu)).
 - MSI/MSI-X and MMIO only: no port I/O and no INTx for userspace drivers.
 - **Supervision**: devmgr restarts a driver process that dies
   unexpectedly (crash, kill, error exit; an exit 0 by itself means the
@@ -803,7 +830,8 @@ Rules for userspace drivers:
   for 2 s before it counts as not ended cleanly. A restart is a bind from scratch, i.e. the safe-rebind path: the
   function woken to D0, a new `dma_cap` (bus mastering off until the new
   driver has quiesced the device; the dead driver's pins stay quarantined
-  meanwhile), a new interrupt object. A driver's hardware handles are not
+  meanwhile, or with the IOMMU are freed once its domain is gone), a new
+  interrupt object. A driver's hardware handles are not
   transferable (no `RIGHT_DUPLICATE`/`RIGHT_TRANSFER`, handed over with
   `channel_write_rights`), so nothing of the device outlives its job.
 - **Reconnect rule**: a client whose call fails with `PEER_CLOSED` asks
@@ -1001,6 +1029,146 @@ What M11.6 does not cover: the drivers. A driver's restart is still a
 bind from scratch on purpose (the safe rebind above) and its clients
 still see `ERR_PEER_CLOSED`; the plan for usb-storage and hda is
 [M11.6-PLAN.md](docs/M11.6-PLAN.md#x-drivers-the-design-note).
+
+## The IOMMU
+
+Intel VT-d's DMA remapping and interrupt remapping, in the kernel
+(`kernel/dev/vtd_*.c`; the rest of the kernel sees `<jam/iommu.h>` and
+`<jam/irq_remap.h>` only). The plan, with what each stage built and where
+it differs, is [M11-PLAN.md](docs/M11-PLAN.md); the PC's unit is in
+[HARDWARE.md](docs/HARDWARE.md#the-iommu-vt-d). With it, a device reaches
+only the memory its driver pinned for it and raises only the interrupts
+it was given, so drivers are contained, not only crash-isolated
+([what Jam OS defends against](#what-jam-os-defends-against)).
+
+**Off by default, for now.** It runs only with the boot word `iommu=on`
+(the boot entries "Jam OS (IOMMU)" and "Tests > IOMMU checks"; `iommu=off`
+wins over it, and a reboot keeps either word). Without it no VT-d register
+is written: the boot's read-only probe (`vtd:` lines: the DMAR table, each
+unit's capabilities, what the firmware left on) is the only trace, and
+DMA works as before the IOMMU (physical addresses, the
+[quarantine](#drivers-and-services)). It becomes the default once the PC
+has passed All tests and `soak 10` with it on; `iommu=off` is then the way
+out for troubleshooting.
+
+- **Units.** Each remapping unit the DMAR table lists and the probe could
+  read is started: its invalidation queue, then its fault event
+  interrupt; then interrupt remapping, on every unit at once (only when
+  every unit started and offers it); then translation. A unit that fails
+  to start is reported in the RESULTS box and left as it was. The units'
+  register pages stay the kernel's: no resource handle reaches them.
+- **Domains** (legacy mode: a root table, a context table per bus, a
+  second-stage page table of 3 or 4 levels as the unit offers, 4 KiB
+  leaves, read and write, the snoop bit where the unit has snoop
+  control). Every function a unit covers has a context entry from the
+  boot, naming its *home*: the **blocking** domain (an empty table: any
+  DMA is blocked and logged) for a function nobody drives, or a **boot
+  domain** holding just its region for a function the firmware's RMRRs
+  name (the PC has none). While a driver holds a `dma_cap` for the
+  function, the entry names **the cap's own domain**, which maps what the
+  cap pinned and the function's RMRRs, nothing else. Domain ids are the
+  unit's (256 on the PC), never 0, and reused only after the unit's caches
+  for the old one are invalidated. A context entry is rewritten whole by
+  one 16-byte atomic write (the domain id and the table together),
+  flushed from the CPU's cache when the unit doesn't snoop (the PC's
+  doesn't), then the old entry's context cache and its domain's IOTLB are
+  invalidated. Each unit also has a pass-through domain (all of RAM): for
+  the tests only, no driver's function is put there.
+- **Pins.** The device sees physical addresses (IOVA = physical): `vmo_pin`
+  maps each pinned page at its own address in the cap's domain, two pins
+  of one page share the mapping (a pin count in the entry's software
+  bits), so drivers and their numbers are unchanged. `vmo_unpin` unmaps,
+  invalidates and waits, and only then lets the pages go. A domain's
+  table pages are charged to the job that made the cap (devmgr's: it
+  makes its drivers' caps) and capped at 512 per domain (1 GiB of
+  scattered pins); past either limit the pin fails `ERR_NO_RESOURCES`.
+- **Safe rebind with the IOMMU.** Making a cap turns the function's Bus
+  Master Enable off and points its context entry at the new, empty domain
+  in one step: whatever the previous driver left queued reaches nothing.
+  Closing the cap (the driver died; the close can't wait) turns Bus
+  Master Enable off and hands its pins to the "dma quarantine" thread,
+  which points the function back home (unless a newer cap has it
+  already), destroys the domain (its id's caches invalidated, waited
+  for) and frees the pins at once: no quarantine. If that invalidation
+  can't be confirmed, the domain is kept for good and the pages are
+  quarantined as without an IOMMU.
+- **Invalidation** goes through each unit's queue only (VT-d 6.5.2): a
+  page of 256 descriptors. A caller writes its batch and a wait
+  descriptor that stores a sequence number in a status word of its own,
+  drops the queue lock and polls its word, at most 100 ms (past it the
+  call fails `ERR_TIMED_OUT` and the unit's state is logged), so callers
+  on many CPUs wait at once. A new mapping needs none unless the unit
+  caches not-present entries (CAP.CM: QEMU's caching mode; the PC's is
+  0). An unmap invalidates the IOTLB page-selectively in naturally
+  aligned power-of-two runs (domain-wide for a long list), and emptied
+  table pages are freed only after the wait, as the CPU's TLB gather
+  does. A descriptor the unit refuses is replaced by a harmless one, its
+  caller gets `ERR_IO`, and the queue goes on.
+- **Interrupt remapping.** One remapping table (1024 entries, 16 KiB)
+  shared by every unit, so an entry's index is the same whichever unit a
+  device sits behind. Each MSI or MSI-X vector of an interrupt object gets
+  an entry of its own: fixed delivery to the CPU's APIC id
+  (32-bit x2APIC ids when the CPUs run in x2APIC mode and every unit has
+  EIM, as on the PC; 8-bit ones otherwise),
+  usable only by that function's requester id (source validation). The
+  kernel's PCI core programs the device with the remappable message that
+  names the entry; drivers never see either. The entry is freed with the
+  object, after every unit's interrupt entry cache dropped it. The I/O
+  APIC's routed pins (COM1) are rewritten in remappable format too, each
+  validated against the I/O APIC's requester id from the DMAR table, and
+  compatibility-format interrupts are blocked. So a write to the interrupt
+  window in the old format, or naming an entry that isn't the device's,
+  raises nothing: it is blocked and recorded (reasons 25h, 26h, 22h).
+  Remapping is turned on once, at boot, before any MSI is programmed.
+- **Faults.** The unit's fault event interrupt (a vector of its own;
+  fault events aren't remapped) copies each fault record into a ring and
+  clears it; a kernel thread logs them, `vtd: fault: unit 0: 00:1f.3 read
+  at 0x...: <the reason in words>`, puts each device's first fault in the
+  RESULTS box, logs the first 8 per device in a boot and only counts the
+  rest. A function whose DMA faulted 8 times since its last attach is
+  *muted*: fault processing disabled in its context entry, so a device
+  stuck retrying can't keep the fault registers full (its DMA is still
+  blocked); a new driver's domain unmutes it and starts its count again.
+  Faults are reported, not acted on: no driver is stopped or restarted
+  for one (a fault is a driver bug or an attack, better seen than hidden).
+  The thread also looks at every unit once a second, for a fault that
+  raised no interrupt.
+- **The boot handover**, right after PCI enumeration and before resources
+  and user space, so no driver ever runs without it. Before the memory
+  managers start, an RMRR in RAM the memory map calls usable is made
+  reserved. Then per unit: the tables built with every covered function at
+  home, the root table pointer set with its global invalidations,
+  translation on, protected memory regions off. A unit found translating
+  (the firmware's pre-boot DMA protection, or a kexec that couldn't turn
+  it off) is never turned off, which would open all of RAM for a moment:
+  it is pointed at the new tables while it translates. A unit found with
+  interrupt remapping or its queue on is taken over the same way.
+- **Kexec, panic and the firmware reset.** After bus mastering is off on
+  every function, `iommu_jump_off`: the I/O APIC's pins masked, interrupt
+  remapping off, then per unit the fault event masked, translation off and
+  the queue off, each wait bounded and no lock taken (other CPUs may be
+  halted holding any). The next kernel finds the units as a cold boot
+  leaves them and builds its own tables.
+- **Seeing it.** The `iommu` command (the shell's, and the kernel's debug
+  command of the same name) prints each started unit's state, its queue
+  and fault counters, each covered function's domain with its mapped and
+  table pages and its DMA faults since attached, the faults per requester
+  and the interrupt remapping entries in use. `sysinfo`'s
+  `SYSINFO_IOMMU` flag tells a program that translation is on. `bench`
+  has the map and unmap cost ([BENCH.md](docs/BENCH.md)).
+- **The cost.** Nothing on the IPC path touches the IOMMU. A pin pays its
+  table writes and line flushes, an unpin an invalidation wait
+  (microseconds); drivers pin when they start and unpin when they stop,
+  never per transfer. A device's access to a page not in the unit's IOTLB
+  costs a table walk in the unit.
+
+What it doesn't do (yet): read-only pins (a device that only reads a
+buffer still gets a writable mapping: M12's system call review);
+addresses other than the physical ones; device TLBs (ATS) and scalable
+mode, which nothing here needs. QEMU's unit can't show a missing cache
+flush (it reads guest memory directly) and passes old-format interrupt
+writes through, so the table coherence and the blocked 0xfee00000 write
+are proven on the PC only.
 
 ## Networking
 
@@ -2181,7 +2349,9 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   where the panic's lines start, its message, the boot's log name, the
   panics in a row and the uptime), Bus Master Enable goes off on every PCI
   function but bridges and the display (so no device keeps writing memory
-  or sending MSIs), the other CPUs (halted by the panic's NMI) are sent
+  or sending MSIs), then the IOMMU's interrupt remapping, translation and
+  queue go off (`iommu_jump_off`, best effort: [The IOMMU](#the-iommu)),
+  the other CPUs (halted by the panic's NMI) are sent
   INIT, the framebuffer is filled with the splash background through its
   existing mapping, and the jump goes through a trampoline page mapped at
   the same address in both kernels' tables. The last three happen on the
@@ -2212,11 +2382,11 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   the hda driver ends only once its client has gone), stops devmgr in
   order (`DEVMGR_SHUTDOWN`) and calls `kexec_reboot` (the other CPUs
   halted, the kernel's screen quiet, the image verified, bus mastering
-  off, the jump). Any failure before the jump falls back to the firmware
+  off, the IOMMU off, the jump). Any failure before the jump falls back to the firmware
   reset; `reboot -f` always uses it, after the same sync, log flush and
   devmgr shutdown. The kernel's firmware reset (`kernel/dev/reboot.c`)
-  halts the other CPUs, takes the screen back, turns bus mastering off,
-  then tries the FADT's reset register, 0xCF9's full reset, the 8042 and
+  halts the other CPUs, takes the screen back, turns bus mastering and
+  the IOMMU off, then tries the FADT's reset register, 0xCF9's full reset, the 8042 and
   a triple fault, a second apart, each said on the screen first. M9's `update` hands init a fetched
   build on an offer channel (initctl.update_offer, `<update.h>`): init
   checks the manifest's signature with its build's key, copies the files

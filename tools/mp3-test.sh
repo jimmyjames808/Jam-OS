@@ -114,7 +114,7 @@ devs="-audiodev wav,id=snd0,path=$wav,out.frequency=48000,out.channels=2,out.for
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-180} QEMU_IMAGE="$stick" QEMU_EXTRA="$devs" \
     QEMU_INPUT=tools/shell-tests/mp3.txt \
     tools/qemu-test.sh "$out" mp3 shell > "$out/mp3.out" 2>&1 ||
-    { echo "mp3: the script failed"; grep "serial-feed: .*no '" "$out/mp3.out"; ok=0; }
+    { echo "mp3: the script failed"; grep "serial-feed: .*no '" "$out/mp3.out" || true; ok=0; }
 rm -f "$stick"
 
 # play -n: the decoding cost, and every frame of long.mp3.

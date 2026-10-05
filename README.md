@@ -8,9 +8,10 @@
 Jam OS is a from-scratch operating system for x86_64 PCs, written in C. It
 is capability-based: a program can do only what the handles it holds
 allow, and every driver and service runs as a separate user process that
-the kernel supervises through those handles. Until the IOMMU work
-(planned), that keeps a crashed driver from taking the system down, not a
-faulty driver's device from writing memory. It boots from a USB stick on
+the kernel supervises through those handles. That keeps a crashed driver
+from taking the system down; with the IOMMU on (built, off by default
+until the real PC signs it off) it also keeps a faulty driver's device
+from writing memory its driver didn't pin. It boots from a USB stick on
 a real desktop PC, which is where every milestone is tested.
 
 ![The Jam OS shell in QEMU: uname, date, free, the services under /svc, mount and ps](docs/images/shell-m86.png)
@@ -27,6 +28,12 @@ a real desktop PC, which is where every milestone is tested.
 - Drivers as user processes: a PCI core with MSI/MSI-X and DMA
   capabilities, a device manager that restarts crashed drivers, and USB
   (xHCI controller, hubs, keyboard and mouse).
+- The IOMMU (Intel VT-d, M11): with the boot entry "Jam OS (IOMMU)" (the
+  boot word `iommu=on`) each driver's device reaches only the memory the
+  driver pinned for it, every other DMA is blocked and logged, and a
+  device can raise only its own interrupts (interrupt remapping); `iommu`
+  shows the units, domains and faults. Built and tested in QEMU; off by
+  default until it is signed off on the PC.
 - Storage: USB sticks through a usb-storage driver and a FAT32 service
   (FatFs) per volume. The stick Jam OS boots from has its boot partition
   at `/esp`, read-only, and a data partition at `/data`; any other stick
@@ -102,7 +109,8 @@ a real desktop PC, which is where every milestone is tested.
   names the git commit a build was made from.
 
 Not yet: the network signed off on the PC (everything but DHCP has run
-there: pings, names, the log to the Mac, `update`), power management.
+there: pings, names, the log to the Mac, `update`), the IOMMU on by
+default, power management.
 Status and plans: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Build and run in QEMU
@@ -344,13 +352,13 @@ newest: an older signed build is accepted too (the versions are printed).
 | `kernel/boot/` | loader glue: Limine's (the only code that knows about it), and a kexec'd kernel's handoff |
 | `kernel/kexec/` | kexec: the reserved region, the stored kernel loaded into it, the jump after a reboot or a panic, the next boot's side (the crash record, the panicked boot's log) |
 | `kernel/arch/x86_64/` | entry, interrupts, syscalls, CPUs, APIC, TSC, FPU, PCIDs, IPIs |
-| `kernel/acpi/` | static ACPI tables (MADT, FADT, HPET, MCFG) |
+| `kernel/acpi/` | static ACPI tables (MADT, FADT, HPET, MCFG, DMAR) |
 | `kernel/mm/` | physical pages, page tables, heap, address spaces |
 | `kernel/sched/` | scheduler, threads, waits, mutexes |
 | `kernel/object/` | kernel objects and handles |
 | `kernel/abi/` | the handle-level API and the syscalls |
 | `kernel/proc/` | bootfs, the ELF parser, userboot (starts init) |
-| `kernel/dev/` | the kernel's own devices: framebuffer console, serial, RTC and the wall clock, PCI core, reboot |
+| `kernel/dev/` | the kernel's own devices: framebuffer console, serial, RTC and the wall clock, PCI core, reboot, the IOMMU (VT-d) |
 | `kernel/debug/` | klog, panic, symbols, lock checker, RESULTS box, self-, crash and stress tests |
 | `kernel/test/` | in-kernel tests and the benchmark |
 | `kernel/include/jam/` | kernel headers |
