@@ -7,9 +7,17 @@
  * order; a batch whose messages leave handles unused is refused when its
  * last byte is used up, before the next batch is read.
  *
- * Sending: messages are encoded into c->out behind room for the header,
- * which is written when the batch goes (so a held batch carries the
- * newest acknowledgement). A batch goes when it is full or at
+ * Sending: jwl_send (what the generated stubs call) checks the message
+ * against the object it is sent on, its objects and its new ids against
+ * the map, and encodes it into c->out behind room for the header, which is
+ * written when the batch goes (so a held batch carries the newest
+ * acknowledgement).
+ *
+ * Destructors (the tables' destructor bits) are kept here, on both sides
+ * and both directions, so the map can't drift from what was said: once a
+ * destructor is sent or received, its object is forgotten (the compositor
+ * frees a client's id and queues delete_id; a client keeps a zombie until
+ * delete_id). A batch goes when it is full or at
  * jwl_conn_flush. The compositor writes at most JWL_WINDOW batches past
  * the client's last acknowledgement; the rest wait in c->held, in order,
  * up to JWL_HELD_MAX bytes, and past that the client is disconnected with
@@ -103,6 +111,9 @@ static bool window_open(const struct jwl_conn *c)
 {
     return c->side == JWL_CLIENT || c->nsent - c->peer_acked < JWL_WINDOW;
 }
+
+static bool destructor(const struct jwl_interface *iface, bool request, uint32_t opcode);
+static status_t forget(struct jwl_conn *c, uint32_t id);
 
 /* ---- the connection -------------------------------------------------------------- */
 
@@ -258,6 +269,8 @@ status_t jwl_conn_next(struct jwl_conn *c, struct jwl_msg *out)
                 return st;
             continue;
         }
+        if (destructor(out->iface, c->side == JWL_SERVER, out->opcode))
+            return forget(c, out->id);
         return OK;
     }
 }
@@ -371,74 +384,73 @@ status_t jwl_conn_flush(struct jwl_conn *c)
     return c->status;
 }
 
-/* The message opcode of iface for this side to send, and its signature. */
-static status_t send_message(const struct jwl_conn *c, const struct jwl_interface *iface,
-                             uint16_t opcode, const struct jwl_message **m, struct jwl_sig *sig)
+/* Is opcode a destructor of iface, sent by side's peer (requests) or by
+ * the compositor (events)? */
+static bool destructor(const struct jwl_interface *iface, bool request, uint32_t opcode)
 {
-    bool client = c->side == JWL_CLIENT;
-    if (!iface || opcode >= (client ? iface->nrequests : iface->nevents))
-        return ERR_NOT_SUPPORTED;
-    *m = &(client ? iface->requests : iface->events)[opcode];
-    return jwl_sig_parse((*m)->signature, sig) == OK ? OK : ERR_INVALID_ARGS;
+    uint32_t mask = request ? iface->request_destructors : iface->event_destructors;
+    return opcode < 32 && (mask >> opcode) & 1;
 }
 
-/* The object, its version, and every object argument live and of its type. */
-static status_t send_checks(struct jwl_conn *c, const struct jwl_interface *iface, uint32_t id,
+/* m must be message opcode of object id's interface, for this side to
+ * send, no newer than the object. */
+static status_t send_target(struct jwl_conn *c, uint32_t id, uint32_t opcode,
                             const struct jwl_message *m, const struct jwl_sig *sig,
-                            const union jwl_arg *args)
+                            const struct jwl_object **out)
 {
     const struct jwl_object *o = jwl_map_get(&c->map, id);
     if (!o)
         return ERR_NOT_FOUND;
-    if (!jwl_interface_same(o->iface, iface))
+    if (o->pending)
+        return ERR_BAD_STATE;
+    bool client = c->side == JWL_CLIENT;
+    unsigned count = client ? o->iface->nrequests : o->iface->nevents;
+    const struct jwl_message *mine =
+        opcode < count ? &(client ? o->iface->requests : o->iface->events)[opcode] : NULL;
+    if (!mine || (mine != m && (strcmp(mine->name, m->name) || strcmp(mine->signature, m->signature))))
         return ERR_WRONG_TYPE;
     if (sig->since > o->version)
         return ERR_NOT_SUPPORTED;
+    *out = o;
+    return OK;
+}
+
+/* A new id argument: one of our pending objects, of the interface and
+ * version the message makes, not twice in the message. */
+static bool new_id_fits(const struct jwl_conn *c, const struct jwl_message *m,
+                        const struct jwl_sig *sig, unsigned i, uint32_t version,
+                        const union jwl_arg *args)
+{
+    const struct jwl_object *a = jwl_map_get(&c->map, args[i].n);
+    if (!a || !a->pending)
+        return false;
+    for (unsigned j = 0; j < i; j++)
+        if (sig->type[j] == 'n' && args[j].n == args[i].n)
+            return false;
+    const struct jwl_interface *t = m->types ? m->types[i] : NULL;
+    if (t)
+        return jwl_interface_same(a->iface, t) && a->version == version;
+    /* untyped: the "su" before it say what it is (jwl_interface_check) */
+    return i >= 2 && args[i - 2].s && !strcmp(a->iface->name, args[i - 2].s) &&
+           a->version == args[i - 1].u;
+}
+
+/* Every object argument live, announced and of its type; every new id as
+ * new_id_fits says. version: the object the message is sent on's. */
+static status_t send_args(const struct jwl_conn *c, const struct jwl_message *m,
+                          const struct jwl_sig *sig, uint32_t version, const union jwl_arg *args)
+{
     for (unsigned i = 0; i < sig->n; i++) {
+        if (sig->type[i] == 'n' && !new_id_fits(c, m, sig, i, version, args))
+            return ERR_INVALID_ARGS;
         if (sig->type[i] != 'o' || !args[i].o)
             continue;
         const struct jwl_object *a = jwl_map_get(&c->map, args[i].o);
         const struct jwl_interface *t = m->types ? m->types[i] : NULL;
-        if (!a || (t && !jwl_interface_same(a->iface, t)))
+        if (!a || a->pending || (t && !jwl_interface_same(a->iface, t)))
             return ERR_INVALID_ARGS;
     }
     return OK;
-}
-
-/* Each new id of the message, made in our range and written into args. */
-static status_t make_ids(struct jwl_conn *c, const struct jwl_message *m,
-                         const struct jwl_sig *sig, uint32_t version, union jwl_arg *args)
-{
-    for (unsigned i = 0; i < sig->n; i++) {
-        if (sig->type[i] != 'n')
-            continue;
-        const struct jwl_interface *t = m->types ? m->types[i] : NULL;
-        status_t st;
-        if (t) {
-            st = jwl_map_new(&c->map, t, version, NULL, &args[i].n);
-        } else if (!args[i].any.iface || !args[i].any.version ||
-                   args[i].any.version > args[i].any.iface->version) {
-            st = ERR_INVALID_ARGS;
-        } else {
-            st = jwl_map_new(&c->map, args[i].any.iface, args[i].any.version, NULL,
-                             &args[i].any.id);
-        }
-        if (st != OK) {
-            for (unsigned j = 0; j < i; j++)
-                if (sig->type[j] == 'n')
-                    jwl_map_unmake(&c->map, m->types && m->types[j] ? args[j].n : args[j].any.id);
-            return st;
-        }
-    }
-    return OK;
-}
-
-static void unmake_ids(struct jwl_conn *c, const struct jwl_message *m, const struct jwl_sig *sig,
-                       const union jwl_arg *args)
-{
-    for (unsigned i = 0; i < sig->n; i++)
-        if (sig->type[i] == 'n')
-            jwl_map_unmake(&c->map, m->types && m->types[i] ? args[i].n : args[i].any.id);
 }
 
 static status_t encode(struct jwl_conn *c, const struct jwl_message *m, uint32_t id,
@@ -463,50 +475,75 @@ static status_t encode(struct jwl_conn *c, const struct jwl_message *m, uint32_t
     return ERR_INTERNAL;
 }
 
-static void close_arg_handles(const struct jwl_sig *sig, union jwl_arg *args, unsigned nargs)
+static void close_arg_handles(const struct jwl_sig *sig, const union jwl_arg *args)
 {
-    for (unsigned i = 0; i < sig->n && i < nargs; i++)
+    for (unsigned i = 0; i < sig->n; i++)
         if (sig->type[i] == 'h' && args[i].h != HANDLE_INVALID)
             jam_handle_close(args[i].h);
 }
 
-status_t jwl_conn_send(struct jwl_conn *c, const struct jwl_interface *iface, uint32_t id,
-                       uint16_t opcode, union jwl_arg *args, unsigned nargs)
+/* After a destructor went or came: the compositor frees the id (a
+ * client's with delete_id), a client keeps a zombie until delete_id. */
+static status_t forget(struct jwl_conn *c, uint32_t id)
 {
-    const struct jwl_message *m;
+    if (c->side == JWL_SERVER)
+        return jwl_conn_delete(c, id);
+    return jwl_map_remove(&c->map, id);
+}
+
+status_t jwl_send(struct jwl_conn *c, uint32_t id, uint32_t opcode, const struct jwl_message *m,
+                  const union jwl_arg *args)
+{
     struct jwl_sig sig;
-    status_t st = send_message(c, iface, opcode, &m, &sig);
-    if (st != OK)
-        return st;
-    st = c->status;
-    if (st == OK && nargs != sig.n)
-        st = ERR_INVALID_ARGS;
+    if (!m || jwl_sig_parse(m->signature, &sig) != OK)
+        return ERR_INVALID_ARGS;   /* not a message: nothing known of its handles */
+    const struct jwl_object *o = NULL;
+    status_t st = c->status;
+    if (st == OK && opcode > 0xffff)
+        st = ERR_WRONG_TYPE;
     if (st == OK)
-        st = send_checks(c, iface, id, m, &sig, args);
+        st = send_target(c, id, opcode, m, &sig, &o);
     if (st == OK)
-        st = make_ids(c, m, &sig, jwl_map_get(&c->map, id)->version, args);
+        st = send_args(c, m, &sig, o->version, args);
+    if (st == OK) {
+        st = encode(c, m, id, (uint16_t)opcode, args, sig.n);
+        for (unsigned i = 0; st != OK && c->status == OK && i < sig.n; i++)
+            if (sig.type[i] == 'n')
+                (void)jwl_map_remove(&c->map, args[i].n);   /* pending: freed, no gap left */
+    }
     if (st != OK) {
-        close_arg_handles(&sig, args, nargs);
+        close_arg_handles(&sig, args);
         return st;
     }
-    st = encode(c, m, id, opcode, args, nargs);
-    if (st != OK) {
-        if (c->status == OK)
-            unmake_ids(c, m, &sig, args);
-        close_arg_handles(&sig, args, nargs);
-    }
-    return st;
+    for (unsigned i = 0; i < sig.n; i++)
+        if (sig.type[i] == 'n')
+            jwl_map_get(&c->map, args[i].n)->pending = false;   /* announced */
+    if (destructor(o->iface, c->side == JWL_CLIENT, opcode))
+        return forget(c, id);
+    return OK;
+}
+
+status_t jwl_conn_make(struct jwl_conn *c, const struct jwl_interface *iface, uint32_t version,
+                       void *data, uint32_t *out)
+{
+    if (c->status != OK)
+        return c->status;
+    if (!iface || !version || version > iface->version)
+        return ERR_INVALID_ARGS;
+    return jwl_map_new(&c->map, iface, version, data, out);
 }
 
 status_t jwl_conn_delete(struct jwl_conn *c, uint32_t id)
 {
     if (c->status != OK)
         return c->status;
+    const struct jwl_object *o = jwl_map_get(&c->map, id);
+    bool announced = o && !o->pending;
     status_t st = jwl_map_remove(&c->map, id);
-    if (st != OK || c->side != JWL_SERVER || id > JWL_CLIENT_ID_MAX)
+    if (st != OK || c->side != JWL_SERVER || id > JWL_CLIENT_ID_MAX || !announced)
         return st;
     union jwl_arg a = { .u = id };
-    return jwl_conn_send(c, c->display, JWL_DISPLAY_ID, 1, &a, 1);
+    return jwl_send(c, JWL_DISPLAY_ID, 1, &c->display->events[1], &a);
 }
 
 /* ---- errors ----------------------------------------------------------------------- */

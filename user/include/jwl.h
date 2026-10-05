@@ -56,13 +56,18 @@
  *
  * types[i] is the interface of argument i when it is an 'o' or an 'n'
  * that the XML gives one, and NULL otherwise (and for every other
- * letter): an 'o' with NULL takes any object; an 'n' with NULL is the
- * untyped new_id of wl_registry.bind, ONE argument whose wire form is the
- * interface's name (a string), its version (a uint) and the id. So
- * wl_registry.bind is "un" with types { NULL, NULL }, not libwayland's
- * expanded "usun". types may be NULL for a message without 'o' or 'n'.
+ * letter): an 'o' with NULL takes any object. A new_id the XML gives no
+ * interface (wl_registry.bind's) is three letters, as on the wire and as
+ * libwayland writes it: the interface's name 's', its version 'u', and the
+ * id 'n' with a NULL type, which takes its interface and version from the
+ * two before it. So wl_registry.bind is "usun", types all NULL. types may
+ * be NULL for a message without 'o' or 'n'.
  *
- * The requests and events arrays are indexed by opcode. */
+ * The requests and events arrays are indexed by opcode (NULL when there
+ * are none). Bit n of request_destructors (event_destructors) is set when
+ * request (event) n destroys its object (the XML's type="destructor"), so
+ * libjwl forgets the object when one is sent or received; messages past
+ * opcode 31 can't be destructors (genwl refuses such a protocol). */
 struct jwl_message {
     const char *name;                         /* the XML name: "attach" */
     const char *signature;                    /* as above: "?oii" */
@@ -74,12 +79,15 @@ struct jwl_interface {
     uint32_t version;                         /* the newest version these tables know */
     uint16_t nrequests, nevents;
     const struct jwl_message *requests, *events;
+    uint32_t request_destructors;             /* bit per opcode, as above */
+    uint32_t event_destructors;
 };
 
 /* Every signature of iface well formed (letters, '?' only before s or o,
- * at most JWL_ARGS_MAX arguments, a since from 1 to iface's version) and
- * its counts matching its arrays. OK or ERR_INVALID_ARGS; for the
- * generator's selftest and each side's start. */
+ * at most JWL_ARGS_MAX arguments, a since from 1 to iface's version, an
+ * untyped 'n' right after a non-null 's' and a 'u'), its counts matching
+ * its arrays, no destructor bit past its messages. OK or
+ * ERR_INVALID_ARGS; for the generator's selftest and each side's start. */
 status_t jwl_interface_check(const struct jwl_interface *iface);
 /* The same interface: the same table, or one of the same name (a ported
  * library may carry tables of its own). */
@@ -112,16 +120,8 @@ bool     jwl_interface_same(const struct jwl_interface *a, const struct jwl_inte
 /* ---- arguments and messages ---------------------------------------------------- */
 
 struct jwl_array {
-    uint32_t    size;    /* bytes */
     const void *data;    /* size bytes; NULL when size is 0 */
-};
-
-/* The untyped new_id ('n' with types[i] NULL): an object of any interface
- * the connection knows, at a version the sender chose. */
-struct jwl_new_any {
-    const struct jwl_interface *iface;   /* decoded: found by name among the known */
-    uint32_t version;                    /* 1 .. iface->version */
-    uint32_t id;                         /* the new object's id */
+    uint32_t    size;    /* bytes */
 };
 
 /* One argument, by its letter. Strings and arrays decoded point into the
@@ -132,8 +132,7 @@ union jwl_arg {
     int32_t          f;     /* 'f': fixed, signed 24.8 */
     const char      *s;     /* 's': NUL-terminated UTF-8; NULL for a null string */
     uint32_t         o;     /* 'o': an object's id; 0 for null */
-    uint32_t         n;     /* 'n' typed: the new object's id (jwl_conn_send writes it) */
-    struct jwl_new_any any; /* 'n' untyped */
+    uint32_t         n;     /* 'n': the new object's id (made by jwl_conn_make to send) */
     struct jwl_array a;     /* 'a' */
     handle_t         h;     /* 'h': whoever holds the message owns the handle */
 };
@@ -177,7 +176,11 @@ struct jwl_error {
  * are decoded, their handles closed, and dropped), the compositor frees
  * the id and says wl_display.delete_id, and only then is the id free for
  * the client to use again. The compositor's ids have no handshake: freed
- * at once on the compositor; a zombie on the client until reused. */
+ * at once on the compositor; a zombie on the client until reused.
+ *
+ * Our own new objects are made before the message that announces them is
+ * sent (jwl_map_new): until then they are "pending", can't be named in a
+ * message, and one destroyed while pending is free at once. */
 
 enum jwl_side { JWL_CLIENT, JWL_SERVER };
 enum jwl_state { JWL_FREE, JWL_LIVE, JWL_ZOMBIE };
@@ -188,7 +191,8 @@ struct jwl_object {
     uint32_t version;                   /* the bound or inherited version */
     uint8_t  state;                     /* enum jwl_state */
     bool     deleted;                   /* client: delete_id came while still live */
-    uint16_t reserved;
+    bool     pending;                   /* ours, made, its new_id not sent yet */
+    uint8_t  reserved;
     uint32_t next_free;                 /* free list of our own range: an index + 1, 0 ends it */
 };
 
@@ -217,8 +221,8 @@ void     jwl_map_free(struct jwl_map *m);
 struct jwl_object *jwl_map_entry(const struct jwl_map *m, uint32_t id);
 /* The live object id, or NULL. */
 struct jwl_object *jwl_map_get(const struct jwl_map *m, uint32_t id);
-/* A new id in our own range for an object of iface at version (the first
- * free entry, else the next): OK with *out; ERR_NO_RESOURCES at
+/* A new pending id in our own range for an object of iface at version
+ * (the first free entry, else the next): OK with *out; ERR_NO_RESOURCES at
  * JWL_OBJECTS_MAX; ERR_NO_MEMORY. */
 status_t jwl_map_new(struct jwl_map *m, const struct jwl_interface *iface, uint32_t version,
                      void *data, uint32_t *out);
@@ -232,10 +236,8 @@ status_t jwl_map_insert(struct jwl_map *m, uint32_t id, const struct jwl_interfa
  * live; ERR_INVALID_ARGS: wl_display. */
 status_t jwl_map_remove(struct jwl_map *m, uint32_t id);
 /* Client: the compositor's delete_id. ERR_INVALID_ARGS: not one of our
- * ids that is live or a zombie. */
+ * ids that is live (and announced) or a zombie. */
 status_t jwl_map_delete_id(struct jwl_map *m, uint32_t id);
-/* Undo a jwl_map_new whose message was never sent: the id is free at once. */
-void     jwl_map_unmake(struct jwl_map *m, uint32_t id);
 status_t jwl_map_set_data(struct jwl_map *m, uint32_t id, void *data);
 
 /* ---- the codec (jwl_wire.c) ----------------------------------------------------- */
@@ -260,7 +262,11 @@ struct jwl_out {
 /* The next message of in, checked against its signature with map's ids
  * (the requests of a JWL_SERVER map, the events of a JWL_CLIENT one): OK
  * with *out filled, in advanced past the message and its handles, and its
- * new ids entered in map. An object argument naming one of this side's
+ * new ids entered in map (an untyped one with the interface its 's' names,
+ * which must be among map's known, at the version its 'u' gives, from 1
+ * to that interface's; a typed one at the version of the object the
+ * message was sent on). Destructors are the transport's business, not
+ * this function's. An object argument naming one of this side's
  * zombies is decoded as 0 (as libwayland does); a message to a zombie is
  * decoded with dead_target set, its new ids entered as zombies, for the
  * caller to drop. ERR_SHOULD_WAIT: nothing left in in. ERR_INVALID_ARGS:
@@ -277,7 +283,7 @@ status_t jwl_decode(struct jwl_in *in, struct jwl_map *map, struct jwl_msg *out,
  * JWL_STRING_MAX, a NULL array with a size, a new id 0); ERR_OUT_OF_RANGE:
  * the message would be over JWL_MSG_MAX; ERR_BUFFER_TOO_SMALL: no room
  * left in out (bytes or handles). On failure out is unchanged. Ids are
- * taken as given: the map is jwl_conn_send's business. */
+ * taken as given: the map is jwl_send's business. */
 status_t jwl_encode(struct jwl_out *out, const struct jwl_message *m, uint32_t id,
                     uint16_t opcode, const union jwl_arg *args, unsigned nargs);
 
@@ -374,7 +380,11 @@ void     jwl_conn_destroy(struct jwl_conn *c);
 
 /* The next message for this side: OK with *out (its handles are the
  * caller's). A message to a zombie is dropped here, and a client handles
- * wl_display.delete_id here: neither is returned. ERR_SHOULD_WAIT: the
+ * wl_display.delete_id here: neither is returned. A destructor is
+ * returned with its object already gone from the map (out->data is still
+ * what the map held, for the caller to free): on the compositor the id is
+ * freed and delete_id queued, on a client the object is a zombie until
+ * the delete_id that follows. ERR_SHOULD_WAIT: the
  * channel is empty (wait for SIG_READABLE). Any other error: the
  * connection is dead, and that status comes back from every call after
  * (ERR_PEER_CLOSED: the peer closed; ERR_INVALID_ARGS: a protocol error,
@@ -383,24 +393,40 @@ void     jwl_conn_destroy(struct jwl_conn *c);
  * left for the caller, which the channel's 1024-message cap bounds. */
 status_t jwl_conn_next(struct jwl_conn *c, struct jwl_msg *out);
 
-/* Send message opcode on object id, which must be live and of iface:
- * requests from a client, events from the compositor. Each new id in args
- * is made here (in our range; a typed one at id's version, an untyped one
- * at args[i].any's) and written back into args. Every handle in args is
- * consumed, whatever happens. The message joins the batch being filled;
- * nothing is written to the channel until it fills or jwl_conn_flush.
- * ERR_NOT_FOUND: id isn't live; ERR_WRONG_TYPE: not an iface; ERR_NOT_SUPPORTED:
- * the opcode is newer than the object's version or doesn't exist;
- * ERR_INVALID_ARGS: args don't fit (jwl_encode; an object argument that
- * isn't live or of its type); ERR_OUT_OF_RANGE: too big; ERR_NO_RESOURCES:
- * no id left; a dead connection's status. */
-status_t jwl_conn_send(struct jwl_conn *c, const struct jwl_interface *iface, uint32_t id,
-                       uint16_t opcode, union jwl_arg *args, unsigned nargs);
+/* A new object of iface at version, in our own range, for a message to
+ * announce (its 'n' argument): OK with *out, the id. It is pending until
+ * that message is sent. Make it right before the jwl_send, and if that
+ * send refuses the id itself, jwl_conn_delete it: a pending id the peer
+ * never hears of leaves a gap, and the peer refuses the ids after it.
+ * (A send that fails for any other reason frees it.) Errors as
+ * jwl_map_new's, ERR_INVALID_ARGS for a version outside 1 to
+ * iface->version, or a dead connection's status. */
+status_t jwl_conn_make(struct jwl_conn *c, const struct jwl_interface *iface, uint32_t version,
+                       void *data, uint32_t *out);
 
-/* The object id is destroyed (after its destructor request was sent or
- * received): on the compositor, a client's id is freed and
- * wl_display.delete_id is sent; see the map's rules for the rest. Errors
- * as jwl_map_remove's, or a dead connection's status. */
+/* Send m, message opcode of object id's interface, with args (as many as
+ * m's signature has): requests from a client, events from the compositor.
+ * The generated stubs (<jwl/<protocol>.h>) call this. id must be live and
+ * announced; each 'o' argument too, of its type; each 'n' argument a
+ * pending object of ours of the type the message makes (for a typed one,
+ * at id's version; for an untyped one, the interface its 's' names at the
+ * version its 'u' gives), announced from now on. A destructor forgets id
+ * once sent (on the compositor, a client's id with delete_id). Every
+ * handle in args is consumed, whatever happens. The message joins the
+ * batch being filled; nothing is written until it fills or
+ * jwl_conn_flush. ERR_NOT_FOUND: id isn't live; ERR_BAD_STATE: id is
+ * pending; ERR_WRONG_TYPE: m isn't that message of id's interface;
+ * ERR_NOT_SUPPORTED: m is newer than id's version; ERR_INVALID_ARGS: args
+ * don't fit (jwl_encode's reasons, or an object or new id as above);
+ * ERR_OUT_OF_RANGE: too big; a dead connection's status. */
+status_t jwl_send(struct jwl_conn *c, uint32_t id, uint32_t opcode, const struct jwl_message *m,
+                  const union jwl_arg *args);
+
+/* The object id is destroyed without a destructor message (the
+ * compositor's own decision; a pending object never announced): on the
+ * compositor a client's id is freed and wl_display.delete_id is sent; see
+ * the map's rules for the rest. Errors as jwl_map_remove's, or a dead
+ * connection's status. */
 status_t jwl_conn_delete(struct jwl_conn *c, uint32_t id);
 
 /* Write what is waiting: the batch being filled, then held batches as far

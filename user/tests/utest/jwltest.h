@@ -23,6 +23,7 @@ enum {
     JT_DESTROY,    /* "" */
     JT_ANY_OBJ,    /* "o", any interface */
     JT_MAX,        /* twenty 'u' */
+    JT_MAKE_NAMED, /* "sn" jt_thing */
 };
 enum {
     JT_EV_ARGS,    /* "iufsoa", the 'o' a jt_thing */

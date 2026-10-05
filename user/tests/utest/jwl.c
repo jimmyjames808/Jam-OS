@@ -8,6 +8,8 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <jwl.h>
+#include <jwl/wayland.h>
+#include <jwl/xdg_shell.h>
 #include <os.h>
 #include "jwltest.h"
 #include "utest.h"
@@ -17,9 +19,10 @@
 static const struct jwl_interface *const t_cb[] = { &jt_callback };
 static const struct jwl_interface *const t_reg[] = { &jt_registry };
 static const struct jwl_interface *const t_thing[] = { &jt_thing };
-static const struct jwl_interface *const t_bind[] = { NULL, NULL };
+static const struct jwl_interface *const t_bind[] = { NULL, NULL, NULL, NULL };
 static const struct jwl_interface *const t_args[] = { NULL, NULL, NULL, NULL, &jt_thing, NULL };
 static const struct jwl_interface *const t_ev_args[] = { NULL, NULL, NULL, NULL, &jt_thing, NULL };
+static const struct jwl_interface *const t_named[] = { NULL, &jt_thing };
 
 static const struct jwl_message display_requests[] = {
     { "sync", "n", t_cb },
@@ -30,18 +33,19 @@ static const struct jwl_message display_events[] = {
     { "delete_id", "u", NULL },
 };
 const struct jwl_interface jt_display = { "wl_display", 1, 2, 2, display_requests,
-                                          display_events };
+                                          display_events, 0, 0 };
 
-static const struct jwl_message registry_requests[] = { { "bind", "un", t_bind } };
+static const struct jwl_message registry_requests[] = { { "bind", "usun", t_bind } };
 static const struct jwl_message registry_events[] = {
     { "global", "usu", NULL },
     { "global_remove", "u", NULL },
 };
 const struct jwl_interface jt_registry = { "wl_registry", 1, 1, 2, registry_requests,
-                                           registry_events };
+                                           registry_events, 0, 0 };
 
 static const struct jwl_message callback_events[] = { { "done", "u", NULL } };
-const struct jwl_interface jt_callback = { "wl_callback", 1, 0, 1, NULL, callback_events };
+const struct jwl_interface jt_callback = { "wl_callback", 1, 0, 1, NULL, callback_events,
+                                           0, 1u << 0 };   /* done destroys it */
 
 static const struct jwl_message all_requests[] = {
     { "args", "iuf?s?oa", t_args },
@@ -53,6 +57,7 @@ static const struct jwl_message all_requests[] = {
     { "destroy", "", NULL },
     { "any_obj", "o", NULL },
     { "max", "uuuuuuuuuuuuuuuuuuuu", NULL },
+    { "make_named", "sn", t_named },
 };
 static const struct jwl_message all_events[] = {
     { "ev_args", "iufsoa", t_ev_args },
@@ -60,12 +65,14 @@ static const struct jwl_message all_events[] = {
     { "ev_handle", "h", NULL },
     { "ev_newer", "2u", NULL },
 };
-const struct jwl_interface jt_all = { "jt_all", 3, 9, 4, all_requests, all_events };
+const struct jwl_interface jt_all = { "jt_all", 3, 10, 4, all_requests, all_events,
+                                      1u << JT_DESTROY, 0 };
 
 static const struct jwl_message thing_requests[] = { { "poke", "u", NULL }, { "destroy", "", NULL } };
 static const struct jwl_message thing_events[] = { { "poked", "u", NULL } };
 /* version 3 as jt_all's: an object a request makes has its maker's version */
-const struct jwl_interface jt_thing = { "jt_thing", 3, 2, 1, thing_requests, thing_events };
+const struct jwl_interface jt_thing = { "jt_thing", 3, 2, 1, thing_requests, thing_events,
+                                        1u << 1, 0 };
 
 const struct jwl_interface *const jt_known[] = { &jt_all, &jt_thing, &jt_callback };
 
@@ -135,22 +142,36 @@ status_t jt_request(struct jt_pair *p, uint32_t id, uint16_t op, const union jwl
     return jwl_decode(&in, &p->server, m, err);
 }
 
+/* A client object made and announced (its request went). */
+static bool made(struct jwl_map *m, const struct jwl_interface *iface, uint32_t version,
+                 uint32_t *id)
+{
+    CHECK_ST(jwl_map_new(m, iface, version, NULL, id), OK);
+    jwl_map_get(m, *id)->pending = false;
+    return true;
+}
+
 bool jt_pair_init(struct jt_pair *p, uint32_t version)
 {
     CHECK_ST(jwl_map_init(&p->client, JWL_CLIENT, &jt_display, jt_known, JT_NKNOWN), OK);
     CHECK_ST(jwl_map_init(&p->server, JWL_SERVER, &jt_display, jt_known, JT_NKNOWN), OK);
     struct jwl_msg m;
     struct jwl_error err;
-    union jwl_arg a[2];
-    CHECK_ST(jwl_map_new(&p->client, &jt_registry, 1, NULL, &a[0].n), OK);
+    union jwl_arg a[4];
+    if (!made(&p->client, &jt_registry, 1, &a[0].n))
+        return false;
     CHECK_EQ(a[0].n, 2);
     CHECK_ST(jt_request(p, JWL_DISPLAY_ID, 1, a, 1, &m, &err), OK);
     a[0].u = 7;   /* the global's name */
-    a[1].any = (struct jwl_new_any){ .iface = &jt_all, .version = version };
-    CHECK_ST(jwl_map_new(&p->client, &jt_all, version, NULL, &a[1].any.id), OK);
-    CHECK_ST(jt_request(p, 2, 0, a, 2, &m, &err), OK);
-    CHECK(m.args[1].any.iface == &jt_all && m.args[1].any.version == version);
-    CHECK_ST(jwl_map_new(&p->client, &jt_thing, version, NULL, &a[0].n), OK);
+    a[1].s = "jt_all";
+    a[2].u = version;
+    if (!made(&p->client, &jt_all, version, &a[3].n))
+        return false;
+    CHECK_ST(jt_request(p, 2, 0, a, 4, &m, &err), OK);
+    CHECK(!strcmp(m.args[1].s, "jt_all") && m.args[2].u == version && m.args[3].n == 3);
+    CHECK(jwl_map_get(&p->server, 3)->iface == &jt_all);
+    if (!made(&p->client, &jt_thing, version, &a[0].n))
+        return false;
     CHECK_ST(jt_request(p, 3, JT_MAKE, a, 1, &m, &err), OK);
     CHECK_EQ(a[0].n, 4);
     return true;
@@ -189,12 +210,27 @@ bool t_jwl_tables(void)
     static const struct jwl_interface *const typed_u[] = { &jt_thing };
     static const struct jwl_message typed_wrong[] = { { "x", "u", typed_u } };
     static const struct jwl_message noname[] = { { NULL, "u", NULL } };
-    struct jwl_interface t = { "t", 3, 1, 0, newer, NULL };
+    static const struct jwl_message bare_n[] = { { "x", "un", NULL } };
+    static const struct jwl_message null_s_n[] = { { "x", "?sun", NULL } };
+    static const struct jwl_message ok[] = { { "x", "sun", NULL } };
+    struct jwl_interface t = { "t", 3, 1, 0, newer, NULL, 0, 0 };
     CHECK_ST(jwl_interface_check(&t), ERR_INVALID_ARGS);   /* since 4 > version 3 */
     t.requests = typed_wrong;
     CHECK_ST(jwl_interface_check(&t), ERR_INVALID_ARGS);   /* a type on a 'u' */
     t.requests = noname;
     CHECK_ST(jwl_interface_check(&t), ERR_INVALID_ARGS);
+    t.requests = bare_n;
+    CHECK_ST(jwl_interface_check(&t), ERR_INVALID_ARGS);   /* an untyped n without "su" */
+    t.requests = null_s_n;
+    CHECK_ST(jwl_interface_check(&t), ERR_INVALID_ARGS);   /* ... whose name may be null */
+    t.requests = ok;
+    CHECK_ST(jwl_interface_check(&t), OK);
+    t.request_destructors = 2;
+    CHECK_ST(jwl_interface_check(&t), ERR_INVALID_ARGS);   /* a destructor past the messages */
+    t.request_destructors = 1;
+    t.event_destructors = 1;
+    CHECK_ST(jwl_interface_check(&t), ERR_INVALID_ARGS);
+    t.event_destructors = 0;
     t.requests = NULL;
     CHECK_ST(jwl_interface_check(&t), ERR_INVALID_ARGS);   /* a count with no array */
     t.version = 0;
@@ -203,6 +239,27 @@ bool t_jwl_tables(void)
     CHECK(jwl_interface_same(&jt_all, &jt_all) && !jwl_interface_same(&jt_all, &jt_thing));
     struct jwl_interface copy = jt_thing;   /* another library's table of the same name */
     CHECK(jwl_interface_same(&copy, &jt_thing));
+    return true;
+}
+
+/* Every table genwl made from upstream's XML is one the codec takes. */
+bool t_jwl_tables_generated(void)
+{
+    const struct jwl_interface *gen[] = {
+        &jwl_wl_display_interface, &jwl_wl_registry_interface, &jwl_wl_callback_interface,
+        &jwl_wl_compositor_interface, &jwl_wl_shm_pool_interface, &jwl_wl_shm_interface,
+        &jwl_wl_buffer_interface, &jwl_wl_data_offer_interface, &jwl_wl_data_source_interface,
+        &jwl_wl_data_device_interface, &jwl_wl_data_device_manager_interface,
+        &jwl_wl_shell_interface, &jwl_wl_shell_surface_interface, &jwl_wl_surface_interface,
+        &jwl_wl_seat_interface, &jwl_wl_pointer_interface, &jwl_wl_keyboard_interface,
+        &jwl_wl_touch_interface, &jwl_wl_output_interface, &jwl_wl_region_interface,
+        &jwl_wl_subcompositor_interface, &jwl_wl_subsurface_interface, &jwl_wl_fixes_interface,
+        &jwl_xdg_wm_base_interface, &jwl_xdg_positioner_interface, &jwl_xdg_surface_interface,
+        &jwl_xdg_toplevel_interface, &jwl_xdg_popup_interface,
+    };
+    for (unsigned i = 0; i < sizeof(gen) / sizeof(gen[0]); i++)
+        if (jwl_interface_check(gen[i]) != OK)
+            FAIL("genwl's %s refused", gen[i]->name);
     return true;
 }
 
@@ -218,7 +275,7 @@ bool t_jwl_roundtrip(void)
     static const uint8_t blob[7] = { 1, 2, 3, 4, 5, 6, 7 };
     union jwl_arg a[JWL_ARGS_MAX] = {
         { .i = -5 }, { .u = 0xdeadbeef }, { .f = -256 }, { .s = "hello" }, { .o = 4 },
-        { .a = { sizeof(blob), blob } },
+        { .a = { .data = blob, .size = sizeof(blob) } },
     };
     CHECK_ST(jt_request(&p, 3, JT_ARGS, a, 6, &m, &err), OK);
     CHECK(m.id == 3 && m.opcode == JT_ARGS && m.nargs == 6 && m.iface == &jt_all);
@@ -227,14 +284,14 @@ bool t_jwl_roundtrip(void)
     CHECK(m.args[5].a.size == 7 && !memcmp(m.args[5].a.data, blob, 7));
     a[3].s = NULL;   /* the nullable ones null */
     a[4].o = 0;
-    a[5].a = (struct jwl_array){ 0, NULL };
+    a[5].a = (struct jwl_array){ .data = NULL, .size = 0 };
     CHECK_ST(jt_request(&p, 3, JT_ARGS, a, 6, &m, &err), OK);
     CHECK(m.args[3].s == NULL && m.args[4].o == 0 && m.args[5].a.size == 0 && !m.args[5].a.data);
     /* the bytes: padding written as zeros, sizes exact */
     uint8_t buf[64];
     struct jwl_out out = { .buf = buf, .cap = sizeof(buf) };
     a[3].s = "hello";
-    a[5].a = (struct jwl_array){ sizeof(blob), blob };
+    a[5].a = (struct jwl_array){ .data = blob, .size = sizeof(blob) };
     CHECK_ST(jwl_encode(&out, &all_requests[JT_ARGS], 3, JT_ARGS, a, 6), OK);
     CHECK_EQ(out.len, 8 + 12 + 4 + 8 + 4 + 4 + 8);
     CHECK(buf[8 + 12 + 4 + 6] == 0 && buf[8 + 12 + 4 + 7] == 0);   /* "hello\0" + 2 */
@@ -263,7 +320,7 @@ bool t_jwl_roundtrip_events(void)
     struct jwl_out out = { .buf = buf, .cap = sizeof(buf), .h = hs, .hcap = 2 };
     static const uint8_t blob[4] = { 9, 8, 7, 6 };
     union jwl_arg a[6] = { { .i = 1 }, { .u = 2 }, { .f = 3 }, { .s = "x" }, { .o = 4 },
-                           { .a = { 4, blob } } };
+                           { .a = { .data = blob, .size = 4 } } };
     CHECK_ST(jwl_encode(&out, &all_events[JT_EV_ARGS], 3, JT_EV_ARGS, a, 6), OK);
     uint32_t sid;
     CHECK_ST(jwl_map_new(&p.server, &jt_thing, 3, NULL, &sid), OK);
@@ -323,22 +380,24 @@ bool t_jwl_encode_limits(void)
     CHECK_ST(jwl_encode(&out, &all_requests[JT_GIVE], 3, JT_GIVE, a, 2), ERR_INVALID_ARGS);
     a[0].h = 4;
     CHECK_ST(jwl_encode(&out, &all_requests[JT_GIVE], 3, JT_GIVE, a, 2), ERR_BUFFER_TOO_SMALL);
-    a[5].a = (struct jwl_array){ 3, NULL };
+    a[5].a = (struct jwl_array){ .data = NULL, .size = 3 };
     a[3].s = NULL;
     CHECK_ST(jwl_encode(&out, &all_requests[JT_ARGS], 3, JT_ARGS, a, 6), ERR_INVALID_ARGS);
-    a[5].a = (struct jwl_array){ JWL_STRING_MAX + 1, big };
+    a[5].a = (struct jwl_array){ .data = big, .size = JWL_STRING_MAX + 1 };
     CHECK_ST(jwl_encode(&out, &all_requests[JT_ARGS], 3, JT_ARGS, a, 6), ERR_INVALID_ARGS);
-    /* wl_registry.bind: no room; then a version past jt_all's */
+    /* wl_registry.bind: no room; no name; id 0 */
     a[0].u = 7;
-    a[1].any = (struct jwl_new_any){ &jt_all, 3, 9 };
+    a[1].s = "jt_all";
+    a[2].u = 3;
+    a[3].n = 9;
     struct jwl_out small = { .buf = buf, .cap = 8 };
-    CHECK_ST(jwl_encode(&small, &registry_requests[0], 2, 0, a, 2), ERR_BUFFER_TOO_SMALL);
+    CHECK_ST(jwl_encode(&small, &registry_requests[0], 2, 0, a, 4), ERR_BUFFER_TOO_SMALL);
     CHECK_EQ(small.len, 0);
-    a[1].any.version = 4;
-    CHECK_ST(jwl_encode(&out, &registry_requests[0], 2, 0, a, 2), ERR_INVALID_ARGS);
-    a[1].any.version = 3;
-    a[1].any.id = 0;
-    CHECK_ST(jwl_encode(&out, &registry_requests[0], 2, 0, a, 2), ERR_INVALID_ARGS);
+    a[1].s = NULL;
+    CHECK_ST(jwl_encode(&out, &registry_requests[0], 2, 0, a, 4), ERR_INVALID_ARGS);
+    a[1].s = "jt_all";
+    a[3].n = 0;
+    CHECK_ST(jwl_encode(&out, &registry_requests[0], 2, 0, a, 4), ERR_INVALID_ARGS);
     return true;
 }
 
@@ -352,7 +411,8 @@ bool t_jwl_map_client_ids(void)
     CHECK_ST(jwl_map_init(&m, JWL_CLIENT, &jt_display, jt_known, JT_NKNOWN), OK);
     uint32_t id[4];
     for (unsigned i = 0; i < 4; i++) {
-        CHECK_ST(jwl_map_new(&m, &jt_thing, 1, NULL, &id[i]), OK);
+        if (!made(&m, &jt_thing, 1, &id[i]))
+            return false;
         CHECK_EQ(id[i], i + 2);
     }
     CHECK_EQ(m.live, 5);
@@ -361,11 +421,16 @@ bool t_jwl_map_client_ids(void)
     uint32_t x;
     CHECK_ST(jwl_map_new(&m, &jt_thing, 1, NULL, &x), OK);
     CHECK_EQ(x, 6);   /* not 3: the compositor hasn't said delete_id */
+    CHECK(jwl_map_get(&m, 6)->pending);
+    CHECK_ST(jwl_map_delete_id(&m, 6), ERR_INVALID_ARGS);   /* never announced */
+    CHECK_ST(jwl_map_remove(&m, 6), OK);
+    CHECK(jwl_map_entry(&m, 6)->state == JWL_FREE);   /* pending: no handshake */
     CHECK_ST(jwl_map_delete_id(&m, 3), OK);
     CHECK(jwl_map_entry(&m, 3)->state == JWL_FREE);
     CHECK_ST(jwl_map_delete_id(&m, 3), ERR_INVALID_ARGS);   /* twice */
     CHECK_ST(jwl_map_new(&m, &jt_thing, 1, NULL, &x), OK);
-    CHECK_EQ(x, 3);
+    CHECK_EQ(x, 3);   /* the last freed first */
+    jwl_map_get(&m, 3)->pending = false;
     /* delete_id before the client destroys it (a wl_callback after done) */
     CHECK_ST(jwl_map_delete_id(&m, 4), OK);
     CHECK(jwl_map_get(&m, 4) != NULL);
@@ -378,8 +443,7 @@ bool t_jwl_map_client_ids(void)
     CHECK_ST(jwl_map_remove(&m, 4), ERR_NOT_FOUND);
     CHECK_ST(jwl_map_set_data(&m, 5, &m), OK);
     CHECK(jwl_map_get(&m, 5)->data == &m);
-    jwl_map_unmake(&m, 5);   /* never sent: free at once, no handshake */
-    CHECK(jwl_map_entry(&m, 5)->state == JWL_FREE);
+    CHECK_ST(jwl_map_set_data(&m, 4, &m), ERR_NOT_FOUND);
     /* the compositor's ids on a client: entered, a zombie once destroyed,
      * and made again in its place */
     CHECK_ST(jwl_map_check_new(&m, JWL_SERVER_ID_BASE), OK);

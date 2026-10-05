@@ -75,13 +75,13 @@ static size_t good_requests(uint8_t *b, uint32_t *seed, unsigned *nh)
     static const uint8_t blob[5] = { 1, 2, 3, 4, 5 };
     for (unsigned k = 0, n = 1 + jt_rng(seed) % 6; k < n; k++) {
         union jwl_arg a[JWL_ARGS_MAX] = { { .u = jt_rng(seed) } };
-        uint32_t op = jt_rng(seed) % 10, id = 3;
-        const struct jwl_message *m = &jt_all.requests[op % 9];
+        uint32_t op = jt_rng(seed) % 11, id = 3;
+        const struct jwl_message *m = &jt_all.requests[op % 10];
         switch (op) {
         case JT_ARGS:
-            a[3].s = op & 1 ? NULL : "fuzz";
+            a[3].s = jt_rng(seed) & 1 ? NULL : "fuzz";
             a[4].o = 4;
-            a[5].a = (struct jwl_array){ sizeof(blob), blob };
+            a[5].a = (struct jwl_array){ .data = blob, .size = sizeof(blob) };
             break;
         case JT_MAKE:
             (void)jwl_map_new(&g.client, &jt_thing, 3, NULL, &a[0].n);
@@ -97,13 +97,20 @@ static size_t good_requests(uint8_t *b, uint32_t *seed, unsigned *nh)
         case JT_ANY_OBJ:
             a[0].o = 1 + jt_rng(seed) % 4;
             break;
-        case 9:   /* wl_registry.bind */
+        case JT_MAKE_NAMED:
+            a[0].s = "named";
+            (void)jwl_map_new(&g.client, &jt_thing, 3, NULL, &a[1].n);
+            break;
+        case 10: {   /* wl_registry.bind */
+            const struct jwl_interface *iface = jt_known[jt_rng(seed) % JT_NKNOWN];
             id = 2;
             m = &jt_registry.requests[0];
             op = 0;
-            a[1].any = (struct jwl_new_any){ jt_known[jt_rng(seed) % JT_NKNOWN], 1, 0 };
-            (void)jwl_map_new(&g.client, a[1].any.iface, 1, NULL, &a[1].any.id);
+            a[1].s = iface->name;
+            a[2].u = 1;
+            (void)jwl_map_new(&g.client, iface, 1, NULL, &a[3].n);
             break;
+        }
         }
         struct jwl_sig sig;
         (void)jwl_sig_parse(m->signature, &sig);
@@ -185,8 +192,6 @@ static bool taken_ok(const struct jwl_msg *m, const uint8_t *lo, const uint8_t *
             CHECK(inside(a->s, strnlen(a->s, (size_t)(hi - (const uint8_t *)a->s)) + 1, lo, hi));
         if (sig.type[i] == 'a' && a->a.size)
             CHECK(inside(a->a.data, a->a.size, lo, hi));
-        if (sig.type[i] == 'n' && !(m->msg->types && m->msg->types[i]))
-            CHECK(a->any.iface && inside(a->any.iface, 0, (const uint8_t *)0, (const uint8_t *)-1));
     }
     static uint8_t again[JWL_MSG_MAX];
     handle_t hs[JWL_ARGS_MAX];
@@ -320,18 +325,34 @@ static bool feed_conn(const uint8_t *b, size_t n, unsigned nh, uint32_t *seed, s
         CHECK(sv->error.code <= JWL_ERROR_IMPLEMENTATION);
         t->refused++;
         t->codes[sv->error.code]++;
-        uint32_t back[8], nb, nhb;
+        uint32_t back[128], nb, nhb;   /* the whole error batch: a short buffer reads nothing */
         struct channel_read_args r = { .h = a, .bytes_cap = sizeof(back),
                                        .bytes = (uint64_t)(uintptr_t)back,
                                        .actual_bytes = (uint64_t)(uintptr_t)&nb,
                                        .actual_handles = (uint64_t)(uintptr_t)&nhb };
-        status_t rs = jam_channel_read(&r);   /* the error is the only message back */
-        CHECK(rs == OK || rs == ERR_BUFFER_TOO_SMALL);
+        CHECK_ST(jam_channel_read(&r), OK);   /* the error is the only message back */
         CHECK(back[0] == JWL_MAGIC && back[4] == JWL_DISPLAY_ID && back[7] == sv->error.code);
     }
     jwl_conn_destroy(sv);
     jam_handle_close(a);
     return true;
+}
+
+/* What a fresh connection needs first: get_registry (2), bind jt_all at
+ * version 3 (3), make a jt_thing (4), as jt_pair_init's. */
+static size_t setup_requests(uint8_t *b)
+{
+    struct jwl_out out = { .buf = b, .cap = ROOM };
+    union jwl_arg a[4] = { { .n = 2 } };
+    (void)jwl_encode(&out, &jt_display.requests[1], JWL_DISPLAY_ID, 1, a, 1);
+    a[0].u = 7;
+    a[1].s = "jt_all";
+    a[2].u = 3;
+    a[3].n = 3;
+    (void)jwl_encode(&out, &jt_registry.requests[0], 2, 0, a, 4);
+    a[0].n = 4;
+    (void)jwl_encode(&out, &jt_all.requests[JT_MAKE], 3, JT_MAKE, a, 1);
+    return out.len;
 }
 
 bool t_jwl_fuzz_conn(void)
@@ -345,7 +366,8 @@ bool t_jwl_fuzz_conn(void)
     unsigned count = 1500 * JWL_FUZZ_SCALE;
     for (unsigned i = 0; i < count; i++) {
         unsigned nh = 0;
-        size_t n = i % 3 == 0 ? random_batch(b, &seed) : good_requests(b, &seed, &nh);
+        size_t n = setup_requests(b);
+        n += i % 3 == 0 ? random_batch(b + n, &seed) : good_requests(b + n, &seed, &nh);
         if (i % 3 && jt_rng(&seed) % 4)
             n = mutate(b, n, &nh, &seed);
         if (!feed_conn(b, n, nh, &seed, &t))

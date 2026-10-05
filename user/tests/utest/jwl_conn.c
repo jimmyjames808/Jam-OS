@@ -5,7 +5,7 @@
  * bytes behind it (a client that reads late catches up; one that never
  * reads is disconnected with no_memory, and reads the error), the
  * half-window acknowledgement, every malformed batch refused with
- * wl_display.error, and jwl_conn_send's own refusals. Each test ends with
+ * wl_display.error, and jwl_send's own refusals. Each test ends with
  * the job's handles and message bytes back where they started. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
@@ -39,6 +39,15 @@ static status_t conn_on(handle_t ch, enum jwl_side side, struct jwl_conn **out)
     return jwl_conn_create(&cfg, out);
 }
 
+/* Message op of iface, sent on id as c's side sends (as a stub would). */
+static status_t say(struct jwl_conn *c, uint32_t id, const struct jwl_interface *iface,
+                    uint32_t op, const union jwl_arg *a)
+{
+    const struct jwl_message *m =
+        c->side == JWL_CLIENT ? &iface->requests[op] : &iface->events[op];
+    return jwl_send(c, id, op, m, a);
+}
+
 /* A connected pair with wl_registry at 2, jt_all (version 3) at 3 and a
  * jt_thing at 4, made by the client and read by the compositor. */
 static bool pair_up(struct pair *p)
@@ -47,14 +56,18 @@ static bool pair_up(struct pair *p)
     CHECK_ST(jam_channel_create(&a, &b), OK);
     CHECK_ST(conn_on(a, JWL_CLIENT, &p->cl), OK);
     CHECK_ST(conn_on(b, JWL_SERVER, &p->sv), OK);
-    union jwl_arg r[2] = { { .n = 0 } };
-    CHECK_ST(jwl_conn_send(p->cl, &jt_display, JWL_DISPLAY_ID, 1, r, 1), OK);
+    union jwl_arg r[4];
+    CHECK_ST(jwl_conn_make(p->cl, &jt_registry, 1, NULL, &r[0].n), OK);
     CHECK_EQ(r[0].n, 2);
+    CHECK_ST(say(p->cl, JWL_DISPLAY_ID, &jt_display, 1, r), OK);
     r[0].u = 7;
-    r[1].any = (struct jwl_new_any){ .iface = &jt_all, .version = 3 };
-    CHECK_ST(jwl_conn_send(p->cl, &jt_registry, 2, 0, r, 2), OK);
-    CHECK_EQ(r[1].any.id, 3);
-    CHECK_ST(jwl_conn_send(p->cl, &jt_all, 3, JT_MAKE, r, 1), OK);
+    r[1].s = "jt_all";
+    r[2].u = 3;
+    CHECK_ST(jwl_conn_make(p->cl, &jt_all, 3, NULL, &r[3].n), OK);
+    CHECK_ST(say(p->cl, 2, &jt_registry, 0, r), OK);
+    CHECK_EQ(r[3].n, 3);
+    CHECK_ST(jwl_conn_make(p->cl, &jt_thing, 3, NULL, &r[0].n), OK);
+    CHECK_ST(say(p->cl, 3, &jt_all, JT_MAKE, r), OK);
     CHECK_EQ(r[0].n, 4);
     CHECK_ST(jwl_conn_flush(p->cl), OK);
     struct jwl_msg m;
@@ -85,15 +98,19 @@ bool t_jwl_conn_messages(void)
     struct pair p;
     if (!pair_up(&p))
         return false;
-    /* sync: the compositor answers done, destroys the callback, delete_id */
-    union jwl_arg a[3] = { { .n = 0 } };
-    CHECK_ST(jwl_conn_send(p.cl, &jt_display, JWL_DISPLAY_ID, 0, a, 1), OK);
-    uint32_t cb = a[0].n;
+    /* sync; two handles; jt_thing.destroy, a destructor request */
+    union jwl_arg a[3];
+    uint32_t cb;
+    CHECK_ST(jwl_conn_make(p.cl, &jt_callback, 1, NULL, &cb), OK);
     CHECK_EQ(cb, 5);
+    a[0].n = cb;
+    CHECK_ST(say(p.cl, JWL_DISPLAY_ID, &jt_display, 0, a), OK);
     a[0].h = new_vmo();
     a[1].h = new_vmo();
     CHECK(a[0].h != HANDLE_INVALID && a[1].h != HANDLE_INVALID);
-    CHECK_ST(jwl_conn_send(p.cl, &jt_all, 3, JT_GIVE, a, 2), OK);
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_GIVE, a), OK);
+    CHECK_ST(say(p.cl, 4, &jt_thing, 1, a), OK);
+    CHECK(jwl_map_entry(&p.cl->map, 4)->state == JWL_ZOMBIE);   /* until delete_id */
     CHECK_ST(jwl_conn_flush(p.cl), OK);
     struct jwl_msg m;
     CHECK_ST(jwl_conn_next(p.sv, &m), OK);
@@ -105,30 +122,35 @@ bool t_jwl_conn_messages(void)
     CHECK_EQ(size, PAGE_SIZE);
     handle_t back = m.args[0].h;   /* one goes back in an event, one is closed */
     jam_handle_close(m.args[1].h);
+    CHECK_ST(jwl_conn_next(p.sv, &m), OK);
+    CHECK(m.id == 4 && m.opcode == 1 && jwl_map_entry(&p.sv->map, 4)->state == JWL_FREE);
+    /* done destroys the callback: freed at once here, delete_id queued */
     a[0].u = 42;
-    CHECK_ST(jwl_conn_send(p.sv, &jt_callback, cb, 0, a, 1), OK);
-    CHECK_ST(jwl_conn_delete(p.sv, cb), OK);
+    CHECK_ST(say(p.sv, cb, &jt_callback, 0, a), OK);
+    CHECK(jwl_map_entry(&p.sv->map, cb)->state == JWL_FREE);
     a[0].h = back;
-    CHECK_ST(jwl_conn_send(p.sv, &jt_all, 3, JT_EV_HANDLE, a, 1), OK);
+    CHECK_ST(say(p.sv, 3, &jt_all, JT_EV_HANDLE, a), OK);
     a[0].u = 7;
     a[1].s = "jt_all";
     a[2].u = 3;
-    CHECK_ST(jwl_conn_send(p.sv, &jt_registry, 2, 0, a, 3), OK);
+    CHECK_ST(say(p.sv, 2, &jt_registry, 0, a), OK);
     CHECK_ST(jwl_conn_flush(p.sv), OK);
-    CHECK_ST(jwl_conn_next(p.cl, &m), OK);
+    CHECK_ST(jwl_conn_next(p.cl, &m), OK);   /* delete_id(4) taken on the way */
     CHECK(m.id == cb && m.args[0].u == 42);
-    CHECK_ST(jwl_conn_next(p.cl, &m), OK);   /* delete_id was taken on the way */
+    CHECK(jwl_map_entry(&p.cl->map, 4)->state == JWL_FREE);
+    CHECK(jwl_map_entry(&p.cl->map, cb)->state == JWL_ZOMBIE);
+    CHECK_ST(jwl_conn_next(p.cl, &m), OK);   /* and delete_id(cb) */
     CHECK(m.opcode == JT_EV_HANDLE && m.nhandles == 1);
     CHECK_ST(jam_vmo_get_size(m.args[0].h, &size), OK);
     jwl_msg_close_handles(&m);
     CHECK_ST(jwl_conn_next(p.cl, &m), OK);
     CHECK(m.id == 2 && !strcmp(m.args[1].s, "jt_all") && m.args[2].u == 3);
     CHECK_ST(jwl_conn_next(p.cl, &m), ERR_SHOULD_WAIT);
-    CHECK(jwl_map_entry(&p.cl->map, cb)->deleted);
-    CHECK_ST(jwl_conn_delete(p.cl, cb), OK);   /* free at once: delete_id came first */
-    CHECK_ST(jwl_conn_send(p.cl, &jt_display, JWL_DISPLAY_ID, 0, a, 1), OK);
-    CHECK_EQ(a[0].n, cb);
-    CHECK(p.cl->stats.msgs_out == 6 && p.sv->stats.msgs_in == 5 && p.cl->stats.msgs_in == 4);
+    CHECK(jwl_map_entry(&p.cl->map, cb)->state == JWL_FREE);
+    uint32_t again;
+    CHECK_ST(jwl_conn_make(p.cl, &jt_callback, 1, NULL, &again), OK);
+    CHECK_EQ(again, cb);   /* the last freed, reused */
+    CHECK(p.cl->stats.msgs_out == 6 && p.sv->stats.msgs_in == 6 && p.cl->stats.msgs_in == 5);
     pair_down(&p);
     held_now(&h1, &b1);
     CHECK_EQ(h1, h0);
@@ -150,12 +172,12 @@ bool t_jwl_conn_batches(void)
     for (unsigned i = 0; i < 3000; i++) {
         for (unsigned k = 0; k < JWL_ARGS_MAX; k++)
             a[k].u = i + k;
-        CHECK_ST(jwl_conn_send(p.cl, &jt_all, 3, JT_MAX, a, JWL_ARGS_MAX), OK);
+        CHECK_ST(say(p.cl, 3, &jt_all, JT_MAX, a), OK);
     }
     for (unsigned i = 0; i < 40; i++) {
         a[0].h = new_vmo();
         a[1].h = new_vmo();
-        CHECK_ST(jwl_conn_send(p.cl, &jt_all, 3, JT_GIVE, a, 2), OK);
+        CHECK_ST(say(p.cl, 3, &jt_all, JT_GIVE, a), OK);
     }
     CHECK_ST(jwl_conn_flush(p.cl), OK);
     uint64_t batches = p.cl->stats.batches_out - before;
@@ -190,7 +212,7 @@ static status_t poke(struct pair *p, unsigned n, uint32_t *seq)
     status_t st = OK;
     for (unsigned i = 0; i < n && st == OK; i++) {
         union jwl_arg a = { .u = (*seq)++ };
-        st = jwl_conn_send(p->sv, &jt_thing, 4, 0, &a, 1);
+        st = say(p->sv, 4, &jt_thing, 0, &a);
     }
     return st;
 }
@@ -240,7 +262,7 @@ bool t_jwl_conn_window(void)
     /* an acknowledgement goes when half the window is read, not before;
      * a request first, so the count told is the count read */
     union jwl_arg a = { .u = 1 };
-    CHECK_ST(jwl_conn_send(p.cl, &jt_thing, 4, 0, &a, 1), OK);
+    CHECK_ST(say(p.cl, 4, &jt_thing, 0, &a), OK);
     CHECK_ST(jwl_conn_flush(p.cl), OK);
     CHECK_EQ(p.cl->told, p.cl->nread);
     CHECK_ST(poke(&p, 15 * POKED_PER_BATCH, &sent), OK);
@@ -286,7 +308,7 @@ bool t_jwl_conn_never_reads(void)
     CHECK_EQ(p.sv->held_bytes, 0);
     CHECK_ST(jwl_conn_flush(p.sv), ERR_INVALID_ARGS);   /* dead from now on */
     union jwl_arg a = { .u = 1 };
-    CHECK_ST(jwl_conn_send(p.sv, &jt_thing, 4, 0, &a, 1), ERR_INVALID_ARGS);
+    CHECK_ST(say(p.sv, 4, &jt_thing, 0, &a), ERR_INVALID_ARGS);
     uint32_t got = 0;
     bool in_order = true;
     struct jwl_msg m;
@@ -310,7 +332,7 @@ bool t_jwl_conn_never_reads(void)
     return true;
 }
 
-/* jwl_conn_send's refusals; handles are consumed even then. */
+/* jwl_send's refusals; handles are consumed even then. */
 bool t_jwl_conn_send_refusals(void)
 {
     uint64_t h0, b0, h1, b1;
@@ -319,54 +341,108 @@ bool t_jwl_conn_send_refusals(void)
     if (!pair_up(&p))
         return false;
     union jwl_arg a[6] = { { .u = 0 } };
-    CHECK_ST(jwl_conn_send(p.cl, &jt_thing, 9, 0, a, 1), ERR_NOT_FOUND);
-    CHECK_ST(jwl_conn_send(p.cl, &jt_thing, 3, 0, a, 1), ERR_WRONG_TYPE);
-    CHECK_ST(jwl_conn_send(p.cl, &jt_all, 3, 99, a, 0), ERR_NOT_SUPPORTED);
-    CHECK_ST(jwl_conn_send(p.cl, &jt_all, 3, JT_MAKE, a, 2), ERR_INVALID_ARGS);
+    CHECK_ST(say(p.cl, 9, &jt_thing, 0, a), ERR_NOT_FOUND);
+    CHECK_ST(say(p.cl, 3, &jt_thing, 0, a), ERR_WRONG_TYPE);   /* a jt_all, not a jt_thing */
+    CHECK_ST(jwl_send(p.cl, 3, 99, &jt_all.requests[0], a), ERR_WRONG_TYPE);
+    CHECK_ST(jwl_send(p.cl, 3, 0x10000, &jt_all.requests[0], a), ERR_WRONG_TYPE);
+    CHECK_ST(jwl_send(p.cl, 3, 0, NULL, a), ERR_INVALID_ARGS);
+    CHECK_ST(jwl_send(p.sv, 3, 0, &jt_all.requests[0], a), ERR_WRONG_TYPE);   /* not an event */
     a[0].h = new_vmo();
     a[1].h = new_vmo();
-    CHECK_ST(jwl_conn_send(p.cl, &jt_thing, 3, JT_GIVE, a, 2), ERR_NOT_SUPPORTED);   /* thing has 2 */
-    CHECK_ST(jwl_conn_send(p.cl, &jt_all, 4, JT_GIVE, a, 2), ERR_WRONG_TYPE);
+    CHECK_ST(say(p.cl, 4, &jt_all, JT_GIVE, a), ERR_WRONG_TYPE);
     uint64_t size;
     CHECK_ST(jam_vmo_get_size(a[0].h, &size), ERR_BAD_HANDLE);   /* consumed */
     CHECK_ST(jam_vmo_get_size(a[1].h, &size), ERR_BAD_HANDLE);
-    a[4].o = 2;   /* jt_all.args wants a jt_thing */
     a[3].s = NULL;
-    CHECK_ST(jwl_conn_send(p.cl, &jt_all, 3, JT_ARGS, a, 6), ERR_INVALID_ARGS);
+    a[4].o = 2;   /* jt_all.args wants a jt_thing */
+    a[5].a = (struct jwl_array){ .data = NULL, .size = 0 };
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_ARGS, a), ERR_INVALID_ARGS);
     a[4].o = 77;
-    CHECK_ST(jwl_conn_send(p.cl, &jt_all, 3, JT_ARGS, a, 6), ERR_INVALID_ARGS);
-    a[0].u = 7;   /* bind at a version past the table's: no id made */
-    a[1].any = (struct jwl_new_any){ .iface = &jt_all, .version = 4 };
-    CHECK_ST(jwl_conn_send(p.cl, &jt_registry, 2, 0, a, 2), ERR_INVALID_ARGS);
-    a[0].n = 0;
-    CHECK_ST(jwl_conn_send(p.cl, &jt_all, 3, JT_MAKE, a, 1), OK);
-    CHECK_EQ(a[0].n, 5);
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_ARGS, a), ERR_INVALID_ARGS);
     static char big[JWL_MSG_MAX];   /* 4095 bytes and the NUL: too big a message */
     memset(big, 'x', sizeof(big) - 1);
     a[0].s = big;
     a[1].s = "y";
-    CHECK_ST(jwl_conn_send(p.cl, &jt_all, 3, JT_STRS, a, 2), ERR_OUT_OF_RANGE);
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_STRS, a), ERR_OUT_OF_RANGE);
+    /* a send that fails past the checks gives its new id back */
+    uint32_t lost;
+    CHECK_ST(jwl_conn_make(p.cl, &jt_thing, 3, NULL, &lost), OK);
+    a[1].n = lost;
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_MAKE_NAMED, a), ERR_OUT_OF_RANGE);
+    CHECK(jwl_map_entry(&p.cl->map, lost)->state == JWL_FREE);
     CHECK_ST(jwl_conn_post_error(p.cl, 1, 0, "no"), ERR_NOT_SUPPORTED);
-    /* version: a since-2 event to an object bound at 1 isn't sent */
-    a[0].u = 7;
-    a[1].any = (struct jwl_new_any){ .iface = &jt_all, .version = 1 };
-    CHECK_ST(jwl_conn_send(p.cl, &jt_registry, 2, 0, a, 2), OK);
-    CHECK_ST(jwl_conn_flush(p.cl), OK);
-    struct jwl_msg m;
-    while (jwl_conn_next(p.sv, &m) == OK)
-        ;
-    CHECK(jwl_conn_object(p.sv, 6) && jwl_conn_object(p.sv, 6)->version == 1);
-    CHECK_ST(jwl_conn_send(p.sv, &jt_all, 6, JT_EV_NEWER, a, 1), ERR_NOT_SUPPORTED);
-    CHECK_ST(jwl_conn_send(p.sv, &jt_all, 3, JT_EV_NEWER, a, 1), OK);
     CHECK_ST(jwl_conn_delete(p.sv, JWL_DISPLAY_ID), ERR_INVALID_ARGS);
     CHECK_ST(jwl_conn_delete(p.sv, 99), ERR_NOT_FOUND);
     /* the compositor's error naming an object that isn't there names the display */
     CHECK_ST(jwl_conn_post_error(p.sv, 1234, JWL_ERROR_IMPLEMENTATION, "bad \x01 byte"),
              ERR_INVALID_ARGS);
     CHECK(!strcmp(p.sv->error.text, "bad ? byte"));
-    while (jwl_conn_next(p.cl, &m) == OK && m.id != JWL_DISPLAY_ID)
-        ;
+    struct jwl_msg m;
+    CHECK_ST(jwl_conn_next(p.cl, &m), OK);
     CHECK(m.id == JWL_DISPLAY_ID && m.args[0].o == JWL_DISPLAY_ID && m.args[1].u == 3);
+    pair_down(&p);
+    held_now(&h1, &b1);
+    CHECK_EQ(h1, h0);
+    CHECK_EQ(b1, b0);
+    return true;
+}
+
+/* New ids sent must be made, pending, of the interface and version the
+ * message makes; a since-2 event isn't sent to an object bound at 1. */
+bool t_jwl_conn_new_ids(void)
+{
+    uint64_t h0, b0, h1, b1;
+    held_now(&h0, &b0);
+    struct pair p;
+    if (!pair_up(&p))
+        return false;
+    union jwl_arg a[4] = { { .u = 0 } };
+    a[0].n = 50;
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_MAKE, a), ERR_INVALID_ARGS);   /* never made */
+    a[0].n = 4;
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_MAKE, a), ERR_INVALID_ARGS);   /* announced already */
+    uint32_t cb, v1, ok;
+    CHECK_ST(jwl_conn_make(p.cl, &jt_callback, 1, NULL, &cb), OK);
+    a[0].n = cb;
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_MAKE, a), ERR_INVALID_ARGS);   /* not a jt_thing */
+    CHECK_ST(jwl_conn_delete(p.cl, cb), OK);   /* else a gap: the compositor refuses the next */
+    CHECK_ST(jwl_conn_make(p.cl, &jt_thing, 1, NULL, &v1), OK);
+    a[0].n = v1;
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_MAKE, a), ERR_INVALID_ARGS);   /* jt_all is version 3 */
+    a[0].o = v1;
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_ANY_OBJ, a), ERR_INVALID_ARGS);   /* not announced */
+    CHECK_ST(say(p.cl, v1, &jt_thing, 0, a), ERR_BAD_STATE);
+    CHECK_ST(jwl_conn_delete(p.cl, v1), OK);   /* never announced: gone at once */
+    CHECK(jwl_map_entry(&p.cl->map, v1)->state == JWL_FREE);
+    CHECK_ST(jwl_conn_make(p.cl, &jt_thing, 3, NULL, &ok), OK);
+    a[0].n = ok;
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_MAKE, a), OK);
+    CHECK_ST(jwl_conn_make(p.cl, &jt_thing, 4, NULL, &v1), ERR_INVALID_ARGS);
+    CHECK_ST(jwl_conn_make(p.cl, &jt_thing, 0, NULL, &v1), ERR_INVALID_ARGS);
+    /* bind: the id must be what the name and version say */
+    uint32_t b;
+    CHECK_ST(jwl_conn_make(p.cl, &jt_all, 1, NULL, &b), OK);
+    a[0].u = 7;
+    a[1].s = "jt_all";
+    a[2].u = 2;
+    a[3].n = b;
+    CHECK_ST(say(p.cl, 2, &jt_registry, 0, a), ERR_INVALID_ARGS);
+    a[1].s = "jt_thing";
+    a[2].u = 1;
+    CHECK_ST(say(p.cl, 2, &jt_registry, 0, a), ERR_INVALID_ARGS);
+    a[1].s = "jt_all";
+    CHECK_ST(say(p.cl, 2, &jt_registry, 0, a), OK);
+    CHECK_ST(jwl_conn_flush(p.cl), OK);
+    struct jwl_msg m;
+    unsigned taken = 0;
+    while (jwl_conn_next(p.sv, &m) == OK)
+        taken++;
+    CHECK_EQ(taken, 2);   /* the make and the bind; no protocol error */
+    CHECK_ST(p.sv->status, OK);
+    CHECK(jwl_conn_object(p.sv, b) && jwl_conn_object(p.sv, b)->version == 1);
+    a[0].u = 1;
+    CHECK_ST(say(p.sv, b, &jt_all, JT_EV_NEWER, a), ERR_NOT_SUPPORTED);
+    CHECK_ST(say(p.sv, 3, &jt_all, JT_EV_NEWER, a), OK);
     pair_down(&p);
     held_now(&h1, &b1);
     CHECK_EQ(h1, h0);

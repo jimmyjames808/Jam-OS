@@ -12,6 +12,8 @@
  *     range never grows faster than the peer's real objects;
  *   - our own new ids come from a free list first (the ids freed most
  *     recently, as libwayland's allocator), so the peer sees the same;
+ *     each is pending until the message that names it is sent, and one
+ *     destroyed while pending is free at once (the peer never knew it);
  *   - a client's id, once destroyed by the client, is a zombie until the
  *     compositor's delete_id, and only then free (the compositor frees it
  *     at once and says delete_id); a compositor's id is free at once on
@@ -142,6 +144,7 @@ status_t jwl_map_new(struct jwl_map *m, const struct jwl_interface *iface, uint3
     }
     set_entry(&r->v[idx], iface, version, JWL_LIVE);
     r->v[idx].data = data;
+    r->v[idx].pending = true;
     m->live++;
     *out = id_of(m->side == JWL_CLIENT ? 0 : 1, idx);
     return OK;
@@ -204,7 +207,9 @@ status_t jwl_map_remove(struct jwl_map *m, uint32_t id)
     (void)locate(id, &range, &idx);   /* true: jwl_map_get found it */
     m->live--;
     bool ours = range == (m->side == JWL_CLIENT ? 0u : 1u);
-    if (m->side == JWL_SERVER) {
+    if (o->pending) {
+        free_own(&m->r[range], idx);   /* never announced: nobody else knows it */
+    } else if (m->side == JWL_SERVER) {
         /* our ids free at once; a client's is free now and delete_id follows */
         if (ours)
             free_own(&m->r[range], idx);
@@ -225,24 +230,13 @@ status_t jwl_map_delete_id(struct jwl_map *m, uint32_t id)
     if (m->side != JWL_CLIENT || id == JWL_DISPLAY_ID || id > JWL_OBJECTS_MAX)
         return ERR_INVALID_ARGS;
     struct jwl_object *o = jwl_map_entry(m, id);
-    if (!o || o->state == JWL_FREE || o->deleted)
+    if (!o || o->state == JWL_FREE || o->deleted || o->pending)
         return ERR_INVALID_ARGS;
     if (o->state == JWL_LIVE)
         o->deleted = true;   /* free when we destroy it */
     else
         free_own(&m->r[0], id - 1);
     return OK;
-}
-
-void jwl_map_unmake(struct jwl_map *m, uint32_t id)
-{
-    struct jwl_object *o = jwl_map_get(m, id);
-    unsigned range;
-    uint32_t idx;
-    if (!o || !locate(id, &range, &idx) || range != (m->side == JWL_CLIENT ? 0u : 1u))
-        return;
-    m->live--;
-    free_own(&m->r[range], idx);
 }
 
 status_t jwl_map_set_data(struct jwl_map *m, uint32_t id, void *data)

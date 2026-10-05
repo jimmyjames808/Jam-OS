@@ -82,8 +82,8 @@ bool t_jwl_bad_framing(void)
     REFUSED(&p.server, 0, 1, M_OBJ, "object 0");
     msg(&w, JWL_SERVER_ID_BASE + 5, 0, NULL, 0);
     REFUSED(&p.server, 0, 1, M_OBJ, "a compositor id never made");
-    msg(&w, 3, 9, NULL, 0);
-    REFUSED(&p.server, 0, 3, M_BAD, "opcode 9 of 9");
+    msg(&w, 3, 10, NULL, 0);
+    REFUSED(&p.server, 0, 3, M_BAD, "opcode 10 of 10");
     msg(&w, 3, 0xffff, NULL, 0);
     REFUSED(&p.server, 0, 3, M_BAD, "opcode 0xffff");
     uint32_t one = 7;
@@ -250,8 +250,8 @@ bool t_jwl_bad_bind(void)
     struct jwl_msg m;
     struct jwl_error err;
     CHECK_ST(jwl_decode(&in, &p.server, &m, &err), OK);
-    CHECK(m.args[1].any.iface == &jt_all && m.args[1].any.version == 2 && m.args[1].any.id == 5);
-    CHECK(jwl_map_get(&p.server, 5)->version == 2);
+    CHECK(m.nargs == 4 && !strcmp(m.args[1].s, "jt_all") && m.args[2].u == 2 && m.args[3].n == 5);
+    CHECK(jwl_map_get(&p.server, 5)->iface == &jt_all && jwl_map_get(&p.server, 5)->version == 2);
     jt_pair_free(&p);
     return true;
 }

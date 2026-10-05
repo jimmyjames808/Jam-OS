@@ -397,6 +397,33 @@ bool t_http_chunks(void);
 bool t_http_request(void);
 bool t_http_fuzz(void);
 
+/* jwl.c, jwl_bad.c, jwl_batch.c, jwl_conn.c and jwl_fuzz.c (jwltest.h):
+ * libjwl's codec, object map and transport (<jwl.h>) against stand-in
+ * tables: round trips, every malformed message and batch, the window, and
+ * random and mutated batches. */
+bool t_jwl_tables(void);
+bool t_jwl_tables_generated(void);
+bool t_jwl_roundtrip(void);
+bool t_jwl_roundtrip_events(void);
+bool t_jwl_encode_limits(void);
+bool t_jwl_map_client_ids(void);
+bool t_jwl_map_server_ids(void);
+bool t_jwl_bad_framing(void);
+bool t_jwl_bad_strings(void);
+bool t_jwl_bad_objects(void);
+bool t_jwl_bad_bind(void);
+bool t_jwl_bad_events(void);
+bool t_jwl_bad_batches(void);
+bool t_jwl_bad_compositor(void);
+bool t_jwl_conn_messages(void);
+bool t_jwl_conn_batches(void);
+bool t_jwl_conn_window(void);
+bool t_jwl_conn_never_reads(void);
+bool t_jwl_conn_send_refusals(void);
+bool t_jwl_conn_new_ids(void);
+bool t_jwl_fuzz_decode(void);
+bool t_jwl_fuzz_conn(void);
+
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */
 bool t_netdev_ring_counts(void);

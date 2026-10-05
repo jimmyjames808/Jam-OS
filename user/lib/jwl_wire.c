@@ -72,21 +72,37 @@ status_t jwl_sig_parse(const char *s, struct jwl_sig *out)
     return OK;
 }
 
-/* One message of a table: its name, signature and since, and an 'n' that
- * names an interface names a whole one. */
+/* An 'n' with no interface of its own takes it from the "su" before it. */
+static bool untyped_new_id(const struct jwl_message *m, const struct jwl_sig *sig, unsigned i)
+{
+    return sig->type[i] == 'n' && (!m->types || !m->types[i]);
+}
+
+/* One message of a table: its name, signature and since, a type only on
+ * an 'o' or 'n' (and a whole one), an untyped 'n' right after a non-null
+ * 's' and a 'u'. */
 static status_t check_message(const struct jwl_message *m, uint32_t version)
 {
     struct jwl_sig sig;
     if (!m->name || jwl_sig_parse(m->signature, &sig) != OK || sig.since > version)
         return ERR_INVALID_ARGS;
-    for (unsigned i = 0; m->types && i < sig.n; i++) {
-        const struct jwl_interface *t = m->types[i];
+    for (unsigned i = 0; i < sig.n; i++) {
+        const struct jwl_interface *t = m->types ? m->types[i] : NULL;
         if (t && sig.type[i] != 'o' && sig.type[i] != 'n')
             return ERR_INVALID_ARGS;
         if (t && (!t->name || !t->version))
             return ERR_INVALID_ARGS;
+        if (untyped_new_id(m, &sig, i) &&
+            (i < 2 || sig.type[i - 2] != 's' || sig.nullable[i - 2] || sig.type[i - 1] != 'u'))
+            return ERR_INVALID_ARGS;
     }
     return OK;
+}
+
+/* Destructor bits only for messages that exist. */
+static bool mask_fits(uint32_t mask, unsigned n)
+{
+    return n >= 32 || (mask >> n) == 0;
 }
 
 status_t jwl_interface_check(const struct jwl_interface *iface)
@@ -94,6 +110,9 @@ status_t jwl_interface_check(const struct jwl_interface *iface)
     if (!iface || !iface->name || !iface->version)
         return ERR_INVALID_ARGS;
     if ((iface->nrequests && !iface->requests) || (iface->nevents && !iface->events))
+        return ERR_INVALID_ARGS;
+    if (!mask_fits(iface->request_destructors, iface->nrequests) ||
+        !mask_fits(iface->event_destructors, iface->nevents))
         return ERR_INVALID_ARGS;
     for (unsigned i = 0; i < iface->nrequests; i++)
         if (check_message(&iface->requests[i], iface->version) != OK)
@@ -133,8 +152,11 @@ struct dec {
     unsigned          hat;              /* the next handle of the batch */
     uint32_t          id;               /* the object it was sent on */
     const char       *where;            /* "interface.message" for the text */
-    unsigned          nnew;             /* new ids so far */
+    uint32_t          version;          /* that object's */
+    unsigned          nnew;             /* new ids so far, and what they will be */
     uint32_t          new_ids[JWL_ARGS_MAX];
+    const struct jwl_interface *new_iface[JWL_ARGS_MAX];
+    uint32_t          new_version[JWL_ARGS_MAX];
 };
 
 static status_t fail(struct jwl_error *err, uint32_t object, uint32_t code, const char *fmt, ...)
@@ -230,8 +252,10 @@ static status_t dec_object(struct dec *d, bool nullable, const struct jwl_interf
     return OK;
 }
 
-/* A new id the peer made: in its range, free or next, and not twice. */
-static status_t dec_new_id(struct dec *d, uint32_t *out)
+/* A new id the peer made, for an object of iface at version: in its
+ * range, free or next, and not twice in one message. */
+static status_t dec_new_id(struct dec *d, const struct jwl_interface *iface, uint32_t version,
+                           uint32_t *out)
 {
     uint32_t id;
     status_t st = word(d, &id);
@@ -248,21 +272,17 @@ static status_t dec_new_id(struct dec *d, uint32_t *out)
     if (st != OK)
         return fail(d->err, d->id, JWL_ERROR_INVALID_OBJECT, "%s@%u: invalid new id %u",
                     d->where, d->id, id);
-    d->new_ids[d->nnew++] = id;
+    d->new_ids[d->nnew] = id;
+    d->new_iface[d->nnew] = iface;
+    d->new_version[d->nnew++] = version;
     *out = id;
     return OK;
 }
 
-/* The untyped new_id: interface name, version, id. */
-static status_t dec_new_any(struct dec *d, struct jwl_new_any *out)
+/* The untyped new_id: its interface is the one the string before it names
+ * (among the connection's known), its version the uint before it. */
+static status_t dec_new_any(struct dec *d, const char *name, uint32_t version, uint32_t *out)
 {
-    const char *name;
-    uint32_t version;
-    status_t st = dec_string(d, false, &name);
-    if (st == OK)
-        st = word(d, &version);
-    if (st != OK)
-        return st;
     const struct jwl_interface *iface = NULL;
     for (unsigned i = 0; i < d->map->nknown && !iface; i++)
         if (!strcmp(d->map->known[i]->name, name))
@@ -273,25 +293,30 @@ static status_t dec_new_any(struct dec *d, struct jwl_new_any *out)
     if (version == 0 || version > iface->version)
         return fail(d->err, d->id, JWL_ERROR_INVALID_OBJECT, "%s@%u: %s version %u (1 to %u)",
                     d->where, d->id, iface->name, version, iface->version);
-    out->iface = iface;
-    out->version = version;
-    return dec_new_id(d, &out->id);
+    return dec_new_id(d, iface, version, out);
 }
 
-static status_t dec_arg(struct dec *d, char type, bool nullable, const struct jwl_interface *t,
-                        union jwl_arg *a)
+/* Argument i of the message into args[i] (the ones before it decoded). */
+static status_t dec_arg(struct dec *d, const struct jwl_sig *sig, unsigned i,
+                        const struct jwl_interface *const *types, union jwl_arg *args)
 {
-    switch (type) {
+    const struct jwl_interface *t = types ? types[i] : NULL;
+    union jwl_arg *a = &args[i];
+    switch (sig->type[i]) {
     case 'i':
     case 'u':
     case 'f':
         return word(d, &a->u);
     case 's':
-        return dec_string(d, nullable, &a->s);
+        return dec_string(d, sig->nullable[i], &a->s);
     case 'o':
-        return dec_object(d, nullable, t, &a->o);
+        return dec_object(d, sig->nullable[i], t, &a->o);
     case 'n':
-        return t ? dec_new_id(d, &a->n) : dec_new_any(d, &a->any);
+        if (t)
+            return dec_new_id(d, t, d->version, &a->n);
+        if (i < 2 || sig->type[i - 2] != 's' || sig->type[i - 1] != 'u' || !args[i - 2].s)
+            break;   /* jwl_interface_check refuses such a table */
+        return dec_new_any(d, args[i - 2].s, args[i - 1].u, &a->n);
     case 'a': {
         const uint8_t *at;
         status_t st = bytes(d, &at, &a->a.size);
@@ -331,19 +356,15 @@ static status_t dec_target(struct jwl_map *map, uint32_t id, uint16_t opcode,
     return OK;
 }
 
-/* Pass 2: the message is good; its new ids join the map. */
-static status_t commit_new_ids(struct dec *d, const struct jwl_sig *sig, struct jwl_msg *out)
+/* Pass 2: the message is good; its new ids join the map (as zombies for a
+ * message to a zombie, so what is later sent to them is dropped too). */
+static status_t commit_new_ids(struct dec *d, bool dead_target)
 {
-    for (unsigned i = 0; i < sig->n; i++) {
-        if (sig->type[i] != 'n')
-            continue;
-        bool any = !out->msg->types || !out->msg->types[i];
-        const struct jwl_interface *iface = any ? out->args[i].any.iface : out->msg->types[i];
-        uint32_t id = any ? out->args[i].any.id : out->args[i].n;
-        uint32_t version = any ? out->args[i].any.version : out->version;
-        enum jwl_state state = out->dead_target ? JWL_ZOMBIE : JWL_LIVE;
-        if (jwl_map_insert(d->map, id, iface, version, state) != OK)
-            return fail(d->err, JWL_DISPLAY_ID, JWL_ERROR_NO_MEMORY, "no memory for object %u", id);
+    for (unsigned i = 0; i < d->nnew; i++) {
+        enum jwl_state state = dead_target ? JWL_ZOMBIE : JWL_LIVE;
+        if (jwl_map_insert(d->map, d->new_ids[i], d->new_iface[i], d->new_version[i], state) != OK)
+            return fail(d->err, JWL_DISPLAY_ID, JWL_ERROR_NO_MEMORY, "no memory for object %u",
+                        d->new_ids[i]);
     }
     return OK;
 }
@@ -374,16 +395,15 @@ status_t jwl_decode(struct jwl_in *in, struct jwl_map *map, struct jwl_msg *out,
         return fail(err, id, JWL_ERROR_INVALID_METHOD, "%s@%u: since version %u, bound at %u",
                     where, id, sig.since, out->version);
     struct dec d = { .map = map, .err = err, .p = p + 8, .end = p + size, .in = in,
-                     .hat = in->hat, .id = id, .where = where };
+                     .hat = in->hat, .id = id, .where = where, .version = out->version };
     for (unsigned i = 0; i < sig.n; i++) {
-        const struct jwl_interface *t = out->msg->types ? out->msg->types[i] : NULL;
-        st = dec_arg(&d, sig.type[i], sig.nullable[i], t, &out->args[i]);
+        st = dec_arg(&d, &sig, i, out->msg->types, out->args);
         if (st != OK)
             return st;
     }
     if (d.p != d.end)
         return bad(&d, "bytes past the last argument");
-    st = commit_new_ids(&d, &sig, out);
+    st = commit_new_ids(&d, out->dead_target);
     if (st != OK)
         return st;
     out->nargs = (uint16_t)sig.n;
@@ -397,7 +417,7 @@ status_t jwl_decode(struct jwl_in *in, struct jwl_map *map, struct jwl_msg *out,
 
 /* Bytes argument a takes on the wire (0 for a handle); -1 if it doesn't
  * fit its letter. */
-static long arg_size(char type, bool nullable, bool typed, const union jwl_arg *a)
+static long arg_size(char type, bool nullable, const union jwl_arg *a)
 {
     size_t len;
     switch (type) {
@@ -413,12 +433,7 @@ static long arg_size(char type, bool nullable, bool typed, const union jwl_arg *
     case 'o':
         return a->o || nullable ? 4 : -1;
     case 'n':
-        if (typed)
-            return a->n ? 4 : -1;
-        if (!a->any.iface || !a->any.id || !a->any.version || a->any.version > a->any.iface->version)
-            return -1;
-        len = strnlen(a->any.iface->name, JWL_STRING_MAX) + 1;
-        return len > JWL_STRING_MAX ? -1 : 12 + (long)padded((uint32_t)len);
+        return a->n ? 4 : -1;
     case 'h':
         return a->h != HANDLE_INVALID ? 0 : -1;
     }
@@ -434,26 +449,17 @@ static uint8_t *put_bytes(uint8_t *p, const void *src, uint32_t len)
     return p + 4 + padded(len);
 }
 
-static uint8_t *put_arg(uint8_t *p, char type, bool typed, const union jwl_arg *a)
+static uint8_t *put_arg(uint8_t *p, char type, const union jwl_arg *a)
 {
     switch (type) {
     case 's':
         return a->s ? put_bytes(p, a->s, (uint32_t)strlen(a->s) + 1) : put_bytes(p, NULL, 0);
     case 'a':
         return put_bytes(p, a->a.data, a->a.size);
-    case 'n':
-        if (!typed) {
-            p = put_bytes(p, a->any.iface->name, (uint32_t)strlen(a->any.iface->name) + 1);
-            wr32(p, a->any.version);
-            wr32(p + 4, a->any.id);
-            return p + 8;
-        }
-        wr32(p, a->n);
-        return p + 4;
     case 'h':
         return p;
     }
-    wr32(p, a->u);   /* i, u, f, o share the word */
+    wr32(p, a->u);   /* i, u, f, o and n share the word */
     return p + 4;
 }
 
@@ -466,8 +472,7 @@ status_t jwl_encode(struct jwl_out *out, const struct jwl_message *m, uint32_t i
     size_t size = 8;
     unsigned nh = 0;
     for (unsigned i = 0; i < sig.n; i++) {
-        bool typed = m->types && m->types[i];
-        long n = arg_size(sig.type[i], sig.nullable[i], typed, &args[i]);
+        long n = arg_size(sig.type[i], sig.nullable[i], &args[i]);
         if (n < 0)
             return ERR_INVALID_ARGS;
         size += (size_t)n;
@@ -482,7 +487,7 @@ status_t jwl_encode(struct jwl_out *out, const struct jwl_message *m, uint32_t i
     wr32(p + 4, (uint32_t)size << 16 | opcode);
     p += 8;
     for (unsigned i = 0; i < sig.n; i++) {
-        p = put_arg(p, sig.type[i], m->types && m->types[i], &args[i]);
+        p = put_arg(p, sig.type[i], &args[i]);
         if (sig.type[i] == 'h')
             out->h[out->nh++] = args[i].h;
     }
