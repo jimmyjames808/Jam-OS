@@ -436,6 +436,18 @@ bool t_jwl_conn_new_ids(void);
 bool t_jwl_fuzz_decode(void);
 bool t_jwl_fuzz_conn(void);
 
+/* jwlc_window.c, jwlc_seat.c and jwlc_reconnect.c, over the fake
+ * compositor of jwlc_fake.c (jwlcfake.h): libjwl's client side
+ * (<jwl_client.h>). */
+bool t_jwlc_setup(void);
+bool t_jwlc_window(void);
+bool t_jwlc_window_sizes(void);
+bool t_jwlc_keyboard(void);
+bool t_jwlc_pointer(void);
+bool t_jwlc_reconnect(void);
+bool t_jwlc_protocol_error(void);
+bool t_jwlc_blocking(void);
+
 /* comp.c, comp_bad.c: bin/compositor headless, driven by Wayland clients
  * over real channels (comptest.h). */
 bool t_comp_globals(void);
