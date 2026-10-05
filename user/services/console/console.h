@@ -131,6 +131,13 @@ bool screen_init(void);
 bool screen_alloc(void);
 /* Draw the cells that changed since the last render. */
 void render(void);
+/* What the screen shows now, cell by cell: show(x, y, cell, inverted)
+ * for each of the rows x cols cells (the scrollback's view and the
+ * current line, or the alternate screen); inverted: the cursor. */
+void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv));
+/* The 8x16 bits of cell c's glyph, one byte a row, the leftmost pixel
+ * the top bit: the font's, or block (filled) for a block element. */
+const uint8_t *cell_bits(struct cell c, uint8_t block[GH]);
 /* Quiet (the boot splash is coming, init's argument "quiet"): draw nothing
  * until a lent screen comes back, or until `until` (uptime ns) if nobody
  * borrows it, so the kernel's dark splash background stays up with no

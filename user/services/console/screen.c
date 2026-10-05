@@ -39,6 +39,21 @@ static uint8_t *shadow_cursor;     /* rows * cols: drawn inverted */
 static uint64_t quiet_until;       /* uptime ns: draw nothing before it (0: not quiet) */
 static bool blanked;               /* console.blank: draw nothing at all */
 
+const uint8_t *cell_bits(struct cell c, uint8_t block[GH])
+{
+    if (c.ch >= G_UPPER && c.ch <= G_DARK) {   /* the block elements */
+        static const uint8_t shade[3][2] = { { 0x88, 0x22 }, { 0xaa, 0x55 }, { 0x77, 0xdd } };
+        for (int i = 0; i < GH; i++)
+            block[i] = c.ch == G_UPPER ? (i < GH / 2 ? 0xff : 0)
+                     : c.ch == G_LOWER ? (i >= GH / 2 ? 0xff : 0)
+                     : c.ch == G_FULL  ? 0xff
+                                       : shade[c.ch - G_LIGHT][i & 1];
+        return block;
+    }
+    return c.ch >= G_LATIN && c.ch < G_LATIN + FONT_LATIN_N ? font_latin[c.ch - G_LATIN]
+                                                           : font_8x16[c.ch & 0x7f];
+}
+
 static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
 {
     uint32_t fg = native[c.attr & 15], bg = native[c.attr >> 4];
@@ -47,18 +62,8 @@ static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
         fg = bg;
         bg = t;
     }
-    const uint8_t *g = c.ch >= G_LATIN && c.ch < G_LATIN + FONT_LATIN_N
-                           ? font_latin[c.ch - G_LATIN] : font_8x16[c.ch & 0x7f];
     uint8_t block[GH];
-    if (c.ch >= G_UPPER && c.ch <= G_DARK) {   /* the block elements */
-        static const uint8_t shade[3][2] = { { 0x88, 0x22 }, { 0xaa, 0x55 }, { 0x77, 0xdd } };
-        for (int i = 0; i < GH; i++)
-            block[i] = c.ch == G_UPPER ? (i < GH / 2 ? 0xff : 0)
-                     : c.ch == G_LOWER ? (i >= GH / 2 ? 0xff : 0)
-                     : c.ch == G_FULL  ? 0xff
-                                       : shade[c.ch - G_LIGHT][i & 1];
-        g = block;
-    }
+    const uint8_t *g = cell_bits(c, block);
     volatile uint32_t *row = fbp + (uint64_t)y * GH * (fbi.pitch / 4) + x * GW;
     for (int i = 0; i < GH; i++, row += fbi.pitch / 4) {
         uint8_t bits = g[i];
@@ -110,23 +115,12 @@ void screen_blank(bool on)
             fbp[(uint64_t)y * (fbi.pitch / 4) + x] = px;
 }
 
-void render(void)
+void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv))
 {
-    if (blanked) {
-        dirty = false;   /* nothing to draw until blank is off, which redraws it all */
-        return;
-    }
-    if (alt_on && alt_sync && now() - alt_sync_since < 250000000ull)
-        return;   /* mid-frame: stay dirty, draw once the frame is complete */
-    if (quiet_until && now() < quiet_until)
-        return;   /* stay dirty: drawn once the splash is done */
-    dirty = false;
-    if (!fbp || lease)
-        return;   /* no screen, or lent: drawn in full when it comes back */
     if (alt_on) {
         for (uint32_t y = 0; y < rows; y++)
             for (uint32_t x = 0; x < cols; x++)
-                show_cell(x, y, alt[y * cols + x], alt_cursor && x == alt_x && y == alt_y);
+                show(x, y, alt[y * cols + x], alt_cursor && x == alt_x && y == alt_y);
         return;
     }
     struct cell empty = { ' ', A_OUT };
@@ -146,8 +140,24 @@ void render(void)
             l = line(i);
         }
         for (uint32_t x = 0; x < cols; x++)
-            show_cell(x, y, l ? l[x] : empty, cursor_row && x == cur_x);
+            show(x, y, l ? l[x] : empty, cursor_row && x == cur_x);
     }
+}
+
+void render(void)
+{
+    if (blanked) {
+        dirty = false;   /* nothing to draw until blank is off, which redraws it all */
+        return;
+    }
+    if (alt_on && alt_sync && now() - alt_sync_since < 250000000ull)
+        return;   /* mid-frame: stay dirty, draw once the frame is complete */
+    if (quiet_until && now() < quiet_until)
+        return;   /* stay dirty: drawn once the splash is done */
+    dirty = false;
+    if (!fbp || lease)
+        return;   /* no screen, or lent: drawn in full when it comes back */
+    grid_walk(show_cell);
 }
 
 bool screen_init(void)
