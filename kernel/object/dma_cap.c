@@ -226,9 +226,8 @@ static bool take_domain_away(struct pci_dev *d, struct q_batch *b)
         return true;
     }
     if (!b->unconfirmed)
-        report("dma: %02x:%02x.%x: the IOMMU did not confirm that a closed dma_cap's domain is "
-               "gone (%d): its %lu page%s held, tried again every second", BDF(d), st,
-               b->pages, plural(b->pages));
+        report("dma: %02x:%02x.%x: the IOMMU didn't confirm a closed dma_cap's domain gone (%d): "
+               "%lu page%s held, retried every second", BDF(d), st, b->pages, plural(b->pages));
     b->unconfirmed = true;
     return false;
 }

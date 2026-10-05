@@ -1134,7 +1134,12 @@ out for troubleshooting.
   Faults are reported, not acted on: no driver is stopped or restarted
   for one (a fault is a driver bug or an attack, better seen than hidden).
   The thread also looks at every unit once a second, for a fault that
-  raised no interrupt.
+  raised no interrupt. Faults that can't be muted (an interrupt's, or a
+  DMA from a requester id no function has: a driver can point its
+  device's every write at the interrupt window) have a storm guard
+  instead: past 32 fault interrupts in 100 ms the unit's fault interrupt
+  is masked, and the thread polls the unit every 10 ms until a look finds
+  nothing new, then unmasks it, so a storm costs at most that.
 - **The boot handover**, right after PCI enumeration and before resources
   and user space, so no driver ever runs without it. Before the memory
   managers start, an RMRR in RAM the memory map calls usable is made

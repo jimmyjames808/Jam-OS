@@ -439,6 +439,53 @@ KTEST(vtd_unit_many_cpus_at_once)
     KT_ASSERT(stat(&u->stats.submissions) - s0 >= (uint64_t)n * MANY_ROUNDS);
 }
 
+/* A storm of fault events (each refused descriptor raises one, 7.3: the
+ * fastest real source QEMU has; a device's blocked DMA or interrupt
+ * writes are the same interrupt) doesn't take the fault interrupt's CPU:
+ * past VTD_STORM_IRQS in a window the interrupt is masked, the log thread
+ * polls the unit instead, and unmasks it once the faults stop. Review
+ * finding 2. */
+#define STORM_EVENTS 1500
+
+KTEST(vtd_unit_fault_storm_masked)
+{
+    NEED_UNIT(u);
+    if (!__atomic_load_n(&u->fault_on, __ATOMIC_ACQUIRE)) {
+        kprintf("ktest %s: no fault interrupt, skipped\n", ktest_current);
+        return;
+    }
+    struct vtd_desc bad = { 0xf, 0 };   /* type 0xf: refused (Table 23) */
+    uint64_t i0 = stat(&u->stats.fault_irqs), r0 = stat(&u->stats.refused);
+    uint64_t t0 = uptime_ns();
+    uint32_t io = 0;
+    for (uint32_t i = 0; i < STORM_EVENTS; i++)
+        io += vtd_qi_submit(u, &bad, 1) == ERR_IO;
+    uint64_t ms = (uptime_ns() - t0) / NS_PER_MS;
+    uint64_t irqs = stat(&u->stats.fault_irqs) - i0;
+    /* Quiet again: unmasked within a few of the log thread's looks. */
+    uint64_t end = uptime_ns() + kt_patience_ms(1000) * NS_PER_MS;
+    while ((vtd_rd32(u, VTD_FECTL) & VTD_FECTL_IM) && uptime_ns() < end)
+        thread_sleep_ms(2);
+    bool unmasked = !(vtd_rd32(u, VTD_FECTL) & VTD_FECTL_IM);
+    /* And a single event is an interrupt again. */
+    uint64_t i1 = stat(&u->stats.fault_irqs);
+    KT_EQ(vtd_qi_submit(u, &bad, 1), ERR_IO);
+    end = uptime_ns() + kt_patience_ms(1000) * NS_PER_MS;
+    while (stat(&u->stats.fault_irqs) == i1 && uptime_ns() < end)
+        thread_sleep_ms(1);
+    bool heard = stat(&u->stats.fault_irqs) > i1;
+    kprintf("ktest %s: %u refused descriptors in %lu ms: %lu fault interrupt(s); unmasked "
+            "after: %s; the next event heard: %s\n", ktest_current, STORM_EVENTS, ms, irqs,
+            unmasked ? "yes" : "NO", heard ? "yes" : "NO");
+    KT_EQ(io, STORM_EVENTS);
+    KT_EQ(stat(&u->stats.refused), r0 + STORM_EVENTS + 1);
+    /* Without the guard nearly every event is an interrupt. With it, at
+     * most VTD_STORM_IRQS per window, and a masked unit stays masked for at least the poll. */
+    KT_ASSERT(irqs < STORM_EVENTS / 2);
+    KT_ASSERT(unmasked);
+    KT_ASSERT(heard);
+}
+
 KTEST(vtd_unit_queue_off_and_on)
 {
     KT_SKIP_LIVE("turns the unit's queue off for a moment");

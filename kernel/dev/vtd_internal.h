@@ -22,7 +22,8 @@
  *   - the fault event interrupt (vtd_fault.c, VT-d 7.3): its handler copies
  *     each fault record into a ring and clears it; a kernel thread logs
  *     them ("vtd: fault: ..."), counts them per device, and puts the first
- *     per device in the RESULTS box.
+ *     per device in the RESULTS box. A storm of them masks the interrupt
+ *     and the thread polls instead (VTD_STORM_*).
  * Translation is not turned on here; interrupt remapping is vtd_irq.c's.
  *
  * Locks, in order: "vtd queue" (one per unit: the queue's tail, slots and
@@ -118,7 +119,19 @@ struct vtd_unit_stats {
     uint64_t fault_irqs;    /* fault event interrupts taken */
     uint64_t faults;        /* fault records read */
     uint64_t faults_lost;   /* overflow (PFO), or the ring was full */
+    uint64_t storms;        /* times the storm guard masked the fault interrupt */
 };
+
+/* The fault storm guard (vtd_fault.c): no fault is legitimate, but one
+ * that can't be muted in a context entry (an interrupt's, or a DMA from a
+ * requester id no function has) could otherwise be raised forever, one
+ * interrupt each. Past VTD_STORM_IRQS fault event interrupts within
+ * VTD_STORM_WINDOW_NS, the interrupt is masked and the log thread polls
+ * the unit every VTD_STORM_POLL_NS instead (one record and the overflow
+ * per look); once a look finds no new fault it is unmasked. */
+#define VTD_STORM_IRQS      32
+#define VTD_STORM_WINDOW_NS (100 * NS_PER_MS)
+#define VTD_STORM_POLL_NS   (10 * NS_PER_MS)
 
 /* One fault record as the handler copied it (FRCD, 11.4.7.6). */
 struct vtd_fault_rec {
@@ -154,10 +167,18 @@ struct vtd_unit {
     bool              fault_on;     /* the interrupt is routed (release/acquire) */
     uint32_t          fault_cpu;    /* where the fault event interrupt goes */
     uint8_t           fault_vec;
-    spinlock_t        ring_lock;    /* "vtd fault ring": ring, rhead, rtail, inv_errs */
+    spinlock_t        ring_lock;    /* "vtd fault ring": ring, rhead, rtail, inv_errs, storm_*,
+                                     * and FECTL's mask once the unit is started */
     struct vtd_fault_rec ring[VTD_FAULT_RING];
     uint32_t          rhead, rtail; /* records [rhead, rtail) wait for the log thread */
     uint32_t          inv_errs;     /* FSTS IQE/ICE/ITE seen by the handler, for the thread */
+    /* The storm guard (ring_lock). */
+    uint64_t          storm_window; /* when the current count began */
+    uint32_t          storm_irqs;   /* fault event interrupts since then */
+    bool              storm_masked; /* the guard masked the interrupt (also read lock-free) */
+    uint64_t          storm_look;   /* the log thread's last look at a masked unit */
+    uint64_t          storm_seen;   /* faults read and lost at that look */
+    uint64_t          storms_said;  /* storms the log thread has said (the thread's) */
 
     struct vtd_unit_stats stats;
 };
