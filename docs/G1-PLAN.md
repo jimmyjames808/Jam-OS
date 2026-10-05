@@ -1084,6 +1084,46 @@ at the output's size from integer arithmetic with an 8x8 ordered dither
 compare every pixel against a reference painter of their own, and
 `tools/comp-check.py` paints the same look to check QEMU's screen.
 
+**As built: D2a, the desktop (the compositor's side).** Everything in
+"The look" above but the plumbing, in `user/services/compositor/` with
+`desk.h` as its map: virtual screens (`screens.c`: a slot pool in order,
+a window's screen on its `wm_window`, other screens' windows unmapped so
+the seat never sees them; tiling and floating per screen), the animations
+(`anim.c` the clock and ends, one at a time, interrupted ones jump to
+their end; `animdraw.c` a snapshot of the window drawn bilinearly scaled;
+slides move the windows themselves by `slide_x`), the strip (`strip.c`
+laid out only when something on it changed, `stripdraw.c`), the search
+box and Alt+Tab (`menus.c`, `menudraw.c`), popovers and notifications
+(`popover.c`, `notify.c`, `popdraw.c`), the frosting (`frost.c`: the
+strip's blurred wallpaper made once; each card's backdrop composed under
+it and blurred, three box blurs, only when the card opens or something
+behind it is damaged: the scene's `under` damage), `ui.c`'s drawing,
+`deskpaint.c` the layers in a paint, `desk.c` the keys, presses, clock and
+hooks. Windows never go under the strip: the room below it starts 6
+pixels down in every arrangement. The `nodesk` argument turns it all off
+(the window manager alone: tests that check windows' places use it); the
+test scene turns it on with `desktop` (`testdesk.c`). The cursors (the
+owner's set, `docs/design/cursors.svg`) are drawn on the Mac at build time
+by `tools/cursorgen.c` into a table the compositor links (drawing them at
+start took seconds of QEMU's emulated CPU); `build/cursors.png` shows them.
+Clients ask for one by name with wp-cursor-shape-v1 (vendored from
+wayland-protocols 1.49; `tools/genwl.py` takes its tablet argument
+untyped). Hooks for D2b, weak in `desk.c` until it defines them (comp.h):
+`void ctl_launch(const char *app)`, `void ctl_run_in_terminal(const char
+*cmd)`, `void ctl_notify_answered(uint32_t id, uint32_t button)`, `bool
+ctl_volume(uint32_t *percent)`, `void ctl_set_volume(uint32_t percent)`,
+`bool ctl_audio_output(char *buf, size_t n)`, `bool ctl_now_playing(char
+*buf, size_t n)`, `bool ctl_network(struct desk_net *out)`; and the way in
+for notices, `uint32_t notify_post(const struct notify_spec *n)` and
+`notify_withdraw(id)` (desk.h). Memory at 2560x1440, beyond D1's
+wallpaper: the strip's picture 400 KiB, eight baked fonts about 0.7 MiB,
+the blur's line buffers 80 KiB, the cards' backdrops kept once made (about
+1 MiB for the search box, 256 KiB a popover, 768 KiB five notifications,
+1.5 MiB a full Alt+Tab list), a snapshot while an animation runs (its
+window's frame: 4 MiB for 1280x800, 14 MiB maximised; none if there is no
+memory: the animation is skipped), the cursor set 119 KiB of read-only
+data; nothing from the 16 MiB heap but a few KiB of state.
+
 **Order and parallel work:**
 
 1. After the owner's answers: **P0, W1, W2, K1 and KM** together (P0 goes

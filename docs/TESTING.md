@@ -310,9 +310,9 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   `/svc/wayland` for programs are not wired yet, so the keys still go to
   the first terminal.
 - `comptest`: init starts only the compositor, on the screen, running its
-  test scene (`user/services/init/comptest.c`): three steps of windows
-  held 4 s each, then its `compositor: bench:` lines; the RESULTS box says
-  how it ended (`tools/comp-test.sh`).
+  test scene (`user/services/init/comptest.c`): three steps of windows and
+  two of the desktop held 4 s each, then its `compositor: bench:` lines;
+  the RESULTS box says how it ended (`tools/comp-test.sh`).
 - `reset=cf9`, `reset=8042`, `reset=triple`: the firmware reset
   (`reboot -f`, and every other reset through the firmware) starts its
   list of methods there instead of at the ACPI reset register
@@ -741,7 +741,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/apps-test.sh <outdir>` | snake, mines and sysmon (`apps.txt`), with a USB mouse; `APPS_HD=1` runs at 2560x1440 |
 | `tools/jamjar-test.sh <outdir>` | jamjar (`jamjar.txt`), with a USB keyboard and mouse and an hda-output capture, on a library the script makes (six made-up stereo songs as MP3 under owner-style UTF-8 names with made-up covers in their tags, drawn with Python's PIL; a calibration track, 1 kHz on the left and 4 kHz on the right; two MP3s with a bad cover); it checks the calibration shot's bars with PIL; `JAMJAR_HD=1` runs `jamjar-hd.txt` at 2560x1440; screenshots `jamjar-*.png` |
 | `tools/jamjar-covers-test.sh <outdir>` | jamjar's now-playing cover at 2560x1440 (`jamjar-covers.txt`), on 32 made-up albums of two MP3s, each with a teal PNG cover in its tag: every shot of now playing must show the cover's teal, not a jar label |
-| `tools/comp-test.sh <outdir>` | the compositor on QEMU's framebuffer (`comptest`): a screenshot of each of its test scene's steps (opaque floating windows on the wallpaper, a translucent one over them, the arrow on the first's circles; one moved, a tiled window's look, one raised, no arrow; a full-screen window copied straight from its buffer) compared by `tools/comp-check.py` with the steps the log describes, painted from scratch with the look's numbers (wallpaper, shadows, title bars, outlines, borders, rounded corners: every third pixel each way; the titles' text found in their bars, each circle's colour or symbol where it is all circle); prints the compositor's `bench:` lines (frame costs: QEMU's only show the code runs) |
+| `tools/comp-test.sh <outdir>` | the compositor on QEMU's framebuffer (`comptest`): a screenshot of each of its test scene's steps (opaque floating windows on the wallpaper, a translucent one over them, the arrow on the first's circles; one moved, a tiled window's look, one raised, no arrow; a full-screen window copied straight from its buffer; the desktop: the top bar with three toplevels' chips (one focused, one minimised), the clock's popover, a notification with buttons and the hand on a chip; then the search box with "te" typed) compared by `tools/comp-check.py` with the steps the log describes, painted from scratch with the look's numbers (wallpaper, shadows, title bars, outlines, borders, rounded corners: every third pixel each way; the titles' text found in their bars, each circle's colour or symbol where it is all circle; the arrow where it is all fill; the strip's frosting and islands pixel for pixel, the lit dot and chip, no toplevel under the strip, the popover 2 pixels under it with its right edge on its icon's, the calendar's today, the notification's tile and buttons, the search box's letter tiles, from the layout the test scene logs); prints the compositor's `bench:` lines (frame costs: QEMU's only show the code runs) |
 | `tools/mouse-test.sh <outdir>` | the mouse end to end (`mouse.txt`): QEMU's monitor moves and clicks a USB mouse, driven in the report protocol (its descriptor has a wheel); `MOUSE_HIDBOOT=1` adds the boot word `hidboot` and checks the boot protocol instead; 1280x800 only (the clicks are at pixel positions) |
 | `tools/crash-test.sh <outdir> [name...]` | every crash test from the shell (`crash <name> yes`), each on a fresh boot; each panic starts the stored kernel, whose shell says what happened (`kexecbad`: refused, the panic screen stays up; `kexecstall`, `kexecfault`: a firmware reset) |
 | `tools/kdump-test.sh <outdir> [case...]` | a panic starts the stored kernel, each case a fresh boot of a stick image read afterwards with mtools: `save` (`crash panic yes`: no panic screen, the next boot comes up on every CPU, saves `/data/logs/boot-0001-crash.txt` with the panic and the lines before it, logs to `boot-0002` and its shell says so), `loop` (`crashtest=lockorder`: the next boot panics at once, a crash loop, and halts on the red panic screen), `bad` (`crash kexecbad yes`: the damaged stored kernel is refused, red panic screen, nothing saved), `nostick` (the stick pulled first: the shell says the log was not saved and why), `screen` (with the splash: the screen as the next kernel starts is all the splash background) |
@@ -1108,6 +1108,39 @@ every pixel it knows is compared exactly
 hit boxes (to the pixel) and click each circle; `wm_states` makes a
 window full screen by a double-click on its title bar.
 `tools/comp-test.sh` checks the same look on QEMU's screen.
+
+## The desktop
+
+The top bar, virtual screens, minimising, Alt+Tab, the search box,
+popovers, notifications, animations and cursors
+(`user/services/compositor/desk.h`; the owner's picks in
+[G1-PLAN](G1-PLAN.md#questions-for-the-owner), "The look"). In utest
+(the `init` run), its logic is linked in on the window manager's harness
+(`user/tests/utest/compwm.h`: the seat played by the test, fake
+toplevels), the desktop on, no animations unless a test turns them on, the
+clock fixed (`user/tests/utest/compdesk.c`, `compdesk2.c`):
+
+| Test | What it checks |
+|---|---|
+| `desk_screens` | one screen at the start; Super+Right past the last makes one and an empty one left behind goes; Super+1..9; each screen's own arrangement (Super+T on the current one, new screens take it); Super+Shift+Right/Left move the focused window, making a screen and dropping the one left empty |
+| `desk_fullscreen` | full screen on a screen of its own right of its home, no strip, the whole output; back home, its screen gone; closed while full screen; a new window while a full-screen screen is current opens on the normal one left of it |
+| `desk_minimise` | hidden, its chip dimmed, the focus moved on; its screen stays; Alt+Tab's way and a chip bring it back focused (from another screen too); a chip click minimises the focused window; in tiling the others take its tile |
+| `desk_room` | no window under the strip and its 6-pixel gap: first places, the cascade, a drag up, a maximise, every tile, tiling's maximise; full screen has all of the output; with the desktop off all of it is the windows' |
+| `desk_strip` | the islands' places and items ("Jam OS", dots, "+", chips, icons, the clock "Mon 5 Oct  14:32"), the focused chip lit; each item's click |
+| `desk_cursors` | the cursor set's pictures at known pixels and hot spots, busy's arc turning; the resize arrows on each edge and corner, the hand on circles, islands and rows; busy from a launch until the app's first window or 10 s |
+| `desk_anim` | open, minimise, restore and close end exactly where the change ends (mapped or not, drawn as itself, the snapshot freed); a key mid-way jumps to the end; a frame damages only its boxes; a slide offsets both screens' windows and ends at 0 with the old screen's unmapped |
+| `desk_alttab` | the order (this screen's windows most recently focused first, other screens grouped, minimised last); Tab, Shift+Tab, wrapping; letting go of Alt goes there (its screen, restored); Esc cancels; the list shows after 120 ms |
+| `desk_search` | Super tapped alone (not with another key or a click) toggles it; typing filters, the run row; arrows, Backspace; Enter runs the app (`ctl_launch`) or the command (`ctl_run_in_terminal`); a click on a row; its place |
+| `desk_popover` | each popover 2 pixels under the strip, its right edge on its icon's, one at a time, closed by its icon, Esc or a click elsewhere; the volume slider by a click and a drag; the calendar Monday first (leap years) |
+| `desk_notify` | cards stacked from under the strip, the newest on top; the plain one goes after 5 s, the one with buttons stays until a button (`ctl_notify_answered`); a click sends a plain card; at most 5 |
+
+With the real seat (`user/tests/utest/compwmseat.c`, bin/compositor
+headless), `wm_seat_cursors` checks the cursor drawn over a window's edges,
+corner and circles, and pixel for pixel over its surface, and a client
+asking for the text bar and the hand through wp-cursor-shape-v1 (a stale
+serial ignored, a shape there isn't an error). The other compositor tests
+that start it headless pass `nodesk` (`comptest.h`): the window manager
+alone, the whole output the windows'.
 
 ## The other tools
 

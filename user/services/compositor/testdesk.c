@@ -230,6 +230,13 @@ static void damage_behind_search(void)
     scene_damage(search_box());
 }
 
+static struct comp_box anim_box;   /* a minimising window's picture, at full size */
+
+static void damage_anim(void)
+{
+    scene_damage_over(anim_box);
+}
+
 static void desk_bench(void)
 {
     if (!desk_on())
@@ -239,6 +246,15 @@ static void desk_bench(void)
         search_toggle();
     testscene_bench("the search box, blurred again", damage_behind_search);
     search_close();
+    if (!ntops || !tops[0].ww->win)
+        return;
+    /* the first frame of a minimise: the window's snapshot at full size,
+     * sampled and laid over the strip's layer, every pixel */
+    anim_init(true);
+    anim_minimise(tops[0].ww->win, strip_chip_box(tops[0].ww));
+    anim_box = window_frame(tops[0].ww->win);
+    testscene_bench("a minimising window's picture", damage_anim);
+    anim_init(false);
 }
 
 int testdesk_command(const char *c)

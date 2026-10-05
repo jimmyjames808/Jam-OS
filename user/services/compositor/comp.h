@@ -30,7 +30,10 @@
  *   testscene.c windows of known pixels with no client (a test power);
  *   paint.h     what those share.
  * Later tracks: xdg-shell and window management (xdg.c, wm.c, deco.c), the
- * seat and compctl (seat.c, keyboard.c, pointer.c, focus.c, sources.c).
+ * seat and compctl (seat.c, keyboard.c, pointer.c, focus.c, sources.c,
+ * shapes.c), the cursor set (cursors.c, drawn by tools/cursorgen.c), and the
+ * desktop around the windows: virtual screens, the top bar, the menus,
+ * popovers, notifications, animations and frosting (desk.h has its files).
  *
  * The model:
  *   - a client is one connection (struct comp_client); everything it made
