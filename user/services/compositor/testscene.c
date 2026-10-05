@@ -236,9 +236,13 @@ static void bench_line(const char *what, uint64_t *ns, unsigned n, uint64_t px)
             ns[j] = ns[j - 1];
             ns[j - 1] = x;
         }
-    printf("compositor: bench: %-46s median %6lu us  worst %6lu us  %8lu px\n", what,
-           (unsigned long)(ns[n / 2] / 1000), (unsigned long)(ns[n - 1] / 1000),
-           (unsigned long)px);
+    /* Into the RESULTS box too: the PC's comptest boot has no log on a stick. */
+    char line[128];
+    int len = snprintf(line, sizeof(line),
+                       "compositor: bench: %-30s median %5lu us worst %5lu us %7lu px", what,
+                       (unsigned long)(ns[n / 2] / 1000), (unsigned long)(ns[n - 1] / 1000),
+                       (unsigned long)px);
+    (void)jam_debug_report(line, (uint64_t)(len < (int)sizeof(line) ? len : (int)sizeof(line) - 1));
 }
 
 /* One kind of frame, BENCH_SAMPLES times: damage() before each paint. */
@@ -278,7 +282,7 @@ static bool bench_run(void)
     if (!add_window((struct comp_box){ 0, 0, w, h }, opaque, (uint32_t)w, false))
         return false;
     bench_box = (struct comp_box){ 0, 0, w, h };
-    bench_frames("full screen, one opaque window (direct)", damage_box);
+    bench_frames("full screen, opaque (direct)", damage_box);
     int32_t ww = w < 1280 ? w * 3 / 4 : 1280, wh = h < 800 ? h * 3 / 4 : 800;
     struct comp_box at = { (w - ww) / 2, (h - wh) / 2, (w + ww) / 2, (h + wh) / 2 };
     struct twin *t = add_window(at, argb, (uint32_t)w, true);
@@ -286,13 +290,13 @@ static bool bench_run(void)
         return false;
     apply_flags(t, "tf");
     cursor_show(true);
-    bench_frames("full screen, argb window over it, cursor", damage_box);
+    bench_frames("full screen, argb window on it", damage_box);
     bench_box = window_frame(t->s.window);
     char what[64];
-    snprintf(what, sizeof(what), "%dx%d argb window over an opaque one", ww, wh);
+    snprintf(what, sizeof(what), "%dx%d argb over opaque", ww, wh);
     bench_frames(what, damage_box);
     bench_box = (struct comp_box){ 0, h / 2, w, h / 2 + 16 };
-    bench_frames("one line of text (full width, 16 rows)", damage_box);
+    bench_frames("a text line (full width x 16)", damage_box);
     bench_frames("the pointer moved", damage_pointer);
     return true;
 }
