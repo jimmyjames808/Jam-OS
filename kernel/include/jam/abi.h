@@ -111,6 +111,22 @@ struct port_packet {
 #define PORT_BIND_ONCE       0   /* fire once, then the binding is gone */
 #define PORT_BIND_PERSISTENT 1   /* fire on every not-matching -> matching edge */
 
+/* VMOs ------------------------------------------------------------------------
+ * vmo_create flags. Bits 0 and 1 (physically contiguous, below 4 GiB) are
+ * for drivers: <jam/driver.h>'s DRV_VMO_*. */
+
+/* Pages that stay. Every page is committed at creation and charged to the
+ * creator's job (vmo_create fails with ERR_NO_MEMORY, nothing made, if the
+ * job can't pay for all of them), and no holder of any handle can ever
+ * take one away: vmo_decommit and a shrinking vmo_set_size are
+ * ERR_BAD_STATE, and a growing vmo_set_size commits the new pages before
+ * it returns (ERR_NO_MEMORY with the size unchanged if they can't all be
+ * had). For memory a process reads that a less trusted one gave it (a
+ * Wayland client's pool, read by the compositor through VMAR_KEPT_ONLY).
+ * Not together with the drivers' bits (ERR_INVALID_ARGS). There is no
+ * clone or copy-on-write child of a VMO, of this kind or any other. */
+#define VMO_KEEP_PAGES (1u << 2)
+
 /* address spaces ------------------------------------------------------------
  * vmar_map / vmar_protect flags. Same values as ASPACE_* in <jam/aspace.h>
  * (checked at compile time in kernel/abi/abi_check.c). */
@@ -119,6 +135,16 @@ struct port_packet {
 #define VMAR_WRITE (1u << 1)
 #define VMAR_EXEC  (1u << 2)   /* never together with VMAR_WRITE */
 #define VMAR_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
+/* vmar_map only: map a VMO_KEEP_PAGES VMO (ERR_WRONG_TYPE for any other
+ * VMO) read-only (VMAR_READ, maybe VMAR_FIXED; ERR_INVALID_ARGS for any
+ * other permission), with every page-table entry filled before the call
+ * returns, so no access through the mapping ever faults, whatever the
+ * VMO's other holders do. The page tables are charged to the mapper's job
+ * then: a refused charge fails the map (ERR_NO_MEMORY, nothing left
+ * mapped), never a later access. The mapping's permissions never change
+ * (vmar_protect: ERR_ACCESS_DENIED), and its length is what was mapped: a
+ * VMO that grows later is mapped again to reach the new pages. */
+#define VMAR_KEPT_ONLY (1u << 4)
 
 /* jobs ---------------------------------------------------------------------
  * Every process belongs to a job. A job has a limit on each resource below
