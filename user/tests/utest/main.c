@@ -912,6 +912,7 @@ static const struct {
     { "fun_window_present", t_fun_window_present },
     { "fun_window_input", t_fun_window_input },
     { "fun_window_reconnect", t_fun_window_reconnect },
+    { "fun_screen_close_frees", t_fun_screen_close_frees },
     { "fun_window_resize", t_fun_window_resize },
     { "comp_globals", t_comp_globals },
     { "comp_surface", t_comp_surface },

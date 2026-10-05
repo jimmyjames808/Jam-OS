@@ -9,8 +9,8 @@
  *   A. the command ring (CORB) pointed at an address the driver did not
  *      pin. With per-device translation the read is blocked (a fault
  *      naming the controller, 00:1f.3 on the PC), so no codec answers;
- *      without it (pass-through, or iommu=off) the controller reads the
- *      address and a codec answers.
+ *      without it (iommu=off, or no unit covers the controller) it reads
+ *      the address and a codec answers.
  *   B. only when A was blocked: the response ring (RIRB) pointed at the
  *      interrupt window 0xfee00000, and a command sent so the controller
  *      writes a response there. With interrupt remapping on, that write is
@@ -28,7 +28,7 @@
  * read from the controller's own behaviour in phase A: the codec's answer
  * to the command in the unpinned page is compared with the answer the same
  * command got through the real rings just before. The same answer means
- * the read went through (iommu=off, or the device on pass-through): the
+ * the read went through (iommu=off, or no unit translates the device): the
  * checks say so and stop, since there is nothing to see in the fault log.
  *
  * Phase B is made only where an unblocked write would be harmless:
@@ -246,7 +246,7 @@ void hda_vtdtest(struct hda *h, unsigned cad)
     /* The RESULTS box and the log show about 120 characters of a line. */
     if (answered && got == expect) {
         drv_log("vtdtest: the controller read an unpinned page: its device is not translated "
-                "with only its pins mapped (iommu=off, or pass-through), so there is no fault "
+                "with only its pins mapped (iommu=off, or no unit covers it), so there is no fault "
                 "to provoke");
         drv_report("vtdtest: unpinned read at %#lx answered: DMA not restricted: skipped", scaddr);
         return;

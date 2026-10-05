@@ -19,9 +19,8 @@
  *     (iommu_domain_create, iommu_attach: kernel/object/dma_cap.c): what
  *     the cap pinned (vmo_pin's iommu_map) and the function's RMRRs.
  * A function's "home" is the blocking domain or its boot domain: where
- * iommu_detach puts it back. Each unit also has a PASS-THROUGH domain
- * (all of RAM, as without an IOMMU: iommu_device_driven); no driver's
- * function is put there any more, only the tests use it.
+ * iommu_detach puts it back. No function is ever given pass-through or
+ * all of RAM.
  *
  * IOVA = physical address: iommu_map maps each page at its own address
  * (docs/M11-PLAN.md, question 1), so a driver's numbers don't change.
@@ -55,7 +54,7 @@ void iommu_reserve_early(struct boot_info *bi);
 
 /* With `iommu=on`, after the units are started (vtd_units_start): every
  * started unit gets its tables (root, context entries for each function
- * it covers, the blocking, pass-through and boot domains) and translation
+ * it covers, the blocking and boot domains) and translation
  * on. A unit whose firmware (or a kexec'd kernel) left translation on is
  * taken over without turning it off. Problems go to the RESULTS box; a
  * unit that can't be set up is left as it was. Once, at boot, before user
@@ -87,19 +86,15 @@ bool iommu_translating(void);
  * each unit's context mutex while it reads. */
 void iommu_report(void);
 
-/* dev's context entry to its unit's pass-through domain (all of RAM). For
- * the tests only: a driver's function gets its dma_cap's own domain. OK at
- * once when dev isn't translated. ERR_TIMED_OUT, ERR_IO (the invalidation
- * failed: dev stays where it was). */
-status_t iommu_device_driven(struct pci_dev *dev);
-
 /* ---- domains (for dma_cap and vmo_pin) ---------------------------------------------- */
 
 /* A new, empty domain for dev on dev's unit (its own domain id and page
  * table, the table pages charged to job, which may be NULL), with dev's
  * RMRRs already mapped. Not attached. ERR_NOT_SUPPORTED (dev isn't
- * translated: no unit covers it, or iommu=off), ERR_NO_RESOURCES (no
- * domain id left), ERR_NO_MEMORY. */
+ * translated: no unit covers it, or iommu=off), ERR_ACCESS_DENIED (dev's
+ * requester id is shared with other functions, behind a PCIe-to-PCI or
+ * PCI bridge: its domain would be theirs too; logged),
+ * ERR_NO_RESOURCES (no domain id left), ERR_NO_MEMORY. */
 status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_domain **out);
 
 /* Free a domain no context entry names (detached, or never attached):

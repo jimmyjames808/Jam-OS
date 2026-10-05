@@ -43,7 +43,9 @@ status_t resource_pci_bar(struct kobject *dev, uint32_t bar, struct kobject **ou
  * them away, or quarantined without one, never dropped (see
  * kernel/object/dma_cap.c). job (may be NULL) is charged one handle unit
  * for the cap and a page for each of its domain's table pages.
- * ERR_INVALID_ARGS, ERR_ACCESS_DENIED (a bridge or display function),
+ * ERR_INVALID_ARGS, ERR_ACCESS_DENIED (a bridge or display function, or,
+ * while the IOMMU translates, one whose requester id other functions
+ * share),
  * ERR_NO_MEMORY, ERR_NO_RESOURCES (the unit has no domain id left),
  * ERR_TIMED_OUT / ERR_IO (the unit didn't confirm the switch).
  * Thread context, interrupts on, no spinlock held. */
