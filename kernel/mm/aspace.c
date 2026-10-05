@@ -686,6 +686,24 @@ static void map_undo(struct aspace *as, struct mapping *m)
     (void)maps_account(as, as->nmaps);   /* shrinking: can't fail */
 }
 
+/* A new mapping struct for aspace_map (not placed yet), or NULL. */
+static struct mapping *mapping_new(struct vmo *vmo, uint64_t vmo_off, uint64_t len,
+                                   unsigned flags)
+{
+    struct mapping *m = kzalloc(sizeof(*m));
+    if (!m)
+        return NULL;
+    unsigned perms = flags & PERMS;
+    m->vmo = vmo;
+    m->vmo_off = vmo_off;
+    m->len = len;
+    m->flags = perms;
+    m->kept = (flags & ASPACE_KEPT_ONLY) != 0;
+    /* A kept mapping stays as it is made: no CAN bits. */
+    m->max = m->kept ? perms : perms | ((flags >> CAN_SHIFT) & PERMS);
+    return m;
+}
+
 status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
                     unsigned flags, uint64_t *addr)
 {
@@ -704,16 +722,9 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
     if (st != OK)
         return st;
 
-    struct mapping *m = kzalloc(sizeof(*m));
+    struct mapping *m = mapping_new(vmo, vmo_off, len, flags);
     if (!m)
         return ERR_NO_MEMORY;
-    m->vmo = vmo;
-    m->vmo_off = vmo_off;
-    m->len = len;
-    m->flags = perms;
-    m->kept = (flags & ASPACE_KEPT_ONLY) != 0;
-    /* A kept mapping stays as it is made: no CAN bits. */
-    m->max = m->kept ? perms : perms | ((flags >> CAN_SHIFT) & PERMS);
 
     mutex_lock(&as->lock);
     struct list_node *pos = &as->maps;   /* insert after this */
