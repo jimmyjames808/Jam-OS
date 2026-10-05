@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Serve the Mac's build to the PC's `update` (docs/M9-PLAN.md, "update: a
-new build from the Mac"): build/jamos.elf, build/bootfs.img and their
-manifest, over UDP.
+new build from the Mac"): build/jamos.elf, build/bootfs.img, the boot menu
+boot/limine.conf and their manifest, over UDP.
 
-    update-server.py [--build DIR] [--port 5022] [--bind ADDR] [--client ADDR] [--key KEY]
-        serve DIR/jamos.elf and DIR/bootfs.img (default build/) until ^C,
-        each manifest signed with KEY (default ~/.config/jamos/update.key)
-    update-server.py --manifest KERNEL BOOTFS [--version V] [--git G] [--net N] [--key KEY]
-                     [--extra LINE]...
-        print the manifest of those two files and exit (signed with KEY if
-        one is given, else with a bare signature line: unsigned), with each
-        LINE as an extension line before the signature line
+    update-server.py [--build DIR] [--menu FILE | --no-menu] [--port 5022] [--bind ADDR]
+                     [--client ADDR] [--key KEY]
+        serve DIR/jamos.elf and DIR/bootfs.img (default build/) and the
+        boot menu FILE (default the repository's boot/limine.conf, which
+        `update -w` also writes to the stick) until ^C, each manifest
+        signed with KEY (default ~/.config/jamos/update.key)
+    update-server.py --manifest KERNEL BOOTFS [--menu FILE] [--version V] [--git G] [--net N]
+                     [--key KEY] [--extra LINE]...
+        print the manifest of those two files (and of the menu FILE: its
+        `menu` line) and exit (signed with KEY if one is given, else with a
+        bare signature line: unsigned), with each LINE as an extension line
+        before the signature line
     update-server.py --build-net BOOTFS
         print the boot image's network default ("vlan21", "untagged", or
         "unknown" for a build made before build.txt had one); exit 1 if
@@ -30,12 +34,17 @@ parser is user/lib/update.c):
     net <the build's network default: vlan<id> or untagged>
     kernel <size> <sha256>
     bootfs <size> <sha256>
+    menu <size> <sha256>          (an extension line: the boot menu)
     signature <128 hex digits>
 
 Format 2 is the stable base: a later build adds extension lines
 (`<key> [<value>]` before the signature line, signed with the rest), which
 an older build skips, or must-understand ones (`!<key> ...`), which it
 refuses ("needs a newer build"); so an old build can always be updated.
+`menu` is one: a build that knows it fetches the menu too and `update -w`
+writes it to the stick (if it passes the PC's check, which `make check`
+also runs on boot/limine.conf: build/host/menucheck; the server logs its
+verdict for each snapshot), an older build skips it.
 
 The signature is Ed25519's (RFC 8032) over every byte before its line, made
 by build/host/jamos-sign (tools/jamos-sign.c: the same Monocypher the PC
@@ -45,15 +54,15 @@ made once: `build/host/jamos-sign keygen` (after `make`).
 
 The protocol (user/include/updwire.h has the byte layout; every field is
 little-endian): a request names a snapshot, a file (0 the manifest, 1 the
-kernel, 2 the boot image), an offset and a length of at most 1400 bytes,
+kernel, 2 the boot image, 3 the boot menu), an offset and a length of at most 1400 bytes,
 and the manifest format the asking build reads (0 from builds older than
 that field: format 2); the reply carries the same, the file's size and
 the bytes. A new snapshot's manifest is made in the newest format the
 asker reads (FORMAT_MIN..FORMAT_MAX are made here; one older than
 FORMAT_MIN is refused, BAD, with a log line saying the build needs `make
 flash`), so a newer server always serves an older build. A request for
-the manifest with snapshot 0 makes a snapshot: both files read into memory
-then (read again if either changed while being read, so a `make` running
+the manifest with snapshot 0 makes a snapshot: the files read into memory
+then (read again if any changed while being read, so a `make` running
 meanwhile can't mix two builds), and every later request for that snapshot
 is answered from that copy. The server keeps the last SNAPSHOTS snapshots
 and nothing per client: a request for another snapshot gets GONE and the
@@ -88,12 +97,13 @@ PORT = 5022
 MAGIC = 0x4450554A          # "JUPD"
 VERSION = 1
 REQUEST, REPLY = 1, 2
-MANIFEST, KERNEL, BOOTFS = 0, 1, 2
+MANIFEST, KERNEL, BOOTFS, MENU = 0, 1, 2, 3
 OK, GONE, RANGE, BAD = 0, 1, 2, 3
 CHUNK_MAX = 1400
 REQ = struct.Struct("<IBBBBIIHH")           # 20 bytes
 REP = struct.Struct("<IBBBBIIIHH")          # 24 bytes, then the data
 FILE_MAX = 32 << 20                         # <update.h> UPDATE_FILE_MAX
+MENU_MAX = 64 << 10                         # <update.h> UPDATE_MENU_MAX
 MANIFEST_MAX = 1024
 FORMAT_MIN = FORMAT_MAX = 2                 # the manifest formats made here (<update.h>)
 SNAPSHOTS = 8
@@ -103,7 +113,12 @@ GIT_RE = re.compile(rb"[0-9a-f]{7,40}(-dirty)?$")
 SIG_RE = re.compile(rb"signature( [0-9a-f]{128})?$")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIGN_TOOL = os.path.join(REPO, "build/host/jamos-sign")
+MENU_TOOL = os.path.join(REPO, "build/host/menucheck")   # the PC's menu check (tools/menucheck.c)
 DEFAULT_KEY = os.path.expanduser("~/.config/jamos/update.key")
+DEFAULT_MENU = os.path.join(REPO, "boot/limine.conf")
+# What a stick has once `update -w` has written a build (the Makefile's STICK_FILES).
+STICK_FILES = ("/boot/jamos.elf", "/boot/bootfs.img", "/boot/prev-jamos.elf",
+               "/boot/prev-bootfs.img")
 
 
 # ---- the manifest ---------------------------------------------------------------
@@ -128,8 +143,16 @@ def ext_ok(line):
     return bool(EXT_RE.match(line)) and len(key) <= 32 and key not in BASE_KEYS
 
 
-def manifest(kernel, bootfs, version, git, net, extra=(), fmt=FORMAT_MAX):
+def menu_line(menu):
+    """The `menu` extension line for a boot menu's bytes."""
+    if not 1 <= len(menu) <= MENU_MAX:
+        raise ValueError("the boot menu is %d bytes (1..%d)" % (len(menu), MENU_MAX))
+    return "menu %d %s" % (len(menu), hashlib.sha256(menu).hexdigest())
+
+
+def manifest(kernel, bootfs, version, git, net, extra=(), fmt=FORMAT_MAX, menu=None):
     """The manifest's bytes for these two files' contents, in format fmt;
+    menu: the boot menu's bytes (its `menu` line, after bootfs), or None;
     extra: extension lines (str), put before the signature line."""
     if not FORMAT_MIN <= fmt <= FORMAT_MAX:
         raise ValueError("manifest format %d isn't made here" % fmt)
@@ -143,6 +166,8 @@ def manifest(kernel, bootfs, version, git, net, extra=(), fmt=FORMAT_MAX):
         if not 1 <= len(data) <= FILE_MAX:
             raise ValueError("%s is %d bytes (1..%d)" % (name, len(data), FILE_MAX))
         lines.append("%s %d %s" % (name, len(data), hashlib.sha256(data).hexdigest()))
+    if menu is not None:
+        lines.append(menu_line(menu))
     for line in extra:
         if not ext_ok(line.encode()):
             raise ValueError("not an extension line: %r" % (line,))
@@ -164,19 +189,29 @@ def sign(text, key):
     return p.stdout
 
 
-def parse_manifest(text):
+MENU_RE = re.compile(rb"menu ([1-9][0-9]{0,9}) ([0-9a-f]{64})$")
+
+
+def parse_manifest(text, old=False):
     """The C parser's rules, for the self-test: (version, git, [(size, sha)],
-    net, needs) or None; needs is the first must-understand extension
-    line's key ("" if none). Extension lines are checked and skipped."""
+    net, needs, menu) or None; needs is the first must-understand extension
+    line's key ("" if none), menu the `menu` line's (size, sha) or None.
+    Other extension lines are checked and skipped; old=True parses as a
+    build older than the `menu` line does (it skips that one too)."""
     lines = text.split(b"\n")
     if len(text) > MANIFEST_MAX or lines[0] != b"jamos-update 2" or lines[-1] != b"":
         return None
-    needs, base = "", [lines[0]]
+    needs, base, menu = "", [lines[0]], None
     for line in lines[1:-1]:
         if line.split(b" ", 1)[0] in BASE_KEYS:
             base.append(line)
         elif not ext_ok(line) or base[-1].startswith(b"signature"):
             return None
+        elif line.split(b" ", 1)[0] == b"menu" and not old:
+            m = MENU_RE.match(line)
+            if not m or menu or int(m.group(1)) > MENU_MAX:
+                return None
+            menu = (int(m.group(1)), m.group(2).decode())
         elif line.startswith(b"!") and not needs:
             needs = line.split(b" ", 1)[0].decode()
     lines = base + [b""]
@@ -198,7 +233,7 @@ def parse_manifest(text):
         files.append((int(w[1]), w[2].decode()))
     if not SIG_RE.match(lines[6]):
         return None
-    return v[1].decode(), g[1].decode(), files, n[1].decode(), needs
+    return v[1].decode(), g[1].decode(), files, n[1].decode(), needs, menu
 
 
 def elf_symbol_string(data, name):
@@ -291,8 +326,8 @@ def git_hash():
 # ---- the server -------------------------------------------------------------------
 
 def read_stable(paths, settle, tries=10):
-    """The files' bytes, once neither has changed for `settle` seconds, and
-    read again if either changed during the read. (A snapshot taken while
+    """The files' bytes, once none has changed for `settle` seconds, and
+    read again if any changed during the read. (A snapshot taken while
     `make` is between writing the kernel and the boot image would still
     pair a new kernel with an old image: run `update` once `make` is done.)"""
     for _ in range(tries):
@@ -309,35 +344,59 @@ def read_stable(paths, settle, tries=10):
     raise OSError("the build kept changing while it was read: is `make` still running?")
 
 
+def menu_verdict(menu):
+    """The PC's check of a boot menu's bytes (build/host/menucheck, with the
+    files a written stick has), as its one line, or None without the tool."""
+    if not os.access(MENU_TOOL, os.X_OK):
+        return None
+    with tempfile.NamedTemporaryFile(suffix=".conf") as f:
+        f.write(menu)
+        f.flush()
+        p = subprocess.run([MENU_TOOL, f.name] + list(STICK_FILES), capture_output=True,
+                           text=True)
+    return p.stdout.strip().replace(f.name, "the boot menu")
+
+
 class Server:
     def __init__(self, kernel_path, bootfs_path, sock, client=None, log=print,
-                 version=None, git=None, settle=SETTLE, key=None, net=None):
+                 version=None, git=None, settle=SETTLE, key=None, net=None, menu_path=None):
         self.paths = [kernel_path, bootfs_path]
+        self.menu_path = menu_path              # None: no boot menu served
         self.sock, self.client, self.log = sock, client, log
         self.version, self.git, self.settle, self.key = version, git, settle, key
         self.net = net
-        self.snaps = collections.OrderedDict()   # id -> [manifest, kernel, bootfs]
+        self.snaps = collections.OrderedDict()   # id -> [manifest, kernel, bootfs, menu]
+
+    def read_files(self):
+        """The build's files as they are now, and the menu (None if not served)."""
+        if not self.menu_path:
+            return read_stable(self.paths, self.settle) + [None]
+        return read_stable(self.paths + [self.menu_path], self.settle)
 
     def snapshot(self, fmt=FORMAT_MAX):
         """A new snapshot, its manifest in format fmt; its id."""
-        kernel, bootfs = read_stable(self.paths, self.settle)
+        kernel, bootfs, menu = self.read_files()
         text = manifest(kernel, bootfs, self.version or build_version(kernel),
                         self.git or build_git(bootfs) or git_hash(),
-                        self.net or build_net(bootfs), fmt=fmt)
-        text, kernel, bootfs = self.prepare(text, kernel, bootfs)
+                        self.net or build_net(bootfs), fmt=fmt, menu=menu)
+        text, kernel, bootfs, menu = self.prepare(text, kernel, bootfs, menu)
         text = self.signed(text)
         sid = 0
         while not sid or sid in self.snaps:
             sid = secrets.randbits(32)
-        self.snaps[sid] = [text, kernel, bootfs]
+        self.snaps[sid] = [text, kernel, bootfs, menu]
         while len(self.snaps) > SNAPSHOTS:
             self.snaps.popitem(last=False)
         self.log("update-server: snapshot %08x: %s" % (sid, text.decode().split("\n")[1:4]))
+        if menu is not None:
+            self.log("update-server: snapshot %08x: boot menu %d bytes; %s" %
+                     (sid, len(menu), menu_verdict(menu) or "no build/host/menucheck to "
+                      "check it with (make)"))
         return sid
 
-    def prepare(self, text, kernel, bootfs):
+    def prepare(self, text, kernel, bootfs, menu):
         """A snapshot's manifest and files as served (PlannedServer's hook)."""
-        return text, kernel, bootfs
+        return text, kernel, bootfs, menu
 
     def signed(self, text):
         """The manifest as served: signed with the key (PlannedServer's hook)."""
@@ -349,7 +408,7 @@ class Server:
             return None
         magic, ver, typ, f, fmt, sid, off, length, res2 = REQ.unpack(dgram)
         if magic != MAGIC or ver != VERSION or typ != REQUEST or res2 or \
-                f > BOOTFS or not 1 <= length <= CHUNK_MAX or (not sid and f != MANIFEST):
+                f > MENU or not 1 <= length <= CHUNK_MAX or (not sid and f != MANIFEST):
             return None
         # The manifest format the asker reads (0: a build older than the
         # field, which reads 2): the newest made here that it reads.
@@ -368,6 +427,8 @@ class Server:
         if snap is None:
             return REP.pack(MAGIC, VERSION, REPLY, f, GONE, sid, off, 0, 0, 0)
         data = snap[f]
+        if data is None:   # no boot menu in this snapshot: nothing to ask for
+            return REP.pack(MAGIC, VERSION, REPLY, f, RANGE, sid, off, 0, 0, 0)
         if off > len(data) or (off == len(data) and len(data)):
             return REP.pack(MAGIC, VERSION, REPLY, f, RANGE, sid, off, len(data), 0, 0)
         piece = data[off:off + length]
@@ -385,7 +446,7 @@ class Server:
 # ---- a server for tests: a plan of damaged builds ------------------------------------
 
 PLANS = ("good", "damage", "wronghash", "truncated", "gone", "unsigned", "badsig", "othernet",
-         "extension", "mustknow")
+         "extension", "mustknow", "menudamage", "nomenu")
 EXTENSION_LINE = "future-note a line a later build may add"   # the "extension" plan's
 MUSTKNOW_LINE = "!future-must 1"                               # the "mustknow" plan's
 GONE_AFTER = 300        # replies to a "gone" client before the server stops answering it
@@ -415,13 +476,18 @@ class PlannedServer(Server):
                  no build knows (EXTENSION_LINE): taken as "good" is
       mustknow   the same with a must-understand line (MUSTKNOW_LINE):
                  init refuses it, saying it needs a newer build
+      menudamage a byte of the boot menu changed after the manifest was made
+                 (the spec has a menu): init refuses the menu's SHA-256, and
+                 with it the whole offer
+      nomenu     the build without its boot menu and the manifest without
+                 its `menu` line, as a server older than the line serves it
     Every other manifest is signed with the spec's key (a throwaway test
     key: the PC under test has its public half)."""
 
     def __init__(self, kernel_path, bootfs_path, plan, log=print, version=None, git=None,
-                 key=None, net=None):
+                 key=None, net=None, menu_path=None):
         super().__init__(kernel_path, bootfs_path, None, log=log, version=version, git=git,
-                         settle=0.0, key=key, net=net)
+                         settle=0.0, key=key, net=net, menu_path=menu_path)
         for p in plan:
             if p not in PLANS:
                 raise ValueError("no plan %r (%s)" % (p, ", ".join(PLANS)))
@@ -429,8 +495,16 @@ class PlannedServer(Server):
         self.clients = {}       # (address, port) -> [plan, replies]
         self.current = "good"   # the plan of the request being answered
 
-    def prepare(self, text, kernel, bootfs):
-        if self.current == "damage":
+    def read_files(self):
+        kernel, bootfs, menu = super().read_files()
+        return [kernel, bootfs, None if self.current == "nomenu" else menu]
+
+    def prepare(self, text, kernel, bootfs, menu):
+        if self.current == "menudamage" and menu:
+            m = bytearray(menu)
+            m[len(m) // 2] ^= 0x20
+            menu = bytes(m)
+        elif self.current == "damage":
             k = bytearray(kernel)
             k[len(k) // 2] ^= 0x20
             kernel = bytes(k)
@@ -446,7 +520,7 @@ class PlannedServer(Server):
         elif self.current in ("extension", "mustknow"):
             line = EXTENSION_LINE if self.current == "extension" else MUSTKNOW_LINE
             text = text.replace(b"\nsignature\n", b"\n" + line.encode() + b"\nsignature\n")
-        return text, kernel, bootfs
+        return text, kernel, bootfs, menu
 
     def signed(self, text):
         if self.current == "unsigned":
@@ -477,13 +551,14 @@ def peer_handler(spec_path, log):
     """tools/netpeer.py's handler for port 5022: a PlannedServer from the
     JSON file spec_path ({"kernel": path, "bootfs": path, "plan": [...],
     and optionally "version", "git", "net", "key": the secret key to sign
-    with})."""
+    with, "menu": a boot menu to serve with the build; none without it})."""
     import json
     with open(spec_path) as f:
         spec = json.load(f)
     server = PlannedServer(spec["kernel"], spec["bootfs"], spec.get("plan", []), log=log,
                            version=spec.get("version"), git=spec.get("git"),
-                           key=spec.get("key"), net=spec.get("net"))
+                           key=spec.get("key"), net=spec.get("net"),
+                           menu_path=spec.get("menu"))
 
     def handle(peer, src, sport, dst, payload):
         return server.handle((socket.inet_ntoa(src), sport), payload)
@@ -571,6 +646,53 @@ class Client:
                     between()
                     between = None
         return [bytes(o) for o in out]
+
+
+def check_menu(kpath, bpath, tmp, check):
+    """The boot menu: its `menu` line (an extension line an older build's
+    grammar skips), served as file 3 of a snapshot; a server without one
+    answers RANGE for it; the "menudamage" and "nomenu" plans."""
+    mpath = os.path.join(tmp, "limine.conf")
+    menu = open(os.path.join(REPO, "boot/limine.conf"), "rb").read()
+    open(mpath, "wb").write(menu)
+    line = menu_line(menu).encode()
+    check("the menu line is an extension line", ext_ok(line))
+    text = manifest(b"k", b"b", "1.0", "abcdef0", "vlan21", menu=menu)
+    m, old = parse_manifest(text), parse_manifest(text, old=True)
+    check("a manifest with a menu parses", m is not None and
+          m[5] == (len(menu), hashlib.sha256(menu).hexdigest()))
+    check("an older build's parser skips the menu line",
+          old is not None and old[:5] == m[:5] and old[5] is None)
+    for what, bad in (("twice", text.replace(line, line + b"\n" + line)),
+                      ("size 0", text.replace(b"menu %d " % len(menu), b"menu 0 ")),
+                      ("too big", text.replace(b"menu %d " % len(menu), b"menu 65537 ")),
+                      ("short hash", text.replace(line, line[:-1]))):
+        check("a menu line refused: " + what, parse_manifest(bad) is None)
+    for size in (0, MENU_MAX + 1):
+        try:
+            manifest(b"k", b"b", "1.0", "abcdef0", "vlan21", menu=b"x" * size)
+            check("no manifest with a %d-byte menu" % size, False)
+        except ValueError:
+            pass
+    s = PlannedServer(kpath, bpath, ["menudamage", "nomenu"], log=lambda s: None,
+                      version="0.0.29-test", git="abcdef0", net="vlan21", menu_path=mpath)
+
+    def ask(client, f, sid, off, length):
+        rep = s.handle(client, REQ.pack(MAGIC, VERSION, REQUEST, f, 0, sid, off, length, 0))
+        return (REP.unpack_from(rep), rep[REP.size:]) if rep else (None, b"")
+    for n, plan in enumerate(["menudamage", "nomenu", "good"]):
+        client = ("10.2.21.5", 52000 + n)
+        fields, text = ask(client, MANIFEST, 0, 0, CHUNK_MAX)
+        m, sid = parse_manifest(text), fields[5]
+        got = b"".join(ask(client, MENU, sid, off, CHUNK_MAX)[1]
+                       for off in range(0, len(menu), CHUNK_MAX))
+        if plan == "nomenu":
+            check("the plan 'nomenu': no menu line, file 3 is RANGE", m[5] is None and
+                  ask(client, MENU, sid, 0, 10)[0][4] == RANGE)
+        else:
+            good = m[5] == (len(got), hashlib.sha256(got).hexdigest())
+            check("the plan %r: the menu %s its line" % (plan, "matches" if good else "breaks"),
+                  good == (plan == "good") and got != b"" and m[5][0] == len(menu))
 
 
 def check_plans(kpath, bpath, check):
@@ -709,7 +831,7 @@ def self_test():
     check("the last piece is short", got and got[0][4] == OK and got[0][8] == 10)
     bad = [REQ.pack(MAGIC, VERSION, REQUEST, KERNEL, 0, sid2, 0, 0, 0),        # length 0
            REQ.pack(MAGIC, VERSION, REQUEST, KERNEL, 0, sid2, 0, 1401, 0),     # too long
-           REQ.pack(MAGIC, VERSION, REQUEST, 3, 0, sid2, 0, 10, 0),            # no such file
+           REQ.pack(MAGIC, VERSION, REQUEST, 4, 0, sid2, 0, 10, 0),            # no such file
            REQ.pack(MAGIC, VERSION, REQUEST, KERNEL, 0, 0, 0, 10, 0),          # snapshot 0
            REQ.pack(MAGIC, VERSION, REQUEST, KERNEL, 2, sid2, 0, 10, 1),       # reserved
            REQ.pack(MAGIC ^ 1, VERSION, REQUEST, KERNEL, 0, sid2, 0, 10, 0),   # magic
@@ -797,6 +919,7 @@ def self_test():
                BOOTFS_ENTRY.pack(b"build.txt", entry_at, len(text)) + text)
         check("build.txt %r: network default %r" % (text, want), build_net(img) == want)
     check_plans(kpath, bpath, check)
+    check_menu(kpath, bpath, tmp, check)
     check_signing(kpath, bpath, tmp, check)
     stop.set()
     if fails:
@@ -819,6 +942,11 @@ def main():
     ap.add_argument("--net", help="the network default to claim (vlan<id>, untagged)")
     ap.add_argument("--extra", action="append", default=[], metavar="LINE",
                     help="--manifest: an extension line to add (again for more)")
+    ap.add_argument("--menu", metavar="FILE",
+                    help="the boot menu to serve (default %s); with --manifest, its `menu` "
+                         "line" % DEFAULT_MENU)
+    ap.add_argument("--no-menu", action="store_true",
+                    help="serve no boot menu (as a server older than the `menu` line)")
     ap.add_argument("--build-net", metavar="BOOTFS")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
@@ -830,8 +958,9 @@ def main():
         return 0 if net else 1
     if a.manifest:
         k, b = (open(p, "rb").read() for p in a.manifest)
+        menu = open(a.menu, "rb").read() if a.menu else None
         text = manifest(k, b, a.version or build_version(k), a.git or build_git(b) or git_hash(),
-                        a.net or build_net(b), a.extra)
+                        a.net or build_net(b), a.extra, menu=menu)
         sys.stdout.write((sign(text, a.key) if a.key else text).decode())
         return 0
     key = a.key or DEFAULT_KEY
@@ -843,9 +972,12 @@ def main():
     sign(b"signature\n", key)   # the key and the tool work, before anyone asks
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((a.bind, a.port))
+    menu = None if a.no_menu else a.menu or DEFAULT_MENU
     server = Server(os.path.join(a.build, "jamos.elf"), os.path.join(a.build, "bootfs.img"),
-                    sock, client=a.client, version=a.version, git=a.git, key=key, net=a.net)
-    print("update-server: serving %s on %s:%d, signed with %s" % (a.build, a.bind, a.port, key))
+                    sock, client=a.client, version=a.version, git=a.git, key=key, net=a.net,
+                    menu_path=menu)
+    print("update-server: serving %s on %s:%d, signed with %s; boot menu: %s" %
+          (a.build, a.bind, a.port, key, menu or "none (--no-menu)"))
     try:
         while True:
             server.serve_one()
