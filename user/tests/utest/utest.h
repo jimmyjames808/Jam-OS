@@ -45,6 +45,17 @@ bool t_keymap_typing(void);
 bool t_keymap_xkb_text(void);
 bool t_keymap_matches_hid(void);
 
+/* smoothfont.c: libfun's smooth text (<fun.h>: font.c, fontdraw.c). */
+bool t_font_open(void);
+bool t_font_measure(void);
+bool t_font_pixels(void);
+bool t_font_blend(void);
+bool t_font_clip(void);
+bool t_font_ellipsis(void);
+bool t_font_threads(void);
+/* "utest font-write": writes into a font, which must kill it. */
+int  font_write_child(void);
+
 /* disks.c: devmgr's disks and mounts against the mock usb-storage
  * (diskmock.c), with the fat service on its partitions. */
 bool t_disk_mounts(void);
@@ -470,6 +481,11 @@ bool t_comp_connections(void);
 bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
 bool t_comp_regions(void);
+/* conwin.c: the console's window mode: its grid, keys and pointer
+ * (wlinput.c, linked in). */
+bool t_conwin_grid(void);
+bool t_conwin_keys(void);
+bool t_conwin_pointer(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
  * a pool, a buffer and a surface, then crashes. */
 int  comp_child(int argc, char **argv);

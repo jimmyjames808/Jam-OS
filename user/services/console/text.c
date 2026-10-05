@@ -134,6 +134,60 @@ bool text_init(void)
     return true;
 }
 
+/* Line i of a scrollback of SCROLLBACK lines n cells wide, at base. */
+static struct cell *line_in(struct cell *base, uint64_t i, uint32_t n)
+{
+    return &base[(i % SCROLLBACK) * n];
+}
+
+/* n cells of from into to (m cells): the first min(n, m), the rest blank. */
+static void copy_cells(struct cell *to, uint32_t m, const struct cell *from, uint32_t n)
+{
+    uint32_t k = n < m ? n : m;
+    memcpy(to, from, (size_t)k * sizeof(struct cell));
+    if (k < m)
+        blank(to + k, m - k, A_OUT);
+}
+
+bool text_regrid(uint32_t c, uint32_t r)
+{
+    if (!c || !r || c > MAX_COLS || r > MAX_ROWS)
+        return false;
+    struct cell *nsb = malloc((size_t)SCROLLBACK * c * sizeof(struct cell));
+    struct cell *nalt = malloc((size_t)r * c * sizeof(struct cell));
+    if (!nsb || !nalt) {
+        free(nsb);
+        free(nalt);
+        return false;
+    }
+    for (uint64_t i = 0; i < SCROLLBACK; i++)
+        copy_cells(line_in(nsb, i, c), c, line_in(sb, i, cols), cols);
+    /* The alternate screen keeps its top left; its program draws again
+     * at its next frame (or never: it asked for the size once). */
+    for (uint32_t y = 0; y < r; y++) {
+        if (y < rows)
+            copy_cells(nalt + (size_t)y * c, c, alt + (size_t)y * cols, cols);
+        else
+            blank(nalt + (size_t)y * c, c, A_OUT);
+    }
+    if (c > cols)
+        blank(cur + cols, c - cols, A_OUT);
+    free(sb);
+    free(alt);
+    sb = nsb;
+    alt = nalt;
+    cols = c;
+    rows = r;
+    cur_x = cur_x < cols ? cur_x : cols - 1;
+    alt_x = alt_x < cols ? alt_x : cols - 1;
+    alt_y = alt_y < rows ? alt_y : rows - 1;
+    uint64_t max = committed < SCROLLBACK ? committed : SCROLLBACK;
+    max = max > rows ? max - rows + 1 : 0;
+    view_back = view_back < max ? view_back : (uint32_t)max;
+    dirty = true;
+    return true;
+}
+
 void new_line(void)
 {
     commit(cur);

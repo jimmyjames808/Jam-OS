@@ -85,3 +85,53 @@ void wl_present(bool all);
 /* wlpaint.c: forget what the window's buffers hold (a new size, a new
  * connection): the next present writes all of each and damages it all. */
 void wl_paint_reset(void);
+
+/* ---- smooth text (font.c bakes, fontdraw.c draws, fontdata.c has the faces) ---------- */
+
+/* The glyphs a font has, by slot: printable ASCII (U+0020..U+007E),
+ * Latin-1's printable half (U+00A0..U+00FF), the punctuation in
+ * font_extra[] (tools/subsetfont.py keeps the same code points), then
+ * .notdef, the box drawn for everything else. */
+#define FONT_ASCII    95
+#define FONT_LATIN    96
+#define FONT_EXTRA    9
+#define FONT_ELLIPSIS (FONT_ASCII + FONT_LATIN + 7)   /* U+2026's slot */
+#define FONT_NOTDEF   (FONT_ASCII + FONT_LATIN + FONT_EXTRA)
+#define FONT_SLOTS    (FONT_NOTDEF + 1)
+/* Horizontal positions each glyph is baked at, 1/FONT_PHASES pixel apart. */
+#define FONT_PHASES   4
+
+/* The slot of code point cp (FONT_NOTDEF if it has none), and the code
+ * point of a slot (0 for FONT_NOTDEF). */
+int      font_slot(uint32_t cp);
+uint32_t font_slot_cp(int slot);
+
+/* One slot at one position: its ink's box and coverage. */
+struct font_glyph {
+    int16_t  x, y;    /* the box's top-left corner from the pen on the baseline, pixels */
+    uint16_t w, h;    /* the box's size (0 x 0: no ink, a space) */
+    uint32_t off;     /* its coverage, w * h bytes (0..255) row after row, at cov + off */
+};
+
+/* A kerning pair: the pen moves by d more after the glyph in slot
+ * pair / FONT_SLOTS when the one in slot pair % FONT_SLOTS follows. */
+struct font_kern {
+    uint16_t pair;    /* left slot * FONT_SLOTS + right slot */
+    int16_t  d;       /* 1/256 pixels (negative: closer) */
+};
+
+/* A baked font: one block of memory (big_alloc), this struct first, then
+ * kern[] and cov[]; read-only (big_seal) once font_open returns it. */
+struct font {
+    struct font_metrics m;
+    uint64_t bytes;                                 /* the block's size, for big_free */
+    int32_t  adv[FONT_SLOTS];                       /* advances, 1/256 pixels */
+    struct font_glyph g[FONT_SLOTS][FONT_PHASES];   /* each slot at each position */
+    uint32_t nkern;                                 /* pairs in kern[] */
+    const struct font_kern *kern;                   /* sorted by pair */
+    const uint8_t *cov;                             /* every glyph's coverage */
+};
+
+/* fontdata.c: a built-in face's TrueType bytes (n of them); NULL for no
+ * such weight. */
+const uint8_t *font_face(enum font_weight w, size_t *n);

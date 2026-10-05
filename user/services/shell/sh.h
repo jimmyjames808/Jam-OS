@@ -414,6 +414,10 @@ bool        sh_is_mount(const char *abs);
 /* Why a file call failed, in words ("no such file or directory"). */
 const char *sh_why(status_t st);
 
+/* Which terminal this shell runs in (1: the first, the system's; init's
+ * argument "term=<n>" for another one: `term`). */
+extern unsigned sh_term_no;
+
 /* ---- the commands (cmd/<name>.c) --------------------------------------------------- */
 
 /* information */
@@ -428,7 +432,7 @@ SH_CMD(head); SH_CMD(tail); SH_CMD(grep); SH_CMD(sort); SH_CMD(uniq); SH_CMD(seq
 /* shell */
 SH_CMD(help); SH_CMD(history); SH_CMD(clear); SH_CMD(echo); SH_CMD(set); SH_CMD(unset);
 SH_CMD(export); SH_CMD(env); SH_CMD(alias); SH_CMD(unalias); SH_CMD(type); SH_CMD(time);
-SH_CMD(jobs);
+SH_CMD(jobs); SH_CMD(term); SH_CMD(exit);
 SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 /* system */
 SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(play); SH_CMD(vol);

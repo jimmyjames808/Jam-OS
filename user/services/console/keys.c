@@ -85,7 +85,7 @@ static void send_key(const struct input_key_event *ev)
         send_below(ev, at, L_SHELL, &at);
 }
 
-/* ---- Ctrl+Alt+Del -------------------------------------------------------------- */
+/* ---- init: Ctrl+Alt+Del and another terminal ------------------------------------ */
 
 /* Ctrl+Alt+Del (a keyboard's: usage 0x4c with CTRL and ALT) reboots:
  * through init, which syncs /data first and kexecs into the kernel on the
@@ -95,15 +95,40 @@ static void send_key(const struct input_key_event *ev)
  * input sources, so the keyboard drivers never wait on it while init
  * stops them. Without init, if init's answer says it failed, or if init
  * is still at it after REBOOT_WAIT, the console resets the machine
- * itself. */
+ * itself.
+ *
+ * Super+Enter asks init for another terminal (initctl.terminal) the same
+ * way, without waiting; only a refusal is said, on this terminal (the new
+ * one is its own news). Both answers come on init's channel, told apart
+ * by their transaction ids (init_event). */
 static bool rebooting;              /* asked for: keys are dropped from now on */
 static uint64_t reboot_at;          /* when the console resets the machine itself */
-#define REBOOT_TXID 0x0cad0001u     /* the request's transaction id */
+static bool watching;               /* init's channel is bound to our port */
+static bool term_asked;             /* a terminal request is unanswered */
+#define REBOOT_TXID 0x0cad0001u     /* the reboot request's transaction id */
+#define TERM_TXID   0x7e570001u     /* the terminal request's */
+
+static handle_t init_channel(void)
+{
+    return startup_handle(SR_USER + INITCTL_ROLE);
+}
 
 static void reboot_now(void)
 {
     status_t st = jam_reboot(root);
     printf("console: reboot: %s\n", status_str(st));
+}
+
+void init_watch(void)
+{
+    handle_t init = init_channel();
+    if (!init)
+        return;
+    status_t st = jam_port_bind(port, init, KEY(K_INIT, 0), SIG_READABLE | SIG_PEER_CLOSED,
+                                PORT_BIND_PERSISTENT);
+    watching = st == OK;
+    if (!watching)   /* Ctrl+Alt+Del then resets the machine itself */
+        printf("console: init's channel: port_bind: %s\n", status_str(st));
 }
 
 static void ctrl_alt_del(void)
@@ -114,36 +139,73 @@ static void ctrl_alt_del(void)
     reboot_at = now() + REBOOT_WAIT;
     printf("console: Ctrl+Alt+Del: rebooting\n");
     screen_blank(true);   /* nothing drawn until the next boot's splash */
-    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
-    struct initctl_reboot_req q = { .txid = REBOOT_TXID, .ordinal = INITCTL_REBOOT };
-    status_t st = init ? jam_channel_write(init, &q, sizeof(q), NULL, 0) : ERR_NOT_FOUND;
-    if (st == OK)
-        st = jam_port_bind(port, init, KEY(K_REBOOT, 0), SIG_READABLE | SIG_PEER_CLOSED,
-                           PORT_BIND_ONCE);
+    handle_t init = init_channel();
+    status_t st = init && watching ? initctl_reboot_send(init, REBOOT_TXID) : ERR_NOT_FOUND;
     if (st != OK) {
         printf("console: init: %s\n", status_str(st));
         reboot_now();
     }
 }
 
-void reboot_event(void)
+/* A terminal request refused, or one that never went: said here. */
+static void terminal_said(status_t st)
 {
-    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
-    struct initctl_reboot_rep r = { 0 };
-    uint32_t n = 0;
-    struct channel_read_args a = {
-        .h = init, .bytes_cap = sizeof(r), .bytes = (uint64_t)(uintptr_t)&r,
-        .actual_bytes = (uint64_t)(uintptr_t)&n,
-    };
-    status_t st = jam_channel_read(&a);
-    if (st == OK && (n != sizeof(r) || r.txid != REBOOT_TXID)) {
-        /* Not the answer: wait on. */
-        (void)jam_port_bind(port, init, KEY(K_REBOOT, 0), SIG_READABLE | SIG_PEER_CLOSED,
-                            PORT_BIND_ONCE);
-        return;
+    char line[96];
+    int n;
+    if (st == ERR_NOT_SUPPORTED)
+        n = snprintf(line, sizeof(line), "[another terminal needs the compositor: this boot "
+                                         "has none]");
+    else if (st == ERR_NO_RESOURCES)
+        n = snprintf(line, sizeof(line), "[no more terminals: as many are open as there may be]");
+    else
+        n = snprintf(line, sizeof(line), "[no new terminal: %s]", status_str(st));
+    notice_out(line, (size_t)n);
+    dirty = true;
+}
+
+void terminal_ask(void)
+{
+    if (rebooting || term_asked)
+        return;   /* one at a time: a second Super+Enter before the answer is the same ask */
+    handle_t init = init_channel();
+    status_t st = init && watching ? initctl_terminal_send(init, TERM_TXID) : ERR_NOT_FOUND;
+    if (st == OK)
+        term_asked = true;
+    else
+        terminal_said(st);
+}
+
+void init_event(void)
+{
+    handle_t init = init_channel();
+    for (;;) {   /* bounded: init answers only what we asked, two at most */
+        uint8_t rep[64];
+        struct idl_msg m;
+        status_t st = idl_reply_read(init, rep, sizeof(rep), &m);
+        if (st == ERR_SHOULD_WAIT)
+            return;
+        if (st != OK && st != ERR_INTERNAL) {   /* init's end is gone */
+            (void)jam_port_unbind(port, init, KEY(K_INIT, 0));
+            watching = false;
+            if (rebooting) {
+                printf("console: init: %s\n", status_str(st));
+                reboot_now();
+            }
+            return;
+        }
+        if (m.txid == REBOOT_TXID && rebooting) {
+            printf("console: init: %s\n", status_str(initctl_reboot_result(rep, &m)));
+            reboot_now();
+        } else if (m.txid == TERM_TXID && term_asked) {
+            uint8_t number = 0;
+            st = initctl_terminal_result(rep, &m, &number);
+            term_asked = false;
+            if (st != OK)
+                terminal_said(st);
+        } else {
+            idl_msg_drop(&m);   /* not an answer we wait for */
+        }
     }
-    printf("console: init: %s\n", status_str(st == OK ? r.status : st));
-    reboot_now();
 }
 
 uint64_t reboot_deadline(void)
@@ -162,10 +224,15 @@ void reboot_due(void)
 
 /* ---- keys to the focus ----------------------------------------------------------- */
 
-static void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool terminal)
+void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool terminal)
 {
     if (rebooting)
         return;   /* the machine is going: nobody reads keys any more */
+    struct input_key_event ev = { usage, state, mods, cp };
+    if (asks_terminal(&ev)) {
+        terminal_ask();
+        return;
+    }
     if (usage == 0x4c && state == INPUT_KEY_DOWN && (mods & INPUT_MOD_CTRL) &&
         (mods & INPUT_MOD_ALT)) {
         ctrl_alt_del();
@@ -190,7 +257,6 @@ static void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, 
         view_back = 0;
         dirty = true;
     }
-    struct input_key_event ev = { usage, state, mods, cp };
     send_key(&ev);
 }
 
@@ -283,24 +349,29 @@ static bool mouse_to_focus(const struct input_mouse_event *ev)
     return false;
 }
 
-static status_t op_mouse(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
+void mouse_event(const struct input_mouse_event *ev)
 {
-    (void)ctx;
     if (rebooting)
-        return OK;
-    struct input_mouse_event ev = {
-        .kind = INPUT_EVENT_MOUSE, .dx = dx, .dy = dy, .wheel = wheel, .buttons = buttons,
-    };
-    if (mouse_to_focus(&ev))
-        return OK;
+        return;
+    if (mouse_to_focus(ev))
+        return;
     /* Nobody wants the mouse: the wheel scrolls back, unless the screen is
      * lent out (the text isn't on it to be scrolled). */
     if (screen_lent())
-        return OK;
-    if (wheel > 0)
+        return;
+    if (ev->wheel > 0)
         key_event(0x4b, INPUT_KEY_DOWN, INPUT_MOD_LSHIFT, 0, false);
-    else if (wheel < 0)
+    else if (ev->wheel < 0)
         key_event(0x4e, INPUT_KEY_DOWN, INPUT_MOD_LSHIFT, 0, false);
+}
+
+static status_t op_mouse(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
+{
+    (void)ctx;
+    struct input_mouse_event ev = {
+        .kind = INPUT_EVENT_MOUSE, .dx = dx, .dy = dy, .wheel = wheel, .buttons = buttons,
+    };
+    mouse_event(&ev);
     return OK;
 }
 

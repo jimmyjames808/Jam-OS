@@ -104,6 +104,54 @@ differs from the recommendation below, this note wins:
   the screen dots with "+"; centre the current screen's windows (the
   focused one tinted raspberry, minimised ones dimmed with an apricot
   dot); right the floating/tiling icon, network, volume and the clock.
+  The app menu is a search box (owner's pick): tapping Super alone (pressed
+  and released with no other key) or clicking "Jam OS" opens it centred
+  near the top, frosted; empty, it lists every app (most recently used
+  first) so a mouse user can just click; typing filters, Enter runs the
+  top hit, arrows move, Esc closes; its last row offers to run what was
+  typed as a command in a new terminal. Apps show as letter tiles in jam
+  colours until there are icons.
+  Alt+Tab (owner's pick): a compact frosted list, centred, one row per
+  window (letter tile and title). Order: the current screen's windows
+  (most recently focused first), then every other screen's windows grouped
+  under a small "screen N" label, then minimised windows. Holding Alt,
+  the first Tab selects the next row and each further Tab the one after
+  (Shift+Tab goes back, wrapping); letting go of Alt goes to the selected
+  window (sliding to its screen, restoring it if minimised); Esc while
+  Alt is held cancels. A quick Alt+Tab tap goes straight to the previous
+  window; the list appears only if Alt is held past about 120 ms, so a
+  tap doesn't flash it.
+  Animations (owner's picks): a window opens by growing from 92% while
+  fading in, and closes the reverse (about 150 ms, ease-out); minimising
+  shrinks it into its chip in the top bar (about 260 ms) and restoring
+  reverses that; switching screens slides the windows sideways (about
+  260 ms) while the wallpaper and the top bar stay put, the screen dots
+  following; going full screen and back slides the same way. An
+  animation that is interrupted (another key, a second click) jumps to
+  its end. Animations run at the compositor's paint rate and only damage
+  the boxes they touch.
+  The status icons and the clock open frosted popovers under the strip,
+  each popover's right edge lined up with the right edge of what opened
+  it (clicking elsewhere closes it): volume (a slider on the mixer's
+  volume, the output, what's playing), network (link state, address,
+  NIC and speed, live rates), the clock (time, full date, a month
+  calendar, weeks starting Monday); thin inset dividers (1 px, white
+  at about 10%, stopping at the card's inner padding, never touching
+  its edges) separate a popover's sections (volume | output | playing;
+  state | address and link | down and up; time and date | calendar), and
+  the same style separates sections in the app menu and Alt+Tab list.
+  Notifications: frosted cards stacked
+  in the top right under the strip (icon tile, title, one line), fading
+  after about 5 s unless they carry buttons (e.g. "Update written ...
+  Reboot / Later"), which stay until answered; every notice still goes
+  to the first terminal too. No overview of all screens in G1.
+  Words on the desktop are in sentence case (owner, from the mockups):
+  window titles, top-bar chips, menu rows, popover labels, notifications
+  and buttons start with a capital ("Terminal", "Mines", "Connected",
+  "Output", "Reboot"); command names stay lowercase only where they are
+  typed (the terminal, the search box's "run ..." row). The nine apps'
+  gfx_title calls change to "Demo", "Fractal", "Jamjar", "Life", "Mines",
+  "Snake", "Splash", "Sysmon", "Tetris" (with D2).
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
@@ -979,6 +1027,23 @@ user/include/jwl.h, which W2 owns and W1 includes.
 | **X1. End-to-end tests** | tools/g1-test.sh (boot with usb-kbd and usb-mouse, at 1280x800 and at 2560x1440); tools/screencheck.py (checks pixels of a QEMU screendump at known places); wlhostile (user/tests/wlhostile: malformed batches, floods, a client that never reads, pools at every cap, a shrink attempt, a client killed mid-commit); shell-test scripts (several windows, focus by click, typing goes to one, kill one) | tools/g1-test.sh, tools/screencheck.py, user/tests/wlhostile/, tools/shell-tests/g1-*.txt | C2, C3, C4, L2, T1, I1 |
 | **J. The join** | the docs: ARCHITECTURE ("Graphics" rewritten as built, "Userland", the IPC protocol list, "What Jam OS defends against", the Drivers and services table), CODING-GUIDE (the "add a user program" recipe's step 5: a window through libfun; a recipe "add a Wayland interface"), TESTING (the new scripts and boot words), README (the desktop, `&`), ROADMAP; the area tests once on the merged result | the docs | all above |
 | **R. Review and fix** | the independent review-and-fix agent over all of G1 (the standing rule): the codec and the limits first, then focus and input routing, then the kernel flags | what its findings touch | J |
+
+**As built: D0, the smooth font (before D1).** Inter Regular and Medium
+(SIL OFL 1.1) cut to Latin-1 by `tools/subsetfont.py`, rendered by
+stb_truetype, both vendored; libfun's `font_open` bakes a weight at a
+size into a read-only block, and `font_width`, `font_draw`,
+`font_draw_in` (one line in a rectangle: cut with "…", left or centred,
+capitals centred down it, clipped to it) and `font_ellipsize` only read
+it, so the painting workers share it (`<fun.h>` "smooth text";
+[ARCHITECTURE](../ARCHITECTURE.md#smooth-text) has the design and the
+sizes, [TESTING](TESTING.md#smooth-text) the tests). The fonts link into
+libfun (94 KB, only into programs that open one); a title's two fonts
+take about 175 KB at 1x. `make` draws `build/fontpreview.png`, the
+style-B1 title bars at 1x and 2x. For D1: open
+`FONT_MEDIUM` and `FONT_REGULAR` at 13 pixels (26 at 2x) before the
+workers start, then in each tile `font_draw_in(&tile_surf, &title_rect,
+font, colour, FONT_CENTRE, title)` with the title's rectangle in the
+tile's coordinates (it may reach outside the tile).
 
 **Order and parallel work:**
 

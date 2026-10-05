@@ -109,7 +109,9 @@ be compatible with that.
   Prefer permissive references (FreeBSD, OpenBSD, the vendor datasheet).
 - **Vendored code goes in `third_party/<name>/` with its own LICENSE file**
   and an entry in `third_party/VERSIONS.md`. Only permissive licences
-  (BSD, MIT, ISC, 0BSD, Zlib, Apache-2.0).
+  (BSD, MIT, ISC, 0BSD, Zlib, Apache-2.0); fonts may be under the SIL Open
+  Font License 1.1, which allows bundling with any software (Inter,
+  `third_party/inter/`).
 
 ### Files and functions
 
@@ -136,8 +138,9 @@ be compatible with that.
   libfun's drawing calls take a `struct rect` (a `struct picture` to
   scale from); the ones whose shape is no rectangle may take up to eight:
   `line_aa` and `ring_aa` (float end points or a centre, a width, the
-  colour and its alpha) and `text2` (a position, a scale, two colours, a
-  shadow or not).
+  colour and its alpha), `text2` (a position, a scale, two colours, a
+  shadow or not) and `font_draw` (a clip, a font, a position, a
+  colour).
 
 ### Headers
 
