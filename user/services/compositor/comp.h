@@ -443,7 +443,7 @@ void surfaces_teardown(struct comp_client *cl);
 void shm_teardown(struct comp_client *cl);
 void display_teardown(struct comp_client *cl);
 
-/* ---- surfaces, buffers and painting (surface.c, shm.c, headless.c) ----------------- */
+/* ---- surfaces and buffers (surface.c, shm.c) ----------------------------------------- */
 
 /* wl_compositor.create_surface: a surface for cl at the new id. OK, or a
  * protocol error posted (the cap, no memory). */
