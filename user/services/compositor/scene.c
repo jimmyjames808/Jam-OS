@@ -162,5 +162,5 @@ bool surface_visible(const struct comp_surface *s)
     const struct comp_window *w = s->window;
     if (!w || !(w->flags & COMP_WIN_MAPPED))
         return false;
-    return !box_empty(box_intersect(window_surface_box(w), output_box()));
+    return !box_empty(box_intersect(window_surface_box(w), output_box())) && !window_covered(w);
 }

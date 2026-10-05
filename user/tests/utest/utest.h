@@ -440,6 +440,14 @@ bool t_jwl_fuzz_conn(void);
  * over real channels (comptest.h). */
 bool t_comp_globals(void);
 bool t_comp_surface(void);
+/* comp_paint.c: the compositor's painting, through its test scene
+ * (windows with no client) run headless (testscene.h). */
+bool t_comp_paint_overlap(void);
+bool t_comp_paint_cull(void);
+bool t_comp_paint_damage(void);
+bool t_comp_paint_fullscreen(void);
+bool t_comp_paint_title(void);
+bool t_comp_paint_blank(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

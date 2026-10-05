@@ -373,7 +373,8 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
-                      -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT)
+                      -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) \
+                      -iquote user/services/compositor -Iuser/apps/fun
 EXTRA_DEPS_utest   := $(FATFS_HDRS)
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy

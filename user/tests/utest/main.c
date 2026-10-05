@@ -888,6 +888,12 @@ static const struct {
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "comp_globals", t_comp_globals },
     { "comp_surface", t_comp_surface },
+    { "comp_paint_overlap", t_comp_paint_overlap },
+    { "comp_paint_cull", t_comp_paint_cull },
+    { "comp_paint_damage", t_comp_paint_damage },
+    { "comp_paint_fullscreen", t_comp_paint_fullscreen },
+    { "comp_paint_title", t_comp_paint_title },
+    { "comp_paint_blank", t_comp_paint_blank },
 };
 
 int main(int argc, char **argv)
