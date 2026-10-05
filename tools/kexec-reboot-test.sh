@@ -14,9 +14,10 @@
 #   changed   the stick swapped (the monitor) for a copy whose
 #             /esp/boot/jamos.elf is 4 KiB longer, as if flashed on the
 #             Mac: `reboot` reads both files and kexec_loads them first
-#             (the screen meanwhile all the splash background: the shell
-#             blanked the console; the copy's reads are throttled to 2 MB/s
-#             so the read lasts past the screenshot 2 s in, fat's cache
+#             (the screen meanwhile all the splash background: init blanked
+#             it through the compositor first; the copy's reads are
+#             throttled to 2 MB/s so the read lasts past the screenshot 2 s
+#             in, fat's cache
 #             making it a fraction of a second otherwise), then the new
 #             kernel comes up
 #   load      the stick swapped the same way, then `kernel load`: both
@@ -61,7 +62,7 @@ run() {
 run_kexec() {
     QEMU_EXTRA="${QEMU_EXTRA:--audiodev none,id=snd0 -device intel-hda,id=hda0 \
 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0}" QEMU_SPLASH=1 run kexec shell "wait 180 init: the shell is up" "wait jam>" \
-        "seen 30 console: the screen is back" \
+        "seen 30 init: bin/splash exited with code 0" \
         "seen 60 logd: writing /data/logs/boot-0001.txt" \
         "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
         "send reboot" \
