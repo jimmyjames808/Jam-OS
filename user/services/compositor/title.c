@@ -6,9 +6,11 @@
  *   - the top strip, if it is COMP_TITLE_H or more, is the title bar: the
  *     three circles on its left (close, minimise, full screen; grey on an
  *     unfocused window; each with its symbol while the pointer is over
- *     them), and the title centred, "(not responding)" after it when the
- *     window didn't answer a ping, cut short with "..." where it would
- *     reach the circles' side or the same distance from the right end;
+ *     them), and the title centred in libfun's smooth text (Inter,
+ *     LOOK_TITLE_PX pixels to the em: Medium focused, Regular not),
+ *     "(not responding)" after it when the window didn't answer a ping,
+ *     cut short with an ellipsis where it would reach the circles' side or
+ *     the same distance from the right end;
  *   - the other strips, and a thinner top one (tiling mode's windows have
  *     no title bar, a border all round), are the outline or the border;
  *     a floating window's outline also runs along its title bar's top
@@ -21,14 +23,16 @@
  * only what falls in the tile (libfun's fill and text clip to the tile's
  * buffer, which stands for its box of the output). A title can't draw
  * outside its bar: the text is cut before the circles' side and clipped
- * to the bar's rows. libfun's glyph tables and the masks are made before
- * the workers start (paint_init), so the workers only read them. */
+ * to the bar's rows. The fonts are baked and the masks made before the
+ * workers start (paint_init), so the workers only read them; without the
+ * fonts (no memory) the titles are in libfun's 8x16 text. */
 #include <fun.h>
 #include "paint.h"
 
 #define TITLE_MAX 300   /* bytes of title drawn: the window manager keeps at most 256 */
 
 const struct comp_window *title_hovered;
+static struct font *font_focused, *font_plain;   /* Medium, Regular; NULL: the 8x16 text */
 
 static const uint32_t btn_colour[TITLE_BUTTONS] = { LOOK_CLOSE, LOOK_MINIMISE, LOOK_FULLSCREEN };
 static const uint32_t btn_ink[TITLE_BUTTONS] = { LOOK_CLOSE_INK, LOOK_MINIMISE_INK,
@@ -140,11 +144,31 @@ static void draw_buttons(const struct comp_window *w, const struct tile_buf *t)
     }
 }
 
-/* The title's text at r (r's top left, r->w wide at most, in s's
- * coordinates): the one place the font is chosen. */
+status_t title_init(void)
+{
+    status_t st = font_open(FONT_MEDIUM, LOOK_TITLE_PX, &font_focused);
+    if (st == OK)
+        st = font_open(FONT_REGULAR, LOOK_TITLE_PX, &font_plain);
+    if (st != OK) {
+        font_close(font_focused);
+        font_focused = font_plain = NULL;
+    }
+    return st;
+}
+
+/* The title in r (in s's coordinates), centred across it and down it, cut
+ * short to fit: the one place the font is chosen. */
 static void title_text(const struct surf *s, const struct rect *r, bool focused, const char *str)
 {
-    text_clip(s, r, 1, focused ? LOOK_TITLE_FOCUSED : LOOK_TITLE, str);
+    uint32_t ink = focused ? LOOK_TITLE_FOCUSED : LOOK_TITLE;
+    if (font_plain) {
+        (void)font_draw_in(s, r, focused ? font_focused : font_plain, ink, FONT_CENTRE, str);
+        return;
+    }
+    int w = text_width(1, str);
+    struct rect at = { w < r->w ? r->x + (r->w - w) / 2 : r->x, r->y + (r->h - TEXT_H(1)) / 2,
+                       w < r->w ? w : r->w, TEXT_H(1) };
+    text_clip(s, &at, 1, ink, str);
 }
 
 /* The title, centred in the bar between the circles' side and as much on
@@ -152,23 +176,18 @@ static void title_text(const struct surf *s, const struct rect *r, bool focused,
 static void draw_title(const struct comp_window *w, const struct tile_buf *t,
                        const struct surf *s, struct comp_box bar)
 {
+    int32_t side = LOOK_BTNS_W + LOOK_TEXT_PAD;
+    struct comp_box text = { bar.x1 + side, bar.y1, bar.x2 - side, bar.y2 };
+    if (box_empty(text) || box_empty(box_intersect(text, t->b)))
+        return;
     char title[TITLE_MAX];
     snprintf(title, sizeof(title), "%s%s", w->title ? w->title : "",
              w->flags & COMP_WIN_UNRESPONSIVE ? " (not responding)" : "");
-    int32_t side = LOOK_BTNS_W + LOOK_TEXT_PAD, room = bar.x2 - bar.x1 - 2 * side;
-    int32_t width = text_width(1, title);
-    if (room <= 0 || !title[0])
-        return;
-    int32_t x = width < room ? bar.x1 + (bar.x2 - bar.x1 - width) / 2 : bar.x1 + side;
-    struct comp_box text = { x, bar.y1 + (bar.y2 - bar.y1 - TEXT_H(1)) / 2, x + room, 0 };
-    text.y2 = text.y1 + TEXT_H(1);
-    if (box_empty(box_intersect(text, t->b)))
-        return;
-    /* Clipped to the bar's rows too: a bar shorter than the font. */
+    /* The tile's rows of the bar only: nothing drawn outside it. */
     struct comp_box rows = box_intersect(t->b, bar);
     struct surf clip = { tile_row(t, rows.y1), s->w, rows.y2 - rows.y1, s->stride };
-    struct rect r = { text.x1 - t->b.x1, text.y1 - rows.y1, width < room ? width : room,
-                      TEXT_H(1) };
+    struct rect r = { text.x1 - t->b.x1, text.y1 - rows.y1, text.x2 - text.x1,
+                      text.y2 - text.y1 };
     title_text(&clip, &r, w->flags & COMP_WIN_FOCUSED, title);
 }
 

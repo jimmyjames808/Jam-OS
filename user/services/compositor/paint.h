@@ -73,6 +73,9 @@ static inline uint32_t paint_mix(uint32_t a, uint32_t b, uint32_t c)
 
 /* ---- title.c ----------------------------------------------------------------------- */
 
+/* The titles' fonts, baked (once, before the workers start). ERR_NO_MEMORY:
+ * none, and the titles are in the 8x16 text. */
+status_t title_init(void);
 /* w's decorations (title bar and its circles, outline or borders) where
  * they meet t. */
 void title_draw(const struct comp_window *w, const struct tile_buf *t);

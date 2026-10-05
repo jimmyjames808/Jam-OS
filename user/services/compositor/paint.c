@@ -368,6 +368,8 @@ status_t paint_init(uint32_t threads)
     if (!threads)
         threads = THREADS_DEFAULT;
     uint32_t cpus = fun_cpu_count();
+    if (title_init() != OK)   /* before the workers: they only read the fonts */
+        printf("compositor: no memory for the titles' fonts: the 8x16 text\n");
     pt.threads = pool_start(threads < cpus ? threads : cpus);
     for (uint32_t i = 0; i < pt.threads; i++) {
         pt.buf[i] = big_alloc(((uint64_t)TILE_W * TILE_H + SHAPE_SAVE_PX) * 4);

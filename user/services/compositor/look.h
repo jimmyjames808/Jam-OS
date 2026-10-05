@@ -38,6 +38,7 @@
 #define LOOK_OUTLINE          0x363c44u  /* ... and not */
 #define LOOK_TITLE_FOCUSED    0xe6e9ecu  /* the title's text, focused */
 #define LOOK_TITLE            0x7f8892u  /* ... and not */
+#define LOOK_TITLE_PX         13         /* the title's size, pixels to the em (Inter) */
 #define LOOK_TEXT_PAD         8          /* between the circles and the title, and at the right */
 
 /* The three circles, on the left of the title bar: close, minimise, full

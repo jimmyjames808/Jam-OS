@@ -44,17 +44,18 @@ static struct comp_box btn_box(int32_t x, int32_t y, int b)
     return (struct comp_box){ bx, by, bx + LOOK_BTN_D, by + LOOK_BTN_D };
 }
 
-/* The pixels of colour c in rows y1..y2 of the image: how many, and the
- * leftmost and rightmost columns. */
-static unsigned ink_span(const struct cp_run *r, struct comp_box b, uint32_t c, int32_t *x1,
-                         int32_t *x2)
+/* The pixels in box b of the image nearer the text's colour ink than the
+ * bar's (the text is anti-aliased: its green channel past the middle):
+ * how many, and the leftmost and rightmost columns. */
+static unsigned ink_span(const struct cp_run *r, struct comp_box b, uint32_t ink, uint32_t bar,
+                         int32_t *x1, int32_t *x2)
 {
-    unsigned n = 0;
+    unsigned n = 0, mid = ((ink >> 8 & 0xff) + (bar >> 8 & 0xff)) / 2;
     *x1 = CP_W;
     *x2 = -1;
     for (int32_t y = b.y1; y < b.y2; y++)
         for (int32_t x = b.x1; x < b.x2; x++) {
-            if (r->image[y * CP_W + x] != c)
+            if ((r->image[y * CP_W + x] >> 8 & 0xff) <= mid)
                 continue;
             n++;
             *x1 = x < *x1 ? x : *x1;
@@ -79,9 +80,11 @@ static bool title_checks(const struct cp_run *r)
     }
     /* The titles' text, centred in each bar (frames 39..241 and 99..301). */
     int32_t x1, x2;
-    CHECK(ink_span(r, (struct comp_box){ 39, 16, 241, 44 }, LOOK_TITLE_FOCUSED, &x1, &x2) > 20);
+    struct comp_box text1 = { 39 + LOOK_BTNS_W, 17, 241 - LOOK_BTNS_W, 43 };
+    CHECK(ink_span(r, text1, LOOK_TITLE_FOCUSED, LOOK_BAR_FOCUSED, &x1, &x2) > 20);
     CHECK((x1 + x2 + 1) / 2 >= 140 - 3 && (x1 + x2 + 1) / 2 <= 140 + 3);
-    CHECK(ink_span(r, (struct comp_box){ 99, 100, 301, 128 }, LOOK_TITLE, &x1, &x2) > 20);
+    struct comp_box text2 = { 99 + LOOK_BTNS_W, 101, 301 - LOOK_BTNS_W, 127 };
+    CHECK(ink_span(r, text2, LOOK_TITLE, LOOK_BAR, &x1, &x2) > 20);
     CHECK((x1 + x2 + 1) / 2 >= 200 - 3 && (x1 + x2 + 1) / 2 <= 200 + 3);
     CHECK(x1 >= 99 + LOOK_BTNS_W + LOOK_TEXT_PAD);
     return true;

@@ -217,7 +217,7 @@ class Win:
         bx, by = x1 + BTN_LEFT, y1 + BTN_TOP
         if bx <= px < x1 + BTNS_W and by <= py < by + BTN_D:
             return GARBAGE   # the circles: checked apart
-        if x1 + BTNS_W <= px < x2 - BTNS_W and y1 + 6 <= py < y1 + 22:
+        if x1 + BTNS_W <= px < x2 - BTNS_W and y1 + 2 <= py < y1 + TITLE_H - 1:
             return GARBAGE   # the title's text: checked apart
         return BAR_F if self.focused else BAR
 
@@ -369,16 +369,18 @@ def check_buttons(step, pix, shown, cursor, size):
 
 
 def check_titles(step, pix, shown, size):
-    """The titles' text is there, in the bars the step shows uncovered."""
+    """The top window's title text is there: pixels nearer the text's colour
+    than the bar's (it is anti-aliased), in its bar."""
     bad = 0
-    for w in shown:
-        if w.look not in ("t", "m") or w is not shown[-1] and step != 1:
+    for w in shown[-1:]:
+        if w.look not in ("t", "m"):
             continue
-        ink = TEXT_F if w.focused else TEXT
+        ink, bar = (TEXT_F, BAR_F) if w.focused else (TEXT, BAR)
+        mid = ((ink >> 8 & 0xFF) + (bar >> 8 & 0xFF)) // 2
         x1, y1, x2, _ = w.frame()
         found = sum(1 for yy in range(y1, y1 + TITLE_H) for xx in range(x1 + BTNS_W, x2 - BTNS_W)
                     if 0 <= xx < size[0] and 0 <= yy < size[1] and
-                    topmost_at(shown, xx, yy) is w and rgb(pix, xx, yy) == ink)
+                    (rgb(pix, xx, yy) >> 8 & 0xFF) > mid)
         if found < 20:
             print("comp-check: step %d: window %d's title has %d pixels of text" % (step, w.n, found))
             bad += 1
