@@ -301,6 +301,12 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   starts the shell anyway (`tools/splash-test.sh`).
 - `pcilist` (the PCI device report), `keytest` (keys to the log for 30 s),
   `memmap`, `init_timeout=<s>` (how long the `init` run may take).
+- `comp`: a plain boot with the compositor (`user/services/init/comp.c`):
+  init starts it before the console, and every console runs in window
+  mode (a terminal window); `term` and Super+Enter open more terminals
+  (`terms.txt`). Not the default yet; the compositor's own input and
+  `/svc/wayland` for programs are not wired yet, so the keys still go to
+  the first terminal.
 - `comptest`: init starts only the compositor, on the screen, running its
   test scene (`user/services/init/comptest.c`): three steps of windows
   held 4 s each, then its `compositor: bench:` lines; the RESULTS box says
@@ -551,6 +557,8 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `sntp.txt`, `sntp-name.txt`, `sntp-off.txt` | the clock from the network: the jump to the peer's 2031 past forged replies, `date -r`, `date -z`, sntp restarted, devmgr restarted and the network's time kept; `ntp.server` by name; `ntp = off` ([netstack](#netstack)) | use `tools/sntp-test.sh` |
 | `allow.txt` | programs on `/data`: a copy of bin/soakload refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, a changed file refused, a list asking for devmgr or init (a copy of bin/utest) or for `right debug` (a copy of bin/wantdebug) or for the ports below 1024 (a copy of bin/serve, `svc net listen low`) refused, approval or not, `svc net listen` (bin/wantlisten: port 5000 refused on `/svc/net`, taken on `/svc/net-listen`, a TCP listener on port 80 refused there, from `/boot`, and from `/data` once `allow` showed "accepting connections from the network"), `allow -r`, a file off `/data` and a second shell refused | |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
+| `terms.txt` | more terminals, booted with `comp`: `term` opens terminal 2 (its shell's banner copied to COM1), its shell and its console killed and started again, the compositor killed and both consoles connected again, terminals up to the limit of 8 and `term` refusing one more | add `comp` |
+| `terms-windows.txt` | terminals as windows (once the compositor has xdg-shell and its own input): the first terminal's window, `term`'s window taking the keys, `exit` closing it and the keys back to the first (where `exit` refuses), Super+Enter on a USB keyboard, the compositor killed and both windows back; screenshots | add `comp`, and `QEMU_USB="-device usb-kbd,bus=xhci.0,port=2"` |
 | `jobs.txt` | programs in the background (`prog &`): the prompt back at once, their output on the screen, the "[n] done" notice and its exit code, one outliving a foreground program, Ctrl+C reaching only the foreground, `jobs`, `kill %n` (and `kill <name>` unchanged), the refusals (a pipeline, a shell command, an alias), tetris given no screen, the limit of 8, and background programs ending with their shell | |
 | `hda.txt` | the HD Audio driver's dump, `hda`, `kill hda`, `hda jacks`, `hda gain` and `hda bits` set and read back (all through the mixer's query channels) | use `tools/hda-test.sh` |
 | `vtdtest.txt` | the IOMMU checks boot (`iommu=on vtdtest`): `iommu`, then `hda` still answering after drv/hda's checks | use `tools/hda-test.sh` |
