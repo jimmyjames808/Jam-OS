@@ -44,7 +44,9 @@ static struct sleepq sleepqs[MAX_CPUS];
  * re-arms the timer for the head (sched_timer_expire, from lapic.c's
  * on_timer), so the deadline is met to the microsecond all the same, and
  * the far deadlines most waits carry (a call's 5 s) cost no timer write.
- * This relies on the tick never stopping (there is no tickless idle). In
+ * This relies on the tick never stopping (there is no tickless idle; M10's
+ * row in docs/ROADMAP.md carries the obligation: a CPU that stops its tick
+ * arms its timer for this queue's head first). In
  * the periodic mode tick_deadline stays 0: nothing is armed there anyway. */
 static bool after_next_tick(uint64_t wake_at_tsc)
 {
