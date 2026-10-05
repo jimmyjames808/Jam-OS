@@ -1,0 +1,164 @@
+# The keys Jam OS knows, whatever the layout: each key's name, its HID
+# usage and its Linux evdev key code. tools/genkeymap.py reads this file
+# with a layout file (us.txt) and makes user/lib/keymap_keys.c (the HID
+# usage to evdev code table) and, per layout, the C table and the XKB
+# keymap (user/lib/keymap_<layout>.c). `make keymap` makes them again;
+# `make check` fails if they are stale.
+#
+# One key a line:   <name> <usage> <evdev> [comment]
+#   name    XKB's name for the key (as in its "evdev" key codes, written
+#           without the < >): AE01 is the second key of row E, the digit
+#           row; RTRN is Return. A layout file names keys by it, and the
+#           XKB keymap's key numbers are the evdev code + 8.
+#   usage   the USB HID usage, Keyboard/Keypad page (0x07), in hex (USB HID
+#           Usage Tables 1.4, section 10): what hid reports.
+#   evdev   the Linux key code Wayland sends for it (the numbers of Linux's
+#           input-event-codes.h, used as facts; a decimal number).
+# Two usages may give one key (0x31 and 0x32 are both BKSL, as Linux maps
+# them); a usage is listed once. The usage-to-code pairs are Linux's own
+# (its hid-input table), so a ported program sees the codes it would on
+# Linux. Usages not listed have no code (0).
+#
+# The 105 keys of a PC keyboard, then the keypad's =, F13-F24, Power and
+# the volume keys.
+
+# The function row.
+ESC     0x29    1       Escape
+FK01    0x3a    59      F1
+FK02    0x3b    60
+FK03    0x3c    61
+FK04    0x3d    62
+FK05    0x3e    63
+FK06    0x3f    64
+FK07    0x40    65
+FK08    0x41    66
+FK09    0x42    67
+FK10    0x43    68
+FK11    0x44    87
+FK12    0x45    88
+PRSC    0x46    99      Print Screen (Linux's SysRq)
+SCLK    0x47    70      Scroll Lock
+PAUS    0x48    119     Pause
+
+# Row E: the digit row.
+TLDE    0x35    41      ` ~
+AE01    0x1e    2       1
+AE02    0x1f    3
+AE03    0x20    4
+AE04    0x21    5
+AE05    0x22    6
+AE06    0x23    7
+AE07    0x24    8
+AE08    0x25    9
+AE09    0x26    10
+AE10    0x27    11      0
+AE11    0x2d    12      - _
+AE12    0x2e    13      = +
+BKSP    0x2a    14      Backspace
+
+# Row D.
+TAB     0x2b    15
+AD01    0x14    16      q
+AD02    0x1a    17      w
+AD03    0x08    18      e
+AD04    0x15    19      r
+AD05    0x17    20      t
+AD06    0x1c    21      y
+AD07    0x18    22      u
+AD08    0x0c    23      i
+AD09    0x12    24      o
+AD10    0x13    25      p
+AD11    0x2f    26      [ {
+AD12    0x30    27      ] }
+BKSL    0x31    43      \ |
+BKSL    0x32    43      the non-US # key: the same key code as \ (Linux)
+
+# Row C.
+CAPS    0x39    58      Caps Lock
+AC01    0x04    30      a
+AC02    0x16    31      s
+AC03    0x07    32      d
+AC04    0x09    33      f
+AC05    0x0a    34      g
+AC06    0x0b    35      h
+AC07    0x0d    36      j
+AC08    0x0e    37      k
+AC09    0x0f    38      l
+AC10    0x33    39      ; :
+AC11    0x34    40      ' "
+RTRN    0x28    28      Enter
+
+# Row B.
+LFSH    0xe1    42      left Shift
+LSGT    0x64    86      the 105th key, beside left Shift (non-US \)
+AB01    0x1d    44      z
+AB02    0x1b    45      x
+AB03    0x06    46      c
+AB04    0x19    47      v
+AB05    0x05    48      b
+AB06    0x11    49      n
+AB07    0x10    50      m
+AB08    0x36    51      , <
+AB09    0x37    52      . >
+AB10    0x38    53      / ?
+RTSH    0xe5    54      right Shift
+
+# Row A.
+LCTL    0xe0    29
+LWIN    0xe3    125     left GUI (Windows) key
+LALT    0xe2    56
+SPCE    0x2c    57
+RALT    0xe6    100
+RWIN    0xe7    126
+COMP    0x65    127     the Menu (Application) key
+RCTL    0xe4    97
+
+# Editing and the arrows.
+INS     0x49    110
+HOME    0x4a    102
+PGUP    0x4b    104
+DELE    0x4c    111
+END     0x4d    107
+PGDN    0x4e    109
+UP      0x52    103
+LEFT    0x50    105
+DOWN    0x51    108
+RGHT    0x4f    106
+
+# The keypad.
+NMLK    0x53    69      Num Lock
+KPDV    0x54    98      /
+KPMU    0x55    55      *
+KPSU    0x56    74      -
+KP7     0x5f    71
+KP8     0x60    72
+KP9     0x61    73
+KPAD    0x57    78      +
+KP4     0x5c    75
+KP5     0x5d    76
+KP6     0x5e    77
+KP1     0x59    79
+KP2     0x5a    80
+KP3     0x5b    81
+KPEN    0x58    96      Enter
+KP0     0x62    82
+KPDL    0x63    83      . (Delete)
+
+# Beyond the 105.
+KPEQ    0x67    117     the keypad's =
+POWR    0x66    116     Power
+FK13    0x68    183
+FK14    0x69    184
+FK15    0x6a    185
+FK16    0x6b    186
+FK17    0x6c    187
+FK18    0x6d    188
+FK19    0x6e    189
+FK20    0x6f    190
+FK21    0x70    191
+FK22    0x71    192
+FK23    0x72    193
+FK24    0x73    194
+MUTE    0x7f    113
+VOL+    0x80    115
+VOL-    0x81    114

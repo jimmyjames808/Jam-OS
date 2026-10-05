@@ -38,6 +38,13 @@ bool t_hid_mouse_report_protocol(void);
 bool t_hid_mouse_report_ids(void);
 bool t_hid_mouse_boot_kept(void);
 
+/* keymap.c: <keymap.h>'s tables, and the US one against the hid driver. */
+bool t_keymap_hid_codes(void);
+bool t_keymap_us_keys(void);
+bool t_keymap_typing(void);
+bool t_keymap_xkb_text(void);
+bool t_keymap_matches_hid(void);
+
 /* disks.c: devmgr's disks and mounts against the mock usb-storage
  * (diskmock.c), with the fat service on its partitions. */
 bool t_disk_mounts(void);

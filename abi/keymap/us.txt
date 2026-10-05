@@ -1,0 +1,179 @@
+# A keyboard layout: US (AU keyboards are US). tools/genkeymap.py turns
+# it, with the keys in keys.txt, into user/lib/keymap_us.c: the C table
+# Jam OS's own programs decode keys with (<keymap.h>), and the XKB text
+# keymap the compositor sends Wayland clients (wl_keyboard.keymap), whose
+# first line names this layout. `make keymap` makes it again; `make
+# check` fails if it is stale.
+#
+# The format, one statement a line ('#' starts a comment):
+#   layout <name>            the layout's name: [a-z0-9_-], at most 15
+#                            characters; the keymap's first line carries it
+#   description <text>       what XKB's group name shows ("English (US)")
+#   <key> <type> <level 1> [<level 2>]
+#       key      a key's name from keys.txt
+#       type     how the modifiers pick a level:
+#                  ONE_LEVEL   one keysym whatever is held
+#                  TWO_LEVEL   Shift picks level 2
+#                  ALPHABETIC  Shift or Caps Lock picks level 2 (both: 1)
+#                  KEYPAD      Num Lock picks level 2; Shift changes
+#                              nothing (as hid's US layout has always done;
+#                              XKB's usual keypad lets Shift undo Num Lock)
+#       level    an X keysym by name (XKB's names: exclam, KP_7, Return;
+#                a single ASCII digit or letter stands for itself), the
+#                level 2 one for every type but ONE_LEVEL
+# Every key of keys.txt this layout gives a keysym is listed; a key left
+# out is no key in this layout. Ctrl, Alt and Super pick no level: they
+# go to the program with the key, as hid's events do today.
+#
+# The character a keysym types (the C table's code point; XKB clients ask
+# xkbcommon) is the generator's rule, the same for every layout: Latin-1
+# keysyms are their own code point, Unicode keysyms (0x01000000 + code
+# point) theirs; Return and KP_Enter type '\n', Tab and ISO_Left_Tab '\t',
+# BackSpace '\b', Escape 0x1b; the keypad's digits, operators and
+# separator their ASCII character; everything else (the arrows, Delete,
+# the function keys, the modifiers) none. That is hid's US layout exactly:
+# the utest checks every key it maps against the driver itself.
+
+layout us
+description English (US)
+
+# The function row.
+ESC   ONE_LEVEL   Escape
+FK01  ONE_LEVEL   F1
+FK02  ONE_LEVEL   F2
+FK03  ONE_LEVEL   F3
+FK04  ONE_LEVEL   F4
+FK05  ONE_LEVEL   F5
+FK06  ONE_LEVEL   F6
+FK07  ONE_LEVEL   F7
+FK08  ONE_LEVEL   F8
+FK09  ONE_LEVEL   F9
+FK10  ONE_LEVEL   F10
+FK11  ONE_LEVEL   F11
+FK12  ONE_LEVEL   F12
+PRSC  ONE_LEVEL   Print
+SCLK  ONE_LEVEL   Scroll_Lock
+PAUS  ONE_LEVEL   Pause
+
+# The digit row.
+TLDE  TWO_LEVEL   grave         asciitilde
+AE01  TWO_LEVEL   1             exclam
+AE02  TWO_LEVEL   2             at
+AE03  TWO_LEVEL   3             numbersign
+AE04  TWO_LEVEL   4             dollar
+AE05  TWO_LEVEL   5             percent
+AE06  TWO_LEVEL   6             asciicircum
+AE07  TWO_LEVEL   7             ampersand
+AE08  TWO_LEVEL   8             asterisk
+AE09  TWO_LEVEL   9             parenleft
+AE10  TWO_LEVEL   0             parenright
+AE11  TWO_LEVEL   minus         underscore
+AE12  TWO_LEVEL   equal         plus
+BKSP  ONE_LEVEL   BackSpace
+
+# Row D.
+TAB   TWO_LEVEL   Tab           ISO_Left_Tab
+AD01  ALPHABETIC  q             Q
+AD02  ALPHABETIC  w             W
+AD03  ALPHABETIC  e             E
+AD04  ALPHABETIC  r             R
+AD05  ALPHABETIC  t             T
+AD06  ALPHABETIC  y             Y
+AD07  ALPHABETIC  u             U
+AD08  ALPHABETIC  i             I
+AD09  ALPHABETIC  o             O
+AD10  ALPHABETIC  p             P
+AD11  TWO_LEVEL   bracketleft   braceleft
+AD12  TWO_LEVEL   bracketright  braceright
+BKSL  TWO_LEVEL   backslash     bar
+
+# Row C.
+CAPS  ONE_LEVEL   Caps_Lock
+AC01  ALPHABETIC  a             A
+AC02  ALPHABETIC  s             S
+AC03  ALPHABETIC  d             D
+AC04  ALPHABETIC  f             F
+AC05  ALPHABETIC  g             G
+AC06  ALPHABETIC  h             H
+AC07  ALPHABETIC  j             J
+AC08  ALPHABETIC  k             K
+AC09  ALPHABETIC  l             L
+AC10  TWO_LEVEL   semicolon     colon
+AC11  TWO_LEVEL   apostrophe    quotedbl
+RTRN  ONE_LEVEL   Return
+
+# Row B. The 105th key types \ and | as on hid's US layout (XKB's pc105
+# puts < and > there).
+LFSH  ONE_LEVEL   Shift_L
+LSGT  TWO_LEVEL   backslash     bar
+AB01  ALPHABETIC  z             Z
+AB02  ALPHABETIC  x             X
+AB03  ALPHABETIC  c             C
+AB04  ALPHABETIC  v             V
+AB05  ALPHABETIC  b             B
+AB06  ALPHABETIC  n             N
+AB07  ALPHABETIC  m             M
+AB08  TWO_LEVEL   comma         less
+AB09  TWO_LEVEL   period        greater
+AB10  TWO_LEVEL   slash         question
+RTSH  ONE_LEVEL   Shift_R
+
+# Row A. US has no AltGr: the right Alt is an Alt.
+LCTL  ONE_LEVEL   Control_L
+LWIN  ONE_LEVEL   Super_L
+LALT  ONE_LEVEL   Alt_L
+SPCE  ONE_LEVEL   space
+RALT  ONE_LEVEL   Alt_R
+RWIN  ONE_LEVEL   Super_R
+COMP  ONE_LEVEL   Menu
+RCTL  ONE_LEVEL   Control_R
+
+# Editing and the arrows.
+INS   ONE_LEVEL   Insert
+HOME  ONE_LEVEL   Home
+PGUP  ONE_LEVEL   Prior
+DELE  ONE_LEVEL   Delete
+END   ONE_LEVEL   End
+PGDN  ONE_LEVEL   Next
+UP    ONE_LEVEL   Up
+LEFT  ONE_LEVEL   Left
+DOWN  ONE_LEVEL   Down
+RGHT  ONE_LEVEL   Right
+
+# The keypad: with Num Lock off, the keys printed under the digits.
+NMLK  ONE_LEVEL   Num_Lock
+KPDV  ONE_LEVEL   KP_Divide
+KPMU  ONE_LEVEL   KP_Multiply
+KPSU  ONE_LEVEL   KP_Subtract
+KP7   KEYPAD      KP_Home       KP_7
+KP8   KEYPAD      KP_Up         KP_8
+KP9   KEYPAD      KP_Prior      KP_9
+KPAD  ONE_LEVEL   KP_Add
+KP4   KEYPAD      KP_Left       KP_4
+KP5   KEYPAD      KP_Begin      KP_5
+KP6   KEYPAD      KP_Right      KP_6
+KP1   KEYPAD      KP_End        KP_1
+KP2   KEYPAD      KP_Down       KP_2
+KP3   KEYPAD      KP_Next       KP_3
+KPEN  ONE_LEVEL   KP_Enter
+KP0   KEYPAD      KP_Insert     KP_0
+KPDL  KEYPAD      KP_Delete     KP_Decimal
+
+# Beyond the 105.
+KPEQ  ONE_LEVEL   KP_Equal
+POWR  ONE_LEVEL   XF86PowerOff
+FK13  ONE_LEVEL   F13
+FK14  ONE_LEVEL   F14
+FK15  ONE_LEVEL   F15
+FK16  ONE_LEVEL   F16
+FK17  ONE_LEVEL   F17
+FK18  ONE_LEVEL   F18
+FK19  ONE_LEVEL   F19
+FK20  ONE_LEVEL   F20
+FK21  ONE_LEVEL   F21
+FK22  ONE_LEVEL   F22
+FK23  ONE_LEVEL   F23
+FK24  ONE_LEVEL   F24
+MUTE  ONE_LEVEL   XF86AudioMute
+VOL+  ONE_LEVEL   XF86AudioRaiseVolume
+VOL-  ONE_LEVEL   XF86AudioLowerVolume

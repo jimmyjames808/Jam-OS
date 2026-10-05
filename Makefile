@@ -102,7 +102,7 @@ ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
 $(error two driver directories share a name: $(DRIVER_DIRS))
 endif
 
-.PHONY: all image run debug clean font usb flash syscalls idl check compdb includes FORCE
+.PHONY: all image run debug clean font usb flash syscalls idl keymap check compdb includes FORCE
 
 all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL)
 
@@ -148,6 +148,13 @@ $(IDL_OK): $(IDL_SRCS) tools/genidl.py $(wildcard $(IDL_GEN))
 
 idl:
 	python3 tools/genidl.py gen
+
+# Keyboard layouts. tools/genkeymap.py turns abi/keymap/ (keys.txt, and a
+# file per layout) into user/lib/keymap_keys.c and user/lib/keymap_<layout>.c
+# (<keymap.h>: the C tables and the XKB keymap). Committed like the IDL;
+# `make check` fails if they are stale; `make keymap` makes them again.
+keymap:
+	python3 tools/genkeymap.py gen
 
 $(OBJS): | $(SYSCALLS_OK) $(IDL_OK)
 
@@ -445,6 +452,7 @@ $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
+	python3 tools/genkeymap.py check
 	CC="$(CC)" NM="$(CROSS)nm" CFLAGS="$(DRV_CFLAGS)" SURFACE="$(DRV_SURFACE)" \
 	    OUT="$(BUILD)/checkdriver-tests" sh tools/checkdriver-selftest.sh
 	python3 tools/checkdocs.py
