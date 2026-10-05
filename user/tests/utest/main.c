@@ -886,6 +886,8 @@ static const struct {
     { "jwl_conn_new_ids", t_jwl_conn_new_ids },
     { "jwl_fuzz_decode", t_jwl_fuzz_decode },
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
+    { "comp_globals", t_comp_globals },
+    { "comp_surface", t_comp_surface },
 };
 
 int main(int argc, char **argv)

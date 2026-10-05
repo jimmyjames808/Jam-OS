@@ -436,6 +436,11 @@ bool t_jwl_conn_new_ids(void);
 bool t_jwl_fuzz_decode(void);
 bool t_jwl_fuzz_conn(void);
 
+/* comp.c, comp_bad.c: bin/compositor headless, driven by Wayland clients
+ * over real channels (comptest.h). */
+bool t_comp_globals(void);
+bool t_comp_surface(void);
+
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */
 bool t_netdev_ring_counts(void);
