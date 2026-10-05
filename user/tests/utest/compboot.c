@@ -11,6 +11,8 @@
  * t_comp_early_keys: keys typed while no window has the keys (before the
  * first, or after the focused one went) reach the next that takes them,
  * with their modifiers, unless they are more than 5 s old by then.
+ * t_comp_screen_on_top: a full-screen window that takes no keys stays over
+ * a window that maps after it and takes the keys.
  * t_comp_no_keyboard: a window whose client has no wl_keyboard (the boot
  * splash's) never takes the keys: not when it maps over the focused
  * window, not when it is clicked. */
@@ -22,6 +24,7 @@
 #include <idl/input.h>
 #include <jwl.h>
 #include <jwl/wayland.h>
+#include <jwl/xdg_shell.h>
 #include <os.h>
 #include "compseat.h"
 #include "utest.h"
@@ -219,6 +222,71 @@ static bool keyless_client(struct cs *t, struct sc *c)
     CHECK_ST(jwl_wl_seat_get_pointer(k, c->seat, c->ptr), OK);
     c->kb = 0;
     CHECK_ST(ct_roundtrip(&c->k), OK);
+    return true;
+}
+
+/* c's full-screen xdg toplevel (the splash's kind of window), mapped with
+ * an OUT_W x OUT_H buffer. */
+static bool fullscreen_window(struct sc *c)
+{
+    struct ct_client *k = &c->k;
+    struct jwl_conn *n = k->c;
+    uint32_t wm = ct_new(k, &jwl_xdg_wm_base_interface, 1);
+    CHECK(wm && jwl_wl_registry_bind(n, k->registry, 5, "xdg_wm_base", 1, wm) == OK);
+    uint32_t size = OUT_W * OUT_H * 4;
+    handle_t vmo = HANDLE_INVALID;
+    uint32_t pool = ct_pool(k, size, &vmo);
+    if (vmo != HANDLE_INVALID)
+        jam_handle_close(vmo);
+    uint32_t buf = pool ? ct_new(k, &jwl_wl_buffer_interface, 1) : 0;
+    CHECK(buf && jwl_wl_shm_pool_create_buffer(n, pool, buf, 0, OUT_W, OUT_H, OUT_W * 4,
+                                               JWL_WL_SHM_FORMAT_XRGB8888) == OK);
+    uint32_t s = ct_new(k, &jwl_wl_surface_interface, 4);
+    uint32_t xs = ct_new(k, &jwl_xdg_surface_interface, 1);
+    uint32_t top = ct_new(k, &jwl_xdg_toplevel_interface, 1);
+    CHECK(s && xs && top);
+    CHECK_ST(jwl_wl_compositor_create_surface(n, k->compositor, s), OK);
+    CHECK_ST(jwl_xdg_wm_base_get_xdg_surface(n, wm, xs, s), OK);
+    CHECK_ST(jwl_xdg_surface_get_toplevel(n, xs, top), OK);
+    CHECK_ST(jwl_xdg_toplevel_set_fullscreen(n, top, 0), OK);
+    CHECK_ST(jwl_wl_surface_commit(n, s), OK);   /* the initial commit: a configure comes */
+    const struct ct_event *e = ct_await(k, &jwl_xdg_surface_interface,
+                                        JWL_XDG_SURFACE_EV_CONFIGURE, xs, CT_WAIT);
+    CHECK(e);
+    CHECK_ST(jwl_xdg_surface_ack_configure(n, xs, e->u[0]), OK);
+    CHECK_ST(jwl_wl_surface_attach(n, s, buf, 0, 0), OK);
+    CHECK_ST(jwl_wl_surface_commit(n, s), OK);
+    CHECK_ST(ct_roundtrip(k), OK);
+    return true;
+}
+
+/* A full-screen window that takes no keys (the splash) mapped first, then
+ * a's (the first terminal's, later than the splash's): a takes the keys
+ * but comes up under the full-screen one, which a click reaches. */
+bool t_comp_screen_on_top(void)
+{
+    static struct sc a, s;
+    struct cs t;
+    CHECK(cs_start(&t));
+    CHECK(keyless_client(&t, &s));
+    CHECK(fullscreen_window(&s));
+    CHECK(cs_client(&t, &a));
+    CHECK(cs_window(&a, 10, 10, 64, 64));
+    CHECK(ct_await(&a.k, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER, a.kb, CT_WAIT));
+    ct_clear(&a.k);
+    ct_clear(&s.k);
+    CHECK(cs_pointer_to(&t, 20, 20));
+    CHECK(cs_button(&t, true));
+    CHECK(cs_button(&t, false));
+    CHECK(cs_tap(&t, U_A, 0));
+    CHECK(cs_sync(&a, &s));
+    CHECK(find_ev(&s, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON));
+    CHECK(!find_ev(&a, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON));
+    const uint32_t ka[] = { DOWN(KEY_A), UP(KEY_A) };
+    CHECK(keys_are(&a.k, ka, 2));   /* the keys are still a's */
+    ct_close(&s.k);
+    ct_close(&a.k);
+    CHECK(cs_stop(&t));
     return true;
 }
 

@@ -64,6 +64,25 @@ static bool focusable(const struct comp_window *w)
            seat_of(w->surface->client)->nres[SEAT_KEYBOARD] > 0;
 }
 
+/* A full-screen window whose client takes no keys (the boot splash) is a
+ * screen over the desktop, not a window to work in: a window that takes
+ * the focus comes up under it, never over it (the first terminal's, when
+ * it maps after the splash's). Raised again, in their own order. */
+#define SCREENS_MAX 4u
+static void screens_on_top(void)
+{
+    struct comp_window *s[SCREENS_MAX];
+    unsigned n = 0;
+    for (struct comp_window *w = scene.bottom; w && n < SCREENS_MAX; w = w->above)
+        if ((w->flags & COMP_WIN_MAPPED) && (w->flags & COMP_WIN_FULLSCREEN) &&
+            client_alive(w->surface->client) &&
+            !seat_of(w->surface->client)->nres[SEAT_KEYBOARD])
+            s[n++] = w;
+    for (unsigned i = 0; i < n; i++)
+        if (s[i] != scene.top)
+            window_raise(s[i]);
+}
+
 void seat_focus(struct comp_window *w)
 {
     if (w == focused || (w && !focusable(w)))
@@ -81,6 +100,7 @@ void seat_focus(struct comp_window *w)
         keyboard_enter(w);
     }
     wm_focus_changed(w);   /* raised, and the toplevels' activated state */
+    screens_on_top();
 }
 
 void focus_click(struct comp_window *w)
