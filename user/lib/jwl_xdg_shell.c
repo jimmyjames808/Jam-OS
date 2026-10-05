@@ -65,6 +65,8 @@ const struct jwl_interface jwl_xdg_wm_base_interface = {
     .nevents = 1,
     .requests = requests_xdg_wm_base,
     .events = events_xdg_wm_base,
+    .request_destructors = JWL_XDG_WM_BASE_REQ_DESTRUCTORS,
+    .event_destructors = JWL_XDG_WM_BASE_EV_DESTRUCTORS,
 };
 
 /* xdg_positioner */
@@ -87,6 +89,8 @@ const struct jwl_interface jwl_xdg_positioner_interface = {
     .nevents = 0,
     .requests = requests_xdg_positioner,
     .events = NULL,
+    .request_destructors = JWL_XDG_POSITIONER_REQ_DESTRUCTORS,
+    .event_destructors = 0,
 };
 
 /* xdg_surface */
@@ -115,6 +119,8 @@ const struct jwl_interface jwl_xdg_surface_interface = {
     .nevents = 1,
     .requests = requests_xdg_surface,
     .events = events_xdg_surface,
+    .request_destructors = JWL_XDG_SURFACE_REQ_DESTRUCTORS,
+    .event_destructors = JWL_XDG_SURFACE_EV_DESTRUCTORS,
 };
 
 /* xdg_toplevel */
@@ -169,6 +175,8 @@ const struct jwl_interface jwl_xdg_toplevel_interface = {
     .nevents = 4,
     .requests = requests_xdg_toplevel,
     .events = events_xdg_toplevel,
+    .request_destructors = JWL_XDG_TOPLEVEL_REQ_DESTRUCTORS,
+    .event_destructors = JWL_XDG_TOPLEVEL_EV_DESTRUCTORS,
 };
 
 /* xdg_popup */
@@ -197,4 +205,6 @@ const struct jwl_interface jwl_xdg_popup_interface = {
     .nevents = 3,
     .requests = requests_xdg_popup,
     .events = events_xdg_popup,
+    .request_destructors = JWL_XDG_POPUP_REQ_DESTRUCTORS,
+    .event_destructors = JWL_XDG_POPUP_EV_DESTRUCTORS,
 };

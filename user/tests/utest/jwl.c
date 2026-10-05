@@ -260,6 +260,10 @@ bool t_jwl_tables_generated(void)
     for (unsigned i = 0; i < sizeof(gen) / sizeof(gen[0]); i++)
         if (jwl_interface_check(gen[i]) != OK)
             FAIL("genwl's %s refused", gen[i]->name);
+    /* The tables carry the XML's destructors, so libjwl forgets the object. */
+    CHECK_EQ(jwl_wl_callback_interface.event_destructors, JWL_WL_CALLBACK_EV_DESTRUCTORS);
+    CHECK_EQ(jwl_wl_surface_interface.request_destructors, JWL_WL_SURFACE_REQ_DESTRUCTORS);
+    CHECK(jwl_wl_callback_interface.event_destructors != 0);
     return true;
 }
 

@@ -67,6 +67,8 @@ const struct jwl_interface jwl_wl_display_interface = {
     .nevents = 2,
     .requests = requests_wl_display,
     .events = events_wl_display,
+    .request_destructors = JWL_WL_DISPLAY_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_DISPLAY_EV_DESTRUCTORS,
 };
 
 /* wl_registry */
@@ -90,6 +92,8 @@ const struct jwl_interface jwl_wl_registry_interface = {
     .nevents = 2,
     .requests = requests_wl_registry,
     .events = events_wl_registry,
+    .request_destructors = JWL_WL_REGISTRY_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_REGISTRY_EV_DESTRUCTORS,
 };
 
 /* wl_callback */
@@ -103,6 +107,8 @@ const struct jwl_interface jwl_wl_callback_interface = {
     .nevents = 1,
     .requests = NULL,
     .events = events_wl_callback,
+    .request_destructors = 0,
+    .event_destructors = JWL_WL_CALLBACK_EV_DESTRUCTORS,
 };
 
 /* wl_compositor */
@@ -124,6 +130,8 @@ const struct jwl_interface jwl_wl_compositor_interface = {
     .nevents = 0,
     .requests = requests_wl_compositor,
     .events = NULL,
+    .request_destructors = JWL_WL_COMPOSITOR_REQ_DESTRUCTORS,
+    .event_destructors = 0,
 };
 
 /* wl_shm_pool */
@@ -147,6 +155,8 @@ const struct jwl_interface jwl_wl_shm_pool_interface = {
     .nevents = 0,
     .requests = requests_wl_shm_pool,
     .events = NULL,
+    .request_destructors = JWL_WL_SHM_POOL_REQ_DESTRUCTORS,
+    .event_destructors = 0,
 };
 
 /* wl_shm */
@@ -169,6 +179,8 @@ const struct jwl_interface jwl_wl_shm_interface = {
     .nevents = 1,
     .requests = requests_wl_shm,
     .events = events_wl_shm,
+    .request_destructors = JWL_WL_SHM_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_SHM_EV_DESTRUCTORS,
 };
 
 /* wl_buffer */
@@ -185,6 +197,8 @@ const struct jwl_interface jwl_wl_buffer_interface = {
     .nevents = 1,
     .requests = requests_wl_buffer,
     .events = events_wl_buffer,
+    .request_destructors = JWL_WL_BUFFER_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_BUFFER_EV_DESTRUCTORS,
 };
 
 /* wl_data_offer */
@@ -207,6 +221,8 @@ const struct jwl_interface jwl_wl_data_offer_interface = {
     .nevents = 3,
     .requests = requests_wl_data_offer,
     .events = events_wl_data_offer,
+    .request_destructors = JWL_WL_DATA_OFFER_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_DATA_OFFER_EV_DESTRUCTORS,
 };
 
 /* wl_data_source */
@@ -230,6 +246,8 @@ const struct jwl_interface jwl_wl_data_source_interface = {
     .nevents = 6,
     .requests = requests_wl_data_source,
     .events = events_wl_data_source,
+    .request_destructors = JWL_WL_DATA_SOURCE_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_DATA_SOURCE_EV_DESTRUCTORS,
 };
 
 /* wl_data_device */
@@ -276,6 +294,8 @@ const struct jwl_interface jwl_wl_data_device_interface = {
     .nevents = 6,
     .requests = requests_wl_data_device,
     .events = events_wl_data_device,
+    .request_destructors = JWL_WL_DATA_DEVICE_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_DATA_DEVICE_EV_DESTRUCTORS,
 };
 
 /* wl_data_device_manager */
@@ -300,6 +320,8 @@ const struct jwl_interface jwl_wl_data_device_manager_interface = {
     .nevents = 0,
     .requests = requests_wl_data_device_manager,
     .events = NULL,
+    .request_destructors = JWL_WL_DATA_DEVICE_MANAGER_REQ_DESTRUCTORS,
+    .event_destructors = 0,
 };
 
 /* wl_shell */
@@ -317,6 +339,8 @@ const struct jwl_interface jwl_wl_shell_interface = {
     .nevents = 0,
     .requests = requests_wl_shell,
     .events = NULL,
+    .request_destructors = JWL_WL_SHELL_REQ_DESTRUCTORS,
+    .event_destructors = 0,
 };
 
 /* wl_shell_surface */
@@ -376,6 +400,8 @@ const struct jwl_interface jwl_wl_shell_surface_interface = {
     .nevents = 3,
     .requests = requests_wl_shell_surface,
     .events = events_wl_shell_surface,
+    .request_destructors = JWL_WL_SHELL_SURFACE_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_SHELL_SURFACE_EV_DESTRUCTORS,
 };
 
 /* wl_surface */
@@ -429,6 +455,8 @@ const struct jwl_interface jwl_wl_surface_interface = {
     .nevents = 4,
     .requests = requests_wl_surface,
     .events = events_wl_surface,
+    .request_destructors = JWL_WL_SURFACE_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_SURFACE_EV_DESTRUCTORS,
 };
 
 /* wl_seat */
@@ -458,6 +486,8 @@ const struct jwl_interface jwl_wl_seat_interface = {
     .nevents = 2,
     .requests = requests_wl_seat,
     .events = events_wl_seat,
+    .request_destructors = JWL_WL_SEAT_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_SEAT_EV_DESTRUCTORS,
 };
 
 /* wl_pointer */
@@ -502,6 +532,8 @@ const struct jwl_interface jwl_wl_pointer_interface = {
     .nevents = 12,
     .requests = requests_wl_pointer,
     .events = events_wl_pointer,
+    .request_destructors = JWL_WL_POINTER_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_POINTER_EV_DESTRUCTORS,
 };
 
 /* wl_keyboard */
@@ -532,6 +564,8 @@ const struct jwl_interface jwl_wl_keyboard_interface = {
     .nevents = 6,
     .requests = requests_wl_keyboard,
     .events = events_wl_keyboard,
+    .request_destructors = JWL_WL_KEYBOARD_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_KEYBOARD_EV_DESTRUCTORS,
 };
 
 /* wl_touch */
@@ -562,6 +596,8 @@ const struct jwl_interface jwl_wl_touch_interface = {
     .nevents = 7,
     .requests = requests_wl_touch,
     .events = events_wl_touch,
+    .request_destructors = JWL_WL_TOUCH_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_TOUCH_EV_DESTRUCTORS,
 };
 
 /* wl_output */
@@ -583,6 +619,8 @@ const struct jwl_interface jwl_wl_output_interface = {
     .nevents = 6,
     .requests = requests_wl_output,
     .events = events_wl_output,
+    .request_destructors = JWL_WL_OUTPUT_REQ_DESTRUCTORS,
+    .event_destructors = JWL_WL_OUTPUT_EV_DESTRUCTORS,
 };
 
 /* wl_region */
@@ -598,6 +636,8 @@ const struct jwl_interface jwl_wl_region_interface = {
     .nevents = 0,
     .requests = requests_wl_region,
     .events = NULL,
+    .request_destructors = JWL_WL_REGION_REQ_DESTRUCTORS,
+    .event_destructors = 0,
 };
 
 /* wl_subcompositor */
@@ -618,6 +658,8 @@ const struct jwl_interface jwl_wl_subcompositor_interface = {
     .nevents = 0,
     .requests = requests_wl_subcompositor,
     .events = NULL,
+    .request_destructors = JWL_WL_SUBCOMPOSITOR_REQ_DESTRUCTORS,
+    .event_destructors = 0,
 };
 
 /* wl_subsurface */
@@ -642,6 +684,8 @@ const struct jwl_interface jwl_wl_subsurface_interface = {
     .nevents = 0,
     .requests = requests_wl_subsurface,
     .events = NULL,
+    .request_destructors = JWL_WL_SUBSURFACE_REQ_DESTRUCTORS,
+    .event_destructors = 0,
 };
 
 /* wl_fixes */
@@ -664,4 +708,6 @@ const struct jwl_interface jwl_wl_fixes_interface = {
     .nevents = 0,
     .requests = requests_wl_fixes,
     .events = NULL,
+    .request_destructors = JWL_WL_FIXES_REQ_DESTRUCTORS,
+    .event_destructors = 0,
 };

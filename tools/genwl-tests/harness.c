@@ -118,7 +118,8 @@ static void dump_messages(char kind, const struct jwl_message *ms, unsigned n)
 static void dump(void)
 {
     for (const struct jwl_interface *const *i = genwl_all; *i; i++) {
-        printf("I %s %u %u %u\n", (*i)->name, (*i)->version, (*i)->nrequests, (*i)->nevents);
+        printf("I %s %u %u %u %x %x\n", (*i)->name, (*i)->version, (*i)->nrequests,
+               (*i)->nevents, (*i)->request_destructors, (*i)->event_destructors);
         dump_messages('R', (*i)->requests, (*i)->nrequests);
         dump_messages('E', (*i)->events, (*i)->nevents);
     }

@@ -47,8 +47,10 @@ The header, for each interface <i> (in C names: jwl_<i>, JWL_<I>):
                                     came in
     JWL_<I>_REQ_DESTRUCTORS, ..._EV_DESTRUCTORS
                                     bit n set: message n destroys its object
-                                    (`type="destructor"`; the table has no
-                                    field for it)
+                                    (`type="destructor"`); the table carries
+                                    them too (request_destructors,
+                                    event_destructors), so libjwl forgets the
+                                    object when one is sent or received
     enum jwl_<i>_<e>, JWL_<I>_<E>_<V>   the XML's enums; entries that came
                                     later also get ..._SINCE
     jwl_<i>_<r>(c, self, args...)   a client's request r on object self
@@ -731,6 +733,10 @@ def gen_tables(p):
                 f"    .nevents = {len(i.events)},",
                 f"    .requests = {f'requests_{i.name}' if i.requests else 'NULL'},",
                 f"    .events = {f'events_{i.name}' if i.events else 'NULL'},",
+                f"    .request_destructors = "
+                f"{f'JWL_{i.name.upper()}_REQ_DESTRUCTORS' if i.requests else '0'},",
+                f"    .event_destructors = "
+                f"{f'JWL_{i.name.upper()}_EV_DESTRUCTORS' if i.events else '0'},",
                 "};"]
     return "\n".join(out) + "\n"
 

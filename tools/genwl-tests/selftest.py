@@ -39,7 +39,8 @@ typedef uint32_t handle_t;
 #define ERR_INVALID_ARGS (-10)
 struct jwl_message;
 struct jwl_interface { const char *name; uint32_t version; uint16_t nrequests, nevents;
-                       const struct jwl_message *requests, *events; };
+                       const struct jwl_message *requests, *events;
+                       uint32_t request_destructors, event_destructors; };
 struct jwl_message { const char *name; const char *signature;
                      const struct jwl_interface *const *types; };
 struct jwl_conn;
@@ -400,7 +401,10 @@ def want_dump(protocols):
     out = []
     for p in protocols:
         for i in p.interfaces:
-            out.append(f"I {i.name} {i.version} {len(i.requests)} {len(i.events)}")
+            masks = [sum(1 << m.opcode for m in msgs if m.destructor)
+                     for msgs in (i.requests, i.events)]
+            out.append(f"I {i.name} {i.version} {len(i.requests)} {len(i.events)} "
+                       f"{masks[0]:x} {masks[1]:x}")
             for tag, msgs in (("R", i.requests), ("E", i.events)):
                 for m in msgs:
                     types = [t or "-" for _, t, _ in m.letters()]
