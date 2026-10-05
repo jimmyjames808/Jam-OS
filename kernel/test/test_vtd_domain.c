@@ -4,7 +4,8 @@
  * Pure ones run everywhere: the root and context entries' exact bits
  * against VT-d 4.1's 9.1 and 9.3 written out as literals, pass-through's
  * address width from CAP.SAGAW, the early RMRR reservation on a made-up
- * memory map, the domain-id allocator.
+ * memory map, the domain-id allocator, the root table's page flushed for a
+ * unit that doesn't snoop.
  *
  * The rest need translation on (QEMU's intel-iommu and the boot word
  * iommu=on: tools/vtd-test.sh runs them with caching mode on and off) and
@@ -28,6 +29,7 @@
  *     unit is pointed at a copy of the tables while it translates, and
  *     devices keep working through it. */
 #include <jam/boot.h>
+#include <jam/dbghook.h>
 #include <jam/iommu.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
@@ -133,6 +135,60 @@ KTEST(vtd_domain_did_alloc)
     KT_EQ(vtd_did_free(&ctl, 7), OK);   /* not live: no invalidation */
     KT_EQ(vtd_did_alloc(&ctl), 7);
     KT_EQ(vtd_did_alloc(&ctl), 0);
+}
+
+/* The lines vtd_flush_lines flushed while the hook was on (any CPU: this
+ * test only reads them for the page it made). */
+#define FLUSHES_KEPT 64
+static struct vtd_flush_range flushes[FLUSHES_KEPT];
+static uint32_t nflushes;
+
+static void keep_flush(void *arg)
+{
+    uint32_t n = __atomic_fetch_add(&nflushes, 1, __ATOMIC_RELAXED);
+    if (n < FLUSHES_KEPT)
+        flushes[n] = *(const struct vtd_flush_range *)arg;
+}
+
+/* Were all of [va, va + len) flushed, 64-byte line by line? */
+static bool all_flushed(const void *va, size_t len)
+{
+    uint32_t n = __atomic_load_n(&nflushes, __ATOMIC_RELAXED);
+    if (n > FLUSHES_KEPT)
+        n = FLUSHES_KEPT;
+    for (uintptr_t p = (uintptr_t)va; p < (uintptr_t)va + len; p += 64) {
+        bool covered = false;
+        for (uint32_t i = 0; i < n && !covered; i++) {
+            uintptr_t a = (uintptr_t)flushes[i].va & ~(uintptr_t)63;
+            covered = p >= a && p < (uintptr_t)flushes[i].va + flushes[i].len;
+        }
+        if (!covered)
+            return false;
+    }
+    return true;
+}
+
+/* A unit whose walks don't snoop (ECAP.C = 0, the PC's) reads the root
+ * table from memory: the cleared page must reach memory before the unit
+ * is pointed at it, or the root entries of buses with no context table
+ * are whatever the page held before (9.1: P in bit 0 of each). Review
+ * finding 1. A unit that snoops needs no flush. */
+KTEST(vtd_domain_root_table_flushed)
+{
+    struct vtd_unit u = { .ecap = 0 };   /* C = 0 */
+    __atomic_store_n(&nflushes, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&dbg_hooks[DBG_VTD_FLUSH], keep_flush, __ATOMIC_RELEASE);
+    uint64_t root = vtd_root_table_new(&u);
+    __atomic_store_n(&dbg_hooks[DBG_VTD_FLUSH], NULL, __ATOMIC_RELEASE);
+    KT_ASSERT(root);
+    const uint64_t *e = phys_to_virt(root);
+    bool zero = true;
+    for (unsigned i = 0; i < PAGE_SIZE / 8; i++)
+        zero &= e[i] == 0;
+    bool flushed = all_flushed(e, PAGE_SIZE);
+    pmm_free_page_phys(root);
+    KT_ASSERT(zero);
+    KT_ASSERT(flushed);
 }
 
 /* ---- live: translation on --------------------------------------------------------------- */

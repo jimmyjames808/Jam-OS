@@ -111,8 +111,16 @@ status_t vtd_fns_init(void)
 
 uint64_t vtd_root_table_new(const struct vtd_unit *u)
 {
-    (void)u;
-    return pmm_alloc_page_phys(PMM_ZERO);
+    /* PMM_ZERO clears the page through the CPU's caches. A unit whose
+     * walks don't snoop (ECAP.C = 0) reads memory, which still holds what
+     * the page held before: every root entry not given a context table
+     * later (table_for flushes those) would be stale, maybe "present"
+     * (9.1, P in bit 0) and naming any page as a context table. So the
+     * whole page is flushed, as every other table page is. */
+    uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
+    if (pa && !VTD_ECAP_C(u->ecap))
+        vtd_flush_lines(phys_to_virt(pa), PAGE_SIZE);
+    return pa;
 }
 
 status_t vtd_ctl_init(struct vtd_unit *u)

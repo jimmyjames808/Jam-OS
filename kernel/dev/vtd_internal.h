@@ -197,8 +197,13 @@ bool vtd_gcmd_nolock(struct vtd_unit *u, uint32_t bit, bool on, uint32_t status,
 status_t vtd_unit_flush_write_buffer(struct vtd_unit *u);
 
 /* Make the CPU's writes to [va, va + len) visible to a unit whose table
- * reads don't snoop (CLFLUSHOPT or CLFLUSH over the lines, then SFENCE). */
+ * reads don't snoop (CLFLUSHOPT or CLFLUSH over the lines, then SFENCE).
+ * The tests see each call through DBG_VTD_FLUSH. */
 void vtd_flush_lines(const void *va, size_t len);
+struct vtd_flush_range {
+    const void *va;
+    size_t      len;
+};
 
 /* ---- the queue (vtd_qi.c) --------------------------------------------------- */
 
