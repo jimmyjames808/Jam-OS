@@ -49,7 +49,8 @@ static void report_unit_domains(struct vtd_ctl *ctl)
             k++;
         if (k == nseen && nseen < 64)
             seen[nseen++] = f->cur;
-        kprintf("iommu:     %02x:%02x.%x -> domain %u (%s)%s, %u DMA fault(s)\n", dev->info.bus,
+        kprintf("iommu:     %02x:%02x.%x -> domain %u (%s)%s, %u DMA fault(s) since attached\n",
+                dev->info.bus,
                 dev->info.dev, dev->info.fn, f->cur->ud.did, f->cur->what,
                 f->muted ? ", muted" : "", f->dma_faults);
     }

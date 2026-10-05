@@ -132,6 +132,7 @@ domain_ok() {
         "ktest: vtd_domain_pass_dma_lands        ok" \
         "ktest: vtd_domain_own_domain            ok" \
         "ktest: vtd_domain_mute_after_faults     ok" \
+        "ktest: vtd_domain_new_driver_fresh_count ok" \
         "ktest: vtd_domain_handover_while_on     ok"
 }
 

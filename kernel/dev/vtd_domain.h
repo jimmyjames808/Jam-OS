@@ -28,7 +28,9 @@
  * Fault-processing disable ("mute", VT-d 9.3 FPD): a function whose DMA
  * faulted VTD_FAULT_LOGGED times gets FPD in its context entry, so a
  * device stuck retrying can't keep the fault registers full. Attaching it
- * to a new domain (a driver) clears it.
+ * to a new domain (a driver) clears it and starts the function's count
+ * again, so a new driver is muted only for its own faults. (The log's
+ * counts per requester, vtd_fault.c, run for the whole boot.)
  *
  * Locks, in order: "vtd context" (a mutex per unit: its context tables,
  * its functions' state, its domain ids) before "vtd domain" (a mutex per
@@ -119,7 +121,8 @@ struct vtd_fn {
     struct vtd_ctl  *ctl;          /* its unit's tables; NULL: not translated */
     uint16_t         sid;          /* requester id: bus 15:8, device 7:3, function 2:0 */
     bool             muted;        /* FPD set in its entry; "vtd context" */
-    uint32_t         dma_faults;   /* DMA faults seen (log thread); "vtd context" */
+    uint32_t         dma_faults;   /* DMA faults seen since its last attach (log thread);
+                                    * "vtd context" */
     struct vtd_dom  *home;         /* blocking, or its boot domain */
     struct vtd_dom  *cur;          /* what its entry names; "vtd context" */
 };
