@@ -530,6 +530,19 @@ bool t_wm_switch(void);
 bool t_wm_focus(void);
 bool t_wm_window_at(void);
 bool t_wm_layout_setting(void);
+/* compdesk.c, compdesk2.c: the desktop (screens, minimising, the strip,
+ * animations, Alt+Tab, the search box, popovers, notifications) linked in
+ * on compwm.c's harness (compwm.h). */
+bool t_desk_screens(void);
+bool t_desk_fullscreen(void);
+bool t_desk_minimise(void);
+bool t_desk_room(void);
+bool t_desk_strip(void);
+bool t_desk_anim(void);
+bool t_desk_alttab(void);
+bool t_desk_search(void);
+bool t_desk_popover(void);
+bool t_desk_notify(void);
 /* compwmseat.c: the window manager with the real seat: drag, close box,
  * Super+Q, Super+F, Super+T on an xdg toplevel. */
 bool t_wm_seat(void);

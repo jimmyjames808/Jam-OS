@@ -1,0 +1,371 @@
+/* utest: the desktop's cards and keys (user/services/compositor: menus.c,
+ * popover.c, notify.c, desk.c), on compwm.c's harness as compdesk.c is.
+ *
+ * t_desk_alttab: the list's order (this screen's windows most recently
+ * focused first, every other screen's grouped in the screens' order, the
+ * minimised last); the first Tab selects the window before, each Tab the
+ * next, Shift+Tab back, wrapping; letting go of Alt goes there (to its
+ * screen, restored); Esc cancels; the list shows only once Alt was held
+ * LOOK_ALTTAB_SHOW_MS.
+ * t_desk_search: Super tapped alone opens and closes it (not with another
+ * key or a click between, nor held too long); typing filters (names
+ * starting with the text first), the rows the most recently run first, the
+ * last "Run ..." for what is typed; arrows, Backspace; Enter runs the
+ * selected app (ctl_launch, in lower case, the busy cursor until its first
+ * window) or the command in a terminal (ctl_run_in_terminal); a click on a
+ * row runs it, one outside closes it; every key is the box's while open.
+ * t_desk_popover: each icon's popover 2 pixels under the strip, its right
+ * edge on its icon's; one at a time; a click elsewhere or Esc closes it;
+ * the volume slider sets the volume (ctl_set_volume) by a click and a
+ * drag; the calendar starts on Monday (known months, leap years).
+ * t_desk_notify: cards stacked down from under the strip, the newest on
+ * top; one without buttons goes after LOOK_NOTE_SHOW_MS, one with buttons
+ * stays until one is pressed (ctl_notify_answered), a click on a plain
+ * card sends it; at most NOTIFY_MAX, the oldest plain one pushed out. */
+#define CHECK_PROG "utest"
+#define CHECK_CUR  utest_cur
+#include <check.h>
+#include <keymap.h>
+#include "compwm.h"
+#include "utest.h"
+
+#define U_A      0x04
+#define U_E      0x08
+#define U_I      0x0c
+#define U_M      0x10
+#define U_T      0x17
+#define U_ENTER  0x28
+#define U_ESC    0x29
+#define U_BKSP   0x2a
+#define U_TAB    0x2b
+#define U_DOWN   0x51
+#define U_LALT   0xe2
+#define U_LGUI   0xe3
+#define ALT      INPUT_MOD_LALT
+#define SHIFT    INPUT_MOD_LSHIFT
+#define SUPER    INPUT_MOD_LGUI
+
+static bool key(uint16_t usage, uint8_t mods)
+{
+    return desk_key(usage, mods, keymap_mods_of_hid(mods));
+}
+
+/* Super pressed and let go alone. */
+static void super_tap(void)
+{
+    (void)key(U_LGUI, SUPER);
+    desk_key_up(U_LGUI);
+}
+
+/* ---- Alt+Tab ------------------------------------------------------------------------------ */
+
+static bool rows_are(const unsigned *want, unsigned n)
+{
+    CHECK_EQ(alttab.n, n);
+    for (unsigned i = 0; i < n; i++)
+        CHECK(alttab.rows[i].ww == fks[want[i]].ww);
+    return true;
+}
+
+static bool alttab_order_steps(void)
+{
+    /* screen 1: windows 0, 1 (1 focused last); screen 2: 2, 3; then 4 minimised on 1 */
+    CHECK(fk_open(&fks[0], 200, 100, false) && fk_open(&fks[1], 200, 100, false));
+    CHECK(fk_open(&fks[4], 200, 100, false));
+    seat_focus(win(0));
+    seat_focus(win(1));
+    wm_minimise(win(4));
+    screens_step(1);
+    CHECK(fk_open(&fks[2], 200, 100, false) && fk_open(&fks[3], 200, 100, false));
+    seat_focus(win(3));
+    seat_focus(win(2));
+    screens_go(0);
+    CHECK_EQ(seat.focused, win(1));   /* the screen's last focused */
+    CHECK(key(U_TAB, ALT));
+    CHECK(alttab.active && !alttab.shown);
+    const unsigned order[] = { 1, 0, 2, 3, 4 };
+    CHECK(rows_are(order, 5));
+    CHECK(!alttab.rows[0].first && !alttab.rows[1].first && alttab.rows[2].first &&
+          !alttab.rows[3].first && alttab.rows[4].first);
+    CHECK_EQ(alttab.rows[2].group, 2);
+    CHECK_EQ(alttab.sel, 1);   /* the window before */
+    CHECK(box_empty(alttab_box()) == false);
+    /* shown only after it is held a while */
+    desk_tick(now());
+    CHECK(!alttab.shown);
+    desk_tick(alttab.since + (LOOK_ALTTAB_SHOW_MS + 1) * NS_PER_MS);
+    CHECK(alttab.shown);
+    return true;
+}
+
+static bool alttab_steps(void)
+{
+    CHECK(alttab_order_steps());
+    /* Tab, Tab: window 3; Shift+Tab: 2; let go: screen 2, window 2 focused */
+    CHECK(key(U_TAB, ALT));
+    CHECK(key(U_TAB, ALT));
+    CHECK_EQ(alttab.sel, 3);
+    CHECK(key(U_TAB, ALT | SHIFT));
+    CHECK_EQ(alttab.sel, 2);
+    desk_key_up(U_LALT);
+    CHECK(!alttab.active);
+    CHECK_EQ(screens_cur_index(), 1);
+    CHECK_EQ(seat.focused, win(2));
+    /* wrapping back from the first: the minimised one, restored on screen 1 */
+    CHECK(key(U_TAB, ALT | SHIFT));
+    CHECK_EQ(alttab.sel, alttab.n - 1);
+    CHECK(alttab.rows[alttab.sel].ww == fks[4].ww);
+    desk_key_up(U_LALT);
+    CHECK_EQ(screens_cur_index(), 0);
+    CHECK(!fks[4].ww->minimised && seat.focused == win(4));
+    /* Esc cancels: nothing moves */
+    CHECK(key(U_TAB, ALT));
+    CHECK(key(U_ESC, ALT));
+    CHECK(!alttab.active);
+    desk_key_up(U_LALT);
+    CHECK_EQ(seat.focused, win(4));
+    /* a quick Alt+Tab: the window before (4's before was 1) */
+    CHECK(key(U_TAB, ALT));
+    desk_key_up(U_LALT);
+    CHECK_EQ(seat.focused, win(1));
+    CHECK(!alttab.shown);
+    return true;
+}
+
+bool t_desk_alttab(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = alttab_steps();
+    fk_close_all();
+    return ok;
+}
+
+/* ---- the search box ------------------------------------------------------------------------ */
+
+static const char *row_name(unsigned i)
+{
+    return search.row[i] == DESK_APPS ? "run" : desk_apps[search.row[i]].name;
+}
+
+static bool search_open_steps(void)
+{
+    super_tap();
+    CHECK(search.open);
+    CHECK_EQ(search.nrows, DESK_APPS);   /* empty: every app */
+    CHECK(!strcmp(row_name(0), "Terminal"));
+    super_tap();
+    CHECK(!search.open);
+    /* Super with another key between: no tap */
+    CHECK(!key(U_LGUI, SUPER));
+    CHECK(!key(U_A, SUPER));
+    desk_key_up(U_LGUI);
+    CHECK(!search.open);
+    /* nor with a click between */
+    CHECK(!key(U_LGUI, SUPER));
+    (void)desk_press(600, 600, BTN);
+    desk_key_up(U_LGUI);
+    CHECK(!search.open);
+    return true;
+}
+
+static bool search_type_steps(void)
+{
+    super_tap();
+    /* "t", "e": names starting with it first, then the run row */
+    CHECK(key(U_T, 0) && key(U_E, 0));
+    CHECK(!strcmp(search.text, "te"));
+    CHECK_EQ(search.nrows, 3);
+    CHECK(!strcmp(row_name(0), "Terminal") && !strcmp(row_name(1), "Tetris"));
+    CHECK(!strcmp(row_name(2), "run"));
+    /* "m": nothing holds "tem": only the run row; Backspace: back */
+    CHECK(key(U_M, 0));
+    CHECK_EQ(search.nrows, 1);
+    CHECK(key(U_BKSP, 0));
+    CHECK_EQ(search.nrows, 3);
+    /* Down, Enter: Tetris runs (in lower case), the box closes, the cursor busy */
+    CHECK(key(U_DOWN, 0));
+    CHECK(key(U_ENTER, 0));
+    CHECK(!search.open);
+    CHECK(!strcmp(fdesk.launched, "tetris"));
+    CHECK(desk_busy());
+    /* its first window: busy no more */
+    CHECK(fk_open(&fks[0], 200, 100, false));
+    wm_set_app_id(fks[0].ww, "tetris");
+    desk_window_mapped(fks[0].ww);
+    CHECK(!desk_busy());
+    /* opened again: Tetris first (run last) */
+    super_tap();
+    CHECK(!strcmp(row_name(0), "Tetris"));
+    /* a command: "te" then Shift+i ("I"), Up past... the run row: Enter */
+    CHECK(key(U_T, 0) && key(U_E, 0) && key(U_I, SHIFT));
+    CHECK(!strcmp(search.text, "teI"));
+    CHECK_EQ(search.nrows, 1);
+    CHECK(key(U_ENTER, 0));
+    CHECK(!strcmp(fdesk.ran, "teI"));
+    return true;
+}
+
+static bool search_mouse_steps(void)
+{
+    /* "Jam OS": opens; a click on a row runs it; one outside closes */
+    strip_click(strip_find(STRIP_JAM));
+    CHECK(search.open);
+    struct comp_box r = search_row_box(1);
+    CHECK(!box_empty(r) && box_contains(search_box(), r.x1, r.y1));
+    CHECK(press_btn((r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2, BTN));
+    release_at((r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2);
+    CHECK(!search.open);
+    CHECK_EQ(fdesk.nlaunch, 2);
+    strip_click(strip_find(STRIP_JAM));
+    CHECK(!press_btn(10, 790, BTN));   /* outside: closed, and the press goes on */
+    release_at(10, 790);
+    CHECK(!search.open);
+    /* its box: centred, near the top */
+    super_tap();
+    struct comp_box b = search_box();
+    CHECK_EQ(b.x1 + b.x2, OUT_W);
+    CHECK_EQ(b.y1, OUT_H * LOOK_SEARCH_TOP / 1000);
+    CHECK(key(U_ESC, 0));
+    CHECK(!search.open);
+    return true;
+}
+
+bool t_desk_search(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = search_open_steps() && search_type_steps() && search_mouse_steps();
+    fk_close_all();
+    return ok;
+}
+
+/* ---- popovers ------------------------------------------------------------------------------- */
+
+static bool placed_under(enum strip_part part, enum pop_kind kind)
+{
+    const struct strip_item *it = strip_find(part);
+    CHECK(it);
+    struct comp_box icon = it->box;
+    strip_click(it);
+    CHECK_EQ(pop.kind, kind);
+    CHECK_EQ(pop.box.y1, LOOK_STRIP_H + LOOK_POP_GAP);
+    CHECK_EQ(pop.box.x2, icon.x2);
+    CHECK_EQ(pop.box.x2 - pop.box.x1, LOOK_POP_W);
+    CHECK(strip_find(part)->on);
+    return true;
+}
+
+static bool popover_steps(void)
+{
+    CHECK(placed_under(STRIP_VOL, POP_VOLUME));
+    CHECK(placed_under(STRIP_NET, POP_NETWORK));   /* one at a time */
+    CHECK(!strcmp(pop.net.address, "") && !pop.net.up);   /* nothing behind it yet */
+    CHECK(placed_under(STRIP_CLOCK, POP_CLOCK));
+    CHECK(pop.now.day == 5 && pop.now.month == 10);
+    strip_click(strip_find(STRIP_CLOCK));   /* its own icon again: closed */
+    CHECK_EQ(pop.kind, POP_NONE);
+    CHECK(placed_under(STRIP_VOL, POP_VOLUME));
+    CHECK(key(U_ESC, 0));
+    CHECK_EQ(pop.kind, POP_NONE);
+    /* the slider: a click at its middle, then a drag to its end */
+    CHECK(placed_under(STRIP_VOL, POP_VOLUME));
+    struct comp_box s = pop_slider_box();
+    CHECK(press_btn((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, BTN));
+    CHECK(pop.volume >= 49 && pop.volume <= 50);
+    move_to(s.x2 + 40, s.y1);
+    CHECK_EQ(pop.volume, 100);
+    release_at(s.x2 + 40, s.y1);
+    CHECK(!pop.dragging);
+    /* a click elsewhere: closed, and the press goes on */
+    CHECK(!press_btn(10, 700, BTN));
+    release_at(10, 700);
+    CHECK_EQ(pop.kind, POP_NONE);
+    return true;
+}
+
+/* The calendar of year y, month m: its first day's cell and the number of days. */
+static bool month_is(int64_t y, unsigned m, unsigned first, unsigned days)
+{
+    struct civil c = { .year = y, .month = m, .day = 1 };
+    uint8_t cells[42];
+    unsigned n = pop_calendar(&c, cells);
+    CHECK_EQ(n, first + days);
+    CHECK_EQ(cells[first], 1);
+    CHECK(first == 0 || cells[first - 1] == 0);
+    CHECK_EQ(cells[n - 1], days);
+    return true;
+}
+
+bool t_desk_popover(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = popover_steps();
+    /* Monday first: October 2026 starts on a Thursday (cell 3), June 2026
+     * on a Monday, February 2024 (leap) on a Thursday, 2100 isn't leap */
+    ok = ok && month_is(2026, 10, 3, 31) && month_is(2026, 6, 0, 30) &&
+         month_is(2024, 2, 3, 29) && month_is(2100, 2, 0, 28) && month_is(2026, 2, 6, 28);
+    fk_close_all();
+    return ok;
+}
+
+/* ---- notifications -------------------------------------------------------------------------- */
+
+static uint32_t post(const char *title, unsigned nbuttons)
+{
+    struct notify_spec n = { .title = title, .body = "one line", .letter = title[0],
+                             .buttons = { "Reboot", "Later" }, .nbuttons = nbuttons };
+    return notify_post(&n);
+}
+
+static bool notify_steps(void)
+{
+    uint32_t a = post("First", 0), b = post("Second", 2);
+    CHECK(a && b && a != b);
+    CHECK_EQ(notes.n, 2);
+    /* the newest on top, under the strip, at the right */
+    CHECK_EQ(notes.cards[0].id, b);
+    CHECK_EQ(notes.cards[0].box.y1, LOOK_NOTE_TOP);
+    CHECK_EQ(notes.cards[0].box.x2, OUT_W - LOOK_NOTE_RIGHT);
+    CHECK_EQ(notes.cards[1].box.y1, notes.cards[0].box.y2 + LOOK_NOTE_GAP);
+    /* after its time the plain one goes; the one with buttons stays */
+    notify_tick(now() + (LOOK_NOTE_SHOW_MS + 10) * NS_PER_MS);
+    CHECK_EQ(notes.n, 1);
+    CHECK_EQ(notes.cards[0].id, b);
+    CHECK_EQ(notes.cards[0].box.y1, LOOK_NOTE_TOP);
+    /* its second button: answered, gone */
+    struct comp_box later = notify_button_box(&notes.cards[0], 1);
+    CHECK(press_btn(later.x1 + 2, later.y1 + 2, BTN));
+    release_at(later.x1 + 2, later.y1 + 2);
+    CHECK_EQ(fdesk.nanswered, 1);
+    CHECK(fdesk.answered_id == b && fdesk.answered_button == 1);
+    CHECK_EQ(notes.n, 0);
+    /* a click on a plain card sends it */
+    a = post("Third", 0);
+    struct comp_box c = notes.cards[0].box;
+    CHECK(press_btn(c.x1 + 5, c.y1 + 5, BTN));
+    release_at(c.x1 + 5, c.y1 + 5);
+    CHECK_EQ(notes.n, 0);
+    /* at most NOTIFY_MAX: the oldest plain one pushed out */
+    uint32_t keep = post("Buttons", 1);
+    uint32_t oldest = post("Plain 1", 0);
+    for (unsigned i = 0; i < NOTIFY_MAX; i++)
+        (void)post("More", 0);
+    CHECK_EQ(notes.n, NOTIFY_MAX);
+    bool has_keep = false, has_oldest = false;
+    for (unsigned i = 0; i < notes.n; i++) {
+        has_keep |= notes.cards[i].id == keep;
+        has_oldest |= notes.cards[i].id == oldest;
+    }
+    CHECK(has_keep && !has_oldest);
+    notify_withdraw(keep);
+    for (unsigned i = 0; i < notes.n; i++)
+        CHECK(notes.cards[i].id != keep);
+    return true;
+}
+
+bool t_desk_notify(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = notify_steps();
+    fk_close_all();
+    return ok;
+}
