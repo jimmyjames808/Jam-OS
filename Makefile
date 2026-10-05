@@ -58,6 +58,10 @@ BOOTFS  := $(BUILD)/bootfs.img
 SIGN_TOOL := build/host/jamos-sign
 # The PC's check of a boot menu, on the Mac (tools/menucheck.c, below).
 MENU_TOOL := build/host/menucheck
+# libfun's smooth text on the Mac: the preview and its sanitised check
+# (tools/fontpreview.c, below).
+FONT_TOOL  := build/host/fontpreview
+FONT_CHECK := build/host/fontcheck
 # The files a stick has once `update -w` has written a build: its own and
 # the previous one (what boot/limine.conf may name; `make check`).
 STICK_FILES := /boot/jamos.elf /boot/bootfs.img /boot/prev-jamos.elf /boot/prev-bootfs.img
@@ -109,7 +113,7 @@ endif
 
 .PHONY: all image run debug clean font usb flash syscalls idl wl keymap check compdb includes FORCE
 
-all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL) $(MENU_TOOL)
+all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL) $(MENU_TOOL) $(BUILD)/fontpreview.png
 
 # kernel/main.c gets the network's default (JAMOS_NET_DEFAULT, above) and
 # is built again whenever it changes: the stamp is rewritten only then.
@@ -300,6 +304,17 @@ $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
+# libfun's smooth text (<fun.h>, font.c): stb_truetype
+# (third_party/stb_truetype, vendored unmodified, compiled in ttf.c) and
+# the Inter faces (third_party/inter), which fontdata.c's .incbin links in
+# as they are.
+# build/host/fontpreview (below) builds the same files for the Mac.
+FONT_FACES  := third_party/inter/Inter-Regular.ttf third_party/inter/Inter-Medium.ttf
+FONT_SRCS   := $(addprefix $(LIBFUN_DIR)/,font.c fontdraw.c fontdata.c ttf.c utf8.c alpha.c)
+FONT_STB_OBJS := $(UOBJ)/$(LIBFUN_DIR)/ttf.c.o $(UOBJ)/$(LIBFUN_DIR)/font.c.o
+$(FONT_STB_OBJS): PROG_CFLAGS := -Ithird_party/stb_truetype
+$(UOBJ)/$(LIBFUN_DIR)/fontdata.c.o: $(FONT_FACES)
+
 # FatFs (third_party/fatfs, vendored unmodified), built into the fat
 # service only. Its configuration is Jam OS's
 # (user/services/fat/ffport/ffconf.h), but ff.h includes "ffconf.h" from
@@ -370,7 +385,9 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # and the compositor's boxes and regions (utest/comp_region.c: region.c
 # and its comp.h), and its window manager on its scene (utest/compwm.c:
 # wm.h, no protocol in those files; the test plays the seat), with
-# title.c's title bar boxes and the masks (mask.c) and libfun they draw with.
+# title.c's title bar boxes and the masks (mask.c) and libfun they draw
+# with, and the console's window mode's pure parts (utest/conwin.c:
+# wlinput.c and its console.h).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -382,9 +399,10 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/sntp/ntp.c.o \
                       $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
                       $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile \
-                        wmgrab deco title mask) $(UOBJ)/libfun.a
+                        wmgrab deco title mask) $(UOBJ)/user/services/console/wlinput.c.o \
+                      $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
-                      -iquote user/services/compositor \
+                      -iquote user/services/compositor -iquote user/services/console \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
                       -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) -Iuser/apps/fun
@@ -502,6 +520,8 @@ check: all
 	python3 tools/fatcheck.py --selftest
 	$(SIGN_TOOL) self-test
 	$(MENU_TOOL) boot/limine.conf $(STICK_FILES)
+	$(MAKE) -s $(FONT_CHECK)
+	$(FONT_CHECK) --check
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
@@ -612,6 +632,27 @@ $(MENU_TOOL): tools/menucheck.c user/lib/bootmenu.c user/include/bootmenu.h
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -Iuser/include \
 	    -o $@ tools/menucheck.c user/lib/bootmenu.c
+
+# fontpreview (tools/fontpreview.c): libfun's smooth text on the Mac, from
+# the same files (FONT_SRCS, above). `make` draws build/fontpreview.png
+# with it (the title bars and sample text); fontcheck is the same program
+# built with ASan and UBSan, whose --check `make check` runs. x86-64 code
+# (Rosetta on Apple silicon): <os.h>'s inline functions are x86.
+HOST_X86     := $(if $(filter arm64,$(shell uname -m)),-arch x86_64)
+FONT_TOOL_SRCS := tools/fontpreview.c tools/fontcheck.c tools/png.c $(FONT_SRCS)
+FONT_TOOL_DEPS := $(FONT_TOOL_SRCS) tools/fontpreview.h $(LIBFUN_DIR)/fun.h \
+                  $(LIBFUN_DIR)/internal.h $(FONT_FACES) third_party/stb_truetype/stb_truetype.h
+FONT_TOOL_CFLAGS := -std=gnu17 -Wall -Wextra -Werror -Wvla $(HOST_X86) -D_FORTIFY_SOURCE=0 -Iuser/include \
+                    -Ikernel/include -Idrivers/include -I$(LIBFUN_DIR) -Ithird_party/stb_truetype
+$(FONT_TOOL): $(FONT_TOOL_DEPS)
+	@mkdir -p $(dir $@)
+	$(HOSTCC) $(FONT_TOOL_CFLAGS) -O2 -o $@ $(FONT_TOOL_SRCS)
+$(FONT_CHECK): $(FONT_TOOL_DEPS)
+	@mkdir -p $(dir $@)
+	$(HOSTCC) $(FONT_TOOL_CFLAGS) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+	    -o $@ $(FONT_TOOL_SRCS)
+$(BUILD)/fontpreview.png: $(FONT_TOOL)
+	$(FONT_TOOL) $@
 
 # Write the image to a USB stick. Refuses anything that isn't external.
 usb: $(IMAGE)

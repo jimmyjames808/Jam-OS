@@ -4,6 +4,9 @@
  *              alternate screen's grid
  *   term.c     program output as a small terminal: escapes, UTF-8
  *   screen.c   drawing the cells on the framebuffer, and lending it out
+ *   window.c   the window mode: the terminal as a Wayland client
+ *   winpaint.c ... drawing the cells into its window's buffers
+ *   wlinput.c  ... its size, and Wayland's keys and pointer as input events
  *   keys.c     the focus stack of key channels, and the input sources
  *   clients.c  the console protocol's clients and their levels
  *   notices.c  the few things worth a line while the kernel log is off
@@ -15,6 +18,7 @@
 #include <font.h>
 #include <idl/console.h>
 #include <idl/input.h>
+#include <jwl_client.h>
 #include <os.h>
 #include <utf8.h>
 
@@ -29,6 +33,14 @@
 #define MAX_FOCUS   8
 #define PENDING_KEYS 256
 #define RENDER_NS  16000000ull
+/* The window mode's terminal (wlinput.c, term_grid): at most this many
+ * cells, at least the classic 80x24 (unless the output is smaller). */
+#define WIN_COLS     160
+#define WIN_ROWS     50
+#define WIN_MIN_COLS 80
+#define WIN_MIN_ROWS 24
+/* SR_USER + this: /svc/wayland's shared channel (window mode). */
+#define WAYLAND_ROLE 10
 /* One round of one client's requests: a count and a time, so a client
  * writing flat out can't hold up the keys (Ctrl+C), the other clients or
  * the render. */
@@ -65,7 +77,7 @@ struct client {
 };
 
 /* Port keys: the kind in the high half, an index in the low. */
-enum { K_KLOG = 1, K_CLIENT, K_SOURCE, K_ALT, K_LEASE, K_REBOOT };
+enum { K_KLOG = 1, K_CLIENT, K_SOURCE, K_ALT, K_LEASE, K_INIT, K_WL };
 #define KEY(kind, i) ((uint64_t)(kind) << 32 | (i))
 
 /* main.c */
@@ -102,6 +114,12 @@ uint16_t cell_glyph(uint32_t cp);
 void new_line(void);
 /* ESC [ 2 J: a screenful of blank lines. */
 void clear_screen(void);
+/* The grid becomes c x r cells (the window was resized): the scrollback,
+ * the current line and the alternate screen keep their cells, cut or
+ * padded with blanks at the new width (nothing is wrapped again); the
+ * view and the cursors stay inside. false: no memory (or a size out of
+ * range), and nothing changed. */
+bool text_regrid(uint32_t c, uint32_t r);
 
 /* The alternate screen (text.c says what it is). */
 extern struct cell *alt;           /* rows * cols */
@@ -131,6 +149,13 @@ bool screen_init(void);
 bool screen_alloc(void);
 /* Draw the cells that changed since the last render. */
 void render(void);
+/* What the screen shows now, cell by cell: show(x, y, cell, inverted)
+ * for each of the rows x cols cells (the scrollback's view and the
+ * current line, or the alternate screen); inverted: the cursor. */
+void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv));
+/* The 8x16 bits of cell c's glyph, one byte a row, the leftmost pixel
+ * the top bit: the font's, or block (filled) for a block element. */
+const uint8_t *cell_bits(struct cell c, uint8_t block[GH]);
 /* Quiet (the boot splash is coming, init's argument "quiet"): draw nothing
  * until a lent screen comes back, or until `until` (uptime ns) if nobody
  * borrows it, so the kernel's dark splash background stays up with no
@@ -157,13 +182,73 @@ status_t op_open_keys(void *ctx, handle_t *out);
 status_t op_connect_input(void *ctx, handle_t *out);
 /* Input source i is readable (or gone). */
 void source_event(unsigned i);
-/* Ctrl+Alt+Del's request to init: its answer came (a failed reboot), or
- * init's channel closed: reset the machine. */
-void reboot_event(void);
+/* A key, from an input source or the window (terminal: from a terminal's
+ * text, where PageUp scrolls back without Shift): Ctrl+Alt+Del, the
+ * scrollback's keys, or to the focus. */
+void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool terminal);
+/* A mouse report, from an input source or the window: to the focus if
+ * it asked for the mouse, else the wheel scrolls back. */
+void mouse_event(const struct input_mouse_event *ev);
+/* Super+Enter: ask init for another terminal (initctl.terminal), without
+ * waiting; a refusal is said on this terminal. */
+void terminal_ask(void);
+/* Something came on init's control channel: the answer to a request of
+ * ours (a failed reboot, a terminal or not), or init's end closed while
+ * a reboot is asked for (reset the machine). */
+void init_event(void);
+/* Watch init's control channel for answers (at start). */
+void init_watch(void);
 /* When the console resets the machine itself if init hasn't
  * (DEADLINE_NEVER: no reboot asked for); reboot_due does it then. */
 uint64_t reboot_deadline(void);
 void reboot_due(void);
+
+/* ---- window.c, winpaint.c, wlinput.c: the window mode --------------------------- */
+
+extern bool window_mode;           /* a compositor draws the screen: we draw into a window */
+extern unsigned term_no;           /* this terminal's number (1: the first, the system's) */
+extern bool closing;               /* our window was closed: main ends with 0 */
+/* Window mode on /svc/wayland's shared channel svc, as terminal `term`:
+ * connect (without waiting: the window opens once the compositor
+ * answers). false: it can't (said); the text then goes to COM1 only. */
+bool window_init(handle_t svc, unsigned term);
+/* The client's packet (K_WL): its messages, the window, the events. */
+void window_event(void);
+/* When the client has work of its own (key repeat, a reconnect's try). */
+uint64_t window_deadline(void);
+/* The window, if it is up and configured now (NULL: nothing to draw on). */
+struct jwl_window *window_now(void);
+/* Draw what changed into the window's free buffer and present it. */
+void window_render(void);
+/* The window's shadow grids for cols x rows (at start and after a
+ * regrid); false: no memory. */
+bool paint_regrid(void);
+/* Every cell of both buffers drawn again at the next render. */
+void paint_forget(void);
+
+/* The terminal's grid on an output of ow x oh pixels (0: not known yet):
+ * at most three quarters of it each way, at most WIN_COLS x WIN_ROWS, at
+ * least WIN_MIN_COLS x WIN_MIN_ROWS if the output has room. */
+void term_grid(int32_t ow, int32_t oh, uint32_t *out_cols, uint32_t *out_rows);
+/* The grid that fits a window of w x h pixels (1 to MAX_COLS x MAX_ROWS). */
+void grid_of_size(int32_t w, int32_t h, uint32_t *out_cols, uint32_t *out_rows);
+/* A wl_keyboard key (evdev code, JWL_KEY_* state, KEYMAP_MOD_* modifiers,
+ * the character it types) as the console's key event: the HID usage, the
+ * left modifier keys. false: a key with no HID usage (dropped). */
+bool key_of_wayland(uint32_t code, uint32_t state, uint32_t mods, uint32_t cp,
+                    struct input_key_event *out);
+/* The key asks for another terminal: Super+Enter pressed. */
+bool asks_terminal(const struct input_key_event *ev);
+/* What mouse_of_wayland keeps between pointer events. */
+struct pointer_track {
+    int32_t x, y;        /* the last position, surface coordinates, fixed 24.8 */
+    uint8_t buttons;     /* INPUT_BTN_* held */
+};
+/* A wl_pointer event as a mouse report (relative pixels, the buttons
+ * held, the wheel in notches, + away from the user); false: it makes
+ * none (enter, leave, no movement, another axis or button). */
+bool mouse_of_wayland(struct pointer_track *p, const struct jwl_event *ev,
+                      struct input_mouse_event *out);
 
 /* ---- notices.c: while the kernel log is off the screen ---------------------------- */
 

@@ -1,10 +1,10 @@
 # initctl: init's control channel, served by init in shell mode
 # (user/services/init/ctl.c). One channel answers every method: init
-# publishes it as /svc/init, a new one for each shell it starts (the shell,
-# and the test programs whose lists ask for it, <wants.h>). The console
-# holds another (startup role SR_USER + 8: reboot only; the rest
-# ERR_ACCESS_DENIED), so what a holder may ask is decided by which channel
-# it holds. Format: see tools/genidl.py.
+# publishes it as /svc/init, a new one for each first terminal's shell it
+# starts (that shell, every other terminal's, and the test programs whose
+# lists ask for it, <wants.h>). Each console holds another (startup role
+# SR_USER + 8: reboot and terminal only; the rest ERR_ACCESS_DENIED), so
+# what a holder may ask is decided by which channel it holds. Format: see tools/genidl.py.
 #
 # Restart: none. After ERR_PEER_CLOSED there is nothing to reconnect to:
 # init is gone, and with it whoever would restart anything; `reboot`
@@ -78,3 +78,14 @@ protocol initctl 18
 # that ask for `svc init`): the shell's `update` hands the channel to
 # bin/update, the fetcher, which holds nothing else of init's.
 8  update_offer  () -> (handle offer)
+# Open another terminal: a window of its own on the compositor, with a
+# shell of its own, which init supervises as it does the first's (a
+# crashed or killed shell or console is started again; one that ends too
+# often is given up on, and the terminal closes). The terminal closes for
+# good when its window is closed or its shell ends with `exit`. Answers at
+# once with the new terminal's number (2 and up; the first terminal is 1);
+# its window opens a moment later. ERR_NOT_SUPPORTED: no compositor runs
+# (a boot without one: one terminal only); ERR_NO_RESOURCES: as many
+# terminals are open as there may be. The shell's channel (`term`) and
+# the consoles' (Super+Enter).
+9  terminal  () -> (u8 number)

@@ -357,6 +357,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "main-exits")) return main_exits();
     if (!strcmp(m, "startup"))    return startup(argc, argv);
     if (!strcmp(m, "exit7"))      return 7;
+    if (!strcmp(m, "font-write")) return font_write_child();
     if (!strcmp(m, "env"))        return print_env(argc, argv);
     if (!strcmp(m, "say"))        return say(argc, argv);
     if (!strcmp(m, "impostor"))   return impostor();

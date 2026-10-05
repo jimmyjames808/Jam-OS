@@ -68,8 +68,10 @@ that a bug fix comes with a test is in
   --selftest`: the program-list check takes `svc net listen` and refuses
   `svc net-listen`, a listen on another service and a list over its 24
   wants; the FAT32 checker finds each kind of damage it knows in volumes
-  it makes and damages (`tools/fatcheck.py --selftest`); and the update signing tool passes Monocypher's Ed25519 vectors
-  (`build/host/jamos-sign self-test`).
+  it makes and damages (`tools/fatcheck.py --selftest`); the update signing tool passes Monocypher's Ed25519 vectors
+  (`build/host/jamos-sign self-test`); and libfun's smooth text holds up
+  against hostile input under ASan and UBSan (`build/host/fontcheck
+  --check`, [below](#smooth-text)).
 
 ## Running QEMU: tools/qemu-test.sh
 
@@ -301,6 +303,12 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   starts the shell anyway (`tools/splash-test.sh`).
 - `pcilist` (the PCI device report), `keytest` (keys to the log for 30 s),
   `memmap`, `init_timeout=<s>` (how long the `init` run may take).
+- `comp`: a plain boot with the compositor (`user/services/init/comp.c`):
+  init starts it before the console, and every console runs in window
+  mode (a terminal window); `term` and Super+Enter open more terminals
+  (`terms.txt`). Not the default yet; the compositor's own input and
+  `/svc/wayland` for programs are not wired yet, so the keys still go to
+  the first terminal.
 - `comptest`: init starts only the compositor, on the screen, running its
   test scene (`user/services/init/comptest.c`): three steps of windows
   held 4 s each, then its `compositor: bench:` lines; the RESULTS box says
@@ -551,6 +559,8 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `sntp.txt`, `sntp-name.txt`, `sntp-off.txt` | the clock from the network: the jump to the peer's 2031 past forged replies, `date -r`, `date -z`, sntp restarted, devmgr restarted and the network's time kept; `ntp.server` by name; `ntp = off` ([netstack](#netstack)) | use `tools/sntp-test.sh` |
 | `allow.txt` | programs on `/data`: a copy of bin/soakload refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, a changed file refused, a list asking for devmgr or init (a copy of bin/utest) or for `right debug` (a copy of bin/wantdebug) or for the ports below 1024 (a copy of bin/serve, `svc net listen low`) refused, approval or not, `svc net listen` (bin/wantlisten: port 5000 refused on `/svc/net`, taken on `/svc/net-listen`, a TCP listener on port 80 refused there, from `/boot`, and from `/data` once `allow` showed "accepting connections from the network"), `allow -r`, a file off `/data` and a second shell refused | |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
+| `terms.txt` | more terminals, booted with `comp`: `term` opens terminal 2 (its shell's banner copied to COM1), its shell and its console killed and started again, the compositor killed and both consoles connected again, terminals up to the limit of 8 and `term` refusing one more | add `comp` |
+| `terms-windows.txt` | terminals as windows (once the compositor has xdg-shell and its own input): the first terminal's window, `term`'s window taking the keys, `exit` closing it and the keys back to the first (where `exit` refuses), Super+Enter on a USB keyboard, the compositor killed and both windows back; screenshots | add `comp`, and `QEMU_USB="-device usb-kbd,bus=xhci.0,port=2"` |
 | `jobs.txt` | programs in the background (`prog &`): the prompt back at once, their output on the screen, the "[n] done" notice and its exit code, one outliving a foreground program, Ctrl+C reaching only the foreground, `jobs`, `kill %n` (and `kill <name>` unchanged), the refusals (a pipeline, a shell command, an alias), tetris given no screen, the limit of 8, and background programs ending with their shell | |
 | `hda.txt` | the HD Audio driver's dump, `hda`, `kill hda`, `hda jacks`, `hda gain` and `hda bits` set and read back (all through the mixer's query channels) | use `tools/hda-test.sh` |
 | `vtdtest.txt` | the IOMMU checks boot (`iommu=on vtdtest`): `iommu`, then `hda` still answering after drv/hda's checks | use `tools/hda-test.sh` |
@@ -1046,6 +1056,33 @@ QEMU's default `-cpu max` has RDSEED and RDRAND. The path without them
 needs another CPU model: `QEMU_CPU=qemu64 tools/qemu-test.sh build/test
 rnd ktest=random` boots with `random: no RDSEED/RDRAND: seeded from
 timing only ...: WEAK` in the log and the RESULTS box.
+
+## Smooth text
+
+libfun's anti-aliased text ([ARCHITECTURE](../ARCHITECTURE.md#smooth-text)).
+In utest (the `init` run), every expectation from the font's own numbers
+(`user/tests/utest/smoothfont.c`):
+
+| Test | What it checks |
+|---|---|
+| `font_open` | sizes and weights out of range refused; ascent, descent, line height and capital height at 13 and 26 pixels; each bake's time (`utest: font: ... baked in`) |
+| `font_measure` | widths of known strings in both weights and sizes, kerning included ("AV" narrower than "A" plus "V"); "" is 0; `font_draw` returns x plus the width |
+| `font_pixels` | 'I', "II" (the second glyph at a half-pixel position) and '-' (rows cut by its edges) at 13 px Regular and 'I' at 26 px Medium, white on black: every pixel's coverage is its share of the glyph's rectangle (from the outline's coordinates), exact where it is 0 or 255, within 1 elsewhere |
+| `font_blend` | coloured text over a pattern is exactly `px_over(pattern, argb_pm(colour, coverage))` per pixel, coverage from white on black; the colour's top byte ignored |
+| `font_clip` | 13 clip rectangles (across each edge of the text, a box inside, empty, negative, huge, outside): unclipped pixels inside, nothing changed outside; text off each edge and corner of a surface inside a guarded buffer: the surface's part right, the guard untouched |
+| `font_ellipsis` | `font_ellipsize` against a search of every cut for 7 strings (malformed UTF-8 and "" among them) at every width and buffer size; no space before the "…"; `font_draw_in`, left and centred, draws exactly the cut text where it says, clipped to its rectangle |
+| `font_threads` | four threads drawing titles with two shared fonts get the pixels one thread got; a child that writes into a font's memory is killed (`utest font-write`): fonts are read-only |
+
+On the Mac, `make` builds `build/host/fontpreview` from the same files
+and draws `build/fontpreview.png` (the floating windows' title bars at 1x
+and 2x, focused and not, and sample text at six sizes): look at it after
+a change to the text or the font. `make check` runs `build/host/fontcheck
+--check`, the same program with ASan and UBSan: 4,000 random strings
+(malformed UTF-8, other scripts, controls) drawn at random places
+through random clip rectangles into a surface inside a guarded buffer,
+in two fonts, with nothing outside the clip changed; and 4,000 random
+cuts, each fitting its width and buffer, a start of the string plus "…",
+and the longest such start.
 
 ## The other tools
 
