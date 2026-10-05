@@ -16,6 +16,7 @@
  * no such focus the wheel scrolls the console back while the console has
  * the screen, and the rest of the report is dropped. */
 #include <idl/initctl.h>
+#include <termkeys.h>
 #include "console.h"
 
 #define INITCTL_ROLE 8                  /* SR_USER + this: init's control channel */
@@ -287,11 +288,8 @@ status_t op_open_keys(void *ctx, handle_t *out)
 /* ---- input sources ------------------------------------------------------------- */
 
 struct source {
-    handle_t ch;        /* our end of its `input` channel; 0: a free slot */
-    int      esc;       /* terminal escape parser */
-    char     params[8]; /* the escape's parameter bytes so far */
-    unsigned np;        /* how many */
-    bool     last_cr;   /* the last text byte was '\r' (a '\n' after it is dropped) */
+    handle_t        ch;     /* our end of its `input` channel; 0: a free slot */
+    struct termkeys term;   /* its terminal text's decoding state */
 };
 static struct source sources[MAX_SOURCES];
 
@@ -375,83 +373,10 @@ static status_t op_mouse(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_
     return OK;
 }
 
+/* A key a terminal typed (<termkeys.h>). */
 static void term_key(uint16_t usage, uint32_t cp)
 {
     key_event(usage, INPUT_KEY_DOWN, 0, cp, true);
-}
-
-/* ESC [ <params> <final> or ESC O <final> from a terminal. */
-static void term_escape(struct source *s, char final)
-{
-    s->params[s->np < sizeof(s->params) ? s->np : sizeof(s->params) - 1] = '\0';
-    switch (final) {
-    case 'A': term_key(0x52, 0); return;   /* up */
-    case 'B': term_key(0x51, 0); return;   /* down */
-    case 'C': term_key(0x4f, 0); return;   /* right */
-    case 'D': term_key(0x50, 0); return;   /* left */
-    case 'H': term_key(0x4a, 0); return;   /* home */
-    case 'F': term_key(0x4d, 0); return;   /* end */
-    case '~': {
-        int n = 0;
-        for (unsigned i = 0; i < s->np && s->params[i] >= '0' && s->params[i] <= '9'; i++)
-            n = n * 10 + s->params[i] - '0';
-        switch (n) {
-        case 1: case 7: term_key(0x4a, 0); return;
-        case 4: case 8: term_key(0x4d, 0); return;
-        case 3: term_key(0x4c, 0); return;      /* delete */
-        case 5: term_key(0x4b, 0); return;      /* page up */
-        case 6: term_key(0x4e, 0); return;      /* page down */
-        }
-        return;
-    }
-    }
-}
-
-/* Byte b of source s's text while an escape sequence may be open: true
- * if the sequence took it. A byte that ends a lone ESC sends the ESC key
- * and is then an ordinary byte (false). */
-static bool escape_byte(struct source *s, uint8_t b)
-{
-    if (s->esc == 1) {   /* after ESC */
-        if (b == '[' || b == 'O') {
-            s->esc = 2;
-            s->np = 0;
-            return true;
-        }
-        s->esc = 0;
-        term_key(0x29, 0x1b);   /* a lone ESC */
-        return false;
-    }
-    if (s->esc == 2) {
-        if ((b >= '0' && b <= '9') || b == ';') {
-            if (s->np < sizeof(s->params) - 1)
-                s->params[s->np++] = (char)b;
-            return true;
-        }
-        s->esc = 0;
-        term_escape(s, (char)b);
-        return true;
-    }
-    return false;
-}
-
-/* An ordinary byte of source s's text as a key. */
-static void text_byte(struct source *s, uint8_t b)
-{
-    bool cr = false;
-    if (b == 0x1b)
-        s->esc = 1;
-    else if (b == '\r' || (b == '\n' && !s->last_cr))
-        term_key(0x28, '\n'), cr = b == '\r';
-    else if (b == '\n')
-        ;   /* the LF of a CR LF */
-    else if (b == 0x7f || b == 0x08)
-        term_key(0x2a, 0x08);
-    else if (b == '\t')
-        term_key(0x2b, '\t');
-    else
-        term_key(0, b);   /* printable, or a control character (Ctrl+C = 3) */
-    s->last_cr = cr;
 }
 
 static status_t op_text(void *ctx, uint16_t length, const uint8_t bytes[64])
@@ -459,9 +384,12 @@ static status_t op_text(void *ctx, uint16_t length, const uint8_t bytes[64])
     struct source *s = ctx;
     if (length > 64)
         return ERR_INVALID_ARGS;
-    for (unsigned i = 0; i < length; i++)
-        if (!escape_byte(s, bytes[i]))
-            text_byte(s, bytes[i]);
+    for (unsigned i = 0; i < length; i++) {
+        struct termkey k[2];
+        unsigned n = termkeys_byte(&s->term, bytes[i], k);
+        for (unsigned j = 0; j < n; j++)
+            term_key(k[j].usage, k[j].cp);
+    }
     return OK;
 }
 
