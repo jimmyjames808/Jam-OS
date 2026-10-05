@@ -252,7 +252,17 @@ so the script mounts it by hand with `sudo`. It refuses a disk whose first
 partition holds no Jam OS kernel. Pulling the stick during the copies
 leaves the old files whole (it boots as before; run `make flash` again);
 only the renames at the end, a few milliseconds, could leave the new
-kernel with the old boot image for one boot. (A stick made before M8 has one partition that macOS mounts as
+kernel with the old boot image for one boot. It also removes
+`/esp/boot/limine.conf` once the new menu is in place: the spare an `update -w`
+cut short may have left ([ARCHITECTURE.md](../ARCHITECTURE.md#storage)).
+
+The PC's `update -w` brings the boot menu as well (the server's
+`boot/limine.conf`), so new boot entries need no `make flash`. A build
+older than that (the stick's, the first time) skips the menu and updates
+the build alone; the shell then reboots into the new build, and a second
+`update -w` (the build is there already: a second or so) writes the menu.
+`make flash` stays the way for a new update key, a new Limine, or a stick
+whose build has no key. (A stick made before M8 has one partition that macOS mounts as
 `NO NAME`: copy the three files there by hand, or remake it with
 `make usb`.)
 

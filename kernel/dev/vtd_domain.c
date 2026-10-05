@@ -109,6 +109,20 @@ status_t vtd_fns_init(void)
     return OK;
 }
 
+uint64_t vtd_root_table_new(const struct vtd_unit *u)
+{
+    /* PMM_ZERO clears the page through the CPU's caches. A unit whose
+     * walks don't snoop (ECAP.C = 0) reads memory, which still holds what
+     * the page held before: every root entry not given a context table
+     * later (table_for flushes those) would be stale, maybe "present"
+     * (9.1, P in bit 0) and naming any page as a context table. So the
+     * whole page is flushed, as every other table page is. */
+    uint64_t pa = pmm_alloc_page_phys(PMM_ZERO);
+    if (pa && !VTD_ECAP_C(u->ecap))
+        vtd_flush_lines(phys_to_virt(pa), PAGE_SIZE);
+    return pa;
+}
+
 status_t vtd_ctl_init(struct vtd_unit *u)
 {
     struct vtd_ctl *ctl = &ctls[u->index];
@@ -119,7 +133,7 @@ status_t vtd_ctl_init(struct vtd_unit *u)
     uint32_t ndid = 1u << (4 + 2 * (unsigned)VTD_CAP_ND(u->cap));
     if (ndid > VTD_TT_MAX_DIDS)
         ndid = VTD_TT_MAX_DIDS;
-    uint64_t root = pmm_alloc_page_phys(PMM_ZERO);
+    uint64_t root = vtd_root_table_new(u);
     uint64_t *used = kzalloc(((ndid + 63) / 64) * sizeof(uint64_t));
     if (!root || !used) {
         if (root)
@@ -536,8 +550,10 @@ status_t iommu_device_driven(struct pci_dev *dev)
     return st;
 }
 
-/* The domain cap for one driver's domain: 512 table pages, 1 GiB of
- * scattered pins (docs/M11-PLAN.md). */
+/* The domain cap for one driver's domain: 512 table pages (docs/M11-PLAN.md).
+ * A leaf table maps 2 MiB of IOVA = physical addresses, so that is up to
+ * 1 GiB of pins dense within 2 MiB blocks, but only ~500 pages spread one
+ * per block (review finding 6, design question C). */
 #define DRIVER_MAX_TABLES 512
 
 status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_domain **out)

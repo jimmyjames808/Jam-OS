@@ -128,6 +128,50 @@ bool t_update_manifest(void)
     return manifest_extensions();
 }
 
+/* The boot menu's line (`menu <size> <SHA-256>`, the one extension line
+ * this build knows): taken wherever extension lines may be, once, signed
+ * with the rest; one that breaks its rules refuses the manifest (an older
+ * build would have skipped it, as any extension line); `!menu` is
+ * another line, a must-understand one this build doesn't know. */
+bool t_update_manifest_menu(void)
+{
+    static const char sha[] = "5e846c64f2db12266e6b658a8e5b5b42cc225419b3ee1fca88acbb181ddfdb52";
+    char with[256];
+    struct update_manifest m;
+    CHECK_ST(update_manifest_parse(golden, strlen(golden), &m), OK);
+    CHECK(!m.has_menu && !m.file[UPDATE_MENU].size);
+    snprintf(with, sizeof(with), "menu 5 %s\nsignature\n", sha);
+    CHECK_ST(edited("signature\n", with, &m), OK);
+    CHECK(m.has_menu && m.file[UPDATE_MENU].size == 5 && !m.needs[0]);
+    uint8_t want[SHA256_BYTES];
+    sha256("bbbbb", 5, want);
+    CHECK(!memcmp(m.file[UPDATE_MENU].sha256, want, SHA256_BYTES));
+    CHECK_EQ(m.signed_len, strlen(golden) + strlen(with) - 2 * strlen("signature\n"));
+    snprintf(with, sizeof(with), "jamos-update 2\nmenu 65536 %s\n", sha);   /* UPDATE_MENU_MAX */
+    CHECK_ST(edited("jamos-update 2\n", with, &m), OK);
+    CHECK(m.has_menu && m.file[UPDATE_MENU].size == UPDATE_MENU_MAX);
+    static const struct { const char *line; status_t want; } bad[] = {
+        { "menu 65537 %s\n", ERR_OUT_OF_RANGE }, { "menu 0 %s\n", ERR_OUT_OF_RANGE },
+        { "menu 99999999999 %s\n", ERR_INVALID_ARGS }, { "menu 05 %s\n", ERR_INVALID_ARGS },
+        { "menu 5\n", ERR_INVALID_ARGS }, { "menu 5 %.63s\n", ERR_INVALID_ARGS },
+        { "menu 5 %s x\n", ERR_INVALID_ARGS }, { "menu\n", ERR_INVALID_ARGS },
+        { "menu  5 %s\n", ERR_INVALID_ARGS }, { "menu 5 %s\nmenu 5 %s\n", ERR_INVALID_ARGS },
+        { "menu 5 5E846C64F2DB12266E6B658A8E5B5B42CC225419B3EE1FCA88ACBB181DDFDB52\n",
+          ERR_INVALID_ARGS },
+    };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char line[200];
+        snprintf(line, sizeof(line), bad[i].line, sha, sha);
+        snprintf(with, sizeof(with), "%ssignature\n", line);
+        if (edited("signature\n", with, &m) != bad[i].want)
+            FAIL("the menu line %u (\"%s\") wasn't refused as it should be", i, bad[i].line);
+    }
+    snprintf(with, sizeof(with), "!menu 5 %s\nsignature\n", sha);
+    CHECK_ST(edited("signature\n", with, &m), OK);
+    CHECK(!m.has_menu && !strcmp(m.needs, "!menu"));
+    return true;
+}
+
 /* Each line wrong in each way: refused, with the status that says why. */
 bool t_update_manifest_refusals(void)
 {

@@ -148,7 +148,7 @@ static const char *ktest_prefix(void)
 static bool mode_word_given(void)
 {
     static const char *const modes[] = { "ktest", "bench", "selftest", "init", "keytest",
-                                         "pcilist", "memmap" };
+                                         "comptest", "pcilist", "memmap" };
     for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
         if (cmdline_has(modes[i]))
             return true;
@@ -346,7 +346,9 @@ static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
  * soak[=minutes] (the Soak test entry) is a plain boot whose shell runs
  * `soak <minutes> halt` by itself: an option, like verbose, not a mode
  * word. The hidden `keytest` boot word: init starts devmgr alone
- * (usb-bus, a hid per HID interface, keys to the log) for 30 s. Test,
+ * (usb-bus, a hid per HID interface, keys to the log) for 30 s; the
+ * hidden `comptest`: init starts the compositor alone on the screen with
+ * its test scene (tools/comp-test.sh takes screenshots of it). Test,
  * benchmark and crash entries start none of it. False if init (or
  * keytest's) reported a problem. */
 static bool run_user_space(bool shell, bool nousb)
@@ -370,6 +372,8 @@ static bool run_user_space(bool shell, bool nousb)
                                 boot_vlan ? 1 : 0);
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest", words, nwords);
+    if (cmdline_has("comptest"))
+        ok &= userboot_run_init(150, "comptest", NULL, 0);
     return ok;
 }
 

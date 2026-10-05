@@ -71,7 +71,16 @@ KTEST(vtd_ir_irte_refuses)
     KT_EQ(vtd_irte_encode(&s, true, &e), ERR_INVALID_ARGS);   /* an exception vector */
     s.vector = 0;
     KT_EQ(vtd_irte_encode(&s, true, &e), ERR_INVALID_ARGS);
+    /* 16-31 are reserved for exceptions too (#MF, #AC, #MC, #XM, #VE,
+     * #CP): the local APIC would deliver them into those handlers. Review
+     * finding 5. */
     s.vector = 16;
+    KT_EQ(vtd_irte_encode(&s, true, &e), ERR_INVALID_ARGS);
+    s.vector = 18;   /* #MC */
+    KT_EQ(vtd_irte_encode(&s, true, &e), ERR_INVALID_ARGS);
+    s.vector = 31;
+    KT_EQ(vtd_irte_encode(&s, true, &e), ERR_INVALID_ARGS);
+    s.vector = 32;
     KT_EQ(vtd_irte_encode(&s, true, &e), OK);
     s.dest = 256;
     KT_EQ(vtd_irte_encode(&s, false, &e), ERR_OUT_OF_RANGE);  /* doesn't fit xAPIC's 8 bits */
@@ -139,6 +148,8 @@ KTEST(vtd_ir_rte_exact_bits)
     KT_EQ(vtd_ir_rte_encode(&s, &v), ERR_OUT_OF_RANGE);
     s.index = 1;
     s.vector = 15;
+    KT_EQ(vtd_ir_rte_encode(&s, &v), ERR_INVALID_ARGS);
+    s.vector = 31;
     KT_EQ(vtd_ir_rte_encode(&s, &v), ERR_INVALID_ARGS);
     KT_EQ(v, 9);
 }

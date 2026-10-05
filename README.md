@@ -317,7 +317,8 @@ made without the key takes no update at all.
    python3 tools/update-server.py
    ```
 
-   It serves `build/jamos.elf` and `build/bootfs.img` on UDP port 5022,
+   It serves `build/jamos.elf`, `build/bootfs.img` and the boot menu
+   `boot/limine.conf` (`--no-menu`: none) on UDP port 5022,
    each snapshot's manifest signed with `~/.config/jamos/update.key`
    (`--key <file>` for another; it won't start without one), `--build
    <dir>` for another folder, `--client <the PC's address>` to answer only
@@ -341,7 +342,15 @@ seconds; the stick boots throughout (the old build first, under every
 name, then the new one), and if anything goes wrong the screen says how
 far it got, the new build stays loaded (`reboot` runs it), and the stick
 still boots the old one. `-w` needs a build with the key, as `update`
-does. A signature proves the build is one you signed, not that it is the
+does. It brings the boot menu too: new entries in `boot/limine.conf`
+reach the stick without `make flash`. init writes the menu after the
+build, only if it passes init's check (its default entry boots the new
+build, "Jam OS (previous build)" the previous one, every file it names is
+on the stick; `make check` runs the same check on `boot/limine.conf`),
+keeps the stick's old menu as `/esp/boot/limine/limine.conf.prev`, and the
+stick has a whole menu at every moment; a menu that fails is left out and
+the screen says why. `update` and `update -n` never touch the stick's
+menu. A signature proves the build is one you signed, not that it is the
 newest: an older signed build is accepted too (the versions are printed).
 
 ## Where things live

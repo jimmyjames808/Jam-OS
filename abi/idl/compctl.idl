@@ -1,0 +1,42 @@
+# compctl: the compositor's control channel (user/services/compositor,
+# docs/G1-PLAN.md). System powers, not app features: Wayland clients
+# never see it. init holds the ADMIN channel the compositor is started
+# with, and makes narrower ones with new_client for devmgr (its HID
+# drivers' input sources) and for serialin. Format: see tools/genidl.py.
+#
+# Levels, fixed on a channel when it is made: 0 ADMIN (init's: every
+# method), 1 INPUT (devmgr's and serialin's: connect_input only). Any other
+# method on an INPUT channel: ERR_ACCESS_DENIED.
+#
+# Reconnect: the compositor keeps nothing across a restart. After
+# ERR_PEER_CLOSED ask init for a new channel (init restarts the
+# compositor and makes the narrower channels again). An input source's
+# channel closes with it: a HID driver exits 0 and devmgr binds it again,
+# which connects it to the new compositor (as when the console restarts);
+# keys sent to the old one and not yet taken are lost, and so are the keys
+# held down (the new compositor starts with none held, Num Lock on).
+
+protocol compctl 32
+
+# A new input source: the compositor serves the `input` protocol
+# (abi/idl/input.idl, unchanged) on its end; the caller hands the other end
+# to the source (a HID driver, serialin), which calls `input` on it. At
+# most 16 sources at once: ERR_NO_RESOURCES.
+1  connect_input  () -> (handle source)
+# Blank the screen (on 1): the splash's background over all of it and no
+# window drawn, until on 0. Input still goes to the windows. For init's
+# reboot by kexec: the screen stays that colour until the next boot's
+# splash. ADMIN only.
+2  blank          (u8 on) -> ()
+# A new channel with less authority: level 1 (INPUT). A caller may only
+# make a level above its own: ERR_ACCESS_DENIED otherwise,
+# ERR_INVALID_ARGS for a level > 1. At most 8 channels at once:
+# ERR_NO_RESOURCES. ADMIN only.
+3  new_client     (u8 level) -> (handle client)
+# What the compositor has done, for tests and `ps`: paints and the pixels
+# they composed, the last and the worst paint's time (ns); the clients
+# connected now, their surfaces and windows; connections taken, refused,
+# and gone by why (closed, a protocol error, too slow to read); input
+# sources connected now, key presses taken, and those the compositor kept
+# for itself (Ctrl+Alt+Del, Alt+Tab and the window keys). ADMIN only.
+4  stats          () -> (u64 paints, u64 painted_px, u64 last_paint_ns, u64 worst_paint_ns, u32 clients, u32 surfaces, u32 windows, u64 connected, u64 refused, u64 gone_closed, u64 gone_protocol, u64 gone_slow, u32 sources, u64 keys, u64 reserved_keys)

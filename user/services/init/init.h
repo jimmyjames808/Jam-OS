@@ -31,6 +31,9 @@ void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  * controllers alone (the safe mode boot entry); splash: the boot splash
  * plays first (splash.c). */
 bool init_shell(bool nousb, bool splash, const char *shell_arg);
+/* The hidden comptest mode (comptest.c): the compositor alone on the
+ * screen, running its test scene. True if it exited 0. */
+bool run_comptest(void);
 /* The option word "hidboot" (main.c): devmgr is started with it, so every
  * hid keeps its mouse in the boot protocol. */
 extern bool init_hidboot;
@@ -447,6 +450,9 @@ struct esp_write {
     handle_t       vmo[UPDATE_FILES];          /* init's checked copies of the new build */
     uint64_t       size[UPDATE_FILES];         /* their sizes in bytes */
     const uint8_t *sha256[UPDATE_FILES];       /* the signed manifest's SHA-256s */
+    handle_t       menu_vmo;                   /* init's checked copy of the boot menu (0: none) */
+    uint64_t       menu_size;                  /* its size in bytes */
+    const uint8_t *menu_sha256;                /* the signed manifest's SHA-256 of it */
     uint32_t       fail_at;                    /* a test's: fail at this step, once (NONE: no) */
     uint32_t       stop_at;                    /* a test's: stop after this swap change (0: no) */
     /* Answered. */
@@ -457,10 +463,14 @@ struct esp_write {
     bool           noted;                      /* the stick's files, as they are now: */
     uint64_t       file_size[UPDATE_FILES];    /* ... their sizes */
     uint64_t       mtime[UPDATE_FILES];        /* ... and modification times */
+    uint32_t       menu;                       /* enum update_menu: what became of the menu */
+    status_t       menu_status;                /* ... MENU_NOT_WRITTEN: why */
+    char           menu_why[UPDATE_MENU_WHY_MAX + 1];   /* ... MENU_REFUSED: the check's */
 };
-/* Write the build in j to the stick's ESP (the file's header has the
- * steps and what each failure leaves); blocks for as long as that takes
- * (seconds: never call it from init's loop). */
+/* Write the build in j to the stick's ESP, then its boot menu, if j has
+ * one (espwrite.c's and espmenu.c's headers have the steps and what each
+ * failure leaves); blocks for as long as that takes (seconds: never call
+ * it from init's loop). */
 void esp_write_build(struct esp_write *j);
 
 /* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */

@@ -4,8 +4,7 @@
  * answers it.
  *
  * The globals never come and go (one output, one seat). A row with no
- * bind function is not advertised yet: the seat (seat.c) and xdg-shell
- * (xdg.c) fill theirs. bind is checked against the row it names: the
+ * bind function is not advertised yet: xdg-shell (xdg.c) fills its own. bind is checked against the row it names: the
  * interface's name and a version from 1 to ours (libjwl has already
  * checked the version against the interface's tables and entered the id).
  *
@@ -30,7 +29,7 @@ static const struct global {
     { 1, &jwl_wl_compositor_interface, COMP_COMPOSITOR_VERSION, bind_compositor },
     { 2, &jwl_wl_shm_interface, COMP_SHM_VERSION, shm_bind },
     { 3, &jwl_wl_output_interface, COMP_OUTPUT_VERSION, bind_output },
-    { 4, &jwl_wl_seat_interface, COMP_SEAT_VERSION, NULL },          /* seat.c */
+    { 4, &jwl_wl_seat_interface, COMP_SEAT_VERSION, seat_bind },
     { 5, &jwl_xdg_wm_base_interface, COMP_XDG_WM_VERSION, NULL },    /* xdg.c */
 };
 #define NGLOBALS (sizeof(globals) / sizeof(globals[0]))

@@ -244,8 +244,8 @@ static bool bind_as(struct ct_client *k, uint32_t *obj, uint32_t name,
 
 static bool bad_bind_seat(struct ct_client *k, uint32_t *obj, uint32_t *code)
 {
-    *code = JWL_ERROR_INVALID_OBJECT;   /* the seat's row isn't offered yet */
-    return bind_as(k, obj, 4, &jwl_wl_seat_interface, 1);
+    *code = JWL_ERROR_INVALID_OBJECT;   /* we offer version 5 */
+    return bind_as(k, obj, 4, &jwl_wl_seat_interface, 6);
 }
 
 static bool bad_bind_name(struct ct_client *k, uint32_t *obj, uint32_t *code)
@@ -309,7 +309,7 @@ static const struct {
     { "a buffer 8193 wide", bad_buffer_width }, { "a negative offset", bad_buffer_offset },
     { "a pool shrunk", bad_resize_shrink }, { "a pool grown past its VMO", bad_resize_past_vmo },
     { "scale 2", bad_scale_2 }, { "scale 0", bad_scale_0 }, { "transform 9", bad_transform_9 },
-    { "transform 90", bad_transform_90 }, { "the seat bound", bad_bind_seat },
+    { "transform 90", bad_transform_90 }, { "a seat too new", bad_bind_seat },
     { "a bind by the wrong name", bad_bind_name }, { "a bind too new", bad_bind_newer },
     { "an unknown object", bad_unknown_object }, { "an unknown opcode", bad_opcode },
     { "a request too new", bad_too_new }, { "a batch that isn't one", bad_batch },

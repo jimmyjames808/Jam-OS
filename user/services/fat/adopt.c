@@ -422,6 +422,7 @@ status_t adopt(bool adopted, bool *no_volume)
     if (f.k != SVCSTATE_RESEND && post_owed())
         (void)op_resend();
     f.request = finish(f.k, f.slot);
+    reply_flush();   /* its answer now, not after the closes files_adopt makes */
     f.files = files_adopt();
     f.views = views_adopt();
     say(&f);

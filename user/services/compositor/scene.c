@@ -105,6 +105,7 @@ status_t window_create(struct comp_surface *s, int32_t x, int32_t y, struct comp
 
 void window_destroy(struct comp_window *w)
 {
+    seat_window_gone(w);   /* its focus moves on while it is still in the order */
     window_damage(w);
     unlink(w);
     scene.nwindows--;
@@ -116,9 +117,13 @@ void window_map(struct comp_window *w, bool mapped)
 {
     if (mapped == !!(w->flags & COMP_WIN_MAPPED))
         return;
+    if (!mapped)
+        seat_window_gone(w);   /* its focus moves on */
     window_damage(w);   /* the frame it leaves (unmapping) */
     w->flags = mapped ? w->flags | COMP_WIN_MAPPED : w->flags & ~COMP_WIN_MAPPED;
     window_damage(w);   /* the frame it covers (mapping) */
+    if (mapped)
+        seat_window_mapped(w);   /* a client's first window takes the keyboard */
 }
 
 void window_move(struct comp_window *w, int32_t x, int32_t y)
@@ -162,5 +167,5 @@ bool surface_visible(const struct comp_surface *s)
     const struct comp_window *w = s->window;
     if (!w || !(w->flags & COMP_WIN_MAPPED))
         return false;
-    return !box_empty(box_intersect(window_surface_box(w), output_box()));
+    return !box_empty(box_intersect(window_surface_box(w), output_box())) && !window_covered(w);
 }

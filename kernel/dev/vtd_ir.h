@@ -86,10 +86,12 @@ struct vtd_ir_source {
 };
 
 /* What an entry delivers: always fixed delivery to one CPU, physical
- * destination mode. */
+ * destination mode. Vectors 0-31 are the CPU's exceptions (the local APIC
+ * delivers 16-31 into their handlers): never in an entry. */
+#define VTD_IR_VECTOR_MIN 32
 struct vtd_irte_spec {
     uint32_t             dest;     /* the CPU's APIC id (at most 255 in xAPIC format) */
-    uint8_t              vector;   /* 16..255 */
+    uint8_t              vector;   /* VTD_IR_VECTOR_MIN..255 */
     bool                 level;    /* level-triggered (I/O APIC level pins); MSIs are edge */
     struct vtd_ir_source src;
 };
@@ -113,7 +115,7 @@ status_t vtd_ir_source_from_scope(const struct dmar_scope *s, struct vtd_ir_sour
 
 /* Encode an entry: present, fixed delivery, physical destination. eim: the
  * table takes 32-bit (x2APIC) destinations, else 8-bit (xAPIC).
- * ERR_INVALID_ARGS (vector below 16, a source that validates nothing,
+ * ERR_INVALID_ARGS (vector below VTD_IR_VECTOR_MIN, a source that validates nothing,
  * reserved SVT or SQ, an empty bus range), ERR_OUT_OF_RANGE (an xAPIC
  * destination over 255). Pure. */
 status_t vtd_irte_encode(const struct vtd_irte_spec *s, bool eim, struct vtd_irte *out);
@@ -146,13 +148,13 @@ status_t vtd_ir_msi_encode(uint32_t index, struct vtd_ir_msi *out);
  * the entry's: the I/O APIC matches a level pin's EOI by it. */
 struct vtd_ir_rte_spec {
     uint32_t index;        /* the IRTE */
-    uint8_t  vector;       /* the IRTE's vector, 16..255 */
+    uint8_t  vector;       /* the IRTE's vector, VTD_IR_VECTOR_MIN..255 */
     bool     level;        /* level-triggered (and the IRTE's TM) */
     bool     active_low;   /* the pin's polarity */
     bool     masked;
 };
 /* ERR_OUT_OF_RANGE (index past 0xffff), ERR_INVALID_ARGS (vector below
- * 16). Pure. */
+ * VTD_IR_VECTOR_MIN). Pure. */
 status_t vtd_ir_rte_encode(const struct vtd_ir_rte_spec *s, uint64_t *out);
 
 /* ---- the table ------------------------------------------------------------------ */

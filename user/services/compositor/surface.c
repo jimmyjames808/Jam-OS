@@ -264,7 +264,9 @@ static status_t on_commit(void *data, uint32_t self)
     s->nframes += s->npending;   /* committed: answered after the next paint */
     s->npending = 0;
     s->commits++;
-    return s->role_ops && s->role_ops->commit ? s->role_ops->commit(s) : OK;
+    if (!s->role_ops)
+        return testwin_commit(s);   /* nothing without the test power */
+    return s->role_ops->commit ? s->role_ops->commit(s) : OK;
 }
 
 static const struct jwl_wl_surface_requests surface_ops = {

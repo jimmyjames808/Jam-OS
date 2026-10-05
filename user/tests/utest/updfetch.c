@@ -13,6 +13,8 @@
 #define KSIZE   20000u   /* the fake kernel: 15 pieces, the last short */
 #define BSIZE   9000u    /* the fake boot image: 7 pieces */
 #define PIECES  (15u + 7u)
+#define MSIZE   3000u    /* the fake boot menu (add_menu): 3 pieces */
+#define MPIECES 3u
 #define INFLIGHT 256u    /* replies on their way, at most */
 
 /* A reply on its way. */
@@ -28,8 +30,8 @@ struct fake {
     uint32_t snap;                   /* the snapshot it serves (0: none yet) */
     char     manifest[2048];         /* room for one too big for a datagram */
     size_t   manifest_len;
-    uint8_t  file[UPDATE_FILES][KSIZE];
-    uint32_t size[UPDATE_FILES];
+    uint8_t  file[UPDATE_PARTS][KSIZE];   /* the menu's too, if add_menu */
+    uint32_t size[UPDATE_PARTS];
     /* the case */
     unsigned drop_req, drop_rep, dup_rep;   /* every Nth lost / repeated (0: never) */
     bool     reorder;                       /* latencies vary: replies overtake */
@@ -38,9 +40,9 @@ struct fake {
     bool     always_gone;
     uint32_t lie_size;                      /* the boot image's file_size in replies, if set */
     /* what happened */
-    unsigned requests, replies, begins, stores, piece_reqs;
-    uint8_t  got[UPDATE_FILES][KSIZE];
-    uint64_t room[UPDATE_FILES];            /* begin's sizes */
+    unsigned requests, replies, begins, stores, piece_reqs, menu_reqs;
+    uint8_t  got[UPDATE_PARTS][KSIZE];
+    uint64_t room[UPDATE_PARTS];            /* begin's sizes */
     struct wire q[INFLIGHT];
     unsigned nq;
 };
@@ -70,6 +72,23 @@ static void make_files(struct fake *f)
                                        "bootfs %u %s\nsignature\n", KSIZE, hex[0], BSIZE, hex[1]);
 }
 
+/* make_files' build with a boot menu too: MSIZE bytes, and the manifest's
+ * `menu` line before its signature line. */
+static void add_menu(struct fake *f)
+{
+    f->size[UPDATE_MENU] = MSIZE;
+    for (unsigned i = 0; i < MSIZE; i++)
+        f->file[UPDATE_MENU][i] = (uint8_t)("# a menu\n/Jam OS\n"[i % 17]);
+    uint8_t d[SHA256_BYTES];
+    char hex[2 * SHA256_BYTES + 1];
+    sha256(f->file[UPDATE_MENU], MSIZE, d);
+    sha256_hex(d, hex);
+    f->manifest_len -= strlen("signature\n");
+    f->manifest_len += (size_t)snprintf(f->manifest + f->manifest_len,
+                                        sizeof(f->manifest) - f->manifest_len,
+                                        "menu %u %s\nsignature\n", MSIZE, hex);
+}
+
 static void queue(struct fake *f, const struct updwire_rep *r, unsigned copies)
 {
     for (unsigned c = 0; c < copies && f->nq < INFLIGHT; c++) {
@@ -90,6 +109,7 @@ static status_t fake_send(void *ctx, const uint8_t *d, size_t len)
     if (updwire_req_decode(d, len, &q) != OK || q.format != UPDATE_FORMAT)
         return ERR_INVALID_ARGS;   /* every request says the format this build reads */
     f->requests++;
+    f->menu_reqs += q.file == UPDWIRE_MENU;
     if (f->silent || (f->drop_req && f->requests % f->drop_req == 0))
         return OK;   /* lost on the way */
     if (q.file == UPDWIRE_MANIFEST && !q.snapshot)
@@ -127,15 +147,15 @@ static status_t fake_begin(void *ctx, const struct update_manifest *m, const uin
     (void)len;
     f->begins++;
     memset(f->got, 0, sizeof(f->got));
-    for (unsigned w = 0; w < UPDATE_FILES; w++)
-        f->room[w] = m->file[w].size;
+    for (unsigned w = 0; w < UPDATE_PARTS; w++)
+        f->room[w] = m->file[w].size;   /* the menu's: 0 without a menu line */
     return OK;
 }
 
 static status_t fake_store(void *ctx, unsigned file, uint64_t off, const uint8_t *d, size_t len)
 {
     struct fake *f = ctx;
-    if (file >= UPDATE_FILES || off > f->room[file] || len > f->room[file] - off)
+    if (file >= UPDATE_PARTS || off > f->room[file] || len > f->room[file] - off)
         return ERR_OUT_OF_RANGE;   /* the test checks this never happens */
     memcpy(f->got[file] + off, d, len);
     f->stores++;
@@ -254,6 +274,34 @@ bool t_updfetch_snapshot_gone(void)
     CHECK_EQ(u.state, UPDFETCH_FAILED);
     CHECK_ST(u.why, ERR_NOT_FOUND);
     CHECK_EQ(fk.begins, UPDFETCH_RESTARTS + 1);
+    return true;
+}
+
+/* A manifest with a `menu` line: the boot menu fetched after the build,
+ * as a third file, through loss, repeats and forgeries; one without the
+ * line never asks for it (a server older than it isn't asked). */
+bool t_updfetch_menu(void)
+{
+    struct updfetch u;
+    make_files(&fk);
+    add_menu(&fk);
+    fk.drop_req = 4;
+    fk.dup_rep = 3;
+    fk.reorder = true;
+    run(&u, 3);
+    CHECK_EQ(u.state, UPDFETCH_DONE);
+    CHECK(u.m.has_menu);
+    CHECK(same_files());
+    CHECK(!memcmp(fk.got[UPDATE_MENU], fk.file[UPDATE_MENU], MSIZE));
+    CHECK_EQ(u.total, KSIZE + BSIZE + MSIZE);
+    CHECK_EQ(fk.stores, PIECES + MPIECES);
+    CHECK(fk.menu_reqs >= MPIECES);
+    make_files(&fk);
+    run(&u, 0);
+    CHECK_EQ(u.state, UPDFETCH_DONE);
+    CHECK(!u.m.has_menu && same_files());
+    CHECK_EQ(fk.menu_reqs, 0);
+    CHECK_EQ(u.total, KSIZE + BSIZE);
     return true;
 }
 
