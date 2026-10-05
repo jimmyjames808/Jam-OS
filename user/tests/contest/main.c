@@ -58,11 +58,21 @@ static bool typed(handle_t k, char c)
     return false;
 }
 
+/* No key pressed on k: releases are read away (a keyboard, and the
+ * compositor's keys, release what they press; the console's own serial
+ * decoding sends presses alone). */
 static bool empty(handle_t k)
 {
-    signals_t seen = 0;
-    jam_object_wait_one(k, SIG_READABLE, now() + 50 * NS_PER_MS, &seen);
-    return !(seen & SIG_READABLE);
+    struct input_key_event ev;
+    for (unsigned n = 0; n < 16; n++) {
+        signals_t seen = 0;
+        jam_object_wait_one(k, SIG_READABLE, now() + 50 * NS_PER_MS, &seen);
+        if (!(seen & SIG_READABLE))
+            return true;
+        if (!next_key(k, &ev) || ev.state == INPUT_KEY_DOWN)
+            return false;
+    }
+    return false;
 }
 
 /* ---- probe `run contest steal`: a `run` program posing as the console. If
