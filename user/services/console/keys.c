@@ -428,6 +428,8 @@ status_t op_connect_input(void *ctx, handle_t *out)
     const struct client *c = ctx;
     if (c->level != L_ADMIN)
         return ERR_ACCESS_DENIED;   /* input sources are devmgr's and init's */
+    if (window_mode)
+        return ERR_NOT_SUPPORTED;   /* the input is the compositor's: our keys come to our window */
     unsigned i;
     for (i = 0; i < MAX_SOURCES && sources[i].ch; i++)
         ;

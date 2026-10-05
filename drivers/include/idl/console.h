@@ -287,7 +287,9 @@ static inline status_t console_connect_input_call(handle_t ch, bool idl_within, 
 /* A new input source: the console serves the `input` protocol on its end;
  * the caller (devmgr, for a HID driver; or the serial source) gets the
  * other end and hands it to the source, which calls `input` on it. ADMIN
- * channels only (see new_client). */
+ * channels only (see new_client). ERR_NOT_SUPPORTED in window mode: the
+ * input sources are the compositor's (compctl.connect_input), and the
+ * console's keys come to its window. */
 static inline status_t console_connect_input_until(handle_t ch, uint64_t deadline_ns, handle_t *out_source)
 {
     return console_connect_input_call(ch, false, deadline_ns, out_source);
