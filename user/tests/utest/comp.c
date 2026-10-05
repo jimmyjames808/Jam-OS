@@ -2,7 +2,7 @@
  * real channels by test clients speaking Wayland through libjwl.
  *
  * t_comp_globals: the registry (wl_compositor 4, wl_shm 1, wl_output 3,
- * wl_seat 5; xdg-shell not offered yet), binding them (wl_shm's two
+ * wl_seat 5, xdg_wm_base 1), binding them (wl_shm's two
  * formats, wl_output's geometry, mode, scale and done), sync, and the
  * headless image composed with the background.
  * t_comp_surface: a surface with a shm buffer from a kept pool: commit,
@@ -64,6 +64,11 @@ static bool image_for(struct ct_comp *p, handle_t *theirs)
 
 bool ct_start(struct ct_comp *p, int32_t w, int32_t h)
 {
+    return ct_start_arg(p, w, h, NULL);
+}
+
+bool ct_start_arg(struct ct_comp *p, int32_t w, int32_t h, const char *arg)
+{
     *p = (struct ct_comp){ .w = w, .h = h };
     handle_t server, image;
     if (!image_for(p, &image))
@@ -72,10 +77,10 @@ bool ct_start(struct ct_comp *p, int32_t w, int32_t h)
     CHECK_ST(new_job(&p->job), OK);
     char size[32];
     snprintf(size, sizeof(size), "size=%dx%d", w, h);
-    const char *argv[] = { "bin/compositor", "headless", size };
+    const char *argv[] = { "bin/compositor", "headless", size, arg };
     struct spawn_handle x[] = { { SR_USER + 0, server }, { SR_USER + 1, image } };
-    struct spawn_args a = { .path = "bin/compositor", .argc = 3, .argv = argv, .job = p->job,
-                            .extra = x, .nextra = 2 };
+    struct spawn_args a = { .path = "bin/compositor", .argc = arg ? 4 : 3, .argv = argv,
+                            .job = p->job, .extra = x, .nextra = 2 };
     CHECK_ST(spawn(&a, &p->proc), OK);
     return true;
 }
@@ -228,9 +233,21 @@ const struct ct_event *ct_await(struct ct_client *k, const struct jwl_interface 
     return e;
 }
 
+/* The events of iface's object id forgotten: an id used again would find
+ * its last owner's (an earlier round trip's done) and stop waiting early. */
+static void forget(struct ct_client *k, const struct jwl_interface *iface, uint32_t id)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < k->nev; i++)
+        if (k->ev[i].iface != iface || k->ev[i].id != id)
+            k->ev[n++] = k->ev[i];
+    k->nev = n;
+}
+
 status_t ct_roundtrip(struct ct_client *k)
 {
     uint32_t cb = ct_new(k, &jwl_wl_callback_interface, 1);
+    forget(k, &jwl_wl_callback_interface, cb);
     status_t st = cb ? jwl_wl_display_sync(k->c, JWL_DISPLAY_ID, cb) : ERR_NO_RESOURCES;
     if (st != OK)
         return st;
@@ -320,7 +337,8 @@ static bool globals_and_binds(struct ct_client *k)
     CHECK(has_global(k, 2, "wl_shm", 1));
     CHECK(has_global(k, 3, "wl_output", 3));
     CHECK(has_global(k, 4, "wl_seat", 5));
-    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 4);
+    CHECK(has_global(k, 5, "xdg_wm_base", 1));
+    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 5);
     CHECK_EQ(count(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT), 2);
     CHECK(ct_find(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT, k->shm)->u[0] ==
           JWL_WL_SHM_FORMAT_ARGB8888);
@@ -352,7 +370,7 @@ bool t_comp_globals(void)
     uint32_t reg2 = ct_new(&k, &jwl_wl_registry_interface, 1);
     CHECK_ST(jwl_wl_display_get_registry(k.c, JWL_DISPLAY_ID, reg2), OK);
     CHECK_ST(ct_roundtrip(&k), OK);
-    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 4);
+    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 5);
     ct_close(&k);
     CHECK(ct_stop(&p));
     return true;

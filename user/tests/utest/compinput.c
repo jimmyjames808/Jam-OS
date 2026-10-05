@@ -120,7 +120,8 @@ bool t_comp_seat_focus(void)
     ct_clear(&a.k);
     CHECK(alt_tab(&t, &a, &b, sb));
     /* a second window of a's doesn't take the focus from b; b going gives
-     * it to the window below b's (none), else the top one: a's second */
+     * it to the window below b's: a's first, since the window manager
+     * raised b over it when Alt+Tab focused it */
     ct_clear(&a.k);
     ct_clear(&b.k);
     uint32_t sa2 = cs_window(&a, 400, 300, 50, 50);
@@ -131,7 +132,7 @@ bool t_comp_seat_focus(void)
     ct_close(&b.k);
     const struct ct_event *e = ct_await(&a.k, &jwl_wl_keyboard_interface,
                                         JWL_WL_KEYBOARD_EV_ENTER, a.kb, CT_WAIT);
-    CHECK(e && e->u[1] == sa2);
+    CHECK(e && e->u[1] == sa);
     ct_close(&a.k);
     CHECK(cs_stop(&t));
     return true;

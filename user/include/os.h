@@ -328,6 +328,7 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
  * `svc net listen low`: user/services/ only, never a program on /data */
 #define SVC_NET_LISTEN_LOW "net-low"
 #define SVC_SERVE      "serve"       /* the file server, a channel per opener (serve.idl) */
+#define SVC_WAYLAND    "wayland"     /* the compositor: windows, a connection per opener (<jwl.h>) */
 
 /* A channel to service `name` for the caller, who closes it. */
 status_t svc_open(const char *name, handle_t *out);

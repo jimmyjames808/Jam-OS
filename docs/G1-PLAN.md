@@ -87,8 +87,19 @@ differs from the recommendation below, this note wins:
   title bar toggles full screen; open and close animations (fade and
   scale, about 150 ms); minimise, brought back from a top bar; a top bar
   with a clock and the open windows (minimised ones too). The terminal's
-  text stays the 8x16 bitmap font. Tracks D1 (the look) and D2 (minimise,
-  the top bar, animations) build these after C3 (added to the stages
+  text stays the 8x16 bitmap font. Virtual screens (workspaces), made as
+  needed: the desktop starts with one; a new one is made when you go past
+  the last (Super+Right, or the "+" at the end of the top bar's screen
+  dots) or move a window there (Super+Shift+Right); a screen other than
+  the current one that has no windows left goes away; Super+1..9 jump to
+  an existing screen; switching slides. Each screen keeps its own
+  arrangement (floating or tiling: Super+T switches the current one). A
+  window made full screen (its blackcurrant circle, Super+F or a
+  double-click) slides onto a new screen of its own next to the one it
+  came from, with no top bar, frame or wallpaper; leaving full screen
+  slides it back to its place, and that screen goes away. The top bar
+  lists the current screen's windows. Tracks D1 (the look) and D2 (minimise,
+  the top bar, virtual screens, animations) build these after C3 (added to the stages
   when they start).
 
 Each question stands on its own, says what it decides and why it

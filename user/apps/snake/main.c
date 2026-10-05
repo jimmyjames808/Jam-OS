@@ -17,7 +17,11 @@
  * snake between the rules' whole-cell steps, so frames come at `hz` while
  * the game runs; paused or over, a frame is drawn only when a key changes
  * something, and gfx_present sends only the pixels that changed. */
+#include <wants.h>
 #include "snake.h"
+
+/* What it is given when the shell runs it (<wants.h>): a window. */
+JAM_WANTS("svc wayland\n");
 
 static int play(int argc, char **argv)
 {
@@ -70,6 +74,7 @@ static int play(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    gfx_title("snake");
     if (has_arg(argc, argv, "--selftest"))
         return snake_selftest();
     return play(argc, argv);

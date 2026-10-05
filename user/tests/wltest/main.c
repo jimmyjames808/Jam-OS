@@ -11,11 +11,15 @@
  * "wltest: FAIL: ...". `--spawn` starts a headless compositor of its own
  * (spawn.c) instead of opening /svc/wayland.
  *
- * Not built yet: a list asking for `svc wayland` (<wants.h>); until init
+ * Its list asks for the compositor (`svc wayland`, below); until init
  * publishes /svc/wayland, `--spawn` is the way to a compositor. */
 #include <jwl_client.h>
 #include <os.h>
+#include <wants.h>
 #include "wltest.h"
+
+/* What it is given when the shell runs it (<wants.h>). */
+JAM_WANTS("svc wayland\n");
 
 #define KEY_ESC        1u     /* evdev */
 #define CONNECT_WAIT   (5 * NS_PER_S)

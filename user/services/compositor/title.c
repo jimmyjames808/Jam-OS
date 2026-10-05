@@ -2,13 +2,13 @@
  *
  * A window's decorations are the strips of its frame around its surface,
  * as wide as the window manager made them (struct comp_window's deco_*):
- *   - the top strip, if any, is the title bar: the window's title on the
- *     left, in libfun's 8x16 font, cut short with "..." before the close
- *     box; the close box, a square as tall as the bar, at its right end,
- *     with an X; "(not responding)" after the title when the window
- *     didn't answer a ping;
- *   - the other strips are a plain border (floating windows have a thin
- *     one; tiling mode's tile borders are the same strips, made wider).
+ *   - the top strip, if it is COMP_TITLE_H or more, is the title bar: the
+ *     window's title on the left, in libfun's 8x16 font, cut short with
+ *     "..." before the close box; the close box, a square as tall as the
+ *     bar, at its right end, with an X; "(not responding)" after the title
+ *     when the window didn't answer a ping;
+ *   - the other strips, and a thinner top one (tiling mode's windows have
+ *     no title bar, a border all round), are a plain border.
  * The focused window's are brighter. Every pixel of a strip is drawn, and
  * opaquely, so paint.c may treat decorations as hiding what is below.
  *
@@ -28,8 +28,8 @@
 struct comp_box title_bar_box(const struct comp_window *w)
 {
     struct comp_box f = window_frame(w), s = window_surface_box(w);
-    if (w->deco_top <= 0 || box_empty(s))
-        return (struct comp_box){ 0, 0, 0, 0 };
+    if (w->deco_top < COMP_TITLE_H || box_empty(s))
+        return (struct comp_box){ 0, 0, 0, 0 };   /* none, or a top border (tiling's) */
     return (struct comp_box){ f.x1, f.y1, f.x2, s.y1 };
 }
 
@@ -111,6 +111,8 @@ void title_draw(const struct comp_window *w, const struct tile_buf *t)
     struct surf s = { t->px, tw, t->b.y2 - t->b.y1, tw };
     uint32_t border = w->flags & COMP_WIN_FOCUSED ? BORDER_FOCUSED : BORDER;
     draw_bar(w, t, &s);
+    if (box_empty(title_bar_box(w)))   /* a top strip thinner than a title bar: a border */
+        fill_box(t, &s, (struct comp_box){ f.x1, f.y1, f.x2, sb.y1 }, border);
     fill_box(t, &s, (struct comp_box){ f.x1, sb.y1, sb.x1, sb.y2 }, border);   /* left */
     fill_box(t, &s, (struct comp_box){ sb.x2, sb.y1, f.x2, sb.y2 }, border);   /* right */
     fill_box(t, &s, (struct comp_box){ f.x1, sb.y2, f.x2, f.y2 }, border);     /* bottom */

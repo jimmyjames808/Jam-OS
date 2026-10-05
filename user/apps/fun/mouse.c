@@ -13,6 +13,10 @@
  * default 100): `export POINTER_SPEED=70` in the shell slows every app's
  * pointer.
  *
+ * In a window the compositor owns the pointer: it moves and accelerates
+ * it and draws the arrow, and tells where it is over the window (wl.c
+ * hands that to mouse_at); none of the above is used.
+ *
  * The arrow is not part of the app's picture: a present paints it into the
  * back buffer, copies what changed to the screen, and takes it out again
  * (the pixels under it are kept meanwhile). The present's own compare
@@ -90,7 +94,7 @@ status_t gfx_mouse_open(bool accel)
     if (!scr.open)
         return ERR_BAD_STATE;
     struct input_want w = { .events = INPUT_WANT_MOUSE };
-    status_t st = jam_channel_write(scr.keys, &w, sizeof(w), NULL, 0);
+    status_t st = scr.windowed ? OK : jam_channel_write(scr.keys, &w, sizeof(w), NULL, 0);
     if (st != OK)
         return st;
     pointer_init(&ptr, scr.w, scr.h, accel);
@@ -108,21 +112,34 @@ void mouse_close(void)
     wanted = visible = false;
 }
 
+bool mouse_wanted(void)
+{
+    return wanted;
+}
+
 bool mouse_report(const struct input_mouse_event *ev)
 {
     if (!wanted)
         return false;
-    uint8_t buttons = ev->buttons & (MOUSE_LEFT | MOUSE_RIGHT | MOUSE_MIDDLE);
     pointer_move(&ptr, ev->dx, ev->dy);
-    int x = pointer_x(&ptr), y = pointer_y(&ptr);
+    return mouse_at(pointer_x(&ptr), pointer_y(&ptr), ev->buttons, ev->wheel);
+}
+
+bool mouse_at(int x, int y, uint8_t buttons, int wheel)
+{
+    if (!wanted)
+        return false;
+    buttons &= MOUSE_LEFT | MOUSE_RIGHT | MOUSE_MIDDLE;
+    x = x < 0 ? 0 : x >= scr.w ? scr.w - 1 : x;
+    y = y < 0 ? 0 : y >= scr.h ? scr.h - 1 : y;
     state.moved |= x != state.x || y != state.y;
     state.x = x;
     state.y = y;
     state.pressed |= buttons & ~state.buttons;
     state.released |= state.buttons & ~buttons;
-    bool edge = buttons != state.buttons || ev->wheel;
+    bool edge = buttons != state.buttons || wheel;
     state.buttons = buttons;
-    state.wheel += ev->wheel;
+    state.wheel += wheel;
     state.reports++;
     visible = !hidden;
     return edge;
@@ -219,6 +236,8 @@ void gfx_pointer_show(bool on)
 
 void gfx_present_pointer(void)
 {
+    if (scr.windowed)
+        return;   /* the compositor's arrow */
     int from = shown_y, to = visible ? state.y : -1;
     if (from < 0 && to < 0)
         return;

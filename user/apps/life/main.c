@@ -29,7 +29,11 @@
  * faster / slower, r a new random soup, c clear, g a Gosper glider gun and
  * p an R-pentomino at the centre of the view, a ages on / off, m the map,
  * h the help line, q or Esc quits. */
+#include <wants.h>
 #include "life.h"
+
+/* What it is given when the shell runs it (<wants.h>): a window. */
+JAM_WANTS("svc wayland\n");
 
 /* ---- drawing ---------------------------------------------------------------------- */
 
@@ -533,6 +537,7 @@ static int play(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    gfx_title("life");
     if (has_arg(argc, argv, "--selftest"))
         return life_selftest();
     return play(argc, argv);
