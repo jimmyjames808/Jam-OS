@@ -256,18 +256,27 @@ static void clean_job(handle_t job, const char *path)
     }
 }
 
-/* argv[0] as a program. Its status. */
-static int run_program(int argc, char **argv)
+/* A program spawn started: what start_program hands back. */
+struct started {
+    char     path[SH_PATH_MAX];   /* what was started (bin/x, /data/x) */
+    handle_t proc, job;           /* its process and its job */
+    handle_t out_r;               /* its stdout's read end, or HANDLE_INVALID */
+    uint64_t t0;                  /* when it started */
+};
+
+/* argv[0] found, its list read, a job made, its handles and spawned, into
+ * *s. 0, or the status to give back (said). */
+static int start_program(int argc, char **argv, struct started *s)
 {
-    char path[SH_PATH_MAX];
-    if (!find_program(argv[0], path, sizeof(path)))
+    if (!find_program(argv[0], s->path, sizeof(s->path)))
         return 127;
-    handle_t job, proc, out_r = HANDLE_INVALID, vmo;
+    handle_t vmo;
     uint64_t size;
-    static struct wants w;   /* the shell runs one program at a time */
-    if (!program_wants(path, &w, &vmo, &size))
+    static struct wants w;   /* the shell starts one program at a time */
+    if (!program_wants(s->path, &w, &vmo, &size))
         return 126;
-    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
+    s->out_r = HANDLE_INVALID;
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &s->job);
     if (st != OK) {
         sh_tty("run: no job (%s)\n", status_str(st));
         if (vmo)
@@ -280,46 +289,55 @@ static int run_program(int argc, char **argv)
     grants[w.n] = NULL;
     struct spawn_handle x[RUN_HANDLES];
     rights_t xr[RUN_HANDLES];
-    unsigned nx = program_handles(&w, x, xr, &out_r);
+    unsigned nx = program_handles(&w, x, xr, &s->out_r);
     char **env = sh_make_env();
     const char *args[20];
     int n = 0;
-    args[n++] = path;
+    args[n++] = s->path;
     for (int i = 1; i < argc && n < 19; i++)
         args[n++] = argv[i];
     args[n] = NULL;
     struct spawn_args a = {
-        .path = path, .vmo = vmo, .size = size, .argc = n, .argv = args, .job = job,
+        .path = s->path, .vmo = vmo, .size = size, .argc = n, .argv = args, .job = s->job,
         .extra = x, .nextra = nx, .extra_rights = xr, .envp = (const char *const *)env,
         .ns = w.n ? grants : NULL,
     };
-    uint64_t t0 = now();
-    st = spawn(&a, &proc);
+    s->t0 = now();
+    st = spawn(&a, &s->proc);
     sh_free_env(env);
     if (vmo)
         jam_handle_close(vmo);   /* the program maps what it runs: it keeps it */
-    if (st != OK) {
-        sh_tty("run: can't start %s (%s)\n", path, status_str(st));
-        if (st == ERR_ACCESS_DENIED && path[0] == '/')
-            sh_tty("run: only programs in /boot can run, and those on /data the owner "
-                   "allowed (`allow`)\n");
-        if (out_r)
-            jam_handle_close(out_r);
-        jam_handle_close(job);
-        return 126;
-    }
+    if (st == OK)
+        return 0;
+    sh_tty("run: can't start %s (%s)\n", s->path, status_str(st));
+    if (st == ERR_ACCESS_DENIED && s->path[0] == '/')
+        sh_tty("run: only programs in /boot can run, and those on /data the owner "
+               "allowed (`allow`)\n");
+    if (s->out_r)
+        jam_handle_close(s->out_r);
+    jam_handle_close(s->job);
+    return 126;
+}
+
+/* argv[0] as a program. Its status. */
+static int run_program(int argc, char **argv)
+{
+    struct started s;
+    int code = start_program(argc, argv, &s);
+    if (code)
+        return code;
     /* What it prints goes to the log (unless piped): shown while it runs. */
-    const char *base = strrchr(path, '/');
-    sh_show_log(true, base ? base + 1 : path);
-    sh_tty("run: %s started (Ctrl+C kills it)\n", path);
+    const char *base = strrchr(s.path, '/');
+    sh_show_log(true, base ? base + 1 : s.path);
+    sh_tty("run: %s started (Ctrl+C kills it)\n", s.path);
     sh_flush();
     struct process_info info;
-    st = wait_program(proc, job, out_r, path, &info);
-    int code = ended(st, &info, path, t0);
-    clean_job(job, path);
+    status_t st = wait_program(s.proc, s.job, s.out_r, s.path, &info);
+    code = ended(st, &info, s.path, s.t0);
+    clean_job(s.job, s.path);
     sh_show_log(false, NULL);
-    jam_handle_close(proc);
-    jam_handle_close(job);
+    jam_handle_close(s.proc);
+    jam_handle_close(s.job);
     return code;
 }
 
