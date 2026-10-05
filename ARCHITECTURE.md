@@ -1910,6 +1910,10 @@ open a font link them in.
   and, for most, a shaper.
 - stb_truetype doesn't check a font's offsets, so it only ever reads the
   two built-in files: no call takes a font from outside.
+- `build/host/fontpreview` (`tools/fontpreview.c`) builds the same files
+  on the Mac and draws `build/fontpreview.png` on every `make`: the
+  floating windows' title bars (docs/G1-PLAN.md "The look") at 1x and 2x
+  and sample text at six sizes.
 
 ## Audio
 

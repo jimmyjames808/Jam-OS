@@ -378,7 +378,7 @@ newest: an older signed build is accepted too (the versions are printed).
 | `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), mixramp (a ramp played while the mixer is killed again and again), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test), wantlisten (a list asking for `svc net listen`, the same) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
-| `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater; `update`'s server and its signing tool (`jamos-sign`, built into `build/host/`) |
+| `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater; `update`'s server and its signing tool (`jamos-sign`, built into `build/host/`); the smooth text's preview and font cutter (`tools/fontpreview.c`, `tools/subsetfont.py`) |
 | `third_party/` | Limine and `limine.h`, the Spleen font, FatFs, dr_mp3, pl_mpeg (the splash's MPEG-1 decoder), stb_image (jamjar's album covers), stb_truetype and the Inter font (the compositor's titles), lwIP (netstack's IPv4, ARP, ICMP and UDP), Monocypher (`update`'s Ed25519 signatures) |
 | `docs/` | the documentation below; `docs/logo/`, the logo |
 

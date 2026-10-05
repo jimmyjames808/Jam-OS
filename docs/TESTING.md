@@ -68,8 +68,10 @@ that a bug fix comes with a test is in
   --selftest`: the program-list check takes `svc net listen` and refuses
   `svc net-listen`, a listen on another service and a list over its 24
   wants; the FAT32 checker finds each kind of damage it knows in volumes
-  it makes and damages (`tools/fatcheck.py --selftest`); and the update signing tool passes Monocypher's Ed25519 vectors
-  (`build/host/jamos-sign self-test`).
+  it makes and damages (`tools/fatcheck.py --selftest`); the update signing tool passes Monocypher's Ed25519 vectors
+  (`build/host/jamos-sign self-test`); and libfun's smooth text holds up
+  against hostile input under ASan and UBSan (`build/host/fontcheck
+  --check`, [below](#smooth-text)).
 
 ## Running QEMU: tools/qemu-test.sh
 
@@ -1062,6 +1064,17 @@ In utest (the `init` run), every expectation from the font's own numbers
 | `font_clip` | 13 clip rectangles (across each edge of the text, a box inside, empty, negative, huge, outside): unclipped pixels inside, nothing changed outside; text off each edge and corner of a surface inside a guarded buffer: the surface's part right, the guard untouched |
 | `font_ellipsis` | `font_ellipsize` against a search of every cut for 7 strings (malformed UTF-8 and "" among them) at every width and buffer size; no space before the "…"; `font_draw_in`, left and centred, draws exactly the cut text where it says, clipped to its rectangle |
 | `font_threads` | four threads drawing titles with two shared fonts get the pixels one thread got; a child that writes into a font's memory is killed (`utest font-write`): fonts are read-only |
+
+On the Mac, `make` builds `build/host/fontpreview` from the same files
+and draws `build/fontpreview.png` (the floating windows' title bars at 1x
+and 2x, focused and not, and sample text at six sizes): look at it after
+a change to the text or the font. `make check` runs `build/host/fontcheck
+--check`, the same program with ASan and UBSan: 4,000 random strings
+(malformed UTF-8, other scripts, controls) drawn at random places
+through random clip rectangles into a surface inside a guarded buffer,
+in two fonts, with nothing outside the clip changed; and 4,000 random
+cuts, each fitting its width and buffer, a start of the string plus "…",
+and the longest such start.
 
 ## The other tools
 
