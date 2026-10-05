@@ -461,6 +461,8 @@ bool t_comp_regions(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
  * a pool, a buffer and a surface, then crashes. */
 int  comp_child(int argc, char **argv);
+/* jwlc_real.c: libjwl's client side against the real compositor, headless. */
+bool t_jwlc_real_compositor(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

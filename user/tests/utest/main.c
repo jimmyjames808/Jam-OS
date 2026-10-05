@@ -902,6 +902,7 @@ static const struct {
     { "comp_client_crash", t_comp_client_crash },
     { "comp_never_reads", t_comp_never_reads },
     { "comp_regions", t_comp_regions },
+    { "jwlc_real_compositor", t_jwlc_real_compositor },
 };
 
 int main(int argc, char **argv)
