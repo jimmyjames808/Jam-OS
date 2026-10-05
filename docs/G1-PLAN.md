@@ -163,6 +163,10 @@ differs from the recommendation below, this note wins:
   rows, and busy from launching an app until its first window shows (at
   most 10 s); clients ask for a shape through wp-cursor-shape-v1 (the
   terminal and Jamjar ask for the text bar).
+  Text size in apps (owner): apps should size their text to the screen,
+  not to their window, but that is each app's job, after G1: G1 keeps
+  L2's behaviour (scale from the window's height); later, libfun passes
+  the output's size (wl_output) to the app and the app chooses.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
