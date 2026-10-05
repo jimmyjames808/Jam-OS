@@ -35,7 +35,7 @@ if ! grep -aq "comptest: the compositor exited with code 0" "$log"; then
     ok=0
 fi
 python3 tools/comp-check.py "$log" "$out/$name" || ok=0
-grep -a "\[compositor\] compositor: bench:" "$log" | sed 's/^.*compositor: bench:/bench:/' || true
+grep -a "\] compositor: bench:" "$log" | sed 's/^.*compositor: bench:/bench:/' || true
 rm -f "$out/$name"-[123].ppm
 if [ $ok = 1 ]; then
     echo "$name: PASS"

@@ -49,6 +49,10 @@ struct twin {
 };
 
 static struct twin wins[WINS_MAX];
+/* The client every test surface belongs to, for the seat (which looks at a
+ * window's client): it has no connection, so nothing is ever sent to it
+ * and the seat never gives it the focus. */
+static struct comp_client scene_client;
 static unsigned nwins;
 static handle_t report = HANDLE_INVALID;
 static uint32_t npaints;
@@ -134,6 +138,7 @@ static struct twin *add_surface(int32_t w, int32_t h, const uint32_t *px, uint32
     t->s.width = w;
     t->s.height = h;
     t->s.input_all = true;
+    t->s.client = &scene_client;
     region_init(&t->s.opaque, NULL);
     region_init(&t->s.input, NULL);
     return t;
@@ -166,6 +171,8 @@ static void apply_flags(struct twin *t, const char *flags)
             w->deco_top = COMP_TITLE_H;
             w->deco_left = w->deco_right = w->deco_bottom = BORDER_W;
         }
+        /* Focus as the seat marks it (it gives none to a client with no
+         * connection, so it leaves these windows to us). */
         w->flags |= *f == 'f' ? COMP_WIN_FOCUSED : *f == 'u' ? COMP_WIN_UNRESPONSIVE : 0;
         if (*f == 'o')
             (void)region_add(&t->s.opaque, box_make(0, 0, t->s.width, t->s.height));
