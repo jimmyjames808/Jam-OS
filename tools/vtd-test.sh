@@ -28,8 +28,8 @@
 #      COM1 unaffected, remapping off and on again); DMA translation on
 #      (kernel/dev/vtd_domain.c, vtd_boot.c): every function in its home
 #      (blocking) domain, and every vtd_domain_* test passed (edu blocked
-#      and its fault seen, passed through, in a domain of its own, muted,
-#      the handover in flight); nothing in the RESULTS box but the refusal
+#      and its fault seen, in a domain of its own, muted, the handover
+#      in flight); nothing in the RESULTS box but the refusal
 #      and the faults the tests provoke (edu's, 00:04.0, and its DMA's
 #      into the interrupt window, which QEMU sends with no requester id:
 #      ff:1f.7);
@@ -131,7 +131,6 @@ domain_ok() {
         "ktest: vtd_domain_did_alloc             ok" \
         "ktest: vtd_domain_translation_on        ok" \
         "ktest: vtd_domain_blocked_dma_faults    ok" \
-        "ktest: vtd_domain_pass_dma_lands        ok" \
         "ktest: vtd_domain_own_domain            ok" \
         "ktest: vtd_domain_mute_after_faults     ok" \
         "ktest: vtd_domain_new_driver_fresh_count ok" \

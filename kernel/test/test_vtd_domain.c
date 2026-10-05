@@ -15,8 +15,6 @@
  *     a function nobody drives sits in its home domain;
  *   - edu in the blocking domain: its write to a page doesn't land, and a
  *     fault naming edu is seen;
- *   - edu in the pass-through domain (a driver's, until dma_cap makes one
- *     per cap): its writes land;
  *   - edu in a domain of its own (iommu_domain_create, attach): a mapped
  *     page is reached, an unmapped one is not (and faults), an unmapped
  *     page stops being reached, the entry carries the domain's id and
@@ -27,7 +25,7 @@
  *   - the handover with translation on (what a boot finds after the
  *     firmware's DMA protection or a kexec that couldn't turn it off): the
  *     unit is pointed at a copy of the tables while it translates, and
- *     devices keep working through it. */
+ *     edu, in a domain of its own, keeps reaching its pages through it. */
 #include <jam/boot.h>
 #include <jam/dbghook.h>
 #include <jam/iommu.h>
@@ -347,27 +345,6 @@ KTEST(vtd_domain_blocked_dma_faults)
     KT_EQ(sid, (uint16_t)(e.d->info.bus << 8 | e.d->info.dev << 3 | e.d->info.fn));
 }
 
-KTEST(vtd_domain_pass_dma_lands)
-{
-    NEED_LIVE(ctl);
-    struct edu e;
-    if (!edu_open(&e))
-        return;
-    uint64_t a = page_of(0xa5), b = page_of(0);
-    KT_ASSERT(a && b);
-    KT_EQ(iommu_device_driven(e.d), OK);
-    KT_ASSERT(e.f->cur == ctl->pass);
-    bool ok = edu_in(&e, a) && edu_out(&e, b);
-    bool landed = page_is(b, 0xa5);
-    uint32_t faults = e.f->dma_faults;
-    edu_close(&e);
-    pmm_free_page_phys(a);
-    pmm_free_page_phys(b);
-    KT_ASSERT(ok);
-    KT_ASSERT(landed);
-    KT_EQ(faults, 0);
-}
-
 KTEST(vtd_domain_own_domain)
 {
     NEED_LIVE(ctl);
@@ -540,16 +517,22 @@ KTEST(vtd_domain_handover_while_on)
     struct vtd_unit *u = ctl->unit;
     uint64_t a = page_of(0x3c), b = page_of(0), c = page_of(0x44);
     static uint64_t pages[257];
-    uint32_t n;
+    uint32_t n = 0;
     KT_ASSERT(a && b && c);
-    KT_EQ(iommu_device_driven(e.d), OK);
+    /* edu in a domain of its own mapping a and b: what the copy's context
+     * entry names too (the same page table). */
+    struct iommu_domain *dom = NULL;
+    uint64_t two[2] = { a, b };
+    status_t made = iommu_domain_create(e.d, NULL, &dom);
+    status_t mapped = made == OK ? iommu_map(dom, two, 2) : made;
+    status_t attached = mapped == OK ? iommu_attach(dom) : mapped;
     /* Nothing may change the tables while the copy is in use. */
     mutex_lock(&ctl->lock);
-    uint64_t copy = copy_tables(ctl, pages, &n);
+    uint64_t copy = attached == OK ? copy_tables(ctl, pages, &n) : 0;
     status_t st = copy ? vtd_boot_handover(u, copy) : ERR_NO_MEMORY;
     bool on = vtd_rd32(u, VTD_GSTS) & VTD_GSTS_TES;
     uint64_t rt = vtd_rd64(u, VTD_RTADDR) & ~0xfffull;
-    /* Through the copy: edu (pass-through) reaches RAM. */
+    /* Through the copy: edu reaches the pages its domain maps. */
     bool ok = st == OK && edu_in(&e, a) && edu_out(&e, b);
     bool landed = page_is(b, 0x3c);
     status_t back = vtd_boot_handover(u, ctl->root_phys);
@@ -558,12 +541,19 @@ KTEST(vtd_domain_handover_while_on)
     KT_EQ(to_home(&e), OK);
     ok = ok && edu_out(&e, c);
     bool kept = page_is(c, 0x44);
+    if (mapped == OK)
+        (void)iommu_unmap(dom, two, 2);   /* home already: no entry names dom */
+    status_t gone = made == OK ? iommu_domain_destroy(dom) : made;
     edu_close(&e);
     for (uint32_t i = 0; i < n; i++)
         pmm_free_page_phys(pages[i]);
     pmm_free_page_phys(a);
     pmm_free_page_phys(b);
     pmm_free_page_phys(c);
+    KT_EQ(made, OK);
+    KT_EQ(mapped, OK);
+    KT_EQ(attached, OK);
+    KT_EQ(gone, OK);
     KT_EQ(st, OK);
     KT_ASSERT(on);
     KT_EQ(rt, copy);
