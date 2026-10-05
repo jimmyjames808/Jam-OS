@@ -942,9 +942,14 @@ static const struct {
     { "comp_paint_cull", t_comp_paint_cull },
     { "comp_paint_damage", t_comp_paint_damage },
     { "comp_paint_fullscreen", t_comp_paint_fullscreen },
-    { "comp_paint_title", t_comp_paint_title },
     { "comp_paint_cursor", t_comp_paint_cursor },
     { "comp_paint_blank", t_comp_paint_blank },
+    { "comp_look_title", t_comp_look_title },
+    { "comp_look_corners", t_comp_look_corners },
+    { "comp_look_shadow", t_comp_look_shadow },
+    { "comp_look_buttons", t_comp_look_buttons },
+    { "comp_look_tiled", t_comp_look_tiled },
+    { "comp_look_wallpaper", t_comp_look_wallpaper },
 };
 
 int main(int argc, char **argv)

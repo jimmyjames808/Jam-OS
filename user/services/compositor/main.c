@@ -42,7 +42,6 @@
  * this one waits for them. */
 #include <fun.h>
 #include <idl/svc.h>
-#include <splash.h>
 #include "paint.h"
 
 #define DEFAULT_W  1280
@@ -134,7 +133,7 @@ static status_t setup(int argc, char **argv, struct args *a)
     if (st != OK)
         return st;
     comp.headless = !output.screen;
-    scene_init(output.width, output.height, SPLASH_BG);
+    scene_init(output.width, output.height, LOOK_WALL_BASE);   /* if the wallpaper fails */
     wm_set_layout(a->layout);
     st = paint_init(a->threads);
     if (st == OK)

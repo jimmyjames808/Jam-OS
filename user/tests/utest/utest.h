@@ -489,9 +489,16 @@ bool t_comp_paint_overlap(void);
 bool t_comp_paint_cull(void);
 bool t_comp_paint_damage(void);
 bool t_comp_paint_fullscreen(void);
-bool t_comp_paint_title(void);
 bool t_comp_paint_cursor(void);
 bool t_comp_paint_blank(void);
+/* comp_look.c: the look (look.h) the same way: title bars and circles,
+ * rounded corners, shadows, tiling's borders, the wallpaper. */
+bool t_comp_look_title(void);
+bool t_comp_look_corners(void);
+bool t_comp_look_shadow(void);
+bool t_comp_look_buttons(void);
+bool t_comp_look_tiled(void);
+bool t_comp_look_wallpaper(void);
 
 /* compwm.c: the compositor's window manager, linked in and driven by fake
  * toplevels and pointer calls: floating, tiling, the switch, focus, the

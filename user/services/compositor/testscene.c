@@ -11,8 +11,11 @@
  *                 a window (numbered 1, 2, ... in order), on top, its
  *                 buffer W x H of testscene.h's pixels in colour RRGGBB:
  *                 xrgb8888 if AA is ff, else argb8888 at alpha AA. Flags:
- *                 t decorations (a title bar "Window <n>", 2-pixel borders),
- *                 f focused, o its opaque region is all of it, u not
+ *                 t a floating window's decorations (a title bar "Window
+ *                 <n>", the outline; round corners and a shadow), m a
+ *                 maximised one's (the title bar only), g a tiled one's
+ *                 (a DECO_BORDER border all round, round corners), f
+ *                 focused, o its opaque region is all of it, u not
  *                 responding, s solid (no pattern)
  *   fullscreen=AARRGGBB
  *                 the same at (0, 0), as big as the output
@@ -38,7 +41,6 @@
 
 #define WINS_MAX      8
 #define BENCH_SAMPLES 31
-#define BORDER_W      2
 
 /* A window with no client: its surface, buffer and pool are ours. */
 struct twin {
@@ -167,9 +169,10 @@ static void apply_flags(struct twin *t, const char *flags)
     struct comp_window *w = t->s.window;
     window_damage(w);
     for (const char *f = flags; f && *f; f++) {
-        if (*f == 't') {
-            w->deco_top = COMP_TITLE_H;
-            w->deco_left = w->deco_right = w->deco_bottom = BORDER_W;
+        if (*f == 't' || *f == 'm' || *f == 'g') {   /* as deco.c sizes them */
+            int32_t side = *f == 't' ? DECO_OUTLINE : *f == 'g' ? DECO_BORDER : 0;
+            w->deco_top = *f == 'g' ? DECO_BORDER : COMP_TITLE_H;
+            w->deco_left = w->deco_right = w->deco_bottom = side;
         }
         /* Focus as the seat marks it (it gives none to a client with no
          * connection, so it leaves these windows to us). */

@@ -1,6 +1,7 @@
 /* paint.h: what the painting files of the compositor share among
- * themselves (output.c, paint.c, title.c, cursor.c, clock.c, testscene.c);
- * what other files need is in comp.h.
+ * themselves (output.c, paint.c, title.c, shape.c, mask.c, wallpaper.c,
+ * cursor.c, clock.c, testscene.c); what other files need is in comp.h,
+ * and the look's colours and sizes in look.h.
  *
  * The model (paint.c has the whole of it): the scene's damage is cut into
  * tiles, at most TILE_W by TILE_H pixels; the workers of libfun's pool
@@ -13,6 +14,7 @@
 #pragma once
 
 #include "comp.h"
+#include "look.h"
 
 /* A tile: at most this many pixels across and down. The PC's numbers
  * (fbbench, 2026-10-05) show the framebuffer takes 10.8 GB/s whatever the
@@ -57,17 +59,76 @@ extern struct paint_stats paint_last;
  * ignored, so nothing below is ever needed). */
 bool paint_opaque_over(const struct comp_window *w, struct comp_box in);
 
+/* a over b by coverage c (0: all a, 255: all b), per channel, rounded as
+ * px_over rounds; top byte 0. */
+static inline uint32_t paint_mix(uint32_t a, uint32_t b, uint32_t c)
+{
+    uint32_t out = 0;
+    for (int sh = 0; sh < 24; sh += 8) {
+        uint32_t x = (a >> sh & 0xff) * (255 - c) + (b >> sh & 0xff) * c + 128;
+        out |= ((x + (x >> 8)) >> 8) << sh;
+    }
+    return out;
+}
+
 /* ---- title.c ----------------------------------------------------------------------- */
 
-/* w's decorations (title bar, close box, borders) where they meet t. */
+/* w's decorations (title bar and its circles, outline or borders) where
+ * they meet t. */
 void title_draw(const struct comp_window *w, const struct tile_buf *t);
-/* The colours, for tests: the title bar focused and not, the borders. */
-#define TITLE_BAR_FOCUSED   0x4a3d66u
-#define TITLE_BAR           0x2e2833u
-#define TITLE_TEXT_FOCUSED  0xf2eaf6u
-#define TITLE_TEXT          0x9d93a3u
-#define BORDER_FOCUSED      0x7a66a8u
-#define BORDER              0x3d3542u
+/* The window whose circles the pointer is over, which show their symbols
+ * (paint.c sets it before each paint's tiles), or NULL. */
+extern const struct comp_window *title_hovered;
+/* The box round the hit boxes of w's circles (empty: none): what changes
+ * when the pointer comes onto them or leaves. */
+struct comp_box title_buttons_hit(const struct comp_window *w);
+/* The colour of w's outline (floating) or border (tiled), by its focus. */
+uint32_t title_edge_colour(const struct comp_window *w);
+
+/* ---- mask.c ------------------------------------------------------------------------ */
+
+/* A rounded corner: the top-left r by r square (the others are its mirror
+ * images), each pixel's coverage by the window's shape, and by the band of
+ * its outline or border along the curve (ring <= cov). */
+#define MASK_CORNER_MAX LOOK_RADIUS
+struct corner_mask {
+    int32_t r;                                         /* the radius */
+    uint8_t cov[MASK_CORNER_MAX * MASK_CORNER_MAX];    /* r * r of them, row by row */
+    uint8_t ring[MASK_CORNER_MAX * MASK_CORNER_MAX];
+};
+extern struct corner_mask mask_float, mask_tile;     /* LOOK_RADIUS, LOOK_TILE_RADIUS */
+extern uint8_t mask_disc[LOOK_BTN_D * LOOK_BTN_D];   /* a title bar circle */
+extern uint8_t mask_symbol[TITLE_BUTTONS][LOOK_BTN_D * LOOK_BTN_D];   /* x, -, full screen */
+/* All of them made (once, before the workers paint). */
+void mask_init(void);
+
+/* ---- shape.c ----------------------------------------------------------------------- */
+
+/* The shadow's edge profiles, made once (after mask_init). */
+void shape_init(void);
+/* w's corner mask, or NULL: its corners are square (no decorations,
+ * maximised, or a frame too small for the radius). */
+const struct corner_mask *shape_corners(const struct comp_window *w);
+/* Does b meet one of w's rounded corner squares (where w doesn't hide what
+ * is below)? */
+bool shape_corner_meets(const struct comp_window *w, struct comp_box b);
+/* w's shadow where it meets t (floating windows only; outside the
+ * window's shape only: under the window it would never show). */
+void shadow_draw(const struct comp_window *w, const struct tile_buf *t);
+/* Around drawing w into t: the pixels below its corners kept first
+ * (save: room for 4 * MASK_CORNER_MAX^2), then w's corners cut round, its
+ * outline or border along the curve. */
+#define SHAPE_SAVE_PX (4 * MASK_CORNER_MAX * MASK_CORNER_MAX)
+void shape_save(const struct comp_window *w, const struct tile_buf *t, uint32_t *save);
+void shape_clip(const struct comp_window *w, const struct tile_buf *t, const uint32_t *save);
+
+/* ---- wallpaper.c ------------------------------------------------------------------- */
+
+/* The wallpaper made at the output's size (look.h), on the pool's workers.
+ * ERR_NO_MEMORY: none (the background is then LOOK_WALL_BASE, flat). */
+status_t wallpaper_init(int32_t w, int32_t h);
+/* t all wallpaper. */
+void wallpaper_fill(const struct tile_buf *t);
 
 /* ---- cursor.c ---------------------------------------------------------------------- */
 

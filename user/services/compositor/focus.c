@@ -23,7 +23,7 @@
  *   Alt+Tab        the next window (Alt+Shift+Tab: the one before);
  *   Super+F        the focused window full screen, or back;
  *   Super+T        the screen's arrangement: floating or tiling;
- *   Super+Q        the focused window asked to close (as its close box).
+ *   Super+Q        the focused window asked to close (as its close circle).
  * Ctrl+C is an ordinary key: it goes to the focused window, so a program
  * can trap the keys of its own window and never another's.
  *

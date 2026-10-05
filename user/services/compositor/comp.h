@@ -21,8 +21,10 @@
  *               in memory when there is none (headless: tests, screenshots);
  *   paint.c     composing the damage onto the output: tiles on workers,
  *               opaque windows hiding what is below, the full-screen path;
- *   title.c     drawing title bars, close boxes and borders (their sizes and
- *               what a click on them does are the window manager's);
+ *   title.c     drawing title bars, their circles and borders (their sizes
+ *               and what a click on them does are the window manager's);
+ *   shape.c     rounded corners and shadows; mask.c the shapes they draw;
+ *   wallpaper.c the background; look.h every colour and size of the look;
  *   cursor.c    the pointer's picture: the arrow, hidden, or a client's;
  *   clock.c     the paint clock (display.hz) and the frame callbacks' turn;
  *   testscene.c windows of known pixels with no client (a test power);
@@ -302,8 +304,8 @@ enum comp_layout {
 #define COMP_WIN_UNRESPONSIVE (1u << 4) /* didn't answer a ping: its title bar says so */
 
 /* A floating window's title bar: deco_top, in pixels (title.c draws it,
- * the window manager sets it). Text is libfun's 8x16 font at scale 1. */
-#define COMP_TITLE_H 24
+ * the window manager sets it; look.h has the rest of its look). */
+#define COMP_TITLE_H 28
 
 struct comp_window {
     struct comp_surface *surface;
@@ -341,6 +343,10 @@ void scene_init(int32_t w, int32_t h, uint32_t background);
 void scene_damage(struct comp_box b);
 /* The window's frame on the output: the surface's box and its decorations. */
 struct comp_box window_frame(const struct comp_window *w);
+/* All a window paints: its frame and its shadow (look.h), the larger
+ * shadow's whether it is focused or not, so a focus change repaints every
+ * pixel either shadow touches. What window_damage damages. */
+struct comp_box window_extent(const struct comp_window *w);
 /* The surface's box on the output. */
 struct comp_box window_surface_box(const struct comp_window *w);
 /* A window for s (which must have none), at (x, y), on top, not mapped
@@ -351,7 +357,7 @@ void window_destroy(struct comp_window *w);
 void window_map(struct comp_window *w, bool mapped);   /* damages its frame */
 void window_move(struct comp_window *w, int32_t x, int32_t y);   /* damages old and new */
 void window_raise(struct comp_window *w);              /* to the top; damages its frame */
-void window_damage(struct comp_window *w);             /* all of its frame */
+void window_damage(struct comp_window *w);             /* all of its extent */
 /* Surface damage b (surface coordinates, clipped to the surface) on the output. */
 void window_damage_surface(struct comp_window *w, struct comp_box b);
 /* The topmost mapped window whose surface takes input at output (x, y)
@@ -511,9 +517,17 @@ uint64_t paint_frame(void);
  * at all)? Its frame callbacks then come as a hidden surface's. */
 bool     window_covered(const struct comp_window *w);
 
-/* A title bar's box on the output, and its close box (empty: none), as
- * title.c draws them: for the window manager's clicks. */
+/* A title bar's box on the output, and its circles' (empty: none), as
+ * title.c draws them: for the window manager's clicks. A press is on a
+ * circle anywhere in its title_button_hit box, a little larger than the
+ * circle (look.h); title_button_at says which (TITLE_NONE: none). */
+enum title_button { TITLE_CLOSE, TITLE_MINIMISE, TITLE_FULLSCREEN, TITLE_BUTTONS,
+                    TITLE_NONE = TITLE_BUTTONS };
 struct comp_box title_bar_box(const struct comp_window *w);
+struct comp_box title_button_box(const struct comp_window *w, enum title_button b);
+struct comp_box title_button_hit(const struct comp_window *w, enum title_button b);
+enum title_button title_button_at(const struct comp_window *w, int32_t x, int32_t y);
+/* The close circle's box (title_button_box's). */
 struct comp_box title_close_box(const struct comp_window *w);
 
 /* Paints at most hz times a second (1 to 240; display.hz, 60 by default). */
@@ -616,17 +630,21 @@ struct comp_window *wm_cycle(struct comp_window *from, bool backward);
  * Default: window_raise. */
 void wm_clicked(struct comp_window *w);
 /* A button press at output (x, y) that the window manager may take for
- * itself (a title bar, a close box, a frame's edge): true if it did; the
+ * itself (a title bar, its circles, a frame's edge): true if it did; the
  * press and its release then reach no client. Default: false. */
 bool wm_press(int32_t x, int32_t y, uint32_t button);
-/* Super+F: w full screen, or back. Default: nothing. */
+/* Super+F (and the full-screen circle, a double-click on the title bar):
+ * w full screen, or back. Default: nothing. */
 void wm_toggle_fullscreen(struct comp_window *w);
 /* The layout key (Super+T): the screen floating, or tiling, or back.
  * Default: nothing. */
 void wm_toggle_layout(void);
 /* Super+Q: ask w's client to close it (xdg_toplevel.close), as its close
- * box does; tiling's windows have none. Default: nothing. */
+ * circle does; tiling's windows have none. Default: nothing. */
 void wm_close(struct comp_window *w);
+/* The minimise circle on w. Minimising is not built yet: wm.c's weak
+ * default does nothing (the circle is drawn and pressed all the same). */
+void wm_minimise(struct comp_window *w);
 /* The keyboard focus moved to w (NULL: none), COMP_WIN_FOCUSED already set
  * (seat_focus calls it last, whatever moved it): the window manager raises
  * w and tells both toplevels whether they are activated. Default: nothing. */
@@ -654,18 +672,19 @@ status_t testwin_commit(struct comp_surface *s);
  * cycled after the toplevels. */
 
 /* Decorations (deco.c sets struct comp_window's deco_*; title.c draws
- * them). Floating: the title bar, COMP_TITLE_H high, above the surface
- * (its close box at the right end) and a DECO_BORDER border on the other
- * sides; maximised, the title bar only. Tiling: no title bar, a
- * DECO_BORDER border on all four sides, its colour the focus. Full
- * screen: none. The window's title is w->title (the window manager's
+ * them, look.h says how they look). Floating: the title bar, COMP_TITLE_H
+ * high, above the surface (its three circles at the left end) and a
+ * DECO_OUTLINE outline on the other sides; maximised, the title bar only.
+ * Tiling: no title bar, a DECO_BORDER border on all four sides, its colour
+ * the focus. Full screen: none. The window's title is w->title (the window manager's
  * copy, at most 255 bytes; it outlives the window), and
  * COMP_WIN_UNRESPONSIVE says the client didn't answer the ping a close
  * sent. A resizable floating window's edges also take presses DECO_GRAB
  * pixels outside its frame: a border thin enough to look right is too
  * thin to hit. */
-#define DECO_BORDER 2
-#define DECO_GRAB   6
+#define DECO_OUTLINE 1
+#define DECO_BORDER  2
+#define DECO_GRAB    6
 
 /* The topmost mapped window whose frame (and grab margin) holds output (x,
  * y), or NULL (the background). *on_surface: the point is in its surface's

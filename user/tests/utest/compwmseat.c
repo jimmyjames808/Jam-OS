@@ -5,8 +5,9 @@
  * pieces are all real.
  *
  * t_wm_seat: one 100x80 toplevel, centred on the 640x480 output (its
- * title bar y 176..199, its close box x 348..371): dragged by its title
- * bar; its close box and Super+Q each send xdg_toplevel.close and a ping,
+ * title bar y 172..199, its close circle x 278..289, y 180..191): dragged
+ * by its title bar; its close circle and Super+Q each send
+ * xdg_toplevel.close and a ping,
  * which the client answers; Super+F asks it to fill the output; Super+T
  * tiles it (no title bar: a border all round). */
 #define CHECK_PROG "utest"
@@ -17,6 +18,7 @@
 #include <jwl/xdg_shell.h>
 #include <os.h>
 #include "compseat.h"
+#include "look.h"
 #include "utest.h"
 
 #define U_Q   0x14
@@ -115,18 +117,20 @@ static bool mouse_steps(struct cs *t, struct sc *a, const struct top *w)
     int32_t x0 = (OUT_W - WIN_W) / 2, y0 = (OUT_H - WIN_H) / 2;
     /* centred: its pixel (10, 10) is the output's (x0 + 10, y0 + 10) */
     CHECK(at(t, a, x0 + 10, y0 + 10));
-    /* dragged by its title bar: 50 right, 30 down; no client sees the drag */
-    CHECK(cs_pointer_to(t, x0 + 30, y0 - 10));
+    /* dragged by its title bar (right of the circles): 50 right, 30 down;
+     * no client sees the drag */
+    CHECK(cs_pointer_to(t, x0 + 80, y0 - 10));
     ct_clear(&a->k);
     CHECK(cs_button(t, true));
-    CHECK(cs_pointer_to(t, x0 + 80, y0 + 20));
+    CHECK(cs_pointer_to(t, x0 + 130, y0 + 20));
     CHECK(cs_button(t, false));
     CHECK(cs_sync(a, NULL));
     CHECK(!find_ev(a, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON));
     CHECK(at(t, a, x0 + 50 + 10, y0 + 30 + 10));
     ct_clear(&a->k);
-    /* its close box: a click asks the client to close */
-    CHECK(cs_pointer_to(t, x0 + 50 + WIN_W - 6, y0 + 30 - 10));
+    /* its close circle: a click asks the client to close */
+    CHECK(cs_pointer_to(t, x0 + 50 - DECO_OUTLINE + LOOK_BTN_LEFT + LOOK_BTN_D / 2,
+                        y0 + 30 - COMP_TITLE_H + LOOK_BTN_TOP + LOOK_BTN_D / 2));
     CHECK(cs_button(t, true));
     CHECK(cs_button(t, false));
     return closed_and_pinged(a, w);
@@ -135,7 +139,7 @@ static bool mouse_steps(struct cs *t, struct sc *a, const struct top *w)
 static bool key_steps(struct cs *t, struct sc *a, const struct top *w)
 {
     int32_t cw = -1, ch = -1;
-    /* Super+Q: the same, without a close box */
+    /* Super+Q: the same, without a close circle */
     CHECK(cs_tap(t, U_Q, SUPER));
     CHECK(closed_and_pinged(a, w));
     /* Super+F: the whole output */

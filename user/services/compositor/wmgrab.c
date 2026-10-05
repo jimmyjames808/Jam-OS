@@ -1,6 +1,8 @@
 /* The pointer on decorations, and the compositor's grabs (wm.h, comp.h):
- * moving a window by its title bar, resizing it by an edge, its close box,
- * a double-click that maximises. The seat (pointer.c) owns the pointer:
+ * moving a window by its title bar, resizing it by an edge, its three
+ * circles (close, minimise, full screen), a double-click on the title bar
+ * that makes it full screen (the owner's look; leaving full screen gives
+ * back what it was). The seat (pointer.c) owns the pointer:
  * it offers us every first press (wm_press) before a client sees it, and
  * we take the ones on a window's decorations; a client's own
  * xdg_toplevel.move or resize reaches us once the seat has checked its
@@ -19,6 +21,9 @@
  * left or top edge keeps the opposite side still (the window's anchor),
  * however late the client's commits come.
  *
+ * A circle acts when the press that began on it is released on it too
+ * (pressed and dragged away: nothing), as buttons do.
+ *
  * A double-click is two presses on one title bar within
  * WM_DOUBLE_CLICK_NS, the first released without the pointer moving
  * further than WM_CLICK_SLOP (a drag is not a click). */
@@ -32,13 +37,14 @@ enum grab_kind {
     GRAB_TITLE,                    /* a title bar pressed where it can't move: watch for a click */
     GRAB_MOVE,
     GRAB_RESIZE,
-    GRAB_CLOSE,                    /* pressed on a close box: closes if released on it */
+    GRAB_BUTTON,                   /* pressed on a circle: acts if released on it */
 };
 
 static struct {
     enum grab_kind kind;
     struct wm_window *ww;          /* the window it is on; NULL once that went */
     uint32_t edges;                /* GRAB_RESIZE: WM_EDGE_* */
+    enum title_button button;      /* GRAB_BUTTON: which circle */
     int32_t px, py;                /* where the pointer was at the start */
     struct comp_box start;         /* the surface's box at the start */
 } grab;
@@ -152,14 +158,14 @@ status_t wm_begin_resize(struct comp_window *w, uint32_t edges, int32_t x, int32
 
 /* ---- presses ------------------------------------------------------------------------ */
 
-/* A press on a title bar: the second of a double-click maximises (or
- * restores); otherwise a move, or a grab that only watches for a click. */
+/* A press on a title bar: the second of a double-click makes the window
+ * full screen; otherwise a move, or a grab that only watches for a click. */
 static void title_press(struct wm_window *ww, int32_t x, int32_t y)
 {
     uint64_t t = now();
     if (last_title.ww == ww && t - last_title.t <= WM_DOUBLE_CLICK_NS) {
         last_title.ww = NULL;
-        wm_request_maximized(ww, ww->want != WM_MAXIMIZED);
+        wm_toggle_fullscreen(ww->win);
         return;
     }
     last_title.ww = ww;
@@ -179,9 +185,10 @@ bool wm_press(int32_t x, int32_t y, uint32_t button)
         return true;   /* taken: no client sees it, and it does nothing */
     uint32_t edges;
     enum deco_part part = deco_hit(w, x, y, &edges);
-    if (part == DECO_CLOSE)
-        (void)start(GRAB_CLOSE, ww, x, y);
-    else if (part == DECO_TITLE)
+    if (part == DECO_CLOSE || part == DECO_MINIMISE || part == DECO_FULLSCREEN) {
+        if (start(GRAB_BUTTON, ww, x, y) == OK)
+            grab.button = title_button_at(w, x, y);
+    } else if (part == DECO_TITLE)
         title_press(ww, x, y);
     else if (part == DECO_EDGE && can_move(ww) && wm_resizable(ww))
         (void)wm_begin_resize(w, edges, x, y);
@@ -238,14 +245,25 @@ static void grab_motion(void *data, int32_t x, int32_t y)
     }
 }
 
+/* A circle's press released on it: what it does. */
+static void button_up(struct wm_window *ww, enum title_button b)
+{
+    if (b == TITLE_CLOSE && ww->ops && ww->ops->close)
+        ww->ops->close(ww->ctx);
+    else if (b == TITLE_MINIMISE)
+        wm_minimise(ww->win);
+    else if (b == TITLE_FULLSCREEN)
+        wm_toggle_fullscreen(ww->win);
+}
+
 static void grab_end(void *data)
 {
     struct wm_window *ww = grab.ww;
-    uint32_t edges;
+    enum title_button b = grab.button;
     (void)data;
-    bool close = grab.kind == GRAB_CLOSE && ww && ww->win &&
-                 deco_hit(ww->win, cursor.x, cursor.y, &edges) == DECO_CLOSE;
+    bool on = grab.kind == GRAB_BUTTON && ww && ww->win &&
+              title_button_at(ww->win, cursor.x, cursor.y) == b;
     finish();
-    if (close && ww->ops && ww->ops->close)
-        ww->ops->close(ww->ctx);
+    if (on)
+        button_up(ww, b);
 }
