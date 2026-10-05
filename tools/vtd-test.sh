@@ -160,7 +160,8 @@ on() {
         tools/qemu-test.sh "$out" "$1" ktest=vtd iommu=on > "$out/$1.out" 2>&1 ||
         { echo "$1: QEMU run failed (see $out/$1.out)"; ok=0; }
     domain_ok "$1"
-    have "$1" "vtd:         unit 0: translation on (it was off): " "a driver's gets its dma_cap's domain"
+    have "$1" "vtd:         unit 0: translation on (it was off): " \
+        "a driver's gets its dma_cap's domain"
     have "$1" "vtd:         unit 0: started: invalidation queue at" \
         "vtd:         iommu=on: 1 of 1 unit started" \
         "ktest: vtd_unit_every_invalidation_completes ok" \
@@ -234,7 +235,8 @@ fi
 # domain (no DMA capability) while translating; nothing else is reported.
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_IOMMU=1 \
     QEMU_EXTRA="-device pcie-pci-bridge,id=pb,bus=pcie.0,addr=0x1e -device edu,bus=pb,addr=0x1" \
-    tools/qemu-test.sh "$out" vtd-shared ktest=vtd_domain_shared iommu=on > "$out/vtd-shared.out" 2>&1 ||
+    tools/qemu-test.sh "$out" vtd-shared ktest=vtd_domain_shared iommu=on \
+    > "$out/vtd-shared.out" 2>&1 ||
     { echo "vtd-shared: QEMU run failed (see $out/vtd-shared.out)"; ok=0; }
 have vtd-shared "vtd: 00:1e.0 shares a requester id" "vtd: 01:01.0 shares a requester id" \
     "vtd: unit 0: no domain for 01:01.0: its requester id is shared" \
