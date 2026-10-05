@@ -1,0 +1,56 @@
+# The desktop with real input (tools/mouse-test.sh's second boot, the
+# compositor's: a plain boot with a usb-kbd on xhci port 2 and a usb-mouse
+# on port 3): QEMU's keys and mouse go usb-bus -> drv/hid -> the compositor
+# (devmgr's INPUT channel) -> the focused window, the terminal's console
+# -> the shell. Typing in the first terminal; Super+Enter opening terminal
+# 2, whose window takes the keys; a click on the first terminal giving them
+# back; terminal 2's close box closing it.
+#
+# Where things are at OVMF's 1280x800: the first terminal's window is
+# centred, its surface 960x592 at (160, 104) and its title bar the 24 rows
+# above; terminal 2's is cascaded 26 pixels down and right. The close box
+# is the title bar's last 24 pixels (centre (1136, 118) on terminal 2's).
+# `pointer` puts the mouse there exactly (serial-feed.py: 1:1 steps).
+wait 120 Jam OS shell
+wait jam>
+seen 30 report mouse ready
+seen 30 compositor: keyboard 0627:0001 ready
+usbkeys echo usb-one\r
+wait 10 usb-one
+wait jam>
+# Super+Enter, whichever window has the keys: terminal 2
+monitor sendkey meta_l-ret
+wait 10 init: terminal 2 opens
+wait 30 Jam OS shell
+wait 10 jam>
+sleep 1
+usbkeys echo usb-two\r
+wait 10 usb-two
+wait jam>
+shot desktop-two
+# a click on the first terminal (the strip of it left of terminal 2):
+# the keys go back to it, and it comes to the top
+pointer 172 400
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.5
+usbkeys echo usb-back\r
+wait 10 usb-back
+wait jam>
+shot desktop-back
+# terminal 2's close box (still in sight, right of the first terminal):
+# its console ends, init closes the terminal
+pointer 1136 118
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 init: terminal 2: its window was closed
+wait 10 init: terminal 2 is closed
+sleep 1
+shot desktop-closed
+usbkeys echo usb-last\r
+wait 10 usb-last
+wait jam>
+send reboot -f
+wait reboot: resetting

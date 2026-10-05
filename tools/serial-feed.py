@@ -24,6 +24,11 @@ the script, one command per line:
                               `sendkey`, one key at a time: the USB keyboard
                               path); \r (or \n) is Enter; a-z 0-9 space
                               - . / and : only
+    pointer <x> <y>           QEMU's mouse to pixel (x, y): pushed into the
+                              top-left corner (where it is clamped), then
+                              moved in steps of at most 6 counts, which the
+                              compositor's (and libfun's) acceleration
+                              takes 1:1, each its own monitor command
     # comment, blank lines ignored
 
 After the script it keeps reading until QEMU closes the socket (a `reboot`
@@ -120,6 +125,19 @@ def usbkeys(text):
         time.sleep(0.2)   # sendkey holds each key 100 ms
 
 
+def pointer(x, y):
+    """Each step is a report of its own: the monitor's round trip (its 50 ms
+    reply wait) lets the guest poll the mouse in between, so QEMU never
+    merges two steps into one bigger, accelerated move."""
+    for _ in range(4):
+        monitor("mouse_move -2000 -2000")
+    time.sleep(0.5)
+    while x > 0 or y > 0:
+        dx, dy = min(x, 6), min(y, 6)
+        monitor(f"mouse_move {dx} {dy}")
+        x, y = x - dx, y - dy
+
+
 def send(data):
     for b in data:
         s.sendall(bytes([b]))
@@ -183,6 +201,9 @@ for lineno, raw in enumerate(open(script), 1):
         monitor(arg)
     elif cmd == "usbkeys":
         usbkeys(arg)
+    elif cmd == "pointer":
+        px, py = (int(v) for v in arg.split())
+        pointer(px, py)
     else:
         sys.exit(f"serial-feed: {script}:{lineno}: unknown command '{cmd}'")
 

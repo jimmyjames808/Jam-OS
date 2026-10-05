@@ -1,5 +1,6 @@
 # Typing into the shell on a USB keyboard: QEMU's keys go
-# usb-bus -> drv/hid -> console -> shell, the output is checked on COM1.
+# usb-bus -> drv/hid -> compositor -> the terminal's console -> shell, the
+# output is checked on COM1.
 # Run by tools/usbkeys-test.sh: QEMU_USB = a usb-hub on xhci port 2 with a
 # usb-kbd behind it (usb path 6.1: hid-6.1:0) and a usb-mouse on port 3;
 # the command line "shell" (a plain boot).
@@ -19,12 +20,22 @@ sleep 0.5
 usbkeys help\r
 wait 10 Commands:
 wait jam>
-# the console restarts: hid loses its input channel, ends, and devmgr
-# starts it again connected to the new console
+# the compositor restarts: hid loses its input channel, ends, and devmgr
+# starts it again connected to the new compositor; the keys reach the
+# terminal's window again (under `nocomp` the console is the input's hub:
+# `kill console` does this)
+send kill compositor
+wait 10 init: bin/compositor was killed
+seen 30 usb 6.1:0 drv/hid: its compositor went away: reconnecting
+seen 30 usb 6.1:0 drv/hid started again (the compositor is back)
+wait 30 console: connected again
+sleep 1
+usbkeys help\r
+wait 10 Commands:
+wait jam>
+# the console restarts: its window goes and comes back, hid stays
 send kill console
 wait 30 Jam OS shell.
-seen 30 usb 6.1:0 drv/hid: its console went away: reconnecting
-seen 30 usb 6.1:0 drv/hid started again (the console is back)
 sleep 1
 usbkeys help\r
 wait 10 Commands:

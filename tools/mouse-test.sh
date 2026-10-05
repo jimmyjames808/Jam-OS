@@ -1,9 +1,18 @@
 #!/bin/sh
-# The mouse, end to end: a plain boot ("shell") with a usb-kbd on xhci
-# port 2 and a usb-mouse on port 3. tools/shell-tests/mouse.txt moves the
-# mouse and presses its buttons through QEMU's monitor (mouse_move,
-# mouse_button): usb-bus -> drv/hid -> console -> the key channel of the
-# focused client. It checks
+# The mouse, end to end: two plain boots ("shell") with a usb-kbd on xhci
+# port 2 and a usb-mouse on port 3.
+#
+# desktop  the compositor's (the default): tools/shell-tests/desktop.txt
+#          types on the USB keyboard and moves and clicks the mouse
+#          through QEMU's monitor: usb-bus -> drv/hid -> the compositor ->
+#          the focused window. Typing in the first terminal, Super+Enter
+#          (terminal 2, which takes the keys), a click giving the keys back
+#          to the first, and terminal 2's close box closing it; screenshots
+#          (<outdir>/desktop-*.png).
+# mouse    with `nocomp`, the console's: tools/shell-tests/mouse.txt moves
+#          the mouse and presses its buttons through QEMU's monitor
+#          (mouse_move, mouse_button): usb-bus -> drv/hid -> console -> the
+#          key channel of the focused client. It checks
 #   - the shell and tetris, which never asked for the mouse, are not
 #     disturbed by it (no message they would misread as a key), and the
 #     wheel still scrolls the console back;
@@ -28,15 +37,22 @@ if [ "${MOUSE_HIDBOOT:-0}" = 1 ]; then
 else
     words="shell" ready="report mouse ready"
 fi
+usb="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3"
+ok=1
 # shellcheck disable=SC2086 # $words is the command line, word by word
-if QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/mouse.txt \
-   QEMU_USB="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3" \
-   tools/qemu-test.sh "$out" "$name" $words; then
-    if grep -aq "hid 0627:0001 if 0: $ready" "$out/$name.log"; then
-        echo "$name: PASS"
-        exit 0
-    fi
-    echo "$name: no '$ready' in the log"
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/desktop.txt QEMU_USB="$usb" \
+    tools/qemu-test.sh "$out" "$name-desktop" $words > "$out/$name-desktop.out" 2>&1 ||
+    { echo "$name-desktop: the script failed"; tail -2 "$out/$name-desktop.out"; ok=0; }
+# shellcheck disable=SC2086
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/mouse.txt QEMU_USB="$usb" \
+    tools/qemu-test.sh "$out" "$name" $words nocomp > "$out/$name.out" 2>&1 ||
+    { echo "$name: the script failed"; tail -2 "$out/$name.out"; ok=0; }
+for log in "$out/$name-desktop.log" "$out/$name.log"; do
+    grep -aq "hid 0627:0001 if 0: $ready" "$log" || { echo "$name: no '$ready' in $log"; ok=0; }
+done
+if [ $ok = 1 ]; then
+    echo "$name: PASS"
+    exit 0
 fi
-echo "$name: FAIL (see $out/$name.log)"
+echo "$name: FAIL (see $out/$name-desktop.log, $out/$name.log)"
 exit 1
