@@ -970,6 +970,23 @@ user/include/jwl.h, which W2 owns and W1 includes.
 | **J. The join** | the docs: ARCHITECTURE ("Graphics" rewritten as built, "Userland", the IPC protocol list, "What Jam OS defends against", the Drivers and services table), CODING-GUIDE (the "add a user program" recipe's step 5: a window through libfun; a recipe "add a Wayland interface"), TESTING (the new scripts and boot words), README (the desktop, `&`), ROADMAP; the area tests once on the merged result | the docs | all above |
 | **R. Review and fix** | the independent review-and-fix agent over all of G1 (the standing rule): the codec and the limits first, then focus and input routing, then the kernel flags | what its findings touch | J |
 
+**As built: D0, the smooth font (before D1).** Inter Regular and Medium
+(SIL OFL 1.1) cut to Latin-1 by `tools/subsetfont.py`, rendered by
+stb_truetype, both vendored; libfun's `font_open` bakes a weight at a
+size into a read-only block, and `font_width`, `font_draw`,
+`font_draw_in` (one line in a rectangle: cut with "…", left or centred,
+capitals centred down it, clipped to it) and `font_ellipsize` only read
+it, so the painting workers share it (`<fun.h>` "smooth text";
+[ARCHITECTURE](../ARCHITECTURE.md#smooth-text) has the design and the
+sizes, [TESTING](TESTING.md#smooth-text) the tests). The fonts link into
+libfun (94 KB, only into programs that open one); a title's two fonts
+take about 175 KB at 1x. `make` draws `build/fontpreview.png`, the
+style-B1 title bars at 1x and 2x. For D1: open
+`FONT_MEDIUM` and `FONT_REGULAR` at 13 pixels (26 at 2x) before the
+workers start, then in each tile `font_draw_in(&tile_surf, &title_rect,
+font, colour, FONT_CENTRE, title)` with the title's rectangle in the
+tile's coordinates (it may reach outside the tile).
+
 **Order and parallel work:**
 
 1. After the owner's answers: **P0, W1, W2, K1 and KM** together (P0 goes
