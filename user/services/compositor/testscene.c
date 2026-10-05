@@ -26,7 +26,7 @@
  *   cursorarrow   the arrow again
  *   blank         unblank
  *   paint         paint the damage now; a line in the log and a struct
- *                 testscene_report on SR_USER + 2 (if given)
+ *                 testscene_report on SR_USER + TESTSCENE_REPORT_ROLE (if given)
  *   hold=MS       wait (a screenshot's time), saying so in the log
  *   bench         time whole frames (below): `compositor: bench:` lines
  * Every command is echoed to the log as it runs, so a test that only sees
@@ -207,6 +207,27 @@ static bool cmd_fullscreen(const char *s)
 
 static struct twin *cursor_twin;   /* the cursor's surface (cursorsurf), or NULL */
 
+/* The pointer to (x, y), as the seat moves it. */
+static void move_cursor(int32_t x, int32_t y)
+{
+    int32_t ox = cursor.x, oy = cursor.y;
+    cursor.x = x;
+    cursor.y = y;
+    cursor_moved(ox, oy);
+}
+
+/* The cursor's picture, as the seat sets it: s with its hot spot at
+ * (hx, hy), or the arrow (s NULL). */
+static void set_cursor_picture(struct twin *t, int32_t hx, int32_t hy)
+{
+    cursor_twin = t;
+    cursor.surface = t ? &t->s : NULL;
+    cursor.hot_x = hx;
+    cursor.hot_y = hy;
+    cursor.hidden = false;
+    cursor_moved(cursor.x, cursor.y);
+}
+
 /* cursorsurf=W,H,AARRGGBB,HX,HY: a surface of ours, no window, as the
  * cursor with hot spot HX, HY. cursorsize=W,H: it shrinks to W x H, as a
  * commit of a smaller buffer would make it. cursorarrow: the arrow again. */
@@ -215,8 +236,7 @@ static bool cmd_cursor(const char *cmd, const char *s)
     int64_t v[5];
     const char *rest;
     if (!strcmp(cmd, "cursorarrow")) {
-        cursor_set(COMP_CURSOR_ARROW, NULL, 0, 0);
-        cursor_twin = NULL;
+        set_cursor_picture(NULL, 0, 0);
         return true;
     }
     if (!strcmp(cmd, "cursorsize")) {
@@ -225,7 +245,7 @@ static bool cmd_cursor(const char *cmd, const char *s)
             return false;
         cursor_twin->b.width = cursor_twin->s.width = (int32_t)v[0];
         cursor_twin->b.height = cursor_twin->s.height = (int32_t)v[1];
-        cursor_damage();
+        cursor_moved(cursor.x, cursor.y);   /* as its commit would */
         return true;
     }
     if (numbers(s, v, 5, 2, &rest) != 5 || rest || v[0] < 1 || v[1] < 1 || v[0] > 256 ||
@@ -237,8 +257,7 @@ static bool cmd_cursor(const char *cmd, const char *s)
                         : NULL;
     if (!t)
         return false;
-    cursor_twin = t;
-    cursor_set(COMP_CURSOR_SURFACE, &t->s, (int32_t)v[3], (int32_t)v[4]);
+    set_cursor_picture(t, (int32_t)v[3], (int32_t)v[4]);
     return true;
 }
 
@@ -266,6 +285,13 @@ static bool cmd_window(const char *cmd, const char *s)
     else
         return false;
     return true;
+}
+
+/* blank, unblank: as compctl.blank does it. */
+static void set_blank(bool on)
+{
+    comp.blanked = on;
+    scene_damage((struct comp_box){ 0, 0, scene.width, scene.height });
 }
 
 /* ---- painting and reporting ----------------------------------------------------------------- */
@@ -323,7 +349,7 @@ static void damage_box(void) { scene_damage(bench_box); }
 static void damage_pointer(void)
 {
     struct comp_box c = cursor_box();
-    cursor_move(c.x1 + (c.x1 > scene.width / 2 ? -8 : 8), c.y1 + 3);
+    move_cursor(c.x1 + (c.x1 > scene.width / 2 ? -8 : 8), c.y1 + 3);
 }
 
 /* Every test window gone, then the bench's own: a full-screen opaque one,
@@ -331,8 +357,7 @@ static void damage_pointer(void)
 static bool bench_run(void)
 {
     int32_t w = scene.width, h = scene.height;
-    cursor_set(COMP_CURSOR_ARROW, NULL, 0, 0);
-    cursor_twin = NULL;
+    set_cursor_picture(NULL, 0, 0);
     while (nwins)
         if (wins[--nwins].s.window)
             window_destroy(wins[nwins].s.window);
@@ -391,7 +416,7 @@ static bool run_one(const char *c)
     if ((s = after(c, "cursor"))) {
         if (numbers(s, v, 2, -1, &rest) != 2 || rest)
             return false;
-        cursor_move((int32_t)v[0], (int32_t)v[1]);
+        move_cursor((int32_t)v[0], (int32_t)v[1]);
         cursor_show(true);
         return true;
     }
@@ -410,7 +435,7 @@ static bool run_one(const char *c)
         if (c[0] == 'n')
             cursor_show(false);
         else
-            output_blank(c[0] == 'b');
+            set_blank(c[0] == 'b');
         return true;
     }
     if (!strcmp(c, "paint")) {
@@ -422,7 +447,7 @@ static bool run_one(const char *c)
 
 int testscene_run(int argc, char **argv, int first)
 {
-    report = startup_handle(SR_USER + 2);
+    report = startup_handle(SR_USER + TESTSCENE_REPORT_ROLE);
     printf("compositor: testscene: output %dx%d, %s\n", scene.width, scene.height,
            output.screen ? "the screen" : "headless");
     for (int i = first; i < argc; i++) {

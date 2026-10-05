@@ -1,6 +1,7 @@
 /* The update manifest's parser (<update.h>): format 2's seven lines,
  * strictly, and the extension lines between them, which it checks and
- * skips; the public key file's; and the network default line of a
+ * skips, but for the one it knows (`menu`, the boot menu), which it
+ * takes; the public key file's; and the network default line of a
  * build.txt, by the manifest's rules. The signature's check is updsig.c's
  * (it alone links Monocypher in).
  *
@@ -174,12 +175,31 @@ static bool key_char(uint8_t ch)
     return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
 }
 
+/* "menu <size> <sha>\n", after its key: the boot menu's line, the one
+ * extension line this build knows (<update.h>). Once only. */
+static status_t take_menu(struct cur *c, struct update_manifest *m)
+{
+    if (m->has_menu || !take_text(c, " "))
+        return ERR_INVALID_ARGS;
+    status_t st = take_size(c, &m->file[UPDATE_MENU].size);
+    if (st == OK && m->file[UPDATE_MENU].size > UPDATE_MENU_MAX)
+        st = ERR_OUT_OF_RANGE;
+    if (st != OK)
+        return st;
+    if (!take_text(c, " ") || !take_hex(c, m->file[UPDATE_MENU].sha256, SHA256_BYTES) ||
+        !take_text(c, "\n"))
+        return ERR_INVALID_ARGS;
+    m->has_menu = true;
+    return OK;
+}
+
 /* One extension line ("<key>" or "<key> <value>\n") taken, if the next
  * line is one: OK; ERR_NOT_FOUND if the next line is one of format 2's
- * (left for the caller); ERR_INVALID_ARGS if it is neither. A
- * must-understand line ('!' and a key) goes in needs, if needs is empty:
- * this build knows none. */
-static status_t take_extension(struct cur *c, char needs[UPDATE_EXT_KEY_MAX + 1])
+ * (left for the caller); ERR_INVALID_ARGS if it is neither, or take_menu's
+ * error for a `menu` line that breaks its rules. A must-understand line
+ * ('!' and a key) goes in m->needs, if that is empty: this build knows
+ * none. Any other line is skipped. */
+static status_t take_extension(struct cur *c, struct update_manifest *m)
 {
     size_t n = word_len(c), from = n && c->p[0] == '!';
     if (base_key(c->p, n))
@@ -189,9 +209,13 @@ static status_t take_extension(struct cur *c, char needs[UPDATE_EXT_KEY_MAX + 1]
     for (size_t i = from; i < n; i++)
         if (!key_char(c->p[i]))
             return ERR_INVALID_ARGS;
-    if (from && !needs[0]) {
-        memcpy(needs, c->p, n);
-        needs[n] = '\0';
+    if (n == 4 && !memcmp(c->p, "menu", 4)) {
+        c->p += n;
+        return take_menu(c, m);
+    }
+    if (from && !m->needs[0]) {
+        memcpy(m->needs, c->p, n);
+        m->needs[n] = '\0';
     }
     c->p += n;
     if (take_text(c, " ")) {
@@ -207,11 +231,11 @@ static status_t take_extension(struct cur *c, char needs[UPDATE_EXT_KEY_MAX + 1]
 
 /* Every extension line before the next line of format 2's (a later
  * build's additions: skipped, unknown to this one; the first
- * must-understand one into needs). */
-static status_t skip_extensions(struct cur *c, char needs[UPDATE_EXT_KEY_MAX + 1])
+ * must-understand one into m->needs; the menu's into m). */
+static status_t skip_extensions(struct cur *c, struct update_manifest *m)
 {
     status_t st;
-    while ((st = take_extension(c, needs)) == OK)
+    while ((st = take_extension(c, m)) == OK)
         ;
     return st == ERR_NOT_FOUND ? OK : st;
 }
@@ -249,24 +273,26 @@ status_t update_manifest_parse(const void *text, size_t len, struct update_manif
         return st;
     }
     if (st == OK)
-        st = skip_extensions(&c, m.needs);
+        st = skip_extensions(&c, &m);
     if (st != OK)
         return st;
     if (!take_text(&c, "version ") ||
-        !take_word(&c, version_char, m.version, UPDATE_VERSION_MAX) || !take_text(&c, "\n") ||
-        skip_extensions(&c, m.needs) != OK)
+        !take_word(&c, version_char, m.version, UPDATE_VERSION_MAX) || !take_text(&c, "\n"))
         return ERR_INVALID_ARGS;
+    if ((st = skip_extensions(&c, &m)) != OK)
+        return st;
     if (!take_text(&c, "git ") || !take_word(&c, git_char, m.git, UPDATE_GIT_MAX) ||
-        !git_ok(m.git) || !take_text(&c, "\n") || skip_extensions(&c, m.needs) != OK)
+        !git_ok(m.git) || !take_text(&c, "\n"))
         return ERR_INVALID_ARGS;
-    if (!take_net(&c, m.net) || skip_extensions(&c, m.needs) != OK)
+    if ((st = skip_extensions(&c, &m)) != OK)
+        return st;
+    if (!take_net(&c, m.net))
         return ERR_INVALID_ARGS;
-    for (unsigned f = 0; f < UPDATE_FILES; f++) {
-        if ((st = take_file(&c, f, &m)) != OK)
+    if ((st = skip_extensions(&c, &m)) != OK)
+        return st;
+    for (unsigned f = 0; f < UPDATE_FILES; f++)
+        if ((st = take_file(&c, f, &m)) != OK || (st = skip_extensions(&c, &m)) != OK)
             return st;
-        if (skip_extensions(&c, m.needs) != OK)
-            return ERR_INVALID_ARGS;
-    }
     m.signed_len = (size_t)(c.p - (const uint8_t *)text);
     if (!take_text(&c, "signature"))
         return ERR_INVALID_ARGS;
@@ -314,7 +340,10 @@ status_t update_key_parse(const void *text, size_t len, uint8_t key[UPDATE_KEY_B
 
 const char *update_file_name(unsigned file)
 {
-    return file == UPDATE_KERNEL ? "kernel" : file == UPDATE_BOOTFS ? "bootfs" : "?";
+    return file == UPDATE_KERNEL   ? "kernel"
+           : file == UPDATE_BOOTFS ? "bootfs"
+           : file == UPDATE_MENU   ? "menu"
+                                   : "?";
 }
 
 const char *update_why_str(uint32_t why)
@@ -347,6 +376,7 @@ const char *update_write_step_str(uint32_t step)
         [UPDATE_WRITE_PREV] = "keeping the old build as the previous one",
         [UPDATE_WRITE_NEW] = "writing the new build",
         [UPDATE_WRITE_SWITCH] = "switching the names",
+        [UPDATE_WRITE_MENU] = "writing the boot menu",
         [UPDATE_WRITE_DONE] = "done",
     };
     return step < UPDATE_WRITE_STEPS ? words[step] : "?";
@@ -365,4 +395,20 @@ const char *update_stick_str(uint32_t stick)
                                    "build)\" may not",
     };
     return stick < UPDATE_STICK_STATES ? words[stick] : "?";
+}
+
+const char *update_menu_str(uint32_t menu)
+{
+    static const char *const words[UPDATE_MENU_STATES] = {
+        [UPDATE_MENU_NONE] = "no boot menu came with it: the stick's is as it was",
+        [UPDATE_MENU_WRITTEN] = "its boot menu written (the stick's old one is "
+                                "boot/limine/limine.conf.prev)",
+        [UPDATE_MENU_SAME] = "the stick has its boot menu already",
+        [UPDATE_MENU_REFUSED] = "its boot menu refused by init's check: the stick keeps its "
+                                "own",
+        [UPDATE_MENU_NOT_WRITTEN] = "its boot menu not written: the stick keeps its own",
+        [UPDATE_MENU_SKIPPED] = "its boot menu not tried (the build's write failed): the "
+                                "stick keeps its own",
+    };
+    return menu < UPDATE_MENU_STATES ? words[menu] : "?";
 }

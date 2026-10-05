@@ -73,6 +73,8 @@ void title_draw(const struct comp_window *w, const struct tile_buf *t);
 
 /* The arrow at the output's scale (call after output_open). */
 void cursor_init(void);
+/* Shown or not whether the pointer has moved yet (the test scene's). */
+void cursor_show(bool on);
 /* The cursor where it meets t: drawn last, over everything. */
 void cursor_draw(const struct tile_buf *t);
 /* Where the cursor is on the output (empty: not shown). */

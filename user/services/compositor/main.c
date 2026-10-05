@@ -13,17 +13,24 @@
  *                 width * height * 4 bytes, read and written), for a test
  *                 or a screenshot to look at; without it the image is a
  *                 VMO of our own.
- *   SR_USER + 2   optional, `testscene` only: a channel for its reports.
+ *   SR_USER + 2   optional: compctl's ADMIN channel, its server end (init
+ *                 holds the other; ctl.c).
+ *   SR_USER + 3   optional: init's control channel, reboot only (for
+ *                 Ctrl+Alt+Del; ctl.c).
+ *   SR_USER + 4   optional, `testscene` only: a channel for its reports.
  * Arguments: `headless` (no framebuffer: compose into memory),
  * `size=<w>x<h>` (the headless output, default 1280x800), `hz=<n>` (the
  * paint clock, display.hz: 60 by default), `threads=<n>` (painting
- * threads, the loop's included: a few by default), and `testscene`
- * followed by its commands (testscene.c: windows with no client, for the
- * tests; a test power only the starter can give, never a client).
+ * threads, the loop's included: a few by default), and two test powers,
+ * which only the starter can give, never a client, and init never does:
+ * `testwin` (testwin.c: a client's surface becomes a window without
+ * xdg-shell) and `testscene` followed by its commands (testscene.c:
+ * windows with no client).
  *
  * The loop (the service-loop rule, ARCHITECTURE.md "How a service waits"):
  * one thread, one port. A turn takes what the port has (new connections,
- * clients with messages), serves each client a budget (conn.c), paints if
+ * clients with messages, input), serves the input sources and then each
+ * client a budget (seat.h, conn.c), paints if
  * the clock says so and answers the frame callbacks the paint showed, and
  * writes what each client is owed. It never blocks on anyone: nothing it
  * sends waits (libjwl's flow control holds what a client is slow to read),
@@ -101,6 +108,8 @@ static void parse_args(int argc, char **argv, struct args *a)
         const char *s = argv[i];
         if (!strcmp(s, "headless"))
             comp.headless = true;
+        else if (!strcmp(s, "testwin"))
+            comp.testwin = true;
         else if (!strcmp(s, "testscene"))
             a->scene_at = i;
         else if (!(!strncmp(s, "size=", 5) && parse_size(s + 5, &a->w, &a->h)) &&
@@ -128,6 +137,8 @@ static status_t setup(int argc, char **argv, struct args *a)
     if (st == OK)
         st = jam_port_bind(comp.port, comp.svc, COMP_KEY_SVC, SIG_READABLE | SIG_PEER_CLOSED,
                            PORT_BIND_PERSISTENT);
+    if (st == OK)
+        st = seat_init();
     return st;
 }
 
@@ -157,7 +168,8 @@ static uint64_t next_deadline(void)
 {
     if (conn_more())
         return 0;
-    uint64_t d = clock_deadline();
+    uint64_t d = seat_deadline(), c = clock_deadline();
+    d = c < d ? c : d;
     if (conn_held()) {
         uint64_t r = now() + HELD_RETRY;
         d = r < d ? r : d;
@@ -175,6 +187,8 @@ static status_t take_packets(uint64_t deadline)
     while (st == OK) {
         if (pkt.key == COMP_KEY_SVC)
             svc = true;
+        else if (pkt.key >= COMP_KEY_SEAT && pkt.key < COMP_KEY_SEAT_END)
+            seat_packet(pkt.key);
         else
             conn_ready(pkt.key);
         st = jam_port_wait(comp.port, 0, &pkt);
@@ -199,7 +213,9 @@ int main(int argc, char **argv)
         return testscene_run(argc, argv, a.scene_at + 1);
     st = serve_svc();   /* connects queued before we bound the port */
     while (st == OK) {
+        seat_serve();       /* input first: typing never waits behind a client */
         conn_serve_all();
+        seat_turn();        /* the pointer's focus after the clients changed the scene */
         clock_turn();
         conn_flush_all();   /* the frame callbacks the paint answered */
         st = take_packets(next_deadline());

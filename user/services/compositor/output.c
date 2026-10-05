@@ -106,14 +106,6 @@ status_t output_open(bool headless, int32_t w, int32_t h)
     return OK;
 }
 
-void output_blank(bool on)
-{
-    if (output.blank == on)
-        return;
-    output.blank = on;
-    scene_damage((struct comp_box){ 0, 0, output.width, output.height });
-}
-
 /* n pixels from src to dst, top bytes cleared, 16 bytes a store. Not
  * turned into a call to memcpy (the attribute). */
 __attribute__((optimize("no-tree-loop-distribute-patterns")))

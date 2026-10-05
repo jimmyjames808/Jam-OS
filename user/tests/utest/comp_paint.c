@@ -99,7 +99,7 @@ static bool cp_run(const char *const *cmds, unsigned n, struct cp_run *r)
     for (unsigned i = 0; i < n; i++)
         argv[5 + i] = cmds[i];
     struct spawn_handle x[] = { { SR_USER + 0, svc_theirs }, { SR_USER + 1, image },
-                                { SR_USER + 2, rep_theirs } };
+                                { SR_USER + TESTSCENE_REPORT_ROLE, rep_theirs } };
     struct spawn_args a = { .path = "bin/compositor", .argc = (int)(5 + n), .argv = argv,
                             .job = job, .extra = x, .nextra = 3 };
     CHECK_ST(spawn(&a, &proc), OK);

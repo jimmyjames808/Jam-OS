@@ -52,12 +52,15 @@ static const struct {
     { &jwl_wl_shm_interface, shm_request },
     { &jwl_wl_shm_pool_interface, pool_request },
     { &jwl_wl_buffer_interface, buffer_request },
+    { &jwl_wl_seat_interface, seat_request },
+    { &jwl_wl_keyboard_interface, keyboard_request },
+    { &jwl_wl_pointer_interface, pointer_request },
 };
 
 /* What goes with a client, module by module (later tracks add theirs:
  * roles before surfaces, so a role sees its surface still there). */
 static void (*const teardowns[])(struct comp_client *) = {
-    surfaces_teardown, shm_teardown, display_teardown,
+    surfaces_teardown, shm_teardown, display_teardown, seat_teardown,
 };
 
 static const char *const gone_names[COMP_GONE_COUNT] = { "closed", "protocol error", "too slow" };

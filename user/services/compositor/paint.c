@@ -122,7 +122,7 @@ bool window_covered(const struct comp_window *w)
 static const struct comp_window *full_screen(void)
 {
     struct comp_box out = { 0, 0, scene.width, scene.height };
-    if (output.blank)
+    if (comp.blanked)
         return NULL;
     for (const struct comp_window *w = scene.top; w; w = w->below) {
         if (!(w->flags & COMP_WIN_MAPPED) || box_empty(box_intersect(window_frame(w), out)))
@@ -175,13 +175,13 @@ static void draw_window(const struct comp_window *w, const struct tile_buf *t, u
 
 static void compose(const struct tile_buf *t, uint32_t me)
 {
-    const struct comp_window *from = output.blank ? NULL : cull(t->b);
+    const struct comp_window *from = comp.blanked ? NULL : cull(t->b);
     if (!from) {
         uint64_t n = (uint64_t)(t->b.x2 - t->b.x1) * (uint64_t)(t->b.y2 - t->b.y1);
         for (uint64_t i = 0; i < n; i++)
             t->px[i] = scene.background;
     }
-    if (output.blank)
+    if (comp.blanked)
         return;
     for (const struct comp_window *w = from ? from : scene.bottom; w; w = w->above)
         draw_window(w, t, me);

@@ -6,9 +6,10 @@
  * fake server that loses, repeats and reorders.
  *
  * First the manifest (a new snapshot), asked again every UPDFETCH_RETRY
- * until it comes; it is parsed (<update.h>) to learn the two files'
- * sizes, and io.begin is told. Then the kernel's and the boot image's
- * bytes, in UPDWIRE_CHUNK_MAX pieces, with up to UPDFETCH_WINDOW requests
+ * until it comes; it is parsed (<update.h>) to learn the files' sizes,
+ * and io.begin is told. Then the kernel's and the boot image's bytes, and
+ * the boot menu's if the manifest names one (its `menu` line), in
+ * UPDWIRE_CHUNK_MAX pieces, with up to UPDFETCH_WINDOW requests
  * in flight: each reply that matches a request in flight exactly (file,
  * offset, length, snapshot, and the file's size the manifest gave) is
  * stored (io.store) and frees its place for the next request; a request
@@ -45,8 +46,8 @@ struct updfetch_io {
      * its files (again, after a restart). A failure fails the fetch. */
     status_t (*begin)(void *ctx, const struct update_manifest *m, const uint8_t *text,
                       size_t len);
-    /* Bytes of file (UPDATE_KERNEL, UPDATE_BOOTFS) at offset, inside the
-     * size begin was given. A failure fails the fetch. */
+    /* Bytes of file (UPDATE_KERNEL, UPDATE_BOOTFS, UPDATE_MENU) at offset,
+     * inside the size begin was given. A failure fails the fetch. */
     status_t (*store)(void *ctx, unsigned file, uint64_t offset, const uint8_t *data,
                       size_t len);
 };
@@ -73,8 +74,8 @@ struct updfetch {
     struct update_manifest m;
     unsigned               file;        /* the file asked for next (UPDATE_*) */
     uint64_t               next;        /* its next offset never asked for */
-    uint64_t               stored;      /* bytes of both files stored */
-    uint64_t               total;       /* bytes of both files */
+    uint64_t               stored;      /* bytes of the files stored */
+    uint64_t               total;       /* bytes of the files (the menu's too) */
     unsigned               restarts;
     struct updfetch_slot   slots[UPDFETCH_WINDOW];
     /* Counts, for the log and the tests. */
