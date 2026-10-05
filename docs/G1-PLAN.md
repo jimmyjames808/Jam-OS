@@ -98,8 +98,13 @@ differs from the recommendation below, this note wins:
   double-click) slides onto a new screen of its own next to the one it
   came from, with no top bar, frame or wallpaper; leaving full screen
   slides it back to its place, and that screen goes away. The top bar
-  lists the current screen's windows. The top bar floats with rounded
-  ends over a blurred copy of the wallpaper (made once per screen size,
+  lists the current screen's windows. The top bar (owner's pick, "3 on
+  a strip"): a full-width frosted strip, about 40 px at 1x, holding three
+  rounded islands slightly lighter than it: left "Jam OS" (the menu) and
+  the screen dots with "+"; centre the current screen's windows (the
+  focused one tinted raspberry, minimised ones dimmed with an apricot
+  dot); right the floating/tiling icon, network, volume and the clock.
+  The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
   floating moves, maximise and tiling alike (full screen has no bar).
