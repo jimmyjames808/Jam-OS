@@ -131,7 +131,7 @@ grep -aq "init: update: its network default is $othernet, this build's $net: tak
 grep -aq "init: update: .* and not loaded (check only)" "$log" ||
     fail "init didn't check the check-only offer"
 grep -aq "updtest: good: PASS" "$log" || fail "the good build wasn't accepted"
-grep -aq "init: update: .* and stored: .reboot. starts it" "$log" ||
+grep -aq "init: update: .* and stored in memory only" "$log" ||
     fail "init didn't say it stored the build"
 [ "$(grep -ac "$marker" "$log")" -ge 1 ] || fail "the fetched build didn't run (no marker)"
 [ "$(grep -ac "reboot: resetting" "$log")" -eq 1 ] ||
