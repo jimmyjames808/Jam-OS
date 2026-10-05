@@ -417,10 +417,24 @@ bool t_jwl_conn_new_ids(void)
     CHECK_ST(jwl_conn_make(p.cl, &jt_thing, 3, NULL, &ok), OK);
     a[0].n = ok;
     CHECK_ST(say(p.cl, 3, &jt_all, JT_MAKE, a), OK);
-    CHECK_ST(jwl_conn_make(p.cl, &jt_thing, 4, NULL, &v1), ERR_INVALID_ARGS);
+    /* a typed child has its parent's version, even above its own table's
+     * (a wl_callback of a version 4 wl_surface): made at 4, it fits only a
+     * version 4 parent */
+    CHECK_ST(jwl_conn_make(p.cl, &jt_thing, 4, NULL, &v1), OK);
+    a[0].n = v1;
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_MAKE, a), ERR_INVALID_ARGS);   /* jt_all is version 3 */
+    CHECK_ST(jwl_conn_delete(p.cl, v1), OK);
     CHECK_ST(jwl_conn_make(p.cl, &jt_thing, 0, NULL, &v1), ERR_INVALID_ARGS);
-    /* bind: the id must be what the name and version say */
+    /* bind: never above the table's version (its events must decode) */
     uint32_t b;
+    CHECK_ST(jwl_conn_make(p.cl, &jt_all, 4, NULL, &b), OK);
+    a[0].u = 7;
+    a[1].s = "jt_all";
+    a[2].u = 4;
+    a[3].n = b;
+    CHECK_ST(say(p.cl, 2, &jt_registry, 0, a), ERR_INVALID_ARGS);
+    CHECK_ST(jwl_conn_delete(p.cl, b), OK);
+    /* bind: the id must be what the name and version say */
     CHECK_ST(jwl_conn_make(p.cl, &jt_all, 1, NULL, &b), OK);
     a[0].u = 7;
     a[1].s = "jt_all";
