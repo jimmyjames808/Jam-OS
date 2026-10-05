@@ -181,7 +181,14 @@ KTEST(timer_reset_and_cancel)
     now = uptime_ns();
     KT_EQ(timer_set(t, now + 30 * NS_PER_MS), OK);
     KT_EQ(timer_set(t, now + 120 * NS_PER_MS), OK);
-    KT_EQ(object_wait_one(&t->base, SIG_SIGNALED, now + 90 * NS_PER_MS, NULL), ERR_TIMED_OUT);
+    /* Under load the 90 ms wait can be woken (or run) more than 30 ms
+     * late, after the 120 ms deadline has fired: then it sees it fired,
+     * which is right as long as that was at 120 ms, not at the old 30. */
+    status_t st = object_wait_one(&t->base, SIG_SIGNALED, now + 90 * NS_PER_MS, NULL);
+    if (st == OK && ktest_busy && uptime_ns() >= now + 120 * NS_PER_MS)
+        ktest_idle_relaxed++;
+    else
+        KT_EQ(st, ERR_TIMED_OUT);
     expect_fires(t, now + 120 * NS_PER_MS);
 
     /* Cancel: disarms and clears. */

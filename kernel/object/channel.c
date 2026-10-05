@@ -318,7 +318,7 @@ static void channel_close(struct channel *ch)
         dead.prev->next = &dead;
         list_init(&ch->queue);
     }
-    ch->nqueued = 0;
+    __atomic_store_n(&ch->nqueued, 0, __ATOMIC_RELAXED);
     wake_callers_locked(ch);
     kobject_signal_locked(&ch->base, SIG_READABLE | SIG_WRITABLE, 0);
     spin_unlock_irqrestore(&ch->base.lock, f);
@@ -391,7 +391,7 @@ static void refresh_writable(struct channel *ch)
     struct channel *writer = pair->ep[!ch->side];
     if (writer && pair->ep[ch->side] == ch) {
         spin_lock(&ch->base.lock);
-        bool full = ch->nqueued >= CHANNEL_MAX_QUEUED;
+        bool full = chan_nqueued(ch) >= CHANNEL_MAX_QUEUED;
         spin_unlock(&ch->base.lock);
         spin_lock(&writer->base.lock);
         kobject_signal_locked(&writer->base, full ? SIG_WRITABLE : 0, full ? 0 : SIG_WRITABLE);
@@ -415,8 +415,9 @@ static status_t take_first_locked(struct channel *ch, uint32_t bytes_cap, uint32
     if (m->nbytes > bytes_cap || m->nhandles > handles_cap)
         return ERR_BUFFER_TOO_SMALL;
     list_del(&m->node);
-    *was_full = ch->nqueued == CHANNEL_MAX_QUEUED;
-    if (--ch->nqueued == 0)
+    *was_full = chan_nqueued(ch) == CHANNEL_MAX_QUEUED;
+    COUNTER_SUB(&ch->nqueued, 1);
+    if (chan_nqueued(ch) == 0)
         kobject_signal_locked(&ch->base, SIG_READABLE, 0);
     *out = m;
     return OK;
@@ -544,7 +545,7 @@ void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged)
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
     for (struct list_node *n = ch->queue.next; n != &ch->queue; n = n->next)
         sum += container_of(n, struct chan_msg, node)->charge;
-    *msgs = ch->nqueued;
+    *msgs = chan_nqueued(ch);
     spin_unlock_irqrestore(&ch->base.lock, f);
     *charged = sum;
 }

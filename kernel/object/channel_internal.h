@@ -74,7 +74,11 @@ struct channel {
     struct chan_pair *pair;          /* shared with the peer */
     uint32_t          side;          /* our index in pair->ep */
     struct list_node  queue;         /* chan_msg, oldest first */
-    uint32_t          nqueued;       /* messages on queue (at most CHANNEL_MAX_QUEUED) */
+    uint32_t          nqueued;       /* messages on queue (at most CHANNEL_MAX_QUEUED);
+                                      * changed under the lock, but a writer on the
+                                      * peer reads it without (hand_over_locked's
+                                      * guess): every access is atomic (chan_nqueued,
+                                      * COUNTER_ADD / COUNTER_SUB) */
     struct list_node  callers;       /* chan_waiter */
     bool              closed;        /* we left the pair */
     bool              peer_closed;   /* the peer left the pair */
@@ -87,6 +91,12 @@ struct channel {
 static inline struct chan_msg *chan_handed(const struct chan_waiter *w)
 {
     return __atomic_load_n(&w->reply, __ATOMIC_ACQUIRE);
+}
+
+/* ch's queued count: exact with ch's lock held, a hint without it. */
+static inline uint32_t chan_nqueued(const struct channel *ch)
+{
+    return __atomic_load_n(&ch->nqueued, __ATOMIC_RELAXED);
 }
 
 /* channel.c: messages. */
