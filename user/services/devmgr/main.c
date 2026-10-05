@@ -58,7 +58,9 @@
  * driver learns the mode; without it (or with one that isn't valid) the
  * drivers start without one and keep the network off. The argument
  * "nospare" (the boot word, through init) keeps no warm spare fat
- * (spare.c): a filesystem service's restart starts a process.
+ * (spare.c): a filesystem service's restart starts a process. The argument
+ * "vtdtest" (with "iommu=on", the IOMMU checks test entry) is passed on to
+ * drv/hda, which runs its deliberate DMA faults before serving.
  *
  * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
@@ -120,6 +122,7 @@ handle_t pci_res, port;
 unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
+bool vtdtest;
 static bool netprobe, netsend, net;
 uint32_t boot_mbr_id;
 uint16_t net_vlan;
@@ -414,6 +417,7 @@ int main(int argc, char **argv)
         nospare |= !strcmp(argv[i], "nospare");
         nousb |= !strcmp(argv[i], "nousb");
         hidboot |= !strcmp(argv[i], "hidboot");
+        vtdtest |= !strcmp(argv[i], "vtdtest");
         netprobe |= !strcmp(argv[i], "netprobe");
         netsend |= !strcmp(argv[i], "netsend");
         net |= !strcmp(argv[i], "net");

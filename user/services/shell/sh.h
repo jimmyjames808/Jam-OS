@@ -371,7 +371,7 @@ SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(play); SH_CMD(vol);
 SH_CMD(music); SH_CMD(net); SH_CMD(ping);
 SH_CMD(host); SH_CMD(fetch); SH_CMD(serve); SH_CMD(speed);
-SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill);
+SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill); SH_CMD(iommu);
 SH_CMD(reboot); SH_CMD(kernel); SH_CMD(update); SH_CMD(run); SH_CMD(allow);
 /* tests */
 SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(storm); SH_CMD(utest);

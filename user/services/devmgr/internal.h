@@ -148,6 +148,10 @@ extern unsigned       problems;
 /* The argument "hidboot": passed on to every hid (mice stay in the boot
  * protocol). */
 extern bool           hidboot;
+/* The argument "vtdtest" (with "iommu=on", the IOMMU checks test entry):
+ * passed on to drv/hda, which runs its deliberate DMA faults before
+ * serving (M11 stage 5). */
+extern bool           vtdtest;
 /* The argument "bootdisk=0x<id>": the MBR disk id of the disk the machine
  * booted from (the loader's, passed on by the kernel and init); 0: not
  * known. disk.c takes the Jam OS disk with that id as the boot disk. */
