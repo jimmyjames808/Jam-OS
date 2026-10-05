@@ -152,7 +152,10 @@
 /* (1 handle: a client end of the console's channel) -> (): the console to
  * connect class drivers to. init sends it after it restarted the
  * console (the first one comes as SR_CONSOLE); the class drivers that
- * ended because the old console went away start again connected to it. */
+ * ended because the old console went away start again connected to it.
+ * A devmgr started with the argument "comp" takes an INPUT-level compctl
+ * channel here and as SR_CONSOLE instead (the compositor's: init sends a
+ * new one after it restarted the compositor). */
 #define DEVMGR_SET_CONSOLE  0x00030009u
 
 /* Mounts (control channel only): the boot disk's data partition at /data

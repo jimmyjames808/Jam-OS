@@ -146,7 +146,8 @@ void sup_died(struct binding *b, uint32_t gen)
              * SET_CONSOLE may well have come before this death.) */
             b->restart_at = now();
             b->input_gen = 0;
-            say(false, "devmgr: %s %s: its console went away: reconnecting", bdf(b), b->path);
+            say(false, "devmgr: %s %s: its %s went away: reconnecting", bdf(b), b->path,
+                usb_hub_name());
             return;
         }
     }
@@ -201,7 +202,8 @@ void sup_run_due(void)
         if (b->last == OK) {
             b->console_wait = false;
             if (reconnect)
-                say(false, "devmgr: %s %s started again (the console is back)", bdf(b), b->path);
+                say(false, "devmgr: %s %s started again (the %s is back)", bdf(b), b->path,
+                    usb_hub_name());
             else
                 say(false, "devmgr: %s %s restarted (restart %u since boot)", bdf(b), b->path,
                     b->restarts);
