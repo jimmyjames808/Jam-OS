@@ -1,4 +1,5 @@
-/* libfun: the screen borrowed from the console, and drawing on surfaces (fun.h). */
+/* libfun: the screen (fun.h): a window (wl.c) or, without one, the screen
+ * borrowed from the console; and drawing on surfaces. */
 #include <idl/console.h>
 #include "internal.h"
 
@@ -20,8 +21,8 @@ status_t gfx_open(void)
     return gfx_open_on(0);
 }
 
-/* The screen, and with `keys` the keyboard focus. */
-static status_t open_screen(uint32_t bg, bool keys)
+/* The borrowed screen, and with `keys` the keyboard focus. */
+static status_t borrow_screen(uint32_t bg, bool keys)
 {
     memset(&scr, 0, sizeof(scr));
     scr.con = startup_handle(SR_CONSOLE);
@@ -70,6 +71,7 @@ static status_t open_screen(uint32_t bg, bool keys)
     scr.bs = bs;
     scr.native = rs == 16 && gs == 8 && bs == 0;
     scr.ui = h > 1100 ? 2 : 1;
+    scr.bg = bg;
     scr.open = true;
     /* The shown copy starts black; the screen starts as the console left
      * it, so the first present writes everything. */
@@ -79,14 +81,32 @@ static status_t open_screen(uint32_t bg, bool keys)
     return OK;
 }
 
+/* A window if the compositor gives us one, else the borrowed screen. */
+static status_t open_screen(uint32_t bg, bool keys, bool full)
+{
+    status_t st = wl_open(bg, keys, full);
+    if (st == OK) {
+        gfx_present_all();   /* the window shows bg at once */
+        return OK;
+    }
+    if (st != ERR_NOT_FOUND)   /* a compositor in our namespace, but no window from it */
+        printf("libfun: no window (%s): borrowing the screen\n", status_str(st));
+    return borrow_screen(bg, keys);
+}
+
 status_t gfx_open_on(uint32_t bg)
 {
-    return open_screen(bg, true);
+    return open_screen(bg, true, false);
+}
+
+status_t gfx_open_fullscreen(uint32_t bg)
+{
+    return open_screen(bg, true, true);
 }
 
 status_t gfx_open_screen(uint32_t bg)
 {
-    return open_screen(bg, false);
+    return open_screen(bg, false, true);
 }
 
 void gfx_close(void)
@@ -95,6 +115,10 @@ void gfx_close(void)
         return;
     scr.open = false;
     mouse_close();
+    if (scr.windowed) {
+        wl_close();   /* the compositor takes the window off the screen */
+        return;
+    }
     jam_handle_close(scr.lease);   /* the console redraws its text screen */
     if (scr.keys)
         jam_handle_close(scr.keys);   /* and the keys go back to the shell */
@@ -163,6 +187,10 @@ static void present(bool all, int y0, int y1)
     y1 = y1 > scr.h ? scr.h : y1;
     if (!scr.open || y0 >= y1)
         return;
+    if (scr.windowed) {
+        wl_present(all);   /* the whole picture: a window has no arrow to move */
+        return;
+    }
     struct present_job job = { all, (uint32_t)y0 / PBAND };
     for (uint32_t i = 0; i < FUN_MAX_THREADS; i++)
         present_bytes[i] = 0;

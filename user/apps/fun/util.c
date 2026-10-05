@@ -69,6 +69,13 @@ void *big_alloc(uint64_t bytes)
     return st == OK ? (void *)(uintptr_t)addr : NULL;
 }
 
+void big_free(void *p, uint64_t bytes)
+{
+    if (p)   /* the mapping was the VMO's last reference: its pages go with it */
+        (void)jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)p,
+                             (bytes + 4095) & ~4095ull);
+}
+
 void say(const char *fmt, ...)
 {
     char buf[2048];   /* console_write sends a whole 2048-byte buffer */

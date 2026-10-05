@@ -285,8 +285,9 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 # libfun (user/apps/fun, <fun.h>): the screen, drawing, text, keys and
 # thread pool of the apps, which link it before libos.
 # fbbench (user/tests) measures libfun's own drawing code too; the
-# compositor (user/services) blends and draws with it.
-FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS))) fbbench compositor
+# compositor (user/services) blends and draws with it; utest tests its
+# window (utest/funwin.c) against the fake compositor.
+FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS))) fbbench compositor utest
 LIBFUN_OBJS := $(patsubst %,$(UOBJ)/%.o,$(wildcard $(LIBFUN_DIR)/*.c))
 
 $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
