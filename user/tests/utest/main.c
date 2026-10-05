@@ -943,6 +943,7 @@ static const struct {
     { "comp_layout_wait", t_comp_layout_wait },
     { "comp_super_enter", t_comp_super_enter },
     { "comp_no_keyboard", t_comp_no_keyboard },
+    { "comp_early_keys", t_comp_early_keys },
     { "wm_seat", t_wm_seat },
     { "termkeys", t_termkeys },
     { "comp_paint_overlap", t_comp_paint_overlap },

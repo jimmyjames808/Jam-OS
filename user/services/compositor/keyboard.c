@@ -22,6 +22,13 @@
  * does), in XKB's bits for the generated keymap (KEYMAP_MOD_*), sent as
  * wl_keyboard.modifiers whenever they change and after every enter.
  *
+ * Keys typed before any window has had the keys (at boot: the shell's
+ * prompt is up before its terminal's window is mapped) are kept, at most
+ * EARLY_MAX key events with the modifiers each was typed with, and handed
+ * to the first window that takes the keys, after its enter, as the
+ * console kept them for the first to listen. Later, with no window
+ * focused, keys go nowhere.
+ *
  * Terminal text (serialin, a QEMU test): each byte or escape sequence
  * (<termkeys.h>) becomes the presses that type it on the US layout: Shift
  * or Ctrl pressed around the key as needed, so a client sees exactly what
@@ -52,6 +59,16 @@ static unsigned nheld;
 static uint8_t src_mods[SOURCES_MAX];          /* each source's last modifier byte */
 static uint32_t locked = KEYMAP_MOD_NUM;       /* KEYMAP_MOD_CAPS / _NUM on */
 static uint32_t sent_depressed, sent_locked;   /* what the focused client was last told */
+
+/* A key event typed before any window had the keys, and the modifiers then. */
+#define EARLY_MAX 128
+struct early {
+    uint32_t code, state;            /* evdev code, WL_KEYBOARD_KEY_STATE_* */
+    uint32_t depressed, locked;      /* KEYMAP_MOD_* */
+};
+static struct early early[EARLY_MAX];
+static unsigned nearly;              /* kept; more are dropped */
+static bool had_focus;               /* a window has had the keys: nothing is kept any more */
 
 status_t keyboard_init(void)
 {
@@ -132,10 +149,39 @@ static void send_enter(struct comp_window *w, const struct seat_res *only)
                                                  sent_locked, 0);
 }
 
+/* The keys kept from before any window had them, to w's client (just
+ * entered), each after the modifiers it was typed with; then the
+ * modifiers as they are. */
+static void send_early(struct comp_window *w)
+{
+    struct comp_client *cl = w->surface->client;
+    for (unsigned i = 0; i < nearly; i++) {
+        const struct early *e = &early[i];
+        if (e->depressed != sent_depressed || e->locked != sent_locked) {
+            sent_depressed = e->depressed;
+            sent_locked = e->locked;
+            send_modifiers(cl, comp_serial());
+        }
+        uint32_t serial = comp_serial(), t = comp_ms(now());
+        for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
+            (void)jwl_wl_keyboard_send_key(cl->conn, r->id, serial, t, e->code, e->state);
+    }
+    nearly = 0;
+    if (depressed() != sent_depressed || locked != sent_locked) {
+        sent_depressed = depressed();
+        sent_locked = locked;
+        send_modifiers(cl, comp_serial());
+    }
+}
+
 void keyboard_enter(struct comp_window *w)
 {
-    if (surface_live(w->surface))
-        send_enter(w, NULL);
+    if (!surface_live(w->surface))
+        return;
+    send_enter(w, NULL);
+    if (!had_focus)
+        send_early(w);
+    had_focus = true;
 }
 
 void keyboard_leave(struct comp_window *w)
@@ -173,6 +219,8 @@ status_t keyboard_create(struct comp_client *cl, uint32_t id, uint32_t version)
 static void send_key(uint32_t code, uint32_t state)
 {
     struct comp_window *w = focus_target();
+    if (!w && !had_focus && nearly < EARLY_MAX)   /* kept for the first window */
+        early[nearly++] = (struct early){ code, state, depressed(), locked };
     if (!w)
         return;
     struct comp_client *cl = w->surface->client;

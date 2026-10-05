@@ -453,6 +453,7 @@ bool t_jwlc_no_keyboard(void);
 bool t_comp_layout_wait(void);
 bool t_comp_super_enter(void);
 bool t_comp_no_keyboard(void);
+bool t_comp_early_keys(void);
 bool t_jwlc_reconnect(void);
 bool t_jwlc_protocol_error(void);
 bool t_jwlc_blocking(void);
