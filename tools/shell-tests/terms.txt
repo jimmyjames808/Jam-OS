@@ -1,5 +1,5 @@
-# More terminals (docs/G1-PLAN.md, track T1): booted with the word
-# `comp`, init starts the compositor before the console, and each console
+# More terminals (docs/G1-PLAN.md, track T1): on a plain boot init starts
+# the compositor before the console, and each console
 # runs in window mode (a window of the compositor's once it offers
 # xdg_wm_base; without one, its text goes to COM1 only). `term` opens
 # terminal 2, a console and a shell of their own (its output is copied to
@@ -8,9 +8,9 @@
 # both consoles connect again; the first terminal answers throughout.
 # Then terminals up to the limit (8 in all), and `term` refuses one more.
 # Screenshots: terms-boot (the first terminal), terms-eight (all eight).
-# Typing into terminal 2 and closing it (its window's close box, `exit`)
-# need the compositor's input (the boot wiring): terms-windows.txt.
-# Run: QEMU_INPUT=tools/shell-tests/terms.txt tools/qemu-test.sh build/test terms shell comp
+# Typing into terminal 2 and closing it (`exit`, its close circle):
+# terms-windows.txt and desktop.txt.
+# Run: QEMU_INPUT=tools/shell-tests/terms.txt tools/qemu-test.sh build/test terms shell
 wait 120 Jam OS shell
 seen 10 console: window mode (terminal 1)
 wait jam>

@@ -1,14 +1,13 @@
-# Terminals as windows (docs/G1-PLAN.md, track T1), once the compositor
-# has windows (xdg-shell) and its own input (the boot wiring: serialin
-# and the keyboards connected to it, not to the console): booted with
-# `comp`, the first terminal opens as a window; `term` opens terminal 2,
+# Terminals as windows (docs/G1-PLAN.md, track T1) on a plain boot, the
+# compositor's (serialin and the keyboards are its input sources, not the
+# console's): the first terminal opens as a window; `term` opens terminal 2,
 # whose window takes the keys (a client's first window does), so `exit`
 # typed now ends terminal 2's shell and closes it, and the keys come back
 # to the first, where `exit` refuses. Super+Enter on a keyboard opens
 # another. The compositor killed, both windows come back. Screenshots
 # along the way (terms-one, terms-two, terms-back).
 # Run: QEMU_INPUT=tools/shell-tests/terms-windows.txt \
-#      QEMU_USB="-device usb-kbd,bus=xhci.0,port=2" tools/qemu-test.sh build/test terms-windows shell comp
+#      QEMU_USB="-device usb-kbd,bus=xhci.0,port=2" tools/qemu-test.sh build/test terms-windows shell
 wait 120 Jam OS shell
 seen 10 console: window mode: terminal 1 opens a
 wait jam>

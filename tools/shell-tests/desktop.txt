@@ -3,14 +3,16 @@
 # on port 3): QEMU's keys and mouse go usb-bus -> drv/hid -> the compositor
 # (devmgr's INPUT channel) -> the focused window, the terminal's console
 # -> the shell. Typing in the first terminal; Super+Enter opening terminal
-# 2, whose window takes the keys; a click on the first terminal giving them
-# back; terminal 2's close box closing it.
+# 2, whose window takes the keys; a click on the first terminal giving
+# them back, one on terminal 2 taking them again; terminal 2's close
+# circle closing it.
 #
 # Where things are at OVMF's 1280x800: the first terminal's window is
-# centred, its surface 960x592 at (160, 104) and its title bar the 24 rows
-# above; terminal 2's is cascaded 26 pixels down and right. The close box
-# is the title bar's last 24 pixels (centre (1136, 118) on terminal 2's).
-# `pointer` puts the mouse there exactly (serial-feed.py: 1:1 steps).
+# centred, its surface 960x592 at (160, 104) under a 28-pixel title bar;
+# terminal 2's is cascaded 30 pixels down and right (its surface at (190,
+# 134)). A title bar's close circle is its first, on the left: centre (203,
+# 119) on terminal 2's. `pointer` puts the mouse there exactly
+# (serial-feed.py: 1:1 steps).
 wait 120 Jam OS shell
 wait jam>
 seen 30 report mouse ready
@@ -39,9 +41,14 @@ usbkeys echo usb-back\r
 wait 10 usb-back
 wait jam>
 shot desktop-back
-# terminal 2's close box (still in sight, right of the first terminal):
-# its console ends, init closes the terminal
-pointer 1136 118
+# a click on terminal 2 (the strip of it right of the first): on top again
+pointer 1135 400
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.5
+# its close circle: its console ends, init closes the terminal
+pointer 203 119
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0

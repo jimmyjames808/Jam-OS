@@ -90,13 +90,17 @@ wait jam>
 send jobs | grep utest || echo ok-$T-norefused
 wait ok-x-norefused
 
-# ---- a program that wants the screen gets none in the background ------------------------
+# ---- a program that draws, in the background: a window of its own ----------------------
+# (the compositor's; booted with `nocomp` it could borrow no screen and
+# would end at once). Its window takes the keys, as a program's first
+# window does: q quits it, and the keys come back to the terminal.
 send tetris &
 wait 10 [1]
-seen 10 tetris: can't borrow the screen
+sleep 2
+type q
+wait 20 [1] done: tetris (exit 0)
 send echo after-$T-tetris
-wait 10 [1] done: tetris (exit 1)
-seen 10 after-x-tetris
+wait 10 after-x-tetris
 wait jam>
 
 # ---- the limit: 8 at once ----------------------------------------------------------------
