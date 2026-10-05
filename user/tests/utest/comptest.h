@@ -19,6 +19,8 @@ struct ct_comp {
 };
 
 bool ct_start(struct ct_comp *p, int32_t w, int32_t h);
+/* The same with one more argument for the compositor (NULL: none). */
+bool ct_start_arg(struct ct_comp *p, int32_t w, int32_t h, const char *arg);
 /* Close /svc/wayland: the compositor must end with 0 and leave its job empty. */
 bool ct_stop(struct ct_comp *p);
 /* The compositor job's handles in use now. */

@@ -21,6 +21,7 @@
 #define INITCTL_REBOOT_FIRMWARE  0x00120006u
 #define INITCTL_KERNEL_LOAD      0x00120007u
 #define INITCTL_UPDATE_OFFER     0x00120008u
+#define INITCTL_TERMINAL         0x00120009u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct initctl_kill_req {
@@ -93,6 +94,15 @@ struct initctl_update_offer_req {
 struct initctl_update_offer_rep {
     uint32_t txid;
     int32_t  status;
+} __attribute__((packed));
+struct initctl_terminal_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct initctl_terminal_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t number;
 } __attribute__((packed));
 
 #define INITCTL_REQ_MAX 40u   /* bytes: the biggest request */
@@ -409,6 +419,46 @@ static inline status_t initctl_update_offer(handle_t ch, handle_t *out_offer)
     return initctl_update_offer_call(ch, false, DEADLINE_NEVER, out_offer);
 }
 
+/* initctl_terminal_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_number)
+{
+    struct initctl_terminal_req idl_q;
+    struct initctl_terminal_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_TERMINAL;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_number)
+        *out_number = idl_r.number;
+    return idl_st;
+}
+/* Open another terminal: a window of its own on the compositor, with a
+ * shell of its own, which init supervises as it does the first's (a
+ * crashed or killed shell or console is started again; one that ends too
+ * often is given up on, and the terminal closes). The terminal closes for
+ * good when its window is closed or its shell ends with `exit`. Answers at
+ * once with the new terminal's number (2 and up; the first terminal is 1);
+ * its window opens a moment later. ERR_NOT_SUPPORTED: no compositor runs
+ * (a boot without one: one terminal only); ERR_NO_RESOURCES: as many
+ * terminals are open as there may be. The shell's channel (`term`) and
+ * the consoles' (Super+Enter). */
+static inline status_t initctl_terminal_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_number)
+{
+    return initctl_terminal_call(ch, false, deadline_ns, out_number);
+}
+static inline status_t initctl_terminal_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_number)
+{
+    return initctl_terminal_call(ch, true, timeout_ns, out_number);
+}
+static inline status_t initctl_terminal(handle_t ch, uint8_t *out_number)
+{
+    return initctl_terminal_call(ch, false, DEADLINE_NEVER, out_number);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* initctl_kill without waiting: the request, with the caller's txid (not 0).
@@ -665,6 +715,37 @@ static inline status_t initctl_update_offer_result(const void *idl_rep, struct i
     return OK;
 }
 
+/* initctl_terminal without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_terminal_result. */
+static inline status_t initctl_terminal_send(handle_t ch, uint32_t idl_txid)
+{
+    struct initctl_terminal_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_TERMINAL;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_terminal_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_terminal_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_number)
+{
+    const struct initctl_terminal_rep *idl_r = (const struct initctl_terminal_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_number)
+        *out_number = idl_r->number;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -680,6 +761,7 @@ struct initctl_ops {
     status_t (*reboot_firmware)(void *ctx);
     status_t (*kernel_load)(void *ctx, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms);
     status_t (*update_offer)(void *ctx, handle_t *out_offer);
+    status_t (*terminal)(void *ctx, uint8_t *out_number);
 };
 
 /* Answer the initctl.kill request kept in txn: idl_st and, if it is OK, the
@@ -810,6 +892,22 @@ static inline status_t initctl_reply_update_offer(struct idl_txn idl_txn, status
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     }
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the initctl.terminal request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_terminal(struct idl_txn idl_txn, status_t idl_st, uint8_t number)
+{
+    struct initctl_terminal_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.number = number;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -972,6 +1070,23 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         }
         rhs[0] = out_offer;
         *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case INITCTL_TERMINAL: {
+        const struct initctl_terminal_req *idl_q = (const struct initctl_terminal_req *)req;
+        struct initctl_terminal_rep *idl_r = (struct initctl_terminal_rep *)rep;
+        uint8_t out_number = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->terminal) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->terminal(ctx, &out_number);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->number = out_number;
         return sizeof(*idl_r);
     }
     }

@@ -98,7 +98,43 @@ differs from the recommendation below, this note wins:
   double-click) slides onto a new screen of its own next to the one it
   came from, with no top bar, frame or wallpaper; leaving full screen
   slides it back to its place, and that screen goes away. The top bar
-  lists the current screen's windows. Tracks D1 (the look) and D2 (minimise,
+  lists the current screen's windows. The top bar (owner's pick, "3 on
+  a strip"): a full-width frosted strip, about 40 px at 1x, holding three
+  rounded islands slightly lighter than it: left "Jam OS" (the menu) and
+  the screen dots with "+"; centre the current screen's windows (the
+  focused one tinted raspberry, minimised ones dimmed with an apricot
+  dot); right the floating/tiling icon, network, volume and the clock.
+  The app menu is a search box (owner's pick): tapping Super alone (pressed
+  and released with no other key) or clicking "Jam OS" opens it centred
+  near the top, frosted; empty, it lists every app (most recently used
+  first) so a mouse user can just click; typing filters, Enter runs the
+  top hit, arrows move, Esc closes; its last row offers to run what was
+  typed as a command in a new terminal. Apps show as letter tiles in jam
+  colours until there are icons.
+  Alt+Tab (owner's pick): a compact frosted list, centred, one row per
+  window (letter tile and title). Order: the current screen's windows
+  (most recently focused first), then every other screen's windows grouped
+  under a small "screen N" label, then minimised windows. Holding Alt,
+  the first Tab selects the next row and each further Tab the one after
+  (Shift+Tab goes back, wrapping); letting go of Alt goes to the selected
+  window (sliding to its screen, restoring it if minimised); Esc while
+  Alt is held cancels. A quick Alt+Tab tap goes straight to the previous
+  window; the list appears only if Alt is held past about 120 ms, so a
+  tap doesn't flash it.
+  Animations (owner's picks): a window opens by growing from 92% while
+  fading in, and closes the reverse (about 150 ms, ease-out); minimising
+  shrinks it into its chip in the top bar (about 260 ms) and restoring
+  reverses that; switching screens slides the windows sideways (about
+  260 ms) while the wallpaper and the top bar stay put, the screen dots
+  following; going full screen and back slides the same way. An
+  animation that is interrupted (another key, a second click) jumps to
+  its end. Animations run at the compositor's paint rate and only damage
+  the boxes they touch.
+  The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
+  so it costs nothing per frame); windows never go under it: the space
+  it takes (with the gap below it) is outside every window's reach, in
+  floating moves, maximise and tiling alike (full screen has no bar).
+  Tracks D1 (the look) and D2 (minimise,
   the top bar, virtual screens, animations) build these after C3 (added to the stages
   when they start).
 

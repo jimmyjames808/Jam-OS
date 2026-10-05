@@ -47,6 +47,13 @@ static const struct sh_cmd cmds[] = {
       "  it comes. When it ends, the next prompt says so: [2] done: utest (exit 0).\n"
       "  kill %2 ends it; all of them end with the shell. At most 8 at once; a\n"
       "  pipeline, a shell command or an alias can't go in the background"),
+    C(term, C_SHELL, "term",
+      "open another terminal: a window of its own with a shell of its own (as\n"
+      "  Super+Enter does). Needs the compositor (a boot with the word comp); at\n"
+      "  most 8 terminals in all. Close one with its window's close box or exit"),
+    C(exit, C_SHELL, "exit",
+      "end this shell and close its terminal (not the first: it stays). The\n"
+      "  programs it started with & end with it"),
     C(devices, C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),
     C(hda, C_SYSTEM, "hda [gain [dB] | bits [n] | jacks]",
