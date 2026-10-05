@@ -8,7 +8,7 @@
  * until the seat says a pointer has stirred (cursor_show): a machine with
  * no mouse shows no arrow.
  *
- * Every change damages the cursor's box before and after, so a move
+ * Every change damages the cursor's box as it was and as it is, so a move
  * repaints two small boxes (on the PC two 32x32 squares take about 2 us:
  * fbbench). The arrow is kept as premultiplied pixels, drawn with the
  * same blend as windows; a client's surface is drawn as its window would
@@ -27,6 +27,7 @@ static struct {
     int32_t hx, hy;                 /* its hot spot, in it */
     int32_t x, y;                   /* the hot spot on the output */
     int32_t aw, ah;                 /* the arrow's size at our scale */
+    struct comp_box box;            /* its box when last damaged (cursor_damage) */
     uint32_t arrow[POINTER_ARROW_W * SCALE_MAX * POINTER_ARROW_H * SCALE_MAX];   /* premultiplied */
 } cur;
 
@@ -57,14 +58,18 @@ struct comp_box cursor_box(void)
                      s->height < SURFACE_MAX ? s->height : SURFACE_MAX);
 }
 
+/* Where it was when last damaged and where it is now: a cursor surface's
+ * commit may have changed its size before we hear of it, so the old box
+ * is remembered, not worked out again. */
 void cursor_damage(void)
 {
-    scene_damage(cursor_box());
+    scene_damage(cur.box);
+    cur.box = cursor_box();
+    scene_damage(cur.box);
 }
 
 void cursor_show(bool on)
 {
-    cursor_damage();
     cur.shown = on;
     cursor_damage();
 }
@@ -73,7 +78,6 @@ void cursor_move(int32_t x, int32_t y)
 {
     if (x == cur.x && y == cur.y)
         return;
-    cursor_damage();
     cur.x = x;
     cur.y = y;
     cursor_damage();
@@ -81,7 +85,6 @@ void cursor_move(int32_t x, int32_t y)
 
 void cursor_set(enum comp_cursor kind, struct comp_surface *s, int32_t hx, int32_t hy)
 {
-    cursor_damage();
     cur.kind = kind == COMP_CURSOR_SURFACE && !s ? COMP_CURSOR_HIDDEN : kind;
     cur.surface = kind == COMP_CURSOR_SURFACE ? s : NULL;
     cur.hx = hx;

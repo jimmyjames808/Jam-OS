@@ -531,7 +531,8 @@ void     cursor_move(int32_t x, int32_t y);
  * hot spot hx, hy into it); s must stay valid until the next cursor_set
  * (the cursor role's `gone` sets the arrow back). */
 void     cursor_set(enum comp_cursor kind, struct comp_surface *s, int32_t hx, int32_t hy);
-/* The cursor surface committed: its box is drawn again. */
+/* The cursor surface committed: its box as it was and as it is now (a new
+ * size included) is drawn again. */
 void     cursor_damage(void);
 
 /* Paints at most hz times a second (1 to 240; display.hz, 60 by default). */

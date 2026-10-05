@@ -18,7 +18,12 @@
  *                 the same at (0, 0), as big as the output
  *   move=K,X,Y    raise=K    unmap=K    map=K
  *   damage=X,Y,W,H
- *   cursor=X,Y    the arrow, there;  nocursor
+ *   cursor=X,Y    the cursor (the arrow at first), there;  nocursor
+ *   cursorsurf=W,H,AARRGGBB,HX,HY
+ *                 a surface of ours (no window; it takes the next number)
+ *                 as the cursor, hot spot HX, HY
+ *   cursorsize=W,H  that surface shrinks, as a smaller buffer's commit would
+ *   cursorarrow   the arrow again
  *   blank         unblank
  *   paint         paint the damage now; a line in the log and a struct
  *                 testscene_report on SR_USER + 2 (if given)
@@ -102,24 +107,44 @@ static void fill_pixels(uint32_t *px, int32_t w, int32_t h, uint32_t argb, bool 
         }
 }
 
-/* A window of ours over pixels px (stride pixels a row), on top, mapped. */
-static struct twin *add_window(struct comp_box at, const uint32_t *px, uint32_t stride, bool argb)
+/* w x h pixels of testscene.h's picture in memory of their own, or NULL. */
+static uint32_t *pixels_of(int32_t w, int32_t h, uint32_t argb, bool solid)
+{
+    uint32_t *px = big_alloc((uint64_t)w * (uint64_t)h * 4);
+    if (px)
+        fill_pixels(px, w, h, argb, solid);
+    return px;
+}
+
+/* A surface of ours, w x h, over pixels px (stride pixels a row), with no
+ * window yet. */
+static struct twin *add_surface(int32_t w, int32_t h, const uint32_t *px, uint32_t stride,
+                                bool argb)
 {
     if (nwins == WINS_MAX)
         return NULL;
     struct twin *t = &wins[nwins++];
     memset(t, 0, sizeof(*t));
     t->p = (struct comp_pool){ .addr = (uint64_t)(uintptr_t)px, .refs = 1 };
-    t->b = (struct comp_buffer){ .pool = &t->p, .refs = 1, .busy = 1, .width = at.x2 - at.x1,
-                                 .height = at.y2 - at.y1, .stride = stride * 4,
+    t->b = (struct comp_buffer){ .pool = &t->p, .refs = 1, .busy = 1, .width = w, .height = h,
+                                 .stride = stride * 4,
                                  .format = argb ? JWL_WL_SHM_FORMAT_ARGB8888
                                                 : JWL_WL_SHM_FORMAT_XRGB8888 };
     t->s.buffer = &t->b;
-    t->s.width = t->b.width;
-    t->s.height = t->b.height;
+    t->s.width = w;
+    t->s.height = h;
     t->s.input_all = true;
     region_init(&t->s.opaque, NULL);
     region_init(&t->s.input, NULL);
+    return t;
+}
+
+/* A window of ours over pixels px (stride pixels a row), on top, mapped. */
+static struct twin *add_window(struct comp_box at, const uint32_t *px, uint32_t stride, bool argb)
+{
+    struct twin *t = add_surface(at.x2 - at.x1, at.y2 - at.y1, px, stride, argb);
+    if (!t)
+        return NULL;
     struct comp_window *w;
     if (window_create(&t->s, at.x1, at.y1, &w) != OK) {
         nwins--;
@@ -156,11 +181,10 @@ static bool cmd_win(const char *s)
     if (numbers(s, v, 5, 4, &flags) != 5 || v[2] < 1 || v[3] < 1 || v[2] > 4096 || v[3] > 4096 ||
         v[0] < -8192 || v[0] > 8192 || v[1] < -8192 || v[1] > 8192 || v[4] > 0xffffffffll)
         return false;
-    bool solid = flags && strchr(flags, 's');
-    uint32_t *px = big_alloc((uint64_t)v[2] * (uint64_t)v[3] * 4);
+    uint32_t *px = pixels_of((int32_t)v[2], (int32_t)v[3], (uint32_t)v[4],
+                             flags && strchr(flags, 's'));
     if (!px)
         return false;
-    fill_pixels(px, (int32_t)v[2], (int32_t)v[3], (uint32_t)v[4], solid);
     struct comp_box at = box_make((int32_t)v[0], (int32_t)v[1], (int32_t)v[2], (int32_t)v[3]);
     struct twin *t = add_window(at, px, (uint32_t)v[2], (uint32_t)v[4] >> 24 != 0xff);
     if (!t)
@@ -179,6 +203,43 @@ static bool cmd_fullscreen(const char *s)
     char win[64];
     snprintf(win, sizeof(win), "0,0,%d,%d,%08x", scene.width, scene.height, (uint32_t)v[0]);
     return cmd_win(win);
+}
+
+static struct twin *cursor_twin;   /* the cursor's surface (cursorsurf), or NULL */
+
+/* cursorsurf=W,H,AARRGGBB,HX,HY: a surface of ours, no window, as the
+ * cursor with hot spot HX, HY. cursorsize=W,H: it shrinks to W x H, as a
+ * commit of a smaller buffer would make it. cursorarrow: the arrow again. */
+static bool cmd_cursor(const char *cmd, const char *s)
+{
+    int64_t v[5];
+    const char *rest;
+    if (!strcmp(cmd, "cursorarrow")) {
+        cursor_set(COMP_CURSOR_ARROW, NULL, 0, 0);
+        cursor_twin = NULL;
+        return true;
+    }
+    if (!strcmp(cmd, "cursorsize")) {
+        if (!cursor_twin || numbers(s, v, 2, -1, &rest) != 2 || rest || v[0] < 1 || v[1] < 1 ||
+            v[0] > cursor_twin->b.width || v[1] > cursor_twin->b.height)
+            return false;
+        cursor_twin->b.width = cursor_twin->s.width = (int32_t)v[0];
+        cursor_twin->b.height = cursor_twin->s.height = (int32_t)v[1];
+        cursor_damage();
+        return true;
+    }
+    if (numbers(s, v, 5, 2, &rest) != 5 || rest || v[0] < 1 || v[1] < 1 || v[0] > 256 ||
+        v[1] > 256 || v[2] > 0xffffffffll)
+        return false;
+    uint32_t *px = pixels_of((int32_t)v[0], (int32_t)v[1], (uint32_t)v[2], false);
+    struct twin *t = px ? add_surface((int32_t)v[0], (int32_t)v[1], px, (uint32_t)v[0],
+                                      (uint32_t)v[2] >> 24 != 0xff)
+                        : NULL;
+    if (!t)
+        return false;
+    cursor_twin = t;
+    cursor_set(COMP_CURSOR_SURFACE, &t->s, (int32_t)v[3], (int32_t)v[4]);
+    return true;
 }
 
 /* The window numbered k (1-based), or NULL. */
@@ -270,8 +331,11 @@ static void damage_pointer(void)
 static bool bench_run(void)
 {
     int32_t w = scene.width, h = scene.height;
+    cursor_set(COMP_CURSOR_ARROW, NULL, 0, 0);
+    cursor_twin = NULL;
     while (nwins)
-        window_destroy(wins[--nwins].s.window);
+        if (wins[--nwins].s.window)
+            window_destroy(wins[nwins].s.window);
     uint32_t *opaque = big_alloc((uint64_t)w * (uint64_t)h * 4);
     uint32_t *argb = big_alloc((uint64_t)w * (uint64_t)h * 4);
     if (!opaque || !argb)
@@ -312,6 +376,12 @@ static bool run_one(const char *c)
         return cmd_win(s);
     if ((s = after(c, "fullscreen")))
         return cmd_fullscreen(s);
+    if ((s = after(c, "cursorsurf")))
+        return cmd_cursor("cursorsurf", s);
+    if ((s = after(c, "cursorsize")))
+        return cmd_cursor("cursorsize", s);
+    if (!strcmp(c, "cursorarrow"))
+        return cmd_cursor(c, "");
     if ((s = after(c, "damage"))) {
         if (numbers(s, v, 4, -1, &rest) != 4 || rest)
             return false;

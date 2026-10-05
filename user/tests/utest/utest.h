@@ -475,6 +475,7 @@ bool t_comp_paint_cull(void);
 bool t_comp_paint_damage(void);
 bool t_comp_paint_fullscreen(void);
 bool t_comp_paint_title(void);
+bool t_comp_paint_cursor(void);
 bool t_comp_paint_blank(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile

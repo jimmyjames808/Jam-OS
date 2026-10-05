@@ -910,6 +910,7 @@ static const struct {
     { "comp_paint_damage", t_comp_paint_damage },
     { "comp_paint_fullscreen", t_comp_paint_fullscreen },
     { "comp_paint_title", t_comp_paint_title },
+    { "comp_paint_cursor", t_comp_paint_cursor },
     { "comp_paint_blank", t_comp_paint_blank },
 };
 

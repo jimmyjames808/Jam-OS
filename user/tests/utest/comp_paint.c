@@ -20,6 +20,9 @@
  * over it turns that off.
  * t_comp_paint_title: title bars, close boxes and borders, focused and
  * not, drawn opaquely inside the frame and nowhere else.
+ * t_comp_paint_cursor: a client's cursor surface at its hot spot, blended;
+ * when it shrinks (a commit of a smaller buffer) its old box is painted
+ * again, so nothing of it is left behind; a move paints both boxes.
  * t_comp_paint_blank: blank shows the background only, no cursor. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
@@ -396,6 +399,31 @@ bool t_comp_paint_title(void)
         CHECK_EQ(im[60 * CP_W + 37], SPLASH_BG);               /* nor left of the border */
         CHECK_EQ(im[40 * CP_W + 40], testscene_rgb(0x305070, 0, 0, false));   /* the surface */
         CHECK_EQ(im[121 * CP_W + 100], testscene_rgb(0x705030, 0, 1, false));
+    }
+    cp_done(&r);
+    return ok;
+}
+
+bool t_comp_paint_cursor(void)
+{
+    static const char *const cmds[] = {
+        "win=0,0,320,200,ff203040,", "cursor=100,80", "cursorsurf=40,30,80c03060,10,5", "paint",
+        "cursorsize=20,10", "paint", "cursor=200,150", "paint",
+    };
+    struct cp_run r;
+    bool ok = cp_run(cmds, sizeof(cmds) / sizeof(cmds[0]), &r);
+    if (ok) {
+        CHECK_EQ(r.nrep, 3);
+        CHECK_EQ(r.rep[1].px, 40 * 30);   /* shrunk: where it was, all of it */
+        CHECK_EQ(r.rep[2].px, 2 * 20 * 10);
+        /* The client's cursor, blended at its hot spot; nothing left behind. */
+        static const struct cp_win v[] = {
+            { 0, 0, CP_W, CP_H, 0xff203040, false, false },
+            { 190, 145, 20, 10, 0x80c03060, false, false },
+        };
+        static uint32_t want[CP_W * CP_H];
+        ref_paint(want, v, 2);
+        ok = same_image(&r, want, no_skip);
     }
     cp_done(&r);
     return ok;
