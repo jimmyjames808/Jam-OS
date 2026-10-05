@@ -17,6 +17,10 @@
  *      so you can watch the work spread over the CPUs */
 #include <font.h>
 #include <fun.h>
+#include <wants.h>
+
+/* What it is given when the shell runs it (<wants.h>): a window. */
+JAM_WANTS("svc wayland\n");
 
 #define PALETTE 1024
 #define CHUNK   8     /* rows per work item: visible bands in scene 3 */
@@ -278,6 +282,7 @@ static struct result scene(const char *name, double seconds, int which)
 
 int main(int argc, char **argv)
 {
+    gfx_title("demo");
     ncpu = (uint32_t)arg_num(argc, argv, "cpus", 1);
     uint32_t seconds = (uint32_t)arg_num(argc, argv, "seconds", 76);   /* 40 + 22 + 14 */
     if (!ncpu)
@@ -285,7 +290,7 @@ int main(int argc, char **argv)
     if (!seconds)
         seconds = 76;
     uint32_t threads = pool_start(ncpu > FUN_MAX_THREADS ? FUN_MAX_THREADS : ncpu);
-    status_t st = gfx_open();
+    status_t st = gfx_open_fullscreen(0);
     if (st != OK) {
         printf("demo: can't borrow the screen (%s)\n", status_str(st));
         return 1;

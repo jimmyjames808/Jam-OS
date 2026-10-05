@@ -32,7 +32,11 @@
  * fewer / more iterations (0: automatic), 1-6 famous places, t tour (keeps
  * zooming in), b benchmark (1 CPU against all), r reset, h the help line,
  * q or Esc quits. */
+#include <wants.h>
 #include "fractal.h"
+
+/* What it is given when the shell runs it (<wants.h>): a window. */
+JAM_WANTS("svc wayland\n");
 
 /* The tour's target: a Misiurewicz point (preperiod 24, period 1) near
  * -0.77568377 + 0.13646737i, a spiral at every scale (found by Newton's
@@ -464,6 +468,7 @@ static int play(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    gfx_title("fractal");
     if (has_arg(argc, argv, "--selftest"))
         return fractal_selftest();
     return play(argc, argv);

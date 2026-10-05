@@ -37,7 +37,8 @@
 #include "splash_int.h"
 
 /* What it is given when the shell runs it (<wants.h>). */
-JAM_WANTS("svc audio\n");
+JAM_WANTS("svc audio\n"
+          "svc wayland\n");
 
 #define HOLD_MAX   (30 * NS_PER_S)    /* a shell that never comes: give the screen back */
 #define LINGER     (500 * NS_PER_MS)  /* the last frame stays at least this long after the end */
@@ -200,7 +201,8 @@ int main(int argc, char **argv)
     /* The screen first: the console stays quiet until it gets it back, so
      * a missing or bad video gives it back at once. */
     uint64_t since = now();
-    status_t st = keys ? gfx_open_on(SPLASH_BG) : gfx_open_screen(SPLASH_BG);
+    gfx_title("splash");
+    status_t st = keys ? gfx_open_fullscreen(SPLASH_BG) : gfx_open_screen(SPLASH_BG);
     if (st == OK && ((st = find_video(&mpg, &len)) != OK || (st = video_open(mpg, len)) != OK))
         gfx_close();
     if (st != OK) {
