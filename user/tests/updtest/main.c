@@ -70,28 +70,17 @@
 #include <sha256.h>
 #include <update.h>
 #include <wants.h>
+#include "updtest.h"
 
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc init\n"
           "mount /data r\n"
           "mount /esp r\n");
 
-#define DIR         "/data/update/"
-#define ANSWER_WAIT (300 * NS_PER_S)  /* init copies and hashes ~10 MB, and may write the stick */
 #define CHUNK       (64u << 10)       /* bytes copied at a time */
 
-/* One offer: the manifest's text and the two files, each a VMO and the
- * length claimed for it. */
-struct build {
-    char     manifest[UPDATE_MANIFEST_MAX];
-    uint32_t manifest_len;
-    handle_t vmo[UPDATE_FILES];
-    uint64_t bytes[UPDATE_FILES];
-    uint32_t flags;   /* the offer's (UPDATE_OFFER_CHECK_ONLY) */
-};
-
-static handle_t initctl;
-static unsigned failures;
+handle_t initctl;
+unsigned failures;
 
 /* A new VMO holding the first `keep` bytes of src (zeros after, up to
  * size bytes). */
@@ -118,8 +107,7 @@ static status_t clone(handle_t src, uint64_t keep, uint64_t size, handle_t *out)
     return OK;
 }
 
-/* The build whose files are in folder dir ("/data/update/", ...). */
-static status_t load_dir(struct build *b, const char *dir)
+status_t load_dir(struct build *b, const char *dir)
 {
     char p[80];
     handle_t m;
@@ -144,10 +132,7 @@ static status_t load(struct build *b)
     return load_dir(b, DIR);
 }
 
-/* Offer b (its VMOs duplicated: b keeps its own) with `handles` of them
- * and this magic; init's answer into *a. */
-static status_t offer(const struct build *b, unsigned handles, uint32_t magic,
-                      struct update_answer *a)
+status_t offer(const struct build *b, unsigned handles, uint32_t magic, struct update_answer *a)
 {
     handle_t ch;
     status_t st = initctl_update_offer_until(initctl, now() + 5 * NS_PER_S, &ch);
@@ -185,9 +170,8 @@ static status_t offer(const struct build *b, unsigned handles, uint32_t magic,
     return st;
 }
 
-/* One case: b offered, the answer must be `why` (about file `file`). */
-static void expect(const char *name, const struct build *b, unsigned handles, uint32_t magic,
-                   uint32_t why, uint32_t file)
+void expect(const char *name, const struct build *b, unsigned handles, uint32_t magic, uint32_t why,
+            uint32_t file)
 {
     struct update_answer a;
     memset(&a, 0, sizeof(a));
@@ -489,9 +473,7 @@ static status_t sum_vmo(handle_t v, uint64_t n, uint8_t out[SHA256_BYTES])
     return OK;
 }
 
-/* /esp's file at path into *v (n bytes): ERR_NOT_FOUND if /esp is there and
- * the file isn't. /esp comes back a moment after a stick write: waited for. */
-static status_t esp_file(const char *path, handle_t *v, uint64_t *n)
+status_t esp_file(const char *path, handle_t *v, uint64_t *n)
 {
     status_t st = ERR_NOT_FOUND;
     for (uint64_t end = now() + 10 * NS_PER_S; now() < end;) {   /* bounded: /esp's return */
