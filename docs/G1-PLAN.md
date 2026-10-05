@@ -794,9 +794,10 @@ each report closed by `frame`.
   never stretched.
 - **Moving** by the title bar; **resizing** by the window's edges,
   only for windows whose min and max sizes differ (libfun's windows
-  aren't resizable unless the app opted in); **maximising** by a
-  double-click on the title bar or the client's request; **closing** by
-  the close box, which sends `xdg_toplevel.close`: the client decides.
+  aren't resizable unless the app opted in); **maximising** by the
+  client's request; **full screen** by a double-click on the title bar,
+  the blackcurrant circle or Super+F (the owner's look); **closing** by
+  the close circle, which sends `xdg_toplevel.close`: the client decides.
 - **Not responding.** If a client doesn't answer `xdg_wm_base.ping`
   within 5 s of a close request, its title bar says so. The compositor
   can't kill it (it holds no job of anyone's); the shell can.
@@ -1022,6 +1023,29 @@ style-B1 title bars at 1x and 2x. For D1: open
 workers start, then in each tile `font_draw_in(&tile_surf, &title_rect,
 font, colour, FONT_CENTRE, title)` with the title's rectangle in the
 tile's coordinates (it may reach outside the tile).
+
+**As built: D1, the look.** Every colour and size is in
+`user/services/compositor/look.h`, at 1x on every output (2560x1440 is
+ordinary density; a 2x for a 4K screen would go there, not built). A
+window's look follows from its decorations' sizes (`look_of`): floating
+windows have a 28-pixel title bar (`COMP_TITLE_H`) in the window's dark
+colours with the three circles on its left (12 pixels, 9 from the edge,
+6 apart; grey unfocused; under the pointer each shows its symbol, and a
+press lands within 3 pixels of a circle), the title centred in Inter 13
+(Medium focused), a 1-pixel outline, corners of radius 10 that cut the
+client's pixels too (the outline follows the curve), and a shadow (the
+frame moved down, blurred by three box blurs made once into an edge
+profile: focused 25 wide, 10 down, 50% at its darkest; unfocused 11, 4,
+30%); maximised windows are the title bar alone, square, with no
+shadow; tiled ones have their 2-pixel border rounded at radius 6 in
+blackcurrant or grey. A window's damage takes in its shadow
+(`window_extent`), and paint.c never takes a window with round corners
+as hiding what is below its corner squares. The wallpaper is made once
+at the output's size from integer arithmetic with an 8x8 ordered dither
+(14 MiB at 2560x1440); blank is black. The minimise circle calls
+`wm_minimise`, a weak no-op in `wm.c` for D2. utest's `comp_look_*`
+compare every pixel against a reference painter of their own, and
+`tools/comp-check.py` paints the same look to check QEMU's screen.
 
 **Order and parallel work:**
 

@@ -1084,6 +1084,31 @@ in two fonts, with nothing outside the clip changed; and 4,000 random
 cuts, each fitting its width and buffer, a start of the string plus "…",
 and the longest such start.
 
+## The compositor's look
+
+The floating windows' title bars, circles, rounded corners and shadows,
+tiling's borders and the wallpaper (`user/services/compositor/look.h`).
+In utest (the `init` run), the compositor's test scene runs headless
+and a reference painter of the test's own (`user/tests/utest/comp_ref.c`:
+the wallpaper's formula, the corners' supersampled circles, the shadow
+as a count of the ways three numbers add up) paints the same scene;
+every pixel it knows is compared exactly
+(`user/tests/utest/comp_look.c`):
+
+| Test | What it checks |
+|---|---|
+| `comp_look_title` | two floating windows, focused and not: bars, outlines, corners and shadows exact; the circles in their colours or grey, no symbols; each title's text centred in its bar, clear of the circles |
+| `comp_look_corners` | a floating window over a picture: the client's own corner pixels cut, the picture (and the shadow on it) showing through, the outline along the curve; a translucent floating window over it |
+| `comp_look_shadow` | a focused and an unfocused window's shadows exact; a move paints exactly the old and new extents (frame and shadow) and leaves nothing behind |
+| `comp_look_buttons` | the pointer on an unfocused window's circles: its colours and each symbol; a focused window's without symbols; the pointer gone: grey again |
+| `comp_look_tiled` | tiled windows' borders, focused and not, rounded with the border along the curve; the corners and gaps show the wallpaper, no shadow |
+| `comp_look_wallpaper` | the wallpaper is look.h's formula pixel for pixel, the same on a second run, and no neighbouring pixels differ by more than 2 in a channel |
+
+`compwm`'s `wm_window_at` and `wm_floating_move` press the circles'
+hit boxes (to the pixel) and click each circle; `wm_states` makes a
+window full screen by a double-click on its title bar.
+`tools/comp-test.sh` checks the same look on QEMU's screen.
+
 ## The other tools
 
 The rest of `tools/` builds, checks and flashes; the tests above use some
