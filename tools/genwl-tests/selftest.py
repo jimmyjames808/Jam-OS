@@ -397,7 +397,8 @@ def fmt_line(what, obj, opcode, name, sig, args):
     return " ".join([what, str(obj), str(opcode), name, sig or "-"] + parts)
 
 
-def want_dump(protocols):
+def want_dump(protocols, foreign):
+    """The harness's dump: an interface no vendored file has (foreign) is untyped."""
     out = []
     for p in protocols:
         for i in p.interfaces:
@@ -407,7 +408,7 @@ def want_dump(protocols):
                        f"{masks[0]:x} {masks[1]:x}")
             for tag, msgs in (("R", i.requests), ("E", i.events)):
                 for m in msgs:
-                    types = [t or "-" for _, t, _ in m.letters()]
+                    types = [t if t and t not in foreign else "-" for _, t, _ in m.letters()]
                     out.append(" ".join([tag, str(m.opcode), m.name, m.signature() or "-"] +
                                         types))
     return out
@@ -464,7 +465,7 @@ def t_c(g, fails):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     got = r.stdout.splitlines()
-    want = want_dump(protocols) + want_rounds(protocols)
+    want = want_dump(protocols, g.FOREIGN) + want_rounds(protocols)
     if r.returncode != 0:
         fails.append(f"c: the harness exited {r.returncode}")
     for k in range(max(len(got), len(want))):
