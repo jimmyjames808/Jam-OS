@@ -8,7 +8,7 @@
  * protocol says, so a client that would break on a real compositor breaks
  * here too.
  *
- * Pings. A close request (the close box) pings the client's xdg_wm_base;
+ * Pings. A close request (the close box, Super+Q) pings the client's xdg_wm_base;
  * a client that hasn't answered within XDG_PING_NS has its windows marked
  * not responding (the title bar says so) until the pong comes. Nothing
  * more: the compositor holds no job of anyone's, and the shell can kill. */

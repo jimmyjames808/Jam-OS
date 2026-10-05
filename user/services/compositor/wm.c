@@ -7,7 +7,8 @@
  * Placement, for the states the shown buffer was drawn for:
  *   - full screen: centred on the output (a smaller buffer shows the
  *     background around it, never stretched);
- *   - maximised: centred in the output below its title bar;
+ *   - maximised: centred in the output below its title bar (tiling: in
+ *     the whole output, inside its border);
  *   - tiling: centred in its tile (a resizable window was asked to fill
  *     it; one that can't resize keeps its own size, wholly on the screen
  *     where it fits);

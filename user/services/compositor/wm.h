@@ -139,7 +139,8 @@ void wm_grab_cancel(void);
 
 /* ---- deco.c ------------------------------------------------------------------------- */
 
-/* Decorations for a buffer drawn for states: sizes around the surface. */
+/* Decorations for a buffer drawn for states, in the layout now (tiling: no
+ * title bar, a border all round): sizes around the surface. */
 struct deco_sizes {
     int32_t top, left, right, bottom;
 };
