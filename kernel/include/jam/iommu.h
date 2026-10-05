@@ -19,9 +19,8 @@
  *     (iommu_domain_create, iommu_attach: kernel/object/dma_cap.c): what
  *     the cap pinned (vmo_pin's iommu_map) and the function's RMRRs.
  * A function's "home" is the blocking domain or its boot domain: where
- * iommu_detach puts it back. Each unit also has a PASS-THROUGH domain
- * (all of RAM, as without an IOMMU: iommu_device_driven); no driver's
- * function is put there any more, only the tests use it.
+ * iommu_detach puts it back. No function is ever given pass-through or
+ * all of RAM.
  *
  * IOVA = physical address: iommu_map maps each page at its own address
  * (docs/M11-PLAN.md, question 1), so a driver's numbers don't change.
@@ -55,7 +54,7 @@ void iommu_reserve_early(struct boot_info *bi);
 
 /* With `iommu=on`, after the units are started (vtd_units_start): every
  * started unit gets its tables (root, context entries for each function
- * it covers, the blocking, pass-through and boot domains) and translation
+ * it covers, the blocking and boot domains) and translation
  * on. A unit whose firmware (or a kexec'd kernel) left translation on is
  * taken over without turning it off. Problems go to the RESULTS box; a
  * unit that can't be set up is left as it was. Once, at boot, before user
@@ -86,12 +85,6 @@ bool iommu_translating(void);
  * when no unit translates (booted without iommu=on). Thread context; takes
  * each unit's context mutex while it reads. */
 void iommu_report(void);
-
-/* dev's context entry to its unit's pass-through domain (all of RAM). For
- * the tests only: a driver's function gets its dma_cap's own domain. OK at
- * once when dev isn't translated. ERR_TIMED_OUT, ERR_IO (the invalidation
- * failed: dev stays where it was). */
-status_t iommu_device_driven(struct pci_dev *dev);
 
 /* ---- domains (for dma_cap and vmo_pin) ---------------------------------------------- */
 

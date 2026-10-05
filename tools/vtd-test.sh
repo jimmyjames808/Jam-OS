@@ -38,8 +38,8 @@
 #      pinned, a killed driver's pages freed once its domain is gone and
 #      held while the unit doesn't confirm it, the
 #      quarantine's tests in their translated form, the pin cost printed);
-#   6. the domain tests with pass-through off (pt=off): the tests'
-#      pass-through domain is an identity map of all RAM instead;
+#   6. the domain tests on a unit without pass-through (pt=off): nothing
+#      depends on ECAP.PT (no function is ever put on pass-through);
 #   7. a shell boot with iommu=on, `reboot` (kexec): the jump turns
 #      interrupt remapping, translation and the queue off, and the next
 #      kernel finds them all off, starts the unit and turns interrupt
@@ -154,7 +154,7 @@ on() {
         tools/qemu-test.sh "$out" "$1" ktest=vtd iommu=on > "$out/$1.out" 2>&1 ||
         { echo "$1: QEMU run failed (see $out/$1.out)"; ok=0; }
     domain_ok "$1"
-    have "$1" "vtd:         unit 0: translation on (it was off): " "(the tests' pass-through: domain 2, pass-through)"
+    have "$1" "vtd:         unit 0: translation on (it was off): " "a driver's gets its dma_cap's domain"
     have "$1" "vtd:         unit 0: started: invalidation queue at" \
         "vtd:         iommu=on: 1 of 1 unit started" \
         "ktest: vtd_unit_every_invalidation_completes ok" \
@@ -212,12 +212,12 @@ dma_on() {
 dma_on vtd-dma 1
 dma_on vtd-dma-cm0 cm0
 
-# Without pass-through (pt=off): the identity domain of all RAM.
+# A unit without pass-through (pt=off): the same tests, nothing else built.
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="-device intel-iommu,intremap=on,caching-mode=on,pt=off" \
     tools/qemu-test.sh "$out" vtd-nopt ktest=vtd_domain iommu=on > "$out/vtd-nopt.out" 2>&1 ||
     { echo "vtd-nopt: QEMU run failed (see $out/vtd-nopt.out)"; ok=0; }
 domain_ok vtd-nopt
-have vtd-nopt "pt 0," "(the tests' pass-through: domain 2, identity (all RAM))" "run complete: no problems"
+have vtd-nopt "pt 0," "a driver's gets its dma_cap's domain" "run complete: no problems"
 if problems vtd-nopt; then
     echo "vtd-nopt: a VT-d problem reported (above)"
     ok=0

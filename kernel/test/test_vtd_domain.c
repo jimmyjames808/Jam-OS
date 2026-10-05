@@ -2,8 +2,8 @@
  * (kernel/dev/vtd_domain.c, vtd_boot.c).
  *
  * Pure ones run everywhere: the root and context entries' exact bits
- * against VT-d 4.1's 9.1 and 9.3 written out as literals, pass-through's
- * address width from CAP.SAGAW, the early RMRR reservation on a made-up
+ * against VT-d 4.1's 9.1 and 9.3 written out as literals, the early RMRR
+ * reservation on a made-up
  * memory map, the domain-id allocator, the root table's page flushed for a
  * unit that doesn't snoop.
  *
@@ -53,36 +53,22 @@ KTEST(vtd_domain_entry_bits_literal)
     KT_EQ(vtd_root_entry(0x12345fff).lo, 0x12345001);   /* 11:1 reserved: never set */
     /* 9.3 context entry, second stage: P 0, FPD 1, TT 3:2 = 00, SSPTPTR
      * 63:12; AW 66:64, DID 87:72. */
-    struct vtd_ctx c = vtd_ctx_entry(0x1234, false, 0x7bf00000, 2, false);
+    struct vtd_ctx c = vtd_ctx_entry(0x1234, 0x7bf00000, 2, false);
     KT_EQ(c.lo, 0x7bf00001);
     KT_EQ(c.hi, 0x123402);
-    c = vtd_ctx_entry(0xffff, false, 0x000ffffffffff000ull, 1, true);
+    c = vtd_ctx_entry(0xffff, 0x000ffffffffff000ull, 1, true);
     KT_EQ(c.lo, 0x000ffffffffff003ull);
     KT_EQ(c.hi, 0xffff01);
-    /* Pass-through: TT = 10b, SSPTPTR ignored (written 0). */
-    c = vtd_ctx_entry(5, true, 0xdead000, 3, false);
-    KT_EQ(c.lo, 0x9);
+    /* Bits 11:0 of the table never leak into TT or the reserved bits. */
+    c = vtd_ctx_entry(5, 0xdeadfff, 3, false);
+    KT_EQ(c.lo, 0xdead001);
     KT_EQ(c.hi, 0x503);
-    c = vtd_ctx_entry(1, true, 0, 2, true);
-    KT_EQ(c.lo, 0xb);
-    KT_EQ(c.hi, 0x102);
     KT_EQ(VTD_CTX_DID(0x123402), 0x1234);
     KT_EQ(VTD_CTX_AW(0x123402), 2);
     /* RTADDR's TTM, 11:10 (11.4.5). */
     KT_EQ(VTD_RTADDR_TTM(0x7bf00c00ull), 3);
     KT_EQ(VTD_RTADDR_TTM(0x7bf00400ull), 1);
     KT_EQ(VTD_RTADDR_TTM(0x7bf00000ull), 0);
-}
-
-KTEST(vtd_domain_pass_aw)
-{
-    /* 9.3: pass-through's AW is the largest SAGAW (CAP 12:8) offers. */
-    KT_EQ(vtd_pass_aw(0xd2008c222f0686ull), 2);   /* QEMU: 3 and 4 levels */
-    KT_EQ(vtd_pass_aw(0xd2008c40660462ull), 2);   /* Alder Lake: 4 levels */
-    KT_EQ(vtd_pass_aw(1ull << 9), 1);
-    KT_EQ(vtd_pass_aw(0xeull << 8), 3);
-    KT_EQ(vtd_pass_aw(0), 0);
-    KT_EQ(vtd_pass_aw(1ull << 8), 0);   /* bit 0 is reserved */
 }
 
 KTEST(vtd_domain_rmrr_carve)
@@ -222,7 +208,8 @@ KTEST(vtd_domain_translation_on)
         KT_ASSERT(VTD_CTX_DID(e.hi) != 0);
         KT_EQ(VTD_CTX_DID(e.hi), f->cur->ud.did);
         KT_ASSERT(ctl->root[f->sid >> 8].lo & VTD_ROOT_P);
-        if (!pci_in_use(f->dev) && !f->dev->driver_managed && f->cur != ctl->pass)
+        KT_EQ((e.lo >> VTD_CTX_TT_SHIFT) & 3, VTD_CTX_TT_SS);   /* never pass-through */
+        if (!pci_in_use(f->dev) && !f->dev->driver_managed)
             KT_ASSERT(f->cur == f->home);
     }
     mutex_unlock(&ctl->lock);

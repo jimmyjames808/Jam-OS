@@ -1072,8 +1072,8 @@ out for troubleshooting.
   one 16-byte atomic write (the domain id and the table together),
   flushed from the CPU's cache when the unit doesn't snoop (the PC's
   doesn't), then the old entry's context cache and its domain's IOTLB are
-  invalidated. Each unit also has a pass-through domain (all of RAM): for
-  the tests only, no driver's function is put there.
+  invalidated. No function is ever given pass-through or a map of all
+  RAM: a device reaches its domain's pages or nothing.
 - **Pins.** The device sees physical addresses (IOVA = physical): `vmo_pin`
   maps each pinned page at its own address in the cap's domain, two pins
   of one page share the mapping (a pin count in the entry's software
