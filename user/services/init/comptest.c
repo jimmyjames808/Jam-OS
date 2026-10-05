@@ -28,7 +28,15 @@ static const char *const scene_args[] = {
     "nocursor", "paint", "hold=4000",
     /* Step 3: a full-screen opaque window over all of it, the cursor on it. */
     "fullscreen=ff336699", "cursor=100,120", "paint", "hold=4000",
-    "bench",
+    /* Step 4: the desktop: the top bar, three toplevels (the second
+     * focused, the third minimised), the clock's popover and a
+     * notification with buttons. */
+    "clear", "nocursor", "desktop", "time=2026,10,5,14,32", "top=360,220,ff2a6f97,Terminal",
+    "top=300,200,ff8a4f2a,Mines,f", "top=200,150,ff3a7a50,Jamjar,m", "popover=clock",
+    "notify=Update written,Build 847f805 is on the stick,Reboot,Later", "paint", "hold=4000",
+    /* Step 5: the search box, "te" typed into it. */
+    "popover=clock", "search=te", "paint", "hold=4000",
+    "deskbench", "nodesktop", "bench",
 };
 
 bool run_comptest(void)

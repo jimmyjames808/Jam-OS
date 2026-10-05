@@ -17,13 +17,13 @@ mkdir -p "$out"
 abs=$(cd "$out" && pwd)
 mon="$out/$name.mon"
 : > "$mon"
-for step in 1 2 3; do
+for step in 1 2 3 4 5; do
     printf 'expect compositor: testscene: holding 4000 ms after paint %s\nsleep 1\n' "$step" >> "$mon"
     printf 'send screendump %s/%s-%s.ppm\n' "$abs" "$name" "$step" >> "$mon"
 done
 
 ok=1
-rm -f "$out/$name"-[123].ppm
+rm -f "$out/$name"-[1-5].ppm
 if ! QEMU_MONITOR="$mon" QEMU_TIMEOUT=${QEMU_TIMEOUT:-200} \
      tools/qemu-test.sh "$out" "$name" comptest > "$out/$name.out" 2>&1; then
     echo "$name: the boot FAILED (see $out/$name.log)"
@@ -38,7 +38,7 @@ if ! grep -aq "comptest: the compositor exited with code 0" "$log"; then
 fi
 python3 tools/comp-check.py "$log" "$out/$name" || ok=0
 grep -a "\] compositor: bench:" "$log" | sed 's/^.*compositor: bench:/bench:/' || true
-rm -f "$out/$name"-[123].ppm
+rm -f "$out/$name"-[1-5].ppm
 if [ $ok = 1 ]; then
     echo "$name: PASS"
     exit 0

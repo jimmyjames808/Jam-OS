@@ -418,14 +418,248 @@ def check_step(step, prefix, size, wins, state, wall):
     return bad == 0 and checked > 1000
 
 
+# ---- the desktop (steps 4 and 5: desk.h, frost.c, stripdraw.c, testdesk.c) ----------------
+
+STRIP_H, STRIP_BLUR, STRIP_SAT = 40, 33, 333
+STRIP_TINT, STRIP_TINT_A, STRIP_LINE_A, ISLAND_A, ISLAND_R = 0x181B22, 107, 20, 20, 10
+RASPBERRY, APRICOT, BLACKCURRANT, CHIP_FOCUS_A = 0xD4537E, 0xEF9F27, 0x7F77DD, 97
+SHADOW_SIDE, SHADOW_ABOVE, SHADOW_BELOW = 30, 20, 40
+
+
+def mix(a, b, c):
+    """paint_mix: a over b by coverage c (0: a, 255: b)."""
+    out = 0
+    for sh in (0, 8, 16):
+        x = (a >> sh & 0xFF) * (255 - c) + (b >> sh & 0xFF) * c + 128
+        out |= ((x + (x >> 8)) >> 8) << sh
+    return out
+
+
+def box_pass(src, k):
+    """One box blur of width k over a line, its ends repeated (frost.c's box_pass)."""
+    n, h, out = len(src), k // 2, []
+    sums = [0, 0, 0]
+    for j in range(-h - 1, h):
+        p = src[min(max(j, 0), n - 1)]
+        for c in range(3):
+            sums[c] += p >> (8 * c) & 0xFF
+    for i in range(n):
+        pin, pout = src[min(i + h, n - 1)], src[max(i - h - 1, 0)]
+        px = 0
+        for c in range(3):
+            sums[c] += (pin >> (8 * c) & 0xFF) - (pout >> (8 * c) & 0xFF)
+            px |= ((sums[c] + h) // k) << (8 * c)
+        out.append(px)
+    return out
+
+
+def blur3(line, k):
+    return box_pass(box_pass(box_pass(line, k), k), k)
+
+
+def tdiv(a, b):
+    """C's division: towards zero."""
+    q = abs(a) // abs(b)
+    return q if (a >= 0) == (b > 0) else -q
+
+
+def strip_px(p):
+    r, g, b = p >> 16 & 0xFF, p >> 8 & 0xFF, p & 0xFF
+    lum, out = (r * 77 + g * 150 + b * 29) >> 8, 0
+    for i, c in enumerate((r, g, b)):
+        v = lum + tdiv((c - lum) * STRIP_SAT, 256)
+        out |= min(max(v, 0), 255) << (16 - 8 * i)
+    return mix(out, STRIP_TINT, STRIP_TINT_A)
+
+
+def frost_strip(wall, w, h):
+    """The strip's picture (frost.c's make_strip): rows of 0..STRIP_H - 1."""
+    rows = min(STRIP_H + 3 * (STRIP_BLUR // 2), h)
+    img = [blur3([wall.at(x, y) for x in range(w)], STRIP_BLUR) for y in range(rows)]
+    cols = [blur3([img[y][x] for y in range(rows)], STRIP_BLUR) for x in range(w)]
+    out = []
+    for y in range(STRIP_H):
+        row = [strip_px(cols[x][y]) for x in range(w)]
+        if y == STRIP_H - 1:
+            row = [mix(p, 0xFFFFFF, STRIP_LINE_A) for p in row]
+        out.append(row)
+    return out
+
+
+def parse_desk(log):
+    """Each held step's `desk:` lines (the last paint's before the hold), and the tops' colours."""
+    steps, cur, tops = {}, [], []
+    for line in open(log, errors="replace"):
+        m = re.search(r"compositor: testscene: (.*)", line)
+        if not m:
+            continue
+        c = m.group(1).strip()
+        if c.startswith("paint "):
+            cur = []
+        elif c.startswith("desk: "):
+            f = c.split()
+            cur.append((f[1], int(f[2]), tuple(map(int, f[3:7])), int(f[7])))
+        elif c.startswith("top="):
+            tops.append(int(c[4:].split(",")[2], 16))
+        elif c.startswith("holding "):
+            steps[int(c.split()[-1])] = list(cur)
+    return steps, tops
+
+
+def inside(b, x, y):
+    return b[0] <= x < b[2] and b[1] <= y < b[3]
+
+
+def in_corner(b, r, x, y):
+    return (x < b[0] + r or x >= b[2] - r) and (y < b[1] + r or y >= b[3] - r)
+
+
+def check_strip(step, pix, desk, strip, size):
+    """The strip's pixels where nothing is on them: the frosting, the islands over it."""
+    items = [b for kind, _, b, _ in desk if kind not in ("island", "top")]
+    cards = [b for kind, _, b, _ in desk if kind in ("popover", "search", "note")]
+    shadows = [(b[0] - SHADOW_SIDE, b[1] - SHADOW_ABOVE, b[2] + SHADOW_SIDE, b[3] + SHADOW_BELOW)
+               for b in cards]
+    islands = [b for kind, _, b, _ in desk if kind == "island"]
+    bad = checked = 0
+    for y in range(0, STRIP_H, 2):
+        for x in range(0, size[0], 3):
+            if any(inside(b, x, y) for b in items + shadows):
+                continue
+            want = strip[y][x]
+            isl = [b for b in islands if inside(b, x, y)]
+            if isl and in_corner(isl[0], ISLAND_R, x, y):
+                continue
+            if isl:
+                want = mix(want, 0xFFFFFF, ISLAND_A)
+            checked += 1
+            if rgb(pix, x, y) != want:
+                if bad < 5:
+                    print("comp-check: step %d: strip pixel (%d, %d) is %06x, want %06x" %
+                          (step, x, y, rgb(pix, x, y), want))
+                bad += 1
+    if checked < 500:
+        print("comp-check: step %d: only %d strip pixels compared" % (step, checked))
+        bad += 1
+    return bad, checked
+
+
+def check_items(step, pix, desk, strip, tops, size):
+    """The lit items: the current screen's pill, the focused chip's tint, a
+    minimised chip's dot; the toplevels' pixels and that none is under the strip."""
+    bad = 0
+    island = [b for kind, _, b, _ in desk if kind == "island"]
+
+    def want_at(x, y, colour, what):
+        nonlocal bad
+        if rgb(pix, x, y) != colour:
+            print("comp-check: step %d: %s at (%d, %d) is %06x, want %06x" %
+                  (step, what, x, y, rgb(pix, x, y), colour))
+            bad += 1
+    for kind, _, b, on in desk:
+        mid = (b[1] + b[3]) // 2
+        if kind == "dot" and on:
+            want_at((b[0] + b[2]) // 2, 19, APRICOT, "the current screen's pill")
+        if kind == "chip" and on:
+            base = mix(strip[mid][b[0] + 3], 0xFFFFFF, ISLAND_A)
+            want_at(b[0] + 3, mid, mix(base, RASPBERRY, CHIP_FOCUS_A), "the focused chip")
+    tn = 0
+    shown = [(i, b) for kind, i, b, m in desk if kind == "top" and not m]
+    for kind, i, b, minimised in desk:
+        if kind != "top":
+            continue
+        tn += 1
+        if b[1] < STRIP_H + 6:
+            print("comp-check: step %d: toplevel %d's frame at y %d: under the strip" %
+                  (step, i, b[1]))
+            bad += 1
+        x, y = b[0] + 1 + 20, b[1] + TITLE_H + 20   # its surface's (20, 20)
+        over = [o for j, o in shown if j > i and inside((o[0] - SHADOW_SIDE, o[1] - SHADOW_ABOVE,
+                                                         o[2] + SHADOW_SIDE, o[3] + SHADOW_BELOW),
+                                                        x, y)]
+        if minimised or over:
+            continue   # hidden, or under another's frame or shadow
+        want_at(x, y, pattern(tops[i] & 0xFFFFFF, 20, 20, False), "toplevel %d's pixel" % i)
+    if not island or tn != len(tops):
+        print("comp-check: step %d: %d islands, %d of %d toplevels in the log" %
+              (step, len(island), tn, len(tops)))
+        bad += 1
+    return bad
+
+
+def count_near(pix, b, colour, size, tol=24):
+    n = 0
+    for y in range(max(b[1], 0), min(b[3], size[1])):
+        for x in range(max(b[0], 0), min(b[2], size[0])):
+            p = rgb(pix, x, y)
+            if all(abs((p >> sh & 0xFF) - (colour >> sh & 0xFF)) <= tol for sh in (0, 8, 16)):
+                n += 1
+    return n
+
+
+def check_cards(step, pix, desk, size):
+    """The cards: the popover under the strip (2 pixels), its right edge on its
+    icon's; today on the calendar; the notification's tile; the search box's rows."""
+    bad = 0
+    byk = {}
+    for kind, i, b, on in desk:
+        byk.setdefault(kind, []).append((i, b, on))
+    for i, b, _ in byk.get("popover", []):
+        opener = {1: "vol", 2: "net", 3: "clock"}[i]
+        ob = byk[opener][0][1]
+        if b[1] != STRIP_H + 2 or b[2] != ob[2]:
+            print("comp-check: step %d: the popover at %s, its opener at %s" % (step, b, ob))
+            bad += 1
+        if i == 3 and count_near(pix, b, APRICOT, size, 4) < 40:
+            print("comp-check: step %d: no apricot day on the calendar" % step)
+            bad += 1
+    for i, b, buttons in byk.get("note", []):
+        x, y = b[0] + 12 + 2, b[1] + 10 + 14
+        if rgb(pix, x, y) != APRICOT:
+            print("comp-check: step %d: notification %d's tile at (%d, %d) is %06x" %
+                  (step, i, x, y, rgb(pix, x, y)))
+            bad += 1
+        covered = any(not (p[2] <= b[0] or p[0] >= b[2] or p[3] <= b[1] or p[1] >= b[3])
+                      for _, p, _ in byk.get("popover", []))
+        if buttons and not covered and \
+                count_near(pix, (b[0], b[3] - 40, b[2], b[3]), 0xFFB340, size, 40) < 20:
+            print("comp-check: step %d: notification %d has no apricot button text" % (step, i))
+            bad += 1
+    for _, b, _ in byk.get("search", []):
+        tiles = count_near(pix, b, RASPBERRY, size, 4) + count_near(pix, b, BLACKCURRANT, size, 4)
+        if tiles < 400:
+            print("comp-check: step %d: the search box has %d pixels of letter tiles" %
+                  (step, tiles))
+            bad += 1
+    return bad
+
+
+def check_desk(step, prefix, size, desk, tops, strip):
+    img = Image.open("%s-%d.ppm" % (prefix, step)).convert("RGB")
+    img.save("%s-%d.png" % (prefix, step))
+    if img.size != size:
+        print("comp-check: step %d: the screenshot is %dx%d" % (step, img.size[0], img.size[1]))
+        return False
+    pix = img.load()
+    bad, checked = check_strip(step, pix, desk, strip, size)
+    bad += check_items(step, pix, desk, strip, tops, size)
+    bad += check_cards(step, pix, desk, size)
+    print("comp-check: step %d (the desktop): %d strip pixels compared, %d wrong" %
+          (step, checked, bad))
+    return bad == 0
+
+
 def main():
     log, prefix = sys.argv[1], sys.argv[2]
     size, wins, steps, paints = parse(log)
-    if not size or sorted(steps) != [1, 2, 3]:
-        print("comp-check: the log has no output size or not the three steps: %s" % sorted(steps))
+    if not size or sorted(steps) != [1, 2, 3, 4, 5]:
+        print("comp-check: the log has no output size or not the five steps: %s" % sorted(steps))
         return 1
     wall = Wallpaper(*size)
     ok = all([check_step(s, prefix, size, wins, steps[s], wall) for s in (1, 2, 3)])
+    desk, tops = parse_desk(log)
+    strip = frost_strip(wall, *size)
+    ok = all([check_desk(s, prefix, size, desk[s], tops, strip) for s in (4, 5)]) and ok
     if paints.get(3, 0) == 0:
         print("comp-check: step 3 (a full-screen window) copied no tile straight from its buffer")
         ok = False
