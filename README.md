@@ -47,10 +47,11 @@ a real desktop PC, which is where every milestone is tested.
 - Programs in the background: `run prog args &` (or `prog &`) gives the
   prompt back at once; `jobs` lists them, `kill %2` ends one, and the next
   prompt says when one ends (`[2] done: utest (exit 0)`). Such a program
-  gets no keys and no screen (Ctrl+C is the foreground program's); what
+  gets none of the terminal's keys (Ctrl+C is the foreground program's); what
   it prints is shown as it comes. At most 8 at once; they end with the
   shell. A pipeline, a shell command or an alias can't go in the
-  background yet, and the apps that draw need G1's windows for it.
+  background yet. An app that draws opens a window of its own, in the
+  background too (`jamjar &`).
 - Kernel and user-space test suites, a stress test, a soak test (the
   kernel tests repeated in shuffled order under load, with sticks pulled
   and plugged) and a benchmark, runnable from the boot menu or the shell.
@@ -81,13 +82,22 @@ a real desktop PC, which is where every milestone is tested.
   UTC by the kernel and shown in the owner's time zone (Sydney, with
   daylight time; `date -z` changes it); files on the sticks and the boot
   logs are dated. Settings that survive a reboot live in
-  `/data/etc/settings` (the zone, the volumes, the music folder).
+  `/data/etc/settings` (the zone, the volumes, the music folder, the
+  windows' layout).
 - `kernel load` loads a freshly flashed kernel from the stick while Jam OS
   runs, so the next `reboot` is instant.
+- A desktop (G1, being built): a compositor of our own that speaks
+  Wayland draws the screen, and the shell runs in a terminal window on
+  the jam wallpaper. Super+Enter (or `term`) opens another terminal, up
+  to eight; apps open windows of their own (`tetris &`), moved and raised
+  with the mouse and switched floating or tiling with Super+T (the choice
+  is kept in the settings); keys go to the focused window only. The boot
+  entry "Jam OS (no compositor)" (the boot word `nocomp`) is the way back
+  to the full-screen console until G1 is signed off on the PC.
 - A boot splash: the logo animation with its sound while Jam OS starts
   (it plays to the end, and what is typed meanwhile reaches the shell; the
   `verbose` boot entry shows the text log instead).
-  After it the shell's screen holds the shell alone: the kernel log stays
+  After it the shell's terminal holds the shell alone: the kernel log stays
   in `log` and `dmesg`, and only a few notices reach the screen (a stick
   plugged in or pulled out, a service that crashed, `/data` full).
 - Each program gets only what it asks for: a list in its own file (the

@@ -1084,6 +1084,44 @@ at the output's size from integer arithmetic with an 8x8 ordered dither
 compare every pixel against a reference painter of their own, and
 `tools/comp-check.py` paints the same look to check QEMU's screen.
 
+**As built: I1, the boot wiring.** The compositor is the default (Q4): on
+every plain boot init starts it first (`user/services/init/comp.c`) with
+the root's `RIGHT_ROOT_SCREEN` and `RIGHT_ROOT_REBOOT` (Ctrl+Alt+Del's
+own reset when init can't), `/svc/wayland`'s server end (SR_USER + 0),
+the server end of a new compctl ADMIN channel each start (SR_USER + 2)
+and a control channel of init's that answers only `reboot` and
+`terminal` (SR_USER + 3, `CTL_COMPOSITOR` in init's ctl.c), with
+`layout=` from `display.layout` (floating before `/data` is there; once
+it is, init sends the saved one with the new `compctl.set_layout`) and
+`hz=` from `display.hz` when it is set. The boot word `nocomp` (menu
+"Jam OS (no compositor)", kept by kexec) leaves it out: the console as
+before. init publishes `/svc/wayland` (the shell passes it to the
+programs that ask; the splash's grants have it); from the ADMIN channel
+it makes devmgr's INPUT channel (SR_CONSOLE and DEVMGR_SET_CONSOLE, with
+the devmgr argument `comp` saying which protocol it is; a new one after
+each compositor start) and asks serialin's source itself (serialin holds
+only the source, as before, so it is unchanged). The console's
+`connect_input` answers `ERR_NOT_SUPPORTED` in window mode, and its
+escape decoder is `<termkeys.h>`. Saving the layout: init keeps a
+`compctl.layout_wait` (a `later` method, new with `set_layout` as
+ordinals 5 and 6) waiting for the layout it knows; Super+T answers it
+(wm.c's `ctl_layout_changed`, defined in ctl.c), init writes
+`display.layout` and waits again; a switch before `/data` is written once
+it comes. Super+Enter is a key of the compositor's in every window
+(`initctl.terminal` on its init channel, one ask at a time; the
+console's own Super+Enter code stays but never sees the key). init's
+reboot blanks the screen through `compctl.blank`. The splash's window
+takes no keys: libjwl's `no_keyboard` (libfun's `gfx_open_screen`) binds
+no `wl_keyboard`, and the seat gives the keyboard focus only to a
+client with one, by mapping or by a click; the first terminal keeps the
+keys under it. Keys typed while no window has the keys (the shell's
+prompt comes a few ms before its terminal's window, at boot and after a
+console or compositor restart) wait in the compositor (128 at most) for
+the next window that takes them, if it comes within 5 s. The
+kernel passes init all nine of its words now (userboot passed seven).
+Known: a first terminal whose window mapped after the splash's would be
+raised over it (in QEMU it maps 0.5 s before the splash's first frame).
+
 **Order and parallel work:**
 
 1. After the owner's answers: **P0, W1, W2, K1 and KM** together (P0 goes
