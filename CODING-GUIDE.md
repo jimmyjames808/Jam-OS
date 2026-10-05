@@ -397,8 +397,10 @@ fractions. User programs may use floating point and SIMD freely.
   bigger buffers come from `kmalloc` or a static/per-CPU buffer. No VLAs
   or `alloca` anywhere. The compiler enforces the outer limits: `-Wvla`
   everywhere, and a kernel frame over 3 KiB fails the build. The accepted
-  exception to ~1 KiB is the channel syscalls' message buffers
-  (`sys_channel_call`, about 2.4 KiB).
+  exception to ~1 KiB is the channel syscalls' handle arrays (up to
+  `CHANNEL_MAX_HANDLES` each way: `sys_channel_call_from`, about
+  2.3 KiB); the message bytes themselves are never on the stack (they go
+  straight between user memory and the message).
 
 ---
 
@@ -411,7 +413,7 @@ fractions. User programs may use floating point and SIMD freely.
 | Syscall entry (kernel) | `sysc_<name>`, generated dispatch, user addresses as `uint64_t` | `sysc_port_wait` |
 | User syscall wrapper | `jam_<name>` (generated) | `jam_port_wait` |
 | Driver API | `drv_<name>` | `drv_port_wait`, `drv_read32` |
-| IDL client / server | `<proto>_<method>[_until]`, `<proto>_serve`, `struct <proto>_ops` | `null_ping`, `input_key` |
+| IDL client / server | `<proto>_<method>[_until\|_within]`, `<proto>_serve`, `struct <proto>_ops` | `null_ping`, `null_ping_within`, `input_key` |
 | Shell | `sh_<helper>`, commands `SH_CMD(name)` → `shc_<name>` | `sh_say`, `shc_ls` |
 | Constants | `UPPER_CASE`, prefixed by module | `PORT_MAX_BINDINGS`, `DR_SERVE`, `SUP_WINDOW` |
 | Lock classes | lower-case words | `"port bindings"` |
@@ -493,15 +495,18 @@ fractions. User programs may use floating point and SIMD freely.
    not large `u8[N]` arrays (max 4096 per array, 8192 per message).
 4. `make idl`; commit `drivers/include/idl/<name>.h`. Never edit it.
 5. Server: fill a `static const struct <name>_ops`, call `<name>_serve`
-   (or `<name>_serve_one` in a loop of your own). A method the server may
+   (it answers each request in the `channel_reply_wait` that waits for
+   the next: one system call per request), or `<name>_serve_one` in a
+   loop of your own. A method the server may
    answer after its handler returned is marked `later`: its handler gets
    the request's `struct idl_txn` and may return `IDL_LATER`, then answers
    with `<name>_reply_<method>`. A service whose requests must outlive
    it reads each into a slot of its state (`<name>_take_slot`, which also
    sends the last reply, then `<name>_run_slot`; `<svcstate.h>`). A method
    that can run twice with the same result is marked `idempotent`
-   (`<name>_idempotent`). Client: `<name>_<method>` or `_until`
-   with a deadline; from a loop that serves others,
+   (`<name>_idempotent`). Client: `<name>_<method>`, `_until` with a
+   deadline, or `_within` with a timeout (the kernel starts it from its
+   own clock, so no `clock_get` first: prefer it for a time limit); from a loop that serves others,
    `<name>_<method>_send` and `<name>_<method>_result`
    ([a loop that serves never blocks](#a-loop-that-serves-never-blocks)).
 6. Test both ends (a utest with a mock peer, as `user/tests/utest/hid.c` does).

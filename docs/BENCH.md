@@ -20,8 +20,20 @@ timed in batches of 64, 20 ms of untimed warm-up, then the median and the
 are pinned to the CPUs above at priority 24; CPU 0 is left out. The
 `user:` lines are timed in ring 3 by bin/utest, which the kernel starts
 pinned. A line an optimisation should move is measured with its switch
-off and then on in the same run. The `path:` lines are counts
+off and then on in the same run (each switch is named in
+[ARCHITECTURE.md](../ARCHITECTURE.md); M11.5 added `fpucall`,
+`lockdep`, `handoff` and `slots`). The `path:` lines are counts
 ([below](#path-breakdown-m115-stage-0-qemu-2026-10-02)).
+
+The `user:` call lines come in this order: the call against bench-echo, a
+server that reads, writes and waits (the line every milestone since M5
+has; then the same with a deadline on every call, as libos made them
+before `_within`; then that call with one switch at a time off and on;
+then thread->thread in one process); then the call against a server on
+`channel_reply_wait` (written by hand, with the `handoff` and the `slots`
+switch), and through generated code (null.ping with a time limit against
+`null_serve`, the way programs and services call since M11.5); then the
+cross-CPU calls.
 
 **Per-operation lines** (`perop` from the shell; `user/tests/perop/main.c`
 explains each line): what one file operation costs a program, with the
@@ -65,7 +77,7 @@ and command line, the microcode, and every file in
 | user: clock_get | `clock_gettime` as a system call (and through the vDSO, no kernel entry) |
 | user: page fault, fresh zero page | the first write to a page of an anonymous mapping, no huge pages |
 | user: process->process channel_call (same CPU, P->P2/HT/E) | 16 bytes each way three ways: a futex and shared memory, a `socketpair` (SEQPACKET), two pipes |
-| user: the same with a 5 s deadline | the futex way with a 5 s timeout on every wait |
+| user: the same with a 60 s deadline | the futex way with a 60 s timeout on every wait |
 | user: thread->thread channel_call | a `socketpair`, and a futex, between two threads |
 | per-operation lines | `stat`, open + close, `pread` from the page cache, a 4 KiB `pread` with `O_DIRECT`, a 64 KiB `pwrite` with `O_DIRECT`, on the SanDisk |
 
@@ -405,3 +417,150 @@ Reading:
   (`spin_lock + spin_unlock` is 26.7 ns with it on the PC).
 - A deadline costs a system call (the clock), two spinlocks (the sleeper
   queue) and a timer re-arm on every call ([M11.5-PLAN.md](M11.5-PLAN.md#q4-how-should-deadlines-get-cheaper)).
+
+## Path counts after M11.5's tracks, QEMU 2026-10-05
+
+The same cases counted at M11.5's join, on the build with every
+follow-up, plus the two server shapes M11.5 added. The PC's run of
+2026-10-04 agrees with these counts except where the
+[next section](#m115-so-far-pc-2026-10-04) says.
+
+| Per call (per switch for the switch) | switch | kernel call | user call | + deadline | thread->thread | reply-and-wait server | generated | P->P2 |
+|---|---|---|---|---|---|---|---|---|
+| system calls | 0 | 0 | 5 | 6 | 5 | **2**: call; reply_wait | **2** | 5 |
+| user copies in / out (bytes) | 0 | 0 | 5 / 5 (208 / 44) | 5 / 5 | 5 / 5 | 4 / 4 (224 / 40) | 4 / 4 (224 / 48) | 5 / 5 |
+| message copies in the kernel (bytes) | 0 | 4 (64) | **0** | 0 | 0 | 0 | 0 | 0 |
+| kmalloc / kfree | 0 | 1 / 1 | 1 / 1 | 1 / 1 | 1 / 1 | **0** | **0** | 1 / 1 |
+| job charges and credits (levels walked) | 0 | 0 | 2 (2) | 2 (2) | 2 (2) | **0** | **0** | 2 (2) |
+| handle-table operations | 0 | 0 | 5 | 5 | 5 | **2** | **2** | 5 |
+| spinlocks | 1 | 12 | 18 | 20 | 18 | **11** | 13 | 19.3 |
+| scheduler passes / switches / hand-offs | 1 / 1 / 0 | 2 / 2 / 1 | 2 / 2 / 1 | 2 / 2 / 1 | 2 / 2 / 1 | 2 / 2 / **2** | 2 / 2 / 2 | 2 / 4 / 0 |
+| FPU full saves / call saves / restores | 0 | 0 | 0 / 2 / 2 | 0 / 2 / 2 | 0 / 2 / 2 | 0 / 2 / 2 | 0 / 2 / 2 | 0 / 2 / 2 |
+| CR3 loads | 0 | 0 | 2 | 2 | 0 | 2 | 2 | 4 |
+| sleeper inserts / timer re-arms | 0 | 0 | 0 | 1 / **0** | 0 | 0 | 1 / 0 | 0 |
+| clock reads (the kernel's) | 0 | 0 | 0 | 2 | 0 | 0 | 2 | 0 |
+| channel reads that found nothing | 0 | 0 | 1 | 1 | 1 | **0** | **0** | 1 |
+| observer callbacks | 0 | 1 | 1 | 1 | 1 | 0 | 0 | 1 |
+| interrupt-flag toggles: by the lock checker / at a lock release | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+Reading:
+- The message bytes go straight between user memory and the message (no
+  kernel copy left), and a message for a thread already waiting for it
+  goes in its writer's slot: the reply of every call, and both messages
+  with a reply-and-wait server, which therefore allocates and charges
+  nothing.
+- The reply-and-wait server is the shape the plan aimed at: 2 system
+  calls, 2 handle lookups, no read that finds nothing, both wakes handed
+  over. Its 11 locks: per side the handle table, the channel pair and the
+  peer's endpoint for the send, its own endpoint before it blocks, and
+  the scheduler's; the caller also lists itself on its endpoint first. A
+  handed wake takes no run queue lock.
+- The generated call adds the kernel's two clock reads, a sleeper entry
+  and its 2 locks (its time limit, given as a timeout: no `clock_get`),
+  and one more copy-out (the reply's status and the request's sizes, in
+  one).
+- A deadline seconds away costs no timer write any more (the tick looks
+  after it), and a wait with no deadline reads no clock.
+- The lock checker never turns interrupts off on these paths, and a lock
+  release turns them off only when a reschedule is pending (13 toggles a
+  user call at the releases alone before that).
+
+## M11.5 so far, PC 2026-10-04
+
+**Measured before the last follow-ups.** Build b7713bd (M11.5's stage 0
+and tracks F, D, O, L, P, C and H merged), a normal boot with `bench`
+from the shell (step 0's second boot:
+[M11.5-PLAN.md](M11.5-PLAN.md#the-switch-regression-first)), read from
+the log netlog brought to the Mac. Not in that build: track G (the
+generated server on reply-and-wait and `_within`: no generated line
+yet), the hand-off recorded without the run queue lock, no relock after
+a handed wake, the merged copy-outs and `preempt_check`'s fast path. The
+lock checker is on unless a line says otherwise. M8.6's and M5.5's
+medians beside them.
+
+| Line | 2026-10-04 (median / p99) | M8.6 median | M5.5 median |
+|---|---|---|---|
+| timestamp cost | 8.5 / 9.9 ns | 8.9 ns | 8.5 ns |
+| spin_lock + spin_unlock (P), lockdep off; on | 12.7 / 12.9 ns; **13.6 / 14.0 ns** | 26.7 ns (on) | 26.5 ns (on) |
+| kmalloc(64) + kfree, kmcache on | 19.4 / 19.9 ns | 19.2 ns | 19.2 ns |
+| page alloc + free, one CPU; all 28 at once | 18.9 / 19.6 ns; 22.8 / 68.7 ns | 18.9; 23.3 ns | 19.1; 24.0 ns |
+| **context switch (yield, 2 threads, P)** | **30.8 / 31.0 ns** | 92.0 ns | 30.1 ns |
+| block+wake round trip, same CPU | **380.6 / 406.6 ns** | 580.4 ns | 446.4 ns |
+| channel_call round trip, same CPU, lockdep off; on | 392.4 / 414.2 ns; **461.5 / 475.3 ns** | 670.8 ns (on) | 549.6 ns (on) |
+| cache-line round trip P->P2 / P->HT / P->E | 106.5 / 37.8 / 103.6 ns | 105.5 / 38.3 / 98.9 ns | 106.9 / 37.8 / 101.7 ns |
+| block+wake P->P2 / P->HT / P->E (idle CPU), spinidle on | 902.3 / 385.3 / 930.7 ns | 1060.4 / 630.1 / 1067.5 ns | 1003.6 / 480.9 / 943.9 ns |
+| block+wake P->unpinned partner, affinepair on | 386.3 / 596.5 ns | 627.2 ns | 470.0 ns |
+| IPI function call P->P2 / P->HT / P->E, spinidle on | 402.8 / 258.4 / 479.0 ns | 420.8 / 272.2 / 483.3 ns | 418.4 / 268.4 / 474.3 ns |
+| interrupt: vector on cpu19 -> port_wait wakes P | 934.0 / 1410.7 ns | 998.4 ns | - |
+| channel_call P->P2 / P->HT / P->E, 1 client, spinidle on | 1376.6 / 511.7 / 1440.5 ns | 1454.7 / 714.8 / 1558.9 ns | 1385.6 / 586.0 / 1418.8 ns |
+| channel_call, P client, server unpinned; not on P | 459.6 / 476.2 ns; 505.1 / 577.0 ns | 668.9; 714.3 ns | 543.0; 589.8 ns |
+| placement of 19 busy threads, placeorder on | 0 share a core, 12 on E | the same | the same |
+| serial_write of a 100-character line, serialirq on | 6531.6 ns / 12.1 us | 6517.4 ns | 6514.1 ns |
+| sleep 100 us; 1000 us: how late it wakes, oneshot on | 304.8 ns; 321.8 ns | 400.9; 404.2 ns | 349.8; 348.8 ns |
+| TLB shootdown, 1 page, 27 other CPUs | 4361.5 / 4982.6 ns | 4502.1 ns | 4485.1 ns |
+| address-space switch, pcid off; on | 64.3 / 64.7 ns; 61.6 / 62.4 ns | 67.8 ns (on) | 67.9 ns (on) |
+| XRSTOR + XSAVE of user FPU state, fpuopt on | 39.7 / 40.2 ns | 39.2 ns | 39.9 ns |
+| user: syscall round trip / clock_get / page fault | 30.7 / 45.2 / 669.8 ns | 30.5 / 44.6 / 714.3 ns | 30.1 / 44.9 / 745.1 ns |
+| **user: process->process channel_call, same CPU (P)**, pcid off; on | 1255.4 / 1275.3 ns; **1214.7 / 1239.8 ns** | 1532.9 ns | 1406.9 ns |
+| user: the same with a deadline per call (labelled "5 s" then; it is 60 s) | 1320.8 / 1343.0 ns | - | - |
+| user: the same call, fpucall off; on | 1244.6 / 1266.8 ns; 1211.4 ns (p99 cut off in the log) | - | - |
+| user: the same call, lockdep off; on | **1106.8 / 1130.5 ns**; 1213.8 / 1237.0 ns | - | - |
+| user: the same call, handoff off; on | 1211.9 / 1236.0 ns; 1211.9 / 1234.6 ns | - | - |
+| **user: call to a reply-and-wait server, same CPU (P)**, handoff off; on | 886.7 / 908.4 ns; **884.8 / 906.1 ns** | - | - |
+| user: thread->thread channel_call, 1 process, fpuopt on | 1091.2 / 1109.6 ns | 1398.9 ns | 1284.8 ns |
+| user: process->process channel_call P->P2 / P->HT / P->E, m55 on | 2015.3 / 1141.3 / 2232.1 ns | 2228.3 / 1359.6 / 2316.4 ns | 2111.4 / 1195.3 / 2105.7 ns |
+| the same, m55 off | 2557.3 / 1834.0 / 3402.8 ns | - | - |
+
+The run's path counts equal the table above but for: the kernel call 14
+locks, the user call and thread->thread 20, the deadline call 22, the
+reply-and-wait server **15** (the hand-off still took the run queue
+lock, and a waiter handed its message took its endpoint's lock again);
+no generated case yet, and no count yet of interrupt toggles at a lock
+release. Its timelines (each step includes one mark, 23.2 ns): a user
+thread's switch-in costs ~175 ns from `sched_picked` to `arch_done` (the
+FPU call restore ~77 ns, the CR3 load ~97 ns) where a kernel thread's
+costs ~46; sending a message (`msg_made -> sent`) ~160-220 ns; bench-echo's
+read of the request ~290 ns from its system call's entry.
+
+Reading:
+- **The switch regression is gone**: 30.8 ns, M5.5's number, from 92 at
+  M8.6, and every line through a wake fell with it (same-CPU block+wake
+  381 ns and kernel channel_call 462 ns, both below M5.5; the cross-CPU
+  wakes and calls 80-250 ns faster than M8.6). The run had P's lock
+  checker fast path, which no longer toggles the interrupt flag on every
+  acquisition and release (the spinlock pair 26.7 -> 13.6 ns): most
+  likely the cause, but this boot alone can't say. The other two boots of
+  step 0 (Tests > Benchmark, and the same with `smp=loader`) confirm it if
+  their switch is ~31 ns too.
+- **The call**: bench-echo's same-CPU call 1533 -> 1215 ns; against a
+  reply-and-wait server **885 ns**, 285 ns over the 600 ns target. Of the
+  bench-echo call, the lock checker costs 107 ns, the full FPU save that
+  the call rule dropped 33 ns, PCIDs off 41 ns more, and a deadline made
+  as libos made them then (a `clock_get` and a sleeper entry) 106 ns.
+- **The hand-off gained nothing measurable on this build** (886.7 off,
+  884.8 on), though it fired (2.00 hand-offs a round trip in `path
+  rwcall`; the `schedule()` pass itself stays, by design: it finds the
+  wakee waiting). What it skipped, an enqueue and a pick on an otherwise
+  empty run queue, was already cheap; the handed wake still took the run
+  queue lock, and the woken waiter took its endpoint's lock again. Both
+  went in the follow-ups (the reply-and-wait server 15 -> 11 locks).
+
+What the next PC run should show (`bench` on a build with every
+follow-up, on the three boots of step 0, plus a `nolockdep` boot for the
+checker-off column):
+- `context switch` about 31 ns on all three boots (the regression's
+  cause settled);
+- the path counts of the table above: the reply-and-wait server 11
+  locks, the user call 18, the kernel call 12, no interrupt toggles at a
+  lock release;
+- the reply-and-wait line below 885 ns, its `handoff` on now ahead of
+  off (a handed wake takes no lock), and its new `slots` line (off: both
+  messages allocated and charged);
+- the new generated line (`user: generated client and server
+  (null.ping), same CPU (P)`), which is what programs pay since track G:
+  about the reply-and-wait line plus the kernel's clock reads and a
+  sleeper entry;
+- the deadline line under its right name, `user: the same with a 60 s
+  deadline per call (P)`;
+- then the Linux column (`tools/linuxbench`) and the per-operation lines
+  (`perop`), as the method above says.
