@@ -102,28 +102,14 @@ void gfx_close(void)
 }
 
 /* Present: rows in bands of PBAND, each row in pieces of PSEG pixels; a
- * piece that differs from what the screen shows is written to both. */
-#define PBAND 16
-#define PSEG  64
-
-/* Not turned into rep movsb (slow under QEMU; a plain loop of wide stores
- * is what write-combining memory likes best anyway). */
+ * piece that differs from what the screen shows is written to both. Not
+ * turned into rep movsb (slow under QEMU; a plain loop of wide stores is
+ * what write-combining memory likes best anyway). */
 __attribute__((optimize("no-tree-loop-distribute-patterns")))
-static void copy_px(uint32_t *restrict d, const uint32_t *restrict s, int n)
+void px_copy(uint32_t *restrict d, const uint32_t *restrict s, int n)
 {
     for (int i = 0; i < n; i++)
         d[i] = s[i];
-}
-
-static inline bool same_px(const uint32_t *a, const uint32_t *b, int n)
-{
-    const uint64_t *x = (const uint64_t *)a, *y = (const uint64_t *)b;
-    uint64_t diff = 0;
-    for (int i = 0; i < n / 2; i++)
-        diff |= x[i] ^ y[i];
-    if (n & 1)
-        diff |= a[n - 1] ^ b[n - 1];
-    return !diff;
 }
 
 static uint64_t present_bytes[FUN_MAX_THREADS];
@@ -156,11 +142,11 @@ static void present_band(uint32_t item, uint32_t me, void *arg)
         uint32_t *f = (uint32_t *)((uint8_t *)scr.fb + (uint64_t)y * scr.pitch);
         for (int x = 0; x < scr.w; x += PSEG) {
             int n = scr.w - x < PSEG ? scr.w - x : PSEG;
-            if (!all && same_px(b + x, s + x, n))
+            if (!all && px_same(b + x, s + x, n))
                 continue;
-            copy_px(s + x, b + x, n);
+            px_copy(s + x, b + x, n);
             if (scr.native)
-                copy_px(f + x, b + x, n);
+                px_copy(f + x, b + x, n);
             else
                 convert_px(f + x, b + x, n);
             bytes += (uint64_t)n * 4;
@@ -342,7 +328,7 @@ void blit(const struct surf *dst, int x, int y, const struct surf *src, const st
     sx += x - x0;
     sy += y - y0;
     for (int j = 0; j < h; j++)
-        copy_px(dst->px + (uint64_t)(y + j) * dst->stride + x,
+        px_copy(dst->px + (uint64_t)(y + j) * dst->stride + x,
                 src->px + (uint64_t)(sy + j) * src->stride + sx, w);
 }
 
