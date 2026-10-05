@@ -50,24 +50,15 @@ static void drop(handle_t out, uint32_t n, uint32_t nh)
     free(hs);
 }
 
-/* Our output (sh_put), or the screen even inside a pipe (a helper's lines
- * while its channel carries the output: sh_run_helper_out). */
-typedef void (*put_fn)(const char *s, size_t n);
-
 static void tty_put(const char *s, size_t n)
 {
     sh_tty("%.*s", (int)n, s);
 }
 
-/* Copy what the program wrote to its SR_STDOUT channel (or a helper to
- * its output channel) through put, one round of it. A message printf
- * wouldn't send (over 4096 bytes, or carrying handles) is dropped, its
- * handles closed: left at the head of the queue it would fail every later
- * read. True if more may be queued; false once the queue is empty or gone,
- * or Ctrl+C was pressed (unless past_ctrl_c: a helper asked to stop still
- * has its last lines to say, and Ctrl+C stays pressed for the rest of the
- * line). */
-static bool drain_to(handle_t out, bool past_ctrl_c, put_fn put)
+/* A message printf wouldn't send (over 4096 bytes, or carrying handles)
+ * is dropped, its handles closed: left at the head of the queue it would
+ * fail every later read. */
+bool sh_copy_output(handle_t out, bool past_ctrl_c, sh_put_fn put)
 {
     char buf[4096];
     uint64_t t0 = now();
@@ -98,7 +89,7 @@ static bool drain_to(handle_t out, bool past_ctrl_c, put_fn put)
 
 static bool drain(handle_t out, bool past_ctrl_c)
 {
-    return drain_to(out, past_ctrl_c, sh_put);
+    return sh_copy_output(out, past_ctrl_c, sh_put);
 }
 
 /* What spawn should be given for argv0, into path: "utest" -> bin/utest;
@@ -359,11 +350,11 @@ static status_t wait_helper(handle_t proc, handle_t job, handle_t out_r, handle_
 {
     status_t st;
     uint64_t kill_at = DEADLINE_NEVER;
-    put_fn lines = body_r ? tty_put : sh_put;
+    sh_put_fn lines = body_r ? tty_put : sh_put;
     while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
-        drain_to(out_r, true, lines);
+        sh_copy_output(out_r, true, lines);
         if (body_r)
-            drain_to(body_r, true, sh_put);
+            sh_copy_output(body_r, true, sh_put);
         if (sh_interrupted() && kill_at == DEADLINE_NEVER) {
             uint8_t go = 1;
             if (jam_channel_write(stop, &go, 1, NULL, 0) != OK)
@@ -376,10 +367,11 @@ static status_t wait_helper(handle_t proc, handle_t job, handle_t out_r, handle_
             kill_at = DEADLINE_NEVER - 1;   /* once */
         }
     }
-    for (unsigned guard = 0; guard < 64 && drain_to(out_r, true, lines); guard++)
+    for (unsigned guard = 0; guard < 64 && sh_copy_output(out_r, true, lines); guard++)
         ;
-    for (unsigned guard = 0; body_r && guard < 4096 && drain_to(body_r, true, sh_put); guard++)
-        ;
+    for (unsigned guard = 0; body_r && guard < 4096; guard++)
+        if (!sh_copy_output(body_r, true, sh_put))
+            break;
     return st;
 }
 

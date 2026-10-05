@@ -177,6 +177,16 @@ int sh_run_helper(const char *path, int argc, const char *const *argv, struct sp
  * go to the screen. */
 int sh_run_helper_out(const char *path, int argc, const char *const *argv,
                       struct spawn_handle *x, unsigned nx, handle_t body_r);
+/* Where copied output goes: sh_put, or the screen even inside a pipe (a
+ * helper's lines while its channel carries the output). */
+typedef void (*sh_put_fn)(const char *s, size_t n);
+/* Copy what a program wrote to its SR_STDOUT channel (or a helper to its
+ * output channel) through put, one round of it (a count and a time, so a
+ * program writing flat out can't hold up its reader). true if more may be
+ * queued; false once the queue is empty or gone, or Ctrl+C was pressed
+ * (unless past_ctrl_c: a helper asked to stop still has its last lines to
+ * say, and Ctrl+C stays pressed for the rest of the line). */
+bool sh_copy_output(handle_t out, bool past_ctrl_c, sh_put_fn put);
 /* A test program (utest, usbtest, hdatest, mixtest): run it as
  * sh_run_program does (its list asks for what it tests), then show its
  * result line from the kernel log; its status. */
