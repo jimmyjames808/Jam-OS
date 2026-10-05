@@ -14,6 +14,10 @@
 #define ASPACE_WRITE (1u << 1)
 #define ASPACE_EXEC  (1u << 2)   /* never together with ASPACE_WRITE */
 #define ASPACE_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
+/* aspace_map only: a VMO_KEEP_PAGES VMO, read-only, every entry filled at
+ * map time and kept for the mapping's life (see VMAR_KEPT_ONLY in
+ * <jam/abi.h>). */
+#define ASPACE_KEPT_ONLY (1u << 4)
 /* aspace_map only: permissions a later aspace_protect may grant (on top of
  * the ones mapped now). sys_vmar_map sets them from the VMO handle's
  * rights, so a mapping can be made RW, filled, then flipped to RX, but
@@ -49,7 +53,12 @@ void     aspace_unref(struct aspace *as);
  * without R) or a bad range, ERR_OUT_OF_RANGE past the VMO's end,
  * ERR_NO_RESOURCES if it doesn't fit, ERR_ALREADY_BOUND if a FIXED range
  * overlaps an existing mapping. No permissions at all is allowed (a guard:
- * every access faults with ERR_ACCESS_DENIED). */
+ * every access faults with ERR_ACCESS_DENIED). With ASPACE_KEPT_ONLY:
+ * ERR_INVALID_ARGS unless the permissions are ASPACE_READ alone,
+ * ERR_WRONG_TYPE unless vmo is kept (vmo_is_kept), and every entry is
+ * installed before this returns (ERR_NO_MEMORY if the job refuses a page
+ * table: nothing is left mapped); the CAN bits are ignored, and
+ * aspace_protect refuses any change to it (ERR_ACCESS_DENIED). */
 status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
                     unsigned flags, uint64_t *addr);
 /* Remove every mapping page in [addr, addr+len) (splitting mappings as

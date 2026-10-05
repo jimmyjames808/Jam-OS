@@ -83,7 +83,21 @@
  * under the lock when they are recorded; vmo_seal refuses while any
  * mapping or pin exists. Both sides test under the one lock, so a call
  * that took its reference before the seal either finishes before it (and
- * the seal fails) or is refused after it: none lands afterwards. */
+ * the seal fails) or is refused after it: none lands afterwards.
+ *
+ * Kept VMOs (VMO_KEEP_PAGES, a paged VMO): every page below the size is
+ * committed from vmo_create_for to destroy. Creation commits them all
+ * (charged to the job one by one, so a refused page stops it); decommit and
+ * a shrinking vmo_set_size are refused up front (ERR_BAD_STATE), and
+ * nothing else takes a page out of the table but destroy. A growing
+ * vmo_set_size (under "vmo resize") commits the new pages while they still
+ * lie past the size, where no lookup, mapping, fault or pin can reach them
+ * (every one checks the size under the lock), and only then raises the
+ * size; if one can't be had, the ones made so far go through shrink_pages
+ * (nobody maps them: no entries to zap) and the size never moved. So a
+ * reader of any page below the size always finds it committed, and an
+ * address space that filled its entries for one (ASPACE_KEPT_ONLY) never
+ * has them zapped. A kept VMO may also be sealed: the two don't meet. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/dbghook.h>
@@ -435,10 +449,12 @@ static struct vmo *vmo_alloc(enum vmo_kind kind, uint64_t size)
     return v;
 }
 
-status_t vmo_create(uint64_t size, uint32_t flags, struct vmo **out)
+static status_t vmo_new(uint64_t size, uint32_t flags, struct vmo **out)
 {
     if (flags & ~VMO_CREATE_FLAGS)
         return ERR_INVALID_ARGS;
+    if ((flags & VMO_KEEP_PAGES) && (flags & (VMO_CONTIGUOUS | VMO_DMA32)))
+        return ERR_INVALID_ARGS;   /* contiguous memory stays anyway; DMA32 pages are scarce */
     if (size > VMO_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
     size = ALIGN_UP(size, PAGE_SIZE);
@@ -472,6 +488,34 @@ status_t vmo_create(uint64_t size, uint32_t flags, struct vmo **out)
     }
     *out = v;
     return OK;
+}
+
+status_t vmo_create_for(struct job *job, uint64_t size, uint32_t flags, struct vmo **out)
+{
+    struct vmo *v;
+    status_t st = vmo_new(size, flags, &v);
+    if (st != OK)
+        return st;
+    if (job)
+        st = vmo_set_job(v, job);
+    if (st == OK && (flags & VMO_KEEP_PAGES))
+        st = commit_pages(v, 0, v->size >> PAGE_SHIFT);
+    if (st != OK) {
+        kobject_unref(&v->base);   /* destroy gives back every page and its charge */
+        return st;
+    }
+    *out = v;
+    return OK;
+}
+
+status_t vmo_create(uint64_t size, uint32_t flags, struct vmo **out)
+{
+    return vmo_create_for(NULL, size, flags, out);
+}
+
+bool vmo_is_kept(const struct vmo *v)
+{
+    return (v->flags & VMO_KEEP_PAGES) != 0;
 }
 
 status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struct vmo **out)
@@ -696,6 +740,61 @@ static void shrink_pages(struct vmo *v, uint64_t first, uint64_t old_end)
     tlb_gather_finish(&g);
 }
 
+/* A kept VMO growing, "vmo resize" held: commit page idx, which lies past
+ * the size (so its slot is empty and nobody else can reach it), charged
+ * to v's job before it is published. */
+static status_t commit_past_end(struct vmo *v, uint64_t idx)
+{
+    struct page *p = pmm_alloc_pages(0, PMM_ZERO);
+    if (!p)
+        return ERR_NO_MEMORY;
+    uint64_t f = vlock(v);
+    uint64_t *s = slot_locked(v, idx, false);
+    ASSERT(!s || !*s);
+    s = charge_slot_locked(v, idx, s);
+    if (s) {
+        *s = page_to_phys(p);   /* the table takes our reference */
+        v->committed++;
+    }
+    vunlock(v, f);
+    if (!s) {
+        page_put(p);
+        return ERR_NO_MEMORY;
+    }
+    return OK;
+}
+
+/* A kept VMO growing from `first` pages to `end` (bytes: size), "vmo
+ * resize" held: every new page committed first, then the size raised. On a
+ * failure the pages made here go again and the size stays. */
+static status_t grow_kept(struct vmo *v, uint64_t first, uint64_t end, uint64_t size)
+{
+    status_t st = OK;
+    uint64_t idx = first;
+    for (; idx < end && st == OK; idx++)
+        st = commit_past_end(v, idx);
+    if (st != OK) {
+        shrink_pages(v, first, idx);   /* past the size: no mapping has entries for them */
+        return st;
+    }
+    uint64_t f = vlock(v);
+    __atomic_store_n(&v->size, size, __ATOMIC_RELAXED);
+    vunlock(v, f);
+    return OK;
+}
+
+/* vmo_set_size for a kept VMO, as a writer with "vmo resize" held: never
+ * smaller; bigger only with every new page committed. */
+static status_t set_size_kept(struct vmo *v, uint64_t size)
+{
+    uint64_t old = vmo_size(v);   /* only we change it (resize is held) */
+    if (size < old)
+        return ERR_BAD_STATE;
+    if (size == old)
+        return OK;
+    return grow_kept(v, old >> PAGE_SHIFT, size >> PAGE_SHIFT, size);
+}
+
 status_t vmo_set_size(struct vmo *v, uint64_t size)
 {
     if (v->kind != VMO_PAGED)
@@ -707,6 +806,12 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
     if (st != OK)
         return st;
     mutex_lock(&v->resize);
+    if (vmo_is_kept(v)) {
+        st = set_size_kept(v, size);
+        mutex_unlock(&v->resize);
+        writer_exit(v);
+        return st;
+    }
     uint64_t f = vlock(v);
     uint64_t first = size >> PAGE_SHIFT, end = v->size >> PAGE_SHIFT;
     if (first < end && ranges_overlap_locked(v, first, end)) {
@@ -784,6 +889,8 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
 {
     if (v->kind != VMO_PAGED)
         return ERR_NOT_SUPPORTED;
+    if (vmo_is_kept(v))
+        return ERR_BAD_STATE;   /* its pages never leave (the file header) */
     status_t st = writer_enter(v);
     if (st != OK)
         return st;

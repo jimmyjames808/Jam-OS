@@ -9,6 +9,14 @@
  *   - CONTIGUOUS: one buddy block, committed and zeroed at creation;
  *   - physical: existing memory the kernel doesn't own (MMIO, a framebuffer);
  *     its pages are never freed.
+ * A paged VMO made with VMO_KEEP_PAGES ("kept") has every page committed
+ * from its creation to its destruction: decommit and shrink are refused for
+ * every holder, and growing commits the new pages before it returns. So an
+ * address space that maps it can't be made to fault by another holder
+ * (ASPACE_KEPT_ONLY fills such a mapping's entries at map time). There is
+ * no clone or copy-on-write child of any VMO; one added later must not
+ * share a kept VMO's pages copy-on-write (a write would replace a page
+ * under a reader), so it would copy them into a VMO of its own.
  *
  * Offsets and lengths are in bytes. Operations that act on pages (commit,
  * decommit, kernel mappings) cover every page the byte range touches.
@@ -24,14 +32,17 @@
  * the last handle never frees memory a device may still be writing to. */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <jam/abi.h>   /* VMO_KEEP_PAGES */
 #include <jam/object.h>
 #include <jam/status.h>
 
 #define VMO_MAX_SIZE   (1ull << 36)   /* 64 GiB of address space; pages committed on demand */
 #define VMO_CONTIGUOUS (1u << 0)      /* physically contiguous, committed at creation (<= 4 MiB) */
 #define VMO_DMA32      (1u << 1)      /* every page below 4 GiB */
-#define VMO_CREATE_FLAGS (VMO_CONTIGUOUS | VMO_DMA32)
+/* VMO_KEEP_PAGES (1u << 2) is in <jam/abi.h>: user code asks for it. */
+#define VMO_CREATE_FLAGS (VMO_CONTIGUOUS | VMO_DMA32 | VMO_KEEP_PAGES)
 
 /* Embeds struct kobject first (type OBJ_VMO), so the casts below are safe. */
 struct vmo;
@@ -44,9 +55,20 @@ static inline struct vmo *vmo_from_kobject(struct kobject *obj)
 }
 
 /* Size is rounded up to whole pages. 0 is allowed except for CONTIGUOUS.
- * ERR_OUT_OF_RANGE past VMO_MAX_SIZE (or 4 MiB for CONTIGUOUS). The caller
- * gets the only reference (kobject_unref to drop it). */
+ * ERR_OUT_OF_RANGE past VMO_MAX_SIZE (or 4 MiB for CONTIGUOUS);
+ * ERR_INVALID_ARGS for VMO_KEEP_PAGES with CONTIGUOUS or DMA32. The caller
+ * gets the only reference (kobject_unref to drop it). The same as
+ * vmo_create_for with no job. */
 status_t vmo_create(uint64_t size, uint32_t flags, struct vmo **out);
+/* vmo_create, then vmo_set_job(job) unless job is NULL; then, for
+ * VMO_KEEP_PAGES, every page is committed, each charged to job before it
+ * is published (so the kernel never holds more than one page the job
+ * hasn't paid for). ERR_NO_MEMORY if job refuses one or memory runs out:
+ * the VMO is gone again and job is charged nothing. Thread context. */
+struct job;
+status_t vmo_create_for(struct job *job, uint64_t size, uint32_t flags, struct vmo **out);
+/* Made with VMO_KEEP_PAGES (fixed at creation, so no lock is needed). */
+bool vmo_is_kept(const struct vmo *v);
 /* A VMO over [phys, phys+size), which must be page-aligned. The pages are
  * never freed. cache: VM_UC, VM_WC or 0 (write-back), used for mappings.
  * Byte access (vmo_read/vmo_write) is ERR_NOT_SUPPORTED: map it instead. */
@@ -59,7 +81,6 @@ status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struc
  * contiguous VMO) don't fit. A physical VMO owns no pages: only its struct
  * (one JOB_LIMIT_HANDLES unit) is charged. A NULL job is allowed and
  * charges nothing. */
-struct job;
 status_t vmo_set_job(struct vmo *v, struct job *job);
 
 /* Uncommitted pages read as zeros and stay uncommitted. */
@@ -80,14 +101,17 @@ status_t vmo_seal(struct vmo *v);
 uint64_t vmo_committed(struct vmo *v);
 /* Grow or shrink (rounded up to pages). Shrinking frees the pages past the
  * new end, unmapping them from address spaces first; ERR_BAD_STATE if any
- * of them is pinned or kernel-mapped. Paged VMOs only (ERR_NOT_SUPPORTED
- * otherwise). Growing adds zero pages. May sleep (interrupts on, no
- * spinlock held): it shoots down TLBs. */
+ * of them is pinned or kernel-mapped, or v is kept (VMO_KEEP_PAGES). Paged
+ * VMOs only (ERR_NOT_SUPPORTED otherwise). Growing adds zero pages; a kept
+ * VMO commits them (charged to its job) before the new size shows, and on
+ * ERR_NO_MEMORY gives them back and keeps its size. May sleep (interrupts
+ * on, no spinlock held): it shoots down TLBs. */
 status_t vmo_set_size(struct vmo *v, uint64_t size);
 /* Allocate (zeroed) pages now. A no-op for contiguous and physical VMOs. */
 status_t vmo_commit(struct vmo *v, uint64_t offset, uint64_t len);
 /* Free pages; they read as zeros again, and are unmapped from address
- * spaces first. ERR_BAD_STATE if any is pinned or kernel-mapped (checked up
+ * spaces first. ERR_BAD_STATE if v is kept (VMO_KEEP_PAGES: never, for any
+ * range), or if any page is pinned or kernel-mapped (checked up
  * front; a pin that appears while a long decommit runs stops it there, with
  * the pages before it already decommitted). Paged VMOs only. Interrupts on,
  * no spinlock held: it shoots down TLBs. */
