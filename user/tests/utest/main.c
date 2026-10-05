@@ -888,6 +888,14 @@ static const struct {
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "comp_globals", t_comp_globals },
     { "comp_surface", t_comp_surface },
+    { "comp_seat_keymap", t_comp_seat_keymap },
+    { "comp_seat_focus", t_comp_seat_focus },
+    { "comp_seat_grab", t_comp_seat_grab },
+    { "comp_seat_reserved", t_comp_seat_reserved },
+    { "comp_seat_text", t_comp_seat_text },
+    { "comp_seat_ctl", t_comp_seat_ctl },
+    { "comp_seat_move", t_comp_seat_move },
+    { "termkeys", t_termkeys },
 };
 
 int main(int argc, char **argv)

@@ -440,6 +440,16 @@ bool t_jwl_fuzz_conn(void);
  * over real channels (comptest.h). */
 bool t_comp_globals(void);
 bool t_comp_surface(void);
+/* compseat.c, compinput.c: the compositor's seat (input sources, compctl,
+ * focus, the keyboard and the pointer; compseat.h), and <termkeys.h>. */
+bool t_comp_seat_keymap(void);
+bool t_comp_seat_focus(void);
+bool t_comp_seat_grab(void);
+bool t_comp_seat_reserved(void);
+bool t_comp_seat_text(void);
+bool t_comp_seat_ctl(void);
+bool t_comp_seat_move(void);
+bool t_termkeys(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */
