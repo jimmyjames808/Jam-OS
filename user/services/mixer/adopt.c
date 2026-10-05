@@ -24,11 +24,11 @@
  *      cases): taken and not committed, it is run again from the committed
  *      numbers (a request may have committed part-way, e.g. a start that
  *      opened the output: each one's re-run is written to find its own
- *      work done); committed, its reply is sent again, unless it carried
- *      handles (open_output's stream, svc.connect's channel), which died
- *      with the process unless the reply arrived: the made object's
- *      channel says (its peer alive: it did), and if it didn't the object
- *      goes and the request runs again. A request in progress at two
+ *      work done); committed and its reply not out (the slot's mark, which
+ *      the kernel sets in the system call that sends it), its reply is
+ *      sent, unless it carried handles (open_output's stream, svc.connect's
+ *      channel), which died with the process: then the object goes and
+ *      the request runs again. A request in progress at two
  *      crashes (not deliberate kills: init's argv[1]) is answered
  *      ERR_INTERNAL and dropped, so one bad request can't take the mixer
  *      away from everyone;
@@ -271,18 +271,6 @@ static void adopt_out(struct mixer *m, struct found *f)
 
 /* ---- 4. the request in progress ------------------------------------------------- */
 
-/* The handle-carrying reply of the committed request in slot reached its
- * caller: the object it made is still known and its client's end alive. */
-static bool reply_arrived(struct mixer *m)
-{
-    const struct mixer_state *n = m->nums;
-    handle_t ch = n->made_kind == MADE_STREAM ? m->own_s[n->made_index].ch
-                                              : m->own_c[n->made_index].ch;
-    signals_t seen = 0;
-    /* Not known (the keeper dropped it): it was closed after its reply. */
-    return !ch || jam_object_wait_one(ch, SIG_PEER_CLOSED, 0, &seen) == ERR_TIMED_OUT;
-}
-
 static void run(struct mixer *m, unsigned slot, handle_t ch, struct stream *s, uint32_t owner,
                 bool ctl)
 {
@@ -292,7 +280,8 @@ static void run(struct mixer *m, unsigned slot, handle_t ch, struct stream *s, u
         run_audio(m, slot, ch, owner, s);
 }
 
-/* A committed request in slot: answered again (c: svcstate's case). */
+/* A committed request in slot whose reply never went out (its slot's
+ * mark: svcstate_pending): answered now. */
 static const char *resend(struct mixer *m, unsigned slot, handle_t ch, struct stream *s,
                           uint32_t owner, bool ctl)
 {
@@ -302,20 +291,18 @@ static const char *resend(struct mixer *m, unsigned slot, handle_t ch, struct st
         return "answered later, as before";
     }
     if (m->nums->made_seq != sl->seq) {
-        (void)svcstate_reply(&m->state, slot, ch, NULL, 0);   /* the caller gone: no matter */
-        return "its reply sent again";
+        /* Waits for the loop's first take or port wait (the caller gone: no matter). */
+        svcstate_answer(&m->state, slot, ch, NULL, 0, &m->reply);
+        return "its reply sent";
     }
-    if (reply_arrived(m)) {
-        svcstate_sent(&m->state, slot);
-        return "its reply (with handles) had arrived";
-    }
+    /* Its handles were never sent: they died with the process. */
     uint32_t i = m->nums->made_index;
     if (m->nums->made_kind == MADE_STREAM)
-        stream_drop(m, &m->nums->s[i], "its open's reply never arrived");
+        stream_drop(m, &m->nums->s[i], "its open's reply never went out");
     else
         clients_drop(m, i);
     run(m, slot, ch, s, owner, ctl);
-    return "run again (its reply with handles never arrived)";
+    return "run again (its reply with handles never went out)";
 }
 
 /* A request taken and not committed in slot: run again. */

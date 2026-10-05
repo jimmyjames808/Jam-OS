@@ -2,7 +2,7 @@
  * volume, for programs that get less than the whole of it (read-only, or
  * with the top-level `etc` left alone). Each is served like the fs
  * channel devmgr gave us, with its flags checked first (fs_view_dispatch),
- * FAT_BATCH requests per wakeup. A view goes when its client closes it,
+ * one request per wakeup (main.c's loop). A view goes when its client closes it,
  * and every view goes when fat ends: a view never keeps the volume served
  * (main.c ends when the fs channel's clients are gone).
  *
@@ -87,13 +87,10 @@ void views_event(uint64_t key)
         .ch = view_ch[i], .id = FAT_CHAN_VIEW(i, kept->views[i].gen), .proto = FAT_PROTO_FS,
         .flags = kept->views[i].flags,
     };
-    status_t st = OK;
-    for (unsigned k = 0; k < FAT_BATCH && st == OK && !vol.disk_gone; k++) {
-        files_reap();
-        st = serve_one(&c);
-    }
+    files_reap();
+    status_t st = serve_one(&c);   /* one per turn: main.c's loop */
     if (st == OK || st == ERR_SHOULD_WAIT)
-        st = arm(i);
+        st = arm(i);   /* fires at once if more is queued */
     if (st != OK)
         drop(i);   /* the client is gone, or the channel failed */
 }
@@ -120,14 +117,6 @@ unsigned views_adopt(void)
             n++;
     }
     return n;
-}
-
-bool views_reply_arrived(uint32_t i)
-{
-    if (i >= FAT_VIEWS || !kept->views[i].used || !view_ch[i])
-        return true;   /* dropped since: it had arrived, or it is gone anyway */
-    signals_t seen = 0;
-    return jam_object_wait_one(view_ch[i], SIG_PEER_CLOSED, 0, &seen) == ERR_TIMED_OUT;
 }
 
 status_t views_remake(uint32_t i, handle_t *out)
