@@ -340,6 +340,9 @@ bool userboot_run_init(uint64_t timeout_s, const char *arg, const char *const *w
     unsigned argc = arg ? 2 : 1;
     for (unsigned i = 0; arg && i < nwords && i < USERBOOT_MAX_WORDS; i++)
         argv[argc++] = words[i];
+    if (arg && nwords > USERBOOT_MAX_WORDS)   /* a word added without room for it */
+        report("init: %u of its option words dropped (USERBOOT_MAX_WORDS)",
+               nwords - USERBOOT_MAX_WORDS);
     /* init holds the root of hardware authority (SR_RESOURCE) and slices
      * it for devmgr. */
     struct userboot_handle extra[2];

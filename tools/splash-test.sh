@@ -29,6 +29,8 @@
 #            never finishes; init starts the shell anyway, 20 s after the
 #            splash's start (not much later, never sooner), and the
 #            console has the screen back (its text in the screenshot).
+#            Booted with every option word the kernel hands init at once:
+#            init's first line lists all of them.
 # It prints the time from the kernel's start to the first frame and to the
 # shell, with the splash and without (the nosplash boot).
 # QEMU_SMP passes through. Usage: tools/splash-test.sh <outdir>; exit 0 on PASS.
@@ -133,11 +135,14 @@ need "$out/panic.log" "KERNEL PANIC"
 check red "$out/panic.png"
 
 # ---- hang: a splash that never finishes ---------------------------------------
+# Booted with every option word the kernel passes init at once (nine with
+# bootdisk=, which Limine gives): all of them reach it, none dropped.
 QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/splash-hang.txt \
-    tools/qemu-test.sh "$out" hang shell splashhang > "$out/hang.out" 2>&1 ||
-    { echo "hang: the script failed"; tail -3 "$out/hang.out"; ok=0; }
-grep -aqE "init: hello from ring 3 \([0-9]+ args: init shell splash .*splashhang\)" "$out/hang.log" ||
-    { echo "hang: init was not given splashhang"; ok=0; }
+    tools/qemu-test.sh "$out" hang shell splashhang nocomp hidboot net vlan=none nospare vtdtest \
+    > "$out/hang.out" 2>&1 || { echo "hang: the script failed"; tail -3 "$out/hang.out"; ok=0; }
+words="init shell splash nocomp hidboot net vlan=none bootdisk=0x[0-9a-f]+ splashhang nospare vtdtest"
+grep -aqE "init: hello from ring 3 \(11 args: $words\)" "$out/hang.log" ||
+    { echo "hang: init was not given all its words"; grep -a "hello from ring 3" "$out/hang.log"; ok=0; }
 need "$out/hang.log" "splash: hanging, as asked" "the splash didn't finish in 20 s: starting the shell" \
     "console: the screen is back" "init: the shell is up"
 t_hang=$(at "$out/hang.log" "splash: hanging") t_gave=$(at "$out/hang.log" "didn't finish in")
