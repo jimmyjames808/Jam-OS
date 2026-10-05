@@ -1,0 +1,39 @@
+# fbbench (user/tests/fbbench): run from the shell with a tenth of the
+# samples (-q). It borrows the screen, measures, gives it back and prints
+# its lines: each section's lines must be there, none FAILED, and the
+# shell must come back; then a usage error. Command line "shell". The
+# numbers are QEMU's (TCG): meaningless, the PC gives them. The text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait jam>
+send T=f
+wait jam>
+send fbbench -q; echo st-$T=$?
+wait 60 fbbench: kernels agree with px_over
+wait 600 fbbench: screen
+wait 60 fbbench: median and p99 of
+seen 60 fbbench: fb write: fill, 16-byte stores, whole screen, 1 thread
+seen 60 fbbench: fb write: copy from RAM, 16-byte, whole screen, 1 thread
+seen 60 fbbench: fb write: fill, rep stores, whole screen, 1 thread
+seen 60 fbbench: fb write: 64x16 tiles from a cache-hot buffer
+seen 60 fbbench: fb write: libfun present, every piece changed
+seen 60 fbbench: fb write: libfun present, nothing changed
+seen 60 fbbench: RAM copy: 16-byte, whole screen's bytes, 1 thread
+seen 60 fbbench: blend: argb over xrgb, scalar (px_over), whole screen, 1 thread
+seen 60 fbbench: blend: argb over xrgb, SSE2, whole screen, 1 thread
+seen 60 fbbench: vmo_read: 4 KiB in one call, 1 thread
+seen 60 fbbench: vmo_read: whole screen's bytes in 16-row bands
+seen 60 fbbench: frame: full screen, opaque, mapped buffer (Q2 A)
+seen 60 fbbench: frame: full screen, opaque, vmo_read first (Q2 B)
+seen 60 fbbench: frame: full screen, argb blended, mapped (Q2 A)
+seen 60 fbbench: frame: one line of text (full width, 16 rows), 1 thread
+seen 60 fbbench: frame: the pointer moved (two 32x32 squares), 1 thread
+wait 60 fbbench: done
+wait st-f=0
+send echo back-$T
+wait back-f
+send fbbench -x; echo st-$T=$?
+wait usage: fbbench
+wait st-f=2
+send reboot -f
+wait reboot: resetting

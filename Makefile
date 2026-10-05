@@ -258,7 +258,8 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 
 # libfun (user/apps/fun, <fun.h>): the screen, drawing, text, keys and
 # thread pool of the apps, which link it before libos.
-FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS)))
+# fbbench (user/tests) measures libfun's own drawing code too.
+FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS))) fbbench
 LIBFUN_OBJS := $(patsubst %,$(UOBJ)/%.o,$(wildcard $(LIBFUN_DIR)/*.c))
 
 $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
