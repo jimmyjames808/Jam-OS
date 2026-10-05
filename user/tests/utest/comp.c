@@ -206,9 +206,21 @@ const struct ct_event *ct_await(struct ct_client *k, const struct jwl_interface 
     return e;
 }
 
+/* The events of iface's object id forgotten: an id used again would find
+ * its last owner's (an earlier round trip's done) and stop waiting early. */
+static void forget(struct ct_client *k, const struct jwl_interface *iface, uint32_t id)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < k->nev; i++)
+        if (k->ev[i].iface != iface || k->ev[i].id != id)
+            k->ev[n++] = k->ev[i];
+    k->nev = n;
+}
+
 status_t ct_roundtrip(struct ct_client *k)
 {
     uint32_t cb = ct_new(k, &jwl_wl_callback_interface, 1);
+    forget(k, &jwl_wl_callback_interface, cb);
     status_t st = cb ? jwl_wl_display_sync(k->c, JWL_DISPLAY_ID, cb) : ERR_NO_RESOURCES;
     if (st != OK)
         return st;
