@@ -6,6 +6,12 @@
 /* ---- the screen -------------------------------------------------------------------- */
 
 struct screen scr;
+static handle_t console_with;   /* gfx_console_with's, HANDLE_INVALID: SR_CONSOLE */
+
+void gfx_console_with(handle_t con)
+{
+    console_with = con;
+}
 
 static status_t map_vmo(handle_t vmo, uint64_t len, void **out)
 {
@@ -25,7 +31,7 @@ status_t gfx_open(void)
 static status_t borrow_screen(uint32_t bg, bool keys)
 {
     memset(&scr, 0, sizeof(scr));
-    scr.con = startup_handle(SR_CONSOLE);
+    scr.con = console_with != HANDLE_INVALID ? console_with : startup_handle(SR_CONSOLE);
     if (!scr.con)
         return ERR_NOT_FOUND;
     /* Keys first: then the screen (the console lends it to anyone who asks
@@ -84,6 +90,8 @@ static status_t borrow_screen(uint32_t bg, bool keys)
 /* A window if the compositor gives us one, else the borrowed screen. */
 static status_t open_screen(uint32_t bg, bool keys, bool full)
 {
+    if (console_with != HANDLE_INVALID)
+        return borrow_screen(bg, keys);
     status_t st = wl_open(bg, keys, full);
     if (st == OK) {
         gfx_present_all();   /* the window shows bg at once */

@@ -129,6 +129,10 @@ void     gfx_resizable(void);
 /* Tests: how gfx_open reaches the compositor instead of /svc/wayland (a
  * libjwl connect function, <jwl_client.h>); NULL: /svc/wayland again. */
 void     gfx_connect_with(status_t (*connect)(void *ctx, handle_t *out), void *ctx);
+/* Tests: borrow the screen from this console channel (a fake's) instead
+ * of SR_CONSOLE, and ask for no window; HANDLE_INVALID: as usual again.
+ * The channel stays the caller's. */
+void     gfx_console_with(handle_t con);
 /* Copy what changed in scr.s to the screen. */
 void     gfx_present(void);
 /* Copy all of it (after something else may have drawn on the screen). */
