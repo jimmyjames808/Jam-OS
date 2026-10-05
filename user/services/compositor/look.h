@@ -27,6 +27,7 @@
  *     only, square. */
 #pragma once
 
+#include <splash.h>
 #include "comp.h"
 
 /* ---- floating windows ------------------------------------------------------------------ */
@@ -114,9 +115,11 @@ static const struct look_glow look_glows[LOOK_GLOWS] = {
     { 0x5a2c18u, 880, 900, 520 },  /* apricot, bottom right */
     { 0x24203fu, 520, 540, 480 },  /* deep blackcurrant, the middle */
 };
-/* compctl.blank's screen: black (nothing drawn, not even the wallpaper,
- * between a reboot's request and the next boot's splash). */
-#define LOOK_BLANK 0x000000u
+/* compctl.blank's screen: the splash's background (nothing drawn, not even
+ * the wallpaper, between a reboot's request and the next boot's splash,
+ * whose kernel starts the screen in that colour: a reboot looks like
+ * switching the PC on, as compctl.idl says). */
+#define LOOK_BLANK SPLASH_BG
 
 /* ---- which look a window has ------------------------------------------------------------ */
 

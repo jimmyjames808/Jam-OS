@@ -1079,7 +1079,9 @@ blackcurrant or grey. A window's damage takes in its shadow
 (`window_extent`), and paint.c never takes a window with round corners
 as hiding what is below its corner squares. The wallpaper is made once
 at the output's size from integer arithmetic with an 8x8 ordered dither
-(14 MiB at 2560x1440); blank is black. The minimise circle calls
+(14 MiB at 2560x1440); blank is the splash's background (the colour the
+next boot's kernel starts the screen in: black would flash between a
+reboot and the next splash). The minimise circle calls
 `wm_minimise`, a weak no-op in `wm.c` for D2. utest's `comp_look_*`
 compare every pixel against a reference painter of their own, and
 `tools/comp-check.py` paints the same look to check QEMU's screen.

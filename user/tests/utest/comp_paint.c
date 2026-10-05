@@ -19,7 +19,8 @@
  * t_comp_paint_cursor: a client's cursor surface at its hot spot, blended;
  * when it shrinks (a commit of a smaller buffer) its old box is painted
  * again, so nothing of it is left behind; a move paints both boxes.
- * t_comp_paint_blank: blank shows black only, no window, no cursor. */
+ * t_comp_paint_blank: blank shows the splash's background only, no window,
+ * no cursor. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>

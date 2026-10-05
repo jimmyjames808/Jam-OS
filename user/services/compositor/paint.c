@@ -14,7 +14,7 @@
  *     pixels that hide what is below (paint_opaque_over, decorations are
  *     opaque too, a rounded corner's square is not: shape.c);
  *     everything under it is skipped, the wallpaper too. With none, the
- *     wallpaper first (wallpaper.c; black while blank);
+ *     wallpaper first (wallpaper.c; the splash's background while blank);
  *   - then each mapped window from there up: its shadow (shape.c), the
  *     pixels below its corners kept, its decorations (title.c), then its
  *     buffer: copied (xrgb8888, or inside its opaque region), or blended
