@@ -17,11 +17,12 @@
  * Lines may overlap (a fill isn't cut short at a line already there);
  * they hold the same bytes, since they come from the same disk.
  *
- * Write-through (sticks get pulled): every write still goes to the disk
- * at once, as it did without the cache; afterwards the sectors written are
- * copied into every line that holds them (a line is never made by a
- * write). So what the cache holds is always what the disk holds, and
- * nothing is lost when the stick goes. Nobody else writes the partition
+ * Write-through (sticks get pulled): every write goes to the disk before
+ * the request that made it is answered (held until its commit, hold.c);
+ * the sectors written are copied into every line that holds them (a line
+ * is never made by a write). So what the cache holds is always what the
+ * disk holds or is about to, and nothing answered is lost when the stick
+ * goes. Nobody else writes the partition
  * while fat runs (the block channel is fat's alone; a stick changed
  * elsewhere comes back as a new fat), so the cache never goes stale.
  *
@@ -29,8 +30,9 @@
  * straight to the disk: it would only push the FAT and directory lines
  * out.
  *
- * Writes held back (disk.c, a file opened FS_GATHER) are copied into the
- * lines when they are held, so reads see them; a held write that then
+ * Writes held back (hold.c: every request's until its commit, a file
+ * opened FS_GATHER's until its sync or close) are copied into the lines
+ * when they are held, so reads see them; a held write that then
  * fails to reach the disk takes its lines with it (cache_forget), so what
  * the cache holds is still never other than what the disk holds or is
  * about to. */
