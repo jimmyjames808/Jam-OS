@@ -25,13 +25,13 @@
 
 /* ---- making and losing surfaces ---------------------------------------------------- */
 
-status_t surface_create(struct comp_client *cl, uint32_t id)
+status_t surface_create(struct comp_client *cl, uint32_t compositor, uint32_t id)
 {
     if (cl->nsurfaces >= COMP_SURFACES_MAX)
-        return comp_no_memory(cl, id, "too many surfaces (64)");
+        return comp_no_memory(cl, compositor, "too many surfaces (64)");
     struct comp_surface *s = calloc(1, sizeof(*s));
     if (!s)
-        return comp_no_memory(cl, id, "no memory for a surface");
+        return comp_no_memory(cl, compositor, "no memory for a surface");
     s->client = cl;
     s->id = id;
     s->input_all = s->pending.input_all = true;

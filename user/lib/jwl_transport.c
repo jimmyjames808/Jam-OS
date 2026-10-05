@@ -430,9 +430,11 @@ static bool new_id_fits(const struct jwl_conn *c, const struct jwl_message *m,
     const struct jwl_interface *t = m->types ? m->types[i] : NULL;
     if (t)
         return jwl_interface_same(a->iface, t) && a->version == version;
-    /* untyped: the "su" before it say what it is (jwl_interface_check) */
+    /* untyped: the "su" before it say what it is (jwl_interface_check), at
+     * a version our tables know all of (a bound global's events must
+     * decode; a typed child may be newer than its table, as its parent) */
     return i >= 2 && args[i - 2].s && !strcmp(a->iface->name, args[i - 2].s) &&
-           a->version == args[i - 1].u;
+           a->version == args[i - 1].u && a->version <= a->iface->version;
 }
 
 /* Every object argument live, announced and of its type; every new id as
@@ -528,7 +530,7 @@ status_t jwl_conn_make(struct jwl_conn *c, const struct jwl_interface *iface, ui
 {
     if (c->status != OK)
         return c->status;
-    if (!iface || !version || version > iface->version)
+    if (!iface || !version)
         return ERR_INVALID_ARGS;
     return jwl_map_new(&c->map, iface, version, data, out);
 }

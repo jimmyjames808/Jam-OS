@@ -116,6 +116,10 @@ status_t drv_channel_call_within(handle_t h, void *wbytes, uint32_t wn, void *rb
 status_t drv_channel_reply_wait(const struct channel_reply_wait_args *a);
 status_t drv_port_create(handle_t *out);
 status_t drv_port_bind(handle_t port, handle_t obj, uint64_t key, signals_t mask, uint32_t flags);
+/* Take obj's binding with key off the port. A binding holds a reference
+ * on what it watches, so closing obj's handle doesn't end it: unbind
+ * first. ERR_NOT_FOUND: none (a ONCE binding that fired). */
+status_t drv_port_unbind(handle_t port, handle_t obj, uint64_t key);
 status_t drv_port_wait(handle_t port, uint64_t deadline_ns, struct port_packet *out);
 status_t drv_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns,
                              signals_t *observed);
