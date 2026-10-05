@@ -25,13 +25,12 @@
  *   5. the request in progress is finished exactly once (svcstate's
  *      cases): uncommitted, it runs again from its slot (a write's bytes
  *      from the slot too: request.c's bounce); committed, its send is done
- *      again (the same bytes to the same sectors) and it is answered.
- *      A reply that carries handles (fs.open's file, fs.view's view)
- *      reached its client only if the client's end is alive; if it never
- *      did, the handles died with the process: the slot gets a new
- *      channel and the reply goes again. (A client that got the reply and
- *      closed the file at once looks the same: it gets a stray reply,
- *      which a blocking call never reads; devmgr drains the mount's.)
+ *      again (the same bytes to the same sectors) and it is answered,
+ *      unless its reply went out (the slot's mark, which the kernel sets
+ *      in the system call that sends it: then there is nothing to do). A
+ *      reply that carries handles (fs.open's file, fs.view's view) and
+ *      never went out took them with the process: the slot gets a new
+ *      channel and the reply goes again.
  *      A request in progress at two crashes (not deliberate kills: how
  *      the last instance ended is in argv) is answered ERR_IO and dropped,
  *      so one bad request can't crash every successor in turn;
@@ -264,8 +263,9 @@ static bool chan_of(unsigned slot, struct fat_chan *c)
     return false;   /* fsctl's: a channel of the dead instance's, gone with it */
 }
 
-/* A committed request's reply, again: unless it carried handles that
- * reached the client. */
+/* A committed request's reply, which never went out (its slot's mark
+ * says so: svcstate_pending), sent now; the handles one carried died with
+ * the process: made again. */
 static const char *reply_again(const struct fat_chan *c, unsigned slot)
 {
     struct svcstate *s = state_slots();
@@ -275,13 +275,9 @@ static const char *reply_again(const struct fat_chan *c, unsigned slot)
     bool made = m->seq == sl->seq && sl->reply_len >= sizeof(*r) && r->status == OK;
     if (!made) {
         answer(c, slot, sl->reply_len, NULL, 0);
-        return "answered again";
+        return "answered";
     }
     bool file = m->kind == FAT_MADE_FILE;
-    if (file ? files_reply_arrived(m->index) : views_reply_arrived(m->index)) {
-        svcstate_sent(s, slot);
-        return "its reply (with handles) had arrived";
-    }
     handle_t hs[2];
     status_t st = file ? files_remake(m->index, &hs[0], &hs[1]) : views_remake(m->index, &hs[0]);
     if (st != OK) {
@@ -289,7 +285,7 @@ static const char *reply_again(const struct fat_chan *c, unsigned slot)
         return "its handles couldn't be made again: answered with the error";
     }
     answer(c, slot, sl->reply_len, hs, file ? 2 : 1);
-    return "answered again, with its handles made again";
+    return "answered, with its handles made again";
 }
 
 static const char *finish(enum svcstate_case k, unsigned slot)

@@ -15,6 +15,7 @@
  * position says how many of its frames have been heard.
  *
  * Each request is read into a request slot of the state (req_take) and
+ * run there with the protocol's generated run (audio_run_slot, audioctl_run_slot),
  * answered from the slot's reply area after a commit (req_answer); a
  * successor runs the one in progress again with the same code (run_audio,
  * run_control). A drain answered later is answered before the commit that
@@ -397,9 +398,11 @@ void run_audio(struct mixer *m, unsigned slot, handle_t ch, uint32_t owner, stru
     struct opener o = { m, owner, owner ? m->nums->c[owner - 1].gen : 0 };
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
+    struct idl_slot is;
+    svcstate_slot(&m->state, slot, &is);
     m->cur_slot = slot;
-    uint32_t rn = audio_dispatch(s ? &stream_ops : &svc_ops, s ? (void *)&c : (void *)&o, q, n,
-                                 svcstate_reply_area(&m->state, slot), rhs, &rhn);
+    uint32_t rn = audio_run_slot(ch, &is, s ? &stream_ops : &svc_ops, s ? (void *)&c : (void *)&o,
+                            rhs, &rhn);
     req_answer(m, slot, ch, rn, rhs, rhn);
 }
 
@@ -409,7 +412,7 @@ static status_t serve_one(struct mixer *m, handle_t ch, uint32_t key, uint32_t o
                           struct stream *s)
 {
     unsigned slot;
-    status_t st = req_take(m, ch, key, REQ_CAP_AUDIO, &slot);
+    status_t st = req_take(m, ch, key, false, &slot);
     if (st == OK && slot != REQ_NONE)
         run_audio(m, slot, ch, owner, s);
     return st;
@@ -424,7 +427,7 @@ status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner)
         if (st != OK)
             return st;
     }
-    return OK;
+    return req_budget_spent(m);
 }
 
 void serve_svc(struct mixer *m)
@@ -450,7 +453,7 @@ void serve_stream(struct mixer *m, struct stream *s)
             printf("mixer: reading stream %u's channel: %s\n", s->id, status_str(st));
         return;
     }
-    w->pending = true;
+    w->pending = req_budget_spent(m) == OK;
 }
 
 void stream_event(struct mixer *m, struct stream *s)
@@ -551,8 +554,9 @@ void run_control(struct mixer *m, unsigned slot, handle_t ch, uint32_t key)
     }
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
-    uint32_t rn = audioctl_dispatch(&ctl_ops, m, q, n, svcstate_reply_area(&m->state, slot), rhs,
-                                    &rhn);
+    struct idl_slot is;
+    svcstate_slot(&m->state, slot, &is);
+    uint32_t rn = audioctl_run_slot(ch, &is, &ctl_ops, m, rhs, &rhn);
     req_answer(m, slot, ch, rn, rhs, rhn);
 }
 
@@ -561,7 +565,7 @@ void run_control(struct mixer *m, unsigned slot, handle_t ch, uint32_t key)
 static status_t ctl_serve_one(struct mixer *m, handle_t ch, uint32_t key)
 {
     unsigned slot;
-    status_t st = req_take(m, ch, key, REQ_CAP_CTL, &slot);
+    status_t st = req_take(m, ch, key, true, &slot);
     if (st == OK && slot != REQ_NONE)
         run_control(m, slot, ch, key);
     return st;
@@ -574,7 +578,7 @@ status_t serve_control(struct mixer *m, handle_t ch, uint32_t key)
         if (st != OK)
             return st;
     }
-    return OK;
+    return req_budget_spent(m);
 }
 
 void serve_ctl(struct mixer *m)
