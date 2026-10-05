@@ -29,7 +29,7 @@ built yet, it says so.
 | Bulk data | Through shared VMOs (rings + offsets), not 64 KiB channel messages |
 | Memory API | VMOs + VMAR handles |
 | Scheduler | Per-CPU run queues, 32 priorities, work stealing |
-| Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to every program; only init writes it, for `update -w` |
+| Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to every program; only init writes it, for `update` |
 | Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP); uACPI when power management lands |
 | Executables | Static ELF64 |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
@@ -850,7 +850,7 @@ Rules for userspace drivers:
   same way ([below](#the-demonstration-storm)).
 - **Authority**: devmgr has a query channel (look things up), a control
   channel (change bindings), the ESP channel (init's alone: the boot
-  stick's ESP made writable for `update -w`, which no other channel may
+  stick's ESP made writable for `update`, which no other channel may
   ask, [Storage](#storage)) and *device channels*, each scoped to one
   device and made on the control channel (`DEVMGR_DEVICE_CHANNEL` in
   `user/include/devmgr.h`): a device channel answers about its own device
@@ -1544,7 +1544,7 @@ with no time backs off from 16 s to 1024 s. It sets the clock with
 ([Time and settings](#time-and-settings)).
 
 **update** (`user/services/update`, `user/services/init/update.c`). The
-shell's `update [-n] [address]` takes an offer channel from init
+shell's `update [-n | -m | -w] [-r] [-f] [address]` takes an offer channel from init
 (`initctl.update_offer`) and runs `bin/update` with that channel and
 `/svc/net-sys` only. It fetches the manifest, kernel and boot image from the
 Mac (`net.host`, UDP port 5022, `tools/update-server.py`: a request names
@@ -1559,21 +1559,25 @@ before that passes; a build without a key refuses every update, and so
 does an unsigned manifest. Then it copies the files into VMOs only it
 holds, checks each size and SHA-256 against the manifest, calls
 `kexec_load` (which init alone may) and notes `/esp`'s files as seen, so
-the `reboot` that follows starts the fetched build
-([Kexec](#kexec-reboot-and-panic)). `-n` checks without loading. A build
-whose network default (the manifest's `net`, from its `build.txt`, signed
-with the rest) isn't the running build's is refused (`update -f` takes
-it), so `update` never moves a PC from VLAN 21 to untagged or back by
-accident. By default only RAM changes: a power-off brings back the stick's build.
-`update -w` has init also write the build to the stick's ESP once it is
-loaded (the stick's own build renamed to be the previous one), so it survives a
-power-off ([Storage](#storage) has who may write the ESP and in what
-order); if the write fails, the build stays loaded, the stick still boots,
-and the answer says how far it got. The build comes with its boot menu
+the owner's next `reboot` starts the fetched build
+([Kexec](#kexec-reboot-and-panic)). Then, for a plain `update` (and `-w`,
+its older spelling), init writes the build to the stick's ESP too (the
+stick's own build renamed to be the previous one), so `reboot -f` and
+every power-on start it as well ([Storage](#storage) has who may write
+the ESP and in what order); if the write fails, the build stays loaded,
+the stick still boots, and the answer says how far it got. Nothing
+reboots by itself: bin/update's last line says what `reboot` (kexec, the
+loaded build) and `reboot -f` (the firmware, the stick's build) start
+now, and `update -r` asks the shell to reboot at once. `-m` loads into
+memory only (the stick untouched: a power-off brings back its build);
+`-n` checks without loading. A build whose network default (the
+manifest's `net`, from its `build.txt`, signed with the rest) isn't the
+running build's is refused (`update -f` takes it), so `update` never
+moves a PC from VLAN 21 to untagged or back by accident. The build comes with its boot menu
 (the server's `boot/limine.conf`, named in the manifest by its size and
 SHA-256 and fetched as a third file): every `update` checks its SHA-256
 like the other two (one that isn't the signed one refuses the whole
-update), and only `update -w` writes it, after the build, as the stick's
+update), and only the stick write writes it, after the build, as the stick's
 `/esp/boot/limine/limine.conf`, once init's own check of it passes
 ([Storage](#storage)); a menu that fails is not written, and the build is.
 The key's secret
@@ -1619,7 +1623,7 @@ a `make flash`.
 | bin/fetch | `/svc/net`, `/svc/dns`, the file (or pipe) its body goes to, the shell's stop channel | yes: HTTP answers (`<http.h>`) |
 | bin/serve | `/svc/net` and `/svc/net-low`; the files the shell hands it, read-only | yes: HTTP requests (`<http.h>`) |
 | bin/speed | `/svc/net` and `/svc/net-listen`, `/svc/dns`, the shell's stop channel | its own 16-byte hello and report |
-| init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), devmgr's ESP channel (`update -w`) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
+| init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), devmgr's ESP channel (`update`'s stick write) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
 **The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
 each driver runs one loop on one port (its interrupt, netstack's event,
@@ -1634,7 +1638,7 @@ set (file reads sent without waiting); asking netstack for a listener
 waits, so a thread of its own that serves nobody does it. dhcp, netlog,
 sntp, `bin/update`, `fetch` and `speed` serve nobody, so they may block,
 always with a deadline. init's update check hashes on a worker thread,
-and `update -w`'s stick write runs on the same worker after it; its loop
+and `update`'s stick write runs on the same worker after it; its loop
 does only the `kexec_load` and `/esp`'s stat.
 
 **Waiting on many sockets** (`user/include/netwait.h`, libos;
@@ -2142,7 +2146,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   stick's kernel and boot image as the previous build
   (`/esp/boot/prev-jamos.elf`, `/esp/boot/prev-bootfs.img`: the boot menu's "Jam OS
   (previous build)").
-- **On the PC only init writes the ESP, and only for `update -w`** (a
+- **On the PC only init writes the ESP, and only for `update`** (a
   build it has checked and loaded, [Networking](#networking)). The power
   is a channel: devmgr makes the ESP's partition writable only when asked
   on its ESP channel (`DEVMGR_ESP_WRITE`), whose one client end init made
@@ -2168,7 +2172,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   holds it; this order puts that moment where the other pair holds a
   whole build. A power cut in (1) or (2) leaves the default entry without
   a whole build and "Jam OS (previous build)" booting the build before the
-  old one, until the next `update -w`, which first finishes or undoes an
+  old one, until the next `update`, which first finishes or undoes an
   earlier write's renames. A stick with no whole previous build (none
   ever written, or a failure removed it) gets a copy of its build as the
   previous one before (1), the one copy left. A failure stops the write
@@ -2176,7 +2180,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   while the ESP's fat still answers (after (3) the stick then has no
   previous build until the next write). The read-back goes
   through fat, whose cache may answer it. Every call of the write ends by one deadline (120 s for
-  the steps, 60 s for the clean-up after a failure), so `update -w`
+  the steps, 60 s for the clean-up after a failure), so `update`
   always gets an answer; each step logs its time.
 - **The boot menu** (`user/services/init/espmenu.c`), written after the
   build when the update carries one, under the same deadline. A menu
@@ -2210,7 +2214,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   cut between the two leaves the new build with the old menu, whose
   entries name the same four files. A failure puts the stick's menu back
   in its place if it isn't, and removes the temporary files (the spare
-  only once a menu is in place); the next `update -w` first settles what
+  only once a menu is in place); the next `update` first settles what
   a cut left the same way.
 - Write ordering: file data, then both FATs, then the directory entry.
 - fat keeps a write-through block cache (`user/services/fat/cache.c`):
@@ -2331,7 +2335,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   state, the keeper's handles), so the new fat starts fresh. `/boot` and
   `/esp` can never be made writable by `mount` and `/data` never
   read-only: init passes on nothing but `/usbN`, and devmgr remounts
-  nothing else that way (making the ESP writable for `update -w` is the
+  nothing else that way (making the ESP writable for `update` is the
   ESP channel's alone, above).
 - logd follows the kernel log from its first byte into
   `/data/logs/boot-NNNN.txt`, the next free number each boot, after one
@@ -2503,7 +2507,9 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   checks the manifest's signature with its build's key, copies the files
   into VMOs of its own, checks each length and SHA-256 against
   the manifest, calls `kexec_load` with the copies and notes `/esp`'s
-  files as seen, so `reboot` starts the fetched build
+  files as seen, so `reboot` starts the fetched build (a plain `update`
+  has written it to the stick too, so `reboot -f` does as well); init
+  never reboots for an update
   (`user/services/init/update.c`; the fetch: [Networking](#networking)).
 - **A stick whose files don't load** (a flash pulled half way, a damaged
   copy): the kernel refuses them and keeps the stored copy armed, so
