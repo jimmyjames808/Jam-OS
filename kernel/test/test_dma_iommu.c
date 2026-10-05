@@ -47,10 +47,10 @@
 #define PG  PAGE_SIZE
 #define LEN 64u   /* bytes per edu transfer */
 
-/* edu if a VT-d unit translates it, else NULL (said: the test skips). Its
- * DMA fault count starts again from 0, so the unit's mute (after
- * VTD_FAULT_LOGGED faults) can't hide this test's faults; a new cap's
- * domain clears the mute itself. */
+/* edu if a VT-d unit translates it, else NULL (said: the test skips).
+ * Every test here makes a new cap before it provokes a fault, and the
+ * cap's attach clears the mute and starts edu's DMA fault count again
+ * (iommu_attach), so earlier tests' faults can't hide this one's. */
 static struct pci_dev *edu_translated(void)
 {
     struct pci_dev *d = kt_edu();
@@ -58,12 +58,7 @@ static struct pci_dev *edu_translated(void)
     if (d && !f)
         kprintf("ktest %s: edu is not translated (QEMU's intel-iommu and iommu=on), skipped\n",
                 ktest_current);
-    if (!f)
-        return NULL;
-    mutex_lock(&f->ctl->lock);
-    f->dma_faults = 0;
-    mutex_unlock(&f->ctl->lock);
-    return d;
+    return f ? d : NULL;
 }
 
 static uint16_t rid(const struct pci_dev *d)
