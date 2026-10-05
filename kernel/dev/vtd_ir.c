@@ -53,8 +53,8 @@ static status_t encode_source(const struct vtd_ir_source *src, uint64_t *out)
 
 status_t vtd_irte_encode(const struct vtd_irte_spec *s, bool eim, struct vtd_irte *out)
 {
-    if (s->vector < 16)
-        return ERR_INVALID_ARGS;   /* 0-15 are exceptions and reserved */
+    if (s->vector < VTD_IR_VECTOR_MIN)
+        return ERR_INVALID_ARGS;   /* 0-31 are the CPU's exceptions */
     if (!eim && s->dest > 0xff)
         return ERR_OUT_OF_RANGE;
     uint64_t hi;
@@ -87,7 +87,7 @@ status_t vtd_ir_rte_encode(const struct vtd_ir_rte_spec *s, uint64_t *out)
 {
     if (s->index > 0xffff)
         return ERR_OUT_OF_RANGE;
-    if (s->vector < 16)
+    if (s->vector < VTD_IR_VECTOR_MIN)
         return ERR_INVALID_ARGS;
     uint64_t v = s->vector | VTD_IR_RTE_FORMAT |
                  (uint64_t)(s->index & 0x7fff) << VTD_IR_RTE_I_SHIFT;

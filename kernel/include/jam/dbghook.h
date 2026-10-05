@@ -31,6 +31,9 @@ enum {
     DBG_CHANNEL_HANDED,    /* channel_send.c hand_to_locked, the waiter woken, before its
                               message is published; the endpoint's lock held, interrupts
                               off (arg: the waiting thread) */
+    DBG_VTD_FLUSH,         /* vtd_unit.c vtd_flush_lines, the lines flushed for a unit that
+                              doesn't snoop its tables (arg: struct vtd_flush_range,
+                              vtd_internal.h) */
     DBG_N
 };
 
