@@ -7,12 +7,15 @@
 # are started again, as the first terminal's are; the compositor killed,
 # both consoles connect again; the first terminal answers throughout.
 # Then terminals up to the limit (8 in all), and `term` refuses one more.
+# Screenshots: terms-boot (the first terminal), terms-eight (all eight).
 # Typing into terminal 2 and closing it (its window's close box, `exit`)
 # need the compositor's input (the boot wiring): terms-windows.txt.
 # Run: QEMU_INPUT=tools/shell-tests/terms.txt tools/qemu-test.sh build/test terms shell comp
 wait 120 Jam OS shell
 seen 10 console: window mode (terminal 1)
 wait jam>
+sleep 2
+shot terms-boot
 send term
 wait 10 terminal 2 opens
 wait 30 Jam OS shell
@@ -52,6 +55,7 @@ wait 10 terminal 7 opens
 send term
 wait 10 terminal 8 opens
 sleep 3
+shot terms-eight
 send term
 wait 10 term: as many terminals are open as there may be
 send echo ok-$?-full
