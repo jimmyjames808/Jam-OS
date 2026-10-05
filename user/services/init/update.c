@@ -378,8 +378,7 @@ static void say(const struct check *c)
                only                 ? "and not loaded (check only)"
                : wrote && a->already ? "and stored; the stick has it already"
                : wrote               ? "and stored, and written to the stick"
-                                     : "and stored in memory only: `reboot` starts it, the "
-                                       "stick is untouched");
+                                     : "and stored in memory only (-m)");
         if (wrote)
             printf("init: update: the stick write took %u ms: `reboot` and a power-on start "
                    "the new build\n", a->write_ms);
