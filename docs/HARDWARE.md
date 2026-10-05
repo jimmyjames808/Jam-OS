@@ -132,6 +132,10 @@ boot-2026-10-04_21-\*; `dmesg | grep -E 'vtd:|acpi:'`), the facts M11
 QEMU's emulated unit differs (registers at 0xfed90000, caching mode on, an
 explicit endpoint scope per function instead of INCLUDE_PCI_ALL, no RMRR):
 what only the PC proves is in [M11-PLAN.md](M11-PLAN.md#what-only-the-pc-can-show).
+As of 2026-10-05 the PC has run the probe only, never `iommu=on`: its
+first boots with the IOMMU on are the "Tests > IOMMU checks" and "Jam OS
+(IOMMU)" entries ([TESTING.md](TESTING.md#the-iommu)), and the IOMMU
+stays off by default until they pass.
 
 ## The network
 

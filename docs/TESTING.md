@@ -401,7 +401,8 @@ boot comes up and says so; `kexecbad` damages the stored kernel first, so
 it must be refused and the panic screen stay up; `kexecstall` and
 `kexecfault` break the jump after it was decided, and must end in a
 firmware reset), plus `devices`, `usb`,
-`pci`, `memmap`. `reboot` kexecs into the stored kernel (or the files on
+`pci`, `memmap`, `iommu` (the IOMMU's units, domains and faults:
+[The IOMMU](#the-iommu)). `reboot` kexecs into the stored kernel (or the files on
 `/esp` if they changed); `reboot -f` resets through the firmware, which
 ends a QEMU run (`-no-reboot`): the shell scripts end with it.
 `soak` is the soak test ([Soak](#soak)), and `ktest` takes its options.
@@ -902,6 +903,52 @@ quick tiers:
 The times are the PC's: `bench` ([BENCH.md](BENCH.md)) prints every
 switch's line off and on in one run, and `perop` the per-operation lines.
 
+## The IOMMU
+
+The IOMMU ([ARCHITECTURE.md](../ARCHITECTURE.md#the-iommu),
+[M11-PLAN.md](M11-PLAN.md)) is off unless a boot has `iommu=on`, so a
+plain test run never uses it. It has tests at three levels:
+
+- **Kernel tests**, in `tools/vtd-test.sh` (the table under
+  [Area scripts](#area-scripts) says what each boot checks): `vtd_unit_*`
+  (the queue and every invalidation), `vtd_irq_*` (interrupt remapping),
+  `vtd_domain_*` (domains, edu blocked and let through, the mute, the
+  handover while translating), `dma_iommu_*` and the `dma_*` tests in
+  their translated form, with QEMU's caching mode on and off and with
+  pass-through off; and a `reboot` and a panic jumping into the next
+  kernel with everything on. The pure ones (`vtd_pt_*`, `vtd_ir_*`, the
+  entry bit layouts, the DMAR parser) run in every `ktest`.
+- **The deliberate faults**: `tools/hda-test.sh`'s third boot runs drv/hda's
+  IOMMU checks (`iommu=on vtdtest`, the "Tests > IOMMU checks" entry on
+  the PC).
+- **Every device with the IOMMU on**: the area scripts run unchanged with
+  QEMU's unit and the word, `QEMU_IOMMU=<mode> QEMU_WORDS=iommu=on
+  tools/<area>-test.sh <outdir>`. QEMU_WORDS reaches every boot a script
+  makes (a script's own `QEMU_IOMMU` and `QEMU_WORDS`, as hda-test's third
+  boot has, win for that boot). The matrix, run at each IOMMU change and
+  at M11's join:
+
+  | `QEMU_IOMMU` | Area scripts |
+  |---|---|
+  | `1` (caching mode on: every new mapping invalidated too) | usb, storage, net, hda, play, mouse, mixer, data, sticks, fetch, serve, tcp, music, kexec-reboot, reboot-firmware, and the `init` run (`tools/qemu-test.sh <outdir> init init`) |
+  | `cm0` (caching mode off, as on the PC) | the ones whose devices do the most DMA: usb, storage, net, hda |
+  | `eim` (x2APIC destination ids) | hda-test's IOMMU checks boot; vtd-test's `vtd-eim` probe |
+
+  Each must pass as it does without the IOMMU, and the logs must hold no
+  `vtd: fault:` line but those a test provokes (vtd-test's and
+  hda-test's own: edu at 00:04.0, QEMU's DMA engine as ff:1f.7, each
+  sound controller's one read). A `vtd: fault:` line anywhere else is a
+  device reaching memory its driver didn't pin: a bug in the driver or in
+  the IOMMU code.
+
+What QEMU can't show (its unit reads the tables straight from guest
+memory and lets old-format interrupt writes through) is the PC's: the
+"Tests > IOMMU checks" entry, then the "Jam OS (IOMMU)" entry with every
+device in use, `iommu` (no fault but the checks'), `bench`'s IOMMU lines,
+a `reboot` and `reboot -f`, then All tests and `soak 10` booted with
+`iommu=on` (added with E in the boot menu). Only after that does
+`iommu=on` become the default.
+
 ## Random numbers
 
 The kernel's generator ([ARCHITECTURE.md](../ARCHITECTURE.md#random-numbers))
@@ -955,6 +1002,11 @@ of them. Each file's header says more.
 - 4-CPU stress throughput under QEMU is bimodal (context switches from
   thousands to millions in 10 s): CPU-hog threads on 4 vCPUs, not a
   regression. Don't chase it.
+- On a busy Mac (several QEMUs at once, load above the core count) a run
+  can end "FINISHED WITH PROBLEMS" for one reason only: the boot's
+  `timer: ... MISMATCH` line, every CPU short of its 100 ticks by more
+  than 10% (87-89 seen) because the host didn't run the vCPUs. Check that
+  line before looking for a bug, and rerun when the load is lower.
 - QEMU can't measure page-allocator scaling or anything that depends on
   which physical pages a run lands on ([BENCH.md](BENCH.md) has the
   details). Performance is measured on the PC.
