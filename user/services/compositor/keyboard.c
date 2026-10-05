@@ -22,12 +22,13 @@
  * does), in XKB's bits for the generated keymap (KEYMAP_MOD_*), sent as
  * wl_keyboard.modifiers whenever they change and after every enter.
  *
- * Keys typed before any window has had the keys (at boot: the shell's
- * prompt is up before its terminal's window is mapped) are kept, at most
- * EARLY_MAX key events with the modifiers each was typed with, and handed
- * to the first window that takes the keys, after its enter, as the
- * console kept them for the first to listen. Later, with no window
- * focused, keys go nowhere.
+ * Keys typed while no window has the keys are kept, at most EARLY_MAX key
+ * events with the modifiers each was typed with, and handed to the next
+ * window that takes the keys, after its enter, if they are at most
+ * EARLY_KEEP old by then: the shell's prompt is up a few ms before its
+ * terminal's window is mapped (at boot, after the console or the
+ * compositor restarted), and what is typed at it must not be lost, as the
+ * console kept keys for the first to listen. Older ones go nowhere.
  *
  * Terminal text (serialin, a QEMU test): each byte or escape sequence
  * (<termkeys.h>) becomes the presses that type it on the US layout: Shift
@@ -60,15 +61,16 @@ static uint8_t src_mods[SOURCES_MAX];          /* each source's last modifier by
 static uint32_t locked = KEYMAP_MOD_NUM;       /* KEYMAP_MOD_CAPS / _NUM on */
 static uint32_t sent_depressed, sent_locked;   /* what the focused client was last told */
 
-/* A key event typed before any window had the keys, and the modifiers then. */
-#define EARLY_MAX 128
+/* A key event typed while no window had the keys, the modifiers then, and when. */
+#define EARLY_MAX  128
+#define EARLY_KEEP (5 * NS_PER_S)
 struct early {
     uint32_t code, state;            /* evdev code, WL_KEYBOARD_KEY_STATE_* */
     uint32_t depressed, locked;      /* KEYMAP_MOD_* */
+    uint64_t at;                     /* uptime ns */
 };
 static struct early early[EARLY_MAX];
 static unsigned nearly;              /* kept; more are dropped */
-static bool had_focus;               /* a window has had the keys: nothing is kept any more */
 
 status_t keyboard_init(void)
 {
@@ -149,14 +151,17 @@ static void send_enter(struct comp_window *w, const struct seat_res *only)
                                                  sent_locked, 0);
 }
 
-/* The keys kept from before any window had them, to w's client (just
- * entered), each after the modifiers it was typed with; then the
- * modifiers as they are. */
+/* The keys kept while no window had them, to w's client (just entered),
+ * each after the modifiers it was typed with, those no older than
+ * EARLY_KEEP; then the modifiers as they are. */
 static void send_early(struct comp_window *w)
 {
     struct comp_client *cl = w->surface->client;
+    uint64_t t0 = now();
     for (unsigned i = 0; i < nearly; i++) {
         const struct early *e = &early[i];
+        if (t0 - e->at > EARLY_KEEP)
+            continue;
         if (e->depressed != sent_depressed || e->locked != sent_locked) {
             sent_depressed = e->depressed;
             sent_locked = e->locked;
@@ -179,9 +184,7 @@ void keyboard_enter(struct comp_window *w)
     if (!surface_live(w->surface))
         return;
     send_enter(w, NULL);
-    if (!had_focus)
-        send_early(w);
-    had_focus = true;
+    send_early(w);
 }
 
 void keyboard_leave(struct comp_window *w)
@@ -219,8 +222,16 @@ status_t keyboard_create(struct comp_client *cl, uint32_t id, uint32_t version)
 static void send_key(uint32_t code, uint32_t state)
 {
     struct comp_window *w = focus_target();
-    if (!w && !had_focus && nearly < EARLY_MAX)   /* kept for the first window */
-        early[nearly++] = (struct early){ code, state, depressed(), locked };
+    if (!w) {   /* kept for the next window, the old ones forgotten first */
+        uint64_t t = now();
+        unsigned keep = 0;
+        for (unsigned i = 0; i < nearly; i++)
+            if (t - early[i].at <= EARLY_KEEP)
+                early[keep++] = early[i];
+        nearly = keep;
+        if (nearly < EARLY_MAX)
+            early[nearly++] = (struct early){ code, state, depressed(), locked, t };
+    }
     if (!w)
         return;
     struct comp_client *cl = w->surface->client;

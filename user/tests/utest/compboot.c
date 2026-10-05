@@ -8,8 +8,9 @@
  * t_comp_super_enter: Super+Enter (and keypad Enter) asks init for a
  * terminal on its control channel, one ask at a time, whichever window has
  * the keys, and the window never sees Enter.
- * t_comp_early_keys: keys typed before any window had the keys reach the
- * first that takes them; after that, keys with no window focused don't.
+ * t_comp_early_keys: keys typed while no window has the keys (before the
+ * first, or after the focused one went) reach the next that takes them,
+ * with their modifiers, unless they are more than 5 s old by then.
  * t_comp_no_keyboard: a window whose client has no wl_keyboard (the boot
  * splash's) never takes the keys: not when it maps over the focused
  * window, not when it is clicked. */
@@ -32,6 +33,7 @@
 #define U_KP_ENTER 0x58
 #define U_LSHIFT   0xe1
 #define QUIET      (200 * NS_PER_MS)   /* how long "nothing comes" is watched */
+#define STALE      (5300 * NS_PER_MS)  /* past keyboard.c's EARLY_KEEP (5 s) */
 
 /* The answer to our layout_wait (WAIT_TXID) on ch, within CT_WAIT: its status and layout. */
 static status_t wait_answer(handle_t ch, uint8_t *layout)
@@ -151,13 +153,13 @@ bool t_comp_super_enter(void)
     return true;
 }
 
-/* Keys typed before any window has had the keys (the boot: the shell's
- * prompt comes before its terminal's window) reach the first window that
- * takes them, after its enter, with their modifiers; once one has, keys
- * with no window focused go nowhere. */
+/* Keys typed while no window has the keys (the shell's prompt comes
+ * before its terminal's window: at boot, after a restart) reach the next
+ * window that takes them, after its enter, with their modifiers; not
+ * those more than 5 s old by then. */
 bool t_comp_early_keys(void)
 {
-    static struct sc a, b;
+    static struct sc a, b, c;
     struct cs t;
     CHECK(cs_start(&t));
     CHECK(cs_client(&t, &a));
@@ -179,8 +181,8 @@ bool t_comp_early_keys(void)
         shifted |= a.k.ev[i].iface == &jwl_wl_keyboard_interface &&
                    a.k.ev[i].op == JWL_WL_KEYBOARD_EV_MODIFIERS && a.k.ev[i].u[1] != 0;
     CHECK(shifted);
-    /* a's window gone, nothing focused: a key now goes nowhere, and b's
-     * window gets none of it */
+    /* a's window gone (a terminal restarting): a key typed now reaches
+     * the next window, b's */
     ct_close(&a.k);
     CHECK(cs_client(&t, &b));
     jam_nanosleep(now() + QUIET);   /* a's windows taken away */
@@ -188,8 +190,19 @@ bool t_comp_early_keys(void)
     CHECK(cs_window(&b, 10, 10, 64, 64));
     CHECK(ct_await(&b.k, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER, b.kb, CT_WAIT));
     CHECK(cs_sync(&b, NULL));
-    CHECK(no_keys(&b.k));
+    const uint32_t kx[] = { DOWN(KEY_X), UP(KEY_X) };
+    CHECK(keys_are(&b.k, kx, 2));
+    /* but not one typed more than 5 s before a window takes the keys */
     ct_close(&b.k);
+    CHECK(cs_client(&t, &c));
+    jam_nanosleep(now() + QUIET);
+    CHECK(cs_tap(&t, U_A, 0));
+    jam_nanosleep(now() + STALE);
+    CHECK(cs_window(&c, 10, 10, 64, 64));
+    CHECK(ct_await(&c.k, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER, c.kb, CT_WAIT));
+    CHECK(cs_sync(&c, NULL));
+    CHECK(no_keys(&c.k));
+    ct_close(&c.k);
     CHECK(cs_stop(&t));
     return true;
 }
