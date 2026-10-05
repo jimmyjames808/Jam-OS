@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A small protocol of genwl's own for its selftest (tools/genwl-tests/selftest.py):
+     every argument type, nullable ones, a new_id with and without an interface,
+     an object with no interface, since on messages and enum entries, destructors,
+     a bitfield, names the stubs must rename, and an interface with no events. -->
+<protocol name="jwltest">
+  <copyright>
+    Part of Jam OS's tests (BSD-2-Clause, as the rest of Jam OS).
+  </copyright>
+
+  <interface name="t_root" version="3">
+    <description summary="the root object of the test protocol"/>
+
+    <request name="make">
+      <description summary="make a child"/>
+      <arg name="id" type="new_id" interface="t_child" summary="the new child"/>
+      <arg name="flags" type="uint" enum="t_child.flags"/>
+    </request>
+
+    <request name="bind">
+      <arg name="name" type="uint"/>
+      <arg name="id" type="new_id" summary="an object of the interface the sender names"/>
+    </request>
+
+    <request name="every" since="2">
+      <description summary="one argument of every type"/>
+      <arg name="i" type="int"/>
+      <arg name="u" type="uint" enum="error"/>
+      <arg name="f" type="fixed"/>
+      <arg name="s" type="string"/>
+      <arg name="ns" type="string" allow-null="true"/>
+      <arg name="o" type="object" interface="t_child"/>
+      <arg name="no" type="object" interface="t_child" allow-null="true"/>
+      <arg name="any" type="object"/>
+      <arg name="bytes" type="array"/>
+      <arg name="fd" type="fd"/>
+    </request>
+
+    <request name="destroy" type="destructor" since="3"/>
+
+    <event name="ping">
+      <arg name="serial" type="uint"/>
+    </event>
+
+    <event name="gone" since="2">
+      <arg name="child" type="object" interface="t_child" allow-null="true"/>
+    </event>
+
+    <enum name="error">
+      <entry name="bad" value="0" summary="it was bad"/>
+      <entry name="worse" value="0x7" summary="it was worse" since="2"/>
+    </enum>
+  </interface>
+
+  <interface name="t_child" version="1">
+    <request name="poke">
+      <arg name="self" type="int"/>
+      <arg name="default" type="int"/>
+      <arg name="c" type="uint"/>
+      <arg name="jwl_a" type="uint"/>
+    </request>
+
+    <event name="done" type="destructor">
+      <arg name="data" type="uint"/>
+    </event>
+
+    <enum name="flags" bitfield="true">
+      <entry name="none" value="0"/>
+      <entry name="1st" value="1"/>
+      <entry name="top" value="0x40000000"/>
+    </enum>
+  </interface>
+
+  <interface name="t_quiet" version="1">
+    <request name="hush"/>
+  </interface>
+</protocol>

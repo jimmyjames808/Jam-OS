@@ -39,7 +39,10 @@ that a bug fix comes with a test is in
 - `make` builds with `-Werror`; `make KTESTS=0` builds a kernel without
   the in-kernel tests, benchmark and test hooks (into `build/noktests/`).
 - `make check`: the generated syscall and IDL code matches `abi/`
-  (`tools/gensyscalls.py check`, `tools/genidl.py check`); the driver
+  (`tools/gensyscalls.py check`, `tools/genidl.py check`), the generated
+  Wayland code matches the vendored XML (`tools/genwl.py check`) and the
+  Wayland generator passes its own tests (`tools/genwl.py selftest`:
+  tools/genwl-tests/, built and run with the Mac's compiler); the driver
   isolation check still rejects what it must (`tools/checkdriver-selftest.sh`
   over `tools/checkdriver-tests/`); the docs match the tree
   (`tools/checkdocs.py`: links, anchors, and the repo paths, file names,
@@ -875,6 +878,7 @@ of them. Each file's header says more.
 | `tools/checkdriver.py`, `tools/checkdriver-selftest.sh` | the driver build check, and the proof that it still rejects what it must (`tools/checkdriver-tests/`) |
 | `tools/sortincludes.py` | the include-order check of `make check`; `make includes` runs it with `--fix` |
 | `tools/gensyscalls.py`, `tools/genidl.py`, `tools/gensyms.py` | the syscall glue, the IDL headers and the kernel symbol table |
+| `tools/genwl.py` | the Wayland tables and typed stubs from upstream's XML (`gen`, `check`, `selftest`) |
 | `tools/mkbootfs.py`, `tools/mkimage.py` | the boot image and the two-partition disk image |
 | `tools/bootfs-edit.py <in> <out> name=file...` | a boot image with files added, replaced or (`name=`) left out (the update tests' build B, and their builds with or without a test key) |
 | `tools/update-test-key.sh <outdir> <in.img> <out.img> [nokey]` | for the update tests: two throwaway keys in `<outdir>/testkey` (made once by `build/host/jamos-sign keygen`) and a copy of the image whose build has the first one's public half (or none) |
