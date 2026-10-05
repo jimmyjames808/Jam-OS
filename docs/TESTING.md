@@ -338,8 +338,7 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   `nofpuopt`, `nofpucall` (a switch inside a system call saves the full
   FPU state again; utest's `fpu_call_keeps_control_words` then reports
   its rounds as kept, not zeroed), `nohandoff` (a wake that would hand
-  the CPU straight to the woken thread queues it instead; unlike the
-  others, a reboot doesn't keep it). The message slots
+  the CPU straight to the woken thread queues it instead). The message slots
   (`channel_slots`) have no boot word: the benchmark's `slots` switch and
   the path tests turn them off for a moment.
 - `vlan=<id>`, `vlan=none`, `vlan=off`: the network's mode
