@@ -135,8 +135,9 @@ differs from the recommendation below, this note wins:
   it (clicking elsewhere closes it): volume (a slider on the mixer's
   volume, the output, what's playing), network (link state, address,
   NIC and speed, live rates), the clock (time, full date, a month
-  calendar, weeks starting Monday); thin full-width dividers (1 px, white
-  at about 10%) separate a popover's sections (volume | output | playing;
+  calendar, weeks starting Monday); thin inset dividers (1 px, white
+  at about 10%, stopping at the card's inner padding, never touching
+  its edges) separate a popover's sections (volume | output | playing;
   state | address and link | down and up; time and date | calendar), and
   the same style separates sections in the app menu and Alt+Tab list.
   Notifications: frosted cards stacked
