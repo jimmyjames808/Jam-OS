@@ -5,7 +5,7 @@
 # -> the shell. Typing in the first terminal; Super+Enter opening terminal
 # 2, whose window takes the keys; a click on the first terminal giving
 # them back, one on terminal 2 taking them again; terminal 2's close
-# circle closing it.
+# circle closing it; Super+T's tiling saved and kept across a reboot.
 #
 # Where things are at OVMF's 1280x800: the first terminal's window is
 # centred, its surface 960x592 at (160, 104) under a 28-pixel title bar;
@@ -59,5 +59,18 @@ shot desktop-closed
 usbkeys echo usb-last\r
 wait 10 usb-last
 wait jam>
+# Super+T: tiling, saved by init (the compositor's layout_wait answered);
+# a reboot (kexec) comes back tiling, as the settings say
+monitor sendkey meta_l-t
+wait 10 init: the window layout is tiling (saved)
+send grep layout /data/etc/settings
+wait 10 display.layout = tiling
+wait jam>
+shot desktop-tiling
+send reboot
+wait 60 kexec: started by a reboot
+wait 120 init: the window layout: tiling, as the settings say
+seen 120 init: the shell is up
+sleep 2
 send reboot -f
 wait reboot: resetting
