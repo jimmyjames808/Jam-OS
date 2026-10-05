@@ -109,6 +109,12 @@ status_t vtd_fns_init(void)
     return OK;
 }
 
+uint64_t vtd_root_table_new(const struct vtd_unit *u)
+{
+    (void)u;
+    return pmm_alloc_page_phys(PMM_ZERO);
+}
+
 status_t vtd_ctl_init(struct vtd_unit *u)
 {
     struct vtd_ctl *ctl = &ctls[u->index];
@@ -119,7 +125,7 @@ status_t vtd_ctl_init(struct vtd_unit *u)
     uint32_t ndid = 1u << (4 + 2 * (unsigned)VTD_CAP_ND(u->cap));
     if (ndid > VTD_TT_MAX_DIDS)
         ndid = VTD_TT_MAX_DIDS;
-    uint64_t root = pmm_alloc_page_phys(PMM_ZERO);
+    uint64_t root = vtd_root_table_new(u);
     uint64_t *used = kzalloc(((ndid + 63) / 64) * sizeof(uint64_t));
     if (!root || !used) {
         if (root)

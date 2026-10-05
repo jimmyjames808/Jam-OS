@@ -137,6 +137,10 @@ struct vtd_ctl *vtd_ctl_get(uint32_t i);
 /* The function's state, or NULL (iommu=off, or no unit covers it). */
 struct vtd_fn *vtd_fn_of(const struct pci_dev *dev);
 
+/* A cleared root table page for u (9.1: every entry not present): its
+ * physical address, or 0 (no memory). */
+uint64_t vtd_root_table_new(const struct vtd_unit *u);
+
 /* Set up u's tables (vtd_ctl_get(u->index) afterwards: an empty root
  * table, the domain-id map) and fns[] for every PCI function (vtd_boot.c
  * fills in which unit covers which). ERR_NO_MEMORY. Boot only. */
