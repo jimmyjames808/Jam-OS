@@ -33,6 +33,7 @@ JAM_WANTS("mount * rw\n"
 #define PROMPT_W  5
 
 static handle_t con, keys;
+unsigned sh_term_no = 1;
 
 /* ---- output ------------------------------------------------------------------- */
 
@@ -347,6 +348,9 @@ static void boot_soak(const char *minutes)
 
 int main(int argc, char **argv)
 {
+    if (argc > 1 && !strncmp(argv[1], "term=", 5) && argv[1][5] >= '2' && argv[1][5] <= '9' &&
+        !argv[1][6])
+        sh_term_no = (unsigned)(argv[1][5] - '0');   /* init's, for another terminal's shell */
     con = startup_handle(SR_CONSOLE);
     if (!con) {
         printf("shell: no console channel\n");

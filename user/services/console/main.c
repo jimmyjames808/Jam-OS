@@ -16,7 +16,11 @@
  * output is the log runs). The log is still all in the kernel's ring, on
  * the serial port and in /data/logs: `log` and `dmesg` show it.
  * "selftest" (alone; `run console selftest` from the shell): the notices'
- * checks (selftest.c), then exit.
+ * checks (selftest.c), then exit. "term=<n>" (init, in window mode): this
+ * is terminal n (1 to 9; 1, the first, if none is given): its window's
+ * title; a terminal other than the first keeps the log off its screen
+ * but on request (as "nolog") and makes no notices: the log and its news
+ * are the first terminal's.
  *
  * Startup handles:
  *   SR_RESOURCE     the root resource with RIGHT_ROOT_KLOG (klog_open),
@@ -27,9 +31,15 @@
  *   SR_USER + n     server ends of `console` channels (n = 0..7): init's;
  *                   clients share one by duplicating the client end
  *   SR_USER + 8     init's control channel (abi/idl/initctl.idl), which
- *                   answers this holder only `reboot`: Ctrl+Alt+Del
+ *                   answers this holder only `reboot` (Ctrl+Alt+Del) and
+ *                   `terminal` (Super+Enter: another terminal)
  *   SR_USER + 9     init's table of the log writers whose lines make
  *                   notices (<logwriters.h>), read-only
+ *   SR_USER + 10    optional: the client end of /svc/wayland's shared
+ *                   channel (WAYLAND_ROLE). With it the console runs in
+ *                   window mode (window.c): it draws into a window of the
+ *                   compositor's and never takes the framebuffer; without
+ *                   it, as below, on the framebuffer
  *
  * The screen: a grid of 8x16 cells. Committed lines live in a scrollback
  * ring; the line the programs are writing (the "current line", where the
@@ -77,6 +87,7 @@ static size_t nmarks, mark_next;
 static uint64_t marks_known, marks_upto;
 static const struct log_writers *writers;   /* init's table, mapped (NULL: none) */
 static bool log_off;               /* "nolog": the log is off the screen but on request */
+static bool notices;               /* ... and its notices are ours to show (the first terminal) */
 static bool catching_up;           /* reading the log from before we started */
 static bool log_whole = true;       /* the log read so far starts at the boot's first line */
 static uint64_t draw_from;         /* the catch-up draws no line that starts before this */
@@ -155,7 +166,7 @@ static void klog_line(const char *s, size_t n)
     if (shown)
         kernel_line(s, n);
     drawn_lines += shown && catching_up;
-    if (log_off)
+    if (notices)
         notice_take(s, n, !shown && !catching_up, partial_by);
 }
 
@@ -203,7 +214,7 @@ void klog_event(void)
                 kernel_line(gap, (size_t)m);
         }
         klog_pos = first + (uint64_t)n;
-        if (log_off)
+        if (notices)
             fetch_marks(first, n);   /* only the notices need them */
         klog_take(klog_buf, n, first);
     }
@@ -231,10 +242,112 @@ static void port_event(const struct port_packet *pkt)
     case K_LEASE:
         lease_ended();
         break;
-    case K_REBOOT:
-        reboot_event();
+    case K_INIT:
+        init_event();
+        break;
+    case K_WL:
+        window_event();
         break;
     }
+}
+
+/* The screen: the window (window mode, with /svc/wayland's channel from
+ * init) or the framebuffer; the text model at its size. false: out of
+ * memory. *screen: something shows the text. */
+static bool start_screen(bool *screen)
+{
+    handle_t wayland = startup_handle(SR_USER + WAYLAND_ROLE);
+    if (wayland) {
+        cols = WIN_COLS;   /* until the output is known (window.c regrids) */
+        rows = WIN_ROWS;
+        *screen = window_init(wayland, term_no);
+        return text_init() && paint_regrid();
+    }
+    *screen = screen_init();
+    return text_init() && screen_alloc();
+}
+
+/* Read the kernel log written before we started: drawn (its last part),
+ * and the notices' state from all of it. */
+static void read_boot_log(void)
+{
+    status_t st = jam_klog_open(root, &klog);
+    if (st != OK) {
+        printf("console: no kernel log (%s)\n", status_str(st));
+        return;
+    }
+    /* Unbound, new kernel lines show only when a program writes (each
+     * write pulls them in first): say so, it's worth knowing. */
+    st = jam_port_bind(port, klog, KEY(K_KLOG, 0), SIG_READABLE, PORT_BIND_PERSISTENT);
+    if (st != OK)
+        printf("console: kernel log: port_bind: %s; its lines show only with program "
+               "output\n", status_str(st));
+    /* Past the end: 0 bytes and the end. If that fails, end stays 0 and
+     * everything is drawn, as a console did before it looked. */
+    uint64_t end = 0;
+    char c;
+    jam_klog_read(klog, UINT64_MAX, &c, 1, &end);
+    draw_from = end > CATCH_UP_DRAWN ? end - CATCH_UP_DRAWN : 0;
+    catching_up = true;
+    klog_event();   /* the boot log so far: no news in it */
+    catching_up = false;
+    printf("console: the kernel log so far: drew %lu lines of the last %lu KiB (of %lu "
+           "KiB)%s\n", (unsigned long)drawn_lines, (unsigned long)((end - draw_from) >> 10),
+           (unsigned long)(end >> 10), draw_from ? "; `dmesg` shows the rest" : "");
+    notice_settle(log_whole);
+}
+
+/* The loop: returns only when our window was closed (0) or the port
+ * failed (1). */
+static int serve(void)
+{
+    uint64_t last = 0;
+    while (!closing) {
+        /* A client with requests left over: take what else is queued (a
+         * key, another client) without sleeping, then give it another round. */
+        uint64_t deadline = clients_pending() ? 0 : dirty ? last + RENDER_NS : DEADLINE_NEVER;
+        uint64_t more[3] = { reboot_deadline(), notices ? notice_deadline() : DEADLINE_NEVER,
+                             window_deadline() };
+        for (unsigned i = 0; i < 3; i++)
+            deadline = more[i] < deadline ? more[i] : deadline;
+        struct port_packet pkt;
+        status_t st = jam_port_wait(port, deadline, &pkt);
+        if (st == OK) {
+            port_event(&pkt);
+        } else if (st != ERR_TIMED_OUT) {
+            printf("console: port_wait: %s\n", status_str(st));
+            return 1;
+        }
+        if (window_mode && st == ERR_TIMED_OUT)
+            window_event();   /* its own work: a key repeat, a reconnect's try */
+        clients_serve_pending();
+        reboot_due();
+        if (notices)
+            notice_tick(clients_show_all());
+        uint64_t t = now();
+        if (dirty && t >= last + RENDER_NS) {
+            render();
+            last = t;
+        }
+    }
+    return 0;
+}
+
+/* The arguments (the file's header says what each does). */
+static void take_args(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "quiet"))
+            screen_quiet(now() + QUIET_MAX);
+        else if (!strcmp(argv[i], "nolog"))
+            log_off = true;
+        else if (!strncmp(argv[i], "term=", 5) && argv[i][5] >= '1' && argv[i][5] <= '9' &&
+                 !argv[i][6])
+            term_no = (unsigned)(argv[i][5] - '0');
+    }
+    if (term_no > 1)
+        log_off = true;   /* the log and its notices are the first terminal's */
+    notices = log_off && term_no == 1;
 }
 
 int main(int argc, char **argv)
@@ -247,76 +360,22 @@ int main(int argc, char **argv)
         jam_vmar_map(startup_handle(SR_SELF_VMAR), startup_handle(CONSOLE_WRITERS_ROLE), 0,
                      PAGE_SIZE, VMAR_READ, &waddr) == OK)
         writers = (const struct log_writers *)(uintptr_t)waddr;
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "quiet"))
-            screen_quiet(now() + QUIET_MAX);
-        else if (!strcmp(argv[i], "nolog"))
-            log_off = true;
-    }
+    take_args(argc, argv);
     status_t st = jam_port_create(&port);
     if (st != OK)
         return 1;
     clients_init();
-    bool screen = screen_init();
-    if (!text_init() || !screen_alloc()) {
+    init_watch();
+    bool screen = false;
+    if (!start_screen(&screen)) {
         printf("console: out of memory\n");
         return 1;
     }
-    st = jam_klog_open(root, &klog);
-    if (st == OK) {
-        /* Unbound, new kernel lines show only when a program writes (each
-         * write pulls them in first): say so, it's worth knowing. */
-        st = jam_port_bind(port, klog, KEY(K_KLOG, 0), SIG_READABLE, PORT_BIND_PERSISTENT);
-        if (st != OK)
-            printf("console: kernel log: port_bind: %s; its lines show only with program "
-                   "output\n", status_str(st));
-        /* Past the end: 0 bytes and the end. If that fails, end stays 0 and
-         * everything is drawn, as a console did before it looked. */
-        uint64_t end = 0;
-        char c;
-        jam_klog_read(klog, UINT64_MAX, &c, 1, &end);
-        draw_from = end > CATCH_UP_DRAWN ? end - CATCH_UP_DRAWN : 0;
-        catching_up = true;
-        klog_event();   /* the boot log so far: no news in it */
-        catching_up = false;
-        printf("console: the kernel log so far: drew %lu lines of the last %lu KiB (of %lu "
-               "KiB)%s\n", (unsigned long)drawn_lines, (unsigned long)((end - draw_from) >> 10),
-               (unsigned long)(end >> 10), draw_from ? "; `dmesg` shows the rest" : "");
-        notice_settle(log_whole);
-    } else {
-        printf("console: no kernel log (%s)\n", status_str(st));
-    }
+    read_boot_log();
     printf("console: %ux%u cells%s, %u client channel(s)%s\n", cols, rows,
            screen ? "" : " (no screen)", client_count(),
-           log_off ? "; the kernel log off the screen (notices only)" : "");
+           !log_off ? "" : notices ? "; the kernel log off the screen (notices only)"
+                                   : "; the kernel log off the screen");
     render();
-
-    uint64_t last = 0;
-    for (;;) {
-        /* A client with requests left over: take what else is queued (a
-         * key, another client) without sleeping, then give it another round. */
-        uint64_t deadline = clients_pending() ? 0 : dirty ? last + RENDER_NS : DEADLINE_NEVER;
-        if (reboot_deadline() < deadline)
-            deadline = reboot_deadline();
-        uint64_t nd = log_off ? notice_deadline() : DEADLINE_NEVER;
-        if (nd < deadline)
-            deadline = nd;
-        struct port_packet pkt;
-        st = jam_port_wait(port, deadline, &pkt);
-        if (st == OK) {
-            port_event(&pkt);
-        } else if (st != ERR_TIMED_OUT) {
-            printf("console: port_wait: %s\n", status_str(st));
-            return 1;
-        }
-        clients_serve_pending();
-        reboot_due();
-        if (log_off)
-            notice_tick(clients_show_all());
-        uint64_t t = now();
-        if (dirty && t >= last + RENDER_NS) {
-            render();
-            last = t;
-        }
-    }
+    return serve();
 }
