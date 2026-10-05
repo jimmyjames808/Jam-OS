@@ -145,6 +145,13 @@ differs from the recommendation below, this note wins:
   after about 5 s unless they carry buttons (e.g. "Update written ...
   Reboot / Later"), which stay until answered; every notice still goes
   to the first terminal too. No overview of all screens in G1.
+  Words on the desktop are in sentence case (owner, from the mockups):
+  window titles, top-bar chips, menu rows, popover labels, notifications
+  and buttons start with a capital ("Terminal", "Mines", "Connected",
+  "Output", "Reboot"); command names stay lowercase only where they are
+  typed (the terminal, the search box's "run ..." row). The nine apps'
+  gfx_title calls change to "Demo", "Fractal", "Jamjar", "Life", "Mines",
+  "Snake", "Splash", "Sysmon", "Tetris" (with D2).
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
