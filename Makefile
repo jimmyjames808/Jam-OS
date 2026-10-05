@@ -368,7 +368,9 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # as fat's build sees them (utest/fatlayout.c: "ff.h" with fat's
 # ffconf.h, on the quote path only, so ffport's <string.h> stays fat's),
 # and the compositor's boxes and regions (utest/comp_region.c: region.c
-# and its comp.h).
+# and its comp.h), and its window manager on its scene (utest/compwm.c:
+# wm.h, no protocol in those files; the test plays the seat), with
+# title.c's title bar boxes and the libfun they draw with.
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -379,7 +381,8 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/dns/socks.c.o $(UOBJ)/user/services/dns/askers.c.o \
                       $(UOBJ)/user/services/sntp/ntp.c.o \
                       $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
-                      $(UOBJ)/user/services/compositor/region.c.o
+                      $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile \
+                        wmgrab deco title) $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor \
                       -iquote user/services/netstack -iquote user/services/dhcp \

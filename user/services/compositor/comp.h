@@ -314,7 +314,7 @@ struct comp_window {
     int32_t deco_top, deco_left, deco_right, deco_bottom;
     uint32_t flags;                /* COMP_WIN_* */
     struct comp_box tile;          /* tiling: the tile it was given (wm.c) */
-    void *wm;                      /* the window manager's own */
+    void *wm;                      /* the window manager's own (struct wm_window, wm.h) */
     const char *title;             /* its title bar's text (the window manager's), or NULL */
 };
 
@@ -624,9 +624,92 @@ void wm_toggle_fullscreen(struct comp_window *w);
 /* The layout key (Super+T): the screen floating, or tiling, or back.
  * Default: nothing. */
 void wm_toggle_layout(void);
+/* Super+Q: ask w's client to close it (xdg_toplevel.close), as its close
+ * box does; tiling's windows have none. Default: nothing. */
+void wm_close(struct comp_window *w);
+/* The keyboard focus moved to w (NULL: none), COMP_WIN_FOCUSED already set
+ * (seat_focus calls it last, whatever moved it): the window manager raises
+ * w and tells both toplevels whether they are activated. Default: nothing. */
+void wm_focus_changed(struct comp_window *w);
 
 /* The test power `testwin` (testwin.c): a surface without a role that
  * commits a buffer becomes a window at the attach's x and y, mapped while
  * it has a buffer. For tests that need windows without xdg-shell; init
  * never passes it. surface.c calls this at commit. */
 status_t testwin_commit(struct comp_surface *s);
+
+/* ---- window management (wm.c, wmtile.c, wmgrab.c, deco.c) -------------------------------
+ *
+ * Every toplevel is a window the window manager places: floating (new
+ * windows centred, the next one cascaded; moved by the title bar, resized
+ * by the edges when the client allows) or tiling (the master and stack
+ * layout: the oldest window on the left half, the others stacked on the
+ * right; a window that can't resize sits centred in its tile at its own
+ * size; tiles have a gap of background between them and at the edges).
+ * scene.layout says which; Super+T switches all windows at once, Super+Q
+ * asks the focused one to close. The seat's hooks above (wm_cycle,
+ * wm_clicked, wm_press, wm_toggle_*, wm_close, wm_focus_changed) are
+ * defined in wm.c and wmgrab.c. A window without a toplevel (testwin's:
+ * w->wm is NULL) is the seat's alone: no decorations, never placed,
+ * cycled after the toplevels. */
+
+/* Decorations (deco.c sets struct comp_window's deco_*; title.c draws
+ * them). Floating: the title bar, COMP_TITLE_H high, above the surface
+ * (its close box at the right end) and a DECO_BORDER border on the other
+ * sides; maximised, the title bar only. Tiling: no title bar, a
+ * DECO_BORDER border on all four sides, its colour the focus. Full
+ * screen: none. The window's title is w->title (the window manager's
+ * copy, at most 255 bytes; it outlives the window), and
+ * COMP_WIN_UNRESPONSIVE says the client didn't answer the ping a close
+ * sent. A resizable floating window's edges also take presses DECO_GRAB
+ * pixels outside its frame: a border thin enough to look right is too
+ * thin to hit. */
+#define DECO_BORDER 2
+#define DECO_GRAB   6
+
+/* The topmost mapped window whose frame (and grab margin) holds output (x,
+ * y), or NULL (the background). *on_surface: the point is in its surface's
+ * input region (the client's); else it is on the decorations (the window
+ * manager's). A point in a surface but outside its input region looks at
+ * the windows below. (window_at sees surfaces only: a title bar over
+ * another window's surface hides it here, not there.) */
+struct comp_window *wm_window_at(int32_t x, int32_t y, bool *on_surface);
+
+/* The compositor's grabs for a client's xdg_toplevel.move and resize, once
+ * seat_button_serial_ok said yes, from (x, y), the pointer now (edges:
+ * xdg_toplevel.resize_edge's bits). Started with seat_grab_begin.
+ * ERR_BAD_STATE: w can't be moved or resized now (tiling, maximised,
+ * no button held, a grab on already); ERR_INVALID_ARGS: edges. */
+status_t wm_begin_move(struct comp_window *w, int32_t x, int32_t y);
+status_t wm_begin_resize(struct comp_window *w, uint32_t edges, int32_t x, int32_t y);
+/* Every window placed again for layout (the start: init's saved choice). */
+void     wm_set_layout(enum comp_layout layout);
+
+/* The layout's setting in /data/etc/settings (<settings.h>): `display.layout
+ * = floating` or `tiling`. The compositor reads no files: init reads it and
+ * hands it over (the `layout=` argument), and saves it when told the user
+ * switched (ctl_layout_changed). */
+#define WM_LAYOUT_SETTING "display.layout"
+const char *wm_layout_name(enum comp_layout layout);
+bool        wm_layout_parse(const char *s, enum comp_layout *out);
+/* The user switched the layout: compctl tells init, which saves it. Not
+ * built yet (a compctl method for I1): wm.c's weak default does nothing. */
+void        ctl_layout_changed(enum comp_layout layout);
+
+/* ---- xdg-shell (xdg.c, xdgtop.c) -------------------------------------------------- */
+
+/* wl_registry.bind of xdg_wm_base. */
+status_t xdg_bind(struct comp_client *cl, uint32_t id, uint32_t version);
+status_t xdg_wm_base_request(struct comp_client *cl, struct jwl_msg *m);
+status_t xdg_positioner_request(struct comp_client *cl, struct jwl_msg *m);
+status_t xdg_surface_request(struct comp_client *cl, struct jwl_msg *m);
+status_t xdg_toplevel_request(struct comp_client *cl, struct jwl_msg *m);
+status_t xdg_popup_request(struct comp_client *cl, struct jwl_msg *m);
+/* Everything of cl's xdg-shell objects, nothing sent (before surfaces_teardown). */
+void     xdg_teardown(struct comp_client *cl);
+/* The ping clock: pings unanswered for XDG_PING_NS mark their client's
+ * windows not responding. xdg_deadline: when xdg_tick is next due
+ * (DEADLINE_NEVER: nothing waits). */
+#define XDG_PING_NS (5 * NS_PER_S)
+void     xdg_tick(uint64_t t);
+uint64_t xdg_deadline(void);
