@@ -217,12 +217,6 @@ UINC        := $(UINC_HDRS:%=$(BUILD)/uinc/jam/%)
 UOBJ        := $(BUILD)/uobj
 LIBOS_SRCS  := $(filter-out user/lib/crt0.S user/lib/driver_crt.c,\
                              $(wildcard user/lib/*.c user/lib/*.S))
-# The Wayland tables include <jwl.h>, libjwl's own header. A tree without it
-# leaves them out of libos (`genwl.py selftest` still builds them, against a
-# stand-in).
-ifeq ($(wildcard user/include/jwl.h),)
-LIBOS_SRCS  := $(filter-out $(WL_TABLES),$(LIBOS_SRCS))
-endif
 LIBOS_OBJS  := $(LIBOS_SRCS:%=$(UOBJ)/%.o)
 # dr_mp3 (third_party/dr_mp3, vendored unmodified) is compiled once, from
 # user/lib/mp3port/dr_mp3_impl.c (its configuration; the directory also
