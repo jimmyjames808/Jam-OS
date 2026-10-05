@@ -4,11 +4,11 @@
  * Keys (desk_key, before any client sees them; focus.c asks):
  *   - Super tapped alone (pressed and let go within half a second, no
  *     other key or click between) opens the search box, or closes it;
- *   - while the search box is open every key is its own (search_key);
- *   - Alt+Tab, Alt+Shift+Tab: Alt+Tab's list (alttab_step); letting go of
- *     Alt goes to the selected window (desk_key_up, before the release
- *     reaches a client, so the window it goes to gets that release), Esc
- *     while Alt is held cancels;
+ *   - Alt+Tab, Alt+Shift+Tab: Alt+Tab's list (alttab_step; an open search
+ *     box closes first); letting go of Alt goes to the selected window
+ *     (desk_key_up, before the release reaches a client, so the window it
+ *     goes to gets that release), Esc while Alt is held cancels;
+ *   - while the search box is open every other key is its own (search_key);
  *   - Esc closes an open popover;
  *   - Super+Left/Right: the screen before or after (past the last: a new
  *     one); with Shift the focused window goes there too; Super+1..9: that
@@ -155,14 +155,14 @@ bool desk_key(uint16_t usage, uint8_t mods, uint32_t xkb_mods)
     }
     dk.super_used = true;
     anim_finish();
-    if (dk.on && search.open) {
-        search_key(usage, xkb_mods);
-        return true;
-    }
-    if (dk.on && usage == U_TAB && alt && !ctrl) {
+    if (dk.on && usage == U_TAB && alt && !ctrl) {   /* even from the search box: it closes */
         search_close();
         pop_close();
         alttab_step(shift);
+        return true;
+    }
+    if (dk.on && search.open) {
+        search_key(usage, xkb_mods);
         return true;
     }
     if (dk.on && usage == U_ESC && alttab.active) {
