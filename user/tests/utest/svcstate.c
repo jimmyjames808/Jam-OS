@@ -205,9 +205,10 @@ bool t_svcstate_slots(void)
     CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_REPLY);
     CHECK_ST(svcstate_reply(&s, 1, srv, NULL, 0), OK);
     CHECK(answered(cli, 7, 0xaa));
-    /* Killed before the next read: the reply is sent again (harmless). */
+    /* Killed before the next read: the reply is marked out, nothing is owed. */
+    CHECK(s.h->slot[1].replied == 1);
     CHECK(reopen(&s, svc, SVCSTATE_ADOPTED));
-    CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_REPLY);
+    CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_IDLE);
 
     CHECK_ST(svcstate_take(&s, 3, srv, &slot), ERR_SHOULD_WAIT);
     CHECK(reopen(&s, svc, SVCSTATE_ADOPTED));
@@ -248,6 +249,81 @@ bool t_svcstate_slots(void)
     svcstate_close(&s);
     jam_handle_close(srv);
     jam_handle_close(cli);
+    jam_handle_close(svc);
+    jam_handle_close(state);
+    CHECK_EQ(handles_used(), before);
+    return true;
+}
+
+/* A reply that waits for the service's next system call (svcstate_answer,
+ * <idl/common.h> struct idl_reply), marked out in its slot by the kernel
+ * in the call that sends it. A death before that call, the next slot set
+ * up: the reply is owed (svcstate_pending says REPLY for the older slot);
+ * after it: nothing is. The next request read in the call that sends the
+ * reply. A reply to a client that has gone is never marked out, and its
+ * handle is closed; one of 0 bytes waits for nothing. */
+bool t_svcstate_answer_mark(void)
+{
+    uint64_t before = handles_used();
+    handle_t state, svc, srv, cli, ev;
+    CHECK(new_state(&state, &svc));
+    CHECK_ST(jam_channel_create(&srv, &cli), OK);
+    struct svcstate s = { 0 };
+    enum svcstate_start how;
+    CHECK_ST(svcstate_open(svc, &L, &s, &how), OK);
+    struct idl_reply rep = { .ch = HANDLE_INVALID };
+    struct idl_slot is;
+    unsigned slot = 9, next = 9, found = 9;
+
+    CHECK(ask(cli, 7, 0xa, 40));
+    svcstate_prepare(&s, 3, &slot, &is);
+    CHECK_ST(idl_take(srv, &is), OK);
+    CHECK(svcstate_taken(&s, slot) && slot == 1 && holds(&s, 1, 7, 0xa, 40));
+    CHECK(commit(&s, slot, 7, 0xaa));
+    svcstate_answer(&s, slot, srv, NULL, 0, &rep);
+    CHECK(rep.ch == srv && rep.rn == 8 && rep.mark == &s.h->slot[1].replied);
+    CHECK(s.h->slot[1].phase == SVCSTATE_SENT && s.h->slot[1].replied == 0);
+    svcstate_prepare(&s, 3, &next, &is);   /* then killed */
+    CHECK(reopen(&s, svc, SVCSTATE_ADOPTED));
+    CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_REPLY);
+    CHECK_EQ(found, 1);
+    svcstate_prepare(&s, 3, &next, &is);
+    CHECK_ST(idl_take_after(srv, &is, &rep), ERR_SHOULD_WAIT);   /* sends it, finds nothing */
+    CHECK(!svcstate_taken(&s, next) && rep.ch == HANDLE_INVALID && s.h->slot[1].replied == 1);
+    CHECK(answered(cli, 7, 0xaa));
+    CHECK(reopen(&s, svc, SVCSTATE_ADOPTED));
+    CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_IDLE);
+
+    CHECK(ask(cli, 8, 0xb, 12));
+    svcstate_prepare(&s, 3, &slot, &is);
+    CHECK_ST(idl_take(srv, &is), OK);
+    CHECK(svcstate_taken(&s, slot) && slot == 0);
+    CHECK(commit(&s, slot, 8, 0xbb));
+    svcstate_answer(&s, slot, srv, NULL, 0, &rep);
+    CHECK(ask(cli, 9, 0xc, 16));
+    svcstate_prepare(&s, 3, &next, &is);
+    CHECK_ST(idl_take_after(srv, &is, &rep), OK);   /* 8's reply out, 9 in */
+    CHECK(svcstate_taken(&s, next) && next == 1 && s.h->slot[0].replied == 1);
+    CHECK(holds(&s, 1, 9, 0xc, 16) && answered(cli, 8, 0xbb));
+    CHECK(reopen(&s, svc, SVCSTATE_ADOPTED));
+    CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_RERUN);
+
+    CHECK(commit(&s, 1, 9, 0xcc));
+    CHECK_ST(jam_event_create(&ev), OK);
+    svcstate_answer(&s, 1, srv, &ev, 1, &rep);
+    CHECK_ST(jam_handle_close(cli), OK);
+    svcstate_prepare(&s, 3, &next, &is);
+    CHECK_ST(idl_take_after(srv, &is, &rep), ERR_PEER_CLOSED);
+    CHECK(s.h->slot[1].replied == 0 && rep.ch == HANDLE_INVALID);
+    CHECK(reopen(&s, svc, SVCSTATE_ADOPTED));
+    CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_REPLY);   /* to nobody: harmless */
+    CHECK_ST(svcstate_commit(&s, 1, 0), OK);   /* answered later, say */
+    svcstate_answer(&s, 1, srv, NULL, 0, &rep);
+    CHECK(rep.ch == HANDLE_INVALID);
+    CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_IDLE);
+
+    svcstate_close(&s);
+    jam_handle_close(srv);
     jam_handle_close(svc);
     jam_handle_close(state);
     CHECK_EQ(handles_used(), before);
@@ -332,7 +408,7 @@ bool t_svcstate_refused(void)
     other.req_cap = 1024;     /* the same pages, another layout */
     CHECK(refused(st, sv, 0, NULL, 0, &other, "another layout"));
     CHECK(refused(st, sv, AT(magic), &junk, 8, &L, "not a state"));
-    CHECK(refused(st, sv, AT(version), &two, 4, &L, "another header version"));
+    CHECK(refused(st, sv, AT(version), &seven, 4, &L, "another header version"));
     CHECK(refused(st, sv, AT(header_size), &two, 4, &L, "another header version"));
     CHECK(refused(st, sv, AT(size), &junk, 8, &L, "another layout"));
     CHECK(refused(st, sv, AT(adopted), &big, 8, &L, "adopted too often"));
@@ -341,6 +417,9 @@ bool t_svcstate_refused(void)
     CHECK(refused(st, sv, SLOT(1, phase), &seven, 4, &L, "a slot in no known phase"));
     CHECK(refused(st, sv, SLOT(1, reply_len), &toolong, 4, &L, "a reply longer than its area"));
     CHECK(refused(st, sv, AT(commit), &seven, 8, &L, "a commit word out of step"));
+    uint64_t two64 = 2, one64 = 1;   /* slot 1's reply is out (1); slot 0 is still running */
+    CHECK(refused(st, sv, SLOT(1, replied), &two64, 8, &L, "a reply out before it was ready"));
+    CHECK(refused(st, sv, SLOT(0, replied), &one64, 8, &L, "a reply out before it was ready"));
     /* Slot 1 (seq 1) was answered before slot 0 was set up: the commit
      * word can't be 0, whether slot 1 says it was sent or not. */
     uint64_t zero = 0;
@@ -349,6 +428,7 @@ bool t_svcstate_refused(void)
     CHECK(used_state(st, sv));
     CHECK_ST(jam_vmo_write(st, AT(commit), &zero, 8), OK);
     CHECK_ST(jam_vmo_write(st, SLOT(1, phase), &run, 4), OK);
+    CHECK_ST(jam_vmo_write(st, SLOT(1, replied), &zero, 8), OK);
     CHECK(refused_now(sv, &L, "a commit word out of step"));
     uint32_t sent = SVCSTATE_SENT;   /* slot 0 (seq 2) taken, not committed */
     CHECK(refused(st, sv, SLOT(0, phase), &sent, 4, &L, "a request sent before its commit"));
