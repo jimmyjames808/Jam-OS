@@ -1,4 +1,4 @@
-/* init's stick write for `update -w` (update.c, <update.h>
+/* init's stick write for `update` (update.c, <update.h>
  * UPDATE_OFFER_WRITE): a fetched build, already checked (signature, sizes,
  * SHA-256s) and loaded as the stored kernel, written to the boot stick's
  * ESP too, so it survives a power-off. It runs on update.c's worker
@@ -46,7 +46,7 @@
  * order puts that moment where the other pair holds a whole build (1, 2:
  * the build before; 3, 4: the new one). The cost: a power cut in 1 or 2
  * leaves the stick to boot the build before the old one, from "Jam OS
- * (previous build)", until the next `update -w` settles it. A stick with
+ * (previous build)", until the next `update` settles it. A stick with
  * no whole previous build (none was ever written, or a failure removed it)
  * gets a copy of its build as the previous one first (copy_previous: the
  * one copy left, and only then). A stick whose build isn't whole keeps its
@@ -95,7 +95,7 @@ enum { AT_NONE, AT_CUR, AT_OLD, AT_PREV };
 /* A call's deadline: FS_CALL_TIMEOUT from now, never past the write's. A
  * stick (or ESP service) that stops answering ends the write within
  * WRITE_LIMIT, then the clean-up within RECOVER_LIMIT, then the remount
- * back within ESP_WAIT: `update -w` (bin/update waits 300 s) always gets
+ * back within ESP_WAIT: `update` (bin/update waits 300 s) always gets
  * its answer, and the answer says the write failed. */
 uint64_t esp_until(const struct writer *w)
 {
@@ -671,6 +671,7 @@ void esp_write_build(struct esp_write *j)
     j->step = UPDATE_WRITE_OPEN;
     j->stick = UPDATE_STICK_OLD;
     j->noted = false;
+    j->already = false;
     j->menu = j->menu_vmo ? UPDATE_MENU_SKIPPED : UPDATE_MENU_NONE;   /* until the menu's turn */
     j->menu_status = OK;
     j->menu_why[0] = '\0';
@@ -684,6 +685,7 @@ void esp_write_build(struct esp_write *j)
     w.deadline = now() + WRITE_LIMIT;
     if (j->st == OK) {
         steps(&w);
+        j->already = w.already;   /* said: the stick has the build it was asked to write */
         note_files(&w);
     }
     free(w.buf);

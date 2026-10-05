@@ -44,8 +44,8 @@
  *
  * `menu` names the boot menu that goes with the build (the server's
  * boot/limine.conf, size 1..UPDATE_MENU_MAX): a third file to fetch,
- * checked like the other two, which `update -w` also writes to the
- * stick's ESP as boot/limine/limine.conf once the build is written, if
+ * checked like the other two, which a stick write (`update`) also writes
+ * to the stick's ESP as boot/limine/limine.conf once the build is written, if
  * the menu passes init's check of it (<bootmenu.h>; espmenu.c). It is an
  * extension line, not a must-understand one: a build older than it skips
  * it and updates the build alone, its menu left as it was. A manifest
@@ -82,14 +82,17 @@
  * copies to the kernel (kexec_load) as the stored kernel,
  * the one `reboot` and a panic start. It answers one struct update_answer
  * on the channel and closes it. Any refusal leaves the stored kernel as it
- * was. By default nothing is written to the stick: the fetched build runs
- * until a power-off or until /esp changes. An offer with
- * UPDATE_OFFER_CHECK_ONLY is checked the same way and answered, but
- * nothing is loaded (the shell's `update -n`). One with UPDATE_OFFER_WRITE
- * (`update -w`) is loaded and then also written to the stick's ESP by init
- * (init's espwrite.c: init alone can make the ESP writable); if that write
- * fails the answer is UPDATE_NOT_WRITTEN: the build is loaded all the same,
- * and the stick still boots (write_step and stick say how far it got).
+ * was. A plain offer writes nothing to the stick: the fetched build runs
+ * until a power-off or until /esp changes (the shell's `update -m`). An
+ * offer with UPDATE_OFFER_CHECK_ONLY is checked the same way and answered,
+ * but nothing is loaded (`update -n`). One with UPDATE_OFFER_WRITE (plain
+ * `update`, and `update -w`, its older spelling) is loaded and then also
+ * written to the stick's ESP by init (init's espwrite.c: init alone can
+ * make the ESP writable); if that write fails the answer is
+ * UPDATE_NOT_WRITTEN: the build is loaded all the same, and the stick
+ * still boots (write_step and stick say how far it got). Nothing reboots:
+ * the shell's `reboot` (kexec) then starts the loaded build, and with a
+ * written stick `reboot -f` (the firmware) does too.
  * Then, with a menu, the stick's boot menu too (espmenu.c; the answer's
  * menu says what became of it): past its SHA-256, the menu never decides
  * whether the build is taken (a menu init's check refuses is not written,
@@ -202,11 +205,12 @@ struct update_offer {
 /* Take it even if its network default (the manifest's `net`) isn't this
  * build's (`update -f`): init refuses such a build otherwise. */
 #define UPDATE_OFFER_FORCE      4u
-/* Also write it to the stick (`update -w`): once checked and loaded, init
- * writes the build to the boot stick's ESP, keeping the stick's own build
- * as the previous one (boot/prev-jamos.elf, boot/prev-bootfs.img: the boot
- * menu's "Jam OS (previous build)"), so it survives a power-off; then the
- * boot menu, if the offer has one. Never with CHECK_ONLY. */
+/* Also write it to the stick (plain `update`, or `update -w`): once checked
+ * and loaded, init writes the build to the boot stick's ESP, keeping the
+ * stick's own build as the previous one (boot/prev-jamos.elf,
+ * boot/prev-bootfs.img: the boot menu's "Jam OS (previous build)"), so it
+ * survives a power-off; then the boot menu, if the offer has one. Never
+ * with CHECK_ONLY. */
 #define UPDATE_OFFER_WRITE      2u
 /* A test's (bin/updtest): the stick write fails at step s (enum
  * update_write_step: ROOM, PREV, NEW, SWITCH or MENU) as if the ESP's
@@ -318,6 +322,8 @@ struct update_answer {
     uint32_t menu;                            /* UPDATE_OFFER_WRITE: enum update_menu */
     int32_t  menu_status;                     /* ... MENU_NOT_WRITTEN: why */
     char     menu_why[UPDATE_MENU_WHY_MAX + 1]; /* ... MENU_REFUSED: the check's reason */
+    uint32_t already;                         /* ... 1: the stick had this build already
+                                               * (nothing of it written), else 0 */
 };
 
 /* "the SHA-256 isn't the manifest's", ...: why, in words. */

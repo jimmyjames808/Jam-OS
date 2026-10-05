@@ -423,7 +423,7 @@ status_t init_kernel_load(uint64_t *kernel_bytes, uint64_t *bootfs_bytes, uint32
  * it and reads nothing unless the stick changes. Without /esp nothing is
  * noted now (its first mount notes it, reboot_note_esp). */
 void     reboot_keep_stored(void);
-/* The same, with the stick's files as `update -w` saw them last (sizes and
+/* The same, with the stick's files as `update`'s write saw them last (sizes and
  * modification times; espwrite.c: /esp itself is no mount at that
  * moment). */
 void     reboot_keep_written(const uint64_t size[UPDATE_FILES], const uint64_t mtime[UPDATE_FILES]);
@@ -441,7 +441,7 @@ status_t update_offer_new(handle_t port, uint64_t key, handle_t *client);
  * closed. */
 void     update_event(void);
 
-/* ---- espwrite.c: `update -w`'s stick write, on update.c's worker thread ----------- */
+/* ---- espwrite.c: `update`'s stick write, on update.c's worker thread -------------- */
 
 /* One stick write: what to write, and how far it got. */
 struct esp_write {
@@ -463,6 +463,8 @@ struct esp_write {
     bool           noted;                      /* the stick's files, as they are now: */
     uint64_t       file_size[UPDATE_FILES];    /* ... their sizes */
     uint64_t       mtime[UPDATE_FILES];        /* ... and modification times */
+    bool           already;                    /* the stick had this build: nothing of it
+                                                * written */
     uint32_t       menu;                       /* enum update_menu: what became of the menu */
     status_t       menu_status;                /* ... MENU_NOT_WRITTEN: why */
     char           menu_why[UPDATE_MENU_WHY_MAX + 1];   /* ... MENU_REFUSED: the check's */
