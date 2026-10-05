@@ -108,23 +108,49 @@ static void send_motion(struct comp_window *w)
     send_frame(cl);
 }
 
-/* The cursor's picture: the client's under the pointer, or the arrow. */
+static void cursor_update(void);
+
+void seat_cursor_changed(void)
+{
+    cursor_update();
+}
+
+enum cursor_shape cursor_shape_at(int32_t x, int32_t y)
+{
+    enum cursor_shape s = desk_cursor_at(x, y);
+    if (s == CURSOR_SHAPES)
+        s = wm_cursor_at(x, y);
+    return s == CURSOR_ARROW && desk_busy() ? CURSOR_BUSY : s;
+}
+
+/* The cursor's picture: the client's under the pointer (a surface, none,
+ * or one of the set), else the compositor's for what is there (and during
+ * a grab of its own, what it was when the grab began: a resize's arrows). */
 static void cursor_update(void)
 {
     struct comp_surface *s = NULL;
     bool hidden = false;
+    enum cursor_shape shape = cursor.shape;
     struct seat_client *sc = over ? seat_of(over->surface->client) : NULL;
-    if (sc && sc->cursor_set) {
+    if (sc && sc->shape_set) {
+        shape = sc->shape == CURSOR_ARROW && desk_busy() ? CURSOR_BUSY : sc->shape;
+    } else if (sc && sc->cursor_set) {
         s = sc->cursor;
         hidden = !s;
+    } else if (sc) {
+        shape = desk_busy() ? CURSOR_BUSY : CURSOR_ARROW;
+    } else if (!grab_ops) {
+        shape = cursor_shape_at(cursor.x, cursor.y);
     }
     int32_t hx = s ? sc->hot_x : 0, hy = s ? sc->hot_y : 0;
-    if (s == cursor.surface && hidden == cursor.hidden && hx == cursor.hot_x && hy == cursor.hot_y)
+    if (s == cursor.surface && hidden == cursor.hidden && hx == cursor.hot_x &&
+        hy == cursor.hot_y && (s || shape == cursor.shape))
         return;
     cursor.surface = s;
     cursor.hidden = hidden;
     cursor.hot_x = hx;
     cursor.hot_y = hy;
+    cursor.shape = shape;
     cursor_moved(cursor.x, cursor.y);
 }
 
@@ -179,6 +205,7 @@ static void move(int16_t dx, int16_t dy)
     struct comp_window *before = over;
     if (!implicit)
         set_over(under_pointer());
+    cursor_update();   /* the compositor's cursor follows what is under it */
     if (over && over == before && surface_live(over->surface))
         send_motion(over);   /* a new focus had the position in its enter */
 }
@@ -372,7 +399,8 @@ static status_t on_set_cursor(void *data, uint32_t self, uint32_t serial, uint32
         surface_set_role(s, COMP_ROLE_CURSOR, &cursor_role, sc) != OK)
         return comp_error(cl, self, JWL_WL_POINTER_ERROR_ROLE, "surface %u has another role",
                           surface);
-    sc->cursor_set = true;
+    sc->cursor_set = true;   /* a surface replaces a shape */
+    sc->shape_set = false;
     sc->cursor = s;
     sc->hot_x = hot_x;
     sc->hot_y = hot_y;

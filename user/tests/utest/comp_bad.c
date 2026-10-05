@@ -584,7 +584,7 @@ bool t_comp_client_crash(void)
 
 /* ---- a client that never reads ----------------------------------------------------- */
 
-#define FLOOD 3800u   /* registries: 3 globals each, ~340 KiB of events, past 32 batches + 64 KiB */
+#define FLOOD 3800u   /* registries: 6 globals each, ~680 KiB of events, past 32 batches + 64 KiB */
 
 bool t_comp_never_reads(void)
 {
@@ -621,7 +621,7 @@ bool t_comp_never_reads(void)
         }
         events++;
     }
-    CHECK(events < FLOOD * 3);   /* cut off before everything was sent */
+    CHECK(events < FLOOD * 6);   /* cut off before everything was sent */
     CHECK(k.c->nread <= JWL_WINDOW + 1);   /* the window, and the error past it */
     ct_close(&k);
     CHECK_ST(ct_roundtrip(&good), OK);

@@ -9,16 +9,23 @@
  * by its title bar; its close circle and Super+Q each send
  * xdg_toplevel.close and a ping,
  * which the client answers; Super+F asks it to fill the output; Super+T
- * tiles it (no title bar: a border all round). */
+ * tiles it (no title bar: a border all round).
+ * t_wm_seat_cursors: the compositor's cursors over the same window: the
+ * resize arrows on its edges and corners, the hand on its circles, the arrow
+ * on it; then the client asks for the text bar and the hand by name
+ * (wp-cursor-shape-v1), a stale serial ignored, a shape there isn't an
+ * error. The pictures are compared pixel for pixel with cursors.c's. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <fun.h>
 #include <jwl.h>
+#include <jwl/cursor_shape_v1.h>
 #include <jwl/wayland.h>
 #include <jwl/xdg_shell.h>
 #include <os.h>
 #include "compseat.h"
-#include "look.h"
+#include "paint.h"
 #include "utest.h"
 
 #define U_Q   0x14
@@ -169,6 +176,116 @@ bool t_wm_seat(void)
     CHECK(cs_start(&t));
     CHECK(cs_client(&t, &a));
     bool ok = toplevel(&a, &w) && mouse_steps(&t, &a, &w) && key_steps(&t, &a, &w);
+    ct_close(&a.k);
+    CHECK(cs_stop(&t));
+    return ok;
+}
+
+/* ---- the cursor ------------------------------------------------------------------------- */
+
+/* The output's pixel (x, y) becomes want within CT_WAIT (a paint comes). */
+static bool pixel_becomes(const struct cs *t, int32_t x, int32_t y, uint32_t want)
+{
+    uint64_t until = now() + CT_WAIT;
+    while (t->p.image[y * OUT_W + x] != want && now() < until)
+        jam_nanosleep(now() + NS_PER_MS);
+    if (t->p.image[y * OUT_W + x] != want)
+        FAIL("pixel (%d, %d) is %06x, want %06x", x, y, t->p.image[y * OUT_W + x], want);
+    return true;
+}
+
+/* Shape s's picture drawn over the red window with its hot spot at (x, y),
+ * pixel for pixel, within CT_WAIT. */
+static bool cursor_is(const struct cs *t, enum cursor_shape s, int32_t x, int32_t y)
+{
+    const struct cursor_image *img = cursors_get(s, 0);
+    uint64_t until = now() + CT_WAIT;
+    for (;;) {
+        unsigned bad = 0;
+        for (int32_t j = 0; j < img->h; j++)
+            for (int32_t i = 0; i < img->w; i++) {
+                int32_t ox = x - img->hot_x + i, oy = y - img->hot_y + j;
+                bad += t->p.image[oy * OUT_W + ox] != px_over(RED, img->px[j * img->w + i]);
+            }
+        if (!bad)
+            return true;
+        if (now() >= until)
+            FAIL("the cursor at (%d, %d) isn't shape %d: %u pixels differ", x, y, s, bad);
+        jam_nanosleep(now() + NS_PER_MS);
+    }
+}
+
+/* The compositor's own cursors over the window's frame: the resize arrows
+ * on its edges and corners (all fill at their middle, the hot spot), the
+ * hand on its circles; the arrow on its surface (the client asked for
+ * nothing). */
+static bool frame_cursor_steps(struct cs *t)
+{
+    int32_t x0 = (OUT_W - WIN_W) / 2, y0 = (OUT_H - WIN_H) / 2;
+    const uint32_t fill = 0xf6f3f8;
+    CHECK(cs_pointer_to(t, x0 + WIN_W + 3, y0 + WIN_H / 2));     /* the right edge's grab */
+    CHECK(pixel_becomes(t, x0 + WIN_W + 3, y0 + WIN_H / 2, fill));
+    CHECK(cs_pointer_to(t, x0 + WIN_W + 3, y0 + WIN_H + 3));     /* bottom right */
+    CHECK(pixel_becomes(t, x0 + WIN_W + 3, y0 + WIN_H + 3, fill));
+    CHECK(cs_pointer_to(t, x0 + WIN_W / 2, y0 + WIN_H + 3));     /* the bottom */
+    CHECK(pixel_becomes(t, x0 + WIN_W / 2, y0 + WIN_H + 3, fill));
+    /* the hand on the close circle: its palm all fill (the SVG's (14, 14)) */
+    int32_t cx = x0 - DECO_OUTLINE + LOOK_BTN_LEFT + LOOK_BTN_D / 2;
+    int32_t cy = y0 - COMP_TITLE_H + LOOK_BTN_TOP + LOOK_BTN_D / 2;
+    CHECK(cs_pointer_to(t, cx, cy));
+    const struct cursor_image *hand = cursors_get(CURSOR_HAND, 0);
+    CHECK(pixel_becomes(t, cx - hand->hot_x + 14 + CURSOR_PAD, cy - hand->hot_y + 14 + CURSOR_PAD,
+                        fill));
+    /* the window's middle: the arrow, the client's default */
+    CHECK(cs_pointer_to(t, x0 + WIN_W / 2, y0 + WIN_H / 2));
+    CHECK(cursor_is(t, CURSOR_ARROW, x0 + WIN_W / 2, y0 + WIN_H / 2));
+    return true;
+}
+
+/* wp-cursor-shape-v1: the client asks for the text bar, then the hand;
+ * a wrong serial is ignored; a shape there isn't is an error. */
+static bool shape_steps(struct cs *t, struct sc *a)
+{
+    int32_t x = (OUT_W - WIN_W) / 2 + WIN_W / 2, y = (OUT_H - WIN_H) / 2 + WIN_H / 2;
+    struct ct_client *k = &a->k;
+    uint32_t m = ct_new(k, &jwl_wp_cursor_shape_manager_v1_interface, 2);
+    uint32_t d = ct_new(k, &jwl_wp_cursor_shape_device_v1_interface, 2);
+    CHECK_ST(jwl_wl_registry_bind(k->c, k->registry, 6, "wp_cursor_shape_manager_v1", 2, m), OK);
+    CHECK_ST(jwl_wp_cursor_shape_manager_v1_get_pointer(k->c, m, d, a->ptr), OK);
+    /* the latest enter's serial: leave the window and come back */
+    CHECK(cs_pointer_to(t, 5, 5));
+    ct_clear(k);
+    CHECK(cs_pointer_to(t, x, y));
+    CHECK(cs_sync(a, NULL));
+    uint32_t serial = 0;   /* the latest enter's (an older one may come in late) */
+    for (unsigned i = 0; i < k->nev; i++)
+        if (k->ev[i].iface == &jwl_wl_pointer_interface && k->ev[i].op == JWL_WL_POINTER_EV_ENTER)
+            serial = k->ev[i].u[0];
+    CHECK(serial);
+    CHECK_ST(jwl_wp_cursor_shape_device_v1_set_shape(k->c, d, serial,
+                                                     JWL_WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT), OK);
+    CHECK(cs_sync(a, NULL));
+    CHECK(cursor_is(t, CURSOR_TEXT, x, y));
+    CHECK_ST(jwl_wp_cursor_shape_device_v1_set_shape(k->c, d, serial + 1,
+                                                     JWL_WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_MOVE), OK);
+    CHECK_ST(jwl_wp_cursor_shape_device_v1_set_shape(
+                 k->c, d, serial, JWL_WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER), OK);
+    CHECK(cs_sync(a, NULL));
+    CHECK(cursor_is(t, CURSOR_HAND, x, y));   /* the move with a stale serial: nothing */
+    CHECK_ST(jwl_wp_cursor_shape_device_v1_set_shape(k->c, d, serial, 0), OK);
+    CHECK(ct_expect_error(k, d, JWL_WP_CURSOR_SHAPE_DEVICE_V1_ERROR_INVALID_SHAPE));
+    return true;
+}
+
+bool t_wm_seat_cursors(void)
+{
+    static struct sc a;
+    struct cs t;
+    struct top w;
+    cursors_init();   /* the pictures the compositor draws, to compare with */
+    CHECK(cs_start(&t));
+    CHECK(cs_client(&t, &a));
+    bool ok = toplevel(&a, &w) && frame_cursor_steps(&t) && shape_steps(&t, &a);
     ct_close(&a.k);
     CHECK(cs_stop(&t));
     return ok;

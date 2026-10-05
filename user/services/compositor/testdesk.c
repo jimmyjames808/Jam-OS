@@ -13,6 +13,8 @@
  *   popover=volume|network|clock   that popover, opened from its icon
  *   notify=TITLE,BODY[,BUTTON[,BUTTON]]   a notification
  *   search[=TEXT]    the search box, TEXT typed into it
+ *   cursorshape=NAME the pointer shows that one of the set (arrow, ew, ns,
+ *                    nwse, nesw, move, text, hand, busy)
  * After each paint with the desktop on, its layout goes to the log (`desk:`
  * lines: the strip's islands and items, the cards' boxes) for the checker,
  * which can't measure text. */
@@ -164,6 +166,21 @@ static bool cmd_popover(const char *arg)
     return false;
 }
 
+/* cursorshape=NAME: the pointer shows one of the set (as the seat would
+ * pick it): arrow, ew, ns, nwse, nesw, move, text, hand, busy. */
+static bool cmd_cursorshape(const char *arg)
+{
+    static const char *const names[CURSOR_SHAPES] = { "arrow", "ew", "ns", "nwse", "nesw",
+                                                      "move", "text", "hand", "busy" };
+    for (unsigned s = 0; s < CURSOR_SHAPES; s++)
+        if (!strcmp(arg, names[s])) {
+            cursor.shape = (enum cursor_shape)s;
+            cursor_moved(cursor.x, cursor.y);
+            return true;
+        }
+    return false;
+}
+
 static void desktop_on(void)
 {
     desk_init(true, false);
@@ -194,6 +211,8 @@ static void desktop_off(void)
     while (notes.n)
         notify_withdraw(notes.cards[0].id);   /* no animations: at once */
     desk_init(false, false);
+    cursor.shape = CURSOR_ARROW;
+    cursor_moved(cursor.x, cursor.y);
     strip_dirty();
     scene_damage((struct comp_box){ 0, 0, scene.width, scene.height });
 }
@@ -203,7 +222,7 @@ static void desktop_off(void)
  * changes) and the box drawn on it. */
 static void damage_strip(void)
 {
-    desk_damage(strip_box());
+    scene_damage_over(strip_box());
 }
 
 static void damage_behind_search(void)
@@ -245,7 +264,7 @@ int testdesk_command(const char *c)
     }
     static const struct { const char *name; bool (*fn)(const char *); } cmds[] = {
         { "top", cmd_top }, { "time", cmd_time }, { "notify", cmd_notify },
-        { "popover", cmd_popover },
+        { "popover", cmd_popover }, { "cursorshape", cmd_cursorshape },
     };
     for (unsigned i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         if (eq && k == strlen(cmds[i].name) && !strncmp(c, cmds[i].name, k))
@@ -277,4 +296,5 @@ void testdesk_report(void)
     for (unsigned i = 0; i < ntops; i++)
         if (tops[i].ww->win)
             box_line("top", i, window_frame(tops[i].ww->win), tops[i].ww->minimised);
+    box_line("cursor", (unsigned)cursor.shape, cursor_box(), false);
 }

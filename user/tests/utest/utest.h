@@ -539,6 +539,7 @@ bool t_desk_minimise(void);
 bool t_desk_room(void);
 bool t_desk_strip(void);
 bool t_desk_anim(void);
+bool t_desk_cursors(void);
 bool t_desk_alttab(void);
 bool t_desk_search(void);
 bool t_desk_popover(void);
@@ -546,6 +547,7 @@ bool t_desk_notify(void);
 /* compwmseat.c: the window manager with the real seat: drag, close box,
  * Super+Q, Super+F, Super+T on an xdg toplevel. */
 bool t_wm_seat(void);
+bool t_wm_seat_cursors(void);
 bool t_xdg_toplevel(void);
 bool t_xdg_tiling(void);
 bool t_xdg_popup(void);

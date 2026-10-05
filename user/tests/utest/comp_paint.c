@@ -100,12 +100,6 @@ bool t_comp_paint_cull(void)
     return ok;
 }
 
-/* The arrow's box at (x, y) on a CP_H-line output (scale 1). */
-static struct comp_box arrow_at(int32_t x, int32_t y)
-{
-    return (struct comp_box){ x, y, x + POINTER_ARROW_W, y + POINTER_ARROW_H };
-}
-
 bool t_comp_paint_damage(void)
 {
     static const struct cp_win v[] = {
@@ -134,17 +128,17 @@ bool t_comp_paint_damage(void)
         moved[1].x = 60;
         moved[1].y = 70;
         ref_paint(want, unknown, moved, 2);
-        ok = cp_same_image(&r, want, NULL, arrow_at(200, 100));
+        ok = cp_same_image(&r, want, NULL, cp_arrow_at(200, 100));
     }
     if (ok) {
         CHECK_EQ(r.nrep, 5);
         CHECK_EQ(r.rep[0].px, CP_W * CP_H);
         CHECK_EQ(r.rep[1].px, 40 * 30 + 40 * 30 - 20 * 20);   /* the union, the third inside */
         CHECK_EQ(r.rep[2].px, 100 * 60 * 2 - 90 * 40);        /* the old place and the new */
-        CHECK_EQ(r.rep[3].px, POINTER_ARROW_W * POINTER_ARROW_H);
+        CHECK_EQ(r.rep[3].px, CURSOR_IMG * CURSOR_IMG);
         CHECK_EQ(r.rep[4].px, 0);
-        CHECK_EQ(r.image[100 * CP_W + 200], 0x000000);   /* the arrow's tip: outline */
-        CHECK_EQ(r.image[103 * CP_W + 201], 0xffffff);   /* inside it: fill */
+        /* the arrow, its hot spot at the pointer: all fill well inside it */
+        CHECK_EQ(r.image[(100 + CP_FILL_DY) * CP_W + 200 + CP_FILL_DX], CP_ARROW_FILL);
     }
     cp_done(&r);
     return ok;
@@ -175,8 +169,8 @@ bool t_comp_paint_fullscreen(void)
         static uint32_t want[CP_W * CP_H];
         static uint8_t unknown[CP_W * CP_H];
         ref_paint(want, unknown, v, 2);
-        ok = cp_same_image(&r, want, NULL, arrow_at(100, 100));
-        CHECK_EQ(r.image[100 * CP_W + 100], 0x000000);
+        ok = cp_same_image(&r, want, NULL, cp_arrow_at(100, 100));
+        CHECK_EQ(r.image[(100 + CP_FILL_DY) * CP_W + 100 + CP_FILL_DX], CP_ARROW_FILL);
     }
     cp_done(&r);
     return ok;

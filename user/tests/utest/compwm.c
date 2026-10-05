@@ -56,6 +56,10 @@ void cursor_moved(int32_t old_x, int32_t old_y)
     (void)old_y;
 }
 
+void seat_cursor_changed(void)
+{
+}
+
 /* The plumbing's hooks, played here. */
 void ctl_launch(const char *app)
 {

@@ -13,8 +13,10 @@ leave it at that step, painted here from scratch with the look's numbers
 pixels (testscene.h's pattern, premultiplied alpha blended with px_over's
 rounding), the shadows (a blur of three boxes, as shape.c makes it), the
 title bars, outlines and borders, the rounded corners (mask.c's
-supersampled circles), the arrow. Pixels whose value this script doesn't
-model (the title's text, the circles' edges) are skipped; the text is
+supersampled circles), the arrow (where it is all fill: cursors.c's set,
+docs/design/cursors.svg). Pixels whose value this script doesn't
+model (the title's text, the circles' edges, the arrow's outline and
+shadow) are skipped; the text is
 checked to be there instead, and each circle's colour (or its symbol,
 under the pointer) where it is all circle. Every third pixel each way is
 compared; exit 0 if all match."""
@@ -40,12 +42,13 @@ WALL_BASE = 0x161B26
 GLOWS = ((0x4A2450, 150, 180, 620), (0x5A2C18, 880, 900, 520), (0x24203F, 520, 540, 480))
 GARBAGE = None                    # a pixel this script doesn't model
 
-ARROW = [   # libfun's pointer_arrow (fun.h): '#' black, 'o' white
-    "#           ", "##          ", "#o#         ", "#oo#        ", "#ooo#       ",
-    "#oooo#      ", "#ooooo#     ", "#oooooo#    ", "#ooooooo#   ", "#oooooooo#  ",
-    "#ooooooooo# ", "#oooooo#####", "#ooo#oo#    ", "#oo# #oo#   ", "#o#  #oo#   ",
-    "##    #oo#  ", "#     #oo#  ", "       ##   ",
-]
+# The arrow (cursors.c, docs/design/cursors.svg): its outline in units (a
+# pixel each), its picture CURSOR_IMG square with CURSOR_PAD round, its hot
+# spot (5, 2.5) rounded down; filled #f6f3f8, outlined 0.55 either side of
+# each edge, sampled 5 x 5 a pixel.
+ARROW_PTS = [(5, 2.5), (5, 18.7), (9.1, 15), (11.8, 21.2), (14.5, 20), (11.8, 13.9), (17.4, 13.9)]
+CURSOR_IMG, CURSOR_PAD, CURSOR_FILL = 28, 2, 0xF6F3F8
+ARROW_HOT = (5 + CURSOR_PAD, 2 + CURSOR_PAD)
 
 
 def pattern(rgb, x, y, solid):
@@ -311,15 +314,45 @@ def hovered(shown, cursor):
     return None
 
 
+def seg_d2(x, y, a, b):
+    vx, vy, qx, qy = b[0] - a[0], b[1] - a[1], x - a[0], y - a[1]
+    k = max(0.0, min(1.0, (qx * vx + qy * vy) / (vx * vx + vy * vy)))
+    return (qx - k * vx) ** 2 + (qy - k * vy) ** 2
+
+
+def in_arrow(x, y):
+    inside, n = False, len(ARROW_PTS)
+    for i in range(n):
+        (xi, yi), (xj, yj) = ARROW_PTS[i], ARROW_PTS[i - 1]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+    return inside
+
+
+def arrow_fill(i, j):
+    """Is the arrow's picture's pixel (i, j) all fill: every sample inside,
+    none within the outline's 0.55 (or near enough to it to round either way)?"""
+    for t in range(5):
+        for s in range(5):
+            x, y = i - CURSOR_PAD + (s + 0.5) / 5, j - CURSOR_PAD + (t + 0.5) / 5
+            if not in_arrow(x, y):
+                return False
+            if min(seg_d2(x, y, ARROW_PTS[k], ARROW_PTS[k - 1]) for k in range(7)) <= 0.6 ** 2:
+                return False
+    return True
+
+
+ARROW_FILL = {(i, j) for j in range(CURSOR_IMG) for i in range(CURSOR_IMG) if arrow_fill(i, j)}
+
+
 def expected(px, py, shown, cursor, scale, wall):
+    if cursor:
+        i, j = px - cursor[0] + ARROW_HOT[0], py - cursor[1] + ARROW_HOT[1]
+        if 0 <= i < CURSOR_IMG and 0 <= j < CURSOR_IMG:
+            return CURSOR_FILL if (i, j) in ARROW_FILL else GARBAGE
     v = wall.at(px, py)
     for w in shown:
         v = w.pixel(px, py, v)
-    if cursor:
-        cx, cy = cursor
-        i, j = (px - cx) // scale, (py - cy) // scale
-        if 0 <= i < 12 and 0 <= j < 18 and px >= cx and py >= cy and ARROW[j][i] != " ":
-            v = 0 if ARROW[j][i] == "#" else 0xFFFFFF
     return v
 
 
@@ -357,7 +390,8 @@ def check_buttons(step, pix, shown, cursor, size):
                     continue
                 if topmost_at(shown, x, y) is not w:
                     continue
-                if cursor and cursor[0] <= x < cursor[0] + 24 and cursor[1] <= y < cursor[1] + 36:
+                if cursor and 0 <= x - cursor[0] + ARROW_HOT[0] < CURSOR_IMG and \
+                        0 <= y - cursor[1] + ARROW_HOT[1] < CURSOR_IMG:
                     continue   # under the arrow
                 for above in shown[shown.index(w) + 1:]:
                     colour = above.shadowed(x, y, colour)   # a shadow from above falls on it

@@ -48,6 +48,19 @@ void cp_win_cmd(char *buf, size_t n, const struct cp_win *w);
 /* The windows over the wallpaper, bottom to top, into img; unknown[i] set
  * where the reference doesn't know the pixel (title text and circles). */
 void ref_paint(uint32_t *img, uint8_t *unknown, const struct cp_win *v, unsigned n);
+/* The arrow (cursors.c): its hot spot in its picture, the picture's box
+ * with the pointer at (x, y), and a pixel of it that is all fill, from the
+ * pointer (the SVG's unit (6, 10): well inside, clear of the outline). */
+#define CP_ARROW_HX   (5 + CURSOR_PAD)
+#define CP_ARROW_HY   (2 + CURSOR_PAD)
+#define CP_ARROW_FILL 0xf6f3f8u
+#define CP_FILL_DX    1
+#define CP_FILL_DY    8
+static inline struct comp_box cp_arrow_at(int32_t x, int32_t y)
+{
+    return (struct comp_box){ x - CP_ARROW_HX, y - CP_ARROW_HY, x - CP_ARROW_HX + CURSOR_IMG,
+                              y - CP_ARROW_HY + CURSOR_IMG };
+}
 /* The wallpaper's pixel (x, y) on a CP_W x CP_H output (look.h's formula). */
 uint32_t ref_wallpaper(int32_t x, int32_t y);
 /* A floating window's frame, and its extent (with the shadow), on the output. */

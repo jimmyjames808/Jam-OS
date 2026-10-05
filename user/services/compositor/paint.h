@@ -147,9 +147,26 @@ void paint_under(const struct tile_buf *t, uint32_t worker);
  * there), with no shadow: an animation's picture. save: SHAPE_SAVE_PX. */
 void paint_window(const struct comp_window *w, const struct tile_buf *t, uint32_t *save);
 
+/* ---- cursors.c: the cursor set's pictures -------------------------------------------- */
+
+#define CURSOR_IMG          28   /* each picture's side: 24 units and CURSOR_PAD round */
+#define CURSOR_PAD          2    /* for the outline and the shadow */
+#define CURSOR_BUSY_FRAMES  30   /* busy's turn, a frame each 1/30 s */
+
+/* A picture: premultiplied 0xAARRGGBB, w x h, drawn with (hot_x, hot_y)
+ * at the pointer. */
+struct cursor_image {
+    int32_t w, h, hot_x, hot_y;
+    const uint32_t *px;
+};
+/* Every picture drawn (once, at start: they are only read after). */
+void cursors_init(void);
+/* Shape s's picture (busy's frame for time t). */
+const struct cursor_image *cursors_get(enum cursor_shape s, uint64_t t);
+
 /* ---- cursor.c ---------------------------------------------------------------------- */
 
-/* The arrow at the output's scale (call after output_open). */
+/* The cursor's pictures made (call after output_open). */
 void cursor_init(void);
 /* Shown or not whether the pointer has moved yet (the test scene's). */
 void cursor_show(bool on);

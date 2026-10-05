@@ -26,18 +26,20 @@
 bool cs_start(struct cs *t)
 {
     memset(t, 0, sizeof(*t));
-    handle_t svc, ctl, init;
+    handle_t svc, ctl, init, image;
+    t->p.w = OUT_W;
+    t->p.h = OUT_H;
+    CHECK(ct_image_for(&t->p, &image));   /* what it paints, for the cursor's tests */
     CHECK_ST(jam_channel_create(&t->p.svc, &svc), OK);
     CHECK_ST(jam_channel_create(&t->ctl, &ctl), OK);
     CHECK_ST(jam_channel_create(&t->init, &init), OK);
     CHECK_ST(new_job(&t->p.job), OK);
     const char *argv[] = { "bin/compositor", "headless", "size=640x480", "testwin", "nodesk" };
-    struct spawn_handle x[] = { { SR_USER + 0, svc }, { SR_USER + 2, ctl }, { SR_USER + 3, init } };
+    struct spawn_handle x[] = { { SR_USER + 0, svc }, { SR_USER + 1, image },
+                                { SR_USER + 2, ctl }, { SR_USER + 3, init } };
     struct spawn_args a = { .path = "bin/compositor", .argc = 5, .argv = argv, .job = t->p.job,
-                            .extra = x, .nextra = 3 };
+                            .extra = x, .nextra = 4 };
     CHECK_ST(spawn(&a, &t->p.proc), OK);
-    t->p.w = OUT_W;
-    t->p.h = OUT_H;
     CHECK_ST(compctl_connect_input_within(t->ctl, CT_WAIT, &t->src), OK);
     CHECK_ST(input_ready_within(t->src, CT_WAIT, INPUT_READY_KEYBOARD, 0x1234, 1), OK);
     CHECK_ST(input_ready_within(t->src, CT_WAIT, INPUT_READY_MOUSE, 0x1234, 2), OK);

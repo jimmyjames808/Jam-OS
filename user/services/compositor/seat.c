@@ -18,7 +18,9 @@
 #include "seat.h"
 
 static struct seat_client clients[COMP_CLIENTS_MAX];
-static const char *const kind_names[SEAT_KINDS] = { "wl_seat", "wl_keyboard", "wl_pointer" };
+static const char *const kind_names[SEAT_KINDS] = { "wl_seat", "wl_keyboard", "wl_pointer",
+                                                    "wp_cursor_shape_manager_v1",
+                                                    "wp_cursor_shape_device_v1" };
 uint64_t seat_keys, seat_reserved;
 
 struct seat_client *seat_of(struct comp_client *cl)

@@ -8,6 +8,7 @@
  *   pointer.c   wl_pointer: the position, focus and the implicit grab,
  *               buttons and their serials, the wheel, set_cursor, grabs of
  *               the compositor's own;
+ *   shapes.c    wp-cursor-shape-v1: a client's cursor by name, from the set;
  *   focus.c     the keyboard focus and its rules, the keys no client sees,
  *               the window manager's hooks' defaults;
  *   sources.c   input sources: the `input` protocol, a budget each;
@@ -36,13 +37,14 @@
 
 /* One wl_seat, wl_keyboard or wl_pointer object of a client's: the data
  * libjwl's map holds for it. */
-enum seat_kind { SEAT_SEAT, SEAT_KEYBOARD, SEAT_POINTER, SEAT_KINDS };
+enum seat_kind { SEAT_SEAT, SEAT_KEYBOARD, SEAT_POINTER, SEAT_SHAPES, SEAT_SHAPE_DEV, SEAT_KINDS };
 struct seat_res {
     struct seat_res *next;         /* the client's objects of this kind */
     struct comp_client *client;
     uint32_t id;
     uint32_t version;
     enum seat_kind kind;
+    uint32_t pointer;              /* SEAT_SHAPE_DEV: its wl_pointer's id (0: inert) */
 };
 
 /* What the seat keeps per client (struct comp_client's seat points here). */
@@ -52,10 +54,13 @@ struct seat_client {
     bool had_window;               /* a window of its was mapped once: later ones don't take focus */
     bool motion_owed;              /* pointer motion held back while it was behind (pointer.c) */
     uint32_t enter_serial;         /* the last wl_pointer.enter's serial it got: set_cursor's */
-    /* Its cursor (set_cursor): shown while the pointer is over its window. */
+    /* Its cursor (set_cursor, or wp_cursor_shape_device_v1.set_shape, each
+     * replacing the other): shown while the pointer is over its window. */
     bool cursor_set;               /* it asked: else the default arrow */
     struct comp_surface *cursor;   /* the surface, or NULL: no cursor at all */
     int32_t hot_x, hot_y;
+    bool shape_set;                /* it asked for one of the set: shape */
+    enum cursor_shape shape;
 };
 
 /* seat.c */

@@ -229,7 +229,7 @@ bool t_comp_look_buttons(void)
     snprintf(at, sizeof(at), "cursor=%d,%d", hit.x2 + LOOK_BTN_HIT - 1, hit.y2 + LOOK_BTN_HIT - 1);
     const char *more[] = { "paint", at, "paint" };
     struct cp_run r;
-    struct comp_box arrow = { hit.x2 + LOOK_BTN_HIT - 1, hit.y2 + LOOK_BTN_HIT - 1, CP_W, CP_H };
+    struct comp_box arrow = cp_arrow_at(hit.x2 + LOOK_BTN_HIT - 1, hit.y2 + LOOK_BTN_HIT - 1);
     bool ok = cp_run_windows(v, 2, more, 3, arrow, &r) && hovered_checks(&r);
     if (ok) {
         CHECK_EQ(r.nrep, 2);
@@ -243,7 +243,7 @@ bool t_comp_look_buttons(void)
         return false;
     /* ... and the pointer gone from them: grey again, no symbols */
     const char *away[] = { "paint", at, "paint", "cursor=300,10", "paint" };
-    ok = cp_run_windows(v, 2, away, 5, (struct comp_box){ 300, 10, CP_W, 40 }, &r);
+    ok = cp_run_windows(v, 2, away, 5, cp_arrow_at(300, 10), &r);
     if (ok) {
         struct comp_box c = btn_box(100, 128, 0);
         CHECK_EQ(btn_px(&r, c.x1, c.y1, 5, 5), LOOK_BTN_IDLE);

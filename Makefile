@@ -352,8 +352,24 @@ $(LWIP_OBJS): $(BUILD)/lwip/%.o: %.c | $(UINC) $(SYSCALLS_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(LWIP_INC) -c $< -o $@
 
+# The compositor's cursor set (docs/design/cursors.svg): tools/cursorgen.c
+# draws it on the Mac into build/gen/cursorset.c, which the compositor
+# links (and utest, which compares what the compositor draws with it), and
+# build/cursors.png, the set four times as big, to look at.
+CURSOR_GEN := build/host/cursorgen
+CURSOR_SET := $(BUILD)/gen/cursorset.c
+CURSOR_OBJ := $(UOBJ)/$(CURSOR_SET).o
+$(CURSOR_GEN): tools/cursorgen.c tools/png.c tools/fontpreview.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O2 -Wall -Wextra -Werror -o $@ tools/cursorgen.c tools/png.c -lm
+$(CURSOR_SET): $(CURSOR_GEN)
+	@mkdir -p $(dir $@)
+	$(CURSOR_GEN) $@ $(BUILD)/cursors.png
+$(CURSOR_OBJ): PROG_CFLAGS := -iquote user/services/compositor -I$(LIBFUN_DIR)
+
 # What a program links, includes and needs made first beyond its own
 # directory and libos.
+EXTRA_OBJS_compositor := $(CURSOR_OBJ)
 EXTRA_OBJS_netstack   := $(LWIP_OBJS)
 EXTRA_CFLAGS_netstack := $(LWIP_INC)
 EXTRA_OBJS_fat   := $(FATFS_OBJS)
@@ -402,8 +418,9 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/sntp/ntp.c.o \
                       $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
                       $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile \
-                        wmgrab deco title mask screens anim strip menus popover notify desk) \
-                      $(UOBJ)/user/services/console/wlinput.c.o \
+                        wmgrab deco title mask screens anim strip menus popover notify desk \
+                        cursors) \
+                      $(CURSOR_OBJ) $(UOBJ)/user/services/console/wlinput.c.o \
                       $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \

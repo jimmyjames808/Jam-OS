@@ -238,6 +238,40 @@ bool desk_covers(int32_t x, int32_t y)
     return false;
 }
 
+/* Is (x, y) on one of the boxes a click does something with: a strip item
+ * or island, a menu's row, a notification's card, a popover's slider? */
+static bool clickable(int32_t x, int32_t y)
+{
+    for (int i = 0; i < 3; i++)
+        if (box_contains(strip.islands[i], x, y))
+            return true;
+    for (unsigned i = 0; i < search.nrows && search.open; i++)
+        if (box_contains(search_row_box(i), x, y))
+            return true;
+    for (unsigned i = 0; i < alttab.n && alttab.shown; i++)
+        if (box_contains(alttab_row_box(i), x, y))
+            return true;
+    for (unsigned i = 0; i < notes.n; i++) {
+        const struct notify_card *c = &notes.cards[i];
+        if (!box_contains(c->box, x, y))
+            continue;
+        if (!c->nbuttons)
+            return true;   /* a click sends it */
+        for (unsigned b = 0; b < c->nbuttons; b++)
+            if (box_contains(notify_button_box(c, b), x, y))
+                return true;
+        return false;
+    }
+    return box_contains(pop_slider_box(), x, y);
+}
+
+enum cursor_shape desk_cursor_at(int32_t x, int32_t y)
+{
+    if (!desk_covers(x, y))
+        return CURSOR_SHAPES;   /* nothing of the desktop's there */
+    return clickable(x, y) ? CURSOR_HAND : CURSOR_ARROW;
+}
+
 void desk_damage(struct comp_box b)
 {
     if (box_empty(b))
@@ -257,7 +291,7 @@ static void busy_set(bool on)
     if (!on)
         dk.launching[0] = '\0';
     if (was != on)
-        cursor_moved(cursor.x, cursor.y);   /* its picture changes */
+        seat_cursor_changed();   /* busy, or the arrow again */
 }
 
 void desk_launch(const char *app)

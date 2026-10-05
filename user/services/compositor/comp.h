@@ -587,6 +587,11 @@ status_t seat_bind(struct comp_client *cl, uint32_t id, uint32_t version);
 status_t seat_request(struct comp_client *cl, struct jwl_msg *m);
 status_t keyboard_request(struct comp_client *cl, struct jwl_msg *m);
 status_t pointer_request(struct comp_client *cl, struct jwl_msg *m);
+/* wp-cursor-shape-v1 (shapes.c): its global, and its two objects' requests. */
+#define COMP_CURSOR_SHAPE_VERSION 2u
+status_t shapes_bind(struct comp_client *cl, uint32_t id, uint32_t version);
+status_t shapes_request(struct comp_client *cl, struct jwl_msg *m);
+status_t shape_device_request(struct comp_client *cl, struct jwl_msg *m);
 /* cl went: its seat objects, and every focus, grab and serial it had. */
 void     seat_teardown(struct comp_client *cl);
 
@@ -617,16 +622,47 @@ status_t seat_grab_begin(const struct comp_grab_ops *ops, void *data);
 /* The grab ends now (its window went): ops->end is not called. */
 void     seat_grab_cancel(void);
 
+/* The compositor's cursor set (cursors.c; docs/design/cursors.svg). */
+enum cursor_shape {
+    CURSOR_ARROW,
+    CURSOR_RESIZE_EW,              /* left and right */
+    CURSOR_RESIZE_NS,              /* up and down */
+    CURSOR_RESIZE_NWSE,            /* top left and bottom right */
+    CURSOR_RESIZE_NESW,            /* top right and bottom left */
+    CURSOR_MOVE,
+    CURSOR_TEXT,
+    CURSOR_HAND,
+    CURSOR_BUSY,                   /* a ring turning: an app is starting */
+    CURSOR_SHAPES
+};
+
 /* The pointer, for painting the cursor (C2: cursor.c): where it is, and
  * what to draw there. surface is the cursor surface of the client under
- * the pointer (wl_pointer.set_cursor), or NULL for the default arrow;
+ * the pointer (wl_pointer.set_cursor), or NULL for one of the set, shape;
  * hidden: that client asked for no cursor at all. */
 struct comp_cursor {
     int32_t x, y;                  /* the pointer's tip, output pixels */
-    struct comp_surface *surface;  /* COMP_ROLE_CURSOR, or NULL: the arrow */
+    struct comp_surface *surface;  /* COMP_ROLE_CURSOR, or NULL: shape */
     int32_t hot_x, hot_y;          /* the surface's point drawn at (x, y) */
     bool hidden;
+    enum cursor_shape shape;       /* without a surface: the client's (wp_cursor_shape) or
+                                    * the compositor's choice (pointer.c) */
 };
+
+/* The compositor's own cursor at (x, y) where no client's surface is: a
+ * frame's resize arrows on a resizable floating window's edges and
+ * corners (deco.c's grab zones), the hand on its circles, the arrow
+ * elsewhere (wm_cursor_at); the hand on the top bar's islands, menu rows
+ * and buttons (desk_cursor_at: CURSOR_SHAPES where the desktop has
+ * nothing there). */
+enum cursor_shape wm_cursor_at(int32_t x, int32_t y);
+enum cursor_shape desk_cursor_at(int32_t x, int32_t y);
+/* The shape the pointer shows over nothing of a client's: the desktop's,
+ * else the window manager's, busy for the arrow while an app starts. */
+enum cursor_shape cursor_shape_at(int32_t x, int32_t y);
+/* What the cursor shows may have changed without the pointer moving (busy
+ * began or ended): the seat chooses again. */
+void seat_cursor_changed(void);
 extern struct comp_cursor cursor;
 
 /* Hooks the seat calls; the painting and window-manager tracks define
@@ -747,6 +783,9 @@ void     desk_key_up(uint16_t usage);
 bool     desk_press(int32_t x, int32_t y, uint32_t button);
 /* Is the strip or a card at (x, y), so no window is under the pointer there? */
 bool     desk_covers(int32_t x, int32_t y);
+/* An app the desktop launched hasn't shown a window yet (at most
+ * DESK_BUSY_NS): the arrow is the busy ring. */
+bool     desk_busy(void);
 /* The loop's clock: animations, the clock on the strip, notifications
  * fading, Alt+Tab's list showing. When it next needs a turn. */
 void     desk_tick(uint64_t t);

@@ -379,7 +379,6 @@ void     desk_damage(struct comp_box b);
 #define DESK_BUSY_NS (10 * NS_PER_S)
 void     desk_launch(const char *app);
 void     desk_run(const char *cmd);
-bool     desk_busy(void);
 /* ww's first buffer was mapped (wm.c): the busy cursor ends if it is the
  * app being launched. */
 void     desk_window_mapped(const struct wm_window *ww);

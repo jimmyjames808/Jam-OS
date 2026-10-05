@@ -22,6 +22,9 @@ struct ct_comp {
  * window manager alone, the whole output the windows'; compdesk.c tests the
  * desktop). */
 bool ct_start(struct ct_comp *p, int32_t w, int32_t h);
+/* The image VMO for p (p->w x p->h): one for the compositor to compose
+ * into (SR_USER + 1, theirs), mapped by us too (p->image). */
+bool ct_image_for(struct ct_comp *p, handle_t *theirs);
 /* The same with one more argument for the compositor (NULL: none). */
 bool ct_start_arg(struct ct_comp *p, int32_t w, int32_t h, const char *arg);
 /* Close /svc/wayland: the compositor must end with 0 and leave its job empty. */

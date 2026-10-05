@@ -122,6 +122,32 @@ enum deco_part deco_hit(const struct comp_window *w, int32_t x, int32_t y, uint3
     return box_contains(title_bar_box(w), x, y) ? DECO_TITLE : DECO_NONE;
 }
 
+enum cursor_shape wm_cursor_at(int32_t x, int32_t y)
+{
+    bool on_surface;
+    uint32_t e;
+    struct comp_window *w = wm_window_at(x, y, &on_surface);
+    if (!w || on_surface)
+        return CURSOR_ARROW;
+    switch (deco_hit(w, x, y, &e)) {
+    case DECO_CLOSE:
+    case DECO_MINIMISE:
+    case DECO_FULLSCREEN:
+        return CURSOR_HAND;
+    case DECO_EDGE:
+        if (!(e & (WM_EDGE_TOP | WM_EDGE_BOTTOM)))
+            return CURSOR_RESIZE_EW;
+        if (!(e & (WM_EDGE_LEFT | WM_EDGE_RIGHT)))
+            return CURSOR_RESIZE_NS;
+        if (((e & WM_EDGE_TOP) && (e & WM_EDGE_LEFT)) ||
+            ((e & WM_EDGE_BOTTOM) && (e & WM_EDGE_RIGHT)))
+            return CURSOR_RESIZE_NWSE;
+        return CURSOR_RESIZE_NESW;
+    default:
+        return CURSOR_ARROW;
+    }
+}
+
 /* Does w's surface take input at output (x, y) (its input region)? */
 static bool takes_input(const struct comp_window *w, int32_t x, int32_t y)
 {

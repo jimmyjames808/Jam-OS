@@ -34,7 +34,13 @@
  * window mapped or not, drawn as itself, the snapshot freed); a slide moves
  * both screens' windows and ends with every offset 0 and the old screen's
  * windows unmapped; a key or click mid-way jumps to the end; each frame
- * damages only the boxes it touches. */
+ * damages only the boxes it touches.
+ * t_desk_cursors: the cursor set's pictures at known pixels (all fill well
+ * inside, nothing far outside, the outline along an edge), their hot
+ * spots, busy's arc turning a turn a second; the resize arrows on each edge
+ * and corner of a resizable floating window, the hand on its circles, the
+ * strip's islands and the search box's rows, the arrow elsewhere; busy from
+ * a launch until that app's first window, or DESK_BUSY_NS. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -515,6 +521,106 @@ static bool anim_slide_steps(void)
     CHECK(mapped(0) && !mapped(1));
     CHECK_EQ(screens_count(), 2);   /* screen 2 has a window: it stays */
     return true;
+}
+
+/* ---- cursors ------------------------------------------------------------------------------- */
+
+#define CFILL 0xfff6f3f8u   /* the set's fill, opaque, premultiplied */
+
+static uint32_t px_of(enum cursor_shape s, int32_t i, int32_t j)
+{
+    const struct cursor_image *c = cursors_get(s, 0);
+    return c->px[j * c->w + i];
+}
+
+/* The pictures, at known pixels: all fill well inside a shape, nothing far
+ * outside it, the outline's dark ink along an edge; the hot spots; busy's
+ * arc turning. */
+static bool cursor_picture_steps(void)
+{
+    cursors_init();
+    const struct cursor_image *a = cursors_get(CURSOR_ARROW, 0);
+    CHECK(a->w == CURSOR_IMG && a->h == CURSOR_IMG);
+    CHECK(a->hot_x == 5 + CURSOR_PAD && a->hot_y == 2 + CURSOR_PAD);
+    CHECK_EQ(px_of(CURSOR_ARROW, 8, 12), CFILL);          /* the SVG's (6, 10) */
+    CHECK_EQ(px_of(CURSOR_ARROW, 0, 0), 0);               /* nothing, no shadow */
+    CHECK_EQ(px_of(CURSOR_ARROW, 26, 2), 0);
+    uint32_t edge = px_of(CURSOR_ARROW, 6, 14);           /* across the left edge (x 5) */
+    CHECK((edge >> 24) > 0x80 && (edge >> 16 & 0xff) < 0x50);   /* mostly the dark outline */
+    CHECK(cursors_get(CURSOR_HAND, 0)->hot_x == 10 + CURSOR_PAD);
+    for (int s = CURSOR_RESIZE_EW; s < CURSOR_SHAPES; s++) {
+        const struct cursor_image *c = cursors_get((enum cursor_shape)s, 0);
+        if (s != CURSOR_HAND)
+            CHECK(c->hot_x == 12 + CURSOR_PAD && c->hot_y == 12 + CURSOR_PAD);
+    }
+    /* the resize arrows, move and the text bar: all fill at the hot spot's
+     * pixel (the SVG's centre is its top-left corner: the shaft going up
+     * to the right passes the pixel left of it) */
+    for (int s = CURSOR_RESIZE_EW; s <= CURSOR_TEXT; s++)
+        CHECK_EQ(px_of((enum cursor_shape)s, s == CURSOR_RESIZE_NESW ? 13 : 14, 14), CFILL);
+    CHECK_EQ(px_of(CURSOR_HAND, 16, 16), CFILL);          /* the palm */
+    /* busy: the ring, no fill at its middle, the arc somewhere and moving */
+    CHECK_EQ(px_of(CURSOR_BUSY, 14, 14), 0);
+    const struct cursor_image *b0 = cursors_get(CURSOR_BUSY, 0);
+    const struct cursor_image *b1 = cursors_get(CURSOR_BUSY, NS_PER_S / 2);
+    CHECK(b0 != b1 && b0 == cursors_get(CURSOR_BUSY, NS_PER_S));   /* a turn a second */
+    unsigned raspberry = 0, moved = 0;
+    for (int i = 0; i < CURSOR_IMG * CURSOR_IMG; i++) {
+        raspberry += b0->px[i] == 0xffd4537eu;
+        moved += b0->px[i] != b1->px[i];
+    }
+    CHECK(raspberry > 5 && moved > 10);
+    return true;
+}
+
+/* Which cursor the window manager and the desktop want where. */
+static bool cursor_choice_steps(void)
+{
+    CHECK(fk_open(&fks[0], 320, 200, false));
+    struct comp_box s = window_surface_box(win(0)), f = window_frame(win(0));
+    CHECK_EQ(wm_cursor_at(s.x2 + 2, (s.y1 + s.y2) / 2), CURSOR_RESIZE_EW);
+    CHECK_EQ(wm_cursor_at(s.x1 - 3, (s.y1 + s.y2) / 2), CURSOR_RESIZE_EW);
+    CHECK_EQ(wm_cursor_at((s.x1 + s.x2) / 2, s.y2 + 2), CURSOR_RESIZE_NS);
+    CHECK_EQ(wm_cursor_at((s.x1 + s.x2) / 2, f.y1 - 2), CURSOR_RESIZE_NS);
+    CHECK_EQ(wm_cursor_at(s.x2 + 2, s.y2 + 2), CURSOR_RESIZE_NWSE);
+    CHECK_EQ(wm_cursor_at(f.x1 - 2, f.y1 - 2), CURSOR_RESIZE_NWSE);
+    CHECK_EQ(wm_cursor_at(s.x2 + 2, f.y1 - 2), CURSOR_RESIZE_NESW);
+    CHECK_EQ(wm_cursor_at(f.x1 - 2, s.y2 + 2), CURSOR_RESIZE_NESW);
+    struct comp_box c = title_button_box(win(0), TITLE_MINIMISE);
+    CHECK_EQ(wm_cursor_at(c.x1 + 5, c.y1 + 5), CURSOR_HAND);
+    CHECK_EQ(wm_cursor_at((f.x1 + f.x2) / 2, f.y1 + 14), CURSOR_ARROW);   /* the title bar */
+    CHECK_EQ(wm_cursor_at((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2), CURSOR_ARROW);
+    CHECK_EQ(wm_cursor_at(5, 790), CURSOR_ARROW);
+    /* the desktop: the hand on the islands and the search box's rows */
+    strip_update();
+    const struct strip_item *clock = strip_find(STRIP_CLOCK);
+    CHECK_EQ(desk_cursor_at(clock->box.x1 + 3, clock->box.y1 + 3), CURSOR_HAND);
+    CHECK_EQ(desk_cursor_at(OUT_W / 2 - 300, 20), CURSOR_ARROW);   /* between islands */
+    CHECK_EQ(desk_cursor_at(600, 600), CURSOR_SHAPES);            /* not the desktop's */
+    search_toggle();
+    struct comp_box r = search_row_box(0);
+    CHECK_EQ(desk_cursor_at(r.x1 + 5, r.y1 + 5), CURSOR_HAND);
+    search_close();
+    /* busy from launching until the app's first window, at most DESK_BUSY_NS */
+    desk_launch("mines");
+    CHECK(desk_busy());
+    CHECK(fk_open(&fks[1], 200, 100, false));
+    CHECK(desk_busy());   /* not mines */
+    wm_set_title(fks[1].ww, "Mines");
+    desk_window_mapped(fks[1].ww);
+    CHECK(!desk_busy());
+    desk_launch("life");
+    desk_tick(now() + DESK_BUSY_NS + NS_PER_MS);
+    CHECK(!desk_busy());
+    return true;
+}
+
+bool t_desk_cursors(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = cursor_picture_steps() && cursor_choice_steps();
+    fk_close_all();
+    return ok;
 }
 
 bool t_desk_anim(void)
