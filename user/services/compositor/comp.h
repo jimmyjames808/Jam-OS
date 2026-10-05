@@ -299,7 +299,7 @@ struct comp_window {
     int32_t deco_top, deco_left, deco_right, deco_bottom;
     uint32_t flags;                /* COMP_WIN_* */
     struct comp_box tile;          /* tiling: the tile it was given (wm.c) */
-    void *wm;                      /* the window manager's own */
+    void *wm;                      /* the window manager's own (struct wm_window, wm.h) */
 };
 
 struct comp_scene {
@@ -462,3 +462,118 @@ uint64_t surfaces_hidden_deadline(void);
 bool     surfaces_waiting_paint(void);
 /* Compose the scene's damage into scene.pixels (headless), and clear it. */
 void     headless_compose(void);
+
+/* ---- window management (wm.c, wmtile.c, wmgrab.c, deco.c) -------------------------------
+ *
+ * Every toplevel is a window the window manager places: floating (new
+ * windows centred, the next one cascaded; moved by the title bar, resized
+ * by the edges when the client allows) or tiling (the master and stack
+ * layout: the oldest window on the left half, the others stacked on the
+ * right; a window that can't resize sits centred in its tile at its own
+ * size). scene.layout says which; a key switches all windows at once. */
+
+/* Decorations: the title bar (its close box at the right end) above the
+ * surface and a border on the other sides; maximised, the title bar only;
+ * full screen, none. Pixels. */
+#define DECO_TITLE_H 24
+#define DECO_BORDER  4
+
+/* For painting: the title bar's box (output coordinates; empty when w has
+ * none) and the close box in it; the title ("" when none, UTF-8, at most
+ * 255 bytes); and whether the client stopped answering after it was asked
+ * to close (the title bar says so). */
+struct comp_box deco_title_bar(const struct comp_window *w);
+struct comp_box deco_close_box(const struct comp_window *w);
+const char     *window_title(const struct comp_window *w);
+bool            window_not_responding(const struct comp_window *w);
+
+/* For the pointer: the topmost mapped window whose frame holds output (x,
+ * y), or NULL (the background). *on_surface: the point is in its surface's
+ * input region (the client's); else it is on the decorations (the window
+ * manager's). A point in a surface but outside its input region looks at
+ * the windows below. */
+struct comp_window *wm_window_at(int32_t x, int32_t y, bool *on_surface);
+
+/* The seat's calls (focus.c, pointer.c):
+ * - wm_pointer_press, before a press is delivered: true when the window
+ *   manager takes it (it was on a window's decorations: no client sees it).
+ *   Until wm_grabbing() is false again, motion and the release go to
+ *   wm_pointer_motion and wm_pointer_release, not to a client. button is
+ *   the evdev code (BTN_LEFT 0x110 moves, resizes and closes; others are
+ *   taken and do nothing); t ns of uptime (double-clicks).
+ * - wm_begin_move, wm_begin_resize: the compositor's grab for a client's
+ *   xdg_toplevel.move or resize, from (x, y), the pointer now (edges:
+ *   xdg_toplevel.resize_edge). ERR_BAD_STATE: w can't be moved or resized
+ *   now (tiling, maximised, a grab already on); ERR_INVALID_ARGS: edges.
+ * - wm_grab_cancel: the grab ends where it is (the pointer went away).
+ * - wm_focus_changed, after the seat set COMP_WIN_FOCUSED on w (NULL: no
+ *   window has the keys): w is raised and told it is activated, the one
+ *   before told it isn't.
+ * - wm_cycle: Alt+Tab's next window after from (NULL: the first) in the
+ *   order windows opened, backwards for Shift; skips unmapped ones; NULL
+ *   if there is none.
+ * - wm_focus_successor: who gets the keys when w goes (the next one down
+ *   in the stacking order, else the top); NULL if none.
+ * - wm_toggle_fullscreen (Super+F on the focused window), wm_toggle_layout
+ *   (the layout key). */
+#define WM_BTN_LEFT 0x110u
+bool     wm_pointer_press(int32_t x, int32_t y, uint32_t button, uint64_t t);
+void     wm_pointer_motion(int32_t x, int32_t y);
+void     wm_pointer_release(int32_t x, int32_t y);
+bool     wm_grabbing(void);
+status_t wm_begin_move(struct comp_window *w, int32_t x, int32_t y);
+status_t wm_begin_resize(struct comp_window *w, uint32_t edges, int32_t x, int32_t y);
+void     wm_grab_cancel(void);
+void     wm_focus_changed(struct comp_window *w);
+struct comp_window *wm_cycle(const struct comp_window *from, bool backwards);
+struct comp_window *wm_focus_successor(const struct comp_window *w);
+void     wm_toggle_fullscreen(struct comp_window *w);
+void     wm_toggle_layout(void);
+/* Every window placed again for layout (the start: init's saved choice). */
+void     wm_set_layout(enum comp_layout layout);
+
+/* The layout's setting in /data/etc/settings (<settings.h>): `display.layout
+ * = floating` or `tiling`. The compositor reads no files: init reads it and
+ * hands it over (the `layout=` argument, compctl), and writes it when the
+ * layout_changed hook below reports the user switched. */
+#define WM_LAYOUT_SETTING "display.layout"
+const char *wm_layout_name(enum comp_layout layout);
+bool        wm_layout_parse(const char *s, enum comp_layout *out);
+
+/* What the window manager tells the seat (focus.c fills these at the
+ * start; NULL: nobody listens, as in tests without a seat). */
+struct comp_wm_hooks {
+    /* A toplevel was mapped. take_focus: the plan's rule says it gets the
+     * keys (its client's first window). */
+    void (*mapped)(struct comp_window *w, bool take_focus);
+    /* w is about to be unmapped or destroyed (still in the stacking order:
+     * wm_focus_successor works): move the keys off it, end its grabs. */
+    void (*unmapping)(struct comp_window *w);
+    /* The user pressed on w's decorations: give it the keys. */
+    void (*focus)(struct comp_window *w);
+    /* Was serial a button press sent to cl and still held? Then true with
+     * the pointer's position (output coordinates), and the press is the
+     * compositor's from now (cl gets a pointer leave). */
+    bool (*take_press)(struct comp_client *cl, uint32_t serial, int32_t *x, int32_t *y);
+    /* The user switched the layout: init saves it (WM_LAYOUT_SETTING). */
+    void (*layout_changed)(enum comp_layout layout);
+};
+extern struct comp_wm_hooks comp_wm_hooks;
+
+/* ---- xdg-shell (xdg.c, xdgtop.c) -------------------------------------------------- */
+
+/* wl_registry.bind of xdg_wm_base. */
+status_t xdg_bind(struct comp_client *cl, uint32_t id, uint32_t version);
+status_t xdg_wm_base_request(struct comp_client *cl, struct jwl_msg *m);
+status_t xdg_positioner_request(struct comp_client *cl, struct jwl_msg *m);
+status_t xdg_surface_request(struct comp_client *cl, struct jwl_msg *m);
+status_t xdg_toplevel_request(struct comp_client *cl, struct jwl_msg *m);
+status_t xdg_popup_request(struct comp_client *cl, struct jwl_msg *m);
+/* Everything of cl's xdg-shell objects, nothing sent (before surfaces_teardown). */
+void     xdg_teardown(struct comp_client *cl);
+/* The ping clock: pings unanswered for XDG_PING_NS mark their client's
+ * windows not responding. xdg_deadline: when xdg_tick is next due
+ * (DEADLINE_NEVER: nothing waits). */
+#define XDG_PING_NS (5 * NS_PER_S)
+void     xdg_tick(uint64_t t);
+uint64_t xdg_deadline(void);

@@ -441,6 +441,24 @@ bool t_jwl_fuzz_conn(void);
 bool t_comp_globals(void);
 bool t_comp_surface(void);
 
+/* compwm.c: the compositor's window manager, linked in and driven by fake
+ * toplevels and pointer calls: floating, tiling, the switch, focus, the
+ * layout setting. compxdg.c: xdg-shell against bin/compositor headless. */
+bool t_wm_floating_place(void);
+bool t_wm_floating_move(void);
+bool t_wm_floating_resize(void);
+bool t_wm_states(void);
+bool t_wm_tiling(void);
+bool t_wm_switch(void);
+bool t_wm_focus(void);
+bool t_wm_window_at(void);
+bool t_wm_layout_setting(void);
+bool t_xdg_toplevel(void);
+bool t_xdg_tiling(void);
+bool t_xdg_popup(void);
+bool t_xdg_unacked(void);
+bool t_xdg_errors(void);
+
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */
 bool t_netdev_ring_counts(void);

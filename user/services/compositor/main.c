@@ -11,8 +11,10 @@
  *                 width * height * 4 bytes, read and written), for a test
  *                 or a screenshot to look at; without it the image is a
  *                 VMO of our own.
- * Arguments: `headless` (no framebuffer: compose into memory) and
- * `size=<w>x<h>` (the headless output, default 1280x800). Not built yet:
+ * Arguments: `headless` (no framebuffer: compose into memory),
+ * `size=<w>x<h>` (the headless output, default 1280x800) and
+ * `layout=floating|tiling` (the window layout to start with: init's
+ * `display.layout` setting, comp.h WM_LAYOUT_SETTING). Not built yet:
  * the framebuffer (framebuffer_take), so every run is headless for now.
  *
  * The loop (the service-loop rule, ARCHITECTURE.md "How a service waits"):
@@ -91,10 +93,13 @@ static status_t headless_image(int32_t w, int32_t h)
 static status_t setup(int argc, char **argv)
 {
     int32_t w = DEFAULT_W, h = DEFAULT_H;
+    enum comp_layout layout = COMP_FLOATING;
     comp.headless = true;   /* the framebuffer is not built yet */
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "headless"))
             comp.headless = true;
+        else if (!strncmp(argv[i], "layout=", 7) && wm_layout_parse(argv[i] + 7, &layout))
+            continue;
         else if (strncmp(argv[i], "size=", 5) || !parse_size(argv[i] + 5, &w, &h))
             printf("compositor: argument \"%s\" ignored\n", argv[i]);
     }
@@ -104,6 +109,7 @@ static status_t setup(int argc, char **argv)
     if (comp.svc == HANDLE_INVALID || comp.vmar == HANDLE_INVALID)
         return ERR_BAD_HANDLE;
     scene_init(w, h, SPLASH_BG);
+    wm_set_layout(layout);
     status_t st = headless_image(w, h);
     if (st == OK)
         st = jam_port_create(&comp.port);
@@ -169,7 +175,8 @@ static uint64_t next_deadline(void)
         uint64_t r = now() + HELD_RETRY;
         d = r < d ? r : d;
     }
-    return d;
+    uint64_t x = xdg_deadline();   /* a ping going late */
+    return x < d ? x : d;
 }
 
 /* Wait for the port (until deadline), then take every packet it has. The
@@ -202,6 +209,7 @@ int main(int argc, char **argv)
     st = serve_svc();   /* connects queued before we bound the port */
     while (st == OK) {
         conn_serve_all();
+        xdg_tick(now());
         paint_turn();
         conn_flush_all();   /* the frame callbacks the paint answered */
         st = take_packets(next_deadline());

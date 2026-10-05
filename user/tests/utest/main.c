@@ -888,6 +888,20 @@ static const struct {
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "comp_globals", t_comp_globals },
     { "comp_surface", t_comp_surface },
+    { "wm_floating_place", t_wm_floating_place },
+    { "wm_floating_move", t_wm_floating_move },
+    { "wm_floating_resize", t_wm_floating_resize },
+    { "wm_states", t_wm_states },
+    { "wm_tiling", t_wm_tiling },
+    { "wm_switch", t_wm_switch },
+    { "wm_focus", t_wm_focus },
+    { "wm_window_at", t_wm_window_at },
+    { "wm_layout_setting", t_wm_layout_setting },
+    { "xdg_toplevel", t_xdg_toplevel },
+    { "xdg_tiling", t_xdg_tiling },
+    { "xdg_popup", t_xdg_popup },
+    { "xdg_unacked", t_xdg_unacked },
+    { "xdg_errors", t_xdg_errors },
 };
 
 int main(int argc, char **argv)

@@ -31,7 +31,7 @@ static const struct global {
     { 2, &jwl_wl_shm_interface, COMP_SHM_VERSION, shm_bind },
     { 3, &jwl_wl_output_interface, COMP_OUTPUT_VERSION, bind_output },
     { 4, &jwl_wl_seat_interface, COMP_SEAT_VERSION, NULL },          /* seat.c */
-    { 5, &jwl_xdg_wm_base_interface, COMP_XDG_WM_VERSION, NULL },    /* xdg.c */
+    { 5, &jwl_xdg_wm_base_interface, COMP_XDG_WM_VERSION, xdg_bind },
 };
 #define NGLOBALS (sizeof(globals) / sizeof(globals[0]))
 

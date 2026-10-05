@@ -19,6 +19,8 @@ struct ct_comp {
 };
 
 bool ct_start(struct ct_comp *p, int32_t w, int32_t h);
+/* The same with one more argument for the compositor (NULL: none). */
+bool ct_start_arg(struct ct_comp *p, int32_t w, int32_t h, const char *arg);
 /* Close /svc/wayland: the compositor must end with 0 and leave its job empty. */
 bool ct_stop(struct ct_comp *p);
 /* The compositor job's handles in use now. */
@@ -26,14 +28,16 @@ uint64_t ct_handles(const struct ct_comp *p);
 /* Wait (up to CT_WAIT) for the compositor's handles to be back at want. */
 bool ct_handles_back(const struct ct_comp *p, uint64_t want);
 
-/* One event a client got (the first four non-string arguments' words, and
- * its first string argument). */
+/* One event a client got (the first four non-string arguments' words, its
+ * first string argument, and the first bytes of its first array). */
 struct ct_event {
     const struct jwl_interface *iface;
     uint16_t op;
     uint32_t id;
     uint32_t u[4];
     char     s[128];
+    uint32_t a[4];
+    uint32_t na;                   /* bytes of the array in a[] */
 };
 
 #define CT_EVENTS 128

@@ -359,7 +359,9 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # and the RTL8125 driver's guard over a fake chip (utest/rtlguard.c:
 # guard.c and the files it calls, built as user code), and FatFs's structs
 # as fat's build sees them (utest/fatlayout.c: "ff.h" with fat's
-# ffconf.h, on the quote path only, so ffport's <string.h> stays fat's).
+# ffconf.h, on the quote path only, so ffport's <string.h> stays fat's),
+# and the compositor's window manager on its scene (utest/compwm.c: wm.h,
+# no protocol in those files).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -369,8 +371,11 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/dns/resolver.c.o $(UOBJ)/drivers/lib/netserver.c.o \
                       $(UOBJ)/user/services/dns/socks.c.o $(UOBJ)/user/services/dns/askers.c.o \
                       $(UOBJ)/user/services/sntp/ntp.c.o \
-                      $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx)
-EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
+                      $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
+                      $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile \
+                        wmgrab deco)
+EXTRA_CFLAGS_utest := -iquote user/services/compositor \
+                      -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
                       -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT)
