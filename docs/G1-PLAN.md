@@ -130,8 +130,9 @@ differs from the recommendation below, this note wins:
   animation that is interrupted (another key, a second click) jumps to
   its end. Animations run at the compositor's paint rate and only damage
   the boxes they touch.
-  The status icons and the clock open frosted popovers under the strip,
-  each popover's right edge lined up with the right edge of what opened
+  The status icons and the clock open frosted popovers just under their
+  island (about 4 px below it, over the strip's lower edge), each
+  popover's right edge lined up with the right edge of what opened
   it (clicking elsewhere closes it): volume (a slider on the mixer's
   volume, the output, what's playing), network (link state, address,
   NIC and speed, live rates), the clock (time, full date, a month
