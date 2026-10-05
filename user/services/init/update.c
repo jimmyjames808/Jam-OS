@@ -19,11 +19,14 @@
  * stored kernel as it was. On success /esp's files are noted as seen
  * (reboot.c), so the next `reboot` starts the fetched build instead of
  * reloading the stick's. Nothing is written to the stick, unless the offer
- * asks (UPDATE_OFFER_WRITE, `update -w`): then, once the build is loaded,
- * the worker writes it to the stick's ESP too (espwrite.c, which alone
+ * asks (UPDATE_OFFER_WRITE: the shell's plain `update`, and `update -w`;
+ * `update -m` doesn't): then, once the build is loaded, the worker writes
+ * it to the stick's ESP too (espwrite.c, which alone
  * holds the ESP writable, through devmgr's ESP channel that only init
  * has), and the answer comes when that is done. A failed stick write
  * leaves the build loaded and the stick bootable (UPDATE_NOT_WRITTEN).
+ * init never reboots for an update: the owner's `reboot` (kexec) starts
+ * the loaded build, `reboot -f` whatever the stick boots.
  * A manifest with a `menu` line comes with a third VMO, the boot menu,
  * copied and hashed with the other two (one that isn't the signed one
  * refuses the offer); only a stick write uses it, after the build
@@ -372,9 +375,10 @@ static void say(const struct check *c)
                a->version, a->git, a->check_ms, (unsigned long)c->verify_us,
                (unsigned long)o->bytes[UPDATE_KERNEL], (unsigned long)o->bytes[UPDATE_BOOTFS],
                menu, (unsigned long)c->hash_ms,
-               only    ? "and not loaded (check only)"
-               : wrote ? "and stored, and written to the stick"
-                       : "and stored: `reboot` starts it");
+               only                 ? "and not loaded (check only)"
+               : wrote && a->already ? "and stored; the stick has it already"
+               : wrote               ? "and stored, and written to the stick"
+                                     : "and stored in memory only (-m)");
         if (wrote)
             printf("init: update: the stick write took %u ms: `reboot` and a power-on start "
                    "the new build\n", a->write_ms);
@@ -486,6 +490,7 @@ static void write_done(struct check *c)
     c->a.write_ms = w->write_ms;
     c->a.menu = w->menu;
     c->a.menu_status = w->menu_status;
+    c->a.already = w->already ? 1 : 0;
     memcpy(c->a.menu_why, w->menu_why, sizeof(c->a.menu_why));
     if (w->st != OK)
         refuse(&c->a, UPDATE_NOT_WRITTEN, 0, w->st);

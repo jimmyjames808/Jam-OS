@@ -1,6 +1,6 @@
 #!/bin/sh
-# `update -w` in QEMU: init writes a fetched build to the stick's ESP, and
-# the stick boots it from cold. Build A is this build with a throwaway test
+# `update`'s stick write in QEMU: init writes a fetched build to the
+# stick's ESP, and the stick boots it from cold. Build A is this build with a throwaway test
 # key (tools/update-test-key.sh); build B is A's kernel with another version
 # string and A's boot image with `build.txt` saying git b0b0b0b and one
 # more file, update-marker.txt (as tools/update-net-test.sh makes them),
@@ -24,10 +24,12 @@
 #      before its change 4 (it isn't in yet), the other one after; then a
 #      last write of C with no stop. Cold boots of that stick: its default
 #      entry runs C, its previous-build entry B.
-#   2. wnet: a cold boot runs A; `update -w` (QEMU_NET, the peer serving B,
-#      signed): B fetched, checked, stored and written; the shell reboots
-#      (kexec) into B: `version` is B's, the marker is there. On the Mac the
-#      ESP holds B, and A as the previous build.
+#   2. wnet: a cold boot runs A; `update -m` (QEMU_NET, the peer serving B,
+#      signed): B fetched, checked and loaded into memory only, no reboot;
+#      `reboot` (kexec) starts B (`version`, the marker), the stick's
+#      kernel still A's; then `update -w` (the old spelling of plain
+#      `update`), B being the running build: B written to the stick, no
+#      reboot. On the Mac the ESP holds B, and A as the previous build.
 #   3. wcold: a cold boot of that stick runs B (the marker is there).
 #   4. wprev: a cold boot of the boot menu's "Jam OS (previous build)"
 #      (QEMU_BOOT_PREV) runs A (no marker).
@@ -107,6 +109,7 @@ cat > "$out/wtest.spec.json" <<EOF
 {"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img", "key": "$key", "plan": []}
 EOF
 echo "update-write-test: build A $va, build B $vb, build C $vc"
+sha_a=$(shasum -a 256 build/jamos.elf | cut -d' ' -f1)
 
 # esp <image> <name> <file>: does the image's ESP have boot/<name>, the
 # same bytes as <file>?
@@ -184,7 +187,8 @@ for run in wstopcold wstopprev; do
         fail "$run: the stopped-and-written stick didn't boot build $want (see $out/$run.log)"
 done
 
-# Run 2: a cold boot (A), then `update -w` over the network.
+# Run 2: a cold boot (A), `update -m` and `reboot` (B from memory), then
+# `update -w` over the network.
 cat > "$out/wnet.txt" <<EOF
 wait 120 Jam OS shell
 seen 60 netstack: address 10.2.21.5/24
@@ -192,9 +196,11 @@ wait jam>
 send version
 wait Jam OS $va, git
 wait jam>
-send update -w
+send update -m
 wait 600 -> $vb (b0b0b0b): checked by init in
-wait stored and written to the stick (-w)
+wait loaded into memory only (-m)
+wait jam>
+send reboot
 wait 30 init: kexec: /esp unchanged: the stored kernel, no files read
 wait 60 kexec: starting the stored kernel
 wait 60 kexec: started by a reboot
@@ -206,6 +212,17 @@ wait jam>
 send cat /boot/update-marker.txt
 wait $marker
 wait jam>
+send sha256sum /esp/boot/jamos.elf
+wait $sha_a
+wait jam>
+send update -w
+wait 600 -> $vb (b0b0b0b): checked by init in
+wait loaded and written to the stick
+wait update: written to the stick and loaded:
+wait jam>
+send version
+wait Jam OS $vb, git b0b0b0b
+wait jam>
 send reboot -f
 wait reboot: resetting
 EOF
@@ -214,10 +231,16 @@ QEMU_IMAGE="$out/wtest-1.img" QEMU_SAVE="$out/wtest-2.img" QEMU_NET=1 \
     QEMU_INPUT="$out/wnet.txt" tools/qemu-test.sh "$out" wnet shell > "$out/wnet.out" 2>&1 ||
     fail "run 2, the script or the VLAN checks (see $out/wnet.out, $out/wnet.log)"
 log="$out/wnet.log"
+grep -aq "init: update: .* and stored in memory only" "$log" ||
+    fail "run 2: init didn't say update -m loaded it into memory only"
 grep -aq "init: update: .* and stored, and written to the stick" "$log" ||
     fail "run 2: init didn't say it wrote the stick"
-[ "$(grep -ac "kexec: kexec_load from init: OK" "$log")" -eq 1 ] ||
-    fail "run 2: not exactly one build loaded"
+[ "$(grep -ac "kexec: kexec_load from init: OK" "$log")" -eq 2 ] ||
+    fail "run 2: not exactly two builds loaded (update -m, update -w)"
+[ "$(grep -ac "kexec: starting the stored kernel" "$log")" -eq 1 ] ||
+    fail "run 2: not exactly one kexec (the reboot after update -m: update -w rebooted?)"
+[ "$(grep -ac "reboot: resetting" "$log")" -eq 1 ] ||
+    fail "run 2: a firmware reset before the last one"
 grep -a "update: fetched\|init: update: \|devmgr: /esp" "$log" | sed 's/^/update-write-test: /'
 esp "$out/wtest-2.img" jamos.elf "$out/jamos-B.elf" &&
     esp "$out/wtest-2.img" bootfs.img "$out/bootfs-B.img" ||

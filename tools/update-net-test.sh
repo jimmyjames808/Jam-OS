@@ -27,15 +27,21 @@
 #                 knows, with `update -n`: skipped, B checked
 #  10. `update -n`: build B fetched and checked, old -> new said, nothing
 #                 loaded
-#  11. `update`: build B stored and the shell reboots into it (kexec); the
-#      next boot's `version` is B's, and /boot/update-marker.txt is there.
+#  11. `update -m`: build B loaded into memory only: no reboot (`version`
+#      still A's), the stick's kernel still A's (sha256sum /esp/boot/jamos.elf)
+#  12. `update`: build B loaded and written to the stick, and NO reboot:
+#      `version` still A's, the stick's kernel B's; then `reboot` (kexec)
+#      reads nothing from /esp and starts B: `version` is B's, and
+#      /boot/update-marker.txt is there; then `reboot -f`.
+# Then a second run, `updcold`: a cold boot of the stick that run left
+# (what `reboot -f` starts, through the firmware): B, from the stick.
 # Build A (the stick's) has a throwaway test key's public half
 # (tools/update-test-key.sh), and the server signs every manifest with it;
-# build B has it too. The running build stays untouched by 1-8: exactly one
-# kexec_load (the last), `version` still A's before it. Every frame the
-# guest sent is tagged VLAN 21 (the peer's and the pcap's checks,
-# tools/qemu-test.sh: the run boots with vlan=21, whatever this build's
-# default).
+# build B has it too. The running build stays untouched by 1-10: exactly
+# two kexec_loads (11 and 12), `version` still A's until the `reboot`.
+# Every frame the guest sent is tagged VLAN 21 (the peer's and the pcap's
+# checks, tools/qemu-test.sh: the run boots with vlan=21, whatever this
+# build's default).
 # Usage: tools/update-net-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
 out=$1
@@ -82,6 +88,8 @@ cat > "$out/updnet.spec.json" <<EOF
           "mustknow", "extension"]}
 EOF
 echo "update-net-test: build A $va, build B $vb"
+sha_a=$(shasum -a 256 build/jamos.elf | cut -d' ' -f1)
+sha_b=$(shasum -a 256 "$out/jamos-B.elf" | cut -d' ' -f1)
 
 cat > "$out/updnet.txt" <<EOF
 wait 120 Jam OS shell
@@ -126,8 +134,29 @@ wait jam>
 send version
 wait Jam OS $va, git
 wait jam>
+send update -m
+wait 120 -> $vb (b0b0b0b): checked by init in
+wait loaded into memory only (-m)
+wait update: loaded into memory only:
+wait jam>
+send version
+wait Jam OS $va, git
+wait jam>
+send sha256sum /esp/boot/jamos.elf
+wait $sha_a
+wait jam>
 send update
 wait 120 -> $vb (b0b0b0b): checked by init in
+wait loaded and written to the stick
+wait update: written to the stick and loaded:
+wait jam>
+send version
+wait Jam OS $va, git
+wait jam>
+send sha256sum /esp/boot/jamos.elf
+wait $sha_b
+wait jam>
+send reboot
 wait 30 init: kexec: /esp unchanged: the stored kernel, no files read
 wait 60 kexec: starting the stored kernel
 wait 60 kexec: started by a reboot
@@ -142,15 +171,20 @@ wait jam>
 send reboot -f
 wait reboot: resetting
 EOF
-QEMU_IMAGE="$img" QEMU_NET=1 QEMU_NET_PEER="--update $out/updnet.spec.json" \
-    QEMU_TIMEOUT=${QEMU_TIMEOUT:-360} QEMU_INPUT="$out/updnet.txt" \
+QEMU_IMAGE="$img" QEMU_SAVE="$out/updnet-saved.img" QEMU_NET=1 \
+    QEMU_NET_PEER="--update $out/updnet.spec.json" \
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-480} QEMU_INPUT="$out/updnet.txt" \
     tools/qemu-test.sh "$out" updnet shell > "$out/updnet.out" 2>&1 ||
     fail "the script or the VLAN checks (see $out/updnet.out, $out/updnet.log)"
 log="$out/updnet.log"
 [ "$(grep -ac "init: update: refused: a file's SHA-256 isn't the manifest's" "$log")" -eq 2 ] ||
     fail "not 2 SHA-256 refusals logged by init"
-[ "$(grep -ac "kexec: kexec_load from init: OK" "$log")" -eq 1 ] ||
-    fail "not exactly one build loaded (the last one)"
+[ "$(grep -ac "kexec: kexec_load from init: OK" "$log")" -eq 2 ] ||
+    fail "not exactly two builds loaded (update -m and update)"
+[ "$(grep -ac "init: update: .* and stored in memory only" "$log")" -eq 1 ] ||
+    fail "init didn't say update -m loaded B into memory only"
+[ "$(grep -ac "init: update: .* and stored, and written to the stick" "$log")" -eq 1 ] ||
+    fail "init didn't say update wrote B to the stick"
 [ "$(grep -ac "init: update: .* and not loaded (check only)" "$log")" -eq 3 ] ||
     fail "init didn't say the three -n checks loaded nothing"
 grep -aq "init: update: refused: it needs a newer build than this one to take it (it has \"!" \
@@ -170,7 +204,25 @@ done
     fail "a firmware reset happened before the last one"
 grep -a "update: fetched\|init: update: .*checked in" "$log" | sed 's/^/update-net-test: /'
 tail -1 "$out/updnet.out"
-rm -f "$img" "$out/updnet.img"
+
+# What `reboot -f` starts: the stick, from cold, runs B.
+cat > "$out/updcold.txt" <<EOF
+wait 120 Jam OS shell
+wait jam>
+send version
+wait Jam OS $vb, git b0b0b0b
+wait jam>
+send cat /boot/update-marker.txt
+wait $marker
+wait jam>
+send reboot -f
+wait reboot: resetting
+EOF
+QEMU_IMAGE="$out/updnet-saved.img" QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
+    QEMU_INPUT="$out/updcold.txt" tools/qemu-test.sh "$out" updcold shell \
+    > "$out/updcold.out" 2>&1 ||
+    fail "updcold: the written stick didn't boot B from cold (see $out/updcold.log)"
+rm -f "$img" "$out/updnet.img" "$out/updnet-saved.img"
 if [ $fails -eq 0 ]; then
     echo "update-net-test: PASS"
     exit 0

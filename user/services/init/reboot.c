@@ -17,8 +17,9 @@
  * load`) reads and hands them over at once, and notes them as the stored
  * copy's: the reboot after it reads nothing. An update (update.c) makes a
  * fetched build the stored copy and notes /esp's files as they are then,
- * so the reboot keeps the fetched build until the stick changes; `update
- * -w` notes the files it wrote (or left) on the stick, the same build.
+ * so the reboot keeps the fetched build until the stick changes; `update`'s
+ * stick write notes the files it wrote (or left) on the stick, the same
+ * build.
  *
  * Then what a firmware reset does too (stop_everything: /data synced,
  * logd's last lines written, the volume left clean, devmgr's shutdown,

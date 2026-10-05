@@ -1,5 +1,5 @@
 #!/bin/sh
-# `update -w` and the boot menu (user/services/init/espmenu.c, <update.h>'s
+# `update`'s stick write and the boot menu (user/services/init/espmenu.c, <update.h>'s
 # `menu` line), in QEMU. The stick's build A has a test key
 # (tools/update-test-key.sh) and an OLD boot menu: boot/limine.conf without
 # its two IOMMU entries (as the owner's stick had it). Build B is A's kernel
@@ -41,11 +41,12 @@
 #   5. net: a fresh stick (A, the old menu), QEMU_NET with the peer serving
 #      B and the NEW menu (tools/netpeer.py --update): `update -n` (checked,
 #      the menu untouched); `update -w` with the menu damaged on the way
-#      (refused: "a file's SHA-256 isn't the manifest's: menu"); `update -w`
-#      from a server without menus (the build written, the menu untouched;
-#      the shell reboots into B); `update -w` again with the menu (the
-#      build there already, the menu written; the shell reboots). On the
-#      Mac: the new menu, the old as .prev, B, A as the previous build.
+#      (refused: "a file's SHA-256 isn't the manifest's: menu"); plain
+#      `update` from a server without menus (the build written, the menu
+#      untouched; no reboot: `reboot` starts B); `update -w` again with the
+#      menu (the build there already and running, the menu written; then
+#      `reboot`). On the Mac: the new menu, the old as .prev, B, A as the
+#      previous build.
 #   6. entries: that stick, with nothing of the test's on it, booted with
 #      Limine's own pick (its menu as written: the default entry, B), then
 #      each entry of its menu that boots (a copy of the menu with
@@ -319,8 +320,11 @@ wait jam>
 send update -w
 wait 300 init refused it: a file's SHA-256 isn't the manifest's: menu
 wait jam>
-send update -w
-wait 300 stored and written to the stick (-w)
+send update
+wait 300 loaded and written to the stick
+wait update: written to the stick and loaded:
+wait jam>
+send reboot
 wait 60 kexec: starting the stored kernel
 wait 120 init: the shell is up
 wait jam>
@@ -328,6 +332,9 @@ $mcheck
 wait jam>
 send update -w
 wait 300 update: its boot menu written
+wait update: this is the build running now, and the stick has it already
+wait jam>
+send reboot
 wait 60 kexec: starting the stored kernel
 wait 120 init: the shell is up
 wait jam>

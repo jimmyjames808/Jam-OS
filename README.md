@@ -203,7 +203,7 @@ the everyday entry "Jam OS" is on the network; "Jam OS (no network)"
 | `net stats` | every count netstack keeps, and the network card's own |
 | `ping <address or name> [-c count] [-s size]` | ICMP echo, one a second; Ctrl+C stops it |
 | `host <name>` | the name's IPv4 addresses, from the DNS server |
-| `update [-n \| -w] [-f] [address]` | fetch the build the Mac serves, have init check its signature and files, and reboot into it; `-n` fetches and checks only; `-w` has init write it to the stick too; `-f` takes a build whose network default isn't this one's |
+| `update [-n \| -m \| -w] [-r] [-f] [address]` | fetch the build the Mac serves, have init check its signature and files, write it (and its boot menu) to the stick and load it, then stop: `reboot` starts it, `reboot -f` too (from the stick); `-m` loads it into memory only, the stick untouched; `-n` fetches and checks only; `-w` is the same as plain `update`; `-r` reboots into it at once; `-f` takes a build whose network default isn't this one's |
 | `fetch <url> [file \| -]` | download a file over plain HTTP (`http://` only: https needs TLS, which Jam OS doesn't have yet), into the URL's last name here, a file or a folder, or a pipe |
 | `serve [<file> [port] \| stop [port]]` | serve one file over HTTP in the background (port 8080 unless given); alone, what is served; `stop`, stop it |
 | `speed <host> [port] [-r \| -u] [-t s]`, `speed -l [port]` | network throughput against `tools/speed.py` on the Mac, either way, TCP or UDP |
@@ -338,30 +338,54 @@ made without the key takes no update at all.
 2. On the PC: `update`. It fetches the build from `net.host`, init checks
    the manifest's signature against the key in the running build, then
    each file's size and SHA-256 against the manifest, the screen says
-   `old -> new` (version and git commit), and the PC reboots into it. A
-   build with another network default (the Mac's tree without `local.mk`,
-   say) is refused: `update -f` takes it anyway.
+   `old -> new` (version and git commit), and init loads the build into
+   memory and writes it to the stick. Then it stops; its last line says
+   what comes next:
 
-The fetched build lives in RAM: it survives `reboot` and a panic, and a
-power-off brings back the stick's. **`update -w`** keeps it: once init has
-checked and loaded the build, it also writes it to the stick (only init
-can: no program, the shell included, can write the boot partition), and
-the stick's own build stays on as the boot menu's **"Jam OS (previous
-build)"**, which `make flash` keeps the same way. The write takes a few
-seconds; the stick boots throughout (the old build first, under every
-name, then the new one), and if anything goes wrong the screen says how
-far it got, the new build stays loaded (`reboot` runs it), and the stick
-still boots the old one. `-w` needs a build with the key, as `update`
-does. It brings the boot menu too: new entries in `boot/limine.conf`
-reach the stick without `make flash`. init writes the menu after the
-build, only if it passes init's check (its default entry boots the new
-build, "Jam OS (previous build)" the previous one, every file it names is
-on the stick; `make check` runs the same check on `boot/limine.conf`),
-keeps the stick's old menu as `/esp/boot/limine/limine.conf.prev`, and the
-stick has a whole menu at every moment; a menu that fails is left out and
-the screen says why. `update` and `update -n` never touch the stick's
-menu. A signature proves the build is one you signed, not that it is the
-newest: an older signed build is accepted too (the versions are printed).
+   ```
+   update: written to the stick and loaded: `reboot` starts it now, `reboot -f` restarts through the firmware (the stick boots it too)
+   ```
+
+   `reboot` starts the new build from memory (kexec: a few seconds, no
+   firmware); `reboot -f` restarts through the firmware and the boot menu,
+   and the stick boots the new build too, as does every power-on after.
+   A build with another network default (the Mac's tree without
+   `local.mk`, say) is refused: `update -f` takes it anyway.
+
+**What `update` does to the stick.** Once init has checked and loaded the
+build, it writes it to the stick (only init can: no program, the shell
+included, can write the boot partition), and the stick's own build stays
+on as the boot menu's **"Jam OS (previous build)"**, which `make flash`
+keeps the same way. The write takes a few seconds (about 20 on the
+owner's USB 2 stick); the stick boots throughout (the old build first,
+under every name, then the new one). If anything goes wrong the screen
+says how far it got and that the new build is still loaded: `reboot`
+runs it, while the stick (`reboot -f`, a power-off) still boots the old
+one. A stick that has the build already gets nothing written ("the stick
+has this build already"; "this is the build running now" if it is the
+running one too), and the build is loaded all the same. The update brings
+the boot menu too: new entries in `boot/limine.conf` reach the stick
+without `make flash`. init writes the menu after the build, only if it
+passes init's check (its default entry boots the new build, "Jam OS
+(previous build)" the previous one, every file it names is on the stick;
+`make check` runs the same check on `boot/limine.conf`), keeps the
+stick's old menu as `/esp/boot/limine/limine.conf.prev`, and the stick
+has a whole menu at every moment; a menu that fails is left out and the
+screen says why.
+
+**The other ways.** `update -m` loads the build into memory only and
+leaves the stick alone, for a build you'd rather try first: `reboot` runs
+it and keeps running it (it survives `reboot` and a panic), and a
+power-off or `reboot -f` brings back the stick's. `update -n` fetches and
+checks only: nothing loaded, nothing written. `update -w` is the same as
+plain `update` (it was the stick write's flag when plain `update` wrote
+nothing). `update -r` does the plain update and then reboots into it at
+once (`update -m -r`: into memory only, then the reboot), unless the
+stick write failed. `update -m` and `update -n` never touch the stick or
+its menu. With nothing new loaded, `reboot` and `reboot -f` are as they
+always were: the stick's build. Every form needs a build with the key. A
+signature proves the build is one you signed, not that it is the newest:
+an older signed build is accepted too (the versions are printed).
 
 ## Where things live
 
