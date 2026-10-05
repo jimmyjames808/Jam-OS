@@ -109,7 +109,9 @@ be compatible with that.
   Prefer permissive references (FreeBSD, OpenBSD, the vendor datasheet).
 - **Vendored code goes in `third_party/<name>/` with its own LICENSE file**
   and an entry in `third_party/VERSIONS.md`. Only permissive licences
-  (BSD, MIT, ISC, 0BSD, Zlib, Apache-2.0).
+  (BSD, MIT, ISC, 0BSD, Zlib, Apache-2.0); fonts may be under the SIL Open
+  Font License 1.1, which allows bundling with any software (Inter,
+  `third_party/inter/`).
 
 ### Files and functions
 
