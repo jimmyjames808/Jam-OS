@@ -111,6 +111,16 @@ differs from the recommendation below, this note wins:
   top hit, arrows move, Esc closes; its last row offers to run what was
   typed as a command in a new terminal. Apps show as letter tiles in jam
   colours until there are icons.
+  Alt+Tab (owner's pick): a compact frosted list, centred, one row per
+  window (letter tile and title). Order: the current screen's windows
+  (most recently focused first), then every other screen's windows grouped
+  under a small "screen N" label, then minimised windows. Holding Alt,
+  the first Tab selects the next row and each further Tab the one after
+  (Shift+Tab goes back, wrapping); letting go of Alt goes to the selected
+  window (sliding to its screen, restoring it if minimised); Esc while
+  Alt is held cancels. A quick Alt+Tab tap goes straight to the previous
+  window; the list appears only if Alt is held past about 120 ms, so a
+  tap doesn't flash it.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
