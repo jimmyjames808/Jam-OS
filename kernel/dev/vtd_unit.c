@@ -16,6 +16,7 @@
  * The units' register pages stay the kernel's (vtd_regs_overlap): every
  * unit the DMAR table lists, whether it answered or not. */
 #include <jam/cmdline.h>
+#include <jam/dbghook.h>
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/report.h>
@@ -190,6 +191,8 @@ void vtd_flush_lines(const void *va, size_t len)
             __asm__ volatile("clflush (%0)" ::"r"(p) : "memory");
     }
     __asm__ volatile("sfence" ::: "memory");
+    struct vtd_flush_range r = { va, len };
+    DBG_HOOK(DBG_VTD_FLUSH, &r);
 }
 
 /* ---- the callbacks for vtd_pt and vtd_ir ----------------------------------------- */

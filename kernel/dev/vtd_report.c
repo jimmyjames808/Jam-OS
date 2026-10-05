@@ -71,8 +71,10 @@ static void report_unit(struct vtd_unit *u)
     kprintf("iommu:     queue: %lu submission(s), %lu descriptor(s), %lu wrap(s), %lu refused, "
             "%lu timed out\n", (unsigned long)s->submissions, (unsigned long)s->descriptors,
             (unsigned long)s->wraps, (unsigned long)s->refused, (unsigned long)s->timeouts);
-    kprintf("iommu:     faults: %lu event interrupt(s), %lu record(s) read, %lu lost\n",
-            (unsigned long)s->fault_irqs, (unsigned long)s->faults, (unsigned long)s->faults_lost);
+    kprintf("iommu:     faults: %lu event interrupt(s), %lu record(s) read, %lu lost, %lu "
+            "storm(s)%s\n", (unsigned long)s->fault_irqs, (unsigned long)s->faults,
+            (unsigned long)s->faults_lost, (unsigned long)s->storms,
+            __atomic_load_n(&u->storm_masked, __ATOMIC_RELAXED) ? " (one now: masked)" : "");
     if (u->fault_on)
         kprintf("iommu:     fault event interrupt on cpu %u, vector %u\n", u->fault_cpu,
                 u->fault_vec);

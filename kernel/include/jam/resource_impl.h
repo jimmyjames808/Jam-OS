@@ -133,7 +133,8 @@ bool dma_cap_bus_master_on(struct kobject *cap);
  * doesn't touch it. A bound cap closing with pins still held: with an
  * IOMMU domain, a kernel thread ("dma quarantine") takes the domain away
  * from the device, waits for the unit to confirm it, and frees the pages
- * at once; without one it quarantines them (see vmo_quarantine_cap_pins):
+ * at once (until the unit confirms, they stay held and the thread tries
+ * again every second); without one it quarantines them (see vmo_quarantine_cap_pins):
  * they are released DMA_QUARANTINE_GRACE_NS after the function's current
  * cap next turns bus mastering on, or DMA_QUARANTINE_TIMEOUT_NS after the
  * close if nobody does. The same thread releases them. */
@@ -159,9 +160,11 @@ struct dma_quarantine_stats {
  * pages are back. */
 void dma_quarantine_stats(struct pci_dev *d, struct dma_quarantine_stats *out);
 /* Tests: release d's batches now (quarantined ones whatever their
- * deadlines; a closed cap's domain taken away first); returns once
- * nothing of d's is held (it also waits for a batch the release thread is
- * in the middle of). Interrupts on, no spinlock held. */
+ * deadlines; a closed cap's domain taken away first), each batch listed
+ * when it is called tried once; returns once that is done and the release
+ * thread is in the middle of none. Nothing of d's is held afterwards
+ * unless a domain the unit didn't confirm gone keeps its pages. Interrupts
+ * on, no spinlock held. */
 void dma_quarantine_flush(struct pci_dev *d);
 
 /* ---- the handle layer (kernel/abi/sysc_hw.c) -------------------------------

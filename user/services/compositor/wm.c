@@ -23,7 +23,7 @@
  * windows that are no toplevel (testwin's) from the bottom up. */
 #include "wm.h"
 
-#define CASCADE_STEP  (DECO_TITLE_H + DECO_BORDER)   /* one cascade step, both ways */
+#define CASCADE_STEP  (COMP_TITLE_H + DECO_BORDER)   /* one cascade step, both ways */
 #define CASCADE_MAX   16u                            /* steps before it starts over */
 #define REACH_MIN     48   /* a floating title bar keeps this much on the output */
 #define CYCLE_MAX     (COMP_CLIENTS_MAX * COMP_SURFACES_MAX)   /* windows there can be */
@@ -286,6 +286,7 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
         if (st != OK)
             return st;
         ww->win->wm = ww;
+        ww->win->title = ww->title;   /* ours: it outlives the window */
     }
     ww->shown = states;
     wm_place(ww);
@@ -329,7 +330,7 @@ void wm_set_title(struct wm_window *ww, const char *title)
 {
     copy_text(ww->title, title);
     if (ww->win)
-        scene_damage(deco_title_bar(ww->win));
+        window_damage(ww->win);   /* its title bar */
 }
 
 void wm_set_app_id(struct wm_window *ww, const char *app_id)
@@ -385,11 +386,21 @@ void wm_set_not_responding(struct wm_window *ww, bool on)
     if (ww->not_responding == on)
         return;
     ww->not_responding = on;
-    if (ww->win)
-        scene_damage(deco_title_bar(ww->win));
+    if (!ww->win)
+        return;
+    ww->win->flags = on ? ww->win->flags | COMP_WIN_UNRESPONSIVE
+                        : ww->win->flags & ~COMP_WIN_UNRESPONSIVE;
+    window_damage(ww->win);   /* its title bar says so, or not */
 }
 
 /* ---- the user's side ---------------------------------------------------------------- */
+
+void wm_close(struct comp_window *w)
+{
+    struct wm_window *ww = w ? w->wm : NULL;
+    if (ww && ww->ops && ww->ops->close)
+        ww->ops->close(ww->ctx);   /* the client decides; a ping asks if it is alive */
+}
 
 void wm_toggle_fullscreen(struct comp_window *w)
 {

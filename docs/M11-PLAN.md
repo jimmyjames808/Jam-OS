@@ -3,8 +3,8 @@
 Status (2026-10-05): **built and tested in QEMU**, stages 0 to 6
 ([as built](#as-built)); behind the boot word `iommu=on`, off by default.
 Next: the PC run (the IOMMU checks entry, then every device, All tests and
-`soak 10` with `iommu=on`), then the default turned on, then the
-independent review (stage 7). The design as built is
+`soak 10` with `iommu=on`), then the default turned on. The independent
+review (stage 7) is done ([M11-REVIEW.md](history/M11-REVIEW.md)). The design as built is
 [ARCHITECTURE.md](../ARCHITECTURE.md#the-iommu). M11 runs beside M11.5 and
 M11.6 ([PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-1-m11-m115-and-m116-together)).
 
@@ -666,8 +666,19 @@ by default until the PC passes (question 6).
   per attach (above) and the test scripts that stopped at their first
   failure report under `set -e`.
 
+- **7, the review** ([M11-REVIEW.md](history/M11-REVIEW.md)): no High;
+  three Mediums fixed: the root table's cleared page is flushed for a unit
+  that doesn't snoop; a storm of fault events (an interrupt's faults can't
+  be muted) masks the fault interrupt and the log thread polls instead; a
+  closed cap's domain the unit doesn't confirm gone keeps its pages (tried
+  again every second) instead of releasing them after the quarantine's
+  time. Two Lows fixed (vectors 16-31 refused in an entry; a redundant test
+  reset dropped); the "512 table pages = 1 GiB of scattered pins" claim
+  corrected (fully scattered pins hit it at ~500 pages); design questions
+  A-E for the owner there.
+
 **Left for the PC** ([What only the PC can show](#what-only-the-pc-can-show)),
-then the default, then stage 7's review.
+then the default.
 
 ## Where M11 meets the rest of wave 1
 

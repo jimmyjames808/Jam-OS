@@ -932,7 +932,15 @@ static const struct {
     { "comp_seat_text", t_comp_seat_text },
     { "comp_seat_ctl", t_comp_seat_ctl },
     { "comp_seat_move", t_comp_seat_move },
+    { "wm_seat", t_wm_seat },
     { "termkeys", t_termkeys },
+    { "comp_paint_overlap", t_comp_paint_overlap },
+    { "comp_paint_cull", t_comp_paint_cull },
+    { "comp_paint_damage", t_comp_paint_damage },
+    { "comp_paint_fullscreen", t_comp_paint_fullscreen },
+    { "comp_paint_title", t_comp_paint_title },
+    { "comp_paint_cursor", t_comp_paint_cursor },
+    { "comp_paint_blank", t_comp_paint_blank },
 };
 
 int main(int argc, char **argv)

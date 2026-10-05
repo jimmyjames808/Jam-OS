@@ -140,6 +140,12 @@ uint32_t argb_pm(uint32_t rgb, uint32_t a);
 uint32_t px_over(uint32_t dst, uint32_t src);
 /* src (premultiplied) over every pixel of the rectangle (SSE2). */
 void fill_pm(const struct surf *s, int x, int y, int w, int h, uint32_t src);
+/* n premultiplied pixels of src over the n opaque pixels of dst, in place,
+ * exactly as px_over (over.c): AVX2 where it pays, else SSE2. The two
+ * versions by name, for fbbench to compare. Rows need no alignment. */
+void px_over_row(uint32_t *dst, const uint32_t *src, int n);
+void px_over_row_sse2(uint32_t *dst, const uint32_t *src, int n);
+void px_over_row_avx2(uint32_t *dst, const uint32_t *src, int n);   /* AVX2 CPUs only */
 /* An image whose pixels are premultiplied 0xAARRGGBB, over dst at x, y. */
 void blit_pm(const struct surf *dst, int x, int y, const struct surf *src);
 /* Premultiplied pixels to read from: w x h of them, `stride` a row. */
@@ -261,6 +267,13 @@ void     gfx_pointer_show(bool on);
 /* Only the arrow moved: present just its rows (much cheaper than
  * gfx_present when the frame is unchanged). */
 void     gfx_present_pointer(void);
+
+/* The arrow (mouse.c), at scale 1: '#' its outline (black), 'o' its fill
+ * (white), ' ' nothing; the hot spot is the top-left corner. The
+ * compositor draws the same one. */
+#define POINTER_ARROW_W 12
+#define POINTER_ARROW_H 18
+extern const char pointer_arrow[POINTER_ARROW_H][POINTER_ARROW_W + 1];
 
 /* A pointer position from relative mouse counts: what gfx_mouse keeps,
  * here by itself so it can be tested. */

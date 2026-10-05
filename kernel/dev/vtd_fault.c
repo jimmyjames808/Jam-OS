@@ -22,6 +22,19 @@
  * raised no interrupt (an error bit was set at the time) is still seen,
  * and it runs the queue's error recovery when the handler saw an error.
  *
+ * The storm guard (VTD_STORM_*, vtd_internal.h). The mute (vtd_domain.c)
+ * silences a function's DMA faults in its context entry, but nothing can
+ * silence an interrupt's fault (the entry it names is past the table, not
+ * present, or someone else's) or a DMA from a requester id no function
+ * has, and a driver can point its device's every write at the interrupt
+ * window: a fault event interrupt per write, for as long as it likes. So
+ * the handler counts its interrupts; past VTD_STORM_IRQS in
+ * VTD_STORM_WINDOW_NS it masks the interrupt (FECTL.IM), and the thread
+ * then looks at the unit every VTD_STORM_POLL_NS (draining what was
+ * recorded meanwhile: one record per register and the overflow) until a
+ * look finds nothing new, and unmasks it. The cost of a storm is then at
+ * most VTD_STORM_IRQS interrupts per window and one look per poll.
+ *
  * Counts per device are the log thread's alone (struct vtd_fault_counts);
  * the ring is "vtd fault ring" (irqsave: the handler takes it). */
 #include <jam/dbghook.h>
@@ -135,12 +148,68 @@ static void wake_thread(void)
     waitqueue_wake_one(&log_wq);
 }
 
+/* What raises the fault event interrupt (7.3), counted so far: fault
+ * records read, faults lost (the overflow, a full ring), and the queue's
+ * errors (a refused descriptor, device-TLB errors). */
+static uint64_t storm_events(const struct vtd_unit *u)
+{
+    const struct vtd_unit_stats *s = &u->stats;
+    return __atomic_load_n(&s->faults, __ATOMIC_RELAXED) +
+           __atomic_load_n(&s->faults_lost, __ATOMIC_RELAXED) +
+           __atomic_load_n(&s->refused, __ATOMIC_RELAXED) +
+           __atomic_load_n(&s->ite, __ATOMIC_RELAXED) + __atomic_load_n(&s->ice, __ATOMIC_RELAXED);
+}
+
+/* Count one fault event interrupt in the current window; past
+ * VTD_STORM_IRQS, mask the interrupt (the log thread takes over). ring_lock
+ * held. */
+static void storm_count_locked(struct vtd_unit *u, uint64_t now)
+{
+    if (u->storm_masked)
+        return;
+    if (now - u->storm_window >= VTD_STORM_WINDOW_NS) {
+        u->storm_window = now;
+        u->storm_irqs = 0;
+    }
+    if (++u->storm_irqs <= VTD_STORM_IRQS)
+        return;
+    vtd_fault_mask(u);
+    __atomic_store_n(&u->storm_masked, true, __ATOMIC_RELAXED);
+    u->storm_look = now;
+    u->storm_seen = storm_events(u);
+    __atomic_add_fetch(&u->stats.storms, 1, __ATOMIC_RELAXED);
+}
+
+/* The log thread's look at a unit the guard masked, VTD_STORM_POLL_NS
+ * after the last: when no new event came since, the storm is over
+ * and the interrupt is unmasked (a fault held pending meanwhile raises it
+ * at once, 7.3). True when it unmasked. ring_lock held, the records just
+ * drained. */
+static bool storm_look_locked(struct vtd_unit *u, uint64_t now)
+{
+    if (!u->storm_masked || now - u->storm_look < VTD_STORM_POLL_NS)
+        return false;
+    uint64_t seen = storm_events(u);
+    u->storm_look = now;
+    if (seen != u->storm_seen) {
+        u->storm_seen = seen;
+        return false;
+    }
+    __atomic_store_n(&u->storm_masked, false, __ATOMIC_RELAXED);
+    u->storm_window = now;
+    u->storm_irqs = 0;
+    uint32_t c = vtd_rd32(u, VTD_FECTL);
+    vtd_wr32(u, VTD_FECTL, c & ~(VTD_FECTL_IM | VTD_FECTL_IP));
+    return true;
+}
+
 static void fault_irq(void *ctx)
 {
     struct vtd_unit *u = ctx;
     __atomic_add_fetch(&u->stats.fault_irqs, 1, __ATOMIC_RELAXED);
     uint64_t f = spin_lock_irqsave(&u->ring_lock);
     drain_locked(u);
+    storm_count_locked(u, uptime_ns());
     spin_unlock_irqrestore(&u->ring_lock, f);
     wake_thread();
 }
@@ -195,12 +264,47 @@ static void service(struct vtd_unit *u)
     }
 }
 
+/* Is a unit's interrupt masked by the storm guard (the thread looks more
+ * often then)? */
+static bool storming(void)
+{
+    for (uint32_t i = 0; i < VTD_MAX_UNITS; i++) {
+        struct vtd_unit *u = vtd_unit_get(i);
+        if (u && __atomic_load_n(&u->storm_masked, __ATOMIC_RELAXED))
+            return true;
+    }
+    return false;
+}
+
+/* Say a storm the handler found (the first in the RESULTS box, the next
+ * few in the log, the rest only counted), and its end. */
+static void say_storm(struct vtd_unit *u, bool over)
+{
+    uint64_t n = __atomic_load_n(&u->stats.storms, __ATOMIC_RELAXED);
+    if (n != u->storms_said) {
+        u->storms_said = n;
+        if (n == 1)
+            report("vtd: fault: unit %u: fault storm (over %u interrupts in %u ms): masked, "
+                   "polled every %u ms", u->index, VTD_STORM_IRQS,
+                   (unsigned)(VTD_STORM_WINDOW_NS / NS_PER_MS),
+                   (unsigned)(VTD_STORM_POLL_NS / NS_PER_MS));
+        else if (n <= VTD_FAULT_LOGGED)
+            kprintf("vtd: fault: unit %u: fault storm %lu: the interrupt is masked again\n",
+                    u->index, n);
+    }
+    if (over && n <= VTD_FAULT_LOGGED)
+        kprintf("vtd: fault: unit %u: the fault storm is over (%lu fault(s) read, %lu lost so "
+                "far): the interrupt is unmasked\n", u->index,
+                __atomic_load_n(&u->stats.faults, __ATOMIC_RELAXED),
+                __atomic_load_n(&u->stats.faults_lost, __ATOMIC_RELAXED));
+}
+
 static void log_main(void *arg)
 {
     (void)arg;
     for (;;) {
         uint64_t f = spin_lock_irqsave(&log_lock);
-        uint64_t deadline = uptime_ns() + FAULT_POLL_NS;
+        uint64_t deadline = uptime_ns() + (storming() ? VTD_STORM_POLL_NS : FAULT_POLL_NS);
         while (!kicked && uptime_ns() < deadline)
             waitqueue_wait_until(&log_wq, &log_lock, &f, deadline);
         kicked = false;
@@ -210,8 +314,10 @@ static void log_main(void *arg)
             if (!u || !__atomic_load_n(&u->fault_on, __ATOMIC_ACQUIRE))
                 continue;
             uint64_t g = spin_lock_irqsave(&u->ring_lock);
-            drain_locked(u);   /* the once-a-second look */
+            drain_locked(u);   /* the once-a-second look (in a storm, every poll) */
+            bool over = storm_look_locked(u, uptime_ns());
             spin_unlock_irqrestore(&u->ring_lock, g);
+            say_storm(u, over);
             service(u);
         }
     }

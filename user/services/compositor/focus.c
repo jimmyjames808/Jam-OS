@@ -22,7 +22,8 @@
  *                  did);
  *   Alt+Tab        the next window (Alt+Shift+Tab: the one before);
  *   Super+F        the focused window full screen, or back;
- *   Super+T        the screen's arrangement: floating or tiling.
+ *   Super+T        the screen's arrangement: floating or tiling;
+ *   Super+Q        the focused window asked to close (as its close box).
  * Ctrl+C is an ordinary key: it goes to the focused window, so a program
  * can trap the keys of its own window and never another's.
  *
@@ -33,6 +34,7 @@
 
 /* HID usages (USB HID Usage Tables 1.4, section 10) and modifier bits. */
 #define U_F        0x09
+#define U_Q        0x14
 #define U_T        0x17
 #define U_TAB      0x2b
 #define U_DELETE   0x4c
@@ -133,6 +135,11 @@ bool focus_reserved_key(uint16_t usage, uint8_t mods)
         wm_toggle_layout();
         return true;
     }
+    if (usage == U_Q && super) {
+        if (focused)
+            wm_close(focused);
+        return true;
+    }
     return false;
 }
 
@@ -175,6 +182,11 @@ __attribute__((weak)) void wm_toggle_layout(void)
 }
 
 __attribute__((weak)) void wm_focus_changed(struct comp_window *w)
+{
+    (void)w;
+}
+
+__attribute__((weak)) void wm_close(struct comp_window *w)
 {
     (void)w;
 }

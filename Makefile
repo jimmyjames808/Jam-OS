@@ -367,7 +367,8 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # ffconf.h, on the quote path only, so ffport's <string.h> stays fat's),
 # and the compositor's boxes and regions (utest/comp_region.c: region.c
 # and its comp.h), and its window manager on its scene (utest/compwm.c:
-# wm.h, no protocol in those files; the test plays the seat).
+# wm.h, no protocol in those files; the test plays the seat), with
+# title.c's title bar boxes and the libfun they draw with.
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -379,12 +380,12 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/sntp/ntp.c.o \
                       $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
                       $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile \
-                        wmgrab deco)
+                        wmgrab deco title) $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
-                      -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT)
+                      -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) -Iuser/apps/fun
 EXTRA_DEPS_utest   := $(FATFS_HDRS)
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy

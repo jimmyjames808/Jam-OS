@@ -1080,8 +1080,10 @@ out for troubleshooting.
   bits), so drivers and their numbers are unchanged. `vmo_unpin` unmaps,
   invalidates and waits, and only then lets the pages go. A domain's
   table pages are charged to the job that made the cap (devmgr's: it
-  makes its drivers' caps) and capped at 512 per domain (1 GiB of
-  scattered pins); past either limit the pin fails `ERR_NO_RESOURCES`.
+  makes its drivers' caps) and capped at 512 per domain: a leaf table
+  maps 2 MiB, so that is up to 1 GiB of pins dense within 2 MiB blocks,
+  but only ~500 pages spread one per block; past either limit the pin
+  fails `ERR_NO_RESOURCES`.
 - **Safe rebind with the IOMMU.** Making a cap turns the function's Bus
   Master Enable off and points its context entry at the new, empty domain
   in one step: whatever the previous driver left queued reaches nothing.
@@ -1090,8 +1092,10 @@ out for troubleshooting.
   which points the function back home (unless a newer cap has it
   already), destroys the domain (its id's caches invalidated, waited
   for) and frees the pins at once: no quarantine. If that invalidation
-  can't be confirmed, the domain is kept for good and the pages are
-  quarantined as without an IOMMU.
+  can't be confirmed, the domain and its pages are kept and the thread
+  tries again every second: the pages are never released before the unit
+  confirms (it may still hold the function's old context entry and
+  translations, which only freeing the domain's id invalidates).
 - **Invalidation** goes through each unit's queue only (VT-d 6.5.2): a
   page of 256 descriptors. A caller writes its batch and a wait
   descriptor that stores a sequence number in a status word of its own,
@@ -1132,7 +1136,12 @@ out for troubleshooting.
   Faults are reported, not acted on: no driver is stopped or restarted
   for one (a fault is a driver bug or an attack, better seen than hidden).
   The thread also looks at every unit once a second, for a fault that
-  raised no interrupt.
+  raised no interrupt. Faults that can't be muted (an interrupt's, or a
+  DMA from a requester id no function has: a driver can point its
+  device's every write at the interrupt window) have a storm guard
+  instead: past 32 fault interrupts in 100 ms the unit's fault interrupt
+  is masked, and the thread polls the unit every 10 ms until a look finds
+  nothing new, then unmasks it, so a storm costs at most that.
 - **The boot handover**, right after PCI enumeration and before resources
   and user space, so no driver ever runs without it. Before the memory
   managers start, an RMRR in RAM the memory map calls usable is made

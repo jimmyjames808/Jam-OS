@@ -10,13 +10,13 @@
  * one main program (the terminal, jamjar) with smaller ones beside it,
  * and many of them can't resize (libfun's games and demos keep their own
  * size). Columns make every window narrower with each one added (four on
- * 1280 pixels are 300 each, too narrow for the terminal's 80 columns),
+ * 1280 pixels are about 300 each, too narrow for the terminal's 80 columns),
  * where master and stack keeps the first window half the screen however
  * many join, and gives the stack's fixed-size windows tiles they are
  * centred in. dwm and xmonad's default layouts are the same idea. */
 #include "wm.h"
 
-#define WM_GAP 4   /* background between tiles, and around them */
+#define WM_GAP 6   /* background between tiles, and around them */
 
 /* [lo, hi) cut into n equal parts with a gap between them: part i. */
 static void split(int32_t lo, int32_t hi, unsigned n, unsigned i, int32_t *a, int32_t *b)

@@ -1,21 +1,29 @@
-/* Decorations' geometry (wm.h, comp.h): how big each side is, where the
- * title bar and its close box are, and what a point on a window's frame
- * is. Drawing them is painting's (paint.c); this file only says where.
+/* Decorations' geometry (wm.h, comp.h): how big each side is, and what a
+ * point on or near a window's frame is. Drawing them is title.c's, and so
+ * are the title bar's and close box's boxes (title_bar_box,
+ * title_close_box): a click lands exactly where the drawing is.
  *
  * The frame of a normal window, around its surface S:
  *
- *     +--------------------------------------+---+   <- top edge: the title
- *     |  title bar (DECO_TITLE_H)            | x |      bar's first DECO_BORDER rows
- *     +-+----------------------------------+-+---+
+ *     +--------------------------------------+----+  <- top edge: the title
+ *     |  title bar (COMP_TITLE_H)            |  x |     bar's first DECO_BORDER rows
+ *     +-+----------------------------------+-+----+
  *     | |                                  | |
  *     | |                S                 | |      borders: DECO_BORDER
  *     | |                                  | |
  *     +-+----------------------------------+-+
  *
- * The close box is the title bar's last DECO_TITLE_H pixels above the
- * surface. A border (and a corner: DECO_CORNER pixels from one along
- * either side) resizes; the title bar moves. Maximised windows have the
- * title bar only and full-screen ones nothing, so neither has edges. */
+ * The close box is the title bar's last COMP_TITLE_H pixels. On a window
+ * that can be resized (floating, normal, wm_resizable) a border, and
+ * DECO_GRAB pixels around the frame, resize it: within DECO_CORNER of a
+ * corner, both ways. The title bar moves it. Maximised windows have the
+ * title bar only and full-screen ones nothing, so neither has edges.
+ *
+ * Tiling (the owner's look): no title bar at all, a DECO_BORDER border on
+ * all four sides, whose colour shows the focus (title.c draws a top strip
+ * thinner than a title bar as border); Super+Q closes the focused window,
+ * there being no close box. A press on a tiled window's border focuses it
+ * and does nothing more. */
 #include "wm.h"
 
 #define DECO_CORNER 16   /* this close to a corner, an edge is a corner */
@@ -24,9 +32,11 @@ struct deco_sizes deco_sizes(uint32_t states)
 {
     if (states & WM_ST_FULLSCREEN)
         return (struct deco_sizes){ 0, 0, 0, 0 };
+    if (scene.layout == COMP_TILING)   /* no title bar: a border all round */
+        return (struct deco_sizes){ DECO_BORDER, DECO_BORDER, DECO_BORDER, DECO_BORDER };
     if (states & WM_ST_MAXIMIZED)
-        return (struct deco_sizes){ DECO_TITLE_H, 0, 0, 0 };
-    return (struct deco_sizes){ DECO_TITLE_H, DECO_BORDER, DECO_BORDER, DECO_BORDER };
+        return (struct deco_sizes){ COMP_TITLE_H, 0, 0, 0 };
+    return (struct deco_sizes){ COMP_TITLE_H, DECO_BORDER, DECO_BORDER, DECO_BORDER };
 }
 
 struct comp_box deco_inner(struct comp_box frame, uint32_t states)
@@ -50,43 +60,32 @@ void deco_set(struct comp_window *w, uint32_t states)
     window_damage(w);
 }
 
-struct comp_box deco_title_bar(const struct comp_window *w)
+/* Can the user resize w by its edges now? */
+static bool has_edges(const struct comp_window *w)
+{
+    const struct wm_window *ww = w->wm;
+    return ww && w->deco_left > 0 && scene.layout == COMP_FLOATING && ww->want == WM_NORMAL &&
+           wm_resizable(ww);
+}
+
+/* The box presses on w's decorations land in: its frame, and the grab
+ * margin around it when its edges resize. */
+static struct comp_box press_box(const struct comp_window *w)
 {
     struct comp_box f = window_frame(w);
-    if (w->deco_top <= 0 || box_empty(f))
-        return (struct comp_box){ 0, 0, 0, 0 };
-    return (struct comp_box){ f.x1, f.y1, f.x2, w->y };
+    if (!has_edges(w) || box_empty(f))
+        return f;
+    return (struct comp_box){ f.x1 - DECO_GRAB, f.y1 - DECO_GRAB, f.x2 + DECO_GRAB,
+                              f.y2 + DECO_GRAB };
 }
 
-struct comp_box deco_close_box(const struct comp_window *w)
+/* Which edges (x, y) is on: the side, and a corner's second side near the
+ * frame's ends. 0 when it is on none. */
+static uint32_t edges_at(const struct comp_window *w, int32_t x, int32_t y)
 {
-    struct comp_box t = deco_title_bar(w);
-    if (box_empty(t))
-        return t;
-    int32_t right = w->x + w->surface->width;
-    int32_t left = right - w->deco_top;
-    return (struct comp_box){ left > t.x1 ? left : t.x1, t.y1, right, t.y2 };
-}
-
-const char *window_title(const struct comp_window *w)
-{
-    const struct wm_window *ww = w->wm;
-    return ww ? ww->title : "";
-}
-
-bool window_not_responding(const struct comp_window *w)
-{
-    const struct wm_window *ww = w->wm;
-    return ww && ww->not_responding;
-}
-
-/* Which edges (x, y) on w's border is: the side it is on, and a corner's
- * second side near the ends. 0 when it isn't on one. */
-static uint32_t edges_at(const struct comp_window *w, struct comp_box f, struct comp_box s,
-                         int32_t x, int32_t y)
-{
-    if (w->deco_left <= 0)
-        return 0;   /* only a normal window has borders */
+    struct comp_box f = window_frame(w), s = window_surface_box(w);
+    if (!has_edges(w))
+        return 0;
     uint32_t e = 0;
     if (x < s.x1)
         e |= WM_EDGE_LEFT;
@@ -107,17 +106,16 @@ static uint32_t edges_at(const struct comp_window *w, struct comp_box f, struct 
 
 enum deco_part deco_hit(const struct comp_window *w, int32_t x, int32_t y, uint32_t *edges)
 {
-    struct comp_box f = window_frame(w), s = window_surface_box(w);
     *edges = 0;
-    if (!box_contains(f, x, y))
+    if (!box_contains(press_box(w), x, y))
         return DECO_NONE;
-    if (box_contains(s, x, y))
+    if (box_contains(window_surface_box(w), x, y))
         return DECO_SURFACE;
-    if ((*edges = edges_at(w, f, s, x, y)))
+    if ((*edges = edges_at(w, x, y)))
         return DECO_EDGE;
-    if (box_contains(deco_close_box(w), x, y))
+    if (box_contains(title_close_box(w), x, y))
         return DECO_CLOSE;
-    return box_contains(deco_title_bar(w), x, y) ? DECO_TITLE : DECO_NONE;
+    return box_contains(title_bar_box(w), x, y) ? DECO_TITLE : DECO_NONE;
 }
 
 /* Does w's surface take input at output (x, y) (its input region)? */
@@ -130,7 +128,7 @@ static bool takes_input(const struct comp_window *w, int32_t x, int32_t y)
 struct comp_window *wm_window_at(int32_t x, int32_t y, bool *on_surface)
 {
     for (struct comp_window *w = scene.top; w; w = w->below) {
-        if (!(w->flags & COMP_WIN_MAPPED) || !box_contains(window_frame(w), x, y))
+        if (!(w->flags & COMP_WIN_MAPPED) || !box_contains(press_box(w), x, y))
             continue;
         if (!box_contains(window_surface_box(w), x, y)) {
             *on_surface = false;

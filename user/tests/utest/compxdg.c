@@ -5,9 +5,10 @@
  * configure and ack sequence, where its pixels land, every protocol error
  * xdg-shell names, and popups dismissed at once.
  *
- * The output is 320x240: the title bar (24) is the only decoration a
- * maximised window has, and headless composing draws no decorations, so
- * what is not a window's pixels is the background. */
+ * The output is 320x240. Decorations are drawn (title.c), so the checks
+ * that want the background look past them: a floating window's 2-pixel
+ * border, a maximised one's 24-pixel title bar (its only decoration), a
+ * tiled one's border and the gap between tiles. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -174,7 +175,7 @@ static bool map_floating(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK(c.w == 0 && c.h == 0 && c.nstates == 0);   /* floating: its own size */
     CHECK(ack_commit(x, t, &c, buffer(x, 0, 64, 64, RED)));
     CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, RED));   /* centred */
-    CHECK(pixel(p, (W - 64) / 2 - 1, (H - 64) / 2 + 32, SPLASH_BG));
+    CHECK(pixel(p, (W - 64) / 2 - 3, (H - 64) / 2 + 32, SPLASH_BG));   /* past its border */
     /* its client's first window took the keys: it is told it is activated */
     CHECK(configured(x, t, &c));
     CHECK(c.w == 64 && c.h == 64 && c.nstates == 1);
@@ -193,7 +194,8 @@ static bool maximise_and_back(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK(ack_commit(x, t, &c, buffer(x, 16384, W, H - TITLE, GREEN)));
     CHECK(pixel(p, 0, TITLE, GREEN));
     CHECK(pixel(p, W - 1, H - 1, GREEN));
-    CHECK(pixel(p, 0, TITLE - 1, SPLASH_BG));
+    uint32_t bar = p->image[(TITLE - 1) * W];   /* the title bar, drawn by the same paint */
+    CHECK(bar != GREEN && bar != SPLASH_BG);
     CHECK_ST(jwl_xdg_toplevel_unset_maximized(x->k.c, t->top), OK);
     CHECK(configured(x, t, &c));
     CHECK(c.w == 64 && c.h == 64 && c.nstates == 1);   /* the size it had, activated */
@@ -254,13 +256,14 @@ static bool tiling_steps(struct ct_comp *p, struct xc *x)
 {
     struct tl a, b;
     struct cfg c;
-    /* alone: the whole output less the gap (4) and its decorations */
+    /* alone: the whole output less the gap (6) and its border (2): no
+     * title bar when tiling */
     CHECK(toplevel(x, &a));
     CHECK(ack_commit(x, &a, NULL, 0));
     CHECK(configured(x, &a, &c));
-    CHECK(c.w == W - 16 && c.h == H - 8 - TITLE - 4);
+    CHECK(c.w == W - 16 && c.h == H - 16);
     CHECK(ack_commit(x, &a, &c, buffer(x, 0, c.w, c.h, RED)));
-    CHECK(pixel(p, 8, 28, RED));
+    CHECK(pixel(p, 8, 8, RED));
     /* a window that can't resize joins: it is centred in the right half,
      * the first one is asked to take the left half */
     CHECK(toplevel(x, &b));
@@ -271,12 +274,12 @@ static bool tiling_steps(struct ct_comp *p, struct xc *x)
     CHECK(configured(x, &b, &cb));
     CHECK(cb.w == 0 && cb.h == 0);
     CHECK(ack_commit(x, &b, &cb, buffer(x, 300000, 64, 64, GREEN)));
-    CHECK(pixel(p, 166 + (146 - 64) / 2 + 32, 28 + (204 - 64) / 2 + 32, GREEN));
+    CHECK(pixel(p, 165 + (147 - 64) / 2 + 32, 8 + (224 - 64) / 2 + 32, GREEN));
     CHECK(configured(x, &a, &c));
-    CHECK(c.w == 146 && c.h == 204);
+    CHECK(c.w == 147 && c.h == 224);
     CHECK(ack_commit(x, &a, &c, buffer(x, 600000, c.w, c.h, BLUE)));
-    CHECK(pixel(p, 8, 28, BLUE));
-    CHECK(pixel(p, 154, 100, SPLASH_BG));   /* the gap between the tiles */
+    CHECK(pixel(p, 8, 8, BLUE));
+    CHECK(pixel(p, 159, 100, SPLASH_BG));   /* the gap between the tiles */
     return true;
 }
 

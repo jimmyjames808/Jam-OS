@@ -17,6 +17,10 @@
  *       Afterwards a careless next driver turns bus mastering on at once
  *       and points the device at the freed page: it faults, and the page
  *       is never written.
+ *   dma_iommu_unconfirmed_close_keeps_pages
+ *       A cap closed while the unit confirms no invalidation (its queue
+ *       off) keeps its pinned pages held, not released after a time; once
+ *       the unit confirms again, the next try frees them.
  *   dma_iommu_pin_cost
  *       What pins and unpins cost now, in the unit's invalidation waits
  *       and descriptors (for M11.5's numbers): a pin waits for nothing (one
@@ -43,10 +47,10 @@
 #define PG  PAGE_SIZE
 #define LEN 64u   /* bytes per edu transfer */
 
-/* edu if a VT-d unit translates it, else NULL (said: the test skips). Its
- * DMA fault count starts again from 0, so the unit's mute (after
- * VTD_FAULT_LOGGED faults) can't hide this test's faults; a new cap's
- * domain clears the mute itself. */
+/* edu if a VT-d unit translates it, else NULL (said: the test skips).
+ * Every test here makes a new cap before it provokes a fault, and the
+ * cap's attach clears the mute and starts edu's DMA fault count again
+ * (iommu_attach), so earlier tests' faults can't hide this one's. */
 static struct pci_dev *edu_translated(void)
 {
     struct pci_dev *d = kt_edu();
@@ -54,12 +58,7 @@ static struct pci_dev *edu_translated(void)
     if (d && !f)
         kprintf("ktest %s: edu is not translated (QEMU's intel-iommu and iommu=on), skipped\n",
                 ktest_current);
-    if (!f)
-        return NULL;
-    mutex_lock(&f->ctl->lock);
-    f->dma_faults = 0;
-    mutex_unlock(&f->ctl->lock);
-    return d;
+    return f ? d : NULL;
 }
 
 static uint16_t rid(const struct pci_dev *d)
@@ -253,6 +252,52 @@ KTEST(dma_iommu_kill_mid_dma)
     KT_EQ(q.changed, q0.changed);     /* and nothing wrote them meanwhile */
     KT_ASSERT(stale_idle && ok);
     KT_ASSERT(kept && fault);
+}
+
+/* ---- a close the unit doesn't confirm -------------------------------------------------- */
+
+/* A cap closed while the unit confirms nothing (its queue off: every
+ * invalidation fails): its domain can't be shown gone, and the unit may
+ * still hold the function's old context entry and translations (a later
+ * switch invalidates by the new entry's domain id, 6.5.1.1), so its pages
+ * must stay held, not be released as a timed quarantine would. Once the
+ * unit confirms again, the next try frees them. Review finding 3. */
+KTEST(dma_iommu_unconfirmed_close_keeps_pages)
+{
+    KT_SKIP_LIVE("turns the unit's queue off for a moment");
+    struct pci_dev *d = edu_translated();
+    if (!d)
+        return;
+    struct vtd_unit *u = vtd_fn_of(d)->ctl->unit;
+    dma_quarantine_flush(d);
+    struct dma_quarantine_stats q0, q1, q2;
+    dma_quarantine_stats(d, &q0);
+    struct vmo *v;
+    KT_EQ(vmo_create(PG, VMO_CONTIGUOUS | VMO_DMA32, &v), OK);
+    struct kobject *cap;
+    KT_EQ(dma_cap_create_for(d, NULL, &cap), OK);
+    KT_EQ(dma_cap_bus_master(cap, true), OK);
+    uint64_t pa, id;
+    KT_EQ(vmo_pin(v, cap, 0, PG, &pa, 1, &id), OK);
+    KT_EQ(vtd_qi_disable(u), OK);   /* from here every invalidation fails */
+    struct khandle kh = khandle_from_new(cap, DMA_CAP_RIGHTS);
+    khandle_release(&kh);           /* its last handle: closed, the page still pinned */
+    dma_quarantine_flush(d);
+    dma_quarantine_stats(d, &q1);
+    status_t on = vtd_qi_enable(u);
+    dma_quarantine_flush(d);        /* confirmed now */
+    dma_quarantine_stats(d, &q2);
+    kobject_unref(vmo_kobject(v));
+    kprintf("ktest %s: unconfirmed: %lu pin(s) held, %lu page(s) released; confirmed: %lu "
+            "held, %lu freed\n", ktest_current, q1.pins - q0.pins, q1.released - q0.released,
+            q2.pins - q0.pins, q2.freed - q0.freed);
+    KT_EQ(on, OK);
+    KT_EQ(q1.pins, q0.pins + 1);         /* still held */
+    KT_EQ(q1.released, q0.released);     /* not released after a time */
+    KT_EQ(q1.freed, q0.freed);
+    KT_EQ(q2.pins, q0.pins);
+    KT_EQ(q2.freed, q0.freed + 1);       /* freed once the domain was confirmed gone */
+    KT_EQ(q2.released, q0.released);
 }
 
 /* ---- what a pin costs --------------------------------------------------------------------- */

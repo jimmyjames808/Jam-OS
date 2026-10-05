@@ -460,6 +460,8 @@ int main(int argc, char **argv)
 
     if (argc > 1 && !strcmp(argv[1], "keytest"))
         return run_keytest() ? 0 : 1;
+    if (argc > 1 && !strcmp(argv[1], "comptest"))
+        return run_comptest() ? 0 : 1;
 
     const struct bootfs_view *fs;
     status_t st = bootfs_default(&fs);
