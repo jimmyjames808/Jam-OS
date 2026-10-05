@@ -54,6 +54,10 @@ extern const char *init_vlan;
 /* The option word "splashhang" (main.c, a test's): bin/splash is started
  * with --hang, so it never finishes (the shell's deadline is tested). */
 extern bool init_splashhang;
+/* The option word "vtdtest" (main.c; with "iommu=on", the IOMMU checks
+ * test entry): devmgr is started with it, so it passes it to drv/hda,
+ * which runs its deliberate DMA faults before serving (M11 stage 5). */
+extern bool init_vtdtest;
 
 
 /* ---- mounts.c -------------------------------------------------------------------- */

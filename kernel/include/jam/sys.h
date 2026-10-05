@@ -138,7 +138,9 @@ status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
 /* New VMO (vmo_create flags); the handle gets
  * RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE. VMO_CONTIGUOUS /
  * VMO_DMA32 require dma_cap to name a valid OBJ_DMA_CAP handle
- * (ERR_ACCESS_DENIED otherwise); for other flags dma_cap is ignored. */
+ * (ERR_ACCESS_DENIED otherwise); for other flags dma_cap is ignored. Its
+ * pages are charged to t's job (vmo_create_for: a VMO_KEEP_PAGES one's all
+ * before this returns). */
 status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
                         handle_t dma_cap, handle_t *out);
 status_t sys_vmo_read(struct handle_table *t, handle_t h, uint64_t offset, void *buf,
@@ -163,7 +165,7 @@ status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset, u
 /* New vmar over an empty address space: RIGHTS_BASIC | RIGHT_READ |
  * RIGHT_WRITE. (For tests; a process gets its own with process_create.) */
 status_t sys_vmar_create(struct handle_table *t, handle_t *out);
-/* flags: ASPACE_READ/WRITE/EXEC/FIXED only. Needs RIGHT_WRITE on vmar and
+/* flags: ASPACE_READ/WRITE/EXEC/FIXED/KEPT_ONLY only. Needs RIGHT_WRITE on vmar and
  * RIGHT_MAP on vmo, plus RIGHT_READ / RIGHT_WRITE / RIGHT_EXEC on vmo for
  * each permission asked for. The VMO handle's READ/WRITE/EXEC rights bound
  * later protects. *addr as for aspace_map. */

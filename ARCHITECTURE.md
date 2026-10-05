@@ -243,12 +243,31 @@ Every driver and service is a userspace process from the start.
   Guards: a pinned or kernel-mapped range can't be decommitted or cut off by
   a shrink (`ERR_BAD_STATE`); pins hold references on both the VMO and the
   `dma_cap`.
+  - *kept* (`VMO_KEEP_PAGES`, a paged VMO): every page committed at
+    creation and charged to the creator's job then (a job that can't pay
+    for all of them gets no VMO), and none ever leaves: decommit and
+    shrinking are `ERR_BAD_STATE` for every holder, and growing commits
+    the new pages, charged, before the new size shows (or fails and
+    changes nothing). For memory a process reads that a less trusted one
+    made: a Wayland client's pixel pool, read by the compositor.
+  There is no clone or copy-on-write child of a VMO; one added later must
+  not share a kept VMO's pages copy-on-write (a write would swap a page
+  under its readers), so it would copy them into a VMO of its own.
 - **VMAR**: one flat address space per process, no nested VMARs. Maps
   VMOs with R/W/X; W^X always, and an executable mapping needs `RIGHT_EXEC`
   on the VMO handle. User mappings are tracked in a per-VMO reverse map, so
   decommit and shrink unmap the pages from every address space (pins, which
   are DMA, still block them). Lock order: address-space region lock (a
   sleeping mutex) above `vmo`, page-table lock (a spinlock) below it.
+  A **kept mapping** (`VMAR_KEPT_ONLY`) maps only a kept VMO, read-only,
+  with every page-table entry filled at map time (the tables charged to
+  the mapper's job then, so a refusal fails the map, never a later read),
+  and its permissions never change. Since nothing can take a kept VMO's
+  page away, nothing ever clears those entries: no read through the
+  mapping faults, so a client can't kill the process that maps its pool
+  (a mapping of an ordinary VMO dies on a read past a shrunk end, or on a
+  decommitted page whose new commit the client's job refuses). Its length
+  is what was mapped; a pool that grew is mapped again.
 - **DMA**: `vmo_pin` needs a `dma_cap`. The IOMMU goes behind the same API.
 - **TLB**: a kernel unmap does a synchronous range shootdown to all CPUs (a
   full flush above 64 pages). User address spaces keep a mask of the CPUs
@@ -263,7 +282,9 @@ Every driver and service is a userspace process from the start.
   switch-in sets its active bit before reading the generation, so either
   the CPU is shot down while it runs the address space or it flushes on its
   next load; CPUs that only ran it earlier are never interrupted. Kernel
-  entries are global (PCIDs require PGE); INVPCID is not used. Switch
+  entries are global (PCIDs require PGE); INVPCID is not used. Each
+  CPU keeps a hint of the slot an address space last had, so a load
+  searches the slots only when the hint is wrong. Switch
   `pcid_set`, boot `nopcid`. QEMU's TCG has no PCIDs: the PC is the only
   place this runs for real. On Alder Lake and Raptor Lake CPUs whose
   microcode is older than Intel's fix, INVLPG may leave global entries
@@ -287,8 +308,12 @@ Every driver and service is a userspace process from the start.
   any lock spinning for 5 s (naming the holder). On unless the boot word
   `nolockdep` turns it off (for the benchmark's checker-off column), with a lockless fast path: edges and IRQ flags only ever get
   set, so only a new edge takes the graph lock, and each CPU's list of
-  held locks is a stack updated without turning interrupts off. It tracks
-  sleeping mutexes too.
+  held locks is a stack updated without turning interrupts off (a release
+  is checked against the top; a self-deadlock is found from the lock's
+  holder, not by searching the list). It tracks sleeping mutexes too.
+  Switch `lockdep_set` (the benchmark's `lockdep`, spinlocks only). With
+  it off the held-lock stack stays empty, so the "spinlock held" checks
+  on the way to user mode, in IPIs and at thread exit see nothing.
 - IPIs: reschedule, cross-CPU calls (`smp_call_on/others/all`, which refuse
   to run with interrupts off), TLB shootdown, and NMI halt of all other
   CPUs on panic.
@@ -483,7 +508,23 @@ Every driver and service is a userspace process from the start.
   the caller's CPU (wake-affine, see [Scheduler](#scheduler)). The
   deadline is absolute, or with `CHANNEL_CALL_TIMEOUT` in `flags` a
   timeout the kernel adds to its own clock, so a caller needs no
-  `clock_get` first.
+  `clock_get` first. A deadline later than the CPU's next tick costs no
+  timer write ([Scheduler](#scheduler), sleepers), and a wait without
+  one reads no clock.
+- **One copy each way**: a message's bytes go from the sender's memory
+  straight into the message (`copy_from_user`, no lock held) and from it
+  straight into the reader's buffer: no kernel stack buffer in between
+  (`kernel/object/channel_send.c` writes and calls, `channel.c` reads).
+  **Message slots**: every thread keeps one free 512-byte slot
+  (`CHAN_SLOT_SIZE`, like its FPU area). A small message for a reader
+  that is already waiting for it (the reply to a `channel_call`, the next
+  request of a reply-and-wait or read-wait reader) is built in the
+  writer's slot and handed over, the writer taking the reader's free slot
+  in exchange: no allocation and no job charge, and nothing can pile up,
+  since a slot message is never queued (one whose reader stopped waiting
+  meanwhile is copied into an ordinary, charged message first). Every
+  other message is allocated and charged as described above. Switch
+  `channel_slots` (the benchmark's `slots`; no boot word).
 - **`channel_reply_wait`**: a server's reply and its wait for the next
   request in one call: a write on one end (none on a first call), then
   the next message read from a channel end straight into the server's
@@ -496,7 +537,12 @@ Every driver and service is a userspace process from the start.
   writer's per-thread slot when small (no allocation, no charge: one per
   waiting thread). A reply's `ERR_PEER_CLOSED` doesn't stop the wait;
   `reply_status` says which half failed. The rules are in
-  `abi/syscalls.def`.
+  `abi/syscalls.def`. A round trip against such a server is 2 system
+  calls (the client's call, the server's reply-and-wait) and 2 handle
+  lookups, where a server that reads, writes and waits makes 5 of each and
+  one read that finds nothing; a waiter handed its message doesn't take
+  its endpoint's lock again after the wake. The counts are pinned by the
+  path tests (`kernel/test/test_pathstat.c`; [BENCH.md](docs/BENCH.md)).
 - **Port**: bind many handles and wait on all of them; matching signals queue
   packets. `ONCE` bindings fire once; `PERSISTENT` ones stay and coalesce
   into one queued packet with a count. Limits: 4096 user packets, 4096
@@ -521,14 +567,18 @@ Every driver and service is a userspace process from the start.
   messages carry offsets. Every protocol defines how a client reconnects
   after `PEER_CLOSED` (the server restarted).
 - **Generated calls in three shapes** (`tools/genidl.py` has the
-  details): the blocking `<proto>_<method>` / `_until`; a call that
-  doesn't wait (`<proto>_<method>_send` with a txid of the caller's own,
+  details): the blocking `<proto>_<method>` / `_until` (a deadline) /
+  `_within` (a timeout the kernel starts from its own clock, so the
+  caller reads no clock: libos's file calls and fat's block calls use
+  it); a call that doesn't wait (`<proto>_<method>_send` with a txid of the caller's own,
   the reply read off a port-bound channel with `idl_reply_read` and
   decoded by `<proto>_<method>_result`); and on the server, a method
   marked `later` may keep its request (`struct idl_txn`) and answer it
   after its handler returned, with `<proto>_reply_<method>`. One channel
   end uses blocking calls or calls that don't wait, never both (the
-  kernel's txids could match the caller's).
+  kernel's txids could match the caller's). `<proto>_serve` sends each
+  reply in the `channel_reply_wait` that waits for the next request: one
+  system call per request.
 
 ## How a service waits
 
@@ -606,7 +656,11 @@ port, so while it handles one request every other client waits behind it.
   waker that doesn't block queues its wakee (`sched_handoff_done`, or its
   next `schedule()`), and the wakee runs on the rest of the waker's time
   slice, so a pair passing the CPU back and forth is sliced like one
-  thread. Same CPU only. Switch `sched_handoff`, boot `nohandoff`.
+  thread. Recording the hand-off takes no lock (only its own CPU touches
+  `rq->handoff`, with interrupts off), so a handed wake takes no run
+  queue lock; the `schedule()` that follows still makes its pass (it
+  just finds the wakee waiting, with no enqueue, pick or placement).
+  Same CPU only. Switch `sched_handoff`, boot `nohandoff`.
 - **Client/server pairs**: every wake from thread context records
   the waker in the wakee; two threads that each woke the other twice
   running are a pair, and a plain wake (the waker keeps running) puts the
@@ -621,7 +675,10 @@ port, so while it handles one request every other client waits behind it.
   `idlespin=<us>` / `nospinidle`.
 - Preemptible kernel: switches happen on interrupt exit or when the last
   spinlock is dropped, never with one held (`schedule()` panics if called
-  with preemption disabled).
+  with preemption disabled). Dropping the last one (`preempt_check`)
+  looks at `need_resched` with one GS-relative load and touches the
+  interrupt flag only when a reschedule is pending, which is rare: a
+  call's dozen lock releases cost no interrupt toggle.
 - Switch-safety: the run queue lock is held across `switch_context` and
   released by the next thread; `on_cpu` stays set until a switched-out
   thread's registers are saved, and whoever picks it waits for that. This

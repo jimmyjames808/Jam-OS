@@ -31,6 +31,11 @@
  *                    ran them; the ones needing a second CPU use CPU 1).
  *                    Each panics on purpose, except bp, which returns 0
  *   memmap           the loader's memory map (the "memmap" boot word)
+ *   iommu            the IOMMU (VT-d): the units, their translation,
+ *                    interrupt-remapping and queue state, each covered
+ *                    function's domain and its mapped pages, the DMA fault
+ *                    counts and the interrupt remapping table's use
+ *                    (iommu_report, <jam/iommu.h>): 0
  *
  * Killing a process by name is not here: that is init's (its control
  * channel, abi/idl/initctl.idl), with the handles init and devmgr hold.
@@ -40,6 +45,7 @@
 #include <jam/boot.h>
 #include <jam/console_svc.h>
 #include <jam/event.h>
+#include <jam/iommu.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
@@ -134,7 +140,7 @@ status_t dbgcmd_check(const char *cmd, size_t len)
         return !k || selftest_crash_known(rest, k) ? OK : ERR_NOT_FOUND;
     }
     if (is(cmd, n, "devices") || is(cmd, n, "ps") || is(cmd, n, "mem") || is(cmd, n, "panic") ||
-        is(cmd, n, "memmap"))
+        is(cmd, n, "memmap") || is(cmd, n, "iommu"))
         return *rest ? ERR_INVALID_ARGS : OK;
     return ERR_NOT_SUPPORTED;
 }
@@ -189,6 +195,10 @@ static int64_t exec(const char *cmd, struct job *scope)
         return *rest ? selftest_crash_run(rest) : selftest_crash_list();
     if (is(cmd, n, "memmap")) {
         kmain_print_memmap();
+        return 0;
+    }
+    if (is(cmd, n, "iommu")) {
+        iommu_report();
         return 0;
     }
     if (is(cmd, n, "panic"))

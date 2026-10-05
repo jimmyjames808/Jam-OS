@@ -23,7 +23,15 @@
  * Reading into a slot keeps what the generated server did with a message
  * that doesn't fit: one longer than the channel's protocol takes, or
  * carrying handles, is answered ERR_INVALID_ARGS (with its txid, if it
- * has one) and dropped; one under 4 bytes is dropped unanswered. */
+ * has one) and dropped; one under 4 bytes is dropped unanswered.
+ *
+ * A reply waits (m->reply) for the loop's next system call that can carry
+ * it: the next take, which reads the next request in the same call
+ * (channel_reply_wait), or the port wait (main.c). A synchronous request
+ * then costs three system calls: the port wait, the take, and the take
+ * that finds the channel empty and sends the reply. The kernel marks the
+ * reply out in its slot in that call, so a successor answers it again
+ * only if it never went. */
 #include <keep.h>
 #include "internal.h"
 
@@ -176,31 +184,21 @@ void keep_slot_drop(struct mixer *m, uint32_t slot)
 
 /* ---- requests in slots ------------------------------------------------------------ */
 
-/* The message that didn't fit the slot (too long, or too many handles):
- * its sizes, then dropped as the generated server drops one. */
-static status_t drop_big(handle_t ch)
-{
-    uint32_t n = 0, nh = 0;
-    status_t st = jam_channel_read(&(struct channel_read_args){
-        .h = ch, .actual_bytes = (uint64_t)(uintptr_t)&n,
-        .actual_handles = (uint64_t)(uintptr_t)&nh });
-    return st == ERR_BUFFER_TOO_SMALL ? idl_drain(ch, n, nh) : st;
-}
-
-status_t req_take(struct mixer *m, handle_t ch, uint32_t key, uint32_t cap, unsigned *slot)
+status_t req_take(struct mixer *m, handle_t ch, uint32_t key, bool ctl, unsigned *slot)
 {
     unsigned i;
-    status_t st = svcstate_take(&m->state, key, ch, &i);
+    struct idl_slot is;
+    svcstate_prepare(&m->state, key, &i, &is);
+    /* The protocol's generated take, which sends the reply waiting first: a
+     * message too long for the slot is answered ERR_INVALID_ARGS there, one
+     * under 4 bytes (no txid) dropped. */
+    status_t st = ctl ? audioctl_take_slot(ch, &is, &m->reply)
+                      : audio_take_slot(ch, &is, &m->reply);
     *slot = REQ_NONE;
-    if (st == ERR_BUFFER_TOO_SMALL)
-        return drop_big(ch);
-    if (st == ERR_INVALID_ARGS)
-        return OK;   /* under 4 bytes: taken, no txid to answer */
-    if (st != OK)
+    if (!svcstate_taken(&m->state, i) || st != OK)
         return st;
-    uint32_t n = 0, nh = m->state.h->slot[i].nhandles;
-    (void)svcstate_request(&m->state, i, &n);
-    if (nh || n > cap) {
+    uint32_t n = *is.n, nh = *is.nh;
+    if (nh || n > (ctl ? REQ_CAP_CTL : REQ_CAP_AUDIO)) {
         idl_close_all(m->state.handles, nh);
         req_status(m, i, ch, ERR_INVALID_ARGS);
         return OK;
@@ -219,8 +217,15 @@ void req_answer(struct mixer *m, unsigned slot, handle_t ch, uint32_t rn, handle
         svcstate_sent(&m->state, slot);
         return;
     }
-    if (svcstate_reply(&m->state, slot, ch, hs, nh) != OK)
-        idl_close_all(hs, nh);   /* not sent: they're still ours */
+    (void)idl_reply_flush(&m->reply);   /* one waits at a time: a take sent the last one */
+    svcstate_answer(&m->state, slot, ch, hs, nh, &m->reply);
+}
+
+status_t req_budget_spent(struct mixer *m)
+{
+    if (m->reply.ch == HANDLE_INVALID)
+        return OK;   /* nothing waits: more may be queued */
+    return idl_reply_flush(&m->reply) ? OK : ERR_SHOULD_WAIT;
 }
 
 void req_status(struct mixer *m, unsigned slot, handle_t ch, status_t st)

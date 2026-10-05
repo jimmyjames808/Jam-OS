@@ -127,6 +127,7 @@ the build tools (and Pillow for test screenshots).
 | `make KTESTS=0` | a kernel without the in-kernel tests (into `build/noktests/`) |
 | `make syscalls` | regenerate the syscall glue after editing `abi/syscalls.def` |
 | `make idl` | regenerate `drivers/include/idl/` after editing `abi/idl/` |
+| `make wl` | regenerate the Wayland tables and stubs (`user/include/jwl/`, `user/lib/jwl_*.c`) from `third_party/wayland-protocols/` |
 | `make compdb` | `compile_commands.json` for editors |
 | `make clean` | remove `build/` |
 

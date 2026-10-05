@@ -38,6 +38,13 @@ bool t_hid_mouse_report_protocol(void);
 bool t_hid_mouse_report_ids(void);
 bool t_hid_mouse_boot_kept(void);
 
+/* keymap.c: <keymap.h>'s tables, and the US one against the hid driver. */
+bool t_keymap_hid_codes(void);
+bool t_keymap_us_keys(void);
+bool t_keymap_typing(void);
+bool t_keymap_xkb_text(void);
+bool t_keymap_matches_hid(void);
+
 /* disks.c: devmgr's disks and mounts against the mock usb-storage
  * (diskmock.c), with the fat service on its partitions. */
 bool t_disk_mounts(void);
@@ -99,6 +106,7 @@ bool t_keep_restore_refusals(void);
  * reader of the kernel's chanread_* test). */
 bool t_svcstate_fresh_and_adopted(void);
 bool t_svcstate_slots(void);
+bool t_svcstate_answer_mark(void);
 bool t_svcstate_refused(void);
 bool t_svcstate_standby(void);
 int  svcstate_child(int argc, char **argv);
@@ -114,6 +122,12 @@ bool t_idl_async_through_port(void);
 bool t_idl_serve_reply_wait(void);
 bool t_idl_serve_gone_client(void);
 bool t_idl_within_times_out(void);
+/* idlslot.c: requests read into slots (<proto>_take_slot, _run_slot), a
+ * reply that waits for the next system call (struct idl_reply) and the
+ * `idempotent` keyword, on the test protocol idltest. */
+bool t_idl_slot_take_run(void);
+bool t_idl_slot_idempotent(void);
+bool t_idl_slot_reply_after(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
@@ -151,6 +165,11 @@ bool t_reply_wait_second_process(void);
 bool t_reply_wait_port(void);
 bool t_reply_wait_refusals(void);
 int  replywait_child(int argc, char **argv);
+/* keptvmo.c: VMO_KEEP_PAGES and VMAR_KEPT_ONLY, and their child modes
+ * ("utest kept-..."). */
+bool t_kept_vmo_refusals(void);
+bool t_kept_vmo_client_and_compositor(void);
+int  kept_child(int argc, char **argv);
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_kill_spinning_and_unstarted(void);

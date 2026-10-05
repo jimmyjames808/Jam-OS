@@ -102,7 +102,7 @@ ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
 $(error two driver directories share a name: $(DRIVER_DIRS))
 endif
 
-.PHONY: all image run debug clean font usb flash syscalls idl check compdb includes FORCE
+.PHONY: all image run debug clean font usb flash syscalls idl wl keymap check compdb includes FORCE
 
 all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL)
 
@@ -148,6 +148,32 @@ $(IDL_OK): $(IDL_SRCS) tools/genidl.py $(wildcard $(IDL_GEN))
 
 idl:
 	python3 tools/genidl.py gen
+
+# Wayland (docs/G1-PLAN.md). tools/genwl.py turns upstream's interface files,
+# third_party/wayland-protocols/<name>.xml, into user/include/jwl/<protocol>.h
+# (versions, opcodes, enums, typed stubs) and user/lib/jwl_<protocol>.c (the
+# tables libjwl's codec reads); the protocol is the file's name with '_' for
+# '-'. Committed and checked like the IDL; `make wl` regenerates.
+WL_XML    := $(wildcard third_party/wayland-protocols/*.xml)
+WL_PROTOS := $(subst -,_,$(WL_XML:third_party/wayland-protocols/%.xml=%))
+WL_TABLES := $(WL_PROTOS:%=user/lib/jwl_%.c)
+WL_GEN    := $(WL_PROTOS:%=user/include/jwl/%.h) $(WL_TABLES)
+WL_OK     := $(BUILD)/wl.ok
+
+$(WL_OK): $(WL_XML) tools/genwl.py $(wildcard $(WL_GEN))
+	@mkdir -p $(BUILD)
+	python3 tools/genwl.py check
+	@touch $@
+
+wl:
+	python3 tools/genwl.py gen
+
+# Keyboard layouts. tools/genkeymap.py turns abi/keymap/ (keys.txt, and a
+# file per layout) into user/lib/keymap_keys.c and user/lib/keymap_<layout>.c
+# (<keymap.h>: the C tables and the XKB keymap). Committed like the IDL;
+# `make check` fails if they are stale; `make keymap` makes them again.
+keymap:
+	python3 tools/genkeymap.py gen
 
 $(OBJS): | $(SYSCALLS_OK) $(IDL_OK)
 
@@ -198,6 +224,12 @@ UINC        := $(UINC_HDRS:%=$(BUILD)/uinc/jam/%)
 UOBJ        := $(BUILD)/uobj
 LIBOS_SRCS  := $(filter-out user/lib/crt0.S user/lib/driver_crt.c,\
                              $(wildcard user/lib/*.c user/lib/*.S))
+# The Wayland tables include <jwl.h>, libjwl's own header. A tree without it
+# leaves them out of libos (`genwl.py selftest` still builds them, against a
+# stand-in).
+ifeq ($(wildcard user/include/jwl.h),)
+LIBOS_SRCS  := $(filter-out $(WL_TABLES),$(LIBOS_SRCS))
+endif
 LIBOS_OBJS  := $(LIBOS_SRCS:%=$(UOBJ)/%.o)
 # dr_mp3 (third_party/dr_mp3, vendored unmodified) is compiled once, from
 # user/lib/mp3port/dr_mp3_impl.c (its configuration; the directory also
@@ -244,7 +276,7 @@ $(UINC): $(BUILD)/uinc/jam/%.h: kernel/include/jam/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-$(UOBJ)/%.c.o: %.c | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+$(UOBJ)/%.c.o: %.c | $(UINC) $(SYSCALLS_OK) $(IDL_OK) $(WL_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(PROG_CFLAGS) -c $< -o $@
 
@@ -258,7 +290,8 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 
 # libfun (user/apps/fun, <fun.h>): the screen, drawing, text, keys and
 # thread pool of the apps, which link it before libos.
-FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS)))
+# fbbench (user/tests) measures libfun's own drawing code too.
+FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS))) fbbench
 LIBFUN_OBJS := $(patsubst %,$(UOBJ)/%.o,$(wildcard $(LIBFUN_DIR)/*.c))
 
 $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
@@ -436,7 +469,8 @@ $(BUILD)/drv/$(1).bootfs: $(BUILD)/drv/$(1)
 endef
 $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 
-# `make check`: the generated code is current, the driver check still
+# `make check`: the generated code is current (and the Wayland generator
+# passes its own tests, tools/genwl-tests/), the driver check still
 # rejects what it must (tools/checkdriver-tests/: a kernel include, a
 # kmalloc call, a call into another driver, ...) and accepts a clean one,
 # the Markdown docs still match the tree (tools/checkdocs.py), and the
@@ -444,6 +478,9 @@ $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
+	python3 tools/genwl.py check
+	HOSTCC="$(HOSTCC)" python3 tools/genwl.py selftest
+	python3 tools/genkeymap.py check
 	CC="$(CC)" NM="$(CROSS)nm" CFLAGS="$(DRV_CFLAGS)" SURFACE="$(DRV_SURFACE)" \
 	    OUT="$(BUILD)/checkdriver-tests" sh tools/checkdriver-selftest.sh
 	python3 tools/checkdocs.py

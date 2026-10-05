@@ -300,8 +300,10 @@ static bool run_tests(void)
  * on to devmgr and devmgr to every network driver; bootdisk=0x<id>, which init passes on
  * to devmgr (the boot disk); `splashhang` (a test's: the splash never
  * finishes, and init must start the shell anyway); `nospare` (init keeps
- * no warm spare of the mixer: a restart starts a process). */
-#define INIT_WORDS_MAX 7
+ * no warm spare of the mixer: a restart starts a process); `vtdtest`
+ * (with `iommu=on`, the "IOMMU checks" test entry), which init passes on
+ * to devmgr and devmgr to drv/hda: its deliberate DMA faults. */
+#define INIT_WORDS_MAX 8
 
 static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
 {
@@ -327,6 +329,8 @@ static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
         words[n++] = "splashhang";
     if (cmdline_has("nospare"))
         words[n++] = "nospare";
+    if (shell && cmdline_has("vtdtest"))
+        words[n++] = "vtdtest";
     return n;
 }
 
