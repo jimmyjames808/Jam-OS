@@ -300,6 +300,15 @@ $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
+# libfun's smooth text (<fun.h>, font.c): stb_truetype
+# (third_party/stb_truetype, vendored unmodified, compiled in ttf.c) and
+# the Inter faces (third_party/inter), which fontdata.c's .incbin links in
+# as they are.
+FONT_FACES  := third_party/inter/Inter-Regular.ttf third_party/inter/Inter-Medium.ttf
+FONT_STB_OBJS := $(UOBJ)/$(LIBFUN_DIR)/ttf.c.o $(UOBJ)/$(LIBFUN_DIR)/font.c.o
+$(FONT_STB_OBJS): PROG_CFLAGS := -Ithird_party/stb_truetype
+$(UOBJ)/$(LIBFUN_DIR)/fontdata.c.o: $(FONT_FACES)
+
 # FatFs (third_party/fatfs, vendored unmodified), built into the fat
 # service only. Its configuration is Jam OS's
 # (user/services/fat/ffport/ffconf.h), but ff.h includes "ffconf.h" from

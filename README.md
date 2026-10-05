@@ -379,7 +379,7 @@ newest: an older signed build is accepted too (the versions are printed).
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater; `update`'s server and its signing tool (`jamos-sign`, built into `build/host/`) |
-| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs, dr_mp3, pl_mpeg (the splash's MPEG-1 decoder), stb_image (jamjar's album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP), Monocypher (`update`'s Ed25519 signatures) |
+| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs, dr_mp3, pl_mpeg (the splash's MPEG-1 decoder), stb_image (jamjar's album covers), stb_truetype and the Inter font (the compositor's titles), lwIP (netstack's IPv4, ARP, ICMP and UDP), Monocypher (`update`'s Ed25519 signatures) |
 | `docs/` | the documentation below; `docs/logo/`, the logo |
 
 ## Documentation
@@ -405,4 +405,4 @@ changing the code are in [CODING-GUIDE.md](CODING-GUIDE.md).
 ## Licence
 
 Jam OS is released under the [BSD 2-Clause License](LICENSE). The
-third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its own one-clause BSD-style licence; dr_mp3: public domain or MIT-0; pl_mpeg: MIT; stb_image: MIT or public domain; lwIP: BSD-3-Clause; Monocypher: BSD-2-Clause, or CC0).
+third-party code in `third_party/` keeps its own licences (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its own one-clause BSD-style licence; dr_mp3: public domain or MIT-0; pl_mpeg: MIT; stb_image and stb_truetype: MIT or public domain; Inter: SIL Open Font License 1.1; lwIP: BSD-3-Clause; Monocypher: BSD-2-Clause, or CC0).

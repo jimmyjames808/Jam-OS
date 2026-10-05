@@ -138,8 +138,9 @@ be compatible with that.
   libfun's drawing calls take a `struct rect` (a `struct picture` to
   scale from); the ones whose shape is no rectangle may take up to eight:
   `line_aa` and `ring_aa` (float end points or a centre, a width, the
-  colour and its alpha) and `text2` (a position, a scale, two colours, a
-  shadow or not).
+  colour and its alpha), `text2` (a position, a scale, two colours, a
+  shadow or not) and `font_draw` (a clip, a font, a position, a
+  colour).
 
 ### Headers
 

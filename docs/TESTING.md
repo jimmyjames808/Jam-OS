@@ -1047,6 +1047,22 @@ needs another CPU model: `QEMU_CPU=qemu64 tools/qemu-test.sh build/test
 rnd ktest=random` boots with `random: no RDSEED/RDRAND: seeded from
 timing only ...: WEAK` in the log and the RESULTS box.
 
+## Smooth text
+
+libfun's anti-aliased text ([ARCHITECTURE](../ARCHITECTURE.md#smooth-text)).
+In utest (the `init` run), every expectation from the font's own numbers
+(`user/tests/utest/smoothfont.c`):
+
+| Test | What it checks |
+|---|---|
+| `font_open` | sizes and weights out of range refused; ascent, descent, line height and capital height at 13 and 26 pixels; each bake's time (`utest: font: ... baked in`) |
+| `font_measure` | widths of known strings in both weights and sizes, kerning included ("AV" narrower than "A" plus "V"); "" is 0; `font_draw` returns x plus the width |
+| `font_pixels` | 'I', "II" (the second glyph at a half-pixel position) and '-' (rows cut by its edges) at 13 px Regular and 'I' at 26 px Medium, white on black: every pixel's coverage is its share of the glyph's rectangle (from the outline's coordinates), exact where it is 0 or 255, within 1 elsewhere |
+| `font_blend` | coloured text over a pattern is exactly `px_over(pattern, argb_pm(colour, coverage))` per pixel, coverage from white on black; the colour's top byte ignored |
+| `font_clip` | 13 clip rectangles (across each edge of the text, a box inside, empty, negative, huge, outside): unclipped pixels inside, nothing changed outside; text off each edge and corner of a surface inside a guarded buffer: the surface's part right, the guard untouched |
+| `font_ellipsis` | `font_ellipsize` against a search of every cut for 7 strings (malformed UTF-8 and "" among them) at every width and buffer size; no space before the "…"; `font_draw_in`, left and centred, draws exactly the cut text where it says, clipped to its rectangle |
+| `font_threads` | four threads drawing titles with two shared fonts get the pixels one thread got; a child that writes into a font's memory is killed (`utest font-write`): fonts are read-only |
+
 ## The other tools
 
 The rest of `tools/` builds, checks and flashes; the tests above use some
