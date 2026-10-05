@@ -72,7 +72,8 @@ status_t jwlc_seat_caps(struct jwl_client *c, uint32_t caps)
 {
     c->info.seat_caps = caps;
     status_t st = OK;
-    bool kb = caps & JWL_WL_SEAT_CAPABILITY_KEYBOARD, ptr = caps & JWL_WL_SEAT_CAPABILITY_POINTER;
+    bool kb = (caps & JWL_WL_SEAT_CAPABILITY_KEYBOARD) && !c->cfg.no_keyboard;
+    bool ptr = caps & JWL_WL_SEAT_CAPABILITY_POINTER;
     if (kb && !c->seat.keyboard)
         st = get_device(c, true);
     else if (!kb && c->seat.keyboard)

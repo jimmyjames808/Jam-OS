@@ -449,6 +449,7 @@ bool t_jwlc_window(void);
 bool t_jwlc_window_sizes(void);
 bool t_jwlc_keyboard(void);
 bool t_jwlc_pointer(void);
+bool t_jwlc_no_keyboard(void);
 bool t_jwlc_reconnect(void);
 bool t_jwlc_protocol_error(void);
 bool t_jwlc_blocking(void);

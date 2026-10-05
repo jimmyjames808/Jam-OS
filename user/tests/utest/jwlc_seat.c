@@ -5,6 +5,7 @@
  *                  the focus, key repeat made by the library from
  *                  repeat_info (and stopped by the release), a keymap
  *                  naming no layout of ours (US instead);
+ *   jwlc_no_keyboard  a client that takes no keys binds no wl_keyboard;
  *   jwlc_pointer   enter, motion (two queued become one), buttons, the
  *                  wheel with its notches folded in, and a move asked
  *                  with the press's serial. */
@@ -98,6 +99,27 @@ bool t_jwlc_keyboard(void)
     f.keymap_text = "xkb_keymap { };\n";
     c = fake_ready(&f);
     CHECK(c && jwl_client_info(c)->keymap == &keymap_us);
+    return fake_all_gone(&f, c, h0, b0);
+}
+
+/* A client that takes no keys (the boot splash's config) binds the seat's
+ * pointer but never a wl_keyboard, which is how the compositor knows its
+ * windows want no keyboard focus. */
+bool t_jwlc_no_keyboard(void)
+{
+    uint64_t h0, b0;
+    fake_held(&h0, &b0);
+    struct fake f;
+    fake_init(&f);
+    struct jwl_client_config cfg = fake_config(&f);
+    cfg.no_keyboard = true;
+    struct jwl_client *c;
+    CHECK_ST(jwl_client_create(&cfg, &c), OK);
+    CHECK(fake_pump(&f, c) && jwl_client_status(c) == OK);
+    CHECK(jwl_client_info(c)->seat_caps & JWL_WL_SEAT_CAPABILITY_KEYBOARD);   /* offered */
+    CHECK_EQ(f.keyboard, 0u);   /* and not taken */
+    CHECK(f.pointer != 0);
+    CHECK(f.seat != 0);
     return fake_all_gone(&f, c, h0, b0);
 }
 

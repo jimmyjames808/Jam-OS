@@ -14,7 +14,11 @@
  *     windows of clients being torn down;
  *   - the window manager may focus a window itself (seat_focus: a title
  *     bar click).
- * No client can grab the keyboard: there is no request that moves it.
+ * No client can grab the keyboard: there is no request that moves it. A
+ * window whose client has no wl_keyboard never gets the focus at all
+ * (focusable): it wants no keys, so it takes none from the window that has
+ * them (the boot splash plays full screen over the first terminal, which
+ * keeps the keys typed meanwhile).
  *
  * Keys no client sees, taken on their press before any focus is looked at
  * (the press and its release both go nowhere):
@@ -51,10 +55,13 @@ struct comp_window *seat_focused(void)
     return focused;
 }
 
-/* Can w take the focus: mapped, and its client alive. */
+/* Can w take the focus: mapped, its client alive and taking keys (it has a
+ * wl_keyboard: a client without one, the boot splash, never takes the keys
+ * from the window that has them, by mapping or by a click). */
 static bool focusable(const struct comp_window *w)
 {
-    return w && (w->flags & COMP_WIN_MAPPED) && client_alive(w->surface->client);
+    return w && (w->flags & COMP_WIN_MAPPED) && client_alive(w->surface->client) &&
+           seat_of(w->surface->client)->nres[SEAT_KEYBOARD] > 0;
 }
 
 void seat_focus(struct comp_window *w)

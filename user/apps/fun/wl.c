@@ -243,7 +243,7 @@ status_t wl_open(uint32_t bg, bool keys, bool full)
         return ERR_NOT_FOUND;   /* not in our namespace: the borrowed screen */
     struct jwl_client_config cfg = {
         .connect = connect_fn ? connect_fn : connect_svc, .connect_ctx = connect_ctx,
-        .name = title ? title : "libfun",
+        .name = title ? title : "libfun", .no_keyboard = !keys,
     };
     status_t st = jwl_client_connect(&cfg, now() + CONNECT_WAIT, &wl.c);
     if (st == OK)

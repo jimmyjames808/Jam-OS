@@ -899,6 +899,7 @@ static const struct {
     { "jwlc_window_sizes", t_jwlc_window_sizes },
     { "jwlc_keyboard", t_jwlc_keyboard },
     { "jwlc_pointer", t_jwlc_pointer },
+    { "jwlc_no_keyboard", t_jwlc_no_keyboard },
     { "jwlc_reconnect", t_jwlc_reconnect },
     { "jwlc_protocol_error", t_jwlc_protocol_error },
     { "jwlc_blocking", t_jwlc_blocking },
