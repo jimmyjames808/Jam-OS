@@ -418,7 +418,7 @@ static void log_error(struct vtd_unit *u, const struct inv_error *e)
         else if (n <= VTD_FAULT_LOGGED)
             kprintf("%s\n", line);
         if (n == VTD_FAULT_LOGGED)
-            kprintf("vtd: unit %u: the queue refused %lu descriptors: the next are counted, not "
+            kprintf("vtd: unit %u: the queue refused descriptors %lu times: the next are counted, not "
                     "logged\n", u->index, n);
     }
     if (e->fsts & (VTD_FSTS_ITE | VTD_FSTS_ICE))
