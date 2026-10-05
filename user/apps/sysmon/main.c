@@ -107,7 +107,7 @@ static int monitor(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    gfx_title("sysmon");
+    gfx_title("Sysmon");
     if (has_arg(argc, argv, "--selftest"))
         return sysmon_selftest();
     return monitor(argc, argv);

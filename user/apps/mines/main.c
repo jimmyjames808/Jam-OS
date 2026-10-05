@@ -198,7 +198,7 @@ static int play(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    gfx_title("mines");
+    gfx_title("Mines");
     if (has_arg(argc, argv, "--selftest"))
         return mines_selftest();
     return play(argc, argv);

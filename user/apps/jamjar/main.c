@@ -195,7 +195,7 @@ static int run(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    gfx_title("jamjar");
+    gfx_title("Jamjar");
     if (has_arg(argc, argv, "--selftest"))
         return jamjar_selftest();
     return run(argc, argv);

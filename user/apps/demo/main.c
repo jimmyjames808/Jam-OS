@@ -282,7 +282,7 @@ static struct result scene(const char *name, double seconds, int which)
 
 int main(int argc, char **argv)
 {
-    gfx_title("demo");
+    gfx_title("Demo");
     ncpu = (uint32_t)arg_num(argc, argv, "cpus", 1);
     uint32_t seconds = (uint32_t)arg_num(argc, argv, "seconds", 76);   /* 40 + 22 + 14 */
     if (!ncpu)

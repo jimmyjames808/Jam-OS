@@ -201,7 +201,7 @@ int main(int argc, char **argv)
     /* The screen first: the console stays quiet until it gets it back, so
      * a missing or bad video gives it back at once. */
     uint64_t since = now();
-    gfx_title("splash");
+    gfx_title("Splash");
     status_t st = keys ? gfx_open_fullscreen(SPLASH_BG) : gfx_open_screen(SPLASH_BG);
     if (st == OK && ((st = find_video(&mpg, &len)) != OK || (st = video_open(mpg, len)) != OK))
         gfx_close();

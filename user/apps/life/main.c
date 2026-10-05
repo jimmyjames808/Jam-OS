@@ -537,7 +537,7 @@ static int play(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    gfx_title("life");
+    gfx_title("Life");
     if (has_arg(argc, argv, "--selftest"))
         return life_selftest();
     return play(argc, argv);
