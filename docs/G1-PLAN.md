@@ -74,6 +74,22 @@ differs from the recommendation below, this note wins:
 - **Q9: (B) a smaller terminal window.** After the splash, the first
   terminal opens as a centred window (not maximised), with the desktop
   background (the splash's dark colour) around it; text stays 8x16 pixels.
+- **The look (later the same day, from mockups).** Tiling mode: no title
+  bars; the focused tile shows by its border colour; small gaps between
+  tiles; Super+Q closes the focused window (both modes). Floating windows
+  ("style B1"): rounded corners, a soft shadow, the title centred in a
+  smooth (anti-aliased) proportional font, and three circles on the
+  LEFT of the title bar in jam colours: raspberry (#d4537e) closes,
+  apricot (#ef9f27) minimises, blackcurrant (#7f77dd) makes the window
+  full screen; an unfocused window's circles are grey. Extras the owner
+  chose: the circles show their symbol (x, -, full screen) on hover; a
+  jam-coloured wallpaper instead of a flat colour; double-clicking a
+  title bar toggles full screen; open and close animations (fade and
+  scale, about 150 ms); minimise, brought back from a top bar; a top bar
+  with a clock and the open windows (minimised ones too). The terminal's
+  text stays the 8x16 bitmap font. Tracks D1 (the look) and D2 (minimise,
+  the top bar, animations) build these after C3 (added to the stages
+  when they start).
 
 Each question stands on its own, says what it decides and why it
 matters, and ends with a recommendation. The plan assumes the

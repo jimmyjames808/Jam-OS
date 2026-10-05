@@ -2,24 +2,36 @@
  *
  * libfun.a, linked into the programs that use it (bin/life, bin/tetris,
  * bin/fractal, bin/demo, ...), one object per job: gfx.c (the screen and
- * drawing), text.c, keys.c (the key channel), mouse.c (the pointer and its
- * arrow), pool.c (CPUs and the thread pool), util.c (maths, memory, output,
+ * drawing), wl.c and wlpaint.c (a window on the compositor instead),
+ * text.c, keys.c (the key channel), mouse.c (the pointer and its arrow),
+ * pool.c (CPUs and the thread pool), util.c (maths, memory, output,
  * arguments, self-tests).
  *
- * The screen: the apps draw real pixels. gfx_open borrows the framebuffer
- * from the console (console.lend_screen through SR_CONSOLE: a
- * write-combining VMO of the framebuffer, its geometry and a lease
- * channel) and takes the keyboard focus (console.open_keys). The app draws
- * into a full-resolution RAM back buffer (scr.s: 0xRRGGBB pixels);
- * gfx_present copies the parts that changed since the last present to the
- * screen, compared against a RAM copy of what the screen shows, in 64-pixel
- * row pieces, on every CPU. The framebuffer itself is never read (reads of
- * write-combining memory are very slow). gfx_close closes the lease and
- * the key channel: the console redraws its text screen and the keys go
- * back to the shell. If the app dies instead (a crash, a kill, Ctrl+C: the
- * shell kills the job), the kernel closes those handles and the console
- * does the same. All of the screen and key hand-off is in gfx_open /
- * gfx_close.
+ * The screen: the apps draw real pixels into a RAM back buffer (scr.s:
+ * 0xRRGGBB pixels), and gfx_present shows what changed since the last
+ * present, compared against a RAM copy of what is shown, in 64-pixel row
+ * pieces, on every CPU. Where it shows them depends on what the program
+ * was given:
+ *   - a window (wl.c, wlpaint.c), when its namespace has the compositor
+ *     (/svc/wayland, the list's `svc wayland`) and the compositor offers
+ *     windows: gfx_open opens one (an xdg_toplevel through libjwl,
+ *     <jwl_client.h>), present copies the changed pieces into the free one
+ *     of the window's two shared buffers, damages them and commits, one
+ *     commit per frame callback; keys and the mouse come from the seat,
+ *     the close box is KEY_QUIT, and the compositor draws the pointer;
+ *   - otherwise the whole screen, borrowed from the console as before
+ *     there was a compositor (the `nocomp` boot, or no compositor offering
+ *     windows): console.lend_screen through SR_CONSOLE gives a
+ *     write-combining VMO of the framebuffer, its geometry and a lease
+ *     channel, and console.open_keys the keyboard focus. The framebuffer
+ *     itself is never read (reads of write-combining memory are very
+ *     slow). gfx_close closes the lease and the key channel: the console
+ *     redraws its text screen and the keys go back to the shell. If the
+ *     app dies instead (a crash, a kill, Ctrl+C: the shell kills the job),
+ *     the kernel closes those handles and the console does the same.
+ * The app's code is the same either way: all of the hand-off is in
+ * gfx_open / gfx_close, and scr.w and scr.h are the size it draws at (a
+ * window's size, or the screen's).
  *
  * Also here: drawing (rectangles, blending, gradients, lines, blits;
  * premultiplied alpha and anti-aliased shapes in alpha.c, scaling in
@@ -66,32 +78,57 @@ struct surf {
 
 struct screen {
     struct surf s;      /* the back buffer: draw here, then gfx_present */
-    int w, h;           /* screen pixels */
-    int ui;             /* a UI scale for text: 1 up to 1080 lines, 2 above */
+    int w, h;           /* pixels drawn at: the window's or the screen's */
+    int ui;             /* a UI scale for text: 1 up to 1100 lines (h), 2 above */
     /* private */
-    uint32_t *shown;    /* what the screen shows (RAM copy) */
+    uint32_t *shown;    /* what the screen or the window shows (RAM copy) */
     uint32_t *fb;       /* the framebuffer (write-combining: written, never read) */
     uint32_t pitch;     /* framebuffer bytes per line */
     uint8_t  rs, gs, bs;   /* the framebuffer's red, green, blue bit positions */
     bool     native;    /* the framebuffer is 0xRRGGBB too: copied as it is */
     handle_t con, keys, lease;   /* the console, our key channel, the screen's lease */
     bool     open;      /* gfx_open succeeded, gfx_close not called yet */
-    uint64_t presents, bytes;   /* stats: presents, bytes written to the screen */
+    bool     windowed;  /* a window on the compositor (wl.c), not the borrowed screen */
+    uint32_t bg;        /* the colour opened on: round a window's picture when they differ */
+    uint64_t presents, bytes;   /* stats: presents, bytes written to the screen or window */
 };
 extern struct screen scr;
 
-/* Take the keys and borrow the screen; fills scr. The pool (pool_start)
- * should be started first: gfx_present runs on it. */
+/* Open a window, or else take the keys and borrow the screen (above);
+ * fills scr. The pool (pool_start) should be started first: gfx_present
+ * runs on it. The window is the size the app asked for (gfx_window_size),
+ * else $FUN_WINDOW ("<w>x<h>"), else 1600x1000 on a screen bigger than
+ * 1920x1200 and the whole screen (maximised) on smaller ones. Errors: the
+ * screen's (ERR_NOT_FOUND: no console either), ERR_NO_MEMORY. */
 status_t gfx_open(void);
-/* The same with the back buffer, and so the screen, all colour bg at
- * first (gfx_open: black): no black frame on its way to bg. */
+/* The same with the back buffer, and so the window or the screen, all
+ * colour bg at first (gfx_open: black): no black frame on its way to bg. */
 status_t gfx_open_on(uint32_t bg);
-/* The screen only, the keys left with whoever has them (the boot splash:
- * what is typed meanwhile waits for the shell). gfx_key then returns
- * KEY_QUIT at once: don't wait with it. */
+/* The same as a full-screen window (the screen when borrowed): scr is
+ * the screen's size. */
+status_t gfx_open_fullscreen(uint32_t bg);
+/* Full screen without the keys, which stay with whoever has them (the
+ * boot splash: what is typed meanwhile waits for the shell). gfx_key then
+ * returns KEY_QUIT at once: don't wait with it. */
 status_t gfx_open_screen(uint32_t bg);
-/* Give the screen and the keys back (the console redraws its text). */
+/* Give the window up (its back buffer goes with it: scr.s is drawn on no
+ * more), or the screen and the keys back (the console redraws its text). */
 void     gfx_close(void);
+/* Before gfx_open: the window's title (and app id; NULL or unset: "Jam OS"),
+ * and the size the app would like its window (w, h of at least 320x200;
+ * 0: the default above). Kept by pointer: a string that stays. */
+void     gfx_title(const char *title);
+void     gfx_window_size(int w, int h);
+/* Before gfx_open: the app takes any size its window is given (the
+ * compositor's resize, maximise, full screen). gfx_key then says
+ * KEY_RESIZE, after which scr.w, scr.h and scr.s are new and the app draws
+ * the whole picture again. Without it a window keeps the app's size, and
+ * a bigger window (full screen by the compositor's key) shows the picture
+ * centred on scr.bg. */
+void     gfx_resizable(void);
+/* Tests: how gfx_open reaches the compositor instead of /svc/wayland (a
+ * libjwl connect function, <jwl_client.h>); NULL: /svc/wayland again. */
+void     gfx_connect_with(status_t (*connect)(void *ctx, handle_t *out), void *ctx);
 /* Copy what changed in scr.s to the screen. */
 void     gfx_present(void);
 /* Copy all of it (after something else may have drawn on the screen). */
@@ -223,13 +260,18 @@ void fps_frame(struct fps *f);
 enum {
     KEY_NONE = 0,
     KEY_UP = 0x100, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ENTER, KEY_PGUP, KEY_PGDN, KEY_HOME,
-    KEY_QUIT,   /* Esc or Ctrl+C */
+    KEY_QUIT,   /* Esc or Ctrl+C, or the window's close box */
     KEY_MOUSE,  /* not a key: the mouse did something (gfx_mouse says what) */
     KEY_BACKSPACE, KEY_TAB, KEY_END, KEY_DELETE,
+    KEY_RESIZE, /* not a key: the window's size changed (only after gfx_resizable) */
 };
 /* The next key press (DOWN or REPEAT) before deadline: a KEY_* code or a
  * character; KEY_NONE on timeout (deadline 0: don't wait). KEY_QUIT too if
- * the key channel broke. After gfx_mouse_open it is also how the mouse is
+ * the key channel broke (a window: the compositor is gone for good) and
+ * when the window's close box is clicked. In a window it is also where
+ * the compositor's news is read (KEY_RESIZE, frames, the buffers it gives
+ * back): an app that never calls it still works, as gfx_present reads
+ * them too. After gfx_mouse_open it is also how the mouse is
  * waited for: KEY_MOUSE when it moved (the movement queued so far, merged)
  * or when a button or the wheel changed (one such change at a time). */
 int      gfx_key(uint64_t deadline);
@@ -258,14 +300,17 @@ struct mouse {
 /* Ask the console for the mouse (after gfx_open; gfx_close ends it). The
  * pointer starts at the middle of the screen; its arrow shows from the
  * first report on. accel: quick movement goes further (false: one pixel
- * a count whatever the speed, which the tests need). */
+ * a count whatever the speed, which the tests need). In a window the
+ * pointer is the compositor's (it moves it, accelerates it and draws the
+ * arrow): x and y are where it is over the window, kept as they were
+ * last while it is elsewhere, and accel is not looked at. */
 status_t gfx_mouse_open(bool accel);
 /* The mouse now, and what it did since the last call. */
 void     gfx_mouse(struct mouse *out);
 /* Hide or show the arrow (shown by default once the mouse has moved). */
 void     gfx_pointer_show(bool on);
 /* Only the arrow moved: present just its rows (much cheaper than
- * gfx_present when the frame is unchanged). */
+ * gfx_present when the frame is unchanged). Nothing in a window. */
 void     gfx_present_pointer(void);
 
 /* The arrow (mouse.c), at scale 1: '#' its outline (black), 'o' its fill
@@ -367,6 +412,8 @@ static inline uint32_t popcount64(uint64_t x)
 /* A zeroed, page-aligned block of memory of its own VMO (for buffers
  * bigger than the heap likes); NULL on failure. */
 void    *big_alloc(uint64_t bytes);
+/* Give back a block of big_alloc's (p NULL: nothing), bytes as asked. */
+void     big_free(void *p, uint64_t bytes);
 /* Text to the console (also mirrored to COM1, so the QEMU tests see it)
  * and to the kernel log. Not while the screen is borrowed (it isn't
  * drawn then, but it is kept and shown when the screen comes back). */

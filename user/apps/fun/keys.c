@@ -1,5 +1,7 @@
 /* libfun: the console's key channel (fun.h): key events decoded, and the
- * mouse reports that share the channel handed to mouse.c.
+ * mouse reports that share the channel handed to mouse.c. In a window the
+ * same messages come from the compositor instead (wl.c's wl_next), with
+ * one more: the window's new size (KEY_RESIZE).
  *
  * The channel's messages are told apart by size (<jam/abi.h>): a key is a
  * struct input_key_event; a mouse report, which only comes after
@@ -55,17 +57,19 @@ union input_msg {
     struct input_key_event   key;     /* by its size */
     struct input_mouse_event mouse;   /* by its size, and kind INPUT_EVENT_MOUSE */
 };
-enum msg_kind { MSG_KEY, MSG_MOVE, MSG_BUTTON };
 
 static struct input_key_event held;   /* a key read while mouse news waited to be told */
 static bool have_held;
 static bool mouse_news;               /* reports folded in since the last KEY_MOUSE */
+static bool resize_news;              /* a new size gfx_key_event read, not told yet */
 
 /* The next message before deadline (0: only what is queued). OK: *kind
  * says what it was; a key is in *ev, a mouse report went to mouse.c.
  * ERR_TIMED_OUT when none came; another error when the channel broke. */
 static status_t next_msg(uint64_t deadline, struct input_key_event *ev, enum msg_kind *kind)
 {
+    if (scr.windowed)
+        return wl_next(deadline, ev, kind);
     if (!scr.keys)
         return ERR_BAD_HANDLE;
     for (;;) {
@@ -111,7 +115,10 @@ status_t gfx_key_event(uint64_t deadline, struct input_key_event *ev)
         status_t st = next_msg(deadline, ev, &kind);
         if (st != OK || kind == MSG_KEY)
             return st;
-        mouse_news = true;   /* gfx_key tells */
+        if (kind == MSG_RESIZE)
+            resize_news = true;   /* gfx_key tells */
+        else
+            mouse_news = true;
     }
 }
 
@@ -124,6 +131,10 @@ static int tell_mouse(void)
 
 int gfx_key(uint64_t deadline)
 {
+    if (resize_news) {
+        resize_news = false;
+        return KEY_RESIZE;
+    }
     for (;;) {
         struct input_key_event ev;
         enum msg_kind kind = MSG_KEY;
@@ -139,6 +150,8 @@ int gfx_key(uint64_t deadline)
             if (st != OK)
                 return KEY_QUIT;
         }
+        if (kind == MSG_RESIZE)
+            return KEY_RESIZE;   /* at once: scr is new already; mouse news waits */
         if (kind == MSG_BUTTON)
             return tell_mouse();
         if (kind == MSG_MOVE) {

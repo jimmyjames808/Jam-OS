@@ -30,7 +30,8 @@
 
 JAM_WANTS("svc music\n"
           "mount /data r\n"
-          "mount /usb* r\n");
+          "mount /usb* r\n"
+          "svc wayland\n");
 
 static struct app A;
 
@@ -117,6 +118,10 @@ static void input(struct app *a, uint64_t deadline)
             struct mouse m;
             gfx_mouse(&m);
             app_mouse(a, &m);
+        } else if (k == KEY_RESIZE) {   /* its window took a new size (gfx_resizable) */
+            layout_make(&a->lo, scr.w, scr.h, scr.ui);
+            if (a->view_ok)
+                view_scroll(&a->view, a->lo.rows);
         } else {
             app_key(a, k);
         }
@@ -142,6 +147,7 @@ static int run(int argc, char **argv)
     pool_start((uint32_t)arg_num(argc, argv, "threads", 0));
     if (!has_arg(argc, argv, "nocovers"))
         cover_start(a->trace);
+    gfx_resizable();   /* the layout takes any size */
     status_t st = gfx_open_on(C_BG);
     if (st != OK) {
         say("jamjar: can't borrow the screen (%s)\n", status_str(st));
@@ -189,6 +195,7 @@ static int run(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    gfx_title("jamjar");
     if (has_arg(argc, argv, "--selftest"))
         return jamjar_selftest();
     return run(argc, argv);

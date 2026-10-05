@@ -26,7 +26,11 @@
  * self-test plays whole games against them. The frame is drawn only when
  * something changed (a click, the pointer on another cell, a second on
  * the clock); a pointer that only moved presents just the arrow's rows. */
+#include <wants.h>
 #include "mines.h"
+
+/* What it is given when the shell runs it (<wants.h>): a window. */
+JAM_WANTS("svc wayland\n");
 
 struct session {
     struct board b;
@@ -194,6 +198,7 @@ static int play(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    gfx_title("mines");
     if (has_arg(argc, argv, "--selftest"))
         return mines_selftest();
     return play(argc, argv);

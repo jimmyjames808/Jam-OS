@@ -26,7 +26,11 @@
  * drop leaves a fading trail and dust, locked pieces glow, particles fly),
  * else only when the game or a key changes something, and gfx_present
  * sends only the pixels that changed. */
+#include <wants.h>
 #include "tetris.h"
+
+/* What it is given when the shell runs it (<wants.h>): a window. */
+JAM_WANTS("svc wayland\n");
 
 static int play(int argc, char **argv)
 {
@@ -122,6 +126,7 @@ static int hang_test(void)
 
 int main(int argc, char **argv)
 {
+    gfx_title("tetris");
     if (has_arg(argc, argv, "--selftest"))
         return tetris_selftest();
     if (has_arg(argc, argv, "--crash-test"))

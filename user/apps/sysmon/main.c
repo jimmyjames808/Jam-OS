@@ -26,7 +26,8 @@
 #include "sysmon.h"
 
 /* What it is given when the shell runs it (<wants.h>). */
-JAM_WANTS("right sysinfo\n");
+JAM_WANTS("right sysinfo\n"
+          "svc wayland\n");
 
 static struct sample readings[2];
 static struct model model;
@@ -106,6 +107,7 @@ static int monitor(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    gfx_title("sysmon");
     if (has_arg(argc, argv, "--selftest"))
         return sysmon_selftest();
     return monitor(argc, argv);

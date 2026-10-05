@@ -452,6 +452,11 @@ bool t_jwlc_pointer(void);
 bool t_jwlc_reconnect(void);
 bool t_jwlc_protocol_error(void);
 bool t_jwlc_blocking(void);
+/* funwin.c: libfun's window (gfx_open on a compositor), over the same fake. */
+bool t_fun_window_present(void);
+bool t_fun_window_input(void);
+bool t_fun_window_reconnect(void);
+bool t_fun_window_resize(void);
 
 /* comp.c, comp_bad.c: bin/compositor headless, driven by Wayland clients
  * over real channels (comptest.h). */
