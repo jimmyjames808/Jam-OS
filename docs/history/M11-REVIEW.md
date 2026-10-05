@@ -113,21 +113,52 @@ a check, or a design point.
   `vtd_domain_handover_while_on`) can map just the pages they use in a
   domain of their own; it removes ~120 lines, a domain id, the all-of-RAM
   footgun and the boot-time identity map on units without PT.
+  **Owner's answer: remove it; done in fee5306** (`vtd_domain_handover_while_on`
+  maps edu's two pages in a domain of its own; `vtd_domain_pass_dma_lands`
+  dropped, `vtd_domain_own_domain` covers it) **and 0c7c84f** (`iommu_device_driven`,
+  `VTD_DOM_PASS`, `make_identity`, `vtd_pass_aw`, `ctl->pass` and the
+  context entry's pass-through form gone; vtd-test's `pt=off` boot now
+  checks that nothing depends on ECAP.PT).
 - **B (finding 7, deviation D2 a).** Charge a cap's table pages to the
   driver's job (M12's system call review: the cap is made before the
   driver's job exists, so it needs `dma_cap_set_job` to move the domain's
   charge, or devmgr to make the job first), or keep devmgr's job with the
   per-domain cap as the bound?
+  **Owner's answer: devmgr's job for now; charging each cap's table pages
+  to its driver's job is M12's (the system call review).** No change.
 - **C (finding 6).** Keep 512 table pages per domain (fine on today's PC,
   tight for usb-bus under fragmentation), raise it (2048 = 8 MiB worst
   case), or allocate DMA pools contiguously in the drivers?
+  **Owner's answer: raise it to 2048; done in c307db5f** (refactor: the cap
+  is `VTD_DRIVER_MAX_TABLES` in `vtd_domain.h`) **and ccce91e7** (2048 table
+  pages, 8 MiB at most per domain: about 2040 pins spread one per 2 MiB;
+  the comment, ARCHITECTURE "Pins" and M11-PLAN corrected; ktest
+  `vtd_domain_driver_cap_spread_pins` maps 1024 pins spread one per 2 MiB,
+  then the rest up to exactly the cap, and the next one is refused with
+  nothing changed: with 512 the first map failed `ERR_NO_RESOURCES`).
 - **D (finding 4).** When a machine with a PCIe-to-PCI bridge appears:
   refuse caps for functions behind it (the plan), or give every function
   that shares a requester id one shared domain?
+  **Owner's answer: refuse them; done in 0a00ec14.** `kernel/dev/vtd_rid.c`
+  reads the bridges from config space at boot and marks every function
+  below a PCIe-to-PCI/PCI-X bridge or a bridge with no PCIe capability,
+  and such a bridge itself (its id stands for those below), as sharing a
+  requester id (`struct vtd_fn.shared`; each covered one named in the
+  RESULTS box). While translating, `iommu_domain_create` refuses them
+  `ERR_ACCESS_DENIED` with a log line, so `dma_cap_create` does too and
+  their DMA stays blocked; with `iommu=off` nothing changes. About 100
+  lines. Tests: `vtd_domain_shared_rid_topology` (pure, a made-up topology
+  with a switch, a PCIe-to-PCI bridge, a PCI bridge below it, an
+  unconfigured bridge, two segments), `vtd_domain_shared_rid_refused` (edu
+  made to look shared: `dma_cap_create_for` says `ERR_ACCESS_DENIED` and
+  edu stays home; failed without the refusal: OK, -7 expected), and
+  vtd-test's `vtd-shared` boot (QEMU's `pcie-pci-bridge` with a second edu
+  behind it: both named, the edu refused). The PC has no such bridge.
 - **E (finding 3's fix).** As fixed below, a closed cap whose domain the
   unit didn't confirm gone keeps its pages, and the release thread retries
   the teardown every second until the unit confirms. The alternative is
   keeping them for good with no retry (as `pin_keep` does).
+  **Owner's answer: keep the retry as built (b7e50b1).** No change.
 
 ## Outcomes
 
@@ -136,11 +167,11 @@ a check, or a design point.
 | 1 | **Fixed** (27df4a7 refactor: `vtd_root_table_new`; 643b2ca fix): the cleared root page is flushed whole when the unit doesn't snoop. Test `vtd_domain_root_table_flushed` (pure, runs in every ktest): a new `DBG_VTD_FLUSH` hook records what `vtd_flush_lines` flushes, and every line of the new root page must be in it; failed without the fix ("flushed failed"). The PC is the only place the flush itself matters. |
 | 2 | **Fixed** (c319fae): the storm guard. The handler counts its interrupts; past 32 in 100 ms it masks FECTL.IM, the log thread polls the unit every 10 ms (draining records) until a look finds no new event (records, overflow, queue errors), then unmasks; the first storm goes to the RESULTS box, the `iommu` command shows the count. Test `vtd_unit_fault_storm_masked`: 1500 refused descriptors (each one a fault event, 7.3: QEMU's fastest real source; a device's window writes are the same interrupt): 1490 interrupts without the fix (failed), 33-45 with it; unmasked after, and the next single event heard. |
 | 3 | **Fixed** (b7e50b1): a batch whose domain the unit didn't confirm gone keeps its domain, its cap (until its pins in flight are done) and its pages, and is retried every second; only a confirmed domain-id invalidation frees them. `dma_quarantine_flush` tries each listed batch once. Test `dma_iommu_unconfirmed_close_keeps_pages` (`KT_SKIP_LIVE`): queue off, close with a page pinned, flush: held (without the fix: released, failed); queue on, flush: freed. Design question E. (c319fae also carries this fix's shortened report line.) |
-| 4 | Not fixed: no such bridge on the PC; design question D. |
+| 4 | **Fixed** after the review (0a00ec14): caps refused for functions that share a requester id; design question D. |
 | 5 | **Fixed** (22b5e88): `vtd_irte_encode` and `vtd_ir_rte_encode` refuse vectors below 32 (`VTD_IR_VECTOR_MIN`). Tests `vtd_ir_irte_refuses`, `vtd_ir_rte_exact_bits` refuse 16, 18, 31; failed without the fix. |
-| 6 | Claim corrected in ARCHITECTURE and `vtd_domain.c` (this commit); the cap itself is design question C. |
-| 7 | Design question B; no change. |
-| 8 | Design question A; no change. |
+| 6 | Claim corrected in ARCHITECTURE and `vtd_domain.c` (this commit); the cap raised to 2048 after the review (ccce91e7), design question C. |
+| 7 | Design question B: stays devmgr's job; M12. |
+| 8 | **Removed** after the review (0c7c84f), design question A. |
 | 9 | Not fixed: moving kept table pages off the caller's list breaks `vtd_dom_map`'s retry with the same gather in caching mode; harmless as it stands. |
 | 10 | Not fixed (harmless, as said). |
 | 11 | Accepted as built. |
