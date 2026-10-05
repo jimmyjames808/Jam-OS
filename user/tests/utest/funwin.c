@@ -12,6 +12,10 @@
  *                       KEY_QUIT, a release as nothing), the mouse at the
  *                       window's pixels, a button, the wheel (down the
  *                       screen: negative), the close box as KEY_QUIT;
+ *   fun_window_reconnect the compositor dies: libjwl connects again and
+ *                       makes the window again; a change drawn meanwhile
+ *                       and one after are both shown, the whole window
+ *                       damaged once;
  *   fun_window_resize   a resizable app (gfx_resizable: kept for the rest
  *                       of the process, so this runs last) hears
  *                       KEY_RESIZE and draws at the new size.
@@ -197,6 +201,41 @@ bool t_fun_window_input(void)
     CHECK_ST(fake_close(&f, s), OK);
     fake_serve(&f);
     CHECK_EQ(key_soon(), KEY_QUIT);
+    return close_all(&f, h0, b0);
+}
+
+bool t_fun_window_reconnect(void)
+{
+    uint64_t h0, b0;
+    start(&h0, &b0);
+    struct fake f;
+    fake_init(&f);
+    struct fake_surface *s;
+    if (!open_on(&f, 320, 200, &s))
+        return false;
+    fill(&scr.s, 10, 10, 50, 20, RED);
+    gfx_present();
+    fake_serve(&f);
+    fake_drop(&f);   /* the compositor dies */
+    fill(&scr.s, 200, 100, 10, 10, GREEN);   /* drawn while it is gone */
+    gfx_present();
+    /* libjwl connects again at once and makes the window again; its first
+     * configure shows the last buffer; the next present shows it all */
+    for (int i = 0; i < 20 && (f.connects < 2 || !fake_surface(&f, 0) ||
+                               !fake_surface(&f, 0)->acked); i++) {
+        (void)gfx_key(now() + 10 * NS_PER_MS);
+        fake_serve(&f);
+    }
+    CHECK_EQ(f.connects, 2);
+    s = fake_surface(&f, 0);
+    CHECK(s && s->acked);
+    fill(&scr.s, 300, 190, 10, 10, GREEN);
+    gfx_present();
+    fake_serve(&f);
+    CHECK_EQ(shown_px(&f, s, 20, 15), RED);
+    CHECK_EQ(shown_px(&f, s, 205, 105), GREEN);
+    CHECK_EQ(shown_px(&f, s, 305, 195), GREEN);
+    CHECK(s->last_damage.w == 320 && s->last_damage.h == 200);   /* all of it, once */
     return close_all(&f, h0, b0);
 }
 
