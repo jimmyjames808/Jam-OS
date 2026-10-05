@@ -153,6 +153,16 @@ differs from the recommendation below, this note wins:
   typed (the terminal, the search box's "run ..." row). The nine apps'
   gfx_title calls change to "Demo", "Fractal", "Jamjar", "Life", "Mines",
   "Snake", "Splash", "Sysmon", "Tetris" (with D2).
+  Cursors (owner's picks, docs/design/cursors.svg is the exact source):
+  one set in "style C": white, a thin dark outline, rounded joins, a small
+  shadow; arrow, resize left-right, up-down and both diagonals, move,
+  text bar (curved serifs), hand, and busy, which is only a ring (white with
+  a turning raspberry arc, no arrow). Every stroke-like part shows the
+  same white width. The compositor uses resize cursors on window edges
+  and corners, the hand on the top bar's islands, chips, circles and menu
+  rows, and busy from launching an app until its first window shows (at
+  most 10 s); clients ask for a shape through wp-cursor-shape-v1 (the
+  terminal and Jamjar ask for the text bar).
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
