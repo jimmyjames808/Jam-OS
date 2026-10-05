@@ -1,6 +1,7 @@
 /* Channels: writing and channel_call. A write queues a message on the
  * peer endpoint, or hands it straight to the channel_call there waiting
  * for its txid. The model and the lock order are in channel.c's header. */
+#include <jam/atomic.h>
 #include <jam/channel.h>
 #include <jam/dbghook.h>
 #include <jam/pathstat.h>
@@ -174,10 +175,10 @@ static status_t hand_over_locked(struct channel *ch, struct channel *peer, struc
          * that goes on to other work instead just delays it until the next
          * tick or steal). Our queue count is read without our lock: a stale
          * answer only changes the placement. */
-        hand_to_locked(peer, w, m, !__atomic_load_n(&ch->nqueued, __ATOMIC_RELAXED));
+        hand_to_locked(peer, w, m, !chan_nqueued(ch));
         return OK;
     }
-    w = peer->nqueued ? NULL : find_reader_locked(peer);
+    w = chan_nqueued(peer) ? NULL : find_reader_locked(peer);
     if (w && m->nbytes <= w->bytes_cap && m->nhandles <= w->handles_cap) {
         /* A plain wake: wake-affine only for a writer that blocks next and
          * said so (channel_call's request, thread_set_wake_sync). */
@@ -188,10 +189,11 @@ static status_t hand_over_locked(struct channel *ch, struct channel *peer, struc
         *must_queue = true;
         return OK;
     }
-    if (peer->nqueued >= CHANNEL_MAX_QUEUED)
+    if (chan_nqueued(peer) >= CHANNEL_MAX_QUEUED)
         return ERR_SHOULD_WAIT;
     list_add_tail(&peer->queue, &m->node);
-    *filled = ++peer->nqueued == CHANNEL_MAX_QUEUED;
+    COUNTER_ADD(&peer->nqueued, 1);
+    *filled = chan_nqueued(peer) == CHANNEL_MAX_QUEUED;
     if (w)
         wake_readers_locked(peer);   /* it didn't fit the reader: it reads it from the queue */
     kobject_signal_locked(&peer->base, 0, SIG_READABLE);
