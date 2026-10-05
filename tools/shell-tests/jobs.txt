@@ -1,0 +1,145 @@
+# Programs in the background (user/services/shell/sh_jobs.c: prog &, jobs,
+# kill %n):
+#   QEMU_INPUT=tools/shell-tests/jobs.txt tools/qemu-test.sh build/test jobs shell
+# Markers are built from $T (= x) so the text waited for never appears in
+# the typed line.
+wait 120 Jam OS shell
+wait jam>
+send T=x
+wait jam>
+
+# ---- one in the background: the prompt at once, its output, its notice -----------------
+send run utest say hello-$T-bg &
+wait 10 [1]
+wait utest: in the background (jobs lists it, kill %1 ends it)
+seen 10 hello-x-bg
+send echo after-$T-start
+wait after-x-start
+wait 10 [1] done: utest (exit 0)
+wait jam>
+# Its exit code, and the number free again.
+send run utest exit7 &
+wait 10 [1]
+send echo st$? ok-$T-started
+wait st0 ok-x-started
+wait 10 [1] done: utest (exit 7)
+wait jam>
+
+# ---- a background program outlives a foreground one, and Ctrl+C is not its -------------
+send run utest spin &
+wait 10 [1]
+wait jam>
+send run utest say fg-$T-ran
+wait fg-x-ran
+wait run: bin/utest exited with code 0
+wait jam>
+send jobs
+wait [1]
+wait running
+wait utest spin
+wait jam>
+# Ctrl+C at the prompt: only the line goes.
+type \x03
+wait ^C
+wait jam>
+# Ctrl+C on a foreground program: it is killed, the background one runs on.
+send run utest spin
+wait run: bin/utest started (Ctrl+C kills it)
+type \x03
+wait 10 ^C: killing bin/utest
+wait 10 run: bin/utest was killed
+wait jam>
+send jobs | grep "running *utest spin$" && echo ok-$T-alive
+wait ok-x-alive
+wait jam>
+# Typing still reaches the shell, never the background program.
+send echo keys-$T-shell
+wait keys-x-shell
+wait jam>
+
+# ---- kill %n, and the refusals -----------------------------------------------------------
+send kill %1
+wait 10 [1] killed: utest
+wait jam>
+send jobs | grep utest || echo ok-$T-nojobs
+wait ok-x-nojobs
+send kill %1
+wait kill: no background program %1 (jobs lists them)
+send kill %x
+wait kill: no background program %x
+send kill 999999
+wait kill: no process called "999999"
+send kill nosuchprocess
+wait kill: no process called "nosuchprocess"
+wait jam>
+send run utest say a | grep a &
+wait sh: a pipeline can't run in the background (| before &)
+send ls &
+wait sh: only a program runs in the background (& after ls, a shell command)
+send alias spinner='run utest spin'
+wait jam>
+send spinner &
+wait sh: & doesn't follow aliases (spinner)
+send &
+wait sh: a command is missing next to | && || or &
+send run &
+wait usage: run <prog|path> [args]
+send nosuchprogram &
+wait nosuchprogram: unknown command
+wait jam>
+send jobs | grep utest || echo ok-$T-norefused
+wait ok-x-norefused
+
+# ---- a program that wants the screen gets none in the background ------------------------
+send tetris &
+wait 10 [1]
+seen 10 tetris: can't borrow the screen
+send echo after-$T-tetris
+wait after-x-tetris
+wait 10 [1] done: tetris (exit 1)
+wait jam>
+
+# ---- the limit: 8 at once ----------------------------------------------------------------
+send repeat 8 'run utest spin &'
+wait 10 [8]
+wait jam>
+send run utest spin &
+wait sh: 8 programs already run in the background (the most): end one first (jobs, kill %n)
+wait jam>
+send jobs | grep -c running | grep ^8$ && echo ok-$T-eight
+wait ok-x-eight
+wait jam>
+send kill %3; kill %8
+wait [3] killed: utest
+wait [8] killed: utest
+wait jam>
+# Free numbers are taken again, lowest first.
+send run utest spin &
+wait 10 [3]
+send kill %1; kill %2; kill %3; kill %4; kill %5; kill %6; kill %7
+wait [7] killed: utest
+wait jam>
+send jobs | grep utest || echo ok-$T-allgone
+wait ok-x-allgone
+
+# ---- background programs end with their shell -------------------------------------------
+send run shell
+wait Jam OS shell
+seen run: bin/shell started
+wait jam>
+send run utest spin &
+wait 10 [1]
+wait jam>
+send run utest spin &
+wait 10 [2]
+wait jam>
+type \x03
+wait 10 ^C: killing bin/shell
+wait 10 run: bin/shell was killed
+wait jam>
+send ps | grep -c utest || echo ok-$T-ended
+wait ok-x-ended
+wait jam>
+
+send reboot -f
+wait reboot: resetting

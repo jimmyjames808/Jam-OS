@@ -265,16 +265,33 @@ static bool edit_key(struct edit *e, const struct input_key_event *ev)
     return false;
 }
 
+/* The next key for the line editor: first what was typed while the last
+ * command ran. While programs run in the background, their output is
+ * shown as it comes (over the line, which is drawn again below it). */
+static void next_key(struct input_key_event *ev, const struct edit *e)
+{
+    if (sh_typeahead(ev))
+        return;
+    while (sh_jobs_running()) {
+        if (sh_get_key(ev, now() + SH_JOBS_POLL_NS))
+            return;
+        if (sh_jobs_poll(true))
+            redraw(e);
+        sh_flush();
+    }
+    sh_get_key(ev, DEADLINE_NEVER);
+}
+
 /* Read one line into buf (NUL-terminated). */
 static void read_line(char *buf)
 {
     struct edit e = { .len = 0 };
+    sh_jobs_report();   /* the background programs that ended */
     echo(PROMPT);
     sh_flush();
     for (;;) {
         struct input_key_event ev;
-        if (!sh_typeahead(&ev))   /* first what was typed while the last command ran */
-            sh_get_key(&ev, DEADLINE_NEVER);
+        next_key(&ev, &e);
         uint16_t u = ev.usage;
         if (u == U_ENTER || u == U_KP_ENTER ||
             (!u && (ev.codepoint == '\n' || ev.codepoint == '\r'))) {

@@ -40,6 +40,13 @@ static const struct sh_cmd cmds[] = {
     C(hostname, C_INFO, "hostname", "this machine's name"),
     C(dmesg, C_INFO, "dmesg", "the whole kernel log (up to 4 MiB); pipe it: dmesg | grep usb"),
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
+    C(jobs, C_SHELL, "jobs",
+      "the programs started with & (prog &, run prog args &): number, pid, state,\n"
+      "  command. Such a program runs on while you type; it gets no keys and no\n"
+      "  screen (Ctrl+C is the foreground program's), and what it prints is shown as\n"
+      "  it comes. When it ends, the next prompt says so: [2] done: utest (exit 0).\n"
+      "  kill %2 ends it; all of them end with the shell. At most 8 at once; a\n"
+      "  pipeline, a shell command or an alias can't go in the background"),
     C(devices, C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),
     C(hda, C_SYSTEM, "hda [gain [dB] | bits [n] | jacks]",
@@ -119,9 +126,10 @@ static const struct sh_cmd cmds[] = {
     C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
     C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
     C(mem, C_SYSTEM, "mem", "physical memory from the kernel, and the shell's job"),
-    C(kill, C_SYSTEM, "kill <name>",
+    C(kill, C_SYSTEM, "kill <name> | %<n> | <pid>",
       "kill the first process with that name (see ps): a service init runs or a\n"
-      "  USB driver (hid-6.1:0); whoever supervises it starts it again"),
+      "  USB driver (hid-6.1:0); whoever supervises it starts it again.\n"
+      "  kill %2, or the pid `jobs` shows: end background program 2 (prog &)"),
     C(clear, C_SHELL, "clear", "clear the screen (also Ctrl+L)"),
     C(reboot, C_SYSTEM, "reboot [-f]",
       "restart the machine into the kernel on the stick, by kexec (no firmware);\n"
@@ -144,7 +152,8 @@ static const struct sh_cmd cmds[] = {
       "  Typing a program's name does the same. Exported variables are its environment;\n"
       "  in a pipe its printf output goes down the pipe: run utest | grep passed.\n"
       "  It gets what its list asks for (services, mounts) and its terminal. A program\n"
-      "  on /data runs once `allow` has marked it, and only as the file was then"),
+      "  on /data runs once `allow` has marked it, and only as the file was then.\n"
+      "  run prog &: in the background (see jobs)"),
     C(allow, C_SYSTEM, "allow <file> | -l | -r <name>",
       "let a program on /data run: shows what it asks for (services, mounts) and\n"
       "  asks y/n; y keeps its hash and list in /data/etc/allow. A changed file is\n"

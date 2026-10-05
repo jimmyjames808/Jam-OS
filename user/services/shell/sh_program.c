@@ -20,7 +20,11 @@
  * program with no list gets the terminal only. Ctrl+C reaches the shell
  * even while the program holds the keys (the console sees to that) and
  * kills it. When it ends its job is killed: anything it started goes with
- * it, so its console channel never outlives it in the foreground. */
+ * it, so its console channel never outlives it in the foreground.
+ *
+ * A program started in the background (`prog &`) gets no terminal: its
+ * printf goes down an output channel the shell copies to the screen
+ * (sh_jobs.c, which keeps it until it ends). */
 #include <idl/console.h>
 #include <wants.h>
 #include "sh.h"
@@ -140,10 +144,10 @@ static rights_t root_rights(uint32_t want)
 }
 
 /* The handles it starts with (see the top), each with the rights its copy
- * gets in xr; *out_r: its stdout's read end when we are in a pipe. The
- * number of them. */
-static unsigned program_handles(const struct wants *w, struct spawn_handle *x, rights_t *xr,
-                                handle_t *out_r)
+ * gets in xr; *out_r: its stdout's read end when we are in a pipe or it
+ * runs in the background (bg: no terminal then). The number of them. */
+static unsigned program_handles(const struct wants *w, bool bg, struct spawn_handle *x,
+                                rights_t *xr, handle_t *out_r)
 {
     unsigned nx = 0;
     handle_t h, out_w;
@@ -151,12 +155,13 @@ static unsigned program_handles(const struct wants *w, struct spawn_handle *x, r
         xr[nx] = root_rights(w->rights);
         x[nx++] = (struct spawn_handle){ SR_RESOURCE, h };
     }
-    if (console_new_client_until(sh_console(), now() + 5 * NS_PER_S, 2, &h) == OK) {
+    if (!bg && console_new_client_until(sh_console(), now() + 5 * NS_PER_S, 2, &h) == OK) {
         xr[nx] = RIGHT_SAME;
         x[nx++] = (struct spawn_handle){ SR_CONSOLE, h };
     }
-    /* In a pipe: its printf goes down a channel to us (libos printf.c). */
-    if (sh_piped() && jam_channel_create(out_r, &out_w) == OK) {
+    /* In a pipe or the background: its printf goes down a channel to us
+     * (libos printf.c). */
+    if ((bg || sh_piped()) && jam_channel_create(out_r, &out_w) == OK) {
         xr[nx] = RIGHT_SAME;
         x[nx++] = (struct spawn_handle){ SR_STDOUT, out_w };
     }
@@ -192,6 +197,7 @@ static status_t wait_program(handle_t proc, handle_t job, handle_t out_r, const 
     while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
         if (out_r)
             drain(out_r, false);
+        sh_jobs_poll(false);
         if (sh_interrupted() && !killed) {
             sh_tty("^C: killing %s\n", path);
             sh_flush();
@@ -255,9 +261,10 @@ struct started {
     uint64_t t0;                  /* when it started */
 };
 
-/* argv[0] found, its list read, a job made, its handles and spawned, into
- * *s. 0, or the status to give back (said). */
-static int start_program(int argc, char **argv, struct started *s)
+/* argv[0] found, its list read, a job made, its handles and spawned (bg:
+ * to run in the background), into *s. 0, or the status to give back
+ * (said). */
+static int start_program(int argc, char **argv, bool bg, struct started *s)
 {
     if (!find_program(argv[0], s->path, sizeof(s->path)))
         return 127;
@@ -280,7 +287,7 @@ static int start_program(int argc, char **argv, struct started *s)
     grants[w.n] = NULL;
     struct spawn_handle x[RUN_HANDLES];
     rights_t xr[RUN_HANDLES];
-    unsigned nx = program_handles(&w, x, xr, &s->out_r);
+    unsigned nx = program_handles(&w, bg, x, xr, &s->out_r);
     char **env = sh_make_env();
     const char *args[20];
     int n = 0;
@@ -314,7 +321,7 @@ static int start_program(int argc, char **argv, struct started *s)
 static int run_program(int argc, char **argv)
 {
     struct started s;
-    int code = start_program(argc, argv, &s);
+    int code = start_program(argc, argv, false, &s);
     if (code)
         return code;
     /* What it prints goes to the log (unless piped): shown while it runs. */
@@ -337,6 +344,28 @@ int sh_run_program(int argc, char **argv)
     return run_program(argc, argv);
 }
 
+int sh_start_background(int argc, char **argv)
+{
+    if (sh_jobs_full()) {
+        sh_tty("sh: %d programs already run in the background (the most): end one first "
+               "(jobs, kill %%n)\n", SH_MAX_JOBS);
+        return 1;
+    }
+    if (sh_piped()) {
+        sh_tty("sh: a program in the background can't write into a pipe\n");
+        return 2;
+    }
+    struct started s;
+    int code = start_program(argc, argv, true, &s);
+    if (code)
+        return code;
+    unsigned n = sh_jobs_add(s.path, argc, argv, s.proc, s.job, s.out_r);
+    const struct sh_job *j = sh_job_at(n - 1);
+    sh_tty("[%u] %lu %s: in the background (jobs lists it, kill %%%u ends it)\n", n,
+           (unsigned long)(j ? j->pid : 0), sh_basename(s.path), n);
+    return 0;
+}
+
 /* ---- helpers: a program that does one job for a command ----------------------------- */
 
 #define STOP_GRACE (3 * NS_PER_S)   /* a stopped helper's time to wind down */
@@ -353,6 +382,7 @@ static status_t wait_helper(handle_t proc, handle_t job, handle_t out_r, handle_
     sh_put_fn lines = body_r ? tty_put : sh_put;
     while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
         sh_copy_output(out_r, true, lines);
+        sh_jobs_poll(false);
         if (body_r)
             sh_copy_output(body_r, true, sh_put);
         if (sh_interrupted() && kill_at == DEADLINE_NEVER) {

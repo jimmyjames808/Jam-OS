@@ -1,6 +1,8 @@
-/* Running a line: its lists (; && ||), each list's pipeline, each stage's
- * NAME=value words and alias, and then the command: one in the table,
- * else a program in /boot/bin. */
+/* Running a line: its lists (; && || &), each list's pipeline, each
+ * stage's NAME=value words and alias, and then the command: one in the
+ * table, else a program in /boot/bin. A command before a single & is a
+ * program started in the background (sh_jobs.c): a program's name or
+ * `run`; a shell command, an alias or a pipeline before & is refused. */
 #include "sh_core.h"
 
 #define MAX_DEPTH 8   /* aliases in aliases, watch 'a | b' in a line, ... */
@@ -15,8 +17,9 @@ int sh_status(void)
     return last_status;
 }
 
-/* Not in the table: /boot/bin/<name> if there is one. */
-static int exec_unknown(int argc, char **argv)
+/* Not in the table: /boot/bin/<name> if there is one (bg: started in the
+ * background). */
+static int exec_unknown(int argc, char **argv, bool bg)
 {
     char path[SH_PATH_MAX];
     bool dir;
@@ -24,16 +27,26 @@ static int exec_unknown(int argc, char **argv)
     if (!strchr(argv[0], '/')) {
         snprintf(path, sizeof(path), "/boot/bin/%s", argv[0]);
         if (sh_stat(path, &dir, &n) == OK && !dir)
-            return sh_run_program(argc, argv);
+            return bg ? sh_start_background(argc, argv) : sh_run_program(argc, argv);
     }
     sh_tty("%s: unknown command (try help)\n", argv[0]);
     return 127;
 }
 
-static int exec_argv(int argc, char **argv)
+/* The command argv; bg: before a &, so only a program (its name, or
+ * `run prog`), started in the background. */
+static int exec_argv(int argc, char **argv, bool bg)
 {
     const struct sh_cmd *c = sh_find_cmd(argv[0]);
-    return c ? c->fn(argc, argv) : exec_unknown(argc, argv);
+    if (!bg)
+        return c ? c->fn(argc, argv) : exec_unknown(argc, argv, false);
+    if (!c)
+        return exec_unknown(argc, argv, true);
+    if (c->fn == shc_run)
+        return argc > 1 ? sh_start_background(argc - 1, argv + 1) : c->fn(argc, argv);
+    sh_tty("sh: only a program runs in the background (& after %s, a shell command): "
+           "e.g. run utest &\n", argv[0]);
+    return 2;
 }
 
 /* 'word' with ' as '\'' : re-quoted, for an alias's arguments. */
@@ -108,7 +121,7 @@ static void restore_vars(struct saved_var *saved, int nsaved)
     }
 }
 
-static int exec_simple(const char *text)
+static int exec_simple(const char *text, bool bg)
 {
     struct sh_words w;
     if (!sh_split_words(text, &w))
@@ -121,10 +134,15 @@ static int exec_simple(const char *text)
     int na = assign_leading(&w, saved, &nsaved);
     if (na < w.argc) {
         const char *a = w.quoted[na] ? NULL : sh_alias_of(w.argv[na]);
-        if (a && depth < MAX_DEPTH)
+        if (a && bg) {
+            sh_tty("sh: & doesn't follow aliases (%s): type the program's name\n",
+                   w.argv[na]);
+            st = 2;
+        } else if (a && depth < MAX_DEPTH) {
             st = exec_alias(a, w.argc - na, w.argv + na);
-        else
-            st = exec_argv(w.argc - na, w.argv + na);
+        } else {
+            st = exec_argv(w.argc - na, w.argv + na, bg);
+        }
     }
     restore_vars(saved, nsaved);
     sh_words_free(&w);
@@ -153,7 +171,7 @@ static int exec_pipeline(struct sh_seg *s, int n)
             io.have_in = true;
         }
         sh_stdio_set(io);
-        st = exec_simple(s[k].text);
+        st = exec_simple(s[k].text, false);
         if (mine && mine->full)
             sh_tty("sh: pipe full: output past %u MiB dropped\n", SH_PIPE_MAX >> 20);
     }
@@ -161,6 +179,15 @@ static int exec_pipeline(struct sh_seg *s, int n)
     free(bufs[1].p);
     sh_stdio_set(outer);
     return st;
+}
+
+/* Every stage of a pipeline would have to run at once to put one in the
+ * background, and the shell runs them in turn. */
+static int refuse_bg_pipe(void)
+{
+    sh_tty("sh: a pipeline can't run in the background (| before &): start one program "
+           "with &\n");
+    return 2;
 }
 
 static int exec_line(const char *line)
@@ -181,10 +208,12 @@ static int exec_line(const char *line)
         int j = i;
         while (segs[j].op == SH_OP_PIPE && j + 1 < n)
             j++;
-        bool run = prev_op == SH_OP_SEMI || (prev_op == SH_OP_AND && st == 0) ||
-                   (prev_op == SH_OP_OR && st != 0);
+        bool run = prev_op == SH_OP_SEMI || prev_op == SH_OP_BG ||
+                   (prev_op == SH_OP_AND && st == 0) || (prev_op == SH_OP_OR && st != 0);
         if (run) {
-            st = exec_pipeline(segs + i, j - i + 1);
+            st = segs[j].op != SH_OP_BG ? exec_pipeline(segs + i, j - i + 1)
+                 : j == i               ? exec_simple(segs[i].text, true)
+                                        : refuse_bg_pipe();
             last_status = st;
         }
         prev_op = segs[j].op;
@@ -199,7 +228,7 @@ int sh_run_words(int argc, char **argv)
 {
     if (argc == 1)
         return exec_line(argv[0]);
-    return exec_argv(argc, argv);
+    return exec_argv(argc, argv, false);
 }
 
 void sh_line(char *line)

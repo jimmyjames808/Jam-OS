@@ -1,4 +1,4 @@
-/* Parsing a line: cutting it at ; && || | (sh_segments), and one simple
+/* Parsing a line: cutting it at ; && || | & (sh_segments), and one simple
  * command's text into words with quotes, escapes and $ references
  * (sh_split_words). */
 #include "sh_core.h"
@@ -149,7 +149,8 @@ bool sh_split_words(const char *s, struct sh_words *w)
 
 /* ---- segments: ; && || | --------------------------------------------------------------- */
 
-/* An empty command next to | && || is a mistake; next to ; it's fine. */
+/* An empty command next to | && || or before & is a mistake; next to ;
+ * (or after &) it's fine. */
 static bool missing_command(const struct sh_seg *segs, int n)
 {
     for (int i = 0; i < n; i++) {
@@ -158,11 +159,11 @@ static bool missing_command(const struct sh_seg *segs, int n)
             t++;
         bool empty = !*t;
         bool needs = segs[i].op == SH_OP_PIPE || segs[i].op == SH_OP_AND ||
-                     segs[i].op == SH_OP_OR ||
+                     segs[i].op == SH_OP_OR || segs[i].op == SH_OP_BG ||
                      (i > 0 && (segs[i - 1].op == SH_OP_PIPE || segs[i - 1].op == SH_OP_AND ||
                                 segs[i - 1].op == SH_OP_OR));
         if (empty && needs) {
-            sh_tty("sh: a command is missing next to | && or ||\n");
+            sh_tty("sh: a command is missing next to | && || or &\n");
             return true;
         }
     }
@@ -206,12 +207,8 @@ int sh_segments(char *line, struct sh_seg *segs)
             *p = c = '\0';
         int op = !c ? SH_OP_END : c == ';' ? SH_OP_SEMI
                : c == '|' ? (p[1] == '|' ? SH_OP_OR : SH_OP_PIPE)
-               : c == '&' ? (p[1] == '&' ? SH_OP_AND : -1) : -2;
+               : c == '&' ? (p[1] == '&' ? SH_OP_AND : SH_OP_BG) : -1;
         if (op == -1) {
-            sh_tty("sh: & (running in the background) is not supported\n");
-            return -1;
-        }
-        if (op == -2) {
             word_start = c == ' ' || c == '\t';
             p++;
             continue;

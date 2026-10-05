@@ -219,8 +219,13 @@ bool sh_sleep(uint64_t ns)
 {
     uint64_t deadline = now() + ns;
     sh_flush();
-    while (!interrupted && now() < deadline)
-        take_key(deadline);
+    for (uint64_t t = now(); !interrupted && t < deadline; t = now()) {
+        /* Background programs' output meanwhile (sh_jobs.c). */
+        bool bg = sh_jobs_running();
+        take_key(bg && deadline - t > SH_JOBS_POLL_NS ? t + SH_JOBS_POLL_NS : deadline);
+        if (bg && sh_jobs_poll(false))
+            sh_flush();
+    }
     return !interrupted;
 }
 

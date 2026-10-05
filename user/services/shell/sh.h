@@ -6,6 +6,8 @@
  *   words     "double quotes" ($ expanded), 'single quotes', \escapes,
  *             $NAME ${NAME} $? (last status), # comments
  *   lists     a ; b      a && b      a || b
+ *   background  prog &  (a program started with & runs on while the next
+ *             line is read: sh_jobs.c; `jobs` lists them, `kill %n` ends one)
  *   pipes     a | b | c  (every stage is a builtin run in turn: a's output
  *             is kept in memory and becomes b's input; `run prog` in a pipe
  *             gets a stdout channel, so programs can be piped too)
@@ -29,6 +31,7 @@
  *   sh_vars.c      variables and aliases
  *   sh_handles.c   the handles init gives the shell (root, devmgr, ...)
  *   sh_program.c   starting programs (run, utest, ...)
+ *   sh_jobs.c      programs in the background (prog &)
  *   sh_allow.c     programs from /data: the owner's approvals
  *   sh_kernel.c    the kernel's debug commands and its log
  *   sh_vfs.c       paths and files
@@ -161,6 +164,11 @@ const char *sh_boot_note(void);
  * for (<wants.h>) and its terminal (a PROGRAM-level console channel); its
  * job is killed when it ends. */
 int sh_run_program(int argc, char **argv);
+/* The same in the background (`prog &`, sh_jobs.c): started and given a
+ * number at once, with no terminal (no keys, no screen) and its printf
+ * output copied to the screen by the shell. 0 if it started; else a
+ * status as sh_run_program's (said), 1 when SH_MAX_JOBS already run. */
+int sh_start_background(int argc, char **argv);
 /* A helper: the boot-image program at path (a bootfs name) doing one job
  * for a command, started with its list, the extras x (moved; x has room
  * for 2 more after them), an output channel whose lines the shell prints
@@ -191,6 +199,50 @@ bool sh_copy_output(handle_t out, bool past_ctrl_c, sh_put_fn put);
  * sh_run_program does (its list asks for what it tests), then show its
  * result line from the kernel log; its status. */
 int sh_run_test_program(int argc, char **argv);
+
+/* ---- background programs (sh_jobs.c) ------------------------------------------------ */
+
+#define SH_MAX_JOBS     8                     /* programs running with & at once */
+#define SH_JOBS_POLL_NS (50 * NS_PER_MS)      /* their output shown at most this late */
+
+/* One background program, number n (`%n`). */
+struct sh_job {
+    unsigned n;                    /* its number, 1..SH_MAX_JOBS; 0: a free slot */
+    char     name[32];             /* the program's name (bin/utest: utest) */
+    char     args[64];             /* its arguments as typed (cut short) */
+    uint64_t pid;                  /* its process's id (ps's PID) */
+    handle_t proc, job, out_r;     /* its process, job and output; 0 once it ended */
+    bool     ended;                /* it ended, and its notice isn't printed yet */
+    bool     killed;               /* once ended: it was killed */
+    int64_t  code;                 /* once ended: its exit code */
+};
+
+/* No number is free: every one runs, or ended without its notice yet. */
+bool     sh_jobs_full(void);
+/* A background program still runs. */
+bool     sh_jobs_running(void);
+/* Slot i (< SH_MAX_JOBS), NULL if free: `jobs` lists them in number order. */
+const struct sh_job *sh_job_at(unsigned i);
+/* A program sh_start_background started: its handles become the table's.
+ * Its number, or 0 if full (check sh_jobs_full first). */
+unsigned sh_jobs_add(const char *path, int argc, char **argv, handle_t proc, handle_t job,
+                     handle_t out_r);
+/* One round of each program's output to the screen, and the end of those
+ * that ended. prompt: the shell waits at its prompt, so output goes over
+ * the prompt's line (true: something was written; redraw the line). */
+bool     sh_jobs_poll(bool prompt);
+/* Before a prompt: the notice of every program that ended ("[2] done:
+ * tetris (exit 0)"), its number free again. */
+void     sh_jobs_report(void);
+/* The notice of j's end; forget an ended one (its number free again). */
+void     sh_job_say_end(const struct sh_job *j);
+void     sh_job_forget(unsigned n);
+/* The number of the running program with this pid, or 0. */
+unsigned sh_job_by_pid(uint64_t pid);
+/* End background program n (its job killed, waited for, its output
+ * copied). ERR_NOT_FOUND: no such number; ERR_BAD_STATE: it had already
+ * ended; else the kill's or the wait's error. */
+status_t sh_job_kill(unsigned n);
 
 /* ---- names (sh_lookup.c) ------------------------------------------------------------- */
 
@@ -376,6 +428,7 @@ SH_CMD(head); SH_CMD(tail); SH_CMD(grep); SH_CMD(sort); SH_CMD(uniq); SH_CMD(seq
 /* shell */
 SH_CMD(help); SH_CMD(history); SH_CMD(clear); SH_CMD(echo); SH_CMD(set); SH_CMD(unset);
 SH_CMD(export); SH_CMD(env); SH_CMD(alias); SH_CMD(unalias); SH_CMD(type); SH_CMD(time);
+SH_CMD(jobs);
 SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 /* system */
 SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(play); SH_CMD(vol);
