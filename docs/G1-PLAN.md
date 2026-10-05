@@ -156,7 +156,7 @@ differs from the recommendation below, this note wins:
   Cursors (owner's picks, docs/design/cursors.svg is the exact source):
   one set in "style C": white, a thin dark outline, rounded joins, a small
   shadow; arrow, resize left-right, up-down and both diagonals, move,
-  text bar (flat serifs), hand, and busy, which is only a ring (white with
+  text bar (curved serifs), hand, and busy, which is only a ring (white with
   a turning raspberry arc, no arrow). Every stroke-like part shows the
   same white width. The compositor uses resize cursors on window edges
   and corners, the hand on the top bar's islands, chips, circles and menu
