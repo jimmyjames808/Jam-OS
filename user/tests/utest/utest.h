@@ -440,6 +440,15 @@ bool t_jwl_fuzz_conn(void);
  * over real channels (comptest.h). */
 bool t_comp_globals(void);
 bool t_comp_surface(void);
+bool t_comp_bad_requests(void);
+bool t_comp_caps(void);
+bool t_comp_connections(void);
+bool t_comp_client_crash(void);
+bool t_comp_never_reads(void);
+bool t_comp_regions(void);
+/* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
+ * a pool, a buffer and a surface, then crashes. */
+int  comp_child(int argc, char **argv);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

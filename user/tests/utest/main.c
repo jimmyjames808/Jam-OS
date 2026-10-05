@@ -888,6 +888,12 @@ static const struct {
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "comp_globals", t_comp_globals },
     { "comp_surface", t_comp_surface },
+    { "comp_bad_requests", t_comp_bad_requests },
+    { "comp_caps", t_comp_caps },
+    { "comp_connections", t_comp_connections },
+    { "comp_client_crash", t_comp_client_crash },
+    { "comp_never_reads", t_comp_never_reads },
+    { "comp_regions", t_comp_regions },
 };
 
 int main(int argc, char **argv)
