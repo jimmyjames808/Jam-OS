@@ -104,6 +104,13 @@ differs from the recommendation below, this note wins:
   the screen dots with "+"; centre the current screen's windows (the
   focused one tinted raspberry, minimised ones dimmed with an apricot
   dot); right the floating/tiling icon, network, volume and the clock.
+  The app menu is a search box (owner's pick): tapping Super alone (pressed
+  and released with no other key) or clicking "Jam OS" opens it centred
+  near the top, frosted; empty, it lists every app (most recently used
+  first) so a mouse user can just click; typing filters, Enter runs the
+  top hit, arrows move, Esc closes; its last row offers to run what was
+  typed as a command in a new terminal. Apps show as letter tiles in jam
+  colours until there are icons.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
