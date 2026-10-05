@@ -121,6 +121,15 @@ differs from the recommendation below, this note wins:
   Alt is held cancels. A quick Alt+Tab tap goes straight to the previous
   window; the list appears only if Alt is held past about 120 ms, so a
   tap doesn't flash it.
+  Animations (owner's picks): a window opens by growing from 92% while
+  fading in, and closes the reverse (about 150 ms, ease-out); minimising
+  shrinks it into its chip in the top bar (about 260 ms) and restoring
+  reverses that; switching screens slides the windows sideways (about
+  260 ms) while the wallpaper and the top bar stay put, the screen dots
+  following; going full screen and back slides the same way. An
+  animation that is interrupted (another key, a second click) jumps to
+  its end. Animations run at the compositor's paint rate and only damage
+  the boxes they touch.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
