@@ -26,12 +26,6 @@ static struct vtd_ctl ctls[VTD_MAX_UNITS];   /* by the DMAR's unit number */
 static struct vtd_fn *fns;                   /* one per PCI function; written at boot */
 static uint32_t nfns;
 
-/* What <jam/iommu.h> hands out: a domain of the function it was made for. */
-struct iommu_domain {
-    struct vtd_dom *dom;   /* the domain itself */
-    struct vtd_fn  *fn;    /* the function it is for (fixed) */
-};
-
 /* ---- the entries (pure) ------------------------------------------------------------------- */
 
 struct vtd_ctx vtd_root_entry(uint64_t ctx_table)
@@ -40,26 +34,13 @@ struct vtd_ctx vtd_root_entry(uint64_t ctx_table)
     return (struct vtd_ctx){ .lo = (ctx_table & VTD_ROOT_CTP) | VTD_ROOT_P, .hi = 0 };
 }
 
-struct vtd_ctx vtd_ctx_entry(uint16_t did, bool pass, uint64_t table, unsigned aw, bool fpd)
+struct vtd_ctx vtd_ctx_entry(uint16_t did, uint64_t table, unsigned aw, bool fpd)
 {
-    /* 9.3: P 0, FPD 1, TT 3:2, SSPTPTR 63:12 (ignored with TT = 10b: 0);
-     * AW 66:64, DID 87:72, the rest reserved (0). */
-    uint64_t lo = VTD_CTX_P | (fpd ? VTD_CTX_FPD : 0) |
-                  (pass ? VTD_CTX_TT_PT : VTD_CTX_TT_SS) << VTD_CTX_TT_SHIFT;
-    if (!pass)
-        lo |= table & VTD_CTX_SSPTPTR;
+    /* 9.3: P 0, FPD 1, TT 3:2 (00: second stage), SSPTPTR 63:12; AW 66:64,
+     * DID 87:72, the rest reserved (0). */
+    uint64_t lo = VTD_CTX_P | (fpd ? VTD_CTX_FPD : 0) | VTD_CTX_TT_SS << VTD_CTX_TT_SHIFT |
+                  (table & VTD_CTX_SSPTPTR);
     return (struct vtd_ctx){ lo, (uint64_t)(aw & 7) | (uint64_t)did << VTD_CTX_DID_SHIFT };
-}
-
-unsigned vtd_pass_aw(uint64_t cap)
-{
-    /* 9.3: with TT = 10b, AW is the largest AGAW the unit supports; AW's
-     * encoding (1 = 39-bit, 2 = 48, 3 = 57) is SAGAW's bit number. */
-    uint64_t sagaw = VTD_CAP_SAGAW(cap);
-    for (unsigned b = 3; b >= 1; b--)
-        if (sagaw & (1u << b))
-            return b;
-    return 0;
 }
 
 /* ---- units and functions ------------------------------------------------------------------ */
@@ -194,12 +175,10 @@ static struct vtd_ctl *ctl_of(const struct vtd_dom *d)
     return &ctls[d->ud.unit->index];
 }
 
-status_t vtd_dom_new(struct vtd_ctl *ctl, enum vtd_dom_kind kind, struct job *job,
-                     uint32_t max_tables, const char *what, struct vtd_dom **out)
+status_t vtd_dom_new(struct vtd_ctl *ctl, struct job *job, uint32_t max_tables, const char *what,
+                     struct vtd_dom **out)
 {
     struct vtd_unit *u = ctl->unit;
-    if (kind == VTD_DOM_PASS && (!VTD_ECAP_PT(u->ecap) || !vtd_pass_aw(u->cap)))
-        return ERR_NOT_SUPPORTED;
     struct vtd_dom *d = kzalloc(sizeof(*d));
     if (!d)
         return ERR_NO_MEMORY;
@@ -209,19 +188,16 @@ status_t vtd_dom_new(struct vtd_ctl *ctl, enum vtd_dom_kind kind, struct job *jo
         return ERR_NO_RESOURCES;
     }
     d->ud = (struct vtd_unit_domain){ .unit = u, .did = did };
-    d->kind = kind;
     d->what = what;
     mutex_init(&d->lock, "vtd domain");
-    if (kind == VTD_DOM_TABLE) {
-        struct vtd_pt_geom g;
-        status_t st = vtd_unit_pt_geom(u, &g);
-        if (st == OK)
-            st = vtd_pt_init(&d->pt, &g, &vtd_unit_pt_ops, &d->ud, job, max_tables);
-        if (st != OK) {
-            did_put(ctl, did);   /* never named by an entry: nothing cached */
-            kfree(d);
-            return st == ERR_NO_MEMORY ? st : ERR_NOT_SUPPORTED;
-        }
+    struct vtd_pt_geom g;
+    status_t st = vtd_unit_pt_geom(u, &g);
+    if (st == OK)
+        st = vtd_pt_init(&d->pt, &g, &vtd_unit_pt_ops, &d->ud, job, max_tables);
+    if (st != OK) {
+        did_put(ctl, did);   /* never named by an entry: nothing cached */
+        kfree(d);
+        return st == ERR_NO_MEMORY ? st : ERR_NOT_SUPPORTED;
     }
     *out = d;
     return OK;
@@ -229,13 +205,12 @@ status_t vtd_dom_new(struct vtd_ctl *ctl, enum vtd_dom_kind kind, struct job *jo
 
 status_t vtd_dom_free(struct vtd_dom *d)
 {
-    if (d->users || (d->kind == VTD_DOM_TABLE && d->pt.pending))
+    if (d->users || d->pt.pending)
         return ERR_BAD_STATE;
     status_t st = vtd_did_free(ctl_of(d), d->ud.did);
     if (st != OK)
         return st;
-    if (d->kind == VTD_DOM_TABLE)
-        (void)vtd_pt_destroy(&d->pt);   /* nothing pending (checked): OK */
+    (void)vtd_pt_destroy(&d->pt);   /* nothing pending (checked): OK */
     kfree(d);
     return OK;
 }
@@ -270,10 +245,8 @@ static status_t finish(struct vtd_dom *d, struct vtd_pt_gather *g)
     return st;
 }
 
-static status_t check_pages(const struct vtd_dom *d, const uint64_t *pages, size_t n)
+static status_t check_pages(const uint64_t *pages, size_t n)
 {
-    if (d->kind != VTD_DOM_TABLE)
-        return ERR_NOT_SUPPORTED;
     if (!n)
         return ERR_INVALID_ARGS;
     for (size_t i = 0; i < n; i++)
@@ -284,7 +257,7 @@ static status_t check_pages(const struct vtd_dom *d, const uint64_t *pages, size
 
 status_t vtd_dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n)
 {
-    status_t st = check_pages(d, pages, n);
+    status_t st = check_pages(pages, n);
     if (st != OK)
         return st;
     mutex_lock(&d->lock);
@@ -313,8 +286,6 @@ status_t vtd_dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n)
 
 status_t vtd_dom_map_range(struct vtd_dom *d, uint64_t pa, uint64_t pages)
 {
-    if (d->kind != VTD_DOM_TABLE)
-        return ERR_NOT_SUPPORTED;
     mutex_lock(&d->lock);
     struct vtd_pt_gather g;
     vtd_pt_gather_init(&g);
@@ -326,7 +297,7 @@ status_t vtd_dom_map_range(struct vtd_dom *d, uint64_t pa, uint64_t pages)
 
 status_t vtd_dom_unmap(struct vtd_dom *d, const uint64_t *pages, size_t n)
 {
-    status_t st = check_pages(d, pages, n);
+    status_t st = check_pages(pages, n);
     if (st != OK)
         return st;
     mutex_lock(&d->lock);
@@ -393,10 +364,7 @@ static void write_entry(struct vtd_ctx *e, struct vtd_ctx v)
 
 struct vtd_ctx vtd_fn_entry(const struct vtd_fn *f, const struct vtd_dom *d)
 {
-    const struct vtd_unit *u = f->ctl->unit;
-    bool pass = d->kind == VTD_DOM_PASS;
-    unsigned aw = pass ? vtd_pass_aw(u->cap) : vtd_pt_aw(&d->pt);
-    return vtd_ctx_entry(d->ud.did, pass, pass ? 0 : vtd_pt_root(&d->pt), aw, f->muted);
+    return vtd_ctx_entry(d->ud.did, vtd_pt_root(&d->pt), vtd_pt_aw(&d->pt), f->muted);
 }
 
 struct vtd_ctx vtd_fn_read(const struct vtd_fn *f)
@@ -534,39 +502,23 @@ bool iommu_translating(void)
     return false;
 }
 
-status_t iommu_device_driven(struct pci_dev *dev)
-{
-    struct vtd_fn *f = vtd_fn_of(dev);
-    if (!f || !f->ctl->pass)
-        return OK;
-    mutex_lock(&f->ctl->lock);
-    status_t st = OK;
-    if (f->cur != f->ctl->pass) {
-        f->muted = false;
-        f->dma_faults = 0;
-        st = vtd_fn_switch_locked(f, f->ctl->pass);
-    }
-    mutex_unlock(&f->ctl->lock);
-    return st;
-}
-
-/* The domain cap for one driver's domain: 512 table pages (docs/M11-PLAN.md).
- * A leaf table maps 2 MiB of IOVA = physical addresses, so that is up to
- * 1 GiB of pins dense within 2 MiB blocks, but only ~500 pages spread one
- * per block (review finding 6, design question C). */
-#define DRIVER_MAX_TABLES 512
-
 status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_domain **out)
 {
     struct vtd_fn *f = vtd_fn_of(dev);
     if (!f)
         return ERR_NOT_SUPPORTED;
+    if (f->shared) {
+        kprintf("vtd: unit %u: no domain for %02x:%02x.%x: its requester id is shared with "
+                "other functions (behind a PCIe-to-PCI or PCI bridge)\n", f->ctl->unit->index,
+                f->sid >> 8, (f->sid >> 3) & 0x1f, f->sid & 7);
+        return ERR_ACCESS_DENIED;
+    }
     struct iommu_domain *id = kzalloc(sizeof(*id));
     if (!id)
         return ERR_NO_MEMORY;
     mutex_lock(&f->ctl->lock);
     struct vtd_dom *d = NULL;
-    status_t st = vtd_dom_new(f->ctl, VTD_DOM_TABLE, job, DRIVER_MAX_TABLES, "driver", &d);
+    status_t st = vtd_dom_new(f->ctl, job, VTD_DRIVER_MAX_TABLES, "driver", &d);
     mutex_unlock(&f->ctl->lock);
     if (st == OK) {
         st = vtd_boot_map_rmrrs(f, d);   /* the function keeps its RMRRs in every domain */

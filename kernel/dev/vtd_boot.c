@@ -7,10 +7,9 @@
  *     report them so; a table that doesn't is caught here).
  *   - After the units are started (iommu_boot), per unit: which PCI
  *     functions it covers (its DRHD scopes, or INCLUDE_PCI_ALL for the
- *     rest of its segment, 8.3), its tables: the blocking domain, the
- *     pass-through domain (TT = 10b where ECAP.PT, else an identity map of
- *     all RAM), a boot domain with its RMRRs for each function an RMRR
- *     names (3.16), every covered function's context entry naming its
+ *     rest of its segment, 8.3), its tables: the blocking domain, a boot
+ *     domain with its RMRRs for each function an RMRR names (3.16), every
+ *     covered function's context entry naming its
  *     home; then the handover (vtd_boot_handover): Set Root Table Pointer
  *     and its invalidations (6.6), translation on, protected memory off.
  *     Translation found on (the firmware's DMA protection, or a kexec'd
@@ -27,8 +26,8 @@
  *     taken (other CPUs may be halted holding any).
  *
  * A function a driver holds a dma_cap for gets that cap's own domain
- * (kernel/object/dma_cap.c): everything else stays blocked. The
- * pass-through domain is built for the tests (iommu_device_driven). */
+ * (kernel/object/dma_cap.c): everything else stays blocked. No function
+ * is ever given pass-through (TT = 10b) or an identity map of RAM. */
 #include <jam/acpi.h>
 #include <jam/boot.h>
 #include <jam/cmdline.h>
@@ -253,7 +252,7 @@ status_t vtd_boot_map_rmrrs(const struct vtd_fn *f, struct vtd_dom *d)
     return OK;
 }
 
-/* Table pages for `pages` scattered 4 KiB pages at most, with room. */
+/* Table pages for an RMRR boot domain of `pages` pages, with room. */
 static uint32_t tables_for(uint64_t pages)
 {
     uint64_t t = pages / 512 + pages / (512 * 512) + 16;
@@ -278,7 +277,7 @@ static struct vtd_dom *home_of(struct vtd_ctl *ctl, struct vtd_fn *f)
     if (!pages)
         return ctl->blocking;
     struct vtd_dom *d;
-    status_t st = vtd_dom_new(ctl, VTD_DOM_TABLE, NULL, tables_for(pages), "boot (RMRR)", &d);
+    status_t st = vtd_dom_new(ctl, NULL, tables_for(pages), "boot (RMRR)", &d);
     if (st == OK && (st = vtd_boot_map_rmrrs(f, d)) != OK)
         (void)vtd_dom_free(d);
     if (st != OK) {
@@ -292,43 +291,9 @@ static struct vtd_dom *home_of(struct vtd_ctl *ctl, struct vtd_fn *f)
 
 /* ---- the unit's tables ------------------------------------------------------------------- */
 
-/* Without ECAP.PT: a domain mapping every page of RAM (and the unit's
- * RMRRs) at its own address, for the functions with a driver. */
-static status_t make_identity(struct vtd_ctl *ctl)
-{
-    uint64_t max = pmm_max_pfn();
-    struct vtd_dom *d = NULL;
-    status_t st = vtd_dom_new(ctl, VTD_DOM_TABLE, NULL, tables_for(max), "identity (all RAM)", &d);
-    for (uint64_t pfn = 1; pfn < max && st == OK;) {
-        uint64_t end = pfn;
-        while (end < max && pmm_range_has_ram(end << PAGE_SHIFT, PAGE_SIZE))
-            end++;
-        if (end > pfn)
-            st = vtd_dom_map_range(d, pfn << PAGE_SHIFT, end - pfn);
-        pfn = end + 1;
-    }
-    const struct dmar_info *info = vtd_dmar_info();
-    uint16_t seg = info->units[ctl->unit->index].segment;
-    for (uint32_t i = 0; i < info->nrmrrs && st == OK; i++) {
-        uint64_t pages;
-        if (info->rmrrs[i].segment == seg && rmrr_sane(&info->rmrrs[i], &pages))
-            st = vtd_dom_map_range(d, info->rmrrs[i].base, pages);
-    }
-    if (st == OK)
-        ctl->pass = d;
-    else if (d)
-        (void)vtd_dom_free(d);
-    return st;
-}
-
 static status_t build_unit(struct vtd_ctl *ctl)
 {
-    status_t st = vtd_dom_new(ctl, VTD_DOM_TABLE, NULL, 1, "blocking", &ctl->blocking);
-    if (st != OK)
-        return st;
-    st = vtd_dom_new(ctl, VTD_DOM_PASS, NULL, 0, "pass-through", &ctl->pass);
-    if (st == ERR_NOT_SUPPORTED)
-        st = make_identity(ctl);
+    status_t st = vtd_dom_new(ctl, NULL, 1, "blocking", &ctl->blocking);
     for (uint32_t i = 0; st == OK && vtd_fn_at(i); i++) {
         struct vtd_fn *f = vtd_fn_at(i);
         if (f->ctl != ctl)
@@ -416,10 +381,9 @@ static void start_unit(struct vtd_ctl *ctl)
     __atomic_store_n(&ctl->live, true, __ATOMIC_RELEASE);
     log_functions(ctl);
     kprintf("vtd:         unit %u: translation on (%s): %u function%s, %u with an RMRR boot "
-            "domain, the rest blocked; a driver's gets its dma_cap's domain (the tests' "
-            "pass-through: domain %u, %s)\n", u->index,
+            "domain, the rest blocked; a driver's gets its dma_cap's domain\n", u->index,
             was_on ? "it was on: taken over" : "it was off", ctl->nfn, ctl->nfn == 1 ? "" : "s",
-            ctl->nboot, ctl->pass->ud.did, ctl->pass->what);
+            ctl->nboot);
     if (was_on)
         kprintf("vtd:         unit %u: the old root table was %lx (ttm %lu)\n", u->index,
                 was_root & ~(uint64_t)0xfff, VTD_RTADDR_TTM(was_root));
@@ -472,6 +436,10 @@ void iommu_boot(void)
         return;
     }
     uint32_t none = assign_functions(info);
+    if (vtd_rid_mark() != OK) {
+        report("vtd: no memory to read the PCI topology: translation stays off");
+        return;
+    }
     for (uint32_t i = 0; i < VTD_MAX_UNITS; i++)
         if (vtd_ctl_get(i))
             start_unit(vtd_ctl_get(i));

@@ -428,6 +428,12 @@ void wm_toggle_layout(void)
     ctl_layout_changed(l);
 }
 
+/* Minimising is not built yet (comp.h): the circle does nothing. */
+__attribute__((weak)) void wm_minimise(struct comp_window *w)
+{
+    (void)w;
+}
+
 /* ctl.c's tells init (comp.h); a build without it (a test's) tells nobody. */
 __attribute__((weak)) void ctl_layout_changed(enum comp_layout layout)
 {

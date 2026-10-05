@@ -27,7 +27,7 @@
  *   Alt+Tab        the next window (Alt+Shift+Tab: the one before);
  *   Super+F        the focused window full screen, or back;
  *   Super+T        the screen's arrangement: floating or tiling;
- *   Super+Q        the focused window asked to close (as its close box);
+ *   Super+Q        the focused window asked to close (as its close circle);
  *   Super+Enter    another terminal (ctl.c asks init), whichever window
  *                  has the focus, a terminal or not.
  * Ctrl+C is an ordinary key: it goes to the focused window, so a program

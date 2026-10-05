@@ -49,7 +49,7 @@ struct wm_ops {
      * whenever anything that goes into it may have changed: the role drops
      * repeats. */
     void (*configure)(void *ctx, const struct wm_config *cfg);
-    /* The user asked the window to close (its close box). */
+    /* The user asked the window to close (its close circle, Super+Q). */
     void (*close)(void *ctx);
 };
 
@@ -154,7 +154,9 @@ enum deco_part {
     DECO_NONE,                     /* not in w's frame */
     DECO_SURFACE,                  /* the client's */
     DECO_TITLE,
-    DECO_CLOSE,
+    DECO_CLOSE,                    /* the title bar's circles */
+    DECO_MINIMISE,
+    DECO_FULLSCREEN,
     DECO_EDGE,                     /* a border or corner: *edges says which */
 };
 enum deco_part deco_hit(const struct comp_window *w, int32_t x, int32_t y, uint32_t *edges);

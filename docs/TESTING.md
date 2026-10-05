@@ -68,8 +68,10 @@ that a bug fix comes with a test is in
   --selftest`: the program-list check takes `svc net listen` and refuses
   `svc net-listen`, a listen on another service and a list over its 24
   wants; the FAT32 checker finds each kind of damage it knows in volumes
-  it makes and damages (`tools/fatcheck.py --selftest`); and the update signing tool passes Monocypher's Ed25519 vectors
-  (`build/host/jamos-sign self-test`).
+  it makes and damages (`tools/fatcheck.py --selftest`); the update signing tool passes Monocypher's Ed25519 vectors
+  (`build/host/jamos-sign self-test`); and libfun's smooth text holds up
+  against hostile input under ASan and UBSan (`build/host/fontcheck
+  --check`, [below](#smooth-text)).
 
 ## Running QEMU: tools/qemu-test.sh
 
@@ -739,7 +741,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/apps-test.sh <outdir>` | snake, mines and sysmon (`apps.txt`), with a USB mouse; `APPS_HD=1` runs at 2560x1440 |
 | `tools/jamjar-test.sh <outdir>` | jamjar (`jamjar.txt`), with a USB keyboard and mouse and an hda-output capture, on a library the script makes (six made-up stereo songs as MP3 under owner-style UTF-8 names with made-up covers in their tags, drawn with Python's PIL; a calibration track, 1 kHz on the left and 4 kHz on the right; two MP3s with a bad cover); it checks the calibration shot's bars with PIL; `JAMJAR_HD=1` runs `jamjar-hd.txt` at 2560x1440; screenshots `jamjar-*.png` |
 | `tools/jamjar-covers-test.sh <outdir>` | jamjar's now-playing cover at 2560x1440 (`jamjar-covers.txt`), on 32 made-up albums of two MP3s, each with a teal PNG cover in its tag: every shot of now playing must show the cover's teal, not a jar label |
-| `tools/comp-test.sh <outdir>` | the compositor on QEMU's framebuffer (`comptest`): a screenshot of each of its test scene's steps (opaque windows with title bars, a translucent one over them, the arrow; one moved, one raised, no arrow; a full-screen window copied straight from its buffer) compared by `tools/comp-check.py` with the steps the log describes, painted from scratch (every third pixel each way; the titles' text found in their bars); prints the compositor's `bench:` lines (frame costs: QEMU's only show the code runs) |
+| `tools/comp-test.sh <outdir>` | the compositor on QEMU's framebuffer (`comptest`): a screenshot of each of its test scene's steps (opaque floating windows on the wallpaper, a translucent one over them, the arrow on the first's circles; one moved, a tiled window's look, one raised, no arrow; a full-screen window copied straight from its buffer) compared by `tools/comp-check.py` with the steps the log describes, painted from scratch with the look's numbers (wallpaper, shadows, title bars, outlines, borders, rounded corners: every third pixel each way; the titles' text found in their bars, each circle's colour or symbol where it is all circle); prints the compositor's `bench:` lines (frame costs: QEMU's only show the code runs) |
 | `tools/mouse-test.sh <outdir>` | the mouse end to end (`mouse.txt`): QEMU's monitor moves and clicks a USB mouse, driven in the report protocol (its descriptor has a wheel); `MOUSE_HIDBOOT=1` adds the boot word `hidboot` and checks the boot protocol instead; 1280x800 only (the clicks are at pixel positions) |
 | `tools/crash-test.sh <outdir> [name...]` | every crash test from the shell (`crash <name> yes`), each on a fresh boot; each panic starts the stored kernel, whose shell says what happened (`kexecbad`: refused, the panic screen stays up; `kexecstall`, `kexecfault`: a firmware reset) |
 | `tools/kdump-test.sh <outdir> [case...]` | a panic starts the stored kernel, each case a fresh boot of a stick image read afterwards with mtools: `save` (`crash panic yes`: no panic screen, the next boot comes up on every CPU, saves `/data/logs/boot-0001-crash.txt` with the panic and the lines before it, logs to `boot-0002` and its shell says so), `loop` (`crashtest=lockorder`: the next boot panics at once, a crash loop, and halts on the red panic screen), `bad` (`crash kexecbad yes`: the damaged stored kernel is refused, red panic screen, nothing saved), `nostick` (the stick pulled first: the shell says the log was not saved and why), `screen` (with the splash: the screen as the next kernel starts is all the splash background) |
@@ -749,7 +751,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/soak-test.sh <outdir>` | the soak test (`soak-plug.txt`): `soak loops=3` at a fixed seed (`SOAK_LOOPS`, `SOAK_SEED`), under the kernel's and `bin/soakload`'s load, with a second stick (made writable) pulled in the middle of writes and plugged back and then the boot stick pulled and plugged back (`SOAK_LOAD`: the kernel load workers, default one per CPU); PASS needs 0 FAILED kernel tests, utest runs and file checks, the job tree's message bytes grown by at most 32 KiB (unread messages piling up), and the second stick's own files unchanged |
 | `tools/ktest-keep-test.sh <outdir>` | the test runner's own failure paths, with three tests that exist for it (`ktest=review_ktest`): with `keep` both failures are recorded and the run goes on; without it (and `crashkernel=0`, so the panic screen stays up) the first panics and the panic screen names loop, seed and test |
 | `tools/hda-test.sh <outdir>` | the HD Audio driver (`hda.txt`): two emulated controllers (intel-hda with hda-duplex and hda-output, ich9-intel-hda with hda-micro), each codec's graph in the log, `hda` from the shell, `kill hda` and devmgr's restart; the path self-test passes and every codec's path is DAC 02 -> pin 03, set up muted; the jack self-test passes (the ALC897's jack table and tags, the RIRB's demultiplexer on a fake RIRB, the debounce, unsolicited responses and the polling fallback against a fake codec that allows jack code only SET_UNSOLICITED_ENABLE, SET_PIN_SENSE and GET_PIN_SENSE; QEMU's codecs have no presence detection, so the real jack path runs only on the PC); QEMU's codecs trace every verb they get and every one must be a GET or a silent SET (power D0, a connection select, pin control with the output off, an amp mute), and none a jack verb (0x708, 0x709); `hda` opens no stream, so no converter format or stream tag either; `hda jacks` shows the RIRB interrupt taken (it is on for unsolicited responses while the dumps' commands are polled, and the dumps must still see no timeout); then the `init` run with the same devices, where each driver must stop cleanly and the run end "run complete: no problems"; then a shell boot with `QEMU_IOMMU=eim` and `iommu=on vtdtest` (`vtdtest.txt`): each drv/hda's read of a page it unpinned is blocked (QEMU hands the controller a 0, so the codec's answer is not the command's) and the kernel logs a read fault naming that controller at that address, then its response ring is pointed into the interrupt window (QEMU passes old-format writes through: blocked only on the PC), `hda` still answers with no timeout (the rings were put back), and `iommu` shows each controller in a domain of its own with its fault counted |
-| `tools/vtd-test.sh <outdir>` | the boot-time VT-d probe ([M11-PLAN](M11-PLAN.md#stage-0-the-read-only-probe)), three `pcilist` boots: with QEMU's `intel-iommu` (interrupt remapping and caching mode on) the DMAR table's lines (the unit, its I/O APIC scope matched with the MADT's, each endpoint scope named by its ids), the unit's registers decoded, translation and interrupt remapping off as the firmware left them, the handover line, nothing in the RESULTS box, and QEMU's trace of the unit's registers: reads, not one write; with `eim=on`: x2APIC ids; without an IOMMU: "no DMAR table". Then two `ktest=vtd iommu=on` boots, caching mode on and off: the unit started and every `vtd_unit_*` test passed (every invalidation kind, the page-table and interrupt-entry callbacks, a refused descriptor reported with the queue going on, the queue wrapping, every CPU submitting at once, the queue turned off and on), interrupt remapping on and every `vtd_irq_*` test passed (COM1's pin remapped, an MSI through its own entry, entries freed on close, another function's, a freed and an out-of-range entry refused and recorded, edu's DMA into the interrupt window blocked, the timer, IPIs and COM1 unaffected, remapping off and on again), translation on (every function in its home domain) and every `vtd_domain_*` test passed (edu blocked with its fault seen, passed through, in a domain of its own, muted after its faults, the tables switched while translating), nothing else in the RESULTS box but the faults those tests provoke; two `ktest=dma iommu=on` boots, caching mode on and off: every `dma_*` test passed, none skipped (edu reaches only what its DMA capability pinned, a killed driver's pages freed once its domain is gone, the quarantine's tests in their translated form, the pin and unpin cost in invalidation waits printed); the same `vtd_domain_*` tests with pass-through off (`pt=off`: an identity map of all RAM instead); then two shell boots with `iommu=on` jumping into the stored kernel, by `reboot` and by `crash panic yes`: the jump turns interrupt remapping, translation and the queue off, so both boots find the unit all off, and the next kernel turns interrupt remapping and translation on again. `VTD_TEST_INIT=1` adds the `init` run with the IOMMU present, left off and then started with `iommu=on`. About a minute (two more with the init runs) |
+| `tools/vtd-test.sh <outdir>` | the boot-time VT-d probe ([M11-PLAN](M11-PLAN.md#stage-0-the-read-only-probe)), three `pcilist` boots: with QEMU's `intel-iommu` (interrupt remapping and caching mode on) the DMAR table's lines (the unit, its I/O APIC scope matched with the MADT's, each endpoint scope named by its ids), the unit's registers decoded, translation and interrupt remapping off as the firmware left them, the handover line, nothing in the RESULTS box, and QEMU's trace of the unit's registers: reads, not one write; with `eim=on`: x2APIC ids; without an IOMMU: "no DMAR table". Then two `ktest=vtd iommu=on` boots, caching mode on and off: the unit started and every `vtd_unit_*` test passed (every invalidation kind, the page-table and interrupt-entry callbacks, a refused descriptor reported with the queue going on, the queue wrapping, every CPU submitting at once, the queue turned off and on), interrupt remapping on and every `vtd_irq_*` test passed (COM1's pin remapped, an MSI through its own entry, entries freed on close, another function's, a freed and an out-of-range entry refused and recorded, edu's DMA into the interrupt window blocked, the timer, IPIs and COM1 unaffected, remapping off and on again), translation on (every function in its home domain) and every `vtd_domain_*` test passed (edu blocked with its fault seen, in a domain of its own, a driver's domain taking pins spread one per 2 MiB up to its 2048 table pages, a function whose requester id is shared refused a domain (on a made-up topology, and edu made to look shared), muted after its faults, the tables switched while translating), nothing else in the RESULTS box but the faults those tests provoke; two `ktest=dma iommu=on` boots, caching mode on and off: every `dma_*` test passed, none skipped (edu reaches only what its DMA capability pinned, a killed driver's pages freed once its domain is gone, the quarantine's tests in their translated form, the pin and unpin cost in invalidation waits printed); the same `vtd_domain_*` tests on a unit without pass-through (`pt=off`: nothing depends on it); a boot with a PCIe-to-PCI bridge and a second edu behind it: both named in the RESULTS box as sharing a requester id, and neither given a domain; then two shell boots with `iommu=on` jumping into the stored kernel, by `reboot` and by `crash panic yes`: the jump turns interrupt remapping, translation and the queue off, so both boots find the unit all off, and the next kernel turns interrupt remapping and translation on again. `VTD_TEST_INIT=1` adds the `init` run with the IOMMU present, left off and then started with `iommu=on`. About a minute (two more with the init runs) |
 | `tools/hda-stream-test.sh <outdir>` | the HD Audio output stream (`hdastream.txt`): intel-hda with an hda-output codec (`mixer=off`) whose samples go to a WAV file through QEMU's wav backend at 48 kHz 16-bit stereo; `hdatest` passes (the position's rate within 2 %, a closed stream released, a kill mid-stream: restart, the dead driver's pins out of the DMA quarantine unwritten); the WAV holds `hdatest`'s one-second pattern sample for sample after the leading silence, then most of a ring of silence (the driver's clear-behind); the codec got only allow-listed verbs, and the path opened only while the converter has the stream's tag and closed again before it is released (`tools/hda-verbs.awk` follows the state the SETs leave; hdatest turns the gain down while it plays) |
 | `tools/beep-test.sh <outdir>` | `beep` (`beep.txt`): intel-hda with an hda-output codec with its mixer on (its DAC amp scales what the WAV gets) through QEMU's wav backend; `beep 440 500` at the default -30 dB: the tone's frequency from its zero crossings within 1 %, its length within 30 ms, the fades (first and last 2.5 ms well under the peak), no clicks, silence after, the peak at QEMU's volume for step 44 within 5 %; the codec's verbs: the path opened only while the converter has the stream's tag and muted again before it is released, the DAC's amp opened at step 44 only; the output stage (pin output, EAPD) on before the first stream and never off, the first unmute at least 400 ms after it went on; the driver's lines in order (stream open, unmuted, muted again, stream closed); `hda gain` set and clamped |
 | `tools/play-test.sh <outdir>` | `play` (`play.txt`): WAV files made by the script and copied onto the stick image's `/data` with mtools, played through intel-hda with an hda-output codec (mixer on) into QEMU's wav backend: 48 kHz stereo (440 Hz left, 660 Hz right), 44.1 kHz mono, 22.05 kHz 8-bit, 96 kHz 24-bit WAVE_FORMAT_EXTENSIBLE with `play -v -20`; each sound's frequency per channel within 1 %, its length within 2 %, mono equal on both channels, silence after it, no clicks, the `-v` one's peak a tenth of the others' (its mixer stream at -20 dB) and the others' unchanged; garbage, a cut-off header, 32-bit float and a missing file refused with their reasons; a 10 s file stopped by Ctrl+C after 2 s ends within 3 s with a fade; QEMU runs with the trace event `hda_audio_overrun`, and each codec buffer it dropped on a busy host excuses one click or one sound 2048 frames short |
@@ -999,11 +1001,11 @@ plain test run never uses it. It has tests at three levels:
 - **Kernel tests**, in `tools/vtd-test.sh` (the table under
   [Area scripts](#area-scripts) says what each boot checks): `vtd_unit_*`
   (the queue and every invalidation), `vtd_irq_*` (interrupt remapping),
-  `vtd_domain_*` (domains, edu blocked and let through, the mute, the
-  handover while translating), `dma_iommu_*` and the `dma_*` tests in
-  their translated form, with QEMU's caching mode on and off and with
-  pass-through off; and a `reboot` and a panic jumping into the next
-  kernel with everything on. The pure ones (`vtd_pt_*`, `vtd_ir_*`, the
+  `vtd_domain_*` (domains, edu blocked and let through, a driver's table
+  cap, the mute, the handover while translating), `dma_iommu_*` and the
+  `dma_*` tests in their translated form, with QEMU's caching mode on and
+  off and on a unit without pass-through; and a `reboot` and a panic
+  jumping into the next kernel with everything on. The pure ones (`vtd_pt_*`, `vtd_ir_*`, the
   entry bit layouts, the DMAR parser) run in every `ktest`.
 - **The deliberate faults**: `tools/hda-test.sh`'s third boot runs drv/hda's
   IOMMU checks (`iommu=on vtdtest`, the "Tests > IOMMU checks" entry on
@@ -1054,6 +1056,58 @@ QEMU's default `-cpu max` has RDSEED and RDRAND. The path without them
 needs another CPU model: `QEMU_CPU=qemu64 tools/qemu-test.sh build/test
 rnd ktest=random` boots with `random: no RDSEED/RDRAND: seeded from
 timing only ...: WEAK` in the log and the RESULTS box.
+
+## Smooth text
+
+libfun's anti-aliased text ([ARCHITECTURE](../ARCHITECTURE.md#smooth-text)).
+In utest (the `init` run), every expectation from the font's own numbers
+(`user/tests/utest/smoothfont.c`):
+
+| Test | What it checks |
+|---|---|
+| `font_open` | sizes and weights out of range refused; ascent, descent, line height and capital height at 13 and 26 pixels; each bake's time (`utest: font: ... baked in`) |
+| `font_measure` | widths of known strings in both weights and sizes, kerning included ("AV" narrower than "A" plus "V"); "" is 0; `font_draw` returns x plus the width |
+| `font_pixels` | 'I', "II" (the second glyph at a half-pixel position) and '-' (rows cut by its edges) at 13 px Regular and 'I' at 26 px Medium, white on black: every pixel's coverage is its share of the glyph's rectangle (from the outline's coordinates), exact where it is 0 or 255, within 1 elsewhere |
+| `font_blend` | coloured text over a pattern is exactly `px_over(pattern, argb_pm(colour, coverage))` per pixel, coverage from white on black; the colour's top byte ignored |
+| `font_clip` | 13 clip rectangles (across each edge of the text, a box inside, empty, negative, huge, outside): unclipped pixels inside, nothing changed outside; text off each edge and corner of a surface inside a guarded buffer: the surface's part right, the guard untouched |
+| `font_ellipsis` | `font_ellipsize` against a search of every cut for 7 strings (malformed UTF-8 and "" among them) at every width and buffer size; no space before the "…"; `font_draw_in`, left and centred, draws exactly the cut text where it says, clipped to its rectangle |
+| `font_threads` | four threads drawing titles with two shared fonts get the pixels one thread got; a child that writes into a font's memory is killed (`utest font-write`): fonts are read-only |
+
+On the Mac, `make` builds `build/host/fontpreview` from the same files
+and draws `build/fontpreview.png` (the floating windows' title bars at 1x
+and 2x, focused and not, and sample text at six sizes): look at it after
+a change to the text or the font. `make check` runs `build/host/fontcheck
+--check`, the same program with ASan and UBSan: 4,000 random strings
+(malformed UTF-8, other scripts, controls) drawn at random places
+through random clip rectangles into a surface inside a guarded buffer,
+in two fonts, with nothing outside the clip changed; and 4,000 random
+cuts, each fitting its width and buffer, a start of the string plus "…",
+and the longest such start.
+
+## The compositor's look
+
+The floating windows' title bars, circles, rounded corners and shadows,
+tiling's borders and the wallpaper (`user/services/compositor/look.h`).
+In utest (the `init` run), the compositor's test scene runs headless
+and a reference painter of the test's own (`user/tests/utest/comp_ref.c`:
+the wallpaper's formula, the corners' supersampled circles, the shadow
+as a count of the ways three numbers add up) paints the same scene;
+every pixel it knows is compared exactly
+(`user/tests/utest/comp_look.c`):
+
+| Test | What it checks |
+|---|---|
+| `comp_look_title` | two floating windows, focused and not: bars, outlines, corners and shadows exact; the circles in their colours or grey, no symbols; each title's text centred in its bar, clear of the circles |
+| `comp_look_corners` | a floating window over a picture: the client's own corner pixels cut, the picture (and the shadow on it) showing through, the outline along the curve; a translucent floating window over it |
+| `comp_look_shadow` | a focused and an unfocused window's shadows exact; a move paints exactly the old and new extents (frame and shadow) and leaves nothing behind |
+| `comp_look_buttons` | the pointer on an unfocused window's circles: its colours and each symbol; a focused window's without symbols; the pointer gone: grey again |
+| `comp_look_tiled` | tiled windows' borders, focused and not, rounded with the border along the curve; the corners and gaps show the wallpaper, no shadow |
+| `comp_look_wallpaper` | the wallpaper is look.h's formula pixel for pixel, the same on a second run, and no neighbouring pixels differ by more than 2 in a channel |
+
+`compwm`'s `wm_window_at` and `wm_floating_move` press the circles'
+hit boxes (to the pixel) and click each circle; `wm_states` makes a
+window full screen by a double-click on its title bar.
+`tools/comp-test.sh` checks the same look on QEMU's screen.
 
 ## The other tools
 

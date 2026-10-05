@@ -17,12 +17,15 @@
 /* The scene (testscene.c's commands). Every step fits an 800x600 screen. */
 static const char *const scene_args[] = {
     "bin/compositor", "testscene",
-    /* Step 1: two opaque windows and a translucent one over both, each
-     * with a title bar (the first focused), and the arrow over them. */
+    /* Step 1: two opaque floating windows and a translucent one over both
+     * (the first focused), on the wallpaper; the arrow on the first's
+     * circles, which show their symbols. */
     "win=60,80,420,260,ff2a6f97,tf", "win=330,220,380,240,ff8a4f2a,t",
-    "win=200,150,300,200,a0e0a040,t", "cursor=420,300", "paint", "hold=4000",
-    /* Step 2: the second moved, the first raised, no cursor. */
-    "move=2,420,60", "raise=1", "nocursor", "paint", "hold=4000",
+    "win=200,150,300,200,a0e0a040,t", "cursor=118,74", "paint", "hold=4000",
+    /* Step 2: the second moved, a tiled window's look below the others,
+     * the first raised, no cursor. */
+    "move=2,420,60", "win=520,400,240,150,ff3a7a50,g", "raise=2", "raise=3", "raise=1",
+    "nocursor", "paint", "hold=4000",
     /* Step 3: a full-screen opaque window over all of it, the cursor on it. */
     "fullscreen=ff336699", "cursor=100,120", "paint", "hold=4000",
     "bench",

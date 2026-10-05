@@ -4,10 +4,10 @@
  * decisions (wm.c); this file keeps them and damages what each change
  * uncovers or covers, so the next paint composes exactly that.
  *
- * Every change damages the window's whole frame before and after it
- * (moving, mapping, raising, going): cheap, since a frame is one box,
- * and never wrong. */
-#include "comp.h"
+ * Every change damages the window's whole extent (its frame and its
+ * shadow) before and after it (moving, mapping, raising, going): cheap,
+ * since it is one box, and never wrong. */
+#include "look.h"
 
 struct comp_scene scene;
 
@@ -48,10 +48,19 @@ struct comp_box window_frame(const struct comp_window *w)
     return box_empty(f) ? s : f;
 }
 
+struct comp_box window_extent(const struct comp_window *w)
+{
+    struct comp_box f = window_frame(w);
+    if (box_empty(f) || look_of(w) != LOOK_FLOATING)
+        return f;
+    return (struct comp_box){ f.x1 - LOOK_SHADOW_SIDE, f.y1 - LOOK_SHADOW_ABOVE,
+                              f.x2 + LOOK_SHADOW_SIDE, f.y2 + LOOK_SHADOW_BELOW };
+}
+
 void window_damage(struct comp_window *w)
 {
     if (w->flags & COMP_WIN_MAPPED)
-        scene_damage(window_frame(w));
+        scene_damage(window_extent(w));
 }
 
 void window_damage_surface(struct comp_window *w, struct comp_box b)

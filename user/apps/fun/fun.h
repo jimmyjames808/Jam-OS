@@ -3,9 +3,10 @@
  * libfun.a, linked into the programs that use it (bin/life, bin/tetris,
  * bin/fractal, bin/demo, ...), one object per job: gfx.c (the screen and
  * drawing), wl.c and wlpaint.c (a window on the compositor instead),
- * text.c, keys.c (the key channel), mouse.c (the pointer and its arrow),
- * pool.c (CPUs and the thread pool), util.c (maths, memory, output,
- * arguments, self-tests).
+ * text.c (the 8x16 text), utf8.c, font.c, fontdraw.c, fontdata.c and
+ * ttf.c (the smooth text), keys.c (the key channel), mouse.c (the pointer
+ * and its arrow), pool.c (CPUs and the thread pool), util.c (maths,
+ * memory, output, arguments, self-tests).
  *
  * The screen: the apps draw real pixels into a RAM back buffer (scr.s:
  * 0xRRGGBB pixels), and gfx_present shows what changed since the last
@@ -83,6 +84,7 @@ struct screen {
     /* private */
     uint32_t *shown;    /* what the screen or the window shows (RAM copy) */
     uint32_t *fb;       /* the framebuffer (write-combining: written, never read) */
+    uint64_t fb_len;    /* bytes mapped at fb (the borrowed screen's VMO) */
     uint32_t pitch;     /* framebuffer bytes per line */
     uint8_t  rs, gs, bs;   /* the framebuffer's red, green, blue bit positions */
     bool     native;    /* the framebuffer is 0xRRGGBB too: copied as it is */
@@ -129,6 +131,10 @@ void     gfx_resizable(void);
 /* Tests: how gfx_open reaches the compositor instead of /svc/wayland (a
  * libjwl connect function, <jwl_client.h>); NULL: /svc/wayland again. */
 void     gfx_connect_with(status_t (*connect)(void *ctx, handle_t *out), void *ctx);
+/* Tests: borrow the screen from this console channel (a fake's) instead
+ * of SR_CONSOLE, and ask for no window; HANDLE_INVALID: as usual again.
+ * The channel stays the caller's. */
+void     gfx_console_with(handle_t con);
 /* Copy what changed in scr.s to the screen. */
 void     gfx_present(void);
 /* Copy all of it (after something else may have drawn on the screen). */
@@ -247,6 +253,86 @@ uint32_t utf8_next(const char **s);
 #define TEXT_H(scale) (16 * (scale))
 /* The text centred in r, both ways. */
 void text_in(const struct surf *s, const struct rect *r, int scale, uint32_t c, const char *str);
+
+/* ---- smooth text -------------------------------------------------------------------- */
+
+/* Anti-aliased proportional text in Inter (third_party/inter: Regular and
+ * Medium, cut to printable Latin-1 and a little punctuation, linked in:
+ * fontdata.c), for the compositor's title bars and top bar (font.c bakes,
+ * fontdraw.c measures and draws). The terminal and the apps keep the 8x16
+ * text above.
+ *
+ * A struct font is one weight at one size with every glyph baked: at
+ * font_open, stb_truetype (third_party/stb_truetype) renders each glyph's
+ * coverage at four horizontal positions a quarter pixel apart, into one
+ * block of memory that is then made read-only. Measuring and drawing only
+ * read it: they allocate nothing, write nothing but the surface's pixels,
+ * and may run on any number of threads at once, once the font has reached
+ * them (open it before the threads start, or hand it over with a release
+ * store, or through pool_run, which orders memory). Text is UTF-8; a code
+ * point with no glyph, a control character and each malformed byte draws
+ * as a box (.notdef). There is no shaping: kerning between pairs, nothing
+ * else.
+ *
+ * Positions: x, y are a baseline's left end; the pen moves in 1/256
+ * pixels and each glyph is drawn at the nearest quarter pixel, so widths
+ * are as the font means them, not one rounding per glyph. Each pixel is
+ * drawn as px_over(pixel, argb_pm(rgb, coverage)): full coverage gives rgb
+ * exactly, none leaves the pixel as it was. */
+struct font;
+
+enum font_weight {
+    FONT_REGULAR,   /* Inter Regular (400) */
+    FONT_MEDIUM,    /* Inter Medium (500): a focused window's title */
+};
+#define FONT_PX_MIN 6     /* the sizes font_open bakes: pixels to the em */
+#define FONT_PX_MAX 128
+
+/* Weight w at px pixels to the em (CSS's font-size: Inter's capitals are
+ * 0.73 of it), baked now. Errors: ERR_OUT_OF_RANGE (px or w),
+ * ERR_NO_MEMORY. It takes some milliseconds and a few hundred KiB at
+ * title sizes (ARCHITECTURE.md "Smooth text" has the numbers): open
+ * the sizes a program needs once, at its start. */
+status_t font_open(enum font_weight w, int px, struct font **out);
+/* Give a font back (NULL: nothing). No thread may still be drawing with it. */
+void     font_close(struct font *f);
+
+struct font_metrics {
+    int px;        /* pixels to the em: the size it was opened at */
+    int ascent;    /* the face's height above the baseline, pixels (rounded up) */
+    int descent;   /* its depth below the baseline (positive, rounded up) */
+    int line_h;    /* baseline to baseline for lines of text */
+    int cap_h;     /* a capital's height (rounded): what font_draw_in centres */
+};
+const struct font_metrics *font_metrics(const struct font *f);
+
+/* How wide str is drawn: the pen's advance with kerning, rounded to
+ * whole pixels (ink may reach a pixel or so past either end). */
+int    font_width(const struct font *f, const char *str);
+/* str in colour rgb (0xRRGGBB) with its baseline's left end at x, y of s,
+ * only inside clip (NULL: all of s) and s. Returns the x after it (x plus
+ * font_width). */
+int    font_draw(const struct surf *s, const struct rect *clip, const struct font *f, int x, int y,
+                 uint32_t rgb, const char *str);
+
+enum font_align {
+    FONT_LEFT,     /* from r's left edge */
+    FONT_CENTRE,   /* centred across r */
+};
+/* str on one line in r: cut short with an ellipsis ("…") if it is wider
+ * than r->w (as font_ellipsize cuts), placed by align across r, its
+ * capitals centred down r (the baseline at r->y + (r->h + cap_h) / 2),
+ * drawn only inside r and s. r may reach outside s (a tile of a bigger
+ * picture: every tile computes the same layout and draws its part).
+ * Returns the width drawn. */
+int    font_draw_in(const struct surf *s, const struct rect *r, const struct font *f, uint32_t rgb,
+                    enum font_align align, const char *str);
+/* str as it fits in max_w pixels, into buf (n bytes, always terminated
+ * when n > 0): str itself if it is no wider and fits in buf; else the
+ * longest start of it (whole code points, not ending in a space) that fits
+ * with "…" after it, and the "…"; "" if not even "…" fits. Returns the
+ * length written. */
+size_t font_ellipsize(const struct font *f, const char *str, int max_w, char *buf, size_t n);
 
 /* Frames per second over the last half second or so, x10. */
 struct fps {
@@ -414,6 +500,9 @@ static inline uint32_t popcount64(uint64_t x)
 void    *big_alloc(uint64_t bytes);
 /* Give back a block of big_alloc's (p NULL: nothing), bytes as asked. */
 void     big_free(void *p, uint64_t bytes);
+/* Make a block of big_alloc's read-only (bytes as asked): a write to it
+ * faults from then on. Errors: vmar_protect's. */
+status_t big_seal(void *p, uint64_t bytes);
 /* Text to the console (also mirrored to COM1, so the QEMU tests see it)
  * and to the kernel log. Not while the screen is borrowed (it isn't
  * drawn then, but it is kept and shown when the screen comes back). */

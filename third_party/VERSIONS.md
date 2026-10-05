@@ -49,6 +49,42 @@ Vendored third-party code:
   for hostile input, so the helper checks a picture's size with stbi_info before decoding it
   (2048x1600 pixels at most) and gives it one bounded arena (40 MiB) for
   all of its memory: a picture that needs more fails to decode.
+- stb_truetype/: stb_truetype v1.26 (2021-08-28) by Sean Barrett,
+  stb_truetype.h from https://github.com/nothings/stb at commit
+  2c980bb59875b0d32144a71867fbdebb2f77cd20 (2026-08-02, master then; the
+  last commit to touch the file is 6e9f34d, 2024-07-15, and the file is
+  byte for byte the one at stb_image's commit above), sha256
+  ecd30b05e0dd4fea...; unmodified. LICENSE is the repository's (the same
+  file as stb_image's): MIT or public domain (Unlicense), the user's
+  choice. Built into libfun (user/apps/fun/ttf.c: no stdio, its maths and
+  memory from libfun and libos) for the smooth text (user/apps/fun/font.c),
+  and with the Mac's compiler into build/host/fontpreview. It runs only
+  when a font is opened, on the built-in font below: stb_truetype doesn't
+  check a font's offsets, so it is never given a font from anywhere else.
+- inter/: Inter 4.1 by Rasmus Andersson and the Inter Project Authors,
+  SIL Open Font License 1.1 (LICENSE.txt, as released; no Reserved Font
+  Name). From the release archive
+  https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip
+  (sha256 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e;
+  fetched 2026-10-05): extras/ttf/Inter-Regular.ttf (sha256
+  40d692fce188e447...) and extras/ttf/Inter-Medium.ttf (97ad806f526e4154...),
+  version string "Version 4.001;git-9221beed3". Cut down for libfun's
+  smooth text with fontTools 4.60.2 (tools/subsetfont.py: printable ASCII,
+  U+00A0..U+00FF, nine punctuation marks (U+2013 U+2014 U+2018 U+2019
+  U+201C U+201D U+2022 U+2026 U+20AC) and .notdef; no hinting; the GPOS
+  kerning flattened into a 'kern' table that stb_truetype reads, checked
+  against HarfBuzz's shaping of the upstream font for 210 pairs; GPOS,
+  GSUB and GDEF dropped), from the repository root:
+
+      python3 tools/subsetfont.py <archive>/extras/ttf/Inter-Regular.ttf third_party/inter/Inter-Regular.ttf
+      python3 tools/subsetfont.py <archive>/extras/ttf/Inter-Medium.ttf third_party/inter/Inter-Medium.ttf
+
+  which give Inter-Regular.ttf (45772 bytes, 222 glyphs, 4773 kerning
+  pairs, sha256 a98ba86b60e4726b...) and Inter-Medium.ttf (48892 bytes, 222
+  glyphs, 5299 pairs, sha256 4c5373e4e2d19173...); the same input gives the
+  same bytes. Linked into libfun as they are (user/apps/fun/fontdata.c).
+  A modified version under the OFL, which allows bundling with any
+  software; the fonts are not sold by themselves.
 - lwip/: lwIP 2.2.1 (the latest 2.2.x release), tag STABLE-2_2_1_RELEASE,
   commit 77dcd25a72509eb83f72b033d219b1d40cd8eb95 (tag object 009c225),
   from https://github.com/lwip-tcpip/lwip (the Savannah repository's

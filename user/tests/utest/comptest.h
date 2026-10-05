@@ -76,6 +76,10 @@ bool     ct_expect_error(struct ct_client *k, uint32_t object, uint32_t code);
 /* A new id of ours for iface at version (jwl_conn_make). */
 uint32_t ct_new(struct ct_client *k, const struct jwl_interface *iface, uint32_t version);
 
+/* The wallpaper's pixel (x, y) on a compositor's w by h output, as look.h
+ * describes it (comp_ref.c's reference). */
+uint32_t ref_wallpaper_of(int32_t x, int32_t y, int32_t w, int32_t h);
+
 /* A VMO_KEEP_PAGES VMO of size bytes, and a duplicate of a VMO to send in
  * a request (read and map, and transfer). HANDLE_INVALID on failure. */
 handle_t ct_kept_vmo(uint64_t size);

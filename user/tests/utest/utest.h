@@ -45,6 +45,17 @@ bool t_keymap_typing(void);
 bool t_keymap_xkb_text(void);
 bool t_keymap_matches_hid(void);
 
+/* smoothfont.c: libfun's smooth text (<fun.h>: font.c, fontdraw.c). */
+bool t_font_open(void);
+bool t_font_measure(void);
+bool t_font_pixels(void);
+bool t_font_blend(void);
+bool t_font_clip(void);
+bool t_font_ellipsis(void);
+bool t_font_threads(void);
+/* "utest font-write": writes into a font, which must kill it. */
+int  font_write_child(void);
+
 /* disks.c: devmgr's disks and mounts against the mock usb-storage
  * (diskmock.c), with the fat service on its partitions. */
 bool t_disk_mounts(void);
@@ -462,6 +473,8 @@ bool t_fun_window_present(void);
 bool t_fun_window_input(void);
 bool t_fun_window_reconnect(void);
 bool t_fun_window_resize(void);
+/* funscreen.c: libfun's borrowed screen against a fake console. */
+bool t_fun_screen_close_frees(void);
 
 /* comp.c, comp_bad.c: bin/compositor headless, driven by Wayland clients
  * over real channels (comptest.h). */
@@ -499,9 +512,16 @@ bool t_comp_paint_overlap(void);
 bool t_comp_paint_cull(void);
 bool t_comp_paint_damage(void);
 bool t_comp_paint_fullscreen(void);
-bool t_comp_paint_title(void);
 bool t_comp_paint_cursor(void);
 bool t_comp_paint_blank(void);
+/* comp_look.c: the look (look.h) the same way: title bars and circles,
+ * rounded corners, shadows, tiling's borders, the wallpaper. */
+bool t_comp_look_title(void);
+bool t_comp_look_corners(void);
+bool t_comp_look_shadow(void);
+bool t_comp_look_buttons(void);
+bool t_comp_look_tiled(void);
+bool t_comp_look_wallpaper(void);
 
 /* compwm.c: the compositor's window manager, linked in and driven by fake
  * toplevels and pointer calls: floating, tiling, the switch, focus, the

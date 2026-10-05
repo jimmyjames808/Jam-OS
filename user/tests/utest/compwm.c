@@ -9,14 +9,15 @@
  * (xdg-shell over real channels) is compxdg.c's; the real seat's, the
  * comp_seat_* tests'.
  *
- * The output is 1280x800 in every test; decorations are COMP_TITLE_H (24)
- * above and DECO_BORDER (2) around, so the numbers below can be checked
- * by hand. */
+ * The output is 1280x800 in every test; decorations are COMP_TITLE_H (28)
+ * above and DECO_OUTLINE (1) around (tiling: DECO_BORDER, 2, all round),
+ * so the numbers below can be checked by hand. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <settings.h>
 #include "fattest.h"
+#include "look.h"
 #include "utest.h"
 #include "wm.h"
 
@@ -245,9 +246,9 @@ static bool floating_place_steps(void)
     CFG(0, 0, 0, 0);                     /* the initial configure: its own size */
     AT(0, 480, 300);                     /* centred */
     CHECK(fk_open(&fks[1], 320, 200, false));
-    AT(1, 506, 326);                     /* one cascade step: 24 + 2 */
+    AT(1, 510, 330);                     /* one cascade step: 28 + 2 */
     CHECK(fk_open(&fks[2], 320, 200, false));
-    AT(2, 532, 352);
+    AT(2, 540, 360);
     CHECK_EQ(seat.nmapped, 3);           /* the scene told the seat of each */
     CHECK_EQ(scene.top, win(2));
     /* the first one's corner is free again */
@@ -259,7 +260,7 @@ static bool floating_place_steps(void)
     AT(3, 480, 300);
     /* bigger than the output: its frame's corner at the output's */
     CHECK(fk_open(&fks[4], 1400, 900, false));
-    AT(4, DECO_BORDER, COMP_TITLE_H);
+    AT(4, DECO_OUTLINE, COMP_TITLE_H);
     /* the size it drew is what it is asked for from now on */
     wm_reconfigure(fks[2].ww);
     CFG(2, 320, 200, 0);
@@ -274,19 +275,42 @@ bool t_wm_floating_place(void)
     return ok;
 }
 
-static bool close_box_steps(void)
+/* A click (press and release) at the middle of circle b of win(0). */
+static bool click_button(enum title_button b)
 {
-    /* the close box: closes on a release on it, not elsewhere */
-    struct comp_box c = title_close_box(win(0));
-    CHECK(!box_empty(c) && c.x2 == 580 + 320 + DECO_BORDER && c.y2 == COMP_TITLE_H);
+    struct comp_box c = title_button_box(win(0), b);
+    CHECK(!box_empty(c));
     int32_t cx = (c.x1 + c.x2) / 2, cy = (c.y1 + c.y2) / 2;
     CHECK(press_btn(cx, cy, BTN));
     release_at(cx, cy);
+    return true;
+}
+
+static bool close_box_steps(void)
+{
+    /* the close circle, first on the left: closes on a release on it, not
+     * elsewhere */
+    struct comp_box c = title_close_box(win(0));
+    CHECK(!box_empty(c) && c.x1 == 580 - DECO_OUTLINE + LOOK_BTN_LEFT && c.y1 == LOOK_BTN_TOP);
+    CHECK_EQ(c.x2 - c.x1, LOOK_BTN_D);
+    CHECK(click_button(TITLE_CLOSE));
     CHECK_EQ(fks[0].closes, 1);
+    int32_t cx = (c.x1 + c.x2) / 2, cy = (c.y1 + c.y2) / 2;
     CHECK(press_btn(cx, cy, BTN));
     release_at(cx - 100, cy + 100);
     CHECK_EQ(fks[0].closes, 1);
-    AT(0, 580, COMP_TITLE_H);            /* a close box press never moves it */
+    AT(0, 580, COMP_TITLE_H);            /* a circle's press never moves it */
+    /* minimise: not built yet, so nothing at all */
+    unsigned n = fks[0].nconf;
+    CHECK(click_button(TITLE_MINIMISE));
+    CHECK_EQ(fks[0].nconf, n);
+    CHECK_EQ(fks[0].closes, 1);
+    AT(0, 580, COMP_TITLE_H);
+    /* full screen, and back with Super+F */
+    CHECK(click_button(TITLE_FULLSCREEN));
+    CFG(0, OUT_W, OUT_H, WM_ST_ACTIVATED | WM_ST_FULLSCREEN);
+    wm_toggle_fullscreen(win(0));
+    CFG(0, 320, 200, WM_ST_ACTIVATED);
     return true;
 }
 
@@ -294,7 +318,7 @@ static bool floating_move_steps(void)
 {
     CHECK(fk_open(&fks[0], 320, 200, false));
     AT(0, 480, 300);
-    /* the title bar is y 276..299: drag it */
+    /* the title bar is y 272..299: drag it (right of its circles) */
     CHECK(drag(600, 290, 100, 50));
     AT(0, 580, 350);
     CHECK_EQ(seat.focused, win(0));      /* a press on decorations focuses */
@@ -324,7 +348,7 @@ bool t_wm_floating_move(void)
 
 static bool resize_right_and_left(void)
 {
-    /* the right border is x 800..803 */
+    /* the right outline is x 800, and DECO_GRAB more outside it */
     CHECK(press_btn(801, 400, BTN));
     CFG(0, 320, 200, WM_ST_ACTIVATED | WM_ST_RESIZING);
     move_to(901, 400);
@@ -334,7 +358,7 @@ static bool resize_right_and_left(void)
     release_at(901, 400);
     CFG(0, 420, 200, WM_ST_ACTIVATED);
     CHECK(fk_draw(&fks[0]));
-    /* the left border (x 476..479): the right side (900) stays put */
+    /* the left outline (x 479, and outside it): the right side (900) stays put */
     CHECK(drag(478, 400, -100, 0));
     CFG(0, 520, 200, WM_ST_ACTIVATED);
     AT(0, 480, 300);                     /* not drawn yet: where it was */
@@ -368,11 +392,11 @@ static bool floating_resize_steps(void)
 {
     CHECK(fk_open(&fks[0], 320, 200, false));
     CHECK(resize_right_and_left() && resize_limits());
-    /* a window that can't resize: its border is taken and does nothing */
+    /* a window that can't resize: its outline is taken and does nothing */
     CHECK(fk_open(&fks[1], 200, 100, true));
     struct comp_box s = window_surface_box(win(1));
     unsigned n = fks[1].nconf;
-    CHECK(press_btn(s.x2 + 1, (s.y1 + s.y2) / 2, BTN));
+    CHECK(press_btn(s.x2, (s.y1 + s.y2) / 2, BTN));
     CHECK(!seat.ops);
     release_at(s.x2 + 51, (s.y1 + s.y2) / 2);
     CHECK_EQ(fks[1].nconf, n + 1);       /* only its focus: activated */
@@ -406,10 +430,20 @@ bool t_wm_floating_resize(void)
 
 static bool maximise_steps(void)
 {
+    /* a double-click on the title bar: full screen (the owner's look) */
     CHECK(fk_open(&fks[0], 320, 200, false));
     CHECK(double_click_title(600, 290));
-    CFG(0, OUT_W, OUT_H - COMP_TITLE_H, WM_ST_ACTIVATED | WM_ST_MAXIMIZED);
+    CFG(0, OUT_W, OUT_H, WM_ST_ACTIVATED | WM_ST_FULLSCREEN);
     AT(0, 480, 300);                     /* until it draws for it */
+    CHECK(fk_draw(&fks[0]));
+    AT(0, 0, 0);
+    CHECK(win(0)->flags & COMP_WIN_FULLSCREEN);
+    wm_toggle_fullscreen(win(0));
+    CHECK(fk_draw(&fks[0]));
+    AT(0, 480, 300);
+    /* maximised (the client asks): the title bar only, which doesn't move */
+    wm_request_maximized(fks[0].ww, true);
+    CFG(0, OUT_W, OUT_H - COMP_TITLE_H, WM_ST_ACTIVATED | WM_ST_MAXIMIZED);
     CHECK(fk_draw(&fks[0]));
     AT(0, 0, COMP_TITLE_H);
     CHECK(win(0)->flags & COMP_WIN_MAXIMIZED);
@@ -417,7 +451,14 @@ static bool maximise_steps(void)
     seat.held = true;
     CHECK_ST(wm_begin_move(win(0), 0, 0), ERR_BAD_STATE);
     seat.held = false;
+    /* a double-click there: full screen, which gives back maximised */
     CHECK(double_click_title(600, 10));
+    CFG(0, OUT_W, OUT_H, WM_ST_ACTIVATED | WM_ST_FULLSCREEN);
+    CHECK(fk_draw(&fks[0]));
+    wm_toggle_fullscreen(win(0));
+    CFG(0, OUT_W, OUT_H - COMP_TITLE_H, WM_ST_ACTIVATED | WM_ST_MAXIMIZED);
+    CHECK(fk_draw(&fks[0]));
+    wm_request_maximized(fks[0].ww, false);
     CFG(0, 320, 200, WM_ST_ACTIVATED);
     CHECK(fk_draw(&fks[0]));
     AT(0, 480, 300);
@@ -712,11 +753,37 @@ bool t_wm_focus(void)
 
 /* ---- what is under the pointer --------------------------------------------------------- */
 
+/* The circles of win(1) (surface at 510, 330: frame from 509, bar y
+ * 302..329): each one's hit box, LOOK_BTN_HIT round the circle, the boxes
+ * touching. */
+static bool circle_hits(void)
+{
+    uint32_t e;
+    int32_t y = 302 + LOOK_BTN_TOP + LOOK_BTN_D / 2;
+    CHECK_EQ(deco_hit(win(1), 524, y, &e), DECO_CLOSE);        /* the middles */
+    CHECK_EQ(deco_hit(win(1), 542, y, &e), DECO_MINIMISE);
+    CHECK_EQ(deco_hit(win(1), 560, y, &e), DECO_FULLSCREEN);
+    CHECK_EQ(deco_hit(win(1), 515, y, &e), DECO_CLOSE);        /* close: x 515..532 */
+    CHECK_EQ(deco_hit(win(1), 514, y, &e), DECO_TITLE);
+    CHECK_EQ(deco_hit(win(1), 532, y, &e), DECO_CLOSE);
+    CHECK_EQ(deco_hit(win(1), 533, y, &e), DECO_MINIMISE);     /* minimise: 533..550 */
+    CHECK_EQ(deco_hit(win(1), 551, y, &e), DECO_FULLSCREEN);   /* full screen: 551..568 */
+    CHECK_EQ(deco_hit(win(1), 568, y, &e), DECO_FULLSCREEN);
+    CHECK_EQ(deco_hit(win(1), 569, y, &e), DECO_TITLE);
+    CHECK_EQ(deco_hit(win(1), 524, 307, &e), DECO_CLOSE);      /* y 307..324 */
+    CHECK_EQ(deco_hit(win(1), 524, 306, &e), DECO_TITLE);
+    CHECK_EQ(deco_hit(win(1), 524, 324, &e), DECO_CLOSE);
+    CHECK_EQ(deco_hit(win(1), 524, 325, &e), DECO_TITLE);
+    CHECK_EQ(title_button_at(win(1), 542, y), TITLE_MINIMISE);
+    CHECK(box_contains(title_close_box(win(1)), 524, y));
+    return true;
+}
+
 static bool window_at_steps(void)
 {
     bool on;
     CHECK(fk_open(&fks[0], 320, 200, false));   /* at 480, 300 */
-    CHECK(fk_open(&fks[1], 320, 200, false));   /* at 506, 326: over it */
+    CHECK(fk_open(&fks[1], 320, 200, false));   /* at 510, 330: over it */
     CHECK_EQ(wm_window_at(600, 400, &on), win(1));
     CHECK(on);
     /* the top window's title bar hides the surface under it */
@@ -738,18 +805,16 @@ static bool window_at_steps(void)
     CHECK_EQ(e, WM_EDGE_TOP);
     CHECK_EQ(deco_hit(win(1), 505, 315, &e), DECO_EDGE);   /* near the top-left corner */
     CHECK_EQ(e, WM_EDGE_LEFT | WM_EDGE_TOP);
-    CHECK_EQ(deco_hit(win(1), 827, 400, &e), DECO_EDGE);   /* the right border */
+    CHECK_EQ(deco_hit(win(1), 830, 400, &e), DECO_EDGE);   /* the right outline */
     CHECK_EQ(e, WM_EDGE_RIGHT);
-    CHECK_EQ(deco_hit(win(1), 820, 315, &e), DECO_CLOSE);
+    CHECK(circle_hits());
     CHECK_EQ(deco_hit(win(1), 100, 100, &e), DECO_NONE);
     /* a few pixels outside a resizable window's frame still resize it */
-    CHECK_EQ(deco_hit(win(1), 833, 400, &e), DECO_EDGE);
+    CHECK_EQ(deco_hit(win(1), 836, 400, &e), DECO_EDGE);
     CHECK_EQ(e, WM_EDGE_RIGHT);
-    CHECK_EQ(wm_window_at(833, 400, &on), win(1));
+    CHECK_EQ(wm_window_at(836, 400, &on), win(1));
     CHECK(!on);
-    CHECK_EQ(wm_window_at(835, 400, &on), NULL);
-    /* the title bar and close box are where title.c draws them */
-    CHECK(box_contains(title_close_box(win(1)), 820, 315));
+    CHECK_EQ(wm_window_at(837, 400, &on), NULL);
     CHECK(!strcmp(win(1)->title, ""));
     wm_set_title(fks[1].ww, "a window");
     CHECK(!strcmp(win(1)->title, "a window"));

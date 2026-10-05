@@ -5,10 +5,10 @@
  * configure and ack sequence, where its pixels land, every protocol error
  * xdg-shell names, and popups dismissed at once.
  *
- * The output is 320x240. Decorations are drawn (title.c), so the checks
- * that want the background look past them: a floating window's 2-pixel
- * border, a maximised one's 24-pixel title bar (its only decoration), a
- * tiled one's border and the gap between tiles. */
+ * The output is 320x240. Decorations are drawn (title.c, shape.c), so the
+ * checks that want the wallpaper (comp_ref.c's) look past them: a floating
+ * window's shadow, a maximised one's title bar (its only decoration), a
+ * tiled one's border and rounded corners, and the gap between tiles. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -16,13 +16,13 @@
 #include <jwl/wayland.h>
 #include <jwl/xdg_shell.h>
 #include <os.h>
-#include <splash.h>
 #include "comptest.h"
+#include "look.h"
 #include "utest.h"
 
 #define W 320
 #define H 240
-#define TITLE 24
+#define TITLE COMP_TITLE_H
 #define POOL (1u << 20)
 
 #define RED   0x00ff0000u
@@ -167,6 +167,27 @@ static bool pixel(const struct ct_comp *p, int32_t px, int32_t py, uint32_t want
     return true;
 }
 
+/* The wallpaper's pixel (x, y). */
+static uint32_t bg(int32_t x, int32_t y)
+{
+    return ref_wallpaper_of(x, y, W, H);
+}
+
+/* Wait (up to CT_WAIT) until the image is darker than the wallpaper at
+ * (px, py): a shadow is on it. */
+static bool shadowed(const struct ct_comp *p, int32_t px, int32_t py)
+{
+    uint64_t until = now() + CT_WAIT;
+    const volatile uint32_t *img = p->image;
+    while (img[py * W + px] == bg(px, py) && now() < until)
+        jam_nanosleep(now() + NS_PER_MS);
+    uint32_t got = img[py * W + px], want = bg(px, py);
+    for (int sh = 0; sh < 24; sh += 8)
+        if ((got >> sh & 0xff) > (want >> sh & 0xff) || got == want)
+            FAIL("pixel %d,%d is %06x, not darker than %06x", px, py, got, want);
+    return true;
+}
+
 /* ---- a toplevel's life -------------------------------------------------------------- */
 
 static bool map_floating(struct ct_comp *p, struct xc *x, struct tl *t)
@@ -180,7 +201,10 @@ static bool map_floating(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK(c.w == 0 && c.h == 0 && c.nstates == 0);   /* floating: its own size */
     CHECK(ack_commit(x, t, &c, buffer(x, 0, 64, 64, RED)));
     CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, RED));   /* centred */
-    CHECK(pixel(p, (W - 64) / 2 - 3, (H - 64) / 2 + 32, SPLASH_BG));   /* past its border */
+    /* its shadow beside it, and the wallpaper past the shadow's reach */
+    CHECK(shadowed(p, (W - 64) / 2 - 3, (H - 64) / 2 + 32));
+    int32_t past = (W - 64) / 2 - DECO_OUTLINE - LOOK_SHADOW_F_REACH - 1;
+    CHECK(pixel(p, past, (H - 64) / 2 + 32, bg(past, (H - 64) / 2 + 32)));
     /* its client's first window took the keys: it is told it is activated */
     CHECK(configured(x, t, &c));
     CHECK(c.w == 64 && c.h == 64 && c.nstates == 1);
@@ -200,12 +224,12 @@ static bool maximise_and_back(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK(pixel(p, 0, TITLE, GREEN));
     CHECK(pixel(p, W - 1, H - 1, GREEN));
     uint32_t bar = p->image[(TITLE - 1) * W];   /* the title bar, drawn by the same paint */
-    CHECK(bar != GREEN && bar != SPLASH_BG);
+    CHECK(bar != GREEN && bar != bg(0, TITLE - 1));
     CHECK_ST(jwl_xdg_toplevel_unset_maximized(x->k.c, t->top), OK);
     CHECK(configured(x, t, &c));
     CHECK(c.w == 64 && c.h == 64 && c.nstates == 1);   /* the size it had, activated */
     CHECK(ack_commit(x, t, &c, buffer(x, 0, 64, 64, RED)));
-    CHECK(pixel(p, 0, TITLE, SPLASH_BG));
+    CHECK(pixel(p, 0, TITLE, bg(0, TITLE)));
     CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, RED));
     /* full screen: all of it, no title bar */
     CHECK_ST(jwl_xdg_toplevel_set_fullscreen(x->k.c, t->top, 0), OK);
@@ -217,7 +241,7 @@ static bool maximise_and_back(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK(configured(x, t, &c));
     CHECK(c.w == 64 && c.h == 64 && c.nstates == 1);
     CHECK(ack_commit(x, t, &c, buffer(x, 0, 64, 64, RED)));
-    CHECK(pixel(p, 0, 0, SPLASH_BG));
+    CHECK(pixel(p, 0, 0, bg(0, 0)));
     return true;
 }
 
@@ -226,7 +250,7 @@ static bool unmap_remap(struct ct_comp *p, struct xc *x, struct tl *t)
 {
     struct cfg c;
     CHECK(ack_commit(x, t, NULL, 0));
-    CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, SPLASH_BG));
+    CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, bg((W - 64) / 2 + 32, (H - 64) / 2 + 32)));
     CHECK(ack_commit(x, t, NULL, 0));   /* the initial commit, again */
     CHECK(configured(x, t, &c));
     CHECK(ack_commit(x, t, &c, buffer(x, 0, 64, 64, RED)));
@@ -237,7 +261,7 @@ static bool unmap_remap(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK_ST(jwl_wl_surface_destroy(x->k.c, t->s), OK);
     CHECK_ST(ct_roundtrip(&x->k), OK);
     CHECK(!x->k.errored);
-    CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, SPLASH_BG));
+    CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, bg((W - 64) / 2 + 32, (H - 64) / 2 + 32)));
     return true;
 }
 
@@ -268,7 +292,7 @@ static bool tiling_steps(struct ct_comp *p, struct xc *x)
     CHECK(configured(x, &a, &c));
     CHECK(c.w == W - 16 && c.h == H - 16);
     CHECK(ack_commit(x, &a, &c, buffer(x, 0, c.w, c.h, RED)));
-    CHECK(pixel(p, 8, 8, RED));
+    CHECK(pixel(p, 14, 14, RED));   /* past the tile's rounded corner */
     /* a window that can't resize joins: it is centred in the right half,
      * the first one is asked to take the left half */
     CHECK(toplevel(x, &b));
@@ -283,8 +307,8 @@ static bool tiling_steps(struct ct_comp *p, struct xc *x)
     CHECK(configured(x, &a, &c));
     CHECK(c.w == 147 && c.h == 224);
     CHECK(ack_commit(x, &a, &c, buffer(x, 600000, c.w, c.h, BLUE)));
-    CHECK(pixel(p, 8, 8, BLUE));
-    CHECK(pixel(p, 159, 100, SPLASH_BG));   /* the gap between the tiles */
+    CHECK(pixel(p, 14, 14, BLUE));
+    CHECK(pixel(p, 159, 100, bg(159, 100)));   /* the gap between the tiles */
     return true;
 }
 

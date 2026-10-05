@@ -261,8 +261,8 @@ void     hda_ctrl_stop(struct hda *h);
  * answers) and the RIRB at the interrupt window 0xfee00000 (a DMA write
  * the IOMMU should block without raising an interrupt), each logged, then
  * the rings restored for ordinary use. When the device is not translated
- * with only its pinned pages mapped (iommu=off, or on pass-through: the
- * controller does read the unpinned address), it says so and stops: the
+ * with only its pinned pages mapped (iommu=off, or no VT-d unit covers it:
+ * the controller does read the unpinned address), it says so and stops: the
  * kernel fault records are what the checks look for, and there would be
  * none. The rings are left as they were found. */
 void     hda_vtdtest(struct hda *h, unsigned cad);

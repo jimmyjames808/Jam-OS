@@ -19,7 +19,6 @@
 #include <jwl.h>
 #include <jwl/wayland.h>
 #include <os.h>
-#include <splash.h>
 #include "comptest.h"
 #include "utest.h"
 
@@ -361,9 +360,9 @@ bool t_comp_globals(void)
     CHECK(ct_start(&p, 320, 200));
     CHECK(ct_open(&p, &k));
     CHECK(globals_and_binds(&k));
-    /* the first paint is the background, all over */
-    CHECK_EQ(p.image[0], SPLASH_BG);
-    CHECK_EQ(p.image[320 * 200 - 1], SPLASH_BG);
+    /* the first paint is the wallpaper, all over */
+    CHECK_EQ(p.image[0], ref_wallpaper_of(0, 0, 320, 200));
+    CHECK_EQ(p.image[320 * 200 - 1], ref_wallpaper_of(319, 199, 320, 200));
     /* wl_output.release (version 3) and a second registry */
     CHECK_ST(jwl_wl_output_release(k.c, k.output), OK);
     ct_clear(&k);

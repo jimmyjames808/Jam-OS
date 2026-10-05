@@ -1072,18 +1072,28 @@ out for troubleshooting.
   one 16-byte atomic write (the domain id and the table together),
   flushed from the CPU's cache when the unit doesn't snoop (the PC's
   doesn't), then the old entry's context cache and its domain's IOTLB are
-  invalidated. Each unit also has a pass-through domain (all of RAM): for
-  the tests only, no driver's function is put there.
+  invalidated. No function is ever given pass-through or a map of all
+  RAM: a device reaches its domain's pages or nothing.
 - **Pins.** The device sees physical addresses (IOVA = physical): `vmo_pin`
   maps each pinned page at its own address in the cap's domain, two pins
   of one page share the mapping (a pin count in the entry's software
   bits), so drivers and their numbers are unchanged. `vmo_unpin` unmaps,
   invalidates and waits, and only then lets the pages go. A domain's
   table pages are charged to the job that made the cap (devmgr's: it
-  makes its drivers' caps) and capped at 512 per domain: a leaf table
-  maps 2 MiB, so that is up to 1 GiB of pins dense within 2 MiB blocks,
-  but only ~500 pages spread one per block; past either limit the pin
-  fails `ERR_NO_RESOURCES`.
+  makes its drivers' caps) and capped at 2048 per domain (8 MiB): a leaf
+  table maps 2 MiB, so that is up to 4 GiB of pins dense within 2 MiB
+  blocks, but only about 2040 pages spread one per block (usb-bus pins
+  about 450 on the PC); past either limit the pin fails
+  `ERR_NO_RESOURCES`.
+- **Shared requester ids.** A unit tells devices apart only by the
+  requester id their requests carry, and a conventional PCI device's
+  carries a bridge's: a PCIe-to-PCI bridge's (its secondary bus, 00.0, or
+  its own) or a PCI-to-PCI bridge's. Such functions would use one
+  domain, so while the IOMMU translates none of them (nor the bridge)
+  gets a `dma_cap` (`ERR_ACCESS_DENIED`, a log line); the boot names
+  them in the RESULTS box, read from the PCI topology
+  (`kernel/dev/vtd_rid.c`), and their DMA stays blocked. The PC has no
+  such bridge.
 - **Safe rebind with the IOMMU.** Making a cap turns the function's Bus
   Master Enable off and points its context entry at the new, empty domain
   in one step: whatever the previous driver left queued reaches nothing.
@@ -1679,7 +1689,8 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   long-running program that frees what it allocates stops growing. **libfun** (`user/apps/fun/`): the
   apps' screen, drawing (premultiplied alpha and anti-aliased shapes in
   `alpha.c`), text (UTF-8: the console font's ASCII and Latin-1 and
-  Latin Extended-A glyphs, one box for any other character), keys and
+  Latin Extended-A glyphs, one box for any other character), smooth
+  text for the compositor ([below](#smooth-text)), keys and
   a thread pool (its workers spin briefly between batches that come back
   to back, and sleep as soon as the app waits for keys: `pool_rest`).
 - **userboot** (`kernel/proc/userboot.c`): a tiny ELF loader in the kernel
@@ -1867,6 +1878,52 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   its key channel, and only if that client asked for them (the wire format
   is in `<jam/abi.h>` with the key event's); the apps library turns them
   into a pointer and draws its arrow.
+
+### Smooth text
+
+The compositor's title bars and top bar use anti-aliased proportional
+text; the terminal and the apps keep the 8x16 font. libfun has it
+(`<fun.h>` "smooth text"): Inter Regular and Medium
+(`third_party/inter/`, SIL OFL 1.1), cut to printable ASCII, Latin-1
+and nine punctuation marks by `tools/subsetfont.py`, which also turns
+Inter's GPOS kerning into a 'kern' table (45 and 49 KB). The two files
+are linked into libfun as they are (`fontdata.c`, the assembler's
+`.incbin`), so drawing a title needs no filesystem; only programs that
+open a font link them in.
+
+- **Baked, then read-only.** `font_open(weight, px, &f)` runs
+  stb_truetype (`third_party/stb_truetype/`, in `ttf.c`) once over every
+  glyph: its coverage (each pixel's exact share of the outline) at four
+  horizontal positions a quarter pixel apart, its advance, and the
+  kerning between every pair of glyphs, as a sorted list. All of it is
+  one block of memory (`big_alloc`), made read-only (`big_seal`:
+  `vmar_protect`) before `font_open` returns; stb_truetype's own memory
+  is freed by then. Measured in QEMU (TCG, 2026-10-05): 30-60 ms a
+  font; on the Mac (Rosetta) about 2 ms. Memory: about 85 KB at 13
+  pixels to the em, 225 KB at 26, of which the kerning list is about
+  20 KB (4,773 pairs in Regular, 5,299 in Medium); the two fonts of the
+  compositor's titles at 1x take about 175 KB.
+- **Drawing only reads.** Measuring (`font_width`), cutting
+  (`font_ellipsize`) and drawing (`font_draw`, `font_draw_in`) walk the
+  string with a pen in 1/256 pixels (advances and kerning were rounded
+  to that once, with integers); a glyph goes at the pen rounded to the
+  nearest quarter pixel, which picks its baked copy. Each pixel is
+  `px_over(pixel, argb_pm(rgb, coverage))`. No allocation, no static
+  state, nothing written but the surface: the compositor's painting
+  workers draw with one font at once, each into its tile, and each tile
+  computes the same layout from the same rectangle, so a title split
+  across tiles meets itself exactly.
+- **No shaping.** UTF-8 code points map to glyphs one to one (a code
+  point without one, a control character and each malformed byte draw
+  the font's box); kerning is the only thing between glyphs. Enough for
+  titles in Latin scripts; another script needs a font with its glyphs
+  and, for most, a shaper.
+- stb_truetype doesn't check a font's offsets, so it only ever reads the
+  two built-in files: no call takes a font from outside.
+- `build/host/fontpreview` (`tools/fontpreview.c`) builds the same files
+  on the Mac and draws `build/fontpreview.png` on every `make`: the
+  floating windows' title bars (docs/G1-PLAN.md "The look") at 1x and 2x
+  and sample text at six sizes.
 
 ## Audio
 

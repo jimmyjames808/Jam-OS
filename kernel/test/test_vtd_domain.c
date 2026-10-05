@@ -2,8 +2,8 @@
  * (kernel/dev/vtd_domain.c, vtd_boot.c).
  *
  * Pure ones run everywhere: the root and context entries' exact bits
- * against VT-d 4.1's 9.1 and 9.3 written out as literals, pass-through's
- * address width from CAP.SAGAW, the early RMRR reservation on a made-up
+ * against VT-d 4.1's 9.1 and 9.3 written out as literals, the early RMRR
+ * reservation on a made-up
  * memory map, the domain-id allocator, the root table's page flushed for a
  * unit that doesn't snoop.
  *
@@ -15,8 +15,6 @@
  *     a function nobody drives sits in its home domain;
  *   - edu in the blocking domain: its write to a page doesn't land, and a
  *     fault naming edu is seen;
- *   - edu in the pass-through domain (a driver's, until dma_cap makes one
- *     per cap): its writes land;
  *   - edu in a domain of its own (iommu_domain_create, attach): a mapped
  *     page is reached, an unmapped one is not (and faults), an unmapped
  *     page stops being reached, the entry carries the domain's id and
@@ -27,7 +25,7 @@
  *   - the handover with translation on (what a boot finds after the
  *     firmware's DMA protection or a kexec that couldn't turn it off): the
  *     unit is pointed at a copy of the tables while it translates, and
- *     devices keep working through it. */
+ *     edu, in a domain of its own, keeps reaching its pages through it. */
 #include <jam/boot.h>
 #include <jam/dbghook.h>
 #include <jam/iommu.h>
@@ -35,6 +33,7 @@
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
+#include <jam/resource.h>
 #include <jam/resource_impl.h>
 #include <jam/sched.h>
 #include <jam/string.h>
@@ -55,36 +54,22 @@ KTEST(vtd_domain_entry_bits_literal)
     KT_EQ(vtd_root_entry(0x12345fff).lo, 0x12345001);   /* 11:1 reserved: never set */
     /* 9.3 context entry, second stage: P 0, FPD 1, TT 3:2 = 00, SSPTPTR
      * 63:12; AW 66:64, DID 87:72. */
-    struct vtd_ctx c = vtd_ctx_entry(0x1234, false, 0x7bf00000, 2, false);
+    struct vtd_ctx c = vtd_ctx_entry(0x1234, 0x7bf00000, 2, false);
     KT_EQ(c.lo, 0x7bf00001);
     KT_EQ(c.hi, 0x123402);
-    c = vtd_ctx_entry(0xffff, false, 0x000ffffffffff000ull, 1, true);
+    c = vtd_ctx_entry(0xffff, 0x000ffffffffff000ull, 1, true);
     KT_EQ(c.lo, 0x000ffffffffff003ull);
     KT_EQ(c.hi, 0xffff01);
-    /* Pass-through: TT = 10b, SSPTPTR ignored (written 0). */
-    c = vtd_ctx_entry(5, true, 0xdead000, 3, false);
-    KT_EQ(c.lo, 0x9);
+    /* Bits 11:0 of the table never leak into TT or the reserved bits. */
+    c = vtd_ctx_entry(5, 0xdeadfff, 3, false);
+    KT_EQ(c.lo, 0xdead001);
     KT_EQ(c.hi, 0x503);
-    c = vtd_ctx_entry(1, true, 0, 2, true);
-    KT_EQ(c.lo, 0xb);
-    KT_EQ(c.hi, 0x102);
     KT_EQ(VTD_CTX_DID(0x123402), 0x1234);
     KT_EQ(VTD_CTX_AW(0x123402), 2);
     /* RTADDR's TTM, 11:10 (11.4.5). */
     KT_EQ(VTD_RTADDR_TTM(0x7bf00c00ull), 3);
     KT_EQ(VTD_RTADDR_TTM(0x7bf00400ull), 1);
     KT_EQ(VTD_RTADDR_TTM(0x7bf00000ull), 0);
-}
-
-KTEST(vtd_domain_pass_aw)
-{
-    /* 9.3: pass-through's AW is the largest SAGAW (CAP 12:8) offers. */
-    KT_EQ(vtd_pass_aw(0xd2008c222f0686ull), 2);   /* QEMU: 3 and 4 levels */
-    KT_EQ(vtd_pass_aw(0xd2008c40660462ull), 2);   /* Alder Lake: 4 levels */
-    KT_EQ(vtd_pass_aw(1ull << 9), 1);
-    KT_EQ(vtd_pass_aw(0xeull << 8), 3);
-    KT_EQ(vtd_pass_aw(0), 0);
-    KT_EQ(vtd_pass_aw(1ull << 8), 0);   /* bit 0 is reserved */
 }
 
 KTEST(vtd_domain_rmrr_carve)
@@ -135,6 +120,49 @@ KTEST(vtd_domain_did_alloc)
     KT_EQ(vtd_did_free(&ctl, 7), OK);   /* not live: no invalidation */
     KT_EQ(vtd_did_alloc(&ctl), 7);
     KT_EQ(vtd_did_alloc(&ctl), 0);
+}
+
+#define SID(b, d, f) ((uint16_t)((b) << 8 | (d) << 3 | (f)))
+
+/* Requester ids that several functions share, on a made-up topology:
+ *   00:1c.0 PCIe root port -> 01:00.0 switch up -> 02:01.0 switch down
+ *     -> 03:00.0 an endpoint: its own id;
+ *   00:1d.0 PCIe root port -> 04:00.0 a PCIe-to-PCI bridge -> bus 5:
+ *     05:01.0, 05:02.0 and a conventional PCI bridge 05:03.0 -> 06:00.0;
+ *   00:1e.0 a bridge left unconfigured (secondary 0);
+ *   segment 1 has no bridges at all.
+ * Review finding 4, design question D. */
+KTEST(vtd_domain_shared_rid_topology)
+{
+    static const struct vtd_bridge br[] = {
+        { 0, SID(0, 0x1c, 0), 1, 3, false },
+        { 0, SID(1, 0, 0), 2, 3, false },
+        { 0, SID(2, 1, 0), 3, 3, false },
+        { 0, SID(0, 0x1d, 0), 4, 6, false },
+        { 0, SID(4, 0, 0), 5, 6, true },
+        { 0, SID(5, 3, 0), 6, 6, true },
+        { 0, SID(0, 0x1e, 0), 0, 0, true },
+    };
+    uint32_t n = sizeof(br) / sizeof(br[0]);
+    /* Their own ids: on a root bus, or below PCIe bridges only. */
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(0, 2, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(3, 0, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(0, 0x1c, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(2, 1, 0)));
+    /* Below the PCIe-to-PCI bridge, at any depth, and the bridges whose
+     * ids stand for them. */
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(5, 1, 0)));
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(5, 2, 0)));
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(5, 3, 0)));
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(6, 0, 0)));
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(4, 0, 0)));
+    /* The root port above it is PCIe: its own id. An unconfigured
+     * conventional bridge leads nowhere. */
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(0, 0x1d, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(0, 0x1e, 0)));
+    /* Another segment's bus 5 is not segment 0's. */
+    KT_ASSERT(!vtd_rid_shared(br, n, 1, SID(5, 1, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, 0, 0, SID(5, 1, 0)));
 }
 
 /* The lines vtd_flush_lines flushed while the hook was on (any CPU: this
@@ -224,7 +252,8 @@ KTEST(vtd_domain_translation_on)
         KT_ASSERT(VTD_CTX_DID(e.hi) != 0);
         KT_EQ(VTD_CTX_DID(e.hi), f->cur->ud.did);
         KT_ASSERT(ctl->root[f->sid >> 8].lo & VTD_ROOT_P);
-        if (!pci_in_use(f->dev) && !f->dev->driver_managed && f->cur != ctl->pass)
+        KT_EQ((e.lo >> VTD_CTX_TT_SHIFT) & 3, VTD_CTX_TT_SS);   /* never pass-through */
+        if (!pci_in_use(f->dev) && !f->dev->driver_managed)
             KT_ASSERT(f->cur == f->home);
     }
     mutex_unlock(&ctl->lock);
@@ -347,27 +376,6 @@ KTEST(vtd_domain_blocked_dma_faults)
     KT_EQ(sid, (uint16_t)(e.d->info.bus << 8 | e.d->info.dev << 3 | e.d->info.fn));
 }
 
-KTEST(vtd_domain_pass_dma_lands)
-{
-    NEED_LIVE(ctl);
-    struct edu e;
-    if (!edu_open(&e))
-        return;
-    uint64_t a = page_of(0xa5), b = page_of(0);
-    KT_ASSERT(a && b);
-    KT_EQ(iommu_device_driven(e.d), OK);
-    KT_ASSERT(e.f->cur == ctl->pass);
-    bool ok = edu_in(&e, a) && edu_out(&e, b);
-    bool landed = page_is(b, 0xa5);
-    uint32_t faults = e.f->dma_faults;
-    edu_close(&e);
-    pmm_free_page_phys(a);
-    pmm_free_page_phys(b);
-    KT_ASSERT(ok);
-    KT_ASSERT(landed);
-    KT_EQ(faults, 0);
-}
-
 KTEST(vtd_domain_own_domain)
 {
     NEED_LIVE(ctl);
@@ -413,6 +421,101 @@ KTEST(vtd_domain_own_domain)
     KT_ASSERT(landed);
     KT_ASSERT(c_kept && c_fault);
     KT_ASSERT(b_kept && b_fault);
+}
+
+/* Table pages a domain of `levels` levels holds for n pages mapped one per
+ * 2 MiB block from 0 up: a leaf table each, a directory per 512 of them,
+ * one per 512 directories with 4 levels, and the root. */
+static uint32_t spread_tables(unsigned levels, uint32_t n)
+{
+    uint32_t dirs = (n + 511) / 512;
+    return 1 + (levels == 4 ? (dirs + 511) / 512 : 0) + dirs + n;
+}
+
+#define SPREAD_FIRST 1024u   /* spread pins mapped first: twice the old cap's worth */
+
+/* A driver's domain takes pins spread one per 2 MiB block (a leaf table
+ * each: what a fragmented machine gives usb-bus's pool) up to its cap of
+ * VTD_DRIVER_MAX_TABLES table pages, well past 512, and refuses the next
+ * one with nothing changed. The domain is never attached: the addresses
+ * are only written into its tables, no device uses them. Review finding
+ * 6, design question C. */
+KTEST(vtd_domain_driver_cap_spread_pins)
+{
+    NEED_LIVE(ctl);
+    struct pci_dev *d = kt_edu();
+    if (!d || !vtd_fn_of(d)) {
+        kprintf("ktest %s: no translated edu, skipped\n", ktest_current);
+        return;
+    }
+    struct iommu_domain *dom;
+    KT_EQ(iommu_domain_create(d, NULL, &dom), OK);
+    struct vtd_pt *pt = &dom->dom->pt;
+    uint32_t n = 0;
+    while (spread_tables(pt->geom.levels, n + 1) <= VTD_DRIVER_MAX_TABLES)
+        n++;
+    if (n < SPREAD_FIRST)
+        n = SPREAD_FIRST;   /* a cap too small: the first map fails, as it should */
+    uint64_t *pages = kmalloc((n + 1) * sizeof(*pages));
+    KT_ASSERT(pages);
+    for (uint32_t i = 0; i <= n; i++)
+        pages[i] = (uint64_t)i * 0x200000 + PAGE_SIZE;   /* page 1 of block i */
+    /* Twice the old cap's worth first, then the rest up to the cap. */
+    status_t first = iommu_map(dom, pages, SPREAD_FIRST);
+    status_t all = first == OK ? iommu_map(dom, &pages[SPREAD_FIRST], n - SPREAD_FIRST) : first;
+    uint32_t tables = pt->tables;
+    status_t more = all == OK ? iommu_map(dom, &pages[n], 1) : all;
+    uint32_t tables_after = pt->tables;
+    uint64_t mapped = pt->mapped;
+    status_t unmapped = all == OK ? iommu_unmap(dom, pages, n) : OK;
+    status_t gone = iommu_domain_destroy(dom);
+    kfree(pages);
+    KT_EQ(first, OK);
+    KT_EQ(all, OK);
+    KT_EQ(tables, VTD_DRIVER_MAX_TABLES);
+    KT_EQ(more, ERR_NO_RESOURCES);
+    KT_EQ(tables_after, VTD_DRIVER_MAX_TABLES);
+    KT_EQ(mapped, n);
+    KT_EQ(unmapped, OK);
+    KT_EQ(gone, OK);
+}
+
+/* While the IOMMU translates, a function whose requester id is shared gets
+ * no domain and so no DMA capability (ERR_ACCESS_DENIED), and its context
+ * entry stays home. edu is made to look shared for the test; on a boot
+ * with a real PCIe-to-PCI bridge (tools/vtd-test.sh's vtd-shared run),
+ * every function vtd_rid_mark found shared is refused too. */
+KTEST(vtd_domain_shared_rid_refused)
+{
+    NEED_LIVE(ctl);
+    struct edu e;
+    if (!edu_open(&e))
+        return;
+    struct kobject *cap = NULL;
+    e.f->shared = true;
+    status_t st = dma_cap_create_for(e.d, NULL, &cap);
+    e.f->shared = false;
+    bool home = e.f->cur == e.saved;
+    if (st == OK)
+        kobject_unref(cap);
+    uint32_t real = 0, refused = 0;
+    for (uint32_t i = 0; vtd_fn_at(i); i++) {
+        struct vtd_fn *f = vtd_fn_at(i);
+        if (!f->shared || !f->ctl || (f->dev->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY)))
+            continue;
+        real++;
+        struct iommu_domain *dom = NULL;
+        status_t r = iommu_domain_create(f->dev, NULL, &dom);
+        refused += r == ERR_ACCESS_DENIED;
+        if (r == OK)
+            (void)iommu_domain_destroy(dom);
+    }
+    edu_close(&e);
+    KT_EQ(st, ERR_ACCESS_DENIED);
+    KT_ASSERT(home);
+    KT_EQ(refused, real);
+    if (real)
+        kprintf("ktest %s: %u function(s) behind a bridge refused\n", ktest_current, real);
 }
 
 KTEST(vtd_domain_mute_after_faults)
@@ -540,16 +643,22 @@ KTEST(vtd_domain_handover_while_on)
     struct vtd_unit *u = ctl->unit;
     uint64_t a = page_of(0x3c), b = page_of(0), c = page_of(0x44);
     static uint64_t pages[257];
-    uint32_t n;
+    uint32_t n = 0;
     KT_ASSERT(a && b && c);
-    KT_EQ(iommu_device_driven(e.d), OK);
+    /* edu in a domain of its own mapping a and b: what the copy's context
+     * entry names too (the same page table). */
+    struct iommu_domain *dom = NULL;
+    uint64_t two[2] = { a, b };
+    status_t made = iommu_domain_create(e.d, NULL, &dom);
+    status_t mapped = made == OK ? iommu_map(dom, two, 2) : made;
+    status_t attached = mapped == OK ? iommu_attach(dom) : mapped;
     /* Nothing may change the tables while the copy is in use. */
     mutex_lock(&ctl->lock);
-    uint64_t copy = copy_tables(ctl, pages, &n);
+    uint64_t copy = attached == OK ? copy_tables(ctl, pages, &n) : 0;
     status_t st = copy ? vtd_boot_handover(u, copy) : ERR_NO_MEMORY;
     bool on = vtd_rd32(u, VTD_GSTS) & VTD_GSTS_TES;
     uint64_t rt = vtd_rd64(u, VTD_RTADDR) & ~0xfffull;
-    /* Through the copy: edu (pass-through) reaches RAM. */
+    /* Through the copy: edu reaches the pages its domain maps. */
     bool ok = st == OK && edu_in(&e, a) && edu_out(&e, b);
     bool landed = page_is(b, 0x3c);
     status_t back = vtd_boot_handover(u, ctl->root_phys);
@@ -558,12 +667,19 @@ KTEST(vtd_domain_handover_while_on)
     KT_EQ(to_home(&e), OK);
     ok = ok && edu_out(&e, c);
     bool kept = page_is(c, 0x44);
+    if (mapped == OK)
+        (void)iommu_unmap(dom, two, 2);   /* home already: no entry names dom */
+    status_t gone = made == OK ? iommu_domain_destroy(dom) : made;
     edu_close(&e);
     for (uint32_t i = 0; i < n; i++)
         pmm_free_page_phys(pages[i]);
     pmm_free_page_phys(a);
     pmm_free_page_phys(b);
     pmm_free_page_phys(c);
+    KT_EQ(made, OK);
+    KT_EQ(mapped, OK);
+    KT_EQ(attached, OK);
+    KT_EQ(gone, OK);
     KT_EQ(st, OK);
     KT_ASSERT(on);
     KT_EQ(rt, copy);

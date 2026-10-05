@@ -11,8 +11,11 @@
  *                 a window (numbered 1, 2, ... in order), on top, its
  *                 buffer W x H of testscene.h's pixels in colour RRGGBB:
  *                 xrgb8888 if AA is ff, else argb8888 at alpha AA. Flags:
- *                 t decorations (a title bar "Window <n>", 2-pixel borders),
- *                 f focused, o its opaque region is all of it, u not
+ *                 t a floating window's decorations (a title bar "Window
+ *                 <n>", the outline; round corners and a shadow), m a
+ *                 maximised one's (the title bar only), g a tiled one's
+ *                 (a DECO_BORDER border all round, round corners), f
+ *                 focused, o its opaque region is all of it, u not
  *                 responding, s solid (no pattern)
  *   fullscreen=AARRGGBB
  *                 the same at (0, 0), as big as the output
@@ -38,7 +41,6 @@
 
 #define WINS_MAX      8
 #define BENCH_SAMPLES 31
-#define BORDER_W      2
 
 /* A window with no client: its surface, buffer and pool are ours. */
 struct twin {
@@ -167,9 +169,10 @@ static void apply_flags(struct twin *t, const char *flags)
     struct comp_window *w = t->s.window;
     window_damage(w);
     for (const char *f = flags; f && *f; f++) {
-        if (*f == 't') {
-            w->deco_top = COMP_TITLE_H;
-            w->deco_left = w->deco_right = w->deco_bottom = BORDER_W;
+        if (*f == 't' || *f == 'm' || *f == 'g') {   /* as deco.c sizes them */
+            int32_t side = *f == 't' ? DECO_OUTLINE : *f == 'g' ? DECO_BORDER : 0;
+            w->deco_top = *f == 'g' ? DECO_BORDER : COMP_TITLE_H;
+            w->deco_left = w->deco_right = w->deco_bottom = side;
         }
         /* Focus as the seat marks it (it gives none to a client with no
          * connection, so it leaves these windows to us). */
@@ -352,7 +355,12 @@ static void bench_frames(const char *what, void (*damage)(void))
 }
 
 static struct comp_box bench_box;   /* what the next bench frame damages */
+static struct comp_window *bench_win;   /* the decorated window the bench moves */
 static void damage_box(void) { scene_damage(bench_box); }
+static void move_window(void)
+{
+    window_move(bench_win, bench_win->x + (bench_win->x & 8 ? -8 : 8), bench_win->y);
+}
 static void damage_pointer(void)
 {
     struct comp_box c = cursor_box();
@@ -360,7 +368,7 @@ static void damage_pointer(void)
 }
 
 /* Every test window gone, then the bench's own: a full-screen opaque one,
- * then a decorated argb window over it. */
+ * then a decorated argb window over it (its shadow and corners too). */
 static bool bench_run(void)
 {
     int32_t w = scene.width, h = scene.height;
@@ -387,13 +395,15 @@ static bool bench_run(void)
     apply_flags(t, "tf");
     cursor_show(true);
     bench_frames("full screen, argb window on it", damage_box);
-    bench_box = window_frame(t->s.window);
+    bench_box = window_extent(t->s.window);
     char what[64];
     snprintf(what, sizeof(what), "%dx%d argb over opaque", ww, wh);
     bench_frames(what, damage_box);
     bench_box = (struct comp_box){ 0, h / 2, w, h / 2 + 16 };
     bench_frames("a text line (full width x 16)", damage_box);
     bench_frames("the pointer moved", damage_pointer);
+    bench_win = t->s.window;
+    bench_frames("the argb window moved 8 pixels", move_window);
     return true;
 }
 

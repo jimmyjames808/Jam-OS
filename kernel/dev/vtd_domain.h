@@ -1,7 +1,7 @@
 /* VT-d DMA remapping in legacy mode: the root and context tables, domains
  * and their ids, and which domain each PCI function's context entry names
  * (Intel VT-d specification 4.1, 3.4.2, 9.1, 9.3, 6.2.2.1). What
- * vtd_domain.c and vtd_boot.c share; the kernel's interface is
+ * vtd_domain.c, vtd_boot.c and vtd_rid.c share; the kernel's interface is
  * <jam/iommu.h>, the units' is vtd_internal.h.
  *
  * The model, per started unit (struct vtd_ctl):
@@ -9,10 +9,10 @@
  *     page: an entry per device and function) for every bus that has a
  *     function the unit covers. Built at boot (vtd_boot.c) before the unit
  *     is pointed at it; root entries never change afterwards;
- *   - domains (struct vtd_dom): a domain id and what it maps. A TABLE
- *     domain has a second-stage page table (vtd_pt); the PASS domain is
- *     pass-through (TT = 10b, needs ECAP.PT): the address goes through
- *     unchanged. Every context entry naming a domain carries its id, and
+ *   - domains (struct vtd_dom): a domain id and a second-stage page table
+ *     (vtd_pt) holding what the domain maps. Pass-through (TT = 10b) is
+ *     never used: a function reaches what its domain maps or nothing.
+ *     Every context entry naming a domain carries its id, and
  *     ids are never shared between different tables (6.2.2.1), so the
  *     unit's caches, tagged by id, can't mix two domains up. Id 0 is never
  *     used (reserved under CM = 1, 9.3; simpler to skip always);
@@ -64,38 +64,34 @@ _Static_assert(sizeof(struct vtd_ctx) == 16, "a 128-bit entry");
 #define VTD_CTX_FPD       (1ull << 1)              /* fault processing disable */
 #define VTD_CTX_TT_SHIFT  2                        /* translation type, 3:2 */
 #define VTD_CTX_TT_SS     0ull                     /* untranslated requests: second stage */
-#define VTD_CTX_TT_PT     2ull                     /* pass-through (ECAP.PT) */
 #define VTD_CTX_SSPTPTR   0x000ffffffffff000ull    /* the page table, 63:12 */
 #define VTD_CTX_AW(hi)    ((unsigned)((hi) & 7))   /* hi 2:0 = bits 66:64 */
 #define VTD_CTX_DID_SHIFT 8                        /* hi 23:8 = bits 87:72 */
 #define VTD_CTX_DID(hi)   ((uint16_t)((hi) >> VTD_CTX_DID_SHIFT))
 #define VTD_RTADDR_TTM(r) VTD_BITS(r, 10, 2)       /* 11.4.5: 00 legacy, 01 scalable, 11 abort */
 
-/* The entries, pure. A context entry: present, domain did, pass-through
- * or the table at `table`, address width aw (9.3's encoding: 1 = 39-bit,
- * 2 = 48-bit, 3 = 57-bit), fpd. */
+/* The entries, pure. A context entry: present, domain did, second-stage
+ * translation through the table at `table` with address width aw (9.3's
+ * encoding: 1 = 39-bit, 2 = 48-bit, 3 = 57-bit), fpd. */
 struct vtd_ctx vtd_root_entry(uint64_t ctx_table);
-struct vtd_ctx vtd_ctx_entry(uint16_t did, bool pass, uint64_t table, unsigned aw, bool fpd);
-
-/* The AW for pass-through: the largest AGAW CAP.SAGAW offers (9.3), 0 if
- * none. Pure. */
-unsigned vtd_pass_aw(uint64_t cap);
+struct vtd_ctx vtd_ctx_entry(uint16_t did, uint64_t table, unsigned aw, bool fpd);
 
 /* ---- domains ----------------------------------------------------------------------------- */
 
-enum vtd_dom_kind {
-    VTD_DOM_TABLE,   /* a second-stage page table */
-    VTD_DOM_PASS,    /* pass-through: TT = 10b */
-};
-
 struct vtd_dom {
     struct vtd_unit_domain ud;     /* the unit and the domain id (vtd_pt's ctx) */
-    enum vtd_dom_kind      kind;
-    const char            *what;   /* for the log: "blocking", "pass-through", ... */
-    struct vtd_pt          pt;     /* VTD_DOM_TABLE: its tables; "vtd domain" */
+    const char            *what;   /* for the log: "blocking", "driver", ... */
+    struct vtd_pt          pt;     /* its tables; "vtd domain" */
     struct mutex           lock;   /* "vtd domain": pt */
     uint32_t               users;  /* context entries naming it; "vtd context" */
 };
+
+/* The cap on one driver's domain (iommu_domain_create): 2048 table pages,
+ * 8 MiB at most. A leaf table maps 2 MiB of IOVA = physical addresses, so
+ * pins dense within 2 MiB blocks reach 4 GiB, but pins spread one per
+ * block need a leaf table each: about 2040 pages that way. usb-bus pins
+ * about 450 pages on the PC, which a fragmented machine may well spread. */
+#define VTD_DRIVER_MAX_TABLES 2048u
 
 /* ---- a unit's tables ---------------------------------------------------------------------- */
 
@@ -111,8 +107,13 @@ struct vtd_ctl {
     uint64_t        *did_used;        /* a bit per domain id; id 0 always set */
     uint32_t         ndid;            /* domain ids the unit has (CAP.ND) */
     struct vtd_dom  *blocking;        /* empty table: every driverless function */
-    struct vtd_dom  *pass;            /* all of RAM: functions with a driver */
     uint32_t         nfn, nboot;      /* functions covered; boot domains made */
+};
+
+/* What <jam/iommu.h> hands out: a domain of the function it was made for. */
+struct iommu_domain {
+    struct vtd_dom *dom;   /* the domain itself */
+    struct vtd_fn  *fn;    /* the function it is for (fixed) */
 };
 
 /* Per PCI function (pci_dev.index). */
@@ -123,6 +124,8 @@ struct vtd_fn {
     bool             muted;        /* FPD set in its entry; "vtd context" */
     uint32_t         dma_faults;   /* DMA faults seen since its last attach (log thread);
                                     * "vtd context" */
+    bool             shared;       /* its requester id may be another function's
+                                    * (vtd_rid.c): no domain for it; written at boot */
     struct vtd_dom  *home;         /* blocking, or its boot domain */
     struct vtd_dom  *cur;          /* what its entry names; "vtd context" */
 };
@@ -157,12 +160,12 @@ uint16_t vtd_did_alloc(struct vtd_ctl *ctl);
  * free it. ERR_TIMED_OUT, ERR_IO: kept (never reused). */
 status_t vtd_did_free(struct vtd_ctl *ctl, uint16_t did);
 
-/* A new domain: kind TABLE with an empty page table (max_tables table
- * pages at most, charged to job), or PASS. ERR_NO_RESOURCES (no id),
- * ERR_NO_MEMORY, ERR_NOT_SUPPORTED (PASS without ECAP.PT, or a geometry
- * vtd_pt can't build). "vtd context" held (or the boot). */
-status_t vtd_dom_new(struct vtd_ctl *ctl, enum vtd_dom_kind kind, struct job *job,
-                     uint32_t max_tables, const char *what, struct vtd_dom **out);
+/* A new domain with an empty page table (max_tables table pages at most,
+ * charged to job). ERR_NO_RESOURCES (no id), ERR_NO_MEMORY,
+ * ERR_NOT_SUPPORTED (a geometry vtd_pt can't build). "vtd context" held
+ * (or the boot). */
+status_t vtd_dom_new(struct vtd_ctl *ctl, struct job *job, uint32_t max_tables, const char *what,
+                     struct vtd_dom **out);
 /* Free a domain no entry names (users 0): vtd_did_free, then its tables.
  * ERR_BAD_STATE, or vtd_did_free's error (nothing freed). */
 status_t vtd_dom_free(struct vtd_dom *d);
@@ -170,7 +173,7 @@ status_t vtd_dom_free(struct vtd_dom *d);
  * Takes "vtd domain". */
 status_t vtd_dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n);
 status_t vtd_dom_unmap(struct vtd_dom *d, const uint64_t *pages, size_t n);
-/* Map [pa, pa + pages * 4 KiB) (an RMRR, or RAM for an identity domain). */
+/* Map [pa, pa + pages * 4 KiB) (an RMRR). */
 status_t vtd_dom_map_range(struct vtd_dom *d, uint64_t pa, uint64_t pages);
 
 /* ---- context entries ---------------------------------------------------------------------- */
@@ -195,6 +198,28 @@ struct vtd_ctx vtd_fn_read(const struct vtd_fn *f);
  * thread (vtd_fault.c): counted per function; at VTD_FAULT_LOGGED the
  * function is muted. Thread context. */
 void vtd_domain_fault_seen(uint32_t unit, uint16_t sid, uint32_t reason);
+
+/* ---- requester ids several functions share (vtd_rid.c) ------------------------------------ */
+
+/* A PCI-to-PCI or CardBus bridge as the check sees it. */
+struct vtd_bridge {
+    uint16_t seg;            /* its segment */
+    uint16_t sid;            /* its own requester id: bus 15:8, device 7:3, function 2:0 */
+    uint8_t  secondary;      /* the bus right below it */
+    uint8_t  subordinate;    /* the highest bus below it */
+    bool     conventional;   /* forwards requests under an id not their own: a PCIe-to-PCI
+                              * or PCI-X bridge, or a bridge with no PCIe capability */
+};
+
+/* Does the function (seg, sid) share its requester id with others, given
+ * the bridges br[0..n): is it below a conventional bridge, or one with a
+ * bus below it? Bridges whose secondary bus isn't above their own are
+ * ignored (unconfigured). Pure. */
+bool vtd_rid_shared(const struct vtd_bridge *br, uint32_t n, uint16_t seg, uint16_t sid);
+/* Set every function's `shared` from the PCI topology (config space), and
+ * put each covered one that is in the RESULTS box. Boot, after the
+ * functions are assigned to units. ERR_NO_MEMORY. */
+status_t vtd_rid_mark(void);
 
 /* ---- the boot (vtd_boot.c) ---------------------------------------------------------------- */
 

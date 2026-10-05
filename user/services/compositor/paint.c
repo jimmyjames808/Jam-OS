@@ -12,16 +12,21 @@
  * One tile, by one worker, into a buffer of its own (cached memory):
  *   - where to start: the topmost window that covers the whole tile with
  *     pixels that hide what is below (paint_opaque_over, decorations are
- *     opaque too); everything under it is skipped, the background too.
- *     With none, the background colour first;
- *   - then each mapped window from there up: its decorations (title.c),
- *     then its buffer: copied (xrgb8888, or inside its opaque region),
- *     or blended over what is below (argb8888, premultiplied, with
- *     libfun's px_over_row: px_over's exact rounding);
+ *     opaque too, a rounded corner's square is not: shape.c);
+ *     everything under it is skipped, the wallpaper too. With none, the
+ *     wallpaper first (wallpaper.c; black while blank);
+ *   - then each mapped window from there up: its shadow (shape.c), the
+ *     pixels below its corners kept, its decorations (title.c), then its
+ *     buffer: copied (xrgb8888, or inside its opaque region), or blended
+ *     over what is below (argb8888, premultiplied, with libfun's
+ *     px_over_row: px_over's exact rounding), then its corners cut round;
  *   - the cursor last (cursor.c);
  *   - the tile's rows to the output (output_put), which is never read.
- * The background is filled only where nothing opaque is, so a tile under
+ * The wallpaper is copied only where nothing opaque is, so a tile under
  * one opaque window costs one copy in and one write out.
+ *
+ * Before a paint, the window whose title bar circles the pointer is over
+ * is looked up (title_hovered), and the circles damaged when it changes.
  *
  * The full-screen path: when the topmost visible window is opaque and its
  * surface covers the whole output (the splash, a full-screen game), its
@@ -57,7 +62,8 @@ static struct {
     struct tile *t;               /* this paint's tiles */
     uint32_t n, cap;
     uint32_t threads;             /* the pool's */
-    uint32_t *buf[FUN_MAX_THREADS];   /* each worker's tile pixels, TILE_W * TILE_H */
+    uint32_t *buf[FUN_MAX_THREADS];   /* each worker's tile pixels, TILE_W * TILE_H, then
+                                       * SHAPE_SAVE_PX for the pixels below a window's corners */
     struct worker_count count[FUN_MAX_THREADS];
     const struct comp_window *full;   /* this paint's full-screen window, or NULL */
 } pt;
@@ -86,11 +92,13 @@ bool paint_opaque_over(const struct comp_window *w, struct comp_box in)
     return false;
 }
 
-/* Does w hide all of b (b not empty)? Its frame holds b, and the part of b
- * on its surface is opaque (decorations always are). */
+/* Does w hide all of b (b not empty)? Its frame holds b, b is clear of its
+ * round corners, and the part of b on its surface is opaque (decorations
+ * always are). */
 static bool hides(const struct comp_window *w, struct comp_box b)
 {
-    if (!(w->flags & COMP_WIN_MAPPED) || !w->surface->buffer || !inside(b, window_frame(w)))
+    if (!(w->flags & COMP_WIN_MAPPED) || !w->surface->buffer || !inside(b, window_frame(w)) ||
+        shape_corner_meets(w, b))
         return false;
     struct comp_box in = box_intersect(b, window_surface_box(w));
     return box_empty(in) || paint_opaque_over(w, in);
@@ -118,16 +126,17 @@ bool window_covered(const struct comp_window *w)
 }
 
 /* The full-screen window: the topmost one shown, if its surface covers the
- * whole output with opaque pixels. */
+ * whole output with opaque pixels (no round corner on the output either). */
 static const struct comp_window *full_screen(void)
 {
     struct comp_box out = { 0, 0, scene.width, scene.height };
     if (comp.blanked)
         return NULL;
     for (const struct comp_window *w = scene.top; w; w = w->below) {
-        if (!(w->flags & COMP_WIN_MAPPED) || box_empty(box_intersect(window_frame(w), out)))
+        if (!(w->flags & COMP_WIN_MAPPED) || box_empty(box_intersect(window_extent(w), out)))
             continue;
-        bool all = inside(out, window_surface_box(w)) && paint_opaque_over(w, out);
+        bool all = inside(out, window_surface_box(w)) && paint_opaque_over(w, out) &&
+                   !shape_corner_meets(w, out);
         return all ? w : NULL;
     }
     return NULL;
@@ -151,12 +160,9 @@ static const uint32_t *buffer_at(const struct comp_window *w, int32_t x, int32_t
                                             (uint64_t)(y - w->y) * b->stride) + (x - w->x);
 }
 
-/* Window w where it meets t: decorations, then its buffer. */
-static void draw_window(const struct comp_window *w, const struct tile_buf *t, uint32_t me)
+/* Window w's buffer where it meets t. */
+static void draw_buffer(const struct comp_window *w, const struct tile_buf *t, uint32_t me)
 {
-    if (!(w->flags & COMP_WIN_MAPPED) || box_empty(box_intersect(window_frame(w), t->b)))
-        return;
-    title_draw(w, t);
     struct comp_box in = box_intersect(window_surface_box(w), t->b);
     if (!w->surface->buffer || box_empty(in))
         return;
@@ -173,16 +179,39 @@ static void draw_window(const struct comp_window *w, const struct tile_buf *t, u
     pt.count[me].layer_px += (uint64_t)n * (uint64_t)(in.y2 - in.y1);
 }
 
+/* Window w where it meets t: its shadow, decorations and buffer, its
+ * corners cut round. */
+static void draw_window(const struct comp_window *w, const struct tile_buf *t, uint32_t me)
+{
+    if (!(w->flags & COMP_WIN_MAPPED) || box_empty(box_intersect(window_extent(w), t->b)))
+        return;
+    shadow_draw(w, t);
+    if (box_empty(box_intersect(window_frame(w), t->b)))
+        return;
+    uint32_t *save = pt.buf[me] + TILE_W * TILE_H;
+    shape_save(w, t, save);
+    title_draw(w, t);
+    draw_buffer(w, t, me);
+    shape_clip(w, t, save);
+}
+
+/* t all one colour. */
+static void fill_tile(const struct tile_buf *t, uint32_t c)
+{
+    uint64_t n = (uint64_t)(t->b.x2 - t->b.x1) * (uint64_t)(t->b.y2 - t->b.y1);
+    for (uint64_t i = 0; i < n; i++)
+        t->px[i] = c;
+}
+
 static void compose(const struct tile_buf *t, uint32_t me)
 {
-    const struct comp_window *from = comp.blanked ? NULL : cull(t->b);
-    if (!from) {
-        uint64_t n = (uint64_t)(t->b.x2 - t->b.x1) * (uint64_t)(t->b.y2 - t->b.y1);
-        for (uint64_t i = 0; i < n; i++)
-            t->px[i] = scene.background;
-    }
-    if (comp.blanked)
+    if (comp.blanked) {
+        fill_tile(t, LOOK_BLANK);
         return;
+    }
+    const struct comp_window *from = cull(t->b);
+    if (!from)
+        wallpaper_fill(t);
     for (const struct comp_window *w = from ? from : scene.bottom; w; w = w->above)
         draw_window(w, t, me);
     cursor_draw(t);
@@ -283,10 +312,35 @@ static void plan(void)
     region_fini(&dis);
 }
 
+/* The window whose circles the pointer is over (title_hovered), its
+ * circles damaged when that changes: they show their symbols, or stop. */
+static void hover_update(void)
+{
+    static struct comp_box last;   /* the circles hovered at the last paint */
+    const struct comp_window *w = NULL;
+    struct comp_box now_on = { 0, 0, 0, 0 };
+    bool on_surface;
+    struct comp_window *u = comp.blanked || box_empty(cursor_box())
+                                ? NULL
+                                : wm_window_at(cursor.x, cursor.y, &on_surface);
+    if (u && !on_surface && title_button_at(u, cursor.x, cursor.y) != TITLE_NONE) {
+        w = u;
+        now_on = title_buttons_hit(u);
+    }
+    if (now_on.x1 != last.x1 || now_on.y1 != last.y1 || now_on.x2 != last.x2 ||
+        now_on.y2 != last.y2) {
+        scene_damage(last);
+        scene_damage(now_on);
+        last = now_on;
+    }
+    title_hovered = w;
+}
+
 uint64_t paint_frame(void)
 {
     uint64_t t0 = now();
     memset(&paint_last, 0, sizeof(paint_last));
+    hover_update();
     if (damage_empty(&scene.damage))
         return 0;
     plan();
@@ -314,13 +368,19 @@ status_t paint_init(uint32_t threads)
     if (!threads)
         threads = THREADS_DEFAULT;
     uint32_t cpus = fun_cpu_count();
+    if (title_init() != OK)   /* before the workers: they only read the fonts */
+        printf("compositor: no memory for the titles' fonts: the 8x16 text\n");
     pt.threads = pool_start(threads < cpus ? threads : cpus);
     for (uint32_t i = 0; i < pt.threads; i++) {
-        pt.buf[i] = big_alloc((uint64_t)TILE_W * TILE_H * 4);
+        pt.buf[i] = big_alloc(((uint64_t)TILE_W * TILE_H + SHAPE_SAVE_PX) * 4);
         if (!pt.buf[i])
             return ERR_NO_MEMORY;
     }
     (void)text_width(1, "");   /* libfun's glyph tables, made now: the workers only read them */
+    mask_init();
+    shape_init();
     cursor_init();
+    if (wallpaper_init(output.width, output.height) != OK)
+        printf("compositor: no memory for the wallpaper: a flat background\n");
     return OK;
 }

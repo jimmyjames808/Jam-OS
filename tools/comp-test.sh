@@ -2,8 +2,10 @@
 # The compositor on QEMU's framebuffer: the hidden boot word `comptest`
 # makes init start bin/compositor alone with the screen, running its test
 # scene (user/services/init/comptest.c: windows of known pixels with no
-# client, title bars, a translucent window, the arrow, then a full-screen
-# window). Each step is held on the screen for 4 s; QEMU's monitor takes a
+# client on the wallpaper, in the floating look (title bars, circles,
+# rounded corners, shadows), a translucent window, the arrow on a window's
+# circles, a tiled window's look, then a full-screen window). Each step is
+# held on the screen for 4 s; QEMU's monitor takes a
 # screenshot of each, and tools/comp-check.py checks them against the steps
 # the log describes. Then the compositor's `bench:` lines are printed (its
 # frame costs; QEMU's numbers only show the code runs, the PC's count).

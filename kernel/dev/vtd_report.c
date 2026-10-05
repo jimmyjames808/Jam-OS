@@ -18,13 +18,8 @@
 /* One domain, printed once (deduplicated by pointer within a unit). */
 static void report_domain(const struct vtd_dom *d)
 {
-    if (d->kind == VTD_DOM_PASS)
-        kprintf("iommu:     domain %u (%s): pass-through, %u function(s)\n", d->ud.did, d->what,
-                d->users);
-    else
-        kprintf("iommu:     domain %u (%s): %lu page(s) mapped, %u table page(s), %u "
-                "function(s)\n", d->ud.did, d->what, (unsigned long)d->pt.mapped, d->pt.tables,
-                d->users);
+    kprintf("iommu:     domain %u (%s): %lu page(s) mapped, %u table page(s), %u function(s)\n",
+            d->ud.did, d->what, (unsigned long)d->pt.mapped, d->pt.tables, d->users);
 }
 
 /* The distinct domains the unit's functions name, and each function's. */

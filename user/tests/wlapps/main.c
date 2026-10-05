@@ -12,7 +12,8 @@
  * can't open a window can't fall back to borrowing the screen, it ends.
  * After `settle` seconds (default 5) every app must still run and the
  * image must have the apps' pixels in it: more than a tenth of each
- * window's area in colours other than the background. Then it borrows the
+ * window's area changed from the compositor's first picture (the
+ * wallpaper, taken before the apps start). Then it borrows the
  * real screen (its own namespace without the compositor again) and shows
  * the image there for `hold` seconds (default 4), for QEMU's screendump,
  * and ends the apps and the compositor.
@@ -29,10 +30,10 @@
 #include <fun.h>
 #include <jwl_client.h>
 #include <os.h>
-#include <splash.h>
 
 #define MAX_APPS   4
 #define CONNECT_NS (5 * NS_PER_S)
+#define FIRST_NS   (10 * NS_PER_S)   /* the compositor's first picture, at most this long */
 
 struct opts {
     int32_t w, h;          /* the headless output */
@@ -89,6 +90,7 @@ struct comp {
     handle_t job, proc;    /* its job and process */
     handle_t image;        /* the VMO it composes into */
     uint32_t *px;          /* ... mapped here */
+    uint32_t *first;       /* its first picture (the wallpaper), ours */
 };
 
 static status_t start_compositor(const struct opts *o, struct comp *k)
@@ -124,6 +126,27 @@ static status_t start_compositor(const struct opts *o, struct comp *k)
             jam_handle_close(left[i]);
     k->px = (uint32_t *)(uintptr_t)addr;
     return st;
+}
+
+/* The compositor's first picture, once all of it is painted (the image
+ * starts all 0, which no pixel of the wallpaper is): a copy of ours. */
+static status_t first_picture(const struct opts *o, struct comp *k)
+{
+    uint64_t n = (uint64_t)o->w * (uint64_t)o->h, until = now() + FIRST_NS, i = 0;
+    const volatile uint32_t *px = k->px;   /* the compositor writes it */
+    while (i < n && now() < until) {
+        if (px[i] & 0xffffff)
+            i++;
+        else
+            jam_nanosleep(now() + NS_PER_MS);
+    }
+    if (i < n)
+        return ERR_TIMED_OUT;
+    k->first = big_alloc(n * 4);
+    if (!k->first)
+        return ERR_NO_MEMORY;
+    memcpy(k->first, k->px, n * 4);
+    return OK;
 }
 
 /* Whether the compositor offers windows: a client of our own asks. */
@@ -174,12 +197,12 @@ static bool all_running(const struct opts *o, const handle_t *procs)
     return true;
 }
 
-/* The image's pixels in colours other than the background. */
-static uint64_t drawn(const struct opts *o, const uint32_t *px)
+/* The image's pixels changed since the compositor's first picture. */
+static uint64_t drawn(const struct opts *o, const struct comp *k)
 {
     uint64_t n = 0;
     for (uint64_t i = 0; i < (uint64_t)o->w * (uint64_t)o->h; i++)
-        n += (px[i] & 0xffffff) != SPLASH_BG;
+        n += (k->px[i] & 0xffffff) != (k->first[i] & 0xffffff);
     return n;
 }
 
@@ -206,7 +229,7 @@ static bool check(const struct opts *o, const struct comp *k, const handle_t *pr
     jam_nanosleep(now() + (uint64_t)o->settle * NS_PER_S);
     if (!all_running(o, procs))
         return false;
-    uint64_t n = drawn(o, k->px), want = (uint64_t)o->ww * (uint64_t)o->wh / 10 * o->napps;
+    uint64_t n = drawn(o, k), want = (uint64_t)o->ww * (uint64_t)o->wh / 10 * o->napps;
     printf("wlapps: %llu pixels drawn by the windows (want more than %llu)\n",
            (unsigned long long)n, (unsigned long long)want);
     if (n <= want) {
@@ -227,6 +250,8 @@ int main(int argc, char **argv)
     pool_start(0);
     struct comp k = { .proc = HANDLE_INVALID };
     status_t st = start_compositor(&o, &k);
+    if (st == OK)
+        st = first_picture(&o, &k);
     if (st != OK) {
         printf("wlapps: verdict: FAIL: can't start the compositor (%s)\n", status_str(st));
         return 1;
