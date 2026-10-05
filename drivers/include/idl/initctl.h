@@ -5,8 +5,9 @@
  * (and initctl_<method>_until with a deadline, _within with a timeout), or
  * initctl_<method>_send and initctl_<method>_result without waiting. Server:
  * fill a struct initctl_ops and run initctl_serve(ch, &ops, ctx), or
- * initctl_serve_one / initctl_dispatch_on for a loop of your own;
- * initctl_reply_<method> answers a request later. */
+ * initctl_serve_one / initctl_dispatch_on for a loop of your own, or
+ * initctl_take_slot / initctl_run_slot for requests read into slots that outlive
+ * the server; initctl_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -983,6 +984,49 @@ static inline uint32_t initctl_dispatch(const struct initctl_ops *ops, void *ctx
                                         void *rep, handle_t *rhs, uint32_t *rhn)
 {
     return initctl_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t initctl_take_slot(handle_t ch, const struct idl_slot *slot,
+                                         struct idl_reply *rep)
+{
+    if (slot->qcap < INITCTL_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by initctl_take_slot, or found there by a
+ * successor), which came on ch: as initctl_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it can't. */
+static inline uint32_t initctl_run_slot(handle_t ch, const struct idl_slot *slot,
+                                        const struct initctl_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return initctl_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. */
+static inline bool initctl_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
 }
 
 /* Take one message off ch and answer it. OK once a message was handled

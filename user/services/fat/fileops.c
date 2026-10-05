@@ -544,9 +544,7 @@ void files_event(uint64_t key)
         return;   /* a packet of a file closed since */
     fh[slot].armed = false;
     const struct fat_chan c = chan_of(f);
-    status_t st = OK;
-    for (unsigned i = 0; i < FAT_BATCH && st == OK && !vol.disk_gone; i++)
-        st = serve_one(&c);
+    status_t st = serve_one(&c);   /* one per turn: main.c's loop */
     if (st == OK || st == ERR_SHOULD_WAIT)
         st = arm(f);   /* fires at once if more is queued */
     if (st != OK)
@@ -581,14 +579,6 @@ unsigned files_adopt(void)
         n++;
     }
     return n;
-}
-
-bool files_reply_arrived(uint32_t i)
-{
-    if (i >= FAT_MAX_FILES || !kept->files[i].used || !fh[i].ch)
-        return true;   /* closed since: its reply had arrived, or it is gone anyway */
-    signals_t seen = 0;
-    return jam_object_wait_one(fh[i].ch, SIG_PEER_CLOSED, 0, &seen) == ERR_TIMED_OUT;
 }
 
 status_t files_remake(uint32_t i, handle_t *out_ch, handle_t *out_vmo)

@@ -311,12 +311,12 @@ KTEST(pathstat_user_reply_wait_counts)
     KT_ASSERT(per100(&r, PATH_CLOCK) <= 2);
 }
 
-/* The same call with a deadline, as libos gives every file call: one more
- * system call (the clock) and one sleeper-queue entry per call. Clock
- * reads: the clock_get and the call's wait, which has a deadline (the
- * server's wait has none, and reads no clock). The 5 s
- * deadline is after the CPU's next tick, so it never re-arms the timer
- * (the tick looks after it: wait.c). */
+/* The same call with a deadline, as libos gave every file call before
+ * they took a timeout (_within): one more system call (the clock) and one
+ * sleeper-queue entry per call. Clock reads: the clock_get and the call's
+ * wait, which has a deadline (the server's wait has none, and reads no
+ * clock). The 60 s deadline (FS_CALL_TIMEOUT) is after the CPU's next
+ * tick, so it never re-arms the timer (the tick looks after it: wait.c). */
 KTEST(pathstat_user_deadline_call_counts)
 {
     struct path_result r;

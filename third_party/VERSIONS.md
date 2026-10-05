@@ -89,3 +89,14 @@ Vendored third-party code:
   and, with the Mac's compiler, into build/host/jamos-sign
   (tools/jamos-sign.c: the key and the signatures; its `self-test` runs
   those vectors).
+- wayland-protocols/: Wayland's interface files, vendored unmodified as data
+  for tools/genwl.py (no libwayland code is used): wayland.xml from wayland
+  1.26.0 (tag 1.26.0, commit 87cc8a8728a923fc57938faa81ba0e74f34ecdc7,
+  protocol/wayland.xml, sha256 cc860987e54f8d85...) and xdg-shell.xml from
+  wayland-protocols 1.49 (tag 1.49, commit
+  ee78491a237eaff9389a0ccf8680521d074407d3, stable/xdg-shell/xdg-shell.xml,
+  sha256 7ba7f9c8473deee6...), both from https://gitlab.freedesktop.org/wayland/.
+  MIT: each project's COPYING is kept beside them (COPYING-wayland,
+  COPYING-wayland-protocols); README.md there has every file's source and
+  sha256. The generated user/include/jwl/*.h and user/lib/jwl_*.c carry the
+  XML's copyright block.

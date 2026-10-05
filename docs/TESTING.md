@@ -39,7 +39,10 @@ that a bug fix comes with a test is in
 - `make` builds with `-Werror`; `make KTESTS=0` builds a kernel without
   the in-kernel tests, benchmark and test hooks (into `build/noktests/`).
 - `make check`: the generated syscall and IDL code matches `abi/`
-  (`tools/gensyscalls.py check`, `tools/genidl.py check`); the driver
+  (`tools/gensyscalls.py check`, `tools/genidl.py check`), the generated
+  Wayland code matches the vendored XML (`tools/genwl.py check`) and the
+  Wayland generator passes its own tests (`tools/genwl.py selftest`:
+  tools/genwl-tests/, built and run with the Mac's compiler); the driver
   isolation check still rejects what it must (`tools/checkdriver-selftest.sh`
   over `tools/checkdriver-tests/`); the docs match the tree
   (`tools/checkdocs.py`: links, anchors, and the repo paths, file names,
@@ -337,7 +340,10 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   `noplaceorder`, `noaffinepair`, `nokmcache`, `nooneshot`, `noserialirq`,
   `nofpuopt`, `nofpucall` (a switch inside a system call saves the full
   FPU state again; utest's `fpu_call_keeps_control_words` then reports
-  its rounds as kept, not zeroed).
+  its rounds as kept, not zeroed), `nohandoff` (a wake that would hand
+  the CPU straight to the woken thread queues it instead). The message slots
+  (`channel_slots`) have no boot word: the benchmark's `slots` switch and
+  the path tests turn them off for a moment.
 - `vlan=<id>`, `vlan=none`, `vlan=off`: the network's mode
   ([ARCHITECTURE](../ARCHITECTURE.md#networking)). `vlan=<id>` (1..4094):
   every frame Jam OS sends is tagged with that VLAN and only frames tagged
@@ -502,6 +508,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `console-restart.txt` | a console started again after about 550 KiB of log (the klog gap test, 8 loops) draws only the last 256 KiB of it, and the shell comes back | |
 | `commands.txt` | utest, usbtest, pci, memmap, the crash list, demo, Ctrl+C past a program, orphans killed with their job, devmgr restarted by init; ends with a real crash, and the next boot's line about it | |
 | `extras.txt` | bench and a short stress from the shell, scrollback, clear; ends with a panic, and the next boot's line about it | |
+| `perop.txt` | `perop -q /data/` (the per-operation lines, a tenth of the samples): every line printed (stat, open + close, a 4 KiB block read through usb-storage, cached 4 KiB and 64 KiB reads, a 64 KiB write through to the stick), its scratch file gone afterwards; a usage error (2). QEMU's numbers mean nothing: the PC gives them ([BENCH.md](BENCH.md#method)) | |
 | `files.txt` | the file namespace: `/boot` as a read-only mount, `run` with a path, the file commands (mkdir touch write cp mv rm df sync) on a writable mount (the tests' RAM filesystem, `run ramfs shell`), a mount that reaches a running shell, the bootfs server killed and mounted again | |
 | `files-fat.txt` | the file commands on a real FAT volume (`run utest fat-shell`: bin/fat over a RAM disk): names with spaces and lower case, big copies, rm -r | |
 | `unplug.txt` | the stick pulled while the system runs and plugged back in (the monitor's `device_del` / `device_add`): `/data` and `/esp` go, nothing hangs, they come back in the running shell, logd carries on | |
@@ -840,6 +847,55 @@ pcap's VLAN checks.
   `dhcp:` line in the log, no DHCP message at the peer), and `host
   www.jam` works with the settings' DNS server.
 
+## The call path
+
+The IPC fast path ([ARCHITECTURE.md](../ARCHITECTURE.md#ipc),
+[M11.5-PLAN.md](M11.5-PLAN.md)) has tests at three levels, all in the
+quick tiers:
+
+- **Counts** (`ktest=pathstat`, `kernel/test/test_pathstat.c`): the path
+  trace's own rules (members only, the window, interrupt handlers left
+  out, one trace at a time), then what one call costs, exactly: a context
+  switch (1 lock, 1 pass), a kernel `channel_call`, the user call against
+  a server that reads, writes and waits (5 system calls, 1 read that
+  finds nothing, 1 allocation), the same against a reply-and-wait server
+  (2 system calls, 0 empty reads, 0 allocations, 0 job charges, 2
+  hand-offs, 11 locks), with a deadline (a `clock_get`, a sleeper entry,
+  no timer write), and through generated code (2 system calls, the
+  kernel's two clock reads). A change that moves a count updates its
+  number in the same commit and says so; the benchmark prints the same
+  counts (`bench: path` lines, [BENCH.md](BENCH.md)).
+- **Kernel behaviour**: `chanslot_*` (a slot reused call after call, a
+  big reply allocated, a slot message nobody waits for queued whole,
+  handles in a slot, a user caller killed at every point losing nothing),
+  `chanwait_*` (a waiting reader handed the next message that fits, in
+  order, with handles, two readers, closed ends, no relock after the
+  wake), `chanread_kill_loses_nothing` and
+  `chanread_reply_wait_kill_loses_nothing` (a server killed inside its
+  read or its reply-and-wait: each request still queued or wholly in its
+  buffer), `handoff_*` (a higher-priority thread queued meanwhile runs
+  first, a waker that doesn't block queues its wakee, a ping-pong pair
+  shares one slice), `preempt_resched_*` (a reschedule pending at the
+  last unlock still happens, and waits for interrupts to be on),
+  `lockdep_*` (the checker's fast path: an empty top slot seen by an
+  interrupt handler, a release out of order, the switch with locks
+  held); that the checker still refuses a bad order, a lock taken twice,
+  a nested class and a class used in and out of interrupts is shown by
+  the crash tests `lockorder`, `lockself`, `locknest` and `lockirq`
+  (`tools/crash-test.sh`), since each one panics.
+- **From user space** (utest): `reply_wait_*` (the mark written before
+  the wait and not after a failed reply, a reply to a caller that has
+  gone, a second process answering on the same end, the port form, bad
+  pointers, rights and handle types), `call_timeout_relative`
+  (`CHANNEL_CALL_TIMEOUT`), `fpu_call_keeps_control_words` (MXCSR and the
+  x87 control word survive a blocking call, the vector registers come
+  back zero, never another thread's), `idl_serve_*` and
+  `idl_within_times_out` (the generated server on reply-and-wait, a
+  client that went away, `_within`).
+
+The times are the PC's: `bench` ([BENCH.md](BENCH.md)) prints every
+switch's line off and on in one run, and `perop` the per-operation lines.
+
 ## Random numbers
 
 The kernel's generator ([ARCHITECTURE.md](../ARCHITECTURE.md#random-numbers))
@@ -875,6 +931,7 @@ of them. Each file's header says more.
 | `tools/checkdriver.py`, `tools/checkdriver-selftest.sh` | the driver build check, and the proof that it still rejects what it must (`tools/checkdriver-tests/`) |
 | `tools/sortincludes.py` | the include-order check of `make check`; `make includes` runs it with `--fix` |
 | `tools/gensyscalls.py`, `tools/genidl.py`, `tools/gensyms.py` | the syscall glue, the IDL headers and the kernel symbol table |
+| `tools/genwl.py` | the Wayland tables and typed stubs from upstream's XML (`gen`, `check`, `selftest`) |
 | `tools/mkbootfs.py`, `tools/mkimage.py` | the boot image and the two-partition disk image |
 | `tools/bootfs-edit.py <in> <out> name=file...` | a boot image with files added, replaced or (`name=`) left out (the update tests' build B, and their builds with or without a test key) |
 | `tools/update-test-key.sh <outdir> <in.img> <out.img> [nokey]` | for the update tests: two throwaway keys in `<outdir>/testkey` (made once by `build/host/jamos-sign keygen`) and a copy of the image whose build has the first one's public half (or none) |
