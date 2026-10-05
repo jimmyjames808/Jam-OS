@@ -39,6 +39,8 @@ send kill compositor
 wait 10 init: bin/compositor was killed
 wait 30 console: connected again (connection 2)
 wait 30 console: connected again (connection 2)
+# (the new compositor's focus: the window mapped last; both copy to COM1)
+sleep 2
 send echo ok-$?-after-compositor
 wait 10 ok-0-after-compositor
 

@@ -98,9 +98,11 @@ send tetris &
 wait 10 [1]
 sleep 2
 type q
-wait 20 [1] done: tetris (exit 0)
+wait 20 tetris: score
+sleep 1
 send echo after-$T-tetris
 wait 10 after-x-tetris
+seen 10 [1] done: tetris (exit 0)
 wait jam>
 
 # ---- the limit: 8 at once ----------------------------------------------------------------
