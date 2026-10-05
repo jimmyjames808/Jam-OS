@@ -6,6 +6,8 @@
  * Startup handles:
  *   SR_RESOURCE   the root resource with RIGHT_ROOT_SCREEN: the framebuffer
  *                 (output.c); without it, or with no framebuffer, headless.
+ *                 init's also has RIGHT_ROOT_REBOOT: Ctrl+Alt+Del's reset
+ *                 when init can't reboot (ctl.c).
  *   SR_USER + 0   the server end of /svc/wayland: the svc protocol's
  *                 connect makes each opener's connection (conn.c). init
  *                 keeps it, so a restarted compositor serves the same one.
