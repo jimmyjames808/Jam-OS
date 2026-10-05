@@ -14,6 +14,8 @@
  *                 t decorations (a title bar "Window <n>", 2-pixel borders),
  *                 f focused, o its opaque region is all of it, u not
  *                 responding, s solid (no pattern)
+ *   fullscreen=AARRGGBB
+ *                 the same at (0, 0), as big as the output
  *   move=K,X,Y    raise=K    unmap=K    map=K
  *   damage=X,Y,W,H
  *   cursor=X,Y    the arrow, there;  nocursor
@@ -167,6 +169,18 @@ static bool cmd_win(const char *s)
     return true;
 }
 
+/* fullscreen=AARRGGBB: a window as big as the output, at (0, 0). */
+static bool cmd_fullscreen(const char *s)
+{
+    int64_t v[1];
+    const char *rest;
+    if (numbers(s, v, 1, 0, &rest) != 1 || rest || v[0] > 0xffffffffll)
+        return false;
+    char win[64];
+    snprintf(win, sizeof(win), "0,0,%d,%d,%08x", scene.width, scene.height, (uint32_t)v[0]);
+    return cmd_win(win);
+}
+
 /* The window numbered k (1-based), or NULL. */
 static struct comp_window *window_no(int64_t k)
 {
@@ -292,6 +306,8 @@ static bool run_one(const char *c)
     const char *rest;
     if ((s = after(c, "win")))
         return cmd_win(s);
+    if ((s = after(c, "fullscreen")))
+        return cmd_fullscreen(s);
     if ((s = after(c, "damage"))) {
         if (numbers(s, v, 4, -1, &rest) != 4 || rest)
             return false;

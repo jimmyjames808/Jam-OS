@@ -31,6 +31,9 @@ void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  * controllers alone (the safe mode boot entry); splash: the boot splash
  * plays first (splash.c). */
 bool init_shell(bool nousb, bool splash, const char *shell_arg);
+/* The hidden comptest mode (comptest.c): the compositor alone on the
+ * screen, running its test scene. True if it exited 0. */
+bool run_comptest(void);
 /* The option word "hidboot" (main.c): devmgr is started with it, so every
  * hid keeps its mouse in the boot protocol. */
 extern bool init_hidboot;
