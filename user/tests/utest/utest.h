@@ -457,6 +457,8 @@ bool t_fun_window_present(void);
 bool t_fun_window_input(void);
 bool t_fun_window_reconnect(void);
 bool t_fun_window_resize(void);
+/* funscreen.c: libfun's borrowed screen against a fake console. */
+bool t_fun_screen_close_frees(void);
 
 /* comp.c, comp_bad.c: bin/compositor headless, driven by Wayland clients
  * over real channels (comptest.h). */

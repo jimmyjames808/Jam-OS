@@ -22,6 +22,14 @@ static status_t map_vmo(handle_t vmo, uint64_t len, void **out)
     return st;
 }
 
+/* Drop map_vmo's mapping (p NULL: none). A failure leaves it mapped,
+ * which nothing writes again: the screen is closed. */
+static void unmap_vmo(void *p, uint64_t len)
+{
+    if (p)
+        (void)jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)p, len);
+}
+
 status_t gfx_open(void)
 {
     return gfx_open_on(0);
@@ -50,10 +58,11 @@ static status_t borrow_screen(uint32_t bg, bool keys)
         return st;
     }
     void *p = NULL;
+    uint64_t len = (size + 4095) & ~4095ull;
     if (w < 320 || h < 200 || w > 8192 || h > 8192 || pitch < w * 4 || size < (uint64_t)pitch * h)
         st = ERR_NOT_SUPPORTED;
     else
-        st = map_vmo(vmo, (size + 4095) & ~4095ull, &p);
+        st = map_vmo(vmo, len, &p);
     jam_handle_close(vmo);   /* the mapping keeps it */
     uint64_t px = (uint64_t)w * h * 4;
     if (st == OK) {
@@ -63,12 +72,16 @@ static status_t borrow_screen(uint32_t bg, bool keys)
             st = ERR_NO_MEMORY;
     }
     if (st != OK) {
+        big_free(scr.s.px, px);
+        big_free(scr.shown, px);
+        unmap_vmo(p, len);
         jam_handle_close(scr.lease);
         if (scr.keys)
             jam_handle_close(scr.keys);
         return st;
     }
     scr.fb = p;
+    scr.fb_len = len;
     scr.w = scr.s.w = scr.s.stride = (int)w;
     scr.h = scr.s.h = (int)h;
     scr.pitch = pitch;
@@ -127,9 +140,18 @@ void gfx_close(void)
         wl_close();   /* the compositor takes the window off the screen */
         return;
     }
+    /* The screen's mapping goes before the lease, so nothing of ours can
+     * draw over the console once it has its screen back; then the back
+     * buffers (as a window's go in wl_close). */
+    uint64_t px = (uint64_t)scr.w * (uint64_t)scr.h * 4;
+    unmap_vmo(scr.fb, scr.fb_len);
     jam_handle_close(scr.lease);   /* the console redraws its text screen */
     if (scr.keys)
         jam_handle_close(scr.keys);   /* and the keys go back to the shell */
+    big_free(scr.s.px, px);
+    big_free(scr.shown, px);
+    scr.s.px = scr.shown = scr.fb = NULL;
+    scr.fb_len = 0;
     scr.lease = scr.keys = HANDLE_INVALID;
 }
 

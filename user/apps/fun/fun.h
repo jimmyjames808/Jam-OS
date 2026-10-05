@@ -83,6 +83,7 @@ struct screen {
     /* private */
     uint32_t *shown;    /* what the screen or the window shows (RAM copy) */
     uint32_t *fb;       /* the framebuffer (write-combining: written, never read) */
+    uint64_t fb_len;    /* bytes mapped at fb (the borrowed screen's VMO) */
     uint32_t pitch;     /* framebuffer bytes per line */
     uint8_t  rs, gs, bs;   /* the framebuffer's red, green, blue bit positions */
     bool     native;    /* the framebuffer is 0xRRGGBB too: copied as it is */
