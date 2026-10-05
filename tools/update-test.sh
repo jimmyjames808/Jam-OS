@@ -144,7 +144,8 @@ rm -f "$stick"
 # 4. A build without a key (its boot image has no update.pub): the shell's
 #    `update` fetches nothing and says why; init refuses the build offered
 #    straight to it (updtest nokey), plain, check-only and to be written to
-#    the stick; `update -w` fetches nothing either.
+#    the stick; `update -w` and `update -m` fetch nothing either; and
+#    `update -n -r` is a usage error (nothing to reboot into).
 nokey="$out/update-nokey.img"
 tools/update-test-key.sh "$out" build/jamos.img "$nokey" nokey &&
     mmd -i "$nokey@@64M" ::/update &&
@@ -162,6 +163,14 @@ wait jam>
 send update -w 10.2.21.174; echo nw-""\$?
 wait 30 this build has no update key: updates are off
 wait nw-1
+wait jam>
+send update -m 10.2.21.174; echo nm-""\$?
+wait 30 this build has no update key: updates are off
+wait nm-1
+wait jam>
+send update -n -r; echo nr-""\$?
+wait 30 usage: update [-n | -m | -w] [-r] [-f] [server address]
+wait nr-2
 wait jam>
 send run updtest nokey
 wait 120 updtest: nokey:
