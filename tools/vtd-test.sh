@@ -19,7 +19,8 @@
 #      the "started" line, every vtd_unit_* test passed (every
 #      invalidation kind, the vtd_pt and vtd_ir callbacks, a refused
 #      descriptor reported and the queue going on, the queue wrapping,
-#      every CPU at once, QI off and on); interrupt remapping on
+#      every CPU at once, QI off and on, a storm of fault events masked
+#      and unmasked again); interrupt remapping on
 #      (kernel/dev/vtd_irq.c) and every vtd_irq_* test passed (COM1's pin
 #      remapped, an MSI through its own entry, entries freed on close, a
 #      foreign, freed or out-of-range entry refused and recorded, the
@@ -34,7 +35,8 @@
 #      ff:1f.7);
 #   5b. ktest=dma with translation on, both caching modes: every dma_*
 #      test passed and none skipped (edu reaches only what its dma_cap
-#      pinned, a killed driver's pages freed once its domain is gone, the
+#      pinned, a killed driver's pages freed once its domain is gone and
+#      held while the unit doesn't confirm it, the
 #      quarantine's tests in their translated form, the pin cost printed);
 #   6. the domain tests with pass-through off (pt=off): the tests'
 #      pass-through domain is an identity map of all RAM instead;
@@ -136,11 +138,15 @@ domain_ok() {
         "ktest: vtd_domain_handover_while_on     ok"
 }
 
-# problems <name>: the VT-d problems reported, but for the refusal and
-# edu's faults the tests provoke.
+# problems <name>: the VT-d problems reported, but for what the tests
+# provoke: the refusals, edu's faults, vtd_unit_fault_storm_masked's storm,
+# and dma_iommu_unconfirmed_close_keeps_pages's switch with the queue off
+# (ERR_BAD_STATE, -8).
 problems() {
     grep -E "vtd: [^ ]" "$out/$1.log" | grep -vF "the queue refused descriptor" |
-        grep -vE "vtd: fault: unit 0: (00:04\.0 |ff:1f\.7 interrupt, index)"
+        grep -vE "vtd: fault: unit 0: (00:04\.0 |ff:1f\.7 interrupt, index)" |
+        grep -vE "vtd: fault: unit 0: (fault storm|the fault storm is over)" |
+        grep -vF "vtd: unit 0: 00:04.0 to domain 1 (blocking): the invalidation failed (-8)"
 }
 
 # on <name> <QEMU_IOMMU>: the units started, translation on, their ktests.
@@ -158,6 +164,7 @@ on() {
         "ktest: vtd_unit_queue_wraps             ok" \
         "ktest: vtd_unit_many_cpus_at_once       ok" \
         "ktest: vtd_unit_queue_off_and_on        ok" \
+        "ktest: vtd_unit_fault_storm_masked      ok" \
         "ktest: vtd_unit_registers_kept          ok" \
         "vtd:         interrupt remapping on: 1 unit, one table at" \
         "ktest: vtd_irq_check_units_pure         ok" \
@@ -192,6 +199,7 @@ dma_on() {
         "ktest: dma_iommu_unpinned_page_blocked" "ktest: dma_quarantine_stats_consistent" \
         "ktest: dma_quarantine_phys_and_clean_close" "ktest: dma_cap_owner_rules" \
         "ktest: dma_stale_write_after_rebind" "the IOMMU translating; 2 page(s) freed at once" \
+        "ktest: dma_iommu_unconfirmed_close_keeps_pages ok" \
         "run complete: no problems"
     if problems "$1"; then
         echo "$1: a VT-d problem reported (above)"
