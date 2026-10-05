@@ -302,9 +302,8 @@ static bool run_tests(void)
  * finishes, and init must start the shell anyway); `nospare` (init keeps
  * no warm spare of the mixer: a restart starts a process); `vtdtest`
  * (with `iommu=on`, the "IOMMU checks" test entry), which init passes on
- * to devmgr and devmgr to drv/hda: its deliberate DMA faults; `comp` (the
- * compositor draws the screen, each terminal a window), early, so the
- * limit on init's words never drops it. */
+ * to devmgr and devmgr to drv/hda: its deliberate DMA faults; `nocomp` (no
+ * compositor: the console draws the screen, one terminal). */
 #define INIT_WORDS_MAX 9
 
 static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
@@ -312,8 +311,8 @@ static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
     unsigned n = 0;
     if (shell && splash_boot())
         words[n++] = "splash";
-    if (shell && cmdline_has("comp"))
-        words[n++] = "comp";
+    if (shell && cmdline_has("nocomp"))
+        words[n++] = "nocomp";
     if (cmdline_has("hidboot"))
         words[n++] = "hidboot";
     if (cmdline_has("netprobe"))

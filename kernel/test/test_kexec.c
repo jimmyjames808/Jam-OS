@@ -277,6 +277,9 @@ KTEST(kexec_next_cmdline_words)
     KT_ASSERT(!strcmp(buf, "nolockdep"));
     kexec_next_cmdline("bench nohandoff", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "nohandoff"));
+    /* No compositor stays no compositor; the compositor's test scene is a test. */
+    kexec_next_cmdline("nocomp comptest comp", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "nocomp"));
     /* The disk the machine booted from goes on from kernel to kernel. */
     kexec_next_cmdline("shell bootdisk=3792991605 init", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "shell bootdisk=3792991605"));

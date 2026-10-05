@@ -1,18 +1,19 @@
-/* serialin: COM1 as an input source for the console.
+/* serialin: COM1 as an input source for the compositor (or, booted with
+ * `nocomp`, the console).
  *
  * Reads what arrives on the serial port (the kernel's serial_open object,
  * interrupt-driven) and passes it on as `input.text` calls (abi/idl/
- * input.idl) on the channel the console handed out through
- * console.connect_input: the same path a HID driver's keys take. So a
- * serial terminal, or a QEMU test writing to the serial port, can type
- * into the shell.
+ * input.idl) on the channel init got for it from compctl.connect_input
+ * (or console.connect_input): the same path a HID driver's keys take. So
+ * a serial terminal, or a QEMU test writing to the serial port, can type
+ * into the focused window, and so into the shell.
  *
  * Startup handles:
  *   SR_RESOURCE   the root resource with RIGHT_ROOT_SERIAL (serial_open)
- *   SR_USER + 0   the `input` channel to the console
+ *   SR_USER + 0   the `input` channel to the compositor (or the console)
  *
- * Exits 0 when the console closes the channel (it restarted: init starts
- * a new serialin for the new console), 1 if the port can't be opened. */
+ * Exits 0 when the other end closes the channel (it restarted: init
+ * starts a new serialin for the new one), 1 if the port can't be opened. */
 #include <idl/input.h>
 #include <os.h>
 

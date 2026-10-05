@@ -44,7 +44,10 @@ static const char template_text[] =
     "#   sets it), utc (as Linux and macOS do), or a zone (Windows set to another one)\n"
     "rtc = local\n"
     "# volume: the master volume in dB (0 is the most, -96 silence); music.volume:\n"
-    "#   the music player's; music.folder: what `music start` plays without a folder\n";
+    "#   the music player's; music.folder: what `music start` plays without a folder\n"
+    "# display.layout: the windows floating or tiling (Super+T switches it and saves\n"
+    "#   it here); display.hz: how often the screen is redrawn at most, 1 to 1000 a\n"
+    "#   second (default 60)\n";
 
 /* key's value from the settings file, or dflt if there is none (or no
  * /data). */

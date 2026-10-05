@@ -4,9 +4,10 @@
  * With "shell" (a plain boot), "shell-nousb" (the safe mode entry:
  * devmgr leaves USB controllers alone) or "soak=<minutes>" (a plain boot
  * whose shell starts the soak test) it starts and supervises the bootfs
- * server, the console, serial input, devmgr and the shell (shell.c) and
- * never exits; an option word "splash" after it plays the boot splash
- * first (splash.c). The option word "hidboot" (with any mode) is passed
+ * server, the compositor, the console, serial input, devmgr and the shell
+ * (shell.c) and never exits; an option word "splash" after it plays the
+ * boot splash first (splash.c), and "nocomp" leaves the compositor out
+ * (comp.c). The option word "hidboot" (with any mode) is passed
  * on to devmgr, which passes it to every hid: mice stay in the boot
  * protocol; so is "netprobe", "netsend" or "net" in shell mode (devmgr
  * binds the RTL8125's driver for its listen-only probe, its ARP send test
@@ -58,7 +59,7 @@ const char *init_vlan;
 bool init_splashhang;
 bool init_nospare;
 bool init_vtdtest;
-bool init_comp;
+bool init_nocomp;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -430,8 +431,8 @@ int main(int argc, char **argv)
      * or "vlan=none", "bootdisk=0x<id>", "splashhang", "nospare" (no warm
      * spare mixer: spare.c; passed on to devmgr: no warm spare fat),
      * "vtdtest" (passed on to devmgr: drv/hda's IOMMU fault checks),
-     * "comp" (the compositor draws the screen, each terminal a window:
-     * comp.c). */
+     * "nocomp" (no compositor: the console draws the screen and takes
+     * the input, one terminal; comp.c). */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");
@@ -446,7 +447,7 @@ int main(int argc, char **argv)
         init_splashhang |= !strcmp(argv[i], "splashhang");
         init_nospare |= !strcmp(argv[i], "nospare");
         init_vtdtest |= !strcmp(argv[i], "vtdtest");
-        init_comp |= !strcmp(argv[i], "comp");
+        init_nocomp |= !strcmp(argv[i], "nocomp");
     }
     /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain
      * boot: the console, devmgr (connected to it), serial input and the

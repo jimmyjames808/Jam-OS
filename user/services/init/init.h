@@ -1,6 +1,7 @@
 /* init: what its files share. main.c starts init (the init.cfg programs,
  * keytest); shell.c is the shell mode, where init starts and supervises
- * the bootfs server, the console, serialin, devmgr, the mixer, the music
+ * the bootfs server, the compositor (comp.c), the console, serialin,
+ * devmgr, the mixer, the music
  * player, netstack, logd, netlog, sntp and the shell, each started as services.c says; splash.c
  * the boot splash that plays first in shell mode; lastboot.c the boot
  * before this one, if it panicked (its log saved by logd, one line for the
@@ -84,10 +85,11 @@ void     mounts_settle(void);
 
 /* ---- ctl.c ----------------------------------------------------------------------- */
 
-/* Who holds a control channel: the shell may ask everything, each
- * terminal's console (CTL_CONSOLE + its index) only reboot and terminal. */
+/* Who holds a control channel: the shell may ask everything, the
+ * compositor and each terminal's console (CTL_CONSOLE + its index) only
+ * reboot and terminal. */
 #define TERM_MAX 8   /* terminals at most, the first included (terms.c) */
-enum { CTL_SHELL, CTL_CONSOLE, CTL_COUNT = CTL_CONSOLE + TERM_MAX };
+enum { CTL_SHELL, CTL_COMPOSITOR, CTL_CONSOLE, CTL_COUNT = CTL_CONSOLE + TERM_MAX };
 
 /* A new control channel for holder `who`, replacing its old one (whose
  * client ends see ERR_PEER_CLOSED). *client: the end to hand over. Its
@@ -140,6 +142,7 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETS
 #define KEY_NETCTL   0x600u   /* netstack's answers to init's netctl calls (net.c) */
 #define KEY_SPARE    0x700u   /* the warm spare's process ended (spare.c) */
 #define KEY_KEEP     0x800u   /* the kept service wrote to its keeper (spare.c) */
+#define KEY_COMP     0x900u   /* the compositor's answer on init's compctl channel (comp.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -230,20 +233,45 @@ status_t terms_open(uint8_t *number);
 /* "console-<n>", "shell-<n>" (n 2 to TERM_MAX): terminal n's service i. */
 bool     terms_named(const char *name, unsigned *i);
 
-/* ---- comp.c: the compositor (the boot word `comp`) ---------------------------------- */
+/* ---- comp.c: the compositor (not with the boot word `nocomp`) ----------------------- */
 
-/* Set up once before the loop: on (the word given): /svc/wayland's
- * channel made; off: the compositor is not started this boot. */
-void     comp_init(bool on);
+/* Set up once before the loop (port: the loop's): on (no `nocomp`, and
+ * bin/compositor in bootfs): /svc/wayland's channel made and published;
+ * off: the compositor is not started this boot. */
+void     comp_init(handle_t port, bool on);
 /* A compositor draws the screen this boot. */
 bool     comp_on(void);
+/* One runs now (its compctl channel is init's). */
+bool     comp_up(void);
 /* Start it (services_start's, for COMPOSITOR). */
 status_t comp_start(void);
+/* It ended: its compctl channel goes (services_closed). */
+void     comp_closed(void);
+/* KEY_COMP: the compositor answered init's layout_wait (saved), or went. */
+void     comp_event(void);
+/* /data came: the layout the settings say, sent to the compositor (or a
+ * switch made before /data saved). */
+void     comp_settings(void);
 /* A duplicate of /svc/wayland's client end for a console, HANDLE_INVALID
  * without a compositor. */
 handle_t comp_wayland(void);
-/* The boot word `comp` (main.c). */
-extern bool init_comp;
+/* A new INPUT-level compctl channel (devmgr's), and a new input source
+ * (serialin's), from the running compositor: ERR_BAD_STATE while none
+ * runs, else compctl's errors. */
+status_t comp_input_channel(handle_t *out);
+status_t comp_source(handle_t *out);
+/* The screen blank (on) or drawn again, if a compositor runs (init's
+ * reboot: the console can't, it has no screen of its own). */
+void     comp_blank(bool on);
+/* The boot word `nocomp` (main.c). */
+extern bool init_nocomp;
+
+/* services.c: devmgr's class drivers type into what ch leads to (consumed):
+ * the first console's channel, or the compositor's INPUT channel
+ * (DEVMGR_SET_CONSOLE); nothing if no devmgr runs. */
+void     services_devmgr_input(handle_t ch);
+/* services.c: a new compositor runs: devmgr gets an INPUT channel of it. */
+void     comp_restarted(void);
 
 /* services.c: what shell mode's services share, set up once before the
  * loop: the loop's port, the safe mode word, whether the splash plays

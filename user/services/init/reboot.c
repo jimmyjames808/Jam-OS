@@ -30,9 +30,10 @@
  * call; `reboot -f` goes straight there). A board whose firmware hangs
  * after a reset that caught a device mid-transfer (a USB stick half way
  * through a command, a NIC writing a ring) is what the stopped drivers
- * are for. The screen already shows only the
- * splash background: the shell or the console blanked it (console.blank)
- * before asking for the reboot. */
+ * are for. The screen shows only the splash background: with a
+ * compositor init blanks it first (compctl.blank: the console, a window,
+ * can't); under `nocomp` the shell or the console blanked it
+ * (console.blank) before asking for the reboot. */
 #include <devmgr.h>
 #include <idl/console.h>
 #include <os.h>
@@ -168,11 +169,15 @@ static void say_stored_instead(status_t why)
     uint8_t text[2048] = { 0 };
     memcpy(text, line, (size_t)n);
     uint64_t deadline = now() + NS_PER_S;
+    comp_blank(false);   /* the terminal's window shows it */
     if (console_blank_until(c, deadline, 0) != OK ||
-        console_write_until(c, deadline, (uint16_t)n, text) != OK)
+        console_write_until(c, deadline, (uint16_t)n, text) != OK) {
+        comp_blank(true);
         return;
+    }
     jam_nanosleep(now() + NOTICE_SHOW);
     (void)console_blank_until(c, now() + NS_PER_S, 1);   /* dark again until the next splash */
+    comp_blank(true);
 }
 
 /* What every restart does before the reset or the jump: /data synced,
@@ -195,6 +200,7 @@ static uint64_t stop_everything(const char *how)
 
 status_t init_reboot_kexec(void)
 {
+    comp_blank(true);   /* with a compositor (the console's blank can't: no screen of its own) */
     if (esp_changed()) {
         uint64_t kb, bb;
         uint32_t ms;

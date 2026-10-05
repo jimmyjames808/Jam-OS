@@ -1,7 +1,8 @@
 /* init's control channels: the initctl protocol (abi/idl/initctl.idl).
  *
- * A channel per holder: the shell's answers everything, each terminal's
- * console's only `reboot` (Ctrl+Alt+Del) and `terminal` (Super+Enter).
+ * A channel per holder: the shell's answers everything; the compositor's
+ * and each terminal's console's only `reboot` (Ctrl+Alt+Del) and
+ * `terminal` (Super+Enter: the compositor's, or under `nocomp` nobody's).
  * Which requests a channel takes is a property of the channel, never of
  * who is asking.
  *
@@ -348,7 +349,7 @@ static status_t op_update_offer(void *ctx, handle_t *out_offer)
 
 static status_t op_terminal(void *ctx, uint8_t *out_number)
 {
-    (void)ctx;   /* every holder: the shell's and the consoles' */
+    (void)ctx;   /* every holder: the shell's, the compositor's and the consoles' */
     status_t st = terms_open(out_number);
     if (st != OK)
         printf("init: no new terminal: %s\n", status_str(st));

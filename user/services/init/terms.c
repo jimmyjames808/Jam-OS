@@ -20,7 +20,8 @@
  *             console channel (SR_USER + 0) and a control channel of init's
  *             of its own that answers only `reboot` and `terminal`
  *             (SR_USER + 8, ctl.c: Ctrl+Alt+Del goes through init, which
- *             syncs /data first; Super+Enter opens a terminal), and the
+ *             syncs /data first; with a compositor the compositor keeps
+ *             Ctrl+Alt+Del and Super+Enter, which never reach it), and the
  *             log writers' table read-only (CONSOLE_WRITERS_ROLE,
  *             writers.c); init keeps the client end. With the splash (the
  *             argument "quiet") the first draws nothing until the splash
@@ -50,10 +51,12 @@
  * hardware beyond the calls made for them.
  *
  * A new console gets a new channel, so the shell on it (whose channel
- * then closes) exits and comes back connected to it; the first
- * terminal's also takes serialin with it, and devmgr gets the new channel
- * (DEVMGR_SET_CONSOLE): its HID drivers, which end when their console
- * goes, come back connected to it. */
+ * then closes) exits and comes back connected to it. Under `nocomp` the
+ * first console is also the input's hub: it takes serialin with it, and
+ * devmgr gets the new channel (DEVMGR_SET_CONSOLE): its HID drivers,
+ * which end when their console goes, come back connected to it. With a
+ * compositor the input is the compositor's (comp.c), and a console's
+ * keys come to its window. */
 #include <devmgr.h>
 #include <idl/console.h>
 #include <logwriters.h>
@@ -123,27 +126,15 @@ bool terms_extra_open(void)
     return false;
 }
 
-/* devmgr takes a new console (after the console restarted): its HID
- * drivers come back connected to it. */
+/* devmgr takes a new console (after the console restarted, under
+ * `nocomp`: with a compositor the keys are its): its HID drivers come
+ * back connected to it. */
 static void tell_devmgr(void)
 {
     handle_t c = HANDLE_INVALID;
-    handle_t devmgr = shell_devmgr();
-    if (!devmgr || jam_handle_duplicate(terms[0].cons, RIGHT_SAME, &c) != OK)
-        return;
-    struct devmgr_req q = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
-    struct devmgr_rep r;
-    uint32_t n = 0, got = 0;
-    struct channel_call_args a = {
-        .h = devmgr, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)&q,
-        .wh = (uint64_t)(uintptr_t)&c, .whn = 1, .rcap = sizeof(r),
-        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
-        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * NS_PER_S,
-    };
-    status_t st = jam_channel_call(&a);   /* c goes with the request either way */
-    if (st != OK || n < DEVMGR_REP_HDR || r.status != OK)
-        printf("init: devmgr didn't take the new console (%s)\n",
-               status_str(st != OK ? st : r.status));
+    if (shell_devmgr() && !comp_on() &&
+        jam_handle_duplicate(terms[0].cons, RIGHT_SAME, &c) == OK)
+        services_devmgr_input(c);
 }
 
 /* Terminal k's console's handles (x has room for 5), how many. */
