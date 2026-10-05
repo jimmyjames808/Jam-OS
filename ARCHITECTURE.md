@@ -1085,6 +1085,15 @@ out for troubleshooting.
   blocks, but only about 2040 pages spread one per block (usb-bus pins
   about 450 on the PC); past either limit the pin fails
   `ERR_NO_RESOURCES`.
+- **Shared requester ids.** A unit tells devices apart only by the
+  requester id their requests carry, and a conventional PCI device's
+  carries a bridge's: a PCIe-to-PCI bridge's (its secondary bus, 00.0, or
+  its own) or a PCI-to-PCI bridge's. Such functions would use one
+  domain, so while the IOMMU translates none of them (nor the bridge)
+  gets a `dma_cap` (`ERR_ACCESS_DENIED`, a log line); the boot names
+  them in the RESULTS box, read from the PCI topology
+  (`kernel/dev/vtd_rid.c`), and their DMA stays blocked. The PC has no
+  such bridge.
 - **Safe rebind with the IOMMU.** Making a cap turns the function's Bus
   Master Enable off and points its context entry at the new, empty domain
   in one step: whatever the previous driver left queued reaches nothing.

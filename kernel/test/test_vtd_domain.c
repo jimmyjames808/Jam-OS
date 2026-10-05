@@ -33,6 +33,7 @@
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
+#include <jam/resource.h>
 #include <jam/resource_impl.h>
 #include <jam/sched.h>
 #include <jam/string.h>
@@ -119,6 +120,49 @@ KTEST(vtd_domain_did_alloc)
     KT_EQ(vtd_did_free(&ctl, 7), OK);   /* not live: no invalidation */
     KT_EQ(vtd_did_alloc(&ctl), 7);
     KT_EQ(vtd_did_alloc(&ctl), 0);
+}
+
+#define SID(b, d, f) ((uint16_t)((b) << 8 | (d) << 3 | (f)))
+
+/* Requester ids that several functions share, on a made-up topology:
+ *   00:1c.0 PCIe root port -> 01:00.0 switch up -> 02:01.0 switch down
+ *     -> 03:00.0 an endpoint: its own id;
+ *   00:1d.0 PCIe root port -> 04:00.0 a PCIe-to-PCI bridge -> bus 5:
+ *     05:01.0, 05:02.0 and a conventional PCI bridge 05:03.0 -> 06:00.0;
+ *   00:1e.0 a bridge left unconfigured (secondary 0);
+ *   segment 1 has no bridges at all.
+ * Review finding 4, design question D. */
+KTEST(vtd_domain_shared_rid_topology)
+{
+    static const struct vtd_bridge br[] = {
+        { 0, SID(0, 0x1c, 0), 1, 3, false },
+        { 0, SID(1, 0, 0), 2, 3, false },
+        { 0, SID(2, 1, 0), 3, 3, false },
+        { 0, SID(0, 0x1d, 0), 4, 6, false },
+        { 0, SID(4, 0, 0), 5, 6, true },
+        { 0, SID(5, 3, 0), 6, 6, true },
+        { 0, SID(0, 0x1e, 0), 0, 0, true },
+    };
+    uint32_t n = sizeof(br) / sizeof(br[0]);
+    /* Their own ids: on a root bus, or below PCIe bridges only. */
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(0, 2, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(3, 0, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(0, 0x1c, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(2, 1, 0)));
+    /* Below the PCIe-to-PCI bridge, at any depth, and the bridges whose
+     * ids stand for them. */
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(5, 1, 0)));
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(5, 2, 0)));
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(5, 3, 0)));
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(6, 0, 0)));
+    KT_ASSERT(vtd_rid_shared(br, n, 0, SID(4, 0, 0)));
+    /* The root port above it is PCIe: its own id. An unconfigured
+     * conventional bridge leads nowhere. */
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(0, 0x1d, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, n, 0, SID(0, 0x1e, 0)));
+    /* Another segment's bus 5 is not segment 0's. */
+    KT_ASSERT(!vtd_rid_shared(br, n, 1, SID(5, 1, 0)));
+    KT_ASSERT(!vtd_rid_shared(br, 0, 0, SID(5, 1, 0)));
 }
 
 /* The lines vtd_flush_lines flushed while the hook was on (any CPU: this
@@ -434,6 +478,44 @@ KTEST(vtd_domain_driver_cap_spread_pins)
     KT_EQ(mapped, n);
     KT_EQ(unmapped, OK);
     KT_EQ(gone, OK);
+}
+
+/* While the IOMMU translates, a function whose requester id is shared gets
+ * no domain and so no DMA capability (ERR_ACCESS_DENIED), and its context
+ * entry stays home. edu is made to look shared for the test; on a boot
+ * with a real PCIe-to-PCI bridge (tools/vtd-test.sh's vtd-shared run),
+ * every function vtd_rid_mark found shared is refused too. */
+KTEST(vtd_domain_shared_rid_refused)
+{
+    NEED_LIVE(ctl);
+    struct edu e;
+    if (!edu_open(&e))
+        return;
+    struct kobject *cap = NULL;
+    e.f->shared = true;
+    status_t st = dma_cap_create_for(e.d, NULL, &cap);
+    e.f->shared = false;
+    bool home = e.f->cur == e.saved;
+    if (st == OK)
+        kobject_unref(cap);
+    uint32_t real = 0, refused = 0;
+    for (uint32_t i = 0; vtd_fn_at(i); i++) {
+        struct vtd_fn *f = vtd_fn_at(i);
+        if (!f->shared || !f->ctl || (f->dev->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY)))
+            continue;
+        real++;
+        struct iommu_domain *dom = NULL;
+        status_t r = iommu_domain_create(f->dev, NULL, &dom);
+        refused += r == ERR_ACCESS_DENIED;
+        if (r == OK)
+            (void)iommu_domain_destroy(dom);
+    }
+    edu_close(&e);
+    KT_EQ(st, ERR_ACCESS_DENIED);
+    KT_ASSERT(home);
+    KT_EQ(refused, real);
+    if (real)
+        kprintf("ktest %s: %u function(s) behind a bridge refused\n", ktest_current, real);
 }
 
 KTEST(vtd_domain_mute_after_faults)

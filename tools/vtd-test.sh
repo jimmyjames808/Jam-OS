@@ -40,6 +40,8 @@
 #      quarantine's tests in their translated form, the pin cost printed);
 #   6. the domain tests on a unit without pass-through (pt=off): nothing
 #      depends on ECAP.PT (no function is ever put on pass-through);
+#   6b. a PCIe-to-PCI bridge with a second edu behind it: both named as
+#      sharing a requester id, and neither gets a domain;
 #   7. a shell boot with iommu=on, `reboot` (kexec): the jump turns
 #      interrupt remapping, translation and the queue off, and the next
 #      kernel finds them all off, starts the unit and turns interrupt
@@ -133,6 +135,8 @@ domain_ok() {
         "ktest: vtd_domain_blocked_dma_faults    ok" \
         "ktest: vtd_domain_own_domain            ok" \
         "ktest: vtd_domain_driver_cap_spread_pins ok" \
+        "ktest: vtd_domain_shared_rid_topology   ok" \
+        "ktest: vtd_domain_shared_rid_refused    ok" \
         "ktest: vtd_domain_mute_after_faults     ok" \
         "ktest: vtd_domain_new_driver_fresh_count ok" \
         "ktest: vtd_domain_handover_while_on     ok"
@@ -140,13 +144,14 @@ domain_ok() {
 
 # problems <name>: the VT-d problems reported, but for what the tests
 # provoke: the refusals, edu's faults, vtd_unit_fault_storm_masked's storm,
-# and dma_iommu_unconfirmed_close_keeps_pages's switch with the queue off
-# (ERR_BAD_STATE, -8).
+# dma_iommu_unconfirmed_close_keeps_pages's switch with the queue off
+# (ERR_BAD_STATE, -8), and vtd_domain_shared_rid_refused's refusal of edu.
 problems() {
     grep -E "vtd: [^ ]" "$out/$1.log" | grep -vF "the queue refused descriptor" |
         grep -vE "vtd: fault: unit 0: (00:04\.0 |ff:1f\.7 interrupt, index)" |
         grep -vE "vtd: fault: unit 0: (fault storm|the fault storm is over)" |
-        grep -vF "vtd: unit 0: 00:04.0 to domain 1 (blocking): the invalidation failed (-8)"
+        grep -vF "vtd: unit 0: 00:04.0 to domain 1 (blocking): the invalidation failed (-8)" |
+        grep -vF "vtd: unit 0: no domain for 00:04.0: its requester id is shared"
 }
 
 # on <name> <QEMU_IOMMU>: the units started, translation on, their ktests.
@@ -221,6 +226,23 @@ domain_ok vtd-nopt
 have vtd-nopt "pt 0," "a driver's gets its dma_cap's domain" "run complete: no problems"
 if problems vtd-nopt; then
     echo "vtd-nopt: a VT-d problem reported (above)"
+    ok=0
+fi
+
+# A PCIe-to-PCI bridge (00:1e.0) with a second edu behind it (01:01.0):
+# both share a requester id, are named in the RESULTS box, and get no
+# domain (no DMA capability) while translating; nothing else is reported.
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_IOMMU=1 \
+    QEMU_EXTRA="-device pcie-pci-bridge,id=pb,bus=pcie.0,addr=0x1e -device edu,bus=pb,addr=0x1" \
+    tools/qemu-test.sh "$out" vtd-shared ktest=vtd_domain_shared iommu=on > "$out/vtd-shared.out" 2>&1 ||
+    { echo "vtd-shared: QEMU run failed (see $out/vtd-shared.out)"; ok=0; }
+have vtd-shared "vtd: 00:1e.0 shares a requester id" "vtd: 01:01.0 shares a requester id" \
+    "vtd: unit 0: no domain for 01:01.0: its requester id is shared" \
+    "ktest vtd_domain_shared_rid_refused: 1 function(s) behind a bridge refused" \
+    "ktest: vtd_domain_shared_rid_refused    ok" "run complete: no problems"
+if problems vtd-shared | grep -vE "vtd: (00:1e\.0|01:01\.0) shares a requester id" |
+    grep -vF "vtd: unit 0: no domain for 01:01.0"; then
+    echo "vtd-shared: a VT-d problem reported (above)"
     ok=0
 fi
 

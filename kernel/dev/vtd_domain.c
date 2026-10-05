@@ -507,6 +507,12 @@ status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_
     struct vtd_fn *f = vtd_fn_of(dev);
     if (!f)
         return ERR_NOT_SUPPORTED;
+    if (f->shared) {
+        kprintf("vtd: unit %u: no domain for %02x:%02x.%x: its requester id is shared with "
+                "other functions (behind a PCIe-to-PCI or PCI bridge)\n", f->ctl->unit->index,
+                f->sid >> 8, (f->sid >> 3) & 0x1f, f->sid & 7);
+        return ERR_ACCESS_DENIED;
+    }
     struct iommu_domain *id = kzalloc(sizeof(*id));
     if (!id)
         return ERR_NO_MEMORY;

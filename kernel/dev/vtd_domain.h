@@ -1,7 +1,7 @@
 /* VT-d DMA remapping in legacy mode: the root and context tables, domains
  * and their ids, and which domain each PCI function's context entry names
  * (Intel VT-d specification 4.1, 3.4.2, 9.1, 9.3, 6.2.2.1). What
- * vtd_domain.c and vtd_boot.c share; the kernel's interface is
+ * vtd_domain.c, vtd_boot.c and vtd_rid.c share; the kernel's interface is
  * <jam/iommu.h>, the units' is vtd_internal.h.
  *
  * The model, per started unit (struct vtd_ctl):
@@ -124,6 +124,8 @@ struct vtd_fn {
     bool             muted;        /* FPD set in its entry; "vtd context" */
     uint32_t         dma_faults;   /* DMA faults seen since its last attach (log thread);
                                     * "vtd context" */
+    bool             shared;       /* its requester id may be another function's
+                                    * (vtd_rid.c): no domain for it; written at boot */
     struct vtd_dom  *home;         /* blocking, or its boot domain */
     struct vtd_dom  *cur;          /* what its entry names; "vtd context" */
 };
@@ -196,6 +198,28 @@ struct vtd_ctx vtd_fn_read(const struct vtd_fn *f);
  * thread (vtd_fault.c): counted per function; at VTD_FAULT_LOGGED the
  * function is muted. Thread context. */
 void vtd_domain_fault_seen(uint32_t unit, uint16_t sid, uint32_t reason);
+
+/* ---- requester ids several functions share (vtd_rid.c) ------------------------------------ */
+
+/* A PCI-to-PCI or CardBus bridge as the check sees it. */
+struct vtd_bridge {
+    uint16_t seg;            /* its segment */
+    uint16_t sid;            /* its own requester id: bus 15:8, device 7:3, function 2:0 */
+    uint8_t  secondary;      /* the bus right below it */
+    uint8_t  subordinate;    /* the highest bus below it */
+    bool     conventional;   /* forwards requests under an id not their own: a PCIe-to-PCI
+                              * or PCI-X bridge, or a bridge with no PCIe capability */
+};
+
+/* Does the function (seg, sid) share its requester id with others, given
+ * the bridges br[0..n): is it below a conventional bridge, or one with a
+ * bus below it? Bridges whose secondary bus isn't above their own are
+ * ignored (unconfigured). Pure. */
+bool vtd_rid_shared(const struct vtd_bridge *br, uint32_t n, uint16_t seg, uint16_t sid);
+/* Set every function's `shared` from the PCI topology (config space), and
+ * put each covered one that is in the RESULTS box. Boot, after the
+ * functions are assigned to units. ERR_NO_MEMORY. */
+status_t vtd_rid_mark(void);
 
 /* ---- the boot (vtd_boot.c) ---------------------------------------------------------------- */
 

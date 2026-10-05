@@ -200,7 +200,8 @@ on: the dead driver's device can reach nothing it had.
 - Functions that share a requester id (behind a PCIe-to-PCI bridge, or a
   quirk) would have to share a domain. Stage 0's scopes and the PCI
   listing say whether the PC has any; the plan assumes none and refuses a
-  cap for an aliased function until it is needed.
+  cap for an aliased function until it is needed (built after the
+  review: `kernel/dev/vtd_rid.c`; the PC has none).
 - Unbound caps (kernel tests, no device) have no domain, as today.
 - Domain ids are bounded by the unit (CAP.ND: 256 expected on the PC);
   ids are reused only after their invalidation completed. Out of ids:
@@ -680,7 +681,8 @@ by default until the PC passes (question 6).
   reset dropped); the "512 table pages = 1 GiB of scattered pins" claim
   corrected (fully scattered pins hit it at ~500 pages); design questions
   A-E for the owner there, answered and built or recorded in the same file
-  (the pass-through domain removed, the cap raised to 2048 table pages).
+  (the pass-through domain removed, the cap raised to 2048 table pages,
+  caps refused for functions that share a requester id).
 
 **Left for the PC** ([What only the PC can show](#what-only-the-pc-can-show)),
 then the default.

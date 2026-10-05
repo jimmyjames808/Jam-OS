@@ -91,8 +91,10 @@ void iommu_report(void);
 /* A new, empty domain for dev on dev's unit (its own domain id and page
  * table, the table pages charged to job, which may be NULL), with dev's
  * RMRRs already mapped. Not attached. ERR_NOT_SUPPORTED (dev isn't
- * translated: no unit covers it, or iommu=off), ERR_NO_RESOURCES (no
- * domain id left), ERR_NO_MEMORY. */
+ * translated: no unit covers it, or iommu=off), ERR_ACCESS_DENIED (dev's
+ * requester id is shared with other functions, behind a PCIe-to-PCI or
+ * PCI bridge: its domain would be theirs too; logged),
+ * ERR_NO_RESOURCES (no domain id left), ERR_NO_MEMORY. */
 status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_domain **out);
 
 /* Free a domain no context entry names (detached, or never attached):

@@ -436,6 +436,10 @@ void iommu_boot(void)
         return;
     }
     uint32_t none = assign_functions(info);
+    if (vtd_rid_mark() != OK) {
+        report("vtd: no memory to read the PCI topology: translation stays off");
+        return;
+    }
     for (uint32_t i = 0; i < VTD_MAX_UNITS; i++)
         if (vtd_ctl_get(i))
             start_unit(vtd_ctl_get(i));
