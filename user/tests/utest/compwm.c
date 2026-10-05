@@ -753,6 +753,15 @@ static bool window_at_steps(void)
     CHECK(!strcmp(win(1)->title, ""));
     wm_set_title(fks[1].ww, "a window");
     CHECK(!strcmp(win(1)->title, "a window"));
+    /* a title set before the first buffer (as libfun does) is there at the map */
+    struct fk *f = &fks[2];
+    *f = (struct fk){ .s = { .client = &fake_client, .input_all = true }, .own_w = 64,
+                      .own_h = 64 };
+    CHECK((f->ww = wm_create(&f->s, &fk_ops, f)) != NULL);
+    wm_set_title(f->ww, "early");
+    wm_reconfigure(f->ww);
+    CHECK(fk_draw(f));
+    CHECK(win(2)->title && !strcmp(win(2)->title, "early"));
     /* not responding: the flag the title bar reads */
     wm_set_not_responding(fks[1].ww, true);
     CHECK(win(1)->flags & COMP_WIN_UNRESPONSIVE);
