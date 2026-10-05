@@ -46,8 +46,10 @@
  *        undone with the cap, then destroys the domain, which invalidates
  *        what the unit cached for its domain id; once the unit has
  *        confirmed that, the pages are FREED at once. If it can't confirm
- *        (an invalidation timed out), the domain is kept for good (the
- *        unit may still use it) and the batch is quarantined instead;
+ *        (an invalidation timed out or was refused), the batch keeps its
+ *        domain and its pages and is tried again every second (RETRY_NS):
+ *        they are never released unconfirmed, since the unit may still
+ *        use the domain's mappings;
  *      - without a domain the batch is QUARANTINED: the device may still
  *        hold the pages' addresses in a queued transfer, and Bus Master
  *        Enable comes back on with the next driver. The quarantine keeps
@@ -107,14 +109,19 @@
 /* How long the release thread waits for a closed cap's pins still being
  * made or undone (each at most a commit and one invalidation, 100 ms). */
 #define SETTLE_NS (10 * NS_PER_S)
+/* How often the release thread tries again to take away a domain the unit
+ * didn't confirm gone. */
+#define RETRY_NS  (1 * NS_PER_S)
 
 struct q_batch {
     struct list_node     node;          /* on dma_fn.batches */
     struct list_node     pins;          /* vmo.c ranges (their cap_node) */
     uint64_t             npins, pages;  /* pins and pages in the batch */
-    uint64_t             deadline;      /* uptime_ns() at which it goes */
+    uint64_t             deadline;      /* uptime_ns() at which it goes (or is tried again) */
     struct iommu_domain *dom;           /* taken away first, then the pages freed; NULL: quarantined */
-    struct dma_cap      *cap;           /* with dom: the closed cap (a reference), or NULL */
+    struct dma_cap      *cap;           /* with dom: the closed cap (a reference) until its pins in
+                                         * flight are done, or NULL */
+    bool                 unconfirmed;   /* a try failed (said once); the release thread's */
 };
 
 struct dma_fn {
@@ -187,36 +194,50 @@ static bool pins_settled(struct dma_cap *c)
  * freed at once: the function back home unless a newer cap's domain has
  * replaced it already (that switch waited for the same invalidation), the
  * closed cap's pins in flight finished, the domain destroyed (the unit's
- * caches for its id invalidated and waited for). False when the unit
- * didn't confirm it: the domain is kept for good (the unit may still use
- * it) and b becomes a quarantined batch. */
+ * caches for its id invalidated and waited for: the context entries and
+ * translations it tagged, the function's included). False when the unit
+ * didn't confirm it: b keeps its domain (and its cap until the pins in
+ * flight are done) and its pages, and is tried again RETRY_NS later. The
+ * pages are never released before the unit confirms: the domain still
+ * maps them, and the unit may still hold the function's old context
+ * entry, which a later switch's device-selective invalidation doesn't
+ * reach (it names the domain id in memory, VT-d 6.5.1.1), so a timed
+ * release could hand the next driver's device freed pages. Only freeing
+ * the domain's id invalidates what it tagged. */
 static bool take_domain_away(struct pci_dev *d, struct q_batch *b)
 {
     status_t st = iommu_detach(b->dom);
     if (st == ERR_BAD_STATE)
         st = OK;   /* not attached: a newer cap's domain replaced it */
-    if (st == OK && b->cap && !pins_settled(b->cap))
-        st = ERR_TIMED_OUT;
-    if (st == OK)
-        st = iommu_domain_destroy(b->dom);
-    if (b->cap) {
-        kobject_unref(&b->cap->base);
-        b->cap = NULL;
+    if (st == OK && b->cap) {
+        if (!pins_settled(b->cap)) {
+            st = ERR_TIMED_OUT;
+        } else {
+            kobject_unref(&b->cap->base);
+            b->cap = NULL;
+        }
     }
     if (st == OK)
+        st = iommu_domain_destroy(b->dom);
+    if (st == OK) {
+        if (b->unconfirmed)
+            kprintf("dma: %02x:%02x.%x: the IOMMU confirmed a closed dma_cap's domain gone at "
+                    "last\n", BDF(d));
         return true;
-    report("dma: %02x:%02x.%x: the IOMMU did not confirm that a closed dma_cap's domain is gone "
-           "(%d): the domain is kept, its %lu page%s quarantined", BDF(d), st, b->pages,
-           plural(b->pages));
-    b->dom = NULL;
+    }
+    if (!b->unconfirmed)
+        report("dma: %02x:%02x.%x: the IOMMU did not confirm that a closed dma_cap's domain is "
+               "gone (%d): its %lu page%s held, tried again every second", BDF(d), st,
+               b->pages, plural(b->pages));
+    b->unconfirmed = true;
     return false;
 }
 
-/* b (taken off its list) back on it as a quarantined batch. */
-static void requeue(struct pci_dev *d, struct q_batch *b)
+/* b (taken off its list) back on it: due again `after` from now. */
+static void requeue(struct pci_dev *d, struct q_batch *b, uint64_t after)
 {
     struct dma_fn *fn = fn_of(d);
-    b->deadline = uptime_ns() + DMA_QUARANTINE_TIMEOUT_NS;
+    b->deadline = uptime_ns() + after;
     uint64_t f = spin_lock_irqsave(&q_lock);
     list_add_tail(&fn->batches, &b->node);
     fn->releasing--;
@@ -249,7 +270,7 @@ static void release_batch(struct pci_dev *d, struct q_batch *b, const char *why)
 {
     bool freed = b->dom != NULL;
     if (freed && !take_domain_away(d, b)) {
-        requeue(d, b);
+        requeue(d, b, RETRY_NS);
         return;
     }
     uint64_t pages = 0, changed = 0;
@@ -418,13 +439,23 @@ void dma_quarantine_flush(struct pci_dev *d)
     struct dma_fn *fn = fn_of(d);
     if (!fn)
         return;
+    /* Each batch listed now is tried once: one whose domain the unit
+     * doesn't confirm gone goes back on the list, held. */
+    uint32_t left = 0;
+    uint64_t lf = spin_lock_irqsave(&q_lock);
+    if (fn->init)
+        for (struct list_node *n = fn->batches.next; n != &fn->batches; n = n->next)
+            left++;
+    spin_unlock_irqrestore(&q_lock, lf);
     for (;;) {
         uint64_t f = spin_lock_irqsave(&q_lock);
-        struct q_batch *b = take_due_locked(fn, 0, true);
+        struct q_batch *b = left ? take_due_locked(fn, 0, true) : NULL;
         bool busy = fn->releasing != 0;
         spin_unlock_irqrestore(&q_lock, f);
-        if (b)
+        if (b) {
+            left--;
             release_batch(d, b, "flushed");
+        }
         else if (busy)
             thread_sleep_ms(1);   /* the reaper is releasing one: done in a moment */
         else

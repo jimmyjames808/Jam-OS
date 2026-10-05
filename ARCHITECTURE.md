@@ -1090,8 +1090,10 @@ out for troubleshooting.
   which points the function back home (unless a newer cap has it
   already), destroys the domain (its id's caches invalidated, waited
   for) and frees the pins at once: no quarantine. If that invalidation
-  can't be confirmed, the domain is kept for good and the pages are
-  quarantined as without an IOMMU.
+  can't be confirmed, the domain and its pages are kept and the thread
+  tries again every second: the pages are never released before the unit
+  confirms (it may still hold the function's old context entry and
+  translations, which only freeing the domain's id invalidates).
 - **Invalidation** goes through each unit's queue only (VT-d 6.5.2): a
   page of 256 descriptors. A caller writes its batch and a wait
   descriptor that stores a sequence number in a status word of its own,
