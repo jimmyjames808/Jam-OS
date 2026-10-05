@@ -1,0 +1,24 @@
+<!-- Jam OS cursor set (G1, owner's pick: "style C", thinner outline, flat-serif
+     text bar, busy = ring only). 24x24 units = the cursor at 1x; scale with
+     look.h. Fill #f6f3f8, outline #262a35 1.1 units centred on each edge
+     (round joins), shadow 0 1.5 1.5 black 55%. Every stroke-like part (resize
+     shafts, move arms, text bar stem and caps, the ring) is 3.5 units wide
+     before the outline, so 2.4 units of white show everywhere; the ring is a
+     2.4 white circle stroke on a 4.6 dark one (radius 8), with a raspberry
+     (#d4537e) arc, 2.4 wide, dash 14 of 54 (round caps) turning once a second.
+     Hotspots: arrow (5,2.5); hand (10.8,2); all others the centre (12,12). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 216 24" fill="#f6f3f8" stroke="#262a35" stroke-width="1.1" stroke-linejoin="round">
+  <g id="arrow"><path d="M5 2.5v16.2l4.1-3.7 2.7 6.2 2.7-1.2-2.7-6.1h5.6z"/></g>
+  <g id="resize-ew" transform="translate(24 0)"><path d="M1.8 12l5.4-4.8v3.05h9.6V7.2l5.4 4.8-5.4 4.8v-3.05H7.2v3.05z"/></g>
+  <g id="resize-ns" transform="translate(48 0)"><path d="M12 1.8l4.8 5.4h-3.05v9.6h3.05L12 22.2l-4.8-5.4h3.05V7.2H7.2z"/></g>
+  <g id="resize-nwse" transform="translate(72 0)"><path transform="rotate(45 12 12)" d="M1.8 12l5.4-4.8v3.05h9.6V7.2l5.4 4.8-5.4 4.8v-3.05H7.2v3.05z"/></g>
+  <g id="resize-nesw" transform="translate(96 0)"><path transform="rotate(-45 12 12)" d="M1.8 12l5.4-4.8v3.05h9.6V7.2l5.4 4.8-5.4 4.8v-3.05H7.2v3.05z"/></g>
+  <g id="move" transform="translate(120 0)"><path d="M12 1.6l4 4.2h-2.25v4.45h4.45V8l4.2 4-4.2 4v-2.25h-4.45v4.45H16l-4 4.2-4-4.2h2.25v-4.45H5.8V16l-4.2-4 4.2-4v2.25h4.45V5.8H8z"/></g>
+  <g id="text" transform="translate(144 0)"><path d="M8 3h8v3.5h-2.25v11H16V21H8v-3.5h2.25v-11H8z"/></g>
+  <g id="hand" transform="translate(168 0)"><path d="M9.2 3.2a1.6 1.6 0 0 1 3.2 0v6.6h.5V8.6a1.6 1.6 0 0 1 3.2 0v1.5h.4v-.6a1.6 1.6 0 0 1 3.2 0v5.6c0 3.6-2.4 6.2-5.8 6.2h-1.6c-2 0-3.4-.9-4.5-2.5l-3.4-5a1.6 1.6 0 0 1 2.4-2.1l2.4 2.3z"/></g>
+  <g id="busy" transform="translate(192 0)" fill="none">
+    <circle cx="12" cy="12" r="8" stroke="#262a35" stroke-width="4.6"/>
+    <circle cx="12" cy="12" r="8" stroke="#f6f3f8" stroke-width="2.4"/>
+    <circle cx="12" cy="12" r="8" stroke="#d4537e" stroke-width="2.4" stroke-dasharray="14 40" stroke-linecap="round"/>
+  </g>
+</svg>
