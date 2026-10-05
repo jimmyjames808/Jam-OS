@@ -560,6 +560,8 @@ static const struct {
     { "kexec_refusals", t_kexec_refusals },
     { "root_powers", t_root_powers },
     { "vmo_make_exec", t_vmo_make_exec },
+    { "kept_vmo_refusals", t_kept_vmo_refusals },
+    { "kept_vmo_client_and_compositor", t_kept_vmo_client_and_compositor },
     { "bad_pointers", t_bad_pointers },
     { "startup_message", t_startup_message },
     { "crash_kills_only_the_child", t_crash_kills_only_the_child },

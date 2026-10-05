@@ -364,6 +364,7 @@ int child_main(int argc, char **argv)
     if (!strncmp(m, "bench-", 6)) return bench_child(argc, argv);
     if (!strncmp(m, "svcstate-", 9)) return svcstate_child(argc, argv);
     if (!strncmp(m, "rw-", 3))    return replywait_child(argc, argv);
+    if (!strncmp(m, "kept-", 5))  return kept_child(argc, argv);
     if (!strncmp(m, "ns-", 3) || !strncmp(m, "fs", 2) || !strcmp(m, "fat-shell"))
         return ns_child(argc, argv);
     printf("utest: unknown mode \"%s\"\n", m);
