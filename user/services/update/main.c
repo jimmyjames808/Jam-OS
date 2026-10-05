@@ -14,12 +14,15 @@
  * The shell's `update` starts it as a helper (sh_run_helper):
  *   argv: update <server address> load|check|write <running version> <running git>
  *         [force]
- *   (write: load, and have init write the build to the stick too; force: a
- *   build whose network default differs from this one's is taken)
+ *   (write, plain `update` and `update -w`: load, and have init write the
+ *   build to the stick too; load, `update -m`: into memory only; check,
+ *   `update -n`: checked, nothing loaded or written; force: a build whose
+ *   network default differs from this one's is taken)
  *   SR_USER + 0   the offer channel (initctl.update_offer)
  *   SR_USER + 2   the shell's stop channel: Ctrl+C (or the shell gone)
- * Its lines are the shell's. Exit: 0 init took the build (or, with
- * `check`, would have; with `write`, wrote it to the stick too), 1 not,
+ * Its lines are the shell's; the last one says what `reboot` and `reboot
+ * -f` start now. Nothing here reboots. Exit: 0 init took the build (or,
+ * with `check`, would have; with `write`, the stick has it too), 1 not,
  * 2 usage, 3 loaded but not written to the stick, 130 stopped. */
 #include <ipv4.h>
 #include <net.h>
@@ -240,28 +243,39 @@ static void say_menu(const struct update_answer *a)
         printf("update: %s\n", update_menu_str(a->menu));
 }
 
-/* init's answer to an offer with flags, in words (but the menu's); the
- * exit status. */
+/* Is the offered build (its signed manifest's version and git, as init
+ * read them) the one running? Said only for a clean commit: two builds of
+ * a tree with changes ("-dirty") can differ under one version and git. */
+static bool is_running(const struct update_answer *a, const char *version, const char *git)
+{
+    size_t n = strlen(git);
+    if (!strcmp(git, "unknown") || (n >= 6 && !strcmp(git + n - 6, "-dirty")))
+        return false;
+    return !strncmp(a->version, version, sizeof(a->version)) &&
+           !strncmp(a->git, git, sizeof(a->git));
+}
+
+/* init's answer to an offer with flags, in words (but the menu's and what
+ * comes next: say_next); the exit status. */
 static int say_verdict(const struct update_answer *a, uint32_t flags, const char *from_version,
                        const char *from_git)
 {
-    if (a->why == UPDATE_ACCEPTED && a->status == OK) {
-        printf("update: %s (%s) -> %.*s (%.*s): checked by init in %u ms, %s\n", from_version,
+    if ((a->why == UPDATE_ACCEPTED && a->status == OK) || a->why == UPDATE_NOT_WRITTEN) {
+        bool taken = a->why == UPDATE_ACCEPTED;
+        printf("update: %s (%s) -> %.*s (%.*s): checked by init in %u ms, %s", from_version,
                from_git, (int)UPDATE_VERSION_MAX, a->version, (int)UPDATE_GIT_MAX, a->git,
                a->check_ms,
-               flags & UPDATE_OFFER_CHECK_ONLY ? "not loaded (-n): the running build stays"
-               : flags & UPDATE_OFFER_WRITE    ? "stored and written to the stick (-w): the next "
-                                                 "reboot runs it, and so does the next power-on"
-                                               : "stored: the next reboot runs it");
-        return 0;
-    }
-    if (a->why == UPDATE_NOT_WRITTEN) {
-        printf("update: %.*s (%.*s) is stored, but init couldn't write it to the stick (%s: %s);"
-               "\n  %s.\n  `reboot` runs the new build until the power goes off\n",
-               (int)UPDATE_VERSION_MAX, a->version, (int)UPDATE_GIT_MAX, a->git,
-               update_write_step_str(a->write_step), status_str(a->status),
-               update_stick_str(a->stick));
-        return 3;
+               flags & UPDATE_OFFER_CHECK_ONLY ? "not loaded (-n): the running build stays, the "
+                                                 "stick is untouched"
+               : !(flags & UPDATE_OFFER_WRITE) ? "loaded into memory only (-m)"
+               : !taken                        ? "loaded, but init couldn't write it to the stick"
+               : a->already                    ? "loaded; the stick has it already: nothing "
+                                                 "written"
+                                               : "loaded and written to the stick");
+        if (!taken)
+            printf(" (%s: %s)", update_write_step_str(a->write_step), status_str(a->status));
+        printf("\n");
+        return taken ? 0 : 3;
     }
     if (a->why == UPDATE_NET_CHANGE) {
         printf("update: init refused it: its network default is %.*s, this build's %.*s: "
@@ -285,13 +299,42 @@ static int say_verdict(const struct update_answer *a, uint32_t flags, const char
     return 1;
 }
 
-/* init's answer, in words; the exit status (the menu's fate doesn't
- * change it: the build is what was asked for). */
+/* The last line: what `reboot` (kexec: the loaded build) and `reboot -f`
+ * (the firmware: whatever the stick boots) start now. Nothing for a check
+ * or a refusal: the verdict said the running build stays. */
+static void say_next(const struct update_answer *a, uint32_t flags, bool running)
+{
+    if (flags & UPDATE_OFFER_CHECK_ONLY)
+        return;
+    if (a->why == UPDATE_NOT_WRITTEN)
+        printf("update: loaded, but NOT written to the stick: `reboot` starts the new build "
+               "from memory; %s, and `reboot -f` or a power-off starts that\n",
+               update_stick_str(a->stick));
+    if (a->why != UPDATE_ACCEPTED || a->status != OK)
+        return;
+    if (!(flags & UPDATE_OFFER_WRITE))
+        printf("update: loaded into memory only: `reboot` starts it now; the stick is "
+               "untouched, so `reboot -f` and a power-off bring back the stick's build\n");
+    else if (a->already && running)
+        printf("update: this is the build running now, and the stick has it already: nothing "
+               "to do (it is loaded too: `reboot` starts a fresh copy of it)\n");
+    else if (a->already)
+        printf("update: the stick has this build already, and it is loaded: `reboot` starts it "
+               "now, `reboot -f` restarts through the firmware (the stick boots it too)\n");
+    else
+        printf("update: written to the stick and loaded: `reboot` starts it now, `reboot -f` "
+               "restarts through the firmware (the stick boots it too)\n");
+}
+
+/* init's answer, in words, the menu's fate, then what comes next; the
+ * exit status (the menu's fate doesn't change it: the build is what was
+ * asked for). */
 static int say_answer(const struct update_answer *a, uint32_t flags, const char *from_version,
                       const char *from_git)
 {
     int rc = say_verdict(a, flags, from_version, from_git);
     say_menu(a);
+    say_next(a, flags, is_running(a, from_version, from_git));
     return rc;
 }
 

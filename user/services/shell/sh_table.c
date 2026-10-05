@@ -143,21 +143,25 @@ static const struct sh_cmd cmds[] = {
       "  kill %2, or the pid `jobs` shows: end background program 2 (prog &)"),
     C(clear, C_SHELL, "clear", "clear the screen (also Ctrl+L)"),
     C(reboot, C_SYSTEM, "reboot [-f]",
-      "restart the machine into the kernel on the stick, by kexec (no firmware);\n"
-      "  -f: through the firmware and the boot menu. /data is synced first"),
+      "restart the machine into the kernel on the stick (or the one `update` loaded),\n"
+      "  by kexec (no firmware); -f: through the firmware and the boot menu (the\n"
+      "  stick's build). /data is synced first"),
     C(kernel, C_SYSTEM, "kernel load",
       "read /esp's kernel and boot image now and store them for the next reboot\n"
       "  (and a panic): after `make flash`, load, then `reboot` reads nothing"),
-    C(update, C_SYSTEM, "update [-n | -w] [-f] [server address]",
-      "run the build the Mac serves: on the Mac `make`, then tools/update-server.py\n"
+    C(update, C_SYSTEM, "update [-n | -m | -w] [-r] [-f] [server address]",
+      "take the build the Mac serves: on the Mac `make`, then tools/update-server.py\n"
       "  left running; here `update` fetches it (bin/update), init checks its signature\n"
-      "  (the key in this build) and each file's size and SHA-256, and the PC reboots\n"
-      "  into it: old -> new is shown. RAM only: a power-off brings back the stick's.\n"
-      "  The server is net.host in /data/etc/settings (e.g. 10.2.21.174).\n"
-      "  -n: fetch and check only, nothing loaded. -w: init writes it to the stick\n"
-      "  too, keeping the stick's build as \"Jam OS (previous build)\" in the boot menu.\n"
-      "  A build whose network default (VLAN 21 or untagged: local.mk) isn't this\n"
-      "  one's is refused; -f takes it"),
+      "  (the key in this build) and each file's size and SHA-256 (old -> new is shown),\n"
+      "  writes it and its boot menu to the stick (the stick's build kept as \"Jam OS\n"
+      "  (previous build)\") and loads it, then stops: `reboot` starts it now (kexec),\n"
+      "  `reboot -f` through the firmware (the stick boots it too). The server is\n"
+      "  net.host in /data/etc/settings (e.g. 10.2.21.174).\n"
+      "  -m: into memory only, the stick untouched: `reboot` runs it, a power-off\n"
+      "  brings back the stick's. -n: fetch and check only, nothing loaded or written.\n"
+      "  -w: the same as plain `update`. -r: reboot into it at once. A build whose\n"
+      "  network default (VLAN 21 or untagged: local.mk) isn't this one's is refused;\n"
+      "  -f takes it"),
     C(run, C_SYSTEM, "run <prog|path> [args]",
       "start /boot/bin/<prog> (or a path), wait, say how it ended; Ctrl+C kills it.\n"
       "  Typing a program's name does the same. Exported variables are its environment;\n"
