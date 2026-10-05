@@ -71,7 +71,9 @@ void *big_alloc(uint64_t bytes)
 
 void big_free(void *p, uint64_t bytes)
 {
-    if (p)   /* the mapping was the VMO's last reference: its pages go with it */
+    /* The mapping was the VMO's last reference: its pages go with it. A
+     * failure leaves a block mapped, which nothing reads again. */
+    if (p)
         (void)jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)p,
                              (bytes + 4095) & ~4095ull);
 }

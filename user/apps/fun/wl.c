@@ -168,8 +168,8 @@ static void wait_once(uint64_t until)
     d = until < d ? until : d;
     handle_t ch = jwl_client_channel(wl.c);
     signals_t seen;
-    if (ch != HANDLE_INVALID)
-        (void)jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, d, &seen);   /* or d */
+    if (ch != HANDLE_INVALID)   /* a timeout or a wake: the caller looks either way */
+        (void)jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, d, &seen);
     else
         (void)jam_nanosleep(d);
 }
