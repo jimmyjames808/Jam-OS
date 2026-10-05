@@ -762,8 +762,8 @@ void     wm_set_layout(enum comp_layout layout);
 #define WM_LAYOUT_SETTING "display.layout"
 const char *wm_layout_name(enum comp_layout layout);
 bool        wm_layout_parse(const char *s, enum comp_layout *out);
-/* The user switched the layout: compctl tells init, which saves it. Not
- * built yet (a compctl method for I1): wm.c's weak default does nothing. */
+/* The user switched the layout: compctl tells init, which saves it
+ * (ctl.c: the answer to init's layout_wait). */
 void        ctl_layout_changed(enum comp_layout layout);
 
 /* ---- the desktop (desk.h has its inside) --------------------------------------------------

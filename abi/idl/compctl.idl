@@ -14,7 +14,10 @@
 # channel closes with it: a HID driver exits 0 and devmgr binds it again,
 # which connects it to the new compositor (as when the console restarts);
 # keys sent to the old one and not yet taken are lost, and so are the keys
-# held down (the new compositor starts with none held, Num Lock on).
+# held down (the new compositor starts with none held, Num Lock on). A
+# layout_wait still waiting ends with ERR_PEER_CLOSED: init asks the new
+# compositor again (it starts it with the saved layout, so a switch the
+# old one had not reported yet is lost).
 
 protocol compctl 32
 
@@ -40,3 +43,13 @@ protocol compctl 32
 # sources connected now, key presses taken, and those the compositor kept
 # for itself (Ctrl+Alt+Del, Alt+Tab and the window keys). ADMIN only.
 4  stats          () -> (u64 paints, u64 painted_px, u64 last_paint_ns, u64 worst_paint_ns, u32 clients, u32 surfaces, u32 windows, u64 connected, u64 refused, u64 gone_closed, u64 gone_protocol, u64 gone_slow, u32 sources, u64 keys, u64 reserved_keys)
+# The window layout, 0 floating or 1 tiling: every window placed again, as
+# the layout key (Super+T) does. For init, which starts the compositor
+# before /data is there and sends the saved one (/data/etc/settings'
+# display.layout) once it is. ERR_INVALID_ARGS: another value. ADMIN only.
+5  set_layout     (u8 layout) -> ()
+# Answered when the window layout is no longer `layout` (at once if it
+# isn't), with the one it is now: the user switched it, and init saves
+# it. One call waits per channel: a second while one waits is
+# ERR_BAD_STATE. ADMIN only.
+6  layout_wait    (u8 layout) -> (u8 now) later

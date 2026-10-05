@@ -1,7 +1,9 @@
 # The shell over COM1: tools/qemu-test.sh with QEMU_INPUT=this file and
-# the command line "shell" (what a plain boot does). Types through the
-# serial port -> serialin -> console -> shell path and checks what the shell
-# writes back (the console mirrors program output to COM1).
+# the command line "shell" (what a plain boot does), or "shell nocomp".
+# Types through the serial port -> serialin -> compositor -> the terminal's
+# console -> shell path (under `nocomp`, serialin -> console -> shell) and
+# checks what the shell writes back (the console mirrors program output to
+# COM1).
 wait 120 Jam OS shell
 wait jam>
 send help
@@ -71,8 +73,10 @@ wait passed
 wait jam>
 sleep 0.5
 shot shell-ktest
-# restarts: the serial source, then the console itself (init restarts it,
-# the kernel draws its log meanwhile; serialin and the shell come back)
+# restarts: the serial source, then the console itself (init restarts it
+# and the shell comes back; with the compositor its window goes and comes
+# back, under `nocomp` the kernel draws its log meanwhile and serialin
+# comes back too: screen-test.sh looks at that screen)
 send kill serialin
 wait bin/serialin was killed
 sleep 1
@@ -80,8 +84,7 @@ send help
 wait Commands:
 wait jam>
 send kill console
-wait screen: back to the kernel's log
-wait 30 screen: taken by console
+wait 30 init: bin/console was killed
 wait 30 Jam OS shell
 wait jam>
 sleep 1

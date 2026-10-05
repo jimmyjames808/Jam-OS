@@ -22,7 +22,9 @@ protocol console 12
 # A new input source: the console serves the `input` protocol on its end;
 # the caller (devmgr, for a HID driver; or the serial source) gets the
 # other end and hands it to the source, which calls `input` on it. ADMIN
-# channels only (see new_client).
+# channels only (see new_client). ERR_NOT_SUPPORTED in window mode: the
+# input sources are the compositor's (compctl.connect_input), and the
+# console's keys come to its window.
 5  connect_input  () -> (handle source)
 # Lend the screen to a program that draws on it itself (the shell's `demo`):
 # the framebuffer as a write-combining VMO (READ | WRITE | MAP, not

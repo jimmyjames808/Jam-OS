@@ -201,8 +201,10 @@ static inline status_t initctl_reboot_call(handle_t ch, bool idl_within, uint64_
  * copy, or /esp's boot/jamos.elf and boot/bootfs.img if they changed since
  * this boot noted them; everything synced, devmgr's drivers stopped, then
  * the jump), or, if any of that fails, through the firmware (sync, then a
- * reset). Answers only if both failed. The caller blanks the screen first
- * (console.blank): nothing is drawn until the next boot's splash. */
+ * reset). Answers only if both failed. The screen is blank first, nothing
+ * drawn until the next boot's splash: init blanks it through the
+ * compositor (compctl.blank), or under `nocomp` the caller does
+ * (console.blank). */
 static inline status_t initctl_reboot_until(handle_t ch, uint64_t deadline_ns)
 {
     return initctl_reboot_call(ch, false, deadline_ns);
@@ -445,7 +447,7 @@ static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint6
  * its window opens a moment later. ERR_NOT_SUPPORTED: no compositor runs
  * (a boot without one: one terminal only); ERR_NO_RESOURCES: as many
  * terminals are open as there may be. The shell's channel (`term`) and
- * the consoles' (Super+Enter). */
+ * the compositor's (Super+Enter); the consoles' too. */
 static inline status_t initctl_terminal_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_number)
 {
     return initctl_terminal_call(ch, false, deadline_ns, out_number);

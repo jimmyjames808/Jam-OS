@@ -1,10 +1,12 @@
 #!/bin/sh
 # Typing into the shell with a USB keyboard behind a hub:
-# a plain boot ("shell": the console, devmgr connected to it, serialin, the
-# shell) with a usb-hub on xhci port 2, a usb-kbd behind it and a
-# usb-mouse on port 3. tools/shell-tests/usbkeys.txt types through QEMU's
-# monitor (`sendkey`): usb-bus -> drv/hid -> console -> shell, kills the
-# keyboard's hid and then the console, and types again after each.
+# a plain boot ("shell": the compositor, devmgr's input connected to it,
+# the console in a window, serialin, the shell) with a usb-hub on xhci
+# port 2, a usb-kbd behind it and a usb-mouse on port 3.
+# tools/shell-tests/usbkeys.txt types through QEMU's monitor (`sendkey`):
+# usb-bus -> drv/hid -> compositor -> console -> shell, kills the
+# keyboard's hid, the compositor, the console and devmgr, and types again
+# after each.
 # QEMU_SMP / QEMU_XHCI pass through. Usage: tools/usbkeys-test.sh <outdir>
 # [name]; exit 0 on PASS.
 set -eu

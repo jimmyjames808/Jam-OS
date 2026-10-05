@@ -29,8 +29,13 @@
  *                  RTC's (default on)
  *   ntp.server     where bin/sntp asks the time: an IPv4 address or a
  *                  name; without it the gateway, then pool.ntp.org
- * The shell's vol, music and date -z write them; init reads them when
- * /data is mounted.
+ *   display.layout the compositor's arrangement of windows: floating
+ *                  (the default) or tiling; init passes it on, and
+ *                  writes it when the user switches (Super+T)
+ *   display.hz     how often the compositor paints at most, 1 to 1000 a
+ *                  second (its default: 60); from its next start
+ * The shell's vol, music and date -z write them, and init the layout;
+ * init reads them when /data is mounted.
  *
  * Writing never leaves a half-written file where the settings were: the
  * new text goes to settings.new and is synced, then takes the old one's

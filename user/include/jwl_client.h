@@ -83,6 +83,9 @@ struct jwl_client_config {
     void     *connect_ctx;
     bool      no_reconnect;   /* a lost connection stays lost: the client is dead */
     bool      quiet;          /* no log lines (tests that break things on purpose) */
+    bool      no_keyboard;    /* never bind wl_keyboard: no keys wanted, so the compositor
+                               * never gives this client's windows the keyboard focus (the
+                               * boot splash: what is typed meanwhile goes to the terminal) */
     const char *name;         /* the program's name, for log lines; NULL: "jwl" */
 };
 

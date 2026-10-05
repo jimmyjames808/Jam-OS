@@ -289,7 +289,8 @@ static bool run_tests(void)
     return ok;
 }
 
-/* init's option words (at most INIT_WORDS_MAX): "splash" (splash_boot);
+/* init's option words (at most USERBOOT_MAX_WORDS, which has room for
+ * every one below at once, so none is ever dropped): "splash" (splash_boot);
  * `hidboot`, which init passes on to devmgr and devmgr to every hid (mice
  * stay in the boot protocol); one of `netprobe`, `netsend` or `net` (in
  * that order of precedence), which init passes on to devmgr and devmgr to
@@ -302,18 +303,15 @@ static bool run_tests(void)
  * finishes, and init must start the shell anyway); `nospare` (init keeps
  * no warm spare of the mixer: a restart starts a process); `vtdtest`
  * (with `iommu=on`, the "IOMMU checks" test entry), which init passes on
- * to devmgr and devmgr to drv/hda: its deliberate DMA faults; `comp` (the
- * compositor draws the screen, each terminal a window), early, so the
- * limit on init's words never drops it. */
-#define INIT_WORDS_MAX 9
-
-static unsigned init_words(bool shell, const char *words[INIT_WORDS_MAX])
+ * to devmgr and devmgr to drv/hda: its deliberate DMA faults; `nocomp` (no
+ * compositor: the console draws the screen, one terminal). */
+static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
 {
     unsigned n = 0;
     if (shell && splash_boot())
         words[n++] = "splash";
-    if (shell && cmdline_has("comp"))
-        words[n++] = "comp";
+    if (shell && cmdline_has("nocomp"))
+        words[n++] = "nocomp";
     if (cmdline_has("hidboot"))
         words[n++] = "hidboot";
     if (cmdline_has("netprobe"))
@@ -358,7 +356,7 @@ static bool run_user_space(bool shell, bool nousb)
     if (soak_min && !nousb)
         ksnprintf(soak_arg, sizeof(soak_arg), "soak=%lu", soak_min > 600 ? 600 : soak_min);
     const char *mode = nousb ? "shell-nousb" : soak_arg[0] ? soak_arg : "shell";
-    const char *words[INIT_WORDS_MAX];
+    const char *words[USERBOOT_MAX_WORDS];
     unsigned nwords = init_words(shell, words);
     /* The regression run (init.cfg's programs, mode "init") gets the vlan=
      * word alone of the words, so its network drivers start as a plain boot's

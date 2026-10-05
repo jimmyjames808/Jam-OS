@@ -11,21 +11,29 @@
  *   splash    bin/splash, once, on a plain boot (argv "splash" from the
  *             kernel): a PROGRAM-level console channel (SR_CONSOLE), a
  *             channel of init's (SR_USER + 0, <splash.h>) and a namespace
- *             with /svc/audio (shell.c's grants). It plays the boot
+ *             with /svc/audio and, with a compositor, /svc/wayland
+ *             (shell.c's grants: it plays in a full-screen window that
+ *             takes no keys, over the first terminal's). It plays the boot
  *             animation while the rest start; the shell is started only
  *             once it has played (or ended), and it gives the screen back
  *             when the shell says it is ready (initctl.shell_ready)
+ *   compositor  bin/compositor, first of all with a compositor: comp.c
  *   serialin  bin/serialin: root with RIGHT_ROOT_SERIAL (serial_open) and an `input`
- *             channel from console.connect_input (SR_USER + 0)
+ *             channel (SR_USER + 0) from compctl.connect_input (the
+ *             compositor's: init asks on its own channel), or under
+ *             `nocomp` from console.connect_input
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
  *             server ends of its control and query channels
  *             (SR_DEVMGR_CTL, SR_DEVMGR; init keeps a client end of each
  *             and publishes them as /svc/devmgr-ctl and /svc/devmgr), the
  *             server end of the ESP channel (DEVMGR_SR_ESP: the ESP made
  *             writable, for `update -w`; init keeps the client end and
- *             hands it to nobody, update.c's stick write alone uses it) and a
- *             copy of init's (ADMIN) console client end (SR_CONSOLE), so its
- *             HID drivers type into the console. init waits for its first
+ *             hands it to nobody, update.c's stick write alone uses it) and
+ *             what its HID drivers type into (SR_CONSOLE): an INPUT-level
+ *             compctl channel of the compositor's, with the argument
+ *             "comp" (none while the compositor restarts: it is sent once
+ *             one runs, DEVMGR_SET_CONSOLE), or under `nocomp` a copy of
+ *             init's (ADMIN) console client end. init waits for its first
  *             binding pass (up to 30 s), then asks it for each HD Audio
  *             controller's device channel (<devmgr.h> DEVMGR_DEVICE_CHANNEL:
  *             only its holder, and the control channel, can reach that hda
@@ -80,15 +88,19 @@
  * for them.
  *
  * What a service's end changes here (services_closed): a new console gets
- * a new channel, so serialin and the shell (whose channel then closes)
- * exit and come back connected to it, and devmgr gets the new channel
- * (DEVMGR_SET_CONSOLE): its HID drivers, which end when their console
- * goes, come back connected to it. devmgr dying (killed, or a crash)
+ * a new channel, so the shell (whose channel then closes) exits and comes
+ * back connected to it. The input sources (serialin's, the HID drivers')
+ * are the compositor's: a new compositor gets a new compctl channel, so
+ * serialin (its source closed) exits and comes back with a source of the
+ * new one, and devmgr gets an INPUT channel of it (DEVMGR_SET_CONSOLE):
+ * its HID drivers, which end when their compositor goes, come back
+ * connected to it. Under `nocomp` the console is their hub instead, and
+ * the same happens when it restarts. devmgr dying (killed, or a crash)
  * takes its whole job with it: every driver it started (usb-bus, each
  * hid). A new devmgr binds them again from scratch (the kernel's safe
  * rebind: a new dma_cap with Bus Master Enable off until usb-bus has
  * reset the controller; the dead one's DMA pages stay quarantined until
- * then), connected to the console. /svc/devmgr and /svc/devmgr-ctl name
+ * then), connected to the compositor (or the console). /svc/devmgr and /svc/devmgr-ctl name
  * the new devmgr's channels, and the followers are told.
  * The mounts that came from the dead devmgr leave the namespace (the
  * shell's and logd's too) until the new one serves them again; logd then
@@ -213,10 +225,15 @@ static status_t start_splash(void)
     return svc_start(SPLASH, init_splashhang ? 2 : 1, argv, x, 2);   /* no /svc/audio: silent */
 }
 
+/* serialin: an input source of the compositor's (comp.c), or of the
+ * console's under `nocomp`. It holds the source alone: nothing that makes
+ * more of them. */
 static status_t start_serialin(void)
 {
     handle_t src;
-    status_t st = console_connect_input_until(shell_console(), now() + 5 * NS_PER_S, &src);
+    status_t st = comp_on() ? comp_source(&src)
+                            : console_connect_input_until(shell_console(), now() + 5 * NS_PER_S,
+                                                          &src);
     if (st != OK)
         return st;
     struct spawn_handle x[] = {
@@ -271,7 +288,11 @@ static status_t start_devmgr(void)
         st = jam_channel_create(&qa, &qb);
     if (st == OK)
         st = jam_channel_create(&ea, &eb);
-    if (st == OK)
+    /* What its HID drivers type into: the compositor (an INPUT channel; none
+     * while it restarts: comp_restarted sends one), or the console. */
+    if (st == OK && comp_on() && comp_input_channel(&c) != OK)
+        c = HANDLE_INVALID;
+    else if (st == OK && !comp_on())
         st = jam_handle_duplicate(shell_console(), RIGHT_SAME, &c);
     if (st != OK) {
         handle_t left[] = { pci, a, b, qa, qb, ea, eb };
@@ -280,12 +301,14 @@ static status_t start_devmgr(void)
                 jam_handle_close(left[k]);
         return st;
     }
-    const char *argv[8] = { "bin/devmgr" };
+    const char *argv[10] = { "bin/devmgr" };   /* it and every word below */
     int argc = 1;
     if (nousb)
         argv[argc++] = "nousb";
     if (init_vtdtest)
         argv[argc++] = "vtdtest";   /* drv/hda's deliberate DMA faults */
+    if (comp_on())
+        argv[argc++] = "comp";      /* SR_CONSOLE is a compctl INPUT channel */
     if (init_nospare)
         argv[argc++] = "nospare";   /* no warm spare fat either */
     if (init_hidboot)
@@ -301,8 +324,8 @@ static status_t start_devmgr(void)
     if (init_bootdisk)
         argv[argc++] = init_bootdisk;
     struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
-                                { SR_CONSOLE, c }, { DEVMGR_SR_ESP, eb } };
-    st = svc_start(DEVMGR, argc, argv, x, 5);   /* consumes pci, b, qb, c and eb */
+                                { DEVMGR_SR_ESP, eb }, { SR_CONSOLE, c } };
+    st = svc_start(DEVMGR, argc, argv, x, c ? 5 : 4);   /* consumes pci, b, qb, eb and c */
     if (st != OK) {
         jam_handle_close(a);
         jam_handle_close(qa);
@@ -336,6 +359,34 @@ static status_t start_devmgr(void)
     if (st != OK)
         printf("init: not following devmgr's mounts (%s)\n", status_str(st));
     return OK;
+}
+
+void services_devmgr_input(handle_t c)
+{
+    if (!devmgr) {
+        jam_handle_close(c);
+        return;
+    }
+    struct devmgr_req q = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
+    struct devmgr_rep r;
+    uint32_t n = 0, got = 0;
+    struct channel_call_args a = {
+        .h = devmgr, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)&q,
+        .wh = (uint64_t)(uintptr_t)&c, .whn = 1, .rcap = sizeof(r),
+        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
+        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * NS_PER_S,
+    };
+    status_t st = jam_channel_call(&a);   /* c goes with the request either way */
+    if (st != OK || n < DEVMGR_REP_HDR || r.status != OK)
+        printf("init: devmgr didn't take the new input channel (%s)\n",
+               status_str(st != OK ? st : r.status));
+}
+
+void comp_restarted(void)
+{
+    handle_t c;
+    if (devmgr && comp_input_channel(&c) == OK)
+        services_devmgr_input(c);   /* its HID drivers, which ended with the old one, come back */
 }
 
 /* logd: the kernel log into /data/logs. shell.c starts it only once
@@ -525,6 +576,8 @@ status_t services_start(unsigned i)
 void services_closed(unsigned i)
 {
     terms_closed(i);
+    if (i == COMPOSITOR)
+        comp_closed();
     if (i == DEVMGR && devmgr) {
         jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(devmgr_q);
@@ -593,7 +646,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     port = loop_port;
     nousb = no_usb;
     terms_init(port, splash, shell_arg);
-    comp_init(init_comp);
+    comp_init(port, !init_nocomp);
     make_audio_channels();
     net_init(port);
     if (jam_channel_create(&music_cli, &music_srv) != OK)

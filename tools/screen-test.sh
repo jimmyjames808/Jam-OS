@@ -1,5 +1,6 @@
 #!/bin/sh
-# The screen on a plain boot (tools/shell-tests/screen.txt), booted with
+# The console's own screen, booted with `nocomp` (the compositor draws it
+# on every other plain boot), on a plain boot (tools/shell-tests/screen.txt), booted with
 # the splash (QEMU_SPLASH=1) and so with the kernel log off the screen,
 # and a stick image "a" (MBR, one FAT32 partition) for QEMU's monitor to
 # plug in and pull. Then the screenshots, with PIL: the shell after the
@@ -28,7 +29,7 @@ rm -f "$out/$name-hello.txt"
 ok=1
 if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/screen.txt \
      QEMU_USB="-drive if=none,id=aimg,format=raw,file=$a " \
-     tools/qemu-test.sh "$out" "$name" shell > "$out/$name.out" 2>&1; then
+     tools/qemu-test.sh "$out" "$name" shell nocomp > "$out/$name.out" 2>&1; then
     echo "$name: the shell script FAILED (see $out/$name.log)"
     tail -3 "$out/$name.out"
     ok=0
@@ -50,7 +51,7 @@ fi
 
 # The verbose boot: the log on the shell's screen as ever.
 if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/screen-verbose.txt \
-     tools/qemu-test.sh "$out" "$name-verbose" shell verbose > "$out/$name-verbose.out" 2>&1; then
+     tools/qemu-test.sh "$out" "$name-verbose" shell verbose nocomp > "$out/$name-verbose.out" 2>&1; then
     echo "$name-verbose: the shell script FAILED"
     ok=0
 fi
@@ -58,7 +59,7 @@ fi
 # A stick in at boot: mounted while the machine starts, so no news.
 if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/screen-atboot.txt \
      QEMU_USB="-drive if=none,id=aimg,format=raw,file=$a -device usb-storage,id=sb,bus=xhci.0,port=2,drive=aimg " \
-     tools/qemu-test.sh "$out" "$name-atboot" shell > "$out/$name-atboot.out" 2>&1; then
+     tools/qemu-test.sh "$out" "$name-atboot" shell nocomp > "$out/$name-atboot.out" 2>&1; then
     echo "$name-atboot: the shell script FAILED (see $out/$name-atboot.log)"
     tail -3 "$out/$name-atboot.out"
     ok=0

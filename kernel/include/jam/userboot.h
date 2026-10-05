@@ -37,7 +37,9 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
  * of handles and threads). The caller gets the only reference. */
 status_t userboot_root_job(struct job **out);
 
-#define USERBOOT_MAX_WORDS 7   /* option words init can be given */
+/* Option words init can be given: every word kernel/main.c's init_words
+ * can pass at once (nine), so the words a boot names all reach init. */
+#define USERBOOT_MAX_WORDS 9
 
 /* Boot: run bin/init under a new root job, wait up to timeout_s seconds
  * for it to exit, and report how it went. Returns true if it exited 0 and
@@ -45,7 +47,8 @@ status_t userboot_root_job(struct job **out);
  * argv[1]: a mode: "init" (init.cfg's programs, as with none), or one
  * init runs instead of init.cfg (e.g. "keytest");
  * with arg, the nwords option words (at most USERBOOT_MAX_WORDS; the rest
- * are dropped) follow it as argv[2...] ("splash": the boot splash plays
+ * are dropped, and the RESULTS box says so) follow it as argv[2...]
+ * ("splash": the boot splash plays
  * first; "hidboot": hid keeps mice in the boot protocol; "netprobe": the
  * RTL8125's listen-only probe runs; "netsend": its ARP send test runs;
  * "net": its netdev service runs;

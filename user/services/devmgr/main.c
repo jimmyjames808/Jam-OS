@@ -67,7 +67,9 @@
  *
  * USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
  * drv/hid, each in a job of its own, supervised the same way), connected
- * to the console when there is one (SR_CONSOLE, then DEVMGR_SET_CONSOLE).
+ * to the console when there is one (SR_CONSOLE, then DEVMGR_SET_CONSOLE),
+ * or with the argument "comp" (init's, when the compositor draws the
+ * screen) to the compositor: those channels are then compctl's.
  *
  * A mass-storage interface's driver makes a disk (disk.c): devmgr asks it
  * for its partitions and, if it is the disk Jam OS booted from, starts a
@@ -122,6 +124,7 @@ handle_t pci_res, port;
 unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
+bool comp_input;
 bool vtdtest;
 static bool netprobe, netsend, net;
 uint32_t boot_mbr_id;
@@ -421,6 +424,7 @@ int main(int argc, char **argv)
         netprobe |= !strcmp(argv[i], "netprobe");
         netsend |= !strcmp(argv[i], "netsend");
         net |= !strcmp(argv[i], "net");
+        comp_input |= !strcmp(argv[i], "comp");
         if (!strncmp(argv[i], "bootdisk=", 9))
             boot_mbr_id = hex32(argv[i] + 9);
     }

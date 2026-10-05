@@ -29,10 +29,11 @@
 #define GREEN 0x0000ff00u
 #define BLUE  0x000000ffu
 
-/* A client with xdg_wm_base bound, and a pool to draw from. */
+/* A client with xdg_wm_base bound, a keyboard (so its windows take the
+ * keys, and are activated), and a pool to draw from. */
 struct xc {
     struct ct_client k;
-    uint32_t wm, pool;
+    uint32_t wm, pool, seat, kb;
     handle_t vmo;
 };
 
@@ -54,6 +55,10 @@ static bool xc_open(struct ct_comp *p, struct xc *x)
     CHECK(ct_bind_all(&x->k));
     CHECK((x->wm = ct_new(&x->k, &jwl_xdg_wm_base_interface, 1)) != 0);
     CHECK_ST(jwl_wl_registry_bind(x->k.c, x->k.registry, 5, "xdg_wm_base", 1, x->wm), OK);
+    CHECK((x->seat = ct_new(&x->k, &jwl_wl_seat_interface, 5)) != 0);
+    CHECK_ST(jwl_wl_registry_bind(x->k.c, x->k.registry, 4, "wl_seat", 5, x->seat), OK);
+    CHECK((x->kb = ct_new(&x->k, &jwl_wl_keyboard_interface, 5)) != 0);
+    CHECK_ST(jwl_wl_seat_get_keyboard(x->k.c, x->seat, x->kb), OK);
     CHECK((x->pool = ct_pool(&x->k, POOL, &x->vmo)) != 0);
     CHECK_ST(ct_roundtrip(&x->k), OK);
     return true;

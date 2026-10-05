@@ -5,8 +5,8 @@
  * own under init's: the bootfs server, the console, the boot splash,
  * serialin, devmgr, the mixer, the music player, netstack, the DHCP
  * client, the resolver, logd, netlog, sntp, the file server and the shell;
- * with the boot word `comp`, the compositor first (comp.c), and then
- * each terminal opened later, a console and a shell (terms.c). How each
+ * the compositor first, unless the boot word `nocomp` says no (comp.c),
+ * and then each terminal opened later, a console and a shell (terms.c). How each
  * one is started and what it is given is in services.c (the network's in
  * net.c, the terminals' in terms.c); this file is the order, the
  * namespace they follow and the restarts.
@@ -17,7 +17,7 @@
  * (followers[], <os.h> "grants"): the shell all of it as it is, the music
  * player every mount read-only and the mixer, logd /data (its top-level
  * etc left alone), netlog /svc/net-sys, sntp /svc/net-sys and /svc/dns-sys, the
- * splash the mixer, the file server /svc/net and /svc/net-low. init
+ * splash the mixer and /svc/wayland, the file server /svc/net and /svc/net-low. init
  * keeps its end of each one's
  * SR_NS channel and sends it every later change, with ns_update: each
  * change takes back the one it hasn't read yet (logd never looks up a
@@ -36,10 +36,11 @@
  * the compositor they show in: without them nobody can use the machine
  * until a reset, so they are started again for good, every 5 s at worst
  * (said once a minute). Another terminal given up on closes (terms.c),
- * as one does whose window is closed or whose shell ends with `exit`. The console's clients (serialin,
- * the shell) end when it does, often before init has seen the console's
- * own end: an end of theirs while the console is gone doesn't count, and
- * they start again at once with the new console.
+ * as one does whose window is closed or whose shell ends with `exit`. The console's clients (the
+ * shell; serialin, under `nocomp`) end when it does, often before init
+ * has seen the console's own end: an end of theirs while the console is
+ * gone doesn't count, and they start again at once with the new console;
+ * serialin goes with the compositor the same way.
  * The mixer outlives its process (spare.c: init keeps its state VMO, what
  * it hands its keeper, and a warm spare to promote), and has a rule of its
  * own: a deliberate kill (initctl.kill) neither counts nor waits, and the
@@ -68,7 +69,9 @@ struct follower {
     handle_t           back;    /* a duplicate of its end, for ns_update (0: none) */
 };
 
-static const char *const splash_grants[] = { "/svc/" SVC_AUDIO, NULL };
+/* The splash: the mixer, and its full-screen window (/svc/wayland, which
+ * only a boot with a compositor has). */
+static const char *const splash_grants[] = { "/svc/" SVC_AUDIO, "/svc/" SVC_WAYLAND, NULL };
 static const char *const music_grants[] = { "*:r", "/svc/" SVC_AUDIO, NULL };
 static const char *const logd_grants[] = { DATA_MOUNT ":w", NULL };
 /* The network's own services reach netstack through /svc/net-sys and the
@@ -245,15 +248,17 @@ static bool never_given_up(unsigned i)
     return i == CONSOLE || i == SHELL || i == COMPOSITOR;
 }
 
-/* Svc i is one of a console's clients (serialin, the first's; a shell,
- * its terminal's) and that console has ended (its end may still be on
- * its way to us): i went with it, no fault of its own. */
+/* Svc i is one of a console's clients (a shell, its terminal's) or of
+ * the input's hub (serialin: the compositor's, or under `nocomp` the
+ * first console's) and that has ended (its end may still be on its way
+ * to us): i went with it, no fault of its own. */
 static bool went_with_console(unsigned i)
 {
     int k = term_of(i);
     if (i != SERIALIN && (k < 0 || (unsigned)TERM_SHELL(k) != i))
         return false;
-    struct svc *c = &svcs[i == SERIALIN ? CONSOLE : TERM_CONSOLE(k)];
+    unsigned hub = comp_on() ? COMPOSITOR : CONSOLE;
+    struct svc *c = &svcs[i == SERIALIN ? hub : (unsigned)TERM_CONSOLE(k)];
     signals_t seen;
     return !c->running || jam_object_wait_one(c->proc, SIG_TERMINATED, 0, &seen) == OK;
 }
@@ -361,6 +366,7 @@ static void data_came(void)
         services_settings(MIXER);
         services_settings(MUSIC);
         services_settings(NETSTACK);
+        comp_settings();   /* the saved window layout */
     }
     had = has;
 }
@@ -379,6 +385,8 @@ static uint64_t start_due(uint64_t t)
             continue;   /* waits for the console */
         if (term_of(i) > 0 && (unsigned)TERM_SHELL(term_of(i)) == i && !terms_console_up(i))
             continue;   /* an extra terminal's shell waits for its console */
+        if (i == SERIALIN && comp_on() && !comp_up())
+            continue;   /* its source is the compositor's: it waits for one */
         if ((i == LOGD || i == NETLOG || i == SNTP) && !mounted(DATA_MOUNT))
             continue;   /* waits for /data (netlog, sntp: their settings): a mount's packet
                          * wakes the loop */
@@ -446,10 +454,11 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     spare_init(port, !init_nospare);
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);
-    printf("init: shell mode%s: starting the bootfs server, the console,%s the serial input, "
+    printf("init: shell mode%s: starting the bootfs server,%s the console,%s the serial input, "
            "devmgr, the mixer, the music player, netstack, dhcp, dns, logd, netlog, sntp, the file "
            "server and the shell\n",
-           no_usb ? " (safe mode: nousb)" : "", splash ? " the boot splash," : "");
+           no_usb ? " (safe mode: nousb)" : "", comp_on() ? " the compositor," : "",
+           splash ? " the boot splash," : "");
     for (;;) {
         uint64_t t = now(), deadline = start_due(t), net = net_due(t);
         uint64_t spare = spare_due(t);   /* after the starts: a promoted spare runs first */
@@ -483,6 +492,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             spare_event();
         } else if (pkt.key == KEY_KEEP) {
             kept_event();
+        } else if (pkt.key == KEY_COMP) {
+            comp_event();
         }
     }
 }

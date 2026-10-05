@@ -188,6 +188,24 @@ Every driver and service is a userspace process from the start.
   anyone listens go to the first to open the keys) and reaches the shell
   once it is up. `run splash` from the shell takes the keys, and there a
   key skips it.
+- **The desktop** ([docs/G1-PLAN.md](docs/G1-PLAN.md), as built: I1): on
+  every plain boot init starts the compositor first, before the console;
+  it takes the screen and fills it with the splash's background, and
+  every terminal is a window on it. The splash then plays in a
+  full-screen window that takes no keys (its client binds no
+  `wl_keyboard`, and the compositor gives the keyboard focus only to a
+  client with one) over the first terminal's window (which stays under it,
+  whichever maps first) and the terminal keeps the
+  keys: what is typed meanwhile reaches the shell once it is up, and keys
+  typed while no window has the keys (a terminal's window comes a moment
+  after its prompt) wait in the compositor, up to 5 s, for the next one.
+  The boot word `nocomp` (the menu's "Jam OS (no compositor)", kept by a
+  reboot) starts no compositor: the console owns
+  the screen and the input as before G1. Under the compositor the
+  keyboards and the mouse (devmgr's HID drivers) and serialin are the
+  compositor's input sources; Ctrl+Alt+Del and Super+Enter (another
+  terminal) are its keys, which it asks init for; Super+T switches
+  floating and tiling, and init saves the choice as `display.layout`.
 - **The timer check** (every CPU's ticks counted over 1 s): the test,
   benchmark and regression entries run it before anything else; a plain
   boot runs it in a kernel thread next to user space, so the second is not
@@ -1720,17 +1738,23 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   one, else through `debug_write` (lines prefixed `[process-name]` in the
   kernel log); `debug_report` also puts a line into the RESULTS box.
 - **init** holds the root capabilities and starts services with only the
-  handles they need: on a plain boot the bootfs server, the console,
-  the boot splash (once; the shell waits for it), serialin, devmgr, the
+  handles they need: on a plain boot the bootfs server, the compositor
+  (`user/services/init/comp.c`: the screen, a reset for Ctrl+Alt+Del when
+  init can't reboot, compctl's ADMIN channel, from which init makes
+  devmgr's INPUT channel and serialin's source, and a control channel of
+  init's that answers it `reboot` and `terminal`; not with `nocomp`), the
+  console (the first terminal; with the compositor it gets
+  `/svc/wayland` and no screen), the boot splash (once; the shell waits
+  for it), serialin, devmgr, the
   mixer, the music player, netstack, dhcp (without a static address), dns,
   logd (once `/data` is there), netlog (when `net.host` is set), sntp
   (once `/data` is there, unless `ntp = off`), the file server (`serve`,
   after netstack) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job), backing
   off up to 5 s; one that dies more than 10 times in a minute is given up
-  on, except the console and the shell, which nobody could do without
-  (an end of serialin's or the shell's that the console's took with it
-  doesn't count); for the
+  on, except the compositor, the console and the shell, which nobody
+  could do without (an end of serialin's or the shell's that the
+  compositor's or the console's took with it doesn't count); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and publishes
   its services in it under `/svc` (`audio` and `audioctl`, the mixer's,
@@ -1741,23 +1765,26 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   listen permission, `net-low`, the same on ports below 1024 too,
   `net-sys`, the same for the network's services
   ([Networking](#networking)), `dns`, the resolver, `dns-sys`, the same
-  for the network's services, and `serve`, the file server, each a
-  channel per opener). The services it starts
+  for the network's services, `serve`, the file server, and `wayland`,
+  the compositor (not with `nocomp`), each a channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the
-  mixer, the file server `/svc/net` and `/svc/net-low` (no mount: the
+  mixer and `/svc/wayland`, the file server `/svc/net` and `/svc/net-low` (no mount: the
   shell hands it each file); they are sent every later change (a mount gone, or back with a
   new service, a new devmgr's channels), each change replacing the one
   they haven't read yet (below). Its control channel (`abi/idl/initctl.idl`) serves
   `kill <name>` ([Drivers and services](#drivers-and-services)), `sync`,
   `mount` (`-w`/`-r` for a `/usbN`, passed on to devmgr), `shell_ready`
-  (the shell is up: the splash gives the screen back) and `reboot`,
+  (the shell is up: the splash gives the screen back), `reboot`,
   which syncs `/data` and every `/usbN` first (2 s at most) and has logd
   write out the log's last lines before the restart (a kexec, or the
   firmware's reset if that fails; `reboot_firmware` always resets;
-  [Kexec](#kexec-reboot-and-panic)); the shell holds one
-  end, the console another that answers only `reboot` (Ctrl+Alt+Del).
+  [Kexec](#kexec-reboot-and-panic); with a compositor init blanks the
+  screen through it first, `compctl.blank`), and `terminal` (another
+  terminal window); the shell holds one end, and the compositor and each
+  console another that answers only `reboot` (Ctrl+Alt+Del) and
+  `terminal` (Super+Enter).
 - **Namespace**: each process has a table of mount point → `fs` channel
   (`/boot`, `/esp`, `/data`, `/usbN`) and of services → their channel
   (`/svc/<name>`), given by whoever started it (startup role
@@ -1856,17 +1883,19 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
 Text console first; these choices keep later graphics possible. The
 monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 
-- The display is the firmware (GOP) framebuffer: fixed mode, no vsync. The
-  console owns it and can lend it to one program (`console.lend_screen`),
-  which is how the apps draw real pixels; the kernel takes it back on a
-  panic, from anyone.
-- A future compositor process owns the framebuffer VMO; apps draw into
-  their own surface VMOs and send damage rectangles over a channel; input
-  goes to the compositor, which routes it to the focused client. Rendering
-  is in software (28 cores and AVX are plenty for 2D at 2560x1440). It
-  speaks the Wayland protocol (G1 in the roadmap): Wayland's model and
-  wire format over channels, handles where Linux passes file descriptors,
-  `wl_shm` pools as VMOs; our own compositor, not a port.
+- The display is the firmware (GOP) framebuffer: fixed mode, no vsync.
+  The compositor (`user/services/compositor/`, started by init on every
+  plain boot: [The desktop](#boot)) owns it; the kernel takes it back on a
+  panic, from anyone, and draws its log while the compositor is dead.
+  Booted with `nocomp`, the console owns it instead and can lend it to
+  one program (`console.lend_screen`), which is how the apps draw then.
+- Apps draw into their own surface VMOs and send damage rectangles over a
+  channel; input goes to the compositor, which routes it to the focused
+  client. Rendering is in software (28 cores and AVX are plenty for 2D at
+  2560x1440). It speaks the Wayland protocol (G1 in the roadmap):
+  Wayland's model and wire format over channels, handles where Linux
+  passes file descriptors, `wl_shm` pools as VMOs; our own compositor,
+  not a port ([docs/G1-PLAN.md](docs/G1-PLAN.md)).
 - Mode setting and vsync only through the Intel iGPU (documented by
   Intel); the NVIDIA card (GSP firmware, no practical open path) stays a
   plain framebuffer. The IOMMU matters most for GPUs.
@@ -2385,11 +2414,12 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   one `key = value` a line, `#` comments (`<settings.h>` has the format
   and the keys: `timezone`, `rtc`, `volume`, `music.volume`,
   `music.folder`, and the network's `net.address`, `net.host`,
-  `netlog`, `ntp` and `ntp.server`: [Networking](#networking)). init reads them when `/data`
-  comes (the clock, the network's address) and when the mixer, the music
-  player, netstack and netlog start; the shell's
+  `netlog`, `ntp` and `ntp.server`: [Networking](#networking); the
+  compositor's `display.layout` and `display.hz`). init reads them when `/data`
+  comes (the clock, the network's address, the window layout) and when the mixer, the music
+  player, netstack, netlog and the compositor start; the shell's
   `vol master`, `music vol`, `music start <folder>` and `date -z` write
-  them. A write goes to `settings.new`, is synced, and then takes the old
+  them, and init writes `display.layout` when Super+T switches it. A write goes to `settings.new`, is synced, and then takes the old
   file's name, so a pulled stick leaves the old settings or the new ones,
   never half of either (a lone `settings.new` is read in their place).
   init writes a commented file with the defaults the first time `/data`

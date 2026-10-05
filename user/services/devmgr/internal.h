@@ -268,8 +268,15 @@ void usb_retire(struct binding *b, const char *why);
 bool usb_gone(const struct binding *b);
 /* The console to connect class drivers to: devmgr's client end of it,
  * from SR_CONSOLE or DEVMGR_SET_CONSOLE (consumed). A new one restarts the
- * class drivers waiting for it. */
+ * class drivers waiting for it. With the argument "comp" (init's, when
+ * the compositor draws the screen) it is an INPUT-level compctl channel
+ * instead (abi/idl/compctl.idl): the keys and the mouse go to the
+ * compositor; "the console" in this file's names then means it. */
 void usb_new_console(handle_t ch);
+/* What the class drivers type into, for the log: "console" or "compositor". */
+const char *usb_hub_name(void);
+/* The argument "comp" (main.c). */
+extern bool comp_input;
 /* Could b's driver have ended because the console went away? */
 bool usb_console_gone(const struct binding *b);
 

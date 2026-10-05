@@ -1,0 +1,76 @@
+# The desktop with real input (tools/mouse-test.sh's second boot, the
+# compositor's: a plain boot with a usb-kbd on xhci port 2 and a usb-mouse
+# on port 3): QEMU's keys and mouse go usb-bus -> drv/hid -> the compositor
+# (devmgr's INPUT channel) -> the focused window, the terminal's console
+# -> the shell. Typing in the first terminal; Super+Enter opening terminal
+# 2, whose window takes the keys; a click on the first terminal giving
+# them back, one on terminal 2 taking them again; terminal 2's close
+# circle closing it; Super+T's tiling saved and kept across a reboot.
+#
+# Where things are at OVMF's 1280x800: the first terminal's window is
+# centred, its surface 960x592 at (160, 104) under a 28-pixel title bar;
+# terminal 2's is cascaded 30 pixels down and right (its surface at (190,
+# 134)). A title bar's close circle is its first, on the left: centre (203,
+# 119) on terminal 2's. `pointer` puts the mouse there exactly
+# (serial-feed.py: 1:1 steps).
+wait 120 Jam OS shell
+wait jam>
+seen 30 report mouse ready
+seen 30 compositor: keyboard 0627:0001 ready
+usbkeys echo usb-one\r
+wait 10 usb-one
+wait jam>
+# Super+Enter, whichever window has the keys: terminal 2
+monitor sendkey meta_l-ret
+wait 10 init: terminal 2 opens
+wait 30 Jam OS shell
+wait 10 jam>
+sleep 1
+usbkeys echo usb-two\r
+wait 10 usb-two
+wait jam>
+shot desktop-two
+# a click on the first terminal (the strip of it left of terminal 2):
+# the keys go back to it, and it comes to the top
+pointer 172 400
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.5
+usbkeys echo usb-back\r
+wait 10 usb-back
+wait jam>
+shot desktop-back
+# a click on terminal 2 (the strip of it right of the first): on top again
+pointer 1135 400
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.5
+# its close circle: its console ends, init closes the terminal
+pointer 203 119
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 init: terminal 2: its window was closed
+wait 10 init: terminal 2 is closed
+sleep 1
+shot desktop-closed
+usbkeys echo usb-last\r
+wait 10 usb-last
+wait jam>
+# Super+T: tiling, saved by init (the compositor's layout_wait answered);
+# a reboot (kexec) comes back tiling, as the settings say
+monitor sendkey meta_l-t
+wait 10 init: the window layout is tiling (saved)
+send grep layout /data/etc/settings
+wait 10 display.layout = tiling
+wait jam>
+shot desktop-tiling
+send reboot
+wait 60 kexec: started by a reboot
+wait 120 init: the window layout: tiling, as the settings say
+seen 120 init: the shell is up
+sleep 2
+send reboot -f
+wait reboot: resetting

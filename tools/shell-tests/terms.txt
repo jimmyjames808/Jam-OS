@@ -1,16 +1,17 @@
-# More terminals (docs/G1-PLAN.md, track T1): booted with the word
-# `comp`, init starts the compositor before the console, and each console
+# More terminals (docs/G1-PLAN.md, track T1): on a plain boot init starts
+# the compositor before the console, and each console
 # runs in window mode (a window of the compositor's once it offers
 # xdg_wm_base; without one, its text goes to COM1 only). `term` opens
 # terminal 2, a console and a shell of their own (its output is copied to
 # COM1 too, so its banner shows here). Its shell and its console killed
 # are started again, as the first terminal's are; the compositor killed,
 # both consoles connect again; the first terminal answers throughout.
-# Then terminals up to the limit (8 in all), and `term` refuses one more.
+# Then terminals up to the limit (8 in all), and `term` refuses one more
+# (each `term` typed once the last one's window is up and has the keys).
 # Screenshots: terms-boot (the first terminal), terms-eight (all eight).
-# Typing into terminal 2 and closing it (its window's close box, `exit`)
-# need the compositor's input (the boot wiring): terms-windows.txt.
-# Run: QEMU_INPUT=tools/shell-tests/terms.txt tools/qemu-test.sh build/test terms shell comp
+# Typing into terminal 2 and closing it (`exit`, its close circle):
+# terms-windows.txt and desktop.txt.
+# Run: QEMU_INPUT=tools/shell-tests/terms.txt tools/qemu-test.sh build/test terms shell
 wait 120 Jam OS shell
 seen 10 console: window mode (terminal 1)
 wait jam>
@@ -39,21 +40,35 @@ send kill compositor
 wait 10 init: bin/compositor was killed
 wait 30 console: connected again (connection 2)
 wait 30 console: connected again (connection 2)
+# (the new compositor's focus: the window mapped last; both copy to COM1)
+sleep 2
 send echo ok-$?-after-compositor
 wait 10 ok-0-after-compositor
 
 send term
 wait 10 terminal 3 opens
+wait 30 console: window mode: terminal 3 opens a
+sleep 1
 send term
 wait 10 terminal 4 opens
+wait 30 console: window mode: terminal 4 opens a
+sleep 1
 send term
 wait 10 terminal 5 opens
+wait 30 console: window mode: terminal 5 opens a
+sleep 1
 send term
 wait 10 terminal 6 opens
+wait 30 console: window mode: terminal 6 opens a
+sleep 1
 send term
 wait 10 terminal 7 opens
+wait 30 console: window mode: terminal 7 opens a
+sleep 1
 send term
 wait 10 terminal 8 opens
+wait 30 console: window mode: terminal 8 opens a
+sleep 1
 sleep 3
 shot terms-eight
 send term

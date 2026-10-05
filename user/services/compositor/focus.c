@@ -14,7 +14,11 @@
  *     windows of clients being torn down;
  *   - the window manager may focus a window itself (seat_focus: a title
  *     bar click).
- * No client can grab the keyboard: there is no request that moves it.
+ * No client can grab the keyboard: there is no request that moves it. A
+ * window whose client has no wl_keyboard never gets the focus at all
+ * (focusable): it wants no keys, so it takes none from the window that has
+ * them (the boot splash plays full screen over the first terminal, which
+ * keeps the keys typed meanwhile).
  *
  * Keys no client sees, taken on their press before any focus is looked at
  * (the press and its release both go nowhere):
@@ -27,7 +31,9 @@
  *                  one before);
  *   Super+F        the focused window full screen, or back;
  *   Super+T        the screen's arrangement: floating or tiling;
- *   Super+Q        the focused window asked to close (as its close circle).
+ *   Super+Q        the focused window asked to close (as its close circle);
+ *   Super+Enter    another terminal (ctl.c asks init), whichever window
+ *                  has the focus, a terminal or not.
  * Ctrl+C is an ordinary key: it goes to the focused window, so a program
  * can trap the keys of its own window and never another's.
  *
@@ -40,8 +46,10 @@
 #define U_F        0x09
 #define U_Q        0x14
 #define U_T        0x17
+#define U_ENTER    0x28
 #define U_TAB      0x2b
 #define U_DELETE   0x4c
+#define U_KP_ENTER 0x58
 #define MOD_SUPER  (INPUT_MOD_LGUI | INPUT_MOD_RGUI)
 
 static struct comp_window *focused;   /* NULL: no window has the keys */
@@ -51,10 +59,32 @@ struct comp_window *seat_focused(void)
     return focused;
 }
 
-/* Can w take the focus: mapped, and its client alive. */
+/* Can w take the focus: mapped, its client alive and taking keys (it has a
+ * wl_keyboard: a client without one, the boot splash, never takes the keys
+ * from the window that has them, by mapping or by a click). */
 static bool focusable(const struct comp_window *w)
 {
-    return w && (w->flags & COMP_WIN_MAPPED) && client_alive(w->surface->client);
+    return w && (w->flags & COMP_WIN_MAPPED) && client_alive(w->surface->client) &&
+           seat_of(w->surface->client)->nres[SEAT_KEYBOARD] > 0;
+}
+
+/* A full-screen window whose client takes no keys (the boot splash) is a
+ * screen over the desktop, not a window to work in: a window that takes
+ * the focus comes up under it, never over it (the first terminal's, when
+ * it maps after the splash's). Raised again, in their own order. */
+#define SCREENS_MAX 4u
+static void screens_on_top(void)
+{
+    struct comp_window *s[SCREENS_MAX];
+    unsigned n = 0;
+    for (struct comp_window *w = scene.bottom; w && n < SCREENS_MAX; w = w->above)
+        if ((w->flags & COMP_WIN_MAPPED) && (w->flags & COMP_WIN_FULLSCREEN) &&
+            client_alive(w->surface->client) &&
+            !seat_of(w->surface->client)->nres[SEAT_KEYBOARD])
+            s[n++] = w;
+    for (unsigned i = 0; i < n; i++)
+        if (s[i] != scene.top)
+            window_raise(s[i]);
 }
 
 void seat_focus(struct comp_window *w)
@@ -74,6 +104,7 @@ void seat_focus(struct comp_window *w)
         keyboard_enter(w);
     }
     wm_focus_changed(w);   /* raised, and the toplevels' activated state */
+    screens_on_top();
 }
 
 void focus_click(struct comp_window *w)
@@ -144,6 +175,10 @@ bool focus_reserved_key(uint16_t usage, uint8_t mods)
     if (usage == U_Q && super) {
         if (focused)
             wm_close(focused);
+        return true;
+    }
+    if ((usage == U_ENTER || usage == U_KP_ENTER) && super) {
+        ctl_terminal();
         return true;
     }
     return false;

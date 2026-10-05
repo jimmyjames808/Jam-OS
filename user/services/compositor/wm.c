@@ -507,7 +507,7 @@ void wm_minimise(struct comp_window *w)
         screens_minimise(ww);
 }
 
-/* Until compctl can tell init (comp.h): nobody saves the switch. */
+/* ctl.c's tells init (comp.h); a build without it (a test's) tells nobody. */
 __attribute__((weak)) void ctl_layout_changed(enum comp_layout layout)
 {
     (void)layout;
