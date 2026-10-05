@@ -243,12 +243,31 @@ Every driver and service is a userspace process from the start.
   Guards: a pinned or kernel-mapped range can't be decommitted or cut off by
   a shrink (`ERR_BAD_STATE`); pins hold references on both the VMO and the
   `dma_cap`.
+  - *kept* (`VMO_KEEP_PAGES`, a paged VMO): every page committed at
+    creation and charged to the creator's job then (a job that can't pay
+    for all of them gets no VMO), and none ever leaves: decommit and
+    shrinking are `ERR_BAD_STATE` for every holder, and growing commits
+    the new pages, charged, before the new size shows (or fails and
+    changes nothing). For memory a process reads that a less trusted one
+    made: a Wayland client's pixel pool, read by the compositor.
+  There is no clone or copy-on-write child of a VMO; one added later must
+  not share a kept VMO's pages copy-on-write (a write would swap a page
+  under its readers), so it would copy them into a VMO of its own.
 - **VMAR**: one flat address space per process, no nested VMARs. Maps
   VMOs with R/W/X; W^X always, and an executable mapping needs `RIGHT_EXEC`
   on the VMO handle. User mappings are tracked in a per-VMO reverse map, so
   decommit and shrink unmap the pages from every address space (pins, which
   are DMA, still block them). Lock order: address-space region lock (a
   sleeping mutex) above `vmo`, page-table lock (a spinlock) below it.
+  A **kept mapping** (`VMAR_KEPT_ONLY`) maps only a kept VMO, read-only,
+  with every page-table entry filled at map time (the tables charged to
+  the mapper's job then, so a refusal fails the map, never a later read),
+  and its permissions never change. Since nothing can take a kept VMO's
+  page away, nothing ever clears those entries: no read through the
+  mapping faults, so a client can't kill the process that maps its pool
+  (a mapping of an ordinary VMO dies on a read past a shrunk end, or on a
+  decommitted page whose new commit the client's job refuses). Its length
+  is what was mapped; a pool that grew is mapped again.
 - **DMA**: `vmo_pin` needs a `dma_cap`. The IOMMU goes behind the same API.
 - **TLB**: a kernel unmap does a synchronous range shootdown to all CPUs (a
   full flush above 64 pages). User address spaces keep a mask of the CPUs

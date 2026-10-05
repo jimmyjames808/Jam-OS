@@ -95,6 +95,14 @@
 44  port_wait         status    handle_t port, uint64_t deadline_ns, struct port_packet *out
 
 # VMOs ----------------------------------------------------------------------
+# vmo_create flags: DRV_VMO_CONTIGUOUS / DRV_VMO_DMA32 (bits 0, 1: drivers,
+# with a dma_cap) and VMO_KEEP_PAGES (bit 2, <jam/abi.h>): every page
+# committed at creation and charged to the creator's job (ERR_NO_MEMORY, no
+# VMO, if the job can't pay for all of them), and none ever leaves:
+# vmo_decommit and a shrinking vmo_set_size are ERR_BAD_STATE for every
+# handle, a growing vmo_set_size commits the new pages before it returns
+# (ERR_NO_MEMORY with the size unchanged if it can't). Not with bits 0-1
+# (ERR_INVALID_ARGS). No VMO has a clone or copy-on-write child.
 50  vmo_create        status    uint64_t size, uint32_t flags, handle_t dma_cap, handle_t *out
 51  vmo_read          status    handle_t h, uint64_t offset, void *buf, uint64_t len
 52  vmo_write         status    handle_t h, uint64_t offset, const void *buf, uint64_t len
@@ -114,6 +122,13 @@
 57  vmo_make_exec     status    handle_t vmo, handle_t root, handle_t *out
 
 # address spaces (flags: VMAR_READ/WRITE/EXEC/FIXED) --------------------------
+# vmar_map also takes VMAR_KEPT_ONLY (bit 4): only a VMO_KEEP_PAGES VMO
+# (ERR_WRONG_TYPE otherwise), only VMAR_READ (ERR_INVALID_ARGS for write or
+# exec), and every page-table entry is filled before the call returns, the
+# tables charged to the mapper's job then (ERR_NO_MEMORY, nothing mapped),
+# so no access through the mapping ever faults, whatever the VMO's other
+# holders do. vmar_protect refuses to change such a mapping
+# (ERR_ACCESS_DENIED); a VMO grown later is mapped again for its new pages.
 60  vmar_map          status    handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t *addr
 61  vmar_unmap        status    handle_t vmar, uint64_t addr, uint64_t len
 62  vmar_protect      status    handle_t vmar, uint64_t addr, uint64_t len, uint32_t flags
