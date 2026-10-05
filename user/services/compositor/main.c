@@ -4,6 +4,8 @@
  * windows and composes them onto the output.
  *
  * Startup handles:
+ *   SR_RESOURCE   the root resource with RIGHT_ROOT_SCREEN: the framebuffer
+ *                 (output.c); without it, or with no framebuffer, headless.
  *   SR_USER + 0   the server end of /svc/wayland: the svc protocol's
  *                 connect makes each opener's connection (conn.c). init
  *                 keeps it, so a restarted compositor serves the same one.
@@ -15,10 +17,15 @@
  *                 holds the other; ctl.c).
  *   SR_USER + 3   optional: init's control channel, reboot only (for
  *                 Ctrl+Alt+Del; ctl.c).
+ *   SR_USER + 4   optional, `testscene` only: a channel for its reports.
  * Arguments: `headless` (no framebuffer: compose into memory),
- * `size=<w>x<h>` (the headless output, default 1280x800) and the test
- * power `testwin` (testwin.c). Not built yet:
- * the framebuffer (framebuffer_take), so every run is headless for now.
+ * `size=<w>x<h>` (the headless output, default 1280x800), `hz=<n>` (the
+ * paint clock, display.hz: 60 by default), `threads=<n>` (painting
+ * threads, the loop's included: a few by default), and two test powers,
+ * which only the starter can give, never a client, and init never does:
+ * `testwin` (testwin.c: a client's surface becomes a window without
+ * xdg-shell) and `testscene` followed by its commands (testscene.c:
+ * windows with no client).
  *
  * The loop (the service-loop rule, ARCHITECTURE.md "How a service waits"):
  * one thread, one port. A turn takes what the port has (new connections,
@@ -30,15 +37,16 @@
  * and it makes no calls to other processes. It sleeps until the port has
  * something, the paint clock's next tick if there is damage, or the next
  * hidden surface's frame callbacks; never while a client's budget left
- * messages over. */
+ * messages over. Painting (paint.c) runs on a few worker threads while
+ * this one waits for them. */
+#include <fun.h>
 #include <idl/svc.h>
 #include <splash.h>
-#include "comp.h"
+#include "paint.h"
 
 #define DEFAULT_W  1280
 #define DEFAULT_H  800
 #define MAX_SIDE   8192
-#define PAINT_HZ   60
 #define HELD_RETRY (10 * NS_PER_MS)   /* a client's full channel: try writing again after this */
 #define SVC_BUDGET 16u                /* connects per turn */
 
@@ -69,50 +77,61 @@ static bool parse_size(const char *s, int32_t *w, int32_t *h)
     return true;
 }
 
-/* The headless image: the starter's VMO (SR_USER + 1) or one of our own,
- * mapped read-write. */
-static status_t headless_image(int32_t w, int32_t h)
+/* "<key>=<n>" with n 1 to max: true with n in *out. */
+static bool parse_num(const char *arg, const char *key, uint32_t max, uint32_t *out)
 {
-    uint64_t bytes = (uint64_t)w * (uint64_t)h * 4, size = 0, addr = 0;
-    uint64_t mapped = (bytes + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    handle_t vmo = startup_handle(SR_USER + 1);
-    status_t st = OK;
-    if (vmo == HANDLE_INVALID)
-        st = jam_vmo_create(mapped, 0, HANDLE_INVALID, &vmo);
-    if (st == OK)
-        st = jam_vmo_get_size(vmo, &size);
-    if (st == OK && size < mapped)
-        st = ERR_OUT_OF_RANGE;
-    if (st == OK)
-        st = jam_vmar_map(comp.vmar, vmo, 0, mapped, VMAR_READ | VMAR_WRITE, &addr);
-    if (vmo != HANDLE_INVALID)
-        jam_handle_close(vmo);   /* the mapping keeps it */
-    if (st != OK)
-        return st;
-    scene.pixels = (uint32_t *)(uintptr_t)addr;
-    scene.stride = (uint32_t)w;
-    return OK;
+    size_t k = strlen(key);
+    if (strncmp(arg, key, k) || arg[k] != '=')
+        return false;
+    uint32_t v = 0;
+    const char *s = arg + k + 1;
+    while (*s >= '0' && *s <= '9' && v <= max)
+        v = v * 10 + (uint32_t)(*s++ - '0');
+    if (*s || v < 1 || v > max)
+        return false;
+    *out = v;
+    return true;
 }
 
-static status_t setup(int argc, char **argv)
+/* The arguments before `testscene` (whose index goes to *scene_at, 0 if
+ * none). */
+struct args {
+    int32_t w, h;
+    uint32_t hz, threads;
+    int scene_at;
+};
+
+static void parse_args(int argc, char **argv, struct args *a)
 {
-    int32_t w = DEFAULT_W, h = DEFAULT_H;
-    comp.headless = true;   /* the framebuffer is not built yet */
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "headless"))
+    *a = (struct args){ .w = DEFAULT_W, .h = DEFAULT_H };
+    for (int i = 1; i < argc && !a->scene_at; i++) {
+        const char *s = argv[i];
+        if (!strcmp(s, "headless"))
             comp.headless = true;
-        else if (!strcmp(argv[i], "testwin"))
+        else if (!strcmp(s, "testwin"))
             comp.testwin = true;
-        else if (strncmp(argv[i], "size=", 5) || !parse_size(argv[i] + 5, &w, &h))
-            printf("compositor: argument \"%s\" ignored\n", argv[i]);
+        else if (!strcmp(s, "testscene"))
+            a->scene_at = i;
+        else if (!(!strncmp(s, "size=", 5) && parse_size(s + 5, &a->w, &a->h)) &&
+                 !parse_num(s, "hz", 1000, &a->hz) && !parse_num(s, "threads", 64, &a->threads))
+            printf("compositor: argument \"%s\" ignored\n", s);
     }
+}
+
+static status_t setup(int argc, char **argv, struct args *a)
+{
+    parse_args(argc, argv, a);
     comp.svc = startup_handle(SR_USER + 0);
     comp.vmar = startup_handle(SR_SELF_VMAR);
-    comp.period_ns = NS_PER_S / PAINT_HZ;
     if (comp.svc == HANDLE_INVALID || comp.vmar == HANDLE_INVALID)
         return ERR_BAD_HANDLE;
-    scene_init(w, h, SPLASH_BG);
-    status_t st = headless_image(w, h);
+    clock_init(a->hz);
+    status_t st = output_open(comp.headless, a->w, a->h);
+    if (st != OK)
+        return st;
+    comp.headless = !output.screen;
+    scene_init(output.width, output.height, SPLASH_BG);
+    st = paint_init(a->threads);
     if (st == OK)
         st = jam_port_create(&comp.port);
     if (st == OK)
@@ -144,39 +163,13 @@ static status_t serve_svc(void)
     return OK;
 }
 
-/* Paint if there is something to show and the clock allows; answer the
- * frame callbacks that are due. */
-static void paint_turn(void)
-{
-    uint64_t t = now();
-    bool want = !damage_empty(&scene.damage) || surfaces_waiting_paint();
-    if (want && t >= scene.last_paint_ns + comp.period_ns) {
-        headless_compose();
-        uint64_t done = now();
-        scene.paints++;
-        scene.last_paint_ns = done;
-        comp.stats.paints++;
-        comp.stats.last_paint_ns = done - t;
-        if (done - t > comp.stats.worst_paint_ns)
-            comp.stats.worst_paint_ns = done - t;
-        surfaces_frame_done(done, true);
-    } else if (t >= surfaces_hidden_deadline()) {
-        surfaces_frame_done(t, false);
-    }
-}
-
 /* How long the loop may sleep. */
 static uint64_t next_deadline(void)
 {
     if (conn_more())
         return 0;
-    uint64_t d = seat_deadline();
-    uint64_t h = surfaces_hidden_deadline();
-    d = h < d ? h : d;
-    if (!damage_empty(&scene.damage) || surfaces_waiting_paint()) {
-        uint64_t p = scene.last_paint_ns + comp.period_ns;
-        d = p < d ? p : d;
-    }
+    uint64_t d = seat_deadline(), c = clock_deadline();
+    d = c < d ? c : d;
     if (conn_held()) {
         uint64_t r = now() + HELD_RETRY;
         d = r < d ? r : d;
@@ -207,18 +200,23 @@ static status_t take_packets(uint64_t deadline)
 
 int main(int argc, char **argv)
 {
-    status_t st = setup(argc, argv);
+    struct args a;
+    status_t st = setup(argc, argv, &a);
     if (st != OK) {
         printf("compositor: can't start: %s\n", status_str(st));
         return 1;
     }
-    printf("compositor: ready, headless %dx%d\n", scene.width, scene.height);
+    printf("compositor: ready, %s %dx%d, painting on %u threads at %lu Hz\n",
+           output.screen ? "on the screen" : "headless", scene.width, scene.height,
+           pool_threads(), (unsigned long)(NS_PER_S / comp.period_ns));
+    if (a.scene_at)
+        return testscene_run(argc, argv, a.scene_at + 1);
     st = serve_svc();   /* connects queued before we bound the port */
     while (st == OK) {
         seat_serve();       /* input first: typing never waits behind a client */
         conn_serve_all();
         seat_turn();        /* the pointer's focus after the clients changed the scene */
-        paint_turn();
+        clock_turn();
         conn_flush_all();   /* the frame callbacks the paint answered */
         st = take_packets(next_deadline());
     }

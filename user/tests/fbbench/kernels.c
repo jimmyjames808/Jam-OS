@@ -13,11 +13,10 @@
  * could alias *r, so the compiler would read them again every pixel.
  *
  * The blends put a premultiplied argb pixel over an opaque one, exactly
- * as libfun's px_over does (alpha.c), per channel:
- *     out = src + (dst * (255 - a) + 128 + ((dst * (255 - a) + 128) >> 8)) >> 8
- * clamped to 255, top byte 0. The SIMD ones do it on 16-bit lanes, alpha
- * broadcast to its pixel's lanes with a shuffle; kernels_selftest checks
- * that they give px_over's answer for every pixel. */
+ * as libfun's px_over does (alpha.c): px_over itself a pixel at a time,
+ * and libfun's SSE2 and AVX2 row blends (over.c, what the compositor
+ * paints with); kernels_selftest checks that they give px_over's answer
+ * for every pixel. */
 #include "fbbench.h"
 
 #define NOLIB __attribute__((optimize("no-tree-loop-distribute-patterns")))
@@ -26,12 +25,6 @@
 typedef uint32_t  v4u32  __attribute__((vector_size(16)));
 typedef uint32_t  v8u32  __attribute__((vector_size(32)));
 typedef long long v2i64  __attribute__((vector_size(16)));
-typedef uint8_t   v8u8   __attribute__((vector_size(8)));
-typedef uint16_t  v8u16  __attribute__((vector_size(16)));
-typedef int16_t   v8i16  __attribute__((vector_size(16)));
-typedef uint8_t   v16u8  __attribute__((vector_size(16)));
-typedef uint16_t  v16u16 __attribute__((vector_size(32)));
-typedef int16_t   v16i16 __attribute__((vector_size(32)));
 
 static inline uint32_t *drow(const struct rows *r, int y)
 {
@@ -219,69 +212,17 @@ static void blend_scalar(const struct rows *r)
     }
 }
 
-/* Two pixels as eight 16-bit lanes (b, g, r, a each). */
-static inline v8u16 over2(v8u16 d, v8u16 s)
+/* libfun's row blends (over.c), the compositor's: a row at a time. */
+static void blend_sse2(const struct rows *r)
 {
-    static const v8u16 alpha = { 3, 3, 3, 3, 7, 7, 7, 7 };
-    static const v8u16 rgb = { 0xffff, 0xffff, 0xffff, 0, 0xffff, 0xffff, 0xffff, 0 };
-    v8u16 x = d * (255 - __builtin_shuffle(s, alpha)) + 128;
-    x = ((x + (x >> 8)) >> 8) + s;
-    v8u16 big = (v8u16)(x > 255);
-    return ((x & ~big) | (big & 255)) & rgb;
+    for (int y = 0; y < r->rows; y++)
+        px_over_row_sse2(drow(r, y), srow(r, y), r->w);
 }
 
-NOLIB static void blend_sse2(const struct rows *r)
+static void blend_avx2(const struct rows *r)
 {
-    int w = r->w;
-    for (int y = 0; y < r->rows; y++) {
-        uint32_t *d = drow(r, y);
-        const uint32_t *s = srow(r, y);
-        int i = 0;
-        for (; i + 2 <= w; i += 2) {
-            v8u8 d8, s8;
-            __builtin_memcpy(&d8, d + i, 8);
-            __builtin_memcpy(&s8, s + i, 8);
-            v8u16 x = over2(__builtin_convertvector(d8, v8u16), __builtin_convertvector(s8, v8u16));
-            v8u8 o = __builtin_convertvector(x, v8u8);
-            __builtin_memcpy(d + i, &o, 8);
-        }
-        if (i < w)
-            d[i] = px_over(d[i], s[i]);
-    }
-}
-
-/* Four pixels as sixteen 16-bit lanes; the shuffle stays inside each
- * 128-bit half (vpshufb). */
-AVX2 static inline v16u16 over4(v16u16 d, v16u16 s)
-{
-    static const v16u16 alpha = { 3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15 };
-    static const v16u16 rgb = { 0xffff, 0xffff, 0xffff, 0, 0xffff, 0xffff, 0xffff, 0,
-                                0xffff, 0xffff, 0xffff, 0, 0xffff, 0xffff, 0xffff, 0 };
-    v16u16 x = d * (255 - __builtin_shuffle(s, alpha)) + 128;
-    x = ((x + (x >> 8)) >> 8) + s;
-    v16u16 big = (v16u16)(x > 255);
-    return ((x & ~big) | (big & 255)) & rgb;
-}
-
-NOLIB AVX2 static void blend_avx2(const struct rows *r)
-{
-    int w = r->w;
-    for (int y = 0; y < r->rows; y++) {
-        uint32_t *d = drow(r, y);
-        const uint32_t *s = srow(r, y);
-        int i = 0;
-        for (; i + 4 <= w; i += 4) {
-            v16u8 d8, s8;
-            __builtin_memcpy(&d8, d + i, 16);
-            __builtin_memcpy(&s8, s + i, 16);
-            v16u16 x = over4(__builtin_convertvector(d8, v16u16),
-                             __builtin_convertvector(s8, v16u16));
-            v16u8 o = __builtin_convertvector(x, v16u8);
-            __builtin_memcpy(d + i, &o, 16);
-        }
-        for (; i < w; i++)
-            d[i] = px_over(d[i], s[i]);
-    }
+    for (int y = 0; y < r->rows; y++)
+        px_over_row_avx2(drow(r, y), srow(r, y), r->w);
 }
 
 const char *const blend_name[B_COUNT] = { "scalar", "SSE2", "AVX2" };

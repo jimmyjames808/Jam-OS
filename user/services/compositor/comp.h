@@ -17,9 +17,17 @@
  *   region.c    boxes, regions (wl_region, input and opaque) and damage
  *               lists: pure code, no protocol;
  *   scene.c     windows: stacking, position, damage, what is under a point;
- *   headless.c  composing into memory (no framebuffer: tests, screenshots).
- * Later tracks: painting on the framebuffer (output.c, paint.c, cursor.c,
- * clock.c), xdg-shell and window management (xdg.c, wm.c, deco.c), the
+ *   output.c    the output: the framebuffer (framebuffer_take), or an image
+ *               in memory when there is none (headless: tests, screenshots);
+ *   paint.c     composing the damage onto the output: tiles on workers,
+ *               opaque windows hiding what is below, the full-screen path;
+ *   title.c     drawing title bars, close boxes and borders (their sizes and
+ *               what a click on them does are the window manager's);
+ *   cursor.c    the pointer's picture: the arrow, hidden, or a client's;
+ *   clock.c     the paint clock (display.hz) and the frame callbacks' turn;
+ *   testscene.c windows of known pixels with no client (a test power);
+ *   paint.h     what those share.
+ * Later tracks: xdg-shell and window management (xdg.c, wm.c, deco.c), the
  * seat and compctl (seat.c, keyboard.c, pointer.c, focus.c, sources.c).
  *
  * The model:
@@ -37,9 +45,10 @@
  *   - the output (struct comp_scene) is one screen of pixels and its
  *     damage: what must be composed again at the next paint.
  *
- * Threads: one. The loop serves the clients and paints in turn (a paint
- * may later run on workers while the loop waits for it), so nothing here
- * takes a lock: nothing changes the scene while a paint reads it.
+ * Threads: the loop's, and a few painting workers (paint.c). The loop
+ * serves the clients and paints in turn, and waits while the workers
+ * paint, so nothing here takes a lock: nothing changes the scene while a
+ * paint reads it, and the workers only read it.
  *
  * Memory: the compositor's own structures for a client are bounded by the
  * caps below and freed with it. A client's pools are its own VMOs (pages
@@ -290,6 +299,11 @@ enum comp_layout {
 #define COMP_WIN_MAXIMIZED  (1u << 1)
 #define COMP_WIN_FULLSCREEN (1u << 2)
 #define COMP_WIN_FOCUSED    (1u << 3)   /* has the keyboard focus (focus.c sets it) */
+#define COMP_WIN_UNRESPONSIVE (1u << 4) /* didn't answer a ping: its title bar says so */
+
+/* A floating window's title bar: deco_top, in pixels (title.c draws it,
+ * the window manager sets it). Text is libfun's 8x16 font at scale 1. */
+#define COMP_TITLE_H 24
 
 struct comp_window {
     struct comp_surface *surface;
@@ -301,12 +315,13 @@ struct comp_window {
     uint32_t flags;                /* COMP_WIN_* */
     struct comp_box tile;          /* tiling: the tile it was given (wm.c) */
     void *wm;                      /* the window manager's own */
+    const char *title;             /* its title bar's text (the window manager's), or NULL */
 };
 
 struct comp_scene {
     int32_t   width, height;       /* the output, in pixels */
-    uint32_t *pixels;              /* headless: the image, 0x00RRGGBB; NULL until set up */
-    uint32_t  stride;              /* pixels a row */
+    uint32_t *pixels;              /* headless: the image, 0x00RRGGBB (output.c); else NULL */
+    uint32_t  stride;              /* its pixels a row */
     uint32_t  background;          /* 0x00RRGGBB where no window is */
     struct comp_window *bottom, *top;
     uint32_t  nwindows;
@@ -314,7 +329,7 @@ struct comp_scene {
     struct comp_box damage_boxes[COMP_OUTPUT_DAMAGE_MAX];
     enum comp_layout layout;
     uint64_t  paints;              /* paints done */
-    uint64_t  last_paint_ns;       /* when the last one ended */
+    uint64_t  last_paint_ns;       /* when the last one began (clock.c) */
 };
 
 extern struct comp_scene scene;
@@ -431,7 +446,7 @@ void surfaces_teardown(struct comp_client *cl);
 void shm_teardown(struct comp_client *cl);
 void display_teardown(struct comp_client *cl);
 
-/* ---- surfaces, buffers and painting (surface.c, shm.c, headless.c) ----------------- */
+/* ---- surfaces and buffers (surface.c, shm.c) ----------------------------------------- */
 
 /* wl_compositor.create_surface on compositor: a surface for cl at the new
  * id. OK, or a protocol error posted (the cap, no memory). */
@@ -463,8 +478,51 @@ void     surfaces_frame_done(uint64_t t, bool painted);
  * and whether a visible one waits for a paint. */
 uint64_t surfaces_hidden_deadline(void);
 bool     surfaces_waiting_paint(void);
-/* Compose the scene's damage into scene.pixels (headless), and clear it. */
-void     headless_compose(void);
+
+/* ---- painting and the output (output.c, paint.c, title.c, cursor.c, clock.c) ---------- */
+
+/* The output: where composed pixels go. */
+struct comp_output {
+    uint32_t *px;                  /* pixel (x, y) is px[y * stride + x]: the framebuffer
+                                    * (write-combining: written, never read) or the image */
+    uint32_t  stride;              /* pixels from one row to the next */
+    int32_t   width, height;
+    uint8_t   rs, gs, bs;          /* the red, green and blue channels' bit positions */
+    bool      native;              /* the format is 0x00RRGGBB: copied as it is */
+    bool      screen;              /* the framebuffer (false: headless) */
+    handle_t  owner;               /* framebuffer_take's owner token, held for good */
+};
+extern struct comp_output output;
+
+/* The framebuffer (SR_RESOURCE with RIGHT_ROOT_SCREEN), or with headless,
+ * no root or no framebuffer (ERR_NOT_FOUND) an image of w by h in memory
+ * (SR_USER + 1 if the starter gave one); scene_init for its size comes
+ * after. ERR_BAD_STATE: someone else owns the screen; others: no memory, a
+ * framebuffer that isn't 32 bits a pixel. */
+status_t output_open(bool headless, int32_t w, int32_t h);
+
+/* The workers (threads in all, the loop's thread included; 0: the
+ * default, a few). Call once, after output_open. */
+status_t paint_init(uint32_t threads);
+/* Compose the scene's damage onto the output, then clear it: what the
+ * clock calls. The output pixels written. */
+uint64_t paint_frame(void);
+/* Is w's surface hidden behind one opaque window above it (or not shown
+ * at all)? Its frame callbacks then come as a hidden surface's. */
+bool     window_covered(const struct comp_window *w);
+
+/* A title bar's box on the output, and its close box (empty: none), as
+ * title.c draws them: for the window manager's clicks. */
+struct comp_box title_bar_box(const struct comp_window *w);
+struct comp_box title_close_box(const struct comp_window *w);
+
+/* Paints at most hz times a second (1 to 240; display.hz, 60 by default). */
+void     clock_set_hz(uint32_t hz);
+/* Paint if there is damage (or a visible surface waits) and the clock
+ * allows; answer the frame callbacks that are due. One loop turn's. */
+void     clock_turn(void);
+/* When the loop must wake for the clock (DEADLINE_NEVER: nothing to do). */
+uint64_t clock_deadline(void);
 
 /* ---- the seat: input, focus and compctl (seat.c, keyboard.c, pointer.c, focus.c,
  * sources.c, ctl.c, testwin.c) ----------------------------------------------------------
