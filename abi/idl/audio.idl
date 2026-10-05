@@ -19,8 +19,8 @@
 # the driver's ring, before the sound written ahead runs out) and
 # finishes the request in progress exactly once (one in progress at two
 # crashes is answered ERR_INTERNAL). A call made meanwhile waits in its
-# channel. ERR_PEER_CLOSED means init gave up on the mixer (ten crashes
-# in a minute) or a successor couldn't carry on from the state and
+# channel. ERR_PEER_CLOSED means init gave up on the mixer (its eleventh
+# crash in a minute) or a successor couldn't carry on from the state and
 # started fresh (said in the log): then open /svc/audio again (svc_get
 # does), whose connect waits (bounded by the caller's deadline) on the
 # shared channel for the next mixer, and open a new stream.

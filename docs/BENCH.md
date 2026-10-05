@@ -579,3 +579,103 @@ checker-off column):
   deadline per call (P)`;
 - then the Linux column (`tools/linuxbench`) and the per-operation lines
   (`perop`), as the method above says.
+
+## M11.6, QEMU 2026-10-05
+
+Services that outlive their process
+([ARCHITECTURE.md](../ARCHITECTURE.md#services-that-outlive-their-process),
+[M11.6-PLAN.md](M11.6-PLAN.md#kill-to-first-answer)), measured by the
+area scripts at M11.6's join (local main 0e7f888 plus the join's docs and
+genidl check), `QEMU_SMP=2`, on the Mac with three or four other agents'
+QEMU runs going (load average ~10). These are QEMU's numbers: they say
+the mechanism works and roughly where the time goes, not what the PC
+does. The PC's lines (below) replace them.
+
+**Kill to first answer**: from the clock read just before the kill to the
+answer of one cheap call on the killed service (`fs.statfs` on the mount,
+`audioctl.streams` for the mixer), as a client feels it. It includes the
+kill itself, seeing the death, the promotion (or a process start), the
+successor's checks and handles, and the request it finishes first.
+
+| Path | spare | `nospare` | script |
+|---|---|---|---|
+| fat `/data`, nothing in progress (devmgr's probe) | median 7.9 ms, worst 71 ms (10) | median 10.1 ms, worst 19.7 ms (5) | fat-spare |
+| fat `/data`, files written meanwhile (devmgr's probe) | median 23.2 ms, worst 47.8 ms (10) | median 27.2 ms, worst 45.8 ms (11) | fat-restart |
+| fat, a copy running (`storm`'s probe), 1 / 10 / 100 kills a second | medians 12.5 / 10.3 / 10.2 ms; p99 17.1 / 81.1 / 24.3 ms | - | fat-storm |
+| the mixer, a ramp playing (mixramp's probe) | median 4.6 ms, p99 7.0 ms (20) | - | mixer-restart |
+| the mixer, a ramp playing (init's probe) | median 4.0 ms, worst 6.8 ms (20) | median 3.9 ms, worst 5.9 ms (20) | mixer-restart |
+| the mixer, idle (init's probe) | median 3.7 ms, worst 5.2 ms (13) | median 3.5 ms, worst 4.9 ms (5) | mixer-spare |
+| the mixer, music playing (`storm mixer 2 10`) | median 6.4 ms, p99 11.6 ms (20) | - | fat-storm |
+
+Where a fat restart's time goes (its restart line, the times from the
+kill; three promotions in fat-restart): its end seen at 1.0-1.5 ms,
+the spare promoted at 1.4-2.8 ms, its `main` at 1.9-3.1, the `block`
+channel at 2.4-3.9, the state checked at 3.3-4.4, the kept handles bound
+at 3.4-5.4, carrying on at 9.7-10.8 ms. In fat-spare: the kill itself
+(its end seen) median 1.2 ms, the spare promoted median 2.0 ms, a new
+process started instead median 1.8 ms.
+
+**The spare gives no speed-up in QEMU.** A promotion is no faster than
+starting a process from the boot image here (1.1-2.0 ms against
+1.6-1.8 ms), and what follows `main` dominates either way. On the PC a
+process start costs real page faults and cache misses; the PC decides
+whether the spares earn their ~100 KiB each (`ps`: `fat-spare` 100 KiB,
+the spare mixer 100 KiB).
+
+**The mixer's budget.** What was written ahead at the last commit and
+not yet played when the successor took over (the lead left): over 20
+kills least 123 ms, median 141-144 ms, most 165 ms, with the spare and
+without; `storm mixer`'s least 126 ms. Every restart is a few ms of that
+budget: no period late, and mixer-restart's WAV is the whole ramp, every
+frame once (384,000 frames).
+
+**The copy under kills** (`storm`, a 32 MiB file of random bytes from a
+second stick's fat to `/data`'s, killing `fat-usb0` and `fat-data` in
+turn; every copy MATCH, both disks clean by `tools/fatcheck.py` and
+`fsck_msdos -n` on /data afterwards):
+
+| Kills a second | Throughput | Kills | Kill to first answer (median / p99 / worst) |
+|---|---|---|---|
+| 0 | 4.54 MB/s | 0 | - |
+| 1 | 14.69 MB/s | 2 (0.8/s) | 12.5 / 17.1 / 17.1 ms |
+| 10 | 12.19 MB/s | 27 (9.8/s) | 10.3 / 81.1 / 81.1 ms |
+| 100 | 4.04 MB/s | 662 (79.8/s) | 10.2 / 24.3 / 45.6 ms |
+
+395 restarts of fat `/data` and 396 of fat `/usb0` carried on, none
+started fresh. The 0 line is the first copy after the boot (the first
+writes into `/data`'s free space, while the boot's own work and the
+first spare's start still run): slower than the 1 and 10 lines in both
+this run and stage D's, so it is no baseline in QEMU. At 100 kills a
+second (each fat dies about every 25 ms) the copy still runs at about a
+third of its undisturbed speed. Stage D's run, on a quieter Mac: 100
+kills a second 10.6 MB/s, 314 kills, median 5.9 ms.
+
+**The cost when nothing dies**, measured by stage F2 in QEMU: a cached
+4 KiB read about 6 % slower (the undo copy, the slot), a plain 64 KiB
+write about 30 times faster (its writes now go out as one coalesced
+write after the request instead of a write per cluster). fat's system
+calls per request (stage C, after it moved onto
+`channel_reply_wait`): a request is the port wait (which sends the last
+reply), the take and the port's binding again, 3 where it was 5; the
+mixer's 4 -> 3. Over a copy fat averages 5.5 system calls a request
+where it made 7.5; but a tight loop of cached reads went from 3.2 to 4.0,
+because fat now re-arms its port after every request, where its old
+batch loop could take several requests per wake-up and flush their
+replies together. **Open for the review:** whether to take a batch of
+requests per port packet again (each reply would still go out with the
+next take, so the `replied` mark stays exact), winning back the tight
+loop without giving up the copy's 5.5.
+
+What the PC run should show (the owner's steps, [TESTING.md](TESTING.md#services-that-outlive-their-process)):
+- `storm /usb0/big.bin /data/big.bin` (256 MiB) at 0, 1, 10 and 100
+  kills a second: four MATCH lines, the throughput and kill-to-first-answer
+  of each, and the sticks clean on the Mac afterwards (`fsck_msdos -n`,
+  `tools/fatcheck.py --require-clean`); the plan's target for fat with a
+  spare and nothing in progress is a median under 0.5 ms and a p99 under
+  2 ms;
+- `storm mixer 2 60` while music plays: nothing heard, no period late,
+  the least lead left (the plan's target: a median under 1 ms from the
+  kill to the next period written, the worst under 20 ms);
+- `ps`: the two spares' memory; and the per-operation lines (`perop
+  /data/`: the cached read and the 64 KiB write) for the cost when
+  nothing dies.

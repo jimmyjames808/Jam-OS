@@ -902,6 +902,71 @@ quick tiers:
 The times are the PC's: `bench` ([BENCH.md](BENCH.md)) prints every
 switch's line off and on in one run, and `perop` the per-operation lines.
 
+## Services that outlive their process
+
+fat and the mixer carry on from a dead instance's state
+([ARCHITECTURE.md](../ARCHITECTURE.md#services-that-outlive-their-process),
+[M11.6-PLAN.md](M11.6-PLAN.md)). The tests, cheapest first:
+
+- **The pieces, in the `init` run** (utest): `keep_*` (the keep channel:
+  put, drop, restore in 64-handle batches with the same objects and the
+  same rights, slots the state doesn't know, the keeper's refusals of
+  other handle types, malformed messages and too many slots or handles,
+  a successor's of a malformed restore), `svcstate_*` (a fresh, an adopted and a refused state:
+  every header check and a corrupted one set up empty; the slots, the
+  commit word and the four cases a successor finds; the `replied` mark;
+  a spare waiting before `main` and promoted), `idl_slot_*` (the
+  generated `_take_slot`, `_run_slot`, `_idempotent` and the reply that
+  goes with the next take), `fat_layout` (every FatFs field adoption
+  relies on, against the vendored FatFs), `fat_gather` (held writes go
+  out together), `disk_fs_restart` (devmgr's kept `fs` channel: the mount
+  never goes), and the exact deaths: `fat_restart_steps` (a script of
+  every kind of request run undisturbed, then with fat ended at a held
+  write, the commit, a block write of the send, before and after the
+  answer: the same answers and the RAM disks the same byte for byte),
+  `fat_restart_handles` and `fat_restart_bad_request`. In the kernel:
+  `chanread_kill_loses_nothing` and `chanread_reply_wait_kill_loses_nothing`
+  (a request is either queued or wholly in the slot). usbtest's
+  `storage_fence` (a dead client's queued writes never land).
+- **The area scripts** (rows above): `tools/fat-restart-test.sh`,
+  `tools/fat-spare-test.sh`, `tools/mixer-restart-test.sh` (the ramp
+  exact under 20 kills), `tools/mixer-spare-test.sh` and
+  `tools/fat-storm-test.sh` (`storm`; the copies checked on the host and
+  both disks by `tools/fatcheck.py`). Each boots once with the warm spare
+  and once with `nospare`, and prints kill-to-first-answer
+  ([BENCH.md](BENCH.md#m116-qemu-2026-10-05)). The scripts that killed
+  fat or the mixer before M11.6 expect no error now: `data-test`'s
+  killed fat keeps logd's file open, `mixer-test`'s killed mixer plays
+  on, `music-test`'s player never sees the mixer's restart.
+- **Two test builds of fat**, made by hand (`make EXTRA_CFLAGS_fat="...
+  -DFAT_RERUN_CHECK"`, the flags in `user/services/fat/request.c`):
+  every request is run, undone and run again from its slot before its
+  commit, as a successor would, and the two runs must answer and hold the
+  same ("rerun check FAILED" in the log otherwise); and `-DFAT_UNDO_OFF`
+  (`user/services/fat/undo.c`): no undo copy, only to measure what it
+  costs.
+
+**On the PC** (after a flash; the plan's
+[demonstration](M11.6-PLAN.md#the-demonstration-and-its-tests)): on the
+Mac first, a 256 MiB file of random bytes on the SanDisk and its SHA-256
+(`head -c 268435456 /dev/urandom > "/Volumes/NO NAME/big.bin"`,
+`shasum -a 256`); on the PC `mount -w /usb0`, then `storm /usb0/big.bin
+/data/big.bin 0`, and again at 1, 10 and 100 (an `rm /data/big.bin`
+between); `music start`, `storm mixer 2 60` while listening, `music
+stop`; `ps` (the spares' memory); `sync`, `reboot -f`, and the sticks
+pulled at the boot menu. On the Mac: `grep -E 'storm:|mixer: restart
+\(killed'` in the boot's log, `fsck_msdos -n` and `sudo python3
+tools/fatcheck.py /dev/rdiskNs2 --require-clean` on the Jam OS stick
+(the SanDisk's partition is `/dev/rdiskMs1`).
+
+**Noise.** A kill-to-first-answer sample includes whatever else the host
+was doing: on a Mac running several QEMUs the medians double and single
+samples reach 50-80 ms. A Mac asleep (lid closed, on battery) stops the
+guest for minutes, which shows as silent gaps in the guest's log and
+timeouts anywhere: check `pmset -g log` before calling such a failure a
+bug. `mixer-restart`'s check excuses the buffers QEMU's own audio
+dropped (traced with `hda_audio_overrun`), as mixer-test does.
+
 ## Random numbers
 
 The kernel's generator ([ARCHITECTURE.md](../ARCHITECTURE.md#random-numbers))

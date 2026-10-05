@@ -14,7 +14,7 @@
 # successor, and the request in progress is finished exactly once (a
 # request in progress at two crashes is answered ERR_IO). ERR_PEER_CLOSED
 # means the mount itself went: its stick pulled, `mount -w` / `-r` (a
-# stop in order), devmgr gave up on the service (five crashes in a
+# stop in order), devmgr gave up on the service (its sixth crash in a
 # minute), or /boot's server (which keeps no state) ended. Whoever gave
 # the mount gives the new channel when there is one (init sends its
 # followers' namespaces the change, libos's ns_update), and every file

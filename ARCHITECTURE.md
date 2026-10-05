@@ -49,10 +49,16 @@ What the design defends against today:
   a program to get something it wasn't granted is a bug
   ([SECURITY.md](SECURITY.md)).
 - **Crashing services and drivers.** Each is a process: a crash ends that
-  process, devmgr or init starts it again, and the kernel goes on (its
-  clients see the restart until M11.6). A driver's code can reach only
-  what it was given: it can't program MSI, change another device's
-  config, or keep its device mastering after it died
+  process, devmgr or init starts it again, and the kernel goes on. fat
+  and the mixer outlive their process: a successor carries on from the
+  dead one's state and its clients see no error, no lost write and no gap
+  in the sound ([Services that outlive their
+  process](#services-that-outlive-their-process)); a request that crashes
+  the service twice is answered with an error and dropped, so it can't
+  take the service away from everyone. The drivers' clients still see a
+  restart (`ERR_PEER_CLOSED`, then they reconnect). A driver's code can
+  reach only what it was given: it can't program MSI, change another
+  device's config, or keep its device mastering after it died
   ([the rules](#drivers-and-services)).
 
 Not yet:
@@ -564,8 +570,12 @@ Every driver and service is a userspace process from the start.
   protocol is still written by hand (`user/include/devmgr.h`). Planned:
   `power`. Bulk data
   (disk blocks, packets, file contents) moves through a shared VMO ring;
-  messages carry offsets. Every protocol defines how a client reconnects
-  after `PEER_CLOSED` (the server restarted).
+  messages carry offsets. Every protocol's file states its restart rule
+  (a paragraph beginning `Restart:` or `Reconnect:`, which `genidl`
+  checks): either a restart is not seen (`fs`, `file`, `audio`,
+  `audioctl`: [Services that outlive their
+  process](#services-that-outlive-their-process)), or what a client does
+  after `PEER_CLOSED` and what it loses.
 - **Generated calls in three shapes** (`tools/genidl.py` has the
   details): the blocking `<proto>_<method>` / `_until` (a deadline) /
   `_within` (a timeout the kernel starts from its own clock, so the
@@ -579,6 +589,21 @@ Every driver and service is a userspace process from the start.
   kernel's txids could match the caller's). `<proto>_serve` sends each
   reply in the `channel_reply_wait` that waits for the next request: one
   system call per request.
+- **Requests in slots**, for a server whose requests must outlive it:
+  `<proto>_take_slot` reads one request into memory the server chooses
+  (`struct idl_slot`, in its state VMO), the request's length written
+  last in the same system call, so a death leaves it either still queued
+  or wholly in the slot; `<proto>_run_slot` runs a slot's request and
+  builds its reply in the slot too, so the loop and a successor's re-run
+  are the same code. The reply waits (`struct idl_reply`) and goes out
+  with the server's next system call (the next take, which is a
+  `channel_reply_wait`, or its wait on its port), and the kernel sets a
+  mark in the slot once it went out. `<PROTO>_REQ_MAX` and
+  `<PROTO>_REP_MAX` size the slots. A method marked `idempotent` (running
+  it again on the state its first run left gives the same answer:
+  `block`'s info, read, write and sync) says so in
+  `<proto>_idempotent(ordinal)`, for a server that keeps no state and may
+  run such a request again after a restart.
 
 ## How a service waits
 
@@ -728,11 +753,11 @@ port, so while it handles one request every other client waits behind it.
 | console | the framebuffer and COM1's output (the root's `RIGHT_ROOT_SCREEN` and `RIGHT_ROOT_SERIAL_OUT`, which no other program holds), `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` to devmgr, a `block` channel per partition | yes |
-| fat | one partition's `block` channel | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr | yes |
+| fat | one partition's `block` channel, a state VMO and a keep channel from devmgr | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr; outlives its process ([below](#services-that-outlive-their-process)) | yes |
 | bootfs | the bootfs image VMO | `fs` and `file` for `/boot`, read-only | yes |
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
 | hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | yes |
-| mixer | `hda`, through the sound cards' devmgr device channels | `audio` and `audioctl`: every program's sound mixed into the one output, and query channels to the sound card ([Audio](#audio)) | yes |
+| mixer | `hda`, through the sound cards' devmgr device channels; a state VMO and a keep channel from init | `audio` and `audioctl`: every program's sound mixed into the one output, and query channels to the sound card ([Audio](#audio)); outlives its process ([below](#services-that-outlive-their-process)) | yes |
 | music | `audio`, the namespace | `music`: a folder played in shuffle in the background ([Audio](#audio)) | yes |
 | rtl8125 | its PCI device (the PC's Realtek RTL8125B: MSI-X, DMA rings) | `netdev`, every frame in the network mode: tagged with the VLAN, or untagged ([Networking](#networking)) | yes (on every boot but "Jam OS (no network)", `vlan=off`) |
 | e1000e | its PCI device (QEMU's Intel 82574L, for the tests) | `netdev`, the same rules | yes |
@@ -770,7 +795,9 @@ Rules for userspace drivers:
   unexpectedly (crash, kill, error exit; an exit 0 by itself means the
   driver is finished): backoff 100 ms, doubling per restart within the
   last 60 s up to 5 s; the 6th death within 60 s gives up (log + RESULTS
-  line). A driver that ended by itself must leave its job empty; one
+  line). A filesystem service is supervised by the rule for services
+  that outlive their process instead ([below](#supervision-and-the-warm-spare)).
+  A driver that ended by itself must leave its job empty; one
   that hasn't quite yet (a request it sent still queued at the server it
   called, its pages being given back on another CPU) is looked at again
   for 2 s before it counts as not ended cleanly. A restart is a bind from scratch, i.e. the safe-rebind path: the
@@ -787,9 +814,12 @@ Rules for userspace drivers:
   again (`input` and `console` define theirs).
 - **Kill**: the shell's `kill <name>` asks init (`initctl.kill`), which
   kills its own services itself and asks devmgr to kill what devmgr runs:
-  a USB class driver, a filesystem service or a PCI driver (usb-bus, hda),
-  found by name through devmgr's bindings. Whoever supervises it starts it
-  again. The shell refuses to kill init.
+  a USB class driver, a filesystem service (`fat-<mount>`: `fat-data`,
+  `fat-usb0`, found by its mount, since a promoted spare's process is
+  called `fat-spare`) or a PCI driver (usb-bus, hda), found by name
+  through devmgr's bindings. Whoever supervises it starts it again. The
+  shell refuses to kill init. `storm` kills services at a fixed rate the
+  same way ([below](#the-demonstration-storm)).
 - **Authority**: devmgr has a query channel (look things up), a control
   channel (change bindings), the ESP channel (init's alone: the boot
   stick's ESP made writable for `update -w`, which no other channel may
@@ -804,6 +834,173 @@ Rules for userspace drivers:
   network card's to netstack. Console clients have a level fixed on their channel
   when it is made (ADMIN, SHELL, PROGRAM), and a program started from the
   shell gets a PROGRAM channel and nothing of devmgr's.
+
+## Services that outlive their process
+
+fat and the mixer keep their queues and their state outside their
+process, so a successor carries on where a dead instance stopped and
+their clients never see the death: no error, no lost write, no gap in
+the sound, only a slower answer ([M11.6-PLAN.md](docs/M11.6-PLAN.md)).
+A service like that keeps three kinds of state apart:
+
+1. **Kernel objects its clients hold the other end of** (a mount's `fs`
+   channel and views, an open file's channel and buffer VMO, a mixer
+   stream's channel, ring and event, an opener's channel, the mixer's
+   channels to the hda driver): kept alive by the supervisor (devmgr for
+   fat, init for the mixer), which holds a duplicate of each. Clients'
+   handles never change.
+2. **What the service knows** (the volume, every open file, what it holds
+   for the disk; every stream's numbers, the output's position, the
+   limiter): in a **state VMO** the supervisor makes, keeps and hands to
+   each instance, committed at the end of every request (fat) or period
+   (the mixer).
+3. **Everything else** (the port and its bindings, fat's block cache and
+   directory cursors, the mixer's mixing buffers, mappings): rebuilt by
+   the successor.
+
+**The keep channel** (`<keep.h>`, `user/lib/keep.c`, written by hand
+because it carries handles in one-way messages): a service sends its
+supervisor `KEEP_PUT` (a slot number of its own and up to 4 duplicates)
+before it records the slot in its state and before it answers, and
+`KEEP_DROP` after it has forgotten it; the supervisor's keeper hands a
+successor every slot back (`KEEP_RESTORE`, 64 handles a message, then
+`KEEP_DONE`). Order makes it exact without a reply: a slot the keeper
+returns that the state doesn't know (a death between the two) is closed
+by the successor, and a slot the state knows that the keeper didn't
+return is dropped from the state. The keeper takes channels, VMOs and
+events only (told apart by three questions that change nothing: there
+is no system call that names a handle's type yet), never widens rights,
+holds at most 256 slots and 256 handles per service, charged to its own
+job, and hands them only to the next instance of the same binding. It
+closes them all when the service is given up on, its disk goes, or it is
+stopped in order (a remount): then clients see `ERR_PEER_CLOSED`.
+
+**The state VMO** (`<svcstate.h>`, `user/lib/svcstate.c`): made by the
+supervisor (4 MiB reserved for fat, of which fat's layout uses 1224 KiB,
+mostly the write hold; 1 MiB for the mixer, which uses about 32 KiB),
+charged to its job, never mapped by it, and handed to each instance with
+read, write and map only (no resize, transfer or duplicate, so the
+service can't pass it on). The service maps it at a fixed address
+(`SVCSTATE_ADDR`) before anything else, so pointers inside it (FatFs's)
+stay valid from one instance to the next. Its header page says what it
+is (magic, version, the service's kind and its own layout version from
+the build, the binding: fat's mount name and partition size), how many
+times it was adopted, the two request slots and the commit word. A
+successor checks all of it and every count and index inside; any
+mismatch and it starts fresh (today's behaviour before M11.6: fat mounts
+from the disk and closes every file, the mixer's clients open again),
+with a line in the log.
+
+**The request in progress.** Each request is read straight into a slot
+of the state (`<proto>_take_slot`, [IPC](#ipc)): the slot's length is
+zeroed, then the kernel copies the message and writes its length in one
+system call, and a killed thread always finishes the call it is in, so a
+request is either still queued or wholly in the slot (ktests
+`chanread_kill_loses_nothing`, `chanread_reply_wait_kill_loses_nothing`).
+The service runs it, commits (the reply into the slot, then the commit
+word: one released store, so a death leaves it old or new), sends what it
+held for the disk, and answers; the reply goes out with its next system
+call, which also sets the slot's `replied` mark in the kernel once it
+went. A successor finds one of four cases (`svcstate_pending`): nothing
+in progress; taken and not committed (the state is put back as it was
+before the request, from an undo copy, and the request runs again from
+its slot's bytes, a write's data included: the client may have changed
+its buffer since); committed and not all sent (the held writes are sent
+again, the same bytes to the same sectors, then the reply); sent and not
+answered (the reply). A reply that carried handles (`fs.open`, `fs.view`,
+`audio.open_output`, `svc.connect`) and never went out took them with the
+process: the object is made again and the reply goes again. So every
+call is answered exactly once.
+
+**A bad request.** A request in progress when the service *crashes*
+twice (not a deliberate kill: the supervisor tells each instance how the
+last one ended, in its arguments) is answered `ERR_IO` (fat) or
+`ERR_INTERNAL` (the mixer) and dropped, and the service carries on: one
+crafted request can't crash every successor in turn.
+
+### Supervision and the warm spare
+
+- **A warm spare** is a second copy of the service, started with nothing
+  but one channel (`SR_STANDBY`): it waits in libos's startup
+  (`user/lib/start.c`) before `main`, having opened and read nothing (a
+  spare that had mounted would hold a stale copy of the disk). Promoting
+  it is one message with the handles a new process would have been given
+  by role (up to 64), its arguments and the time of the kill
+  (`struct standby_msg`, `<jam/startup.h>`); from then on it starts as any
+  program and its code doesn't know it was a spare. devmgr keeps one
+  spare fat (`fat-spare`) for every mount, started 1 s after the first
+  filesystem service and again 50 ms after each promotion, with `/data`'s
+  `block` channel opened in advance; init keeps one spare mixer. Each
+  costs about 100 KiB of its job's memory (`ps`). Boot word `nospare`:
+  restarts start a process instead (still handed the state and the keep
+  channel), for comparing.
+- **Deliberate kills don't count.** A kill (the shell's `kill`, `storm`,
+  `DEVMGR_KILL`, `initctl.kill`) neither counts toward giving up nor
+  waits: the spare is promoted at once. A crash or an error exit counts as
+  for any service (fat: given up on at the sixth death in 60 s, the
+  mixer at the eleventh); the first crash in a window is restarted at
+  once, later ones back off from 100 ms, doubling to 5 s. With the
+  bad-request rule, a crash loop on one request ends after two crashes
+  without anyone giving up.
+- **Measured at every restart:** each supervisor logs when the new
+  instance ran after the kill, and a thread of its own that serves
+  nothing makes one cheap call on the kept channel (`fs.statfs`,
+  `audioctl.streams`): kill to first answer, as a client feels it. Each
+  successor logs one restart line (`fat /data: restart (killed, ...)`,
+  `mixer: restart (killed, ...)`): what it found in progress, what became
+  of it, and where the time went; the mixer adds the lead left.
+- A supervisor's own death still takes its services with it (devmgr's
+  job holds every fat): surviving devmgr or init is not built.
+
+### Security
+
+A restarted service gains nothing it didn't have, and no client can
+forge the state it is handed back:
+
+- The successor's authority is a fresh start's: its startup handles are
+  minted again by the supervisor (never taken from the dead process),
+  plus its state VMO and the duplicates the dead instance itself handed
+  the keeper, at the rights it had. The keeper refuses every type but
+  channels, VMOs and events (no `dma_cap`, interrupt, resource, process,
+  thread, job, port, timer or VMAR).
+- A spare holds only its standby channel, whose other end is the
+  supervisor's alone, until it is promoted.
+- The state VMO is never handed to a client and never mapped by the
+  supervisor. Nothing that carries authority lives in memory a client can
+  write: a view's and an open file's flags come from the state, never
+  from a request; a stream's `read` from the state, never from its ring's
+  header; a re-run request's data from the slot, never re-read from the
+  client's buffer; and a re-run passes every check its first run did.
+- A state written by a misbehaving instance is checked before use, and is
+  bound to its mount and partition (a fat on another disk can't take it);
+  the supervisor drops it with the binding. A fat corrupted by an
+  exploit already held the volume's `block` channel, so a bad state gives
+  it nothing more.
+- usb-storage never starts a request from a client that has gone ([the
+  fence](#storage)), so nothing a dead fat queued lands after its
+  successor's writes.
+
+### The demonstration: storm
+
+`storm <from> <to> <kills/s> [service...]` (the shell's
+`user/services/shell/cmd/storm.c`) copies a file while a thread of its
+own kills services through init's control channel at a fixed rate, by
+default the filesystem service of each side in turn (`fat-usb0`,
+`fat-data`); afterwards it reads both files back and prints the
+throughput, the kills, kill-to-first-answer (median, p99, worst: from
+the clock read before the kill to the answer of one `fs.statfs` on the
+killed mount) and whether the two SHA-256s MATCH. `storm mixer <kills/s>
+<seconds>` kills the mixer while whatever plays plays, then reads the
+mixer's restart lines back from the log: the restarts, the least lead
+left and any late period. `tools/fatcheck.py` checks a stick's FAT32 on
+the Mac afterwards (every chain, every size, lost clusters, the clean
+bit). Measured in QEMU (TESTING.md's `tools/fat-storm-test.sh`, a 32 MiB
+copy, 2 vCPUs on a busy Mac) and to be measured on the PC: [BENCH.md](docs/BENCH.md#m116-qemu-2026-10-05).
+
+What M11.6 does not cover: the drivers. A driver's restart is still a
+bind from scratch on purpose (the safe rebind above) and its clients
+still see `ERR_PEER_CLOSED`; the plan for usb-storage and hda is
+[M11.6-PLAN.md](docs/M11.6-PLAN.md#x-drivers-the-design-note).
 
 ## Networking
 
@@ -1557,9 +1754,8 @@ restarted mixer serves the same channels: `audio`
 asks for it plays sound), and `audioctl` (every stream's volume and the
 master volume, `/svc/audioctl`: the shell's `vol` and test programs).
 Each opener of either gets a channel of its own (`svc.connect`), so a
-late answer goes only to the program that asked; it ends with the mixer
-that made it, and the next open waits on the shared channel for the
-restarted one. An opener holds at most 4 of the 16 streams
+late answer goes only to the program that asked; init's keeper keeps it
+across the mixer's restarts (below). An opener holds at most 4 of the 16 streams
 (`MIXER_STREAMS_PER_CLIENT` in `user/include/mixer.h`, where the number is
 argued): a program looping over the library can't starve the others.
 `open_output` gives a client a stream of its own: a channel (start,
@@ -1580,8 +1776,7 @@ nothing below full scale), then out at 24 bits (or, to a 16-bit device,
 rounded with TPDF dither where a volume left a fraction): one stream at
 0 dB is bit-exact. A slow
 client gives silence for what it lacks (an underrun); a dead one's
-stream is dropped; a driver that restarts is reopened; a mixer that dies
-is restarted by init and its clients open new streams. Programs write
+stream is dropped; a driver that restarts is reopened. Programs write
 sound through `<audio.h>` in libos (open with their own rate and
 channels, blocking writes, drain, close), a mixer stream underneath: the
 library makes mono stereo and resamples to 48 kHz (a polyphase
@@ -1589,6 +1784,35 @@ windowed-sinc filter: flat to 20 kHz, 100 dB down from 22.05 kHz, its
 position kept exactly); `beep` and `play` (WAV files, parsed by
 `<wav.h>`; `play -s` prints underruns, late periods and the least lead
 afterwards) use it.
+
+**The mixer outlives its process** ([Services that outlive their
+process](#services-that-outlive-their-process)). Its numbers (every
+stream's id, owner, volume, `read` and history, every opener's, the
+output's position, period, the limiter's state and the dither seed, the
+master volume) live in a state VMO init keeps, two copies and a commit
+word that names the current one; its handles (every stream's channel,
+ring and event, every opener's channel, the driver's channel and its
+stream channel and ring) are put with init's keeper. A period is mixed,
+written into the driver's ring, committed, and only then is each
+stream's new `read` published in its ring's header; a control call
+commits before it answers. The driver's stream channel is kept too, so
+when the mixer dies the driver doesn't stop and mute: the stream plays on
+through the 128-171 ms written ahead. A successor (the warm spare)
+takes the handles back, maps the driver's ring again, asks its position,
+and mixes the periods since the last commit again from the committed
+numbers (the same frames, gains, limiter and dither: the same samples,
+bit for bit) over the same place in the ring, still ahead of the play
+position; a death after the commit only publishes. So nothing plays
+twice or goes missing, and the only thing that can cost a gap is time:
+the successor must write the next period before the lead left runs out,
+which its restart line logs. It takes `read` from its state, never from
+a ring's header (the client writes that page). `audioctl.device`
+requests the dead instance's device thread hadn't answered are recorded
+in the state and handed to the new thread. Measured in QEMU: a 16-bit
+ramp played at 0 dB comes out of QEMU's codec whole, every frame once,
+while the mixer is killed 20 times (`tools/mixer-restart-test.sh`); 20
+kills in 10 s while the music player played left at least 126 ms of
+lead, and no period was late ([BENCH.md](docs/BENCH.md#m116-qemu-2026-10-05)).
 
 **MP3** ([docs/history/A2-PLAN.md](docs/history/A2-PLAN.md#mp3)): `play` picks a file's
 format by its first bytes, not its name (`RIFF`: WAV; MPEG audio frames,
@@ -1715,21 +1939,60 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
 - fat keeps a write-through block cache (`user/services/fat/cache.c`):
   a miss reads 4 KiB, and twice as much as the last one when it carries
   on where that one ended, up to a 64 KiB line (one block call); 16 lines
-  per volume, the least recently used given up first; every write still
-  goes to the
-  stick at once and is then copied into the lines that hold its sectors,
-  so the cache never holds anything the stick doesn't (sticks get
-  pulled). A big read (a whole 64 KiB) goes past it. Nobody else writes a
-  partition while its fat runs, so the cache never goes stale.
-- The exception is a file opened `FS_GATHER` (`<os.h>`), which only init's
-  ESP write uses: FatFs writes a file a cluster at a time, one sector on
-  the ESP, and a cheap stick takes milliseconds per write command, so its
-  writes are held in fat (`user/services/fat/hold.c`, about a MiB) and go
-  out in 64 KiB writes, in the order above, at its sync or close (or when
-  anything else writes, or the hold is full). A pulled stick loses what
-  was held; a held write that fails stops fat writing until it starts
-  again. An unlink's FAT writes are held the same way, and sent before it
-  is answered.
+  per volume, the least recently used given up first; every write goes
+  to the stick before its request is answered (below) and is copied into
+  the lines that hold its sectors when it is held, so the cache never
+  holds anything the stick doesn't hold or is about to (sticks get
+  pulled; a write that fails takes its lines with it). A big read (a
+  whole 64 KiB) goes past it. Nobody else writes a partition while its
+  fat runs, so the cache never goes stale. A successor of a dead fat
+  starts it cold.
+- **Every request is one operation** (`user/services/fat/request.c`),
+  so a successor can finish it exactly once ([Services that outlive their
+  process](#services-that-outlive-their-process)): an undo copy of what it
+  may change (`undo.c`: FatFs's volume, the file's open, fat's tables:
+  1.4 to 2.3 KiB for most requests), then the request runs with **every
+  disk write held** (`hold.c`, about a MiB, in the state VMO: nothing of
+  it reaches the stick before it commits), then the commit (one store),
+  then what it held goes out in 64 KiB writes in the order above, then the
+  answer. A write's bytes are copied into the request's slot once (the
+  bounce buffer it always had), so a re-run writes the same bytes. As a
+  side effect a plain 64 KiB write goes out as one coalesced write
+  instead of a write per cluster. A request whose writes don't fit the
+  hold (an unlink or truncate of a file over about 2 GiB on `/data`, or a
+  grow by more than the hold) goes out in steps, says so in the log, and
+  can't be undone: a death between steps can leave clusters no file
+  reaches (lost space, never a damaged file).
+- A file opened `FS_GATHER` (`<os.h>`), which only init's ESP write uses,
+  keeps its writes held across requests: FatFs writes a file a cluster at
+  a time, one sector on the ESP, and a cheap stick takes milliseconds per
+  write command, so they go out in 64 KiB writes at its sync or close (or
+  when anything else writes, or the hold is full). They are in the state,
+  so they survive fat's death too. A pulled stick loses what was held; a
+  held write that fails stops fat writing until it starts again (fail
+  closed: FatFs's idea of the volume is then ahead of the disk).
+- **fat outlives its process.** devmgr keeps, per mount, the `fs`
+  channel's both ends (so the mount stays listed and calls wait for the
+  successor), a state VMO and a keeper. fat's state (`struct fat_state`,
+  `user/services/fat/fat.h`) is FatFs's `FATFS` and every open file's
+  `FIL`, fat's tables of open files and views, what it believes the clean
+  bit on the stick says, and the hold. A successor registers the committed
+  `FATFS` with FatFs without reading the disk (`f_mount(..., 0)`, then the
+  struct copied back over it: `user/services/fat/adopt.c`), takes the
+  keeper's handles back, finishes the request in progress and logs one
+  restart line. utest's `fat_layout` pins every FatFs field this relies
+  on (FatFs is vendored unmodified at R0.16). FatFs's own lock table is
+  off (`FF_FS_LOCK 0`): it is state FatFs keeps outside the struct, so fat
+  keeps its own rules (one writer, no unlink or rename of an open file)
+  matched by directory entry, so an 8.3 alias can't open a file twice.
+- **The fence** (`drivers/usb-storage/block.c`): usb-storage looks at a
+  `block` channel's peer before it starts each request and drops the
+  request, unanswered, if the client has gone. A channel's queued
+  messages can still be read after its peer closed, so without it a
+  write a dying fat had queued could run after its successor's writes to
+  the same sectors (a microsecond later with a spare) and put an older
+  FAT sector back. A request already started finishes first, and the
+  successor's channel is a new one, served after it.
 - The FAT "clean shutdown" bit is cleared on the stick before the first
   sector written after a sync, and set again once everything is flushed (a
   sync, the last written file closed, a clean stop). A volume found dirty
@@ -1762,10 +2025,11 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   all. `make usb` gives every stick a random id (`tools/mkimage.py`); on
   a stick made before, whose id is 0, the first Jam OS disk found is the
   boot disk, as before. Each mount is a fat service
-  holding one partition's `block` channel, supervised like a driver; init
-  gets the mounts' `fs` channels from devmgr (`DEVMGR_MOUNTS` in
-  `user/include/devmgr.h`), with a generation that moves whenever a mount
-  comes, goes or is restarted.
+  holding one partition's `block` channel, supervised by devmgr (a
+  restart is not seen: above); init gets the mounts' `fs` channels from
+  devmgr (`DEVMGR_MOUNTS` in `user/include/devmgr.h`), with a generation
+  that moves whenever a mount comes or goes or its `fs` channel changes
+  (a remount), never for a restart.
 - Any other stick: each partition whose MBR type says FAT (01 04 06 0B 0C
   0E EF) gets a fat service and the lowest free `/usbN`, one at a time so
   the numbers follow the order found; a stick with no partition table
@@ -1783,7 +2047,9 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   flushed, the volume marked clean, then the exit, so a program writing
   at that moment gets an error for the write that came too late and loses
   none that was answered. The mount is gone
-  for a moment either way, and files open on it are closed. `/boot` and
+  for a moment either way, and files open on it are closed: a stop in
+  order also ends what devmgr kept for the mount (its `fs` channel, its
+  state, the keeper's handles), so the new fat starts fresh. `/boot` and
   `/esp` can never be made writable by `mount` and `/data` never
   read-only: init passes on nothing but `/usbN`, and devmgr remounts
   nothing else that way (making the ESP writable for `update -w` is the

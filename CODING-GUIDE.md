@@ -486,8 +486,12 @@ fractions. User programs may use floating point and SIMD freely.
 ### Add an IDL protocol or method
 
 1. New protocol: `abi/idl/<name>.idl` with a unique protocol id and a
-   header comment saying who serves it, who calls it, and **what a client
-   does after `ERR_PEER_CLOSED`** (the reconnect rule).
+   header comment saying who serves it, who calls it, and **its restart
+   rule**, in a paragraph that begins `Restart:` or `Reconnect:`
+   (`genidl` refuses a file without one): either a restart of the server
+   is not seen ([a service that outlives its
+   process](#a-service-that-outlives-its-process)), or what a client does
+   after `ERR_PEER_CLOSED` and what it loses.
 2. New method: the next ordinal; never renumber or change an existing
    method's arguments (add a new method instead). Comment lines above a
    method are copied into the generated header.
@@ -510,6 +514,67 @@ fractions. User programs may use floating point and SIMD freely.
    `<name>_<method>_send` and `<name>_<method>_result`
    ([a loop that serves never blocks](#a-loop-that-serves-never-blocks)).
 6. Test both ends (a utest with a mock peer, as `user/tests/utest/hid.c` does).
+
+### A service that outlives its process
+
+For a service whose clients must not see it die (fat and the mixer are
+the models: `user/services/fat/`, `user/services/mixer/`; the design is
+in [ARCHITECTURE.md](ARCHITECTURE.md#services-that-outlive-their-process)).
+A service that keeps nothing worth keeping doesn't need this: its
+protocol's restart rule says what clients do after `ERR_PEER_CLOSED`.
+
+1. **Sort its state into three kinds.** Kernel objects clients hold the
+   other end of: put with the keeper. What it knows: in one struct in its
+   state VMO. Everything else (the port, caches, mappings, scratch
+   buffers): rebuilt at every start. Handles never go in the state VMO;
+   keep them in the process's own memory by the same index as the
+   state's entry.
+2. **The supervisor** makes the state VMO once per binding
+   (`svcstate_create`, sized by `svcstate_size`), a keeper
+   (`keeper_init`, `keeper_attach` for each instance) and a warm spare
+   (`SR_STANDBY`, `standby_promote`), and hands each instance `SR_STATE`
+   (with `svcstate_give`'s rights only) and `SR_KEEP`; it sends the
+   keep channel's end before `keeper_restore` writes into it. It never
+   maps the state. A deliberate kill neither counts nor waits; it tells
+   each instance how the last one ended (killed or crashed). It drops the
+   state and calls `keeper_release` when the binding retires, is given up
+   on or is stopped in order. devmgr's and init's `spare.c` are the two
+   copies to follow.
+3. **The service** calls `svcstate_open` before anything else (the state
+   at the fixed address, so pointers inside it stay valid), with its own
+   layout version (bump it on any change to the struct) and its binding,
+   and checks every count and index of its own area; anything wrong:
+   start fresh, with a line in the log.
+4. **Every request in a slot**: `svcstate_prepare` and
+   `<proto>_take_slot` (the reply of the last request goes out in the
+   same call), `<proto>_run_slot`, then commit (`svcstate_commit`, after
+   which the request counts as done), finish its side effects, mark it
+   sent (`svcstate_sent`), and `svcstate_answer`. Nothing a request does
+   outside the state (a disk write, a period written to a device) may
+   happen before its commit unless doing it again gives the same result;
+   fat holds its writes until the commit, the mixer writes a period over
+   the same place again.
+5. **Order with the keeper**: `keep_put` before the state records the
+   slot and before the reply that hands the client its end; `keep_drop`
+   after the state has forgotten it for good (after the commit of the
+   operation that closed it, since an undo would bring it back).
+6. **The successor** (`svcstate_pending`): put back what an uncommitted
+   request changed and run it again from its slot (its data from the
+   slot, never from the client); redo a committed one's side effects and
+   reply unless its `replied` mark is set; make a handle-carrying reply's
+   objects again if it never went out; answer a request in progress at
+   two crashes with an error and drop it. Take the keeper's slots back
+   with `keep_restore`, refusing the slots the state doesn't know.
+7. **Nothing that carries authority comes from memory a client can
+   write**: flags from the state, never from a request or a shared ring;
+   a re-run passes every check its first run did.
+8. **Tests**: kill it at every step of a request (a test power only its
+   spawner can pass, as fat's `die=`) and check the answers and the
+   result are the same as without; a request that crashes it twice; the
+   kept handles of a reply that never went out; an area script that
+   kills it while a client works and prints kill-to-first-answer with a
+   spare and with `nospare`. Its protocol's restart rule says the restart
+   is not seen.
 
 ### Add a shell command
 

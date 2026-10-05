@@ -40,13 +40,18 @@ a real desktop PC, which is where every milestone is tested.
 - Kernel and user-space test suites, a stress test, a soak test (the
   kernel tests repeated in shuffled order under load, with sticks pulled
   and plugged) and a benchmark, runnable from the boot menu or the shell.
-- `storm /usb0/big.bin /data/big.bin 10` copies a file while the
-  filesystem services of both sides are killed ten times a second, then
-  prints the throughput, the kills, kill-to-first-answer (median, p99,
-  worst) and both files' SHA-256 (MATCH or DIFFERENT); `storm mixer 2 60`
-  kills the mixer while music plays. `tools/fatcheck.py` checks the
-  stick's FAT32 afterwards on the Mac. (Services that outlive their
-  process: M11.6, not signed off on the PC yet.)
+- Services that outlive their process: the FAT32 service and the sound
+  mixer keep their state and their clients' channels outside the
+  process, so when one is killed or crashes a waiting spare carries on
+  where it stopped and programs see nothing: no error, no lost write, no
+  gap in the sound. `storm /usb0/big.bin /data/big.bin 10` shows it:
+  it copies a file while the filesystem services of both sides are
+  killed ten times a second, then prints the throughput, the kills,
+  kill-to-first-answer (median, p99, worst) and both files' SHA-256
+  (MATCH or DIFFERENT); `storm mixer 2 60` kills the mixer while music
+  plays. `tools/fatcheck.py` checks the stick's FAT32 afterwards on the
+  Mac. (Built and tested in QEMU, where a 32 MiB copy at 100 kills a
+  second matches; not signed off on the PC yet.)
 - Sound: `beep`, and `play /data/song.wav` plays a PCM WAV
   file (8- to 32-bit, mono or stereo, any common rate) in the headphones;
   `play /data/song.mp3` plays an MP3 (CBR or VBR, ID3 tags skipped, decoded
