@@ -1,22 +1,28 @@
-/* update: run the build the Mac serves (tools/update-server.py), without
+/* update: take the build the Mac serves (tools/update-server.py), without
  * moving the stick (docs/M9-PLAN.md "update: a new build from the Mac").
- *   update [-n | -w] [-f] [server address]
+ *   update [-n | -m | -w] [-r] [-f] [server address]
  * The server is net.host in /data/etc/settings unless given. The shell
  * takes an offer channel from init (initctl.update_offer) and starts
  * bin/update (user/services/update) with it: the fetcher holds only that
  * channel and /svc/net, offers what it fetched, and init checks it
  * against the manifest (signed by the key in this build's boot image) and
- * makes it the stored kernel (<update.h>). Then the shell reboots into it,
- * the normal way (`reboot`). -n: fetched and checked, nothing loaded, no
- * reboot. By default only RAM changes; -w: init also writes the build to
- * the stick (the stick's own build kept as "Jam OS (previous build)"), so
- * it survives a power-off; if that write fails, init says how far it got
- * and that the stick still boots, and the shell doesn't reboot (`reboot`
- * runs the loaded build). Only init can write the stick: the shell and
- * bin/update just ask. A build without a key fetches nothing: init would
- * refuse every build. -f: taken even if its network default (vlan21,
- * untagged: its build.txt) isn't this build's, which init otherwise
- * refuses. */
+ * makes it the stored kernel (<update.h>), the one `reboot` starts.
+ * Plain `update`: init also writes the build (and its boot menu) to the
+ * stick, the stick's own build kept as "Jam OS (previous build)", so
+ * `reboot -f` and a power-on start it too. Then it stops: nothing
+ * reboots, the last line says what `reboot` and `reboot -f` start now.
+ * If the stick write fails, init says how far it got and that the stick
+ * still boots; the build stays loaded (`reboot` runs it). -w: the same as
+ * plain `update` (its spelling when the plain one wrote nothing). -m: into
+ * memory only, the stick untouched: `reboot` runs it, a power-off (or
+ * `reboot -f`) brings back the stick's (for a build you'd rather try
+ * first). -n: fetched and checked, nothing loaded or written. -r: once it
+ * is loaded (and written, without -m), reboot into it at once (kexec), as
+ * `update` did before it stopped. Only init can write the stick: the shell
+ * and bin/update just ask. A build without a key fetches nothing: init
+ * would refuse every build. -f: taken even if its network default
+ * (vlan21, untagged: its build.txt) isn't this build's, which init
+ * otherwise refuses. */
 #include <idl/initctl.h>
 #include <ipv4.h>
 #include <settings.h>
@@ -61,23 +67,36 @@ static bool server(const char *given, char *out, size_t cap)
 
 SH_CMD(update)
 {
-    const char *mode = "load", *given = NULL;   /* bin/update's: load, check (-n), write (-w) */
-    bool force = false;
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-n") && !strcmp(mode, "load")) {
-            mode = "check";
-        } else if (!strcmp(argv[i], "-w") && !strcmp(mode, "load")) {
-            mode = "write";
+    /* bin/update's mode: write (plain, -w), load (-m: memory only), check (-n) */
+    const char *mode = "write", *given = NULL;
+    bool force = false, then_reboot = false, mode_given = false, bad = false;
+    for (int i = 1; i < argc && !bad; i++) {
+        const char *m = !strcmp(argv[i], "-n")   ? "check"
+                        : !strcmp(argv[i], "-m") ? "load"
+                        : !strcmp(argv[i], "-w") ? "write"
+                                                 : NULL;
+        if (m && !mode_given) {
+            mode = m;
+            mode_given = true;
+        } else if (!strcmp(argv[i], "-r") && !then_reboot) {
+            then_reboot = true;
         } else if (!strcmp(argv[i], "-f") && !force) {
             force = true;
         } else if (argv[i][0] != '-' && !given) {
             given = argv[i];
         } else {
-            sh_tty("usage: update [-n | -w] [-f] [server address]\n"
-                   "  -n: fetch and check only; -w: write it to the stick too;\n"
-                   "  -f: even if its network default (VLAN or untagged) isn't this build's\n");
-            return 2;
+            bad = true;
         }
+    }
+    if (bad || (then_reboot && !strcmp(mode, "check"))) {   /* -n -r: nothing to reboot into */
+        sh_tty("usage: update [-n | -m | -w] [-r] [-f] [server address]\n"
+               "  plain: fetch, check, write it to the stick and load it; then `reboot`\n"
+               "         starts it (kexec), `reboot -f` too (through the firmware)\n"
+               "  -m: load it into memory only, the stick untouched (a power-off brings\n"
+               "      back the stick's); -n: fetch and check only, nothing loaded or written\n"
+               "  -w: the same as plain; -r: reboot into it (kexec) once loaded;\n"
+               "  -f: even if its network default (VLAN or untagged) isn't this build's\n");
+        return 2;
     }
     char host[SETTINGS_VALUE_MAX], git[48];
     struct sys_info s;
@@ -96,8 +115,14 @@ SH_CMD(update)
     const char *args[] = { "update", host, mode, s.version, git, force ? "force" : NULL, NULL };
     sh_flush();
     int code = sh_run_helper(UPDATE_PATH, force ? 6 : 5, args, x, 1);
-    if (code || !strcmp(mode, "check"))
+    if (!then_reboot)
+        return code;   /* bin/update's last line said what `reboot` starts now */
+    if (code == 3)
+        sh_tty("update: no reboot (-r): the stick write failed; `reboot` starts the loaded "
+               "build\n");
+    if (code)
         return code;
+    sh_tty("update: rebooting into it (-r)\n");
     char *reboot_args[] = { "reboot", NULL };
     return shc_reboot(1, reboot_args);
 }

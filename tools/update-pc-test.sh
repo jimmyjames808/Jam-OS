@@ -1,5 +1,5 @@
 #!/bin/sh
-# `update -w` as on the owner's PC, where it first looked like a hang
+# `update`'s stick write as on the owner's PC, where it first looked like a hang
 # (2026-10-02, build b050c6a): a real USB 2 boot stick, whose every write
 # command costs milliseconds, and a second stick at /usb0 (the SanDisk: an
 # MBR and one FAT32 partition, type 0b). The boot stick here is QEMU's
@@ -11,17 +11,20 @@
 # (`again`: of the one `fast` left):
 #   fast    100 write commands a second and 10 MB/s (a cheap stick's
 #           small-write speed; PC_THROTTLE overrides it, "" for none):
-#           `update -w` answers "written" within PC_WAIT seconds (150);
-#           the stick holds B, with A as the previous build, no .new file,
-#           and the new menu, the old as limine.conf.prev;
-#   again   that stick boots B, and `update -w` of B again writes nothing
-#           ("the stick has this build already", "... this boot menu
-#           already") and answers "written";
+#           plain `update` answers "written" within PC_WAIT seconds (150)
+#           and doesn't reboot; the stick holds B, with A as the previous
+#           build, no .new file, and the new menu, the old as
+#           limine.conf.prev;
+#   again   that stick boots B, and `update -w` (the old spelling) of B
+#           again writes nothing ("the stick has this build already", "...
+#           this boot menu already") and says B is the build running and
+#           the stick has it: nothing to do;
 #   stuck   3 write commands a second: the write can't finish in its time
-#           (espwrite.c WRITE_LIMIT), and `update -w` still answers, "not
-#           written", within 280 s; /esp is back read-only, and the stick
+#           (espwrite.c WRITE_LIMIT), and `update` still answers, "not
+#           written", within 280 s, B loaded all the same; /esp is back
+#           read-only; `reboot` (kexec) starts B from memory; the stick
 #           still boots A, with its old menu, no .new file left;
-#   reboot  the same slow stick; `update -w` stopped with Ctrl+C while init
+#   reboot  the same slow stick; `update` stopped with Ctrl+C while init
 #           writes, then `reboot`: the write doesn't hold the reboot up
 #           (kexec within 60 s), and the next boot runs B (the stored
 #           kernel); the stick's default entry still boots A.
@@ -138,23 +141,30 @@ boot() {
         sed "s/^/update-pc-test: $1: /"
 }
 
+# begin <run> <command>: the run's script, up to its `update`.
 begin() {
     cat > "$out/$1.txt" <<EOF
 wait 120 Jam OS shell
 $seen_usb
 seen 60 netstack: address 10.2.21.5/24
 wait jam>
-send update -w
+send $2
 EOF
 }
 
 slow="${PC_THROTTLE-x-iops-write=100,x-bps-write=10485760}"
 for run in ${PC_RUNS:-fast again stuck reboot}; do
-    begin $run
+    cmd=update
+    [ $run = again ] && cmd="update -w"
+    begin $run "$cmd"
     case $run in
     fast|again)
+        said="update: written to the stick and loaded:"
+        [ $run = again ] &&
+            said="update: this is the build running now, and the stick has it already: nothing to do"
         cat >> "$out/$run.txt" <<EOF
-wait $limit stored and written to the stick (-w)
+wait $limit checked by init in
+wait $said
 wait jam>
 send reboot -f
 wait reboot: resetting
@@ -173,16 +183,27 @@ EOF
         [ $run = again ] ||
             grep -aq "init: update: its boot menu written" "$out/$run.log" ||
             fail "$run: init didn't say it wrote the boot menu"
-        grep -aq "init: update: .* and stored, and written to the stick" "$out/$run.log" ||
-            fail "$run: init didn't say it wrote the stick"
+        wrote="and stored, and written to the stick"
+        [ $run = again ] && wrote="and stored; the stick has it already"
+        grep -aq "init: update: .* $wrote" "$out/$run.log" ||
+            fail "$run: init didn't say \"$wrote\""
+        grep -aq "kexec: starting" "$out/$run.log" && fail "$run: update rebooted"
         stick $run B A none ;;
     stuck)
         cat >> "$out/stuck.txt" <<EOF
-wait 280 is stored, but init couldn't write it to the stick
+wait 280 loaded, but init couldn't write it to the stick
+wait update: loaded, but NOT written to the stick:
 wait jam>
 seen 30 init: update: write: the ESP read-only again in
 send ls /esp/boot
 wait jamos.elf
+wait jam>
+send reboot
+wait 60 kexec: starting the stored kernel
+wait 120 init: the shell is up
+wait jam>
+send version
+wait Jam OS $vb, git
 wait jam>
 send reboot -f
 wait reboot: resetting

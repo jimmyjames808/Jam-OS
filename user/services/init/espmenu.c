@@ -1,4 +1,4 @@
-/* init's boot menu write for `update -w` (<update.h>'s `menu` line): the
+/* init's boot menu write for `update` (<update.h>'s `menu` line): the
  * fetched build's boot/limine.conf, checked against the signed manifest's
  * SHA-256 by update.c, written to the stick's ESP as
  * boot/limine/limine.conf once the build itself is written (espwrite.c's
@@ -52,7 +52,7 @@
  * A failure stops where it is and puts things back while the ESP's fat
  * still answers: limine.conf.prev back to limine.conf if that is missing,
  * the .new removed, the spare removed once limine.conf is there; never
- * the spare without a limine.conf. The next `update -w` first settles
+ * the spare without a limine.conf. The next `update` first settles
  * what a cut left (esp_menu_settle: the same rules), whatever it carries.
  * The answer says what became of the menu (enum update_menu); the
  * build's own answer doesn't depend on it. */
