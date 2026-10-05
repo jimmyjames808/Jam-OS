@@ -1,8 +1,8 @@
 /* utest: bin/compositor (user/services/compositor) headless, driven over
  * real channels by test clients speaking Wayland through libjwl.
  *
- * t_comp_globals: the registry (wl_compositor 4, wl_shm 1, wl_output 3;
- * the seat and xdg-shell not offered yet), binding them (wl_shm's two
+ * t_comp_globals: the registry (wl_compositor 4, wl_shm 1, wl_output 3,
+ * wl_seat 5; xdg-shell not offered yet), binding them (wl_shm's two
  * formats, wl_output's geometry, mode, scale and done), sync, and the
  * headless image composed with the background.
  * t_comp_surface: a surface with a shm buffer from a kept pool: commit,
@@ -97,8 +97,9 @@ bool ct_stop(struct ct_comp *p)
                  (unsigned long)ct_job_used(p->job, k), k);
     }
     CHECK_ST(jam_handle_close(p->job), OK);
-    CHECK_ST(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)p->image,
-                            p->image_size), OK);
+    if (p->image)   /* none if the compositor was started with an image of its own */
+        CHECK_ST(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)p->image,
+                                p->image_size), OK);
     return true;
 }
 
@@ -124,6 +125,9 @@ void ct_close(struct ct_client *k)
 {
     jwl_conn_destroy(k->c);
     k->c = NULL;
+    if (k->kept != HANDLE_INVALID)
+        jam_handle_close(k->kept);
+    k->kept = HANDLE_INVALID;
 }
 
 void ct_clear(struct ct_client *k)
@@ -143,6 +147,13 @@ uint32_t ct_new(struct ct_client *k, const struct jwl_interface *iface, uint32_t
     return jwl_conn_make(k->c, iface, version, NULL, &id) == OK ? id : 0;
 }
 
+static void record_array(struct ct_event *e, const struct jwl_array *a)
+{
+    e->na = a->size / 4;
+    if (e->na)
+        memcpy(e->a, a->data, (e->na < 8 ? e->na : 8) * 4);
+}
+
 static void record(struct ct_client *k, struct jwl_msg *m)
 {
     struct ct_event e = { .iface = m->iface, .op = m->opcode, .id = m->id };
@@ -152,8 +163,14 @@ static void record(struct ct_client *k, struct jwl_msg *m)
         for (unsigned i = 0; i < sig.n && i < m->nargs; i++) {
             if (sig.type[i] == 's' && m->args[i].s && !e.s[0])
                 snprintf(e.s, sizeof(e.s), "%s", m->args[i].s);
+            else if (sig.type[i] == 'a' && !e.na)
+                record_array(&e, &m->args[i].a);
             else if (sig.type[i] != 's' && sig.type[i] != 'a' && nu < 4)
                 e.u[nu++] = m->args[i].u;
+            if (sig.type[i] == 'h' && k->kept == HANDLE_INVALID) {
+                k->kept = m->args[i].h;   /* the test's now */
+                m->args[i].h = HANDLE_INVALID;
+            }
         }
     }
     jwl_msg_close_handles(m);
@@ -302,7 +319,8 @@ static bool globals_and_binds(struct ct_client *k)
     CHECK(has_global(k, 1, "wl_compositor", 4));
     CHECK(has_global(k, 2, "wl_shm", 1));
     CHECK(has_global(k, 3, "wl_output", 3));
-    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 3);
+    CHECK(has_global(k, 4, "wl_seat", 5));
+    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 4);
     CHECK_EQ(count(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT), 2);
     CHECK(ct_find(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT, k->shm)->u[0] ==
           JWL_WL_SHM_FORMAT_ARGB8888);
@@ -334,7 +352,7 @@ bool t_comp_globals(void)
     uint32_t reg2 = ct_new(&k, &jwl_wl_registry_interface, 1);
     CHECK_ST(jwl_wl_display_get_registry(k.c, JWL_DISPLAY_ID, reg2), OK);
     CHECK_ST(ct_roundtrip(&k), OK);
-    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 3);
+    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 4);
     ct_close(&k);
     CHECK(ct_stop(&p));
     return true;

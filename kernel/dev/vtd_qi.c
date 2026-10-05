@@ -404,7 +404,10 @@ static void log_error(struct vtd_unit *u, const struct inv_error *e)
             "a reserved field set", "a bad descriptor width", "a misaligned tail",
         };
         const char *w = e->iqei < sizeof(why) / sizeof(why[0]) ? why[e->iqei] : "?";
-        bool first = __atomic_load_n(&u->stats.refused, __ATOMIC_RELAXED) == 1;
+        /* The first in the RESULTS box, the next few logged, the rest
+         * counted (the `iommu` command): a run of them can't flood the log. */
+        uint64_t n = __atomic_load_n(&u->stats.refused, __ATOMIC_RELAXED);
+        bool first = n == 1;
         const char *fmt = "vtd: unit %u: the queue refused descriptor %u (%016lx %016lx): %s "
                           "(iqei %u)%s";
         char line[192];
@@ -412,8 +415,11 @@ static void log_error(struct vtd_unit *u, const struct inv_error *e)
                   first ? "" : "; logged only");
         if (first)
             report("%s", line);
-        else
+        else if (n <= VTD_FAULT_LOGGED)
             kprintf("%s\n", line);
+        if (n == VTD_FAULT_LOGGED)
+            kprintf("vtd: unit %u: the queue refused descriptors %lu times: the next are counted, not "
+                    "logged\n", u->index, n);
     }
     if (e->fsts & (VTD_FSTS_ITE | VTD_FSTS_ICE))
         report("vtd: unit %u: device-TLB invalidation error (fsts %x, iqercd %lx), never "

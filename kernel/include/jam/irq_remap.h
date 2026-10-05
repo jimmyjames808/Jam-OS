@@ -36,9 +36,10 @@ bool irq_remap_on(void);
  * its index (never 0), *out_addr and *out_data the remappable MSI message
  * that names it. ERR_BAD_STATE (remapping is off), ERR_NOT_SUPPORTED (a
  * function on a segment no unit covers), ERR_NO_RESOURCES (the table is
- * full), ERR_INVALID_ARGS (a vector below 16), or the invalidation's
- * error (the entry is freed again). Thread context, interrupts on, no
- * spinlock held: it waits for the units' interrupt entry caches. */
+ * full), ERR_INVALID_ARGS (a vector below 32: the CPU's exceptions), or
+ * the invalidation's error (the entry is freed again). Thread context,
+ * interrupts on, no spinlock held: it waits for the units' interrupt entry
+ * caches. */
 status_t irq_remap_alloc_pci(const struct pci_dev *d, uint32_t apic_id, uint8_t vector,
                              uint32_t *out_index, uint64_t *out_addr, uint32_t *out_data);
 

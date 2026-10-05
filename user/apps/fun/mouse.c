@@ -155,11 +155,12 @@ void gfx_mouse(struct mouse *out)
 
 /* ---- the arrow ------------------------------------------------------------------------ */
 
-#define ARROW_W 12
-#define ARROW_H 18
+#define ARROW_W POINTER_ARROW_W
+#define ARROW_H POINTER_ARROW_H
 #define ARROW_MAX_SCALE 4
-/* '#' the outline, 'o' the fill; the hot spot is the top-left corner. */
-static const char arrow[ARROW_H][ARROW_W + 1] = {
+/* '#' the outline, 'o' the fill; the hot spot is the top-left corner
+ * (fun.h: the compositor draws it too). */
+const char pointer_arrow[ARROW_H][ARROW_W + 1] = {
     "#           ",
     "##          ",
     "#o#         ",
@@ -207,7 +208,7 @@ void pointer_paint(void)
         uint32_t *row = scr.s.px + (uint64_t)(py + j) * scr.s.stride + px;
         for (int i = 0; i < pw; i++) {
             under[j * pw + i] = row[i];
-            char c = arrow[j / k][i / k];
+            char c = pointer_arrow[j / k][i / k];
             if (c != ' ')
                 row[i] = c == '#' ? 0x000000 : 0xffffff;
         }
