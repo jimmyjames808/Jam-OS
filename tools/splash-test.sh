@@ -2,7 +2,15 @@
 # The boot splash (user/apps/splash, docs/history/AS-PLAN.md) in QEMU, with
 # QEMU_SPLASH=1 (tools/qemu-test.sh leaves the splash out otherwise) and an
 # intel-hda + hda-output codec writing what it plays to a WAV file (as
-# tools/mixer-test.sh). Six boots:
+# tools/mixer-test.sh). Seven boots; all but `comp` with `nocomp`, the
+# console on the whole screen (the PC's way back until G1 is signed off):
+#   comp     a plain boot, the compositor's (splash-comp.txt): the screen
+#            is all #1E1A1D when init starts; two screenshots a second
+#            apart are frames of the video (its full-screen window, over
+#            the first terminal's); a line typed while it plays, one once
+#            it has played and one right after its window has gone all
+#            reach the shell (the splash's window takes no keys: the
+#            terminal's keeps them), and no key skips it.
 #   splash   a plain boot (OVMF's 1280x800: the video at 1x, centred), the
 #            serial script tools/shell-tests/splash.txt. Checked: the
 #            screen is all #1E1A1D when init starts (the kernel's quiet
@@ -57,10 +65,20 @@ check() {
     python3 tools/splash-check.py "$@" || ok=0
 }
 
+# ---- comp: the compositor's plain boot -------------------------------------------
+QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$(snd "$out/comp.wav")" \
+    QEMU_INPUT=tools/shell-tests/splash-comp.txt tools/qemu-test.sh "$out" comp shell \
+    > "$out/comp.out" 2>&1 || { echo "comp: the script failed"; tail -3 "$out/comp.out"; ok=0; }
+need "$out/comp.log" "init: the compositor draws the screen" "splash: played at" \
+    "init: the shell is up" "typed-kept" "right-after" "bin/splash exited with code 0"
+if grep -aqF "skipped by a key" "$out/comp.log"; then echo "comp: a key skipped the splash"; ok=0; fi
+check quiet "$out/comp-quiet.png"
+check frames "$out/comp-a.png" "$out/comp-b.png"
+
 # ---- splash: a plain boot ----------------------------------------------------
 rm -f "$out/splash.wav"
 QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$(snd "$out/splash.wav")" \
-    QEMU_INPUT=tools/shell-tests/splash.txt tools/qemu-test.sh "$out" splash shell \
+    QEMU_INPUT=tools/shell-tests/splash.txt tools/qemu-test.sh "$out" splash shell nocomp \
     > "$out/splash.out" 2>&1 || { echo "splash: the script failed"; tail -3 "$out/splash.out"; ok=0; }
 log=$out/splash.log
 need "$log" "quiet for the boot splash" "args: init shell splash" \
@@ -94,7 +112,7 @@ if [ -n "$join" ]; then check sound "$out/splash.wav" "$join"; else ok=0; fi
 rm -f "$out/keys.wav"
 QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
     QEMU_EXTRA="$(snd "$out/keys.wav") -vga none -device VGA,xres=2560,yres=1440,vgamem_mb=64" \
-    QEMU_INPUT=tools/shell-tests/splash-keys.txt tools/qemu-test.sh "$out" keys shell \
+    QEMU_INPUT=tools/shell-tests/splash-keys.txt tools/qemu-test.sh "$out" keys shell nocomp \
     > "$out/keys.out" 2>&1 || { echo "keys: the script failed"; tail -3 "$out/keys.out"; ok=0; }
 need "$out/keys.log" "at 1:1 on 2560x1440" "splash: played at" "typed-kept" \
     "console: the screen is back"
@@ -115,7 +133,7 @@ echo "keys: the mixer took ${taken:-?} frames of the splash's sound (the whole t
 # ---- verbose and nosplash: the text log --------------------------------------
 for word in verbose nosplash; do
     QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/splash-off.txt \
-        tools/qemu-test.sh "$out" "$word" shell "$word" > "$out/$word.out" 2>&1 ||
+        tools/qemu-test.sh "$out" "$word" shell "$word" nocomp > "$out/$word.out" 2>&1 ||
         { echo "$word: the script failed"; tail -3 "$out/$word.out"; ok=0; }
     need "$out/$word.log" "init: hello from ring 3" "init: the shell is up"
     if grep -aq "args: init shell splash" "$out/$word.log"; then

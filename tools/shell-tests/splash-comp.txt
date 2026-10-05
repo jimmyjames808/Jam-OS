@@ -1,0 +1,27 @@
+# The boot splash on the compositor (a plain boot, booted with it:
+# tools/splash-test.sh): it plays in a full-screen window that takes no
+# keys, over the first terminal's window, which keeps them. A line typed
+# while it plays, one typed once it has played and one right after its
+# window is gone all reach the shell once it is up, which runs them (the
+# second prints typed-kept: the variable the first set). Screenshots: the
+# dark screen before init, two frames a second apart, then the terminal.
+wait 120 init: hello from ring 3
+shot comp-quiet
+wait 120 splash: waited
+sleep 1
+shot comp-a
+send K=kept
+sleep 1
+shot comp-b
+wait 60 splash: played at
+send echo typed-$K
+wait 60 init: bin/splash exited with code 0
+send echo right-""after
+# (the shell may run the first two before the splash has gone: `seen`)
+seen 60 typed-kept
+wait 60 right-after
+wait jam>
+sleep 1
+shot comp-shell
+send reboot -f
+wait reboot: resetting
