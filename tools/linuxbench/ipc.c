@@ -41,7 +41,7 @@ struct shm {
 struct conn {
     enum way way;
     bool process;            /* the server is a process: futexes are shared */
-    bool timeout;            /* every futex wait has a 5 s timeout */
+    bool timeout;            /* every futex wait has a 60 s timeout (libos's FS_CALL_TIMEOUT) */
     struct shm *shm;
     int cli, srv;            /* socket ends */
     int req[2], rep[2];      /* pipes: client->server, server->client */
@@ -54,12 +54,12 @@ static int futex_flags(const struct conn *c, int op)
 
 static void futex_call(struct conn *c, const uint8_t *req, uint8_t *rep)
 {
-    static const struct timespec five = { 5, 0 };
+    static const struct timespec limit = { 60, 0 };
     memcpy(c->shm->msg, req, MSG);
     __atomic_store_n(&c->shm->turn, 1, __ATOMIC_RELEASE);
     futex_op(&c->shm->turn, futex_flags(c, FUTEX_WAKE), 1, NULL);
     while (__atomic_load_n(&c->shm->turn, __ATOMIC_ACQUIRE) == 1)
-        futex_op(&c->shm->turn, futex_flags(c, FUTEX_WAIT), 1, c->timeout ? &five : NULL);
+        futex_op(&c->shm->turn, futex_flags(c, FUTEX_WAIT), 1, c->timeout ? &limit : NULL);
     memcpy(rep, c->shm->msg, MSG);
 }
 
@@ -200,7 +200,7 @@ static void measure(enum way way, bool process, bool timeout, int server_cpu, co
             pthread_join(st, NULL);
         char how[96];
         snprintf(how, sizeof(how), "%s%s", way_how[way],
-                 timeout ? ", every wait with a 5 s timeout" : "");
+                 timeout ? ", every wait with a 60 s timeout" : "");
         result(what, how, SAMPLES);
     }
     close_conn(&c);
@@ -211,7 +211,7 @@ void bench_ipc(void)
     for (int w = WAY_FUTEX; w <= WAY_PIPE; w++)
         measure((enum way)w, true, false, cpu_p,
                 "user: process->process channel_call, same CPU (P)");
-    measure(WAY_FUTEX, true, true, cpu_p, "user: the same with a 5 s deadline per call (P)");
+    measure(WAY_FUTEX, true, true, cpu_p, "user: the same with a 60 s deadline per call (P)");
     measure(WAY_SOCKET, false, false, cpu_p, "user: thread->thread channel_call, 1 process (P)");
     measure(WAY_FUTEX, false, false, cpu_p, "user: thread->thread channel_call, 1 process (P)");
     int others[] = { cpu_p2, cpu_ht, cpu_e };

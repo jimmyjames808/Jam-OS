@@ -16,12 +16,13 @@
  *           switches, so the counts are printed per switch
  *   kcall   channel_call between two kernel threads on P
  *   ucall   process->process channel_call, both on P (utest bench-call)
- *   rwcall  the same against a server on channel_reply_wait (bench-rwecho)
- *   dcall   the same with a deadline on every call, as libos's file calls
- *           have (bench-dcall)
+ *   dcall   the same with a deadline on every call (now() + FS_CALL_TIMEOUT,
+ *           as libos made its file calls before they took a timeout:
+ *           bench-dcall)
+ *   tcall   thread->thread channel_call inside one process on P (bench-tcall)
+ *   rwcall  ucall against a server on channel_reply_wait (bench-rwecho)
  *   gcall   the same through generated code: a null.ping client stub with
  *           a time limit against null_serve (bench-gcall, bench-gecho)
- *   tcall   thread->thread channel_call inside one process on P (bench-tcall)
  *   ucall2  process->process channel_call, client on P, server on P2
  *           (counts only: two CPUs' timestamps interleave)
  *
@@ -483,14 +484,14 @@ void bench_path_run(void)
           { "client", "server" } },
         { "ucall", "user process->process channel_call, same CPU (P)", "call", 1, PATH_MK_CALL,
           { "client", "server" } },
-        { "rwcall", "user process->process channel_call, reply-and-wait server, same CPU (P)",
-          "call", 1, PATH_MK_CALL, { "client", "server" } },
         { "dcall", "user process->process channel_call with a deadline, same CPU (P)", "call",
-          1, PATH_MK_CALL, { "client", "server" } },
-        { "gcall", "user process->process generated call (null.ping), same CPU (P)", "call",
           1, PATH_MK_CALL, { "client", "server" } },
         { "tcall", "user thread->thread channel_call, 1 process (P)", "call", 1, PATH_MK_CALL,
           { "proc", "-" } },
+        { "rwcall", "user process->process channel_call, reply-and-wait server, same CPU (P)",
+          "call", 1, PATH_MK_CALL, { "client", "server" } },
+        { "gcall", "user process->process generated call (null.ping), same CPU (P)", "call",
+          1, PATH_MK_CALL, { "client", "server" } },
         { "ucall2", "user process->process channel_call P->P2", "call", 1, PATH_MK_CALL,
           { "client", "server" } },
     };
@@ -501,13 +502,13 @@ void bench_path_run(void)
         print_case(&cases[1], &r, mark_ps, true);
     if (bench_path_ucall("call", p, p, PATH_MARKED, &r))
         print_case(&cases[2], &r, mark_ps, true);
-    if (bench_path_ucall("rwcall", p, p, PATH_MARKED, &r))
-        print_case(&cases[3], &r, mark_ps, true);
     if (bench_path_ucall("dcall", p, p, PATH_MARKED, &r))
-        print_case(&cases[4], &r, mark_ps, true);
-    if (bench_path_ucall("gcall", p, p, PATH_MARKED, &r))
-        print_case(&cases[5], &r, mark_ps, true);
+        print_case(&cases[3], &r, mark_ps, true);
     if (bench_path_ucall("tcall", p, -1, PATH_MARKED, &r))
+        print_case(&cases[4], &r, mark_ps, true);
+    if (bench_path_ucall("rwcall", p, p, PATH_MARKED, &r))
+        print_case(&cases[5], &r, mark_ps, true);
+    if (bench_path_ucall("gcall", p, p, PATH_MARKED, &r))
         print_case(&cases[6], &r, mark_ps, true);
     if (p2 >= 0 && bench_path_ucall("call", p, p2, 0, &r))
         print_case(&cases[7], &r, mark_ps, false);
