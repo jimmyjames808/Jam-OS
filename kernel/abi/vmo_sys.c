@@ -2,7 +2,9 @@
  * RIGHT_READ; writing and committing RIGHT_WRITE; resizing and decommitting
  * RIGHT_WRITE | RIGHT_RESIZE, so a handle duplicated without RIGHT_RESIZE
  * changes a buffer's contents but never takes pages out from under someone
- * else's mapping of it. */
+ * else's mapping of it. A VMO_KEEP_PAGES VMO refuses decommit and shrink
+ * whatever the handle's rights (vmo.c), so the same holds for every handle
+ * to it, its creator's included. */
 #include <jam/handle.h>
 #include <jam/sys.h>
 #include <jam/sysinfo.h>
@@ -39,17 +41,12 @@ status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
             return ERR_ACCESS_DENIED;
         kobject_unref(cap);
     }
+    /* Its pages are charged to the creating table's job (none for a
+     * kernel table); a VMO_KEEP_PAGES one's all at once, here. */
     struct vmo *v;
-    status_t st = vmo_create(size, flags, &v);
+    status_t st = vmo_create_for(t->job, size, flags, &v);
     if (st != OK)
         return st;
-    /* Its pages are charged to the creating table's job (none for a
-     * kernel table). */
-    st = vmo_set_job(v, t->job);
-    if (st != OK) {
-        kobject_unref(vmo_kobject(v));
-        return st;
-    }
     struct khandle kh = khandle_from_new(vmo_kobject(v), VMO_RIGHTS);
     st = handle_insert(t, &kh, out);
     if (st != OK)

@@ -58,13 +58,15 @@ struct sh_words {
 bool sh_split_words(const char *s, struct sh_words *w);
 void sh_words_free(struct sh_words *w);
 
-enum { SH_OP_END, SH_OP_PIPE, SH_OP_SEMI, SH_OP_AND, SH_OP_OR };
+/* SH_OP_BG: a single & (the command before it runs in the background, and
+ * the line goes on as after ;). */
+enum { SH_OP_END, SH_OP_PIPE, SH_OP_SEMI, SH_OP_AND, SH_OP_OR, SH_OP_BG };
 
 struct sh_seg {
     char *text; /* the segment, inside the line */
     int   op;   /* what follows it */
 };
-/* Cut a line at | ; && || outside quotes (and drop a # comment). The
+/* Cut a line at | ; && || & outside quotes (and drop a # comment). The
  * texts point into `line`, which is modified. -1 on a syntax error (said). */
 int sh_segments(char *line, struct sh_seg *segs);
 

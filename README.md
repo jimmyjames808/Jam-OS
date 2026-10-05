@@ -37,6 +37,13 @@ a real desktop PC, which is where every milestone is tested.
   completion and file commands (`ls cat cp mv rm mkdir write df mount`),
   plus a few apps: a Mandelbrot explorer, life, tetris, snake, minesweeper
   played with the mouse, and a graphical system monitor.
+- Programs in the background: `run prog args &` (or `prog &`) gives the
+  prompt back at once; `jobs` lists them, `kill %2` ends one, and the next
+  prompt says when one ends (`[2] done: utest (exit 0)`). Such a program
+  gets no keys and no screen (Ctrl+C is the foreground program's); what
+  it prints is shown as it comes. At most 8 at once; they end with the
+  shell. A pipeline, a shell command or an alias can't go in the
+  background yet, and the apps that draw need G1's windows for it.
 - Kernel and user-space test suites, a stress test, a soak test (the
   kernel tests repeated in shuffled order under load, with sticks pulled
   and plugged) and a benchmark, runnable from the boot menu or the shell.

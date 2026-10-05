@@ -92,6 +92,18 @@
  * Faults past a shrunk VMO's end fail with ERR_OUT_OF_RANGE; the mapping
  * stays and works again if the VMO grows back.
  *
+ * Kept mappings (ASPACE_KEPT_ONLY): only of a kept VMO (VMO_KEEP_PAGES),
+ * read-only, and every entry is installed before aspace_map returns,
+ * through the same vmo_fault_map a fault uses, with the page tables
+ * charged then (a refusal takes the whole mapping back). A kept VMO never
+ * gives up a page below its size and never shrinks (vmo.c), so nobody zaps
+ * those entries; this file never clears them either while the mapping
+ * lasts, since protect refuses any change to a kept mapping (no access
+ * would clear them). So no access through it ever faults, whatever the
+ * VMO's other holders do: a compositor reads a client's pixels without
+ * trusting the client. `faults` counts aspace_fault calls, for the tests
+ * that check that.
+ *
  * Job charges. An address space made for a process
  * (aspace_create_charged) charges that job JOB_LIMIT_PAGES units for the
  * kernel memory it holds: 1 for the PML4 from creation to destroy, 1 for
@@ -138,8 +150,9 @@
 #define PTE_CACHE (PTE_PWT | PTE_PCD | PTE_PAT4K)
 
 #define PERMS     (ASPACE_READ | ASPACE_WRITE | ASPACE_EXEC)
-#define CAN_SHIFT 4   /* ASPACE_CAN_x == ASPACE_x << CAN_SHIFT */
-#define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_CAN_READ | ASPACE_CAN_WRITE | ASPACE_CAN_EXEC)
+#define CAN_SHIFT 8   /* ASPACE_CAN_x == ASPACE_x << CAN_SHIFT */
+#define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_CAN_READ | ASPACE_CAN_WRITE | \
+                   ASPACE_CAN_EXEC)
 #define MAX_MAPPINGS 16384
 
 #define SIZE_2M   (1ull << 21)
@@ -158,6 +171,7 @@ struct mapping {
     uint64_t         vmo_off;    /* VMO offset of base */
     unsigned         flags;      /* current ASPACE_READ/WRITE/EXEC */
     unsigned         max;        /* what aspace_protect may grant */
+    bool             kept;       /* ASPACE_KEPT_ONLY: entries filled at map time, never changed */
 };
 
 struct aspace {
@@ -176,6 +190,7 @@ struct aspace {
      * bumped by every change that must reach TLBs (gather_note). */
     uint64_t          pcid_id;
     uint64_t          tlb_gen;
+    uint64_t          faults;     /* aspace_fault calls (atomic, relaxed; for tests) */
 };
 
 static uint64_t mend(const struct mapping *m)
@@ -618,6 +633,7 @@ static struct mapping *split(struct aspace *as, struct mapping *m, uint64_t addr
     r->vmo_off = m->vmo_off + (addr - m->base);
     r->flags = m->flags;
     r->max = m->max;
+    r->kept = m->kept;
     umap_fill(as, r);
     vmo_umap_add(m->vmo, &r->umap, false);   /* can't fail unchecked */
     list_add(&m->node, &r->node);
@@ -625,6 +641,67 @@ static struct mapping *split(struct aspace *as, struct mapping *m, uint64_t addr
     m->len = addr - m->base;
     umap_sync(m);
     return r;
+}
+
+/* ASPACE_KEPT_ONLY's own checks: read-only (a bad combination of flags),
+ * then a kept VMO. */
+static status_t kept_check(const struct vmo *vmo, unsigned flags)
+{
+    if (!(flags & ASPACE_KEPT_ONLY))
+        return OK;
+    if ((flags & PERMS) != ASPACE_READ)
+        return ERR_INVALID_ARGS;
+    return vmo_is_kept(vmo) ? OK : ERR_WRONG_TYPE;
+}
+
+/* Region lock held: install every entry of m, a new kept mapping, as a
+ * fault would (its pages are all committed and stay). ERR_NO_MEMORY if
+ * the job refuses a page table; the entries made so far stay for the
+ * caller to take back. */
+static status_t fill_kept(struct aspace *as, const struct mapping *m)
+{
+    for (uint64_t off = 0; off < m->len; off += PAGE_SIZE) {
+        uint64_t va = m->base + off;
+        status_t st = pt_prepare(as, va);
+        if (st == OK)
+            st = vmo_fault_map(m->vmo, (m->vmo_off + off) >> PAGE_SHIFT, as, va, m->flags);
+        if (st != OK)
+            return st;
+    }
+    return OK;
+}
+
+/* Region lock held: take back m, just added, whose fill failed: its
+ * entries and the tables left empty (shot down), then m from the list and
+ * the reverse map. The caller frees m. */
+static void map_undo(struct aspace *as, struct mapping *m)
+{
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    zap(as, m->base, mend(m), true, &g);
+    tlb_gather_finish(&g);
+    list_del(&m->node);
+    as->nmaps--;
+    vmo_umap_remove(m->vmo, &m->umap);
+    (void)maps_account(as, as->nmaps);   /* shrinking: can't fail */
+}
+
+/* A new mapping struct for aspace_map (not placed yet), or NULL. */
+static struct mapping *mapping_new(struct vmo *vmo, uint64_t vmo_off, uint64_t len,
+                                   unsigned flags)
+{
+    struct mapping *m = kzalloc(sizeof(*m));
+    if (!m)
+        return NULL;
+    unsigned perms = flags & PERMS;
+    m->vmo = vmo;
+    m->vmo_off = vmo_off;
+    m->len = len;
+    m->flags = perms;
+    m->kept = (flags & ASPACE_KEPT_ONLY) != 0;
+    /* A kept mapping stays as it is made: no CAN bits. */
+    m->max = m->kept ? perms : perms | ((flags >> CAN_SHIFT) & PERMS);
+    return m;
 }
 
 status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
@@ -641,18 +718,15 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
         return ERR_NO_RESOURCES;
     if (vmo_off > VMO_MAX_SIZE || len > VMO_MAX_SIZE)
         return ERR_OUT_OF_RANGE;   /* (so vmo_off + len can't overflow) */
+    status_t st = kept_check(vmo, flags);
+    if (st != OK)
+        return st;
 
-    struct mapping *m = kzalloc(sizeof(*m));
+    struct mapping *m = mapping_new(vmo, vmo_off, len, flags);
     if (!m)
         return ERR_NO_MEMORY;
-    m->vmo = vmo;
-    m->vmo_off = vmo_off;
-    m->len = len;
-    m->flags = perms;
-    m->max = perms | ((flags >> CAN_SHIFT) & PERMS);
 
     mutex_lock(&as->lock);
-    status_t st = OK;
     struct list_node *pos = &as->maps;   /* insert after this */
     uint64_t base;
     if (as->nmaps >= MAX_MAPPINGS) {
@@ -693,6 +767,8 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
     if (st == OK) {
         list_add(pos, &m->node);
         as->nmaps++;
+        if (m->kept && (st = fill_kept(as, m)) != OK)
+            map_undo(as, m);
     }
     mutex_unlock(&as->lock);
     if (st != OK) {
@@ -790,6 +866,7 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
             break;
         }
         denied |= (flags & ~m->max) != 0;
+        denied |= m->kept && flags != m->flags;   /* its entries stay as they were filled */
         last = m;
         if (mend(m) >= end)
             break;
@@ -849,6 +926,7 @@ status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access)
     unsigned need = access & PERMS;
     if (!need)
         need = ASPACE_READ;
+    __atomic_add_fetch(&as->faults, 1, __ATOMIC_RELAXED);
     mutex_lock(&as->lock);
     struct mapping *m = find(as, addr);
     status_t st;
@@ -911,6 +989,11 @@ uint64_t aspace_pt_pages(struct aspace *as)
     uint64_t n = as->pt_pages;
     spin_unlock_irqrestore(&as->pt_lock, f);
     return n;
+}
+
+uint64_t aspace_fault_count(struct aspace *as)
+{
+    return __atomic_load_n(&as->faults, __ATOMIC_RELAXED);
 }
 
 uint32_t aspace_mapping_count(struct aspace *as)

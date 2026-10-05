@@ -38,6 +38,13 @@ bool t_hid_mouse_report_protocol(void);
 bool t_hid_mouse_report_ids(void);
 bool t_hid_mouse_boot_kept(void);
 
+/* keymap.c: <keymap.h>'s tables, and the US one against the hid driver. */
+bool t_keymap_hid_codes(void);
+bool t_keymap_us_keys(void);
+bool t_keymap_typing(void);
+bool t_keymap_xkb_text(void);
+bool t_keymap_matches_hid(void);
+
 /* disks.c: devmgr's disks and mounts against the mock usb-storage
  * (diskmock.c), with the fat service on its partitions. */
 bool t_disk_mounts(void);
@@ -158,6 +165,11 @@ bool t_reply_wait_second_process(void);
 bool t_reply_wait_port(void);
 bool t_reply_wait_refusals(void);
 int  replywait_child(int argc, char **argv);
+/* keptvmo.c: VMO_KEEP_PAGES and VMAR_KEPT_ONLY, and their child modes
+ * ("utest kept-..."). */
+bool t_kept_vmo_refusals(void);
+bool t_kept_vmo_client_and_compositor(void);
+int  kept_child(int argc, char **argv);
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_kill_spinning_and_unstarted(void);

@@ -350,6 +350,10 @@ static int start(const struct driver_start *ds, struct state *s)
                    status_str(st));
         return 3;
     }
+    /* The IOMMU checks (vtdtest.c) run before the path is set up, on the
+     * rings just brought up, and leave them as they were. */
+    if (drv_has_arg(ds, "vtdtest") && h->codec_mask)
+        hda_vtdtest(h, (unsigned)__builtin_ctz(h->codec_mask));
     uint32_t answered = dump_all(s, &o, true);
     set_path(s, &o);
     report(s, answered, (drv_clock_ns() - t0) / NS_PER_MS);

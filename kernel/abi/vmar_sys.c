@@ -2,7 +2,9 @@
  * RIGHT_WRITE on the vmar and, on the VMO handle, RIGHT_MAP plus the right
  * behind each permission asked for (RIGHT_READ, RIGHT_WRITE, RIGHT_EXEC).
  * The VMO handle's rights are also recorded as the most a later protect
- * may grant, so a mapping can never gain a permission the handle lacked. */
+ * may grant, so a mapping can never gain a permission the handle lacked.
+ * ASPACE_KEPT_ONLY (VMAR_KEPT_ONLY) goes straight to aspace_map, which
+ * checks the VMO's kind and fills the mapping. */
 #include <jam/aspace.h>
 #include <jam/handle.h>
 #include <jam/sys.h>
@@ -48,7 +50,7 @@ status_t sys_vmar_create(struct handle_table *t, handle_t *out)
 status_t sys_vmar_map(struct handle_table *t, handle_t vmar, handle_t vmo, uint64_t vmo_off,
                       uint64_t len, uint32_t flags, uint64_t *addr)
 {
-    if (flags & ~(USER_PERMS | ASPACE_FIXED))
+    if (flags & ~(USER_PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY))
         return ERR_INVALID_ARGS;   /* the CAN bits come from the handle, not the caller */
     if ((flags & ASPACE_WRITE) && (flags & ASPACE_EXEC))
         return ERR_INVALID_ARGS;   /* W^X is an argument error whatever the rights */

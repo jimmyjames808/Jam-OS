@@ -102,7 +102,7 @@ ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
 $(error two driver directories share a name: $(DRIVER_DIRS))
 endif
 
-.PHONY: all image run debug clean font usb flash syscalls idl wl check compdb includes FORCE
+.PHONY: all image run debug clean font usb flash syscalls idl wl keymap check compdb includes FORCE
 
 all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL)
 
@@ -167,6 +167,13 @@ $(WL_OK): $(WL_XML) tools/genwl.py $(wildcard $(WL_GEN))
 
 wl:
 	python3 tools/genwl.py gen
+
+# Keyboard layouts. tools/genkeymap.py turns abi/keymap/ (keys.txt, and a
+# file per layout) into user/lib/keymap_keys.c and user/lib/keymap_<layout>.c
+# (<keymap.h>: the C tables and the XKB keymap). Committed like the IDL;
+# `make check` fails if they are stale; `make keymap` makes them again.
+keymap:
+	python3 tools/genkeymap.py gen
 
 $(OBJS): | $(SYSCALLS_OK) $(IDL_OK)
 
@@ -277,7 +284,8 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 
 # libfun (user/apps/fun, <fun.h>): the screen, drawing, text, keys and
 # thread pool of the apps, which link it before libos.
-FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS)))
+# fbbench (user/tests) measures libfun's own drawing code too.
+FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS))) fbbench
 LIBFUN_OBJS := $(patsubst %,$(UOBJ)/%.o,$(wildcard $(LIBFUN_DIR)/*.c))
 
 $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
@@ -466,6 +474,7 @@ check: all
 	python3 tools/genidl.py check
 	python3 tools/genwl.py check
 	HOSTCC="$(HOSTCC)" python3 tools/genwl.py selftest
+	python3 tools/genkeymap.py check
 	CC="$(CC)" NM="$(CROSS)nm" CFLAGS="$(DRV_CFLAGS)" SURFACE="$(DRV_SURFACE)" \
 	    OUT="$(BUILD)/checkdriver-tests" sh tools/checkdriver-selftest.sh
 	python3 tools/checkdocs.py
