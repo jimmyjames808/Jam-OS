@@ -194,7 +194,8 @@ Every driver and service is a userspace process from the start.
   every terminal is a window on it. The splash then plays in a
   full-screen window that takes no keys (its client binds no
   `wl_keyboard`, and the compositor gives the keyboard focus only to a
-  client with one), over the first terminal's window, which keeps the
+  client with one) over the first terminal's window (which stays under it,
+  whichever maps first) and the terminal keeps the
   keys: what is typed meanwhile reaches the shell once it is up, and keys
   typed while no window has the keys (a terminal's window comes a moment
   after its prompt) wait in the compositor, up to 5 s, for the next one.

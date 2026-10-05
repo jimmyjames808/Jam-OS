@@ -1121,8 +1121,9 @@ prompt comes a few ms before its terminal's window, at boot and after a
 console or compositor restart) wait in the compositor (128 at most) for
 the next window that takes them, if it comes within 5 s. The
 kernel passes init all nine of its words now (userboot passed seven).
-Known: a first terminal whose window mapped after the splash's would be
-raised over it (in QEMU it maps 0.5 s before the splash's first frame).
+A full-screen window whose client takes no keys stays over a window that
+takes the focus after it (focus.c), so the first terminal's window,
+mapped after the splash's on a busy machine, comes up under it.
 
 **Order and parallel work:**
 
