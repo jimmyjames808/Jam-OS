@@ -17,6 +17,8 @@
 #define COMPCTL_BLANK            0x00200002u
 #define COMPCTL_NEW_CLIENT       0x00200003u
 #define COMPCTL_STATS            0x00200004u
+#define COMPCTL_SET_LAYOUT       0x00200005u
+#define COMPCTL_LAYOUT_WAIT      0x00200006u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct compctl_connect_input_req {
@@ -67,6 +69,25 @@ struct compctl_stats_rep {
     uint32_t sources;
     uint64_t keys;
     uint64_t reserved_keys;
+} __attribute__((packed));
+struct compctl_set_layout_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t layout;
+} __attribute__((packed));
+struct compctl_set_layout_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct compctl_layout_wait_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t layout;
+} __attribute__((packed));
+struct compctl_layout_wait_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t now;
 } __attribute__((packed));
 
 #define COMPCTL_REQ_MAX 9u   /* bytes: the biggest request */
@@ -264,6 +285,74 @@ static inline status_t compctl_stats(handle_t ch, uint64_t *out_paints, uint64_t
     return compctl_stats_call(ch, false, DEADLINE_NEVER, out_paints, out_painted_px, out_last_paint_ns, out_worst_paint_ns, out_clients, out_surfaces, out_windows, out_connected, out_refused, out_gone_closed, out_gone_protocol, out_gone_slow, out_sources, out_keys, out_reserved_keys);
 }
 
+/* compctl_set_layout_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t compctl_set_layout_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t layout)
+{
+    struct compctl_set_layout_req idl_q;
+    struct compctl_set_layout_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = COMPCTL_SET_LAYOUT;
+    idl_q.layout = layout;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* The window layout, 0 floating or 1 tiling: every window placed again, as
+ * the layout key (Super+T) does. For init, which starts the compositor
+ * before /data is there and sends the saved one (/data/etc/settings'
+ * display.layout) once it is. ERR_INVALID_ARGS: another value. ADMIN only. */
+static inline status_t compctl_set_layout_until(handle_t ch, uint64_t deadline_ns, uint8_t layout)
+{
+    return compctl_set_layout_call(ch, false, deadline_ns, layout);
+}
+static inline status_t compctl_set_layout_within(handle_t ch, uint64_t timeout_ns, uint8_t layout)
+{
+    return compctl_set_layout_call(ch, true, timeout_ns, layout);
+}
+static inline status_t compctl_set_layout(handle_t ch, uint8_t layout)
+{
+    return compctl_set_layout_call(ch, false, DEADLINE_NEVER, layout);
+}
+
+/* compctl_layout_wait_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t compctl_layout_wait_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t layout, uint8_t *out_now)
+{
+    struct compctl_layout_wait_req idl_q;
+    struct compctl_layout_wait_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = COMPCTL_LAYOUT_WAIT;
+    idl_q.layout = layout;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_now)
+        *out_now = idl_r.now;
+    return idl_st;
+}
+/* Answered when the window layout is no longer `layout` (at once if it
+ * isn't), with the one it is now: the user switched it, and init saves
+ * it. One call waits per channel: a second while one waits is
+ * ERR_BAD_STATE. ADMIN only. */
+static inline status_t compctl_layout_wait_until(handle_t ch, uint64_t deadline_ns, uint8_t layout, uint8_t *out_now)
+{
+    return compctl_layout_wait_call(ch, false, deadline_ns, layout, out_now);
+}
+static inline status_t compctl_layout_wait_within(handle_t ch, uint64_t timeout_ns, uint8_t layout, uint8_t *out_now)
+{
+    return compctl_layout_wait_call(ch, true, timeout_ns, layout, out_now);
+}
+static inline status_t compctl_layout_wait(handle_t ch, uint8_t layout, uint8_t *out_now)
+{
+    return compctl_layout_wait_call(ch, false, DEADLINE_NEVER, layout, out_now);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* compctl_connect_input without waiting: the request, with the caller's txid (not 0).
@@ -423,6 +512,69 @@ static inline status_t compctl_stats_result(const void *idl_rep, struct idl_msg 
     return OK;
 }
 
+/* compctl_set_layout without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then compctl_set_layout_result. */
+static inline status_t compctl_set_layout_send(handle_t ch, uint32_t idl_txid, uint8_t layout)
+{
+    struct compctl_set_layout_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = COMPCTL_SET_LAYOUT;
+    idl_q.layout = layout;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to compctl_set_layout_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t compctl_set_layout_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct compctl_set_layout_rep *idl_r = (const struct compctl_set_layout_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* compctl_layout_wait without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then compctl_layout_wait_result. */
+static inline status_t compctl_layout_wait_send(handle_t ch, uint32_t idl_txid, uint8_t layout)
+{
+    struct compctl_layout_wait_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = COMPCTL_LAYOUT_WAIT;
+    idl_q.layout = layout;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to compctl_layout_wait_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t compctl_layout_wait_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_now)
+{
+    const struct compctl_layout_wait_rep *idl_r = (const struct compctl_layout_wait_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_now)
+        *out_now = idl_r->now;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -434,6 +586,8 @@ struct compctl_ops {
     status_t (*blank)(void *ctx, uint8_t on);
     status_t (*new_client)(void *ctx, uint8_t level, handle_t *out_client);
     status_t (*stats)(void *ctx, uint64_t *out_paints, uint64_t *out_painted_px, uint64_t *out_last_paint_ns, uint64_t *out_worst_paint_ns, uint32_t *out_clients, uint32_t *out_surfaces, uint32_t *out_windows, uint64_t *out_connected, uint64_t *out_refused, uint64_t *out_gone_closed, uint64_t *out_gone_protocol, uint64_t *out_gone_slow, uint32_t *out_sources, uint64_t *out_keys, uint64_t *out_reserved_keys);
+    status_t (*set_layout)(void *ctx, uint8_t layout);
+    status_t (*layout_wait)(void *ctx, struct idl_txn idl_txn, uint8_t layout, uint8_t *out_now);
 };
 
 /* Answer the compctl.connect_input request kept in txn: idl_st and, if it is OK, the
@@ -523,6 +677,37 @@ static inline status_t compctl_reply_stats(struct idl_txn idl_txn, status_t idl_
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
+/* Answer the compctl.set_layout request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t compctl_reply_set_layout(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct compctl_set_layout_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the compctl.layout_wait request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t compctl_reply_layout_wait(struct idl_txn idl_txn, status_t idl_st, uint8_t now)
+{
+    struct compctl_layout_wait_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.now = now;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (COMPCTL_REP_MAX bytes) and the handles it carries
  * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
@@ -536,7 +721,6 @@ static inline uint32_t compctl_dispatch_on(handle_t ch, const struct compctl_ops
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -651,12 +835,49 @@ static inline uint32_t compctl_dispatch_on(handle_t ch, const struct compctl_ops
         idl_r->reserved_keys = out_reserved_keys;
         return sizeof(*idl_r);
     }
+    case COMPCTL_SET_LAYOUT: {
+        const struct compctl_set_layout_req *idl_q = (const struct compctl_set_layout_req *)req;
+        struct compctl_set_layout_rep *idl_r = (struct compctl_set_layout_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->set_layout) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->set_layout(ctx, idl_q->layout);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case COMPCTL_LAYOUT_WAIT: {
+        const struct compctl_layout_wait_req *idl_q = (const struct compctl_layout_wait_req *)req;
+        struct compctl_layout_wait_rep *idl_r = (struct compctl_layout_wait_rep *)rep;
+        uint8_t out_now = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->layout_wait) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->layout_wait(ctx, idl_txn, idl_q->layout, &out_now);
+        /* IDL_LATER: the handler answers with compctl_reply_layout_wait. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->now = out_now;
+        return sizeof(*idl_r);
+    }
     }
     idl_h->status = ERR_NOT_SUPPORTED;
     return sizeof(*idl_h);
 }
 
-/* compctl_dispatch_on without the channel (the protocol has no `later` method). */
+/* compctl_dispatch_on without the channel (a `later` handler's txn then has none: use compctl_dispatch_on). */
 static inline uint32_t compctl_dispatch(const struct compctl_ops *ops, void *ctx, const void *req, uint32_t n,
                                         void *rep, handle_t *rhs, uint32_t *rhn)
 {

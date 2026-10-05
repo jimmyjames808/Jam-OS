@@ -15,8 +15,8 @@
  *                 VMO of our own.
  *   SR_USER + 2   optional: compctl's ADMIN channel, its server end (init
  *                 holds the other; ctl.c).
- *   SR_USER + 3   optional: init's control channel, reboot only (for
- *                 Ctrl+Alt+Del; ctl.c).
+ *   SR_USER + 3   optional: init's control channel, reboot and terminal
+ *                 only (Ctrl+Alt+Del, Super+Enter; ctl.c).
  *   SR_USER + 4   optional, `testscene` only: a channel for its reports.
  * Arguments: `headless` (no framebuffer: compose into memory),
  * `size=<w>x<h>` (the headless output, default 1280x800), `hz=<n>` (the

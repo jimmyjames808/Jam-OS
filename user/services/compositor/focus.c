@@ -23,7 +23,9 @@
  *   Alt+Tab        the next window (Alt+Shift+Tab: the one before);
  *   Super+F        the focused window full screen, or back;
  *   Super+T        the screen's arrangement: floating or tiling;
- *   Super+Q        the focused window asked to close (as its close box).
+ *   Super+Q        the focused window asked to close (as its close box);
+ *   Super+Enter    another terminal (ctl.c asks init), whichever window
+ *                  has the focus, a terminal or not.
  * Ctrl+C is an ordinary key: it goes to the focused window, so a program
  * can trap the keys of its own window and never another's.
  *
@@ -36,8 +38,10 @@
 #define U_F        0x09
 #define U_Q        0x14
 #define U_T        0x17
+#define U_ENTER    0x28
 #define U_TAB      0x2b
 #define U_DELETE   0x4c
+#define U_KP_ENTER 0x58
 #define MOD_SUPER  (INPUT_MOD_LGUI | INPUT_MOD_RGUI)
 
 static struct comp_window *focused;   /* NULL: no window has the keys */
@@ -138,6 +142,10 @@ bool focus_reserved_key(uint16_t usage, uint8_t mods)
     if (usage == U_Q && super) {
         if (focused)
             wm_close(focused);
+        return true;
+    }
+    if ((usage == U_ENTER || usage == U_KP_ENTER) && super) {
+        ctl_terminal();
         return true;
     }
     return false;

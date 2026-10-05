@@ -12,7 +12,8 @@
  *               the window manager's hooks' defaults;
  *   sources.c   input sources: the `input` protocol, a budget each;
  *   ctl.c       compctl's channels (levels, connect_input, blank,
- *               new_client, stats) and Ctrl+Alt+Del's request to init;
+ *               new_client, stats, the layout) and the requests to init
+ *               (Ctrl+Alt+Del's reboot, Super+Enter's terminal);
  *   testwin.c   the `testwin` test power's windows.
  *
  * Pointers into the scene (a window with the keyboard or pointer focus)
@@ -29,7 +30,7 @@
 #define SEAT_OBJS_MAX 8u          /* per client: wl_seat, wl_keyboard and wl_pointer objects, each */
 #define SEAT_KEY_CTL  (COMP_KEY_SEAT + 0x000u)   /* + compctl channel slot */
 #define SEAT_KEY_SRC  (COMP_KEY_SEAT + 0x100u)   /* + input source slot */
-#define SEAT_KEY_INIT (COMP_KEY_SEAT + 0x200u)   /* init's answer to Ctrl+Alt+Del */
+#define SEAT_KEY_INIT (COMP_KEY_SEAT + 0x200u)   /* init's answers (Ctrl+Alt+Del, Super+Enter) */
 #define SEAT_BUDGET   64u         /* requests of one source or compctl channel per turn */
 #define SOURCES_MAX   16u         /* input sources at once */
 #define KEYS_HELD_MAX 32u         /* keys held down at once, over every keyboard */
@@ -119,5 +120,7 @@ bool     ctl_more(void);
 uint64_t ctl_deadline(void);
 /* Ctrl+Alt+Del: ask init to reboot. */
 void     ctl_reboot(void);
+/* Super+Enter: ask init for another terminal. */
+void     ctl_terminal(void);
 /* Asked for: every key and mouse report is dropped from now on. */
 bool     ctl_rebooting(void);

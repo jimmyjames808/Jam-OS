@@ -1,5 +1,5 @@
-/* compctl's channels (abi/idl/compctl.idl) and Ctrl+Alt+Del's request to
- * init (seat.h).
+/* compctl's channels (abi/idl/compctl.idl) and the compositor's requests
+ * to init (seat.h).
  *
  * The compositor starts with init's ADMIN channel (SR_USER + 2; a test
  * may start it without one). new_client makes narrower ones (INPUT: for
@@ -8,15 +8,26 @@
  * loop with a budget, as an input source is; one whose peer closes is
  * dropped.
  *
- * Ctrl+Alt+Del: the compositor asks init to reboot, as the console did:
- * initctl.reboot written on init's control channel (SR_USER + 3, reboot
- * only) without waiting for the answer (init syncs /data and kexecs; it
- * answers only if that failed). From then on the screen is blank and every
- * key and mouse report is dropped, while the loop keeps serving the
- * sources so their drivers never wait on it while init stops them. If init
- * says it failed, is missing, or is still at it after REBOOT_WAIT, the
- * compositor resets the machine itself if its root resource allows it
- * (RIGHT_ROOT_REBOOT); if not, it says so and takes keys again. */
+ * The layout: init starts the compositor with the saved one (`layout=`)
+ * and may send it again (set_layout: /data came after the start); it
+ * keeps a layout_wait waiting on its channel, which is answered when the
+ * layout is no longer the one init knows (the user's Super+T: wm.c calls
+ * ctl_layout_changed), and init saves it.
+ *
+ * init's control channel (SR_USER + 3) answers us `reboot` and `terminal`
+ * only. Each request is written without waiting for the answer, and the
+ * channel is read whenever it is readable (init_event), so the answers
+ * never pile up.
+ *   - Ctrl+Alt+Del: initctl.reboot, as the console did (init syncs /data
+ *     and kexecs; it answers only if that failed). From then on the screen
+ *     is blank and every key and mouse report is dropped, while the loop
+ *     keeps serving the sources so their drivers never wait on it while
+ *     init stops them. If init says it failed, is missing, or is still at
+ *     it after REBOOT_WAIT, the compositor resets the machine itself if
+ *     its root resource allows it (RIGHT_ROOT_REBOOT); if not, it says so
+ *     and takes keys again.
+ *   - Super+Enter: initctl.terminal, another terminal window (one ask at
+ *     a time; a refusal is said in the log). */
 #include <idl/compctl.h>
 #include <idl/initctl.h>
 #include "seat.h"
@@ -26,6 +37,7 @@
 #define INITCTL_ROLE 3                     /* SR_USER + this: init's control channel */
 #define REBOOT_WAIT  (60 * NS_PER_S)       /* init's kexec: sync (2 s) + drivers stopped (30 s) */
 #define REBOOT_TXID  0x0cad0002u           /* our reboot request's transaction id */
+#define TERM_TXID    0x7e570002u           /* our terminal request's */
 
 enum { L_ADMIN, L_INPUT, L_LAST = L_INPUT };
 
@@ -34,11 +46,16 @@ struct ctl {
     uint8_t  level;       /* L_* */
     bool     ready;       /* a port packet came */
     bool     more;        /* its budget ran out with requests left */
+    bool     waiting;     /* a layout_wait is kept in wait, for the layout to leave wait_for */
+    uint8_t  wait_for;    /* ... the layout its caller knows */
+    struct idl_txn wait;
 };
 
 static struct ctl ctls[CTL_MAX];
 static bool rebooting;            /* Ctrl+Alt+Del asked for it: input is dropped */
 static uint64_t reboot_at;        /* when the compositor resets the machine itself */
+static bool watching;             /* init's control channel is bound to our port */
+static bool term_asked;           /* a terminal request waits for init's answer */
 
 bool ctl_rebooting(void)
 {
@@ -62,6 +79,11 @@ static status_t ctl_add(handle_t ch, uint8_t level)
 
 status_t ctl_init(void)
 {
+    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
+    /* Without it Ctrl+Alt+Del resets the machine itself; Super+Enter does nothing. */
+    watching = init != HANDLE_INVALID &&
+               jam_port_bind(comp.port, init, SEAT_KEY_INIT, SIG_READABLE | SIG_PEER_CLOSED,
+                             PORT_BIND_PERSISTENT) == OK;
     handle_t ch = startup_handle(SR_USER + CTL_ROLE);
     return ch == HANDLE_INVALID ? OK : ctl_add(ch, L_ADMIN);
 }
@@ -156,9 +178,57 @@ static status_t op_stats(void *ctx, uint64_t *paints, uint64_t *painted_px,
     return OK;
 }
 
+/* The layout is l now: every layout_wait kept for another one is answered. */
+static void layout_now(enum comp_layout l)
+{
+    for (unsigned i = 0; i < CTL_MAX; i++) {
+        struct ctl *c = &ctls[i];
+        if (c->ch == HANDLE_INVALID || !c->waiting || c->wait_for == l)
+            continue;
+        c->waiting = false;
+        /* A failed write: its caller is gone, and the channel goes with it. */
+        (void)compctl_reply_layout_wait(c->wait, OK, (uint8_t)l);
+    }
+}
+
+static status_t op_set_layout(void *ctx, uint8_t layout)
+{
+    const struct ctl *c = ctx;
+    if (c->level != L_ADMIN)
+        return ERR_ACCESS_DENIED;
+    if (layout != COMP_FLOATING && layout != COMP_TILING)
+        return ERR_INVALID_ARGS;
+    wm_set_layout((enum comp_layout)layout);
+    layout_now(scene.layout);
+    return OK;
+}
+
+static status_t op_layout_wait(void *ctx, struct idl_txn txn, uint8_t layout, uint8_t *out_now)
+{
+    struct ctl *c = ctx;
+    if (c->level != L_ADMIN)
+        return ERR_ACCESS_DENIED;
+    if (c->waiting)
+        return ERR_BAD_STATE;
+    if (layout != scene.layout) {
+        *out_now = (uint8_t)scene.layout;
+        return OK;
+    }
+    c->waiting = true;
+    c->wait_for = layout;
+    c->wait = txn;
+    return IDL_LATER;
+}
+
+/* The user switched the layout (wm.c's Super+T): init hears it. */
+void ctl_layout_changed(enum comp_layout layout)
+{
+    layout_now(layout);
+}
+
 static const struct compctl_ops ctl_ops = {
     .connect_input = op_connect_input, .blank = op_blank, .new_client = op_new_client,
-    .stats = op_stats,
+    .stats = op_stats, .set_layout = op_set_layout, .layout_wait = op_layout_wait,
 };
 
 /* ---- serving ------------------------------------------------------------------------ */
@@ -175,20 +245,20 @@ static void serve_ctl(struct ctl *c)
         if (st != OK) {   /* ERR_PEER_CLOSED: whoever held it is gone */
             (void)jam_port_unbind(comp.port, c->ch, SEAT_KEY_CTL + (unsigned)(c - ctls));
             jam_handle_close(c->ch);
-            *c = (struct ctl){ 0 };
+            *c = (struct ctl){ 0 };   /* a layout_wait kept goes with it */
             return;
         }
     }
     c->more = true;
 }
 
-static void reboot_answer(void);
+static void init_event(void);
 static void reboot_due(void);
 
 void ctl_packet(uint64_t key)
 {
     if (key == SEAT_KEY_INIT) {
-        reboot_answer();
+        init_event();
         return;
     }
     uint64_t i = key - SEAT_KEY_CTL;
@@ -217,7 +287,7 @@ uint64_t ctl_deadline(void)
     return rebooting ? reboot_at : DEADLINE_NEVER;
 }
 
-/* ---- Ctrl+Alt+Del ------------------------------------------------------------------- */
+/* ---- init's channel: Ctrl+Alt+Del and Super+Enter ----------------------------------- */
 
 /* init couldn't: reset the machine ourselves, or give up and take keys again. */
 static void reset_now(void)
@@ -237,37 +307,57 @@ void ctl_reboot(void)
     printf("compositor: Ctrl+Alt+Del: rebooting\n");
     blank(true);   /* nothing drawn until the next boot's splash */
     handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
-    struct initctl_reboot_req q = { .txid = REBOOT_TXID, .ordinal = INITCTL_REBOOT };
-    status_t st = init ? jam_channel_write(init, &q, sizeof(q), NULL, 0) : ERR_NOT_FOUND;
-    if (st == OK)
-        st = jam_port_bind(comp.port, init, SEAT_KEY_INIT, SIG_READABLE | SIG_PEER_CLOSED,
-                           PORT_BIND_ONCE);
+    status_t st = watching ? initctl_reboot_send(init, REBOOT_TXID) : ERR_NOT_FOUND;
     if (st != OK) {
         printf("compositor: init: %s\n", status_str(st));
         reset_now();
     }
 }
 
-static void reboot_answer(void)
+void ctl_terminal(void)
+{
+    if (rebooting || term_asked)
+        return;   /* one at a time: a second Super+Enter before the answer is the same ask */
+    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
+    status_t st = watching ? initctl_terminal_send(init, TERM_TXID) : ERR_NOT_FOUND;
+    if (st == OK)
+        term_asked = true;
+    else
+        printf("compositor: Super+Enter: no new terminal (%s)\n", status_str(st));
+}
+
+/* init's channel is readable: its answers, by their transaction ids. */
+static void init_event(void)
 {
     handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
-    struct initctl_reboot_rep r = { 0 };
-    uint32_t n = 0;
-    struct channel_read_args a = {
-        .h = init, .bytes_cap = sizeof(r), .bytes = (uint64_t)(uintptr_t)&r,
-        .actual_bytes = (uint64_t)(uintptr_t)&n,
-    };
-    status_t st = jam_channel_read(&a);
-    if (st == OK && (n != sizeof(r) || r.txid != REBOOT_TXID)) {
-        /* Not the answer: wait on. */
-        (void)jam_port_bind(comp.port, init, SEAT_KEY_INIT, SIG_READABLE | SIG_PEER_CLOSED,
-                            PORT_BIND_ONCE);
-        return;
+    for (;;) {   /* bounded: init answers only what we asked, two at most */
+        uint8_t rep[64];
+        struct idl_msg m;
+        status_t st = idl_reply_read(init, rep, sizeof(rep), &m);
+        if (st == ERR_SHOULD_WAIT)
+            return;
+        if (st != OK && st != ERR_INTERNAL) {   /* init's end is gone */
+            (void)jam_port_unbind(comp.port, init, SEAT_KEY_INIT);
+            watching = term_asked = false;
+            if (rebooting) {
+                printf("compositor: init: %s\n", status_str(st));
+                reset_now();
+            }
+            return;
+        }
+        if (m.txid == REBOOT_TXID && rebooting) {
+            printf("compositor: init: %s\n", status_str(initctl_reboot_result(rep, &m)));
+            reset_now();
+        } else if (m.txid == TERM_TXID && term_asked) {
+            uint8_t number = 0;
+            st = initctl_terminal_result(rep, &m, &number);
+            term_asked = false;
+            if (st != OK)
+                printf("compositor: Super+Enter: no new terminal (%s)\n", status_str(st));
+        } else {
+            idl_msg_drop(&m);   /* not an answer we wait for */
+        }
     }
-    if (!rebooting)
-        return;
-    printf("compositor: init: %s\n", status_str(st == OK ? r.status : st));
-    reset_now();
 }
 
 static void reboot_due(void)
