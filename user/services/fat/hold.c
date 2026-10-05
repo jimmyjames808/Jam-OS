@@ -37,7 +37,13 @@
  * 32 KiB clusters, over about 2 GiB), and a write or truncate that grows a
  * file by more than the hold (up to FAT_GROW_MAX). A death between steps
  * can leave clusters that no file reaches (lost space, never a damaged
- * file), so such a request can't be undone (undo_spend).
+ * file), so such a request can't be undone (undo_spend). That holds
+ * because the first FAT sector such a request holds is the one that
+ * stops the file from reaching what it frees: an unlink's directory entry
+ * goes before its chain, and a truncate marks its new last cluster as the
+ * chain's end before it frees the rest (fileops.c's truncate_fil cuts a
+ * truncate to 0 to one cluster first, since FatFs frees a whole chain
+ * from its head while the entry naming that head waits for the sync).
  *
  * Where. The hold is part of fat's state (struct fat_hold), so that what
  * it holds can outlive fat. Its data's pages are committed a chunk

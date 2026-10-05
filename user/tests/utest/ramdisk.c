@@ -72,6 +72,10 @@ static status_t op_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offse
         return ERR_IO;
     memcpy(rd->mem + lba * RAMDISK_SECTOR, rd->buf + offset, (size_t)count * RAMDISK_SECTOR);
     __atomic_add_fetch(&rd->writes, 1, __ATOMIC_RELAXED);
+    void (*fn)(struct ramdisk *, uint64_t, uint32_t) =
+        __atomic_load_n(&rd->on_write, __ATOMIC_ACQUIRE);   /* ramdisk_on_write's release */
+    if (fn)
+        fn(rd, lba, count);
     return OK;
 }
 
@@ -184,6 +188,12 @@ void ramdisk_fail_writes(struct ramdisk *rd, bool on)
 void ramdisk_fail_after(struct ramdisk *rd, uint32_t writes)
 {
     __atomic_store_n(&rd->fail_after, writes, __ATOMIC_RELAXED);
+}
+
+void ramdisk_on_write(struct ramdisk *rd,
+                      void (*fn)(struct ramdisk *rd, uint64_t lba, uint32_t count))
+{
+    __atomic_store_n(&rd->on_write, fn, __ATOMIC_RELEASE);   /* op_write acquires it */
 }
 
 void ramdisk_pull_after(struct ramdisk *rd, uint32_t requests)

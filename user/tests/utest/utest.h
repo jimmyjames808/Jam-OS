@@ -280,6 +280,11 @@ bool t_fat_dir_linear(void);
 bool t_fat_dir_cursors(void);
 bool t_fat_cache(void);
 bool t_fat_gather(void);
+/* fat_trunc.c: a truncate to 0 that goes out in steps keeps its chain's head
+ * until the end (the disk watched write by write). */
+bool t_fat_truncate_steps(void);
+/* fat_ctl.c: every fsctl request queued together is answered. */
+bool t_fat_ctl_queued(void);
 /* fat_restart.c: fat ended at each step of a request and carrying on from
  * its state (the test plays devmgr: state VMO, keeper, restarts). */
 bool t_fat_restart_steps(void);

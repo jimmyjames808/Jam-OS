@@ -152,6 +152,31 @@ bool files_is_open(const char *path)
 
 /* ---- the file protocol ---------------------------------------------------------------- */
 
+/* f_truncate at fp's position, but a truncate to 0 of a file of more than
+ * one cluster in two: to one byte (its first cluster made the chain's end,
+ * the rest freed), then to 0. FatFs truncates to 0 by freeing the chain
+ * from its head, and the directory entry naming that head changes only at
+ * the file's next sync; when the freed chain doesn't fit the hold, its FAT
+ * sectors go out in steps before the request commits (hold.c's "Room"),
+ * and a death between steps leaves the successor, started fresh from the
+ * disk, an entry naming free clusters that the next allocation gives to
+ * another file. Cut first, the first FAT sector to go out ends the chain
+ * at its head: at worst clusters no file reaches. The disk ends the same. */
+static FRESULT truncate_fil(FIL *fp)
+{
+    FSIZE_t cluster = (FSIZE_t)kept->fs.csize * FAT_SECTOR;
+    if (f_tell(fp) == 0 && f_size(fp) > cluster) {
+        FRESULT fr = f_lseek(fp, 1);
+        if (fr == FR_OK)
+            fr = f_truncate(fp);
+        if (fr == FR_OK)
+            fr = f_lseek(fp, 0);
+        if (fr != FR_OK)
+            return fr;
+    }
+    return f_truncate(fp);
+}
+
 /* Make f at least `size` bytes long, the new part zeros. */
 static status_t grow_to(struct fat_open *f, uint64_t size)
 {
@@ -256,7 +281,7 @@ static status_t op_truncate(void *ctx, uint64_t size)
         return grow_to(f, size);
     FRESULT fr = f_lseek(&f->fil, (FSIZE_t)size);
     if (fr == FR_OK)
-        fr = f_truncate(&f->fil);
+        fr = truncate_fil(&f->fil);
     f->unsynced = true;
     return fr_status(fr);
 }
@@ -437,7 +462,7 @@ static status_t open_fil(struct fat_open *f, const char *path, uint32_t flags, b
     }
     f->unsynced = !exists;
     if ((flags & FS_TRUNCATE) && f_size(&f->fil) > 0) {
-        fr = f_truncate(&f->fil);   /* the file pointer is 0 after f_open */
+        fr = truncate_fil(&f->fil);   /* the file pointer is 0 after f_open */
         f->unsynced = true;
         if (fr != FR_OK)
             (void)f_close(&f->fil);   /* the truncate's error is the result */

@@ -921,7 +921,10 @@ fat and the mixer carry on from a dead instance's state
   generated `_take_slot`, `_run_slot`, `_idempotent` and the reply that
   goes with the next take), `fat_layout` (every FatFs field adoption
   relies on, against the vendored FatFs), `fat_gather` (held writes go
-  out together), `disk_fs_restart` (devmgr's kept `fs` channel: the mount
+  out together), `fat_truncate_steps` (a truncate to 0 too big for the
+  hold, which goes out in steps: the disk, watched write by write, never
+  frees the head of the chain the file's entry still names),
+  `disk_fs_restart` (devmgr's kept `fs` channel: the mount
   never goes), and the exact deaths: `fat_restart_steps` (a script of
   every kind of request run undisturbed, then with fat ended at a held
   write, the commit, a block write of the send, before and after the

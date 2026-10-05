@@ -241,6 +241,11 @@ status_t drv_port_bind(handle_t port, handle_t obj, uint64_t key, signals_t mask
     return jam_port_bind(port, obj, key, mask, flags);
 }
 
+status_t drv_port_unbind(handle_t port, handle_t obj, uint64_t key)
+{
+    return jam_port_unbind(port, obj, key);
+}
+
 status_t drv_port_wait(handle_t port, uint64_t deadline_ns, struct port_packet *out)
 {
     return jam_port_wait(port, deadline_ns, out);
