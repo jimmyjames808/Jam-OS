@@ -36,35 +36,6 @@ static const uint8_t *rows_of(unsigned g)
     return box_rows;
 }
 
-uint32_t utf8_next(const char **s)
-{
-    const uint8_t *p = (const uint8_t *)*s;
-    uint32_t c = p[0];
-    if (c < 0x80) {
-        *s += c != 0;
-        return c;
-    }
-    unsigned n = c >= 0xf0 && c < 0xf5 ? 3 : c >= 0xe0 ? 2 : c >= 0xc2 && c < 0xe0 ? 1 : 0;
-    if (c >= 0xf5)
-        n = 0;
-    uint32_t cp = c & (0x3f >> n);
-    for (unsigned i = 1; i <= n; i++) {
-        if ((p[i] & 0xc0) != 0x80) {
-            n = 0;   /* cut short: the lead byte alone is the bad one */
-            break;
-        }
-        cp = cp << 6 | (p[i] & 0x3f);
-    }
-    /* Overlong forms, surrogates and beyond U+10FFFF are malformed. */
-    if (!n || (n == 2 && (cp < 0x800 || (cp >= 0xd800 && cp < 0xe000))) ||
-        (n == 3 && (cp < 0x10000 || cp > 0x10ffff))) {
-        *s += 1;
-        return UTF8_BAD;
-    }
-    *s += n + 1;
-    return cp;
-}
-
 /* The glyph for code point cp. */
 static unsigned glyph_of(uint32_t cp)
 {
