@@ -89,12 +89,12 @@ wait the clock: 2026-01-14 14:0
 wait {prompt}
 
 # ---- files ---------------------------------------------------------------------------
-send pwd
-wait /boot
+send pwd | grep "^/$" && echo ok-$T-pwd
+wait ok-x-pwd
 send ls
-wait init.cfg
-send ls /
 wait boot/
+send cd /boot && ls
+wait init.cfg
 send ls -l bin
 wait KiB  init
 send ls nosuch
@@ -103,13 +103,13 @@ send cd bin && pwd | grep ^/boot/bin$ && echo ok-$T-cd1
 wait ok-x-cd1
 send cd ../drv; pwd | grep ^/boot/drv$ && echo ok-$T-cd2
 wait ok-x-cd2
-send cd; pwd | grep ^/boot$ && echo ok-$T-cd3
+send cd; pwd | grep "^/$" && echo ok-$T-cd3
 wait ok-x-cd3
 send cd /nowhere
 wait cd: /nowhere: no such directory
 send find / -name hid
 wait /boot/drv/hid
-send cat init.cfg | grep ^bin/utest$ && echo ok-$T-cat
+send cd /boot && cat init.cfg | grep ^bin/utest$ && echo ok-$T-cat
 wait ok-x-cat
 send cat bin/init
 wait a binary file
