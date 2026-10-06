@@ -36,6 +36,8 @@ const struct jwlc_want jwlc_wanted[JWLC_GLOBALS] = {
     [JWLC_WM_BASE]    = { &jwl_xdg_wm_base_interface, JWL_CLIENT_WM_BASE_VERSION, false },
     [JWLC_SEAT]       = { &jwl_wl_seat_interface, JWL_CLIENT_SEAT_VERSION, false },
     [JWLC_OUTPUT]     = { &jwl_wl_output_interface, JWL_CLIENT_OUTPUT_VERSION, false },
+    [JWLC_CURSOR_SHAPE] = { &jwl_wp_cursor_shape_manager_v1_interface,
+                            JWL_CLIENT_CURSOR_SHAPE_VERSION, false },
 };
 
 void jwlc_log(const struct jwl_client *c, const char *fmt, ...)
@@ -199,6 +201,7 @@ static void bind_globals(struct jwl_client *c)
         [JWLC_COMPOSITOR] = &c->info.compositor_version, [JWLC_SHM] = &c->info.shm_version,
         [JWLC_WM_BASE] = &c->info.wm_base_version,       [JWLC_SEAT] = &c->info.seat_version,
         [JWLC_OUTPUT] = &c->info.output_version,
+        [JWLC_CURSOR_SHAPE] = &c->info.cursor_shape_version,
     };
     for (unsigned i = 0; i < JWLC_GLOBALS; i++) {
         *versions[i] = 0;

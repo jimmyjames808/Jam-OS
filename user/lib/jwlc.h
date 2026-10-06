@@ -15,6 +15,7 @@
 #pragma once
 
 #include <jwl.h>
+#include <jwl/cursor_shape_v1.h>
 #include <jwl/wayland.h>
 #include <jwl/xdg_shell.h>
 #include <jwl_client.h>
@@ -33,7 +34,8 @@ struct jwlc_offer {
     uint32_t version;          /* the version offered */
 };
 
-enum { JWLC_COMPOSITOR, JWLC_SHM, JWLC_WM_BASE, JWLC_SEAT, JWLC_OUTPUT, JWLC_GLOBALS };
+enum { JWLC_COMPOSITOR, JWLC_SHM, JWLC_WM_BASE, JWLC_SEAT, JWLC_OUTPUT, JWLC_CURSOR_SHAPE,
+       JWLC_GLOBALS };
 
 /* A global the library binds (jwl_client.c's jwlc_wanted, by the enum). */
 struct jwlc_want {
@@ -95,6 +97,8 @@ struct jwl_window {
 
 struct jwlc_seat {
     uint32_t keyboard, pointer;       /* ids on this connection; 0: none */
+    uint32_t shape_dev;               /* the pointer's wp_cursor_shape_device_v1; 0: none */
+    uint32_t enter_serial;            /* the pointer's last enter (set_shape's serial) */
     struct jwl_window *kb_focus, *ptr_focus;
     uint32_t mods;                    /* KEYMAP_MOD_* */
     uint32_t repeat_code;             /* the key repeating; 0: none */
@@ -123,6 +127,7 @@ struct jwl_client {
     struct jwl_callback setup;       /* the sync of REGISTRY and BINDING */
     struct jwl_callback rt;          /* jwl_client_roundtrip's sync */
     struct jwlc_seat seat;
+    uint32_t cursor_shape;            /* jwl_client_set_cursor's; 0: none */
     struct jwl_pool   *pools;
     struct jwl_window *windows;
     struct jwl_event q[JWL_EVENT_QUEUE];
