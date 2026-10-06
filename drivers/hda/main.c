@@ -254,7 +254,31 @@ static status_t do_jacks(void *ctx, uint32_t *out_count, uint32_t *out_state,
     return OK;
 }
 
+/* "ALC897 headphones": the path's codec (a Realtek's by its part number,
+ * QEMU's as QEMU, any other's ids) and its pin's kind (hda_jack_name's
+ * names: the configuration default's device). "" with no path. */
+static status_t do_output_name(void *ctx, uint8_t out_name[48])
+{
+    struct state *s = ctx;
+    if (s->path.rule == PATH_NONE || !s->best || !s->path.n)
+        return OK;
+    uint32_t vendor = s->best->vendor;
+    const struct widget *pin = hda_widget(s->best, s->path.nid[s->path.n - 1]);
+    struct jack j = { .config = pin ? pin->config : 0 };
+    char codec[24], name[48];
+    if (vendor >> 16 == 0x10ec)
+        drv_snprintf(codec, sizeof(codec), "ALC%x", vendor & 0xffff);
+    else if (vendor >> 16 == 0x1af4)
+        drv_snprintf(codec, sizeof(codec), "QEMU");
+    else
+        drv_snprintf(codec, sizeof(codec), "Codec %04x:%04x", vendor >> 16, vendor & 0xffff);
+    drv_snprintf(name, sizeof(name), "%s %s", codec, hda_jack_name(&j));
+    copy_text(out_name, 48, name);
+    return OK;
+}
+
 static const struct hda_ops ops = {
+    .output_name = do_output_name,
     .dump = do_dump,
     .jacks = do_jacks,
     .info = do_info,

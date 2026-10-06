@@ -25,6 +25,7 @@
 #define HDA_SET_BITS         0x0015000au
 #define HDA_JACKS            0x0015000bu
 #define HDA_QUERY            0x0015000cu
+#define HDA_OUTPUT_NAME      0x0015000du
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct hda_dump_req {
@@ -162,6 +163,15 @@ struct hda_query_req {
 struct hda_query_rep {
     uint32_t txid;
     int32_t  status;
+} __attribute__((packed));
+struct hda_output_name_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_output_name_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t name[48];
 } __attribute__((packed));
 
 #define HDA_REQ_MAX 16u   /* bytes: the biggest request */
@@ -711,6 +721,40 @@ static inline status_t hda_query(handle_t ch, handle_t *out_channel)
     return hda_query_call(ch, false, DEADLINE_NEVER, out_channel);
 }
 
+/* hda_output_name_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_output_name_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_name[48])
+{
+    struct hda_output_name_req idl_q;
+    struct hda_output_name_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_OUTPUT_NAME;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    for (uint32_t idl_i = 0; idl_st == OK && out_name && idl_i < 48; idl_i++)
+        out_name[idl_i] = idl_r.name[idl_i];
+    return idl_st;
+}
+/* The output's name for people (the desktop's volume popover): the codec
+ * and what the path's pin is, e.g. "ALC897 headphones" (a Realtek codec:
+ * "ALC" and its device id), "QEMU line-out" (QEMU's codecs), else
+ * "Codec 1234:5678 line-out" ("" with no path). Also on a query channel. */
+static inline status_t hda_output_name_until(handle_t ch, uint64_t deadline_ns, uint8_t out_name[48])
+{
+    return hda_output_name_call(ch, false, deadline_ns, out_name);
+}
+static inline status_t hda_output_name_within(handle_t ch, uint64_t timeout_ns, uint8_t out_name[48])
+{
+    return hda_output_name_call(ch, true, timeout_ns, out_name);
+}
+static inline status_t hda_output_name(handle_t ch, uint8_t out_name[48])
+{
+    return hda_output_name_call(ch, false, DEADLINE_NEVER, out_name);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* hda_dump without waiting: the request, with the caller's txid (not 0).
@@ -1153,6 +1197,37 @@ static inline status_t hda_query_result(const void *idl_rep, struct idl_msg *idl
     return OK;
 }
 
+/* hda_output_name without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_output_name_result. */
+static inline status_t hda_output_name_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_output_name_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_OUTPUT_NAME;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_output_name_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_output_name_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_name[48])
+{
+    const struct hda_output_name_rep *idl_r = (const struct hda_output_name_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    for (uint32_t idl_i = 0; out_name && idl_i < 48; idl_i++)
+        out_name[idl_i] = idl_r->name[idl_i];
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -1172,6 +1247,7 @@ struct hda_ops {
     status_t (*set_bits)(void *ctx, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm);
     status_t (*jacks)(void *ctx, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024]);
     status_t (*query)(void *ctx, handle_t *out_channel);
+    status_t (*output_name)(void *ctx, uint8_t out_name[48]);
 };
 
 /* Answer the hda.dump request kept in txn: idl_st and, if it is OK, the
@@ -1411,6 +1487,23 @@ static inline status_t hda_reply_query(struct idl_txn idl_txn, status_t idl_st, 
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     }
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the hda.output_name request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_reply_output_name(struct idl_txn idl_txn, status_t idl_st, const uint8_t name[48])
+{
+    struct hda_output_name_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    for (uint32_t idl_i = 0; idl_i < 48; idl_i++)
+        idl_r.name[idl_i] = name[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -1725,6 +1818,26 @@ static inline uint32_t hda_dispatch_on(handle_t ch, const struct hda_ops *ops, v
         }
         rhs[0] = out_channel;
         *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case HDA_OUTPUT_NAME: {
+        const struct hda_output_name_req *idl_q = (const struct hda_output_name_req *)req;
+        struct hda_output_name_rep *idl_r = (struct hda_output_name_rep *)rep;
+        uint8_t out_name[48];
+        for (uint32_t idl_i = 0; idl_i < 48; idl_i++)
+            out_name[idl_i] = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->output_name) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->output_name(ctx, out_name);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        for (uint32_t idl_i = 0; idl_i < 48; idl_i++)
+            idl_r->name[idl_i] = out_name[idl_i];
         return sizeof(*idl_r);
     }
     }

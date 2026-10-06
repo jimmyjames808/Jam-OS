@@ -129,3 +129,8 @@ protocol hda 21
 # (ERR_PEER_CLOSED: ask for a new one). At most 8 at once
 # (ERR_NO_RESOURCES). ERR_ACCESS_DENIED on a query channel.
 12  query  ()  -> (handle channel)
+# The output's name for people (the desktop's volume popover): the codec
+# and what the path's pin is, e.g. "ALC897 headphones" (a Realtek codec:
+# "ALC" and its device id), "QEMU line-out" (QEMU's codecs), else
+# "Codec 1234:5678 line-out" ("" with no path). Also on a query channel.
+13  output_name  ()  -> (u8[48] name)
