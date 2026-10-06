@@ -767,7 +767,8 @@ status_t testwin_commit(struct comp_surface *s);
 
 #define COMP_DATA_VERSION    3u    /* wl_data_device_manager offered */
 #define DATA_OBJS_MAX        16u   /* per client: managers, devices, sources and offers, each */
-#define DATA_RECEIVES_MAX    4u    /* receives honoured per offer */
+#define DATA_RECEIVES_MAX    32u   /* receives passed on per client, between the user giving
+                                    * it the keys and the selection changing (data.c) */
 
 status_t data_bind(struct comp_client *cl, uint32_t id, uint32_t version);
 status_t data_manager_request(struct comp_client *cl, struct jwl_msg *m);

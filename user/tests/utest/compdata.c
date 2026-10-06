@@ -10,8 +10,9 @@
  * the source with a channel end the source can write and not read, its
  * data reaching the reader; receives refused (the reader's end closed, the
  * source told nothing) for a type not offered, a handle that isn't a
- * channel, a reader without the focus, past the cap per offer; the owner
- * going clears the selection.
+ * channel, a reader without the focus, past its budget (32 between
+ * focus enters, whatever offer it uses: a new device's new offer
+ * too); the owner going clears the selection.
  * t_comp_data_rules: drag and drop refused (start_drag cancels its source
  * at once; a used source used again, a drag source as the selection,
  * finish and set_actions on a selection's offer are protocol errors); a
@@ -30,8 +31,9 @@
 #include "compseat.h"
 #include "utest.h"
 
-#define TEXT    "text/plain;charset=utf-8"
-#define DATA_V  3u
+#define TEXT     "text/plain;charset=utf-8"
+#define DATA_V   3u
+#define RECEIVES 32u   /* the compositor's DATA_RECEIVES_MAX (comp.h) */
 
 /* A client with a seat, its data device and the device manager. */
 struct dc {
@@ -221,6 +223,25 @@ static bool b_unfocused(struct dc *a, struct dc *b)
     return true;
 }
 
+/* b, its receive budget spent, makes another data device: it is told the
+ * selection with a new offer, which reads no more than the old one. */
+static bool fresh_device_refused(struct dc *b)
+{
+    struct ct_client *k = &b->s.k;
+    uint32_t dev = ct_new(k, &jwl_wl_data_device_interface, DATA_V);
+    CHECK(dev);
+    ct_clear(k);
+    CHECK_ST(jwl_wl_data_device_manager_get_data_device(k->c, b->mgr, dev, b->s.seat), OK);
+    CHECK(ct_await(k, &jwl_wl_data_device_interface, JWL_WL_DATA_DEVICE_EV_SELECTION, dev,
+                   CT_WAIT));
+    uint32_t offer = ct_find(k, &jwl_wl_data_device_interface, JWL_WL_DATA_DEVICE_EV_SELECTION,
+                             dev)->u[0];
+    CHECK(offer);
+    handle_t mine;
+    CHECK(receive(b, offer, TEXT, &mine));
+    return refused(mine);
+}
+
 /* b (focused) reads a's selection; the refusals. */
 static bool b_pastes(struct cs *t, struct dc *a, struct dc *b, uint32_t src, uint32_t a_offer)
 {
@@ -234,19 +255,20 @@ static bool b_pastes(struct cs *t, struct dc *a, struct dc *b, uint32_t src, uin
     CHECK_ST(jam_event_create(&ev), OK);   /* not a channel */
     CHECK_ST(jwl_wl_data_offer_receive(b->s.k.c, offer, TEXT, ev), OK);
     CHECK_ST(ct_roundtrip(&b->s.k), OK);
+    (void)t;
     CHECK(receive(a, a_offer, TEXT, &mine));   /* a hasn't the focus */
     CHECK(refused(mine));
     CHECK(cs_sync(&a->s, NULL));
     CHECK(!ct_find(&a->s.k, &jwl_wl_data_source_interface, JWL_WL_DATA_SOURCE_EV_SEND, 0));
-    /* the cap: one passed on already, three more, then refused */
-    for (unsigned i = 1; i < 4; i++) {
+    /* the budget: one passed on already, then up to RECEIVES, then
+     * refused, whatever offer asks: a new device's own new offer too */
+    for (unsigned i = 1; i < RECEIVES; i++) {
         CHECK(receive(b, offer, TEXT, &mine));
         CHECK(sent_through(a, src, mine, "again"));
     }
     CHECK(receive(b, offer, TEXT, &mine));
     CHECK(refused(mine));
-    (void)t;
-    return true;
+    return fresh_device_refused(b);
 }
 
 bool t_comp_data_selection(void)

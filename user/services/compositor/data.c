@@ -29,9 +29,14 @@
  * hostile source can't hold it up; the reader's side (libjwl) caps the
  * size and times a transfer out. A receive is passed on only when the
  * offer is the current selection's, the reader has the keyboard focus, the
- * type is one the source offered, the offer has had fewer than
- * DATA_RECEIVES_MAX, and the handle is a channel end (with read, write and
- * transfer rights: a fresh one's). The source gets it with write, wait and
+ * type is one the source offered, the reader has had fewer than
+ * DATA_RECEIVES_MAX passed on since it last got the focus or the selection
+ * last changed (counted per client, not per offer: a client can make
+ * itself new offers with new devices, but not new focus), and the handle
+ * is a channel end (with read, write and transfer rights: a fresh one's).
+ * The budget bounds what a reader can make the owner send (and its job
+ * hold, queued, until read) to DATA_RECEIVES_MAX transfers for each time
+ * the user gives the reader the keys. The source gets it with write, wait and
  * transfer only, so it can't read what the reader writes back. A receive
  * that isn't passed on has its handle closed: the reader sees an empty
  * transfer. Nothing in any of this decides by the data itself.
@@ -58,13 +63,14 @@ struct data_res {
     uint8_t types;                 /* SOURCE: bit n, text_types[n] offered */
     bool used;                     /* SOURCE: given to set_selection or start_drag */
     bool dnd;                      /* SOURCE: set_actions came: drag and drop only */
-    uint8_t receives;              /* OFFER: receives passed on */
     struct data_res *source;       /* OFFER: whose data (NULL once that source went) */
 };
 
 struct data_client {
     struct data_res *res[DATA_KINDS];
     uint32_t nres[DATA_KINDS];
+    uint32_t receives;             /* passed on since its last focus enter, of ... */
+    uint32_t receives_gen;         /* ... the selection of this generation */
 };
 
 /* The text types passed on, the best first. */
@@ -80,6 +86,7 @@ static const char *const kind_names[DATA_KINDS] = {
 static struct data_client dclients[COMP_CLIENTS_MAX];
 static struct data_res *selection;     /* the selection's source, or NULL */
 static uint32_t selection_serial;      /* the serial it was set with */
+static uint32_t selection_gen;         /* +1 at each change of the selection */
 
 /* ---- objects ------------------------------------------------------------------------ */
 
@@ -181,6 +188,7 @@ static void tell_client(struct comp_client *cl)
 
 void data_focus_enter(struct comp_client *cl)
 {
+    dc_of(cl)->receives = 0;   /* the user gave it the keys: a fresh budget */
     tell_client(cl);
 }
 
@@ -202,6 +210,7 @@ static void source_gone(struct data_res *src)
     if (selection != src)
         return;
     selection = NULL;
+    selection_gen++;
     struct comp_client *f = focused_client();
     if (f && f != src->client)
         tell_client(f);
@@ -321,6 +330,7 @@ static status_t on_set_selection(void *data, uint32_t self, uint32_t source, uin
     struct data_res *old = selection;
     selection = src;
     selection_serial = serial;
+    selection_gen++;
     if (old && old != src)
         cancel(old);
     tell_client(cl);   /* the focused client: the new selection's offer */
@@ -414,8 +424,13 @@ static unsigned type_of(const char *mime_type)
 static bool may_receive(struct data_res *o, const char *mime_type)
 {
     unsigned t = type_of(mime_type);
+    struct data_client *dc = dc_of(o->client);
+    if (dc->receives_gen != selection_gen) {   /* a new selection: a new count */
+        dc->receives_gen = selection_gen;
+        dc->receives = 0;
+    }
     return o->source && o->source == selection && focused_client() == o->client &&
-           t < NTYPES && (o->source->types & (1u << t)) && o->receives < DATA_RECEIVES_MAX;
+           t < NTYPES && (o->source->types & (1u << t)) && dc->receives < DATA_RECEIVES_MAX;
 }
 
 static status_t on_receive(void *data, uint32_t self, const char *mime_type, handle_t fd)
@@ -428,7 +443,7 @@ static status_t on_receive(void *data, uint32_t self, const char *mime_type, han
         jam_handle_close(fd);   /* the reader sees an empty transfer */
         return OK;
     }
-    o->receives++;
+    dc_of(o->client)->receives++;
     /* The source's own type string is ours: it offered exactly it. */
     (void)jwl_wl_data_source_send_send(o->source->client->conn, o->source->id,
                                        text_types[type_of(mime_type)], w);   /* consumes w */
