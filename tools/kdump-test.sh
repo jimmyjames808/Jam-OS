@@ -56,6 +56,10 @@ boot() {
 # The panicking boot's log reached the shell's prompt and logd's file.
 UP="wait 120 Jam OS shell|wait {prompt}|wait 60 logd: writing /data/logs/boot-0001.txt"
 
+# The calm panic screen's lines on the serial port (debug/panicscreen.c).
+RESTARTING='panic screen: "Jam OS hit a problem and is restarting", JAM-KP-'
+STUCK='panic screen: "Jam OS hit a problem it can'"'"'t recover from", JAM-'
+
 case_save() {
     IFS='|'
     set -- $UP "send crash panic yes" "wait 60 KERNEL PANIC" \
@@ -106,7 +110,9 @@ case_loop() {
     set -- $UP "send crash panic yes" "wait 60 KERNEL PANIC" \
         "wait 60 loader:      Jam OS kexec" "wait 60 KERNEL PANIC" \
         "wait 30 no restart: this boot started after a panic less than 30 s ago (a crash loop)" \
-        "wait 30 system halted"
+        "wait 10 $STUCK" "sleep 0.5" "shot kdump-loop-0s" \
+        "wait 10 panic screen: the details are up" "sleep 0.5" "shot kdump-loop-5s" \
+        "wait 15 reboot: resetting"
     unset IFS
     boot loop "shell crashtest=lockorder" "$@" || { fail loop "the script (see $out/kdump-loop.log)"; return; }
     log="$out/kdump-loop.log"
@@ -115,22 +121,58 @@ case_loop() {
         fail loop "the stored kernel didn't get the test word"
     [ "$(count "$log" 'JAM OS KERNEL PANIC')" -eq 2 ] || fail loop "not exactly two panics"
     [ "$(count "$log" 'loader:      Jam OS kexec')" -eq 1 ] || fail loop "a third kernel started"
-    python3 tools/splash-check.py red "$out/kdump-loop.png" > /dev/null ||
-        fail loop "the crash loop's screen isn't the red panic screen"
+    python3 tools/splash-check.py calm "$out/kdump-loop-0s.png" > /dev/null ||
+        fail loop "the crash loop's screen at 0 s isn't the calm panic screen without details"
+    python3 tools/splash-check.py calm "$out/kdump-loop-5s.png" details > /dev/null ||
+        fail loop "the crash loop's screen at 5 s isn't the calm panic screen with its details"
 }
 
 case_bad() {
     IFS='|'
     set -- $UP "send crash kexecbad yes" "wait 60 KERNEL PANIC" \
         "wait 30 no restart: the stored kernel's checksum no longer matches" \
-        "wait 30 system halted"
+        "wait 10 $STUCK" "sleep 0.5" "shot kdump-bad-0s" \
+        "wait 10 panic screen: the details are up" "sleep 0.5" "shot kdump-bad-5s" \
+        "wait 15 reboot: resetting: reset=none" \
+        "wait 10 panic screen: \"Jam OS couldn't restart the PC\": hold the power button" \
+        "sleep 0.5" "shot kdump-bad-noreset" "wait 10 system halted"
     unset IFS
-    boot bad shell "$@" || { fail bad "the script (see $out/kdump-bad.log)"; return; }
+    boot bad "shell reset=none" "$@" || { fail bad "the script (see $out/kdump-bad.log)"; return; }
     [ "$(count "$out/kdump-bad.log" 'Jam OS kexec')" -eq 0 ] || fail bad "a second kernel started anyway"
     mdir -i "$out/kdump-bad-stick.img@@64M" ::/logs/boot-0001-crash.txt > /dev/null 2>&1 &&
         fail bad "a crash log was saved"
-    python3 tools/splash-check.py red "$out/kdump-bad.png" > /dev/null ||
-        fail bad "the screen isn't the red panic screen"
+    python3 tools/splash-check.py calm "$out/kdump-bad-0s.png" > /dev/null ||
+        fail bad "the screen at 0 s isn't the calm panic screen without its details"
+    python3 tools/splash-check.py calm "$out/kdump-bad-5s.png" details > /dev/null ||
+        fail bad "the screen at 5 s isn't the calm panic screen with its details"
+    python3 tools/splash-check.py calm "$out/kdump-bad-noreset.png" details > /dev/null ||
+        fail bad "the screen after the reset failed isn't the calm panic screen with its details"
+    # The details came at 5 s and the reset at 15 s, from the screen's start.
+    t0=$(grep -a "$STUCK" "$out/kdump-bad.log" | head -1 | sed 's/^\[ *\([0-9.]*\)\].*/\1/')
+    t5=$(grep -a "the details are up" "$out/kdump-bad.log" | head -1 | sed 's/^\[ *\([0-9.]*\)\].*/\1/')
+    t15=$(grep -a "reboot: resetting: reset=none" "$out/kdump-bad.log" | head -1 |
+          sed 's/^\[ *\([0-9.]*\)\].*/\1/')
+    awk -v a="$t0" -v b="$t5" -v c="$t15" 'BEGIN { d = b - a; e = c - a;
+        printf "kdump bad: details at %.2f s, the reset at %.2f s\n", d, e;
+        exit !(d > 4.9 && d < 5.5 && e > 14.9 && e < 15.5) }' ||
+        fail bad "the details or the reset not at 5 s and 15 s"
+}
+
+case_notice() {
+    IFS='|'
+    set -- $UP "send crash panic yes" "wait 60 KERNEL PANIC" \
+        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" \
+        "wait 30 init: notice \"Jam OS restarted after a problem\" (Everything is back. Code JAM-KP-" \
+        "sleep 1" "shot kdump-notice" \
+        "pointer 1028 112" "monitor mouse_button 1" "sleep 0.2" "monitor mouse_button 0" \
+        "wait 10 init: the notice's first button was pressed: a terminal runs \"crashlog\"" \
+        "wait 10 init: terminal 2 opens to run \"crashlog\"" \
+        "wait 60 Crash report /data/logs/boot-0001-crash.txt, the newest of 1" \
+        "wait 30 build      Jam OS " "sleep 2" "shot kdump-details" \
+        "send reboot -f" "wait reboot: resetting"
+    unset IFS
+    QEMU_USB="-device usb-mouse,bus=xhci.0,port=2" boot notice shell "$@" ||
+        fail notice "the script (see $out/kdump-notice.log)"
 }
 
 case_nostick() {

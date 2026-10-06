@@ -17,7 +17,13 @@ boot splash's own file (boot/splash.mpg, decoded here with ffmpeg).
                                             desktop before the splash)
     splash-check.py text <png>              the console's text screen: its
                                             background with text on it
-    splash-check.py red <png>               a panic screen (dark red)
+    splash-check.py calm <png> [details]    the calm panic screen
+                                            (<jam/panicscreen.h>): mostly its
+                                            dark #11141B, the busy ring's
+                                            raspberry arc and white, light
+                                            text; with `details`, its details
+                                            panel (#1A1E27) below them too,
+                                            else none
     splash-check.py alpha <png>             `run splash --alpha`: the seven
                                             drupelets' colours at their
                                             centres, the middle one's edge
@@ -169,12 +175,22 @@ def check_text(path):
         fail("%s: not the console's text screen" % path)
 
 
-def check_red(path):
+def check_calm(path, details):
     img = shot(path)
-    red = float(((img[:, :, 0] > 100) & (img[:, :, 1] < 40) & (img[:, :, 2] < 40)).mean())
-    ok("%s: %.0f %% panic red" % (path, red * 100))
-    if red < 0.5:
-        fail("%s: not a panic screen" % path)
+    def near(rgb, tol):
+        c = np.array([rgb >> 16, rgb >> 8 & 0xff, rgb & 0xff])
+        return np.abs(img - c).max(axis=2) <= tol
+    bg = float(near(0x11141B, 1).mean())
+    arc = int(near(0xD4537E, 6).sum())
+    light = int(near(0xF6F3F8, 6).sum())
+    text = int((img.min(axis=2) > 200).sum())
+    panel = float(near(0x1A1E27, 1).mean())
+    ok("%s: %.0f %% panic background, ring %d raspberry + %d white pixels, %d light pixels, "
+       "panel %.1f %%" % (path, bg * 100, arc, light, text, panel * 100))
+    if bg < (0.6 if details else 0.9) or arc < 15 or light < 40 or text < 150:
+        fail("%s: not the calm panic screen" % path)
+    if details != (panel > 0.03):
+        fail("%s: the details panel %s" % (path, "is missing" if details else "is up too soon"))
 
 
 def check_alpha(path):
@@ -322,8 +338,8 @@ def main():
         check_frame(args[0], int(args[1]))
     elif what == "text":
         check_text(args[0])
-    elif what == "red":
-        check_red(args[0])
+    elif what == "calm":
+        check_calm(args[0], args[1:] == ["details"])
     elif what == "alpha":
         check_alpha(args[0])
     elif what in ("sound", "skipped"):

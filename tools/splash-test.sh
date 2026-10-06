@@ -35,7 +35,8 @@
 #   verbose, nosplash   the boot words: the kernel's text log is on the
 #            screen as init starts, no splash runs, the shell comes up.
 #   panic    `shell testpf`: a panic at boot with the screen quiet draws
-#            the red panic screen over it.
+#            the calm panic screen over it (one before the clock is
+#            measured: its details at once, and no reset).
 #   hang     the test word `splashhang` (splash-hang.txt): a splash that
 #            never finishes; init starts the shell anyway, 20 s after the
 #            splash's start (not much later, never sooner), and the
@@ -154,7 +155,7 @@ t_plain=$(at "$out/nosplash.log" "init: the shell is up")
 QEMU_SPLASH=1 QEMU_TIMEOUT=120 tools/qemu-test.sh "$out" panic shell testpf \
     > "$out/panic.out" 2>&1 || true
 need "$out/panic.log" "KERNEL PANIC"
-check red "$out/panic.png"
+check calm "$out/panic.png" details
 
 # ---- hang: a splash that never finishes ---------------------------------------
 # Booted with every option word the kernel passes init at once (nine with

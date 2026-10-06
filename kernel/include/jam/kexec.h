@@ -118,6 +118,10 @@ bool kexec_crash_loop(bool after_panic, uint32_t panics_before, uint64_t uptime_
  * else. */
 status_t kexec_set_log_name(const char *name, size_t len);
 
+/* That name as it is now ("" before logd gives one): for the panic
+ * screen's details. */
+const char *kexec_log_name(void);
+
 /* Replace the stored kernel: the kernel ELF and the bootfs image (both
  * whole, read-only), and the command line ("" or NULL:
  * kexec_next_cmdline's). ERR_NOT_SUPPORTED: no region; ERR_INVALID_ARGS:

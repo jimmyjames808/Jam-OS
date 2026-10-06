@@ -4,9 +4,10 @@
 #   keep     both failures are recorded (one in the test's thread, one in
 #            a helper thread), the test after them still passes, and the
 #            boot ends with its RESULTS box saying FINISHED WITH PROBLEMS
-#   no keep  the first failure panics, and the panic screen carries the
-#            note with the loop, the seed and the test (crashkernel=0: the
-#            panic screen stays up instead of the next boot starting)
+#   no keep  the first failure panics, and the panic carries the note
+#            with the loop, the seed and the test (crashkernel=0: the panic
+#            screen's second case, it can't recover, instead of the next
+#            boot starting)
 # Usage: tools/ktest-keep-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1
@@ -25,7 +26,7 @@ QEMU_TIMEOUT=${QEMU_TIMEOUT:-120} tools/qemu-test.sh "$out" ktpanic ktest=review
 want ktpanic "JAM OS KERNEL PANIC"
 want ktpanic "ktest review_ktest_fails_in_[a-z_]+: .* failed"
 want ktpanic "ktest: loop 1 of 1, seed 5, test [1-3] of 3: review_ktest_fails_in_[a-z_]+; before it: "
-want ktpanic "system halted"
+want ktpanic "panic screen: \"Jam OS hit a problem it can't recover from\", JAM-KP-"
 if [ $ok = 1 ]; then
     echo "ktest-keep: PASS"
     exit 0
