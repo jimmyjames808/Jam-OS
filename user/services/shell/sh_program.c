@@ -1,5 +1,5 @@
-/* Starting programs: `run`, a program's name typed as a command, demo,
- * and the test programs (utest, usbtest).
+/* Starting programs: `run`, a program's name typed as a command, and the
+ * test programs (utest, usbtest).
  *
  * Where a program is: a bare name is /boot/bin/<name>; anything with a '/'
  * is a bootfs name ("bin/x") or a path on any mount. A program on /boot is

@@ -602,14 +602,14 @@ static bool cursor_choice_steps(void)
     CHECK_EQ(desk_cursor_at(r.x1 + 5, r.y1 + 5), CURSOR_HAND);
     search_close();
     /* busy from launching until the app's first window, at most DESK_BUSY_NS */
-    desk_launch("mines");
+    desk_launch("jamjar");
     CHECK(desk_busy());
     CHECK(fk_open(&fks[1], 200, 100, false));
-    CHECK(desk_busy());   /* not mines */
-    wm_set_title(fks[1].ww, "Mines");
+    CHECK(desk_busy());   /* not jamjar */
+    wm_set_title(fks[1].ww, "Jamjar");
     desk_window_mapped(fks[1].ww);
     CHECK(!desk_busy());
-    desk_launch("life");
+    desk_launch("terminal");
     desk_tick(now() + DESK_BUSY_NS + NS_PER_MS);
     CHECK(!desk_busy());
     return true;

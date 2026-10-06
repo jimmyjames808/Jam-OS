@@ -241,7 +241,7 @@ void     strip_click(const struct strip_item *it);
 /* The apps the search box lists (a fixed table until there is a list of
  * installed apps): the name shown, what it is, its tile's letter and
  * colour; the command is the name in lower case. */
-#define DESK_APPS 9u
+#define DESK_APPS 2u
 struct desk_app {
     const char *name, *desc;
     char letter;

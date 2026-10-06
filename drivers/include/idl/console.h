@@ -362,7 +362,7 @@ static inline status_t console_lend_screen_call(handle_t ch, bool idl_within, ui
         *out_size = idl_r.size;
     return idl_st;
 }
-/* Lend the screen to a program that draws on it itself (the shell's `demo`):
+/* Lend the screen to a program that draws on it itself (libfun's gfx_open):
  * the framebuffer as a write-combining VMO (READ | WRITE | MAP, not
  * duplicable) with its geometry (<jam/abi.h> struct fb_info's fields), and
  * a lease channel. The console stops drawing (it keeps its text, the kernel

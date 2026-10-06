@@ -179,31 +179,36 @@ static bool search_open_steps(void)
 static bool search_type_steps(void)
 {
     super_tap();
-    /* "t", "e": names starting with it first, then the run row */
-    CHECK(key(U_T, 0) && key(U_E, 0));
-    CHECK(!strcmp(search.text, "te"));
+    /* "a": the names holding it (none starts with it), then the run row */
+    CHECK(key(U_A, 0));
+    CHECK(!strcmp(search.text, "a"));
     CHECK_EQ(search.nrows, 3);
-    CHECK(!strcmp(row_name(0), "Terminal") && !strcmp(row_name(1), "Tetris"));
+    CHECK(!strcmp(row_name(0), "Terminal") && !strcmp(row_name(1), "Jamjar"));
     CHECK(!strcmp(row_name(2), "run"));
-    /* "m": nothing holds "tem": only the run row; Backspace: back */
+    /* "m": only Jamjar holds "am"; "i": nothing holds "ai": only the run
+     * row; Backspace: back */
     CHECK(key(U_M, 0));
+    CHECK_EQ(search.nrows, 2);
+    CHECK(!strcmp(row_name(0), "Jamjar"));
+    CHECK(key(U_BKSP, 0));
+    CHECK(key(U_I, 0));
     CHECK_EQ(search.nrows, 1);
     CHECK(key(U_BKSP, 0));
     CHECK_EQ(search.nrows, 3);
-    /* Down, Enter: Tetris runs (in lower case), the box closes, the cursor busy */
+    /* Down, Enter: Jamjar runs (in lower case), the box closes, the cursor busy */
     CHECK(key(U_DOWN, 0));
     CHECK(key(U_ENTER, 0));
     CHECK(!search.open);
-    CHECK(!strcmp(fdesk.launched, "tetris"));
+    CHECK(!strcmp(fdesk.launched, "jamjar"));
     CHECK(desk_busy());
     /* its first window: busy no more */
     CHECK(fk_open(&fks[0], 200, 100, false));
-    wm_set_app_id(fks[0].ww, "tetris");
+    wm_set_app_id(fks[0].ww, "jamjar");
     desk_window_mapped(fks[0].ww);
     CHECK(!desk_busy());
-    /* opened again: Tetris first (run last) */
+    /* opened again: Jamjar first (run last) */
     super_tap();
-    CHECK(!strcmp(row_name(0), "Tetris"));
+    CHECK(!strcmp(row_name(0), "Jamjar"));
     /* a command: "te" then Shift+i ("I"), Up past... the run row: Enter */
     CHECK(key(U_T, 0) && key(U_E, 0) && key(U_I, SHIFT));
     CHECK(!strcmp(search.text, "teI"));

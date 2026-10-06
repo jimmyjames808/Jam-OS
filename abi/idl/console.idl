@@ -26,7 +26,7 @@ protocol console 12
 # input sources are the compositor's (compctl.connect_input), and the
 # console's keys come to its window.
 5  connect_input  () -> (handle source)
-# Lend the screen to a program that draws on it itself (the shell's `demo`):
+# Lend the screen to a program that draws on it itself (libfun's gfx_open):
 # the framebuffer as a write-combining VMO (READ | WRITE | MAP, not
 # duplicable) with its geometry (<jam/abi.h> struct fb_info's fields), and
 # a lease channel. The console stops drawing (it keeps its text, the kernel
