@@ -16,8 +16,10 @@
 
 /* Serve up to CTL_BUDGET requests from ch. OK: the budget was spent (more
  * may be queued); else the read's status: ERR_SHOULD_WAIT (none left),
- * ERR_PEER_CLOSED (no client end is left). */
-status_t ctl_serve(handle_t ch);
+ * ERR_PEER_CLOSED (no client end is left). read_only: the read-only
+ * channel (the compositor's): info, stats, device and summary; the rest
+ * ERR_ACCESS_DENIED. */
+status_t ctl_serve(handle_t ch, bool read_only);
 
 /* Where netctl.device's answer comes from: main.c points it at the card
  * (netif.c's dev_get_report); NULL (a test's): no card, all 0. */

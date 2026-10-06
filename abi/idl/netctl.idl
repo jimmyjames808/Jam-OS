@@ -8,6 +8,13 @@
 # through /svc/net (net.idl), which can't change the address.
 # docs/M9-PLAN.md "Programs and sockets" has the design.
 #
+# The read-only channel: a second channel of the same protocol, made and
+# kept by init in the same way (its server end is each netstack's
+# SR_NETINFO, user/services/netstack/progs.h), which answers only info,
+# stats, device and summary (the rest ERR_ACCESS_DENIED): init hands the
+# compositor a duplicate of its client end for the network popover, which
+# can look at the link and change nothing.
+#
 # Addresses are IPv4 addresses as numbers, the first byte highest:
 # 10.2.21.5 is 0x0a021505; 0 is "none".
 #
@@ -61,3 +68,10 @@ protocol netctl 28
 # can do none of this. One at a time: ERR_ALREADY_BOUND while the last
 # one's channel is open. Closing the channel closes the socket.
 7  dhcp_open  ()  -> (handle socket)
+# What the desktop's network popover shows, in one call (also on the
+# read-only channel): `link` 1 when the card's link is up; the address
+# and mask (0: none yet); the link's speed in Mb/s (0: down or unknown);
+# bytes received and sent since netstack started (whole frames, as the
+# card moved them; the caller works out rates); the chip's name as
+# `device` has it ("" without a card).
+8  summary  ()  -> (u8 link, u32 address, u32 mask, u32 speed, u64 rx_bytes, u64 tx_bytes, u8[16] chip)

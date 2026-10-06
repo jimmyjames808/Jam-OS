@@ -30,7 +30,7 @@ struct pair {
 /* Serve what is queued on the server end and read the one reply. */
 static status_t pump(const struct pair *p, void *rep, uint32_t cap, struct idl_msg *m)
 {
-    status_t st = ctl_serve(p->srv);
+    status_t st = ctl_serve(p->srv, false);
     if (st != ERR_SHOULD_WAIT)
         return st == OK ? ERR_INTERNAL : st;   /* one request can't spend the budget */
     return idl_reply_read(p->cli, rep, cap, m);
@@ -149,7 +149,7 @@ bool t_netctl_set_and_clear(void)
     CHECK_ST(pump(&p, rep, sizeof(rep), &m), OK);
     CHECK_EQ(((const struct idl_rep_hdr *)rep)->status, ERR_INVALID_ARGS);
     CHECK_ST(jam_handle_close(p.cli), OK);
-    CHECK_ST(ctl_serve(p.srv), ERR_PEER_CLOSED);
+    CHECK_ST(ctl_serve(p.srv, false), ERR_PEER_CLOSED);
     CHECK_ST(jam_handle_close(p.srv), OK);
     stack_stop();
     return true;

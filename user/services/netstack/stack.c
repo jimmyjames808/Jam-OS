@@ -175,6 +175,7 @@ static err_t link_out(struct netif *n, struct pbuf *p)
         return ERR_IF;
     }
     counts.tx_frames++;
+    counts.tx_bytes += len;
     if (type == ICMP_ECHO_REPLY)
         counts.echo_replies++;
     else if (type == ICMP_UNREACHABLE)
@@ -301,6 +302,7 @@ static uint32_t *tcp_drop(const uint8_t *f, size_t len)
 void stack_input(const uint8_t *frame, size_t len)
 {
     counts.rx_frames++;
+    counts.rx_bytes += len;
     if (!started || len < 14 || len > STACK_FRAME_MAX) {
         counts.rx_refused++;
         return;
