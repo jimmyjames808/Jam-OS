@@ -43,7 +43,10 @@ extern void (*dbg_hooks[DBG_N])(void *arg);
 
 #ifdef JAM_NO_KTESTS
 #define DBG_HOOK(id, arg) ((void)(arg))
+#define DBG_HOOK_SET(id) false
 #else
+/* A test has set hook id (a report that says a failure was faked). */
+#define DBG_HOOK_SET(id) (__atomic_load_n(&dbg_hooks[id], __ATOMIC_ACQUIRE) != NULL)
 #define DBG_HOOK(id, arg)                                                  \
     do {                                                                   \
         void (*_h)(void *) = __atomic_load_n(&dbg_hooks[id], __ATOMIC_ACQUIRE); \
