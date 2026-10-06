@@ -10,7 +10,9 @@ uint64_t committed;
 struct cell cur[MAX_COLS];
 uint32_t cur_x;
 uint8_t out_attr = A_OUT;
+uint8_t out_style;
 uint32_t view_back;
+uint64_t top_line;
 bool dirty = true;
 
 struct cell *line(uint64_t i)
@@ -21,16 +23,27 @@ struct cell *line(uint64_t i)
 void blank(struct cell *c, uint32_t n, uint8_t attr)
 {
     for (uint32_t i = 0; i < n; i++)
-        c[i] = (struct cell){ ' ', attr };
+        c[i] = (struct cell){ ' ', attr, 0 };
+}
+
+struct view view_now(void)
+{
+    return (struct view){ committed, top_line, rows, window_mode };
 }
 
 static void commit(const struct cell *c)
 {
+    struct view v = view_now();
+    int64_t base = view_base(&v);
     struct cell *l = line(committed++);
     for (uint32_t i = 0; i < cols; i++)
         l[i] = c[i];
-    if (view_back && view_back < SCROLLBACK - rows)
-        view_back++;   /* keep the view where it was */
+    if (view_back) {   /* keep the view where it was, if the screen scrolled */
+        v = view_now();
+        uint32_t max = view_back_max(&v);
+        view_back += (uint32_t)(view_base(&v) - base);
+        view_back = view_back < max ? view_back : max;
+    }
     dirty = true;
 }
 
@@ -40,14 +53,8 @@ uint16_t cell_glyph(uint32_t cp)
         return (uint16_t)cp;
     if (cp >= FONT_LATIN_FIRST && cp < FONT_LATIN_FIRST + FONT_LATIN_N)
         return (uint16_t)(G_LATIN + cp - FONT_LATIN_FIRST);
-    switch (cp) {
-    case 0x2580: return G_UPPER;    /* upper half block */
-    case 0x2584: return G_LOWER;    /* lower half block */
-    case 0x2588: return G_FULL;     /* full block */
-    case 0x2591: return G_LIGHT;    /* light shade */
-    case 0x2592: return G_MEDIUM;   /* medium shade */
-    case 0x2593: return G_DARK;     /* dark shade */
-    }
+    if (cp >= 0x2500 && cp < 0x2500 + G_BOX_N)
+        return (uint16_t)(G_BOX + cp - 0x2500);   /* box drawing, block elements */
     return '?';
 }
 
@@ -87,7 +94,7 @@ static void log_text(const char *s, size_t n, size_t stamp, uint8_t attr)
             blank(l, cols, A_KERNEL);
             x = 0;
         }
-        l[x++] = (struct cell){ g, in_stamp ? A_STAMP : attr };
+        l[x++] = (struct cell){ g, in_stamp ? A_STAMP : attr, 0 };
     }
     commit(l);
 }
@@ -181,9 +188,9 @@ bool text_regrid(uint32_t c, uint32_t r)
     cur_x = cur_x < cols ? cur_x : cols - 1;
     alt_x = alt_x < cols ? alt_x : cols - 1;
     alt_y = alt_y < rows ? alt_y : rows - 1;
-    uint64_t max = committed < SCROLLBACK ? committed : SCROLLBACK;
-    max = max > rows ? max - rows + 1 : 0;
-    view_back = view_back < max ? view_back : (uint32_t)max;
+    struct view v = view_now();   /* the current line stays in view (view_base) */
+    uint32_t max = view_back_max(&v);
+    view_back = view_back < max ? view_back : max;
     dirty = true;
     return true;
 }
@@ -200,8 +207,11 @@ void clear_screen(void)
     struct cell l[MAX_COLS];
     blank(l, cols, A_OUT);
     commit(cur);
-    for (uint32_t i = 0; i + 1 < rows; i++)
-        commit(l);
+    if (window_mode)
+        top_line = committed;   /* the screen starts again, at the top */
+    else
+        for (uint32_t i = 0; i + 1 < rows; i++)
+            commit(l);
     blank(cur, cols, A_OUT);
     cur_x = 0;
     view_back = 0;

@@ -8,22 +8,22 @@ static int esc_state;
 static char esc_buf[16];
 static uint32_t esc_len;
 
-static bool bold;   /* ESC [ 1 m: the normal colours (30-37) come out bright */
-
+/* ESC [ 1 m (out_style S_BOLD): the normal colours (30-37) come out bright,
+ * and the smooth font draws the text in bold. */
 void sgr(uint32_t p)
 {
     uint8_t fg = out_attr & 15, bg = out_attr >> 4;
     if (p == 0) {
         fg = C_WHITE;
         bg = C_BLACK;
-        bold = false;
+        out_style = 0;
     } else if (p == 1) {
         fg |= 8;
-        bold = true;
+        out_style |= S_BOLD;
     } else if (p == 22) {
-        bold = false;
+        out_style &= (uint8_t)~S_BOLD;
     } else if (p >= 30 && p <= 37) {
-        fg = (uint8_t)(p - 30) | (bold ? 8 : 0);
+        fg = (uint8_t)(p - 30) | (out_style & S_BOLD ? 8 : 0);
     } else if (p == 39) {
         fg = C_WHITE;
     } else if (p >= 40 && p <= 47) {
@@ -138,9 +138,10 @@ static void csi(char final)
     }
 }
 
-/* UTF-8 (<utf8.h>): a character the console's font has (ASCII, the Latin
- * letters, the block elements full-screen programs draw with) is drawn as
- * itself (cell_glyph); any other character, a control character and each
+/* UTF-8 (<utf8.h>): a character the console's fonts have (ASCII, the Latin
+ * letters, the box drawing and block elements) is drawn as itself
+ * (cell_glyph; the 8x16 bitmap draws '?' for the box drawing but the
+ * block elements full-screen programs draw with); any other character, a control character and each
  * bad piece of a malformed sequence is one '?'. A sequence arrives a byte
  * at a time: its bytes wait in useq until it is complete or turns out bad. */
 static uint8_t useq[4];
@@ -261,10 +262,10 @@ static void put_char(uint16_t ch)
     if (alt_on) {
         if (alt_x >= cols)
             alt_newline();
-        alt[alt_y * cols + alt_x++] = (struct cell){ ch, out_attr };
+        alt[alt_y * cols + alt_x++] = (struct cell){ ch, out_attr, out_style };
         return;
     }
     if (cur_x >= cols)
         new_line();
-    cur[cur_x++] = (struct cell){ ch, out_attr };
+    cur[cur_x++] = (struct cell){ ch, out_attr, out_style };
 }

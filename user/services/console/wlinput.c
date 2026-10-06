@@ -1,5 +1,7 @@
 /* console: the window mode's pure parts (console.h): how big a terminal
- * window is on an output, and Wayland's keys and pointer as the console's
+ * window is on an output and how many cells fit in a window (its
+ * WIN_PAD padding on every side, in a look's cells: cells.h), the
+ * terminal.font values, and Wayland's keys and pointer as the console's
  * own input events (<jam/abi.h>, "input"), so a key typed into a window
  * reaches the focus stack exactly as one from a keyboard driver does.
  *
@@ -8,7 +10,14 @@
 #include <keymap.h>
 #include "console.h"
 
-void term_grid(int32_t ow, int32_t oh, uint32_t *out_cols, uint32_t *out_rows)
+/* The cells that fit in n pixels with the padding on both sides. */
+static uint32_t cells_in(int32_t n, int32_t cell)
+{
+    return n > 2 * WIN_PAD ? (uint32_t)((n - 2 * WIN_PAD) / cell) : 0;
+}
+
+void term_grid(const struct cell_look *l, int32_t ow, int32_t oh, uint32_t *out_cols,
+               uint32_t *out_rows)
 {
     if (ow <= 0 || oh <= 0) {   /* not told yet */
         *out_cols = WIN_COLS;
@@ -17,8 +26,8 @@ void term_grid(int32_t ow, int32_t oh, uint32_t *out_cols, uint32_t *out_rows)
     }
     /* Three quarters of the output at most, so the desktop shows around
      * it; never under the classic 80x24 unless the output is smaller. */
-    uint32_t c = (uint32_t)ow / 4 * 3 / GW, r = (uint32_t)oh / 4 * 3 / GH;
-    uint32_t maxc = (uint32_t)ow / GW, maxr = (uint32_t)oh / GH;
+    uint32_t c = cells_in(ow / 4 * 3, l->w), r = cells_in(oh / 4 * 3, l->h);
+    uint32_t maxc = cells_in(ow, l->w), maxr = cells_in(oh, l->h);
     c = c > WIN_COLS ? WIN_COLS : c < WIN_MIN_COLS ? WIN_MIN_COLS : c;
     r = r > WIN_ROWS ? WIN_ROWS : r < WIN_MIN_ROWS ? WIN_MIN_ROWS : r;
     c = c > maxc ? maxc : c;
@@ -27,11 +36,23 @@ void term_grid(int32_t ow, int32_t oh, uint32_t *out_cols, uint32_t *out_rows)
     *out_rows = r ? r : 1;
 }
 
-void grid_of_size(int32_t w, int32_t h, uint32_t *out_cols, uint32_t *out_rows)
+void window_size(const struct cell_look *l, uint32_t c, uint32_t r, int32_t *w, int32_t *h)
 {
-    uint32_t c = w > 0 ? (uint32_t)w / GW : 0, r = h > 0 ? (uint32_t)h / GH : 0;
+    *w = (int32_t)c * l->w + 2 * WIN_PAD;
+    *h = (int32_t)r * l->h + 2 * WIN_PAD;
+}
+
+void grid_of_size(const struct cell_look *l, int32_t w, int32_t h, uint32_t *out_cols,
+                  uint32_t *out_rows)
+{
+    uint32_t c = cells_in(w, l->w), r = cells_in(h, l->h);
     *out_cols = c < 1 ? 1 : c > MAX_COLS ? MAX_COLS : c;
     *out_rows = r < 1 ? 1 : r > MAX_ROWS ? MAX_ROWS : r;
+}
+
+int term_font_parse(const char *value)
+{
+    return !strcmp(value, "smooth") ? 0 : !strcmp(value, "bitmap") ? 1 : -1;
 }
 
 /* KEYMAP_MOD_* (XKB's modifiers, as libjwl keeps them) as the HID

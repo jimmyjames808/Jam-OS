@@ -245,10 +245,10 @@ void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool te
         if (state == INPUT_KEY_UP)
             return;
         uint32_t step = rows / 2 ? rows / 2 : 1;
-        uint64_t max = committed < SCROLLBACK ? committed : SCROLLBACK;
-        max = max > rows ? max - rows + 1 : 0;
+        struct view v = view_now();
+        uint32_t max = view_back_max(&v);
         if (usage == 0x4b)
-            view_back = view_back + step < max ? view_back + step : (uint32_t)max;
+            view_back = view_back + step < max ? view_back + step : max;
         else
             view_back = view_back > step ? view_back - step : 0;
         dirty = true;
