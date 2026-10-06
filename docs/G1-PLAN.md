@@ -224,7 +224,8 @@ differs from the recommendation below, this note wins:
   double-click takes a word, a triple-click a line; highlighted in the jam
   colours) and Super+C copies, Super+V pastes (Ctrl+Shift+C/V as well),
   so Ctrl+C still stops a program; a paste is bracketed so a pasted
-  multi-line command never runs line by line by accident.
+  multi-line command never runs line by line by accident. As built:
+  below, "As built: copy and paste".
   A POLISH track follows G1 (owner, 2026-10-07): the boot menu's test
   and network-test entries under one "Developer" submenu (on top: Jam OS,
   previous build, no compositor); a quiet boot (Terminal 1 starts at the
@@ -621,10 +622,12 @@ additive):
 | `xdg_surface` | 1 | get_toplevel, get_popup, set_window_geometry, ack_configure; configure | |
 | `xdg_toplevel` | 1 | title, app_id, move, resize, min and max size, maximised, full screen; configure, close | `set_minimized` accepted and ignored (allowed), no window menu |
 | `xdg_popup` | 1 | grab; popup_done | dismissed at once with `popup_done`, which the spec allows |
+| `wl_data_device_manager` | 3 | create_data_source, get_data_device; `wl_data_device` (set_selection; selection, data_offer), `wl_data_source` (offer; send, cancelled), `wl_data_offer` (receive, destroy; offer) | copy and paste: the selection only, text types only, the data over a channel end instead of a pipe; drag and drop refused (`start_drag` cancels its source); added with copy and paste (below, "As built: copy and paste") |
 
 **Not offered in G1** (each is an XML file and a module when a program
 needs it; G2's first ports decide the order): `wl_subcompositor`,
-`wl_data_device_manager` (copy and paste), `wl_touch`, `wl_shell`
+drag and drop and the primary selection (`wl_data_device_manager` is
+offered for the clipboard's selection only), `wl_touch`, `wl_shell`
 (deprecated upstream), `xdg-decoration` (G2, for ports that draw their
 own title bars otherwise), `xdg-activation`, `linux-dmabuf`,
 `presentation-time`, `viewporter`, fractional scaling, relative pointer
@@ -1424,6 +1427,61 @@ notices; the update card's Reboot clicked). Not yet: the popovers in
 QEMU (the strip's icons move with the clock's width: the volume and
 network popovers are checked in utest with fake services, the mixer's and
 netstack's sides apart); Jamjar asking for the text bar.
+
+**As built: copy and paste (the owner's track after D2b).** The
+compositor offers `wl_data_device_manager` 3 (`data.c`; the protocol table
+above) for the clipboard's selection only. **The transfer:** where
+Wayland passes a pipe's write end (`wl_data_offer.receive(mime, fd)`,
+passed on as `wl_data_source.send(mime, fd)`), a Jam OS reader passes one
+end of a channel it made and keeps the other; the compositor checks that
+the handle is a channel end (a zero-byte read) and hands it to the owner
+with write, wait and transfer only; the owner writes the text as channel
+messages of bytes (at most 64 KiB each, no handles) and closes its end,
+which the reader sees as the end of the data (`ERR_PEER_CLOSED`, a pipe's
+end of file). So a libwayland shim (G2) maps `receive(fd)` and `send(fd)`
+onto the two ends, and the compositor never touches the data: a slow or
+hostile owner can't hold it up (the reader's libjwl caps a paste at 1 MiB
+and 2 s and drops it past either, or for a message with handles; the owner
+writes without waiting). **The rules:** `set_selection` only from the
+client with the keyboard focus, with the serial of one of the last eight
+input events the seat sent it (key or button press, keyboard enter), not
+older than the current selection's, else its source is `cancelled`; the
+selection told only to the focused client (a new offer before
+`wl_keyboard.enter`, and on each change), read only by it, at most 32
+receives each time the user gives it the keys or the selection changes
+(per client, not per offer: a new data device brings a new offer); only `text/plain;charset=utf-8`, `text/plain`,
+`UTF8_STRING` and `TEXT` passed on; the selection gone with its owner;
+`start_drag` cancels its source at once (a second use is `used_source`,
+`finish` and `set_actions` on a selection's offer protocol errors); a
+client that keeps 16 offers gets no more (told "none") until it destroys
+some. libjwl: `jwl_clip_copy`, `jwl_clip_paste`, `jwl_clip_pasted`,
+`jwl_clip_available` and the events `JWL_EV_SELECTION`, `JWL_EV_PASTE`,
+`JWL_EV_COPY_CANCELLED` (`user/lib/jwl_data.c`). **The terminal:** the
+left button selects while the program with the keys hasn't asked for the
+mouse and the text screen is up: a drag (across lines; past the top or
+bottom it scrolls a line a move, into the scrollback), a double click a
+word (letters, numbers and `-_./~:@%+=#?&`), a triple click a line; a
+click or a key clears it; selected cells on blackcurrant #7f77dd at 45%
+over their background, the text unchanged (`select.c`, `clip.c`). Super+C
+or Ctrl+Shift+C copies, Super+V or Ctrl+Shift+V pastes; the compositor
+reserves neither (only its table's Super keys are its own), Ctrl+C stays
+the interrupt. A paste is typed into the focus as key presses (usage 0,
+the character; control characters and ESC dropped) as fast as the program
+reads them, bracketed by `ESC [ 200 ~` / `ESC [ 201 ~` when the client
+that opened that focus wrote `ESC [ ? 2004 h` (kept per console client,
+so a program the shell runs is never bracketed unless it asks); a key
+typed meanwhile ends a long paste (`paste.c`). **The shell** asks for
+bracketed paste once at its start and takes a bracketed paste onto its
+line at the cursor, line breaks and tabs as spaces, anything not ASCII
+dropped, running nothing until Enter (`sh_paste.c`): the safest simple
+behaviour, since a pasted multi-line command can never run line by line
+and the user sees all of it first. Not built: drag and drop, the primary
+selection, other MIME types, copying from a full-screen program's
+alternate screen. Tests: utest `comp_data_selection`, `comp_data_rules`,
+`jwlc_clip`, `consel_*`, `sh_paste`; `tools/clip-test.sh` (`clip.txt`: two
+terminals, a triple click, Super+C, Super+V, then a drag pasted with
+Ctrl+Shift+V into a third, with the tint checked in the screenshots)
+([TESTING](TESTING.md#copy-and-paste)).
 
 **Order and parallel work:**
 

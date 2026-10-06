@@ -110,6 +110,13 @@ a real desktop PC, which is where every milestone is tested.
   | Alt+Tab, Alt+Shift+Tab | the switcher (hold Alt; Esc cancels) |
   | Ctrl+Alt+Del | reboot |
 
+  Copy and paste in the terminals: drag with the mouse to select text (a
+  double click takes a word, a triple click a line; a click or a key
+  clears it), then Super+C (or Ctrl+Shift+C) copies it and Super+V (or
+  Ctrl+Shift+V) pastes into the terminal with the keys. Ctrl+C still
+  stops a program. A paste goes onto the shell's line, line breaks as
+  spaces, and runs only when you press Enter.
+
   The search box (Super alone, or "Jam OS") starts Terminal or Jamjar,
   or runs what is typed in a new terminal (`term <command>` does too);
   init starts only the desktop's own apps for it. The top bar's volume

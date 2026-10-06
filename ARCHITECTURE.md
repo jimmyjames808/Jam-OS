@@ -2028,6 +2028,64 @@ drawing differs (`window.c`, `winpaint.c`, `cellpaint.c`, `cells.h`).
   library sends again at each enter and after a reconnect); over the
   padding, the arrow.
 
+### Copy and paste
+
+Text only, for now: the clipboard's selection (no drag and drop, no
+primary selection), through Wayland's own `wl_data_device_manager`
+(version 3), which the compositor offers (`user/services/compositor/data.c`)
+and libjwl uses (`user/lib/jwl_data.c`, `jwl_clip_*` in `<jwl_client.h>`).
+
+- **The transfer.** Wayland moves the data through a pipe: the reader
+  passes the pipe's write end in `wl_data_offer.receive`, the compositor
+  passes it on to the selection's owner in `wl_data_source.send`, the
+  owner writes and closes it. Jam OS has no pipes or file descriptors, so
+  the `fd` argument is a handle, and the "pipe" is a channel: the reader
+  makes one, keeps an end and sends the other; the owner writes the text
+  into it as channel messages of bytes (at most 64 KiB each, no handles)
+  and closes it, which the reader sees as `ERR_PEER_CLOSED`, a pipe's end
+  of file. A shim for ported Wayland programs (G2) maps `receive(fd)` and
+  `send(fd)` onto the same two ends. The compositor never reads or writes
+  the data, so a slow or hostile owner can't hold it up; it checks that
+  the handle is a channel end (a zero-byte read: a channel answers
+  `ERR_SHOULD_WAIT` or `ERR_BUFFER_TOO_SMALL`, anything else
+  `ERR_WRONG_TYPE`) and passes it on with write, wait and transfer only,
+  so the owner can't read what the reader writes back.
+- **The rules.** Only the client with the keyboard focus may set the
+  selection, with the serial of an input event the seat sent it (the
+  last eight key presses, button presses and keyboard enters are kept
+  per client), never older than the current selection's; anything else
+  is refused (its source `cancelled`). Only the focused client is told the
+  selection (a new offer with its text types, right before
+  `wl_keyboard.enter`, and again when it changes), and only it may read
+  it: at most 32 reads each time the user gives it the keys (counted per
+  client, not per offer, since a client can make itself new offers), which
+  bounds what a reader can make the owner write and hold for it. Only text
+  types go on
+  (`text/plain;charset=utf-8`, `text/plain`, `UTF8_STRING`, `TEXT`). The
+  selection goes when its owner does. `start_drag` cancels its source at
+  once. So clipboard data never reaches a client that didn't ask for it
+  and doesn't have the keys.
+- **The reader's limits** (libjwl): a paste takes at most 1 MiB and 2 s;
+  more, a message with handles, or the time running out drops it. The
+  channel is read as it comes, bound to the program's port, so a paste
+  never blocks the program's loop. The owner writes without waiting.
+- **In a terminal** (`user/services/console/select.c`, `clip.c`,
+  `paste.c`): while the program with the keys hasn't asked for the mouse,
+  the left button selects the text (a drag, a double click a word, a
+  triple click a line; dragging past the top or bottom scrolls), the
+  selection being lines and columns of the text, not of the screen, so it
+  stays on its lines in the scrollback. Selected cells are drawn on
+  blackcurrant (#7f77dd) at 45% over their background. Super+C or
+  Ctrl+Shift+C copies, Super+V or Ctrl+Shift+V pastes (the compositor
+  reserves neither: they reach the focused window); Ctrl+C is the
+  interrupt as ever. A paste is typed into the focus as key presses with
+  usage 0, control characters and escapes dropped, as fast as the
+  program reads them (a channel holds 1024 messages). If the client that
+  opened the focus asked for bracketed paste (`ESC [ ? 2004 h`, kept per
+  console client), the keys come between `ESC [ 200 ~` and `ESC [ 201 ~`;
+  the shell asks, and puts what is pasted on its line with line breaks
+  as spaces, running nothing until Enter (`user/services/shell/sh_paste.c`).
+
 ### The desktop's plumbing
 
 The desktop (the strip, the search box, the popovers, the notices:

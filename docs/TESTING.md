@@ -427,6 +427,10 @@ firmware reset), plus `devices`, `usb`,
 `/esp` if they changed); `reboot -f` resets through the firmware, which
 ends a QEMU run (`-no-reboot`): the shell scripts end with it.
 `soak` is the soak test ([Soak](#soak)), and `ktest` takes its options.
+`run utest only <prefix>` runs the utests whose name starts with prefix
+(a quick run while working on one area; a test that counts the process's
+handles may then see one an earlier test would have made first, as
+`jwlc_setup` does when it runs first).
 `ktest` from the shell runs "live" next to the rest of user space: checks
 on system-wide counts are not made, and tests that need the machine to
 themselves are skipped (`KT_SKIP_LIVE`, in `kernel/include/jam/ktest.h`);
@@ -565,6 +569,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `allow.txt` | programs on `/data`: a copy of bin/soakload refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, a changed file refused, a list asking for devmgr or init (a copy of bin/utest) or for `right debug` (a copy of bin/wantdebug) or for the ports below 1024 (a copy of bin/serve, `svc net listen low`) refused, approval or not, `svc net listen` (bin/wantlisten: port 5000 refused on `/svc/net`, taken on `/svc/net-listen`, a TCP listener on port 80 refused there, from `/boot`, and from `/data` once `allow` showed "accepting connections from the network"), `allow -r`, a file off `/data` and a second shell refused | |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
 | `terms.txt` | more terminals: `term` opens terminal 2 (its shell's banner copied to COM1), its shell and its console killed and started again, the compositor killed and both consoles connected again, terminals up to the limit of 8 and `term` refusing one more | |
+| `clip.txt` | copy and paste between terminal windows: a triple click on a line of terminal 1 (`clip-selected`), Super+C, `term`, Super+V in terminal 2 puts it on the shell's line, bracketed, and only Enter runs it (`clip-pasted`); a drag over two lines (`clip-drag`) copied and pasted with Ctrl+Shift+V into terminal 3 arrives as one line (clicks at 1280x800) | use `tools/clip-test.sh` |
 | `terms-windows.txt` | terminals as windows: the first terminal's window, `term`'s window taking the keys, `exit` closing it and the keys back to the first (where `exit` refuses), Super+Enter on a USB keyboard, the compositor killed and both windows back; screenshots | `QEMU_USB="-device usb-kbd,bus=xhci.0,port=2"` |
 | `jobs.txt` | programs in the background (`prog &`): the prompt back at once, their output on the screen, the "[n] done" notice and its exit code, one outliving a foreground program, Ctrl+C reaching only the foreground, `jobs`, `kill %n` (and `kill <name>` unchanged), the refusals (a pipeline, a shell command, an alias), wltest in a window of its own (its keys, q), the limit of 8, and background programs ending with their shell | |
 | `hda.txt` | the HD Audio driver's dump, `hda`, `kill hda`, `hda jacks`, `hda gain` and `hda bits` set and read back (all through the mixer's query channels) | use `tools/hda-test.sh` |
@@ -749,6 +754,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/jamjar-covers-test.sh <outdir>` | jamjar's now-playing cover at 2560x1440 (`jamjar-covers.txt`), on 32 made-up albums of two MP3s, each with a teal PNG cover in its tag: every shot of now playing must show the cover's teal, not a jar label |
 | `tools/comp-test.sh <outdir>` | the compositor on QEMU's framebuffer (`comptest`): a screenshot of each of its test scene's steps (opaque floating windows on the wallpaper, a translucent one over them, the arrow on the first's circles; one moved, a tiled window's look, one raised, no arrow; a full-screen window copied straight from its buffer; the desktop: the top bar with three toplevels' chips (one focused, one minimised), the clock's popover, a notification with buttons and the hand on a chip; then the search box with "te" typed) compared by `tools/comp-check.py` with the steps the log describes, painted from scratch with the look's numbers (wallpaper, shadows, title bars, outlines, borders, rounded corners: every third pixel each way; the titles' text found in their bars, each circle's colour or symbol where it is all circle; the arrow where it is all fill; the strip's frosting and islands pixel for pixel, the lit dot and chip, no toplevel under the strip, the popover 2 pixels under it with its right edge on its icon's, the calendar's today, the notification's tile and buttons, the search box's letter tiles, from the layout the test scene logs); prints the compositor's `bench:` lines (frame costs: QEMU's only show the code runs) |
 | `tools/mouse-test.sh <outdir>` | two boots: the compositor's seat with a USB keyboard and mouse (`desktop.txt`), and the mouse end to end under `nocomp` (`mouse.txt`): QEMU's monitor moves and clicks a USB mouse, driven in the report protocol (its descriptor has a wheel); `MOUSE_HIDBOOT=1` adds the boot word `hidboot` and checks the boot protocol instead; 1280x800 only (the clicks are at pixel positions) |
+| `tools/clip-test.sh <outdir>` | copy and paste between terminal windows (`clip.txt`): a plain boot with a USB keyboard and mouse; PASS also needs the screenshots' tint where the selections are (#423e71: #7f77dd at 45% over #101018) and the background beside them; screenshots `clip-*.png`; 1280x800 only |
 | `tools/desk-test.sh <outdir>` | the desktop's plumbing (`desk.txt`): a plain boot with a USB keyboard and mouse and `QEMU_NET=1` (untagged, the peer's DHCP); PASS also needs both busy cursors ended by their windows (not the 10 s limit) and no `init: launch fractal: OK`; screenshots `desk-*.png`; 1280x800 only |
 | `tools/crash-test.sh <outdir> [name...]` | every crash test from the shell (`crash <name> yes`), each on a fresh boot; each panic starts the stored kernel, whose shell says what happened (`kexecbad`: refused, the panic screen stays up; `kexecstall`, `kexecfault`: a firmware reset) |
 | `tools/kdump-test.sh <outdir> [case...]` | a panic starts the stored kernel, each case a fresh boot of a stick image read afterwards with mtools: `save` (`crash panic yes`: no panic screen, the next boot comes up on every CPU, saves `/data/logs/boot-0001-crash.txt` with the panic and the lines before it, logs to `boot-0002` and its shell says so), `loop` (`crashtest=lockorder`: the next boot panics at once, a crash loop, and halts on the red panic screen), `bad` (`crash kexecbad yes`: the damaged stored kernel is refused, red panic screen, nothing saved), `nostick` (the stick pulled first: the shell says the log was not saved and why), `screen` (with the splash: the screen as the next kernel starts is all the splash background) |
@@ -1116,6 +1122,29 @@ log has "init: the terminals' font: bitmap, as the settings say" and
 "console: terminal 1: the 8x16 bitmap font"; `terms-windows.txt`,
 `desktop.txt` (`tools/mouse-test.sh`) and `screen-test.sh` (`nocomp`, the
 bitmap) take screenshots of the windows and the full screen.
+
+## Copy and paste
+
+The clipboard ([ARCHITECTURE](../ARCHITECTURE.md#copy-and-paste)): the
+compositor's `wl_data_device_manager`, libjwl's `jwl_clip_*`, the
+terminal's selection and keys, the shell's bracketed paste. In utest (the
+`init` run; `run utest only comp_data`, `only jwlc_clip`, `only consel`
+or `only sh_paste` alone):
+
+| Test | What it checks |
+|---|---|
+| `comp_data_selection` | the compositor headless with test clients: set_selection refused (its source cancelled) with a serial that isn't one of the client's input events, or without the keyboard focus; only text types offered on; the focused client told the selection before `wl_keyboard.enter`, an unfocused one never; a receive passed on with a channel end the source can write and not read, the data reaching the reader; receives refused (the reader's end closed, the source told nothing) for a type not offered, a handle that isn't a channel, a reader without the focus, and past 32 since its focus came (a new data device's new offer too); the owner going clears the selection |
+| `comp_data_rules` | drag and drop refused (`start_drag` cancels its source; the source used again, a drag's source as the selection, `finish` on a selection's offer are protocol errors); a source that never writes holds up nobody (keys still routed, the reader's end closes when the source closes its own); a client that never destroys its offers is told "none" at the cap |
+| `jwlc_clip` | libjwl against the real compositor: a client copies and pastes its own text; another, whose window then has the focus, pastes 300 KiB of it (several messages); a raw client's selection replaces it (the first hears `JWL_EV_COPY_CANCELLED`); a fourth pastes from that raw owner, which never writes (timed out after 2 s), writes one byte over 1 MiB, or sends a handle (both refused) |
+| `consel_drag` | the cell under a pixel (padding and edges clamped); a drag across lines, forwards and backwards, its cells and its text (trailing blanks dropped, lines joined by newlines, UTF-8); a press alone selects nothing until the drag reaches another cell |
+| `consel_word_line` | a double click takes a word (paths and options are words; blanks and other punctuation are runs of their own) and a drag after it goes on by words; a triple click takes a line, a drag after it by lines |
+| `consel_scrollback` | a range far back in the scrollback with a line no longer kept (skipped, its newline kept); a copy cut at its buffer; clicks counted within 500 ms on one cell, a fourth starting again |
+| `consel_keys` | Super+C and Ctrl+Shift+C copy, Super+V and Ctrl+Shift+V paste, Ctrl+C and other chords don't; which keys clear the selection; pasted text as keys (CR LF one newline, tabs kept, ESC, other control characters, C1 controls and bad UTF-8 dropped) |
+| `consel_tint` | a selected cell's background is #7f77dd at 45% over its own, its text unchanged; the cursor wins |
+| `sh_paste` | the shell's markers (`ESC [ 200 ~`, `ESC [ 201 ~`, from a keyboard's Escape key or a terminal's byte), a marker's start, near misses; a pasted key's byte on the line (line breaks and tabs a space, nothing that isn't ASCII) |
+
+End to end, `tools/clip-test.sh <outdir>` ([below](#area-scripts)):
+`clip.txt` on a plain boot with a USB keyboard and mouse.
 
 ## The compositor's look
 
