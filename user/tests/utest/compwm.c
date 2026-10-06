@@ -17,6 +17,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <keymap.h>
 #include <settings.h>
 #include "compwm.h"
 #include "fattest.h"
@@ -151,7 +152,26 @@ bool press_btn(int32_t x, int32_t y, uint32_t button)
     cursor.x = x;
     cursor.y = y;
     seat.held = true;
-    return wm_press(x, y, button);
+    return wm_press(x, y, button, seat.mods);
+}
+
+bool press_super(int32_t x, int32_t y, uint32_t button)
+{
+    seat.mods = INPUT_MOD_LGUI;
+    bool took = press_btn(x, y, button);
+    seat.mods = 0;
+    return took;
+}
+
+bool wm_test_key(uint16_t usage, uint8_t mods)
+{
+    return desk_key(usage, mods, keymap_mods_of_hid(mods)) || wm_key(usage, mods);
+}
+
+/* focus.c's: Super+Enter asks init for a terminal. */
+void ctl_terminal(void)
+{
+    fdesk.nterminal++;
 }
 
 void move_to(int32_t x, int32_t y)
@@ -267,18 +287,6 @@ struct comp_window *win(unsigned i)
     return fks[i].ww->win;
 }
 
-#define AT(i, wx, wy)                                                   \
-    do {                                                                \
-        CHECK(win(i));                                                  \
-        CHECK_EQ(win(i)->x, (wx));                                      \
-        CHECK_EQ(win(i)->y, (wy));                                      \
-    } while (0)
-#define CFG(i, cw, ch, st)                                              \
-    do {                                                                \
-        CHECK_EQ(fks[i].cfg.width, (cw));                               \
-        CHECK_EQ(fks[i].cfg.height, (ch));                              \
-        CHECK_EQ(fks[i].cfg.states, (st));                              \
-    } while (0)
 
 /* ---- floating ---------------------------------------------------------------------- */
 
@@ -560,61 +568,55 @@ bool t_wm_states(void)
 
 /* ---- tiling ------------------------------------------------------------------------ */
 
-/* The surface box tile i of n gives a resizable window. */
-static struct comp_box inner(unsigned n, unsigned i)
+struct comp_box tile_inner(struct comp_box tile)
 {
-    return deco_inner(wm_tile_box((struct comp_box){ 0, 0, OUT_W, OUT_H }, n, i), 0, COMP_TILING);
+    return deco_inner(tile, 0, COMP_TILING);
 }
 
-/* f was asked to fill tile i of n, draws, and sits in it. */
-static bool fills(unsigned f, unsigned n, unsigned i)
+bool fills_box(unsigned f, struct comp_box b)
 {
-    struct comp_box b = inner(n, i);
     CFG(f, b.x2 - b.x1, b.y2 - b.y1, fks[f].cfg.states & WM_ST_ACTIVATED);
     CHECK(fk_draw(&fks[f]));
     AT(f, b.x1, b.y1);
     return true;
 }
 
-/* Every tile of n inside the output and apart. */
-static bool tiles_sane(unsigned n)
-{
-    for (unsigned i = 0; i < n; i++) {
-        struct comp_box b = wm_tile_box((struct comp_box){ 0, 0, OUT_W, OUT_H }, n, i);
-        CHECK(b.x1 >= 6 && b.y1 >= 6 && b.x2 <= OUT_W - 6 && b.y2 <= OUT_H - 6);
-        CHECK(!box_empty(b));
-        for (unsigned j = 0; j < i; j++) {
-            struct comp_box c = wm_tile_box((struct comp_box){ 0, 0, OUT_W, OUT_H }, n, j);
-            CHECK(box_empty(box_intersect(b, c)));
-        }
-    }
-    return true;
-}
+/* The output's tiles by hand (the desktop off: the room is the output; a
+ * gap of 6 round and between; a border of 2 inside each): the whole room;
+ * its left half (1262 / 2 = 631 wide); the right half's top and bottom
+ * (782 / 2 = 391 high each). */
+static const struct comp_box ALL = { 6, 6, 1274, 794 };
+static const struct comp_box LEFT = { 6, 6, 637, 794 };
+static const struct comp_box RIGHT = { 643, 6, 1274, 794 };
+static const struct comp_box RTOP = { 643, 6, 1274, 397 };
+static const struct comp_box RBOT = { 643, 403, 1274, 794 };
 
 static bool tiling_join_steps(void)
 {
-    for (unsigned n = 1; n <= 8; n++)
-        CHECK(tiles_sane(n));
-    /* one window: all of the output, less the gap (6) and its border (2) */
+    /* one window: all of the room, less its border */
     CHECK(fk_open(&fks[0], 320, 200, false));
     CFG(0, 1264, 784, 0);
-    CHECK(fk_draw(&fks[0]));
-    AT(0, 8, 8);
+    CHECK(fills_box(0, tile_inner(ALL)));
     /* no title bar when tiling: a border all round */
     CHECK_EQ(win(0)->deco_top, DECO_BORDER);
     CHECK(box_empty(title_bar_box(win(0))) && box_empty(title_close_box(win(0))));
-    /* a fixed one joins: the master shrinks to the left half, the new one
-     * sits centred in the right half at its own size */
+    /* a fixed one joins with the first focused: it splits that tile across
+     * (it is wider than high), the old window keeping the left half; the
+     * new one sits centred in the right half at its own size */
+    seat_focus(win(0));
     CHECK(fk_open(&fks[1], 320, 200, true));
     CFG(1, 0, 0, 0);
-    CHECK(fills(0, 2, 0));
-    CHECK_EQ(inner(2, 0).x2, 635);
-    AT(1, 645 + (627 - 320) / 2, 8 + (784 - 200) / 2);
-    /* a third: the stack splits */
+    CHECK(fills_box(0, tile_inner(LEFT)));
+    CHECK(box_eq(win(1)->tile, RIGHT));
+    AT(1, 643 + (631 - 320) / 2, 6 + (788 - 200) / 2);
+    /* a third, with the fixed one focused: its tile (taller than wide)
+     * splits top and bottom */
+    seat_focus(win(1));
     CHECK(fk_open(&fks[2], 320, 200, false));
-    CHECK(fills(2, 3, 2));
-    struct comp_box s1 = inner(3, 1);
-    AT(1, s1.x1 + (s1.x2 - s1.x1 - 320) / 2, s1.y1 + (s1.y2 - s1.y1 - 200) / 2);
+    CHECK(fills_box(2, tile_inner(RBOT)));
+    CHECK(box_eq(win(1)->tile, RTOP));
+    AT(1, 643 + (631 - 320) / 2, 6 + (391 - 200) / 2);
+    CHECK(box_eq(win(0)->tile, LEFT));
     return true;
 }
 
@@ -623,11 +625,11 @@ static bool tiling_rules_steps(void)
     /* a press on a tiled window's border focuses it, nothing more: no
      * moving, no resizing, no double-click (no title bar) */
     struct comp_box f2 = window_frame(win(2));
-    CHECK(press_btn(f2.x1 + 50, f2.y1, BTN));
+    CHECK(press_btn(f2.x1 + 50, f2.y2 - 1, BTN));
     CHECK(!seat.ops);
     CHECK_EQ(seat.focused, win(2));
     release_at(f2.x1 - 300, f2.y1 + 100);
-    CHECK(fills(2, 3, 2));
+    CHECK(fills_box(2, tile_inner(RBOT)));
     seat.held = true;
     CHECK_ST(wm_begin_move(win(2), 0, 0), ERR_BAD_STATE);
     CHECK_ST(wm_begin_resize(win(2), WM_EDGE_RIGHT, 0, 0), ERR_BAD_STATE);
@@ -637,16 +639,20 @@ static bool tiling_rules_steps(void)
     CFG(2, OUT_W - 2 * DECO_BORDER, OUT_H - 2 * DECO_BORDER,
         WM_ST_ACTIVATED | WM_ST_MAXIMIZED);
     wm_request_maximized(fks[2].ww, false);
-    CHECK(fills(2, 3, 2));
+    CHECK(fills_box(2, tile_inner(RBOT)));
     /* Super+Q: the close box tiling has none of */
     wm_close(win(2));
     CHECK_EQ(fks[2].closes, 1);
-    /* the master leaves: the fixed one is the master now */
+    /* the first leaves: its sibling (the right half's split) takes the
+     * whole room, its own split kept */
     wm_destroy(fks[0].ww);
     fks[0].ww = NULL;
-    struct comp_box m = inner(2, 0);
-    AT(1, m.x1 + (m.x2 - m.x1 - 320) / 2, m.y1 + (m.y2 - m.y1 - 200) / 2);
-    CHECK(fills(2, 2, 1));
+    CHECK(box_eq(win(1)->tile, (struct comp_box){ 6, 6, 1274, 397 }));
+    CHECK(fills_box(2, tile_inner((struct comp_box){ 6, 403, 1274, 794 })));
+    /* the bottom one leaves: the fixed one alone, centred in all of it */
+    wm_destroy(fks[2].ww);
+    fks[2].ww = NULL;
+    CHECK(box_eq(win(1)->tile, ALL));
     /* a fixed window bigger than its tile: centred on it, wholly on the screen */
     CHECK(fk_open(&fks[3], 700, 500, true));
     struct comp_box f = window_frame(win(3));
@@ -695,17 +701,19 @@ static bool switch_steps(void)
     CHECK(fk_draw(&fks[2]));
     struct place p[3] = { place_of(0), place_of(1), place_of(2) };
     CHECK_EQ(p[2].w, 500);
-    /* the key: everything tiles, and init is told to keep it */
+    /* the key: everything tiles, and init is told to keep it; the tree is
+     * made in the windows' order, each splitting the last (whatever has
+     * the focus): the first the left half, the second the right's top, the
+     * third its bottom */
     wm_toggle_layout();
     CHECK_EQ(scene.layout, COMP_TILING);
     CHECK_EQ(seat.nlayout, 1);
     CHECK_EQ(seat.layout, COMP_TILING);
-    CHECK(fills(0, 3, 0));
-    CHECK(fills(2, 3, 2));
+    CHECK(fills_box(0, tile_inner(LEFT)));
+    CHECK(fills_box(2, tile_inner(RBOT)));
     CFG(1, 0, 0, 0);
     CHECK(fk_draw(&fks[1]));
-    struct comp_box i1 = inner(3, 1);
-    AT(1, i1.x1 + (i1.x2 - i1.x1 - 200) / 2, i1.y1 + (i1.y2 - i1.y1 - 150) / 2);
+    AT(1, 643 + (631 - 200) / 2, 6 + (391 - 150) / 2);
     /* and back: every window where and as big as it was */
     wm_toggle_layout();
     CHECK_EQ(seat.layout, COMP_FLOATING);
@@ -914,7 +922,7 @@ static bool layout_setting_steps(void)
     wm_set_layout(l);
     CHECK_EQ(seat.nlayout, 0);   /* init's own choice isn't reported back */
     CHECK(fk_open(&fks[0], 320, 200, false));
-    CHECK(fills(0, 1, 0));
+    CHECK(fills_box(0, tile_inner(ALL)));
     seat.save = true;
     wm_toggle_layout();
     CHECK_ST(settings_get(WF, WM_LAYOUT_SETTING, v, sizeof(v)), OK);

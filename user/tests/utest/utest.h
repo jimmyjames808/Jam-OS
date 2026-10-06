@@ -537,6 +537,15 @@ bool t_wm_switch(void);
 bool t_wm_focus(void);
 bool t_wm_window_at(void);
 bool t_wm_layout_setting(void);
+/* compwm2.c, compwm3.c: tiling's dwindle tree, its gaps, the window keys,
+ * Super+drag and the glide, on the same harness. */
+bool t_wm_tile_tree(void);
+bool t_wm_tile_gaps(void);
+bool t_wm_tile_push(void);
+bool t_wm_focus_dir(void);
+bool t_wm_swap(void);
+bool t_wm_reflow(void);
+bool t_wm_keys(void);
 /* compdesk.c, compdesk2.c: the desktop (screens, minimising, the strip,
  * animations, Alt+Tab, the search box, popovers, notifications) linked in
  * on compwm.c's harness (compwm.h). */

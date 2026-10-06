@@ -15,9 +15,11 @@
  *     boot overlay's on none: over every screen, screens.c);
  *   - maximised: centred in the room below the floor, under its title bar
  *     (tiling: inside its border instead);
- *   - tiling: centred in its tile (a resizable window was asked to fill
- *     it; one that can't resize keeps its own size, wholly in the room
- *     where it fits);
+ *   - tiling: centred in its tile (wmtile.c's dwindle tree; a resizable
+ *     window was asked to fill it; one that can't resize keeps its own
+ *     size, wholly in the room where it fits); when a window opens or
+ *     goes, two swap or a key resizes a tile, the tiles that move glide
+ *     there (wm_reflow, anim.c);
  *   - floating: at its floating place. The first time it is centred in the
  *     room, moved down and right by a title bar's height while another
  *     window's top-left corner is already there (the cascade); its title
@@ -73,11 +75,16 @@ static struct comp_box room_of(const struct wm_window *ww)
     return screens_room(ww->screen ? ww->screen : screens_cur());
 }
 
-/* The top a window's frame may reach: the floor under the strip. */
-static int32_t floor_of(const struct wm_window *ww)
+int32_t wm_floor(const struct wm_window *ww)
 {
     struct comp_box r = room_of(ww);
     return r.y1 > 0 ? r.y1 + LOOK_STRIP_GAP : r.y1;
+}
+
+bool wm_floating_normal(const struct wm_window *ww)
+{
+    return ww->win && wm_layout_of(ww) == COMP_FLOATING && ww->want == WM_NORMAL &&
+           !(ww->shown & (WM_ST_MAXIMIZED | WM_ST_FULLSCREEN));
 }
 
 /* ---- making and losing toplevels ---------------------------------------------------- */
@@ -141,7 +148,7 @@ static struct comp_box output_box(void)
 static struct comp_box max_box(const struct wm_window *ww)
 {
     struct comp_box r = room_of(ww);
-    r.y1 = floor_of(ww);
+    r.y1 = wm_floor(ww);
     return r;
 }
 
@@ -188,11 +195,19 @@ void wm_reconfigure(struct wm_window *ww)
 
 void wm_relayout(void)
 {
+    tiles_update();
     for (struct wm_window *ww = wm.first; ww; ww = ww->next) {
         wm_reconfigure(ww);
         if (ww->win)
             wm_place(ww);
     }
+}
+
+void wm_reflow(void)
+{
+    anim_glide_note();
+    wm_relayout();
+    anim_glide_start();
 }
 
 /* ---- placing ------------------------------------------------------------------------ */
@@ -235,7 +250,7 @@ static void first_place(struct wm_window *ww)
 {
     struct comp_window *w = ww->win;
     const struct comp_surface *s = ww->surface;
-    int32_t fl = floor_of(ww);
+    int32_t fl = wm_floor(ww);
     int32_t x0 = centre(0, scene.width, s->width, w->deco_left, w->deco_right, 0, scene.width);
     int32_t y0 = centre(fl, scene.height, s->height, w->deco_top, w->deco_bottom, fl,
                         scene.height);
@@ -280,7 +295,7 @@ static void place_floating(struct wm_window *ww)
         ww->float_x = ww->anchor_x2 - s->width;
     if (ww->anchor & WM_EDGE_TOP)
         ww->float_y = ww->anchor_y2 - s->height;
-    keep_reachable(w, floor_of(ww), &ww->float_x, &ww->float_y);
+    keep_reachable(w, wm_floor(ww), &ww->float_x, &ww->float_y);
     window_move(w, ww->float_x, ww->float_y);
 }
 
@@ -344,7 +359,7 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
     if (!first)
         return OK;
     if (wm_layout_of(ww) == COMP_TILING)
-        wm_relayout();   /* the others make room */
+        wm_reflow();   /* it splits the focused tile; the others glide to make room */
     window_map(ww->win, screens_shown(ww));   /* the seat hears (a client's first window
                                                * takes the keys) */
     if (ww->want == WM_FULLSCREEN)
@@ -370,6 +385,8 @@ void wm_unmap(struct wm_window *ww)
     bool tiled = wm_layout_of(ww) == COMP_TILING;
     window_destroy(ww->win);   /* the seat hears first, while it is in the order */
     ww->win = NULL;
+    ww->gliding = ww->glide_noted = false;
+    tiles_forget(ww);   /* its sibling takes their parent's room */
     screens_window_gone(ww);
     strip_dirty();
     /* back to what get_toplevel made (xdg-shell's "unmapping") */
@@ -380,7 +397,7 @@ void wm_unmap(struct wm_window *ww)
     ww->anchor = 0;
     ww->not_responding = false;
     if (tiled)
-        wm_relayout();   /* the others take its room */
+        wm_reflow();   /* the others glide into its room */
 }
 
 /* ---- what the client says ---------------------------------------------------------- */
@@ -482,6 +499,8 @@ void wm_set_layout(enum comp_layout layout)
 {
     struct desk_screen *s = screens_cur();
     bool same = s->kind != SCREEN_NORMAL || s->layout == layout;
+    if (!same)
+        tiles_drop(s);   /* to tiling: made again in the windows' order; to floating: none */
     screens_set_default(layout);
     if (same)
         return;

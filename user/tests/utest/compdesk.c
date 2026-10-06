@@ -6,12 +6,14 @@
  * output 1280x800. No pixels here: comp_look's and comp-test.sh's pictures
  * have those.
  *
- * t_desk_screens: one screen at the start; Super+Right past the last makes
- * one, an empty screen left behind goes; Super+1..9 and the dots go to one
- * that exists; each screen's own arrangement (Super+T acts on the current
- * one, and new screens take it); a window moved with Super+Shift+Right
- * makes a screen and goes there, focused, and its old screen goes when
- * empty; windows of other screens are unmapped.
+ * t_desk_screens: one screen at the start; Super+Ctrl+Right (or L) past
+ * the last makes one, an empty screen left behind goes; Super+Right and
+ * Super+Left move the focus, not the screen; Super+1..9 and the dots go to
+ * one that exists; each screen's own arrangement (Super+T acts on the
+ * current one, and new screens take it); a window moved with
+ * Super+Ctrl+Shift+Right (or L) makes a screen and goes there, focused,
+ * and its old screen goes when empty; Super+Shift+N moves it to screen N;
+ * windows of other screens are unmapped.
  * t_desk_fullscreen: full screen moves the window to a screen of its own
  * right of its home (no strip there, all of the output) and back again
  * (its screen gone); a full-screen window closing takes the user back home;
@@ -51,10 +53,13 @@
 #define U_T     0x17
 #define U_1     0x1e
 #define U_2     0x1f
+#define U_H     0x0b
+#define U_L     0x0f
 #define U_RIGHT 0x4f
 #define U_LEFT  0x50
 #define SUPER   INPUT_MOD_LGUI
 #define SHIFT   INPUT_MOD_LSHIFT
+#define CTRL    INPUT_MOD_LCTRL
 #define FLOOR   (LOOK_STRIP_H + LOOK_STRIP_GAP)   /* the highest a frame reaches */
 
 void desk_test_start(enum comp_layout layout)
@@ -69,7 +74,7 @@ void desk_test_start(enum comp_layout layout)
 
 static bool key(uint16_t usage, uint8_t mods)
 {
-    return desk_key(usage, mods, keymap_mods_of_hid(mods));
+    return wm_test_key(usage, mods);
 }
 
 /* Screen i's windows: those of fks[] on it, as a bit mask. */
@@ -93,14 +98,20 @@ static bool screens_steps(void)
 {
     CHECK_EQ(screens_count(), 1);
     CHECK(fk_open(&fks[0], 320, 200, false));
-    /* past the last: a new, empty screen, current; the first keeps its window */
+    /* Super+Right: the focus (there is nothing to its right), never a screen */
+    seat_focus(win(0));
     CHECK(key(U_RIGHT, SUPER));
+    CHECK_EQ(screens_count(), 1);
+    CHECK_EQ(seat.focused, win(0));
+    /* Super+Ctrl+Right past the last: a new, empty screen, current; the
+     * first keeps its window */
+    CHECK(key(U_RIGHT, SUPER | CTRL));
     CHECK_EQ(screens_count(), 2);
     CHECK_EQ(screens_cur_index(), 1);
     CHECK(!mapped(0));
     CHECK_EQ(seat.focused, NULL);
-    /* again: the empty one left behind goes, so there are still two */
-    CHECK(key(U_RIGHT, SUPER));
+    /* again, by L: the empty one left behind goes, so there are still two */
+    CHECK(key(U_L, SUPER | CTRL));
     CHECK_EQ(screens_count(), 2);
     CHECK_EQ(screens_cur_index(), 1);
     CHECK(fk_open(&fks[1], 300, 200, false));   /* opens here */
@@ -113,9 +124,17 @@ static bool screens_steps(void)
     CHECK(key(U_1 + 8, SUPER));
     CHECK_EQ(screens_cur_index(), 0);
     CHECK(!key(U_RIGHT, 0));   /* without Super: a client's */
-    /* Super+Left from the first: nowhere */
-    CHECK(key(U_LEFT, SUPER));
+    CHECK(!key(U_RIGHT, CTRL));
+    /* Super+Ctrl+Left (and H) from the first: nowhere */
+    CHECK(key(U_LEFT, SUPER | CTRL));
+    CHECK(key(U_H, SUPER | CTRL));
     CHECK_EQ(screens_cur_index(), 0);
+    /* and back to the second by Super+Ctrl+Right; Super+Left there is no screen */
+    CHECK(key(U_RIGHT, SUPER | CTRL));
+    CHECK_EQ(screens_cur_index(), 1);
+    CHECK(key(U_LEFT, SUPER));
+    CHECK_EQ(screens_cur_index(), 1);
+    CHECK(key(U_1, SUPER));
     return true;
 }
 
@@ -135,21 +154,35 @@ static bool layout_steps(void)
     CHECK_EQ(screens_cur()->layout, COMP_TILING);
     screens_go(1);
     CHECK_EQ(screens_count(), 2);              /* the empty third went */
-    /* the window moved right (Super+Shift+Right): a new screen past the
-     * last, current, the window focused there; the screen it left, empty, goes */
+    /* the window moved right (Super+Ctrl+Shift+Right): a new screen past
+     * the last, current, the window focused there; the screen it left,
+     * empty, goes; Super+Shift+Right is a swap (no tile right of it), no move */
     seat_focus(win(1));
     CHECK(key(U_RIGHT, SUPER | SHIFT));
+    CHECK_EQ(screens_cur_index(), 1);
+    CHECK_EQ(screens_count(), 2);
+    CHECK(key(U_RIGHT, SUPER | CTRL | SHIFT));
     CHECK_EQ(screens_count(), 2);
     CHECK_EQ(screens_cur_index(), 1);
     CHECK_EQ(on_screen(1), 2u);
     CHECK_EQ(seat.focused, win(1));
     CHECK(mapped(1) && !mapped(0));
-    /* and left again: onto the first screen with window 0; its own goes */
-    CHECK(key(U_LEFT, SUPER | SHIFT));
+    /* and left again (by H): onto the first screen with window 0; its own goes */
+    CHECK(key(U_H, SUPER | CTRL | SHIFT));
     CHECK_EQ(screens_count(), 1);
     CHECK_EQ(on_screen(0), 3u);
     CHECK_EQ(seat.focused, win(1));
     CHECK(mapped(0) && mapped(1));
+    /* Super+Shift+2: to screen 2, past the last: a new one, current */
+    CHECK(key(U_2, SUPER | SHIFT));
+    CHECK_EQ(screens_count(), 2);
+    CHECK_EQ(screens_cur_index(), 1);
+    CHECK_EQ(on_screen(1), 2u);
+    /* Super+Shift+1: back to the first; the second, empty, goes */
+    CHECK(key(U_1, SUPER | SHIFT));
+    CHECK_EQ(screens_count(), 1);
+    CHECK_EQ(on_screen(0), 3u);
+    CHECK_EQ(seat.focused, win(1));
     return true;
 }
 
@@ -334,7 +367,7 @@ static bool room_tiling_steps(void)
         CHECK(fk_draw(&fks[k]));
         CHECK(below_strip(k));
     }
-    CHECK_EQ(window_frame(win(0)).y1, FLOOR);   /* the master: the room less the gap */
+    CHECK_EQ(window_frame(win(0)).y1, FLOOR);   /* the first tile: the room less the gap */
     wm_request_maximized(fks[1].ww, true);
     CHECK(fk_draw(&fks[1]));
     CHECK_EQ(window_frame(win(1)).y1, FLOOR);   /* tiling's maximise: below the floor too */

@@ -417,7 +417,7 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/dns/socks.c.o $(UOBJ)/user/services/dns/askers.c.o \
                       $(UOBJ)/user/services/sntp/ntp.c.o \
                       $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
-                      $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile \
+                      $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile wmkeys \
                         wmgrab deco title mask screens anim strip menus popover notify desk \
                         cursors) \
                       $(CURSOR_OBJ) $(UOBJ)/user/services/console/wlinput.c.o \

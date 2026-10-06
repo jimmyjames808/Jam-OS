@@ -1,9 +1,10 @@
 /* Virtual screens (desk.h), the owner's rules (docs/G1-PLAN.md "The
  * look"):
  *   - the desktop starts with one screen; a new one is made past the last
- *     (Super+Right, the strip's "+") or by moving a window there
- *     (Super+Shift+Right); a screen other than the current one that has no
- *     windows left goes away (minimised windows count: they live there);
+ *     (Super+Ctrl+Right or L, the strip's "+") or by moving a window there
+ *     (Super+Ctrl+Shift+Right or L, Super+Shift+1..9 past the last); a
+ *     screen other than the current one that has no windows left goes away
+ *     (minimised windows count: they live there);
  *   - Super+1..9 and the strip's dots go to a screen that exists;
  *   - each normal screen has its own arrangement, floating or tiling
  *     (Super+T switches the current one; new screens get the last choice);
@@ -65,6 +66,7 @@ static struct desk_screen *new_screen(enum screen_kind kind, unsigned at)
 
 static void drop_screen(unsigned i)
 {
+    tiles_drop(sc.order[i]);
     sc.order[i]->used = false;
     memmove(&sc.order[i], &sc.order[i + 1], (sc.n - i - 1) * sizeof(sc.order[0]));
     sc.n--;
@@ -75,6 +77,9 @@ static void drop_screen(unsigned i)
 
 void screens_init(enum comp_layout layout)
 {
+    for (unsigned i = 0; i < DESK_SCREENS_MAX; i++)
+        if (sc.pool[i].used)
+            tiles_drop(&sc.pool[i]);   /* a fresh start's (each test's) */
     memset(&sc, 0, sizeof(sc));
     sc.deflt = layout;
     sc.pool[0] = (struct desk_screen){ .used = true, .kind = SCREEN_NORMAL, .layout = layout };
@@ -263,15 +268,16 @@ void screens_add(void)
         go_to(sc.n - 1, true);
 }
 
-void screens_move(struct wm_window *ww, int dir)
+/* Can ww move to another screen: a mapped window on a normal one. */
+static bool movable(const struct wm_window *ww)
 {
-    anim_finish();
-    if (!ww || !ww->win || !ww->screen || ww->screen->kind != SCREEN_NORMAL)
-        return;
-    int i = screens_index(ww->screen) + dir;
-    while (i >= 0 && i < (int)sc.n && sc.order[i]->kind == SCREEN_FULL)
-        i += dir;
-    if (i < 0 || (i >= (int)sc.n && !append()))
+    return ww && ww->win && ww->screen && ww->screen->kind == SCREEN_NORMAL;
+}
+
+/* ww onto screen i (past the last: a new one at the end), which becomes current. */
+static void move_window(struct wm_window *ww, int i)
+{
+    if (i >= (int)sc.n && !append())
         return;
     if (i >= (int)sc.n)
         i = (int)sc.n - 1;
@@ -281,6 +287,27 @@ void screens_move(struct wm_window *ww, int dir)
     go_to((unsigned)i, true);
     screens_sync();
     seat_focus(ww->win);
+}
+
+void screens_move(struct wm_window *ww, int dir)
+{
+    anim_finish();
+    if (!movable(ww))
+        return;
+    int i = screens_index(ww->screen) + dir;
+    while (i >= 0 && i < (int)sc.n && sc.order[i]->kind == SCREEN_FULL)
+        i += dir;
+    if (i >= 0)
+        move_window(ww, i);
+}
+
+void screens_move_to(struct wm_window *ww, unsigned i)
+{
+    anim_finish();
+    if (!movable(ww) || (i < sc.n && sc.order[i]->kind == SCREEN_FULL) ||
+        (i < sc.n && sc.order[i] == ww->screen))
+        return;
+    move_window(ww, i < sc.n ? (int)i : (int)sc.n);
 }
 
 /* ---- minimising ------------------------------------------------------------------------- */

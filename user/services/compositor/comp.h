@@ -305,8 +305,9 @@ enum comp_layout {
 #define COMP_WIN_FULLSCREEN (1u << 2)
 #define COMP_WIN_FOCUSED    (1u << 3)   /* has the keyboard focus (focus.c sets it) */
 #define COMP_WIN_UNRESPONSIVE (1u << 4) /* didn't answer a ping: its title bar says so */
-#define COMP_WIN_ANIMATED   (1u << 5)   /* mapped, but an animation draws it (anim.c): painting
-                                         * skips it and nothing below it is taken as hidden */
+#define COMP_WIN_ANIMATED   (1u << 5)   /* mapped, but drawn elsewhere: by an animation (anim.c)
+                                         * or as a Super+dragged tile's picture (wmgrab.c):
+                                         * painting skips it and nothing below it is hidden */
 #define COMP_WIN_OVERLAY    (1u << 6)   /* a boot overlay (screens.c: a full-screen window whose
                                          * client takes no keys, the splash's): over every other
                                          * window, whatever is raised or made after it */
@@ -326,9 +327,21 @@ struct comp_window {
     struct comp_box tile;          /* tiling: the tile it was given (wm.c) */
     void *wm;                      /* the window manager's own (struct wm_window, wm.h) */
     const char *title;             /* its title bar's text (the window manager's), or NULL */
-    int32_t slide_x;               /* a screen slide's sideways offset (anim.c): the window is
-                                    * painted, damaged and hit there; 0 at rest */
+    /* Where it is shown, from (x, y) (anim.c): a screen slide's sideways
+     * offset, or a tile's glide to its new place; the window is painted,
+     * damaged and hit there (window_shown_x/y). 0, 0 at rest. */
+    int32_t slide_x, slide_y;
 };
+
+/* Where w's surface's (0, 0) is shown now: (x, y) and its offsets. */
+static inline int32_t window_shown_x(const struct comp_window *w)
+{
+    return w->x + w->slide_x;
+}
+static inline int32_t window_shown_y(const struct comp_window *w)
+{
+    return w->y + w->slide_y;
+}
 
 struct comp_scene {
     int32_t   width, height;       /* the output, in pixels */
@@ -688,10 +701,20 @@ struct comp_window *wm_cycle(struct comp_window *from, bool backward);
 /* A click (a button press) focused w: raise it, as the arrangement wants.
  * Default: window_raise. */
 void wm_clicked(struct comp_window *w);
-/* A button press at output (x, y) that the window manager may take for
- * itself (a title bar, its circles, a frame's edge): true if it did; the
- * press and its release then reach no client. Default: false. */
-bool wm_press(int32_t x, int32_t y, uint32_t button);
+/* A button press at output (x, y), with the modifiers held (INPUT_MOD_*:
+ * every source's), that the window manager may take for itself (a title
+ * bar, its circles, a frame's edge, a gap between tiles, anything with
+ * Super held): true if it did; the press and its release then reach no
+ * client. Default: false. */
+bool wm_press(int32_t x, int32_t y, uint32_t button, uint8_t mods);
+/* Is (x, y) on a gap between tiles a drag resizes (its hit area reaches a
+ * little into the tiles' borders): no client is under the pointer there.
+ * Default: false. */
+bool wm_gap_covers(int32_t x, int32_t y);
+/* The window keys (wmkeys.c, the owner's table): a key press with the
+ * source's modifier byte, true if taken (acted on, and neither it nor its
+ * release reaches a client). Default: false. */
+bool wm_key(uint16_t usage, uint8_t mods);
 /* Super+F (and the full-screen circle, a double-click on the title bar):
  * w full screen, or back. Default: nothing. */
 void wm_toggle_fullscreen(struct comp_window *w);
@@ -718,17 +741,19 @@ status_t testwin_commit(struct comp_surface *s);
 /* ---- window management (wm.c, wmtile.c, wmgrab.c, deco.c) -------------------------------
  *
  * Every toplevel is a window the window manager places: floating (new
- * windows centred, the next one cascaded; moved by the title bar, resized
- * by the edges when the client allows) or tiling (the master and stack
- * layout: the oldest window on the left half, the others stacked on the
- * right; a window that can't resize sits centred in its tile at its own
- * size; tiles have a gap of background between them and at the edges).
- * scene.layout says which; Super+T switches all windows at once, Super+Q
- * asks the focused one to close. The seat's hooks above (wm_cycle,
- * wm_clicked, wm_press, wm_toggle_*, wm_close, wm_focus_changed) are
- * defined in wm.c and wmgrab.c. A window without a toplevel (testwin's:
- * w->wm is NULL) is the seat's alone: no decorations, never placed,
- * cycled after the toplevels. */
+ * windows centred, the next one cascaded; moved by the title bar or
+ * Super+drag, resized by the edges or Super+right-drag when the client
+ * allows) or tiling (dwindle, wmtile.c: each screen's room split in a
+ * binary tree, a new window halving the focused tile along its longer
+ * side; the gaps between tiles dragged to resize them; a window that
+ * can't resize sits centred in its tile at its own size; tiles have a gap
+ * of background between them and at the edges). scene.layout says which
+ * for the current screen; Super+T switches it. The keys are wmkeys.c's.
+ * The seat's hooks above (wm_cycle, wm_clicked, wm_press, wm_key,
+ * wm_toggle_*, wm_close, wm_focus_changed) are defined in wm.c, wmgrab.c
+ * and wmkeys.c. A window without a toplevel (testwin's: w->wm is NULL) is
+ * the seat's alone: no decorations, never placed, cycled after the
+ * toplevels. */
 
 /* Decorations (deco.c sets struct comp_window's deco_*; title.c draws
  * them, look.h says how they look). Floating: the title bar, COMP_TITLE_H
