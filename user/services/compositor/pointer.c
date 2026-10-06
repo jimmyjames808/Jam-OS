@@ -194,8 +194,10 @@ static void move(int16_t dx, int16_t dy)
     pointer_move(&pos, dx, dy);
     cursor.x = pointer_x(&pos);
     cursor.y = pointer_y(&pos);
-    if (cursor.x != ox || cursor.y != oy)
+    if (cursor.x != ox || cursor.y != oy) {
+        cursor.moved = true;   /* a gap under it may light from now on */
         cursor_moved(ox, oy);
+    }
     if (pos.x256 == ox256 && pos.y256 == oy256)
         return;   /* against an edge */
     if (grab_ops) {

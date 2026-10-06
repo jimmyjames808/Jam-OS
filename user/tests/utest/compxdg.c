@@ -2,8 +2,10 @@
  * xdg.c, xdgtop.c), driven over real channels by test clients through
  * libjwl, as comp.c drives the core (comptest.h). The window manager's
  * own decisions are compwm.c's; here, what a client sees of them: the
- * configure and ack sequence, where its pixels land, every protocol error
- * xdg-shell names, and popups dismissed at once.
+ * configure and ack sequence, where its pixels land (a tile whose client
+ * hasn't drawn its new size yet: its last picture clipped or padded in its
+ * colour, xdg_tile_resize), every protocol error xdg-shell names, and
+ * popups dismissed at once.
  *
  * The output is 320x240. Decorations are drawn (title.c, shape.c), so the
  * checks that want the wallpaper (comp_ref.c's) look past them: a floating
@@ -308,12 +310,74 @@ static bool tiling_steps(struct ct_comp *p, struct xc *x)
     CHECK(c.w == 147 && c.h == 224);
     CHECK(ack_commit(x, &a, &c, buffer(x, 600000, c.w, c.h, BLUE)));
     CHECK(pixel(p, 14, 14, BLUE));
-    /* the gap between the tiles (x 157..162), beside its middle: the
-     * pointer starts in the middle of the output, so the gap is lit
-     * (its bar, x 159..161, is apricot) */
+    /* the gap between the tiles (x 157..162): the pointer starts in the
+     * middle of the output, on it, but no mouse has moved it, so the gap
+     * isn't lit (its bar, x 159..161, would be apricot): background */
     CHECK(pixel(p, 158, 100, bg(158, 100)));
-    CHECK(((const volatile uint32_t *)p->image)[100 * W + 160] != bg(160, 100));
+    CHECK(pixel(p, 160, 100, bg(160, 100)));
     return true;
+}
+
+/* A tile resized again and again (another window joining and going), its
+ * client slow to draw the new size: until it does, its last buffer shows,
+ * clipped to the tile (the gap stays the wallpaper) or padded with its
+ * edge's colour (never the wallpaper or black), the tile's border round it. */
+static bool tile_resize_steps(struct ct_comp *p, struct xc *x)
+{
+    struct tl a, b;
+    struct cfg c;
+    CHECK(toplevel(x, &a));
+    CHECK(ack_commit(x, &a, NULL, 0));
+    CHECK(configured(x, &a, &c));
+    CHECK(c.w == W - 16 && c.h == H - 16);
+    CHECK(ack_commit(x, &a, &c, buffer(x, 0, c.w, c.h, RED)));
+    CHECK(pixel(p, 240, 120, RED));
+    uint32_t col = RED;   /* a's picture now */
+    for (int round = 0; round < 3; round++) {
+        /* b joins: a is asked for the left half and doesn't draw it yet */
+        CHECK(toplevel(x, &b));
+        CHECK(ack_commit(x, &b, NULL, 0));
+        struct cfg cb;
+        CHECK(configured(x, &b, &cb));
+        CHECK(ack_commit(x, &b, &cb, buffer(x, 600000, cb.w, cb.h, GREEN)));
+        CHECK(pixel(p, 240, 120, GREEN));
+        CHECK(pixel(p, 80, 120, col));            /* a's old picture, clipped to its tile */
+        CHECK(pixel(p, 159, 120, bg(159, 120)));  /* the gap: none of a's pixels */
+        /* a draws the left half */
+        CHECK(configured(x, &a, &c));
+        CHECK(c.w == 147 && c.h == H - 16);
+        col = col == RED ? BLUE : RED;
+        CHECK(ack_commit(x, &a, &c, buffer(x, 300000, c.w, c.h, col)));
+        CHECK(pixel(p, 80, 120, col));
+        /* b goes: a's tile is the whole room again, and a hasn't drawn it:
+         * its half-wide picture at the tile's left, the rest in its colour */
+        CHECK_ST(jwl_xdg_toplevel_destroy(x->k.c, b.top), OK);
+        CHECK_ST(jwl_xdg_surface_destroy(x->k.c, b.xs), OK);
+        CHECK_ST(jwl_wl_surface_destroy(x->k.c, b.s), OK);
+        CHECK_ST(ct_roundtrip(&x->k), OK);
+        CHECK(pixel(p, 12, 120, col));    /* not moved to the middle */
+        CHECK(pixel(p, 240, 120, col));   /* padded: not the wallpaper */
+        CHECK(pixel(p, 240, H - 12, col));
+        /* a catches up with the whole room */
+        CHECK(configured(x, &a, &c));
+        CHECK(c.w == W - 16 && c.h == H - 16);
+        col = col == RED ? BLUE : RED;
+        CHECK(ack_commit(x, &a, &c, buffer(x, 0, c.w, c.h, col)));
+        CHECK(pixel(p, 240, 120, col));
+    }
+    return true;
+}
+
+bool t_xdg_tile_resize(void)
+{
+    static struct xc x;
+    struct ct_comp p;
+    CHECK(ct_start_arg(&p, W, H, "layout=tiling"));
+    CHECK(xc_open(&p, &x));
+    bool ok = tile_resize_steps(&p, &x);
+    xc_close(&x);
+    CHECK(ct_stop(&p));
+    return ok;
 }
 
 bool t_xdg_tiling(void)

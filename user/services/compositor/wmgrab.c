@@ -148,8 +148,9 @@ void wm_marks_update(void)
     struct tile_gap g;
     if (gap_live())
         bar = tiles_gap(grab.split).bar;
-    else if (grab.kind == GRAB_NONE && !comp.blanked && gap_under(cursor.x, cursor.y, &g))
-        bar = g.bar;
+    else if (grab.kind == GRAB_NONE && !comp.blanked && cursor.moved &&
+             gap_under(cursor.x, cursor.y, &g))
+        bar = g.bar;   /* hovered: not before the mouse first moves (no cursor is drawn) */
     mark_set(&wm_marks.bar, bar);
     if (grab.kind == GRAB_LIFT)   /* the target's frame may have moved under the pointer */
         mark_set(&wm_marks.target, grab.target && grab.target->win

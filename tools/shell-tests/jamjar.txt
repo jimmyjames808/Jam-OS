@@ -1,7 +1,11 @@
 # jamjar, the music player's window (user/apps/jamjar): use
 # tools/jamjar-test.sh (it makes the library on /data/music, adds the
-# audio devices, a USB keyboard and mouse). At OVMF's 1280x800: the mouse
-# targets below are that layout's (`noaccel`: a pixel a count).
+# audio devices, a USB keyboard and mouse). At OVMF's 1280x800, on either
+# boot: the compositor's (jamjar a maximised window under the desktop's
+# strip, the terminal's tile under it) or `nocomp`'s (jamjar borrows the
+# whole screen). The mouse's targets are jamjar's own (its trace says
+# where they are in its window) plus the window's place (a right click,
+# which jamjar only reports, finds it).
 #   1. the self-tests (jamcover's decoder; jamjar's, whose cover helper
 #      crashes and hangs on purpose and is replaced); `run jamjar noplayer`
 #      has no player: it says so, shows the library
@@ -42,6 +46,8 @@ wait {prompt}
 
 # ---- 2: keys ----------------------------------------------------------------------------
 send jamjar trace noaccel
+# where the mouse's targets are in its window (section 3 clicks them)
+wait 30 jamjar: targets: next {nx},{ny}, volume {v0}-{v1} at y {vy}, first track {tx},{ty}
 wait 30 jamjar: library /data/music: 6 artists, 7 albums, 9 tracks
 seen 60 2017_4-44/Kill_Jay_Z.mp3: 640x640 in
 seen 60 2024_Vultures_1/Carnival.mp3: 600x600 in
@@ -125,40 +131,49 @@ wait jamjar: sleep timer off
 sleep 1
 
 # ---- 3: the mouse ------------------------------------------------------------------------
-# Each target is reached from the top-left corner (the pointer is clamped
-# there), a pixel a count. QEMU's mouse sends at most 127 counts a report
-# and merges moves not sent yet, so each move gets time to arrive before
-# the next. The next button's middle is (1064,411).
-monitor mouse_move -3000 -3000
-sleep 1
-monitor mouse_move 1064 411
-sleep 0.6
+# `pointer` puts the mouse on a pixel of the output (from the top-left
+# corner, a pixel a count: serial-feed.py). Where jamjar's window is: a
+# right click in the output's middle (inside jamjar on either boot), which
+# jamjar's trace reports in its own pixels (lx, ly): its window's top-left
+# is (640 - lx, 400 - ly). Its targets (next, the volume slider, the first
+# track row) were in its trace at the start of section 2.
+pointer 640 400
+# (QEMU's mouse_button: 1 left, 2 right, 4 middle)
+monitor mouse_button 2
+sleep 0.15
+monitor mouse_button 0
+wait 10 jamjar: right click {lx},{ly}
+# the next button
+pointer 640-{lx}+{nx} 400-{ly}+{ny}
 monitor mouse_button 1
 sleep 0.15
 monitor mouse_button 0
-wait 10 jamjar: click 1064,411
+wait 10 jamjar: click {nx},{ny}
 wait jamjar: next
-# the volume slider (770..998 x 467..479): a drag from 900 to 840
-monitor mouse_move -3000 -3000
-sleep 1
-monitor mouse_move 900 473
-sleep 0.6
+# the volume slider: a drag from 60 inside its right end, 60 to the left
+pointer 640-{lx}+{v1}-60 400-{ly}+{vy}
 monitor mouse_button 1
 sleep 0.15
-monitor mouse_move -60 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
 sleep 0.3
 monitor mouse_button 0
-wait 10 jamjar: click 900,473
-# a double-click on the first track row (tracks: x 462..696, row 0 y 114..139)
-monitor mouse_move -3000 -3000
-sleep 1
-monitor mouse_move 560 127
-sleep 0.6
+wait 10 jamjar: click {vx},{vy}
+# a double-click on the first track row
+pointer 640-{lx}+{tx} 400-{ly}+{ty}
 monitor mouse_button 1
 monitor mouse_button 0
 monitor mouse_button 1
 monitor mouse_button 0
-wait 10 jamjar: click 560,127
+wait 10 jamjar: click {tx},{ty}
 wait 10 jamjar: play
 sleep 2
 shot jamjar-mouse

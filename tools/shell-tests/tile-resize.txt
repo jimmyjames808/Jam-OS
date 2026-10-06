@@ -1,0 +1,113 @@
+# Two terminals tiled side by side and the gap between them dragged a few
+# pixels at a time, a screenshot after each few steps (tools/resize-test.sh
+# checks them: the bottom of each tile is the terminal's background, never
+# the wallpaper, black or a half-drawn frame). The compositor's boot with a
+# usb-kbd and a usb-mouse, at OVMF's 1280x800: the room x 6..1274, y
+# 46..794; the gap between the two halves at x 637..643, its middle 640.
+wait 120 Jam OS shell
+wait {prompt}
+seen 30 report mouse ready
+seen 30 compositor: keyboard 0627:0001 ready
+usbkeys help\r
+wait {prompt}
+monitor sendkey meta_l-ret
+wait 10 init: terminal 2 opens
+wait 30 Jam OS shell
+wait 10 {prompt}
+sleep 1
+usbkeys help\r
+wait {prompt}
+sleep 1
+shot resize-00
+# press on the gap's middle, then right 6 pixels a step (1:1), a shot every
+# 2 steps (12 pixels): 10 shots to x 760; then back left 4 steps a shot: 10
+# shots to x 520
+pointer 640 400
+sleep 0.3
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-01
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-02
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-03
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-04
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-05
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-06
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-07
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-08
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-09
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+shot resize-10
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-11
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-12
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-13
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-14
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-15
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-16
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-17
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-18
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-19
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+shot resize-20
+monitor mouse_button 0
+sleep 1
+shot resize-21
+send reboot -f
+wait reboot: resetting

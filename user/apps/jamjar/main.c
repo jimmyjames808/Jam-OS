@@ -109,6 +109,21 @@ static bool animate(struct app *a, uint64_t t, float dt)
            a->searching || (a->toast[0] && t - a->toast_at < TOAST_NS + NS_PER_S);
 }
 
+/* trace: where the mouse's targets are in the window (the layout's, in
+ * its own pixels), for tools/shell-tests/jamjar.txt's clicks: the next
+ * button's middle, the volume slider across at its middle, the first
+ * track row's middle. Said again for every new layout. */
+static void say_targets(const struct app *a)
+{
+    const struct layout *lo = &a->lo;
+    const struct rect *n = &lo->btn[BTN_NEXT], *t = &lo->list[COL_TRACK];
+    if (!a->trace)
+        return;
+    say("jamjar: targets: next %d,%d, volume %d-%d at y %d, first track %d,%d\n",
+        n->x + n->w / 2, n->y + n->h / 2, lo->vol.x, lo->vol.x + lo->vol.w - 1,
+        lo->vol.y + lo->vol.h / 2, t->x + t->w / 2, t->y + lo->row_h / 2);
+}
+
 /* Keys and mouse reports until the deadline (the first wait), then
  * whatever else is queued. */
 static void input(struct app *a, uint64_t deadline)
@@ -120,6 +135,7 @@ static void input(struct app *a, uint64_t deadline)
             app_mouse(a, &m);
         } else if (k == KEY_RESIZE) {   /* its window took a new size (gfx_resizable) */
             layout_make(&a->lo, scr.w, scr.h, scr.ui);
+            say_targets(a);
             if (a->view_ok)
                 view_scroll(&a->view, a->lo.rows);
         } else {
@@ -172,6 +188,7 @@ static int run(int argc, char **argv)
         say("jamjar: the bars: the line at y %d, bar 0 at x %d-%d, bar %d at x %d-%d\n", y, x0,
             x1, BARS - 1, x2, x3);
     }
+    say_targets(a);
     uint64_t last = now(), frames = 0, t0 = last, draw_ns = 0;
     while (!a->quit) {
         uint64_t t = now();

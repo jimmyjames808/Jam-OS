@@ -13,8 +13,13 @@
  * floating builds its tree in the windows' order, each splitting the last.
  * t_wm_tile_gaps: a gap takes presses 12 pixels across centred on it (not
  * under a maximised window), shows the resize arrows and its bar lit while
- * hovered or dragged; dragging it resizes both sides live, with no glide,
- * clamped; stacked gaps too.
+ * hovered (not before a mouse first moves the pointer, which starts on the
+ * first two tiles' gap) or dragged; dragging it resizes both sides live,
+ * with no glide, clamped; stacked gaps too.
+ * t_wm_tile_float: windows that have only ever tiled (or been maximised),
+ * switched to floating, are asked for 60% of the room under the strip
+ * each way, as their limits allow and never more than the room, and
+ * centred and cascaded for that size; they keep it across another switch.
  * t_wm_tile_push: Super+Alt+direction (H/J/K/L and the arrows alike)
  * pushes the focused tile's edge 48 pixels that way, or with no edge
  * there its other edge, gliding; a floating window grows or shrinks by its
@@ -177,7 +182,12 @@ static bool gap_hover_steps(void)
      * short at either end (788 * 0.15 = 118) */
     cursor.x = 640;
     cursor.y = 400;
+    cursor.moved = false;   /* where it starts (the output's middle): no mouse has moved it */
     damage_clear(&scene.damage);
+    wm_marks_update();
+    CHECK(box_empty(wm_marks.bar));
+    CHECK_EQ(scene.damage.n, 0);
+    cursor.moved = true;
     wm_marks_update();
     CHECK(box_eq(wm_marks.bar, ((struct comp_box){ 639, 124, 642, 676 })));
     CHECK(scene.damage.n > 0);
@@ -298,6 +308,109 @@ static bool push_floating_steps(void)
     CHECK(wm_test_key(U_L, U_RIGHT_ALT));
     CHECK_EQ(fks[1].nconf, n);
     return true;
+}
+
+/* ---- a tile's floating size ------------------------------------------------------------- */
+
+/* Window i's frame wholly on the output, its top at floor or below. */
+static bool on_output(unsigned i, int32_t floor)
+{
+    struct comp_box f = window_frame(win(i));
+    if (f.x1 < 0 || f.y1 < floor || f.x2 > OUT_W || f.y2 > OUT_H)
+        FAIL("window %u's frame is %d,%d..%d,%d", i, f.x1, f.y1, f.x2, f.y2);
+    return true;
+}
+
+static bool tile_float_steps(void)
+{
+    /* five tiles: two of no limits, one of one size, one of max width 500
+     * and min height 600, one of min width 2000 */
+    for (unsigned i = 0; i < 5; i++) {
+        CHECK(fk_open(&fks[i], 320, 200, i == 2));
+        seat_focus(win(i));
+    }
+    wm_set_limits(fks[3].ww, 0, 600, 500, 0);
+    wm_set_limits(fks[4].ww, 2000, 0, 0, 0);
+    anim_finish();
+    for (unsigned i = 0; i < 5; i++)
+        CHECK(fk_draw(&fks[i]));
+    /* floating: none has a floating size of its own, so each is asked for
+     * 60% of the room (1278x771 inside a frame: 766x462), as its limits
+     * allow and never more than the room, and centred for it (two of one
+     * size cascade), before it draws */
+    wm_toggle_layout();
+    CHECK_EQ(fks[0].cfg.width, 766);
+    CHECK_EQ(fks[0].cfg.height, 462);
+    AT(0, (OUT_W - 766) / 2, (OUT_H - 462) / 2);
+    CHECK_EQ(fks[1].cfg.width, 766);
+    CHECK_EQ(fks[1].cfg.height, 462);
+    AT(1, (OUT_W - 766) / 2 + COMP_TITLE_H + DECO_BORDER, (OUT_H - 462) / 2 + COMP_TITLE_H + DECO_BORDER);
+    CHECK_EQ(fks[2].cfg.width, 320);      /* its one size */
+    CHECK_EQ(fks[2].cfg.height, 200);
+    CHECK_EQ(fks[3].cfg.width, 500);
+    CHECK_EQ(fks[3].cfg.height, 600);
+    AT(3, (OUT_W - 500) / 2, (OUT_H - 600) / 2);
+    CHECK_EQ(fks[4].cfg.width, OUT_W - 2 * DECO_OUTLINE);   /* the room, not 2000 */
+    CHECK_EQ(fks[4].cfg.height, 462);
+    for (unsigned i = 0; i < 5; i++) {
+        CHECK(fk_draw(&fks[i]));
+        CHECK(on_output(i, 0));
+    }
+    AT(0, (OUT_W - 766) / 2, (OUT_H - 462) / 2);   /* where it was put for that size */
+    /* tiling and back: each where and as big as it floated */
+    struct comp_box was = window_surface_box(win(0));
+    wm_toggle_layout();
+    anim_finish();
+    wm_toggle_layout();
+    CFG(0, 766, 462, 0);
+    CHECK(fk_draw(&fks[0]));
+    CHECK(box_eq(window_surface_box(win(0)), was));
+    return true;
+}
+
+/* A window maximised before its first buffer, on a floating screen, then
+ * not: 60% of the room, centred (not the maximised size it drew). */
+static bool maximised_float_steps(void)
+{
+    wm_test_start(COMP_FLOATING);
+    CHECK(fk_open_max(&fks[0], 320, 200));
+    CHECK(win(0)->flags & COMP_WIN_MAXIMIZED);
+    CHECK_EQ(fks[0].s.height, OUT_H - COMP_TITLE_H);
+    wm_request_maximized(fks[0].ww, false);
+    CHECK_EQ(fks[0].cfg.width, 766);
+    CHECK_EQ(fks[0].cfg.height, 462);
+    CHECK(fk_draw(&fks[0]));
+    AT(0, (OUT_W - 766) / 2, (OUT_H - 462) / 2);
+    CHECK(on_output(0, 0));
+    return true;
+}
+
+/* With the desktop on: 60% of the room under the strip, the frame below it. */
+static bool strip_float_steps(void)
+{
+    desk_test_start(COMP_TILING);
+    CHECK(fk_open(&fks[0], 320, 200, false));
+    anim_finish();
+    CHECK(fk_draw(&fks[0]));
+    int32_t floor = wm_floor(fks[0].ww);
+    CHECK(floor > 0);
+    wm_toggle_layout();
+    CHECK_EQ(fks[0].cfg.height, (OUT_H - floor - COMP_TITLE_H - DECO_OUTLINE) * 60 / 100);
+    CHECK(fk_draw(&fks[0]));
+    CHECK(on_output(0, floor));
+    return true;
+}
+
+bool t_wm_tile_float(void)
+{
+    wm_test_start(COMP_TILING);
+    bool ok = tile_float_steps();
+    fk_close_all();
+    ok = ok && maximised_float_steps();
+    fk_close_all();
+    ok = ok && strip_float_steps();
+    fk_close_all();
+    return ok;
 }
 
 bool t_wm_tile_push(void)
