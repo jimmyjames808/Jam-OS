@@ -366,10 +366,7 @@ int main(int argc, char **argv)
         cols - PROMPT_W - 1 < LINE_MAX)
         line_max = cols - PROMPT_W - 1;
     sh_init();
-    /* Terminal 1 has the boot log above the banner: a blank line between;
-     * another terminal starts empty, so its banner is its first line. */
-    echo("%s\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n",
-         sh_term_no == 1 ? "\n" : "");
+    echo("\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
     const char *note = sh_boot_note();   /* after a panic: what happened to that boot */
     if (note[0])
         echo("\033[93m%s\033[0m\n", note);
