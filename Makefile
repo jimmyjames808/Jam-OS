@@ -413,7 +413,8 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # the animations' clock, the strip's layout, the menus, popovers and
 # notifications, desk.c; none of their drawing), and the console's window
 # mode's pure parts (utest/conwin.c, conpaint.c:
-# wlinput.c, cellpaint.c, view.c and their console.h).
+# wlinput.c, cellpaint.c, view.c and their console.h), and the shell's
+# bracketed paste (utest/shpaste.c: sh_paste.c and sh_paste.h).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -428,10 +429,11 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                         wmgrab deco title mask screens anim strip menus popover notify desk \
                         cursors) \
                       $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
-                        cellpaint view) \
+                        cellpaint view) $(UOBJ)/user/services/shell/sh_paste.c.o \
                       $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \
+                      -iquote user/services/shell \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
                       -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) -Iuser/apps/fun

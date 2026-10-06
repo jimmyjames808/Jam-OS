@@ -507,6 +507,8 @@ bool t_conpaint_cells(void);
 bool t_conpaint_bold(void);
 bool t_conpaint_blocks(void);
 bool t_conpaint_bitmap(void);
+/* shpaste.c: the shell's bracketed paste (sh_paste.c). */
+bool t_sh_paste(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
  * a pool, a buffer and a surface, then crashes. */
 int  comp_child(int argc, char **argv);

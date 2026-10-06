@@ -966,6 +966,7 @@ static const struct {
     { "conpaint_bold", t_conpaint_bold },
     { "conpaint_blocks", t_conpaint_blocks },
     { "conpaint_bitmap", t_conpaint_bitmap },
+    { "sh_paste", t_sh_paste },
     { "conwin_keys", t_conwin_keys },
     { "conwin_pointer", t_conwin_pointer },
     { "conwin_pointer_shape", t_conwin_pointer_shape },

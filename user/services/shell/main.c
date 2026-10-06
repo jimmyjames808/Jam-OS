@@ -9,7 +9,9 @@
  * own line editing: left/right/home/end, backspace/delete, Ctrl+A/E/U,
  * Ctrl+C (cancel the line, or kill what `run` started), Ctrl+L (clear),
  * up/down for the history. The line is redrawn with \r and ESC [ K, which
- * the console and serial terminals both understand.
+ * the console and serial terminals both understand. It asks the terminal
+ * for bracketed paste (ESC [ ? 2004 h) and takes pasted text onto the line
+ * without running it, line breaks as spaces (sh_paste.c).
  *
  * The prompt is `jam:<cwd>> ` ("jam:/data/music> "): "jam" and the current
  * directory each in a colour of the console's 16 (term.c, cellpaint.c's
@@ -25,6 +27,7 @@
 #include <idl/initctl.h>
 #include <wants.h>
 #include "sh_core.h"
+#include "sh_paste.h"
 
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("mount * rw\n"
@@ -41,6 +44,8 @@ JAM_WANTS("mount * rw\n"
 #define C_DIR     "\033[94m"   /* the directory: bright blue, its nearest to blackcurrant */
 #define C_PLAIN   "\033[0m"
 #define DIR_MIN   12            /* the directory's room in the prompt: half the row, at least this */
+#define PASTE_GAP_NS (2 * NS_PER_S)   /* a bracketed paste's keys: the longest wait for the next */
+#define MARK_GAP_NS  (100 * NS_PER_MS) /* after an Escape: the longest wait for a marker's next key */
 
 static handle_t con, keys;
 unsigned sh_term_no = 1;
@@ -313,17 +318,94 @@ static void next_key(struct input_key_event *ev, const struct edit *e)
     sh_get_key(ev, DEADLINE_NEVER);
 }
 
+/* ---- bracketed paste (sh_paste.c) ------------------------------------------------ */
+
+/* Keys typed after an Escape that were not a paste marker, to be taken as
+ * typed (the line editor's next keys). */
+static struct input_key_event replay[SH_PASTE_MARK_LEN];
+static unsigned nreplay, ireplay;
+
+/* k[0] is an Escape: the keys after it, as far as a marker goes (each
+ * within gap). Returns how many of k are filled, *kind what they are. */
+static unsigned marker_keys(struct input_key_event *k, uint64_t gap, enum sh_paste_mark *kind)
+{
+    unsigned n = 1;
+    *kind = sh_paste_marker(k, 1);
+    while (*kind == SH_PASTE_MORE && n < SH_PASTE_MARK_LEN && sh_get_key(&k[n], now() + gap))
+        *kind = sh_paste_marker(k, ++n);
+    if (*kind == SH_PASTE_MORE)
+        *kind = SH_PASTE_NO;   /* the keys stopped part way */
+    return n;
+}
+
+/* A pasted key onto the line at the cursor (no echo: the line is redrawn). */
+static void paste_insert(struct edit *e, const struct input_key_event *k)
+{
+    char c = sh_paste_byte(k);
+    if (!c || e->len >= line_max)
+        return;   /* dropped: not a character the line holds, or the line is full */
+    memmove(e->line + e->pos + 1, e->line + e->pos, e->len - e->pos);
+    e->line[e->pos++] = c;
+    e->len++;
+}
+
+/* Pasted text, up to its end marker (or a pause of PASTE_GAP_NS: what came
+ * stays), onto the line. Bounded by what the console pastes. */
+static void take_paste(struct edit *e)
+{
+    struct input_key_event k[SH_PASTE_MARK_LEN];
+    while (sh_get_key(&k[0], now() + PASTE_GAP_NS)) {
+        enum sh_paste_mark kind = SH_PASTE_NO;
+        unsigned n = sh_paste_is_esc(&k[0]) ? marker_keys(k, PASTE_GAP_NS, &kind) : 1;
+        if (kind == SH_PASTE_END)
+            return;
+        for (unsigned i = 0; i < n; i++)
+            paste_insert(e, &k[i]);
+    }
+}
+
+/* An Escape came: a paste's start (taken now: true), or keys to take as
+ * typed, which replay hands out next. */
+static bool paste_or_keys(struct edit *e, const struct input_key_event *esc)
+{
+    struct input_key_event k[SH_PASTE_MARK_LEN];
+    k[0] = *esc;
+    enum sh_paste_mark kind;
+    unsigned n = marker_keys(k, MARK_GAP_NS, &kind);
+    if (kind == SH_PASTE_BEGIN) {
+        take_paste(e);
+        return true;
+    }
+    memcpy(replay, k + 1, (n - 1) * sizeof(k[0]));   /* the Escape itself does nothing */
+    nreplay = n - 1;
+    ireplay = 0;
+    return false;
+}
+
 /* Read one line into buf (NUL-terminated). */
 static void read_line(char *buf)
 {
+    static bool asked;
     struct edit e = { .len = 0 };
     sh_jobs_report();   /* the background programs that ended */
     set_prompt();       /* the directory may have changed */
+    if (!asked)   /* once: the console keeps it for this shell's channel (term.c) */
+        echo("\033[?2004h");
+    asked = true;
     echo("%s", prompt);
     sh_flush();
     for (;;) {
         struct input_key_event ev;
-        next_key(&ev, &e);
+        if (ireplay < nreplay)
+            ev = replay[ireplay++];
+        else
+            next_key(&ev, &e);
+        if (sh_paste_is_esc(&ev) && ireplay >= nreplay) {
+            if (paste_or_keys(&e, &ev))
+                redraw(&e);
+            sh_flush();
+            continue;
+        }
         uint16_t u = ev.usage;
         if (u == U_ENTER || u == U_KP_ENTER ||
             (!u && (ev.codepoint == '\n' || ev.codepoint == '\r'))) {
