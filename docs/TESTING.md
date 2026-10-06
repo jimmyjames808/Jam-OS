@@ -1139,6 +1139,7 @@ clock fixed (`user/tests/utest/compdesk.c`, `compdesk2.c`):
 | `desk_search` | Super tapped alone (not with another key or a click) toggles it; typing filters, the run row; arrows, Backspace; Enter runs the app (`ctl_launch`) or the command (`ctl_run_in_terminal`); a click on a row; its place |
 | `desk_popover` | each popover 2 pixels under the strip, its right edge on its icon's, one at a time, closed by its icon, Esc or a click elsewhere; the volume slider by a click and a drag; the calendar Monday first (leap years) |
 | `desk_notify` | cards stacked from under the strip, the newest on top; the plain one goes after 5 s, the one with buttons stays until a button (`ctl_notify_answered`); a click sends a plain card; at most 5 |
+| `desk_overlay` | a full-screen window whose client takes no keys (the splash's) is a boot overlay: no screen or dot of its own, no chip, no Alt+Tab row, never cycled to, not minimised; the whole output over the strip (hidden under it) and every window focused or opened after it; screens change under it without moving it; its fade (200 ms, over the strip, its box only) ends with the strip back and its snapshot freed; out of full screen it is a window on the current screen; a client with keys still gets a screen of its own |
 
 With the real seat (`user/tests/utest/compwmseat.c`, bin/compositor
 headless), `wm_seat_cursors` checks the cursor drawn over a window's edges,
@@ -1146,7 +1147,13 @@ corner and circles, and pixel for pixel over its surface, and a client
 asking for the text bar and the hand through wp-cursor-shape-v1 (a stale
 serial ignored, a shape there isn't an error). The other compositor tests
 that start it headless pass `nodesk` (`comptest.h`): the window manager
-alone, the whole output the windows'.
+alone, the whole output the windows'; `comp_screen_on_top` runs both ways
+(a boot overlay over a window that takes the keys: a click where the strip
+is reaches it, the keys stay the window's, before and after it goes).
+`comp_paint_overlay` paints it in the test scene (`top=...,F`, `close=`,
+`animate`, `tick=`): its own pixels on all of the output, copied straight
+from its buffer; half-way through its fade neither picture; at the end
+exactly the desktop without it.
 
 ## The other tools
 

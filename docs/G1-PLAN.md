@@ -1165,6 +1165,21 @@ A full-screen window whose client takes no keys stays over a window that
 takes the focus after it (focus.c), so the first terminal's window,
 mapped after the splash's on a busy machine, comes up under it.
 
+**As built: the splash as a boot overlay (after I1, the owner's fix).** A
+full-screen window whose client takes no keys (the splash's) is not an app
+to switch between, so it gets no virtual screen: it is a boot overlay
+(`screens.c`), on no screen and over whichever is current, covering the
+whole output, the strip included (the strip is not laid out under it), and
+every window (`COMP_WIN_OVERLAY`: `scene.c` puts a window raised or made
+after it underneath); no screen dot, chip, Alt+Tab row or slide; never the
+keys, so typing reaches the first terminal as before. When it goes (its
+client closes the window or exits) it fades out over 200 ms
+(`anim_fade`, `LOOK_ANIM_FADE_MS`) over the strip to what is under it,
+only its box damaged; while it is up and opaque the full-screen direct copy
+still paints it. A window whose client has a keyboard still goes full
+screen on a screen of its own. Tests: utest's `desk_overlay`,
+`comp_paint_overlay` and `comp_screen_on_top` (desktop off and on).
+
 **Order and parallel work:**
 
 1. After the owner's answers: **P0, W1, W2, K1 and KM** together (P0 goes
