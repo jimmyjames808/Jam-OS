@@ -74,7 +74,8 @@ struct wm_window {
     uint32_t shown;                /* WM_ST_* the shown buffer was drawn for */
     bool float_placed;             /* float_x, float_y are set */
     int32_t float_x, float_y;      /* floating: where the surface's (0, 0) goes */
-    int32_t float_w, float_h;      /* floating: its size to ask for; 0: the client's own */
+    int32_t float_w, float_h;      /* floating: its size to ask for; 0: the client's own
+                                    * (a mapped window with none: wm.c's float_default) */
     uint32_t anchor;               /* WM_EDGE_LEFT/TOP: a resize keeps the opposite side still */
     int32_t anchor_x2, anchor_y2;  /* ... that side: the surface's right or bottom edge */
     bool resizing;                 /* a resize grab is on it */

@@ -21,16 +21,25 @@
 # roulette, the full jar, the sleep timer, mouse clicks on a button, the
 # volume, the jam and a track row; quits, and the music must still be
 # playing (`music status`). Screenshots: <outdir>/jamjar-*.png.
+# The boot is the default one, the compositor's (jamjar a window: the
+# script finds where and clicks in it); JAMJAR_NOCOMP=1 boots `nocomp`
+# instead (jamjar borrows the console's screen; the same script, its runs
+# named jamjar-nocomp, jamjar-hd-nocomp).
 # QEMU_SMP passes through. Usage: tools/jamjar-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1
 mkdir -p "$out"
 name=jamjar
 script=tools/shell-tests/jamjar.txt
+words=shell
 if [ "${JAMJAR_HD:-}" = 1 ]; then
     name=jamjar-hd
     script=tools/shell-tests/jamjar-hd.txt
     QEMU_EXTRA_VGA="-vga none -device VGA,xres=2560,yres=1440,vgamem_mb=64"
+fi
+if [ "${JAMJAR_NOCOMP:-}" = 1 ]; then
+    name=$name-nocomp
+    words="shell nocomp"
 fi
 wav="$out/$name.wav"
 stick="$out/$name-stick.img"
@@ -219,27 +228,34 @@ ok=1
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_IMAGE="$stick" \
     QEMU_EXTRA="${QEMU_EXTRA:-} ${QEMU_EXTRA_VGA:-} $devs" \
     QEMU_USB="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3" \
-    QEMU_INPUT=$script tools/qemu-test.sh "$out" "$name" shell > "$out/$name.out" 2>&1 ||
+    QEMU_INPUT=$script tools/qemu-test.sh "$out" "$name" $words > "$out/$name.out" 2>&1 ||
     { echo "jamjar: the script failed"; grep "serial-feed: .*no '" "$out/$name.out" || true; ok=0; }
 rm -f "$stick"
 log="$out/$name.log"
 # What the trace said, for the report.
 tr -d '\r' < "$log" | grep -aE "jamjar: (spectrum|frames|library|cover)" | head -20 || true
-# The calibration shot: the bars' place from the trace; the left's 1 kHz
-# bar (34) up only, the right's 4 kHz bar (49) down only.
+# The calibration shot: the bars' place from the trace (in jamjar's own
+# pixels: moved by its window's place, which jamjar.txt's right click in
+# the output's middle, 640,400, found); the left's 1 kHz bar (34) up
+# only, the right's 4 kHz bar (49) down only.
 tone="$out/jamjar-tone.png"
 if [ $ok = 1 ] && [ -f "$tone" ]; then
-    where=$(tr -d '\r' < "$log" | grep -a "jamjar: the bars: " | head -1)
-    python3 - "$tone" "$where" <<'PY' || { echo "jamjar: the calibration shot is wrong"; ok=0; }
+    where=$(tr -d '\r' < "$log" | grep -a "jamjar: the bars: " | tail -1)
+    probe=$(tr -d '\r' < "$log" | grep -a "jamjar: right click " | tail -1)
+    python3 - "$tone" "$where" "$probe" <<'PY' || { echo "jamjar: the calibration shot is wrong"; ok=0; }
 import re, sys
 from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 m = re.search(r"line at y (\d+), bar 0 at x (\d+)-(\d+), bar 63 at x (\d+)-(\d+)", sys.argv[2])
-if not m:
-    sys.exit("no 'the bars' line in the log")
+p = re.search(r"right click (-?\d+),(-?\d+)", sys.argv[3])
+if not m or not p:
+    sys.exit("no 'the bars' or 'right click' line in the log")
+wx, wy = 640 - int(p.group(1)), 400 - int(p.group(2))
+print("jamjar: its window's top-left at %d,%d" % (wx, wy))
 mid, a0, a1, b0 = (int(m.group(k)) for k in (1, 2, 3, 4))
+mid, a0, a1, b0 = mid + wy, a0 + wx, a1 + wx, b0 + wx
 pitch = (b0 - a0) / 63.0
-bg = im.getpixel((2, mid - 20))
+bg = im.getpixel((wx + 2, mid - 20))
 def lit(x, ys):
     return sum(1 for y in ys if max(abs(p - q) for p, q in zip(im.getpixel((x, y)), bg)) > 24)
 def col(i):

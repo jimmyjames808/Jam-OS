@@ -44,31 +44,34 @@ static int32_t labelled(const struct tile_buf *t, int32_t y, const char *label, 
     return y + LABEL_H + LOOK_POP_LINE;
 }
 
-/* A label on the left, its value on the right; the next y. */
+/* A label on the left, its value on the right (a long one cut short, a
+ * gap after the label, never over it); the next y. */
 static int32_t key_value(const struct tile_buf *t, int32_t y, const char *key, const char *value)
 {
     struct comp_box l = pline(y, LOOK_POP_LINE);
     ui_text(t, l, desk_font.r11, LOOK_MUTED, false, key);
     int32_t w = desk_text_w(desk_font.r12, value);
-    ui_text(t, (struct comp_box){ l.x2 - w, l.y1, l.x2, l.y2 }, desk_font.r12, LOOK_INK, false,
-            value);
+    int32_t from = l.x1 + desk_text_w(desk_font.r11, key) + LOOK_POP_PCT_GAP;
+    ui_text(t, (struct comp_box){ l.x2 - w > from ? l.x2 - w : from, l.y1, l.x2, l.y2 },
+            desk_font.r12, LOOK_INK, false, value);
     return y + LOOK_POP_LINE;
 }
 
 static void volume(const struct tile_buf *t)
 {
     int32_t y = pop.box.y1 + LOOK_POP_PAD;
-    struct comp_box l = pline(y, LOOK_POP_LINE), s = pop_slider_box();
+    struct comp_box l = pline(y, LOOK_POP_LINE), s = pop_slider_box(), p = pop_pct_box();
     ui_icon(t, (struct comp_box){ l.x1, y + 2, l.x1 + 16, y + 18 }, UI_VOLUME, LOOK_INK);
     int32_t mid = (s.y1 + s.y2) / 2, fill = s.x1 + (s.x2 - s.x1) * (int32_t)pop.volume / 100;
+    const int32_t k = LOOK_POP_KNOB;
     ui_round(t, (struct comp_box){ s.x1, mid - 2, s.x2, mid + 2 }, 2, LOOK_SLIDER_OFF, 255);
     ui_round(t, (struct comp_box){ s.x1, mid - 2, fill, mid + 2 }, 2, LOOK_SLIDER_ON, 255);
-    ui_round(t, (struct comp_box){ fill - 7, mid - 7, fill + 7, mid + 7 }, 7, LOOK_SLIDER_ON, 255);
+    ui_round(t, (struct comp_box){ fill - k, mid - k, fill + k, mid + k }, k, LOOK_SLIDER_ON, 255);
     char pct[8];
     snprintf(pct, sizeof(pct), "%u%%", pop.volume);
-    int32_t w = desk_text_w(desk_font.r12, pct);
-    ui_text(t, (struct comp_box){ l.x2 - w, y, l.x2, y + LOOK_POP_LINE }, desk_font.r12, LOOK_INK,
-            false, pct);
+    int32_t w = desk_text_w(desk_font.r12, pct);   /* right-aligned in its slot */
+    ui_text(t, (struct comp_box){ p.x2 - w, p.y1, p.x2, p.y2 }, desk_font.r12, LOOK_INK, false,
+            pct);
     y = divide(t, y + LOOK_POP_LINE);
     y = labelled(t, y, "Output", pop.output);
     y = divide(t, y);

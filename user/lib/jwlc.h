@@ -83,10 +83,13 @@ struct jwl_window {
     uint32_t ack_serial;
     int32_t  width, height;           /* the size to draw at */
     uint32_t states;
-    /* buffers: two slots of slot_bytes each in pool */
+    /* buffers: two slots of slot_bytes each in pool, from base */
     struct jwl_pool   *pool;
     struct jwl_buffer *buf[2];
     uint64_t slot_bytes;
+    uint64_t base;
+    uint64_t shown_lo, shown_hi;      /* the bytes of the buffer last committed (the
+                                       * compositor's picture): a new size's slots avoid them */
     int      began;                   /* the slot jwl_window_begin gave; -1: none */
     int      shown;                   /* the slot last presented; -1: none */
     bool     rebuilt;                 /* made again after a reconnect, not configured since */

@@ -17,10 +17,13 @@
  * take sizes. Within 1 to JWL_SIZE_MAX.
  *
  * Buffers: two slots of one pool of the window's, each a whole number of
- * pages, slot i at i * slot_bytes. A slot's buffer is made when first
- * handed out at a size; a new size destroys both and grows the pool if it
- * must (the compositor may show the old picture's pixels being
- * overwritten for that one frame).
+ * pages, slot i at base + i * slot_bytes. A slot's buffer is made when
+ * first handed out at a size; a new size destroys both and puts the new
+ * slots clear of the bytes of the buffer the compositor shows (base 0 if
+ * they fit before it, else just after it), growing the pool if it must:
+ * the compositor keeps showing the old picture whole until the commit of
+ * the new size (a window being resized never shows a half-drawn frame).
+ * The pool is then at most a few slots of the largest size.
  *
  * After a reconnect the window is made again (title, sizes, states) and
  * its first configure shows its last buffer again with all of it damaged,
@@ -207,23 +210,42 @@ static void drop_buffers(struct jwl_window *w)
     w->began = w->shown = -1;
 }
 
+/* A slot's bytes at the window's size: a whole number of pages. */
+static uint64_t slot_size(const struct jwl_window *w)
+{
+    uint64_t px = (uint64_t)w->width * 4 * (uint64_t)w->height;
+    return (px + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+}
+
+/* A new size: both buffers go, and the new slots go where the picture the
+ * compositor shows isn't (at the pool's start if they fit before it, else
+ * after it), so its pixels stay as they are until the commit of the new
+ * size replaces them: no frame shows it half drawn over. */
+static void resize_buffers(struct jwl_window *w)
+{
+    uint64_t lo = w->shown_lo, hi = w->shown_hi;
+    drop_buffers(w);
+    w->base = hi > lo && 2 * slot_size(w) > lo ? hi : 0;
+}
+
 /* Slot i's buffer at the window's size, made if it isn't. */
 static status_t slot_buffer(struct jwl_window *w, unsigned i)
 {
     if (w->buf[i])
         return OK;
     int32_t stride = w->width * 4;
-    uint64_t slot = ((uint64_t)stride * (uint64_t)w->height + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint64_t slot = slot_size(w), need = w->base + 2 * slot;
     status_t st = OK;
     if (!w->pool)
-        st = jwl_pool_create(w->c, 2 * slot, &w->pool);
-    else if (jwl_pool_size(w->pool) < 2 * slot)
-        st = jwl_pool_grow(w->pool, 2 * slot);
+        st = jwl_pool_create(w->c, need, &w->pool);
+    else if (jwl_pool_size(w->pool) < need)
+        st = jwl_pool_grow(w->pool, need);
     if (st != OK)
         return st;
     w->slot_bytes = slot;
     uint32_t fmt = w->alpha ? JWL_WL_SHM_FORMAT_ARGB8888 : JWL_WL_SHM_FORMAT_XRGB8888;
-    return jwl_buffer_create(w->pool, i * slot, w->width, w->height, stride, fmt, &w->buf[i]);
+    return jwl_buffer_create(w->pool, w->base + i * slot, w->width, w->height, stride, fmt,
+                             &w->buf[i]);
 }
 
 static void frame_of(const struct jwl_window *w, unsigned i, struct jwl_frame *out)
@@ -239,10 +261,9 @@ status_t jwl_window_begin(struct jwl_window *w, struct jwl_frame *out)
 {
     if (!w->configured)
         return ERR_BAD_STATE;
-    if (w->buf[0] && (w->buf[0]->width != w->width || w->buf[0]->height != w->height))
-        drop_buffers(w);
-    if (w->buf[1] && (w->buf[1]->width != w->width || w->buf[1]->height != w->height))
-        drop_buffers(w);
+    for (int i = 0; i < 2; i++)
+        if (w->buf[i] && (w->buf[i]->width != w->width || w->buf[i]->height != w->height))
+            resize_buffers(w);
     int pick = -1;
     for (int i = 0; i < 2; i++) {
         bool free_slot = !w->buf[i] || !w->buf[i]->busy;
@@ -328,6 +349,8 @@ static status_t show(struct jwl_window *w, unsigned slot, const struct jwl_rect 
     if (st == OK) {
         w->buf[slot]->busy = true;
         w->shown = (int)slot;
+        w->shown_lo = w->base + slot * w->slot_bytes;   /* kept across a new size's drop */
+        w->shown_hi = w->shown_lo + w->slot_bytes;
         st = jwl_conn_flush(k);
     }
     return st;

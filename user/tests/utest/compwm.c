@@ -274,6 +274,18 @@ bool fk_open_full(struct fk *f, struct comp_client *cl)
     return fk_draw(f);
 }
 
+bool fk_open_max(struct fk *f, int32_t w, int32_t h)
+{
+    memset(f, 0, sizeof(*f));
+    f->s.client = &fake_client;
+    f->s.input_all = true;
+    f->own_w = w;
+    f->own_h = h;
+    CHECK((f->ww = wm_create(&f->s, &fk_ops, f)) != NULL);
+    wm_request_maximized(f->ww, true);   /* before its first buffer, as libfun asks */
+    return fk_draw(f);
+}
+
 void fk_close_all(void)
 {
     for (unsigned i = 0; i < FK_MAX; i++)

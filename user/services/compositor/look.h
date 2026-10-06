@@ -228,6 +228,8 @@ static const struct look_glow look_glows[LOOK_GLOWS] = {
 #define LOOK_POP_DIV          9          /* space above and below a divider */
 #define LOOK_POP_LINE         20         /* a line of a popover's text */
 #define LOOK_POP_BIG_PX       17         /* the clock's time */
+#define LOOK_POP_KNOB         7          /* the volume slider's knob's radius (past its ends) */
+#define LOOK_POP_PCT_GAP      10         /* between the knob at 100% and the percentage's slot */
 #define LOOK_SLIDER_ON        0xd4537eu  /* the volume slider's filled part: raspberry */
 #define LOOK_SLIDER_OFF       0x4a5058u
 #define LOOK_LIVE             0x97c459u  /* "Connected": leaf green */

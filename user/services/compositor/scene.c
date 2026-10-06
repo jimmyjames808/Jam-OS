@@ -49,7 +49,19 @@ void scene_damage_over(struct comp_box b)
 
 struct comp_box window_surface_box(const struct comp_window *w)
 {
+    if (w->view_w > 0 && w->view_h > 0)
+        return box_make(window_shown_x(w), window_shown_y(w), w->view_w, w->view_h);
     return box_make(window_shown_x(w), window_shown_y(w), w->surface->width, w->surface->height);
+}
+
+void window_view(struct comp_window *w, int32_t view_w, int32_t view_h)
+{
+    if (w->view_w == view_w && w->view_h == view_h)
+        return;
+    window_damage(w);
+    w->view_w = view_w;
+    w->view_h = view_h;
+    window_damage(w);
 }
 
 struct comp_box window_frame(const struct comp_window *w)
