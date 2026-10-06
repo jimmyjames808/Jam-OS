@@ -205,7 +205,8 @@ Every driver and service is a userspace process from the start.
   keyboards and the mouse (devmgr's HID drivers) and serialin are the
   compositor's input sources; Ctrl+Alt+Del and Super+Enter (another
   terminal) are its keys, which it asks init for; Super+T switches
-  floating and tiling, and init saves the choice as `display.layout`.
+  floating and tiling (tiling unless the settings say otherwise), and init
+  saves the choice as `display.layout`.
 - **The timer check** (every CPU's ticks counted over 1 s): the test,
   benchmark and regression entries run it before anything else; a plain
   boot runs it in a kernel thread next to user space, so the second is not
@@ -1896,6 +1897,15 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   Wayland's model and wire format over channels, handles where Linux
   passes file descriptors, `wl_shm` pools as VMOs; our own compositor,
   not a port ([docs/G1-PLAN.md](docs/G1-PLAN.md)).
+- Windows float or tile, per virtual screen. Tiling is dwindle
+  (`wmtile.c`): each screen keeps a binary tree of splits whose leaves
+  are its windows, a new window halving the focused tile along its longer
+  side and a window that goes leaving its sibling their parent's room;
+  each split keeps its own ratio (15-85%), set by dragging the gap or by
+  Super+Alt+direction; tiles glide to new places (200 ms, `anim.c`). The
+  tree is walked without recursion, since its depth is the number of
+  windows, which clients choose. The window keys (`wmkeys.c`) and
+  Super+drag (`wmgrab.c`) are the compositor's: no client sees them.
 - Mode setting and vsync only through the Intel iGPU (documented by
   Intel); the NVIDIA card (GSP firmware, no practical open path) stays a
   plain framebuffer. The IOMMU matters most for GPUs.

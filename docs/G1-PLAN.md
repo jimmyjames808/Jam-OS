@@ -1217,6 +1217,58 @@ still paints it. A window whose client has a keyboard still goes full
 screen on a screen of its own. Tests: utest's `desk_overlay`,
 `comp_paint_overlay` and `comp_screen_on_top` (desktop off and on).
 
+**As built: the owner's tiler and key set (after the splash overlay).**
+Dwindle replaces C3's main-and-stack (`wmtile.c`): each tiling screen has
+a binary tree (`struct tile_node` on `struct desk_screen`), a leaf per
+window (`wm_window.leaf`); the room is the screen's (below the strip)
+less 6 pixels round and between halves; a split's ratio is in 65536ths,
+held to 15-85%. `tiles_update` (from `wm_relayout`) drops the leaves of
+windows no longer tiled there (closed, unmapped, minimised, moved, a
+floating screen) and adds the new ones, splitting the focused tile or
+the last (always b: the spiral's newest corner) along its longer side; a
+tree made from nothing (a screen switched to tiling: Super+T drops the
+tree, so switching back builds it again) takes the windows in their
+order, each splitting the last. A new window's first configure is the
+half it will get. The tree is walked with parent pointers, never
+recursion. Gaps (`wmgrab.c`): a press within 6 pixels of a gap's middle,
+with nothing over it but the tiles beside it, drags it, every tile placed
+again at each motion (no glide; a tree change mid-drag ends it); the
+pointer over one shows the resize arrows, and the gap's bar (3 pixels, 15%
+short at each end, apricot at 85%) is lit while hovered or dragged
+(`wm_marks`, drawn by `wmdraw.c` over the windows, under the strip). The
+pointer starts in the middle of the output, so with two tiles side by
+side the gap is lit until the mouse moves. Super+press (`wm_press` gets
+the modifiers every keyboard holds) on a tiled window lifts it: its
+picture (an animation snapshot) follows the pointer at 85% with a shadow,
+the tile under the pointer gets an apricot ring over a 14% tint, release
+swaps the two (same screen only); floating, Super+drag moves from
+anywhere, Super+right-drag resizes from the nearest corner (a resize from
+the top, by an edge or Super+right-drag, stops below the strip). The
+glide (`anim.c`): beside the one picture animation, `wm_reflow` notes
+where every shown window is, places them again, and those that moved
+glide from there (struct comp_window's `slide_x` and `slide_y`, used
+everywhere through `window_shown_x/y`) over 200 ms ease-out, damaging
+each frame's old and new extent only; on open, close, swap and keyboard
+resizing; any key or press first jumps it to its end; none while a
+screen slides. Keys (`wmkeys.c`'s `wm_key`, asked by focus.c after
+Ctrl+Alt+Del and the desktop's keys): exactly the table above; direction
+by geometry is the prototype's (centres at least 5 pixels that way, the
+distance along plus twice the distance across, the lowest first);
+floating Super+Alt+direction moves the right or bottom edge 48 pixels
+that way (Right and Down grow, Left and Up shrink), within the client's
+limits. Super+Shift+N past the last screen makes one at the end.
+Tiling is the default (the owner, after the tiler): the compositor
+without `layout=` tiles, init starts it with `layout=tiling` until
+`/data` says otherwise, new screens take the last choice; a saved
+`display.layout = floating` wins. A window that has only ever tiled has no
+floating size of its own: switched to floating, its configure is 0 by 0
+and the client keeps its last size (a tall terminal's frame can then
+reach below the output; its title bar stays reachable). Tests: utest's
+`wm_tiling`, `wm_switch`, `wm_tile_tree`, `wm_tile_gaps`,
+`wm_tile_push`, `wm_focus_dir`, `wm_swap`, `wm_reflow`, `wm_keys`,
+`desk_screens`, `comp_layout_wait`, `xdg_tiling`;
+`tools/shell-tests/desktop.txt` (four terminals tiled, a gap dragged).
+
 **Order and parallel work:**
 
 1. After the owner's answers: **P0, W1, W2, K1 and KM** together (P0 goes
