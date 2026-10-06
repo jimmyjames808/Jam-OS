@@ -30,7 +30,7 @@ a real desktop PC, which is where every milestone is tested.
 - Drivers as user processes: a PCI core with MSI/MSI-X and DMA
   capabilities, a device manager that restarts crashed drivers, and USB
   (xHCI controller, hubs, keyboard and mouse).
-- The IOMMU (Intel VT-d, M11): with the boot entry "Jam OS (IOMMU)" (the
+- The IOMMU (Intel VT-d, M11): with the boot entry "Developer > Jam OS (IOMMU)" (the
   boot word `iommu=on`) each driver's device reaches only the memory the
   driver pinned for it, every other DMA is blocked and logged, and a
   device can raise only its own interrupts (interrupt remapping); `iommu`
@@ -124,18 +124,26 @@ a real desktop PC, which is where every milestone is tested.
   init starts only the desktop's own apps for it. The top bar's volume
   popover sets the mixer's master volume and shows the output and what
   plays; the network popover the link, address and rates. Notices come as
-  cards in the top right: a stick added or removed, the network connected
-  or lost, an update written (with a Reboot button), a restart after a
-  panic (with Details: `crashlog` in a new terminal), or the shell's
-  `notify -b Yes -b No -w Tea? The kettle is on`. The boot
+  cards in the top right, in plain words: a stick added or removed, the
+  Jam OS stick pulled out and back, the network connected or lost, a
+  service or driver that crashed (and was started again) or kept crashing,
+  an update written (with a Reboot button), a restart after a panic (with
+  Details: `crashlog` in a new terminal), or the shell's
+  `notify -b Yes -b No -w Tea? The kettle is on`. Every terminal is
+  equal: any of them, the first too, closes with its close circle,
+  Super+Q or `exit`; with none left the desktop shows its wallpaper and
+  top bar, and Super+Enter or the search box opens one. The boot
   entry "Jam OS (no compositor)" (the boot word `nocomp`) is the way back
   to the full-screen console until G1 is signed off on the PC.
 - A boot splash: the logo animation with its sound while Jam OS starts
   (it plays to the end, and what is typed meanwhile reaches the shell; the
   `verbose` boot entry shows the text log instead).
-  After it the shell's terminal holds the shell alone: the kernel log stays
-  in `log` and `dmesg`, and only a few notices reach the screen (a stick
-  plugged in or pulled out, a service that crashed, `/data` full).
+  A quiet boot: the first terminal starts at the shell's banner and
+  prompt, on every boot but the Developer folder's text-log entry
+  (`verbose`); the log stays in `log`, `dmesg`, `/data/logs`, the serial
+  port and netlog, and what matters to a user comes as a notice. Without
+  the compositor (`nocomp`) the full-screen console is just as quiet and
+  shows those notices as short yellow lines.
 - Each program gets only what it asks for: a list in its own file (the
   services under `/svc` and the mounts it wants, read-only or writable).
   A program copied to `/data` runs once the owner has said yes to its list
@@ -171,7 +179,9 @@ make run                                  # build, then boot it in QEMU
 `make run` boots the image in QEMU (q35, OVMF, the stick on a USB xHCI
 controller, a USB keyboard) with the serial console on your terminal. Type
 at the prompt, `jam:/>` (`jam:` and the current directory, which `cd`
-changes); `help` lists the commands. Python 3 is needed for
+changes); `help` lists the everyday commands, `help dev` the developer
+ones (tests, hardware, the kernel), `help <command>` any one. Python 3 is
+needed for
 the build tools (and Pillow for test screenshots).
 
 | Command | What it does |

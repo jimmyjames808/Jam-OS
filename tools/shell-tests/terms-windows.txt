@@ -3,9 +3,12 @@
 # console's): the first terminal opens as a window; `term` opens terminal 2,
 # whose window takes the keys (a client's first window does), so `exit`
 # typed now ends terminal 2's shell and closes it, and the keys come back
-# to the first, where `exit` refuses. Super+Enter on a keyboard opens
-# another. The compositor killed, both windows come back. Screenshots
-# along the way (terms-one, terms-two, terms-back).
+# to the first. Every terminal is equal (the polish track): `exit` in the
+# first closes it too, and with none left the desktop shows its wallpaper
+# and top bar (terms-none); Super+Enter on a keyboard opens terminal 1
+# again (the lowest number free), and another Super+Enter terminal 2. The
+# compositor killed, both windows come back. Screenshots along the way
+# (terms-one, terms-two, terms-none, terms-back).
 # Run: QEMU_INPUT=tools/shell-tests/terms-windows.txt \
 #      QEMU_USB="-device usb-kbd,bus=xhci.0,port=2" tools/qemu-test.sh build/test terms-windows shell
 wait 120 Jam OS shell
@@ -24,8 +27,22 @@ send exit
 wait 10 init: terminal 2: its shell ended with exit
 wait 10 init: terminal 2 is closed
 sleep 1
+
+# the first terminal closes like any other
 send exit
-wait 10 exit: this is the first terminal
+wait 10 init: terminal 1: its shell ended with exit
+wait 10 init: terminal 1 is closed
+wait 10 init: no terminal is open
+sleep 2
+shot terms-none
+monitor sendkey meta_l-ret
+wait 10 init: terminal 1 opens
+wait 30 Jam OS shell
+wait 10 {prompt}
+seen 30 console: window mode: terminal 1 opens a
+sleep 1
+send echo "ok-""again"
+wait 10 ok-again
 wait {prompt}
 
 monitor sendkey meta_l-ret

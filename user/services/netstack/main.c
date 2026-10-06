@@ -127,7 +127,8 @@ static void tell_link(void)
         return;
     l.connected = up;
     if (!up) {
-        notice_post(&l.notes, "Disconnected", "The network is down", 'N', NOTICE_RASPBERRY);
+        notice_post(&l.notes, "Disconnected", "The network went away.", 'N',
+                    NOTICE_RASPBERRY);
         return;
     }
     struct dev_report r = { 0 };

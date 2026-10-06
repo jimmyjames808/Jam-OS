@@ -299,12 +299,18 @@ static void got_stat(struct disk *d, status_t st, bool is_dir)
         return;
     }
     d->state = DISK_BOOT;
+    d->boot_down = false;
     release_held(d);
+    disk_told_boot(d, true);   /* back after it was pulled out */
     st = fs_start(d, PART_DATA, false);
     say(!d->test, "devmgr: %s is the boot disk: its ESP is mounted, its data partition %s%s",
         disk_name(d), st == OK ? "too" : "is not: ", st == OK ? "" : status_str(st));
-    if (st != OK && !d->test)
+    if (st != OK && !d->test) {
         problems++;
+        notice_post(&devmgr_notices, "Your files can't be saved",
+                    "Its data partition didn't open.", '!',
+                    NOTICE_RASPBERRY);
+    }
     mounts_update();
 }
 

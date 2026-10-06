@@ -62,6 +62,11 @@ extern bool init_splashhang;
  * test entry): devmgr is started with it, so it passes it to drv/hda,
  * which runs its deliberate DMA faults before serving (M11 stage 5). */
 extern bool init_vtdtest;
+/* The option word "verbose" (main.c; the kernel's, from the boot entry
+ * Developer > "Jam OS (text log, no splash)"): the first terminal shows
+ * the log as it comes. Every other boot keeps it off every terminal's
+ * screen (terms.c: the consoles' "nolog"). */
+extern bool init_verbose;
 
 
 /* ---- mounts.c -------------------------------------------------------------------- */
@@ -208,8 +213,8 @@ void     services_publish(const char *name, handle_t h, bool connect);
 /* ---- terms.c: the terminals: a console and a shell each --------------------------- */
 
 /* Set up once before the loop: the loop's port, whether the splash plays
- * first (the first console starts quiet, every console with "nolog"),
- * the first shell's argument; the other terminals' services, closed. */
+ * first (the first console starts quiet), the first shell's argument; the
+ * other terminals' services, closed. */
 void     terms_init(handle_t port, bool splash, const char *shell_arg);
 /* Which terminal service i belongs to (0: the first), -1 for none. */
 int      term_of(unsigned i);
@@ -219,22 +224,32 @@ status_t terms_start(unsigned i);
 bool     terms_console_up(unsigned i);
 /* A terminal other than the first is open (or closing). */
 bool     terms_extra_open(void);
+/* The console of the first terminal that has one running (0: none: every
+ * terminal is closed, or the first is restarting under `nocomp`). */
+handle_t terms_any_console(void);
 /* Service i ended: the console's or the shell's ends that init kept go. */
 void     terms_closed(unsigned i);
 /* Service i ended (after terms_closed), killed or with code: true if its
- * terminal closes (an extra one's window closed, or its shell's `exit`)
- * or is closing: it is not started again. */
+ * terminal closes (its window closed, or its shell's `exit`; with a
+ * compositor every terminal, the first too) or is closing: it is not
+ * started again. */
 bool     terms_ended(unsigned i, bool killed, int64_t code);
-/* Service i is given up on: an extra terminal closes. */
+/* Service i is given up on: its terminal closes (with a compositor; under
+ * `nocomp` the one console and its shell are never given up). */
 void     terms_given_up(unsigned i);
-/* initctl.terminal: open another terminal; *number: its number (2 and
- * up). cmd: a line its shell runs first ("": none; at most
+/* Is service i one init starts again however often it ends: the
+ * compositor, and under `nocomp` the one terminal's console and shell
+ * (shell.c's count_end). */
+bool     terms_never_given_up(unsigned i);
+/* initctl.terminal: open another terminal; *number: its number (the
+ * lowest free one, 1 included). cmd: a line its shell runs first ("": none; at most
  * TERM_CMD_MAX - 1 bytes, the caller's checked). ERR_NOT_SUPPORTED: no
  * compositor; ERR_NO_RESOURCES: TERM_MAX are open. Its console and shell
  * start at the loop's next turn. */
 #define TERM_CMD_MAX 128
 status_t terms_open(const char *cmd, uint8_t *number);
-/* "console-<n>", "shell-<n>" (n 2 to TERM_MAX): terminal n's service i. */
+/* "console-<n>", "shell-<n>" (n 2 to TERM_MAX): terminal n's service i
+ * ("console" and "shell" are the first's, shell.c). */
 bool     terms_named(const char *name, unsigned *i);
 /* /data has come: the settings' terminal.font (smooth or bitmap) to the
  * consoles started from now on ("font=bitmap"), and, if it changed, to
@@ -316,7 +331,10 @@ status_t services_start(unsigned i);
 void     services_closed(unsigned i);
 /* Service i is given up on: calls waiting for it fail now. */
 void     services_given_up(unsigned i);
-/* A console runs (its clients may start); a devmgr runs. */
+/* The services but the first ones may start: under `nocomp` the console
+ * runs (the input's hub and the screen); with a compositor the first
+ * terminal's console has started once this boot (the order at boot only:
+ * every terminal may be closed later). A devmgr runs. */
 bool     services_console_up(void);
 /* What /data/etc/settings says for svc i (settings.c), if it runs: the
  * mixer's master volume, the music player's volume. */

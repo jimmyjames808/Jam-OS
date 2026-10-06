@@ -16,6 +16,6 @@ wait console: the kernel log so far
 wait {prompt}
 sleep 1
 monitor device_del sb
-wait 30 console: notice: the stick at /usb0 was pulled out
+wait 30 console: notice: The stick at /usb0 was pulled out
 send reboot -f
 wait reboot: resetting

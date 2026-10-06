@@ -32,11 +32,13 @@
  *     their ends change for the others.
  * Restarts back off from 100 ms to 5 s; one that ends more than 10 times
  * in a minute (from its first end) is given up on (a line in the log and
- * the RESULTS box), but for the first terminal's console and shell, and
- * the compositor they show in: without them nobody can use the machine
+ * the RESULTS box), but for the compositor, and under `nocomp` the one
+ * terminal's console and shell: without them nobody can use the machine
  * until a reset, so they are started again for good, every 5 s at worst
- * (said once a minute). Another terminal given up on closes (terms.c),
- * as one does whose window is closed or whose shell ends with `exit`. The console's clients (the
+ * (said once a minute). With a compositor every terminal is equal, the
+ * first included: one given up on closes (terms.c), as one does whose
+ * window is closed or whose shell ends with `exit`, and Super+Enter or
+ * the search box opens another. The console's clients (the
  * shell; serialin, under `nocomp`) end when it does, often before init
  * has seen the console's own end: an end of theirs while the console is
  * gone doesn't count, and they start again at once with the new console;
@@ -45,8 +47,14 @@
  * it hands its keeper, and a warm spare to promote), and has a rule of its
  * own: a deliberate kill (initctl.kill) neither counts nor waits, and the
  * first crash in a minute is restarted at once; later crashes count and
- * back off as above. init itself never returns in this mode. */
+ * back off as above. init itself never returns in this mode.
+ *
+ * With a compositor a service's crash (killed, by nobody's request: the
+ * kernel's, for a fault) is a notice on the desktop in plain words, the
+ * first in its minute only ("Sound crashed / Jam OS started it again"),
+ * and so is giving one up; the log has the details as ever. */
 #include <deskapps.h>
+#include <notice.h>
 #include <os.h>
 #include "init.h"
 
@@ -242,13 +250,6 @@ status_t shell_kill_service(const char *name, uint64_t *koid)
     return ERR_NOT_FOUND;
 }
 
-/* The services init never gives up on, however often they end: the first
- * terminal and, when there is one, the compositor it shows in. */
-static bool never_given_up(unsigned i)
-{
-    return i == CONSOLE || i == SHELL || i == COMPOSITOR;
-}
-
 /* Svc i is one of a console's clients (a shell, its terminal's) or of
  * the input's hub (serialin: the compositor's, or under `nocomp` the
  * first console's) and that has ended (its end may still be on its way
@@ -264,6 +265,44 @@ static bool went_with_console(unsigned i)
     return !c->running || jam_object_wait_one(c->proc, SIG_TERMINATED, 0, &seen) == OK;
 }
 
+/* What a user calls service i, for a notice ("Sound", "Terminal 2"):
+ * false for the compositor (its notices go with it). */
+static bool plain_name(unsigned i, char *buf, size_t n)
+{
+    static const char *const names[TERMS] = {
+        [BOOTFS] = "Boot files", [SERIALIN] = "Serial input", [DEVMGR] = "Device manager",
+        [MIXER] = "Sound", [MUSIC] = "Music player", [NETSTACK] = "Network",
+        [DHCP] = "Network address (DHCP)", [DNS] = "Name lookup (DNS)", [LOGD] = "Log saving",
+        [NETLOG] = "Network log", [SNTP] = "Clock sync", [SERVE] = "File server",
+    };
+    int k = term_of(i);
+    if (k >= 0) {
+        char t[16] = "Terminal";
+        if (k)
+            snprintf(t, sizeof(t), "Terminal %d", k + 1);
+        snprintf(buf, n, "%s%s", (unsigned)TERM_SHELL(k) == i ? "The shell in " : "", t);
+        return true;
+    }
+    if (i >= TERMS || !names[i])
+        return false;
+    snprintf(buf, n, "%s", names[i]);
+    return true;
+}
+
+/* A notice of svc i's crash (or, gave_up, of giving it up). */
+static void tell_desktop(unsigned i, bool gave_up)
+{
+    char title[64];
+    if (!plain_name(i, title, sizeof(title)))
+        return;
+    size_t n = strlen(title);
+    snprintf(title + n, sizeof(title) - n, gave_up ? " stopped" : " crashed");
+    const char *body = !gave_up         ? "Jam OS started it again."
+                       : term_of(i) >= 0 ? "It kept stopping; Jam OS closed it."
+                                         : "It kept stopping; Jam OS gave up.";
+    comp_notice(title, body, '!', NOTICE_RASPBERRY, NULL, false);
+}
+
 /* Count svc i's end at t in its minute: true if it may start again. */
 static bool count_end(unsigned i, uint64_t t)
 {
@@ -272,10 +311,11 @@ static bool count_end(unsigned i, uint64_t t)
         s->window_start = t;
         s->ends = 0;
     }
-    if (++s->ends > GIVE_UP_COUNT && !never_given_up(i)) {
+    if (++s->ends > GIVE_UP_COUNT && !terms_never_given_up(i)) {
         s->given_up = true;
         services_given_up(i);
         init_say("init: %s ended %u times in a minute: not restarting it", s->path, s->ends);
+        tell_desktop(i, true);
         return false;
     }
     if (s->ends == GIVE_UP_COUNT + 1)
@@ -339,11 +379,13 @@ static void ended(unsigned i)
         return;
     }
     if (terms_ended(i, got && info.killed, got ? info.exit_code : -1))
-        return;   /* an extra terminal closes */
+        return;   /* a terminal closes */
     bool took = went_with_console(i);
     bool counted = !took && !(spare_kept(i) && s->kill_at);
     if (counted && !count_end(i, t))
         return;
+    if (got && info.killed && !s->kill_at && s->ends == 1)
+        tell_desktop(i, false);   /* a crash, the first in its minute */
     if (kept_restart(i, t))
         return;
     /* Ran for a while (or went with its console): start again soon; else
@@ -385,8 +427,8 @@ static uint64_t start_due(uint64_t t)
             continue;
         if (i != CONSOLE && i != BOOTFS && i != COMPOSITOR && i != LOGD && !services_console_up())
             continue;   /* waits for the console */
-        if (term_of(i) > 0 && (unsigned)TERM_SHELL(term_of(i)) == i && !terms_console_up(i))
-            continue;   /* an extra terminal's shell waits for its console */
+        if (term_of(i) >= 0 && (unsigned)TERM_SHELL(term_of(i)) == i && !terms_console_up(i))
+            continue;   /* a terminal's shell waits for its console */
         if (i == SERIALIN && comp_on() && !comp_up())
             continue;   /* its source is the compositor's: it waits for one */
         if ((i == LOGD || i == NETLOG || i == SNTP) && !mounted(DATA_MOUNT))

@@ -26,10 +26,10 @@
  *     Ctrl+Shift+C) copies it to the compositor's clipboard and Super+V
  *     (Ctrl+Shift+V) pastes the clipboard's text into the program with
  *     the keys (clip.c, paste.c; libjwl's jwl_clip_*);
- *   - the close box: the first terminal stays (it is the system's: init
- *     restarts it whatever happens, so closing it would only bring it
- *     back) and says so; any other terminal's console ends with code 0,
- *     which tells init to close that terminal and end its shell;
+ *   - the close box: the console ends with code 0, which tells init to
+ *     close the terminal and end its shell; every terminal alike, the
+ *     first too (with none left, Super+Enter or the search box opens
+ *     one);
  *   - when the compositor dies, libjwl connects again by itself and makes
  *     the window again; the grid is then drawn again in full.
  *
@@ -195,13 +195,6 @@ static void configured(const struct jwl_event *ev)
 
 static void close_asked(void)
 {
-    if (term_no == 1) {
-        static const char m[] = "[the first terminal stays open: close the others, or type "
-                                "exit in them]";
-        notice_out(m, sizeof(m) - 1);
-        dirty = true;
-        return;
-    }
     printf("console: terminal %u: its window was closed\n", term_no);
     closing = true;   /* main ends with 0: init closes the terminal */
 }

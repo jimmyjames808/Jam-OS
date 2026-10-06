@@ -41,7 +41,7 @@ static void services(void)
            LINES(K("[    5.000000] user: process \"music\" killed: page fault at rip 401000, "
                    "address 0 (thread \"music\")"),
                  I("[    5.000100] [init] init: bin/music was killed, code -1")),
-           true, "music crashed (page fault): init is starting it again");
+           true, "Music crashed (page fault): Jam OS is starting it again");
     expect("a service killed on request: no news",
            LINES(K("[    5.000000] user: process \"music\" killed by \"init\""),
                  I("[    5.000100] [init] init: bin/music was killed, code -1")),
@@ -55,11 +55,11 @@ static void services(void)
     expect("init gave up on a service",
            LINES(I("[    9.000000] init: bin/mixer ended 11 times in a minute: not restarting "
                    "it")),
-           true, "mixer kept stopping: init gave up on it (`log` says more)");
+           true, "Mixer kept stopping: Jam OS gave up on it (`log` says more)");
     expect("a driver crashed: devmgr starts it again",
            LINES(D("[    7.000000] [devmgr] devmgr: usb 1:0 drv/hid crashed: restart 1 in "
                    "100 ms")),
-           true, "the hid driver (usb 1:0) crashed: devmgr is starting it again");
+           true, "The hid driver (usb 1:0) crashed: Jam OS is starting it again");
     expect("a driver killed on request: no news",
            LINES(D("[    7.000000] [devmgr] devmgr: 00:04.0 drv/edu was killed (KILL): "
                    "restart 1 in 100 ms")),
@@ -67,7 +67,7 @@ static void services(void)
     expect("devmgr gave up on a driver",
            LINES(D("[    7.000000] [devmgr] devmgr: 00:1d.0 drv/usb-bus crashed after 5 "
                    "restarts in 60 s: giving up")),
-           true, "the usb-bus driver (00:1d.0) kept failing: devmgr gave up on it");
+           true, "The usb-bus driver (00:1d.0) kept failing: Jam OS gave up on it");
     expect("... but not on the crash-test driver",
            LINES(D("[    7.000000] [devmgr] devmgr: 00:05.0 drv/crashtest crashed after 5 "
                    "restarts in 60 s: giving up (the crash-test driver: expected)")),
@@ -122,7 +122,7 @@ static void others(void)
                    "restarting it"),
                  D("[    7.300000] [devmgr] devmgr: usb 1:0 drv/hid crashed: restart 2 in "
                    "200 ms")),
-           true, "mixer kept stopping: init gave up on it (`log` says more)");
+           true, "Mixer kept stopping: Jam OS gave up on it (`log` says more)");
 }
 
 int console_selftest(void)

@@ -1,0 +1,18 @@
+# The quiet boot (tools/quiet-test.sh, the polish track): the first
+# terminal starts at the shell's banner and prompt, with no log line on
+# its screen however late the boot's lines come (usb-bus's, the timer
+# check's, a few seconds in), and the log is all still there: `dmesg`,
+# the boot's file in /data/logs (and the serial port: this log). The
+# screenshot quiet-<name> is checked by the script.
+wait 120 Jam OS shell
+wait {prompt}
+sleep 4
+shot quiet-{name}
+send dmesg | grep 'shell is'
+wait 10 init: the shell is up
+wait {prompt}
+send ls /data/logs
+wait 10 boot-0001.txt
+wait {prompt}
+send reboot -f
+wait reboot: resetting

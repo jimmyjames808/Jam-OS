@@ -133,8 +133,8 @@ QEMU's emulated unit differs (registers at 0xfed90000, caching mode on, an
 explicit endpoint scope per function instead of INCLUDE_PCI_ALL, no RMRR):
 what only the PC proves is in [M11-PLAN.md](M11-PLAN.md#what-only-the-pc-can-show).
 As of 2026-10-05 the PC has run the probe only, never `iommu=on`: its
-first boots with the IOMMU on are the "Tests > IOMMU checks" and "Jam OS
-(IOMMU)" entries ([TESTING.md](TESTING.md#the-iommu)), and the IOMMU
+first boots with the IOMMU on are the "Developer > IOMMU checks" and
+"Developer > Jam OS (IOMMU)" entries ([TESTING.md](TESTING.md#the-iommu)), and the IOMMU
 stays off by default until they pass.
 
 ## The network
@@ -332,7 +332,7 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
 - A hang during boot: the last line on the screen names the step (`pci:`
   lines name the function being sized). The plain entry shows the boot
   splash instead of the log, and the shell after it shows only notices
-  of it: boot `Jam OS (text log, no splash)` (`verbose`) to see the log
+  of it: boot Developer > `Jam OS (text log, no splash)` (`verbose`) to see the log
   as it comes; `log 40` shows its last lines from the shell.
 - Fewer than 28 CPUs, or a hang right after the `lapic: timer` line: the
   kernel starts the other CPUs itself (INIT-SIPI-SIPI). The boot log's
@@ -344,7 +344,7 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
   (QEMU's TCG has no PCIDs, so the PC is the only place they run). The boot
   log's `cpu id:` and `pcid:` lines give the microcode revision and whether
   PCIDs are on ([PCIDs](#the-machine)).
-- The safe mode entry (`nousb`) starts no USB drivers; input then comes only
+- The safe mode entry (Developer, `nousb`) starts no USB drivers; input then comes only
   from the serial port.
 - **`reboot -f` hangs.** It ends with the kernel's lines on the screen
   (it takes the screen back from the console and redraws the log, init's

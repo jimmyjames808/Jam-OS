@@ -48,8 +48,8 @@
  *                 it shows only the splash's background until the
  *                 splash's window maps (5 s at most), so the desktop never
  *                 shows before the splash. A restart later never waits.
- *               Like the console it is started again however often it ends
- *               (shell.c, never_given_up): the terminals have no screen
+ *               It is started again however often it ends
+ *               (terms_never_given_up): the terminals have no screen
  *               without it.
  *
  * The layout: init keeps a compctl.layout_wait waiting on its channel,

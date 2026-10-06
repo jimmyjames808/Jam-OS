@@ -68,7 +68,7 @@ What the design defends against today:
   were given (a write to the interrupt window that isn't its own entry is
   blocked) ([The IOMMU](#the-iommu)). **This is off by default** until the
   PC has signed it off (M11 in [ROADMAP.md](docs/ROADMAP.md)); the boot
-  entry "Jam OS (IOMMU)" turns it on.
+  entry "Developer > Jam OS (IOMMU)" turns it on.
 
 Not yet:
 
@@ -1061,7 +1061,7 @@ it was given, so drivers are contained, not only crash-isolated
 ([what Jam OS defends against](#what-jam-os-defends-against)).
 
 **Off by default, for now.** It runs only with the boot word `iommu=on`
-(the boot entries "Jam OS (IOMMU)" and "Tests > IOMMU checks"; `iommu=off`
+(the boot entries "Developer > Jam OS (IOMMU)" and "Developer > IOMMU checks"; `iommu=off`
 wins over it, and a reboot keeps either word). Without it no VT-d register
 is written: the boot's read-only probe (`vtd:` lines: the DMAR table, each
 unit's capabilities, what the firmware left on) is the only trace, and
@@ -1753,8 +1753,11 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   after netstack) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job), backing
   off up to 5 s; one that dies more than 10 times in a minute is given up
-  on, except the compositor, the console and the shell, which nobody
-  could do without (an end of serialin's or the shell's that the
+  on, except the compositor, and under `nocomp` the one console and its
+  shell, which nobody could do without (with the compositor every
+  terminal is equal: one given up on closes, as does one whose window is
+  closed or whose shell exits, the first included, and Super+Enter or the
+  search box opens another, the lowest number free; an end of serialin's or the shell's that the
   compositor's or the console's took with it doesn't count); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and publishes
@@ -1984,7 +1987,11 @@ extra glyphs.
 Each terminal is a console (`user/services/console/`) in window mode: the
 text model (the scrollback, the current line, the alternate screen), the
 escapes and the kernel log are the full-screen console's; only the
-drawing differs (`window.c`, `winpaint.c`, `cellpaint.c`, `cells.h`).
+drawing differs (`window.c`, `winpaint.c`, `cellpaint.c`, `cells.h`). A
+window makes no notices (the desktop's cards are the news), and every
+terminal closes the same way, the first too: its close circle or Super+Q
+(the console ends with code 0) or `exit` (the shell, given `term=<n>`,
+ends with 0), and init closes the terminal (`user/services/init/terms.c`).
 
 - **Cells.** JetBrains Mono at 15 pixels to the em: a cell is the face's
   advance rounded to whole pixels wide (9: 0.6 em is exactly 9 at 15,
@@ -2127,9 +2134,11 @@ each request goes out without waiting and its answer comes to the port
   answers by rebooting, as `initctl.reboot` does, and its "Jam OS
   restarted after a problem" (the boot after a panic) a Details button
   that init answers by opening a terminal running `crashlog`, as
-  `initctl.terminal` does. Without a compositor
-  (`nocomp`) nothing is posted: the services' log lines, and the
-  console's notices made from them, are as before.
+  `initctl.terminal` does. init's and devmgr's crash and stick notices
+  (the polish track) say what happened in a few words ("Sound crashed /
+  Jam OS started it again"), the log keeping the details. Without a
+  compositor (`nocomp`) nothing is posted: the services' log lines, and
+  the console's notices made from them, are as before.
 - **Volume and network.** The mixer serves its desktop channel as it does
   `audioctl`, refusing every method but `desk` and `set_master`; the
   music player names its stream's track (`audio.stream_set_title`), which
@@ -2779,14 +2788,23 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   newlines and well-formed UTF-8 go in as they are (a song's "JAŸ-Z"),
   any other control character and each bad piece of ill-formed UTF-8
   (Unicode's maximal-subpart rule) as one `?` (`kernel/debug/klog.c`).
-- **The log and the screen**: on a plain boot (the splash plays) the
-  console keeps the kernel log off the shell's screen (init starts it
-  with "nolog"); `log` and `dmesg` show it, and the shell asks for it on
+- **The log and the screen** (the quiet boot): on every boot but a
+  `verbose` one the consoles keep the kernel log off their screen (init
+  starts each with "nolog"; on a `verbose` boot, the Developer folder's
+  text-log entry, the first terminal shows it as it comes); `log`,
+  `dmesg`, `/data/logs`, the serial port and netlog have it, and the shell asks for it on
   the screen (`console.show_log`) while a command whose output is the log
   runs: the kernel's commands (`ktest`, `ps -k`, `pci`, ...) and the test
   programs with every line, a program `run` starts with its own lines and
-  the kernel's. A few things the log says still get a line of their own,
-  in yellow (`user/services/console/notices.c`): another stick plugged
+  the kernel's. With the compositor what matters to a user is a desktop
+  notice in plain words, posted by whoever knows it (init: a service's
+  crash, the first in its minute, and giving one up; devmgr: a driver's,
+  the Jam OS stick pulled out and back, its data partition not opening,
+  other sticks; netstack: connected or not), and no terminal shows the
+  log or depends on the first one. Under `nocomp` the full-screen console
+  is the only screen, so a few things the log says still get a line of
+  their own there, in yellow and sentence case
+  (`user/services/console/notices.c`): another stick plugged
   in or pulled out, the Jam OS stick pulled out and back, `/data` full or
   not mounted, a service or driver that crashed and is being started
   again or was given up on. Only lines the kernel marks as its own or as
@@ -2795,8 +2813,10 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   program that starts a process called "init" makes no notice. Each is
   announced once things have settled
   (a remount says nothing), never twice within 30 s, at most four in
-  10 s. `verbose`, `nosplash` and the safe mode show the whole log as it
-  comes, and the boot tests draw it from the kernel.
+  10 s. `verbose` shows the whole log as it comes; `nosplash` and the
+  safe mode show the kernel's text log until the compositor or the
+  console takes the screen, then the quiet terminal; the boot tests draw
+  it from the kernel.
 - A panic's lines: message, decoded exception (page-fault cause, NULL and stack
   overflow hints), all registers and control registers, symbolised backtrace
   with repeated frames collapsed, the code, the build, and the log tail,

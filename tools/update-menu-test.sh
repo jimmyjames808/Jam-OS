@@ -2,7 +2,8 @@
 # `update`'s stick write and the boot menu (user/services/init/espmenu.c, <update.h>'s
 # `menu` line), in QEMU. The stick's build A has a test key
 # (tools/update-test-key.sh) and an OLD boot menu: boot/limine.conf without
-# its two IOMMU entries (as the owner's stick had it). Build B is A's kernel
+# its two IOMMU entries (Developer > "Jam OS (IOMMU)" and "IOMMU checks":
+# the owner's stick had neither). Build B is A's kernel
 # with another version string and A's boot image with build.txt saying git
 # b0b0b0b and one more file (as tools/update-write-test.sh makes it). The
 # NEW menu is boot/limine.conf; a BAD one is it with "Jam OS (previous
@@ -90,7 +91,7 @@ for line in text.split("\n")[:-1]:
         cur = []
     cur.append(line)
 blocks.append(cur)
-old = [b for b in blocks if b[0] not in ("/Jam OS (IOMMU)", "//IOMMU checks")]
+old = [b for b in blocks if b[0] not in ("//Jam OS (IOMMU)", "//IOMMU checks")]
 assert len(old) == len(blocks) - 2, "boot/limine.conf has no IOMMU entries to leave out"
 open(sys.argv[2], "w").write("\n".join(l for b in old for l in b) + "\n")
 bad = text.replace("path: boot():/boot/prev-jamos.elf\n    module_path: boot():/boot/prev-bootfs.img",

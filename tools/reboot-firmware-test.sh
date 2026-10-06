@@ -46,7 +46,7 @@ run_data() {
     QEMU_SAVE="$stick" run data shell "wait 120 Jam OS shell" "wait {prompt}" \
         "seen 60 init: /data mounted" "seen 60 logd: writing /data/logs/boot-0001.txt" \
         "send T=k && write /data/rbf.txt written before the reset" "wait {prompt}" \
-        "send reboot -f" "wait 30 rebooting through the firmware" \
+        "send reboot -f" "wait 30 Restarting through the firmware" \
         "wait 30 init: /data synced in" "wait 60 init: firmware reset: devmgr stopped in" \
         "$asked" "$resetting" "$quiet" \
         "wait 30 reboot: trying the ACPI reset register (io 0xcf9 = 0xf)" ||

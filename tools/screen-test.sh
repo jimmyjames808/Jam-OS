@@ -35,12 +35,12 @@ if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-test
     ok=0
 fi
 log="$out/$name.log"
-n=$(grep -ac "console: notice: a stick is at /usb0" "$log" || true)
+n=$(grep -ac "console: notice: A stick is at /usb0" "$log" || true)
 [ "$n" = 1 ] || { echo "$name: 'a stick is at /usb0' said $n times, want 1"; ok=0; }
 grep -aq "console: selftest PASSED" "$log" || { echo "$name: the console's selftest failed"; ok=0; }
 grep -aq "\[init\] init: bin/music ended 11 times" "$log" ||
     { echo "$name: utest impostor's line in init's name is not in the log"; ok=0; }
-for fake in "music kept stopping" "the hid driver (usb 9:0)" "/data is full"; do
+for fake in "Music kept stopping" "The hid driver (usb 9:0)" "/data is full"; do
     if grep -aq "console: notice: $fake" "$log"; then
         echo "$name: a notice from an impostor: $fake"; ok=0
     fi
@@ -64,7 +64,7 @@ if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-test
     tail -3 "$out/$name-atboot.out"
     ok=0
 fi
-if grep -aq "console: notice: a stick is at" "$out/$name-atboot.log"; then
+if grep -aq "console: notice: A stick is at" "$out/$name-atboot.log"; then
     echo "$name-atboot: a notice for the stick that was in at boot"; ok=0
 fi
 

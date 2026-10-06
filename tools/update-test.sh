@@ -141,7 +141,7 @@ grep -aq "init: update: its network default is $othernet, this build's $net: tak
 grep -aq "init: update: .* and not loaded (check only)" "$log" ||
     fail "init didn't check the check-only offer"
 grep -aq "updtest: good: PASS" "$log" || fail "the good build wasn't accepted"
-grep -aq "compositor: notice [0-9]*: Update loaded: .*: reboot to start it (not on the stick)" \
+grep -aq "compositor: notice [0-9]*: Update loaded: Jam OS .*Reboot to start it" \
     "$log" || fail "no 'Update loaded' notice on the desktop (init's, with Reboot and Later)"
 grep -aq "init: update: .* and stored in memory only" "$log" ||
     fail "init didn't say it stored the build"

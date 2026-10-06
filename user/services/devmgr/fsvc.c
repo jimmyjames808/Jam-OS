@@ -240,6 +240,23 @@ void disk_told_added(struct disk *d, const struct binding *b)
     notice_post(&devmgr_notices, "USB stick added", body, 'U', NOTICE_APRICOT);
 }
 
+/* The desktop's notice of the boot disk gone (pulled out: /data and /esp
+ * with it) or back (came: it is the boot disk again after one went). Not
+ * at a reboot, never a test disk's. */
+void disk_told_boot(const struct disk *d, bool came)
+{
+    static bool gone;   /* the boot disk went and hasn't come back */
+    if (d->test || shutdown_asked || came != gone)
+        return;
+    gone = !came;
+    if (came)
+        notice_post(&devmgr_notices, "Jam OS stick is back", "Your files are saved again.", 'U',
+                    NOTICE_APRICOT);
+    else
+        notice_post(&devmgr_notices, "Jam OS stick removed",
+                    "Nothing is saved until it's back.", 'U', NOTICE_RASPBERRY);
+}
+
 /* Its mounts the desktop was told of have gone with it. */
 static void told_removed(struct disk *d)
 {
@@ -258,6 +275,14 @@ void drop_services(struct disk *d, enum disk_state state)
 {
     if (state == DISK_FREE || state == DISK_DOWN)
         told_removed(d);   /* pulled out, or its driver gone: not a remount */
+    /* The boot disk gone: pulled out (its driver stops, DISK_DOWN, then
+     * the disk is forgotten, DISK_FREE), not its driver restarting. */
+    if (state == DISK_DOWN && d->state != DISK_DOWN)
+        d->boot_down = d->state == DISK_BOOT;
+    if (state == DISK_FREE && (d->state == DISK_BOOT || d->boot_down))
+        disk_told_boot(d, false);
+    if (state == DISK_FREE)
+        d->boot_down = false;
     d->state = state;
     d->want = 0;
     for (unsigned part = 0; part < MAX_PARTS; part++) {

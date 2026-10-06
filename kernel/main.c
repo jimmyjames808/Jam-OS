@@ -291,7 +291,10 @@ static bool run_tests(void)
 }
 
 /* init's option words (at most USERBOOT_MAX_WORDS, which has room for
- * every one below at once, so none is ever dropped): "splash" (splash_boot);
+ * every one below that can come at once, so none is ever dropped: `verbose`
+ * never comes with "splash" or `splashhang`): "splash" (splash_boot);
+ * `verbose` (the first terminal shows the log as it comes: every other
+ * boot keeps it off the screen);
  * `hidboot`, which init passes on to devmgr and devmgr to every hid (mice
  * stay in the boot protocol); one of `netprobe`, `netsend` or `net` (in
  * that order of precedence), which init passes on to devmgr and devmgr to
@@ -311,6 +314,8 @@ static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
     unsigned n = 0;
     if (shell && splash_boot())
         words[n++] = "splash";
+    else if (shell && cmdline_has("verbose"))
+        words[n++] = "verbose";
     if (shell && cmdline_has("nocomp"))
         words[n++] = "nocomp";
     if (cmdline_has("hidboot"))

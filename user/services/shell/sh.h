@@ -91,6 +91,9 @@ struct sh_cmd {
 
 extern const char *const sh_categories[];
 extern const unsigned    sh_ncategories;
+/* Categories [0, sh_neveryday) are the everyday ones `help` lists; the
+ * rest the developer ones, `help dev`'s. */
+extern const unsigned    sh_neveryday;
 /* The i-th command in table order, NULL past the end. */
 const struct sh_cmd *sh_cmd_at(size_t i);
 /* The command called name (or one of its extra names: hd, which, ...), or NULL. */
@@ -414,8 +417,9 @@ bool        sh_is_mount(const char *abs);
 /* Why a file call failed, in words ("no such file or directory"). */
 const char *sh_why(status_t st);
 
-/* Which terminal this shell runs in (1: the first, the system's; init's
- * argument "term=<n>" for another one: `term`). */
+/* Which terminal this shell runs in (init's argument "term=<n>", given to
+ * every terminal's shell with a compositor: `exit` closes it), or 0: none
+ * (the one full-screen console under `nocomp`, or a shell run by a shell). */
 extern unsigned sh_term_no;
 
 /* ---- the commands (cmd/<name>.c) --------------------------------------------------- */
