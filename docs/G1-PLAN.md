@@ -255,6 +255,26 @@ differs from the recommendation below, this note wins:
   the power button to turn it off, then on again". The details still go
   to the serial port as they happen and into the next boot's crash
   report, as today.
+  As built (the panic screen): `kernel/debug/panicscreen.c`, `panicdraw.c`,
+  `paniccode.c` ([ARCHITECTURE](../ARCHITECTURE.md#kexec-reboot-and-panic)
+  has the design, `<jam/panicscreen.h>` the code's table: an exception's
+  mnemonic, WD, AS, LK, OOM or KP, with the low 16 bits of the faulting
+  address for PF, else RIP or panic()'s caller). The glyphs (Inter
+  Regular, 17 and 12 px at 1x, as look.h's 1x) are baked by
+  `build/host/fontpreview --panic` (`tools/panicglyphs.c`) from libfun's
+  own font code, four quarter-pixel positions each, and the kernel lays
+  them out as libfun does (ktest panicscreen_text_matches_libfun compares
+  hashes of lines libfun drew); the ring is worked out per pixel with
+  integers, 40 px; the details panel uses the kernel's 8x16 font. The
+  restarting screen is held 1.5 s (the test word `panichold=<ms>`, at
+  most 5000); `reset=none` makes the 15 s reset fail, for the last
+  screen's test. A panic before the TSC is measured (the first kernel's
+  boot-time crash tests) can't count: its details and the power button's
+  words come at once, and no reset. The desktop's notice is init's
+  (lastboot.c, once the first shell is up), whose Details opens a
+  terminal running the shell's `crashlog`; under `nocomp` the shell's
+  line gains the code. Tests: `tools/kdump-test.sh` (`save`, `notice`,
+  `loop`, `bad`) and `tools/crash-test.sh`; screenshots in their output.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in

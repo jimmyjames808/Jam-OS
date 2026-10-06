@@ -335,6 +335,7 @@ static status_t op_shell_ready(void *ctx)
         return ERR_ACCESS_DENIED;
     printf("init: the shell is up\n");   /* the boot's time to a shell (splash-test.sh) */
     splash_shell_ready();
+    lastboot_shell_ready();
     return OK;
 }
 

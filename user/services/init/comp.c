@@ -62,8 +62,11 @@
  * ADMIN channel, without waiting; a compctl.notify_wait is kept waiting
  * there once one has buttons. A press of the Reboot button of a notice
  * posted with `reboot` is init's to act on: it reboots as initctl.reboot
- * does. The compositor only says which button was pressed: it never
- * reboots for a notice, and no other poster can make init reboot. A new
+ * does; one of the first button of a notice posted by comp_notice_run
+ * opens a terminal running its command (lastboot.c's Details: `crashlog`),
+ * as initctl.terminal does. The compositor only says which button was
+ * pressed: it never acts for a notice, and no other poster can make init
+ * reboot or run anything. A new
  * compositor has none of the old one's notices. */
 #include <idl/compctl.h>
 #include <settings.h>
@@ -90,6 +93,9 @@ static handle_t note_srv, note_cli;   /* /svc/notify's shared channel (0: no com
 static uint32_t note_count;       /* our notices' transaction ids */
 static uint32_t reboot_txid;      /* the last notice with a Reboot button, until answered */
 static uint32_t reboot_id;        /* ... its id (0: none up) */
+static uint32_t run_txid;         /* the last comp_notice_run notice, until answered */
+static uint32_t run_id;           /* ... its id (0: none up) */
+static char run_cmd[TERM_CMD_MAX];   /* ... what its first button runs */
 static bool note_waiting;         /* our notify_wait is out */
 
 bool comp_on(void)
@@ -202,11 +208,12 @@ handle_t comp_notify_client(void)
     return d;
 }
 
-void comp_notice(const char *title, const char *body, char icon, uint8_t tint,
-                 const char *const *buttons, bool reboot)
+/* Post a notice; its transaction id (0: not posted, said in the log). */
+static uint32_t post(const char *title, const char *body, char icon, uint8_t tint,
+                     const char *const *buttons)
 {
     if (!admin)
-        return;   /* no compositor (or none yet): the log has it */
+        return 0;   /* no compositor (or none yet): the log has it */
     uint8_t t[64] = { 0 }, b[96] = { 0 }, btn[72] = { 0 };
     snprintf((char *)t, sizeof(t), "%s", title);
     snprintf((char *)b, sizeof(b), "%s", body ? body : "");
@@ -217,19 +224,45 @@ void comp_notice(const char *title, const char *body, char icon, uint8_t tint,
     status_t st = compctl_notify_send(admin, txid, t, b, (uint8_t)icon, tint, btn);
     if (st != OK) {
         printf("init: the notice \"%s\" isn't shown (%s)\n", title, status_str(st));
-        return;
+        return 0;
     }
-    if (reboot)
-        reboot_txid = txid;
     if (btn[0] && !note_waiting)
         note_waiting = compctl_notify_wait_send(admin, NOTE_WAIT) == OK;
+    return txid;
 }
 
-/* A press of one of our notices' buttons: the Reboot one reboots. */
+void comp_notice(const char *title, const char *body, char icon, uint8_t tint,
+                 const char *const *buttons, bool reboot)
+{
+    uint32_t txid = post(title, body, icon, tint, buttons);
+    if (txid && reboot)
+        reboot_txid = txid;
+}
+
+bool comp_notice_run(const char *title, const char *body, char icon, uint8_t tint,
+                     const char *const *buttons, const char *cmd)
+{
+    uint32_t txid = post(title, body, icon, tint, buttons);
+    if (txid && cmd) {
+        run_txid = txid;
+        snprintf(run_cmd, sizeof(run_cmd), "%s", cmd);
+    }
+    return txid != 0;
+}
+
+/* A press of one of our notices' buttons: the Reboot one reboots, a
+ * comp_notice_run notice's first one opens its terminal. */
 static void note_pressed(uint32_t id, uint8_t button)
 {
+    if (id && id == run_id && button == 0) {
+        run_id = 0;
+        uint8_t n;
+        printf("init: the notice's first button was pressed: a terminal runs \"%s\"\n", run_cmd);
+        (void)terms_open(run_cmd, &n);   /* says why if it can't */
+        return;
+    }
     if (!id || id != reboot_id || button != 0)
-        return;   /* Later, or a notice gone */
+        return;   /* Later, Close, or a notice gone */
     reboot_id = 0;
     printf("init: the notice's Reboot was pressed: rebooting\n");
     (void)init_reboot_kexec();   /* comes back only if it failed, having said why */
@@ -259,6 +292,8 @@ static void note_answer(const uint8_t *rep, struct idl_msg *m)
         printf("init: a notice isn't shown (%s)\n", status_str(st));
     else if (m->txid == reboot_txid)
         reboot_id = id;
+    else if (m->txid == run_txid)
+        run_id = id;
 }
 
 void comp_event(void)

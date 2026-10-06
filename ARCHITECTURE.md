@@ -2066,7 +2066,10 @@ each request goes out without waiting and its answer comes to the port
   a channel that closes takes its cards with buttons along. The
   compositor never acts on a button itself: init's own "Update written"
   notice (posted on its ADMIN channel) has a Reboot button that init
-  answers by rebooting, as `initctl.reboot` does. Without a compositor
+  answers by rebooting, as `initctl.reboot` does, and its "Jam OS
+  restarted after a problem" (the boot after a panic) a Details button
+  that init answers by opening a terminal running `crashlog`, as
+  `initctl.terminal` does. Without a compositor
   (`nocomp`) nothing is posted: the services' log lines, and the
   console's notices made from them, are as before.
 - **Volume and network.** The mixer serves its desktop channel as it does
@@ -2582,9 +2585,10 @@ One kernel, two ways in: Limine at power-on, or a jump from a running Jam
 OS, after `reboot` or a panic. Either way the boot is a normal one (every
 CPU, every driver, all of RAM, the splash, the shell), and the screen
 shows nothing but the splash background from the moment `reboot` starts
-or the panic happens until the next boot's splash. After a panic the next
-boot saves the panicked boot's log first and the shell prints one line
-about it. Code in `kernel/kexec/`; the plan, with the layout and the
+(after a panic, once the panic screen has said so) until the next boot's
+splash. After a panic the next boot saves the panicked boot's log first
+and says so: a line in the shell, a notice on the desktop. Code in
+`kernel/kexec/`; the plan, with the layout and the
 decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 2").
 
 - **The region** (32 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
@@ -2661,7 +2665,14 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   overwriting) and syncs before it opens this boot's own log, and answers
   on a channel of init's (`<crashlog.h>`). The boot's first shell waits for
   the answer (20 s for `/data`, 60 s for the save) and prints
-  `the last boot panicked: <message> (saved as ...)`, or why it was not.
+  `the last boot panicked: <message> (saved as ...). Code JAM-...:
+  crashlog shows the details`, or why it was not saved; init finds the
+  code in the panic's lines (`<crashinfo.h>`). On the desktop, once that
+  shell is up, init posts the notice "Jam OS restarted after a problem" /
+  "Everything is back. Code ...", whose Details opens a terminal running
+  the shell's `crashlog` (the saved report: the code, what and where, the
+  backtrace, the log lines before it, the boot and the build; `crashlog
+  list`, `crashlog N`).
 - **`reboot`** (initctl.reboot, so also Ctrl+Alt+Del): the shell (or the
   console) blanks the screen first (`console.blank`: the splash background,
   nothing drawn). init starts the stored kernel as it is unless `/esp`

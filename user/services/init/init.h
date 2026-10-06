@@ -291,6 +291,11 @@ handle_t comp_notify_client(void);
  * (init's own power: the compositor only tells init it was pressed). */
 void     comp_notice(const char *title, const char *body, char icon, uint8_t tint,
                      const char *const *buttons, bool reboot);
+/* The same, but its first button opens a new terminal whose shell runs
+ * cmd (NULL: none does anything). false if it wasn't posted (no
+ * compositor, or it refused: said in the log). */
+bool     comp_notice_run(const char *title, const char *body, char icon, uint8_t tint,
+                         const char *const *buttons, const char *cmd);
 /* The boot word `nocomp` (main.c). */
 extern bool init_nocomp;
 
@@ -555,6 +560,9 @@ uint64_t lastboot_wait_until(uint64_t t);
 /* The banner line for the boot's first shell ("" if this boot did not
  * follow a panic); after the first call, always "". */
 const char *lastboot_banner(void);
+/* The first shell is up (initctl.shell_ready): on the desktop, the notice
+ * that this boot followed a panic, once (Details runs `crashlog`). */
+void     lastboot_shell_ready(void);
 
 /* Kill the service init runs under this name ("console", ...): its whole
  * job; init's loop then starts it again. *koid: its process's id.
