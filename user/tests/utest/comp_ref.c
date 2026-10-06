@@ -58,13 +58,14 @@ bool cp_run(const char *const *cmds, unsigned n, struct cp_run *r)
     CHECK_ST(new_job(&job), OK);
     char size[32];
     snprintf(size, sizeof(size), "size=%dx%d", CP_W, CP_H);
-    const char *argv[24] = { "bin/compositor", "headless", size, "threads=3", "testscene" };
-    CHECK(n <= 24 - 5);
+    const char *argv[24] = { "bin/compositor", "headless", size, "threads=3", "layout=floating",
+                             "testscene" };
+    CHECK(n <= 24 - 6);
     for (unsigned i = 0; i < n; i++)
-        argv[5 + i] = cmds[i];
+        argv[6 + i] = cmds[i];
     struct spawn_handle x[] = { { SR_USER + 0, svc_theirs }, { SR_USER + 1, image },
                                 { SR_USER + TESTSCENE_REPORT_ROLE, rep_theirs } };
-    struct spawn_args a = { .path = "bin/compositor", .argc = (int)(5 + n), .argv = argv,
+    struct spawn_args a = { .path = "bin/compositor", .argc = (int)(6 + n), .argv = argv,
                             .job = job, .extra = x, .nextra = 3 };
     CHECK_ST(spawn(&a, &proc), OK);
     struct process_info info;

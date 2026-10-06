@@ -16,7 +16,7 @@
 
 /* The scene (testscene.c's commands). Every step fits an 800x600 screen. */
 static const char *const scene_args[] = {
-    "bin/compositor", "testscene",
+    "bin/compositor", "layout=floating", "testscene",
     /* Step 1: two opaque floating windows and a translucent one over both
      * (the first focused), on the wallpaper; the arrow on the first's
      * circles, which show their symbols. */

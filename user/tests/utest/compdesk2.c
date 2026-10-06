@@ -55,7 +55,7 @@
 
 static bool key(uint16_t usage, uint8_t mods)
 {
-    return desk_key(usage, mods, keymap_mods_of_hid(mods));
+    return wm_test_key(usage, mods);
 }
 
 /* Super pressed and let go alone. */
@@ -390,10 +390,6 @@ static bool mapped(unsigned k)
     return fks[k].ww && fks[k].ww->win && (fks[k].ww->win->flags & COMP_WIN_MAPPED);
 }
 
-static bool box_eq(struct comp_box a, struct comp_box b)
-{
-    return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
-}
 
 static bool covers_output(const struct comp_window *w)
 {
@@ -452,7 +448,9 @@ static bool overlay_steps(void)
     /* tiling: the two windows share the room; it isn't one of them */
     wm_toggle_layout();
     struct comp_box room = screens_room(screens_cur());
-    CHECK(box_eq(win(0)->tile, wm_tile_box(room, 2, 0)));
+    int32_t half = (room.x2 - room.x1 - 3 * WM_GAP + 1) / 2;   /* the left of two */
+    CHECK(box_eq(win(0)->tile, (struct comp_box){ room.x1 + WM_GAP, room.y1 + WM_GAP,
+                                                  room.x1 + WM_GAP + half, room.y2 - WM_GAP }));
     CHECK(covers_output(win(1)));
     wm_toggle_layout();
     /* a client with keys: full screen on a screen of its own, as before */

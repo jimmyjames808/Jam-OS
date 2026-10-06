@@ -86,6 +86,14 @@ uint32_t keyboard_mods(uint8_t hid_mods)
     return keymap_mods_of_hid(hid_mods) | locked;
 }
 
+uint8_t keyboard_held_mods(void)
+{
+    uint8_t all = 0;
+    for (unsigned i = 0; i < SOURCES_MAX; i++)
+        all |= src_mods[i];
+    return all;
+}
+
 static uint32_t depressed(void)
 {
     uint8_t all = 0;

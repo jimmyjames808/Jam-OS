@@ -23,6 +23,7 @@ struct fake_seat {
     struct comp_window *gone;          /* the last window gone */
     enum comp_layout layout;           /* the last switch reported */
     bool save;                         /* reported switches go to WF, as init would write them */
+    uint8_t mods;                      /* the modifiers held at a press (INPUT_MOD_*) */
 };
 extern struct fake_seat seat;
 extern struct comp_client fake_client;
@@ -52,8 +53,36 @@ bool fk_open(struct fk *f, int32_t w, int32_t h, bool fixed);
 bool fk_open_full(struct fk *f, struct comp_client *cl);
 void fk_close_all(void);
 struct comp_window *win(unsigned i);
-/* A press at (x, y) with button: did the window manager (or the desktop) take it? */
+/* A press at (x, y) with button (and seat.mods held): did the window
+ * manager (or the desktop) take it? */
 bool press_btn(int32_t x, int32_t y, uint32_t button);
+/* The same with Super held. */
+bool press_super(int32_t x, int32_t y, uint32_t button);
+/* A key press as the seat offers it (focus.c): the desktop's, then the
+ * window manager's. Taken? */
+bool wm_test_key(uint16_t usage, uint8_t mods);
+/* Window i's surface at (wx, wy); fake i's last configure (in a test body). */
+#define AT(i, wx, wy)                                                   \
+    do {                                                                \
+        CHECK(win(i));                                                  \
+        CHECK_EQ(win(i)->x, (wx));                                      \
+        CHECK_EQ(win(i)->y, (wy));                                      \
+    } while (0)
+#define CFG(i, cw, ch, st)                                              \
+    do {                                                                \
+        CHECK_EQ(fks[i].cfg.width, (cw));                               \
+        CHECK_EQ(fks[i].cfg.height, (ch));                              \
+        CHECK_EQ(fks[i].cfg.states, (st));                              \
+    } while (0)
+
+static inline bool box_eq(struct comp_box a, struct comp_box b)
+{
+    return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
+}
+/* tile's surface box for a resizable tiled window (its border inside it). */
+struct comp_box tile_inner(struct comp_box tile);
+/* f was asked to fill box b (a surface box), draws, and sits in it. */
+bool fills_box(unsigned f, struct comp_box b);
 void move_to(int32_t x, int32_t y);
 /* The pointer to (x, y), and the button up: a grab ends. */
 void release_at(int32_t x, int32_t y);
@@ -65,7 +94,7 @@ bool drag(int32_t x, int32_t y, int32_t dx, int32_t dy);
 struct fake_desk {
     unsigned snaps, snaps_freed;
     char launched[32], ran[80];
-    unsigned nlaunch, nrun;
+    unsigned nlaunch, nrun, nterminal;
     uint32_t answered_id, answered_button;
     unsigned nanswered;
 };

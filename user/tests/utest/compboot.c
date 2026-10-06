@@ -4,7 +4,8 @@
  * t_comp_layout_wait: compctl's set_layout and layout_wait (how init
  * learns of a switch and saves it): answered at once for another layout,
  * kept until Super+T switches it, one waiting per channel, set_layout
- * answering it too; ADMIN only, the values checked.
+ * answering it too; ADMIN only, the values checked. Without a layout=
+ * argument the compositor starts tiling (the owner's default).
  * t_comp_super_enter: Super+Enter (and keypad Enter) asks init for a
  * terminal on its control channel, one ask at a time, whichever window has
  * the keys, and the window never sees Enter.
@@ -78,9 +79,14 @@ bool t_comp_layout_wait(void)
 {
     struct cs t;
     uint8_t l = 9;
+    /* no layout= argument: tiling, so a wait for floating is answered at once */
+    CHECK(cs_start_default(&t));
+    CHECK_ST(compctl_layout_wait_within(t.ctl, CT_WAIT, FLOATING, &l), OK);
+    CHECK_EQ(l, TILING);
+    CHECK(cs_stop(&t));
     CHECK(cs_start(&t));
     CHECK(layout_refusals(&t));
-    /* it starts floating (no layout= argument): a wait for tiling is answered at once */
+    /* it starts floating (layout=floating): a wait for tiling is answered at once */
     CHECK_ST(compctl_layout_wait_within(t.ctl, CT_WAIT, TILING, &l), OK);
     CHECK_EQ(l, FLOATING);
     /* a wait for floating stays until the user switches; a second one is refused */

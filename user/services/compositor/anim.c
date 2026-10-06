@@ -8,19 +8,26 @@
  *   - switching screens slides the windows of both sideways by the
  *     output's width (260 ms), the wallpaper and the strip staying put;
  *   - a boot overlay (the splash, screens.c) fades out where it was when it
- *     goes (200 ms), over the strip, to what is under it.
+ *     goes (200 ms), over the strip, to what is under it;
+ *   - tiles glide to their new places (200 ms) when a window opens or goes,
+ *     two swap or a key resizes one (wm_reflow); not while a gap is
+ *     dragged, which places them at once.
  *
- * One animation runs at a time: starting one, or anything the user does
- * that changes what is shown (desk.c, screens.c), first makes the running
- * one jump to its end. So a quick second key or click never waits for a
- * picture to finish.
+ * One animation runs at a time, and beside it at most one glide (a window
+ * opening grows in while the others glide to make room): starting one, or
+ * anything the user does that changes what is shown (desk.c, screens.c),
+ * first makes the running one jump to its end (a new glide ends the last
+ * glide; a picture's start ends a running picture or slide only). So a
+ * quick second key or click never waits for a picture to finish.
  *
  * Opening, closing, minimising, restoring and fading draw a snapshot of
  * the window (animdraw.c: its frame as it was, rounded corners clear)
  * scaled about a moving centre; the window itself is not drawn meanwhile (COMP_WIN_ANIMATED
  * while it is mapped, or it is unmapped or gone already). A slide moves the
  * windows themselves (struct comp_window's slide_x), so the clients' own
- * pixels keep coming.
+ * pixels keep coming; a glide moves them too, by slide_x and slide_y, from
+ * where each was shown to where it is now placed, so a client's commit
+ * that moves its window again mid-glide only bends the path.
  *
  * Driven by the loop's clock (desk_tick): each tick computes the frame for
  * its time, and damages only what changed: the picture's old and new boxes,
@@ -43,6 +50,8 @@ static struct {
     const struct desk_screen *from, *to;   /* a slide's screens */
     int dir;
     struct anim_draw now;          /* the frame the next paint draws */
+    bool gliding;                  /* a glide runs (beside the above) */
+    uint64_t glide_start;
 } an;
 
 void anim_init(bool on)
@@ -172,9 +181,75 @@ static void end(void)
     }
 }
 
+/* ---- gliding ---------------------------------------------------------------------------- */
+
+/* Every gliding window shown at eased progress e of its way. */
+static void glide_to(float e)
+{
+    for (struct wm_window *ww = wm_first(); ww; ww = ww->next) {
+        struct comp_window *w = ww->win;
+        if (!ww->gliding || !w)
+            continue;
+        int32_t sx = lerp(ww->glide_x - w->x, 0, e), sy = lerp(ww->glide_y - w->y, 0, e);
+        if (w->slide_x == sx && w->slide_y == sy)
+            continue;
+        window_damage(w);
+        w->slide_x = sx;
+        w->slide_y = sy;
+        window_damage(w);
+    }
+}
+
+static void glide_end(void)
+{
+    if (!an.gliding)
+        return;
+    glide_to(1.0f);
+    for (struct wm_window *ww = wm_first(); ww; ww = ww->next)
+        ww->gliding = false;
+    an.gliding = false;
+}
+
+void anim_glide_note(void)
+{
+    glide_end();
+    for (struct wm_window *ww = wm_first(); ww; ww = ww->next) {
+        const struct comp_window *w = ww->win;
+        ww->glide_noted = w && (w->flags & COMP_WIN_MAPPED);
+        if (ww->glide_noted) {
+            ww->glide_x = window_shown_x(w);
+            ww->glide_y = window_shown_y(w);
+        }
+    }
+}
+
+void anim_glide_start(void)
+{
+    bool any = false;
+    for (struct wm_window *ww = wm_first(); ww; ww = ww->next) {
+        const struct comp_window *w = ww->win;
+        bool moved = ww->glide_noted && w && (w->flags & COMP_WIN_MAPPED) &&
+                     (ww->glide_x != w->x || ww->glide_y != w->y);
+        ww->glide_noted = false;
+        ww->gliding = moved && an.on && an.kind != ANIM_SLIDE;
+        any |= ww->gliding;
+    }
+    if (!any)
+        return;
+    an.gliding = true;
+    an.glide_start = now();
+    glide_to(0.0f);
+}
+
+bool anim_gliding(void)
+{
+    return an.gliding;
+}
+
 void anim_finish(void)
 {
     end();
+    glide_end();
 }
 
 void anim_forget(const struct comp_window *w)
@@ -187,6 +262,10 @@ void anim_forget(const struct comp_window *w)
 
 void anim_tick(uint64_t t)
 {
+    if (an.gliding && t >= an.glide_start + LOOK_ANIM_GLIDE_MS * NS_PER_MS)
+        glide_end();
+    else if (an.gliding)
+        glide_to(ease((float)(t - an.glide_start) / (float)(LOOK_ANIM_GLIDE_MS * NS_PER_MS)));
     if (an.kind == ANIM_NONE)
         return;
     if (t >= an.start + an.ms * NS_PER_MS) {
@@ -198,7 +277,7 @@ void anim_tick(uint64_t t)
 
 uint64_t anim_deadline(void)
 {
-    if (an.kind == ANIM_NONE)
+    if (an.kind == ANIM_NONE && !an.gliding)
         return DEADLINE_NEVER;
     return scene.last_paint_ns + comp.period_ns;   /* the next paint's frame */
 }
@@ -215,7 +294,7 @@ bool anim_now(struct anim_draw *out)
  * scales from and to. False: none (animations off, no memory). */
 static bool begin(enum anim_kind kind, struct comp_window *w, uint64_t ms)
 {
-    anim_finish();
+    end();   /* a glide goes on beside it */
     if (!an.on || !w)
         return false;
     struct comp_box f = window_frame(w);

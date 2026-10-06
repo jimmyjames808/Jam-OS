@@ -91,6 +91,9 @@ void     keyboard_source_gone(unsigned src);
 /* KEYMAP_MOD_* for hid's modifier byte, with the locks on now (what a key
  * types: the desktop's search box). */
 uint32_t keyboard_mods(uint8_t hid_mods);
+/* The modifiers every keyboard holds now (INPUT_MOD_*): a press's, for
+ * Super+drag. */
+uint8_t  keyboard_held_mods(void);
 /* The focus left w's client's keyboards / arrived on w (enter with the keys held). */
 void     keyboard_leave(struct comp_window *w);
 void     keyboard_enter(struct comp_window *w);

@@ -126,6 +126,9 @@ enum cursor_shape wm_cursor_at(int32_t x, int32_t y)
 {
     bool on_surface;
     uint32_t e;
+    enum cursor_shape gap = wm_gap_cursor(x, y);
+    if (gap != CURSOR_SHAPES)
+        return gap;   /* a gap between tiles: its resize arrows */
     struct comp_window *w = wm_window_at(x, y, &on_surface);
     if (!w || on_surface)
         return CURSOR_ARROW;
@@ -152,7 +155,8 @@ enum cursor_shape wm_cursor_at(int32_t x, int32_t y)
 static bool takes_input(const struct comp_window *w, int32_t x, int32_t y)
 {
     const struct comp_surface *s = w->surface;
-    return s->input_all || region_contains(&s->input, x - w->x - w->slide_x, y - w->y);
+    return s->input_all ||
+           region_contains(&s->input, x - window_shown_x(w), y - window_shown_y(w));
 }
 
 struct comp_window *wm_window_at(int32_t x, int32_t y, bool *on_surface)

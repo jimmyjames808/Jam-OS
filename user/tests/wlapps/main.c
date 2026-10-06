@@ -125,9 +125,10 @@ static status_t start_compositor(const struct opts *o, struct comp *k)
         st = jam_job_create(startup_handle(SR_JOB), 0, &k->job);
     char size[32];
     snprintf(size, sizeof(size), "size=%dx%d", o->w, o->h);
-    const char *argv[] = { "bin/compositor", "headless", size, "layout=tiling" };
+    const char *argv[] = { "bin/compositor", "headless", size,
+                           o->tile ? "layout=tiling" : "layout=floating" };
     struct spawn_handle x[] = { { SR_USER + 0, theirs }, { SR_USER + 1, dup } };
-    struct spawn_args a = { .path = "bin/compositor", .argc = o->tile ? 4 : 3, .argv = argv,
+    struct spawn_args a = { .path = "bin/compositor", .argc = 4, .argv = argv,
                             .job = k->job, .extra = x, .nextra = 2 };
     if (st == OK) {
         st = spawn(&a, &k->proc);   /* consumes x either way */

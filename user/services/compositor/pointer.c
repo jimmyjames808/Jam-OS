@@ -64,12 +64,12 @@ void pointer_init_position(void)
 
 static int32_t local_x(const struct comp_window *w)
 {
-    return pos.x256 - (int32_t)((uint32_t)w->x << 8);
+    return pos.x256 - (int32_t)((uint32_t)window_shown_x(w) << 8);
 }
 
 static int32_t local_y(const struct comp_window *w)
 {
-    return pos.y256 - (int32_t)((uint32_t)w->y << 8);
+    return pos.y256 - (int32_t)((uint32_t)window_shown_y(w) << 8);
 }
 
 static void send_frame(struct comp_client *cl)
@@ -176,11 +176,11 @@ static void set_over(struct comp_window *w)
 /* The window whose surface is under the pointer, if its client is alive:
  * none over another window's decorations (wm_window_at sees title bars and
  * frames, which hide what is below them), nor over the desktop's strip or
- * cards. */
+ * cards, nor over a gap between tiles a press would drag. */
 static struct comp_window *under_pointer(void)
 {
     bool on_surface;
-    if (desk_covers(cursor.x, cursor.y))
+    if (desk_covers(cursor.x, cursor.y) || wm_gap_covers(cursor.x, cursor.y))
         return NULL;
     struct comp_window *w = wm_window_at(cursor.x, cursor.y, &on_surface);
     return w && on_surface && client_alive(w->surface->client) ? w : NULL;
@@ -216,7 +216,7 @@ static void press(unsigned b)
     if (first && !grab_ops) {
         set_over(under_pointer());
         implicit = true;   /* whatever it lands on (a window, or none) keeps the pointer */
-        if (wm_press(cursor.x, cursor.y, BTN_LEFT + b)) {
+        if (wm_press(cursor.x, cursor.y, BTN_LEFT + b, keyboard_held_mods())) {
             wm_buttons |= (uint8_t)(1u << b);   /* its release goes nowhere too */
             return;
         }

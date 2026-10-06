@@ -75,9 +75,9 @@ bool ct_start_arg(struct ct_comp *p, int32_t w, int32_t h, const char *arg)
     CHECK_ST(new_job(&p->job), OK);
     char size[32];
     snprintf(size, sizeof(size), "size=%dx%d", w, h);
-    const char *argv[] = { "bin/compositor", "headless", size, "nodesk", arg };
+    const char *argv[] = { "bin/compositor", "headless", size, "nodesk", "layout=floating", arg };
     struct spawn_handle x[] = { { SR_USER + 0, server }, { SR_USER + 1, image } };
-    struct spawn_args a = { .path = "bin/compositor", .argc = arg ? 5 : 4, .argv = argv,
+    struct spawn_args a = { .path = "bin/compositor", .argc = arg ? 6 : 5, .argv = argv,
                             .job = p->job, .extra = x, .nextra = 2 };
     CHECK_ST(spawn(&a, &p->proc), OK);
     return true;
