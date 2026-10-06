@@ -7,6 +7,7 @@
 #     button (the card's place: notify.c, under the 40-pixel strip at
 #     y 48, 300 wide from 10 off the right edge; a body's line, then the
 #     buttons) answers it;
+#   - the terminal's text cursor shape (a screenshot only);
 #   - init launches only the desktop's apps (`launch`);
 #   - the search box (Super tapped alone): "jamj" and Enter starts Jamjar
 #     through init, the cursor busy until its window is up; Super+Q closes
@@ -29,6 +30,11 @@ sleep 0.2
 monitor mouse_button 0
 wait 10 : Yes
 wait {prompt}
+# the pointer over the terminal's text: the text bar it asked for
+# (wp-cursor-shape-v1); the arrow over its padding
+pointer 400 400
+sleep 0.5
+shot desk-text-cursor
 # ---- what init launches ---------------------------------------------------------------------
 send launch fractal
 wait 10 launch: fractal is not one of the desktop's apps

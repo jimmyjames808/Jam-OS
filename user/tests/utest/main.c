@@ -968,6 +968,7 @@ static const struct {
     { "conpaint_bitmap", t_conpaint_bitmap },
     { "conwin_keys", t_conwin_keys },
     { "conwin_pointer", t_conwin_pointer },
+    { "conwin_pointer_shape", t_conwin_pointer_shape },
     { "jwlc_real_compositor", t_jwlc_real_compositor },
     { "comp_seat_keymap", t_comp_seat_keymap },
     { "comp_seat_focus", t_comp_seat_focus },

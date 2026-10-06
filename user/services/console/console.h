@@ -281,6 +281,11 @@ struct pointer_track {
  * none (enter, leave, no movement, another axis or button). */
 bool mouse_of_wayland(struct pointer_track *p, const struct jwl_event *ev,
                       struct input_mouse_event *out);
+/* The pointer's shape at surface pixel (x, y) of a window with a cols x
+ * rows grid of l's cells inside its padding (wp-cursor-shape-v1's): the
+ * text bar over the text, the arrow over the padding. */
+uint32_t pointer_shape_at(const struct cell_look *l, uint32_t cols, uint32_t rows, int32_t x,
+                          int32_t y);
 
 /* ---- notices.c: while the kernel log is off the screen ---------------------------- */
 

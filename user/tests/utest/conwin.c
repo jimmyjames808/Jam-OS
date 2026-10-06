@@ -10,6 +10,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <jwl/cursor_shape_v1.h>
 #include <keymap.h>
 #include <os.h>
 #include "console.h"
@@ -191,6 +192,23 @@ static struct jwl_event pointer_ev(uint32_t type, int32_t x, int32_t y)
     e.pointer.x = x * 256;
     e.pointer.y = y * 256;
     return e;
+}
+
+/* The text bar over the grid's cells, the arrow over the padding round it. */
+bool t_conwin_pointer_shape(void)
+{
+    const struct cell_look l = { .w = 9, .h = 21 };
+    const uint32_t text = JWL_WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT;
+    const uint32_t arrow = JWL_WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT;
+    CHECK_EQ(pointer_shape_at(&l, 104, 27, WIN_PAD, WIN_PAD), text);
+    CHECK_EQ(pointer_shape_at(&l, 104, 27, WIN_PAD + 104 * 9 - 1, WIN_PAD + 27 * 21 - 1), text);
+    CHECK_EQ(pointer_shape_at(&l, 104, 27, 300, 200), text);
+    CHECK_EQ(pointer_shape_at(&l, 104, 27, WIN_PAD - 1, 200), arrow);
+    CHECK_EQ(pointer_shape_at(&l, 104, 27, 300, WIN_PAD - 1), arrow);
+    CHECK_EQ(pointer_shape_at(&l, 104, 27, WIN_PAD + 104 * 9, 200), arrow);
+    CHECK_EQ(pointer_shape_at(&l, 104, 27, 300, WIN_PAD + 27 * 21), arrow);
+    CHECK_EQ(pointer_shape_at(&l, 104, 27, -1, -1), arrow);
+    return true;
 }
 
 bool t_conwin_pointer(void)

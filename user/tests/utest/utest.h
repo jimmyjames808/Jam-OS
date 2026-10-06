@@ -500,6 +500,7 @@ bool t_conwin_view(void);
 bool t_conwin_font_setting(void);
 bool t_conwin_keys(void);
 bool t_conwin_pointer(void);
+bool t_conwin_pointer_shape(void);
 /* conpaint.c: the console's cells drawn (cellpaint.c, linked in). */
 bool t_conpaint_metrics(void);
 bool t_conpaint_cells(void);
