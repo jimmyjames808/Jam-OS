@@ -81,3 +81,7 @@ protocol audio 22
 # output's sample size now (0: the output is closed); `played`, its
 # frames heard (estimated, as stream_position).
 8  stream_stats  ()  -> (u32 underruns, u32 late, u32 min_lead, u32 limited, u32 bits, u64 played)
+# On a stream channel: what plays on it, for the desktop (audioctl.desk):
+# "Artist - Title" (NUL-terminated UTF-8, a control character replaced by
+# '?'; "" clears it). Kept until changed or the stream closes.
+9  stream_set_title  (u8[64] title)  -> ()

@@ -71,6 +71,7 @@
 #define KEY_CTL     2u
 #define KEY_DEVMGR  3u
 #define KEY_OUT     4u          /* | out.gen << 8 */
+#define KEY_DESK    5u          /* the desktop's channel (SR_AUDIO_DESK) */
 #define KEY_STREAM  0x10u       /* + slot, | gen << 8 */
 #define KEY_EVENT   0x30u       /* + slot, | gen << 8 */
 #define KEY_CLIENT  0x50u       /* + an opener's slot, | gen << 8 */
@@ -78,7 +79,7 @@
 #define MIXER_CLIENTS 24u       /* openers' channels at once (clients.c) */
 
 #define STATE_KIND     0x6d697872u   /* "mixr": the state's svcstate kind */
-#define STATE_LAYOUT   2u            /* struct mixer_saved's layout version */
+#define STATE_LAYOUT   3u            /* struct mixer_saved's layout version */
 #define DEVICE_QUEUE   8u            /* audioctl.device requests handed to device.c's thread */
 
 /* The keeper's slots (<keep.h>): which handles each one holds, in order. */
@@ -110,6 +111,7 @@ struct stream {
     uint32_t    owner_gen;         /* that slot's generation then (0 for the shared one) */
     uint32_t    gen;               /* the slot's generation (its port keys) */
     char        name[16];
+    char        title[64];         /* what plays on it (stream_set_title), "" none */
     bool        playing;           /* started */
     int32_t     volume;            /* centibels */
     uint32_t    gain;              /* Q15, from volume */
@@ -170,6 +172,7 @@ struct out_own {
 struct client {
     bool     used;      /* a channel is open in this slot */
     bool     ctl;       /* an `audioctl` channel (else `audio`) */
+    bool     desk;      /* ... with the desktop's authority only (desk_channel) */
     uint32_t gen;       /* the slot's generation (its port key) */
 };
 
@@ -220,6 +223,9 @@ struct mixer {
     struct mixer_saved *saved;     /* in the state VMO */
     struct svcstate     state;     /* the state VMO, mapped */
     handle_t      port, svc, ctl;
+    handle_t      desk;            /* the desktop's channel (SR_AUDIO_DESK), or 0 */
+    bool          desk_pending;
+    char          out_name[48];    /* the output's name (hda.output_name), "" not known yet */
     handle_t      cards[MIXER_CARDS];   /* devmgr's device channels, one per sound card */
     unsigned      ncards;
     bool          svc_pending, ctl_pending;
@@ -289,6 +295,8 @@ void     req_status(struct mixer *m, unsigned slot, handle_t ch, status_t st);
  * channel; sets the pending flag again if more may be queued. */
 void serve_svc(struct mixer *m);
 void serve_ctl(struct mixer *m);
+/* The same for the desktop's channel. */
+void serve_desk(struct mixer *m);
 /* Up to a budget of messages from an `audio` (or `audioctl`) channel ch,
  * the shared one or an opener's (`owner`: struct stream's), OK if the
  * budget was spent (more may be queued), else the read's status
@@ -351,6 +359,10 @@ void     out_publish(struct mixer *m);
 /* Forget the driver's channel (it died, or is to be found again): closed,
  * the keeper told. */
 void     out_forget_driver(struct mixer *m);
+/* The output's name (hda.output_name), asked of the driver the first time
+ * (found if need be: out_find); "" if there is none. The process's own,
+ * not the state's: a successor asks again. */
+const char *out_name(struct mixer *m);
 /* The driver's gain in centibels (hda.get_gain), or 0 if it can't say (no
  * driver found yet: this never goes looking for one). */
 int32_t  out_device_gain(struct mixer *m);
@@ -366,9 +378,9 @@ status_t out_query(struct mixer *m, uint32_t index, handle_t *out);
 
 /* svc.connect: a new opener's channel (`audioctl` if ctl), watched on the
  * port; *out: the client end. ERR_NO_RESOURCES: MIXER_CLIENTS already. */
-status_t clients_connect(struct mixer *m, bool ctl, handle_t *out);
+status_t clients_connect(struct mixer *m, bool ctl, bool desk, handle_t *out);
 /* The same, answered on ch to the request in the request slot `slot`. */
-void clients_connect_reply(struct mixer *m, handle_t ch, unsigned slot, bool ctl);
+void clients_connect_reply(struct mixer *m, handle_t ch, unsigned slot, bool ctl, bool desk);
 /* The opener a port key names, if it still holds that slot's generation. */
 struct client_own *clients_keyed(struct mixer *m, uint64_t key);
 /* Opener i's channel closed and its slot free (the keeper told). */

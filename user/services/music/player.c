@@ -265,6 +265,10 @@ static status_t open_track(struct player *p, uint32_t i, bool again)
     p->src_open = true;
     p->cur = i;
     p->cur_frames = 0;
+    /* What the desktop's volume popover shows as playing (audioctl.desk). */
+    uint8_t t64[64] = { 0 };
+    snprintf((char *)t64, sizeof(t64), "%s", title);
+    (void)audio_stream_set_title_until(p->a.s.ch, now() + SOON, t64);   /* only a label */
     uint64_t ms = p->src.frames && p->src.rate ? p->src.frames * 1000 / p->src.rate : 0;
     mark(p, i, ++p->serial, (int64_t)p->a.s.write, ms);
     if (!again)

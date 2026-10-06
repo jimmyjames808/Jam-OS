@@ -67,7 +67,9 @@ handle_t key_channel(struct mixer *m, uint32_t key, struct stream **s, uint32_t 
     uint32_t low = KEY_LOW(key), gen = KEY_GEN(key);
     *s = NULL;
     *owner = 0;
-    *ctl = key == KEY_CTL;
+    *ctl = key == KEY_CTL || key == KEY_DESK;
+    if (key == KEY_DESK)
+        return m->desk;
     if (key == KEY_SVC || key == KEY_CTL)
         return key == KEY_SVC ? m->svc : m->ctl;
     if (low >= KEY_CLIENT && low < KEY_CLIENT + MIXER_CLIENTS) {
