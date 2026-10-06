@@ -7,8 +7,9 @@
 # the keys; a click on the first terminal giving them back; Super+Right
 # and Super+H moving the focus by direction; two more terminals splitting
 # the focused tile (four tiles: desktop-tiles); the gap between the first
-# two dragged; Super+Q closing terminals; Super+T's floating saved and kept
-# across a reboot.
+# two dragged; Super+Q closing terminals, the first too, and Super+Enter
+# opening terminal 1 again; Super+T's floating saved and kept across a
+# reboot.
 #
 # Where things are at OVMF's 1280x800: the room for tiles is under the
 # desktop's strip (40 pixels) less a 6-pixel gap all round: x 6..1274, y
@@ -99,6 +100,26 @@ sleep 1
 shot desktop-closed
 usbkeys echo usb-last\r
 wait 10 usb-last
+wait {prompt}
+# the first terminal closes like any other (the polish track): a click on
+# it, Super+Q, and Super+Enter opens terminal 1 again (the lowest number free)
+pointer 300 400
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.5
+monitor sendkey meta_l-q
+wait 10 init: terminal 1: its window was closed
+wait 10 init: terminal 1 is closed
+sleep 1
+monitor sendkey meta_l-ret
+wait 10 init: terminal 1 opens
+wait 30 Jam OS shell
+wait 10 {prompt}
+sleep 1
+shot desktop-reopened
+usbkeys echo usb-again\r
+wait 10 usb-again
 wait {prompt}
 # Super+T: floating, saved by init (the compositor's layout_wait answered);
 # a reboot (kexec) comes back floating, as the settings say
