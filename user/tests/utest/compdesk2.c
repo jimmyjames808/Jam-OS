@@ -282,6 +282,19 @@ static bool popover_steps(void)
     /* the slider: a click at its middle, then a drag to its end */
     CHECK(placed_under(STRIP_VOL, POP_VOLUME));
     struct comp_box s = pop_slider_box();
+    /* the percentage's slot: as wide as "100%" (every value fits), at the
+     * popover's padding, and the knob at 100% (its radius past the
+     * slider's end) LOOK_POP_PCT_GAP short of it */
+    struct comp_box p = pop_pct_box();
+    CHECK_EQ(p.x2, pop.box.x2 - LOOK_POP_PAD);
+    for (unsigned v = 0; v <= 100; v++) {
+        char pct[8];
+        snprintf(pct, sizeof(pct), "%u%%", v);
+        CHECK(desk_text_w(desk_font.r12, pct) <= p.x2 - p.x1);
+    }
+    CHECK(desk_font.r12 != NULL);   /* measured with the real font */
+    CHECK_EQ(p.x1 - (s.x2 + LOOK_POP_KNOB), LOOK_POP_PCT_GAP);
+    CHECK(s.x2 - s.x1 >= 100);      /* the slider keeps room to drag */
     CHECK(press_btn((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, BTN));
     CHECK(pop.volume >= 49 && pop.volume <= 50);
     move_to(s.x2 + 40, s.y1);
