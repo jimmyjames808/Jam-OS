@@ -85,6 +85,10 @@ bool t_mp3_decode(void);
 /* text.c: libos's text helpers: <utf8.h>. */
 bool t_utf8_well_formed(void);
 bool t_utf8_bad_pieces(void);
+/* crashinfo.c: a saved panic read back: <crashinfo.h>. */
+bool t_crashinfo_report(void);
+bool t_crashinfo_code(void);
+bool t_crashinfo_hostile(void);
 
 /* time.c: <wallclock.h> (the calendar, the zones, the clock's calls) and
  * <settings.h> (the parser, and the file on a FAT volume). */
