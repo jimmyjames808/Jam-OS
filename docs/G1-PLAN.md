@@ -1274,6 +1274,23 @@ still paints it. A window whose client has a keyboard still goes full
 screen on a screen of its own. Tests: utest's `desk_overlay`,
 `comp_paint_overlay` and `comp_screen_on_top` (desktop off and on).
 
+**As built: the splash first (the owner: "the first thing you should see
+should be the splash").** The compositor starts before the splash and
+used to paint its desktop at once, so the wallpaper and strip flashed for
+about half a second. Now init gives it the argument `splash` at its first
+start on a boot that plays the splash (`comp.c`: the splash not yet
+played; never on a restart, nor with `nosplash`, `verbose`, the text-log
+entry, `comptest` or `nocomp`), and until a boot overlay is mapped with a
+buffer every tile is `LOOK_BLANK` (`SPLASH_BG`, the colour a kexec reboot
+blanks to, which output.c fills the screen with at start): no wallpaper,
+strip, window or cursor (`paint.c`, `comp.splash_until`). With no overlay
+within 5 s it paints the desktop anyway (`compositor: no splash after
+5000 ms`). The windows behind it are placed, focused and given keys as
+before: typing reaches the first terminal. Tests: utest's
+`comp_paint_splash` (test-scene commands `splash` and `splashtick=`) and
+splash-test.sh's compositor boot (`check early`: twelve screenshots from
+init's start, each the background or a frame of the video).
+
 **As built: the terminal's look (the owner's Q9 change, 2026-10-06).**
 The terminal windows draw JetBrains Mono 2.304 (OFL; Regular and Bold,
 cut by `tools/subsetfont.py --terminal` to Latin-1, Latin Extended-A and
