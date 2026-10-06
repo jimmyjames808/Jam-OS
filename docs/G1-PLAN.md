@@ -154,8 +154,9 @@ differs from the recommendation below, this note wins:
   Notifications: frosted cards stacked
   in the top right under the strip (icon tile, title, one line), fading
   after about 5 s unless they carry buttons (e.g. "Update written ...
-  Reboot / Later"), which stay until answered; every notice still goes
-  to the first terminal too. No overview of all screens in G1.
+  Reboot / Later"), which stay until answered (the polish track: no
+  terminal shows notices any more; under `nocomp` the full-screen console
+  still does). No overview of all screens in G1.
   Words on the desktop are in sentence case (owner, from the mockups):
   window titles, top-bar chips, menu rows, popover labels, notifications
   and buttons start with a capital ("Terminal", "Mines", "Connected",
@@ -1460,6 +1461,63 @@ notices; the update card's Reboot clicked). Not yet: the popovers in
 QEMU (the strip's icons move with the clock's width: the volume and
 network popovers are checked in utest with fake services, the mixer's and
 netstack's sides apart); Jamjar asking for the text bar.
+
+**As built: the polish track (P1: the menu, the quiet boot, equal
+terminals, `help dev`, plain words; the panic screen is P2's).** The boot
+menu (`boot/limine.conf`) has three entries on top, "Jam OS", "Jam OS
+(previous build)" and "Jam OS (no compositor)", and one folder,
+"Developer", with everything else side by side (the text log, the
+IOMMU, safe mode, the two network checks, no network, and every test
+entry): the menu check allows one level of folder, unchanged; the
+default still boots `/boot/jamos.elf` and "Jam OS (previous build)" is
+still at the top. The quiet boot: every console gets "nolog" but the
+first terminal's on a `verbose` boot (the kernel now passes init the word
+`verbose`, Developer > "Jam OS (text log, no splash)"), so the first
+terminal starts at the shell's banner and prompt on every boot, with the
+splash or without; the log stays in `log`, `dmesg`, `/data/logs`, the
+serial port and netlog. A console in a window makes no notices: what
+matters to a user is a desktop card in plain words from whoever knows
+it: init a service's crash (killed by nobody's request, the first in its
+minute: "Sound crashed / Jam OS started it again") and its give-up
+("Terminal 2 stopped / It kept stopping; Jam OS closed it."); devmgr a
+real driver's (not the crash-test driver's, another stick's filesystem's
+or anything at a shutdown), "Jam OS stick removed / Nothing is saved
+until it's back" and "Jam OS stick is back" (a pull, not a usb-storage
+restart: `struct disk`'s `boot_down`), and "Your files can't be saved"
+when the data partition doesn't open. Under `nocomp` (decided: quiet
+too, the same `verbose` escape) the full-screen console is the only
+screen, so its yellow notices stay, in sentence case and naming Jam OS.
+Every terminal is equal with a compositor (`user/services/init/terms.c`):
+the first closes with its close circle, Super+Q or `exit` (its shell gets
+`term=1` like the others), and one that ends too often is given up on
+and closes; `initctl.terminal` opens the lowest number free (1 again),
+whose window is titled "Terminal" (the compositor's busy cursor waits for
+that name); with no terminal the desktop shows its wallpaper and strip
+and Super+Enter or the search box opens one. The services that waited
+for the first console wait only for its first start (the order at
+boot). Under `nocomp` the one console and its shell are never given up
+(`terms_never_given_up`) and `exit` says the terminal stays. `help` lists
+the everyday commands (files, text, programs and windows, music and
+sound, the network, the system with `update`, `reboot`, `crashlog` and
+`log`, the shell); `help dev` the developer ones (hardware: `devices`,
+`usb`, `pci`, `hda`, `iommu`, `memmap`, `mem`; kernel and boot: `dmesg`,
+`kernel`, `crash`, `panic`; tests and benchmarks: `ktest`, `soak`,
+`bench`, `stress`, `storm`, `utest`, `usbtest`, `hdatest`, `mixtest`, and
+the test programs by name); `help <command>` either (`sh_table.c`'s
+header has the rule). Plain words: `update` says "Looking for a new build
+at ...", "Downloading Jam OS <version> (12.3 MB)", "50% downloaded",
+"Jam OS <version> is loaded and written to the stick", "Type reboot to
+start it", "Update refused: ... Nothing was changed."; its detailed lines
+(sizes, gits, times, init's verdict, the menu) go to the log only
+(`detail`, debug_write), where the tests read them on the serial port;
+`reboot` says "Restarting..."; the update cards "Jam OS <version>. Reboot
+to start it."; netstack's "Disconnected / The network went away."; card
+bodies kept within the card's one line. Tests: `tools/quiet-test.sh`
+(`quiet-check.py`, `quiet.txt`), `terms-windows.txt` (`exit` closes the
+first, Super+Enter reopens terminal 1), `desktop.txt` (Super+Q on the
+first, `desktop-reopened`), `cmds.txt` (`help`, `help dev`), `unplug.txt`
+(the stick's two cards), `shell-forever.txt` under `nocomp`; the console's
+selftest and `screen-test.sh` for the sentence-case notices.
 
 **Order and parallel work:**
 
