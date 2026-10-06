@@ -30,7 +30,13 @@
  * has died, devmgr makes the channel the restarted driver will serve and
  * GET_SERVICE hands it out: clients that saw ERR_PEER_CLOSED reconnect at
  * once and their calls wait in the channel until the new driver reads
- * them (the reconnect rule, <devmgr.h>). */
+ * them (the reconnect rule, <devmgr.h>).
+ *
+ * On the desktop (devmgr_notices, <notice.h>) a real driver's first crash
+ * in its window and its give-up are notices in plain words ("Sound
+ * driver crashed / Jam OS started it again"); a deliberate kill, the
+ * crash-test driver, another stick's filesystem service and anything at
+ * a shutdown are not. The log lines are as they were. */
 #include <fatsvc.h>
 #include "internal.h"
 
@@ -39,6 +45,42 @@
 static bool excused(const struct binding *b)
 {
     return b->test || (b->kind == BIND_FS && b->other);
+}
+
+/* What a user calls b's driver, for a notice ("Sound driver"). */
+static void plain_name(const struct binding *b, char *buf, size_t n)
+{
+    static const struct { const char *path, *name; } names[] = {
+        { "drv/hda", "Sound driver" },          { "drv/usb-bus", "USB driver" },
+        { "drv/hid", "Keyboard and mouse driver" }, { "drv/usb-storage", "USB stick driver" },
+        { "drv/rtl8125", "Network driver" },    { "drv/e1000e", "Network driver" },
+    };
+    if (b->kind == BIND_FS) {
+        snprintf(buf, n, "File system");
+        return;
+    }
+    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (b->path && !strcmp(b->path, names[i].path)) {
+            snprintf(buf, n, "%s", names[i].name);
+            return;
+        }
+    snprintf(buf, n, "Driver %s", b->path ? b->path : "?");
+}
+
+/* A notice of b's crash (first: the first in its window) or give-up, if
+ * it is news to a user. */
+static void tell_desktop(const struct binding *b, bool gave_up, bool first)
+{
+    char title[64];
+    if (excused(b) || shutdown_asked || (!gave_up && !first))
+        return;
+    plain_name(b, title, sizeof(title));
+    size_t n = strlen(title);
+    snprintf(title + n, sizeof(title) - n, gave_up ? " stopped" : " crashed");
+    notice_post(&devmgr_notices, title,
+                gave_up ? "It kept crashing, so Jam OS stopped restarting it."
+                        : "Jam OS started it again.",
+                '!', NOTICE_RASPBERRY);
 }
 
 /* Restarts within the window. */
@@ -87,6 +129,8 @@ static void schedule(struct binding *b, const char *why, bool expected)
             : excused(b) ? " (another stick's filesystem: left alone)" : "");
         if (!excused(b))
             problems++;
+        if (!deliberate)
+            tell_desktop(b, true, false);
         if (b->kind == BIND_FS) {
             drop_channel(b);   /* its clients see ERR_PEER_CLOSED: the mount is gone */
             fs_kept_release(b);
@@ -109,6 +153,8 @@ static void schedule(struct binding *b, const char *why, bool expected)
     else
         say(!expected, "devmgr: %s %s %s: restart %u in %u ms", bdf(b), b->path, why, n + 1,
             b->backoff_ms);
+    if (!expected && !deliberate)
+        tell_desktop(b, false, n == 0);
 }
 
 void sup_died(struct binding *b, uint32_t gen)

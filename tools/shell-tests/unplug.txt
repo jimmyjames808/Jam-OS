@@ -2,7 +2,9 @@
 # monitor: device_del / device_add of the boot stick, id "stick"). /esp and
 # /data go away and nothing hangs; /boot and the shell carry on; after the
 # replug the mounts are back in the running shell, what was synced is
-# there, and logd carries on in its file.
+# there, and logd carries on in its file. On the desktop devmgr's notices
+# say so in plain words: "Jam OS stick removed", then "Jam OS stick is
+# back" (the compositor's log line of each).
 # QEMU_INPUT=this file, command line "shell".
 wait 120 Jam OS shell
 wait {prompt}
@@ -16,6 +18,7 @@ wait written before the pull-u
 # ---- pulled ------------------------------------------------------------------------------
 monitor device_del stick
 wait 30 init: /data is gone
+seen 30 : Jam OS stick removed: Nothing is saved until you put it back.
 send ls /data; echo st-$T=$?
 wait ls: /data: no such file or directory
 wait st-u=1
@@ -32,6 +35,7 @@ wait run: bin/utest exited with code 0
 monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick
 wait 60 init: /data mounted
 wait 30 logd: writing /data/logs/boot-0001.txt
+seen 30 : Jam OS stick is back: Your files are saved again.
 send cat /data/keep.txt
 wait written before the pull-u
 send write /data/again.txt written after the replug-$T && cat /data/again.txt

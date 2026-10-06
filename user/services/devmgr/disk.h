@@ -53,6 +53,7 @@ struct disk {
     uint8_t         told;       /* bit n: partition n's mount was on the desktop (a notice) */
     char            at[MAX_PARTS][16];   /* ... where it was mounted ("/usb0") */
     uint8_t         want;       /* DISK_OTHER: bit n: partition n waits for its service */
+    bool            boot_down;  /* DISK_DOWN: it was the boot disk when its driver stopped */
 };
 
 extern struct disk disks[MAX_DISKS];
@@ -75,6 +76,9 @@ void        drop_services(struct disk *d, enum disk_state state);
 /* b, another stick's partition d holds, is mounted now: the desktop's
  * notice, once a mount (devmgr_notices). */
 void        disk_told_added(struct disk *d, const struct binding *b);
+/* The desktop's notice that the boot disk d went (came: false) or came
+ * back after it went (came: true); nothing else is news. */
+void        disk_told_boot(const struct disk *d, bool came);
 void        others_pump(void);                    /* start the next /usbN waited for */
 void        mount_others(struct disk *d);         /* step 4: d's FAT partitions, read-only */
 /* An fs.stat of `path` written to b's service without waiting (fs_answers

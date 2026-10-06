@@ -47,8 +47,14 @@
  * it hands its keeper, and a warm spare to promote), and has a rule of its
  * own: a deliberate kill (initctl.kill) neither counts nor waits, and the
  * first crash in a minute is restarted at once; later crashes count and
- * back off as above. init itself never returns in this mode. */
+ * back off as above. init itself never returns in this mode.
+ *
+ * With a compositor a service's crash (killed, by nobody's request: the
+ * kernel's, for a fault) is a notice on the desktop in plain words, the
+ * first in its minute only ("Sound crashed / Jam OS started it again"),
+ * and so is giving one up; the log has the details as ever. */
 #include <deskapps.h>
+#include <notice.h>
 #include <os.h>
 #include "init.h"
 
@@ -259,6 +265,44 @@ static bool went_with_console(unsigned i)
     return !c->running || jam_object_wait_one(c->proc, SIG_TERMINATED, 0, &seen) == OK;
 }
 
+/* What a user calls service i, for a notice ("Sound", "Terminal 2"):
+ * false for the compositor (its notices go with it). */
+static bool plain_name(unsigned i, char *buf, size_t n)
+{
+    static const char *const names[TERMS] = {
+        [BOOTFS] = "Boot files", [SERIALIN] = "Serial input", [DEVMGR] = "Device manager",
+        [MIXER] = "Sound", [MUSIC] = "Music player", [NETSTACK] = "Network",
+        [DHCP] = "Network address (DHCP)", [DNS] = "Name lookup (DNS)", [LOGD] = "Log saving",
+        [NETLOG] = "Network log", [SNTP] = "Clock sync", [SERVE] = "File server",
+    };
+    int k = term_of(i);
+    if (k >= 0) {
+        char t[16] = "Terminal";
+        if (k)
+            snprintf(t, sizeof(t), "Terminal %d", k + 1);
+        snprintf(buf, n, "%s%s", (unsigned)TERM_SHELL(k) == i ? "The shell in " : "", t);
+        return true;
+    }
+    if (i >= TERMS || !names[i])
+        return false;
+    snprintf(buf, n, "%s", names[i]);
+    return true;
+}
+
+/* A notice of svc i's crash (or, gave_up, of giving it up). */
+static void tell_desktop(unsigned i, bool gave_up)
+{
+    char title[64];
+    if (!plain_name(i, title, sizeof(title)))
+        return;
+    size_t n = strlen(title);
+    snprintf(title + n, sizeof(title) - n, gave_up ? " stopped" : " crashed");
+    const char *body = !gave_up         ? "Jam OS started it again."
+                       : term_of(i) >= 0 ? "It kept stopping, so Jam OS closed it."
+                                         : "It kept stopping, so Jam OS stopped restarting it.";
+    comp_notice(title, body, '!', NOTICE_RASPBERRY, NULL, false);
+}
+
 /* Count svc i's end at t in its minute: true if it may start again. */
 static bool count_end(unsigned i, uint64_t t)
 {
@@ -271,6 +315,7 @@ static bool count_end(unsigned i, uint64_t t)
         s->given_up = true;
         services_given_up(i);
         init_say("init: %s ended %u times in a minute: not restarting it", s->path, s->ends);
+        tell_desktop(i, true);
         return false;
     }
     if (s->ends == GIVE_UP_COUNT + 1)
@@ -339,6 +384,8 @@ static void ended(unsigned i)
     bool counted = !took && !(spare_kept(i) && s->kill_at);
     if (counted && !count_end(i, t))
         return;
+    if (got && info.killed && !s->kill_at && s->ends == 1)
+        tell_desktop(i, false);   /* a crash, the first in its minute */
     if (kept_restart(i, t))
         return;
     /* Ran for a while (or went with its console): start again soon; else
