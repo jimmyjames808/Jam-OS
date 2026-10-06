@@ -7,6 +7,7 @@
  *
  * No state of the console's and no system calls: utest checks them
  * (user/tests/utest/conwin.c). */
+#include <jwl/cursor_shape_v1.h>
 #include <keymap.h>
 #include "console.h"
 
@@ -104,6 +105,15 @@ static uint8_t button_bit(uint32_t button)
 static int16_t clamp16(int32_t v)
 {
     return (int16_t)(v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : v);
+}
+
+uint32_t pointer_shape_at(const struct cell_look *l, uint32_t cols, uint32_t rows, int32_t x,
+                          int32_t y)
+{
+    bool text = x >= WIN_PAD && y >= WIN_PAD && x < WIN_PAD + (int32_t)cols * l->w &&
+                y < WIN_PAD + (int32_t)rows * l->h;
+    return text ? JWL_WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT
+                : JWL_WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT;
 }
 
 bool mouse_of_wayland(struct pointer_track *p, const struct jwl_event *ev,

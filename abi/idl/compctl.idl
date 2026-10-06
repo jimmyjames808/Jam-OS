@@ -5,8 +5,20 @@
 # drivers' input sources) and for serialin. Format: see tools/genidl.py.
 #
 # Levels, fixed on a channel when it is made: 0 ADMIN (init's: every
-# method), 1 INPUT (devmgr's and serialin's: connect_input only). Any other
-# method on an INPUT channel: ERR_ACCESS_DENIED.
+# method), 1 INPUT (devmgr's and serialin's: connect_input only), 2 NOTIFY
+# (notify, notify_wait and withdraw only: the desktop's notices). Any
+# other method on a narrower channel: ERR_ACCESS_DENIED.
+#
+# /svc/notify: a shared channel init makes once and keeps (both ends, as
+# /svc/wayland's), whose server end each compositor is started with
+# (SR_USER + 5). The svc protocol's connect on it (abi/idl/svc.idl)
+# answers a new NOTIFY channel, so whoever holds it may post notices and
+# nothing more: init publishes it (not under `nocomp`) for the programs
+# whose list asks (`svc notify`: the shell's `notify`) and gives a
+# duplicate to devmgr (a stick added or removed) and netstack (connected,
+# disconnected). <notice.h> is the posters' side. At most NOTIFY_CHANNELS
+# (8) NOTIFY channels at once, apart from the other levels' CTL_MAX:
+# ERR_NO_RESOURCES past that.
 #
 # Reconnect: the compositor keeps nothing across a restart. After
 # ERR_PEER_CLOSED ask init for a new channel (init restarts the
@@ -17,24 +29,27 @@
 # held down (the new compositor starts with none held, Num Lock on). A
 # layout_wait still waiting ends with ERR_PEER_CLOSED: init asks the new
 # compositor again (it starts it with the saved layout, so a switch the
-# old one had not reported yet is lost).
+# old one had not reported yet is lost). A NOTIFY channel closes too, and
+# its notices go with the compositor: connect again on /svc/notify (calls
+# wait there for the next compositor, bounded by the caller's deadline);
+# a notify_wait still waiting ends with ERR_PEER_CLOSED.
 
 protocol compctl 32
 
 # A new input source: the compositor serves the `input` protocol
 # (abi/idl/input.idl, unchanged) on its end; the caller hands the other end
 # to the source (a HID driver, serialin), which calls `input` on it. At
-# most 16 sources at once: ERR_NO_RESOURCES.
+# most 16 sources at once: ERR_NO_RESOURCES. ADMIN and INPUT.
 1  connect_input  () -> (handle source)
 # Blank the screen (on 1): the splash's background over all of it and no
 # window drawn, until on 0. Input still goes to the windows. For init's
 # reboot by kexec: the screen stays that colour until the next boot's
 # splash. ADMIN only.
 2  blank          (u8 on) -> ()
-# A new channel with less authority: level 1 (INPUT). A caller may only
-# make a level above its own: ERR_ACCESS_DENIED otherwise,
-# ERR_INVALID_ARGS for a level > 1. At most 8 channels at once:
-# ERR_NO_RESOURCES. ADMIN only.
+# A new channel with less authority: level 1 (INPUT) or 2 (NOTIFY). A
+# caller may only make a level above its own: ERR_ACCESS_DENIED otherwise,
+# ERR_INVALID_ARGS for a level > 2. At most 8 ADMIN and INPUT channels at
+# once, and NOTIFY_CHANNELS NOTIFY ones: ERR_NO_RESOURCES. ADMIN only.
 3  new_client     (u8 level) -> (handle client)
 # What the compositor has done, for tests and `ps`: paints and the pixels
 # they composed, the last and the worst paint's time (ns); the clients
@@ -53,3 +68,30 @@ protocol compctl 32
 # it. One call waits per channel: a second while one waits is
 # ERR_BAD_STATE. ADMIN only.
 6  layout_wait    (u8 layout) -> (u8 now) later
+
+# A notice on the desktop: a frosted card in the top right (docs/G1-PLAN.md
+# "The look"). `title` (NUL-terminated, not empty) and `body` (one line,
+# "" for none) are UTF-8, cut short on the card to fit; a control
+# character in either: ERR_INVALID_ARGS. `icon`: the letter on the card's
+# tile ('A'-'Z', '0'-'9'; 0 for an "i"); `tint`: the tile's jam colour, 0
+# blackcurrant, 1 raspberry, 2 apricot. `buttons`: up to three button
+# labels of 24 bytes each (NUL-padded; the first empty one ends the list):
+# a card without buttons fades away after about 5 s (or a click), one with
+# buttons stays until one is pressed, which is told to this channel
+# (notify_wait); then the card goes. Answers the notice's id (never 0).
+# At most NOTIFY_BUTTON_CARDS (3) cards with buttons from a channel at once
+# (and five cards on the screen: a new one pushes out the oldest without
+# buttons): ERR_NO_RESOURCES. ERR_NOT_SUPPORTED: the compositor runs
+# without a desktop (`nodesk`). A channel that closes takes its cards with
+# buttons with it. NOTIFY and ADMIN.
+7  notify  (u8[64] title, u8[96] body, u8 icon, u8 tint, u8[72] buttons) -> (u32 id)
+# Answered when a button of a notice posted on this channel was pressed:
+# the notice's id and the button (0 the first). Presses not yet taken are
+# kept, at most 4 (older ones are dropped: said in the log), and answered
+# at once in the order they came. One call waits per channel: a second
+# while one waits is ERR_BAD_STATE. NOTIFY and ADMIN.
+8  notify_wait  () -> (u32 id, u8 button) later
+# Take a notice posted on this channel off the screen (it fades away).
+# ERR_NOT_FOUND: no such notice from this channel on the screen now.
+# NOTIFY and ADMIN.
+9  withdraw  (u32 id) -> ()

@@ -286,6 +286,10 @@ struct devmgr_mounts_rep {
 #define DEVMGR_ESP_WRITE      0x00030010u
 #define DEVMGR_ESP_WRITABLE   1u
 #define DEVMGR_SR_ESP         (SR_USER + 0)   /* devmgr's startup role: the ESP channel */
+/* devmgr's startup role: a duplicate of /svc/notify's shared channel (not
+ * under `nocomp`), for the desktop's notices of other sticks: "USB stick
+ * added" (its size, where it is mounted), "USB stick removed" (<notice.h>). */
+#define DEVMGR_SR_NOTIFY      (SR_USER + 1)
 #define DEVMGR_CLASS_HDA      0x040300u   /* HD Audio (04 03 00): the mixer's */
 #define DEVMGR_CLASS_NET      0x020000u   /* Ethernet (02 00 00): netstack's (netdev.idl) */
 

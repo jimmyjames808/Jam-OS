@@ -8,7 +8,10 @@
  * Covered: set_ipv4 and info agree; every kind of address set_ipv4 must
  * refuse is refused and changes nothing; set_dns likewise; clear forgets
  * the address and the DNS servers; stats answers; the process serves
- * with no device (link down, nothing sent) and leaves its job empty. */
+ * with no device (link down, nothing sent) and leaves its job empty.
+ * t_netctl_read_only: the read-only channel (the compositor's) answers
+ * info, stats, device and summary, and refuses set_ipv4, set_dns, clear
+ * and dhcp_open, changing nothing; summary counts the bytes. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -25,12 +28,13 @@
 /* Our end and ctl.c's end of an in-process control channel. */
 struct pair {
     handle_t cli, srv;
+    bool ro;   /* the read-only channel */
 };
 
 /* Serve what is queued on the server end and read the one reply. */
 static status_t pump(const struct pair *p, void *rep, uint32_t cap, struct idl_msg *m)
 {
-    status_t st = ctl_serve(p->srv);
+    status_t st = ctl_serve(p->srv, p->ro);
     if (st != ERR_SHOULD_WAIT)
         return st == OK ? ERR_INTERNAL : st;   /* one request can't spend the budget */
     return idl_reply_read(p->cli, rep, cap, m);
@@ -119,7 +123,7 @@ static bool refusals(const struct pair *p)
 
 bool t_netctl_set_and_clear(void)
 {
-    struct pair p;
+    struct pair p = { 0 };
     stack_stop();
     CHECK_ST(stack_start(&stack_no_device), OK);
     CHECK_ST(jam_channel_create(&p.cli, &p.srv), OK);
@@ -149,8 +153,67 @@ bool t_netctl_set_and_clear(void)
     CHECK_ST(pump(&p, rep, sizeof(rep), &m), OK);
     CHECK_EQ(((const struct idl_rep_hdr *)rep)->status, ERR_INVALID_ARGS);
     CHECK_ST(jam_handle_close(p.cli), OK);
-    CHECK_ST(ctl_serve(p.srv), ERR_PEER_CLOSED);
+    CHECK_ST(ctl_serve(p.srv, false), ERR_PEER_CLOSED);
     CHECK_ST(jam_handle_close(p.srv), OK);
+    stack_stop();
+    return true;
+}
+
+static status_t summary(const struct pair *p, uint8_t *link, uint32_t *addr, uint64_t *rx,
+                        uint64_t *tx)
+{
+    _Alignas(8) uint8_t rep[NETCTL_REP_MAX];
+    struct idl_msg m;
+    uint32_t mask, speed;
+    uint8_t chip[16];
+    status_t st = netctl_summary_send(p->cli, 5);
+    if (st == OK)
+        st = pump(p, rep, sizeof(rep), &m);
+    return st == OK ? netctl_summary_result(rep, &m, link, addr, &mask, &speed, rx, tx, chip) : st;
+}
+
+bool t_netctl_read_only(void)
+{
+    struct pair full = { 0 }, ro = { .ro = true };
+    stack_stop();
+    CHECK_ST(stack_start(&stack_no_device), OK);
+    CHECK_ST(jam_channel_create(&full.cli, &full.srv), OK);
+    CHECK_ST(jam_channel_create(&ro.cli, &ro.srv), OK);
+    CHECK_ST(set_ipv4(&full, A_ADDR, A_MASK, A_GW), OK);
+    /* refused, and nothing changes */
+    CHECK_ST(set_ipv4(&ro, 0x0a021506u, A_MASK, A_GW), ERR_ACCESS_DENIED);
+    CHECK_ST(set_dns(&ro, 0x01010101u, 0), ERR_ACCESS_DENIED);
+    CHECK_ST(clear(&ro), ERR_ACCESS_DENIED);
+    _Alignas(8) uint8_t rep[NETCTL_REP_MAX];
+    struct idl_msg m;
+    handle_t sock = HANDLE_INVALID;
+    CHECK_ST(netctl_dhcp_open_send(ro.cli, 6), OK);
+    CHECK_ST(pump(&ro, rep, sizeof(rep), &m), OK);
+    CHECK_ST(netctl_dhcp_open_result(rep, &m, &sock), ERR_ACCESS_DENIED);
+    /* read: info and summary on it agree with the full channel's */
+    struct info i;
+    CHECK_ST(info(&ro, &i), OK);
+    CHECK_EQ(i.address, A_ADDR);
+    CHECK_EQ(i.gateway, A_GW);
+    uint8_t link = 9;
+    uint32_t addr = 0;
+    uint64_t rx = 1, tx = 1, rx2 = 0, tx2 = 0;
+    CHECK_ST(summary(&ro, &link, &addr, &rx, &tx), OK);
+    CHECK_EQ(addr, A_ADDR);
+    CHECK_EQ(link, 0);
+    CHECK_ST(summary(&full, &link, &addr, &rx2, &tx2), OK);
+    CHECK_EQ(addr, A_ADDR);
+    CHECK(rx2 == rx && tx2 == tx);   /* no device: nothing moved between the two */
+    uint8_t frame[60] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    stack_input(frame, sizeof(frame));   /* a frame in: its bytes counted */
+    CHECK_ST(summary(&ro, &link, &addr, &rx2, &tx2), OK);
+    CHECK_EQ(rx2, rx + sizeof(frame));
+    for (unsigned k = 0; k < 2; k++) {
+        struct pair *p = k ? &ro : &full;
+        CHECK_ST(jam_handle_close(p->cli), OK);
+        CHECK_ST(ctl_serve(p->srv, p->ro), ERR_PEER_CLOSED);
+        CHECK_ST(jam_handle_close(p->srv), OK);
+    }
     stack_stop();
     return true;
 }

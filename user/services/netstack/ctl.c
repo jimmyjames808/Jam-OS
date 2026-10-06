@@ -58,8 +58,16 @@ static unsigned prefix_len(uint32_t mask)
     return mask ? 32u - (unsigned)__builtin_ctz(mask) : 0;
 }
 
+/* ctx: the channel's (ctl_serve): true on the read-only one. */
+static bool read_only(const void *ctx)
+{
+    return *(const bool *)ctx;
+}
+
 static status_t op_set_ipv4(void *ctx, uint32_t address, uint32_t mask, uint32_t gateway)
 {
+    if (read_only(ctx))
+        return ERR_ACCESS_DENIED;
     (void)ctx;
     struct stack_ipv4 ip = { .address = address, .mask = mask, .gateway = gateway };
     if (!ctl_ipv4_valid(&ip))
@@ -78,6 +86,8 @@ static status_t op_set_ipv4(void *ctx, uint32_t address, uint32_t mask, uint32_t
 
 static status_t op_set_dns(void *ctx, uint32_t first, uint32_t second)
 {
+    if (read_only(ctx))
+        return ERR_ACCESS_DENIED;
     (void)ctx;
     if ((first && !ctl_unicast(first)) || (second && !ctl_unicast(second)))
         return ERR_INVALID_ARGS;
@@ -94,6 +104,8 @@ static status_t op_set_dns(void *ctx, uint32_t first, uint32_t second)
 
 static status_t op_clear(void *ctx)
 {
+    if (read_only(ctx))
+        return ERR_ACCESS_DENIED;
     (void)ctx;
     struct stack_state s;
     stack_get(&s);
@@ -176,8 +188,31 @@ static status_t op_device(void *ctx, uint8_t *out_session, uint16_t *out_vlan,
 
 static status_t op_dhcp_open(void *ctx, handle_t *out_socket)
 {
-    (void)ctx;
+    if (read_only(ctx))
+        return ERR_ACCESS_DENIED;
     return ctl_dhcp_open ? ctl_dhcp_open(out_socket) : ERR_NOT_SUPPORTED;
+}
+
+static status_t op_summary(void *ctx, uint8_t *out_link, uint32_t *out_address,
+                           uint32_t *out_mask, uint32_t *out_speed, uint64_t *out_rx_bytes,
+                           uint64_t *out_tx_bytes, uint8_t out_chip[16])
+{
+    (void)ctx;   /* both channels */
+    struct stack_state s;
+    struct stack_counts c;
+    struct dev_report r = { 0 };
+    stack_get(&s);
+    stack_get_counts(&c);
+    if (ctl_device_report)
+        ctl_device_report(&r);
+    *out_link = s.link;
+    *out_address = s.ip.address;
+    *out_mask = s.ip.mask;
+    *out_speed = s.link ? r.speed : 0;
+    *out_rx_bytes = c.rx_bytes;
+    *out_tx_bytes = c.tx_bytes;
+    memcpy(out_chip, r.chip, sizeof(r.chip));
+    return OK;
 }
 
 static const struct netctl_ops ops = {
@@ -188,12 +223,14 @@ static const struct netctl_ops ops = {
     .stats = op_stats,
     .device = op_device,
     .dhcp_open = op_dhcp_open,
+    .summary = op_summary,
 };
 
-status_t ctl_serve(handle_t ch)
+status_t ctl_serve(handle_t ch, bool read_only)
 {
+    static const bool full = false, ro = true;
     for (unsigned i = 0; i < CTL_BUDGET; i++) {
-        status_t st = netctl_serve_one(ch, &ops, NULL);
+        status_t st = netctl_serve_one(ch, &ops, (void *)(read_only ? &ro : &full));
         if (st != OK)
             return st;
     }

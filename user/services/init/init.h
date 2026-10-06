@@ -86,8 +86,8 @@ void     mounts_settle(void);
 /* ---- ctl.c ----------------------------------------------------------------------- */
 
 /* Who holds a control channel: the shell may ask everything, the
- * compositor and each terminal's console (CTL_CONSOLE + its index) only
- * reboot and terminal. */
+ * compositor reboot, terminal and launch, and each terminal's console
+ * (CTL_CONSOLE + its index) only reboot and terminal. */
 #define TERM_MAX 8   /* terminals at most, the first included (terms.c) */
 enum { CTL_SHELL, CTL_COMPOSITOR, CTL_CONSOLE, CTL_COUNT = CTL_CONSOLE + TERM_MAX };
 
@@ -143,6 +143,7 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETS
 #define KEY_SPARE    0x700u   /* the warm spare's process ended (spare.c) */
 #define KEY_KEEP     0x800u   /* the kept service wrote to its keeper (spare.c) */
 #define KEY_COMP     0x900u   /* the compositor's answer on init's compctl channel (comp.c) */
+#define KEY_APPS     0xa00u   /* + a slot: a desktop app's process ended (apps.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -227,15 +228,29 @@ bool     terms_ended(unsigned i, bool killed, int64_t code);
 /* Service i is given up on: an extra terminal closes. */
 void     terms_given_up(unsigned i);
 /* initctl.terminal: open another terminal; *number: its number (2 and
- * up). ERR_NOT_SUPPORTED: no compositor; ERR_NO_RESOURCES: TERM_MAX are
- * open. Its console and shell start at the loop's next turn. */
-status_t terms_open(uint8_t *number);
+ * up). cmd: a line its shell runs first ("": none; at most
+ * TERM_CMD_MAX - 1 bytes, the caller's checked). ERR_NOT_SUPPORTED: no
+ * compositor; ERR_NO_RESOURCES: TERM_MAX are open. Its console and shell
+ * start at the loop's next turn. */
+#define TERM_CMD_MAX 128
+status_t terms_open(const char *cmd, uint8_t *number);
 /* "console-<n>", "shell-<n>" (n 2 to TERM_MAX): terminal n's service i. */
 bool     terms_named(const char *name, unsigned *i);
 /* /data has come: the settings' terminal.font (smooth or bitmap) to the
  * consoles started from now on ("font=bitmap"), and, if it changed, to
  * each running terminal's console (console.set_font). */
 void     terms_settings(void);
+
+/* ---- apps.c: the desktop's apps (initctl.launch, <deskapps.h>) ------------------------- */
+
+/* Set up once before the loop (the loop's port: KEY_APPS + a slot). */
+void     apps_init(handle_t port);
+/* Start desktop app cmd ("jamjar"): *koid its process's. ERR_NOT_FOUND:
+ * not one of <deskapps.h>'s programs; ERR_INVALID_ARGS: not a name;
+ * ERR_NO_RESOURCES: DESKAPPS_RUNNING run; spawn's errors. */
+status_t apps_launch(const char *cmd, uint64_t *koid);
+/* KEY_APPS + i: app i's process ended (its job goes), or an old packet. */
+void     apps_event(unsigned i);
 
 /* ---- comp.c: the compositor (not with the boot word `nocomp`) ----------------------- */
 
@@ -267,6 +282,15 @@ status_t comp_source(handle_t *out);
 /* The screen blank (on) or drawn again, if a compositor runs (init's
  * reboot: the console can't, it has no screen of its own). */
 void     comp_blank(bool on);
+/* /svc/notify's client end (init's; a duplicate for a poster: devmgr,
+ * netstack), HANDLE_INVALID without a compositor. */
+handle_t comp_notify_client(void);
+/* A notice of init's own on the desktop (its ADMIN channel; nothing
+ * without a compositor: the caller has said it in the log). buttons: NULL
+ * or up to three labels, NULL-ended; reboot: its first button reboots
+ * (init's own power: the compositor only tells init it was pressed). */
+void     comp_notice(const char *title, const char *body, char icon, uint8_t tint,
+                     const char *const *buttons, bool reboot);
 /* The boot word `nocomp` (main.c). */
 extern bool init_nocomp;
 
@@ -296,6 +320,9 @@ bool     services_devmgr_up(void);
 /* The mixer's shared audioctl channel, init's client end (0: none): the
  * one /svc/audioctl's openers connect through. */
 handle_t services_audioctl(void);
+/* A duplicate of the mixer's desktop channel's client end (audioctl.idl:
+ * desk and set_master only), for the compositor; HANDLE_INVALID if none. */
+handle_t services_audio_desk(void);
 /* devmgr's device channels (<devmgr.h> DEVMGR_DEVICE_CHANNEL, asked on its
  * control channel devmgr_ctl) for every PCI function of class `cls` that
  * has a driver, at most `max`, into out[]: init gives them to the class's
@@ -408,6 +435,10 @@ handle_t net_listen_low_channel(void);
 /* /svc/net-sys's client end (published: init's own network services and
  * bin/update reach netstack's reserve through it), or 0. */
 handle_t net_sys_channel(void);
+/* A duplicate of netstack's read-only control channel's client end
+ * (netctl.idl: info, stats, device, summary), for the compositor;
+ * HANDLE_INVALID if none. */
+handle_t net_info_channel(void);
 /* Start netlog (shell.c's NETLOG, once /data is mounted) if the settings
  * name a Mac (`net.host`) and don't say `netlog = off`; otherwise it is
  * marked given up for this boot, said once. */

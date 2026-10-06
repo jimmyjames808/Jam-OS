@@ -6,6 +6,15 @@
 # connect, as for `audio`).
 # Format: see tools/genidl.py. The plan is docs/history/A2-PLAN.md.
 #
+# The desktop's channel: a second shared channel of the same protocol,
+# made once by init and kept as the others are (its server end is each
+# mixer's SR_AUDIO_DESK, <mixer.h>), never published; init hands the
+# compositor a duplicate of its client end. It answers only `desk` and
+# `set_master` (the volume popover): the rest, svc.connect included,
+# ERR_ACCESS_DENIED. So the compositor can show and set the master volume
+# and see what plays, and can't open a stream, change one, or reach the
+# sound card.
+#
 # Restart: as audio's: the mixer's restart is not seen, every opener's
 # channel is kept and the volumes are in the state the successor carries
 # on from. After ERR_PEER_CLOSED (init gave up on the mixer, or a fresh
@@ -24,6 +33,7 @@ protocol audioctl 23
 # set. ERR_NOT_FOUND: no such stream.
 2  set_volume  (u32 id, i32 centibels)  -> (i32 centibels)
 # The master volume, applied after the streams are summed, the same way.
+# Also on the desktop's channel.
 3  set_master  (i32 centibels)  -> (i32 centibels)
 # The index-th sound card's HD Audio driver (from 0, in the order of the
 # devmgr device channels init gave the mixer), as a query channel
@@ -32,3 +42,17 @@ protocol audioctl 23
 # stream the mixer plays through. The caller closes it. ERR_NOT_FOUND: no
 # such driver (index past the last card, or its driver not running).
 4  device  (u32 index)  -> (handle device)
+# What the desktop shows (the volume popover; also on the desktop's
+# channel): `master`, the master volume in centibels; `playing` 1 while a
+# stream plays (started, and its frames coming), else 0; `title`, the
+# newest playing stream's title (audio.stream_set_title: the music
+# player's "Artist - Title"), or its name if it set none ("" when nothing
+# plays); `output`, the output's name as the driver gives it
+# (hda.output_name: "ALC897 headphones"; "" without a driver).
+5  desk  ()  -> (i32 master, u8 playing, u8[64] title, u8[48] output)
+# A channel of the caller's own with the desktop channel's authority (desk
+# and set_master only; closing it is the end of it), as a test or a
+# program that hands on less than it holds would want: a full audioctl
+# channel can do all of it anyway. Not on the desktop's channel
+# (ERR_ACCESS_DENIED). ERR_NO_RESOURCES: as svc.connect's.
+6  desk_channel  ()  -> (handle desk)

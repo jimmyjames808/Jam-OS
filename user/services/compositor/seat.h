@@ -24,6 +24,7 @@
  * down still has its windows for a moment. */
 #pragma once
 
+#include <idl/common.h>
 #include <termkeys.h>
 #include "comp.h"
 
@@ -32,6 +33,8 @@
 #define SEAT_KEY_CTL  (COMP_KEY_SEAT + 0x000u)   /* + compctl channel slot */
 #define SEAT_KEY_SRC  (COMP_KEY_SEAT + 0x100u)   /* + input source slot */
 #define SEAT_KEY_INIT (COMP_KEY_SEAT + 0x200u)   /* init's answers (Ctrl+Alt+Del, Super+Enter) */
+#define SEAT_KEY_NOTE (COMP_KEY_SEAT + 0x300u)   /* /svc/notify's shared channel (ctl.c) */
+#define SEAT_KEY_DESK (COMP_KEY_SEAT + 0x310u)   /* + deskctl.c's channels (the mixer's, netstack's) */
 #define SEAT_BUDGET   64u         /* requests of one source or compctl channel per turn */
 #define SOURCES_MAX   16u         /* input sources at once */
 #define KEYS_HELD_MAX 32u         /* keys held down at once, over every keyboard */
@@ -133,5 +136,32 @@ uint64_t ctl_deadline(void);
 void     ctl_reboot(void);
 /* Super+Enter: ask init for another terminal. */
 void     ctl_terminal(void);
+/* The same, its shell running cmd first ("": none; the search box's
+ * "Run ... in a terminal"); busy: the cursor is busy until its window
+ * shows (desk.c). One ask at a time. */
+void     ctl_terminal_run(const char *cmd, bool busy);
+
+/* deskctl.c: the desktop's plumbing (track D2b) behind desk.c's hooks:
+ * the notices of compctl's channels, the mixer's desktop channel (the
+ * volume popover) and netstack's read-only one (the network popover).
+ * Every call to another process is sent without waiting; the answers
+ * come to the port (SEAT_KEY_DESK + n). */
+#define CTL_MAX         8u   /* ADMIN and INPUT compctl channels at once */
+#define NOTIFY_CHANNELS 8u   /* NOTIFY ones, apart */
+#define CTL_ALL         (CTL_MAX + NOTIFY_CHANNELS)
+void     deskctl_init(void);
+void     deskctl_packet(uint64_t key);
+uint64_t deskctl_deadline(void);
+/* compctl's notice methods for the channel in `slot` (its generation
+ * `gen`: a slot used again is another channel). */
+status_t deskctl_notify(unsigned slot, uint32_t gen, const uint8_t title[64],
+                        const uint8_t body[96], uint8_t icon, uint8_t tint,
+                        const uint8_t buttons[72], uint32_t *out_id);
+status_t deskctl_notify_wait(unsigned slot, uint32_t gen, struct idl_txn txn, uint32_t *out_id,
+                             uint8_t *out_button);
+status_t deskctl_withdraw(unsigned slot, uint32_t gen, uint32_t id);
+/* The channel in slot is gone: its cards with buttons go, its presses and
+ * its wait are forgotten. */
+void     deskctl_closed(unsigned slot, uint32_t gen);
 /* Asked for: every key and mouse report is dropped from now on. */
 bool     ctl_rebooting(void);

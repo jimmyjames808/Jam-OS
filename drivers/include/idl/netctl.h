@@ -20,6 +20,7 @@
 #define NETCTL_STATS            0x001c0005u
 #define NETCTL_DEVICE           0x001c0006u
 #define NETCTL_DHCP_OPEN        0x001c0007u
+#define NETCTL_SUMMARY          0x001c0008u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct netctl_set_ipv4_req {
@@ -113,6 +114,21 @@ struct netctl_dhcp_open_req {
 struct netctl_dhcp_open_rep {
     uint32_t txid;
     int32_t  status;
+} __attribute__((packed));
+struct netctl_summary_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct netctl_summary_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t link;
+    uint32_t address;
+    uint32_t mask;
+    uint32_t speed;
+    uint64_t rx_bytes;
+    uint64_t tx_bytes;
+    uint8_t chip[16];
 } __attribute__((packed));
 
 #define NETCTL_REQ_MAX 20u   /* bytes: the biggest request */
@@ -433,6 +449,54 @@ static inline status_t netctl_dhcp_open(handle_t ch, handle_t *out_socket)
     return netctl_dhcp_open_call(ch, false, DEADLINE_NEVER, out_socket);
 }
 
+/* netctl_summary_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netctl_summary_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_link, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_speed, uint64_t *out_rx_bytes, uint64_t *out_tx_bytes, uint8_t out_chip[16])
+{
+    struct netctl_summary_req idl_q;
+    struct netctl_summary_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = NETCTL_SUMMARY;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_link)
+        *out_link = idl_r.link;
+    if (idl_st == OK && out_address)
+        *out_address = idl_r.address;
+    if (idl_st == OK && out_mask)
+        *out_mask = idl_r.mask;
+    if (idl_st == OK && out_speed)
+        *out_speed = idl_r.speed;
+    if (idl_st == OK && out_rx_bytes)
+        *out_rx_bytes = idl_r.rx_bytes;
+    if (idl_st == OK && out_tx_bytes)
+        *out_tx_bytes = idl_r.tx_bytes;
+    for (uint32_t idl_i = 0; idl_st == OK && out_chip && idl_i < 16; idl_i++)
+        out_chip[idl_i] = idl_r.chip[idl_i];
+    return idl_st;
+}
+/* What the desktop's network popover shows, in one call (also on the
+ * read-only channel): `link` 1 when the card's link is up; the address
+ * and mask (0: none yet); the link's speed in Mb/s (0: down or unknown);
+ * bytes received and sent since netstack started (whole frames, as the
+ * card moved them; the caller works out rates); the chip's name as
+ * `device` has it ("" without a card). */
+static inline status_t netctl_summary_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_link, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_speed, uint64_t *out_rx_bytes, uint64_t *out_tx_bytes, uint8_t out_chip[16])
+{
+    return netctl_summary_call(ch, false, deadline_ns, out_link, out_address, out_mask, out_speed, out_rx_bytes, out_tx_bytes, out_chip);
+}
+static inline status_t netctl_summary_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_link, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_speed, uint64_t *out_rx_bytes, uint64_t *out_tx_bytes, uint8_t out_chip[16])
+{
+    return netctl_summary_call(ch, true, timeout_ns, out_link, out_address, out_mask, out_speed, out_rx_bytes, out_tx_bytes, out_chip);
+}
+static inline status_t netctl_summary(handle_t ch, uint8_t *out_link, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_speed, uint64_t *out_rx_bytes, uint64_t *out_tx_bytes, uint8_t out_chip[16])
+{
+    return netctl_summary_call(ch, false, DEADLINE_NEVER, out_link, out_address, out_mask, out_speed, out_rx_bytes, out_tx_bytes, out_chip);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* netctl_set_ipv4 without waiting: the request, with the caller's txid (not 0).
@@ -712,6 +776,49 @@ static inline status_t netctl_dhcp_open_result(const void *idl_rep, struct idl_m
     return OK;
 }
 
+/* netctl_summary without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then netctl_summary_result. */
+static inline status_t netctl_summary_send(handle_t ch, uint32_t idl_txid)
+{
+    struct netctl_summary_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = NETCTL_SUMMARY;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to netctl_summary_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t netctl_summary_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_link, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_speed, uint64_t *out_rx_bytes, uint64_t *out_tx_bytes, uint8_t out_chip[16])
+{
+    const struct netctl_summary_rep *idl_r = (const struct netctl_summary_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_link)
+        *out_link = idl_r->link;
+    if (out_address)
+        *out_address = idl_r->address;
+    if (out_mask)
+        *out_mask = idl_r->mask;
+    if (out_speed)
+        *out_speed = idl_r->speed;
+    if (out_rx_bytes)
+        *out_rx_bytes = idl_r->rx_bytes;
+    if (out_tx_bytes)
+        *out_tx_bytes = idl_r->tx_bytes;
+    for (uint32_t idl_i = 0; out_chip && idl_i < 16; idl_i++)
+        out_chip[idl_i] = idl_r->chip[idl_i];
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -726,6 +833,7 @@ struct netctl_ops {
     status_t (*stats)(void *ctx, uint64_t *out_rx_frames, uint64_t *out_rx_refused, uint64_t *out_tx_frames, uint64_t *out_tx_dropped, uint64_t *out_echo_replies, uint64_t *out_icmp_errors, uint64_t *out_icmp_limited, uint32_t *out_link_dropped, uint32_t *out_arp_dropped, uint32_t *out_ip_dropped, uint32_t *out_icmp_dropped, uint32_t *out_udp_dropped, uint32_t *out_bad_checksums, uint32_t *out_rx_buffers_used, uint32_t *out_heap_used);
     status_t (*device)(void *ctx, uint8_t *out_session, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors, uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16]);
     status_t (*dhcp_open)(void *ctx, handle_t *out_socket);
+    status_t (*summary)(void *ctx, uint8_t *out_link, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_speed, uint64_t *out_rx_bytes, uint64_t *out_tx_bytes, uint8_t out_chip[16]);
 };
 
 /* Answer the netctl.set_ipv4 request kept in txn: idl_st and, if it is OK, the
@@ -870,6 +978,29 @@ static inline status_t netctl_reply_dhcp_open(struct idl_txn idl_txn, status_t i
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     }
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the netctl.summary request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t netctl_reply_summary(struct idl_txn idl_txn, status_t idl_st, uint8_t link, uint32_t address, uint32_t mask, uint32_t speed, uint64_t rx_bytes, uint64_t tx_bytes, const uint8_t chip[16])
+{
+    struct netctl_summary_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.link = link;
+    idl_r.address = address;
+    idl_r.mask = mask;
+    idl_r.speed = speed;
+    idl_r.rx_bytes = rx_bytes;
+    idl_r.tx_bytes = tx_bytes;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_r.chip[idl_i] = chip[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -1075,6 +1206,38 @@ static inline uint32_t netctl_dispatch_on(handle_t ch, const struct netctl_ops *
         }
         rhs[0] = out_socket;
         *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case NETCTL_SUMMARY: {
+        const struct netctl_summary_req *idl_q = (const struct netctl_summary_req *)req;
+        struct netctl_summary_rep *idl_r = (struct netctl_summary_rep *)rep;
+        uint8_t out_link = 0;
+        uint32_t out_address = 0;
+        uint32_t out_mask = 0;
+        uint32_t out_speed = 0;
+        uint64_t out_rx_bytes = 0;
+        uint64_t out_tx_bytes = 0;
+        uint8_t out_chip[16];
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            out_chip[idl_i] = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->summary) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->summary(ctx, &out_link, &out_address, &out_mask, &out_speed, &out_rx_bytes, &out_tx_bytes, out_chip);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->link = out_link;
+        idl_r->address = out_address;
+        idl_r->mask = out_mask;
+        idl_r->speed = out_speed;
+        idl_r->rx_bytes = out_rx_bytes;
+        idl_r->tx_bytes = out_tx_bytes;
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            idl_r->chip[idl_i] = out_chip[idl_i];
         return sizeof(*idl_r);
     }
     }

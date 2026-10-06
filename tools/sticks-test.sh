@@ -83,6 +83,14 @@ want "devmgr: disk [0-9]+ partition 1 \(type 0c\) holds no FAT volume bin/fat ca
 want "devmgr: disk [0-9]+ partition 2: type 07 is not FAT: left alone"
 want "devmgr: disk [0-9]+: no FAT partition to mount: left alone"
 never "formatting it|formatted"
+# The desktop's notices (devmgr's): one per stick mounted, `mount -w` and
+# `mount -r` no news; one per stick pulled.
+want "compositor: notice [0-9]+: USB stick added: [0-9.]+ [MG]B at /usb0, read-only"
+want "compositor: notice [0-9]+: USB stick added: [0-9.]+ [MG]B at /usb1, read-only"
+[ "$(grep -ac "USB stick added" "$log")" -eq 3 ] ||
+    { echo "$name: not three 'USB stick added' notices (a, b, f)"; ok=0; }
+[ "$(grep -ac "compositor: notice [0-9]*: USB stick removed: /usb0" "$log")" -eq 2 ] ||
+    { echo "$name: not two 'USB stick removed: /usb0' notices (a, f)"; ok=0; }
 never "did not end cleanly|left [0-9]+ units of job kind"
 
 # The images, from this side.

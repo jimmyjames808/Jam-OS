@@ -17,6 +17,8 @@
 #define AUDIOCTL_SET_VOLUME       0x00170002u
 #define AUDIOCTL_SET_MASTER       0x00170003u
 #define AUDIOCTL_DEVICE           0x00170004u
+#define AUDIOCTL_DESK             0x00170005u
+#define AUDIOCTL_DESK_CHANNEL     0x00170006u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct audioctl_streams_req {
@@ -57,6 +59,26 @@ struct audioctl_device_req {
     uint32_t index;
 } __attribute__((packed));
 struct audioctl_device_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct audioctl_desk_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct audioctl_desk_rep {
+    uint32_t txid;
+    int32_t  status;
+    int32_t master;
+    uint8_t playing;
+    uint8_t title[64];
+    uint8_t output[48];
+} __attribute__((packed));
+struct audioctl_desk_channel_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct audioctl_desk_channel_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -156,7 +178,8 @@ static inline status_t audioctl_set_master_call(handle_t ch, bool idl_within, ui
         *out_centibels = idl_r.centibels;
     return idl_st;
 }
-/* The master volume, applied after the streams are summed, the same way. */
+/* The master volume, applied after the streams are summed, the same way.
+ * Also on the desktop's channel. */
 static inline status_t audioctl_set_master_until(handle_t ch, uint64_t deadline_ns, int32_t centibels, int32_t *out_centibels)
 {
     return audioctl_set_master_call(ch, false, deadline_ns, centibels, out_centibels);
@@ -217,6 +240,96 @@ static inline status_t audioctl_device_within(handle_t ch, uint64_t timeout_ns, 
 static inline status_t audioctl_device(handle_t ch, uint32_t index, handle_t *out_device)
 {
     return audioctl_device_call(ch, false, DEADLINE_NEVER, index, out_device);
+}
+
+/* audioctl_desk_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audioctl_desk_call(handle_t ch, bool idl_within, uint64_t idl_t, int32_t *out_master, uint8_t *out_playing, uint8_t out_title[64], uint8_t out_output[48])
+{
+    struct audioctl_desk_req idl_q;
+    struct audioctl_desk_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = AUDIOCTL_DESK;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_master)
+        *out_master = idl_r.master;
+    if (idl_st == OK && out_playing)
+        *out_playing = idl_r.playing;
+    for (uint32_t idl_i = 0; idl_st == OK && out_title && idl_i < 64; idl_i++)
+        out_title[idl_i] = idl_r.title[idl_i];
+    for (uint32_t idl_i = 0; idl_st == OK && out_output && idl_i < 48; idl_i++)
+        out_output[idl_i] = idl_r.output[idl_i];
+    return idl_st;
+}
+/* What the desktop shows (the volume popover; also on the desktop's
+ * channel): `master`, the master volume in centibels; `playing` 1 while a
+ * stream plays (started, and its frames coming), else 0; `title`, the
+ * newest playing stream's title (audio.stream_set_title: the music
+ * player's "Artist - Title"), or its name if it set none ("" when nothing
+ * plays); `output`, the output's name as the driver gives it
+ * (hda.output_name: "ALC897 headphones"; "" without a driver). */
+static inline status_t audioctl_desk_until(handle_t ch, uint64_t deadline_ns, int32_t *out_master, uint8_t *out_playing, uint8_t out_title[64], uint8_t out_output[48])
+{
+    return audioctl_desk_call(ch, false, deadline_ns, out_master, out_playing, out_title, out_output);
+}
+static inline status_t audioctl_desk_within(handle_t ch, uint64_t timeout_ns, int32_t *out_master, uint8_t *out_playing, uint8_t out_title[64], uint8_t out_output[48])
+{
+    return audioctl_desk_call(ch, true, timeout_ns, out_master, out_playing, out_title, out_output);
+}
+static inline status_t audioctl_desk(handle_t ch, int32_t *out_master, uint8_t *out_playing, uint8_t out_title[64], uint8_t out_output[48])
+{
+    return audioctl_desk_call(ch, false, DEADLINE_NEVER, out_master, out_playing, out_title, out_output);
+}
+
+/* audioctl_desk_channel_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audioctl_desk_channel_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_desk)
+{
+    struct audioctl_desk_channel_req idl_q;
+    struct audioctl_desk_channel_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = AUDIOCTL_DESK_CHANNEL;
+    handle_t idl_rh[1];
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_got[1];
+    idl_n = idl_got[0];
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_desk)
+            *out_desk = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    return idl_st;
+}
+/* A channel of the caller's own with the desktop channel's authority (desk
+ * and set_master only; closing it is the end of it), as a test or a
+ * program that hands on less than it holds would want: a full audioctl
+ * channel can do all of it anyway. Not on the desktop's channel
+ * (ERR_ACCESS_DENIED). ERR_NO_RESOURCES: as svc.connect's. */
+static inline status_t audioctl_desk_channel_until(handle_t ch, uint64_t deadline_ns, handle_t *out_desk)
+{
+    return audioctl_desk_channel_call(ch, false, deadline_ns, out_desk);
+}
+static inline status_t audioctl_desk_channel_within(handle_t ch, uint64_t timeout_ns, handle_t *out_desk)
+{
+    return audioctl_desk_channel_call(ch, true, timeout_ns, out_desk);
+}
+static inline status_t audioctl_desk_channel(handle_t ch, handle_t *out_desk)
+{
+    return audioctl_desk_channel_call(ch, false, DEADLINE_NEVER, out_desk);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -355,6 +468,76 @@ static inline status_t audioctl_device_result(const void *idl_rep, struct idl_ms
     return OK;
 }
 
+/* audioctl_desk without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then audioctl_desk_result. */
+static inline status_t audioctl_desk_send(handle_t ch, uint32_t idl_txid)
+{
+    struct audioctl_desk_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = AUDIOCTL_DESK;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to audioctl_desk_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t audioctl_desk_result(const void *idl_rep, struct idl_msg *idl_m, int32_t *out_master, uint8_t *out_playing, uint8_t out_title[64], uint8_t out_output[48])
+{
+    const struct audioctl_desk_rep *idl_r = (const struct audioctl_desk_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_master)
+        *out_master = idl_r->master;
+    if (out_playing)
+        *out_playing = idl_r->playing;
+    for (uint32_t idl_i = 0; out_title && idl_i < 64; idl_i++)
+        out_title[idl_i] = idl_r->title[idl_i];
+    for (uint32_t idl_i = 0; out_output && idl_i < 48; idl_i++)
+        out_output[idl_i] = idl_r->output[idl_i];
+    return OK;
+}
+
+/* audioctl_desk_channel without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then audioctl_desk_channel_result. */
+static inline status_t audioctl_desk_channel_send(handle_t ch, uint32_t idl_txid)
+{
+    struct audioctl_desk_channel_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = AUDIOCTL_DESK_CHANNEL;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to audioctl_desk_channel_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t audioctl_desk_channel_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_desk)
+{
+    const struct audioctl_desk_channel_rep *idl_r = (const struct audioctl_desk_channel_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_desk)
+        *out_desk = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -366,6 +549,8 @@ struct audioctl_ops {
     status_t (*set_volume)(void *ctx, uint32_t id, int32_t centibels, int32_t *out_centibels);
     status_t (*set_master)(void *ctx, int32_t centibels, int32_t *out_centibels);
     status_t (*device)(void *ctx, uint32_t index, handle_t *out_device);
+    status_t (*desk)(void *ctx, int32_t *out_master, uint8_t *out_playing, uint8_t out_title[64], uint8_t out_output[48]);
+    status_t (*desk_channel)(void *ctx, handle_t *out_desk);
 };
 
 /* Answer the audioctl.streams request kept in txn: idl_st and, if it is OK, the
@@ -430,6 +615,48 @@ static inline status_t audioctl_reply_device(struct idl_txn idl_txn, status_t id
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
     if (idl_st == OK && !(device != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the audioctl.desk request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t audioctl_reply_desk(struct idl_txn idl_txn, status_t idl_st, int32_t master, uint8_t playing, const uint8_t title[64], const uint8_t output[48])
+{
+    struct audioctl_desk_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.master = master;
+    idl_r.playing = playing;
+    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+        idl_r.title[idl_i] = title[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 48; idl_i++)
+        idl_r.output[idl_i] = output[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the audioctl.desk_channel request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t audioctl_reply_desk_channel(struct idl_txn idl_txn, status_t idl_st, handle_t desk)
+{
+    struct audioctl_desk_channel_rep idl_r;
+    handle_t idl_hs[1] = { desk };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(desk != HANDLE_INVALID))
         idl_st = ERR_INTERNAL;
     idl_r.status = idl_st;
     if (idl_st != OK) {
@@ -539,6 +766,58 @@ static inline uint32_t audioctl_dispatch_on(handle_t ch, const struct audioctl_o
             return sizeof(*idl_h);
         }
         rhs[0] = out_device;
+        *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case AUDIOCTL_DESK: {
+        const struct audioctl_desk_req *idl_q = (const struct audioctl_desk_req *)req;
+        struct audioctl_desk_rep *idl_r = (struct audioctl_desk_rep *)rep;
+        int32_t out_master = 0;
+        uint8_t out_playing = 0;
+        uint8_t out_title[64];
+        for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+            out_title[idl_i] = 0;
+        uint8_t out_output[48];
+        for (uint32_t idl_i = 0; idl_i < 48; idl_i++)
+            out_output[idl_i] = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->desk) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->desk(ctx, &out_master, &out_playing, out_title, out_output);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->master = out_master;
+        idl_r->playing = out_playing;
+        for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+            idl_r->title[idl_i] = out_title[idl_i];
+        for (uint32_t idl_i = 0; idl_i < 48; idl_i++)
+            idl_r->output[idl_i] = out_output[idl_i];
+        return sizeof(*idl_r);
+    }
+    case AUDIOCTL_DESK_CHANNEL: {
+        const struct audioctl_desk_channel_req *idl_q = (const struct audioctl_desk_channel_req *)req;
+        struct audioctl_desk_channel_rep *idl_r = (struct audioctl_desk_channel_rep *)rep;
+        handle_t out_desk = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->desk_channel) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->desk_channel(ctx, &out_desk);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_desk != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_desk != HANDLE_INVALID)
+                drv_handle_close(out_desk);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_desk;
         *rhn = 1;
         return sizeof(*idl_r);
     }

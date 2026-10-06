@@ -34,6 +34,7 @@
  * either way. */
 #pragma once
 
+#include <deskapps.h>
 #include <wallclock.h>
 #include "paint.h"
 #include "wm.h"
@@ -271,11 +272,15 @@ void     strip_click(const struct strip_item *it);
 /* The apps the search box lists (a fixed table until there is a list of
  * installed apps): the name shown, what it is, its tile's letter and
  * colour; the command is the name in lower case. */
-#define DESK_APPS 2u
+/* The search box's apps: <deskapps.h>'s list, the one init launches from
+ * (menus.c makes the table from it). */
+#define DESK_APP_COUNT(cmd, path, name, about, letter, tint) +1u
+#define DESK_APPS (0u DESKAPPS(DESK_APP_COUNT))
 struct desk_app {
     const char *name, *desc;
     char letter;
     uint32_t colour;
+    const char *cmd;               /* what ctl_launch asks init for ("jamjar", "terminal") */
 };
 extern const struct desk_app desk_apps[DESK_APPS];
 
@@ -421,6 +426,10 @@ void     desk_run(const char *cmd);
 /* ww's first buffer was mapped (wm.c): the busy cursor ends if it is the
  * app being launched. */
 void     desk_window_mapped(const struct wm_window *ww);
+/* The plumbing (ctl.c): the launched app's window will have this title
+ * (init answered "Terminal 2"); or the launch was refused: not busy. */
+void     desk_launch_awaits(const char *title);
+void     desk_launch_failed(void);
 
 /* ---- the drawing (stripdraw.c, menudraw.c, popdraw.c, frost.c, ui.c) ------------------------- */
 

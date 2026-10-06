@@ -49,6 +49,9 @@ struct disk {
     uint8_t         nparts;     /* partitions it lists (at most MAX_PARTS are looked at) */
     uint8_t         type[MAX_PARTS];   /* their MBR types */
     uint32_t        fs[MAX_PARTS];     /* devs index + 1 of each partition's service; 0: none */
+    uint64_t        mib;        /* its size (storage.info), MiB */
+    uint8_t         told;       /* bit n: partition n's mount was on the desktop (a notice) */
+    char            at[MAX_PARTS][16];   /* ... where it was mounted ("/usb0") */
     uint8_t         want;       /* DISK_OTHER: bit n: partition n waits for its service */
 };
 
@@ -69,6 +72,9 @@ void        not_boot(struct disk *d, const char *why);      /* step 4 */
 status_t    fs_start(struct disk *d, unsigned part, bool other);
 /* d moves to `state` (one with nothing mounted) and its services go. */
 void        drop_services(struct disk *d, enum disk_state state);
+/* b, another stick's partition d holds, is mounted now: the desktop's
+ * notice, once a mount (devmgr_notices). */
+void        disk_told_added(struct disk *d, const struct binding *b);
 void        others_pump(void);                    /* start the next /usbN waited for */
 void        mount_others(struct disk *d);         /* step 4: d's FAT partitions, read-only */
 /* An fs.stat of `path` written to b's service without waiting (fs_answers

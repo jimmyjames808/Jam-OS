@@ -68,6 +68,8 @@ struct stack_counts {
                                * no receive buffer free */
     uint64_t tx_frames;       /* frames the edge took */
     uint64_t tx_dropped;      /* frames the edge refused (no device, a full ring) or too long */
+    uint64_t rx_bytes;        /* bytes of the frames given to stack_input */
+    uint64_t tx_bytes;        /* ... and of those the edge took */
     uint64_t echo_replies;    /* ICMP echo replies sent (pings answered) */
     uint64_t icmp_errors;     /* ICMP errors sent (port or protocol unreachable) */
     uint64_t icmp_limited;    /* ICMP errors not sent: over STACK_ICMP_ERR_PER_S */

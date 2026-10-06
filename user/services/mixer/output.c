@@ -109,9 +109,20 @@ status_t out_find(struct mixer *m)
     return ERR_NOT_FOUND;
 }
 
+const char *out_name(struct mixer *m)
+{
+    if (!m->out_name[0] && (m->own_out.svc || out_find(m) == OK)) {
+        uint8_t name[48] = { 0 };
+        if (hda_output_name_until(m->own_out.svc, now() + CALL_WAIT, name) == OK)
+            snprintf(m->out_name, sizeof(m->out_name), "%.*s", 47, (const char *)name);
+    }
+    return m->out_name;
+}
+
 void out_forget_driver(struct mixer *m)
 {
     struct out_own *w = &m->own_out;
+    m->out_name[0] = '\0';   /* the next driver says it again */
     if (w->svc)
         jam_handle_close(w->svc);
     w->svc = HANDLE_INVALID;

@@ -21,6 +21,7 @@
 #define AUDIO_STREAM_SET_VOLUME 0x00160006u
 #define AUDIO_STREAM_LEVELS    0x00160007u
 #define AUDIO_STREAM_STATS     0x00160008u
+#define AUDIO_STREAM_SET_TITLE 0x00160009u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct audio_open_output_req {
@@ -109,8 +110,17 @@ struct audio_stream_stats_rep {
     uint32_t bits;
     uint64_t played;
 } __attribute__((packed));
+struct audio_stream_set_title_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t title[64];
+} __attribute__((packed));
+struct audio_stream_set_title_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
 
-#define AUDIO_REQ_MAX 30u   /* bytes: the biggest request */
+#define AUDIO_REQ_MAX 72u   /* bytes: the biggest request */
 #define AUDIO_REP_MAX 36u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
@@ -450,6 +460,39 @@ static inline status_t audio_stream_stats(handle_t ch, uint32_t *out_underruns, 
     return audio_stream_stats_call(ch, false, DEADLINE_NEVER, out_underruns, out_late, out_min_lead, out_limited, out_bits, out_played);
 }
 
+/* audio_stream_set_title_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t audio_stream_set_title_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t title[64])
+{
+    struct audio_stream_set_title_req idl_q;
+    struct audio_stream_set_title_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = AUDIO_STREAM_SET_TITLE;
+    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+        idl_q.title[idl_i] = title[idl_i];
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* On a stream channel: what plays on it, for the desktop (audioctl.desk):
+ * "Artist - Title" (NUL-terminated UTF-8, a control character replaced by
+ * '?'; "" clears it). Kept until changed or the stream closes. */
+static inline status_t audio_stream_set_title_until(handle_t ch, uint64_t deadline_ns, const uint8_t title[64])
+{
+    return audio_stream_set_title_call(ch, false, deadline_ns, title);
+}
+static inline status_t audio_stream_set_title_within(handle_t ch, uint64_t timeout_ns, const uint8_t title[64])
+{
+    return audio_stream_set_title_call(ch, true, timeout_ns, title);
+}
+static inline status_t audio_stream_set_title(handle_t ch, const uint8_t title[64])
+{
+    return audio_stream_set_title_call(ch, false, DEADLINE_NEVER, title);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* audio_open_output without waiting: the request, with the caller's txid (not 0).
@@ -738,6 +781,38 @@ static inline status_t audio_stream_stats_result(const void *idl_rep, struct idl
     return OK;
 }
 
+/* audio_stream_set_title without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then audio_stream_set_title_result. */
+static inline status_t audio_stream_set_title_send(handle_t ch, uint32_t idl_txid, const uint8_t title[64])
+{
+    struct audio_stream_set_title_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = AUDIO_STREAM_SET_TITLE;
+    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
+        idl_q.title[idl_i] = title[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to audio_stream_set_title_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t audio_stream_set_title_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct audio_stream_set_title_rep *idl_r = (const struct audio_stream_set_title_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -753,6 +828,7 @@ struct audio_ops {
     status_t (*stream_set_volume)(void *ctx, int32_t centibels, int32_t *out_centibels);
     status_t (*stream_levels)(void *ctx, int32_t *out_volume, int32_t *out_master, int32_t *out_device);
     status_t (*stream_stats)(void *ctx, uint32_t *out_underruns, uint32_t *out_late, uint32_t *out_min_lead, uint32_t *out_limited, uint32_t *out_bits, uint64_t *out_played);
+    status_t (*stream_set_title)(void *ctx, const uint8_t title[64]);
 };
 
 /* Answer the audio.open_output request kept in txn: idl_st and, if it is OK, the
@@ -899,6 +975,21 @@ static inline status_t audio_reply_stream_stats(struct idl_txn idl_txn, status_t
     idl_r.limited = limited;
     idl_r.bits = bits;
     idl_r.played = played;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the audio.stream_set_title request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t audio_reply_stream_set_title(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct audio_stream_set_title_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
@@ -1093,6 +1184,22 @@ static inline uint32_t audio_dispatch_on(handle_t ch, const struct audio_ops *op
         idl_r->limited = out_limited;
         idl_r->bits = out_bits;
         idl_r->played = out_played;
+        return sizeof(*idl_r);
+    }
+    case AUDIO_STREAM_SET_TITLE: {
+        const struct audio_stream_set_title_req *idl_q = (const struct audio_stream_set_title_req *)req;
+        struct audio_stream_set_title_rep *idl_r = (struct audio_stream_set_title_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->stream_set_title) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->stream_set_title(ctx, idl_q->title);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
         return sizeof(*idl_r);
     }
     }

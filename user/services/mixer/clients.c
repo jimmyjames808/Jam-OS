@@ -20,7 +20,7 @@
 #include <idl/svc.h>
 #include "internal.h"
 
-status_t clients_connect(struct mixer *m, bool ctl, handle_t *out)
+status_t clients_connect(struct mixer *m, bool ctl, bool desk, handle_t *out)
 {
     for (unsigned i = 0; i < MIXER_CLIENTS; i++) {
         struct client *c = &m->nums->c[i];
@@ -48,6 +48,7 @@ status_t clients_connect(struct mixer *m, bool ctl, handle_t *out)
         m->nums->made_kind = MADE_CLIENT;
         m->nums->made_index = i;
         c->ctl = ctl;
+        c->desk = desk;
         w->ch = mine;
         w->pending = true;   /* a request may come before the first packet is read */
         *out = theirs;
@@ -56,13 +57,17 @@ status_t clients_connect(struct mixer *m, bool ctl, handle_t *out)
     return ERR_NO_RESOURCES;
 }
 
-void clients_connect_reply(struct mixer *m, handle_t ch, unsigned slot, bool ctl)
+/* svc.connect, or audioctl.desk_channel (desk: its reply has the same
+ * shape). */
+void clients_connect_reply(struct mixer *m, handle_t ch, unsigned slot, bool ctl, bool desk)
 {
+    _Static_assert(sizeof(struct svc_connect_rep) == sizeof(struct audioctl_desk_channel_rep),
+                   "the same reply");
     const struct idl_req_hdr *q = svcstate_request(&m->state, slot, NULL);
     struct svc_connect_rep *r = svcstate_reply_area(&m->state, slot);
     handle_t h = HANDLE_INVALID;
     m->nums->made_seq = 0;
-    status_t st = clients_connect(m, ctl, &h);
+    status_t st = clients_connect(m, ctl, desk, &h);
     if (st == OK)
         m->nums->made_seq = m->state.h->slot[slot].seq;
     *r = (struct svc_connect_rep){ .txid = q->txid, .status = st };

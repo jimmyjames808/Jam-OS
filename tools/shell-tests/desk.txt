@@ -1,0 +1,68 @@
+# The desktop's plumbing (track D2b; tools/desk-test.sh runs this): a plain
+# boot with a usb-kbd on xhci port 2, a usb-mouse on port 3 and QEMU's
+# e1000e with the network peer (DHCP: 10.2.21.100). Clicks are at OVMF's
+# 1280x800.
+#   - netstack's "Connected" notice, with the peer's lease;
+#   - `notify -w` posts a card with buttons and waits; a click on its first
+#     button (the card's place: notify.c, under the 40-pixel strip at
+#     y 48, 300 wide from 10 off the right edge; a body's line, then the
+#     buttons) answers it;
+#   - the terminal's text cursor shape (a screenshot only);
+#   - init launches only the desktop's apps (`launch`);
+#   - the search box (Super tapped alone): "jamj" and Enter starts Jamjar
+#     through init, the cursor busy until its window is up; Super+Q closes
+#     it and init sees it end;
+#   - its "Run ... in a terminal" row: terminal 2 opens and its shell runs
+#     the line (seq's 7771 is the command's output, not the typed line).
+wait 120 Jam OS shell
+wait {prompt}
+seen 30 compositor: keyboard 0627:0001 ready
+seen 60 netstack: link up
+wait 60 Connected: 10.2.21.100
+# ---- a notice and its button --------------------------------------------------------------
+send notify -b Yes -b No -w Tea The kettle is on
+wait 10 posted
+sleep 0.6
+shot desk-notice
+pointer 1028 112
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 : Yes
+wait {prompt}
+# the pointer over the terminal's text: the text bar it asked for
+# (wp-cursor-shape-v1); the arrow over its padding
+pointer 400 400
+sleep 0.5
+shot desk-text-cursor
+# ---- what init launches ---------------------------------------------------------------------
+send launch fractal
+wait 10 launch: fractal is not one of the desktop's apps
+wait {prompt}
+send launch ../bin/shell
+wait 10 launch: init: not a valid name
+wait {prompt}
+# ---- the search box: Jamjar ----------------------------------------------------------------
+monitor sendkey meta_l
+sleep 0.5
+usbkeys jamj
+monitor sendkey ret
+wait 20 init: launch jamjar: OK
+wait 10 compositor: launched jamjar
+wait 30 compositor: Jamjar's window is up: the cursor is not busy
+sleep 1
+shot desk-jamjar
+monitor sendkey meta_l-q
+wait 20 init: jamjar ended
+# ---- the search box: a command in a new terminal ---------------------------------------------
+monitor sendkey meta_l
+sleep 0.5
+usbkeys seq 7770 7772
+monitor sendkey ret
+wait 10 init: terminal 2 opens to run "seq 7770 7772"
+wait 60 7771
+seen 30 compositor: Terminal 2's window is up: the cursor is not busy
+sleep 1
+shot desk-run
+send reboot -f
+wait 30 reboot: resetting

@@ -2023,6 +2023,61 @@ drawing differs (`window.c`, `winpaint.c`, `cellpaint.c`, `cells.h`).
   (a typed command and its output, 10 to 30 cells) 1.2 to 1.7 ms, most
   of it the walk over the 18,894 cells; the bitmap's full redraw of its
   317x88 cells there took 24 to 38 ms.
+- **The pointer.** Over the text the window asks for the text bar
+  (wp-cursor-shape-v1 through libjwl's `jwl_client_set_cursor`, which the
+  library sends again at each enter and after a reconnect); over the
+  padding, the arrow.
+
+### The desktop's plumbing
+
+The desktop (the strip, the search box, the popovers, the notices:
+[docs/G1-PLAN.md](docs/G1-PLAN.md) "The look") reaches the rest of the
+system through channels init gives the compositor, each as narrow as its
+feature. The compositor is the most exposed process (every client talks to
+it), so none of them lets it start an arbitrary program or reach a
+service beyond what its feature needs, and it never waits on any of them:
+each request goes out without waiting and its answer comes to the port
+(`user/services/compositor/ctl.c`, `deskctl.c`).
+
+| Feature | The compositor's channel | What it can ask |
+| --- | --- | --- |
+| The search box's apps | init's control channel (SR_USER + 3) | `initctl.launch(app)`: init starts the app only if it is in `<deskapps.h>` (today Jamjar), the program in the boot image, with what its own list asks for (as the shell would give it) and `/svc/wayland`, no console, in a job of its own it cleans up; `initctl.terminal(command)`: a new terminal whose shell runs the command first ("Run ... in a terminal"); and `reboot` |
+| Notices | `/svc/notify`'s server end (SR_USER + 5) | serves it: each `svc.connect` is a compctl NOTIFY channel, which may `notify`, `notify_wait` and `withdraw` and nothing else |
+| The volume popover | the mixer's desktop channel (SR_USER + 6) | `audioctl.desk` (the master volume, what plays, the output's name) and `set_master`; no stream, no sound card |
+| The network popover | netstack's read-only control channel (SR_USER + 7) | `netctl.info`, `stats`, `device`, `summary`; nothing that changes the address |
+
+- **Launching.** The search box's rows are `<deskapps.h>`'s list, the
+  same one init decides by, and the compositor names an app by its
+  command name, never a path. "Terminal" is init's `terminal`. The cursor
+  is busy from the ask until the app's first window maps, matched by its
+  title (an app's window has the app's name; init answers a terminal's
+  number, whose window is "Terminal <n>"), or at once if init refuses, or
+  after 10 s. A command for a new terminal adds nothing to what the
+  compositor can do: it types into every terminal anyway.
+- **Notices.** Posters hold `/svc/notify` (init makes the shared channel
+  once and keeps both ends, as `/svc/wayland`'s, so a restarted
+  compositor serves the same one and posters connect again): devmgr (a
+  stick mounted, with its size and where, once a mount, and pulled out;
+  not the drivers stopped at a reboot), netstack (connected with an
+  address, disconnected), and the shell (`notify`, through its namespace:
+  `svc notify` is for `user/services/` only). `<notice.h>` is the side for
+  a service whose loop mustn't wait. A card's button press goes back to
+  the channel that posted it (`notify_wait`, kept if it isn't waiting), and
+  a channel that closes takes its cards with buttons along. The
+  compositor never acts on a button itself: init's own "Update written"
+  notice (posted on its ADMIN channel) has a Reboot button that init
+  answers by rebooting, as `initctl.reboot` does. Without a compositor
+  (`nocomp`) nothing is posted: the services' log lines, and the
+  console's notices made from them, are as before.
+- **Volume and network.** The mixer serves its desktop channel as it does
+  `audioctl`, refusing every method but `desk` and `set_master`; the
+  music player names its stream's track (`audio.stream_set_title`), which
+  `desk` reports while it plays; the output's name is the hda driver's
+  (`hda.output_name`: "ALC897 headphones"). The popover's 0-100% is the
+  master on a dB scale (100% 0 dB, 0.6 dB a percent less, 0% silence).
+  netstack's `summary` gives the link, address, speed, chip and its byte
+  counters; the compositor works out the rates from two summaries a
+  second apart while the popover is open.
 
 ## Audio
 

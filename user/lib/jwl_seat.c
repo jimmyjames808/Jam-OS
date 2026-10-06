@@ -46,7 +46,35 @@ static status_t get_device(struct jwl_client *c, bool keyboard)
         st = jwlc_made(c, jwl_wl_seat_get_pointer(c->conn, seat, id), id);
     if (st == OK)
         *(keyboard ? &c->seat.keyboard : &c->seat.pointer) = id;
+    /* the pointer's shape device, if the compositor has shapes */
+    uint32_t mgr = c->global[JWLC_CURSOR_SHAPE], dev;
+    if (st == OK && !keyboard && mgr &&
+        jwlc_make(c, &jwl_wp_cursor_shape_device_v1_interface, c->info.cursor_shape_version, c,
+                  &dev) == OK &&
+        jwlc_made(c, jwl_wp_cursor_shape_manager_v1_get_pointer(c->conn, mgr, dev, id), dev) == OK)
+        c->seat.shape_dev = dev;
     return st;
+}
+
+/* The shape asked for, with the pointer's last enter: OK if none is asked
+ * or there is no pointer over us. */
+static status_t send_shape(struct jwl_client *c)
+{
+    if (!c->cursor_shape || !c->seat.shape_dev || !c->seat.ptr_focus)
+        return OK;
+    return jwl_wp_cursor_shape_device_v1_set_shape(c->conn, c->seat.shape_dev,
+                                                    c->seat.enter_serial, c->cursor_shape);
+}
+
+status_t jwl_client_set_cursor(struct jwl_client *c, uint32_t shape)
+{
+    c->cursor_shape = shape;
+    if (c->state != JWLC_READY)
+        return OK;   /* sent at the next enter */
+    if (!c->global[JWLC_CURSOR_SHAPE])
+        return ERR_NOT_SUPPORTED;
+    status_t st = send_shape(c);
+    return st == OK ? jwl_client_flush(c) : st;
 }
 
 /* The device went from the seat: release it (a destructor from version 3). */
@@ -60,6 +88,10 @@ static void put_device(struct jwl_client *c, bool keyboard)
             (void)jwl_wl_pointer_release(c->conn, *id);
     }
     *id = 0;
+    if (!keyboard && c->seat.shape_dev) {   /* its shape device goes with it */
+        (void)jwl_wp_cursor_shape_device_v1_destroy(c->conn, c->seat.shape_dev);
+        c->seat.shape_dev = 0;
+    }
     struct jwl_window **focus = keyboard ? &c->seat.kb_focus : &c->seat.ptr_focus;
     if (*focus)
         queue_simple(c, keyboard ? JWL_EV_KEYBOARD_LEAVE : JWL_EV_POINTER_LEAVE, *focus);
@@ -232,10 +264,11 @@ static status_t ptr_enter(void *data, uint32_t self, uint32_t serial, uint32_t s
                           int32_t y)
 {
     struct jwl_client *c = data;
-    (void)self, (void)serial;
+    (void)self;
     c->seat.ptr_focus = jwlc_window_of_surface(c, surface);
+    c->seat.enter_serial = serial;
     pointer_event(c, JWL_EV_POINTER_ENTER, x, y);
-    return OK;
+    return send_shape(c);   /* the program's shape, from this enter on */
 }
 
 static status_t ptr_leave(void *data, uint32_t self, uint32_t serial, uint32_t surface)

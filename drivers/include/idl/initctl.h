@@ -22,6 +22,7 @@
 #define INITCTL_KERNEL_LOAD      0x00120007u
 #define INITCTL_UPDATE_OFFER     0x00120008u
 #define INITCTL_TERMINAL         0x00120009u
+#define INITCTL_LAUNCH           0x0012000au
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct initctl_kill_req {
@@ -98,14 +99,25 @@ struct initctl_update_offer_rep {
 struct initctl_terminal_req {
     uint32_t txid;
     uint32_t ordinal;
+    uint8_t command[128];
 } __attribute__((packed));
 struct initctl_terminal_rep {
     uint32_t txid;
     int32_t  status;
     uint8_t number;
 } __attribute__((packed));
+struct initctl_launch_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t app[16];
+} __attribute__((packed));
+struct initctl_launch_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t koid;
+} __attribute__((packed));
 
-#define INITCTL_REQ_MAX 40u   /* bytes: the biggest request */
+#define INITCTL_REQ_MAX 136u   /* bytes: the biggest request */
 #define INITCTL_REP_MAX 28u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
@@ -423,13 +435,15 @@ static inline status_t initctl_update_offer(handle_t ch, handle_t *out_offer)
 
 /* initctl_terminal_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_number)
+static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t command[128], uint8_t *out_number)
 {
     struct initctl_terminal_req idl_q;
     struct initctl_terminal_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = INITCTL_TERMINAL;
+    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
+        idl_q.command[idl_i] = command[idl_i];
     status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
                                NULL, idl_within, idl_t);
     if (idl_st == OK)
@@ -444,21 +458,73 @@ static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint6
  * often is given up on, and the terminal closes). The terminal closes for
  * good when its window is closed or its shell ends with `exit`. Answers at
  * once with the new terminal's number (2 and up; the first terminal is 1);
- * its window opens a moment later. ERR_NOT_SUPPORTED: no compositor runs
- * (a boot without one: one terminal only); ERR_NO_RESOURCES: as many
- * terminals are open as there may be. The shell's channel (`term`) and
- * the compositor's (Super+Enter); the consoles' too. */
-static inline status_t initctl_terminal_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_number)
+ * its window opens a moment later, titled "Terminal <number>". `command`
+ * (NUL-terminated; "" for none): a line its shell runs first, as if typed
+ * at its first prompt (shown after the prompt, and in its history), then
+ * the shell stays at the prompt; a restarted shell doesn't run it again.
+ * ERR_INVALID_ARGS: not NUL-terminated, or a control character in it.
+ * ERR_NOT_SUPPORTED: no compositor runs (a boot without one: one terminal
+ * only); ERR_NO_RESOURCES: as many terminals are open as there may be. The
+ * shell's channel (`term [command]`), the compositor's (Super+Enter, the
+ * search box's "Run ... in a terminal": the compositor types into every
+ * terminal anyway, so a command adds nothing to what it can do); the
+ * consoles' too. */
+static inline status_t initctl_terminal_until(handle_t ch, uint64_t deadline_ns, const uint8_t command[128], uint8_t *out_number)
 {
-    return initctl_terminal_call(ch, false, deadline_ns, out_number);
+    return initctl_terminal_call(ch, false, deadline_ns, command, out_number);
 }
-static inline status_t initctl_terminal_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_number)
+static inline status_t initctl_terminal_within(handle_t ch, uint64_t timeout_ns, const uint8_t command[128], uint8_t *out_number)
 {
-    return initctl_terminal_call(ch, true, timeout_ns, out_number);
+    return initctl_terminal_call(ch, true, timeout_ns, command, out_number);
 }
-static inline status_t initctl_terminal(handle_t ch, uint8_t *out_number)
+static inline status_t initctl_terminal(handle_t ch, const uint8_t command[128], uint8_t *out_number)
 {
-    return initctl_terminal_call(ch, false, DEADLINE_NEVER, out_number);
+    return initctl_terminal_call(ch, false, DEADLINE_NEVER, command, out_number);
+}
+
+/* initctl_launch_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_launch_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t app[16], uint64_t *out_koid)
+{
+    struct initctl_launch_req idl_q;
+    struct initctl_launch_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_LAUNCH;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_q.app[idl_i] = app[idl_i];
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_koid)
+        *out_koid = idl_r.koid;
+    return idl_st;
+}
+/* Start a desktop app: `app` (NUL-terminated) is one of init's fixed list
+ * of programs the desktop may start (<deskapps.h>: "jamjar"), nothing
+ * else: the program in the boot image, never one from /data. It gets what
+ * the shell would give it (its list, <wants.h>: the services and mounts
+ * it names, the root's rights it asks for) and /svc/wayland, no console;
+ * what it prints goes to the log. It runs in a job of its own, which init
+ * kills if it is still there when the process ends; init doesn't start it
+ * again. At most DESKAPPS_RUNNING (8) at once. Answers once it is started,
+ * with its process's kernel object id (its window comes a moment later,
+ * with the app's own title: "Jamjar"). ERR_NOT_FOUND: not in the list (or
+ * not in the boot image); ERR_INVALID_ARGS: not a name; ERR_NO_RESOURCES:
+ * DESKAPPS_RUNNING run already; spawn's errors. The compositor's channel
+ * (the search box) and the shell's; the consoles' ERR_ACCESS_DENIED. */
+static inline status_t initctl_launch_until(handle_t ch, uint64_t deadline_ns, const uint8_t app[16], uint64_t *out_koid)
+{
+    return initctl_launch_call(ch, false, deadline_ns, app, out_koid);
+}
+static inline status_t initctl_launch_within(handle_t ch, uint64_t timeout_ns, const uint8_t app[16], uint64_t *out_koid)
+{
+    return initctl_launch_call(ch, true, timeout_ns, app, out_koid);
+}
+static inline status_t initctl_launch(handle_t ch, const uint8_t app[16], uint64_t *out_koid)
+{
+    return initctl_launch_call(ch, false, DEADLINE_NEVER, app, out_koid);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -719,13 +785,15 @@ static inline status_t initctl_update_offer_result(const void *idl_rep, struct i
 
 /* initctl_terminal without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then initctl_terminal_result. */
-static inline status_t initctl_terminal_send(handle_t ch, uint32_t idl_txid)
+static inline status_t initctl_terminal_send(handle_t ch, uint32_t idl_txid, const uint8_t command[128])
 {
     struct initctl_terminal_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
     idl_q.txid = idl_txid;
     idl_q.ordinal = INITCTL_TERMINAL;
+    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
+        idl_q.command[idl_i] = command[idl_i];
     return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
 }
 
@@ -748,6 +816,39 @@ static inline status_t initctl_terminal_result(const void *idl_rep, struct idl_m
     return OK;
 }
 
+/* initctl_launch without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_launch_result. */
+static inline status_t initctl_launch_send(handle_t ch, uint32_t idl_txid, const uint8_t app[16])
+{
+    struct initctl_launch_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_LAUNCH;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_q.app[idl_i] = app[idl_i];
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_launch_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_launch_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_koid)
+{
+    const struct initctl_launch_rep *idl_r = (const struct initctl_launch_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_koid)
+        *out_koid = idl_r->koid;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -763,7 +864,8 @@ struct initctl_ops {
     status_t (*reboot_firmware)(void *ctx);
     status_t (*kernel_load)(void *ctx, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms);
     status_t (*update_offer)(void *ctx, handle_t *out_offer);
-    status_t (*terminal)(void *ctx, uint8_t *out_number);
+    status_t (*terminal)(void *ctx, const uint8_t command[128], uint8_t *out_number);
+    status_t (*launch)(void *ctx, const uint8_t app[16], uint64_t *out_koid);
 };
 
 /* Answer the initctl.kill request kept in txn: idl_st and, if it is OK, the
@@ -909,6 +1011,22 @@ static inline status_t initctl_reply_terminal(struct idl_txn idl_txn, status_t i
     if (idl_st != OK)
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     idl_r.number = number;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the initctl.launch request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_launch(struct idl_txn idl_txn, status_t idl_st, uint64_t koid)
+{
+    struct initctl_launch_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.koid = koid;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
@@ -1084,11 +1202,28 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->terminal(ctx, &out_number);
+        status_t idl_st = ops->terminal(ctx, idl_q->command, &out_number);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->number = out_number;
+        return sizeof(*idl_r);
+    }
+    case INITCTL_LAUNCH: {
+        const struct initctl_launch_req *idl_q = (const struct initctl_launch_req *)req;
+        struct initctl_launch_rep *idl_r = (struct initctl_launch_rep *)rep;
+        uint64_t out_koid = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->launch) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->launch(ctx, idl_q->app, &out_koid);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->koid = out_koid;
         return sizeof(*idl_r);
     }
     }

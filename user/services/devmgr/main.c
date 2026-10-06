@@ -121,6 +121,7 @@ static const struct {
 struct binding devs[MAX_DEVS];
 unsigned ndevs, problems;
 handle_t pci_res, port;
+struct notice_box devmgr_notices;
 unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
@@ -450,6 +451,7 @@ int main(int argc, char **argv)
         return 1;
     }
     spare_init(!nospare);
+    notice_init(&devmgr_notices, startup_handle(DEVMGR_SR_NOTIFY));
     /* With a console, class drivers send their input to it. */
     if (startup_handle(SR_CONSOLE))
         usb_new_console(startup_handle(SR_CONSOLE));

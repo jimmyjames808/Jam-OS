@@ -378,6 +378,20 @@ static void boot_soak(const char *minutes)
     sh_flush();
 }
 
+/* "run=<line>" (init's, after term=: initctl.terminal's command, the
+ * compositor's "Run ... in a terminal"): the line run as if typed at the
+ * first prompt, and remembered; then the prompt as ever. */
+static void run_first(const char *line)
+{
+    char copy[LINE_MAX + 1];
+    snprintf(copy, sizeof(copy), "%s", line);
+    set_prompt();
+    echo("%s%s\n", prompt, copy);
+    remember(copy);
+    sh_line(copy);
+    sh_flush();
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strncmp(argv[1], "term=", 5) && argv[1][5] >= '2' && argv[1][5] <= '9' &&
@@ -408,6 +422,8 @@ int main(int argc, char **argv)
         (void)initctl_shell_ready_until(sh_initctl(), now() + 2 * NS_PER_S);
     if (argc > 1 && !strncmp(argv[1], "soak=", 5))
         boot_soak(argv[1] + 5);
+    if (argc > 2 && sh_term_no && !strncmp(argv[2], "run=", 4) && argv[2][4])
+        run_first(argv[2] + 4);
     for (;;) {
         char line[LINE_MAX + 1];
         read_line(line);

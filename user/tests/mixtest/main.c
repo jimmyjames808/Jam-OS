@@ -23,6 +23,13 @@
  *                  openers' up to 16 in all, the 17th refused; one closed
  *                  frees a stream for another opener, not for one at its
  *                  cap
+ *   desk           no sound: the desktop's authority (desk_channel: what
+ *                  the compositor's channel has): desk answers the master
+ *                  volume, the output's name (QEMU's codec) and what
+ *                  plays (a stream of silence titled with
+ *                  stream_set_title), set_master works and the full
+ *                  channel sees it; everything else is refused, a
+ *                  desk_channel of it too
  *   device         no sound: audioctl.device's query channel to the hda
  *                  driver answers info and the gain but refuses
  *                  open_output and query (so nobody but the mixer can take
@@ -561,6 +568,50 @@ static bool t_idle_wakes(void)
     return true;
 }
 
+static bool t_desk(void)
+{
+    handle_t d = HANDLE_INVALID, h = HANDLE_INVALID;
+    CHECK_ST(audioctl_desk_channel_until(ctl(), soon(), &d), OK);
+    /* refused on it: the streams, their volumes, the card, another channel */
+    uint32_t n = 0;
+    int32_t master = 1, cb = 0;
+    static uint8_t list[640];
+    CHECK_ST(audioctl_streams_until(d, soon(), &n, &master, list), ERR_ACCESS_DENIED);
+    CHECK_ST(audioctl_set_volume_until(d, soon(), 1, -60, &cb), ERR_ACCESS_DENIED);
+    CHECK_ST(audioctl_device_until(d, soon(), 0, &h), ERR_ACCESS_DENIED);
+    CHECK_ST(audioctl_desk_channel_until(d, soon(), &h), ERR_ACCESS_DENIED);
+    CHECK(!h);
+    /* nothing plays: its master, the output's name */
+    uint8_t playing = 9, title[64], output[48];
+    CHECK_ST(audioctl_desk_until(d, soon(), &master, &playing, title, output), OK);
+    CHECK_EQ(master, 0);
+    CHECK_EQ(playing, 0);
+    CHECK(!strncmp((const char *)output, "QEMU ", 5));
+    /* the master volume set on it is the mixer's */
+    CHECK_ST(audioctl_set_master_until(d, soon(), -200, &cb), OK);
+    CHECK_ST(audioctl_streams_until(ctl(), soon(), &n, &master, list), OK);
+    CHECK_EQ(master, -200);
+    /* a stream of silence with a title: what plays */
+    struct mixer_stream s;
+    CHECK_ST(mixer_open(svc(), "desk", soon(), &s), OK);
+    uint8_t t[64] = "Artist - Title";
+    CHECK_ST(audio_stream_set_title_until(s.ch, soon(), t), OK);
+    static int16_t quiet[2 * CHUNK];
+    size_t done = 0;
+    for (unsigned k = 0; k < 8; k++)
+        CHECK_ST(mixer_write(&s, quiet, CHUNK, now() + LONG, &done), OK);
+    CHECK_ST(mixer_start(&s, soon()), OK);
+    pause_ms(100);
+    CHECK_ST(audioctl_desk_until(d, soon(), &master, &playing, title, output), OK);
+    CHECK_EQ(playing, 1);
+    CHECK(!strcmp((const char *)title, "Artist - Title"));
+    CHECK_EQ(master, -200);
+    mixer_close(&s);
+    CHECK_ST(audioctl_set_master_until(d, soon(), 0, &cb), OK);
+    jam_handle_close(d);
+    return true;
+}
+
 static bool t_none_left(void)
 {
     struct mixer_stream_info e[MIXER_MAX_STREAMS];
@@ -580,6 +631,7 @@ static const struct {
     { "protocol", t_protocol, false },
     { "openers", t_openers, false },
     { "stream_cap", t_stream_cap, false },
+    { "desk", t_desk, false },
     { "device", t_device, false },
     { "two_at_once", t_two_at_once, true },
     { "client_killed", t_client_killed, true },

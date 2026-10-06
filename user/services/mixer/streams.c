@@ -352,7 +352,21 @@ static status_t do_stats(void *ctx, uint32_t *out_underruns, uint32_t *out_late,
     return OK;
 }
 
+static status_t do_stream_title(void *ctx, const uint8_t title[64])
+{
+    struct call *c = ctx;
+    char *t = c->s->title;
+    size_t n = strnlen((const char *)title, 64);
+    if (n == 64)
+        n = 63;
+    for (size_t i = 0; i < n; i++)
+        t[i] = title[i] < ' ' || title[i] == 0x7f ? '?' : (char)title[i];
+    t[n] = '\0';
+    return OK;
+}
+
 static const struct audio_ops stream_ops = {
+    .stream_set_title = do_stream_title,
     .stream_start = do_start,
     .stream_stop = do_stop,
     .stream_position = do_position,
@@ -391,7 +405,7 @@ void run_audio(struct mixer *m, unsigned slot, handle_t ch, uint32_t owner, stru
         return;
     }
     if (!s && n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
-        clients_connect_reply(m, ch, slot, false);
+        clients_connect_reply(m, ch, slot, false, false);
         return;
     }
     struct call c = { m, s };
@@ -528,11 +542,44 @@ static status_t do_set_master(void *ctx, int32_t cb, int32_t *out)
     return OK;
 }
 
+/* What the desktop shows: the newest stream playing (and its frames
+ * coming), its title or name; the output's name, asked of the driver the
+ * first time (the driver answers at once: it made the name at its start). */
+static status_t do_desk(void *ctx, int32_t *out_master, uint8_t *out_playing,
+                        uint8_t title[64], uint8_t output[48])
+{
+    struct mixer *m = ctx;
+    const struct stream *best = NULL;
+    for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
+        const struct stream *s = &m->nums->s[i];
+        if (s->used && s->playing && !s->idle && (!best || s->id > best->id))
+            best = s;
+    }
+    *out_master = m->nums->master;
+    *out_playing = best != NULL;
+    if (best)
+        snprintf((char *)title, 64, "%s", best->title[0] ? best->title : best->name);
+    memcpy(output, out_name(m), sizeof(m->out_name));
+    return OK;
+}
+
 static const struct audioctl_ops ctl_ops = {
     .streams = do_streams,
     .set_volume = do_set_volume,
     .set_master = do_set_master,
-};   /* device: device.c, on a thread of its own */
+    .desk = do_desk,
+};   /* device: device.c, on a thread of its own; desk_channel: run_control */
+
+/* The desktop's authority only: its shared channel, or an opener's made by
+ * desk_channel. */
+static bool desk_only(const struct mixer *m, uint32_t key)
+{
+    uint32_t i = (key & 0xff) - KEY_CLIENT;
+    if (key == KEY_DESK)
+        return true;
+    return (key & 0xff) >= KEY_CLIENT && i < MIXER_CLIENTS && m->nums->c[i].used &&
+           m->nums->c[i].desk;
+}
 
 /* `device` goes to its thread (device.c), the rest are answered here. */
 void run_control(struct mixer *m, unsigned slot, handle_t ch, uint32_t key)
@@ -540,6 +587,15 @@ void run_control(struct mixer *m, unsigned slot, handle_t ch, uint32_t key)
     uint32_t n = 0;
     const void *q = svcstate_request(&m->state, slot, &n);
     const struct idl_req_hdr *hdr = q;
+    if (desk_only(m, key) && (n < sizeof(*hdr) || (hdr->ordinal != AUDIOCTL_DESK &&
+                                                   hdr->ordinal != AUDIOCTL_SET_MASTER))) {
+        req_status(m, slot, ch, ERR_ACCESS_DENIED);
+        return;
+    }
+    if (n == sizeof(struct audioctl_desk_channel_req) && hdr->ordinal == AUDIOCTL_DESK_CHANNEL) {
+        clients_connect_reply(m, ch, slot, true, true);
+        return;
+    }
     if (n == sizeof(struct audioctl_device_req) && hdr->ordinal == AUDIOCTL_DEVICE) {
         status_t st = device_ask(m, ch, key, slot, q);
         if (st == OK)
@@ -549,7 +605,7 @@ void run_control(struct mixer *m, unsigned slot, handle_t ch, uint32_t key)
         return;
     }
     if (n == sizeof(struct svc_connect_req) && hdr->ordinal == SVC_CONNECT) {
-        clients_connect_reply(m, ch, slot, true);
+        clients_connect_reply(m, ch, slot, true, false);
         return;
     }
     handle_t rhs[IDL_REP_HANDLES];
@@ -579,6 +635,19 @@ status_t serve_control(struct mixer *m, handle_t ch, uint32_t key)
             return st;
     }
     return req_budget_spent(m);
+}
+
+void serve_desk(struct mixer *m)
+{
+    status_t st = serve_control(m, m->desk, KEY_DESK);
+    m->desk_pending = st == OK;
+    if (st == OK || st == ERR_SHOULD_WAIT)
+        return;
+    if (st != ERR_PEER_CLOSED)
+        printf("mixer: reading the desktop's channel: %s\n", status_str(st));
+    (void)jam_port_unbind(m->port, m->desk, KEY_DESK);
+    jam_handle_close(m->desk);
+    m->desk = HANDLE_INVALID;
 }
 
 void serve_ctl(struct mixer *m)

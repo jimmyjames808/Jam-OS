@@ -46,10 +46,20 @@ static const struct sh_cmd cmds[] = {
       "  it comes. When it ends, the next prompt says so: [2] done: utest (exit 0).\n"
       "  kill %2 ends it; all of them end with the shell. At most 8 at once; a\n"
       "  pipeline, a shell command or an alias can't go in the background"),
-    C(term, C_SHELL, "term",
+    C(term, C_SHELL, "term [command]",
       "open another terminal: a window of its own with a shell of its own (as\n"
-      "  Super+Enter does). Needs the compositor (a boot with the word comp); at\n"
-      "  most 8 terminals in all. Close one with its window's close box or exit"),
+      "  Super+Enter does); with a command, its shell runs it first, as if typed,\n"
+      "  and stays. Needs the compositor (not a nocomp boot); at most 8 terminals\n"
+      "  in all. Close one with its window's close box or exit"),
+    C(launch, C_SHELL, "launch <app>",
+      "start one of the desktop's apps as its search box does (jamjar): init starts\n"
+      "  only those, from the boot image, with what each one's list asks for and a\n"
+      "  window, no terminal; what it prints goes to the log"),
+    C(notify, C_SHELL, "notify [-b button]... [-w] <title> [body...]",
+      "a notice on the desktop: a card in the top right that fades after 5 s, or\n"
+      "  with buttons (-b, up to 3) stays until one is pressed. -w: wait for it and\n"
+      "  say which (Ctrl+C stops waiting). Needs the compositor (not a nocomp boot).\n"
+      "  Example: notify -b Yes -b No -w Tea? Kettle is on"),
     C(exit, C_SHELL, "exit",
       "end this shell and close its terminal (not the first: it stays). The\n"
       "  programs it started with & end with it"),

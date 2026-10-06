@@ -22,7 +22,12 @@
  *             listen`; and /svc/net-low's (SR_USER + 4), whose
  *             openers may also listen on ports below 1024, which the shell
  *             gives only to a program whose list says `svc net listen low`
- *             (bin/serve; never one on /data). And /svc/net-sys's
+ *             (bin/serve; never one on /data). The server end of a
+ *             second, read-only control channel (SR_USER + 5: info, stats,
+ *             device and summary only), made and kept the same way, whose
+ *             client end only the compositor gets (the network popover);
+ *             and a duplicate of /svc/notify's client end (SR_USER + 6, not
+ *             under `nocomp`: "Connected", "Disconnected"). And /svc/net-sys's
  *             (SR_USER + 3): the same protocol for the network's own
  *             services (dns, netlog, sntp, and
  *             bin/update through the shell), whose openers may use a
@@ -98,6 +103,7 @@ static handle_t dsys_srv, dsys_cli; /* /svc/dns-sys's two ends, the same */
 static handle_t listen_srv, listen_cli;   /* /svc/net-listen's two ends, the same */
 static handle_t low_srv, low_cli;         /* /svc/net-low's two ends, the same */
 static handle_t sys_srv, sys_cli;         /* /svc/net-sys's two ends, the same */
+static handle_t info_srv, info_cli;       /* the read-only netctl channel's (the compositor's) */
 static handle_t loop_port;                /* init's loop's port: netctl's answers */
 
 /* The static address on its way to netstack (above, "The address"). */
@@ -127,6 +133,8 @@ void net_init(handle_t port)
         low_cli = low_srv = HANDLE_INVALID;   /* no program may listen below 1024 */
     if (jam_channel_create(&sys_cli, &sys_srv) != OK)
         sys_cli = sys_srv = HANDLE_INVALID;   /* the services share /svc/net with programs */
+    if (jam_channel_create(&info_cli, &info_srv) != OK)
+        info_cli = info_srv = HANDLE_INVALID;   /* the desktop shows no network */
     handle_t d;
     if (jam_channel_create(&dns_cli, &dns_srv) != OK)
         dns_cli = dns_srv = HANDLE_INVALID;
@@ -160,6 +168,14 @@ handle_t net_sys_channel(void)
     return sys_cli;
 }
 
+handle_t net_info_channel(void)
+{
+    handle_t d = HANDLE_INVALID;
+    if (!info_cli || jam_handle_duplicate(info_cli, RIGHT_SAME, &d) != OK)
+        return HANDLE_INVALID;
+    return d;
+}
+
 status_t net_start(void)
 {
     const struct bootfs_view *fs;
@@ -171,7 +187,7 @@ status_t net_start(void)
         svcs[NETSTACK].given_up = true;
         return OK;
     }
-    struct spawn_handle x[5 + INIT_MAX_CLAIMED] = { { SR_USER + 0, HANDLE_INVALID } };
+    struct spawn_handle x[7 + INIT_MAX_CLAIMED] = { { SR_USER + 0, HANDLE_INVALID } };
     if (jam_handle_duplicate(ctl_srv, RIGHT_SAME, &x[0].h) != OK)
         return ERR_NO_RESOURCES;
     unsigned n = 1;
@@ -187,6 +203,12 @@ status_t net_start(void)
     x[n] = (struct spawn_handle){ SR_USER + 4, HANDLE_INVALID };
     if (low_srv && jam_handle_duplicate(low_srv, RIGHT_SAME, &x[n].h) == OK)
         n++;   /* without it no program may listen below 1024 */
+    x[n] = (struct spawn_handle){ SR_USER + 5, HANDLE_INVALID };
+    if (info_srv && jam_handle_duplicate(info_srv, RIGHT_SAME, &x[n].h) == OK)
+        n++;   /* without it the desktop shows no network */
+    x[n] = (struct spawn_handle){ SR_USER + 6, comp_notify_client() };
+    if (x[n].h)
+        n++;   /* without it (`nocomp`) the link's news is in the log only */
     handle_t cards[INIT_MAX_CLAIMED];
     unsigned nc = services_net_devices(cards, INIT_MAX_CLAIMED);
     for (unsigned k = 0; k < nc; k++)
@@ -423,7 +445,9 @@ void net_given_up(void)
         jam_handle_close(low_srv);
     if (sys_srv)
         jam_handle_close(sys_srv);
-    ctl_srv = net_srv = listen_srv = low_srv = sys_srv = HANDLE_INVALID;
+    if (info_srv)
+        jam_handle_close(info_srv);
+    ctl_srv = net_srv = listen_srv = low_srv = sys_srv = info_srv = HANDLE_INVALID;
 }
 
 /* The kernel's start in UTC ns: the wall clock now less the uptime; 0 if

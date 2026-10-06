@@ -11,6 +11,9 @@
  *                 the mixer, and init starts it again with the new devmgr's
  *   SR_AUDIO      the server end of the `audio` channel (abi/idl/audio.idl)
  *   SR_AUDIO_CTL  the server end of the `audioctl` channel
+ *   SR_AUDIO_DESK optional: the server end of the desktop's `audioctl`
+ *                 channel (desk and set_master only), kept by init as the
+ *                 others; its client end is the compositor's
  *   SR_STATE      its state VMO (<svcstate.h>), kept by init
  *   SR_KEEP       its end of the keep channel (<keep.h>)
  * and, when it replaces one that ended, argv[1]: "killed" (a deliberate
@@ -49,6 +52,8 @@ static void packet(struct mixer *m, const struct port_packet *p)
         m->svc_pending = true;
     } else if (p->key == KEY_CTL) {
         m->ctl_pending = true;
+    } else if (p->key == KEY_DESK) {
+        m->desk_pending = m->desk != HANDLE_INVALID;
     } else if (p->key == KEY_DEVMGR) {
         printf("mixer: devmgr is gone (and the hda driver with it): ending, init starts "
                "me again with the new devmgr\n");
@@ -67,7 +72,8 @@ static void packet(struct mixer *m, const struct port_packet *p)
 
 static bool anything_pending(const struct mixer *m)
 {
-    if (m->svc_pending || m->ctl_pending || m->own_out.pending || clients_pending(m))
+    if (m->svc_pending || m->ctl_pending || m->desk_pending || m->own_out.pending ||
+        clients_pending(m))
         return true;
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
         if (m->nums->s[i].used && m->own_s[i].pending)
@@ -81,6 +87,8 @@ static void serve_all(struct mixer *m)
         serve_svc(m);
     if (m->ctl_pending)
         serve_ctl(m);
+    if (m->desk_pending)
+        serve_desk(m);
     clients_serve(m);
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
         if (m->nums->s[i].used && m->own_s[i].pending)
@@ -106,6 +114,7 @@ static status_t setup(struct mixer *m, const char *restart)
     m->svc = startup_handle(SR_AUDIO);
     m->ctl = startup_handle(SR_AUDIO_CTL);
     m->keep = startup_handle(SR_KEEP);
+    m->desk = startup_handle(SR_AUDIO_DESK);
     if (!m->svc || !m->ctl) {
         printf("mixer: started without SR_AUDIO and SR_AUDIO_CTL: nothing to serve\n");
         return ERR_BAD_HANDLE;
@@ -117,6 +126,9 @@ static status_t setup(struct mixer *m, const char *restart)
     if (st == OK)
         st = jam_port_bind(m->port, m->ctl, KEY_CTL, SIG_READABLE | SIG_PEER_CLOSED,
                            PORT_BIND_PERSISTENT);
+    if (st == OK && m->desk)
+        st = jam_port_bind(m->port, m->desk, KEY_DESK, SIG_READABLE | SIG_PEER_CLOSED,
+                           PORT_BIND_PERSISTENT);
     if (st == OK && m->ncards)   /* they all end with devmgr: one is enough to watch */
         st = jam_port_bind(m->port, m->cards[0], KEY_DEVMGR, SIG_PEER_CLOSED, PORT_BIND_ONCE);
     if (st != OK) {
@@ -124,6 +136,7 @@ static status_t setup(struct mixer *m, const char *restart)
         return st;
     }
     m->svc_pending = m->ctl_pending = true;   /* calls may be queued from before a restart */
+    m->desk_pending = m->desk != HANDLE_INVALID;
     device_init(m);
     adopt(m, adopted, restart);
     return OK;

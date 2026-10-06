@@ -23,8 +23,22 @@
  *                 DEVMGR_SET_CONSOLE after a restart: comp_restarted), and
  *                 serialin's source;
  *               SR_USER + 3  a control channel of init's that answers it
- *                 only `reboot` (Ctrl+Alt+Del) and `terminal`
- *                 (Super+Enter), ctl.c's CTL_COMPOSITOR;
+ *                 only `reboot` (Ctrl+Alt+Del), `terminal` (Super+Enter,
+ *                 the search box's "Run ... in a terminal") and `launch`
+ *                 (the search box's apps: <deskapps.h>'s alone, apps.c),
+ *                 ctl.c's CTL_COMPOSITOR;
+ *               SR_USER + 5  the server end of /svc/notify's shared
+ *                 channel, made once and kept (both ends) as /svc/wayland's:
+ *                 its svc.connect makes a compctl NOTIFY channel (post a
+ *                 notice, hear its buttons; nothing else). init publishes the
+ *                 client end as /svc/notify (the shell's `notify`) and gives
+ *                 devmgr and netstack a duplicate each (sticks; the network);
+ *               SR_USER + 6  a duplicate of the mixer's desktop channel's
+ *                 client end (services.c: audioctl's desk and set_master
+ *                 only, the volume popover);
+ *               SR_USER + 7  a duplicate of netstack's read-only control
+ *                 channel's client end (net.c: netctl's info, stats, device
+ *                 and summary only, the network popover);
  *               arguments `layout=floating|tiling` (/data/etc/settings'
  *                 display.layout; tiling, the default, without /data,
  *                 which comes after the first start: comp_settings then
@@ -42,7 +56,15 @@
  * for the layout it knows; the compositor answers it when the user
  * switches (Super+T), init saves the new one as display.layout and waits
  * again. A switch before /data is there is saved when /data comes (and the
- * settings' layout is then not applied over it). */
+ * settings' layout is then not applied over it).
+ *
+ * init's own notices (comp_notice: update.c's "Update written") go on its
+ * ADMIN channel, without waiting; a compctl.notify_wait is kept waiting
+ * there once one has buttons. A press of the Reboot button of a notice
+ * posted with `reboot` is init's to act on: it reboots as initctl.reboot
+ * does. The compositor only says which button was pressed: it never
+ * reboots for a notice, and no other poster can make init reboot. A new
+ * compositor has none of the old one's notices. */
 #include <idl/compctl.h>
 #include <settings.h>
 #include "init.h"
@@ -52,6 +74,9 @@
 #define HZ_KEY        "display.hz"
 #define HZ_MAX        1000u                   /* the compositor's limit */
 #define LAYOUT_TXID   0x1a70000u              /* our layout_wait's transaction id */
+#define NOTE_TXID     0x2b80000u              /* | a count: a notify of ours */
+#define NOTE_WAIT     0x2b90000u              /* our notify_wait's */
+#define NOTE_COUNT    0xffffu
 #define LAYOUT_TILING 1u                      /* compctl's layouts: 0 floating, 1 tiling */
 
 static handle_t wl_srv, wl_cli;   /* /svc/wayland's shared channel (0: no compositor) */
@@ -61,6 +86,11 @@ static uint8_t layout = LAYOUT_TILING;   /* the layout as init knows it (compctl
                                          * tiling until the settings say otherwise */
 static bool unsaved;              /* the user switched it before /data was there */
 static bool started_once;         /* a compositor has started this boot */
+static handle_t note_srv, note_cli;   /* /svc/notify's shared channel (0: no compositor) */
+static uint32_t note_count;       /* our notices' transaction ids */
+static uint32_t reboot_txid;      /* the last notice with a Reboot button, until answered */
+static uint32_t reboot_id;        /* ... its id (0: none up) */
+static bool note_waiting;         /* our notify_wait is out */
 
 bool comp_on(void)
 {
@@ -164,9 +194,76 @@ static void save_layout(uint8_t l)
     write_layout();
 }
 
+handle_t comp_notify_client(void)
+{
+    handle_t d = HANDLE_INVALID;
+    if (!note_cli || jam_handle_duplicate(note_cli, RIGHT_SAME, &d) != OK)
+        return HANDLE_INVALID;
+    return d;
+}
+
+void comp_notice(const char *title, const char *body, char icon, uint8_t tint,
+                 const char *const *buttons, bool reboot)
+{
+    if (!admin)
+        return;   /* no compositor (or none yet): the log has it */
+    uint8_t t[64] = { 0 }, b[96] = { 0 }, btn[72] = { 0 };
+    snprintf((char *)t, sizeof(t), "%s", title);
+    snprintf((char *)b, sizeof(b), "%s", body ? body : "");
+    for (unsigned i = 0; buttons && i < 3 && buttons[i]; i++)
+        snprintf((char *)btn + 24 * i, 24, "%s", buttons[i]);
+    note_count = (note_count + 1) & NOTE_COUNT;
+    uint32_t txid = NOTE_TXID | note_count;
+    status_t st = compctl_notify_send(admin, txid, t, b, (uint8_t)icon, tint, btn);
+    if (st != OK) {
+        printf("init: the notice \"%s\" isn't shown (%s)\n", title, status_str(st));
+        return;
+    }
+    if (reboot)
+        reboot_txid = txid;
+    if (btn[0] && !note_waiting)
+        note_waiting = compctl_notify_wait_send(admin, NOTE_WAIT) == OK;
+}
+
+/* A press of one of our notices' buttons: the Reboot one reboots. */
+static void note_pressed(uint32_t id, uint8_t button)
+{
+    if (!id || id != reboot_id || button != 0)
+        return;   /* Later, or a notice gone */
+    reboot_id = 0;
+    printf("init: the notice's Reboot was pressed: rebooting\n");
+    (void)init_reboot_kexec();   /* comes back only if it failed, having said why */
+    printf("init: rebooting through the firmware instead\n");
+    (void)init_reboot_firmware();
+}
+
+/* An answer of the compositor's to a notice call of ours. */
+static void note_answer(const uint8_t *rep, struct idl_msg *m)
+{
+    if (m->txid == NOTE_WAIT) {
+        uint32_t id = 0;
+        uint8_t button = 0;
+        status_t st = compctl_notify_wait_result(rep, m, &id, &button);
+        note_waiting = false;
+        if (st == OK)
+            note_waiting = compctl_notify_wait_send(admin, NOTE_WAIT) == OK;
+        else
+            printf("init: the compositor's notify_wait: %s\n", status_str(st));
+        if (st == OK)
+            note_pressed(id, button);
+        return;
+    }
+    uint32_t id = 0;
+    status_t st = compctl_notify_result(rep, m, &id);
+    if (st != OK)
+        printf("init: a notice isn't shown (%s)\n", status_str(st));
+    else if (m->txid == reboot_txid)
+        reboot_id = id;
+}
+
 void comp_event(void)
 {
-    for (unsigned n = 0; admin && n < 4; n++) {   /* bounded: one call of ours waits */
+    for (unsigned n = 0; admin && n < 8; n++) {   /* bounded: a few calls of ours wait */
         uint8_t rep[COMPCTL_REP_MAX];
         struct idl_msg m;
         status_t st = idl_reply_read(admin, rep, sizeof(rep), &m);
@@ -175,6 +272,10 @@ void comp_event(void)
         if (st != OK && st != ERR_INTERNAL) {   /* the compositor is gone: comp_closed */
             (void)jam_port_unbind(port, admin, KEY_COMP);
             return;
+        }
+        if (m.txid == NOTE_WAIT || (m.txid & ~NOTE_COUNT) == NOTE_TXID) {
+            note_answer(rep, &m);
+            continue;
         }
         if (m.txid != LAYOUT_TXID) {
             idl_msg_drop(&m);   /* a late answer to a call that gave up */
@@ -209,10 +310,12 @@ void comp_settings(void)
 }
 
 /* A compositor's handles beyond the root and /svc/wayland (x has room for
- * 2): its ADMIN channel (*mine: init's end) and init's control channel. */
+ * 5): its ADMIN channel (*mine: init's end), init's control channel, and
+ * the desktop's: /svc/notify's server end, the mixer's desktop channel and
+ * netstack's read-only one (each left out if there is none). */
 static status_t comp_handles(struct spawn_handle *x, unsigned *n, handle_t *mine)
 {
-    handle_t theirs, ctl;
+    handle_t theirs, ctl, h;
     status_t st = jam_channel_create(mine, &theirs);
     if (st != OK)
         return st;
@@ -220,6 +323,13 @@ static status_t comp_handles(struct spawn_handle *x, unsigned *n, handle_t *mine
     /* Without it Ctrl+Alt+Del resets the machine without the sync. */
     if (ctl_new(CTL_COMPOSITOR, port, KEY_CTL + CTL_COMPOSITOR, &ctl) == OK)
         x[(*n)++] = (struct spawn_handle){ SR_USER + 3, ctl };
+    /* Without these the desktop shows no notices, volume or network. */
+    if (note_srv && jam_handle_duplicate(note_srv, RIGHT_SAME, &h) == OK)
+        x[(*n)++] = (struct spawn_handle){ SR_USER + 5, h };
+    if ((h = services_audio_desk()) != HANDLE_INVALID)
+        x[(*n)++] = (struct spawn_handle){ SR_USER + 6, h };
+    if ((h = net_info_channel()) != HANDLE_INVALID)
+        x[(*n)++] = (struct spawn_handle){ SR_USER + 7, h };
     return OK;
 }
 
@@ -228,7 +338,7 @@ status_t comp_start(void)
     handle_t srv = HANDLE_INVALID, mine = HANDLE_INVALID;
     if (jam_handle_duplicate(wl_srv, RIGHT_SAME, &srv) != OK)
         return ERR_NO_RESOURCES;
-    struct spawn_handle x[4] = {
+    struct spawn_handle x[7] = {
         { SR_RESOURCE, services_root_with(RIGHTS_BASIC | RIGHT_ROOT_SCREEN | RIGHT_ROOT_REBOOT) },
         { SR_USER + 0, srv },
     };
@@ -253,6 +363,8 @@ status_t comp_start(void)
         return st;
     }
     admin = mine;
+    note_waiting = false;   /* the old compositor's notices went with it */
+    reboot_id = reboot_txid = 0;
     if (jam_port_bind(port, admin, KEY_COMP, SIG_READABLE | SIG_PEER_CLOSED,
                       PORT_BIND_PERSISTENT) == OK)
         wait_layout();
@@ -290,5 +402,9 @@ void comp_init(handle_t loop_port, bool on)
         return;
     }
     services_publish(SVC_WAYLAND, wl_cli, true);   /* a connection per opener (svc.connect) */
+    if (jam_channel_create(&note_cli, &note_srv) != OK)
+        note_cli = note_srv = HANDLE_INVALID;   /* no notices: the log has them */
+    else
+        services_publish(SVC_NOTIFY, note_cli, true);   /* a NOTIFY channel per opener */
     printf("init: the compositor draws the screen: each terminal is a window\n");
 }

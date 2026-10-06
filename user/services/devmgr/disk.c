@@ -269,6 +269,7 @@ static void got_info(struct disk *d, const struct storage_info_rep *r)
         st = storage_partition_until(disk_ch(d), now() + CALL_WAIT, i, &type[i], NULL, NULL);
     say(false, "devmgr: %s: %s %s, %lu MiB, %u partition(s), types %02x %02x", disk_name(d), vendor,
         product, (unsigned long)(r->blocks * r->block_size >> 20), r->partitions, type[0], type[1]);
+    d->mib = r->blocks * r->block_size >> 20;
     if (st != OK) {
         snprintf(why, sizeof(why), "its partitions can't be read (%s)", status_str(st));
         leave_alone(d, why);
@@ -344,6 +345,7 @@ static void fs_answers(struct binding *b)
             b->ready = true;
             say(false, "devmgr: %s partition %u is %s, %s", disk_name(d), b->part + 1,
                 fs_mount_path(b), b->rw ? "read-write" : "read-only");
+            disk_told_added(d, b);
             mounts_update();
             continue;
         }

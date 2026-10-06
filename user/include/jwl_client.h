@@ -62,6 +62,7 @@
 #define JWL_CLIENT_SEAT_VERSION       5u   /* wl_keyboard and wl_pointer at 5 too */
 #define JWL_CLIENT_OUTPUT_VERSION     3u
 #define JWL_CLIENT_WM_BASE_VERSION    1u
+#define JWL_CLIENT_CURSOR_SHAPE_VERSION 1u   /* wp_cursor_shape_manager_v1 (optional) */
 
 #define JWL_EVENT_QUEUE      256u    /* events waiting for the program; more are dropped */
 #define JWL_SIZE_MAX         8192    /* a window's or buffer's width and height, at most */
@@ -97,6 +98,7 @@ struct jwl_client_info {
     uint32_t seat_version;
     uint32_t output_version;
     uint32_t wm_base_version;
+    uint32_t cursor_shape_version;  /* 0: the compositor offers no cursor shapes */
     uint32_t shm_formats;         /* bit n: wl_shm format n offered (n < 32) */
     int32_t  output_width;        /* the output's current mode; 0 until told */
     int32_t  output_height;
@@ -154,6 +156,14 @@ status_t jwl_client_dispatch(struct jwl_client *c);
  * this library binds, e.g. &jwl_wl_compositor_interface), 0 if none: for
  * requests of the program's own. */
 uint32_t jwl_client_global(const struct jwl_client *c, const struct jwl_interface *iface);
+
+/* The pointer's shape while it is over this client's windows, by name
+ * (wp-cursor-shape-v1: JWL_WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT for a
+ * terminal's text, _DEFAULT for the arrow): sent now if the pointer is
+ * over one, and again at each enter (and after a reconnect). 0: none asked
+ * (the compositor's own). ERR_NOT_SUPPORTED: no wp_cursor_shape_manager_v1
+ * (kept, for the next connection). */
+status_t jwl_client_set_cursor(struct jwl_client *c, uint32_t shape);
 
 /* A wl_callback answered: for a frame callback on a surface the program
  * made itself with requests of its own (jwl_client_frame). The library's

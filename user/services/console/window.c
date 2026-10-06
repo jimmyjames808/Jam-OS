@@ -54,6 +54,7 @@ static struct jwl_client *wl;
 static struct jwl_window *win;
 static bool no_windows;            /* the compositor has no xdg_wm_base: until it is new */
 static struct pointer_track ptr;   /* where the pointer was, and the buttons held */
+static uint32_t shape_asked;       /* the pointer's shape asked of the compositor (0: none) */
 static int32_t win_w, win_h;       /* the size the compositor gave the window (0: none yet) */
 
 /* ---- the connector thread ------------------------------------------------------- */
@@ -209,6 +210,21 @@ static void key(const struct jwl_event *ev)
     key_event(k.usage, k.state, k.mods, k.codepoint, false);
 }
 
+/* The text bar while the pointer is over the text, the arrow over the
+ * padding (wp-cursor-shape-v1, through libjwl: sent at each enter too). */
+static void pointer_shape(const struct jwl_event *ev)
+{
+    if (ev->type == JWL_EV_POINTER_LEAVE) {
+        shape_asked = 0;   /* the next enter decides again */
+        return;
+    }
+    if (ev->type != JWL_EV_POINTER_ENTER && ev->type != JWL_EV_POINTER_MOTION)
+        return;
+    uint32_t want = pointer_shape_at(&look, cols, rows, ev->pointer.x >> 8, ev->pointer.y >> 8);
+    if (want != shape_asked && jwl_client_set_cursor(wl, want) == OK)
+        shape_asked = want;
+}
+
 static void take(const struct jwl_event *ev)
 {
     struct input_mouse_event m;
@@ -227,11 +243,13 @@ static void take(const struct jwl_event *ev)
     case JWL_EV_POINTER_MOTION:
     case JWL_EV_POINTER_BUTTON:
     case JWL_EV_POINTER_AXIS:
+        pointer_shape(ev);
         if (mouse_of_wayland(&ptr, ev, &m))
             mouse_event(&m);
         break;
     case JWL_EV_RECONNECTED:
         no_windows = false;   /* a new compositor: it may have windows now */
+        shape_asked = 0;
         paint_forget();
         dirty = true;
         break;

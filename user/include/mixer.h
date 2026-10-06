@@ -29,6 +29,11 @@
 
 #include <os.h>
 
+/* The mixer's startup role for the server end of the desktop's audioctl
+ * channel (desk and set_master only: abi/idl/audioctl.idl), which init
+ * makes once and keeps, and whose client end only the compositor gets. */
+#define SR_AUDIO_DESK    (SR_USER + 0)
+
 #define MIXER_RATE       48000u
 #define MIXER_CHANNELS   2u
 #define MIXER_FRAME      4u            /* bytes: left, right */

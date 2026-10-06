@@ -4,8 +4,9 @@
 # starts (that shell, every other terminal's, and the test programs whose
 # lists ask for it, <wants.h>). Each console holds another (startup role
 # SR_USER + 8: reboot and terminal only; the rest ERR_ACCESS_DENIED), and
-# so does the compositor (SR_USER + 3, the same two), so what a holder may
-# ask is decided by which channel it holds. Format: see tools/genidl.py.
+# so does the compositor (SR_USER + 3: reboot, terminal and launch), so
+# what a holder may ask is decided by which channel it holds. Format: see
+# tools/genidl.py.
 #
 # Restart: none. After ERR_PEER_CLOSED there is nothing to reconnect to:
 # init is gone, and with it whoever would restart anything; `reboot`
@@ -87,8 +88,29 @@ protocol initctl 18
 # often is given up on, and the terminal closes). The terminal closes for
 # good when its window is closed or its shell ends with `exit`. Answers at
 # once with the new terminal's number (2 and up; the first terminal is 1);
-# its window opens a moment later. ERR_NOT_SUPPORTED: no compositor runs
-# (a boot without one: one terminal only); ERR_NO_RESOURCES: as many
-# terminals are open as there may be. The shell's channel (`term`) and
-# the compositor's (Super+Enter); the consoles' too.
-9  terminal  () -> (u8 number)
+# its window opens a moment later, titled "Terminal <number>". `command`
+# (NUL-terminated; "" for none): a line its shell runs first, as if typed
+# at its first prompt (shown after the prompt, and in its history), then
+# the shell stays at the prompt; a restarted shell doesn't run it again.
+# ERR_INVALID_ARGS: not NUL-terminated, or a control character in it.
+# ERR_NOT_SUPPORTED: no compositor runs (a boot without one: one terminal
+# only); ERR_NO_RESOURCES: as many terminals are open as there may be. The
+# shell's channel (`term [command]`), the compositor's (Super+Enter, the
+# search box's "Run ... in a terminal": the compositor types into every
+# terminal anyway, so a command adds nothing to what it can do); the
+# consoles' too.
+9  terminal  (u8[128] command) -> (u8 number)
+# Start a desktop app: `app` (NUL-terminated) is one of init's fixed list
+# of programs the desktop may start (<deskapps.h>: "jamjar"), nothing
+# else: the program in the boot image, never one from /data. It gets what
+# the shell would give it (its list, <wants.h>: the services and mounts
+# it names, the root's rights it asks for) and /svc/wayland, no console;
+# what it prints goes to the log. It runs in a job of its own, which init
+# kills if it is still there when the process ends; init doesn't start it
+# again. At most DESKAPPS_RUNNING (8) at once. Answers once it is started,
+# with its process's kernel object id (its window comes a moment later,
+# with the app's own title: "Jamjar"). ERR_NOT_FOUND: not in the list (or
+# not in the boot image); ERR_INVALID_ARGS: not a name; ERR_NO_RESOURCES:
+# DESKAPPS_RUNNING run already; spawn's errors. The compositor's channel
+# (the search box) and the shell's; the consoles' ERR_ACCESS_DENIED.
+10 launch  (u8[16] app) -> (u64 koid)

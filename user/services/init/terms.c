@@ -50,7 +50,11 @@
  *             on the boot after a panic it waits for logd's answer
  *             (lastboot.c) and finds its one line queued on that channel
  *             (INIT_SHELL_NOTE) when it starts. An extra terminal's shell
- *             gets "term=<n>" (`exit` closes its terminal)
+ *             gets "term=<n>" (`exit` closes its terminal), and the first
+ *             time it starts "run=<line>" when initctl.terminal asked for
+ *             a command (the compositor's "Run ... in a terminal": the
+ *             shell runs it as if typed at its first prompt; a restarted
+ *             shell isn't given it again)
  * Neither gets RIGHT_ROOT_MAP or RIGHT_ROOT_SLICE: they can't reach
  * hardware beyond the calls made for them.
  *
@@ -87,6 +91,7 @@ enum { TERM_CLOSED, TERM_OPEN, TERM_CLOSING };
 struct term {
     uint8_t  state;      /* TERM_*: the first is always OPEN */
     handle_t cons;       /* its console's client end (0: none running) */
+    char     cmd[TERM_CMD_MAX];   /* its shell's first line, until it has started ("": none) */
 };
 static struct term terms[TERM_MAX];
 
@@ -270,12 +275,15 @@ static status_t start_shell(unsigned k)
             y[n++] = x[j];
     /* The boot's first shell gets the boot word's command (shell_first_arg);
      * one init restarts later is an ordinary shell. */
-    char term[8];
+    char term[8], run[4 + TERM_CMD_MAX];
     snprintf(term, sizeof(term), "term=%u", k + 1);
-    const char *argv[] = { svcs[TERM_SHELL(k)].path, k ? term : first_arg };
-    st = svc_start(TERM_SHELL(k), argv[1] ? 2 : 1, argv, y, n);
+    snprintf(run, sizeof(run), "run=%s", terms[k].cmd);
+    const char *argv[] = { svcs[TERM_SHELL(k)].path, k ? term : first_arg, run };
+    st = svc_start(TERM_SHELL(k), !argv[1] ? 1 : k && terms[k].cmd[0] ? 3 : 2, argv, y, n);
     if (!k)
         first_arg = NULL;
+    if (st == OK)
+        terms[k].cmd[0] = '\0';   /* once: a restarted shell is an ordinary one */
     if (st != OK) {
         if (mine)
             jam_handle_close(mine);
@@ -360,7 +368,7 @@ void terms_given_up(unsigned i)
     close_term((unsigned)k);
 }
 
-status_t terms_open(uint8_t *number)
+status_t terms_open(const char *cmd, uint8_t *number)
 {
     if (!comp_on())
         return ERR_NOT_SUPPORTED;   /* one screen, one terminal */
@@ -370,6 +378,7 @@ status_t terms_open(uint8_t *number)
     if (k == TERM_MAX)
         return ERR_NO_RESOURCES;
     terms[k].state = TERM_OPEN;
+    snprintf(terms[k].cmd, sizeof(terms[k].cmd), "%s", cmd);
     unsigned both[2] = { TERM_CONSOLE(k), TERM_SHELL(k) };
     for (unsigned j = 0; j < 2; j++) {
         struct svc *s = &svcs[both[j]];
@@ -379,7 +388,10 @@ status_t terms_open(uint8_t *number)
         s->next_try = 0;
         s->kill_at = 0;
     }
-    printf("init: terminal %u opens\n", k + 1);
+    if (cmd[0])
+        printf("init: terminal %u opens to run \"%s\"\n", k + 1, cmd);
+    else
+        printf("init: terminal %u opens\n", k + 1);
     *number = (uint8_t)(k + 1);
     return OK;
 }

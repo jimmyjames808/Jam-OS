@@ -14,6 +14,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <jwl/cursor_shape_v1.h>
 #include <idl/svc.h>
 #include <jwl_client.h>
 #include <os.h>
@@ -107,6 +108,10 @@ bool t_jwlc_real_compositor(void)
     const struct jwl_client_info *in = jwl_client_info(c);
     CHECK(in->compositor_version == 4 && in->shm_version == 1 && in->output_version == 3);
     CHECK(in->output_width == 320 && in->output_height == 200 && (in->shm_formats & 3) == 3);
+    /* wp-cursor-shape-v1 bound: a shape asked for goes at the pointer's next enter */
+    CHECK_EQ(in->cursor_shape_version, 1);
+    CHECK_ST(jwl_client_set_cursor(c, JWL_WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT), OK);
+    CHECK_ST(jwl_client_roundtrip(c, now() + CT_WAIT), OK);
     struct jwl_pool *pool;
     struct jwl_buffer *b[2];
     CHECK_ST(jwl_pool_create(c, 2 * SIDE * SIDE * 4, &pool), OK);
