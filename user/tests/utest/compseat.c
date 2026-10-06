@@ -23,7 +23,7 @@
 #include "compseat.h"
 #include "utest.h"
 
-bool cs_start(struct cs *t)
+static bool start(struct cs *t, bool desk)
 {
     memset(t, 0, sizeof(*t));
     handle_t svc, ctl, init, image;
@@ -37,7 +37,8 @@ bool cs_start(struct cs *t)
     const char *argv[] = { "bin/compositor", "headless", "size=640x480", "testwin", "nodesk" };
     struct spawn_handle x[] = { { SR_USER + 0, svc }, { SR_USER + 1, image },
                                 { SR_USER + 2, ctl }, { SR_USER + 3, init } };
-    struct spawn_args a = { .path = "bin/compositor", .argc = 5, .argv = argv, .job = t->p.job,
+    struct spawn_args a = { .path = "bin/compositor", .argc = desk ? 4 : 5, .argv = argv,
+                            .job = t->p.job,
                             .extra = x, .nextra = 4 };
     CHECK_ST(spawn(&a, &t->p.proc), OK);
     CHECK_ST(compctl_connect_input_within(t->ctl, CT_WAIT, &t->src), OK);
@@ -46,6 +47,16 @@ bool cs_start(struct cs *t)
     t->x = OUT_W / 2;   /* where the pointer starts */
     t->y = OUT_H / 2;
     return true;
+}
+
+bool cs_start(struct cs *t)
+{
+    return start(t, false);
+}
+
+bool cs_start_desk(struct cs *t)
+{
+    return start(t, true);
 }
 
 bool cs_stop(struct cs *t)

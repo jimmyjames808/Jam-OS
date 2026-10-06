@@ -11,7 +11,8 @@
  * arrangement (its floor). Placement, for the states the shown buffer was
  * drawn for:
  *   - full screen: centred on the output (a smaller buffer shows the
- *     background around it, never stretched), on a screen of its own;
+ *     background around it, never stretched), on a screen of its own (a
+ *     boot overlay's on none: over every screen, screens.c);
  *   - maximised: centred in the room below the floor, under its title bar
  *     (tiling: inside its border instead);
  *   - tiling: centred in its tile (a resizable window was asked to fill
@@ -362,7 +363,9 @@ void wm_unmap(struct wm_window *ww)
     wm_grab_forget(ww);
     if (wm.focused == ww)
         wm.focused = NULL;
-    if (ww->surface->buffer && screens_shown(ww))
+    if (ww->surface->buffer && ww->overlay)
+        anim_fade(ww->win);    /* the splash fades out to what is under it */
+    else if (ww->surface->buffer && screens_shown(ww))
         anim_close(ww->win);   /* its picture, while its pixels are still there */
     bool tiled = wm_layout_of(ww) == COMP_TILING;
     window_destroy(ww->win);   /* the seat hears first, while it is in the order */
@@ -553,11 +556,12 @@ void wm_clicked(struct comp_window *w)
     window_raise(w);   /* wm_focus_changed did, if the focus moved; a click raises anyway */
 }
 
-/* Can the keys go to w: mapped, and its client still there. */
+/* Can the keys go to w: mapped, its client still there, no boot overlay. */
 static bool cyclable(const struct comp_window *w)
 {
     const struct jwl_conn *c = w->surface->client->conn;
-    return (w->flags & COMP_WIN_MAPPED) && c && c->status == OK;
+    return (w->flags & COMP_WIN_MAPPED) && !(w->flags & COMP_WIN_OVERLAY) && c &&
+           c->status == OK;
 }
 
 /* Alt+Tab's order into order[]: the toplevels as they opened, then the

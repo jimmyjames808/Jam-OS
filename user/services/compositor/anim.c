@@ -6,16 +6,18 @@
  *   - minimising shrinks it into its chip on the strip while it fades to
  *     15% (260 ms); restoring grows it back out of the chip;
  *   - switching screens slides the windows of both sideways by the
- *     output's width (260 ms), the wallpaper and the strip staying put.
+ *     output's width (260 ms), the wallpaper and the strip staying put;
+ *   - a boot overlay (the splash, screens.c) fades out where it was when it
+ *     goes (200 ms), over the strip, to what is under it.
  *
  * One animation runs at a time: starting one, or anything the user does
  * that changes what is shown (desk.c, screens.c), first makes the running
  * one jump to its end. So a quick second key or click never waits for a
  * picture to finish.
  *
- * Opening, closing, minimising and restoring draw a snapshot of the window
- * (animdraw.c: its frame as it was, rounded corners clear) scaled about a
- * moving centre; the window itself is not drawn meanwhile (COMP_WIN_ANIMATED
+ * Opening, closing, minimising, restoring and fading draw a snapshot of
+ * the window (animdraw.c: its frame as it was, rounded corners clear)
+ * scaled about a moving centre; the window itself is not drawn meanwhile (COMP_WIN_ANIMATED
  * while it is mapped, or it is unmapped or gone already). A slide moves the
  * windows themselves (struct comp_window's slide_x), so the clients' own
  * pixels keep coming.
@@ -226,7 +228,8 @@ static bool begin(enum anim_kind kind, struct comp_window *w, uint64_t ms)
     an.cx0 = an.cx1 = f.x1 + f.x2;
     an.cy0 = an.cy1 = f.y1 + f.y2;
     an.now = (struct anim_draw){ .kind = kind, .snap = &an.snap, .at = f, .alpha = 255,
-                                 .above_strip = kind == ANIM_MINIMISE || kind == ANIM_RESTORE };
+                                 .above_strip = kind == ANIM_MINIMISE || kind == ANIM_RESTORE ||
+                                                kind == ANIM_FADE };
     return true;
 }
 
@@ -250,6 +253,17 @@ void anim_close(struct comp_window *w)
         return;
     an.s0 = 1000;
     an.s1 = LOOK_ANIM_OPEN_FROM;
+    an.a0 = 255;
+    an.a1 = 0;
+    frame_at(an.start);
+}
+
+/* A boot overlay going: the same size and place, fading out. */
+void anim_fade(struct comp_window *w)
+{
+    if (!begin(ANIM_FADE, w, LOOK_ANIM_FADE_MS))
+        return;
+    an.s0 = an.s1 = 1000;
     an.a0 = 255;
     an.a1 = 0;
     frame_at(an.start);

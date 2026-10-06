@@ -26,7 +26,7 @@
 
 const struct desk_app desk_apps[DESK_APPS] = {
     { "Terminal", "Shell", 'T', LOOK_JAM_RASPBERRY },
-    { "Jamjar", "Notes and files", 'J', LOOK_JAM_APRICOT },
+    { "Jamjar", "Music player", 'J', LOOK_JAM_APRICOT },
     { "Sysmon", "CPUs, memory, network", 'S', LOOK_JAM_BLACKCURRANT },
     { "Mines", "Game", 'M', LOOK_JAM_RASPBERRY },
     { "Snake", "Game", 'S', LOOK_JAM_APRICOT },

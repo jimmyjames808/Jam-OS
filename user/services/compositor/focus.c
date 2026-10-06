@@ -18,7 +18,9 @@
  * window whose client has no wl_keyboard never gets the focus at all
  * (focusable): it wants no keys, so it takes none from the window that has
  * them (the boot splash plays full screen over the first terminal, which
- * keeps the keys typed meanwhile).
+ * keeps the keys typed meanwhile). Full screen, such a window is a boot
+ * overlay (screens.c), which the scene keeps over every other window
+ * (scene.c: a window raised or mapped after it comes up under it).
  *
  * Keys no client sees, taken on their press before any focus is looked at
  * (the press and its release both go nowhere):
@@ -59,32 +61,18 @@ struct comp_window *seat_focused(void)
     return focused;
 }
 
+bool seat_takes_keys(struct comp_client *cl)
+{
+    return seat_of(cl)->nres[SEAT_KEYBOARD] > 0;
+}
+
 /* Can w take the focus: mapped, its client alive and taking keys (it has a
  * wl_keyboard: a client without one, the boot splash, never takes the keys
  * from the window that has them, by mapping or by a click). */
 static bool focusable(const struct comp_window *w)
 {
     return w && (w->flags & COMP_WIN_MAPPED) && client_alive(w->surface->client) &&
-           seat_of(w->surface->client)->nres[SEAT_KEYBOARD] > 0;
-}
-
-/* A full-screen window whose client takes no keys (the boot splash) is a
- * screen over the desktop, not a window to work in: a window that takes
- * the focus comes up under it, never over it (the first terminal's, when
- * it maps after the splash's). Raised again, in their own order. */
-#define SCREENS_MAX 4u
-static void screens_on_top(void)
-{
-    struct comp_window *s[SCREENS_MAX];
-    unsigned n = 0;
-    for (struct comp_window *w = scene.bottom; w && n < SCREENS_MAX; w = w->above)
-        if ((w->flags & COMP_WIN_MAPPED) && (w->flags & COMP_WIN_FULLSCREEN) &&
-            client_alive(w->surface->client) &&
-            !seat_of(w->surface->client)->nres[SEAT_KEYBOARD])
-            s[n++] = w;
-    for (unsigned i = 0; i < n; i++)
-        if (s[i] != scene.top)
-            window_raise(s[i]);
+           seat_takes_keys(w->surface->client);
 }
 
 void seat_focus(struct comp_window *w)
@@ -103,8 +91,7 @@ void seat_focus(struct comp_window *w)
         window_damage(w);
         keyboard_enter(w);
     }
-    wm_focus_changed(w);   /* raised, and the toplevels' activated state */
-    screens_on_top();
+    wm_focus_changed(w);   /* raised (under a boot overlay), and the toplevels' activated state */
 }
 
 void focus_click(struct comp_window *w)

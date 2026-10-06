@@ -20,7 +20,12 @@
  * when it shrinks (a commit of a smaller buffer) its old box is painted
  * again, so nothing of it is left behind; a move paints both boxes.
  * t_comp_paint_blank: blank shows the splash's background only, no window,
- * no cursor. */
+ * no cursor.
+ * t_comp_paint_overlay: a boot overlay (a full-screen window whose client
+ * takes no keys, the splash's) on the desktop covers all of the output, the
+ * strip included, copied straight from its buffer; when it goes it fades
+ * (a frame between shows both) to exactly the picture without it, each
+ * frame painting its box only. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -216,5 +221,64 @@ bool t_comp_paint_blank(void)
         CHECK_EQ(r.rep[0].layer_px, 0);
     }
     cp_done(&r);
+    return ok;
+}
+
+/* The desktop with a floating window; then a boot overlay (the test
+ * scene's client takes no keys) over it. */
+#define OV_DESK  "nocursor", "desktop", "time=2026,10,5,14,32", "top=120,60,ff3060a0,Term,f", \
+                 "paint"
+#define OV_SPLASH "top=320,200,ff70a030,Splash,F", "paint"
+#define OV_FADE  "animate", "close=2", "tick=50", "paint"
+
+/* Pixels of run r equal to run o's. */
+static unsigned same_px(const struct cp_run *r, const struct cp_run *o)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < CP_W * CP_H; i++)
+        n += r->image[i] == o->image[i];
+    return n;
+}
+
+static bool overlay_runs(struct cp_run *desk, struct cp_run *over, struct cp_run *mid,
+                         struct cp_run *end)
+{
+    static const char *const d[] = { OV_DESK };
+    static const char *const o[] = { OV_DESK, OV_SPLASH };
+    static const char *const m[] = { OV_DESK, OV_SPLASH, OV_FADE };
+    static const char *const e[] = { OV_DESK, OV_SPLASH, OV_FADE, "tick=250", "paint" };
+    CHECK(cp_run(d, sizeof(d) / sizeof(d[0]), desk));
+    CHECK(cp_run(o, sizeof(o) / sizeof(o[0]), over));
+    CHECK(cp_run(m, sizeof(m) / sizeof(m[0]), mid));
+    CHECK(cp_run(e, sizeof(e) / sizeof(e[0]), end));
+    /* the overlay: its own pixels everywhere (over the strip too), direct */
+    for (int32_t y = 0; y < CP_H; y++)
+        for (int32_t x = 0; x < CP_W; x++)
+            CHECK_EQ(over->image[y * CP_W + x], testscene_rgb(0x70a030, x, y, false));
+    CHECK_EQ(over->nrep, 2);
+    CHECK(over->rep[1].tiles > 0);
+    CHECK_EQ(over->rep[1].direct, over->rep[1].tiles);
+    /* the strip is there without it */
+    CHECK(same_px(desk, over) < CP_W * CP_H / 100);
+    /* half-way: neither (a blend of both), its box painted, composed */
+    CHECK_EQ(mid->nrep, 3);
+    CHECK(same_px(mid, desk) < CP_W * CP_H / 2);
+    CHECK(same_px(mid, over) < CP_W * CP_H / 2);
+    CHECK_EQ(mid->rep[2].px, CP_W * CP_H);
+    CHECK_EQ(mid->rep[2].direct, 0);
+    /* the end: exactly the desktop without it */
+    CHECK_EQ(end->nrep, 4);
+    CHECK_EQ(end->rep[3].px, CP_W * CP_H);
+    CHECK_EQ(same_px(end, desk), CP_W * CP_H);
+    return true;
+}
+
+bool t_comp_paint_overlay(void)
+{
+    static struct cp_run r[4];
+    memset(r, 0, sizeof(r));
+    bool ok = overlay_runs(&r[0], &r[1], &r[2], &r[3]);
+    for (unsigned i = 0; i < 4; i++)
+        cp_done(&r[i]);
     return ok;
 }

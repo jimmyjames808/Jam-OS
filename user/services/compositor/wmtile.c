@@ -51,8 +51,10 @@ struct comp_box wm_tile(const struct wm_window *ww)
     const struct desk_screen *s = ww->screen ? ww->screen : screens_cur();
     unsigned n = 0, i = 0;
     for (const struct wm_window *t = wm_first(); t; t = t->next) {
-        if (t != ww && (!t->win || t->minimised || (t->screen ? t->screen : screens_cur()) != s))
-            continue;   /* not tiled here: unmapped, minimised, or on another screen */
+        if (t != ww && (!t->win || t->minimised || t->overlay ||
+                        (t->screen ? t->screen : screens_cur()) != s))
+            continue;   /* not tiled here: unmapped, minimised, a boot overlay, or on another
+                         * screen */
         if (t == ww)
             i = n;
         n++;

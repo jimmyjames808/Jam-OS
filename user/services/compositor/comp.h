@@ -307,6 +307,9 @@ enum comp_layout {
 #define COMP_WIN_UNRESPONSIVE (1u << 4) /* didn't answer a ping: its title bar says so */
 #define COMP_WIN_ANIMATED   (1u << 5)   /* mapped, but an animation draws it (anim.c): painting
                                          * skips it and nothing below it is taken as hidden */
+#define COMP_WIN_OVERLAY    (1u << 6)   /* a boot overlay (screens.c: a full-screen window whose
+                                         * client takes no keys, the splash's): over every other
+                                         * window, whatever is raised or made after it */
 
 /* A floating window's title bar: deco_top, in pixels (title.c draws it,
  * the window manager sets it; look.h has the rest of its look). */
@@ -371,7 +374,9 @@ status_t window_create(struct comp_surface *s, int32_t x, int32_t y, struct comp
 void window_destroy(struct comp_window *w);
 void window_map(struct comp_window *w, bool mapped);   /* damages its frame */
 void window_move(struct comp_window *w, int32_t x, int32_t y);   /* damages old and new */
-void window_raise(struct comp_window *w);              /* to the top; damages its frame */
+/* To the top (under the boot overlays, COMP_WIN_OVERLAY, unless w is one);
+ * damages its frame. window_create puts a new window there too. */
+void window_raise(struct comp_window *w);
 void window_damage(struct comp_window *w);             /* all of its extent */
 /* Surface damage b (surface coordinates, clipped to the surface) on the output. */
 void window_damage_surface(struct comp_window *w, struct comp_box b);
@@ -609,6 +614,9 @@ void     seat_window_gone(struct comp_window *w);
 void     seat_focus(struct comp_window *w);
 /* The window with the keyboard focus, or NULL. */
 struct comp_window *seat_focused(void);
+/* Does cl take keys: it has a wl_keyboard (libjwl's no_keyboard binds none:
+ * the boot splash's). A client without one never gets the keyboard focus. */
+bool     seat_takes_keys(struct comp_client *cl);
 /* Is serial that of a button press sent to cl whose button is still held?
  * (xdg_toplevel.move and resize are honoured only then.) */
 bool     seat_button_serial_ok(const struct comp_client *cl, uint32_t serial);

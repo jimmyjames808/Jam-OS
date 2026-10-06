@@ -9,7 +9,13 @@
  *   top=W,H,AARRGGBB,TITLE[,FLAGS]
  *                    a toplevel W x H of testscene.h's pixels that can't be
  *                    resized, placed by the window manager on the current
- *                    screen; FLAGS: f focused, m minimised
+ *                    screen; FLAGS: f focused, m minimised, F full screen
+ *                    from its first buffer (its client, the scene's, takes
+ *                    no keys: a boot overlay, as the splash's)
+ *   close=K          toplevel K (1, 2, ... in order) unmapped, as its client
+ *                    would (a boot overlay fades out)
+ *   animate          the animations on (`tick` moves their clock)
+ *   tick=MS          the animations' clock MS milliseconds on from now
  *   popover=volume|network|clock   that popover, opened from its icon
  *   notify=TITLE,BODY[,BUTTON[,BUTTON]]   a notification
  *   search[=TEXT]    the search box, TEXT typed into it
@@ -101,7 +107,10 @@ static bool cmd_top(const char *arg)
         return false;
     wm_set_title(t->ww, f[3]);
     wm_set_limits(t->ww, (int32_t)w, (int32_t)h, (int32_t)w, (int32_t)h);
-    if (wm_commit(t->ww, 0) != OK)
+    bool full = n == 5 && strchr(f[4], 'F');
+    if (full)
+        wm_request_fullscreen(t->ww, true);
+    if (wm_commit(t->ww, full ? WM_ST_FULLSCREEN : 0) != OK)
         return false;
     for (const char *fl = n == 5 ? f[4] : ""; *fl; fl++) {
         if (*fl == 'f') {   /* as the seat marks it (it gives none to a client without a
@@ -112,6 +121,23 @@ static bool cmd_top(const char *arg)
         if (*fl == 'm')
             screens_minimise(t->ww);
     }
+    return true;
+}
+
+/* close=K */
+static bool cmd_close(const char *arg)
+{
+    uint32_t k = number(arg, 10);
+    if (!k || k > ntops || !tops[k - 1].ww->win)
+        return false;
+    wm_unmap(tops[k - 1].ww);
+    return true;
+}
+
+/* tick=MS */
+static bool cmd_tick(const char *arg)
+{
+    anim_tick(now() + (uint64_t)number(arg, 10) * NS_PER_MS);
     return true;
 }
 
@@ -270,6 +296,10 @@ int testdesk_command(const char *c)
         desktop_off();
         return 1;
     }
+    if (!strcmp(c, "animate")) {
+        anim_init(true);
+        return 1;
+    }
     if (!strcmp(c, "deskbench")) {
         desk_bench();
         return 1;
@@ -281,6 +311,7 @@ int testdesk_command(const char *c)
     static const struct { const char *name; bool (*fn)(const char *); } cmds[] = {
         { "top", cmd_top }, { "time", cmd_time }, { "notify", cmd_notify },
         { "popover", cmd_popover }, { "cursorshape", cmd_cursorshape },
+        { "close", cmd_close },     { "tick", cmd_tick },
     };
     for (unsigned i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         if (eq && k == strlen(cmds[i].name) && !strncmp(c, cmds[i].name, k))

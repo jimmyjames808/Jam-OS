@@ -21,7 +21,15 @@
  * t_desk_notify: cards stacked down from under the strip, the newest on
  * top; one without buttons goes after LOOK_NOTE_SHOW_MS, one with buttons
  * stays until one is pressed (ctl_notify_answered), a click on a plain
- * card sends it; at most NOTIFY_MAX, the oldest plain one pushed out. */
+ * card sends it; at most NOTIFY_MAX, the oldest plain one pushed out.
+ * t_desk_overlay: a full-screen window whose client takes no keys (the
+ * boot splash's) is a boot overlay: no screen of its own (nor a dot), on
+ * none (no chip, no Alt+Tab row, never cycled to), over all of the output
+ * and every window (raised, focused or opened after it), the strip hidden
+ * under it, staying put while screens change; not minimised; it fades out
+ * when it goes (over the strip, its box), ending with the strip back and
+ * nothing left of it; asked out of full screen it is a window on the
+ * current screen. A client with keys still gets a screen of its own. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -366,6 +374,140 @@ bool t_desk_notify(void)
 {
     desk_test_start(COMP_FLOATING);
     bool ok = notify_steps();
+    fk_close_all();
+    return ok;
+}
+
+/* ---- a boot overlay ------------------------------------------------------------------------ */
+
+static bool mapped(unsigned k)
+{
+    return fks[k].ww && fks[k].ww->win && (fks[k].ww->win->flags & COMP_WIN_MAPPED);
+}
+
+static bool box_eq(struct comp_box a, struct comp_box b)
+{
+    return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
+}
+
+static bool covers_output(const struct comp_window *w)
+{
+    struct comp_box f = window_frame(w);
+    return f.x1 == 0 && f.y1 == 0 && f.x2 == OUT_W && f.y2 == OUT_H;
+}
+
+static unsigned strip_count(enum strip_part part)
+{
+    strip_update();
+    unsigned n = 0;
+    for (unsigned i = 0; i < strip.n; i++)
+        n += strip.items[i].part == part;
+    return n;
+}
+
+static bool overlay_steps(void)
+{
+    CHECK(fk_open(&fks[0], 320, 200, false));   /* the first terminal */
+    seat_focus(win(0));
+    CHECK(fk_open_full(&fks[1], &fake_keyless));   /* the splash */
+    struct wm_window *ov = fks[1].ww;
+    CHECK(ov->overlay && !ov->screen && mapped(1));
+    CHECK(win(1)->flags & COMP_WIN_OVERLAY);
+    CHECK_EQ(screens_count(), 1);               /* no screen of its own */
+    CHECK_EQ(screens_windows(screens_cur()), 1);   /* on none: no chip */
+    CHECK(covers_output(win(1)));               /* the strip's rows too */
+    CHECK(screens_overlay());
+    CHECK_EQ(strip_count(STRIP_DOT), 0);        /* hidden under it */
+    CHECK(!strip.shown && box_empty(strip_box()));
+    CHECK_EQ(scene.top, win(1));
+    /* the terminal focused again, a window opened after it: under it */
+    seat_focus(NULL);
+    seat_focus(win(0));
+    CHECK_EQ(scene.top, win(1));
+    CHECK(fk_open(&fks[2], 300, 180, false));
+    CHECK_EQ(scene.top, win(1));
+    CHECK_EQ(screens_count(), 1);
+    CHECK_EQ(screens_windows(screens_cur()), 2);
+    /* never cycled to, no Alt+Tab row */
+    CHECK_EQ(wm_cycle(win(0), false), win(2));
+    CHECK_EQ(wm_cycle(win(2), false), win(0));
+    alttab_step(false);
+    CHECK_EQ(alttab.n, 2);
+    for (unsigned i = 0; i < alttab.n; i++)
+        CHECK(alttab.rows[i].ww != ov);
+    alttab_end(false);
+    /* not minimised; screens change under it, it stays (no slide) */
+    screens_minimise(ov);
+    CHECK(!ov->minimised && mapped(1));
+    screens_step(1);
+    CHECK_EQ(screens_count(), 2);
+    CHECK(mapped(1) && !mapped(0) && win(1)->slide_x == 0 && covers_output(win(1)));
+    screens_go(0);
+    CHECK_EQ(screens_count(), 1);
+    /* tiling: the two windows share the room; it isn't one of them */
+    wm_toggle_layout();
+    struct comp_box room = screens_room(screens_cur());
+    CHECK(box_eq(win(0)->tile, wm_tile_box(room, 2, 0)));
+    CHECK(covers_output(win(1)));
+    wm_toggle_layout();
+    /* a client with keys: full screen on a screen of its own, as before */
+    wm_toggle_fullscreen(win(0));
+    CHECK_EQ(screens_count(), 2);
+    CHECK_EQ(screens_cur()->kind, SCREEN_FULL);
+    CHECK_EQ(scene.top, win(1));
+    wm_toggle_fullscreen(win(0));
+    CHECK_EQ(screens_count(), 1);
+    CHECK(fk_draw(&fks[0]));
+    return true;
+}
+
+static bool overlay_fade_steps(void)
+{
+    anim_init(true);
+    static struct comp_buffer shown;   /* a buffer to take its picture from */
+    fks[1].s.buffer = &shown;
+    unsigned snaps = fdesk.snaps;
+    wm_destroy(fks[1].ww);
+    fks[1].s.buffer = NULL;
+    fks[1].ww = NULL;
+    struct anim_draw d;
+    CHECK_EQ(anim_running(), ANIM_FADE);
+    CHECK(anim_now(&d) && d.above_strip && d.alpha == 255);
+    struct comp_box out = { 0, 0, OUT_W, OUT_H };
+    CHECK(box_eq(d.at, out));
+    CHECK_EQ(fdesk.snaps, snaps + 1);
+    CHECK(!screens_overlay());
+    CHECK_EQ(strip_count(STRIP_DOT), 1);        /* the strip back, under the fade */
+    CHECK_EQ(strip_count(STRIP_CHIP), 2);
+    damage_clear(&scene.damage);
+    anim_tick(now() + 100 * NS_PER_MS);
+    CHECK(anim_now(&d) && d.alpha > 0 && d.alpha < 255 && box_eq(d.at, out));
+    CHECK(scene.damage.n > 0);
+    for (uint32_t i = 0; i < scene.damage.n; i++)
+        CHECK(box_eq(scene.damage.b[i], out));   /* its box: nothing else */
+    anim_tick(now() + 300 * NS_PER_MS);
+    CHECK_EQ(anim_running(), ANIM_NONE);
+    CHECK(!anim_now(&d));
+    CHECK_EQ(fdesk.snaps, fdesk.snaps_freed);
+    CHECK_EQ(screens_count(), 1);
+    CHECK(mapped(0) && mapped(2));
+    anim_init(false);
+    /* one that leaves full screen: a window on the current screen */
+    CHECK(fk_open_full(&fks[1], &fake_keyless));
+    CHECK(fks[1].ww->overlay);
+    wm_request_fullscreen(fks[1].ww, false);
+    CHECK(!fks[1].ww->overlay && fks[1].ww->screen == screens_cur());
+    CHECK(!(win(1)->flags & COMP_WIN_OVERLAY));
+    CHECK(fk_draw(&fks[1]));
+    CHECK_EQ(strip_count(STRIP_CHIP), 3);
+    return true;
+}
+
+bool t_desk_overlay(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = overlay_steps() && overlay_fade_steps();
+    anim_init(false);
     fk_close_all();
     return ok;
 }

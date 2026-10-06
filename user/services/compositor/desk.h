@@ -3,8 +3,9 @@
  * calls; look.h every colour and size.
  *
  *   screens.c   virtual screens: made as needed, each with its own
- *               arrangement; full screen on a screen of its own; minimising
- *               and bringing back; which windows are shown;
+ *               arrangement; full screen on a screen of its own (but a boot
+ *               overlay's); minimising and bringing back; which windows are
+ *               shown;
  *   anim.c      the animations' clock, places and ends (opening, closing,
  *               minimising, restoring, screens sliding); animdraw.c their
  *               pictures (a snapshot of the window, drawn scaled);
@@ -89,6 +90,12 @@ void     screens_window_new(struct wm_window *ww);
 void     screens_window_gone(struct wm_window *ww);
 /* ww is asked to be full screen now, or no more. */
 void     screens_fullscreen(struct wm_window *ww, bool on);
+/* Is a boot overlay shown: a full-screen window whose client takes no keys
+ * (the splash's). It is on no screen and over all of them, the strip
+ * included (the strip is not shown under it): no screen, dot, chip or
+ * Alt+Tab row of its own, no slide; never the keys; it fades out when it
+ * goes. */
+bool     screens_overlay(void);
 /* Is ww's window to be shown now (its screen current or sliding, not
  * minimised)? And every window mapped or unmapped to match. */
 bool     screens_shown(const struct wm_window *ww);
@@ -105,6 +112,7 @@ enum anim_kind {
     ANIM_MINIMISE,                 /* shrinks into its chip */
     ANIM_RESTORE,                  /* grows out of its chip */
     ANIM_SLIDE,                    /* two screens' windows slide sideways */
+    ANIM_FADE,                     /* a boot overlay gone: fades out, over the strip */
 };
 
 /* A window's picture for an animation: its frame (decorations and client
@@ -125,6 +133,7 @@ void     anim_open(struct comp_window *w);
 void     anim_close(struct comp_window *w);
 void     anim_minimise(struct comp_window *w, struct comp_box chip);
 void     anim_restore(struct comp_window *w, struct comp_box chip);
+void     anim_fade(struct comp_window *w);
 /* Screen from's windows slide out towards -dir, to's in from dir. */
 void     anim_slide(const struct desk_screen *from, const struct desk_screen *to, int dir);
 void     anim_finish(void);
@@ -144,7 +153,7 @@ struct anim_draw {
     const struct anim_snap *snap;  /* its picture */
     struct comp_box at;            /* where the picture is drawn now (scaled) */
     uint32_t alpha;                /* 0..255 */
-    bool above_strip;              /* minimise and restore: over the strip */
+    bool above_strip;              /* minimise, restore and fade: over the strip */
 };
 bool     anim_now(struct anim_draw *out);   /* false: no picture to draw */
 

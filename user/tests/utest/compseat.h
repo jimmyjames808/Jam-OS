@@ -69,6 +69,8 @@ struct sc {
  * a source that said it is a keyboard and a mouse; cs_stop: all of it gone
  * and the compositor's job empty (ct_stop). */
 bool cs_start(struct cs *t);
+/* The same with the desktop on (no `nodesk`): the strip, its animations. */
+bool cs_start_desk(struct cs *t);
 bool cs_stop(struct cs *t);
 /* A client, every global bound, a seat 5 with a keyboard and a pointer. */
 bool cs_client(struct cs *t, struct sc *c);
