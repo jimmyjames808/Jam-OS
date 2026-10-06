@@ -6,6 +6,9 @@
 
 /* tools/fontcheck.c: the --check run; the exit code. */
 int  font_check(void);
+/* tools/panicglyphs.c: the --panic run (the kernel's panic screen's
+ * glyphs as C, into path); the exit code. */
+int  panic_glyphs(const char *path);
 /* tools/png.c: w x h pixels (0xRRGGBB, stride a row) as an RGB PNG at
  * path, uncompressed. False (and a line on stderr) if it could not. */
 bool png_write(const char *path, const uint32_t *px, int w, int h, int stride);
