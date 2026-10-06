@@ -49,7 +49,7 @@ status_t userboot_root_job(struct job **out);
  * with arg, the nwords option words (at most USERBOOT_MAX_WORDS; the rest
  * are dropped, and the RESULTS box says so) follow it as argv[2...]
  * ("splash": the boot splash plays
- * first; "hidboot": hid keeps mice in the boot protocol; "netprobe": the
+ * first; "verbose": the log on the first terminal's screen; "hidboot": hid keeps mice in the boot protocol; "netprobe": the
  * RTL8125's listen-only probe runs; "netsend": its ARP send test runs;
  * "net": its netdev service runs;
  * "vlan=<id>" or "vlan=none": the network's mode;
