@@ -1,7 +1,8 @@
 /* wltest internals (user/tests/wltest): main.c (arguments, the
  * interactive window, printing events), spawn.c (a headless compositor of
- * our own, for tests before init starts one) and script.c (the scripted
- * checks). */
+ * our own, for tests before init starts one), script.c (the scripted
+ * checks) and fun.c (the modes that go through libfun as the apps do: the
+ * mouse, and holding the screen through a hang or a crash). */
 #pragma once
 
 #include <jwl_client.h>
@@ -44,3 +45,11 @@ void     wl_draw(const struct jwl_frame *fr, uint32_t t);
 /* The scripted checks (script.c): 0 when every one passed. k: the
  * compositor we started (the reconnect check kills it), or NULL. */
 int      wl_script(const struct jwl_client_config *cfg, struct comp_child *k, unsigned frames);
+
+/* fun.c: --mouse (argv as main has it), --crash-test, --hang-test and
+ * --selftest. Each returns main's exit code (the crash and the hang never
+ * do when they work). */
+int      wl_fun_mouse(int argc, char **argv);
+int      wl_fun_crash(void);
+int      wl_fun_hang(void);
+int      wl_fun_selftest(void);
