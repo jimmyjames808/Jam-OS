@@ -269,9 +269,12 @@ static bool has_word(const char *line, const char *word)
     return false;
 }
 
+/* On by default since the PC's sign-off (2026-10-07: the IOMMU checks,
+ * All tests and soak 10 with it on); the boot word iommu=off turns it off
+ * (kept by a kexec reboot), and iommu=on still says so explicitly. */
 bool vtd_iommu_wanted(const char *cmdline)
 {
-    return has_word(cmdline, "iommu=on") && !has_word(cmdline, "iommu=off");
+    return !has_word(cmdline, "iommu=off");
 }
 
 /* The queue's first batch: every cache dropped, globally (context cache,

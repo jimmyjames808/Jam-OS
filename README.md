@@ -30,12 +30,12 @@ a real desktop PC, which is where every milestone is tested.
 - Drivers as user processes: a PCI core with MSI/MSI-X and DMA
   capabilities, a device manager that restarts crashed drivers, and USB
   (xHCI controller, hubs, keyboard and mouse).
-- The IOMMU (Intel VT-d, M11): with the boot entry "Developer > Jam OS (IOMMU)" (the
-  boot word `iommu=on`) each driver's device reaches only the memory the
-  driver pinned for it, every other DMA is blocked and logged, and a
-  device can raise only its own interrupts (interrupt remapping); `iommu`
-  shows the units, domains and faults. Built and tested in QEMU; off by
-  default until it is signed off on the PC.
+- The IOMMU (Intel VT-d, M11), on by default since the PC's sign-off
+  (2026-10-07): each driver's device reaches only the memory the driver
+  pinned for it, every other DMA is blocked and logged, and a device can
+  raise only its own interrupts (interrupt remapping); `iommu` shows the
+  units, domains and faults. "Developer > Jam OS (no IOMMU)" (the boot word
+  `iommu=off`) turns it off.
 - Storage: USB sticks through a usb-storage driver and a FAT32 service
   (FatFs) per volume. The stick Jam OS boots from has its boot partition
   at `/esp`, read-only, and a data partition at `/data`; any other stick

@@ -48,7 +48,8 @@
 #      remapping and translation on again; nothing reported;
 #   8. the same with a panic (`crash panic yes`): the panic's jump does the
 #      same, and the next kernel comes up with both on.
-# Run 1 has no iommu word: it must start nothing (no write traced).
+# Run 1 boots with iommu=off (the probe runs do; on is the default): it
+# must start nothing (no write traced).
 # VTD_TEST_INIT=1 adds the `init` run (utest, usbtest) twice, with the
 # intel-iommu present: left off, and started with iommu=on (its queue and
 # fault interrupt running: translation is not on yet), so every device's
@@ -85,7 +86,7 @@ clean() {
 run() {
     name=$1
     shift
-    QEMU_TIMEOUT=${QEMU_TIMEOUT:-90} QEMU_EXTRA="$*" \
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-90} QEMU_EXTRA="$*" QEMU_WORDS=iommu=off \
         tools/qemu-test.sh "$out" "$name" pcilist > "$out/$name.out" 2>&1 ||
         { echo "$name: QEMU run failed (see $out/$name.out)"; ok=0; }
 }
@@ -105,7 +106,7 @@ have vtd-iommu \
     "vtd:         handover: 1 of 1 unit answered; translation on in 0, interrupt remapping on in 0"
 clean vtd-iommu
 if grep -qF "started: invalidation queue" "$out/vtd-iommu.log"; then
-    echo "vtd-iommu: a unit was started without iommu=on"
+    echo "vtd-iommu: a unit was started with iommu=off"
     ok=0
 fi
 reads=$(grep -c "vtd_reg_read" "$out/vtd-iommu.out" || true)
@@ -274,7 +275,7 @@ jump vtd-panic "crash panic yes" "KERNEL PANIC"
 
 if [ "${VTD_TEST_INIT:-0}" = 1 ]; then
     QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$iommu" \
-        tools/qemu-test.sh "$out" vtd-init init > "$out/vtd-init.out" 2>&1 ||
+        tools/qemu-test.sh "$out" vtd-init init iommu=off > "$out/vtd-init.out" 2>&1 ||
         { echo "vtd-init: QEMU run failed"; ok=0; }
     have vtd-init "vtd:         handover: 1 of 1 unit answered"
     clean vtd-init

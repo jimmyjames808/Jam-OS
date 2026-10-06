@@ -70,7 +70,7 @@
 # QEMU_NET=<peer port>:<qemu port>: the same card and pcap, with a peer
 # the caller runs (and checks) itself.
 # QEMU_IOMMU adds QEMU's VT-d unit (intel-iommu, interrupt remapping
-# offered; the guest uses it only with the boot word iommu=on):
+# offered; the guest uses it unless the boot word iommu=off says not to):
 #   1     caching mode on (CAP.CM = 1: new mappings are invalidated too)
 #   cm0   caching mode off (the PC's case)
 #   eim   caching mode on, x2APIC destination ids (ECAP.EIM)

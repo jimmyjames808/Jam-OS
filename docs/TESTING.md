@@ -113,7 +113,7 @@ utest's `driver_handle_limits`; **no network card** (`-nic none`) unless
 | `QEMU_NET_WORD` | 1 | 0: don't add the `vlan=` word (a run of the build's default; set `QEMU_NET_VLAN` to it) |
 | `QEMU_NET_NONE` | 0 | 1: no frame at all may leave the guest (the `vlan=off` run) |
 | `QEMU_NET_PEER` | | more flags for `tools/netpeer.py`, e.g. `--noise 2` |
-| `QEMU_IOMMU` | | QEMU's VT-d unit (`intel-iommu`, interrupt remapping offered; the guest starts it only with the boot word `iommu=on`): `1` caching mode on (new mappings need invalidating too), `cm0` caching mode off (the PC's case), `eim` caching mode on with x2APIC destination ids |
+| `QEMU_IOMMU` | | QEMU's VT-d unit (`intel-iommu`, interrupt remapping offered; the guest starts it unless the boot word `iommu=off` says not to): `1` caching mode on (new mappings need invalidating too), `cm0` caching mode off (the PC's case), `eim` caching mode on with x2APIC destination ids |
 | `QEMU_WORDS` | | more boot words after the script's own, e.g. `QEMU_IOMMU=eim QEMU_WORDS=iommu=on tools/usb-test.sh ...`: an area test with DMA translation and interrupt remapping on |
 
 Examples:
@@ -277,7 +277,7 @@ holds them all side by side.
 | Jam OS (previous build) | (empty) | the everyday boot of the build the stick had before the last `update` (`-w`) or `make flash` (`/esp/boot/prev-jamos.elf` and `/esp/boot/prev-bootfs.img`; `tools/qemu-test.sh` boots them with `QEMU_BOOT_PREV=1`); a stick that has had neither has no such files, and Limine says it can't open them |
 | Jam OS (no compositor) | `nocomp` | the everyday boot as it was before G1: no compositor, the console draws the whole screen and takes the keys (one terminal, no Super+Enter or `term`), programs borrow the screen. The way back if the compositor misbehaves on the PC ([G1-PLAN.md](G1-PLAN.md#q4-what-the-console-becomes-and-a-way-back)); a reboot keeps the word |
 | Developer / Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash, and in the first terminal as it comes (every other boot is quiet: the first terminal starts at the shell's banner and prompt, the log off every terminal's screen but for the commands whose output it is: [ARCHITECTURE.md](../ARCHITECTURE.md#debugging)) |
-| Developer / Jam OS (IOMMU) | `iommu=on` | the everyday boot with the IOMMU on (`iommu=on`, below): DMA translation and interrupt remapping. An entry of its own while it is new ([M11-PLAN.md](M11-PLAN.md#questions-for-the-owner), question 6); once the PC checks pass it becomes the default and `iommu=off` turns it off |
+| Developer / Jam OS (no IOMMU) | `iommu=off` | the everyday boot with the IOMMU off: no DMA translation or interrupt remapping (the IOMMU is on by default since the PC's sign-off, 2026-10-07): the escape hatch if a device ever misbehaves with it |
 | Developer / Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
 | Developer / Jam OS (network: listen only) | `netprobe` | the everyday boot, plus the RTL8125's listen-only probe ([M9-PLAN.md](M9-PLAN.md#the-first-pc-stage-listen-only)): devmgr binds `drv/rtl8125`, which sends nothing, listens for 60 s after the link comes up, logs its `[rtl8125]` lines and one RESULTS line, and exits. A `reboot` doesn't keep the word (the next boot is the everyday one, on the network) |
 | Developer / Jam OS (network: send test) | `netsend` | the everyday boot, plus the RTL8125's ARP send test ([M9-PLAN.md](M9-PLAN.md#r1-progress-the-full-driver)): devmgr binds `drv/rtl8125` in full mode on the kernel's VLAN (none: "no VLAN: the network stays off", nothing touched), which waits for the link, sends twenty ARP probes for 10.2.21.1, 200 ms apart, tagged with the VLAN, logs for each when it was queued, when the chip handed its descriptor back and when the reply came, compares the chip's count of frames sent with its own, logs its `[rtl8125]` lines and one RESULTS line, and exits. Nothing else is ever sent; a `reboot` doesn't keep the word |
@@ -342,7 +342,9 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   most real mice) instead of the report protocol it uses for a mouse
   whose report descriptor has a wheel: the way back if a mouse misbehaves
   in report protocol (no movement, or nonsense). A reboot keeps it.
-- `iommu=on`: start each VT-d unit's invalidation queue and fault
+- `iommu=off`: leave the VT-d units as the firmware left them (no queue,
+  no translation, no remapping); the escape hatch, kept by a reboot. The
+  default (and `iommu=on`, which says so explicitly): start each VT-d unit's invalidation queue and fault
   interrupt (kernel/dev/vtd_unit.c; [M11-PLAN](M11-PLAN.md)) and turn DMA
   translation on (kernel/dev/vtd_boot.c): a function nobody drives is
   blocked (its DMA faults and is logged), one an RMRR names reaches only
@@ -1027,8 +1029,10 @@ dropped (traced with `hda_audio_overrun`), as mixer-test does.
 ## The IOMMU
 
 The IOMMU ([ARCHITECTURE.md](../ARCHITECTURE.md#the-iommu),
-[M11-PLAN.md](M11-PLAN.md)) is off unless a boot has `iommu=on`, so a
-plain test run never uses it. It has tests at three levels:
+[M11-PLAN.md](M11-PLAN.md)) is on by default (since the PC's sign-off,
+2026-10-07) wherever there is a DMAR table; QEMU has none unless a script
+adds `intel-iommu` (`QEMU_IOMMU`), so a plain QEMU test run never uses it,
+and `iommu=off` turns it off on any boot. It has tests at three levels:
 
 - **Kernel tests**, in `tools/vtd-test.sh` (the table under
   [Area scripts](#area-scripts) says what each boot checks): `vtd_unit_*`
@@ -1064,11 +1068,10 @@ plain test run never uses it. It has tests at three levels:
 
 What QEMU can't show (its unit reads the tables straight from guest
 memory and lets old-format interrupt writes through) is the PC's: the
-"Developer > IOMMU checks" entry, then the "Developer > Jam OS (IOMMU)" entry with every
-device in use, `iommu` (no fault but the checks'), `bench`'s IOMMU lines,
-a `reboot` and `reboot -f`, then All tests and `soak 10` booted with
-`iommu=on` (added with E in the boot menu). Only after that does
-`iommu=on` become the default.
+"Developer > IOMMU checks" entry, everyday boots with every device in
+use, `iommu` (no fault but the checks'), `bench`'s IOMMU lines, a `reboot`
+and `reboot -f`, then All tests and `soak 10` with it on. All passed on
+2026-10-07, and the IOMMU has been on by default since.
 
 ## Random numbers
 

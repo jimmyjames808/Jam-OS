@@ -193,16 +193,19 @@ KTEST(vtd_unit_fault_line_and_counts)
 
 KTEST(vtd_unit_boot_words)
 {
-    KT_ASSERT(!vtd_iommu_wanted(""));                  /* off by default */
+    KT_ASSERT(vtd_iommu_wanted(""));                   /* on by default */
+    KT_ASSERT(vtd_iommu_wanted("shell verbose"));
     KT_ASSERT(vtd_iommu_wanted("iommu=on"));
     KT_ASSERT(vtd_iommu_wanted("shell iommu=on verbose"));
     KT_ASSERT(!vtd_iommu_wanted("iommu=off"));
     KT_ASSERT(!vtd_iommu_wanted("iommu=on iommu=off"));  /* off wins */
     KT_ASSERT(!vtd_iommu_wanted("iommu=off iommu=on"));
-    KT_ASSERT(!vtd_iommu_wanted("iommu=onx"));
-    KT_ASSERT(!vtd_iommu_wanted("xiommu=on"));
-    KT_ASSERT(!vtd_iommu_wanted("iommu"));
-    KT_ASSERT(!vtd_iommu_wanted("iommu=o"));
+    /* Only the whole word iommu=off turns it off. */
+    KT_ASSERT(vtd_iommu_wanted("iommu=offx"));
+    KT_ASSERT(vtd_iommu_wanted("xiommu=off"));
+    KT_ASSERT(vtd_iommu_wanted("iommu"));
+    KT_ASSERT(vtd_iommu_wanted("iommu=of"));
+    KT_ASSERT(!vtd_iommu_wanted("shell iommu=off verbose"));
     /* kexec keeps either word: a reboot comes back in the same mode. */
     char buf[KEXEC_CMDLINE];
     kexec_next_cmdline("ktest=vtd iommu=on init", buf, sizeof(buf));

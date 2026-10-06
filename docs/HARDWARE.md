@@ -132,10 +132,12 @@ boot-2026-10-04_21-\*; `dmesg | grep -E 'vtd:|acpi:'`), the facts M11
 QEMU's emulated unit differs (registers at 0xfed90000, caching mode on, an
 explicit endpoint scope per function instead of INCLUDE_PCI_ALL, no RMRR):
 what only the PC proves is in [M11-PLAN.md](M11-PLAN.md#what-only-the-pc-can-show).
-As of 2026-10-05 the PC has run the probe only, never `iommu=on`: its
-first boots with the IOMMU on are the "Developer > IOMMU checks" and
-"Developer > Jam OS (IOMMU)" entries ([TESTING.md](TESTING.md#the-iommu)), and the IOMMU
-stays off by default until they pass.
+The PC signed the IOMMU off on 2026-10-07: everyday boots with it on (no
+fault), the "Developer > IOMMU checks" entry (the blocked read and the
+blocked interrupt-window write, fault 25h), All tests with `iommu=on` (382
+passed) and `soak=10 iommu=on` (passed: 4026 kernel tests, 9 utest runs,
+2186 file cycles). Since then it is on by default; "Developer > Jam OS (no
+IOMMU)" (`iommu=off`) turns it off.
 
 ## The network
 
