@@ -85,6 +85,26 @@ void ui_round(const struct tile_buf *t, struct comp_box b, int32_t r, uint32_t r
     }
 }
 
+void ui_ring(const struct tile_buf *t, struct comp_box b, int32_t r, int32_t w, uint32_t rgb,
+             uint32_t a)
+{
+    struct comp_box in = box_intersect(b, t->b);
+    struct comp_box hole = { b.x1 + w, b.y1 + w, b.x2 - w, b.y2 - w };
+    if (box_empty(in) || !a)
+        return;
+    r = radius(b, r);
+    int32_t hr = radius(hole, r - w);
+    for (int32_t y = in.y1; y < in.y2; y++) {
+        uint32_t *row = tile_row(t, y) - t->b.x1;
+        for (int32_t x = in.x1; x < in.x2; x++) {
+            uint32_t outer = round_cov(b, r, x, y), inner = round_cov(hole, hr, x, y);
+            uint32_t c = outer > inner ? (outer - inner) * a / 255 : 0;
+            if (c)
+                row[x] = paint_mix(row[x], rgb, c);
+        }
+    }
+}
+
 /* ---- glass ---------------------------------------------------------------------------------- */
 
 void ui_glass(const struct tile_buf *t, struct comp_box b, enum frost_slot slot, uint32_t a)

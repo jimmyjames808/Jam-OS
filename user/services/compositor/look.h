@@ -68,6 +68,18 @@
 #define LOOK_TILE_RADIUS   6
 #define LOOK_TILE_FOCUSED  0x7f77ddu   /* the border, focused: blackcurrant */
 #define LOOK_TILE          0x363c44u
+/* The tiler's marks (wmdraw.c), the prototype's: a gap under the pointer
+ * or being dragged shows a bar (wmtile.c's size) in apricot at 85%,
+ * rounded; a Super+dragged tile follows the pointer at 85%; the tile it
+ * would swap with gets a LOOK_DROP_RING apricot ring inside its frame over
+ * an apricot tint at 14%. */
+#define LOOK_GAP_LIT       0xef9f27u   /* apricot */
+#define LOOK_GAP_LIT_A     217
+#define LOOK_GAP_BAR_R     2
+#define LOOK_LIFT_A        217
+#define LOOK_DROP          0xef9f27u
+#define LOOK_DROP_RING     3
+#define LOOK_DROP_TINT_A   36
 
 /* ---- shadows ---------------------------------------------------------------------------
  *
@@ -244,6 +256,7 @@ static const struct look_glow look_glows[LOOK_GLOWS] = {
 #define LOOK_ANIM_MIN_ALPHA   38         /* ... and its alpha there (15%) */
 #define LOOK_ANIM_SLIDE_MS    260        /* screens sliding sideways */
 #define LOOK_ANIM_FADE_MS     200        /* a boot overlay (the splash) fading out when it goes */
+#define LOOK_ANIM_GLIDE_MS    200        /* tiles gliding to new places (wm_reflow) */
 #define LOOK_NOTE_IN_MS       200        /* a notification comes in, */
 #define LOOK_NOTE_OUT_MS      180        /* ... and fades out */
 #define LOOK_NOTE_SHOW_MS     5000       /* ... after this, unless it has buttons */

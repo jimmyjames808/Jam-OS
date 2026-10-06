@@ -379,7 +379,7 @@ int main(int argc, char **argv)
         cols - PROMPT_W - 1 < LINE_MAX)
         line_max = cols - PROMPT_W - 1;
     sh_init();
-    echo("\n\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
+    echo("\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
     const char *note = sh_boot_note();   /* after a panic: what happened to that boot */
     if (note[0])
         echo("\033[93m%s\033[0m\n", note);

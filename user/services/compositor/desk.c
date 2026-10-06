@@ -9,11 +9,9 @@
  *     (desk_key_up, before the release reaches a client, so the window it
  *     goes to gets that release), Esc while Alt is held cancels;
  *   - while the search box is open every other key is its own (search_key);
- *   - Esc closes an open popover;
- *   - Super+Left/Right: the screen before or after (past the last: a new
- *     one); with Shift the focused window goes there too; Super+1..9: that
- *     screen.
- * Super itself always reaches the client (it is a modifier), and so do
+ *   - Esc closes an open popover.
+ * The window and screen keys are the window manager's (wmkeys.c), asked
+ * after these. Super itself always reaches the client (it is a modifier), and so do
  * Alt's press and release. Every key press, and every button press, first
  * ends a running animation (anim.c).
  *
@@ -26,18 +24,14 @@
  * strip's clock each minute, the network popover's rates each second, the
  * busy cursor's end.
  *
- * Off (desk_init(false, ...)), only the screen keys work: the window
- * manager alone, as tests and `nodesk` want it. */
+ * Off (desk_init(false, ...)), none of this: the window manager alone
+ * (its keys still work), as tests and `nodesk` want it. */
 #include <fun.h>
 #include "desk.h"
 
 /* HID usages (USB HID Usage Tables 1.4, section 10). */
-#define U_1      0x1e
-#define U_9      0x26
 #define U_ESC    0x29
 #define U_TAB    0x2b
-#define U_RIGHT  0x4f
-#define U_LEFT   0x50
 #define U_LALT   0xe2
 #define U_LGUI   0xe3
 #define U_RALT   0xe6
@@ -125,28 +119,10 @@ void desk_time_fix(const struct civil *c)
 
 /* ---- keys ---------------------------------------------------------------------------------- */
 
-/* Super with an arrow or a digit: the screens. True if taken. */
-static bool screen_key(uint16_t usage, bool shift)
-{
-    if (usage == U_RIGHT || usage == U_LEFT) {
-        int dir = usage == U_RIGHT ? 1 : -1;
-        if (shift)
-            screens_move(wm_focused(), dir);
-        else
-            screens_step(dir);
-        return true;
-    }
-    if (usage >= U_1 && usage <= U_9 && !shift) {
-        screens_go(usage - U_1);
-        return true;
-    }
-    return false;
-}
-
 bool desk_key(uint16_t usage, uint8_t mods, uint32_t xkb_mods)
 {
     bool alt = mods & INPUT_MOD_ALT, ctrl = mods & INPUT_MOD_CTRL;
-    bool shift = mods & INPUT_MOD_SHIFT, super = mods & (INPUT_MOD_LGUI | INPUT_MOD_RGUI);
+    bool shift = mods & INPUT_MOD_SHIFT;
     if (usage == U_LGUI || usage == U_RGUI) {
         dk.super_down = true;
         dk.super_used = false;
@@ -173,7 +149,7 @@ bool desk_key(uint16_t usage, uint8_t mods, uint32_t xkb_mods)
         pop_close();
         return true;
     }
-    return super && !ctrl && !alt && screen_key(usage, shift);
+    return false;
 }
 
 void desk_key_up(uint16_t usage)

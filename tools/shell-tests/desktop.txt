@@ -2,17 +2,20 @@
 # compositor's: a plain boot with a usb-kbd on xhci port 2 and a usb-mouse
 # on port 3): QEMU's keys and mouse go usb-bus -> drv/hid -> the compositor
 # (devmgr's INPUT channel) -> the focused window, the terminal's console
-# -> the shell. Typing in the first terminal; Super+Enter opening terminal
-# 2, whose window takes the keys; a click on the first terminal giving
-# them back, one on terminal 2 taking them again; terminal 2's close
-# circle closing it; Super+T's tiling saved and kept across a reboot.
+# -> the shell. The windows tile (the default): typing in the first
+# terminal; Super+Enter opening terminal 2 beside it, whose window takes
+# the keys; a click on the first terminal giving them back; Super+Right
+# and Super+H moving the focus by direction; two more terminals splitting
+# the focused tile (four tiles: desktop-tiles); the gap between the first
+# two dragged; Super+Q closing terminals; Super+T's floating saved and kept
+# across a reboot.
 #
-# Where things are at OVMF's 1280x800: the first terminal's window is
-# centred in the room under the desktop's strip (40 pixels and a 6-pixel
-# gap), its surface 956x587 (104x27 cells of 9x21 and 10 pixels of padding)
-# at (162, 129) under a 28-pixel title bar; terminal 2's is cascaded 30
-# pixels down and right (its surface at (192, 159)). A title bar's close
-# circle is its first, on the left: centre (205, 144) on terminal 2's.
+# Where things are at OVMF's 1280x800: the room for tiles is under the
+# desktop's strip (40 pixels) less a 6-pixel gap all round: x 6..1274, y
+# 46..794. The first terminal fills it; terminal 2 halves it across (the
+# first x 6..637, terminal 2 x 643..1274, the gap between at x 637..643);
+# terminal 3, with the first focused, halves the first's tile top and
+# bottom (y 46..417 and 423..794); terminal 4 halves terminal 3's across.
 # `pointer` puts the mouse there exactly (serial-feed.py: 1:1 steps).
 wait 120 Jam OS shell
 wait jam>
@@ -21,7 +24,7 @@ seen 30 compositor: keyboard 0627:0001 ready
 usbkeys echo usb-one\r
 wait 10 usb-one
 wait jam>
-# Super+Enter, whichever window has the keys: terminal 2
+# Super+Enter, whichever window has the keys: terminal 2, the right half
 monitor sendkey meta_l-ret
 wait 10 init: terminal 2 opens
 wait 30 Jam OS shell
@@ -31,9 +34,8 @@ usbkeys echo usb-two\r
 wait 10 usb-two
 wait jam>
 shot desktop-two
-# a click on the first terminal (the strip of it left of terminal 2):
-# the keys go back to it, and it comes to the top
-pointer 172 400
+# a click on the first terminal (the left half): the keys go back to it
+pointer 300 400
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
@@ -41,36 +43,74 @@ sleep 0.5
 usbkeys echo usb-back\r
 wait 10 usb-back
 wait jam>
-shot desktop-back
-# a click on terminal 2 (the strip of it right of the first): on top again
-pointer 1135 400
+# Super+Right: the focus to the window on the right (terminal 2) ...
+monitor sendkey meta_l-right
+sleep 0.5
+usbkeys echo usb-right\r
+wait 10 usb-right
+wait jam>
+# ... and Super+H back to the left (the first)
+monitor sendkey meta_l-h
+sleep 0.5
+usbkeys echo usb-left\r
+wait 10 usb-left
+wait jam>
+# two more: terminal 3 splits the focused first's tile (top and bottom),
+# terminal 4 splits terminal 3's (side by side)
+monitor sendkey meta_l-ret
+wait 10 init: terminal 3 opens
+wait 30 Jam OS shell
+wait 10 jam>
+sleep 1
+monitor sendkey meta_l-ret
+wait 10 init: terminal 4 opens
+wait 30 Jam OS shell
+wait 10 jam>
+sleep 1
+usbkeys echo usb-four\r
+wait 10 usb-four
+wait jam>
+sleep 1
+shot desktop-tiles
+# the gap between the first and terminal 2 (x 637..643) dragged 100 right
+pointer 640 300
+monitor mouse_button 1
+sleep 0.2
+pointer 740 300
+sleep 0.2
+monitor mouse_button 0
+sleep 1
+shot desktop-resized
+# Super+Q closes the focused window (terminal 4), then terminal 3 (the
+# focus moved to it): its console ends, init closes the terminal
+monitor sendkey meta_l-q
+wait 10 init: terminal 4: its window was closed
+wait 10 init: terminal 4 is closed
+sleep 1
+pointer 300 600
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
 sleep 0.5
-# its close circle: its console ends, init closes the terminal
-pointer 205 144
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-wait 10 init: terminal 2: its window was closed
-wait 10 init: terminal 2 is closed
+monitor sendkey meta_l-q
+wait 10 init: terminal 3: its window was closed
+wait 10 init: terminal 3 is closed
 sleep 1
 shot desktop-closed
 usbkeys echo usb-last\r
 wait 10 usb-last
 wait jam>
-# Super+T: tiling, saved by init (the compositor's layout_wait answered);
-# a reboot (kexec) comes back tiling, as the settings say
+# Super+T: floating, saved by init (the compositor's layout_wait answered);
+# a reboot (kexec) comes back floating, as the settings say
 monitor sendkey meta_l-t
-wait 10 init: the window layout is tiling (saved)
+wait 10 init: the window layout is floating (saved)
 send grep layout /data/etc/settings
-wait 10 display.layout = tiling
+wait 10 display.layout = floating
 wait jam>
-shot desktop-tiling
+shot desktop-floating
 send reboot
 wait 60 kexec: started by a reboot
-wait 120 init: the window layout: tiling, as the settings say
+wait 120 init: the window layout: floating, as the settings say
 seen 120 init: the shell is up
 sleep 2
 send reboot -f

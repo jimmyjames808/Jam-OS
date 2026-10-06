@@ -14,7 +14,8 @@
  *
  * Floating and tiling are two ways of placing the same windows: the
  * floating place and size (float_*) are kept while tiling, so switching
- * back puts every window where it was.
+ * back puts every window where it was. Tiling is dwindle (wmtile.c): each
+ * tiling screen has a binary tree of splits whose leaves are its windows.
  *
  * Threads: one, the compositor's loop (comp.h). Memory: one struct per
  * toplevel, bounded by the client's surfaces (COMP_SURFACES_MAX). */
@@ -87,6 +88,13 @@ struct wm_window {
     bool minimised;
     bool overlay;
     uint64_t focused_at;           /* a count, not a time: 0 never */
+    /* Tiling's (wmtile.c): its leaf in a screen's tree, and that screen. */
+    struct tile_node *leaf;        /* NULL: not tiled */
+    struct desk_screen *tiled_on;
+    /* A glide to its new tile (anim.c): where its surface was shown when
+     * the glide began, and whether it is gliding. */
+    int32_t glide_x, glide_y;
+    bool glide_noted, gliding;
 };
 
 /* ---- wm.c --------------------------------------------------------------------------- */
@@ -133,14 +141,73 @@ enum comp_layout wm_layout_of(const struct wm_window *ww);
 /* The toplevel with the keyboard focus, or NULL. */
 struct wm_window *wm_focused(void);
 
-/* ---- wmtile.c ----------------------------------------------------------------------- */
+/* Every toplevel's configure renewed and placed again, as wm_relayout,
+ * with the tiles that move gliding to their new places (anim.c): a window
+ * opening or going, a swap, a keyboard resize. */
+void wm_reflow(void);
+/* The top a window's frame may reach on ww's screen: the floor under the
+ * strip (the output's top without the desktop). */
+int32_t wm_floor(const struct wm_window *ww);
+/* Can ww be moved and resized by the user: floating, in its normal state. */
+bool wm_floating_normal(const struct wm_window *ww);
 
-/* Tile i of n (frame boxes, decorations included) in area: the master and stack layout. */
-struct comp_box wm_tile_box(struct comp_box area, unsigned n, unsigned i);
-/* The tile ww has in tiling, or will have once mapped: counted among the
- * mapped toplevels of its screen that aren't minimised, oldest first, in
- * the screen's room for windows (screens_room). */
+/* ---- wmtile.c: dwindle -------------------------------------------------------------- */
+
+#define WM_GAP       6       /* background between tiles, and around them */
+#define TILE_ONE     65536   /* a split's ratio: all of the room */
+#define TILE_MIN     9830    /* 15%: a split's ratio at least ... */
+#define TILE_MAX     55706   /* ... and 85% at most */
+#define WM_PUSH      48      /* Super+Alt+direction: pixels an edge moves */
+#define WM_GAP_HIT   12      /* a gap takes presses this wide, centred on it */
+
+/* A node of a screen's tree: a leaf (a window's tile) or a split of its
+ * room in two, a beside b (across) or a above b, with WM_GAP between. */
+struct tile_node {
+    struct tile_node *up;          /* the split it is half of; NULL: the root */
+    struct tile_node *a, *b;       /* a split's halves (a left or above); NULL: a leaf */
+    struct wm_window *ww;          /* a leaf's window */
+    bool across;                   /* a split: side by side; else one over the other */
+    int32_t ratio;                 /* a split: a's share of the room less the gap, of TILE_ONE */
+    struct comp_box box;           /* the last layout: a leaf's tile, a split's room */
+};
+
+/* A gap between two tiles: the split it belongs to, where it is, the box
+ * that takes its presses, the bar drawn when it is lit (look.h). */
+struct tile_gap {
+    struct tile_node *split;
+    struct comp_box gap, hit, bar;
+};
+
+/* Every tiling screen's tree made to match its tiled windows (mapped,
+ * shown on it, not minimised: a window gone leaves its sibling the whole
+ * of their parent; a new one splits the focused tile, or the last, in
+ * half along its longer side; a tree made from nothing takes the windows
+ * in their order, each splitting the last) and laid out in its room; the
+ * trees of floating screens dropped. */
+void tiles_update(void);
+/* s's tree dropped (its windows untiled): a screen going, or switched. */
+void tiles_drop(struct desk_screen *s);
+/* ww's tile gone from its tree, its sibling taking their parent's room
+ * (it is unmapped or going). */
+void tiles_forget(struct wm_window *ww);
+/* The tile ww has in tiling, or will have once mapped (the half of the
+ * tile a new window splits). */
 struct comp_box wm_tile(const struct wm_window *ww);
+/* A tree's changes so far: a node pointer kept across them is stale. */
+uint64_t tiles_generation(void);
+/* a and b, tiled on one screen, trade tiles. False: they aren't. */
+bool tiles_swap(struct wm_window *a, struct wm_window *b);
+/* The gap of s's tree whose hit box holds (x, y), the outermost first.
+ * False: none. */
+bool tiles_gap_at(const struct desk_screen *s, int32_t x, int32_t y, struct tile_gap *out);
+/* A split's gap. */
+struct tile_gap tiles_gap(struct tile_node *split);
+/* The split's gap moved so its middle is at pos (x across, else y), its
+ * ratio kept within TILE_MIN and TILE_MAX. The caller lays out again. */
+void tiles_gap_move(struct tile_node *split, int32_t pos);
+/* Super+Alt+direction: ww's tile's edge on that side pushed WM_PUSH
+ * that way (with no edge there, its other edge). False: nothing moved. */
+bool tiles_push(struct wm_window *ww, int dx, int dy);
 
 /* ---- wmgrab.c ----------------------------------------------------------------------- */
 
@@ -148,6 +215,12 @@ struct comp_box wm_tile(const struct wm_window *ww);
 void wm_grab_forget(const struct wm_window *ww);
 /* Any grab of ours ends where it is (the layout switched; a fresh start). */
 void wm_grab_cancel(void);
+/* The resize cursor for a gap a press at (x, y) would drag (gap_under),
+ * else CURSOR_SHAPES. */
+enum cursor_shape wm_gap_cursor(int32_t x, int32_t y);
+/* Before a paint: the gap under the pointer (or being dragged) lit, its
+ * bar damaged when that changes (desk.h's wm_marks). */
+void wm_marks_update(void);
 /* The time between a double-click's two presses, at most. */
 #define WM_DOUBLE_CLICK_NS (400 * NS_PER_MS)
 #define WM_MIN_SIDE        32   /* a resize never asks for less than this */

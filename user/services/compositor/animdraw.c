@@ -87,26 +87,30 @@ static uint32_t faded(uint32_t p, uint32_t alpha)
     return out;
 }
 
-void anim_draw(const struct tile_buf *t, bool above_strip)
+void anim_draw_snap(const struct tile_buf *t, const struct anim_snap *s, struct comp_box at,
+                    uint32_t alpha)
 {
-    struct anim_draw d;
-    if (!anim_now(&d) || d.above_strip != above_strip || !d.alpha)
+    struct comp_box in = box_intersect(at, t->b);
+    if (box_empty(in) || !s->px || !alpha)
         return;
-    struct comp_box in = box_intersect(d.at, t->b);
-    if (box_empty(in))
-        return;
-    const struct anim_snap *s = d.snap;
-    int64_t aw = d.at.x2 - d.at.x1, ah = d.at.y2 - d.at.y1;
+    int64_t aw = at.x2 - at.x1, ah = at.y2 - at.y1;
     int64_t sx = ((int64_t)s->w << 16) / aw, sy = ((int64_t)s->h << 16) / ah;
     for (int32_t y = in.y1; y < in.y2; y++) {
         uint32_t *row = tile_row(t, y) - t->b.x1;
-        int64_t v = (y - d.at.y1) * sy + sy / 2 - 0x8000;
+        int64_t v = (y - at.y1) * sy + sy / 2 - 0x8000;
         for (int32_t x = in.x1; x < in.x2; x++) {
-            int64_t u = (x - d.at.x1) * sx + sx / 2 - 0x8000;
+            int64_t u = (x - at.x1) * sx + sx / 2 - 0x8000;
             uint32_t p = sample(s, u, v);
-            if (d.alpha < 255)
-                p = faded(p, d.alpha);
+            if (alpha < 255)
+                p = faded(p, alpha);
             row[x] = px_over(row[x], p);
         }
     }
+}
+
+void anim_draw(const struct tile_buf *t, bool above_strip)
+{
+    struct anim_draw d;
+    if (anim_now(&d) && d.above_strip == above_strip)
+        anim_draw_snap(t, d.snap, d.at, d.alpha);
 }

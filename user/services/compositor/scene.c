@@ -10,8 +10,9 @@
  * `under` damage: what the desktop's frosted cards must blur again
  * (frost.c); the cursor's and the cards' own is not (scene_damage_over).
  *
- * A window sliding with its screen (anim.c) is at x + slide_x for
- * everything: painting, damage and what is under a point. */
+ * A window sliding with its screen or gliding to its tile (anim.c) is at
+ * (x + slide_x, y + slide_y) for everything: painting, damage and what is
+ * under a point (window_shown_x/y). */
 #include "desk.h"
 
 struct comp_scene scene;
@@ -48,7 +49,7 @@ void scene_damage_over(struct comp_box b)
 
 struct comp_box window_surface_box(const struct comp_window *w)
 {
-    return box_make(w->x + w->slide_x, w->y, w->surface->width, w->surface->height);
+    return box_make(window_shown_x(w), window_shown_y(w), w->surface->width, w->surface->height);
 }
 
 struct comp_box window_frame(const struct comp_window *w)
@@ -81,7 +82,7 @@ void window_damage_surface(struct comp_window *w, struct comp_box b)
     if (!(w->flags & COMP_WIN_MAPPED))
         return;
     struct comp_box s = box_make(0, 0, w->surface->width, w->surface->height);
-    scene_damage(box_translate(box_intersect(b, s), w->x + w->slide_x, w->y));
+    scene_damage(box_translate(box_intersect(b, s), window_shown_x(w), window_shown_y(w)));
 }
 
 /* Take w out of the stacking order. */
@@ -182,7 +183,8 @@ static bool takes_input(const struct comp_window *w, int32_t x, int32_t y)
     const struct comp_surface *s = w->surface;
     if (!box_contains(window_surface_box(w), x, y))
         return false;
-    return s->input_all || region_contains(&s->input, x - w->x - w->slide_x, y - w->y);
+    return s->input_all ||
+           region_contains(&s->input, x - window_shown_x(w), y - window_shown_y(w));
 }
 
 struct comp_window *window_at(int32_t x, int32_t y)

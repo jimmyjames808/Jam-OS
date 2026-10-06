@@ -40,7 +40,8 @@
 
 /* ---- screens.c --------------------------------------------------------------------------- */
 
-#define DESK_SCREENS_MAX 16u   /* virtual screens at once (Super+Right past the last refused) */
+#define DESK_SCREENS_MAX 16u   /* virtual screens at once (Super+Ctrl+Right past the last
+                                * refused) */
 
 enum screen_kind {
     SCREEN_NORMAL,                 /* windows, the strip, an arrangement of its own */
@@ -51,6 +52,7 @@ struct desk_screen {
     bool used;                     /* a slot in use */
     enum screen_kind kind;
     enum comp_layout layout;       /* a normal screen's arrangement */
+    struct tile_node *tree;        /* tiling: its windows' tiles (wmtile.c); NULL: none yet */
 };
 
 /* One normal screen, current, in layout; no windows. */
@@ -71,9 +73,13 @@ struct comp_box screens_room(const struct desk_screen *s);
 
 /* What the user does. Each slides when the desktop animates. */
 void     screens_go(unsigned i);                      /* to screen i (Super+1..9, a dot) */
-void     screens_step(int dir);                       /* Super+Left/Right (past the last: new) */
+void     screens_step(int dir);                       /* Super+Ctrl+Left/Right (past the last:
+                                                       * new) */
 void     screens_add(void);                           /* the strip's "+": a new one at the end */
-void     screens_move(struct wm_window *ww, int dir); /* Super+Shift+Left/Right */
+void     screens_move(struct wm_window *ww, int dir); /* Super+Ctrl+Shift+Left/Right */
+/* Super+Shift+1..9: ww to screen i (past the last: a new one at the end;
+ * a full-screen screen: nowhere), which becomes current. */
+void     screens_move_to(struct wm_window *ww, unsigned i);
 void     screens_minimise(struct wm_window *ww);
 void     screens_restore(struct wm_window *ww);
 /* To ww's screen, restored if minimised, focused (Alt+Tab, a chip). */
@@ -146,6 +152,15 @@ void     anim_tick(uint64_t t);
 uint64_t anim_deadline(void);
 /* Is s one of a running slide's two screens? */
 bool     anim_slides(const struct desk_screen *s);
+/* Tiles gliding to new places (wm_reflow), beside the one animation that
+ * draws a picture: before the windows are placed again, the running glide
+ * ends and each window's shown place is noted; after, those whose place
+ * changed glide from it over LOOK_ANIM_GLIDE_MS (struct comp_window's
+ * slide_x and slide_y), only their boxes damaged. None while a screen
+ * slides, or with animations off. */
+void     anim_glide_note(void);
+void     anim_glide_start(void);
+bool     anim_gliding(void);
 
 /* What the drawing reads (the loop sets it before a paint). */
 struct anim_draw {
@@ -162,6 +177,21 @@ bool     anim_now(struct anim_draw *out);   /* false: no picture to draw */
 status_t anim_snapshot(const struct comp_window *w, struct anim_snap *out);
 void     anim_snapshot_free(struct anim_snap *s);
 void     anim_draw(const struct tile_buf *t, bool above_strip);
+/* Picture s drawn scaled to box at over the tile, faded by alpha (0..255). */
+void     anim_draw_snap(const struct tile_buf *t, const struct anim_snap *s, struct comp_box at,
+                        uint32_t alpha);
+
+/* ---- the tiler's marks over the windows (wmgrab.c keeps them, wmdraw.c draws them) ------ */
+
+struct wm_marks {
+    struct comp_box bar;           /* a gap's bar, lit apricot: hovered or dragged (empty: none) */
+    struct anim_snap lift;         /* a Super+dragged tile's picture (px NULL: none) */
+    struct comp_box ghost;         /* ... where it is drawn: its frame moved with the pointer */
+    struct comp_box target;        /* the tile it would swap with: its frame (empty: none) */
+};
+extern struct wm_marks wm_marks;
+/* Their pixels where they meet t: over the windows, under the desktop. */
+void     wm_marks_draw(const struct tile_buf *t);
 
 /* ---- the fonts and the clock (desk.c) ------------------------------------------------------ */
 
@@ -420,6 +450,10 @@ struct comp_box frost_card_box(enum frost_slot slot);
 /* ui.c: drawing into a tile (all clipped to it). */
 /* A rounded box b of colour rgb at alpha a (0..255) over the tile. */
 void     ui_round(const struct tile_buf *t, struct comp_box b, int32_t r, uint32_t rgb, uint32_t a);
+/* The ring of width w inside box b (corners of radius r; the hole's r - w),
+ * of colour rgb at alpha a, over the tile. */
+void     ui_ring(const struct tile_buf *t, struct comp_box b, int32_t r, int32_t w, uint32_t rgb,
+                 uint32_t a);
 /* A glass card (look.h): its shadow, the blurred backdrop of slot tinted,
  * its outline; overall alpha a (a card fading). */
 void     ui_glass(const struct tile_buf *t, struct comp_box b, enum frost_slot slot, uint32_t a);

@@ -547,7 +547,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `jamjar.txt` | jamjar (the music player's window): its cover helper's self-test (`run jamcover --selftest`: stb_image's checks); jamjar's self-test (its helper decodes a PNG, refuses a non-picture, and one that crashes and one that hangs on purpose are killed and replaced; a decode that timed out is tried again once, later); `run jamjar noplayer` without the player; the `jamjar` command: the covers read from the tags (PNG in ID3v2.3 and 2.4, a JPEG, one 611x640, none in a WAV, an oversized and a garbled one refused), an album played by keys, next, back, pause, volume, search, a calibration track (1 kHz on the left, 4 kHz on the right) whose loudest bars must be the left's 34 and the right's 49, and a shot of it (`jamjar-tone`) in which bar 34 stands only up from the line and bar 49 hangs only down, help, roulette, the big view, the sleep timer; mouse clicks on a button, the volume and a track row; the music still playing after q | use `tools/jamjar-test.sh` |
 | `jamjar-hd.txt` | jamjar at 2560x1440 by keys, for screenshots at the PC's size (the stereo bars, the big view's sunburst) | use `JAMJAR_HD=1 tools/jamjar-test.sh` |
 | `jamjar-covers.txt` | jamjar at 2560x1440 over 32 albums with covers, everything in shuffle, 18 skips (the first while the covers are still read), two shots of now playing after each | use `tools/jamjar-covers-test.sh` |
-| `desktop.txt` | the compositor's seat with real USB input: typing in the first terminal, Super+Enter (terminal 2 takes the keys), a click on each window moving the keys, terminal 2's close circle closing it (`pointer` puts the mouse at exact pixels: the geometry is in the script) | use `tools/mouse-test.sh` |
+| `desktop.txt` | the compositor's seat with real USB input, tiling (the default): typing in the first terminal, Super+Enter (terminal 2 takes the right half and the keys), a click moving the keys back, Super+Right and Super+H moving the focus, two more terminals splitting the focused tile (`desktop-tiles`), the gap dragged (`desktop-resized`), Super+Q closing two, Super+T's floating saved and kept across a reboot (`pointer` puts the mouse at exact pixels: the geometry is in the script) | use `tools/mouse-test.sh` |
 | `mouse.txt` | the mouse through QEMU's monitor, booted with `nocomp`: the shell and tetris undisturbed by it, the wheel's scroll-back, contest's client getting the movement, buttons and wheel, then mines played with clicks at exact cells (reveal, flag, chord, peek, the buttons), and acceleration | use `tools/mouse-test.sh` |
 | `ktest-all.txt` | every kernel test from the shell, live, three times in one boot (a test that leaves something behind fails its next run) | |
 | `soak.txt` | `soak loops=2` from the shell: two shuffled loops under load with utest between them, and the SOAK RESULTS box | `QEMU_TIMEOUT=600` |
@@ -1154,7 +1154,7 @@ clock fixed (`user/tests/utest/compdesk.c`, `compdesk2.c`):
 
 | Test | What it checks |
 |---|---|
-| `desk_screens` | one screen at the start; Super+Right past the last makes one and an empty one left behind goes; Super+1..9; each screen's own arrangement (Super+T on the current one, new screens take it); Super+Shift+Right/Left move the focused window, making a screen and dropping the one left empty |
+| `desk_screens` | one screen at the start; Super+Ctrl+Right (or L) past the last makes one and an empty one left behind goes; Super+Right and Super+Left move the focus, not the screen; Super+1..9; each screen's own arrangement (Super+T on the current one, new screens take it); Super+Ctrl+Shift+Right/Left (or L/H) move the focused window, making a screen and dropping the one left empty; Super+Shift+N moves it to screen N |
 | `desk_fullscreen` | full screen on a screen of its own right of its home, no strip, the whole output; back home, its screen gone; closed while full screen; a new window while a full-screen screen is current opens on the normal one left of it |
 | `desk_minimise` | hidden, its chip dimmed, the focus moved on; its screen stays; Alt+Tab's way and a chip bring it back focused (from another screen too); a chip click minimises the focused window; in tiling the others take its tile |
 | `desk_room` | no window under the strip and its 6-pixel gap: first places, the cascade, a drag up, a maximise, every tile, tiling's maximise; full screen has all of the output; with the desktop off all of it is the windows' |
@@ -1180,6 +1180,35 @@ is reaches it, the keys stay the window's, before and after it goes).
 `animate`, `tick=`): its own pixels on all of the output, copied straight
 from its buffer; half-way through its fade neither picture; at the end
 exactly the desktop without it.
+
+## The tiler and the window keys
+
+Tiling is dwindle (`user/services/compositor/wmtile.c`; the owner's pick,
+[G1-PLAN](G1-PLAN.md#questions-for-the-owner), "Tiling" and "Keys"), the
+keys are `wmkeys.c`'s, Super+drag and the gaps `wmgrab.c`'s, the glide
+`anim.c`'s. In utest (the `init` run), on the window manager's harness
+(`compwm.h`), with the desktop off (1280x800: every tile worked out by
+hand in the test) unless a test says (`user/tests/utest/compwm.c`,
+`compwm2.c`, `compwm3.c`):
+
+| Test | What it checks |
+|---|---|
+| `wm_tiling` | one window fills the room less the gap and its border; a fixed one joining is centred in the half it gets; the focused tile is the one split, along its longer side; a press on a border only focuses; a client's maximise; Super+Q; a window that goes leaves its sibling their parent's room |
+| `wm_switch` | floating to tiling builds the tree in the windows' order, each splitting the last; back to floating, every window where and as big as it was |
+| `wm_tile_tree` | splits by the focus (or the last tile, the focus elsewhere); a split's ratio set by its gap, clamped to 15% and 85%; a window going; a swap moving only the two; another screen's own tree and ratios; floating and back made again in order |
+| `wm_tile_gaps` | a gap's 12-pixel hit box (not under a maximised window), the resize arrows (left-right, up-down), its bar lit while hovered or dragged; a drag resizing both sides live with no glide, held at 85%; a stacked gap |
+| `wm_tile_push` | Super+Alt with H/J/K/L and the arrows: the focused tile's edge 48 pixels that way, with no edge there its other edge, nothing with no split that way, held at 85%, gliding; floating: the right or bottom edge out or in, within its limits; a fixed window unchanged |
+| `wm_focus_dir` | Super with H/J/K/L and the arrows: the nearest window that way by where the windows are, tiled and floating; none that way, it stays; nothing focused, the screen's last focused window |
+| `wm_swap` | Super+Shift+direction swaps with the neighbour there (none: nothing); Super+drag lifts a tile (its picture follows the pointer, the tile under it marked), swaps on release, nothing over the background or itself or once the target went; floating Super+drag moves from inside the surface, Super+right-drag resizes from the nearest corner, stopping below the strip, within the minimum size |
+| `wm_reflow` | with animations on, a window opening, a swap, a key's resize and a window going each glide the tiles that move: they start where they were, half way they are between with every damage box on a gliding window's way (or the picture of the one opening or closing), and end exactly in place; another key jumps a glide to its end |
+| `wm_keys` | the owner's table: Super+Q, M, F, T, Enter and keypad Enter; Super+1..9 and Shift+1..9; Super+Ctrl with Left/Right/H/L and Shift; Super+Left and Super+Right never switch screens; keys without Super, and Super with keys not in the table, reach the client |
+
+With the real seat, `comp_layout_wait` (`compboot.c`) starts the
+compositor without a `layout=` argument and finds it tiling; the other
+headless tests pass `layout=floating` (they check floating places), and
+`xdg_tiling` checks a client's tiles and the gap between them (lit: the
+pointer starts on it). `tools/shell-tests/desktop.txt` tiles terminals
+with real input.
 
 ## The other tools
 

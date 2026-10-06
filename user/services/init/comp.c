@@ -40,9 +40,9 @@
  *                 channel's client end (net.c: netctl's info, stats, device
  *                 and summary only, the network popover);
  *               arguments `layout=floating|tiling` (/data/etc/settings'
- *                 display.layout; floating without /data, which comes
- *                 after the first start: comp_settings then sends the
- *                 saved one, compctl.set_layout) and `hz=<n>` (display.hz,
+ *                 display.layout; tiling, the default, without /data,
+ *                 which comes after the first start: comp_settings then
+ *                 sends the saved one, compctl.set_layout) and `hz=<n>` (display.hz,
  *                 if it is set: how often it paints at most).
  *               Like the console it is started again however often it ends
  *               (shell.c, never_given_up): the terminals have no screen
@@ -78,7 +78,8 @@
 static handle_t wl_srv, wl_cli;   /* /svc/wayland's shared channel (0: no compositor) */
 static handle_t admin;            /* the running compositor's compctl channel, ADMIN (0: none) */
 static handle_t port;             /* the loop's: admin's answers come as KEY_COMP */
-static uint8_t layout;            /* the layout as init knows it (compctl's numbering) */
+static uint8_t layout = LAYOUT_TILING;   /* the layout as init knows it (compctl's numbering):
+                                         * tiling until the settings say otherwise */
 static bool unsaved;              /* the user switched it before /data was there */
 static bool started_once;         /* a compositor has started this boot */
 static handle_t note_srv, note_cli;   /* /svc/notify's shared channel (0: no compositor) */

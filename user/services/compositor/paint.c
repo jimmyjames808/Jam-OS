@@ -20,6 +20,7 @@
  *     buffer: copied (xrgb8888, or inside its opaque region), or blended
  *     over what is below (argb8888, premultiplied, with libfun's
  *     px_over_row: px_over's exact rounding), then its corners cut round;
+ *   - the tiler's marks (wmdraw.c: a lit gap, a Super+dragged tile);
  *   - the desktop over the windows (deskpaint.c): animations, the
  *     strip, then the cards;
  *   - the cursor last (cursor.c);
@@ -95,7 +96,7 @@ bool paint_opaque_over(const struct comp_window *w, struct comp_box in)
         return false;
     if (s->buffer->format != JWL_WL_SHM_FORMAT_ARGB8888)
         return true;
-    struct comp_box rel = box_translate(in, -w->x - w->slide_x, -w->y);
+    struct comp_box rel = box_translate(in, -window_shown_x(w), -window_shown_y(w));
     for (uint32_t i = 0; i < s->opaque.n; i++)
         if (inside(rel, s->opaque.b[i]))
             return true;
@@ -169,8 +170,8 @@ static const uint32_t *buffer_at(const struct comp_window *w, int32_t x, int32_t
 {
     const struct comp_buffer *b = w->surface->buffer;
     return (const uint32_t *)(const void *)(comp_buffer_data(b) +
-                                            (uint64_t)(y - w->y) * b->stride) +
-           (x - w->x - w->slide_x);
+                                            (uint64_t)(y - window_shown_y(w)) * b->stride) +
+           (x - window_shown_x(w));
 }
 
 /* Window w's buffer where it meets t (me: the worker, counting; ~0u: none). */
@@ -234,6 +235,7 @@ void paint_under(const struct tile_buf *t, uint32_t me)
             wallpaper_fill(t);
         for (const struct comp_window *w = from ? from : scene.bottom; w; w = w->above)
             draw_window(w, t, me);
+        wm_marks_draw(t);
     }
     desk_draw_low(t);
 }
@@ -373,6 +375,7 @@ uint64_t paint_frame(void)
     uint64_t t0 = now();
     memset(&paint_last, 0, sizeof(paint_last));
     hover_update();
+    wm_marks_update();
     desk_paint_prepare();
     if (damage_empty(&scene.damage)) {
         damage_clear(&scene.under);

@@ -308,7 +308,11 @@ static bool tiling_steps(struct ct_comp *p, struct xc *x)
     CHECK(c.w == 147 && c.h == 224);
     CHECK(ack_commit(x, &a, &c, buffer(x, 600000, c.w, c.h, BLUE)));
     CHECK(pixel(p, 14, 14, BLUE));
-    CHECK(pixel(p, 159, 100, bg(159, 100)));   /* the gap between the tiles */
+    /* the gap between the tiles (x 157..162), beside its middle: the
+     * pointer starts in the middle of the output, so the gap is lit
+     * (its bar, x 159..161, is apricot) */
+    CHECK(pixel(p, 158, 100, bg(158, 100)));
+    CHECK(((const volatile uint32_t *)p->image)[100 * W + 160] != bg(160, 100));
     return true;
 }
 

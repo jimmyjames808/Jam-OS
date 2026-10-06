@@ -83,15 +83,35 @@ a real desktop PC, which is where every milestone is tested.
   daylight time; `date -z` changes it); files on the sticks and the boot
   logs are dated. Settings that survive a reboot live in
   `/data/etc/settings` (the zone, the volumes, the music folder, the
-  windows' layout).
+  windows' layout: `display.layout = tiling`, the default, or `floating`).
 - `kernel load` loads a freshly flashed kernel from the stick while Jam OS
   runs, so the next `reboot` is instant.
 - A desktop (G1, being built): a compositor of our own that speaks
   Wayland draws the screen, and the shell runs in a terminal window on
   the jam wallpaper. Super+Enter (or `term`) opens another terminal, up
-  to eight; apps open windows of their own (`tetris &`), moved and raised
-  with the mouse and switched floating or tiling with Super+T (the choice
-  is kept in the settings); keys go to the focused window only. The boot
+  to eight; apps open windows of their own (`tetris &`). Windows tile by
+  default (each new one halves the focused tile; drag the gap between two
+  to resize them) or float (moved and raised with the mouse); Super+T
+  switches the screen, and the choice is kept in the settings. Keys go to
+  the focused window only, but for the window keys (Super is the logo key;
+  a direction is H/J/K/L or an arrow):
+
+  | Keys | Do |
+  |---|---|
+  | Super+direction | focus the nearest window that way |
+  | Super+Shift+direction | tiling: swap with that neighbour |
+  | Super+Alt+direction | tiling: push the tile's edge that way; floating: grow or shrink |
+  | Super+Q, Super+M, Super+F | close, minimise, full screen (and back) |
+  | Super+T | this screen floating or tiling |
+  | Super+drag, Super+right-drag | move (floating) or swap (tiling); resize (floating) |
+  | Super+1..9, Super+Shift+1..9 | go to screen N; move the focused window there |
+  | Super+Ctrl+Left/Right (or H/L) | the screen before or after (past the last: a new one) |
+  | Super+Ctrl+Shift+the same | move the focused window to that screen |
+  | Super alone, Super+Enter | search; a new terminal |
+  | Alt+Tab, Alt+Shift+Tab | the switcher (hold Alt; Esc cancels) |
+  | Ctrl+Alt+Del | reboot |
+
+  The boot
   entry "Jam OS (no compositor)" (the boot word `nocomp`) is the way back
   to the full-screen console until G1 is signed off on the PC.
 - A boot splash: the logo animation with its sound while Jam OS starts

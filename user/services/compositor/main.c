@@ -25,7 +25,7 @@
  * paint clock, display.hz: 60 by default), `threads=<n>` (painting
  * threads, the loop's included: a few by default), `layout=floating|tiling`
  * (the window layout to start with: init's `display.layout` setting, comp.h
- * WM_LAYOUT_SETTING), `nodesk` (the window manager alone: no top bar, no
+ * WM_LAYOUT_SETTING; tiling without one), `nodesk` (the window manager alone: no top bar, no
  * cards, no animations; desk.h), and two test powers, which only the starter can
  * give, never a client, and init never does: `testwin` (testwin.c: a
  * client's surface becomes a window without xdg-shell) and `testscene`
@@ -108,7 +108,7 @@ struct args {
 
 static void parse_args(int argc, char **argv, struct args *a)
 {
-    *a = (struct args){ .w = DEFAULT_W, .h = DEFAULT_H, .layout = COMP_FLOATING };
+    *a = (struct args){ .w = DEFAULT_W, .h = DEFAULT_H, .layout = COMP_TILING };
     for (int i = 1; i < argc && !a->scene_at; i++) {
         const char *s = argv[i];
         if (!strcmp(s, "headless"))

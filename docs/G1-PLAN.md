@@ -220,6 +220,36 @@ differs from the recommendation below, this note wins:
   colours) and Super+C copies, Super+V pastes (Ctrl+Shift+C/V as well),
   so Ctrl+C still stops a program; a paste is bracketed so a pasted
   multi-line command never runs line by line by accident.
+  A POLISH track follows G1 (owner, 2026-10-07): the boot menu's test
+  and network-test entries under one "Developer" submenu (on top: Jam OS,
+  previous build, no compositor); a quiet boot (Terminal 1 starts at the
+  prompt; the log stays in `dmesg` and /data/logs); every terminal
+  equal and closable, the first included (init no longer treats terminal
+  1 as the console it never gives up on; with none left the desktop
+  shows the wallpaper and Super+Enter or search opens one; under
+  `nocomp` the one full-screen console stays); `help` lists everyday
+  commands and `help dev` the developer ones; plain wording on screen and
+  in notifications (the detailed lines stay in the log); a calm panic
+  screen (owner's design, 2026-10-07, "B1"): the dark #11141b background,
+  the busy ring (cursors.svg) spinning in the middle, one line of Inter
+  text and a short code under it (JAM-<kind>-<4 hex of the faulting
+  address>, e.g. JAM-PF-7F3A); the kernel draws it alone, with the few
+  glyphs it needs baked into a table at build time (no font code runs in
+  a crashed kernel) and the ring animated off the TSC. No keys: drivers
+  are user space and gone after a panic. Case 1, it restarts itself (the
+  stored kernel): "Jam OS hit a problem and is restarting" held about
+  1.5 s, then the restart; on the desktop a notification "Jam OS
+  restarted after a problem / Everything is back. Code ..." with Details
+  (opens a terminal running a new `crashlog` command: the saved report,
+  its code, backtrace and the last log lines) and Close. Case 2, it can't
+  recover (a crash loop, a refused stored kernel): "Jam OS hit a problem
+  it can't recover from / Restarting the PC in 15 s"; after 5 s the
+  details panel (code, where, backtrace, why it can't recover, boot and
+  build) appears by itself below; at 15 s the firmware reset; if that
+  fails the ring stops and it says "Jam OS couldn't restart the PC / Hold
+  the power button to turn it off, then on again". The details still go
+  to the serial port as they happen and into the next boot's crash
+  report, as today.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
@@ -1254,6 +1284,58 @@ position: whole-pixel advances). A full redraw of a full-screen
 2560x1440 terminal (282x67 cells) took 11-15 ms in QEMU, a one-line
 change 1.2-1.7 ms ([ARCHITECTURE](../ARCHITECTURE.md#the-terminal-windows),
 [TESTING](TESTING.md#the-terminal-windows)).
+
+**As built: the owner's tiler and key set (after the splash overlay).**
+Dwindle replaces C3's main-and-stack (`wmtile.c`): each tiling screen has
+a binary tree (`struct tile_node` on `struct desk_screen`), a leaf per
+window (`wm_window.leaf`); the room is the screen's (below the strip)
+less 6 pixels round and between halves; a split's ratio is in 65536ths,
+held to 15-85%. `tiles_update` (from `wm_relayout`) drops the leaves of
+windows no longer tiled there (closed, unmapped, minimised, moved, a
+floating screen) and adds the new ones, splitting the focused tile or
+the last (always b: the spiral's newest corner) along its longer side; a
+tree made from nothing (a screen switched to tiling: Super+T drops the
+tree, so switching back builds it again) takes the windows in their
+order, each splitting the last. A new window's first configure is the
+half it will get. The tree is walked with parent pointers, never
+recursion. Gaps (`wmgrab.c`): a press within 6 pixels of a gap's middle,
+with nothing over it but the tiles beside it, drags it, every tile placed
+again at each motion (no glide; a tree change mid-drag ends it); the
+pointer over one shows the resize arrows, and the gap's bar (3 pixels, 15%
+short at each end, apricot at 85%) is lit while hovered or dragged
+(`wm_marks`, drawn by `wmdraw.c` over the windows, under the strip). The
+pointer starts in the middle of the output, so with two tiles side by
+side the gap is lit until the mouse moves. Super+press (`wm_press` gets
+the modifiers every keyboard holds) on a tiled window lifts it: its
+picture (an animation snapshot) follows the pointer at 85% with a shadow,
+the tile under the pointer gets an apricot ring over a 14% tint, release
+swaps the two (same screen only); floating, Super+drag moves from
+anywhere, Super+right-drag resizes from the nearest corner (a resize from
+the top, by an edge or Super+right-drag, stops below the strip). The
+glide (`anim.c`): beside the one picture animation, `wm_reflow` notes
+where every shown window is, places them again, and those that moved
+glide from there (struct comp_window's `slide_x` and `slide_y`, used
+everywhere through `window_shown_x/y`) over 200 ms ease-out, damaging
+each frame's old and new extent only; on open, close, swap and keyboard
+resizing; any key or press first jumps it to its end; none while a
+screen slides. Keys (`wmkeys.c`'s `wm_key`, asked by focus.c after
+Ctrl+Alt+Del and the desktop's keys): exactly the table above; direction
+by geometry is the prototype's (centres at least 5 pixels that way, the
+distance along plus twice the distance across, the lowest first);
+floating Super+Alt+direction moves the right or bottom edge 48 pixels
+that way (Right and Down grow, Left and Up shrink), within the client's
+limits. Super+Shift+N past the last screen makes one at the end.
+Tiling is the default (the owner, after the tiler): the compositor
+without `layout=` tiles, init starts it with `layout=tiling` until
+`/data` says otherwise, new screens take the last choice; a saved
+`display.layout = floating` wins. A window that has only ever tiled has no
+floating size of its own: switched to floating, its configure is 0 by 0
+and the client keeps its last size (a tall terminal's frame can then
+reach below the output; its title bar stays reachable). Tests: utest's
+`wm_tiling`, `wm_switch`, `wm_tile_tree`, `wm_tile_gaps`,
+`wm_tile_push`, `wm_focus_dir`, `wm_swap`, `wm_reflow`, `wm_keys`,
+`desk_screens`, `comp_layout_wait`, `xdg_tiling`;
+`tools/shell-tests/desktop.txt` (four terminals tiled, a gap dragged).
 
 **Order and parallel work:**
 
