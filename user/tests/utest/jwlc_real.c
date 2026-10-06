@@ -14,8 +14,8 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
-#include <jwl/cursor_shape_v1.h>
 #include <idl/svc.h>
+#include <jwl/cursor_shape_v1.h>
 #include <jwl_client.h>
 #include <os.h>
 #include "comptest.h"
