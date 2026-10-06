@@ -72,7 +72,7 @@ bool t_font_open(void)
     struct font *f;
     CHECK_ST(font_open(FONT_REGULAR, FONT_PX_MIN - 1, &f), ERR_OUT_OF_RANGE);
     CHECK_ST(font_open(FONT_REGULAR, FONT_PX_MAX + 1, &f), ERR_OUT_OF_RANGE);
-    CHECK_ST(font_open((enum font_weight)2, 13, &f), ERR_OUT_OF_RANGE);
+    CHECK_ST(font_open((enum font_weight)4, 13, &f), ERR_OUT_OF_RANGE);
     font_close(NULL);
     /* Inter: 2048 units to the em, ascender 1984, descender -494, no line
      * gap, capital height 1490 (hhea, 'H'). */

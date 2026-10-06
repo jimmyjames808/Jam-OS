@@ -33,10 +33,13 @@ static struct run run_of(const char *str, const char *end, bool ell)
     return (struct run){ str, end, ell, -1, 0 };
 }
 
-/* The kerning between slots l and r: a binary search of the pairs. */
+/* The kerning between slots l and r: a binary search of the pairs (only
+ * the first FONT_TEXT_SLOTS kern). */
 static int32_t kern_of(const struct font *f, int l, int r)
 {
-    uint32_t key = (uint32_t)(l * FONT_SLOTS + r), lo = 0, hi = f->nkern;
+    if (l >= FONT_TEXT_SLOTS || r >= FONT_TEXT_SLOTS)
+        return 0;
+    uint32_t key = (uint32_t)(l * FONT_TEXT_SLOTS + r), lo = 0, hi = f->nkern;
     while (lo < hi) {
         uint32_t mid = lo + (hi - lo) / 2;
         if (f->kern[mid].pair < key)
@@ -55,6 +58,8 @@ static int run_next(const struct font *f, struct run *r, int64_t *at)
     if (r->p < r->end && *r->p) {
         uint32_t cp = utf8_next(&r->p);
         slot = font_slot(cp);
+        if (slot >= f->nslots)
+            slot = FONT_NOTDEF;   /* a terminal's code point in a face without it */
     } else if (r->ell) {
         r->ell = false;
         slot = FONT_ELLIPSIS;

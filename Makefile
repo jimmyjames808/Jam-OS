@@ -306,10 +306,13 @@ $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
 
 # libfun's smooth text (<fun.h>, font.c): stb_truetype
 # (third_party/stb_truetype, vendored unmodified, compiled in ttf.c) and
-# the Inter faces (third_party/inter), which fontdata.c's .incbin links in
-# as they are.
+# the Inter and JetBrains Mono faces (third_party/inter,
+# third_party/jetbrains-mono), which fontdata.c's .incbin links in as they
+# are.
 # build/host/fontpreview (below) builds the same files for the Mac.
-FONT_FACES  := third_party/inter/Inter-Regular.ttf third_party/inter/Inter-Medium.ttf
+FONT_FACES  := third_party/inter/Inter-Regular.ttf third_party/inter/Inter-Medium.ttf \
+               third_party/jetbrains-mono/JetBrainsMono-Regular.ttf \
+               third_party/jetbrains-mono/JetBrainsMono-Bold.ttf
 FONT_SRCS   := $(addprefix $(LIBFUN_DIR)/,font.c fontdraw.c fontdata.c ttf.c utf8.c alpha.c)
 FONT_STB_OBJS := $(UOBJ)/$(LIBFUN_DIR)/ttf.c.o $(UOBJ)/$(LIBFUN_DIR)/font.c.o
 $(FONT_STB_OBJS): PROG_CFLAGS := -Ithird_party/stb_truetype
