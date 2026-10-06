@@ -31,7 +31,11 @@
  *             also gets /svc/wayland's client end (SR_USER + 10: window
  *             mode, the screen is the compositor's, so no RIGHT_ROOT_SCREEN)
  *             and "term=<n>", its terminal's number (an extra terminal's
- *             console shows the log only on request and makes no notices)
+ *             console shows the log only on request and makes no notices),
+ *             and "font=bitmap" when the settings' terminal.font says so
+ *             (terms_settings: read when /data comes, which is after the
+ *             first console starts, so it is then sent to each running
+ *             console as console.set_font)
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
  *             console.new_client; no connect_input), root with SHELL_ROOT,
  *             RES_PCI with RIGHTS_BASIC (SR_USER + 1), and init's whole
@@ -61,7 +65,10 @@
 #include <idl/console.h>
 #include <logwriters.h>
 #include <os.h>
+#include <settings.h>
 #include "init.h"
+
+#define FONT_KEY "terminal.font"   /* smooth or bitmap: the terminal windows' font */
 
 /* The root's powers (<jam/abi.h> RIGHT_ROOT_*; neither can map or slice):
  * the console reads the log, draws on the screen (not with a
@@ -89,6 +96,9 @@ static bool quiet_console;   /* the next first console starts quiet (the splash'
 static bool nolog_console;   /* every console keeps the log off the screen (a splash boot) */
 /* An argument for the first shell started ("soak=3": run the soak test), or NULL. */
 static const char *first_arg;
+/* The settings' terminal.font is bitmap (read when /data comes,
+ * terms_settings; smooth until then). */
+static bool font_bitmap;
 
 int term_of(unsigned i)
 {
@@ -171,7 +181,7 @@ static status_t start_console(unsigned k)
     unsigned nx = console_handles(k, b, x);
     char term[8];
     snprintf(term, sizeof(term), "term=%u", k + 1);
-    const char *argv[4] = { svcs[TERM_CONSOLE(k)].path };
+    const char *argv[5] = { svcs[TERM_CONSOLE(k)].path };
     int argc = 1;
     if (nolog_console)
         argv[argc++] = "nolog";
@@ -179,6 +189,8 @@ static status_t start_console(unsigned k)
         argv[argc++] = "quiet";
     if (comp_on())
         argv[argc++] = term;
+    if (comp_on() && font_bitmap)
+        argv[argc++] = "font=bitmap";
     st = svc_start(TERM_CONSOLE(k), argc, argv, x, nx);
     if (!k)
         quiet_console = false;   /* a restarted console draws at once */
@@ -383,6 +395,31 @@ bool terms_named(const char *name, unsigned *i)
     unsigned k = (unsigned)(n[0] - '1');
     *i = shell ? TERM_SHELL(k) : TERM_CONSOLE(k);
     return true;
+}
+
+void terms_settings(void)
+{
+    char v[SETTINGS_VALUE_MAX];
+    bool bitmap = false;
+    if (settings_get(SETTINGS_FILE, FONT_KEY, v, sizeof(v)) == OK) {
+        if (!strcmp(v, "bitmap"))
+            bitmap = true;
+        else if (strcmp(v, "smooth"))
+            printf("init: settings: %s = %s is not smooth or bitmap: smooth\n", FONT_KEY, v);
+    }
+    if (bitmap == font_bitmap)
+        return;
+    font_bitmap = bitmap;   /* for the consoles started from now on (start_console) */
+    if (!comp_on())
+        return;   /* the full-screen console draws the bitmap always */
+    for (unsigned k = 0; k < TERM_MAX; k++) {
+        if (!terms[k].cons)
+            continue;
+        status_t st = console_set_font_until(terms[k].cons, now() + NS_PER_S, bitmap ? 1 : 0);
+        if (st != OK)
+            printf("init: terminal %u: its font not changed (%s)\n", k + 1, status_str(st));
+    }
+    printf("init: the terminals' font: %s, as the settings say\n", bitmap ? "bitmap" : "smooth");
 }
 
 void terms_init(handle_t loop_port, bool splash, const char *shell_arg)

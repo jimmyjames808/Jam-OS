@@ -110,9 +110,21 @@ static status_t op_show_log(void *ctx, uint8_t on, const uint8_t only[32])
     return OK;
 }
 
+/* init's terminal.font (console.idl). */
+static status_t op_set_font(void *ctx, uint8_t font)
+{
+    const struct client *c = ctx;
+    if (c->level != L_ADMIN)
+        return ERR_ACCESS_DENIED;
+    if (font > 1)
+        return ERR_INVALID_ARGS;
+    window_set_font(font == 1);
+    return OK;
+}
+
 static const struct console_ops console_ops = {
     op_write, op_size, op_clear, op_open_keys, op_connect_input, op_lend_screen, op_new_client,
-    op_blank, op_show_log,
+    op_blank, op_show_log, op_set_font,
 };
 
 void clients_init(void)

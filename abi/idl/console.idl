@@ -64,3 +64,11 @@ protocol console 12
 # the log is always on the screen and this changes nothing. ADMIN and
 # SHELL channels only: ERR_ACCESS_DENIED for a PROGRAM one.
 9  show_log       (u8 on, u8[32] only) -> ()
+# The terminal window's font (the settings' terminal.font, which init
+# reads when /data comes and sends to every terminal's console): font 0
+# smooth (JetBrains Mono, the default), 1 the 8x16 bitmap. The window
+# keeps its size; its grid is made again in the new cells. The
+# full-screen console (no compositor) always draws the bitmap: OK, and
+# nothing changes. ADMIN channels only: ERR_ACCESS_DENIED otherwise;
+# ERR_INVALID_ARGS for a font > 1.
+10 set_font       (u8 font) -> ()

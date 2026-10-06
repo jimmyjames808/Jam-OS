@@ -12,6 +12,10 @@
  *     size the compositor gives it re-grids the text (text_regrid): lines
  *     keep their cells, cut or padded at the new width, as a terminal
  *     emulator does; nothing is re-wrapped;
+ *   - the cells are JetBrains Mono's (cells.h), or the 8x16 bitmap's with
+ *     the argument "font=bitmap" (init's, from terminal.font) or after
+ *     console.set_font asks for it, WIN_PAD pixels in from each edge; the
+ *     text fills the window from the top (view.c);
  *   - keys come from wl_keyboard while the window has the focus, into the
  *     same focus stack as a keyboard driver's (keys.c), so Ctrl+C reaches
  *     the shell below a program as before; Super+Enter asks init for
@@ -43,11 +47,14 @@
 bool window_mode;
 unsigned term_no = 1;
 bool closing;
+bool font_bitmap;
+struct cell_look look = { GW, GH, 0, NULL, NULL };
 
 static struct jwl_client *wl;
 static struct jwl_window *win;
 static bool no_windows;            /* the compositor has no xdg_wm_base: until it is new */
 static struct pointer_track ptr;   /* where the pointer was, and the buttons held */
+static int32_t win_w, win_h;       /* the size the compositor gave the window (0: none yet) */
 
 /* ---- the connector thread ------------------------------------------------------- */
 
@@ -140,7 +147,7 @@ static void open_window(void)
         return;
     const struct jwl_client_info *in = jwl_client_info(wl);
     uint32_t c, r;
-    term_grid(in->output_width, in->output_height, &c, &r);
+    term_grid(&look, in->output_width, in->output_height, &c, &r);
     (void)regrid(c, r);   /* else at the size it has */
     char title[24];
     if (term_no > 1)
@@ -148,9 +155,9 @@ static void open_window(void)
     else
         snprintf(title, sizeof(title), "Terminal");
     struct jwl_window_config cfg = {
-        .width = (int32_t)(cols * GW), .height = (int32_t)(rows * GH), .title = title,
-        .app_id = "jamos.terminal", .resizable = true,
+        .title = title, .app_id = "jamos.terminal", .resizable = true,
     };
+    window_size(&look, cols, rows, &cfg.width, &cfg.height);
     status_t st = jwl_window_create(wl, &cfg, &win);
     if (st == OK) {
         printf("console: window mode: terminal %u opens a %ux%u-cell window (%dx%d pixels) on a "
@@ -172,7 +179,9 @@ static void open_window(void)
 static void configured(const struct jwl_event *ev)
 {
     uint32_t c, r;
-    grid_of_size(ev->configure.width, ev->configure.height, &c, &r);
+    win_w = ev->configure.width;
+    win_h = ev->configure.height;
+    grid_of_size(&look, win_w, win_h, &c, &r);
     (void)regrid(c, r);
     if (ev->configure.rebuilt)
         paint_forget();
@@ -235,11 +244,35 @@ static void take(const struct jwl_event *ev)
 
 /* ---- the console's side ------------------------------------------------------------ */
 
+void window_set_font(bool bitmap)
+{
+    font_bitmap = bitmap;
+    if (!window_mode || bitmap == !look.reg)
+        return;   /* the full screen's is the bitmap always; or no change */
+    /* The console draws on its one thread, between events: nothing is
+     * drawing with the fonts closed here. */
+    if (bitmap)
+        cell_look_close(&look);
+    else if (!cell_look_open(&look))
+        printf("console: no memory for the smooth font: the terminal keeps the 8x16 one\n");
+    printf("console: terminal %u: the %s font, %dx%d-pixel cells\n", term_no,
+           look.reg ? "smooth (JetBrains Mono)" : "8x16 bitmap", look.w, look.h);
+    if (win_w > 0) {   /* the window's size stays; the grid in it changes */
+        uint32_t c, r;
+        grid_of_size(&look, win_w, win_h, &c, &r);
+        (void)regrid(c, r);
+    }
+    paint_forget();
+    dirty = true;
+}
+
 bool window_init(handle_t svc, unsigned term)
 {
     window_mode = true;
     wl_svc = svc;
     term_no = term ? term : 1;
+    if (!font_bitmap)   /* the look starts as the bitmap's */
+        window_set_font(false);
     handle_t thread;
     status_t st = jam_channel_create(&ask_mine, &ask_theirs);
     if (st == OK)

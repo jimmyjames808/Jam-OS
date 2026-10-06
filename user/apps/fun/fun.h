@@ -259,8 +259,11 @@ void text_in(const struct surf *s, const struct rect *r, int scale, uint32_t c, 
 /* Anti-aliased proportional text in Inter (third_party/inter: Regular and
  * Medium, cut to printable Latin-1 and a little punctuation, linked in:
  * fontdata.c), for the compositor's title bars and top bar (font.c bakes,
- * fontdraw.c measures and draws). The terminal and the apps keep the 8x16
- * text above.
+ * fontdraw.c measures and draws); and the terminal's monospace face,
+ * JetBrains Mono (third_party/jetbrains-mono: Regular and Bold, which also
+ * have Latin Extended-A and the box drawing and block elements,
+ * U+2500..U+259F), for the console's windows. The apps keep the 8x16 text
+ * above.
  *
  * A struct font is one weight at one size with every glyph baked: at
  * font_open, stb_truetype (third_party/stb_truetype) renders each glyph's
@@ -281,9 +284,12 @@ void text_in(const struct surf *s, const struct rect *r, int scale, uint32_t c, 
  * exactly, none leaves the pixel as it was. */
 struct font;
 
-enum font_weight {
+enum font_weight {   /* the face: a weight of Inter, or the terminal's */
     FONT_REGULAR,   /* Inter Regular (400) */
     FONT_MEDIUM,    /* Inter Medium (500): a focused window's title */
+    FONT_MONO,      /* JetBrains Mono Regular (400): the terminal's text; every
+                     * glyph's advance is 0.6 of the size (9 pixels at 15) */
+    FONT_MONO_BOLD, /* JetBrains Mono Bold (700): its bold */
 };
 #define FONT_PX_MIN 6     /* the sizes font_open bakes: pixels to the em */
 #define FONT_PX_MAX 128

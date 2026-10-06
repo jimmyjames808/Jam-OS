@@ -34,6 +34,11 @@
  *                  writes it when the user switches (Super+T)
  *   display.hz     how often the compositor paints at most, 1 to 1000 a
  *                  second (its default: 60); from its next start
+ *   terminal.font  the terminal windows' text: smooth (JetBrains Mono,
+ *                  the default) or bitmap (the 8x16 font); init passes
+ *                  it to each terminal's console, and to the running ones
+ *                  when /data comes (the full-screen console, `nocomp`,
+ *                  is always the bitmap)
  * The shell's vol, music and date -z write them, and init the layout;
  * init reads them when /data is mounted.
  *

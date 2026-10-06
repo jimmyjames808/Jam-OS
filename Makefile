@@ -296,8 +296,9 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 # fbbench (user/tests) measures libfun's own drawing code too; the
 # compositor (user/services) blends and draws with it; utest tests its
 # window (utest/funwin.c) against the fake compositor, and wlapps shows
-# the apps' windows composed headless on the borrowed screen.
-FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS))) fbbench compositor utest wlapps
+# the apps' windows composed headless on the borrowed screen; the console
+# draws its windows' text in libfun's smooth font (cellpaint.c).
+FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS))) fbbench compositor utest wlapps console
 LIBFUN_OBJS := $(patsubst %,$(UOBJ)/%.o,$(wildcard $(LIBFUN_DIR)/*.c))
 
 $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
@@ -306,10 +307,13 @@ $(UOBJ)/libfun.a: $(LIBFUN_OBJS)
 
 # libfun's smooth text (<fun.h>, font.c): stb_truetype
 # (third_party/stb_truetype, vendored unmodified, compiled in ttf.c) and
-# the Inter faces (third_party/inter), which fontdata.c's .incbin links in
-# as they are.
+# the Inter and JetBrains Mono faces (third_party/inter,
+# third_party/jetbrains-mono), which fontdata.c's .incbin links in as they
+# are.
 # build/host/fontpreview (below) builds the same files for the Mac.
-FONT_FACES  := third_party/inter/Inter-Regular.ttf third_party/inter/Inter-Medium.ttf
+FONT_FACES  := third_party/inter/Inter-Regular.ttf third_party/inter/Inter-Medium.ttf \
+               third_party/jetbrains-mono/JetBrainsMono-Regular.ttf \
+               third_party/jetbrains-mono/JetBrainsMono-Bold.ttf
 FONT_SRCS   := $(addprefix $(LIBFUN_DIR)/,font.c fontdraw.c fontdata.c ttf.c utf8.c alpha.c)
 FONT_STB_OBJS := $(UOBJ)/$(LIBFUN_DIR)/ttf.c.o $(UOBJ)/$(LIBFUN_DIR)/font.c.o
 $(FONT_STB_OBJS): PROG_CFLAGS := -Ithird_party/stb_truetype
@@ -405,8 +409,8 @@ EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
 # with, and the desktop's logic around them (utest/compdesk*.c: screens,
 # the animations' clock, the strip's layout, the menus, popovers and
 # notifications, desk.c; none of their drawing), and the console's window
-# mode's pure parts (utest/conwin.c:
-# wlinput.c and its console.h).
+# mode's pure parts (utest/conwin.c, conpaint.c:
+# wlinput.c, cellpaint.c, view.c and their console.h).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -420,7 +424,8 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile wmkeys \
                         wmgrab deco title mask screens anim strip menus popover notify desk \
                         cursors) \
-                      $(CURSOR_OBJ) $(UOBJ)/user/services/console/wlinput.c.o \
+                      $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
+                        cellpaint view) \
                       $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \

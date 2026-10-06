@@ -1925,14 +1925,21 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 ### Smooth text
 
 The compositor's title bars and top bar use anti-aliased proportional
-text; the terminal and the apps keep the 8x16 font. libfun has it
+text, and the terminal windows a monospace one; the apps (and the
+full-screen console, `nocomp`) keep the 8x16 font. libfun has it
 (`<fun.h>` "smooth text"): Inter Regular and Medium
 (`third_party/inter/`, SIL OFL 1.1), cut to printable ASCII, Latin-1
 and nine punctuation marks by `tools/subsetfont.py`, which also turns
-Inter's GPOS kerning into a 'kern' table (45 and 49 KB). The two files
-are linked into libfun as they are (`fontdata.c`, the assembler's
-`.incbin`), so drawing a title needs no filesystem; only programs that
-open a font link them in.
+Inter's GPOS kerning into a 'kern' table (45 and 49 KB); and JetBrains
+Mono Regular and Bold (`third_party/jetbrains-mono/`, SIL OFL 1.1, cut
+by `subsetfont.py --terminal` to the same plus Latin Extended-A and the
+box drawing and block elements, U+2500..U+259F; no kerning, 33 KB each).
+The four files are linked into libfun as they are (`fontdata.c`, the
+assembler's `.incbin`), so drawing a title needs no filesystem; only
+programs that open a font link them in. A face has its own number of
+glyph slots: Inter's 201, JetBrains Mono's 489 (a code point a face
+lacks draws its box), so Inter's fonts are no bigger for the terminal's
+extra glyphs.
 
 - **Baked, then read-only.** `font_open(weight, px, &f)` runs
   stb_truetype (`third_party/stb_truetype/`, in `ttf.c`) once over every
@@ -1945,7 +1952,11 @@ open a font link them in.
   font; on the Mac (Rosetta) about 2 ms. Memory: about 85 KB at 13
   pixels to the em, 225 KB at 26, of which the kerning list is about
   20 KB (4,773 pairs in Regular, 5,299 in Medium); the two fonts of the
-  compositor's titles at 1x take about 175 KB.
+  compositor's titles at 1x take about 175 KB. A face with no kerning
+  whose every advance is a whole number of pixels at the size asked
+  (JetBrains Mono at 15: 600 units are 9 pixels) only ever draws at
+  whole-pixel pens, so only its first position is baked: 75 KB for
+  Regular at 15 pixels and 77 KB for Bold (227 and 234 KB with all four).
 - **Drawing only reads.** Measuring (`font_width`), cutting
   (`font_ellipsize`) and drawing (`font_draw`, `font_draw_in`) walk the
   string with a pen in 1/256 pixels (advances and kerning were rounded
@@ -1967,6 +1978,51 @@ open a font link them in.
   on the Mac and draws `build/fontpreview.png` on every `make`: the
   floating windows' title bars (docs/G1-PLAN.md "The look") at 1x and 2x
   and sample text at six sizes.
+
+### The terminal windows
+
+Each terminal is a console (`user/services/console/`) in window mode: the
+text model (the scrollback, the current line, the alternate screen), the
+escapes and the kernel log are the full-screen console's; only the
+drawing differs (`window.c`, `winpaint.c`, `cellpaint.c`, `cells.h`).
+
+- **Cells.** JetBrains Mono at 15 pixels to the em: a cell is the face's
+  advance rounded to whole pixels wide (9: 0.6 em is exactly 9 at 15,
+  so every glyph sits where the font means it; at 14 it would be 8.4,
+  squeezed to 8) and 1.4 times the size high (21), the face's ascent and
+  descent (16 and 5 pixels) centred in it, the baseline 16 pixels down.
+  Each glyph is drawn at its cell's origin with `font_draw`, clipped to
+  its cell: a cell is drawn alone (only the cells that changed are), so
+  nothing may reach into a neighbour. `ESC [ 1 m` makes a cell bold
+  (`struct cell`'s `style`, which fits in the byte the struct had spare)
+  as well as bright, as before. The box drawing comes from the font: its
+  lines run past the em box (-400 to 1120 units high, -20 to 620 wide),
+  so clipped to the cell they meet the next one. The block elements
+  (U+2580..U+259F) are filled as exact fractions of the cell (halves,
+  eighths, quadrants; the shades as the colour at a quarter, half and
+  three quarters over the background): the font's own are made for its
+  1.32-em line. `terminal.font = bitmap` in the settings draws the 8x16
+  bitmap instead (init passes `font=bitmap` to each terminal's console,
+  and `console.set_font` to the running ones when `/data` comes, which is
+  after the first starts); the full-screen console (`nocomp`) always does.
+- **Padding.** 10 pixels of the terminal's background inside the window
+  on every side (`WIN_PAD`); the grid is what fits inside it, the rest of
+  a size that isn't whole cells is background too. The compositor's
+  rounded corners (radius 10 inside a 1-pixel outline) cut only the
+  padding.
+- **Text from the top.** In a window the first line is on the top row and
+  the text fills downward; the screen scrolls only once the current line
+  reaches the bottom row; a clear (`ESC [ 2 J`) starts the screen again at
+  the top, the lines before it still there to scroll back to; any size
+  keeps the current line on the screen (`view.c`). The full-screen console
+  keeps the current line on the bottom row, as it always has.
+- **Cost.** The damaged rows only, as before: a frame walks the grid
+  against the buffer's shadow and draws the cells that differ. Measured in
+  QEMU (TCG, 2026-10-06) on a 2560x1440 output with the window full
+  screen (282x67 cells): a full redraw 10.6 to 15 ms, a one-line change
+  (a typed command and its output, 10 to 30 cells) 1.2 to 1.7 ms, most
+  of it the walk over the 18,894 cells; the bitmap's full redraw of its
+  317x88 cells there took 24 to 38 ms.
 
 ## Audio
 
@@ -2425,8 +2481,10 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   and the keys: `timezone`, `rtc`, `volume`, `music.volume`,
   `music.folder`, and the network's `net.address`, `net.host`,
   `netlog`, `ntp` and `ntp.server`: [Networking](#networking); the
-  compositor's `display.layout` and `display.hz`). init reads them when `/data`
-  comes (the clock, the network's address, the window layout) and when the mixer, the music
+  compositor's `display.layout` and `display.hz`; the terminals'
+  `terminal.font`). init reads them when `/data`
+  comes (the clock, the network's address, the window layout, the
+  terminals' font) and when the mixer, the music
   player, netstack, netlog and the compositor start; the shell's
   `vol master`, `music vol`, `music start <folder>` and `date -z` write
   them, and init writes `display.layout` when Super+T switches it. A write goes to `settings.new`, is synced, and then takes the old

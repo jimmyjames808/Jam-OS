@@ -7,6 +7,8 @@
  *   window.c   the window mode: the terminal as a Wayland client
  *   winpaint.c ... drawing the cells into its window's buffers
  *   wlinput.c  ... its size, and Wayland's keys and pointer as input events
+ *   cellpaint.c a cell drawn in the 8x16 bitmap or the smooth font (cells.h)
+ *   view.c     which lines of the text the screen shows
  *   keys.c     the focus stack of key channels, and the input sources
  *   clients.c  the console protocol's clients and their levels
  *   notices.c  the few things worth a line while the kernel log is off
@@ -15,15 +17,13 @@
 #pragma once
 
 #include <stdarg.h>
-#include <font.h>
 #include <idl/console.h>
 #include <idl/input.h>
 #include <jwl_client.h>
 #include <os.h>
 #include <utf8.h>
+#include "cells.h"
 
-#define GW 8
-#define GH 16
 #define MAX_COLS   480
 #define MAX_ROWS   180
 #define SCROLLBACK 4000         /* committed lines kept */
@@ -48,24 +48,12 @@
 #define CLIENT_BUDGET_NS (20 * NS_PER_MS)
 #define KLOG_BUF   16384
 
-/* Palette indices (screen.c has the colours). */
-enum { C_BLACK, C_RED, C_GREEN, C_YELLOW, C_BLUE, C_MAGENTA, C_CYAN, C_GREY,
-       C_DARK, C_BRED, C_BGREEN, C_BYELLOW, C_BBLUE, C_BMAGENTA, C_BCYAN, C_WHITE };
-#define ATTR(fg, bg) ((uint8_t)((fg) | (bg) << 4))
+/* The cells' colours (cells.h has the palette). */
 #define A_KERNEL  ATTR(C_GREY, C_BLACK)
 #define A_STAMP   ATTR(C_DARK, C_BLACK)
 #define A_PROC    ATTR(C_BGREEN, C_BLACK)
 #define A_OUT     ATTR(C_WHITE, C_BLACK)
 #define A_NOTICE  ATTR(C_BYELLOW, C_BLACK)
-
-struct cell {
-    uint16_t ch;    /* the glyph: ASCII, a G_* block, or G_LATIN + n */
-    uint8_t  attr;  /* ATTR(fg, bg) */
-};
-/* The block elements full-screen programs draw with, as cell characters. */
-enum { G_UPPER = 1, G_LOWER, G_FULL, G_LIGHT, G_MEDIUM, G_DARK };
-/* U+00A0 + n (n < FONT_LATIN_N, <font.h>) is glyph G_LATIN + n. */
-#define G_LATIN 128u
 
 /* Client levels (console.idl new_client): see main.c. */
 enum { L_ADMIN, L_SHELL, L_PROGRAM };
@@ -87,6 +75,30 @@ extern handle_t port;              /* everything we wait for */
  * log is off the screen, to notices.c). */
 void klog_event(void);
 
+/* ---- view.c: which lines the screen shows ------------------------------------
+ *
+ * Lines are numbered as the scrollback numbers them: 0 to committed - 1
+ * the committed ones, `committed` the current line (the cursor's). On the
+ * full-screen console (nocomp) the current line is always the bottom row,
+ * as it ever was. In a window (from_top) the text starts at the top as in
+ * any terminal: the screen's first row is line `top` (0 at the start, the
+ * current line after a clear) until the current line reaches the bottom
+ * row; from then on the screen scrolls, the current line on the bottom
+ * row. Either way the current line is on the screen unless scrolled back,
+ * whatever the rows (a resize keeps it in view). No state: utest checks
+ * them (conwin.c). */
+struct view {
+    uint64_t committed;   /* lines committed */
+    uint64_t top;         /* from_top: the line the screen starts at (<= committed) */
+    uint32_t rows;        /* the screen's rows */
+    bool     from_top;    /* window mode */
+};
+/* The line on the screen's first row, not scrolled back (below 0: rows
+ * before the first line, blank). */
+int64_t  view_base(const struct view *v);
+/* How far back the view may go: to the oldest line the scrollback keeps. */
+uint32_t view_back_max(const struct view *v);
+
 /* ---- text.c: the text model -------------------------------------------------- */
 
 extern uint32_t cols, rows;
@@ -94,12 +106,16 @@ extern uint64_t committed;         /* lines ever committed; line i at i % SCROLL
 extern struct cell cur[MAX_COLS];  /* the current line */
 extern uint32_t cur_x;             /* the cursor */
 extern uint8_t out_attr;           /* program output colour (ESC [ m) */
+extern uint8_t out_style;          /* ... and style (S_BOLD: ESC [ 1 m) */
 extern uint32_t view_back;         /* lines scrolled back (0: at the bottom) */
+extern uint64_t top_line;          /* window mode: the line the screen starts at (view.c) */
 extern bool dirty;                 /* the screen needs a render */
 
 /* The scrollback's line i (committed ones only). */
 struct cell *line(uint64_t i);
 void blank(struct cell *c, uint32_t n, uint8_t attr);
+/* The view as it is now (view.c). */
+struct view view_now(void);
 /* The scrollback, allocated (and touched) for cols x rows. */
 bool text_init(void);
 /* A kernel log line (without its newline), wrapped at cols, above the
@@ -108,11 +124,14 @@ void kernel_line(const char *s, size_t n);
 /* A notice (notices.c), the same way, in its own colour. */
 void notice_out(const char *s, size_t n);
 /* The glyph for code point cp (not a control character): ASCII, a Latin
- * letter or a block element as they are, anything else '?'. */
+ * letter, the box drawing and block elements as they are, anything else
+ * '?'. */
 uint16_t cell_glyph(uint32_t cp);
 /* Commit the current line and start a new one. */
 void new_line(void);
-/* ESC [ 2 J: a screenful of blank lines. */
+/* ESC [ 2 J: the text so far scrolled off the screen (a screenful of
+ * blank lines; in window mode, the screen starts again at the current
+ * line, on the top row). */
 void clear_screen(void);
 /* The grid becomes c x r cells (the window was resized): the scrollback,
  * the current line and the alternate screen keep their cells, cut or
@@ -153,9 +172,6 @@ void render(void);
  * for each of the rows x cols cells (the scrollback's view and the
  * current line, or the alternate screen); inverted: the cursor. */
 void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv));
-/* The 8x16 bits of cell c's glyph, one byte a row, the leftmost pixel
- * the top bit: the font's, or block (filled) for a block element. */
-const uint8_t *cell_bits(struct cell c, uint8_t block[GH]);
 /* Quiet (the boot splash is coming, init's argument "quiet"): draw nothing
  * until a lent screen comes back, or until `until` (uptime ns) if nobody
  * borrows it, so the kernel's dark splash background stays up with no
@@ -208,6 +224,7 @@ void reboot_due(void);
 extern bool window_mode;           /* a compositor draws the screen: we draw into a window */
 extern unsigned term_no;           /* this terminal's number (1: the first, the system's) */
 extern bool closing;               /* our window was closed: main ends with 0 */
+extern bool font_bitmap;           /* terminal.font = bitmap (argument, set_font) */
 /* Window mode on /svc/wayland's shared channel svc, as terminal `term`:
  * connect (without waiting: the window opens once the compositor
  * answers). false: it can't (said); the text then goes to COM1 only. */
@@ -225,13 +242,28 @@ void window_render(void);
 bool paint_regrid(void);
 /* Every cell of both buffers drawn again at the next render. */
 void paint_forget(void);
+/* The window's cells: their size and font (window.c sets it: the smooth
+ * font unless the argument or console.set_font says bitmap). */
+extern struct cell_look look;
+/* The smooth font (bitmap false) or the 8x16 bitmap for the window: the
+ * grid again for the window's size, everything drawn again. */
+void window_set_font(bool bitmap);
 
-/* The terminal's grid on an output of ow x oh pixels (0: not known yet):
- * at most three quarters of it each way, at most WIN_COLS x WIN_ROWS, at
- * least WIN_MIN_COLS x WIN_MIN_ROWS if the output has room. */
-void term_grid(int32_t ow, int32_t oh, uint32_t *out_cols, uint32_t *out_rows);
-/* The grid that fits a window of w x h pixels (1 to MAX_COLS x MAX_ROWS). */
-void grid_of_size(int32_t w, int32_t h, uint32_t *out_cols, uint32_t *out_rows);
+/* The terminal's grid in look l on an output of ow x oh pixels (0: not
+ * known yet): a window of at most three quarters of it each way (its
+ * WIN_PAD padding included), at most WIN_COLS x WIN_ROWS cells, at least
+ * WIN_MIN_COLS x WIN_MIN_ROWS if the output has room. */
+void term_grid(const struct cell_look *l, int32_t ow, int32_t oh, uint32_t *out_cols,
+               uint32_t *out_rows);
+/* The size in pixels of a window holding c x r cells in look l. */
+void window_size(const struct cell_look *l, uint32_t c, uint32_t r, int32_t *w, int32_t *h);
+/* The grid that fits a window of w x h pixels inside its padding (1 to
+ * MAX_COLS x MAX_ROWS). */
+void grid_of_size(const struct cell_look *l, int32_t w, int32_t h, uint32_t *out_cols,
+                  uint32_t *out_rows);
+/* terminal.font's value (init's argument "font=<value>", console.set_font):
+ * 0 smooth, 1 bitmap, -1 neither. */
+int  term_font_parse(const char *value);
 /* A wl_keyboard key (evdev code, JWL_KEY_* state, KEYMAP_MOD_* modifiers,
  * the character it types) as the console's key event: the HID usage, the
  * left modifier keys. false: a key with no HID usage (dropped). */

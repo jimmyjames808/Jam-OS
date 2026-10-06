@@ -85,6 +85,33 @@ Vendored third-party code:
   same bytes. Linked into libfun as they are (user/apps/fun/fontdata.c).
   A modified version under the OFL, which allows bundling with any
   software; the fonts are not sold by themselves.
+- jetbrains-mono/: JetBrains Mono 2.304 by The JetBrains Mono Project
+  Authors, SIL Open Font License 1.1 (OFL.txt, as released; no Reserved
+  Font Name). From the official release archive
+  https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip
+  (sha256 6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf;
+  the latest release, 2023-01-14; fetched 2026-10-06): fonts/ttf/JetBrainsMono-Regular.ttf
+  (sha256 a0bf60ef0f83c5ed...) and fonts/ttf/JetBrainsMono-Bold.ttf
+  (5590990c82e09739...), version string "Version 2.304; ttfautohint
+  (v1.8.4.7-5d5b)"; OFL.txt's sha256 30f0c136e3c88e42.... The terminal
+  windows' font (user/services/console/cellpaint.c). Cut down with
+  fontTools 4.60.2 (tools/subsetfont.py --terminal: printable ASCII,
+  U+00A0..U+00FF, the same nine punctuation marks as Inter, Latin
+  Extended-A U+0100..U+017F (the console's 8x16 font has them too) and the
+  box drawing and block elements U+2500..U+259F, and .notdef; no
+  hinting; GPOS, GSUB (the ligatures: the terminal draws a glyph a cell)
+  and GDEF dropped; it has no kerning, so no 'kern' table), from the
+  repository root:
+
+      python3 tools/subsetfont.py --terminal <archive>/fonts/ttf/JetBrainsMono-Regular.ttf third_party/jetbrains-mono/JetBrainsMono-Regular.ttf
+      python3 tools/subsetfont.py --terminal <archive>/fonts/ttf/JetBrainsMono-Bold.ttf third_party/jetbrains-mono/JetBrainsMono-Bold.ttf
+
+  which give JetBrainsMono-Regular.ttf (33156 bytes, 519 glyphs, sha256
+  ff86b170d96b5fcc...) and JetBrainsMono-Bold.ttf (33144 bytes, 519 glyphs,
+  sha256 ab1f23123537a7bf...); the same input gives the same bytes. Only
+  U+0132 and U+0133 (IJ, ij) of the code points asked for are missing
+  (they draw as .notdef). Linked into libfun as they are
+  (user/apps/fun/fontdata.c). A modified version under the OFL, as Inter.
 - lwip/: lwIP 2.2.1 (the latest 2.2.x release), tag STABLE-2_2_1_RELEASE,
   commit 77dcd25a72509eb83f72b033d219b1d40cd8eb95 (tag object 009c225),
   from https://github.com/lwip-tcpip/lwip (the Savannah repository's

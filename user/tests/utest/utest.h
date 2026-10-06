@@ -487,11 +487,20 @@ bool t_comp_connections(void);
 bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
 bool t_comp_regions(void);
-/* conwin.c: the console's window mode: its grid, keys and pointer
- * (wlinput.c, linked in). */
+/* conwin.c: the console's window mode: its grid and padding, the view,
+ * terminal.font, keys and pointer (wlinput.c, view.c, linked in). */
 bool t_conwin_grid(void);
+bool t_conwin_padding(void);
+bool t_conwin_view(void);
+bool t_conwin_font_setting(void);
 bool t_conwin_keys(void);
 bool t_conwin_pointer(void);
+/* conpaint.c: the console's cells drawn (cellpaint.c, linked in). */
+bool t_conpaint_metrics(void);
+bool t_conpaint_cells(void);
+bool t_conpaint_bold(void);
+bool t_conpaint_blocks(void);
+bool t_conpaint_bitmap(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
  * a pool, a buffer and a surface, then crashes. */
 int  comp_child(int argc, char **argv);

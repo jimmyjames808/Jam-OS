@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Cut an upstream Inter TTF down to what libfun's smooth text draws.
+"""Cut an upstream TTF down to what libfun's smooth text draws.
 
-    python3 tools/subsetfont.py <upstream.ttf> <out.ttf>
+    python3 tools/subsetfont.py <upstream.ttf> <out.ttf>              Inter's
+    python3 tools/subsetfont.py --terminal <upstream.ttf> <out.ttf>   JetBrains Mono's
 
 Run on the Mac (fontTools: `pip3 install fonttools`); the output is
 committed in third_party/inter/ and its command lines are in
-third_party/VERSIONS.md. What it does, in order:
+third_party/VERSIONS.md (Inter's in third_party/inter/, the terminal's
+JetBrains Mono in third_party/jetbrains-mono/). What it does, in order:
 
 1. Subsets the font to the code points libfun has slots for
-   (user/apps/fun/font.c, `slot_of`): printable ASCII, U+00A0..U+00FF and
+   (user/apps/fun/font.c, `font_slot`): printable ASCII, U+00A0..U+00FF and
    a few punctuation marks titles often hold, plus .notdef (the box drawn
-   for any other code point). Hinting is dropped (stb_truetype doesn't
+   for any other code point); with --terminal (the console's faces) also
+   Latin Extended-A, U+0100..U+017F (the console's 8x16 font has them
+   too), and the box drawing and block elements, U+2500..U+259F, so
+   text-mode art lines up. Hinting is dropped (stb_truetype doesn't
    run it), and so are the layout tables after step 2.
 2. Flattens the kerning. Inter kerns through GPOS: class-based pair
    lookups, one of them wrapped in an extension lookup, which
@@ -21,7 +26,8 @@ third_party/VERSIONS.md. What it does, in order:
    applies, the first glyph's x advance summed. The non-zero pairs go into
    a legacy 'kern' table (version 0, format 0), which stb_truetype reads
    whole (stbtt_GetKerningTable); GPOS, GSUB and GDEF are then dropped.
-   Text is drawn without shaping, so nothing else in them is used.
+   Text is drawn without shaping, so nothing else in them is used. A
+   font with no kerning (a monospace face) gets no 'kern' table.
 
 Deterministic: the same input gives the same bytes (the subsetter's
 timestamps are left as upstream's).
@@ -36,13 +42,16 @@ from fontTools.ttLib.tables._k_e_r_n import KernTable_format_0
 # the punctuation in EXTRA. user/apps/fun/font.c's slot table must match.
 EXTRA = [0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x20AC]
 UNICODES = list(range(0x20, 0x7F)) + list(range(0xA0, 0x100)) + EXTRA
+# --terminal: Latin Extended-A, then the box drawing and block elements
+# (font.c's slots after .notdef's, in this order).
+TERMINAL = list(range(0x100, 0x180)) + list(range(0x2500, 0x25A0))
 
 # A 'kern' format 0 subtable holds at most this many pairs (its length
 # field is 16 bits: 14 header bytes + 6 a pair).
 KERN0_MAX_PAIRS = (0xFFFF - 14) // 6
 
 
-def subset_font(path):
+def subset_font(path, unicodes):
     opts = subset.Options()
     opts.hinting = False
     opts.layout_features = ["kern"]
@@ -52,7 +61,7 @@ def subset_font(path):
     opts.drop_tables += ["DSIG"]
     font = TTFont(path, recalcTimestamp=False)
     sub = subset.Subsetter(opts)
-    sub.populate(unicodes=UNICODES)
+    sub.populate(unicodes=unicodes)
     sub.subset(font)
     return font
 
@@ -130,15 +139,27 @@ def flatten_kerning(font):
 
 
 def main():
-    if len(sys.argv) != 3:
-        sys.exit(__doc__.strip().splitlines()[2].strip())
-    font = subset_font(sys.argv[1])
+    args = sys.argv[1:]
+    terminal = args[:1] == ["--terminal"]
+    if terminal:
+        args = args[1:]
+    if len(args) != 2:
+        sys.exit("\n".join(l.strip() for l in __doc__.strip().splitlines()[2:4]))
+    font = subset_font(args[0], UNICODES + (TERMINAL if terminal else []))
     pairs = flatten_kerning(font)
     if len(pairs) > KERN0_MAX_PAIRS:
         sys.exit(f"subsetfont: {len(pairs)} kerning pairs, a 'kern' subtable holds {KERN0_MAX_PAIRS}")
     for tag in ("GPOS", "GSUB", "GDEF"):
         if tag in font:
             del font[tag]
+    if pairs:
+        add_kern(font, pairs)
+    font.save(args[1])
+    print(f"{args[1]}: {len(font.getGlyphOrder())} glyphs, {len(pairs)} kerning pairs")
+
+
+def add_kern(font, pairs):
+    """pairs as a legacy 'kern' table (version 0, one format 0 subtable)."""
     kern = newTable("kern")
     kern.version = 0
     sub = KernTable_format_0()
@@ -149,8 +170,6 @@ def main():
     sub.kernTable = pairs
     kern.kernTables = [sub]
     font["kern"] = kern
-    font.save(sys.argv[2])
-    print(f"{sys.argv[2]}: {len(font.getGlyphOrder())} glyphs, {len(pairs)} kerning pairs")
 
 
 if __name__ == "__main__":

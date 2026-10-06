@@ -27,12 +27,6 @@
 #include <splash.h>
 #include "console.h"
 
-/* The palette (C_* in console.h). */
-static const uint32_t rgb[16] = {
-    0x101018, 0xcc4444, 0x44aa44, 0xccaa33, 0x4466cc, 0xaa44aa, 0x44aaaa, 0xb0b0b0,
-    0x707070, 0xff6666, 0x66dd66, 0xffdd55, 0x6699ff, 0xdd77dd, 0x66dddd, 0xf0f0f0,
-};
-
 static volatile uint32_t *fbp;
 static struct fb_info fbi;
 static handle_t fb_vmo;            /* kept for lend_screen */
@@ -42,21 +36,6 @@ static struct cell *shadow;        /* rows * cols: what each screen cell shows *
 static uint8_t *shadow_cursor;     /* rows * cols: drawn inverted */
 static uint64_t quiet_until;       /* uptime ns: draw nothing before it (0: not quiet) */
 static bool blanked;               /* console.blank: draw nothing at all */
-
-const uint8_t *cell_bits(struct cell c, uint8_t block[GH])
-{
-    if (c.ch >= G_UPPER && c.ch <= G_DARK) {   /* the block elements */
-        static const uint8_t shade[3][2] = { { 0x88, 0x22 }, { 0xaa, 0x55 }, { 0x77, 0xdd } };
-        for (int i = 0; i < GH; i++)
-            block[i] = c.ch == G_UPPER ? (i < GH / 2 ? 0xff : 0)
-                     : c.ch == G_LOWER ? (i >= GH / 2 ? 0xff : 0)
-                     : c.ch == G_FULL  ? 0xff
-                                       : shade[c.ch - G_LIGHT][i & 1];
-        return block;
-    }
-    return c.ch >= G_LATIN && c.ch < G_LATIN + FONT_LATIN_N ? font_latin[c.ch - G_LATIN]
-                                                           : font_8x16[c.ch & 0x7f];
-}
 
 static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
 {
@@ -80,7 +59,7 @@ static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
 static void show_cell(uint32_t x, uint32_t y, struct cell c, uint8_t inv)
 {
     struct cell *s = &shadow[y * cols + x];
-    if (s->ch != c.ch || s->attr != c.attr || shadow_cursor[y * cols + x] != inv) {
+    if (!cell_same(*s, c) || shadow_cursor[y * cols + x] != inv) {
         draw_cell(x, y, c, inv);
         *s = c;
         shadow_cursor[y * cols + x] = inv;
@@ -129,22 +108,18 @@ void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv))
                 show(x, y, alt[y * cols + x], alt_cursor && x == alt_x && y == alt_y);
         return;
     }
-    struct cell empty = { ' ', A_OUT };
-    uint64_t first;   /* the committed line on screen row 0 */
-    uint32_t shown = view_back ? rows : rows - 1;
-    uint64_t end = committed > view_back ? committed - view_back : 0;
-    first = end > shown ? end - shown : 0;
-    uint64_t oldest = committed > SCROLLBACK ? committed - SCROLLBACK : 0;
+    struct cell empty = { ' ', A_OUT, 0 };
+    struct view v = view_now();
+    int64_t first = view_base(&v) - view_back;   /* the line on row 0 (view.c) */
+    int64_t oldest = committed > SCROLLBACK ? (int64_t)(committed - SCROLLBACK) : 0;
     for (uint32_t y = 0; y < rows; y++) {
         const struct cell *l = NULL;
-        bool cursor_row = false;
-        uint64_t i = first + y;
-        if (!view_back && y == rows - 1) {
+        int64_t i = first + y;
+        bool cursor_row = i == (int64_t)committed;
+        if (cursor_row)
             l = cur;
-            cursor_row = true;
-        } else if (i < end && i >= oldest) {
-            l = line(i);
-        }
+        else if (i >= oldest && i < (int64_t)committed)
+            l = line((uint64_t)i);
         for (uint32_t x = 0; x < cols; x++)
             show(x, y, l ? l[x] : empty, cursor_row && x == cur_x);
     }
@@ -189,9 +164,11 @@ bool screen_init(void)
     }
     fbp = (volatile uint32_t *)(uintptr_t)addr;
     fb_vmo = vmo;
-    for (int i = 0; i < 16; i++)
-        native[i] = ((rgb[i] >> 16 & 0xff) << fbi.red_shift) |
-                    ((rgb[i] >> 8 & 0xff) << fbi.green_shift) | ((rgb[i] & 0xff) << fbi.blue_shift);
+    for (int i = 0; i < 16; i++) {
+        uint32_t c = cell_palette[i];
+        native[i] = ((c >> 16 & 0xff) << fbi.red_shift) | ((c >> 8 & 0xff) << fbi.green_shift) |
+                    ((c & 0xff) << fbi.blue_shift);
+    }
     cols = fbi.width / GW;
     rows = fbi.height / GH;
     if (cols > MAX_COLS)

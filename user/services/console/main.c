@@ -20,7 +20,10 @@
  * is terminal n (1 to 9; 1, the first, if none is given): its window's
  * title; a terminal other than the first keeps the log off its screen
  * but on request (as "nolog") and makes no notices: the log and its news
- * are the first terminal's.
+ * are the first terminal's. "font=smooth|bitmap" (init, in window mode,
+ * from the settings' terminal.font): the window's cells in JetBrains Mono
+ * (smooth, the default) or the 8x16 bitmap; console.set_font changes it
+ * later. The full-screen console always draws the bitmap.
  *
  * Startup handles:
  *   SR_RESOURCE     the root resource with RIGHT_ROOT_KLOG (klog_open),
@@ -41,15 +44,18 @@
  *                   compositor's and never takes the framebuffer; without
  *                   it, as below, on the framebuffer
  *
- * The screen: a grid of 8x16 cells. Committed lines live in a scrollback
- * ring; the line the programs are writing (the "current line", where the
- * cursor is) is always the bottom row. Kernel log lines (a klog reader,
+ * The screen: a grid of cells (8x16 on the full screen; a window's are
+ * cells.h's). Committed lines live in a scrollback ring; the line the
+ * programs are writing (the "current line", where the cursor is) is the
+ * bottom row of the full screen, and in a window the row after the text
+ * so far, from the top until the window is full (view.c). Kernel log lines (a klog reader,
  * here) and notices are committed ABOVE the current line, so a log line
  * never breaks up the prompt the shell is editing. Colours: kernel lines
  * grey, lines a process logged through debug_write ("[name] ...") green,
- * notices yellow, program output white (ESC [ ... m changes it). Shift+PageUp/PageDown (or PageUp/PageDown
- * from a serial terminal) scroll back; any other key goes back to the
- * bottom.
+ * notices yellow, program output white (ESC [ ... m changes it; ESC [ 1 m
+ * is also bold in a window's smooth font). Shift+PageUp/PageDown (or
+ * PageUp/PageDown from a serial terminal) scroll back; any other key goes
+ * back to the bottom.
  *
  * Who may do what: clients.c (the client levels) and keys.c (the keys).
  * Drawing, and lending the screen to a program: screen.c. Full-screen text
@@ -344,6 +350,8 @@ static void take_args(int argc, char **argv)
         else if (!strncmp(argv[i], "term=", 5) && argv[i][5] >= '1' && argv[i][5] <= '9' &&
                  !argv[i][6])
             term_no = (unsigned)(argv[i][5] - '0');
+        else if (!strncmp(argv[i], "font=", 5) && term_font_parse(argv[i] + 5) >= 0)
+            font_bitmap = term_font_parse(argv[i] + 5) == 1;
     }
     if (term_no > 1)
         log_off = true;   /* the log and its notices are the first terminal's */

@@ -22,6 +22,7 @@
 #define CONSOLE_NEW_CLIENT       0x000c0007u
 #define CONSOLE_BLANK            0x000c0008u
 #define CONSOLE_SHOW_LOG         0x000c0009u
+#define CONSOLE_SET_FONT         0x000c000au
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct console_write_req {
@@ -108,6 +109,15 @@ struct console_show_log_req {
     uint8_t only[32];
 } __attribute__((packed));
 struct console_show_log_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct console_set_font_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t font;
+} __attribute__((packed));
+struct console_set_font_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -502,6 +512,42 @@ static inline status_t console_show_log(handle_t ch, uint8_t on, const uint8_t o
     return console_show_log_call(ch, false, DEADLINE_NEVER, on, only);
 }
 
+/* console_set_font_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_set_font_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t font)
+{
+    struct console_set_font_req idl_q;
+    struct console_set_font_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = CONSOLE_SET_FONT;
+    idl_q.font = font;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* The terminal window's font (the settings' terminal.font, which init
+ * reads when /data comes and sends to every terminal's console): font 0
+ * smooth (JetBrains Mono, the default), 1 the 8x16 bitmap. The window
+ * keeps its size; its grid is made again in the new cells. The
+ * full-screen console (no compositor) always draws the bitmap: OK, and
+ * nothing changes. ADMIN channels only: ERR_ACCESS_DENIED otherwise;
+ * ERR_INVALID_ARGS for a font > 1. */
+static inline status_t console_set_font_until(handle_t ch, uint64_t deadline_ns, uint8_t font)
+{
+    return console_set_font_call(ch, false, deadline_ns, font);
+}
+static inline status_t console_set_font_within(handle_t ch, uint64_t timeout_ns, uint8_t font)
+{
+    return console_set_font_call(ch, true, timeout_ns, font);
+}
+static inline status_t console_set_font(handle_t ch, uint8_t font)
+{
+    return console_set_font_call(ch, false, DEADLINE_NEVER, font);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* console_write without waiting: the request, with the caller's txid (not 0).
@@ -815,6 +861,37 @@ static inline status_t console_show_log_result(const void *idl_rep, struct idl_m
     return OK;
 }
 
+/* console_set_font without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_set_font_result. */
+static inline status_t console_set_font_send(handle_t ch, uint32_t idl_txid, uint8_t font)
+{
+    struct console_set_font_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_SET_FONT;
+    idl_q.font = font;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_set_font_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_set_font_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct console_set_font_rep *idl_r = (const struct console_set_font_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -831,6 +908,7 @@ struct console_ops {
     status_t (*new_client)(void *ctx, uint8_t level, handle_t *out_client);
     status_t (*blank)(void *ctx, uint8_t on);
     status_t (*show_log)(void *ctx, uint8_t on, const uint8_t only[32]);
+    status_t (*set_font)(void *ctx, uint8_t font);
 };
 
 /* Answer the console.write request kept in txn: idl_st and, if it is OK, the
@@ -995,6 +1073,21 @@ static inline status_t console_reply_blank(struct idl_txn idl_txn, status_t idl_
 static inline status_t console_reply_show_log(struct idl_txn idl_txn, status_t idl_st)
 {
     struct console_show_log_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the console.set_font request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_set_font(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct console_set_font_rep idl_r;
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
     idl_r.status = idl_st;
@@ -1212,6 +1305,22 @@ static inline uint32_t console_dispatch_on(handle_t ch, const struct console_ops
             return sizeof(*idl_h);
         }
         status_t idl_st = ops->show_log(ctx, idl_q->on, idl_q->only);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case CONSOLE_SET_FONT: {
+        const struct console_set_font_req *idl_q = (const struct console_set_font_req *)req;
+        struct console_set_font_rep *idl_r = (struct console_set_font_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->set_font) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->set_font(ctx, idl_q->font);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

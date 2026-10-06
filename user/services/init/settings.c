@@ -47,7 +47,9 @@ static const char template_text[] =
     "#   the music player's; music.folder: what `music start` plays without a folder\n"
     "# display.layout: the windows floating or tiling (default tiling; Super+T\n"
     "#   switches it and saves it here); display.hz: how often the screen is redrawn\n"
-    "#   at most, 1 to 1000 a second (default 60)\n";
+    "#   at most, 1 to 1000 a second (default 60)\n"
+    "# terminal.font: the terminal windows' text: smooth (JetBrains Mono, the\n"
+    "#   default) or bitmap (the 8x16 font of the screen without the desktop)\n";
 
 /* key's value from the settings file, or dflt if there is none (or no
  * /data). */

@@ -74,6 +74,11 @@ differs from the recommendation below, this note wins:
 - **Q9: (B) a smaller terminal window.** After the splash, the first
   terminal opens as a centred window (not maximised), with the desktop
   background (the splash's dark colour) around it; text stays 8x16 pixels.
+  **Changed by the owner (2026-10-06), after trying the desktop:** the
+  terminal windows' text is a smooth monospace font (JetBrains Mono),
+  with a margin inside the window and the text starting at the top; the
+  8x16 bitmap stays as the `terminal.font = bitmap` setting and on the
+  full-screen console (`nocomp`). As built: below, "the terminal's look".
 - **The look (later the same day, from mockups).** Tiling mode: no title
   bars; the focused tile shows by its border colour; small gaps between
   tiles; Super+Q closes the focused window (both modes). Floating windows
@@ -167,6 +172,9 @@ differs from the recommendation below, this note wins:
   not to their window, but that is each app's job, after G1: G1 keeps
   L2's behaviour (scale from the window's height); later, libfun passes
   the output's size (wl_output) to the app and the app chooses.
+  Tiling is the DEFAULT arrangement (owner, 2026-10-07): a new install,
+  a boot before /data mounts and the first screen all tile; a saved
+  `display.layout = floating` still wins.
   Tiling (owner, 2026-10-07, after trying the prototype's six layouts):
   DWINDLE only, replacing C3's main-and-stack; no monocle, columns or
   grid. The first window fills the room under the strip; each new window
@@ -204,6 +212,40 @@ differs from the recommendation below, this note wins:
     Ctrl+Alt+Del               reboot
     double-click a title bar   full screen
   (Super+Left/Right no longer switch screens: they move focus.)
+  Copy and paste come into G1 (owner, 2026-10-07; a track after D2b):
+  text only at first. The compositor offers a clipboard
+  (wl_data_device_manager: an owner's offer, the data moved over a Jam OS
+  channel rather than a pipe); the terminal gets selection (drag; a
+  double-click takes a word, a triple-click a line; highlighted in the jam
+  colours) and Super+C copies, Super+V pastes (Ctrl+Shift+C/V as well),
+  so Ctrl+C still stops a program; a paste is bracketed so a pasted
+  multi-line command never runs line by line by accident.
+  A POLISH track follows G1 (owner, 2026-10-07): the boot menu's test
+  and network-test entries under one "Developer" submenu (on top: Jam OS,
+  previous build, no compositor); a quiet boot (Terminal 1 starts at the
+  prompt; the log stays in `dmesg` and /data/logs); `help` lists everyday
+  commands and `help dev` the developer ones; plain wording on screen and
+  in notifications (the detailed lines stay in the log); a calm panic
+  screen (owner's design, 2026-10-07, "B1"): the dark #11141b background,
+  the busy ring (cursors.svg) spinning in the middle, one line of Inter
+  text and a short code under it (JAM-<kind>-<4 hex of the faulting
+  address>, e.g. JAM-PF-7F3A); the kernel draws it alone, with the few
+  glyphs it needs baked into a table at build time (no font code runs in
+  a crashed kernel) and the ring animated off the TSC. No keys: drivers
+  are user space and gone after a panic. Case 1, it restarts itself (the
+  stored kernel): "Jam OS hit a problem and is restarting" held about
+  1.5 s, then the restart; on the desktop a notification "Jam OS
+  restarted after a problem / Everything is back. Code ..." with Details
+  (opens a terminal running a new `crashlog` command: the saved report,
+  its code, backtrace and the last log lines) and Close. Case 2, it can't
+  recover (a crash loop, a refused stored kernel): "Jam OS hit a problem
+  it can't recover from / Restarting the PC in 15 s"; after 5 s the
+  details panel (code, where, backtrace, why it can't recover, boot and
+  build) appears by itself below; at 15 s the firmware reset; if that
+  fails the ring stops and it says "Jam OS couldn't restart the PC / Hold
+  the power button to turn it off, then on again". The details still go
+  to the serial port as they happen and into the next boot's crash
+  report, as today.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
@@ -1216,6 +1258,28 @@ only its box damaged; while it is up and opaque the full-screen direct copy
 still paints it. A window whose client has a keyboard still goes full
 screen on a screen of its own. Tests: utest's `desk_overlay`,
 `comp_paint_overlay` and `comp_screen_on_top` (desktop off and on).
+
+**As built: the terminal's look (the owner's Q9 change, 2026-10-06).**
+The terminal windows draw JetBrains Mono 2.304 (OFL; Regular and Bold,
+cut by `tools/subsetfont.py --terminal` to Latin-1, Latin Extended-A and
+the box drawing and block elements; `third_party/jetbrains-mono/`) with
+D0's smooth text: `font_open` takes `FONT_MONO` and `FONT_MONO_BOLD` too.
+15 pixels to the em (JetBrains Mono's 0.6-em advance is exactly 9 pixels
+there, so no glyph is squeezed or spread; 14 would round 8.4 to 8), cells
+9x21 (1.4 times the size), each glyph at its cell's origin and clipped
+to it, bold for `ESC [ 1 m`, the block elements filled as exact
+fractions of a cell; 10 pixels of padding inside the window on every
+side (the rounded corners cut only that); the text from the top,
+scrolling once the window is full (`user/services/console/view.c`; the
+full-screen console keeps its bottom row). On QEMU's 1280x800 the first
+window is 104x27 cells (956x587 pixels); on the PC's 2560x1440 160x50
+(1460x1070). `terminal.font = bitmap` keeps the 8x16 font (init's
+`font=bitmap` argument, and the new `console.set_font` when `/data`
+comes); `nocomp` always has it. Fonts 75 + 77 KB a console (one baked
+position: whole-pixel advances). A full redraw of a full-screen
+2560x1440 terminal (282x67 cells) took 11-15 ms in QEMU, a one-line
+change 1.2-1.7 ms ([ARCHITECTURE](../ARCHITECTURE.md#the-terminal-windows),
+[TESTING](TESTING.md#the-terminal-windows)).
 
 **As built: the owner's tiler and key set (after the splash overlay).**
 Dwindle replaces C3's main-and-stack (`wmtile.c`): each tiling screen has
