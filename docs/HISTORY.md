@@ -379,6 +379,16 @@ with 27 clients at 836,077 calls/s (M4: 492,673), worst call 37 us,
 Dated decisions, newest first. The design they produced is in
 [ARCHITECTURE.md](../ARCHITECTURE.md); this is the when and why.
 
+- 2026-10-07, during G1: the owner removed the apps he considers bloat:
+  sysmon, snake, tetris, mines, life and the visual demo (with the shell's
+  `sysmon` and `demo` commands). The apps left are jamjar (with its
+  helper jamcover), the splash and the terminal; the search box lists
+  Terminal and Jamjar. fractal became a test program
+  (`user/tests/fractal`) for its workload (vector maths on every CPU, its
+  benchmark, its self-test); the tests that used the others moved to it
+  and to the test window wltest (`wltest --mouse`). The shell's prompt
+  became `jam:<cwd>>`.
+
 - 2026-10-01, after the PC sign-off of the audio track and M8.5: M8.6's
   decisions, listed in [its plan](history/M8.6-PLAN.md#the-owners-decisions-2026-10-01).
   Programs on `/data` run only once the owner marks them with `allow`,
