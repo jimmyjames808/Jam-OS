@@ -254,7 +254,7 @@ void disk_told_boot(const struct disk *d, bool came)
                     NOTICE_APRICOT);
     else
         notice_post(&devmgr_notices, "Jam OS stick removed",
-                    "Nothing is saved until you put it back.", 'U', NOTICE_RASPBERRY);
+                    "Nothing is saved until it's back.", 'U', NOTICE_RASPBERRY);
 }
 
 /* Its mounts the desktop was told of have gone with it. */

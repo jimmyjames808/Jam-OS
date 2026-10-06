@@ -107,8 +107,10 @@ SH_CMD(update)
     status_t st = sh_initctl() ? initctl_update_offer_until(sh_initctl(), now() + OFFER_WAIT, &ch)
                                : ERR_NOT_FOUND;
     if (st != OK) {
-        sh_tty("update: init: %s\n", st == ERR_BAD_STATE ? "still checking the last one"
-                                                        : status_str(st));
+        if (st == ERR_BAD_STATE)
+            sh_tty("update: the last update is still being checked: try again in a moment\n");
+        else
+            sh_tty("update: the system can't take an update now (%s)\n", status_str(st));
         return 1;
     }
     struct spawn_handle x[3] = { { SR_USER + 0, ch } };

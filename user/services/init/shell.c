@@ -298,8 +298,8 @@ static void tell_desktop(unsigned i, bool gave_up)
     size_t n = strlen(title);
     snprintf(title + n, sizeof(title) - n, gave_up ? " stopped" : " crashed");
     const char *body = !gave_up         ? "Jam OS started it again."
-                       : term_of(i) >= 0 ? "It kept stopping, so Jam OS closed it."
-                                         : "It kept stopping, so Jam OS stopped restarting it.";
+                       : term_of(i) >= 0 ? "It kept stopping; Jam OS closed it."
+                                         : "It kept stopping; Jam OS gave up.";
     comp_notice(title, body, '!', NOTICE_RASPBERRY, NULL, false);
 }
 

@@ -41,6 +41,10 @@
  * process called "init" in its own job. A writer that isn't known (no
  * mark, no table) counts as no one's.
  *
+ * Each says what happened in plain words, in sentence case (say: the first
+ * letter a capital), naming Jam OS rather than init or devmgr; the log
+ * lines it comes from have the details.
+ *
  * Never a burst: a text said in the last REPEAT is not said again (of the
  * last RECENT), and at most BURST notices go on the screen in BURST_WINDOW,
  * the rest counted and said once in a line of their own. */
@@ -102,6 +106,8 @@ static void say(const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(text, sizeof(text), fmt, ap);
     va_end(ap);
+    if (text[0] >= 'a' && text[0] <= 'z')
+        text[0] = (char)(text[0] - 'a' + 'A');   /* sentence case */
     uint64_t t = now();
     for (unsigned i = 0; i < RECENT; i++)
         if (recent_at[i] && t - recent_at[i] < REPEAT && !strcmp(text, recent[i]))
@@ -238,7 +244,7 @@ static void init_line(const char *text, bool announce)
         bool crash = crashed_at && now() - crashed_at < CRASH_PAIR && n == strlen(crashed) &&
                      !strncmp(name, crashed, n);
         if (crash && announce)
-            say("%s crashed (%s): init is starting it again", crashed, crash_why);
+            say("%s crashed (%s): Jam OS is starting it again", crashed, crash_why);
         crashed_at = 0;
         return;
     }
@@ -247,7 +253,7 @@ static void init_line(const char *text, bool announce)
         const char *e = strstr(text, " ended ");
         size_t n;
         const char *name = base_name(text, e ? (size_t)(e - text) : 0, &n);
-        say("%.*s kept stopping: init gave up on it (`log` says more)", (int)n, name);
+        say("%.*s kept stopping: Jam OS gave up on it (`log` says more)", (int)n, name);
     }
 }
 
@@ -263,10 +269,10 @@ static void devmgr_line(const char *text, bool announce)
     int n = (int)(end - name);
     int wn = (int)(d - (text + 8));
     if (!strncmp(end, " crashed: restart", 17))
-        say("the %.*s driver (%.*s) crashed: devmgr is starting it again", n, name, wn, text + 8);
+        say("the %.*s driver (%.*s) crashed: Jam OS is starting it again", n, name, wn, text + 8);
     else if (strstr(end, ": giving up") && !strstr(end, "(the crash-test driver") &&
              !strstr(end, "(another stick's"))
-        say("the %.*s driver (%.*s) kept failing: devmgr gave up on it", n, name, wn, text + 8);
+        say("the %.*s driver (%.*s) kept failing: Jam OS gave up on it", n, name, wn, text + 8);
 }
 
 /* The kernel's own "user: process "x" killed: <why> at rip ...". */

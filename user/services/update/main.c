@@ -20,8 +20,12 @@
  *   network default differs from this one's is taken)
  *   SR_USER + 0   the offer channel (initctl.update_offer)
  *   SR_USER + 2   the shell's stop channel: Ctrl+C (or the shell gone)
- * Its lines are the shell's; the last one says what `reboot` and `reboot
- * -f` start now. Nothing here reboots. Exit: 0 init took the build (or,
+ * Its lines are the shell's, in plain words (the polish track: "Downloading
+ * Jam OS 0.0.40 (12.3 MB)", "Type reboot to start it"); the detailed
+ * ones (sizes, gits, times, init's verdict and the steps of its write)
+ * go to the log only (detail: `dmesg`, /data/logs, the serial port),
+ * where the tests read them. The last plain line says what `reboot` and
+ * `reboot -f` start now. Nothing here reboots. Exit: 0 init took the build (or,
  * with `check`, would have; with `write`, the stick has it too), 1 not,
  * 2 usage, 3 loaded but not written to the stick, 130 stopped. */
 #include <ipv4.h>
@@ -59,6 +63,23 @@ struct fetch {
 
 static struct fetch fetch;
 static struct net_dgram dgram;
+
+/* A line for the log only (the kernel's: `dmesg`, /data/logs, the serial
+ * port, netlog), not the terminal: the details behind the plain lines
+ * printf puts on the screen. */
+static void detail(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void detail(const char *fmt, ...)
+{
+    char line[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n > (int)sizeof(line) - 1)
+        n = sizeof(line) - 1;
+    if (n > 0)
+        jam_debug_write(line, (uint64_t)n);
+}
 
 /* The shell asked us to stop (Ctrl+C), or is gone. */
 static bool stop_asked(void)
@@ -99,9 +120,13 @@ static status_t io_begin(void *ctx, const struct update_manifest *m, const uint8
     if (m->has_menu)
         snprintf(menu, sizeof(menu), ", boot menu %lu bytes",
                  (unsigned long)m->file[UPDATE_MENU].size);
-    printf("update: the server has %s (git %s): kernel %lu.%u MB, boot image %lu.%u MB%s\n",
+    detail("update: the server has %s (git %s): kernel %lu.%u MB, boot image %lu.%u MB%s\n",
            m->version, m->git, MB(m->file[UPDATE_KERNEL].size), MB(m->file[UPDATE_BOOTFS].size),
            menu);
+    uint64_t total = 0;
+    for (unsigned i = 0; i < f->parts; i++)
+        total += f->size[i];
+    printf("Downloading Jam OS %s (%lu.%u MB)\n", m->version, MB(total));
     return OK;
 }
 
@@ -131,7 +156,8 @@ static void progress(const struct updfetch *u, unsigned *quarter)
     if (q <= *quarter || q >= 4)
         return;
     *quarter = q;
-    printf("update: %u%% (%lu.%u of %lu.%u MB)\n", q * 25, MB(u->stored), MB(u->total));
+    detail("update: %u%% (%lu.%u of %lu.%u MB)\n", q * 25, MB(u->stored), MB(u->total));
+    printf("%u%% downloaded\n", q * 25);
 }
 
 /* Why the fetcher gave up, in words. A request unanswered UPDFETCH_TRIES
@@ -140,16 +166,22 @@ static void progress(const struct updfetch *u, unsigned *quarter)
  * server whose files aren't its manifest's). */
 static void say_failure(const struct updfetch *u)
 {
-    if (u->why == ERR_TIMED_OUT && !u->replies)
-        printf("update: no answer from the server (is tools/update-server.py running on the "
+    if (u->why == ERR_TIMED_OUT && !u->replies) {
+        detail("update: no answer from the server (is tools/update-server.py running on the "
                "Mac, and net.host its address?)\n");
-    else if (u->why == ERR_TIMED_OUT && u->ignored > UPDFETCH_WINDOW)
-        printf("update: the server's answers don't match its manifest (%lu ignored): the "
+        printf("The update server didn't answer. Is tools/update-server.py running on the Mac, "
+               "and is net.host in /data/etc/settings its address?\n");
+    } else if (u->why == ERR_TIMED_OUT && u->ignored > UPDFETCH_WINDOW) {
+        detail("update: the server's answers don't match its manifest (%lu ignored): the "
                "fetch failed\n", (unsigned long)u->ignored);
-    else if (u->why == ERR_TIMED_OUT)
-        printf("update: the server stopped answering: the fetch failed\n");
-    else
-        printf("update: the fetch failed (%s)\n", status_str(u->why));
+        printf("The download failed: the server sent files that don't match its list.\n");
+    } else if (u->why == ERR_TIMED_OUT) {
+        detail("update: the server stopped answering: the fetch failed\n");
+        printf("The download failed: the server stopped answering.\n");
+    } else {
+        detail("update: the fetch failed (%s)\n", status_str(u->why));
+        printf("The download failed (%s).\n", status_str(u->why));
+    }
 }
 
 /* The whole fetch from host. OK when both files are in; ERR_CANCELED on
@@ -174,16 +206,19 @@ static status_t run_fetch(uint32_t host)
     }
     uint64_t ms = (now() - t0) / NS_PER_MS;
     if (st != OK) {
-        printf("update: the network failed (%s)\n", status_str(st));
+        detail("update: the network failed (%s)\n", status_str(st));
+        printf("The download failed: the network stopped working (%s).\n", status_str(st));
         return st;
     }
     if (u.state == UPDFETCH_FAILED) {
         say_failure(&u);
         return u.why;
     }
-    printf("update: fetched %lu.%u MB in %lu.%lu s (%lu requests, %lu sent again, %lu replies "
+    detail("update: fetched %lu.%u MB in %lu.%lu s (%lu requests, %lu sent again, %lu replies "
            "ignored)\n", MB(u.total), (unsigned long)(ms / 1000), (unsigned long)(ms / 100 % 10),
            (unsigned long)u.sent, (unsigned long)u.resent, (unsigned long)u.ignored);
+    printf("Downloaded in %lu.%lu s. Checking it...\n", (unsigned long)(ms / 1000),
+           (unsigned long)(ms / 100 % 10));
     return OK;
 }
 
@@ -235,12 +270,16 @@ static void say_menu(const struct update_answer *a)
     if (a->menu == UPDATE_MENU_NONE)
         return;
     if (a->menu == UPDATE_MENU_REFUSED)
-        printf("update: %s:\n  %.*s\n", update_menu_str(a->menu), (int)UPDATE_MENU_WHY_MAX,
+        detail("update: %s:\n  %.*s\n", update_menu_str(a->menu), (int)UPDATE_MENU_WHY_MAX,
                a->menu_why);
     else if (a->menu == UPDATE_MENU_NOT_WRITTEN)
-        printf("update: %s (%s)\n", update_menu_str(a->menu), status_str(a->menu_status));
+        detail("update: %s (%s)\n", update_menu_str(a->menu), status_str(a->menu_status));
     else
-        printf("update: %s\n", update_menu_str(a->menu));
+        detail("update: %s\n", update_menu_str(a->menu));
+    if (a->menu == UPDATE_MENU_WRITTEN)
+        printf("The boot menu is updated too.\n");
+    else if (a->menu == UPDATE_MENU_REFUSED || a->menu == UPDATE_MENU_NOT_WRITTEN)
+        printf("The boot menu stays as it was (`dmesg | grep update` says why).\n");
 }
 
 /* Is the offered build (its signed manifest's version and git, as init
@@ -262,30 +301,50 @@ static int say_verdict(const struct update_answer *a, uint32_t flags, const char
 {
     if ((a->why == UPDATE_ACCEPTED && a->status == OK) || a->why == UPDATE_NOT_WRITTEN) {
         bool taken = a->why == UPDATE_ACCEPTED;
-        printf("update: %s (%s) -> %.*s (%.*s): checked by init in %u ms, %s", from_version,
-               from_git, (int)UPDATE_VERSION_MAX, a->version, (int)UPDATE_GIT_MAX, a->git,
-               a->check_ms,
-               flags & UPDATE_OFFER_CHECK_ONLY ? "not loaded (-n): the running build stays, the "
-                                                 "stick is untouched"
-               : !(flags & UPDATE_OFFER_WRITE) ? "loaded into memory only (-m)"
-               : !taken                        ? "loaded, but init couldn't write it to the stick"
-               : a->already                    ? "loaded; the stick has it already: nothing "
-                                                 "written"
-                                               : "loaded and written to the stick");
-        if (!taken)
-            printf(" (%s: %s)", update_write_step_str(a->write_step), status_str(a->status));
-        printf("\n");
+        char line[512];
+        int n = snprintf(
+            line, sizeof(line), "update: %s (%s) -> %.*s (%.*s): checked by init in %u ms, %s",
+            from_version, from_git, (int)UPDATE_VERSION_MAX, a->version, (int)UPDATE_GIT_MAX,
+            a->git, a->check_ms,
+            flags & UPDATE_OFFER_CHECK_ONLY ? "not loaded (-n): the running build stays, the "
+                                              "stick is untouched"
+            : !(flags & UPDATE_OFFER_WRITE) ? "loaded into memory only (-m)"
+            : !taken                        ? "loaded, but init couldn't write it to the stick"
+            : a->already                    ? "loaded; the stick has it already: nothing written"
+                                            : "loaded and written to the stick");
+        if (!taken && n > 0 && n < (int)sizeof(line))
+            snprintf(line + n, sizeof(line) - (size_t)n, " (%s: %s)",
+                     update_write_step_str(a->write_step), status_str(a->status));
+        detail("%s\n", line);
+        /* The plain line: what became of it. */
+        int vn = (int)UPDATE_VERSION_MAX;
+        const char *v = a->version;
+        if (flags & UPDATE_OFFER_CHECK_ONLY)
+            printf("Jam OS %.*s checks out. Nothing was changed (-n).\n", vn, v);
+        else if (!(flags & UPDATE_OFFER_WRITE))
+            printf("Jam OS %.*s is loaded into memory.\n", vn, v);
+        else if (!taken)
+            printf("Jam OS %.*s is loaded, but it couldn't be written to the stick.\n", vn, v);
+        else if (a->already)
+            printf("Jam OS %.*s is loaded. The stick has it already.\n", vn, v);
+        else
+            printf("Jam OS %.*s is loaded and written to the stick.\n", vn, v);
         return taken ? 0 : 3;
     }
     if (a->why == UPDATE_NET_CHANGE) {
-        printf("update: init refused it: its network default is %.*s, this build's %.*s: "
+        printf("Update refused: it is set up for another network (%.*s, not %.*s). "
+               "`update -f` takes it anyway. Nothing was changed.\n", (int)UPDATE_NET_MAX, a->net,
+               (int)UPDATE_NET_MAX, a->net_running[0] ? a->net_running : "this one");
+        detail("update: init refused it: its network default is %.*s, this build's %.*s: "
                "`update -f` takes it anyway (the PC then sends on that network); the running "
                "build is unchanged\n", (int)UPDATE_NET_MAX, a->net, (int)UPDATE_NET_MAX,
                a->net_running[0] ? a->net_running : "not known");
         return 1;
     }
     if (a->why == UPDATE_NEEDS_NEWER) {
-        printf("update: init refused it: it needs a newer build than this one to take it (it "
+        printf("Update refused: this build is too old to take it; update to a newer one first. "
+               "Nothing was changed.\n");
+        detail("update: init refused it: it needs a newer build than this one to take it (it "
                "has \"%.*s\", which this build doesn't know); the running build is "
                "unchanged\n",
                (int)UPDATE_EXT_KEY_MAX, a->needs);
@@ -293,9 +352,11 @@ static int say_verdict(const struct update_answer *a, uint32_t flags, const char
     }
     bool per_file = a->why == UPDATE_BAD_SIZE || a->why == UPDATE_SHORT_VMO ||
                     a->why == UPDATE_BAD_HASH;
-    printf("update: init refused it: %s%s%s (%s); the running build is unchanged\n",
+    detail("update: init refused it: %s%s%s (%s); the running build is unchanged\n",
            update_why_str(a->why), per_file ? ": " : "", per_file ? update_file_name(a->file) : "",
            status_str(a->status));
+    printf("Update refused: %s%s%s. Nothing was changed.\n", update_why_str(a->why),
+           per_file ? ": " : "", per_file ? update_file_name(a->file) : "");
     return 1;
 }
 
@@ -306,24 +367,32 @@ static void say_next(const struct update_answer *a, uint32_t flags, bool running
 {
     if (flags & UPDATE_OFFER_CHECK_ONLY)
         return;
-    if (a->why == UPDATE_NOT_WRITTEN)
-        printf("update: loaded, but NOT written to the stick: `reboot` starts the new build "
+    if (a->why == UPDATE_NOT_WRITTEN) {
+        detail("update: loaded, but NOT written to the stick: `reboot` starts the new build "
                "from memory; %s, and `reboot -f` or a power-off starts that\n",
                update_stick_str(a->stick));
+        printf("Type reboot to start it from memory; the stick still starts the build it had.\n");
+    }
     if (a->why != UPDATE_ACCEPTED || a->status != OK)
         return;
-    if (!(flags & UPDATE_OFFER_WRITE))
-        printf("update: loaded into memory only: `reboot` starts it now; the stick is "
+    if (!(flags & UPDATE_OFFER_WRITE)) {
+        detail("update: loaded into memory only: `reboot` starts it now; the stick is "
                "untouched, so `reboot -f` and a power-off bring back the stick's build\n");
-    else if (a->already && running)
-        printf("update: this is the build running now, and the stick has it already: nothing "
+        printf("Type reboot to start it. The stick is unchanged: turning off brings back its "
+               "build.\n");
+    } else if (a->already && running) {
+        detail("update: this is the build running now, and the stick has it already: nothing "
                "to do (it is loaded too: `reboot` starts a fresh copy of it)\n");
-    else if (a->already)
-        printf("update: the stick has this build already, and it is loaded: `reboot` starts it "
+        printf("You have this build already: nothing to do.\n");
+    } else if (a->already) {
+        detail("update: the stick has this build already, and it is loaded: `reboot` starts it "
                "now, `reboot -f` restarts through the firmware (the stick boots it too)\n");
-    else
-        printf("update: written to the stick and loaded: `reboot` starts it now, `reboot -f` "
+        printf("Type reboot to start it.\n");
+    } else {
+        detail("update: written to the stick and loaded: `reboot` starts it now, `reboot -f` "
                "restarts through the firmware (the stick boots it too)\n");
+        printf("Type reboot to start it.\n");
+    }
 }
 
 /* init's answer, in words, the menu's fate, then what comes next; the
@@ -343,20 +412,25 @@ static status_t open_socket(uint32_t host)
 {
     handle_t net = net_svc();
     if (!net) {
-        printf("update: no network (netstack isn't running)\n");
+        detail("update: no network (netstack isn't running)\n");
+        printf("There is no network, so there is nothing to update from.\n");
         return ERR_NOT_FOUND;
     }
     status_t st = net_wait_up(net, now() + UP_WAIT, NULL);
     if (st != OK) {
-        printf("update: the network has no address (%s): net.address in /data/etc/settings\n",
+        detail("update: the network has no address (%s): net.address in /data/etc/settings\n",
                status_str(st));
+        printf("The network has no address yet. Is the cable in? (net.address in "
+               "/data/etc/settings sets one by hand.)\n");
         return st;
     }
     st = net_udp_open_rings(net, 0, 0, UPDATE_RX_RING, &fetch.sock);   /* a window of replies */
     if (st == OK)
         st = net_connect(&fetch.sock, host, UPDWIRE_PORT);
-    if (st != OK)
-        printf("update: no socket (%s)\n", status_str(st));
+    if (st != OK) {
+        detail("update: no socket (%s)\n", status_str(st));
+        printf("The update can't use the network (%s).\n", status_str(st));
+    }
     return st;
 }
 
@@ -377,24 +451,29 @@ int main(int argc, char **argv)
     uint32_t flags = !strcmp(argv[2], "check")   ? UPDATE_OFFER_CHECK_ONLY
                      : !strcmp(argv[2], "write") ? UPDATE_OFFER_WRITE
                                                  : 0;
-    printf("update: asking %s:%u for its build\n", argv[1], UPDWIRE_PORT);
+    detail("update: asking %s:%u for its build\n", argv[1], UPDWIRE_PORT);
+    printf("Looking for a new build at %s...\n", argv[1]);
     status_t st = open_socket(host);
     if (st == OK)
         st = run_fetch(host);
     net_close(&fetch.sock);   /* nothing more from the network */
     if (st == ERR_CANCELED) {
-        printf("update: stopped; the running build is unchanged\n");
+        detail("update: stopped; the running build is unchanged\n");
+        printf("Stopped. Nothing was changed.\n");
         return 130;
     }
     if (st != OK) {
-        printf("update: the running build is unchanged\n");
+        detail("update: the running build is unchanged\n");
+        printf("Nothing was changed.\n");
         return 1;
     }
     struct update_answer a;
     memset(&a, 0, sizeof(a));
     st = offer(ch, flags | (force ? UPDATE_OFFER_FORCE : 0), &a);
     if (st != OK) {
-        printf("update: init didn't answer (%s)\n", status_str(st));
+        detail("update: init didn't answer (%s)\n", status_str(st));
+        printf("The update failed: the system didn't answer (%s). Nothing was changed.\n",
+               status_str(st));
         return 1;
     }
     return say_answer(&a, flags, argv[3], argv[4]);

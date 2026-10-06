@@ -18,7 +18,7 @@ wait written before the pull-u
 # ---- pulled ------------------------------------------------------------------------------
 monitor device_del stick
 wait 30 init: /data is gone
-seen 30 : Jam OS stick removed: Nothing is saved until you put it back.
+seen 30 : Jam OS stick removed: Nothing is saved until it's back.
 send ls /data; echo st-$T=$?
 wait ls: /data: no such file or directory
 wait st-u=1

@@ -12,7 +12,7 @@ shot screen-boot
 
 # ---- another stick -----------------------------------------------------------------
 monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
-wait 60 console: notice: a stick is at /usb0 (read-only
+wait 60 console: notice: A stick is at /usb0 (read-only
 sleep 1
 shot screen-stick
 send ls /usb0
@@ -27,7 +27,7 @@ sleep 5
 send echo remount-quiet
 wait remount-quiet
 monitor device_del sa
-wait 30 console: notice: the stick at /usb0 was pulled out
+wait 30 console: notice: The stick at /usb0 was pulled out
 
 # ---- the log while a command runs ----------------------------------------------------
 send ktest utf8
@@ -51,9 +51,9 @@ wait {prompt}
 
 # ---- the boot stick ----------------------------------------------------------------
 monitor device_del stick
-wait 30 console: notice: the Jam OS stick was pulled out
+wait 30 console: notice: The Jam OS stick was pulled out
 monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick
-wait 60 console: notice: the Jam OS stick is back
+wait 60 console: notice: The Jam OS stick is back
 sleep 1
 shot screen-back
 send run console selftest

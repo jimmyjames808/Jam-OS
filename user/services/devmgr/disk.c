@@ -308,7 +308,7 @@ static void got_stat(struct disk *d, status_t st, bool is_dir)
     if (st != OK && !d->test) {
         problems++;
         notice_post(&devmgr_notices, "Your files can't be saved",
-                    "The stick's data partition didn't open: nothing is saved this time.", '!',
+                    "Its data partition didn't open.", '!',
                     NOTICE_RASPBERRY);
     }
     mounts_update();

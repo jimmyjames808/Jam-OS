@@ -78,7 +78,7 @@ static void tell_desktop(const struct binding *b, bool gave_up, bool first)
     size_t n = strlen(title);
     snprintf(title + n, sizeof(title) - n, gave_up ? " stopped" : " crashed");
     notice_post(&devmgr_notices, title,
-                gave_up ? "It kept crashing, so Jam OS stopped restarting it."
+                gave_up ? "It kept crashing; Jam OS gave up."
                         : "Jam OS started it again.",
                 '!', NOTICE_RASPBERRY);
 }
