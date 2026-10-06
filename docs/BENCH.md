@@ -580,6 +580,39 @@ checker-off column):
 - then the Linux column (`tools/linuxbench`) and the per-operation lines
   (`perop`), as the method above says.
 
+## M11.5 with every follow-up, PC 2026-10-07
+
+`bench` from the shell twice on an everyday boot (G1's desktop up, the
+IOMMU on by default, lock checker on), median / p99 of 4000 samples:
+
+| Line | Before (2026-10-04) | Now |
+|---|---|---|
+| context switch (yield, P) | 30.8 ns | 30.1-30.4 ns |
+| block+wake round trip, same CPU | 381 ns | 310 ns |
+| kernel channel_call, same CPU (checker on) | 462 ns | 389 ns |
+| user process->process call, same CPU | 1215 ns | 1089 ns |
+| user call to a reply-and-wait server, same CPU | **885 ns** | **765 ns** (hand-off on; 786 off) |
+| the same with per-thread message slots off | | 848 ns |
+| generated client and server (null.ping) | | 826 ns |
+| the same call with a 60 s deadline | | 1179 ns |
+| TLB shootdown, 1 page, 27 other CPUs | 4485 ns | 4096 ns |
+| iommu map + unmap + invalidate, 1 page | | 5170 ns (p99 9.2 us) |
+| iommu map + unmap + invalidate, 64 pages | | 23 us |
+
+Reading:
+- **Every follow-up landed as planned**: the path counts match the
+  table above (the reply-and-wait server 11 locks, the user call 18, the
+  kernel call 12), the hand-off is now ahead of off (765 vs 786 ns) and
+  the slots save 84 ns a call.
+- **The reply-and-wait line is 765 ns, 165 ns over the 600 ns target**
+  (M11.5's question D reads the target on this line, checker on); with
+  the checker off the user call is 95 ns cheaper (994 vs 1089), so the
+  checker-off reply-and-wait would be about 670 ns.
+- **The IOMMU costs about 5 us per one-page pin and unpin** (an
+  invalidation wait each way on a unit without caching mode); drivers pin
+  their rings once, so it shows only in per-transfer pinning. The
+  64-page line (23 us) shows the batching works: 0.36 us a page.
+
 ## M11.6, QEMU 2026-10-05
 
 Services that outlive their process
