@@ -110,7 +110,14 @@ a real desktop PC, which is where every milestone is tested.
   | Alt+Tab, Alt+Shift+Tab | the switcher (hold Alt; Esc cancels) |
   | Ctrl+Alt+Del | reboot |
 
-  The boot
+  The search box (Super alone, or "Jam OS") starts Terminal or Jamjar,
+  or runs what is typed in a new terminal (`term <command>` does too);
+  init starts only the desktop's own apps for it. The top bar's volume
+  popover sets the mixer's master volume and shows the output and what
+  plays; the network popover the link, address and rates. Notices come as
+  cards in the top right: a stick added or removed, the network connected
+  or lost, an update written (with a Reboot button), or the shell's
+  `notify -b Yes -b No -w Tea? The kettle is on`. The boot
   entry "Jam OS (no compositor)" (the boot word `nocomp`) is the way back
   to the full-screen console until G1 is signed off on the PC.
 - A boot splash: the logo animation with its sound while Jam OS starts

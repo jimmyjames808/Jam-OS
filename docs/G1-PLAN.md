@@ -1348,6 +1348,62 @@ reach below the output; its title bar stays reachable). Tests: utest's
 `desk_screens`, `comp_layout_wait`, `xdg_tiling`;
 `tools/shell-tests/desktop.txt` (four terminals tiled, a gap dragged).
 
+**As built: D2b, the desktop's plumbing.** D2a's hooks reach the system
+through channels init hands the compositor, each as narrow as its feature
+([ARCHITECTURE](../ARCHITECTURE.md#the-desktops-plumbing) has the table);
+the compositor never waits on any of them (`ctl.c`, `deskctl.c`: requests
+go out with ids of ours, answers come to the port). New methods:
+`initctl.launch(u8[16] app) -> (u64 koid)` (the compositor's and the
+shell's channels; consoles refused) and `initctl.terminal(u8[128] command)
+-> (u8 number)` (a command its new shell runs first, once); compctl's
+level 2 NOTIFY with `notify(u8[64] title, u8[96] body, u8 icon, u8 tint,
+u8[72] buttons) -> (u32 id)`, `notify_wait() -> (u32 id, u8 button) later`
+and `withdraw(u32 id)` (NOTIFY and ADMIN), and `/svc/notify`, whose
+svc.connect makes a NOTIFY channel; `audioctl.desk() -> (i32 master, u8
+playing, u8[64] title, u8[48] output)` and `audioctl.desk_channel() ->
+(handle)`, with the mixer's desktop channel (SR_AUDIO_DESK) answering only
+`desk` and `set_master`; `audio.stream_set_title(u8[64])`;
+`hda.output_name() -> (u8[48])`; `netctl.summary() -> (u8 link, u32
+address, u32 mask, u32 speed, u64 rx_bytes, u64 tx_bytes, u8[16] chip)`,
+with netstack's read-only control channel (info, stats, device,
+summary). Who holds what: the compositor init's control channel (reboot,
+terminal, launch), `/svc/notify`'s server end (SR_USER + 5), the mixer's
+desktop channel (SR_USER + 6) and netstack's read-only one (SR_USER + 7);
+devmgr (DEVMGR_SR_NOTIFY) and netstack (SR_USER + 6) a duplicate of
+`/svc/notify`'s client end; the shell `/svc/notify` in its namespace
+(`svc notify`: user/services/ only). Launching: `<deskapps.h>` is the one
+list (the search box's rows, built from it, and init's decision): today
+Terminal (init's `terminal`) and Jamjar (bin/jamjar, its list's grants
+and `/svc/wayland`, no console, a job of its own); the busy cursor ends
+when a window with the app's title maps (init answers a terminal's
+number: "Terminal 3"), at once on a refusal, else after 10 s. Notices:
+devmgr's "USB stick added" (its size, where, read-only or not; once a
+mount, not for `mount -w`) and "removed" (not at a reboot), netstack's
+"Connected" (address, card, speed) and "Disconnected", init's own "Update
+written" / "Update loaded" with Reboot and Later on its ADMIN channel: the
+Reboot press is told to init, which reboots; the compositor never acts on
+a button. The shell's `notify [-b button]... [-w] <title> [body]` and
+`launch <app>`. Without the compositor (`nocomp`) no `/svc/notify`
+exists: the services' log lines and the console's notices are as before.
+The volume popover's percent is the master on a dB scale (100% 0 dB, 0.6 dB
+a percent, 0% silence); "what's playing" is the newest playing stream's
+title (the music player names each track) or name; the output's name is
+the driver's ("ALC897 headphones", "QEMU line-out"). The network
+popover's rates come from two summaries a second apart. The terminal's
+pointer: libjwl binds wp_cursor_shape_manager_v1 and
+`jwl_client_set_cursor` (sent at each enter); a terminal window asks for
+the text bar over its text and the arrow over its padding. Tests: utest
+`comp_notify`, `comp_launch`, `comp_volume_net`, `netctl_read_only`,
+`conwin_pointer_shape`, `jwlc_real_compositor`, `comp_seat_ctl`;
+mixtest's `desk` phase; `tools/desk-test.sh` (`desk.txt`: the Connected
+notice with QEMU's lease, `notify -w` clicked, launch from the search box
+with the busy cursor, a command in a new terminal, the text cursor's
+screenshot); `tools/sticks-test.sh` and `tools/update-test.sh` (the
+notices; the update card's Reboot clicked). Not yet: the popovers in
+QEMU (the strip's icons move with the clock's width: the volume and
+network popovers are checked in utest with fake services, the mixer's and
+netstack's sides apart); Jamjar asking for the text bar.
+
 **Order and parallel work:**
 
 1. After the owner's answers: **P0, W1, W2, K1 and KM** together (P0 goes
