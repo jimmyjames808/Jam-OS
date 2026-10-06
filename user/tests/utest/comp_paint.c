@@ -25,7 +25,12 @@
  * takes no keys, the splash's) on the desktop covers all of the output, the
  * strip included, copied straight from its buffer; when it goes it fades
  * (a frame between shows both) to exactly the picture without it, each
- * frame painting its box only. */
+ * frame painting its box only.
+ * t_comp_paint_splash: the boot's wait for the splash (init's `splash`
+ * argument): the desktop, a window and the cursor are there, yet every
+ * paint is the splash's background only, until a boot overlay maps (then
+ * it, everywhere, straight from its buffer, and its fade-out to exactly the
+ * desktop) or the 5 s are up with none (then exactly the desktop). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -279,6 +284,56 @@ bool t_comp_paint_overlay(void)
     memset(r, 0, sizeof(r));
     bool ok = overlay_runs(&r[0], &r[1], &r[2], &r[3]);
     for (unsigned i = 0; i < 4; i++)
+        cp_done(&r[i]);
+    return ok;
+}
+
+/* The boot's wait for the splash, then the overlay (or none). */
+#define SP_WAIT "splash", OV_DESK, "cursor=100,100", "paint"
+
+static bool splash_runs(struct cp_run *desk, struct cp_run *wait, struct cp_run *over,
+                        struct cp_run *faded, struct cp_run *none)
+{
+    static const char *const d[] = { OV_DESK };
+    static const char *const w[] = { SP_WAIT, "splashtick=3000", "paint" };
+    static const char *const o[] = { SP_WAIT, "nocursor", OV_SPLASH };
+    static const char *const f[] = { SP_WAIT, "nocursor", OV_SPLASH, OV_FADE, "tick=250", "paint" };
+    static const char *const n[] = { SP_WAIT, "nocursor", "splashtick=5100", "paint" };
+    CHECK(cp_run(d, sizeof(d) / sizeof(d[0]), desk));
+    CHECK(cp_run(w, sizeof(w) / sizeof(w[0]), wait));
+    CHECK(cp_run(o, sizeof(o) / sizeof(o[0]), over));
+    CHECK(cp_run(f, sizeof(f) / sizeof(f[0]), faded));
+    CHECK(cp_run(n, sizeof(n) / sizeof(n[0]), none));
+    /* waiting: the background only, nothing drawn from any window */
+    CHECK_EQ(cp_count_colour(wait, (struct comp_box){ 0, 0, CP_W, CP_H }, LOOK_BLANK),
+             CP_W * CP_H);
+    CHECK_EQ(wait->nrep, 3);
+    for (unsigned i = 0; i < 3; i++)
+        CHECK_EQ(wait->rep[i].layer_px, 0);
+    CHECK_EQ(wait->rep[0].px, CP_W * CP_H);
+    /* the overlay mapped: it, everywhere, direct, all of the output painted */
+    for (int32_t y = 0; y < CP_H; y++)
+        for (int32_t x = 0; x < CP_W; x++)
+            CHECK_EQ(over->image[y * CP_W + x], testscene_rgb(0x70a030, x, y, false));
+    CHECK_EQ(over->nrep, 3);
+    CHECK_EQ(over->rep[2].px, CP_W * CP_H);
+    CHECK_EQ(over->rep[2].direct, over->rep[2].tiles);
+    /* its fade-out ends on exactly the desktop */
+    CHECK_EQ(faded->nrep, 5);
+    CHECK_EQ(same_px(faded, desk), CP_W * CP_H);
+    /* no overlay in 5 s: exactly the desktop, all of it painted */
+    CHECK_EQ(none->nrep, 3);
+    CHECK_EQ(none->rep[2].px, CP_W * CP_H);
+    CHECK_EQ(same_px(none, desk), CP_W * CP_H);
+    return true;
+}
+
+bool t_comp_paint_splash(void)
+{
+    static struct cp_run r[5];
+    memset(r, 0, sizeof(r));
+    bool ok = splash_runs(&r[0], &r[1], &r[2], &r[3], &r[4]);
+    for (unsigned i = 0; i < 5; i++)
         cp_done(&r[i]);
     return ok;
 }

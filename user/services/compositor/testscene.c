@@ -28,6 +28,10 @@
  *   cursorsize=W,H  that surface shrinks, as a smaller buffer's commit would
  *   cursorarrow   the arrow again
  *   blank         unblank
+ *   splash        the boot's wait for the splash, as init's `splash`
+ *                 argument starts it (paint.c)
+ *   splashtick=MS the wait checked as it would be MS milliseconds on
+ *                 from now (MS past 5000: given up if no overlay is up)
  *   clear         every window gone (a fresh picture)
  *   desktop, time=, top=, popover=, notify=, search[=]
  *                 the desktop: testdesk.c
@@ -455,6 +459,16 @@ static bool run_one(const char *c)
             return false;
         move_cursor((int32_t)v[0], (int32_t)v[1]);
         cursor_show(true);
+        return true;
+    }
+    if (!strcmp(c, "splash")) {
+        paint_splash_wait();
+        return true;
+    }
+    if ((s = after(c, "splashtick"))) {
+        if (numbers(s, v, 1, -1, &rest) != 1 || rest || v[0] < 0 || v[0] > 600000)
+            return false;
+        paint_splash_check(now() + (uint64_t)v[0] * NS_PER_MS);
         return true;
     }
     if ((s = after(c, "hold"))) {
