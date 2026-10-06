@@ -193,10 +193,13 @@ static void panel(const char *why)
         panel_line(&y, "note", r->note);
     panel_frames(&y);
     panel_line(&y, "no restart", why);
-    uint64_t ms = tsc_hz ? uptime_ns() / 1000000 : 0;
     const char *name = kexec_log_name();
-    ksnprintf(line, sizeof(line), "%s, after %lu.%03lu s", name[0] ? name : "(no log file yet)",
-              ms / 1000, ms % 1000);
+    name = name[0] ? name : "(no log file yet)";
+    uint64_t ms = tsc_hz ? uptime_ns() / 1000000 : 0;
+    if (tsc_hz)
+        ksnprintf(line, sizeof(line), "%s, after %lu.%03lu s", name, ms / 1000, ms % 1000);
+    else
+        ksnprintf(line, sizeof(line), "%s, before the clock was measured", name);
     panel_line(&y, "boot", line);
     ksnprintf(line, sizeof(line), "Jam OS %s, %s", jamos_version, panic_screen_build());
     panel_line(&y, "build", line);

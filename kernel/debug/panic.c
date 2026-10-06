@@ -224,7 +224,7 @@ _Noreturn static void panic_end(void)
     klog_write_raw(start, strlen(start));
     const char *why = kexec_panic_why_not();
     if (!why)
-        why = "there is no stored kernel (crashkernel=0, or it couldn't be loaded)";
+        why = "there is no stored kernel (crashkernel=0, not loaded yet, or it couldn't be)";
     kprintf("\n\nno restart: %s\n", why);
     panic_screen_stuck(why);
 }
