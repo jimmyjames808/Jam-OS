@@ -17,8 +17,9 @@
  * finish and set_actions on a selection's offer are protocol errors); a
  * source that never writes holds up nobody (the compositor answers and
  * routes keys meanwhile; the reader's end closes when the source closes
- * its own); a client that never destroys its offers stops getting new
- * ones (the selection said to be empty) at the cap. */
+ * its own); a selection with no text type is told as none; a client that
+ * never destroys its offers stops getting new ones (the selection said to
+ * be empty) at the cap. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -338,11 +339,26 @@ static bool slow_source(struct cs *t, struct dc *a, struct dc *b)
     return refused(mine);
 }
 
+/* A selection of no text type: the focused client is told "none". */
+static bool no_text(struct dc *b, uint32_t serial)
+{
+    static const char *const types[] = { "image/png" };
+    uint32_t s = source(b, types, 1);
+    CHECK(s);
+    ct_clear(&b->s.k);
+    CHECK_ST(jwl_wl_data_device_set_selection(b->s.k.c, b->dev, s, serial), OK);
+    CHECK_ST(ct_roundtrip(&b->s.k), OK);
+    CHECK_EQ(told(b), 0);
+    CHECK(!ct_find(&b->s.k, &jwl_wl_data_source_interface, JWL_WL_DATA_SOURCE_EV_CANCELLED, s));
+    CHECK_ST(jwl_wl_data_source_destroy(b->s.k.c, s), OK);
+    CHECK_ST(ct_roundtrip(&b->s.k), OK);
+    return true;
+}
+
 /* A client that keeps every offer: past the cap it is told "none". */
-static bool offers_capped(struct dc *b)
+static bool offers_capped(struct dc *b, uint32_t serial)
 {
     static const char *const types[] = { TEXT };
-    uint32_t serial = enter_serial(b);
     uint32_t last = 0;
     for (unsigned i = 0; i < 20; i++) {
         uint32_t s = source(b, types, 1);
@@ -372,7 +388,10 @@ bool t_comp_data_rules(void)
     CHECK(data_client(&t, &b));
     CHECK(window_told_first(&a, 50, 0));
     CHECK(slow_source(&t, &a, &b));
-    CHECK(offers_capped(&b));
+    uint32_t serial = enter_serial(&b);   /* its last key press */
+    CHECK(serial);
+    CHECK(no_text(&b, serial));
+    CHECK(offers_capped(&b, serial));
     ct_close(&a.s.k);
     ct_close(&b.s.k);
     CHECK(cs_stop(&t));

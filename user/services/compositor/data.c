@@ -161,11 +161,12 @@ static status_t make_offer(struct data_res *d, uint32_t *out)
     return st;
 }
 
-/* The selection (or that there is none) to device d. */
+/* The selection (or that there is none: also a selection with no text
+ * type, which no reader could take) to device d. */
 static void tell_device(struct data_res *d)
 {
     uint32_t offer = 0;
-    if (selection && make_offer(d, &offer) != OK)
+    if (selection && selection->types && make_offer(d, &offer) != OK)
         return;
     (void)jwl_wl_data_device_send_selection(d->client->conn, d->id, offer);   /* dead: torn down */
 }
