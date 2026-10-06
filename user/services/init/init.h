@@ -232,6 +232,10 @@ void     terms_given_up(unsigned i);
 status_t terms_open(uint8_t *number);
 /* "console-<n>", "shell-<n>" (n 2 to TERM_MAX): terminal n's service i. */
 bool     terms_named(const char *name, unsigned *i);
+/* /data has come: the settings' terminal.font (smooth or bitmap) to the
+ * consoles started from now on ("font=bitmap"), and, if it changed, to
+ * each running terminal's console (console.set_font). */
+void     terms_settings(void);
 
 /* ---- comp.c: the compositor (not with the boot word `nocomp`) ----------------------- */
 

@@ -367,6 +367,7 @@ static void data_came(void)
         services_settings(MUSIC);
         services_settings(NETSTACK);
         comp_settings();   /* the saved window layout */
+        terms_settings();  /* the terminals' font */
     }
     had = has;
 }
