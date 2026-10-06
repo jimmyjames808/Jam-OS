@@ -1336,8 +1336,9 @@ again at each motion (no glide; a tree change mid-drag ends it); the
 pointer over one shows the resize arrows, and the gap's bar (3 pixels, 15%
 short at each end, apricot at 85%) is lit while hovered or dragged
 (`wm_marks`, drawn by `wmdraw.c` over the windows, under the strip). The
-pointer starts in the middle of the output, so with two tiles side by
-side the gap is lit until the mouse moves. Super+press (`wm_press` gets
+pointer starts in the middle of the output, on the gap of two tiles side
+by side, so nothing is hovered until a mouse first moves it (`cursor.moved`,
+as no cursor is drawn until then): no gap lights at boot. Super+press (`wm_press` gets
 the modifiers every keyboard holds) on a tiled window lifts it: its
 picture (an animation snapshot) follows the pointer at 85% with a shadow,
 the tile under the pointer gets an apricot ring over a 14% tint, release
@@ -1360,12 +1361,16 @@ limits. Super+Shift+N past the last screen makes one at the end.
 Tiling is the default (the owner, after the tiler): the compositor
 without `layout=` tiles, init starts it with `layout=tiling` until
 `/data` says otherwise, new screens take the last choice; a saved
-`display.layout = floating` wins. A window that has only ever tiled has no
-floating size of its own: switched to floating, its configure is 0 by 0
-and the client keeps its last size (a tall terminal's frame can then
-reach below the output; its title bar stays reachable). Tests: utest's
+`display.layout = floating` wins. A window that has only ever tiled (or
+been maximised or full screen) has no floating size of its own: placed
+floating (Super+T, or leaving maximised on a floating screen) it is asked
+for 60% of the room under the strip each way (`wm.c`'s `float_default`),
+within its xdg limits (a window of one size keeps it) and never more than
+the room, centred for that size and cascaded; from then on that is its
+floating size. (libfun's asked size isn't the compositor's to know: xdg
+carries it only as the limits of a window of one size.) Tests: utest's
 `wm_tiling`, `wm_switch`, `wm_tile_tree`, `wm_tile_gaps`,
-`wm_tile_push`, `wm_focus_dir`, `wm_swap`, `wm_reflow`, `wm_keys`,
+`wm_tile_push`, `wm_tile_float`, `wm_focus_dir`, `wm_swap`, `wm_reflow`, `wm_keys`,
 `desk_screens`, `comp_layout_wait`, `xdg_tiling`;
 `tools/shell-tests/desktop.txt` (four terminals tiled, a gap dragged).
 
