@@ -25,9 +25,9 @@ status_t comp_start(struct comp_child *k)
     }
     char size[32];
     snprintf(size, sizeof(size), "size=%dx%d", k->w, k->h);
-    const char *argv[] = { "bin/compositor", "headless", size };
+    const char *argv[] = { "bin/compositor", "headless", size, "layout=floating" };
     struct spawn_handle x[] = { { SR_USER + 0, theirs } };
-    struct spawn_args a = { .path = "bin/compositor", .argc = 3, .argv = argv, .job = k->job,
+    struct spawn_args a = { .path = "bin/compositor", .argc = 4, .argv = argv, .job = k->job,
                             .extra = x, .nextra = 1 };
     st = spawn(&a, &k->proc);   /* theirs is consumed either way */
     if (st != OK) {
