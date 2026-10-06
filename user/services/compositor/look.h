@@ -243,6 +243,7 @@ static const struct look_glow look_glows[LOOK_GLOWS] = {
 #define LOOK_ANIM_MIN_TO      80         /* thousandths of the size, in the chip */
 #define LOOK_ANIM_MIN_ALPHA   38         /* ... and its alpha there (15%) */
 #define LOOK_ANIM_SLIDE_MS    260        /* screens sliding sideways */
+#define LOOK_ANIM_FADE_MS     200        /* a boot overlay (the splash) fading out when it goes */
 #define LOOK_NOTE_IN_MS       200        /* a notification comes in, */
 #define LOOK_NOTE_OUT_MS      180        /* ... and fades out */
 #define LOOK_NOTE_SHOW_MS     5000       /* ... after this, unless it has buttons */

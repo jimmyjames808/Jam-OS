@@ -26,6 +26,7 @@ struct fake_seat {
 };
 extern struct fake_seat seat;
 extern struct comp_client fake_client;
+extern struct comp_client fake_keyless;   /* a client with no wl_keyboard (the splash's) */
 
 /* A fake toplevel: its surface, the last configure it got, closes asked. */
 struct fk {
@@ -46,6 +47,9 @@ void desk_test_start(enum comp_layout layout);
 bool fk_draw(struct fk *f);
 /* A toplevel w by h of its own: the initial configure, then its first buffer. */
 bool fk_open(struct fk *f, int32_t w, int32_t h, bool fixed);
+/* A full-screen toplevel of client cl's (fake_keyless: a boot overlay), asked
+ * for before its first buffer. */
+bool fk_open_full(struct fk *f, struct comp_client *cl);
 void fk_close_all(void);
 struct comp_window *win(unsigned i);
 /* A press at (x, y) with button: did the window manager (or the desktop) take it? */

@@ -515,6 +515,7 @@ bool t_comp_paint_damage(void);
 bool t_comp_paint_fullscreen(void);
 bool t_comp_paint_cursor(void);
 bool t_comp_paint_blank(void);
+bool t_comp_paint_overlay(void);
 /* comp_look.c: the look (look.h) the same way: title bars and circles,
  * rounded corners, shadows, tiling's borders, the wallpaper. */
 bool t_comp_look_title(void);
@@ -550,6 +551,7 @@ bool t_desk_alttab(void);
 bool t_desk_search(void);
 bool t_desk_popover(void);
 bool t_desk_notify(void);
+bool t_desk_overlay(void);
 /* compwmseat.c: the window manager with the real seat: drag, close box,
  * Super+Q, Super+F, Super+T on an xdg toplevel. */
 bool t_wm_seat(void);

@@ -11,8 +11,10 @@
  * t_comp_early_keys: keys typed while no window has the keys (before the
  * first, or after the focused one went) reach the next that takes them,
  * with their modifiers, unless they are more than 5 s old by then.
- * t_comp_screen_on_top: a full-screen window that takes no keys stays over
- * a window that maps after it and takes the keys.
+ * t_comp_screen_on_top: a full-screen window that takes no keys (a boot
+ * overlay) stays over a window that maps after it and takes the keys, with
+ * the desktop off and on: a click anywhere (where the strip is too) is
+ * its, the keys stay the other window's, and still are once it has gone.
  * t_comp_no_keyboard: a window whose client has no wl_keyboard (the boot
  * splash's) never takes the keys: not when it maps over the focused
  * window, not when it is clicked. */
@@ -263,11 +265,13 @@ static bool fullscreen_window(struct sc *c)
 /* A full-screen window that takes no keys (the splash) mapped first, then
  * a's (the first terminal's, later than the splash's): a takes the keys
  * but comes up under the full-screen one, which a click reaches. */
-bool t_comp_screen_on_top(void)
+static bool screen_on_top(bool desk)
 {
     static struct sc a, s;
     struct cs t;
-    CHECK(cs_start(&t));
+    memset(&a, 0, sizeof(a));
+    memset(&s, 0, sizeof(s));
+    CHECK(desk ? cs_start_desk(&t) : cs_start(&t));
     CHECK(keyless_client(&t, &s));
     CHECK(fullscreen_window(&s));
     CHECK(cs_client(&t, &a));
@@ -284,10 +288,29 @@ bool t_comp_screen_on_top(void)
     CHECK(!find_ev(&a, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON));
     const uint32_t ka[] = { DOWN(KEY_A), UP(KEY_A) };
     CHECK(keys_are(&a.k, ka, 2));   /* the keys are still a's */
+    /* a click where the strip is: the overlay's, not the desktop's */
+    ct_clear(&s.k);
+    CHECK(cs_pointer_to(&t, 20, 4));
+    CHECK(cs_button(&t, true));
+    CHECK(cs_button(&t, false));
+    CHECK(cs_sync(&a, &s));
+    CHECK(find_ev(&s, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON));
+    /* it goes: a still has the keys */
     ct_close(&s.k);
+    ct_clear(&a.k);
+    CHECK(cs_tap(&t, U_B, 0));
+    CHECK(cs_sync(&a, NULL));
+    const uint32_t kb[] = { DOWN(KEY_B), UP(KEY_B) };
+    CHECK(keys_are(&a.k, kb, 2));
+    CHECK(!find_ev(&a, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_LEAVE));
     ct_close(&a.k);
     CHECK(cs_stop(&t));
     return true;
+}
+
+bool t_comp_screen_on_top(void)
+{
+    return screen_on_top(false) && screen_on_top(true);
 }
 
 bool t_comp_no_keyboard(void)

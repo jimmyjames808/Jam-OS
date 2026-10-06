@@ -98,16 +98,24 @@ static void unlink(struct comp_window *w)
     w->below = w->above = NULL;
 }
 
-/* Put w on top. */
+/* Put w on top; a window that is no boot overlay goes under the overlays
+ * on top (COMP_WIN_OVERLAY: they stay over every other window). */
 static void push_top(struct comp_window *w)
 {
-    w->below = scene.top;
-    w->above = NULL;
-    if (scene.top)
-        scene.top->above = w;
+    struct comp_window *over = NULL;   /* the lowest overlay of those on top */
+    if (!(w->flags & COMP_WIN_OVERLAY))
+        for (struct comp_window *t = scene.top; t && (t->flags & COMP_WIN_OVERLAY); t = t->below)
+            over = t;
+    w->above = over;
+    w->below = over ? over->below : scene.top;
+    if (w->below)
+        w->below->above = w;
     else
         scene.bottom = w;
-    scene.top = w;
+    if (over)
+        over->below = w;
+    else
+        scene.top = w;
 }
 
 status_t window_create(struct comp_surface *s, int32_t x, int32_t y, struct comp_window **out)

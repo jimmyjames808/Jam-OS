@@ -30,6 +30,7 @@ struct comp_cursor cursor;
 struct comp comp = { .period_ns = NS_PER_S / 60 };
 static struct jwl_conn fake_conn;   /* a live connection: status OK */
 struct comp_client fake_client = { .conn = &fake_conn };
+struct comp_client fake_keyless = { .conn = &fake_conn };
 struct fake_seat seat;
 struct fake_desk fdesk;
 
@@ -105,6 +106,12 @@ void seat_focus(struct comp_window *w)
     if (w)
         w->flags |= COMP_WIN_FOCUSED;
     wm_focus_changed(w);
+}
+
+/* fake_keyless takes no keys (as a client with no wl_keyboard: the splash). */
+bool seat_takes_keys(struct comp_client *cl)
+{
+    return cl != &fake_keyless;
 }
 
 void seat_window_mapped(struct comp_window *w)
@@ -232,6 +239,18 @@ bool fk_open(struct fk *f, int32_t w, int32_t h, bool fixed)
     if (fixed)
         wm_set_limits(f->ww, w, h, w, h);
     wm_reconfigure(f->ww);   /* the initial commit */
+    return fk_draw(f);
+}
+
+bool fk_open_full(struct fk *f, struct comp_client *cl)
+{
+    memset(f, 0, sizeof(*f));
+    f->s.client = cl;
+    f->s.input_all = true;
+    f->own_w = OUT_W;
+    f->own_h = OUT_H;
+    CHECK((f->ww = wm_create(&f->s, &fk_ops, f)) != NULL);
+    wm_request_fullscreen(f->ww, true);   /* before its first buffer, as libfun asks */
     return fk_draw(f);
 }
 

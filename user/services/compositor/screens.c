@@ -13,7 +13,14 @@
  *     then goes;
  *   - a new window opens on the current screen; on a full-screen screen,
  *     on the normal screen left of it, which becomes current;
- *   - minimised windows stay on their screen, hidden, listed by its chips.
+ *   - minimised windows stay on their screen, hidden, listed by its chips;
+ *   - a full-screen window whose client takes no keys (the boot splash's:
+ *     libjwl's no_keyboard) is a boot overlay instead, not an app to
+ *     switch between: on no screen, over whichever is current, the strip
+ *     included (strip.c shows none under it) and every window (the scene
+ *     keeps it on top: COMP_WIN_OVERLAY); no screen, dot, chip or Alt+Tab
+ *     row, no slide; never the keys (focus.c), so typing reaches the
+ *     window under it; when it goes it fades out (anim_fade, wm.c).
  * Going from one screen to another slides (anim.c), the windows of both
  * shown while it does; when it ends, the old screen's windows are hidden
  * and screens with nothing left go.
@@ -132,8 +139,18 @@ struct comp_box screens_room(const struct desk_screen *s)
 
 bool screens_shown(const struct wm_window *ww)
 {
+    if (ww->overlay)
+        return ww->win != NULL;
     return ww->win && !ww->minimised && ww->screen &&
            (ww->screen == sc.order[sc.cur] || anim_slides(ww->screen));
+}
+
+bool screens_overlay(void)
+{
+    for (const struct wm_window *ww = wm_first(); ww; ww = ww->next)
+        if (ww->overlay && ww->win && (ww->win->flags & COMP_WIN_MAPPED))
+            return true;
+    return false;
 }
 
 void screens_sync(void)
@@ -270,7 +287,7 @@ void screens_move(struct wm_window *ww, int dir)
 
 void screens_minimise(struct wm_window *ww)
 {
-    if (!ww || !ww->win || ww->minimised)
+    if (!ww || !ww->win || ww->minimised || ww->overlay)
         return;
     anim_finish();
     if (ww->screen && ww->screen->kind == SCREEN_FULL)
@@ -330,8 +347,38 @@ static unsigned normal_near(unsigned i)
     return new_screen(SCREEN_NORMAL, i) ? i : 0;
 }
 
+/* Is ww to be a boot overlay: asked to be full screen by a client that
+ * takes no keys. */
+static bool overlay_wanted(const struct wm_window *ww)
+{
+    return ww->want == WM_FULLSCREEN && !seat_takes_keys(ww->surface->client);
+}
+
+/* ww a boot overlay, or no more (onto the current screen, a normal one). */
+static void set_overlay(struct wm_window *ww, bool on)
+{
+    ww->overlay = on;
+    ww->home = NULL;
+    ww->minimised = false;
+    if (on) {
+        ww->screen = NULL;
+        ww->win->flags |= COMP_WIN_OVERLAY;
+        window_raise(ww->win);
+    } else {
+        ww->win->flags &= ~COMP_WIN_OVERLAY;
+        if (sc.order[sc.cur]->kind == SCREEN_FULL)
+            go_to(normal_near(sc.cur), true);
+        ww->screen = sc.order[sc.cur];
+    }
+    strip_dirty();
+}
+
 void screens_window_new(struct wm_window *ww)
 {
+    if (overlay_wanted(ww)) {
+        set_overlay(ww, true);   /* no screen to go to */
+        return;
+    }
     unsigned i = sc.cur;
     if (sc.order[i]->kind == SCREEN_FULL) {
         i = normal_near(sc.cur);
@@ -347,6 +394,9 @@ void screens_window_gone(struct wm_window *ww)
     struct desk_screen *s = ww->screen, *home = ww->home;
     ww->screen = ww->home = NULL;
     ww->minimised = false;
+    if (ww->overlay)
+        strip_dirty();   /* the strip again, under its fade */
+    ww->overlay = false;
     if (!s)
         return;
     int i = screens_index(s);
@@ -398,6 +448,14 @@ static void leave_full(struct wm_window *ww)
 
 void screens_fullscreen(struct wm_window *ww, bool on)
 {
+    if (ww->win && ww->overlay != (on && overlay_wanted(ww))) {
+        anim_finish();
+        set_overlay(ww, !ww->overlay);
+        wm_relayout();   /* its tile goes to the others, or comes back */
+        cleanup();
+        screens_sync();
+        return;
+    }
     if (!ww->win || !ww->screen || ww->minimised)
         return;   /* placed when it is mapped (screens_window_new, then wm.c asks again) */
     anim_finish();

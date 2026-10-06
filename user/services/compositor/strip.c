@@ -12,7 +12,8 @@
  *   right   the floating/tiling icon (a click switches), the network and
  *           volume icons and the clock ("Mon 5 Oct  14:32"), which open
  *           their popovers.
- * Not shown on a full-screen screen, nor with the desktop off.
+ * Not shown on a full-screen screen, under a boot overlay (the splash,
+ * screens.c: it covers all of the output), nor with the desktop off.
  *
  * The layout is made again (strip_update, before each paint, and before a
  * chip's box is asked for) only when something it shows changed
@@ -178,7 +179,7 @@ static void lay_out(void)
 {
     strip.n = 0;
     memset(strip.islands, 0, sizeof(strip.islands));
-    strip.shown = desk_on() && screens_cur()->kind == SCREEN_NORMAL &&
+    strip.shown = desk_on() && screens_cur()->kind == SCREEN_NORMAL && !screens_overlay() &&
                   scene.height > LOOK_STRIP_H && scene.width > 2 * LOOK_ISLAND_EDGE;
     if (!strip.shown)
         return;

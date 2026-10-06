@@ -79,11 +79,13 @@ struct wm_window {
     bool resizing;                 /* a resize grab is on it */
     bool not_responding;           /* asked to close, no pong since: the title bar says so */
     /* The desktop's (screens.c): the virtual screen it is on while mapped,
-     * the one a full-screen window came from, minimised or not, and when it
-     * last had the focus (Alt+Tab's order, most recent first). */
+     * the one a full-screen window came from, minimised or not, a boot
+     * overlay (on no screen: over all of them), and when it last had the
+     * focus (Alt+Tab's order, most recent first). */
     struct desk_screen *screen;
     struct desk_screen *home;
     bool minimised;
+    bool overlay;
     uint64_t focused_at;           /* a count, not a time: 0 never */
 };
 
