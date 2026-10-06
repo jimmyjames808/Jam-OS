@@ -153,7 +153,7 @@ make run                                  # build, then boot it in QEMU
 
 `make run` boots the image in QEMU (q35, OVMF, the stick on a USB xHCI
 controller, a USB keyboard) with the serial console on your terminal. Type
-at the prompt, `jam:/boot>` (`jam:` and the current directory, which `cd`
+at the prompt, `jam:/>` (`jam:` and the current directory, which `cd`
 changes); `help` lists the commands. Python 3 is needed for
 the build tools (and Pillow for test screenshots).
 

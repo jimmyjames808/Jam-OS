@@ -243,7 +243,7 @@ void sh_init(void)
 {
     sh_handles_init();
     sh_setvar("USER", "jam", 1);
-    sh_setvar("HOME", "/boot", 1);
+    sh_setvar("HOME", "/", 1);
     sh_setvar("PATH", "/boot/bin", 1);
     sh_setvar("HOSTNAME", "jamos", 0);
     sh_set_alias("lspci", "devices");
