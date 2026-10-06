@@ -2,14 +2,15 @@
 # A tile resized live, in QEMU: the compositor's boot ("shell") with a
 # usb-kbd and a usb-mouse, two terminals side by side, the gap between
 # them dragged 6 pixels a step, right 120 and back left 240, a screenshot
-# every few steps (tools/shell-tests/tile-resize.txt). Each shot is taken
-# just after a move, often before the terminals have drawn their new
-# sizes: the compositor shows each one's last picture clipped to its new
-# tile or padded in its background colour, and libjwl never draws a new
-# size over the picture being shown. So in every shot the top and bottom
-# padding rows of both tiles (y 52 and 788, away from the gap) are the
-# terminal's background, as in the first shot: never the wallpaper, black,
-# or a half-drawn frame. Shots: <outdir>/resize-*.png.
+# every few steps (tools/shell-tests/tile-resize.txt), each just after a
+# move. In every shot the top and bottom padding rows of both tiles (y 52
+# and 788, away from the gap) must be the terminal's background, as in the
+# first shot: never the wallpaper, black, or a half-drawn frame. (QEMU's
+# terminals mostly redraw before the screendump lands, so a shot rarely
+# catches a tile mid-resize; the moments in between are utest's:
+# xdg_tile_resize, the compositor showing a slow client's last picture
+# clipped or padded, and jwlc_window_sizes, libjwl never drawing a new
+# size over the picture shown.) Shots: <outdir>/resize-*.png.
 # QEMU_SMP passes through. Usage: tools/resize-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1

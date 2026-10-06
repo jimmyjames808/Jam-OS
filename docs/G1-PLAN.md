@@ -1372,7 +1372,18 @@ carries it only as the limits of a window of one size.) Tests: utest's
 `wm_tiling`, `wm_switch`, `wm_tile_tree`, `wm_tile_gaps`,
 `wm_tile_push`, `wm_tile_float`, `wm_focus_dir`, `wm_swap`, `wm_reflow`, `wm_keys`,
 `desk_screens`, `comp_layout_wait`, `xdg_tiling`;
-`tools/shell-tests/desktop.txt` (four terminals tiled, a gap dragged).
+`tools/shell-tests/desktop.txt` (four terminals tiled, a gap dragged). A tile resized (a gap dragged, a window
+joining or going) whose client fills it is shown as the new tile from
+the first frame (`comp_window`'s `view_w`, `view_h`): its last buffer at
+the tile's top left, clipped to the tile or padded in the buffer's
+bottom-right colour (a terminal's background) until the client commits
+the new size, never centred on the wallpaper; and libjwl puts a new
+size's buffers clear of the bytes of the one the compositor shows, so the
+old picture is never drawn over while it is shown (both were the owner's
+flashes on the PC; utest `xdg_tile_resize`, `jwlc_window_sizes`,
+`tools/resize-test.sh`). The volume popover's percentage has a slot as
+wide as "100%" (right-aligned), the slider ending 10 pixels plus its
+knob before it.
 
 **As built: D2b, the desktop's plumbing.** D2a's hooks reach the system
 through channels init hands the compositor, each as narrow as its feature
