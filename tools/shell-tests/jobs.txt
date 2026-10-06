@@ -93,16 +93,17 @@ wait ok-x-norefused
 # ---- a program that draws, in the background: a window of its own ----------------------
 # (the compositor's; booted with `nocomp` it could borrow no screen and
 # would end at once). Its window takes the keys, as a program's first
-# window does: q quits it, and the keys come back to the terminal.
-send tetris &
+# window does: q quits it, and the keys come back to the terminal. (The
+# test window, wltest: what it prints is its events, then its frames.)
+send wltest &
 wait 10 [1]
 sleep 2
 type q
-wait 20 tetris: score
+wait 20 frames in
 sleep 1
-send echo after-$T-tetris
-wait 10 after-x-tetris
-seen 10 [1] done: tetris (exit 0)
+send echo after-$T-wltest
+wait 10 after-x-wltest
+seen 10 [1] done: wltest (exit 0)
 wait {prompt}
 
 # ---- the limit: 8 at once ----------------------------------------------------------------

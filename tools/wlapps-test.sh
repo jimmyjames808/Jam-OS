@@ -1,9 +1,12 @@
 #!/bin/sh
-# libfun's apps as windows on a compositor (tools/shell-tests/wlapps.txt):
-# a plain boot ("shell"); `run wlapps` four times, each starting a headless
-# compositor of its own and apps on it (user/tests/wlapps), with a
-# screenshot of each composition (<outdir>/wlapps-*.png, shown on the
-# borrowed screen). PASS when every verdict is PASS; SKIP (exit 0) when
+# Programs as windows on a compositor (tools/shell-tests/wlapps.txt):
+# jamjar and the test programs wltest (its own libjwl window, and its
+# libfun mouse mode) and fractal (in a window, and full screen). A plain
+# boot without the system's compositor ("shell nocomp", so wlapps can
+# borrow the screen to show its pictures); `run wlapps` four times, each
+# starting a headless compositor of its own and programs on it
+# (user/tests/wlapps), with a screenshot of each composition
+# (<outdir>/wlapps-*.png, shown on the borrowed screen). PASS when every verdict is PASS; SKIP (exit 0) when
 # the compositor offers no windows yet (no xdg_wm_base); FAIL otherwise.
 # QEMU_SMP passes through.
 # Usage: tools/wlapps-test.sh <outdir> [name]; exit 0 on PASS or SKIP.
@@ -12,7 +15,7 @@ out=$1 name=${2:-wlapps}
 mkdir -p "$out"
 ok=1
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-400} QEMU_INPUT=tools/shell-tests/wlapps.txt \
-    tools/qemu-test.sh "$out" "$name" shell > "$out/$name.out" 2>&1 || ok=0
+    tools/qemu-test.sh "$out" "$name" shell nocomp > "$out/$name.out" 2>&1 || ok=0
 log="$out/$name.log"
 grep -a "wlapps: verdict:\|wlapps: [0-9]* pixels\|libfun: no window" "$log" | \
     sed 's/^.*\] //' || true

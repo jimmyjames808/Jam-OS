@@ -5,12 +5,16 @@
 # reports go usb-bus -> drv/hid -> console, and from there only to a
 # focused client that asked for them.
 #
-# The pointer is put somewhere exact by pushing it into the top-left
-# corner (it is clamped there) and moving on from (0, 0); mines runs with
-# `noaccel`, so a count is a pixel. At 1280x800 the Intermediate board's
-# cells are 38 pixels and its top-left corner is at (336, 96): cell (c, r)
-# has its middle at (355 + 38 c, 115 + 38 r). With seed=5 and the first
-# reveal on (8, 8), cell (7, 8) shows a 1 whose mine is at (6, 7).
+# The client that asks is `wltest --mouse` (user/tests/wltest/fun.c),
+# which goes through libfun as an app does: under `nocomp` the console's
+# screen and key channel, and libfun's pointer (user/apps/fun/mouse.c),
+# which makes a position out of the relative counts. It says every edge on
+# the console: "wltest: mouse: left down at X,Y", "... left click at X,Y"
+# (or "drag from X,Y to X,Y"), "... chord at X,Y", "... wheel +1 at X,Y".
+# The pointer starts in the middle of the screen, (640, 400) at 1280x800,
+# and is put somewhere exact by pushing it into the top-left corner (it is
+# clamped there) and moving on from (0, 0); `noaccel` makes a count a
+# pixel.
 wait 120 Jam OS shell
 wait {prompt}
 # "report mouse ready", or with hidboot "boot mouse ready" (mouse-test.sh
@@ -35,20 +39,22 @@ shot mouse-scrollback
 send echo mouse-$HOME
 wait mouse-/boot
 wait {prompt}
-# An app that didn't ask either (tetris) plays on under a busy mouse.
-send run tetris
-wait run: bin/tetris started
+# An app that didn't ask for the mouse (`wltest --mouse nomouse`) reads
+# its keys undisturbed under a busy mouse: only the two keys typed reach it.
+send run wltest --mouse nomouse
+wait run: bin/wltest started
+wait 30 wltest: mouse: ready
 sleep 1
 monitor mouse_move 200 100
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
 monitor mouse_move -90 40 1
-type \x20
+type x
 sleep 0.5
 type q
-wait 30 tetris: score
-wait run: bin/tetris exited with code 0
+wait 30 wltest: mouse: 0 clicks (0 left, 0 right, 0 middle), 0 drags, 0 chords, wheel 0 (0 notches), 2 keys, 0 mouse reports
+wait run: bin/wltest exited with code 0
 wait {prompt}
 # The wire format, checked by a client of its own (contest mouse says what
 # each step expects): the mouse moves, then a key ends the step.
@@ -91,99 +97,80 @@ monitor mouse_move 1 1
 wait 30 contest: mouse: all held
 wait run: bin/contest exited with code 0
 wait {prompt}
-# mines asked: the pointer starts in the middle of the screen, the corner
-# of cell (8, 8); 10 pixels in, a left click reveals that cell.
-send run mines level=2 seed=5 noaccel trace
-wait run: bin/mines started
-wait mines: new game: Intermediate 16x16, 40 mines
+# wltest asked: the pointer starts in the middle of the screen; 10 pixels
+# in, a left click.
+send run wltest --mouse noaccel
+wait run: bin/wltest started
+wait 30 wltest: mouse: ready, 1280x800 (the screen), pointer at 640,400
 sleep 1
 monitor mouse_move 10 10
 sleep 0.3
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
-wait 10 mines: reveal 8,8: 39 opened, playing
-# A right click on the 1 at (7, 8) with no flag round it reveals nothing:
-# while the button is down the three closed cells it covers are dimmed.
+wait 10 wltest: mouse: left down at 650,410
+wait 10 wltest: mouse: left click at 650,410
+# Somewhere exact: a right click, the button held for a screenshot.
 monitor mouse_move -2000 -2000
 sleep 0.4
 monitor mouse_move 621 419
 sleep 0.4
 monitor mouse_button 2
-wait 10 mines: right 7,8: peek, 39 opened, 40 left, playing
+wait 10 wltest: mouse: right down at 621,419
 sleep 0.5
-shot mouse-mines-peek
+shot mouse-right-held
 monitor mouse_button 0
-# A right click on the closed cell (6, 7) flags it ...
-monitor mouse_move -38 -38
-sleep 0.4
+wait 10 wltest: mouse: right click at 621,419
+# A chord: left, then right as well; both let go at once.
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 3
+wait 10 wltest: mouse: chord at 621,419 (left and right held)
+sleep 0.2
+monitor mouse_button 0
+wait 10 wltest: mouse: left click at 621,419
+wait 10 wltest: mouse: right click at 621,419
+# Drags: left down, moved, up; then the right button back the other way.
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_move 100 50
+sleep 0.3
+monitor mouse_button 0
+wait 10 wltest: mouse: left drag from 621,419 to 721,469
 monitor mouse_button 2
 sleep 0.2
+monitor mouse_move -200 -100
+sleep 0.3
 monitor mouse_button 0
-wait 10 mines: right 6,7: flag, 39 opened, 39 left, playing
-# ... and now the 1 has its flag: a right click on it opens the other two.
-monitor mouse_move 38 38
-sleep 0.4
-monitor mouse_button 2
+wait 10 wltest: mouse: right drag from 721,469 to 521,369
+# The wheel, a notch each way.
+monitor mouse_move 0 0 1
+wait 10 wltest: mouse: wheel +1 at 521,369 (now 1)
 sleep 0.2
-monitor mouse_button 0
-wait 10 mines: right 7,8: chord, 41 opened, 39 left, playing
+monitor mouse_move 0 0 -1
+wait 10 wltest: mouse: wheel -1 at 521,369 (now 0)
 sleep 0.5
-shot mouse-mines-chord
-# The flag protects its cell from a left click; without it the mine goes off.
-monitor mouse_move -38 -38
-sleep 0.4
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-wait 10 mines: reveal 6,7: 0 opened, playing
-monitor mouse_button 2
-sleep 0.2
-monitor mouse_button 0
-wait 10 mines: right 6,7: flag, 41 opened, 40 left, playing
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-wait 10 mines: reveal 6,7: 0 opened, lost
-sleep 0.5
-shot mouse-mines-lost
-# The face is the new-game button; the buttons under the board set the level.
-monitor mouse_move -2000 -2000
-sleep 0.4
-monitor mouse_move 640 52
-sleep 0.4
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-wait 10 mines: new game: Intermediate 16x16, 40 mines
-monitor mouse_move -270 683
-sleep 0.4
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-wait 10 mines: new game: Beginner 9x9, 10 mines
-sleep 0.5
-shot mouse-mines-beginner
+shot mouse-wltest
 type q
-wait 30 mines: 1 game(s) finished, 0 won
-wait run: bin/mines exited with code 0
+wait 30 wltest: mouse: 4 clicks (2 left, 2 right, 0 middle), 2 drags, 1 chords, wheel 0 (2 notches), 1 keys,
+wait run: bin/wltest exited with code 0
 wait {prompt}
 # With acceleration (the default) a quick push goes twice as far: 100
-# counts to the right of the middle lands in column 13, not column 10.
-send run mines level=2 seed=5 trace
-wait run: bin/mines started
-wait mines: new game: Intermediate 16x16, 40 mines
+# counts to the right of the middle land 200 pixels on.
+send run wltest --mouse
+wait run: bin/wltest started
+wait 30 wltest: mouse: ready, 1280x800 (the screen), pointer at 640,400
 sleep 1
 monitor mouse_move 100 0
 sleep 0.4
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
-wait 10 mines: reveal 13,8:
+wait 10 wltest: mouse: left click at 840,400
 type q
-wait run: bin/mines exited with code 0
+wait run: bin/wltest exited with code 0
 wait {prompt}
-# mines is gone: the first report after it finds its key channel closed,
+# wltest is gone: the first report after it finds its key channel closed,
 # and the keys and the wheel are the shell's again.
 monitor mouse_move 30 30
 monitor mouse_button 1

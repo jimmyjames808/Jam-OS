@@ -13,14 +13,15 @@
 #          the mouse and presses its buttons through QEMU's monitor
 #          (mouse_move, mouse_button): usb-bus -> drv/hid -> console -> the
 #          key channel of the focused client. It checks
-#   - the shell and tetris, which never asked for the mouse, are not
-#     disturbed by it (no message they would misread as a key), and the
-#     wheel still scrolls the console back;
+#   - the shell and `wltest --mouse nomouse`, which never asked for the
+#     mouse, are not disturbed by it (no message they would misread as a
+#     key), and the wheel still scrolls the console back;
 #   - contest's client gets the movement, the buttons and the wheel;
-#   - bin/mines, which asked, gets the pointer where the script put it
-#     and every button edge: a whole game is played with clicks, each of
-#     which mines says on the console (`trace`), so the serial log shows
-#     them; the arrow is in the screenshots (<outdir>/mouse-*.png).
+#   - `wltest --mouse` (libfun's pointer, as an app has it), which asked,
+#     gets the pointer where the script put it and every button edge:
+#     clicks, a right click held, a chord, drags and the wheel, each of
+#     which it says on the console, so the serial log shows them; the
+#     arrow is in the screenshots (<outdir>/mouse-*.png).
 # QEMU's usb-mouse has a wheel in its report descriptor, so hid drives it
 # in the report protocol ("report mouse ready" in the log); with
 # MOUSE_HIDBOOT=1 the boot word hidboot keeps it in the boot protocol
