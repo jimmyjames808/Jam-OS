@@ -220,6 +220,13 @@ differs from the recommendation below, this note wins:
   colours) and Super+C copies, Super+V pastes (Ctrl+Shift+C/V as well),
   so Ctrl+C still stops a program; a paste is bracketed so a pasted
   multi-line command never runs line by line by accident.
+  A POLISH track follows G1 (owner, 2026-10-07): the boot menu's test
+  and network-test entries under one "Developer" submenu (on top: Jam OS,
+  previous build, no compositor); a quiet boot (Terminal 1 starts at the
+  prompt; the log stays in `dmesg` and /data/logs); `help` lists everyday
+  commands and `help dev` the developer ones; plain wording on screen and
+  in notifications (the detailed lines stay in the log); a calm panic
+  screen (its design is being settled with the owner).
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
