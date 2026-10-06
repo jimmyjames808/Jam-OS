@@ -7,14 +7,14 @@
 wait 120 Jam OS shell
 seen 30 devmgr: net: an RTL8125 (10ec:8125) gets drv/rtl8125, which serves netdev on the VLAN
 seen 30 devmgr: 00:04.0 1234:11e8 -> drv/edu
-wait jam>
+wait {prompt}
 send devices
 wait devmgr:
-wait jam>
+wait {prompt}
 # A reboot (kexec) keeps `net`: the next boot's devmgr has the word too
 # (M9-REVIEW item 3; netprobe-test.sh counts the devmgr lines: two).
 send reboot
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

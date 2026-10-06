@@ -6,9 +6,9 @@ wait 120 Jam OS shell
 seen 60 init: net.address is set: the static address, no DHCP client
 seen 60 netstack: address 10.2.21.5/24
 seen 30 dns: serving /svc/dns
-wait jam>
+wait {prompt}
 send host www.jam
 wait www.jam has address 10.2.21.174
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

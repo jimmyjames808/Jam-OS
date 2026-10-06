@@ -14,26 +14,26 @@
 # Run: QEMU_INPUT=tools/shell-tests/terms.txt tools/qemu-test.sh build/test terms shell
 wait 120 Jam OS shell
 seen 10 console: window mode (terminal 1)
-wait jam>
+wait {prompt}
 sleep 2
 shot terms-boot
 send term
 wait 10 terminal 2 opens
 wait 30 Jam OS shell
 seen 30 console: window mode (terminal 2)
-wait 10 jam>
+wait 10 {prompt}
 sleep 1
 
 send kill shell-2
 wait 10 init: bin/shell (terminal 2) was killed
 wait 30 Jam OS shell
-wait 10 jam>
+wait 10 {prompt}
 sleep 1
 send kill console-2
 wait 10 init: bin/console (terminal 2) was killed
 wait 30 console: window mode (terminal 2)
 wait 30 Jam OS shell
-wait 10 jam>
+wait 10 {prompt}
 sleep 1
 
 send kill compositor

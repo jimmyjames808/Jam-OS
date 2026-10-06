@@ -232,7 +232,7 @@ unsigned sh_jobs_add(const char *path, int argc, char **argv, handle_t proc, han
  * the prompt's line (true: something was written; redraw the line). */
 bool     sh_jobs_poll(bool prompt);
 /* Before a prompt: the notice of every program that ended ("[2] done:
- * tetris (exit 0)"), its number free again. */
+ * jamjar (exit 0)"), its number free again. */
 void     sh_jobs_report(void);
 /* The notice of j's end; forget an ended one (its number free again). */
 void     sh_job_say_end(const struct sh_job *j);
@@ -423,7 +423,7 @@ extern unsigned sh_term_no;
 /* information */
 SH_CMD(uname); SH_CMD(version); SH_CMD(uptime); SH_CMD(date); SH_CMD(lscpu); SH_CMD(free);
 SH_CMD(ps); SH_CMD(top); SH_CMD(whoami); SH_CMD(hostname); SH_CMD(dmesg); SH_CMD(log);
-SH_CMD(sysmon); SH_CMD(jamjar);
+SH_CMD(jamjar);
 /* files and text */
 SH_CMD(pwd); SH_CMD(cd); SH_CMD(ls); SH_CMD(find); SH_CMD(mkdir); SH_CMD(rm); SH_CMD(mv);
 SH_CMD(cp); SH_CMD(touch); SH_CMD(write); SH_CMD(df); SH_CMD(sync); SH_CMD(mount);
@@ -444,4 +444,4 @@ SH_CMD(reboot); SH_CMD(kernel); SH_CMD(update); SH_CMD(run); SH_CMD(allow);
 SH_CMD(ktest); SH_CMD(soak); SH_CMD(bench); SH_CMD(stress); SH_CMD(storm); SH_CMD(utest);
 SH_CMD(usbtest); SH_CMD(hdatest);
 SH_CMD(mixtest);
-SH_CMD(demo); SH_CMD(crash); SH_CMD(panic);
+SH_CMD(crash); SH_CMD(panic);

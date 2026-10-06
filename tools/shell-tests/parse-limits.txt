@@ -7,47 +7,47 @@
 # never appears in the typed line. QEMU_INPUT=this file, command line
 # "shell".
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send T=x
-wait jam>
+wait {prompt}
 
 # 31 segments: 30 empty ones, then the echo
 send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo seg31$T
 wait seg31x
-wait jam>
+wait {prompt}
 # 32 segments: the most a line may have
 send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo seg32$T
 wait seg32x
-wait jam>
+wait {prompt}
 # 33 segments: refused, nothing runs
 send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo seg33$T
 wait 10 sh: too many commands on one line
-wait jam>
+wait {prompt}
 send echo status$?$T
 wait status2x
-wait jam>
+wait {prompt}
 
 # 32 segments, the last with an unclosed quote: the quote's error
 send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo "open32$T
 wait 10 sh: no closing "
-wait jam>
+wait {prompt}
 send echo status$?$T
 wait status2x
-wait jam>
+wait {prompt}
 # 33 segments, the last with an unclosed quote: the limit's error
 send ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;echo "open33$T
 wait 10 sh: too many commands on one line
-wait jam>
+wait {prompt}
 send echo status$?$T
 wait status2x
-wait jam>
+wait {prompt}
 # a lone unclosed quote still says so (the one-segment case)
 send echo 'single$T
 wait 10 sh: no closing '
-wait jam>
+wait {prompt}
 # and the shell is still fine
 send echo alive$T
 wait alivex
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

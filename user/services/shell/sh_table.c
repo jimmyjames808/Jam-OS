@@ -35,7 +35,6 @@ static const struct sh_cmd cmds[] = {
       "  -k: the kernel's own listing (jobs with pages, handles, threads) in the log"),
     C(top, C_INFO, "top [-d seconds] [-n frames]",
       "live CPU use per CPU and per process, and memory; q or Ctrl+C quits"),
-    C(sysmon, C_INFO, "sysmon", "the graphical system monitor (bin/sysmon); q quits"),
     C(whoami, C_INFO, "whoami", "the user (there is one: jam)"),
     C(hostname, C_INFO, "hostname", "this machine's name"),
     C(dmesg, C_INFO, "dmesg", "the whole kernel log (up to 4 MiB); pipe it: dmesg | grep usb"),
@@ -219,8 +218,6 @@ static const struct sh_cmd cmds[] = {
     C(mixtest, C_TESTS, "mixtest",
       "the mixer checks (bin/mixtest) and their result line: tone programs played at\n"
       "  once, one killed; it kills and restarts the mixer and the hda driver once"),
-    C(demo, C_TESTS, "demo [seconds]",
-      "the visual demo: fractals on every CPU (default 76 s; any key stops it)"),
     C(crash, C_TESTS, "crash [name [yes]]",
       "the kernel's crash tests: alone, the list; \"crash <name> yes\" runs one\n"
       "  (each panics the machine on purpose, bp excepted)"),

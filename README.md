@@ -41,9 +41,8 @@ a real desktop PC, which is where every milestone is tested.
   writable. Each boot's kernel log is saved to `/data/logs/` and can be
   read on another computer.
 - A console and a shell with about 80 commands, pipes, variables, Tab
-  completion and file commands (`ls cat cp mv rm mkdir write df mount`),
-  plus a few apps: a Mandelbrot explorer, life, tetris, snake, minesweeper
-  played with the mouse, and a graphical system monitor.
+  completion and file commands (`ls cat cp mv rm mkdir write df mount`);
+  its prompt says where it is (`jam:/data/music>`).
 - Programs in the background: `run prog args &` (or `prog &`) gives the
   prompt back at once; `jobs` lists them, `kill %2` ends one, and the next
   prompt says when one ends (`[2] done: utest (exit 0)`). Such a program
@@ -89,7 +88,7 @@ a real desktop PC, which is where every milestone is tested.
 - A desktop (G1, being built): a compositor of our own that speaks
   Wayland draws the screen, and the shell runs in a terminal window on
   the jam wallpaper. Super+Enter (or `term`) opens another terminal, up
-  to eight; apps open windows of their own (`tetris &`). Windows tile by
+  to eight; apps open windows of their own (`jamjar &`). Windows tile by
   default (each new one halves the focused tile; drag the gap between two
   to resize them) or float (moved and raised with the mouse); Super+T
   switches the screen, and the choice is kept in the settings. Keys go to
@@ -154,7 +153,8 @@ make run                                  # build, then boot it in QEMU
 
 `make run` boots the image in QEMU (q35, OVMF, the stick on a USB xHCI
 controller, a USB keyboard) with the serial console on your terminal. Type
-at the `jam>` prompt; `help` lists the commands. Python 3 is needed for
+at the prompt, `jam:/boot>` (`jam:` and the current directory, which `cd`
+changes); `help` lists the commands. Python 3 is needed for
 the build tools (and Pillow for test screenshots).
 
 | Command | What it does |
@@ -429,8 +429,8 @@ an older signed build is accepted too (the versions are printed).
 | `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `rtl8125/` (the PC's Realtek RTL8125B network chip), `e1000e/` (QEMU's Intel 82574L network card, for the network tests), `lib/` (code several drivers link: the netdev server, `netserver.c`), `test/` (test drivers), `include/` (`<jam/driver.h>`, `<jam/task.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace and `/svc`, a program's list (`<wants.h>`), the driver API, cooperative tasks (`<jam/task.h>`), sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3), settings (`<settings.h>`), the calendar and time zones (`<wallclock.h>`), UTF-8, SHA-256 and IPv4 addresses as text (`<ipv4.h>`) |
 | `user/services/` | init, console, devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), dhcp (the DHCP client), dns (the resolver, `/svc/dns`), netlog (the log to the Mac), sntp (the clock from the network), serve (the file server behind `serve`), update (`update`'s fetcher: the build the Mac serves, offered to init) |
-| `user/apps/` | fractal, life, tetris, snake, mines, sysmon, jamjar (the music player's window), demo, splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), and `fun/` (the apps library) |
-| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), mixramp (a ramp played while the mixer is killed again and again), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test), wantlisten (a list asking for `svc net listen`, the same) |
+| `user/apps/` | jamjar (the music player's window), splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), fetch and speed (the shell's `fetch` and `speed`), and `fun/` (the apps library) |
+| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), mixramp (a ramp played while the mixer is killed again and again), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test), wantlisten (a list asking for `svc net listen`, the same), fractal (a Mandelbrot explorer drawn by every CPU with vector maths: its benchmark and self-test), wltest (a test window: the compositor's checks, and the mouse as an app sees it), wlapps (programs as windows on a compositor of its own), fbbench (the drawing code's speed) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
 | `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
 | `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts; the USB writer and `make flash`'s updater; `update`'s server and its signing tool (`jamos-sign`, built into `build/host/`); the smooth text's preview and font cutter (`tools/fontpreview.c`, `tools/subsetfont.py`) |

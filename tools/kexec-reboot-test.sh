@@ -61,7 +61,7 @@ run() {
 
 run_kexec() {
     QEMU_EXTRA="${QEMU_EXTRA:--audiodev none,id=snd0 -device intel-hda,id=hda0 \
--device hda-output,bus=hda0.0,cad=0,audiodev=snd0}" QEMU_SPLASH=1 run kexec shell "wait 180 init: the shell is up" "wait jam>" \
+-device hda-output,bus=hda0.0,cad=0,audiodev=snd0}" QEMU_SPLASH=1 run kexec shell "wait 180 init: the shell is up" "wait {prompt}" \
         "seen 30 init: bin/splash exited with code 0" \
         "seen 60 logd: writing /data/logs/boot-0001.txt" \
         "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
@@ -72,8 +72,8 @@ run_kexec() {
         "wait 60 loader:      Jam OS kexec" "shot kexec-between" \
         "wait 30 kexec: started by a reboot" \
         "wait 60 kexec: stored kernel armed" "wait 120 splash: first frame" \
-        "wait 180 init: the shell is up" "wait jam>" \
-        "send sleep 5 && ls /data/logs && uname" "wait boot-0001.txt" "wait jam>" \
+        "wait 180 init: the shell is up" "wait {prompt}" \
+        "send sleep 5 && ls /data/logs && uname" "wait boot-0001.txt" "wait {prompt}" \
         "seen 30 logd: writing /data/logs/boot-0002.txt" \
         "send reboot -f" "wait reboot: resetting" ||
         { fail kexec "the script (see $out/kexec-kexec.log)"; return; }
@@ -109,7 +109,7 @@ run_changed() {
     head -c 4096 /dev/zero >> "$out/jamos-longer.elf"
     mcopy -o -i "$stick2@@1M" "$out/jamos-longer.elf" ::/boot/jamos.elf ||
         { fail changed "can't write the second stick's kernel"; return; }
-    run changed shell "wait 120 Jam OS shell" "wait jam>" \
+    run changed shell "wait 120 Jam OS shell" "wait {prompt}" \
         "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
         "monitor device_del stick" "wait 30 init: /esp is gone" \
         "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw,throttling.bps-read=2000000" \
@@ -118,7 +118,7 @@ run_changed() {
         "wait 30 init: kexec: /esp's kernel or boot image changed: reading" \
         "sleep 2" "shot kexec-blank" \
         "wait 120 kexec_load: OK" "wait 60 kexec: starting the stored kernel" \
-        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" "wait jam>" \
+        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" "wait {prompt}" \
         "send reboot -f" "wait reboot: resetting" ||
         fail changed "the script (see $out/kexec-changed.log)"
     [ "$(grep -ac "reboot: resetting" "$out/kexec-changed.log")" -eq 1 ] ||
@@ -135,16 +135,16 @@ run_load() {
     head -c 4096 /dev/zero >> "$out/jamos-longer.elf"
     mcopy -o -i "$stick2@@1M" "$out/jamos-longer.elf" ::/boot/jamos.elf ||
         { fail load "can't write the second stick's kernel"; return; }
-    run load shell "wait 120 Jam OS shell" "wait jam>" \
+    run load shell "wait 120 Jam OS shell" "wait {prompt}" \
         "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
         "monitor device_del stick" "wait 30 init: /esp is gone" \
         "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw" \
         "monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=stick2" \
         "wait 60 init: /esp mounted" "sleep 1" "send kernel load" \
-        "wait 120 kexec_load: OK" "wait 30 kernel: loaded" "wait jam>" \
+        "wait 120 kexec_load: OK" "wait 30 kernel: loaded" "wait {prompt}" \
         "send reboot" "wait 30 init: kexec: /esp unchanged: the stored kernel, no files read" \
         "wait 60 kexec: starting the stored kernel" \
-        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" "wait jam>" \
+        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" "wait {prompt}" \
         "send reboot -f" "wait reboot: resetting" ||
         fail load "the script (see $out/kexec-load.log)"
     log="$out/kexec-load.log"
@@ -161,18 +161,18 @@ run_broken() {
     head -c 200000 build/jamos.elf > "$out/jamos-cut.elf"
     mcopy -o -i "$stick2@@1M" "$out/jamos-cut.elf" ::/boot/jamos.elf ||
         { fail broken "can't write the second stick's kernel"; return; }
-    run broken shell "wait 120 Jam OS shell" "wait jam>" \
+    run broken shell "wait 120 Jam OS shell" "wait {prompt}" \
         "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
         "monitor device_del stick" "wait 30 init: /esp is gone" \
         "monitor drive_add 0 if=none,id=stick2,file=$stick2,format=raw" \
         "monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=stick2" \
         "wait 60 init: /esp mounted" "sleep 1" "send kernel load" \
-        "wait 120 kernel: not loaded: they are not a Jam OS kernel and boot image" "wait jam>" \
+        "wait 120 kernel: not loaded: they are not a Jam OS kernel and boot image" "wait {prompt}" \
         "send reboot" "wait 30 init: kexec: /esp's kernel or boot image changed: reading" \
         "wait 120 the stick's kernel didn't load (ERR_INVALID_ARGS): restarting the one in memory" \
         "sleep 1" "shot kexec-broken-notice" \
         "wait 60 kexec: starting the stored kernel" \
-        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" "wait jam>" \
+        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" "wait {prompt}" \
         "send reboot -f" "wait reboot: resetting" ||
         fail broken "the script (see $out/kexec-broken.log)"
     [ "$(grep -ac "reboot: resetting" "$out/kexec-broken.log")" -eq 1 ] ||
@@ -181,7 +181,7 @@ run_broken() {
 }
 
 run_firmware() {
-    run firmware shell "wait 120 Jam OS shell" "wait jam>" "send reboot -f" \
+    run firmware shell "wait 120 Jam OS shell" "wait {prompt}" "send reboot -f" \
         "wait 30 rebooting through the firmware" "wait 30 reboot: resetting" ||
         fail firmware "the script (see $out/kexec-firmware.log)"
     grep -aq "kexec_load\|kexec: starting\|init: kexec:.*stored kernel," "$out/kexec-firmware.log" &&
@@ -189,9 +189,9 @@ run_firmware() {
 }
 
 run_fallback() {
-    run fallback "shell crashkernel=0" "wait 120 Jam OS shell" "wait jam>" \
+    run fallback "shell crashkernel=0" "wait 120 Jam OS shell" "wait {prompt}" \
         "seen 60 init: /esp mounted" "send kernel load" \
-        "wait 120 kernel: not loaded: there is no stored kernel" "wait jam>" \
+        "wait 120 kernel: not loaded: there is no stored kernel" "wait {prompt}" \
         "send reboot" "wait 60 init: kexec: " \
         "wait 60 the jump failed (ERR_NOT_SUPPORTED)" \
         "wait 10 init: rebooting through the firmware instead" "wait 30 reboot: resetting" ||

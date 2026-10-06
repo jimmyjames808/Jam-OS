@@ -4,7 +4,7 @@
 # search, the help, the roulette and the big view; then q, and the music
 # plays on.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 seen 60 music: ready
 send jamjar trace
@@ -51,12 +51,12 @@ type f
 sleep 1
 type q
 wait 30 run: bin/jamjar exited with code 0
-wait jam>
+wait {prompt}
 send music status | grep -c "music: playing"; echo jj-""1 $?
 wait jj-1 0
-wait jam>
+wait {prompt}
 send music stop
 wait music: stopped
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

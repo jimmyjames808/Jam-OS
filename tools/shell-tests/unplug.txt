@@ -5,11 +5,11 @@
 # there, and logd carries on in its file.
 # QEMU_INPUT=this file, command line "shell".
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 seen 30 logd: writing /data/logs/boot-0001.txt
 send T=u
-wait jam>
+wait {prompt}
 send write /data/keep.txt written before the pull-$T && sync && cat /data/keep.txt
 wait written before the pull-u
 

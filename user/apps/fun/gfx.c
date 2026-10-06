@@ -315,40 +315,6 @@ void frame(const struct surf *s, const struct rect *r, int t, uint32_t c)
     fill(s, x + w - t, y + t, t, h - 2 * t, c);
 }
 
-void bevel(const struct surf *s, const struct rect *r, int e, uint32_t c)
-{
-    bool sunk = e < 0;
-    e = sunk ? -e : e;
-    uint32_t light = mixc(c, 0xffffff, 110), soft = mixc(c, 0xffffff, 56);
-    uint32_t dark = scalec(c, 118), shade = scalec(c, 164);
-    uint32_t top = sunk ? dark : light, left = sunk ? shade : soft;
-    uint32_t bottom = sunk ? light : dark, right = sunk ? soft : shade;
-    vgrad(s, r, mixc(c, 0xffffff, 26), scalec(c, 214));
-    /* Ring i of the edge: each side one pixel, the corners mitred. */
-    for (int i = 0; i < e && 2 * i < r->w && 2 * i < r->h; i++) {
-        fill(s, r->x + i, r->y + i, r->w - 2 * i, 1, top);
-        fill(s, r->x + i, r->y + i + 1, 1, r->h - 2 * i - 1, left);
-        fill(s, r->x + i + 1, r->y + r->h - 1 - i, r->w - 2 * i - 1, 1, bottom);
-        fill(s, r->x + r->w - 1 - i, r->y + i + 1, 1, r->h - 2 * i - 2, right);
-    }
-}
-
-void glow(const struct surf *s, const struct rect *r, int reach, uint32_t c)
-{
-    int step = reach / 5 > 1 ? reach / 5 : 1;
-    for (int g = 5; g >= 1; g--)
-        panel(s,
-              &(struct rect){ r->x - g * step, r->y - g * step, r->w + 2 * g * step,
-                              r->h + 2 * g * step },
-              2 * step + g * step, c, 22);
-}
-
-void card(const struct surf *s, const struct rect *r, int radius)
-{
-    panel(s, &(struct rect){ r->x - 2, r->y - 2, r->w + 4, r->h + 4 }, radius + 2, 0x3b4c86, 170);
-    panel(s, r, radius, 0x0c1022, 240);
-}
-
 void vgrad(const struct surf *s, const struct rect *r, uint32_t c0, uint32_t c1)
 {
     int h = r->h;

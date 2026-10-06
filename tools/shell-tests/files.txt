@@ -9,9 +9,9 @@
 # QEMU_INPUT=this file, command line "shell". As in cmds.txt, the text
 # waited for is built from $T, so it never appears in the typed line.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send T=x
-wait jam>
+wait {prompt}
 
 # ---- /boot: a mount like any other, and read-only ----------------------------------------
 send ls / | grep -c ^boot/$ | grep ^1$ && echo ok-$T-root
@@ -19,7 +19,7 @@ wait ok-x-root
 send df
 wait /boot
 wait BOOTFS (read-only)
-wait jam>
+wait {prompt}
 send write /boot/new.txt hello; echo st-$T=$?
 wait write: /boot/new.txt: read-only
 wait st-x=1
@@ -47,7 +47,7 @@ send sync && echo ok-$T-sync
 wait ok-x-sync
 send rm /boot
 wait rm: /boot: a mount point: not removed
-wait jam>
+wait {prompt}
 
 # ---- run takes a path ------------------------------------------------------------------
 send run /boot/bin/utest env one-$T
@@ -65,15 +65,15 @@ wait st-x=127
 # a program the shell starts sees the shell's mounts
 send run utest fscat /boot/init.cfg | grep -c "fscat: # init.cfg" | grep ^1$ && echo ok-$T-ns
 wait ok-x-ns
-wait jam>
+wait {prompt}
 
 # ---- a writable mount: a shell with the RAM filesystem at /ram -------------------------
 send run ramfs shell
 wait run: bin/ramfs started
 wait Jam OS shell
-wait jam>
+wait {prompt}
 send T=y
-wait jam>
+wait {prompt}
 send ls / | grep -c ^ram/$ | grep ^1$ && echo ok-$T-mounts
 wait ok-y-mounts
 send df | grep /ram | grep -c RAMFS | grep ^1$ && echo ok-$T-df
@@ -183,15 +183,15 @@ wait ok-y-sync
 type \x03
 wait 10 ^C: killing bin/ramfs
 wait 10 run: bin/ramfs was killed
-wait jam>
+wait {prompt}
 send ls /ram
 wait ls: /ram: no such file or directory
-wait jam>
+wait {prompt}
 
 # ---- a mount that reaches a running shell ------------------------------------------------
 send run ramfs shell late
 wait Jam OS shell
-wait jam>
+wait {prompt}
 send ls /ram
 wait ls: /ram: no such file or directory
 wait 30 ramfs: /ram is mounted
@@ -199,7 +199,7 @@ send write /ram/late.txt it came && cat /ram/late.txt
 wait it came
 type \x03
 wait 10 run: bin/ramfs was killed
-wait jam>
+wait {prompt}
 
 # ---- init sends the shell its mounts again when the bootfs server restarts --------------
 send kill bootfs
@@ -211,6 +211,6 @@ wait ok-x-remount
 send run utest env back-$T
 wait arg: back-x
 wait run: bin/utest exited with code 0
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

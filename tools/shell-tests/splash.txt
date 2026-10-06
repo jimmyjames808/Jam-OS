@@ -12,19 +12,19 @@ shot splash-a
 sleep 1
 shot splash-b
 wait 60 console: the screen is back
-seen 60 jam>
+seen 60 {prompt}
 # the console draws its text within a render (16 ms), not at once
 sleep 1
 shot splash-shell
 send run splash --selftest
 wait 240 splash: selftest
 wait 240 run: bin/splash exited
-wait jam>
+wait {prompt}
 send run splash --alpha
 wait 60 splash: alpha demo drawn
 sleep 1
 shot splash-alpha
 wait 60 run: bin/splash exited
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

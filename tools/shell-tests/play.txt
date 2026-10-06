@@ -5,62 +5,62 @@
 # refused, then a long one is stopped with Ctrl+C. (The markers are
 # echoed as pl-""1 so the typed line itself never matches the wait.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 1 codec(s) answered; 0 verb(s) timed out
 seen 60 init: /data mounted
 send ls -l /data; echo pl-""0
 wait long.wav
 wait pl-0
-wait jam>
+wait {prompt}
 send play /data/s48.wav; echo pl-""1 $?
 wait 30 play: /data/s48.wav: 48000 Hz, 16-bit, 2 ch, 0:02
 wait 30 pl-1 0
-wait jam>
+wait {prompt}
 send cd /data; play m44.wav; echo pl-""2 $?
 wait 30 play: m44.wav: 44100 Hz, 16-bit, 1 ch, 0:01
 wait 30 pl-2 0
-wait jam>
+wait {prompt}
 send play u8.wav; echo pl-""3 $?
 wait 30 play: u8.wav: 22050 Hz, 8-bit, 1 ch, 0:01
 wait 30 pl-3 0
-wait jam>
+wait {prompt}
 send play -v -20 x24.wav; echo pl-""4 $?
 wait 30 play: x24.wav: 96000 Hz, 24-bit, 2 ch, 0:01
 wait 30 pl-4 0
-wait jam>
+wait {prompt}
 send hda gain; echo pl-""5
 wait hda: gain -30.0 dB (step 44;
 wait pl-5
-wait jam>
+wait {prompt}
 send play garbage.wav; echo pl-""6 $?
 wait play: garbage.wav: not a WAV or MP3 file (no RIFF/WAVE header, no MPEG audio frames)
 wait pl-6 1
-wait jam>
+wait {prompt}
 send play cut.wav; echo pl-""7 $?
 wait play: cut.wav: cut off in its format chunk
 wait pl-7 1
-wait jam>
+wait {prompt}
 send play float.wav; echo pl-""8 $?
 wait play: float.wav: floating-point samples: only PCM (convert it to 16-bit PCM)
 wait pl-8 1
-wait jam>
+wait {prompt}
 send play nope.wav; echo pl-""9 $?
 wait play: nope.wav: no such file
 wait pl-9 1
-wait jam>
+wait {prompt}
 send play -v loud x24.wav; echo pl-""10 $?
 wait usage: play [-s] [-v dB | -n] <file.wav|file.mp3>
 wait pl-10 2
-wait jam>
+wait {prompt}
 # Ctrl+C ends the whole line, so $? is asked for on the next one.
 send play long.wav
 wait 30 play: long.wav: 48000 Hz, 16-bit, 1 ch, 0:10
 sleep 2
 type \x03
 wait 10 play: long.wav: stopped at 0:0
-wait jam>
+wait {prompt}
 send echo pl-""11 $?
 wait pl-11 130
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

@@ -126,11 +126,11 @@ mcopy -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
 # Run 1: the failures, then a power cycle.
 cat > "$out/wfail.txt" <<EOF
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 send run updtest writefail
 wait 900 updtest: writefail:
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF
@@ -156,11 +156,11 @@ no_new "$out/wtest-1.img" || fail "run 1: a .new or .old file is left on the ESP
 
 # Run 1b: a stop at each change of the swap, on a copy of run 1's stick.
 {
-    printf 'wait 120 Jam OS shell\nwait jam>\nseen 60 init: /data mounted\n'
+    printf 'wait 120 Jam OS shell\nwait {prompt}\nseen 60 init: /data mounted\n'
     for step in 1:b 2:b 3:b 4:b 5:c 6:b 7:c 8:b 0:c; do
-        printf 'send run updtest writestop %s %s\nwait 300 updtest: writestop:\nwait jam>\n' \
+        printf 'send run updtest writestop %s %s\nwait 300 updtest: writestop:\nwait {prompt}\n' \
             "${step%:*}" "${step#*:}"
-        printf 'send run updtest espcheck\nwait 120 updtest: espcheck:\nwait jam>\n'
+        printf 'send run updtest espcheck\nwait 120 updtest: espcheck:\nwait {prompt}\n'
     done
     printf 'send reboot -f\nwait reboot: resetting\n'
 } > "$out/wstop.txt"
@@ -180,7 +180,7 @@ no_new "$out/wtest-stop.img" || fail "run 1b: a .new or .old file is left on the
 for run in wstopcold wstopprev; do
     want=$vc prev=0
     [ $run = wstopprev ] && want=$vb prev=1
-    printf 'wait 120 Jam OS shell\nwait jam>\nsend version\nwait Jam OS %s, git\nwait jam>\nsend reboot -f\nwait reboot: resetting\n' \
+    printf 'wait 120 Jam OS shell\nwait {prompt}\nsend version\nwait Jam OS %s, git\nwait {prompt}\nsend reboot -f\nwait reboot: resetting\n' \
         "$want" > "$out/$run.txt"
     QEMU_IMAGE="$out/wtest-stop.img" QEMU_BOOT_PREV=$prev QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
         QEMU_INPUT="$out/$run.txt" tools/qemu-test.sh "$out" $run shell > "$out/$run.out" 2>&1 ||
@@ -192,37 +192,37 @@ done
 cat > "$out/wnet.txt" <<EOF
 wait 120 Jam OS shell
 seen 60 netstack: address 10.2.21.5/24
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $va, git
-wait jam>
+wait {prompt}
 send update -m
 wait 600 -> $vb (b0b0b0b): checked by init in
 wait loaded into memory only (-m)
-wait jam>
+wait {prompt}
 send reboot
 wait 30 init: kexec: /esp unchanged: the stored kernel, no files read
 wait 60 kexec: starting the stored kernel
 wait 60 kexec: started by a reboot
 wait 120 init: the shell is up
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $vb, git b0b0b0b
-wait jam>
+wait {prompt}
 send cat /boot/update-marker.txt
 wait $marker
-wait jam>
+wait {prompt}
 send sha256sum /esp/boot/jamos.elf
 wait $sha_a
-wait jam>
+wait {prompt}
 send update -w
 wait 600 -> $vb (b0b0b0b): checked by init in
 wait loaded and written to the stick
 wait update: written to the stick and loaded:
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $vb, git b0b0b0b
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF
@@ -257,13 +257,13 @@ for run in wcold wprev; do
     [ $run = wprev ] && want=$va mk=1 prev=1
     cat > "$out/$run.txt" <<EOF
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $want, git
-wait jam>
+wait {prompt}
 send cat /boot/update-marker.txt; echo mk-""\$?
 wait mk-$mk
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF

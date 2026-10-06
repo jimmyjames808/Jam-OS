@@ -7,17 +7,17 @@
 # Each file is synced before the kill (fat-spare.txt says why).
 # (The markers are echoed as np-""1 so the typed line itself never matches.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 seen 60 devmgr: nospare: no warm spare
 send write /data/nospare-0.txt written before the kills; echo np-""1
 wait np-1
-wait jam>
+wait {prompt}
 send sync && kill fat-data && cat /data/nospare-0.txt; echo np-""2
 wait shell: killed process
 wait written before the kills
 wait np-2
-wait jam>
+wait {prompt}
 seen 10 devmgr: fat-data: new process started (no spare waited)
 send write /data/nospare-1.txt k-""1 && sync && kill fat-data && cat /data/nospare-1.txt; echo np-""3
 wait k-1
@@ -31,13 +31,13 @@ wait np-5
 send write /data/nospare-4.txt k-""4 && sync && kill fat-data && cat /data/nospare-4.txt; echo np-""6
 wait k-4
 wait np-6
-wait jam>
+wait {prompt}
 send sleep 2; ls /data | grep -c "^nospare-" | grep ^5$ && echo ok-""five; echo np-""7
 wait ok-five
 wait np-7
-wait jam>
+wait {prompt}
 send ps; echo np-""8
 wait np-8
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

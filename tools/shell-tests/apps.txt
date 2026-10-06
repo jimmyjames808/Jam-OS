@@ -1,113 +1,95 @@
-# The apps that came with the mouse (user/apps/snake, user/apps/mines,
-# user/apps/sysmon) from the shell: run by tools/apps-test.sh (QEMU_USB = a
-# usb-kbd on xhci port 2 and a usb-mouse on port 3; the command line
-# "shell"). Each app's self-test, then each one used for a while, with
-# screenshots (<name>.png next to the log) of the screen it borrowed, quit
-# with q, and the shell prompt must come back. Nothing here depends on the
-# screen's size, so the same script runs at 1280x800 and at 2560x1440
-# (APPS_HD=1): the one mouse click is at the pointer's starting place, the
-# middle of the screen, which is the middle of the mines board.
-# tools/shell-tests/mouse.txt drives the mouse further.
+# Programs that draw with libfun on the screen they borrow, from the
+# shell: run by tools/apps-test.sh (QEMU_USB = a usb-kbd on xhci port 2
+# and a usb-mouse on port 3; the command line "shell nocomp", so they
+# borrow the console's screen: tools/shell-tests/wlapps.txt has them as
+# windows). The self-tests of the test programs fractal (user/tests/fractal:
+# its maths, the parallel render, libfun's pool) and wltest (libfun's
+# pointer); then fractal explored through the serial terminal (arrows arrive as ESC [ A..D,
+# letters as themselves) with screenshots (<name>.png next to the log),
+# its benchmark, quit with q, and the shell prompt must come back: the
+# console redraws its text screen when the lease closes. wltest's mouse
+# mode (user/tests/wltest/fun.c) before the mouse stirs and with one click;
+# then a program killed (Ctrl+C: the shell kills its job) and one that
+# crashes (a page fault) with the screen still borrowed. Nothing here
+# depends on the screen's size, so the same script runs at 1280x800 and at
+# 2560x1440 (APPS_HD=1): the one mouse click is at the pointer's starting
+# place, the middle of the screen. tools/shell-tests/mouse.txt drives the
+# mouse further.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 30 report mouse ready
-send run snake --selftest
-wait 60 snake: selftest PASSED
-wait run: bin/snake exited with code 0
-wait jam>
-send run mines --selftest
-wait 60 mines: selftest PASSED
-wait run: bin/mines exited with code 0
-wait jam>
-send run sysmon --selftest
-wait 60 sysmon: selftest PASSED
-wait run: bin/sysmon exited with code 0
-wait jam>
-# snake: turn with an arrow and with w a s d, pause, carry on into a wall
-send run snake seed=7
-wait run: bin/snake started
-sleep 1
-type \e[A
-sleep 0.4
-type a
-sleep 0.4
-type s
-sleep 0.3
-shot apps-snake
-type d
-sleep 0.2
-type p
-sleep 0.5
-shot apps-snake-paused
-type p
-sleep 7
-shot apps-snake-over
-type \r
-sleep 0.5
-type q
-wait 30 snake: score
-wait run: bin/snake exited with code 0
-wait jam>
-# mines: before the mouse stirs the bottom line says the game needs one;
-# then one click in the middle of the board, and the other levels
-send run mines level=2 seed=5 noaccel trace
-wait run: bin/mines started
-wait mines: new game: Intermediate 16x16, 40 mines
-sleep 1
-shot apps-mines-no-mouse
-monitor mouse_move 10 10
-sleep 0.3
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-wait 10 mines: reveal 8,8: 39 opened, playing
-sleep 1.2
-shot apps-mines
-type 4
-wait 10 mines: new game: Giant 40x22, 180 mines
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-wait 10 mines: reveal 20,11:
-sleep 0.5
-shot apps-mines-giant
-type 1
-wait 10 mines: new game: Beginner 9x9, 10 mines
-sleep 0.5
-shot apps-mines-beginner
-type q
-wait 30 mines: 0 game(s) finished
-wait run: bin/mines exited with code 0
-wait jam>
-# sysmon: the shell command hands it the root resource to read
-send sysmon
-wait sysmon: bin/sysmon started
-sleep 4
-shot apps-sysmon
-type q
-wait 30 sysmon: bin/sysmon exited with code 0
-wait jam>
-# ... and `run sysmon` gives it the same: its list asks for the kernel's
-# figures (right sysinfo)
-send run sysmon
-wait run: bin/sysmon started
-sleep 2
-type q
-wait 30 run: bin/sysmon exited with code 0
-wait jam>
-# ... and the PC's 28 CPUs (16 P + 12 E threads), made up
-send run sysmon fake=28
-wait run: bin/sysmon started
+send run fractal --selftest
+wait 240 fractal: selftest PASSED
+wait run: bin/fractal exited with code 0
+wait {prompt}
+send run wltest --selftest
+wait 60 wltest: selftest PASSED
+wait run: bin/wltest exited with code 0
+wait {prompt}
+# fractal: the whole set, a famous place, a Julia set in another palette,
+# then deep: the tour's point zoomed 2^60 (~1e18x: perturbation); the
+# benchmark (one CPU against all of them) on the way
+send run fractal
+wait run: bin/fractal started
 sleep 8
-shot apps-sysmon-28
+shot apps-fractal
+type 2
+sleep 12
+shot apps-fractal-seahorse
+type b
+wait 120 fractal: benchmark,
+type jc
+sleep 10
+shot apps-fractal-julia
+type j1tt++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+sleep 40
+shot apps-fractal-deep
 type q
-wait 30 readings of 28 CPUs
-wait run: bin/sysmon exited with code 0
-wait jam>
+wait 30 renders on
+wait run: bin/fractal exited with code 0
+wait {prompt}
+# wltest's mouse mode: before the mouse stirs, then one click where the
+# pointer starts
+send run wltest --mouse noaccel
+wait run: bin/wltest started
+wait 30 wltest: mouse: ready
+sleep 1
+shot apps-wltest-no-mouse
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 wltest: mouse: left click at
+sleep 0.5
+shot apps-wltest-click
+type q
+wait 30 wltest: mouse: 1 clicks (1 left
+wait run: bin/wltest exited with code 0
+wait {prompt}
+# Ctrl+C in a program that reads its keys quits it (the shell would kill
+# it too)
+send run fractal
+wait run: bin/fractal started
+sleep 3
+type \x03
+wait 30 run: bin/fractal
+wait {prompt}
+# Killed with the screen borrowed: a program that reads no keys, Ctrl+C
+# (the shell kills its job; the lease closes with it)
+send run wltest --hang-test
+wait 30 wltest: hang test: holding the screen
+sleep 1
+shot apps-hang
+type \x03
+wait 30 run: bin/wltest was killed
+wait {prompt}
+# ... and a crash: a program that dies (page fault) holding the screen
+send run wltest --crash-test
+wait 30 run: bin/wltest was killed
+wait {prompt}
 # the shell is back in charge of the keys and the screen
-send help sysmon
-wait the graphical system monitor
-wait jam>
+send help
+wait Commands:
+wait {prompt}
 sleep 0.5
 shot apps-shell-after
 send reboot -f

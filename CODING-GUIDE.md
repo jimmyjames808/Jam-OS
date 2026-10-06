@@ -88,8 +88,8 @@ syscall path returns an error.
 | Kernel tests | `kernel/test/test_<subject>.c` (left out by `make KTESTS=0`; checks that must ship in every kernel go in `kernel/debug/`) |
 | Drivers | `drivers/<name>/` (test drivers in `drivers/test/<name>/`); either way `drv/<name>` in bootfs |
 | System services (bootfs, console, devmgr, dhcp, dns, fat, init, logd, mixer, music, netstack, serialin, serve, shell, sntp, update) | `user/services/<name>/` |
-| Apps (fractal, life, tetris, snake, mines, sysmon, jamjar, jamcover, demo, splash, play, fetch, speed) | `user/apps/<name>/`; the apps library (libfun) is `user/apps/fun/` |
-| Test programs (utest, usbtest, hdatest, mixtest, mixramp, nettest, dnstest, tcptest, contest, ramfs, soakload, wantdebug, wantlisten, nolisten) | `user/tests/<name>/` |
+| Apps (jamjar, jamcover, splash, play, fetch, speed) | `user/apps/<name>/`; the apps library (libfun) is `user/apps/fun/` |
+| Test programs (utest, usbtest, hdatest, mixtest, mixramp, nettest, dnstest, tcptest, contest, ramfs, soakload, wantdebug, wantlisten, nolisten, fractal, wltest, wlapps, fbbench) | `user/tests/<name>/` |
 | Shared user code | `user/lib/` (libos, headers in `user/include/`), libfun (`<fun.h>`) |
 | ABI sources | `abi/syscalls.def`, `abi/idl/*.idl` |
 | Build tools and test scripts | `tools/` (QEMU shell scripts in `tools/shell-tests/`) |
@@ -655,7 +655,9 @@ protocol's restart rule says what clients do after `ERR_PEER_CLOSED`.
 ### Add a user program
 
 1. `user/<services|apps|tests>/<name>/`: the Makefile finds it there and
-   it becomes `bin/<name>` in bootfs (an app also links libfun).
+   it becomes `bin/<name>` in bootfs (an app also links libfun; a test
+   program or a service that draws with it goes in the Makefile's
+   `FUN_PROGS`, as fractal and wltest do).
 2. `int main(int argc, char **argv)` on libos. Take handles from the
    startup message by role (`startup_handle(SR_*)`); the program has no
    other authority.
@@ -663,8 +665,9 @@ protocol's restart rule says what clients do after `ERR_PEER_CLOSED`.
    to `boot/init.cfg`; the services init starts on a plain boot are
    started in `user/services/init/shell.c`, each with its handles.
 4. Big ones split by job from the start, with an internal header.
-5. An app that draws borrows the screen through the console
-   (`console.lend_screen`) and uses the apps library.
+5. An app that draws uses the apps library: `gfx_open` opens a window on
+   the compositor (its list asks for `svc wayland`), or under `nocomp`
+   borrows the screen from the console (`console.lend_screen`).
 
 ---
 

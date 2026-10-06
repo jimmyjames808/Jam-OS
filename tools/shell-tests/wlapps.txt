@@ -1,40 +1,43 @@
-# libfun's apps as windows (user/tests/wlapps, tools/wlapps-test.sh): from
-# the shell, `run wlapps` starts a headless compositor of its own and two
-# apps on it, each with only /svc/wayland in its namespace and no console
-# (so an app that got no window can't borrow the screen instead), checks
+# Programs as windows (user/tests/wlapps, tools/wlapps-test.sh): jamjar,
+# the test programs wltest and fractal. From the shell, `run wlapps`
+# starts a headless compositor of its own and the programs on it, each
+# with only /svc/wayland in its namespace and no console (so a program
+# that got no window can't borrow the screen instead), checks
 # that they run and that the composition has their pixels, prints its
 # verdict, and then shows the composition on the borrowed screen while
 # the screenshot is taken. Without a window manager in the compositor
 # (no xdg_wm_base) each verdict is SKIP and nothing is shown.
 wait 120 Jam OS shell
-wait jam>
-# two games side by side in the window manager's tiles
-send run wlapps tile win=600x400 life tetris
+wait {prompt}
+# two of wltest's own windows (libjwl, no libfun) side by side in the
+# window manager's tiles
+send run wlapps tile win=600x400 wltest wltest
 wait 60 wlapps: verdict:
 sleep 1.5
-shot wlapps-life-tetris
+shot wlapps-wltest-tiles
 wait 30 wlapps: done
-wait jam>
-# the mouse's apps floating (each new window centred: the second on top)
-send run wlapps win=560x360 mines snake
+wait {prompt}
+# floating (each new window centred: the second on top): wltest's mouse
+# mode, a libfun window, and the test program fractal drawing on every CPU
+send run wlapps win=560x360 wltest:--mouse fractal
 wait 60 wlapps: verdict:
 sleep 1.5
-shot wlapps-mines-snake
+shot wlapps-mouse-fractal
 wait 30 wlapps: done
-wait jam>
+wait {prompt}
 # a resizable app (jamjar takes its tile's size) beside a fixed one
 send run wlapps tile win=480x320 jamjar fractal
 wait 90 wlapps: verdict:
 sleep 1.5
 shot wlapps-jamjar-fractal
 wait 30 wlapps: done
-wait jam>
-# full screen: the demo asks for it
-send run wlapps win=400x300 demo
+wait {prompt}
+# full screen: fractal asks for it
+send run wlapps win=400x300 fractal:fullscreen
 wait 60 wlapps: verdict:
 sleep 1.5
-shot wlapps-demo
+shot wlapps-fullscreen
 wait 30 wlapps: done
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

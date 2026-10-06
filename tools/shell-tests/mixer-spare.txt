@@ -8,15 +8,15 @@
 # spare once devmgr is back. The mixer answers after each.
 # (The markers are echoed as sp-""1 so the typed line itself never matches.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: a warm spare bin/mixer waits
 send ps; echo sp-""1
 wait sp-1
-wait jam>
+wait {prompt}
 send vol; echo sp-""2
 wait master 0.0 dB
 wait sp-2
-wait jam>
+wait {prompt}
 send kill mixer
 wait init: bin/mixer: killed on purpose
 wait init: bin/mixer: spare promoted
@@ -25,7 +25,7 @@ seen 10 init: bin/mixer: kill to first answer
 send vol; echo sp-""4
 wait master 0.0 dB
 wait sp-4
-wait jam>
+wait {prompt}
 send kill mixer
 wait init: a warm spare bin/mixer waits
 send kill mixer
@@ -53,10 +53,10 @@ wait init: a warm spare bin/mixer waits
 send vol; echo sp-""5
 wait master 0.0 dB
 wait sp-5
-wait jam>
+wait {prompt}
 send ps; echo sp-""6
 wait sp-6
-wait jam>
+wait {prompt}
 send kill devmgr
 wait init: bin/mixer exited with code 3
 wait 60 init: bin/mixer: spare promoted
@@ -64,6 +64,6 @@ seen 30 init: bin/mixer: end to first answer
 send vol; echo sp-""8
 wait master 0.0 dB
 wait sp-8
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

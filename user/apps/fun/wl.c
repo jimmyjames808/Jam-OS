@@ -283,7 +283,7 @@ void wl_close(void)
 
 /* A configure: a new size the app takes, if it took gfx_resizable; else
  * its picture is shown again in the window's new size (the app may not
- * present again for a while: mines waits for a click). */
+ * present again for a while: wltest --mouse waits for the mouse). */
 static void configured(const struct jwl_event *ev)
 {
     int w = clampi(ev->configure.width, MIN_W, JWL_SIZE_MAX);

@@ -10,13 +10,13 @@
 #      QEMU_USB="-device usb-kbd,bus=xhci.0,port=2" tools/qemu-test.sh build/test terms-windows shell
 wait 120 Jam OS shell
 seen 10 console: window mode: terminal 1 opens a
-wait jam>
+wait {prompt}
 sleep 2
 shot terms-one
 send term
 wait 10 terminal 2 opens
 wait 30 Jam OS shell
-wait 10 jam>
+wait 10 {prompt}
 seen 30 console: window mode: terminal 2 opens a
 sleep 2
 shot terms-two
@@ -26,12 +26,12 @@ wait 10 init: terminal 2 is closed
 sleep 1
 send exit
 wait 10 exit: this is the first terminal
-wait jam>
+wait {prompt}
 
 monitor sendkey meta_l-ret
 wait 10 init: terminal 2 opens
 wait 30 Jam OS shell
-wait 10 jam>
+wait 10 {prompt}
 sleep 1
 send kill compositor
 wait 10 init: bin/compositor was killed

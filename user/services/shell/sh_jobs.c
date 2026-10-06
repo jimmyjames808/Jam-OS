@@ -18,7 +18,7 @@
  * At most SH_MAX_JOBS at once. Each costs the shell three handles (its
  * process, its job, its output channel) and nothing from init, whose spawn
  * of the shell already hands over the most extras a spawn takes. A program
- * that ended keeps its number until its notice ("[2] done: tetris (exit
+ * that ended keeps its number until its notice ("[2] done: jamjar (exit
  * 0)") is printed: at the next prompt, or by `jobs`. */
 #include "sh_core.h"
 

@@ -1,52 +1,54 @@
 # The tests as shell commands (QEMU_INPUT=this file, command
 # line "shell"): utest and usbtest with their result lines, pci, memmap,
-# the crash list and its confirmation, the demo on a borrowed screen and
+# the crash list and its confirmation, fractal in a full-screen window and
 # back to the prompt, Ctrl+C reaching the shell past a program holding the
 # keys, a program's orphans killed with its job, devmgr killed and
 # restarted by init (the shell's devices/usb reconnect), and last a real
 # crash test from the shell: the panic starts the stored kernel, whose
 # shell says what happened.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send utest
 wait 300 utest:
 wait passed
-wait jam>
+wait {prompt}
 send usbtest
 wait 120 usbtest:
 wait passed
-wait jam>
+wait {prompt}
 send pci
 wait pci list:
-wait jam>
+wait {prompt}
 send memmap
 wait usable
-wait jam>
+wait {prompt}
 send crash
 wait crash tests
 wait smep
 wait usage: crash <name> yes
-wait jam>
+wait {prompt}
 send crash pf
 wait type "crash pf yes" to go ahead
-wait jam>
+wait {prompt}
 send crash nosuchtest yes
 wait no test called nosuchtest
-wait jam>
+wait {prompt}
 send crash bp yes
 wait came back, as a breakpoint must
-wait jam>
-# the demo borrows the screen from the console, and gives it back
-send demo 6
-wait console: the screen is lent out
-sleep 3
-shot demo
-wait 60 run: bin/demo exited with code 0
-seen console: the screen is back
-seen demo: who drew what
-wait jam>
+wait {prompt}
+# a program drawing on every CPU in a full-screen window (the test
+# program fractal: the visual demo was removed on 2026-10-07), quit with
+# q, and the terminal back
+send run fractal fullscreen
+wait run: bin/fractal started
+sleep 6
+shot fractal
+type q
+wait 60 renders on
+wait run: bin/fractal exited with code 0
+wait {prompt}
 sleep 0.5
-shot after-demo
+shot after-fractal
 # a program holding the keys can't keep Ctrl+C from the shell
 send run contest trap
 wait contest: trap: holding the keys
@@ -55,12 +57,12 @@ wait contest: trap: got key
 type \x03
 wait 10 ^C: killing bin/contest
 wait 10 run: bin/contest was killed
-wait jam>
+wait {prompt}
 # what a program leaves running is killed with its job when it ends
 send run utest orphan
 wait run: bin/utest exited with code 0
 wait run: killing what bin/utest left running
-wait jam>
+wait {prompt}
 # devmgr dies: init takes its job (usb-bus, the hids) down and starts it again
 send kill devmgr
 # (init's line goes to the kernel log, the shell's through the console: their
@@ -71,10 +73,10 @@ wait 60 init: devmgr:
 send devices
 wait devmgr:
 wait bound
-wait jam>
+wait {prompt}
 send usb
 wait problem(s)
-wait jam>
+wait {prompt}
 send crash pf yes
 wait crash pf: page fault
 wait 30 KERNEL PANIC
@@ -82,6 +84,6 @@ wait 30 KERNEL PANIC
 # happened
 wait 60 loader:      Jam OS kexec
 wait 120 the last boot panicked: page fault
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

@@ -6,7 +6,7 @@
 # none from processes that only borrow the names init, devmgr and logd
 # (`utest impostor`: tools/screen-test.sh checks the log for them).
 wait 120 console: the screen is back
-seen 60 jam>
+seen 60 {prompt}
 sleep 2
 shot screen-boot
 
@@ -17,12 +17,12 @@ sleep 1
 shot screen-stick
 send ls /usb0
 wait hello.txt
-wait jam>
+wait {prompt}
 send mount -w /usb0
-wait jam>
+wait {prompt}
 sleep 5
 send mount -r /usb0
-wait jam>
+wait {prompt}
 sleep 5
 send echo remount-quiet
 wait remount-quiet
@@ -32,22 +32,22 @@ wait 30 console: notice: the stick at /usb0 was pulled out
 # ---- the log while a command runs ----------------------------------------------------
 send ktest utf8
 wait shell: ktest utf8: 5 passed
-wait jam>
+wait {prompt}
 sleep 1
 shot screen-ktest
 send clear
-wait jam>
+wait {prompt}
 
 # ---- impostors: lines in init's, devmgr's and logd's names, other writers ------------
 send run utest impostor
 wait impostor: 3 lines written as init, devmgr and logd
-wait jam>
+wait {prompt}
 sleep 4
 send echo impostors-done
 wait impostors-done
-wait jam>
+wait {prompt}
 send clear
-wait jam>
+wait {prompt}
 
 # ---- the boot stick ----------------------------------------------------------------
 monitor device_del stick
@@ -59,6 +59,6 @@ shot screen-back
 send run console selftest
 wait 60 console: selftest
 wait run: bin/console exited
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

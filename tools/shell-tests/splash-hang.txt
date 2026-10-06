@@ -3,7 +3,7 @@
 # kills it (the console gets the screen back) and starts the shell anyway.
 wait 120 splash: hanging, as asked
 wait 60 init: the splash didn't finish in 20 s: starting the shell
-wait 60 jam>
+wait 60 {prompt}
 send echo hang-""ok
 wait hang-ok
 shot splash-hang

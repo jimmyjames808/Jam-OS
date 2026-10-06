@@ -7,10 +7,10 @@
 # dimg and fimg. As in cmds.txt, the text waited for is built from $T, so
 # it never appears in the typed line.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 send T=s
-wait jam>
+wait {prompt}
 send mount | grep -c /usb | grep ^0$ && echo ok-$T-none
 wait ok-s-none
 

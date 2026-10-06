@@ -8,7 +8,7 @@
 # QEMU_INPUT=this file, command line "shell". As in cmds.txt, the text
 # waited for is built from $T, so it never appears in the typed line.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send run utest fat-shell
 # (the outer shell's "started" line, the second shell's banner and fat's
 # lines in the kernel log have no fixed order on the serial port: `seen`)
@@ -16,7 +16,7 @@ seen 60 run: bin/utest started
 seen 60 fat utest: mounted
 sleep 1
 send T=f
-wait jam>
+wait {prompt}
 send df | grep /data | grep -c JAMOS-DATA | grep ^1$ && echo ok-$T-df
 wait ok-f-df
 send cd /data && ls | wc -l | grep ^0$ && echo ok-$T-empty
@@ -69,11 +69,11 @@ wait ok-f-rmr
 # (the pipe keeps the first 4 MiB and says so; head has its line)
 send seq 1 400000 | write long.txt; seq 1 400000 | write -a long.txt; ls -l long.txt
 wait MiB  long.txt
-wait jam>
+wait {prompt}
 send cat long.txt | head -1 | grep ^1$ && echo ok-$T-stream
 wait 60 ok-f-stream
 send rm long.txt
-wait jam>
+wait {prompt}
 # ---- a directory of more than 256 entries: ls and find show 256 and say so -----------------
 send mkdir many && cd many && echo ok-$T-many
 wait ok-f-many
@@ -116,6 +116,6 @@ send df | grep /data
 wait JAMOS-DATA
 type \x03
 wait 10 run: bin/utest was killed
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

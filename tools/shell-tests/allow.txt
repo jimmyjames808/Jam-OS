@@ -13,43 +13,43 @@
 # init didn't start can't.
 # Run: QEMU_INPUT=tools/shell-tests/allow.txt tools/qemu-test.sh build/test allow shell
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 send T=x
-wait jam>
+wait {prompt}
 send cp /boot/bin/soakload /data/s && cp /boot/bin/utest /data/u && echo ok-$T-copied
 wait ok-x-copied
-wait jam>
+wait {prompt}
 send run /data/s 1; echo st-$T=$?
 wait run: /data/s is not allowed to run: `allow /data/s` first
 wait st-x=126
-wait jam>
+wait {prompt}
 send allow /data/s; echo st-$T=$?
 wait allow s: every mount (write)? y/n
 type n
 wait st-x=1
-wait jam>
+wait {prompt}
 # a y typed ahead, before the question, is no answer to it (typed during
 # the sleep, so it has reached the shell before `allow` asks)
 type sleep 1; allow /data/s; echo st-$T=$?\ry
 wait allow s: every mount (write)? y/n
 type n
 wait st-x=1
-wait jam>
+wait {prompt}
 send allow /data/s; echo st-$T=$?
 wait allow s: every mount (write)? y/n
 type y
 wait allow: /data/s may run
 wait st-x=0
-wait jam>
+wait {prompt}
 send allow -l
 wait /data/s: every mount (write) (sha-256
-wait jam>
+wait {prompt}
 send run /data/s 1; echo st-$T=$?
 wait soakload:
 wait run: /data/s exited with code 0
 wait st-x=0
-wait jam>
+wait {prompt}
 # the listen permission: /svc/net refuses port 5000, /svc/net-listen takes it
 # but not a listener on port 80 (that is `svc net listen low`'s)
 send run wantlisten; echo st-$T=$?
@@ -58,103 +58,103 @@ wait wantlisten: port 5000 on /svc/net-listen: OK
 wait wantlisten: port 0 on /svc/net: OK
 wait wantlisten: a listener on port 80 on /svc/net-listen: ERR_ACCESS_DENIED
 wait st-x=0
-wait jam>
+wait {prompt}
 send cp /boot/bin/wantlisten /data/l && run /data/l; echo st-$T=$?
 wait run: /data/l is not allowed to run: `allow /data/l` first
 wait st-x=126
-wait jam>
+wait {prompt}
 send allow /data/l; echo st-$T=$?
 wait allow l: net, accepting connections from the network? y/n
 type y
 wait allow: /data/l may run
 wait st-x=0
-wait jam>
+wait {prompt}
 send run /data/l; echo st-$T=$?
 wait wantlisten: port 5000 on /svc/net: ERR_ACCESS_DENIED
 wait wantlisten: port 5000 on /svc/net-listen: OK
 wait st-x=0
-wait jam>
+wait {prompt}
 send allow -r l; echo st-$T=$?
 wait allow: l may no longer run
 wait st-x=0
-wait jam>
+wait {prompt}
 # devmgr's and init's channels reach past every view: never from /data
 send allow /data/u; echo st-$T=$?
 wait allow: /data/u: asks for devmgr, which no program from /data may have
 wait st-x=1
-wait jam>
+wait {prompt}
 # nor the kernel's debug commands (panic, the crash tests): from /boot the
 # list is given as it stands, from /data never
 send run wantdebug; echo st-$T=$?
 wait wantdebug: right debug held
 wait st-x=0
-wait jam>
+wait {prompt}
 send cp /boot/bin/wantdebug /data/d && allow /data/d; echo st-$T=$?
 wait allow: /data/d: asks for right debug, which no program from /data may have
 wait st-x=1
-wait jam>
+wait {prompt}
 # nor the ports below 1024 (`svc net listen low`, bin/serve's list): from
 # /data a program could pose as one of the system's services
 send cp /boot/bin/serve /data/v && allow /data/v; echo st-$T=$?
 wait allow: /data/v: asks for net-low, which no program from /data may have
 wait st-x=1
-wait jam>
+wait {prompt}
 # a program's /data is a view: etc can't change, the rest can
 send run utest fs-put /data/etc/allow x
 wait fs-put: /data/etc/allow: ERR_ACCESS_DENIED
-wait jam>
+wait {prompt}
 send run utest fs-put /data/ETC/new x
 wait fs-put: /data/ETC/new: ERR_ACCESS_DENIED
-wait jam>
+wait {prompt}
 send run utest fs-put /data/ok.txt fine
 wait fs-put: /data/ok.txt: OK
-wait jam>
+wait {prompt}
 send cat /data/etc/allow | grep -c /data/s | grep ^1$ && echo ok-$T-unchanged
 wait ok-x-unchanged
-wait jam>
+wait {prompt}
 # the file changes: refused until it is allowed again
 send write -a /data/s x; run /data/s 1; echo st-$T=$?
 wait run: /data/s changed since it was allowed: `allow /data/s` again
 wait st-x=126
-wait jam>
+wait {prompt}
 # an approval does not let in a list that asks for devmgr, init or debug
 send cp /boot/bin/wantdebug /data/s; run /data/s; echo st-$T=$?
 wait run: /data/s: asks for right debug, which no program from /data may have
 wait st-x=126
-wait jam>
+wait {prompt}
 send cp /boot/bin/utest /data/s; run /data/s env two; echo st-$T=$?
 wait run: /data/s: asks for devmgr, which no program from /data may have
 wait st-x=126
-wait jam>
+wait {prompt}
 send allow -r s; echo st-$T=$?
 wait allow: s may no longer run
 wait st-x=0
-wait jam>
+wait {prompt}
 send allow -l
 wait allow: no program on /data is allowed to run
-wait jam>
+wait {prompt}
 send allow -r s; echo st-$T=$?
 wait allow: s: not allowed
 wait st-x=1
-wait jam>
+wait {prompt}
 send allow /boot/bin/utest; echo st-$T=$?
 wait allow: /boot/bin/utest: only a program on /data can be allowed
 wait st-x=1
-wait jam>
+wait {prompt}
 send allow; echo st-$T=$?
 wait usage: allow
 wait st-x=2
-wait jam>
+wait {prompt}
 # a second shell (run shell): no /data etc, no root: it can't
 send run shell
 wait Jam OS shell
 seen run: bin/shell started
-wait jam>
+wait {prompt}
 send allow /data/u
 wait allow: /data/u: only the shell init starts can allow programs
-wait jam>
+wait {prompt}
 type \x03
 wait 10 run: bin/shell was killed
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

@@ -24,13 +24,13 @@ for n in $names; do
     s="$out/crash-$n.txt"
     {
         echo "wait 120 Jam OS shell"
-        echo "wait jam>"
+        echo "wait {prompt}"
         echo "send crash $n yes"
         echo "wait crash $n: here goes"
         case $n in
         bp)
             echo "wait 30 came back, as a breakpoint must"
-            echo "wait jam>"
+            echo "wait {prompt}"
             echo "send reboot -f"
             echo "wait reboot: resetting" ;;
         kexecbad)
@@ -50,7 +50,7 @@ for n in $names; do
             echo "wait 30 starting the stored kernel"
             echo "wait 60 loader:      Jam OS kexec"
             echo "wait 120 the last boot panicked: "
-            echo "wait jam>"
+            echo "wait {prompt}"
             echo "send reboot -f"
             echo "wait reboot: resetting" ;;
         esac

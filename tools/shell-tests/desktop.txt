@@ -18,21 +18,21 @@
 # bottom (y 46..417 and 423..794); terminal 4 halves terminal 3's across.
 # `pointer` puts the mouse there exactly (serial-feed.py: 1:1 steps).
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 30 report mouse ready
 seen 30 compositor: keyboard 0627:0001 ready
 usbkeys echo usb-one\r
 wait 10 usb-one
-wait jam>
+wait {prompt}
 # Super+Enter, whichever window has the keys: terminal 2, the right half
 monitor sendkey meta_l-ret
 wait 10 init: terminal 2 opens
 wait 30 Jam OS shell
-wait 10 jam>
+wait 10 {prompt}
 sleep 1
 usbkeys echo usb-two\r
 wait 10 usb-two
-wait jam>
+wait {prompt}
 shot desktop-two
 # a click on the first terminal (the left half): the keys go back to it
 pointer 300 400
@@ -42,34 +42,34 @@ monitor mouse_button 0
 sleep 0.5
 usbkeys echo usb-back\r
 wait 10 usb-back
-wait jam>
+wait {prompt}
 # Super+Right: the focus to the window on the right (terminal 2) ...
 monitor sendkey meta_l-right
 sleep 0.5
 usbkeys echo usb-right\r
 wait 10 usb-right
-wait jam>
+wait {prompt}
 # ... and Super+H back to the left (the first)
 monitor sendkey meta_l-h
 sleep 0.5
 usbkeys echo usb-left\r
 wait 10 usb-left
-wait jam>
+wait {prompt}
 # two more: terminal 3 splits the focused first's tile (top and bottom),
 # terminal 4 splits terminal 3's (side by side)
 monitor sendkey meta_l-ret
 wait 10 init: terminal 3 opens
 wait 30 Jam OS shell
-wait 10 jam>
+wait 10 {prompt}
 sleep 1
 monitor sendkey meta_l-ret
 wait 10 init: terminal 4 opens
 wait 30 Jam OS shell
-wait 10 jam>
+wait 10 {prompt}
 sleep 1
 usbkeys echo usb-four\r
 wait 10 usb-four
-wait jam>
+wait {prompt}
 sleep 1
 shot desktop-tiles
 # the gap between the first and terminal 2 (x 637..643) dragged 100 right
@@ -99,14 +99,14 @@ sleep 1
 shot desktop-closed
 usbkeys echo usb-last\r
 wait 10 usb-last
-wait jam>
+wait {prompt}
 # Super+T: floating, saved by init (the compositor's layout_wait answered);
 # a reboot (kexec) comes back floating, as the settings say
 monitor sendkey meta_l-t
 wait 10 init: the window layout is floating (saved)
 send grep layout /data/etc/settings
 wait 10 display.layout = floating
-wait jam>
+wait {prompt}
 shot desktop-floating
 send reboot
 wait 60 kexec: started by a reboot

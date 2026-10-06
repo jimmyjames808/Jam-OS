@@ -15,8 +15,9 @@ becomes a client: a terminal window.**
 
 **Done when** (the roadmap's row, made concrete):
 - windows from several programs on the PC's screen at once (the shell in
-  a terminal window, jamjar, a game, sysmon), moved, raised and focused
-  with the mouse;
+  a terminal window, jamjar, a game, sysmon; since the owner removed the
+  games and sysmon on 2026-10-07: terminals, jamjar and the test window
+  wltest), moved, raised and focused with the mouse;
 - keys typed go to the focused window only, and a program killed or
   crashed takes only its own window with it;
 - the cost of a frame measured on the PC (a full-screen frame, a typical
@@ -57,7 +58,11 @@ becomes a client: a terminal window.**
 **The owner's answers (2026-10-05).** The plan follows them; where one
 differs from the recommendation below, this note wins:
 - Q1 (A) real Wayland on the wire; Q2 (A) the kernel "pages stay" VMO
-  flag; Q3 (A) every libfun program a window; Q4 (A) `nocomp` kept until
+  flag; Q3 (A) every libfun program a window (on 2026-10-07 the owner
+  removed the games and tools: demo, life, tetris, snake, mines and
+  sysmon are gone, and fractal is a test program; the apps left are
+  jamjar and the splash, and the search box lists Terminal and Jamjar);
+  Q4 (A) `nocomp` kept until
   the PC sign-off; Q6 (A) one layout file, two outputs, US only;
   Q8 (A) clients reconnect.
 - **Q5: both arrangements, switchable.** Floating windows with the
@@ -1038,6 +1043,12 @@ the screen's `w` and `h` are new). Under `nocomp`, the old `lend_screen` path.
 jamjar change only their list (`svc wayland`) and, for jamjar, opt in to
 resizing; demo and fractal's benchmark open full screen. Their `trace`
 lines and selftests stay, so `tools/apps-test.sh` keeps working.
+(As built, then changed by the owner on 2026-10-07: all but jamjar were
+removed, fractal kept as a test program (`user/tests/fractal`, its
+`fullscreen` argument for a full-screen window), and the tests that used
+them moved to the test window wltest (`wltest --mouse`: libfun's mouse,
+for `mouse.txt` and `apps.txt`; `wltest &` for `jobs.txt`; wltest's own
+windows in `wlapps.txt`) and to fractal.)
 
 **The splash** opens a full-screen window without taking the focus
 (`gfx_open_screen` becomes that), plays as today, and closes it; the
@@ -1377,7 +1388,8 @@ before I1 (compctl); T1 before I1.
    `fbbench:` lines (from the log on the Mac). They decide the tile
    size and whether a frame fits the estimates.
 2. **After I1** (a flash): the compositor on the real framebuffer and
-   mouse: the splash, the terminal, `jamjar &`, `tetris &`, `sysmon &`;
+   mouse: the splash, the terminal, `jamjar &`, `wltest &`,
+   `wltest --mouse &` (the games and sysmon were removed on 2026-10-07);
    move, raise, focus, type; the compositor's paint lines
    (`grep 'compositor: paint'`), jamjar's frame rate. If anything fails
    to come up: the `nocomp` boot entry.

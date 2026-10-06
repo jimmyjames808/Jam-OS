@@ -9,18 +9,18 @@
 wait 120 Jam OS shell
 seen 60 netstack: link up
 seen 30 netstack: address 10.2.21.5/24
-wait jam>
+wait {prompt}
 send run tcptest send 10.2.21.174 5030 10485760
 wait 300 tcptest: PASS: connected
-wait jam>
+wait {prompt}
 send run tcptest send 10.2.21.174 5032 8388608 2097152
 wait 300 tcptest: PASS: connected
-wait jam>
+wait {prompt}
 send run tcptest serve 5031 20 262144
 wait 30 tcptest: listening on port 5031
 wait 300 tcptest: PASS: served 20 connections
-wait jam>
+wait {prompt}
 send net stats
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

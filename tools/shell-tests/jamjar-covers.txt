@@ -4,7 +4,7 @@
 # shuffle; the first skips come while the covers are still being read;
 # two shots of the card after each of 18 skips.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 seen 60 music: ready
 send jamjar trace root=/data/many
@@ -113,9 +113,9 @@ sleep 1
 shot covers-15b
 type q
 wait 30 run: bin/jamjar exited with code 0
-wait jam>
+wait {prompt}
 send music stop
 wait music: stopped
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

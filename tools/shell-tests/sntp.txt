@@ -13,28 +13,28 @@ seen 60 init: the clock: 2026-01-15 01:02
 seen 60 dhcp: lease 10.2.21.100/24
 seen 90 sntp: asking the gateway, then pool.ntp.org for the time
 seen 90 off: set from the gateway (10.2.21.1, stratum 2
-wait jam>
+wait {prompt}
 send date -u
 wait 30 Thu 27 Feb 2031
-wait jam>
+wait {prompt}
 send date -r
 wait set from the network (sntp)
-wait jam>
+wait {prompt}
 send date -z Europe/London
 wait date: the zone is Europe/London now
-wait jam>
+wait {prompt}
 send date -r
 wait set from the network (sntp), zone Europe/London
-wait jam>
+wait {prompt}
 send date -z Australia/Sydney
 wait date: the zone is Australia/Sydney now
-wait jam>
+wait {prompt}
 send kill sntp
 wait 10 init: bin/sntp was killed
 wait 60 off: set from the gateway (10.2.21.1, stratum 2
 send date -u
 wait 30 Thu 27 Feb 2031
-wait jam>
+wait {prompt}
 send kill devmgr
 # (init's line goes to the kernel log, the shell's through the console: their
 # order on the serial port isn't fixed, hence `seen`)
@@ -44,6 +44,6 @@ wait 60 init: /data mounted
 wait 30 kept (set from the network)
 send date -u
 wait 30 Thu 27 Feb 2031
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

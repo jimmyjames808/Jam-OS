@@ -11,30 +11,30 @@ wait 120 Jam OS shell
 seen 60 netstack: link up
 seen 30 netstack: address 10.2.21.5/24
 seen 30 serve: ready
-wait jam>
+wait {prompt}
 send serve
 wait serve: nothing is served
-wait jam>
+wait {prompt}
 send serve /data/serve.bin
 wait 30 serve: serving /data/serve.bin (5.0 MiB) on port 8080, in the background
 wait curl http://10.2.21.5:8080/ -o serve.bin
-wait jam>
+wait {prompt}
 send serve /data/page.html 80; echo st=$?
 wait 30 on port 80, in the background
 wait st=0
-wait jam>
+wait {prompt}
 send serve /data/page.html 80; echo st=$?
 wait a file is served on that port already
 wait st=1
-wait jam>
+wait {prompt}
 send serve /data; echo st=$?
 wait serve: /data: a folder
 wait st=1
-wait jam>
+wait {prompt}
 send serve /data/serve.bin 0; echo st=$?
 wait serve: 0: a port is 1..65535
 wait st=2
-wait jam>
+wait {prompt}
 # tools/servecheck.py starts now: two downloads at once, HEAD, a range,
 # the second file, a request that isn't HTTP, a head over 8 KiB
 wait 300 GET /any/thing?x=1 200, 5242880 bytes
@@ -47,27 +47,27 @@ wait 120 ? 431, 0 bytes
 send serve
 wait serve: port 8080: /data/serve.bin (5.0 MiB)
 wait serve: port 80: /data/page.html
-wait jam>
+wait {prompt}
 send serve stop 80
 wait serve: stopped 1 file
-wait jam>
+wait {prompt}
 send serve stop
 wait serve: stopped 1 file
-wait jam>
+wait {prompt}
 send serve stop
 wait serve: nothing was served
-wait jam>
+wait {prompt}
 send serve
 wait serve: nothing is served
-wait jam>
+wait {prompt}
 send run nolisten
 wait 30 nolisten: a listener on port 8081 through /svc/net: ERR_ACCESS_DENIED
 wait nolisten: a listener on port 80 through /svc/net: ERR_ACCESS_DENIED
 wait nolisten: /svc/net-listen in its namespace: no
 wait nolisten: /svc/net-low in its namespace: no
 wait nolisten: PASS
-wait jam>
+wait {prompt}
 send sleep 5
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

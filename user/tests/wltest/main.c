@@ -2,14 +2,18 @@
  * compositor by hand and to test it.
  *
  *     wltest [--spawn [size=WxH]] [--frames N] [--script]
+ *     wltest --mouse [noaccel] [nomouse] | --hang-test | --crash-test | --selftest
  *
  * By hand it opens a window, draws a moving pattern into it on every
  * frame callback, and prints every event it gets (configures, keys with
  * the characters they type, the pointer, the connection going and coming
- * back); Escape, the window's close or N frames end it. `--script` runs
+ * back); Escape, q, the window's close or N frames end it. `--script` runs
  * the scripted checks instead (script.c) and ends with "wltest: PASS" or
  * "wltest: FAIL: ...". `--spawn` starts a headless compositor of its own
- * (spawn.c) instead of opening /svc/wayland.
+ * (spawn.c) instead of opening /svc/wayland. The rest go through libfun
+ * as an app does, and work without a compositor too (fun.c): the mouse,
+ * logged and drawn, a program that hangs or crashes holding the screen,
+ * and the self-test of libfun's pointer.
  *
  * Its list asks for the compositor (`svc wayland`, below); until init
  * publishes /svc/wayland, `--spawn` is the way to a compositor. */
@@ -145,7 +149,8 @@ static int by_hand(struct jwl_client *c, unsigned frames)
             break;
         wl_print_event(&ev);
         quit = ev.type == JWL_EV_CLOSE ||
-               (ev.type == JWL_EV_KEY && ev.key.code == KEY_ESC && ev.key.state);
+               (ev.type == JWL_EV_KEY && ev.key.state &&
+                (ev.key.code == KEY_ESC || ev.key.cp == 'q'));
         struct jwl_frame fr;
         bool draw = ev.win == w && (ev.type == JWL_EV_CONFIGURE || ev.type == JWL_EV_FRAME);
         if (draw && jwl_window_begin(w, &fr) == OK) {
@@ -196,6 +201,14 @@ static bool parse_size(const char *s, int32_t *w, int32_t *h)
 
 int main(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "--mouse"))
+        return wl_fun_mouse(argc, argv);
+    if (argc == 2 && !strcmp(argv[1], "--hang-test"))
+        return wl_fun_hang();
+    if (argc == 2 && !strcmp(argv[1], "--crash-test"))
+        return wl_fun_crash();
+    if (argc == 2 && !strcmp(argv[1], "--selftest"))
+        return wl_fun_selftest();
     bool spawn_own = false, script = false;
     unsigned frames = 0;
     struct comp_child k = { .svc = HANDLE_INVALID, .proc = HANDLE_INVALID,
@@ -210,7 +223,9 @@ int main(int argc, char **argv)
         } else if (!strncmp(argv[i], "size=", 5) && parse_size(argv[i] + 5, &k.w, &k.h)) {
             continue;
         } else {
-            printf("usage: wltest [--spawn [size=WxH]] [--frames N] [--script]\n");
+            printf("usage: wltest [--spawn [size=WxH]] [--frames N] [--script]\n"
+                   "       wltest --mouse [noaccel] [nomouse] | --hang-test | --crash-test | "
+                   "--selftest\n");
             return 2;
         }
     }

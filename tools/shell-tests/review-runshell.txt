@@ -3,20 +3,20 @@
 # still reaches the outer shell (the console sends it to the SHELL-level
 # focus below a PROGRAM's), which kills it and gets the keys back.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send run shell
 # The outer shell's "started" line and the inner shell's banner come from
 # two processes, in either order: the banner and the inner prompt in order
 # after the outer prompt, the "started" line anywhere.
 wait Jam OS shell
 seen run: bin/shell started
-wait jam>
+wait {prompt}
 type \x03
 wait 10 ^C: killing bin/shell
 wait 10 run: bin/shell was killed
-wait jam>
+wait {prompt}
 send help
 wait Commands:
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

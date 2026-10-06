@@ -4,9 +4,9 @@
 # Markers are built from $T (= x) so the text waited for never appears in
 # the typed line.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send T=x
-wait jam>
+wait {prompt}
 
 # ---- one in the background: the prompt at once, its output, its notice -----------------
 send run utest say hello-$T-bg &
@@ -16,51 +16,51 @@ seen 10 hello-x-bg
 send echo after-$T-start
 wait 10 [1] done: utest (exit 0)
 seen 10 after-x-start
-wait jam>
+wait {prompt}
 # Its exit code, and the number free again.
 send run utest exit7 &
 wait 10 [1]
 send echo st$? ok-$T-started
 wait 10 [1] done: utest (exit 7)
 seen 10 st0 ok-x-started
-wait jam>
+wait {prompt}
 
 # ---- a background program outlives a foreground one, and Ctrl+C is not its -------------
 send run utest spin &
 wait 10 [1]
-wait jam>
+wait {prompt}
 send run utest say fg-$T-ran
 wait fg-x-ran
 wait run: bin/utest exited with code 0
-wait jam>
+wait {prompt}
 send jobs
 wait [1]
 wait running
 wait utest spin
-wait jam>
+wait {prompt}
 # Ctrl+C at the prompt: only the line goes.
 type \x03
 wait ^C
-wait jam>
+wait {prompt}
 # Ctrl+C on a foreground program: it is killed, the background one runs on.
 send run utest spin
 wait run: bin/utest started (Ctrl+C kills it)
 type \x03
 wait 10 ^C: killing bin/utest
 wait 10 run: bin/utest was killed
-wait jam>
+wait {prompt}
 send jobs | grep "running *utest spin$" && echo ok-$T-alive
 wait ok-x-alive
-wait jam>
+wait {prompt}
 # Typing still reaches the shell, never the background program.
 send echo keys-$T-shell
 wait keys-x-shell
-wait jam>
+wait {prompt}
 
 # ---- kill %n, and the refusals -----------------------------------------------------------
 send kill %1
 wait 10 [1] killed: utest
-wait jam>
+wait {prompt}
 send jobs | grep utest || echo ok-$T-nojobs
 wait ok-x-nojobs
 send kill %1
@@ -71,13 +71,13 @@ send kill 999999
 wait kill: no process called "999999"
 send kill nosuchprocess
 wait kill: no process called "nosuchprocess"
-wait jam>
+wait {prompt}
 send run utest say a | grep a &
 wait sh: a pipeline can't run in the background (| before &)
 send ls &
 wait sh: only a program runs in the background (& after ls, a shell command)
 send alias spinner='run utest spin'
-wait jam>
+wait {prompt}
 send spinner &
 wait sh: & doesn't follow aliases (spinner)
 send &
@@ -86,24 +86,25 @@ send run &
 wait usage: run <prog|path> [args]
 send nosuchprogram &
 wait nosuchprogram: unknown command
-wait jam>
+wait {prompt}
 send jobs | grep utest || echo ok-$T-norefused
 wait ok-x-norefused
 
 # ---- a program that draws, in the background: a window of its own ----------------------
 # (the compositor's; booted with `nocomp` it could borrow no screen and
 # would end at once). Its window takes the keys, as a program's first
-# window does: q quits it, and the keys come back to the terminal.
-send tetris &
+# window does: q quits it, and the keys come back to the terminal. (The
+# test window, wltest: what it prints is its events, then its frames.)
+send wltest &
 wait 10 [1]
 sleep 2
 type q
-wait 20 tetris: score
+wait 20 frames in
 sleep 1
-send echo after-$T-tetris
-wait 10 after-x-tetris
-seen 10 [1] done: tetris (exit 0)
-wait jam>
+send echo after-$T-wltest
+wait 10 after-x-wltest
+seen 10 [1] done: wltest (exit 0)
+wait {prompt}
 
 # ---- the limit: 8 at once ----------------------------------------------------------------
 # Eight that ended within one line hold their numbers until their notices,
@@ -115,26 +116,26 @@ seen 10 ninth-x-bg
 send echo after-$T-ninth
 wait 10 [1] done: utest (exit 0)
 seen 10 after-x-ninth
-wait jam>
+wait {prompt}
 send repeat 8 'run utest spin &'
 wait 10 [8]
-wait jam>
+wait {prompt}
 send run utest spin &
 wait sh: 8 programs already run in the background (the most): end one first (jobs, kill %n)
-wait jam>
+wait {prompt}
 send jobs | grep -c running | grep ^8$ && echo ok-$T-eight
 wait ok-x-eight
-wait jam>
+wait {prompt}
 send kill %3; kill %8
 wait [3] killed: utest
 wait [8] killed: utest
-wait jam>
+wait {prompt}
 # Free numbers are taken again, lowest first.
 send run utest spin &
 wait 10 [3]
 send kill %1; kill %2; kill %3; kill %4; kill %5; kill %6; kill %7
 wait [7] killed: utest
-wait jam>
+wait {prompt}
 send jobs | grep utest || echo ok-$T-allgone
 wait ok-x-allgone
 
@@ -142,20 +143,20 @@ wait ok-x-allgone
 send run shell
 wait Jam OS shell
 seen run: bin/shell started
-wait jam>
+wait {prompt}
 send run utest spin &
 wait 10 [1]
-wait jam>
+wait {prompt}
 send run utest spin &
 wait 10 [2]
-wait jam>
+wait {prompt}
 type \x03
 wait 10 ^C: killing bin/shell
 wait 10 run: bin/shell was killed
-wait jam>
+wait {prompt}
 send ps | grep -c utest || echo ok-$T-ended
 wait ok-x-ended
-wait jam>
+wait {prompt}
 
 send reboot -f
 wait reboot: resetting

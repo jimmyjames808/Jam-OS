@@ -15,18 +15,18 @@
 #   3. the mouse: the next button, a volume drag, a double-click
 #   4. q: the music plays on
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 seen 60 music: ready
 seen 30 report mouse ready
 send run jamcover --selftest
 wait 60 jamcover: selftest PASSED
 wait run: bin/jamcover exited with code 0
-wait jam>
+wait {prompt}
 send run jamjar --selftest
 wait 60 jamjar: selftest PASSED
 wait run: bin/jamjar exited with code 0
-wait jam>
+wait {prompt}
 
 # ---- 1: no player -----------------------------------------------------------------------
 send run jamjar trace noplayer
@@ -38,7 +38,7 @@ type x
 wait jamjar: no player: the library only
 type q
 wait 30 run: bin/jamjar exited with code 0
-wait jam>
+wait {prompt}
 
 # ---- 2: keys ----------------------------------------------------------------------------
 send jamjar trace noaccel
@@ -167,12 +167,12 @@ shot jamjar-mouse
 type q
 wait 30 jamjar:
 wait run: bin/jamjar exited with code 0
-wait jam>
+wait {prompt}
 send music status | grep -c "music: playing"; echo jj-""1 $?
 wait jj-1 0
-wait jam>
+wait {prompt}
 send music stop
 wait music: stopped
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

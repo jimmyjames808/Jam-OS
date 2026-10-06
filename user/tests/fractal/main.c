@@ -1,9 +1,16 @@
-/* fractal: an interactive Mandelbrot / Julia explorer drawn by every CPU.
+/* fractal: a Mandelbrot / Julia explorer drawn by every CPU: a test
+ * program, not an app (it was one until 2026-10-07), kept for its
+ * workload: vector maths (AVX2, double-double) on every CPU at once into
+ * real pixels, the `b` benchmark and the self-test.
  *
- *   run fractal [threads=N] [noavx|avx]   explore
+ *   run fractal [threads=N] [noavx|avx] [fullscreen]   explore
  *   run fractal --selftest            check the maths and the parallel render, exit 0 if right
  *
- * Real pixels at the screen's full resolution (borrowed from the console).
+ * tools/shell-tests/apps.txt runs both; wlapps (tools/shell-tests/wlapps.txt)
+ * shows it as a window, and `fullscreen` as a full-screen one.
+ *
+ * Real pixels at the window's size (or the screen's, borrowed from the
+ * console under `nocomp`).
  * The screen is cut into 16 x 16 tiles; tiles are handed to the pool's
  * threads (one per CPU) through an atomic counter, the middle of the
  * screen first. Rendering is progressive: a first pass computes one pixel
@@ -416,9 +423,9 @@ static void show(void)
 static int play(int argc, char **argv)
 {
     pool_start((uint32_t)arg_num(argc, argv, "threads", 0));
-    status_t st = gfx_open();
+    status_t st = has_arg(argc, argv, "fullscreen") ? gfx_open_fullscreen(0) : gfx_open();
     if (st != OK) {
-        say("fractal: can't borrow the screen (%s)\n", status_str(st));
+        say("fractal: can't open a window or borrow the screen (%s)\n", status_str(st));
         return 1;
     }
     if (!view_alloc(scr.w, scr.h)) {

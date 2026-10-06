@@ -6,8 +6,8 @@
  * changed.
  *
  * console.lend_screen lends the framebuffer to a program that draws on it
- * itself (the shell's `demo`, bin/life, bin/tetris, bin/fractal through
- * libfun's gfx_open): it gets the VMO (without RIGHT_DUPLICATE) and the
+ * itself (bin/jamjar, bin/splash, the test programs fractal and wltest,
+ * through libfun's gfx_open, under `nocomp`): it gets the VMO (without RIGHT_DUPLICATE) and the
  * geometry, and a lease channel. Meanwhile nothing is drawn (the text
  * model, the kernel log and the serial mirror keep going); when the
  * lease's other end closes (the program closed it or died), the whole

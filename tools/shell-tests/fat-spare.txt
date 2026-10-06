@@ -16,20 +16,20 @@
 # carries on from the dead one's state: fat-restart.txt tests that).
 # (The markers are echoed as fs-""1 so the typed line itself never matches.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 seen 60 devmgr: a warm spare bin/fat waits
 send ps; echo fs-""1
 wait fs-1
-wait jam>
+wait {prompt}
 send write /data/spare-0.txt written before the kills; echo fs-""2
 wait fs-2
-wait jam>
+wait {prompt}
 send sync && kill fat-data && cat /data/spare-0.txt; echo fs-""3
 wait shell: killed process
 wait written before the kills
 wait fs-3
-wait jam>
+wait {prompt}
 seen 10 devmgr: fat-data: spare promoted
 seen 10 devmgr: fat-data: kill to first answer
 
@@ -58,35 +58,35 @@ wait fs-10
 send sleep 1; write /data/spare-8.txt k-""8 && sync && kill fat-data && cat /data/spare-8.txt; echo fs-""11
 wait k-8
 wait fs-11
-wait jam>
+wait {prompt}
 send cat /data/spare-0.txt /data/spare-1.txt /data/spare-8.txt | wc -l | grep ^3$ && echo ok-""three; echo fs-""12
 wait ok-three
 wait fs-12
-wait jam>
+wait {prompt}
 
 # ---- /esp's service too ------------------------------------------------------------------------
 send sleep 1; kill fat-esp && ls /esp/boot | grep -c jamos.elf | grep ^1$ && echo ok-""esp; echo fs-""13
 wait ok-esp
 wait fs-13
-wait jam>
+wait {prompt}
 seen 10 devmgr: fat-esp: spare promoted
 
 # ---- a burst: ten kills in a row, then the mount still answers -----------------------------------
 send sleep 1; repeat 10 kill fat-data; cat /data/spare-5.txt; echo fs-""14
 wait k-5
 wait fs-14
-wait jam>
+wait {prompt}
 send sleep 2; ls /data | grep -c "^spare-" | grep ^9$ && echo ok-""nine; echo fs-""15
 wait ok-nine
 wait fs-15
-wait jam>
+wait {prompt}
 # logd carried on: the kills' own lines are in the boot's log on /data
 send sleep 3; grep -c "fat-data: spare promoted" /data/logs/boot-0001.txt | grep -v ^0$ && echo ok-""logd; echo fs-""16
 wait ok-logd
 wait fs-16
-wait jam>
+wait {prompt}
 send ps; echo fs-""17
 wait fs-17
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

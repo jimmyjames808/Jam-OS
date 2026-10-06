@@ -19,7 +19,7 @@
 # hence `seen`. Ctrl+C ends the whole line, so `$?` is asked on the next.
 # (The markers are echoed as st-""1 so the typed line itself never matches.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 monitor device_add usb-storage,id=s0,bus=xhci.0,port=2,drive=s0img
 seen 60 init: /usb0 mounted
@@ -27,50 +27,50 @@ seen 60 devmgr: a warm spare bin/fat waits
 send mount -w /usb0; echo st-""1 $?
 wait mount: /usb0 is now read-write
 wait st-1 0
-wait jam>
+wait {prompt}
 
 # ---- the copies -------------------------------------------------------------------------------
 send sleep 2; storm /usb0/big.bin /data/s0.bin 0; echo st-""2 $?
 wait 300 st-2 0
-wait jam>
+wait {prompt}
 send rm /data/s0.bin; sleep 1; storm /usb0/big.bin /data/s1.bin 1; echo st-""3 $?
 wait 300 st-3 0
-wait jam>
+wait {prompt}
 send rm /data/s1.bin; sleep 1; storm /usb0/big.bin /data/s10.bin 10; echo st-""4 $?
 wait 300 st-4 0
-wait jam>
+wait {prompt}
 
 # ---- Ctrl+C in the middle of a copy -----------------------------------------------------------
 send rm /data/s10.bin; sleep 1; storm /usb0/big.bin /data/cut.bin 100
 sleep 2.5
 type \x03
 wait 60 stopped by Ctrl+C
-wait jam>
+wait {prompt}
 send echo st-""5 $?
 wait st-5 130
-wait jam>
+wait {prompt}
 send rm /data/cut.bin; sleep 1; storm /usb0/big.bin /data/s100.bin 100; echo st-""6 $?
 wait 300 st-6 0
-wait jam>
+wait {prompt}
 send storm /usb0/big.bin /data/x.bin 2000; echo st-""7 $?
 wait st-7 2
-wait jam>
+wait {prompt}
 
 # ---- the mixer, while music plays -------------------------------------------------------------
 seen 60 music: ready
 send music start /data/music; echo st-""8 $?
 wait st-8 0
-wait jam>
+wait {prompt}
 seen 30 music: track
 send sleep 2; storm mixer 2 10; echo st-""9 $?
 wait 120 st-9 0
-wait jam>
+wait {prompt}
 send music stop; echo st-""10 $?
 wait st-10 0
-wait jam>
+wait {prompt}
 seen 30 mixer: stream
 send sleep 1; sync; echo st-""11 $?
 wait st-11 0
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

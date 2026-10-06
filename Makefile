@@ -293,12 +293,15 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 
 # libfun (user/apps/fun, <fun.h>): the screen, drawing, text, keys and
 # thread pool of the apps, which link it before libos.
-# fbbench (user/tests) measures libfun's own drawing code too; the
+# fbbench (user/tests) measures libfun's own drawing code too, and
+# fractal (user/tests) draws with it on every CPU; the
 # compositor (user/services) blends and draws with it; utest tests its
 # window (utest/funwin.c) against the fake compositor, and wlapps shows
-# the apps' windows composed headless on the borrowed screen; the console
+# the apps' windows composed headless on the borrowed screen; wltest's
+# libfun modes (wltest/fun.c) test the mouse as an app sees it; the console
 # draws its windows' text in libfun's smooth font (cellpaint.c).
-FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS))) fbbench compositor utest wlapps console
+FUN_PROGS   := $(notdir $(filter user/apps/%,$(USER_DIRS))) fbbench fractal compositor utest \
+               wlapps wltest console
 LIBFUN_OBJS := $(patsubst %,$(UOBJ)/%.o,$(wildcard $(LIBFUN_DIR)/*.c))
 
 $(UOBJ)/libfun.a: $(LIBFUN_OBJS)

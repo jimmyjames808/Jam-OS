@@ -6,12 +6,12 @@
 # Command line "shell". The text waited for is built from $T, so it never
 # appears in the typed line.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /esp mounted
 seen 60 init: /data mounted
 seen 30 logd: writing /data/logs/boot-0001.txt
 send T=a
-wait jam>
+wait {prompt}
 
 # ---- the mounts --------------------------------------------------------------------------
 send ls / | sort | head -3 | tail -1 | grep ^esp/$ && ls / | grep -c /$ | grep ^4$ && ls / | grep -c ^svc/$ | grep ^1$ && echo ok-$T-root
@@ -21,7 +21,7 @@ wait /esp
 wait JAMOS (read-only)
 wait /data
 wait JAMOS-DATA
-wait jam>
+wait {prompt}
 send ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && ls /esp/boot | grep -c ^bootfs.img$ | grep ^1$ && echo ok-$T-esp
 wait ok-a-esp
 send grep -c "^    protocol: limine$" /esp/boot/limine/limine.conf | grep ^1$ && echo ok-$T-conf
@@ -35,7 +35,7 @@ wait st-a=1
 
 # ---- /data: written now, read on the next boot ------------------------------------------
 send mkdir "/data/My Notes" && write "/data/My Notes/first boot.txt" kept across a reboot-$T
-wait jam>
+wait {prompt}
 send cat "/data/My Notes/first boot.txt"
 wait kept across a reboot-a
 send cp /boot/bin/utest /data/utest.copy && hexdump -n 4 /data/utest.copy

@@ -13,6 +13,11 @@ the script, one command per line:
     seen [<seconds>] <text>   the same, but anywhere in the output so far
                               (for lines whose order against the last wait
                               isn't fixed); doesn't move that point
+                              In <text> of either, {prompt} stands for the
+                              shell's prompt, `jam:<cwd>>` with its colours
+                              (user/services/shell/main.c), whatever the
+                              current directory: `wait {prompt}` waits for
+                              the next one.
     send <text>               <text> and Enter (CR), one byte at a time
     type <text>               <text> without Enter; \\e \\r \\n \\t \\xNN escapes
     sleep <seconds>
@@ -35,6 +40,7 @@ After the script it keeps reading until QEMU closes the socket (a `reboot`
 with -no-reboot ends QEMU), so the guest never blocks on a full socket.
 Exit status 0 if every wait matched; on a timeout it says which and exits 1
 (and stops typing, but still drains until QEMU goes)."""
+import re
 import socket
 import sys
 import threading
@@ -76,6 +82,29 @@ def reader():
 
 
 threading.Thread(target=reader, daemon=True).start()
+
+
+# {prompt} in a wait or seen: the shell's prompt as the serial port has it,
+# "jam" and the directory each in their colour (ESC [ ... m) and plain ":"
+# and ">": jam, colours, ':', the directory (and colours), '>'.
+PROMPT_RE = rb"jam(?:\x1b\[[0-9;]*m)*:[^\r\n>]*>"
+
+
+def needle_of(text):
+    """What a wait or seen looks for: the text's bytes, or a regular
+    expression when it has {prompt} in it."""
+    if "{prompt}" not in text:
+        return text.encode()
+    return re.compile(PROMPT_RE.join(re.escape(p.encode()) for p in text.split("{prompt}")))
+
+
+def find(needle, start):
+    """(start, end) of needle's first match in buf from start, or None."""
+    if isinstance(needle, bytes):
+        i = buf.find(needle, start)
+        return (i, i + len(needle)) if i >= 0 else None
+    m = needle.search(buf, start)
+    return m.span() if m else None
 
 
 def unescape(t):
@@ -159,14 +188,14 @@ for lineno, raw in enumerate(open(script), 1):
             arg = rest
         except ValueError:
             pass
-        needle = arg.encode()
+        needle = needle_of(arg)
         end = time.time() + timeout
         with lock:
             while True:
-                i = buf.find(needle, mark if cmd == "wait" else 0)
-                if i >= 0:
+                hit = find(needle, mark if cmd == "wait" else 0)
+                if hit:
                     if cmd == "wait":
-                        mark = i + len(needle)
+                        mark = hit[1]
                     break
                 left = end - time.time()
                 if left <= 0 or closed:

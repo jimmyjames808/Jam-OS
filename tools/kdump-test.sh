@@ -54,7 +54,7 @@ boot() {
 }
 
 # The panicking boot's log reached the shell's prompt and logd's file.
-UP="wait 120 Jam OS shell|wait jam>|wait 60 logd: writing /data/logs/boot-0001.txt"
+UP="wait 120 Jam OS shell|wait {prompt}|wait 60 logd: writing /data/logs/boot-0001.txt"
 
 case_save() {
     IFS='|'
@@ -63,8 +63,8 @@ case_save() {
         "wait 60 loader:      Jam OS kexec" \
         "wait 60 kexec: the previous kernel panicked after" \
         "wait 120 the last boot panicked: test panic requested (crash test) (saved as /data/logs/boot-0001-crash.txt)" \
-        "wait jam>" "seen 60 logd: writing /data/logs/boot-0002.txt" \
-        "send ls /data/logs" "wait boot-0002.txt" "wait jam>" \
+        "wait {prompt}" "seen 60 logd: writing /data/logs/boot-0002.txt" \
+        "send ls /data/logs" "wait boot-0002.txt" "wait {prompt}" \
         "send reboot -f" "wait reboot: resetting"
     unset IFS
     boot save shell "$@" || { fail save "the script (see $out/kdump-save.log)"; return; }
@@ -138,17 +138,17 @@ case_nostick() {
     set -- $UP "monitor device_del stick" "wait 30 init: /data is gone" \
         "send crash panic yes" "wait 60 KERNEL PANIC" "wait 60 loader:      Jam OS kexec" \
         "wait 120 the last boot panicked: test panic requested (crash test) (not saved: no /data within 20 s" \
-        "wait jam>" "send reboot -f" "wait reboot: resetting"
+        "wait {prompt}" "send reboot -f" "wait reboot: resetting"
     unset IFS
     boot nostick shell "$@" || fail nostick "the script (see $out/kdump-nostick.log)"
 }
 
 case_screen() {
-    printf '%s\n' "wait 180 init: the shell is up" "wait jam>" "seen 60 logd: writing /data/logs/boot-0001.txt" \
+    printf '%s\n' "wait 180 init: the shell is up" "wait {prompt}" "seen 60 logd: writing /data/logs/boot-0001.txt" \
         "sleep 1" "send crash panic yes" "wait 60 starting the stored kernel" \
         "wait 60 loader:      Jam OS kexec" "shot kdump-between" "wait 120 splash: first frame" \
         "wait 180 the last boot panicked: test panic requested" "wait 60 init: the shell is up" \
-        "wait jam>" "send reboot -f" "wait reboot: resetting" > "$out/kdump-screen.txt"
+        "wait {prompt}" "send reboot -f" "wait reboot: resetting" > "$out/kdump-screen.txt"
     QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT="$out/kdump-screen.txt" \
         tools/qemu-test.sh "$out" kdump-screen shell > "$out/kdump-screen.out" 2>&1 ||
         { fail screen "the script (see $out/kdump-screen.log)"; return; }

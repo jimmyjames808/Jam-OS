@@ -3,12 +3,12 @@
 # stick still boots, /data is found dirty and mounted anyway, what was
 # synced before the pull is all there, and it can be written again.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 fat /data: the volume is dirty
 seen 60 init: /data mounted
 seen 30 logd: writing /data/logs/boot-0003.txt
 send T=c
-wait jam>
+wait {prompt}
 send cat "/data/My Notes/first boot.txt" "/data/My Notes/second boot.txt"
 wait kept across a reboot-a
 wait written on boot two-b

@@ -76,33 +76,33 @@ mmd -i "$stick@@64M" ::/update &&
 
 cat > "$out/update.txt" <<EOF
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: kexec: noted /esp/boot/jamos.elf
 seen 60 init: /data mounted
 send run updtest bad
 wait 300 updtest: bad:
-wait jam>
+wait {prompt}
 send reboot
 wait 30 init: kexec: /esp unchanged: the stored kernel, no files read
 wait 60 kexec: starting the stored kernel
 wait 60 kexec: started by a reboot
 wait 120 init: the shell is up
-wait jam>
+wait {prompt}
 send cat /boot/update-marker.txt; echo mk-""\$?
 wait mk-1
-wait jam>
+wait {prompt}
 send run updtest good
 wait 300 updtest: good:
-wait jam>
+wait {prompt}
 send reboot
 wait 30 init: kexec: /esp unchanged: the stored kernel, no files read
 wait 60 kexec: starting the stored kernel
 wait 60 kexec: started by a reboot
 wait 120 init: the shell is up
-wait jam>
+wait {prompt}
 send cat /boot/update-marker.txt; echo mk-""\$?
 wait mk-0
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF
@@ -154,27 +154,27 @@ tools/update-test-key.sh "$out" build/jamos.img "$nokey" nokey &&
     { echo "update-test: can't make the keyless stick"; exit 1; }
 cat > "$out/nokey.txt" <<EOF
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 send update 10.2.21.174; echo nk-""\$?
 wait 30 this build has no update key: updates are off
 wait nk-1
-wait jam>
+wait {prompt}
 send update -w 10.2.21.174; echo nw-""\$?
 wait 30 this build has no update key: updates are off
 wait nw-1
-wait jam>
+wait {prompt}
 send update -m 10.2.21.174; echo nm-""\$?
 wait 30 this build has no update key: updates are off
 wait nm-1
-wait jam>
+wait {prompt}
 send update -n -r; echo nr-""\$?
 wait 30 usage: update [-n | -m | -w] [-r] [-f] [server address]
 wait nr-2
-wait jam>
+wait {prompt}
 send run updtest nokey
 wait 120 updtest: nokey:
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF

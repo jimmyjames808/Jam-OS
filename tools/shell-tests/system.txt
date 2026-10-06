@@ -6,25 +6,25 @@
 # "shell". As in cmds.txt, the text waited for is built from $T = x, so it
 # never appears in the typed line.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send T=x
-wait jam>
+wait {prompt}
 
 # ---- argv as typed: a quoted word stays one word ---------------------------------------
 send utest env "q $T" 'r s'
 wait 30 arg: q x
 wait arg: r s
 wait run: bin/utest exited with code 0
-wait jam>
+wait {prompt}
 send kill "a $T"
 wait kill a x: ERR_INVALID_ARGS
-wait jam>
+wait {prompt}
 send crash "pf yes"
 wait type "crash pf yes yes" to go ahead
-wait jam>
+wait {prompt}
 send ktest "zz-$T"
 wait 60 ktest zz-x
-wait jam>
+wait {prompt}
 
 # ---- status ------------------------------------------------------------------------------
 send kill nosuch-$T || echo ok-$T-kill
@@ -42,7 +42,7 @@ wait st3-x=1
 send time memmap
 wait usable
 wait (status 0)
-wait jam>
+wait {prompt}
 
 # ---- output down a pipe --------------------------------------------------------------------
 send mem | grep "shell's job" | grep -c pages | grep ^1$ && echo ok-$T-mem
@@ -65,13 +65,13 @@ send type reboot clear
 wait reboot is a shell builtin
 wait clear is a shell builtin
 send alias m$T=mem
-wait jam>
+wait {prompt}
 send mx | grep -c "MiB free" | grep ^1$ && echo ok-$T-alias
 wait ok-x-alias
 type memm\t\r
 wait usable
-wait jam>
+wait {prompt}
 send clear
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

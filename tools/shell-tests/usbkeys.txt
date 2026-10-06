@@ -5,12 +5,12 @@
 # usb-kbd behind it (usb path 6.1: hid-6.1:0) and a usb-mouse on port 3;
 # the command line "shell" (a plain boot).
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 30 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
 sleep 0.5
 usbkeys help\r
 wait Commands:
-wait jam>
+wait {prompt}
 # kill the keyboard's hid (from the serial side): devmgr restarts it, and
 # the keys typed right away (QEMU queues them while nobody polls) still arrive
 send kill hid-6.1:0
@@ -19,7 +19,7 @@ seen 10 usb 6.1:0 drv/hid restarted
 sleep 0.5
 usbkeys help\r
 wait 10 Commands:
-wait jam>
+wait {prompt}
 # the compositor restarts: hid loses its input channel, ends, and devmgr
 # starts it again connected to the new compositor; the keys reach the
 # terminal's window again (under `nocomp` the console is the input's hub:
@@ -32,14 +32,14 @@ wait 30 console: connected again
 sleep 1
 usbkeys help\r
 wait 10 Commands:
-wait jam>
+wait {prompt}
 # the console restarts: its window goes and comes back, hid stays
 send kill console
 wait 30 Jam OS shell.
 sleep 1
 usbkeys help\r
 wait 10 Commands:
-wait jam>
+wait {prompt}
 # devmgr dies: init kills its job (usb-bus and every hid go
 # with it) and starts it again; the new usb-bus resets the controller and
 # enumerates, a new hid binds and the keyboard types again; the shell's
@@ -53,10 +53,10 @@ wait 90 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
 sleep 1
 usbkeys help\r
 wait 10 Commands:
-wait jam>
+wait {prompt}
 send usb
 wait 30 problem(s)
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 

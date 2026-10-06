@@ -1,7 +1,8 @@
-/* libfun: the fun apps' shared code (user/apps/fun).
+/* libfun: the apps' shared code (user/apps/fun).
  *
- * libfun.a, linked into the programs that use it (bin/life, bin/tetris,
- * bin/fractal, bin/demo, ...), one object per job: gfx.c (the screen and
+ * libfun.a, linked into the programs that use it (bin/jamjar, bin/splash,
+ * the compositor, the console, the test programs fractal, wltest and
+ * fbbench, ...), one object per job: gfx.c (the screen and
  * drawing), wl.c and wlpaint.c (a window on the compositor instead),
  * text.c (the 8x16 text), utf8.c, font.c, fontdraw.c, fontdata.c and
  * ttf.c (the smooth text), keys.c (the key channel), mouse.c (the pointer
@@ -212,16 +213,6 @@ void ring_aa(const struct surf *s, float cx, float cy, float r, float width, uin
              uint32_t a);
 void poly_aa(const struct surf *s, const float *xy, int n, uint32_t rgb, uint32_t a);
 
-/* A block of colour c with an edge e pixels wide, lit from the top left so
- * it stands out of the surface (e < 0: lit from the bottom right, so it is
- * sunk into it), and a soft gradient down its face. */
-void bevel(const struct surf *s, const struct rect *r, int e, uint32_t c);
-/* A soft glow of colour c round r, fading out over `reach` pixels: what a
- * playing field sits in. Drawn before the field itself. */
-void glow(const struct surf *s, const struct rect *r, int reach, uint32_t c);
-/* A dark card with rounded corners and a lighter outline: the panel that
- * numbers and help sit on. */
-void card(const struct surf *s, const struct rect *r, int radius);
 /* A filled circle of radius rad around (cx, cy), blended at alpha a. */
 static inline void disc(const struct surf *s, int cx, int cy, int rad, uint32_t c, uint32_t a)
 {
@@ -491,14 +482,6 @@ static inline uint64_t rng_next(uint64_t *s)
     x ^= x >> 27;
     *s = x;
     return x * 0x2545f4914f6cdd1dull;
-}
-
-static inline uint32_t popcount64(uint64_t x)
-{
-    x = x - ((x >> 1) & 0x5555555555555555ull);
-    x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);
-    x = (x + (x >> 4)) & 0x0f0f0f0f0f0f0f0full;
-    return (uint32_t)((x * 0x0101010101010101ull) >> 56);
 }
 
 /* A zeroed, page-aligned block of memory of its own VMO (for buffers
