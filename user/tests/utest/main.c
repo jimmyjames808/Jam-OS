@@ -1007,10 +1007,16 @@ static const struct {
 
 int main(int argc, char **argv)
 {
-    if (argc >= 2)
+    /* "utest only <prefix>": the tests whose name starts with prefix (a
+     * quick run while working on one area; the regression runs them all). */
+    const char *only = argc == 3 && !strcmp(argv[1], "only") ? argv[2] : NULL;
+    if (argc >= 2 && !only)
         return child_main(argc, argv);
-    unsigned n = sizeof(tests) / sizeof(tests[0]), passed = 0;
-    for (unsigned i = 0; i < n; i++) {
+    unsigned n = 0, passed = 0;
+    for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
+        if (only && strncmp(tests[i].name, only, strlen(only)))
+            continue;
+        n++;
         utest_cur = tests[i].name;
         uint64_t t0 = now();
         if (tests[i].fn()) {
