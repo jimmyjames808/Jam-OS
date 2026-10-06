@@ -68,7 +68,7 @@ What the design defends against today:
   were given (a write to the interrupt window that isn't its own entry is
   blocked) ([The IOMMU](#the-iommu)). **This is off by default** until the
   PC has signed it off (M11 in [ROADMAP.md](docs/ROADMAP.md)); the boot
-  entry "Jam OS (IOMMU)" turns it on.
+  entry "Developer > Jam OS (IOMMU)" turns it on.
 
 Not yet:
 
@@ -1061,7 +1061,7 @@ it was given, so drivers are contained, not only crash-isolated
 ([what Jam OS defends against](#what-jam-os-defends-against)).
 
 **Off by default, for now.** It runs only with the boot word `iommu=on`
-(the boot entries "Jam OS (IOMMU)" and "Tests > IOMMU checks"; `iommu=off`
+(the boot entries "Developer > Jam OS (IOMMU)" and "Developer > IOMMU checks"; `iommu=off`
 wins over it, and a reboot keeps either word). Without it no VT-d register
 is written: the boot's read-only probe (`vtd:` lines: the DMAR table, each
 unit's capabilities, what the firmware left on) is the only trace, and

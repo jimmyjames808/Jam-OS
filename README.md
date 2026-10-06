@@ -28,7 +28,7 @@ a real desktop PC, which is where every milestone is tested.
 - Drivers as user processes: a PCI core with MSI/MSI-X and DMA
   capabilities, a device manager that restarts crashed drivers, and USB
   (xHCI controller, hubs, keyboard and mouse).
-- The IOMMU (Intel VT-d, M11): with the boot entry "Jam OS (IOMMU)" (the
+- The IOMMU (Intel VT-d, M11): with the boot entry "Developer > Jam OS (IOMMU)" (the
   boot word `iommu=on`) each driver's device reaches only the memory the
   driver pinned for it, every other DMA is blocked and logged, and a
   device can raise only its own interrupts (interrupt remapping); `iommu`

@@ -263,26 +263,32 @@ one line. Only without a stored kernel, or for a panic within 30 s of a
 start after a panic (a crash loop), does the panic screen stay up and the
 machine halt ([ARCHITECTURE.md](../ARCHITECTURE.md#kexec-reboot-and-panic)).
 
+On top are the three everyday entries (Jam OS, its previous build, no
+compositor); everything else is in one folder, Developer (Enter opens
+it): the text log, the IOMMU, safe mode, the network checks and every
+test. The check allows one level of folder (`//` entries), so Developer
+holds them all side by side.
+
 | Entry | Command line | What it does |
 |---|---|---|
 | Jam OS | (empty) | the boot splash ([AS-PLAN.md](history/AS-PLAN.md)): the screen dark from the kernel's start, the logo animation with its sound (played to the end, full screen; what is typed meanwhile reaches the shell), then the desktop: the shell in a terminal window on the wallpaper; meanwhile init starts the bootfs server (`/boot`), the compositor, the console (the first terminal), serialin, devmgr (with the USB and PCI drivers; it mounts the stick's `/esp` and `/data`), the mixer, the music player, netstack, dhcp (without `net.address`), dns, logd and netlog (with `net.host`). devmgr binds the PC's network chip as the netdev service on the kernel's VLAN (21), so the shell has `net`, `ping`, `host` and `update`; QEMU's e1000e, when there is one, is bound the same way. "Jam OS (no network)" (below) keeps both off. `reboot` and a panic look like switching the PC on: the splash background at once, then the next boot's splash; after a panic the shell's first line says what it was and where its log went |
-| Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash, and in the shell as it comes (a plain boot keeps it off the shell's screen but for notices and the commands whose output it is: [ARCHITECTURE.md](../ARCHITECTURE.md#debugging)) |
-| Jam OS (no compositor) | `nocomp` | the everyday boot as it was before G1: no compositor, the console draws the whole screen and takes the keys (one terminal, no Super+Enter or `term`), programs borrow the screen. The way back if the compositor misbehaves on the PC ([G1-PLAN.md](G1-PLAN.md#q4-what-the-console-becomes-and-a-way-back)); a reboot keeps the word |
-| Jam OS (IOMMU) | `iommu=on` | the everyday boot with the IOMMU on (`iommu=on`, below): DMA translation and interrupt remapping. An entry of its own while it is new ([M11-PLAN.md](M11-PLAN.md#questions-for-the-owner), question 6); once the PC checks pass it becomes the default and `iommu=off` turns it off |
-| Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
-| Jam OS (network: listen only) | `netprobe` | the everyday boot, plus the RTL8125's listen-only probe ([M9-PLAN.md](M9-PLAN.md#the-first-pc-stage-listen-only)): devmgr binds `drv/rtl8125`, which sends nothing, listens for 60 s after the link comes up, logs its `[rtl8125]` lines and one RESULTS line, and exits. A `reboot` doesn't keep the word (the next boot is the everyday one, on the network) |
-| Jam OS (network: send test) | `netsend` | the everyday boot, plus the RTL8125's ARP send test ([M9-PLAN.md](M9-PLAN.md#r1-progress-the-full-driver)): devmgr binds `drv/rtl8125` in full mode on the kernel's VLAN (none: "no VLAN: the network stays off", nothing touched), which waits for the link, sends twenty ARP probes for 10.2.21.1, 200 ms apart, tagged with the VLAN, logs for each when it was queued, when the chip handed its descriptor back and when the reply came, compares the chip's count of frames sent with its own, logs its `[rtl8125]` lines and one RESULTS line, and exits. Nothing else is ever sent; a `reboot` doesn't keep the word |
-| Jam OS (no network) | `vlan=off` | the everyday boot with the network off: every network driver starts without a VLAN, logs `no VLAN: the network stays off` and leaves its card alone; netstack has no session, so nothing is ever sent ([ARCHITECTURE.md](../ARCHITECTURE.md#networking)) |
 | Jam OS (previous build) | (empty) | the everyday boot of the build the stick had before the last `update` (`-w`) or `make flash` (`/esp/boot/prev-jamos.elf` and `/esp/boot/prev-bootfs.img`; `tools/qemu-test.sh` boots them with `QEMU_BOOT_PREV=1`); a stick that has had neither has no such files, and Limine says it can't open them |
-| Tests / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
-| Tests / Stress test (2 minutes) | `selftest stress=120` | the stress test alone, no user space: kernel work |
-| Tests / Stress test (10 minutes) | `selftest stress=600` | the same for 10 minutes (it signed off the milestones up to M8; from A1 on the soak does) |
-| Tests / Soak test (3 minutes) | `soak=3` | a plain boot whose shell runs `soak 3 halt` by itself ([Soak](#soak)): the first failure panics, and the next boot's shell names it (the log is on the stick); a pass ends with the SOAK RESULTS box and a prompt |
-| Tests / Benchmark | `bench` | about 10 s; results go to [BENCH.md](BENCH.md) |
-| Tests / IOMMU checks | `iommu=on vtdtest` | a plain boot with the IOMMU on in which drv/hda provokes its faults on purpose before it serves (`drivers/hda/vtdtest.c`): its command ring pointed at a page it doesn't hold pinned (a read the IOMMU blocks: a `vtd: fault:` line naming 00:1f.3), then its response ring at the interrupt window 0xfee00000 (a write blocked with fault 25h, no interrupt), then the rings back and sound as usual. `hda: vtdtest:` lines say what happened; if the controller could read the page anyway (no translation), it says so and provokes nothing. `iommu` in the shell shows the units, domains and fault counts |
-| Tests / Compositor test scene | `comptest` | the compositor alone on the screen with its test scene (below, `comptest`): windows in the desktop's look held about 4 s each, then the RESULTS box with its `compositor: bench:` paint times |
-| Tests / init + utest + usbtest | `init` | the user-space regression run: init runs `boot/init.cfg` (utest, then usbtest) and the RESULTS box says whether init's root job ended with nothing charged |
-| Tests / Timer fallback | `nodeadline selftest` | the periodic LAPIC timer instead of TSC-deadline |
+| Jam OS (no compositor) | `nocomp` | the everyday boot as it was before G1: no compositor, the console draws the whole screen and takes the keys (one terminal, no Super+Enter or `term`), programs borrow the screen. The way back if the compositor misbehaves on the PC ([G1-PLAN.md](G1-PLAN.md#q4-what-the-console-becomes-and-a-way-back)); a reboot keeps the word |
+| Developer / Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash, and in the shell as it comes (a plain boot keeps it off the shell's screen but for notices and the commands whose output it is: [ARCHITECTURE.md](../ARCHITECTURE.md#debugging)) |
+| Developer / Jam OS (IOMMU) | `iommu=on` | the everyday boot with the IOMMU on (`iommu=on`, below): DMA translation and interrupt remapping. An entry of its own while it is new ([M11-PLAN.md](M11-PLAN.md#questions-for-the-owner), question 6); once the PC checks pass it becomes the default and `iommu=off` turns it off |
+| Developer / Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
+| Developer / Jam OS (network: listen only) | `netprobe` | the everyday boot, plus the RTL8125's listen-only probe ([M9-PLAN.md](M9-PLAN.md#the-first-pc-stage-listen-only)): devmgr binds `drv/rtl8125`, which sends nothing, listens for 60 s after the link comes up, logs its `[rtl8125]` lines and one RESULTS line, and exits. A `reboot` doesn't keep the word (the next boot is the everyday one, on the network) |
+| Developer / Jam OS (network: send test) | `netsend` | the everyday boot, plus the RTL8125's ARP send test ([M9-PLAN.md](M9-PLAN.md#r1-progress-the-full-driver)): devmgr binds `drv/rtl8125` in full mode on the kernel's VLAN (none: "no VLAN: the network stays off", nothing touched), which waits for the link, sends twenty ARP probes for 10.2.21.1, 200 ms apart, tagged with the VLAN, logs for each when it was queued, when the chip handed its descriptor back and when the reply came, compares the chip's count of frames sent with its own, logs its `[rtl8125]` lines and one RESULTS line, and exits. Nothing else is ever sent; a `reboot` doesn't keep the word |
+| Developer / Jam OS (no network) | `vlan=off` | the everyday boot with the network off: every network driver starts without a VLAN, logs `no VLAN: the network stays off` and leaves its card alone; netstack has no session, so nothing is ever sent ([ARCHITECTURE.md](../ARCHITECTURE.md#networking)) |
+| Developer / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
+| Developer / Stress test (2 minutes) | `selftest stress=120` | the stress test alone, no user space: kernel work |
+| Developer / Stress test (10 minutes) | `selftest stress=600` | the same for 10 minutes (it signed off the milestones up to M8; from A1 on the soak does) |
+| Developer / Soak test (3 minutes) | `soak=3` | a plain boot whose shell runs `soak 3 halt` by itself ([Soak](#soak)): the first failure panics, and the next boot's shell names it (the log is on the stick); a pass ends with the SOAK RESULTS box and a prompt |
+| Developer / Benchmark | `bench` | about 10 s; results go to [BENCH.md](BENCH.md) |
+| Developer / IOMMU checks | `iommu=on vtdtest` | a plain boot with the IOMMU on in which drv/hda provokes its faults on purpose before it serves (`drivers/hda/vtdtest.c`): its command ring pointed at a page it doesn't hold pinned (a read the IOMMU blocks: a `vtd: fault:` line naming 00:1f.3), then its response ring at the interrupt window 0xfee00000 (a write blocked with fault 25h, no interrupt), then the rings back and sound as usual. `hda: vtdtest:` lines say what happened; if the controller could read the page anyway (no translation), it says so and provokes nothing. `iommu` in the shell shows the units, domains and fault counts |
+| Developer / Compositor test scene | `comptest` | the compositor alone on the screen with its test scene (below, `comptest`): windows in the desktop's look held about 4 s each, then the RESULTS box with its `compositor: bench:` paint times |
+| Developer / init + utest + usbtest | `init` | the user-space regression run: init runs `boot/init.cfg` (utest, then usbtest) and the RESULTS box says whether init's root job ended with nothing charged |
+| Developer / Timer fallback | `nodeadline selftest` | the periodic LAPIC timer instead of TSC-deadline |
 
 Other boot words (for `tools/qemu-test.sh`, not in the menu):
 
@@ -1015,7 +1021,7 @@ plain test run never uses it. It has tests at three levels:
   jumping into the next kernel with everything on. The pure ones (`vtd_pt_*`, `vtd_ir_*`, the
   entry bit layouts, the DMAR parser) run in every `ktest`.
 - **The deliberate faults**: `tools/hda-test.sh`'s third boot runs drv/hda's
-  IOMMU checks (`iommu=on vtdtest`, the "Tests > IOMMU checks" entry on
+  IOMMU checks (`iommu=on vtdtest`, the "Developer > IOMMU checks" entry on
   the PC).
 - **Every device with the IOMMU on**: the area scripts run unchanged with
   QEMU's unit and the word, `QEMU_IOMMU=<mode> QEMU_WORDS=iommu=on
@@ -1039,7 +1045,7 @@ plain test run never uses it. It has tests at three levels:
 
 What QEMU can't show (its unit reads the tables straight from guest
 memory and lets old-format interrupt writes through) is the PC's: the
-"Tests > IOMMU checks" entry, then the "Jam OS (IOMMU)" entry with every
+"Developer > IOMMU checks" entry, then the "Developer > Jam OS (IOMMU)" entry with every
 device in use, `iommu` (no fault but the checks'), `bench`'s IOMMU lines,
 a `reboot` and `reboot -f`, then All tests and `soak 10` booted with
 `iommu=on` (added with E in the boot menu). Only after that does
