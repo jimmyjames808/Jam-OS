@@ -1,5 +1,6 @@
 /* fractal: the self-test (`run fractal --selftest`): the maths, the kernels
- * against each other, and the parallel render against one thread. */
+ * against each other, the parallel render against one thread, and libfun's
+ * pool resting its workers. */
 #include "fractal.h"
 
 /* An n x n grid of points around the centre in two modes: how many agree
@@ -247,6 +248,33 @@ static bool speed(uint32_t n, bool avx2)
     return true;
 }
 
+static void nothing(uint32_t item, uint32_t worker, void *arg)
+{
+    (void)item, (void)worker, (void)arg;
+}
+
+/* libfun's pool: after pool_rest (what gfx_key does before the app waits)
+ * every worker sleeps at once. With the spin before sleeping made endless,
+ * only the rest can put them to sleep, however late it comes. (From life's
+ * self-test, removed with life on 2026-10-07.) */
+static void test_pool_rest(uint32_t n)
+{
+    if (n < 2) {
+        fun_check(true, "pool_rest: one thread, no workers to rest");
+        return;
+    }
+    pool_set_spin(UINT32_MAX);
+    pool_run(nothing, NULL, 4 * n);
+    pool_rest();
+    uint64_t deadline = now() + 5 * NS_PER_S;
+    while (pool_asleep() < n - 1 && now() < deadline)
+        jam_nanosleep(now() + NS_PER_MS);
+    uint32_t asleep = pool_asleep();
+    pool_set_spin(0);   /* back to the default: any still spinning sleep soon */
+    say("fractal: pool_rest: %u of %u workers asleep\n", asleep, n - 1);
+    fun_check(asleep == n - 1, "pool_rest: every worker asleep at once, not spinning");
+}
+
 int fractal_selftest(void)
 {
     fun_selftest_begin("fractal", 64);
@@ -260,5 +288,6 @@ int fractal_selftest(void)
     test_kernels();
     if (!test_render(avx2) || !speed(n, avx2))
         return 1;
+    test_pool_rest(n);
     return fun_selftest_end();
 }
