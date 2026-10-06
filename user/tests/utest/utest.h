@@ -526,6 +526,7 @@ bool t_comp_paint_cursor(void);
 bool t_comp_paint_blank(void);
 bool t_comp_paint_overlay(void);
 bool t_comp_paint_splash(void);
+bool t_comp_paint_overlay_open(void);
 /* comp_look.c: the look (look.h) the same way: title bars and circles,
  * rounded corners, shadows, tiling's borders, the wallpaper. */
 bool t_comp_look_title(void);

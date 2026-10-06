@@ -30,7 +30,10 @@
  * argument): the desktop, a window and the cursor are there, yet every
  * paint is the splash's background only, until a boot overlay maps (then
  * it, everywhere, straight from its buffer, and its fade-out to exactly the
- * desktop) or the 5 s are up with none (then exactly the desktop). */
+ * desktop) or the 5 s are up with none (then exactly the desktop).
+ * t_comp_paint_overlay_open: with the animations on, a window opening just
+ * before a boot overlay maps, or under it, is not drawn over it (an
+ * animation is drawn over the windows): the overlay everywhere. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -334,6 +337,43 @@ bool t_comp_paint_splash(void)
     memset(r, 0, sizeof(r));
     bool ok = splash_runs(&r[0], &r[1], &r[2], &r[3], &r[4]);
     for (unsigned i = 0; i < 5; i++)
+        cp_done(&r[i]);
+    return ok;
+}
+
+/* A window opening (animated) and a boot overlay, in either order; a
+ * paint 100 ms into the opening (half way: drawn, half see-through). */
+#define OO_DESK  "nocursor", "desktop", "time=2026,10,5,14,32", "animate"
+#define OO_TERM  "top=120,60,ff3060a0,Term,f"
+#define OO_OVER  "top=320,200,ff70a030,Splash,F"
+
+/* Pixels of run r that aren't the overlay's. */
+static unsigned not_overlay(const struct cp_run *r)
+{
+    unsigned bad = 0;
+    for (int32_t y = 0; y < CP_H; y++)
+        for (int32_t x = 0; x < CP_W; x++)
+            bad += r->image[y * CP_W + x] != testscene_rgb(0x70a030, x, y, false);
+    return bad;
+}
+
+static bool overlay_open_runs(struct cp_run *before, struct cp_run *under)
+{
+    static const char *const b[] = { OO_DESK, OO_TERM, "paint", OO_OVER, "tick=100", "paint" };
+    static const char *const u[] = { OO_DESK, OO_OVER, "paint", OO_TERM, "tick=100", "paint" };
+    CHECK(cp_run(b, sizeof(b) / sizeof(b[0]), before));
+    CHECK(cp_run(u, sizeof(u) / sizeof(u[0]), under));
+    CHECK_EQ(not_overlay(before), 0);
+    CHECK_EQ(not_overlay(under), 0);
+    return true;
+}
+
+bool t_comp_paint_overlay_open(void)
+{
+    static struct cp_run r[2];
+    memset(r, 0, sizeof(r));
+    bool ok = overlay_open_runs(&r[0], &r[1]);
+    for (unsigned i = 0; i < 2; i++)
         cp_done(&r[i]);
     return ok;
 }
