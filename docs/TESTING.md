@@ -372,7 +372,12 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   no spinlock or mutex this boot: the switch for the benchmark's
   checker-off column (`bench` also flips it for spinlocks within one run,
   as the `lockdep` switch). The everyday boot checks every lock. A reboot
-  keeps it.
+  keeps it. Its guards are weaker, on purpose (the owner, M11.5 review
+  question B): with the checker off no CPU counts the spinlocks it holds,
+  so `can_trim` (thread.c) and `check_callable` (ipi.c) can't refuse a
+  stack trim or a cross-CPU call made while one is held; no caller does
+  that today, and `return_to_user_work` still catches a lock held into
+  user space through `preempt_count`. Use it only for measuring.
 - `test<name>`: a crash test at boot (`testpf`, `testlockorder`, ...; the
   names are in `kernel/debug/selftest.c`). Each must panic with the right
   message; `testbp` must come back. The early ones run before the stored

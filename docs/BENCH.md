@@ -605,7 +605,9 @@ Reading:
   kernel call 12), the hand-off is now ahead of off (765 vs 786 ns) and
   the slots save 84 ns a call.
 - **The reply-and-wait line is 765 ns, 165 ns over the 600 ns target**
-  (M11.5's question D reads the target on this line, checker on); with
+  (the owner settled M11.5's question D on 2026-10-07: the target is
+  read on this line, checker on; the generated line beside it is what
+  programs pay, bench-echo the history line); with
   the checker off the user call is 95 ns cheaper (994 vs 1089), so the
   checker-off reply-and-wait would be about 670 ns.
 - **The IOMMU costs about 5 us per one-page pin and unpin** (an

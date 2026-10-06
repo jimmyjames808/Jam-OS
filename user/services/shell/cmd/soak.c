@@ -192,6 +192,15 @@ SH_CMD(soak)
     stop_load(&s);
     if (go && !s.idle)
         ktest_once(&s, false);
+    /* Look a path up before the last snapshot: the shell takes the
+     * namespace notice init sent it last (an NS_SET of every service it
+     * has, about 1 KB each, read only at a lookup), so the job tree's
+     * message bytes measure real queues, not that one message (the
+     * owner, M11.5 review question C). Not "/": it names no mount, so
+     * ns_resolve answers it without reading the notices. */
+    bool dir;
+    uint64_t size;
+    (void)sh_stat("/svc", &dir, &size);
     char cmd[64];
     snprintf(cmd, sizeof(cmd), "soak end u=%lu,%lu io=%lu,%lu%s", (unsigned long)s.utest_runs,
              (unsigned long)s.utest_failed, (unsigned long)s.load.file_cycles,
