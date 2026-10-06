@@ -1,25 +1,52 @@
 /* The command table: every command the shell has, in the order `help`
  * lists them within a category, with its usage and help (the first line
- * of the help is what the list shows; `help <command>` shows it all). */
+ * of the help is what the list shows; `help <command>` shows it all).
+ *
+ * The categories come in two halves (the polish track): the everyday
+ * ones, which `help` lists (files, text, programs and windows, music,
+ * the network, the system, the shell), then the developer ones, which
+ * `help dev` lists (the hardware's internals, the kernel, the tests).
+ * The split: a command is everyday if someone using Jam OS (not working
+ * on it) would type it: their files and text, starting and stopping
+ * programs and terminals, music, fetching and serving files, the date,
+ * what is running, updating and rebooting; a command that reports or
+ * provokes the system's insides (PCI and USB internals, the codec's
+ * widgets, the IOMMU, memory maps, the whole kernel log, kernel loading,
+ * crashes and every test and benchmark) is a developer's. `help
+ * <command>` answers for either. */
 #include "sh.h"
 
-enum { C_INFO, C_FILES, C_TEXT, C_SHELL, C_SYSTEM, C_TESTS, C_COUNT };
+enum {
+    C_FILES, C_TEXT, C_PROGRAMS, C_SOUND, C_NET, C_SYSTEM, C_SHELL,   /* everyday: `help` */
+    C_HARDWARE, C_KERNEL, C_TESTS,                                    /* `help dev` */
+    C_COUNT
+};
 
 const char *const sh_categories[C_COUNT] = {
-    "Information", "Files (/boot: the boot image, read-only; /data: the stick)",
+    "Files (/data: your files on the stick; /usb0...: other sticks)",
     "Text (read a file or a pipe)",
-    "Shell", "System", "Tests",
+    "Programs and windows",
+    "Music and sound",
+    "Network",
+    "System",
+    "Shell",
+    "Hardware",
+    "Kernel and boot",
+    "Tests and benchmarks",
 };
 const unsigned sh_ncategories = C_COUNT;
+const unsigned sh_neveryday = C_HARDWARE;
 
 #define C(n, cat, usage, help) { #n, shc_##n, cat, usage, help }
 
 static const struct sh_cmd cmds[] = {
-    C(help, C_SHELL, "help [command]", "the commands by category, or one command's usage"),
-    C(uname, C_INFO, "uname [-a]", "the system's name (-a: with version, machine and CPU)"),
-    C(version, C_INFO, "version", "the Jam OS version"),
-    C(uptime, C_INFO, "uptime", "the time, how long since boot, CPU use since boot"),
-    C(date, C_INFO, "date [-u] [-d @secs] | -r | -z <zone>",
+    C(help, C_SHELL, "help [dev | command]",
+      "the everyday commands; help dev: the developer ones (tests, hardware)\n"
+      "  by category; help <command>: one command's usage and details"),
+    C(uname, C_SYSTEM, "uname [-a]", "the system's name (-a: with version, machine and CPU)"),
+    C(version, C_SYSTEM, "version", "the Jam OS version"),
+    C(uptime, C_SYSTEM, "uptime", "the time, how long since boot, CPU use since boot"),
+    C(date, C_SYSTEM, "date [-u] [-d @secs] | -r | -z <zone>",
       "the date and time, in $TZ or else the system's zone (the setting timezone).\n"
       "  -u: UTC. -d @secs: that Unix time. -r: the real-time clock as it reads, and\n"
       "  the system's clock (init sets it from the RTC at boot; the setting rtc says\n"
@@ -27,46 +54,46 @@ static const struct sh_cmd cmds[] = {
       "  system's zone from now on, kept in /data/etc/settings. Zones: Australia/Sydney\n"
       "  (AEST/AEDT), Australia/Perth, Europe/London, ..., UTC, or an offset like +10,\n"
       "  +9:30, -5. Example: TZ=UTC date"),
-    C(lscpu, C_INFO, "lscpu [-e]",
+    C(lscpu, C_SYSTEM, "lscpu [-e]",
       "the CPU: model, P-cores, E-cores, threads (-e: one line per CPU)"),
-    C(free, C_INFO, "free", "memory: total, used, free"),
-    C(ps, C_INFO, "ps [-k]",
+    C(free, C_SYSTEM, "free", "memory: total, used, free"),
+    C(ps, C_SYSTEM, "ps [-k]",
       "processes: id, threads, CPU time, memory of its job, name (indented by job).\n"
       "  -k: the kernel's own listing (jobs with pages, handles, threads) in the log"),
-    C(top, C_INFO, "top [-d seconds] [-n frames]",
+    C(top, C_SYSTEM, "top [-d seconds] [-n frames]",
       "live CPU use per CPU and per process, and memory; q or Ctrl+C quits"),
-    C(whoami, C_INFO, "whoami", "the user (there is one: jam)"),
-    C(hostname, C_INFO, "hostname", "this machine's name"),
-    C(dmesg, C_INFO, "dmesg", "the whole kernel log (up to 4 MiB); pipe it: dmesg | grep usb"),
+    C(whoami, C_SYSTEM, "whoami", "the user (there is one: jam)"),
+    C(hostname, C_SYSTEM, "hostname", "this machine's name"),
+    C(dmesg, C_KERNEL, "dmesg", "the whole kernel log (up to 4 MiB); pipe it: dmesg | grep usb"),
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
-    C(jobs, C_SHELL, "jobs",
+    C(jobs, C_PROGRAMS, "jobs",
       "the programs started with & (prog &, run prog args &): number, pid, state,\n"
       "  command. Such a program runs on while you type; it gets no keys and no\n"
       "  screen (Ctrl+C is the foreground program's), and what it prints is shown as\n"
       "  it comes. When it ends, the next prompt says so: [2] done: utest (exit 0).\n"
       "  kill %2 ends it; all of them end with the shell. At most 8 at once; a\n"
       "  pipeline, a shell command or an alias can't go in the background"),
-    C(term, C_SHELL, "term [command]",
+    C(term, C_PROGRAMS, "term [command]",
       "open another terminal: a window of its own with a shell of its own (as\n"
       "  Super+Enter does); with a command, its shell runs it first, as if typed,\n"
       "  and stays. Needs the compositor (not a nocomp boot); at most 8 terminals\n"
       "  in all. Close one with its window's close box or exit"),
-    C(launch, C_SHELL, "launch <app>",
+    C(launch, C_PROGRAMS, "launch <app>",
       "start one of the desktop's apps as its search box does (jamjar): init starts\n"
       "  only those, from the boot image, with what each one's list asks for and a\n"
       "  window, no terminal; what it prints goes to the log"),
-    C(notify, C_SHELL, "notify [-b button]... [-w] <title> [body...]",
+    C(notify, C_PROGRAMS, "notify [-b button]... [-w] <title> [body...]",
       "a notice on the desktop: a card in the top right that fades after 5 s, or\n"
       "  with buttons (-b, up to 3) stays until one is pressed. -w: wait for it and\n"
       "  say which (Ctrl+C stops waiting). Needs the compositor (not a nocomp boot).\n"
       "  Example: notify -b Yes -b No -w Tea? Kettle is on"),
-    C(exit, C_SHELL, "exit",
+    C(exit, C_PROGRAMS, "exit",
       "end this shell and close its terminal (any of them; Super+Enter opens\n"
       "  another). The programs it started with & end with it. Without the\n"
       "  desktop (a nocomp boot) the one terminal stays"),
-    C(devices, C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
-    C(usb, C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),
-    C(hda, C_SYSTEM, "hda [gain [dB] | bits [n] | jacks]",
+    C(devices, C_HARDWARE, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
+    C(usb, C_HARDWARE, "usb", "USB devices from usb-bus (alias lsusb)"),
+    C(hda, C_HARDWARE, "hda [gain [dB] | bits [n] | jacks]",
       "the HD Audio codecs and their widget graphs, read now by drv/hda\n"
       "  (the lines it logged at boot; pipe it: hda | grep pin), then the path to the\n"
       "  headphones, the gain it plays at and the jacks. hda gain: the gain; hda gain\n"
@@ -74,21 +101,21 @@ static const struct sh_cmd cmds[] = {
       "  -30 dB). The path is unmuted only while a stream plays (beep). hda bits 16:\n"
       "  the largest sample size. hda jacks: each jack plugged in or not (the driver\n"
       "  logs every change: dmesg | grep plugged)"),
-    C(beep, C_SYSTEM, "beep [hz] [ms]",
+    C(beep, C_SOUND, "beep [hz] [ms]",
       "a tone in the headphones (default 440 Hz for 300 ms; 20-20000 Hz, up to 5000 ms),\n"
       "  at a quarter of full scale with 5 ms fades, through the mixer at `hda gain`.\n"
       "  Ctrl+C stops it. Turn the headphones' own volume down before the first one"),
-    C(play, C_SYSTEM, "play [-v dB | -n] <file.wav|file.mp3>",
+    C(play, C_SOUND, "play [-v dB | -n] <file.wav|file.mp3>",
       "play a WAV or MP3 file in the headphones (e.g. play /data/song.mp3), at `hda\n"
       "  gain`. PCM WAV: 8-, 16-, 24- or 32-bit, mono or stereo, 8000-192000 Hz. MP3\n"
       "  (and MP2): CBR or VBR, mono or stereo, 8000-48000 Hz; ID3 tags skipped. Both\n"
       "  resampled to 48 kHz. -v -20: 20 dB down for this file only. -n: decode only,\n"
       "  and say how long it took. Ctrl+C stops it. Copy files to the stick from a Mac"),
-    C(vol, C_SYSTEM, "vol [<id>|master <dB>]",
+    C(vol, C_SOUND, "vol [<id>|master <dB>]",
       "the mixer's volumes: alone, the master and every stream playing (id, volume,\n"
       "  state, underruns, name); vol 3 -6: stream 3 at -6 dB; vol master -10: all of\n"
       "  them. 0 dB is the most, -96 dB is silence. hda gain is the codec's level below"),
-    C(music, C_SYSTEM,
+    C(music, C_SOUND,
       "music start [folder] | stop | next | prev | pause | status | vol <dB> | sleep <min>",
       "the background music player: plays every .mp3 and .wav under a folder\n"
       "  (default /data/music, any depth) in shuffle, forever, while the shell goes on.\n"
@@ -98,33 +125,33 @@ static const struct sh_cmd cmds[] = {
       "  in, the folder, how many tracks. vol -10: its volume (0 dB the most). sleep\n"
       "  30: stop in 30 minutes, fading out (sleep off). jamjar: the same in a window.\n"
       "  Each track's start is a line in the log. e.g. music start /data/music/OnTheSpot"),
-    C(jamjar, C_SYSTEM, "jamjar [root=<folder>]",
+    C(jamjar, C_SOUND, "jamjar [root=<folder>]",
       "the music player's window (bin/jamjar): the library (artists, albums, tracks)\n"
       "  from /usb0/music or /data/music, search, play, pause, next, back, volume, a\n"
       "  sleep timer, jam roulette; keys and the mouse, ? for the keys. q quits it and\n"
       "  the music plays on (it drives the same player as `music`)"),
-    C(net, C_SYSTEM, "net [stats]",
+    C(net, C_NET, "net [stats]",
       "the network: the address, gateway and DNS servers, the link (speed, VLAN,\n"
       "  MAC) and the frames in and out, as netstack sees them. net stats: every count\n"
       "  netstack keeps and the network card's own. The address comes from DHCP\n"
       "  (bin/dhcp's lease is in the log), or from net.address in /data/etc/settings\n"
       "  (e.g. 10.2.21.50/24 10.2.21.1 10.2.21.1; then there is no DHCP)"),
-    C(ping, C_SYSTEM, "ping <address|name> [-c count] [-s size]",
+    C(ping, C_NET, "ping <address|name> [-c count] [-s size]",
       "ICMP echo requests to an IPv4 address, one a second (default 4, 56 data\n"
       "  bytes): a line per reply with its round trip and TTL, or \"no reply\" after\n"
       "  1 s, then a summary. A name is resolved first (as `host`, its first\n"
       "  address). Ctrl+C stops it. e.g. ping 1.1.1.1 -c 10, ping one.one.one.one"),
-    C(host, C_SYSTEM, "host <name>",
+    C(host, C_NET, "host <name>",
       "a name's IPv4 addresses from the resolver (bin/dns, asking the DNS servers\n"
       "  `net` shows: from DHCP, or net.address in /data/etc/settings), and how long\n"
       "  they may be kept. Ctrl+C stops the wait. e.g. host one.one.one.one"),
-    C(fetch, C_SYSTEM, "fetch <url> [file | -]",
+    C(fetch, C_NET, "fetch <url> [file | -]",
       "download a file over plain HTTP (http:// only: https needs TLS, which Jam OS\n"
       "  doesn't have yet), e.g. fetch http://10.2.21.174:8000/big.bin. Into the URL's\n"
       "  last name here (or file, or a folder; -: the output), or into a pipe: fetch\n"
       "  <url> | head. Follows 3 redirects, says progress, the size, time and MB/s;\n"
       "  Ctrl+C stops it. Saved as <file>.part until it is whole (bin/fetch)"),
-    C(serve, C_SYSTEM, "serve [<file> [port] | stop [port]]",
+    C(serve, C_NET, "serve [<file> [port] | stop [port]]",
       "serve one file over HTTP to any computer on the network, in the background\n"
       "  (bin/serve, a service init runs: the shell stays free), e.g. serve\n"
       "  /data/big.bin, then on the Mac: curl http://<address>:8080/ -o big.bin. Every\n"
@@ -132,22 +159,22 @@ static const struct sh_cmd cmds[] = {
       "  Port 8080 unless given (any, 80 too); up to 4 files on 4 ports. serve alone:\n"
       "  what is served (file, port, clients, requests, bytes). serve stop [port]:\n"
       "  stop it (all of them without a port). One log line per request"),
-    C(speed, C_SYSTEM, "speed <host> [port] [-r] [-u] [-t seconds] | -l [port]",
+    C(speed, C_NET, "speed <host> [port] [-r] [-u] [-t seconds] | -l [port]",
       "network throughput against tools/speed.py on the Mac (`python3 tools/speed.py\n"
       "  server` there; port 5201): sends for 5 s (-t) over TCP and says MB/s and\n"
       "  Mbit/s; -r: the Mac sends, this receives; -u: UDP datagrams instead (lost ones\n"
       "  counted). -l: wait for the Mac's `speed.py client <address>` (needs the listen\n"
       "  permission: bin/speed's list has it). Ctrl+C stops it (status 130). QEMU's\n"
       "  numbers are QEMU's"),
-    C(pci, C_SYSTEM, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
-    C(memmap, C_SYSTEM, "memmap", "the loader's memory map"),
-    C(iommu, C_SYSTEM, "iommu",
+    C(pci, C_HARDWARE, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
+    C(memmap, C_HARDWARE, "memmap", "the loader's memory map"),
+    C(iommu, C_HARDWARE, "iommu",
       "the IOMMU (VT-d): the units, DMA translation, interrupt remapping and the\n"
       "  invalidation queue, each device's domain and mapped pages, the DMA fault\n"
       "  counts and the interrupt remapping table. Empty-looking without iommu=on"),
-    C(log, C_INFO, "log [lines]", "the last lines of the kernel log (default 20)"),
-    C(mem, C_SYSTEM, "mem", "physical memory from the kernel, and the shell's job"),
-    C(kill, C_SYSTEM, "kill <name> | %<n> | <pid>",
+    C(log, C_SYSTEM, "log [lines]", "the last lines of the kernel log (default 20)"),
+    C(mem, C_HARDWARE, "mem", "physical memory from the kernel, and the shell's job"),
+    C(kill, C_PROGRAMS, "kill <name> | %<n> | <pid>",
       "kill the first process with that name (see ps): a service init runs or a\n"
       "  USB driver (hid-6.1:0); whoever supervises it starts it again.\n"
       "  kill %2, or the pid `jobs` shows: end background program 2 (prog &)"),
@@ -156,7 +183,7 @@ static const struct sh_cmd cmds[] = {
       "restart the machine into the kernel on the stick (or the one `update` loaded),\n"
       "  by kexec (no firmware); -f: through the firmware and the boot menu (the\n"
       "  stick's build). /data is synced first"),
-    C(kernel, C_SYSTEM, "kernel load",
+    C(kernel, C_KERNEL, "kernel load",
       "read /esp's kernel and boot image now and store them for the next reboot\n"
       "  (and a panic): after `make flash`, load, then `reboot` reads nothing"),
     C(update, C_SYSTEM, "update [-n | -m | -w] [-r] [-f] [server address]",
@@ -172,14 +199,14 @@ static const struct sh_cmd cmds[] = {
       "  -w: the same as plain `update`. -r: reboot into it at once. A build whose\n"
       "  network default (VLAN 21 or untagged: local.mk) isn't this one's is refused;\n"
       "  -f takes it"),
-    C(run, C_SYSTEM, "run <prog|path> [args]",
+    C(run, C_PROGRAMS, "run <prog|path> [args]",
       "start /boot/bin/<prog> (or a path), wait, say how it ended; Ctrl+C kills it.\n"
       "  Typing a program's name does the same. Exported variables are its environment;\n"
       "  in a pipe its printf output goes down the pipe: run utest | grep passed.\n"
       "  It gets what its list asks for (services, mounts) and its terminal. A program\n"
       "  on /data runs once `allow` has marked it, and only as the file was then.\n"
       "  run prog &: in the background (see jobs)"),
-    C(allow, C_SYSTEM, "allow <file> | -l | -r <name>",
+    C(allow, C_PROGRAMS, "allow <file> | -l | -r <name>",
       "let a program on /data run: shows what it asks for (services, mounts) and\n"
       "  asks y/n; y keeps its hash and list in /data/etc/allow. A changed file is\n"
       "  refused until allowed again. -l: the allowed ones. -r: take one back"),
@@ -219,10 +246,10 @@ static const struct sh_cmd cmds[] = {
     C(mixtest, C_TESTS, "mixtest",
       "the mixer checks (bin/mixtest) and their result line: tone programs played at\n"
       "  once, one killed; it kills and restarts the mixer and the hda driver once"),
-    C(crash, C_TESTS, "crash [name [yes]]",
+    C(crash, C_KERNEL, "crash [name [yes]]",
       "the kernel's crash tests: alone, the list; \"crash <name> yes\" runs one\n"
       "  (each panics the machine on purpose, bp excepted)"),
-    C(panic, C_TESTS, "panic", "panic the kernel (a test: its screen must show)"),
+    C(panic, C_KERNEL, "panic", "panic the kernel (a test: its screen must show)"),
     C(pwd, C_FILES, "pwd", "the current directory"),
     C(cd, C_FILES, "cd [dir]", "change directory (no argument: $HOME)"),
     C(ls, C_FILES, "ls [-l] [path...]", "list a directory (-l: sizes)"),

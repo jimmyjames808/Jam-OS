@@ -91,6 +91,9 @@ struct sh_cmd {
 
 extern const char *const sh_categories[];
 extern const unsigned    sh_ncategories;
+/* Categories [0, sh_neveryday) are the everyday ones `help` lists; the
+ * rest the developer ones, `help dev`'s. */
+extern const unsigned    sh_neveryday;
 /* The i-th command in table order, NULL past the end. */
 const struct sh_cmd *sh_cmd_at(size_t i);
 /* The command called name (or one of its extra names: hd, which, ...), or NULL. */

@@ -211,14 +211,31 @@ wait (status 0)
 send history | tail -2 | head -1 | grep "time sleep 0.3" && echo ok-$T-hist
 wait ok-x-hist
 send help
-wait Information
 wait Text (read a file or a pipe)
+wait Programs and windows
 wait restart the machine
+wait help dev: the commands for developers
 wait {prompt}
 sleep 0.5
 shot shell-help
 send help grep
 wait usage: grep [-i] [-v] [-c] [-n] <pattern> [file]
+wait {prompt}
+# help lists the everyday commands, help dev the developer ones (the
+# polish track); help <command> answers for either
+send help dev
+wait Commands: for developers
+wait Tests and benchmarks
+wait kernel benchmark
+wait {prompt}
+sleep 0.5
+shot shell-help-dev
+send help | grep -c "kernel benchmark" || echo ok-$T-everyday
+wait ok-x-everyday
+send help dev | grep -c "^  ls " || echo ok-$T-dev
+wait ok-x-dev
+send help ktest
+wait usage: ktest [prefix] [options]
 wait {prompt}
 
 # ---- programs: by name, environment, in a pipe ----------------------------------------
