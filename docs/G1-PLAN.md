@@ -167,6 +167,9 @@ differs from the recommendation below, this note wins:
   not to their window, but that is each app's job, after G1: G1 keeps
   L2's behaviour (scale from the window's height); later, libfun passes
   the output's size (wl_output) to the app and the app chooses.
+  Tiling is the DEFAULT arrangement (owner, 2026-10-07): a new install,
+  a boot before /data mounts and the first screen all tile; a saved
+  `display.layout = floating` still wins.
   Tiling (owner, 2026-10-07, after trying the prototype's six layouts):
   DWINDLE only, replacing C3's main-and-stack; no monocle, columns or
   grid. The first window fills the room under the strip; each new window
