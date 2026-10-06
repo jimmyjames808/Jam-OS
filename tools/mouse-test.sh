@@ -5,9 +5,11 @@
 # desktop  the compositor's (the default): tools/shell-tests/desktop.txt
 #          types on the USB keyboard and moves and clicks the mouse
 #          through QEMU's monitor: usb-bus -> drv/hid -> the compositor ->
-#          the focused window. Typing in the first terminal, Super+Enter
-#          (terminal 2, which takes the keys), a click giving the keys back
-#          to the first, and terminal 2's close box closing it; screenshots
+#          the focused window. The windows tiling (the default): typing in
+#          the first terminal, Super+Enter (terminal 2, which takes the
+#          keys), a click giving the keys back to the first, the focus moved
+#          by direction, four terminals tiled, a gap dragged, Super+Q
+#          closing two, Super+T's floating kept across a reboot; screenshots
 #          (<outdir>/desktop-*.png).
 # mouse    with `nocomp`, the console's: tools/shell-tests/mouse.txt moves
 #          the mouse and presses its buttons through QEMU's monitor
