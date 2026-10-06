@@ -165,8 +165,9 @@ differs from the recommendation below, this note wins:
   gfx_title calls change to "Demo", "Fractal", "Jamjar", "Life", "Mines",
   "Snake", "Splash", "Sysmon", "Tetris" (with D2).
   Cursors (owner's picks, docs/design/cursors.svg is the exact source):
-  one set in "style C": white, a thin dark outline, rounded joins, a small
-  shadow; arrow, resize left-right, up-down and both diagonals, move,
+  one set in "style C": near-black (#14161c) with a thin white outline
+  (inverted by the owner on 2026-10-07: the desktop's mood is dark),
+  rounded joins, a small shadow; arrow, resize left-right, up-down and both diagonals, move,
   text bar (curved serifs), hand, and busy, which is only a ring (white with
   a turning raspberry arc, no arrow). Every stroke-like part shows the
   same white width. The compositor uses resize cursors on window edges

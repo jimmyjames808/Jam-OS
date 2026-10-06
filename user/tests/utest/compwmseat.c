@@ -222,7 +222,7 @@ static bool cursor_is(const struct cs *t, enum cursor_shape s, int32_t x, int32_
 static bool frame_cursor_steps(struct cs *t)
 {
     int32_t x0 = (OUT_W - WIN_W) / 2, y0 = (OUT_H - WIN_H) / 2;
-    const uint32_t fill = 0xf6f3f8;
+    const uint32_t fill = 0x14161c;
     CHECK(cs_pointer_to(t, x0 + WIN_W + 3, y0 + WIN_H / 2));     /* the right edge's grab */
     CHECK(pixel_becomes(t, x0 + WIN_W + 3, y0 + WIN_H / 2, fill));
     CHECK(cs_pointer_to(t, x0 + WIN_W + 3, y0 + WIN_H + 3));     /* bottom right */

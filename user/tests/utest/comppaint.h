@@ -53,7 +53,7 @@ void ref_paint(uint32_t *img, uint8_t *unknown, const struct cp_win *v, unsigned
  * pointer (the SVG's unit (6, 10): well inside, clear of the outline). */
 #define CP_ARROW_HX   (5 + CURSOR_PAD)
 #define CP_ARROW_HY   (2 + CURSOR_PAD)
-#define CP_ARROW_FILL 0xf6f3f8u
+#define CP_ARROW_FILL 0x14161cu
 #define CP_FILL_DX    1
 #define CP_FILL_DY    8
 static inline struct comp_box cp_arrow_at(int32_t x, int32_t y)

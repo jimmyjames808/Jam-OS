@@ -558,7 +558,7 @@ static bool anim_slide_steps(void)
 
 /* ---- cursors ------------------------------------------------------------------------------- */
 
-#define CFILL 0xfff6f3f8u   /* the set's fill, opaque, premultiplied */
+#define CFILL 0xff14161cu   /* the set's fill, opaque, premultiplied */
 
 static uint32_t px_of(enum cursor_shape s, int32_t i, int32_t j)
 {
@@ -567,7 +567,7 @@ static uint32_t px_of(enum cursor_shape s, int32_t i, int32_t j)
 }
 
 /* The pictures, at known pixels: all fill well inside a shape, nothing far
- * outside it, the outline's dark ink along an edge; the hot spots; busy's
+ * outside it, the outline's white along an edge; the hot spots; busy's
  * arc turning. */
 static bool cursor_picture_steps(void)
 {
@@ -579,7 +579,7 @@ static bool cursor_picture_steps(void)
     CHECK_EQ(px_of(CURSOR_ARROW, 0, 0), 0);               /* nothing, no shadow */
     CHECK_EQ(px_of(CURSOR_ARROW, 26, 2), 0);
     uint32_t edge = px_of(CURSOR_ARROW, 6, 14);           /* across the left edge (x 5) */
-    CHECK((edge >> 24) > 0x80 && (edge >> 16 & 0xff) < 0x50);   /* mostly the dark outline */
+    CHECK((edge >> 24) > 0x80 && (edge >> 16 & 0xff) > 0x80);   /* mostly the white outline */
     CHECK(cursors_get(CURSOR_HAND, 0)->hot_x == 10 + CURSOR_PAD);
     for (int s = CURSOR_RESIZE_EW; s < CURSOR_SHAPES; s++) {
         const struct cursor_image *c = cursors_get((enum cursor_shape)s, 0);

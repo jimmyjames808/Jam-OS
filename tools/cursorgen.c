@@ -45,8 +45,8 @@
 #define PAD          2
 #define BUSY_FRAMES  30
 #define SAMPLES      5
-#define FILL         0xf6f3f8u   /* the SVG's fill */
-#define INK          0x262a35u   /* its outline */
+#define FILL         0x14161cu   /* the SVG's fill: near-black (the owner: dark mood) */
+#define INK          0xf6f3f8u   /* its outline: white */
 #define ARC          0xd4537eu   /* busy's arc: raspberry */
 #define HALF_OUTLINE 0.55f
 #define SHADOW_DY    1.5f

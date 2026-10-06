@@ -44,10 +44,10 @@ GARBAGE = None                    # a pixel this script doesn't model
 
 # The arrow (cursors.c, docs/design/cursors.svg): its outline in units (a
 # pixel each), its picture CURSOR_IMG square with CURSOR_PAD round, its hot
-# spot (5, 2.5) rounded down; filled #f6f3f8, outlined 0.55 either side of
+# spot (5, 2.5) rounded down; filled #14161c, outlined 0.55 either side of
 # each edge, sampled 5 x 5 a pixel.
 ARROW_PTS = [(5, 2.5), (5, 18.7), (9.1, 15), (11.8, 21.2), (14.5, 20), (11.8, 13.9), (17.4, 13.9)]
-CURSOR_IMG, CURSOR_PAD, CURSOR_FILL = 28, 2, 0xF6F3F8
+CURSOR_IMG, CURSOR_PAD, CURSOR_FILL = 28, 2, 0x14161C
 ARROW_HOT = (5 + CURSOR_PAD, 2 + CURSOR_PAD)
 
 
