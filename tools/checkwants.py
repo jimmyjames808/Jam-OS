@@ -23,7 +23,7 @@ and, the build's own policy, the services that kill drivers and services
 put any file it can read on the network without the listen permission)
 only for a program whose source is under user/tests/,
 and netstack's and the resolver's reserves for the network's own services
-(net-sys, dns-sys) and the low ports (`svc net listen low`: the system's
+(net-sys, dns-sys), the desktop's notices (notify) and the low ports (`svc net listen low`: the system's
 ports, where a program could pose as a service) only for one under
 user/services/.
 A program without a list is fine (it gets its terminal only). Prints how
@@ -38,7 +38,7 @@ OS_H = "user/include/os.h"
 POINTS = {"/boot", "/esp", "/data", "/usb*", "*"}
 RIGHTS = {"klog", "sysinfo", "clock", "debug"}
 TESTS_ONLY = {"devmgr-ctl", "init", "serve"}
-SERVICES_ONLY = {"net-sys", "dns-sys"}
+SERVICES_ONLY = {"net-sys", "dns-sys", "notify"}
 LISTEN = {"net-listen", "net-low"}   # given only as `svc net listen [low]` (<wants.h>)
 TEXT_MAX = 1024
 WANTS_MAX = 24

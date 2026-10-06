@@ -220,8 +220,44 @@ status_t fs_start(struct disk *d, unsigned part, bool other)
  * services go: killed (their `block` channels are dead, or nobody needs
  * them) and their bindings freed. The state first, so the mounts change
  * once, not once per service. */
+/* The desktop's notice of another stick mounted: once a mount, not again
+ * when `mount -w` or a crash restarts its service; a test disk's never. */
+void disk_told_added(struct disk *d, const struct binding *b)
+{
+    unsigned bit = 1u << b->part;
+    if (d->test || b->part >= MAX_PARTS || (d->told & bit))
+        return;
+    d->told |= (uint8_t)bit;
+    snprintf(d->at[b->part], sizeof(d->at[0]), "%s", fs_mount_path(b));
+    char body[96];
+    if (d->mib >= 1024)
+        snprintf(body, sizeof(body), "%lu.%lu GB at %s, %s", (unsigned long)(d->mib / 1024),
+                 (unsigned long)(d->mib % 1024 * 10 / 1024), d->at[b->part],
+                 b->rw ? "read-write" : "read-only");
+    else
+        snprintf(body, sizeof(body), "%lu MB at %s, %s", (unsigned long)d->mib, d->at[b->part],
+                 b->rw ? "read-write" : "read-only");
+    notice_post(&devmgr_notices, "USB stick added", body, 'U', NOTICE_APRICOT);
+}
+
+/* Its mounts the desktop was told of have gone with it. */
+static void told_removed(struct disk *d)
+{
+    char body[96] = "";
+    size_t o = 0;
+    for (unsigned part = 0; part < MAX_PARTS; part++)
+        if (d->told & (1u << part))
+            o += (size_t)snprintf(body + o, o < sizeof(body) ? sizeof(body) - o : 0, "%s%s",
+                                  o ? " and " : "", d->at[part]);
+    d->told = 0;
+    if (o)
+        notice_post(&devmgr_notices, "USB stick removed", body, 'U', NOTICE_BLACKCURRANT);
+}
+
 void drop_services(struct disk *d, enum disk_state state)
 {
+    if (state == DISK_FREE || state == DISK_DOWN)
+        told_removed(d);   /* pulled out, or its driver gone: not a remount */
     d->state = state;
     d->want = 0;
     for (unsigned part = 0; part < MAX_PARTS; part++) {

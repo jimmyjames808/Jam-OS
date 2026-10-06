@@ -21,6 +21,13 @@
  *                     can take: progs.h)
  *   SR_USER + 4       the same for /svc/net-low, the programs
  *                     that may listen on ports below 1024 too (listen.h)
+ *   SR_USER + 5       the server end of the read-only control channel
+ *                     (netctl.idl: info, stats, device and summary only),
+ *                     kept by init as the other one is; its client end is
+ *                     the compositor's (the network popover)
+ *   SR_USER + 6       a duplicate of /svc/notify's shared channel (not
+ *                     under `nocomp`): the desktop's "Connected" (the link
+ *                     up with an address) and "Disconnected" (<notice.h>)
  *
  * This file is the loop: one port, and lwIP's timers, the programs'
  * timeouts and the next reconnect as the port wait's deadline (and
@@ -30,6 +37,7 @@
  * locks. The control channel is bound PERSISTENT and served a budget at a
  * time, with a flag saying more may be queued (a binding fires on edges
  * only); the card's keys are netif.c's (dev.h). */
+#include <notice.h>
 #include <os.h>
 #include "ctl.h"
 #include "dev.h"
@@ -44,7 +52,10 @@
 #define SR_NET_LISTEN (SR_USER + 2)
 #define SR_NET_SYS    (SR_USER + 3)
 #define SR_NET_LISTEN_LOW (SR_USER + 4)
+#define SR_NETINFO    (SR_USER + 5)
+#define SR_NOTIFY     (SR_USER + 6)
 #define KEY_CTL   1u
+#define KEY_INFO  6u   /* 2-5: the shared channels (clients.c, listen.c) */
 #define RX_TICK   (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
 #define PACKETS_PER_TURN 32u        /* port packets taken a turn (each notes work) */
 
@@ -52,6 +63,10 @@ struct loop {
     handle_t   port;
     handle_t   ctl;           /* netctl's server end, 0 once its clients are all gone */
     bool       ctl_pending;   /* it may have requests queued */
+    handle_t   info;          /* the read-only one's (0: none, or its clients are gone) */
+    bool       info_pending;
+    struct notice_box notes;  /* the desktop's notices */
+    bool       connected;     /* the link up with an address, as last told */
     struct dev dev;           /* the network card */
     uint64_t   rx_tick_at;    /* when rx_tick last logged (ns) */
     uint64_t   rx_tick_taken; /* frames taken off the ring then */
@@ -89,9 +104,46 @@ static void rx_tick(void)
            c.icmp_dropped, c.udp_dropped, (unsigned long)c.echo_replies);
 }
 
+/* The read-only channel: like the control channel, its end just closes. */
+static void serve_info(void)
+{
+    status_t st = ctl_serve(l.info, true);
+    l.info_pending = st == OK;
+    if (st == OK || st == ERR_SHOULD_WAIT)
+        return;
+    (void)jam_port_unbind(l.port, l.info, KEY_INFO);
+    jam_handle_close(l.info);
+    l.info = 0;
+}
+
+/* "Connected" or "Disconnected" on the desktop when the link with an
+ * address comes or goes (looked at once a turn: a change is a turn). */
+static void tell_link(void)
+{
+    struct stack_state s;
+    stack_get(&s);
+    bool up = s.link && s.ip.address;
+    if (up == l.connected)
+        return;
+    l.connected = up;
+    if (!up) {
+        notice_post(&l.notes, "Disconnected", "The network is down", 'N', NOTICE_RASPBERRY);
+        return;
+    }
+    struct dev_report r = { 0 };
+    dev_get_report(&l.dev, &r);
+    char ip[16], body[96];
+    if (r.chip[0] && r.speed)
+        snprintf(body, sizeof(body), "%s on %.*s, %u Mb/s", ctl_fmt_ip(ip, s.ip.address),
+                 (int)sizeof(r.chip), r.chip, r.speed);
+    else
+        snprintf(body, sizeof(body), "%s", ctl_fmt_ip(ip, s.ip.address));
+    notice_post(&l.notes, "Connected", body, 'N', NOTICE_BLACKCURRANT);
+}
+
 static void serve_ctl(void)
 {
-    status_t st = ctl_serve(l.ctl);
+    status_t st = ctl_serve(l.ctl, false);
     l.ctl_pending = st == OK;   /* the budget was spent: more may be queued */
     if (st == OK || st == ERR_SHOULD_WAIT)
         return;
@@ -118,6 +170,8 @@ static status_t take_packets(uint64_t deadline)
             return st;
         if (p.key == KEY_CTL)
             l.ctl_pending = l.ctl != 0;
+        else if (p.key == KEY_INFO)
+            l.info_pending = l.info != 0;
         else if (!tcpsock_packet(&p) && !progs_packet(&p) && !listen_packet(&p))
             dev_packet(&l.dev, &p);
     }
@@ -151,6 +205,13 @@ static status_t setup(void)
     }
     ctl_device_report = report;
     l.ctl_pending = true;   /* requests may be queued from before a restart */
+    /* Without it the compositor shows no network: said once. */
+    l.info = startup_handle(SR_NETINFO);
+    if (l.info && jam_port_bind(l.port, l.info, KEY_INFO, SIG_READABLE | SIG_PEER_CLOSED,
+                                PORT_BIND_PERSISTENT) != OK)
+        l.info = 0;
+    l.info_pending = l.info != 0;
+    notice_init(&l.notes, startup_handle(SR_NOTIFY));
     return OK;
 }
 
@@ -164,6 +225,8 @@ int main(int argc, char **argv)
     for (;;) {
         if (l.ctl_pending)
             serve_ctl();
+        if (l.info_pending)
+            serve_info();
         progs_serve();
         listen_serve();
         tcpsock_serve();
@@ -178,6 +241,7 @@ int main(int argc, char **argv)
         uint64_t retry = dev_work(&l.dev);   /* it sends what the others queued */
         progs_flush();                       /* last: what the card's frames put in rx rings */
         rx_tick();
+        tell_link();
         if (retry < deadline)
             deadline = retry;
         if (sock_tcp_card())   /* frames put now: the next turn's dev_work publishes them */
@@ -186,7 +250,8 @@ int main(int argc, char **argv)
          * sleeping rather than skip it, so a channel that always has more
          * never keeps the other channels' packets, or the card's, unread
          * (the service-loop rule: a busy client delays only itself). */
-        if (l.ctl_pending || dev_pending(&l.dev) || progs_pending() || listen_pending() ||
+        if (l.ctl_pending || l.info_pending || dev_pending(&l.dev) || progs_pending() ||
+            listen_pending() ||
             tcpsock_pending() || ntcp_pending())
             deadline = 0;
         if (take_packets(deadline) != OK)

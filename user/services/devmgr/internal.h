@@ -12,6 +12,7 @@
 
 #include <devmgr.h>
 #include <jam/driver.h>
+#include <notice.h>
 #include <os.h>
 
 #define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers,
@@ -142,6 +143,8 @@ struct binding {
 extern struct binding devs[MAX_DEVS];
 extern unsigned       ndevs;
 extern handle_t       pci_res, port;
+/* The desktop's notices (DEVMGR_SR_NOTIFY; none under `nocomp`). */
+extern struct notice_box devmgr_notices;
 /* Problems for the exit code: real drivers that crashed or were given up
  * on, and drivers that didn't end cleanly. */
 extern unsigned       problems;
