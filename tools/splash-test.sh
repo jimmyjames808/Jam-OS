@@ -4,8 +4,11 @@
 # intel-hda + hda-output codec writing what it plays to a WAV file (as
 # tools/mixer-test.sh). Seven boots; all but `comp` with `nocomp`, the
 # console on the whole screen (the PC's way back until G1 is signed off):
-#   comp     a plain boot, the compositor's (splash-comp.txt): the screen
-#            is all #1E1A1D when init starts; two screenshots a second
+#   comp     a plain boot, the compositor's (splash-comp.txt): twelve
+#            screenshots 0.1 s apart from init's start are each all
+#            #1E1A1D or a frame of the video (the compositor's `splash`
+#            argument: only the splash's background until its window
+#            maps, never the desktop first); two screenshots a second
 #            apart are frames of the video (its full-screen window, over
 #            the first terminal's); a line typed while it plays, one once
 #            it has played and one right after its window has gone all
@@ -70,9 +73,10 @@ QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$(snd "$out/comp.wav
     QEMU_INPUT=tools/shell-tests/splash-comp.txt tools/qemu-test.sh "$out" comp shell \
     > "$out/comp.out" 2>&1 || { echo "comp: the script failed"; tail -3 "$out/comp.out"; ok=0; }
 need "$out/comp.log" "init: the compositor draws the screen" "splash: played at" \
+    "the background only until the splash shows" \
     "init: the shell is up" "typed-kept" "right-after" "bin/splash exited with code 0"
 if grep -aqF "skipped by a key" "$out/comp.log"; then echo "comp: a key skipped the splash"; ok=0; fi
-check quiet "$out/comp-quiet.png"
+check early "$out"/comp-early-*.png
 check frames "$out/comp-a.png" "$out/comp-b.png"
 
 # ---- splash: a plain boot ----------------------------------------------------

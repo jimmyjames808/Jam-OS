@@ -11,6 +11,10 @@ boot splash's own file (boot/splash.mpg, decoded here with ffmpeg).
                                             in order
     splash-check.py frame <png> <width>     one screenshot: a frame of the
                                             video, drawn that wide
+    splash-check.py early <png>...          screenshots from the boot's start
+                                            on: each all #1E1A1D or a frame
+                                            of the video, nothing else (no
+                                            desktop before the splash)
     splash-check.py text <png>              the console's text screen: its
                                             background with text on it
     splash-check.py red <png>               a panic screen (dark red)
@@ -138,6 +142,21 @@ def check_frame(path, width):
     ok("%s: frame %d (mean error %.2f), %d wide" % (path, i, err, k))
     if err > 4 or border > 4 or k != width:
         fail("%s: not a frame of the video %d wide" % (path, width))
+
+
+def check_early(paths):
+    frames, quiet, video = ref_frames(), 0, 0
+    for path in paths:
+        img = shot(path)
+        if int(np.abs(img - BG).max()) <= 2:
+            quiet += 1
+            continue
+        i, err, border, _ = match(frames, img)
+        if err > 4 or border > 4:
+            fail("%s: neither all #1E1A1D nor a frame of the video (mean error %.2f, around it "
+                 "%d off)" % (path, err, border))
+        video += 1
+    ok("%d screenshots: %d all #1E1A1D, %d frames of the video" % (len(paths), quiet, video))
 
 
 def check_text(path):
@@ -297,6 +316,8 @@ def main():
         check_quiet(args[0])
     elif what == "frames":
         check_frames(args[0], args[1])
+    elif what == "early":
+        check_early(args)
     elif what == "frame":
         check_frame(args[0], int(args[1]))
     elif what == "text":

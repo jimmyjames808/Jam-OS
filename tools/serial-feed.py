@@ -23,6 +23,8 @@ the script, one command per line:
     sleep <seconds>
     shot <name>               a screenshot: <name>.png next to the log
                               (through QEMU's monitor, $QEMU_MON / $SHOT_DIR)
+    shots <name> <n> <s>      n screenshots <s> seconds apart (made PNGs
+                              after the last): <name>-01.png, -02 ...
     monitor <command>         a QEMU monitor command ($QEMU_MON), e.g.
                               `monitor device_del kbd1`
     usbkeys <text>            <text> typed on QEMU's keyboards (monitor
@@ -213,19 +215,28 @@ for lineno, raw in enumerate(open(script), 1):
         send(unescape(arg.replace("\\e", "\x1b")))
     elif cmd == "sleep":
         time.sleep(float(arg))
-    elif cmd == "shot":
+    elif cmd in ("shot", "shots"):
         import os
         mon, d = os.environ.get("QEMU_MON"), os.environ.get("SHOT_DIR")
+        if cmd == "shot":
+            names, gap = [arg], 0.0
+        else:
+            base, n, gap = arg.split()
+            names, gap = [f"{base}-{i + 1:02d}" for i in range(int(n))], float(gap)
         if mon and d:
-            ppm = os.path.join(d, arg + ".ppm")
             try:
-                monitor(f"screendump {ppm}")
+                for i, name in enumerate(names):
+                    if i:
+                        time.sleep(gap)
+                    monitor(f"screendump {os.path.join(d, name + '.ppm')}")
                 time.sleep(1.0)
                 from PIL import Image
-                Image.open(ppm).save(os.path.join(d, arg + ".png"))
-                os.remove(ppm)
+                for name in names:
+                    ppm = os.path.join(d, name + ".ppm")
+                    Image.open(ppm).save(os.path.join(d, name + ".png"))
+                    os.remove(ppm)
             except Exception as e:
-                print(f"serial-feed: shot {arg}: {e}", file=sys.stderr)
+                print(f"serial-feed: {cmd} {arg}: {e}", file=sys.stderr)
     elif cmd == "monitor":
         monitor(arg)
     elif cmd == "usbkeys":
