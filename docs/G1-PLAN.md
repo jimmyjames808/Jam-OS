@@ -207,6 +207,14 @@ differs from the recommendation below, this note wins:
     Ctrl+Alt+Del               reboot
     double-click a title bar   full screen
   (Super+Left/Right no longer switch screens: they move focus.)
+  Copy and paste come into G1 (owner, 2026-10-07; a track after D2b):
+  text only at first. The compositor offers a clipboard
+  (wl_data_device_manager: an owner's offer, the data moved over a Jam OS
+  channel rather than a pipe); the terminal gets selection (drag; a
+  double-click takes a word, a triple-click a line; highlighted in the jam
+  colours) and Super+C copies, Super+V pastes (Ctrl+Shift+C/V as well),
+  so Ctrl+C still stops a program; a paste is bracketed so a pasted
+  multi-line command never runs line by line by accident.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
