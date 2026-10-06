@@ -73,11 +73,12 @@ drivers, services, libraries and tools): findings first, then fixes with a
 test each, then All tests and `soak 10` on the PC. It is the clean base
 POSIX is built on.
 
-## Wave 5: M12.5 and M13 together
+## Wave 5: M12.5, M12.7 and M13 together
 
 | Milestone | What it touches | Meets the other at |
 |---|---|---|
 | **M12.5** user-space pagers | the kernel's virtual memory (a VMO whose pages a process supplies), fat as a pager, programs from `/data` loaded on demand | nothing in user space but fat and the program loader |
+| **M12.7** NVMe and installing (the owner, 2026-10-07) | a new user-space driver behind the IOMMU, GPT, then writes to a Jam OS disk and an installer (ROADMAP's row: read-only first, because the PC's NVMe drive holds Windows) | the block interface M12 reviewed, which fat and USB storage use too; M12.5's pagers get faster from a fast disk but don't wait for it |
 | **M13** POSIX on musl | user space: musl, file descriptors over handles, `posix_spawn`, paths through the namespace, signals, `poll`/`select` on M9.5's wait sets, the terminal layer, then tinyssh as the first port | file-backed `mmap`, which waits for M12.5's pagers; M13's other stages don't |
 
 Both build on M12's reviewed interfaces and add new ones (the pager calls,
