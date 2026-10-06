@@ -11,7 +11,7 @@
 #define COPY_CHUNK (64u << 10)    /* sh_copy's piece: one call to the service each way */
 #define HASH_CHUNK (256u << 10)   /* sh_sha256_file's piece */
 
-static char cwd[SH_PATH_MAX] = "/boot";
+static char cwd[SH_PATH_MAX] = "/";
 static void *held;   /* the file sh_read last handed out */
 
 const char *sh_cwd(void)

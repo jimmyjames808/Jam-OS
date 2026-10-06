@@ -37,7 +37,7 @@ monitor mouse_move 0 0 1
 sleep 0.7
 shot mouse-scrollback
 send echo mouse-$HOME
-wait mouse-/boot
+wait mouse-/
 wait {prompt}
 # An app that didn't ask for the mouse (`wltest --mouse nomouse`) reads
 # its keys undisturbed under a busy mouse: only the two keys typed reach it.
@@ -178,7 +178,7 @@ sleep 0.2
 monitor mouse_button 0
 sleep 0.3
 send echo after-$HOME
-wait after-/boot
+wait after-/
 wait {prompt}
 send reboot -f
 wait reboot: resetting
