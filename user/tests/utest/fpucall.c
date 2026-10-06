@@ -32,7 +32,7 @@
 #define FX_XMM      160      /* XMM0-XMM15 */
 #define FX_END      416
 
-#define RIVALS      40       /* at most; without the CPU count, more than the PC's 28 */
+#define RIVALS      64       /* at most; without the CPU count, more than twice the PC's 28 */
 #define CALL_ROUNDS 16
 #define RUN_NS      (300 * NS_PER_MS)
 #define PAGES       16       /* fresh pages faulted in per ring-3 round */
@@ -140,8 +140,11 @@ static void rival(void *arg)
 static handle_t rival_th[RIVALS];
 static unsigned nrivals;
 
-/* Two more rivals than CPUs: every CPU busy, and the test thread still
- * gets a fair share of one (so its slice runs out mid-round). */
+/* Two rivals a CPU and two more: every CPU has more than one thread to
+ * run, so whichever CPU the test thread is on, its slice runs out
+ * mid-round. (One a CPU and two more wasn't enough on the PC's 28 CPUs
+ * under the soak's load: the extra rivals went elsewhere, and in 300 ms
+ * of rounds the test thread was never preempted.) */
 static unsigned rivals_wanted(void)
 {
     handle_t h;
@@ -150,7 +153,7 @@ static unsigned rivals_wanted(void)
         return RIVALS;
     status_t st = jam_sys_info(h, &si);
     jam_handle_close(h);
-    return st == OK && si.cpu_count + 2 < RIVALS ? si.cpu_count + 2 : RIVALS;
+    return st == OK && 2 * si.cpu_count + 2 < RIVALS ? 2 * si.cpu_count + 2 : RIVALS;
 }
 
 static bool rivals_start(void)
@@ -279,10 +282,12 @@ bool t_fpu_ring3_switch_keeps_all(void)
     CHECK_ST(jam_vmar_map(vmar, vmo, 0, len, VMAR_READ | VMAR_WRITE, &addr), OK);
     if (!rivals_start())
         return false;
-    uint64_t end = now() + RUN_NS, fastest = UINT64_MAX;
+    /* RUN_NS of rounds, or up to four times that until one is preempted:
+     * a run that never was proves nothing. */
+    uint64_t start = now(), end = start + RUN_NS, fastest = UINT64_MAX;
     unsigned rounds = 0, preempted = 0;
     bool ok = true;
-    while (ok && now() < end) {
+    while (ok && (now() < end || (preempted == 0 && now() < start + 4 * RUN_NS))) {
         struct round r = {
             .pat = pat, .fx = fx, .hi = hi,
             .pages = (uint8_t *)(uintptr_t)(addr + (uint64_t)(rounds % SLICES) * PAGES * 4096),
