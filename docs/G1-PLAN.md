@@ -225,6 +225,32 @@ differs from the recommendation below, this note wins:
   colours) and Super+C copies, Super+V pastes (Ctrl+Shift+C/V as well),
   so Ctrl+C still stops a program; a paste is bracketed so a pasted
   multi-line command never runs line by line by accident.
+  A POLISH track follows G1 (owner, 2026-10-07): the boot menu's test
+  and network-test entries under one "Developer" submenu (on top: Jam OS,
+  previous build, no compositor); a quiet boot (Terminal 1 starts at the
+  prompt; the log stays in `dmesg` and /data/logs); `help` lists everyday
+  commands and `help dev` the developer ones; plain wording on screen and
+  in notifications (the detailed lines stay in the log); a calm panic
+  screen (owner's design, 2026-10-07, "B1"): the dark #11141b background,
+  the busy ring (cursors.svg) spinning in the middle, one line of Inter
+  text and a short code under it (JAM-<kind>-<4 hex of the faulting
+  address>, e.g. JAM-PF-7F3A); the kernel draws it alone, with the few
+  glyphs it needs baked into a table at build time (no font code runs in
+  a crashed kernel) and the ring animated off the TSC. No keys: drivers
+  are user space and gone after a panic. Case 1, it restarts itself (the
+  stored kernel): "Jam OS hit a problem and is restarting" held about
+  1.5 s, then the restart; on the desktop a notification "Jam OS
+  restarted after a problem / Everything is back. Code ..." with Details
+  (opens a terminal running a new `crashlog` command: the saved report,
+  its code, backtrace and the last log lines) and Close. Case 2, it can't
+  recover (a crash loop, a refused stored kernel): "Jam OS hit a problem
+  it can't recover from / Restarting the PC in 15 s"; after 5 s the
+  details panel (code, where, backtrace, why it can't recover, boot and
+  build) appears by itself below; at 15 s the firmware reset; if that
+  fails the ring stops and it says "Jam OS couldn't restart the PC / Hold
+  the power button to turn it off, then on again". The details still go
+  to the serial port as they happen and into the next boot's crash
+  report, as today.
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
