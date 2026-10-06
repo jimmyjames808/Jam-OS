@@ -1286,8 +1286,12 @@ blanks to, which output.c fills the screen with at start): no wallpaper,
 strip, window or cursor (`paint.c`, `comp.splash_until`). With no overlay
 within 5 s it paints the desktop anyway (`compositor: no splash after
 5000 ms`). The windows behind it are placed, focused and given keys as
-before: typing reaches the first terminal. Tests: utest's
-`comp_paint_splash` (test-scene commands `splash` and `splashtick=`) and
+before: typing reaches the first terminal. A window opening or closing
+under a boot overlay is not animated, and an overlay mapping ends any
+animation (`wm.c`): an animation is drawn over every window, so the first
+terminal's opening, a moment before the splash's window, showed over it.
+Tests: utest's `comp_paint_splash` (test-scene commands `splash` and
+`splashtick=`), `comp_paint_overlay_open` and
 splash-test.sh's compositor boot (`check early`: twelve screenshots from
 init's start, each the background or a frame of the video).
 

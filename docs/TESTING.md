@@ -1183,7 +1183,10 @@ wait for the splash (`splash`, as init's argument; `splashtick=` moves its
 clock): with the desktop, a window and the cursor there, every paint is
 the splash's background only, nothing drawn from a window; once an
 overlay maps, it everywhere, direct, and its fade-out ends on exactly the
-desktop; with none after 5 s, exactly the desktop. splash-test.sh's
+desktop; with none after 5 s, exactly the desktop.
+`comp_paint_overlay_open`: with the animations on, a window opening just
+before a boot overlay maps, or under it, is not drawn over it 100 ms into
+its opening (the overlay everywhere). splash-test.sh's
 compositor boot checks the same on QEMU: twelve screenshots 0.1 s apart
 from init's start, each all `#1E1A1D` or a frame of the video (with init
 not asking for the wait, one of them is the desktop).
