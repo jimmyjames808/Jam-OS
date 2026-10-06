@@ -5,9 +5,8 @@
  * The panic path takes no lock and allocates nothing: kexec_panic_begin
  * decides (the state, the crash-loop rule, the checksum read through the
  * window's own page-table entries, region.c, and the BSP waiting) before
- * the panic prints a line, so a panic that will jump draws nothing
- * (fbcon_go_dark) and one that won't draws its screen as always, with the
- * reason. The jump itself (kexec_panic_jump) is plain stores into the
+ * the panic prints a line, so the panic screen (<jam/panicscreen.h>) can
+ * say which: it is restarting, or it can't recover and why. The jump itself (kexec_panic_jump) is plain stores into the
  * crash record, one config write per PCI function
  * (pci_panic_bus_master_off), an INIT to the other CPUs, the screen
  * filled with the splash background, and the trampoline.
@@ -21,12 +20,13 @@
  * AP is handed to it (HAND_JUMP): the next kernel always starts on the
  * BSP, as after Limine, and starts every AP itself.
  *
- * A jump decided and then not made would leave the machine dark (the
- * panic draws nothing once it has decided) and halted for good. So the
- * BSP waits for the hand-over at most HANDOVER_WAIT_S, and a fault on the
- * panicking CPU after the decision (debug/panic.c: kexec_panic_failed)
- * gives up too: either way a firmware reset, which loses the log but
- * brings the machine back.
+ * A jump decided and then not made would leave the machine halted for
+ * good on a screen that says it is restarting. So the BSP waits for the
+ * hand-over at most HANDOVER_WAIT_S, and a fault on the panicking CPU
+ * after the decision (debug/panic.c: kexec_panic_failed) gives up too:
+ * either way the panic screen's second case (<jam/panicscreen.h>: it
+ * can't recover) and its firmware reset, which loses the log but brings
+ * the machine back.
  *
  * The crash record is a page of this kernel's own, typed CRASH_LOG in the
  * stored kernel's memory map with the log ring, its address in the
@@ -45,6 +45,7 @@
 #include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/panicscreen.h>
 #include <jam/pci.h>
 #include <jam/percpu.h>
 #include <jam/serial.h>
@@ -100,6 +101,11 @@ status_t kexec_set_log_name(const char *name, size_t len)
     for (size_t i = 0; i < len; i++)
         __atomic_store_n(&rec.r.name[i], name[i], __ATOMIC_RELAXED);
     return OK;
+}
+
+const char *kexec_log_name(void)
+{
+    return rec.r.name;   /* NUL-terminated: kexec_set_log_name writes the NUL first */
 }
 
 bool kexec_crash_loop(bool after_panic, uint32_t panics_before, uint64_t uptime)
@@ -203,16 +209,16 @@ _Noreturn static void jump_here(void)
         hlt();
 }
 
-/* No jump after all: a firmware reset rather than a dark, silent hang.
- * A stuck CPU may hold the log's or the serial port's lock; the screen
- * stays dark (the reset follows at once). */
+/* No jump after all: the panic screen's second case (it can't recover),
+ * then a firmware reset, rather than a dark, silent hang. A stuck CPU may
+ * hold the log's or the serial port's lock. */
 _Noreturn static void give_up(const char *why)
 {
     klog_force_unlock();
     fbcon_go_dark();
     serial_panic();
     kprintf("kexec: %s: a firmware reboot instead\n", why);
-    machine_reboot();
+    panic_screen_stuck(why);
 }
 
 /* Bus mastering off, then the jump: here on the BSP, else by the BSP

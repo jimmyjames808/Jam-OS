@@ -17,7 +17,10 @@ the script, one command per line:
                               shell's prompt, `jam:<cwd>>` with its colours
                               (user/services/shell/main.c), whatever the
                               current directory: `wait {prompt}` waits for
-                              the next one.
+                              the next one. Any other {name} is a number:
+                              one not seen yet is captured from the match
+                              (e.g. `seen jamjar: next at {nx},{ny}`), one
+                              captured before stands for its value.
     send <text>               <text> and Enter (CR), one byte at a time
     type <text>               <text> without Enter; \\e \\r \\n \\t \\xNN escapes
     sleep <seconds>
@@ -35,7 +38,10 @@ the script, one command per line:
                               top-left corner (where it is clamped), then
                               moved in steps of at most 6 counts, which the
                               compositor's (and libfun's) acceleration
-                              takes 1:1, each its own monitor command
+                              takes 1:1, each its own monitor command; x
+                              and y are sums of numbers and captured
+                              {name}s, e.g. 640-{lx}+{nx} (a window's
+                              place plus a point in it)
     # comment, blank lines ignored
 
 After the script it keeps reading until QEMU closes the socket (a `reboot`
@@ -90,23 +96,62 @@ threading.Thread(target=reader, daemon=True).start()
 # "jam" and the directory each in their colour (ESC [ ... m) and plain ":"
 # and ">": jam, colours, ':', the directory (and colours), '>'.
 PROMPT_RE = rb"jam(?:\x1b\[[0-9;]*m)*:[^\r\n>]*>"
+FIELD = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+numbers = {}   # the {name}s captured so far
 
 
 def needle_of(text):
     """What a wait or seen looks for: the text's bytes, or a regular
-    expression when it has {prompt} in it."""
-    if "{prompt}" not in text:
+    expression when it has a {field} in it: {prompt}, a number captured
+    before (its value), or one to capture (a named group)."""
+    if not FIELD.search(text):
         return text.encode()
-    return re.compile(PROMPT_RE.join(re.escape(p.encode()) for p in text.split("{prompt}")))
+    out, at, named = b"", 0, set()
+    for m in FIELD.finditer(text):
+        out += re.escape(text[at:m.start()].encode())
+        name = m.group(1)
+        if name == "prompt":
+            out += PROMPT_RE
+        elif name in numbers:
+            out += re.escape(str(numbers[name]).encode())
+        elif name in named:
+            out += b"(?P=" + name.encode() + b")"
+        else:
+            out += b"(?P<" + name.encode() + b">-?[0-9]+)"
+            named.add(name)
+        at = m.end()
+    return re.compile(out + re.escape(text[at:].encode()))
 
 
 def find(needle, start):
-    """(start, end) of needle's first match in buf from start, or None."""
+    """(start, end) of needle's first match in buf from start, or None;
+    the numbers it captures are kept."""
     if isinstance(needle, bytes):
         i = buf.find(needle, start)
         return (i, i + len(needle)) if i >= 0 else None
     m = needle.search(buf, start)
-    return m.span() if m else None
+    if not m:
+        return None
+    numbers.update((k, int(v)) for k, v in m.groupdict().items())
+    return m.span()
+
+
+def number(expr):
+    """A pointer coordinate: numbers and captured {name}s added and taken
+    away, e.g. 640-{lx}+{nx}."""
+    terms = re.findall(r"([+-]?)(\{[a-z][a-z0-9_]*\}|[0-9]+)", expr)
+    if not terms or "".join(s + t for s, t in terms) != expr.replace(" ", ""):
+        sys.exit(f"serial-feed: pointer: can't read '{expr}'")
+    total = 0
+    for sign, term in terms:
+        if term.startswith("{"):
+            if term[1:-1] not in numbers:
+                sys.exit(f"serial-feed: pointer: {term} was never captured")
+            v = numbers[term[1:-1]]
+        else:
+            v = int(term)
+        total += -v if sign == "-" else v
+    return total
 
 
 def unescape(t):
@@ -242,7 +287,7 @@ for lineno, raw in enumerate(open(script), 1):
     elif cmd == "usbkeys":
         usbkeys(arg)
     elif cmd == "pointer":
-        px, py = (int(v) for v in arg.split())
+        px, py = (number(v) for v in arg.split())
         pointer(px, py)
     else:
         sys.exit(f"serial-feed: {script}:{lineno}: unknown command '{cmd}'")

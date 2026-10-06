@@ -2,13 +2,14 @@
 # the same library and player as jamjar.txt, by keys only, for the
 # screenshots at the PC's size (UI scale 2): the library, playing, the
 # search, the help, the roulette and the big view; then q, and the music
-# plays on.
+# plays on. On the compositor's boot jamjar is a window (a tile beside
+# the terminal's), on `nocomp`'s the whole screen: its size is either.
 wait 120 Jam OS shell
 wait {prompt}
 seen 60 init: /data mounted
 seen 60 music: ready
 send jamjar trace
-wait 30 jamjar: 2560x1440, reading /data/music
+wait 30 jamjar: {w}x{h}, reading /data/music
 wait 30 jamjar: library /data/music: 6 artists, 7 albums, 9 tracks
 seen 60 2001_Discovery/One_More_Time.mp3: 640x640 in
 seen 60 Twisted_Fantasy/Dark_Fantasy.mp3: 611x640 in

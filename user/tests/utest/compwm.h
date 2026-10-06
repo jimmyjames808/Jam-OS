@@ -51,6 +51,9 @@ bool fk_open(struct fk *f, int32_t w, int32_t h, bool fixed);
 /* A full-screen toplevel of client cl's (fake_keyless: a boot overlay), asked
  * for before its first buffer. */
 bool fk_open_full(struct fk *f, struct comp_client *cl);
+/* A toplevel w by h of its own, maximised before its first buffer (as
+ * libfun asks on a screen up to 1920x1200). */
+bool fk_open_max(struct fk *f, int32_t w, int32_t h);
 void fk_close_all(void);
 struct comp_window *win(unsigned i);
 /* A press at (x, y) with button (and seat.mods held): did the window

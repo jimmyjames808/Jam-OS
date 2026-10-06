@@ -5,19 +5,33 @@
 # Each case is a fresh boot of a stick image; the image is read afterwards
 # with mtools, as the Mac reads the real stick.
 #   save     a plain boot, `crash panic yes` once logd writes boot-0001:
-#            no panic screen, the next boot comes up on every CPU, its
-#            shell says "the last boot panicked: ... (saved as
-#            /data/logs/boot-0001-crash.txt)", and that file (the panicked
-#            boot's own number) holds the panic and the lines before it;
-#            the new boot logs to boot-0002
+#            the calm panic screen's first case ("Jam OS hit a problem and
+#            is restarting" and the code: kdump-restarting.png, held 3 s by
+#            the test word panichold=3000), the next boot comes up on every
+#            CPU, its shell says "the last boot panicked: ... (saved as
+#            /data/logs/boot-0001-crash.txt). Code JAM-KP-...", and that
+#            file (the panicked boot's own number) holds the panic, its
+#            code and the lines before it; the new boot logs to boot-0002;
+#            `crashlog` and `crashlog list` show it (kdump-save-crashlog.txt)
+#   notice   the same panic with a mouse: on the next boot's desktop the
+#            notice "Jam OS restarted after a problem" / "Everything is
+#            back. Code ..." (kdump-notice.png); a click on its Details
+#            opens a terminal running `crashlog` (kdump-details.png)
 #   loop     crashtest=lockorder: the next boot panics at once (its test
-#            word), within 30 s of a start after a panic: it halts on its
-#            panic screen (red), saying it is a crash loop; no third kernel
-#   bad      `crash kexecbad yes`: a byte of the stored kernel changed, so
-#            the panic refuses it (checksum) and halts on its red screen;
-#            no second kernel, no crash file
+#            word), within 30 s of a start after a panic: the calm panic
+#            screen's second case, "Restarting the PC in 15 s"
+#            (kdump-loop-0s.png), its details at 5 s saying it is a crash
+#            loop (kdump-loop-5s.png), the firmware reset at 15 s (which
+#            ends QEMU); no third kernel
+#   bad      `crash kexecbad yes` with reset=none: a byte of the stored
+#            kernel changed, so the panic refuses it (checksum): the second
+#            case, "Restarting the PC in 15 s" (kdump-bad-0s.png), the
+#            details panel at 5 s (kdump-bad-5s.png), at 15 s the reset
+#            that reset=none makes fail, so "Jam OS couldn't restart the
+#            PC" (kdump-bad-noreset.png); no second kernel, no crash file
 #   nostick  the stick pulled before the panic: the next boot comes up
-#            without it, and its shell says the log was not saved and why
+#            without it, and its shell says the log was not saved and why;
+#            `crashlog` says there is no /data/logs
 #   screen   with the splash (QEMU_SPLASH=1): the screen as the next
 #            kernel starts is all the splash background (no panic screen,
 #            no text), and the next boot plays the splash before the
@@ -27,7 +41,7 @@
 set -u
 out=$1
 shift
-cases=${*:-save loop bad nostick screen}
+cases=${*:-save notice loop bad nostick screen}
 mkdir -p "$out"
 fails=0
 cpus=${QEMU_SMP:-4}
@@ -56,19 +70,35 @@ boot() {
 # The panicking boot's log reached the shell's prompt and logd's file.
 UP="wait 120 Jam OS shell|wait {prompt}|wait 60 logd: writing /data/logs/boot-0001.txt"
 
+# The calm panic screen's lines on the serial port (debug/panicscreen.c).
+RESTARTING='panic screen: "Jam OS hit a problem and is restarting", JAM-KP-'
+STUCK='panic screen: "Jam OS hit a problem it can'"'"'t recover from", JAM-'
+
 case_save() {
     IFS='|'
     set -- $UP "send crash panic yes" "wait 60 KERNEL PANIC" \
         "wait 30 starting the stored kernel: the next boot saves this log" \
+        "wait 10 $RESTARTING" "sleep 1" "shot kdump-restarting" \
         "wait 60 loader:      Jam OS kexec" \
         "wait 60 kexec: the previous kernel panicked after" \
-        "wait 120 the last boot panicked: test panic requested (crash test) (saved as /data/logs/boot-0001-crash.txt)" \
+        "wait 120 the last boot panicked: test panic requested (crash test) (saved as /data/logs/boot-0001-crash.txt). Code JAM-KP-" \
         "wait {prompt}" "seen 60 logd: writing /data/logs/boot-0002.txt" \
         "send ls /data/logs" "wait boot-0002.txt" "wait {prompt}" \
+        "send crashlog" "wait 10 Crash report /data/logs/boot-0001-crash.txt, the newest of 1" \
+        "wait code       JAM-KP-" "wait what       test panic requested (crash test)" \
+        "wait where      crash_panic+0x" \
+        "wait backtrace  #0 " "wait the last lines before the panic:" "wait dbgcmd: crash panic" \
+        "wait boot       boot-0001, which panicked after" "wait build      Jam OS " \
+        "wait {prompt}" "send crashlog list" \
+        "wait   1  boot-0001-crash.txt  JAM-KP-" "wait {prompt}" \
+        "send crashlog 2" "wait there is 1 crash report" "wait {prompt}" \
         "send reboot -f" "wait reboot: resetting"
     unset IFS
-    boot save shell "$@" || { fail save "the script (see $out/kdump-save.log)"; return; }
+    boot save "shell panichold=3000" "$@" || { fail save "the script (see $out/kdump-save.log)"; return; }
     log="$out/kdump-save.log"
+    python3 tools/splash-check.py calm "$out/kdump-restarting.png" > /dev/null ||
+        fail save "the screen before the restart isn't the calm panic screen's first case"
+    awk '/Crash report \/data\/logs/,/build      Jam OS/' "$log" > "$out/kdump-save-crashlog.txt"
     [ "$(count "$log" "smp: $cpus of $cpus CPUs online")" -ge 2 ] ||
         fail save "the next boot didn't bring up all $cpus CPUs"
     [ "$(count "$log" 'system halted')" -eq 0 ] || fail save "something halted"
@@ -84,7 +114,7 @@ case_save() {
     done
     for want in "Jam OS crash log: the end of the kernel log of boot-0001, which panicked" \
                 "The panic: test panic requested (crash test)" \
-                "JAM OS KERNEL PANIC" "dbgcmd: crash panic" \
+                "JAM OS KERNEL PANIC" "dbgcmd: crash panic" "code JAM-KP-" "build Jam OS " \
                 "logd: writing /data/logs/boot-0001.txt" \
                 "starting the stored kernel: the next boot saves this log"; do
         grep -qF -- "$want" "$f" || fail save "the crash log lacks '$want'"
@@ -106,7 +136,9 @@ case_loop() {
     set -- $UP "send crash panic yes" "wait 60 KERNEL PANIC" \
         "wait 60 loader:      Jam OS kexec" "wait 60 KERNEL PANIC" \
         "wait 30 no restart: this boot started after a panic less than 30 s ago (a crash loop)" \
-        "wait 30 system halted"
+        "wait 10 $STUCK" "sleep 0.5" "shot kdump-loop-0s" \
+        "wait 10 panic screen: the details are up" "sleep 0.5" "shot kdump-loop-5s" \
+        "wait 15 reboot: resetting"
     unset IFS
     boot loop "shell crashtest=lockorder" "$@" || { fail loop "the script (see $out/kdump-loop.log)"; return; }
     log="$out/kdump-loop.log"
@@ -115,22 +147,58 @@ case_loop() {
         fail loop "the stored kernel didn't get the test word"
     [ "$(count "$log" 'JAM OS KERNEL PANIC')" -eq 2 ] || fail loop "not exactly two panics"
     [ "$(count "$log" 'loader:      Jam OS kexec')" -eq 1 ] || fail loop "a third kernel started"
-    python3 tools/splash-check.py red "$out/kdump-loop.png" > /dev/null ||
-        fail loop "the crash loop's screen isn't the red panic screen"
+    python3 tools/splash-check.py calm "$out/kdump-loop-0s.png" > /dev/null ||
+        fail loop "the crash loop's screen at 0 s isn't the calm panic screen without details"
+    python3 tools/splash-check.py calm "$out/kdump-loop-5s.png" details > /dev/null ||
+        fail loop "the crash loop's screen at 5 s isn't the calm panic screen with its details"
 }
 
 case_bad() {
     IFS='|'
     set -- $UP "send crash kexecbad yes" "wait 60 KERNEL PANIC" \
         "wait 30 no restart: the stored kernel's checksum no longer matches" \
-        "wait 30 system halted"
+        "wait 10 $STUCK" "sleep 0.5" "shot kdump-bad-0s" \
+        "wait 10 panic screen: the details are up" "sleep 0.5" "shot kdump-bad-5s" \
+        "wait 15 reboot: resetting: reset=none" \
+        "wait 10 panic screen: \"Jam OS couldn't restart the PC\": hold the power button" \
+        "sleep 0.5" "shot kdump-bad-noreset" "wait 10 system halted"
     unset IFS
-    boot bad shell "$@" || { fail bad "the script (see $out/kdump-bad.log)"; return; }
+    boot bad "shell reset=none" "$@" || { fail bad "the script (see $out/kdump-bad.log)"; return; }
     [ "$(count "$out/kdump-bad.log" 'Jam OS kexec')" -eq 0 ] || fail bad "a second kernel started anyway"
     mdir -i "$out/kdump-bad-stick.img@@64M" ::/logs/boot-0001-crash.txt > /dev/null 2>&1 &&
         fail bad "a crash log was saved"
-    python3 tools/splash-check.py red "$out/kdump-bad.png" > /dev/null ||
-        fail bad "the screen isn't the red panic screen"
+    python3 tools/splash-check.py calm "$out/kdump-bad-0s.png" > /dev/null ||
+        fail bad "the screen at 0 s isn't the calm panic screen without its details"
+    python3 tools/splash-check.py calm "$out/kdump-bad-5s.png" details > /dev/null ||
+        fail bad "the screen at 5 s isn't the calm panic screen with its details"
+    python3 tools/splash-check.py calm "$out/kdump-bad-noreset.png" details > /dev/null ||
+        fail bad "the screen after the reset failed isn't the calm panic screen with its details"
+    # The details came at 5 s and the reset at 15 s, from the screen's start.
+    t0=$(grep -a "$STUCK" "$out/kdump-bad.log" | head -1 | sed 's/^\[ *\([0-9.]*\)\].*/\1/')
+    t5=$(grep -a "the details are up" "$out/kdump-bad.log" | head -1 | sed 's/^\[ *\([0-9.]*\)\].*/\1/')
+    t15=$(grep -a "reboot: resetting: reset=none" "$out/kdump-bad.log" | head -1 |
+          sed 's/^\[ *\([0-9.]*\)\].*/\1/')
+    awk -v a="$t0" -v b="$t5" -v c="$t15" 'BEGIN { d = b - a; e = c - a;
+        printf "kdump bad: details at %.2f s, the reset at %.2f s\n", d, e;
+        exit !(d > 4.9 && d < 5.5 && e > 14.9 && e < 15.5) }' ||
+        fail bad "the details or the reset not at 5 s and 15 s"
+}
+
+case_notice() {
+    IFS='|'
+    set -- $UP "send crash panic yes" "wait 60 KERNEL PANIC" \
+        "wait 60 loader:      Jam OS kexec" "wait 120 init: the shell is up" \
+        "wait 30 init: notice \"Jam OS restarted after a problem\" (Everything is back. Code JAM-KP-" \
+        "sleep 1" "shot kdump-notice" \
+        "pointer 1028 112" "monitor mouse_button 1" "sleep 0.2" "monitor mouse_button 0" \
+        "wait 10 init: the notice's first button was pressed: a terminal runs \"crashlog\"" \
+        "wait 10 init: terminal 2 opens to run \"crashlog\"" \
+        "wait 60 Crash report /data/logs/boot-0001-crash.txt, the newest of 1" \
+        "wait 30 build      Jam OS " "sleep 2" "shot kdump-details" \
+        "send reboot -f" "wait reboot: resetting"
+    unset IFS
+    QEMU_USB="-device usb-mouse,bus=xhci.0,port=2" boot notice shell "$@" ||
+        fail notice "the script (see $out/kdump-notice.log)"
 }
 
 case_nostick() {
@@ -138,6 +206,7 @@ case_nostick() {
     set -- $UP "monitor device_del stick" "wait 30 init: /data is gone" \
         "send crash panic yes" "wait 60 KERNEL PANIC" "wait 60 loader:      Jam OS kexec" \
         "wait 120 the last boot panicked: test panic requested (crash test) (not saved: no /data within 20 s" \
+        "wait {prompt}" "send crashlog" "wait 10 crashlog: no /data/logs (is the Jam OS stick in?)" \
         "wait {prompt}" "send reboot -f" "wait reboot: resetting"
     unset IFS
     boot nostick shell "$@" || fail nostick "the script (see $out/kdump-nostick.log)"

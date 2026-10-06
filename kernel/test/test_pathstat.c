@@ -258,7 +258,8 @@ KTEST(pathstat_user_call_counts)
      * lock, and every lock pair has been seen before the window. */
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
     KT_IDLE_EQ(per100(&r, PATH_RESCHED_IRQ), 0);   /* nothing pending at any release */
-    KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
+    KT_ASSERT(per100(&r, PATH_CLOCK) <= 2);   /* no deadline; the client's warm-up
+                                              * reads (every 64) may fall in the window */
 }
 
 /* The same call against a server on channel_reply_wait (utest
@@ -325,12 +326,15 @@ KTEST(pathstat_user_deadline_call_counts)
         KT_ASSERT(!"bench_path_ucall failed");
     }
     KT_ASSERT(r.calls > 0);
-    KT_EQ(sys100(&r, SYS_clock_get), 100);
+    /* The client's warm-up also reads the clock every 64 calls, and on a
+     * fast CPU (the PC, not QEMU) those calls can fall in the trace's
+     * window, as the test above allows for: up to 2 more per 100. */
+    KT_ASSERT(sys100(&r, SYS_clock_get) >= 100 && sys100(&r, SYS_clock_get) <= 102);
     KT_EQ(sys100(&r, SYS_channel_call), 100);
     KT_EQ(per100(&r, PATH_SLEEPQ), 100);
     KT_EQ(per100(&r, PATH_TIMER_ARM), 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 100);
-    KT_IDLE_EQ(per100(&r, PATH_CLOCK), 200);
+    KT_IDLE_ASSERT(per100(&r, PATH_CLOCK) >= 200 && per100(&r, PATH_CLOCK) <= 202);
     KT_IDLE_EQ(per100(&r, PATH_LOCK_SLOW), 0);
     KT_IDLE_EQ(per100(&r, PATH_RESCHED_IRQ), 0);   /* nothing pending at any release */
 }

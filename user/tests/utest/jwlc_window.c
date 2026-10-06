@@ -16,8 +16,9 @@
  *                     frame callbacks on a version 4 surface, release;
  *   jwlc_window_sizes a resizable window maximised to a size the pool
  *                     grows for, a configure that changes only states
- *                     (acked at once), a fixed-size window keeping its
- *                     size, full screen, close, a new title.
+ *                     (acked at once), new sizes drawn without touching
+ *                     the shown buffer's pixels, a fixed-size window
+ *                     keeping its size, full screen, close, a new title.
  * Each ends with the job's handles and message bytes where they began. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
@@ -191,6 +192,40 @@ bool t_jwlc_window_sizes(void)
     CHECK(fake_pump(&f, c));
     CHECK(s->acked == s->sent_serial && s->commits == commits + 1 && s->attaches == attaches);
     CHECK(fake_next_of(c, JWL_EV_CONFIGURE, &ev) && ev.configure.states == MAXIMIZED);
+
+    /* a new size again (a resize): the picture shown keeps its pixels while
+     * the new size's frame is drawn, until that frame's commit replaces it */
+    const struct fake_buffer *shown = NULL;
+    for (unsigned i = 0; i < FAKE_BUFFERS; i++)
+        if (f.b[i].id && f.b[i].id == s->current)
+            shown = &f.b[i];
+    CHECK(shown);
+    const volatile uint32_t *old = (const volatile uint32_t *)(uintptr_t)(shown->pool->addr +
+                                                                         (uint64_t)shown->offset);
+    size_t last = (size_t)(shown->h - 1) * (size_t)(shown->stride / 4) + (size_t)shown->w - 1;
+    uint32_t first_px = 0xff0000ffu, last_px = 0xff000002u;   /* what the shown one has */
+    for (uint32_t k = 0; k < 3; k++) {   /* bigger, then smaller twice */
+        int32_t nw = 400 - 60 * (int32_t)k, nh = 300 - 40 * (int32_t)k;
+        CHECK_ST(fake_configure(&f, s, nw, nh, MAXIMIZED), OK);
+        CHECK(fake_pump(&f, c));
+        CHECK(fake_next_of(c, JWL_EV_CONFIGURE, &ev));
+        CHECK_ST(jwl_window_begin(w, &fr), OK);
+        CHECK(fr.width == nw && fr.height == nh);
+        fake_fill(&fr, 0xff000003u + k);
+        CHECK(old[0] == first_px && old[last] == last_px);   /* not drawn over */
+        CHECK_ST(jwl_window_present(w, NULL, 0, false), OK);
+        CHECK(fake_pump(&f, c));
+        CHECK(s->pixel == 0xff000003u + k);
+        first_px = last_px = 0xff000003u + k;
+        /* the next round's shown buffer: this one */
+        shown = NULL;
+        for (unsigned i = 0; i < FAKE_BUFFERS; i++)
+            if (f.b[i].id && f.b[i].id == s->current)
+                shown = &f.b[i];
+        CHECK(shown);
+        old = (const volatile uint32_t *)(uintptr_t)(shown->pool->addr + (uint64_t)shown->offset);
+        last = (size_t)(shown->h - 1) * (size_t)(shown->stride / 4) + (size_t)shown->w - 1;
+    }
 
     /* a fixed-size window keeps its size whatever it is asked */
     struct jwl_window_config fixed = { .width = 50, .height = 40 };

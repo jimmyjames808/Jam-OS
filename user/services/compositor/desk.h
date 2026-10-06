@@ -358,8 +358,11 @@ extern struct pop_state pop;
  * it is the one open. */
 void     pop_toggle(enum pop_kind kind, struct comp_box opener);
 void     pop_close(void);
-/* Its parts: the slider's track. */
+/* Its parts: the slider's track (the knob reaches LOOK_POP_KNOB past its
+ * ends), and the percentage's slot after it, as wide as "100%" (the text
+ * drawn right-aligned in it), LOOK_POP_PCT_GAP past the knob at 100%. */
 struct comp_box pop_slider_box(void);
+struct comp_box pop_pct_box(void);
 bool     pop_press(int32_t x, int32_t y);
 /* The data read again (the clock's minute, the network's rates). */
 void     pop_refresh(uint64_t t);

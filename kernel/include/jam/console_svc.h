@@ -70,5 +70,13 @@ status_t dbgcmd_check(const char *cmd, size_t len);
  * reset, the 8042 and a triple fault, each said on the screen first.
  * Any context; never returns. */
 _Noreturn void machine_reboot(void);
+/* The panic screen's reset (debug/panicscreen.c), interrupts off and the
+ * other CPUs halted: as machine_reboot, but the screen is left as it is,
+ * and it returns if neither the ACPI register, 0xCF9 nor the 8042 reset
+ * the machine (at once with the boot word reset=none, which tries none).
+ * Then machine_reset_triple, the last way, which never returns (but with
+ * reset=none, which returns at once). */
+void     machine_reset_try(void);
+void     machine_reset_triple(void);
 /* Which reset methods this machine offers, for the log / RESULTS. */
 void     reboot_describe(char *buf, size_t size);

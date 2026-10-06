@@ -21,8 +21,10 @@ a real desktop PC, which is where every milestone is tested.
 - UEFI boot from a USB stick (via Limine) on a real PC with 28 CPUs, and in
   QEMU.
 - A preemptive SMP kernel: per-CPU scheduling for hybrid P/E-core CPUs,
-  virtual memory, a lock-order checker, a watchdog and a panic screen with
-  a symbolised backtrace.
+  virtual memory, a lock-order checker, a watchdog, and a calm panic
+  screen with a short code (`JAM-PF-0008`) while it restarts itself; the
+  next boot saves the panic's log, with its symbolised backtrace, and
+  `crashlog` shows it.
 - Capability handles, channels and ports; processes, threads and jobs with
   quotas on every kernel resource a process can use.
 - Drivers as user processes: a PCI core with MSI/MSI-X and DMA
@@ -123,7 +125,8 @@ a real desktop PC, which is where every milestone is tested.
   popover sets the mixer's master volume and shows the output and what
   plays; the network popover the link, address and rates. Notices come as
   cards in the top right: a stick added or removed, the network connected
-  or lost, an update written (with a Reboot button), or the shell's
+  or lost, an update written (with a Reboot button), a restart after a
+  panic (with Details: `crashlog` in a new terminal), or the shell's
   `notify -b Yes -b No -w Tea? The kettle is on`. The boot
   entry "Jam OS (no compositor)" (the boot word `nocomp`) is the way back
   to the full-screen console until G1 is signed off on the PC.

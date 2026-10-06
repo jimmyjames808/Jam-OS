@@ -372,7 +372,12 @@ static void run_seconds(const struct worker *ws, uint32_t n, uint64_t seconds, u
         shootdown_round(va, sec);
         DBG_HOOK(DBG_STRESS_SHOOTDOWN, &shoot_bad);
         if (__atomic_load_n(&shoot_bad, __ATOMIC_RELAXED)) {
-            report("stress: FAILED TLB shootdown: a CPU saw a stale mapping");
+            /* A hook set here is a test faking the stale read (ktest
+             * stress_failure_does_not_stick): say so, so the RESULTS box
+             * doesn't read as a real stale mapping. */
+            bool faked = __atomic_load_n(&dbg_hooks[DBG_STRESS_SHOOTDOWN], __ATOMIC_ACQUIRE);
+            report("stress: FAILED TLB shootdown: a CPU saw a stale mapping%s",
+                   faked ? " (faked on purpose by a test: not a real failure)" : "");
             __atomic_add_fetch(&failures, 1, __ATOMIC_RELAXED);
         }
         if (sec >= 10)
@@ -476,8 +481,10 @@ bool stress_run(uint64_t seconds)
     pmm_stats(&total, &free_after);
     kprintf("stress: %lu KiB not returned (thread stacks are kept for reuse)\n",
             (free_before - free_after) * 4);
-    report("stress: %s after %lu s (%lu failures)", failed ? "FAILED" : "PASSED",
-            (uptime_ns() - start) / 1000000000, failed);
+    bool faked = __atomic_load_n(&dbg_hooks[DBG_STRESS_SHOOTDOWN], __ATOMIC_ACQUIRE);
+    report("stress: %s after %lu s (%lu failures)%s", failed ? "FAILED" : "PASSED",
+           (uptime_ns() - start) / 1000000000, failed,
+           failed && faked ? " (on purpose: a test's faked failure)" : "");
     return failed == 0;
 }
 

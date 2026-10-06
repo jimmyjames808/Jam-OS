@@ -98,6 +98,12 @@ endif
 S_SRCS := $(shell find kernel -name '*.S')
 OBJS   := $(C_SRCS:%.c=$(BUILD)/%.o) $(S_SRCS:%.S=$(BUILD)/%.S.o)
 
+# The panic screen's glyphs (<jam/panictext.h>): a crashed kernel runs no
+# font code, so the font tool (tools/panicglyphs.c, in build/host/fontpreview,
+# below) bakes them on the Mac into a table the kernel links.
+PANIC_GLYPHS := $(BUILD)/gen/panicglyphs.c
+OBJS         += $(PANIC_GLYPHS:.c=.o)
+
 NET_STAMP := $(BUILD)/net-default.txt
 
 # Drivers (the rules are further down, after the user programs'): every
@@ -211,6 +217,12 @@ $(BUILD)/ksyms_empty.o $(BUILD)/ksyms.o: $(BUILD)/%.o: $(BUILD)/%.c
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(PANIC_GLYPHS): $(FONT_TOOL)
+	@mkdir -p $(dir $@)
+	$(FONT_TOOL) --panic $@
+$(PANIC_GLYPHS:.c=.o): $(PANIC_GLYPHS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.S.o: %.S
@@ -670,9 +682,10 @@ $(MENU_TOOL): tools/menucheck.c user/lib/bootmenu.c user/include/bootmenu.h
 # built with ASan and UBSan, whose --check `make check` runs. x86-64 code
 # (Rosetta on Apple silicon): <os.h>'s inline functions are x86.
 HOST_X86     := $(if $(filter arm64,$(shell uname -m)),-arch x86_64)
-FONT_TOOL_SRCS := tools/fontpreview.c tools/fontcheck.c tools/png.c $(FONT_SRCS)
-FONT_TOOL_DEPS := $(FONT_TOOL_SRCS) tools/fontpreview.h $(LIBFUN_DIR)/fun.h \
-                  $(LIBFUN_DIR)/internal.h $(FONT_FACES) third_party/stb_truetype/stb_truetype.h
+FONT_TOOL_SRCS := tools/fontpreview.c tools/fontcheck.c tools/panicglyphs.c tools/png.c \
+                  $(FONT_SRCS)
+FONT_TOOL_DEPS := $(FONT_TOOL_SRCS) tools/fontpreview.h kernel/include/jam/panictext.h \
+                  $(LIBFUN_DIR)/fun.h $(LIBFUN_DIR)/internal.h $(FONT_FACES) third_party/stb_truetype/stb_truetype.h
 FONT_TOOL_CFLAGS := -std=gnu17 -Wall -Wextra -Werror -Wvla $(HOST_X86) -D_FORTIFY_SOURCE=0 -Iuser/include \
                     -Ikernel/include -Idrivers/include -I$(LIBFUN_DIR) -Ithird_party/stb_truetype
 $(FONT_TOOL): $(FONT_TOOL_DEPS)

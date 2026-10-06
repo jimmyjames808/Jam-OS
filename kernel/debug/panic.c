@@ -1,11 +1,12 @@
 /* Panic: message, registers (for exceptions), a symbolised frame-pointer
- * backtrace and the tail of the kernel log. The other CPUs are halted with
- * an NMI first. Then the stored kernel is started (kernel/kexec/jump.c):
- * the next boot saves this one's log and says what happened, so nothing
- * is drawn (the lines go to the log and the serial port). Without a
- * stored kernel to start (none, a damaged one, or a crash loop) the
- * screen turns red, shows all of it with the reason, and the machine
- * halts. */
+ * backtrace, the panic's code (<jam/panicscreen.h>) and the tail of the
+ * kernel log, into the log and onto the serial port. The other CPUs are
+ * halted with an NMI first. The screen is the calm panic screen
+ * (debug/panicscreen.c), never the log's text: "Jam OS hit a problem and
+ * is restarting" while the stored kernel is started (kernel/kexec/
+ * jump.c), whose boot saves this one's log and says what happened; or,
+ * without a stored kernel to start (none, a damaged one, or a crash
+ * loop), "... can't recover from", its details and a firmware reset. */
 #include <stdarg.h>
 #include <stdint.h>
 #include <jam/console_svc.h>
@@ -17,11 +18,13 @@
 #include <jam/ksyms.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/panicscreen.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/serial.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
+#include <jam/sysinfo.h>
 #include <jam/time.h>
 #include <jam/trap.h>
 #include <jam/x86.h>
@@ -57,8 +60,13 @@ _Noreturn void halt_forever(void)
     }
 }
 
+/* One frame, printed; the first few also kept for the panic screen. */
 static void print_addr(int index, uint64_t addr)
 {
+    if (index < PANIC_FRAMES) {
+        panic_report.frames[index] = addr;
+        panic_report.nframes = (unsigned)index + 1;
+    }
     uint64_t off;
     const char *name = ksym_lookup(addr, &off);
     if (name)
@@ -115,7 +123,7 @@ static void backtrace_from(uint64_t first_rip, uint64_t rbp_val)
         kprintf("       ... same frame %lu more times\n", repeats);
 }
 
-static bool jumping;   /* the stored kernel will be started: draw nothing */
+static bool jumping;   /* the stored kernel will be started (the screen's first case) */
 
 /* This CPU's APIC id from CPUID (leaf 0Bh's x2APIC id where there is one,
  * else leaf 1's initial id): no LAPIC mapping or GS needed, so it works at
@@ -134,17 +142,17 @@ static uint32_t apic_id_cpuid(void)
 }
 
 /* Common start of every panic: stop interrupts, stop recursion, decide
- * whether the stored kernel takes over, grab the log tail before we
- * overwrite the screen, then paint it red (or, if it takes over, draw
- * nothing at all). */
+ * whether the stored kernel takes over, the screen dark (the kernel's
+ * text console draws nothing more), grab the log tail. */
 static void panic_begin(void)
 {
     cli();
     if (__atomic_exchange_n(&panic_in_progress, 1, __ATOMIC_SEQ_CST)) {
         /* A fault inside this CPU's own panic after it decided to start the
-         * stored kernel: the screen is dark already, so halting would
-         * leave nothing to see; reset instead. Otherwise (a fault while
-         * the panic screen is drawn, or a second CPU) halt as always. */
+         * stored kernel: halting would leave a screen that says it is
+         * restarting; the second case and a reset instead. Otherwise (a
+         * fault while the second case's screen is up, or a second CPU)
+         * halt as always. */
         if (__atomic_load_n(&jumping, __ATOMIC_ACQUIRE) && panic_apic == apic_id_cpuid())
             kexec_panic_failed();
         halt_forever();
@@ -158,17 +166,15 @@ static void panic_begin(void)
     klog_force_unlock();
     /* No lock, no allocation; the panic's lines start here. */
     __atomic_store_n(&jumping, kexec_panic_begin(), __ATOMIC_RELEASE);
-    if (jumping)
-        fbcon_go_dark();
-    else
-        fbcon_force_unlock();
+    fbcon_go_dark();   /* the text is kept, never drawn: the panic screen draws */
+    panic_screen_begin();
     serial_panic();   /* queued output first, then everything synchronous */
 
     size_t n = klog_tail(tail, TAIL_BYTES);
     tail[n] = '\0';
 
-    fbcon_set_colors(0xffffff, 0x8b0000);
-    fbcon_clear();
+    panic_report.cpu = this_cpu()->index;
+    panic_report.note = note;
     kprintf("\n  *** JAM OS KERNEL PANIC *** on cpu %u", this_cpu()->index);
     if (this_cpu()->current)
         kprintf(", thread \"%s\"", this_cpu()->current->name);
@@ -185,14 +191,25 @@ void panic_note_set(const char *fmt, ...)
     va_end(ap);
 }
 
+/* The panic's one line, for the panic screen's details. */
+static void report_message(const char *msg)
+{
+    kexec_message_clean(panic_report.message, sizeof(panic_report.message), msg);
+}
+
 _Noreturn static void panic_end(void)
 {
     if (note[0])
         kprintf("\n  %s\n", note);
+    const struct panic_cause *c = &panic_report.cause;
+    kprintf("\n  code %s: %s; its digits are the low 16 bits of %s (%016lx)\n", c->code,
+            c->what, c->hex_of, c->addr);
+    kprintf("  build Jam OS %s, %s\n", jamos_version, panic_screen_build());
     if (jumping) {
         /* The log already has the lines before the panic: the next boot
          * saves all of it. */
         kprintf("\nstarting the stored kernel: the next boot saves this log\n");
+        panic_screen_restarting();
         kexec_panic_jump();
     }
     /* Show the tail of the log starting at a line boundary. */
@@ -205,10 +222,11 @@ _Noreturn static void panic_end(void)
     /* Written directly: the tail is longer than kprintf's line buffer. */
     kprintf("\nlast log lines:\n");
     klog_write_raw(start, strlen(start));
-    if (kexec_panic_why_not())
-        kprintf("\n\nno restart: %s\n", kexec_panic_why_not());
-    kprintf("\n\nsystem halted.\n");
-    halt_forever();
+    const char *why = kexec_panic_why_not();
+    if (!why)
+        why = "there is no stored kernel (crashkernel=0, not loaded yet, or it couldn't be)";
+    kprintf("\n\nno restart: %s\n", why);
+    panic_screen_stuck(why);
 }
 
 _Noreturn void panic(const char *fmt, ...)
@@ -221,6 +239,9 @@ _Noreturn void panic(const char *fmt, ...)
     kvsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
     kexec_panic_message(msg);
+    report_message(msg);
+    panic_report.at = (uint64_t)__builtin_return_address(0);
+    panic_cause_message(&panic_report.cause, msg, panic_report.at);
     kprintf("  %s\n\n", msg);
 
     backtrace_from(0, (uint64_t)__builtin_frame_address(0));
@@ -259,6 +280,8 @@ _Noreturn void panic_watchdog(const struct trap_frame *f)
     kprintf("  watchdog: this CPU stopped taking timer interrupts for 5 s\n");
     kprintf("  (interrupts disabled too long, or spinning in a loop with IF=0)\n\n");
     dump_frame(f, cr2);
+    report_message("watchdog: a CPU stopped taking timer interrupts for 5 s");
+    panic_cause_watchdog(&panic_report.cause, f->rip);
     panic_end();
 }
 
@@ -279,6 +302,9 @@ static void dump_frame(const struct trap_frame *f, uint64_t cr2)
     ksnprintf(msg, sizeof(msg), "%s (vector %lu, error %lx) at %s+0x%lx", name, f->vector,
               f->error, sym ? sym : "?", sym ? off : f->rip);
     kexec_panic_message(msg);
+    report_message(msg);
+    panic_report.at = f->rip;
+    panic_cause_trap(&panic_report.cause, f->vector, f->rip, cr2);
     kprintf("  %s\n\n", msg);
     if (f->vector == 14)
         describe_page_fault(f, cr2);

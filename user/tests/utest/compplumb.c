@@ -22,6 +22,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <fun.h>
 #include <idl/audioctl.h>
 #include <idl/compctl.h>
 #include <idl/initctl.h>
@@ -472,8 +473,15 @@ static bool volume_slider(struct cs *t, int32_t mode_x1)
     CHECK_ST(asked(t->mix, CT_WAIT, &q, sizeof(q), &n), OK);
     CHECK_EQ(q.h.ordinal, AUDIOCTL_DESK);
     CHECK(answer_desk(t, q.h.txid));
-    /* the slider (popover.c): three quarters along it */
-    int32_t sx1 = vol_x2 - LOOK_POP_W + LOOK_POP_PAD + 16 + 9, sx2 = vol_x2 - LOOK_POP_PAD - 36;
+    /* the slider (popover.c): three quarters along it; it ends short of the
+     * percentage's slot (as wide as "100%" in the strip's font) by the gap
+     * and the knob */
+    struct font *f;
+    CHECK_ST(font_open(FONT_REGULAR, LOOK_STRIP_PX, &f), OK);
+    int32_t pct = font_width(f, "100%");
+    font_close(f);
+    int32_t sx1 = vol_x2 - LOOK_POP_W + LOOK_POP_PAD + 16 + 9;
+    int32_t sx2 = vol_x2 - LOOK_POP_PAD - pct - LOOK_POP_PCT_GAP - LOOK_POP_KNOB;
     int32_t sy = LOOK_STRIP_H + LOOK_POP_GAP + LOOK_POP_PAD + LOOK_POP_LINE / 2;
     CHECK(click(t, sx1 + (sx2 - sx1) * 3 / 4, sy));
     CHECK_ST(asked(t->mix, CT_WAIT, &q, sizeof(q), &n), OK);

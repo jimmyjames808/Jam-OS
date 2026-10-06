@@ -101,14 +101,23 @@ void pop_close(void)
 /* ---- the volume slider ------------------------------------------------------------------- */
 
 #define SLIDER_ICON 16   /* the speaker before it */
-#define SLIDER_PCT  36   /* the percentage after it */
+
+struct comp_box pop_pct_box(void)
+{
+    if (pop.kind != POP_VOLUME)
+        return (struct comp_box){ 0, 0, 0, 0 };
+    int32_t x2 = pop.box.x2 - LOOK_POP_PAD, y = pop.box.y1 + LOOK_POP_PAD;
+    return (struct comp_box){ x2 - desk_text_w(desk_font.r12, "100%"), y, x2,
+                              y + LOOK_POP_LINE };
+}
 
 struct comp_box pop_slider_box(void)
 {
     if (pop.kind != POP_VOLUME)
         return (struct comp_box){ 0, 0, 0, 0 };
     int32_t x1 = pop.box.x1 + LOOK_POP_PAD + SLIDER_ICON + 9;
-    int32_t x2 = pop.box.x2 - LOOK_POP_PAD - SLIDER_PCT;
+    int32_t x2 = pop_pct_box().x1 - LOOK_POP_PCT_GAP - LOOK_POP_KNOB;   /* the knob at 100%
+                                                                         * stops short of it */
     int32_t y = pop.box.y1 + LOOK_POP_PAD;
     return (struct comp_box){ x1, y, x2, y + LOOK_POP_LINE };
 }
