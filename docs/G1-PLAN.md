@@ -74,6 +74,11 @@ differs from the recommendation below, this note wins:
 - **Q9: (B) a smaller terminal window.** After the splash, the first
   terminal opens as a centred window (not maximised), with the desktop
   background (the splash's dark colour) around it; text stays 8x16 pixels.
+  **Changed by the owner (2026-10-06), after trying the desktop:** the
+  terminal windows' text is a smooth monospace font (JetBrains Mono),
+  with a margin inside the window and the text starting at the top; the
+  8x16 bitmap stays as the `terminal.font = bitmap` setting and on the
+  full-screen console (`nocomp`). As built: below, "the terminal's look".
 - **The look (later the same day, from mockups).** Tiling mode: no title
   bars; the focused tile shows by its border colour; small gaps between
   tiles; Super+Q closes the focused window (both modes). Floating windows
@@ -1164,6 +1169,28 @@ kernel passes init all nine of its words now (userboot passed seven).
 A full-screen window whose client takes no keys stays over a window that
 takes the focus after it (focus.c), so the first terminal's window,
 mapped after the splash's on a busy machine, comes up under it.
+
+**As built: the terminal's look (the owner's Q9 change, 2026-10-06).**
+The terminal windows draw JetBrains Mono 2.304 (OFL; Regular and Bold,
+cut by `tools/subsetfont.py --terminal` to Latin-1, Latin Extended-A and
+the box drawing and block elements; `third_party/jetbrains-mono/`) with
+D0's smooth text: `font_open` takes `FONT_MONO` and `FONT_MONO_BOLD` too.
+15 pixels to the em (JetBrains Mono's 0.6-em advance is exactly 9 pixels
+there, so no glyph is squeezed or spread; 14 would round 8.4 to 8), cells
+9x21 (1.4 times the size), each glyph at its cell's origin and clipped
+to it, bold for `ESC [ 1 m`, the block elements filled as exact
+fractions of a cell; 10 pixels of padding inside the window on every
+side (the rounded corners cut only that); the text from the top,
+scrolling once the window is full (`user/services/console/view.c`; the
+full-screen console keeps its bottom row). On QEMU's 1280x800 the first
+window is 104x27 cells (956x587 pixels); on the PC's 2560x1440 160x50
+(1460x1070). `terminal.font = bitmap` keeps the 8x16 font (init's
+`font=bitmap` argument, and the new `console.set_font` when `/data`
+comes); `nocomp` always has it. Fonts 75 + 77 KB a console (one baked
+position: whole-pixel advances). A full redraw of a full-screen
+2560x1440 terminal (282x67 cells) took 11-15 ms in QEMU, a one-line
+change 1.2-1.7 ms ([ARCHITECTURE](../ARCHITECTURE.md#the-terminal-windows),
+[TESTING](TESTING.md#the-terminal-windows)).
 
 **Order and parallel work:**
 

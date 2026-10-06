@@ -223,6 +223,7 @@ net.host = 10.2.21.174
 | `netlog` | `off`: don't send the log, even with `net.host` set |
 | `ntp.server` | where the clock comes from (SNTP): an IPv4 address or a name. Without it, the network's gateway, then `pool.ntp.org` if the gateway gives no time |
 | `ntp` | `off`: don't set the clock from the network (it stays the real-time clock's, as `rtc` says) |
+| `terminal.font` | the terminal windows' text: `smooth` (JetBrains Mono, the default) or `bitmap` (the 8x16 font); from when the stick is mounted. The screen without the desktop (`nocomp`) always has the 8x16 font |
 
 **The clock from the network.** Once the network has an address, sntp
 asks the time (SNTP, UDP port 123) and sets the clock, then asks again

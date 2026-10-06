@@ -1090,6 +1090,32 @@ in two fonts, with nothing outside the clip changed; and 4,000 random
 cuts, each fitting its width and buffer, a start of the string plus "…",
 and the longest such start.
 
+## The terminal windows
+
+The console in window mode ([ARCHITECTURE](../ARCHITECTURE.md#the-terminal-windows)):
+its cells, padding and view. In utest (the `init` run), the console's
+pure files linked in (`wlinput.c`, `view.c`, `cellpaint.c`;
+`user/tests/utest/conwin.c`, `conpaint.c`):
+
+| Test | What it checks |
+|---|---|
+| `conwin_grid` | the first window's grid on six output sizes in both fonts' cells (three quarters of the output less the padding, at most 160x50, at least 80x24 where it fits); the window asked for holds that grid exactly and fits the output |
+| `conwin_padding` | a window's grid inside its 10 pixels of padding: one pixel less loses a row and a column, what is past the last whole cell is margin; maximised and tiny sizes; the padding covers the compositor's rounded corners |
+| `conwin_view` | text from the top in a window: the current line on row n after n lines, scrolling only once it reaches the bottom row, how far back the view goes; a clear starts at the top row with the old lines still behind it; every height keeps the current line on the screen; the full screen's current line on the bottom row as before |
+| `conwin_font_setting` | `terminal.font`'s values: `smooth`, `bitmap`, nothing else |
+| `conpaint_metrics` | JetBrains Mono at 15 px: 9x21 cells, baseline 16, a line 1.35 to 1.45 times the size; every code point a cell can hold one cell wide in both weights; '─' has a full row of ink and '│' a full column (neighbours meet); the box drawing and Latin Extended-A have glyphs of their own (not the box); the bitmap's look 8x16 |
+| `conpaint_cells` | a cell writes its own pixels only; a space is all background, the cursor on it all foreground; ten characters (ASCII, Latin-1, Latin Extended-A, box drawing) are exactly `font_draw`'s glyph at the cell's origin and baseline, clipped to the cell; cells partly off a buffer |
+| `conpaint_bold` | a bold cell is JetBrains Mono Bold's pixels (`font_draw` with the Bold font), not Regular's, with more ink |
+| `conpaint_blocks` | block elements: the full block, halves (upper and lower meet with no gap), eighths, quadrants and three of them with the fourth making the full block, the shades as the colour at 64, 128 and 192 over the background |
+| `conpaint_bitmap` | `terminal.font = bitmap`: the 8x16 font's bits for ASCII and the Latin letters, '?' for the box drawing it lacks, bold changing nothing, the bitmap's own half blocks and shades |
+
+The setting end to end (init's `font=bitmap` and `console.set_font`) is
+seen in a boot whose stick's settings say `terminal.font = bitmap`: the
+log has "init: the terminals' font: bitmap, as the settings say" and
+"console: terminal 1: the 8x16 bitmap font"; `terms-windows.txt`,
+`desktop.txt` (`tools/mouse-test.sh`) and `screen-test.sh` (`nocomp`, the
+bitmap) take screenshots of the windows and the full screen.
+
 ## The compositor's look
 
 The floating windows' title bars, circles, rounded corners and shadows,
