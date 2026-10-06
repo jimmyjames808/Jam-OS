@@ -339,6 +339,8 @@ void app_mouse(struct app *a, const struct mouse *m)
     a->my = m->y;
     if (!row_at(a, m->x, m->y, &a->hover_col, &a->hover_row))
         a->hover_col = a->hover_row = -1;
+    if ((m->pressed & MOUSE_RIGHT) && a->trace)   /* does nothing but say where (the */
+        say("jamjar: right click %d,%d\n", m->x, m->y);   /* tests find the window by it) */
     if (m->pressed & MOUSE_LEFT) {
         if (a->trace)   /* before what it does, which may say more */
             say("jamjar: click %d,%d\n", m->x, m->y);
