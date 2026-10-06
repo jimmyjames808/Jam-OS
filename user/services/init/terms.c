@@ -1,19 +1,23 @@
 /* init's shell mode: the terminals, a console and a shell each (shell.c
  * supervises them; services.c starts the other services).
  *
- * The first terminal is the system's: its console and its shell start
- * with the boot and are started again whatever happens, however often
- * (shell.c, never_given_up). With a compositor (comp.c) there can be more,
- * up to TERM_MAX in all: initctl.terminal (the shell's `term`, a
- * console's Super+Enter) opens one, a console in a window of its own with
- * a shell of its own. Each is supervised as the first is: its console or
- * shell ending by a crash or a kill is started again with the same
- * backoff; but one that ends too often is given up on, and an extra
- * terminal closes for good when its window is closed (its console ends
- * with code 0) or its shell ends with `exit` (code 0): the other one is
- * then ended too and the terminal's place is free. A shell that ends
- * because its console did (codes 2 and 3: its console channel closed) is
- * no `exit`.
+ * The first terminal starts with the boot. With a compositor (comp.c)
+ * there can be more, up to TERM_MAX in all: initctl.terminal (the shell's
+ * `term`, the compositor's Super+Enter and its search box) opens one, a
+ * console in a window of its own with a shell of its own, numbered with
+ * the lowest number free (1 too, once the first has closed). Every
+ * terminal is supervised alike: its console or shell ending by a crash
+ * or a kill is started again with the same backoff; one that ends too
+ * often is given up on, and the terminal closes; and a terminal closes
+ * for good when its window is closed (its console ends with code 0) or
+ * its shell ends with `exit` (code 0): the other one is then ended too
+ * and the terminal's place is free. The first is no different: with
+ * every terminal closed the desktop shows its wallpaper and top bar, and
+ * Super+Enter or the search box opens one. A shell that ends because its
+ * console did (codes 2 and 3: its console channel closed) is no `exit`.
+ * Under `nocomp` there is one terminal, the full-screen console: it and
+ * its shell are started again whatever happens, however often
+ * (terms_never_given_up), and never close.
  *
  *   console   bin/console: root with CONSOLE_ROOT (klog, the screen,
  *             serial output; reboot on Ctrl+Alt+Del), the server end of a
@@ -23,15 +27,18 @@
  *             syncs /data first; with a compositor the compositor keeps
  *             Ctrl+Alt+Del and Super+Enter, which never reach it), and the
  *             log writers' table read-only (CONSOLE_WRITERS_ROLE,
- *             writers.c); init keeps the client end. With the splash (the
- *             argument "quiet") the first draws nothing until the splash
- *             has borrowed the screen and given it back; on a boot with
- *             the splash every console also gets "nolog": the kernel log
- *             off the screen but for its notices. With a compositor each
- *             also gets /svc/wayland's client end (SR_USER + 10: window
- *             mode, the screen is the compositor's, so no RIGHT_ROOT_SCREEN)
- *             and "term=<n>", its terminal's number (an extra terminal's
- *             console shows the log only on request and makes no notices),
+ *             writers.c: under `nocomp` only, the console's notices);
+ *             init keeps the client end. With the splash under `nocomp`
+ *             (the argument "quiet") it draws nothing until the splash
+ *             has borrowed the screen and given it back. Every console
+ *             gets "nolog" (the quiet boot: the kernel log off the screen,
+ *             but for the commands whose output it is) except the first
+ *             terminal's on a `verbose` boot, which shows the log as it
+ *             comes. With a compositor each also gets /svc/wayland's
+ *             client end (SR_USER + 10: window mode, the screen is the
+ *             compositor's, so no RIGHT_ROOT_SCREEN) and "term=<n>", its
+ *             terminal's number (the system's news is the desktop's
+ *             notices, not a terminal's),
  *             and "font=bitmap" when the settings' terminal.font says so
  *             (terms_settings: read when /data comes, which is after the
  *             first console starts, so it is then sent to each running
@@ -49,8 +56,10 @@
  *             ERR_PEER_CLOSED, and the other shells are sent the new one);
  *             on the boot after a panic it waits for logd's answer
  *             (lastboot.c) and finds its one line queued on that channel
- *             (INIT_SHELL_NOTE) when it starts. An extra terminal's shell
- *             gets "term=<n>" (`exit` closes its terminal), and the first
+ *             (INIT_SHELL_NOTE) when it starts. With a compositor every
+ *             terminal's shell gets "term=<n>" (`exit` closes its
+ *             terminal; under `nocomp` it gets none, and `exit` says the
+ *             one terminal stays), and the first
  *             time it starts "run=<line>" when initctl.terminal asked for
  *             a command (the compositor's "Run ... in a terminal": the
  *             shell runs it as if typed at its first prompt; a restarted
@@ -89,7 +98,7 @@
 enum { TERM_CLOSED, TERM_OPEN, TERM_CLOSING };
 
 struct term {
-    uint8_t  state;      /* TERM_*: the first is always OPEN */
+    uint8_t  state;      /* TERM_*: under `nocomp` the first is always OPEN */
     handle_t cons;       /* its console's client end (0: none running) */
     char     cmd[TERM_CMD_MAX];   /* its shell's first line, until it has started ("": none) */
 };
@@ -97,8 +106,8 @@ static struct term terms[TERM_MAX];
 
 static handle_t port;
 static handle_t to_shell;    /* init's end of the first shell's SR_USER + 2 channel */
-static bool quiet_console;   /* the next first console starts quiet (the splash's) */
-static bool nolog_console;   /* every console keeps the log off the screen (a splash boot) */
+static bool quiet_console;   /* the next first console starts quiet (the splash's, nocomp) */
+static bool console_ever;    /* the first terminal's console has started this boot */
 /* An argument for the first shell started ("soak=3": run the soak test), or NULL. */
 static const char *first_arg;
 /* The settings' terminal.font is bitmap (read when /data comes,
@@ -122,9 +131,22 @@ handle_t shell_console(void)
     return terms[0].cons;
 }
 
+handle_t terms_any_console(void)
+{
+    for (unsigned k = 0; k < TERM_MAX; k++)
+        if (terms[k].cons)
+            return terms[k].cons;
+    return HANDLE_INVALID;
+}
+
 bool services_console_up(void)
 {
-    return terms[0].cons != HANDLE_INVALID;
+    return terms[0].cons != HANDLE_INVALID || (comp_on() && console_ever);
+}
+
+bool terms_never_given_up(unsigned i)
+{
+    return i == COMPOSITOR || (!comp_on() && (i == CONSOLE || i == SHELL));
 }
 
 bool terms_console_up(unsigned i)
@@ -165,7 +187,9 @@ static unsigned console_handles(unsigned k, handle_t b, struct spawn_handle *x)
     unsigned nx = 0;
     x[nx++] = (struct spawn_handle){ SR_RESOURCE, services_root_with(rights) };
     x[nx++] = (struct spawn_handle){ SR_USER + 0, b };
-    handle_t writers = k ? HANDLE_INVALID : writers_for_console();   /* the first's notices */
+    /* The full-screen console's notices (with a compositor they are the
+     * desktop's). */
+    handle_t writers = k || wayland ? HANDLE_INVALID : writers_for_console();
     if (writers)
         x[nx++] = (struct spawn_handle){ CONSOLE_WRITERS_ROLE, writers };
     if (ctl)
@@ -188,8 +212,8 @@ static status_t start_console(unsigned k)
     snprintf(term, sizeof(term), "term=%u", k + 1);
     const char *argv[5] = { svcs[TERM_CONSOLE(k)].path };
     int argc = 1;
-    if (nolog_console)
-        argv[argc++] = "nolog";
+    if (k || !init_verbose)
+        argv[argc++] = "nolog";   /* the quiet boot */
     if (quiet_console && !k && !comp_on())
         argv[argc++] = "quiet";
     if (comp_on())
@@ -203,6 +227,8 @@ static status_t start_console(unsigned k)
         jam_handle_close(a);
         return st;
     }
+    if (!k)
+        console_ever = true;
     if (terms[k].cons)
         jam_handle_close(terms[k].cons);
     terms[k].cons = a;
@@ -273,13 +299,22 @@ static status_t start_shell(unsigned k)
     for (unsigned j = 0; j < 4; j++)
         if (x[j].h)
             y[n++] = x[j];
-    /* The boot's first shell gets the boot word's command (shell_first_arg);
-     * one init restarts later is an ordinary shell. */
+    /* Its terminal's number (with a compositor: `exit` closes it); the
+     * boot's first shell gets the boot word's command (shell_first_arg),
+     * and one init restarts later is an ordinary shell; the command
+     * initctl.terminal asked for, once. */
     char term[8], run[4 + TERM_CMD_MAX];
     snprintf(term, sizeof(term), "term=%u", k + 1);
     snprintf(run, sizeof(run), "run=%s", terms[k].cmd);
-    const char *argv[] = { svcs[TERM_SHELL(k)].path, k ? term : first_arg, run };
-    st = svc_start(TERM_SHELL(k), !argv[1] ? 1 : k && terms[k].cmd[0] ? 3 : 2, argv, y, n);
+    const char *argv[4] = { svcs[TERM_SHELL(k)].path };
+    int argc = 1;
+    if (comp_on())
+        argv[argc++] = term;
+    if (!k && first_arg)
+        argv[argc++] = first_arg;
+    if (terms[k].cmd[0])
+        argv[argc++] = run;
+    st = svc_start(TERM_SHELL(k), argc, argv, y, n);
     if (!k)
         first_arg = NULL;
     if (st == OK)
@@ -320,7 +355,7 @@ void terms_closed(unsigned i)
     }
 }
 
-/* Extra terminal k closes: both stay stopped, and whichever still runs is
+/* Terminal k closes: both stay stopped, and whichever still runs is
  * ended (its end comes to the loop: terms_ended frees the place). */
 static void close_term(unsigned k)
 {
@@ -338,14 +373,19 @@ static void close_term(unsigned k)
     if (!any) {
         terms[k].state = TERM_CLOSED;
         printf("init: terminal %u is closed\n", k + 1);
+        unsigned open = 0;
+        for (unsigned j = 0; j < TERM_MAX; j++)
+            open += terms[j].state != TERM_CLOSED;
+        if (!open)
+            printf("init: no terminal is open: Super+Enter or the search box opens one\n");
     }
 }
 
 bool terms_ended(unsigned i, bool killed, int64_t code)
 {
     int k = term_of(i);
-    if (k <= 0)
-        return false;   /* the first terminal: never closes */
+    if (k < 0 || !comp_on())
+        return false;   /* not a terminal's; or the one terminal (nocomp): never closes */
     if (terms[k].state == TERM_CLOSING) {
         close_term((unsigned)k);   /* closed once neither runs */
         return true;
@@ -361,7 +401,7 @@ bool terms_ended(unsigned i, bool killed, int64_t code)
 void terms_given_up(unsigned i)
 {
     int k = term_of(i);
-    if (k <= 0 || terms[k].state != TERM_OPEN)
+    if (k < 0 || terms[k].state != TERM_OPEN)
         return;
     printf("init: terminal %u closes: its %s ended too often\n", k + 1,
            is_console(i) ? "console" : "shell");
@@ -372,7 +412,7 @@ status_t terms_open(const char *cmd, uint8_t *number)
 {
     if (!comp_on())
         return ERR_NOT_SUPPORTED;   /* one screen, one terminal */
-    unsigned k = 1;
+    unsigned k = 0;   /* the lowest free number: 1 too, once the first has closed */
     while (k < TERM_MAX && terms[k].state != TERM_CLOSED)
         k++;
     if (k == TERM_MAX)
@@ -438,7 +478,7 @@ void terms_init(handle_t loop_port, bool splash, const char *shell_arg)
 {
     port = loop_port;
     first_arg = shell_arg;
-    quiet_console = nolog_console = splash;
+    quiet_console = splash;
     terms[0].state = TERM_OPEN;
     for (unsigned k = 1; k < TERM_MAX; k++) {
         svcs[TERM_CONSOLE(k)] = (struct svc){ .path = "bin/console", .given_up = true };

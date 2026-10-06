@@ -164,7 +164,7 @@ static void say_stored_instead(status_t why)
                      "restarting the one in memory\033[0m\r\n", status_str(why));
     printf("init: kexec: the stick's kernel didn't load (%s): restarting the one in memory\n",
            status_str(why));
-    handle_t c = shell_console();
+    handle_t c = terms_any_console();   /* every terminal may be closed: then the log only */
     if (!c)
         return;
     uint8_t text[2048] = { 0 };

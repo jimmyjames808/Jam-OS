@@ -61,8 +61,9 @@ static const struct sh_cmd cmds[] = {
       "  say which (Ctrl+C stops waiting). Needs the compositor (not a nocomp boot).\n"
       "  Example: notify -b Yes -b No -w Tea? Kettle is on"),
     C(exit, C_SHELL, "exit",
-      "end this shell and close its terminal (not the first: it stays). The\n"
-      "  programs it started with & end with it"),
+      "end this shell and close its terminal (any of them; Super+Enter opens\n"
+      "  another). The programs it started with & end with it. Without the\n"
+      "  desktop (a nocomp boot) the one terminal stays"),
     C(devices, C_SYSTEM, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_SYSTEM, "usb", "USB devices from usb-bus (alias lsusb)"),
     C(hda, C_SYSTEM, "hda [gain [dB] | bits [n] | jacks]",

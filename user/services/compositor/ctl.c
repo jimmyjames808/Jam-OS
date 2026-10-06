@@ -522,9 +522,13 @@ static void init_event(void)
             term_asked = false;
             if (st != OK)
                 printf("compositor: no new terminal (%s)\n", status_str(st));
-            if (term_busy && st == OK) {   /* its window: "Terminal <n>" (console/window.c) */
+            if (term_busy && st == OK) {   /* its window: "Terminal <n>", the first's
+                                            * "Terminal" (console/window.c) */
                 char title[16];
-                snprintf(title, sizeof(title), "Terminal %u", (unsigned)number);
+                if (number > 1)
+                    snprintf(title, sizeof(title), "Terminal %u", (unsigned)number);
+                else
+                    snprintf(title, sizeof(title), "Terminal");
                 desk_launch_awaits(title);
             } else if (term_busy) {
                 desk_launch_failed();

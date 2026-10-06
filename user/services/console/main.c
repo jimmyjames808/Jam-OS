@@ -7,20 +7,22 @@
  * out (a HID driver, the serial source). The parts are listed in
  * console.h.
  *
- * Arguments: "quiet" (init, when the boot splash plays first): draw
- * nothing until the splash has borrowed the screen and given it back
- * (screen_quiet), at most QUIET_MAX. "nolog" (init, on a plain boot with
- * the splash: every console it starts then): the kernel log stays off the
- * screen, but for the few lines notices.c makes of it, except while a
- * client asks for it (console.show_log: the shell, while a command whose
- * output is the log runs). The log is still all in the kernel's ring, on
- * the serial port and in /data/logs: `log` and `dmesg` show it.
- * "selftest" (alone; `run console selftest` from the shell): the notices'
- * checks (selftest.c), then exit. "term=<n>" (init, in window mode): this
- * is terminal n (1 to 9; 1, the first, if none is given): its window's
- * title; a terminal other than the first keeps the log off its screen
- * but on request (as "nolog") and makes no notices: the log and its news
- * are the first terminal's. "font=smooth|bitmap" (init, in window mode,
+ * Arguments: "quiet" (init, when the boot splash plays first without a
+ * compositor): draw nothing until the splash has borrowed the screen and
+ * given it back (screen_quiet), at most QUIET_MAX. "nolog" (init, on
+ * every boot but a `verbose` one's first terminal: the quiet boot): the
+ * kernel log stays off the screen, except while a client asks for it
+ * (console.show_log: the shell, while a command whose output is the log
+ * runs); the full-screen console (no compositor) still shows the few
+ * lines notices.c makes of it. The log is still all in the kernel's
+ * ring, on the serial port, in /data/logs and over netlog: `log` and
+ * `dmesg` show it. "selftest" (alone; `run console selftest` from the
+ * shell): the notices' checks (selftest.c), then exit. "term=<n>" (init,
+ * in window mode): this is terminal n (1 to 9; 1 if none is given): its
+ * window's title; a terminal other than the first keeps the log off its
+ * screen but on request (as "nolog"). A terminal in a window makes no
+ * notices: the system's news is the desktop's (init's, devmgr's and
+ * netstack's notices through /svc/notify). "font=smooth|bitmap" (init, in window mode,
  * from the settings' terminal.font): the window's cells in JetBrains Mono
  * (smooth, the default) or the 8x16 bitmap; console.set_font changes it
  * later. The full-screen console always draws the bitmap.
@@ -93,7 +95,7 @@ static size_t nmarks, mark_next;
 static uint64_t marks_known, marks_upto;
 static const struct log_writers *writers;   /* init's table, mapped (NULL: none) */
 static bool log_off;               /* "nolog": the log is off the screen but on request */
-static bool notices;               /* ... and its notices are ours to show (the first terminal) */
+static bool notices;               /* ... and its notices are ours to show (the full screen's) */
 static bool catching_up;           /* reading the log from before we started */
 static bool log_whole = true;       /* the log read so far starts at the boot's first line */
 static uint64_t draw_from;         /* the catch-up draws no line that starts before this */
@@ -264,6 +266,7 @@ static bool start_screen(bool *screen)
 {
     handle_t wayland = startup_handle(SR_USER + WAYLAND_ROLE);
     if (wayland) {
+        notices = false;   /* the desktop's notices say the news */
         cols = WIN_COLS;   /* until the output is known (window.c regrids) */
         rows = WIN_ROWS;
         *screen = window_init(wayland, term_no);
@@ -354,8 +357,8 @@ static void take_args(int argc, char **argv)
             font_bitmap = term_font_parse(argv[i] + 5) == 1;
     }
     if (term_no > 1)
-        log_off = true;   /* the log and its notices are the first terminal's */
-    notices = log_off && term_no == 1;
+        log_off = true;   /* the log, on a `verbose` boot, is the first terminal's */
+    notices = log_off && term_no == 1;   /* and not in a window: start_screen */
 }
 
 int main(int argc, char **argv)

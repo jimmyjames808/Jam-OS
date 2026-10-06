@@ -1,8 +1,9 @@
 /* exit: end this shell, and with it its terminal (and every program it
- * started with &), in a terminal other than the first (`term`): init
- * closes the terminal when its shell ends with code 0. The first
- * terminal is the system's: init would only start its shell again, so
- * exit says so and does nothing there. */
+ * started with &): init closes the terminal when its shell ends with
+ * code 0, the first terminal like any other. Without a compositor
+ * (`nocomp`) the full-screen console is the one terminal: init would
+ * only start its shell again, so exit says so and does nothing there
+ * (init gives such a shell no "term=": sh_term_no 0). */
 #include "sh.h"
 
 SH_CMD(exit)
@@ -12,8 +13,8 @@ SH_CMD(exit)
         sh_tty("usage: exit\n");
         return 2;
     }
-    if (sh_term_no <= 1) {
-        sh_tty("exit: this is the first terminal: it stays (exit closes the others)\n");
+    if (!sh_term_no) {
+        sh_tty("exit: this is the only terminal (no desktop), so it stays open\n");
         return 1;
     }
     sh_flush();

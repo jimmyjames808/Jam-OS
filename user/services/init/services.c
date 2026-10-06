@@ -621,7 +621,7 @@ void services_closed(unsigned i)
 
 void services_given_up(unsigned i)
 {
-    terms_given_up(i);   /* an extra terminal closes */
+    terms_given_up(i);   /* its terminal closes (with a compositor) */
     net_service_given_up(i);   /* the DHCP client's and the resolver's */
     if (i == NETSTACK) {
         net_given_up();

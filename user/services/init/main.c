@@ -57,6 +57,7 @@ bool init_net;
 const char *init_bootdisk;
 const char *init_vlan;
 bool init_splashhang;
+bool init_verbose;
 bool init_nospare;
 bool init_vtdtest;
 bool init_nocomp;
@@ -432,7 +433,8 @@ int main(int argc, char **argv)
      * spare mixer: spare.c; passed on to devmgr: no warm spare fat),
      * "vtdtest" (passed on to devmgr: drv/hda's IOMMU fault checks),
      * "nocomp" (no compositor: the console draws the screen and takes
-     * the input, one terminal; comp.c). */
+     * the input, one terminal; comp.c), "verbose" (the log on the first
+     * terminal's screen: terms.c). */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");
@@ -448,6 +450,7 @@ int main(int argc, char **argv)
         init_nospare |= !strcmp(argv[i], "nospare");
         init_vtdtest |= !strcmp(argv[i], "vtdtest");
         init_nocomp |= !strcmp(argv[i], "nocomp");
+        init_verbose |= !strcmp(argv[i], "verbose");
     }
     /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain
      * boot: the console, devmgr (connected to it), serial input and the

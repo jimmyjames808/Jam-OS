@@ -43,7 +43,7 @@ JAM_WANTS("mount * rw\n"
 #define DIR_MIN   12            /* the directory's room in the prompt: half the row, at least this */
 
 static handle_t con, keys;
-unsigned sh_term_no = 1;
+unsigned sh_term_no;   /* init's "term=<n>": this shell's terminal closes with `exit` */
 
 /* ---- output ------------------------------------------------------------------- */
 
@@ -392,11 +392,27 @@ static void run_first(const char *line)
     sh_flush();
 }
 
+/* init's arguments, in any order: "term=<n>" (with a compositor: terminal
+ * n's shell, which `exit` closes), "soak=<minutes>" (the boot word's soak
+ * test) and "run=<line>" (initctl.terminal's command). */
+static const char *soak_arg, *run_arg;
+
+static void take_args(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (!strncmp(a, "term=", 5) && a[5] >= '1' && a[5] <= '9' && !a[6])
+            sh_term_no = (unsigned)(a[5] - '0');
+        else if (!strncmp(a, "soak=", 5))
+            soak_arg = a + 5;
+        else if (!strncmp(a, "run=", 4) && a[4])
+            run_arg = a + 4;
+    }
+}
+
 int main(int argc, char **argv)
 {
-    if (argc > 1 && !strncmp(argv[1], "term=", 5) && argv[1][5] >= '2' && argv[1][5] <= '9' &&
-        !argv[1][6])
-        sh_term_no = (unsigned)(argv[1][5] - '0');   /* init's, for another terminal's shell */
+    take_args(argc, argv);
     con = startup_handle(SR_CONSOLE);
     if (!con) {
         printf("shell: no console channel\n");
@@ -420,10 +436,10 @@ int main(int argc, char **argv)
      * Without init's channel (a shell run from a shell) there is none. */
     if (sh_initctl())
         (void)initctl_shell_ready_until(sh_initctl(), now() + 2 * NS_PER_S);
-    if (argc > 1 && !strncmp(argv[1], "soak=", 5))
-        boot_soak(argv[1] + 5);
-    if (argc > 2 && sh_term_no && !strncmp(argv[2], "run=", 4) && argv[2][4])
-        run_first(argv[2] + 4);
+    if (soak_arg)
+        boot_soak(soak_arg);
+    if (run_arg)
+        run_first(run_arg);
     for (;;) {
         char line[LINE_MAX + 1];
         read_line(line);
