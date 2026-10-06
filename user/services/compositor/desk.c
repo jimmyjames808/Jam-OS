@@ -312,8 +312,10 @@ static bool same_name(const char *a, const char *b)
 void desk_window_mapped(const struct wm_window *ww)
 {
     if (dk.busy_until &&
-        (same_name(ww->app_id, dk.launching) || same_name(ww->title, dk.launching)))
+        (same_name(ww->app_id, dk.launching) || same_name(ww->title, dk.launching))) {
+        printf("compositor: %s's window is up: the cursor is not busy\n", ww->title);
         busy_set(false);
+    }
 }
 
 /* ---- the clock ------------------------------------------------------------------------------ */

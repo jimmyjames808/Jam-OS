@@ -403,6 +403,7 @@ static struct {
     struct ask sum;
     bool known;
     struct desk_net now;
+    struct desk_net said;          /* what the log was last told */
     uint64_t rx, tx, at;           /* the last summary's counts, and when it came */
 } net;
 
@@ -440,6 +441,13 @@ static void take_summary(uint8_t link, uint32_t addr, uint32_t speed, uint64_t r
         d->address[0] = '\0';
     snprintf(d->nic, sizeof(d->nic), "%.*s", 15, (const char *)chip);
     d->mbps = link == 1 ? speed : 0;
+    if (!net.known || d->up != net.said.up || strcmp(d->address, net.said.address) ||
+        strcmp(d->nic, net.said.nic) || d->mbps != net.said.mbps) {
+        printf("compositor: network: %s, address %s, %s, %u Mb/s\n",
+               d->up ? "connected" : "not connected", d->address[0] ? d->address : "none",
+               d->nic[0] ? d->nic : "no card", d->mbps);
+        net.said = *d;   /* said once a change: the rates are not news */
+    }
     d->rx_bps = fresh ? rate(rx, net.rx, dt) : 0;
     d->tx_bps = fresh ? rate(tx, net.tx, dt) : 0;
     net.rx = rx;
