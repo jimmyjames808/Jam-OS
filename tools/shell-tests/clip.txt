@@ -1,0 +1,82 @@
+# Copy and paste between two terminal windows (docs/G1-PLAN.md, "As built:
+# copy and paste"), on a plain boot with a USB keyboard and mouse (the
+# compositor's): terminal 1 prints a command; a triple click on that line
+# (QEMU's mouse through the monitor) selects it, drawn on the blackcurrant
+# tint (`clip-selected`); Super+C copies it; `term` opens terminal 2, whose
+# window takes the keys; Super+V there pastes it onto the shell's line,
+# bracketed, so nothing runs (`clip-pasted`) until Enter, which runs it.
+# Then a two-line selection in terminal 1 (a press, a drag down a line, a
+# release: `clip-drag`), copied and pasted with Ctrl+Shift+V into terminal
+# 3, arrives as one line, its line break a space, and runs only at Enter. Pixel positions are for OVMF's 1280x800, the first window
+# alone in its tile: the text starts at (18, 58), cells 9x21.
+# Run: tools/clip-test.sh <outdir> (it checks the screenshot's tint too).
+wait 120 Jam OS shell
+wait {prompt}
+# the boot's last log lines in first, so the text starts where it should
+sleep 4
+send clear
+wait {prompt}
+send echo "echo ""pas""ted-""ok"
+wait 10 echo pasted-ok
+wait {prompt}
+sleep 1
+# row 1 (the output line), column 2: a triple click
+pointer 40 89
+monitor mouse_button 1
+monitor mouse_button 0
+monitor mouse_button 1
+monitor mouse_button 0
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+shot clip-selected
+monitor sendkey meta_l-c
+wait 10 console: terminal 1: copied 14 bytes
+
+send term
+wait 10 terminal 2 opens
+wait 30 Jam OS shell
+wait 10 {prompt}
+sleep 1
+monitor sendkey meta_l-v
+wait 10 console: terminal 2: pasted 14 bytes (bracketed)
+wait 10 {prompt} echo pasted-ok
+# (sendkey holds its keys 100 ms: Super let go before Enter, which with
+# Super would open a terminal)
+sleep 1
+shot clip-pasted
+send
+wait 10 pasted-ok
+wait 10 {prompt}
+
+# two lines of terminal 1 (the left tile now): a press on row 0's first
+# "e" (which gives terminal 1 the keys), a drag to row 1's column 10, and
+# Super+C; `term` there opens terminal 3, where Ctrl+Shift+V pastes it:
+# one line, its line break a space, run by Enter
+pointer 85 68
+monitor mouse_button 1
+monitor mouse_move 6 6
+monitor mouse_move 6 6
+monitor mouse_move 6 6
+monitor mouse_move 6 6
+monitor mouse_button 0
+sleep 1
+shot clip-drag
+monitor sendkey meta_l-c
+wait 10 console: terminal 1: copied
+send term
+wait 10 terminal 3 opens
+wait 30 Jam OS shell
+wait 10 {prompt}
+sleep 1
+monitor sendkey ctrl-shift-v
+wait 10 console: terminal 3: pasted
+wait 10 {prompt} echo "echo ""pas""ted-""ok" echo pas
+# sendkey holds its keys 100 ms: Ctrl and Shift let go before typing on
+sleep 1
+send
+wait 10 echo pasted-ok echo pas
+wait 10 {prompt}
+
+send reboot -f
+wait reboot: resetting
