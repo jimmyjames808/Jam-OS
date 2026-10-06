@@ -990,6 +990,8 @@ static const struct {
     { "comp_paint_cursor", t_comp_paint_cursor },
     { "comp_paint_blank", t_comp_paint_blank },
     { "comp_paint_overlay", t_comp_paint_overlay },
+    { "comp_paint_splash", t_comp_paint_splash },
+    { "comp_paint_overlay_open", t_comp_paint_overlay_open },
     { "comp_look_title", t_comp_look_title },
     { "comp_look_corners", t_comp_look_corners },
     { "comp_look_shadow", t_comp_look_shadow },

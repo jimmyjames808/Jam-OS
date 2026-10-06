@@ -364,8 +364,10 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
                                                * takes the keys) */
     if (ww->want == WM_FULLSCREEN)
         screens_fullscreen(ww, true);   /* asked before its first buffer */
-    else
-        anim_open(ww->win);
+    else if (!screens_overlay())
+        anim_open(ww->win);   /* (an animation is drawn over every window, a boot overlay too) */
+    if (ww->overlay)
+        anim_finish();        /* nothing drawn over the splash, not even a window opening */
     desk_window_mapped(ww);
     strip_dirty();
     return OK;
@@ -380,7 +382,7 @@ void wm_unmap(struct wm_window *ww)
         wm.focused = NULL;
     if (ww->surface->buffer && ww->overlay)
         anim_fade(ww->win);    /* the splash fades out to what is under it */
-    else if (ww->surface->buffer && screens_shown(ww))
+    else if (ww->surface->buffer && screens_shown(ww) && !screens_overlay())
         anim_close(ww->win);   /* its picture, while its pixels are still there */
     bool tiled = wm_layout_of(ww) == COMP_TILING;
     window_destroy(ww->win);   /* the seat hears first, while it is in the order */

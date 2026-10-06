@@ -26,7 +26,9 @@
  * threads, the loop's included: a few by default), `layout=floating|tiling`
  * (the window layout to start with: init's `display.layout` setting, comp.h
  * WM_LAYOUT_SETTING; tiling without one), `nodesk` (the window manager alone: no top bar, no
- * cards, no animations; desk.h), and two test powers, which only the starter can
+ * cards, no animations; desk.h), `splash` (init's, on a boot whose splash
+ * is coming: only the splash's background until its window maps, 5 s at
+ * most; paint.c), and two test powers, which only the starter can
  * give, never a client, and init never does: `testwin` (testwin.c: a
  * client's surface becomes a window without xdg-shell) and `testscene`
  * followed by its commands (testscene.c: windows with no client).
@@ -104,6 +106,7 @@ struct args {
     int scene_at;
     enum comp_layout layout;       /* layout=: the window layout to start with */
     bool nodesk;                   /* the desktop off */
+    bool splash;                   /* wait for the boot splash */
 };
 
 static void parse_args(int argc, char **argv, struct args *a)
@@ -119,6 +122,8 @@ static void parse_args(int argc, char **argv, struct args *a)
             a->scene_at = i;
         else if (!strcmp(s, "nodesk"))
             a->nodesk = true;
+        else if (!strcmp(s, "splash"))
+            a->splash = true;
         else if (!strncmp(s, "layout=", 7) && wm_layout_parse(s + 7, &a->layout))
             continue;
         else if (!(!strncmp(s, "size=", 5) && parse_size(s + 5, &a->w, &a->h)) &&
@@ -143,6 +148,8 @@ static status_t setup(int argc, char **argv, struct args *a)
     desk_init(!a->nodesk && !a->scene_at, true);   /* the test scene turns it on itself */
     wm_init(a->layout);
     st = paint_init(a->threads);
+    if (st == OK && a->splash)
+        paint_splash_wait();
     if (st == OK)
         st = jam_port_create(&comp.port);
     if (st == OK)
@@ -188,6 +195,8 @@ static uint64_t next_deadline(void)
     uint64_t x = xdg_deadline();   /* a ping going late */
     d = x < d ? x : d;
     x = desk_deadline();           /* an animation's next frame, the clock's minute */
+    d = x < d ? x : d;
+    x = paint_splash_deadline();   /* the boot's wait for the splash given up */
     return x < d ? x : d;
 }
 
@@ -220,9 +229,10 @@ int main(int argc, char **argv)
         printf("compositor: can't start: %s\n", status_str(st));
         return 1;
     }
-    printf("compositor: ready, %s %dx%d, painting on %u threads at %lu Hz\n",
+    printf("compositor: ready, %s %dx%d, painting on %u threads at %lu Hz%s\n",
            output.screen ? "on the screen" : "headless", scene.width, scene.height,
-           pool_threads(), (unsigned long)(NS_PER_S / comp.period_ns));
+           pool_threads(), (unsigned long)(NS_PER_S / comp.period_ns),
+           a.splash ? ", the background only until the splash shows" : "");
     if (a.scene_at)
         return testscene_run(argc, argv, a.scene_at + 1);
     st = serve_svc();   /* connects queued before we bound the port */
@@ -232,6 +242,7 @@ int main(int argc, char **argv)
         seat_turn();        /* the pointer's focus after the clients changed the scene */
         xdg_tick(now());    /* pings gone unanswered */
         desk_tick(now());   /* animations, the strip's clock, notifications */
+        paint_splash_check(now());
         clock_turn();
         conn_flush_all();   /* the frame callbacks the paint answered */
         st = take_packets(next_deadline());

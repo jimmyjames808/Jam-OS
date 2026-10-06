@@ -28,8 +28,12 @@
  *               arguments `layout=floating|tiling` (/data/etc/settings'
  *                 display.layout; tiling, the default, without /data,
  *                 which comes after the first start: comp_settings then
- *                 sends the saved one, compctl.set_layout) and `hz=<n>` (display.hz,
- *                 if it is set: how often it paints at most).
+ *                 sends the saved one, compctl.set_layout), `hz=<n>` (display.hz,
+ *                 if it is set: how often it paints at most) and, at its
+ *                 first start on a boot that plays the splash, `splash`:
+ *                 it shows only the splash's background until the
+ *                 splash's window maps (5 s at most), so the desktop never
+ *                 shows before the splash. A restart later never waits.
  *               Like the console it is started again however often it ends
  *               (shell.c, never_given_up): the terminals have no screen
  *               without it.
@@ -237,8 +241,13 @@ status_t comp_start(void)
     }
     char lw[24], hz[16];
     snprintf(lw, sizeof(lw), "layout=%s", layout_name(layout));
-    const char *argv[3] = { svcs[COMPOSITOR].path, lw, hz };
-    st = svc_start(COMPOSITOR, saved_hz(hz, sizeof(hz)) ? 3 : 2, argv, x, nx);
+    const char *argv[4] = { svcs[COMPOSITOR].path, lw };
+    unsigned argc = 2;
+    if (saved_hz(hz, sizeof(hz)))
+        argv[argc++] = hz;
+    if (!started_once && !splash_played())
+        argv[argc++] = "splash";   /* the splash is coming: nothing before it */
+    st = svc_start(COMPOSITOR, (int)argc, argv, x, nx);
     if (st != OK) {
         jam_handle_close(mine);
         return st;

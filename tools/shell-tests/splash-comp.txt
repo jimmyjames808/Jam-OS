@@ -3,12 +3,14 @@
 # keys, over the first terminal's window, which keeps them. A line typed
 # while it plays, one typed once it has played and one right after its
 # window is gone all reach the shell once it is up, which runs them (the
-# second prints typed-kept: the variable the first set). Screenshots: the
-# dark screen before init, two frames a second apart, then the terminal.
+# second prints typed-kept: the variable the first set). Screenshots: 12
+# from init's start, 0.1 s apart, each the dark screen or a frame of the
+# video (the compositor shows only the splash's background until the
+# splash's window maps: no desktop, terminal or pointer before it), two
+# frames a second apart, then the terminal.
 wait 120 init: hello from ring 3
-shot comp-quiet
+shots comp-early 12 0.1
 wait 120 splash: waited
-sleep 1
 shot comp-a
 send K=kept
 sleep 1

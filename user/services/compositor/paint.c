@@ -34,6 +34,13 @@
  * Before a paint, the window whose title bar circles the pointer is over
  * is looked up (title_hovered), and the circles damaged when it changes.
  *
+ * The boot's wait for the splash (init's `splash` argument: the splash is
+ * coming): every tile is the splash's background, as while blank, until
+ * a boot overlay is mapped with a buffer, or SPLASH_WAIT at most if none
+ * comes; then all of the output is painted as it is. The screen goes from
+ * the firmware's dark to the background (output.c's fill, the same) to
+ * the splash, with no wallpaper, strip, terminal or cursor between.
+ *
  * Before the tiles, the desktop lays out its strip and remakes the
  * blurred backdrops of its cards that went stale (frost.c), on the same
  * workers. The `under` damage is cleared with the rest.
@@ -55,6 +62,7 @@
 #include "desk.h"
 
 #define THREADS_DEFAULT 4   /* the framebuffer saturates at two (fbbench); blends want a few */
+#define SPLASH_WAIT (5 * NS_PER_S)   /* the boot's wait for the splash, at most */
 
 /* A tile to paint: its box, and whether it is copied straight from the
  * full-screen window's buffer (no tile buffer). */
@@ -141,7 +149,7 @@ bool window_covered(const struct comp_window *w)
 static const struct comp_window *full_screen(void)
 {
     struct comp_box out = { 0, 0, scene.width, scene.height };
-    if (comp.blanked || desk_over_windows())
+    if (comp.blanked || comp.splash_until || desk_over_windows())
         return NULL;
     for (const struct comp_window *w = scene.top; w; w = w->below) {
         if (!(w->flags & COMP_WIN_MAPPED) || box_empty(box_intersect(window_extent(w), out)))
@@ -242,7 +250,7 @@ void paint_under(const struct tile_buf *t, uint32_t me)
 
 static void compose(const struct tile_buf *t, uint32_t me)
 {
-    if (comp.blanked) {
+    if (comp.blanked || comp.splash_until) {
         fill_tile(t, LOOK_BLANK);
         return;
     }
@@ -354,7 +362,7 @@ static void hover_update(void)
     const struct comp_window *w = NULL;
     struct comp_box now_on = { 0, 0, 0, 0 };
     bool on_surface;
-    struct comp_window *u = comp.blanked || box_empty(cursor_box())
+    struct comp_window *u = comp.blanked || comp.splash_until || box_empty(cursor_box())
                                 ? NULL
                                 : wm_window_at(cursor.x, cursor.y, &on_surface);
     if (u && !on_surface && title_button_at(u, cursor.x, cursor.y) != TITLE_NONE) {
@@ -370,9 +378,40 @@ static void hover_update(void)
     title_hovered = w;
 }
 
+/* ---- the boot's wait for the splash --------------------------------------------------- */
+
+void paint_splash_wait(void)
+{
+    comp.splash_until = now() + SPLASH_WAIT;
+    scene_damage(box_make(0, 0, scene.width, scene.height));
+}
+
+void paint_splash_check(uint64_t t)
+{
+    if (!comp.splash_until)
+        return;
+    bool up = false;   /* the overlays are the top of the stack (scene.c) */
+    for (const struct comp_window *w = scene.top; w && (w->flags & COMP_WIN_OVERLAY) && !up;
+         w = w->below)
+        up = (w->flags & COMP_WIN_MAPPED) && w->surface->buffer;
+    if (!up && t < comp.splash_until)
+        return;
+    if (!up)
+        printf("compositor: no splash after %lu ms: the desktop\n",
+               (unsigned long)(SPLASH_WAIT / NS_PER_MS));
+    comp.splash_until = 0;
+    scene_damage(box_make(0, 0, scene.width, scene.height));
+}
+
+uint64_t paint_splash_deadline(void)
+{
+    return comp.splash_until ? comp.splash_until : DEADLINE_NEVER;
+}
+
 uint64_t paint_frame(void)
 {
     uint64_t t0 = now();
+    paint_splash_check(t0);
     memset(&paint_last, 0, sizeof(paint_last));
     hover_update();
     wm_marks_update();

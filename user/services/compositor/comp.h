@@ -415,6 +415,9 @@ struct comp {
     handle_t svc;                  /* /svc/wayland's server end (init keeps it) */
     bool headless;                 /* no framebuffer: compose into memory */
     bool blanked;                  /* compctl.blank: the background only, no window drawn */
+    uint64_t splash_until;         /* the boot's wait for the splash (`splash`, paint.c): the
+                                    * background only until a boot overlay maps or until then
+                                    * (uptime ns); 0: not waiting */
     bool testwin;                  /* the test power `testwin` (testwin.c): never set by init */
     uint32_t serial;               /* the last event serial handed out */
     uint64_t period_ns;            /* the paint clock's period */
@@ -546,6 +549,17 @@ status_t paint_init(uint32_t threads);
 /* Compose the scene's damage onto the output, then clear it: what the
  * clock calls. The output pixels written. */
 uint64_t paint_frame(void);
+/* The boot's wait for the splash (init's `splash` argument): from now on
+ * the screen is only the splash's background (LOOK_BLANK: no wallpaper,
+ * strip, window or cursor) until a boot overlay (COMP_WIN_OVERLAY) is
+ * mapped with a buffer, or for 5 s at most if none is. */
+void     paint_splash_wait(void);
+/* The wait over if a boot overlay is up or t is past its end: then all of
+ * the output is damaged, to be painted as it is. paint_frame checks too;
+ * the loop calls it for the end, which nothing else wakes it for. */
+void     paint_splash_check(uint64_t t);
+/* When the wait ends at the latest (DEADLINE_NEVER: no wait). */
+uint64_t paint_splash_deadline(void);
 /* Is w's surface hidden behind one opaque window above it (or not shown
  * at all)? Its frame callbacks then come as a hidden surface's. */
 bool     window_covered(const struct comp_window *w);
