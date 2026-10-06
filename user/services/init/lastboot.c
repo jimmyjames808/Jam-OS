@@ -28,7 +28,7 @@
 #define DATA_WAIT  (20 * NS_PER_S)   /* /data, and logd with the log, from init's start */
 #define SAVE_WAIT  (60 * NS_PER_S)   /* logd's answer, from init's start */
 #define BANNER_MAX 256
-#define CODE_SCAN  (16u << 10)       /* the log's bytes from the panic's start searched for the code */
+#define CODE_SCAN  (16u << 10)       /* the log searched for the code, from the panic on */
 
 enum { NONE, WAITING, DONE };
 

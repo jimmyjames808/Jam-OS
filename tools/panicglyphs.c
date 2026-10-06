@@ -55,6 +55,55 @@ static bool fits_i8(int v)
     return v >= -128 && v <= 127;
 }
 
+/* The baked font's glyph for character c at position q. */
+static const struct font_glyph *glyph(const struct font *f, char c, int q)
+{
+    return &f->g[font_slot(cp_of(c))][q];
+}
+
+/* Each character's glyph at each position: its box and where its coverage
+ * goes. The coverage's bytes in all (-1: a box too big for the table). */
+static int64_t write_glyphs(FILE *o, const struct font *f, const char *name, const char *ch)
+{
+    int n = (int)strlen(ch);
+    fprintf(o, "static const struct panic_glyph %s_g[%d][PANIC_PHASES] = {\n", name, n);
+    uint32_t off = 0;
+    for (int i = 0; i < n; i++) {
+        fprintf(o, "    {");
+        for (int q = 0; q < FONT_PHASES; q++) {
+            const struct font_glyph *g = glyph(f, ch[i], q);
+            if (!fits_i8(g->x) || !fits_i8(g->y) || g->w > 255 || g->h > 255) {
+                fprintf(stderr, "panicglyphs: '%c' doesn't fit the table\n", ch[i]);
+                return -1;
+            }
+            fprintf(o, " { %d, %d, %u, %u, %u },", g->x, g->y, g->w, g->h, off);
+            off += (uint32_t)g->w * g->h;
+        }
+        fprintf(o, " },   /* '%c' */\n", ch[i]);
+    }
+    fprintf(o, "};\n");
+    return off;
+}
+
+/* The kerning between every two of the characters: how many pairs. */
+static int write_kern(FILE *o, const struct font *f, const char *name, const char *ch)
+{
+    int n = (int)strlen(ch), nk = 0;
+    fprintf(o, "static const struct panic_kern %s_kern[] = {\n", name);
+    for (int l = 0; l < n; l++)
+        for (int r = 0; r < n; r++) {
+            int d = kern_of(f, font_slot(cp_of(ch[l])), font_slot(cp_of(ch[r])));
+            if (d) {
+                fprintf(o, "    { %d, %d, %d },   /* \"%c%c\" */\n", l, r, d, ch[l], ch[r]);
+                nk++;
+            }
+        }
+    if (!nk)
+        fprintf(o, "    { 0, 0, 0 },   /* none: an entry for C, not counted */\n");
+    fprintf(o, "};\n");
+    return nk;
+}
+
 /* One size, as `name` (title or small): its tables and its struct. */
 static int write_font(FILE *o, const char *name, int px, const char *words)
 {
@@ -74,38 +123,14 @@ static int write_font(FILE *o, const char *name, int px, const char *words)
     fprintf(o, "\n};\nstatic const int32_t %s_adv[%d] = {", name, n);
     for (int i = 0; i < n; i++)
         fprintf(o, "%s%d,", i % 8 ? " " : "\n    ", f->adv[font_slot(cp_of(ch[i]))]);
-    fprintf(o, "\n};\nstatic const struct panic_glyph %s_g[%d][PANIC_PHASES] = {\n", name, n);
-    uint32_t off = 0;
-    for (int i = 0; i < n; i++) {
-        fprintf(o, "    {");
-        for (int q = 0; q < FONT_PHASES; q++) {
-            const struct font_glyph *g = &f->g[font_slot(cp_of(ch[i]))][q];
-            if (!fits_i8(g->x) || !fits_i8(g->y) || g->w > 255 || g->h > 255) {
-                fprintf(stderr, "panicglyphs: '%c' at %d px doesn't fit the table\n", ch[i], px);
-                return 1;
-            }
-            fprintf(o, " { %d, %d, %u, %u, %u },", g->x, g->y, g->w, g->h, off);
-            off += (uint32_t)g->w * g->h;
-        }
-        fprintf(o, " },   /* '%c' */\n", ch[i]);
-    }
-    fprintf(o, "};\nstatic const struct panic_kern %s_kern[] = {\n", name);
-    int nk = 0;
-    for (int l = 0; l < n; l++)
-        for (int r = 0; r < n; r++) {
-            int d = kern_of(f, font_slot(cp_of(ch[l])), font_slot(cp_of(ch[r])));
-            if (d) {
-                fprintf(o, "    { %d, %d, %d },   /* \"%c%c\" */\n", l, r, d, ch[l], ch[r]);
-                nk++;
-            }
-        }
-    if (!nk)
-        fprintf(o, "    { 0, 0, 0 },   /* none: an entry for C, not counted */\n");
-    fprintf(o, "};\nstatic const uint8_t %s_cov[%u] = {", name, off ? off : 1);
+    fprintf(o, "\n};\n");
+    int64_t bytes = write_glyphs(o, f, name, ch);
+    int nk = bytes < 0 ? 0 : write_kern(o, f, name, ch);
+    fprintf(o, "static const uint8_t %s_cov[%lld] = {", name, bytes > 0 ? (long long)bytes : 1);
     uint32_t k = 0;
-    for (int i = 0; i < n; i++)
+    for (int i = 0; bytes > 0 && i < n; i++)
         for (int q = 0; q < FONT_PHASES; q++) {
-            const struct font_glyph *g = &f->g[font_slot(cp_of(ch[i]))][q];
+            const struct font_glyph *g = glyph(f, ch[i], q);
             for (uint32_t b = 0; b < (uint32_t)g->w * g->h; b++, k++)
                 fprintf(o, "%s%u,", k % 20 ? " " : "\n    ", f->cov[g->off + b]);
         }
@@ -114,7 +139,7 @@ static int write_font(FILE *o, const char *name, int px, const char *words)
                "    %d, %d, %d, %d, %d, %s_slot_of, %s_adv, %s_g, %d, %s_kern, %s_cov,\n};\n\n",
             name, m->px, m->ascent, m->descent, m->cap_h, n, name, name, name, nk, name, name);
     font_close(f);
-    return 0;
+    return bytes < 0 ? 1 : 0;
 }
 
 /* text with each ASCII apostrophe as U+2019, in UTF-8: what the kernel
@@ -175,8 +200,8 @@ int panic_glyphs(const char *path)
     fprintf(o, "const struct panic_text_ref panic_text_refs[] = {\n");
     static const char *const titles[] = { PANIC_TITLE_RESTARTING, PANIC_TITLE_STUCK,
                                           PANIC_TITLE_NORESET };
-    static const char *const smalls[] = { "JAM-PF-7F3A", "JAM-OOM-0042", "Restarting the PC in 15 s",
-                                          PANIC_SMALL_POWER };
+    static const char *const smalls[] = { "JAM-PF-7F3A", "JAM-OOM-0042",
+                                          "Restarting the PC in 15 s", PANIC_SMALL_POWER };
     for (unsigned i = 0; !st && i < sizeof(titles) / sizeof(titles[0]); i++)
         st = write_ref(o, titles[i], true);
     for (unsigned i = 0; !st && i < sizeof(smalls) / sizeof(smalls[0]); i++)

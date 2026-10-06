@@ -9,9 +9,9 @@
 #include <jam/panicscreen.h>
 #include <jam/string.h>
 
-#define GUARD 0x5a5a5au
+#define GUARD 0x5a5a5au   /* a buffer's colour where nothing may be drawn */
 
-extern const uint8_t font_8x16[128][16];   /* kernel/dev/font_8x16.c */   /* a buffer's colour where nothing may be drawn */
+extern const uint8_t font_8x16[128][16];   /* kernel/dev/font_8x16.c */
 
 static bool code_is(const struct panic_cause *c, const char *want)
 {
