@@ -970,6 +970,7 @@ static const struct {
     { "conwin_pointer", t_conwin_pointer },
     { "conwin_pointer_shape", t_conwin_pointer_shape },
     { "jwlc_real_compositor", t_jwlc_real_compositor },
+    { "jwlc_clip", t_jwlc_clip },
     { "comp_seat_keymap", t_comp_seat_keymap },
     { "comp_seat_focus", t_comp_seat_focus },
     { "comp_seat_grab", t_comp_seat_grab },

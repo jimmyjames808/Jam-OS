@@ -512,6 +512,8 @@ bool t_conpaint_bitmap(void);
 int  comp_child(int argc, char **argv);
 /* jwlc_real.c: libjwl's client side against the real compositor, headless. */
 bool t_jwlc_real_compositor(void);
+/* jwlc_clip.c: libjwl's clipboard against the real compositor, headless. */
+bool t_jwlc_clip(void);
 /* compseat.c, compinput.c: the compositor's seat (input sources, compctl,
  * focus, the keyboard and the pointer; compseat.h), and <termkeys.h>. */
 bool t_comp_seat_keymap(void);

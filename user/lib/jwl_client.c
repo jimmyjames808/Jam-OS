@@ -38,6 +38,7 @@ const struct jwlc_want jwlc_wanted[JWLC_GLOBALS] = {
     [JWLC_OUTPUT]     = { &jwl_wl_output_interface, JWL_CLIENT_OUTPUT_VERSION, false },
     [JWLC_CURSOR_SHAPE] = { &jwl_wp_cursor_shape_manager_v1_interface,
                             JWL_CLIENT_CURSOR_SHAPE_VERSION, false },
+    [JWLC_DATA]       = { &jwl_wl_data_device_manager_interface, JWL_CLIENT_DATA_VERSION, false },
 };
 
 void jwlc_log(const struct jwl_client *c, const char *fmt, ...)
@@ -125,6 +126,7 @@ static void lost(struct jwl_client *c, status_t st)
     memset(c->global, 0, sizeof(c->global));
     c->setup.id = c->rt.id = 0;
     jwlc_seat_lost(c);
+    jwlc_clip_lost(c);
     jwlc_shm_lost(c);
     jwlc_windows_lost(c);
     jwlc_queue_conn(c, JWL_EV_DISCONNECTED, st);
@@ -202,6 +204,7 @@ static void bind_globals(struct jwl_client *c)
         [JWLC_WM_BASE] = &c->info.wm_base_version,       [JWLC_SEAT] = &c->info.seat_version,
         [JWLC_OUTPUT] = &c->info.output_version,
         [JWLC_CURSOR_SHAPE] = &c->info.cursor_shape_version,
+        [JWLC_DATA] = &c->info.data_version,
     };
     for (unsigned i = 0; i < JWLC_GLOBALS; i++) {
         *versions[i] = 0;
@@ -259,6 +262,7 @@ static void advance(struct jwl_client *c)
     c->setup.done = false;
     if (c->state == JWLC_REGISTRY) {
         bind_globals(c);
+        jwlc_clip_bound(c);
         c->state = JWLC_BINDING;
         if (!missing(c))
             (void)sync(c, &c->setup);   /* a failure is the connection's: seen next read */
@@ -314,6 +318,7 @@ status_t jwl_client_dispatch(struct jwl_client *c)
         try_connect(c);
     read_all(c);
     jwlc_seat_tick(c);
+    jwlc_clip_tick(c);
     if (c->conn) {
         status_t st = jwl_conn_flush(c->conn);
         if (st != OK)
@@ -331,9 +336,11 @@ status_t jwl_client_flush(struct jwl_client *c)
 
 uint64_t jwl_client_deadline(const struct jwl_client *c)
 {
-    if (c->state == JWLC_DOWN)
-        return c->retry_at;
-    return c->state == JWLC_READY ? jwlc_seat_deadline(c) : DEADLINE_NEVER;
+    uint64_t clip = jwlc_clip_deadline(c);   /* a paste goes on whatever the state */
+    uint64_t d = c->state == JWLC_DOWN    ? c->retry_at
+               : c->state == JWLC_READY   ? jwlc_seat_deadline(c)
+                                          : DEADLINE_NEVER;
+    return clip < d ? clip : d;
 }
 
 /* Until something may have happened: the channel, a timer, or deadline. */
@@ -451,6 +458,7 @@ void jwl_client_destroy(struct jwl_client *c)
         (void)jwl_conn_flush(c->conn);   /* the destroys: the compositor frees at once */
         jwl_conn_destroy(c->conn);
     }
+    jwlc_clip_free(c);
     free(c);
 }
 

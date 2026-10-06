@@ -224,5 +224,8 @@ status_t jwlc_handle(struct jwl_client *c, struct jwl_msg *m)
         return jwlc_window_event(c, m);
     if (i == &jwl_wl_keyboard_interface || i == &jwl_wl_pointer_interface)
         return jwlc_seat_event(c, m);
+    if (i == &jwl_wl_data_device_interface || i == &jwl_wl_data_offer_interface ||
+        i == &jwl_wl_data_source_interface)
+        return jwlc_clip_event(c, m);
     return ERR_NOT_SUPPORTED;
 }

@@ -1,15 +1,17 @@
 /* <jwl_client.h>: libjwl's client side (user/lib/jwl_client.c, jwl_shm.c,
- * jwl_window.c, jwl_seat.c), on top of <jwl.h>'s codec and transport.
+ * jwl_window.c, jwl_seat.c, jwl_data.c), on top of <jwl.h>'s codec and
+ * transport.
  * What a Jam OS program uses to open windows on the compositor
  * (docs/G1-PLAN.md, "libjwl: the codec and the client library").
  *
  * The model:
  *   - a struct jwl_client is one program's link to the compositor: the
  *     connection (a channel from /svc/wayland), the globals it bound
- *     (wl_compositor, wl_shm, xdg_wm_base, wl_seat, wl_output, at the
- *     versions below or lower if the compositor offers less), the seat's
- *     keyboard and pointer, and a queue of events for the program
- *     (struct jwl_event);
+ *     (wl_compositor, wl_shm, xdg_wm_base, wl_seat, wl_output, and the
+ *     optional cursor shapes and clipboard, at the versions below or
+ *     lower if the compositor offers less), the seat's keyboard and
+ *     pointer, the clipboard's data device, and a queue of events for the
+ *     program (struct jwl_event);
  *   - pools (struct jwl_pool) are VMOs whose pages stay (VMO_KEEP_PAGES),
  *     mapped into the program and shared with the compositor as
  *     wl_shm_pool; buffers (struct jwl_buffer) are rectangles of a pool;
@@ -63,6 +65,7 @@
 #define JWL_CLIENT_OUTPUT_VERSION     3u
 #define JWL_CLIENT_WM_BASE_VERSION    1u
 #define JWL_CLIENT_CURSOR_SHAPE_VERSION 1u   /* wp_cursor_shape_manager_v1 (optional) */
+#define JWL_CLIENT_DATA_VERSION       3u   /* wl_data_device_manager (optional): the clipboard */
 
 #define JWL_EVENT_QUEUE      256u    /* events waiting for the program; more are dropped */
 #define JWL_SIZE_MAX         8192    /* a window's or buffer's width and height, at most */
@@ -99,6 +102,7 @@ struct jwl_client_info {
     uint32_t output_version;
     uint32_t wm_base_version;
     uint32_t cursor_shape_version;  /* 0: the compositor offers no cursor shapes */
+    uint32_t data_version;        /* wl_data_device_manager's; 0: no clipboard */
     uint32_t shm_formats;         /* bit n: wl_shm format n offered (n < 32) */
     int32_t  output_width;        /* the output's current mode; 0 until told */
     int32_t  output_height;
@@ -208,6 +212,10 @@ enum jwl_event_type {
     JWL_EV_DISCONNECTED,    /* the connection went (conn.why); windows come back by themselves */
     JWL_EV_RECONNECTED,     /* every object made again on connection conn.generation */
     JWL_EV_DEAD,            /* the client is dead for good (conn.why) */
+    JWL_EV_SELECTION,       /* the clipboard's selection changed (clip.available) */
+    JWL_EV_PASTE,           /* jwl_clip_paste's answer (clip.status, clip.size) */
+    JWL_EV_COPY_CANCELLED,  /* jwl_clip_copy's text is no longer the selection (replaced,
+                             * refused, or the compositor went) */
 };
 
 #define JWL_KEY_RELEASED 0u
@@ -257,6 +265,11 @@ struct jwl_event {
             status_t why;             /* DISCONNECTED, DEAD: what ended the connection */
             uint32_t generation;      /* RECONNECTED: info.generation */
         } conn;
+        struct {
+            bool     available;       /* SELECTION: text may be pasted now */
+            status_t status;          /* PASTE: OK, or why there is no text (below) */
+            uint32_t size;            /* PASTE: the text's bytes */
+        } clip;
     };
 };
 
@@ -367,3 +380,51 @@ status_t jwl_window_move(struct jwl_window *w);
 /* The program's own pointer for the window. */
 void     jwl_window_set_user(struct jwl_window *w, void *user);
 void    *jwl_window_user(const struct jwl_window *w);
+
+/* ---- the clipboard (jwl_data.c) -----------------------------------------------------
+ *
+ * Copy and paste of text through the compositor's wl_data_device_manager
+ * (the selection; no drag and drop). The compositor tells the client with
+ * the keyboard focus what the selection is (JWL_EV_SELECTION) and lets
+ * only that client set or read it.
+ *
+ * The transfer. Where Wayland passes a pipe, Jam OS passes a channel:
+ * a paste makes a channel, keeps one end and sends the other in
+ * wl_data_offer.receive; the compositor hands it to the selection's owner
+ * in wl_data_source.send; the owner writes the text into it as channel
+ * messages of bytes (at most 64 KiB each, no handles) and closes its end,
+ * which the reader sees as the end of the text (ERR_PEER_CLOSED), a
+ * pipe's end of file. A shim for ported Wayland programs maps receive(fd)
+ * and send(fd) onto the same ends. The reader never waits for it: the
+ * channel is read as it comes (bound to the client's port), at most
+ * JWL_CLIP_MAX bytes and for at most JWL_CLIP_WAIT_NS; more, a message
+ * carrying handles, or the time running out drops the transfer. The
+ * owner writes without waiting: a reader whose channel is full gets the
+ * end at once. */
+
+#define JWL_CLIP_MAX     (1u << 20)          /* bytes of text a paste takes, at most */
+#define JWL_CLIP_WAIT_NS (2 * NS_PER_S)      /* how long a paste waits for its text */
+#define JWL_CLIP_CHUNK   65536u              /* bytes a transfer's message carries, at most */
+
+/* Offer text (n bytes, UTF-8, copied) as the selection, with the serial of
+ * the last input event the client got (a key or button press, the
+ * keyboard's enter). The compositor may refuse it (the client hasn't the
+ * focus, or a newer copy came first): JWL_EV_COPY_CANCELLED says so, as it
+ * says when another copy replaces ours. ERR_NOT_SUPPORTED: no clipboard;
+ * ERR_OUT_OF_RANGE: n is over JWL_CLIP_MAX; ERR_BAD_STATE: no input event
+ * yet; ERR_NO_MEMORY; ERR_SHOULD_WAIT: not connected now; a dead client's
+ * status. */
+status_t jwl_clip_copy(struct jwl_client *c, const char *text, size_t n);
+/* Is there text to paste (the compositor offered a selection of text to
+ * this client, which has the keyboard focus)? */
+bool     jwl_clip_available(const struct jwl_client *c);
+/* Read the selection: OK, and JWL_EV_PASTE comes with the result (status
+ * OK and the text from jwl_clip_pasted; ERR_TIMED_OUT, the owner too slow;
+ * ERR_OUT_OF_RANGE, more than JWL_CLIP_MAX; ERR_INVALID_ARGS, the owner
+ * sent handles; ERR_PEER_CLOSED, the connection went). ERR_NOT_FOUND: no
+ * text offered; ERR_BAD_STATE: a paste is still going; ERR_NO_MEMORY; a
+ * dead client's status. */
+status_t jwl_clip_paste(struct jwl_client *c);
+/* The text of the last paste that ended OK (NUL-terminated, *n bytes
+ * before the NUL), valid until the next jwl_clip_paste; NULL if none. */
+const char *jwl_clip_pasted(const struct jwl_client *c, size_t *n);

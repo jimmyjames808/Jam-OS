@@ -179,7 +179,8 @@ static status_t kb_enter(void *data, uint32_t self, uint32_t serial, uint32_t su
                          const void *keys, uint32_t keys_size)
 {
     struct jwl_client *c = data;
-    (void)self, (void)serial, (void)keys, (void)keys_size;   /* keys held: not pressed here */
+    (void)self, (void)keys, (void)keys_size;   /* keys held: not pressed here */
+    c->seat.input_serial = serial;
     c->seat.kb_focus = jwlc_window_of_surface(c, surface);
     c->seat.repeat_code = 0;
     queue_simple(c, JWL_EV_KEYBOARD_ENTER, c->seat.kb_focus);
@@ -200,8 +201,10 @@ static status_t kb_key(void *data, uint32_t self, uint32_t serial, uint32_t time
                        uint32_t state)
 {
     struct jwl_client *c = data;
-    (void)self, (void)serial;
+    (void)self;
     bool pressed = state == JWL_WL_KEYBOARD_KEY_STATE_PRESSED;
+    if (pressed)
+        c->seat.input_serial = serial;
     key_event(c, key, pressed ? JWL_KEY_PRESSED : JWL_KEY_RELEASED, time);
     if (pressed && repeats(c, key)) {
         c->seat.repeat_code = key;
@@ -293,6 +296,8 @@ static status_t ptr_button(void *data, uint32_t self, uint32_t serial, uint32_t 
     struct jwl_client *c = data;
     (void)self;
     bool pressed = state == JWL_WL_POINTER_BUTTON_STATE_PRESSED;
+    if (pressed)
+        c->seat.input_serial = serial;
     if (pressed && c->seat.ptr_focus)
         c->seat.ptr_focus->press_serial = serial;
     struct jwl_event ev = { .type = JWL_EV_POINTER_BUTTON, .win = c->seat.ptr_focus };
