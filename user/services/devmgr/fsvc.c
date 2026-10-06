@@ -250,7 +250,7 @@ static void told_removed(struct disk *d)
             o += (size_t)snprintf(body + o, o < sizeof(body) ? sizeof(body) - o : 0, "%s%s",
                                   o ? " and " : "", d->at[part]);
     d->told = 0;
-    if (o)
+    if (o && !shutdown_asked)   /* every driver stopped for a reboot: no news */
         notice_post(&devmgr_notices, "USB stick removed", body, 'U', NOTICE_BLACKCURRANT);
 }
 

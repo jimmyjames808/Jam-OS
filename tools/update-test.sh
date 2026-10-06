@@ -17,8 +17,10 @@
 #      not loaded); then `reboot` (kexec): the stored kernel was
 #      left alone, so the next boot is the stick's build (no
 #      /boot/update-marker.txt).
-#   2. `run updtest good`: the build accepted and stored; `reboot` reads
-#      nothing from /esp ("/esp unchanged") and starts it.
+#   2. `run updtest good`: the build accepted and stored, and init's
+#      "Update loaded" notice on the desktop; a click on its Reboot button
+#      (a usb-mouse on xhci port 3) is init's reboot, which reads nothing
+#      from /esp ("/esp unchanged") and starts it.
 #   3. the fetched build runs: /boot/update-marker.txt is there.
 # The stick's build has a throwaway test key's public half
 # (tools/update-test-key.sh: never the owner's). The fetched build is this
@@ -94,7 +96,15 @@ wait {prompt}
 send run updtest good
 wait 300 updtest: good:
 wait {prompt}
-send reboot
+# the desktop's "Update loaded" card: its Reboot button (notify.c's place
+# at 1280x800: the newest card, a body line, then the buttons) is init's
+seen 10 Update loaded
+sleep 0.6
+pointer 1028 112
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 10 init: the notice's Reboot was pressed: rebooting
 wait 30 init: kexec: /esp unchanged: the stored kernel, no files read
 wait 60 kexec: starting the stored kernel
 wait 60 kexec: started by a reboot
@@ -107,7 +117,7 @@ send reboot -f
 wait reboot: resetting
 EOF
 QEMU_IMAGE="$stick" QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$out/update.txt" \
-    tools/qemu-test.sh "$out" update shell > "$out/update.out" 2>&1 ||
+    QEMU_USB="-device usb-mouse,bus=xhci.0,port=3" tools/qemu-test.sh "$out" update shell > "$out/update.out" 2>&1 ||
     fail "the script (see $out/update.log)"
 log="$out/update.log"
 grep -aq "updtest: bad: PASS" "$log" || fail "a damaged offer wasn't refused for its reason"
@@ -131,6 +141,8 @@ grep -aq "init: update: its network default is $othernet, this build's $net: tak
 grep -aq "init: update: .* and not loaded (check only)" "$log" ||
     fail "init didn't check the check-only offer"
 grep -aq "updtest: good: PASS" "$log" || fail "the good build wasn't accepted"
+grep -aq "compositor: notice [0-9]*: Update loaded: .*: reboot to start it (not on the stick)" \
+    "$log" || fail "no 'Update loaded' notice on the desktop (init's, with Reboot and Later)"
 grep -aq "init: update: .* and stored in memory only" "$log" ||
     fail "init didn't say it stored the build"
 [ "$(grep -ac "$marker" "$log")" -ge 1 ] || fail "the fetched build didn't run (no marker)"
