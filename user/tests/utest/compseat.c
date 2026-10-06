@@ -27,13 +27,16 @@
 static bool start(struct cs *t, bool desk, const char *layout)
 {
     memset(t, 0, sizeof(*t));
-    handle_t svc, ctl, init, image;
+    handle_t svc, ctl, init, image, note, mix, net;
     t->p.w = OUT_W;
     t->p.h = OUT_H;
     CHECK(ct_image_for(&t->p, &image));   /* what it paints, for the cursor's tests */
     CHECK_ST(jam_channel_create(&t->p.svc, &svc), OK);
     CHECK_ST(jam_channel_create(&t->ctl, &ctl), OK);
     CHECK_ST(jam_channel_create(&t->init, &init), OK);
+    CHECK_ST(jam_channel_create(&t->note, &note), OK);
+    CHECK_ST(jam_channel_create(&mix, &t->mix), OK);
+    CHECK_ST(jam_channel_create(&net, &t->net), OK);
     CHECK_ST(new_job(&t->p.job), OK);
     const char *argv[6] = { "bin/compositor", "headless", "size=640x480", "testwin" };
     int argc = 4;
@@ -42,10 +45,12 @@ static bool start(struct cs *t, bool desk, const char *layout)
     if (!desk)
         argv[argc++] = "nodesk";
     struct spawn_handle x[] = { { SR_USER + 0, svc }, { SR_USER + 1, image },
-                                { SR_USER + 2, ctl }, { SR_USER + 3, init } };
+                                { SR_USER + 2, ctl }, { SR_USER + 3, init },
+                                { SR_USER + 5, note }, { SR_USER + 6, mix },
+                                { SR_USER + 7, net } };
     struct spawn_args a = { .path = "bin/compositor", .argc = argc, .argv = argv,
                             .job = t->p.job,
-                            .extra = x, .nextra = 4 };
+                            .extra = x, .nextra = 7 };
     CHECK_ST(spawn(&a, &t->p.proc), OK);
     CHECK_ST(compctl_connect_input_within(t->ctl, CT_WAIT, &t->src), OK);
     CHECK_ST(input_ready_within(t->src, CT_WAIT, INPUT_READY_KEYBOARD, 0x1234, 1), OK);
@@ -75,6 +80,9 @@ bool cs_stop(struct cs *t)
     jam_handle_close(t->src);
     jam_handle_close(t->ctl);
     jam_handle_close(t->init);
+    jam_handle_close(t->note);
+    jam_handle_close(t->mix);
+    jam_handle_close(t->net);
     return ct_stop(&t->p);
 }
 

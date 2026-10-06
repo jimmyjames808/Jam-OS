@@ -380,6 +380,7 @@ bool t_nettcp_ooseq_bounds(void);
 bool t_nettcp_limits(void);
 bool t_nettcp_bulk_rings(void);
 bool t_netctl_set_and_clear(void);
+bool t_netctl_read_only(void);
 bool t_netctl_process(void);
 bool t_ipv4_text(void);
 /* netdrv.c: bin/netstack over a fake driver's netdev rings (netpkt.c's
@@ -463,6 +464,10 @@ bool t_jwlc_pointer(void);
 bool t_jwlc_no_keyboard(void);
 bool t_comp_layout_wait(void);
 bool t_comp_super_enter(void);
+/* compplumb.c: the desktop's plumbing (D2b) */
+bool t_comp_notify(void);
+bool t_comp_launch(void);
+bool t_comp_volume_net(void);
 bool t_comp_no_keyboard(void);
 bool t_comp_early_keys(void);
 bool t_comp_screen_on_top(void);
