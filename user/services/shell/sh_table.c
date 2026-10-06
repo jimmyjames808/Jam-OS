@@ -38,6 +38,10 @@ static const struct sh_cmd cmds[] = {
     C(whoami, C_INFO, "whoami", "the user (there is one: jam)"),
     C(hostname, C_INFO, "hostname", "this machine's name"),
     C(dmesg, C_INFO, "dmesg", "the whole kernel log (up to 4 MiB); pipe it: dmesg | grep usb"),
+    C(crashlog, C_INFO, "crashlog [N | list]",
+      "the last kernel panic's saved report: its code, what and where, the backtrace,\n"
+      "  the log lines before it, the boot and the build (/data/logs/boot-NNNN-crash.txt).\n"
+      "  N: the N-th newest (1 is the newest); list: every saved one, newest first"),
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
     C(jobs, C_SHELL, "jobs",
       "the programs started with & (prog &, run prog args &): number, pid, state,\n"
