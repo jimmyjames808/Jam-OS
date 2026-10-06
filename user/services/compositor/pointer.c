@@ -227,6 +227,7 @@ static void press(unsigned b)
         return;
     struct comp_client *cl = over->surface->client;
     uint32_t serial = comp_serial(), t = comp_ms(now());
+    seat_input_serial(cl, serial);
     for (struct seat_res *r = seat_of(cl)->res[SEAT_POINTER]; r; r = r->next)
         (void)jwl_wl_pointer_send_button(cl->conn, r->id, serial, t, BTN_LEFT + b,
                                          JWL_WL_POINTER_BUTTON_STATE_PRESSED);

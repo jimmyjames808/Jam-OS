@@ -977,6 +977,8 @@ static const struct {
     { "comp_seat_text", t_comp_seat_text },
     { "comp_seat_ctl", t_comp_seat_ctl },
     { "comp_seat_move", t_comp_seat_move },
+    { "comp_data_selection", t_comp_data_selection },
+    { "comp_data_rules", t_comp_data_rules },
     { "comp_layout_wait", t_comp_layout_wait },
     { "comp_super_enter", t_comp_super_enter },
     { "comp_notify", t_comp_notify },

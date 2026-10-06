@@ -38,6 +38,7 @@
 #define SEAT_BUDGET   64u         /* requests of one source or compctl channel per turn */
 #define SOURCES_MAX   16u         /* input sources at once */
 #define KEYS_HELD_MAX 32u         /* keys held down at once, over every keyboard */
+#define SEAT_INPUT_SERIALS 8u     /* per client: the input events' serials kept (seat_input_serial) */
 
 /* One wl_seat, wl_keyboard or wl_pointer object of a client's: the data
  * libjwl's map holds for it. */
@@ -65,6 +66,11 @@ struct seat_client {
     int32_t hot_x, hot_y;
     bool shape_set;                /* it asked for one of the set: shape */
     enum cursor_shape shape;
+    /* The serials of the input events it was sent last (wl_keyboard.enter,
+     * a key press, a button press), newest at input_at - 1: what
+     * wl_data_device.set_selection must name (data.c). */
+    uint32_t input[SEAT_INPUT_SERIALS];
+    unsigned input_at;             /* the next slot of input to write */
 };
 
 /* seat.c */
@@ -79,6 +85,9 @@ status_t seat_res_add(struct comp_client *cl, enum seat_kind kind, uint32_t id, 
                       struct seat_res **out);
 /* r off its client's list and freed (its id is libjwl's business). */
 void     seat_res_free(struct seat_res *r);
+/* serial went to cl with an input event (wl_keyboard.enter, a key press,
+ * a button press): one of the serials seat_input_serial_ok accepts. */
+void     seat_input_serial(struct comp_client *cl, uint32_t serial);
 
 /* keyboard.c */
 status_t keyboard_init(void);

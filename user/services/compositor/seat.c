@@ -76,6 +76,24 @@ void seat_res_free(struct seat_res *r)
     free(r);
 }
 
+/* ---- input serials ------------------------------------------------------------------ */
+
+void seat_input_serial(struct comp_client *cl, uint32_t serial)
+{
+    struct seat_client *sc = seat_of(cl);
+    sc->input[sc->input_at] = serial;
+    sc->input_at = (sc->input_at + 1) % SEAT_INPUT_SERIALS;
+}
+
+bool seat_input_serial_ok(struct comp_client *cl, uint32_t serial)
+{
+    const struct seat_client *sc = seat_of(cl);
+    for (unsigned i = 0; i < SEAT_INPUT_SERIALS && serial; i++)
+        if (sc->input[i] == serial)
+            return true;
+    return false;
+}
+
 /* ---- wl_seat ---------------------------------------------------------------------- */
 
 status_t seat_bind(struct comp_client *cl, uint32_t id, uint32_t version)

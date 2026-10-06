@@ -521,6 +521,9 @@ bool t_comp_seat_reserved(void);
 bool t_comp_seat_text(void);
 bool t_comp_seat_ctl(void);
 bool t_comp_seat_move(void);
+/* compdata.c: the compositor's clipboard (wl_data_device_manager). */
+bool t_comp_data_selection(void);
+bool t_comp_data_rules(void);
 bool t_termkeys(void);
 /* comp_paint.c: the compositor's painting, through its test scene
  * (windows with no client) run headless (testscene.h). */

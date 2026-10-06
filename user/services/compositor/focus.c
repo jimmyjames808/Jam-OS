@@ -14,6 +14,9 @@
  *     windows of clients being torn down;
  *   - the window manager may focus a window itself (seat_focus: a title
  *     bar click).
+ * The client the focus comes to hears the clipboard's selection first
+ * (data.c: wl_data_device.selection before wl_keyboard.enter); only the
+ * focused client may set the selection or read it.
  * No client can grab the keyboard: there is no request that moves it. A
  * window whose client has no wl_keyboard never gets the focus at all
  * (focusable): it wants no keys, so it takes none from the window that has
@@ -36,7 +39,9 @@
  *                  T, Enter (another terminal: ctl.c asks init, whichever
  *                  window has the focus) and the digits.
  * Ctrl+C is an ordinary key: it goes to the focused window, so a program
- * can trap the keys of its own window and never another's.
+ * can trap the keys of its own window and never another's. So are Super
+ * with any other key (Super+C and Super+V, a terminal's copy and paste):
+ * the compositor reserves nothing more than the table above.
  *
  * The window manager's hooks (comp.h) have weak defaults here, standing in
  * until wm.c defines them: the seat works on its own (and in tests) with
@@ -83,6 +88,7 @@ void seat_focus(struct comp_window *w)
     if (w) {
         w->flags |= COMP_WIN_FOCUSED;
         window_damage(w);
+        data_focus_enter(w->surface->client);   /* the selection first, as the protocol says */
         keyboard_enter(w);
     }
     wm_focus_changed(w);   /* raised (under a boot overlay), and the toplevels' activated state */

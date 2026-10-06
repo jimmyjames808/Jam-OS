@@ -31,9 +31,10 @@
  *   paint.h     what those share.
  * Later tracks: xdg-shell and window management (xdg.c, wm.c, deco.c), the
  * seat and compctl (seat.c, keyboard.c, pointer.c, focus.c, sources.c,
- * shapes.c), the cursor set (cursors.c, drawn by tools/cursorgen.c), and the
- * desktop around the windows: virtual screens, the top bar, the menus,
- * popovers, notifications, animations and frosting (desk.h has its files).
+ * shapes.c), the clipboard (data.c), the cursor set (cursors.c, drawn by
+ * tools/cursorgen.c), and the desktop around the windows: virtual screens,
+ * the top bar, the menus, popovers, notifications, animations and frosting
+ * (desk.h has its files).
  *
  * The model:
  *   - a client is one connection (struct comp_client); everything it made
@@ -629,6 +630,10 @@ status_t shapes_request(struct comp_client *cl, struct jwl_msg *m);
 status_t shape_device_request(struct comp_client *cl, struct jwl_msg *m);
 /* cl went: its seat objects, and every focus, grab and serial it had. */
 void     seat_teardown(struct comp_client *cl);
+/* Is serial one of the last input events' (wl_keyboard.enter, a key press,
+ * a button press) the seat sent cl? (wl_data_device.set_selection is
+ * honoured only then.) */
+bool     seat_input_serial_ok(struct comp_client *cl, uint32_t serial);
 
 /* scene.c calls these: w was mapped (a client's first window takes the
  * keyboard focus), or is unmapped or going (whatever focus or grab it had
@@ -751,6 +756,30 @@ void wm_focus_changed(struct comp_window *w);
  * it has a buffer. For tests that need windows without xdg-shell; init
  * never passes it. surface.c calls this at commit. */
 status_t testwin_commit(struct comp_surface *s);
+
+/* ---- the clipboard (data.c) -----------------------------------------------------------
+ *
+ * wl_data_device_manager for the selection only (copy and paste of text; no
+ * drag and drop, no primary selection). The data never passes through the
+ * compositor: where Wayland passes a pipe's write end, a Jam OS client
+ * passes a channel end, which the compositor hands from the reader's
+ * wl_data_offer.receive to the source's wl_data_source.send. */
+
+#define COMP_DATA_VERSION    3u    /* wl_data_device_manager offered */
+#define DATA_OBJS_MAX        16u   /* per client: managers, devices, sources and offers, each */
+#define DATA_RECEIVES_MAX    4u    /* receives honoured per offer */
+
+status_t data_bind(struct comp_client *cl, uint32_t id, uint32_t version);
+status_t data_manager_request(struct comp_client *cl, struct jwl_msg *m);
+status_t data_device_request(struct comp_client *cl, struct jwl_msg *m);
+status_t data_source_request(struct comp_client *cl, struct jwl_msg *m);
+status_t data_offer_request(struct comp_client *cl, struct jwl_msg *m);
+/* cl went: its objects; its source, if it was the selection, with it
+ * (the focused client told the selection is empty). */
+void     data_teardown(struct comp_client *cl);
+/* The keyboard focus comes to cl (focus.c, right before wl_keyboard.enter):
+ * its data devices are told the selection. */
+void     data_focus_enter(struct comp_client *cl);
 
 /* ---- window management (wm.c, wmtile.c, wmgrab.c, deco.c) -------------------------------
  *

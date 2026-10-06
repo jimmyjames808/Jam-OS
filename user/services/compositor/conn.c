@@ -37,7 +37,7 @@ static struct comp_client *clients[COMP_CLIENTS_MAX];
 static const struct jwl_interface *const known[] = {
     &jwl_wl_compositor_interface, &jwl_wl_shm_interface,  &jwl_wl_output_interface,
     &jwl_wl_seat_interface,       &jwl_xdg_wm_base_interface,
-    &jwl_wp_cursor_shape_manager_v1_interface,
+    &jwl_wp_cursor_shape_manager_v1_interface, &jwl_wl_data_device_manager_interface,
 };
 
 /* Each interface's requests. */
@@ -64,12 +64,19 @@ static const struct {
     { &jwl_xdg_popup_interface, xdg_popup_request },
     { &jwl_wp_cursor_shape_manager_v1_interface, shapes_request },
     { &jwl_wp_cursor_shape_device_v1_interface, shape_device_request },
+    { &jwl_wl_data_device_manager_interface, data_manager_request },
+    { &jwl_wl_data_device_interface, data_device_request },
+    { &jwl_wl_data_source_interface, data_source_request },
+    { &jwl_wl_data_offer_interface, data_offer_request },
 };
 
 /* What goes with a client, module by module (later tracks add theirs:
- * roles before surfaces, so a role sees its surface still there). */
+ * roles before surfaces, so a role sees its surface still there; the
+ * clipboard first, so a selection of its own is gone before its windows
+ * going move the focus to another client, which then hears it is empty). */
 static void (*const teardowns[])(struct comp_client *) = {
-    xdg_teardown, surfaces_teardown, shm_teardown, display_teardown, seat_teardown,
+    data_teardown, xdg_teardown, surfaces_teardown, shm_teardown, display_teardown,
+    seat_teardown,
 };
 
 static const char *const gone_names[COMP_GONE_COUNT] = { "closed", "protocol error", "too slow" };

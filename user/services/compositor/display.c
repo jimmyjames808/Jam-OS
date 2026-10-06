@@ -33,6 +33,7 @@ static const struct global {
     { 4, &jwl_wl_seat_interface, COMP_SEAT_VERSION, seat_bind },
     { 5, &jwl_xdg_wm_base_interface, COMP_XDG_WM_VERSION, xdg_bind },
     { 6, &jwl_wp_cursor_shape_manager_v1_interface, COMP_CURSOR_SHAPE_VERSION, shapes_bind },
+    { 7, &jwl_wl_data_device_manager_interface, COMP_DATA_VERSION, data_bind },
 };
 #define NGLOBALS (sizeof(globals) / sizeof(globals[0]))
 
