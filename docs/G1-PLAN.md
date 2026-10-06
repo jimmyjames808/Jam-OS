@@ -89,8 +89,8 @@ differs from the recommendation below, this note wins:
   with a clock and the open windows (minimised ones too). The terminal's
   text stays the 8x16 bitmap font. Virtual screens (workspaces), made as
   needed: the desktop starts with one; a new one is made when you go past
-  the last (Super+Right, or the "+" at the end of the top bar's screen
-  dots) or move a window there (Super+Shift+Right); a screen other than
+  the last (Super+Ctrl+Right or L, or the "+" at the end of the top bar's
+  screen dots) or move a window there (Super+Ctrl+Shift+Right or L); a screen other than
   the current one that has no windows left goes away; Super+1..9 jump to
   an existing screen; switching slides. Each screen keeps its own
   arrangement (floating or tiling: Super+T switches the current one). A
@@ -167,6 +167,43 @@ differs from the recommendation below, this note wins:
   not to their window, but that is each app's job, after G1: G1 keeps
   L2's behaviour (scale from the window's height); later, libfun passes
   the output's size (wl_output) to the app and the app chooses.
+  Tiling (owner, 2026-10-07, after trying the prototype's six layouts):
+  DWINDLE only, replacing C3's main-and-stack; no monocle, columns or
+  grid. The first window fills the room under the strip; each new window
+  splits the focused tile in half along its longer side (a screen turned
+  from floating to tiling builds its tree in the windows' order, each
+  splitting the last); a window that goes leaves its sibling the whole of
+  their parent. Each split keeps its own ratio, remembered per screen.
+  Resizing: drag the gap between two tiles (it lights up apricot, resize
+  cursor), or Super+Alt+direction pushes the focused tile's edge that way
+  (about 48 px at 1x; with no edge on that side its other edge moves that
+  way). Swapping: Super+Shift+direction swaps with the neighbour there;
+  Super+drag a window onto another (the dragged one follows the pointer,
+  see-through; the target gets an apricot highlight) swaps them on
+  release. Focus: Super+direction picks the nearest window that way.
+  Reflow: tiles glide to new places over 200 ms (ease-out) on open,
+  close, swap and keyboard resizing; not while a gap is being dragged.
+  Fixed-size apps stay centred in their tile. Floating: Super+drag moves
+  a window from anywhere in it; Super+right-drag resizes it from the
+  nearest corner; Super+Alt+direction grows or shrinks it.
+  Keys (owner, the whole set; every "direction" is BOTH H/J/K/L and the
+  arrow keys; Super is the logo key, separate from Ctrl, so apps keep
+  Ctrl+C, Ctrl+L and the rest):
+    Super+direction            focus left/down/up/right
+    Super+Shift+direction      tiling: swap with that neighbour
+    Super+Alt+direction        tiling: push the tile's edge; floating: grow/shrink
+    Super+Q / Super+M / Super+F close / minimise / full screen (own screen) and back
+    Super+T                    this screen: floating or tiling
+    Super+drag / right-drag    move (floating) or swap (tiling) / resize (floating)
+    Super+1..9                 go to screen N
+    Super+Shift+1..9           move the focused window to screen N
+    Super+Ctrl+Left/Right, H/L previous / next screen (past the last makes one)
+    Super+Ctrl+Shift+same      move the focused window to the previous / next screen
+    Super tapped alone         search;  Super+Enter  new terminal
+    Alt+Tab, Alt+Shift+Tab     the switcher (hold Alt; Esc cancels)
+    Ctrl+Alt+Del               reboot
+    double-click a title bar   full screen
+  (Super+Left/Right no longer switch screens: they move focus.)
   The strip's frosting is a blurred copy of the wallpaper (made once per screen size,
   so it costs nothing per frame); windows never go under it: the space
   it takes (with the gap below it) is outside every window's reach, in
