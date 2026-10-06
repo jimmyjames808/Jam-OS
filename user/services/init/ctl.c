@@ -1,13 +1,17 @@
 /* init's control channels: the initctl protocol (abi/idl/initctl.idl).
  *
  * A channel per holder: the shell's answers everything; the compositor's
- * and each terminal's console's only `reboot` (Ctrl+Alt+Del) and
- * `terminal` (Super+Enter: the compositor's, or under `nocomp` nobody's).
- * Which requests a channel takes is a property of the channel, never of
- * who is asking.
+ * `reboot` (Ctrl+Alt+Del), `terminal` (Super+Enter, the search box's
+ * "Run ... in a terminal") and `launch` (the search box's apps); each
+ * terminal's console's only `reboot` and `terminal` (under `nocomp`
+ * nobody's Super+Enter). Which requests a channel takes is a property of
+ * the channel, never of who is asking.
  *
  * terminal opens another terminal (terms.c): a console in a window of
- * its own with a shell of its own, if a compositor runs.
+ * its own with a shell of its own, if a compositor runs; its shell runs
+ * the request's command first, if it has one. launch starts one of the
+ * desktop's apps (apps.c, <deskapps.h>): only those, from the boot
+ * image.
  *
  * kill <name> reaches the processes init has authority over: its own
  * services (shell.c: their jobs are init's), and, through devmgr's KILL,
@@ -59,11 +63,15 @@
 
 struct ctl {
     handle_t ch;      /* our end (0: none) */
-    bool     admin;   /* every method; else reboot only */
+    bool     admin;   /* every method; else reboot and terminal (and launch: */
+    bool     launch;  /* ... the compositor's) */
     uint64_t key;     /* its port key */
 };
 
-static struct ctl ctls[CTL_COUNT] = { [CTL_SHELL] = { .admin = true } };
+static struct ctl ctls[CTL_COUNT] = {
+    [CTL_SHELL] = { .admin = true, .launch = true },
+    [CTL_COMPOSITOR] = { .launch = true },
+};
 static handle_t ctl_port;
 
 /* ---- kill: what devmgr runs for a USB device -------------------------------------- */
@@ -347,19 +355,39 @@ static status_t op_update_offer(void *ctx, handle_t *out_offer)
     return update_offer_new(ctl_port, KEY_UPDATE, out_offer);
 }
 
-static status_t op_terminal(void *ctx, uint8_t *out_number)
+static status_t op_terminal(void *ctx, const uint8_t command[TERM_CMD_MAX], uint8_t *out_number)
 {
     (void)ctx;   /* every holder: the shell's, the compositor's and the consoles' */
-    status_t st = terms_open(out_number);
+    const char *cmd = (const char *)command;
+    size_t n = strnlen(cmd, TERM_CMD_MAX);
+    if (n == TERM_CMD_MAX)
+        return ERR_INVALID_ARGS;
+    for (size_t i = 0; i < n; i++)
+        if (command[i] < ' ' || command[i] == 0x7f)
+            return ERR_INVALID_ARGS;   /* one line, as typed */
+    status_t st = terms_open(cmd, out_number);
     if (st != OK)
         printf("init: no new terminal: %s\n", status_str(st));
     return st;
+}
+
+static status_t op_launch(void *ctx, const uint8_t app[16], uint64_t *out_koid)
+{
+    const struct ctl *c = ctx;
+    if (!c->launch)
+        return ERR_ACCESS_DENIED;
+    char name[16];
+    memcpy(name, app, sizeof(name));
+    if (strnlen(name, sizeof(name)) == sizeof(name))
+        return ERR_INVALID_ARGS;
+    return apps_launch(name, out_koid);
 }
 
 static const struct initctl_ops ops = {
     .kill = op_kill, .sync = op_sync, .reboot = op_reboot, .mount = op_mount,
     .shell_ready = op_shell_ready, .reboot_firmware = op_reboot_firmware,
     .kernel_load = op_kernel_load, .update_offer = op_update_offer, .terminal = op_terminal,
+    .launch = op_launch,
 };
 
 static void ctl_close(struct ctl *c)

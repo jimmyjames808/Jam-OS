@@ -275,9 +275,10 @@ static bool ctl_levels(struct cs *t)
 {
     handle_t in, h;
     CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 1, &in), OK);
-    CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 2, &h), ERR_INVALID_ARGS);
+    CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 3, &h), ERR_INVALID_ARGS);
     CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 0, &h), ERR_ACCESS_DENIED);
     CHECK_ST(compctl_new_client_within(in, CT_WAIT, 1, &h), ERR_ACCESS_DENIED);
+    CHECK_ST(compctl_new_client_within(in, CT_WAIT, 2, &h), ERR_ACCESS_DENIED);   /* ADMIN's */
     CHECK_ST(compctl_blank_within(in, CT_WAIT, 1), ERR_ACCESS_DENIED);
     uint64_t u[11];
     uint32_t v[4];

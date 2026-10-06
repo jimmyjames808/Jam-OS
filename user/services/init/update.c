@@ -361,6 +361,17 @@ static void say_menu(const struct update_answer *a)
         printf("init: update: %s\n", update_menu_str(a->menu));
 }
 
+/* The desktop's notice of a build stored (comp.c: init's own, so the
+ * Reboot button is init's to act on): "Update written", "0.0.31: reboot to
+ * start it", Reboot / Later. */
+static void notice(const char *title, const char *version, const char *what)
+{
+    static const char *const buttons[] = { "Reboot", "Later", NULL };
+    char body[96];
+    snprintf(body, sizeof(body), "%s: %s", version, what);
+    comp_notice(title, body, 'U', 2, buttons, true);
+}
+
 static void say(const struct check *c)
 {
     const struct update_answer *a = &c->a;
@@ -384,6 +395,9 @@ static void say(const struct check *c)
                    "the new build\n", a->write_ms);
         say_menu(a);
         say_forced(a);
+        if (!only)
+            notice(wrote ? "Update written" : "Update loaded", a->version,
+                   wrote ? "reboot to start it" : "reboot to start it (not on the stick)");
         return;
     }
     if (a->why == UPDATE_NOT_WRITTEN) {
@@ -393,6 +407,7 @@ static void say(const struct check *c)
                update_stick_str(a->stick));
         say_menu(a);
         say_forced(a);
+        notice("Update loaded", a->version, "the stick write failed: reboot to start it");
         return;
     }
     if (a->why == UPDATE_NET_CHANGE) {

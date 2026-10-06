@@ -391,6 +391,10 @@ void     desk_run(const char *cmd);
 /* ww's first buffer was mapped (wm.c): the busy cursor ends if it is the
  * app being launched. */
 void     desk_window_mapped(const struct wm_window *ww);
+/* The plumbing (ctl.c): the launched app's window will have this title
+ * (init answered "Terminal 2"); or the launch was refused: not busy. */
+void     desk_launch_awaits(const char *title);
+void     desk_launch_failed(void);
 
 /* ---- the drawing (stripdraw.c, menudraw.c, popdraw.c, frost.c, ui.c) ------------------------- */
 

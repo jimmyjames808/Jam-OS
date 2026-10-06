@@ -169,7 +169,9 @@ void terminal_ask(void)
     if (rebooting || term_asked)
         return;   /* one at a time: a second Super+Enter before the answer is the same ask */
     handle_t init = init_channel();
-    status_t st = init && watching ? initctl_terminal_send(init, TERM_TXID) : ERR_NOT_FOUND;
+    static const uint8_t none[128];   /* a plain terminal: no command */
+    status_t st = init && watching ? initctl_terminal_send(init, TERM_TXID, none)
+                                   : ERR_NOT_FOUND;
     if (st == OK)
         term_asked = true;
     else

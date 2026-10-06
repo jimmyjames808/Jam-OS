@@ -303,7 +303,20 @@ void desk_launch(const char *app)
 
 void desk_run(const char *cmd)
 {
+    snprintf(dk.launching, sizeof(dk.launching), "%s", "terminal");
+    busy_set(true);   /* until its window shows: the answer names it (desk_launch_awaits) */
     ctl_run_in_terminal(cmd);
+}
+
+void desk_launch_awaits(const char *title)
+{
+    if (dk.busy_until)
+        snprintf(dk.launching, sizeof(dk.launching), "%s", title);
+}
+
+void desk_launch_failed(void)
+{
+    busy_set(false);
 }
 
 bool desk_busy(void)

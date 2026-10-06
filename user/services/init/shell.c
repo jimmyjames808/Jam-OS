@@ -46,6 +46,7 @@
  * own: a deliberate kill (initctl.kill) neither counts nor waits, and the
  * first crash in a minute is restarted at once; later crashes count and
  * back off as above. init itself never returns in this mode. */
+#include <deskapps.h>
 #include <os.h>
 #include "init.h"
 
@@ -495,6 +496,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             kept_event();
         } else if (pkt.key == KEY_COMP) {
             comp_event();
+        } else if (pkt.key >= KEY_APPS && pkt.key < KEY_APPS + DESKAPPS_RUNNING) {
+            apps_event((unsigned)(pkt.key - KEY_APPS));
         }
     }
 }

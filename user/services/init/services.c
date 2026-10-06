@@ -109,6 +109,7 @@
 #include <idl/console.h>
 #include <idl/logctl.h>
 #include <logwriters.h>
+#include <mixer.h>
 #include <os.h>
 #include <splash.h>
 #include "init.h"
@@ -129,7 +130,7 @@ static handle_t logd_ctl;   /* logd's control channel, client end (0: no logd) *
 /* The mixer's channels, made once: server ends (each mixer gets
  * duplicates) and client ends (the shell gets duplicates). [0] `audio`,
  * [1] `audioctl`; 0: none (no bin/mixer, or given up on). */
-static handle_t audio_srv[2], audio_cli[2];
+static handle_t audio_srv[3], audio_cli[3];   /* [2]: the desktop's (the compositor's) */
 /* The music player's channel, made once in the same way (0: none). */
 static handle_t music_srv, music_cli;
 /* The file server's, the same. */
@@ -323,9 +324,16 @@ static status_t start_devmgr(void)
         argv[argc++] = init_vlan;
     if (init_bootdisk)
         argv[argc++] = init_bootdisk;
-    struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
-                                { DEVMGR_SR_ESP, eb }, { SR_CONSOLE, c } };
-    st = svc_start(DEVMGR, argc, argv, x, c ? 5 : 4);   /* consumes pci, b, qb, eb and c */
+    struct spawn_handle x[6] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
+                                 { DEVMGR_SR_ESP, eb } };
+    unsigned nx = 4;
+    if (c)
+        x[nx++] = (struct spawn_handle){ SR_CONSOLE, c };
+    /* Without it (`nocomp`) a stick's news is the console's notices alone. */
+    x[nx] = (struct spawn_handle){ DEVMGR_SR_NOTIFY, comp_notify_client() };
+    if (x[nx].h)
+        nx++;
+    st = svc_start(DEVMGR, argc, argv, x, nx);   /* consumes them all */
     if (st != OK) {
         jam_handle_close(a);
         jam_handle_close(qa);
@@ -463,15 +471,15 @@ void shell_flush_log(uint64_t deadline)
         printf("init: the boot log's last lines were not saved (%s)\n", status_str(st));
 }
 
-/* The mixer's two channels, once (both, or neither). */
+/* The mixer's three channels, once (all, or none). */
 static void make_audio_channels(void)
 {
-    for (unsigned k = 0; k < 2; k++)
+    for (unsigned k = 0; k < 3; k++)
         if (jam_channel_create(&audio_cli[k], &audio_srv[k]) != OK)
             audio_cli[k] = audio_srv[k] = HANDLE_INVALID;
-    if (audio_cli[0] && audio_cli[1])
+    if (audio_cli[0] && audio_cli[1] && audio_cli[2])
         return;
-    for (unsigned k = 0; k < 2; k++) {
+    for (unsigned k = 0; k < 3; k++) {
         if (audio_cli[k]) {
             jam_handle_close(audio_cli[k]);
             jam_handle_close(audio_srv[k]);
@@ -493,14 +501,15 @@ static status_t start_mixer(void)
         svcs[MIXER].given_up = true;
         return OK;
     }
-    struct spawn_handle x[2 + INIT_MAX_CLAIMED + KEPT_EXTRA] = {
+    struct spawn_handle x[3 + INIT_MAX_CLAIMED + KEPT_EXTRA] = {
         { SR_AUDIO, dup_of(audio_srv[0]) }, { SR_AUDIO_CTL, dup_of(audio_srv[1]) },
+        { SR_AUDIO_DESK, dup_of(audio_srv[2]) },
     };
-    unsigned n = 2;
+    unsigned n = 3;
     for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++)
         if (devmgr_hda[k] && (x[n].h = dup_of(devmgr_hda[k])) != HANDLE_INVALID)
             x[n++].role = SR_DEVMGR_DEVICE;   /* none: it answers "no output" */
-    if (!x[0].h || !x[1].h) {
+    if (!x[0].h || !x[1].h || !x[2].h) {
         for (unsigned k = 0; k < n; k++)
             if (x[k].h)
                 jam_handle_close(x[k].h);
@@ -512,6 +521,11 @@ static status_t start_mixer(void)
 handle_t services_audioctl(void)
 {
     return audio_cli[1];
+}
+
+handle_t services_audio_desk(void)
+{
+    return audio_cli[2] ? dup_of(audio_cli[2]) : HANDLE_INVALID;
 }
 
 /* The music player: its server end again (the same channel as any player
@@ -617,7 +631,7 @@ void services_given_up(unsigned i)
         services_publish(SVC_NET_SYS, HANDLE_INVALID, false);
         tell_mounts();
     }
-    for (unsigned k = 0; i == MIXER && k < 2; k++) {
+    for (unsigned k = 0; i == MIXER && k < 3; k++) {
         jam_handle_close(audio_srv[k]);   /* calls waiting for a mixer fail now */
         audio_srv[k] = HANDLE_INVALID;
     }
@@ -646,6 +660,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     port = loop_port;
     nousb = no_usb;
     terms_init(port, splash, shell_arg);
+    apps_init(port);
     comp_init(port, !init_nocomp);
     make_audio_channels();
     net_init(port);
