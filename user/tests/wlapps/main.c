@@ -1,14 +1,15 @@
-/* wlapps: libfun's apps as windows on a compositor of our own, headless,
- * and a picture of the result on the screen (tools/shell-tests/wlapps.txt).
+/* wlapps: programs as windows on a compositor of our own, headless, and a
+ * picture of the result on the screen (tools/shell-tests/wlapps.txt).
  *
- *     run wlapps [size=WxH] [win=WxH] [settle=S] [hold=S] [tile] <app>...
+ *     run wlapps [size=WxH] [win=WxH] [settle=S] [hold=S] [tile] <prog>[:<arg>]...
  *
  * It starts `bin/compositor headless size=WxH` (default 1280x800) with an
  * image of ours to compose into (SR_USER + 1), publishes the compositor in
- * its own namespace as /svc/wayland, and starts each app (bin/<app>, no
- * arguments; `demo` gets seconds=60) in a job of their own with only that
- * service in their namespace and $FUN_WINDOW=<win> (default 600x380), so
- * libfun opens each a window of that size. No console either: an app that
+ * its own namespace as /svc/wayland, and starts each program (bin/<prog>,
+ * with <arg> as its one argument if given: `fractal:fullscreen`) in a job
+ * of their own with only that service in their namespace and
+ * $FUN_WINDOW=<win> (default 600x380), so libfun opens each a window of
+ * that size (wltest's own window keeps its size). No console either: an app that
  * can't open a window can't fall back to borrowing the screen, it ends.
  * After `settle` seconds (default 5) every app must still run and the
  * image must have the apps' pixels in it: more than a tenth of each
@@ -41,7 +42,9 @@ struct opts {
     int32_t ww, wh;        /* ... its numbers */
     unsigned settle, hold; /* seconds */
     bool    tile;
-    const char *apps[MAX_APPS];
+    const char *apps[MAX_APPS];   /* the programs' names ... */
+    const char *args[MAX_APPS];   /* ... and their arguments (NULL: none) */
+    char     names[MAX_APPS][32];
     unsigned napps;
 };
 
@@ -60,6 +63,21 @@ static bool parse_size(const char *s, int32_t *w, int32_t *h)
     return true;
 }
 
+/* "<prog>[:<arg>]" into the next app. */
+static bool split(const char *a, struct opts *o)
+{
+    const char *colon = strchr(a, ':');
+    size_t n = colon ? (size_t)(colon - a) : strlen(a);
+    if (!n || n >= sizeof(o->names[0]) || (colon && !colon[1]))
+        return false;
+    memcpy(o->names[o->napps], a, n);
+    o->names[o->napps][n] = '\0';
+    o->apps[o->napps] = o->names[o->napps];
+    o->args[o->napps] = colon ? colon + 1 : NULL;
+    o->napps++;
+    return true;
+}
+
 static bool parse(int argc, char **argv, struct opts *o)
 {
     *o = (struct opts){ .w = 1280, .h = 800, .ww = 600, .wh = 380, .settle = 5, .hold = 4 };
@@ -73,9 +91,8 @@ static bool parse(int argc, char **argv, struct opts *o)
             continue;   /* arg_num reads them */
         if (!strcmp(a, "tile"))
             o->tile = true;
-        else if (a[0] >= 'a' && a[0] <= 'z' && o->napps < MAX_APPS && !strchr(a, '='))
-            o->apps[o->napps++] = a;
-        else
+        else if (!(a[0] >= 'a' && a[0] <= 'z' && o->napps < MAX_APPS && !strchr(a, '=') &&
+                   split(a, o)))
             return false;
     }
     o->settle = (unsigned)arg_num(argc, argv, "settle", 5);
@@ -170,10 +187,9 @@ static status_t start_apps(const struct opts *o, handle_t job, handle_t *procs)
     for (unsigned i = 0; i < o->napps; i++) {
         char path[48];
         snprintf(path, sizeof(path), "bin/%s", o->apps[i]);
-        bool demo = !strcmp(o->apps[i], "demo");
-        const char *argv[] = { o->apps[i], "seconds=60" };
-        struct spawn_args a = { .path = path, .argc = demo ? 2 : 1, .argv = argv, .job = job,
-                                .envp = envp, .ns = ns };
+        const char *argv[] = { o->apps[i], o->args[i] };
+        struct spawn_args a = { .path = path, .argc = o->args[i] ? 2 : 1, .argv = argv,
+                                .job = job, .envp = envp, .ns = ns };
         status_t st = spawn(&a, &procs[i]);
         if (st != OK) {
             printf("wlapps: verdict: FAIL: can't start %s (%s)\n", path, status_str(st));
@@ -244,7 +260,8 @@ int main(int argc, char **argv)
 {
     struct opts o;
     if (!parse(argc, argv, &o)) {
-        printf("usage: wlapps [size=WxH] [win=WxH] [settle=S] [hold=S] [tile] <app>...\n");
+        printf("usage: wlapps [size=WxH] [win=WxH] [settle=S] [hold=S] [tile] "
+               "<prog>[:<arg>]...\n");
         return 2;
     }
     pool_start(0);
