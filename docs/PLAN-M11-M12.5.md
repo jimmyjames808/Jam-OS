@@ -67,6 +67,11 @@ Findings first, then fixes, as every review; a join; the PC sign-off.
 
 ## Wave 4: M12.1, the code check
 
+Scope (the owner, 2026-10-07): only the code changed or added since
+M8.6's check (commit 2079f350, "M8.6 done"), plus the unchanged callers
+of every interface M12 changed. It also takes G1's docs pass and G1's
+independent review-and-fix (moved from G1 by the owner the same day).
+
 Once M12 has reshaped the interfaces, fresh agents read the whole code base
 as M8.6's check did, in five tracks (kernel core, the rest of the kernel,
 drivers, services, libraries and tools): findings first, then fixes with a
