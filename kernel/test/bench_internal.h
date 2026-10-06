@@ -32,7 +32,11 @@ void bench_path_run(void);
 
 /* One case each, for the tests: run it on `cpu` and fill *out (false if
  * it could not run: no trace free, no memory, no bin/utest). The stamps
- * in *out stay valid until the next trace starts. */
+ * in *out stay valid until the next trace starts. A window in which a
+ * thread outside the trace was ready or running on the CPU
+ * (PATH_SHARED) is measured again, up to PATH_TRIES windows in all;
+ * out->tries says how many it took. */
+#define PATH_TRIES 5
 bool bench_path_switch(int cpu, uint64_t marked, struct path_result *out);
 bool bench_path_kcall(int cpu, uint64_t marked, struct path_result *out);
 bool bench_path_ucall(const char *what, int cpu, int server_cpu, uint64_t marked,

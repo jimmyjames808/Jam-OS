@@ -31,7 +31,14 @@
  * Interrupt handlers are not counted (they are not the call's work), but
  * PATH_IRQ counts the interrupts that land on a member, and anything
  * the scheduler does on the way out of one (a preemption) is counted:
- * an extra scheduler pass per call is a finding, not noise. */
+ * an extra scheduler pass per call is a finding, not noise.
+ *
+ * Sharing. The counts are a path's only when the members have their CPU
+ * to themselves: another thread ready there (the desktop's paint threads
+ * on a 4-CPU QEMU) turns a direct hand-off into a queued wake, and a
+ * message into one that waits in a queue. PATH_SHARED counts the
+ * members' switches that saw one; bench_path.c measures again when it
+ * isn't 0. */
 #pragma once
 
 #include <stdbool.h>
@@ -71,6 +78,9 @@ enum path_ev {
     PATH_CLOCK,          /* clock reads (uptime_ns) */
     PATH_LOCK_SLOW,      /* lock checker steps that turned interrupts off */
     PATH_RESCHED_IRQ,    /* reschedule checks (preempt_check) that turned interrupts off */
+    PATH_SHARED,         /* switches with a thread outside the trace ready or running on
+                          * the CPU (not its idle thread): the window wasn't the trace's
+                          * alone, and its scheduling counts aren't the path's */
     PATH_CALLS,          /* boundaries the lead passed in the window (= calls) */
     PATH_EV_N
 };
@@ -118,6 +128,8 @@ void path_sw_add_slow(struct path_trace *pt, const struct thread *prev,
                       const struct thread *next, enum path_ev ev);
 void path_sw_mark_slow(struct path_trace *pt, const struct thread *prev,
                        const struct thread *next, enum path_mark mk);
+/* t is one of pt's members (the scheduler's PATH_SHARED check). */
+bool path_member_slow(const struct path_trace *pt, const struct thread *t);
 
 #define PATH_ADD(ev, n)                                                          \
     do {                                                                         \
@@ -177,6 +189,8 @@ struct path_result {
     uint64_t sys[PATH_SYS_N];        /* PATH_SYSCALL by number */
     uint32_t nstamps;                /* stamps kept */
     bool     full;                   /* stamps were dropped: the buffer filled */
+    uint32_t tries;                  /* windows measured for it (bench_path.c measures
+                                      * again when one was shared: PATH_SHARED) */
     const struct path_stamp *stamps; /* valid until the next path_begin */
 };
 

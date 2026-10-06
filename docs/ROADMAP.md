@@ -196,15 +196,11 @@ ones below are the design questions M8 left open
 - **Jamjar at squarish sizes**: its layout overlaps below a width-to-height
   ratio (fine when wide); a narrow layout with the controls under the
   cover.
-- **The pathstat tests beside the desktop** (found 2026-10-07): the
-  user-call counts (`pathstat_user_*`) want nothing else ready on the
-  test's CPU, and the compositor's paint threads (4 on a 4-CPU QEMU)
-  now are, while the tests' own lines scroll the terminal. A hand-off
-  is then refused (170 of 200 a round trip) or a message queued (a job
-  charge): a soak's "idle" loop fails. `nocomp` passes 72 of 72; the
-  PC's 28 CPUs haven't shown it. The fix belongs in the harness
-  (`bench_path_ucall`): measure the window again when a non-member ran
-  on the CPU during it.
+- **The shell's quiet ktest loops beside the desktop**: a soak's idle
+  loops now run next to the compositor painting their output (G1). Once
+  in two Mac soaks (2026-10-07, 4-CPU QEMU), `repro_wake_stale_cpu` timed
+  out on a 2 s step (`KT_NEEDS_IDLE`: the machine counted as idle). If it
+  comes back, the shell's ktest should count a busy desktop as load.
 - **GPT sticks** are not read (their partitions are not mounted).
 - devmgr and init are single-threaded loops that wait inside a
   request: devmgr up to 2 s per call to a usb-storage, 5 s for a

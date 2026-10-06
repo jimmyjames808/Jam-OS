@@ -52,6 +52,11 @@ static int member_of(const struct path_trace *pt, const struct thread *t)
     return -1;
 }
 
+bool path_member_slow(const struct path_trace *pt, const struct thread *t)
+{
+    return member_of(pt, t) >= 0;
+}
+
 /* The member index of the current thread, or -1. Interrupts off. */
 static int member_now(const struct path_trace *pt, bool irq_event)
 {
@@ -281,7 +286,7 @@ static const char *const ev_names[PATH_EV_N] = {
     [PATH_SLEEPQ] = "sleeper inserts",  [PATH_TIMER_ARM] = "timer arms",
     [PATH_EMPTY_READ] = "empty reads",  [PATH_OBSERVER] = "observers",
     [PATH_CLOCK] = "clock reads",       [PATH_LOCK_SLOW] = "checker irq-offs",
-    [PATH_RESCHED_IRQ] = "resched irq-offs",
+    [PATH_RESCHED_IRQ] = "resched irq-offs", [PATH_SHARED] = "shared switches",
     [PATH_CALLS] = "calls",
 };
 

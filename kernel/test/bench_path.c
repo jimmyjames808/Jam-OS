@@ -46,6 +46,21 @@
 #define PATH_CALLS_N 1024          /* calls counted */
 #define PATH_MARKED  64            /* of those, calls with a timeline */
 #define PATH_RUN_NS  5000000000ull /* a kernel case gives up after this long */
+#define PATH_PAUSE_NS 20000000ull  /* between two: whatever shared the CPU has its turn */
+
+/* After a window: measure again? Yes if a thread outside the trace was
+ * ready or running on the members' CPU (PATH_SHARED: its scheduling
+ * counts aren't the path's) and tries are left, after a pause. */
+static bool again(struct path_result *r, uint32_t tries)
+{
+    r->tries = tries;
+    if (!r->count[PATH_SHARED] || tries >= PATH_TRIES)
+        return false;
+    kprintf("path: window %u shared its CPU (%lu switches with another thread ready): "
+            "measuring again\n", tries, r->count[PATH_SHARED]);
+    thread_sleep_ns(PATH_PAUSE_NS);
+    return true;
+}
 
 /* The TSC at which a kernel case started now gives up: the loops compare
  * it with rdtsc, not uptime_ns, so the harness adds no clock reads to the
@@ -82,7 +97,7 @@ static void sw_lead(void *arg)
     __atomic_store_n(&sw_stop, true, __ATOMIC_RELEASE);
 }
 
-bool bench_path_switch(int cpu, uint64_t marked, struct path_result *out)
+static bool switch_once(int cpu, uint64_t marked, struct path_result *out)
 {
     if (!path_begin(PATH_MK_YIELD, PATH_SKIP, PATH_CALLS_N, marked))
         return false;
@@ -96,6 +111,16 @@ bool bench_path_switch(int cpu, uint64_t marked, struct path_result *out)
     thread_join(partner);
     path_end(out);
     return true;
+}
+
+bool bench_path_switch(int cpu, uint64_t marked, struct path_result *out)
+{
+    for (uint32_t tries = 1;; tries++) {
+        if (!switch_once(cpu, marked, out))
+            return false;
+        if (!again(out, tries))
+            return true;
+    }
 }
 
 static void kc_server(void *arg)
@@ -128,7 +153,7 @@ static void kc_lead(void *arg)
     }
 }
 
-bool bench_path_kcall(int cpu, uint64_t marked, struct path_result *out)
+static bool kcall_once(int cpu, uint64_t marked, struct path_result *out)
 {
     struct channel *a, *b;
     if (channel_create(&a, &b) != OK)
@@ -151,8 +176,18 @@ bool bench_path_kcall(int cpu, uint64_t marked, struct path_result *out)
     return true;
 }
 
-bool bench_path_ucall(const char *what, int cpu, int server_cpu, uint64_t marked,
-                      struct path_result *out)
+bool bench_path_kcall(int cpu, uint64_t marked, struct path_result *out)
+{
+    for (uint32_t tries = 1;; tries++) {
+        if (!kcall_once(cpu, marked, out))
+            return false;
+        if (!again(out, tries))
+            return true;
+    }
+}
+
+static bool ucall_once(const char *what, int cpu, int server_cpu, uint64_t marked,
+                       struct path_result *out)
 {
     const void *img;
     uint64_t size;
@@ -163,6 +198,17 @@ bool bench_path_ucall(const char *what, int cpu, int server_cpu, uint64_t marked
     bool ok = bench_user_run(what, cpu, server_cpu, "path", true);
     path_end(out);
     return ok;
+}
+
+bool bench_path_ucall(const char *what, int cpu, int server_cpu, uint64_t marked,
+                      struct path_result *out)
+{
+    for (uint32_t tries = 1;; tries++) {
+        if (!ucall_once(what, cpu, server_cpu, marked, out))
+            return false;
+        if (!again(out, tries))
+            return true;
+    }
 }
 
 /* ---- the usual shape of a round trip ------------------------------------------ */
@@ -344,6 +390,10 @@ static void print_counts(const struct case_info *ci, const struct path_result *r
     uint64_t units = r->calls * ci->per_trip;
     kprintf("path: %s: per %s, over %lu %ss (%lu round trips)\n", ci->what, ci->unit, units,
             ci->unit, r->calls);
+    if (r->tries > 1)
+        kprintf("path:   window %u of %u: %s\n", r->tries, PATH_TRIES,
+                r->count[PATH_SHARED] ? "every one shared its CPU (counts not the path's alone)"
+                                      : "the ones before shared their CPU");
     static const enum path_ev entries[] = { PATH_SYSCALL, PATH_IRQ, PATH_TRAP };
     static const enum path_ev copies[] = { PATH_UCOPY_IN, PATH_UCOPY_IN_B, PATH_UCOPY_OUT,
                                            PATH_UCOPY_OUT_B, PATH_KCOPY, PATH_KCOPY_B };
@@ -354,14 +404,14 @@ static void print_counts(const struct case_info *ci, const struct path_result *r
     static const enum path_ev arch[] = { PATH_FPU_SAVE, PATH_FPU_CALLED, PATH_FPU_RESTORE,
                                          PATH_FPU_KEPT, PATH_CR3, PATH_CR3_FLUSH };
     static const enum path_ev other[] = { PATH_EMPTY_READ, PATH_OBSERVER, PATH_CLOCK,
-                                          PATH_LOCK_SLOW, PATH_RESCHED_IRQ };
+                                          PATH_LOCK_SLOW, PATH_RESCHED_IRQ, PATH_SHARED };
     print_group(r, units, "kernel entries", entries, 3);
     print_sys(r, units);
     print_group(r, units, "copies", copies, 6);
     print_group(r, units, "memory, handles, locks", memory, 6);
     print_group(r, units, "scheduler", sched, 7);
     print_group(r, units, "FPU and address space", arch, 6);
-    print_group(r, units, "other", other, 5);
+    print_group(r, units, "other", other, 6);
 }
 
 /* "1.5": v / div with one decimal, rounded (the RESULTS box is narrow). */

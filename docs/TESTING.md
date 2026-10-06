@@ -503,6 +503,18 @@ follows are in [CODING-GUIDE.md](../CODING-GUIDE.md#add-a-kernel-test)):
 | a test that is nothing but such checks | `KT_NEEDS_IDLE("why")` at the top | run from the shell, skipped under load: `skipped (busy machine: why)` |
 | a wait that only guards against a hang | a deadline of `kt_patience_ms(ms)` | 30 times longer under load |
 
+The pathstat tests (`kernel/test/test_pathstat.c`) count exactly what one
+call does, which holds only while the call's two threads have their CPU
+to themselves. Beside the desktop on a small QEMU, the compositor's paint
+threads are sometimes ready on that CPU too: a wake is then queued instead
+of handed over and the counts change. The scheduler counts such switches
+(`PATH_SHARED`), and the harness (`bench_path.c`) measures a shared window
+again, up to 5 in all (the log says `path: window N shared its CPU ...:
+measuring again`). If every window was shared the test is skipped:
+`skipped (shared CPU: ...)`, except under load, where every window is and
+the test makes its load-proof checks as it always did. The boot menu's
+All tests runs nothing else, so there no window is shared.
+
 **`soak [minutes] [loops=N] [seed=S] [load=N] [halt] [idle]`** in the shell is the
 whole thing in one command (default 3 minutes; Ctrl+C ends it after the
 step in progress):

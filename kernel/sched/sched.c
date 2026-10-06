@@ -220,6 +220,35 @@ static struct thread *pick_stealable(struct runqueue *rq, uint32_t cpu)
     return NULL;
 }
 
+#ifndef JAM_NO_KTESTS
+/* pathstat's PATH_SHARED: a switch to or from a member while a thread
+ * outside the trace (not the idle thread) is the other side of it or
+ * waits in rq. rq->lock held, interrupts off. Only with a trace armed:
+ * the walk over rq is the trace's cost, never the scheduler's. */
+static bool is_stranger(const struct path_trace *pt, const struct thread *t)
+{
+    return !t->is_idle && !path_member_slow(pt, t);
+}
+
+static void path_note_shared(struct runqueue *rq, struct thread *prev, struct thread *next)
+{
+    struct path_trace *pt = __atomic_load_n(&path_active, __ATOMIC_ACQUIRE);
+    if (__builtin_expect(!pt, 1))
+        return;
+    bool shared = is_stranger(pt, prev) || is_stranger(pt, next);
+    for (uint32_t bits = rq->bitmap; bits && !shared; bits &= bits - 1) {
+        unsigned p = (unsigned)__builtin_ctz(bits);   /* empty queues cost nothing */
+        for (struct list_node *n = rq->queues[p].next; n != &rq->queues[p] && !shared;
+             n = n->next)
+            shared = is_stranger(pt, container_of(n, struct thread, rq_node));
+    }
+    if (shared)
+        path_sw_add_slow(pt, prev, next, PATH_SHARED);   /* counted if either is a member */
+}
+#else
+#define path_note_shared(rq, prev, next) ((void)0)
+#endif
+
 /* ---- placement ------------------------------------------------------------- */
 
 /* Queued + running. The queued count first, with acquire: schedule() marks
@@ -641,6 +670,7 @@ void schedule(void)
     trace[c->index][trace_pos[c->index]++ % TRACE_N] =
         (struct switch_event){ prev, next, thread_state(prev), cpu_ticks(c) };
     PATH_SW_COUNT(prev, next, PATH_SWITCH);
+    path_note_shared(rq, prev, next);
     PATH_SW_MARK(prev, next, PATH_MK_SCHED_PICKED);
     arch_thread_switch(prev, next);   /* kernel stack, FPU, address space */
     switch_context(&prev->rsp, next->rsp);

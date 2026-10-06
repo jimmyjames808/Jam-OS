@@ -137,6 +137,23 @@ KTEST(pathstat_one_trace_at_a_time)
     KT_EQ(r.calls, 0);
 }
 
+/* After a measurement: every window bench_path.c measured shared its CPU
+ * with a thread outside the trace (the desktop's paint threads on a
+ * 4-CPU QEMU, say), so its counts are not the path's alone. On a machine
+ * meant to be idle the test says so instead of checking them (ktest's
+ * "skipped (shared CPU: ...)"); under load every window is shared, and
+ * the checks made there (the KT_EQs: not the KT_IDLE ones) have always
+ * held beside the load. The boot menu's ktest runs nothing else, so its
+ * windows are never shared. */
+#define KT_NEEDS_CPU_ALONE(r)                                                    \
+    do {                                                                         \
+        if ((r)->count[PATH_SHARED] && !ktest_busy) {                            \
+            ktest_skip_reason = "another thread was ready on the test's CPU in every window"; \
+            ktest_skip_kind = "shared CPU";                                      \
+            return;                                                              \
+        }                                                                        \
+    } while (0)
+
 static int test_cpu(void)
 {
     int p, p2;
@@ -150,6 +167,7 @@ KTEST(pathstat_switch_counts)
 {
     struct path_result r;
     KT_ASSERT(bench_path_switch(test_cpu(), 16, &r));
+    KT_NEEDS_CPU_ALONE(&r);
     KT_ASSERT(r.calls > 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 0);
     KT_EQ(per100(&r, PATH_SYSCALL), 0);
@@ -188,12 +206,15 @@ KTEST(pathstat_kernel_call_counts)
     __atomic_store_n(&channel_slots, false, __ATOMIC_RELAXED);
     bool ok = bench_path_kcall(test_cpu(), 16, &r);
     __atomic_store_n(&channel_slots, slots, __ATOMIC_RELAXED);
-    KT_ASSERT(ok && r.calls > 0);
+    KT_ASSERT(ok);
+    KT_NEEDS_CPU_ALONE(&r);
+    KT_ASSERT(r.calls > 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 200);
     KT_EQ(per100(&r, PATH_KFREE), 200);
     if (!slots)
         return;   /* booted with them off: nothing more to compare */
     KT_ASSERT(bench_path_kcall(test_cpu(), 16, &r));
+    KT_NEEDS_CPU_ALONE(&r);
     KT_ASSERT(r.calls > 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 100);
     KT_EQ(per100(&r, PATH_KFREE), 100);
@@ -217,6 +238,38 @@ KTEST(pathstat_kernel_call_counts)
     KT_EQ(per100(&r, PATH_CLOCK), 0);   /* no deadline: no clock read */
 }
 
+static bool rival_stop;   /* atomic */
+
+static void rival(void *arg)
+{
+    (void)arg;
+    while (!__atomic_load_n(&rival_stop, __ATOMIC_ACQUIRE))
+        thread_yield();
+}
+
+/* A thread kept ready on the trace's CPU, below the members' priority so
+ * it never runs while they do, still shares the CPU: every wake finds it
+ * queued, so none is a direct hand-off, and every switch of the window
+ * counts it (PATH_SHARED). The harness measures again, PATH_TRIES windows
+ * in all, and says so (r.tries): the case the desktop's paint threads make
+ * on a 4-CPU QEMU, which the tests above skip instead of failing. */
+KTEST(pathstat_shared_cpu_measured_again)
+{
+    cpumask_t m;
+    cpumask_one(&m, (uint32_t)test_cpu());
+    __atomic_store_n(&rival_stop, false, __ATOMIC_RELAXED);
+    struct thread *t = thread_create_on("pathstat rival", rival, NULL, PRIO_BENCH - 1, &m);
+    KT_ASSERT(t);
+    struct path_result r;
+    bool ok = bench_path_kcall(test_cpu(), 0, &r);
+    __atomic_store_n(&rival_stop, true, __ATOMIC_RELEASE);
+    thread_join(t);
+    KT_ASSERT(ok && r.calls > 0);
+    KT_EQ(r.tries, PATH_TRIES);
+    KT_ASSERT(r.count[PATH_SHARED] >= r.calls);   /* at least one a round trip */
+    KT_EQ(per100(&r, PATH_HANDOFF), 0);
+}
+
 /* utest bench-call against bench-echo, both on one CPU: today's 5 system
  * calls (the call; the server's read, write, a read that finds nothing,
  * and its wait), 5 handle lookups, 2 messages, and per switch one restore
@@ -235,6 +288,7 @@ KTEST(pathstat_user_call_counts)
         KT_SKIP_LIVE("no bin/utest or no trace free");
         KT_ASSERT(!"bench_path_ucall failed");
     }
+    KT_NEEDS_CPU_ALONE(&r);
     KT_ASSERT(r.calls > 0);
     KT_EQ(sys100(&r, SYS_channel_call), 100);
     KT_EQ(sys100(&r, SYS_channel_read), 200);
@@ -277,6 +331,7 @@ KTEST(pathstat_user_reply_wait_counts)
         KT_SKIP_LIVE("no bin/utest or no trace free");
         KT_ASSERT(!"bench_path_ucall failed");
     }
+    KT_NEEDS_CPU_ALONE(&r);
     KT_ASSERT(r.calls > 0);
     KT_EQ(sys100(&r, SYS_channel_call), 100);
     KT_EQ(sys100(&r, SYS_channel_reply_wait), 100);
@@ -325,6 +380,7 @@ KTEST(pathstat_user_deadline_call_counts)
         KT_SKIP_LIVE("no bin/utest or no trace free");
         KT_ASSERT(!"bench_path_ucall failed");
     }
+    KT_NEEDS_CPU_ALONE(&r);
     KT_ASSERT(r.calls > 0);
     /* The client's warm-up also reads the clock every 64 calls, and on a
      * fast CPU (the PC, not QEMU) those calls can fall in the trace's
@@ -356,6 +412,7 @@ KTEST(pathstat_user_generated_call_counts)
         KT_SKIP_LIVE("no bin/utest or no trace free");
         KT_ASSERT(!"bench_path_ucall failed");
     }
+    KT_NEEDS_CPU_ALONE(&r);
     KT_ASSERT(r.calls > 0);
     /* The warm-up reads the clock every 64 calls (calls this quick may
      * fill the whole window): at most 2 in 100. */
