@@ -685,6 +685,8 @@ struct comp_cursor {
     bool hidden;
     enum cursor_shape shape;       /* without a surface: the client's (wp_cursor_shape) or
                                     * the compositor's choice (pointer.c) */
+    bool moved;                    /* a mouse has moved it: until then it hovers nothing (it
+                                    * starts in the output's middle, often on a gap) */
 };
 
 /* The compositor's own cursor at (x, y) where no client's surface is: a

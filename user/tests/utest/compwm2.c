@@ -13,8 +13,9 @@
  * floating builds its tree in the windows' order, each splitting the last.
  * t_wm_tile_gaps: a gap takes presses 12 pixels across centred on it (not
  * under a maximised window), shows the resize arrows and its bar lit while
- * hovered or dragged; dragging it resizes both sides live, with no glide,
- * clamped; stacked gaps too.
+ * hovered (not before a mouse first moves the pointer, which starts on the
+ * first two tiles' gap) or dragged; dragging it resizes both sides live,
+ * with no glide, clamped; stacked gaps too.
  * t_wm_tile_float: windows that have only ever tiled (or been maximised),
  * switched to floating, are asked for 60% of the room under the strip
  * each way, as their limits allow and never more than the room, and
@@ -181,7 +182,12 @@ static bool gap_hover_steps(void)
      * short at either end (788 * 0.15 = 118) */
     cursor.x = 640;
     cursor.y = 400;
+    cursor.moved = false;   /* where it starts (the output's middle): no mouse has moved it */
     damage_clear(&scene.damage);
+    wm_marks_update();
+    CHECK(box_empty(wm_marks.bar));
+    CHECK_EQ(scene.damage.n, 0);
+    cursor.moved = true;
     wm_marks_update();
     CHECK(box_eq(wm_marks.bar, ((struct comp_box){ 639, 124, 642, 676 })));
     CHECK(scene.damage.n > 0);
