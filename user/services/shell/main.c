@@ -385,7 +385,8 @@ static void run_first(const char *line)
 {
     char copy[LINE_MAX + 1];
     snprintf(copy, sizeof(copy), "%s", line);
-    echo(PROMPT "%s\n", copy);
+    set_prompt();
+    echo("%s%s\n", prompt, copy);
     remember(copy);
     sh_line(copy);
     sh_flush();

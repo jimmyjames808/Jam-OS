@@ -24,10 +24,11 @@
 #include <keymap.h>
 #include "desk.h"
 
-const struct desk_app desk_apps[DESK_APPS] = {
-    { "Terminal", "Shell", 'T', LOOK_JAM_RASPBERRY },
-    { "Jamjar", "Music player", 'J', LOOK_JAM_APRICOT },
-};
+/* Its tiles' jam colours, by <deskapps.h>'s tint. */
+#define TINT(t) ((t) == 0 ? LOOK_JAM_RASPBERRY : (t) == 1 ? LOOK_JAM_APRICOT \
+                                                    : LOOK_JAM_BLACKCURRANT)
+#define DESK_APP_ROW(cmd, path, name, about, letter, tint) { name, about, letter, TINT(tint), cmd },
+const struct desk_app desk_apps[DESK_APPS] = { DESKAPPS(DESK_APP_ROW) };
 
 struct search_state search;
 struct alttab_state alttab;
@@ -133,13 +134,8 @@ static void run(unsigned i)
         desk_run(cmd);
         return;
     }
-    char name[16];
-    unsigned k = 0;
-    for (const char *s = desk_apps[app].name; *s && k + 1 < sizeof(name); s++)
-        name[k++] = lower(*s);
-    name[k] = '\0';
     search.used[app] = ++runs;
-    desk_launch(name);
+    desk_launch(desk_apps[app].cmd);   /* its command name: what init knows it by */
 }
 
 /* cp typed: its UTF-8 bytes added, if they fit. */
