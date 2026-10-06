@@ -29,8 +29,8 @@ QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-nospare.txt \
 log="$out/fatspare.log"
 nolog="$out/fatnospare.log"
 # Up to the `reboot -f` at the end: the shutdown takes every mount away.
-sed '/jam>.* reboot -f/q' "$log" > "$out/fatspare.run.log"
-sed '/jam>.* reboot -f/q' "$nolog" > "$out/fatnospare.run.log"
+sed '/jam[^>]*>.* reboot -f/q' "$log" > "$out/fatspare.run.log"
+sed '/jam[^>]*>.* reboot -f/q' "$nolog" > "$out/fatnospare.run.log"
 
 count() { grep -ac -- "$1" "$2" || true; }
 need() {   # need <min> <text> <log>

@@ -5,13 +5,13 @@
 # answer with no timeout after the checks put the rings back. (Markers
 # echoed split so the typed line itself never matches the wait.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send iommu | grep -E "translation|unit 0"; echo iommu-""1
 wait iommu-1
-wait jam>
+wait {prompt}
 send hda | grep answered; echo hda-""1
 wait codec(s) answered; 0 verb(s) timed out
 wait hda-1
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

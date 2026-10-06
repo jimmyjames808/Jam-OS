@@ -4,12 +4,12 @@
 # mouse must be ready long before the slow ones attach; then `usb` lists
 # all seven devices.
 wait 60 console: input ready: the first keyboard and mouse
-seen 60 jam>
+seen 60 {prompt}
 wait 60 usb 8: 0627:0001
 seen 60 usb 6.3: 0627:0001
 sleep 1
 send usb
 wait 30 7 devices
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

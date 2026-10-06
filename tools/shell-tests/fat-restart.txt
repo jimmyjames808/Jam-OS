@@ -12,11 +12,11 @@
 # the shell's through the console: their order isn't fixed, hence `seen`.
 # (The markers are echoed as fr-""1 so the typed line itself never matches.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 send mkdir /data/fr; echo fr-""1
 wait fr-1
-wait jam>
+wait {prompt}
 
 # ---- unsynced writes, killed right after -----------------------------------------------------
 send sleep 1; write /data/fr/u1.txt unsynced-""1 && kill fat-data && cat /data/fr/u1.txt; echo fr-""2
@@ -31,32 +31,32 @@ wait fr-4
 send write -a /data/fr/u1.txt again-""1 && kill fat-data && kill fat-data && cat /data/fr/u1.txt; echo fr-""5
 wait again-1
 wait fr-5
-wait jam>
+wait {prompt}
 seen 20 fat /data: restart (killed
 
 # ---- a copy, then kills; its checksum ----------------------------------------------------------
 send sleep 1; cp /esp/boot/jamos.elf /data/fr/k1.bin && kill fat-data && sha256sum /data/fr/k1.bin /esp/boot/jamos.elf; echo fr-""6
 wait fr-6
-wait jam>
+wait {prompt}
 send repeat 3 kill fat-data; cp /esp/boot/bootfs.img /data/fr/k2.bin && repeat 2 kill fat-data; sha256sum /data/fr/k2.bin /esp/boot/bootfs.img; echo fr-""7
 wait fr-7
-wait jam>
+wait {prompt}
 
 # ---- bursts of kills between appends to one file -----------------------------------------------
 # (short lines: the shell cuts a line that is too long)
 send repeat 5 kill fat-data; write -a /data/fr/burst.txt b-""1; echo fr-""8
 wait fr-8
-wait jam>
+wait {prompt}
 send repeat 5 kill fat-data; write -a /data/fr/burst.txt b-""2; repeat 5 kill fat-data; echo fr-""9
 wait fr-9
-wait jam>
+wait {prompt}
 send cat /data/fr/burst.txt; ls /data/fr; echo fr-""11
 wait b-1
 wait b-2
 wait fr-11
-wait jam>
+wait {prompt}
 send sync; ps; echo fr-""10
 wait fr-10
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

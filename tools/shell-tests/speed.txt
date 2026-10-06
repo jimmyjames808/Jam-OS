@@ -10,25 +10,25 @@
 wait 120 Jam OS shell
 seen 60 netstack: link up
 seen 30 netstack: address 10.2.21.5/24
-wait jam>
+wait {prompt}
 send speed 10.2.21.174 -t 3
 wait 60 speed: connected to 10.2.21.174 port 5201: sending for 3 s over TCP
 wait 60 speed: sent
 wait 60 speed: the other side got
-wait jam>
+wait {prompt}
 send speed mac.jam -r -t 3
 wait 60 speed: connected to 10.2.21.174 port 5201: receiving for 3 s over TCP
 wait 60 speed: received
-wait jam>
+wait {prompt}
 send speed 10.2.21.174 -u -t 2
 wait 60 speed: sending UDP to 10.2.21.174 port 5201 for 2 s
 wait 60 datagrams sent,
 wait 60 speed: the Mac got
-wait jam>
+wait {prompt}
 send speed 10.2.21.174 5299 -t 1; echo st=$?
 wait 60 speed: 10.2.21.174 port 5299: refused
 wait st=1
-wait jam>
+wait {prompt}
 send speed -l 5202
 wait 30 speed: listening on 10.2.21.5 port 5202
 # tools/speed.py client connects now: sends 3 s, then receives 3 s, then
@@ -42,18 +42,18 @@ wait 60 speed: received
 sleep 2
 type \x03
 wait speed: stopped
-wait jam>
+wait {prompt}
 send echo st=$?
 wait st=130
-wait jam>
+wait {prompt}
 send speed 10.2.21.174 -t 30
 wait 60 speed: connected to 10.2.21.174 port 5201: sending for 30 s over TCP
 sleep 2
 type \x03
 wait speed: stopped
-wait jam>
+wait {prompt}
 send echo st=$?
 wait st=130
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

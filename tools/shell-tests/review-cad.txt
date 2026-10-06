@@ -2,10 +2,10 @@
 # (no root resource) gets a PROGRAM-level console channel, which can't
 # connect an input source, so it can't send Ctrl+Alt+Del (or any key).
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send run contest cad
 wait 10 contest: cad: connect_input: ERR_ACCESS_DENIED
 wait 10 run: bin/contest exited with code 0
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

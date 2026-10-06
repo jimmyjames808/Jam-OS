@@ -43,9 +43,9 @@ quiet="wait 30 other CPU(s) halted, bus mastering off on"
 
 run_data() {
     stick="$out/rbf-data-stick.img"
-    QEMU_SAVE="$stick" run data shell "wait 120 Jam OS shell" "wait jam>" \
+    QEMU_SAVE="$stick" run data shell "wait 120 Jam OS shell" "wait {prompt}" \
         "seen 60 init: /data mounted" "seen 60 logd: writing /data/logs/boot-0001.txt" \
-        "send T=k && write /data/rbf.txt written before the reset" "wait jam>" \
+        "send T=k && write /data/rbf.txt written before the reset" "wait {prompt}" \
         "send reboot -f" "wait 30 rebooting through the firmware" \
         "wait 30 init: /data synced in" "wait 60 init: firmware reset: devmgr stopped in" \
         "$asked" "$resetting" "$quiet" \
@@ -57,7 +57,7 @@ run_data() {
     grep -aq "driver(s) stopped; exiting" "$log" || fail data "devmgr's drivers weren't stopped"
     grep -aq "devmgr didn't stop in order" "$log" && fail data "devmgr had to be killed"
     mtype -i "$stick@@64M" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced" || fail data "boot-0001.txt doesn't have the reset's sync"
-    QEMU_IMAGE="$stick" run data2 shell "wait 120 Jam OS shell" "wait jam>" \
+    QEMU_IMAGE="$stick" run data2 shell "wait 120 Jam OS shell" "wait {prompt}" \
         "seen 60 init: /data mounted" "seen 60 logd: writing /data/logs/boot-0002.txt" \
         "send T=k && cat /data/rbf.txt && echo ok-\$T" "wait written before the reset" \
         "wait ok-k" "send reboot -f" "wait 30 reboot: trying the ACPI reset register" ||
@@ -71,7 +71,7 @@ run_data() {
 # line must never come.
 run_method() {
     word=$1 line=$2 next=$3
-    run "$word" "shell reset=$word" "wait 120 Jam OS shell" "wait jam>" "send reboot -f" \
+    run "$word" "shell reset=$word" "wait 120 Jam OS shell" "wait {prompt}" "send reboot -f" \
         "wait 60 init: firmware reset: devmgr stopped in" \
         "$asked" "$resetting" "$quiet" "wait 30 $line" ||
         { fail "$word" "the script (see $out/rbf-$word.log)"; return; }

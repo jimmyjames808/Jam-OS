@@ -6,12 +6,12 @@
 # devmgr_query_channel), so a keyboard plugged in afterwards types into the
 # shell.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 30 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
 send run contest steal
 wait 10 contest: steal: no devmgr channel
 wait 10 run: bin/contest exited with code 0
-wait jam>
+wait {prompt}
 monitor device_del keys
 sleep 2
 monitor device_add usb-kbd,id=keys2,bus=xhci.0,port=2.1
@@ -19,6 +19,6 @@ wait 30 hid 0627:0001 if 0: boot keyboard ready
 sleep 1
 usbkeys help\r
 wait 10 Commands:
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

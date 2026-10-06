@@ -11,143 +11,143 @@
 #      the sleep timer: set, shown, off, 33 s that runs out and stops it
 #   4. a second stick's folder, the stick pulled mid-song: it stops itself
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 seen 60 music: ready
 send music; echo mu-""0 $?
 wait usage: music start [folder] | stop | next | prev | pause | status | vol [dB]
 wait mu-0 2
-wait jam>
+wait {prompt}
 send music status; echo mu-""1 $?
 wait music: stopped
 wait mu-1 0
-wait jam>
+wait {prompt}
 send music start /data/nothere; echo mu-""2 $?
 wait music: /data/nothere: no such folder
 wait mu-2 1
-wait jam>
+wait {prompt}
 send music start /data/music/Empty; echo mu-""3 $?
 wait music: no .mp3 or .wav files in /data/music/Empty
 wait mu-3 1
-wait jam>
+wait {prompt}
 send music next; echo mu-""4 $?
 wait music: not playing
 wait mu-4 1
-wait jam>
+wait {prompt}
 
 # ---- 2: the shuffle, analysed in the capture --------------------------------------------
 send music start; echo mu-""5 $?
 wait 60 music: playing 7 tracks from /data/music in shuffle
 wait mu-5 0
-wait jam>
+wait {prompt}
 seen 30 music: track 1:
 send ls /data/music | grep -c Loose.Mp3; echo mu-""6 $?
 wait mu-6 0
-wait jam>
+wait {prompt}
 seen 30 music: track 2:
 send beep 1500 400; echo mu-""7 $?
 wait mu-7 0
-wait jam>
+wait {prompt}
 send music status; echo mu-""8 $?
 wait music: playing
 wait folder /data/music: 7 tracks
 wait mu-8 0
-wait jam>
+wait {prompt}
 send vol | grep -c music; echo mu-""9 $?
 wait mu-9 0
-wait jam>
+wait {prompt}
 send music vol -6; music vol 0; echo mu-""10 $?
 wait music: volume -6.0 dB
 wait music: volume 0.0 dB
 wait mu-10 0
-wait jam>
+wait {prompt}
 seen 30 music: track 3:
 sleep 1
 send music next; echo mu-""11 $?
 wait music: next
 wait mu-11 0
-wait jam>
+wait {prompt}
 seen 60 music: track 8:
 seen music: /data/music/Bad/x/garbage.mp3: not a WAV or MP3 file
 send music stop; echo mu-""12 $?
 wait music: stopped
 wait mu-12 0
-wait jam>
+wait {prompt}
 send music status; echo mu-""13 $?
 wait music: stopped
 wait mu-13 0
-wait jam>
+wait {prompt}
 sleep 2
 send beep 1000 300; echo mu-""14 $?
 wait mu-14 0
-wait jam>
+wait {prompt}
 sleep 1
 
 # ---- 3: it outlives Ctrl+C, the shell and the mixer --------------------------------------
 send music start /data/music/A; echo mu-""15 $?
 wait 60 music: playing 2 tracks from /data/music/A in shuffle
 wait mu-15 0
-wait jam>
+wait {prompt}
 send sleep 5
 sleep 1
 type \x03
-wait jam>
+wait {prompt}
 send music status | grep -c "music: playing"; echo mu-""16 $?
 wait mu-16 0
-wait jam>
+wait {prompt}
 send kill shell
 wait 60 Jam OS shell
-wait jam>
+wait {prompt}
 send music status | grep -c "music: playing"; echo mu-""17 $?
 wait mu-17 0
-wait jam>
+wait {prompt}
 send kill mixer
 wait 30 mixer: restart (killed
 send music status | grep -c "music: playing"; echo mu-""18 $?
 wait mu-18 0
-wait jam>
+wait {prompt}
 # prev, pause and the sleep timer (music.idl 6, 9, 10)
 send music prev; echo mu-""22 $?
 wait music: prev
 seen 10 music: back to
 wait mu-22 0
-wait jam>
+wait {prompt}
 send music pause; echo mu-""23 $?
 wait music: paused (music pause again goes on)
 wait mu-23 0
-wait jam>
+wait {prompt}
 send music status; echo mu-""24 $?
 wait music: paused
 wait mu-24 0
-wait jam>
+wait {prompt}
 send music pause; echo mu-""25 $?
 wait music: playing on
 wait mu-25 0
-wait jam>
+wait {prompt}
 send music sleep 0s; echo mu-""26 $?
 wait usage: music sleep <minutes 1..1440> | <seconds>s | off
 wait mu-26 2
-wait jam>
+wait {prompt}
 send music sleep 90; music sleep; echo mu-""27 $?
 wait music: it stops in 90:00 (the last 30 s fade out)
 wait   the sleep timer stops it in 
 wait mu-27 0
-wait jam>
+wait {prompt}
 send music sleep off; music sleep 33s; echo mu-""28 $?
 wait music: the sleep timer is off
 wait music: it stops in 0:33
 wait mu-28 0
-wait jam>
+wait {prompt}
 wait 60 music: stopped: the sleep timer ran out
 send music status; music stop; echo mu-""19 $?
 wait music: stopped: the sleep timer ran out
 wait music: not playing
 wait mu-19 0
-wait jam>
+wait {prompt}
 send music prev; echo mu-""29 $?
 wait music: not playing
 wait mu-29 1
-wait jam>
+wait {prompt}
 
 # ---- 4: a second stick, pulled mid-song ----------------------------------------------------
 monitor device_add usb-storage,id=sp,bus=xhci.0,port=2,drive=pimg
@@ -155,13 +155,13 @@ wait 60 init: /usb0 mounted
 send music start /usb0/music; echo mu-""20 $?
 wait 60 music: playing 3 tracks from /usb0/music in shuffle
 wait mu-20 0
-wait jam>
+wait {prompt}
 sleep 4
 monitor device_del sp
 wait 30 music: stopped: 3 files in a row could not be read
 send music status; echo mu-""21 $?
 wait music: stopped: 3 files in a row could not be read
 wait mu-21 0
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

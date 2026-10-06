@@ -3,28 +3,28 @@
 # last a panic, which starts the stored kernel: the next boot's shell says
 # what happened.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send bench
 wait 300 shell: bench: done
-wait jam>
+wait {prompt}
 send stress 10
 wait 120 shell: stress 10: PASSED
-wait jam>
+wait {prompt}
 send log 3
-wait jam>
+wait {prompt}
 # Page Up on a terminal scrolls the screen back; any other key returns
 type \e[5~\e[5~
 sleep 0.5
 shot scrolled-back
 type \e[6~\e[6~
 send clear
-wait jam>
+wait {prompt}
 sleep 0.5
 shot cleared
 send panic
 wait 30 KERNEL PANIC
 wait 60 loader:      Jam OS kexec
 wait 120 the last boot panicked:
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

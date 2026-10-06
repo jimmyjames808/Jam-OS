@@ -4,11 +4,11 @@
 # Then the plug is pulled: QEMU quits while a program is writing a file it
 # never syncs.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 seen 30 logd: writing /data/logs/boot-0002.txt
 send T=b
-wait jam>
+wait {prompt}
 send cat "/data/My Notes/first boot.txt"
 wait kept across a reboot-a
 send hexdump /boot/bin/utest | tail -n 3 | write /data/end1; hexdump /data/utest.copy | tail -n 3 | write /data/end2; echo hex-$T-done

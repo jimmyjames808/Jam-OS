@@ -4,12 +4,12 @@
 wait 120 Jam OS shell
 seen 30 a USB controller, left alone (nousb)
 seen 30 (nousb: no USB drivers)
-wait jam>
+wait {prompt}
 send usb
 wait usb: no USB bus driver bound
-wait jam>
+wait {prompt}
 send devices
 wait devmgr:
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

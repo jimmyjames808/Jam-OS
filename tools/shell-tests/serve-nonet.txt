@@ -3,10 +3,10 @@
 # comes; the shell says so (not that the server didn't answer).
 wait 120 Jam OS shell
 seen 60 serve: ready
-wait jam>
+wait {prompt}
 send serve /boot/build.txt 8080; echo st=$?
 wait 30 serve: /boot/build.txt on port 8080: no network address yet
 wait st=1
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

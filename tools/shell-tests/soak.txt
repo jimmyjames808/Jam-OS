@@ -5,7 +5,7 @@
 # pulled here: tools/soak-test.sh does that (soak-plug.txt).
 # QEMU_INPUT=this file, command line "shell", QEMU_TIMEOUT=600.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 send soak loops=2 seed=11 load=4
 wait 30 soak: begun on
@@ -20,6 +20,6 @@ wait 200 SOAK RESULTS
 wait soak: PASSED after
 wait kernel tests: 4 loop(s), seeds 11 to 14
 wait shell: soak: PASSED
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

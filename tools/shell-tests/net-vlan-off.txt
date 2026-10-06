@@ -8,43 +8,43 @@
 wait 120 Jam OS shell
 seen 60 [e1000e] no VLAN: the network stays off (the chip is left alone)
 seen 30 netstack: no session with the network driver yet
-wait jam>
+wait {prompt}
 send net
 wait address  none yet
 wait link     no network card
-wait jam>
+wait {prompt}
 send host one.one.one.one
 wait 30 host: one.one.one.one: no DNS server yet
-wait jam>
+wait {prompt}
 send ping mac.jam -c 2
 wait 30 ping: mac.jam: no DNS server yet
-wait jam>
+wait {prompt}
 send ping 1.1.1.1 -c 3
 wait 30 ping: no address, no link or no route
-wait jam>
+wait {prompt}
 send update -n
 wait 60 update: the network has no address
 wait the running build is unchanged
-wait jam>
+wait {prompt}
 send fetch http://10.2.21.174:8000/small.txt /data/x; echo st=$?
 wait 60 fetch: 10.2.21.174 port 8000: no answer in time
 wait st=1
-wait jam>
+wait {prompt}
 send serve /data/served.bin; echo st=$?
 wait 60 serve: /data/served.bin on port 8080:
 wait st=1
-wait jam>
+wait {prompt}
 send serve stop
 wait serve: nothing was served
-wait jam>
+wait {prompt}
 send speed 10.2.21.174 -t 1; echo st=$?
 wait 60 speed: 10.2.21.174 port 5201: ERR_TIMED_OUT
 wait st=1
-wait jam>
+wait {prompt}
 sleep 10
 send net
 wait link     no network card
 wait frames   0 in (0 refused), 0 out (0 dropped)
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

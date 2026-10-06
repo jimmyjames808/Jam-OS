@@ -6,35 +6,35 @@
 # both ends of the amp's range. (The markers are echoed as bp-""1 so the
 # typed line itself never matches the wait.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 1 codec(s) answered; 0 verb(s) timed out
 send hda gain; echo bp-""1
 wait hda: gain -30.0 dB (step 44; -74.0 to 0.0 dB)
 wait bp-1
-wait jam>
+wait {prompt}
 send beep 440 500; echo bp-""2
 wait 30 beep: 440 Hz for 500 ms at -30.0 dB
 wait bp-2
-wait jam>
+wait {prompt}
 send hda gain -20.4; echo bp-""3
 wait hda: gain -20.0 dB (step 54;
 wait bp-3
-wait jam>
+wait {prompt}
 send hda gain -500; echo bp-""4
 wait hda: gain -74.0 dB (step 0;
 wait bp-4
-wait jam>
+wait {prompt}
 send hda gain 6; echo bp-""5
 wait hda: gain 0.0 dB (step 74;
 wait bp-5
-wait jam>
+wait {prompt}
 send hda gain -30; hda | grep "hda: gain"; echo bp-""6
 wait hda: gain -30.0 dB (step 44;
 wait bp-6
-wait jam>
+wait {prompt}
 send beep 30000; echo bp-""7
 wait usage: beep [hz] [ms]
 wait bp-7
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

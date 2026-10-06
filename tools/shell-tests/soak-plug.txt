@@ -8,7 +8,7 @@
 # is not a failure, wrong data is.
 # Use tools/soak-test.sh (it sets @SEED@, @LOOPS@ and @LOAD@ and adds the drive).
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 monitor device_add usb-storage,id=s2,bus=xhci.0,port=2,drive=s2img
 wait 60 init: /usb0 mounted
@@ -41,6 +41,6 @@ wait 120 init: /data mounted
 wait 900 SOAK RESULTS
 wait soak: PASSED after
 wait shell: soak: PASSED
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

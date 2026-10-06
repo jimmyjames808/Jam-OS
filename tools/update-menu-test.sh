@@ -179,13 +179,13 @@ run() {
         "$out/$1.log" | tr -d '\r' | sed "s/^/update-menu-test: $1: /"
 }
 start='wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted'
 mcheck='send run updtest menucheck /data/update/menu-old.conf /data/update/menu-new.conf
 wait 60 updtest: menucheck:'
 # write <dir> [<stop>]: a menuwrite, its answer line waited for.
 write() {
-    printf 'send run updtest menuwrite /data/update/%s %s\nwait 300 updtest: menuwrite:\nwait jam>\n' \
+    printf 'send run updtest menuwrite /data/update/%s %s\nwait 300 updtest: menuwrite:\nwait {prompt}\n' \
         "$1" "${2:-0}"
 }
 # expect <run> <count> <text>: the run's log has <text> exactly <count> times.
@@ -244,12 +244,12 @@ case $r in
 menus)
     {
         echo "$start"
-        echo "$mcheck"; echo "wait jam>"
-        printf 'send run updtest menubad /data/update/mnew/\nwait 300 updtest: menubad:\nwait jam>\n'
-        echo "$mcheck"; echo "wait jam>"
-        write mbad/; echo "$mcheck"; echo "wait jam>"
-        write ""; echo "$mcheck"; echo "wait jam>"
-        write mnew/; echo "$mcheck"; echo "wait jam>"
+        echo "$mcheck"; echo "wait {prompt}"
+        printf 'send run updtest menubad /data/update/mnew/\nwait 300 updtest: menubad:\nwait {prompt}\n'
+        echo "$mcheck"; echo "wait {prompt}"
+        write mbad/; echo "$mcheck"; echo "wait {prompt}"
+        write ""; echo "$mcheck"; echo "wait {prompt}"
+        write mnew/; echo "$mcheck"; echo "wait {prompt}"
         write mnew/
         printf 'send reboot -f\nwait reboot: resetting\n'
     } > "$out/m1.txt"
@@ -273,7 +273,7 @@ stops)
     {
         echo "$start"
         for s in 9:mold 10:mold 11:mold 12:mold 13:mold 14:mnew 0:mold; do
-            write "${s#*:}/" "${s%:*}"; echo "$mcheck"; echo "wait jam>"
+            write "${s#*:}/" "${s%:*}"; echo "$mcheck"; echo "wait {prompt}"
         done
         printf 'send reboot -f\nwait reboot: resetting\n'
     } > "$out/m2.txt"
@@ -286,7 +286,7 @@ stops)
     menus m2 "$out/m2-saved.img" old new
     ;;
 cut)
-    { echo "$start"; write mold/ 12; echo "$mcheck"; echo "wait jam>"
+    { echo "$start"; write mold/ 12; echo "$mcheck"; echo "wait {prompt}"
       printf 'send reboot -f\nwait reboot: resetting\n'; } > "$out/m3.txt"
     run m3 "$out/m1-saved.img" "$out/m3-saved.img"
     expect m3 1 "Limine reads boot/limine.conf (the spare): the new menu (prev: the new menu"
@@ -297,7 +297,7 @@ cut)
     [ "$got" = "$vb|" ] || fail "m3boot: the cut stick doesn't boot B from the spare ($got)"
     ;;
 settle)
-    { echo "$start"; write mold/; echo "$mcheck"; echo "wait jam>"
+    { echo "$start"; write mold/; echo "$mcheck"; echo "wait {prompt}"
       printf 'send reboot -f\nwait reboot: resetting\n'; } > "$out/m4.txt"
     run m4 "$out/m3-saved.img" "$out/m4-saved.img"
     expect m4 1 "an earlier boot menu write stopped in its swap: undoing it"
@@ -314,35 +314,35 @@ $start
 seen 60 netstack: address 10.2.21.5/24
 send update -n
 wait 300 not loaded (-n): the running build stays
-wait jam>
+wait {prompt}
 $mcheck
-wait jam>
+wait {prompt}
 send update -w
 wait 300 init refused it: a file's SHA-256 isn't the manifest's: menu
-wait jam>
+wait {prompt}
 send update
 wait 300 loaded and written to the stick
 wait update: written to the stick and loaded:
-wait jam>
+wait {prompt}
 send reboot
 wait 60 kexec: starting the stored kernel
 wait 120 init: the shell is up
-wait jam>
+wait {prompt}
 $mcheck
-wait jam>
+wait {prompt}
 send update -w
 wait 300 update: its boot menu written
 wait update: this is the build running now, and the stick has it already
-wait jam>
+wait {prompt}
 send reboot
 wait 60 kexec: starting the stored kernel
 wait 120 init: the shell is up
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $vb, git b0b0b0b
-wait jam>
+wait {prompt}
 $mcheck
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF

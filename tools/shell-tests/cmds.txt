@@ -6,9 +6,9 @@
 # appears in the typed line ("ok-$T-3") and only shows when the command
 # before && succeeded.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send T=x
-wait jam>
+wait {prompt}
 
 # ---- information ------------------------------------------------------------------
 send uname -a
@@ -41,7 +41,7 @@ wait top - up
 wait CPU%    CPU TIME
 wait q or Ctrl+C: quit
 wait top - up
-wait jam>
+wait {prompt}
 sleep 0.5
 shot shell-top
 send top -n 1 -d 0.2 | grep -c shell | grep ^1$ && echo ok-$T-top
@@ -54,7 +54,7 @@ send lspci
 wait PCI function
 send lsusb
 wait usb:
-wait jam>
+wait {prompt}
 
 # ---- date and time zones (the RTC starts at 2026-01-15 01:02:03) ----------------------
 send date -d @1791043199
@@ -86,7 +86,7 @@ send date -r
 wait RTC 2026-01-15 01:0
 wait read as local time
 wait the clock: 2026-01-14 14:0
-wait jam>
+wait {prompt}
 
 # ---- files ---------------------------------------------------------------------------
 send pwd
@@ -127,7 +127,7 @@ send head -n 2 init.cfg | tail -1
 wait #     <path in bootfs> [arguments...]
 send wc init.cfg | grep init.cfg && echo ok-$T-wc
 wait ok-x-wc
-wait jam>
+wait {prompt}
 
 # ---- pipes and text ------------------------------------------------------------------
 send seq 5 | sort -rn | head -2 | tail -1 | grep ^4$ && echo ok-$T-p1
@@ -159,7 +159,7 @@ wait only a program runs in the background (& after echo, a shell command)
 wait b-x-after
 send echo "abc
 wait no closing
-wait jam>
+wait {prompt}
 
 # ---- variables, lists, aliases --------------------------------------------------------
 send set A hello; echo "[$A]"
@@ -182,13 +182,13 @@ send echo c-$T; echo d-$T # e-$T
 wait c-x
 wait d-x
 send export JAMTEST=j$T
-wait jam>
+wait {prompt}
 send env | grep ^JAMTEST=jx$ && echo ok-$T-env
 wait ok-x-env
 send set | grep "export JAMTEST=jx" && echo ok-$T-set
 wait ok-x-set
 send alias hi='echo hi-there-$T'
-wait jam>
+wait {prompt}
 send hi
 wait hi-there-x
 send alias | grep "alias ll='ls -l'" && echo ok-$T-alias
@@ -214,12 +214,12 @@ send help
 wait Information
 wait Text (read a file or a pipe)
 wait restart the machine
-wait jam>
+wait {prompt}
 sleep 0.5
 shot shell-help
 send help grep
 wait usage: grep [-i] [-v] [-c] [-n] <pattern> [file]
-wait jam>
+wait {prompt}
 
 # ---- programs: by name, environment, in a pipe ----------------------------------------
 send contest
@@ -231,7 +231,7 @@ wait contest: type s now
 type s
 wait 60 run: bin/contest exited with code 0
 
-wait jam>
+wait {prompt}
 send run utest env one two
 wait env: JAMTEST=jx
 wait arg: two
@@ -243,29 +243,29 @@ wait ok-x-pipe
 # still arrives; a program writing flat out still yields to Ctrl+C
 send run contest junk | grep "9 of 9 handles closed" && echo ok-$T-junk
 wait 30 ok-x-junk
-wait jam>
+wait {prompt}
 send run contest spew | wc -l
 sleep 3
 type \x03
 wait 10 ^C: killing bin/contest
 wait 10 run: bin/contest was killed
-wait jam>
+wait {prompt}
 send utest exit7; echo code=$?
 wait code=7
-wait jam>
+wait {prompt}
 
 # ---- keys: Tab completion, Ctrl+C -------------------------------------------------------
 type hexd\t-n 4 bin/ini\t\r
 wait 60 00000000  7f 45 4c 46
-wait jam>
+wait {prompt}
 type ls /bo\t\r
 wait init.cfg
-wait jam>
+wait {prompt}
 send sleep 30
 sleep 1
 type \x03
 wait ^C
-wait jam>
+wait {prompt}
 send echo st=$?
 wait st=130
 send watch -n 0.5 echo w-$T
@@ -274,7 +274,7 @@ wait w-x
 wait w-x
 type \x03
 wait ^C
-wait jam>
+wait {prompt}
 sleep 0.5
 shot shell-cmds
 send reboot -f

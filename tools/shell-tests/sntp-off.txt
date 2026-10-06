@@ -4,13 +4,13 @@
 wait 120 Jam OS shell
 seen 60 init: ntp = off in the settings: the clock is not set from the network
 seen 60 dhcp: lease 10.2.21.100/24
-wait jam>
+wait {prompt}
 sleep 12
 send date -r
 wait set by init from the RTC
-wait jam>
+wait {prompt}
 send date -u
 wait 30 Wed 14 Jan 2026
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

@@ -254,10 +254,10 @@ fi
 # cold boot leaves it, starts it and turns translation on again; the
 # devices (the stick, the shell) work in both kernels.
 jump() {
-    printf '%s\n' "wait 180 init: the shell is up" "wait jam>" "send $2" "wait 60 $3" \
+    printf '%s\n' "wait 180 init: the shell is up" "wait {prompt}" "send $2" "wait 60 $3" \
         "wait 60 loader:      Jam OS kexec" "wait 60 iommu=on: 1 of 1 unit started" \
         "wait 60 interrupt remapping on: 1 unit" "wait 60 unit 0: translation on (it was off)" "wait 180 init: the shell is up" \
-        "wait jam>" "send reboot -f" "wait reboot: resetting" > "$out/$1.txt"
+        "wait {prompt}" "send reboot -f" "wait reboot: resetting" > "$out/$1.txt"
     QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_IOMMU=1 QEMU_INPUT="$out/$1.txt" \
         tools/qemu-test.sh "$out" "$1" shell iommu=on > "$out/$1.out" 2>&1 ||
         { echo "$1: QEMU run failed (see $out/$1.out)"; ok=0; }

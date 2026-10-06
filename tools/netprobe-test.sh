@@ -58,7 +58,7 @@ if [ "$n" != 2 ]; then
 fi
 
 off=$out/netprobe-off.txt
-printf 'wait 120 Jam OS shell\nwait jam>\nsend reboot -f\nwait reboot: resetting\n' > "$off"
+printf 'wait 120 Jam OS shell\nwait {prompt}\nsend reboot -f\nwait reboot: resetting\n' > "$off"
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_INPUT=$off \
     tools/qemu-test.sh "$out" netprobe-off shell || ok=0
 log=$out/netprobe-off.log

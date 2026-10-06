@@ -46,7 +46,7 @@ stats() {   # stats <label> <pattern> <log>: median and worst of the number befo
 for run in spare nospare; do
     log="$out/fr-$run.log"
     run_log="$out/fr-$run.run.log"
-    sed '/jam>.* reboot -f/q' "$log" > "$run_log"   # the shutdown takes the mounts away
+    sed '/jam[^>]*>.* reboot -f/q' "$log" > "$run_log"   # the shutdown takes the mounts away
     # A kill that lands on an instance still starting (the bursts) ends it
     # before it took anything over: the next one carries on from the same
     # state. So fewer restart lines than kills, never one that starts fresh.

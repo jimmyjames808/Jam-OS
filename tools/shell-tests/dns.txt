@@ -12,40 +12,40 @@ wait 120 Jam OS shell
 seen 60 netstack: link up
 seen 60 dhcp: lease 10.2.21.100/24 from 10.2.21.1: gateway 10.2.21.1, DNS 10.2.21.1, 20 s
 seen 30 dns: serving /svc/dns
-wait jam>
+wait {prompt}
 send net
 wait address  10.2.21.100/24, gateway 10.2.21.1
 wait DNS      10.2.21.1
-wait jam>
+wait {prompt}
 send host one.one.one.one
 wait one.one.one.one has address 1.1.1.1
 wait one.one.one.one has address 1.0.0.1
 wait (ttl
-wait jam>
+wait {prompt}
 send host nothing.jam
 wait host: nothing.jam: no such name
-wait jam>
+wait {prompt}
 send ping mac.jam -c 2
 wait PING mac.jam (10.2.21.174): 56 data bytes
 wait 10.2.21.174: 2 sent, 2 received
-wait jam>
+wait {prompt}
 send ping nothing.jam
 wait ping: nothing.jam: no such name
-wait jam>
+wait {prompt}
 send host slow.jam
 sleep 2
 type \x03
 wait host: slow.jam: stopped
-wait jam>
+wait {prompt}
 send run dnstest
 wait 60 dnstest: 5 passed, 0 failed
-wait jam>
+wait {prompt}
 send kill netstack
 wait 10 init: bin/netstack was killed
 wait 30 dhcp: link up: asking for 10.2.21.100 again
 wait 30 dhcp: lease 10.2.21.100/24 from 10.2.21.1
 send host www.jam
 wait www.jam has address 10.2.21.174
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

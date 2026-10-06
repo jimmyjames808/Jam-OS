@@ -7,9 +7,9 @@
 wait 120 Jam OS shell
 seen 30 devmgr: netsend: an RTL8125 (10ec:8125) gets drv/rtl8125, which sends ARP probes on the VLAN and stops
 seen 30 devmgr: 00:04.0 1234:11e8 -> drv/edu
-wait jam>
+wait {prompt}
 send devices
 wait devmgr:
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

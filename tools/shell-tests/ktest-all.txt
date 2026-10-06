@@ -5,23 +5,23 @@
 # not made and tests that need the machine to themselves are skipped
 # (kernel/include/jam/ktest.h); the kernel's summary line says how many.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send ktest
 wait 600 ktest (live system):
 wait shell: ktest:
 wait passed
-wait jam>
+wait {prompt}
 # Twice more in the same boot: a test that leaves something behind (state
 # of its own, a thread, a count) fails its next run, not its first.
 send ktest
 wait 600 ktest (live system):
 wait shell: ktest:
 wait passed
-wait jam>
+wait {prompt}
 send ktest
 wait 600 ktest (live system):
 wait shell: ktest:
 wait passed
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

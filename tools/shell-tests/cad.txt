@@ -5,25 +5,25 @@
 # QEMU_USB as in tools/usbkeys-test.sh (a usb-hub on xhci port 2 with a
 # usb-kbd behind it: hid-6.1:0), command line "shell".
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: /data mounted
 seen 30 hid-6.1:0: hid 0627:0001 if 0: boot keyboard ready
 sleep 0.5
 send write /data/cad.txt written before the reset && cat /data/cad.txt
 wait written before the reset
 # (that matched the line's echo: the prompt says the command has run)
-wait jam>
+wait {prompt}
 monitor sendkey ctrl-alt-delete
 wait 10 console: Ctrl+Alt+Del: rebooting
 wait 120 init: /data synced
 wait 60 kexec: starting the stored kernel
 wait 60 loader:      Jam OS kexec
 wait 120 init: the shell is up
-wait jam>
+wait {prompt}
 # /data mounts within a moment of devmgr, before or after the prompt
 send sleep 5 && cat /data/cad.txt
 wait written before the reset
-wait jam>
+wait {prompt}
 send reboot -f
 wait 10 reboot: asked by init
 wait reboot: resetting

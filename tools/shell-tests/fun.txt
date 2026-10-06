@@ -8,19 +8,19 @@
 # same when an app is killed (Ctrl+C: the shell kills its job) or crashes
 # (a page fault) with the screen still borrowed.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send run life --selftest
 wait 120 life: selftest PASSED
 wait run: bin/life exited with code 0
-wait jam>
+wait {prompt}
 send run tetris --selftest
 wait 60 tetris: selftest PASSED
 wait run: bin/tetris exited with code 0
-wait jam>
+wait {prompt}
 send run fractal --selftest
 wait 240 fractal: selftest PASSED
 wait run: bin/fractal exited with code 0
-wait jam>
+wait {prompt}
 # life: a 2048x2048 world (quick under QEMU): as it starts, zoomed in to
 # 16 px a cell, out to 2x2 cells a pixel, then a glider gun
 send run life size=2048
@@ -39,7 +39,7 @@ shot fun-life-gun
 type q
 wait 30 generations of a 2048x2048 world
 wait run: bin/life exited with code 0
-wait jam>
+wait {prompt}
 # tetris: move, rotate, drop a few pieces, hold one, pause
 send run tetris
 wait run: bin/tetris started
@@ -63,7 +63,7 @@ shot fun-tetris-paused
 type q
 wait 30 tetris: score
 wait run: bin/tetris exited with code 0
-wait jam>
+wait {prompt}
 # fractal: the whole set, a famous place, a Julia set in another palette,
 # then deep: the tour's point zoomed 2^60 (~1e18x: perturbation)
 send run fractal
@@ -82,14 +82,14 @@ shot fun-fractal-deep
 type q
 wait 30 renders on
 wait run: bin/fractal exited with code 0
-wait jam>
+wait {prompt}
 # Ctrl+C in an app quits it (the shell would kill it too)
 send run life size=1024
 wait run: bin/life started
 sleep 3
 type \x03
 wait 30 run: bin/life
-wait jam>
+wait {prompt}
 # Killed with the screen borrowed: a program that reads no keys, Ctrl+C
 # (the shell kills its job; the lease closes with it)
 send run tetris --hang-test
@@ -98,15 +98,15 @@ sleep 1
 shot fun-hang
 type \x03
 wait 30 run: bin/tetris was killed
-wait jam>
+wait {prompt}
 # ... and a crash: a program that dies (page fault) holding the screen
 send run tetris --crash-test
 wait 30 run: bin/tetris was killed
-wait jam>
+wait {prompt}
 # the shell is back in charge of the keys and the screen
 send help
 wait Commands:
-wait jam>
+wait {prompt}
 sleep 0.5
 shot fun-shell-after
 send reboot -f

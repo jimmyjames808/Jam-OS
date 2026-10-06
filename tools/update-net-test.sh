@@ -94,80 +94,80 @@ sha_b=$(shasum -a 256 "$out/jamos-B.elf" | cut -d' ' -f1)
 cat > "$out/updnet.txt" <<EOF
 wait 120 Jam OS shell
 seen 60 netstack: address 10.2.21.5/24
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $va, git
-wait jam>
+wait {prompt}
 send update
 wait 120 update: init refused it: a file's SHA-256 isn't the manifest's: kernel
-wait jam>
+wait {prompt}
 send update
 wait 120 update: init refused it: a file's SHA-256 isn't the manifest's: bootfs
-wait jam>
+wait {prompt}
 send update
 wait 120 update: the server's answers don't match its manifest
-wait jam>
+wait {prompt}
 send update
 wait 120 update: the server stopped answering: the fetch failed
-wait jam>
+wait {prompt}
 send update
 wait 120 update: init refused it: the signature isn't this build's key's
-wait jam>
+wait {prompt}
 send update
 wait 120 update: init refused it: its network default is
-wait jam>
+wait {prompt}
 send update -f -n
 wait 120 -> $vb (b0b0b0b): checked by init in
 wait not loaded (-n)
-wait jam>
+wait {prompt}
 send update
 wait 120 update: init refused it: it needs a newer build than this one to take it (it has "!future-must"
-wait jam>
+wait {prompt}
 send update -n
 wait 120 -> $vb (b0b0b0b): checked by init in
 wait not loaded (-n)
-wait jam>
+wait {prompt}
 send update -n
 wait 120 -> $vb (b0b0b0b): checked by init in
 wait not loaded (-n)
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $va, git
-wait jam>
+wait {prompt}
 send update -m
 wait 120 -> $vb (b0b0b0b): checked by init in
 wait loaded into memory only (-m)
 wait update: loaded into memory only:
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $va, git
-wait jam>
+wait {prompt}
 send sha256sum /esp/boot/jamos.elf
 wait $sha_a
-wait jam>
+wait {prompt}
 send update
 wait 120 -> $vb (b0b0b0b): checked by init in
 wait loaded and written to the stick
 wait update: written to the stick and loaded:
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $va, git
-wait jam>
+wait {prompt}
 send sha256sum /esp/boot/jamos.elf
 wait $sha_b
-wait jam>
+wait {prompt}
 send reboot
 wait 30 init: kexec: /esp unchanged: the stored kernel, no files read
 wait 60 kexec: starting the stored kernel
 wait 60 kexec: started by a reboot
 wait 120 init: the shell is up
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $vb, git b0b0b0b
-wait jam>
+wait {prompt}
 send cat /boot/update-marker.txt
 wait $marker
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF
@@ -208,13 +208,13 @@ tail -1 "$out/updnet.out"
 # What `reboot -f` starts: the stick, from cold, runs B.
 cat > "$out/updcold.txt" <<EOF
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $vb, git b0b0b0b
-wait jam>
+wait {prompt}
 send cat /boot/update-marker.txt
 wait $marker
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF

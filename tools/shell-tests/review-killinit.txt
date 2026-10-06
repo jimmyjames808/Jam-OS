@@ -5,10 +5,10 @@
 # them), so the shell refuses it. The services init supervises may go:
 # serialin comes back, and devmgr comes back with its drivers.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send kill init
 wait 10 not killing it
-wait jam>
+wait {prompt}
 send kill devmgr
 # (init's line goes to the kernel log, the shell's through the console: their
 # order on the serial port isn't fixed, hence `seen`)
@@ -20,6 +20,6 @@ wait bin/serialin was killed
 sleep 1
 send help
 wait Commands:
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

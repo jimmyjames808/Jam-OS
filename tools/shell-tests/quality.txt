@@ -5,33 +5,33 @@
 # in the capture, in this order. (Markers echoed as aq-""N so the typed
 # line never matches its own wait.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 1 codec(s) answered; 0 verb(s) timed out
 seen 60 init: /data mounted
 send cd /data; ls; echo aq-""0
 wait long.wav
 wait aq-0
-wait jam>
+wait {prompt}
 send play -s bitx.wav; echo aq-""1 $?
 wait 30 aq-1 0
-wait jam>
+wait {prompt}
 send play -s t1k.wav; echo aq-""2 $?
 wait 30 aq-2 0
-wait jam>
+wait {prompt}
 send play -s -v -20 t1k.wav; echo aq-""3 $?
 wait 30 aq-3 0
-wait jam>
+wait {prompt}
 send play -s -v -40 t1k.wav; echo aq-""4 $?
 wait 30 aq-4 0
-wait jam>
+wait {prompt}
 send play -s -v -60 t1k.wav; echo aq-""5 $?
 wait 30 aq-5 0
-wait jam>
+wait {prompt}
 send play -s r44.wav; echo aq-""6 $?
 wait 30 aq-6 0
-wait jam>
+wait {prompt}
 send play -s long.wav; echo aq-""7 $?
 wait 60 aq-7 0
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

@@ -20,7 +20,7 @@ send echo right-""after
 # (the shell may run the first two before the splash has gone: `seen`)
 seen 60 typed-kept
 wait 60 right-after
-wait jam>
+wait {prompt}
 sleep 1
 shot comp-shell
 send reboot -f

@@ -5,15 +5,15 @@
 # shell comes back on it.
 # Run: QEMU_INPUT=tools/shell-tests/console-restart.txt tools/qemu-test.sh build/test console-restart shell
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send ktest console_klog_read_after_gap loops=8
-wait 120 jam>
+wait 120 {prompt}
 send kill console
 wait 30 of the last 256 KiB (of
 wait 30 Jam OS shell
-wait jam>
+wait {prompt}
 send echo ok-$?-back
 wait ok-0-back
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

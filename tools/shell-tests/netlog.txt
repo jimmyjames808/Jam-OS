@@ -31,7 +31,7 @@ wait 60 loader:      Jam OS kexec
 seen 120 netlog: sending this boot's log and the last boot's
 wait 120 the last boot panicked:
 seen 60 netlog: the last boot's log is sent
-wait jam>
+wait {prompt}
 sleep 3
 send reboot -f
 wait reboot: resetting

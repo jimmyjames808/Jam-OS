@@ -4,12 +4,12 @@
 # answer), which answers.
 # (The markers are echoed as np-""1 so the typed line itself never matches.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: nospare: no warm spare
 send vol; echo np-""1
 wait master 0.0 dB
 wait np-1
-wait jam>
+wait {prompt}
 send kill mixer
 wait init: bin/mixer: killed on purpose
 wait init: bin/mixer: new process started (no spare waited)
@@ -25,9 +25,9 @@ wait init: bin/mixer: kill to first answer
 send vol; echo np-""3
 wait master 0.0 dB
 wait np-3
-wait jam>
+wait {prompt}
 send ps; echo np-""4
 wait np-4
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

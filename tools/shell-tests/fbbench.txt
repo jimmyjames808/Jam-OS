@@ -5,9 +5,9 @@
 # numbers are QEMU's (TCG): meaningless, the PC gives them. The text
 # waited for is built from $T, so it never appears in the typed line.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send T=f
-wait jam>
+wait {prompt}
 send fbbench -q; echo st-$T=$?
 wait 60 fbbench: kernels agree with px_over
 wait 600 fbbench: screen

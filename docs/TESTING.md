@@ -101,7 +101,7 @@ utest's `driver_handle_limits`; **no network card** (`-nic none`) unless
 | `QEMU_XHCI` | | qemu-xhci properties, e.g. `msi=on,msix=off` (MSI-only, like the PC) |
 | `QEMU_USB` | | more USB devices; give each a `port=` (port 1 is the stick) |
 | `QEMU_EXTRA` | | more QEMU arguments, e.g. `-rtc base=2026-01-15T01:02:03` |
-| `QEMU_INPUT` | | a script typed into the serial port by `tools/serial-feed.py` (its header has the commands: `wait`, `seen`, `send`, `type`, `sleep`, `shot`, `monitor`, `usbkeys`); the run passes if every `wait` matched and QEMU ended by itself |
+| `QEMU_INPUT` | | a script typed into the serial port by `tools/serial-feed.py` (its header has the commands: `wait`, `seen`, `send`, `type`, `sleep`, `shot`, `monitor`, `usbkeys`, `pointer`; in a `wait` or `seen`, `{prompt}` is the shell's prompt, `jam:<cwd>>` with its colours, in whatever directory: `wait {prompt}`); the run passes if every `wait` matched and QEMU ended by itself |
 | `QEMU_MONITOR` | | a script of `expect` / `send` / `sleep` lines run against the QEMU monitor |
 | `QEMU_SAVE` | | a file to keep the run's stick image in, with what the guest wrote: a later run's `QEMU_IMAGE` boots the same stick again |
 | `QEMU_BOOT_PREV` | 0 | 1: boot the stick's previous build (`/esp/boot/prev-jamos.elf` and `prev-bootfs.img`, the boot menu's "Jam OS (previous build)") instead of its own |

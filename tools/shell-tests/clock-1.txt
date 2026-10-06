@@ -5,7 +5,7 @@
 # changed and kept in /data/etc/settings, then `reboot` (kexec): the next
 # boot reads the RTC as Perth's local time.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: settings: /data/etc/settings written with the defaults
 seen 60 logd: writing /data/logs/boot-0001.txt
 send date
@@ -40,7 +40,7 @@ send reboot
 wait 30 init: /data synced
 wait 120 loader:      Jam OS kexec
 wait 180 Jam OS shell
-wait jam>
+wait {prompt}
 # rtc = local: the RTC's 01:02 is read as the zone's local time, Perth's
 # now (Windows would have set it so in Perth). The zone comes with /data,
 # which may mount after the shell is up: wait for that clock line.

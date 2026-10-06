@@ -3,12 +3,12 @@
 #   QEMU_INPUT=tools/shell-tests/wltest.txt tools/qemu-test.sh build/test wltest shell
 # The compositor is killed half way and libjwl connects again by itself.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send run wltest --spawn --script
 wait 10 wltest: connected:
 wait 30 wltest: connected again (connection 2)
 wait 30 wltest: PASS
-wait jam>
+wait {prompt}
 
 send reboot -f
 wait reboot: resetting

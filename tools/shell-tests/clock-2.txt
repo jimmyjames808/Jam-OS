@@ -2,7 +2,7 @@
 # `rtc = utc` on this side (mtools): the RTC's 01:02 is UTC now, 09:02 in
 # Perth; the file boot 1 wrote is still there.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 init: the clock: 2026-01-15 09:0
 seen 60 AWST (the RTC keeps UTC time)
 send date

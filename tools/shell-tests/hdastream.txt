@@ -5,11 +5,11 @@
 # running stream and kills the driver mid-stream. (The marker is echoed
 # as hds-""1 so the typed line itself never matches the wait.)
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 seen 60 1 codec(s) answered; 0 verb(s) timed out
 send hdatest; echo hds-""1
 wait 180 hdatest: kill
 wait hds-1
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

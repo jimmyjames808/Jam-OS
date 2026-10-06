@@ -147,7 +147,7 @@ begin() {
 wait 120 Jam OS shell
 $seen_usb
 seen 60 netstack: address 10.2.21.5/24
-wait jam>
+wait {prompt}
 send $2
 EOF
 }
@@ -165,7 +165,7 @@ for run in ${PC_RUNS:-fast again stuck reboot}; do
         cat >> "$out/$run.txt" <<EOF
 wait $limit checked by init in
 wait $said
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF
@@ -193,18 +193,18 @@ EOF
         cat >> "$out/stuck.txt" <<EOF
 wait 280 loaded, but init couldn't write it to the stick
 wait update: loaded, but NOT written to the stick:
-wait jam>
+wait {prompt}
 seen 30 init: update: write: the ESP read-only again in
 send ls /esp/boot
 wait jamos.elf
-wait jam>
+wait {prompt}
 send reboot
 wait 60 kexec: starting the stored kernel
 wait 120 init: the shell is up
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $vb, git
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF
@@ -216,14 +216,14 @@ EOF
         cat >> "$out/reboot.txt" <<EOF
 wait 120 init: update: write: making room: OK
 type \x03
-wait jam>
+wait {prompt}
 send reboot
 wait 60 kexec: starting the stored kernel
 wait 120 init: the shell is up
-wait jam>
+wait {prompt}
 send version
 wait Jam OS $vb, git
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
 EOF

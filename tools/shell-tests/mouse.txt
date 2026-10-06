@@ -12,7 +12,7 @@
 # has its middle at (355 + 38 c, 115 + 38 r). With seed=5 and the first
 # reveal on (8, 8), cell (7, 8) shows a 1 whose mine is at (6, 7).
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 # "report mouse ready", or with hidboot "boot mouse ready" (mouse-test.sh
 # checks which).
 seen 30 mouse ready
@@ -21,7 +21,7 @@ seen 30 mouse ready
 # the wheel scrolls the console back as before.
 send help
 wait Commands:
-wait jam>
+wait {prompt}
 monitor mouse_move 60 -40
 monitor mouse_button 1
 sleep 0.2
@@ -34,7 +34,7 @@ sleep 0.7
 shot mouse-scrollback
 send echo mouse-$HOME
 wait mouse-/boot
-wait jam>
+wait {prompt}
 # An app that didn't ask either (tetris) plays on under a busy mouse.
 send run tetris
 wait run: bin/tetris started
@@ -49,7 +49,7 @@ sleep 0.5
 type q
 wait 30 tetris: score
 wait run: bin/tetris exited with code 0
-wait jam>
+wait {prompt}
 # The wire format, checked by a client of its own (contest mouse says what
 # each step expects): the mouse moves, then a key ends the step.
 send run contest mouse
@@ -90,7 +90,7 @@ wait 30 contest: mouse: step 5
 monitor mouse_move 1 1
 wait 30 contest: mouse: all held
 wait run: bin/contest exited with code 0
-wait jam>
+wait {prompt}
 # mines asked: the pointer starts in the middle of the screen, the corner
 # of cell (8, 8); 10 pixels in, a left click reveals that cell.
 send run mines level=2 seed=5 noaccel trace
@@ -167,7 +167,7 @@ shot mouse-mines-beginner
 type q
 wait 30 mines: 1 game(s) finished, 0 won
 wait run: bin/mines exited with code 0
-wait jam>
+wait {prompt}
 # With acceleration (the default) a quick push goes twice as far: 100
 # counts to the right of the middle lands in column 13, not column 10.
 send run mines level=2 seed=5 trace
@@ -182,7 +182,7 @@ monitor mouse_button 0
 wait 10 mines: reveal 13,8:
 type q
 wait run: bin/mines exited with code 0
-wait jam>
+wait {prompt}
 # mines is gone: the first report after it finds its key channel closed,
 # and the keys and the wheel are the shell's again.
 monitor mouse_move 30 30
@@ -192,6 +192,6 @@ monitor mouse_button 0
 sleep 0.3
 send echo after-$HOME
 wait after-/boot
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting

@@ -112,7 +112,7 @@ grep -aq "^storm: 100 kills/s: the copy: stopped by Ctrl+C" "$clean" ||
 never "starting fresh" "$clean"
 never "giving up" "$clean"
 # From /usb0 made writable (its remount takes it away once) to the reboot.
-sed -n '/mount: \/usb0 is now read-write/,/jam>.* reboot -f/p' "$clean" > "$out/storm.run.log"
+sed -n '/mount: \/usb0 is now read-write/,/jam[^>]*>.* reboot -f/p' "$clean" > "$out/storm.run.log"
 never "init: /data is gone" "$out/storm.run.log"
 never "init: /usb0 is gone" "$out/storm.run.log"
 echo "fat-storm: $(count 'fat /data: restart (killed' "$clean") restarts of fat /data and $(count 'fat /usb0: restart (killed' "$clean") of fat /usb0 carried on"

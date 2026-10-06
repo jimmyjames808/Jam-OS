@@ -3,10 +3,10 @@
 # ("\r" + prompt + the whole line) committed another copy of the first row
 # (7 copies in the shot). Now the shell caps the line at the row width.
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 sleep 1
 send clear
-wait jam>
+wait {prompt}
 type aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbb
 type \x7f\x7f\x7f\x7f\x7f
 type \e[D\e[D\e[D\e[D\e[D

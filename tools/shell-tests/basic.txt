@@ -5,41 +5,41 @@
 # checks what the shell writes back (the console mirrors program output to
 # COM1).
 wait 120 Jam OS shell
-wait jam>
+wait {prompt}
 send help
 wait restart the machine
-wait jam>
+wait {prompt}
 sleep 0.5
 shot shell-help
 # line editing: "helx", backspace, "p" -> help; then the history (up, Enter)
 type helx\x7fp\r
 wait Commands:
-wait jam>
+wait {prompt}
 type \e[A\r
 wait Commands:
-wait jam>
+wait {prompt}
 # "hlp", left, left, "e" -> "help"; Home, Delete, End
 type hlp\e[D\e[De\r
 wait Commands:
-wait jam>
+wait {prompt}
 type xhelp\e[H\e[3~\e[F\r
 wait Commands:
-wait jam>
+wait {prompt}
 send nosuchcommand
 wait nosuchcommand: unknown command
 send usb
 wait usb:
 wait problem(s)
-wait jam>
+wait {prompt}
 send devices
 wait devmgr:
 send ps
 wait process
-wait jam>
+wait {prompt}
 send mem
 wait MiB free
 send log 5
-wait jam>
+wait {prompt}
 # the console's protocols from a program's (PROGRAM-level) channel: no
 # input sources or new channels; the focus stack with keys typed here
 send run contest
@@ -50,7 +50,7 @@ type r
 wait contest: type s now
 type s
 wait 60 run: bin/contest exited with code 0
-wait jam>
+wait {prompt}
 # a program writing to the console flat out: the console serves it a
 # bounded round at a time, so Ctrl+C (a key) and the shell's own output
 # still get through
@@ -60,17 +60,17 @@ sleep 2
 type \x03
 wait 10 ^C: killing bin/contest
 wait 10 run: bin/contest was killed
-wait jam>
+wait {prompt}
 send help
 wait Commands:
-wait jam>
+wait {prompt}
 send run bin/utest
 wait 240 run: bin/utest exited with code 0
-wait jam>
+wait {prompt}
 send ktest m4
 wait 300 shell: ktest m4:
 wait passed
-wait jam>
+wait {prompt}
 sleep 0.5
 shot shell-ktest
 # restarts: the serial source, then the console itself (init restarts it
@@ -82,15 +82,15 @@ wait bin/serialin was killed
 sleep 1
 send help
 wait Commands:
-wait jam>
+wait {prompt}
 send kill console
 wait 30 init: bin/console was killed
 wait 30 Jam OS shell
-wait jam>
+wait {prompt}
 sleep 1
 send help
 wait Commands:
-wait jam>
+wait {prompt}
 sleep 0.5
 shot shell-restarted
 send reboot -f

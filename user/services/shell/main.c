@@ -11,6 +11,14 @@
  * up/down for the history. The line is redrawn with \r and ESC [ K, which
  * the console and serial terminals both understand.
  *
+ * The prompt is `jam:<cwd>> ` ("jam:/data/music> "): "jam" and the current
+ * directory each in a colour of the console's 16 (term.c, cellpaint.c's
+ * palette), the nearest to the logo's jams: "jam" yellow (0xccaa33) for
+ * apricot (#ef9f27), the directory bright blue (0x6699ff) for blackcurrant
+ * (#7f77dd); ':' and '>' plain. A directory too long for half the line
+ * shows its end, after "...". The test scripts wait for it as {prompt}
+ * (tools/serial-feed.py), whatever the directory.
+ *
  * Exits 2 when the console goes away (init restarts the console, then the
  * shell with the new console's channel). */
 #include <idl/console.h>
@@ -29,8 +37,10 @@ JAM_WANTS("mount * rw\n"
 
 #define LINE_MAX  240
 #define HIST      32
-#define PROMPT    "\033[93mjam>\033[0m "
-#define PROMPT_W  5
+#define C_JAM     "\033[33m"   /* "jam": yellow, the palette's nearest to apricot */
+#define C_DIR     "\033[94m"   /* the directory: bright blue, its nearest to blackcurrant */
+#define C_PLAIN   "\033[0m"
+#define DIR_MIN   12            /* the directory's room in the prompt: half the row, at least this */
 
 static handle_t con, keys;
 unsigned sh_term_no = 1;
@@ -150,8 +160,27 @@ static char hist[HIST][LINE_MAX + 1];
 static unsigned nhist;   /* entries ever added */
 /* The console's current line is one screen row and the redraw goes back
  * with \r: a line that wraps can't be redrawn (each redraw would commit
- * another copy of its first row). So a line fits the row (main). */
+ * another copy of its first row). So the prompt and the line fit the row
+ * (set_prompt). */
 static unsigned line_max = LINE_MAX;
+static uint16_t cols;    /* the console's columns (0: not known) */
+
+/* The prompt for the next line (set_prompt): its bytes, colours and all. */
+static char prompt[SH_PATH_MAX + 48];
+
+/* The prompt for the current directory, and the room left for the line. */
+static void set_prompt(void)
+{
+    const char *dir = sh_cwd();
+    size_t n = strlen(dir), room = !cols ? n : cols / 2 > DIR_MIN ? cols / 2u : DIR_MIN;
+    const char *cut = n > room ? "..." : "";
+    if (n > room)
+        dir += n - (room - 3);   /* its end, after "..." */
+    snprintf(prompt, sizeof(prompt), C_JAM "jam" C_PLAIN ":" C_DIR "%s%s" C_PLAIN "> ", cut,
+             dir);
+    unsigned width = 6 + (unsigned)strlen(cut) + (unsigned)strlen(dir);   /* jam: > and the space */
+    line_max = cols > width + 1 && cols - width - 1u < LINE_MAX ? cols - width - 1u : LINE_MAX;
+}
 
 struct edit {
     char     line[LINE_MAX + 1];   /* the line being edited */
@@ -162,7 +191,7 @@ struct edit {
 
 static void redraw(const struct edit *e)
 {
-    echo("\r" PROMPT "%.*s\033[K", (int)e->len, e->line);
+    echo("\r%s%.*s\033[K", prompt, (int)e->len, e->line);
     if (e->pos < e->len)
         echo("\033[%uD", e->len - e->pos);
 }
@@ -180,7 +209,8 @@ static bool browse(struct edit *e, bool up)
     }
     e->back = nb;
     const char *src = e->back ? hist[(nhist - e->back) % HIST] : e->saved;
-    e->len = e->pos = (unsigned)strlen(src);
+    size_t n = strlen(src);
+    e->len = e->pos = n < line_max ? (unsigned)n : line_max;   /* a longer prompt now */
     memcpy(e->line, src, e->len);
     return true;
 }
@@ -207,7 +237,7 @@ static bool edit_key(struct edit *e, const struct input_key_event *ev)
     if (sh_is_ctrl(ev, 'c')) {
         echo("^C\r\n");
         e->len = e->pos = e->back = 0;
-        echo(PROMPT);
+        echo("%s", prompt);
         return false;
     }
     if (sh_is_ctrl(ev, 'l')) {
@@ -288,7 +318,8 @@ static void read_line(char *buf)
 {
     struct edit e = { .len = 0 };
     sh_jobs_report();   /* the background programs that ended */
-    echo(PROMPT);
+    set_prompt();       /* the directory may have changed */
+    echo("%s", prompt);
     sh_flush();
     for (;;) {
         struct input_key_event ev;
@@ -341,7 +372,8 @@ static void boot_soak(const char *minutes)
     for (int i = 0; i < 100 && fs_statfs("/data", NULL, NULL, NULL, NULL) != OK; i++)
         jam_nanosleep(now() + 200 * NS_PER_MS);
     snprintf(line, sizeof(line), "soak %s halt", minutes);
-    echo("jam> %s\n", line);
+    set_prompt();
+    echo("%s%s\n", prompt, line);
     sh_line(line);
     sh_flush();
 }
@@ -361,10 +393,9 @@ int main(int argc, char **argv)
         printf("shell: console.open_keys: %s\n", status_str(st));
         return st == ERR_PEER_CLOSED ? 2 : 1;
     }
-    uint16_t cols = 0, rows = 0;
-    if (console_size(con, &cols, &rows) == OK && cols > PROMPT_W + 1 &&
-        cols - PROMPT_W - 1 < LINE_MAX)
-        line_max = cols - PROMPT_W - 1;
+    uint16_t rows = 0;
+    if (console_size(con, &cols, &rows) != OK)
+        cols = 0;
     sh_init();
     echo("\n\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
     const char *note = sh_boot_note();   /* after a panic: what happened to that boot */

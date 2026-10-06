@@ -4,17 +4,17 @@
 # other-stick.txt on its data partition, is mounted read-only as /usb0
 # (its ESP) and /usb1 (its data). Then the same after a kexec reboot,
 # whose kernel learns the disk id from the kernel before.
-wait 60 jam>
+wait 60 {prompt}
 wait 60 is the boot disk
 seen 60 but the machine booted from disk id
 seen 60 the machine booted from another disk: not the boot disk
 wait 60 partition 2 is /usb1
 sleep 1
 send ls /data
-wait jam>
+wait {prompt}
 send ls /usb1
 wait 30 other-stick.txt
-wait jam>
+wait {prompt}
 send reboot
 wait 120 from the kernel before
 wait 60 is the boot disk
@@ -23,6 +23,6 @@ wait 60 partition 2 is /usb1
 sleep 1
 send ls /usb1
 wait 30 other-stick.txt
-wait jam>
+wait {prompt}
 send reboot -f
 wait reboot: resetting
