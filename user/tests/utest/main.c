@@ -930,6 +930,7 @@ static const struct {
     { "wm_tile_tree", t_wm_tile_tree },
     { "wm_tile_gaps", t_wm_tile_gaps },
     { "wm_tile_push", t_wm_tile_push },
+    { "wm_tile_float", t_wm_tile_float },
     { "wm_focus_dir", t_wm_focus_dir },
     { "wm_swap", t_wm_swap },
     { "wm_reflow", t_wm_reflow },

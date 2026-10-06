@@ -23,7 +23,9 @@
  *   - floating: at its floating place. The first time it is centred in the
  *     room, moved down and right by a title bar's height while another
  *     window's top-left corner is already there (the cascade); its title
- *     bar never goes above the floor.
+ *     bar never goes above the floor. Its size is the client's own (what
+ *     it drew when first floating), or for a window that has only ever
+ *     tiled, been maximised or full screen, 60% of the room (float_default).
  *
  * The focus is the seat's (focus.c: a click, Alt+Tab, a client's first
  * window, the next one down when one goes); it tells us when it moves
@@ -36,6 +38,7 @@
 #define CASCADE_STEP  (COMP_TITLE_H + DECO_BORDER)   /* one cascade step, both ways */
 #define CASCADE_MAX   16u                            /* steps before it starts over */
 #define REACH_MIN     48   /* a floating title bar keeps this much on the output */
+#define FLOAT_SHARE   60   /* percent of the room, each way, for a window with no floating size */
 #define CYCLE_MAX     (COMP_CLIENTS_MAX * COMP_SURFACES_MAX)   /* windows there can be */
 
 static struct {
@@ -185,9 +188,27 @@ void wm_wanted(const struct wm_window *ww, struct wm_config *out)
     out->height = b.y2 - b.y1 > 0 ? b.y2 - b.y1 : 1;
 }
 
+/* A mapped window to float that has no floating size of its own (it has
+ * only ever been tiled, maximised or full screen: its client never drew
+ * a floating size) gets one: FLOAT_SHARE of the room under the strip, as
+ * its limits allow (a window of one size keeps it), never more than the
+ * room. Its first floating place is then centred for that size. */
+static void float_default(struct wm_window *ww)
+{
+    if (!ww->win || ww->float_w || ww->float_h || wm_layout_of(ww) != COMP_FLOATING)
+        return;
+    struct comp_box in = deco_inner(max_box(ww), 0, COMP_FLOATING);
+    int32_t rw = in.x2 - in.x1 > 1 ? in.x2 - in.x1 : 1, rh = in.y2 - in.y1 > 1 ? in.y2 - in.y1 : 1;
+    int32_t w = limit(rw * FLOAT_SHARE / 100, ww->min_w, ww->max_w);
+    int32_t h = limit(rh * FLOAT_SHARE / 100, ww->min_h, ww->max_h);
+    ww->float_w = w < rw ? w : rw;
+    ww->float_h = h < rh ? h : rh;
+}
+
 void wm_reconfigure(struct wm_window *ww)
 {
     struct wm_config c;
+    float_default(ww);
     wm_wanted(ww, &c);
     if (ww->ops && ww->ops->configure)
         ww->ops->configure(ww->ctx, &c);
@@ -245,21 +266,22 @@ static bool corner_taken(const struct wm_window *self, int32_t x, int32_t y)
     return false;
 }
 
-/* The first floating place: centred in the room, then down the cascade. */
+/* The first floating place: centred in the room, then down the cascade,
+ * for the floating size asked (float_default's) or else the one drawn. */
 static void first_place(struct wm_window *ww)
 {
     struct comp_window *w = ww->win;
     const struct comp_surface *s = ww->surface;
+    int32_t sw = ww->float_w ? ww->float_w : s->width;
+    int32_t sh = ww->float_h ? ww->float_h : s->height;
     int32_t fl = wm_floor(ww);
-    int32_t x0 = centre(0, scene.width, s->width, w->deco_left, w->deco_right, 0, scene.width);
-    int32_t y0 = centre(fl, scene.height, s->height, w->deco_top, w->deco_bottom, fl,
-                        scene.height);
+    int32_t x0 = centre(0, scene.width, sw, w->deco_left, w->deco_right, 0, scene.width);
+    int32_t y0 = centre(fl, scene.height, sh, w->deco_top, w->deco_bottom, fl, scene.height);
     int32_t x = x0, y = y0;
     for (unsigned i = 1; i < CASCADE_MAX && corner_taken(ww, x, y); i++) {
         x = x0 + (int32_t)i * CASCADE_STEP;
         y = y0 + (int32_t)i * CASCADE_STEP;
-        if (x + s->width + w->deco_right > scene.width ||
-            y + s->height + w->deco_bottom > scene.height) {
+        if (x + sw + w->deco_right > scene.width || y + sh + w->deco_bottom > scene.height) {
             x = x0;
             y = y0;
             break;   /* off the output: back at the centre, on top of it */
