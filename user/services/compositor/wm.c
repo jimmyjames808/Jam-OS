@@ -336,10 +336,19 @@ void wm_place(struct wm_window *ww)
         centre_in(w, deco_inner(b, WM_ST_MAXIMIZED, layout), b.y1);
     } else if (layout == COMP_TILING) {
         w->tile = wm_tile(ww);
-        centre_in(w, deco_inner(w->tile, 0, layout), room_of(ww).y1);
+        struct comp_box in = deco_inner(w->tile, 0, layout);
+        struct wm_config c;
+        wm_wanted(ww, &c);
+        if (c.width == in.x2 - in.x1 && c.height == in.y2 - in.y1) {
+            window_view(w, c.width, c.height);   /* it fills its tile: shown as the tile, */
+            window_move(w, in.x1, in.y1);        /* its last buffer clipped or padded */
+            return;
+        }
+        centre_in(w, in, room_of(ww).y1);
     } else {
         place_floating(ww);
     }
+    window_view(w, 0, 0);
 }
 
 /* ---- commits ------------------------------------------------------------------------ */

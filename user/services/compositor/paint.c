@@ -183,11 +183,45 @@ static const uint32_t *buffer_at(const struct comp_window *w, int32_t x, int32_t
 }
 
 /* Window w's buffer where it meets t (me: the worker, counting; ~0u: none). */
+/* Window w's colour where its buffer doesn't reach its view (comp.h): the
+ * buffer's bottom-right pixel (a terminal's or an app's background). */
+static uint32_t pad_colour(const struct comp_window *w)
+{
+    const struct comp_buffer *b = w->surface->buffer;
+    const uint32_t *row = (const uint32_t *)(const void *)(comp_buffer_data(b) +
+                                                         (uint64_t)(b->height - 1) * b->stride);
+    return row[b->width - 1] & 0xffffff;
+}
+
+/* The part of in (w's view where it meets a tile) past w's buffer, in its
+ * pad colour: right of the buffer on its rows, all of each row below it. */
+static void draw_pad(const struct comp_window *w, const struct tile_buf *t, struct comp_box in)
+{
+    struct comp_box buf = box_make(window_shown_x(w), window_shown_y(w), w->surface->width,
+                                   w->surface->height);
+    if (in.x2 <= buf.x2 && in.y2 <= buf.y2)
+        return;   /* the buffer covers it: the client has caught up */
+    uint32_t c = pad_colour(w);
+    for (int32_t y = in.y1; y < in.y2; y++) {
+        int32_t x1 = y < buf.y2 && in.x1 < buf.x2 ? buf.x2 : in.x1;
+        uint32_t *dst = tile_row(t, y);
+        for (int32_t x = x1; x < in.x2; x++)
+            dst[x - t->b.x1] = c;
+    }
+}
+
 static void draw_buffer(const struct comp_window *w, const struct tile_buf *t, uint32_t me)
 {
     struct comp_box in = box_intersect(window_surface_box(w), t->b);
     if (!w->surface->buffer || box_empty(in))
         return;
+    if (w->view_w > 0) {
+        draw_pad(w, t, in);   /* a view bigger than the buffer; one smaller clips it */
+        in = box_intersect(in, box_make(window_shown_x(w), window_shown_y(w), w->surface->width,
+                                        w->surface->height));
+        if (box_empty(in))
+            return;
+    }
     bool copy = paint_opaque_over(w, in);
     int n = in.x2 - in.x1;
     for (int32_t y = in.y1; y < in.y2; y++) {

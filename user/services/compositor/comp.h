@@ -325,6 +325,12 @@ struct comp_window {
     int32_t deco_top, deco_left, deco_right, deco_bottom;
     uint32_t flags;                /* COMP_WIN_* */
     struct comp_box tile;          /* tiling: the tile it was given (wm.c) */
+    /* The size its surface is shown at (0: its buffer's): a tile's that the
+     * client was asked to fill (wm.c), so while the client catches up with
+     * a new size its last buffer stays, clipped to it, and what it doesn't
+     * cover is its buffer's bottom-right pixel's colour (paint.c), never
+     * the wallpaper; the frame is the tile's from the first frame. */
+    int32_t view_w, view_h;
     void *wm;                      /* the window manager's own (struct wm_window, wm.h) */
     const char *title;             /* its title bar's text (the window manager's), or NULL */
     /* Where it is shown, from (x, y) (anim.c): a screen slide's sideways
@@ -387,6 +393,8 @@ status_t window_create(struct comp_surface *s, int32_t x, int32_t y, struct comp
 void window_destroy(struct comp_window *w);
 void window_map(struct comp_window *w, bool mapped);   /* damages its frame */
 void window_move(struct comp_window *w, int32_t x, int32_t y);   /* damages old and new */
+/* w shown view_w x view_h (0, 0: its buffer's size); damages old and new. */
+void window_view(struct comp_window *w, int32_t view_w, int32_t view_h);
 /* To the top (under the boot overlays, COMP_WIN_OVERLAY, unless w is one);
  * damages its frame. window_create puts a new window there too. */
 void window_raise(struct comp_window *w);

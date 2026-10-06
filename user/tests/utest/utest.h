@@ -585,6 +585,7 @@ bool t_wm_seat(void);
 bool t_wm_seat_cursors(void);
 bool t_xdg_toplevel(void);
 bool t_xdg_tiling(void);
+bool t_xdg_tile_resize(void);
 bool t_xdg_popup(void);
 bool t_xdg_unacked(void);
 bool t_xdg_errors(void);

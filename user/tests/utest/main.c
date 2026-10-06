@@ -949,6 +949,7 @@ static const struct {
     { "desk_overlay", t_desk_overlay },
     { "xdg_toplevel", t_xdg_toplevel },
     { "xdg_tiling", t_xdg_tiling },
+    { "xdg_tile_resize", t_xdg_tile_resize },
     { "xdg_popup", t_xdg_popup },
     { "xdg_unacked", t_xdg_unacked },
     { "xdg_errors", t_xdg_errors },
