@@ -22,6 +22,10 @@
  *     another terminal instead (keys.c, terminal_ask); the pointer's
  *     movement, buttons and wheel become the mouse reports a program that
  *     asked for the mouse gets, or the wheel scrolls back;
+ *   - copy and paste: the mouse selects the text, Super+C (or
+ *     Ctrl+Shift+C) copies it to the compositor's clipboard and Super+V
+ *     (Ctrl+Shift+V) pastes the clipboard's text into the program with
+ *     the keys (clip.c, paste.c; libjwl's jwl_clip_*);
  *   - the close box: the first terminal stays (it is the system's: init
  *     restarts it whatever happens, so closing it would only bring it
  *     back) and says so; any other terminal's console ends with code 0,
@@ -207,7 +211,47 @@ static void key(const struct jwl_event *ev)
     struct input_key_event k;
     if (!key_of_wayland(ev->key.code, ev->key.state, ev->key.mods, ev->key.cp, &k))
         return;
+    if (clip_key(&k))
+        return;   /* copy or paste (clip.c) */
     key_event(k.usage, k.state, k.mods, k.codepoint, false);
+}
+
+/* ---- the clipboard ---------------------------------------------------------------- */
+
+bool window_copy(const char *text, size_t n)
+{
+    status_t st = wl ? jwl_clip_copy(wl, text, n) : ERR_NOT_SUPPORTED;
+    if (st != OK)
+        printf("console: terminal %u: can't copy: %s\n", term_no, status_str(st));
+    return st == OK;
+}
+
+void window_paste(void)
+{
+    status_t st = wl ? jwl_clip_paste(wl) : ERR_NOT_SUPPORTED;
+    if (st == ERR_NOT_FOUND)
+        return;   /* nothing copied: nothing to paste */
+    if (st != OK)
+        printf("console: terminal %u: can't paste: %s\n", term_no, status_str(st));
+}
+
+/* The clipboard's text came (or why not): typed into the focus. */
+static void pasted(const struct jwl_event *ev)
+{
+    size_t n = 0;
+    const char *text = ev->clip.status == OK ? jwl_clip_pasted(wl, &n) : NULL;
+    if (!text) {
+        printf("console: terminal %u: nothing pasted: %s\n", term_no,
+               status_str(ev->clip.status));
+        return;
+    }
+    bool bracketed = nfocus && focus_client[nfocus - 1] && focus_client[nfocus - 1]->bracketed;
+    if (paste_start(text, n))
+        printf("console: terminal %u: pasted %lu bytes%s\n", term_no, (unsigned long)n,
+               bracketed ? " (bracketed)" : "");
+    else
+        printf("console: terminal %u: a paste is still being typed (or nobody reads keys): "
+               "this one dropped\n", term_no);
 }
 
 /* The text bar while the pointer is over the text, the arrow over the
@@ -242,13 +286,19 @@ static void take(const struct jwl_event *ev)
     case JWL_EV_POINTER_LEAVE:
     case JWL_EV_POINTER_MOTION:
     case JWL_EV_POINTER_BUTTON:
-    case JWL_EV_POINTER_AXIS:
+    case JWL_EV_POINTER_AXIS: {
         pointer_shape(ev);
-        if (mouse_of_wayland(&ptr, ev, &m))
+        bool selecting = clip_pointer(ev);   /* the selection's (clip.c), or the program's */
+        if (mouse_of_wayland(&ptr, ev, &m) && !selecting)
             mouse_event(&m);
+        break;
+    }
+    case JWL_EV_PASTE:
+        pasted(ev);
         break;
     case JWL_EV_RECONNECTED:
         no_windows = false;   /* a new compositor: it may have windows now */
+        clip_clear();
         shape_asked = 0;
         paint_forget();
         dirty = true;

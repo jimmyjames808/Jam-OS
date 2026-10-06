@@ -81,8 +81,16 @@ uint32_t cell_cp(struct cell c);
  * shades); '?' for the rest of the box drawing, which Spleen's table here
  * doesn't have. */
 const uint8_t *cell_bits(struct cell c, uint8_t block[GH]);
-/* Cell c (inverted: the cursor) in look l with its top left at (x, y) of
- * a buffer of 0xRRGGBB pixels, w x h of them, stride a row; only the
- * cell's own pixels (and of those, only the buffer's) are written. */
+/* How a cell is marked on the screen (grid_walk's marks). */
+#define CELL_CURSOR   1u   /* the cursor: fg and bg swapped */
+#define CELL_SELECTED 2u   /* in the mouse's selection: the background tinted blackcurrant */
+#define SEL_TINT      0x7f77ddu   /* blackcurrant (the jam colours), ... */
+#define SEL_TINT_A    115u        /* ... at 45% (of 255) over the cell's background */
+/* Cell c with marks (CELL_*) in look l with its top left at (x, y) of a
+ * buffer of 0xRRGGBB pixels, w x h of them, stride a row; only the cell's
+ * own pixels (and of those, only the buffer's) are written. The cursor
+ * wins over the selection's tint. */
 void cell_paint(uint32_t *px, int32_t stride, int32_t w, int32_t h, const struct cell_look *l,
-                int32_t x, int32_t y, struct cell c, bool inverse);
+                int32_t x, int32_t y, struct cell c, uint8_t marks);
+/* The background a selected cell of background bg shows. */
+uint32_t cell_selected_bg(uint32_t bg);

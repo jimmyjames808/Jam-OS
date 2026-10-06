@@ -26,7 +26,7 @@
 /* One of the window's buffers, as we last drew it. */
 struct slot_shadow {
     struct cell *cells;     /* rows * cols: what each cell shows */
-    uint8_t     *inverse;   /* rows * cols: drawn inverted (the cursor) */
+    uint8_t     *inverse;   /* rows * cols: the marks it was drawn with (CELL_*) */
     uint32_t    *px;        /* the buffer it is of (NULL: none yet) */
     int32_t      w, h;      /* its size */
     bool         valid;     /* cells and inverse say what it shows */

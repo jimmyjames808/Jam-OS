@@ -507,6 +507,13 @@ bool t_conpaint_cells(void);
 bool t_conpaint_bold(void);
 bool t_conpaint_blocks(void);
 bool t_conpaint_bitmap(void);
+/* consel.c: copy and paste in a terminal window, the pure parts (select.c,
+ * wlinput.c, cellpaint.c). */
+bool t_consel_drag(void);
+bool t_consel_word_line(void);
+bool t_consel_scrollback(void);
+bool t_consel_keys(void);
+bool t_consel_tint(void);
 /* shpaste.c: the shell's bracketed paste (sh_paste.c). */
 bool t_sh_paste(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes

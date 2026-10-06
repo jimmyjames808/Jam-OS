@@ -3,6 +3,8 @@
 
 /* ---- program output: a small terminal on the current line ------------------ */
 
+struct client *out_writer;
+
 enum { ES_NONE, ES_ESC, ES_CSI };
 static int esc_state;
 static char esc_buf[16];
@@ -38,7 +40,9 @@ void sgr(uint32_t p)
     out_attr = ATTR(fg, bg);
 }
 
-/* ESC [ ? <modes> h / l: DEC private modes. */
+/* ESC [ ? <modes> h / l: DEC private modes: 1049 the alternate screen, 25
+ * its cursor, 2026 a frame (synchronized output), 2004 bracketed paste
+ * (the writing client's own: paste.c). */
 static void dec_modes(char final, const uint32_t *params, uint32_t np)
 {
     if (final != 'h' && final != 'l')
@@ -54,6 +58,8 @@ static void dec_modes(char final, const uint32_t *params, uint32_t np)
         } else if (params[i] == 2026 && alt_on) {
             alt_sync = final == 'h';
             alt_sync_since = now();
+        } else if (params[i] == 2004 && out_writer) {
+            out_writer->bracketed = final == 'h';   /* its pastes bracketed (paste.c) */
         }
     }
 }

@@ -29,6 +29,7 @@
 handle_t focus[MAX_FOCUS];
 static uint8_t focus_level[MAX_FOCUS];   /* the level of the client that opened it */
 static uint32_t focus_want[MAX_FOCUS];   /* INPUT_WANT_*: what it asked for besides keys */
+struct client *focus_client[MAX_FOCUS];
 unsigned nfocus;
 static struct input_key_event pending[PENDING_KEYS];
 static unsigned npending;
@@ -44,6 +45,7 @@ void focus_drop(unsigned i)
         focus[j] = focus[j + 1];
         focus_level[j] = focus_level[j + 1];
         focus_want[j] = focus_want[j + 1];
+        focus_client[j] = focus_client[j + 1];
     }
     nfocus--;
 }
@@ -265,7 +267,7 @@ void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool te
 
 status_t op_open_keys(void *ctx, handle_t *out)
 {
-    const struct client *c = ctx;
+    struct client *c = ctx;
     if (nfocus == MAX_FOCUS) {
         if (c->level == L_PROGRAM)
             return ERR_NO_RESOURCES;   /* a program can't push the shell's focus out */
@@ -277,6 +279,7 @@ status_t op_open_keys(void *ctx, handle_t *out)
         return st;
     focus_level[nfocus] = c->level;
     focus_want[nfocus] = 0;
+    focus_client[nfocus] = c;
     focus[nfocus++] = mine;
     *out = theirs;
     /* Keys typed before anyone listened. */
@@ -345,6 +348,17 @@ static bool mouse_to_focus(const struct input_mouse_event *ev)
             continue;
         }
         return true;   /* sent, or its queue is full (it isn't reading): dropped */
+    }
+    return false;
+}
+
+bool focus_wants_mouse(void)
+{
+    while (nfocus) {
+        unsigned i = nfocus - 1;
+        if (focus_requests(i))
+            return (focus_want[i] & INPUT_WANT_MOUSE) != 0;
+        focus_drop(i);
     }
     return false;
 }

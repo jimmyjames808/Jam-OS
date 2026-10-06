@@ -255,6 +255,7 @@ void alt_enter(void)
 {
     if (alt_on)
         return;
+    clip_clear();   /* the selection is of the text screen */
     alt_on = true;
     alt_cursor = true;
     alt_sync = false;

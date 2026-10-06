@@ -9,7 +9,11 @@
  *
  * Program output (console.write) is also written to COM1 as it is (the
  * kernel log goes there by itself), so a serial terminal, and the QEMU
- * tests, see the same session. */
+ * tests, see the same session.
+ *
+ * A client's DEC modes that are about its keys are its own: ESC [ ? 2004 h
+ * (bracketed paste) brackets what is pasted to a key channel it opened,
+ * not another client's (paste.c). */
 #include "console.h"
 
 static handle_t clients[MAX_CLIENTS];
@@ -17,15 +21,16 @@ static struct client client_info[MAX_CLIENTS];
 
 static status_t op_write(void *ctx, uint16_t length, const uint8_t text[2048])
 {
-    (void)ctx;
     if (length > 2048)
         return ERR_INVALID_ARGS;
     /* Kernel lines logged before this write go above it: e.g. a ktest's
      * output before the shell's summary line. */
     klog_event();
     bool was_alt = alt_on;
+    out_writer = ctx;   /* the modes it asks for are its own (term.c) */
     for (unsigned i = 0; i < length; i++)
         out_char(text[i]);
+    out_writer = NULL;
     if (!was_alt || !alt_on)   /* the alternate screen isn't mirrored to COM1 */
         (void)jam_serial_write(root, text, length);   /* the mirror is best effort */
     dirty = true;
@@ -177,6 +182,7 @@ void client_event(unsigned i)
         jam_handle_close(clients[i]);
         clients[i] = HANDLE_INVALID;
         client_info[i].show_log = false;   /* gone: it asks no more */
+        client_info[i].bracketed = false;
     }
 }
 

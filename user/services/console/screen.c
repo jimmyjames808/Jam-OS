@@ -55,12 +55,13 @@ static void draw_cell(uint32_t x, uint32_t y, struct cell c, bool inverse)
     }
 }
 
-/* Cell (x, y) should show c (inverted: the cursor): drawn if it doesn't. */
+/* Cell (x, y) should show c with marks inv (CELL_*; the full screen draws
+ * only the cursor's): drawn if it doesn't. */
 static void show_cell(uint32_t x, uint32_t y, struct cell c, uint8_t inv)
 {
     struct cell *s = &shadow[y * cols + x];
     if (!cell_same(*s, c) || shadow_cursor[y * cols + x] != inv) {
-        draw_cell(x, y, c, inv);
+        draw_cell(x, y, c, inv & CELL_CURSOR);
         *s = c;
         shadow_cursor[y * cols + x] = inv;
     }
@@ -109,6 +110,7 @@ void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv))
         return;
     }
     struct cell empty = { ' ', A_OUT, 0 };
+    clip_begin();   /* the selection's range, once for the walk */
     struct view v = view_now();
     int64_t first = view_base(&v) - view_back;   /* the line on row 0 (view.c) */
     int64_t oldest = committed > SCROLLBACK ? (int64_t)(committed - SCROLLBACK) : 0;
@@ -121,7 +123,9 @@ void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv))
         else if (i >= oldest && i < (int64_t)committed)
             l = line((uint64_t)i);
         for (uint32_t x = 0; x < cols; x++)
-            show(x, y, l ? l[x] : empty, cursor_row && x == cur_x);
+            show(x, y, l ? l[x] : empty,
+                 (uint8_t)((cursor_row && x == cur_x ? CELL_CURSOR : 0) |
+                           (clip_marked(i, x) ? CELL_SELECTED : 0)));
     }
 }
 

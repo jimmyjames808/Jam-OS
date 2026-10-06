@@ -9,7 +9,10 @@
  *   wlinput.c  ... its size, and Wayland's keys and pointer as input events
  *   cellpaint.c a cell drawn in the 8x16 bitmap or the smooth font (cells.h)
  *   view.c     which lines of the text the screen shows
+ *   select.c   the mouse's selection: its geometry and its text
+ *   clip.c     ... in the window: the mouse and the keys that copy and paste
  *   keys.c     the focus stack of key channels, and the input sources
+ *   paste.c    pasted text typed into the focus
  *   clients.c  the console protocol's clients and their levels
  *   notices.c  the few things worth a line while the kernel log is off
  *              the screen
@@ -61,6 +64,7 @@ enum { L_ADMIN, L_SHELL, L_PROGRAM };
 struct client {
     uint8_t level;                   /* L_* */
     bool    show_log;                /* console.show_log: it asks for the log on the screen */
+    bool    bracketed;               /* it wrote ESC [ ? 2004 h: its pastes are bracketed */
     char    log_only[LOG_ONLY_MAX];  /* ... only this process's lines ("": all of them) */
 };
 
@@ -154,6 +158,11 @@ void alt_owner_event(uint32_t gen);
 
 /* ---- term.c: program output -------------------------------------------------- */
 
+/* The client whose console.write is being read (clients.c sets it around
+ * the bytes; NULL otherwise): the DEC modes a program asks for are its own
+ * (ESC [ ? 2004 h, bracketed paste). */
+extern struct client *out_writer;
+
 /* One byte of program output. */
 void out_char(uint8_t ch);
 /* ESC [ p m. */
@@ -168,9 +177,9 @@ bool screen_init(void);
 bool screen_alloc(void);
 /* Draw the cells that changed since the last render. */
 void render(void);
-/* What the screen shows now, cell by cell: show(x, y, cell, inverted)
- * for each of the rows x cols cells (the scrollback's view and the
- * current line, or the alternate screen); inverted: the cursor. */
+/* What the screen shows now, cell by cell: show(x, y, cell, marks) for
+ * each of the rows x cols cells (the scrollback's view and the current
+ * line, or the alternate screen); marks: CELL_CURSOR, CELL_SELECTED. */
 void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv));
 /* Quiet (the boot splash is coming, init's argument "quiet"): draw nothing
  * until a lent screen comes back, or until `until` (uptime ns) if nobody
@@ -191,6 +200,7 @@ void lease_ended(void);
 /* ---- keys.c: keys and input sources ----------------------------------------- */
 
 extern handle_t focus[MAX_FOCUS];
+extern struct client *focus_client[MAX_FOCUS];   /* the client that opened each */
 extern unsigned nfocus;
 /* Drop focus i (its client is gone, or it was pushed out). */
 void focus_drop(unsigned i);
@@ -205,6 +215,9 @@ void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool te
 /* A mouse report, from an input source or the window: to the focus if
  * it asked for the mouse, else the wheel scrolls back. */
 void mouse_event(const struct input_mouse_event *ev);
+/* Does the focus (the newest key channel) want the mouse? Then the
+ * window's pointer is its, not the selection's. */
+bool focus_wants_mouse(void);
 /* Super+Enter: ask init for another terminal (initctl.terminal), without
  * waiting; a refusal is said on this terminal. */
 void terminal_ask(void);
@@ -218,6 +231,21 @@ void init_watch(void);
  * (DEADLINE_NEVER: no reboot asked for); reboot_due does it then. */
 uint64_t reboot_deadline(void);
 void reboot_due(void);
+
+/* ---- paste.c: pasted text typed into the focus ------------------------------------ */
+
+/* Text (UTF-8, copied) typed into the newest focus as key presses with
+ * usage 0, as a serial terminal's (paste.c says which characters go and
+ * how), between ESC [ 200 ~ and ESC [ 201 ~ if that focus's client asked
+ * for bracketed paste. As fast as the focus reads: what doesn't fit its
+ * channel goes at paste_deadline (paste_pump). false: a paste is still
+ * going (this one is dropped), no focus, or no memory. */
+bool paste_start(const char *text, size_t n);
+void paste_pump(void);
+/* When paste_pump must run (0: now; DEADLINE_NEVER: no paste). */
+uint64_t paste_deadline(void);
+/* The rest of a paste dropped (a key typed): its bracket still closed. */
+void paste_stop(void);
 
 /* ---- window.c, winpaint.c, wlinput.c: the window mode --------------------------- */
 
@@ -286,6 +314,90 @@ bool mouse_of_wayland(struct pointer_track *p, const struct jwl_event *ev,
  * text bar over the text, the arrow over the padding. */
 uint32_t pointer_shape_at(const struct cell_look *l, uint32_t cols, uint32_t rows, int32_t x,
                           int32_t y);
+/* The clipboard's keys: Super+C or Ctrl+Shift+C copies, Super+V or
+ * Ctrl+Shift+V pastes (Ctrl+C alone stays the interrupt). */
+enum clip_key { CLIP_NONE, CLIP_COPY, CLIP_PASTE };
+enum clip_key clip_key_of(const struct input_key_event *ev);
+/* Does a key typed clear the selection: a press that isn't a modifier
+ * alone or the scrollback's page keys. */
+bool key_clears_selection(const struct input_key_event *ev);
+/* The next key pasted text types, from text[*at .. n): true with *out (a
+ * press, usage 0 and the character) and *at moved past what it took; false
+ * at the end. Printable characters as themselves; '\n', '\r' and "\r\n" a
+ * newline '\n'; '\t' a tab; every other control character (ESC among
+ * them, so pasted text can't end a bracketed paste early), DEL, the C1
+ * controls and bad UTF-8 are dropped. */
+bool paste_key(const char *text, size_t n, size_t *at, struct input_key_event *out);
+
+/* ---- select.c, clip.c: the mouse's selection (window mode) ---------------------- */
+
+/* A point of the text: a line, as the scrollback numbers them (view.c),
+ * and a column. */
+struct sel_pt {
+    int64_t  line;
+    uint32_t col;
+};
+enum sel_unit { SEL_CHAR, SEL_WORD, SEL_LINE };
+struct selection {
+    bool on;                       /* something is selected: drawn, and copied by Super+C */
+    enum sel_unit unit;            /* a drag's, a double click's, a triple click's */
+    struct sel_pt anchor, head;    /* where the press was, where the pointer is */
+};
+/* The text a selection reads: line i's cols cells (NULL: not kept). */
+struct sel_text {
+    const struct cell *(*line)(void *ctx, int64_t i);
+    void *ctx;
+    uint32_t cols;
+};
+/* The cell under surface pixel (x, y) of a window with a cols x rows grid
+ * of l's cells inside its padding, clamped to the grid. */
+void   sel_cell_at(const struct cell_look *l, uint32_t cols, uint32_t rows, int32_t x, int32_t y,
+                   uint32_t *col, uint32_t *row);
+/* The selection's first and last cell, its ends grown to their word or
+ * line: false if nothing is selected. */
+bool   sel_range(const struct selection *s, const struct sel_text *t, struct sel_pt *from,
+                 struct sel_pt *to);
+/* Is (line, col) in [from, to]? */
+bool   sel_has(const struct sel_pt *from, const struct sel_pt *to, int64_t line, uint32_t col);
+/* The selected text as UTF-8 into out (cap bytes, cut there; no NUL):
+ * its length. */
+size_t sel_copy(const struct selection *s, const struct sel_text *t, char *out, size_t cap);
+/* Counting clicks: a press within 500 ms of the last on the same cell is
+ * the next of a double or triple click (and a fourth starts again). */
+struct click_track {
+    unsigned count;                /* the last press's: 1, 2 or 3 (0: none yet) */
+    uint32_t time_ms;              /* its time (wl_pointer's) */
+    struct sel_pt at;              /* its cell */
+};
+unsigned sel_click(struct click_track *k, uint32_t time_ms, struct sel_pt at);
+/* A press at `at`, the clicks'th: one starts a drag (nothing selected
+ * until it moves to another cell), two select a word, three a line. */
+void   sel_press(struct selection *s, struct sel_pt at, unsigned clicks);
+/* The drag reached `at`: true if the selection changed. */
+bool   sel_drag(struct selection *s, struct sel_pt at);
+
+/* clip.c: the selection in this terminal. */
+extern struct selection sel;
+/* A pointer event of the window's: true if the selection took it (the
+ * left button and its drags, while the focus doesn't want the mouse and
+ * the text screen is up); the wheel is never taken. */
+bool   clip_pointer(const struct jwl_event *ev);
+/* A key from the window: true if it was a copy or paste key (or the
+ * release of one), which goes no further. Any other key typed clears the
+ * selection. */
+bool   clip_key(const struct input_key_event *ev);
+/* Is (line, col) of the text screen selected now? clip_begin computes the
+ * range once for a screen's walk (grid_walk). */
+void   clip_begin(void);
+bool   clip_marked(int64_t line, uint32_t col);
+/* Nothing selected (a full-screen program took the screen). */
+void   clip_clear(void);
+
+/* window.c: the clipboard through the window's client. */
+/* Offer text as the selection; false if it can't (no clipboard). */
+bool   window_copy(const char *text, size_t n);
+/* Ask for the selection's text: it comes to paste_start (JWL_EV_PASTE). */
+void   window_paste(void);
 
 /* ---- notices.c: while the kernel log is off the screen ---------------------------- */
 

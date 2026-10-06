@@ -199,14 +199,28 @@ static void utf8_put(uint32_t cp, char u[5])
     }
 }
 
+uint32_t cell_selected_bg(uint32_t bg)
+{
+    /* the tint over bg, channel by channel, rounded: bg + (tint - bg) * a */
+    uint32_t out = 0;
+    for (unsigned sh = 0; sh < 24; sh += 8) {
+        int32_t b = (int32_t)(bg >> sh & 0xff), t = (int32_t)(SEL_TINT >> sh & 0xff);
+        int32_t v = b + ((t - b) * (int32_t)SEL_TINT_A + (t >= b ? 127 : -127)) / 255;
+        out |= (uint32_t)v << sh;
+    }
+    return out;
+}
+
 void cell_paint(uint32_t *px, int32_t stride, int32_t w, int32_t h, const struct cell_look *l,
-                int32_t x, int32_t y, struct cell c, bool inverse)
+                int32_t x, int32_t y, struct cell c, uint8_t marks)
 {
     uint32_t fg = cell_palette[c.attr & 15], bg = cell_palette[c.attr >> 4];
-    if (inverse) {
+    if (marks & CELL_CURSOR) {
         uint32_t t = fg;
         fg = bg;
         bg = t;
+    } else if (marks & CELL_SELECTED) {
+        bg = cell_selected_bg(bg);   /* the text unchanged */
     }
     struct dst d = { px, stride, w, h, x, y, l->w, l->h };
     if (!l->reg) {

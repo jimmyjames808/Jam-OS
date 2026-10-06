@@ -1,9 +1,10 @@
 /* console: the window mode's pure parts (console.h): how big a terminal
  * window is on an output and how many cells fit in a window (its
  * WIN_PAD padding on every side, in a look's cells: cells.h), the
- * terminal.font values, and Wayland's keys and pointer as the console's
+ * terminal.font values, Wayland's keys and pointer as the console's
  * own input events (<jam/abi.h>, "input"), so a key typed into a window
- * reaches the focus stack exactly as one from a keyboard driver does.
+ * reaches the focus stack exactly as one from a keyboard driver does, and
+ * which keys copy and paste and what keys pasted text types.
  *
  * No state of the console's and no system calls: utest checks them
  * (user/tests/utest/conwin.c). */
@@ -87,6 +88,46 @@ bool key_of_wayland(uint32_t code, uint32_t state, uint32_t mods, uint32_t cp,
         return false;
     *out = (struct input_key_event){ (uint16_t)usage, s, hid_mods(mods), cp };
     return true;
+}
+
+enum clip_key clip_key_of(const struct input_key_event *ev)
+{
+    uint8_t m = ev->mods;
+    bool super = m & (INPUT_MOD_LGUI | INPUT_MOD_RGUI), ctrl = m & INPUT_MOD_CTRL;
+    bool shift = m & INPUT_MOD_SHIFT, alt = m & INPUT_MOD_ALT;
+    bool chord = !alt && ((super && !ctrl) || (ctrl && shift && !super));
+    if (!chord)
+        return CLIP_NONE;
+    return ev->usage == 0x06 ? CLIP_COPY : ev->usage == 0x19 ? CLIP_PASTE : CLIP_NONE;   /* C, V */
+}
+
+bool key_clears_selection(const struct input_key_event *ev)
+{
+    bool modifier = ev->usage >= 0xe0 && ev->usage <= 0xe7;
+    bool page = ev->usage == 0x4b || ev->usage == 0x4e;   /* the scrollback's keys */
+    return ev->state != INPUT_KEY_UP && !modifier && !page;
+}
+
+bool paste_key(const char *text, size_t n, size_t *at, struct input_key_event *out)
+{
+    while (*at < n) {   /* each turn takes at least one byte */
+        const uint8_t *p = (const uint8_t *)text + *at;
+        uint32_t cp = 0;
+        int k = utf8_seq(p, n - *at, &cp);
+        *at += (size_t)(k > 0 ? k : k < 0 ? -k : 1);
+        if (k <= 0)
+            continue;   /* bad UTF-8 */
+        if (cp == '\r') {
+            if (*at < n && text[*at] == '\n')
+                (*at)++;   /* CR LF: one newline */
+            cp = '\n';
+        }
+        if (cp != '\n' && cp != '\t' && (cp < 0x20 || cp == 0x7f || (cp >= 0x80 && cp < 0xa0)))
+            continue;   /* a control character (ESC among them): never typed */
+        *out = (struct input_key_event){ 0, INPUT_KEY_DOWN, 0, cp };
+        return true;
+    }
+    return false;
 }
 
 bool asks_terminal(const struct input_key_event *ev)

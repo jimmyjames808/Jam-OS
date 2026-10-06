@@ -312,9 +312,9 @@ static int serve(void)
         /* A client with requests left over: take what else is queued (a
          * key, another client) without sleeping, then give it another round. */
         uint64_t deadline = clients_pending() ? 0 : dirty ? last + RENDER_NS : DEADLINE_NEVER;
-        uint64_t more[3] = { reboot_deadline(), notices ? notice_deadline() : DEADLINE_NEVER,
-                             window_deadline() };
-        for (unsigned i = 0; i < 3; i++)
+        uint64_t more[4] = { reboot_deadline(), notices ? notice_deadline() : DEADLINE_NEVER,
+                             window_deadline(), paste_deadline() };
+        for (unsigned i = 0; i < 4; i++)
             deadline = more[i] < deadline ? more[i] : deadline;
         struct port_packet pkt;
         status_t st = jam_port_wait(port, deadline, &pkt);
@@ -327,6 +327,7 @@ static int serve(void)
         if (window_mode && st == ERR_TIMED_OUT)
             window_event();   /* its own work: a key repeat, a reconnect's try */
         clients_serve_pending();
+        paste_pump();   /* a paste's keys, as fast as the focus reads them */
         reboot_due();
         if (notices)
             notice_tick(clients_show_all());
