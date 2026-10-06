@@ -2066,7 +2066,10 @@ each request goes out without waiting and its answer comes to the port
   a channel that closes takes its cards with buttons along. The
   compositor never acts on a button itself: init's own "Update written"
   notice (posted on its ADMIN channel) has a Reboot button that init
-  answers by rebooting, as `initctl.reboot` does. Without a compositor
+  answers by rebooting, as `initctl.reboot` does, and its "Jam OS
+  restarted after a problem" (the boot after a panic) a Details button
+  that init answers by opening a terminal running `crashlog`, as
+  `initctl.terminal` does. Without a compositor
   (`nocomp`) nothing is posted: the services' log lines, and the
   console's notices made from them, are as before.
 - **Volume and network.** The mixer serves its desktop channel as it does
@@ -2582,9 +2585,10 @@ One kernel, two ways in: Limine at power-on, or a jump from a running Jam
 OS, after `reboot` or a panic. Either way the boot is a normal one (every
 CPU, every driver, all of RAM, the splash, the shell), and the screen
 shows nothing but the splash background from the moment `reboot` starts
-or the panic happens until the next boot's splash. After a panic the next
-boot saves the panicked boot's log first and the shell prints one line
-about it. Code in `kernel/kexec/`; the plan, with the layout and the
+(after a panic, once the panic screen has said so) until the next boot's
+splash. After a panic the next boot saves the panicked boot's log first
+and says so: a line in the shell, a notice on the desktop. Code in
+`kernel/kexec/`; the plan, with the layout and the
 decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 2").
 
 - **The region** (32 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
@@ -2612,7 +2616,8 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   window's own page-table entries) matches, and this is not a crash loop
   (a panic within 30 s of a start that was itself a panic's, or the third
   panic in a row however far apart). Then the
-  panic's lines go to the log and the serial port but not the screen;
+  panic's lines go to the log and the serial port but not the screen,
+  which shows the panic screen's first case for 1.5 s (below);
   the crash record is filled (a panic, the log ring's place and head,
   where the panic's lines start, its message, the boot's log name, the
   panics in a row and the uptime), Bus Master Enable goes off on every PCI
@@ -2628,17 +2633,46 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   decided on an AP and makes it itself; the next kernel always starts on
   the BSP and starts every AP. A jump decided and then not made (the AP
   never hands it over within 10 s, or the panicking CPU faults again)
-  resets through the firmware: the screen is dark by then, and a reset
-  beats a dark hang. Without a stored kernel
+  turns into the panic screen's second case and its firmware reset: a
+  reset beats a hang. Without a stored kernel
   (`crashkernel=0`, no region, a damaged one) or in a crash loop the panic
-  screen is drawn as before M8.5, with the reason, and the machine halts.
+  screen's second case comes at once, with the reason in its details.
+- **The panic screen** (the owner's design, `kernel/debug/panicscreen.c`,
+  `<jam/panicscreen.h>`): the kernel draws it alone, with the other CPUs
+  halted and interrupts off, taking no lock and allocating nothing; only
+  the framebuffer is written. A dark background (#11141b), the busy ring
+  of `docs/design/cursors.svg` turning once a second (timed by the TSC;
+  each pixel worked out with integers, `panicdraw.c`), a line of Inter
+  and a code under it, `JAM-<kind>-<4 hex>` (`paniccode.c` has the table:
+  the exception's mnemonic, WD, AS, LK, OOM or KP, and the low 16 bits of
+  the faulting address, RIP or panic()'s caller). No font code runs in a
+  crashed kernel: the few glyphs it needs are baked at build time on the
+  Mac by the font tool (`tools/panicglyphs.c`, libfun's own font code and
+  Inter) into a table the kernel links (`<jam/panictext.h>`), and laid out
+  and blended exactly as libfun draws them. Case 1, the stored kernel
+  will start: "Jam OS hit a problem and is restarting" for 1.5 s, then the
+  jump. Case 2, it can't: "Jam OS hit a problem it can't recover from" /
+  "Restarting the PC in 15 s" counting down; at 5 s a details panel in the
+  8x16 font (the code, where, the address, the message, the backtrace's
+  first frames, why there is no restart, the boot and the build); at 15 s
+  the firmware reset, leaving the screen as it is; if the machine is
+  still there, the ring stops and the words say to hold the power button.
+  A panic before the TSC is measured can't count: its details and those
+  words come at once, and no reset. No keys: the drivers are user space.
 - **The next boot after a panic** checks the record and the ring as
   untrusted input and copies the log into a VMO for init (`SR_CRASHLOG`).
   init gives it to logd, which writes `/data/logs/<name>-crash.txt` (never
   overwriting) and syncs before it opens this boot's own log, and answers
   on a channel of init's (`<crashlog.h>`). The boot's first shell waits for
   the answer (20 s for `/data`, 60 s for the save) and prints
-  `the last boot panicked: <message> (saved as ...)`, or why it was not.
+  `the last boot panicked: <message> (saved as ...). Code JAM-...:
+  crashlog shows the details`, or why it was not saved; init finds the
+  code in the panic's lines (`<crashinfo.h>`). On the desktop, once that
+  shell is up, init posts the notice "Jam OS restarted after a problem" /
+  "Everything is back. Code ...", whose Details opens a terminal running
+  the shell's `crashlog` (the saved report: the code, what and where, the
+  backtrace, the log lines before it, the boot and the build; `crashlog
+  list`, `crashlog N`).
 - **`reboot`** (initctl.reboot, so also Ctrl+Alt+Del): the shell (or the
   console) blanks the screen first (`console.blank`: the splash background,
   nothing drawn). init starts the stored kernel as it is unless `/esp`
@@ -2655,7 +2689,9 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   devmgr shutdown. The kernel's firmware reset (`kernel/dev/reboot.c`)
   halts the other CPUs, takes the screen back, turns bus mastering and
   the IOMMU off, then tries the FADT's reset register, 0xCF9's full reset, the 8042 and
-  a triple fault, a second apart, each said on the screen first. M9's `update` hands init a fetched
+  a triple fault, a second apart, each said on the screen first (the
+  panic screen's reset leaves its screen up, and draws its last words
+  before the triple fault). M9's `update` hands init a fetched
   build on an offer channel (initctl.update_offer, `<update.h>`): init
   checks the manifest's signature with its build's key, copies the files
   into VMOs of its own, checks each length and SHA-256 against
@@ -2703,12 +2739,12 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   (a remount says nothing), never twice within 30 s, at most four in
   10 s. `verbose`, `nosplash` and the safe mode show the whole log as it
   comes, and the boot tests draw it from the kernel.
-- Panic screen: message, decoded exception (page-fault cause, NULL and stack
+- A panic's lines: message, decoded exception (page-fault cause, NULL and stack
   overflow hints), all registers and control registers, symbolised backtrace
-  with repeated frames collapsed, and the log tail: drawn only when there
-  is no stored kernel to start (or in a crash loop); otherwise the same
-  lines go to the log and the serial port, and the next boot saves them
-  ([Kexec: reboot and panic](#kexec-reboot-and-panic)). Symbols come from a
+  with repeated frames collapsed, the code, the build, and the log tail,
+  into the log and onto the serial port; the next boot saves them. The
+  screen shows the calm panic screen instead, its details panel only when
+  there is no restart ([Kexec: reboot and panic](#kexec-reboot-and-panic)). Symbols come from a
   two-pass link: `.ksyms` is the last section, so filling it in moves nothing
   (checked by `tools/gensyms.py verify`). #DF, NMI and #MC run on IST stacks.
   The other CPUs are halted by NMI first.
@@ -2719,11 +2755,12 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   The set can be repeated in one boot, shuffled from a seed and run under
   load (`ktest loops=5 seed=42 load`; the shell's `soak` does all of it
   and adds user-space load): a test must pass on any run and in any order.
-  Every panic screen names the loop, the seed and the test that was running.
+  Every panic names the loop, the seed and the test that was running (its
+  note line, in the log and in the panic screen's details).
 - **DBG_HOOK** injection points (`kernel/include/jam/dbghook.h`) let race
   regression tests stop a thread at an exact line.
 - The RESULTS box: every run ends with a box of the lines that matter
   (`report()`, `debug_report`), so a PC run can be read from one photo.
-- Per-CPU watchdog heartbeat: a stuck core turns into a panic screen.
+- Per-CPU watchdog heartbeat: a stuck core turns into a panic (JAM-WD-...).
 - QEMU mirrors the PC: q35, OVMF, xHCI USB boot (`make run`), gdb stub
   (`make debug`). How to run the tests: [docs/TESTING.md](docs/TESTING.md).

@@ -42,6 +42,9 @@
 # a cheap USB 2 stick's do (tools/update-pc-test.sh).
 # A panic starts the kernel's stored copy (kexec): a run without
 # QEMU_INPUT ends there (PANIC), a scripted one goes on into that boot.
+# A panic that can't start it (crashkernel=0, a crash loop) ends a run
+# without QEMU_INPUT at once too (PANIC), with the panic screen's second
+# case in the screenshot, rather than at its firmware reset 15 s later.
 # The boot splash (a plain boot's animation) is left out with the boot
 # word `nosplash`, so the tests see the text log as before; QEMU_SPLASH=1
 # keeps it (tools/splash-test.sh).
@@ -200,9 +203,11 @@ if [ -n "${QEMU_MONITOR:-}" ]; then
 fi
 
 # A run without a script also ends at a panic that starts the stored
-# kernel (kexec): what comes after it is another boot.
+# kernel (kexec): what comes after it is another boot; or at one that
+# can't, once its screen is up (its firmware reset would end QEMU).
 ends="Halting|Idling|system halted"
-[ -n "${QEMU_INPUT:-}" ] || ends="$ends|starting the stored kernel: the next boot"
+stuck="the details at 5 s, the firmware reset at 15 s"
+[ -n "${QEMU_INPUT:-}" ] || ends="$ends|starting the stored kernel: the next boot|$stuck"
 i=0
 while [ $i -lt $limit ] && kill -0 $qpid 2>/dev/null &&
       ! grep -qE "$ends" "$log" 2>/dev/null; do
@@ -246,5 +251,5 @@ if [ -n "$fpid" ]; then
     exit 0
 fi
 [ $net_ok = 1 ] || exit 1
-grep -q "starting the stored kernel: the next boot" "$log" && { echo "$name: PANIC"; exit 1; }
+grep -qE "starting the stored kernel: the next boot|$stuck" "$log" && { echo "$name: PANIC"; exit 1; }
 grep -qE "Halting|Idling|system halted" "$log" || { echo "$name: TIMEOUT"; exit 1; }

@@ -24,6 +24,7 @@
 #include <jam/lapic.h>
 #include <jam/mm.h>
 #include <jam/panic.h>
+#include <jam/panicscreen.h>
 #include <jam/pci.h>
 #include <jam/pcid.h>
 #include <jam/percpu.h>
@@ -409,6 +410,7 @@ _Noreturn static void kmain_stage2(void *arg)
     boot_disk_init();
     boot_vlan_init();
     bootfs_init(boot);   /* only needs the heap; before the tests that use it */
+    panic_screen_init();   /* the build's name, from bootfs, for a panic's details */
     /* After a kexec: the previous kernel's record (did it panic?) and log,
      * before anything could panic into a stored kernel (kexec.h). */
     crashlog_init(boot);

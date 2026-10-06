@@ -302,19 +302,26 @@ until M8.6); `reboot -f` goes through the firmware and the boot menu.
 
 ## If something goes wrong on the PC
 
-- **A panic.** No panic screen: the screen turns the splash background,
-  the PC boots again without the firmware (the splash, then the shell),
-  and the shell's first line says what the panic was and where its log
-  went (`the last boot panicked: ... (saved as
-  /data/logs/boot-NNNN-crash.txt)`), or why it was not saved. Read that
-  file on the Mac: the last 4 MiB of the log, the panic with its
-  registers, backtrace and note line (a kernel test's loop, seed and test,
-  when tests were running; [TESTING.md](TESTING.md#soak) says how to
-  replay it). The boot's own `boot-NNNN.txt` stops up to a quarter of a
-  second before the panic. The red panic screen only stays up (photograph
-  it) when there is no stored kernel to start, or for a second panic
-  within 30 s of the boot that followed a panic, or for the third panic in
-  a row (a crash loop).
+- **A panic.** The screen turns dark with the busy ring: "Jam OS hit a
+  problem and is restarting" and a code (`JAM-PF-0008`) for 1.5 s, then
+  the PC boots again without the firmware (the splash, then the desktop),
+  and the shell's first line says what the panic was, its code and where
+  its log went (`the last boot panicked: ... (saved as
+  /data/logs/boot-NNNN-crash.txt). Code ...`), or why it was not saved;
+  on the desktop a notice says so too, whose Details runs `crashlog` in a
+  terminal (the report's summary: the code, what and where, the
+  backtrace, the log lines before it, the boot and the build; `crashlog
+  list` for older ones). Read the whole file on the Mac: the last 4 MiB
+  of the log, the panic with its registers, backtrace and note line (a
+  kernel test's loop, seed and test, when tests were running;
+  [TESTING.md](TESTING.md#soak) says how to replay it). The boot's own
+  `boot-NNNN.txt` stops up to a quarter of a second before the panic.
+  When there is no stored kernel to start, or for a second panic within
+  30 s of the boot that followed a panic, or for the third panic in a row
+  (a crash loop), the screen says "Jam OS hit a problem it can't recover
+  from" and counts down 15 s to a firmware reset; its details panel
+  comes after 5 s (photograph it). If the reset doesn't work it says to
+  hold the power button.
 - **Logs.** Every boot with user space (the everyday entries, the Soak
   entry) writes its log to `/data/logs/boot-NNNN.txt`; read it on the Mac
   after a `reboot` or after pulling the plug (the last quarter second may

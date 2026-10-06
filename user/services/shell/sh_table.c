@@ -65,6 +65,11 @@ static const struct sh_cmd cmds[] = {
     C(whoami, C_SYSTEM, "whoami", "the user (there is one: jam)"),
     C(hostname, C_SYSTEM, "hostname", "this machine's name"),
     C(dmesg, C_KERNEL, "dmesg", "the whole kernel log (up to 4 MiB); pipe it: dmesg | grep usb"),
+    C(crashlog, C_SYSTEM, "crashlog [N | list]",
+      "what happened at the last crash (the report Jam OS saved when it restarted).\n"
+      "  The code, what and where, the backtrace, the log lines before it, the boot\n"
+      "  and the build (/data/logs/boot-NNNN-crash.txt). N: the N-th newest (1 is\n"
+      "  the newest); list: every saved one, newest first"),
     C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
     C(jobs, C_PROGRAMS, "jobs",
       "the programs started with & (prog &, run prog args &): number, pid, state,\n"

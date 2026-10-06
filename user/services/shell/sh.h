@@ -426,7 +426,7 @@ extern unsigned sh_term_no;
 
 /* information */
 SH_CMD(uname); SH_CMD(version); SH_CMD(uptime); SH_CMD(date); SH_CMD(lscpu); SH_CMD(free);
-SH_CMD(ps); SH_CMD(top); SH_CMD(whoami); SH_CMD(hostname); SH_CMD(dmesg); SH_CMD(log);
+SH_CMD(ps); SH_CMD(top); SH_CMD(whoami); SH_CMD(hostname); SH_CMD(dmesg); SH_CMD(crashlog); SH_CMD(log);
 SH_CMD(jamjar);
 /* files and text */
 SH_CMD(pwd); SH_CMD(cd); SH_CMD(ls); SH_CMD(find); SH_CMD(mkdir); SH_CMD(rm); SH_CMD(mv);

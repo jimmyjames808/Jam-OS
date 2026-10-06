@@ -10,7 +10,8 @@
  *   4. a triple fault: an empty IDT and an exception.
  * The boot word reset=cf9, reset=8042 or reset=triple starts the list
  * there instead (the QEMU test of each method; on the PC, a way to try
- * the full reset first).
+ * the full reset first); reset=none tries none of them (the test of the
+ * panic screen's words for a reset that didn't happen).
  *
  * First the machine is made quiet, as kexec_reboot does: the other CPUs
  * halted (NMI), the log written out on the serial port and drawn on the
@@ -33,6 +34,7 @@
 #include <jam/kexec.h>
 #include <jam/klog.h>
 #include <jam/kprintf.h>
+#include <jam/panic.h>
 #include <jam/pci.h>
 #include <jam/serial.h>
 #include <jam/time.h>
@@ -49,12 +51,15 @@
 #define KBC_IN_FULL   0x02    /* status: the input buffer is still full */
 #define KBC_PULSE_RST 0xfe    /* pulse output line 0: the reset line */
 
-enum method { M_ACPI, M_CF9, M_8042, M_TRIPLE };
+enum method { M_ACPI, M_CF9, M_8042, M_TRIPLE, M_NONE };
 
 /* Where the list starts: the boot word's choice, else the ACPI register
- * when the FADT has one. */
+ * when the FADT has one. reset=none tries nothing (a test of what the
+ * panic screen says when no reset happens). */
 static enum method first_method(void)
 {
+    if (cmdline_has("reset=none"))
+        return M_NONE;
     if (cmdline_has("reset=triple"))
         return M_TRIPLE;
     if (cmdline_has("reset=8042"))
@@ -141,6 +146,10 @@ _Noreturn static void triple_fault(void)
 void reboot_describe(char *buf, size_t size)
 {
     enum method m = first_method();
+    if (m == M_NONE) {
+        ksnprintf(buf, size, "reset=none: no way is tried (a test)");
+        return;
+    }
     const char *word = m == M_TRIPLE ? "reset=triple: " : m == M_8042 ? "reset=8042: "
                        : m == M_CF9 && acpi.has_reset_reg ? "reset=cf9: " : "";
     const char *rest = m == M_TRIPLE ? "triple fault"
@@ -156,32 +165,30 @@ void reboot_describe(char *buf, size_t size)
 }
 
 /* The other CPUs halted (a BSP that would wait for a kexec jump halts
- * too), the locks they may hold dropped, the serial port synchronous,
- * the screen the kernel's again with the whole log redrawn (the lines of
- * init and the shell before this one included), bus mastering off. */
-static void quiet_machine(void)
+ * too; after a panic they are halted already), the locks they may hold
+ * dropped, the serial port synchronous, bus mastering off. With
+ * `screen`, the screen the kernel's again with the whole log redrawn
+ * (the lines of init and the shell before this one included); without,
+ * it stays as it is (the panic screen's). */
+static void quiet_machine(bool screen)
 {
     kexec_reset_coming();
-    uint32_t halted = ipi_halt_others();
+    uint32_t halted = panic_in_progress ? 0 : ipi_halt_others();
     klog_force_unlock();
     serial_panic();   /* the ring written out: what follows is synchronous */
-    fbcon_force_unlock();
-    fbcon_release();
+    if (screen) {
+        fbcon_force_unlock();
+        fbcon_release();
+    }
     uint32_t off = pci_panic_bus_master_off();
     iommu_jump_off();   /* a reset that fails half-way leaves no table of ours in use */
     kprintf("reboot: %u other CPU(s) halted, bus mastering off on %u PCI function(s)\n", halted,
             off);
 }
 
-_Noreturn void machine_reboot(void)
+/* The methods before the triple fault, from the first (first_method). */
+static void try_methods(enum method m)
 {
-    char how[160];
-    reboot_describe(how, sizeof(how));
-    kprintf("reboot: resetting: %s\n", how);
-    cli();
-    quiet_machine();
-
-    enum method m = first_method();
     if (m == M_ACPI) {
         acpi_reset();
         delay_ms(RESET_WAIT_MS);
@@ -194,5 +201,40 @@ _Noreturn void machine_reboot(void)
         kbc_reset();
         delay_ms(RESET_WAIT_MS);
     }
+}
+
+_Noreturn void machine_reboot(void)
+{
+    char how[160];
+    reboot_describe(how, sizeof(how));
+    kprintf("reboot: resetting: %s\n", how);
+    cli();
+    quiet_machine(true);
+    enum method m = first_method();
+    if (m == M_NONE) {
+        kprintf("reboot: nothing reset the machine: hold the power button\n");
+        halt_forever();
+    }
+    try_methods(m);
     triple_fault();
+}
+
+void machine_reset_try(void)
+{
+    char how[160];
+    reboot_describe(how, sizeof(how));
+    kprintf("reboot: resetting: %s\n", how);
+    cli();
+    quiet_machine(false);
+    enum method m = first_method();
+    if (m != M_NONE)
+        try_methods(m);
+    kprintf("reboot: still here after %s\n", m == M_NONE ? "trying nothing (reset=none)"
+                                                          : "every way but the triple fault");
+}
+
+void machine_reset_triple(void)
+{
+    if (first_method() != M_NONE)
+        triple_fault();
 }

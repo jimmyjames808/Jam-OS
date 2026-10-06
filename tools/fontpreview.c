@@ -8,6 +8,9 @@
  *     fontpreview --check      the drawing code against hostile input
  *                              (`make check` runs it built with ASan and
  *                              UBSan as build/host/fontcheck)
+ *     fontpreview --panic <out.c>  the kernel's panic screen's glyphs
+ *                              (tools/panicglyphs.c), which `make` links
+ *                              into the kernel
  *
  * The check: random strings (malformed UTF-8 among them) drawn at random
  * places, partly or wholly off every edge, into a surface inside a
@@ -175,8 +178,10 @@ int main(int argc, char **argv)
 {
     if (argc == 2 && !strcmp(argv[1], "--check"))
         return font_check();
+    if (argc == 3 && !strcmp(argv[1], "--panic"))
+        return panic_glyphs(argv[2]);
     if (argc == 2 && argv[1][0] != '-')
         return preview(argv[1]);
-    fprintf(stderr, "usage: fontpreview <out.png> | --check\n");
+    fprintf(stderr, "usage: fontpreview <out.png> | --check | --panic <out.c>\n");
     return 2;
 }
