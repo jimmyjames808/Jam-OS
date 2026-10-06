@@ -223,7 +223,11 @@ differs from the recommendation below, this note wins:
   A POLISH track follows G1 (owner, 2026-10-07): the boot menu's test
   and network-test entries under one "Developer" submenu (on top: Jam OS,
   previous build, no compositor); a quiet boot (Terminal 1 starts at the
-  prompt; the log stays in `dmesg` and /data/logs); `help` lists everyday
+  prompt; the log stays in `dmesg` and /data/logs); every terminal
+  equal and closable, the first included (init no longer treats terminal
+  1 as the console it never gives up on; with none left the desktop
+  shows the wallpaper and Super+Enter or search opens one; under
+  `nocomp` the one full-screen console stays); `help` lists everyday
   commands and `help dev` the developer ones; plain wording on screen and
   in notifications (the detailed lines stay in the log); a calm panic
   screen (owner's design, 2026-10-07, "B1"): the dark #11141b background,
