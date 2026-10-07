@@ -352,8 +352,8 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   what that capability pinned (its own domain: kernel/object/dma_cap.c;
   a dead driver's pins are freed once the unit confirms the domain is
   gone, not quarantined); and turn interrupt remapping on
-  (kernel/dev/vtd_irq.c). Off by default: without it no VT-d register is
-  written. `iommu=off` wins over it. The `vtd_unit_*`, `vtd_irq_*`,
+  (kernel/dev/vtd_irq.c). With `iommu=off` no VT-d register is
+  written; `iommu=off` wins over `iommu=on`. The `vtd_unit_*`, `vtd_irq_*`,
   `vtd_domain_*` and `dma_iommu_*` ktests need it (and `QEMU_IOMMU`); they
   skip themselves without it; the other `dma_*` ktests check whichever
   mode the boot is in. A reboot keeps either
