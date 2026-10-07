@@ -47,6 +47,7 @@ monitor sendkey meta_l-alt-left
 sleep 2
 send T=x
 wait {prompt}
+sleep 1
 shot restore-before
 
 # ---- the compositor killed: everything back in place ----------------------------------------
