@@ -1164,6 +1164,22 @@ log has "init: the terminals' font: bitmap, as the settings say" and
 `desktop.txt` (`tools/mouse-test.sh`) and `screen-test.sh` (`nocomp`, the
 bitmap) take screenshots of the windows and the full screen.
 
+## Clients the compositor loses
+
+bin/compositor headless in a job of the test's own
+(`user/tests/utest/comp_bad.c`): `comp_bad_requests`, `comp_caps`,
+`comp_connections`, `comp_client_crash` and `comp_never_reads` end with
+the compositor's handles back where they began and its job's message
+bytes back at or below where they began (`ct_msg_back`: a client gone,
+however it went, leaves nothing charged to the compositor). The
+`comp_live_*` versions run against the desktop's compositor, whose job
+the test can't read: `ps -k` before and after shows it (job "compositor",
+its message bytes the same).
+
+| Test | What it checks |
+|---|---|
+| `comp_lost_clients` | 4 rounds of a client that closes after a round trip, one disconnected for a bad request and then closed (its slot lingers until then), and one that crashes holding a window: after each round the compositor's handles and message bytes are back at the start (until 2026-10-07 each client whose end was closed before its slot was freed left its port binding, 1216 bytes, on the compositor's job) |
+
 ## Copy and paste
 
 The clipboard ([ARCHITECTURE](../ARCHITECTURE.md#copy-and-paste)): the
@@ -1176,7 +1192,7 @@ or `only sh_paste` alone):
 |---|---|
 | `comp_data_selection` | the compositor headless with test clients: set_selection refused (its source cancelled) with a serial that isn't one of the client's input events, or without the keyboard focus; only text types offered on; the focused client told the selection before `wl_keyboard.enter`, an unfocused one never; a receive passed on with a channel end the source can write and not read, the data reaching the reader; receives refused (the reader's end closed, the source told nothing) for a type not offered, a handle that isn't a channel, a reader without the focus, and past 32 since its focus came (a new data device's new offer too); the owner going clears the selection |
 | `comp_data_rules` | drag and drop refused (`start_drag` cancels its source; the source used again, a drag's source as the selection, `finish` on a selection's offer are protocol errors); a source that never writes holds up nobody (keys still routed, the reader's end closes when the source closes its own); a client that never destroys its offers is told "none" at the cap |
-| `jwlc_clip` | libjwl against the real compositor: a client copies and pastes its own text; another, whose window then has the focus, pastes 300 KiB of it (several messages); a raw client's selection replaces it (the first hears `JWL_EV_COPY_CANCELLED`); a fourth pastes from that raw owner, which never writes (timed out after 2 s), writes one byte over 1 MiB, or sends a handle (both refused) |
+| `jwlc_clip` | libjwl against the real compositor: a client copies and pastes its own text, then, its connection bound to a port as a program's is, 8 times more, leaving no message bytes on the job once the port is read (each transfer's channel unbound from the port as the paste ends); another, whose window then has the focus, pastes 300 KiB of it (several messages); a raw client's selection replaces it (the first hears `JWL_EV_COPY_CANCELLED`); a fourth pastes from that raw owner, which never writes (timed out after 2 s), writes one byte over 1 MiB, or sends a handle (both refused) |
 | `consel_drag` | the cell under a pixel (padding and edges clamped); a drag across lines, forwards and backwards, its cells and its text (trailing blanks dropped, lines joined by newlines, UTF-8); a press alone selects nothing until the drag reaches another cell |
 | `consel_word_line` | a double click takes a word (paths and options are words; blanks and other punctuation are runs of their own) and a drag after it goes on by words; a triple click takes a line, a drag after it by lines |
 | `consel_scrollback` | a range far back in the scrollback with a line no longer kept (skipped, its newline kept); a copy cut at its buffer; clicks counted within 500 ms on one cell, a fourth starting again |

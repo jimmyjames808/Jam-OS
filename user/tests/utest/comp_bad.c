@@ -83,16 +83,22 @@ static bool live(struct ct_comp *p)
     return false;
 }
 
-/* The compositor's handles now, and back at base: only for one of ours
- * (headless, its job ours to read); the live one's are its own business. */
-static uint64_t handles_now(const struct ct_comp *p)
+/* What the compositor holds: its handles and its message bytes, and both
+ * back at (or, for message bytes, below) base: only for one of ours
+ * (headless, its job ours to read); the live one's are its own business
+ * (`ps -k` shows its job's message bytes). */
+struct held {
+    uint64_t handles, msg;
+};
+
+static struct held held_now(const struct ct_comp *p)
 {
-    return p->job ? ct_handles(p) : 0;
+    return p->job ? (struct held){ ct_handles(p), ct_msg_bytes(p) } : (struct held){ 0, 0 };
 }
 
-static bool handles_back(const struct ct_comp *p, uint64_t base)
+static bool held_back(const struct ct_comp *p, struct held base)
 {
-    return !p->job || ct_handles_back(p, base);
+    return !p->job || (ct_handles_back(p, base.handles) && ct_msg_back(p, base.msg));
 }
 
 /* ---- the bad requests -------------------------------------------------------------- */
@@ -357,7 +363,7 @@ static bool bad_requests(struct ct_comp *p)
     static struct ct_client good, k;
     CHECK(ct_open(p, &good));
     CHECK(ct_bind_all(&good));
-    uint64_t base = handles_now(p);
+    struct held base = held_now(p);
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         uint32_t obj = 0, code = 0;
         CHECK(ct_open(p, &k));
@@ -367,7 +373,7 @@ static bool bad_requests(struct ct_comp *p)
         ct_close(&k);
         CHECK_ST(ct_roundtrip(&good), OK);   /* the others are served on */
     }
-    CHECK(handles_back(p, base));
+    CHECK(held_back(p, base));
     ct_close(&good);
     return true;
 }
@@ -510,7 +516,7 @@ static bool caps(struct ct_comp *p)
     static struct ct_client good, k;
     CHECK(ct_open(p, &good));
     CHECK(ct_bind_all(&good));   /* the compositor is up: its handles are its own now */
-    uint64_t base = handles_now(p);
+    struct held base = held_now(p);
     CHECK(one_cap(p, &k, "surfaces", NULL, 64, make_surface, BY_COMPOSITOR));
     CHECK(pool_caps(p, &k));
     CHECK(one_cap(p, &k, "frame callbacks", on_surface, 64, make_frame, BY_TARGET));
@@ -518,7 +524,7 @@ static bool caps(struct ct_comp *p)
     CHECK(one_cap(p, &k, "boxes in a region", on_region, 256, make_box, BY_TARGET));
     CHECK(one_cap(p, &k, "boxes in all", all_boxes, 0, make_box, BY_TARGET));
     CHECK_ST(ct_roundtrip(&good), OK);
-    CHECK(handles_back(p, base));
+    CHECK(held_back(p, base));
     ct_close(&good);
     return true;
 }
@@ -548,7 +554,7 @@ bool t_comp_connections(void)
     CHECK(ct_start(&p, 320, 200));
     CHECK(ct_open(&p, &good));
     CHECK(ct_bind_all(&good));
-    uint64_t base = ct_handles(&p);
+    uint64_t base = ct_handles(&p), msg = ct_msg_bytes(&p);
     for (unsigned i = 0; i < 62; i++)
         CHECK_ST(svc_connect_within(p.svc, CT_WAIT, &ch[i]), OK);
     CHECK(ct_open(&p, &k));   /* the 64th, with good */
@@ -571,6 +577,7 @@ bool t_comp_connections(void)
         jam_handle_close(ch[i]);
     CHECK_ST(ct_roundtrip(&good), OK);
     CHECK(ct_handles_back(&p, base));
+    CHECK(ct_msg_back(&p, msg));
     ct_close(&good);
     CHECK(ct_stop(&p));
     return true;
@@ -644,10 +651,10 @@ static bool client_crash(struct ct_comp *p)
     static struct ct_client good;
     CHECK(ct_open(p, &good));
     CHECK(ct_bind_all(&good));
-    uint64_t base = handles_now(p);
+    struct held base = held_now(p);
     CHECK(crash_case(p, &good, "wl-crash"));
     CHECK(crash_case(p, &good, "wl-crash-attach"));
-    CHECK(handles_back(p, base));
+    CHECK(held_back(p, base));
     ct_close(&good);
     return true;
 }
@@ -676,7 +683,7 @@ static bool never_reads(struct ct_comp *p)
     static struct ct_client good, k;
     CHECK(ct_open(p, &good));
     CHECK(ct_bind_all(&good));
-    uint64_t base = handles_now(p);
+    struct held base = held_now(p);
     CHECK(ct_open(p, &k));
     for (unsigned i = 0; i < FLOOD; i++) {
         uint32_t r = ct_new(&k, &jwl_wl_registry_interface, 1);
@@ -708,7 +715,7 @@ static bool never_reads(struct ct_comp *p)
     CHECK(k.c->nread <= JWL_WINDOW + 1);   /* the window, and the error past it */
     ct_close(&k);
     CHECK_ST(ct_roundtrip(&good), OK);
-    CHECK(handles_back(p, base));
+    CHECK(held_back(p, base));
     ct_close(&good);
     return true;
 }
@@ -726,4 +733,43 @@ bool t_comp_live_never_reads(void)
 {
     struct ct_comp p;
     return !live(&p) || never_reads(&p);
+}
+
+/* ---- clients lost, round after round ------------------------------------------------ */
+
+#define LOST_ROUNDS 4
+
+/* Each way a client goes, LOST_ROUNDS times over: one that closes its end
+ * after a round trip, one disconnected for a bad request (then closed:
+ * the lingering slot), one that crashes holding a window. After every
+ * round the compositor's handles and message bytes are back where they
+ * began: a client gone, however it went, leaves nothing charged to the
+ * compositor's job (its port binding on the client's channel goes with
+ * the client; until 2026-10-07 each lost client left one, 1216 bytes). */
+bool t_comp_lost_clients(void)
+{
+    static struct ct_client good, k;
+    struct ct_comp p;
+    CHECK(ct_start(&p, 320, 200));
+    CHECK(ct_open(&p, &good));
+    CHECK(ct_bind_all(&good));
+    struct held base = held_now(&p);
+    for (unsigned r = 0; r < LOST_ROUNDS; r++) {
+        CHECK(ct_open(&p, &k));
+        CHECK(ct_bind_all(&k));
+        ct_close(&k);
+        uint32_t obj = 0, code = 0;
+        CHECK(ct_open(&p, &k));
+        CHECK(ct_bind_all(&k));
+        CHECK(bad_batch(&k, &obj, &code));
+        CHECK(ct_expect_error(&k, obj, code));
+        ct_close(&k);
+        CHECK(crash_case(&p, &good, "wl-crash"));
+        CHECK_ST(ct_roundtrip(&good), OK);
+        if (!held_back(&p, base))
+            FAIL("round %u: base %lu message bytes", r, (unsigned long)base.msg);
+    }
+    ct_close(&good);
+    CHECK(ct_stop(&p));
+    return true;
 }

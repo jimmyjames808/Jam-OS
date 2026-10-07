@@ -48,6 +48,22 @@ bool ct_handles_back(const struct ct_comp *p, uint64_t want)
     return true;
 }
 
+uint64_t ct_msg_bytes(const struct ct_comp *p)
+{
+    return ct_job_used(p->job, JOB_LIMIT_MSG_BYTES);
+}
+
+bool ct_msg_back(const struct ct_comp *p, uint64_t want)
+{
+    uint64_t until = now() + CT_WAIT;   /* what it wrote last may not be read yet */
+    while (ct_msg_bytes(p) > want && now() < until)
+        jam_nanosleep(now() + NS_PER_MS);
+    if (ct_msg_bytes(p) > want)
+        FAIL("the compositor's job keeps %lu message bytes, want at most %lu",
+             (unsigned long)ct_msg_bytes(p), (unsigned long)want);
+    return true;
+}
+
 bool ct_image_for(struct ct_comp *p, handle_t *theirs)
 {
     uint64_t size = ((uint64_t)p->w * (uint64_t)p->h * 4 + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);

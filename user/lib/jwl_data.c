@@ -70,7 +70,11 @@ static void paste_end(struct jwl_client *c, status_t status)
     struct jwlc_clip *k = &c->clip;
     if (k->rx == HANDLE_INVALID)
         return;
-    jam_handle_close(k->rx);   /* unbinds it from the port too */
+    /* Closing alone wouldn't unbind it: the binding would keep the channel
+     * end, and its charge, on the port until the port goes. */
+    if (c->port != HANDLE_INVALID)
+        (void)jam_port_unbind(c->port, k->rx, c->port_key);
+    jam_handle_close(k->rx);
     k->rx = HANDLE_INVALID;
     uint32_t size = 0;
     if (status == OK) {

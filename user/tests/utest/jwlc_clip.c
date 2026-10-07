@@ -106,6 +106,38 @@ static bool paste_is(struct cl *k, status_t want_st, const char *want, size_t n)
     return true;
 }
 
+#define PASTES 8
+
+static handle_t clip_port = HANDLE_INVALID;   /* a's, closed once the clients are gone */
+
+/* A's pastes with its connection bound to a port, as a program's is: each
+ * transfer's channel is bound to the port too while it runs, and leaves
+ * it when the paste ends (closing the channel alone would leave the
+ * binding, 1216 of our job's message bytes, on the port until it goes). */
+static bool pastes_leave_nothing(struct cl *a, const char *want, size_t n)
+{
+    CHECK_ST(jam_port_create(&clip_port), OK);
+    CHECK_ST(jwl_client_bind_port(a->c, clip_port, 1), OK);
+    CHECK(paste_is(a, OK, want, n));   /* whatever a first one leaves: the base */
+    uint64_t base = ct_job_used(own_job(), JOB_LIMIT_MSG_BYTES);
+    for (unsigned i = 0; i < PASTES; i++)
+        CHECK(paste_is(a, OK, want, n));
+    uint64_t until = now() + CT_WAIT;
+    while (ct_job_used(own_job(), JOB_LIMIT_MSG_BYTES) > base && now() < until) {
+        pump_all();
+        /* the port read as a program's loop reads it: a queued packet
+         * keeps its binding (and the charge) until it is taken */
+        struct port_packet pkt;
+        while (jam_port_wait(clip_port, 0, &pkt) == OK)
+            ;
+        jam_nanosleep(now() + NS_PER_MS);
+    }
+    uint64_t left = ct_job_used(own_job(), JOB_LIMIT_MSG_BYTES);
+    if (left > base)
+        FAIL("%u pastes left %lu message bytes on our job", PASTES, (unsigned long)(left - base));
+    return true;
+}
+
 /* A copies and pastes its own text; then 300 KiB, which B pastes. */
 static bool copy_and_paste(struct cs *t, struct cl *a, struct cl *b, char *big)
 {
@@ -117,6 +149,7 @@ static bool copy_and_paste(struct cs *t, struct cl *a, struct cl *b, char *big)
         CHECK(next_of(a, JWL_EV_SELECTION, CT_WAIT, &ev));
     while (!ev.clip.available);
     CHECK(paste_is(a, OK, small, sizeof(small) - 1));
+    CHECK(pastes_leave_nothing(a, small, sizeof(small) - 1));
     for (uint32_t i = 0; i < BIG; i++)
         big[i] = (char)('a' + i % 26);
     CHECK_ST(jwl_clip_copy(a->c, big, BIG), OK);
@@ -216,6 +249,8 @@ bool t_jwlc_clip(void)
     for (unsigned i = 0; i < 3; i++)
         jwl_client_destroy(all[i]->c);
     memset(all, 0, sizeof(all));
+    jam_handle_close(clip_port);
+    clip_port = HANDLE_INVALID;
     ct_close(&r.k);
     CHECK(cs_stop(&t));
     return true;

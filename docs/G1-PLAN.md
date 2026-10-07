@@ -1000,6 +1000,21 @@ other window is untouched and the next paint shows the hole filled. The
 dead client's VMOs go when the compositor's mappings go (their pages
 are charged to the client's dead job until then).
 
+**As built: a lost client's port binding (found 2026-10-07 by X1's
+`comp_live_*` tests).** Every client lost left 1216 bytes on the
+compositor's job for good (`ps -k`: +10,944 to +19,456 for
+`comp_live_bad_requests`, +300 KB over a 10-minute soak on the PC):
+`conn.c`'s `free_client` closed its duplicate of the client's channel
+end but never unbound it from the port, and a port binding holds its
+object and its charge (`BINDING_CHARGE`, 192 + 1024 bytes) until it is
+unbound or the port goes; closing the last handle doesn't remove it
+(the kernel's rule, `port.h`). Only the lingering slots, whose `ONCE`
+binding retires when its packet is read, were clean. `free_client` now
+unbinds first. libjwl's paste did the same with each transfer's channel
+(`jwl_data.c`'s `paste_end`, in the terminal's job): fixed likewise.
+Tests: `comp_lost_clients`, message bytes in every headless hostile
+test, and `jwlc_clip`'s pastes on a port.
+
 **The compositor dies** (Q8): the kernel shows its log on the screen
 (the owner token). init restarts it like any service (the backoff, the
 give-up count; but, as the console, never given up for good while the
