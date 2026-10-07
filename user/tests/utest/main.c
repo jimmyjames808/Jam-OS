@@ -34,6 +34,7 @@
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc devmgr\n"
           "svc devmgr-ctl\n"
+          "svc wayland\n"
           "mount * rw\n"
           "right klog\n"
           "right sysinfo\n");
@@ -961,6 +962,10 @@ static const struct {
     { "comp_connections", t_comp_connections },
     { "comp_client_crash", t_comp_client_crash },
     { "comp_never_reads", t_comp_never_reads },
+    { "comp_live_bad_requests", t_comp_live_bad_requests },
+    { "comp_live_caps", t_comp_live_caps },
+    { "comp_live_client_crash", t_comp_live_client_crash },
+    { "comp_live_never_reads", t_comp_live_never_reads },
     { "comp_regions", t_comp_regions },
     { "conwin_grid", t_conwin_grid },
     { "conwin_padding", t_conwin_padding },

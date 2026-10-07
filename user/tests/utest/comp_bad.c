@@ -19,7 +19,16 @@
  * of its VMO) and the compositor's handles come back.
  * t_comp_never_reads: a client that floods requests and reads nothing is
  * disconnected with no_memory after the window and the held bytes; the
- * healthy client is served throughout. */
+ * healthy client is served throughout.
+ * t_comp_client_crash also crashes one between attach and commit.
+ *
+ * t_comp_live_*: the same hostile clients (all but the connections) against
+ * the desktop's own compositor, /svc/wayland, with everyone's windows on
+ * it (G1-PLAN's X1: `utest only comp_live` on the PC, and
+ * tools/shell-tests/g1-hostile.txt). Its job isn't ours to read, so the
+ * handle counts are left out; the check is that it serves a healthy client
+ * after each one and the desktop's windows stay. On a boot without a
+ * compositor (nocomp) they say so and pass. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -56,6 +65,34 @@ static status_t raw(struct ct_client *k, const uint32_t *words, unsigned n, bool
 static uint32_t msg_word(uint32_t bytes, uint32_t opcode)
 {
     return bytes << 16 | opcode;
+}
+
+/* ---- the live compositor ------------------------------------------------------------ */
+
+/* p is the desktop's compositor (/svc/wayland). False, with a line saying
+ * so, on a boot without one (a first connection, closed at once, tells). */
+static bool live(struct ct_comp *p)
+{
+    *p = (struct ct_comp){ .live = true };
+    handle_t ch;
+    if (ct_connect(p, &ch) == OK) {
+        jam_handle_close(ch);
+        return true;
+    }
+    printf("utest: %s: no /svc/wayland (a nocomp boot): nothing to try\n", utest_cur);
+    return false;
+}
+
+/* The compositor's handles now, and back at base: only for one of ours
+ * (headless, its job ours to read); the live one's are its own business. */
+static uint64_t handles_now(const struct ct_comp *p)
+{
+    return p->job ? ct_handles(p) : 0;
+}
+
+static bool handles_back(const struct ct_comp *p, uint64_t base)
+{
+    return !p->job || ct_handles_back(p, base);
 }
 
 /* ---- the bad requests -------------------------------------------------------------- */
@@ -315,27 +352,39 @@ static const struct {
     { "a request too new", bad_too_new }, { "a batch that isn't one", bad_batch },
 };
 
-bool t_comp_bad_requests(void)
+static bool bad_requests(struct ct_comp *p)
 {
     static struct ct_client good, k;
-    struct ct_comp p;
-    CHECK(ct_start(&p, 320, 200));
-    CHECK(ct_open(&p, &good));
+    CHECK(ct_open(p, &good));
     CHECK(ct_bind_all(&good));
-    uint64_t base = ct_handles(&p);
+    uint64_t base = handles_now(p);
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         uint32_t obj = 0, code = 0;
-        CHECK(ct_open(&p, &k));
+        CHECK(ct_open(p, &k));
         CHECK(ct_bind_all(&k));
         if (!bad[i].fn(&k, &obj, &code) || !ct_expect_error(&k, obj, code))
             FAIL("%s: not refused as it should be", bad[i].name);
         ct_close(&k);
         CHECK_ST(ct_roundtrip(&good), OK);   /* the others are served on */
     }
-    CHECK(ct_handles_back(&p, base));
+    CHECK(handles_back(p, base));
     ct_close(&good);
+    return true;
+}
+
+bool t_comp_bad_requests(void)
+{
+    struct ct_comp p;
+    CHECK(ct_start(&p, 320, 200));
+    CHECK(bad_requests(&p));
     CHECK(ct_stop(&p));
     return true;
+}
+
+bool t_comp_live_bad_requests(void)
+{
+    struct ct_comp p;
+    return !live(&p) || bad_requests(&p);
 }
 
 /* ---- caps ------------------------------------------------------------------------ */
@@ -456,25 +505,37 @@ static bool pool_caps(struct ct_comp *p, struct ct_client *k)
     return true;
 }
 
-bool t_comp_caps(void)
+static bool caps(struct ct_comp *p)
 {
     static struct ct_client good, k;
+    CHECK(ct_open(p, &good));
+    CHECK(ct_bind_all(&good));   /* the compositor is up: its handles are its own now */
+    uint64_t base = handles_now(p);
+    CHECK(one_cap(p, &k, "surfaces", NULL, 64, make_surface, BY_COMPOSITOR));
+    CHECK(pool_caps(p, &k));
+    CHECK(one_cap(p, &k, "frame callbacks", on_surface, 64, make_frame, BY_TARGET));
+    CHECK(one_cap(p, &k, "regions", NULL, 64, make_region, BY_COMPOSITOR));
+    CHECK(one_cap(p, &k, "boxes in a region", on_region, 256, make_box, BY_TARGET));
+    CHECK(one_cap(p, &k, "boxes in all", all_boxes, 0, make_box, BY_TARGET));
+    CHECK_ST(ct_roundtrip(&good), OK);
+    CHECK(handles_back(p, base));
+    ct_close(&good);
+    return true;
+}
+
+bool t_comp_caps(void)
+{
     struct ct_comp p;
     CHECK(ct_start(&p, 320, 200));
-    CHECK(ct_open(&p, &good));
-    CHECK(ct_bind_all(&good));   /* the compositor is up: its handles are its own now */
-    uint64_t base = ct_handles(&p);
-    CHECK(one_cap(&p, &k, "surfaces", NULL, 64, make_surface, BY_COMPOSITOR));
-    CHECK(pool_caps(&p, &k));
-    CHECK(one_cap(&p, &k, "frame callbacks", on_surface, 64, make_frame, BY_TARGET));
-    CHECK(one_cap(&p, &k, "regions", NULL, 64, make_region, BY_COMPOSITOR));
-    CHECK(one_cap(&p, &k, "boxes in a region", on_region, 256, make_box, BY_TARGET));
-    CHECK(one_cap(&p, &k, "boxes in all", all_boxes, 0, make_box, BY_TARGET));
-    CHECK_ST(ct_roundtrip(&good), OK);
-    CHECK(ct_handles_back(&p, base));
-    ct_close(&good);
+    CHECK(caps(&p));
     CHECK(ct_stop(&p));
     return true;
+}
+
+bool t_comp_live_caps(void)
+{
+    struct ct_comp p;
+    return !live(&p) || caps(&p);
 }
 
 /* ---- connections ------------------------------------------------------------------ */
@@ -519,8 +580,10 @@ bool t_comp_connections(void)
 
 /* The child's client: a pool, a buffer, a surface showing it with a frame
  * callback pending, all seen by the compositor (a round trip); then a
- * crash. Exits 1 if it couldn't get that far. */
-static int crash_client(void)
+ * crash. Without commit, the buffer is attached and the crash comes before
+ * the commit that would show it (the compositor holds a pending buffer of
+ * a dead client). Exits 1 if it couldn't get that far. */
+static int crash_client(bool commit)
 {
     static struct ct_client k;
     handle_t ch = startup_handle(SR_USER);
@@ -532,7 +595,7 @@ static int crash_client(void)
         jwl_wl_shm_pool_create_buffer(k.c, pool, buf, 0, 64, 64, 256,
                                       JWL_WL_SHM_FORMAT_XRGB8888) != OK ||
         !(s = surface(&k)) || jwl_wl_surface_attach(k.c, s, buf, 0, 0) != OK ||
-        jwl_wl_surface_commit(k.c, s) != OK ||
+        (commit && jwl_wl_surface_commit(k.c, s) != OK) ||
         !(cb = ct_new(&k, &jwl_wl_callback_interface, 4)) ||
         jwl_wl_surface_frame(k.c, s, cb) != OK || ct_roundtrip(&k) != OK)
         return 1;
@@ -544,23 +607,20 @@ int comp_child(int argc, char **argv)
 {
     (void)argc;
     if (!strcmp(argv[1], "wl-crash"))
-        return crash_client();
+        return crash_client(true);
+    if (!strcmp(argv[1], "wl-crash-attach"))
+        return crash_client(false);
     printf("utest: unknown mode \"%s\"\n", argv[1]);
     return 127;
 }
 
-bool t_comp_client_crash(void)
+/* One crash (mode: the child's), with good served before and after. */
+static bool crash_case(struct ct_comp *p, struct ct_client *good, const char *mode)
 {
-    static struct ct_client good;
-    struct ct_comp p;
-    CHECK(ct_start(&p, 320, 200));
-    CHECK(ct_open(&p, &good));
-    CHECK(ct_bind_all(&good));
-    uint64_t base = ct_handles(&p);
     handle_t ch, job, proc;
-    CHECK_ST(svc_connect_within(p.svc, CT_WAIT, &ch), OK);
+    CHECK_ST(ct_connect(p, &ch), OK);
     CHECK_ST(new_job(&job), OK);
-    CHECK_ST(child("wl-crash", NULL, job, ch, &proc), OK);
+    CHECK_ST(child(mode, NULL, job, ch, &proc), OK);
     struct process_info info;
     CHECK_ST(spawn_wait(proc, CT_WAIT, &info), OK);
     CHECK(info.killed);   /* it got as far as the crash */
@@ -575,26 +635,49 @@ bool t_comp_client_crash(void)
                  (unsigned long)ct_job_used(job, kind), kind);
     }
     CHECK_ST(jam_handle_close(job), OK);
-    CHECK(ct_handles_back(&p, base));
-    CHECK_ST(ct_roundtrip(&good), OK);
+    CHECK_ST(ct_roundtrip(good), OK);
+    return true;
+}
+
+static bool client_crash(struct ct_comp *p)
+{
+    static struct ct_client good;
+    CHECK(ct_open(p, &good));
+    CHECK(ct_bind_all(&good));
+    uint64_t base = handles_now(p);
+    CHECK(crash_case(p, &good, "wl-crash"));
+    CHECK(crash_case(p, &good, "wl-crash-attach"));
+    CHECK(handles_back(p, base));
     ct_close(&good);
+    return true;
+}
+
+bool t_comp_client_crash(void)
+{
+    struct ct_comp p;
+    CHECK(ct_start(&p, 320, 200));
+    CHECK(client_crash(&p));
     CHECK(ct_stop(&p));
     return true;
+}
+
+bool t_comp_live_client_crash(void)
+{
+    struct ct_comp p;
+    return !live(&p) || client_crash(&p);
 }
 
 /* ---- a client that never reads ----------------------------------------------------- */
 
 #define FLOOD 3800u   /* registries: 6 globals each, ~680 KiB of events, past 32 batches + 64 KiB */
 
-bool t_comp_never_reads(void)
+static bool never_reads(struct ct_comp *p)
 {
     static struct ct_client good, k;
-    struct ct_comp p;
-    CHECK(ct_start(&p, 320, 200));
-    CHECK(ct_open(&p, &good));
+    CHECK(ct_open(p, &good));
     CHECK(ct_bind_all(&good));
-    uint64_t base = ct_handles(&p);
-    CHECK(ct_open(&p, &k));
+    uint64_t base = handles_now(p);
+    CHECK(ct_open(p, &k));
     for (unsigned i = 0; i < FLOOD; i++) {
         uint32_t r = ct_new(&k, &jwl_wl_registry_interface, 1);
         CHECK(r);
@@ -625,8 +708,22 @@ bool t_comp_never_reads(void)
     CHECK(k.c->nread <= JWL_WINDOW + 1);   /* the window, and the error past it */
     ct_close(&k);
     CHECK_ST(ct_roundtrip(&good), OK);
-    CHECK(ct_handles_back(&p, base));
+    CHECK(handles_back(p, base));
     ct_close(&good);
+    return true;
+}
+
+bool t_comp_never_reads(void)
+{
+    struct ct_comp p;
+    CHECK(ct_start(&p, 320, 200));
+    CHECK(never_reads(&p));
     CHECK(ct_stop(&p));
     return true;
+}
+
+bool t_comp_live_never_reads(void)
+{
+    struct ct_comp p;
+    return !live(&p) || never_reads(&p);
 }

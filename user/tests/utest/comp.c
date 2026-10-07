@@ -118,10 +118,15 @@ bool ct_adopt(handle_t ch, struct ct_client *k)
     return true;
 }
 
+status_t ct_connect(struct ct_comp *p, handle_t *ch)
+{
+    return p->live ? svc_open(SVC_WAYLAND, ch) : svc_connect_within(p->svc, CT_WAIT, ch);
+}
+
 bool ct_open(struct ct_comp *p, struct ct_client *k)
 {
     handle_t ch;
-    CHECK_ST(svc_connect_within(p->svc, CT_WAIT, &ch), OK);
+    CHECK_ST(ct_connect(p, &ch), OK);
     return ct_adopt(ch, k);
 }
 

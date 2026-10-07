@@ -495,6 +495,11 @@ bool t_comp_caps(void);
 bool t_comp_connections(void);
 bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
+/* The same against the desktop's compositor (/svc/wayland): `utest only comp_live`. */
+bool t_comp_live_bad_requests(void);
+bool t_comp_live_caps(void);
+bool t_comp_live_client_crash(void);
+bool t_comp_live_never_reads(void);
 bool t_comp_regions(void);
 /* conwin.c: the console's window mode: its grid and padding, the view,
  * terminal.font, keys and pointer (wlinput.c, view.c, linked in). */
@@ -521,7 +526,8 @@ bool t_consel_tint(void);
 /* shpaste.c: the shell's bracketed paste (sh_paste.c). */
 bool t_sh_paste(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
- * a pool, a buffer and a surface, then crashes. */
+ * a pool, a buffer and a surface, then crashes; "wl-crash-attach" crashes
+ * between the attach and the commit. */
 int  comp_child(int argc, char **argv);
 /* jwlc_real.c: libjwl's client side against the real compositor, headless. */
 bool t_jwlc_real_compositor(void);

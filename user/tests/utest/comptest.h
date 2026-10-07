@@ -13,6 +13,8 @@
  * headless image mapped read-only. */
 struct ct_comp {
     handle_t job, proc, svc;
+    bool live;                 /* the desktop's own (/svc/wayland): no job, proc or svc of
+                                * ours; each connection is an svc_open of it */
     const uint32_t *image;     /* w * h pixels, 0x00RRGGBB */
     uint64_t image_size;
     int32_t w, h;
@@ -58,8 +60,11 @@ struct ct_client {
                                                      test closes it), else they are closed */
 };
 
-/* A new connection to p (svc.connect on /svc/wayland), or a client on a
- * connection's channel ch (consumed). */
+/* A new connection to p: its channel (svc.connect on p's /svc/wayland, or
+ * on the desktop's for a live p). */
+status_t ct_connect(struct ct_comp *p, handle_t *ch);
+/* A client on a new connection to p, or on a connection's channel ch
+ * (consumed). */
 bool     ct_open(struct ct_comp *p, struct ct_client *k);
 bool     ct_adopt(handle_t ch, struct ct_client *k);
 void     ct_close(struct ct_client *k);
