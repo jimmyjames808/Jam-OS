@@ -105,14 +105,29 @@ static bool tree_insert_steps(void)
 
 static bool tree_ratio_steps(void)
 {
-    /* the root's gap moved to x 1000: the left half 991 wide */
+    /* the root's gap moved to x 800: the left half 791 wide */
     struct tile_node *root = screens_cur()->tree;
     CHECK(root && root->across);
+    tiles_gap_move(root, 800);
+    wm_relayout();
+    CHECK_EQ(win(0)->tile.x2, 797);
+    CHECK_EQ(win(1)->tile.x1, 803);
+    /* to x 1000: stopped where the right half's two tiles side by side
+     * keep the tiler's 200 each (406 with the gap) */
     tiles_gap_move(root, 1000);
     wm_relayout();
-    CHECK_EQ(win(0)->tile.x2, 997);
-    CHECK_EQ(win(1)->tile.x1, 1003);
-    /* clamped at 85% and 15% */
+    CHECK_EQ(win(1)->tile.x1, 1274 - 2 * WM_TILE_MIN_W - WM_GAP);
+    /* stopped where either side would be under the tiler's minimum (200
+     * wide a tile: tighter than 85% and 15% of this room) */
+    tiles_gap_move(root, 5000);
+    wm_relayout();
+    CHECK_EQ(win(0)->tile.x2, 1274 - 2 * WM_TILE_MIN_W - 2 * WM_GAP);
+    tiles_gap_move(root, -100);
+    wm_relayout();
+    CHECK_EQ(win(0)->tile.x2, 6 + WM_TILE_MIN_W);
+    /* with a smaller minimum: clamped at 85% and 15% */
+    tiles_set_min(1, 1);
+    wm_relayout();
     tiles_gap_move(root, 5000);
     wm_relayout();
     CHECK_EQ(root->ratio, TILE_MAX);
@@ -121,6 +136,8 @@ static bool tree_ratio_steps(void)
     wm_relayout();
     CHECK_EQ(root->ratio, TILE_MIN);
     CHECK_EQ(win(0)->tile.x2, 6 + part(1268, TILE_MIN));
+    tiles_set_min(WM_TILE_MIN_W, WM_TILE_MIN_H);
+    wm_relayout();
     /* a window that goes: its sibling takes their parent's room (the left
      * half's split's), the other splits keep their ratios */
     int32_t left_x2 = win(0)->tile.x2;
@@ -350,9 +367,9 @@ static bool gap_drag_steps(void)
     CHECK(!anim_gliding() && win(1)->slide_x == 0);
     wm_marks_update();   /* the bar lit where the gap is now, while dragged */
     CHECK_EQ(wm_marks.bar.x1, 739);
-    /* past 85%: held there */
+    /* past the right tile's minimum (200 wide, before 85%): held there */
     move_to(5000, 400);
-    CHECK_EQ(win(0)->tile.x2, 6 + part(1268, TILE_MAX));
+    CHECK_EQ(win(0)->tile.x2, 1274 - WM_TILE_MIN_W - WM_GAP);
     release_at(5000, 400);
     CHECK(!seat.ops);
     wm_marks_update();
@@ -411,10 +428,11 @@ static bool push_tiled_steps(void)
      * left edge comes right */
     seat_focus(win(1));
     CHECK(push(U_H, 637 - 48) && push(U_L, 637) && push(U_RIGHT, 637 + 48));
-    /* no further than 85% */
+    /* no further than the right tile's minimum (200 wide, before 85%) */
     for (int i = 0; i < 20; i++)
-        CHECK(wm_test_key(U_RIGHT, U_RIGHT_ALT));
-    CHECK_EQ(win(0)->tile.x2, 6 + part(1268, TILE_MAX));
+        (void)wm_test_key(U_RIGHT, U_RIGHT_ALT);
+    anim_finish();
+    CHECK_EQ(win(0)->tile.x2, 1274 - WM_TILE_MIN_W - WM_GAP);
     return true;
 }
 

@@ -1,0 +1,69 @@
+# The compositor killed with windows on two screens: they come back where
+# they were (docs/G1-PLAN.md, "As built: the compositor remembers the
+# arrangement"; the owner's G1 sign-off found them coming back in the
+# order their clients reconnected). Three terminals: 1 and 2 side by
+# side on the first screen with the gap between them pushed left twice
+# (2 the wider), 3 moved to a second screen; the first screen shown, the
+# keys with terminal 2. `kill compositor` (typed into terminal 2): init
+# starts it again with the state it keeps, the new compositor takes the
+# arrangement ("layout remembered: 3 windows on 2 screens") and each
+# terminal that reconnects goes back to its place, the keys back with
+# terminal 2 ("layout restored: 3 windows in place, the keys with
+# "Terminal 2""), so typing still reaches it. Screenshots: restore-before,
+# restore-after (the same windows in the same places), restore-screen2
+# (terminal 3 alone on the second screen).
+# Run (a USB keyboard for the Super keys):
+#   QEMU_USB="-device usb-kbd,bus=xhci.0,port=2" \
+#   QEMU_INPUT=tools/shell-tests/comp-restore.txt tools/qemu-test.sh build/test comp-restore shell
+wait 120 Jam OS shell
+seen 10 console: window mode: terminal 1 opens a
+wait {prompt}
+send T=x
+wait {prompt}
+sleep 2
+
+# ---- the arrangement ------------------------------------------------------------------------
+# Super+Enter: terminal 2 beside 1 (it takes the keys); again: 3 splits 2's
+# tile; Super+Ctrl+Shift+Right moves 3 to a new second screen (the view
+# follows); Super+Ctrl+Left back to the first, the keys with 2;
+# Super+Alt+Left twice moves 2's left edge left (96 pixels).
+monitor sendkey meta_l-ret
+wait 10 init: terminal 2 opens
+wait 30 Jam OS shell
+seen 30 console: window mode: terminal 2 opens a
+sleep 2
+monitor sendkey meta_l-ret
+wait 10 init: terminal 3 opens
+wait 30 Jam OS shell
+seen 30 console: window mode: terminal 3 opens a
+sleep 2
+monitor sendkey meta_l-ctrl-shift-right
+sleep 2
+monitor sendkey meta_l-ctrl-left
+sleep 2
+monitor sendkey meta_l-alt-left
+sleep 1
+monitor sendkey meta_l-alt-left
+sleep 2
+send T=x
+wait {prompt}
+sleep 1
+shot restore-before
+
+# ---- the compositor killed: everything back in place ----------------------------------------
+send kill compositor
+wait 10 init: bin/compositor was killed
+wait 30 compositor: layout remembered: 3 windows on 2 screens
+wait 30 compositor: layout restored: 3 windows in place, the keys with "Terminal 2"
+sleep 3
+shot restore-after
+send echo ok-$T-keys
+wait 10 ok-x-keys
+monitor sendkey meta_l-ctrl-right
+sleep 2
+shot restore-screen2
+monitor sendkey meta_l-ctrl-left
+sleep 1
+
+send reboot -f
+wait reboot: resetting

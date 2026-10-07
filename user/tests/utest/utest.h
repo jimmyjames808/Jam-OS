@@ -532,6 +532,8 @@ bool t_sh_paste(void);
 int  comp_child(int argc, char **argv);
 /* jwlc_real.c: libjwl's client side against the real compositor, headless. */
 bool t_jwlc_real_compositor(void);
+/* jwlc_restore.c: windows back in their places after a real compositor's restart. */
+bool t_jwlc_restore(void);
 /* jwlc_clip.c: libjwl's clipboard against the real compositor, headless. */
 bool t_jwlc_clip(void);
 /* compseat.c, compinput.c: the compositor's seat (input sources, compctl,
@@ -587,6 +589,11 @@ bool t_wm_tile_small(void);
 bool t_wm_tile_gaps(void);
 bool t_wm_tile_push(void);
 bool t_wm_tile_float(void);
+bool t_wm_tile_mins(void);
+bool t_wm_save_restore(void);
+bool t_wm_save_late(void);
+bool t_wm_save_full(void);
+bool t_wm_save_bad(void);
 bool t_wm_focus_dir(void);
 bool t_wm_swap(void);
 bool t_wm_reflow(void);

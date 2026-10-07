@@ -636,6 +636,10 @@ status_t pointer_request(struct comp_client *cl, struct jwl_msg *m);
 status_t shapes_bind(struct comp_client *cl, uint32_t id, uint32_t version);
 status_t shapes_request(struct comp_client *cl, struct jwl_msg *m);
 status_t shape_device_request(struct comp_client *cl, struct jwl_msg *m);
+/* jam_window_memory_v1 (memory.c, abi/wayland): its global, its requests. */
+#define COMP_MEMORY_VERSION 1u
+status_t memory_bind(struct comp_client *cl, uint32_t id, uint32_t version);
+status_t memory_request(struct comp_client *cl, struct jwl_msg *m);
 /* cl went: its seat objects, and every focus, grab and serial it had. */
 void     seat_teardown(struct comp_client *cl);
 /* Is serial one of the last input events' (wl_keyboard.enter, a key press,

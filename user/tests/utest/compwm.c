@@ -275,6 +275,20 @@ bool fk_open_min(struct fk *f, int32_t w, int32_t h, int32_t min_w, int32_t min_
     return fk_draw(f);
 }
 
+bool fk_open_keyed(struct fk *f, int32_t w, int32_t h, uint64_t key, uint64_t *got)
+{
+    memset(f, 0, sizeof(*f));
+    f->s.client = &fake_client;
+    f->s.input_all = true;
+    f->own_w = w;
+    f->own_h = h;
+    CHECK((f->ww = wm_create(&f->s, &fk_ops, f)) != NULL);
+    *got = wm_save_key(f->ww, key);   /* jam_window_memory_v1.identify, as libjwl sends it */
+    CHECK(*got != 0);
+    wm_reconfigure(f->ww);   /* the initial commit */
+    return fk_draw(f);
+}
+
 bool fk_open_full(struct fk *f, struct comp_client *cl)
 {
     memset(f, 0, sizeof(*f));

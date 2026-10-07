@@ -37,6 +37,11 @@
  *     screen) leaves its sibling the whole of their parent's room.
  *   - Two windows swap by trading leaves; a gap moves by changing its
  *     split's ratio (dragged: wmgrab.c; Super+Alt+direction: tiles_push).
+ *   - No tile gets less than its window needs (the tiler's minimum, or
+ *     the window's own and its border): each node's need is worked out at
+ *     every layout, a split's halves are held to theirs while its room
+ *     has it, and a gap stops there (the owner's PC: a terminal's tile
+ *     grew over Jamjar's when the gap was dragged past Jamjar's minimum).
  *
  * Every tile is a frame box: the window's decorations (a border) go inside
  * it, and a window that can't resize sits centred in it (wm.c).
@@ -51,6 +56,15 @@
 #define GAP_BAR_INSET 150   /* ... thousandths of its length left out at either end */
 
 static uint64_t generation;   /* tree changes: grabs holding a node check it */
+
+/* The tiler's minimum for a half (tiles_set_min: a test's small output). */
+static int32_t min_w = WM_TILE_MIN_W, min_h = WM_TILE_MIN_H;
+
+void tiles_set_min(int32_t w, int32_t h)
+{
+    min_w = w;
+    min_h = h;
+}
 
 uint64_t tiles_generation(void)
 {
@@ -70,6 +84,22 @@ static struct tile_node *next_node(const struct tile_node *n)
     return NULL;
 }
 
+/* The first node of n's subtree in post-order (halves before their split). */
+static struct tile_node *first_post(struct tile_node *n)
+{
+    while (n->a)
+        n = n->a;
+    return n;
+}
+
+/* The node after n in post-order, or NULL after the root. */
+static struct tile_node *next_post(struct tile_node *n)
+{
+    if (!n->up)
+        return NULL;
+    return n == n->up->a ? first_post(n->up->b) : n->up;
+}
+
 /* The last tile: from the root, always b. */
 static struct tile_node *last_leaf(struct tile_node *n)
 {
@@ -87,11 +117,63 @@ static int32_t part_of(int64_t len, int32_t ratio)
     return (int32_t)((room * ratio + TILE_ONE / 2) / TILE_ONE);
 }
 
+/* What leaf l needs: the tiler's minimum, or more if its window's own
+ * minimum (a fixed size's too) and its border need it. */
+static void leaf_need(struct tile_node *l)
+{
+    struct deco_sizes d = deco_sizes(0, COMP_TILING);
+    const struct wm_window *ww = l->ww;
+    int32_t mw = ww ? ww->min_w : l->hold_min_w, mh = ww ? ww->min_h : l->hold_min_h;
+    int32_t w = mw > 0 ? mw + d.left + d.right : 0;   /* (a placeholder's: its window's) */
+    int32_t h = mh > 0 ? mh + d.top + d.bottom : 0;
+    l->need_w = w > min_w ? w : min_w;
+    l->need_h = h > min_h ? h : min_h;
+}
+
+/* Every node's need in s's tree, the leaves' first (post-order). */
+static void needs(struct desk_screen *s)
+{
+    for (struct tile_node *n = s->tree ? first_post(s->tree) : NULL; n; n = next_post(n)) {
+        if (!n->a) {
+            leaf_need(n);
+            continue;
+        }
+        const struct tile_node *a = n->a, *b = n->b;
+        int64_t w = n->across ? (int64_t)a->need_w + WM_GAP + b->need_w
+                              : (a->need_w > b->need_w ? a->need_w : b->need_w);
+        int64_t h = n->across ? (a->need_h > b->need_h ? a->need_h : b->need_h)
+                              : (int64_t)a->need_h + WM_GAP + b->need_h;
+        n->need_w = w > INT32_MAX / 2 ? INT32_MAX / 2 : (int32_t)w;   /* deep trees: no overflow */
+        n->need_h = h > INT32_MAX / 2 ? INT32_MAX / 2 : (int32_t)h;
+    }
+}
+
+/* a's length of n's room (len long) at n's ratio, held to what each half
+ * needs while the room has it; with less room than both need, shared in
+ * proportion to their needs (both short: their windows are clipped to
+ * their tiles, wm.c). */
+static int32_t split_part(const struct tile_node *n, int64_t len)
+{
+    int32_t part = part_of(len, n->ratio);
+    int64_t room = len - WM_GAP < 0 ? 0 : len - WM_GAP;
+    int64_t na = n->across ? n->a->need_w : n->a->need_h;
+    int64_t nb = n->across ? n->b->need_w : n->b->need_h;
+    if (na + nb <= room) {
+        if (part < na)
+            part = (int32_t)na;
+        if (part > room - nb)
+            part = (int32_t)(room - nb);
+    } else if (na + nb > 0) {
+        part = (int32_t)(room * na / (na + nb));
+    }
+    return part;
+}
+
 /* Split n's halves' boxes from its own. */
 static void split_boxes(struct tile_node *n)
 {
     struct comp_box r = n->box;
-    int32_t part = part_of(n->across ? (int64_t)r.x2 - r.x1 : (int64_t)r.y2 - r.y1, n->ratio);
+    int32_t part = split_part(n, n->across ? (int64_t)r.x2 - r.x1 : (int64_t)r.y2 - r.y1);
     n->a->box = r;
     n->b->box = r;
     if (n->across) {
@@ -118,6 +200,7 @@ static void layout(struct desk_screen *s)
 {
     if (!s->tree)
         return;
+    needs(s);
     s->tree->box = tile_area(s);
     for (struct tile_node *n = s->tree; n; n = next_node(n))
         if (n->a)
@@ -189,8 +272,13 @@ static bool insert(struct desk_screen *s, struct wm_window *ww, struct tile_node
         t->ratio = TILE_ONE / 2;
         t->a = a;
         t->b = b;
-        a->ww->leaf = a;
+        if (a->ww)
+            a->ww->leaf = a;
+        a->hold = t->hold;   /* a placeholder split keeps its place in a */
+        a->hold_min_w = t->hold_min_w;
+        a->hold_min_h = t->hold_min_h;
         t->ww = NULL;
+        t->hold = 0;
         ww->leaf = b;
     }
     ww->tiled_on = s;
@@ -231,15 +319,6 @@ static bool tiling(const struct desk_screen *s)
     return s->kind == SCREEN_NORMAL && s->layout == COMP_TILING;
 }
 
-/* The tiler's minimum for a half (tiles_set_min: a test's small output). */
-static int32_t min_w = WM_TILE_MIN_W, min_h = WM_TILE_MIN_H;
-
-void tiles_set_min(int32_t w, int32_t h)
-{
-    min_w = w;
-    min_h = h;
-}
-
 /* The halves of t's box when a window splits it at half (split_boxes' sums):
  * *a the old window's, *b the new one's. */
 static void halves(const struct tile_node *t, struct comp_box *a, struct comp_box *b)
@@ -275,7 +354,9 @@ static bool split_fits(const struct tile_node *t, const struct wm_window *ww)
     bool across = t->box.x2 - t->box.x1 >= t->box.y2 - t->box.y1;   /* as halves() splits */
     bool big = across ? a.x2 - a.x1 >= min_w && b.x2 - b.x1 >= min_w
                       : a.y2 - a.y1 >= min_h && b.y2 - b.y1 >= min_h;
-    return big && min_fits(t->ww, a) && min_fits(ww, b);
+    struct comp_box in = deco_inner(a, 0, COMP_TILING);   /* a placeholder: its window's minimum */
+    bool held_fits = t->ww || (in.x2 - in.x1 >= t->hold_min_w && in.y2 - in.y1 >= t->hold_min_h);
+    return big && min_fits(t->ww, a) && held_fits && min_fits(ww, b);
 }
 
 /* The tile a new window on s splits: the focused one if it is on s, else
@@ -330,6 +411,153 @@ void tiles_update(void)
         screens_sync();   /* a window that left the current screen is hidden */
 }
 
+/* ---- placeholders: a restarted compositor's remembered places (wmsave.c) -------------------- */
+
+/* Every node of s's tree freed, whole or not (a build cut short): from
+ * the bottom, one childless node at a time. */
+static void free_all(struct desk_screen *s)
+{
+    while (s->tree) {
+        struct tile_node *t = s->tree;
+        for (;;) {
+            if (t->a)
+                t = t->a;
+            else if (t->b)
+                t = t->b;
+            else
+                break;
+        }
+        if (t->ww && t->ww->leaf == t) {
+            t->ww->leaf = NULL;
+            t->ww->tiled_on = NULL;
+        }
+        if (!t->up)
+            s->tree = NULL;
+        else if (t->up->a == t)
+            t->up->a = NULL;
+        else
+            t->up->b = NULL;
+        free(t);
+    }
+    generation++;
+}
+
+bool tiles_build(struct desk_screen *s, const struct tile_spec *spec, unsigned n)
+{
+    /* a whole tree in pre-order, nothing after it: each split asks one
+     * more node than it gives, each leaf gives one */
+    unsigned need = 1;
+    for (unsigned i = 0; i < n; i++) {
+        if (!need)
+            return false;
+        need = spec[i].split ? need + 1 : need - 1;
+    }
+    if (need || s->tree)
+        return false;
+    struct tile_node *open = NULL;   /* the deepest split still missing a half */
+    for (unsigned i = 0; i < n; i++) {
+        struct tile_node *t = calloc(1, sizeof(*t));
+        if (!t) {
+            free_all(s);
+            return false;
+        }
+        t->up = open;
+        if (!open)
+            s->tree = t;
+        else if (!open->a)
+            open->a = t;
+        else
+            open->b = t;
+        if (spec[i].split) {
+            t->across = spec[i].across;
+            t->ratio = spec[i].ratio;
+            open = t;
+            continue;
+        }
+        t->hold = spec[i].hold;
+        t->hold_min_w = spec[i].min_w;
+        t->hold_min_h = spec[i].min_h;
+        while (open && open->b)   /* whole: up to the next split missing a half */
+            open = open->up;
+    }
+    generation++;
+    /* the places of windows not remembered go now, as closed windows' */
+    for (bool again = true; again;) {
+        again = false;
+        for (struct tile_node *t = s->tree; t; t = next_node(t))
+            if (!t->a && !t->hold) {
+                remove_node(s, t);
+                again = true;
+                break;
+            }
+    }
+    layout(s);
+    return true;
+}
+
+/* The placeholder keeping key's place, on s (NULL: any screen). */
+static struct tile_node *held(uint64_t key, const struct desk_screen *s)
+{
+    for (unsigned i = 0; key && i < screens_count(); i++) {
+        struct desk_screen *sc = screens_nth(i);
+        if (s && sc != s)
+            continue;
+        for (struct tile_node *t = sc->tree; t; t = next_node(t))
+            if (!t->a && !t->ww && t->hold == key)
+                return t;
+    }
+    return NULL;
+}
+
+bool tiles_held_box(uint64_t key, struct comp_box *out)
+{
+    const struct tile_node *t = held(key, NULL);
+    if (t)
+        *out = t->box;
+    return t != NULL;
+}
+
+void tiles_take_hold(struct wm_window *ww)
+{
+    for (unsigned i = 0; i < screens_count(); i++) {
+        struct desk_screen *s = screens_nth(i);
+        struct tile_node *t = held(ww->key, s);
+        if (!t)
+            continue;
+        if (s == ww->screen && !ww->leaf && tiling(s) && tiled_here(ww, s)) {
+            t->ww = ww;
+            t->hold = 0;
+            ww->leaf = t;
+            ww->tiled_on = s;
+            generation++;
+        } else {
+            remove_node(s, t);   /* minimised, moved, its screen floating: the place goes */
+            layout(s);
+        }
+        return;
+    }
+}
+
+unsigned tiles_drop_holds(void)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < screens_count(); i++) {
+        struct desk_screen *s = screens_nth(i);
+        for (bool again = true; again;) {
+            again = false;
+            for (struct tile_node *t = s->tree; t; t = next_node(t))
+                if (!t->a && !t->ww) {
+                    remove_node(s, t);
+                    n++;
+                    again = true;
+                    break;
+                }
+        }
+        layout(s);
+    }
+    return n;
+}
+
 /* ---- what the window manager asks ----------------------------------------------------------- */
 
 
@@ -338,6 +566,9 @@ struct comp_box wm_tile(const struct wm_window *ww)
     const struct desk_screen *s = ww->screen ? ww->screen : screens_cur();
     if (ww->leaf && ww->tiled_on == s)
         return ww->leaf->box;
+    struct comp_box place;
+    if (!ww->win && ww->restoring && tiles_held_box(ww->key, &place))
+        return place;   /* a remembered window not back yet: its place */
     const struct tile_node *t = s->tree ? split_target(s, false) : NULL;
     if (!t || !split_fits(t, ww))
         return tile_area(s);   /* the first; or it will go to a new screen, all its room */
@@ -407,7 +638,19 @@ void tiles_gap_move(struct tile_node *split, int32_t pos)
     int64_t len = split->across ? (int64_t)r.x2 - r.x1 : (int64_t)r.y2 - r.y1;
     if (len - WM_GAP <= 0)
         return;
-    int64_t v = ((pos - start - WM_GAP / 2) * TILE_ONE + (len - WM_GAP) / 2) / (len - WM_GAP);
+    /* a's length the pointer asks for, stopped where either half would get
+     * less than it needs; a gap already past that (the room shrank, a
+     * minimum came later) may only move back towards it */
+    int64_t p = (int64_t)pos - start - WM_GAP / 2;
+    int64_t now_a = split->across ? (int64_t)split->a->box.x2 - split->a->box.x1
+                                  : (int64_t)split->a->box.y2 - split->a->box.y1;
+    int64_t lo = split->across ? split->a->need_w : split->a->need_h;
+    int64_t hi = len - WM_GAP - (split->across ? split->b->need_w : split->b->need_h);
+    int64_t least = lo < hi ? lo : hi, most = lo < hi ? hi : lo;
+    least = now_a < least ? now_a : least;
+    most = now_a > most ? now_a : most;
+    p = p < least ? least : p > most ? most : p;
+    int64_t v = (p * TILE_ONE + (len - WM_GAP) / 2) / (len - WM_GAP);
     split->ratio = (int32_t)(v < TILE_MIN ? TILE_MIN : v > TILE_MAX ? TILE_MAX : v);
 }
 

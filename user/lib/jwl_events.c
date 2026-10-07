@@ -227,5 +227,7 @@ status_t jwlc_handle(struct jwl_client *c, struct jwl_msg *m)
     if (i == &jwl_wl_data_device_interface || i == &jwl_wl_data_offer_interface ||
         i == &jwl_wl_data_source_interface)
         return jwlc_clip_event(c, m);
+    if (i == &jwl_jam_window_memory_v1_interface)
+        return jwlc_memory_event(c, m);
     return ERR_NOT_SUPPORTED;
 }

@@ -54,7 +54,14 @@ void wm_init(enum comp_layout layout)
     anim_finish();
     wm.first = wm.last = wm.focused = NULL;
     wm.focus_count = 0;
+    wm_save_forget();
     screens_init(layout);
+}
+
+void wm_focus_count_at_least(uint64_t n)
+{
+    if (wm.focus_count < n)
+        wm.focus_count = n;
 }
 
 struct wm_window *wm_first(void)
@@ -339,11 +346,23 @@ void wm_place(struct wm_window *ww)
     } else if (layout == COMP_TILING) {
         w->tile = wm_tile(ww);
         struct comp_box in = deco_inner(w->tile, 0, layout);
+        int32_t iw = in.x2 - in.x1, ih = in.y2 - in.y1;
         struct wm_config c;
         wm_wanted(ww, &c);
-        if (c.width == in.x2 - in.x1 && c.height == in.y2 - in.y1) {
+        if (c.width == iw && c.height == ih) {
             window_view(w, c.width, c.height);   /* it fills its tile: shown as the tile, */
             window_move(w, in.x1, in.y1);        /* its last buffer clipped or padded */
+            return;
+        }
+        int32_t sw = c.width ? c.width : ww->surface->width;   /* what it draws */
+        int32_t sh = c.height ? c.height : ww->surface->height;
+        if (iw > 0 && ih > 0 && (sw > iw || sh > ih)) {
+            /* bigger than its tile (its minimum, where the room is short of
+             * what the tiles need): from the tile's top left, clipped to
+             * it, never over its neighbours; centred the way it fits */
+            window_view(w, sw > iw ? iw : sw, sh > ih ? ih : sh);
+            window_move(w, sw > iw ? in.x1 : in.x1 + (iw - sw) / 2,
+                        sh > ih ? in.y1 : in.y1 + (ih - sh) / 2);
             return;
         }
         centre_in(w, in, room_of(ww).y1);
@@ -377,14 +396,16 @@ static void note_floating_size(struct wm_window *ww)
 
 status_t wm_commit(struct wm_window *ww, uint32_t states)
 {
-    bool first = !ww->win;
+    bool first = !ww->win, restored = false;
     if (first) {
         status_t st = window_create(ww->surface, 0, 0, &ww->win);
         if (st != OK)
             return st;
         ww->win->wm = ww;
         ww->win->title = ww->title;   /* ours: it outlives the window */
-        screens_window_new(ww);
+        restored = wm_save_place(ww);   /* back in its remembered place (a restart) */
+        if (!restored)
+            screens_window_new(ww);
     }
     ww->shown = states;
     wm_place(ww);
@@ -395,16 +416,25 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
     if (wm_layout_of(ww) == COMP_TILING) {
         wm_reflow();   /* it splits the focused tile; the others glide to make room */
         spilled = ww->screen != screens_cur();
-        screens_follow(ww);   /* or, no room for its tile, to a new screen: the view slides there */
+        if (!restored)   /* (one coming back stays on its screen, the view where it was) */
+            screens_follow(ww);   /* or, no room for its tile, to a new screen: the view
+                                   * slides there */
     }
     window_map(ww->win, screens_shown(ww));   /* the seat hears (a client's first window
                                                * takes the keys) */
-    if (ww->want == WM_FULLSCREEN)
+    if (ww->want == WM_FULLSCREEN) {
+        const struct desk_screen *shown = screens_cur();
         screens_fullscreen(ww, true);   /* asked before its first buffer */
-    else if (!screens_overlay() && !spilled)
-        anim_open(ww->win);   /* (after a spill the slide is the animation) */   /* (an animation is drawn over every window, a boot overlay too) */
+        if (restored && !wm_save_shown_full(ww))
+            screens_show(shown);   /* its full screen is back, but wasn't the one shown */
+    } else if (!screens_overlay() && !spilled && !restored) {
+        anim_open(ww->win);   /* (after a spill the slide is the animation; an animation
+                               * is drawn over every window, a boot overlay too) */
+    }
     if (ww->overlay)
         anim_finish();        /* nothing drawn over the splash, not even a window opening */
+    if (restored)
+        wm_save_mapped(ww);   /* the focus back where it was */
     desk_window_mapped(ww);
     strip_dirty();
     return OK;
@@ -468,7 +498,10 @@ void wm_set_limits(struct wm_window *ww, int32_t min_w, int32_t min_h, int32_t m
     ww->min_h = min_h;
     ww->max_w = max_w;
     ww->max_h = max_h;
-    wm_reconfigure(ww);   /* a tile's size depends on them */
+    if (ww->leaf)
+        wm_relayout();    /* its tile's need: the tiles around it make room */
+    else
+        wm_reconfigure(ww);   /* a tile's size depends on them */
 }
 
 /* ww is asked to be mode now: full screen takes it to a screen of its

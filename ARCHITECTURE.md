@@ -2160,6 +2160,31 @@ each request goes out without waiting and its answer comes to the port
   counters; the compositor works out the rates from two summaries a
   second apart while the popover is open.
 
+### The compositor's memory across its restarts
+
+init restarts a compositor that ends, and its clients reconnect on their
+own in whatever order; the new one puts the windows back where they were
+(`user/services/compositor/wmsave.c`;
+[G1-PLAN](docs/G1-PLAN.md), "As built: the compositor remembers the
+arrangement").
+
+- **Where.** The compositor's state VMO (`<svcstate.h>`, the M11.6
+  mechanism; `<compstate.h>`): init makes it once a boot, keeps it and
+  gives each compositor a duplicate (`SR_STATE`). Each loop turn the
+  compositor describes the arrangement (normal screens and their layouts,
+  each tiling screen's tree, each window's screen, floating box, mode,
+  minimised, the focus) and, if it changed, writes it over the copy that
+  isn't current and moves the commit word last.
+- **Who.** `jam_window_memory_v1` (`abi/wayland/`, Jam OS's own): the
+  compositor gives each toplevel 64 random bits, told only to its client;
+  libjwl presents them again for the window it makes after a reconnect.
+- **Coming back.** The description is checked whole (bounds, a whole
+  tree per screen, the checksum) or ignored; a taken one makes the
+  screens and trees again with placeholders in the missing windows'
+  tiles, each window presenting its key goes into its place, and after
+  5 s the places of windows not back go, as closed windows' do. A
+  description a compositor died putting back is not tried again.
+
 ## Audio
 
 The target is headphones in the case's front-panel jack, which hangs off

@@ -25,7 +25,9 @@
  * the new size (a window being resized never shows a half-drawn frame).
  * The pool is then at most a few slots of the largest size.
  *
- * After a reconnect the window is made again (title, sizes, states) and
+ * After a reconnect the window is made again (title, sizes, states, and
+ * the key the compositor gave it, jam_window_memory_v1, so a restarted
+ * compositor puts it back where it was) and
  * its first configure shows its last buffer again with all of it damaged,
  * so the window comes back as it was without the program drawing; a
  * frame callback lost with the old connection is answered then too. */
@@ -107,9 +109,27 @@ status_t jwlc_window_make(struct jwl_window *w)
         w->toplevel = tid;
     if (st == OK)
         st = tell_state(w);
+    if (st == OK && c->global[JWLC_MEMORY])   /* its key from before: back in its place */
+        st = jwl_jam_window_memory_v1_identify(k, c->global[JWLC_MEMORY], tid,
+                                               (uint32_t)(w->key >> 32), (uint32_t)w->key);
     if (st == OK)
         st = jwl_wl_surface_commit(k, sid);   /* no buffer: asks for the first configure */
     return st;
+}
+
+status_t jwlc_memory_event(struct jwl_client *c, struct jwl_msg *m)
+{
+    if (m->opcode != JWL_JAM_WINDOW_MEMORY_V1_EV_KEY || !m->args[0].o)
+        return OK;   /* (a toplevel destroyed meanwhile: null) */
+    for (struct jwl_window *w = c->windows; w; w = w->next)
+        if (w->toplevel == m->args[0].o)
+            w->key = (uint64_t)m->args[1].u << 32 | m->args[2].u;
+    return OK;
+}
+
+uint64_t jwl_window_key(const struct jwl_window *w)
+{
+    return w->key;
 }
 
 status_t jwl_window_create(struct jwl_client *c, const struct jwl_window_config *cfg,
