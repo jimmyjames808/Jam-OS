@@ -1713,7 +1713,7 @@ edges above:
   tagged 21). updtest gained an unknown flag (refused) and a check-only
   offer (accepted, not loaded), so tools/update-test.sh counts 13
   refusals. tools/bootfs-edit.py makes the test builds' boot images.
-- **The owner's workflow** ([README](../README.md#the-network)): once,
+- **The owner's workflow** ([NETWORK.md](NETWORK.md)): once,
   `net.host = 10.2.21.174` in the PC's settings; on the Mac `make`, then
   `python3 tools/update-server.py` left running; on the PC `update`.
 - **Not done:** the PC run (after the RTL8125 fix). A build fetched by
