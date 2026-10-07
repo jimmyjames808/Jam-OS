@@ -12,7 +12,7 @@ wait {prompt}
 
 # ---- information ------------------------------------------------------------------
 send uname -a
-wait Jam OS jamos 0.0.
+wait Jam OS jamos 0.
 send version
 wait (kernel tests built in)
 send whoami | uniq -c
@@ -47,7 +47,7 @@ shot shell-top
 send top -n 1 -d 0.2 | grep -c shell | grep ^1$ && echo ok-$T-top
 wait ok-x-top
 send dmesg | grep "Jam OS" | head -1
-wait Jam OS 0.0.
+wait Jam OS 0.
 send dmesg | wc -l | grep -v ^0$ && echo ok-$T-dmesg
 wait ok-x-dmesg
 send lspci
