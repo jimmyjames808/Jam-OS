@@ -12,6 +12,12 @@
 #   readme-floating  the same windows floating (Super+T), each where its
 #                    tile was (its frame 4 pixels inside the tile), none
 #                    overlapping
+# The README's floating picture (docs/images/desktop-floating.png) is
+# the one taken at fdb80d18, before Super+T kept the tiles' places: the
+# windows sized and dragged apart with the wallpaper between them (the
+# owner's pick). This script's readme-floating now shows Super+T's own
+# arrangement; to retake the README's, add the moves back (git show
+# fdb80d18:tools/shell-tests/readme.txt) after the Super+T.
 # A `monitor sendkey` holds its key 100 ms: the sleeps keep Super+Alt's
 # pushes apart, so none is lost.
 wait 120 Jam OS shell

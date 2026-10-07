@@ -165,7 +165,8 @@ static int run(int argc, char **argv)
         cover_start(a->trace);
     gfx_resizable();   /* the layout takes any size ... */
     gfx_min_size(JAMJAR_MIN_W, JAMJAR_MIN_H);   /* ... from where it fits */
-    say("jamjar: its window is at least %dx%d\n", JAMJAR_MIN_W, JAMJAR_MIN_H);
+    if (a->trace)   /* for the tests: not on everyone's terminal */
+        say("jamjar: its window is at least %dx%d\n", JAMJAR_MIN_W, JAMJAR_MIN_H);
     status_t st = gfx_open_on(C_BG);
     if (st != OK) {
         say("jamjar: can't borrow the screen (%s)\n", status_str(st));
