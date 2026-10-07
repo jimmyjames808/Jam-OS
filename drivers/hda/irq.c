@@ -82,7 +82,10 @@ static void stream_ch_close(struct loop *l, const char *why)
 {
     if (l->stream_ch == HANDLE_INVALID)
         return;
-    drv_handle_close(l->stream_ch);   /* its port binding goes with it */
+    /* A binding holds its channel (and its charge) until unbound: closing
+     * the handle alone would leave both on the port. */
+    (void)drv_port_unbind(l->port, l->stream_ch, KEY_STREAM | (uint64_t)l->gen << 8);
+    drv_handle_close(l->stream_ch);
     l->stream_ch = HANDLE_INVALID;
     l->stream_pending = false;
     l->waiting = false;
@@ -109,6 +112,7 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     if (st == OK)
         st = stream_open(l->h, &l->st, bits, out_ring);
     if (st != OK) {
+        (void)drv_port_unbind(l->port, ours, KEY_STREAM | (uint64_t)l->gen << 8);
         drv_handle_close(ours);
         drv_handle_close(theirs);
         return st;

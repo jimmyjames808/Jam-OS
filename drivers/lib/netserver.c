@@ -16,8 +16,15 @@
 
 #define BUDGET   64u      /* requests taken from one channel per srv_work */
 
-static void session_free(struct srv_session *s)
+/* s's bindings (made with v->gen, not bumped yet), handles and mappings.
+ * A binding holds its object (and its charge) until unbound: closing the
+ * handles alone would leave both on the port. */
+static void session_free(struct srv *v, struct srv_session *s)
 {
+    if (s->ch != HANDLE_INVALID)
+        (void)drv_port_unbind(v->port, s->ch, SRV_KEY_SESSION | (uint64_t)v->gen << 8);
+    if (s->to_driver != HANDLE_INVALID)
+        (void)drv_port_unbind(v->port, s->to_driver, SRV_KEY_TX | (uint64_t)v->gen << 8);
     if (s->txmap)
         (void)drv_vmo_unmap(s->txmap, NETDEV_RING_BYTES);   /* nothing to do if it fails */
     if (s->rxmap)
@@ -25,7 +32,7 @@ static void session_free(struct srv_session *s)
     handle_t hs[] = { s->ch, s->txv, s->rxv, s->to_driver, s->to_stack };
     for (unsigned i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
         if (hs[i] != HANDLE_INVALID)
-            drv_handle_close(hs[i]);   /* the port bindings go with the handles */
+            drv_handle_close(hs[i]);
     *s = (struct srv_session){ 0 };
 }
 
@@ -34,7 +41,7 @@ static void session_end(struct srv *v, const char *why)
     if (!v->open)
         return;
     v->ring_errors_past += v->s.tx.errors + v->s.rx.errors;
-    session_free(&v->s);
+    session_free(v, &v->s);
     v->open = false;
     v->gen++;   /* packets of the old session's keys are ignored from now */
     v->session_ready = v->tx_ready = v->tx_blocked = v->rx_dirty = false;
@@ -103,7 +110,7 @@ static status_t op_open(void *ctx, handle_t *session, handle_t *tx, handle_t *rx
                         HANDLE_INVALID };
     status_t st = make_session(v, &s, out);
     if (st != OK) {
-        session_free(&s);
+        session_free(v, &s);
         for (unsigned i = 0; i < 5; i++)
             if (out[i] != HANDLE_INVALID)
                 drv_handle_close(out[i]);

@@ -62,6 +62,7 @@ struct blk {
     handle_t vmo;        /* the client's buffer (map_buffer), HANDLE_INVALID: not made yet */
     uint8_t *map;        /* that buffer, mapped here (NULL: not made yet) */
     uint32_t dropped;    /* requests dropped because the client had gone (the fence) */
+    handle_t port;       /* the port ch is bound to (blk_open's) */
 };
 
 static struct blk blks[MAX_BLKS];
@@ -300,6 +301,10 @@ static void blk_close(struct blk *b)
 {
     if (b->ch == HANDLE_INVALID)
         return;
+    /* A binding holds its channel (and its charge) until unbound: closing
+     * the handle alone would leave both on the port. */
+    (void)drv_port_unbind(b->port, b->ch,
+                          KEY_BLK | ((uint64_t)b->gen << 8) | (uint64_t)(b - blks));
     drv_handle_close(b->ch);
     if (b->map)
         (void)drv_vmo_unmap(b->map, BLOCK_BUF);   /* our own mapping: nothing else to do */
@@ -335,6 +340,7 @@ status_t blk_open(struct disk *k, handle_t port, uint8_t index, bool read_only, 
         return st;
     }
     b->ch = ours;
+    b->port = port;
     b->k = k;
     b->part = index;
     b->ro = read_only;

@@ -89,6 +89,10 @@ void chan_close(int i)
         chans[i].close_after = true;
         return;
     }
+    /* A binding holds its channel (and its charge) until unbound: closing
+     * the handle alone would leave both on the port. */
+    (void)drv_port_unbind(g_hc.port, chans[i].h,
+                          KEY_CHAN | ((uint64_t)chans[i].gen << 8) | (uint64_t)i);
     drv_handle_close(chans[i].h);
     chans[i].h = HANDLE_INVALID;
     chans[i].pending = false;
