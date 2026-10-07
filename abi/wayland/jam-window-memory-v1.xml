@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="jam_window_memory_v1">
+  <interface name="jam_window_memory_v1" version="1">
+    <description summary="windows that come back to their places">
+      Jam OS's own protocol (docs/G1-PLAN.md, "As built: the compositor
+      remembers the arrangement"). When the compositor is restarted its
+      clients connect again and make their windows again, in whatever
+      order they happen to; this lets each window go back where it was
+      (its screen, its place in the tiles, its floating box, minimised or
+      not).
+
+      The compositor gives each toplevel that asks a key: 64 random bits,
+      told only to the window's own client. The client keeps it and,
+      after a reconnect, presents it for the window it makes again before
+      that window's initial commit. A key the compositor remembers (from
+      before its restart, and not taken yet) puts the window in its old
+      place, and the same key is answered; any other key, or none, gets a
+      new one and the window is placed as a new window. A key is taken
+      once: a second window presenting it is a new window. The worst a
+      client can do with a key is put its own window in a place one of its
+      own windows had.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="the object goes">
+        Keys already given stay with their windows.
+      </description>
+    </request>
+
+    <request name="identify">
+      <description summary="ask a toplevel's key">
+        Ask for the toplevel's key, presenting the one it had before a
+        reconnect (key_hi and key_lo both 0: none). Sent before the
+        toplevel's initial commit, a remembered key places it where it
+        was; sent later it only gets a key. Answered by the key event.
+        A toplevel asked about again keeps the key it has.
+      </description>
+      <arg name="toplevel" type="object" interface="xdg_toplevel"/>
+      <arg name="key_hi" type="uint"/>
+      <arg name="key_lo" type="uint"/>
+    </request>
+
+    <event name="key">
+      <description summary="a toplevel's key">
+        The toplevel's key, to be presented after a reconnect. The
+        toplevel is null if the client destroyed it meanwhile.
+      </description>
+      <arg name="toplevel" type="object" interface="xdg_toplevel" allow-null="true"/>
+      <arg name="key_hi" type="uint"/>
+      <arg name="key_lo" type="uint"/>
+    </event>
+  </interface>
+</protocol>

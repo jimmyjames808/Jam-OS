@@ -10,9 +10,11 @@
                         or cc)
 
 Input: third_party/wayland-protocols/<file>.xml, upstream's interface files,
-vendored unmodified (README.md there names the releases). Each file holds
-one protocol, named as the file with '_' for '-' (xdg-shell.xml holds
-xdg_shell). The XML is data: nothing of libwayland's code is used.
+vendored unmodified (README.md there names the releases), and
+abi/wayland/<file>.xml, Jam OS's own protocols in the same format
+(jam-window-memory-v1). Each file holds one protocol, named as the file
+with '_' for '-' (xdg-shell.xml holds xdg_shell). The XML is data:
+nothing of libwayland's code is used.
 
 Outputs, committed like genidl's (so they can be read and grepped) and
 checked by every build:
@@ -97,7 +99,7 @@ import sys
 import textwrap
 import xml.etree.ElementTree as ET
 
-XML_DIR = "third_party/wayland-protocols"
+XML_DIRS = ("third_party/wayland-protocols", "abi/wayland")   # upstream's, then ours
 INC_DIR = "user/include/jwl"
 LIB_DIR = "user/lib"
 TEST_DIR = "tools/genwl-tests"
@@ -754,7 +756,7 @@ def gen_tables(p):
 # ---- gen / check ---------------------------------------------------------------
 
 def xml_files():
-    return sorted(glob.glob(os.path.join(XML_DIR, "*.xml")))
+    return [f for d in XML_DIRS for f in sorted(glob.glob(os.path.join(d, "*.xml")))]
 
 
 def outputs(protocols, where):
