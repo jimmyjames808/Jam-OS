@@ -269,6 +269,47 @@ recommendation.
   at M13).
 - **Q20 (A)**: M12.1 is M12's independent review.
 
+### The reviews' questions, answered (2026-10-07)
+
+Stage B: the four reviews (docs/M12-REVIEW-KERNEL.md, -PROTOCOLS.md,
+-WAYLAND.md, -STORAGE.md) raised 20 questions the answers above left
+open. The owner took the reviews' recommendations for all of them ("your
+recommendation for the rest unless unsure or very important") and was
+asked one, S3.
+
+- **Kernel (K-A to K-F)**: A, "the reader's job" is the job whose handle
+  table last received the reading end; B, the receives-no-handles mark
+  is a one-way call on an end the caller holds, refused while handles
+  are queued there; C, every handle in a send's list is consumed on every
+  outcome, a refused list included (process_start's arg0, handle_replace
+  and vmo_make_exec too); D, vmo_pin takes a struct argument with a flags
+  word; E, a port binding ends when its object has no handles left
+  anywhere; F, private futexes only (a flags argument reserved), with
+  futex_requeue.
+- **Protocols (P-D1 to P-D5)**: D1, events in both directions in one
+  protocol; D2, scalar arrays (`u32[<=N]`) now, records stay byte arrays
+  until M14; D3, `const` lines in each `.idl`; D4, typed handle arguments
+  checked by the generated server with `handle_info`; D5, the kernel
+  drops replies to calls that gave up (with K1's bit-31 txid rule).
+- **Compositor protocol (W-DQ1 to W-DQ4)**: DQ1, events go from server to
+  client (open_keys' keys, the keyboard lights; compctl's two waits stay
+  `later` calls); DQ2, keep the levels, split only /svc/notify off; DQ3,
+  flow control by the kernel's count (a field of `handle_info`), the
+  header loses `acked`: JWL2; DQ4, handles in a queue per connection (at
+  most 28), not tied to their batch.
+- **Storage (S-1 to S-5)**: 1, init follows mounts through watch events;
+  2, a disk reaches volumes on fresh `disks` pairs, each `storage` channel
+  its own through `svc.connect`; **3 (asked): a volumes crash ends its
+  filesystem services and every stick remounts fresh, as a devmgr crash
+  does today; volumes outliving its process waits for the drivers'
+  milestone**; 4, genidl messages up to 16 KiB and fat's request area 12
+  KiB (two 4096-byte paths in one rename); 5, `block` may answer out of
+  order, by txid.
+
+The small bugs the reviews found today (K 2, 3, 24, 28; P's shared
+protocol id 3; W2, W6, W17; S's three Low) are fixed in their tracks, or
+first if a track starts later than a day.
+
 ### Decided already (not asked again)
 
 - **D1. One txid counter per endpoint pair** (the M11.5 review's question
