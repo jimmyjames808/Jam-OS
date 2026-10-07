@@ -33,7 +33,12 @@
  * desktop) or the 5 s are up with none (then exactly the desktop).
  * t_comp_paint_overlay_open: with the animations on, a window opening just
  * before a boot overlay maps, or under it, is not drawn over it (an
- * animation is drawn over the windows): the overlay everywhere. */
+ * animation is drawn over the windows): the overlay everywhere.
+ * t_comp_paint_splash_notice: a notice posted while the compositor waits
+ * for the splash is drawn neither then nor over the splash's overlay
+ * (every pixel the overlay's, still copied straight from its buffer); once
+ * the overlay has faded out it slides in, ending on exactly the picture of
+ * the same notice posted with no splash, which shows at once. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -374,6 +379,51 @@ bool t_comp_paint_overlay_open(void)
     memset(r, 0, sizeof(r));
     bool ok = overlay_open_runs(&r[0], &r[1]);
     for (unsigned i = 0; i < 2; i++)
+        cp_done(&r[i]);
+    return ok;
+}
+
+/* A notice posted with no splash, or during one (the boot's wait, then
+ * the overlay up, then gone). */
+#define SN_NOTE "notify=Connected,10.0.2.15 on QEMU"
+
+static bool splash_notice_runs(struct cp_run *desk, struct cp_run *now, struct cp_run *held,
+                               struct cp_run *mid, struct cp_run *shown)
+{
+    static const char *const d[] = { OV_DESK };
+    static const char *const n[] = { OV_DESK, SN_NOTE, "paint" };
+    static const char *const h[] = { "splash", OV_DESK, SN_NOTE, "paint", OV_SPLASH };
+    static const char *const m[] = { "splash", OV_DESK, SN_NOTE, "paint", OV_SPLASH, OV_FADE,
+                                     "tick=250", "paint" };
+    static const char *const s[] = { "splash", OV_DESK, SN_NOTE, "paint", OV_SPLASH, OV_FADE,
+                                     "tick=250", "paint", "tick=600", "paint" };
+    CHECK(cp_run(d, sizeof(d) / sizeof(d[0]), desk));
+    CHECK(cp_run(n, sizeof(n) / sizeof(n[0]), now));
+    CHECK(cp_run(h, sizeof(h) / sizeof(h[0]), held));
+    CHECK(cp_run(m, sizeof(m) / sizeof(m[0]), mid));
+    CHECK(cp_run(s, sizeof(s) / sizeof(s[0]), shown));
+    /* no splash: the card at once */
+    CHECK(CP_W * CP_H - same_px(now, desk) > 1000);
+    /* waiting for the splash: the background only; the overlay: it alone,
+     * everywhere, direct (nothing of the desktop's drawn over it) */
+    CHECK_EQ(held->nrep, 3);
+    CHECK_EQ(held->rep[1].layer_px, 0);
+    CHECK_EQ(not_overlay(held), 0);
+    CHECK_EQ(held->rep[2].direct, held->rep[2].tiles);
+    /* faded out: the card only coming in (its slide starts now) */
+    CHECK(CP_W * CP_H - same_px(mid, now) > 1000);
+    /* then exactly as with no splash */
+    CHECK_EQ(shown->nrep, 6);
+    CHECK_EQ(same_px(shown, now), CP_W * CP_H);
+    return true;
+}
+
+bool t_comp_paint_splash_notice(void)
+{
+    static struct cp_run r[5];
+    memset(r, 0, sizeof(r));
+    bool ok = splash_notice_runs(&r[0], &r[1], &r[2], &r[3], &r[4]);
+    for (unsigned i = 0; i < 5; i++)
         cp_done(&r[i]);
     return ok;
 }

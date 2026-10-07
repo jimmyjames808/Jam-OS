@@ -22,6 +22,12 @@
  * top; one without buttons goes after LOOK_NOTE_SHOW_MS, one with buttons
  * stays until one is pressed (ctl_notify_answered), a click on a plain
  * card sends it; at most NOTIFY_MAX, the oldest plain one pushed out.
+ * t_desk_notify_held: no notice shows while the boot splash is up (the
+ * wait for it, its overlay on the screen, its fade-out): each gets its id
+ * and waits; a withdrawn one is dropped unseen; when the splash is over
+ * they show in the order they came, their 5 s counted from then; at most
+ * NOTIFY_MAX held, the oldest plain one dropped; with no splash a notice
+ * shows at once, and nothing wakes the loop while one is held.
  * t_desk_overlay: a full-screen window whose client takes no keys (the
  * boot splash's) is a boot overlay: no screen of its own (nor a dot), on
  * none (no chip, no Alt+Tab row, never cycled to), over all of the output
@@ -392,6 +398,124 @@ bool t_desk_notify(void)
 {
     desk_test_start(COMP_FLOATING);
     bool ok = notify_steps();
+    fk_close_all();
+    return ok;
+}
+
+/* ---- notices held during the boot splash ----------------------------------------------- */
+
+static const struct notify_card *card(uint32_t id)
+{
+    for (unsigned i = 0; i < notes.n; i++)
+        if (notes.cards[i].id == id)
+            return &notes.cards[i];
+    return NULL;
+}
+
+/* The splash waited for (paint.c's comp.splash_until), then its overlay up
+ * and gone with no fade: held all along, shown after, the 5 s from then. */
+static bool held_steps(void)
+{
+    /* no splash: at once */
+    uint32_t now_one = post("Now", 0);
+    CHECK(card(now_one) && notes.nheld == 0);
+    notify_withdraw(now_one);
+    CHECK_EQ(notes.n, 0);
+    /* the wait for the splash: held, none shown, the loop not woken */
+    comp.splash_until = now() + 5 * NS_PER_S;
+    uint32_t a = post("Connected", 0), b = post("Update written", 2), gone = post("Gone", 0);
+    CHECK(a && b && gone && a != b && b != gone);
+    CHECK_EQ(notes.n, 0);
+    CHECK_EQ(notes.nheld, 3);
+    CHECK(box_empty(notify_box()));
+    CHECK(notify_live(a) && notify_live(b) && notify_live(gone));
+    CHECK_EQ(notify_deadline(), DEADLINE_NEVER);
+    notify_tick(now() + 6 * NS_PER_S);   /* long past a card's 5 s: still held */
+    CHECK_EQ(notes.n, 0);
+    /* withdrawn while held: dropped unseen */
+    notify_withdraw(gone);
+    CHECK(!notify_live(gone));
+    CHECK_EQ(notes.nheld, 2);
+    /* the splash's overlay up: still held */
+    comp.splash_until = 0;
+    CHECK(fk_open_full(&fks[1], &fake_keyless));
+    CHECK(screens_overlay());
+    uint32_t c = post("USB stick added", 0);
+    notify_tick(now() + 7 * NS_PER_S);
+    CHECK_EQ(notes.n, 0);
+    CHECK_EQ(notes.nheld, 3);
+    CHECK_EQ(notify_deadline(), DEADLINE_NEVER);
+    /* it goes (no animations: no fade): the loop is woken, all shown in
+     * order (the newest on top), each from then */
+    wm_destroy(fks[1].ww);
+    fks[1].ww = NULL;
+    CHECK(!screens_overlay());
+    CHECK_EQ(notify_deadline(), 0);
+    uint64_t t1 = now() + 8 * NS_PER_S;
+    notify_tick(t1);
+    CHECK_EQ(notes.nheld, 0);
+    CHECK_EQ(notes.n, 3);
+    CHECK(notes.cards[0].id == c && notes.cards[1].id == b && notes.cards[2].id == a);
+    CHECK(!card(gone));
+    for (unsigned i = 0; i < notes.n; i++)
+        CHECK_EQ(notes.cards[i].posted, t1);
+    CHECK_EQ(notes.cards[0].box.y1, LOOK_NOTE_TOP);
+    /* the 5 s from the reveal, not from the post */
+    notify_tick(t1 + (LOOK_NOTE_SHOW_MS - 10) * NS_PER_MS);
+    CHECK(card(a) && card(c) && !card(a)->leaving);
+    notify_tick(t1 + (LOOK_NOTE_SHOW_MS + 10) * NS_PER_MS);
+    CHECK(!card(a) && !card(c));
+    CHECK(card(b));                      /* buttons: until pressed */
+    struct comp_box later = notify_button_box(card(b), 1);
+    CHECK(press_btn(later.x1 + 2, later.y1 + 2, BTN));
+    release_at(later.x1 + 2, later.y1 + 2);
+    CHECK(fdesk.answered_id == b && fdesk.answered_button == 1);
+    CHECK_EQ(notes.n, 0);
+    return true;
+}
+
+/* More than NOTIFY_MAX held: the oldest plain one dropped (one with buttons
+ * kept); the overlay's fade-out holds them too. */
+static bool held_cap_steps(void)
+{
+    comp.splash_until = now() + 5 * NS_PER_S;
+    uint32_t keep = post("Buttons", 1), oldest = post("Plain 1", 0), last = 0;
+    for (unsigned i = 0; i < NOTIFY_MAX; i++)
+        last = post("More", 0);
+    CHECK_EQ(notes.nheld, NOTIFY_MAX);
+    CHECK(notify_live(keep) && !notify_live(oldest) && notify_live(last));
+    CHECK_EQ(notes.held[0].id, keep);
+    comp.splash_until = 0;
+    /* the overlay fades out: held until the fade ends */
+    anim_init(true);
+    CHECK(fk_open_full(&fks[1], &fake_keyless));
+    static struct comp_buffer shown;   /* a buffer to take its picture from */
+    fks[1].s.buffer = &shown;
+    wm_destroy(fks[1].ww);
+    fks[1].s.buffer = NULL;
+    fks[1].ww = NULL;
+    CHECK_EQ(anim_running(), ANIM_FADE);
+    notify_tick(now() + 100 * NS_PER_MS);
+    CHECK_EQ(notes.n, 0);
+    uint64_t t = now() + (LOOK_ANIM_FADE_MS + 50) * NS_PER_MS;
+    anim_tick(t);   /* as desk_tick: the animation, then the notices */
+    CHECK_EQ(anim_running(), ANIM_NONE);
+    notify_tick(t);
+    CHECK_EQ(notes.nheld, 0);
+    CHECK_EQ(notes.n, NOTIFY_MAX);
+    CHECK_EQ(notes.cards[0].id, last);
+    CHECK_EQ(notes.cards[NOTIFY_MAX - 1].id, keep);
+    CHECK(notes.cards[0].posted == t && notes.cards[0].alpha == 0);   /* slides in from now */
+    anim_init(false);
+    return true;
+}
+
+bool t_desk_notify_held(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = held_steps() && held_cap_steps();
+    comp.splash_until = 0;
+    anim_init(false);
     fk_close_all();
     return ok;
 }

@@ -124,7 +124,8 @@ a real desktop PC, which is where every milestone is tested.
   init starts only the desktop's own apps for it. The top bar's volume
   popover sets the mixer's master volume and shows the output and what
   plays; the network popover the link, address and rates. Notices come as
-  cards in the top right, in plain words: a stick added or removed, the
+  cards in the top right (after the boot splash, never over it), in plain
+  words: a stick added or removed, the
   Jam OS stick pulled out and back, the network connected or lost, a
   service or driver that crashed (and was started again) or kept crashing,
   an update written (with a Reboot button), a restart after a panic (with

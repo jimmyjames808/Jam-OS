@@ -23,8 +23,9 @@
 #include "compseat.h"
 #include "utest.h"
 
-/* The compositor with the desktop or not, and layout= (NULL: none, its default). */
-static bool start(struct cs *t, bool desk, const char *layout)
+/* The compositor with the desktop or not, layout= (NULL: none, its
+ * default) and one more argument (NULL: none). */
+static bool start(struct cs *t, bool desk, const char *layout, const char *more)
 {
     memset(t, 0, sizeof(*t));
     handle_t svc, ctl, init, image, note, mix, net;
@@ -38,12 +39,14 @@ static bool start(struct cs *t, bool desk, const char *layout)
     CHECK_ST(jam_channel_create(&mix, &t->mix), OK);
     CHECK_ST(jam_channel_create(&net, &t->net), OK);
     CHECK_ST(new_job(&t->p.job), OK);
-    const char *argv[6] = { "bin/compositor", "headless", "size=640x480", "testwin" };
+    const char *argv[7] = { "bin/compositor", "headless", "size=640x480", "testwin" };
     int argc = 4;
     if (layout)
         argv[argc++] = layout;
     if (!desk)
         argv[argc++] = "nodesk";
+    if (more)
+        argv[argc++] = more;
     struct spawn_handle x[] = { { SR_USER + 0, svc }, { SR_USER + 1, image },
                                 { SR_USER + 2, ctl }, { SR_USER + 3, init },
                                 { SR_USER + 5, note }, { SR_USER + 6, mix },
@@ -62,17 +65,22 @@ static bool start(struct cs *t, bool desk, const char *layout)
 
 bool cs_start(struct cs *t)
 {
-    return start(t, false, "layout=floating");
+    return start(t, false, "layout=floating", NULL);
 }
 
 bool cs_start_desk(struct cs *t)
 {
-    return start(t, true, "layout=floating");
+    return start(t, true, "layout=floating", NULL);
+}
+
+bool cs_start_splash(struct cs *t)
+{
+    return start(t, true, "layout=floating", "splash");
 }
 
 bool cs_start_default(struct cs *t)
 {
-    return start(t, false, NULL);
+    return start(t, false, NULL, NULL);
 }
 
 bool cs_stop(struct cs *t)

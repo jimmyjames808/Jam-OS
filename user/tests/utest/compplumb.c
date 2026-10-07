@@ -10,6 +10,11 @@
  * buttons a channel; withdraw only one's own; a button pressed is
  * answered to the poster's notify_wait (kept until it asks when it isn't
  * waiting); without the desktop ERR_NOT_SUPPORTED.
+ * t_comp_notify_splash: while the compositor waits for the boot splash a
+ * notice gets its id but no card: its poster may withdraw it (dropped
+ * unseen), and a click where its button would be answers nothing; when
+ * the wait ends with no splash (5 s) the held card shows and its press
+ * answers the notify_wait sent during the splash.
  * t_comp_launch: the search box's rows reach init: an app as
  * initctl.launch with its command name ("jamjar"), what is typed as
  * initctl.terminal's command; the cursor is busy from Enter until init
@@ -105,6 +110,41 @@ static status_t press_answer(handle_t ch, uint32_t *id, uint8_t *button)
     if (st == OK && m.txid != WAIT_TX)
         st = ERR_INTERNAL;
     return st == OK ? compctl_notify_wait_result(rep, &m, id, button) : st;
+}
+
+/* ---- t_comp_notify_splash ------------------------------------------------------------ */
+
+bool t_comp_notify_splash(void)
+{
+    struct cs t;
+    handle_t n;
+    struct note x;
+    uint32_t id = 0, held = 0, got = 0;
+    uint8_t b = 9;
+    signals_t seen;
+    CHECK(cs_start_splash(&t));
+    uint64_t t0 = now();   /* the wait began before the compositor took input */
+    CHECK_ST(svc_connect_within(t.note, CT_WAIT, &n), OK);
+    /* held: an id at once; withdrawn, it is gone unseen */
+    note_make(&x, "Held", "", NULL, NULL);
+    CHECK_ST(post(n, &x, 0, 0, &id), OK);
+    CHECK(id != 0);
+    CHECK_ST(compctl_withdraw_within(n, CT_WAIT, id), OK);
+    CHECK_ST(compctl_withdraw_within(n, CT_WAIT, id), ERR_NOT_FOUND);
+    /* one with buttons, waited for: no card to press yet */
+    note_make(&x, "Update written", "", "Reboot", "Later");
+    CHECK_ST(post(n, &x, 'U', 2, &held), OK);
+    CHECK_ST(compctl_notify_wait_send(n, WAIT_TX), OK);
+    CHECK(press_first_button(&t));
+    CHECK_ST(jam_object_wait_one(n, SIG_READABLE, now() + SHORT, &seen), ERR_TIMED_OUT);
+    /* no splash in 5 s: the desktop, the held card, its press answered */
+    jam_nanosleep(t0 + 5 * NS_PER_S + SHORT);
+    CHECK(press_first_button(&t));
+    CHECK_ST(press_answer(n, &got, &b), OK);
+    CHECK(got == held && b == 0);
+    jam_handle_close(n);
+    CHECK(cs_stop(&t));
+    return true;
 }
 
 /* ---- t_comp_notify ------------------------------------------------------------------- */
