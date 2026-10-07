@@ -117,7 +117,7 @@ static void die(struct jwl_client *c, status_t why)
 static void lost(struct jwl_client *c, status_t st)
 {
     if (c->port != HANDLE_INVALID)
-        (void)jam_port_unbind(c->port, c->conn->ch, c->port_key);   /* closing unbinds anyway */
+        (void)jam_port_unbind(c->port, c->conn->ch, c->port_key);   /* closing alone doesn't */
     if (c->conn->status == ERR_INVALID_ARGS)
         jwlc_log(c, "the compositor broke the protocol: %s", c->conn->error.text);
     jwl_conn_destroy(c->conn);
