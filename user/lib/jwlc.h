@@ -164,7 +164,12 @@ struct jwl_client {
     struct jwl_window *windows;
     struct jwl_event q[JWL_EVENT_QUEUE];
     unsigned qhead, qlen;
+    bool backlog;                     /* dispatch left messages unread: the queue was nearly full */
 };
+
+/* The queue's room a dispatch keeps: it reads no further message with
+ * less free (one message queues a few events at most). */
+#define JWLC_EVENT_ROOM 32u
 
 /* jwl_events.c */
 /* Queue ev for the program (motion merged into a queued motion). */

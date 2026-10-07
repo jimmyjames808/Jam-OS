@@ -6,7 +6,9 @@
  * What the program is to hear goes into the client's queue, a ring of
  * JWL_EVENT_QUEUE events: pointer motion merges into a motion queued
  * last, a destroyed window's events are blanked, and a full queue drops
- * the event and counts it. */
+ * the event and counts it. A dispatch stops reading while the queue is
+ * nearly full (jwl_client.c, read_all), so only a roundtrip or a connect
+ * that waits without the program taking its events can fill it. */
 #include <jwl_client.h>
 #include <os.h>
 #include "jwlc.h"

@@ -288,9 +288,21 @@ static void advance(struct jwl_client *c)
 }
 
 /* Every message waiting, until the channel is empty or the connection goes. */
-static void read_all(struct jwl_client *c)
+/* Read the messages waiting. With room_only, stop while the queue has
+ * less than JWLC_EVENT_ROOM free (c->backlog: the rest wait in the
+ * connection, and jwl_client_deadline is "now" until they are read): a
+ * burst of events (the compositor hands over the keys typed before our
+ * window was up, hundreds at once) waits for the program to take what is
+ * queued instead of overflowing the queue. A roundtrip reads everything:
+ * it waits for its done, not for the program. */
+static void read_all(struct jwl_client *c, bool room_only)
 {
+    c->backlog = false;
     while (c->conn) {
+        if (room_only && c->qlen > JWL_EVENT_QUEUE - JWLC_EVENT_ROOM) {
+            c->backlog = true;
+            return;
+        }
         struct jwl_msg m;
         status_t st = jwl_conn_next(c->conn, &m);
         if (st == ERR_SHOULD_WAIT)
@@ -314,11 +326,12 @@ static void read_all(struct jwl_client *c)
 
 /* ---- the API -------------------------------------------------------------------------- */
 
-status_t jwl_client_dispatch(struct jwl_client *c)
+/* jwl_client_dispatch; room_only: read_all's. */
+static status_t dispatch(struct jwl_client *c, bool room_only)
 {
     if (c->state == JWLC_DOWN && now() >= c->retry_at)
         try_connect(c);
-    read_all(c);
+    read_all(c, room_only);
     jwlc_seat_tick(c);
     jwlc_clip_tick(c);
     if (c->conn) {
@@ -327,6 +340,11 @@ status_t jwl_client_dispatch(struct jwl_client *c)
             lost(c, st);
     }
     return c->state == JWLC_DEAD ? c->why : OK;
+}
+
+status_t jwl_client_dispatch(struct jwl_client *c)
+{
+    return dispatch(c, true);
 }
 
 status_t jwl_client_flush(struct jwl_client *c)
@@ -338,6 +356,8 @@ status_t jwl_client_flush(struct jwl_client *c)
 
 uint64_t jwl_client_deadline(const struct jwl_client *c)
 {
+    if (c->backlog && c->conn)
+        return 0;   /* messages left unread for the queue's room: dispatch again now */
     uint64_t clip = jwlc_clip_deadline(c);   /* a paste goes on whatever the state */
     uint64_t d = c->state == JWLC_DOWN    ? c->retry_at
                : c->state == JWLC_READY   ? jwlc_seat_deadline(c)
@@ -395,7 +415,7 @@ status_t jwl_client_roundtrip(struct jwl_client *c, uint64_t deadline)
             return ERR_TIMED_OUT;
         }
         wait_a_while(c, deadline);
-        st = jwl_client_dispatch(c);
+        st = dispatch(c, false);
     }
     return st;
 }
@@ -433,7 +453,7 @@ status_t jwl_client_connect(const struct jwl_client_config *cfg, uint64_t deadli
         else
             wait_a_while(c, deadline);
         if (st == OK)
-            st = jwl_client_dispatch(c);
+            st = dispatch(c, false);
     }
     if (st != OK) {
         jwl_client_destroy(c);

@@ -71,7 +71,7 @@
 #define JWL_CLIENT_MEMORY_VERSION     1u   /* jam_window_memory_v1 (optional): windows back in
                                             * their places after a compositor restart */
 
-#define JWL_EVENT_QUEUE      256u    /* events waiting for the program; more are dropped */
+#define JWL_EVENT_QUEUE      256u    /* events waiting for the program (dispatch reads no more) */
 #define JWL_SIZE_MAX         8192    /* a window's or buffer's width and height, at most */
 #define JWL_TEXT_MAX         256u    /* a title's or app id's bytes kept, with the NUL */
 #define JWL_RECONNECT_MAX_MS 1000u   /* the longest pause between two tries */
@@ -153,13 +153,16 @@ handle_t jwl_client_channel(const struct jwl_client *c);
  * persistent), now and on every connection after: the port's packet with
  * key means "call jwl_client_dispatch". Errors: port_bind's. */
 status_t jwl_client_bind_port(struct jwl_client *c, handle_t port, uint64_t key);
-/* When dispatch has work of its own to do (a key repeat, a reconnect):
- * an absolute deadline, DEADLINE_NEVER for none. */
+/* When dispatch has work of its own to do (a key repeat, a reconnect,
+ * messages it left unread): an absolute deadline, DEADLINE_NEVER for
+ * none, 0 for now. */
 uint64_t jwl_client_deadline(const struct jwl_client *c);
 
-/* Read every message waiting, run what is due (key repeat, a reconnect
- * try), and flush. Never blocks but in the connect step. OK; a dead
- * client's status. */
+/* Read the messages waiting while the event queue has room (the rest
+ * wait in the connection, and the deadline is 0 until a dispatch after
+ * the program took its events reads them), run what is due (key repeat,
+ * a reconnect try), and flush. Never blocks but in the connect step. OK;
+ * a dead client's status. */
 status_t jwl_client_dispatch(struct jwl_client *c);
 /* The id of a global bound on the connection now (iface: one of the five
  * this library binds, e.g. &jwl_wl_compositor_interface), 0 if none: for

@@ -5,6 +5,8 @@
  *                  the focus, key repeat made by the library from
  *                  repeat_info (and stopped by the release), a keymap
  *                  naming no layout of ours (US instead);
+ *   jwlc_key_burst  1000 key events at once: read as the queue has room,
+ *                  every one taken, in order, none dropped;
  *   jwlc_no_keyboard  a client that takes no keys binds no wl_keyboard;
  *   jwlc_pointer   enter, motion (two queued become one), buttons, the
  *                  wheel with its notches folded in, and a move asked
@@ -99,6 +101,50 @@ bool t_jwlc_keyboard(void)
     f.keymap_text = "xkb_keymap { };\n";
     c = fake_ready(&f);
     CHECK(c && jwl_client_info(c)->keymap == &keymap_us);
+    return fake_all_gone(&f, c, h0, b0);
+}
+
+/* A burst of keys far past the event queue (the compositor hands over
+ * every key typed before the window was up at once): each dispatch reads
+ * only while the queue has room and leaves the rest in the connection,
+ * with the deadline 0 so the program's loop dispatches again; every key
+ * arrives, in order, and none is dropped (before: one dispatch read them
+ * all into 256 places and dropped the rest). */
+#define BURST_KEYS 1000u
+bool t_jwlc_key_burst(void)
+{
+    uint64_t h0, b0;
+    fake_held(&h0, &b0);
+    struct fake f;
+    fake_init(&f);
+    f.repeat_rate = 0;   /* no repeats among the keys counted */
+    struct jwl_client *c = fake_ready(&f);
+    CHECK(c);
+    struct jwl_window_config wc = { .width = 20, .height = 20 };
+    struct jwl_window *w;
+    struct fake_surface *s;
+    CHECK(fake_window(&f, c, &wc, 0, &w, &s));
+    CHECK_ST(fake_kb_enter(&f, s), OK);
+    for (unsigned i = 0; i < BURST_KEYS; i++)
+        CHECK_ST(fake_key(&f, KEY_A, i % 2 == 0), OK);
+    CHECK_ST(jwl_conn_flush(f.conn), OK);
+    unsigned keys = 0, rounds = 0;
+    bool waited = false;   /* a dispatch left some unread, and said so */
+    while (keys < BURST_KEYS && rounds++ < 64) {
+        CHECK_ST(jwl_client_dispatch(c), OK);
+        waited |= jwl_client_deadline(c) == 0;
+        struct jwl_event ev;
+        while (jwl_client_next_event(c, &ev) == OK) {
+            if (ev.type != JWL_EV_KEY)
+                continue;
+            CHECK_EQ(ev.key.state, keys % 2 == 0 ? JWL_KEY_PRESSED : JWL_KEY_RELEASED);
+            keys++;
+        }
+    }
+    CHECK_EQ(keys, BURST_KEYS);
+    CHECK(waited);
+    CHECK_EQ(jwl_client_info(c)->events_dropped, 0u);
+    CHECK(jwl_client_deadline(c) != 0);   /* all read: no more "now" */
     return fake_all_gone(&f, c, h0, b0);
 }
 
