@@ -33,7 +33,7 @@ built yet, it says so.
 | Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP); uACPI when power management lands |
 | Executables | Static ELF64 |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
-| IOMMU | Intel VT-d, DMA and interrupt remapping ([The IOMMU](#the-iommu)): each `dma_cap` has a domain holding only what it pinned, and a device raises only its own interrupts. Built (M11), but on only with the boot word `iommu=on` until the PC has signed it off; without it a driver's device can reach all of RAM |
+| IOMMU | Intel VT-d, DMA and interrupt remapping ([The IOMMU](#the-iommu)): each `dma_cap` has a domain holding only what it pinned, and a device raises only its own interrupts. Built (M11) and on by default since the PC signed it off (2026-10-07); with the boot word `iommu=off` a driver's device can reach all of RAM |
 | Users | Single user, no accounts. Handles are the only authority; a future "user" would be a namespace root plus a job quota (FAT32 can't store owners anyway) |
 | Networking | The board's own NIC, driven natively; every frame in the configured mode only: tagged with one VLAN (the owner's builds: VLAN 21), or untagged and never tagged (a public build's default) ([Networking](#networking)) |
 
@@ -66,21 +66,22 @@ What the design defends against today:
   pinned (a DMA anywhere else, the kernel included, is blocked and
   logged), and it can raise only the interrupts its interrupt objects
   were given (a write to the interrupt window that isn't its own entry is
-  blocked) ([The IOMMU](#the-iommu)). **This is off by default** until the
-  PC has signed it off (M11 in [ROADMAP.md](docs/ROADMAP.md)); the boot
-  entry "Developer > Jam OS (IOMMU)" turns it on.
+  blocked) ([The IOMMU](#the-iommu)). **This is on by default** since the
+  PC signed it off on 2026-10-07 (M11 in [ROADMAP.md](docs/ROADMAP.md));
+  the boot entry "Developer > Jam OS (no IOMMU)" (the boot word
+  `iommu=off`) turns it off.
 
 Not yet:
 
-- **A driver that misprograms its device, on a boot without `iommu=on`**
-  (today's default, and a machine with no VT-d). A device does what its
+- **A driver that misprograms its device, on a boot with `iommu=off`**
+  (and on a machine with no VT-d). A device does what its
   driver tells it: a DMA address the driver writes can be anywhere in RAM,
   the kernel included, or the interrupt window (any vector to any CPU).
   Drivers are crash-isolated, not contained: they are trusted.
 - **A USB device that exploits usb-bus.** usb-bus holds the xHCI's
   `dma_cap` and parses every USB device's descriptors, so a bug there
   gives a hostile device DMA through the xHCI: over all of RAM without
-  the IOMMU, the largest exposure on a default boot; with `iommu=on` over
+  the IOMMU, the largest exposure on a boot with `iommu=off`; with the IOMMU on (the default) over
   usb-bus's own pinned buffers (every USB device shares the xHCI's
   requester id, so they share usb-bus's domain), and nothing else.
   The other parsers of what comes from outside (usb-storage, fat, hid,
@@ -1060,15 +1061,15 @@ only the memory its driver pinned for it and raises only the interrupts
 it was given, so drivers are contained, not only crash-isolated
 ([what Jam OS defends against](#what-jam-os-defends-against)).
 
-**Off by default, for now.** It runs only with the boot word `iommu=on`
-(the boot entries "Developer > Jam OS (IOMMU)" and "Developer > IOMMU checks"; `iommu=off`
-wins over it, and a reboot keeps either word). Without it no VT-d register
-is written: the boot's read-only probe (`vtd:` lines: the DMAR table, each
-unit's capabilities, what the firmware left on) is the only trace, and
-DMA works as before the IOMMU (physical addresses, the
-[quarantine](#drivers-and-services)). It becomes the default once the PC
-has passed All tests and `soak 10` with it on; `iommu=off` is then the way
-out for troubleshooting.
+**On by default.** Since the PC passed the IOMMU checks, All tests and
+`soak 10` with it on (2026-10-07), every boot runs it unless the boot word
+`iommu=off` says not to (the boot entry "Developer > Jam OS (no IOMMU)",
+the way out for troubleshooting; `iommu=on` says the default explicitly,
+`iommu=off` wins over it, and a reboot keeps either word). With
+`iommu=off` no VT-d register is written: the boot's read-only probe
+(`vtd:` lines: the DMAR table, each unit's capabilities, what the
+firmware left on) is the only trace, and DMA works as before the IOMMU
+(physical addresses, the [quarantine](#drivers-and-services)).
 
 - **Units.** Each remapping unit the DMAR table lists and the probe could
   read is started: its invalidation queue, then its fault event
@@ -1676,7 +1677,7 @@ a stream closed) and errors are always reported. This is what M13's
 `poll`, `select` and `epoll` will be built on.
 
 **The programs on TCP** ([M9.5-PLAN](docs/M9.5-PLAN.md#track-e-as-built-fetch-serve-and-speed);
-the commands are in [README](README.md#the-network)). Each holds only
+the commands are in [NETWORK.md](docs/NETWORK.md)). Each holds only
 what its job needs, because each parses what a stranger sends. `fetch`
 and `speed` are helpers of the shell's (`bin/fetch`, `bin/speed`): the
 shell opens what `fetch` writes into (a `.part` file, renamed once the
