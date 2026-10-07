@@ -226,6 +226,49 @@ Each question stands on its own and ends with a recommendation; the plan
 assumes the recommendation until you say otherwise. They will be asked
 one at a time. Questions 1 to 7 shape the tracks; 8 to 20 are smaller.
 
+### The owner's answers (2026-10-07)
+
+Asked one by one, then "your recommendation for the rest unless unsure
+or very important" (the owner); Q14 was asked and answered against the
+recommendation.
+
+- **D2 confirmed**: the "receives no handles" mark, option 1 (the M11.6
+  review's question A).
+- **Q1 (A)**: handles given to a send are always moved, whatever the status.
+- **Q2 (B)**: once a writer closes its end, what it wrote and nobody read
+  is charged to the reader's job.
+- **Q3 (A)**: `u8[<=N]` and a checked `str[<=N]`.
+- **Q4 (A)**: one-way `event` methods, which may carry handles.
+- **Q5 (A)**: a protocol per kind of channel.
+- **Q6 (A)**: the storage split into a new service named **volumes**, with
+  one shared supervision module.
+- **Q7 (A)**: the disk protocols shaped for GPT and NVMe now, nothing built
+  for them.
+- **Q8 (A)**: the file protocol changed now (paths as strings, batched
+  `readdir`, exclusive create, `is_dir`, fat's lock by directory entry).
+- **Q9 (A)**: the five new error codes.
+- **Q10 (A)**: thread-local storage (the FS base) and a futex in M12.
+- **Q11 (A)**: `handle_info`.
+- **Q12 (B)**: the re-arm flag waits for the speed pass (unless the PC's
+  `perop` says otherwise).
+- **Q13 (A)**: read-only DMA pins now.
+- **Q14 (C), not the recommendation: `nocomp` goes.** The boot menu's
+  "Jam OS (no compositor)" entry, the boot word, the console's full-screen
+  mode with `connect_input` and `lend_screen`, and libfun's borrowed
+  screen all go; the desktop is the only way Jam OS draws. The tests that
+  boot with `nocomp` (`shell-forever.txt`, the `nocomp` runs of the
+  screen, apps, mouse and splash tests, soak runs made with it) move to the
+  desktop or go, and the docs that offer it as a way back (HARDWARE,
+  TESTING, USING, the boot menu's comments) change with it. The previous
+  build stays the way back from a bad build. Track P1 (and its tests).
+- **Q15 (A)**: the character leaves input reports; the keymap is libos's.
+- **Q16 (A)**: libos's heap reserves 1 GiB of address space.
+- **Q17 (A)**: a pipe is a channel of byte messages (M13's starting point).
+- **Q18 (A)**: a dead service's kept objects stay charged to its job.
+- **Q19 (A)**: one rule for time (deadlines; `sleep_until`; the time page
+  at M13).
+- **Q20 (A)**: M12.1 is M12's independent review.
+
 ### Decided already (not asked again)
 
 - **D1. One txid counter per endpoint pair** (the M11.5 review's question
