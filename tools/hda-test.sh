@@ -148,10 +148,25 @@ blocked=$(grep -oE "vtdtest: unpinned read at 0x[0-9a-f]+ blocked" "$log" |
           sed -E 's/.*at 0x([0-9a-f]+) .*/\1/' | sort -u)
 nb=$(echo "$blocked" | grep -c . || true)
 [ "$nb" = 2 ] || { echo "hda-vtd: $nb controller(s) saw the unpinned read blocked, want 2"; ok=0; }
+# QEMU's unit has one fault record: when both controllers fault within a
+# moment of each other (an idle Mac: under a millisecond apart) the second
+# arrives while the first is still in the record and is lost, which the
+# kernel counts ("N lost" in `iommu`). Each blocked read must have its
+# fault line, or be one of the faults counted lost; at least one is seen.
+seen=0 missing=0
 for a in $blocked; do
-    grep -qE "vtd: fault: unit 0: 00:0[0-9a-f]\.0 read at $a, reason 6" "$log" ||
-        { echo "hda-vtd: no read fault at $a"; ok=0; }
+    if grep -qE "vtd: fault: unit 0: 00:0[0-9a-f]\.0 read at $a, reason 6" "$log"; then
+        seen=$((seen + 1))
+    else
+        missing=$((missing + 1))
+    fi
 done
+lost=$(grep -oE "iommu: +faults: [0-9]+ event interrupt\(s\), [0-9]+ record\(s\) read, [0-9]+ lost" \
+       "$log" | tail -1 | sed -E 's/.* ([0-9]+) lost/\1/')
+if [ "$seen" -lt 1 ] || [ "$missing" -gt "${lost:-0}" ]; then
+    echo "hda-vtd: read faults: $seen seen, $missing missing, ${lost:-0} counted lost"
+    ok=0
+fi
 nw=$(grep -c "vtdtest: RIRB write to 0xfee00000 sent" "$log" || true)
 [ "$nw" = 2 ] || { echo "hda-vtd: $nw interrupt-window write(s), want 2"; ok=0; }
 if grep -E "DMA not restricted|window check skipped|drv/hda crashed|PANIC" "$log"; then
