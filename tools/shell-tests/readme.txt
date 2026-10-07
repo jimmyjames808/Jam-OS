@@ -4,7 +4,7 @@
 # albums: the second, Nocturnes, is played). The window geometry below
 # follows from the tiler's and the floating defaults at that size (the
 # room under the strip is x 6..2554, y 46..1434):
-#   readme-tiled     terminal 1 (`top`) on the left, Jamjar playing at the
+#   readme-tiled     terminal 1 (`ps`) on the left, Jamjar playing at the
 #                    top right, terminal 2 under it
 #   readme-floating  the same windows floating (Super+T), moved apart:
 #                    Jamjar in front, the pointer on its circles, and a
@@ -73,10 +73,10 @@ monitor sendkey meta_l-alt-left
 sleep 0.3
 monitor sendkey meta_l-alt-left
 sleep 1
-# terminal 1 runs top; the focus back to Jamjar
+# terminal 1 lists the programs (ps); the focus back to Jamjar
 monitor sendkey meta_l-left
 sleep 0.5
-send top
+send ps
 sleep 1
 monitor sendkey meta_l-right
 sleep 5

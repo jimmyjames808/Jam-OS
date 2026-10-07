@@ -16,7 +16,7 @@ Jam OS (no IOMMU)", turns it off). It boots from a USB stick on a real
 desktop PC, which is where every milestone is tested, into a desktop of
 its own.
 
-![The Jam OS desktop at 2560x1440, tiled: a terminal running top on the left; Jamjar, the music player, at the top right, playing a Chopin nocturne with its library of four composers and six albums, the album cover, the controls and stereo spectrum bars; a second terminal under it showing uname -a and the music folder; the top bar across the top with the window chips and the clock](docs/images/desktop-tiled.png)
+![The Jam OS desktop at 2560x1440, tiled: a terminal listing the running programs (ps) on the left; Jamjar, the music player, at the top right, playing a Chopin nocturne with its library of four composers and six albums, the album cover, the controls and stereo spectrum bars; a second terminal under it showing uname -a and the music folder; the top bar across the top with the window chips and the clock](docs/images/desktop-tiled.png)
 
 ## A tour
 
