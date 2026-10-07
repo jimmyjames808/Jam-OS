@@ -964,6 +964,7 @@ static const struct {
     { "comp_connections", t_comp_connections },
     { "comp_client_crash", t_comp_client_crash },
     { "comp_never_reads", t_comp_never_reads },
+    { "comp_lost_clients", t_comp_lost_clients },
     { "comp_live_bad_requests", t_comp_live_bad_requests },
     { "comp_live_caps", t_comp_live_caps },
     { "comp_live_client_crash", t_comp_live_client_crash },

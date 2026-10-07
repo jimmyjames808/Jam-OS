@@ -1163,6 +1163,22 @@ log has "init: the terminals' font: bitmap, as the settings say" and
 `desktop.txt` (`tools/mouse-test.sh`) and `screen-test.sh` (`nocomp`, the
 bitmap) take screenshots of the windows and the full screen.
 
+## Clients the compositor loses
+
+bin/compositor headless in a job of the test's own
+(`user/tests/utest/comp_bad.c`): `comp_bad_requests`, `comp_caps`,
+`comp_connections`, `comp_client_crash` and `comp_never_reads` end with
+the compositor's handles back where they began and its job's message
+bytes back at or below where they began (`ct_msg_back`: a client gone,
+however it went, leaves nothing charged to the compositor). The
+`comp_live_*` versions run against the desktop's compositor, whose job
+the test can't read: `ps -k` before and after shows it (job "compositor",
+its message bytes the same).
+
+| Test | What it checks |
+|---|---|
+| `comp_lost_clients` | 4 rounds of a client that closes after a round trip, one disconnected for a bad request and then closed (its slot lingers until then), and one that crashes holding a window: after each round the compositor's handles and message bytes are back at the start (until 2026-10-07 each client whose end was closed before its slot was freed left its port binding, 1216 bytes, on the compositor's job) |
+
 ## Copy and paste
 
 The clipboard ([ARCHITECTURE](../ARCHITECTURE.md#copy-and-paste)): the

@@ -35,6 +35,12 @@ bool ct_stop(struct ct_comp *p);
 uint64_t ct_handles(const struct ct_comp *p);
 /* Wait (up to CT_WAIT) for the compositor's handles to be back at want. */
 bool ct_handles_back(const struct ct_comp *p, uint64_t want);
+/* The compositor job's message bytes now (what it wrote that nobody has
+ * read yet, its port's bindings and packets), and a wait (up to CT_WAIT)
+ * for them to be back at want or below: a client gone, however it went,
+ * leaves nothing charged to the compositor. */
+uint64_t ct_msg_bytes(const struct ct_comp *p);
+bool ct_msg_back(const struct ct_comp *p, uint64_t want);
 
 /* One event a client got (the first four non-string arguments' words, its
  * first string argument, and its first array's first words). */

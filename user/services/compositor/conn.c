@@ -17,7 +17,9 @@
  * batches a connection. A client we disconnect may never read what we
  * wrote, so its slot is kept ("lingering", nothing else of it) until it
  * closes its end too: what stays charged to us is bounded by
- * COMP_CLIENTS_MAX windows, however often a client reconnects.
+ * COMP_CLIENTS_MAX windows, however often a client reconnects. Each slot's
+ * port binding on its channel end is charged to us too (about 1.2 KiB):
+ * free_client unbinds it, as closing the handle doesn't.
  *
  * Destructors are libjwl's: a destructor request reaches its handler with
  * the id already freed (delete_id queued) and the object's data in the
@@ -97,8 +99,13 @@ static status_t make_conn(handle_t mine, struct comp_client *cl)
 static void free_client(struct comp_client *cl)
 {
     jwl_conn_destroy(cl->conn);
-    if (cl->raw != HANDLE_INVALID)
+    if (cl->raw != HANDLE_INVALID) {
+        /* Closing the handle doesn't unbind it: the port's binding holds
+         * the channel end and its charge (about 1.2 KiB of our message
+         * bytes) until the port goes. A fired ONCE binding is gone already. */
+        (void)jam_port_unbind(comp.port, cl->raw, 1 + cl->slot);
         jam_handle_close(cl->raw);
+    }
     clients[cl->slot] = NULL;
     free(cl);
 }
