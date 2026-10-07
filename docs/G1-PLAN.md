@@ -156,7 +156,9 @@ differs from the recommendation below, this note wins:
   after about 5 s unless they carry buttons (e.g. "Update written ...
   Reboot / Later"), which stay until answered (the polish track: no
   terminal shows notices any more; under `nocomp` the full-screen console
-  still does). No overview of all screens in G1.
+  still does). No notice shows over the boot splash: one that comes
+  while it plays waits and shows when it is over (the owner, 2026-10-07).
+  No overview of all screens in G1.
   Words on the desktop are in sentence case (owner, from the mockups):
   window titles, top-bar chips, menu rows, popover labels, notifications
   and buttons start with a capital ("Terminal", "Mines", "Connected",
@@ -1319,6 +1321,31 @@ Tests: utest's `comp_paint_splash` (test-scene commands `splash` and
 `splashtick=`), `comp_paint_overlay_open` and
 splash-test.sh's compositor boot (`check early`: twelve screenshots from
 init's start, each the background or a frame of the video).
+
+**As built: notices wait for the splash (the owner, 2026-10-07).** A
+notice used to show over the splash (netstack's "Connected" comes a
+second or two into it). Now a notice posted while the splash is up waits
+(`notify.c`): while the compositor waits for the splash
+(`comp.splash_until`), while a boot overlay is on the screen and while it
+fades out. Its poster gets its id at once and can withdraw it (it is then
+dropped, never shown); `notify -w` keeps waiting. When the splash is over
+the waiting notices show in the order they came, each as if posted then:
+it slides in, and a plain one fades 5 s after that; one with buttons stays
+until pressed. The check is in `notify_tick`, which the loop runs every
+turn, and the loop wakes for it at once (`notify_deadline`), so every way
+the splash ends shows them: its window closed, its program ending or
+crashing, or no splash within the 5 s. At most 5 wait (`NOTIFY_MAX`, the
+cards shown at once): past that the oldest without buttons is dropped
+(else the oldest), as a new card pushes one out, and the log says so. A
+boot without the splash (`nosplash`, `verbose`, a compositor restart)
+shows them at once. Any boot overlay holds them, not only the boot's (a
+full-screen window whose client takes no keys: the splash run again
+later too). Tests: utest's `desk_notify_held`,
+`comp_notify_splash` and `comp_paint_splash_notice` (the test scene's
+`tick=` moves the notices' clock too), and splash-test.sh's compositor
+boot, now with QEMU's network: the Connected notice posted during the
+splash is shown after it (`compositor: the splash is over: 1 held notice
+shown`).
 
 **As built: the terminal's look (the owner's Q9 change, 2026-10-06).**
 The terminal windows draw JetBrains Mono 2.304 (OFL; Regular and Bold,

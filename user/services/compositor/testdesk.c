@@ -15,9 +15,11 @@
  *   close=K          toplevel K (1, 2, ... in order) unmapped, as its client
  *                    would (a boot overlay fades out)
  *   animate          the animations on (`tick` moves their clock)
- *   tick=MS          the animations' clock MS milliseconds on from now
+ *   tick=MS          the animations' and the notices' clock MS milliseconds
+ *                    on from now (notices held during a splash show then)
  *   popover=volume|network|clock   that popover, opened from its icon
- *   notify=TITLE,BODY[,BUTTON[,BUTTON]]   a notification
+ *   notify=TITLE,BODY[,BUTTON[,BUTTON]]   a notification (held while a
+ *                    splash is up, as notify.c holds it)
  *   search[=TEXT]    the search box, TEXT typed into it
  *   cursorshape=NAME the pointer shows that one of the set (arrow, ew, ns,
  *                    nwse, nesw, move, text, hand, busy)
@@ -137,7 +139,9 @@ static bool cmd_close(const char *arg)
 /* tick=MS */
 static bool cmd_tick(const char *arg)
 {
-    anim_tick(now() + (uint64_t)number(arg, 10) * NS_PER_MS);
+    uint64_t t = now() + (uint64_t)number(arg, 10) * NS_PER_MS;
+    anim_tick(t);
+    notify_tick(t);   /* held notices shown once the splash is over */
     return true;
 }
 
@@ -234,6 +238,8 @@ static void desktop_off(void)
     ntops = 0;
     pop_close();
     search_close();
+    while (notes.nheld)
+        notify_withdraw(notes.held[0].id);
     while (notes.n)
         notify_withdraw(notes.cards[0].id);   /* no animations: at once */
     desk_init(false, false);

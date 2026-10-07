@@ -2136,7 +2136,9 @@ each request goes out without waiting and its answer comes to the port
   that init answers by opening a terminal running `crashlog`, as
   `initctl.terminal` does. init's and devmgr's crash and stick notices
   (the polish track) say what happened in a few words ("Sound crashed /
-  Jam OS started it again"), the log keeping the details. Without a
+  Jam OS started it again"), the log keeping the details. A notice
+  posted while the boot splash is up waits (5 at most) and shows when the
+  splash is over, its 5 s counted from then. Without a
   compositor (`nocomp`) nothing is posted: the services' log lines, and
   the console's notices made from them, are as before.
 - **Volume and network.** The mixer serves its desktop channel as it does

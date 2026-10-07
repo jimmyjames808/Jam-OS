@@ -401,12 +401,20 @@ struct notify_card {
 struct notify_state {
     struct notify_card cards[NOTIFY_MAX];   /* the newest first */
     unsigned n;
+    struct notify_card held[NOTIFY_MAX];    /* posted during the boot splash, the oldest first:
+                                             * shown when it is over (notify.c) */
+    unsigned nheld;
     uint32_t next_id;
 };
 extern struct notify_state notes;
 
+/* A notice's id (0: the desktop is off); held, not shown, while the boot
+ * splash is up. */
 uint32_t notify_post(const struct notify_spec *n);
+/* Gone: a card fades out, a held notice is dropped unseen. */
 void     notify_withdraw(uint32_t id);
+/* Is notice id held or shown (and not leaving)? */
+bool     notify_live(uint32_t id);
 /* The cards' places and fades at t; when the next change is due. */
 void     notify_tick(uint64_t t);
 uint64_t notify_deadline(void);

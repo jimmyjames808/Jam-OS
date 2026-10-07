@@ -80,15 +80,6 @@ static struct waiter *waiter(unsigned slot, uint32_t gen)
     return w;
 }
 
-/* The card is up and not leaving. */
-static bool on_screen(uint32_t id)
-{
-    for (unsigned i = 0; i < notes.n; i++)
-        if (notes.cards[i].id == id)
-            return !notes.cards[i].leaving;
-    return false;
-}
-
 /* s (cap bytes) ends with a NUL and holds no control character; with
  * need, not empty either. */
 static bool text_ok(const uint8_t *s, size_t cap, bool need)
@@ -107,7 +98,7 @@ static unsigned button_cards(unsigned slot, uint32_t gen)
     unsigned n = 0;
     for (unsigned i = 0; i < OWNED_MAX; i++)
         if (owned[i].id && owned[i].slot == slot && owned[i].gen == gen && owned[i].buttons &&
-            on_screen(owned[i].id))
+            notify_live(owned[i].id))
             n++;
     return n;
 }
@@ -117,7 +108,7 @@ static void own(uint32_t id, unsigned slot, uint32_t gen, bool buttons)
 {
     unsigned at = 0;
     for (unsigned i = 0; i < OWNED_MAX; i++)
-        if (!owned[i].id || !on_screen(owned[i].id)) {
+        if (!owned[i].id || !notify_live(owned[i].id)) {
             at = i;
             break;
         }
@@ -184,7 +175,7 @@ status_t deskctl_withdraw(unsigned slot, uint32_t gen, uint32_t id)
 {
     for (unsigned i = 0; i < OWNED_MAX; i++)
         if (id && owned[i].id == id && owned[i].slot == slot && owned[i].gen == gen &&
-            on_screen(id)) {
+            notify_live(id)) {
             owned[i].id = 0;
             notify_withdraw(id);
             return OK;

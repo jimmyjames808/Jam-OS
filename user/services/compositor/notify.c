@@ -8,6 +8,20 @@
  * At most NOTIFY_MAX at once: a new one pushes out the oldest without
  * buttons (or the oldest at all).
  *
+ * Held while the boot splash is up (the owner: no notice over the
+ * splash): while the compositor waits for it (comp.splash_until), while a
+ * boot overlay is on the screen (screens_overlay) and while it fades out
+ * (ANIM_FADE), a notice posted gets its id at once but waits in
+ * notes.held, oldest first, instead of showing. The first tick after all
+ * of that is over (notify_tick: every path that ends the splash, its window
+ * closed, its program gone or crashed, or no splash within the 5 s, ends
+ * there, and notify_deadline wakes the loop for it) shows them in the order
+ * they came, each as if posted then: its slide in and its 5 s start when
+ * it is shown. A held notice withdrawn is dropped unseen; its id counts as
+ * up for its poster (notify_live) until then. At most NOTIFY_MAX are held,
+ * as many as can show: past that the oldest without buttons is dropped
+ * (else the oldest), as when cards are shown.
+ *
  * notify_post is the compositor's own way in; the plumbing (a later track)
  * makes it a compctl method for services. Every notice still goes to the
  * first terminal too: that is the poster's to do, not the card's.
@@ -98,30 +112,88 @@ static void make_room(void)
     drop(notes.n - 1);
 }
 
+/* Is the boot splash up: waited for, on the screen or fading out? */
+static bool held(void)
+{
+    return comp.splash_until || screens_overlay() || anim_running() == ANIM_FADE;
+}
+
+/* Card c (made by notify_post) on the screen from t, on top. */
+static void show(const struct notify_card *c, uint64_t t)
+{
+    make_room();
+    memmove(&notes.cards[1], &notes.cards[0], notes.n * sizeof(notes.cards[0]));
+    notes.n++;
+    notes.cards[0] = *c;
+    notes.cards[0].posted = t;
+    notes.cards[0].alpha = anim_enabled() ? 0 : 255;
+    notes.cards[0].dx = anim_enabled() ? 16 : 0;
+    place();
+}
+
+/* Room for one more held: the oldest without buttons goes (else the oldest). */
+static void hold_room(void)
+{
+    if (notes.nheld < NOTIFY_MAX)
+        return;
+    unsigned i = 0;
+    while (i < notes.nheld && notes.held[i].nbuttons)
+        i++;
+    if (i == notes.nheld)
+        i = 0;
+    printf("compositor: notice %u dropped: more than %u came during the splash\n",
+           notes.held[i].id, NOTIFY_MAX);
+    memmove(&notes.held[i], &notes.held[i + 1], (notes.nheld - i - 1) * sizeof(notes.held[0]));
+    notes.nheld--;
+}
+
+/* The held notices shown (the splash is over), oldest first. */
+static void reveal(uint64_t t)
+{
+    printf("compositor: the splash is over: %u held notice%s shown\n", notes.nheld,
+           notes.nheld == 1 ? "" : "s");
+    for (unsigned i = 0; i < notes.nheld; i++)
+        show(&notes.held[i], t);
+    memset(notes.held, 0, sizeof(notes.held));
+    notes.nheld = 0;
+}
+
 uint32_t notify_post(const struct notify_spec *n)
 {
     if (!desk_on() || !n || !n->title)
         return 0;
-    make_room();
-    memmove(&notes.cards[1], &notes.cards[0], notes.n * sizeof(notes.cards[0]));
-    notes.n++;
-    struct notify_card *c = &notes.cards[0];
-    memset(c, 0, sizeof(*c));
+    struct notify_card c;
+    memset(&c, 0, sizeof(c));
     if (++notes.next_id == 0)
         notes.next_id = 1;
-    c->id = notes.next_id;
-    copy(c->title, sizeof(c->title), n->title);
-    copy(c->body, sizeof(c->body), n->body);
-    c->letter = n->letter;
-    c->colour = n->colour ? n->colour : LOOK_JAM_BLACKCURRANT;
-    c->nbuttons = n->nbuttons < NOTIFY_BUTTONS_MAX ? n->nbuttons : NOTIFY_BUTTONS_MAX;
-    for (unsigned b = 0; b < c->nbuttons; b++)
-        copy(c->buttons[b], sizeof(c->buttons[b]), n->buttons[b]);
-    c->posted = now();
-    c->alpha = anim_enabled() ? 0 : 255;
-    c->dx = anim_enabled() ? 16 : 0;
-    place();
-    return c->id;
+    c.id = notes.next_id;
+    copy(c.title, sizeof(c.title), n->title);
+    copy(c.body, sizeof(c.body), n->body);
+    c.letter = n->letter;
+    c.colour = n->colour ? n->colour : LOOK_JAM_BLACKCURRANT;
+    c.nbuttons = n->nbuttons < NOTIFY_BUTTONS_MAX ? n->nbuttons : NOTIFY_BUTTONS_MAX;
+    for (unsigned b = 0; b < c.nbuttons; b++)
+        copy(c.buttons[b], sizeof(c.buttons[b]), n->buttons[b]);
+    if (held()) {
+        hold_room();
+        notes.held[notes.nheld++] = c;
+        return c.id;
+    }
+    if (notes.nheld)
+        reveal(now());   /* the splash just ended: those first, as they came */
+    show(&c, now());
+    return c.id;
+}
+
+bool notify_live(uint32_t id)
+{
+    for (unsigned i = 0; i < notes.nheld; i++)
+        if (notes.held[i].id == id)
+            return true;
+    for (unsigned i = 0; i < notes.n; i++)
+        if (notes.cards[i].id == id)
+            return !notes.cards[i].leaving;
+    return false;
 }
 
 /* Card i begins to leave (it fades, then goes). */
@@ -138,6 +210,14 @@ static void leave(unsigned i)
 
 void notify_withdraw(uint32_t id)
 {
+    for (unsigned i = 0; i < notes.nheld; i++)
+        if (notes.held[i].id == id) {   /* never shown: just dropped */
+            memmove(&notes.held[i], &notes.held[i + 1],
+                    (notes.nheld - i - 1) * sizeof(notes.held[0]));
+            notes.nheld--;
+            memset(&notes.held[notes.nheld], 0, sizeof(notes.held[0]));
+            return;
+        }
     for (unsigned i = 0; i < notes.n; i++)
         if (notes.cards[i].id == id) {
             leave(i);
@@ -156,6 +236,8 @@ static uint32_t part(uint64_t t, uint64_t t0, uint32_t ms)
 
 void notify_tick(uint64_t t)
 {
+    if (notes.nheld && !held())
+        reveal(t);
     for (unsigned i = 0; i < notes.n;) {
         struct notify_card *c = &notes.cards[i];
         if (!c->nbuttons && !c->leaving && t >= c->posted + LOOK_NOTE_SHOW_MS * NS_PER_MS)
@@ -185,6 +267,8 @@ void notify_tick(uint64_t t)
 uint64_t notify_deadline(void)
 {
     uint64_t d = DEADLINE_NEVER;
+    if (notes.nheld && !held())
+        return 0;   /* the splash is over: show the held ones at once */
     for (unsigned i = 0; i < notes.n; i++) {
         const struct notify_card *c = &notes.cards[i];
         uint64_t next = DEADLINE_NEVER;

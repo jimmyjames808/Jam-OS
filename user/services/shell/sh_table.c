@@ -90,7 +90,8 @@ static const struct sh_cmd cmds[] = {
     C(notify, C_PROGRAMS, "notify [-b button]... [-w] <title> [body...]",
       "a notice on the desktop: a card in the top right that fades after 5 s, or\n"
       "  with buttons (-b, up to 3) stays until one is pressed. -w: wait for it and\n"
-      "  say which (Ctrl+C stops waiting). Needs the compositor (not a nocomp boot).\n"
+      "  say which (Ctrl+C stops waiting). During the boot splash it waits and shows\n"
+      "  when the splash is over. Needs the compositor (not a nocomp boot).\n"
       "  Example: notify -b Yes -b No -w Tea? Kettle is on"),
     C(exit, C_PROGRAMS, "exit",
       "end this shell and close its terminal (any of them; Super+Enter opens\n"
