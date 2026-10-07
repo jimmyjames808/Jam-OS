@@ -201,6 +201,14 @@ ones below are the design questions M8 left open
   in two Mac soaks (2026-10-07, 4-CPU QEMU), `repro_wake_stale_cpu` timed
   out on a 2 s step (`KT_NEEDS_IDLE`: the machine counted as idle). If it
   comes back, the shell's ktest should count a busy desktop as load.
+- **The compositor's 64 connections** (`COMP_CLIENTS_MAX`, comp.h): a
+  cap is needed (a program can't open connections until the compositor
+  runs out), but 64 itself is only a round number well above use (16
+  terminals + Jamjar is about 20). Nothing depends on it being 64; the
+  per-connection limits are what bound memory. If it is ever hit (the
+  compositor counts refusals: `refused` in its stats), raise it to 256
+  (fixed tables of a few KB, Alt+Tab's list ~128 KB) and give the refusal
+  a notice like "No more terminals" (the owner, 2026-10-07).
 - **GPT sticks** are not read (their partitions are not mounted).
 - devmgr and init are single-threaded loops that wait inside a
   request: devmgr up to 2 s per call to a usb-storage, 5 s for a
