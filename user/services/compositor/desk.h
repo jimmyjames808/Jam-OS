@@ -56,12 +56,23 @@ struct desk_screen {
     struct tile_node *tree;        /* tiling: its windows' tiles (wmtile.c); NULL: none yet */
     bool spill;                    /* made by screens_spill: when its last window goes while
                                     * it is current, the view goes back left and it goes */
+    unsigned held;                 /* remembered windows not back yet (wmsave.c): it stays */
 };
 
 /* One normal screen, current, in layout; no windows. */
 void     screens_init(enum comp_layout layout);
 /* The arrangement new screens get (and the current one, if normal). */
 void     screens_set_default(enum comp_layout layout);
+enum comp_layout screens_default(void);
+/* A restarted compositor's screens (wmsave.c; only while there is one
+ * screen and no window): n normal screens with layouts[i] (spill[i]: a
+ * spill's), screen cur shown, new ones getting deflt; out[i] each. */
+void     screens_load(unsigned n, const enum comp_layout *layouts, const bool *spill,
+                      unsigned cur, enum comp_layout deflt, struct desk_screen **out);
+/* To s at once, no slide (a restored full screen that wasn't the one shown). */
+void     screens_show(const struct desk_screen *s);
+/* Screens with nothing on them (and nothing awaited) go, but the current one. */
+void     screens_tidy(void);
 unsigned screens_count(void);
 unsigned screens_cur_index(void);
 struct desk_screen *screens_cur(void);

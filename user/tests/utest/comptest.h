@@ -29,6 +29,10 @@ bool ct_start(struct ct_comp *p, int32_t w, int32_t h);
 bool ct_image_for(struct ct_comp *p, handle_t *theirs);
 /* The same with one more argument for the compositor (NULL: none). */
 bool ct_start_arg(struct ct_comp *p, int32_t w, int32_t h, const char *arg);
+/* The same with a state VMO (SR_STATE, a duplicate with svcstate's rights,
+ * as init gives one: the arrangement a restarted compositor comes back
+ * to); HANDLE_INVALID: none. */
+bool ct_start_state(struct ct_comp *p, int32_t w, int32_t h, const char *arg, handle_t state);
 /* Close /svc/wayland: the compositor must end with 0 and leave its job empty. */
 bool ct_stop(struct ct_comp *p);
 /* The compositor job's handles in use now. */

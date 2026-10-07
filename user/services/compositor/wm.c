@@ -54,7 +54,14 @@ void wm_init(enum comp_layout layout)
     anim_finish();
     wm.first = wm.last = wm.focused = NULL;
     wm.focus_count = 0;
+    wm_save_forget();
     screens_init(layout);
+}
+
+void wm_focus_count_at_least(uint64_t n)
+{
+    if (wm.focus_count < n)
+        wm.focus_count = n;
 }
 
 struct wm_window *wm_first(void)
@@ -389,14 +396,16 @@ static void note_floating_size(struct wm_window *ww)
 
 status_t wm_commit(struct wm_window *ww, uint32_t states)
 {
-    bool first = !ww->win;
+    bool first = !ww->win, restored = false;
     if (first) {
         status_t st = window_create(ww->surface, 0, 0, &ww->win);
         if (st != OK)
             return st;
         ww->win->wm = ww;
         ww->win->title = ww->title;   /* ours: it outlives the window */
-        screens_window_new(ww);
+        restored = wm_save_place(ww);   /* back in its remembered place (a restart) */
+        if (!restored)
+            screens_window_new(ww);
     }
     ww->shown = states;
     wm_place(ww);
@@ -407,16 +416,25 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
     if (wm_layout_of(ww) == COMP_TILING) {
         wm_reflow();   /* it splits the focused tile; the others glide to make room */
         spilled = ww->screen != screens_cur();
-        screens_follow(ww);   /* or, no room for its tile, to a new screen: the view slides there */
+        if (!restored)   /* (one coming back stays on its screen, the view where it was) */
+            screens_follow(ww);   /* or, no room for its tile, to a new screen: the view
+                                   * slides there */
     }
     window_map(ww->win, screens_shown(ww));   /* the seat hears (a client's first window
                                                * takes the keys) */
-    if (ww->want == WM_FULLSCREEN)
+    if (ww->want == WM_FULLSCREEN) {
+        const struct desk_screen *shown = screens_cur();
         screens_fullscreen(ww, true);   /* asked before its first buffer */
-    else if (!screens_overlay() && !spilled)
-        anim_open(ww->win);   /* (after a spill the slide is the animation) */   /* (an animation is drawn over every window, a boot overlay too) */
+        if (restored && !wm_save_shown_full(ww))
+            screens_show(shown);   /* its full screen is back, but wasn't the one shown */
+    } else if (!screens_overlay() && !spilled && !restored) {
+        anim_open(ww->win);   /* (after a spill the slide is the animation; an animation
+                               * is drawn over every window, a boot overlay too) */
+    }
     if (ww->overlay)
         anim_finish();        /* nothing drawn over the splash, not even a window opening */
+    if (restored)
+        wm_save_mapped(ww);   /* the focus back where it was */
     desk_window_mapped(ww);
     strip_dirty();
     return OK;

@@ -102,6 +102,34 @@ void screens_set_default(enum comp_layout layout)
     scene.layout = layout;
 }
 
+enum comp_layout screens_default(void)
+{
+    return sc.deflt;
+}
+
+void screens_load(unsigned n, const enum comp_layout *layouts, const bool *spill, unsigned cur,
+                  enum comp_layout deflt, struct desk_screen **out)
+{
+    if (sc.n != 1 || wm_first() || !n || n > DESK_SCREENS_MAX || cur >= n)
+        return;
+    sc.deflt = deflt;
+    for (unsigned i = 0; i < n; i++) {
+        struct desk_screen *s = i ? new_screen(SCREEN_NORMAL, sc.n) : sc.order[0];
+        s->layout = layouts[i];
+        s->spill = spill[i];
+        out[i] = s;
+    }
+    sc.cur = cur;
+    scene.layout = sc.order[cur]->layout;
+    strip_dirty();
+}
+
+void screens_tidy(void)
+{
+    cleanup();
+    strip_dirty();
+}
+
 unsigned screens_count(void)
 {
     return sc.n;
@@ -234,7 +262,7 @@ static void cleanup(void)
             spare = false;
     for (unsigned i = 0; i < sc.n;) {
         struct desk_screen *s = sc.order[i];
-        if (i == sc.cur || anim_slides(s) || screens_windows(s)) {
+        if (i == sc.cur || anim_slides(s) || screens_windows(s) || s->held) {
             i++;
         } else if (spare && s->kind == SCREEN_NORMAL) {
             spare = false;   /* this one stays */
@@ -248,6 +276,13 @@ static void cleanup(void)
 void screens_go(unsigned i)
 {
     go_to(i, true);
+}
+
+void screens_show(const struct desk_screen *s)
+{
+    int i = screens_index(s);
+    if (i >= 0)
+        go_to((unsigned)i, false);
 }
 
 /* A normal screen at the end, or NULL if there is no room for one. */

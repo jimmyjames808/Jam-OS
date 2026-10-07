@@ -233,7 +233,7 @@ static status_t op_set_layout(void *ctx, uint8_t layout)
     if (layout != COMP_FLOATING && layout != COMP_TILING)
         return ERR_INVALID_ARGS;
     wm_set_layout((enum comp_layout)layout);
-    layout_now(scene.layout);
+    layout_now(screens_default());
     return OK;
 }
 
@@ -244,8 +244,9 @@ static status_t op_layout_wait(void *ctx, struct idl_txn txn, uint8_t layout, ui
         return ERR_ACCESS_DENIED;
     if (c->waiting)
         return ERR_BAD_STATE;
-    if (layout != scene.layout) {
-        *out_now = (uint8_t)scene.layout;
+    if (layout != screens_default()) {   /* (the screens' choice, not the one shown: a
+                                          * restored screen of another layout isn't a switch) */
+        *out_now = (uint8_t)screens_default();
         return OK;
     }
     c->waiting = true;

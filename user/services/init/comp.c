@@ -48,6 +48,14 @@
  *                 it shows only the splash's background until the
  *                 splash's window maps (5 s at most), so the desktop never
  *                 shows before the splash. A restart later never waits.
+ *               SR_STATE  its state VMO (<compstate.h>, <svcstate.h>), made
+ *                 at its first start and kept for the boot (never
+ *                 mapped here): the compositor writes the arrangement
+ *                 into it as it changes (the screens, the tiles, each
+ *                 window's place by the key its client presents), so a
+ *                 restarted one puts the windows that come back where they
+ *                 were (user/services/compositor/wmsave.c). Without it
+ *                 (no memory) a restarted compositor starts afresh.
  *               It is started again however often it ends
  *               (terms_never_given_up): the terminals have no screen
  *               without it.
@@ -68,8 +76,10 @@
  * pressed: it never acts for a notice, and no other poster can make init
  * reboot or run anything. A new
  * compositor has none of the old one's notices. */
+#include <compstate.h>
 #include <idl/compctl.h>
 #include <settings.h>
+#include <svcstate.h>
 #include "init.h"
 
 #define CALL_WAIT     NS_PER_S                /* a compctl call: the compositor never blocks */
@@ -97,6 +107,8 @@ static uint32_t run_txid;         /* the last comp_notice_run notice, until answ
 static uint32_t run_id;           /* ... its id (0: none up) */
 static char run_cmd[TERM_CMD_MAX];   /* ... what its first button runs */
 static bool note_waiting;         /* our notify_wait is out */
+static handle_t state;            /* the compositor's state VMO (made at its first start,
+                                   * kept: the arrangement a restarted one comes back to) */
 
 bool comp_on(void)
 {
@@ -345,10 +357,11 @@ void comp_settings(void)
 }
 
 /* A compositor's handles beyond the root and /svc/wayland (x has room for
- * 5): its ADMIN channel (*mine: init's end), init's control channel, and
- * the desktop's: /svc/notify's server end, the mixer's desktop channel and
- * netstack's read-only one (each left out if there is none). */
-static status_t comp_handles(struct spawn_handle *x, unsigned *n, handle_t *mine)
+ * 6): its ADMIN channel (*mine: init's end), init's control channel, the
+ * desktop's: /svc/notify's server end, the mixer's desktop channel and
+ * netstack's read-only one, and its state VMO (r[] its rights) (each but
+ * the first left out if there is none). */
+static status_t comp_handles(struct spawn_handle *x, rights_t *r, unsigned *n, handle_t *mine)
 {
     handle_t theirs, ctl, h;
     status_t st = jam_channel_create(mine, &theirs);
@@ -365,6 +378,14 @@ static status_t comp_handles(struct spawn_handle *x, unsigned *n, handle_t *mine
         x[(*n)++] = (struct spawn_handle){ SR_USER + 6, h };
     if ((h = net_info_channel()) != HANDLE_INVALID)
         x[(*n)++] = (struct spawn_handle){ SR_USER + 7, h };
+    /* Without it a restarted compositor puts the windows back as new ones. */
+    st = state ? OK : svcstate_create(COMP_STATE_SIZE, &state);
+    if (st == OK && svcstate_give(state, &h) == OK) {
+        r[*n] = SVCSTATE_SERVICE_RIGHTS;   /* the transfer right comes off in transit */
+        x[(*n)++] = (struct spawn_handle){ SR_STATE, h };
+    } else {
+        printf("init: the compositor starts without its memory of the layout\n");
+    }
     return OK;
 }
 
@@ -373,12 +394,15 @@ status_t comp_start(void)
     handle_t srv = HANDLE_INVALID, mine = HANDLE_INVALID;
     if (jam_handle_duplicate(wl_srv, RIGHT_SAME, &srv) != OK)
         return ERR_NO_RESOURCES;
-    struct spawn_handle x[7] = {
+    struct spawn_handle x[8] = {
         { SR_RESOURCE, services_root_with(RIGHTS_BASIC | RIGHT_ROOT_SCREEN | RIGHT_ROOT_REBOOT) },
         { SR_USER + 0, srv },
     };
+    rights_t r[8];
+    for (unsigned i = 0; i < 8; i++)
+        r[i] = RIGHT_SAME;
     unsigned nx = 2;
-    status_t st = comp_handles(x, &nx, &mine);
+    status_t st = comp_handles(x, r, &nx, &mine);
     if (st != OK) {
         jam_handle_close(x[0].h);
         jam_handle_close(srv);
@@ -392,7 +416,8 @@ status_t comp_start(void)
         argv[argc++] = hz;
     if (!started_once && !splash_played())
         argv[argc++] = "splash";   /* the splash is coming: nothing before it */
-    st = svc_start(COMPOSITOR, (int)argc, argv, x, nx);
+    struct svc_args sa = { .argc = (int)argc, .argv = argv, .x = x, .rights = r, .nx = nx };
+    st = svc_start_args(COMPOSITOR, &sa);
     if (st != OK) {
         jam_handle_close(mine);
         return st;

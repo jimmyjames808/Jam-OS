@@ -96,6 +96,11 @@ struct wm_window {
      * the glide began, and whether it is gliding. */
     int32_t glide_x, glide_y;
     bool glide_noted, gliding;
+    /* The memory (wmsave.c): its key (jam_window_memory_v1; 0: none
+     * asked), and whether it took a remembered place it hasn't been
+     * mapped into yet. */
+    uint64_t key;
+    bool restoring;
 };
 
 /* ---- wm.c --------------------------------------------------------------------------- */
@@ -141,6 +146,8 @@ struct wm_window *wm_first(void);
 enum comp_layout wm_layout_of(const struct wm_window *ww);
 /* The toplevel with the keyboard focus, or NULL. */
 struct wm_window *wm_focused(void);
+/* Focus changes count on from at least n (a restored focus order, wmsave.c). */
+void wm_focus_count_at_least(uint64_t n);
 
 /* Every toplevel's configure renewed and placed again, as wm_relayout,
  * with the tiles that move gliding to their new places (anim.c): a window
@@ -179,6 +186,11 @@ struct tile_node {
      * need while its room has it (its ratio a wish, held to it), and a
      * gap dragged or pushed stops there (tiles_gap_move). */
     int32_t need_w, need_h;
+    /* A placeholder (wmsave.c's restore: ww NULL): the key of the window
+     * whose place it keeps until it comes back, and that window's
+     * minimum, for its need. 0: none. */
+    uint64_t hold;
+    int32_t hold_min_w, hold_min_h;
 };
 
 /* A gap between two tiles: the split it belongs to, where it is, the box
@@ -227,6 +239,115 @@ void tiles_gap_move(struct tile_node *split, int32_t pos);
 /* Super+Alt+direction: ww's tile's edge on that side pushed WM_PUSH
  * that way (with no edge there, its other edge). False: nothing moved. */
 bool tiles_push(struct wm_window *ww, int dx, int dy);
+
+/* A node for tiles_build, in pre-order: a split (across or down, its
+ * ratio) or a leaf keeping the place of the window with key `hold` (0: a
+ * window not remembered, whose place goes at once, as a closed one's). */
+struct tile_spec {
+    bool split, across;
+    int32_t ratio;
+    uint64_t hold;
+    int32_t min_w, min_h;          /* a leaf's window's minimum */
+};
+/* s's tree (s has none) made from spec[0..n), a whole tree in pre-order
+ * (checked: false, and no tree, if it isn't), its leaves placeholders,
+ * those of no window gone at once, laid out. */
+bool tiles_build(struct desk_screen *s, const struct tile_spec *spec, unsigned n);
+/* The box of the placeholder keeping key's place (on any screen). False: none. */
+bool tiles_held_box(uint64_t key, struct comp_box *out);
+/* ww (mapped now, ww->key its key) into the placeholder keeping its place,
+ * if it is shown tiled on that placeholder's screen; else the placeholder
+ * goes, as a closed window's place. */
+void tiles_take_hold(struct wm_window *ww);
+/* Every placeholder gone, as closed windows' places: how many. */
+unsigned tiles_drop_holds(void);
+
+/* ---- wmsave.c: the arrangement a restarted compositor comes back to -------------------- */
+
+#define WM_SAVE_MAGIC   0x4a4d4c57u   /* "WLMJ" */
+#define WM_SAVE_VERSION 1u
+#define WM_SAVE_SCREENS 16u           /* desk.h's DESK_SCREENS_MAX */
+#define WM_SAVE_WINDOWS 64u           /* windows remembered at most (more: not remembered) */
+#define WM_SAVE_NODES   256u          /* tree nodes, all screens (a tree past it: not kept) */
+#define WM_SAVE_SPLIT   0xffffu       /* a node's win: a split */
+#define WM_SAVE_GONE    0xfffeu       /* ... a leaf of a window not remembered */
+#define WM_SAVE_HOLD_NS (5 * NS_PER_S)   /* how long a remembered place waits for its window */
+#define WM_SAVE_MINIMISED    1u       /* a window's flags */
+#define WM_SAVE_FLOAT_PLACED 2u
+#define WM_SAVE_FLOAT_SIZE   4u
+
+struct wm_save_screen {
+    uint16_t first, n;             /* its tree's nodes, pre-order (n 0: no tree) */
+    uint8_t layout;                /* enum comp_layout */
+    uint8_t spill;
+    uint8_t pad[2];
+};
+struct wm_save_window {
+    uint64_t key;
+    uint64_t rank;                 /* its focused_at (0: never focused) */
+    int32_t fx, fy, fw, fh;        /* its floating place and size */
+    int32_t min_w, min_h;          /* its minimum (its placeholder's need) */
+    uint8_t screen;                /* a normal screen's index (a full-screen window's home) */
+    uint8_t want, before_fs;       /* enum wm_mode */
+    uint8_t flags;                 /* WM_SAVE_MINIMISED, ... */
+    uint8_t pad[4];
+};
+struct wm_save_node {
+    int32_t ratio;                 /* a split's */
+    uint16_t win;                  /* a leaf's window (an index), WM_SAVE_SPLIT or WM_SAVE_GONE */
+    uint8_t across;
+    uint8_t pad;
+};
+/* The description: the normal screens in order (full-screen ones are
+ * made again by their windows), the windows with keys, each tiling
+ * screen's tree. Fixed size; checked whole before anything of it is used. */
+struct wm_save {
+    uint32_t magic, version, bytes;  /* WM_SAVE_MAGIC, WM_SAVE_VERSION, sizeof(struct wm_save) */
+    uint32_t nscreens, nwins, nnodes;
+    uint32_t cur;                    /* the normal screen shown (a full screen's: its home) */
+    uint32_t deflt;                  /* new screens' layout */
+    uint64_t focused;                /* the focused window's key (0: none) */
+    uint64_t cur_full;               /* the key of the window whose full screen was shown (0) */
+    uint64_t sum;                    /* FNV-1a 64 of the whole with sum 0 */
+    struct wm_save_screen screens[WM_SAVE_SCREENS];
+    struct wm_save_window wins[WM_SAVE_WINDOWS];
+    struct wm_save_node nodes[WM_SAVE_NODES];
+};
+
+/* The arrangement now (mapped windows with keys; no boot overlay). */
+void     wm_save_describe(struct wm_save *out);
+/* A description's checksum (its sum field left out). */
+uint64_t wm_save_sum(const struct wm_save *d);
+/* A fresh compositor (no windows yet) takes d: its screens, their
+ * layouts and trees with a placeholder in each remembered window's tile,
+ * the screen shown; each remembered window waits WM_SAVE_HOLD_NS from t
+ * for its client to present its key. ERR_INVALID_ARGS: d fails a check
+ * (said in the log, nothing used); ERR_BAD_STATE: windows already. */
+status_t wm_save_load(const struct wm_save *d, uint64_t t);
+/* Remembered windows still awaited; when the wait ends. */
+bool     wm_save_pending(void);
+uint64_t wm_save_deadline(void);
+/* At t: the wait over, the places of windows not back go as closed ones'. */
+void     wm_save_tick(uint64_t t);
+/* jam_window_memory_v1.identify: ww's key; `presented` (0: none) takes a
+ * remembered place if one waits under it and ww isn't mapped yet. */
+uint64_t wm_save_key(struct wm_window *ww, uint64_t presented);
+/* wm.c, at ww's first buffer: ww onto its remembered screen and place
+ * (instead of screens_window_new). False: not a remembered window. */
+bool     wm_save_place(struct wm_window *ww);
+/* ... and once it is mapped: the focus to the remembered window if it is
+ * back; the last one back ends the wait. */
+void     wm_save_mapped(struct wm_window *ww);
+/* Was ww's full screen the one shown? */
+bool     wm_save_shown_full(const struct wm_window *ww);
+/* Nothing remembered or awaited (wm_init). */
+void     wm_save_forget(void);
+/* main.c: the state VMO (SR_STATE; HANDLE_INVALID: no memory), mapped,
+ * and a dead compositor's description in it taken (wm_save_load); then
+ * at each loop turn the wait's end and the arrangement written there if
+ * it changed (two copies, the commit word last). */
+status_t wm_save_open(handle_t vmo, uint64_t t);
+void     wm_save_turn(uint64_t t);
 
 /* ---- wmgrab.c ----------------------------------------------------------------------- */
 

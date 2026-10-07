@@ -8,7 +8,7 @@
  *   - a struct jwl_client is one program's link to the compositor: the
  *     connection (a channel from /svc/wayland), the globals it bound
  *     (wl_compositor, wl_shm, xdg_wm_base, wl_seat, wl_output, and the
- *     optional cursor shapes and clipboard, at the versions below or
+ *     optional cursor shapes, clipboard and window memory, at the versions below or
  *     lower if the compositor offers less), the seat's keyboard and
  *     pointer, the clipboard's data device, and a queue of events for the
  *     program (struct jwl_event);
@@ -25,7 +25,9 @@
  * growing pause up to a second), binds the globals again and makes every
  * pool, buffer and window again on the new connection, showing each
  * window's last buffer (its pixels are still in the pool), and then says
- * JWL_EV_RECONNECTED. A frame callback the dead compositor never answered
+ * JWL_EV_RECONNECTED. Each window presents the key the compositor gave it
+ * (jam_window_memory_v1, when offered), so a restarted compositor puts it
+ * back on its screen, in its tile or floating box, minimised or not. A frame callback the dead compositor never answered
  * comes as a JWL_EV_FRAME once the window is back, so an animation goes on.
  * A connection the compositor ended with wl_display.error (this program
  * broke the protocol) is not made again: the client is dead.
@@ -66,6 +68,8 @@
 #define JWL_CLIENT_WM_BASE_VERSION    1u
 #define JWL_CLIENT_CURSOR_SHAPE_VERSION 1u   /* wp_cursor_shape_manager_v1 (optional) */
 #define JWL_CLIENT_DATA_VERSION       3u   /* wl_data_device_manager (optional): the clipboard */
+#define JWL_CLIENT_MEMORY_VERSION     1u   /* jam_window_memory_v1 (optional): windows back in
+                                            * their places after a compositor restart */
 
 #define JWL_EVENT_QUEUE      256u    /* events waiting for the program; more are dropped */
 #define JWL_SIZE_MAX         8192    /* a window's or buffer's width and height, at most */
@@ -103,6 +107,7 @@ struct jwl_client_info {
     uint32_t wm_base_version;
     uint32_t cursor_shape_version;  /* 0: the compositor offers no cursor shapes */
     uint32_t data_version;        /* wl_data_device_manager's; 0: no clipboard */
+    uint32_t memory_version;      /* jam_window_memory_v1's; 0: windows aren't remembered */
     uint32_t shm_formats;         /* bit n: wl_shm format n offered (n < 32) */
     int32_t  output_width;        /* the output's current mode; 0 until told */
     int32_t  output_height;
@@ -379,6 +384,11 @@ status_t jwl_window_set_maximized(struct jwl_window *w, bool on);
 /* A move by the pointer, from the button press last seen on this window
  * (the compositor ignores it otherwise). ERR_BAD_STATE: no press seen. */
 status_t jwl_window_move(struct jwl_window *w);
+/* The compositor's key for the window (jam_window_memory_v1: 64 random
+ * bits it gives the window's own client), 0 before it came. libjwl keeps
+ * it and presents it for the window it makes again after a reconnect, so
+ * a restarted compositor puts it back where it was. */
+uint64_t jwl_window_key(const struct jwl_window *w);
 /* The program's own pointer for the window. */
 void     jwl_window_set_user(struct jwl_window *w, void *user);
 void    *jwl_window_user(const struct jwl_window *w);

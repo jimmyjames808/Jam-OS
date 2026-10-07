@@ -48,7 +48,12 @@ apricot minimises, blackcurrant makes the window full screen; a
 double-click on the title bar does too). Super+T switches the screen, and
 the choice is kept in the settings (`display.layout = tiling`, the
 default, or `floating`); from tiling to floating every window stays where
-its tile was. Each virtual screen keeps its own arrangement.
+its tile was. Each virtual screen keeps its own arrangement. If the
+compositor itself ends (`kill compositor`, a crash), init starts it again
+and the windows come back where they were: the same screens, tiles and
+sizes, floating places, minimised ones still minimised, the same screen
+shown and the keys with the window that had them (a window that isn't
+back within 5 s gives up its place).
 
 **The keys.** Keys go to the focused window only, but for the window keys
 (Super is the logo key; a direction is H/J/K/L or an arrow):

@@ -25,6 +25,7 @@
  * (wl_callback.done) frees the id as it is sent. */
 #include <stdarg.h>
 #include <jwl/cursor_shape_v1.h>
+#include <jwl/jam_window_memory_v1.h>
 #include <jwl/wayland.h>
 #include <jwl/xdg_shell.h>
 #include "comp.h"
@@ -38,6 +39,7 @@ static const struct jwl_interface *const known[] = {
     &jwl_wl_compositor_interface, &jwl_wl_shm_interface,  &jwl_wl_output_interface,
     &jwl_wl_seat_interface,       &jwl_xdg_wm_base_interface,
     &jwl_wp_cursor_shape_manager_v1_interface, &jwl_wl_data_device_manager_interface,
+    &jwl_jam_window_memory_v1_interface,
 };
 
 /* Each interface's requests. */
@@ -68,6 +70,7 @@ static const struct {
     { &jwl_wl_data_device_interface, data_device_request },
     { &jwl_wl_data_source_interface, data_source_request },
     { &jwl_wl_data_offer_interface, data_offer_request },
+    { &jwl_jam_window_memory_v1_interface, memory_request },
 };
 
 /* What goes with a client, module by module (later tracks add theirs:

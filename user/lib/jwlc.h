@@ -16,6 +16,7 @@
 
 #include <jwl.h>
 #include <jwl/cursor_shape_v1.h>
+#include <jwl/jam_window_memory_v1.h>
 #include <jwl/wayland.h>
 #include <jwl/xdg_shell.h>
 #include <jwl_client.h>
@@ -35,7 +36,7 @@ struct jwlc_offer {
 };
 
 enum { JWLC_COMPOSITOR, JWLC_SHM, JWLC_WM_BASE, JWLC_SEAT, JWLC_OUTPUT, JWLC_CURSOR_SHAPE,
-       JWLC_DATA, JWLC_GLOBALS };
+       JWLC_DATA, JWLC_MEMORY, JWLC_GLOBALS };
 
 /* A global the library binds (jwl_client.c's jwlc_wanted, by the enum). */
 struct jwlc_want {
@@ -96,6 +97,8 @@ struct jwl_window {
     bool     rebuilt;                 /* made again after a reconnect, not configured since */
     bool     frame_lost;              /* a frame callback went with the old connection */
     uint32_t press_serial;            /* the last button press on this window; 0: none */
+    uint64_t key;                     /* the compositor's key for it (jam_window_memory_v1),
+                                       * presented again after a reconnect; 0: none yet */
     struct jwl_callback frame;       /* the frame callback waiting */
 };
 
@@ -197,6 +200,8 @@ status_t jwlc_shm_event(struct jwl_client *c, struct jwl_msg *m);
 
 /* jwl_window.c */
 status_t jwlc_window_make(struct jwl_window *w);
+/* jam_window_memory_v1's key event: the window's key kept. */
+status_t jwlc_memory_event(struct jwl_client *c, struct jwl_msg *m);
 void     jwlc_windows_lost(struct jwl_client *c);
 /* Events of wl_surface, xdg_surface, xdg_toplevel. */
 status_t jwlc_window_event(struct jwl_client *c, struct jwl_msg *m);

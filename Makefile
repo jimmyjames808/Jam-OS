@@ -165,12 +165,13 @@ idl:
 	python3 tools/genidl.py gen
 
 # Wayland (docs/G1-PLAN.md). tools/genwl.py turns upstream's interface files,
-# third_party/wayland-protocols/<name>.xml, into user/include/jwl/<protocol>.h
+# third_party/wayland-protocols/<name>.xml (and Jam OS's own, abi/wayland/<name>.xml),
+# into user/include/jwl/<protocol>.h
 # (versions, opcodes, enums, typed stubs) and user/lib/jwl_<protocol>.c (the
 # tables libjwl's codec reads); the protocol is the file's name with '_' for
 # '-'. Committed and checked like the IDL; `make wl` regenerates.
-WL_XML    := $(wildcard third_party/wayland-protocols/*.xml)
-WL_PROTOS := $(subst -,_,$(WL_XML:third_party/wayland-protocols/%.xml=%))
+WL_XML    := $(wildcard third_party/wayland-protocols/*.xml) $(wildcard abi/wayland/*.xml)
+WL_PROTOS := $(subst -,_,$(basename $(notdir $(WL_XML))))
 WL_TABLES := $(WL_PROTOS:%=user/lib/jwl_%.c)
 WL_GEN    := $(WL_PROTOS:%=user/include/jwl/%.h) $(WL_TABLES)
 WL_OK     := $(BUILD)/wl.ok
@@ -438,7 +439,7 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(UOBJ)/user/services/sntp/ntp.c.o \
                       $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
                       $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile wmkeys \
-                        wmgrab deco title mask screens anim strip menus popover notify desk \
+                        wmgrab wmsave deco title mask screens anim strip menus popover notify desk \
                         cursors) \
                       $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
                         cellpaint view select) $(UOBJ)/user/services/shell/sh_paste.c.o \

@@ -678,6 +678,7 @@ additive):
 | `xdg_surface` | 1 | get_toplevel, get_popup, set_window_geometry, ack_configure; configure | |
 | `xdg_toplevel` | 1 | title, app_id, move, resize, min and max size, maximised, full screen; configure, close | `set_minimized` accepted and ignored (allowed), no window menu |
 | `xdg_popup` | 1 | grab; popup_done | dismissed at once with `popup_done`, which the spec allows |
+| `jam_window_memory_v1` | 1 | identify; key | Jam OS's own (`abi/wayland/`): each toplevel's key, presented again after a reconnect so a restarted compositor puts the window back (below, "As built: the compositor remembers the arrangement") |
 | `wl_data_device_manager` | 3 | create_data_source, get_data_device; `wl_data_device` (set_selection; selection, data_offer), `wl_data_source` (offer; send, cancelled), `wl_data_offer` (receive, destroy; offer) | copy and paste: the selection only, text types only, the data over a channel end instead of a pipe; drag and drop refused (`start_drag` cancels its source); added with copy and paste (below, "As built: copy and paste") |
 
 **Not offered in G1** (each is an XML file and a module when a program
@@ -1009,7 +1010,9 @@ connection close; libjwl opens `/svc/wayland` again and replays what it
 needs (the registry, its pools, its windows with their last buffer);
 libfun redraws its back buffer, the console its grid. An app that
 doesn't use libjwl's window helper sees `ERR_PEER_CLOSED` and decides
-for itself.
+for itself. The windows that come back go back where they were (their
+screens, tiles, floating boxes, minimised or not, the focus): below, "As
+built: the compositor remembers the arrangement".
 
 ## Limits and the security model
 
@@ -1444,6 +1447,127 @@ resize), its frame the tile's, so it never draws over its neighbour.
 Floating windows already stopped at their minimum (a resize, Super+Alt).
 Tests: utest `wm_tile_mins`, and `wm_tile_tree`, `wm_tile_gaps`,
 `wm_tile_push` (stopped at the other tile's 200).
+
+**As built: the compositor remembers the arrangement (the owner, G1
+sign-off, 2026-10-07).** After `kill compositor` the clients reconnected
+in whatever order they happened to and the new compositor built each
+screen's tree in that order, so windows came back elsewhere. Now a
+restarted compositor puts every window that comes back where it was.
+
+*Where the memory lives: the state VMO.* M11.6's `<svcstate.h>` is the
+general mechanism for state that outlives a service: init makes the
+compositor's VMO (`<compstate.h>`, 64 KiB, pages committed as used) at
+its first start, keeps it for the boot without mapping it, and hands each
+compositor a duplicate with read, write and map only (`SR_STATE`); the
+compositor maps it at `SVCSTATE_ADDR` (`wmsave.c`'s `wm_save_open`).
+Chosen over a compctl message to init (init holding the bytes and
+handing them to the next compositor) because nothing has to be sent,
+debounced, sized for a message or answered: the compositor writes plain
+memory, init needs only the handle, and a kill at any instant leaves a
+whole copy (two copies and a commit word moved last with a released
+store, as the mixer's numbers). Each loop turn the arrangement is
+described (`wm_save_describe`) and written only if it changed: about 5 KB
+of plain stores, so the debounce is the loop turn. init's layout setting
+(I1's `layout save`) stays as it was: it is the boot's default for new
+screens; the memory is this boot's arrangement. svcstate refuses a VMO
+of another build's layout (kind `COMP`, the description's version and
+size), and a fresh boot makes a fresh VMO.
+
+*Who is who: a key per window.* A new protocol of Jam OS's own,
+`jam_window_memory_v1` (`abi/wayland/jam-window-memory-v1.xml`;
+`tools/genwl.py` now reads `abi/wayland/` after the vendored upstream
+files, the `Makefile` too): a global whose `identify(toplevel, key)` is
+answered by `key(toplevel, key)`, 64 random bits (`os_random`, never 0,
+never one in use) the compositor gives the toplevel and tells only its
+own client (`memory.c`). libjwl binds it when offered
+(`info.memory_version`), sends `identify` with the key it has (0 the
+first time) before each window's initial commit, keeps the answer
+(`jwl_window_key`) and so presents it again for the window it makes after
+a reconnect. Titles and app ids were not enough: two terminals or two
+Jamjars have the same ones, and a client can name its window anything. A
+key can't be spoofed into another program's place: a client can't learn
+another's keys, a guess is one in 2^64, and a key is taken once (a
+second window presenting it is a new window); the worst a client can do
+with a key it was given is put its own window in a place its own window
+had. A program that doesn't use libjwl's windows, or a compositor without
+the global, works as before (no key: a new window).
+
+*The description (`struct wm_save`, `wm.h`), fixed size, about 5 KB:* the
+normal screens in order (layout, spill), the screen shown (a full
+screen's: its window's home, and that window's key), new screens'
+layout, the focused window's key; each mapped window with a key (at most
+64): key, screen, wanted mode and what full screen returns to,
+minimised, floating place and size, minimum, its place in the focus
+order; each tiling screen's tree in pre-order (at most 256 nodes for all
+screens: a tree past it is left out and its windows come back as new
+ones): a split's direction and ratio, a leaf's window, or "gone" for a
+window not remembered. Full-screen screens are not described: their
+windows make them again. A boot overlay (the splash) is left out.
+
+*Coming back.* The new compositor takes the description whole or not at
+all (`wm_save_load`'s check: the magic, version, size and FNV-1a
+checksum; every count, index, key (none 0, none twice), layout, mode,
+flag, box (sizes to 8192, places within 65536) and ratio (15-85%); each
+screen's tree a whole binary tree in pre-order where it says it is, on a
+tiling screen, no window in two tiles, none minimised or full screen in a
+tile; the focused and the shown full screen's window remembered); a
+refused one is said in the log ("the remembered layout is ignored
+(why)") and the compositor starts as before. A taken one makes its
+screens again (layouts, the one shown) and each tiling screen's tree
+with a *placeholder* leaf in every remembered window's tile (`wmtile.c`'s
+`tiles_build`: a `struct tile_node` with no window and the key it keeps,
+its need from the window's minimum; leaves of windows not remembered go
+at once, as closed windows' places); a screen with windows still to come
+stays (`desk_screen.held`). A toplevel presenting a remembered key before
+it is mapped takes that place (`wm_save_key`): its screen (for its first
+configure's layout and room), its floating place and size, maximised or
+full screen; its first configure is the placeholder's box (`wm_tile`).
+At its first buffer (`wm_commit` calls `wm_save_place` instead of
+`screens_window_new`) it goes onto that screen, minimised if it was, into
+its placeholder (`tiles_take_hold`), with no open animation and without
+taking the view to its screen; a full-screen window makes its full screen
+again next to its home and the view stays where it was unless that full
+screen was the one shown; once it is mapped (`wm_save_mapped`) the focus
+goes to the window that had it if that one is back, and every other one
+keeps its old place in the focus order. Windows not remembered (no key, a
+key not remembered or already taken) are placed as new windows,
+splitting tiles as usual (a placeholder too). The last window back ends
+the wait ("compositor: layout restored: N windows in place, the keys with
+"title""); after `WM_SAVE_HOLD_NS` (5 s) the places of windows still
+missing go, as closed windows' do, the others gliding into them ("...
+N windows in place, M not back"), and one that comes later is a new
+window. Nothing is written during the wait (a second restart finds the
+same description), but the description is marked as being put back
+(`trying`): a compositor that dies during the wait leaves it marked, and
+the next one ignores it, so a description that kills the compositor
+can't make init's restarts loop. init's `layout_wait` is answered against
+the screens' default layout now (`screens_default`), not the shown
+screen's, so a restored screen of another layout isn't taken for the
+user's Super+T.
+
+Bounds: 64 windows, 256 nodes, 16 screens, one fixed-size description,
+5 s of waiting; a client's `identify` costs no memory (the key is the
+window's). Tests: utest `wm_save_restore` (two screens, a tiling tree
+with a moved gap and two windows of one title, a floating screen with a
+moved window and a minimised one, the focus; back in another order, each
+first configure its old tile while the others are missing, the same
+tree, ratio, screens, boxes, minimised state, screen shown and focus;
+the restored arrangement describes the same; a key taken once),
+`wm_save_late` (a missing window's place kept for the wait, then gone,
+its sibling taking the room; it comes back late as a new window with a
+new key; a window with no key during the wait is new, the remembered
+ones still go to their places), `wm_save_full` (a full-screen window
+back full screen, its screen shown only if it was), `wm_save_bad` (each
+kind of damage refused whole, another version, a bad checksum; refused
+once windows are there; 400 random damages with the checksum made to
+fit: refused or a sane arrangement, never a crash), `jwlc_restore`
+(libjwl against the real compositor with a state VMO, three programs,
+killed, reconnecting in the other order: each window's first configure
+its old size and its key the same), `comp_globals` (the global offered);
+`tools/shell-tests/comp-restore.txt` (three terminals on two screens,
+the gap pushed, killed: "layout remembered: 3 windows on 2 screens",
+"layout restored: 3 windows in place, the keys with "Terminal 2"", the
+screenshots before and after the same).
 
 **As built: the terminal's look (the owner's Q9 change, 2026-10-06).**
 The terminal windows draw JetBrains Mono 2.304 (OFL; Regular and Bold,

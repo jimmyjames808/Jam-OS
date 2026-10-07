@@ -20,6 +20,7 @@
 #include <jwl.h>
 #include <jwl/wayland.h>
 #include <os.h>
+#include <svcstate.h>
 #include "comptest.h"
 #include "utest.h"
 
@@ -68,6 +69,11 @@ bool ct_start(struct ct_comp *p, int32_t w, int32_t h)
 
 bool ct_start_arg(struct ct_comp *p, int32_t w, int32_t h, const char *arg)
 {
+    return ct_start_state(p, w, h, arg, HANDLE_INVALID);
+}
+
+bool ct_start_state(struct ct_comp *p, int32_t w, int32_t h, const char *arg, handle_t state)
+{
     *p = (struct ct_comp){ .w = w, .h = h };
     handle_t server, image;
     if (!ct_image_for(p, &image))
@@ -80,9 +86,15 @@ bool ct_start_arg(struct ct_comp *p, int32_t w, int32_t h, const char *arg)
      * out (the 200x120 minimum and its new screens are compwm2.c's) */
     const char *argv[] = { "bin/compositor", "headless", size, "nodesk", "layout=floating",
                            "tilemin=1x1", arg };
-    struct spawn_handle x[] = { { SR_USER + 0, server }, { SR_USER + 1, image } };
+    struct spawn_handle x[3] = { { SR_USER + 0, server }, { SR_USER + 1, image } };
+    rights_t r[3] = { RIGHT_SAME, RIGHT_SAME, SVCSTATE_SERVICE_RIGHTS };
+    unsigned nx = 2;
+    if (state != HANDLE_INVALID) {   /* as init gives it (comp.c's comp_handles) */
+        CHECK_ST(svcstate_give(state, &x[2].h), OK);
+        x[nx++].role = SR_STATE;
+    }
     struct spawn_args a = { .path = "bin/compositor", .argc = arg ? 7 : 6, .argv = argv,
-                            .job = p->job, .extra = x, .nextra = 2 };
+                            .job = p->job, .extra = x, .nextra = nx, .extra_rights = r };
     CHECK_ST(spawn(&a, &p->proc), OK);
     return true;
 }
@@ -347,7 +359,8 @@ static bool globals_and_binds(struct ct_client *k)
     CHECK(has_global(k, 5, "xdg_wm_base", 1));
     CHECK(has_global(k, 6, "wp_cursor_shape_manager_v1", 2));
     CHECK(has_global(k, 7, "wl_data_device_manager", 3));
-    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 7);
+    CHECK(has_global(k, 8, "jam_window_memory_v1", 1));
+    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 8);
     CHECK_EQ(count(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT), 2);
     CHECK(ct_find(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT, k->shm)->u[0] ==
           JWL_WL_SHM_FORMAT_ARGB8888);
@@ -379,7 +392,7 @@ bool t_comp_globals(void)
     uint32_t reg2 = ct_new(&k, &jwl_wl_registry_interface, 1);
     CHECK_ST(jwl_wl_display_get_registry(k.c, JWL_DISPLAY_ID, reg2), OK);
     CHECK_ST(ct_roundtrip(&k), OK);
-    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 7);
+    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 8);
     ct_close(&k);
     CHECK(ct_stop(&p));
     return true;

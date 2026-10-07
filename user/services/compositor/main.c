@@ -20,6 +20,10 @@
  *   SR_USER + 3   optional: init's control channel, reboot and terminal
  *                 only (Ctrl+Alt+Del, Super+Enter; ctl.c).
  *   SR_USER + 4   optional, `testscene` only: a channel for its reports.
+ *   SR_STATE      optional: the state VMO init keeps (<compstate.h>,
+ *                 <svcstate.h>): the arrangement, written as it changes, so
+ *                 a restarted compositor puts the windows back where they
+ *                 were (wmsave.c). Without it, nothing is remembered.
  * Arguments: `headless` (no framebuffer: compose into memory),
  * `size=<w>x<h>` (the headless output, default 1280x800), `hz=<n>` (the
  * paint clock, display.hz: 60 by default), `threads=<n>` (painting
@@ -155,6 +159,7 @@ static status_t setup(int argc, char **argv, struct args *a)
     wm_init(a->layout);
     if (a->tile_min)
         tiles_set_min(a->tile_w, a->tile_h);
+    (void)wm_save_open(startup_handle(SR_STATE), now());   /* a dead compositor's arrangement */
     st = paint_init(a->threads);
     if (st == OK && a->splash)
         paint_splash_wait();
@@ -204,6 +209,8 @@ static uint64_t next_deadline(void)
     d = x < d ? x : d;
     x = desk_deadline();           /* an animation's next frame, the clock's minute */
     d = x < d ? x : d;
+    x = wm_save_deadline();        /* remembered places given up on */
+    d = x < d ? x : d;
     x = paint_splash_deadline();   /* the boot's wait for the splash given up */
     return x < d ? x : d;
 }
@@ -250,6 +257,7 @@ int main(int argc, char **argv)
         seat_turn();        /* the pointer's focus after the clients changed the scene */
         xdg_tick(now());    /* pings gone unanswered */
         desk_tick(now());   /* animations, the strip's clock, notifications */
+        wm_save_turn(now());   /* the arrangement into the memory, if it changed */
         paint_splash_check(now());
         clock_turn();
         conn_flush_all();   /* the frame callbacks the paint answered */
