@@ -39,6 +39,7 @@
 #define CASCADE_MAX   16u                            /* steps before it starts over */
 #define REACH_MIN     48   /* a floating title bar keeps this much on the output */
 #define FLOAT_SHARE   60   /* percent of the room, each way, for a window with no floating size */
+#define FLOAT_INSET   4    /* tiling to floating: a tile's frame, this far inside the tile */
 #define CYCLE_MAX     (COMP_CLIENTS_MAX * COMP_SURFACES_MAX)   /* windows there can be */
 
 static struct {
@@ -189,8 +190,9 @@ void wm_wanted(const struct wm_window *ww, struct wm_config *out)
 }
 
 /* A mapped window to float that has no floating size of its own (it has
- * only ever been tiled, maximised or full screen: its client never drew
- * a floating size) gets one: FLOAT_SHARE of the room under the strip, as
+ * only ever been maximised or full screen, or was minimised or on another
+ * screen when its screen went from tiling to floating, which gives the
+ * tiled ones theirs: float_from_tile) gets one: FLOAT_SHARE of the room under the strip, as
  * its limits allow (a window of one size keeps it), never more than the
  * room. Its first floating place is then centred for that size. */
 static void float_default(struct wm_window *ww)
@@ -389,14 +391,18 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
     note_floating_size(ww);
     if (!first)
         return OK;
-    if (wm_layout_of(ww) == COMP_TILING)
+    bool spilled = false;
+    if (wm_layout_of(ww) == COMP_TILING) {
         wm_reflow();   /* it splits the focused tile; the others glide to make room */
+        spilled = ww->screen != screens_cur();
+        screens_follow(ww);   /* or, no room for its tile, to a new screen: the view slides there */
+    }
     window_map(ww->win, screens_shown(ww));   /* the seat hears (a client's first window
                                                * takes the keys) */
     if (ww->want == WM_FULLSCREEN)
         screens_fullscreen(ww, true);   /* asked before its first buffer */
-    else if (!screens_overlay())
-        anim_open(ww->win);   /* (an animation is drawn over every window, a boot overlay too) */
+    else if (!screens_overlay() && !spilled)
+        anim_open(ww->win);   /* (after a spill the slide is the animation) */   /* (an animation is drawn over every window, a boot overlay too) */
     if (ww->overlay)
         anim_finish();        /* nothing drawn over the splash, not even a window opening */
     desk_window_mapped(ww);
@@ -528,10 +534,43 @@ void wm_toggle_fullscreen(struct comp_window *w)
         wm_request_fullscreen(ww, ww->want != WM_FULLSCREEN);
 }
 
+/* Tiling to floating (owner, 2026-10-07): ww's floating box from its
+ * tile, so the arrangement stays. Its frame (title bar and border) goes
+ * FLOAT_INSET inside the tile, so neighbours never overlap and a gap shows
+ * between them; the surface is what is left, as its limits allow: centred
+ * in the tile if its max is smaller, at the tile's top left if its min is
+ * bigger (kept on the output). Its old floating place and size go. */
+static void float_from_tile(struct wm_window *ww, struct comp_box tile)
+{
+    struct comp_box f = { tile.x1 + FLOAT_INSET, tile.y1 + FLOAT_INSET, tile.x2 - FLOAT_INSET,
+                          tile.y2 - FLOAT_INSET };
+    struct comp_box in = deco_inner(f, 0, COMP_FLOATING);
+    int32_t iw = in.x2 - in.x1 > 1 ? in.x2 - in.x1 : 1, ih = in.y2 - in.y1 > 1 ? in.y2 - in.y1 : 1;
+    int32_t w = limit(iw, ww->min_w, ww->max_w), h = limit(ih, ww->min_h, ww->max_h);
+    int32_t x = w > iw ? in.x1 : in.x1 + (iw - w) / 2;
+    int32_t y = h > ih ? in.y1 : in.y1 + (ih - h) / 2;
+    struct deco_sizes d = deco_sizes(0, COMP_FLOATING);
+    if (x + w + d.right > scene.width)   /* a min bigger than the tile: still on the output */
+        x = scene.width - d.right - w;
+    if (y + h + d.bottom > scene.height)
+        y = scene.height - d.bottom - h;
+    int32_t floor = wm_floor(ww) + d.top;
+    ww->float_x = x < d.left ? d.left : x;
+    ww->float_y = y < floor ? floor : y;
+    ww->float_w = w;
+    ww->float_h = h;
+    ww->float_placed = true;
+}
+
 void wm_set_layout(enum comp_layout layout)
 {
     struct desk_screen *s = screens_cur();
     bool same = s->kind != SCREEN_NORMAL || s->layout == layout;
+    if (!same && layout == COMP_FLOATING) {
+        for (struct wm_window *ww = wm.first; ww; ww = ww->next)
+            if (ww->leaf && ww->tiled_on == s && ww->want == WM_NORMAL)
+                float_from_tile(ww, ww->leaf->box);   /* the tiled ones: shown, normal */
+    }
     if (!same)
         tiles_drop(s);   /* to tiling: made again in the windows' order; to floating: none */
     screens_set_default(layout);
@@ -540,7 +579,9 @@ void wm_set_layout(enum comp_layout layout)
     wm_grab_cancel();
     for (struct wm_window *ww = wm.first; ww; ww = ww->next)
         ww->anchor = 0;
+    anim_glide_note();   /* to floating: each glides from its tile to its box */
     wm_relayout();
+    anim_glide_start();
     strip_dirty();   /* its icon */
 }
 

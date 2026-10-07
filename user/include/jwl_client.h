@@ -322,6 +322,8 @@ struct jwl_window_config {
     const char *title;           /* NULL: none; cut to JWL_TEXT_MAX - 1 bytes */
     const char *app_id;
     bool        resizable;       /* takes the sizes asked; else min = max = its own size */
+    int32_t     min_width;       /* resizable: the smallest size it works at, sent as */
+    int32_t     min_height;      /* xdg_toplevel.set_min_size (0: none) */
     bool        alpha;           /* argb8888 (premultiplied) instead of xrgb8888 */
     bool        fullscreen;      /* ask for full screen from the start */
     bool        maximized;

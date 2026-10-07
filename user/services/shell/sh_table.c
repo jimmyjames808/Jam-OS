@@ -14,7 +14,11 @@
  * widgets, the IOMMU, memory maps, the whole kernel log, kernel loading,
  * crashes and every test and benchmark) is a developer's. `help
  * <command>` answers for either. */
+#include <deskapps.h>
 #include "sh.h"
+
+/* term's help below says the number. */
+_Static_assert(TERMINALS_MAX == 16, "term's help: at most 16 terminals");
 
 enum {
     C_FILES, C_TEXT, C_PROGRAMS, C_SOUND, C_NET, C_SYSTEM, C_SHELL,   /* everyday: `help` */
@@ -81,7 +85,7 @@ static const struct sh_cmd cmds[] = {
     C(term, C_PROGRAMS, "term [command]",
       "open another terminal: a window of its own with a shell of its own (as\n"
       "  Super+Enter does); with a command, its shell runs it first, as if typed,\n"
-      "  and stays. Needs the compositor (not a nocomp boot); at most 8 terminals\n"
+      "  and stays. Needs the compositor (not a nocomp boot); at most 16 terminals\n"
       "  in all. Close one with its window's close box or exit"),
     C(launch, C_PROGRAMS, "launch <app>",
       "start one of the desktop's apps as its search box does (jamjar): init starts\n"

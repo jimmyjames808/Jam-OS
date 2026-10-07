@@ -190,7 +190,29 @@ differs from the recommendation below, this note wins:
   splits the focused tile in half along its longer side (a screen turned
   from floating to tiling builds its tree in the windows' order, each
   splitting the last); a window that goes leaves its sibling the whole of
-  their parent. Each split keeps its own ratio, remembered per screen.
+  their parent. No tile is made too small (owner, 2026-10-07, with the
+  16 terminals: past about eight windows the spiral left slivers a few
+  pixels wide, and at 1280x800 the 16th tile came out inside out): when
+  the split would leave halves narrower than 200 pixels (split across) or
+  shorter than 120 (split down), about 20 columns or 5 lines of a
+  terminal, or either window's own minimum (an app's
+  xdg_toplevel.set_min_size, e.g. Jamjar's 944x568; a fixed-size app's
+  size) wouldn't fit inside its half, the window doesn't go on this
+  screen but on a new screen at
+  the end, tiling, where it has all the room, and the view slides there;
+  the full screen stays exactly as the user arranged it. When such a
+  screen's last window closes while it is shown, the view slides back to
+  the screen left of it and the empty screen goes (not left on an empty
+  screen). The same rule
+  wherever a window comes into a tree: one moved onto a full screen
+  (Super+Shift+N, Super+Ctrl+Shift+direction), restored, or back from
+  full screen goes to a new screen and the view follows it; Super+T
+  turning a floating screen with more windows than fit into tiling puts
+  the rest, in their order, on one new screen (which spills again if it
+  fills) and the view stays. With no room for another screen (16) the
+  split is made anyway. At 1280x800 a screen holds five terminals, so 16
+  take four screens. Each split keeps its own ratio, remembered per
+  screen.
   Resizing: drag the gap between two tiles (it lights up apricot, resize
   cursor), or Super+Alt+direction pushes the focused tile's edge that way
   (about 48 px at 1x; with no edge on that side its other edge moves that
@@ -200,7 +222,17 @@ differs from the recommendation below, this note wins:
   release. Focus: Super+direction picks the nearest window that way.
   Reflow: tiles glide to new places over 200 ms (ease-out) on open,
   close, swap and keyboard resizing; not while a gap is being dragged.
-  Fixed-size apps stay centred in their tile. Floating: Super+drag moves
+  Fixed-size apps stay centred in their tile. Super+T from tiling to
+  floating keeps the arrangement (owner, 2026-10-07): every tiled window
+  on the screen floats where its tile was, its frame (title bar and
+  outline) 4 pixels inside the tile, so none overlaps and a gap shows
+  between neighbours; its old floating place and size are dropped; a
+  window whose minimum is bigger than its tile keeps its minimum, from
+  the tile's top left, on the screen; the move glides (the tiles' 200 ms
+  glide). Minimised and full-screen windows, and other screens', are left
+  alone: a minimised one restored later floats where it floated before,
+  or, never having floated, at 60% of the room, centred. Floating to
+  tiling is unchanged. Floating: Super+drag moves
   a window from anywhere in it; Super+right-drag resizes it from the
   nearest corner; Super+Alt+direction grows or shrinks it.
   Keys (owner, the whole set; every "direction" is BOTH H/J/K/L and the
@@ -1347,6 +1379,45 @@ boot, now with QEMU's network: the Connected notice posted during the
 splash is shown after it (`compositor: the splash is over: 1 held notice
 shown`).
 
+**As built: a full tiling screen spills (2026-10-07).** `wmtile.c`'s
+`add_missing` checks each window it would add (`split_fits`) against
+`WM_TILE_MIN_W` by `WM_TILE_MIN_H` (200 by 120, `wm.h`; only the side
+being split), and both windows' own minimums (`min_w`/`min_h` from
+xdg_toplevel.set_min_size, which xdg's initial commit applies before
+the first configure, so `wm_tile`'s prediction knows them; a fixed size
+is its minimum) against the halves less their border: a window that
+doesn't fit goes to `screens_spill`'s new tiling screen at
+the end (one per update, its own update placing them in order, and
+spilling again if it fills), and the log says "compositor: no room for
+another tile on screen N: a new screen, M". `wm_commit` (a new window),
+`move_window`, `screens_restore` and `leave_full` then take the view to
+the window's screen (`screens_follow`; a new window's slide is its
+animation, no open animation); Super+T's spill leaves it. `wm_tile`
+predicts it, so a new window's first configure is already the new
+screen's whole room. A split's second half is also never inside out (a
+room narrower than the gap). The compositor's `tilemin=<w>x<h>` sets the
+tiler's minimum for the tests' small outputs (utest's `ct_start` passes
+1x1). Apps declare a minimum through libjwl (`jwl_window_config`'s
+`min_width`/`min_height`, sent as set_min_size for a resizable window)
+and libfun (`gfx_min_size`, which also keeps UI scale 2 for windows where
+twice the minimum fits); Jamjar declares 944x568, the smallest size its
+layout fits (`layout_fits`: nothing overlapping, three rows a list; its
+self-test scans every size from there up and finds some size failing 8
+pixels under each way), so at 1280x800 it opens on a screen of its own
+rather than in a half tile. Tests: utest `wm_tile_small`,
+`jwlc_window_sizes`, `jamjar --selftest`, `terms.txt` (16 terminals over
+four screens at 1280x800).
+
+**As built: tiling to floating keeps the arrangement (2026-10-07).**
+`wm.c`'s `wm_set_layout`, switching a normal screen to floating, gives
+each window still in its tree (shown, not minimised, `WM_NORMAL`) a
+floating box from its tile (`float_from_tile`: the frame `FLOAT_INSET`,
+4 pixels, inside the tile, the surface what `deco_inner` leaves, limited
+by its min and max: centred if smaller, from the tile's top left and
+kept on the output if its min is bigger) before the tree is dropped, and
+the relayout glides (`anim_glide_note`/`start`). Tests: utest
+`wm_tile_float`, `wm_switch`, `wm_seat` (Super+T back to floating).
+
 **As built: the terminal's look (the owner's Q9 change, 2026-10-06).**
 The terminal windows draw JetBrains Mono 2.304 (OFL; Regular and Bold,
 cut by `tools/subsetfont.py --terminal` to Latin-1, Latin Extended-A and
@@ -1578,7 +1649,22 @@ the first closes with its close circle, Super+Q or `exit` (its shell gets
 and closes; `initctl.terminal` opens the lowest number free (1 again),
 whose window is titled "Terminal" (the compositor's busy cursor waits for
 that name); with no terminal the desktop shows its wallpaper and strip
-and Super+Enter or the search box opens one. The services that waited
+and Super+Enter or the search box opens one. At most 16 are open at once
+(`TERMINALS_MAX` in `<deskapps.h>`, 8 until 2026-10-07; init's service
+table, its control channels and the names `console-<n>`/`shell-<n>`,
+`console-16` included, follow it): one more is refused (initctl.terminal's
+ERR_NO_RESOURCES), and where nothing would show it the desktop says so,
+the notice "No more terminals / 16 is the most. Close one first." for
+Super+Enter and the search box (`desk_terminals_full`, in the log as
+"compositor: notice <n>: ..." like every notice); a key held or pressed
+again while that card is still up posts no second one (the log says
+"its notice is still up"). The shell's `term` says "term: 16 terminals
+is the most; close one to open another". A terminal costs two
+processes: in QEMU's 4x4 grid at 1280x800 each console's job held 5 to
+6 MiB (its text, scrollback and fonts, and its window's buffers, which
+grow with the window: a full-screen 2560x1440 one is about 14 MiB a
+buffer) and each shell's about 120 KiB; 16 terminals used about 97 MiB
+more than one (`free`, `terms.txt`). The services that waited
 for the first console wait only for its first start (the order at
 boot). Under `nocomp` the one console and its shell are never given up
 (`terms_never_given_up`) and `exit` says the terminal stays. `help` lists

@@ -932,6 +932,7 @@ static const struct {
     { "wm_window_at", t_wm_window_at },
     { "wm_layout_setting", t_wm_layout_setting },
     { "wm_tile_tree", t_wm_tile_tree },
+    { "wm_tile_small", t_wm_tile_small },
     { "wm_tile_gaps", t_wm_tile_gaps },
     { "wm_tile_push", t_wm_tile_push },
     { "wm_tile_float", t_wm_tile_float },

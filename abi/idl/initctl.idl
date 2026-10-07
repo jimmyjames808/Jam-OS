@@ -94,11 +94,12 @@ protocol initctl 18
 # the shell stays at the prompt; a restarted shell doesn't run it again.
 # ERR_INVALID_ARGS: not NUL-terminated, or a control character in it.
 # ERR_NOT_SUPPORTED: no compositor runs (a boot without one: one terminal
-# only); ERR_NO_RESOURCES: as many terminals are open as there may be. The
-# shell's channel (`term [command]`), the compositor's (Super+Enter, the
-# search box's "Run ... in a terminal": the compositor types into every
-# terminal anyway, so a command adds nothing to what it can do); the
-# consoles' too.
+# only); ERR_NO_RESOURCES: 16 terminals are open, the most there may be
+# (<deskapps.h> TERMINALS_MAX; the compositor then posts its "No more
+# terminals" notice, the shell's `term` says so). The shell's channel
+# (`term [command]`), the compositor's (Super+Enter, the search box's "Run
+# ... in a terminal": the compositor types into every terminal anyway, so
+# a command adds nothing to what it can do); the consoles' too.
 9  terminal  (u8[128] command) -> (u8 number)
 # Start a desktop app: `app` (NUL-terminated) is one of init's fixed list
 # of programs the desktop may start (<deskapps.h>: "jamjar"), nothing

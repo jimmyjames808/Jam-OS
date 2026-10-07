@@ -1758,8 +1758,10 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   shell, which nobody could do without (with the compositor every
   terminal is equal: one given up on closes, as does one whose window is
   closed or whose shell exits, the first included, and Super+Enter or the
-  search box opens another, the lowest number free; an end of serialin's or the shell's that the
-  compositor's or the console's took with it doesn't count); for the
+  search box opens another, the lowest number free, at most 16 at once,
+  a 17th refused with the desktop's "No more terminals" notice; an end of
+  serialin's or the shell's that the compositor's or the console's took
+  with it doesn't count); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
   and `/esp` when devmgr reports their filesystem services) and publishes
   its services in it under `/svc` (`audio` and `audioctl`, the mixer's,
@@ -1904,7 +1906,13 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 - Windows float or tile, per virtual screen. Tiling is dwindle
   (`wmtile.c`): each screen keeps a binary tree of splits whose leaves
   are its windows, a new window halving the focused tile along its longer
-  side and a window that goes leaving its sibling their parent's room;
+  side (when the halves would be narrower than `WM_TILE_MIN_W`, 200
+  pixels, or shorter than `WM_TILE_MIN_H`, 120, or either window's own
+  minimum, xdg_toplevel's set_min_size, wouldn't fit its half, the window
+  goes to a new screen at the end instead and the view follows it: no
+  slivers, and the full screen stays as it was) and a window that goes
+  leaving its sibling their parent's room; switched to floating, each
+  window floats where its tile was (its frame just inside it);
   each split keeps its own ratio (15-85%), set by dragging the gap or by
   Super+Alt+direction; tiles glide to new places (200 ms, `anim.c`). The
   tree is walked without recursion, since its depth is the number of

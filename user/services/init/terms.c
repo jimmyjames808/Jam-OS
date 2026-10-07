@@ -441,10 +441,10 @@ bool terms_named(const char *name, unsigned *i)
     bool shell = !strncmp(name, "shell-", 6);
     if (!shell && strncmp(name, "console-", 8))
         return false;
-    const char *n = name + (shell ? 6 : 8);
-    if (n[0] < '2' || n[0] > '0' + TERM_MAX || n[1])
-        return false;
-    unsigned k = (unsigned)(n[0] - '1');
+    unsigned n = terminal_number(name + (shell ? 6 : 8));   /* 1 to TERM_MAX, else 0 */
+    if (n < 2)
+        return false;   /* the first's are "console" and "shell" */
+    unsigned k = n - 1;
     *i = shell ? TERM_SHELL(k) : TERM_CONSOLE(k);
     return true;
 }

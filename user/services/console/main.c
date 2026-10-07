@@ -18,9 +18,9 @@
  * ring, on the serial port, in /data/logs and over netlog: `log` and
  * `dmesg` show it. "selftest" (alone; `run console selftest` from the
  * shell): the notices' checks (selftest.c), then exit. "term=<n>" (init,
- * in window mode): this is terminal n (1 to 9; 1 if none is given): its
- * window's title; a terminal other than the first keeps the log off its
- * screen but on request (as "nolog"). A terminal in a window makes no
+ * in window mode): this is terminal n (1 to TERMINALS_MAX, 16; 1 if none
+ * is given): its window's title; a terminal other than the first keeps
+ * the log off its screen but on request (as "nolog"). A terminal in a window makes no
  * notices: the system's news is the desktop's (init's, devmgr's and
  * netstack's notices through /svc/notify). "font=smooth|bitmap" (init, in window mode,
  * from the settings' terminal.font): the window's cells in JetBrains Mono
@@ -62,6 +62,7 @@
  * Who may do what: clients.c (the client levels) and keys.c (the keys).
  * Drawing, and lending the screen to a program: screen.c. Full-screen text
  * programs can use the alternate screen: text.c. */
+#include <deskapps.h>
 #include <logwriters.h>
 #include "console.h"
 
@@ -351,9 +352,8 @@ static void take_args(int argc, char **argv)
             screen_quiet(now() + QUIET_MAX);
         else if (!strcmp(argv[i], "nolog"))
             log_off = true;
-        else if (!strncmp(argv[i], "term=", 5) && argv[i][5] >= '1' && argv[i][5] <= '9' &&
-                 !argv[i][6])
-            term_no = (unsigned)(argv[i][5] - '0');
+        else if (!strncmp(argv[i], "term=", 5) && terminal_number(argv[i] + 5))
+            term_no = terminal_number(argv[i] + 5);   /* 1 to TERMINALS_MAX */
         else if (!strncmp(argv[i], "font=", 5) && term_font_parse(argv[i] + 5) >= 0)
             font_bitmap = term_font_parse(argv[i] + 5) == 1;
     }

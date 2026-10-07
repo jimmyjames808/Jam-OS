@@ -129,6 +129,12 @@ void     gfx_window_size(int w, int h);
  * a bigger window (full screen by the compositor's key) shows the picture
  * centred on scr.bg. */
 void     gfx_resizable(void);
+/* Before gfx_open, with gfx_resizable: the smallest window the app works
+ * in (its layout at UI scale 1), told to the compositor (xdg_toplevel's
+ * min size), which never asks for less: tiling opens it on a new screen
+ * rather than in a smaller tile, a drag stops there. The UI scale is 2
+ * only where twice this fits. */
+void     gfx_min_size(int w, int h);
 /* Tests: how gfx_open reaches the compositor instead of /svc/wayland (a
  * libjwl connect function, <jwl_client.h>); NULL: /svc/wayland again. */
 void     gfx_connect_with(status_t (*connect)(void *ctx, handle_t *out), void *ctx);

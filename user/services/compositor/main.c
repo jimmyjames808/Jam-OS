@@ -25,7 +25,9 @@
  * paint clock, display.hz: 60 by default), `threads=<n>` (painting
  * threads, the loop's included: a few by default), `layout=floating|tiling`
  * (the window layout to start with: init's `display.layout` setting, comp.h
- * WM_LAYOUT_SETTING; tiling without one), `nodesk` (the window manager alone: no top bar, no
+ * WM_LAYOUT_SETTING; tiling without one), `tilemin=<w>x<h>` (the
+ * tiler's minimum half, WM_TILE_MIN_W by WM_TILE_MIN_H otherwise: a test's
+ * small output; wmtile.c), `nodesk` (the window manager alone: no top bar, no
  * cards, no animations; desk.h), `splash` (init's, on a boot whose splash
  * is coming: only the splash's background until its window maps, 5 s at
  * most; paint.c), and two test powers, which only the starter can
@@ -107,6 +109,8 @@ struct args {
     enum comp_layout layout;       /* layout=: the window layout to start with */
     bool nodesk;                   /* the desktop off */
     bool splash;                   /* wait for the boot splash */
+    bool tile_min;                 /* tilemin=: the tiler's minimum half (a test's) */
+    int32_t tile_w, tile_h;
 };
 
 static void parse_args(int argc, char **argv, struct args *a)
@@ -126,6 +130,8 @@ static void parse_args(int argc, char **argv, struct args *a)
             a->splash = true;
         else if (!strncmp(s, "layout=", 7) && wm_layout_parse(s + 7, &a->layout))
             continue;
+        else if (!strncmp(s, "tilemin=", 8) && parse_size(s + 8, &a->tile_w, &a->tile_h))
+            a->tile_min = true;
         else if (!(!strncmp(s, "size=", 5) && parse_size(s + 5, &a->w, &a->h)) &&
                  !parse_num(s, "hz", 1000, &a->hz) && !parse_num(s, "threads", 64, &a->threads))
             printf("compositor: argument \"%s\" ignored\n", s);
@@ -147,6 +153,8 @@ static status_t setup(int argc, char **argv, struct args *a)
     scene_init(output.width, output.height, LOOK_WALL_BASE);   /* if the wallpaper fails */
     desk_init(!a->nodesk && !a->scene_at, true);   /* the test scene turns it on itself */
     wm_init(a->layout);
+    if (a->tile_min)
+        tiles_set_min(a->tile_w, a->tile_h);
     st = paint_init(a->threads);
     if (st == OK && a->splash)
         paint_splash_wait();

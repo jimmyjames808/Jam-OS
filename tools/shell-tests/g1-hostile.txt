@@ -23,16 +23,19 @@ wait {prompt}
 # typing does, and every new window takes the keys: Super+direction (the
 # USB keyboard) gives them back. A typed line fits its terminal's width,
 # so the lines are short.
+# At 1280x800 Jamjar (at least 944x568) opens on a screen of its own,
+# the second: Super+1 goes back to the first, whose terminal takes the
+# keys; terminal 2 then opens beside it, and Super+Left gives them back.
 send jamjar &
 wait 10 jamjar: in the background
 sleep 3
-monitor sendkey meta_l-left
+monitor sendkey meta_l-1
 sleep 1
 send term
 wait 10 terminal 2 opens
 seen 30 console: window mode (terminal 2)
 sleep 3
-monitor sendkey meta_l-up
+monitor sendkey meta_l-left
 sleep 1
 
 # ---- the hostile clients -----------------------------------------------------------------

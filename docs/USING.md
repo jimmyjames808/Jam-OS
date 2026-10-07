@@ -33,17 +33,21 @@ the test commands are in [TESTING.md](TESTING.md).
 A compositor of our own that speaks Wayland draws the screen (G1:
 [G1-PLAN.md](G1-PLAN.md), [ARCHITECTURE.md](../ARCHITECTURE.md#graphics)),
 and the shell runs in a terminal window on the jam wallpaper. Super+Enter
-(or `term`) opens another terminal, up to eight; apps open windows of
-their own (`jamjar &`).
+(or `term`) opens another terminal, up to 16 (one more is refused with a
+"No more terminals" notice); apps open windows of their own
+(`jamjar &`).
 
 **Tiling and floating.** Windows tile by default (each new one halves the
 focused tile along its longer side; drag the gap between two to resize
-them) or float (moved by their title bar and raised with the mouse, with
+them; a window that would get a tile too small, under 200x120 or under
+its own minimum, such as Jamjar's 944x568, opens on a new screen of its
+own instead, and when it closes the view comes back) or float (moved by their title bar and raised with the mouse, with
 the three jam circles on the left of the title bar: raspberry closes,
 apricot minimises, blackcurrant makes the window full screen; a
 double-click on the title bar does too). Super+T switches the screen, and
 the choice is kept in the settings (`display.layout = tiling`, the
-default, or `floating`). Each virtual screen keeps its own arrangement.
+default, or `floating`); from tiling to floating every window stays where
+its tile was. Each virtual screen keeps its own arrangement.
 
 **The keys.** Keys go to the focused window only, but for the window keys
 (Super is the logo key; a direction is H/J/K/L or an arrow):
@@ -92,7 +96,9 @@ panic (with Details: `crashlog` in a new terminal), or the shell's
 **Terminals.** Every terminal is equal: any of them, the first too,
 closes with its close circle, Super+Q or `exit`; with none left the
 desktop shows its wallpaper and top bar, and Super+Enter or the search
-box opens one. The terminals' text is JetBrains Mono (`terminal.font =
+box opens one. At most 16 are open at once; each is a console and a
+shell, a few MiB (more for a big window). The terminals' text is
+JetBrains Mono (`terminal.font =
 bitmap` in the settings gives the 8x16 bitmap font instead). The boot
 entry "Jam OS (no compositor)" (the boot word `nocomp`) is the way back
 to the full-screen console until G1 is signed off on the PC.

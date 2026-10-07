@@ -464,11 +464,12 @@ static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint6
  * the shell stays at the prompt; a restarted shell doesn't run it again.
  * ERR_INVALID_ARGS: not NUL-terminated, or a control character in it.
  * ERR_NOT_SUPPORTED: no compositor runs (a boot without one: one terminal
- * only); ERR_NO_RESOURCES: as many terminals are open as there may be. The
- * shell's channel (`term [command]`), the compositor's (Super+Enter, the
- * search box's "Run ... in a terminal": the compositor types into every
- * terminal anyway, so a command adds nothing to what it can do); the
- * consoles' too. */
+ * only); ERR_NO_RESOURCES: 16 terminals are open, the most there may be
+ * (<deskapps.h> TERMINALS_MAX; the compositor then posts its "No more
+ * terminals" notice, the shell's `term` says so). The shell's channel
+ * (`term [command]`), the compositor's (Super+Enter, the search box's "Run
+ * ... in a terminal": the compositor types into every terminal anyway, so
+ * a command adds nothing to what it can do); the consoles' too. */
 static inline status_t initctl_terminal_until(handle_t ch, uint64_t deadline_ns, const uint8_t command[128], uint8_t *out_number)
 {
     return initctl_terminal_call(ch, false, deadline_ns, command, out_number);

@@ -6,17 +6,35 @@
 # COM1 too, so its banner shows here). Its shell and its console killed
 # are started again, as the first terminal's are; the compositor killed,
 # both consoles connect again; the first terminal answers throughout.
-# Then terminals up to the limit (8 in all), and `term` refuses one more
-# (each `term` typed once the last one's window is up and has the keys).
-# Screenshots: terms-boot (the first terminal), terms-eight (all eight).
+# Then terminals up to the limit (16 in all, <deskapps.h> TERMINALS_MAX),
+# each `term` typed once the last one's window is up and has the keys;
+# terminals 10 to 16 by their two-digit names too (`kill console-12`,
+# `kill shell-16`: started again). At 1280x800 a screen holds five tiles:
+# the sixth terminal's split would leave a tile under the tiler's minimum
+# (200 pixels wide), so it opens on a new screen, and so on (screens 1 to
+# 3 with five each, the 16th alone on screen 4); Super+1 goes back to the
+# first. `term` refuses one more, naming the limit; Super+Enter on the
+# USB keyboard is refused too, and the desktop says so: the notice "No
+# more terminals / 16 is the most. Close one first." (in the log as
+# every notice), and only one while it is up (a second Super+Enter at
+# once posts none). `free` before and after: the memory 15 more
+# terminals take.
+# Screenshots: terms-boot (the first terminal), terms-last (the 16th
+# alone on the last screen), terms-first (the first screen, five tiles),
+# terms-full (the notice).
 # Typing into terminal 2 and closing it (`exit`, its close circle):
 # terms-windows.txt and desktop.txt.
-# Run: QEMU_INPUT=tools/shell-tests/terms.txt tools/qemu-test.sh build/test terms shell
+# Run: QEMU_INPUT=tools/shell-tests/terms.txt \
+#      QEMU_USB="-device usb-kbd,bus=xhci.0,port=2" tools/qemu-test.sh build/test terms shell
 wait 120 Jam OS shell
 seen 10 console: window mode (terminal 1)
 wait {prompt}
+seen 30 compositor: keyboard 0627:0001 ready
 sleep 2
 shot terms-boot
+send free
+wait 10 Mem:
+wait {prompt}
 send term
 wait 10 terminal 2 opens
 wait 30 Jam OS shell
@@ -69,13 +87,74 @@ send term
 wait 10 terminal 8 opens
 wait 30 console: window mode: terminal 8 opens a
 sleep 1
-sleep 3
-shot terms-eight
 send term
-wait 10 term: as many terminals are open as there may be
+wait 10 terminal 9 opens
+wait 30 console: window mode: terminal 9 opens a
+sleep 1
+send term
+wait 10 terminal 10 opens
+wait 30 console: window mode: terminal 10 opens a
+sleep 1
+send term
+wait 10 terminal 11 opens
+wait 30 console: window mode: terminal 11 opens a
+sleep 1
+send term
+wait 10 terminal 12 opens
+wait 30 console: window mode: terminal 12 opens a
+sleep 1
+send term
+wait 10 terminal 13 opens
+wait 30 console: window mode: terminal 13 opens a
+sleep 1
+send term
+wait 10 terminal 14 opens
+wait 30 console: window mode: terminal 14 opens a
+sleep 1
+send term
+wait 10 terminal 15 opens
+wait 30 console: window mode: terminal 15 opens a
+sleep 1
+send term
+wait 10 terminal 16 opens
+wait 30 console: window mode: terminal 16 opens a
+sleep 4
+seen 10 compositor: no room for another tile on screen 1: a new screen, 2
+seen 10 compositor: no room for another tile on screen 2: a new screen, 3
+seen 10 compositor: no room for another tile on screen 3: a new screen, 4
+shot terms-last
+monitor sendkey meta_l-1
+sleep 2
+shot terms-first
+# two-digit names: killed and started again
+send kill console-12
+wait 10 init: bin/console (terminal 12) was killed
+wait 30 Jam OS shell
+wait 10 {prompt}
+seen 30 console: window mode: terminal 12 opens a
+sleep 1
+send kill shell-16
+wait 10 init: bin/shell (terminal 16) was killed
+wait 30 Jam OS shell
+wait 10 {prompt}
+sleep 1
+send term
+wait 10 term: 16 terminals is the most; close one to open another
 send echo ok-$?-full
 wait 10 ok-1-full
-seen 30 init: terminal 8 opens
+seen 30 init: terminal 16 opens
+# Super+Enter refused: the notice, once while it is up
+monitor sendkey meta_l-ret
+wait 10 No more terminals: 16 is the most. Close one first.
+monitor sendkey meta_l-ret
+wait 10 compositor: no new terminal: 16 are open, and its notice is still up
+sleep 1
+shot terms-full
+send free
+wait 10 Mem:
+wait {prompt}
+send ps
+wait 10 {prompt}
 
 send reboot -f
 wait reboot: resetting

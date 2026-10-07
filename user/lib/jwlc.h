@@ -72,6 +72,7 @@ struct jwl_window {
     char     title[JWL_TEXT_MAX];
     char     app_id[JWL_TEXT_MAX];
     int32_t  want_w, want_h;          /* the size the program asked */
+    int32_t  min_w, min_h;            /* a resizable one's minimum (0: none) */
     bool     resizable, alpha;
     bool     fullscreen, maximized;   /* what the program asked last */
     uint32_t surface, xdg_surface, toplevel;   /* ids on this connection; 0: none */

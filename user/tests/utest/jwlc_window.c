@@ -18,7 +18,8 @@
  *                     grows for, a configure that changes only states
  *                     (acked at once), new sizes drawn without touching
  *                     the shown buffer's pixels, a fixed-size window
- *                     keeping its size, full screen, close, a new title.
+ *                     keeping its size, full screen, a resizable one's
+ *                     minimum (set_min_size, no max), close, a new title.
  * Each ends with the job's handles and message bytes where they began. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
@@ -247,6 +248,14 @@ bool t_jwlc_window_sizes(void)
     CHECK(fake_pump(&f, c));
     CHECK(fake_next_of(c, JWL_EV_CONFIGURE, &ev) && ev.configure.width == 1280);
     CHECK_ST(jwl_window_set_fullscreen(w3, false), OK);
+
+    /* a resizable window with a minimum: set_min_size, no max */
+    struct jwl_window_config mn = { .width = 120, .height = 90, .resizable = true,
+                                    .min_width = 100, .min_height = 70 };
+    struct jwl_window *w4;
+    struct fake_surface *s4;
+    CHECK(fake_window(&f, c, &mn, 3, &w4, &s4));
+    CHECK(s4->min_w == 100 && s4->min_h == 70 && !s4->max_w && !s4->max_h);
 
     CHECK_ST(fake_close(&f, s), OK);
     CHECK_ST(jwl_window_set_title(w, "renamed"), OK);

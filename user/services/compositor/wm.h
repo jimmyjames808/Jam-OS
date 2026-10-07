@@ -160,6 +160,8 @@ bool wm_floating_normal(const struct wm_window *ww);
 #define TILE_MAX     55706   /* ... and 85% at most */
 #define WM_PUSH      48      /* Super+Alt+direction: pixels an edge moves */
 #define WM_GAP_HIT   12      /* a gap takes presses this wide, centred on it */
+#define WM_TILE_MIN_W 200    /* a tile is halved across only if the halves keep this, */
+#define WM_TILE_MIN_H 120    /* ... down this; else the window goes to a new screen (wmtile.c) */
 
 /* A node of a screen's tree: a leaf (a window's tile) or a split of its
  * room in two, a beside b (across) or a above b, with WM_GAP between. */
@@ -183,11 +185,17 @@ struct tile_gap {
  * shown on it, not minimised: a window gone leaves its sibling the whole
  * of their parent; a new one splits the focused tile, or the last, in
  * half along its longer side; a tree made from nothing takes the windows
- * in their order, each splitting the last) and laid out in its room; the
- * trees of floating screens dropped. */
+ * in their order, each splitting the last; a window whose split would
+ * leave halves under WM_TILE_MIN_W wide or WM_TILE_MIN_H high, or either
+ * window's own minimum outside its half, goes to a new screen at the end
+ * instead, screens_spill, the screen it would have split unchanged) and
+ * laid out in its room; the trees of floating screens dropped. */
 void tiles_update(void);
 /* s's tree dropped (its windows untiled): a screen going, or switched. */
 void tiles_drop(struct desk_screen *s);
+/* The tiler's minimum for a half, WM_TILE_MIN_W by WM_TILE_MIN_H unless
+ * the compositor's `tilemin=<w>x<h>` (a test's small output) says. */
+void tiles_set_min(int32_t w, int32_t h);
 /* ww's tile gone from its tree, its sibling taking their parent's room
  * (it is unmapped or going). */
 void tiles_forget(struct wm_window *ww);

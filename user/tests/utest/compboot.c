@@ -151,7 +151,7 @@ bool t_comp_super_enter(void)
     CHECK(terminal_answer(&t, txid, OK));
     CHECK(cs_tap(&t, U_KP_ENTER, INPUT_MOD_LGUI));
     CHECK(terminal_asked(&t, &txid));
-    CHECK(terminal_answer(&t, txid, ERR_NO_RESOURCES));   /* said in the log, nothing more */
+    CHECK(terminal_answer(&t, txid, ERR_NO_RESOURCES));   /* all open: the notice (t_desk_notify) */
     CHECK(cs_key(&t, U_LGUI, INPUT_KEY_UP, 0));
     CHECK(cs_tap(&t, U_ENTER, 0));   /* without Super: the window's */
     CHECK(cs_sync(&a, NULL));

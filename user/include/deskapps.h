@@ -25,3 +25,26 @@
 
 /* Desktop apps init runs at once, at most (initctl.launch). */
 #define DESKAPPS_RUNNING 8
+
+/* Terminals open at once, at most, the first included: init refuses one
+ * more (initctl.terminal's ERR_NO_RESOURCES, user/services/init/terms.c),
+ * and the compositor's notice ("No more terminals"), the shell's `term`
+ * and the console say this number. Each terminal is two small processes,
+ * a console and a shell (their memory: docs/G1-PLAN.md, "Every terminal
+ * is equal"). */
+#define TERMINALS_MAX 16
+
+/* s a terminal's number, "1" to TERMINALS_MAX without leading zeros (init's
+ * "term=<n>" to a console and a shell, "console-<n>"): the number, else 0. */
+static inline unsigned terminal_number(const char *s)
+{
+    unsigned n = 0, digits = 0;
+    if (!s || s[0] == '0')
+        return 0;
+    for (; *s; s++, digits++) {
+        if (*s < '0' || *s > '9' || digits >= 3)
+            return 0;
+        n = n * 10 + (unsigned)(*s - '0');
+    }
+    return digits && n <= TERMINALS_MAX ? n : 0;
+}

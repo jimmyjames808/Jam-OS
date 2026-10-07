@@ -9,11 +9,9 @@
 #   readme-search    the same desktop with the search box open (Super
 #                    tapped alone), "ja" typed: the box is centred across
 #                    the screen, x 1000..1560, its top at y 216
-#   readme-floating  the same windows floating (Super+T), sized with
-#                    Super+Alt (48 pixels a press) and dragged by their
-#                    title bars apart, none overlapping: terminal 1 at
-#                    (76,100) 958x1277, Jamjar at (1100,100) 1390x797,
-#                    terminal 2 at (1100,964) 1390x413
+#   readme-floating  the same windows floating (Super+T), each where its
+#                    tile was (its frame 4 pixels inside the tile), none
+#                    overlapping
 # A `monitor sendkey` holds its key 100 ms: the sleeps keep Super+Alt's
 # pushes apart, so none is lost.
 wait 120 Jam OS shell
@@ -94,129 +92,17 @@ sleep 1.5
 shot readme-search
 monitor sendkey esc
 sleep 1
-# ---- floating: Jamjar in front at the cascade's end (573,366), terminal 1 at
-# (513,306) behind it, terminal 2 at (543,336) at the back; each 1534x845.
-# A title bar is 27 pixels: a window is dragged by a point 300 in and 13
-# down its title bar, and raised by a click on a part of it that shows.
-# Super+Alt+Left and Up shrink a floating window, Right and Down grow it.
+# ---- floating: Super+T keeps the arrangement (owner, 2026-10-07): each
+# window floats where its tile was, its frame 4 pixels inside the tile, so
+# none overlaps; Jamjar's title bar is the top 27 pixels of its frame, from
+# y 50 (its tile's top, 46, plus 4)
 monitor sendkey meta_l-t
 sleep 3
-# Jamjar (focused): 3 narrower, 1 shorter, then to (1100,100)
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-sleep 0.5
-pointer 873 379
-monitor mouse_button 1
-sleep 0.2
-pointer 1400 113
-sleep 0.2
-monitor mouse_button 0
-sleep 1
-# terminal 1: raised by its title bar left of Jamjar, to (76,100), then 12
-# narrower and 9 taller
-pointer 813 319
-monitor mouse_button 1
-sleep 0.2
-pointer 376 113
-sleep 0.2
-monitor mouse_button 0
-sleep 0.5
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-down
-sleep 0.3
-monitor sendkey meta_l-alt-down
-sleep 0.3
-monitor sendkey meta_l-alt-down
-sleep 0.3
-monitor sendkey meta_l-alt-down
-sleep 0.3
-monitor sendkey meta_l-alt-down
-sleep 0.3
-monitor sendkey meta_l-alt-down
-sleep 0.3
-monitor sendkey meta_l-alt-down
-sleep 0.3
-monitor sendkey meta_l-alt-down
-sleep 0.3
-monitor sendkey meta_l-alt-down
-sleep 0.3
-sleep 0.5
-# terminal 2: raised by the end of its title bar showing between terminal 1
-# and Jamjar, 3 narrower and 9 shorter, then to (1100,964)
-pointer 1067 349
+# the focus to Jamjar (a click on its title bar), the pointer resting there
+pointer 1700 63
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
-sleep 0.5
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-sleep 0.5
-pointer 843 349
-monitor mouse_button 1
-sleep 0.2
-pointer 1400 977
-sleep 0.2
-monitor mouse_button 0
-sleep 1
-# the focus to Jamjar (a click on its title bar), the pointer on the
-# wallpaper between the windows
-pointer 1700 113
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-sleep 0.5
-pointer 1067 1410
 sleep 1.5
 shot readme-floating
 monitor quit

@@ -262,6 +262,19 @@ bool fk_open(struct fk *f, int32_t w, int32_t h, bool fixed)
     return fk_draw(f);
 }
 
+bool fk_open_min(struct fk *f, int32_t w, int32_t h, int32_t min_w, int32_t min_h)
+{
+    memset(f, 0, sizeof(*f));
+    f->s.client = &fake_client;
+    f->s.input_all = true;
+    f->own_w = w;
+    f->own_h = h;
+    CHECK((f->ww = wm_create(&f->s, &fk_ops, f)) != NULL);
+    wm_set_limits(f->ww, min_w, min_h, 0, 0);
+    wm_reconfigure(f->ww);   /* the initial commit, its limits with it */
+    return fk_draw(f);
+}
+
 bool fk_open_full(struct fk *f, struct comp_client *cl)
 {
     memset(f, 0, sizeof(*f));
@@ -691,13 +704,14 @@ static struct place place_of(unsigned i)
     return (struct place){ win(i)->x, win(i)->y, fks[i].s.width, fks[i].s.height };
 }
 
-static bool same_place(unsigned i, struct place p)
+/* Window i floats inside tile t (its frame), not at its old place p. */
+static bool floats_in(unsigned i, struct comp_box t, struct place p)
 {
     CHECK(fk_draw(&fks[i]));
-    CHECK_EQ(win(i)->x, p.x);
-    CHECK_EQ(win(i)->y, p.y);
-    CHECK_EQ(fks[i].s.width, p.w);
-    CHECK_EQ(fks[i].s.height, p.h);
+    struct comp_box f = window_frame(win(i));
+    if (f.x1 < t.x1 || f.y1 < t.y1 || f.x2 > t.x2 || f.y2 > t.y2)
+        FAIL("window %u's frame %d,%d..%d,%d is outside its tile", i, f.x1, f.y1, f.x2, f.y2);
+    CHECK(win(i)->x != p.x || win(i)->y != p.y);
     return true;
 }
 
@@ -726,11 +740,13 @@ static bool switch_steps(void)
     CFG(1, 0, 0, 0);
     CHECK(fk_draw(&fks[1]));
     AT(1, 643 + (631 - 200) / 2, 6 + (391 - 150) / 2);
-    /* and back: every window where and as big as it was */
+    /* and back (owner, 2026-10-07): every window floats in its tile's
+     * place, the arrangement kept, not where it floated before; the fixed
+     * one keeps its size, centred */
     wm_toggle_layout();
     CHECK_EQ(seat.layout, COMP_FLOATING);
-    for (unsigned i = 0; i < 3; i++)
-        CHECK(same_place(i, p[i]));
+    CHECK(floats_in(0, LEFT, p[0]) && floats_in(1, RTOP, p[1]) && floats_in(2, RBOT, p[2]));
+    CHECK(fks[1].s.width == 200 && fks[1].s.height == 150);
     /* a window first opened while tiling gets a floating place, on the screen */
     wm_toggle_layout();
     CHECK(fk_open(&fks[3], 300, 300, false));

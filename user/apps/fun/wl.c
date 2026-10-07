@@ -54,6 +54,7 @@
 static const char *title;
 static int want_w, want_h;
 static bool resizable;
+static int min_w, min_h;   /* gfx_min_size (0: none) */
 static status_t (*connect_fn)(void *ctx, handle_t *out);
 static void *connect_ctx;
 
@@ -77,6 +78,19 @@ static unsigned stash_head, stash_len;
 
 void gfx_title(const char *t) { title = t; }
 void gfx_resizable(void) { resizable = true; }
+
+void gfx_min_size(int w, int h)
+{
+    min_w = w > 0 ? w : 0;
+    min_h = h > 0 ? h : 0;
+}
+
+/* The UI scale for a w x h window: 2 above 1080 lines, if the app's
+ * minimum (gfx_min_size, made at scale 1) fits twice over; else 1. */
+static int ui_for(int w, int h)
+{
+    return h > 1100 && w >= 2 * min_w && h >= 2 * min_h ? 2 : 1;
+}
 
 void gfx_window_size(int w, int h)
 {
@@ -153,6 +167,10 @@ static void pick_size(const struct jwl_client_info *in, bool full, struct jwl_wi
         h = big ? BIG_H : oh;
         wc->maximized = !big;
     }
+    if (resizable) {   /* never under the app's own minimum */
+        w = w < min_w ? min_w : w;
+        h = h < min_h ? min_h : h;
+    }
     wc->width = clampi(w, MIN_W, JWL_SIZE_MAX);
     wc->height = clampi(h, MIN_H, JWL_SIZE_MAX);
 }
@@ -205,7 +223,7 @@ static status_t make_screen(int w, int h, uint32_t bg)
     scr.shown = shown;
     scr.w = w;
     scr.h = h;
-    scr.ui = h > 1100 ? 2 : 1;   /* by its own size: the apps' layouts are made that way */
+    scr.ui = ui_for(w, h);   /* by its own size: the apps' layouts are made that way */
     scr.bg = bg;
     scr.windowed = true;
     scr.open = true;
@@ -221,7 +239,9 @@ static status_t open_window(uint32_t bg, bool full)
     if (!in->wm_base_version)
         return ERR_NOT_SUPPORTED;   /* a compositor without windows (yet) */
     struct jwl_window_config wc = { .title = title ? title : "Jam OS",
-                                    .app_id = title ? title : "jamos", .resizable = resizable };
+                                    .app_id = title ? title : "jamos", .resizable = resizable,
+                                    .min_width = resizable ? min_w : 0,
+                                    .min_height = resizable ? min_h : 0 };
     pick_size(in, full, &wc);
     status_t st = jwl_window_create(wl.c, &wc, &wl.win);
     if (st == OK)
@@ -387,7 +407,7 @@ static bool take_size(void)
     scr.shown = shown;
     scr.w = w;
     scr.h = h;
-    scr.ui = h > 1100 ? 2 : 1;
+    scr.ui = ui_for(w, h);
     if (scr.bg)
         fill(&scr.s, 0, 0, w, h, scr.bg);
     wl.px = clampi(wl.px, 0, w - 1);
