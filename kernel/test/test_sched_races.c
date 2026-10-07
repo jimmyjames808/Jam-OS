@@ -26,6 +26,13 @@ static bool enabled(void)
     return true;
 }
 
+/* The staged races' threads run above every user thread: run from the
+ * shell beside the desktop, the compositor's paint threads (user
+ * priority) share the pinned CPUs, and on QEMU's slow CPU they could hold
+ * a step past its 2 s (a Mac soak's idle loop, twice on 2026-10-07). The
+ * steps themselves are ordered by the hooks, not by priority. */
+#define RACE_PRIO (PRIO_USER_MAX + 1)
+
 static bool wait_for(volatile int *v, int want, uint64_t ms)
 {
     uint64_t end = uptime_ns() + ms * 1000000;
@@ -160,7 +167,7 @@ KTEST(repro_finish_switch_double_reap)
     __atomic_store_n(&dbg_hooks[DBG_FINISH_SWITCH], fs_hook, __ATOMIC_RELEASE);
     cpumask_t m;
     cpumask_one(&m, 1);
-    struct thread *x = thread_create_on("repro-victim", fs_victim, NULL, PRIO_DEFAULT, &m);
+    struct thread *x = thread_create_on("repro-victim", fs_victim, NULL, RACE_PRIO, &m);
     fs_target = x;
     KT_ASSERT(wait_for(&fs_phase, 2, 2000));   /* cpu 1 switched x out, now stalled */
     cpumask_one(&m, 2);
@@ -259,10 +266,10 @@ KTEST(repro_wake_stale_cpu)
     __atomic_store_n(&dbg_hooks[DBG_WAKE_ONCPU], ab_wake_hook, __ATOMIC_RELEASE);
     cpumask_t m;
     cpumask_one(&m, 2);
-    ab_stale_waker = thread_create_on("repro-stale", ab_stale, NULL, PRIO_DEFAULT, &m);
+    ab_stale_waker = thread_create_on("repro-stale", ab_stale, NULL, RACE_PRIO, &m);
     ab_phase = 1;
     cpumask_one(&m, 1);
-    ab_target = thread_create_on("repro-aba", ab_victim, NULL, PRIO_DEFAULT, &m);
+    ab_target = thread_create_on("repro-aba", ab_victim, NULL, RACE_PRIO, &m);
     KT_ASSERT(wait_for(&ab_phase, 3, 2000));   /* stale waker read t->cpu = 1 */
     while (__atomic_load_n(&ab_target->on_cpu, __ATOMIC_RELAXED))
         cpu_relax();

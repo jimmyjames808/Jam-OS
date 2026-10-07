@@ -8,9 +8,8 @@
 # shell says what happened.
 wait 120 Jam OS shell
 wait {prompt}
-send utest
-wait 300 utest:
-wait passed
+send utest; echo ut-$?-done
+wait 300 ut-0-done
 wait {prompt}
 send usbtest
 wait 120 usbtest:
