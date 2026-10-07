@@ -39,7 +39,8 @@ and the shell runs in a terminal window on the jam wallpaper. Super+Enter
 
 **Tiling and floating.** Windows tile by default (each new one halves the
 focused tile along its longer side; drag the gap between two to resize
-them; a window that would get a tile too small, under 200x120 or under
+them, or Super+Alt+arrow; a gap stops where a tile would get smaller than
+200x120 or than its window's own minimum; a window that would get a tile too small, under 200x120 or under
 its own minimum, such as Jamjar's 944x568, opens on a new screen of its
 own instead, and when it closes the view comes back) or float (moved by their title bar and raised with the mouse, with
 the three jam circles on the left of the title bar: raspberry closes,

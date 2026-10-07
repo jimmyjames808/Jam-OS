@@ -1418,6 +1418,33 @@ kept on the output if its min is bigger) before the tree is dropped, and
 the relayout glides (`anim_glide_note`/`start`). Tests: utest
 `wm_tile_float`, `wm_switch`, `wm_seat` (Super+T back to floating).
 
+**As built: gaps stop at the windows' minimums (the owner, G1 sign-off,
+2026-10-07).** On the PC, dragging the gap between Jamjar (minimum
+944x568) and a terminal resized Jamjar to its minimum and then kept
+going: the terminal's tile grew over Jamjar's content. Now each node of
+a screen's tree has a need (`wmtile.c`'s `needs`, worked out at every
+layout, leaves first, without recursion: a leaf needs the tiler's 200x120
+or its window's own minimum and border if that is more, a fixed size
+being its minimum; a split along its axis both halves' needs and the
+gap, across it the larger half's). A split's ratio is the user's wish:
+`split_part` holds a's length between a's need and the room less b's
+need, so an inner split gives its room to the half that needs it when
+an outer gap squeezes it; with less room than both need (an output that
+shrank, a minimum told late, 16 screens full) the room is shared in
+proportion to the needs. `tiles_gap_move` (a gap dragged, `wmgrab.c`, and
+Super+Alt+direction's `tiles_push`) stops a's length at those same two
+needs, a gap already past one moving only back towards it, and then keeps
+TILE_MIN/TILE_MAX's 15-85%; at 1280x800 the 200 minimum is the tighter,
+so a gap now stops 200 short of the edge where it stopped at 85%. A
+minimum told after the window is tiled (`wm_set_limits`) lays the screen
+out again at once. A tiled window still bigger than its tile (the room
+short of the needs) is shown from the tile's top left and clipped to it
+(`wm_place` sets its view to the tile, as for a window catching up with a
+resize), its frame the tile's, so it never draws over its neighbour.
+Floating windows already stopped at their minimum (a resize, Super+Alt).
+Tests: utest `wm_tile_mins`, and `wm_tile_tree`, `wm_tile_gaps`,
+`wm_tile_push` (stopped at the other tile's 200).
+
 **As built: the terminal's look (the owner's Q9 change, 2026-10-06).**
 The terminal windows draw JetBrains Mono 2.304 (OFL; Regular and Bold,
 cut by `tools/subsetfont.py --terminal` to Latin-1, Latin Extended-A and

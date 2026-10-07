@@ -339,11 +339,23 @@ void wm_place(struct wm_window *ww)
     } else if (layout == COMP_TILING) {
         w->tile = wm_tile(ww);
         struct comp_box in = deco_inner(w->tile, 0, layout);
+        int32_t iw = in.x2 - in.x1, ih = in.y2 - in.y1;
         struct wm_config c;
         wm_wanted(ww, &c);
-        if (c.width == in.x2 - in.x1 && c.height == in.y2 - in.y1) {
+        if (c.width == iw && c.height == ih) {
             window_view(w, c.width, c.height);   /* it fills its tile: shown as the tile, */
             window_move(w, in.x1, in.y1);        /* its last buffer clipped or padded */
+            return;
+        }
+        int32_t sw = c.width ? c.width : ww->surface->width;   /* what it draws */
+        int32_t sh = c.height ? c.height : ww->surface->height;
+        if (iw > 0 && ih > 0 && (sw > iw || sh > ih)) {
+            /* bigger than its tile (its minimum, where the room is short of
+             * what the tiles need): from the tile's top left, clipped to
+             * it, never over its neighbours; centred the way it fits */
+            window_view(w, sw > iw ? iw : sw, sh > ih ? ih : sh);
+            window_move(w, sw > iw ? in.x1 : in.x1 + (iw - sw) / 2,
+                        sh > ih ? in.y1 : in.y1 + (ih - sh) / 2);
             return;
         }
         centre_in(w, in, room_of(ww).y1);
@@ -468,7 +480,10 @@ void wm_set_limits(struct wm_window *ww, int32_t min_w, int32_t min_h, int32_t m
     ww->min_h = min_h;
     ww->max_w = max_w;
     ww->max_h = max_h;
-    wm_reconfigure(ww);   /* a tile's size depends on them */
+    if (ww->leaf)
+        wm_relayout();    /* its tile's need: the tiles around it make room */
+    else
+        wm_reconfigure(ww);   /* a tile's size depends on them */
 }
 
 /* ww is asked to be mode now: full screen takes it to a screen of its

@@ -587,6 +587,7 @@ bool t_wm_tile_small(void);
 bool t_wm_tile_gaps(void);
 bool t_wm_tile_push(void);
 bool t_wm_tile_float(void);
+bool t_wm_tile_mins(void);
 bool t_wm_focus_dir(void);
 bool t_wm_swap(void);
 bool t_wm_reflow(void);

@@ -172,6 +172,13 @@ struct tile_node {
     bool across;                   /* a split: side by side; else one over the other */
     int32_t ratio;                 /* a split: a's share of the room less the gap, of TILE_ONE */
     struct comp_box box;           /* the last layout: a leaf's tile, a split's room */
+    /* The last layout: the least room the node's windows need (a leaf:
+     * the tiler's minimum, or its window's own minimum and border if that
+     * is more; a split along its axis: both halves' and the gap, across
+     * it: the larger half's). A split's halves never get less than their
+     * need while its room has it (its ratio a wish, held to it), and a
+     * gap dragged or pushed stops there (tiles_gap_move). */
+    int32_t need_w, need_h;
 };
 
 /* A gap between two tiles: the split it belongs to, where it is, the box
@@ -212,7 +219,10 @@ bool tiles_gap_at(const struct desk_screen *s, int32_t x, int32_t y, struct tile
 /* A split's gap. */
 struct tile_gap tiles_gap(struct tile_node *split);
 /* The split's gap moved so its middle is at pos (x across, else y), its
- * ratio kept within TILE_MIN and TILE_MAX. The caller lays out again. */
+ * ratio kept within TILE_MIN and TILE_MAX, and stopped where either half
+ * would get less than its windows need (its need_w or need_h: a gap
+ * already past that moves only back towards it). The caller lays out
+ * again. */
 void tiles_gap_move(struct tile_node *split, int32_t pos);
 /* Super+Alt+direction: ww's tile's edge on that side pushed WM_PUSH
  * that way (with no edge there, its other edge). False: nothing moved. */
