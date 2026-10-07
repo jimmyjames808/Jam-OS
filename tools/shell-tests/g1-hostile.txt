@@ -1,0 +1,54 @@
+# Hostile programs against the live desktop (docs/G1-PLAN.md, X1; the PC's
+# part is docs/G1-SIGNOFF.md): Jamjar and a second terminal open on the
+# default (compositor) boot, then utest's comp_live tests connect to the
+# desktop's own compositor and send it every bad request, every
+# per-client cap, a client that floods and never reads, and clients that
+# crash holding windows (one between attach and commit). The desktop must
+# answer throughout: Jamjar and both terminals stay, the first terminal
+# keeps answering. Then the compositor itself is killed: init starts it
+# again, both consoles and Jamjar connect again on their own, and the
+# terminal answers. Screenshots: g1-hostile-after (after the hostile
+# clients), g1-hostile-back (after the compositor came back).
+# Run (a USB keyboard for the Super keys):
+#   QEMU_USB="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3" \
+#   QEMU_INPUT=tools/shell-tests/g1-hostile.txt tools/qemu-test.sh build/test g1-hostile shell
+wait 120 Jam OS shell
+seen 10 console: window mode (terminal 1)
+wait {prompt}
+send T=x
+wait {prompt}
+
+# ---- the desktop as someone uses it ------------------------------------------------------
+# QEMU's serial input reaches the shell through the focused window, as
+# typing does, and every new window takes the keys: Super+direction (the
+# USB keyboard) gives them back. A typed line fits its terminal's width,
+# so the lines are short.
+send jamjar &
+wait 10 jamjar: in the background
+sleep 3
+monitor sendkey meta_l-left
+sleep 1
+send term
+wait 10 terminal 2 opens
+seen 30 console: window mode (terminal 2)
+sleep 3
+monitor sendkey meta_l-up
+sleep 1
+
+# ---- the hostile clients -----------------------------------------------------------------
+send utest only comp_live; echo hostile-$T-$?
+wait 300 hostile-x-0
+seen 5 utest: 4 passed
+send jobs | grep jamjar && echo ok-$T-jamjar
+wait 10 ok-x-jamjar
+shot g1-hostile-after
+
+# ---- the compositor killed: everything comes back -----------------------------------------
+# (one line: after it the new compositor's focus is the window mapped last)
+send kill compositor;sleep 15;jobs|grep jamjar&&echo ok-$T-back
+wait 10 init: bin/compositor was killed
+seen 30 Jamjar: connected again (connection 2)
+seen 30 console: connected again (connection 2)
+wait 30 ok-x-back
+shot g1-hostile-back
+monitor system_reset
