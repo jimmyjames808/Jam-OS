@@ -9,7 +9,8 @@
  * own line editing: left/right/home/end, backspace/delete, Ctrl+A/E/U,
  * Ctrl+C (cancel the line, or kill what `run` started), Ctrl+L (clear),
  * up/down for the history. The line is redrawn with \r and ESC [ K, which
- * the console and serial terminals both understand. It asks the terminal
+ * the console and serial terminals both understand; a line longer than the
+ * row scrolls sideways in it (scroll). It asks the terminal
  * for bracketed paste (ESC [ ? 2004 h) and takes pasted text onto the line
  * without running it, line breaks as spaces (sh_paste.c).
  *
@@ -45,6 +46,9 @@ JAM_WANTS("mount * rw\n"
 #define C_DIR     "\033[94m"   /* the directory: bright blue, its nearest to blackcurrant */
 #define C_PLAIN   "\033[0m"
 #define DIR_MIN   12            /* the directory's room in the prompt: half the row, at least this */
+#define VIEW_MIN  8             /* the line's room in a narrow row: the directory shrinks for it */
+#define C_MARK    "\033[30;47m" /* the markers at a cut edge: black on grey, unlike typed text */
+#define RESIZE_POLL_NS (250 * NS_PER_MS) /* a line being edited: how often the width is asked */
 #define PASTE_GAP_NS (2 * NS_PER_S)   /* a bracketed paste's keys: the longest wait for the next */
 #define MARK_GAP_NS  (100 * NS_PER_MS) /* after an Escape: the longest wait for a marker's next key */
 
@@ -164,12 +168,20 @@ bool sh_is_ctrl(const struct input_key_event *ev, char letter)
 
 static char hist[HIST][LINE_MAX + 1];
 static unsigned nhist;   /* entries ever added */
-/* The console's current line is one screen row and the redraw goes back
- * with \r: a line that wraps can't be redrawn (each redraw would commit
- * another copy of its first row). So the prompt and the line fit the row
- * (set_prompt). */
-static unsigned line_max = LINE_MAX;
-static uint16_t cols;    /* the console's columns (0: not known) */
+
+/* The console's current line is one screen row, and the console can't go
+ * back up into the rows above it (a row is committed to the scrollback
+ * when the text goes past its end): so a line that wrapped could not be
+ * redrawn (each redraw would commit another copy of its first row). The
+ * line editor keeps the line on the one row instead: a line longer than
+ * the room after the prompt scrolls sideways to keep the cursor in view,
+ * with a marker (C_MARK) where text is cut off: '<' at the left, '>' at
+ * the right. Enter (and Ctrl+C) writes the whole line out once more, which
+ * the console wraps, so the scrollback keeps all of it. Nothing is ever
+ * written in the row's last column: the cursor sits there at the end of a
+ * line that fills the room, and an echo there would wrap. */
+static uint16_t cols;    /* the console's columns (0: not known: no scrolling) */
+static unsigned room;    /* the row's cells after the prompt, less the last column */
 
 /* The prompt for the next line (set_prompt): its bytes, colours and all. */
 static char prompt[SH_PATH_MAX + 48];
@@ -178,28 +190,115 @@ static char prompt[SH_PATH_MAX + 48];
 static void set_prompt(void)
 {
     const char *dir = sh_cwd();
-    size_t n = strlen(dir), room = !cols ? n : cols / 2 > DIR_MIN ? cols / 2u : DIR_MIN;
-    const char *cut = n > room ? "..." : "";
-    if (n > room)
-        dir += n - (room - 3);   /* its end, after "..." */
+    size_t n = strlen(dir), keep = !cols ? n : cols / 2 > DIR_MIN ? cols / 2u : DIR_MIN;
+    if (cols && cols > 6 + 1 + VIEW_MIN + 4 && keep > cols - 6u - 1u - VIEW_MIN)
+        keep = cols - 6u - 1u - VIEW_MIN;   /* a narrow row: the line keeps VIEW_MIN cells */
+    const char *cut = n > keep ? "..." : "";
+    if (n > keep)
+        dir += n - (keep - 3);   /* its end, after "..." */
     snprintf(prompt, sizeof(prompt), C_JAM "jam" C_PLAIN ":" C_DIR "%s%s" C_PLAIN "> ", cut,
              dir);
     unsigned width = 6 + (unsigned)strlen(cut) + (unsigned)strlen(dir);   /* jam: > and the space */
-    line_max = cols > width + 1 && cols - width - 1u < LINE_MAX ? cols - width - 1u : LINE_MAX;
+    /* At least 3 cells, so a character shows between the two markers
+     * (scroll's loop needs one); a row narrower than that wraps anyway. */
+    room = !cols ? LINE_MAX : cols > width + 3 ? cols - width - 1u : 3;
+}
+
+/* The console's width again (a terminal window is resized at any time),
+ * and with it the prompt and the room. True if the row must be redrawn:
+ * the width changed with text on the line (line), or the prompt changed
+ * (its directory gets half the row). An empty line under the same prompt
+ * stays as it is (a redraw would only repeat the prompt). */
+static bool resized(bool line)
+{
+    uint16_t c = 0, r = 0;
+    if (console_size(con, &c, &r) != OK || c == cols)
+        return false;
+    char was[sizeof(prompt)];
+    memcpy(was, prompt, sizeof(prompt));
+    cols = c;
+    set_prompt();
+    return line || strcmp(was, prompt) != 0;
 }
 
 struct edit {
     char     line[LINE_MAX + 1];   /* the line being edited */
     unsigned len, pos;             /* its length; the cursor */
+    unsigned first;                /* the first character shown (> 0: scrolled, '<' shown) */
     unsigned back;                 /* 0 = the new line, n = the n-th newest in the history */
     char     saved[LINE_MAX + 1];  /* the new line while browsing the history */
 };
 
-static void redraw(const struct edit *e)
+/* What the row shows of a line from its character `first` on. */
+struct shown {
+    unsigned left, right;   /* the '<' and '>' markers: 0 or 1 each */
+    unsigned chars;         /* the characters between them */
+};
+
+static struct shown shown_at(const struct edit *e)
 {
-    echo("\r%s%.*s\033[K", prompt, (int)e->len, e->line);
-    if (e->pos < e->len)
-        echo("\033[%uD", e->len - e->pos);
+    struct shown v = { .left = e->first > 0 };
+    unsigned cells = room - v.left;
+    v.right = e->len - e->first > cells;
+    v.chars = v.right ? cells - 1 : e->len - e->first;
+    return v;
+}
+
+/* The cursor is in view: on a shown character, or just past the last one
+ * when nothing is cut off at the right. */
+static bool in_view(const struct edit *e)
+{
+    struct shown v = shown_at(e);
+    return e->pos >= e->first &&
+           (e->pos < e->first + v.chars || (!v.right && e->pos == e->len));
+}
+
+/* Scroll so the cursor is in view. A line that fits shows whole; one that
+ * doesn't fills the room (no blank cells at the right while text is cut
+ * off at the left). The cursor leaving the view jumps it to show a third
+ * of the room past the cursor, so moving along a line shows what comes;
+ * typing at the end keeps the cursor at the right edge (the end can't go
+ * further). True if e->first changed (the row must be redrawn). */
+static bool scroll(struct edit *e)
+{
+    unsigned was = e->first, third = room / 3;
+    if (e->len <= room) {
+        e->first = 0;
+        return e->first != was;
+    }
+    if (e->pos < e->first) {
+        e->first = e->pos > third ? e->pos - third : 0;
+    } else if (!in_view(e)) {
+        /* the cursor's cell (after '<'): a third of the room and '>' after it */
+        unsigned cell = room > third + 3 ? room - 2 - third : 1;
+        e->first = e->pos + 1 > cell ? e->pos + 1 - cell : 0;
+    }
+    if (e->first > e->len - (room - 1))
+        e->first = e->len - (room - 1);   /* the end and the cursor's cell fill the room */
+    while (!in_view(e))
+        e->first++;   /* first <= pos here, and first == pos is in view: it ends */
+    return e->first != was;
+}
+
+static void redraw(struct edit *e)
+{
+    (void)scroll(e);
+    struct shown v = shown_at(e);
+    echo("\r%s%s%.*s%s\033[K", prompt, v.left ? C_MARK "<" C_PLAIN : "", (int)v.chars,
+         e->line + e->first, v.right ? C_MARK ">" C_PLAIN : "");
+    unsigned end = v.left + v.chars + v.right, at = v.left + e->pos - e->first;
+    if (at < end)
+        echo("\033[%uD", end - at);
+}
+
+/* The line is done (Enter, or Ctrl+C with "^C"): a line cut off on the row
+ * is written out whole, for the console to wrap, so all of it stays in the
+ * scrollback; then tail and the next row. */
+static void end_line(const struct edit *e, const char *tail)
+{
+    if (e->len > room)
+        echo("\r%s%.*s\033[K", prompt, (int)e->len, e->line);
+    echo("%s\r\n", tail);
 }
 
 /* Up or down in the history; true if the line changed. */
@@ -216,7 +315,7 @@ static bool browse(struct edit *e, bool up)
     e->back = nb;
     const char *src = e->back ? hist[(nhist - e->back) % HIST] : e->saved;
     size_t n = strlen(src);
-    e->len = e->pos = n < line_max ? (unsigned)n : line_max;   /* a longer prompt now */
+    e->len = e->pos = n < LINE_MAX ? (unsigned)n : LINE_MAX;
     memcpy(e->line, src, e->len);
     return true;
 }
@@ -224,14 +323,14 @@ static bool browse(struct edit *e, bool up)
 /* A printable character at the cursor; true if the line needs a redraw. */
 static bool insert(struct edit *e, char c)
 {
-    if (e->len >= line_max)
+    if (e->len >= LINE_MAX)
         return false;
     memmove(e->line + e->pos + 1, e->line + e->pos, e->len - e->pos);
     e->line[e->pos++] = c;
     e->len++;
-    if (e->pos < e->len)
-        return true;
-    sh_console_write(&c, 1);   /* typing at the end: just echo */
+    if (e->pos < e->len || e->len > room)
+        return true;   /* in the middle, or past the room: the row scrolls */
+    sh_console_write(&c, 1);   /* typing at the end of a line that fits: just echo */
     return false;
 }
 
@@ -241,7 +340,7 @@ static bool edit_key(struct edit *e, const struct input_key_event *ev)
     uint32_t cp = ev->codepoint;
     uint16_t u = ev->usage;
     if (sh_is_ctrl(ev, 'c')) {
-        echo("^C\r\n");
+        end_line(e, "^C");
         e->len = e->pos = e->back = 0;
         echo("%s", prompt);
         return false;
@@ -280,23 +379,27 @@ static bool edit_key(struct edit *e, const struct input_key_event *ev)
         return true;
     }
     if (u == U_LEFT) {
-        if (e->pos) {
-            e->pos--;
-            echo("\033[D");
-        }
+        if (!e->pos)
+            return false;
+        e->pos--;
+        if (scroll(e))
+            return true;
+        echo("\033[D");
         return false;
     }
     if (u == U_RIGHT) {
-        if (e->pos < e->len) {
-            e->pos++;
-            echo("\033[C");
-        }
+        if (e->pos >= e->len)
+            return false;
+        e->pos++;
+        if (scroll(e))
+            return true;
+        echo("\033[C");
         return false;
     }
     if (u == U_UP || u == U_DOWN)
         return browse(e, u == U_UP);
     if (u == U_TAB || (!u && cp == '\t'))
-        return sh_complete(e->line, &e->len, &e->pos, line_max);
+        return sh_complete(e->line, &e->len, &e->pos, LINE_MAX);
     if (cp >= 0x20 && cp < 0x7f && !(ev->mods & (INPUT_MOD_CTRL | INPUT_MOD_ALT)))
         return insert(e, (char)cp);
     return false;
@@ -304,19 +407,29 @@ static bool edit_key(struct edit *e, const struct input_key_event *ev)
 
 /* The next key for the line editor: first what was typed while the last
  * command ran. While programs run in the background, their output is
- * shown as it comes (over the line, which is drawn again below it). */
-static void next_key(struct input_key_event *ev, const struct edit *e)
+ * shown as it comes (over the line, which is drawn again below it). While
+ * a line is being edited, a resize of the terminal redraws it within
+ * RESIZE_POLL_NS (the console doesn't say: the shell asks); an empty line
+ * waits without waking. */
+static void next_key(struct input_key_event *ev, struct edit *e)
 {
     if (sh_typeahead(ev))
         return;
-    while (sh_jobs_running()) {
-        if (sh_get_key(ev, now() + SH_JOBS_POLL_NS))
+    for (;;) {
+        bool jobs = sh_jobs_running();
+        if (!jobs && !e->len) {
+            sh_get_key(ev, DEADLINE_NEVER);
             return;
-        if (sh_jobs_poll(true))
+        }
+        if (sh_get_key(ev, now() + (jobs ? SH_JOBS_POLL_NS : RESIZE_POLL_NS)))
+            return;
+        bool again = jobs && sh_jobs_poll(true);
+        if (e->len && resized(true))
+            again = true;
+        if (again)
             redraw(e);
         sh_flush();
     }
-    sh_get_key(ev, DEADLINE_NEVER);
 }
 
 /* ---- bracketed paste (sh_paste.c) ------------------------------------------------ */
@@ -343,7 +456,7 @@ static unsigned marker_keys(struct input_key_event *k, uint64_t gap, enum sh_pas
 static void paste_insert(struct edit *e, const struct input_key_event *k)
 {
     char c = sh_paste_byte(k);
-    if (!c || e->len >= line_max)
+    if (!c || e->len >= LINE_MAX)
         return;   /* dropped: not a character the line holds, or the line is full */
     memmove(e->line + e->pos + 1, e->line + e->pos, e->len - e->pos);
     e->line[e->pos++] = c;
@@ -390,6 +503,7 @@ static void read_line(char *buf)
     struct edit e = { .len = 0 };
     sh_jobs_report();   /* the background programs that ended */
     set_prompt();       /* the directory may have changed */
+    (void)resized(false);   /* and the width, while the last command ran */
     if (!asked)   /* once: the console keeps it for this shell's channel (term.c) */
         echo("\033[?2004h");
     asked = true;
@@ -401,6 +515,10 @@ static void read_line(char *buf)
             ev = replay[ireplay++];
         else
             next_key(&ev, &e);
+        if (resized(e.len > 0)) {   /* before the key: its echo assumes the row's width */
+            redraw(&e);
+            sh_flush();
+        }
         if (sh_paste_is_esc(&ev) && ireplay >= nreplay) {
             if (paste_or_keys(&e, &ev))
                 redraw(&e);
@@ -412,7 +530,7 @@ static void read_line(char *buf)
             (!u && (ev.codepoint == '\n' || ev.codepoint == '\r'))) {
             e.line[e.len] = '\0';
             memcpy(buf, e.line, e.len + 1);
-            echo("\r\n");
+            end_line(&e, "");
             sh_flush();
             return;
         }

@@ -110,6 +110,11 @@ to the full-screen console until G1 is signed off on the PC.
   Its prompt says where it is: `jam:/>` at the start, `jam:/data/music>`
   after a `cd`. `help` lists the everyday commands, `help dev` the
   developer ones (tests, hardware, the kernel), `help <command>` any one.
+- A command line holds up to 240 characters in a terminal of any width.
+  A line longer than the terminal scrolls sideways on its row to keep the
+  cursor in view, with `<` or `>` where text is cut off; Enter shows it
+  whole. The arrows, Home and End, Backspace and Delete, Ctrl+A/E/U, Tab
+  completion, the history (up and down) and a paste all work on it.
 - Programs in the background: `run prog args &` (or `prog &`) gives the
   prompt back at once; `jobs` lists them, `kill %2` ends one, and the next
   prompt says when one ends (`[2] done: utest (exit 0)`). Such a program

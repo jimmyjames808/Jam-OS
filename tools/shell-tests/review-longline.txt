@@ -1,7 +1,10 @@
-# Review: a command line longer than the screen row (before the fix). The console's
-# current line is one row: the echo wraps (commits a row), and every redraw
-# ("\r" + prompt + the whole line) committed another copy of the first row
-# (7 copies in the shot). Now the shell caps the line at the row width.
+# Review: a command line longer than the screen row. The console's current
+# line is one row: an echo past its end wraps (commits a row), and a redraw
+# ("\r" + prompt + the whole line) would commit another copy of the first
+# row each time. The shell keeps the line on its row, scrolled sideways
+# (user/services/shell/main.c): the shot shows one row, '<' at its left; at
+# Enter the whole line is written once, wrapped, and runs (the shell says
+# the 186-character word, 180 a's, an X and 5 b's, is an unknown command).
 wait 120 Jam OS shell
 wait {prompt}
 sleep 1
@@ -14,7 +17,7 @@ type X
 sleep 1
 shot longline
 send
-wait unknown command
+wait aaaaaXbbbbb: unknown command
 sleep 0.5
 shot longline-after
 send reboot -f

@@ -1,0 +1,136 @@
+# Lines longer than the terminal is wide (user/services/shell/main.c: the
+# line editor scrolls a long line sideways in its row, with a marker at a
+# cut edge, and runs all of it, up to LINE_MAX = 240 characters, at any
+# width). A plain boot with a USB keyboard and mouse at OVMF's 1280x800:
+# terminal 1 (full width, cells 9x21 from (18, 58)) prints a 212-character
+# line, whose two rows a triple click and a drag select and Super+C copies;
+# `term` opens terminal 2 in the right half (about 67 columns), which takes
+# the keys. There: a 208-character line typed and run whole; a 194-character
+# line edited in its middle (96 lefts, "XYZ", a backspace: `longline-mid`);
+# both recalled from the history (up, up) and run again; the copied text
+# pasted (Ctrl+Shift+V, bracketed) and run whole; a long line typed, the gap
+# between the tiles dragged 60 pixels left and back while it is on the line
+# (`longline-resize-1`, `-2`: the line redrawn on its one row at each new
+# width), then more typed and run whole. Each output waited for is built so
+# it never appears in what was typed ("mark-"0123 types, mark-0123 shows;
+# $T and $Q expand only when run).
+# Run: QEMU_INPUT=tools/shell-tests/longline.txt \
+#      QEMU_USB="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3" \
+#      tools/qemu-test.sh <dir> longline shell
+wait 120 Jam OS shell
+wait {prompt}
+seen 30 report mouse ready
+seen 30 compositor: keyboard 0627:0001 ready
+# the boot's last log lines in first, so the text starts where it should
+sleep 4
+send T=x
+wait {prompt}
+send Q=qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+wait {prompt}
+send clear
+wait {prompt}
+# row 0: the command; rows 1 and 2: its 212 characters (echo L-$T-, 200 q, -R)
+send echo 'echo L-$T-'$Q$Q$Q$Q$Q'-R'
+wait 10 qqqqqqqqqq-R
+wait {prompt}
+sleep 1
+# a triple click on row 1, the third press dragged down to row 2 (by lines)
+pointer 40 89
+monitor mouse_button 1
+monitor mouse_button 0
+monitor mouse_button 1
+monitor mouse_button 0
+monitor mouse_button 1
+monitor mouse_move 0 6
+monitor mouse_move 0 6
+monitor mouse_move 0 6
+monitor mouse_move 0 6
+monitor mouse_button 0
+sleep 1
+monitor sendkey meta_l-c
+wait 10 console: terminal 1: copied 213 bytes
+
+send term
+wait 10 terminal 2 opens
+wait 30 Jam OS shell
+wait 10 {prompt}
+sleep 2
+# terminal 2's shell has variables of its own
+send T=x
+wait {prompt}
+
+# typed and run whole
+send echo "mark-"0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"-end"
+wait 10 mark-0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789-end
+wait {prompt}
+
+# edited in the middle: between the A's and the B's
+type echo "mid-"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"-end"
+type \e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D\e[D
+type XYZ\x7f
+sleep 1
+shot longline-mid
+type \r
+wait 10 mid-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXYBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB-end
+wait {prompt}
+
+# the history: the last line, then the one before
+type \e[A\r
+wait 10 mid-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXYBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB-end
+wait {prompt}
+type \e[A\e[A\r
+wait 10 mark-0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789-end
+wait {prompt}
+
+# pasted: one line, the rows' break a space, run by Enter
+monitor sendkey ctrl-shift-v
+wait 10 console: terminal 2: pasted 213 bytes (bracketed)
+# sendkey holds its keys 100 ms: Ctrl and Shift let go before typing on
+sleep 1
+shot longline-paste
+send
+wait 10 L-x-qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+wait 10 qqqqqqqqqqqqqqqqqqqq-R
+wait {prompt}
+
+# a resize while a long line is on it: the gap (x 640) dragged left, then back
+type echo "size-"012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
+sleep 1
+pointer 640 400
+sleep 0.3
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_move -6 0
+monitor mouse_button 0
+sleep 1
+shot longline-resize-1
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+monitor mouse_move 6 0
+monitor mouse_button 0
+sleep 1
+shot longline-resize-2
+send "-done"
+wait 10 size-012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789-done
+wait {prompt}
+
+send reboot -f
+wait reboot: resetting
