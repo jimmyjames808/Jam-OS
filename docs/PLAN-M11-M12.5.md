@@ -67,16 +67,21 @@ Findings first, then fixes, as every review; a join; the PC sign-off.
 
 ## Wave 4: M12.1, the code check
 
-Scope (the owner, 2026-10-07): only the code changed or added since
-M8.6's check (commit 2079f350, "M8.6 done"), plus the unchanged callers
-of every interface M12 changed. It also takes G1's docs pass and G1's
-independent review-and-fix (moved from G1 by the owner the same day).
+Rescoped (the owner, 2026-10-07): not a sweep of everything changed since
+M8.6's check (about 166,000 lines), but where reading finds what tests
+don't:
 
-Once M12 has reshaped the interfaces, fresh agents read the whole code base
-as M8.6's check did, in five tracks (kernel core, the rest of the kernel,
-drivers, services, libraries and tools): findings first, then fixes with a
-test each, then All tests and `soak 10` on the PC. It is the clean base
-POSIX is built on.
+1. Every line M12 changes, and the unchanged callers of each interface it
+   changes: M12's own independent review (M12-PLAN.md Q20).
+2. G1's code, which was never reviewed whole: the compositor, libjwl,
+   libfun's Wayland back end, the console's window mode, init's terminals
+   and desktop wiring (about 32,000 lines), with G1's docs pass.
+3. The kernel's changes since M8.6 (about 20,000 lines).
+
+Unchanged user space that the tests and soaks already exercise is left
+to them; part of the time saved goes into hostile and fuzz tests in X1's
+style. Four or five agents, findings first, then fixes with a test each,
+then All tests and `soak 10` on the PC.
 
 ## Wave 5: M12.5, M12.7 and M13 together
 
