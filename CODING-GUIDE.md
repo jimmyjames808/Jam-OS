@@ -216,6 +216,25 @@ be compatible with that.
 
 ---
 
+### Build commands
+
+| Command | What it does |
+|---|---|
+| `make` | the kernel, the user programs and the boot filesystem image (not the disk image) |
+| `make image` | `build/jamos.img`: the USB image, a FAT32 boot partition with Limine (UEFI) and a FAT32 data partition |
+| `make run` | build the image and boot it in QEMU |
+| `make debug` | the same, stopped for gdb on :1234 |
+| `make usb DEV=/dev/diskN` | write the image to a USB stick, erasing it ([docs/HARDWARE.md](docs/HARDWARE.md)) |
+| `make flash` | update a stick that already has Jam OS: kernel, boot image and boot menu only (the stick's kernel and boot image kept as "Jam OS (previous build)") |
+| `make check` | generated code current, the driver isolation check, the docs check, the include order, the signing tool's test vectors |
+| `make includes` | put `#include` lines in the order the check wants |
+| `make KTESTS=0` | a kernel without the in-kernel tests (into `build/noktests/`) |
+| `make syscalls` | regenerate the syscall glue after editing `abi/syscalls.def` |
+| `make idl` | regenerate `drivers/include/idl/` after editing `abi/idl/` |
+| `make wl` | regenerate the Wayland tables and stubs (`user/include/jwl/`, `user/lib/jwl_*.c`) from `third_party/wayland-protocols/` |
+| `make compdb` | `compile_commands.json` for editors |
+| `make clean` | remove `build/` |
+
 ## 3. C rules
 
 The build is `-std=gnu17 -Wall -Wextra -Werror -Wvla`, freestanding, and
