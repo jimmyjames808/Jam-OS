@@ -190,7 +190,14 @@ differs from the recommendation below, this note wins:
   splits the focused tile in half along its longer side (a screen turned
   from floating to tiling builds its tree in the windows' order, each
   splitting the last); a window that goes leaves its sibling the whole of
-  their parent. Each split keeps its own ratio, remembered per screen.
+  their parent. When the halves would be narrower than 200 pixels (split
+  across) or shorter than 120 (split down), about 20 columns or 5 lines
+  of a terminal, the largest tile splits instead (added with the 16
+  terminals, 2026-10-07: past about eight windows the spiral left
+  slivers a few pixels wide, and at 1280x800 the 16th tile came out
+  inside out; now 16 terminals make a 4x4 grid of about 312x182 pixels at
+  1280x800; utest `wm_tile_small`). Each split keeps its own ratio,
+  remembered per screen.
   Resizing: drag the gap between two tiles (it lights up apricot, resize
   cursor), or Super+Alt+direction pushes the focused tile's edge that way
   (about 48 px at 1x; with no edge on that side its other edge moves that
@@ -1578,7 +1585,22 @@ the first closes with its close circle, Super+Q or `exit` (its shell gets
 and closes; `initctl.terminal` opens the lowest number free (1 again),
 whose window is titled "Terminal" (the compositor's busy cursor waits for
 that name); with no terminal the desktop shows its wallpaper and strip
-and Super+Enter or the search box opens one. The services that waited
+and Super+Enter or the search box opens one. At most 16 are open at once
+(`TERMINALS_MAX` in `<deskapps.h>`, 8 until 2026-10-07; init's service
+table, its control channels and the names `console-<n>`/`shell-<n>`,
+`console-16` included, follow it): one more is refused (initctl.terminal's
+ERR_NO_RESOURCES), and where nothing would show it the desktop says so,
+the notice "No more terminals / 16 is the most. Close one first." for
+Super+Enter and the search box (`desk_terminals_full`, in the log as
+"compositor: notice <n>: ..." like every notice); a key held or pressed
+again while that card is still up posts no second one (the log says
+"its notice is still up"). The shell's `term` says "term: 16 terminals
+is the most; close one to open another". A terminal costs two
+processes: in QEMU's 4x4 grid at 1280x800 each console's job held 5 to
+6 MiB (its text, scrollback and fonts, and its window's buffers, which
+grow with the window: a full-screen 2560x1440 one is about 14 MiB a
+buffer) and each shell's about 120 KiB; 16 terminals used about 97 MiB
+more than one (`free`, `terms.txt`). The services that waited
 for the first console wait only for its first start (the order at
 boot). Under `nocomp` the one console and its shell are never given up
 (`terms_never_given_up`) and `exit` says the terminal stays. `help` lists

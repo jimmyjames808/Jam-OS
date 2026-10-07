@@ -4,6 +4,7 @@
  * terminal does the same. With a command, the new terminal's shell runs
  * it first, as if typed at its prompt, and stays. Without a compositor (a
  * boot without one) there is one terminal. */
+#include <deskapps.h>
 #include <idl/initctl.h>
 #include "sh.h"
 
@@ -36,7 +37,7 @@ SH_CMD(term)
         return 1;
     }
     if (st == ERR_NO_RESOURCES) {
-        sh_tty("term: as many terminals are open as there may be\n");
+        sh_tty("term: %u terminals is the most; close one to open another\n", TERMINALS_MAX);
         return 1;
     }
     if (st != OK) {

@@ -23,6 +23,7 @@
  *
  * Exits 2 when the console goes away (init restarts the console, then the
  * shell with the new console's channel). */
+#include <deskapps.h>
 #include <idl/console.h>
 #include <idl/initctl.h>
 #include <wants.h>
@@ -483,8 +484,8 @@ static void take_args(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (!strncmp(a, "term=", 5) && a[5] >= '1' && a[5] <= '9' && !a[6])
-            sh_term_no = (unsigned)(a[5] - '0');
+        if (!strncmp(a, "term=", 5) && terminal_number(a + 5))
+            sh_term_no = terminal_number(a + 5);   /* 1 to TERMINALS_MAX */
         else if (!strncmp(a, "soak=", 5))
             soak_arg = a + 5;
         else if (!strncmp(a, "run=", 4) && a[4])

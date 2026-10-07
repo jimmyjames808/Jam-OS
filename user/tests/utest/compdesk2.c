@@ -22,6 +22,9 @@
  * top; one without buttons goes after LOOK_NOTE_SHOW_MS, one with buttons
  * stays until one is pressed (ctl_notify_answered), a click on a plain
  * card sends it; at most NOTIFY_MAX, the oldest plain one pushed out.
+ * Init refusing a terminal (desk_terminals_full) posts "No more terminals"
+ * with the limit's number, and not again while that card is up (a held
+ * Super+Enter): once it has gone, the next refusal posts it again.
  * t_desk_notify_held: no notice shows while the boot splash is up (the
  * wait for it, its overlay on the screen, its fade-out): each gets its id
  * and waits; a withdrawn one is dropped unseen; when the splash is over
@@ -394,10 +397,49 @@ static bool notify_steps(void)
     return true;
 }
 
+/* initctl.terminal refused (TERMINALS_MAX open): one notice while it is up. */
+static bool terminals_full_steps(void)
+{
+    while (notes.n)
+        notify_withdraw(notes.cards[0].id);   /* (animations off: gone at once) */
+    uint32_t a = desk_terminals_full();
+    CHECK(a);
+    CHECK_EQ(notes.n, 1);
+    CHECK_EQ(notes.cards[0].id, a);
+    CHECK(!strcmp(notes.cards[0].title, "No more terminals"));
+    CHECK(!strcmp(notes.cards[0].body, "16 is the most. Close one first."));
+    /* the body's one line fits the card (popdraw.c: right of the tile) */
+    int32_t room = LOOK_NOTE_W - 2 * LOOK_NOTE_PAD_X - LOOK_NOTE_TILE - 10;
+    CHECK(desk_font.r12 && desk_text_w(desk_font.r12, notes.cards[0].body) <= room);
+    CHECK(desk_text_w(desk_font.m13, notes.cards[0].title) <= room);
+    CHECK(notes.cards[0].letter == 'T' && notes.cards[0].nbuttons == 0);
+    /* asked again (Super+Enter held: its repeats): no second card */
+    CHECK_EQ(desk_terminals_full(), 0);
+    CHECK_EQ(desk_terminals_full(), 0);
+    CHECK_EQ(notes.n, 1);
+    /* gone after its 5 s: the next refusal shows it again */
+    notify_tick(now() + (LOOK_NOTE_SHOW_MS + 10) * NS_PER_MS);
+    CHECK_EQ(notes.n, 0);
+    uint32_t b = desk_terminals_full();
+    CHECK(b && b != a);
+    CHECK_EQ(notes.n, 1);
+    /* a click sends it sooner: again the next refusal shows it */
+    struct comp_box c = notes.cards[0].box;
+    CHECK(press_btn(c.x1 + 5, c.y1 + 5, BTN));
+    release_at(c.x1 + 5, c.y1 + 5);
+    CHECK_EQ(notes.n, 0);
+    CHECK(desk_terminals_full() != 0);
+    return true;
+}
+
 bool t_desk_notify(void)
 {
     desk_test_start(COMP_FLOATING);
-    bool ok = notify_steps();
+    bool ok = notify_steps() && terminals_full_steps();
+    fk_close_all();
+    /* without the desktop: no card (the log says so) */
+    wm_test_start(COMP_FLOATING);
+    ok = ok && desk_terminals_full() == 0;
     fk_close_all();
     return ok;
 }

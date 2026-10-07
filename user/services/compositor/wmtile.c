@@ -14,7 +14,12 @@
  *   - A new window splits the focused tile in half (the last one, if the
  *     focus is elsewhere) along its longer side: the old window keeps the
  *     left or top half, the new one takes the other. The last tile is the
- *     one reached by always taking b: the newest corner of the spiral.
+ *     one reached by always taking b: the newest corner of the spiral. If
+ *     the halves would be narrower than WM_TILE_MIN_W (split across) or
+ *     shorter than WM_TILE_MIN_H (split down), about 20 columns or 5 lines
+ *     of a terminal, the largest tile splits instead:
+ *     with many windows (16 terminals) no tile shrinks to a sliver, and
+ *     the spiral turns into a grid.
  *   - A screen switched from floating (its tree made from nothing) takes
  *     its windows in the order they opened, each splitting the last.
  *   - A window that goes (closed, unmapped, minimised, moved to another
@@ -81,9 +86,13 @@ static void split_boxes(struct tile_node *n)
     if (n->across) {
         n->a->box.x2 = r.x1 + part;
         n->b->box.x1 = r.x1 + part + WM_GAP;
+        if (n->b->box.x1 > r.x2)
+            n->b->box.x1 = r.x2;   /* a room narrower than the gap: b empty, never inside out */
     } else {
         n->a->box.y2 = r.y1 + part;
         n->b->box.y1 = r.y1 + part + WM_GAP;
+        if (n->b->box.y1 > r.y2)
+            n->b->box.y1 = r.y2;
     }
 }
 
@@ -211,14 +220,40 @@ static bool tiling(const struct desk_screen *s)
     return s->kind == SCREEN_NORMAL && s->layout == COMP_TILING;
 }
 
+/* Would halving t (along its longer side) make halves narrower than
+ * WM_TILE_MIN_W, or shorter than WM_TILE_MIN_H? (The other side stays.) */
+static bool too_small_to_split(const struct tile_node *t)
+{
+    int32_t w = t->box.x2 - t->box.x1, h = t->box.y2 - t->box.y1;
+    return w >= h ? (w - WM_GAP) / 2 < WM_TILE_MIN_W : (h - WM_GAP) / 2 < WM_TILE_MIN_H;
+}
+
+/* s's largest tile by area (the first in pre-order of equals). */
+static struct tile_node *largest_leaf(struct tile_node *root)
+{
+    struct tile_node *best = NULL;
+    int64_t most = -1;
+    for (struct tile_node *n = root; n; n = next_node(n)) {
+        int64_t area = n->a ? -1
+                            : (int64_t)(n->box.x2 - n->box.x1) * (n->box.y2 - n->box.y1);
+        if (area > most) {
+            most = area;
+            best = n;
+        }
+    }
+    return best;
+}
+
 /* The tile a new window on s splits: the focused one if it is on s, else
- * the last; NULL: none (the tree is empty). */
+ * the last; if halving that one would make a tile too small to use, the
+ * largest instead (many windows: no slivers, a spiral turns into a grid);
+ * NULL: none (the tree is empty). */
 static struct tile_node *split_target(const struct desk_screen *s, bool fresh)
 {
     const struct wm_window *f = wm_focused();
-    if (!fresh && f && f->leaf && f->tiled_on == s)
-        return f->leaf;
-    return last_leaf(s->tree);
+    struct tile_node *t = !fresh && f && f->leaf && f->tiled_on == s ? f->leaf
+                                                                     : last_leaf(s->tree);
+    return t && too_small_to_split(t) ? largest_leaf(s->tree) : t;
 }
 
 static void add_missing(struct desk_screen *s)

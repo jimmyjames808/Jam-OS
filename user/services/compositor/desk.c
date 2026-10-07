@@ -50,6 +50,7 @@ static struct {
     int minute;                    /* the strip's clock's minute (-1: not drawn yet) */
     char launching[16];            /* the app being launched ("" none) */
     uint64_t busy_until;           /* 0: not busy */
+    uint32_t full_note;            /* the "No more terminals" notice's id (0: none yet) */
 } dk;
 
 /* ---- start --------------------------------------------------------------------------------- */
@@ -293,6 +294,28 @@ void desk_launch_awaits(const char *title)
 void desk_launch_failed(void)
 {
     busy_set(false);
+}
+
+uint32_t desk_terminals_full(void)
+{
+    if (dk.full_note && notify_live(dk.full_note)) {   /* one at a time: a key held, or again */
+        printf("compositor: no new terminal: %u are open, and its notice is still up\n",
+               TERMINALS_MAX);
+        return 0;
+    }
+    char body[NOTIFY_TEXT_MAX];   /* one line of the card (the longer words: the shell's `term`) */
+    snprintf(body, sizeof(body), "%u is the most. Close one first.", TERMINALS_MAX);
+    struct notify_spec n = { .title = "No more terminals", .body = body, .letter = 'T',
+                             .colour = LOOK_JAM_RASPBERRY };   /* the search box's Terminal tile */
+    uint32_t id = notify_post(&n);
+    if (id) {
+        printf("compositor: notice %u: %s: %s\n", id, n.title, body);
+        dk.full_note = id;
+    } else {
+        printf("compositor: no new terminal: %u are open (no desktop for the notice)\n",
+               TERMINALS_MAX);
+    }
+    return id;
 }
 
 bool desk_busy(void)

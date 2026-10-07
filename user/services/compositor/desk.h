@@ -441,6 +441,12 @@ void     desk_window_mapped(const struct wm_window *ww);
  * (init answered "Terminal 2"); or the launch was refused: not busy. */
 void     desk_launch_awaits(const char *title);
 void     desk_launch_failed(void);
+/* init refused a terminal (Super+Enter, the search box's Terminal or "Run
+ * ... in a terminal"): TERMINALS_MAX are open. The notice "No more
+ * terminals / 16 is the most. Close one first.", said in the log as every
+ * notice is; not again while that one is still up (a held key's repeats,
+ * presses in a row): its id, 0 when none was posted. */
+uint32_t desk_terminals_full(void);
 
 /* ---- the drawing (stripdraw.c, menudraw.c, popdraw.c, frost.c, ui.c) ------------------------- */
 

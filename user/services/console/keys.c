@@ -15,6 +15,7 @@
  * never gets one, so the shell's line editor reads nothing but keys. With
  * no such focus the wheel scrolls the console back while the console has
  * the screen, and the rest of the report is dropped. */
+#include <deskapps.h>
 #include <idl/initctl.h>
 #include <termkeys.h>
 #include "console.h"
@@ -159,7 +160,8 @@ static void terminal_said(status_t st)
         n = snprintf(line, sizeof(line), "[another terminal needs the compositor: this boot "
                                          "has none]");
     else if (st == ERR_NO_RESOURCES)
-        n = snprintf(line, sizeof(line), "[no more terminals: as many are open as there may be]");
+        n = snprintf(line, sizeof(line), "[no more terminals: %u is the most; close one to open "
+                                         "another]", TERMINALS_MAX);
     else
         n = snprintf(line, sizeof(line), "[no new terminal: %s]", status_str(st));
     notice_out(line, (size_t)n);

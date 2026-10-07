@@ -30,8 +30,11 @@
  *     its root resource allows it (RIGHT_ROOT_REBOOT); if not, it says so
  *     and takes keys again.
  *   - Super+Enter: initctl.terminal, another terminal window (one ask at
- *     a time; a refusal is said in the log); the search box's "Run ... in
- *     a terminal" the same with its command (ctl_run_in_terminal).
+ *     a time; a refusal is said in the log, and when TERMINALS_MAX are
+ *     open, ERR_NO_RESOURCES, on the screen too: desk_terminals_full's
+ *     "No more terminals" notice, one while it is up); the search box's
+ *     "Run ... in a terminal" the same with its command
+ *     (ctl_run_in_terminal).
  *   - the search box's apps (ctl_launch): "terminal" is initctl.terminal,
  *     any other name initctl.launch, which init does only for its fixed
  *     list of desktop apps (<deskapps.h>): the compositor can't start
@@ -520,7 +523,9 @@ static void init_event(void)
             uint8_t number = 0;
             st = initctl_terminal_result(rep, &m, &number);
             term_asked = false;
-            if (st != OK)
+            if (st == ERR_NO_RESOURCES)
+                (void)desk_terminals_full();   /* all open: the "No more terminals" notice */
+            else if (st != OK)
                 printf("compositor: no new terminal (%s)\n", status_str(st));
             if (term_busy && st == OK) {   /* its window: "Terminal <n>", the first's
                                             * "Terminal" (console/window.c) */

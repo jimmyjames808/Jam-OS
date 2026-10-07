@@ -90,9 +90,10 @@ a real desktop PC, which is where every milestone is tested.
 - A desktop (G1, being built): a compositor of our own that speaks
   Wayland draws the screen, and the shell runs in a terminal window on
   the jam wallpaper. Super+Enter (or `term`) opens another terminal, up
-  to eight; apps open windows of their own (`jamjar &`). Windows tile by
-  default (each new one halves the focused tile; drag the gap between two
-  to resize them) or float (moved and raised with the mouse); Super+T
+  to 16 (one more is refused with a "No more terminals" notice); apps
+  open windows of their own (`jamjar &`). Windows tile by default (each
+  new one halves the focused tile, or the largest once that would be too
+  small; drag the gap between two to resize them) or float (moved and raised with the mouse); Super+T
   switches the screen, and the choice is kept in the settings. Keys go to
   the focused window only, but for the window keys (Super is the logo key;
   a direction is H/J/K/L or an arrow):

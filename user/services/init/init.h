@@ -16,6 +16,7 @@
  * main.c or shell.c mounts; the rest come from devmgr (mounts.c). */
 #pragma once
 
+#include <deskapps.h>
 #include <os.h>
 #include <update.h>
 
@@ -93,7 +94,7 @@ void     mounts_settle(void);
 /* Who holds a control channel: the shell may ask everything, the
  * compositor reboot, terminal and launch, and each terminal's console
  * (CTL_CONSOLE + its index) only reboot and terminal. */
-#define TERM_MAX 8   /* terminals at most, the first included (terms.c) */
+#define TERM_MAX TERMINALS_MAX   /* terminals at most, the first included (terms.c): 16 */
 enum { CTL_SHELL, CTL_COMPOSITOR, CTL_CONSOLE, CTL_COUNT = CTL_CONSOLE + TERM_MAX };
 
 /* A new control channel for holder `who`, replacing its old one (whose
@@ -244,12 +245,14 @@ bool     terms_never_given_up(unsigned i);
 /* initctl.terminal: open another terminal; *number: its number (the
  * lowest free one, 1 included). cmd: a line its shell runs first ("": none; at most
  * TERM_CMD_MAX - 1 bytes, the caller's checked). ERR_NOT_SUPPORTED: no
- * compositor; ERR_NO_RESOURCES: TERM_MAX are open. Its console and shell
- * start at the loop's next turn. */
+ * compositor; ERR_NO_RESOURCES: TERM_MAX are open (the compositor posts
+ * its "No more terminals" notice, the shell's `term` says so). Its
+ * console and shell start at the loop's next turn. */
 #define TERM_CMD_MAX 128
 status_t terms_open(const char *cmd, uint8_t *number);
-/* "console-<n>", "shell-<n>" (n 2 to TERM_MAX): terminal n's service i
- * ("console" and "shell" are the first's, shell.c). */
+/* "console-<n>", "shell-<n>" (n 2 to TERM_MAX: "console-16" too):
+ * terminal n's service i ("console" and "shell" are the first's,
+ * shell.c). */
 bool     terms_named(const char *name, unsigned *i);
 /* /data has come: the settings' terminal.font (smooth or bitmap) to the
  * consoles started from now on ("font=bitmap"), and, if it changed, to

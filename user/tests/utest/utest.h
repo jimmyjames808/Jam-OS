@@ -583,6 +583,7 @@ bool t_wm_layout_setting(void);
 /* compwm2.c, compwm3.c: tiling's dwindle tree, its gaps, the window keys,
  * Super+drag and the glide, on the same harness. */
 bool t_wm_tile_tree(void);
+bool t_wm_tile_small(void);
 bool t_wm_tile_gaps(void);
 bool t_wm_tile_push(void);
 bool t_wm_tile_float(void);

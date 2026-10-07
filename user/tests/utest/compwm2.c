@@ -11,6 +11,10 @@
  * sibling their parent's room; a split's ratio set by its gap, clamped to
  * 15-85%, kept per screen; two windows swap tiles; a screen switched from
  * floating builds its tree in the windows' order, each splitting the last.
+ * t_wm_tile_small: a focused tile too small to halve (the halves would be
+ * under WM_TILE_MIN_W wide, or WM_TILE_MIN_H high) isn't split: the
+ * largest tile is (the new window's first configure is for that tile). A
+ * narrow tall tile still splits down (t_wm_tile_gaps' stacked gap).
  * t_wm_tile_gaps: a gap takes presses 12 pixels across centred on it (not
  * under a maximised window), shows the resize arrows and its bar lit while
  * hovered (not before a mouse first moves the pointer, which starts on the
@@ -152,6 +156,44 @@ bool t_wm_tile_tree(void)
 {
     wm_test_start(COMP_TILING);
     bool ok = tree_insert_steps() && tree_ratio_steps() && tree_screens_steps();
+    fk_close_all();
+    return ok;
+}
+
+/* ---- small tiles ------------------------------------------------------------------------ */
+
+static bool tile_small_steps(void)
+{
+    /* each new window splits the focused (newest) tile: a spiral */
+    for (unsigned i = 0; i < 5; i++) {
+        if (i)
+            seat_focus(win(i - 1));
+        CHECK(fk_open(&fks[i], 300, 200, false));
+    }
+    CHECK(tile_is(0, LEFT) && tile_is(1, RTOP));
+    int32_t across = part(631, TILE_ONE / 2);   /* 313: the bottom right split across */
+    CHECK(tile_is(2, ((struct comp_box){ 643, 403, 643 + across, 794 })));
+    int32_t down = part(391, TILE_ONE / 2);     /* 193: then its right part down */
+    struct comp_box t3 = { 643 + across + WM_GAP, 403, 1274, 403 + down };
+    struct comp_box t4 = { t3.x1, t3.y2 + WM_GAP, 1274, 794 };
+    CHECK(tile_is(3, t3) && tile_is(4, t4));
+    /* the newest, 312x192, halved across would leave 153 wide: under the
+     * minimum, so the largest tile (the left half) splits instead, down */
+    CHECK((t4.x2 - t4.x1 - WM_GAP) / 2 < WM_TILE_MIN_W);
+    seat_focus(win(4));
+    struct comp_box want = { 6, 403, 637, 794 };
+    CHECK(fk_open(&fks[5], 300, 200, false));
+    CHECK(tile_is(0, ((struct comp_box){ 6, 6, 637, 397 })) && tile_is(5, want));
+    CHECK(tile_is(4, t4) && tile_is(3, t3));
+    for (unsigned i = 0; i < 6; i++)
+        CHECK(fills_box(i, tile_inner(win(i)->tile)));
+    return true;
+}
+
+bool t_wm_tile_small(void)
+{
+    wm_test_start(COMP_TILING);
+    bool ok = tile_small_steps();
     fk_close_all();
     return ok;
 }
