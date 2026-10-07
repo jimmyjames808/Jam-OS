@@ -1,25 +1,22 @@
 #!/bin/sh
-# The README's pictures (docs/images/desktop-*.png, panic-screen.png),
-# taken in QEMU at the PC's 2560x1440 (QEMU's VGA with that mode), so they
-# can be taken again after the desktop changes:
-#   1. a plain boot (the desktop) with a usb-kbd, a usb-mouse, an
-#      hda-output codec into a WAV file (so Jamjar really plays), the
-#      real-time clock at a fixed time, and a second stick holding the
-#      music library at /usb0/music, running tools/shell-tests/readme.txt:
-#      Jamjar playing beside two terminals (tiled), the same windows
-#      floating with a notice, the search box, the volume popover;
-#   2. a plain boot that panics on purpose (`crash pf yes`) with the
-#      restarting screen held 5 s (`panichold=5000`): the calm panic
-#      screen with its code.
+# The README's pictures (docs/images/desktop-tiled.png, desktop-search.png,
+# desktop-floating.png), taken in QEMU at the PC's 2560x1440 (QEMU's VGA
+# with that mode), so they can be taken again after the desktop changes:
+# one plain boot (the desktop) with a usb-kbd, a usb-mouse, an hda-output
+# codec into a WAV file (so Jamjar really plays), the real-time clock at a
+# fixed time, and a second stick holding the music library at
+# /usb0/music, running tools/shell-tests/readme.txt: Jamjar playing beside
+# two terminals (tiled), the search box open over that same desktop, then
+# the same windows floating apart.
 # The library: a folder laid out Artist/Album/Track.mp3, e.g. the one
 # tools/readme-music.py makes from public-domain recordings (the
 # README's "Picture credits" names them); keep it outside the
 # repository. The pictures go to <outdir> as PNG (lossless, saved again
-# by Pillow with optimize: each is well under 1 MB); the search box, the
-# popover and the panic screen are cut to the part of the screen around
-# them. README_SHOTS_INSTALL=1 copies them into docs/images. Look at them
+# by Pillow with optimize: each is well under 1 MB); the search box's is
+# cut to the part of the screen around it, centred on it.
+# README_SHOTS_INSTALL=1 copies them into docs/images. Look at them
 # before committing: a change to the desktop's sizes can move a window or
-# a click (the geometry is in the script's header).
+# a click (the geometry is in readme.txt's header).
 # Needs `make image` first (plain `make` leaves build/jamos.img as it
 # was), Pillow and mtools. QEMU_SMP passes through (4 by default).
 # Usage: tools/readme-shots.sh <outdir> <music folder>; exit 0 when every
@@ -55,32 +52,38 @@ QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_EXTRA="$vga $snd $rtc" QEMU_USB="$usb" \
     tools/qemu-test.sh "$out" readme shell > "$out/readme.out" 2>&1 ||
     { echo "readme-shots: the desktop script failed (see $out/readme.log, $out/readme.out)"; ok=0; }
 rm -f "$out/readme.wav"
-if [ -z "${README_SHOTS_SCRIPT:-}" ]; then
-    printf '%s\n' "wait 120 Jam OS shell" "wait {prompt}" "sleep 2" "send crash pf yes" \
-        "wait 60 KERNEL PANIC" 'wait 10 panic screen: "Jam OS hit a problem and is restarting", JAM-' \
-        "sleep 1.5" "shot readme-panic" "wait 60 loader:      Jam OS kexec" \
-        "wait 120 the last boot panicked: " "wait {prompt}" "send reboot -f" \
-        "wait 30 reboot: resetting" > "$out/readme-panic.txt"
-    QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_EXTRA="$vga $rtc" QEMU_INPUT="$out/readme-panic.txt" \
-        tools/qemu-test.sh "$out" readme-panic shell panichold=5000 > "$out/readme-panic.out" 2>&1 ||
-        { echo "readme-shots: the panic script failed (see $out/readme-panic.log)"; ok=0; }
-fi
 rm -f "$stick"
 
-# The screenshots under their docs/images names, as palette PNGs.
+# The screenshots under their docs/images names.
 python3 - "$out" <<'PY' || ok=0
 import os, sys
 from PIL import Image
 out = sys.argv[1]
-# The tiled and floating desktops whole; the search box, the popover and
-# the panic screen as the part of the screen around them, pixel for pixel
-# (in a whole screen they would be a few dozen pixels across on the
-# README's page).
+# The tiled and floating desktops whole; the search box as the part of
+# the screen around it, pixel for pixel, the crop's centre the box's
+# centre (its bottom found in the picture: the box is a frosted panel
+# x 1000..1560 from y 216 down, readme.txt's header), up to the top.
 names = {"readme-tiled": ("desktop-tiled", None),
-         "readme-floating": ("desktop-floating", None),
-         "readme-search": ("desktop-search", (0, 0, 1600, 900)),
-         "readme-popover": ("desktop-popover", (1000, 0, 2560, 878)),
-         "readme-panic": ("panic-screen", (640, 255, 1920, 975))}
+         "readme-search": ("desktop-search", "search"),
+         "readme-floating": ("desktop-floating", None)}
+
+
+def search_bottom(im):
+    """The search box's last row: going down from its top, the last row
+    where the pixels just inside its left and right edges differ from
+    those just outside."""
+    px = im.load()
+    last = None
+    for y in range(216, 216 + 600):
+        d = max(sum(abs(px[1002, y][i] - px[996, y][i]) for i in range(3)),
+                sum(abs(px[1557, y][i] - px[1563, y][i]) for i in range(3)))
+        if d > 6:
+            last = y
+        elif last is not None and y - last > 8:
+            break
+    return last
+
+
 for shot, (name, box) in names.items():
     src = os.path.join(out, shot + ".png")
     if not os.path.exists(src):
@@ -89,14 +92,20 @@ for shot, (name, box) in names.items():
     if im.size != (2560, 1440):
         print("readme-shots: %s is %dx%d, not 2560x1440" % (shot, *im.size))
         sys.exit(1)
-    if box:
-        im = im.crop(box)
+    if box == "search":
+        bottom = search_bottom(im)
+        if bottom is None:
+            print("readme-shots: no search box in %s" % shot)
+            sys.exit(1)
+        cy = (216 + bottom) // 2   # the box's centre; the crop reaches the top
+        print("readme-shots: the search box is y 216..%d" % bottom)
+        im = im.crop((1280 - 2 * cy, 0, 1280 + 2 * cy, 2 * cy))
     dest = os.path.join(out, name + ".png")
     im.save(dest, optimize=True)
     print("readme-shots: %s.png %d KB" % (name, os.path.getsize(dest) // 1024))
 PY
 if [ "${README_SHOTS_INSTALL:-0}" = 1 ] && [ $ok = 1 ]; then
-    for n in desktop-tiled desktop-floating desktop-search desktop-popover panic-screen; do
+    for n in desktop-tiled desktop-search desktop-floating; do
         cp "$out/$n.png" docs/images/
     done
     echo "readme-shots: copied into docs/images"

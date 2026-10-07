@@ -6,11 +6,14 @@
 # room under the strip is x 6..2554, y 46..1434):
 #   readme-tiled     terminal 1 (`ps`) on the left, Jamjar playing at the
 #                    top right, terminal 2 under it
-#   readme-floating  the same windows floating (Super+T), moved apart:
-#                    Jamjar in front, the pointer on its circles, and a
-#                    notice with buttons (`notify`) in the top right
-#   readme-search    the search box (Super tapped alone), "ja" typed
-#   readme-popover   the volume popover, the notice answered first
+#   readme-search    the same desktop with the search box open (Super
+#                    tapped alone), "ja" typed: the box is centred across
+#                    the screen, x 1000..1560, its top at y 216
+#   readme-floating  the same windows floating (Super+T), sized with
+#                    Super+Alt (48 pixels a press) and dragged by their
+#                    title bars apart, none overlapping: terminal 1 at
+#                    (76,100) 958x1277, Jamjar at (1100,100) 1390x797,
+#                    terminal 2 at (1100,964) 1390x413
 # A `monitor sendkey` holds its key 100 ms: the sleeps keep Super+Alt's
 # pushes apart, so none is lost.
 wait 120 Jam OS shell
@@ -83,34 +86,44 @@ sleep 5
 pointer 1500 700
 sleep 1
 shot readme-tiled
-# a notice with buttons (it stays until one is pressed), posted from
-# terminal 2 (under Jamjar), then the focus back to Jamjar: the focused
-# window ends up in front when the screen floats
-monitor sendkey meta_l-down
+# ---- the search box over the same desktop -----------------------------------------
+monitor sendkey meta_l
 sleep 0.5
-send notify -b Yes -b No Tea? The kettle is on
-wait 10 posted
-sleep 0.5
-monitor sendkey meta_l-up
-sleep 0.5
+usbkeys ja
+sleep 1.5
+shot readme-search
+monitor sendkey esc
+sleep 1
 # ---- floating: Jamjar in front at the cascade's end (573,366), terminal 1 at
-# (513,306) behind it, terminal 2 at (543,336) at the back; each 1534 wide.
-# A title bar is 27 pixels: each window is dragged by a point 300 in and
-# 13 down its title bar.
+# (513,306) behind it, terminal 2 at (543,336) at the back; each 1534x845.
+# A title bar is 27 pixels: a window is dragged by a point 300 in and 13
+# down its title bar, and raised by a click on a part of it that shows.
+# Super+Alt+Left and Up shrink a floating window, Right and Down grow it.
 monitor sendkey meta_l-t
 sleep 3
-# Jamjar to (150,200)
+# Jamjar (focused): 3 narrower, 1 shorter, then to (1100,100)
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-up
+sleep 0.3
+sleep 0.5
 pointer 873 379
 monitor mouse_button 1
 sleep 0.2
-pointer 450 213
+pointer 1400 113
 sleep 0.2
 monitor mouse_button 0
 sleep 1
-# terminal 2: raised by a click on the end of its title bar that shows,
-# made smaller, then to (1380,790)
-pointer 2062 349
+# terminal 1: raised by its title bar left of Jamjar, to (76,100), then 12
+# narrower and 9 taller
+pointer 813 319
 monitor mouse_button 1
+sleep 0.2
+pointer 376 113
 sleep 0.2
 monitor mouse_button 0
 sleep 0.5
@@ -130,6 +143,52 @@ monitor sendkey meta_l-alt-left
 sleep 0.3
 monitor sendkey meta_l-alt-left
 sleep 0.3
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-down
+sleep 0.3
+monitor sendkey meta_l-alt-down
+sleep 0.3
+monitor sendkey meta_l-alt-down
+sleep 0.3
+monitor sendkey meta_l-alt-down
+sleep 0.3
+monitor sendkey meta_l-alt-down
+sleep 0.3
+monitor sendkey meta_l-alt-down
+sleep 0.3
+monitor sendkey meta_l-alt-down
+sleep 0.3
+monitor sendkey meta_l-alt-down
+sleep 0.3
+monitor sendkey meta_l-alt-down
+sleep 0.3
+sleep 0.5
+# terminal 2: raised by the end of its title bar showing between terminal 1
+# and Jamjar, 3 narrower and 9 shorter, then to (1100,964)
+pointer 1067 349
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.5
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-left
+sleep 0.3
+monitor sendkey meta_l-alt-up
+sleep 0.3
+monitor sendkey meta_l-alt-up
+sleep 0.3
+monitor sendkey meta_l-alt-up
+sleep 0.3
 monitor sendkey meta_l-alt-up
 sleep 0.3
 monitor sendkey meta_l-alt-up
@@ -139,85 +198,25 @@ sleep 0.3
 monitor sendkey meta_l-alt-up
 sleep 0.3
 monitor sendkey meta_l-alt-up
+sleep 0.3
+monitor sendkey meta_l-alt-up
+sleep 0.3
 sleep 0.5
 pointer 843 349
 monitor mouse_button 1
 sleep 0.2
-pointer 1680 803
+pointer 1400 977
 sleep 0.2
 monitor mouse_button 0
 sleep 1
-# terminal 1: raised the same way, made smaller, then to (1300,110)
-pointer 1850 319
+# the focus to Jamjar (a click on its title bar), the pointer on the
+# wallpaper between the windows
+pointer 1700 113
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
 sleep 0.5
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-left
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.3
-monitor sendkey meta_l-alt-up
-sleep 0.5
-pointer 813 319
-monitor mouse_button 1
-sleep 0.2
-pointer 1600 123
-sleep 0.2
-monitor mouse_button 0
-sleep 1
-# Jamjar raised again by its title bar; the pointer on its circles
-pointer 700 213
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-sleep 0.5
-pointer 188 219
+pointer 1067 1410
 sleep 1.5
 shot readme-floating
-# ---- the search box ----------------------------------------------------------------
-monitor sendkey meta_l
-sleep 0.5
-usbkeys ja
-sleep 1
-pointer 1150 292
-sleep 1
-shot readme-search
-monitor sendkey esc
-sleep 1
-# ---- the volume popover: the notice answered first (its Yes, 58 pixels into
-# the card, which is 300 wide and 10 from the right edge), then the icon
-pointer 2308 112
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-sleep 1
-pointer 2415 20
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-sleep 1.5
-pointer 2350 240
-sleep 1
-shot readme-popover
 monitor quit

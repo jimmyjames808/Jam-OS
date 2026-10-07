@@ -20,25 +20,15 @@ its own.
 
 ## A tour
 
-![Three floating windows on the jam wallpaper: Jamjar in front with the raspberry, apricot and blackcurrant circles on the left of its title bar, rounded corners and a soft shadow, two terminals behind it, and a notification card with Yes and No buttons in the top right corner](docs/images/desktop-floating.png)
+![The search box open over the same tiled desktop, centred in the picture: "ja" typed, Jamjar as the top result with "Music player" and "Enter" beside it, and a row to run "ja" in a terminal; Jamjar's library and the top bar's window chips around it](docs/images/desktop-search.png)
 
-Windows float too (Super+T switches a screen between tiling and
-floating): the jam circles close, minimise and go full screen.
+The search box (tap Super, or click "Jam OS" on the top bar) starts an
+app or runs a command in a new terminal.
 
-![The search box open under the top bar, "ja" typed: the Jamjar app as the top result and a row to run "ja" in a terminal, over the floating windows](docs/images/desktop-search.png)
+![The same three windows floating on the jam wallpaper, apart with gaps between them: a terminal listing the running programs on the left, Jamjar playing at the top right with the raspberry, apricot and blackcurrant circles on the left of its title bar, and a smaller terminal below it; rounded corners and soft shadows](docs/images/desktop-floating.png)
 
-The search box (Super, or the top bar's "Jam OS") starts an app or runs a
-command in a new terminal.
-
-![The top bar's volume popover open under the speaker icon: the volume slider at 100%, the output (QEMU line-out) and what is playing (Nocturne in C-sharp minor), beside a terminal and Jamjar](docs/images/desktop-popover.png)
-
-The top bar's icons open popovers: the volume (with what's playing), the
-network and the clock.
-
-![The calm panic screen: a dark screen with a small spinning ring, the words "Jam OS hit a problem and is restarting" and the code JAM-PF-0018 under them](docs/images/panic-screen.png)
-
-A kernel panic shows a calm screen with a short code while Jam OS
-restarts itself; the next boot saves the log, and `crashlog` shows it.
+Windows can float instead of tiling (Super+T switches a screen): the jam
+circles on a title bar close, minimise and go full screen.
 
 ## What works today
 
@@ -52,7 +42,8 @@ music player. The keys and the rest: [docs/USING.md](docs/USING.md#the-desktop).
 scheduling for hybrid P/E cores; virtual memory; capability handles,
 channels and ports; processes, threads and jobs with quotas on every
 kernel resource; a lock-order checker and a watchdog; reboot by kexec;
-the panic screen above. The design: [ARCHITECTURE.md](ARCHITECTURE.md).
+a calm panic screen with a short code (`JAM-PF-0018`) while Jam OS
+restarts itself, the panicked boot's log saved for `crashlog`. The design: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 **Drivers and hardware**: drivers are user processes, restarted by a
 device manager when they crash; a PCI core with MSI/MSI-X and DMA
