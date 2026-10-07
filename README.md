@@ -16,19 +16,22 @@ Jam OS (no IOMMU)", turns it off). It boots from a USB stick on a real
 desktop PC, which is where every milestone is tested, into a desktop of
 its own.
 
+## A tour
+
 ![The Jam OS desktop at 2560x1440, tiled: a terminal listing the running programs (ps) on the left; Jamjar, the music player, at the top right, playing a Chopin nocturne with its library of four composers and six albums, the album cover, the controls and stereo spectrum bars; a second terminal under it showing uname -a and the music folder; the top bar across the top with the window chips and the clock](docs/images/desktop-tiled.png)
 
-## A tour
+The desktop, tiled: each new window splits the one in focus, here two
+terminals and Jamjar, the music player, playing from a USB stick.
 
 ![The search box open over the same tiled desktop, centred in the picture: "ja" typed, Jamjar as the top result with "Music player" and "Enter" beside it, and a row to run "ja" in a terminal; Jamjar's library and the top bar's window chips around it](docs/images/desktop-search.png)
 
-The search box (tap Super, or click "Jam OS" on the top bar) starts an
-app or runs a command in a new terminal.
+The search box: tap Super (or click "Jam OS" on the top bar) to start an
+app or run a command in a new terminal.
 
 ![The same three windows floating on the jam wallpaper, apart with gaps between them: a terminal listing the running programs on the left, Jamjar playing at the top right with the raspberry, apricot and blackcurrant circles on the left of its title bar, and a smaller terminal below it; rounded corners and soft shadows](docs/images/desktop-floating.png)
 
-Windows can float instead of tiling (Super+T switches a screen): the jam
-circles on a title bar close, minimise and go full screen.
+The same windows floating (Super+T switches a screen): the jam circles
+on each title bar close, minimise and go full screen.
 
 ## What works today
 
