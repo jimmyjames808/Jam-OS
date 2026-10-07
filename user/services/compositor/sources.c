@@ -13,7 +13,8 @@
  * hid's character is not used: clients decode keys with the keymap) to
  * keyboard.c; mouse to pointer.c; text (a terminal's bytes) typed as
  * keys, decoded with a terminal state of the source's own; ready logged
- * with the time since the kernel started, as the console did. */
+ * with the time since the kernel started, and "input ready" once the
+ * first keyboard and the first mouse both are, as the console did. */
 #include <idl/input.h>
 #include "seat.h"
 
@@ -73,6 +74,16 @@ static status_t op_ready(void *ctx, uint8_t kind, uint16_t vendor, uint16_t prod
            (unsigned long)(t / NS_PER_S), (unsigned long)(t % NS_PER_S / NS_PER_MS),
            !first ? "" : kind == INPUT_READY_KEYBOARD ? " (the first keyboard)"
                                                       : " (the first mouse)");
+    /* The boot log's one line for "input works" (tools/usb-early-test.sh
+     * times it), as the console said it before the compositor took the
+     * input. */
+    uint64_t k = first_ready[INPUT_READY_KEYBOARD], m = first_ready[INPUT_READY_MOUSE];
+    if (first && k && m) {
+        uint64_t both = k > m ? k : m;
+        printf("compositor: input ready: the first keyboard and mouse %lu.%03lu s after the "
+               "kernel started\n", (unsigned long)(both / NS_PER_S),
+               (unsigned long)(both % NS_PER_S / NS_PER_MS));
+    }
     return OK;
 }
 

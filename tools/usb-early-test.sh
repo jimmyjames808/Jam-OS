@@ -12,8 +12,8 @@
 # test_slow): its first two attempts on a port each take a second and
 # fail, so its port is tried again after 100 ms and then 200 ms, and it
 # attaches on the third. Checked (tools/shell-tests/usb-early.txt): the
-# console's line "input ready: the first keyboard and mouse N s after the
-# kernel started" with N under EARLY_MAX (default 1.5 s; QEMU's kernel
+# compositor's line (the console's under nocomp) "input ready: the first
+# keyboard and mouse N s after the kernel started" with N under EARLY_MAX (default 1.5 s; QEMU's kernel
 # takes ~0.3 s to reach user space); that line before either slow
 # device attached; both slow ports' two failed attempts and their retries
 # at 100 and 200 ms, then attached, their keyboards ready too; `usb` lists
@@ -51,8 +51,8 @@ need "usb-bus: 7 devices (1 hub)"
 ready=$(grep -aE "input ready: the first keyboard and mouse [0-9.]+ s" "$log" | head -1 |
         sed -n 's/.*mouse \([0-9.]*\) s after.*/\1/p')
 t_slow8=$(at "usb 8: 0627:0001 high-speed") t_slow63=$(at "usb 6.3: 0627:0001 full-speed")
-t_ready=$(at "console: input ready: the first keyboard and mouse")
-n=$(grep -ac "console: keyboard 0627:0001 ready" "$log" || true)
+t_ready=$(at "input ready: the first keyboard and mouse")
+n=$(grep -ac ": keyboard 0627:0001 ready" "$log" || true)
 [ "$n" -ge 3 ] || { echo "$name: $n keyboards ready, want 3 (6.1 and the two slow ones)"; ok=0; }
 python3 - "$early_max" "${ready:-99}" "${t_ready:-99}" "${t_slow8:-0}" "${t_slow63:-0}" <<'PY' || ok=0
 import sys
