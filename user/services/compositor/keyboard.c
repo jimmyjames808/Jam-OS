@@ -61,8 +61,13 @@ static uint8_t src_mods[SOURCES_MAX];          /* each source's last modifier by
 static uint32_t locked = KEYMAP_MOD_NUM;       /* KEYMAP_MOD_CAPS / _NUM on */
 static uint32_t sent_depressed, sent_locked;   /* what the focused client was last told */
 
-/* A key event typed while no window had the keys, the modifiers then, and when. */
-#define EARLY_MAX  128
+/* A key event typed while no window had the keys, the modifiers then, and
+ * when. EARLY_MAX holds a whole shell line typed at once (240 characters,
+ * up to four events each: Shift down, the key down and up, Shift up) and
+ * its Enter: a QEMU test or a serial terminal types its line the moment
+ * the prompt shows, before the terminal's window is mapped, and 128 (64
+ * characters) cut such lines short. */
+#define EARLY_MAX  1024
 #define EARLY_KEEP (5 * NS_PER_S)
 struct early {
     uint32_t code, state;            /* evdev code, WL_KEYBOARD_KEY_STATE_* */
@@ -71,6 +76,7 @@ struct early {
 };
 static struct early early[EARLY_MAX];
 static unsigned nearly;              /* kept; more are dropped */
+static uint64_t early_dropped;       /* dropped since the last were handed over (logged then) */
 
 status_t keyboard_init(void)
 {
@@ -188,6 +194,11 @@ static void send_early(struct comp_window *w)
             (void)jwl_wl_keyboard_send_key(cl->conn, r->id, serial, t, e->code, e->state);
     }
     nearly = 0;
+    if (early_dropped) {   /* typed with no window, past what is kept: said once */
+        printf("compositor: %lu key events typed with no window were dropped (%u kept)\n",
+               (unsigned long)early_dropped, EARLY_MAX);
+        early_dropped = 0;
+    }
     if (depressed() != sent_depressed || locked != sent_locked) {
         sent_depressed = depressed();
         sent_locked = locked;
@@ -247,6 +258,8 @@ static void send_key(uint32_t code, uint32_t state)
         nearly = keep;
         if (nearly < EARLY_MAX)
             early[nearly++] = (struct early){ code, state, depressed(), locked, t };
+        else
+            early_dropped++;
     }
     if (!w)
         return;

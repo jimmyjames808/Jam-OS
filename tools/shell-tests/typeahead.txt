@@ -1,0 +1,43 @@
+# Typed before the window: every key arrives. The shell's prompt shows
+# (and reaches COM1) a few hundred ms before its terminal's window is
+# mapped and takes the keys, and the terminal is resized as the windows
+# open and tile (104x27, then 138x34) while the line editor asks the
+# console its size before each key; a QEMU test or a serial terminal
+# types at once. The compositor keeps keys typed while no window has them
+# (keyboard.c, EARLY_MAX) and hands them all to the next window at once,
+# and libjwl reads them into the console's event queue (jwl_client.c,
+# read_all). Both lost keys (2026-10-07): the compositor kept 128 key
+# events, so a line typed at the boot's first prompt lost what came past
+# its 64th character until the window was up, Enter included (the
+# regression's fat-nospare.txt and update-menu-test's m1.txt); and a
+# handover of more than the queue's 256 events lost the rest.
+# Here: a 213-character line, two thirds of its characters typed with
+# Shift (4 key events each), typed the moment terminal 1's prompt shows;
+# it sets a variable, and once the boot is quiet `echo` shows it whole
+# (the quotes split the typed text, so it never matches what is waited
+# for). Then the same in terminal 2 (`term`) once its window has the
+# keys, typed fast at 67 columns (the line scrolled on its row).
+# Run: QEMU_INPUT=tools/shell-tests/typeahead.txt tools/qemu-test.sh <dir> typeahead shell
+wait 120 Jam OS shell
+wait {prompt}
+send L='early-''ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^*()_+{}:,.?~=-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^*()_+{}:,.?~=-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@'
+wait 30 {prompt}
+seen 30 terminal 1 opens
+sleep 4
+send echo $L'-end'
+wait 10 early-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^*()_+{}:,.?~=-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^*()_+{}:,.?~=-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@-end
+wait {prompt}
+send term
+wait 10 terminal 2 opens
+wait 30 Jam OS shell
+wait 10 {prompt}
+seen 30 console: window mode: terminal 2 opens a
+sleep 2
+send M='second-''zyxwvutsrqponmlkjihgfedcba-=~?.,:}{+_)(*^%#@!9876543210ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsrqponmlkjihgfedcba-=~?.,:}{+_)(*^%#@!9876543210ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsrqponmlkjihgfedcba-=~?.,:}{+_)'
+wait 30 {prompt}
+sleep 1
+send echo $M'-end'
+wait 10 second-zyxwvutsrqponmlkjihgfedcba-=~?.,:}{+_)(*^%#@!9876543210ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsrqponmlkjihgfedcba-=~?.,:}{+_)(*^%#@!9876543210ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsrqponmlkjihgfedcba-=~?.,:}{+_)-end
+wait {prompt}
+send reboot -f
+wait reboot: resetting
