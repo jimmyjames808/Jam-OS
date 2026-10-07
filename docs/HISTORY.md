@@ -29,6 +29,36 @@ are the kernel's version string; hashes are commits on main.
   2% of a process-to-process call; the cost was on the user side of the
   boundary.
 
+## G1: the desktop
+
+*2026-10-05 to 2026-10-07.* A compositor of Jam OS's own that speaks the
+Wayland protocol over channels ([G1-PLAN.md](G1-PLAN.md) has the design
+and every "As built" note): dwindle tiling and floating windows, virtual
+screens made as needed, the frosted top bar with its popovers, search,
+Alt+Tab, notices (held until the splash is over), up to 16 terminals
+with copy and paste, Jamjar as a window, the splash as a boot overlay, a
+calm panic screen, cursors of its own, and a layout that survives the
+compositor's own restart. Signed off on the PC (now in its new case):
+the checklist ([G1-SIGNOFF.md](G1-SIGNOFF.md)), All tests, `soak 10`
+(3672 kernel tests, 8 utest runs, 2253 file cycles, 0 FAILED, the IOMMU
+on by default), and a `soak 2` after the last fixes (+6.9 KB of message
+bytes). 502 commits pushed after the full Mac regression.
+
+What the last day found:
+- **X1's hostile clients, run against the live compositor, found a
+  leak the headless tests hid**: a port binding holds its object and its
+  1216-byte charge until it is unbound, and closing the handle doesn't
+  unbind it. The compositor leaked one per client it lost; the sweep that
+  followed fixed the same mistake in the clipboard, dns, music, netstack,
+  the mixer and five drivers. (M12 makes a binding end with its object's
+  last handle: review K's finding 26.)
+- **Keys typed during boot were lost** past 128 events (the compositor's
+  early-key buffer) and 256 (libjwl's queue): both fixed, with a
+  typeahead test.
+- **The desktop's paint threads share the CPUs** with tests that assumed
+  an idle machine: the pathstat tests now measure again when their CPU was
+  shared, and the staged scheduler races run above every user thread.
+
 ## M8.6: cleanup and polish
 
 *2026-10-01 to 2026-10-02, 0.0.28-m8.6.* Signed off on the PC:
