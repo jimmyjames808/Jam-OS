@@ -135,6 +135,9 @@ static void input(struct app *a, uint64_t deadline)
             app_mouse(a, &m);
         } else if (k == KEY_RESIZE) {   /* its window took a new size (gfx_resizable) */
             layout_make(&a->lo, scr.w, scr.h, scr.ui);
+            if (a->trace)   /* the cover test's full screen (Super+F) */
+                say("jamjar: resized to %dx%d; now playing's cover at %d,%d, %d px\n", scr.w,
+                    scr.h, a->lo.art.x, a->lo.art.y, a->lo.art.w);
             say_targets(a);
             if (a->view_ok)
                 view_scroll(&a->view, a->lo.rows);

@@ -9,7 +9,9 @@
 # album's first), skips on 18 times (the first skips while the covers are
 # still being read), and screenshots the card twice after each skip. Then
 # every shot is checked: the middle of now playing's cover (where jamjar
-# says it is) must be the teal of a real cover.
+# says it is, the last it said: on the compositor's boot it opens in a
+# tile and the script makes it full screen with Super+F) must be the teal
+# of a real cover.
 # QEMU_SMP passes through. Usage: tools/jamjar-covers-test.sh <outdir>;
 # exit 0 on PASS.
 set -eu
@@ -82,7 +84,7 @@ tr -d '\r' < "$log" | grep -aE "jamjar: (frames|library|.*no cover)" | head -20 
 
 # Every shot: the middle half of the cover's square must be mostly teal.
 where=$(tr -d '\r' < "$log" | grep -aoE "now playing's cover at [0-9]+,[0-9]+, [0-9]+ px" |
-        head -1 | grep -oE "[0-9]+" | tr '\n' ' ')
+        tail -1 | grep -oE "[0-9]+" | tr '\n' ' ')
 python3 - "$out" $where <<'PY' || ok=0
 import glob, sys
 from PIL import Image

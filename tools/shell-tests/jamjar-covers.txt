@@ -2,14 +2,21 @@
 # tools/jamjar-covers-test.sh (it makes /data/many: 32 albums of two songs,
 # each with a teal PNG cover, and checks the shots). Everything plays in
 # shuffle; the first skips come while the covers are still being read;
-# two shots of the card after each of 18 skips.
+# two shots of the card after each of 18 skips. Needs the USB keyboard
+# for Super+F (the script's QEMU_USB).
 wait 120 Jam OS shell
 wait {prompt}
 seen 60 init: /data mounted
 seen 60 music: ready
 send jamjar trace root=/data/many
-wait 30 jamjar: 2560x1440, reading /data/many
+wait 30 jamjar: {w}x{h}, reading /data/many
 wait 30 jamjar: library /data/many: 32 artists, 32 albums, 64 tracks
+# On the compositor's boot jamjar opens in a tile beside the terminal:
+# Super+F makes it full screen (a screen of its own), the whole 2560x1440
+# from 0,0 as the shots see it, and it says where its cover went.
+monitor sendkey meta_l-f
+wait 30 jamjar: resized to 2560x1440; now playing's cover at
+sleep 1
 type a
 wait jamjar: play everything (shuffle)
 wait 30 jamjar: hearing
