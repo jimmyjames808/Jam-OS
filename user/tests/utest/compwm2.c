@@ -12,18 +12,27 @@
  * 15-85%, kept per screen; two windows swap tiles; a screen switched from
  * floating builds its tree in the windows' order, each splitting the last.
  * t_wm_tile_small: a focused tile too small to halve (the halves would be
- * under WM_TILE_MIN_W wide, or WM_TILE_MIN_H high) isn't split: the
- * largest tile is (the new window's first configure is for that tile). A
- * narrow tall tile still splits down (t_wm_tile_gaps' stacked gap).
+ * under WM_TILE_MIN_W wide, or WM_TILE_MIN_H high) isn't split: the new
+ * window goes to a new screen at the end, all its room (its first
+ * configure too), the view following; the first screen unchanged; closed,
+ * the view back to the first and the emptied screen gone. Super+T
+ * on a floating screen with more windows than fit: the rest go to a new
+ * screen, the view staying; a window moved onto a full screen goes to a
+ * new one, followed. The windows' own minimums: the new window's, the old
+ * one's, a fixed size, each against its half. A narrow tall tile still
+ * splits down (t_wm_tile_gaps' stacked gap).
  * t_wm_tile_gaps: a gap takes presses 12 pixels across centred on it (not
  * under a maximised window), shows the resize arrows and its bar lit while
  * hovered (not before a mouse first moves the pointer, which starts on the
  * first two tiles' gap) or dragged; dragging it resizes both sides live,
  * with no glide, clamped; stacked gaps too.
- * t_wm_tile_float: windows that have only ever tiled (or been maximised),
- * switched to floating, are asked for 60% of the room under the strip
- * each way, as their limits allow and never more than the room, and
- * centred and cascaded for that size; they keep it across another switch.
+ * t_wm_tile_float: tiling to floating keeps the arrangement (owner,
+ * 2026-10-07): each tiled window's floating box comes from its tile (its
+ * frame 4 pixels inside it), so the boxes keep their places and never
+ * overlap, whatever floating places they had before; a min bigger than
+ * the tile is kept, from the tile's top left, on the output; again after
+ * tiling and back. A window maximised before its first buffer, then not,
+ * still gets 60% of the room, centred.
  * t_wm_tile_push: Super+Alt+direction (H/J/K/L and the arrows alike)
  * pushes the focused tile's edge 48 pixels that way, or with no edge
  * there its other edge, gliding; a floating window grows or shrinks by its
@@ -172,28 +181,117 @@ static bool tile_small_steps(void)
     }
     CHECK(tile_is(0, LEFT) && tile_is(1, RTOP));
     int32_t across = part(631, TILE_ONE / 2);   /* 313: the bottom right split across */
-    CHECK(tile_is(2, ((struct comp_box){ 643, 403, 643 + across, 794 })));
+    struct comp_box t2 = { 643, 403, 643 + across, 794 };
     int32_t down = part(391, TILE_ONE / 2);     /* 193: then its right part down */
     struct comp_box t3 = { 643 + across + WM_GAP, 403, 1274, 403 + down };
     struct comp_box t4 = { t3.x1, t3.y2 + WM_GAP, 1274, 794 };
-    CHECK(tile_is(3, t3) && tile_is(4, t4));
+    CHECK(tile_is(2, t2) && tile_is(3, t3) && tile_is(4, t4));
     /* the newest, 312x192, halved across would leave 153 wide: under the
-     * minimum, so the largest tile (the left half) splits instead, down */
+     * minimum, so the sixth goes to a new screen at the end, all its room
+     * (its first configure says so), and the view goes there; the first
+     * screen's tiles stay as they were */
     CHECK((t4.x2 - t4.x1 - WM_GAP) / 2 < WM_TILE_MIN_W);
     seat_focus(win(4));
-    struct comp_box want = { 6, 403, 637, 794 };
+    struct desk_screen *first = screens_cur();
     CHECK(fk_open(&fks[5], 300, 200, false));
-    CHECK(tile_is(0, ((struct comp_box){ 6, 6, 637, 397 })) && tile_is(5, want));
-    CHECK(tile_is(4, t4) && tile_is(3, t3));
-    for (unsigned i = 0; i < 6; i++)
-        CHECK(fills_box(i, tile_inner(win(i)->tile)));
+    CHECK_EQ(screens_count(), 2);
+    CHECK(fks[5].ww->screen == screens_nth(1) && screens_cur() == screens_nth(1));
+    CHECK_EQ(screens_nth(1)->layout, COMP_TILING);
+    CHECK(tile_is(5, ALL));
+    CHECK(fills_box(5, tile_inner(ALL)));
+    CHECK(tile_is(0, LEFT) && tile_is(1, RTOP) && tile_is(2, t2) && tile_is(3, t3) &&
+          tile_is(4, t4));
+    for (unsigned i = 0; i < 5; i++)
+        CHECK(fks[i].ww->screen == first && !(win(i)->flags & COMP_WIN_MAPPED));
+    CHECK(win(5)->flags & COMP_WIN_MAPPED);
+    /* its window closed: the view goes back to the first screen, and the
+     * emptied spill goes; opened again, it spills again */
+    wm_destroy(fks[5].ww);
+    fks[5].ww = NULL;
+    CHECK(screens_cur() == first && screens_count() == 1);
+    CHECK(win(0)->flags & COMP_WIN_MAPPED);
+    seat_focus(win(4));
+    CHECK(fk_open(&fks[5], 300, 200, false));
+    CHECK(screens_count() == 2 && screens_cur() == fks[5].ww->screen);
+    return true;
+}
+
+/* Super+T building a tree from a floating screen's windows: those that
+ * don't fit go to one new screen, in order, the view staying; a window
+ * moved onto a full screen goes to a new one instead, the view following. */
+static bool tile_small_switch_steps(void)
+{
+    struct desk_screen *first = screens_nth(0);
+    const struct comp_box t4 = { 962, 602, 1274, 794 };
+    screens_go(0);
+    wm_toggle_layout();   /* the first screen floats: no tree */
+    CHECK(!first->tree);
+    screens_move_to(fks[5].ww, 0);   /* the sixth joins it (floating: no tile) */
+    CHECK(fks[5].ww->screen == first && screens_cur() == first);
+    wm_toggle_layout();   /* tiling again: made in the windows' order, each splitting the last */
+    CHECK(screens_cur() == first);
+    CHECK(tile_is(0, LEFT) && tile_is(4, t4));
+    struct desk_screen *spill = fks[5].ww->screen;
+    CHECK(spill != first && screens_index(spill) == (int)screens_count() - 1);
+    CHECK(tile_is(5, ALL) && !(win(5)->flags & COMP_WIN_MAPPED));
+    CHECK(win(0)->flags & COMP_WIN_MAPPED);
+    /* moved onto the full first screen (its last tile too small): to a new
+     * screen at the end instead, which the view follows */
+    screens_go((unsigned)screens_index(spill));
+    CHECK(screens_cur() == spill);
+    screens_move_to(fks[5].ww, 0);
+    CHECK(fks[5].ww->screen != first && screens_cur() == fks[5].ww->screen);
+    CHECK(tile_is(5, ALL) && (win(5)->flags & COMP_WIN_MAPPED));
+    CHECK(tile_is(4, t4));
+    return true;
+}
+
+/* The windows' own minimums: a new window whose minimum doesn't fit the
+ * half it would get goes to a new screen, one whose minimum fits splits;
+ * the old window's minimum counts too; a fixed size bigger than its half
+ * goes to a new screen, a smaller one splits. */
+static bool tile_small_min_steps(void)
+{
+    struct desk_screen *first = screens_cur();
+    CHECK(fk_open(&fks[0], 300, 200, false));
+    seat_focus(win(0));
+    /* 700 wide: the right half (631, its border off) is too narrow */
+    CHECK(fk_open_min(&fks[1], 300, 200, 700, 100));
+    CHECK(fks[1].ww->screen != first && screens_cur() == fks[1].ww->screen);
+    CHECK(tile_is(1, ALL) && tile_is(0, ALL));
+    screens_go(0);
+    seat_focus(win(0));
+    /* 500 by 300 fits the right half: an ordinary split */
+    CHECK(fk_open_min(&fks[2], 300, 200, 500, 300));
+    CHECK(fks[2].ww->screen == first && tile_is(0, LEFT) && tile_is(2, RIGHT));
+    /* the old window's minimum: 2's 500 high no longer fits its top half */
+    wm_set_limits(fks[2].ww, 500, 500, 0, 0);
+    seat_focus(win(2));
+    CHECK(fk_open(&fks[3], 300, 200, false));
+    CHECK(fks[3].ww->screen != first && tile_is(3, ALL));
+    CHECK(tile_is(0, LEFT) && tile_is(2, RIGHT));
+    screens_go(0);
+    /* a fixed 600x450 window: bigger than the left half's bottom (391 high) */
+    seat_focus(win(0));
+    CHECK(fk_open(&fks[4], 600, 450, true));
+    CHECK(fks[4].ww->screen != first && screens_cur() == fks[4].ww->screen);
+    screens_go(0);
+    /* a fixed 300x200 one fits it: the left half splits, it is centred there */
+    seat_focus(win(0));
+    CHECK(fk_open(&fks[5], 300, 200, true));
+    CHECK(fks[5].ww->screen == first);
+    CHECK(tile_is(0, ((struct comp_box){ 6, 6, 637, 397 })));
+    CHECK(tile_is(5, ((struct comp_box){ 6, 403, 637, 794 })));
     return true;
 }
 
 bool t_wm_tile_small(void)
 {
     wm_test_start(COMP_TILING);
-    bool ok = tile_small_steps();
+    bool ok = tile_small_steps() && tile_small_switch_steps();
+    fk_close_all();
+    wm_test_start(COMP_TILING);
+    ok = ok && tile_small_min_steps();
     fk_close_all();
     return ok;
 }
@@ -363,50 +461,74 @@ static bool on_output(unsigned i, int32_t floor)
     return true;
 }
 
+/* Window i's frame inside box b. */
+static bool frame_in(unsigned i, struct comp_box b)
+{
+    struct comp_box f = window_frame(win(i));
+    if (f.x1 < b.x1 || f.y1 < b.y1 || f.x2 > b.x2 || f.y2 > b.y2)
+        FAIL("window %u's frame %d,%d..%d,%d is outside %d,%d..%d,%d", i, f.x1, f.y1, f.x2, f.y2,
+             b.x1, b.y1, b.x2, b.y2);
+    return true;
+}
+
+/* The surface size a tile's floating box gives (wm.c's float_from_tile). */
+static struct comp_box float_inner(struct comp_box tile)
+{
+    struct comp_box f = { tile.x1 + 4, tile.y1 + 4, tile.x2 - 4, tile.y2 - 4 };
+    return deco_inner(f, 0, COMP_FLOATING);
+}
+
 static bool tile_float_steps(void)
 {
-    /* five tiles: two of no limits, one of one size, one of max width 500
-     * and min height 600, one of min width 2000 */
-    for (unsigned i = 0; i < 5; i++) {
-        CHECK(fk_open(&fks[i], 320, 200, i == 2));
-        seat_focus(win(i));
-    }
-    wm_set_limits(fks[3].ww, 0, 600, 500, 0);
-    wm_set_limits(fks[4].ww, 2000, 0, 0, 0);
+    /* three windows floating first (centred and cascaded: places the
+     * switch below must not use) */
+    for (unsigned i = 0; i < 3; i++)
+        CHECK(fk_open(&fks[i], 320, 200, false));
+    int32_t old_x = win(0)->x, old_y = win(0)->y;
+    /* tiling: 0 left, 1 top right, 2 bottom right; then 3 splits 2's tile,
+     * and is given a min width of 400 its 312 can't hold */
+    wm_toggle_layout();
+    seat_focus(win(2));
+    CHECK(fk_open(&fks[3], 320, 200, false));
+    wm_set_limits(fks[3].ww, 400, 0, 0, 0);
     anim_finish();
-    for (unsigned i = 0; i < 5; i++)
+    struct comp_box tile[4];
+    for (unsigned i = 0; i < 4; i++) {
         CHECK(fk_draw(&fks[i]));
-    /* floating: none has a floating size of its own, so each is asked for
-     * 60% of the room (1278x771 inside a frame: 766x462), as its limits
-     * allow and never more than the room, and centred for it (two of one
-     * size cascade), before it draws */
-    wm_toggle_layout();
-    CHECK_EQ(fks[0].cfg.width, 766);
-    CHECK_EQ(fks[0].cfg.height, 462);
-    AT(0, (OUT_W - 766) / 2, (OUT_H - 462) / 2);
-    CHECK_EQ(fks[1].cfg.width, 766);
-    CHECK_EQ(fks[1].cfg.height, 462);
-    AT(1, (OUT_W - 766) / 2 + COMP_TITLE_H + DECO_BORDER, (OUT_H - 462) / 2 + COMP_TITLE_H + DECO_BORDER);
-    CHECK_EQ(fks[2].cfg.width, 320);      /* its one size */
-    CHECK_EQ(fks[2].cfg.height, 200);
-    CHECK_EQ(fks[3].cfg.width, 500);
-    CHECK_EQ(fks[3].cfg.height, 600);
-    AT(3, (OUT_W - 500) / 2, (OUT_H - 600) / 2);
-    CHECK_EQ(fks[4].cfg.width, OUT_W - 2 * DECO_OUTLINE);   /* the room, not 2000 */
-    CHECK_EQ(fks[4].cfg.height, 462);
-    for (unsigned i = 0; i < 5; i++) {
-        CHECK(fk_draw(&fks[i]));
-        CHECK(on_output(i, 0));
+        tile[i] = win(i)->tile;
     }
-    AT(0, (OUT_W - 766) / 2, (OUT_H - 462) / 2);   /* where it was put for that size */
-    /* tiling and back: each where and as big as it floated */
-    struct comp_box was = window_surface_box(win(0));
+    CHECK(box_eq(tile[0], LEFT) && box_eq(tile[1], RTOP));
+    /* floating: each window's box from its tile, its frame inside it, the
+     * arrangement kept, no two overlapping; the old places unused */
+    wm_toggle_layout();
+    for (unsigned i = 0; i < 3; i++) {
+        struct comp_box in = float_inner(tile[i]);
+        CHECK_EQ(fks[i].cfg.width, in.x2 - in.x1);
+        CHECK_EQ(fks[i].cfg.height, in.y2 - in.y1);
+        CHECK(fk_draw(&fks[i]));
+        AT(i, in.x1, in.y1);
+        CHECK(frame_in(i, tile[i]));
+    }
+    struct comp_box f0 = window_frame(win(0)), f1 = window_frame(win(1)),
+                    f2 = window_frame(win(2));
+    CHECK(f0.x2 < f1.x1 && f0.x2 < f2.x1 && f1.y2 < f2.y1);   /* left, top right, bottom */
+    CHECK(box_empty(box_intersect(f0, f1)) && box_empty(box_intersect(f0, f2)) &&
+          box_empty(box_intersect(f1, f2)));
+    CHECK(win(0)->x != old_x || win(0)->y != old_y);
+    /* its min: 400 wide, from its tile's top left, kept on the output */
+    CHECK_EQ(fks[3].cfg.width, 400);
+    CHECK(fk_draw(&fks[3]));
+    CHECK(on_output(3, 0));
+    struct comp_box f3 = window_frame(win(3));
+    CHECK(f3.y1 >= tile[3].y1 && f3.x2 <= OUT_W);
+    /* tiling and back: from the tiles again (the floating places don't stay) */
     wm_toggle_layout();
     anim_finish();
+    for (unsigned i = 0; i < 4; i++)
+        CHECK(fk_draw(&fks[i]));
     wm_toggle_layout();
-    CFG(0, 766, 462, 0);
-    CHECK(fk_draw(&fks[0]));
-    CHECK(box_eq(window_surface_box(win(0)), was));
+    struct comp_box in = float_inner(win(0)->tile);
+    CHECK_EQ(fks[0].cfg.width, in.x2 - in.x1);
     return true;
 }
 
@@ -427,7 +549,7 @@ static bool maximised_float_steps(void)
     return true;
 }
 
-/* With the desktop on: 60% of the room under the strip, the frame below it. */
+/* With the desktop on: its tile's box, under the strip. */
 static bool strip_float_steps(void)
 {
     desk_test_start(COMP_TILING);
@@ -436,16 +558,18 @@ static bool strip_float_steps(void)
     CHECK(fk_draw(&fks[0]));
     int32_t floor = wm_floor(fks[0].ww);
     CHECK(floor > 0);
-    wm_toggle_layout();
-    CHECK_EQ(fks[0].cfg.height, (OUT_H - floor - COMP_TITLE_H - DECO_OUTLINE) * 60 / 100);
+    struct comp_box tile = win(0)->tile, in = float_inner(tile);
+    CHECK(tile.y1 >= floor);
+    wm_toggle_layout();   /* its tile's box: under the strip */
+    CHECK_EQ(fks[0].cfg.height, in.y2 - in.y1);
     CHECK(fk_draw(&fks[0]));
-    CHECK(on_output(0, floor));
+    CHECK(on_output(0, floor) && frame_in(0, tile));
     return true;
 }
 
 bool t_wm_tile_float(void)
 {
-    wm_test_start(COMP_TILING);
+    wm_test_start(COMP_FLOATING);
     bool ok = tile_float_steps();
     fk_close_all();
     ok = ok && maximised_float_steps();

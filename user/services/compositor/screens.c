@@ -14,6 +14,12 @@
  *     then goes;
  *   - a new window opens on the current screen; on a full-screen screen,
  *     on the normal screen left of it, which becomes current;
+ *   - a window whose tile would be too small (wmtile.c: a tiling screen
+ *     full) goes to a new tiling screen at the end instead (screens_spill),
+ *     and the view follows it there if it was new, moved, restored or back
+ *     from full screen (Super+T's spill leaves the view where it is); when
+ *     such a screen's last window goes while it is current, the view goes
+ *     back to the normal screen left of it, and it goes;
  *   - minimised windows stay on their screen, hidden, listed by its chips;
  *   - a full-screen window whose client takes no keys (the boot splash's:
  *     libjwl's no_keyboard) is a boot overlay instead, not an app to
@@ -274,7 +280,26 @@ static bool movable(const struct wm_window *ww)
     return ww && ww->win && ww->screen && ww->screen->kind == SCREEN_NORMAL;
 }
 
-/* ww onto screen i (past the last: a new one at the end), which becomes current. */
+struct desk_screen *screens_spill(void)
+{
+    struct desk_screen *s = new_screen(SCREEN_NORMAL, sc.n);
+    if (s) {
+        s->layout = COMP_TILING;
+        s->spill = true;
+    }
+    return s;
+}
+
+void screens_follow(struct wm_window *ww)
+{
+    int i = ww && ww->screen ? screens_index(ww->screen) : -1;
+    if (i >= 0 && (unsigned)i != sc.cur)
+        go_to((unsigned)i, true);
+}
+
+/* ww onto screen i (past the last: a new one at the end), which becomes
+ * current; or, if its tile there would be too small, a new screen at the
+ * end (wmtile.c), which becomes current instead. */
 static void move_window(struct wm_window *ww, int i)
 {
     if (i >= (int)sc.n && !append())
@@ -283,8 +308,8 @@ static void move_window(struct wm_window *ww, int i)
         i = (int)sc.n - 1;
     ww->screen = sc.order[i];
     ww->minimised = false;
-    wm_relayout();   /* both screens' tiles */
-    go_to((unsigned)i, true);
+    wm_relayout();   /* both screens' tiles (a spill: ww's screen is another) */
+    go_to((unsigned)screens_index(ww->screen), true);
     screens_sync();
     seat_focus(ww->win);
 }
@@ -340,6 +365,7 @@ void screens_restore(struct wm_window *ww)
     ww->minimised = false;
     if (wm_layout_of(ww) == COMP_TILING)
         wm_relayout();
+    screens_follow(ww);   /* no room for its tile: it went to a new screen */
     screens_sync();
     seat_focus(ww->win);
     strip_dirty();
@@ -432,6 +458,10 @@ void screens_window_gone(struct wm_window *ww)
         go_to(h >= 0 ? (unsigned)h : normal_near(sc.cur), true);   /* its screen goes after */
         return;
     }
+    if (s->spill && i == (int)sc.cur && i > 0 && !screens_windows(s)) {
+        go_to(normal_near((unsigned)i - 1), true);   /* a spill emptied: back, and it goes */
+        return;
+    }
     cleanup();
     strip_dirty();
 }
@@ -463,9 +493,9 @@ static void leave_full(struct wm_window *ww)
         back = sc.order[normal_near((unsigned)screens_index(s))];
     ww->screen = back;
     ww->home = NULL;
-    wm_relayout();
+    wm_relayout();   /* (no room for its tile at home: a new screen, ww->screen) */
     if (screens_index(s) == (int)sc.cur)
-        go_to((unsigned)screens_index(back), true);   /* its own screen goes after the slide */
+        go_to((unsigned)screens_index(ww->screen), true);   /* its own screen goes after */
     else
         cleanup();
     screens_sync();

@@ -161,9 +161,12 @@ static bool key_steps(struct cs *t, struct sc *a, const struct top *w)
     CHECK(cs_tap(t, U_T, SUPER));
     CHECK(cs_sync(a, NULL));
     CHECK(last_configure(&a->k, w, &cw, &ch) && cw == OUT_W - 16 && ch == OUT_H - 16);
+    /* and floating again: its tile's place and size (the arrangement kept:
+     * the frame 4 pixels inside the tile), not its old size */
     CHECK(cs_tap(t, U_T, SUPER));
     CHECK(cs_sync(a, NULL));
-    CHECK(last_configure(&a->k, w, &cw, &ch) && cw == WIN_W && ch == WIN_H);
+    CHECK(last_configure(&a->k, w, &cw, &ch) && cw == OUT_W - 20 - 2 * DECO_OUTLINE &&
+          ch == OUT_H - 20 - COMP_TITLE_H - DECO_OUTLINE);
     CHECK(!a->k.errored);
     return true;
 }

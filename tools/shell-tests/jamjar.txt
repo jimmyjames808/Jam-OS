@@ -46,6 +46,7 @@ wait {prompt}
 
 # ---- 2: keys ----------------------------------------------------------------------------
 send jamjar trace noaccel
+seen 30 jamjar: its window is at least 944x568
 # where the mouse's targets are in its window (section 3 clicks them)
 wait 30 jamjar: targets: next {nx},{ny}, volume {v0}-{v1} at y {vy}, first track {tx},{ty}
 wait 30 jamjar: library /data/music: 6 artists, 7 albums, 9 tracks

@@ -98,6 +98,46 @@ static void place_big(struct layout *l)
     l->big_text = (struct rect){ m, y + art + 24 * u, inner, text_h };
 }
 
+static bool apart(const struct rect *p, const struct rect *q)
+{
+    return p->x + p->w <= q->x || q->x + q->w <= p->x || p->y + p->h <= q->y ||
+           q->y + q->h <= p->y;
+}
+
+static bool inside(const struct rect *in, const struct rect *out)
+{
+    return in->x >= out->x && in->y >= out->y && in->x + in->w <= out->x + out->w &&
+           in->y + in->h <= out->y + out->h && in->w > 0 && in->h > 0;
+}
+
+bool layout_fits(const struct layout *l, int min_rows)
+{
+    struct rect screen = { 0, 0, l->w, l->h };
+    const struct rect *big[] = { &l->top, &l->lib, &l->now, &l->jam };
+    bool ok = l->rows >= min_rows;
+    for (int i = 0; i < 4; i++) {
+        ok &= inside(big[i], &screen);
+        for (int j = 0; j < i; j++)
+            ok &= apart(big[i], big[j]);
+    }
+    const struct rect *in_now[] = { &l->art, &l->title, &l->progress, &l->btn[0], &l->btn[1],
+                                    &l->btn[2], &l->btn[3], &l->vol, &l->mode };
+    for (unsigned i = 0; i < sizeof(in_now) / sizeof(in_now[0]); i++)
+        ok &= inside(in_now[i], &l->now);
+    for (int i = 0; i < NBTNS; i++)
+        for (int j = 0; j < i; j++)
+            ok &= apart(&l->btn[i], &l->btn[j]);
+    for (int c = 0; c < NCOLS; c++)
+        ok &= inside(&l->list[c], &l->lib) && (c == 0 || apart(&l->list[c], &l->list[c - 1]));
+    ok &= apart(&l->vol, &l->mode) && inside(&l->search, &l->top) && inside(&l->mark, &l->top);
+    ok &= apart(&l->mark, &l->search) && (l->status.w <= 0 || apart(&l->search, &l->status));
+    ok &= !l->info.h || (inside(&l->info, &l->now) && apart(&l->info, &l->mode));
+    /* the big view (f): the cover and the names on the screen, apart; a circle */
+    ok &= inside(&l->big_art, &screen) && inside(&l->big_text, &screen) &&
+          apart(&l->big_art, &l->big_text) && l->burst_r > 0;
+    return ok;
+}
+
 void layout_make(struct layout *l, int w, int h, int ui)
 {
     memset(l, 0, sizeof(*l));

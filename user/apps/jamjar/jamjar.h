@@ -219,6 +219,17 @@ struct layout {
 /* Everything on a w x h screen at UI scale ui. Nothing overlaps or leaves
  * the screen, from 1024x600 up. */
 void layout_make(struct layout *l, int w, int h, int ui);
+/* The smallest window the layout fits at UI scale 1 (layout_fits with 3
+ * rows a list; the selftest's scan): narrower, the bar's search box and
+ * now playing's buttons run into each other; shorter, the lists lose
+ * their rows. Told to the compositor (gfx_min_size). */
+#define JAMJAR_MIN_W 944
+#define JAMJAR_MIN_H 568
+/* Does l draw without overlap: every part on the screen and inside its
+ * panel, none over another (the buttons, the volume and the play order,
+ * the search box and the mark), the lists at least min_rows rows, the big
+ * view's cover and names apart? */
+bool layout_fits(const struct layout *l, int min_rows);
 
 /* ---- the bars (bars.c) and the sunburst (burst.c) --------------------------------------- */
 

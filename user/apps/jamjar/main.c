@@ -163,7 +163,9 @@ static int run(int argc, char **argv)
     pool_start((uint32_t)arg_num(argc, argv, "threads", 0));
     if (!has_arg(argc, argv, "nocovers"))
         cover_start(a->trace);
-    gfx_resizable();   /* the layout takes any size */
+    gfx_resizable();   /* the layout takes any size ... */
+    gfx_min_size(JAMJAR_MIN_W, JAMJAR_MIN_H);   /* ... from where it fits */
+    say("jamjar: its window is at least %dx%d\n", JAMJAR_MIN_W, JAMJAR_MIN_H);
     status_t st = gfx_open_on(C_BG);
     if (st != OK) {
         say("jamjar: can't borrow the screen (%s)\n", status_str(st));

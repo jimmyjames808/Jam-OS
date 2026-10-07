@@ -508,22 +508,7 @@ static void test_screen(int w, int h)
     static struct layout l;
     int ui = h > 1100 ? 2 : 1;
     layout_make(&l, w, h, ui);
-    struct rect screen = { 0, 0, w, h };
-    const struct rect *big[] = { &l.top, &l.lib, &l.now, &l.jam };
-    bool ok = l.rows >= 5;
-    for (int i = 0; i < 4; i++) {
-        ok &= inside(big[i], &screen);
-        for (int j = 0; j < i; j++)
-            ok &= apart(big[i], big[j]);
-    }
-    const struct rect *in_now[] = { &l.art, &l.title, &l.progress, &l.btn[0], &l.btn[1],
-                                    &l.btn[2], &l.btn[3], &l.vol, &l.mode };
-    for (unsigned i = 0; i < sizeof(in_now) / sizeof(in_now[0]); i++)
-        ok &= inside(in_now[i], &l.now);
-    for (int c = 0; c < NCOLS; c++)
-        ok &= inside(&l.list[c], &l.lib) && (c == 0 || apart(&l.list[c], &l.list[c - 1]));
-    ok &= apart(&l.vol, &l.mode) && inside(&l.search, &l.top);
-    ok &= !l.info.h || (inside(&l.info, &l.now) && apart(&l.info, &l.mode));
+    bool ok = layout_fits(&l, 5);
     char what[96];
     snprintf(what, sizeof(what), "layout %dx%d: fits, %d rows a column", w, h, l.rows);
     fun_check(ok, what);
@@ -533,9 +518,45 @@ static void test_screen(int w, int h)
     test_burst(&l);
 }
 
+/* Every size from JAMJAR_MIN_W by JAMJAR_MIN_H up fits, at the UI scale
+ * libfun picks for it (2 above 1100 lines where twice the minimum fits);
+ * 8 pixels narrower, or shorter, some size doesn't (it is the smallest). */
+static void test_min_size(void)
+{
+    static struct layout l;
+    int bad_w = 0, bad_h = 0;
+    for (int h = JAMJAR_MIN_H; h <= 2160 && !bad_w; h += h < JAMJAR_MIN_H + 32 ? 1 : 16)
+        for (int w = JAMJAR_MIN_W; w <= 3840 && !bad_w; w += w < JAMJAR_MIN_W + 32 ? 1 : 16) {
+            int ui = h > 1100 && w >= 2 * JAMJAR_MIN_W && h >= 2 * JAMJAR_MIN_H ? 2 : 1;
+            layout_make(&l, w, h, ui);
+            if (!layout_fits(&l, 3)) {
+                bad_w = w;
+                bad_h = h;
+            }
+        }
+    bool narrower = true, shorter = true;   /* 8 pixels under: every size fits? */
+    for (int h = JAMJAR_MIN_H; h <= 1100; h += 4) {
+        layout_make(&l, JAMJAR_MIN_W - 8, h, 1);
+        narrower &= layout_fits(&l, 3);
+    }
+    for (int w = JAMJAR_MIN_W; w <= 2560; w += 4) {
+        layout_make(&l, w, JAMJAR_MIN_H - 8, 1);
+        shorter &= layout_fits(&l, 3);
+    }
+    char what[96];
+    if (bad_w)
+        snprintf(what, sizeof(what), "layout: fits from %dx%d up (not at %dx%d)", JAMJAR_MIN_W,
+                 JAMJAR_MIN_H, bad_w, bad_h);
+    else
+        snprintf(what, sizeof(what), "layout: fits from %dx%d up, not 8 pixels under%s%s",
+                 JAMJAR_MIN_W, JAMJAR_MIN_H, narrower ? " (narrower fits)" : "",
+                 shorter ? " (shorter fits)" : "");
+    fun_check(!bad_w && !narrower && !shorter, what);
+}
+
 int jamjar_selftest(void)
 {
-    fun_selftest_begin("jamjar", 74);
+    fun_selftest_begin("jamjar", 75);
     test_names();
     test_utf8();
     test_library();
@@ -552,5 +573,6 @@ int jamjar_selftest(void)
     test_screen(1920, 1080);
     test_screen(2560, 1440);
     test_screen(3840, 2160);
+    test_min_size();
     return fun_selftest_end();
 }

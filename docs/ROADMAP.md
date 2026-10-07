@@ -193,9 +193,10 @@ ones below are the design questions M8 left open
 - **Paste outside the terminal** (the owner noticed): the compositor's
   search box and libfun's text fields (Jamjar's search) take Ctrl+V /
   Super+V through the clipboard.
-- **Jamjar at squarish sizes**: its layout overlaps below a width-to-height
-  ratio (fine when wide); a narrow layout with the controls under the
-  cover.
+- **Jamjar at squarish sizes**: its layout overlaps below 944x568, so it
+  now declares that as its minimum window (2026-10-07: tiling opens it on
+  a screen of its own rather than squeezing it); still to do, a narrow
+  layout with the controls under the cover, and then a smaller minimum.
 - **The shell's quiet ktest loops beside the desktop**: a soak's idle
   loops now run next to the compositor painting their output (G1). Once
   in two Mac soaks (2026-10-07, 4-CPU QEMU), `repro_wake_stale_cpu` timed

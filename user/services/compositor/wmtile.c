@@ -14,12 +14,23 @@
  *   - A new window splits the focused tile in half (the last one, if the
  *     focus is elsewhere) along its longer side: the old window keeps the
  *     left or top half, the new one takes the other. The last tile is the
- *     one reached by always taking b: the newest corner of the spiral. If
- *     the halves would be narrower than WM_TILE_MIN_W (split across) or
- *     shorter than WM_TILE_MIN_H (split down), about 20 columns or 5 lines
- *     of a terminal, the largest tile splits instead:
- *     with many windows (16 terminals) no tile shrinks to a sliver, and
- *     the spiral turns into a grid.
+ *     one reached by always taking b: the newest corner of the spiral.
+ *   - No tile is made too small: if that split would leave halves
+ *     narrower than WM_TILE_MIN_W (split across) or shorter than
+ *     WM_TILE_MIN_H (split down), about 20 columns or 5 lines of a
+ *     terminal, or if either window's own minimum (xdg_toplevel's
+ *     set_min_size, wm_set_limits; a fixed size is min = max) wouldn't fit
+ *     inside its half, the window doesn't go on this screen: it goes to a new
+ *     screen at the end (screens_spill), tiling, where it has all the
+ *     room; this screen stays as the user arranged it. The same wherever
+ *     a window comes into a tree: a new window (wm.c then takes the view
+ *     there: screens_follow), one moved to the screen (Super+Shift+N,
+ *     Super+Ctrl+Shift+direction: the view follows it to the new screen),
+ *     one restored or back from full screen (followed), and Super+T
+ *     building a tree from a floating screen's windows (those that don't
+ *     fit go to one new screen, in order, the view staying; that screen
+ *     spills again if it fills). With no room for another screen
+ *     (DESK_SCREENS_MAX) the split is made, however small.
  *   - A screen switched from floating (its tree made from nothing) takes
  *     its windows in the order they opened, each splitting the last.
  *   - A window that goes (closed, unmapped, minimised, moved to another
@@ -220,48 +231,86 @@ static bool tiling(const struct desk_screen *s)
     return s->kind == SCREEN_NORMAL && s->layout == COMP_TILING;
 }
 
-/* Would halving t (along its longer side) make halves narrower than
- * WM_TILE_MIN_W, or shorter than WM_TILE_MIN_H? (The other side stays.) */
-static bool too_small_to_split(const struct tile_node *t)
+/* The tiler's minimum for a half (tiles_set_min: a test's small output). */
+static int32_t min_w = WM_TILE_MIN_W, min_h = WM_TILE_MIN_H;
+
+void tiles_set_min(int32_t w, int32_t h)
 {
-    int32_t w = t->box.x2 - t->box.x1, h = t->box.y2 - t->box.y1;
-    return w >= h ? (w - WM_GAP) / 2 < WM_TILE_MIN_W : (h - WM_GAP) / 2 < WM_TILE_MIN_H;
+    min_w = w;
+    min_h = h;
 }
 
-/* s's largest tile by area (the first in pre-order of equals). */
-static struct tile_node *largest_leaf(struct tile_node *root)
+/* The halves of t's box when a window splits it at half (split_boxes' sums):
+ * *a the old window's, *b the new one's. */
+static void halves(const struct tile_node *t, struct comp_box *a, struct comp_box *b)
 {
-    struct tile_node *best = NULL;
-    int64_t most = -1;
-    for (struct tile_node *n = root; n; n = next_node(n)) {
-        int64_t area = n->a ? -1
-                            : (int64_t)(n->box.x2 - n->box.x1) * (n->box.y2 - n->box.y1);
-        if (area > most) {
-            most = area;
-            best = n;
-        }
+    struct comp_box r = t->box;
+    bool across = r.x2 - r.x1 >= r.y2 - r.y1;
+    int32_t part = part_of(across ? (int64_t)r.x2 - r.x1 : (int64_t)r.y2 - r.y1, TILE_ONE / 2);
+    *a = *b = r;
+    if (across) {
+        a->x2 = r.x1 + part;
+        b->x1 = r.x1 + part + WM_GAP;
+    } else {
+        a->y2 = r.y1 + part;
+        b->y1 = r.y1 + part + WM_GAP;
     }
-    return best;
+}
+
+/* Does ww's declared minimum (xdg_toplevel.set_min_size; a fixed size's
+ * too) fit inside tile b, its border taken off? */
+static bool min_fits(const struct wm_window *ww, struct comp_box b)
+{
+    struct comp_box in = deco_inner(b, 0, COMP_TILING);
+    return !ww || (in.x2 - in.x1 >= ww->min_w && in.y2 - in.y1 >= ww->min_h);
+}
+
+/* May ww split leaf t: on the side split, both halves at least the
+ * tiler's minimum (the other side stays as it is), and each window's own
+ * minimum fits its half (t's in a, ww in b)? */
+static bool split_fits(const struct tile_node *t, const struct wm_window *ww)
+{
+    struct comp_box a, b;
+    halves(t, &a, &b);
+    bool across = t->box.x2 - t->box.x1 >= t->box.y2 - t->box.y1;   /* as halves() splits */
+    bool big = across ? a.x2 - a.x1 >= min_w && b.x2 - b.x1 >= min_w
+                      : a.y2 - a.y1 >= min_h && b.y2 - b.y1 >= min_h;
+    return big && min_fits(t->ww, a) && min_fits(ww, b);
 }
 
 /* The tile a new window on s splits: the focused one if it is on s, else
- * the last; if halving that one would make a tile too small to use, the
- * largest instead (many windows: no slivers, a spiral turns into a grid);
- * NULL: none (the tree is empty). */
+ * the last; NULL: none (the tree is empty). */
 static struct tile_node *split_target(const struct desk_screen *s, bool fresh)
 {
     const struct wm_window *f = wm_focused();
-    struct tile_node *t = !fresh && f && f->leaf && f->tiled_on == s ? f->leaf
-                                                                     : last_leaf(s->tree);
-    return t && too_small_to_split(t) ? largest_leaf(s->tree) : t;
+    return !fresh && f && f->leaf && f->tiled_on == s ? f->leaf : last_leaf(s->tree);
 }
 
+/* Windows that went to a new screen in this update (the caller's screens
+ * then sync: one left the current screen). */
+static bool spilled;
+
+/* s's windows not in its tree yet go in; one whose split would leave a
+ * half too small goes to a new screen instead, and the others that don't
+ * fit after it too, in order (that screen's own update places them). */
 static void add_missing(struct desk_screen *s)
 {
     bool fresh = !s->tree;
-    for (struct wm_window *ww = wm_first(); ww; ww = ww->next)
-        if (!ww->leaf && tiled_here(ww, s) && !insert(s, ww, split_target(s, fresh)))
+    struct desk_screen *spill = NULL;
+    for (struct wm_window *ww = wm_first(); ww; ww = ww->next) {
+        if (ww->leaf || !tiled_here(ww, s))
+            continue;
+        struct tile_node *t = split_target(s, fresh);
+        if (t && !split_fits(t, ww) && (spill || (spill = screens_spill()))) {
+            printf("compositor: no room for another tile on screen %d: a new screen, %d\n",
+                   screens_index(s) + 1, screens_index(spill) + 1);
+            ww->screen = spill;   /* (screens_spill: at the end, so its turn comes) */
+            spilled = true;
+            continue;
+        }
+        if (!insert(s, ww, t))   /* (no room for a screen: the split, however small) */
             printf("compositor: no memory for a tile: a window over the others\n");
+    }
 }
 
 void tiles_update(void)
@@ -269,29 +318,20 @@ void tiles_update(void)
     for (struct wm_window *ww = wm_first(); ww; ww = ww->next)
         if (ww->leaf && (!tiled_here(ww, ww->tiled_on) || !tiling(ww->tiled_on)))
             remove_leaf(ww);   /* gone, hidden, moved, or its screen floats now */
-    for (unsigned i = 0; i < screens_count(); i++) {
+    spilled = false;
+    for (unsigned i = 0; i < screens_count(); i++) {   /* a screen spilled to is the last */
         struct desk_screen *s = screens_nth(i);
         if (!tiling(s))
             continue;
         add_missing(s);
         layout(s);
     }
+    if (spilled)
+        screens_sync();   /* a window that left the current screen is hidden */
 }
 
 /* ---- what the window manager asks ----------------------------------------------------------- */
 
-/* The half of t's box a window splitting it gets (b's). */
-static struct comp_box new_half(const struct tile_node *t)
-{
-    struct comp_box r = t->box;
-    bool across = r.x2 - r.x1 >= r.y2 - r.y1;
-    int32_t part = part_of(across ? (int64_t)r.x2 - r.x1 : (int64_t)r.y2 - r.y1, TILE_ONE / 2);
-    if (across)
-        r.x1 += part + WM_GAP;
-    else
-        r.y1 += part + WM_GAP;
-    return r;
-}
 
 struct comp_box wm_tile(const struct wm_window *ww)
 {
@@ -299,7 +339,11 @@ struct comp_box wm_tile(const struct wm_window *ww)
     if (ww->leaf && ww->tiled_on == s)
         return ww->leaf->box;
     const struct tile_node *t = s->tree ? split_target(s, false) : NULL;
-    return t ? new_half(t) : tile_area(s);
+    if (!t || !split_fits(t, ww))
+        return tile_area(s);   /* the first; or it will go to a new screen, all its room */
+    struct comp_box a, b;
+    halves(t, &a, &b);
+    return b;   /* the half it gets */
 }
 
 bool tiles_swap(struct wm_window *a, struct wm_window *b)

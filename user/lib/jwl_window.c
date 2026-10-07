@@ -66,6 +66,8 @@ static status_t tell_state(struct jwl_window *w)
         st = jwl_xdg_toplevel_set_app_id(k, w->toplevel, w->app_id);
     if (st == OK && !w->resizable)
         st = jwl_xdg_toplevel_set_min_size(k, w->toplevel, w->want_w, w->want_h);
+    else if (st == OK && (w->min_w || w->min_h))   /* resizable, not below this */
+        st = jwl_xdg_toplevel_set_min_size(k, w->toplevel, w->min_w, w->min_h);
     if (st == OK && !w->resizable)
         st = jwl_xdg_toplevel_set_max_size(k, w->toplevel, w->want_w, w->want_h);
     if (st == OK && w->fullscreen)
@@ -127,6 +129,8 @@ status_t jwl_window_create(struct jwl_client *c, const struct jwl_window_config 
     w->want_w = w->width = cfg->width;
     w->want_h = w->height = cfg->height;
     w->resizable = cfg->resizable;
+    w->min_w = cfg->min_width > 0 && cfg->min_width <= JWL_SIZE_MAX ? cfg->min_width : 0;
+    w->min_h = cfg->min_height > 0 && cfg->min_height <= JWL_SIZE_MAX ? cfg->min_height : 0;
     w->alpha = cfg->alpha;
     w->fullscreen = cfg->fullscreen;
     w->maximized = cfg->maximized;

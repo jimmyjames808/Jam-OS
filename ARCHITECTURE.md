@@ -1905,10 +1905,13 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 - Windows float or tile, per virtual screen. Tiling is dwindle
   (`wmtile.c`): each screen keeps a binary tree of splits whose leaves
   are its windows, a new window halving the focused tile along its longer
-  side (or the largest tile, when the halves would be narrower than
-  `WM_TILE_MIN_W`, 200 pixels, or shorter than `WM_TILE_MIN_H`, 120:
-  many windows make a grid, not slivers) and a window that goes leaving
-  its sibling their parent's room;
+  side (when the halves would be narrower than `WM_TILE_MIN_W`, 200
+  pixels, or shorter than `WM_TILE_MIN_H`, 120, or either window's own
+  minimum, xdg_toplevel's set_min_size, wouldn't fit its half, the window
+  goes to a new screen at the end instead and the view follows it: no
+  slivers, and the full screen stays as it was) and a window that goes
+  leaving its sibling their parent's room; switched to floating, each
+  window floats where its tile was (its frame just inside it);
   each split keeps its own ratio (15-85%), set by dragging the gap or by
   Super+Alt+direction; tiles glide to new places (200 ms, `anim.c`). The
   tree is walked without recursion, since its depth is the number of

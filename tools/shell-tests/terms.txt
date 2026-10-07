@@ -9,14 +9,18 @@
 # Then terminals up to the limit (16 in all, <deskapps.h> TERMINALS_MAX),
 # each `term` typed once the last one's window is up and has the keys;
 # terminals 10 to 16 by their two-digit names too (`kill console-12`,
-# `kill shell-16`: started again); tiles never thinner than the tiler's
-# minimum. `term` refuses one more, naming the limit; Super+Enter on the
+# `kill shell-16`: started again). At 1280x800 a screen holds five tiles:
+# the sixth terminal's split would leave a tile under the tiler's minimum
+# (200 pixels wide), so it opens on a new screen, and so on (screens 1 to
+# 3 with five each, the 16th alone on screen 4); Super+1 goes back to the
+# first. `term` refuses one more, naming the limit; Super+Enter on the
 # USB keyboard is refused too, and the desktop says so: the notice "No
 # more terminals / 16 is the most. Close one first." (in the log as
-# every notice), and only one while it is up (a second
-# Super+Enter at once posts none). `free` before and after: the memory
-# 15 more terminals take.
-# Screenshots: terms-boot (the first terminal), terms-sixteen (all 16),
+# every notice), and only one while it is up (a second Super+Enter at
+# once posts none). `free` before and after: the memory 15 more
+# terminals take.
+# Screenshots: terms-boot (the first terminal), terms-last (the 16th
+# alone on the last screen), terms-first (the first screen, five tiles),
 # terms-full (the notice).
 # Typing into terminal 2 and closing it (`exit`, its close circle):
 # terms-windows.txt and desktop.txt.
@@ -115,7 +119,13 @@ send term
 wait 10 terminal 16 opens
 wait 30 console: window mode: terminal 16 opens a
 sleep 4
-shot terms-sixteen
+seen 10 compositor: no room for another tile on screen 1: a new screen, 2
+seen 10 compositor: no room for another tile on screen 2: a new screen, 3
+seen 10 compositor: no room for another tile on screen 3: a new screen, 4
+shot terms-last
+monitor sendkey meta_l-1
+sleep 2
+shot terms-first
 # two-digit names: killed and started again
 send kill console-12
 wait 10 init: bin/console (terminal 12) was killed

@@ -54,6 +54,8 @@ struct desk_screen {
     enum screen_kind kind;
     enum comp_layout layout;       /* a normal screen's arrangement */
     struct tile_node *tree;        /* tiling: its windows' tiles (wmtile.c); NULL: none yet */
+    bool spill;                    /* made by screens_spill: when its last window goes while
+                                    * it is current, the view goes back left and it goes */
 };
 
 /* One normal screen, current, in layout; no windows. */
@@ -97,6 +99,14 @@ void     screens_window_new(struct wm_window *ww);
 void     screens_window_gone(struct wm_window *ww);
 /* ww is asked to be full screen now, or no more. */
 void     screens_fullscreen(struct wm_window *ww, bool on);
+/* wmtile.c: a window that would make a tile too small goes to a new
+ * normal screen at the end, tiling (NULL: no room for one). It isn't
+ * current; nothing is shown or focused anew. When its last window goes
+ * while it is current, the view slides back to the screen left of it
+ * (not left on an empty screen) and it goes. */
+struct desk_screen *screens_spill(void);
+/* ww's screen (a spill's, say) becomes current, sliding, if it isn't. */
+void     screens_follow(struct wm_window *ww);
 /* Is a boot overlay shown: a full-screen window whose client takes no keys
  * (the splash's). It is on no screen and over all of them, the strip
  * included (the strip is not shown under it): no screen, dot, chip or

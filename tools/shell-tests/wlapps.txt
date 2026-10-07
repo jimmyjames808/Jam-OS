@@ -25,8 +25,11 @@ sleep 1.5
 shot wlapps-mouse-fractal
 wait 30 wlapps: done
 wait {prompt}
-# a resizable app (jamjar takes its tile's size) beside a fixed one
-send run wlapps tile win=480x320 jamjar fractal
+# a resizable app (jamjar takes its tile's size) beside a fixed one, on a
+# 1920x1080 output: jamjar is at least 944 wide (JAMJAR_MIN_W), so at
+# 1280x800 fractal would open on a screen of its own (the shot shows the
+# middle 1280x800)
+send run wlapps size=1920x1080 tile win=480x320 jamjar fractal
 wait 90 wlapps: verdict:
 sleep 1.5
 shot wlapps-jamjar-fractal
