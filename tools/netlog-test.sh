@@ -46,6 +46,10 @@ ts = re.compile(r"^\[ *\d+\.\d{6}\] ")
 esc = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 serial = esc.sub("", open(os.path.join(out, "netlog.log"), encoding="utf-8",
                           errors="replace").read()).replace("\r", "")
+# The shell writes its prompt (jam:<cwd>> ) to the serial port too, and it
+# can land inside a kernel line, after the timestamp: the netlog file has
+# that line without it, so the reference drops every prompt.
+serial = re.sub(r"jam:/[^\s>]*> ", "", serial)
 boots, cur = [], None
 for line in serial.split("\n"):
     if not ts.match(line):
