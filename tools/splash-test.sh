@@ -13,7 +13,12 @@
 #            the first terminal's); a line typed while it plays, one once
 #            it has played and one right after its window has gone all
 #            reach the shell (the splash's window takes no keys: the
-#            terminal's keeps them), and no key skips it.
+#            terminal's keeps them), and no key skips it. With QEMU's
+#            network (QEMU_NET=1, untagged): netstack's Connected notice,
+#            posted while the splash plays, is held and shown only once
+#            the splash is over (the compositor's "held notice" line after
+#            the splash's "played at"; skipped, said, if the lease comes
+#            after the splash).
 #   splash   a plain boot (OVMF's 1280x800: the video at 1x, centred), the
 #            serial script tools/shell-tests/splash.txt. Checked: the
 #            screen is all #1E1A1D when init starts (the kernel's quiet
@@ -71,11 +76,26 @@ check() {
 
 # ---- comp: the compositor's plain boot -------------------------------------------
 QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$(snd "$out/comp.wav")" \
+    QEMU_NET=1 QEMU_NET_VLAN=none \
     QEMU_INPUT=tools/shell-tests/splash-comp.txt tools/qemu-test.sh "$out" comp shell \
     > "$out/comp.out" 2>&1 || { echo "comp: the script failed"; tail -3 "$out/comp.out"; ok=0; }
 need "$out/comp.log" "init: the compositor draws the screen" "splash: played at" \
     "the background only until the splash shows" \
     "init: the shell is up" "typed-kept" "right-after" "bin/splash exited with code 0"
+t_note=$(at "$out/comp.log" ": Connected: ")
+t_played=$(at "$out/comp.log" "splash: played at")
+t_held=$(at "$out/comp.log" "held notice")
+if [ -z "$t_note" ] || [ -z "$t_played" ] ||
+   python3 -c "import sys; sys.exit(float(sys.argv[1]) < float(sys.argv[2]))" "$t_note" "$t_played"; then
+    echo "comp: no Connected notice during the splash (${t_note:-none}): its hold not checked"
+elif [ -z "$t_held" ] ||
+     ! python3 -c "import sys; sys.exit(float(sys.argv[1]) < float(sys.argv[2]))" "$t_held" "$t_played"; then
+    echo "comp: the Connected notice ($t_note s) wasn't held until the splash was over" \
+         "(played at $t_played s, held notices shown at ${t_held:-never})"
+    ok=0
+else
+    echo "comp: the Connected notice at $t_note s was held, shown at $t_held s (the splash played at $t_played s)"
+fi
 if grep -aqF "skipped by a key" "$out/comp.log"; then echo "comp: a key skipped the splash"; ok=0; fi
 check early "$out"/comp-early-*.png
 check frames "$out/comp-a.png" "$out/comp-b.png"
