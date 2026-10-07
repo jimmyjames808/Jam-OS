@@ -8,7 +8,7 @@
 Jam OS is a from-scratch operating system for x86_64 PCs, written in C.
 Every driver and service is a separate process that can only use the
 handles it is given, so a crashed driver doesn't take the system down. It
-boots from a USB stick on a real desktop PC into a desktop of its own.
+boots from a USB stick on a real PC into a desktop of its own.
 
 ## A tour
 
@@ -57,9 +57,7 @@ whole disk), then boot it in UEFI mode with Secure Boot off. More in
 
 ## What's next
 
-An interface review (M12), a code check (M12.1), user-space pagers
-(M12.5), NVMe (M12.7) and POSIX on musl (M13). The plan:
-[docs/ROADMAP.md](docs/ROADMAP.md).
+NVMe drives, then POSIX. The plan: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Documentation
 
