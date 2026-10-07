@@ -1677,7 +1677,7 @@ a stream closed) and errors are always reported. This is what M13's
 `poll`, `select` and `epoll` will be built on.
 
 **The programs on TCP** ([M9.5-PLAN](docs/M9.5-PLAN.md#track-e-as-built-fetch-serve-and-speed);
-the commands are in [README](README.md#the-network)). Each holds only
+the commands are in [NETWORK.md](docs/NETWORK.md)). Each holds only
 what its job needs, because each parses what a stranger sends. `fetch`
 and `speed` are helpers of the shell's (`bin/fetch`, `bin/speed`): the
 shell opens what `fetch` writes into (a `.part` file, renamed once the

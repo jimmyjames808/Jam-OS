@@ -87,14 +87,43 @@ syscall path returns an error.
 | Syscall glue (`sysc_*`, `sys_*`) | `kernel/abi/` |
 | Kernel tests | `kernel/test/test_<subject>.c` (left out by `make KTESTS=0`; checks that must ship in every kernel go in `kernel/debug/`) |
 | Drivers | `drivers/<name>/` (test drivers in `drivers/test/<name>/`); either way `drv/<name>` in bootfs |
-| System services (bootfs, console, devmgr, dhcp, dns, fat, init, logd, mixer, music, netstack, serialin, serve, shell, sntp, update) | `user/services/<name>/` |
+| System services (bootfs, compositor, console, devmgr, dhcp, dns, fat, init, logd, mixer, music, netstack, serialin, serve, shell, sntp, update) | `user/services/<name>/` |
 | Apps (jamjar, jamcover, splash, play, fetch, speed) | `user/apps/<name>/`; the apps library (libfun) is `user/apps/fun/` |
-| Test programs (utest, usbtest, hdatest, mixtest, mixramp, nettest, dnstest, tcptest, contest, ramfs, soakload, wantdebug, wantlisten, nolisten, fractal, wltest, wlapps, fbbench) | `user/tests/<name>/` |
+| Test programs (utest, usbtest, hdatest, mixtest, mixramp, nettest, dnstest, tcptest, contest, ramfs, soakload, wantdebug, wantlisten, nolisten, perop, updtest, fractal, wltest, wlapps, fbbench) | `user/tests/<name>/` |
 | Shared user code | `user/lib/` (libos, headers in `user/include/`), libfun (`<fun.h>`) |
 | ABI sources | `abi/syscalls.def`, `abi/idl/*.idl` |
 | Build tools and test scripts | `tools/` (QEMU shell scripts in `tools/shell-tests/`) |
 
 The Makefile finds programs and drivers by directory: no list to edit.
+
+### The tree, folder by folder
+
+| Path | What |
+|---|---|
+| `kernel/main.c` | the boot sequence, then the tests or user space |
+| `kernel/boot/` | loader glue: Limine's (the only code that knows about it), and a kexec'd kernel's handoff |
+| `kernel/kexec/` | kexec: the reserved region, the stored kernel loaded into it, the jump after a reboot or a panic, the next boot's side (the crash record, the panicked boot's log) |
+| `kernel/arch/x86_64/` | entry, interrupts, syscalls, CPUs, APIC, TSC, FPU, PCIDs, IPIs |
+| `kernel/acpi/` | static ACPI tables (MADT, FADT, HPET, MCFG, DMAR) |
+| `kernel/mm/` | physical pages, page tables, heap, address spaces |
+| `kernel/sched/` | scheduler, threads, waits, mutexes |
+| `kernel/object/` | kernel objects and handles |
+| `kernel/abi/` | the handle-level API and the syscalls |
+| `kernel/proc/` | bootfs, the ELF parser, userboot (starts init) |
+| `kernel/dev/` | the kernel's own devices: framebuffer console, serial, RTC and the wall clock, PCI core, reboot, the IOMMU (VT-d) |
+| `kernel/debug/` | klog, panic, symbols, lock checker, RESULTS box, self-, crash and stress tests |
+| `kernel/test/` | in-kernel tests and the benchmark |
+| `kernel/include/jam/` | kernel headers |
+| `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `rtl8125/` (the PC's Realtek RTL8125B network chip), `e1000e/` (QEMU's Intel 82574L network card, for the network tests), `lib/` (code several drivers link: the netdev server, `netserver.c`), `test/` (test drivers), `include/` (`<jam/driver.h>`, `<jam/task.h>`, generated IDL headers) |
+| `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace and `/svc`, a program's list (`<wants.h>`), the driver API, cooperative tasks (`<jam/task.h>`), sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3), settings (`<settings.h>`), the calendar and time zones (`<wallclock.h>`), UTF-8, SHA-256 and IPv4 addresses as text (`<ipv4.h>`) |
+| `user/services/` | init, compositor (the desktop: the Wayland compositor, its window manager, the top bar, search, popovers and notices), console (the terminals), devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), dhcp (the DHCP client), dns (the resolver, `/svc/dns`), netlog (the log to the Mac), sntp (the clock from the network), serve (the file server behind `serve`), update (`update`'s fetcher: the build the Mac serves, offered to init) |
+| `user/apps/` | jamjar (the music player's window), splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), fetch and speed (the shell's `fetch` and `speed`), and `fun/` (the apps library) |
+| `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), mixramp (a ramp played while the mixer is killed again and again), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test), wantlisten (a list asking for `svc net listen`, the same), fractal (a Mandelbrot explorer drawn by every CPU with vector maths: its benchmark and self-test), wltest (a test window: the compositor's checks, and the mouse as an app sees it), wlapps (programs as windows on a compositor of its own), fbbench (the drawing code's speed), tcptest (TCP streams, for the network tests), nolisten (a list with the network but not the listen permission), perop (the per-operation lines of the benchmark), updtest (init's update check fed from files) |
+| `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
+| `boot/` | `limine.conf` (the boot menu), `init.cfg` (the regression run) |
+| `tools/` | image, bootfs, syscall, IDL and symbol generators; checks; QEMU test scripts (and `tools/readme-shots.sh`, the README's pictures); the USB writer and `make flash`'s updater; `update`'s server and its signing tool (`jamos-sign`, built into `build/host/`); the smooth text's preview and font cutter (`tools/fontpreview.c`, `tools/subsetfont.py`) |
+| `third_party/` | Limine and `limine.h`, the Spleen font, FatFs, dr_mp3, pl_mpeg (the splash's MPEG-1 decoder), stb_image (jamjar's album covers), stb_truetype and the Inter font (the desktop's text), the JetBrains Mono font (the terminals' text), Wayland's protocol files (`wayland-protocols/`, data for `tools/genwl.py`), lwIP (netstack's IPv4, ARP, ICMP, UDP and TCP), Monocypher (`update`'s Ed25519 signatures) |
+| `docs/` | the documentation ([README.md](README.md#documentation)); `docs/logo/`, the logo; `docs/images/`, the README's pictures |
 
 ### Licence and outside code
 
