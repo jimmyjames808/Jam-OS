@@ -15,7 +15,9 @@
  * And the askers' fair shares (askers.c, bin/dns's loop for them on a
  * thread): ordinary openers of /svc/dns up to DNS_PROG_OPENERS and their
  * names in flight up to DNS_PROG_QUERIES, the next of each refused, while
- * an opener of /svc/dns-sys still connects and has a name in flight. */
+ * an opener of /svc/dns-sys still connects and has a name in flight; then
+ * openers that come and go leave no message bytes behind (their channels'
+ * port bindings undone, not just their handles closed). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -297,6 +299,43 @@ static status_t asked(handle_t ch, const char *name)
     }
 }
 
+/* Our job's message bytes (a port binding is charged there while it
+ * lives: the askers run in this process). */
+static uint64_t msg_bytes(void)
+{
+    struct job_info ji;
+    return info_of(startup_handle(SR_JOB), &ji) == OK ? ji.used[JOB_LIMIT_MSG_BYTES] : ~0ull;
+}
+
+/* Openers that come and go leave nothing behind: each one's channel is
+ * bound to the loop's port, and closing it without unbinding kept the
+ * binding and its charge for good (1216 bytes an opener). */
+static bool openers_come_and_go(handle_t sys)
+{
+    uint64_t base = 0;
+    for (unsigned r = 0; r <= 8; r++) {
+        handle_t h;
+        CHECK_ST(svc_connect_until(sys, now() + 2 * S, &h), OK);
+        jam_handle_close(h);
+        uint64_t until = now() + 2 * S, want = r ? base : 0;
+        unsigned used;
+        do {   /* until the loop has seen it go */
+            used = 0;
+            for (unsigned k = 0; k < DNS_OPENERS; k++)
+                used += __atomic_load_n(&D.a[k].ch, __ATOMIC_ACQUIRE) != 0;
+            if (used <= DNS_PROG_OPENERS + 1 && (!r || msg_bytes() <= want))
+                break;
+            jam_nanosleep(now() + NS_PER_MS);
+        } while (now() < until);
+        if (!r)
+            base = msg_bytes();   /* after one round: everything it makes once is made */
+        else if (msg_bytes() > base)
+            FAIL("round %u: our job keeps %lu message bytes, %lu after the first", r,
+                 (unsigned long)msg_bytes(), (unsigned long)base);
+    }
+    return true;
+}
+
 /* Ordinary openers to their share and their names to theirs; a system
  * opener still connects and has a name resolved. */
 static bool takes_shares(handle_t shared, handle_t sys, handle_t o[DNS_PROG_OPENERS], handle_t *s)
@@ -334,7 +373,7 @@ bool t_dnsd_shares(void)
     CHECK_ST(askers_init(shared_srv, sys_srv), OK);
     __atomic_store_n(&loop_stop, false, __ATOMIC_RELEASE);
     CHECK_ST(thread_spawn("dns-askers", askers_loop, NULL, stack, sizeof(stack), &th), OK);
-    bool ok = takes_shares(shared, sys, o, &s);
+    bool ok = takes_shares(shared, sys, o, &s) && openers_come_and_go(sys);
     __atomic_store_n(&loop_stop, true, __ATOMIC_RELEASE);
     CHECK(wait_threads(&th, 1));
     CHECK(ok);

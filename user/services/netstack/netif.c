@@ -85,9 +85,12 @@ static void detach(struct dev *d, const char *why)
     if (!d->session)
         return;
     (void)jam_port_unbind(d->port, d->to_stack, key_of(d, KEY_EVENT));   /* may have fired */
+    /* A binding holds its object (and its charge) until unbound: closing
+     * the session's only handle would leave it on the port. */
+    (void)jam_port_unbind(d->port, d->session, key_of(d, KEY_SESSION));
     handle_t hs[] = { d->session, d->tx_vmo, d->rx_vmo, d->to_driver, d->to_stack };
     for (unsigned k = 0; k < DEV_HANDLES; k++)
-        jam_handle_close(hs[k]);   /* the session's binding goes with its only handle */
+        jam_handle_close(hs[k]);
     unmap_ring(d->tx_map);
     unmap_ring(d->rx_map);
     d->session = d->tx_vmo = d->rx_vmo = d->to_driver = d->to_stack = HANDLE_INVALID;

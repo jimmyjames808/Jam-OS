@@ -161,12 +161,16 @@ static status_t make_stream(struct mixer *m, struct stream *s, handle_t *theirs)
         st = jam_port_bind(m->port, w->event, (KEY_EVENT + slot) | (uint64_t)s->gen << 8,
                            MIXER_SIG_DATA, PORT_BIND_ONCE);
     if (st != OK) {
-        if (w->event)   /* a binding holds its object: let go of it first */
+        /* A binding holds its object (and its charge) until unbound:
+         * closing the handle alone would leave both on the port. */
+        if (w->event)
             (void)jam_port_unbind(m->port, w->event, (KEY_EVENT + slot) | (uint64_t)s->gen << 8);
+        if (ours)
+            (void)jam_port_unbind(m->port, ours, (KEY_STREAM + slot) | (uint64_t)s->gen << 8);
         handle_t left[] = { w->vmo, w->event, ours, peer };
         for (unsigned k = 0; k < 4; k++)
             if (left[k])
-                jam_handle_close(left[k]);   /* the channel's binding goes with our end */
+                jam_handle_close(left[k]);
         w->vmo = w->event = HANDLE_INVALID;
         return st;
     }

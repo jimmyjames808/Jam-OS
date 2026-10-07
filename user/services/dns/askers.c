@@ -128,7 +128,10 @@ static void asker_close(unsigned i)
             request_done(q);
         }
     }
-    jam_handle_close(D.a[i].ch);   /* its binding goes with our only handle */
+    /* A binding holds its channel (and its charge) until unbound: closing
+     * our only handle alone would leave it on the port. */
+    (void)jam_port_unbind(D.port, D.a[i].ch, key_of(i));
+    jam_handle_close(D.a[i].ch);
     D.a[i].ch = HANDLE_INVALID;
     D.a[i].pending = false;
     D.a[i].inflight = 0;
@@ -214,6 +217,7 @@ static void serve_shared(handle_t *ch, bool *pending, bool sys)
             /* Every holder is gone, init's too: no new openers. */
             printf("dns: /svc/%s's channel is closed (%s): no new openers\n",
                    sys ? SVC_DNS_SYS : SVC_DNS, status_str(st));
+            (void)jam_port_unbind(D.port, *ch, sys ? KEY_SHARED_SYS : KEY_SHARED);
             jam_handle_close(*ch);
             *ch = HANDLE_INVALID;
         }

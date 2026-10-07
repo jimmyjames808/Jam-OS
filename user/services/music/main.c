@@ -286,7 +286,10 @@ static status_t serve_all(struct player *p)
         return st;
     for (unsigned i = 0; i < CLIENTS; i++) {
         if (clients[i] && serve_some(p, clients[i]) != ERR_SHOULD_WAIT) {
-            jam_handle_close(clients[i]);   /* its opener is gone */
+            /* its opener is gone; the binding would keep the channel (and
+             * its charge) until unbound: closing alone doesn't */
+            (void)jam_port_unbind(port, clients[i], 1 + i);
+            jam_handle_close(clients[i]);
             clients[i] = HANDLE_INVALID;
         }
     }

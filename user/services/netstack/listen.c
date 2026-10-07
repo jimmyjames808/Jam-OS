@@ -26,9 +26,12 @@ static struct lchan chans[CHANNELS] = {
     { .key = 5, .kind = &listening_low, .name = "/svc/net-low" },
 };
 
+static handle_t lport;   /* the port they are bound to (main.c's) */
+
 static status_t chan_init(handle_t port, unsigned i, handle_t ch)
 {
     struct lchan *c = &chans[i];
+    lport = port;
     if (!ch) {
         nstack_log("started without %s's channel: no program may listen%s", c->name,
                    i == LOW ? " on a port below 1024" : "");
@@ -70,7 +73,9 @@ static void chan_serve(struct lchan *c)
             /* Every holder is gone, init's duplicate too: no new listeners. */
             nstack_log("%s's channel is closed (%s): no new listeners there", c->name,
                        status_str(st));
-            jam_handle_close(c->ch);   /* its binding goes with our only handle */
+            /* the binding holds the channel until unbound: closing alone doesn't */
+            (void)jam_port_unbind(lport, c->ch, c->key);
+            jam_handle_close(c->ch);
             c->ch = HANDLE_INVALID;
         }
         return;
