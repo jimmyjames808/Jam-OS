@@ -1,8 +1,9 @@
 /* Running a line: its lists (; && || &), each list's pipeline, each
  * stage's NAME=value words and alias, and then the command: one in the
  * table, else a program in /boot/bin. A command before a single & is a
- * program started in the background (sh_jobs.c): a program's name or
- * `run`; a shell command, an alias or a pipeline before & is refused. */
+ * program started in the background (sh_jobs.c): a program's name, `run`
+ * or `jamjar` (a command that is only its program); another shell
+ * command, an alias or a pipeline before & is refused. */
 #include "sh_core.h"
 
 #define MAX_DEPTH 8   /* aliases in aliases, watch 'a | b' in a line, ... */
@@ -44,6 +45,8 @@ static int exec_argv(int argc, char **argv, bool bg)
         return exec_unknown(argc, argv, true);
     if (c->fn == shc_run)
         return argc > 1 ? sh_start_background(argc - 1, argv + 1) : c->fn(argc, argv);
+    if (c->fn == shc_jamjar)   /* `run jamjar`, as the command itself is */
+        return sh_start_background(argc, argv);
     sh_tty("sh: only a program runs in the background (& after %s, a shell command): "
            "e.g. run utest &\n", argv[0]);
     return 2;

@@ -106,6 +106,20 @@ wait 10 after-x-wltest
 seen 10 [1] done: wltest (exit 0)
 wait {prompt}
 
+# jamjar is a shell command that is only its program (bin/jamjar), so it
+# goes in the background as `run jamjar &` does (the owner's PC, 2026-10-07:
+# `jamjar &` was refused as a shell command). q quits it.
+send jamjar &
+wait 10 jamjar: in the background
+sleep 3
+type q
+wait 20 the music plays on
+sleep 1
+send echo after-$T-jamjar
+wait 10 after-x-jamjar
+seen 10 [1] done: jamjar (exit 0)
+wait {prompt}
+
 # ---- the limit: 8 at once ----------------------------------------------------------------
 # Eight that ended within one line hold their numbers until their notices,
 # which a ninth brings out at once to take a number.

@@ -77,7 +77,7 @@ static const struct sh_cmd cmds[] = {
       "  screen (Ctrl+C is the foreground program's), and what it prints is shown as\n"
       "  it comes. When it ends, the next prompt says so: [2] done: utest (exit 0).\n"
       "  kill %2 ends it; all of them end with the shell. At most 8 at once; a\n"
-      "  pipeline, a shell command or an alias can't go in the background"),
+      "  pipeline, a shell command (but jamjar) or an alias can't go in the background"),
     C(term, C_PROGRAMS, "term [command]",
       "open another terminal: a window of its own with a shell of its own (as\n"
       "  Super+Enter does); with a command, its shell runs it first, as if typed,\n"
