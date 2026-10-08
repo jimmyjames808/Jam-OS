@@ -221,20 +221,8 @@ ones below are the design questions M8 left open
   restarted after a crash ("the shell restarted after a crash: its
   history is kept"), so a restart isn't a mystery. For M12's shell and
   console work (track P1b), or a small agent before it.
-- **GPT sticks** are not read (their partitions are not mounted).
-- devmgr and init are single-threaded loops that wait inside a
-  request: devmgr up to 2 s per call to a usb-storage, 5 s for a
-  filesystem's stop and 15 s for a killed driver; init up to 25 s for
-  a `mount` and 15 s for a `kill`. Meanwhile devmgr binds and
-  restarts nothing and init answers nothing, Ctrl+Alt+Del included.
-  M8.6's pre-M9 batch gives loops the tools to stop doing this; then
-  their waits are converted one at a time (init's first if Ctrl+Alt+Del
-  is ever seen stuck behind a `mount` on the PC; the storage ones go
-  with devmgr's split at M12) ([ARCH-CHECK.md](history/ARCH-CHECK.md)).
-  usb-bus is past this: since M8.6 every port and device has a task of
-  its own and each device's bulk transfers run apart from the others', so
-  a slow stick holds up only its own requests. One Bulk-Only stick still
-  runs one command at a time: the protocol has no queue.
+- **GPT sticks** are not read (their partitions are not mounted); M12
+  shapes the storage protocol for GPT and M12.7 parses it.
 - The mouse wheel works on the PC (2026-10-01: hid drives a mouse whose
   report descriptor has a wheel in the report protocol; real mice send no
   wheel in the boot protocol). The boot log has each mouse's descriptor
@@ -249,16 +237,11 @@ ones below are the design questions M8 left open
 
 The rest:
 
-- devmgr's protocol is hand-written, not IDL: handle results are in
-  genidl now; what remains is handle arguments, a varying number of reply
-  handles and the held-back `MOUNTS` reply. M12.
-- The benchmark has not run on the PC since M5.5 ([BENCH.md](BENCH.md)):
-  run it at M8.6's sign-off. Once per milestone a QEMU soak with the
+- The benchmark ([BENCH.md](BENCH.md), last run on the PC 2026-10-07):
+  once per milestone, and once per milestone a QEMU soak with the
   scheduler's switches off (`noplaceorder noaffinepair nospinidle`). A new
   scheduler heuristic needs a switch and a BENCH line showing a clear win
   on the PC.
-- `console.write` always sends a 2048-byte array; variable-length IDL
-  arrays would fix it.
 - The address-space switch got ~20 ns dearer with PCIDs on
   ([BENCH.md](BENCH.md)); look at `pcid_load`'s bookkeeping.
 - Kernel waits bounded by an iteration count or not at all: the xAPIC ICR
@@ -268,8 +251,8 @@ The rest:
 - Files still over 800 lines: `vmo.c`, `sched.c`, `aspace.c` (splitting
   them needs internal headers).
 - Most of the shell has had no independent review (the cleanup's covered
-  the segment fix and `kill`, M8's the file commands): review the rest
-  next time.
+  the segment fix and `kill`, M8's the file commands); M12.1 reads only
+  what M12 changes in it, so the rest waits for a later check.
 - `job_find_process` is used only by its own test.
 - A pluggable scheduler interface (`sched_ops`): not until a second
   policy is needed.
@@ -277,9 +260,7 @@ The rest:
 ## Not planned
 
 - `fork` (a POSIX layer gets `posix_spawn`).
-- SSH (discussed and not added).
 - Wi-Fi.
 - HDMI/DisplayPort audio through the RTX.
-- Storage other than USB sticks with FAT32: an NVMe driver and other
-  filesystems were discussed and declined.
+- Filesystems other than FAT32 (NVMe itself is M12.7, on FAT32 and GPT).
 - User accounts: single user; handles are the only authority.
