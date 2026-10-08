@@ -210,6 +210,17 @@ ones below are the design questions M8 left open
   compositor counts refusals: `refused` in its stats), raise it to 256
   (fixed tables of a few KB, Alt+Tab's list ~128 KB) and give the refusal
   a notice like "No more terminals" (the owner, 2026-10-07).
+- **The shell's history across restarts** (the owner, 2026-10-08): kept
+  in `/data/etc/history`, the last ~500 commands, each terminal appending
+  as it runs a command and a new terminal starting with the shared list;
+  a command typed with a leading space is not saved, repeats are stored
+  once; `history -c` clears it. **Up and Down match what is typed**: with
+  text on the line, Up steps back only through commands starting with it
+  (newest first), Down forward and back to the typed text; an empty line
+  steps through everything as now. And a short line when a shell is
+  restarted after a crash ("the shell restarted after a crash: its
+  history is kept"), so a restart isn't a mystery. For M12's shell and
+  console work (track P1b), or a small agent before it.
 - **GPT sticks** are not read (their partitions are not mounted).
 - devmgr and init are single-threaded loops that wait inside a
   request: devmgr up to 2 s per call to a usb-storage, 5 s for a
