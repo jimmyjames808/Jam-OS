@@ -22,6 +22,17 @@ static struct kmem_cache *private_cache(struct kmem_cache **c, const char *name)
 static void *xfer_obj;
 static struct kmem_cache *xfer_cache;
 
+/* A joined helper's 64 KiB stack returns to the stack cache (which
+ * kt_free_and_cached_pages counts) when its CPU reaps the thread, a little after
+ * thread_join woke us: on a fast host (KVM) a count taken at once can still miss
+ * those 16 pages. Wait for the count to come back to `want`; if it never does
+ * (a real leak) the caller's check fails as before. */
+static void wait_stack_reaped(uint64_t want)
+{
+    for (int i = 0; i < 200 && kt_free_and_cached_pages() != want; i++)
+        thread_sleep_ms(5);
+}
+
 static void free_it(void *arg)
 {
     (void)arg;
@@ -70,6 +81,7 @@ KTEST(kmag_refill_drain_accounting)
         uint64_t there = kmem_cached_objects(2, c);
         thread_join(thread_create_on("kt-free", free_it, NULL, PRIO_DEFAULT, &m));
         KT_EQ(kmem_cached_objects(2, c), there + 1);
+        wait_stack_reaped(free0);
         KT_GLOBAL_EQ(kt_free_and_cached_pages(), free0);
         KT_EQ(kmem_cached_objects(2, c), 0);
     }
@@ -121,5 +133,6 @@ KTEST(kmag_oom_drains_magazines)
     KT_ASSERT(obj);
     KT_EQ(left, 0);
     kmem_cache_free(c, obj);
+    wait_stack_reaped(free0);
     KT_EQ(kt_free_and_cached_pages(), free0);
 }
