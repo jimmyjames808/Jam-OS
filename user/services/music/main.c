@@ -25,6 +25,8 @@
  * start is one line in the log ("[music] music: track 3: Artist -
  * Title (3:45)"), which the console shows above the prompt. */
 #include <idl/music.h>
+#include <idl/svc.h>
+#include <utf8.h>
 #include "music.h"
 
 #define CLIENTS 8          /* channels handed out by svc.connect at once */
@@ -36,44 +38,51 @@ static handle_t port;
 static handle_t clients[CLIENTS];   /* our ends of the channels openers got (0: free) */
 static bool     more;               /* a channel still had requests when its turn ended */
 
-static void put(uint8_t *out, size_t size, const char *s)
+/* s as a text of the protocol's: at most `max` bytes of UTF-8, cut between
+ * characters, each bad piece (a file name from a stick isn't always UTF-8)
+ * one '?' (<utf8.h>). out has room for max + 1; returns the length. */
+static uint32_t put(char *out, uint32_t max, const char *s)
 {
-    size_t n = s ? strnlen(s, size - 1) : 0;
-    memcpy(out, s ? s : "", n);
-    memset(out + n, 0, size - n);
+    uint32_t n = 0, len = s ? (uint32_t)strlen(s) : 0;
+    for (uint32_t i = 0; i < len;) {
+        uint32_t cp = 0;
+        int k = utf8_seq((const uint8_t *)s + i, len - i, &cp);
+        uint32_t take = k > 0 ? (uint32_t)k : 1;
+        if (n + take > max)
+            break;
+        if (k > 0)
+            memcpy(out + n, s + i, take);
+        else
+            out[n] = '?';
+        n += take;
+        i += k > 0 ? (uint32_t)k : (uint32_t)-k;
+    }
+    out[n] = '\0';
+    return n;
 }
 
-/* A path from the wire: NUL-terminated within its 256 bytes, and absolute
- * (or empty, if `empty` may be). */
-static bool path_arg(const uint8_t in[256], char out[FS_PATH_MAX], bool empty)
+/* A path from the wire (the protocol has checked it: UTF-8, no NUL): into a
+ * buffer of FS_PATH_MAX, and absolute (or empty, if `empty` may be). One the
+ * file system couldn't take is no path. */
+static bool path_arg(const char *in, uint32_t len, char out[FS_PATH_MAX], bool empty)
 {
-    if (strnlen((const char *)in, FS_PATH_MAX) == FS_PATH_MAX)
+    if (len >= FS_PATH_MAX)
         return false;
-    memcpy(out, in, FS_PATH_MAX);
+    memcpy(out, in, len);
+    out[len] = '\0';
     return out[0] == '/' || (empty && !out[0]);
 }
 
-static status_t on_start(void *ctx, const uint8_t folder[256], uint32_t *found, uint8_t *reading)
-{
-    struct player *p = ctx;
-    char path[FS_PATH_MAX];
-    if (!path_arg(folder, path, false))
-        return ERR_INVALID_ARGS;
-    bool scanning = false;
-    status_t st = player_start(p, path, found, &scanning);
-    *reading = scanning;
-    return st;
-}
-
-static status_t on_play(void *ctx, const uint8_t folder[256], const uint8_t first[256],
-                        uint8_t order, uint32_t *found, uint8_t *reading)
+static status_t on_start(void *ctx, const char *folder, uint32_t folder_len, const char *first,
+                         uint32_t first_len, uint8_t order, uint32_t *found, uint8_t *reading)
 {
     struct player *p = ctx;
     char path[FS_PATH_MAX], file[FS_PATH_MAX];
-    if (!path_arg(folder, path, false) || !path_arg(first, file, true) || order > 1)
+    if (!path_arg(folder, folder_len, path, false) || !path_arg(first, first_len, file, true) ||
+        order > 1)
         return ERR_INVALID_ARGS;
     bool scanning = false;
-    status_t st = player_play(p, path, file, order, found, &scanning);
+    status_t st = player_start(p, path, file, order, found, &scanning);
     *reading = scanning;
     return st;
 }
@@ -193,8 +202,9 @@ _Static_assert(SPEC_BANDS == 64, "music.idl's spectrum and stereo have 64 bands,
 
 static status_t on_status(void *ctx, uint8_t *playing, uint32_t *tracks, uint32_t *bad,
                           uint32_t *started, uint64_t *elapsed_ms, uint64_t *length_ms,
-                          int32_t *volume, uint8_t folder[256], uint8_t path[256],
-                          uint8_t title[128], uint8_t note[128])
+                          int32_t *volume, char *folder, uint32_t *folder_len, char *path,
+                          uint32_t *path_len, char *title, uint32_t *title_len, char *note,
+                          uint32_t *note_len)
 {
     struct player *p = ctx;
     *playing = state(p);
@@ -203,18 +213,18 @@ static status_t on_status(void *ctx, uint8_t *playing, uint32_t *tracks, uint32_
     *started = p->started;
     *volume = p->volume;
     *length_ms = 0;
-    put(folder, 256, p->folder);
-    put(note, 128, p->note);
+    *folder_len = put(folder, 4095, p->folder);
+    *note_len = put(note, 127, p->note);
     const struct mark *m = player_heard(p, elapsed_ms);
     if (!m) {
-        put(path, 256, NULL);
-        put(title, 128, NULL);
+        *path_len = put(path, 4095, NULL);
+        *title_len = put(title, 127, NULL);
         return OK;
     }
     char t[TITLE_MAX];
     track_title(p->folder, p->t.path[m->track], t, sizeof(t));
-    put(path, 256, p->t.path[m->track]);
-    put(title, 128, t);
+    *path_len = put(path, 4095, p->t.path[m->track]);
+    *title_len = put(title, 127, t);
     *length_ms = m->length_ms;
     return OK;
 }
@@ -226,17 +236,15 @@ static status_t on_volume(void *ctx, int32_t cb, int32_t *out)
 
 static const struct music_ops ops = {
     .start = on_start, .stop = on_stop, .next = on_next, .status = on_status,
-    .set_volume = on_volume, .prev = on_prev, .play = on_play, .levels = on_levels,
+    .set_volume = on_volume, .prev = on_prev, .levels = on_levels,
     .pause = on_pause, .sleep = on_sleep, .spectrum = on_spectrum, .stereo = on_stereo,
 };
 
-static uint32_t dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
-                         uint32_t *rhn)
-{
-    return music_dispatch(&ops, ctx, req, n, rep, rhs, rhn);
-}
-
 /* svc.connect: a new channel for one opener, served like the shared one. */
+static status_t on_connect(void *ctx, handle_t *out);
+
+static const struct svc_ops svc_ops = { .connect = on_connect };
+
 static status_t on_connect(void *ctx, handle_t *out)
 {
     (void)ctx;
@@ -262,13 +270,43 @@ static status_t on_connect(void *ctx, handle_t *out)
     return ERR_NO_RESOURCES;
 }
 
+/* One request on a channel, as libos's svc_serve_request does (svc.connect
+ * next to `music`), but in buffers of the protocol's own size: a `start` or
+ * a `status` holds two paths, which pass the 8 KiB it keeps on the stack. */
+static status_t serve_request(handle_t ch, struct player *p)
+{
+    static _Alignas(8) uint8_t q[MUSIC_REQ_MAX + 8], r[MUSIC_REP_MAX];
+    handle_t hs[IDL_READ_HANDLES], rhs[IDL_REP_HANDLES];
+    uint32_t n = 0, nh = 0, rhn = 0, rn;
+    status_t st = drv_channel_read(ch, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
+    if (st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, n, nh);
+    if (st != OK)
+        return st;
+    if (nh) {
+        idl_close_all(hs, nh);
+        idl_reply_status(ch, q, n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    const struct idl_req_hdr *h = (const struct idl_req_hdr *)q;
+    if (n >= sizeof(*h) && h->ordinal >> 16 == SVC_PROTOCOL_ID)
+        rn = svc_dispatch(&svc_ops, p, q, n, r, rhs, &rhn);
+    else
+        rn = music_dispatch(&ops, p, q, n, r, rhs, &rhn);
+    if (!rn)
+        idl_close_all(rhs, rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, r, rn, rhs, rhn);
+    return OK;
+}
+
 /* Up to BUDGET requests from ch: ERR_SHOULD_WAIT once it is empty (or the
  * budget is spent: `more` says so), else the read's status. */
 static status_t serve_some(struct player *p, handle_t ch)
 {
     status_t st = OK;
     for (unsigned n = 0; n < BUDGET && st == OK; n++)
-        st = svc_serve_request(ch, dispatch, on_connect, p);
+        st = serve_request(ch, p);
     if (st == OK) {
         more = true;   /* a client writing flat out doesn't hold up the music */
         return ERR_SHOULD_WAIT;

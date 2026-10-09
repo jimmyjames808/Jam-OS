@@ -13,21 +13,8 @@
 
 protocol music 24
 
-# Play `folder` (an absolute path, NUL-terminated): every .mp3 and .wav
-# file under it (any depth; case-insensitive; names starting with '.'
-# left out) in shuffle, back to back, until `stop`. Answers once the
-# folder has been read and the player's mixer stream is open, with the
-# number of files found; 0 files: nothing plays (the player stays
-# stopped). A folder that takes longer than half a second to read is read
-# on after the answer, between the player's other calls: `reading` 1 and
-# `found` the files so far; it plays once the folder is read (or stops,
-# with a note, if there is nothing to play). Already playing (or
-# reading): the old folder stops (5 ms fade) and the new one starts. ERR_NOT_FOUND: no such folder (or a path under no mount),
-# or no audio output (the mixer's open_output: the shell's `music`
-# checks the folder itself first to tell them apart); ERR_WRONG_TYPE: it
-# is a file; ERR_INVALID_ARGS: not an absolute path; the mixer's other
-# errors from opening a stream.
-1  start  (u8[256] folder) -> (u32 found, u8 reading)
+# (Ordinals 1 and 7 were `start` and `play`, now one method, `start` at 13:
+# not reused.)
 # Stop playing, with the 5 ms fade. `was_playing`: 1 if it was.
 2  stop  () -> (u8 was_playing)
 # Skip the track being heard now: the next one starts from its beginning.
@@ -40,10 +27,12 @@ protocol music 24
 # inside) and are skipped; `started`: tracks started since `start`.
 # The track heard now: `elapsed_ms` into it, `length_ms` (0: unknown),
 # `path` (absolute), `title` ("Artist - Title" from the path, see the
-# player's main.c). `folder`: the last one started. `volume`: the
+# player's main.c). `folder`: the last one started. A text that is not
+# UTF-8 (a file name from a stick) comes with a '?' for each bad piece, and
+# a title or note longer than 127 bytes is cut between characters. `volume`: the
 # player's own, in centibels. `note`: why it stopped by itself, if it did
 # ("" otherwise).
-4  status  () -> (u8 playing, u32 tracks, u32 bad, u32 started, u64 elapsed_ms, u64 length_ms, i32 volume, u8[256] folder, u8[256] path, u8[128] title, u8[128] note)
+4  status  () -> (u8 playing, u32 tracks, u32 bad, u32 started, u64 elapsed_ms, u64 length_ms, i32 volume, str[<=4095] folder, str[<=4095] path, str[<=127] title, str[<=127] note)
 # The player's volume in centibels (its mixer stream's), clamped to
 # [-960, 0]; kept across tracks, stops and starts (not across a restart
 # of the player). Answers the volume set.
@@ -55,13 +44,6 @@ protocol music 24
 # shuffle goes on where it was. ERR_BAD_STATE: not playing (paused counts
 # as playing: it plays on from the track chosen).
 6  prev  () -> ()
-# `start` with options. `first`: an absolute path (NUL-terminated) of a
-# file under `folder` that plays first ("" for none; a file that is not in
-# the folder's list is ignored, with a line in the log); `order` 1: the
-# files play in the order of their paths (byte order), over and over,
-# instead of in shuffle; 0: shuffle, as `start`. The answer and the
-# errors are `start`'s; ERR_INVALID_ARGS also for an `order` above 1.
-7  play  (u8[256] folder, u8[256] first, u8 order) -> (u32 found, u8 reading)
 # What a view asks many times a second (a cheap call): `playing` as in
 # `status` (3: paused); `serial`, a number that changes whenever the track
 # heard changes (a new one, or the same one from its start: then `status`
@@ -96,3 +78,21 @@ protocol music 24
 # tilt; a mono file gives both the same); the rest as `levels` (`level`
 # is the mono mix's). A stereo view asks this instead of `spectrum`.
 12 stereo  () -> (u8 playing, u32 serial, u64 elapsed_ms, u64 length_ms, i32 volume, u32 sleep_s, u8[64] left, u8[64] right, u8 level)
+# Play `folder` (an absolute path): every .mp3 and .wav file under it (any
+# depth; case-insensitive; names starting with '.' left out), back to back,
+# until `stop`. `order` 0: in shuffle; 1: in the order of their paths (byte
+# order), over and over. `first`: an absolute path of a file under `folder`
+# that plays first ("" for none; a file that is not in the folder's list is
+# ignored, with a line in the log). Answers once the folder has been read
+# and the player's mixer stream is open, with the number of files found; 0
+# files: nothing plays (the player stays stopped). A folder that takes
+# longer than half a second to read is read on after the answer, between the
+# player's other calls: `reading` 1 and `found` the files so far; it plays
+# once the folder is read (or stops, with a note, if there is nothing to
+# play). Already playing (or reading): the old folder stops (5 ms fade) and
+# the new one starts. ERR_NOT_FOUND: no such folder (or a path under no
+# mount), or no audio output (the mixer's open_output: the shell's `music`
+# checks the folder itself first to tell them apart); ERR_WRONG_TYPE: it is
+# a file; ERR_INVALID_ARGS: not an absolute path, or an `order` above 1; the
+# mixer's other errors from opening a stream.
+13 start  (str[<=4095] folder, str[<=4095] first, u8 order) -> (u32 found, u8 reading)

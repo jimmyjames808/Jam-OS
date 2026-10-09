@@ -47,12 +47,10 @@ static int start(handle_t ch, const char *arg, bool keep)
         sh_tty("music: %s: not a folder (play plays one file)\n", arg);
         return 1;
     }
-    uint8_t folder[FS_PATH_MAX];
-    memset(folder, 0, sizeof(folder));
-    memcpy(folder, abs, strlen(abs));
     uint32_t found = 0;
     uint8_t reading = 0;
-    st = music_start_until(ch, now() + START_WAIT, folder, &found, &reading);
+    st = music_start_until(ch, now() + START_WAIT, abs, (uint32_t)strlen(abs), "", 0, 0, &found,
+                           &reading);
     if (st == ERR_NOT_FOUND) {
         sh_tty("music: no audio output: no HD Audio driver with a path to a jack (see `hda`)\n");
         return 1;
@@ -81,17 +79,24 @@ static int start(handle_t ch, const char *arg, bool keep)
 
 static int status(handle_t ch)
 {
-    uint8_t playing = 0, folder[256], path[256], title[128], note[128];
-    uint32_t tracks = 0, bad = 0, started = 0;
+    uint8_t playing = 0;
+    uint32_t tracks = 0, bad = 0, started = 0, folder_len, path_len, title_len, note_len;
     uint64_t elapsed = 0, length = 0;
     int32_t volume = 0;
-    status_t st = music_status_until(ch, now() + SOON, &playing, &tracks, &bad, &started,
-                                     &elapsed, &length, &volume, folder, path, title, note);
-    if (st != OK) {
-        sh_tty("music: the player doesn't answer (%s)\n", status_str(st));
+    char *text = malloc(2 * 4096 + 2 * 128);   /* folder, path, title, note */
+    if (!text) {
+        sh_tty("music: out of memory\n");
         return 1;
     }
-    folder[255] = path[255] = title[127] = note[127] = 0;
+    char *folder = text, *path = folder + 4096, *title = path + 4096, *note = title + 128;
+    status_t st = music_status_until(ch, now() + SOON, &playing, &tracks, &bad, &started,
+                                     &elapsed, &length, &volume, folder, &folder_len, path,
+                                     &path_len, title, &title_len, note, &note_len);
+    if (st != OK) {
+        sh_tty("music: the player doesn't answer (%s)\n", status_str(st));
+        free(text);
+        return 1;
+    }
     char a[16], b[16], v[16];
     if (playing == 3)
         sh_say("music: paused %s  %s / %s\n  %s\n", (char *)title, mss(elapsed, a, sizeof(a)),
@@ -117,6 +122,7 @@ static int status(handle_t ch)
     if (music_levels_until(ch, now() + SOON, &lp, &serial, NULL, NULL, NULL, &sleep_s, bands,
                            &level) == OK && sleep_s)
         sh_say("  the sleep timer stops it in %u:%02u\n", sleep_s / 60, sleep_s % 60);
+    free(text);
     return 0;
 }
 

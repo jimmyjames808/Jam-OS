@@ -157,15 +157,13 @@ struct player {
 };
 
 /* player.c */
-/* Stop whatever plays and start reading folder; then up to SCAN_SYNC of
+/* Stop whatever plays and start reading folder (first, "" for none, plays
+ * first; ordered: by path, not shuffled); then up to SCAN_SYNC of
  * the reading in this call: *scanning false and *found the tracks (it
  * plays if there are any), or *scanning true and *found so far (the loop
  * reads on with player_scan and plays when it is done). */
-status_t player_start(struct player *p, const char *folder, uint32_t *found, bool *scanning);
-/* The same with `play`'s options: first ("" none) plays first; ordered:
- * by path, not shuffled. */
-status_t player_play(struct player *p, const char *folder, const char *first, bool ordered,
-                     uint32_t *found, bool *scanning);
+status_t player_start(struct player *p, const char *folder, const char *first, bool ordered,
+                      uint32_t *found, bool *scanning);
 /* While p->scanning: a few more entries; at the end, play (or stop with a
  * note if there is nothing to play). */
 void     player_scan(struct player *p);

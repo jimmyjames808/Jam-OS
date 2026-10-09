@@ -136,13 +136,8 @@ static status_t play_list(struct player *p)
     return OK;
 }
 
-status_t player_start(struct player *p, const char *folder, uint32_t *found, bool *scanning)
-{
-    return player_play(p, folder, "", false, found, scanning);
-}
-
-status_t player_play(struct player *p, const char *folder, const char *first, bool ordered,
-                     uint32_t *found, bool *scanning)
+status_t player_start(struct player *p, const char *folder, const char *first, bool ordered,
+                      uint32_t *found, bool *scanning)
 {
     *found = 0;
     *scanning = false;
