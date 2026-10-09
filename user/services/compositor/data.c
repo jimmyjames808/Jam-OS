@@ -435,10 +435,10 @@ static status_t on_receive(void *data, uint32_t self, const char *mime_type, han
     (void)self;
     handle_t w = HANDLE_INVALID;
     rights_t r = may_receive(o, mime_type) ? pass_rights(fd) : 0;
-    if (!r || jam_handle_replace(fd, r, &w) != OK) {
+    if (!r)
         jam_handle_close(fd);   /* the reader sees an empty transfer */
+    if (!r || jam_handle_replace(fd, r, &w) != OK)   /* fd is gone either way */
         return OK;
-    }
     dc_of(o->client)->receives++;
     /* The source's own type string is ours: it offered exactly it. */
     (void)jwl_wl_data_source_send_send(o->source->client->conn, o->source->id,

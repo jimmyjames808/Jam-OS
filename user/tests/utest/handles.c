@@ -108,3 +108,24 @@ bool t_length_limits(void)
     }
     return true;
 }
+
+/* handle_replace consumes h whatever the status (M12's K-C, review K
+ * finding 5): rights it hasn't close it, and the job is charged nothing
+ * for it after. */
+bool t_replace_consumes(void)
+{
+    struct job_info before, after;
+    CHECK_ST(info_of(own_job(), &before), OK);
+    handle_t e, x;
+    CHECK_ST(jam_event_create(&e), OK);
+    CHECK_ST(jam_handle_replace(e, RIGHT_READ | RIGHT_WAIT, &x), ERR_INVALID_ARGS);
+    CHECK_ST(jam_handle_close(e), ERR_BAD_HANDLE);   /* gone */
+    CHECK_ST(info_of(own_job(), &after), OK);
+    CHECK_EQ(after.used[JOB_LIMIT_HANDLES], before.used[JOB_LIMIT_HANDLES]);
+    CHECK_ST(jam_handle_replace(e, RIGHT_SAME, &x), ERR_BAD_HANDLE);   /* nothing to take */
+    CHECK_ST(jam_event_create(&e), OK);
+    CHECK_ST(jam_handle_replace(e, RIGHT_WAIT, &x), OK);
+    CHECK_ST(jam_handle_close(e), ERR_BAD_HANDLE);
+    CHECK_ST(jam_handle_close(x), OK);
+    return true;
+}

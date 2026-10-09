@@ -138,13 +138,15 @@ status_t sys_vmo_commit(struct handle_table *t, handle_t h, uint64_t offset, uin
  * handle_get): the VMO itself refuses it from then on. */
 status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, handle_t *out)
 {
-    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_VMEX);
-    if (st != OK)
-        return st;
+    /* h is gone whatever the status (M12's K-C, as a send's handles). */
     struct vmo *v;
-    st = vmo_get(t, h, RIGHT_READ | RIGHT_MAP, &v);
-    if (st != OK)
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_VMEX);
+    if (st == OK)
+        st = vmo_get(t, h, RIGHT_READ | RIGHT_MAP, &v);
+    if (st != OK) {
+        handle_close(t, h);   /* a bad value names nothing */
         return st;
+    }
     struct khandle kh;
     st = handle_remove(t, h, &kh);
     if (st == OK) {

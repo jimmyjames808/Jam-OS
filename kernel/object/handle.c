@@ -439,10 +439,15 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
     PATH_COUNT(PATH_HANDLE);
     struct handle_slot *s = decode(t, h);
     status_t st = s ? OK : ERR_BAD_HANDLE;
+    struct khandle gone = { 0 };
     if (st == OK) {
         rights_t r = rights == RIGHT_SAME ? s->rights : rights;
         if ((r & s->rights) != r) {
+            /* h goes whatever the status (M12's K-C): closed. */
             st = ERR_INVALID_ARGS;
+            gone = free_slot_locked(t, s);
+            t->charged--;
+            uncharge(t, 1);
         } else {
             /* One slot out, one in: the charge stays as it is. */
             struct khandle kh = free_slot_locked(t, s);
@@ -450,6 +455,7 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
         }
     }
     spin_unlock_irqrestore(&t->lock, f);
+    khandle_release(&gone);   /* outside the lock: may run on_zero_handles */
     return st;
 }
 
