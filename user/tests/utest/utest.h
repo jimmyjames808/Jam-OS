@@ -600,6 +600,11 @@ bool t_conwin_keys(void);
 bool t_conwin_pointer(void);
 bool t_conwin_pointer_shape(void);
 bool t_con_hostile_compositor(void);
+/* conconn.c: the console's connection back end (bin/console "conn"). */
+bool t_con_conn_shell(void);
+bool t_con_conn_log(void);
+bool t_con_conn_hostile(void);
+bool t_con_conn_backpressure(void);
 /* conpaint.c: the console's cells drawn (cellpaint.c, linked in). */
 bool t_conpaint_metrics(void);
 bool t_conpaint_cells(void);

@@ -14,6 +14,7 @@
 #include <idl/audioctl.h>
 #include <idl/block.h>
 #include <idl/compctl.h>
+#include <idl/conn_ctl.h>
 #include <idl/console.h>
 #include <idl/crasher.h>
 #include <idl/devmgr.h>
@@ -518,6 +519,29 @@ static const struct idl_fuzz_msg idl_fz_compctl_msgs[] = {
     { 0x00200005u, 9u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00200006u, 9u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x0020000au, 8u, 1, 1, 0, 0, { IDL_OBJ_CHANNEL }, 0, { { 0, 0, 0 } } },
+};
+
+/* ---- conn_ctl ---- */
+static status_t idl_fz_conn_ctl_resize(void *ctx, uint16_t cols, uint16_t rows)
+{
+    (void)ctx;
+    (void)cols;
+    (void)rows;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static const struct conn_ctl_ops idl_fz_conn_ctl_ops = {
+    .resize = idl_fz_conn_ctl_resize,
+};
+static uint32_t idl_fz_conn_ctl_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return conn_ctl_dispatch_on(HANDLE_INVALID, &idl_fz_conn_ctl_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_conn_ctl_msgs[] = {
+    { 0x002a0001u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- console ---- */
@@ -4138,6 +4162,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "audioctl", 23, AUDIOCTL_REQ_MAX, AUDIOCTL_REP_MAX, AUDIOCTL_REP_HANDLES, idl_fz_audioctl_serve, NULL, idl_fz_audioctl_msgs, 6 },
     { "block", 15, BLOCK_REQ_MAX, BLOCK_REP_MAX, BLOCK_REP_HANDLES, idl_fz_block_serve, NULL, idl_fz_block_msgs, 5 },
     { "compctl", 32, COMPCTL_REQ_MAX, COMPCTL_REP_MAX, COMPCTL_REP_HANDLES, idl_fz_compctl_serve, NULL, idl_fz_compctl_msgs, 6 },
+    { "conn_ctl", 42, CONN_CTL_REQ_MAX, CONN_CTL_REP_MAX, CONN_CTL_REP_HANDLES, idl_fz_conn_ctl_serve, NULL, idl_fz_conn_ctl_msgs, 1 },
     { "console", 12, CONSOLE_REQ_MAX, CONSOLE_REP_MAX, CONSOLE_REP_HANDLES, idl_fz_console_serve, NULL, idl_fz_console_msgs, 7 },
     { "keys", 41, KEYS_REQ_MAX, KEYS_REP_MAX, KEYS_REP_HANDLES, idl_fz_keys_serve, idl_fz_keys_event, idl_fz_keys_msgs, 1 },
     { "crasher", 92, CRASHER_REQ_MAX, CRASHER_REP_MAX, CRASHER_REP_HANDLES, idl_fz_crasher_serve, NULL, idl_fz_crasher_msgs, 3 },
