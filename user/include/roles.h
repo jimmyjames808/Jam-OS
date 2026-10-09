@@ -12,13 +12,14 @@
 enum {
     SR_STDOUT = 5,          /* channel; libos prints through debug_write instead */
     SR_DEVMGR = 8,          /* devmgr's query channel, its server end (clients
-                             * open /svc/devmgr, <devmgr.h>): STATUS,
-                             * GET_SERVICE (not of a device with a device
-                             * channel), GET_DRIVER, SUPERVISION */
+                             * open /svc/devmgr): the `devmgr` protocol
+                             * (abi/idl/devmgr.idl), get_service of a device
+                             * with a device channel refused */
     SR_CONSOLE = 9,         /* a client end of the console's channel (the shell,
                              * and what the shell runs: a restricted one) */
-    SR_DEVMGR_CTL = 10,     /* devmgr's control channel, its server end (every
-                             * call; <devmgr.h>; clients open /svc/devmgr-ctl) */
+    SR_DEVMGR_CTL = 10,     /* devmgr's control channel, its server end (`devmgr`
+                             * and `devmgrctl`, abi/idl/devmgr.idl; clients
+                             * open /svc/devmgr-ctl) */
     SR_NS = 11,             /* the namespace: the mount points and their `fs`
                              * channels and the services under /svc, as libos's
                              * ns.c defines the encoding (<os.h> "files") */

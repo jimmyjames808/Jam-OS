@@ -5,7 +5,7 @@
  * devmgr binds it to a PCI function of class 02 00 00. Served on the
  * driver's DR_SERVE channel, which devmgr hands out only on the
  * function's device channel (init claims it and gives it to netstack
- * alone, <devmgr.h> DEVMGR_CLASS_NET) and its control channel (a test
+ * alone, devmgr.idl's CLASS_NET) and its control channel (a test
  * program under user/tests/). Format: see tools/genidl.py.
  *
  * Two kinds of channel speak it, a protocol each: the driver's own
@@ -22,10 +22,10 @@
  * and passes on only untagged ones. `info` says which, and nobody else
  * tells netstack.
  *
- * Reconnect (devmgr's supervision, user/include/devmgr.h): a call that
+ * Reconnect (devmgr's supervision, abi/idl/devmgr.idl): a call that
  * fails with ERR_PEER_CLOSED, or a session channel that closes, means the
  * driver died or ended; unmap and close the session's rings and events,
- * get the channel from devmgr again (DEVMGR_GET_SERVICE) and `open` again.
+ * get the channel from devmgr again (devmgr.get_service, abi/idl/devmgr.idl) and `open` again.
  * The driver keeps nothing across a restart.
  *
  * Protocols `netdev` (id 27) and `netdev_session` (id 63): one for each
