@@ -43,7 +43,6 @@
 #define SYS_process_start        71
 #define SYS_process_kill         72
 #define SYS_thread_create        73
-#define SYS_thread_start         74
 #define SYS_job_create           75
 #define SYS_job_set_limit        76
 #define SYS_job_get_info         77
@@ -52,6 +51,7 @@
 #define SYS_job_kill             80
 #define SYS_thread_set_fs_base   81
 #define SYS_thread_yield         82
+#define SYS_thread_start         83
 #define SYS_futex_wait           85
 #define SYS_futex_wake           86
 #define SYS_futex_requeue        87

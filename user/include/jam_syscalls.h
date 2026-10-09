@@ -60,7 +60,6 @@ status_t jam_process_create(handle_t job, const char *name, uint64_t name_len, u
 status_t jam_process_start(handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1);
 status_t jam_process_kill(handle_t proc);
 status_t jam_thread_create(handle_t proc, const char *name, uint64_t name_len, uint32_t flags, handle_t *out);
-status_t jam_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1, uint64_t fs_base);
 status_t jam_job_create(handle_t parent, uint32_t flags, handle_t *out);
 status_t jam_job_set_limit(handle_t job, uint32_t kind, uint64_t value);
 status_t jam_job_get_info(handle_t job, struct job_info *out);
@@ -69,6 +68,7 @@ status_t jam_thread_set_priority(handle_t thread, int32_t prio);
 status_t jam_job_kill(handle_t job);
 status_t jam_thread_set_fs_base(uint64_t base);
 status_t jam_thread_yield(void);
+status_t jam_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1, uint64_t fs_base);
 status_t jam_futex_wait(const uint32_t *addr, uint32_t expected, uint64_t deadline_ns, uint32_t flags);
 int64_t jam_futex_wake(const uint32_t *addr, uint32_t count, uint32_t flags);
 int64_t jam_futex_requeue(const uint32_t *addr, uint32_t wake, const uint32_t *addr2, uint32_t requeue, uint32_t flags);

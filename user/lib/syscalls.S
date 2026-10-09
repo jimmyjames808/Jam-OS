@@ -346,15 +346,6 @@ jam_thread_create:
     ret
     .size jam_thread_create, . - jam_thread_create
 
-    .globl jam_thread_start
-    .type jam_thread_start, @function
-jam_thread_start:
-    mov %rcx, %r10
-    mov $SYS_thread_start, %eax
-    syscall
-    ret
-    .size jam_thread_start, . - jam_thread_start
-
     .globl jam_job_create
     .type jam_job_create, @function
 jam_job_create:
@@ -418,6 +409,15 @@ jam_thread_yield:
     syscall
     ret
     .size jam_thread_yield, . - jam_thread_yield
+
+    .globl jam_thread_start
+    .type jam_thread_start, @function
+jam_thread_start:
+    mov %rcx, %r10
+    mov $SYS_thread_start, %eax
+    syscall
+    ret
+    .size jam_thread_start, . - jam_thread_start
 
     .globl jam_futex_wait
     .type jam_futex_wait, @function

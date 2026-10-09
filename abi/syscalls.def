@@ -145,8 +145,9 @@
 73  thread_create     status    handle_t proc, const char *name, uint64_t name_len, uint32_t flags, handle_t *out
 # thread_start: as process_start's thread (rdi = arg0, rsi = arg1), with
 # its FS base (thread-local storage) fs_base; an entry or fs_base at or past
-# the user range's top is ERR_INVALID_ARGS, nothing started.
-74  thread_start      status    handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1, uint64_t fs_base
+# the user range's top is ERR_INVALID_ARGS, nothing started. (Number 74
+# was thread_start without its FS base until M12: retired.)
+83  thread_start      status    handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1, uint64_t fs_base
 75  job_create        status    handle_t parent, uint32_t flags, handle_t *out
 76  job_set_limit     status    handle_t job, uint32_t kind, uint64_t value
 77  job_get_info      status    handle_t job, struct job_info *out

@@ -231,6 +231,16 @@ bool t_thread_fs_base(void)
     CHECK_ST(jam_thread_start(t, entry, top, fs_words[1], 0, USER_TOP_ADDR), ERR_INVALID_ARGS);
     CHECK_ST(jam_thread_start(t, entry, top, fs_words[1], 0, 1ull << 63), ERR_INVALID_ARGS);
     CHECK_ST(jam_thread_start(t, USER_TOP_ADDR, top, fs_words[1], 0, base), ERR_INVALID_ARGS);
+    /* The old thread_start (74, five arguments) is retired: a stale
+     * program gets ERR_NOT_SUPPORTED, never a start with a stray base. */
+    int64_t old;
+    __asm__ volatile("syscall"
+                     : "=a"(old)
+                     : "a"(74ull), "D"((uint64_t)t), "S"(entry), "d"(top)
+                     : "rcx", "r11", "memory", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5",
+                       "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13",
+                       "xmm14", "xmm15");
+    CHECK_ST((status_t)old, ERR_NOT_SUPPORTED);
     CHECK_ST(jam_thread_start(t, entry, top, fs_words[1], 0, base), OK);
     if (!wait_threads(&t, 1))
         return false;

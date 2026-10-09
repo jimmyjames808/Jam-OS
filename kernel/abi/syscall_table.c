@@ -234,12 +234,6 @@ static int64_t call_thread_create(const struct syscall_frame *f)
                               f->args[4]);
 }
 
-static int64_t call_thread_start(const struct syscall_frame *f)
-{
-    return sysc_thread_start((handle_t)f->args[0], f->args[1], f->args[2], f->args[3], f->args[4],
-                             f->args[5]);
-}
-
 static int64_t call_job_create(const struct syscall_frame *f)
 {
     return sysc_job_create((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2]);
@@ -279,6 +273,12 @@ static int64_t call_thread_yield(const struct syscall_frame *f)
 {
     (void)f;
     return sysc_thread_yield();
+}
+
+static int64_t call_thread_start(const struct syscall_frame *f)
+{
+    return sysc_thread_start((handle_t)f->args[0], f->args[1], f->args[2], f->args[3], f->args[4],
+                             f->args[5]);
 }
 
 static int64_t call_futex_wait(const struct syscall_frame *f)
@@ -518,7 +518,6 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_process_start] = call_process_start,
     [SYS_process_kill] = call_process_kill,
     [SYS_thread_create] = call_thread_create,
-    [SYS_thread_start] = call_thread_start,
     [SYS_job_create] = call_job_create,
     [SYS_job_set_limit] = call_job_set_limit,
     [SYS_job_get_info] = call_job_get_info,
@@ -527,6 +526,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_job_kill] = call_job_kill,
     [SYS_thread_set_fs_base] = call_thread_set_fs_base,
     [SYS_thread_yield] = call_thread_yield,
+    [SYS_thread_start] = call_thread_start,
     [SYS_futex_wait] = call_futex_wait,
     [SYS_futex_wake] = call_futex_wake,
     [SYS_futex_requeue] = call_futex_requeue,

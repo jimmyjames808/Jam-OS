@@ -56,8 +56,6 @@ int64_t sysc_process_start(handle_t proc, handle_t thread, uint64_t entry, uint6
 int64_t sysc_process_kill(handle_t proc);
 int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint32_t flags,
                            uint64_t out);
-int64_t sysc_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0,
-                          uint64_t arg1, uint64_t fs_base);
 int64_t sysc_job_create(handle_t parent, uint32_t flags, uint64_t out);
 int64_t sysc_job_set_limit(handle_t job, uint32_t kind, uint64_t value);
 int64_t sysc_job_get_info(handle_t job, uint64_t out);
@@ -66,6 +64,8 @@ int64_t sysc_thread_set_priority(handle_t thread, int32_t prio);
 int64_t sysc_job_kill(handle_t job);
 int64_t sysc_thread_set_fs_base(uint64_t base);
 int64_t sysc_thread_yield(void);
+int64_t sysc_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0,
+                          uint64_t arg1, uint64_t fs_base);
 int64_t sysc_futex_wait(uint64_t addr, uint32_t expected, uint64_t deadline_ns, uint32_t flags);
 int64_t sysc_futex_wake(uint64_t addr, uint32_t count, uint32_t flags);
 int64_t sysc_futex_requeue(uint64_t addr, uint32_t wake, uint64_t addr2, uint32_t requeue,
