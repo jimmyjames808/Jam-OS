@@ -478,7 +478,8 @@ in both cases, and the line discipline lives in it.**
   tty, handle input, handle output)`, on a client channel of any level:
   `input` is a pipe the console writes the terminal's input into (after
   the line discipline), `output` a pipe it reads and draws (or sends),
-  `tty` a channel of the new **`tty`** protocol (id 90): `get_attr`,
+  `tty` a channel of the new **`tty`** protocol (as built: id 43, and one
+  data channel in place of the two pipes; "T2 notes"): `get_attr`,
   `set_attr` (now, after drain, after flush), `drain`, `flush`,
   `get_size`, and the event `size (u16 cols, u16 rows)`. libc's terminal
   descriptor is the three together: `read` reads the input pipe, `write`
@@ -950,7 +951,7 @@ other but for A1 taking A2's first hand-back.
 | **B2. Pipes, dup, `/dev` and `/etc`** | Opus: the descriptor core | `pipe2`, `dup`/`dup2`/`dup3`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`/`F_SETFD`, `F_GETFL`/`F_SETFL`; locks accepted, not enforced), `O_NONBLOCK`, `/dev` and `/etc` (section 3), memfd and `shm_open` as kept VMOs, eventfd, `socketpair`, the one user's calls | user/posix/sys/pipe.c, dev.c, etc.c, user.c | posixtest's pipe section: 1 GiB through a pipe between two threads checked, `PIPE_BUF` atomicity with four writers, end of file only after the last writer closes, `EPIPE`; a BENCH.md line for pipe throughput |
 | **B3. Processes** | Opus: the process core | `posix_spawn` (the override; file actions; attributes: mask, defaults, group, `setsid`, grants), the hand-over (A2's writer), the child table, `waitpid`/`wait4`/`waitid`, `getpid`/`getppid`, `execve` as spawn-wait-exit, process groups, `system`/`popen` checked | user/posix/sys/proc.c, spawn.c, the override of `src/process/posix_spawn.c` | posixtest's process section: 200 children spawned and reaped (any order, `WNOHANG`, by group); descriptors inherited and `FD_CLOEXEC` ones not; a child's `getppid`; `popen("ls /boot")` read whole; a hand-over cut short (the parent killed mid-spawn) leaves a child with no descriptors, not a hang |
 | **B5. `poll`, `select`, `epoll`** | Opus: readiness is where wakes get lost | Section 7 over `<netwait.h>`: the per-thread set and its cache, `poll`/`ppoll`/`select`/`pselect`, `epoll_*`, each descriptor kind's ready and arm, `O_NONBLOCK` reads and writes against them | user/posix/sys/poll.c, epoll.c; the kinds' ready and arm hooks in B1's and B2's files (small, named) | posixtest's poll section: 200 pipes, each written once at random, every write seen exactly once; a poll woken by a write from another process; an epoll with 256 entries; a `poll` with no descriptors as a sleep |
-| **T2. The terminal's POSIX side** | Opus: `termios` semantics and the focus | The line discipline (user/lib/ldisc.c) and keys into bytes (user/lib/keybytes.c), both pure; `console.open_tty` and the `tty` protocol (id 90) in the console's front end; the focus over keys and tty clients; Ctrl+C under `ISIG` (and question 6's answer); libc's terminal descriptor (`tcgetattr`, `tcsetattr`, `TIOCGWINSZ`, `isatty`, `ttyname`, SIGWINCH's source) | user/lib/ldisc.c, user/lib/keybytes.c, `abi/idl/console.idl`, the console's front end (after T1), user/posix/sys/tty.c | utests: the line discipline against a table of byte sequences and `termios` settings (erase, kill, `VMIN`/`VTIME`, echo, `ONLCR`), keys into bytes into keys round trip; posixtest's tty section on a connection console: canonical read of a typed line, raw mode, a resize as SIGWINCH (after B4) |
+| **T2. The terminal's POSIX side** | Opus: `termios` semantics and the focus | The line discipline (user/lib/ldisc.c) and keys into bytes (user/lib/keybytes.c), both pure; `console.open_tty` and the `tty` protocol (id 43) in the console's front end; the focus over keys and tty clients; Ctrl+C under `ISIG` (and question 6's answer); libc's terminal descriptor (`tcgetattr`, `tcsetattr`, `TIOCGWINSZ`, `isatty`, `ttyname`, SIGWINCH's source) | user/lib/ldisc.c, user/lib/keybytes.c, `abi/idl/console.idl`, the console's front end (after T1), user/posix/sys/tty.c | utests: the line discipline against a table of byte sequences and `termios` settings (erase, kill, `VMIN`/`VTIME`, echo, `ONLCR`), keys into bytes into keys round trip; posixtest's tty section on a connection console: canonical read of a typed line, raw mode, a resize as SIGWINCH (after B4) |
 | **K2. Time page and `VMAR_REPLACE`** | Opus: kernel | Section 10's time page (`clock_page`, the sequence counter bumped by `wallclock_set`), `VMAR_REPLACE`; libc's clocks move onto the page | `kernel/dev/wallclock.c`, `kernel/arch/x86_64/tsc.c` (the conversion's export only), `kernel/abi/sysc_wallclock.c`, `kernel/mm/aspace.c` (the replace), their syscall lines, user/posix/sys/time.c | ktests: the page against `clock_get` over 10 s on 8 CPUs (never behind, within 1 µs), a `wallclock_set` seen by a reader mid-read (retry, no torn value); `VMAR_REPLACE` with another thread faulting on the range; a bench line: `clock_gettime` with and without the page |
 
 ### Wave C: signals, sockets, the shell, sessions, ports
@@ -1700,3 +1701,138 @@ safest reasonable option each time):
   a loop that only creates processes and threads it never starts, does
   not). posixtest's hand-over check (the parent killed mid-spawn) is what
   reaches it: `QEMU_SMP=2 tools/qemu-test.sh build/test init init`.
+
+## T2 notes
+
+Track T2 (the terminal's POSIX side) as built, with the choices the plan
+left open (the safest each time):
+
+- **Ids.** The `tty` protocol is **43** (in `abi/idl/console.idl`): 90 to
+  92 are devmgr's (M12's D). Section 9's `session` (91) and `session_ctl`
+  (92) collide with devmgrctl and crasher, and section 6's `signal` (93)
+  sits in devmgr's block: X1 and B4 take free ids (44 onwards).
+- **One data channel, not two pipes** (B5's note above). `console.open_tty
+  () -> (handle tty, handle data)`: `data` is a pipe both ways (as a
+  socketpair's end): the console writes what is typed, the client writes
+  its output. `struct fd_wait` holds one handle, and this way the client's
+  one end says readable, writable and hung up (the console gone) with no
+  user bits to keep right; fd.h is unchanged. `POSIXFDS_TTY` is two
+  handles (the tty channel, the data channel: `user/lib/fdmsg.c`). The
+  console keeps a duplicate of the client's end (read rights) to take
+  back the input it left unread.
+- **open_tty** works on a client of any level; 8 at once; it takes the
+  focus as `open_keys` does (a PROGRAM client still can't push the shell's
+  focus out). The focus stack holds key channels and ttys; a tty leaves
+  it when its `tty` channel closes, or when it breaks the protocol (an
+  output message over `TTY_OUT_MAX`, 2048 bytes: console.write's limit,
+  so the connection back end's room rule holds).
+- **The line discipline** (`user/lib/ldisc.c`) is one per console, with
+  Linux's bits and c_cc indices, its defaults Linux's but `IXON` off (no
+  flow control is built) and `IUTF8` on (erase takes a UTF-8 character).
+  A bit it has no meaning for is kept and changes nothing, as on a Linux
+  pseudo-terminal (refusing them would break every port that copies a
+  termios about). Ctrl+Z (`VSUSP`) under `ISIG` is swallowed (no job
+  control in M13). `ISIG`'s keys echo as `^C` and `^\` by `ECHOCTL`, as
+  on Linux.
+- **Ctrl+C.** With `ISIG` on (Q6 C): the input is flushed (the
+  discipline's and the tty's unread messages), and the key goes to the
+  newest SHELL or ADMIN key channel below the tty, as Ctrl+C reaches the
+  shell today (Ctrl+\ as the key with code point 0x1c); with no shell's
+  keys below (a pty, a program alone on a terminal) the tty gets the
+  `signal` event (`TTY_SIG_INT`, `TTY_SIG_QUIT`). With `ISIG` off it is
+  the byte 3. In a window, Ctrl+Alt+C never reaches a program: it is
+  Ctrl+C to the newest SHELL or ADMIN key channel (keys.c), whatever has
+  the focus.
+- **Type-ahead.** What the discipline makes ready goes to the newest tty
+  at once, one message a record. When a tty goes, the messages it left
+  are read back and put at the front of the discipline's queue (16 KiB and
+  256 records at most: what doesn't fit is dropped); when no tty is left,
+  the queue and the line half typed are typed into the keys focus as keys
+  (through `<termkeys.h>`), so a line typed under a POSIX program reaches
+  the shell after it. Keys typed before a program opened its tty are the
+  shell's (the shell keeps them as type-ahead today).
+- **drain** and `set_attr` after a drain are answered once the client's
+  output has been read off the data channel and handed to the back end
+  (for a connection, into its ring, not necessarily onto the master yet).
+- **Output** goes through the discipline's `OPOST` (`ONLCR`, `OCRNL`) and
+  a new back-end hook, `write_raw`: the connection back end adds no CR of
+  its own; the window's text model reads CR and LF as it always has, so
+  with `OPOST` off a bare LF still starts the line at column 0 there (the
+  window's main screen has no "down one row"). The application cursor
+  mode (`ESC [ ? 1 h`) is scanned in each tty's output and changes the
+  bytes of its cursor keys.
+- **A paste** into a tty (Super+V) goes to its discipline at once as
+  bytes, bracketed if it asked (`ESC [ ? 2004 h`): no pacing, so a raw
+  reader's queue bounds it (`LD_READY_MAX`, then the channel's 1024
+  messages of up to 4 KiB).
+- **TERM.** The window console draws: SGR colours (30-37, 40-47, 90-97,
+  100-107, 0, 1, 22, 39, 49), `ESC [ K`, `C`, `D`, `H` (column 0 only),
+  `ESC [ 2 J`, and on the alternate screen (`ESC [ ? 1049 h`) `H`/`f`
+  with a row and column, `A`, `B`, `J`, `K`; DEC modes 25, 2004, 2026
+  and 1. That is less than a vt100 on the main screen (no cursor
+  addressing, scroll regions, reverse video, `ESC [ 0/1 J`, `ESC [ 1/2
+  K`, insert or delete line): **`TERM=vt100`** is still the name to give
+  a program in a window (the plan's default), and the gaps are a
+  follow-up before any curses port. Over a connection the remote
+  terminal's `TERM` passes through. Nothing sets `TERM` yet: S1 (a
+  window's) and X1 (a session's, from `open`'s `term`).
+- **libc's descriptor** (`user/posix/sys/tty.c`): each read asks the
+  console for the settings (another process on the terminal may have
+  changed them), then reads by `ld_read_deadline`; `FIONREAD` is the
+  bytes the next read gets without waiting; `TIOCSWINSZ` is `EINVAL`
+  (the size is the terminal's); `TCXONC` is accepted and does nothing;
+  the process-group calls (`TIOCGPGRP`, `TIOCSPGRP`, `TIOCSCTTY`) are
+  `ENOTTY` until B3/X1; a write to a hung-up terminal is `EIO`, as on
+  Linux. `ttyname` is `/dev/tty` (musl's `ttyname_r` is overridden: no
+  `/proc`). The process's terminal is its first terminal description,
+  held for its life; B2's `/dev/tty` opens it again (the description
+  shared, as a dup).
+- **Without a hand-over**, a starter's `SR_CONSOLE` makes descriptors 0
+  and 2 the terminal, and 1 too unless it gave `SR_STDOUT` (a program in
+  a shell's pipe writes its output there and its errors to the terminal,
+  as on Unix). The console channel itself stays the program's.
+- **Not done**: SIGWINCH and the `signal` event's SIGINT (B4: below). The
+  window's keys through `<keybytes.h>` and Ctrl+Alt+C are checked by the
+  `keybytes` utest and by reading, not by a window test (no utest drives
+  a window console's keys).
+- **Found and fixed**: the front/back split left the window back end's
+  `replay_log` unset, so a window console (started or restarted) drew none
+  of the boot log; `console-restart.txt` failed on every run, not only
+  under load.
+- **Edits outside T2's files** (small): `user/posix/sys/fd.c` (the
+  `POSIXFDS_TTY` adopter line), `user/posix/sys/dev.c` (`stdfd_default`
+  asks `tty_stdfds` first; `/dev/tty` opens and stats the process's
+  terminal), `user/posix/sys/kinds.h` (that comment), `user/lib/fdmsg.c`
+  and `user/include/posixfds.h` (the tty kind's two handles),
+  `user/posix/sys/glue.h` and `user/posix/musl/OVERRIDES` (`ttyname_r`),
+  and utest's connection-console rig moved out of `conconn.c` into
+  `conrig.c` (a refactor commit) for `contty.c` to share.
+
+**For B4 (signals).** `tty.h`: the signal thread waits on
+`tty_event_handle(d)` (`SIG_READABLE`) for the process's terminal
+(`tty_controlling()`) and calls `tty_take_signals(d)`, which reads every
+queued event and returns the signals they raise as bits (SIGWINCH for a
+resize, SIGINT or SIGQUIT for the `signal` event). Until then the events
+wait on the channel (the console drops one for a full channel). A read
+blocked on the data channel ends with `EINTR` on `ERR_INTERRUPTED`; the
+`tty` calls are channel calls (never interrupted).
+
+**For S1 (the shell gives programs descriptors).** Giving a POSIX
+program `SR_CONSOLE` (a PROGRAM client, as today) is enough: libc opens
+its terminal. To share one terminal between a pipeline's programs, open
+it once (`console.open_tty`) and hand each child duplicates as
+`POSIXFDS_TTY`. The shell's Ctrl+C while a POSIX program runs arrives as
+today (a key on its own key channel); with B4 it should send SIGINT on
+the program's signal channel instead of killing its job, and print no
+`^C` of its own (the line discipline echoed it). Ctrl+\ arrives as the
+key with code point 0x1c (SIGQUIT). The settings outlast a program: a
+raw-mode program that crashes leaves the terminal raw for the next POSIX
+program, as on Unix; the shell may `set_attr` the defaults after one ends
+if it wants a clean terminal. Set `TERM=vt100` for a window.
+
+**For X1 (sessions).** Ids above. The size already reaches every tty
+client as the `size` event through `conn_ctl.resize`. A pty's slave is
+`console.open_tty` on a connection console's client; its name for
+`ttyname` (`/dev/pts/N`) needs a name field in tty.c's description
+(today every terminal is `TTY_NAME`, `/dev/tty`). The `signal` event is
+how a program alone on a pty gets SIGINT.

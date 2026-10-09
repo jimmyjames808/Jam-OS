@@ -65,6 +65,21 @@ protocol console 12
 # program's output may be any bytes, and the terminal shows them). Also
 # copied to COM1. All levels.
 11 write          (u8[<=2048] text) -> ()
+# A terminal for a POSIX program (docs/M13-PLAN.md, "The terminal
+# layer"): `tty` a channel of the `tty` protocol (below), and `data` a
+# pipe both ways (a channel of byte messages, as a socketpair's end):
+# the console writes what is typed into it, after the terminal's line
+# discipline (<ldisc.h>: in canonical mode one line per message, an empty
+# message the end of file), and reads and shows what the client writes
+# (messages of at most TTY_OUT_MAX bytes; a longer one ends the client's
+# terminal, and handles in one are closed). One channel, so its end alone
+# says readable, writable and hung up. Like open_keys, it takes the focus:
+# the keys typed go to it as bytes (<keybytes.h>, or as they came over a
+# connection) until its `tty` channel closes, when what it left unread on
+# `data` goes back to the terminal for the next reader. All levels; at
+# most 8 at once (ERR_NO_RESOURCES), and a PROGRAM client can't push out
+# the shell's focus (ERR_NO_RESOURCES when the focus stack is full).
+12 open_tty       () -> (handle tty, handle data)
 
 # keys: the channel console.open_keys answers (review W14, DQ1: events
 # from the console to its client, in the IDL; the struct a size told apart
@@ -87,3 +102,61 @@ protocol keys 41
 # a key held down), the modifiers (INPUT_MOD_*: the left keys) and the
 # character it types on the layout, 0 for none (an arrow, a modifier).
 1  key  -> (u16 usage, u8 state, u8 mods, u32 codepoint) event
+
+# tty: the terminal's POSIX side, the channel console.open_tty answers
+# (docs/M13-PLAN.md, "The terminal layer"; libc's terminal descriptor,
+# user/posix/sys/tty.c, is this channel and the data channel). The settings
+# are the terminal's (one line discipline per console, <ldisc.h>), not the
+# channel's: a set_attr holds for every client of the terminal, the next
+# program's too. They are Linux's struct termios field for field (bits,
+# c_cc indices), which libc passes through unchanged.
+#
+# Reconnect: the channel lives as long as the console runs and some
+# process keeps it. If its peer closes (the console ended, the terminal
+# hung up), the terminal is gone: libc's reads of the data channel see the
+# end of the file and its writes EPIPE; nothing is opened again.
+
+protocol tty 43
+
+# The most bytes in one message of output on the data channel
+# (console.write's).
+const OUT_MAX 2048
+# set_attr's `when` (Linux's TCSANOW, TCSADRAIN, TCSAFLUSH).
+const WHEN_NOW 0
+const WHEN_DRAIN 1
+const WHEN_FLUSH 2
+# flush's `queue` (Linux's TCIFLUSH, TCOFLUSH, TCIOFLUSH).
+const QUEUE_IN 0
+const QUEUE_OUT 1
+const QUEUE_BOTH 2
+# signal's `sig`.
+const SIG_INT 1
+const SIG_QUIT 2
+
+# The terminal's settings.
+1  get_attr  () -> (u32 iflag, u32 oflag, u32 cflag, u32 lflag, u8[32] cc, u32 ispeed, u32 ospeed)
+# New settings: at once (WHEN_NOW), after the output written so far is
+# shown (WHEN_DRAIN), or after that with the input not yet read thrown
+# away (WHEN_FLUSH: the data channel's unread messages and the line being
+# edited). Every bit is kept (one that means nothing to the console
+# changes nothing, as on a Linux pseudo-terminal); `when` > 2:
+# ERR_INVALID_ARGS.
+2  set_attr  (u8 when, u32 iflag, u32 oflag, u32 cflag, u32 lflag, u8[32] cc, u32 ispeed, u32 ospeed) -> () later
+# Answered once the output written before it has been shown.
+3  drain     () -> () later
+# Throw away input not yet read (QUEUE_IN), output not yet shown
+# (QUEUE_OUT), or both (QUEUE_BOTH).
+# `queue` > 2: ERR_INVALID_ARGS.
+4  flush     (u8 queue) -> ()
+# The terminal's size in cells (console.size's).
+5  get_size  () -> (u16 cols, u16 rows)
+# To the client: the terminal is now cols x rows (a window resized, the
+# remote terminal's resize): libc raises SIGWINCH. Sent to every client
+# of the terminal; dropped for one whose channel is full.
+6  size      -> (u16 cols, u16 rows) event
+# To the client: ISIG's key was typed (SIG_INT, SIG_QUIT) while this
+# client had the focus and no SHELL or ADMIN client's keys were below it
+# to take it (a pseudo-terminal, a program alone on a terminal): libc
+# raises SIGINT or SIGQUIT in its process. With a shell below, the shell
+# gets the key instead (Ctrl+C, or Ctrl+\) and signals the program.
+7  signal    -> (u8 sig) event

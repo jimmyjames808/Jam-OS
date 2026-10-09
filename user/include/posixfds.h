@@ -82,7 +82,7 @@ enum posixfds_kind {
     POSIXFDS_PIPE = 3,        /* a channel end; data: any (bytes read but not taken) */
     POSIXFDS_SOCKET = 4,      /* channel, ring VMO, two events (<sockring.h>); data: any */
     POSIXFDS_LISTENER = 5,    /* a `net_listener` channel; data: any */
-    POSIXFDS_TTY = 6,         /* `tty` channel, input pipe, output pipe; data: any */
+    POSIXFDS_TTY = 6,         /* `tty` channel, data channel (console.open_tty); data: any */
     POSIXFDS_PTY_MASTER = 7,  /* the master channel, its `session_ctl`; data: any */
     POSIXFDS_DEV = 8,         /* no handles; data: the node's name ("null"), a string */
     POSIXFDS_ETC = 9,         /* no handles; data: the file's path ("/etc/passwd"), a string */

@@ -615,6 +615,19 @@ static status_t idl_fz_console_write(void *ctx, const uint8_t *text, uint32_t te
         return ERR_IO;
     return OK;
 }
+static status_t idl_fz_console_open_tty(void *ctx, handle_t *out_tty, handle_t *out_data)
+{
+    (void)ctx;
+    (void)out_tty;
+    (void)out_data;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_tty) != OK)
+        return ERR_NO_MEMORY;
+    if (drv_event_create(out_data) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
 static const struct console_ops idl_fz_console_ops = {
     .size = idl_fz_console_size,
     .clear = idl_fz_console_clear,
@@ -623,6 +636,7 @@ static const struct console_ops idl_fz_console_ops = {
     .show_log = idl_fz_console_show_log,
     .set_font = idl_fz_console_set_font,
     .write = idl_fz_console_write,
+    .open_tty = idl_fz_console_open_tty,
 };
 static uint32_t idl_fz_console_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -638,6 +652,7 @@ static const struct idl_fuzz_msg idl_fz_console_msgs[] = {
     { 0x000c0009u, 41u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x000c000au, 9u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x000c000bu, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 0, 2048 } } },
+    { 0x000c000cu, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- keys ---- */
@@ -666,6 +681,113 @@ static status_t idl_fz_keys_event(const void *m, struct idl_msg *msg)
 }
 static const struct idl_fuzz_msg idl_fz_keys_msgs[] = {
     { 0x00290001u, 16u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+};
+
+/* ---- tty ---- */
+static status_t idl_fz_tty_get_attr(void *ctx, uint32_t *out_iflag, uint32_t *out_oflag, uint32_t *out_cflag, uint32_t *out_lflag, uint8_t out_cc[32], uint32_t *out_ispeed, uint32_t *out_ospeed)
+{
+    (void)ctx;
+    (void)out_iflag;
+    (void)out_oflag;
+    (void)out_cflag;
+    (void)out_lflag;
+    (void)out_cc;
+    (void)out_ispeed;
+    (void)out_ospeed;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_iflag = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_oflag = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_cflag = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_lflag = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_cc, 0x5a, 32);
+    *out_ispeed = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_ospeed = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
+static status_t idl_fz_tty_set_attr(void *ctx, struct idl_txn idl_txn, uint8_t when, uint32_t iflag, uint32_t oflag, uint32_t cflag, uint32_t lflag, const uint8_t cc[32], uint32_t ispeed, uint32_t ospeed)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)when;
+    (void)iflag;
+    (void)oflag;
+    (void)cflag;
+    (void)lflag;
+    (void)cc;
+    (void)ispeed;
+    (void)ospeed;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static status_t idl_fz_tty_drain(void *ctx, struct idl_txn idl_txn)
+{
+    (void)ctx;
+    (void)idl_txn;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static status_t idl_fz_tty_flush(void *ctx, uint8_t queue)
+{
+    (void)ctx;
+    (void)queue;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static status_t idl_fz_tty_get_size(void *ctx, uint16_t *out_cols, uint16_t *out_rows)
+{
+    (void)ctx;
+    (void)out_cols;
+    (void)out_rows;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_cols = (uint16_t)0x5a5a5a5a5a5a5a5aull;
+    *out_rows = (uint16_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
+static void idl_fz_tty_size(void *ctx, uint16_t cols, uint16_t rows)
+{
+    (void)ctx;
+    (void)cols;
+    (void)rows;
+}
+static void idl_fz_tty_signal(void *ctx, uint8_t sig)
+{
+    (void)ctx;
+    (void)sig;
+}
+static const struct tty_ops idl_fz_tty_ops = {
+    .get_attr = idl_fz_tty_get_attr,
+    .set_attr = idl_fz_tty_set_attr,
+    .drain = idl_fz_tty_drain,
+    .flush = idl_fz_tty_flush,
+    .get_size = idl_fz_tty_get_size,
+};
+static uint32_t idl_fz_tty_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return tty_dispatch_on(HANDLE_INVALID, &idl_fz_tty_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct tty_events idl_fz_tty_events = {
+    .size = idl_fz_tty_size,
+    .signal = idl_fz_tty_signal,
+};
+static status_t idl_fz_tty_event(const void *m, struct idl_msg *msg)
+{
+    return tty_event_dispatch(&idl_fz_tty_events, NULL, m, msg);
+}
+static const struct idl_fuzz_msg idl_fz_tty_msgs[] = {
+    { 0x002b0001u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002b0002u, 65u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002b0003u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002b0004u, 9u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002b0005u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002b0006u, 12u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002b0007u, 9u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- crasher ---- */
@@ -4376,8 +4498,9 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "block", 15, BLOCK_REQ_MAX, BLOCK_REP_MAX, BLOCK_REP_HANDLES, idl_fz_block_serve, NULL, idl_fz_block_msgs, 5 },
     { "compctl", 32, COMPCTL_REQ_MAX, COMPCTL_REP_MAX, COMPCTL_REP_HANDLES, idl_fz_compctl_serve, NULL, idl_fz_compctl_msgs, 6 },
     { "conn_ctl", 42, CONN_CTL_REQ_MAX, CONN_CTL_REP_MAX, CONN_CTL_REP_HANDLES, idl_fz_conn_ctl_serve, NULL, idl_fz_conn_ctl_msgs, 1 },
-    { "console", 12, CONSOLE_REQ_MAX, CONSOLE_REP_MAX, CONSOLE_REP_HANDLES, idl_fz_console_serve, NULL, idl_fz_console_msgs, 7 },
+    { "console", 12, CONSOLE_REQ_MAX, CONSOLE_REP_MAX, CONSOLE_REP_HANDLES, idl_fz_console_serve, NULL, idl_fz_console_msgs, 8 },
     { "keys", 41, KEYS_REQ_MAX, KEYS_REP_MAX, KEYS_REP_HANDLES, idl_fz_keys_serve, idl_fz_keys_event, idl_fz_keys_msgs, 1 },
+    { "tty", 43, TTY_REQ_MAX, TTY_REP_MAX, TTY_REP_HANDLES, idl_fz_tty_serve, idl_fz_tty_event, idl_fz_tty_msgs, 7 },
     { "crasher", 92, CRASHER_REQ_MAX, CRASHER_REP_MAX, CRASHER_REP_HANDLES, idl_fz_crasher_serve, NULL, idl_fz_crasher_msgs, 3 },
     { "devmgr", 90, DEVMGR_REQ_MAX, DEVMGR_REP_MAX, DEVMGR_REP_HANDLES, idl_fz_devmgr_serve, NULL, idl_fz_devmgr_msgs, 5 },
     { "devmgrctl", 91, DEVMGRCTL_REQ_MAX, DEVMGRCTL_REP_MAX, DEVMGRCTL_REP_HANDLES, idl_fz_devmgrctl_serve, NULL, idl_fz_devmgrctl_msgs, 13 },

@@ -32,3 +32,5 @@ src/process/x86_64/vfork.s 4d5aad85cb686f9cf66e32f5889471614d7b564503cb2038d21aa
 src/signal/x86_64/restore.s 1aa9c1d8b1d809a64f5edcfcb518f9d95e8cf538ddeab74d6048e489e63b3ea1 user/posix/musl/src/signal/x86_64/restore.S
 # posix_spawn: the parent builds the child (libjam's spawn and the hand-over), no vfork child.
 src/process/posix_spawn.c d223cd70ee0bc2c5b8b1004cf9878ff9e4eba8b7f26187b8cda8770d1f375fc9 user/posix/musl/src/process/posix_spawn.c
+# ttyname_r: the terminal descriptor's own name (user/posix/sys/tty.c), not /proc's link.
+src/unistd/ttyname_r.c fbb4807e4772630cd50cea943265357e619f258c350e7b88ad27855788bd8fb7 user/posix/musl/src/unistd/ttyname_r.c

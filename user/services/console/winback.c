@@ -106,7 +106,9 @@ static void win_flush(void)
 }
 
 const struct backend win_backend = {
+    .replay_log = true,   /* the window shows the boot log so far (its last part) */
     .init = win_init, .banner = win_banner, .ready = win_ready, .write = win_write,
+    .write_raw = win_write,   /* the text model reads CR and LF as they come */
     .log_line = kernel_line, .size = win_size, .clear = win_clear,
     .set_font = window_set_font, .focus_dropped = win_focus_dropped, .event = win_event,
     .deadline = win_deadline, .tick = win_tick, .flush = win_flush,

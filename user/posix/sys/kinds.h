@@ -40,10 +40,9 @@ struct fd_desc *pipe_desc_new(handle_t ch, uint32_t status);
 /* No hand-over (docs/M13-PLAN.md section 5; dev.c): 0 is /dev/null; 1 and
  * 2 share one description, a pipe end on the SR_STDOUT channel if the
  * starter gave one, else the log (debug_write, as a native program's
- * printf without SR_STDOUT; it can't be read). A terminal (SR_CONSOLE)
- * becomes 0 to 2 once terminals have a POSIX side; until then such a
- * program writes to the log, as a native program in the foreground does.
- * Called by fd.c's start, after musl is up. */
+ * printf without SR_STDOUT; it can't be read). A console channel
+ * (SR_CONSOLE) makes its terminal 0 and 2, and 1 too without SR_STDOUT
+ * (tty.c's tty_stdfds). Called by fd.c's start, after musl is up. */
 void stdfd_default(void);
 
 /* ---- /dev and /etc paths ------------------------------------------------- */

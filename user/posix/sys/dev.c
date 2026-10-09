@@ -15,8 +15,9 @@
  *       so another process sees an object only through a descriptor it
  *       was given; shm_unlink drops the name, and the object lives while
  *       a descriptor or a mapping holds it.
- *   /dev/tty  the process's terminal: ENXIO (none) until terminals have
- *       a POSIX side. /dev/ptmx: not built yet (ENOENT).
+ *   /dev/tty  the process's terminal (tty.c's tty_controlling: its
+ *       description shared, as a dup), ENXIO if it has none. /dev/ptmx:
+ *       not built yet (ENOENT).
  *
  * /dev, /dev/fd and /dev/shm stat as directories; listing them is not
  * built. The nodes are static: a description's priv is the node's entry
@@ -28,6 +29,7 @@
 #include <sys/sysmacros.h>
 #include "kinds.h"
 #include "memfd.h"
+#include "tty.h"
 
 #define SHM_DIR     "/dev/shm/"
 #define SHM_MAX     64          /* names at once */
@@ -172,13 +174,21 @@ static const struct node *node_named(const char *name);
 
 void stdfd_default(void)
 {
-    struct fd_desc *in = fd_new(&dev_ops, O_RDONLY, (void *)node_named("null")), *out;
+    unsigned term = tty_stdfds();   /* the console's terminal, where the starter gave one */
+    if (term & 1u << 1)
+        return;   /* 0 to 2 */
+    struct fd_desc *in = term ? NULL : fd_new(&dev_ops, O_RDONLY, (void *)node_named("null"));
     if (in)
         (void)fd_replace(0, in, false);   /* 0 is in range and free at the start */
     handle_t ch = startup_handle(SR_STDOUT);
-    out = ch == HANDLE_INVALID ? fd_new(&log_ops, O_WRONLY, NULL) : pipe_desc_new(ch, O_WRONLY);
+    struct fd_desc *out = ch == HANDLE_INVALID ? fd_new(&log_ops, O_WRONLY, NULL)
+                                               : pipe_desc_new(ch, O_WRONLY);
     if (!out)
         return;
+    if (term & 1u << 2) {   /* 2 is the terminal, 1 the starter's channel */
+        (void)fd_replace(1, out, false);
+        return;
+    }
     fd_ref(out);   /* 1 and 2 share it, as a shell's 2>&1 */
     (void)fd_replace(1, out, false);
     (void)fd_replace(2, out, false);
@@ -319,6 +329,18 @@ static long dup_open(long fd, int flags)
     return d ? fd_install(d, 0, flags & O_CLOEXEC) : -ENOENT;
 }
 
+/* stat of /dev/tty: the process's terminal's, or ENXIO without one. */
+static long tty_stat_of(struct stat *st)
+{
+    struct fd_desc *t = tty_controlling();
+    if (!t)
+        return -ENXIO;
+    memset(st, 0, sizeof(*st));
+    long r = t->ops->stat(t, st);
+    fd_put(t);
+    return r;
+}
+
 long dev_open(const char *abs, int flags, mode_t mode)
 {
     long fd = fd_node(abs);
@@ -330,8 +352,10 @@ long dev_open(const char *abs, int flags, mode_t mode)
         return err ? err : shm_open_path(name, flags);
     if (is_dir(abs))
         return (flags & O_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
-    if (!strcmp(abs, "/dev/tty"))
-        return -ENXIO;   /* no terminal yet */
+    if (!strcmp(abs, "/dev/tty")) {
+        struct fd_desc *t = tty_controlling();
+        return t ? fd_install(t, 0, flags & O_CLOEXEC) : -ENXIO;
+    }
     const struct node *n = node_named(abs + 5);
     if (!n)
         return (flags & O_CREAT) ? -EACCES : -ENOENT;
@@ -393,7 +417,7 @@ long dev_stat(const char *abs, struct stat *st)
         return fd_stat(fd_node(abs), st);
     const struct node *n = node_named(abs + 5);
     if (!n)
-        return !strcmp(abs, "/dev/tty") ? -ENXIO : -ENOENT;
+        return !strcmp(abs, "/dev/tty") ? tty_stat_of(st) : -ENOENT;
     memset(st, 0, sizeof(*st));
     node_stat_of(n, st);
     return 0;

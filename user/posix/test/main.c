@@ -27,6 +27,7 @@ static const struct {
     { "fds", pt_fds },
     { "poll", pt_poll },
     { "proc", pt_proc },
+    { "tty", pt_tty },
 };
 
 static void run(unsigned i, char **argv)
@@ -48,6 +49,10 @@ int main(int argc, char **argv)
         return pt_child_poll();
     if (argc >= 2 && !strcmp(argv[1], "--child-proc"))
         return pt_child_proc(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-tty"))
+        return pt_child_tty();
+    if (argc >= 2 && !strcmp(argv[1], "--child-tty-handover"))
+        return pt_child_tty_handover();
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

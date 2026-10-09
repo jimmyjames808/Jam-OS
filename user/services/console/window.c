@@ -146,6 +146,7 @@ static bool regrid(uint32_t c, uint32_t r)
     if (!paint_regrid())
         printf("console: no memory for the window's copies of the grid: drawn once there is\n");
     printf("console: the terminal is %ux%u cells\n", cols, rows);
+    ttys_resized();   /* the tty clients' size event: SIGWINCH */
     return true;
 }
 

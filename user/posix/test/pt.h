@@ -12,10 +12,11 @@
  * bench), fds.c (dup and fcntl, memfd, eventfd, the one user, /dev and
  * /etc), poll.c (poll, select, epoll on pipes; a child started with
  * libjam's spawn), proc.c (posix_spawn, the waits, the ids, groups,
- * execve, system and popen, the hand-over cut short). start.c, fds.c,
- * poll.c and proc.c are the ones that include libjam (<jamos/libjam.h>:
- * children started with a hand-over); mem.c the only one with Linux's
- * call numbers. */
+ * execve, system and popen, the hand-over cut short), tty.c (a program on
+ * a terminal: a connection console it drives itself). start.c, fds.c,
+ * poll.c, proc.c and tty.c are the ones that include libjam
+ * (<jamos/libjam.h>: children started with a hand-over); mem.c the only
+ * one with Linux's call numbers. */
 #pragma once
 
 #include <stdbool.h>
@@ -42,6 +43,7 @@ void pt_pipe(char **argv);
 void pt_fds(char **argv);
 void pt_poll(char **argv);
 void pt_proc(char **argv);
+void pt_tty(char **argv);
 
 /* The child modes start.c's checks start this program in (main.c runs
  * them instead of the sections): each checks what it was given and exits
@@ -51,6 +53,8 @@ int  pt_child_handover(void);
 int  pt_child_devetc(void);
 int  pt_child_poll(void);
 int  pt_child_proc(int argc, char **argv);
+int  pt_child_tty(void);
+int  pt_child_tty_handover(void);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

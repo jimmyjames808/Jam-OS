@@ -165,6 +165,10 @@ static void port_event(const struct port_packet *pkt)
     case K_CLIENT:
         client_event(i);
         break;
+    case K_TTY:
+    case K_TTY_OUT:
+        tty_event(kind, i);
+        break;
     default:
         back->event(kind, i);   /* the back end's own (K_ALT, K_WL, ...) */
         break;
@@ -213,8 +217,8 @@ static int serve(void)
         /* A client with requests left over: take what else is queued (a
          * key, another client) without sleeping, then give it another round. */
         uint64_t deadline = clients_pending() ? 0 : DEADLINE_NEVER;
-        uint64_t more[2] = { back->deadline(), paste_deadline() };
-        for (unsigned i = 0; i < 2; i++)
+        uint64_t more[3] = { back->deadline(), paste_deadline(), ttys_deadline() };
+        for (unsigned i = 0; i < 3; i++)
             deadline = more[i] < deadline ? more[i] : deadline;
         struct port_packet pkt;
         status_t st = jam_port_wait(port, deadline, &pkt);
@@ -227,6 +231,7 @@ static int serve(void)
         if (st == ERR_TIMED_OUT && back->tick)
             back->tick();
         clients_serve_pending();
+        ttys_pump();    /* the tty clients' output and requests, and their input */
         paste_pump();   /* a paste's keys, as fast as the focus reads them */
         back->flush();
     }
@@ -260,6 +265,7 @@ int main(int argc, char **argv)
     if (st != OK)
         return 1;
     clients_init();
+    ttys_init();
     if (!back->init())
         return 1;
     read_boot_log();

@@ -17,6 +17,7 @@
  * time; it is dropped when its focus is no longer the newest (a program
  * started, or ended), and its text dropped (the bracket still closed) by
  * a key typed (paste_stop). */
+#include <keybytes.h>
 #include "console.h"
 
 #define PASTE_RETRY_NS (5 * NS_PER_MS)   /* a full channel: try again after this */
@@ -42,10 +43,39 @@ static void paste_free(void)
     paste.text = NULL;
 }
 
+/* A paste into a tty client: its bytes typed into its line discipline at
+ * once (no pacing: its queue holds them, LD_READY_MAX at most), the
+ * characters paste_key keeps as UTF-8, a newline as CR (as Enter types
+ * it), between the markers if it asked for bracketed paste. */
+static bool paste_tty(unsigned tty, const char *text, size_t n)
+{
+    bool br = ttys_bracketed(tty);
+    uint8_t *b = malloc(KEYBYTES_MAX * n + 2 * (sizeof(open_seq) - 1));
+    if (!b)
+        return false;
+    size_t k = 0;
+    if (br)
+        for (const char *s = open_seq; *s; s++)
+            b[k++] = (uint8_t)*s;
+    struct input_key_event ev;
+    for (size_t at = 0; paste_key(text, n, &at, &ev);) {
+        uint32_t cp = ev.codepoint == '\n' ? '\r' : ev.codepoint;
+        k += keybytes(0, INPUT_KEY_DOWN, 0, cp, false, b + k);   /* its UTF-8 */
+    }
+    if (br)
+        for (const char *s = close_seq; *s; s++)
+            b[k++] = (uint8_t)*s;
+    ttys_type(tty, b, k);
+    free(b);
+    return true;
+}
+
 bool paste_start(const char *text, size_t n)
 {
     if (paste.text || !nfocus)
         return false;
+    if (focus_top_tty() >= 0)
+        return paste_tty((unsigned)focus_top_tty(), text, n);
     paste.text = malloc(n ? n : 1);
     if (!paste.text)
         return false;
