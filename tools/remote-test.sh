@@ -38,7 +38,12 @@ name=$(basename "$top")
 dir=work/$name
 echo "remote-test: on $host in ~/$dir: $*" >&2
 ssh "${ssh_opts[@]}" "$host" "wsl --cd ~ mkdir -p $dir" < /dev/null
-rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude test.bin \
+# Several runs from one checkout copy it one at a time (lockf, the Mac's
+# flock): two rsyncs into one directory at once failed.
+mkdir -p build
+lock=()
+command -v lockf > /dev/null && lock=(lockf -k build/.remote-sync.lock)
+${lock[@]+"${lock[@]}"} rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude test.bin \
     --exclude compile_commands.json --rsync-path="wsl --cd ~ rsync" \
     -e "ssh ${ssh_opts[*]}" ./ "$host:$dir/" ||
     { echo "remote-test: copying to $host failed" >&2; exit 2; }
