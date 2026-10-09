@@ -2,15 +2,16 @@
  *
  * One thread serves everything from one wait set (<netwait.h>): the
  * control channels (init's shared one and each opener's), each file's
- * listener and `file` channel, and every client's connection. A second
- * thread, the listen worker (listen.c), does the one thing that waits on
- * another process: asking netstack for a listener; it serves nobody, and
- * hands the listener back through the share's slot.
+ * `give` channel while it waits for the file, each file's listener and
+ * `file` channel, and every client's connection. A second thread, the
+ * listen worker (listen.c), does the one thing that waits on another
+ * process: asking netstack for a listener; it serves nobody, and hands
+ * the listener back through the share's slot.
  *
- * A share is one file on one port: its state goes FREE -> LISTENING (the
- * `share` call brought the file; the worker asks netstack for the
- * listener, and the call is answered, later, when it has or hasn't) ->
- * SERVING, and back to FREE on `stop` or a failure. A client is one connection: HEAD (reading the
+ * A share is one file on one port: its state goes FREE -> GIVING (the
+ * shell's `give` channel is open, waiting for the file) -> LISTENING (the
+ * worker asks netstack for the listener) -> SERVING, and back to FREE on
+ * `stop` or a failure. A client is one connection: HEAD (reading the
  * request's head), SEND (the response's head, then the file's bytes),
  * CLOSING (our end sent, waiting for the client's). The file is read
  * without waiting (file.idl's read sent, its answer taken from the `file`
@@ -43,9 +44,9 @@
 
 /* What an entry in the wait set is: its tag, in the entry's user pointer
  * (the low bits; the slot above them). */
-enum tag { T_CTL, T_LISTENER, T_FILE, T_CLIENT, T_SHARED };
+enum tag { T_CTL, T_GIVE, T_LISTENER, T_FILE, T_CLIENT, T_SHARED };
 
-enum share_state { S_FREE, S_LISTENING, S_SERVING };
+enum share_state { S_FREE, S_GIVING, S_LISTENING, S_SERVING };
 
 struct client;
 
@@ -54,8 +55,9 @@ struct share {
     uint16_t   port;             /* asked for, then the listener's */
     char       name[SERVE_NAME_MAX + 1];
     const char *type;            /* its Content-Type (http_content_type) */
-    struct idl_txn txn;          /* LISTENING: the `share` call awaiting its answer ... */
-    bool       reply;            /* ... if there still is one (its channel may close first) */
+    handle_t   give;             /* GIVING: our end of the shell's channel */
+    uint32_t   give_id;
+    uint64_t   give_until;       /* GIVING: the file must come by then */
     struct jfile file;           /* LISTENING, SERVING: the file (its buffer mapped read-only) */
     uint32_t   file_id;
     uint64_t   size;
@@ -115,14 +117,15 @@ status_t listen_init(void);
 status_t listen_ask(unsigned i);
 
 /* share.c */
-/* Share slot i (free) for port and name: the file (its `file` channel and
- * transfer buffer, size bytes; both are the share's now, whatever the
- * status) asked of the listen worker; the call txn is answered when it
- * is listening (share_listened) or fails. OK: the answer comes later. */
-status_t share_begin(unsigned i, uint16_t port, const char *name, uint32_t name_len,
-                     uint64_t size, handle_t file, handle_t buffer, struct idl_txn txn);
-/* Control channel ch is closing: the `share` calls on it get no answer. */
-void     shares_forget_replies(handle_t ch);
+/* Share slot i (free) for port and name, waiting for its file: *out_give is
+ * the end the shell gets. */
+status_t share_giving(unsigned i, uint16_t port, const char *name, uint32_t name_len,
+                      handle_t *out_give);
+/* Its give channel is readable (the file came) or closed. */
+void     share_give_ready(unsigned i);
+/* Shares whose file didn't come in time freed; the earliest of `until` and
+ * the deadlines of those still waiting. */
+uint64_t shares_expire(uint64_t until);
 /* A share's listener came (or didn't): serve it, or free it. */
 void     share_listened(unsigned i);
 /* Stop share i: its listener, its file and its clients go. */

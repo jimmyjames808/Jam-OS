@@ -6,9 +6,8 @@
  *   SR_NS         /svc/net-listen only: the network, with the permission
  *                 to listen (its list below says `svc net listen`; init
  *                 grants the same, shell.c's serve_grants)
- * It holds no mount: the shell opens each file and hands it over with the
- * `share` call (serve.idl), so the server can read that file and nothing
- * else, and serves
+ * It holds no mount: the shell opens each file and hands it over (serve.idl's
+ * share), so the server can read that file and nothing else, and serves
  * it to every path asked (no directories, no path from a request is ever
  * looked up). It runs in a job of its own under init's, so it serves on
  * while the shell runs other commands and across a restart of the shell;
@@ -80,9 +79,10 @@ void serve_log(const char *fmt, ...)
 
 /* ---- the control channels ------------------------------------------------------------ */
 
-/* Why a share of port may not start (OK: it may); *slot the free one. */
-static status_t share_check(uint16_t port, uint32_t name_len, unsigned *slot)
+static status_t on_share(void *ctx, uint16_t port, const char *name, uint32_t name_len,
+                         handle_t *out_give)
 {
+    (void)ctx;
     if (port < SERVE_PORT_MIN)
         return ERR_OUT_OF_RANGE;
     if (!name_len)
@@ -96,25 +96,7 @@ static status_t share_check(uint16_t port, uint32_t name_len, unsigned *slot)
     }
     if (free_slot < 0)
         return ERR_NO_RESOURCES;
-    *slot = (unsigned)free_slot;
-    return OK;
-}
-
-/* The handler owns the file's two handles: the share's, or closed. */
-static status_t on_share(void *ctx, struct idl_txn txn, uint16_t port, const char *name,
-                         uint32_t name_len, uint64_t size, handle_t file, handle_t buffer,
-                         uint16_t *out_port)
-{
-    (void)ctx, (void)out_port;   /* answered with the txn, when it listens */
-    unsigned slot = 0;
-    status_t st = share_check(port, name_len, &slot);
-    if (st == OK)
-        st = share_begin(slot, port, name, name_len, size, file, buffer, txn);
-    else {
-        jam_handle_close(file);
-        jam_handle_close(buffer);
-    }
-    return st == OK ? IDL_LATER : st;
+    return share_giving((unsigned)free_slot, port, name, name_len, out_give);
 }
 
 static status_t on_info(void *ctx, uint32_t index, uint16_t *port, char *name,
@@ -153,14 +135,10 @@ static status_t on_stop(void *ctx, uint16_t port, uint32_t *stopped)
 
 static const struct serve_ops ops = { .share = on_share, .info = on_info, .stop = on_stop };
 
-/* The shared channel answers only svc.connect: a share answered later
- * there could go to any of its holders. */
-static const struct serve_ops shared_ops = { 0 };
-
-static uint32_t shared_dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
-                                uint32_t *rhn)
+static uint32_t dispatch(void *ctx, const void *req, uint32_t n, void *rep, handle_t *rhs,
+                         uint32_t *rhn)
 {
-    return serve_dispatch(&shared_ops, ctx, req, n, rep, rhs, rhn);
+    return serve_dispatch(&ops, ctx, req, n, rep, rhs, rhn);
 }
 
 /* svc.connect: a channel of its own for one opener, in the wait set. */
@@ -189,33 +167,21 @@ static status_t on_connect(void *ctx, handle_t *out)
     return ERR_NO_RESOURCES;
 }
 
-/* Up to BUDGET requests from the shared channel (svc.connect): ERR_SHOULD_WAIT
- * once it is empty (or the budget is spent: the entry stays ready,
- * level-triggered), else the read's status (ERR_PEER_CLOSED: every holder is
- * gone). */
-static status_t serve_shared_some(handle_t ch)
+/* Up to BUDGET requests from ch: ERR_SHOULD_WAIT once it is empty (or the
+ * budget is spent: the entry stays ready, level-triggered), else the
+ * read's status (ERR_PEER_CLOSED: its opener is gone). */
+static status_t serve_some(handle_t ch)
 {
     status_t st = OK;
     for (unsigned n = 0; n < BUDGET && st == OK; n++)
-        st = svc_serve_request(ch, shared_dispatch, on_connect, NULL);
-    return st == OK ? ERR_SHOULD_WAIT : st;
-}
-
-/* The same for an opener's channel (serve's own methods, their handles
- * and a `share` answered later). */
-static status_t serve_ctl_some(handle_t ch)
-{
-    status_t st = OK;
-    for (unsigned n = 0; n < BUDGET && st == OK; n++)
-        st = serve_serve_one(ch, &ops, NULL);
+        st = svc_serve_request(ch, dispatch, on_connect, NULL);
     return st == OK ? ERR_SHOULD_WAIT : st;
 }
 
 static void ctl_ready(unsigned slot)
 {
-    if (serve_ctl_some(ctls[slot]) == ERR_SHOULD_WAIT)
+    if (serve_some(ctls[slot]) == ERR_SHOULD_WAIT)
         return;
-    shares_forget_replies(ctls[slot]);   /* no answer to the shares it was waiting for */
     (void)netwait_remove(serve_w, ctl_ids[slot]);   /* in the set since on_connect */
     jam_handle_close(ctls[slot]);
     ctls[slot] = HANDLE_INVALID;
@@ -229,9 +195,12 @@ static bool ready(const struct netwait_ready *r)
     unsigned slot = key_slot(r->user);
     switch (key_tag(r->user)) {
     case T_SHARED:
-        return serve_shared_some(ctl) == ERR_SHOULD_WAIT;
+        return serve_some(ctl) == ERR_SHOULD_WAIT;
     case T_CTL:
         ctl_ready(slot);
+        break;
+    case T_GIVE:
+        share_give_ready(slot);
         break;
     case T_LISTENER:
         if (r->ready & NETWAIT_HUP)
@@ -277,7 +246,7 @@ int main(int argc, char **argv)
     for (;;) {   /* each turn: what is ready, the listen worker's answers, the deadlines */
         struct netwait_ready r[BATCH];
         uint32_t n = 0;
-        uint64_t deadline = clients_expire(now());
+        uint64_t deadline = shares_expire(clients_expire(now()));
         st = netwait_wait(serve_w, deadline, r, BATCH, &n);
         if (st != OK && st != ERR_TIMED_OUT && st != ERR_CANCELED) {
             printf("serve: waiting: %s: ending\n", status_str(st));

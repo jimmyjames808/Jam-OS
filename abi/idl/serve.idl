@@ -2,7 +2,8 @@
 # which serves files over HTTP/1.1 to any computer on the network. init
 # starts it in shell mode and keeps both ends of this channel, as the music
 # player's, publishing it as /svc/serve (a channel per opener); the shell's
-# `serve` command is its client (<serve.h> has the limits).
+# `serve` command is its client (<serve.h> has the limits and the two
+# structs `share` uses).
 # Format: see tools/genidl.py.
 #
 # Reconnect: init holds the channel across a restart of the server, so a
@@ -15,29 +16,26 @@ protocol serve 31
 # A file's name as `share` is given it: at most NAME_MAX bytes of UTF-8 (a
 # longer path keeps its end).
 const NAME_MAX  127
-# How long a caller of `share` waits for its answer (ms): the server waits up
-# to 5 s for a network address, then asks netstack for a listener.
-const SHARE_WAIT_MS  10000
 
 # Serve a file on `port` (SERVE_PORT_MIN and up: any port, the server has
 # the permission for those below 1024 too). `name` is the file's path
 # as the owner gave it (1..NAME_MAX bytes, checked UTF-8: the generated
 # server refuses the rest): for `info`, the log and the Content-Type, never
-# opened by the server. The file comes with the call: `file`, its channel
-# (file.idl, open to read: file_give's) and `buffer`, its transfer buffer,
-# both moved to the server whatever the status; `size` is the file's size
-# in bytes as its opener saw it. Answered when the server listens (it serves
-# that file and nothing else, to every path asked), with the port it listens
-# on, else why not (ERR_ACCESS_DENIED: the server has no listen permission;
-# ERR_ALREADY_BOUND: another program has the port; ERR_BAD_STATE: no
-# network address yet (it waits 5 s for one); netstack's other errors;
-# ERR_INVALID_ARGS: no name, or a buffer that isn't one; ERR_WRONG_TYPE: a
-# handle of another type, refused by the generated server). ERR_NO_RESOURCES:
-# SERVE_SHARES files served (or waiting for a listener) already;
-# ERR_ALREADY_EXISTS: that port is served already; ERR_OUT_OF_RANGE: a port
-# below SERVE_PORT_MIN. The answer can take the 5 s for an address: a caller
-# gives it SHARE_WAIT_MS.
-1  share  (u16 port, str[<=127] name, u64 size, handle<channel> file, handle<vmo> buffer) -> (u16 port) later
+# opened by the server. Answers at once with a channel
+# `give`: the caller writes one message on it, struct serve_give with the
+# file's two handles (file_give: its `file` channel, open to read, and its
+# transfer buffer), and then reads one answer there, struct serve_answer:
+# OK once the server listens (it serves that file and nothing else, to
+# every path asked), else why not (ERR_ACCESS_DENIED: the server has no
+# listen permission; ERR_ALREADY_BOUND: another program has the port;
+# ERR_BAD_STATE: no network address yet (it waits 5 s for one);
+# netstack's other errors; ERR_INVALID_ARGS: a wrong message). The server
+# closes `give` after its answer, or if nothing comes on it in
+# SERVE_GIVE_WAIT. ERR_NO_RESOURCES: SERVE_SHARES files served (or
+# waiting for their file) already; ERR_ALREADY_EXISTS: that port is served
+# already; ERR_OUT_OF_RANGE: a port below SERVE_PORT_MIN; ERR_INVALID_ARGS:
+# no name (or one that isn't text).
+1  share  (u16 port, str[<=127] name) -> (handle give)
 # What is served: the `index`-th file (0, 1, ...): its port, its name as
 # `share` was given it, its size, the clients connected now, and the
 # requests answered and file bytes sent since it was shared.
