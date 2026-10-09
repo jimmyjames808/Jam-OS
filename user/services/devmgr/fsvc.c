@@ -374,7 +374,7 @@ bool fs_check_ended(struct binding *b, bool no_volume)
         return false;
     say(false, "devmgr: %s partition %u (type %02x) holds no FAT volume %s can read: left alone, "
         "nothing written to it", disk_name(d), b->part + 1, d->type[b->part], FAT_PATH);
-    problems += !job_empty(b->job, b->path);
+    problems += !sup_job_empty(b->job, b->path);
     forget_driver(b);
     fs_retire(b);
     return true;

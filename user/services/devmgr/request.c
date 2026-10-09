@@ -196,8 +196,8 @@ static void supervision(const struct binding *b, struct devmgr_rep *r)
         return;
     }
     r->a = b->state;
-    r->b = b->restarts;
-    r->c = b->backoff_ms;
+    r->b = b->win.restarts;
+    r->c = b->win.backoff_ms;
     if (b->kind == BIND_FS) {
         r->d = b->promoted;
         r->e = spare_waits();
