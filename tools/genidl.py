@@ -22,7 +22,8 @@ right above a method are copied into the header):
     <ordinal> <method> (<type> <arg>, ...) -> (<type> <result>, ...) [later] [idempotent]
 
 name, method, arg, result   C identifiers (lower case by convention)
-id                          1..65535, unique over all protocols
+id                          1..65535, listed in abi/idl/ids.txt (the registry
+                            of every protocol id, hand-written ones too)
 ordinal                     1..65535, unique in the protocol
 type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
                             fixed-size byte array, 1 <= N <= 4096), or
@@ -126,6 +127,7 @@ import sys
 
 IDL_DIR = "abi/idl"
 OUT_DIR = "drivers/include/idl"
+IDS_FILE = os.path.join(IDL_DIR, "ids.txt")   # the protocol id registry
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 # The start of a file comment's restart rule ("Restart:", "Reconnect (note):").
 RESTART_RULE = re.compile(r"(Restart|Reconnect)( \([^)]*\))?:")
@@ -179,8 +181,8 @@ class Method:
 
 
 class Protocol:
-    def __init__(self, src, name, pid, methods):
-        self.src, self.name, self.pid, self.methods = src, name, pid, methods
+    def __init__(self, src, lineno, name, pid, methods):
+        self.src, self.lineno, self.name, self.pid, self.methods = src, lineno, name, pid, methods
 
     def wire(self, m):
         return (self.pid << 16) | m.ordinal
@@ -233,6 +235,7 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
 
 def parse(src):
     name, pid, methods, doc = None, None, [], []
+    plineno = 0
     ordinals, names = set(), set()
     restart_rule = False
     for lineno, raw in enumerate(open(src), 1):
@@ -253,7 +256,7 @@ def parse(src):
             if len(toks) != 3 or not IDENT.match(toks[1]) or toks[1] in C_KEYWORDS or \
                     not toks[2].isdigit():
                 fail(src, lineno, "want 'protocol <name> <id>'")
-            name, pid = toks[1], int(toks[2])
+            name, pid, plineno = toks[1], int(toks[2]), lineno
             if not 1 <= pid <= 65535:
                 fail(src, lineno, f"protocol id {pid} not in 1..65535")
             if os.path.basename(src) != name + ".idl":
@@ -308,7 +311,82 @@ def parse(src):
         sys.exit(f"{src}: no 'protocol' line")
     if not methods:
         sys.exit(f"{src}: no methods")
-    return Protocol(src, name, pid, sorted(methods, key=lambda m: m.ordinal))
+    return Protocol(src, plineno, name, pid, sorted(methods, key=lambda m: m.ordinal))
+
+
+class IdEntry:
+    def __init__(self, lineno, pid, name, where, note):
+        self.lineno, self.pid, self.name, self.where, self.note = lineno, pid, name, where, note
+
+
+def parse_ids(path):
+    """The protocol id registry (abi/idl/ids.txt): one entry per id."""
+    entries, ids, names = [], {}, {}
+    try:
+        lines = open(path).read().splitlines()
+    except FileNotFoundError:
+        sys.exit(f"{path}: missing (the protocol id registry)")
+    for lineno, raw in enumerate(lines, 1):
+        line, _, note = raw.partition("#")
+        toks = line.split()
+        if not toks:
+            continue
+        if len(toks) != 3:
+            fail(path, lineno, "want '<id> <name> <where> [# what]'")
+        try:
+            pid = int(toks[0], 0)
+        except ValueError:
+            fail(path, lineno, f"bad id '{toks[0]}'")
+        name, where = toks[1], toks[2]
+        if not 0 <= pid <= 65535:
+            fail(path, lineno, f"id {pid} not in 0..65535")
+        if not IDENT.match(name) or name in C_KEYWORDS:
+            fail(path, lineno, f"bad name '{name}'")
+        if pid in ids:
+            fail(path, lineno, f"id {pid} listed twice (line {ids[pid]})")
+        if name in names:
+            fail(path, lineno, f"'{name}' listed twice (line {names[name]})")
+        if pid == 0:
+            if name != "none" or where != "-":
+                fail(path, lineno, "id 0 is reserved: '0 none -'")
+        elif not os.path.isfile(where):
+            fail(path, lineno, f"'{where}' doesn't exist")
+        ids[pid], names[name] = lineno, lineno
+        entries.append(IdEntry(lineno, pid, name, where, note.strip()))
+    if 0 not in ids:
+        sys.exit(f"{path}: id 0 must be listed as reserved: '0 none -'")
+    return entries
+
+
+def check_ids(path, entries, protos):
+    """Every .idl protocol is in the registry under its name, id and file,
+    and every registry line that names an .idl is one of them."""
+    by_name = {e.name: e for e in entries}
+    for p in protos:
+        e = by_name.get(p.name)
+        if e is None:
+            fail(p.src, p.lineno, f"protocol '{p.name}' is not in {path}: give it a free id "
+                                  f"there ('<id> {p.name} {p.src}')")
+        if e.pid != p.pid or e.where != p.src:
+            fail(p.src, p.lineno, f"protocol '{p.name}' {p.pid} is listed in {path}:{e.lineno} "
+                                  f"as {e.pid} in {e.where}")
+    defined = {(p.name, p.src) for p in protos}
+    for e in entries:
+        if e.where.endswith(".idl") and (e.name, e.where) not in defined:
+            fail(path, e.lineno, f"{e.where} defines no protocol '{e.name}'")
+
+
+def gen_ids(entries):
+    """The registry as common.h's IDL_ID_* lines, by id."""
+    out = ["/* The protocol id registry (abi/idl/ids.txt): every protocol's id, the",
+           " * hand-written ones' too (the top half of the word after their txid). */"]
+    w = max(len(e.name) for e in entries) + len("IDL_ID_")
+    for e in sorted(entries, key=lambda e: e.pid):
+        what = e.where if e.where != "-" else ""
+        if e.note:
+            what = f"{what}: {e.note}" if what else e.note
+        out.append(f"#define {'IDL_ID_' + e.name.upper():<{w}} 0x{e.pid:04x}u   /* {what} */")
+    return out
 
 
 def c_comment(lines, indent=""):
@@ -322,7 +400,7 @@ def c_comment(lines, indent=""):
     return out
 
 
-def gen_common():
+def gen_common(entries):
     return "\n".join([
         f"/* {BANNER.format(src='tools/genidl.py')}",
         " *",
@@ -332,6 +410,8 @@ def gen_common():
         "#pragma once",
         "",
         "#include <jam/driver.h>",
+        "",
+    ] + gen_ids(entries) + [
         "",
         "/* Every request starts with this, every reply with idl_rep_hdr. */",
         "struct idl_req_hdr {",
@@ -1254,7 +1334,9 @@ def main():
         if p.pid in ids:
             sys.exit(f"{p.src}: protocol id {p.pid} is also {ids[p.pid]}'s")
         ids[p.pid] = p.name
-    outputs = {os.path.join(OUT_DIR, "common.h"): gen_common()}
+    entries = parse_ids(IDS_FILE)
+    check_ids(IDS_FILE, entries, protos)
+    outputs = {os.path.join(OUT_DIR, "common.h"): gen_common(entries)}
     for p in protos:
         if p.name == "common":
             sys.exit(f"{p.src}: 'common' is reserved")

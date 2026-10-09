@@ -156,7 +156,7 @@ IDL_SRCS := $(wildcard abi/idl/*.idl)
 IDL_GEN  := drivers/include/idl/common.h $(IDL_SRCS:abi/idl/%.idl=drivers/include/idl/%.h)
 IDL_OK   := $(BUILD)/idl.ok
 
-$(IDL_OK): $(IDL_SRCS) tools/genidl.py $(wildcard $(IDL_GEN))
+$(IDL_OK): $(IDL_SRCS) abi/idl/ids.txt tools/genidl.py $(wildcard $(IDL_GEN))
 	@mkdir -p $(BUILD)
 	python3 tools/genidl.py check
 	@touch $@

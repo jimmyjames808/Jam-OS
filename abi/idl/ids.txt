@@ -1,0 +1,49 @@
+# The protocol id registry: every id a message's second word may carry in
+# its top 16 bits (an IDL request's ordinal is (id << 16) | method), the
+# .idl protocols' and the hand-written ones' alike, so that no two
+# protocols share one and a message sent to the wrong server is refused
+# (ERR_NOT_SUPPORTED) instead of taken for one of its methods.
+#
+# tools/genidl.py reads this file: it refuses an .idl protocol that isn't
+# listed here under its name, id and file, a line naming an .idl that
+# doesn't define it, an id or a name listed twice, and a file that doesn't
+# exist; and it writes the list into drivers/include/idl/common.h
+# (IDL_ID_<NAME>). A new protocol takes a free id here first.
+#
+# One line per id: <id> <name> <where> [# what], where <where> is the
+# protocol's .idl, or the header of one that stays hand-written (its id is
+# the top half of the word after its txid: a magic number's, for some).
+
+0       none            -                       # reserved: not IDL (keep's, the namespace's kinds)
+1       null            abi/idl/null.idl
+2       edu             abi/idl/edu.idl
+3       devmgr          user/include/devmgr.h           # hand-written until track D's .idl
+10      usb             abi/idl/usb.idl
+11      input           abi/idl/input.idl
+12      console         abi/idl/console.idl
+13      usbbus          abi/idl/usbbus.idl
+14      storage         abi/idl/storage.idl
+15      block           abi/idl/block.idl
+16      fs              abi/idl/fs.idl
+17      file            abi/idl/file.idl
+18      initctl         abi/idl/initctl.idl
+19      logctl          abi/idl/logctl.idl
+20      fsctl           abi/idl/fsctl.idl
+21      hda             abi/idl/hda.idl
+22      audio           abi/idl/audio.idl
+23      audioctl        abi/idl/audioctl.idl
+24      music           abi/idl/music.idl
+25      svc             abi/idl/svc.idl
+26      jamcover        abi/idl/jamcover.idl
+27      netdev          abi/idl/netdev.idl
+28      netctl          abi/idl/netctl.idl
+29      net             abi/idl/net.idl
+30      dns             abi/idl/dns.idl
+31      serve           abi/idl/serve.idl
+32      compctl         abi/idl/compctl.idl
+33      idltest         abi/idl/idltest.idl
+0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
+0x4d4f  standby         kernel/include/jam/startup.h    # STANDBY_MAGIC "PROM" (promotion)
+0x4f50  update_offer    user/include/update.h           # UPDATE_OFFER_MAGIC "JUPO"
+0x534d  startup         kernel/include/jam/startup.h    # STARTUP_MAGIC "JAMS"
+0xc4a5  crasher         user/include/devmgr.h           # the crash-test driver's (CRASHER_*)
