@@ -107,6 +107,12 @@ static struct raw boot_raw;
 static struct drive boot_drive, disk2, slow;
 static uint8_t save[BUF_SIZE];   /* what a write check overwrote */
 
+/* A bulk transfer's own deadline: STEP_MS from now, or ms. */
+static uint64_t step_end(void)
+{
+    return in((uint64_t)STEP_MS * NS_PER_MS);
+}
+
 static uint64_t usb_wait(void)
 {
     return in(20 * NS_PER_S);   /* a transfer's timeout plus usb-bus stopping the endpoint */
@@ -153,14 +159,15 @@ static bool find_disk(const char *serial, struct raw *r)
         if (!d->config || d->hub_ports || (serial ? strcmp(d->serial, serial) != 0 : extra))
             continue;
         for (uint8_t k = 0; k < d->nifs; k++) {
-            uint8_t num, alt, nalts, cls, sub, proto, nep, eps[8];
+            uint8_t num, alt, nalts, cls, sub, proto, eps[8];
+            uint32_t nep;
             if (usbbus_interface_until(bus, soon(), d->id, k, &num, &alt, &nalts, &cls, &sub,
-                                       &proto, &nep, eps) != OK)
+                                       &proto, eps, &nep) != OK)
                 continue;
             if (cls != 0x08 || sub != 0x06 || proto != 0x50)
                 continue;
             *r = (struct raw){ .dev_id = d->id, .ifnum = num };
-            for (uint8_t e = 0; e < nep && e < 8; e++) {
+            for (uint32_t e = 0; e < nep && e < 8; e++) {
                 if ((eps[e] & 0x80) && !r->ep_in)
                     r->ep_in = eps[e];
                 else if (!(eps[e] & 0x80) && !r->ep_out)
@@ -212,7 +219,7 @@ static status_t raw_cbw(struct raw *r, uint32_t sig, const uint8_t *cdb, uint8_t
     w[14] = n;
     memcpy(w + 15, cdb, n);
     uint32_t actual = 0;
-    status_t st = usb_bulk_out_until(r->ch, usb_wait(), RAW_CBW, 31, STEP_MS, &actual);
+    status_t st = usb_bulk_out_until(r->ch, usb_wait(), RAW_CBW, 31, step_end(), &actual);
     return st == OK && actual != 31 ? ERR_IO : st;
 }
 
@@ -220,11 +227,11 @@ static status_t raw_cbw(struct raw *r, uint32_t sig, const uint8_t *cdb, uint8_t
 static status_t raw_csw(struct raw *r, uint8_t *status)
 {
     uint32_t actual = 0;
-    status_t st = usb_bulk_in_until(r->ch, usb_wait(), RAW_CSW, 13, STEP_MS, &actual);
+    status_t st = usb_bulk_in_until(r->ch, usb_wait(), RAW_CSW, 13, step_end(), &actual);
     if (st == ERR_IO) {
         st = usb_clear_halt_until(r->ch, usb_wait(), r->ep_in);
         if (st == OK)
-            st = usb_bulk_in_until(r->ch, usb_wait(), RAW_CSW, 13, STEP_MS, &actual);
+            st = usb_bulk_in_until(r->ch, usb_wait(), RAW_CSW, 13, step_end(), &actual);
     }
     if (st != OK)
         return st;
@@ -246,7 +253,7 @@ static status_t raw_cmd(struct raw *r, const uint8_t *cdb, uint8_t n, uint32_t l
     if (st != OK)
         return st;
     if (len) {
-        st = usb_bulk_in_until(r->ch, usb_wait(), 0, len, STEP_MS, moved);
+        st = usb_bulk_in_until(r->ch, usb_wait(), 0, len, step_end(), moved);
         if (st == ERR_IO) {
             *stalled = true;
             st = usb_clear_halt_until(r->ch, usb_wait(), r->ep_in);
@@ -284,17 +291,22 @@ static bool t_storage_bulk(void)
     CHECK_ST(usbbus_open_interface_until(bus, soon(), r->dev_id, r->ifnum, &other), OK);
     uint32_t n = 0;
     status_t a = usb_open_bulk_until(other, soon(), r->ep_in, r->ep_out, &vmo, &size);
-    status_t b = usb_bulk_in_until(other, soon(), 0, 13, 100, &n);
+    status_t b = usb_bulk_in_until(other, soon(), 0, 13, in(100 * NS_PER_MS), &n);
     jam_handle_close(other);
     CHECK_ST(a, ERR_BAD_STATE);
     CHECK_ST(b, ERR_BAD_STATE);
-    /* transfers outside the buffer, of nothing, or with a bad timeout */
-    CHECK_ST(usb_bulk_in_until(r->ch, soon(), BULK_BUF - 12, 13, 100, &n), ERR_OUT_OF_RANGE);
-    CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0xffffffffu, 13, 100, &n), ERR_OUT_OF_RANGE);
-    CHECK_ST(usb_bulk_out_until(r->ch, soon(), 0, BULK_BUF + 1, 100, &n), ERR_OUT_OF_RANGE);
-    CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 0, 100, &n), ERR_INVALID_ARGS);
-    CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 13, 0, &n), ERR_INVALID_ARGS);
-    CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 13, 60001, &n), ERR_INVALID_ARGS);
+    /* transfers outside the buffer, of nothing, or with a bad deadline: one
+     * already past is over before it begins (ERR_TIMED_OUT, nothing sent),
+     * one more than 60 s away, or none, is refused */
+    uint64_t soon_end = in(100 * NS_PER_MS);
+    CHECK_ST(usb_bulk_in_until(r->ch, soon(), BULK_BUF - 12, 13, soon_end, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0xffffffffu, 13, soon_end, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(usb_bulk_out_until(r->ch, soon(), 0, BULK_BUF + 1, soon_end, &n), ERR_OUT_OF_RANGE);
+    CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 0, soon_end, &n), ERR_INVALID_ARGS);
+    CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 13, 0, &n), ERR_TIMED_OUT);
+    CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 13, now() - 1, &n), ERR_TIMED_OUT);
+    CHECK_ST(usb_bulk_in_until(r->ch, soon(), 0, 13, in(61 * NS_PER_S), &n), ERR_INVALID_ARGS);
+    CHECK_ST(usb_bulk_out_until(r->ch, soon(), 0, 13, DEADLINE_NEVER, &n), ERR_INVALID_ARGS);
     CHECK_ST(usb_clear_halt_until(r->ch, soon(), 0x0f), ERR_INVALID_ARGS);
     CHECK_ST(usb_open_bulk_until(r->ch, soon(), r->ep_out, r->ep_in, &vmo, &size),
              ERR_INVALID_ARGS);
@@ -334,8 +346,7 @@ static bool t_storage_stall(void)
     /* a CBW that isn't one: the device refuses it and wants reset recovery */
     status_t bad = raw_cbw(r, 0x12345678, sense, 6, true, 18);
     CHECK(bad == ERR_IO || bad == OK);
-    const uint8_t none[64] = { 0 };
-    CHECK_ST(usb_control_out_until(r->ch, soon(), 0x21, 0xff, 0, r->ifnum, 0, none), OK);
+    CHECK_ST(usb_control_out_until(r->ch, soon(), 0x21, 0xff, 0, r->ifnum, NULL, 0), OK);
     CHECK_ST(usb_clear_halt_until(r->ch, usb_wait(), r->ep_in), OK);
     CHECK_ST(usb_clear_halt_until(r->ch, usb_wait(), r->ep_out), OK);
     const uint8_t inquiry[6] = { 0x12, 0, 0, 0, 36 };
@@ -591,7 +602,7 @@ static bool t_storage_bind(void)
     const uint8_t read16[10] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 16, 0 };
     uint32_t moved = 0;
     CHECK_ST(raw_cbw(r, CBW_SIG, read16, 10, true, 16 * 512), OK);
-    CHECK_ST(usb_bulk_in_until(r->ch, usb_wait(), 0, 4096, STEP_MS, &moved), OK);
+    CHECK_ST(usb_bulk_in_until(r->ch, usb_wait(), 0, 4096, step_end(), &moved), OK);
     CHECK(moved == 4096);
     handle_t usb = r->ch;
     r->ch = HANDLE_INVALID;

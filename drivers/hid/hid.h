@@ -5,6 +5,7 @@
  * driver. */
 #pragma once
 
+#include <idl/input.h>   /* INPUT_KEY_*, INPUT_MOD_*, INPUT_READY_* */
 #include <jam/driver.h>
 #include "report.h"
 

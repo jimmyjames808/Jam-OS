@@ -160,7 +160,7 @@ static bool wait_count(const uint32_t *counter, uint32_t want)
     uint64_t until = now() + 15 * NS_PER_S;
     while (dm_count(counter) < want) {
         CHECK(now() < until);
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
     }
     return true;
 }
@@ -291,7 +291,7 @@ static bool nothing_to_mount(handle_t dm, bool *skip)
         return false;
     if (!wait_count(&mock.closed[0], 2) || !wait_count(&mock.closed[1], 1))
         return false;
-    jam_nanosleep(now() + 300 * NS_PER_MS);   /* time to do what it must not */
+    jam_sleep_until(now() + 300 * NS_PER_MS);   /* time to do what it must not */
     CHECK_EQ(dm_count(&mock.opened[0]), 2);   /* the boot-disk check, then as any stick's */
     CHECK_EQ(dm_count(&mock.opened[1]), 1);
     CHECK_EQ(dm_count(&mock.opened_rw), 0);

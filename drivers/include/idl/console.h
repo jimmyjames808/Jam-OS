@@ -261,7 +261,7 @@ static inline status_t console_open_keys_call(handle_t ch, bool idl_within, uint
 /* A channel on which the console sends this client the keys typed while it
  * is the focused client (the most recent open_keys wins; closing the
  * channel gives focus back). Each message is one struct input_key_event
- * (<jam/abi.h>). */
+ * (<openkeys.h>). */
 static inline status_t console_open_keys_until(handle_t ch, uint64_t deadline_ns, handle_t *out_keys)
 {
     return console_open_keys_call(ch, false, deadline_ns, out_keys);

@@ -68,7 +68,7 @@ static int echo(void)
 static void sleep_forever(void *arg)
 {
     (void)arg;
-    jam_nanosleep(DEADLINE_NEVER);
+    jam_sleep_until(DEADLINE_NEVER);
 }
 
 /* Hold some of everything, then block in channel_call on SR_USER, whose
@@ -242,7 +242,7 @@ static int orphan(void)
 static void finisher(void *arg)
 {
     (void)arg;
-    jam_nanosleep(now() + 20000000ull);
+    jam_sleep_until(now() + 20000000ull);
     jam_process_exit(11);
 }
 

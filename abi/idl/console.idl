@@ -17,7 +17,7 @@ protocol console 12
 # A channel on which the console sends this client the keys typed while it
 # is the focused client (the most recent open_keys wins; closing the
 # channel gives focus back). Each message is one struct input_key_event
-# (<jam/abi.h>).
+# (<openkeys.h>).
 4  open_keys      () -> (handle keys)
 # A new input source: the console serves the `input` protocol on its end;
 # the caller (devmgr, for a HID driver; or the serial source) gets the

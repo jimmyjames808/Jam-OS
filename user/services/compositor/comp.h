@@ -65,6 +65,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <jwl.h>
+#include <openkeys.h>
 #include <os.h>
 
 /* ---- limits (G1-PLAN, "Limits and the security model") ---------------------------- */

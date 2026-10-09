@@ -848,11 +848,10 @@ KTEST(channel_call_timeout)
     khandle_release(&gh);
     KT_EQ(destroyed, 1);
 
-    /* A reply after the caller gave up is an ordinary message. */
+    /* A reply after the caller gave up is dropped (M12's D5). */
     struct call_reply late = { q.txid, 1, 2, 0 };
     KT_EQ(channel_write(b, &late, sizeof(late), NULL, 0), OK);
-    KT_EQ(channel_read(a, &r, sizeof(r), &nb, NULL, 0, NULL), OK);
-    KT_EQ(r.txid, q.txid);
+    KT_EQ(channel_read(a, &r, sizeof(r), &nb, NULL, 0, NULL), ERR_SHOULD_WAIT);
 
     /* A deadline already past still sends, then returns at once. */
     KT_EQ(channel_call(a, &q, sizeof(q), NULL, 0, &r, sizeof(r), &nb, NULL, 0, &nh, 0),
@@ -1230,4 +1229,37 @@ KTEST(m45_call_canceled_by_own_close)
     KT_ASSERT(uptime_ns() - t0 < NS_PER_S);   /* promptly, not at the deadline */
     handle_table_destroy(&t);
     KT_GLOBAL_EQ(channel_live_count(), live);
+}
+
+/* M12's D5: a reply to a channel_call that gave up (its deadline) is
+ * dropped with its handles, never queued on the caller's end, which a
+ * caller that only makes blocking calls would never read. A message with
+ * any other txid is queued as before. */
+KTEST(channel_late_reply_dropped)
+{
+    struct channel *a, *b;
+    KT_EQ(channel_create(&a, &b), OK);
+    uint32_t q[2] = { 0, 1 }, rep[2], nb = 0;
+    KT_EQ(channel_call(a, q, sizeof(q), NULL, 0, rep, sizeof(rep), &nb, NULL, 0, NULL,
+                       uptime_ns() + 2 * NS_PER_MS),
+          ERR_TIMED_OUT);
+    uint32_t req[2];
+    KT_EQ(channel_read(b, req, sizeof(req), &nb, NULL, 0, NULL), OK);
+    KT_ASSERT(req[0] & CHANNEL_TXID_KERNEL);
+    volatile int destroyed = 0;
+    struct khandle kh = cobj_handle(&destroyed, RIGHTS_BASIC);
+    uint32_t r[2] = { req[0], 2 };
+    KT_EQ(channel_write(b, r, sizeof(r), &kh, 1), OK);   /* the late reply: sent... */
+    KT_ASSERT(kh.obj == NULL);
+    KT_EQ(destroyed, 1);                                   /* ...and dropped, its handle too */
+    KT_ASSERT(!(kobject_signals(CH(a)) & SIG_READABLE));
+    KT_EQ(channel_write(b, r, sizeof(r), NULL, 0), OK);   /* a second: forgotten, so queued */
+    KT_ASSERT(kobject_signals(CH(a)) & SIG_READABLE);
+    KT_EQ(channel_read(a, rep, sizeof(rep), &nb, NULL, 0, NULL), OK);
+    uint32_t other[2] = { CHANNEL_TXID_KERNEL | 12345, 3 };   /* no call of a's */
+    KT_EQ(channel_write(b, other, sizeof(other), NULL, 0), OK);
+    KT_EQ(channel_read(a, rep, sizeof(rep), &nb, NULL, 0, NULL), OK);
+    KT_EQ(rep[1], 3);
+    kobject_unref(CH(a));
+    kobject_unref(CH(b));
 }

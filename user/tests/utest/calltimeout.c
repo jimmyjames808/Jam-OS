@@ -35,7 +35,7 @@ static void slow_server(void *arg)
     signals_t seen;
     if (jam_object_wait_one(h, SIG_READABLE, now() + 10 * NS_PER_S, &seen) != OK)
         return;
-    jam_nanosleep(now() + SLOW_NS);
+    jam_sleep_until(now() + SLOW_NS);
     uint32_t req[2], n = 0;
     struct channel_read_args r = {
         .h = h, .rd_cap = sizeof(req), .rd_bytes = (uint64_t)(uintptr_t)req,

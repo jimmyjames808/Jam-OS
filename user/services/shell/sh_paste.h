@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <jam/abi.h>
+#include <openkeys.h>
 
 #define SH_PASTE_MARK_LEN 6u   /* ESC [ 2 0 0 ~ and ESC [ 2 0 1 ~ */
 

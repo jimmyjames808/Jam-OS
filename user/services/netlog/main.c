@@ -119,7 +119,7 @@ static void open_socket(void)
         if (!said)
             printf("netlog: no network (%s): trying again every second\n", status_str(st));
         said = true;
-        (void)jam_nanosleep(now() + RETRY);
+        (void)jam_sleep_until(now() + RETRY);
     }
 }
 

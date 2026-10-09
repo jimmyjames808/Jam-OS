@@ -95,7 +95,7 @@ static void wait_once(struct jwl_client *c, uint64_t deadline)
     if (ch != HANDLE_INVALID)
         (void)jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, d, &seen);
     else
-        (void)jam_nanosleep(d);
+        (void)jam_sleep_until(d);
     (void)jwl_client_dispatch(c);
 }
 

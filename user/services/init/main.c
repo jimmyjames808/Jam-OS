@@ -403,7 +403,7 @@ static bool run_keytest(void)
     init_say("keytest: type on the USB keyboard now: %d s; each key DOWN is logged by its hid "
              "(hid-<port>:<interface>)", KEYTEST_S);
     for (int left = KEYTEST_S; left > 0; left -= 10) {
-        jam_nanosleep(now() + (uint64_t)(left < 10 ? left : 10) * NS_PER_S);
+        jam_sleep_until(now() + (uint64_t)(left < 10 ? left : 10) * NS_PER_S);
         if (left > 10)
             printf("init: keytest: %d s left\n", left - 10);
     }

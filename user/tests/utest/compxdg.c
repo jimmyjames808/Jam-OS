@@ -163,7 +163,7 @@ static bool pixel(const struct ct_comp *p, int32_t px, int32_t py, uint32_t want
     uint64_t until = now() + CT_WAIT;
     const volatile uint32_t *img = p->image;   /* the compositor writes it */
     while (img[py * W + px] != want && now() < until)
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     if (img[py * W + px] != want)
         FAIL("pixel %d,%d is %06x, want %06x", px, py, img[py * W + px], want);
     return true;
@@ -182,7 +182,7 @@ static bool shadowed(const struct ct_comp *p, int32_t px, int32_t py)
     uint64_t until = now() + CT_WAIT;
     const volatile uint32_t *img = p->image;
     while (img[py * W + px] == bg(px, py) && now() < until)
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     uint32_t got = img[py * W + px], want = bg(px, py);
     for (int sh = 0; sh < 24; sh += 8)
         if ((got >> sh & 0xff) > (want >> sh & 0xff) || got == want)

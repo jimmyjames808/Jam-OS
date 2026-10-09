@@ -18,6 +18,7 @@
 #include <jam/startup.h>
 #include <jam/status.h>
 #include <jam_syscalls.h>
+#include <roles.h>         /* the startup roles programs give each other */
 
 int main(int argc, char **argv);
 
@@ -28,7 +29,7 @@ int main(int argc, char **argv);
 #define NS_PER_S  1000000000ull
 
 /* Nanoseconds since boot: the clock deadlines (jam_object_wait_one,
- * jam_port_wait, jam_nanosleep, ...) are measured on. */
+ * jam_port_wait, jam_sleep_until, ...) are measured on. */
 static inline uint64_t now(void)
 {
     return (uint64_t)jam_clock_get();

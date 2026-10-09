@@ -88,11 +88,11 @@ KTEST(cancel_every_wait_kind)
     cancel_one(sleep_long, &w);
 
     /* The cancelled call's request is still queued at the server; a late
-     * reply to it lands in a's queue like any other message. */
+     * reply to it is dropped (M12's D5): nothing lands in a's queue. */
     uint32_t req[2], nb = 0, nh = 0;
     KT_EQ(sys_channel_read(&t, b, req, 8, &nb, NULL, 0, &nh), OK);
     KT_EQ(sys_channel_write(&t, b, req, 8, NULL, 0), OK);
-    KT_EQ(sys_channel_read(&t, a, req, 8, &nb, NULL, 0, &nh), OK);
+    KT_EQ(sys_channel_read(&t, a, req, 8, &nb, NULL, 0, &nh), ERR_SHOULD_WAIT);
 
     /* The event's observer list is clean: signalling it now touches no
      * dead waiter (the waiter's frame is long gone). */

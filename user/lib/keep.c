@@ -241,30 +241,15 @@ static void forget(struct keeper *k, struct keep_slot *s)
     s->n = 0;
 }
 
-/* A channel, VMO or event (<keep.h> says how this is told), and one we can
- * duplicate: a restore hands out duplicates. */
+/* A channel, VMO or event (handle_info), and one we can duplicate: a
+ * restore hands out duplicates. */
 static bool keepable(handle_t h)
 {
-    uint64_t size;
-    bool ok = jam_vmo_get_size(h, &size) == OK;
-    if (!ok) {
-        /* Sets and clears nothing; ERR_ACCESS_DENIED: an event without
-         * RIGHT_SIGNAL (the type is checked before the rights). */
-        status_t st = jam_event_signal(h, 0, 0);
-        ok = st == OK || st == ERR_ACCESS_DENIED;
-        if (st != OK && st != ERR_ACCESS_DENIED && st != ERR_WRONG_TYPE)
-            return false;   /* not a handle at all */
-    }
-    if (!ok) {
-        signals_t seen = 0;
-        status_t st = jam_object_wait_one(h, SIG_WRITABLE | SIG_PEER_CLOSED, 0, &seen);
-        ok = (st == OK || st == ERR_TIMED_OUT) && (seen & (SIG_WRITABLE | SIG_PEER_CLOSED));
-    }
-    handle_t d;
-    if (!ok || jam_handle_duplicate(h, RIGHT_SAME, &d) != OK)
-        return false;
-    jam_handle_close(d);
-    return true;
+    struct handle_info i;
+    if (jam_handle_info(h, &i) != OK)
+        return false;   /* not a handle at all */
+    return (i.type == OBJ_CHANNEL || i.type == OBJ_VMO || i.type == OBJ_EVENT) &&
+           (i.rights & RIGHT_DUPLICATE);
 }
 
 /* Keep hs[0..n) as slot id (replacing what it held), or say why not. On

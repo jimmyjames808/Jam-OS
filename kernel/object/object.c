@@ -11,6 +11,7 @@
 #include <jam/object.h>
 #include <jam/panic.h>
 #include <jam/pathstat.h>
+#include <jam/port.h>      /* port_object_closed */
 #include <jam/sched.h>
 #include <jam/time.h>
 
@@ -145,6 +146,8 @@ void kobject_handle_drop(struct kobject *obj)
     uint32_t left = __atomic_sub_fetch(&obj->handles, 1, __ATOMIC_ACQ_REL);
     if (left == UINT32_MAX)
         panic("kobject: %s (koid %lu) handle count underflow", obj->ops->name, obj->koid);
+    if (left == 0)
+        port_object_closed(obj);   /* no handle can unbind them now (M12's question E) */
     if (left == 0 && obj->ops->on_zero_handles) {
         /* Keep obj alive until on_zero_handles has run. The event may be
          * deferred (a drainer is running on this CPU), and meanwhile
@@ -187,11 +190,21 @@ signals_t kobject_signals(struct kobject *obj)
 
 void kobject_observe(struct kobject *obj, struct observer *o)
 {
+    kobject_observe_if(obj, o, false);
+}
+
+bool kobject_observe_if(struct kobject *obj, struct observer *o, bool held)
+{
     uint64_t f = spin_lock_irqsave(&obj->lock);
+    if (held && !kobject_handles(obj)) {
+        spin_unlock_irqrestore(&obj->lock, f);
+        return false;
+    }
     list_add_tail(&obj->observers, &o->node);
     if (obj->signals & o->mask)
         o->fire(o, obj->signals);
     spin_unlock_irqrestore(&obj->lock, f);
+    return true;
 }
 
 /* ---- object_wait_one ------------------------------------------------------ */
@@ -282,6 +295,11 @@ const char *status_str(status_t s)
     case ERR_IO:               return "ERR_IO";
     case ERR_ALREADY_EXISTS:   return "ERR_ALREADY_EXISTS";
     case ERR_NO_SPACE:         return "ERR_NO_SPACE";
+    case ERR_NOT_DIR:          return "ERR_NOT_DIR";
+    case ERR_IS_DIR:           return "ERR_IS_DIR";
+    case ERR_NOT_EMPTY:        return "ERR_NOT_EMPTY";
+    case ERR_NAME_TOO_LONG:    return "ERR_NAME_TOO_LONG";
+    case ERR_BUSY:             return "ERR_BUSY";
     default:                   return "ERR_?";
     }
 }

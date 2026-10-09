@@ -636,7 +636,7 @@ static bool crash_case(struct ct_comp *p, struct ct_client *good, const char *mo
     uint64_t until = now() + CT_WAIT;
     for (unsigned kind = 1; kind < JOB_LIMIT_COUNT; kind++) {
         while (ct_job_used(job, kind) && now() < until)
-            jam_nanosleep(now() + NS_PER_MS);
+            jam_sleep_until(now() + NS_PER_MS);
         if (ct_job_used(job, kind))
             FAIL("the crashed client's job keeps %lu units of kind %u",
                  (unsigned long)ct_job_used(job, kind), kind);

@@ -27,9 +27,9 @@ static status_t get_channel(struct handle_table *t, handle_t h, rights_t need,
 /* A send's handles (M12's Q1, Zircon's rule): once the kernel has read
  * the list, every handle it names is gone from t when the call returns,
  * whatever the status: sent with the message, or closed. A caller that
- * wants to try again duplicates first. Only errors found before the list
- * is read (its length or address, and the arguments abi/syscalls.def
- * checks before it) leave the handles where they were. */
+ * wants to try again duplicates first. The system calls read the list
+ * first: only a list they can't read (too long, no buffer, a fault)
+ * leaves the handles where they were (sysc_channel.c's read_list). */
 
 /* A list the send never took (the call failed before it got that far):
  * close every value in it that names a handle (a bad one names nothing). */
@@ -150,8 +150,10 @@ status_t sys_channel_write_rights_from(struct handle_table *t, handle_t h,
                                        const struct chan_bytes *b, const handle_t *handles,
                                        const rights_t *rights, uint32_t nhandles)
 {
-    if (nhandles && !rights)
+    if (nhandles && !rights) {
+        close_list(t, handles, nhandles);   /* a list we can read goes all the same */
         return ERR_INVALID_ARGS;
+    }
     struct channel *ch;
     status_t st = get_channel(t, h, RIGHT_WRITE, &ch);
     if (st != OK) {

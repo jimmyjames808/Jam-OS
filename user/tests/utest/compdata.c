@@ -135,14 +135,25 @@ static bool window_told_first(struct dc *c, int32_t x, uint32_t want_offer)
     return true;
 }
 
-/* c receives offer in type over a new channel: our end in *mine. */
-static bool receive(struct dc *c, uint32_t offer, const char *type, handle_t *mine)
+/* c receives offer in type over a new channel, the end it sends with
+ * `rights` (RIGHT_SAME: all): our end in *mine. */
+static bool receive_with(struct dc *c, uint32_t offer, const char *type, rights_t rights,
+                         handle_t *mine)
 {
-    handle_t theirs;
+    handle_t theirs, narrow;
     CHECK_ST(jam_channel_create(mine, &theirs), OK);
+    if (rights != RIGHT_SAME) {
+        CHECK_ST(jam_handle_replace(theirs, rights, &narrow), OK);
+        theirs = narrow;
+    }
     CHECK_ST(jwl_wl_data_offer_receive(c->s.k.c, offer, type, theirs), OK);
     CHECK_ST(ct_roundtrip(&c->s.k), OK);
     return true;
+}
+
+static bool receive(struct dc *c, uint32_t offer, const char *type, handle_t *mine)
+{
+    return receive_with(c, offer, type, RIGHT_SAME, mine);
 }
 
 /* Our end of a receive the compositor refused: closed, nothing in it. */
@@ -263,7 +274,10 @@ static bool b_pastes(struct cs *t, struct dc *a, struct dc *b, uint32_t src, uin
     /* the budget: one passed on already, then up to RECEIVES, then
      * refused, whatever offer asks: a new device's own new offer too */
     for (unsigned i = 1; i < RECEIVES; i++) {
-        CHECK(receive(b, offer, TEXT, &mine));
+        /* once with an end b may only write on and pass on (a pipe's write
+         * end): the compositor asks nothing else of it (handle_info) */
+        CHECK(receive_with(b, offer, TEXT, i == 1 ? RIGHT_WRITE | RIGHT_TRANSFER : RIGHT_SAME,
+                           &mine));
         CHECK(sent_through(a, src, mine, "again"));
     }
     CHECK(receive(b, offer, TEXT, &mine));

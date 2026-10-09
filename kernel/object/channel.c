@@ -665,3 +665,25 @@ void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged)
     spin_unlock_irqrestore(&ch->base.lock, f);
     *charged = sum;
 }
+
+void channel_get_info(struct channel *ch, uint64_t *peer_koid, uint32_t *queued,
+                      uint32_t *peer_queued, uint64_t *peer_bytes)
+{
+    uint64_t koid = 0, bytes = 0;
+    uint32_t n = 0;
+    uint64_t f = spin_lock_irqsave(&ch->pair->lock);
+    struct channel *peer = ch->pair->ep[!ch->side];
+    if (peer && ch->pair->ep[ch->side] == ch) {   /* in the pair: the peer is alive */
+        koid = peer->base.koid;
+        spin_lock(&peer->base.lock);
+        for (struct list_node *x = peer->queue.next; x != &peer->queue; x = x->next)
+            bytes += container_of(x, struct chan_msg, node)->nbytes;
+        n = chan_nqueued(peer);
+        spin_unlock(&peer->base.lock);
+    }
+    spin_unlock_irqrestore(&ch->pair->lock, f);
+    *peer_koid = koid;
+    *queued = chan_nqueued(ch);
+    *peer_queued = n;
+    *peer_bytes = bytes;
+}

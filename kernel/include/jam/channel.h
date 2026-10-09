@@ -98,8 +98,10 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
  * (ERR_CANCELED). The reply goes only to this caller, never to
  * channel_read. If it doesn't fit rbytes/rh, the call returns
  * ERR_BUFFER_TOO_SMALL with the sizes it needed, and the reply (with its
- * handles) is dropped. A reply that arrives after its caller gave up is
- * queued like any other message. Any number of threads may call at once. */
+ * handles) is dropped. A reply that arrives after its caller gave up (a
+ * deadline, a cancel) is dropped too, by the kernel, for the end's last 16
+ * calls given up (M12's D5); an older one is queued as any message. Any
+ * number of threads may call at once. */
 status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khandle *wh,
                       uint32_t whn, void *rbytes, uint32_t rcap, uint32_t *ractual,
                       struct khandle *rh, uint32_t rhcap, uint32_t *rhactual,
@@ -184,6 +186,12 @@ status_t channel_set_flags(struct channel *ch, uint32_t flags);
 /* The messages queued on ch now and what they are charged (bytes, plus
  * JOB_OBJECT_BYTES per carried handle): for debug_command "ps". */
 void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged);
+
+/* handle_info's channel fields: the peer's koid (0 once either end has
+ * closed), the messages queued on ch, and those ch wrote that wait on its
+ * peer, with their bytes (M12's Q11; the compositor's flow control). */
+void channel_get_info(struct channel *ch, uint64_t *peer_koid, uint32_t *queued,
+                      uint32_t *peer_queued, uint64_t *peer_bytes);
 
 /* Endpoints alive right now (for leak checks in tests). */
 uint64_t channel_live_count(void);

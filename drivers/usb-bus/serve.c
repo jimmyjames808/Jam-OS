@@ -24,9 +24,10 @@
  * the `usbbus` protocol and the loop.
  *
  * devmgr: for each interface of a configured device (hubs aside) usb-bus
- * writes a `usbbus.interface_attached` message on DR_SERVE (txid 0) with
- * the interface's `usb` channel; devmgr starts a class driver with it. A
- * device that goes away has all its channels closed.
+ * writes a `usbbus_events.interface_attached` event on DR_EVENTS (its own
+ * channel, abi/idl/usbbus.idl) with the interface's `usb` channel; devmgr
+ * starts a class driver with it. A device that goes away has all its
+ * channels closed.
  *
  * RESULTS: the controller line, then once enumeration first settles one
  * line per device (hubs included) and a summary; failures as they happen;
@@ -46,7 +47,7 @@ static struct chan chans[MAX_CHANS];
 /* wait_settled requests waiting for their answer. */
 static struct {
     bool used;           /* taken */
-    uint32_t txid;       /* the request's, for the reply */
+    struct idl_txn txn;  /* the request's, for the reply */
     uint64_t deadline;   /* answer by then, settled or not */
 } waiters[MAX_WAITERS];
 static bool serve_closed;   /* DR_SERVE's peer is gone (or there was none) */
@@ -170,18 +171,19 @@ static status_t iface_channel(struct usbdev *d, uint8_t num, handle_t *out, int 
     return OK;
 }
 
-static void copy_str(uint8_t *out, unsigned cap, const char *s)
+/* s into out as a str of at most max bytes (out has room for max): its
+ * length. */
+static uint32_t copy_str(char *out, unsigned max, const char *s)
 {
-    unsigned i = 0;
-    for (; i + 1 < cap && s[i]; i++)
-        out[i] = (uint8_t)s[i];
-    for (; i < cap; i++)
-        out[i] = 0;
+    uint32_t i = 0;
+    for (; i < max && s[i]; i++)
+        out[i] = s[i];
+    return i;
 }
 
 void serve_device_ready(struct usbdev *d)
 {
-    if (serve_closed)
+    if (serve_closed || g_hc.evchan == HANDLE_INVALID)
         return;
     for (int i = 0; i < d->nifs; i++) {
         struct iface *f = &d->ifs[i];
@@ -189,21 +191,14 @@ void serve_device_ready(struct usbdev *d)
         int c;
         if (iface_channel(d, f->number, &b, &c) != OK)
             continue;
-        struct usbbus_interface_attached_req m;
-        m.txid = 0;
-        m.ordinal = USBBUS_INTERFACE_ATTACHED;
-        m.id = d->id;
-        m.vendor = d->vid;
-        m.product = d->pid;
-        m.interface_number = f->number;
-        m.class_code = f->cls;
-        m.subclass = f->sub;
-        m.protocol = f->proto;
-        m.speed = d->speed;
-        copy_str(m.path, sizeof(m.path), d->path);
         /* b is gone whatever the write's status (a send's handles are
          * always moved): never closed after it. */
-        status_t st = drv_channel_write(g_hc.serve, &m, sizeof(m), &b, 1);
+        uint32_t plen = 0;
+        while (plen < 23 && d->path[plen])
+            plen++;
+        status_t st = usbbus_events_interface_attached(g_hc.evchan, d->id, d->vid, d->pid,
+                                                       f->number, f->cls, f->sub, f->proto,
+                                                       d->speed, d->path, plen, b);
         if (st != OK) {
             drv_log("usb %s: interface %u: can't tell devmgr (%s)", d->path, f->number,
                     status_str(st));
@@ -250,7 +245,8 @@ static status_t b_device(void *ctx, uint32_t index, uint32_t *id, uint32_t *pare
                          uint8_t *level, uint32_t *route, uint8_t *tt_slot, uint8_t *tt_port,
                          uint8_t *cls, uint8_t *sub, uint8_t *proto, uint8_t *nconfigs,
                          uint8_t *config, uint8_t *nifs, uint16_t *mps0, uint8_t *hub_ports,
-                         uint8_t path[24], uint8_t name[40], uint8_t serial[24])
+                         char *path, uint32_t *path_len, char *name, uint32_t *name_len,
+                         char *serial, uint32_t *serial_len)
 {
     (void)ctx;
     struct usbdev *d = nth_dev(index);
@@ -278,15 +274,15 @@ static status_t b_device(void *ctx, uint32_t index, uint32_t *id, uint32_t *pare
     *nifs = d->nifs;
     *mps0 = d->mps0;
     *hub_ports = d->is_hub ? d->hub_ports : 0;
-    copy_str(path, 24, d->path);
-    copy_str(name, 40, d->product);
-    copy_str(serial, 24, d->serial);
+    *path_len = copy_str(path, 23, d->path);
+    *name_len = copy_str(name, 39, d->product);
+    *serial_len = copy_str(serial, 23, d->serial);
     return OK;
 }
 
 static status_t b_interface(void *ctx, uint32_t id, uint8_t index, uint8_t *number, uint8_t *alt,
                             uint8_t *nalts, uint8_t *cls, uint8_t *sub, uint8_t *proto,
-                            uint8_t *nep, uint8_t eps[8])
+                            uint8_t *eps, uint32_t *eps_len)
 {
     (void)ctx;
     struct usbdev *d = dev_find(id);
@@ -301,9 +297,10 @@ static status_t b_interface(void *ctx, uint32_t id, uint8_t index, uint8_t *numb
     *cls = f->cls;
     *sub = f->sub;
     *proto = f->proto;
-    *nep = f->nep;
-    for (int i = 0; i < 8; i++)
-        eps[i] = i < f->nep ? f->ep_addr[i] : 0;
+    uint32_t n = f->nep < 8 ? f->nep : 8;
+    for (uint32_t i = 0; i < n; i++)
+        eps[i] = f->ep_addr[i];
+    *eps_len = n;
     return OK;
 }
 
@@ -322,8 +319,29 @@ static status_t b_open_interface(void *ctx, uint32_t id, uint8_t num, handle_t *
     return iface_channel(d, num, out, NULL);
 }
 
+/* Answered by reply_waiter, once the bus has settled or at the deadline. */
+static status_t b_wait_settled(void *ctx, struct idl_txn txn, uint32_t timeout_ms,
+                               uint32_t *devices, uint32_t *hubs, uint32_t *ifaces,
+                               uint32_t *hid, uint32_t *problems, uint32_t *generation,
+                               uint8_t *is_settled)
+{
+    (void)ctx, (void)devices, (void)hubs, (void)ifaces, (void)hid, (void)problems;
+    (void)generation, (void)is_settled;
+    int i = 0;
+    while (i < MAX_WAITERS && waiters[i].used)
+        i++;
+    if (i == MAX_WAITERS)
+        return ERR_NO_RESOURCES;
+    waiters[i].used = true;
+    waiters[i].txn = txn;
+    uint32_t ms = timeout_ms > 60000 ? 60000 : timeout_ms;
+    waiters[i].deadline = drv_clock_ns() + (uint64_t)ms * NS_PER_MS;
+    return IDL_LATER;
+}
+
 static const struct usbbus_ops bus_ops = {
     .status = b_status,
+    .wait_settled = b_wait_settled,
     .device = b_device,
     .interface = b_interface,
     .open_interface = b_open_interface,
@@ -331,70 +349,24 @@ static const struct usbbus_ops bus_ops = {
 
 static void reply_waiter(int i)
 {
-    struct usbbus_wait_settled_rep r;
-    r.txid = waiters[i].txid;
-    r.status = OK;
     uint32_t n, nh, ni, nhid, np;
     usb_counts(&n, &nh, &ni, &nhid, &np);
-    r.devices = n;
-    r.hubs = nh;
-    r.interfaces = ni;
-    r.hid_interfaces = nhid;
-    r.problems = np;
-    r.generation = g_generation;
-    r.settled = settled();
-    (void)drv_channel_write(g_hc.serve, &r, sizeof(r), NULL, 0);   /* devmgr gone: no one waits */
+    /* devmgr gone: no one waits */
+    (void)usbbus_reply_wait_settled(waiters[i].txn, OK, n, nh, ni, nhid, np, g_generation,
+                                    settled());
     waiters[i].used = false;
 }
 
-/* Everything queued on DR_SERVE. wait_settled is kept for later; the rest
- * go through the generated dispatch. */
+/* Everything queued on DR_SERVE (a wait_settled is kept for later). */
 static void serve_bus(struct hc *h)
 {
     for (int guard = 0; guard < 64; guard++) {
-        _Alignas(8) uint8_t q[USBBUS_REQ_MAX + 8];
-        _Alignas(8) uint8_t r[USBBUS_REP_MAX];
-        handle_t hs[IDL_READ_HANDLES];
-        uint32_t n = 0, nh = 0;
-        status_t st = drv_channel_read(h->serve, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
-        if (st == ERR_BUFFER_TOO_SMALL) {
-            (void)idl_drain(h->serve, n, nh);   /* the next read says what is left */
+        status_t st = usbbus_serve_one(h->serve, &bus_ops, NULL);
+        if (st == OK)
             continue;
-        }
-        if (st == ERR_PEER_CLOSED) {
+        if (st == ERR_PEER_CLOSED)
             serve_closed = true;
-            return;
-        }
-        if (st != OK)
-            return;
-        if (nh) {
-            idl_close_all(hs, nh);
-            idl_reply_status(h->serve, q, n, ERR_INVALID_ARGS);
-            continue;
-        }
-        const struct idl_req_hdr *hdr = (const void *)q;
-        if (n == sizeof(struct usbbus_wait_settled_req) && hdr->ordinal == USBBUS_WAIT_SETTLED) {
-            const struct usbbus_wait_settled_req *w = (const void *)q;
-            int i = 0;
-            while (i < MAX_WAITERS && waiters[i].used)
-                i++;
-            if (i == MAX_WAITERS) {
-                idl_reply_status(h->serve, q, n, ERR_NO_RESOURCES);
-                continue;
-            }
-            waiters[i].used = true;
-            waiters[i].txid = w->txid;
-            uint32_t ms = w->timeout_ms > 60000 ? 60000 : w->timeout_ms;
-            waiters[i].deadline = drv_clock_ns() + (uint64_t)ms * NS_PER_MS;
-            continue;
-        }
-        handle_t rhs[IDL_REP_HANDLES];
-        uint32_t rhn = 0;
-        uint32_t rn = usbbus_dispatch(&bus_ops, NULL, q, n, r, rhs, &rhn);
-        if (!rn)
-            idl_close_all(rhs, rhn);   /* no reply: never sent */
-        else   /* the reply's handles are gone whatever the write's status */
-            (void)drv_channel_write(h->serve, r, rn, rhs, rhn);
+        return;
     }
     /* 64 taken and maybe more queued: the binding is edge-triggered and the
      * channel stays readable, so no packet will say so. Come back. */
@@ -528,6 +500,7 @@ static int take_handles(struct hc *h, const struct driver_start *s)
     h->irq = drv_handle(s, DR_IRQ(0));
     h->dma = drv_handle(s, DR_DMA);
     h->serve = drv_handle(s, DR_SERVE);
+    h->evchan = drv_handle(s, DR_EVENTS);
     h->port = h->ctx_vmo = h->sp_vmo = h->pool_vmo = HANDLE_INVALID;
     if (h->dev == HANDLE_INVALID || h->bar == HANDLE_INVALID || h->irq == HANDLE_INVALID ||
         h->dma == HANDLE_INVALID) {
