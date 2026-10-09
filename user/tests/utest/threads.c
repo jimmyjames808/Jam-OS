@@ -143,16 +143,22 @@ bool t_fpu_state_survives_preemption(void)
 
 /* ---- lock_take ---------------------------------------------------------------- */
 
-#define LOCK_THREADS 6
-#define LOCK_ROUNDS  20000
-static bool     lock_l;
-static uint64_t lock_count;   /* plain reads and writes, only under lock_l */
+/* Many threads on every CPU, each holder now and then sleeping with the
+ * lock held, so the others go to sleep on its futex: no increment is
+ * lost, and the sleeping path (the word at 2) was taken. */
+#define LOCK_THREADS 16
+#define LOCK_ROUNDS  5000
+static lock_t   lock_l;
+static uint64_t lock_count;      /* plain reads and writes, only under lock_l */
+static uint32_t lock_contended;  /* holds that found the word at 2 (RELAXED adds) */
 
 static void lock_worker(void *arg)
 {
     (void)arg;
     for (unsigned i = 0; i < LOCK_ROUNDS; i++) {
         lock_take(&lock_l);
+        if (__atomic_load_n(&lock_l.word, __ATOMIC_RELAXED) == 2)
+            __atomic_add_fetch(&lock_contended, 1, __ATOMIC_RELAXED);
         uint64_t v = lock_count;
         if (i % 64 == 0)
             jam_nanosleep(now() + 50 * NS_PER_US);   /* a holder off the CPU: the others wait */
@@ -166,6 +172,7 @@ bool t_lock_take(void)
     static uint8_t stacks[LOCK_THREADS][8192] __attribute__((aligned(64)));
     handle_t th[LOCK_THREADS];
     lock_count = 0;
+    lock_contended = 0;
     for (unsigned i = 0; i < LOCK_THREADS; i++)
         CHECK_ST(thread_spawn("lock", lock_worker, NULL, stacks[i], sizeof(stacks[i]), &th[i]),
                  OK);
@@ -175,6 +182,8 @@ bool t_lock_take(void)
     uint64_t n = lock_count;
     lock_give(&lock_l);
     CHECK_EQ(n, (uint64_t)LOCK_THREADS * LOCK_ROUNDS);   /* no increment lost */
+    CHECK(__atomic_load_n(&lock_contended, __ATOMIC_RELAXED) > 0);   /* waiters slept */
+    CHECK_EQ(lock_l.word, 0);   /* free, nobody marked asleep */
     return true;
 }
 

@@ -43,7 +43,7 @@ static struct entry ents[NS_MAX_ENTRIES];   /* the first nents, in the order giv
 static unsigned nents;                      /* lock */
 static bool started;        /* the starter's first message was waited for; lock */
 static bool starter_gone;   /* SR_NS's other end is closed and its queue is empty; lock */
-static bool lock;           /* lock_take's */
+static lock_t lock;         /* lock_take's */
 
 const char *const NS_ALL[] = { "*", NULL };
 
@@ -497,7 +497,7 @@ static struct {
     char     name[SVC_NAME_MAX + 1];   /* "" : a free slot */
     handle_t h;                        /* ours, handed out (never closed while open) */
 } kept[NS_MAX_SVCS];
-static bool kept_lock;   /* lock_take's, like the table's; nothing is called under it */
+static lock_t kept_lock; /* lock_take's, like the table's; nothing is called under it */
 
 static void kept_take(void)
 {

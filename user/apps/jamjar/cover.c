@@ -49,7 +49,7 @@ struct entry {
 };
 
 static struct {
-    bool          lock;
+    lock_t        lock;
     struct entry  tab[ALBUMS];       /* lock */
     uint32_t     *small;             /* SMALL_SLOTS images, COVER_SMALL squared each */
     uint32_t     *large;             /* LARGE_SLOTS images, COVER_LARGE squared each */
