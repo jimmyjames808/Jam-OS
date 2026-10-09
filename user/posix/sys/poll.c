@@ -28,10 +28,10 @@
  * set entries: more is EINVAL. select (select.c) is a poll_run.
  *
  * Everything here is the calling thread's own: no locks. */
+#include <stdlib.h>
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
-#include <stdlib.h>
 #include <string.h>
 #include "pollcore.h"
 #include "ready.h"

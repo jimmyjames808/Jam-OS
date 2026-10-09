@@ -39,11 +39,11 @@
  * **Locks.** sets_lock (the list of every set, which epoll_forget walks)
  * comes before a set's lock; the descriptor table's lock is never taken
  * under either (descriptions are got before, and put after). */
+#include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
 
@@ -76,6 +76,8 @@ struct epoll {
     lock_t               lock;                  /* everything below but next */
     struct netwait      *w;                     /* NETWAIT_MAX entries */
     uint32_t             waiters;               /* threads counted to sleep (above) */
+    uint32_t             turn;                  /* where the next look's walk of the items
+                                                 * starts, so none starves */
     struct epoll        *next;                  /* every set: sets_lock */
     struct item          items[NETWAIT_MAX];
     struct netwait_ready out[NETWAIT_MAX];      /* a look's reports */
@@ -344,13 +346,15 @@ static void deliver(struct epoll *ep, struct item *it, struct epoll_event *evs, 
         item_unbind(ep, it);
 }
 
-/* One look, under the lock: the set's reports first (their order is the
- * set's, oldest pending first, so no item starves), then the kind's own
- * readiness (ready.h's order). Events delivered, or -errno. */
+/* One look, under the lock: the set's reports first, then the kind's own
+ * readiness (ready.h's order). The set is asked for no more than fit:
+ * those it reports go to the back of its list and the rest stay at the
+ * front, so turns of a few events reach every ready item. Events
+ * delivered, or -errno. */
 static long collect(struct epoll *ep, struct epoll_event *evs, int max)
 {
-    uint32_t nr = 0;
-    status_t st = netwait_wait(ep->w, 0, ep->out, NETWAIT_MAX, &nr);
+    uint32_t nr = 0, ask = (uint32_t)max < NETWAIT_MAX ? (uint32_t)max : NETWAIT_MAX;
+    status_t st = netwait_wait(ep->w, 0, ep->out, ask, &nr);
     if (st == ERR_TIMED_OUT || st == ERR_CANCELED)
         nr = 0;
     else if (st != OK)
@@ -366,8 +370,13 @@ static long collect(struct epoll *ep, struct epoll_event *evs, int max)
     int n = 0;
     for (uint32_t r = 0; r < nr; r++)
         deliver(ep, ep->out[r].user, evs, max, &n);
-    for (uint32_t i = 0; i < NETWAIT_MAX; i++)
+    for (uint32_t k = 0; k < NETWAIT_MAX; k++) {
+        uint32_t i = (ep->turn + k) % NETWAIT_MAX;
+        int before = n;
         deliver(ep, &ep->items[i], evs, max, &n);
+        if (n > before)
+            ep->turn = (i + 1) % NETWAIT_MAX;
+    }
     return n;
 }
 
