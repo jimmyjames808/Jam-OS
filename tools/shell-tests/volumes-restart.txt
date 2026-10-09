@@ -12,6 +12,10 @@
 # kernel log, the shell's through the console: their order isn't fixed,
 # hence `seen`. The text waited for is built from $T, so it never appears
 # in the typed line. QEMU_INPUT=this file, command line "shell".
+# After each return of /data the script sleeps a second: logd writes what
+# was logged while /data was away as soon as it has the file again, but
+# syncs it only every 250 ms, and the next kill takes whatever is not synced
+# with it (a sudden stop loses the last quarter second, by design).
 wait 120 Jam OS shell
 wait {prompt}
 seen 60 init: /esp mounted
@@ -30,6 +34,7 @@ seen 30 init: volumes and its filesystems are gone
 seen 30 init: /data is gone
 wait 60 init: /data mounted
 wait 30 logd: writing /data/logs/boot-0001.txt
+sleep 1
 send cat /data/vr.txt && ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && echo ok-$T-volumes
 wait before the kills-v
 wait ok-v-volumes
@@ -42,6 +47,7 @@ seen 30 init: devmgr and its drivers are gone
 seen 30 init: /data is gone
 wait 60 init: /data mounted
 wait 30 logd: writing /data/logs/boot-0001.txt
+sleep 1
 send cat /data/vr.txt && ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && echo ok-$T-devmgr
 wait before the kills-v
 wait ok-v-devmgr
@@ -53,6 +59,7 @@ wait shell: killed process
 seen 30 init: /data is gone
 wait 60 init: /data mounted
 wait 30 logd: writing /data/logs/boot-0001.txt
+sleep 1
 send cat /data/vr.txt && ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && echo ok-$T-driver
 wait before the kills-v
 wait ok-v-driver
