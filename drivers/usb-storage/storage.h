@@ -115,6 +115,12 @@ status_t blk_open(struct disk *k, handle_t port, uint8_t index, bool read_only, 
 void blk_packet(const struct port_packet *p);
 /* Serve every pending block channel; true if any had something. */
 bool blk_serve(void);
+/* The unread bound (tools/genidl.py, "The unread bound"): a channel whose
+ * client has its protocol's bound of answers unread is not read (held,
+ * not pending) and counted here; the loop makes the held ones pending
+ * again when it says so (blk_unheld for the block channels). */
+extern struct idl_held storage_held;
+void blk_unheld(void);
 void blk_close_all(void);
 
 #define KEY_SERVE 1ull

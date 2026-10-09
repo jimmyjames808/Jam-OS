@@ -62,6 +62,7 @@ struct blk {
     uint8_t part;        /* index into k->parts */
     bool ro;             /* refuses writes */
     bool pending;        /* may have requests queued */
+    bool held;           /* ... and left there: its client is behind (storage_held) */
     uint16_t gen;        /* bumped at every open and close: in its port key */
     handle_t vmo;        /* the client's buffer (map_buffer), HANDLE_INVALID: not made yet */
     uint8_t *map;        /* that buffer, mapped here (NULL: not made yet) */
@@ -384,6 +385,14 @@ void blk_packet(const struct port_packet *p)
         blks[i].pending = true;
 }
 
+void blk_unheld(void)
+{
+    for (int i = 0; i < MAX_BLKS; i++) {
+        blks[i].pending |= blks[i].held && blks[i].ch != HANDLE_INVALID;
+        blks[i].held = false;
+    }
+}
+
 bool blk_serve(void)
 {
     bool any = false;
@@ -395,8 +404,15 @@ bool blk_serve(void)
         b->pending = false;
         /* A few at a time, so one busy client doesn't starve the others. */
         status_t st = OK;
-        for (int guard = 0; guard < 16 && st == OK && !b->k->gone; guard++)
+        for (int guard = 0; guard < 16 && st == OK && !b->k->gone; guard++) {
+            if (block_unread_full(b->ch)) {
+                b->held = true;   /* its client reads its answers first */
+                idl_hold(&storage_held);
+                st = ERR_SHOULD_WAIT;
+                break;
+            }
             st = block_serve_one(b->ch, &block_ops, b);
+        }
         if (st == OK) {
             b->pending = true;   /* maybe more: the port won't say so again */
         } else if (st != ERR_SHOULD_WAIT) {

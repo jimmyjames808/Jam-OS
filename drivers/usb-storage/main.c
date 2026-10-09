@@ -62,12 +62,14 @@
 
 static struct disk disk;
 static handle_t port, serve;
-static bool serve_pending, serve_closed;
+static bool serve_pending, serve_closed, serve_held;
+struct idl_held storage_held;
 
 /* A `storage` channel made by svc.connect on DR_SERVE. */
 static struct conn {
     handle_t ch;        /* our end; HANDLE_INVALID: a free slot */
     bool     pending;   /* may have requests queued */
+    bool     held;      /* ... and left there: its client is behind (storage_held) */
     uint16_t gen;       /* bumped at every close: in its port key */
 } conns[MAX_CONNS];
 
@@ -297,11 +299,15 @@ static status_t s_connect(void *ctx, handle_t *out)
 static const struct svc_ops svc_ops = { .connect = s_connect };
 static const struct svc_ops no_svc_ops = { 0 };   /* a connect's channel makes no more */
 
+/* serve_one's: nothing read, ch's client has the unread bound of answers
+ * unread (storage_unread_full): the channel is held, not pending. */
+#define SERVE_HELD ERR_BUSY
+
 /* Take one message off ch and answer it, as storage_serve_one does, with
  * the svc protocol's connect next to `storage` (on DR_SERVE alone:
- * `connect`). OK once a message was handled; else drv_channel_read's
- * status (ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the client is
- * gone for good). */
+ * `connect`). OK once a message was handled; SERVE_HELD; else
+ * drv_channel_read's status (ERR_SHOULD_WAIT: nothing queued;
+ * ERR_PEER_CLOSED: the client is gone for good). */
 static status_t serve_one(handle_t ch, struct disk *k, bool connect)
 {
     _Static_assert(SVC_REQ_MAX <= STORAGE_REQ_MAX && SVC_REP_MAX <= STORAGE_REP_MAX,
@@ -309,6 +315,10 @@ static status_t serve_one(handle_t ch, struct disk *k, bool connect)
     _Alignas(8) uint8_t q[STORAGE_REQ_MAX], r[STORAGE_REP_MAX];
     handle_t hs[IDL_READ_HANDLES], rhs[IDL_REP_HANDLES];
     uint32_t n = 0, nh = 0, rhn = 0, rn;
+    if (storage_unread_full(ch)) {   /* the unread bound: its client reads first */
+        idl_hold(&storage_held);
+        return SERVE_HELD;
+    }
     status_t st = drv_channel_read(ch, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
     if (st == ERR_BUFFER_TOO_SMALL)
         return idl_drain(ch, n, nh);
@@ -357,6 +367,8 @@ static bool serve_storage(struct disk *k)
         st = serve_one(serve, k, true);
     if (st == OK)
         serve_pending = true;   /* maybe more: the port won't say so again */
+    else if (st == SERVE_HELD)
+        serve_held = true;
     else if (st != ERR_SHOULD_WAIT)
         serve_closed = true;
     return true;
@@ -378,10 +390,25 @@ static bool serve_conns(struct disk *k)
             st = serve_one(c->ch, k, false);
         if (st == OK)
             c->pending = true;
+        else if (st == SERVE_HELD)
+            c->held = true;
         else if (st != ERR_SHOULD_WAIT)
             conn_close(c);
     }
     return did;
+}
+
+/* The channels held back (the unread bound) pending again: serving them
+ * looks again. */
+static void unheld(void)
+{
+    serve_pending |= serve_held;
+    serve_held = false;
+    for (unsigned i = 0; i < MAX_CONNS; i++) {
+        conns[i].pending |= conns[i].held && conns[i].ch != HANDLE_INVALID;
+        conns[i].held = false;
+    }
+    blk_unheld();
 }
 
 /* Serve until the device goes or DR_SERVE closes. 0, or the exit code. */
@@ -393,6 +420,8 @@ static int run(struct disk *k)
                        "giving up on it", k->vid, k->pid, k->silent);
             return 3;
         }
+        if (idl_held_due(&storage_held))
+            unheld();
         bool did = serve_storage(k);
         if (serve_conns(k))
             did = true;
@@ -401,7 +430,9 @@ static int run(struct disk *k)
         if (did)
             continue;
         struct port_packet p;
-        status_t st = drv_port_wait(port, DEADLINE_NEVER, &p);
+        status_t st = drv_port_wait(port, idl_held_deadline(&storage_held, DEADLINE_NEVER), &p);
+        if (st == ERR_TIMED_OUT)
+            continue;
         if (st != OK) {
             drv_log("usb-storage %04x:%04x: port wait: %s", k->vid, k->pid, status_str(st));
             return 1;
