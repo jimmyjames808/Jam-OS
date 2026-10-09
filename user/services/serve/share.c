@@ -1,5 +1,5 @@
-/* serve: the shares (serve.h has the states). A share's file comes on its
- * `give` channel as two handles; its transfer buffer is mapped here
+/* serve: the shares (serve.h has the states). A share's file comes with the
+ * `share` call as two handles; its transfer buffer is mapped here
  * read-only (no call to the file's service: the size is the shell's), and
  * the file is read with file.idl's read sent without waiting, one read at a
  * time, for the client at the head of the share's queue. */
@@ -8,23 +8,19 @@
 
 #define BUF_MAX (1u << 20)   /* a bigger transfer buffer than this is a broken service */
 
+/* Answer the `share` call waiting on sh, if there is one still. */
 static void answer(struct share *sh, status_t st)
 {
-    struct serve_answer a = { .status = st, .port = sh->port };
-    if (sh->give) {
-        (void)jam_channel_write(sh->give, &a, sizeof(a), NULL, 0);   /* gone: nobody asks */
-        (void)netwait_remove(serve_w, sh->give_id);
-        jam_handle_close(sh->give);
-    }
-    sh->give = HANDLE_INVALID;
-    sh->give_id = 0;
+    if (!sh->reply)
+        return;
+    sh->reply = false;
+    (void)serve_reply_share(sh->txn, st, sh->port);   /* gone: nobody asks */
 }
 
 /* Back to S_FREE: whatever it holds goes (no client is left on it). */
 static void share_free(struct share *sh)
 {
-    if (sh->give)
-        answer(sh, ERR_CANCELED);
+    answer(sh, ERR_CANCELED);
     if (sh->file_id)
         (void)netwait_remove(serve_w, sh->file_id);
     if (sh->lst_id)
@@ -34,33 +30,6 @@ static void share_free(struct share *sh)
     if (sh->file.ch)
         file_close(&sh->file);   /* unmaps the buffer, closes both handles */
     memset(sh, 0, sizeof(*sh));
-}
-
-status_t share_giving(unsigned i, uint16_t port, const char *name, uint32_t name_len,
-                      handle_t *out_give)
-{
-    struct share *sh = &shares[i];
-    handle_t theirs;
-    memset(sh, 0, sizeof(*sh));
-    status_t st = jam_channel_create(&sh->give, &theirs);
-    struct netwait_handle h = { sh->give, SIG_READABLE, 0, SIG_PEER_CLOSED };
-    if (st == OK)
-        st = netwait_add_handle(serve_w, &h, NETWAIT_READ, serve_key(T_GIVE, i), &sh->give_id);
-    if (st != OK) {
-        if (sh->give) {
-            jam_handle_close(sh->give);
-            jam_handle_close(theirs);
-        }
-        memset(sh, 0, sizeof(*sh));
-        return st;
-    }
-    sh->state = S_GIVING;
-    sh->port = port;
-    memcpy(sh->name, name, name_len);   /* name_len <= SERVE_NAME_MAX; sh->name was zeroed */
-    sh->type = http_content_type(sh->name);
-    sh->give_until = now() + SERVE_GIVE_WAIT;
-    *out_give = theirs;
-    return OK;
 }
 
 /* The file's transfer buffer, mapped read-only into sh->file. */
@@ -81,61 +50,32 @@ static status_t map_file(struct share *sh, handle_t ch, handle_t buf, uint64_t s
     return OK;
 }
 
-/* The message on give: the file, checked. */
-static status_t take_file(struct share *sh)
-{
-    struct serve_give g;
-    handle_t hs[2] = { 0 };
-    uint32_t n = 0, nh = 0;
-    struct channel_read_args a = {
-        .h = sh->give, .rd_cap = sizeof(g), .rd_bytes = (uint64_t)(uintptr_t)&g,
-        .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
-        .rd_hcap = 2, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-    };
-    status_t st = jam_channel_read(&a);
-    if (st == ERR_SHOULD_WAIT)
-        return st;
-    if (st == OK && (n != sizeof(g) || nh != 2 || g.magic != SERVE_GIVE_MAGIC || g.reserved))
-        st = ERR_INVALID_ARGS;
-    if (st == OK)
-        return map_file(sh, hs[0], hs[1], g.size);   /* the handles are sh->file's now */
-    if (st != ERR_PEER_CLOSED)
-        for (uint32_t k = 0; k < nh && k < 2; k++)
-            jam_handle_close(hs[k]);
-    return st;
-}
-
-void share_give_ready(unsigned i)
+status_t share_begin(unsigned i, uint16_t port, const char *name, uint32_t name_len,
+                     uint64_t size, handle_t file, handle_t buffer, struct idl_txn txn)
 {
     struct share *sh = &shares[i];
-    if (sh->state != S_GIVING)
-        return;
-    status_t st = take_file(sh);
-    if (st == ERR_SHOULD_WAIT)
-        return;
+    memset(sh, 0, sizeof(*sh));
+    sh->state = S_LISTENING;
+    sh->port = port;
+    memcpy(sh->name, name, name_len);   /* name_len <= SERVE_NAME_MAX; sh->name was zeroed */
+    sh->type = http_content_type(sh->name);
+    status_t st = map_file(sh, file, buffer, size);   /* the handles are sh->file's now */
     if (st == OK)
         st = listen_ask(i);
     if (st != OK) {
-        answer(sh, st);
-        share_free(sh);
-        return;
+        share_free(sh);   /* closes the handles */
+        return st;
     }
-    sh->state = S_LISTENING;   /* the give channel stays for the answer */
+    sh->txn = txn;
+    sh->reply = true;   /* answered by share_listened */
+    return OK;
 }
 
-uint64_t shares_expire(uint64_t until)
+void shares_forget_replies(handle_t ch)
 {
-    uint64_t t = now();
-    for (unsigned i = 0; i < SERVE_SHARES; i++) {
-        struct share *sh = &shares[i];
-        if (sh->state != S_GIVING)
-            continue;
-        if (t >= sh->give_until)
-            share_free(sh);   /* the shell never sent the file */
-        else if (sh->give_until < until)
-            until = sh->give_until;
-    }
-    return until;
+    for (unsigned i = 0; i < SERVE_SHARES; i++)
+        if (shares[i].reply && shares[i].txn.ch == ch)
+            shares[i].reply = false;   /* the handle may be another channel's by the time */
 }
 
 void share_listened(unsigned i)
