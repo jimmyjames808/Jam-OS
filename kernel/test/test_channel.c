@@ -737,8 +737,10 @@ static void call_server(void *arg)
         KT_EQ(nb, sizeof(q));
         KT_ASSERT(q.txid != 0);
         struct call_reply r = { q.txid, q.caller, q.seq, q.seq * 3 + q.caller };
-        KT_EQ(channel_write(call_b, &r, sizeof(r), NULL, 0), OK);
+        /* Counted before the reply: once the last caller has its reply the
+         * test reads the count, maybe before we run again. */
         __atomic_add_fetch(&calls_served, 1, __ATOMIC_RELAXED);
+        KT_EQ(channel_write(call_b, &r, sizeof(r), NULL, 0), OK);
         if (!sent_extra) {
             sent_extra = true;
             KT_EQ(write_u32(call_b, 0xabcdef), OK);
