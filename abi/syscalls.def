@@ -179,12 +179,12 @@
 # cache type VMO_CACHE_*; refused over RAM or an MSI-X table/PBA page.
 99  vmo_create_physical status  handle_t res, uint64_t offset, uint64_t size, uint32_t cache, handle_t *out
 # DMA: a capability bound to the function (dma_cap_create, 105 below);
-# vmo_pin writes one device
-# address per page to addrs[] and the pin's id to *pin_id. vmo_unpin needs
-# the cap the pin was made with (ERR_ACCESS_DENIED for any other): holding
-# the VMO isn't enough to take a page away from a device still using it.
-# (Number 100 was dma_cap_create without its job until M12: retired.)
-101 vmo_pin           status    handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t *addrs, uint64_t *pin_id
+# vmo_pin (106 below) writes one device address per page to addrs[] and
+# the pin's id to *pin_id. vmo_unpin needs the cap the pin was made with
+# (ERR_ACCESS_DENIED for any other): holding the VMO isn't enough to take
+# a page away from a device still using it. (Numbers 100, dma_cap_create
+# without its job, and 101, vmo_pin with six arguments, were retired in
+# M12.)
 102 vmo_unpin         status    handle_t vmo, handle_t dma, uint64_t pin_id
 # vmo_create for a driver: flags VMO_CONTIGUOUS and VMO_DMA32 (either,
 # both or none; any other bit is ERR_INVALID_ARGS), memory its device
@@ -203,6 +203,15 @@
 # its holder turns it on (dma_cap_bus_master), the device reaching only
 # what the cap pins.
 105 dma_cap_create    status    handle_t dev, handle_t job, handle_t *out
+# Pin args->len bytes of args->vmo from args->offset (struct vmo_pin_args,
+# <jam/abi.h>) for the device of the dma_cap args->dma: committed, kept in
+# place until vmo_unpin, and (while the IOMMU translates) mapped for the
+# device. RIGHT_WRITE on the VMO. ERR_INVALID_ARGS: offset or len not
+# page-aligned, len 0, a flag, reserved not 0; ERR_OUT_OF_RANGE: past
+# the VMO or more than VMO_PIN_MAX_PAGES pages; ERR_ACCESS_DENIED: the
+# rights, or a cap bound to no function; ERR_BAD_STATE: the cap isn't its
+# function's current one, its bus mastering is off, or the VMO is sealed.
+106 vmo_pin           status    @vmo_pin_args
 
 # console services ----------------------------------------------------------
 # Rights are on a RES_ROOT handle: each call that takes the root needs its

@@ -378,8 +378,17 @@ bool t_driver_handle_limits(void)
     CHECK_ST(jam_dma_vmo_create(dev, 4096, DRV_VMO_DMA32, &x), ERR_WRONG_TYPE);
     CHECK_ST(jam_vmo_create(4096, 0, &v), OK);
     uint64_t addr = 0, pin = 0;
-    CHECK_ST(jam_vmo_pin(v, HANDLE_INVALID, 0, 4096, &addr, &pin), ERR_BAD_HANDLE);
-    CHECK_ST(jam_vmo_pin(v, dev, 0, 4096, &addr, &pin), ERR_WRONG_TYPE);
+    struct vmo_pin_args pa = { .vmo = v, .dma = HANDLE_INVALID, .len = 4096,
+                               .addrs = (uint64_t)(uintptr_t)&addr,
+                               .pin_id = (uint64_t)(uintptr_t)&pin };
+    CHECK_ST(jam_vmo_pin(&pa), ERR_BAD_HANDLE);
+    pa.dma = dev;
+    CHECK_ST(jam_vmo_pin(&pa), ERR_WRONG_TYPE);
+    pa.reserved = 1;
+    CHECK_ST(jam_vmo_pin(&pa), ERR_INVALID_ARGS);
+    pa.reserved = 0;
+    pa.flags = 2;   /* not a VMO_PIN_* */
+    CHECK_ST(jam_vmo_pin(&pa), ERR_INVALID_ARGS);
     CHECK_ST(jam_handle_close(v), OK);
     for (uint32_t i = 0; i < nh; i++)
         CHECK_ST(jam_handle_close(hs[i]), OK);

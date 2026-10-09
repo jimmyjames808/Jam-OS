@@ -450,27 +450,26 @@ int64_t sysc_dma_cap_create(handle_t dev, handle_t job, uint64_t out)
     return st == OK ? sysc_put_handle(t, out, h) : st;
 }
 
-int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t addrs,
-                     uint64_t pin_id)
+int64_t sysc_vmo_pin(const struct vmo_pin_args *a)
 {
     SYSC_TABLE(t);
-    if (len == 0 || (len & (PAGE_SIZE - 1)))
+    if (a->len == 0 || (a->len & (PAGE_SIZE - 1)) || a->flags || a->reserved)
         return ERR_INVALID_ARGS;
-    if ((len >> PAGE_SHIFT) > VMO_PIN_MAX_PAGES)
+    if ((a->len >> PAGE_SHIFT) > VMO_PIN_MAX_PAGES)
         return ERR_OUT_OF_RANGE;
-    uint64_t n = len >> PAGE_SHIFT;
+    uint64_t n = a->len >> PAGE_SHIFT;
     uint64_t *buf = kmalloc(n * sizeof(uint64_t));
     if (!buf)
         return ERR_NO_MEMORY;
     uint64_t id = 0;
     struct vmo *v = NULL;
     struct kobject *cap = NULL;
-    status_t st = pin(t, vmo, dma, offset, len, buf, &id, &v, &cap);
+    status_t st = pin(t, a->vmo, a->dma, a->offset, a->len, buf, &id, &v, &cap);
     if (st == OK) {
         /* Nobody learned the pin if a copy fails: undo it (on the objects
          * themselves, whatever happened to the handles meanwhile). */
-        if (copy_to_user(addrs, buf, n * sizeof(uint64_t)) != OK ||
-            copy_to_user(pin_id, &id, sizeof(id)) != OK) {
+        if (copy_to_user(a->addrs, buf, n * sizeof(uint64_t)) != OK ||
+            copy_to_user(a->pin_id, &id, sizeof(id)) != OK) {
             vmo_unpin(v, cap, id);
             st = ERR_INVALID_ARGS;
         }

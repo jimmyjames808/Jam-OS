@@ -321,7 +321,11 @@ status_t drv_vmo_unmap(void *addr, uint64_t len)
 status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint64_t *addrs,
                      uint64_t *pin_id)
 {
-    return jam_vmo_pin(vmo, dma, off, len, addrs, pin_id);
+    struct vmo_pin_args a = {
+        .vmo = vmo, .dma = dma, .offset = off, .len = len,
+        .addrs = (uint64_t)(uintptr_t)addrs, .pin_id = (uint64_t)(uintptr_t)pin_id,
+    };
+    return jam_vmo_pin(&a);
 }
 
 status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id)

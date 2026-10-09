@@ -479,15 +479,6 @@ jam_vmo_create_physical:
     ret
     .size jam_vmo_create_physical, . - jam_vmo_create_physical
 
-    .globl jam_vmo_pin
-    .type jam_vmo_pin, @function
-jam_vmo_pin:
-    mov %rcx, %r10
-    mov $SYS_vmo_pin, %eax
-    syscall
-    ret
-    .size jam_vmo_pin, . - jam_vmo_pin
-
     .globl jam_vmo_unpin
     .type jam_vmo_unpin, @function
 jam_vmo_unpin:
@@ -520,6 +511,14 @@ jam_dma_cap_create:
     syscall
     ret
     .size jam_dma_cap_create, . - jam_dma_cap_create
+
+    .globl jam_vmo_pin
+    .type jam_vmo_pin, @function
+jam_vmo_pin:
+    mov $SYS_vmo_pin, %eax
+    syscall
+    ret
+    .size jam_vmo_pin, . - jam_vmo_pin
 
     .globl jam_klog_open
     .type jam_klog_open, @function

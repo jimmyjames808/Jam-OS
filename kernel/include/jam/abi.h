@@ -355,6 +355,19 @@ struct pci_dev_info {
 /* interrupt_create_msi flags */
 #define IRQ_MSIX  (1u << 0)   /* use MSI-X vector `index` (else MSI, index 0) */
 
+/* vmo_pin: pin [offset, offset + len) of a VMO for the device of a
+ * dma_cap (abi/syscalls.def has the rules). */
+struct vmo_pin_args {
+    handle_t vmo;              /* the VMO */
+    handle_t dma;              /* a dma_cap bound to a function */
+    uint64_t offset;           /* page-aligned */
+    uint64_t len;              /* page-aligned: 1 .. VMO_PIN_MAX_PAGES pages */
+    uint64_t addrs;            /* user address: len / 4096 uint64_t, one device address a page */
+    uint64_t pin_id;           /* user address of a uint64_t: the pin's id, for vmo_unpin */
+    uint32_t flags;            /* none yet: 0 (any bit: ERR_INVALID_ARGS) */
+    uint32_t reserved;         /* 0 */
+};
+
 /* input (abi/idl/input.idl, console.idl) ------------------------------------- */
 
 #define INPUT_KEY_UP     0
