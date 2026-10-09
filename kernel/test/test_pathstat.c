@@ -427,14 +427,16 @@ KTEST(pathstat_user_generated_call_counts)
     KT_EQ(sys100(&r, SYS_object_wait_one), 0);
     /* 100 / 8 handle_infos, give or take one at the window's edges */
     KT_ASSERT(sys100(&r, SYS_handle_info) >= 11 && sys100(&r, SYS_handle_info) <= 14);
-    KT_ASSERT(per100(&r, PATH_SYSCALL) >= 211 && per100(&r, PATH_SYSCALL) <= 216);
+    KT_ASSERT(per100(&r, PATH_SYSCALL) >= 200 + sys100(&r, SYS_handle_info) &&
+              per100(&r, PATH_SYSCALL) <= 202 + sys100(&r, SYS_handle_info));
     KT_EQ(per100(&r, PATH_EMPTY_READ), 0);
     KT_EQ(per100(&r, PATH_KMALLOC), 0);
     KT_EQ(per100(&r, PATH_SLEEPQ), 100);
     /* Copies out: the reply and its size to the client; the request to
      * the server, then the reply's status and the request's two sizes in
-     * one copy (the generated loop keeps the three in a row). */
-    KT_EQ(per100(&r, PATH_UCOPY_OUT), 400);
+     * one copy (the generated loop keeps the three in a row); and each
+     * handle_info's answer. */
+    KT_EQ(per100(&r, PATH_UCOPY_OUT), 400 + sys100(&r, SYS_handle_info));
     KT_IDLE_EQ(per100(&r, PATH_RESCHED_IRQ), 0);
     /* Two a call, and now and then one of the warm-up's (above). */
     KT_IDLE_ASSERT(per100(&r, PATH_CLOCK) >= 200 && per100(&r, PATH_CLOCK) <= 202);
