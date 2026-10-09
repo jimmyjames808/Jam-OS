@@ -4,6 +4,8 @@
     genidl.py gen     write the generated headers
     genidl.py check   exit 1 (and name them) if any is missing, stale or
                       left over from a protocol that no longer exists
+    genidl.py selftest  run genidl on small trees of its own: what it must
+                      refuse, and a stale output failing `check` (SELFTESTS)
 
 Outputs, committed like the syscall glue (so they can be read and grepped):
     drivers/include/idl/common.h    what every protocol shares
@@ -1399,9 +1401,101 @@ def run(mode, idl_dir=IDL_DIR, out_dir=OUT_DIR, ids_file=IDS_FILE):
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("gen", "check"):
+    if len(sys.argv) != 2 or sys.argv[1] not in ("gen", "check", "selftest"):
         sys.exit(__doc__)
-    run(sys.argv[1])
+    if sys.argv[1] == "selftest":
+        selftest()
+    else:
+        run(sys.argv[1])
+
+
+# ---- self-test (`make check`) ------------------------------------------------
+
+RULE = "# Reconnect: a test.\n\n"
+
+
+def t_ok(body, name="t", pid=40):
+    """A one-protocol file that must pass, with its registry line."""
+    return {f"{name}.idl": f"{RULE}protocol {name} {pid}\n{body}"}
+
+
+# What genidl must refuse (or accept): (what, {file: text}, registry or None
+# for one made from the files' protocol lines, a piece of the error or None).
+SELFTESTS = [
+    ("a good file", t_ok("1 a (u32 x) -> (u32 y)\n"), None, None),
+    ("not in the registry", t_ok("1 a () -> ()\n"), "0 none -\n", "is not in"),
+    ("another id in the registry", t_ok("1 a () -> ()\n"),
+     "0 none -\n41 t abi/idl/t.idl\n", "is listed in"),
+    ("a registry line for no protocol", t_ok("1 a () -> ()\n"),
+     "0 none -\n40 t abi/idl/t.idl\n41 u abi/idl/t.idl\n", "defines no protocol 'u'"),
+    ("an id listed twice", t_ok("1 a () -> ()\n"),
+     "0 none -\n40 t abi/idl/t.idl\n40 u abi/idl/ids.txt\n", "listed twice"),
+    ("a name listed twice", t_ok("1 a () -> ()\n"),
+     "0 none -\n40 t abi/idl/t.idl\n41 t abi/idl/ids.txt\n", "listed twice"),
+    ("a missing file", t_ok("1 a () -> ()\n"),
+     "0 none -\n40 t abi/idl/t.idl\n41 u abi/idl/nothing.h\n", "doesn't exist"),
+    ("no id 0", t_ok("1 a () -> ()\n"), "40 t abi/idl/t.idl\n", "id 0"),
+]
+
+
+def registry_for(files):
+    lines = ["0 none -"]
+    for fname, text in files.items():
+        for m in re.finditer(r"^protocol\s+(\w+)\s+(\d+)", text, re.M):
+            lines.append(f"{m.group(2)} {m.group(1)} abi/idl/{fname}")
+    return "\n".join(lines) + "\n"
+
+
+def in_tree(files, ids, fn):
+    """Run fn() in a fresh tree holding files (and ids) under abi/idl/:
+    None if it passed, else the text it exited with."""
+    import contextlib
+    import io
+    import tempfile
+    here = os.getcwd()
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, IDL_DIR))
+        for fname, text in files.items():
+            open(os.path.join(d, IDL_DIR, fname), "w").write(text)
+        open(os.path.join(d, IDS_FILE), "w").write(ids if ids is not None
+                                                   else registry_for(files))
+        os.chdir(d)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                fn()
+            return None
+        except SystemExit as e:
+            return str(e.code)
+        finally:
+            os.chdir(here)
+
+
+def selftest():
+    bad = 0
+    for what, files, ids, want in SELFTESTS:
+        got = in_tree(files, ids, lambda: run("gen"))
+        if (want is None) != (got is None) or (want is not None and want not in got):
+            print(f"genidl selftest: {what}: wanted {want or 'a pass'!r}, got {got or 'a pass'!r}")
+            bad += 1
+
+    # A generated file that is stale, edited, missing or left over fails `check`.
+    def edited(change):
+        def fn():
+            run("gen")
+            change(os.path.join(OUT_DIR, "t.h"))
+            run("check")
+        return fn
+    for what, change, want in (
+            ("an edited output", lambda p: open(p, "a").write("\n"), "stale"),
+            ("a missing output", os.remove, "stale"),
+            ("a left-over output", lambda p: open(p[:-3] + "x.h", "w").write(""), "no .idl")):
+        got = in_tree(t_ok("1 a () -> ()\n"), None, edited(change))
+        if got is None or want not in got:
+            print(f"genidl selftest: {what}: wanted {want!r}, got {got or 'a pass'!r}")
+            bad += 1
+    if bad:
+        sys.exit(f"genidl selftest: {bad} of {len(SELFTESTS) + 3} failed")
+    print(f"genidl selftest: {len(SELFTESTS) + 3} passed")
 
 
 if __name__ == "__main__":
