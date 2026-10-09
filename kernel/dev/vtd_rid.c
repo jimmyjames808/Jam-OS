@@ -77,6 +77,10 @@ static bool bridge_of(struct pci_dev *d, struct vtd_bridge *out)
 
 status_t vtd_rid_mark(void)
 {
+    /* Peer-to-peer requests up to the root complex first (pci_acs.c), so
+     * the unit sees them once translation is on. */
+    if (pci_acs_enable() != OK)
+        return ERR_NO_MEMORY;
     uint32_t n = 0;
     for (uint32_t i = 0; vtd_fn_at(i); i++)
         n++;

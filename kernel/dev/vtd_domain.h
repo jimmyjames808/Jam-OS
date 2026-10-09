@@ -217,9 +217,10 @@ struct vtd_bridge {
  * bus below it? Bridges whose secondary bus isn't above their own are
  * ignored (unconfigured). Pure. */
 bool vtd_rid_shared(const struct vtd_bridge *br, uint32_t n, uint16_t seg, uint16_t sid);
-/* Set every function's `shared` from the PCI topology (config space), and
- * put each covered one that is in the RESULTS box. Boot, after the
- * functions are assigned to units. ERR_NO_MEMORY. */
+/* Turn ACS on where it applies (pci_acs_enable), then set every
+ * function's `shared` from the PCI topology (config space), and put each
+ * covered one that is in the RESULTS box. Boot, after the functions are
+ * assigned to units. ERR_NO_MEMORY. */
 status_t vtd_rid_mark(void);
 
 /* ---- the boot (vtd_boot.c) ---------------------------------------------------------------- */
