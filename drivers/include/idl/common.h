@@ -43,6 +43,7 @@
 #define IDL_ID_USBBUS_EVENTS 0x0024u   /* abi/idl/usbbus.idl */
 #define IDL_ID_IDLTEST_H     0x0025u   /* abi/idl/idltest.idl */
 #define IDL_ID_NOTIFY        0x0028u   /* abi/idl/notify.idl */
+#define IDL_ID_KEYS          0x0029u   /* abi/idl/console.idl */
 #define IDL_ID_UPDATE_ANSWER 0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY       0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER  0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */

@@ -182,12 +182,10 @@ void focus_drop(unsigned i);
 status_t op_open_keys(void *ctx, handle_t *out);
 /* A key from the window: the scrollback's keys, or to the focus. */
 void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp);
-/* A mouse report from the window: to the focus if it asked for the mouse,
- * else the wheel scrolls back. */
-void mouse_event(const struct input_mouse_event *ev);
-/* Does the focus (the newest key channel) want the mouse? Then the
- * window's pointer is its, not the selection's. */
-bool focus_wants_mouse(void);
+/* A mouse report from the window (con_mouse: wlinput.c): the wheel
+ * scrolls back. */
+struct con_mouse;
+void mouse_event(const struct con_mouse *ev);
 
 /* ---- paste.c: pasted text typed into the focus ------------------------------------ */
 
@@ -254,6 +252,13 @@ int  term_font_parse(const char *value);
  * left modifier keys. false: a key with no HID usage (dropped). */
 bool key_of_wayland(uint32_t code, uint32_t state, uint32_t mods, uint32_t cp,
                     struct input_key_event *out);
+/* A wl_pointer event as a mouse report: whole pixels moved, the wheel in
+ * notches (+ away from the user), the buttons held (INPUT_BTN_*). */
+struct con_mouse {
+    int16_t dx, dy;
+    int8_t  wheel;
+    uint8_t buttons;
+};
 /* What mouse_of_wayland keeps between pointer events. */
 struct pointer_track {
     int32_t x, y;        /* the last position, surface coordinates, fixed 24.8 */
@@ -263,7 +268,7 @@ struct pointer_track {
  * held, the wheel in notches, + away from the user); false: it makes
  * none (enter, leave, no movement, another axis or button). */
 bool mouse_of_wayland(struct pointer_track *p, const struct jwl_event *ev,
-                      struct input_mouse_event *out);
+                      struct con_mouse *out);
 /* The pointer's shape at surface pixel (x, y) of a window with a cols x
  * rows grid of l's cells inside its padding (wp-cursor-shape-v1's): the
  * text bar over the text, the arrow over the padding. */

@@ -13,8 +13,7 @@
  * `contest trap` holds the keys forever: Ctrl+C must still reach the shell,
  * which kills it. Exit code 0 when all hold. The other words are probes
  * the shell-test scripts run: `flood` (console writes flat out), `spew` and
- * `junk` (a program's output in a pipe), `cad` and `steal` (authority),
- * `mouse` (the mouse on a key channel: mouse.c). */
+ * `junk` (a program's output in a pipe), `cad` and `steal` (authority). */
 #include <devmgr.h>
 #include <idl/compctl.h>
 #include <idl/console.h>
@@ -34,17 +33,21 @@ static int checks, failed;
         }                                                                 \
     } while (0)
 
+static void got_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
+{
+    *(struct input_key_event *)ctx = (struct input_key_event){ usage, state, mods, cp };
+}
+
+/* The next key on k (the keys protocol's key event), waiting up to 2 s. */
 static bool next_key(handle_t k, struct input_key_event *ev)
 {
+    static const struct keys_events events = { .key = got_key };
     signals_t seen;
     if (jam_object_wait_one(k, SIG_READABLE, now() + 2000 * NS_PER_MS, &seen) != OK)
         return false;
-    uint32_t n = 0;
-    struct channel_read_args a = {
-        .h = k, .rd_cap = sizeof(*ev), .rd_bytes = (uint64_t)(uintptr_t)ev,
-        .rd_actual = (uint64_t)(uintptr_t)&n,
-    };
-    return jam_channel_read(&a) == OK && n == sizeof(*ev);
+    *ev = (struct input_key_event){ 0 };
+    return keys_read_event(k, &events, ev) == OK && ev->state <= INPUT_KEY_REPEAT &&
+           (ev->usage || ev->codepoint);
 }
 
 /* A key typed by the test script after our prompt. */
@@ -256,8 +259,6 @@ int main(int argc, char **argv)
         printf("contest: no console channel (SR_CONSOLE)\n");
         return 1;
     }
-    if (argc > 1 && !strcmp(argv[1], "mouse"))
-        return contest_mouse(con);
     /* Probe (`run contest cad`): a program with no root resource, only the
      * console channel the shell hands it, tries to become an input source
      * and send Ctrl+Alt+Del. It must fail: the console has no input

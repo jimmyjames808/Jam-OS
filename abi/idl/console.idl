@@ -18,8 +18,8 @@ protocol console 12
 3  clear  () -> ()
 # A channel on which the console sends this client the keys typed while it
 # is the focused client (the most recent open_keys wins; closing the
-# channel gives focus back). Each message is one struct input_key_event
-# (<openkeys.h>).
+# channel gives focus back): the `keys` protocol's events (below; review
+# W14: an IDL protocol, no mouse).
 4  open_keys      () -> (handle keys)
 # 5 (connect_input) and 6 (lend_screen): gone with the full-screen console
 # (M12's Q14); not reused.
@@ -56,3 +56,25 @@ protocol console 12
 # no window (no compositor) has nothing to change: OK. ADMIN channels
 # only: ERR_ACCESS_DENIED otherwise; ERR_INVALID_ARGS for a font > 1.
 10 set_font       (u8 font) -> ()
+
+# keys: the channel console.open_keys answers (review W14, DQ1: events
+# from the console to its client, in the IDL; the struct a size told apart
+# went with the mouse it carried, M12's Q14). The console sends the
+# focused client its keys; the client sends nothing (what it writes is
+# never read: a terminal program gets the mouse as xterm's escape
+# sequences from M13's terminal layer).
+#
+# Reconnect: the channel lives as long as the client keeps it and the
+# console runs. If its peer closes (the console restarted), the client's
+# console channel has closed too: it asks devmgr/init for the new console,
+# and opens the keys again there; keys typed meanwhile are lost.
+
+protocol keys 41
+
+# One key: the HID usage (input.idl's: the Keyboard/Keypad page; 0 for a
+# character pasted or typed by a terminal, with the character alone; a
+# keypad key with Num Lock off as the key printed on it), its state
+# (input.idl's INPUT_KEY_UP, DOWN or REPEAT: the console's window repeats
+# a key held down), the modifiers (INPUT_MOD_*: the left keys) and the
+# character it types on the layout, 0 for none (an arrow, a modifier).
+1  key  -> (u16 usage, u8 state, u8 mods, u32 codepoint) event

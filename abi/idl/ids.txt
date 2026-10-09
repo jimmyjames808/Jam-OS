@@ -47,6 +47,7 @@
 36      usbbus_events   abi/idl/usbbus.idl
 37      idltest_h       abi/idl/idltest.idl
 40      notify          abi/idl/notify.idl
+41      keys            abi/idl/console.idl
 0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
 0x4d4f  standby         user/include/roles.h            # STANDBY_MAGIC "PROM" (promotion)
 0x4f50  update_offer    user/include/update.h           # UPDATE_OFFER_MAGIC "JUPO"

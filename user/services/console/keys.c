@@ -8,20 +8,17 @@
  * hostage: Ctrl+C goes to it and to the SHELL/ADMIN focus below it (the
  * shell that ran it kills it).
  *
- * The mouse goes to the focus too, but only to one that asked: a client
- * writes a struct input_want on its key channel, and mouse reports then
- * arrive there as struct input_mouse_event, a message of another size
- * than a key (<jam/abi.h> has the wire format). A client that never asked
- * never gets one, so the shell's line editor reads nothing but keys. With
- * no such focus the wheel scrolls the console back, and the rest of the
- * report is dropped. */
+ * A key channel speaks the `keys` protocol (abi/idl/console.idl: its key
+ * events, review W14); the console never reads what a client writes on
+ * it. The mouse is the window's: the selection's, and the wheel scrolls
+ * the console back (M12's Q14 took the mouse reports a client could ask
+ * for: a terminal program gets the mouse from M13's terminal layer). */
 #include "console.h"
 
 /* ---- keys: the focus stack of open_keys channels ------------------------------ */
 
 handle_t focus[MAX_FOCUS];
 static uint8_t focus_level[MAX_FOCUS];   /* the level of the client that opened it */
-static uint32_t focus_want[MAX_FOCUS];   /* INPUT_WANT_*: what it asked for besides keys */
 struct client *focus_client[MAX_FOCUS];
 unsigned nfocus;
 static struct input_key_event pending[PENDING_KEYS];
@@ -37,7 +34,6 @@ void focus_drop(unsigned i)
     for (unsigned j = i; j + 1 < nfocus; j++) {
         focus[j] = focus[j + 1];
         focus_level[j] = focus_level[j + 1];
-        focus_want[j] = focus_want[j + 1];
         focus_client[j] = focus_client[j + 1];
     }
     nfocus--;
@@ -57,7 +53,7 @@ static bool send_below(const struct input_key_event *ev, unsigned from, uint8_t 
     for (unsigned i = from; i-- > 0;) {
         if (focus_level[i] > max)
             continue;
-        status_t st = jam_channel_write(focus[i], ev, sizeof(*ev), NULL, 0);
+        status_t st = keys_key(focus[i], ev->usage, ev->state, ev->mods, ev->codepoint);
         if (st == ERR_PEER_CLOSED) {
             focus_drop(i);
             continue;
@@ -121,7 +117,6 @@ status_t op_open_keys(void *ctx, handle_t *out)
     if (st != OK)
         return st;
     focus_level[nfocus] = c->level;
-    focus_want[nfocus] = 0;
     focus_client[nfocus] = c;
     focus[nfocus++] = mine;
     *out = theirs;
@@ -129,73 +124,14 @@ status_t op_open_keys(void *ctx, handle_t *out)
     unsigned n = npending;
     npending = 0;
     for (unsigned i = 0; i < n; i++)
-        jam_channel_write(mine, &pending[i], sizeof(pending[i]), NULL, 0);
+        (void)keys_key(mine, pending[i].usage, pending[i].state, pending[i].mods,
+                       pending[i].codepoint);
     return OK;
 }
 
-/* A round of what focus i wrote on its key channel: each struct input_want
- * replaces what it wants. At most WANT_BUDGET of them, so a client writing
- * flat out can't hold up the mouse. false: its client is gone, or wrote
- * something the wire format doesn't allow, and the focus must be dropped. */
-#define WANT_BUDGET 8
-static bool focus_requests(unsigned i)
+void mouse_event(const struct con_mouse *ev)
 {
-    for (unsigned n = 0; n < WANT_BUDGET; n++) {
-        struct input_want w;
-        uint32_t got = 0;
-        struct channel_read_args a = {
-            .h = focus[i], .rd_cap = sizeof(w), .rd_bytes = (uint64_t)(uintptr_t)&w,
-            .rd_actual = (uint64_t)(uintptr_t)&got,
-        };
-        status_t st = jam_channel_read(&a);
-        if (st == ERR_SHOULD_WAIT)
-            return true;
-        if (st != OK || got != sizeof(w) || (w.events & ~INPUT_WANT_MOUSE) || w.reserved)
-            return false;
-        focus_want[i] = w.events;
-    }
-    return true;
-}
-
-/* A mouse report to the focus, if it asked for the mouse; false if nobody
- * took it. Only the newest focus counts: the mouse belongs to whoever has
- * the keys. */
-static bool mouse_to_focus(const struct input_mouse_event *ev)
-{
-    while (nfocus) {
-        unsigned i = nfocus - 1;
-        if (!focus_requests(i)) {
-            focus_drop(i);
-            continue;
-        }
-        if (!(focus_want[i] & INPUT_WANT_MOUSE))
-            return false;
-        status_t st = jam_channel_write(focus[i], ev, sizeof(*ev), NULL, 0);
-        if (st == ERR_PEER_CLOSED) {
-            focus_drop(i);
-            continue;
-        }
-        return true;   /* sent, or its queue is full (it isn't reading): dropped */
-    }
-    return false;
-}
-
-bool focus_wants_mouse(void)
-{
-    while (nfocus) {
-        unsigned i = nfocus - 1;
-        if (focus_requests(i))
-            return (focus_want[i] & INPUT_WANT_MOUSE) != 0;
-        focus_drop(i);
-    }
-    return false;
-}
-
-void mouse_event(const struct input_mouse_event *ev)
-{
-    if (mouse_to_focus(ev))
-        return;
-    /* Nobody wants the mouse: the wheel scrolls back. */
+    /* The wheel scrolls back; the rest is the selection's (clip.c). */
     if (ev->wheel > 0)
         key_event(0x4b, INPUT_KEY_DOWN, INPUT_MOD_LSHIFT, 0);
     else if (ev->wheel < 0)

@@ -154,9 +154,9 @@ uint32_t pointer_shape_at(const struct cell_look *l, uint32_t cols, uint32_t row
 }
 
 bool mouse_of_wayland(struct pointer_track *p, const struct jwl_event *ev,
-                      struct input_mouse_event *out)
+                      struct con_mouse *out)
 {
-    *out = (struct input_mouse_event){ .kind = INPUT_EVENT_MOUSE };
+    *out = (struct con_mouse){ 0 };
     switch (ev->type) {
     case JWL_EV_POINTER_ENTER:
         p->x = ev->pointer.x;   /* where it came in: no movement of its own */

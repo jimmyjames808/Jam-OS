@@ -4,8 +4,8 @@
  *
  * Talks to the console (abi/idl/console.idl): writes through
  * console.write, and reads keys from the channel console.open_keys gives
- * (struct input_key_event; keys from a serial terminal come with usage 0
- * and the character, or with the usage of the special key). It does its
+ * (the `keys` protocol's key events, kept as struct input_key_event; keys
+ * pasted come with usage 0 and the character). It does its
  * own line editing: left/right/home/end, backspace/delete, Ctrl+A/E/U,
  * Ctrl+C (cancel the line, or kill what `run` started), Ctrl+L (clear),
  * up/down for the history. The line is redrawn with \r and ESC [ K, which
@@ -128,19 +128,22 @@ enum {
     U_KP_ENTER = 0x58,
 };
 
+static void got_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
+{
+    *(struct input_key_event *)ctx = (struct input_key_event){ usage, state, mods, cp };
+}
+
 bool sh_get_key(struct input_key_event *ev, uint64_t deadline)
 {
+    static const struct keys_events events = { .key = got_key };
     for (;;) {
-        uint32_t n = 0;
-        struct channel_read_args a = {
-            .h = keys, .rd_cap = sizeof(*ev), .rd_bytes = (uint64_t)(uintptr_t)ev,
-            .rd_actual = (uint64_t)(uintptr_t)&n,
-        };
-        status_t st = jam_channel_read(&a);
-        if (st == OK) {
-            if (n == sizeof(*ev) && ev->state != INPUT_KEY_UP)
+        ev->state = INPUT_KEY_UP;   /* what a message that is no key leaves */
+        status_t st = keys_read_event(keys, &events, ev);
+        if (st == OK || st == ERR_INTERNAL || st == ERR_INVALID_ARGS || st == ERR_NOT_SUPPORTED ||
+            st == ERR_BUFFER_TOO_SMALL) {
+            if (st == OK && ev->state != INPUT_KEY_UP)
                 return true;
-            continue;
+            continue;   /* a release, or a message that is no key event: skipped */
         }
         if (st == ERR_PEER_CLOSED)
             jam_process_exit(2);

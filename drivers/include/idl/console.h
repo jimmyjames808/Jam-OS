@@ -13,13 +13,16 @@
  * ask devmgr/init for the new one. The console keeps nothing across a
  * restart: what was in the window and the key channels are made again.
  *
- * Protocol `console` (id 12). Client: console_<method>(ch, args..., &results...)
- * (and console_<method>_until with a deadline, _within with a timeout), or
- * console_<method>_send and console_<method>_result without waiting. Server:
- * fill a struct console_ops and run console_serve(ch, &ops, ctx), or
- * console_serve_one / console_dispatch_on for a loop of your own, or
- * console_take_slot / console_run_slot for requests read into slots that outlive
- * the server; console_reply_<method> answers a request later. */
+ * Protocols `console` (id 12) and `keys` (id 41): one for each
+ * kind of channel, so a message of one protocol sent on a channel of
+ * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
+ * Client: <proto>_<method>(ch, args..., &results...)
+ * (and <proto>_<method>_until with a deadline, _within with a timeout), or
+ * <proto>_<method>_send and <proto>_<method>_result without waiting. Server:
+ * fill a struct <proto>_ops and run <proto>_serve(ch, &ops, ctx), or
+ * <proto>_serve_one / <proto>_dispatch_on for a loop of your own, or
+ * <proto>_take_slot / <proto>_run_slot for requests read into slots that outlive
+ * the server; <proto>_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -229,8 +232,8 @@ static inline status_t console_open_keys_call(handle_t ch, bool idl_within, uint
 }
 /* A channel on which the console sends this client the keys typed while it
  * is the focused client (the most recent open_keys wins; closing the
- * channel gives focus back). Each message is one struct input_key_event
- * (<openkeys.h>). */
+ * channel gives focus back): the `keys` protocol's events (below; review
+ * W14: an IDL protocol, no mouse). */
 static inline status_t console_open_keys_until(handle_t ch, uint64_t deadline_ns, handle_t *out_keys)
 {
     return console_open_keys_call(ch, false, deadline_ns, out_keys);
@@ -993,5 +996,276 @@ static inline status_t console_serve(handle_t ch, const struct console_ops *ops,
         if (idl_st != OK)
             return idl_st;
         idl_s.rn = console_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
+    }
+}
+
+
+/* ==== protocol `keys` (id 41) ===============================================
+ *
+ * keys: the channel console.open_keys answers (review W14, DQ1: events
+ * from the console to its client, in the IDL; the struct a size told apart
+ * went with the mouse it carried, M12's Q14). The console sends the
+ * focused client its keys; the client sends nothing (what it writes is
+ * never read: a terminal program gets the mouse as xterm's escape
+ * sequences from M13's terminal layer).
+ *
+ * Reconnect: the channel lives as long as the client keeps it and the
+ * console runs. If its peer closes (the console restarted), the client's
+ * console channel has closed too: it asks devmgr/init for the new console,
+ * and opens the keys again there; keys typed meanwhile are lost. */
+
+#define KEYS_PROTOCOL_ID 41u
+#define KEYS_KEY              0x00290001u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct keys_key_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    uint16_t usage;
+    uint8_t state;
+    uint8_t mods;
+    uint32_t codepoint;
+} __attribute__((packed));
+
+#define KEYS_REQ_MAX 8u   /* bytes: the biggest message to the server */
+#define KEYS_REP_MAX 16u   /* bytes: the biggest message to the client */
+#define KEYS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define KEYS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* ---- events (one way, txid 0, never answered) -------------------------- */
+
+/* One key: the HID usage (input.idl's: the Keyboard/Keypad page; 0 for a
+ * character pasted or typed by a terminal, with the character alone; a
+ * keypad key with Num Lock off as the key printed on it), its state
+ * (input.idl's INPUT_KEY_UP, DOWN or REPEAT: the console's window repeats
+ * a key held down), the modifiers (INPUT_MOD_*: the left keys) and the
+ * character it types on the layout, 0 for none (an arrow, a modifier). */
+/* The event keys.key, to the client: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t keys_key(handle_t ch, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
+{
+    _Alignas(8) uint8_t idl_b0[16];
+    struct keys_key_msg *idl_q = (struct keys_key_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = KEYS_KEY;
+    idl_q->usage = usage;
+    idl_q->state = state;
+    idl_q->mods = mods;
+    idl_q->codepoint = codepoint;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The client's handlers of the events from the server: a NULL one drops
+ * its event (handles closed). A handler owns the handles it is given;
+ * its arrays point into the message (copy what it keeps). */
+struct keys_events {
+    void (*key)(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint);
+};
+
+/* Client: run the event read with idl_reply_read into msg and *m (an
+ * event has txid 0, a reply any other): OK, its handler ran with its
+ * handles; otherwise it is dropped, its handles closed:
+ * ERR_NOT_SUPPORTED (no such event, or no handler), ERR_INVALID_ARGS
+ * (it breaks the format, or isn't an event). */
+static inline status_t keys_event_dispatch(const struct keys_events *idl_tab, void *ctx,
+                                           const void *idl_m, struct idl_msg *m)
+{
+    uint32_t idl_n = m->n, idl_nh = m->nh;
+    const handle_t *idl_hs = m->hs;
+    m->nh = 0;   /* each path below takes them */
+    if (idl_n < sizeof(struct idl_req_hdr) || ((const struct idl_req_hdr *)idl_m)->txid) {
+        idl_close_all(idl_hs, idl_nh);
+        return ERR_INVALID_ARGS;
+    }
+    switch (((const struct idl_req_hdr *)idl_m)->ordinal) {
+    case KEYS_KEY: {
+        const struct keys_key_msg *idl_e = (const struct keys_key_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->key)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->key(ctx, idl_e->usage, idl_e->state, idl_e->mods, idl_e->codepoint);
+        return OK;
+    }
+    }
+    idl_close_all(idl_hs, idl_nh);
+    return ERR_NOT_SUPPORTED;
+}
+
+/* Client: read the next message on ch and run it as an event of the
+ * server's (keys_event_dispatch's results). ERR_SHOULD_WAIT: nothing is
+ * queued; ERR_PEER_CLOSED: the server is gone; ERR_INTERNAL: a message
+ * that is no event (a reply to a call that gave up), dropped. For a
+ * channel whose replies come with idl_reply_read, call
+ * keys_event_dispatch for the messages with txid 0 instead. */
+static inline status_t keys_read_event(handle_t ch, const struct keys_events *idl_tab, void *ctx)
+{
+    _Alignas(8) uint8_t idl_b[KEYS_REP_MAX];
+    struct idl_msg idl_m;
+    status_t idl_st = idl_reply_read(ch, idl_b, KEYS_REP_MAX, &idl_m);
+    if (idl_st == OK && idl_m.txid) {
+        idl_msg_drop(&idl_m);
+        idl_st = ERR_INTERNAL;
+    } else if (idl_st == OK) {
+        idl_st = keys_event_dispatch(idl_tab, ctx, idl_b, &idl_m);
+    }
+    return idl_st;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with keys_reply_<method> (now, or later from anywhere). */
+struct keys_ops {
+};
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (KEYS_REP_MAX bytes) and the handles it carries
+ * into rhs (KEYS_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the message has no txid, a `later` handler
+ * answers it itself, or it has txid 0: an event of the other way, or
+ * none, never answered). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it. */
+static inline uint32_t keys_dispatch_on(handle_t ch, const struct keys_ops *ops, void *ctx,
+                                        const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                        uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    (void)ch;
+    (void)ops;
+    (void)ctx;
+    if (n < sizeof(struct idl_req_hdr) || !((const struct idl_req_hdr *)req)->txid) {
+        /* txid 0: an event (or no txid): never answered */
+        return 0;
+    }
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    }
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* keys_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t keys_dispatch(const struct keys_ops *ops, void *ctx, const void *req, uint32_t n,
+                                     void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return keys_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t keys_take_slot(handle_t ch, const struct idl_slot *slot,
+                                      struct idl_reply *rep)
+{
+    if (slot->qcap < KEYS_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by keys_take_slot, or found there by a
+ * successor), which came on ch: as keys_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (KEYS_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it never sends it. */
+static inline uint32_t keys_run_slot(handle_t ch, const struct idl_slot *slot,
+                                     const struct keys_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return keys_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
+static inline bool keys_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
+}
+
+/* Take one message off ch and answer it. OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t keys_serve_one(handle_t ch, const struct keys_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[KEYS_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[KEYS_REP_MAX];
+    handle_t idl_hs[IDL_READ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, idl_n, idl_nh);
+    if (idl_st != OK)
+        return idl_st;
+    if (idl_nh) {
+        idl_close_all(idl_hs, idl_nh);
+        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = keys_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
+    return OK;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
+static inline status_t keys_serve(handle_t ch, const struct keys_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[KEYS_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[KEYS_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
+    for (;;) {
+        status_t idl_st = idl_serve_next(&idl_s);
+        if (idl_st == ERR_PEER_CLOSED)
+            return OK;
+        if (idl_st != OK)
+            return idl_st;
+        idl_s.rn = keys_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

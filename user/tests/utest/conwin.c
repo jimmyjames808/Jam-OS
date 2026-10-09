@@ -223,13 +223,12 @@ bool t_conwin_pointer_shape(void)
 bool t_conwin_pointer(void)
 {
     struct pointer_track p = { 0 };
-    struct input_mouse_event m;
+    struct con_mouse m;
     struct jwl_event e = pointer_ev(JWL_EV_POINTER_ENTER, 100, 50);
     CHECK(!mouse_of_wayland(&p, &e, &m));   /* coming in is no movement */
     e = pointer_ev(JWL_EV_POINTER_MOTION, 103, 46);
     CHECK(mouse_of_wayland(&p, &e, &m));
-    CHECK(m.kind == INPUT_EVENT_MOUSE && m.dx == 3 && m.dy == -4 && !m.buttons && !m.wheel);
-    CHECK(!m.reserved);
+    CHECK(m.dx == 3 && m.dy == -4 && !m.buttons && !m.wheel);
     e = pointer_ev(JWL_EV_POINTER_MOTION, 103, 46);
     CHECK(!mouse_of_wayland(&p, &e, &m));   /* no movement, no report */
     e = (struct jwl_event){ .type = JWL_EV_POINTER_BUTTON };

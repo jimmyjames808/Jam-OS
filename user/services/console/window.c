@@ -265,7 +265,7 @@ static void pointer_shape(const struct jwl_event *ev)
 
 static void take(const struct jwl_event *ev)
 {
-    struct input_mouse_event m;
+    struct con_mouse m;
     switch (ev->type) {
     case JWL_EV_CONFIGURE:
         configured(ev);
@@ -282,7 +282,7 @@ static void take(const struct jwl_event *ev)
     case JWL_EV_POINTER_BUTTON:
     case JWL_EV_POINTER_AXIS: {
         pointer_shape(ev);
-        bool selecting = clip_pointer(ev);   /* the selection's (clip.c), or the program's */
+        bool selecting = clip_pointer(ev);   /* the selection's (clip.c), or the wheel's */
         if (mouse_of_wayland(&ptr, ev, &m) && !selecting)
             mouse_event(&m);
         break;
