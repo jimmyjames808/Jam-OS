@@ -35,9 +35,13 @@ lx_call lx_clock_gettime, lx_clock_getres, lx_clock_settime, lx_clock_nanosleep,
 /* The machine and randomness (misc.c). */
 lx_call lx_uname, lx_getrandom, lx_sysinfo, lx_sched_getaffinity;
 
-/* Descriptors 0 to 2 before the descriptor table exists (stdfd.c). */
-lx_call lx_read, lx_write, lx_readv, lx_writev, lx_close, lx_fstat, lx_ioctl, lx_lseek,
-        lx_fcntl;
+/* The descriptor table: the calls that route to a descriptor's kind (fd.c). */
+lx_call lx_read, lx_write, lx_readv, lx_writev, lx_pread64, lx_pwrite64, lx_preadv,
+        lx_pwritev, lx_lseek, lx_close, lx_fstat, lx_ioctl, lx_fsync, lx_fdatasync,
+        lx_ftruncate, lx_getdents64;
+
+/* fcntl's table-only commands until B2's fcntl (stdfd.c). */
+lx_call lx_fcntl;
 
 /* Signals before signals exist (nosig.c). */
 lx_call lx_rt_sigprocmask;
