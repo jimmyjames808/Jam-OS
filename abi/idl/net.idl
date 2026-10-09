@@ -193,10 +193,12 @@ protocol net_socket 60
 # stay. ERR_INVALID_ARGS: an address a program can't send to;
 # ERR_NOT_SUPPORTED on the DHCP socket.
 1  connect  (u32 address, u16 port)  -> ()
-# Its local port, the peer `connect` set (0: none), bytes waiting in its rx
-# ring now, and datagrams dropped since it opened (its rx ring was full;
-# also the status line's rx_dropped).
-2  state  ()  -> (u16 port, u32 peer, u16 peer_port, u32 queued, u32 dropped)
+# Its local address and port, the peer `connect` set (0: none), bytes
+# waiting in its rx ring now, and datagrams dropped since it opened (its rx
+# ring was full; also the status line's rx_dropped). The address is the
+# interface's now (0: it has none): a socket is bound to every address, and
+# this is the one its datagrams leave from.
+2  state  ()  -> (u32 address, u16 port, u32 peer, u16 peer_port, u32 queued, u32 dropped)
 # The socket's rings (<sockring.h>, datagram framing): their VMO and events
 # with the rights the header names, and the rings' sizes. tx_bytes and
 # rx_bytes: 0 for SOCKRING_UDP_TX and SOCKRING_UDP_RX, else a ring size
@@ -219,10 +221,12 @@ protocol net_socket 60
 
 protocol net_stream 61
 
-# Its local port, the peer's address and port, and the bytes waiting in its
-# rx ring now. `dropped` is always 0: a stream drops nothing, its window
-# stops the sender.
-1  state  ()  -> (u16 port, u32 peer, u16 peer_port, u32 queued, u32 dropped)
+# Its local address and port (the interface's address now, 0 if it has none;
+# the port netstack picked for a connection `tcp` made, or the listener's
+# for one `accept` gave), the peer's address and port (for an accepted
+# connection too), and the bytes waiting in its rx ring now. (A stream drops
+# nothing, its window stops the sender: it has no count of dropped bytes.)
+1  state  ()  -> (u32 address, u16 port, u32 peer, u16 peer_port, u32 queued)
 
 # net_listener: a TCP listener's channel, from net.tcp_listener. Closing it
 # stops listening and resets the connections waiting.

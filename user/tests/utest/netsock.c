@@ -222,9 +222,10 @@ bool t_netsock_udp(void)
     CHECK_EQ(s.send_errors, 0);   /* the blocking form reported each refusal itself */
     CHECK_ST(netdrv_recv(f, &(uint32_t){ 0 }, NETDRV_QUIET), ERR_TIMED_OUT);   /* none left */
     uint16_t port, peer_port;
-    uint32_t peer, queued, dropped;
-    CHECK_ST(net_socket_state(s.ch, &port, &peer, &peer_port, &queued, &dropped), OK);
-    CHECK(port == 5000 && peer == PEER_IP && peer_port == 40000 && !queued && !dropped);
+    uint32_t addr, peer, queued, dropped;
+    CHECK_ST(net_socket_state(s.ch, &addr, &port, &peer, &peer_port, &queued, &dropped), OK);
+    CHECK(addr == OUR_IP && port == 5000 && peer == PEER_IP && peer_port == 40000 && !queued &&
+          !dropped);
     net_close(&s);
     net_close(&e);
     jam_handle_close(port_h);

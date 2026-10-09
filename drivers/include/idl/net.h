@@ -1805,6 +1805,7 @@ struct net_socket_state_req {
 struct net_socket_state_rep {
     uint32_t txid;
     int32_t  status;
+    uint32_t address;
     uint16_t port;
     uint32_t peer;
     uint16_t peer_port;
@@ -1825,7 +1826,7 @@ struct net_socket_rings_rep {
 } __attribute__((packed));
 
 #define NET_SOCKET_REQ_MAX 16u   /* bytes: the biggest request */
-#define NET_SOCKET_REP_MAX 24u   /* bytes: the biggest reply */
+#define NET_SOCKET_REP_MAX 28u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1866,7 +1867,7 @@ static inline status_t net_socket_connect(handle_t ch, uint32_t address, uint16_
 
 /* net_socket_state_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t net_socket_state_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static inline status_t net_socket_state_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
 {
     struct net_socket_state_req idl_q;
     struct net_socket_state_rep idl_r;
@@ -1877,6 +1878,8 @@ static inline status_t net_socket_state_call(handle_t ch, bool idl_within, uint6
                                NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_address)
+        *out_address = idl_r.address;
     if (idl_st == OK && out_port)
         *out_port = idl_r.port;
     if (idl_st == OK && out_peer)
@@ -1889,20 +1892,22 @@ static inline status_t net_socket_state_call(handle_t ch, bool idl_within, uint6
         *out_dropped = idl_r.dropped;
     return idl_st;
 }
-/* Its local port, the peer `connect` set (0: none), bytes waiting in its rx
- * ring now, and datagrams dropped since it opened (its rx ring was full;
- * also the status line's rx_dropped). */
-static inline status_t net_socket_state_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+/* Its local address and port, the peer `connect` set (0: none), bytes
+ * waiting in its rx ring now, and datagrams dropped since it opened (its rx
+ * ring was full; also the status line's rx_dropped). The address is the
+ * interface's now (0: it has none): a socket is bound to every address, and
+ * this is the one its datagrams leave from. */
+static inline status_t net_socket_state_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
 {
-    return net_socket_state_call(ch, false, deadline_ns, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+    return net_socket_state_call(ch, false, deadline_ns, out_address, out_port, out_peer, out_peer_port, out_queued, out_dropped);
 }
-static inline status_t net_socket_state_within(handle_t ch, uint64_t timeout_ns, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static inline status_t net_socket_state_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
 {
-    return net_socket_state_call(ch, true, timeout_ns, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+    return net_socket_state_call(ch, true, timeout_ns, out_address, out_port, out_peer, out_peer_port, out_queued, out_dropped);
 }
-static inline status_t net_socket_state(handle_t ch, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static inline status_t net_socket_state(handle_t ch, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
 {
-    return net_socket_state_call(ch, false, DEADLINE_NEVER, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+    return net_socket_state_call(ch, false, DEADLINE_NEVER, out_address, out_port, out_peer, out_peer_port, out_queued, out_dropped);
 }
 
 /* net_socket_rings_until and _within: idl_t is a deadline, or with idl_within a
@@ -2024,7 +2029,7 @@ static inline status_t net_socket_state_send(handle_t ch, uint32_t idl_txid)
 /* The status and results of a reply to net_socket_state_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t net_socket_state_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static inline status_t net_socket_state_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
 {
     const struct net_socket_state_rep *idl_r = (const struct net_socket_state_rep *)idl_rep;
     status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
@@ -2035,6 +2040,8 @@ static inline status_t net_socket_state_result(const void *idl_rep, struct idl_m
         return idl_st;
     }
     idl_m->nh = 0;
+    if (out_address)
+        *out_address = idl_r->address;
     if (out_port)
         *out_port = idl_r->port;
     if (out_peer)
@@ -2103,7 +2110,7 @@ static inline status_t net_socket_rings_result(const void *idl_rep, struct idl_m
  * with net_socket_reply_<method> (now, or later from anywhere). */
 struct net_socket_ops {
     status_t (*connect)(void *ctx, uint32_t address, uint16_t port);
-    status_t (*state)(void *ctx, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped);
+    status_t (*state)(void *ctx, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped);
     status_t (*rings)(void *ctx, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes);
 };
 
@@ -2126,7 +2133,7 @@ static inline status_t net_socket_reply_connect(struct idl_txn idl_txn, status_t
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t net_socket_reply_state(struct idl_txn idl_txn, status_t idl_st, uint16_t port, uint32_t peer, uint16_t peer_port, uint32_t queued, uint32_t dropped)
+static inline status_t net_socket_reply_state(struct idl_txn idl_txn, status_t idl_st, uint32_t address, uint16_t port, uint32_t peer, uint16_t peer_port, uint32_t queued, uint32_t dropped)
 {
     struct net_socket_state_rep idl_r;
     if (idl_st > 0)
@@ -2134,6 +2141,7 @@ static inline status_t net_socket_reply_state(struct idl_txn idl_txn, status_t i
     idl_r.status = idl_st;
     if (idl_st != OK)
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.address = address;
     idl_r.port = port;
     idl_r.peer = peer;
     idl_r.peer_port = peer_port;
@@ -2209,6 +2217,7 @@ static inline uint32_t net_socket_dispatch_on(handle_t ch, const struct net_sock
     case NET_SOCKET_STATE: {
         const struct net_socket_state_req *idl_q = (const struct net_socket_state_req *)req;
         struct net_socket_state_rep *idl_r = (struct net_socket_state_rep *)rep;
+        uint32_t out_address = 0;
         uint16_t out_port = 0;
         uint32_t out_peer = 0;
         uint16_t out_peer_port = 0;
@@ -2220,10 +2229,11 @@ static inline uint32_t net_socket_dispatch_on(handle_t ch, const struct net_sock
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->state(ctx, &out_port, &out_peer, &out_peer_port, &out_queued, &out_dropped);
+        status_t idl_st = ops->state(ctx, &out_address, &out_port, &out_peer, &out_peer_port, &out_queued, &out_dropped);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        idl_r->address = out_address;
         idl_r->port = out_port;
         idl_r->peer = out_peer;
         idl_r->peer_port = out_peer_port;
@@ -2397,11 +2407,11 @@ struct net_stream_state_req {
 struct net_stream_state_rep {
     uint32_t txid;
     int32_t  status;
+    uint32_t address;
     uint16_t port;
     uint32_t peer;
     uint16_t peer_port;
     uint32_t queued;
-    uint32_t dropped;
 } __attribute__((packed));
 
 #define NET_STREAM_REQ_MAX 8u   /* bytes: the biggest request */
@@ -2411,7 +2421,7 @@ struct net_stream_state_rep {
 
 /* net_stream_state_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t net_stream_state_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static inline status_t net_stream_state_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued)
 {
     struct net_stream_state_req idl_q;
     struct net_stream_state_rep idl_r;
@@ -2422,6 +2432,8 @@ static inline status_t net_stream_state_call(handle_t ch, bool idl_within, uint6
                                NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_address)
+        *out_address = idl_r.address;
     if (idl_st == OK && out_port)
         *out_port = idl_r.port;
     if (idl_st == OK && out_peer)
@@ -2430,24 +2442,24 @@ static inline status_t net_stream_state_call(handle_t ch, bool idl_within, uint6
         *out_peer_port = idl_r.peer_port;
     if (idl_st == OK && out_queued)
         *out_queued = idl_r.queued;
-    if (idl_st == OK && out_dropped)
-        *out_dropped = idl_r.dropped;
     return idl_st;
 }
-/* Its local port, the peer's address and port, and the bytes waiting in its
- * rx ring now. `dropped` is always 0: a stream drops nothing, its window
- * stops the sender. */
-static inline status_t net_stream_state_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+/* Its local address and port (the interface's address now, 0 if it has none;
+ * the port netstack picked for a connection `tcp` made, or the listener's
+ * for one `accept` gave), the peer's address and port (for an accepted
+ * connection too), and the bytes waiting in its rx ring now. (A stream drops
+ * nothing, its window stops the sender: it has no count of dropped bytes.) */
+static inline status_t net_stream_state_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued)
 {
-    return net_stream_state_call(ch, false, deadline_ns, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+    return net_stream_state_call(ch, false, deadline_ns, out_address, out_port, out_peer, out_peer_port, out_queued);
 }
-static inline status_t net_stream_state_within(handle_t ch, uint64_t timeout_ns, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static inline status_t net_stream_state_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued)
 {
-    return net_stream_state_call(ch, true, timeout_ns, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+    return net_stream_state_call(ch, true, timeout_ns, out_address, out_port, out_peer, out_peer_port, out_queued);
 }
-static inline status_t net_stream_state(handle_t ch, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static inline status_t net_stream_state(handle_t ch, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued)
 {
-    return net_stream_state_call(ch, false, DEADLINE_NEVER, out_port, out_peer, out_peer_port, out_queued, out_dropped);
+    return net_stream_state_call(ch, false, DEADLINE_NEVER, out_address, out_port, out_peer, out_peer_port, out_queued);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -2467,7 +2479,7 @@ static inline status_t net_stream_state_send(handle_t ch, uint32_t idl_txid)
 /* The status and results of a reply to net_stream_state_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t net_stream_state_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static inline status_t net_stream_state_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued)
 {
     const struct net_stream_state_rep *idl_r = (const struct net_stream_state_rep *)idl_rep;
     status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
@@ -2478,6 +2490,8 @@ static inline status_t net_stream_state_result(const void *idl_rep, struct idl_m
         return idl_st;
     }
     idl_m->nh = 0;
+    if (out_address)
+        *out_address = idl_r->address;
     if (out_port)
         *out_port = idl_r->port;
     if (out_peer)
@@ -2486,8 +2500,6 @@ static inline status_t net_stream_state_result(const void *idl_rep, struct idl_m
         *out_peer_port = idl_r->peer_port;
     if (out_queued)
         *out_queued = idl_r->queued;
-    if (out_dropped)
-        *out_dropped = idl_r->dropped;
     return OK;
 }
 
@@ -2498,14 +2510,14 @@ static inline status_t net_stream_state_result(const void *idl_rep, struct idl_m
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with net_stream_reply_<method> (now, or later from anywhere). */
 struct net_stream_ops {
-    status_t (*state)(void *ctx, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped);
+    status_t (*state)(void *ctx, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued);
 };
 
 /* Answer the net_stream.state request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t net_stream_reply_state(struct idl_txn idl_txn, status_t idl_st, uint16_t port, uint32_t peer, uint16_t peer_port, uint32_t queued, uint32_t dropped)
+static inline status_t net_stream_reply_state(struct idl_txn idl_txn, status_t idl_st, uint32_t address, uint16_t port, uint32_t peer, uint16_t peer_port, uint32_t queued)
 {
     struct net_stream_state_rep idl_r;
     if (idl_st > 0)
@@ -2513,11 +2525,11 @@ static inline status_t net_stream_reply_state(struct idl_txn idl_txn, status_t i
     idl_r.status = idl_st;
     if (idl_st != OK)
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.address = address;
     idl_r.port = port;
     idl_r.peer = peer;
     idl_r.peer_port = peer_port;
     idl_r.queued = queued;
-    idl_r.dropped = dropped;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
@@ -2545,26 +2557,26 @@ static inline uint32_t net_stream_dispatch_on(handle_t ch, const struct net_stre
     case NET_STREAM_STATE: {
         const struct net_stream_state_req *idl_q = (const struct net_stream_state_req *)req;
         struct net_stream_state_rep *idl_r = (struct net_stream_state_rep *)rep;
+        uint32_t out_address = 0;
         uint16_t out_port = 0;
         uint32_t out_peer = 0;
         uint16_t out_peer_port = 0;
         uint32_t out_queued = 0;
-        uint32_t out_dropped = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->state) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->state(ctx, &out_port, &out_peer, &out_peer_port, &out_queued, &out_dropped);
+        status_t idl_st = ops->state(ctx, &out_address, &out_port, &out_peer, &out_peer_port, &out_queued);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        idl_r->address = out_address;
         idl_r->port = out_port;
         idl_r->peer = out_peer;
         idl_r->peer_port = out_peer_port;
         idl_r->queued = out_queued;
-        idl_r->dropped = out_dropped;
         return sizeof(*idl_r);
     }
     }

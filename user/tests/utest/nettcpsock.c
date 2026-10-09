@@ -237,17 +237,18 @@ bool t_nettcp_bulk_rings(void)
      * (net_stream) is no opener's, socket's or listener's, and a listener's
      * is none of the others. */
     uint16_t port, peer_port;
-    uint32_t peer, queued, dropped, got;
+    uint32_t addr, peer, queued, dropped, got;
     handle_t hs[4];
     struct net_info in;
-    CHECK_ST(net_stream_state_until(s[0].ch, now() + NETDRV_WAIT, &port, &peer, &peer_port,
-                                    &queued, &dropped), OK);
-    CHECK(port && peer == PEER_IP && peer_port >= 40000);
-    CHECK_ST(net_stream_state_until(l.ch, now() + NETDRV_WAIT, &port, &peer, &peer_port, &queued,
-                                    &dropped), ERR_NOT_SUPPORTED);
-    CHECK_ST(net_stream_state_until(lo, now() + NETDRV_WAIT, &port, &peer, &peer_port, &queued,
-                                    &dropped), ERR_NOT_SUPPORTED);
-    CHECK_ST(net_socket_state(s[0].ch, &port, &peer, &peer_port, &queued, &dropped),
+    CHECK_ST(net_stream_state_until(s[0].ch, now() + NETDRV_WAIT, &addr, &port, &peer,
+                                    &peer_port, &queued), OK);
+    /* Both ends, for an accepted connection too (a getsockname and a getpeername). */
+    CHECK(addr == OUR_IP && port == l.port && peer == PEER_IP && peer_port == 40000);
+    CHECK_ST(net_stream_state_until(l.ch, now() + NETDRV_WAIT, &addr, &port, &peer, &peer_port,
+                                    &queued), ERR_NOT_SUPPORTED);
+    CHECK_ST(net_stream_state_until(lo, now() + NETDRV_WAIT, &addr, &port, &peer, &peer_port,
+                                    &queued), ERR_NOT_SUPPORTED);
+    CHECK_ST(net_socket_state(s[0].ch, &addr, &port, &peer, &peer_port, &queued, &dropped),
              ERR_NOT_SUPPORTED);
     CHECK_ST(net_listener_accept_until(s[0].ch, now() + NETDRV_WAIT, 0, &hs[0], &hs[1], &hs[2],
                                        &hs[3], &peer, &port, &got, &queued),

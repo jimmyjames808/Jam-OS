@@ -395,10 +395,14 @@ static status_t op_connect(void *ctx, uint32_t address, uint16_t port)
     return OK;
 }
 
-static status_t op_state(void *ctx, uint16_t *out_port, uint32_t *out_peer,
-                         uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static status_t op_state(void *ctx, uint32_t *out_address, uint16_t *out_port,
+                         uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued,
+                         uint32_t *out_dropped)
 {
     struct sock *s = ctx;
+    struct stack_state st;
+    stack_get(&st);
+    *out_address = st.ip.address;
     *out_port = s->port;
     *out_peer = s->peer;
     *out_peer_port = s->peer_port;

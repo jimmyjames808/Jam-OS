@@ -220,7 +220,7 @@ bool t_netsock_hostile(void)
     uint32_t a32;
     struct net_info in;
     handle_t h;
-    CHECK_ST(net_socket_state(o, &a16, &a32, &a16, &a32, &a32), ERR_NOT_SUPPORTED);
+    CHECK_ST(net_socket_state(o, &a32, &a16, &a32, &a16, &a32, &a32), ERR_NOT_SUPPORTED);
     CHECK_ST(net_info(s.ch, &in), ERR_NOT_SUPPORTED);
     CHECK_ST(net_udp_until(netdrv_net(), now() + NETDRV_WAIT, 0, &h, &a16), ERR_NOT_SUPPORTED);
     handle_t hs[3];
@@ -302,8 +302,8 @@ bool t_netsock_slow_reader(void)
     CHECK(now() - t0 < 500 * NS_PER_MS);   /* the plan's 200 ms, with room for QEMU */
     CHECK(netdrv_ping(2, false));
     uint16_t port, pp;
-    uint32_t peer, queued, dropped;
-    CHECK_ST(net_socket_state(sa.ch, &port, &peer, &pp, &queued, &dropped), OK);
+    uint32_t addr, peer, queued, dropped;
+    CHECK_ST(net_socket_state(sa.ch, &addr, &port, &peer, &pp, &queued, &dropped), OK);
     CHECK_EQ(queued, kept * sockring_dgram_bytes(sizeof(big)));   /* bytes in its rx ring */
     CHECK_EQ(dropped, more);
     CHECK(counters(&c));

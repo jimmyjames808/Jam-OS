@@ -237,15 +237,17 @@ status_t tcpsock_op_tcp(void *ctx, uint32_t address, uint16_t port, uint32_t tx_
     return OK;
 }
 
-static status_t ts_state(void *ctx, uint16_t *out_port, uint32_t *out_peer,
-                         uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static status_t ts_state(void *ctx, uint32_t *out_address, uint16_t *out_port,
+                         uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued)
 {
     struct tsock *t = ctx;
+    struct stack_state st;
+    stack_get(&st);
+    *out_address = st.ip.address;
     *out_port = t->port;
     *out_peer = t->peer;
     *out_peer_port = t->peer_port;
     *out_queued = t->c ? t->c->r.rx.size - sockring_room(&t->c->r.rx) : 0;
-    *out_dropped = 0;   /* a stream drops nothing: its window stops the sender */
     return OK;
 }
 
