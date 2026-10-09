@@ -1,6 +1,10 @@
-/* Startup: read the startup message (<jam/startup.h>) from the channel in
- * rdi, turn it into argc/argv/environ and a table of handles by role, run
- * main, exit with its result.
+/* Startup: read the startup message (<jam/startup.h>) from the channel a
+ * program starts with, and turn it into argc/argv, the environment's
+ * strings and a table of handles by role (startup_read). A native
+ * program's start (startmain.c) then runs main; a POSIX program's crt
+ * builds Linux's start block from the same strings. So this file uses no
+ * heap, no printf and no thread-local storage: it runs before a POSIX
+ * program's C library does.
  *
  * The message comes from whoever created the process, so it is checked
  * like any other input: a malformed one leaves the program with argc 0 and
@@ -34,7 +38,6 @@ static uint64_t  promoted_at_ns;           /* standby_promoted_ns() */
 static handle_t  start_channel;
 static status_t  start_status = ERR_BAD_STATE;
 static char     *str_ptrs[STARTUP_MAX_STRS + 2];   /* argv NULL envp NULL */
-char           **environ = &str_ptrs[1];
 
 uint64_t standby_kill_ns(void)
 {
@@ -104,6 +107,21 @@ const char *startup_role_name(uint32_t role)
     return role >= SR_USER ? "user" : "?";
 }
 
+/* "libos: <what> (<status>)" as a line in the log, written with
+ * debug_write itself: no printf here (above). */
+static void say(const char *what, status_t st)
+{
+    const char *parts[] = { "libos: ", what, " (", status_str(st), ")\n" };
+    char line[128];
+    size_t n = 0;
+    for (unsigned i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        size_t l = strnlen(parts[i], sizeof(line) - n);
+        memcpy(line + n, parts[i], l);
+        n += l;
+    }
+    jam_debug_write(line, n);
+}
+
 /* Read the one message, waiting for it if it isn't there yet. */
 static status_t read_message(handle_t ch, uint32_t *nbytes, uint32_t *nhandles)
 {
@@ -126,8 +144,8 @@ static status_t read_message(handle_t ch, uint32_t *nbytes, uint32_t *nhandles)
     return st;
 }
 
-/* Point argv/environ at argc + envc NUL-terminated strings, all inside
- * [s, s + len). */
+/* Point argv and the environment at argc + envc NUL-terminated strings,
+ * all inside [s, s + len). */
 static status_t point_strings(char *s, uint32_t len, uint32_t argc, uint32_t envc)
 {
     if (argc > STARTUP_MAX_STRS || envc > STARTUP_MAX_STRS - argc)
@@ -147,11 +165,10 @@ static status_t point_strings(char *s, uint32_t len, uint32_t argc, uint32_t env
         slot++;                        /* argv's NULL when there is no env */
     str_ptrs[argc] = NULL;
     str_ptrs[slot] = NULL;
-    environ = &str_ptrs[argc + 1];
     return OK;
 }
 
-/* Check the message and point argv/environ into it. */
+/* Check the message and point argv and the environment into it. */
 static status_t parse_message(uint32_t nbytes, uint32_t nhandles, int *argc)
 {
     const struct startup_msg *m = (const struct startup_msg *)msg_buf;
@@ -172,7 +189,7 @@ static status_t parse_message(uint32_t nbytes, uint32_t nhandles, int *argc)
 }
 
 /* Check a promotion (nbytes in msg_buf, nhandles at the table's end) and
- * point argv/environ into it. */
+ * point argv and the environment into it. */
 static status_t parse_promotion(uint32_t nbytes, uint32_t nhandles, int *argc)
 {
     const struct standby_msg *m = (const struct standby_msg *)msg_buf;
@@ -241,7 +258,7 @@ static int await_promotion(handle_t ch, unsigned at)
     if (st != OK) {
         for (unsigned i = 0; got && i < nhandles && i < STANDBY_MAX_HANDLES; i++)
             jam_handle_close(msg_handles[msg_nhandles + i]);
-        printf("libos: a spare given no usable promotion (%s)\n", status_str(st));
+        say("a spare given no usable promotion", st);
         jam_process_exit(STANDBY_BAD_PROMOTION);
     }
     promoted_at_ns = now();
@@ -258,7 +275,7 @@ static unsigned entry_of(uint32_t role)
     return i;
 }
 
-_Noreturn void libos_start(handle_t ch)
+void startup_read(handle_t ch, int *argc_out, char ***argv_out)
 {
     int argc = 0;
     uint32_t nbytes = 0, nhandles = 0;
@@ -275,11 +292,11 @@ _Noreturn void libos_start(handle_t ch)
         msg_nhandles = 0;
         argc = 0;
         str_ptrs[0] = str_ptrs[1] = NULL;
-        environ = &str_ptrs[1];
-        printf("libos: no usable startup message (%s)\n", status_str(start_status));
+        say("no usable startup message", start_status);
     }
     unsigned sb = entry_of(SR_STANDBY);
     if (sb < msg_nhandles)
         argc = await_promotion(msg_handles[sb], sb);
-    jam_process_exit(main(argc, str_ptrs));
+    *argc_out = argc;
+    *argv_out = str_ptrs;
 }
