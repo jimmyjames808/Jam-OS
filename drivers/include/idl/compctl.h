@@ -31,8 +31,10 @@
  * keys sent to the old one and not yet taken are lost, and so are the keys
  * held down (the new compositor starts with none held, Num Lock on). A
  * layout_wait still waiting ends with ERR_PEER_CLOSED: init asks the new
- * compositor again (it starts it with the saved layout, so a switch the
- * old one had not reported yet is lost). A NOTIFY channel closes too, and
+ * compositor again, which answers at once if the layout it came back with
+ * isn't the one init knows (the state it keeps across a restart has every
+ * screen's layout, a switch the old one hadn't reported yet included:
+ * review W18), and init saves it. A NOTIFY channel closes too, and
  * its notices go with the compositor: connect again on /svc/notify (calls
  * wait there for the next compositor, bounded by the caller's deadline);
  * a notify_wait still waiting ends with ERR_PEER_CLOSED.
