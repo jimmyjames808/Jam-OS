@@ -54,8 +54,10 @@ static status_t range(const struct ramdisk *rd, uint64_t lba, uint32_t count, ui
     return OK;
 }
 
-static status_t op_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t op_read(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t count,
+                        uint32_t offset)
 {
+    (void)txn;   /* answered now */
     struct ramdisk *rd = ctx;
     status_t st = range(rd, lba, count, offset);
     if (st != OK)
@@ -65,8 +67,10 @@ static status_t op_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset
     return OK;
 }
 
-static status_t op_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t op_write(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t count,
+                         uint32_t offset)
 {
+    (void)txn;
     struct ramdisk *rd = ctx;
     if (rd->read_only)
         return ERR_ACCESS_DENIED;
@@ -86,8 +90,9 @@ static status_t op_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offse
     return OK;
 }
 
-static status_t op_sync(void *ctx)
+static status_t op_sync(void *ctx, struct idl_txn txn)
 {
+    (void)txn;
     struct ramdisk *rd = ctx;
     __atomic_add_fetch(&rd->syncs, 1, __ATOMIC_RELAXED);
     return OK;

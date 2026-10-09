@@ -99,8 +99,10 @@ static status_t span(const struct dm_block *b, uint64_t lba, uint32_t count, uin
     return OK;
 }
 
-static status_t b_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t b_read(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t count,
+                       uint32_t offset)
 {
+    (void)txn;   /* answered now */
     struct dm_block *b = ctx;
     uint8_t *at;
     status_t st = span(b, lba, count, offset, &at);
@@ -110,8 +112,10 @@ static status_t b_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
     return st;
 }
 
-static status_t b_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t b_write(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t count,
+                        uint32_t offset)
 {
+    (void)txn;
     struct dm_block *b = ctx;
     uint8_t *at;
     status_t st = b->ro ? ERR_ACCESS_DENIED : span(b, lba, count, offset, &at);
@@ -121,8 +125,9 @@ static status_t b_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset
     return st;
 }
 
-static status_t b_sync(void *ctx)
+static status_t b_sync(void *ctx, struct idl_txn txn)
 {
+    (void)txn;
     struct dm_block *b = ctx;
     uint32_t hold = __atomic_load_n(&b->m->hold_sync_ms, __ATOMIC_RELAXED);
     if (hold) {   /* a stick slow to flush: the whole disk waits */

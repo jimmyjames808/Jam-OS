@@ -1,5 +1,6 @@
 # block: one partition of a disk, as its driver serves it (storage.idl's
-# open_partition; usb-storage today). Block numbers are relative to the
+# open_partition): usb-storage (a stick) and drv/nvme (an internal drive,
+# read-only). Block numbers are relative to the
 # partition's start; nothing outside it can be reached through this
 # channel. Data moves through a shared buffer (map_buffer), never through
 # messages.
@@ -14,7 +15,14 @@
 #     anything outside the channel's partition and buffer.
 #   - `sync` covers the writes answered before it was sent.
 #   - `queue_depth` says how many the server works on at once; more are
-#     queued on the channel, not refused (usb-storage: 1).
+#     queued on the channel, not refused (usb-storage: 1; drv/nvme: 32).
+#   - `read`, `write` and `sync` are answered later: the server's handler
+#     gets the request's txn and may answer once the disk has (drv/nvme
+#     answers when the last of a request's commands completes, so answers
+#     come in completion order). Nothing changes on the wire.
+#   - `offset` is a multiple of 4 on drv/nvme (NVMe's PRP entries are
+#     dword-aligned; ERR_INVALID_ARGS otherwise); a filesystem's offsets
+#     are whole blocks.
 # Format: see tools/genidl.py.
 #
 # Restart: usb-storage keeps nothing across a restart. ERR_PEER_CLOSED:
@@ -23,7 +31,10 @@
 # disk is back. The other way round: a request from a client that has
 # gone is never started (the fence, drivers/usb-storage/block.c), so
 # nothing a dead filesystem service left queued lands after its
-# successor's writes, which come on a channel of their own.
+# successor's writes, which come on a channel of their own. A server with
+# several requests in flight adds the drain rule: a partition whose closed
+# channel still has commands out gets no new command from any channel
+# until they have completed (drivers/nvme/block.c).
 # `idempotent` is about a driver that is started again: such a request
 # may be sent again on the next driver's channel.
 
@@ -35,18 +46,20 @@ protocol block 15
 # buffer map_buffer makes, in bytes.
 1  info  () -> (u32 block_size, u64 blocks, u8 read_only, u32 max_blocks, u16 queue_depth, u32 buffer_max) idempotent
 # The buffer transfers use: a VMO for the client to map, of `size` bytes
-# asked for (0: the server's choice, 64 KiB for usb-storage; more than
-# buffer_max: buffer_max; rounded up to whole pages), and its size. Once
-# per channel (a second call: ERR_BAD_STATE).
+# asked for (0: the server's choice, 64 KiB for usb-storage and drv/nvme;
+# more than buffer_max: buffer_max, 256 KiB and 1 MiB; rounded up to whole
+# pages), and its size. Once per channel (a second call: ERR_BAD_STATE).
 2  map_buffer  (u32 size) -> (handle buffer, u32 size)
 # Read `count` blocks from `lba` into the buffer at `offset` (bytes).
 # lba + count past the partition, or count blocks past the buffer's end
 # or past max_blocks: ERR_OUT_OF_RANGE; count 0: ERR_INVALID_ARGS; no
 # buffer yet: ERR_BAD_STATE; a disk error: ERR_IO.
-3  read  (u64 lba, u32 count, u32 offset) -> () idempotent
+3  read  (u64 lba, u32 count, u32 offset) -> () later idempotent
 # Write `count` blocks from the buffer at `offset` to `lba`. Read-only:
-# ERR_ACCESS_DENIED.
-4  write  (u64 lba, u32 count, u32 offset) -> () idempotent
+# ERR_ACCESS_DENIED (a server with no write path at all, drv/nvme in
+# M12.7's stage 1, has no handler for it: ERR_NOT_SUPPORTED).
+4  write  (u64 lba, u32 count, u32 offset) -> () later idempotent
 # Every write answered before this was sent is on the medium (SCSI
-# SYNCHRONIZE CACHE).
-5  sync  () -> () idempotent
+# SYNCHRONIZE CACHE; on a read-only drv/nvme channel nothing was written:
+# OK at once).
+5  sync  () -> () later idempotent

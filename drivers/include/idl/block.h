@@ -2,7 +2,8 @@
  * change the .idl and run `make idl`.
  *
  * block: one partition of a disk, as its driver serves it (storage.idl's
- * open_partition; usb-storage today). Block numbers are relative to the
+ * open_partition): usb-storage (a stick) and drv/nvme (an internal drive,
+ * read-only). Block numbers are relative to the
  * partition's start; nothing outside it can be reached through this
  * channel. Data moves through a shared buffer (map_buffer), never through
  * messages.
@@ -17,7 +18,14 @@
  * anything outside the channel's partition and buffer.
  * - `sync` covers the writes answered before it was sent.
  * - `queue_depth` says how many the server works on at once; more are
- * queued on the channel, not refused (usb-storage: 1).
+ * queued on the channel, not refused (usb-storage: 1; drv/nvme: 32).
+ * - `read`, `write` and `sync` are answered later: the server's handler
+ * gets the request's txn and may answer once the disk has (drv/nvme
+ * answers when the last of a request's commands completes, so answers
+ * come in completion order). Nothing changes on the wire.
+ * - `offset` is a multiple of 4 on drv/nvme (NVMe's PRP entries are
+ * dword-aligned; ERR_INVALID_ARGS otherwise); a filesystem's offsets
+ * are whole blocks.
  * Format: see tools/genidl.py.
  *
  * Restart: usb-storage keeps nothing across a restart. ERR_PEER_CLOSED:
@@ -26,7 +34,10 @@
  * disk is back. The other way round: a request from a client that has
  * gone is never started (the fence, drivers/usb-storage/block.c), so
  * nothing a dead filesystem service left queued lands after its
- * successor's writes, which come on a channel of their own.
+ * successor's writes, which come on a channel of their own. A server with
+ * several requests in flight adds the drain rule: a partition whose closed
+ * channel still has commands out gets no new command from any channel
+ * until they have completed (drivers/nvme/block.c).
  * `idempotent` is about a driver that is started again: such a request
  * may be sent again on the next driver's channel.
  *
@@ -188,9 +199,9 @@ static inline status_t block_map_buffer_call(handle_t ch, bool idl_within, uint6
     return idl_st;
 }
 /* The buffer transfers use: a VMO for the client to map, of `size` bytes
- * asked for (0: the server's choice, 64 KiB for usb-storage; more than
- * buffer_max: buffer_max; rounded up to whole pages), and its size. Once
- * per channel (a second call: ERR_BAD_STATE). */
+ * asked for (0: the server's choice, 64 KiB for usb-storage and drv/nvme;
+ * more than buffer_max: buffer_max, 256 KiB and 1 MiB; rounded up to whole
+ * pages), and its size. Once per channel (a second call: ERR_BAD_STATE). */
 static inline status_t block_map_buffer_until(handle_t ch, uint64_t deadline_ns, uint32_t size, handle_t *out_buffer, uint32_t *out_size)
 {
     return block_map_buffer_call(ch, false, deadline_ns, size, out_buffer, out_size);
@@ -258,7 +269,8 @@ static inline status_t block_write_call(handle_t ch, bool idl_within, uint64_t i
     return idl_st;
 }
 /* Write `count` blocks from the buffer at `offset` to `lba`. Read-only:
- * ERR_ACCESS_DENIED. */
+ * ERR_ACCESS_DENIED (a server with no write path at all, drv/nvme in
+ * M12.7's stage 1, has no handler for it: ERR_NOT_SUPPORTED). */
 static inline status_t block_write_until(handle_t ch, uint64_t deadline_ns, uint64_t lba, uint32_t count, uint32_t offset)
 {
     return block_write_call(ch, false, deadline_ns, lba, count, offset);
@@ -288,7 +300,8 @@ static inline status_t block_sync_call(handle_t ch, bool idl_within, uint64_t id
     return idl_st;
 }
 /* Every write answered before this was sent is on the medium (SCSI
- * SYNCHRONIZE CACHE). */
+ * SYNCHRONIZE CACHE; on a read-only drv/nvme channel nothing was written:
+ * OK at once). */
 static inline status_t block_sync_until(handle_t ch, uint64_t deadline_ns)
 {
     return block_sync_call(ch, false, deadline_ns);
@@ -486,9 +499,9 @@ static inline status_t block_sync_result(const void *idl_rep, struct idl_msg *id
 struct block_ops {
     status_t (*info)(void *ctx, uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_read_only, uint32_t *out_max_blocks, uint16_t *out_queue_depth, uint32_t *out_buffer_max);
     status_t (*map_buffer)(void *ctx, uint32_t size, handle_t *out_buffer, uint32_t *out_size);
-    status_t (*read)(void *ctx, uint64_t lba, uint32_t count, uint32_t offset);
-    status_t (*write)(void *ctx, uint64_t lba, uint32_t count, uint32_t offset);
-    status_t (*sync)(void *ctx);
+    status_t (*read)(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint32_t count, uint32_t offset);
+    status_t (*write)(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint32_t count, uint32_t offset);
+    status_t (*sync)(void *ctx, struct idl_txn idl_txn);
 };
 
 /* Answer the block.info request kept in txn: idl_st and, if it is OK, the
@@ -592,7 +605,6 @@ static inline uint32_t block_dispatch_on(handle_t ch, const struct block_ops *op
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -662,7 +674,11 @@ static inline uint32_t block_dispatch_on(handle_t ch, const struct block_ops *op
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->read(ctx, idl_q->lba, idl_q->count, idl_q->offset);
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->read(ctx, idl_txn, idl_q->lba, idl_q->count, idl_q->offset);
+        /* IDL_LATER: the handler answers with block_reply_read. */
+        if (idl_st == IDL_LATER)
+            return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -678,7 +694,11 @@ static inline uint32_t block_dispatch_on(handle_t ch, const struct block_ops *op
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->write(ctx, idl_q->lba, idl_q->count, idl_q->offset);
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->write(ctx, idl_txn, idl_q->lba, idl_q->count, idl_q->offset);
+        /* IDL_LATER: the handler answers with block_reply_write. */
+        if (idl_st == IDL_LATER)
+            return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -694,7 +714,11 @@ static inline uint32_t block_dispatch_on(handle_t ch, const struct block_ops *op
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->sync(ctx);
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->sync(ctx, idl_txn);
+        /* IDL_LATER: the handler answers with block_reply_sync. */
+        if (idl_st == IDL_LATER)
+            return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -705,7 +729,7 @@ static inline uint32_t block_dispatch_on(handle_t ch, const struct block_ops *op
     return sizeof(*idl_h);
 }
 
-/* block_dispatch_on without the channel (the protocol has no `later` method). */
+/* block_dispatch_on without the channel (a `later` handler's txn then has none: use block_dispatch_on). */
 static inline uint32_t block_dispatch(const struct block_ops *ops, void *ctx, const void *req, uint32_t n,
                                       void *rep, handle_t *rhs, uint32_t *rhn)
 {
