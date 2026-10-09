@@ -305,13 +305,35 @@ static long pipe_give(struct fd_desc *d, struct fd_given *out)
     return r;
 }
 
+/* poll's hooks (ready.h): a leftover is readable whatever the channel
+ * says (read without the lock: ready takes none, and a stale answer is
+ * one the next look corrects, since the leftover comes only off the
+ * channel); the channel's signals for the rest. */
+static uint32_t pipe_ready(struct fd_desc *d, uint32_t interest)
+{
+    const struct pipe_end *p = end_of(d);
+    return fd_can_read(d) && __atomic_load_n(&p->at, __ATOMIC_RELAXED) <
+                                 __atomic_load_n(&p->have, __ATOMIC_RELAXED) ? NETWAIT_READ : 0;
+}
+
+static long pipe_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
+{
+    out->kind = FD_WAIT_HANDLE;
+    out->h = (struct netwait_handle){ .h = end_of(d)->ch,
+                                      .read = fd_can_read(d) ? SIG_READABLE : 0,
+                                      .write = fd_can_write(d) ? SIG_WRITABLE : 0,
+                                      .hup = SIG_PEER_CLOSED };
+    return 0;
+}
+
 const struct fd_ops pipe_ops = {
     .name = "pipe",
     .read = pipe_read,
     .write = pipe_write,
     .stat = pipe_stat,
     .ioctl = pipe_ioctl,
-    /* .ready, .arm: poll's (the header says what is ready when) */
+    .ready = pipe_ready,
+    .arm = pipe_arm,
     .give = pipe_give,
     .close = pipe_close,
 };
@@ -322,7 +344,8 @@ const struct fd_ops sockp_ops = {
     .write = pipe_write,
     .stat = sockp_stat,
     .ioctl = pipe_ioctl,
-    /* .ready, .arm: as pipe_ops' */
+    .ready = pipe_ready,
+    .arm = pipe_arm,
     .give = pipe_give,
     .close = pipe_close,
 };
