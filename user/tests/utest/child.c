@@ -107,7 +107,7 @@ static int hog(void)
 {
     for (unsigned i = 0; i < 100000; i++) {
         handle_t v;
-        status_t st = jam_vmo_create(256 * 1024, 0, HANDLE_INVALID, &v);
+        status_t st = jam_vmo_create(256 * 1024, 0, &v);
         if (st == OK)
             st = jam_vmo_commit(v, 0, 256 * 1024);
         if (st == ERR_NO_MEMORY)
@@ -126,7 +126,7 @@ static int hogfault(void)
 {
     handle_t v, vmar = startup_handle(SR_SELF_VMAR);
     uint64_t size = 64ull << 20, addr = 0;
-    if (jam_vmo_create(size, 0, HANDLE_INVALID, &v) != OK ||
+    if (jam_vmo_create(size, 0, &v) != OK ||
         jam_vmar_map(vmar, v, 0, size, VMAR_READ | VMAR_WRITE, &addr) != OK)
         return 43;
     for (uint64_t off = 0; off < size; off += 4096)
@@ -274,7 +274,7 @@ static int raise_own_limit(void)
     if (jam_job_set_limit(startup_handle(SR_JOB), JOB_LIMIT_PAGES, JOB_NO_LIMIT) != OK)
         return 50;
     handle_t v;
-    if (jam_vmo_create(1 << 20, 0, HANDLE_INVALID, &v) != OK)
+    if (jam_vmo_create(1 << 20, 0, &v) != OK)
         return 52;
     status_t st = jam_vmo_commit(v, 0, 1 << 20);
     jam_handle_close(v);

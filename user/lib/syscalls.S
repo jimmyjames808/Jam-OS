@@ -218,15 +218,6 @@ jam_port_wait:
     ret
     .size jam_port_wait, . - jam_port_wait
 
-    .globl jam_vmo_create
-    .type jam_vmo_create, @function
-jam_vmo_create:
-    mov %rcx, %r10
-    mov $SYS_vmo_create, %eax
-    syscall
-    ret
-    .size jam_vmo_create, . - jam_vmo_create
-
     .globl jam_vmo_read
     .type jam_vmo_read, @function
 jam_vmo_read:
@@ -284,6 +275,14 @@ jam_vmo_make_exec:
     syscall
     ret
     .size jam_vmo_make_exec, . - jam_vmo_make_exec
+
+    .globl jam_vmo_create
+    .type jam_vmo_create, @function
+jam_vmo_create:
+    mov $SYS_vmo_create, %eax
+    syscall
+    ret
+    .size jam_vmo_create, . - jam_vmo_create
 
     .globl jam_vmar_map
     .type jam_vmar_map, @function
@@ -512,6 +511,15 @@ jam_vmo_unpin:
     syscall
     ret
     .size jam_vmo_unpin, . - jam_vmo_unpin
+
+    .globl jam_dma_vmo_create
+    .type jam_dma_vmo_create, @function
+jam_dma_vmo_create:
+    mov %rcx, %r10
+    mov $SYS_dma_vmo_create, %eax
+    syscall
+    ret
+    .size jam_dma_vmo_create, . - jam_dma_vmo_create
 
     .globl jam_klog_open
     .type jam_klog_open, @function

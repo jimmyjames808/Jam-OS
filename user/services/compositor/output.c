@@ -66,7 +66,7 @@ static status_t headless_image(int32_t w, int32_t h)
     handle_t vmo = startup_handle(SR_USER + 1);
     status_t st = OK;
     if (vmo == HANDLE_INVALID)
-        st = jam_vmo_create(mapped, 0, HANDLE_INVALID, &vmo);
+        st = jam_vmo_create(mapped, 0, &vmo);
     if (st == OK)
         st = jam_vmo_get_size(vmo, &size);
     if (st == OK && size < mapped)

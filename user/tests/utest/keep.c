@@ -88,7 +88,7 @@ bool t_keep_put_drop_restore(void)
     CHECK_ST(keeper_attach(&k, &svc), OK);
     CHECK_ST(jam_channel_create(&srv, &cli), OK);
     CHECK_ST(jam_channel_create(&srv2, &cli2), OK);
-    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &buf), OK);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &buf), OK);
     CHECK_ST(jam_vmo_write(buf, 0, "hello", 5), OK);
     CHECK_ST(jam_handle_duplicate(buf, RIGHT_READ | RIGHT_MAP | RIGHTS_BASIC, &ro), OK);
     CHECK_ST(jam_event_create(&ev), OK);
@@ -157,7 +157,7 @@ bool t_keep_restore_batches(void)
     for (uint32_t i = 0; i < 100; i++) {
         handle_t pair[2];
         CHECK_ST(jam_event_create(&pair[0]), OK);
-        CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &pair[1]), OK);
+        CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &pair[1]), OK);
         CHECK_ST(keep_put(svc, 1000 + i, pair, 2), OK);
         jam_handle_close(pair[0]);
         jam_handle_close(pair[1]);
@@ -328,13 +328,13 @@ static bool keep_kinds(handle_t svc)
     CHECK_ST(jam_event_create(&x), OK);         /* an event without RIGHT_SIGNAL */
     CHECK_ST(jam_handle_replace(x, RIGHTS_BASIC, &h), OK);
     CHECK(kept_kind(svc, h));
-    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &x), OK);   /* a read-only VMO */
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &x), OK);   /* a read-only VMO */
     CHECK_ST(jam_handle_replace(x, RIGHT_READ | RIGHTS_BASIC, &h), OK);
     CHECK(kept_kind(svc, h));
 
     /* A VMO nobody may duplicate: keep_put won't send it, and the keeper
      * refuses it when it comes anyway. */
-    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &x), OK);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &x), OK);
     CHECK_ST(jam_handle_replace(x, RIGHT_READ | RIGHT_TRANSFER, &h), OK);
     CHECK_ST(keep_put(svc, 1, &h, 1), ERR_ACCESS_DENIED);
     struct keep_msg m = { 0, KEEP_PUT, 1, 1 };

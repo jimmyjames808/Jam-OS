@@ -293,8 +293,8 @@ KTEST(vmo_kept_map_refusals)
     handle_table_init(&t);
     handle_t vh, kh, ph, nomap, ro;
     KT_EQ(sys_vmar_create(&t, &vh), OK);
-    KT_EQ(sys_vmo_create(&t, 2 * PG, VMO_KEEP_PAGES, HANDLE_INVALID, &kh), OK);
-    KT_EQ(sys_vmo_create(&t, 2 * PG, 0, HANDLE_INVALID, &ph), OK);
+    KT_EQ(sys_vmo_create(&t, 2 * PG, VMO_KEEP_PAGES, &kh), OK);
+    KT_EQ(sys_vmo_create(&t, 2 * PG, 0, &ph), OK);
     KT_EQ(handle_duplicate(&t, kh, RIGHTS_BASIC | RIGHT_READ, &nomap), OK);
     KT_EQ(handle_duplicate(&t, kh, RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP, &ro), OK);
     KT_EQ(sys_vmar_map(&t, vh, ph, 0, PG, R | KEPT, &a), ERR_WRONG_TYPE);

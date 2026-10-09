@@ -394,7 +394,7 @@ KTEST(m6r_pins_are_charged)
     struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
     KT_EQ(handle_insert(&t, &kh, &dev), OK);
     KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
-    KT_EQ(sys_vmo_create(&t, PG, 0, HANDLE_INVALID, &vh), OK);
+    KT_EQ(sys_vmo_create(&t, PG, 0, &vh), OK);
     KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
     uint64_t used = job_used(j, JOB_LIMIT_HANDLES);
     KT_EQ(job_set_limit(j, JOB_LIMIT_HANDLES, used + 64), OK);
@@ -448,7 +448,7 @@ KTEST(m6r_unpin_by_other_holder)
     KT_EQ(handle_insert(&td, &kh, &dev), OK);
     KT_EQ(sys_dma_cap_create(&td, dev, &cap), OK);
     KT_EQ(sys_dma_cap_bus_master(&td, cap, 1), OK);
-    KT_EQ(sys_vmo_create(&tc, PG, 0, HANDLE_INVALID, &vc), OK);
+    KT_EQ(sys_vmo_create(&tc, PG, 0, &vc), OK);
     struct kobject *vo;
     KT_EQ(handle_get(&tc, vc, OBJ_VMO, 0, &vo, NULL), OK);
     struct khandle kv = khandle_from_new(vo, RIGHTS_BASIC | RIGHTS_IO | RIGHT_MAP);

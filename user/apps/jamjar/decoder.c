@@ -32,7 +32,7 @@ uint8_t *decoder_buffer(void)
     if (D.in_map)
         return D.in_map;
     uint64_t addr = 0;
-    if (!D.in && jam_vmo_create(JAMCOVER_IN_BYTES, 0, HANDLE_INVALID, &D.in) != OK)
+    if (!D.in && jam_vmo_create(JAMCOVER_IN_BYTES, 0, &D.in) != OK)
         return NULL;
     if (jam_vmar_map(startup_handle(SR_SELF_VMAR), D.in, 0, JAMCOVER_IN_BYTES,
                      VMAR_READ | VMAR_WRITE, &addr) != OK)
@@ -84,7 +84,7 @@ static status_t helper_start(void)
 {
     if (!decoder_buffer())
         return ERR_NO_MEMORY;
-    status_t st = D.out ? OK : jam_vmo_create(JAMCOVER_OUT_BYTES, 0, HANDLE_INVALID, &D.out);
+    status_t st = D.out ? OK : jam_vmo_create(JAMCOVER_OUT_BYTES, 0, &D.out);
     if (st == OK)
         st = jam_job_create(startup_handle(SR_JOB), 0, &D.job);
     struct spawn_handle x[3];

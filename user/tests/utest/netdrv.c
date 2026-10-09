@@ -76,7 +76,7 @@ static status_t f_stats(void *ctx, uint8_t out_counts[256])
 static status_t ring(handle_t *vmo, void **map)
 {
     uint64_t va = 0;
-    status_t st = jam_vmo_create(NETDEV_RING_BYTES, 0, HANDLE_INVALID, vmo);
+    status_t st = jam_vmo_create(NETDEV_RING_BYTES, 0, vmo);
     if (st == OK)
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), *vmo, 0, NETDEV_RING_BYTES,
                           VMAR_READ | VMAR_WRITE, &va);

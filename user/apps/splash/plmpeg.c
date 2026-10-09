@@ -51,7 +51,7 @@ static void *plm_alloc(size_t n)
     if (i == MAX_BIGS)
         return NULL;
     handle_t v;
-    status_t st = jam_vmo_create(len, 0, HANDLE_INVALID, &v);
+    status_t st = jam_vmo_create(len, 0, &v);
     if (st == OK) {
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), v, 0, len, VMAR_READ | VMAR_WRITE, &addr);
         jam_handle_close(v);   /* the mapping keeps it */

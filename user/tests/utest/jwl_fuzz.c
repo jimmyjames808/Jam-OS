@@ -245,7 +245,7 @@ static uint8_t *guarded(void)
 {
     handle_t vmo, vmar = startup_handle(SR_SELF_VMAR);
     uint64_t addr;
-    if (jam_vmo_create(ROOM + PAGE_SIZE, 0, HANDLE_INVALID, &vmo) != OK)
+    if (jam_vmo_create(ROOM + PAGE_SIZE, 0, &vmo) != OK)
         return NULL;
     status_t st = jam_vmar_map(vmar, vmo, 0, ROOM + PAGE_SIZE, VMAR_READ | VMAR_WRITE, &addr);
     jam_handle_close(vmo);
@@ -311,7 +311,7 @@ static bool feed_conn(const uint8_t *b, size_t n, unsigned nh, uint32_t *seed, s
                                    .known = jt_known, .nknown = JT_NKNOWN };
     CHECK_ST(jwl_conn_create(&cfg, &sv), OK);
     for (unsigned i = 0; i < nh; i++)
-        CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &hs[i]), OK);
+        CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &hs[i]), OK);
     CHECK_ST(jam_channel_write(a, raw, (uint32_t)(n + 16), hs, nh), OK);
     struct jwl_msg m;
     status_t st;

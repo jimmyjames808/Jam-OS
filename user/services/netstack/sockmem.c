@@ -5,7 +5,7 @@ status_t sockmem_make(struct sockmem *m, struct sockring *r, uint32_t framing, u
                       uint32_t rx)
 {
     uint64_t va = 0, bytes = sockring_bytes(tx, rx);
-    status_t st = jam_vmo_create(bytes, 0, HANDLE_INVALID, &m->vmo);
+    status_t st = jam_vmo_create(bytes, 0, &m->vmo);
     if (st == OK)
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), m->vmo, 0, bytes,
                           VMAR_READ | VMAR_WRITE, &va);

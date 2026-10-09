@@ -110,7 +110,7 @@ static status_t send_keymap(struct fake *f)
     const char *text = f->keymap_text ? f->keymap_text : keymap_us.xkb;
     uint32_t size = (uint32_t)strlen(text) + 1;
     handle_t v, ro;
-    status_t st = jam_vmo_create(size, 0, HANDLE_INVALID, &v);
+    status_t st = jam_vmo_create(size, 0, &v);
     if (st == OK)
         st = jam_vmo_write(v, 0, text, size);
     if (st == OK)

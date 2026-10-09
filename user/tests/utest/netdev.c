@@ -35,7 +35,7 @@ static void ring_unmap(void *map)
 /* A new ring VMO, mapped. */
 static status_t ring_new(handle_t *vmo, void **map)
 {
-    status_t st = jam_vmo_create(NETDEV_RING_BYTES, 0, HANDLE_INVALID, vmo);
+    status_t st = jam_vmo_create(NETDEV_RING_BYTES, 0, vmo);
     if (st != OK)
         return st;
     st = ring_map(*vmo, map);

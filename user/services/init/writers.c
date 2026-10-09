@@ -12,7 +12,7 @@ void writers_init(void)
 {
     uint64_t addr = 0;
     struct process_info info;
-    status_t st = jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &page);
+    status_t st = jam_vmo_create(PAGE_SIZE, 0, &page);
     if (st == OK)
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), page, 0, PAGE_SIZE,
                           VMAR_READ | VMAR_WRITE, &addr);

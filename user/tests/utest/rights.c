@@ -45,7 +45,7 @@ bool t_root_powers(void)
     struct rtc_time rt;
     struct proc_stat ps;
     struct cpu_stat cs;
-    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &v), OK);
     CHECK((h = root_without(RIGHT_ROOT_KLOG)) != HANDLE_INVALID);
     CHECK_ST(jam_klog_open(h, &out), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_close(h), OK);
@@ -104,7 +104,7 @@ static bool own_copy(handle_t *vmo, uint64_t *size)
     const void *data;
     CHECK_ST(bootfs_default(&img), OK);
     CHECK_ST(bootfs_lookup(img, "bin/utest", &data, size), OK);
-    CHECK_ST(jam_vmo_create((*size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1), 0, HANDLE_INVALID, vmo),
+    CHECK_ST(jam_vmo_create((*size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1), 0, vmo),
              OK);
     CHECK_ST(jam_vmo_write(*vmo, 0, data, *size), OK);
     return true;

@@ -409,7 +409,7 @@ static status_t attach(struct fat_file *f, handle_t *out_ch, handle_t *out_vmo)
 {
     unsigned i = slot_of(f);
     handle_t client = HANDLE_INVALID, buf = HANDLE_INVALID;
-    status_t st = jam_vmo_create(FAT_FILE_BUF, 0, HANDLE_INVALID, &fh[i].vmo);
+    status_t st = jam_vmo_create(FAT_FILE_BUF, 0, &fh[i].vmo);
     if (st == OK)
         st = jam_handle_duplicate(fh[i].vmo, CLIENT_BUF_RIGHTS, &buf);
     if (st == OK)

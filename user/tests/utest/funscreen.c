@@ -31,7 +31,7 @@ static status_t fc_lend_screen(void *ctx, uint32_t *w, uint32_t *h, uint32_t *pi
     struct fakecon *fc = ctx;
     uint64_t bytes = (uint64_t)SCR_W * SCR_H * 4;
     handle_t vmo, theirs;
-    status_t st = jam_vmo_create(bytes, 0, HANDLE_INVALID, &vmo);
+    status_t st = jam_vmo_create(bytes, 0, &vmo);
     if (st != OK)
         return st;
     st = jam_channel_create(&fc->lease, &theirs);

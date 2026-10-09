@@ -114,7 +114,7 @@ static status_t start_compositor(const struct opts *o, struct comp *k)
 {
     uint64_t bytes = ((uint64_t)o->w * (uint64_t)o->h * 4 + 4095) & ~4095ull, addr = 0;
     handle_t mine = HANDLE_INVALID, theirs = HANDLE_INVALID, dup = HANDLE_INVALID;
-    status_t st = jam_vmo_create(bytes, 0, HANDLE_INVALID, &k->image);
+    status_t st = jam_vmo_create(bytes, 0, &k->image);
     if (st == OK)
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), k->image, 0, bytes, VMAR_READ, &addr);
     if (st == OK)

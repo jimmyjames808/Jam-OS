@@ -81,7 +81,7 @@ static uint64_t early_dropped;       /* dropped since the last were handed over 
 status_t keyboard_init(void)
 {
     uint64_t size = (keymap_us.xkb_size + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-    status_t st = jam_vmo_create(size, VMO_KEEP_PAGES, HANDLE_INVALID, &keymap_vmo);
+    status_t st = jam_vmo_create(size, VMO_KEEP_PAGES, &keymap_vmo);
     if (st == OK)
         st = jam_vmo_write(keymap_vmo, 0, keymap_us.xkb, keymap_us.xkb_size);
     return st;

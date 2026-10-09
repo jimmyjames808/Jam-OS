@@ -99,7 +99,7 @@ static int b_fault(void)
 {
     handle_t v, vmar = startup_handle(SR_SELF_VMAR);
     uint64_t pages = SAMPLES + 256, addr = 0;
-    if (jam_vmo_create(pages * 4096, 0, HANDLE_INVALID, &v) != OK ||
+    if (jam_vmo_create(pages * 4096, 0, &v) != OK ||
         jam_vmar_map(vmar, v, 0, pages * 4096, VMAR_READ | VMAR_WRITE, &addr) != OK)
         return 3;
     volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)addr;

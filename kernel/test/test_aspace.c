@@ -883,7 +883,7 @@ KTEST(vmar_sys_rights)
     KT_EQ(handle_get(&t, vh, OBJ_VMAR, 0, &obj, &r), OK);
     kobject_unref(obj);
     KT_EQ(r, RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE);
-    KT_EQ(sys_vmo_create(&t, 4 * PG, 0, HANDLE_INVALID, &h), OK);   /* READ WRITE MAP */
+    KT_EQ(sys_vmo_create(&t, 4 * PG, 0, &h), OK);   /* READ WRITE MAP */
     struct kobject *vref;
     KT_EQ(handle_get(&t, h, OBJ_VMO, 0, &vref, NULL), OK);
     struct vmo *v = vmo_from_kobject(vref);

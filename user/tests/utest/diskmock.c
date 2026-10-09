@@ -65,7 +65,7 @@ static status_t b_map_buffer(void *ctx, handle_t *buffer, uint32_t *size)
     struct dm_block *b = ctx;
     if (b->vmo)
         return ERR_BAD_STATE;
-    status_t st = jam_vmo_create(DM_BUFFER, 0, HANDLE_INVALID, &b->vmo);
+    status_t st = jam_vmo_create(DM_BUFFER, 0, &b->vmo);
     if (st == OK && (st = jam_handle_duplicate(b->vmo, RIGHT_SAME, buffer)) != OK) {
         jam_handle_close(b->vmo);
         b->vmo = HANDLE_INVALID;
@@ -238,7 +238,7 @@ bool dm_start(struct diskmock *m, uint8_t type1, uint8_t type2, handle_t *client
     uint64_t addr = 0;
     memset(m, 0, offsetof(struct diskmock, stack));
     /* a VMO of its own, not the heap: only the blocks written take memory */
-    CHECK_ST(jam_vmo_create(DM_BLOCKS * DM_BLOCK, 0, HANDLE_INVALID, &m->ram_vmo), OK);
+    CHECK_ST(jam_vmo_create(DM_BLOCKS * DM_BLOCK, 0, &m->ram_vmo), OK);
     CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), m->ram_vmo, 0, DM_BLOCKS * DM_BLOCK,
                           VMAR_READ | VMAR_WRITE, &addr), OK);
     m->ram = (uint8_t *)(uintptr_t)addr;

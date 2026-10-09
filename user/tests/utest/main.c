@@ -141,7 +141,7 @@ static bool t_rights(void)
     handle_t v, ro, ro2, x, vmar = startup_handle(SR_SELF_VMAR);
     uint64_t addr = 0;
     char buf[4];
-    CHECK_ST(jam_vmo_create(8192, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(8192, 0, &v), OK);
     CHECK_ST(jam_vmo_write(v, 0, "hi", 2), OK);
     CHECK_ST(jam_handle_duplicate(v, RIGHT_READ | RIGHT_MAP | RIGHT_DUPLICATE, &ro), OK);
     CHECK_ST(jam_vmo_write(ro, 0, "no", 2), ERR_ACCESS_DENIED);   /* a read-only handle */
@@ -201,7 +201,7 @@ static bool t_rights(void)
 static bool t_kexec_refusals(void)
 {
     handle_t root = startup_handle(SR_RESOURCE), v, rd, mapo, klog, m;
-    CHECK_ST(jam_vmo_create(8192, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(8192, 0, &v), OK);
     CHECK_ST(jam_kexec_load(v, v, v, NULL, 0, 0), ERR_WRONG_TYPE);   /* not a resource */
     CHECK_ST(jam_kexec_load(0x7fff0000u, v, v, NULL, 0, 0), ERR_BAD_HANDLE);
     CHECK_ST(jam_kexec_reboot(v), ERR_WRONG_TYPE);
@@ -256,7 +256,7 @@ static bool t_bad_pointers(void)
     CHECK_ST(jam_channel_call((const struct channel_call_args *)unmapped), ERR_INVALID_ARGS);
 
     handle_t v;
-    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(4096, 0, &v), OK);
     CHECK_ST(jam_vmo_read(v, 0, (void *)unmapped, 16), ERR_INVALID_ARGS);
     CHECK_ST(jam_vmo_write(v, 0, (const void *)kernel, 16), ERR_INVALID_ARGS);
     CHECK_ST(jam_vmo_get_size(v, NULL), ERR_INVALID_ARGS);
@@ -316,7 +316,7 @@ static bool t_wx(void)
 {
     handle_t v, vmar = startup_handle(SR_SELF_VMAR);
     uint64_t addr = 0;
-    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(4096, 0, &v), OK);
     CHECK_ST(jam_vmar_map(vmar, v, 0, 4096, VMAR_READ | VMAR_WRITE | VMAR_EXEC, &addr),
              ERR_INVALID_ARGS);
     CHECK_ST(jam_vmar_map(vmar, v, 0, 4096, VMAR_READ | VMAR_EXEC, &addr), ERR_ACCESS_DENIED);
@@ -484,7 +484,7 @@ static bool t_kernel_objects_are_charged(void)
 #define USED(k) (info_of(own_job(), &b) == OK ? b.used[k] - a.used[k] : 999999)
 
     handle_t v;
-    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(4096, 0, &v), OK);
     CHECK_EQ(USED(JOB_LIMIT_HANDLES), 2);   /* its slot and the VMO itself */
     CHECK_ST(jam_handle_close(v), OK);
     CHECK_EQ(USED(JOB_LIMIT_HANDLES), 0);

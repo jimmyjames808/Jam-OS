@@ -155,11 +155,6 @@ static int64_t call_port_wait(const struct syscall_frame *f)
     return sysc_port_wait((handle_t)f->args[0], f->args[1], f->args[2]);
 }
 
-static int64_t call_vmo_create(const struct syscall_frame *f)
-{
-    return sysc_vmo_create(f->args[0], (uint32_t)f->args[1], (handle_t)f->args[2], f->args[3]);
-}
-
 static int64_t call_vmo_read(const struct syscall_frame *f)
 {
     return sysc_vmo_read((handle_t)f->args[0], f->args[1], f->args[2], f->args[3]);
@@ -193,6 +188,11 @@ static int64_t call_vmo_decommit(const struct syscall_frame *f)
 static int64_t call_vmo_make_exec(const struct syscall_frame *f)
 {
     return sysc_vmo_make_exec((handle_t)f->args[0], (handle_t)f->args[1], f->args[2]);
+}
+
+static int64_t call_vmo_create(const struct syscall_frame *f)
+{
+    return sysc_vmo_create(f->args[0], (uint32_t)f->args[1], f->args[2]);
 }
 
 static int64_t call_vmar_map(const struct syscall_frame *f)
@@ -340,6 +340,11 @@ static int64_t call_vmo_unpin(const struct syscall_frame *f)
     return sysc_vmo_unpin((handle_t)f->args[0], (handle_t)f->args[1], f->args[2]);
 }
 
+static int64_t call_dma_vmo_create(const struct syscall_frame *f)
+{
+    return sysc_dma_vmo_create((handle_t)f->args[0], f->args[1], (uint32_t)f->args[2], f->args[3]);
+}
+
 static int64_t call_klog_open(const struct syscall_frame *f)
 {
     return sysc_klog_open((handle_t)f->args[0], f->args[1]);
@@ -475,7 +480,6 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_port_unbind] = call_port_unbind,
     [SYS_port_queue] = call_port_queue,
     [SYS_port_wait] = call_port_wait,
-    [SYS_vmo_create] = call_vmo_create,
     [SYS_vmo_read] = call_vmo_read,
     [SYS_vmo_write] = call_vmo_write,
     [SYS_vmo_get_size] = call_vmo_get_size,
@@ -483,6 +487,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_vmo_commit] = call_vmo_commit,
     [SYS_vmo_decommit] = call_vmo_decommit,
     [SYS_vmo_make_exec] = call_vmo_make_exec,
+    [SYS_vmo_create] = call_vmo_create,
     [SYS_vmar_map] = call_vmar_map,
     [SYS_vmar_unmap] = call_vmar_unmap,
     [SYS_vmar_protect] = call_vmar_protect,
@@ -510,6 +515,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_dma_cap_create] = call_dma_cap_create,
     [SYS_vmo_pin] = call_vmo_pin,
     [SYS_vmo_unpin] = call_vmo_unpin,
+    [SYS_dma_vmo_create] = call_dma_vmo_create,
     [SYS_klog_open] = call_klog_open,
     [SYS_klog_read] = call_klog_read,
     [SYS_framebuffer_take] = call_framebuffer_take,

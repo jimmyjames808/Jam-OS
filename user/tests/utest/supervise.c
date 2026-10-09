@@ -373,10 +373,10 @@ bool t_driver_handle_limits(void)
     CHECK_ST(jam_handle_close(ca), OK);
     CHECK_ST(jam_handle_close(cb), OK);
     /* No dma_cap: no DMA memory, no pins. */
-    CHECK_ST(jam_vmo_create(4096, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, HANDLE_INVALID, &x),
-             ERR_ACCESS_DENIED);
-    CHECK_ST(jam_vmo_create(4096, DRV_VMO_DMA32, dev, &x), ERR_ACCESS_DENIED);
-    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(4096, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, &x), ERR_INVALID_ARGS);
+    CHECK_ST(jam_dma_vmo_create(HANDLE_INVALID, 4096, DRV_VMO_DMA32, &x), ERR_BAD_HANDLE);
+    CHECK_ST(jam_dma_vmo_create(dev, 4096, DRV_VMO_DMA32, &x), ERR_WRONG_TYPE);
+    CHECK_ST(jam_vmo_create(4096, 0, &v), OK);
     uint64_t addr = 0, pin = 0;
     CHECK_ST(jam_vmo_pin(v, HANDLE_INVALID, 0, 4096, &addr, &pin), ERR_BAD_HANDLE);
     CHECK_ST(jam_vmo_pin(v, dev, 0, 4096, &addr, &pin), ERR_WRONG_TYPE);

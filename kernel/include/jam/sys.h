@@ -135,14 +135,18 @@ status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
 /* VMOs ------------------------------------------------------------------------
  * (kernel/abi/vmo_sys.c; semantics as in <jam/vmo.h>) */
 
-/* New VMO (vmo_create flags); the handle gets
- * RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE. VMO_CONTIGUOUS /
- * VMO_DMA32 require dma_cap to name a valid OBJ_DMA_CAP handle
- * (ERR_ACCESS_DENIED otherwise); for other flags dma_cap is ignored. Its
- * pages are charged to t's job (vmo_create_for: a VMO_KEEP_PAGES one's all
- * before this returns). */
-status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
-                        handle_t dma_cap, handle_t *out);
+/* New VMO; the handle gets
+ * RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE. flags: 0
+ * or VMO_KEEP_PAGES (anything else, VMO_CONTIGUOUS and VMO_DMA32 included,
+ * is ERR_INVALID_ARGS: those are sys_dma_vmo_create's). Its pages are
+ * charged to t's job (vmo_create_for: a VMO_KEEP_PAGES one's all before
+ * this returns). */
+status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags, handle_t *out);
+/* The same for a driver: flags any of VMO_CONTIGUOUS and VMO_DMA32 (scarce
+ * memory: anything else is ERR_INVALID_ARGS), and `dma` must name a
+ * dma_cap. */
+status_t sys_dma_vmo_create(struct handle_table *t, handle_t dma, uint64_t size, uint32_t flags,
+                            handle_t *out);
 status_t sys_vmo_read(struct handle_table *t, handle_t h, uint64_t offset, void *buf,
                       uint64_t len);                                        /* RIGHT_READ */
 status_t sys_vmo_write(struct handle_table *t, handle_t h, uint64_t offset, const void *buf,

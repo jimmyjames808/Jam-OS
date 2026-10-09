@@ -87,7 +87,7 @@ static void pair_down(struct pair *p)
 static handle_t new_vmo(void)
 {
     handle_t h = HANDLE_INVALID;
-    (void)jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &h);   /* checked by its user */
+    (void)jam_vmo_create(PAGE_SIZE, 0, &h);   /* checked by its user */
     return h;
 }
 

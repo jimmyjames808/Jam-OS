@@ -60,7 +60,7 @@ void *big_alloc(uint64_t bytes)
 {
     bytes = (bytes + 4095) & ~4095ull;
     handle_t v;
-    if (jam_vmo_create(bytes, 0, HANDLE_INVALID, &v) != OK)
+    if (jam_vmo_create(bytes, 0, &v) != OK)
         return NULL;
     uint64_t addr = 0;
     status_t st = jam_vmar_map(startup_handle(SR_SELF_VMAR), v, 0, bytes, VMAR_READ | VMAR_WRITE,

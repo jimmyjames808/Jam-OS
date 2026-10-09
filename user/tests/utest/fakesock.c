@@ -73,7 +73,7 @@ bool fnet_open(struct fnet *f, uint32_t n)
 {
     *f = (struct fnet){ .n = n, .bytes = n * SOCK_BYTES };
     CHECK(n && n <= FAKE_SOCKS);
-    CHECK_ST(jam_vmo_create(f->bytes, 0, HANDLE_INVALID, &f->vmo), OK);
+    CHECK_ST(jam_vmo_create(f->bytes, 0, &f->vmo), OK);
     uint64_t va = 0;
     CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), f->vmo, 0, f->bytes,
                           VMAR_READ | VMAR_WRITE, &va), OK);

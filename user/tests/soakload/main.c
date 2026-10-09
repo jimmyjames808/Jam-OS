@@ -209,7 +209,7 @@ static void memory_round(uint64_t *seed)
     uint64_t pages = 1 + rnd(seed) % 32, size = pages * PAGE_SIZE, addr = 0;
     uint64_t tag = rnd(seed);
     handle_t vmo, vmar = startup_handle(SR_SELF_VMAR);
-    status_t st = jam_vmo_create(size, 0, HANDLE_INVALID, &vmo);
+    status_t st = jam_vmo_create(size, 0, &vmo);
     if (st != OK) {
         failed("vmo_create", "memory", st);
         return;

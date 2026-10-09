@@ -95,15 +95,18 @@
 44  port_wait         status    handle_t port, uint64_t deadline_ns, struct port_packet *out
 
 # VMOs ----------------------------------------------------------------------
-# vmo_create flags: VMO_CONTIGUOUS / VMO_DMA32 (bits 0, 1: drivers,
-# with a dma_cap) and VMO_KEEP_PAGES (bit 2, <jam/abi.h>): every page
-# committed at creation and charged to the creator's job (ERR_NO_MEMORY, no
-# VMO, if the job can't pay for all of them), and none ever leaves:
-# vmo_decommit and a shrinking vmo_set_size are ERR_BAD_STATE for every
-# handle, a growing vmo_set_size commits the new pages before it returns
-# (ERR_NO_MEMORY with the size unchanged if it can't). Not with bits 0-1
-# (ERR_INVALID_ARGS). No VMO has a clone or copy-on-write child.
-50  vmo_create        status    uint64_t size, uint32_t flags, handle_t dma_cap, handle_t *out
+# vmo_create: a VMO of size bytes (rounded up to pages; VMO_MAX_SIZE at
+# most, ERR_OUT_OF_RANGE past it), its pages charged to the creator's job.
+# flags: 0 or VMO_KEEP_PAGES (<jam/abi.h>): every page committed at
+# creation and charged then (ERR_NO_MEMORY, no VMO, if the job can't pay
+# for all of them), and none ever leaves: vmo_decommit and a shrinking
+# vmo_set_size are ERR_BAD_STATE for every handle, a growing vmo_set_size
+# commits the new pages before it returns (ERR_NO_MEMORY with the size
+# unchanged if it can't). Any other bit is ERR_INVALID_ARGS: contiguous and
+# below-4-GiB memory is dma_vmo_create's. No VMO has a clone or
+# copy-on-write child. (Number 50 was vmo_create with a dma_cap argument
+# until M12: retired.)
+58  vmo_create        status    uint64_t size, uint32_t flags, handle_t *out
 51  vmo_read          status    handle_t h, uint64_t offset, void *buf, uint64_t len
 52  vmo_write         status    handle_t h, uint64_t offset, const void *buf, uint64_t len
 53  vmo_get_size      status    handle_t h, uint64_t *size
@@ -184,6 +187,10 @@
 100 dma_cap_create    status    handle_t dev, handle_t *out
 101 vmo_pin           status    handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t *addrs, uint64_t *pin_id
 102 vmo_unpin         status    handle_t vmo, handle_t dma, uint64_t pin_id
+# vmo_create for a driver: flags VMO_CONTIGUOUS and VMO_DMA32 (either,
+# both or none; any other bit is ERR_INVALID_ARGS), memory its device
+# reaches by DMA, which the dma_cap `dma` lets it ask for.
+103 dma_vmo_create    status    handle_t dma, uint64_t size, uint32_t flags, handle_t *out
 
 # console services ----------------------------------------------------------
 # Rights are on a RES_ROOT handle: each call that takes the root needs its

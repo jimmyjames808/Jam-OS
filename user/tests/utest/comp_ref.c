@@ -18,7 +18,7 @@ static bool cp_map_image(struct cp_run *r, handle_t *theirs)
     uint64_t size = ((uint64_t)CP_W * CP_H * 4 + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
     handle_t v;
     uint64_t addr = 0;
-    CHECK_ST(jam_vmo_create(size, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(size, 0, &v), OK);
     CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), v, 0, size, VMAR_READ, &addr), OK);
     CHECK_ST(jam_handle_duplicate(v, RIGHT_SAME, theirs), OK);
     jam_handle_close(v);

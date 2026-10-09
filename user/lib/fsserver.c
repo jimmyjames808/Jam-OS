@@ -81,7 +81,7 @@ status_t fsserver_open(struct fsserver *s, void *ctx, bool writable, handle_t *c
     handle_t their_buf = HANDLE_INVALID;
     status_t st = jam_channel_create(&mine, &theirs);
     if (st == OK)
-        st = jam_vmo_create(FSSERVER_BUF_SIZE, 0, HANDLE_INVALID, &buf);
+        st = jam_vmo_create(FSSERVER_BUF_SIZE, 0, &buf);
     if (st == OK)
         st = jam_handle_duplicate(buf, BUF_RIGHTS | (writable ? RIGHT_WRITE : 0), &their_buf);
     if (st == OK)

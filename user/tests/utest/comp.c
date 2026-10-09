@@ -69,7 +69,7 @@ bool ct_image_for(struct ct_comp *p, handle_t *theirs)
     uint64_t size = ((uint64_t)p->w * (uint64_t)p->h * 4 + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     handle_t v;
     uint64_t addr = 0;
-    CHECK_ST(jam_vmo_create(size, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(size, 0, &v), OK);
     CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), v, 0, size, VMAR_READ, &addr), OK);
     CHECK_ST(jam_handle_duplicate(v, RIGHT_SAME, theirs), OK);
     jam_handle_close(v);
@@ -318,7 +318,7 @@ bool ct_bind_all(struct ct_client *k)
 handle_t ct_kept_vmo(uint64_t size)
 {
     handle_t h = HANDLE_INVALID;
-    (void)jam_vmo_create(size, VMO_KEEP_PAGES, HANDLE_INVALID, &h);   /* checked by the caller */
+    (void)jam_vmo_create(size, VMO_KEEP_PAGES, &h);   /* checked by the caller */
     return h;
 }
 

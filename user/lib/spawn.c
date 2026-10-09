@@ -87,7 +87,7 @@ static status_t load_segment(handle_t vmar, const struct image *img, const struc
                             perms | VMAR_FIXED, &addr);
     }
     handle_t v;
-    status_t st = jam_vmo_create(hi - lo, 0, HANDLE_INVALID, &v);
+    status_t st = jam_vmo_create(hi - lo, 0, &v);
     if (st != OK)
         return st;
     if (ph->filesz)
@@ -131,7 +131,7 @@ static status_t make_stack(handle_t vmar, uint64_t *top)
 {
     uint64_t size = (STACK_PAGES + 1) * PAGE_SIZE, base = STACK_TOP - size, addr = base;
     handle_t v;
-    status_t st = jam_vmo_create(size, 0, HANDLE_INVALID, &v);
+    status_t st = jam_vmo_create(size, 0, &v);
     if (st != OK)
         return st;
     st = jam_vmar_map(vmar, v, 0, size, VMAR_READ | VMAR_WRITE | VMAR_FIXED, &addr);

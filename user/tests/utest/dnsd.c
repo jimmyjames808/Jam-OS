@@ -67,7 +67,7 @@ static status_t rings_new(handle_t hs[3])
 {
     uint64_t va = 0, bytes = sockring_bytes(SOCKRING_UDP_TX, SOCKRING_UDP_RX);
     rings_drop();
-    status_t st = jam_vmo_create(bytes, 0, HANDLE_INVALID, &F.vmo);
+    status_t st = jam_vmo_create(bytes, 0, &F.vmo);
     if (st == OK)
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), F.vmo, 0, bytes,
                           VMAR_READ | VMAR_WRITE, &va);

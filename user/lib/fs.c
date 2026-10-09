@@ -184,7 +184,7 @@ status_t file_read_vmo(const char *path, uint64_t max_size, handle_t *vmo, uint6
         st = ERR_OUT_OF_RANGE;
     if (st == OK) {
         uint64_t pages = (total + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-        st = jam_vmo_create(pages ? pages : PAGE_SIZE, 0, HANDLE_INVALID, &v);
+        st = jam_vmo_create(pages ? pages : PAGE_SIZE, 0, &v);
     }
     while (st == OK && off < total) {
         uint32_t want = total - off < f.buf_size ? (uint32_t)(total - off) : f.buf_size;

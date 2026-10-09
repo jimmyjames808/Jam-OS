@@ -119,7 +119,7 @@ static bool pool_with(struct ct_client *k, handle_t h, int32_t size)
 static bool bad_plain_vmo(struct ct_client *k, uint32_t *obj, uint32_t *code)
 {
     handle_t v;
-    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &v), OK);
     handle_t d = ct_dup_for_pool(v);
     jam_handle_close(v);
     *obj = k->shm;

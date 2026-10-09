@@ -109,7 +109,7 @@ static status_t io_begin(void *ctx, const struct update_manifest *m, const uint8
     f->parts = UPDATE_FILES + (m->has_menu ? 1u : 0u);
     for (unsigned i = 0; i < f->parts; i++) {
         uint64_t pages = (m->file[i].size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-        status_t st = jam_vmo_create(pages, 0, HANDLE_INVALID, &f->vmo[i]);
+        status_t st = jam_vmo_create(pages, 0, &f->vmo[i]);
         if (st != OK)
             return st;
         f->size[i] = m->file[i].size;

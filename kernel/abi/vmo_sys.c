@@ -28,21 +28,10 @@ static void vmo_put(struct vmo *v)
     kobject_unref(vmo_kobject(v));
 }
 
-status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
-                        handle_t dma_cap, handle_t *out)
+/* A VMO for t (flags already checked): its pages charged to t's job (none
+ * for a kernel table), a VMO_KEEP_PAGES one's all at once, here. */
+static status_t create(struct handle_table *t, uint64_t size, uint32_t flags, handle_t *out)
 {
-    /* VMO_CONTIGUOUS / VMO_DMA32 hand out scarce contiguous / sub-4 GiB
-     * memory, so a caller of the sys layer must present a DMA capability to
-     * ask for them. The kernel-internal vmo_create stays unrestricted:
-     * kernel code is trusted to ask only for what it needs. */
-    if (flags & (VMO_CONTIGUOUS | VMO_DMA32)) {
-        struct kobject *cap;
-        if (handle_get(t, dma_cap, OBJ_DMA_CAP, 0, &cap, NULL) != OK)
-            return ERR_ACCESS_DENIED;
-        kobject_unref(cap);
-    }
-    /* Its pages are charged to the creating table's job (none for a
-     * kernel table); a VMO_KEEP_PAGES one's all at once, here. */
     struct vmo *v;
     status_t st = vmo_create_for(t->job, size, flags, &v);
     if (st != OK)
@@ -52,6 +41,30 @@ status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags,
     if (st != OK)
         khandle_release(&kh);   /* destroys the VMO */
     return st;
+}
+
+status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags, handle_t *out)
+{
+    if (flags & ~VMO_KEEP_PAGES)
+        return ERR_INVALID_ARGS;   /* VMO_CONTIGUOUS, VMO_DMA32: sys_dma_vmo_create */
+    return create(t, size, flags, out);
+}
+
+/* VMO_CONTIGUOUS / VMO_DMA32 hand out scarce contiguous / sub-4 GiB
+ * memory, so a caller of the sys layer must present a DMA capability to
+ * ask for them. The kernel-internal vmo_create stays unrestricted: kernel
+ * code is trusted to ask only for what it needs. */
+status_t sys_dma_vmo_create(struct handle_table *t, handle_t dma, uint64_t size, uint32_t flags,
+                            handle_t *out)
+{
+    if (flags & ~(VMO_CONTIGUOUS | VMO_DMA32))
+        return ERR_INVALID_ARGS;
+    struct kobject *cap;
+    status_t st = handle_get(t, dma, OBJ_DMA_CAP, 0, &cap, NULL);
+    if (st != OK)
+        return st;
+    kobject_unref(cap);
+    return create(t, size, flags, out);
 }
 
 status_t sys_vmo_read(struct handle_table *t, handle_t h, uint64_t offset, void *buf,

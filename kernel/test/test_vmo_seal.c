@@ -139,7 +139,7 @@ static void mx_setup(struct handle_table *t, handle_t *h, handle_t *root)
     kobject_ref(r);
     struct khandle kr = khandle_from_new(r, RIGHTS_BASIC | RIGHT_ROOT_VMEX);
     KT_EQ(handle_insert(t, &kr, root), OK);
-    KT_EQ(sys_vmo_create(t, PG, 0, HANDLE_INVALID, h), OK);
+    KT_EQ(sys_vmo_create(t, PG, 0, h), OK);
     KT_EQ(sys_vmo_write(t, *h, 0, "a", 1), OK);
     struct kobject *obj;
     KT_EQ(handle_get(t, *h, OBJ_VMO, 0, &obj, NULL), OK);

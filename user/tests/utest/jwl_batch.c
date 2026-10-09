@@ -27,7 +27,7 @@ static void header(struct jt_wr *w, uint32_t magic, uint32_t acked, uint32_t nfd
 static handle_t vmo(void)
 {
     handle_t h = HANDLE_INVALID;
-    (void)jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &h);   /* HANDLE_INVALID fails the write */
+    (void)jam_vmo_create(PAGE_SIZE, 0, &h);   /* HANDLE_INVALID fails the write */
     return h;
 }
 

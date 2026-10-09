@@ -79,7 +79,7 @@ static status_t menu_copy(const struct build *b, uint64_t n, uint64_t flip, hand
     if (st == OK && flip < len)
         buf[flip] ^= 0x20;
     if (st == OK)
-        st = jam_vmo_create(n, 0, HANDLE_INVALID, out);
+        st = jam_vmo_create(n, 0, out);
     if (st == OK)
         st = jam_vmo_write(*out, 0, buf, n);
     free(buf);

@@ -54,7 +54,7 @@ status_t svcstate_create(uint64_t size, handle_t *out)
 {
     if (!size || size > SVCSTATE_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
-    return jam_vmo_create(page_up(size), 0, HANDLE_INVALID, out);
+    return jam_vmo_create(page_up(size), 0, out);
 }
 
 status_t svcstate_give(handle_t state, handle_t *out)

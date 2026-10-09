@@ -60,7 +60,7 @@ status_t jwl_pool_create(struct jwl_client *c, uint64_t size, struct jwl_pool **
     if (!p)
         return ERR_NO_MEMORY;
     uint64_t addr = 0;
-    status_t st = jam_vmo_create(size, VMO_KEEP_PAGES, HANDLE_INVALID, &p->vmo);
+    status_t st = jam_vmo_create(size, VMO_KEEP_PAGES, &p->vmo);
     if (st == OK) {
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), p->vmo, 0, size, VMAR_READ | VMAR_WRITE,
                           &addr);

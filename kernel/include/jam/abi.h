@@ -112,9 +112,9 @@ struct port_packet {
 #define PORT_BIND_PERSISTENT 1   /* fire on every not-matching -> matching edge */
 
 /* VMOs ------------------------------------------------------------------------
- * vmo_create flags. Bits 0 and 1 are for drivers, with a dma_cap
- * (<jam/driver.h> also calls them DRV_VMO_*): memory a device reaches by
- * DMA. */
+ * VMO flags. Bits 0 and 1 are dma_vmo_create's, for drivers (a dma_cap
+ * lets them ask; <jam/driver.h> also calls them DRV_VMO_*): memory a
+ * device reaches by DMA. vmo_create takes only VMO_KEEP_PAGES. */
 
 /* Physically contiguous, committed (zeroed) at creation, at most
  * VMO_CONTIGUOUS_MAX bytes. */

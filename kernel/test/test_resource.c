@@ -275,7 +275,7 @@ KTEST(resource_sys_rights_and_charges)
     struct khandle ck = khandle_from_new(ucap, RIGHTS_BASIC);
     handle_t caph, rv;
     KT_EQ(handle_insert(&t, &ck, &caph), OK);
-    KT_EQ(sys_vmo_create(&t, 2 * PG, 0, HANDLE_INVALID, &rv), OK);
+    KT_EQ(sys_vmo_create(&t, 2 * PG, 0, &rv), OK);
     uint64_t addrs[2], pin;
     KT_EQ(sys_vmo_pin(&t, rv, caph, 0, 2 * PG, addrs, &pin), ERR_ACCESS_DENIED);
     KT_EQ(sys_vmo_pin(&t, rv, caph, 0, (VMO_PIN_MAX_PAGES + 1) * PG, addrs, &pin),
@@ -767,7 +767,7 @@ KTEST(resource_dma_close_clears_bus_master)
 
     KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
     KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & CMD_BME));   /* a new cap starts with it off */
-    KT_EQ(sys_vmo_create(&t, 2 * PG, VMO_CONTIGUOUS | VMO_DMA32, cap, &vh), OK);
+    KT_EQ(sys_dma_vmo_create(&t, cap, 2 * PG, VMO_CONTIGUOUS | VMO_DMA32, &vh), OK);
     uint64_t addrs[2], id;
     KT_EQ(sys_vmo_pin(&t, vh, cap, 0, 2 * PG, addrs, &id), ERR_BAD_STATE);   /* BME off */
     KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
