@@ -57,6 +57,7 @@ static bool nvme_storage(handle_t *out)
 struct disk {
     uint32_t bs, parts;
     uint64_t blocks;
+    bool     skip;     /* not a GPT disk with two partitions or more: not the test's */
 };
 
 static bool disk_info(handle_t s, struct disk *d)
@@ -67,8 +68,12 @@ static bool disk_info(handle_t s, struct disk *d)
     CHECK_ST(storage_info_within(s, WAIT, vendor, &vl, product, &pl, &d->bs, &d->blocks, &scheme,
                                  &d->parts, &mbr_id, guid), OK);
     CHECK(d->bs == 512 || d->bs == 4096);
-    CHECK_EQ(scheme, STORAGE_SCHEME_GPT);
-    CHECK(d->parts >= 2);
+    d->skip = scheme != STORAGE_SCHEME_GPT || d->parts < 2;
+    if (d->skip) {
+        printf("utest: %s: the NVMe drive has no GPT with two partitions (scheme %u, %u "
+               "partitions): skipped\n", utest_cur, scheme, d->parts);
+        jam_handle_close(s);
+    }
     return true;
 }
 
@@ -144,6 +149,8 @@ bool t_nvme_storage(void)
         return true;
     if (!disk_info(s, &d))
         return false;
+    if (d.skip)
+        return true;
     /* The ESP first, as the PC's; past the last: refused. */
     uint8_t mbr_type, type[16], uniq[16];
     uint64_t start, blocks, attr;
@@ -216,6 +223,8 @@ bool t_nvme_block(void)
         return true;
     if (!disk_info(s, &d))
         return false;
+    if (d.skip)
+        return true;
     /* A channel with no buffer yet. */
     CHECK_ST(storage_open_partition_within(s, WAIT, 1, 1, &bare), OK);
     CHECK_ST(block_read_within(bare, WAIT, 0, 1, 0), ERR_BAD_STATE);
@@ -274,6 +283,8 @@ bool t_nvme_inflight(void)
         return true;
     if (!disk_info(s, &d))
         return false;
+    if (d.skip)
+        return true;
     const uint8_t *map;
     if (!open_ro(s, 0, &blk, &map))
         return false;
@@ -323,6 +334,8 @@ bool t_nvme_fence(void)
         return true;
     if (!disk_info(s, &d))
         return false;
+    if (d.skip)
+        return true;
     /* The leaving client: 32 reads of a whole buffer each, sent; once the
      * first is answered (the drive is busy with the rest) it goes. */
     const uint8_t *ma, *mb;
