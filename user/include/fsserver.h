@@ -14,7 +14,9 @@
  * (ERR_NO_RESOURCES past that), each with a buffer of FSSERVER_BUF_SIZE
  * bytes charged to the service's job. A client that floods one channel
  * gets FSSERVER_ROUND requests answered, then the other channels their
- * turn. */
+ * turn; one that leaves its protocol's bound of answers unread
+ * (tools/genidl.py, "The unread bound") gets nothing more until it reads
+ * them. */
 #pragma once
 
 #include <fs_idl.h>
@@ -28,6 +30,7 @@ struct fsserver_file {
     handle_t ch;      /* our end of its `file` channel (0: a free slot) */
     handle_t buf;     /* its transfer buffer: read with jam_vmo_read, filled with jam_vmo_write */
     void    *ctx;     /* the service's own state for the file */
+    bool     held;    /* the loop's: its client is behind (the unread bound) */
 };
 
 struct fsserver {
@@ -42,6 +45,8 @@ struct fsserver {
     handle_t              fs[FSSERVER_MAX_FS];         /* our ends (0: a free slot) */
     uint32_t              fs_flags[FSSERVER_MAX_FS];   /* each one's view flags (FS_VIEW_*) */
     bool                  fs_view[FSSERVER_MAX_FS];    /* made by fs.view, not fsserver_add_fs */
+    bool                  fs_held[FSSERVER_MAX_FS];    /* its clients are behind (unread bound) */
+    struct idl_held       held;                        /* how many, and when to look again */
     struct fsserver_file  files[FSSERVER_MAX_FILES];   /* the open files */
 };
 
