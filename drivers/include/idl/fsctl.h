@@ -4,7 +4,9 @@
  * fsctl: a filesystem service's control channel, served by fat
  * (user/services/fat) to whoever started it with one (<fatsvc.h>:
  * FAT_SR_CTL): volumes, which keeps the client end to itself. What it allows
- * is not for a filesystem's clients, so it is not part of `fs`.
+ * is not for a filesystem's clients, so it is not part of `fs`. No message
+ * carries a handle, and volumes marks both ends so (channel_set_flags'
+ * CHANNEL_NO_HANDLES): neither queue can hold a channel end.
  * Format: see tools/genidl.py.
  *
  * Restart: this channel is not kept: volumes makes a new one for each

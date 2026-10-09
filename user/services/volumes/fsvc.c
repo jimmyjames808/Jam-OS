@@ -142,14 +142,22 @@ status_t fs_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigne
     x[*n] = (struct spawn_handle){ FAT_SR_BLOCK, blk };
     xr[(*n)++] = FAT_CHAN_RIGHTS;   /* not to be passed on */
     /* Its control channel: ours alone, a new one for every start. Without
-     * one the service can still be synced and killed. */
-    handle_t theirs;
+     * one the service can still be synced and killed. Neither end takes a
+     * handle (no fsctl message carries one), so neither queue can ever
+     * hold a channel end (M12's D2). */
+    handle_t ours = HANDLE_INVALID, theirs = HANDLE_INVALID;
     fs_ctl_close(b);
-    if (jam_channel_create(&b->ctl, &theirs) == OK) {
+    if (jam_channel_create(&ours, &theirs) == OK &&
+        jam_channel_set_flags(theirs, CHANNEL_NO_HANDLES) == OK &&
+        jam_channel_set_flags(ours, CHANNEL_NO_HANDLES) == OK) {
+        b->ctl = ours;
         x[*n] = (struct spawn_handle){ FAT_SR_CTL, theirs };
         xr[(*n)++] = FAT_CHAN_RIGHTS;
     } else {
-        b->ctl = HANDLE_INVALID;
+        if (ours)
+            jam_handle_close(ours);
+        if (theirs)
+            jam_handle_close(theirs);
     }
     fs_kept_handles(b, x, xr, n);   /* SR_STATE, SR_KEEP */
     return OK;
