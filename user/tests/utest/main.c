@@ -1055,6 +1055,7 @@ static const struct {
     { "conwin_keys", t_conwin_keys },
     { "conwin_pointer", t_conwin_pointer },
     { "conwin_pointer_shape", t_conwin_pointer_shape },
+    { "con_hostile_compositor", t_con_hostile_compositor },
     { "jwlc_real_compositor", t_jwlc_real_compositor },
     { "jwlc_restore", t_jwlc_restore },
     { "jwlc_clip", t_jwlc_clip },
