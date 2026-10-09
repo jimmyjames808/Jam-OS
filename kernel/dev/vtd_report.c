@@ -99,8 +99,8 @@ static void report_faults(void)
 void iommu_report(void)
 {
     if (!iommu_translating() && !irq_remap_on()) {
-        kprintf("iommu: DMA translation and interrupt remapping are off (booted without "
-                "iommu=on)\n");
+        kprintf("iommu: DMA translation and interrupt remapping are off (iommu=off, or no "
+                "VT-d unit started)\n");
         return;
     }
     kprintf("iommu: DMA translation %s, interrupt remapping %s\n",

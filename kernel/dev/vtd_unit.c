@@ -4,9 +4,9 @@
  * flushes for tables the unit reads without snooping, and the callbacks
  * vtd_pt and vtd_ir take.
  *
- * Off by default: without the boot word `iommu=on` nothing here writes a
- * VT-d register; the probe's lines are the only trace of VT-d in a boot.
- * With it, each unit the probe could read gets its invalidation queue
+ * On by default: only with the boot word `iommu=off` does nothing here
+ * write a VT-d register (the probe's lines are then the only trace of VT-d
+ * in a boot). Otherwise each unit the probe could read gets its invalidation queue
  * (vtd_qi.c) and its fault interrupt (vtd_fault.c), in that order, so a
  * queue error found while the fault interrupt is set up is already
  * handled. A unit that fails to start is reported and left alone; the

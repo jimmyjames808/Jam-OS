@@ -3,7 +3,7 @@
  * "Revision 2").
  *
  * At boot the kernel reserves a physically contiguous region of RAM
- * (crashkernel=<MiB>, default 32, below 4 GiB) and unmaps it: the HHDM
+ * (crashkernel=<MiB>, default 48, below 4 GiB) and unmaps it: the HHDM
  * skips it (BOOT_MEM_FOREIGN) and nothing else maps it, so no wild write
  * can reach it. Into it goes the stored kernel, a ready-to-run copy of
  * the kernel and bootfs this boot started from (the boot modules: Limine

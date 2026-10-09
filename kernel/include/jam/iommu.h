@@ -2,8 +2,8 @@
  * kernel/dev/vtd_*.c) without its formats. The design is
  * docs/M11-PLAN.md; the hardware's model is in kernel/dev/vtd_domain.h.
  *
- * Everything here is behind the boot word `iommu=on` (off by default).
- * Without it, or on a machine with no VT-d unit, no function changes
+ * On by default (since 2026-10-07); the boot word `iommu=off` turns it off.
+ * With that word, or on a machine with no VT-d unit, no function changes
  * anything: iommu_translating() is false, the boot calls return at once,
  * iommu_domain_create says ERR_NOT_SUPPORTED (the caller keeps today's
  * behaviour: physical addresses, the pin quarantine) and the jump call
@@ -82,7 +82,7 @@ bool iommu_translating(void);
  * counters and faults), the domains each covered function's context entry
  * names and their mapped page counts, the per-requester DMA fault counts,
  * and the interrupt remapping table's entries in use. Says so and stops
- * when no unit translates (booted without iommu=on). Thread context; takes
+ * when no unit translates (iommu=off, or no unit). Thread context; takes
  * each unit's context mutex while it reads. */
 void iommu_report(void);
 

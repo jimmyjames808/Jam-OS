@@ -246,7 +246,7 @@ Every driver and service is a userspace process from the start.
   the highest, is taken out of the memory map right after the early
   allocator starts (`pmm_early_alloc_low`) and never given back; after the
   startup it holds a halt stub.
-- **The stored kernel's region** (32 MiB below 4 GiB by default,
+- **The stored kernel's region** (48 MiB below 4 GiB by default,
   `crashkernel=<MiB>`) is taken out of the memory map before the PMM
   starts and typed `BOOT_MEM_FOREIGN`: RAM nobody may map as MMIO, but not
   the PMM's, not in the HHDM and in no other mapping
@@ -830,7 +830,7 @@ Rules for userspace drivers:
   (Fuchsia's BTI quarantine): the pages stay, charged to their VMO's job,
   until 1 s after the function's next driver turned bus mastering on, or
   30 s if none does; a page the device wrote meanwhile is logged. With
-  the boot word `iommu=on` (not yet the default) there is no quarantine:
+  the IOMMU on (the default; not with `iommu=off`) there is no quarantine:
   a new cap points its function at its own empty domain in the same step
   that turns Bus Master Enable off, and a closed cap's pins are freed as
   soon as the IOMMU confirms its domain is gone
@@ -1203,9 +1203,7 @@ firmware left on) is the only trace, and DMA works as before the IOMMU
   never per transfer. A device's access to a page not in the unit's IOTLB
   costs a table walk in the unit.
 
-What it doesn't do (yet): read-only pins (a device that only reads a
-buffer still gets a writable mapping: M12's system call review);
-addresses other than the physical ones; device TLBs (ATS) and scalable
+What it doesn't do (yet): addresses other than the physical ones; device TLBs (ATS) and scalable
 mode, which nothing here needs. QEMU's unit can't show a missing cache
 flush (it reads guest memory directly) and passes old-format interrupt
 writes through, so the table coherence and the blocked 0xfee00000 write
@@ -2692,7 +2690,7 @@ and says so: a line in the shell, a notice on the desktop. Code in
 `kernel/kexec/`; the plan, with the layout and the
 decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 2").
 
-- **The region** (32 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
+- **The region** (48 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
   0 turns it all off) is unmapped from the running kernel, so a wild write
   can't reach it. It is written only through a 2 MiB window mapped,
   written and unmapped with a TLB shootdown (`region.c`).
