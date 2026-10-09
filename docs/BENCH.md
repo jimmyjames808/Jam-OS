@@ -723,13 +723,15 @@ posixtest's pipe section (`posixtest pipe`, in the `init` run), 256 MiB
 each, the reader reading 200 KiB at a time; QEMU with KVM on the PC (4
 CPUs), build 0.1.0 + B2:
 
-| Line | MB/s |
-|---|---|
-| pipe, 4 KiB writes | 4802 |
-| pipe, 64 KiB writes (one message each) | 16005 |
-| 1 GiB checked, writes and reads of 1 byte to 200 KiB | 548 ms (about 1960 MB/s, the check included) |
+| Line | run 1 | run 2 |
+|---|---|---|
+| pipe, 4 KiB writes | 4802 MB/s | 6986 MB/s |
+| pipe, 64 KiB writes (one message each) | 16005 MB/s | 27981 MB/s |
+| 1 GiB checked, writes and reads of 1 byte to 200 KiB | 548 ms | 336 ms |
 
 The data stays in the caches (a 1 MiB pattern), so these are the call
-path's costs, not memory bandwidth. Not measured yet: the same between
+path's costs, not memory bandwidth; the two runs (the second beside a
+ktest run on the same PC) differ by up to 1.7x, so the figures are a
+range, not a baseline to compare to the percent. Not measured yet: the same between
 two processes (that needs `posix_spawn`'s descriptors), and Linux's
 pipe on the same PC beside it.
