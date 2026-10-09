@@ -15,9 +15,11 @@
  * And the askers' fair shares (askers.c, bin/dns's loop for them on a
  * thread): ordinary openers of /svc/dns up to DNS_PROG_OPENERS and their
  * names in flight up to DNS_PROG_QUERIES, the next of each refused, while
- * an opener of /svc/dns-sys still connects and has a name in flight; then
- * openers that come and go leave no message bytes behind (their channels'
- * port bindings undone, not just their handles closed). */
+ * an opener of /svc/dns-sys still connects and has a name in flight; the
+ * name rule (str[<=253]: empty, too long, a NUL or bad UTF-8 in it, and the
+ * timeout's 1..DNS_TIMEOUT_MAX, each refused at once); then openers that
+ * come and go leave no message bytes behind (their channels' port bindings
+ * undone, not just their handles closed). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -332,12 +334,52 @@ static bool openers_come_and_go(handle_t sys)
     return true;
 }
 
+/* A raw resolve request on ch: `name_len` bytes of `name` as the array's
+ * count says, with timeout_ms; the reply's status. */
+static status_t raw_resolve(handle_t ch, const void *name, uint16_t name_len, uint32_t timeout_ms)
+{
+    uint8_t msg[sizeof(struct idl_req_hdr) + 4 + 2 + 300] = { 0 };
+    struct idl_req_hdr h = { .txid = idl_txid_next(&txc), .ordinal = DNS_RESOLVE };
+    memcpy(msg, &h, sizeof(h));
+    memcpy(msg + sizeof(h), &timeout_ms, 4);
+    memcpy(msg + sizeof(h) + 4, &name_len, 2);
+    memcpy(msg + sizeof(h) + 6, name, name_len);
+    status_t st = jam_channel_write(ch, msg, (uint32_t)(sizeof(h) + 6 + name_len), NULL, 0);
+    signals_t seen;
+    if (st == OK)
+        st = jam_object_wait_one(ch, SIG_READABLE, now() + 2 * S, &seen);
+    struct idl_rep_hdr r = { 0 };
+    uint32_t got = 0, nh = 0;
+    if (st == OK)
+        st = drv_channel_read(ch, &r, sizeof(r), &got, NULL, 0, &nh);
+    return st == OK ? r.status : st;
+}
+
+/* The name rule, on an opener nothing else uses. */
+static bool name_rule(handle_t ch)
+{
+    static const char nul[] = "a\0b.jam", bad[] = "a\xff" "b.jam";
+    CHECK_ST(raw_resolve(ch, "", 0, 1000), ERR_INVALID_ARGS);          /* no name */
+    CHECK_ST(raw_resolve(ch, nul, 7, 1000), ERR_INVALID_ARGS);         /* a NUL in it */
+    CHECK_ST(raw_resolve(ch, bad, 7, 1000), ERR_INVALID_ARGS);         /* not UTF-8 */
+    char longer[DNS_NAME_MAX + 2];
+    memset(longer, 'a', sizeof(longer));
+    CHECK_ST(raw_resolve(ch, longer, DNS_NAME_MAX + 1, 1000), ERR_INVALID_ARGS);   /* too long */
+    uint32_t addrs[DNS_ADDRS_MAX], n, ttl;
+    CHECK_ST(dns_resolve_until(ch, now() + S, longer, DNS_NAME_MAX + 1, 1000, addrs, &n, &ttl),
+             ERR_INVALID_ARGS);   /* the generated client refuses it too, sending nothing */
+    CHECK_ST(raw_resolve(ch, "a.jam", 5, 0), ERR_INVALID_ARGS);        /* the timeout: 1.. */
+    CHECK_ST(raw_resolve(ch, "a.jam", 5, DNS_TIMEOUT_MAX + 1), ERR_INVALID_ARGS);   /* ..max */
+    return true;
+}
+
 /* Ordinary openers to their share and their names to theirs; a system
  * opener still connects and has a name resolved. */
 static bool takes_shares(handle_t shared, handle_t sys, handle_t o[DNS_PROG_OPENERS], handle_t *s)
 {
     for (unsigned k = 0; k < DNS_PROG_OPENERS; k++)
         CHECK_ST(svc_connect_until(shared, now() + 2 * S, &o[k]), OK);
+    CHECK(name_rule(o[DNS_PROG_OPENERS - 1]));
     handle_t x;
     CHECK_ST(svc_connect_until(shared, now() + 2 * S, &x), ERR_NO_RESOURCES);
     CHECK_ST(svc_connect_until(sys, now() + 2 * S, s), OK);
