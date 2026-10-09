@@ -145,7 +145,10 @@ It copies the checkout (no `.git`, no `build/`) to `~/work/<checkout's
 name>` there, runs `make image` (so the image is never stale), runs the
 command with the `QEMU_*`, `KTESTS` and `JAMOS_*` variables, and copies
 back the output directories its arguments name under `build/` (but stick
-images); its exit status is the command's. Without `JAMOS_REMOTE`, or
+images); its exit status is the command's. Commands from every checkout
+share `JAMOS_REMOTE_SLOTS` (6) slots on the machine and wait for a free
+one ("all 6 slots busy: waiting"): more runs at once made timing tests
+fail. Without `JAMOS_REMOTE`, or
 when the machine doesn't answer in 5 s, the command runs here.
 
 The machine: Windows with its OpenSSH server (a key login), and WSL2's
