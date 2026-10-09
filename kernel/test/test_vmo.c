@@ -687,8 +687,10 @@ KTEST(vmo_sys_rights)
     handle_t dcaph;
     KT_EQ(handle_insert(&t, &dcapk, &dcaph), OK);
     KT_EQ(sys_dma_vmo_create(&t, dcaph, PG, VMO_KEEP_PAGES, &dch), ERR_INVALID_ARGS);
-    KT_EQ(sys_dma_vmo_create(&t, dcaph, PG, VMO_CONTIGUOUS, &dch), OK);
-    KT_EQ(handle_close(&t, dch), OK);
+    /* The cap must be bound to a function, as a driver's is
+     * (resource_dma_close_clears_bus_master uses one): an unbound one (a
+     * kernel test's) asks for nothing. */
+    KT_EQ(sys_dma_vmo_create(&t, dcaph, PG, VMO_CONTIGUOUS, &dch), ERR_ACCESS_DENIED);
     KT_EQ(handle_close(&t, dcaph), OK);
 
     struct kobject *obj;

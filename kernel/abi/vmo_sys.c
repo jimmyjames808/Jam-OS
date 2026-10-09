@@ -6,6 +6,7 @@
  * whatever the handle's rights (vmo.c), so the same holds for every handle
  * to it, its creator's included. */
 #include <jam/handle.h>
+#include <jam/resource.h>
 #include <jam/sys.h>
 #include <jam/sysinfo.h>
 #include <jam/vmo.h>
@@ -51,9 +52,11 @@ status_t sys_vmo_create(struct handle_table *t, uint64_t size, uint32_t flags, h
 }
 
 /* VMO_CONTIGUOUS / VMO_DMA32 hand out scarce contiguous / sub-4 GiB
- * memory, so a caller of the sys layer must present a DMA capability to
- * ask for them. The kernel-internal vmo_create stays unrestricted: kernel
- * code is trusted to ask only for what it needs. */
+ * memory, so a caller of the sys layer must present a DMA capability
+ * bound to a PCI function (a driver's; an unbound one is a kernel test's,
+ * and pins nothing either) to ask for them. The kernel-internal vmo_create
+ * stays unrestricted: kernel code is trusted to ask only for what it
+ * needs. */
 status_t sys_dma_vmo_create(struct handle_table *t, handle_t dma, uint64_t size, uint32_t flags,
                             handle_t *out)
 {
@@ -63,8 +66,9 @@ status_t sys_dma_vmo_create(struct handle_table *t, handle_t dma, uint64_t size,
     status_t st = handle_get(t, dma, OBJ_DMA_CAP, 0, &cap, NULL);
     if (st != OK)
         return st;
+    bool bound = dma_cap_device(cap) != NULL;
     kobject_unref(cap);
-    return create(t, size, flags, out);
+    return bound ? create(t, size, flags, out) : ERR_ACCESS_DENIED;
 }
 
 status_t sys_vmo_read(struct handle_table *t, handle_t h, uint64_t offset, void *buf,

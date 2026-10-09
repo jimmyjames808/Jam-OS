@@ -189,7 +189,8 @@
 102 vmo_unpin         status    handle_t vmo, handle_t dma, uint64_t pin_id
 # vmo_create for a driver: flags VMO_CONTIGUOUS and VMO_DMA32 (either,
 # both or none; any other bit is ERR_INVALID_ARGS), memory its device
-# reaches by DMA, which the dma_cap `dma` lets it ask for.
+# reaches by DMA, which the dma_cap `dma` lets it ask for: one bound to a
+# function (ERR_ACCESS_DENIED otherwise), any rights.
 103 dma_vmo_create    status    handle_t dma, uint64_t size, uint32_t flags, handle_t *out
 
 # console services ----------------------------------------------------------
