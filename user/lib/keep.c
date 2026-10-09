@@ -70,13 +70,15 @@ status_t keep_put(handle_t keep, uint32_t slot, const handle_t *hs, unsigned n)
         if (st == OK)
             made++;
     }
-    struct keep_msg m = { .txid = 0, .kind = KEEP_PUT, .slot = slot, .count = n };
-    if (st == OK)
-        st = jam_channel_write(keep, &m, sizeof(m), d, n);
-    /* A failed write puts the duplicates back in our table. */
-    if (st != OK)
+    if (st != OK) {
         close_all(d, made);
-    return st;
+        return st;
+    }
+    struct keep_msg m = { .txid = 0, .kind = KEEP_PUT, .slot = slot, .count = n };
+    /* The duplicates are gone whatever the write's status (a send's handles
+     * are always moved): never closed here again, as their values may
+     * already be another thread's new handles. */
+    return jam_channel_write(keep, &m, sizeof(m), d, n);
 }
 
 status_t keep_drop(handle_t keep, uint32_t slot)
