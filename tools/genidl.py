@@ -24,6 +24,7 @@ right above a method are copied into the header):
     <ordinal> <method> (<type> <arg>, ...) -> (<type> <result>, ...) [later] [idempotent]
     <ordinal> <event> (<type> <field>, ...) event         to the server
     <ordinal> <event> -> (<type> <field>, ...) event      to the client
+    const <NAME> <value>                                  a constant
 
 name, method, arg, result   C identifiers (lower case by convention)
 id                          1..65535, listed in abi/idl/ids.txt (the registry
@@ -36,7 +37,13 @@ type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
                             string of up to N bytes of UTF-8), or `handle`
                             (RESULTS only, at most 8 per method)
 
-Either list may be empty: `()`. A request or reply is at most 16 KiB
+Either list may be empty: `()`.
+
+A `const` line (the M12 plan's D3) gives the protocol above it a number:
+its flags, levels and states, kept with its methods. NAME is in capitals;
+the value an integer (decimal or 0x hex, maybe negative) or one shifted
+(`1 << 3`). The header has it as <PROTO>_<NAME> (`u` or `ull` suffixed,
+in brackets when negative or shifted), with the comment above it. A request or reply is at most 16 KiB
 (MSG_MAX, header included). Bulk data goes through a shared VMO.
 
 Arrays of varying length, u8[<=N] .. i64[<=N] and str[<=N] (1 <= N <= 65535, within
@@ -466,6 +473,7 @@ class Protocol:
     def __init__(self, src, lineno, name, pid, methods, doc):
         self.src, self.lineno, self.name, self.pid, self.methods = src, lineno, name, pid, methods
         self.doc = doc   # the comment above the protocol line, copied into the header
+        self.consts = []   # (NAME, its C value, the comment above it)
 
     def wire(self, m):
         return (self.pid << 16) | m.ordinal
@@ -596,6 +604,37 @@ def parse_method(src, lineno, line, p, doc):
                             "idempotent" in words))
 
 
+CONST = re.compile(r"const\s+([A-Z][A-Z0-9_]*)\s+(-?(?:0x[0-9a-fA-F]+|\d+))"
+                   r"(?:\s*<<\s*(\d+))?$")
+
+
+def parse_const(src, lineno, line, p, doc):
+    """A `const <NAME> <value>` line of protocol p: an integer (decimal or
+    0x hex, may be negative), or one shifted left (`1 << 3`), as
+    <PROTO>_<NAME> in the header."""
+    m = CONST.match(line)
+    if not m:
+        fail(src, lineno, "want 'const <NAME> <value>': NAME in capitals, the value an integer "
+                          "(decimal or 0x hex, maybe negative) or '<integer> << <bits>'")
+    name, text, shift = m.group(1), m.group(2), m.group(3)
+    if any(c[0] == name for c in p.consts):
+        fail(src, lineno, f"const {name} twice")
+    v = int(text, 0)
+    if shift is not None:
+        if v < 0 or int(shift) > 63:
+            fail(src, lineno, f"const {name}: shift a positive value by 0..63 bits")
+        v <<= int(shift)
+    if not -(1 << 63) <= v < (1 << 64):
+        fail(src, lineno, f"const {name}: {v} doesn't fit 64 bits")
+    if shift is not None:
+        c = f"({text}{'u' if v < (1 << 32) else 'ull'} << {shift})"
+    elif v < 0:
+        c = f"({text}{'' if v >= -(1 << 31) else 'll'})"
+    else:
+        c = f"{text}{'u' if v < (1 << 32) else 'ull'}"
+    p.consts.append((name, c, doc))
+
+
 def parse(src):
     """The protocols of one .idl file, in the order it defines them."""
     protos, p = [], None
@@ -644,7 +683,10 @@ def parse(src):
             continue
         if p is None:
             fail(src, lineno, "the first statement must be 'protocol <name> <id>'")
-        parse_method(src, lineno, line, p, doc)
+        if line.startswith("const ") or line == "const":
+            parse_const(src, lineno, line, p, doc)
+        else:
+            parse_method(src, lineno, line, p, doc)
         doc, above = [], []
     if not protos:
         sys.exit(f"{src}: no 'protocol' line")
@@ -2002,6 +2044,12 @@ def gen_protocol(p):
     for m in p.methods:
         out.append(f"#define {U}_{m.name.upper():<16} 0x{p.wire(m):08x}u")
     out.append("")
+    if p.consts:
+        out.append("/* Constants (the .idl's `const` lines). */")
+        for name, c, doc in p.consts:
+            out += c_comment(doc)
+            out.append(f"#define {U}_{name} {c}")
+        out.append("")
 
     req_max = p.req_max = max([method_max(m.args) for m in calls + ins] + [HDR])
     rep_max = p.rep_max = max([method_max(m.results) for m in calls + outs] + [HDR])
@@ -2449,6 +2497,7 @@ def c_names(p):
     names = [f"{P}_{x}" for x in ("ops", "dispatch_on", "dispatch", "take_slot", "run_slot",
                                   "idempotent", "serve_one", "serve")]
     names += [f"{U}_{x}" for x in ("PROTOCOL_ID", "REQ_MAX", "REP_MAX")]
+    names += [f"{U}_{c[0]}" for c in p.consts]
     if any(m.event == "in" for m in p.methods):
         names.append(f"{P}_event_in")
     if takes_handles(p):
@@ -2626,6 +2675,18 @@ SELFTESTS = [
     ("an event past 16 KiB", t_ok("1 a -> (u8[4096] a, u8[4096] b, u8[4096] c, u8[4096] d) "
                                   "event\n"), None, "the event is 16392 bytes"),
     ("an event's names", t_ok("1 a () event\n2 a_msg () -> ()\n"), None, "defines t_a_msg"),
+    ("consts", t_ok("const K 1\n# b.\nconst B_2 0xffffffffff\nconst C -5\nconst D 1 << 40\n"
+                    "const F -0x80000001\n1 a () -> ()\nconst E 0x10\n"), None, None),
+    ("a const twice", t_ok("const A 1\nconst A 2\n1 a () -> ()\n"), None, "const A twice"),
+    ("a const in lower case", t_ok("const a 1\n1 a () -> ()\n"), None, "want 'const"),
+    ("a const with no value", t_ok("const A\n1 a () -> ()\n"), None, "want 'const"),
+    ("a const that isn't a number", t_ok("const A B\n1 a () -> ()\n"), None, "want 'const"),
+    ("a const past 64 bits", t_ok("const A 0x10000000000000000\n1 a () -> ()\n"), None,
+     "doesn't fit"),
+    ("a const shifted too far", t_ok("const A 1 << 64\n1 a () -> ()\n"), None, "0..63"),
+    ("a const before a protocol", {"t.idl": f"{RULE}const A 1\nprotocol t 40\n1 a () -> ()\n"},
+     None, "the first statement"),
+    ("a const's macro and a method's", t_ok("const A 1\n1 a () -> ()\n"), None, "defines T_A twice"),
 ]
 
 

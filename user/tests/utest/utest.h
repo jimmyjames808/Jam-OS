@@ -146,6 +146,7 @@ bool t_idl_slot_reply_after(void);
 /* idlproto.c: several protocols in one .idl file (idltest, idltest_two). */
 bool t_idl_wrong_protocol(void);
 bool t_idl_big_messages(void);
+bool t_idl_consts(void);
 /* idlarray.c: arrays of varying length (u8[<=N], str[<=N]) on idltest. */
 bool t_idl_var_arrays(void);
 bool t_idl_var_refused(void);

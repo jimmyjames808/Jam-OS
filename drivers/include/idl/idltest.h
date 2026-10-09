@@ -1623,6 +1623,14 @@ static inline status_t idltest_serve(handle_t ch, const struct idltest_ops *ops,
 #define IDLTEST_TWO_BIG              0x00220002u
 #define IDLTEST_TWO_BIG_LATER        0x00220003u
 
+/* Constants (the .idl's `const` lines). */
+/* Checked by idlproto.c (idl_consts). */
+#define IDLTEST_TWO_LIMIT 64u
+#define IDLTEST_TWO_HUGE 0x100000000ull
+#define IDLTEST_TWO_BELOW (-2)
+/* A flag, shifted. */
+#define IDLTEST_TWO_FLAG_C (1u << 3)
+
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct idltest_two_echo_req {
     uint32_t txid;

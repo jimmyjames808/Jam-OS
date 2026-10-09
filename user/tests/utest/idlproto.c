@@ -3,7 +3,7 @@
  * has ordinals of its own, so a server of one refuses a request of the
  * other (ERR_NOT_SUPPORTED) instead of running one of its own methods.
  * And messages up to 16 KiB, whose buffers the generated code takes from
- * the heap (idltest_two.big, big_later). */
+ * the heap (idltest_two.big, big_later), and its `const` lines. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -77,6 +77,24 @@ bool t_idl_wrong_protocol(void)
 
     CHECK_ST(jam_handle_close(c), OK);
     CHECK_ST(jam_handle_close(sv), OK);
+    return true;
+}
+
+/* ---- constants (`const` lines) ---------------------------------------------- */
+
+_Static_assert(IDLTEST_TWO_LIMIT == 64 && IDLTEST_TWO_HUGE == 0x100000000ull &&
+               IDLTEST_TWO_BELOW == -2 && IDLTEST_TWO_FLAG_C == 8, "the .idl's const lines");
+
+bool t_idl_consts(void)
+{
+    /* Their C types too: unsigned (a u64 for one past 32 bits), signed
+     * when negative. */
+    uint64_t huge = IDLTEST_TWO_HUGE;
+    int64_t below = IDLTEST_TWO_BELOW;
+    CHECK_EQ(sizeof(IDLTEST_TWO_LIMIT), 4);
+    CHECK_EQ(sizeof(IDLTEST_TWO_HUGE), 8);
+    CHECK(huge >> 32 == 1 && below < 0 && IDLTEST_TWO_LIMIT - 65 > 0);   /* unsigned: wraps */
+    CHECK_EQ(IDLTEST_TWO_FLAG_C | 1u, 9);
     return true;
 }
 

@@ -823,6 +823,7 @@ static const struct {
     { "idl_slot_reply_after", t_idl_slot_reply_after },
     { "idl_wrong_protocol", t_idl_wrong_protocol },
     { "idl_big_messages", t_idl_big_messages },
+    { "idl_consts", t_idl_consts },
     { "idl_var_arrays", t_idl_var_arrays },
     { "idl_var_refused", t_idl_var_refused },
     { "idl_scalar_arrays", t_idl_scalar_arrays },
