@@ -64,6 +64,10 @@ typedef uint32_t rights_t;
 #define JOB_RIGHTS_OWN (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
 #define JOB_RIGHTS     (JOB_RIGHTS_OWN | RIGHT_MANAGE)
 
+/* Handles a process holds at most (a call that would make one more fails
+ * with ERR_NO_RESOURCES). */
+#define HANDLE_TABLE_MAX 65536
+
 /* signals ------------------------------------------------------------------ */
 
 typedef uint32_t signals_t;
@@ -110,6 +114,12 @@ struct port_packet {
 
 #define PORT_BIND_ONCE       0   /* fire once, then the binding is gone */
 #define PORT_BIND_PERSISTENT 1   /* fire on every not-matching -> matching edge */
+
+/* A port holds at most PORT_MAX_USER_PACKETS user packets (port_queue past
+ * it: ERR_NO_RESOURCES; signal packets never count, each binding owns
+ * one) and PORT_MAX_BINDINGS bindings (port_bind past it: the same). */
+#define PORT_MAX_USER_PACKETS 4096
+#define PORT_MAX_BINDINGS     4096
 
 /* VMOs ------------------------------------------------------------------------
  * VMO flags. Bits 0 and 1 are dma_vmo_create's, for drivers (a dma_cap
@@ -227,6 +237,10 @@ struct process_info {
  * above are the kernel's (and, later, a capability's). */
 #define THREAD_PRIO_DEFAULT  16
 #define THREAD_PRIO_USER_MAX 24
+
+/* A process's or a thread's name (process_create, thread_create): at most
+ * this many bytes. */
+#define PROCESS_NAME_MAX 31
 
 /* channels --------------------------------------------------------------------
  * A message carries at most CHANNEL_MAX_BYTES bytes and CHANNEL_MAX_HANDLES
@@ -407,6 +421,15 @@ struct vmo_pin_args {
 #define VMO_PIN_READ_ONLY (1u << 0)
 
 /* console services (abi/syscalls.def 110-119) --------------------------------- */
+
+/* The longest argument each takes, in bytes: debug_write's and
+ * debug_report's text, serial_write's, debug_command's command, the log
+ * file's name (klog_name), and kexec_load's command line. */
+#define DEBUG_WRITE_MAX    4096
+#define SERIAL_WRITE_MAX   4096
+#define DEBUG_COMMAND_MAX  63
+#define KLOG_NAME_MAX      31
+#define KEXEC_CMDLINE_MAX  511
 
 /* klog_lines: who wrote the log line starting at byte `pos` of the log. */
 #define KLOG_WRITER_KERNEL  0ull            /* the kernel itself (never in a mark) */

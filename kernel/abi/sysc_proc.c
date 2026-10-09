@@ -19,11 +19,11 @@
 
 #define VMAR_HANDLE_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
 
-/* A name argument: at most PROCESS_NAME_MAX - 1 bytes are kept. */
+/* A name argument: at most PROCESS_NAME_MAX bytes are kept. */
 static status_t copy_name(char *dst, uint64_t uname, uint64_t len)
 {
-    if (len >= PROCESS_NAME_MAX)
-        len = PROCESS_NAME_MAX - 1;
+    if (len > PROCESS_NAME_MAX)
+        len = PROCESS_NAME_MAX;
     status_t st = copy_in(dst, uname, len);
     dst[st == OK ? len : 0] = '\0';
     return st;
@@ -35,7 +35,7 @@ int64_t sysc_process_create(handle_t job, uint64_t name, uint64_t name_len, uint
     SYSC_TABLE(t);
     if (flags)
         return ERR_INVALID_ARGS;
-    char kname[PROCESS_NAME_MAX];
+    char kname[PROCESS_NAME_MAX + 1];
     if (copy_name(kname, name, name_len) != OK)
         return ERR_INVALID_ARGS;
     struct kobject *jo;
@@ -151,7 +151,7 @@ int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint
     SYSC_TABLE(t);
     if (flags)
         return ERR_INVALID_ARGS;
-    char kname[PROCESS_NAME_MAX];
+    char kname[PROCESS_NAME_MAX + 1];
     if (copy_name(kname, name, name_len) != OK)
         return ERR_INVALID_ARGS;
     struct kobject *po;

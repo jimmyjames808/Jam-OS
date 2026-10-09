@@ -6,6 +6,7 @@
 #include <jam/abi.h>
 #include <jam/aspace.h>
 #include <jam/bootfs.h>
+#include <jam/kexec_handoff.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>   /* its DEADLINE_NEVER must match abi.h's */
 #include <jam/startup.h>
@@ -64,3 +65,9 @@ _Static_assert(VMO_CONTIGUOUS == 1u && VMO_DMA32 == 2u && VMO_KEEP_PAGES == 4u &
                "the VMO flags and limits user code sees");
 _Static_assert(sizeof(struct vmo_pin_args) == 48 && offsetof(struct vmo_pin_args, flags) == 40,
                "vmo_pin_args layout");
+
+/* The limits user code sees, against the kernel's own sizes. */
+_Static_assert(KEXEC_CMDLINE_MAX + 1 == KEXEC_CMDLINE && KLOG_NAME_MAX + 1 <= KEXEC_NAME,
+               "kexec_load's and klog_name's limits are what kexec keeps");
+_Static_assert(PROCESS_NAME_MAX + 1 == sizeof(((struct proc_stat *)0)->name),
+               "proc_stat.name holds a whole name and its NUL");

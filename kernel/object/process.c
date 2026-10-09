@@ -85,7 +85,7 @@ struct process {
     uint32_t            nthreads;                /* (L) started threads that haven't left */
     uint64_t            cpu_done;                /* (L) CPU time (TSC) of the threads that left */
     struct list_node    threads;                 /* (L) struct uthread, every one not destroyed */
-    char                name[PROCESS_NAME_MAX];  /* NUL-terminated */
+    char                name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
     /* debug_write ("process output" lock): the current, unfinished line and
      * the rate limit (see process_debug_write) */
     spinlock_t          out_lock;

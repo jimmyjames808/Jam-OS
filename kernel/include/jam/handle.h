@@ -49,8 +49,6 @@ struct handle_table {
     uint32_t            charged;
 };
 
-#define HANDLE_TABLE_MAX 65536
-
 void     handle_table_init(struct handle_table *t);
 /* Close every handle and free the table's memory. */
 void     handle_table_destroy(struct handle_table *t);

@@ -45,8 +45,6 @@ struct job;
 struct process;
 struct uthread;
 
-#define PROCESS_NAME_MAX 32   /* bytes including the NUL */
-
 #define PROCESS_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
 #define THREAD_RIGHTS  (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
 /* JOB_RIGHTS / JOB_RIGHTS_OWN: <jam/abi.h> */
@@ -138,7 +136,7 @@ static inline struct process *process_from_kobject(struct kobject *o)
 }
 
 /* A NEW process in job with an empty address space and handle table; the
- * caller gets the only reference. name is truncated to PROCESS_NAME_MAX-1.
+ * caller gets the only reference. name is truncated to PROCESS_NAME_MAX bytes.
  * It costs job one JOB_LIMIT_HANDLES unit until it is torn down
  * (ERR_NO_RESOURCES) and its address space's PML4 (ERR_NO_MEMORY). */
 status_t process_create(struct job *job, const char *name, struct process **out);

@@ -12,8 +12,6 @@
 #include <jam/time.h>
 #include "sysc.h"
 
-/* debug_write copies at most this much per call (the rest is dropped). */
-#define DEBUG_WRITE_MAX 4096
 #define DEBUG_CHUNK     256
 
 static int64_t debug_out(uint64_t buf, uint64_t len, bool report_it)
