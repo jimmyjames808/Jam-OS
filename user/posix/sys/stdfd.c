@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "stdfd.h"
+#include "tty.h"
 
 /* A pipe end's state. */
 struct spipe {
@@ -227,7 +228,10 @@ long stdfd_adopt_dev(const struct posixfds_fd *rec, const void *data, const hand
 
 void stdfd_default(void)
 {
-    struct fd_desc *in = fd_new(&null_ops, O_RDONLY, NULL), *out = NULL;
+    unsigned term = tty_stdfds();   /* the console's terminal, where the starter gave one */
+    if (term & 1u << 1)
+        return;   /* 0 to 2 */
+    struct fd_desc *in = term ? NULL : fd_new(&null_ops, O_RDONLY, NULL), *out = NULL;
     if (in)
         (void)fd_replace(0, in, false);   /* 0 is in range and free at the start */
     handle_t ch = startup_handle(SR_STDOUT);
@@ -237,6 +241,10 @@ void stdfd_default(void)
         out = NULL;
     if (!out)
         return;
+    if (term & 1u << 2) {   /* 2 is the terminal, 1 the starter's channel */
+        (void)fd_replace(1, out, false);
+        return;
+    }
     fd_ref(out);   /* 1 and 2 share it, as a shell's 2>&1 */
     (void)fd_replace(1, out, false);
     (void)fd_replace(2, out, false);

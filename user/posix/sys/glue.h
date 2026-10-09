@@ -28,6 +28,10 @@ int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
  * handle __unmapself unmaps through. thread.c. */
 unsigned __jam_unmapself_prepare(void);
 
+/* ttyname_r's override: the name of the terminal at descriptor fd into
+ * name (size bytes): 0, or an errno (EBADF, ENOTTY, ERANGE). tty.c. */
+int __jam_ttyname(int fd, char *name, unsigned long size);
+
 /* crt1's start: read the startup message on the channel ch (a handle_t),
  * build Linux's start block (argc, argv, envp, auxv) and run main through
  * musl's __libc_start_main with init and fini, as musl's own crt1 does

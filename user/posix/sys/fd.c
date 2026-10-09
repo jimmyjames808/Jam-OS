@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 #include "fd.h"
 #include "stdfd.h"
+#include "tty.h"
 
 /* The reserved mark: a slot fd_alloc gave out, not filled yet. */
 static struct fd_desc reserved_mark;
@@ -350,6 +351,7 @@ void fd_stage_default(void)
 fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
     [POSIXFDS_PIPE] = stdfd_adopt_pipe,
     [POSIXFDS_DEV] = stdfd_adopt_dev,
+    [POSIXFDS_TTY] = tty_adopt,
 };
 
 /* "posix: descriptor <n> (<kind>) left out: <why>\n" in the log. */

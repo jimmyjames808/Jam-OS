@@ -7,12 +7,12 @@
 
 #include "fd.h"
 
-/* No hand-over (docs/M13-PLAN.md section 5): 0 is the null device; 1 and
- * 2 share one description, the SR_STDOUT channel if the starter gave one,
- * else the log (debug_write), as a native program's printf. A terminal
- * (SR_CONSOLE) becomes 0 to 2 once terminals have a POSIX side; until
- * then such a program writes to the log, as a native program in the
- * foreground does. Called by fd.c's start, after musl is up. */
+/* No hand-over (docs/M13-PLAN.md section 5): a console channel
+ * (SR_CONSOLE) makes its terminal 0 to 2 (tty.c), but 1 when the starter
+ * gave SR_STDOUT; without one 0 is the null device. 1 and 2 not a
+ * terminal share one description, the SR_STDOUT channel if the starter
+ * gave one, else the log (debug_write), as a native program's printf.
+ * Called by fd.c's start, after musl is up. */
 void stdfd_default(void);
 
 /* The hand-over's pipes and null devices (fd_adopt_fn): another /dev

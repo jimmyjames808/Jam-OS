@@ -30,3 +30,5 @@ src/thread/x86_64/syscall_cp.s 3d84c844e6a26b934f80fd35e0c7d814b184e489fdd71cd95
 src/process/x86_64/vfork.s 4d5aad85cb686f9cf66e32f5889471614d7b564503cb2038d21aa6e442287fdd user/posix/musl/src/process/x86_64/vfork.c
 # The signal restorer: never used (signals are delivered in libc).
 src/signal/x86_64/restore.s 1aa9c1d8b1d809a64f5edcfcb518f9d95e8cf538ddeab74d6048e489e63b3ea1 user/posix/musl/src/signal/x86_64/restore.S
+# ttyname_r: the terminal descriptor's own name (user/posix/sys/tty.c), not /proc's link.
+src/unistd/ttyname_r.c fbb4807e4772630cd50cea943265357e619f258c350e7b88ad27855788bd8fb7 user/posix/musl/src/unistd/ttyname_r.c
