@@ -851,6 +851,7 @@ static const struct {
     { "netwait_states", t_netwait_states },
     { "netwait_level", t_netwait_level },
     { "netwait_stress", t_netwait_stress },
+    { "netwait_edge", t_netwait_edge },
     { "settings_parse", t_settings_parse },
     { "settings_edit", t_settings_edit },
     { "settings_file", t_settings_file },

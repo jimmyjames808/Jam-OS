@@ -12,10 +12,12 @@
  *     entry is reported ready, changed or removed, so a socket that is
  *     being read never makes netstack signal once per datagram;
  *   - `dead`: the socket's channel saw SIG_PEER_CLOSED; its rings are
- *     never touched again (netstack may shrink their VMO).
+ *     never touched again (netstack may shrink their VMO);
+ *   - an edge entry reported ready is not put back in the FIFO: it is
+ *     armed, and its next packet brings it back.
  * A key is (generation << 32) | (slot << 1) | which, which 0 for the
- * socket's `to_prog` or the handle, 1 for the socket's channel; KEY_WAKE
- * is netwait_wake's. */
+ * socket's `to_prog` or the handle, 1 for the socket's channel or an edge
+ * handle's write signals; KEY_WAKE is netwait_wake's. */
 #include <netwait.h>
 
 #define KEY_WAKE  (1ull << 63)
@@ -32,7 +34,7 @@ struct entry {
     bool     dead;            /* socket: netstack gone; never touch the rings again */
     uint16_t gen;             /* generation: in its id and keys; never 0 */
     status_t broken;          /* a call on its handles failed (reported as ERROR) */
-    uint32_t interest;        /* NETWAIT_INTEREST bits */
+    uint32_t interest;        /* NETWAIT_INTEREST bits, and NETWAIT_EDGE */
     void    *user;            /* the caller's */
     union {
         struct netwait_sock   sock;     /* ENTRY_SOCK (tx_need resolved) */
@@ -158,12 +160,40 @@ static uint32_t sock_arm(struct netwait *w, struct entry *e, status_t *err)
 
 /* ---- handles ----------------------------------------------------------------------- */
 
-/* The signals a handle entry is bound for: those of its interest and HUP's. */
+/* The signals a handle entry watches: those of its interest and HUP's. */
 static signals_t handle_mask(const struct entry *e)
 {
     const struct netwait_handle *h = &e->handle;
     return (e->interest & NETWAIT_READ ? h->read : 0) |
            (e->interest & NETWAIT_WRITE ? h->write : 0) | h->hup;
+}
+
+/* The signals of its binding `which`: a level entry has one binding for
+ * all of them (0); an edge entry binds its read and hup signals (0) apart
+ * from its write signals (1), so each side has edges of its own. */
+static signals_t bind_mask(const struct entry *e, unsigned which)
+{
+    const struct netwait_handle *h = &e->handle;
+    if (!(e->interest & NETWAIT_EDGE))
+        return which ? 0 : handle_mask(e);
+    if (which)
+        return e->interest & NETWAIT_WRITE ? h->write : 0;
+    return (e->interest & NETWAIT_READ ? h->read : 0) | h->hup;
+}
+
+/* Bind a handle entry's signals (none: nothing could ever fire). */
+static status_t handle_bind(struct netwait *w, uint32_t slot, struct entry *e)
+{
+    signals_t m0 = bind_mask(e, 0), m1 = bind_mask(e, 1);
+    status_t st = OK;
+    if (m0)
+        st = jam_port_bind(w->port, e->handle.h, key_of(slot, e, 0), m0, PORT_BIND_PERSISTENT);
+    if (st != OK || !m1)
+        return st;
+    st = jam_port_bind(w->port, e->handle.h, key_of(slot, e, 1), m1, PORT_BIND_PERSISTENT);
+    if (st != OK && m0)
+        (void)jam_port_unbind(w->port, e->handle.h, key_of(slot, e, 0));   /* just bound */
+    return st;
 }
 
 static uint32_t handle_ready(struct entry *e, status_t *err)
@@ -255,6 +285,8 @@ static bool rings_ok(const struct sockring *r)
 status_t netwait_add_sock(struct netwait *w, const struct netwait_sock *s, uint32_t interest,
                           void *user, uint32_t *out_id)
 {
+    if (interest & NETWAIT_EDGE)
+        return ERR_NOT_SUPPORTED;
     if ((interest & ~NETWAIT_INTEREST) || !rings_ok(s->rings) || s->tx_need > s->rings->tx.size)
         return ERR_INVALID_ARGS;
     for (uint32_t i = 0; i < w->max; i++)
@@ -288,7 +320,7 @@ status_t netwait_add_sock(struct netwait *w, const struct netwait_sock *s, uint3
 status_t netwait_add_handle(struct netwait *w, const struct netwait_handle *h,
                             uint32_t interest, void *user, uint32_t *out_id)
 {
-    if ((interest & ~NETWAIT_INTEREST) || !(h->read | h->write | h->hup))
+    if ((interest & ~(NETWAIT_INTEREST | NETWAIT_EDGE)) || !(h->read | h->write | h->hup))
         return ERR_INVALID_ARGS;
     uint32_t slot;
     status_t st = slot_take(w, &slot);
@@ -297,9 +329,7 @@ status_t netwait_add_handle(struct netwait *w, const struct netwait_handle *h,
     struct entry *e = &w->e[slot];
     e->handle = *h;
     e->interest = interest;
-    signals_t mask = handle_mask(e);
-    if (mask)   /* none (interest 0, no hup signals): nothing could ever fire */
-        st = jam_port_bind(w->port, h->h, key_of(slot, e, 0), mask, PORT_BIND_PERSISTENT);
+    st = handle_bind(w, slot, e);
     if (st != OK)
         return st;
     e->kind = ENTRY_HANDLE;
@@ -314,8 +344,10 @@ static void unbind(struct netwait *w, uint32_t slot, struct entry *e)
     if (e->kind == ENTRY_SOCK) {
         (void)jam_port_unbind(w->port, e->sock.to_prog, key_of(slot, e, 0));
         (void)jam_port_unbind(w->port, e->sock.ch, key_of(slot, e, 1));
-    } else if (handle_mask(e)) {
-        (void)jam_port_unbind(w->port, e->handle.h, key_of(slot, e, 0));
+    } else {
+        for (unsigned which = 0; which < 2; which++)
+            if (bind_mask(e, which))
+                (void)jam_port_unbind(w->port, e->handle.h, key_of(slot, e, which));
     }
 }
 
@@ -325,17 +357,17 @@ status_t netwait_modify(struct netwait *w, uint32_t id, uint32_t interest)
     struct entry *e = entry_of(w, id, &slot);
     if (!e)
         return ERR_NOT_FOUND;
-    if (interest & ~NETWAIT_INTEREST)
+    if (interest & ~(NETWAIT_INTEREST | NETWAIT_EDGE))
         return ERR_INVALID_ARGS;
+    if ((interest & NETWAIT_EDGE) && e->kind == ENTRY_SOCK)
+        return ERR_NOT_SUPPORTED;
     sock_disarm(e);
     if (e->kind == ENTRY_HANDLE) {
-        /* Rebound for the new signals under the same key: a packet of the
-         * old binding still queued only makes one look too many. */
+        /* Rebound for the new signals under the same keys: a packet of the
+         * old bindings still queued only makes one look too many. */
         unbind(w, slot, e);
         e->interest = interest;
-        signals_t mask = handle_mask(e);
-        status_t st = mask ? jam_port_bind(w->port, e->handle.h, key_of(slot, e, 0), mask,
-                                           PORT_BIND_PERSISTENT) : OK;
+        status_t st = handle_bind(w, slot, e);
         if (st != OK)
             e->broken = st;   /* reported as ERROR until it is removed */
     }
@@ -395,7 +427,7 @@ static void take_packet(struct netwait *w, const struct port_packet *p, bool *wo
         w->stats.stale++;
         return;
     }
-    if ((p->key & 1) && (p->signal.observed & SIG_PEER_CLOSED)) {
+    if (e->kind == ENTRY_SOCK && (p->key & 1) && (p->signal.observed & SIG_PEER_CLOSED)) {
         e->dead = true;   /* first: sock_disarm then forgets the flags without a touch */
         sock_disarm(e);
     }
@@ -434,7 +466,8 @@ static uint32_t look(struct netwait *w, struct netwait_ready *out, uint32_t max)
         if (!bits)
             continue;   /* asleep: a packet brings it back */
         sock_disarm(e);
-        make_pending(w, slot);   /* level: looked at again next time */
+        if (!(e->interest & NETWAIT_EDGE))
+            make_pending(w, slot);   /* level: looked at again next time */
         out[n++] = (struct netwait_ready){ .id = (uint32_t)e->gen << 16 | slot, .ready = bits,
                                            .error = bits & NETWAIT_ERROR ? err : OK,
                                            .user = e->user };
@@ -465,6 +498,12 @@ status_t netwait_wait(struct netwait *w, uint64_t deadline, struct netwait_ready
             return st;
         take_packet(w, &p, &woken);
     }
+}
+
+status_t netwait_block(struct netwait *w, uint64_t deadline)
+{
+    signals_t seen;
+    return jam_object_wait_one(w->port, SIG_READABLE, deadline, &seen);
 }
 
 status_t netwait_wake(struct netwait *w)
