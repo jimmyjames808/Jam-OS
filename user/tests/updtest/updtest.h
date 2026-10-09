@@ -29,14 +29,20 @@ extern unsigned failures;    /* cases that didn't go as expected */
  * manifest, kernel and boot image (no menu). */
 status_t load_dir(struct build *b, const char *dir);
 /* Offer b (its VMOs duplicated: b keeps its own) with `handles` of them
- * and this magic; init's answer into *a. */
-status_t offer(const struct build *b, unsigned handles, uint32_t magic, struct update_answer *a);
+ * on an offer channel of its own; init's answer into *a. */
+status_t offer(const struct build *b, unsigned handles, struct update_answer *a);
 /* One case: b offered, the answer must be `why` (about file `file`). */
-void     expect(const char *name, const struct build *b, unsigned handles, uint32_t magic,
-                uint32_t why, uint32_t file);
+void     expect(const char *name, const struct build *b, unsigned handles, uint32_t why,
+                uint32_t file);
 /* /esp's file at path into *v (n bytes): ERR_NOT_FOUND if /esp is there
  * and the file isn't (/esp comes back a moment after a stick write). */
 status_t esp_file(const char *path, handle_t *v, uint64_t *n);
+
+/* ---- wire.c: the offer's wire by hand ------------------------------------------ */
+
+/* updtest wire: malformed offers against init, and a good one after them
+ * (b: the build in DIR, loaded). */
+void wire_cases(const struct build *b);
 
 /* ---- menu.c: the boot menu's cases ---------------------------------------------- */
 

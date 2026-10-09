@@ -71,18 +71,19 @@
  *
  * The hand-off: whoever fetched the build (bin/update; a test program,
  * user/tests/updtest) holds an offer channel from init (initctl's
- * update_offer) and writes one struct update_offer on it, with the kernel
- * and the boot image in two VMOs (RIGHT_READ is enough), and the boot menu
- * in a third when the manifest names one (then it must). init checks the
- * manifest's signature with its build's key, copies every file into VMOs
- * only it holds, so the sender can't change a byte after the check, checks
+ * update_offer) and calls `offer` on it (abi/idl/update.idl, the protocol
+ * `update`: update_make_offer below wraps the call), with the manifest,
+ * the kernel and the boot image in two VMOs (RIGHT_READ is enough), and the
+ * boot menu in a third when the manifest names one (then it must). init
+ * checks the manifest's signature with its build's key, copies every file
+ * into VMOs only it holds, so the sender can't change a byte after the check, checks
  * each file's length and SHA-256 against the manifest (which it parses
  * itself: nothing the sender says about it is trusted; a menu that isn't
  * the signed one is refused like a kernel that isn't), and hands its
  * copies to the kernel (kexec_load) as the stored kernel,
- * the one `reboot` and a panic start. It answers one struct update_answer
- * on the channel and closes it. Any refusal leaves the stored kernel as it
- * was. A plain offer writes nothing to the stick: the fetched build runs
+ * the one `reboot` and a panic start. It answers the call with one struct
+ * update_answer (its fields are the call's results) and closes the
+ * channel. Any refusal leaves the stored kernel as it was. A plain offer writes nothing to the stick: the fetched build runs
  * until a power-off or until /esp changes (the shell's `update -m`). An
  * offer with UPDATE_OFFER_CHECK_ONLY is checked the same way and answered,
  * but nothing is loaded (`update -n`). One with UPDATE_OFFER_WRITE (plain
@@ -184,22 +185,10 @@ const char *update_file_name(unsigned file);
 
 /* ---- the hand-off to init ------------------------------------------------------- */
 
-#define UPDATE_OFFER_MAGIC  0x4f50554au   /* "JUPO" */
-#define UPDATE_ANSWER_MAGIC 0x4150554au   /* "JUPA" */
-
-/* The one message on an offer channel, with exactly two handles: the
- * kernel's VMO, then the boot image's; and a third, the boot menu's, when
- * the manifest has a `menu` line (exactly then). Every field is checked. */
-struct update_offer {
-    uint32_t txid;                            /* 0 (the channel convention's place) */
-    uint32_t magic;                           /* UPDATE_OFFER_MAGIC */
-    uint64_t bytes[UPDATE_PARTS];             /* each file's length as fetched (its VMO may
-                                               * be longer: page-rounded); [UPDATE_MENU]
-                                               * 0 when the manifest names no menu */
-    uint32_t manifest_len;                    /* bytes of manifest[] used */
-    uint32_t flags;                           /* 0, or UPDATE_OFFER_CHECK_ONLY */
-    uint8_t  manifest[UPDATE_MANIFEST_MAX];   /* as fetched, not parsed */
-};
+/* The offer is a call of the protocol `update` (abi/idl/update.idl): its
+ * flags (below), each file's length, the manifest as fetched, and two or
+ * three VMOs: the kernel's, the boot image's, and the boot menu's when the
+ * manifest has a `menu` line (exactly then). Every field is checked. */
 
 #define UPDATE_OFFER_CHECK_ONLY 1u   /* check it, load nothing: the stored kernel stays */
 /* Take it even if its network default (the manifest's `net`) isn't this
@@ -303,11 +292,10 @@ enum update_why {
     UPDATE_WHY_COUNT,
 };
 
-/* init's answer, then the channel closes. */
+/* init's answer to the offer (the call's results), then the channel closes. */
 struct update_answer {
-    uint32_t txid;                            /* 0 */
-    uint32_t magic;                           /* UPDATE_ANSWER_MAGIC */
-    int32_t  status;                          /* OK only with UPDATE_ACCEPTED */
+    int32_t  status;                          /* OK only with UPDATE_ACCEPTED (the call's
+                                               * `verdict`) */
     uint32_t why;                             /* enum update_why */
     uint32_t file;                            /* the file a size, VMO or hash refusal is about */
     uint32_t check_ms;                        /* the copy and the check */
@@ -334,3 +322,26 @@ const char *update_why_str(uint32_t why);
 const char *update_write_step_str(uint32_t step);
 const char *update_stick_str(uint32_t stick);
 const char *update_menu_str(uint32_t menu);
+
+/* ---- the offer call, and its answer from init ------------------------------------ */
+
+/* Offer a build on the offer channel ch (initctl.update_offer): flags
+ * (UPDATE_OFFER_*), bytes[f] the length of file f as fetched (UPDATE_PARTS
+ * of them; bytes[UPDATE_MENU] is 0 without a menu), the manifest (mlen
+ * bytes), and the nfiles VMOs, which are moved whatever the status (the
+ * kernel's rule), then wait for the answer until deadline_ns (an absolute
+ * uptime, or DEADLINE_NEVER). OK: init answered, *a says what; else the
+ * call failed (ERR_INVALID_ARGS or ERR_WRONG_TYPE: init refused the form
+ * of the offer, before looking at it; ERR_NOT_SUPPORTED: the channel does
+ * not speak `update`; ERR_PEER_CLOSED: init ended; ERR_TIMED_OUT) and *a
+ * is zeroed. */
+status_t update_make_offer(handle_t ch, uint64_t deadline_ns, uint32_t flags,
+                           const uint64_t bytes[UPDATE_PARTS], const void *manifest,
+                           uint32_t mlen, const handle_t *files, uint32_t nfiles,
+                           struct update_answer *a);
+/* init's side: answer the offer call (ch, txid: the channel it came on and
+ * its transaction id) with *a. The text fields are cut to the protocol's
+ * sizes and anything but printable ASCII in them becomes '?', so the
+ * answer always goes (the answer is data from the network's manifest and
+ * a stick's menu). */
+status_t update_answer_reply(handle_t ch, uint32_t txid, const struct update_answer *a);

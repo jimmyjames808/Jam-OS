@@ -789,6 +789,8 @@ bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
 bool t_update_build_net(void);
 bool t_update_signature(void);
+/* updoffer.c: the offer call of `update` between update_make_offer and update_answer_reply. */
+bool t_update_offer_call(void);
 bool t_updwire_golden(void);
 bool t_updwire_hostile(void);
 bool t_updfetch_clean(void);

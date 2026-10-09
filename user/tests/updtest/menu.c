@@ -58,7 +58,7 @@ static void menu_write(const char *dir, uint32_t stop)
     status_t st = load_menu(&b, dir);
     b.flags = UPDATE_OFFER_WRITE | (stop ? UPDATE_OFFER_STOP(stop) : 0);
     if (st == OK)
-        st = offer(&b, b.parts, UPDATE_OFFER_MAGIC, &a);
+        st = offer(&b, b.parts, &a);
     close_build(&b);
     a.menu_why[sizeof(a.menu_why) - 1] = '\0';
     failures += st != OK;
@@ -99,25 +99,25 @@ static void menu_bad(const char *dir)
     uint64_t len = b.bytes[UPDATE_MENU];
     v = b;
     if (menu_copy(&b, len, len / 2, &v.vmo[UPDATE_MENU]) == OK)
-        expect("a menu byte changed", &v, UPDATE_PARTS, UPDATE_OFFER_MAGIC, UPDATE_BAD_HASH,
+        expect("a menu byte changed", &v, UPDATE_PARTS, UPDATE_BAD_HASH,
                UPDATE_MENU);
     jam_handle_close(v.vmo[UPDATE_MENU]);
     v = b;
     v.bytes[UPDATE_MENU] = len + 1;   /* the VMO is page-rounded: it has the byte */
-    expect("the menu longer than its manifest says", &v, UPDATE_PARTS, UPDATE_OFFER_MAGIC,
+    expect("the menu longer than its manifest says", &v, UPDATE_PARTS,
            UPDATE_BAD_SIZE, UPDATE_MENU);
-    expect("the menu's VMO missing", &b, UPDATE_FILES, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    expect("the menu's VMO missing", &b, UPDATE_FILES, UPDATE_BAD_OFFER, 0);
     v = plain;
     v.vmo[UPDATE_MENU] = b.vmo[UPDATE_MENU];
     v.bytes[UPDATE_MENU] = len;
-    expect("a menu with a manifest that names none", &v, UPDATE_PARTS, UPDATE_OFFER_MAGIC,
+    expect("a menu with a manifest that names none", &v, UPDATE_PARTS,
            UPDATE_BAD_OFFER, 0);
-    expect("a menu length with no menu", &v, UPDATE_FILES, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER,
+    expect("a menu length with no menu", &v, UPDATE_FILES, UPDATE_BAD_OFFER,
            0);
     b.flags = UPDATE_OFFER_CHECK_ONLY;
-    expect("with its menu, check only", &b, UPDATE_PARTS, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+    expect("with its menu, check only", &b, UPDATE_PARTS, UPDATE_ACCEPTED, 0);
     b.flags = 0;
-    expect("with its menu, RAM only", &b, UPDATE_PARTS, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+    expect("with its menu, RAM only", &b, UPDATE_PARTS, UPDATE_ACCEPTED, 0);
     close_build(&b);
     for (unsigned f = 0; f < UPDATE_FILES; f++)
         jam_handle_close(plain.vmo[f]);
