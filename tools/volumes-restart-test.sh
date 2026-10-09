@@ -6,8 +6,9 @@
 # carries on in its file. Checked afterwards: no "Jam OS stick removed"
 # notice (the stick never went), nothing given up on, no job left
 # unclean; on the stick (read on the host with mtools), the file written
-# before the kills and appended after them, and one boot log that holds
-# every kill (logd never started a second file). Of tools/fat-restart-
+# before the kills and appended after them, and one boot log that goes on
+# from the boot to the reboot's sync, every kill in it (logd never started
+# a second file). Of tools/fat-restart-
 # test.sh's family. QEMU_SMP passes through.
 # Usage: tools/volumes-restart-test.sh <outdir>; exit 0 on PASS.
 set -eu
@@ -44,8 +45,10 @@ if [ -f "$img" ]; then
     grep -q "before the kills-v" "$out/vr-file.txt" && grep -q "after the kills-v" "$out/vr-file.txt" ||
         { echo "volumes-restart: the stick's /vr.txt doesn't hold what was written"; ok=0; }
     mtype -i "$img@@64M" ::/logs/boot-0001.txt > "$out/vr-boot.txt" 2>/dev/null || true
-    for line in "init: volumes and its filesystems are gone" "init: devmgr and its drivers are gone" \
-                "init: kill usb-storage-1:0: OK"; do
+    # (what the kernel logged while /data was away may be missing: logd
+    # saves what it still has when /data is back)
+    for line in "init: kill volumes: OK" "init: kill devmgr: OK" "init: kill usb-storage-1:0: OK" \
+                "init: /data synced in"; do
         grep -q "$line" "$out/vr-boot.txt" ||
             { echo "volumes-restart: boot-0001.txt on the stick lacks \"$line\""; ok=0; }
     done
