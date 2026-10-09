@@ -44,6 +44,7 @@
 33      idltest         abi/idl/idltest.idl
 34      idltest_two     abi/idl/idltest.idl
 35      idltest_ev      abi/idl/idltest.idl
+36      usbbus_events   abi/idl/usbbus.idl
 0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
 0x4d4f  standby         kernel/include/jam/startup.h    # STANDBY_MAGIC "PROM" (promotion)
 0x4f50  update_offer    user/include/update.h           # UPDATE_OFFER_MAGIC "JUPO"

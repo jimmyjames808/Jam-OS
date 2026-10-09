@@ -40,6 +40,7 @@
 #define IDL_ID_IDLTEST       0x0021u   /* abi/idl/idltest.idl */
 #define IDL_ID_IDLTEST_TWO   0x0022u   /* abi/idl/idltest.idl */
 #define IDL_ID_IDLTEST_EV    0x0023u   /* abi/idl/idltest.idl */
+#define IDL_ID_USBBUS_EVENTS 0x0024u   /* abi/idl/usbbus.idl */
 #define IDL_ID_UPDATE_ANSWER 0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY       0x4d4fu   /* kernel/include/jam/startup.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER  0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */

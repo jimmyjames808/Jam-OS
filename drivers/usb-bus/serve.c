@@ -24,9 +24,10 @@
  * the `usbbus` protocol and the loop.
  *
  * devmgr: for each interface of a configured device (hubs aside) usb-bus
- * writes a `usbbus.interface_attached` message on DR_SERVE (txid 0) with
- * the interface's `usb` channel; devmgr starts a class driver with it. A
- * device that goes away has all its channels closed.
+ * writes a `usbbus_events.interface_attached` event on DR_EVENTS (its own
+ * channel, abi/idl/usbbus.idl) with the interface's `usb` channel; devmgr
+ * starts a class driver with it. A device that goes away has all its
+ * channels closed.
  *
  * RESULTS: the controller line, then once enumeration first settles one
  * line per device (hubs included) and a summary; failures as they happen;
@@ -171,8 +172,7 @@ static status_t iface_channel(struct usbdev *d, uint8_t num, handle_t *out, int 
 }
 
 /* s into out as a str of at most max bytes (out has room for max): its
- * length; and, for interface_attached's fixed field, out[max] too (the
- * rest of the field is zero). */
+ * length. */
 static uint32_t copy_str(char *out, unsigned max, const char *s)
 {
     uint32_t i = 0;
@@ -181,17 +181,9 @@ static uint32_t copy_str(char *out, unsigned max, const char *s)
     return i;
 }
 
-/* The same into a fixed, zero-padded field of cap bytes (NUL-terminated). */
-static void copy_field(uint8_t *out, unsigned cap, const char *s)
-{
-    uint32_t n = copy_str((char *)out, cap - 1, s);
-    for (uint32_t i = n; i < cap; i++)
-        out[i] = 0;
-}
-
 void serve_device_ready(struct usbdev *d)
 {
-    if (serve_closed)
+    if (serve_closed || g_hc.evchan == HANDLE_INVALID)
         return;
     for (int i = 0; i < d->nifs; i++) {
         struct iface *f = &d->ifs[i];
@@ -199,21 +191,14 @@ void serve_device_ready(struct usbdev *d)
         int c;
         if (iface_channel(d, f->number, &b, &c) != OK)
             continue;
-        struct usbbus_interface_attached_req m;
-        m.txid = 0;
-        m.ordinal = USBBUS_INTERFACE_ATTACHED;
-        m.id = d->id;
-        m.vendor = d->vid;
-        m.product = d->pid;
-        m.interface_number = f->number;
-        m.class_code = f->cls;
-        m.subclass = f->sub;
-        m.protocol = f->proto;
-        m.speed = d->speed;
-        copy_field(m.path, sizeof(m.path), d->path);
         /* b is gone whatever the write's status (a send's handles are
          * always moved): never closed after it. */
-        status_t st = drv_channel_write(g_hc.serve, &m, sizeof(m), &b, 1);
+        uint32_t plen = 0;
+        while (plen < 23 && d->path[plen])
+            plen++;
+        status_t st = usbbus_events_interface_attached(g_hc.evchan, d->id, d->vid, d->pid,
+                                                       f->number, f->cls, f->sub, f->proto,
+                                                       d->speed, d->path, plen, b);
         if (st != OK) {
             drv_log("usb %s: interface %u: can't tell devmgr (%s)", d->path, f->number,
                     status_str(st));
@@ -515,6 +500,7 @@ static int take_handles(struct hc *h, const struct driver_start *s)
     h->irq = drv_handle(s, DR_IRQ(0));
     h->dma = drv_handle(s, DR_DMA);
     h->serve = drv_handle(s, DR_SERVE);
+    h->evchan = drv_handle(s, DR_EVENTS);
     h->port = h->ctx_vmo = h->sp_vmo = h->pool_vmo = HANDLE_INVALID;
     if (h->dev == HANDLE_INVALID || h->bar == HANDLE_INVALID || h->irq == HANDLE_INVALID ||
         h->dma == HANDLE_INVALID) {

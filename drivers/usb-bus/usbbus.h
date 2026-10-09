@@ -234,6 +234,7 @@ struct hc {
     const char *name;                /* the driver's name, for logs */
     handle_t dev, bar, irq, dma, port, serve;   /* DR_PCIDEV, DR_BAR(0), DR_IRQ(0), DR_DMA, our
                                                  * port, DR_SERVE */
+    handle_t evchan;                 /* DR_EVENTS: where new interfaces are reported */
     struct {
         uint32_t page;               /* BAR0 offset of the page */
         volatile uint8_t *va;        /* where it is mapped */

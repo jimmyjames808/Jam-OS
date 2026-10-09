@@ -5,7 +5,9 @@
  * DR_SERVE channel: devmgr holds the other end and hands duplicates out
  * (DEVMGR_GET_SERVICE), so whoever holds it is trusted (tests, the shell's
  * `usb` command). Class drivers never see it: they get one `usb`
- * interface channel each (usb.idl). Format: see tools/genidl.py.
+ * interface channel each (usb.idl). What usb-bus tells devmgr by itself
+ * (a new interface) goes on a channel of its own: `usbbus_events`, below.
+ * Format: see tools/genidl.py.
  *
  * Restart: usb-bus keeps nothing across a restart. ERR_PEER_CLOSED: it
  * ended; get the channel from devmgr again (DEVMGR_GET_SERVICE, which
@@ -18,13 +20,16 @@
  * at each tier ("3", "3.2", "3.2.1"). The names are ASCII (what the device
  * calls itself, other characters shown as '?'); an empty one is none.
  *
- * Protocol `usbbus` (id 13). Client: usbbus_<method>(ch, args..., &results...)
- * (and usbbus_<method>_until with a deadline, _within with a timeout), or
- * usbbus_<method>_send and usbbus_<method>_result without waiting. Server:
- * fill a struct usbbus_ops and run usbbus_serve(ch, &ops, ctx), or
- * usbbus_serve_one / usbbus_dispatch_on for a loop of your own, or
- * usbbus_take_slot / usbbus_run_slot for requests read into slots that outlive
- * the server; usbbus_reply_<method> answers a request later. */
+ * Protocols `usbbus` (id 13) and `usbbus_events` (id 36): one for each
+ * kind of channel, so a message of one protocol sent on a channel of
+ * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
+ * Client: <proto>_<method>(ch, args..., &results...)
+ * (and <proto>_<method>_until with a deadline, _within with a timeout), or
+ * <proto>_<method>_send and <proto>_<method>_result without waiting. Server:
+ * fill a struct <proto>_ops and run <proto>_serve(ch, &ops, ctx), or
+ * <proto>_serve_one / <proto>_dispatch_on for a loop of your own, or
+ * <proto>_take_slot / <proto>_run_slot for requests read into slots that outlive
+ * the server; <proto>_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -35,7 +40,6 @@
 #define USBBUS_DEVICE           0x000d0003u
 #define USBBUS_INTERFACE        0x000d0004u
 #define USBBUS_OPEN_INTERFACE   0x000d0005u
-#define USBBUS_INTERFACE_ATTACHED 0x000d0064u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct usbbus_status_req {
@@ -126,25 +130,8 @@ struct usbbus_open_interface_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
-struct usbbus_interface_attached_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint32_t id;
-    uint16_t vendor;
-    uint16_t product;
-    uint8_t interface_number;
-    uint8_t class_code;
-    uint8_t subclass;
-    uint8_t protocol;
-    uint8_t speed;
-    uint8_t path[24];
-} __attribute__((packed));
-struct usbbus_interface_attached_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
 
-#define USBBUS_REQ_MAX 45u   /* bytes: the biggest request */
+#define USBBUS_REQ_MAX 13u   /* bytes: the biggest request */
 #define USBBUS_REP_MAX 134u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
@@ -469,50 +456,6 @@ static inline status_t usbbus_open_interface(handle_t ch, uint32_t id, uint8_t i
     return usbbus_open_interface_call(ch, false, DEADLINE_NEVER, id, interface_number, out_channel);
 }
 
-/* usbbus_interface_attached_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t usbbus_interface_attached_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
-{
-    struct usbbus_interface_attached_req idl_q;
-    struct usbbus_interface_attached_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = USBBUS_INTERFACE_ATTACHED;
-    idl_q.id = id;
-    idl_q.vendor = vendor;
-    idl_q.product = product;
-    idl_q.interface_number = interface_number;
-    idl_q.class_code = class_code;
-    idl_q.subclass = subclass;
-    idl_q.protocol = protocol;
-    idl_q.speed = speed;
-    for (uint32_t idl_i = 0; idl_i < 24; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-/* NOT a call: the message usb-bus WRITES on DR_SERVE (txid 0, so it is
- * queued on devmgr's end rather than answering anyone) when a configured
- * device's interface appears, with ONE handle: that interface's `usb`
- * channel. devmgr starts a class driver with it (role DR_USB) or keeps it.
- * When the device goes away usb-bus closes its end (PEER_CLOSED); there is
- * no detach message. usb-bus answers a call of it ERR_NOT_SUPPORTED. */
-static inline status_t usbbus_interface_attached_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
-{
-    return usbbus_interface_attached_call(ch, false, deadline_ns, id, vendor, product, interface_number, class_code, subclass, protocol, speed, path);
-}
-static inline status_t usbbus_interface_attached_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
-{
-    return usbbus_interface_attached_call(ch, true, timeout_ns, id, vendor, product, interface_number, class_code, subclass, protocol, speed, path);
-}
-static inline status_t usbbus_interface_attached(handle_t ch, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
-{
-    return usbbus_interface_attached_call(ch, false, DEADLINE_NEVER, id, vendor, product, interface_number, class_code, subclass, protocol, speed, path);
-}
-
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* usbbus_status without waiting: the request, with the caller's txid (not 0).
@@ -819,46 +762,6 @@ static inline status_t usbbus_open_interface_result(const void *idl_rep, struct 
     return OK;
 }
 
-/* usbbus_interface_attached without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then usbbus_interface_attached_result. */
-static inline status_t usbbus_interface_attached_send(handle_t ch, uint32_t idl_txid, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24])
-{
-    struct usbbus_interface_attached_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = USBBUS_INTERFACE_ATTACHED;
-    idl_q.id = id;
-    idl_q.vendor = vendor;
-    idl_q.product = product;
-    idl_q.interface_number = interface_number;
-    idl_q.class_code = class_code;
-    idl_q.subclass = subclass;
-    idl_q.protocol = protocol;
-    idl_q.speed = speed;
-    for (uint32_t idl_i = 0; idl_i < 24; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to usbbus_interface_attached_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t usbbus_interface_attached_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct usbbus_interface_attached_rep *idl_r = (const struct usbbus_interface_attached_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
-}
-
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -871,7 +774,6 @@ struct usbbus_ops {
     status_t (*device)(void *ctx, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, char *out_path, uint32_t *out_path_len, char *out_product_name, uint32_t *out_product_name_len, char *out_serial, uint32_t *out_serial_len);
     status_t (*interface)(void *ctx, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_endpoints, uint32_t *out_endpoints_len);
     status_t (*open_interface)(void *ctx, uint32_t id, uint8_t interface_number, handle_t *out_channel);
-    status_t (*interface_attached)(void *ctx, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24]);
 };
 
 /* Answer the usbbus.status request kept in txn: idl_st and, if it is OK, the
@@ -1016,21 +918,6 @@ static inline status_t usbbus_reply_open_interface(struct idl_txn idl_txn, statu
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     }
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
-}
-
-/* Answer the usbbus.interface_attached request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t usbbus_reply_interface_attached(struct idl_txn idl_txn, status_t idl_st)
-{
-    struct usbbus_interface_attached_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -1246,22 +1133,6 @@ static inline uint32_t usbbus_dispatch_on(handle_t ch, const struct usbbus_ops *
         *rhn = 1;
         return sizeof(*idl_r);
     }
-    case USBBUS_INTERFACE_ATTACHED: {
-        const struct usbbus_interface_attached_req *idl_q = (const struct usbbus_interface_attached_req *)req;
-        struct usbbus_interface_attached_rep *idl_r = (struct usbbus_interface_attached_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->interface_attached) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->interface_attached(ctx, idl_q->id, idl_q->vendor, idl_q->product, idl_q->interface_number, idl_q->class_code, idl_q->subclass, idl_q->protocol, idl_q->speed, idl_q->path);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
     }
     idl_h->status = ERR_NOT_SUPPORTED;
     return sizeof(*idl_h);
@@ -1369,4 +1240,279 @@ static inline status_t usbbus_serve(handle_t ch, const struct usbbus_ops *ops, v
             return idl_st;
         idl_s.rn = usbbus_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
+}
+
+
+/* ==== protocol `usbbus_events` (id 36) ======================================
+ *
+ * usbbus_events: what usb-bus tells devmgr by itself, on a channel of its
+ * own (devmgr gives usb-bus its end as the role DR_EVENTS and serves this
+ * protocol on the other): the one thing it reports is an interface that
+ * appeared. Nothing here is a call, and nobody else holds that channel, so
+ * the DR_SERVE channel `usbbus` is served on carries requests and their
+ * replies only.
+ *
+ * Restart: devmgr makes a new events channel for every usb-bus it starts,
+ * and drops the interfaces the old one reported, with their channels, when
+ * that usb-bus ends: nothing carries over, every device is enumerated and
+ * reported again. */
+
+#define USBBUS_EVENTS_PROTOCOL_ID 36u
+#define USBBUS_EVENTS_INTERFACE_ATTACHED 0x00240001u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct usbbus_events_interface_attached_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+    uint16_t vendor;
+    uint16_t product;
+    uint8_t interface_number;
+    uint8_t class_code;
+    uint8_t subclass;
+    uint8_t protocol;
+    uint8_t speed;
+} __attribute__((packed));
+
+#define USBBUS_EVENTS_REQ_MAX 46u   /* bytes: the biggest message to the server */
+#define USBBUS_EVENTS_REP_MAX 8u   /* bytes: the biggest message to the client */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* ---- events (one way, txid 0, never answered) -------------------------- */
+
+/* A configured device's interface appeared (hubs aside), with its `usb`
+ * channel (usb.idl): devmgr starts a class driver for it (the role DR_USB)
+ * or keeps it, and says nothing back. When the device goes away usb-bus
+ * closes its end of `usb` (devmgr sees PEER_CLOSED); there is no detach
+ * event. `id` is the device's (usbbus.device), `path` its port as there.
+ * ERR_SHOULD_WAIT from the stub: devmgr's queue is full; usb-bus logs it
+ * and leaves the interface unreported. */
+/* The event usbbus_events.interface_attached, to the server: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control).
+ * The handles are gone in every case: sent, closed, or lost with a
+ * write that failed (the caller never closes them after this). */
+static inline status_t usbbus_events_interface_attached(handle_t ch, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const char *path, uint32_t path_len, handle_t usb)
+{
+    handle_t idl_hs[1] = { usb };
+    _Alignas(8) uint8_t idl_b0[46];
+    struct usbbus_events_interface_attached_msg *idl_q = (struct usbbus_events_interface_attached_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = USBBUS_EVENTS_INTERFACE_ATTACHED;
+    idl_q->id = id;
+    idl_q->vendor = vendor;
+    idl_q->product = product;
+    idl_q->interface_number = interface_number;
+    idl_q->class_code = class_code;
+    idl_q->subclass = subclass;
+    idl_q->protocol = protocol;
+    idl_q->speed = speed;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 23, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st != OK)
+        idl_close_all(idl_hs, 1);   /* never sent */
+    else
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, 1);
+    return idl_st;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with usbbus_events_reply_<method> (now, or later from anywhere). An event's
+ * handler returns nothing (nothing is answered; a NULL one drops it),
+ * owns the handles it is given, and its arrays point into the message. */
+struct usbbus_events_ops {
+    void (*interface_attached)(void *ctx, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const char *path, uint32_t path_len, handle_t usb);
+};
+
+/* Run the event (txid 0) of n bytes at m with nh handles in hs: OK, or
+ * ERR_NOT_SUPPORTED (no such event, or no handler) or ERR_INVALID_ARGS
+ * (it breaks the event's format), its handles closed. */
+static inline status_t usbbus_events_event_in(const struct usbbus_events_ops *idl_tab, void *ctx,
+                                              const void *idl_m, uint32_t idl_n, const handle_t *idl_hs, uint32_t idl_nh)
+{
+    switch (((const struct idl_req_hdr *)idl_m)->ordinal) {
+    case USBBUS_EVENTS_INTERFACE_ATTACHED: {
+        const struct usbbus_events_interface_attached_msg *idl_e = (const struct usbbus_events_interface_attached_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 23, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 1)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->interface_attached)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->interface_attached(ctx, idl_e->id, idl_e->vendor, idl_e->product, idl_e->interface_number, idl_e->class_code, idl_e->subclass, idl_e->protocol, idl_e->speed, (const char *)idl_p0, idl_l0, idl_hs[0]);
+        return OK;
+    }
+    }
+    idl_close_all(idl_hs, idl_nh);
+    return ERR_NOT_SUPPORTED;
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (USBBUS_EVENTS_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the message has no txid, a `later` handler
+ * answers it itself, or it is an event: txid 0, never answered; one no
+ * handler takes is dropped). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it.
+ * The idl_nh handles at idl_hs (an event's) are taken in every case:
+ * given to its handler, or closed. */
+static inline uint32_t usbbus_events_dispatch_h(handle_t ch, const struct usbbus_events_ops *ops, void *ctx,
+                                                const void *req, uint32_t n, const handle_t *idl_hs, uint32_t idl_nh,
+                                                void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    (void)ch;
+    if (n < sizeof(struct idl_req_hdr) || !((const struct idl_req_hdr *)req)->txid) {
+        /* txid 0: an event (or no txid): never answered */
+        if (n >= sizeof(struct idl_req_hdr))
+            (void)usbbus_events_event_in(ops, ctx, req, n, idl_hs, idl_nh);
+        else
+            idl_close_all(idl_hs, idl_nh);
+        return 0;
+    }
+    if (idl_nh) {   /* a request with handles: only an event takes any */
+        idl_close_all(idl_hs, idl_nh);
+        idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+        idl_h->status = ERR_INVALID_ARGS;
+        return sizeof(*idl_h);
+    }
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    case USBBUS_EVENTS_INTERFACE_ATTACHED:
+        return sizeof(*idl_h);   /* an event with a txid */
+    }
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* usbbus_events_dispatch_h without handles (a loop of your own that reads none:
+ * an event that carries some is then dropped). */
+static inline uint32_t usbbus_events_dispatch_on(handle_t ch, const struct usbbus_events_ops *ops, void *ctx,
+                                                 const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                                 uint32_t *rhn)
+{
+    return usbbus_events_dispatch_h(ch, ops, ctx, req, n, NULL, 0, rep, rhs, rhn);
+}
+
+/* usbbus_events_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t usbbus_events_dispatch(const struct usbbus_events_ops *ops, void *ctx, const void *req, uint32_t n,
+                                              void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return usbbus_events_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t usbbus_events_take_slot(handle_t ch, const struct idl_slot *slot,
+                                               struct idl_reply *rep)
+{
+    if (slot->qcap < USBBUS_EVENTS_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the message in slot (taken by usbbus_events_take_slot, or found there by a
+ * successor), which came on ch: as usbbus_events_dispatch_h, its reply built in
+ * slot->r and the handles that reply carries put into rhs
+ * (IDL_REP_HANDLES slots; *rhn of them). The handles it carried
+ * (*slot->nh in slot->hs) are taken: given to an event's handler or
+ * closed, *slot->nh 0 after. Returns the reply's length: 0 means no reply
+ * (no txid, an event, or a `later` handler answers it itself). No I/O;
+ * the caller sends the reply with the handles, or closes them if it
+ * never sends it. */
+static inline uint32_t usbbus_events_run_slot(handle_t ch, const struct idl_slot *slot,
+                                              const struct usbbus_events_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    uint32_t idl_nh = *slot->nh;
+    *slot->nh = 0;
+    return usbbus_events_dispatch_h(ch, ops, ctx, slot->q, *slot->n, slot->hs, idl_nh, slot->r,
+                          rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
+static inline bool usbbus_events_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
+}
+
+/* Take one message off ch and answer it. OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t usbbus_events_serve_one(handle_t ch, const struct usbbus_events_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[USBBUS_EVENTS_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[USBBUS_EVENTS_REP_MAX];
+    handle_t idl_hs[IDL_READ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, USBBUS_EVENTS_REQ_MAX, &idl_n, idl_hs, IDL_READ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL) {
+        idl_st = idl_drain(ch, idl_n, idl_nh);
+    } else if (idl_st == OK) {
+        handle_t idl_rhs[IDL_REP_HANDLES];
+        uint32_t idl_rhn = 0;
+        uint32_t idl_rn = usbbus_events_dispatch_h(ch, ops, ctx, idl_q, idl_n, idl_hs, idl_nh, idl_r,
+                                         idl_rhs, &idl_rhn);
+        if (!idl_rn)
+            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+        else   /* the reply's handles are gone whatever the write's status */
+            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
+    }
+    return idl_st;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
+static inline status_t usbbus_events_serve(handle_t ch, const struct usbbus_events_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[USBBUS_EVENTS_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[USBBUS_EVENTS_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES], idl_hs[IDL_READ_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = USBBUS_EVENTS_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
+        .hs = idl_hs, .hcap = IDL_READ_HANDLES,
+    };
+    status_t idl_st;
+    while ((idl_st = idl_serve_next(&idl_s)) == OK)
+        idl_s.rn = usbbus_events_dispatch_h(ch, ops, ctx, idl_q, idl_s.n, idl_hs, idl_s.nh, idl_r,
+                                  idl_rhs, &idl_s.rhn);
+    return idl_st == ERR_PEER_CLOSED ? OK : idl_st;
 }

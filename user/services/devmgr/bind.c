@@ -180,11 +180,11 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
     return spawn(&a, proc);
 }
 
-/* What the driver writes on its own (usb-bus: interface_attached): the
+/* What a disk's driver or a filesystem service writes (its answers): the
  * port watches its client end. */
 static void watch_events(struct binding *b)
 {
-    if (b->client && !b->client_key) {
+    if (b->disk && b->client && !b->client_key) {
         uint64_t key = KEY_EV_OF(b - devs, b->gen);
         if (jam_port_bind(port, b->client, key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
             b->client_key = key;
@@ -210,6 +210,8 @@ status_t start_driver(struct binding *b)
                                    : OK;
     if (st == OK)
         st = add_serve(b, x, xr, &n);
+    if (st == OK)
+        st = usb_bus_handles(b, x, xr, &n);   /* a usb-bus's DR_EVENTS */
     if (st == OK) {
         st = spawn_driver(b, job, x, xr, n, &proc);   /* consumes the extras either way */
         n = 0;

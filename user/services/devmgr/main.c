@@ -33,10 +33,10 @@
  * RIGHT_TRANSFER (<devmgr.h> DEVMGR_DRV_*_RIGHTS): the driver can't pass
  * them on, so nothing of the device outlives the driver's job.
  *
- * A driver may also WRITE on DR_SERVE by itself (txid 0): usb-bus
- * sends `usbbus.interface_attached` (abi/idl/usbbus.idl) with the
- * interface's `usb` channel for each interface of a new device. devmgr
- * watches each driver's channel for these and keeps the channels (usb.c).
+ * usb-bus also gets DR_EVENTS, a channel devmgr serves
+ * `usbbus_events` (abi/idl/usbbus.idl) on: it sends
+ * `interface_attached` with the interface's `usb` channel for each
+ * interface of a new device, and devmgr keeps the channels (usb.c).
  *
  * A driver that dies is restarted with backoff, or given up on
  * (supervise.c). devmgr keeps its own handle to each function (with
@@ -300,8 +300,8 @@ static status_t wait_event(void)
             return OK;   /* stale */
         if (b->disk)
             disk_events(b);   /* a disk's driver, a filesystem service: answers */
-        else
-            usb_driver_events(b);
+    } else if (pkt.key & KEY_BUSEV) {
+        usb_bus_events(pkt.key);
     } else if (pkt.key & KEY_USBIF) {
         usb_if_closed(pkt.key);
     } else if (pkt.key & KEY_DISK) {

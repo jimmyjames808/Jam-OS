@@ -2,7 +2,9 @@
 # DR_SERVE channel: devmgr holds the other end and hands duplicates out
 # (DEVMGR_GET_SERVICE), so whoever holds it is trusted (tests, the shell's
 # `usb` command). Class drivers never see it: they get one `usb`
-# interface channel each (usb.idl). Format: see tools/genidl.py.
+# interface channel each (usb.idl). What usb-bus tells devmgr by itself
+# (a new interface) goes on a channel of its own: `usbbus_events`, below.
+# Format: see tools/genidl.py.
 #
 # Restart: usb-bus keeps nothing across a restart. ERR_PEER_CLOSED: it
 # ended; get the channel from devmgr again (DEVMGR_GET_SERVICE, which
@@ -36,10 +38,25 @@ protocol usbbus 13
 # same thing devmgr is handed; for tests and administration).
 5  open_interface (u32 id, u8 interface_number) -> (handle channel)
 
-# NOT a call: the message usb-bus WRITES on DR_SERVE (txid 0, so it is
-# queued on devmgr's end rather than answering anyone) when a configured
-# device's interface appears, with ONE handle: that interface's `usb`
-# channel. devmgr starts a class driver with it (role DR_USB) or keeps it.
-# When the device goes away usb-bus closes its end (PEER_CLOSED); there is
-# no detach message. usb-bus answers a call of it ERR_NOT_SUPPORTED.
-100 interface_attached (u32 id, u16 vendor, u16 product, u8 interface_number, u8 class_code, u8 subclass, u8 protocol, u8 speed, u8[24] path) -> ()
+# usbbus_events: what usb-bus tells devmgr by itself, on a channel of its
+# own (devmgr gives usb-bus its end as the role DR_EVENTS and serves this
+# protocol on the other): the one thing it reports is an interface that
+# appeared. Nothing here is a call, and nobody else holds that channel, so
+# the DR_SERVE channel `usbbus` is served on carries requests and their
+# replies only.
+#
+# Restart: devmgr makes a new events channel for every usb-bus it starts,
+# and drops the interfaces the old one reported, with their channels, when
+# that usb-bus ends: nothing carries over, every device is enumerated and
+# reported again.
+
+protocol usbbus_events 36
+
+# A configured device's interface appeared (hubs aside), with its `usb`
+# channel (usb.idl): devmgr starts a class driver for it (the role DR_USB)
+# or keeps it, and says nothing back. When the device goes away usb-bus
+# closes its end of `usb` (devmgr sees PEER_CLOSED); there is no detach
+# event. `id` is the device's (usbbus.device), `path` its port as there.
+# ERR_SHOULD_WAIT from the stub: devmgr's queue is full; usb-bus logs it
+# and leaves the interface unreported.
+1  interface_attached (u32 id, u16 vendor, u16 product, u8 interface_number, u8 class_code, u8 subclass, u8 protocol, u8 speed, str[<=23] path, handle usb) event

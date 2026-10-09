@@ -423,6 +423,24 @@ static bool t_serve_backlog(void)
     status_t st = get_status(&b);
     if (st != OK)
         FAIL("%u requests queued, then usbbus.status: %s", sent, status_str(st));
+    /* Their replies are ours to take off the channel: nobody else reads it. */
+    unsigned drained = 0;
+    for (;;) {
+        uint8_t rep[256];
+        uint32_t n = 0, nh = 0;
+        handle_t hs[4];
+        struct channel_read_args ra = {
+            .h = bus, .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        };
+        if (jam_channel_read(&ra) != OK)
+            break;
+        for (uint32_t i = 0; i < nh; i++)
+            jam_handle_close(hs[i]);
+        drained++;
+    }
+    CHECK(drained >= sent);   /* every one answered */
     return true;
 }
 
@@ -598,6 +616,10 @@ static bool t_replug(void)
     if (!hid_ready(&kb, 0, &base))
         return false;
     printf("usbtest: a new %s polls it; ready for keys again\n", kb.name);
+    /* The interface was reported on usb-bus's events channel, devmgr's: on
+     * the channel we hold nothing is ever queued but replies to our calls
+     * (none are owed now). */
+    CHECK(jam_object_wait_one(bus, SIG_READABLE, 0, NULL) != OK);
     return hid_got(&kb, base, 2);   /* `sendkey b` */
 }
 
