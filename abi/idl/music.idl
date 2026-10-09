@@ -92,7 +92,7 @@ protocol music 24
 # play). Already playing (or reading): the old folder stops (5 ms fade) and
 # the new one starts. ERR_NOT_FOUND: no such folder (or a path under no
 # mount), or no audio output (the mixer's open_output: the shell's `music`
-# checks the folder itself first to tell them apart); ERR_WRONG_TYPE: it is
+# checks the folder itself first to tell them apart); ERR_NOT_DIR: it is
 # a file; ERR_INVALID_ARGS: not an absolute path, or an `order` above 1; the
 # mixer's other errors from opening a stream.
 13 start  (str[<=4095] folder, str[<=4095] first, u8 order) -> (u32 found, u8 reading)

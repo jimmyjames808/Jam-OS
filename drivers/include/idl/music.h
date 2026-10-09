@@ -697,7 +697,7 @@ static inline status_t music_start_call(handle_t ch, bool idl_within, uint64_t i
  * play). Already playing (or reading): the old folder stops (5 ms fade) and
  * the new one starts. ERR_NOT_FOUND: no such folder (or a path under no
  * mount), or no audio output (the mixer's open_output: the shell's `music`
- * checks the folder itself first to tell them apart); ERR_WRONG_TYPE: it is
+ * checks the folder itself first to tell them apart); ERR_NOT_DIR: it is
  * a file; ERR_INVALID_ARGS: not an absolute path, or an `order` above 1; the
  * mixer's other errors from opening a stream. */
 static inline status_t music_start_until(handle_t ch, uint64_t deadline_ns, const char *folder, uint32_t folder_len, const char *first, uint32_t first_len, uint8_t order, uint32_t *out_found, uint8_t *out_reading)

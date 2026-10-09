@@ -35,7 +35,7 @@ struct tracks {
 
 /* Start reading folder (absolute) into t: every .mp3 and .wav below it,
  * in directory order. Frees what t held before. ERR_NOT_FOUND,
- * ERR_WRONG_TYPE (a file), ERR_NO_MEMORY. */
+ * ERR_NOT_DIR (a file), ERR_NO_MEMORY. */
 status_t tracks_scan_begin(struct tracks *t, const char *folder);
 /* Read up to `entries` more directory entries. ERR_SHOULD_WAIT: more to
  * read; OK: the list is complete (t->count possibly 0), ready to shuffle;
