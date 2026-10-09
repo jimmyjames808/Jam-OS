@@ -483,6 +483,7 @@ static void attach(void *ctx, uint32_t id, uint8_t bus, handle_t ch)
         jam_handle_close(ch);
         return;
     }
+    d->releasing = false;   /* attached again: a release cut short by its driver's end is over */
     if (!take_ch(d, ch)) {
         leave_alone(d, "its channel can't be watched");
         return;
