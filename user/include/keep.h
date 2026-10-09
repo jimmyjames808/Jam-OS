@@ -159,8 +159,15 @@ status_t keeper_attach(struct keeper *k, handle_t *service_end);
  * SIG_PEER_CLOSED. */
 status_t keeper_take(struct keeper *k);
 /* keeper_take until nothing is left: the service has died, its queue is
- * the rest of what it said. */
-void     keeper_drain(struct keeper *k);
+ * the rest of what it said. A loop that listens to a service still running
+ * stops after CHANNEL_MAX_QUEUED so that a flood can't hold it: then true,
+ * messages left. That is the loop's to come back to, for a binding fires
+ * only on an edge (empty -> not empty), and a queue that is never found
+ * empty makes none: the service would find it full for ever
+ * (sup_kept_event re-queues its packet). keeper_drain_upto takes at most
+ * `max`. */
+bool     keeper_drain(struct keeper *k);
+bool     keeper_drain_upto(struct keeper *k, unsigned max);
 /* Hand the successor duplicates of every slot on k->ch (KEEP_RESTORE
  * batches, then KEEP_DONE), after keeper_attach and after the service end
  * was sent to it (the kernel won't send a channel end whose queue holds
