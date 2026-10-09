@@ -757,11 +757,13 @@ bool t_sockring_exchange(void);
 /* netwait.c and netwaitrun.c: wait sets (<netwait.h>) over fake sockets
  * (fakesock.c): the calls, timeouts, wakes and costs; a socket's life and
  * plain handles; random traffic checked look by look against the rings;
- * a fake netstack thread against the test blocking in the set. */
+ * a fake netstack thread against the test blocking in the set; edge
+ * entries and netwait_block on a channel. */
 bool t_netwait_api(void);
 bool t_netwait_states(void);
 bool t_netwait_level(void);
 bool t_netwait_stress(void);
+bool t_netwait_edge(void);
 
 /* dhcp.c and dhcpc.c: the DHCP client's messages and its state machine
  * (user/services/dhcp/msg.c, client.c); dns.c and dnsres.c: the

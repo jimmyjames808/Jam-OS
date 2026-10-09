@@ -51,5 +51,9 @@ lx_call lx_getuid, lx_geteuid, lx_getgid, lx_getegid, lx_getresuid, lx_getresgid
         lx_setgid, lx_setreuid, lx_setregid, lx_setresuid, lx_setresgid, lx_setfsuid,
         lx_setfsgid, lx_getgroups, lx_setgroups;
 
+/* poll, select and epoll (poll.c, select.c, epoll.c). */
+lx_call lx_poll, lx_ppoll, lx_select, lx_pselect6, lx_epoll_create, lx_epoll_create1,
+        lx_epoll_ctl, lx_epoll_wait, lx_epoll_pwait;
+
 /* Signals before signals exist (nosig.c). */
 lx_call lx_rt_sigprocmask;

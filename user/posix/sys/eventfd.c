@@ -174,12 +174,21 @@ static long efd_give(struct fd_desc *d, struct fd_given *out)
     return 0;
 }
 
+/* poll's hook (ready.h): the event's two bits. */
+static long efd_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
+{
+    out->kind = FD_WAIT_HANDLE;
+    out->h = (struct netwait_handle){ .h = efd_of(d)->ev, .read = EFD_READABLE,
+                                      .write = EFD_WRITABLE };
+    return 0;
+}
+
 const struct fd_ops eventfd_ops = {
     .name = "eventfd",
     .read = efd_read,
     .write = efd_write,
     .stat = efd_stat,
-    /* .ready, .arm: poll's (the header says which bits) */
+    .arm = efd_arm,
     .give = efd_give,
     .close = efd_close,
 };

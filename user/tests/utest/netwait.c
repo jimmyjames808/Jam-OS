@@ -359,3 +359,87 @@ bool t_netwait_states(void)
     CHECK_EQ(msg_bytes(), before);
     return true;
 }
+
+/* ---- edge entries and netwait_block ------------------------------------------------------ */
+
+static bool read_one(handle_t a)
+{
+    uint8_t byte = 0;
+    uint32_t len = 0;
+    struct channel_read_args r = { .h = a, .rd_cap = 1, .rd_bytes = (uint64_t)(uintptr_t)&byte,
+                                   .rd_actual = (uint64_t)(uintptr_t)&len };
+    CHECK_ST(jam_channel_read(&r), OK);
+    return true;
+}
+
+/* An edge entry on a channel end, both ways: each side is reported once
+ * when it rises, not again while it stays up (a second message into a
+ * queue that isn't empty is no edge), again once it went down and came
+ * back; the read side rises while the write side stays up. */
+static bool edge_channel(struct netwait *w, handle_t a, handle_t *b)
+{
+    struct netwait_handle ch = { .h = a, .read = SIG_READABLE, .write = SIG_WRITABLE,
+                                 .hup = SIG_PEER_CLOSED };
+    struct netwait_sock none = { 0 };
+    uint32_t id = 0;
+    CHECK_ST(netwait_add_sock(w, &none, NETWAIT_EDGE, NULL, &id), ERR_NOT_SUPPORTED);
+    CHECK_ST(netwait_add_handle(w, &ch, NETWAIT_READ | NETWAIT_WRITE | NETWAIT_EDGE, NULL, &id),
+             OK);
+    CHECK_EQ(one(w), NETWAIT_WRITE);                   /* writable from the start: once */
+    CHECK_EQ(one(w), 0);
+    CHECK_ST(jam_channel_write(*b, "x", 1, NULL, 0), OK);
+    CHECK_EQ(one(w), NETWAIT_READ | NETWAIT_WRITE);    /* the read side's edge */
+    CHECK_EQ(one(w), 0);
+    CHECK_ST(jam_channel_write(*b, "y", 1, NULL, 0), OK);
+    CHECK_EQ(one(w), 0);                               /* still readable: no edge */
+    CHECK(read_one(a) && read_one(a));
+    CHECK_EQ(one(w), 0);
+    CHECK_ST(jam_channel_write(*b, "z", 1, NULL, 0), OK);
+    CHECK_EQ(one(w), NETWAIT_READ | NETWAIT_WRITE);    /* drained and filled: an edge */
+    CHECK(read_one(a));
+    CHECK_ST(netwait_modify(w, id, NETWAIT_WRITE | NETWAIT_EDGE), OK);
+    CHECK_EQ(one(w), NETWAIT_WRITE);                   /* a change is looked at at once */
+    CHECK_EQ(one(w), 0);
+    jam_handle_close(*b);
+    *b = HANDLE_INVALID;
+    CHECK_EQ(one(w), NETWAIT_HUP);
+    CHECK_EQ(one(w), 0);                               /* hung up for good: once */
+    return netwait_remove(w, id) == OK;
+}
+
+/* netwait_block sleeps until a packet is queued and takes none. */
+static bool edge_block(struct netwait *w, handle_t a, handle_t b)
+{
+    struct netwait_handle ch = { .h = a, .read = SIG_READABLE, .hup = SIG_PEER_CLOSED };
+    uint32_t id = 0;
+    CHECK_ST(netwait_add_handle(w, &ch, NETWAIT_READ, NULL, &id), OK);
+    CHECK_EQ(one(w), 0);
+    uint64_t t0 = now();
+    CHECK_ST(netwait_block(w, t0 + 20 * NS_PER_MS), ERR_TIMED_OUT);
+    CHECK(now() - t0 >= 20 * NS_PER_MS);
+    CHECK_ST(jam_channel_write(b, "x", 1, NULL, 0), OK);
+    CHECK_ST(netwait_block(w, now() + WAIT_LONG), OK);
+    CHECK_ST(netwait_block(w, now() + WAIT_LONG), OK);   /* the packet is still there */
+    CHECK_EQ(one(w), NETWAIT_READ);
+    CHECK(read_one(a));
+    CHECK_EQ(one(w), 0);
+    CHECK_ST(netwait_block(w, 0), ERR_TIMED_OUT);        /* taken by that look */
+    return netwait_remove(w, id) == OK;
+}
+
+bool t_netwait_edge(void)
+{
+    struct netwait *w = NULL;
+    handle_t a = HANDLE_INVALID, b = HANDLE_INVALID, c = HANDLE_INVALID, d = HANDLE_INVALID;
+    uint64_t before = msg_bytes();
+    bool ok = netwait_create(4, &w) == OK && jam_channel_create(&a, &b) == OK &&
+              edge_channel(w, a, &b) && jam_channel_create(&c, &d) == OK && edge_block(w, c, d);
+    netwait_destroy(w);
+    handle_t hs[] = { a, b, c, d };
+    for (unsigned i = 0; i < 4; i++)
+        if (hs[i] != HANDLE_INVALID)
+            jam_handle_close(hs[i]);
+    CHECK(ok);
+    CHECK_EQ(msg_bytes(), before);
+    return true;
+}
