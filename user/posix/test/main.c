@@ -23,6 +23,7 @@ static const struct {
     { "start", pt_start },
     { "mem", pt_mem },
     { "thread", pt_thread },
+    { "poll", pt_poll },
 };
 
 static void run(unsigned i, char **argv)
@@ -38,6 +39,8 @@ int main(int argc, char **argv)
         return pt_child_start(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-handover"))
         return pt_child_handover();
+    if (argc >= 2 && !strcmp(argv[1], "--child-poll"))
+        return pt_child_poll();
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {
