@@ -550,8 +550,8 @@ void sup_restarted(const char *log, const char *name, bool promoted, uint64_t ki
 The log lines keep their words with the new prefix ("volumes: fat-data:
 spare promoted ...", "init: bin/mixer: ..."): the scripts grep them.
 init's own restart counting (`count_end`, the services that are never
-given up) stays init's: `tools/shell-tests/shell-forever.txt` relies on
-it, and nothing in M12 asks to change it.
+given up) stays init's: `shell-forever.txt` relied on it (gone with
+`nocomp`, M12's Q14), and nothing in M12 asks to change it.
 
 ## Start order, hand-overs, deaths
 

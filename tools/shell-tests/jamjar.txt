@@ -1,9 +1,8 @@
 # jamjar, the music player's window (user/apps/jamjar): use
 # tools/jamjar-test.sh (it makes the library on /data/music, adds the
-# audio devices, a USB keyboard and mouse). At OVMF's 1280x800, on either
-# boot: the compositor's (jamjar a maximised window under the desktop's
-# strip, the terminal's tile under it) or `nocomp`'s (jamjar borrows the
-# whole screen). The mouse's targets are jamjar's own (its trace says
+# audio devices, a USB keyboard and mouse). At OVMF's 1280x800: jamjar a
+# maximised window under the desktop's strip, the terminal's tile under
+# it. The mouse's targets are jamjar's own (its trace says
 # where they are in its window) plus the window's place (a right click,
 # which jamjar only reports, finds it).
 #   1. the self-tests (jamcover's decoder; jamjar's, whose cover helper

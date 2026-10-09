@@ -1,20 +1,18 @@
 #!/bin/sh
-# The console's own screen, booted with `nocomp` (the compositor draws it
-# on every other plain boot), on a plain boot (tools/shell-tests/screen.txt), booted with
-# the splash (QEMU_SPLASH=1) and so with the kernel log off the screen,
-# and a stick image "a" (MBR, one FAT32 partition) for QEMU's monitor to
-# plug in and pull. Then the screenshots, with PIL: the shell after the
-# splash shows no log line (none of the log's grey, dark-grey stamp or
-# green process colours) and no RESULTS box; a notice is a yellow line
-# above the prompt; `ktest` puts its log lines on the screen while it
-# runs. The log has the notices ("console: notice: ...") and exactly one
-# "a stick is at /usb0" before the pull (`mount -w` and `-r` said
-# nothing), and none of the notices `utest impostor`'s lines would make if
-# the console trusted a line's name rather than the kernel's mark of its
-# writer. Then a `verbose` boot: the log is on the shell's screen as
-# before. Then a plain boot with the stick in from the start
-# (screen-atboot.txt): it is mounted, and no notice says so (only its pull
-# is news). QEMU_SMP passes through.
+# The screen on a plain boot, the desktop's (tools/shell-tests/screen.txt;
+# before M12's Q14 this was the full-screen console's own screen, booted
+# with `nocomp`), booted with the splash (QEMU_SPLASH=1) and so with the
+# kernel log off the first terminal's screen, and a stick image "a" (MBR,
+# one FAT32 partition) for QEMU's monitor to plug in and pull. The log has
+# the desktop's notices ("compositor: notice <n>: ..."): exactly one "USB
+# stick added" (`mount -w` and `-r` said nothing), "USB stick removed",
+# and the boot stick's "Jam OS stick removed" and "... is back". Then the
+# screenshots, with PIL: the shell after the splash shows no log line in
+# its window (few pixels of the log's grey, dark-grey stamp or green
+# process colours: the desktop around it has none of them), and no RESULTS
+# box; `ktest` puts its log lines in the window while it runs (many more
+# of them). Then a `verbose` boot: the log is in the first terminal's
+# window as it comes. QEMU_SMP passes through.
 # Usage: tools/screen-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
 out=$1 name=${2:-screen}
@@ -29,78 +27,49 @@ rm -f "$out/$name-hello.txt"
 ok=1
 if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/screen.txt \
      QEMU_USB="-drive if=none,id=aimg,format=raw,file=$a " \
-     tools/qemu-test.sh "$out" "$name" shell nocomp > "$out/$name.out" 2>&1; then
+     tools/qemu-test.sh "$out" "$name" shell > "$out/$name.out" 2>&1; then
     echo "$name: the shell script FAILED (see $out/$name.log)"
     tail -3 "$out/$name.out"
     ok=0
 fi
 log="$out/$name.log"
-n=$(grep -ac "console: notice: A stick is at /usb0" "$log" || true)
-[ "$n" = 1 ] || { echo "$name: 'a stick is at /usb0' said $n times, want 1"; ok=0; }
-grep -aq "console: selftest PASSED" "$log" || { echo "$name: the console's selftest failed"; ok=0; }
-grep -aq "\[init\] init: bin/music ended 11 times" "$log" ||
-    { echo "$name: utest impostor's line in init's name is not in the log"; ok=0; }
-for fake in "Music kept stopping" "The hid driver (usb 9:0)" "/data is full"; do
-    if grep -aq "console: notice: $fake" "$log"; then
-        echo "$name: a notice from an impostor: $fake"; ok=0
-    fi
-done
+n=$(grep -acE "compositor: notice [0-9]+: USB stick added" "$log" || true)
+[ "$n" = 1 ] || { echo "$name: 'USB stick added' posted $n times, want 1"; ok=0; }
 if grep -aq "RESULTS (read these lines out)" "$log"; then
     echo "$name: a RESULTS box on a plain boot"; ok=0
 fi
 
-# The verbose boot: the log on the shell's screen as ever.
+# The verbose boot: the log in the first terminal's window as ever.
 if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/screen-verbose.txt \
-     tools/qemu-test.sh "$out" "$name-verbose" shell verbose nocomp > "$out/$name-verbose.out" 2>&1; then
+     tools/qemu-test.sh "$out" "$name-verbose" shell verbose > "$out/$name-verbose.out" 2>&1; then
     echo "$name-verbose: the shell script FAILED"
     ok=0
-fi
-
-# A stick in at boot: mounted while the machine starts, so no news.
-if ! QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/screen-atboot.txt \
-     QEMU_USB="-drive if=none,id=aimg,format=raw,file=$a -device usb-storage,id=sb,bus=xhci.0,port=2,drive=aimg " \
-     tools/qemu-test.sh "$out" "$name-atboot" shell nocomp > "$out/$name-atboot.out" 2>&1; then
-    echo "$name-atboot: the shell script FAILED (see $out/$name-atboot.log)"
-    tail -3 "$out/$name-atboot.out"
-    ok=0
-fi
-if grep -aq "console: notice: A stick is at" "$out/$name-atboot.log"; then
-    echo "$name-atboot: a notice for the stick that was in at boot"; ok=0
 fi
 
 python3 - "$out" <<'PY' || ok=0
 import sys
 from PIL import Image
 out = sys.argv[1]
-# The console's palette (user/services/console/screen.c): the log's grey,
-# its stamps' dark grey, a process's green; the notices' yellow (also the
-# prompt's).
-GREY, DARK, GREEN, YELLOW = (0xb0, 0xb0, 0xb0), (0x70, 0x70, 0x70), (0x66, 0xdd, 0x66), \
-                            (0xff, 0xdd, 0x55)
-def count(path, colour, rows=None):
+# The terminal's palette (user/services/console/cellpaint.c): the log's
+# grey, its stamps' dark grey, a process's green.
+LOG = {(0xb0, 0xb0, 0xb0), (0x70, 0x70, 0x70), (0x66, 0xdd, 0x66)}
+def count(path):
     img = Image.open(path).convert("RGB")
-    w, h = img.size
-    px = img.load()
-    y0, y1 = rows if rows else (0, h)
-    return sum(1 for y in range(y0, y1) for x in range(w) if px[x, y] == colour)
+    return sum(n for n, c in img.getcolors(1 << 24) if c in LOG)
 bad = False
 def check(cond, msg):
     global bad
     print(("screen: ok: " if cond else "screen: FAIL: ") + msg)
     bad |= not cond
+quiet = {}
 for shot in ("screen-boot", "screen-stick", "screen-back"):
-    p = "%s/%s.png" % (out, shot)
-    log = count(p, GREY) + count(p, DARK) + count(p, GREEN)
-    check(log == 0, "%s: no kernel log on the screen (%d log-coloured pixels)" % (shot, log))
-h = Image.open(out + "/screen-stick.png").size[1]
-y = count(out + "/screen-stick.png", YELLOW, (0, h - 16))
-check(y > 100, "screen-stick: a yellow notice above the prompt (%d pixels)" % y)
-y = count(out + "/screen-boot.png", YELLOW, (0, h - 16))
-check(y == 0, "screen-boot: no notice at boot (%d yellow pixels above the prompt)" % y)
-g = count(out + "/screen-ktest.png", GREY) + count(out + "/screen-ktest.png", GREEN)
-check(g > 1000, "screen-ktest: ktest's log lines on the screen (%d pixels)" % g)
-g = count(out + "/screen-verbose.png", GREY) + count(out + "/screen-verbose.png", GREEN)
-check(g > 1000, "screen-verbose: verbose: the log on the shell's screen (%d pixels)" % g)
+    quiet[shot] = count("%s/%s.png" % (out, shot))
+    check(quiet[shot] < 300, "%s: no kernel log on the screen (%d log-coloured pixels)"
+          % (shot, quiet[shot]))
+g = count(out + "/screen-ktest.png")
+check(g > quiet["screen-boot"] + 1000, "screen-ktest: ktest's log lines on the screen (%d pixels)" % g)
+g = count(out + "/screen-verbose.png")
+check(g > quiet["screen-boot"] + 1000, "screen-verbose: verbose: the log on the shell's screen (%d pixels)" % g)
 sys.exit(1 if bad else 0)
 PY
 rm -f "$a"

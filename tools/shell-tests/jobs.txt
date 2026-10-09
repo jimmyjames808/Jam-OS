@@ -91,8 +91,7 @@ send jobs | grep utest || echo ok-$T-norefused
 wait ok-x-norefused
 
 # ---- a program that draws, in the background: a window of its own ----------------------
-# (the compositor's; booted with `nocomp` it could borrow no screen and
-# would end at once). Its window takes the keys, as a program's first
+# (the compositor's). Its window takes the keys, as a program's first
 # window does: q quits it, and the keys come back to the terminal. (The
 # test window, wltest: what it prints is its events, then its frames.)
 send wltest &

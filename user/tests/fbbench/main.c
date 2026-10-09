@@ -21,7 +21,12 @@
  *
  * Exit 0 if every line was measured, 1 if one failed (the line says so),
  * 2 for a usage error. */
+#include <wants.h>
 #include "fbbench.h"
+
+/* What it is given when the shell runs it (<wants.h>): the compositor, for
+ * its window. */
+JAM_WANTS("svc wayland\n");
 
 #define SAMPLES     64
 #define SHORT       1000   /* samples of a line that takes microseconds */

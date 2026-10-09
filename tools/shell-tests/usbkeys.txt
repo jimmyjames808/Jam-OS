@@ -22,8 +22,7 @@ wait 10 Commands:
 wait {prompt}
 # the compositor restarts: hid loses its input channel, ends, and devmgr
 # starts it again connected to the new compositor; the keys reach the
-# terminal's window again (under `nocomp` the console is the input's hub:
-# `kill console` does this)
+# terminal's window again
 send kill compositor
 wait 10 init: bin/compositor was killed
 seen 30 usb 6.1:0 drv/hid: its compositor went away: reconnecting
