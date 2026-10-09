@@ -3,7 +3,11 @@
 # bin/tcptest connects to the peer's TCP server (tools/tcppeer.py, on the
 # Mac's address) and sends 10 MiB, reads 10 MiB back, every byte checked
 # on both sides; the same with 8 MiB and 2 MiB rings (a scaled window) to
-# a server whose ACKs come 20 ms late; then it listens on port 5031 and
+# a server whose ACKs come 20 ms late; then the connection options: eight
+# writes of 10 bytes 20 ms apart to servers whose ACKs come 200 ms late,
+# with Nagle's algorithm off (the peer must see about eight segments) and on
+# (two at most), and a connection idle for 5 s with keep-alive on (the peer
+# must see its probes and answer them); then it listens on port 5031 and
 # serves the peer's 20 connections at once from one wait set, 256 KiB
 # each way each. The script checks the peer's counts afterwards.
 wait 120 Jam OS shell
@@ -15,6 +19,15 @@ wait 300 tcptest: PASS: connected
 wait {prompt}
 send run tcptest send 10.2.21.174 5032 8388608 2097152
 wait 300 tcptest: PASS: connected
+wait {prompt}
+send run tcptest small 10.2.21.174 5033 8 10 0
+wait 60 tcptest: PASS: 8 writes of 10 bytes, no delay
+wait {prompt}
+send run tcptest small 10.2.21.174 5034 8 10 1
+wait 60 tcptest: PASS: 8 writes of 10 bytes, Nagle on
+wait {prompt}
+send run tcptest keepalive 10.2.21.174 5035 5
+wait 60 tcptest: PASS: idle 5 s with keep-alive, still open
 wait {prompt}
 send run tcptest serve 5031 20 262144
 wait 30 tcptest: listening on port 5031

@@ -412,9 +412,13 @@ bool t_nettcp_heap_shares(void);
 /* nettcpooseq.c: segments past a hole kept (bounded), SACK. */
 bool t_nettcp_ooseq_sack(void);
 bool t_nettcp_ooseq_bounds(void);
+/* nettcpopts.c: a connection's options (Nagle, keep-alive), in-process. */
+bool t_nettcp_nodelay(void);
+bool t_nettcp_keepalive(void);
 /* nettcpsock.c: programs' TCP calls on bin/netstack over the fake driver. */
 bool t_nettcp_limits(void);
 bool t_nettcp_bulk_rings(void);
+bool t_nettcp_options(void);
 bool t_netctl_set_and_clear(void);
 bool t_netctl_read_only(void);
 bool t_netctl_process(void);

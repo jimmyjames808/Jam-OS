@@ -204,7 +204,10 @@ uint16_t stack_ooseq_pbufs(const struct tcp_pcb *pcb);
 #define TCP_OOSEQ_BYTES_LIMIT(pcb) stack_ooseq_bytes(pcb)
 #define TCP_OOSEQ_PBUFS_LIMIT(pcb) stack_ooseq_pbufs(pcb)
 #define LWIP_TCP_TIMESTAMPS     0
-#define LWIP_TCP_KEEPALIVE      0     /* an idle connection is its program's to close */
+/* Keep-alive probes only on a connection whose program asked (net_stream's
+ * set_options: SOF_KEEPALIVE, with its own idle time, interval and count);
+ * an idle connection is otherwise its program's to close. */
+#define LWIP_TCP_KEEPALIVE      1
 /* TIME_WAIT is 2 x TCP_MSL: 60 s, as Linux. Their number is bounded by
  * the pool above (the oldest is recycled when a pcb is needed). */
 #define TCP_MSL                 30000

@@ -334,9 +334,17 @@ bool     stack_tcp_fin_acked(struct stack_tcp *t);
 void     stack_tcp_release(struct stack_tcp *t);
 /* Reset it now (a RST) and free it. No hook is called. */
 void     stack_tcp_abort(struct stack_tcp *t);
-/* Its peer's address and port, and its own port. */
+/* Its peer's address and port, and its own address and port. */
 void     stack_tcp_ends(struct stack_tcp *t, uint32_t *peer, uint16_t *peer_port,
-                        uint16_t *port);
+                        uint32_t *local, uint16_t *port);
+/* Nagle's algorithm off (nodelay: a small segment leaves at once, the
+ * default of every connection) or on (it waits while an earlier segment is
+ * unacked), and the keep-alive: off, or on with the seconds idle before the
+ * first probe, between probes and the probes unanswered before lwIP resets
+ * the connection (hooks.gone, ERR_TIMED_OUT). The seconds and the count are
+ * lwIP's real ones (stack_tcp_options' callers range-check them). */
+void     stack_tcp_options(struct stack_tcp *t, bool nodelay, bool keepalive,
+                           uint32_t idle_s, uint32_t intvl_s, uint32_t cnt);
 
 /* lwIP's TCP now: pcbs in use by state, segments queued, and drops (bad
  * checksum or header, no room, out of order or out of window). */

@@ -982,12 +982,32 @@ void stack_tcp_abort(struct stack_tcp *t)
     tcp_abort(pcb);
 }
 
-void stack_tcp_ends(struct stack_tcp *t, uint32_t *peer, uint16_t *peer_port, uint16_t *port)
+void stack_tcp_ends(struct stack_tcp *t, uint32_t *peer, uint16_t *peer_port, uint32_t *local,
+                    uint16_t *port)
 {
     struct tcp_pcb *pcb = pcb_of(t);
     *peer = from_lwip(ip_2_ip4(&pcb->remote_ip));
     *peer_port = pcb->remote_port;
+    *local = from_lwip(ip_2_ip4(&pcb->local_ip));
     *port = pcb->local_port;
+}
+
+void stack_tcp_options(struct stack_tcp *t, bool nodelay, bool keepalive, uint32_t idle_s,
+                       uint32_t intvl_s, uint32_t cnt)
+{
+    struct tcp_pcb *pcb = pcb_of(t);
+    if (nodelay)
+        tcp_nagle_disable(pcb);
+    else
+        tcp_nagle_enable(pcb);
+    if (!keepalive) {
+        ip_reset_option(pcb, SOF_KEEPALIVE);
+        return;
+    }
+    pcb->keep_idle = idle_s * 1000u;   /* lwIP's are milliseconds */
+    pcb->keep_intvl = intvl_s * 1000u;
+    pcb->keep_cnt = cnt;
+    ip_set_option(pcb, SOF_KEEPALIVE);
 }
 
 /* pcbs on a list (all, or those in state `only`): bounded by lwIP's pool. */

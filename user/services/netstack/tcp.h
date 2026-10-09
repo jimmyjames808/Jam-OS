@@ -113,6 +113,11 @@ void     ntcp_conn_rings(struct ntcp_conn *c, const struct sockring *r);
 /* Connect to to:port (the caller checked them). CONNECTING now, OPEN or
  * CLOSED later. stack_tcp_connect's errors. */
 status_t ntcp_connect(struct ntcp_conn *c, uint32_t to, uint16_t port);
+/* Its options (stack_tcp_options): Nagle off or on, keep-alive off or on
+ * with its seconds (ranges checked by the caller). A connection that is
+ * CLOSED has nothing to set: ignored. Nagle going off sends what it held. */
+void     ntcp_conn_options(struct ntcp_conn *c, bool nodelay, bool keepalive, uint32_t idle_s,
+                           uint32_t intvl_s, uint32_t cnt);
 /* The program signalled to_stack (bytes or the END to send, room read). */
 void     ntcp_kick(struct ntcp_conn *c);
 /* Reset it now: CLOSED with `why`. */

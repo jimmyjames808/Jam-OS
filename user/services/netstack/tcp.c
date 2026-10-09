@@ -444,6 +444,16 @@ status_t ntcp_connect(struct ntcp_conn *c, uint32_t to, uint16_t port)
     return st;
 }
 
+void ntcp_conn_options(struct ntcp_conn *c, bool nodelay, bool keepalive, uint32_t idle_s,
+                       uint32_t intvl_s, uint32_t cnt)
+{
+    if (!c->t)
+        return;
+    stack_tcp_options(c->t, nodelay, keepalive, idle_s, intvl_s, cnt);
+    if (nodelay && c->connected)
+        stack_tcp_push(c->t);   /* what Nagle held back goes now */
+}
+
 void ntcp_kick(struct ntcp_conn *c)
 {
     note(c);

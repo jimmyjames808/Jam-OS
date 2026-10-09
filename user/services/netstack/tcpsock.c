@@ -34,7 +34,8 @@ struct tsock {
     struct sockmem    m;           /* its rings' memory */
     uint32_t          peer;        /* the peer's address and port, ... */
     uint16_t          peer_port;
-    uint16_t          port;        /* ... and ours */
+    uint32_t          local;       /* ... and ours (the address the connection runs on) */
+    uint16_t          port;
 };
 
 /* A program's listener. */
@@ -220,7 +221,7 @@ status_t tcpsock_op_tcp(void *ctx, uint32_t address, uint16_t port, uint32_t tx_
         return st;
     st = ntcp_connect(t->c, address, port);
     if (st == OK) {
-        stack_tcp_ends(t->c->t, &t->peer, &t->peer_port, &t->port);
+        stack_tcp_ends(t->c->t, &t->peer, &t->peer_port, &t->local, &t->port);
         st = hand_out(t, &k);
     }
     if (st != OK) {
@@ -241,9 +242,7 @@ static status_t ts_state(void *ctx, uint32_t *out_address, uint16_t *out_port,
                          uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued)
 {
     struct tsock *t = ctx;
-    struct stack_state st;
-    stack_get(&st);
-    *out_address = st.ip.address;
+    *out_address = t->local;
     *out_port = t->port;
     *out_peer = t->peer;
     *out_peer_port = t->peer_port;
@@ -251,7 +250,28 @@ static status_t ts_state(void *ctx, uint32_t *out_address, uint16_t *out_port,
     return OK;
 }
 
-static const struct net_stream_ops sock_ops = { .state = ts_state };
+/* Linux's keep-alive defaults, which a 0 asks for. */
+#define KEEP_IDLE_DEFAULT  7200u
+#define KEEP_INTVL_DEFAULT 75u
+#define KEEP_CNT_DEFAULT   9u
+
+static status_t ts_set_options(void *ctx, uint32_t flags, uint32_t keep_idle,
+                               uint32_t keep_intvl, uint32_t keep_cnt)
+{
+    struct tsock *t = ctx;
+    if ((flags & ~(NET_STREAM_OPT_NODELAY | NET_STREAM_OPT_KEEPALIVE)) ||
+        keep_idle > NET_STREAM_KEEP_MAX || keep_intvl > NET_STREAM_KEEP_MAX ||
+        keep_cnt > NET_STREAM_KEEP_CNT_MAX)
+        return ERR_INVALID_ARGS;
+    if (t->c)
+        ntcp_conn_options(t->c, flags & NET_STREAM_OPT_NODELAY, flags & NET_STREAM_OPT_KEEPALIVE,
+                          keep_idle ? keep_idle : KEEP_IDLE_DEFAULT,
+                          keep_intvl ? keep_intvl : KEEP_INTVL_DEFAULT,
+                          keep_cnt ? keep_cnt : KEEP_CNT_DEFAULT);
+    return OK;
+}
+
+static const struct net_stream_ops sock_ops = { .state = ts_state, .set_options = ts_set_options };
 
 static void ts_serve(struct tsock *t)
 {
@@ -289,7 +309,7 @@ static status_t l_rings(struct ntcp_listener *nl, struct ntcp_conn *c)
     status_t st = ts_new(o, l->cls, tx, l->rx, c, &t);
     if (st != OK)
         return st;
-    stack_tcp_ends(c->t, &t->peer, &t->peer_port, &t->port);
+    stack_tcp_ends(c->t, &t->peer, &t->peer_port, &t->local, &t->port);
     t->on = l;
     return OK;
 }

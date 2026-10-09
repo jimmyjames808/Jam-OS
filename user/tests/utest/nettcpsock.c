@@ -7,8 +7,10 @@
  * resetting its connections, and the counts going back to nothing
  * (nettcp_limits); a listener with bulk tx rings whose connections outgrow
  * its opener's ring bytes: the rest get the default tx ring, not a reset
- * (nettcp_bulk_rings, the test as the peer on the fake driver too). The
- * bytes themselves are tools/tcp-test.sh's (QEMU, a real peer) and the
+ * (nettcp_bulk_rings, the test as the peer on the fake driver too); a
+ * connection's options through net_stream.set_options: the ranges, Nagle's
+ * algorithm seen on the wire, and a keep-alive that ends a connection whose
+ * peer says nothing (nettcp_options). The bytes themselves are tools/tcp-test.sh's (QEMU, a real peer) and the
  * in-process nettcp_* tests'. Each ends with netstack killed and its job
  * empty. */
 #define CHECK_PROG "utest"
@@ -252,7 +254,11 @@ bool t_nettcp_bulk_rings(void)
              ERR_NOT_SUPPORTED);
     CHECK_ST(net_listener_accept_until(s[0].ch, now() + NETDRV_WAIT, 0, &hs[0], &hs[1], &hs[2],
                                        &hs[3], &peer, &port, &got, &queued),
-             ERR_INVALID_ARGS);   /* longer than any request a connection's protocol has */
+             ERR_NOT_SUPPORTED);   /* another protocol's method */
+    /* ... and a connection's method on a listener's or an opener's channel
+     * is refused too (too long for the one, another protocol for the other). */
+    CHECK(net_stream_set_options(l.ch, NET_STREAM_OPT_NODELAY, 0, 0, 0) != OK);
+    CHECK(net_stream_set_options(lo, NET_STREAM_OPT_NODELAY, 0, 0, 0) != OK);
     CHECK_ST(net_info(s[0].ch, &in), ERR_NOT_SUPPORTED);
     CHECK_ST(net_info(l.ch, &in), ERR_NOT_SUPPORTED);
     for (unsigned i = 0; i < N; i++)
@@ -264,6 +270,128 @@ bool t_nettcp_bulk_rings(void)
         CHECK(counts(&c));
     } while ((c.tcp_conns || c.tcp_listeners || c.ring_bytes || c.openers) && now() < end);
     CHECK(!c.tcp_conns && !c.ring_bytes);
+    CHECK(netdrv_stop());
+    return true;
+}
+
+/* ---- a connection's options -------------------------------------------------------- */
+
+/* What netstack sent the peer on p's connection until `quiet` passed after
+ * the last of it: segments with data (and their bytes), empty ones that are
+ * a keep-alive's (one byte before p->rcv) and resets; p->rcv moves on over
+ * the data. */
+struct seen {
+    unsigned segs, probes, resets;
+    uint32_t bytes;
+};
+
+static bool drain(struct tp *p, uint64_t quiet, struct seen *w)
+{
+    uint8_t f[PKT_FRAME_MAX];
+    uint32_t n;
+    *w = (struct seen){ 0 };
+    while (netdrv_recv(f, &n, quiet) == OK) {
+        const uint8_t *t;
+        size_t len;
+        if (!pkt_is_ipv4(f, n, PEER_IP, 6, &t, &len) || len < 20 || pkt_get16(t + 2) != p->port)
+            continue;
+        size_t hl = (size_t)(t[12] >> 4) * 4, paylen = len - hl;
+        uint32_t seq = pkt_get32(t + 4);
+        if (t[13] & TP_RST) {
+            w->resets++;
+        } else if (paylen && seq == p->rcv) {
+            w->segs++;
+            w->bytes += (uint32_t)paylen;
+            p->rcv += (uint32_t)paylen;
+        } else if (!paylen && seq == p->rcv - 1) {
+            w->probes++;
+        }
+    }
+    return true;
+}
+
+static bool peer_acks(struct tp *p)
+{
+    uint8_t f[PKT_FRAME_MAX];
+    CHECK(netdrv_send(f, tp_frame(f, p, TP_ACK, NULL, 0)));
+    return true;
+}
+
+/* A peer connects from port `from` to a listener on `port`; the program
+ * accepts. */
+static bool peer_accepted(struct tp *p, uint16_t port, uint16_t from, struct net_sock *s,
+                          handle_t lo, struct net_listener *l)
+{
+    uint8_t f[PKT_FRAME_MAX];
+    CHECK_ST(net_tcp_listen(lo, port, 4, 0, 0, l), OK);
+    *p = (struct tp){ .ip = PEER_IP, .mac = pkt_peer_mac, .port = from, .our = l->port,
+                      .snd = 0x52000000u, .win = 0xffff };
+    CHECK(netdrv_send(f, tp_frame(f, p, TP_SYN, NULL, 0)));
+    p->snd++;
+    CHECK(syn_ack(p));
+    CHECK(peer_acks(p));
+    CHECK_ST(net_tcp_accept(l, now() + NETDRV_WAIT, s, NULL, NULL), OK);
+    return true;
+}
+
+bool t_nettcp_options(void)
+{
+    handle_t lo;
+    struct net_listener l;
+    struct net_sock s;
+    struct tp p;
+    struct seen w;
+    CHECK(netdrv_start());
+    CHECK(netdrv_ping(1, true));   /* netstack knows the peer's MAC */
+    CHECK(connect_on(netdrv_net_listen(), &lo));
+    CHECK(peer_accepted(&p, 5200, 40200, &s, lo, &l));
+    /* The ranges: a bit that is none of the options, a time or a count past
+     * its largest, each refused with nothing changed. */
+    CHECK_ST(net_tcp_set_options(&s, 4, 0, 0, 0), ERR_INVALID_ARGS);
+    CHECK_ST(net_tcp_set_options(&s, NET_STREAM_OPT_KEEPALIVE, NET_STREAM_KEEP_MAX + 1, 0, 0),
+             ERR_INVALID_ARGS);
+    CHECK_ST(net_tcp_set_options(&s, NET_STREAM_OPT_KEEPALIVE, 0, NET_STREAM_KEEP_MAX + 1, 0),
+             ERR_INVALID_ARGS);
+    CHECK_ST(net_tcp_set_options(&s, NET_STREAM_OPT_KEEPALIVE, 0, 0, NET_STREAM_KEEP_CNT_MAX + 1),
+             ERR_INVALID_ARGS);
+    CHECK_ST(net_tcp_set_options(&s, NET_STREAM_OPT_KEEPALIVE, NET_STREAM_KEEP_MAX,
+                                 NET_STREAM_KEEP_MAX, NET_STREAM_KEEP_CNT_MAX), OK);
+    /* A connection starts with Nagle off: three small writes, three
+     * segments before any ACK. */
+    CHECK_ST(net_tcp_set_options(&s, NET_STREAM_OPT_NODELAY, 0, 0, 0), OK);
+    for (unsigned i = 0; i < 3; i++) {
+        CHECK_ST(net_write(&s, "0123456789", 10, now() + NETDRV_WAIT, NULL), OK);
+        jam_sleep_until(now() + 20 * NS_PER_MS);
+    }
+    CHECK(drain(&p, NETDRV_QUIET, &w));
+    CHECK(w.segs == 3 && w.bytes == 30);
+    CHECK(peer_acks(&p));
+    /* Nagle on: the first goes, the next two wait for its ACK and go as one. */
+    CHECK_ST(net_tcp_set_options(&s, 0, 0, 0, 0), OK);
+    CHECK_ST(net_write(&s, "0123456789", 10, now() + NETDRV_WAIT, NULL), OK);
+    jam_sleep_until(now() + 20 * NS_PER_MS);
+    CHECK_ST(net_write(&s, "0123456789", 10, now() + NETDRV_WAIT, NULL), OK);
+    CHECK_ST(net_write(&s, "0123456789", 10, now() + NETDRV_WAIT, NULL), OK);
+    CHECK(drain(&p, NETDRV_QUIET, &w));
+    CHECK(w.segs == 1 && w.bytes == 10);
+    CHECK(peer_acks(&p));
+    CHECK(drain(&p, NETDRV_QUIET, &w));
+    CHECK(w.segs == 1 && w.bytes == 20);
+    CHECK(peer_acks(&p));
+    /* Keep-alive with a silent peer: idle 1 s, every 1 s, 2 probes, then a
+     * reset, and the connection is CLOSED with ERR_TIMED_OUT. Nothing is
+     * sent before it is asked for. */
+    CHECK(drain(&p, NETDRV_QUIET, &w));
+    CHECK(!w.segs && !w.probes && !w.resets);
+    CHECK_ST(net_tcp_set_options(&s, NET_STREAM_OPT_NODELAY | NET_STREAM_OPT_KEEPALIVE, 1, 1, 2),
+             OK);
+    CHECK(drain(&p, 5 * NS_PER_S, &w));
+    CHECK(w.probes == 2 && w.resets == 1 && !w.segs);
+    CHECK_ST(net_tcp_wait_closed(&s, now() + NETDRV_WAIT), ERR_TIMED_OUT);
+    CHECK_ST(net_tcp_set_options(&s, 0, 0, 0, 0), OK);   /* a closed connection: nothing to set */
+    net_close(&s);
+    net_listener_close(&l);
+    jam_handle_close(lo);
     CHECK(netdrv_stop());
     return true;
 }

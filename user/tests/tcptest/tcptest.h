@@ -15,6 +15,16 @@
  *       <bytes> of stream (its peer's port & 0xff) to its end, checked;
  *       then send <bytes> of stream (peer port + 1) & 0xff and shut down;
  *       done when it is CLOSED with no error.
+ *   tcptest small <address> <port> <writes> <size> <nagle 0|1>
+ *       connect, switch Nagle's algorithm on (1) or off (0), write <size>
+ *       bytes <writes> times 20 ms apart (stream 0xa1), shut down and read
+ *       the peer's <writes> * <size> bytes back (the peer's ACKs come
+ *       200 ms late, so what Nagle holds back is held for good): the peer
+ *       counts the segments (tools/tcp-test.sh).
+ *   tcptest keepalive <address> <port> <seconds>
+ *       connect with keep-alive on (idle 1 s, every 1 s, 3 probes), stay
+ *       idle for <seconds>, check the connection is still OPEN (the peer
+ *       answers each probe and counts it), then carry 64 bytes each way.
  *
  * Byte i of stream `seed` is (i * 131 + (i >> 8) * 7 + seed) & 0xff, as
  * tools/tcppeer.py makes them. The last line is "tcptest: PASS ..." or
@@ -38,6 +48,10 @@ void tt_fill(uint32_t seed, uint64_t from, uint8_t *buf, size_t n);
 bool tt_same(uint32_t seed, uint64_t from, const uint8_t *buf, size_t n);
 /* MB/s (in tenths) of n bytes in ns nanoseconds. */
 uint64_t tt_rate10(uint64_t n, uint64_t ns);
+
+/* opts.c: tcptest small and tcptest keepalive. */
+int tt_small(uint32_t addr, uint16_t port, uint32_t writes, uint32_t size, bool nagle);
+int tt_keepalive(uint32_t addr, uint16_t port, uint32_t hold_s);
 
 /* serve.c */
 int tt_serve(uint16_t port, uint32_t conns, uint64_t bytes);
