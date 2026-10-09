@@ -119,13 +119,34 @@ bool t_rx_flood(void)
            (unsigned long)(b.rx_frames - a.rx_frames),
            (unsigned long)(b.rx_ring_full - a.rx_ring_full),
            (unsigned long)(b.chip_rx_missed - a.chip_rx_missed));
-    CHECK_EQ(b.rx_frames - a.rx_frames, NETDEV_SLOTS);
-    CHECK_EQ(b.rx_ring_full - a.rx_ring_full, RX_FLOOD - NETDEV_SLOTS);
+    uint64_t given = b.rx_frames - a.rx_frames, full = b.rx_ring_full - a.rx_ring_full;
+    CHECK_EQ(given, NETDEV_SLOTS);
+    /* How many of the flood reached the chip: the host's UDP socket in front of QEMU can lose
+     * some of a burst when QEMU reads it late (tools/net-test.sh paces the peer, but a loaded
+     * host still may), so the count to check is the chip's own, not the peer's 300. Every frame
+     * the chip took past the ring's slots must have been dropped, counted, for the full ring. */
+    uint64_t arrived = RX_FLOOD;
+    if (b.chip_counted & NETDEV_CHIP_RX_OK) {
+        arrived = b.chip_rx_ok - a.chip_rx_ok;
+        uint64_t other = (b.rx_untagged - a.rx_untagged) + (b.rx_priority - a.rx_priority) +
+                         (b.rx_other_vlan - a.rx_other_vlan) + (b.rx_bad - a.rx_bad) +
+                         (b.rx_no_session - a.rx_no_session);
+        CHECK_EQ(other, 0);   /* nothing but the flood on the VLAN */
+        CHECK(arrived <= RX_FLOOD);
+        CHECK(arrived >= RX_FLOOD * 9 / 10);   /* the host lost more than a tenth of it */
+    }
+    CHECK_EQ(full, arrived - NETDEV_SLOTS);
     uint8_t f[NETDEV_FRAME_MAX];
     uint32_t len = 0;
+    int64_t prev = -1;
     for (uint32_t i = 0; i < NETDEV_SLOTS; i++) {
         CHECK(next_frame(&s, f, &len, now() + NS_PER_S));
-        CHECK_EQ(seq_of(f, len, "nettest-flood"), i);
+        int64_t seq = seq_of(f, len, "nettest-flood");
+        if (arrived == RX_FLOOD)
+            CHECK_EQ(seq, i);        /* all of it arrived: the first 256, in order */
+        else
+            CHECK(seq > prev && seq < RX_FLOOD);   /* some lost on the host: still in order */
+        prev = seq;
     }
     CHECK_EQ(netdev_ready(&s.rxe), 0);
     sess_close(&s);
