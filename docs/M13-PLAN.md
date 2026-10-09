@@ -1117,3 +1117,18 @@ the public image).
   on the PC host.
 - **Licences**: musl, sbase, Lua, libc-test MIT; tinyssh CC0/0BSD/MIT;
   all inside CODING-GUIDE's rule. busybox is out for that reason.
+
+## The owner's answers (2026-10-09)
+
+The owner: "pick your recommendation for everything unless unsure"; all as
+recommended. **Q1** A: unmodified musl, the build's overrides, the Linux
+call layer. **Q2** A: the line discipline in the terminal, with a `tty`
+protocol. **Q3** A: signals in libc at the call boundary plus
+`thread_interrupt`. **Q4** A: `posix_spawn` only; `execve` as
+spawn-wait-exit; forks replaced by overrides. **Q5** A: offsets per
+process in libc. **Q6** C: with ISIG off the program gets the byte;
+Ctrl+Alt+C always reaches the shell on the desktop. **Q7** A: one user
+`jam`, uid/gid 1000, home /data. **Q8** A: sshd on port 22 whenever
+authorized_keys holds a key, `ssh = off` stops it. **Q9** A: sbase in
+/boot/usr/bin after the shell's builtins. **Q10** A: the `jamos-cc`
+wrapper.
