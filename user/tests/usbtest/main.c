@@ -88,23 +88,18 @@ status_t load(void)
     ndevs = 0;
     for (uint32_t i = 0; i < MAX_DEV; i++) {
         struct dev *d = &devs[ndevs];
-        uint8_t path[24], name[40], serial[24];
+        uint32_t pathn, namen, serialn;
         status_t st = usbbus_device_until(bus, soon(), i, &d->id, &d->parent, &d->vid, &d->pid,
                                           &d->bcd, &d->speed, &d->address, &d->slot,
                                           &d->root_port, &d->port, &d->level, &d->route,
                                           &d->tt_slot, &d->tt_port, &d->cls, &d->sub, &d->proto,
                                           &d->nconfigs, &d->config, &d->nifs, &d->mps0,
-                                          &d->hub_ports, path, name, serial);
+                                          &d->hub_ports, d->path, &pathn, d->name, &namen,
+                                          d->serial, &serialn);
         if (st == ERR_OUT_OF_RANGE)
             return OK;
         if (st != OK)
             return st;
-        memcpy(d->path, path, 24);
-        d->path[24] = 0;
-        memcpy(d->name, name, 40);
-        d->name[40] = 0;
-        memcpy(d->serial, serial, 24);
-        d->serial[24] = 0;
         ndevs++;
     }
     return OK;
@@ -188,10 +183,14 @@ static bool t_interfaces(void)
         if (!d->config)
             continue;
         for (uint8_t k = 0; k < d->nifs; k++) {
-            uint8_t num = 0, alt = 0, nalts = 0, cls = 0, sub = 0, proto = 0, nep = 0, eps[8];
+            uint8_t num = 0, alt = 0, nalts = 0, cls = 0, sub = 0, proto = 0, eps[8];
+            uint32_t nep = 0;
             CHECK_ST(usbbus_interface_until(bus, soon(), d->id, k, &num, &alt, &nalts, &cls,
-                                            &sub, &proto, &nep, eps), OK);
+                                            &sub, &proto, eps, &nep), OK);
             CHECK(nep <= 8 && nalts >= 1);
+            CHECK(cls != 3 || nep >= 1);   /* a HID interface has its interrupt endpoint */
+            for (uint32_t e = 0; e < nep; e++)
+                CHECK(eps[e] != 0 && eps[e] != 0x80);   /* addresses, not endpoint 0 */
             handle_t ch;
             if (cls == 9 || d->hub_ports) {   /* hubs are usb-bus's own: refused */
                 CHECK_ST(usbbus_open_interface_until(bus, soon(), d->id, num, &ch),
@@ -225,9 +224,10 @@ static bool first_iface(const struct dev **dd, uint8_t *num, handle_t *ch, bool 
         struct dev *d = &devs[i];
         if (!d->config || d->hub_ports || (qemu_only && d->vid != 0x0627))
             continue;
-        uint8_t n = 0, alt, nalts, cls, sub, proto, nep, eps[8];
+        uint8_t n = 0, alt, nalts, cls, sub, proto, eps[8];
+        uint32_t nep;
         if (usbbus_interface_until(bus, soon(), d->id, 0, &n, &alt, &nalts, &cls, &sub,
-                                   &proto, &nep, eps) != OK)
+                                   &proto, eps, &nep) != OK)
             continue;
         if (usbbus_open_interface_until(bus, soon(), d->id, n, ch) != OK)
             continue;
@@ -375,14 +375,15 @@ static bool t_set_interface(void)
         skipped++;
         return true;
     }
-    uint8_t num = 0, alt, nalts, cls, sub, proto, nep = 0, eps[8];
+    uint8_t num = 0, alt, nalts, cls, sub, proto, eps[8];
+    uint32_t nep = 0;
     CHECK_ST(usbbus_interface_until(bus, soon(), d->id, 0, &num, &alt, &nalts, &cls, &sub,
-                                    &proto, &nep, eps), OK);
+                                    &proto, eps, &nep), OK);
     handle_t ch, rep = HANDLE_INVALID;
     CHECK_ST(usbbus_open_interface_until(bus, soon(), d->id, num, &ch), OK);
     uint16_t mp;
     uint8_t iv, ep = 0;
-    for (uint8_t i = 0; i < nep && !ep; i++)
+    for (uint32_t i = 0; i < nep && !ep; i++)
         if ((eps[i] & 0x80) && usb_open_interrupt_in_until(ch, soon(), eps[i], &rep, &mp,
                                                             &iv) == OK)
             ep = eps[i];

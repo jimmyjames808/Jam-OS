@@ -12,7 +12,8 @@
 # Devices are named by `id`, unique for the driver's run (a device
 # unplugged and plugged back gets a new one). speed as in usb.idl: 1 full,
 # 2 low, 3 high, 4 super, 5 super+. path: the root port, then the hub port
-# at each tier ("3", "3.2", "3.2.1"), NUL-terminated.
+# at each tier ("3", "3.2", "3.2.1"). The names are ASCII (what the device
+# calls itself, other characters shown as '?'); an empty one is none.
 
 protocol usbbus 13
 
@@ -26,11 +27,11 @@ protocol usbbus 13
 # The index-th device (0 .. devices - 1; ERR_OUT_OF_RANGE after). parent_id
 # 0: on a root port. tt_slot / tt_port: the Transaction Translator a
 # full/low-speed device behind a high-speed hub uses (0: none).
-3  device        (u32 index) -> (u32 id, u32 parent_id, u16 vendor, u16 product, u16 bcd_usb, u8 speed, u8 address, u8 slot, u8 root_port, u8 port, u8 level, u32 route, u8 tt_slot, u8 tt_port, u8 class_code, u8 subclass, u8 protocol, u8 num_configs, u8 configuration, u8 num_interfaces, u16 max_packet0, u8 hub_ports, u8[24] path, u8[40] product_name, u8[24] serial)
+3  device        (u32 index) -> (u32 id, u32 parent_id, u16 vendor, u16 product, u16 bcd_usb, u8 speed, u8 address, u8 slot, u8 root_port, u8 port, u8 level, u32 route, u8 tt_slot, u8 tt_port, u8 class_code, u8 subclass, u8 protocol, u8 num_configs, u8 configuration, u8 num_interfaces, u16 max_packet0, u8 hub_ports, str[<=23] path, str[<=39] product_name, str[<=23] serial)
 # Interface `index` (0 .. num_interfaces - 1) of device `id`, as it is
-# now (its current alternate setting). endpoints: addresses, num_endpoints
-# of them.
-4  interface     (u32 id, u8 index) -> (u8 number, u8 alt_setting, u8 num_alt_settings, u8 class_code, u8 subclass, u8 protocol, u8 num_endpoints, u8[8] endpoints)
+# now (its current alternate setting). endpoints: their addresses, as many
+# as it has (at most 8 are told).
+4  interface     (u32 id, u8 index) -> (u8 number, u8 alt_setting, u8 num_alt_settings, u8 class_code, u8 subclass, u8 protocol, u8[<=8] endpoints)
 # A new `usb` channel to interface `interface_number` of device `id` (the
 # same thing devmgr is handed; for tests and administration).
 5  open_interface (u32 id, u8 interface_number) -> (handle channel)

@@ -15,7 +15,8 @@
  * Devices are named by `id`, unique for the driver's run (a device
  * unplugged and plugged back gets a new one). speed as in usb.idl: 1 full,
  * 2 low, 3 high, 4 super, 5 super+. path: the root port, then the hub port
- * at each tier ("3", "3.2", "3.2.1"), NUL-terminated.
+ * at each tier ("3", "3.2", "3.2.1"). The names are ASCII (what the device
+ * calls itself, other characters shown as '?'); an empty one is none.
  *
  * Protocol `usbbus` (id 13). Client: usbbus_<method>(ch, args..., &results...)
  * (and usbbus_<method>_until with a deadline, _within with a timeout), or
@@ -98,9 +99,6 @@ struct usbbus_device_rep {
     uint8_t num_interfaces;
     uint16_t max_packet0;
     uint8_t hub_ports;
-    uint8_t path[24];
-    uint8_t product_name[40];
-    uint8_t serial[24];
 } __attribute__((packed));
 struct usbbus_interface_req {
     uint32_t txid;
@@ -117,8 +115,6 @@ struct usbbus_interface_rep {
     uint8_t class_code;
     uint8_t subclass;
     uint8_t protocol;
-    uint8_t num_endpoints;
-    uint8_t endpoints[8];
 } __attribute__((packed));
 struct usbbus_open_interface_req {
     uint32_t txid;
@@ -149,7 +145,7 @@ struct usbbus_interface_attached_rep {
 } __attribute__((packed));
 
 #define USBBUS_REQ_MAX 45u   /* bytes: the biggest request */
-#define USBBUS_REP_MAX 131u   /* bytes: the biggest reply */
+#define USBBUS_REP_MAX 134u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -245,133 +241,186 @@ static inline status_t usbbus_wait_settled(handle_t ch, uint32_t timeout_ms, uin
 
 /* usbbus_device_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t usbbus_device_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
+static inline status_t usbbus_device_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, char out_path[23 + 1], uint32_t *out_path_len, char out_product_name[39 + 1], uint32_t *out_product_name_len, char out_serial[23 + 1], uint32_t *out_serial_len)
 {
-    struct usbbus_device_req idl_q;
-    struct usbbus_device_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = USBBUS_DEVICE;
-    idl_q.index = index;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[134];
+    struct usbbus_device_req *idl_q = (struct usbbus_device_req *)idl_b0;
+    const struct usbbus_device_rep *idl_r = (const struct usbbus_device_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = USBBUS_DEVICE;
+    idl_q->index = index;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 134, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 23, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 39, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 23, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && out_id)
-        *out_id = idl_r.id;
+        *out_id = idl_r->id;
     if (idl_st == OK && out_parent_id)
-        *out_parent_id = idl_r.parent_id;
+        *out_parent_id = idl_r->parent_id;
     if (idl_st == OK && out_vendor)
-        *out_vendor = idl_r.vendor;
+        *out_vendor = idl_r->vendor;
     if (idl_st == OK && out_product)
-        *out_product = idl_r.product;
+        *out_product = idl_r->product;
     if (idl_st == OK && out_bcd_usb)
-        *out_bcd_usb = idl_r.bcd_usb;
+        *out_bcd_usb = idl_r->bcd_usb;
     if (idl_st == OK && out_speed)
-        *out_speed = idl_r.speed;
+        *out_speed = idl_r->speed;
     if (idl_st == OK && out_address)
-        *out_address = idl_r.address;
+        *out_address = idl_r->address;
     if (idl_st == OK && out_slot)
-        *out_slot = idl_r.slot;
+        *out_slot = idl_r->slot;
     if (idl_st == OK && out_root_port)
-        *out_root_port = idl_r.root_port;
+        *out_root_port = idl_r->root_port;
     if (idl_st == OK && out_port)
-        *out_port = idl_r.port;
+        *out_port = idl_r->port;
     if (idl_st == OK && out_level)
-        *out_level = idl_r.level;
+        *out_level = idl_r->level;
     if (idl_st == OK && out_route)
-        *out_route = idl_r.route;
+        *out_route = idl_r->route;
     if (idl_st == OK && out_tt_slot)
-        *out_tt_slot = idl_r.tt_slot;
+        *out_tt_slot = idl_r->tt_slot;
     if (idl_st == OK && out_tt_port)
-        *out_tt_port = idl_r.tt_port;
+        *out_tt_port = idl_r->tt_port;
     if (idl_st == OK && out_class_code)
-        *out_class_code = idl_r.class_code;
+        *out_class_code = idl_r->class_code;
     if (idl_st == OK && out_subclass)
-        *out_subclass = idl_r.subclass;
+        *out_subclass = idl_r->subclass;
     if (idl_st == OK && out_protocol)
-        *out_protocol = idl_r.protocol;
+        *out_protocol = idl_r->protocol;
     if (idl_st == OK && out_num_configs)
-        *out_num_configs = idl_r.num_configs;
+        *out_num_configs = idl_r->num_configs;
     if (idl_st == OK && out_configuration)
-        *out_configuration = idl_r.configuration;
+        *out_configuration = idl_r->configuration;
     if (idl_st == OK && out_num_interfaces)
-        *out_num_interfaces = idl_r.num_interfaces;
+        *out_num_interfaces = idl_r->num_interfaces;
     if (idl_st == OK && out_max_packet0)
-        *out_max_packet0 = idl_r.max_packet0;
+        *out_max_packet0 = idl_r->max_packet0;
     if (idl_st == OK && out_hub_ports)
-        *out_hub_ports = idl_r.hub_ports;
-    for (uint32_t idl_i = 0; idl_st == OK && out_path && idl_i < 24; idl_i++)
-        out_path[idl_i] = idl_r.path[idl_i];
-    for (uint32_t idl_i = 0; idl_st == OK && out_product_name && idl_i < 40; idl_i++)
-        out_product_name[idl_i] = idl_r.product_name[idl_i];
-    for (uint32_t idl_i = 0; idl_st == OK && out_serial && idl_i < 24; idl_i++)
-        out_serial[idl_i] = idl_r.serial[idl_i];
+        *out_hub_ports = idl_r->hub_ports;
+    if (idl_st == OK && out_path) {
+        if (idl_l0)
+            __builtin_memcpy(out_path, idl_p0, idl_l0 * 1);
+        out_path[idl_l0] = 0;
+    }
+    if (idl_st == OK && out_path_len)
+        *out_path_len = idl_l0;
+    if (idl_st == OK && out_product_name) {
+        if (idl_l1)
+            __builtin_memcpy(out_product_name, idl_p1, idl_l1 * 1);
+        out_product_name[idl_l1] = 0;
+    }
+    if (idl_st == OK && out_product_name_len)
+        *out_product_name_len = idl_l1;
+    if (idl_st == OK && out_serial) {
+        if (idl_l2)
+            __builtin_memcpy(out_serial, idl_p2, idl_l2 * 1);
+        out_serial[idl_l2] = 0;
+    }
+    if (idl_st == OK && out_serial_len)
+        *out_serial_len = idl_l2;
     return idl_st;
 }
 /* The index-th device (0 .. devices - 1; ERR_OUT_OF_RANGE after). parent_id
  * 0: on a root port. tt_slot / tt_port: the Transaction Translator a
  * full/low-speed device behind a high-speed hub uses (0: none). */
-static inline status_t usbbus_device_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
+static inline status_t usbbus_device_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, char out_path[23 + 1], uint32_t *out_path_len, char out_product_name[39 + 1], uint32_t *out_product_name_len, char out_serial[23 + 1], uint32_t *out_serial_len)
 {
-    return usbbus_device_call(ch, false, deadline_ns, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_product_name, out_serial);
+    return usbbus_device_call(ch, false, deadline_ns, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_path_len, out_product_name, out_product_name_len, out_serial, out_serial_len);
 }
-static inline status_t usbbus_device_within(handle_t ch, uint64_t timeout_ns, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
+static inline status_t usbbus_device_within(handle_t ch, uint64_t timeout_ns, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, char out_path[23 + 1], uint32_t *out_path_len, char out_product_name[39 + 1], uint32_t *out_product_name_len, char out_serial[23 + 1], uint32_t *out_serial_len)
 {
-    return usbbus_device_call(ch, true, timeout_ns, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_product_name, out_serial);
+    return usbbus_device_call(ch, true, timeout_ns, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_path_len, out_product_name, out_product_name_len, out_serial, out_serial_len);
 }
-static inline status_t usbbus_device(handle_t ch, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
+static inline status_t usbbus_device(handle_t ch, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, char out_path[23 + 1], uint32_t *out_path_len, char out_product_name[39 + 1], uint32_t *out_product_name_len, char out_serial[23 + 1], uint32_t *out_serial_len)
 {
-    return usbbus_device_call(ch, false, DEADLINE_NEVER, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_product_name, out_serial);
+    return usbbus_device_call(ch, false, DEADLINE_NEVER, index, out_id, out_parent_id, out_vendor, out_product, out_bcd_usb, out_speed, out_address, out_slot, out_root_port, out_port, out_level, out_route, out_tt_slot, out_tt_port, out_class_code, out_subclass, out_protocol, out_num_configs, out_configuration, out_num_interfaces, out_max_packet0, out_hub_ports, out_path, out_path_len, out_product_name, out_product_name_len, out_serial, out_serial_len);
 }
 
 /* usbbus_interface_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t usbbus_interface_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
+static inline status_t usbbus_interface_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t out_endpoints[8], uint32_t *out_endpoints_len)
 {
-    struct usbbus_interface_req idl_q;
-    struct usbbus_interface_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = USBBUS_INTERFACE;
-    idl_q.id = id;
-    idl_q.index = index;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[13];
+    _Alignas(8) uint8_t idl_b1[24];
+    struct usbbus_interface_req *idl_q = (struct usbbus_interface_req *)idl_b0;
+    const struct usbbus_interface_rep *idl_r = (const struct usbbus_interface_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = USBBUS_INTERFACE;
+    idl_q->id = id;
+    idl_q->index = index;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 24, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 8, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && out_number)
-        *out_number = idl_r.number;
+        *out_number = idl_r->number;
     if (idl_st == OK && out_alt_setting)
-        *out_alt_setting = idl_r.alt_setting;
+        *out_alt_setting = idl_r->alt_setting;
     if (idl_st == OK && out_num_alt_settings)
-        *out_num_alt_settings = idl_r.num_alt_settings;
+        *out_num_alt_settings = idl_r->num_alt_settings;
     if (idl_st == OK && out_class_code)
-        *out_class_code = idl_r.class_code;
+        *out_class_code = idl_r->class_code;
     if (idl_st == OK && out_subclass)
-        *out_subclass = idl_r.subclass;
+        *out_subclass = idl_r->subclass;
     if (idl_st == OK && out_protocol)
-        *out_protocol = idl_r.protocol;
-    if (idl_st == OK && out_num_endpoints)
-        *out_num_endpoints = idl_r.num_endpoints;
-    for (uint32_t idl_i = 0; idl_st == OK && out_endpoints && idl_i < 8; idl_i++)
-        out_endpoints[idl_i] = idl_r.endpoints[idl_i];
+        *out_protocol = idl_r->protocol;
+    if (idl_st == OK && out_endpoints) {
+        if (idl_l0)
+            __builtin_memcpy(out_endpoints, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_endpoints_len)
+        *out_endpoints_len = idl_l0;
     return idl_st;
 }
 /* Interface `index` (0 .. num_interfaces - 1) of device `id`, as it is
- * now (its current alternate setting). endpoints: addresses, num_endpoints
- * of them. */
-static inline status_t usbbus_interface_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
+ * now (its current alternate setting). endpoints: their addresses, as many
+ * as it has (at most 8 are told). */
+static inline status_t usbbus_interface_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t out_endpoints[8], uint32_t *out_endpoints_len)
 {
-    return usbbus_interface_call(ch, false, deadline_ns, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_endpoints);
+    return usbbus_interface_call(ch, false, deadline_ns, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_endpoints, out_endpoints_len);
 }
-static inline status_t usbbus_interface_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
+static inline status_t usbbus_interface_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t out_endpoints[8], uint32_t *out_endpoints_len)
 {
-    return usbbus_interface_call(ch, true, timeout_ns, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_endpoints);
+    return usbbus_interface_call(ch, true, timeout_ns, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_endpoints, out_endpoints_len);
 }
-static inline status_t usbbus_interface(handle_t ch, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
+static inline status_t usbbus_interface(handle_t ch, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t out_endpoints[8], uint32_t *out_endpoints_len)
 {
-    return usbbus_interface_call(ch, false, DEADLINE_NEVER, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_num_endpoints, out_endpoints);
+    return usbbus_interface_call(ch, false, DEADLINE_NEVER, id, index, out_number, out_alt_setting, out_num_alt_settings, out_class_code, out_subclass, out_protocol, out_endpoints, out_endpoints_len);
 }
 
 /* usbbus_open_interface_until and _within: idl_t is a deadline, or with idl_within a
@@ -557,22 +606,48 @@ static inline status_t usbbus_wait_settled_result(const void *idl_rep, struct id
  * The reply comes on ch: idl_reply_read, then usbbus_device_result. */
 static inline status_t usbbus_device_send(handle_t ch, uint32_t idl_txid, uint32_t index)
 {
-    struct usbbus_device_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = USBBUS_DEVICE;
-    idl_q.index = index;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[12];
+    struct usbbus_device_req *idl_q = (struct usbbus_device_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = USBBUS_DEVICE;
+    idl_q->index = index;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to usbbus_device_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t usbbus_device_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24])
+static inline status_t usbbus_device_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, char out_path[23 + 1], uint32_t *out_path_len, char out_product_name[39 + 1], uint32_t *out_product_name_len, char out_serial[23 + 1], uint32_t *out_serial_len)
 {
     const struct usbbus_device_rep *idl_r = (const struct usbbus_device_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 23, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 39, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 23, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -624,12 +699,27 @@ static inline status_t usbbus_device_result(const void *idl_rep, struct idl_msg 
         *out_max_packet0 = idl_r->max_packet0;
     if (out_hub_ports)
         *out_hub_ports = idl_r->hub_ports;
-    for (uint32_t idl_i = 0; out_path && idl_i < 24; idl_i++)
-        out_path[idl_i] = idl_r->path[idl_i];
-    for (uint32_t idl_i = 0; out_product_name && idl_i < 40; idl_i++)
-        out_product_name[idl_i] = idl_r->product_name[idl_i];
-    for (uint32_t idl_i = 0; out_serial && idl_i < 24; idl_i++)
-        out_serial[idl_i] = idl_r->serial[idl_i];
+    if (out_path) {
+        if (idl_l0)
+            __builtin_memcpy(out_path, idl_p0, idl_l0 * 1);
+        out_path[idl_l0] = 0;
+    }
+    if (out_path_len)
+        *out_path_len = idl_l0;
+    if (out_product_name) {
+        if (idl_l1)
+            __builtin_memcpy(out_product_name, idl_p1, idl_l1 * 1);
+        out_product_name[idl_l1] = 0;
+    }
+    if (out_product_name_len)
+        *out_product_name_len = idl_l1;
+    if (out_serial) {
+        if (idl_l2)
+            __builtin_memcpy(out_serial, idl_p2, idl_l2 * 1);
+        out_serial[idl_l2] = 0;
+    }
+    if (out_serial_len)
+        *out_serial_len = idl_l2;
     return OK;
 }
 
@@ -637,23 +727,35 @@ static inline status_t usbbus_device_result(const void *idl_rep, struct idl_msg 
  * The reply comes on ch: idl_reply_read, then usbbus_interface_result. */
 static inline status_t usbbus_interface_send(handle_t ch, uint32_t idl_txid, uint32_t id, uint8_t index)
 {
-    struct usbbus_interface_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = USBBUS_INTERFACE;
-    idl_q.id = id;
-    idl_q.index = index;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[13];
+    struct usbbus_interface_req *idl_q = (struct usbbus_interface_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = USBBUS_INTERFACE;
+    idl_q->id = id;
+    idl_q->index = index;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to usbbus_interface_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t usbbus_interface_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8])
+static inline status_t usbbus_interface_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t out_endpoints[8], uint32_t *out_endpoints_len)
 {
     const struct usbbus_interface_rep *idl_r = (const struct usbbus_interface_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 8, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -673,10 +775,12 @@ static inline status_t usbbus_interface_result(const void *idl_rep, struct idl_m
         *out_subclass = idl_r->subclass;
     if (out_protocol)
         *out_protocol = idl_r->protocol;
-    if (out_num_endpoints)
-        *out_num_endpoints = idl_r->num_endpoints;
-    for (uint32_t idl_i = 0; out_endpoints && idl_i < 8; idl_i++)
-        out_endpoints[idl_i] = idl_r->endpoints[idl_i];
+    if (out_endpoints) {
+        if (idl_l0)
+            __builtin_memcpy(out_endpoints, idl_p0, idl_l0 * 1);
+    }
+    if (out_endpoints_len)
+        *out_endpoints_len = idl_l0;
     return OK;
 }
 
@@ -764,8 +868,8 @@ static inline status_t usbbus_interface_attached_result(const void *idl_rep, str
 struct usbbus_ops {
     status_t (*status)(void *ctx, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled);
     status_t (*wait_settled)(void *ctx, uint32_t timeout_ms, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled);
-    status_t (*device)(void *ctx, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, uint8_t out_path[24], uint8_t out_product_name[40], uint8_t out_serial[24]);
-    status_t (*interface)(void *ctx, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t out_endpoints[8]);
+    status_t (*device)(void *ctx, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, char *out_path, uint32_t *out_path_len, char *out_product_name, uint32_t *out_product_name_len, char *out_serial, uint32_t *out_serial_len);
+    status_t (*interface)(void *ctx, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_endpoints, uint32_t *out_endpoints_len);
     status_t (*open_interface)(void *ctx, uint32_t id, uint8_t interface_number, handle_t *out_channel);
     status_t (*interface_attached)(void *ctx, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const uint8_t path[24]);
 };
@@ -817,68 +921,80 @@ static inline status_t usbbus_reply_wait_settled(struct idl_txn idl_txn, status_
 /* Answer the usbbus.device request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t usbbus_reply_device(struct idl_txn idl_txn, status_t idl_st, uint32_t id, uint32_t parent_id, uint16_t vendor, uint16_t product, uint16_t bcd_usb, uint8_t speed, uint8_t address, uint8_t slot, uint8_t root_port, uint8_t port, uint8_t level, uint32_t route, uint8_t tt_slot, uint8_t tt_port, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t num_configs, uint8_t configuration, uint8_t num_interfaces, uint16_t max_packet0, uint8_t hub_ports, const uint8_t path[24], const uint8_t product_name[40], const uint8_t serial[24])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't
+ * one). Returns the write's status (idl_reply_write). */
+static inline status_t usbbus_reply_device(struct idl_txn idl_txn, status_t idl_st, uint32_t id, uint32_t parent_id, uint16_t vendor, uint16_t product, uint16_t bcd_usb, uint8_t speed, uint8_t address, uint8_t slot, uint8_t root_port, uint8_t port, uint8_t level, uint32_t route, uint8_t tt_slot, uint8_t tt_port, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t num_configs, uint8_t configuration, uint8_t num_interfaces, uint16_t max_packet0, uint8_t hub_ports, const char *path, uint32_t path_len, const char *product_name, uint32_t product_name_len, const char *serial, uint32_t serial_len)
 {
-    struct usbbus_device_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[134];
+    struct usbbus_device_rep *idl_r = (struct usbbus_device_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.id = id;
-    idl_r.parent_id = parent_id;
-    idl_r.vendor = vendor;
-    idl_r.product = product;
-    idl_r.bcd_usb = bcd_usb;
-    idl_r.speed = speed;
-    idl_r.address = address;
-    idl_r.slot = slot;
-    idl_r.root_port = root_port;
-    idl_r.port = port;
-    idl_r.level = level;
-    idl_r.route = route;
-    idl_r.tt_slot = tt_slot;
-    idl_r.tt_port = tt_port;
-    idl_r.class_code = class_code;
-    idl_r.subclass = subclass;
-    idl_r.protocol = protocol;
-    idl_r.num_configs = num_configs;
-    idl_r.configuration = configuration;
-    idl_r.num_interfaces = num_interfaces;
-    idl_r.max_packet0 = max_packet0;
-    idl_r.hub_ports = hub_ports;
-    for (uint32_t idl_i = 0; idl_i < 24; idl_i++)
-        idl_r.path[idl_i] = path[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 40; idl_i++)
-        idl_r.product_name[idl_i] = product_name[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 24; idl_i++)
-        idl_r.serial[idl_i] = serial[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->id = id;
+    idl_r->parent_id = parent_id;
+    idl_r->vendor = vendor;
+    idl_r->product = product;
+    idl_r->bcd_usb = bcd_usb;
+    idl_r->speed = speed;
+    idl_r->address = address;
+    idl_r->slot = slot;
+    idl_r->root_port = root_port;
+    idl_r->port = port;
+    idl_r->level = level;
+    idl_r->route = route;
+    idl_r->tt_slot = tt_slot;
+    idl_r->tt_port = tt_port;
+    idl_r->class_code = class_code;
+    idl_r->subclass = subclass;
+    idl_r->protocol = protocol;
+    idl_r->num_configs = num_configs;
+    idl_r->configuration = configuration;
+    idl_r->num_interfaces = num_interfaces;
+    idl_r->max_packet0 = max_packet0;
+    idl_r->hub_ports = hub_ports;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, path, path_len, 23, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, product_name, product_name_len, 39, 1) ||
+                             !idl_str_ok(product_name, product_name_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, serial, serial_len, 23, 1) ||
+                             !idl_str_ok(serial, serial_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the usbbus.interface request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t usbbus_reply_interface(struct idl_txn idl_txn, status_t idl_st, uint8_t number, uint8_t alt_setting, uint8_t num_alt_settings, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t num_endpoints, const uint8_t endpoints[8])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't
+ * one). Returns the write's status (idl_reply_write). */
+static inline status_t usbbus_reply_interface(struct idl_txn idl_txn, status_t idl_st, uint8_t number, uint8_t alt_setting, uint8_t num_alt_settings, uint8_t class_code, uint8_t subclass, uint8_t protocol, const uint8_t *endpoints, uint32_t endpoints_len)
 {
-    struct usbbus_interface_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[24];
+    struct usbbus_interface_rep *idl_r = (struct usbbus_interface_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.number = number;
-    idl_r.alt_setting = alt_setting;
-    idl_r.num_alt_settings = num_alt_settings;
-    idl_r.class_code = class_code;
-    idl_r.subclass = subclass;
-    idl_r.protocol = protocol;
-    idl_r.num_endpoints = num_endpoints;
-    for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
-        idl_r.endpoints[idl_i] = endpoints[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->number = number;
+    idl_r->alt_setting = alt_setting;
+    idl_r->num_alt_settings = num_alt_settings;
+    idl_r->class_code = class_code;
+    idl_r->subclass = subclass;
+    idl_r->protocol = protocol;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, endpoints, endpoints_len, 8, 1))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the usbbus.open_interface request kept in txn: idl_st and, if it is OK, the
@@ -1021,23 +1137,26 @@ static inline uint32_t usbbus_dispatch_on(handle_t ch, const struct usbbus_ops *
         uint8_t out_num_interfaces = 0;
         uint16_t out_max_packet0 = 0;
         uint8_t out_hub_ports = 0;
-        uint8_t out_path[24];
-        for (uint32_t idl_i = 0; idl_i < 24; idl_i++)
-            out_path[idl_i] = 0;
-        uint8_t out_product_name[40];
-        for (uint32_t idl_i = 0; idl_i < 40; idl_i++)
-            out_product_name[idl_i] = 0;
-        uint8_t out_serial[24];
-        for (uint32_t idl_i = 0; idl_i < 24; idl_i++)
-            out_serial[idl_i] = 0;
+        char *out_path = (char *)((uint8_t *)rep + 45);
+        uint32_t out_path_len = 0;
+        char *out_product_name = (char *)((uint8_t *)rep + 70);
+        uint32_t out_product_name_len = 0;
+        char *out_serial = (char *)((uint8_t *)rep + 111);
+        uint32_t out_serial_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->device) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->device(ctx, idl_q->index, &out_id, &out_parent_id, &out_vendor, &out_product, &out_bcd_usb, &out_speed, &out_address, &out_slot, &out_root_port, &out_port, &out_level, &out_route, &out_tt_slot, &out_tt_port, &out_class_code, &out_subclass, &out_protocol, &out_num_configs, &out_configuration, &out_num_interfaces, &out_max_packet0, &out_hub_ports, out_path, out_product_name, out_serial);
+        status_t idl_st = ops->device(ctx, idl_q->index, &out_id, &out_parent_id, &out_vendor, &out_product, &out_bcd_usb, &out_speed, &out_address, &out_slot, &out_root_port, &out_port, &out_level, &out_route, &out_tt_slot, &out_tt_port, &out_class_code, &out_subclass, &out_protocol, &out_num_configs, &out_configuration, &out_num_interfaces, &out_max_packet0, &out_hub_ports, out_path, &out_path_len, out_product_name, &out_product_name_len, out_serial, &out_serial_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_path_len > 23 || !idl_str_ok(out_path, out_path_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_product_name_len > 39 || !idl_str_ok(out_product_name, out_product_name_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_serial_len > 23 || !idl_str_ok(out_serial, out_serial_len)))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->id = out_id;
@@ -1062,13 +1181,11 @@ static inline uint32_t usbbus_dispatch_on(handle_t ch, const struct usbbus_ops *
         idl_r->num_interfaces = out_num_interfaces;
         idl_r->max_packet0 = out_max_packet0;
         idl_r->hub_ports = out_hub_ports;
-        for (uint32_t idl_i = 0; idl_i < 24; idl_i++)
-            idl_r->path[idl_i] = out_path[idl_i];
-        for (uint32_t idl_i = 0; idl_i < 40; idl_i++)
-            idl_r->product_name[idl_i] = out_product_name[idl_i];
-        for (uint32_t idl_i = 0; idl_i < 24; idl_i++)
-            idl_r->serial[idl_i] = out_serial[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 45, out_path_len, 1);
+        idl_place(rep, &idl_rn, 70, out_product_name_len, 1);
+        idl_place(rep, &idl_rn, 111, out_serial_len, 1);
+        return idl_rn;
     }
     case USBBUS_INTERFACE: {
         const struct usbbus_interface_req *idl_q = (const struct usbbus_interface_req *)req;
@@ -1079,18 +1196,18 @@ static inline uint32_t usbbus_dispatch_on(handle_t ch, const struct usbbus_ops *
         uint8_t out_class_code = 0;
         uint8_t out_subclass = 0;
         uint8_t out_protocol = 0;
-        uint8_t out_num_endpoints = 0;
-        uint8_t out_endpoints[8];
-        for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
-            out_endpoints[idl_i] = 0;
+        uint8_t *out_endpoints = (uint8_t *)((uint8_t *)rep + 16);
+        uint32_t out_endpoints_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->interface) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->interface(ctx, idl_q->id, idl_q->index, &out_number, &out_alt_setting, &out_num_alt_settings, &out_class_code, &out_subclass, &out_protocol, &out_num_endpoints, out_endpoints);
+        status_t idl_st = ops->interface(ctx, idl_q->id, idl_q->index, &out_number, &out_alt_setting, &out_num_alt_settings, &out_class_code, &out_subclass, &out_protocol, out_endpoints, &out_endpoints_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_endpoints_len > 8))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->number = out_number;
@@ -1099,10 +1216,9 @@ static inline uint32_t usbbus_dispatch_on(handle_t ch, const struct usbbus_ops *
         idl_r->class_code = out_class_code;
         idl_r->subclass = out_subclass;
         idl_r->protocol = out_protocol;
-        idl_r->num_endpoints = out_num_endpoints;
-        for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
-            idl_r->endpoints[idl_i] = out_endpoints[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 16, out_endpoints_len, 1);
+        return idl_rn;
     }
     case USBBUS_OPEN_INTERFACE: {
         const struct usbbus_open_interface_req *idl_q = (const struct usbbus_open_interface_req *)req;

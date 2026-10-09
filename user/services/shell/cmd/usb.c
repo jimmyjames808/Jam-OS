@@ -45,9 +45,10 @@ static const char *usb_speed(uint8_t s)
 static void interfaces(handle_t bus, uint32_t id, uint8_t nifs)
 {
     for (uint8_t k = 0; k < nifs && k < 8; k++) {
-        uint8_t num, alt, nalt, icls, isub, iproto, nep, eps[8];
+        uint8_t num, alt, nalt, icls, isub, iproto, eps[8];
+        uint32_t nep;
         if (usbbus_interface_until(bus, now() + 2 * NS_PER_S, id, k, &num, &alt,
-                                   &nalt, &icls, &isub, &iproto, &nep, eps) != OK)
+                                   &nalt, &icls, &isub, &iproto, eps, &nep) != OK)
             continue;
         const char *what = icls == 3 && isub == 1 && iproto == 1 ? " kbd"
                          : icls == 3 && isub == 1 && iproto == 2 ? " mouse"
@@ -63,16 +64,17 @@ static bool device_line(handle_t bus, uint32_t i, struct seen *seen, uint32_t *n
     uint32_t id, parent, route;
     uint16_t vendor, product, bcd, mp0;
     uint8_t speed, addr, slot, rport, port, level, tts, ttp, cls, sub, proto, ncfg, cfg, nifs,
-        hubports, path[24], name[40], serial[24];
+        hubports;
+    char path[24], name[40], serial[24];
+    uint32_t pathn, namen, serialn;
     if (usbbus_device_until(bus, now() + 2 * NS_PER_S, i, &id, &parent, &vendor,
                             &product, &bcd, &speed, &addr, &slot, &rport, &port, &level, &route,
                             &tts, &ttp, &cls, &sub, &proto, &ncfg, &cfg, &nifs, &mp0, &hubports,
-                            path, name, serial) != OK)
+                            path, &pathn, name, &namen, serial, &serialn) != OK)
         return false;
-    path[23] = name[39] = '\0';
     if (*nseen < MAX_SEEN)
         seen[(*nseen)++] = (struct seen){ id, vendor, product };
-    sh_say("  %-8s %04x:%04x %-3s", (char *)path, vendor, product, usb_speed(speed));
+    sh_say("  %-8s %04x:%04x %-3s", path, vendor, product, usb_speed(speed));
     if (cls == 9)
         sh_say(" hub, %u ports", hubports);
     interfaces(bus, id, nifs);

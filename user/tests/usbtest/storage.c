@@ -153,14 +153,15 @@ static bool find_disk(const char *serial, struct raw *r)
         if (!d->config || d->hub_ports || (serial ? strcmp(d->serial, serial) != 0 : extra))
             continue;
         for (uint8_t k = 0; k < d->nifs; k++) {
-            uint8_t num, alt, nalts, cls, sub, proto, nep, eps[8];
+            uint8_t num, alt, nalts, cls, sub, proto, eps[8];
+            uint32_t nep;
             if (usbbus_interface_until(bus, soon(), d->id, k, &num, &alt, &nalts, &cls, &sub,
-                                       &proto, &nep, eps) != OK)
+                                       &proto, eps, &nep) != OK)
                 continue;
             if (cls != 0x08 || sub != 0x06 || proto != 0x50)
                 continue;
             *r = (struct raw){ .dev_id = d->id, .ifnum = num };
-            for (uint8_t e = 0; e < nep && e < 8; e++) {
+            for (uint32_t e = 0; e < nep && e < 8; e++) {
                 if ((eps[e] & 0x80) && !r->ep_in)
                     r->ep_in = eps[e];
                 else if (!(eps[e] & 0x80) && !r->ep_out)
