@@ -34,6 +34,8 @@ enum {
     DBG_VTD_FLUSH,         /* vtd_unit.c vtd_flush_lines, the lines flushed for a unit that
                               doesn't snoop its tables (arg: struct vtd_flush_range,
                               vtd_internal.h) */
+    DBG_VMO_EXEC_CHECK,    /* vmo_sys.c sys_vmo_make_exec, the handle taken out of the table,
+                              before the one-handle check and the seal (arg: the VMO) */
     DBG_N
 };
 
