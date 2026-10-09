@@ -123,11 +123,25 @@ struct jwlc_offer_rec {
     uint32_t id;                      /* wl_data_offer; 0: a free entry */
     uint8_t  types;                   /* bit n: jwlc_text_types[n] offered */
 };
+/* Our copied text, shared by the source and the transfers still writing it
+ * (a newer copy doesn't cut them short). */
+struct jwlc_text {
+    unsigned refs;
+    size_t   len;
+    char     bytes[];
+};
+/* A transfer the reader's channel had no room for yet. */
+struct jwlc_send {
+    handle_t fd;                      /* the reader's end; HANDLE_INVALID: a free entry */
+    struct jwlc_text *text;
+    size_t   at;                      /* bytes written so far */
+    uint64_t deadline;                /* given up (the end closed) then */
+};
 struct jwlc_clip {
     uint32_t device;                  /* wl_data_device on this connection; 0: none */
     uint32_t source;                  /* our wl_data_source, while it offers text; 0: none */
-    char    *text;                    /* what it offers (malloc'd), and its bytes */
-    size_t   len;
+    struct jwlc_text *text;           /* what it offers; NULL: none */
+    struct jwlc_send sends[JWL_CLIP_SENDS];   /* oldest first */
     struct jwlc_offer_rec offers[JWLC_OFFERS];   /* introduced, not the selection (yet) */
     struct jwlc_offer_rec selection;  /* the selection's offer; id 0: none */
     handle_t rx;                      /* a paste's end of its channel; HANDLE_INVALID: none */
