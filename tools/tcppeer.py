@@ -225,9 +225,11 @@ class Conn:
     def take(self, flags, seq, data):
         if not data and not flags & F_FIN:
             return
-        if seq != self.rcv_nxt or self.peer_fin:
+        old = diff(self.rcv_nxt, seq)   # the segment's first bytes that are ours already
+        if self.peer_fin or old < 0 or old > len(data) or (old == len(data) and not flags & F_FIN):
             self.ack()   # out of order, or a repeat: the ACK says where we are
             return
+        data = data[old:]   # a segment sent again from its first byte: the new part is taken
         if data:
             if data != stream(self.rx_seed, self.got, len(data)):
                 self.fail("wrong bytes at %d" % self.got)
