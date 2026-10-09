@@ -115,7 +115,7 @@ struct jwl_client_info {
     int32_t  output_scale;        /* 1 until told */
     uint32_t seat_caps;           /* JWL_WL_SEAT_CAPABILITY_* */
     const struct keymap *keymap;  /* the keyboard's layout (keymap_of_xkb), NULL: no keyboard */
-    int32_t  repeat_rate;         /* keys per second, 0: no repeat */
+    int32_t  repeat_rate;         /* keys per second (at most 1000), 0: no repeat */
     int32_t  repeat_delay;        /* ms before the first repeat */
     uint32_t error_object;        /* wl_display.error that ended it: object, code, text */
     uint32_t error_code;

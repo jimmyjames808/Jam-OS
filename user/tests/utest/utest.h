@@ -501,6 +501,7 @@ bool t_jwlc_setup(void);
 bool t_jwlc_window(void);
 bool t_jwlc_window_sizes(void);
 bool t_jwlc_keyboard(void);
+bool t_jwlc_keyboard_hostile(void);
 bool t_jwlc_key_burst(void);
 bool t_jwlc_pointer(void);
 bool t_jwlc_no_keyboard(void);
