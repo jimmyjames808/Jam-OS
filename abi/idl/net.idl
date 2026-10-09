@@ -84,13 +84,17 @@ protocol net 29
 
 # On an opener's channel (or the shared one): netstack's counts, as
 # <net.h>'s struct net_counters (little-endian, its reserved fields 0).
-3  counts  ()  -> (u8[256] counts)
+# `counts` is that struct's bytes, at most 256: a caller given fewer (a
+# netstack built before the struct grew) reads the rest as zeros, and one
+# given more than its struct knows ignores them.
+3  counts  ()  -> (u8[<=256] counts)
 
 # On an opener's channel: the network card's own counts, as the driver
 # answers netdev.stats (<jam/netdev.h> struct netdev_stats). ERR_NOT_FOUND:
 # no session with a card's driver; ERR_PEER_CLOSED: the session ended
-# before the driver answered.
-4  chip_counts  ()  -> (u8[256] counts) later
+# before the driver answered. `counts` is as netdev.stats': that struct's
+# bytes, at most 256, the rest read as zeros.
+4  chip_counts  ()  -> (u8[<=256] counts) later
 
 # On an opener's channel: a UDP socket on local port `port`, any local
 # address, without its rings yet (net_socket.rings gives them). port 0: netstack

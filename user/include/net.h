@@ -110,7 +110,7 @@ struct net_info {
     uint32_t version;                  /* changes to the address and DNS servers (wait_change) */
 };
 
-/* netstack's counts (net.counts' u8[256], little-endian): since it started. */
+/* netstack's counts (net.counts' u8[<=256], little-endian): since it started. */
 struct net_counters {
     /* frames, and what lwIP did with them */
     uint64_t rx_frames;        /* frames from the card */
@@ -206,7 +206,8 @@ status_t net_info(handle_t net, struct net_info *out);
  * deadline: ERR_TIMED_OUT. *out (may be NULL): the interface then. */
 status_t net_wait_up(handle_t net, uint64_t deadline, struct net_info *out);
 /* netstack's counts; the card's own (struct netdev_stats, <jam/netdev.h>:
- * NETDEV_STATS_SIZE bytes into out). */
+ * NETDEV_STATS_SIZE bytes into out). Bytes the answer did not carry read as
+ * zeros. */
 status_t net_get_counters(handle_t net, struct net_counters *out);
 status_t net_get_chip_counters(handle_t net, void *out);
 

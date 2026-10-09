@@ -367,12 +367,14 @@ bool t_netsock_iface(void)
     /* The card's own counts: netstack asks the driver, then answers. */
     uint32_t t3 = idl_txid_next(&txc);
     uint8_t counts[NETDEV_STATS_SIZE];
+    uint32_t counts_len = 0;
     CHECK_ST(net_chip_counts_send(o, t3), OK);
     CHECK(netdrv_serve_session());
     CHECK_ST(jam_object_wait_one(o, SIG_READABLE, now() + NETDRV_WAIT, &seen), OK);
     CHECK_ST(idl_reply_read(o, rep, sizeof(rep), &m), OK);
     CHECK_EQ(m.txid, t3);
-    CHECK_ST(net_chip_counts_result(rep, &m, counts), OK);
+    CHECK_ST(net_chip_counts_result(rep, &m, counts, &counts_len), OK);
+    CHECK_EQ(counts_len, NETDEV_STATS_SIZE);
     CHECK_EQ(((struct netdev_stats *)counts)->rx_frames, 42);
     jam_handle_close(o);
     CHECK(opener(&o));   /* a fresh channel for blocking calls */

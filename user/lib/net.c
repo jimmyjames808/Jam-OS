@@ -14,7 +14,7 @@
 #define MARGIN    NS_PER_S          /* the call waits this much past netstack's timeout */
 #define CALL_WAIT (5 * NS_PER_S)    /* a call netstack answers at once */
 
-_Static_assert(sizeof(struct net_counters) == NET_COUNTERS_SIZE, "net.counts' u8[256]");
+_Static_assert(sizeof(struct net_counters) == NET_COUNTERS_SIZE, "net.counts' u8[<=256]");
 
 handle_t net_svc(void)
 {
@@ -84,14 +84,33 @@ status_t net_wait_up(handle_t net, uint64_t deadline, struct net_info *out)
     return ERR_TIMED_OUT;
 }
 
+/* A counts array of n bytes in a buffer of cap: the bytes the answer did
+ * not carry read as zeros. */
+static void counts_pad(uint8_t *buf, uint32_t n, uint32_t cap)
+{
+    if (n < cap)
+        memset(buf + n, 0, cap - n);
+}
+
 status_t net_get_counters(handle_t net, struct net_counters *out)
 {
-    return net_counts_until(net, now() + CALL_WAIT, (uint8_t *)out);
+    uint8_t b[NET_COUNTERS_SIZE];
+    uint32_t n = 0;
+    status_t st = net_counts_until(net, now() + CALL_WAIT, b, &n);
+    if (st != OK)
+        return st;
+    counts_pad(b, n, sizeof(b));
+    memcpy(out, b, sizeof(*out));
+    return OK;
 }
 
 status_t net_get_chip_counters(handle_t net, void *out)
 {
-    return net_chip_counts_until(net, now() + CALL_WAIT, out);
+    uint32_t n = 0;
+    status_t st = net_chip_counts_until(net, now() + CALL_WAIT, out, &n);
+    if (st == OK)
+        counts_pad(out, n, NETDEV_STATS_SIZE);
+    return st;
 }
 
 status_t net_sock_attach(struct net_sock *s, handle_t ch, uint16_t port, const handle_t hs[3],

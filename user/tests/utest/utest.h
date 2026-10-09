@@ -420,10 +420,11 @@ bool t_netsock_hostile(void);
 bool t_netsock_slow_reader(void);
 bool t_netsock_busy_client(void);
 bool t_netsock_len_lies(void);
+bool t_netsock_short_counts(void);
 bool t_netsock_dhcp(void);
 /* netrings.c: sockets' rings against netstack: the fair shares, a hostile
  * program's rings, real UDP sockets in a wait set; and libos against a
- * netstack that lies (netsock_len_lies). */
+ * netstack that lies (netsock_len_lies, netsock_short_counts). */
 bool t_netsock_shares(void);
 bool t_netsock_hostile_rings(void);
 bool t_netwait_udp(void);

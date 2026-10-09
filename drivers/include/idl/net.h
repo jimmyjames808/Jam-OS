@@ -130,7 +130,6 @@ struct net_counts_req {
 struct net_counts_rep {
     uint32_t txid;
     int32_t  status;
-    uint8_t counts[256];
 } __attribute__((packed));
 struct net_chip_counts_req {
     uint32_t txid;
@@ -139,7 +138,6 @@ struct net_chip_counts_req {
 struct net_chip_counts_rep {
     uint32_t txid;
     int32_t  status;
-    uint8_t counts[256];
 } __attribute__((packed));
 struct net_udp_req {
     uint32_t txid;
@@ -210,7 +208,7 @@ struct net_tcp_listener_rep {
 } __attribute__((packed));
 
 #define NET_REQ_MAX 22u   /* bytes: the biggest request */
-#define NET_REP_MAX 264u   /* bytes: the biggest reply */
+#define NET_REP_MAX 266u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -310,68 +308,102 @@ static inline status_t net_wait_change(handle_t ch, uint32_t version, uint32_t t
 
 /* net_counts_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t net_counts_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256])
+static inline status_t net_counts_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    struct net_counts_req idl_q;
-    struct net_counts_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = NET_COUNTS;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[266];
+    struct net_counts_req *idl_q = (struct net_counts_req *)idl_b0;
+    const struct net_counts_rep *idl_r = (const struct net_counts_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = NET_COUNTS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    for (uint32_t idl_i = 0; idl_st == OK && out_counts && idl_i < 256; idl_i++)
-        out_counts[idl_i] = idl_r.counts[idl_i];
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 266, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 256, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_counts) {
+        if (idl_l0)
+            __builtin_memcpy(out_counts, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_counts_len)
+        *out_counts_len = idl_l0;
     return idl_st;
 }
 /* On an opener's channel (or the shared one): netstack's counts, as
- * <net.h>'s struct net_counters (little-endian, its reserved fields 0). */
-static inline status_t net_counts_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256])
+ * <net.h>'s struct net_counters (little-endian, its reserved fields 0).
+ * `counts` is that struct's bytes, at most 256: a caller given fewer (a
+ * netstack built before the struct grew) reads the rest as zeros, and one
+ * given more than its struct knows ignores them. */
+static inline status_t net_counts_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    return net_counts_call(ch, false, deadline_ns, out_counts);
+    return net_counts_call(ch, false, deadline_ns, out_counts, out_counts_len);
 }
-static inline status_t net_counts_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256])
+static inline status_t net_counts_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    return net_counts_call(ch, true, timeout_ns, out_counts);
+    return net_counts_call(ch, true, timeout_ns, out_counts, out_counts_len);
 }
-static inline status_t net_counts(handle_t ch, uint8_t out_counts[256])
+static inline status_t net_counts(handle_t ch, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    return net_counts_call(ch, false, DEADLINE_NEVER, out_counts);
+    return net_counts_call(ch, false, DEADLINE_NEVER, out_counts, out_counts_len);
 }
 
 /* net_chip_counts_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t net_chip_counts_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256])
+static inline status_t net_chip_counts_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    struct net_chip_counts_req idl_q;
-    struct net_chip_counts_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = NET_CHIP_COUNTS;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[266];
+    struct net_chip_counts_req *idl_q = (struct net_chip_counts_req *)idl_b0;
+    const struct net_chip_counts_rep *idl_r = (const struct net_chip_counts_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = NET_CHIP_COUNTS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    for (uint32_t idl_i = 0; idl_st == OK && out_counts && idl_i < 256; idl_i++)
-        out_counts[idl_i] = idl_r.counts[idl_i];
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 266, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 256, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_counts) {
+        if (idl_l0)
+            __builtin_memcpy(out_counts, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_counts_len)
+        *out_counts_len = idl_l0;
     return idl_st;
 }
 /* On an opener's channel: the network card's own counts, as the driver
  * answers netdev.stats (<jam/netdev.h> struct netdev_stats). ERR_NOT_FOUND:
  * no session with a card's driver; ERR_PEER_CLOSED: the session ended
- * before the driver answered. */
-static inline status_t net_chip_counts_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256])
+ * before the driver answered. `counts` is as netdev.stats': that struct's
+ * bytes, at most 256, the rest read as zeros. */
+static inline status_t net_chip_counts_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    return net_chip_counts_call(ch, false, deadline_ns, out_counts);
+    return net_chip_counts_call(ch, false, deadline_ns, out_counts, out_counts_len);
 }
-static inline status_t net_chip_counts_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256])
+static inline status_t net_chip_counts_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    return net_chip_counts_call(ch, true, timeout_ns, out_counts);
+    return net_chip_counts_call(ch, true, timeout_ns, out_counts, out_counts_len);
 }
-static inline status_t net_chip_counts(handle_t ch, uint8_t out_counts[256])
+static inline status_t net_chip_counts(handle_t ch, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    return net_chip_counts_call(ch, false, DEADLINE_NEVER, out_counts);
+    return net_chip_counts_call(ch, false, DEADLINE_NEVER, out_counts, out_counts_len);
 }
 
 /* net_udp_until and _within: idl_t is a deadline, or with idl_within a
@@ -795,21 +827,33 @@ static inline status_t net_wait_change_result(const void *idl_rep, struct idl_ms
  * The reply comes on ch: idl_reply_read, then net_counts_result. */
 static inline status_t net_counts_send(handle_t ch, uint32_t idl_txid)
 {
-    struct net_counts_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = NET_COUNTS;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[8];
+    struct net_counts_req *idl_q = (struct net_counts_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = NET_COUNTS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to net_counts_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t net_counts_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_counts[256])
+static inline status_t net_counts_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
     const struct net_counts_rep *idl_r = (const struct net_counts_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 256, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -817,8 +861,12 @@ static inline status_t net_counts_result(const void *idl_rep, struct idl_msg *id
         return idl_st;
     }
     idl_m->nh = 0;
-    for (uint32_t idl_i = 0; out_counts && idl_i < 256; idl_i++)
-        out_counts[idl_i] = idl_r->counts[idl_i];
+    if (out_counts) {
+        if (idl_l0)
+            __builtin_memcpy(out_counts, idl_p0, idl_l0 * 1);
+    }
+    if (out_counts_len)
+        *out_counts_len = idl_l0;
     return OK;
 }
 
@@ -826,21 +874,33 @@ static inline status_t net_counts_result(const void *idl_rep, struct idl_msg *id
  * The reply comes on ch: idl_reply_read, then net_chip_counts_result. */
 static inline status_t net_chip_counts_send(handle_t ch, uint32_t idl_txid)
 {
-    struct net_chip_counts_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = NET_CHIP_COUNTS;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[8];
+    struct net_chip_counts_req *idl_q = (struct net_chip_counts_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = NET_CHIP_COUNTS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to net_chip_counts_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t net_chip_counts_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_counts[256])
+static inline status_t net_chip_counts_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
     const struct net_chip_counts_rep *idl_r = (const struct net_chip_counts_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 256, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -848,8 +908,12 @@ static inline status_t net_chip_counts_result(const void *idl_rep, struct idl_ms
         return idl_st;
     }
     idl_m->nh = 0;
-    for (uint32_t idl_i = 0; out_counts && idl_i < 256; idl_i++)
-        out_counts[idl_i] = idl_r->counts[idl_i];
+    if (out_counts) {
+        if (idl_l0)
+            __builtin_memcpy(out_counts, idl_p0, idl_l0 * 1);
+    }
+    if (out_counts_len)
+        *out_counts_len = idl_l0;
     return OK;
 }
 
@@ -1085,8 +1149,8 @@ static inline status_t net_tcp_listener_result(const void *idl_rep, struct idl_m
 struct net_ops {
     status_t (*iface)(void *ctx, uint32_t *out_address, uint32_t *out_mask, uint32_t *out_gateway, uint32_t *out_dns1, uint32_t *out_dns2, uint8_t out_mac[6], uint8_t *out_device, uint8_t *out_link, uint16_t *out_vlan, uint32_t *out_speed, uint32_t *out_version);
     status_t (*wait_change)(void *ctx, struct idl_txn idl_txn, uint32_t version, uint32_t timeout_ms, uint32_t *out_version);
-    status_t (*counts)(void *ctx, uint8_t out_counts[256]);
-    status_t (*chip_counts)(void *ctx, struct idl_txn idl_txn, uint8_t out_counts[256]);
+    status_t (*counts)(void *ctx, uint8_t *out_counts, uint32_t *out_counts_len);
+    status_t (*chip_counts)(void *ctx, struct idl_txn idl_txn, uint8_t *out_counts, uint32_t *out_counts_len);
     status_t (*udp)(void *ctx, uint16_t port, handle_t *out_socket, uint16_t *out_port);
     status_t (*echo)(void *ctx, struct idl_txn idl_txn, uint32_t address, uint16_t seq, uint16_t size, uint32_t timeout_ms, uint32_t *out_rtt_us, uint8_t *out_ttl, uint16_t *out_size);
     status_t (*udp_rings)(void *ctx, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes);
@@ -1140,35 +1204,45 @@ static inline status_t net_reply_wait_change(struct idl_txn idl_txn, status_t id
 /* Answer the net.counts request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t net_reply_counts(struct idl_txn idl_txn, status_t idl_st, const uint8_t counts[256])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't
+ * one). Returns the write's status (idl_reply_write). */
+static inline status_t net_reply_counts(struct idl_txn idl_txn, status_t idl_st, const uint8_t *counts, uint32_t counts_len)
 {
-    struct net_counts_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[266];
+    struct net_counts_rep *idl_r = (struct net_counts_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_r.counts[idl_i] = counts[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, counts, counts_len, 256, 1))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the net.chip_counts request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t net_reply_chip_counts(struct idl_txn idl_txn, status_t idl_st, const uint8_t counts[256])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't
+ * one). Returns the write's status (idl_reply_write). */
+static inline status_t net_reply_chip_counts(struct idl_txn idl_txn, status_t idl_st, const uint8_t *counts, uint32_t counts_len)
 {
-    struct net_chip_counts_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[266];
+    struct net_chip_counts_rep *idl_r = (struct net_chip_counts_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_r.counts[idl_i] = counts[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, counts, counts_len, 256, 1))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the net.udp request kept in txn: idl_st and, if it is OK, the
@@ -1377,29 +1451,29 @@ static inline uint32_t net_dispatch_on(handle_t ch, const struct net_ops *ops, v
     case NET_COUNTS: {
         const struct net_counts_req *idl_q = (const struct net_counts_req *)req;
         struct net_counts_rep *idl_r = (struct net_counts_rep *)rep;
-        uint8_t out_counts[256];
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            out_counts[idl_i] = 0;
+        uint8_t *out_counts = (uint8_t *)((uint8_t *)rep + 10);
+        uint32_t out_counts_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->counts) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->counts(ctx, out_counts);
+        status_t idl_st = ops->counts(ctx, out_counts, &out_counts_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_counts_len > 256))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            idl_r->counts[idl_i] = out_counts[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 10, out_counts_len, 1);
+        return idl_rn;
     }
     case NET_CHIP_COUNTS: {
         const struct net_chip_counts_req *idl_q = (const struct net_chip_counts_req *)req;
         struct net_chip_counts_rep *idl_r = (struct net_chip_counts_rep *)rep;
-        uint8_t out_counts[256];
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            out_counts[idl_i] = 0;
+        uint8_t *out_counts = (uint8_t *)((uint8_t *)rep + 10);
+        uint32_t out_counts_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->chip_counts) {
@@ -1407,16 +1481,18 @@ static inline uint32_t net_dispatch_on(handle_t ch, const struct net_ops *ops, v
             return sizeof(*idl_h);
         }
         struct idl_txn idl_txn = { ch, idl_h->txid };
-        status_t idl_st = ops->chip_counts(ctx, idl_txn, out_counts);
+        status_t idl_st = ops->chip_counts(ctx, idl_txn, out_counts, &out_counts_len);
         /* IDL_LATER: the handler answers with net_reply_chip_counts. */
         if (idl_st == IDL_LATER)
             return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_counts_len > 256))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            idl_r->counts[idl_i] = out_counts[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 10, out_counts_len, 1);
+        return idl_rn;
     }
     case NET_UDP: {
         const struct net_udp_req *idl_q = (const struct net_udp_req *)req;
