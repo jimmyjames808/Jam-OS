@@ -123,8 +123,8 @@ bool t_keep_put_drop_restore(void)
 
     uint32_t rep[2] = { 0 }, nb = 0, nh = 0;
     struct channel_read_args a = {
-        .h = s.got[0][0], .bytes_cap = sizeof(rep), .bytes = (uint64_t)(uintptr_t)rep,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = s.got[0][0], .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     CHECK_ST(jam_channel_read(&a), OK);   /* the request the client sent while it was dead */
     CHECK(nb == sizeof(rep) && rep[1] == 42);
@@ -173,9 +173,9 @@ bool t_keep_restore_batches(void)
     for (;;) {
         uint32_t nb = 0, nh = 0;
         struct channel_read_args a = {
-            .h = svc2, .bytes_cap = sizeof(m), .bytes = (uint64_t)(uintptr_t)&m,
-            .actual_bytes = (uint64_t)(uintptr_t)&nb, .handles = (uint64_t)(uintptr_t)hs,
-            .handles_cap = KEEP_BATCH, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = svc2, .rd_cap = sizeof(m), .rd_bytes = (uint64_t)(uintptr_t)&m,
+            .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = KEEP_BATCH, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         CHECK_ST(jam_channel_read(&a), OK);
         for (unsigned i = 0; i < nh; i++)

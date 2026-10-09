@@ -70,9 +70,9 @@ static status_t krecv(handle_t ch, uint32_t *word, handle_t *h)
     uint32_t nb = 0, nh = 0;
     *h = HANDLE_INVALID;
     struct channel_read_args r = {
-        .h = ch, .bytes_cap = sizeof(*word), .bytes = (uint64_t)(uintptr_t)word,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb, .handles = (uint64_t)(uintptr_t)h,
-        .handles_cap = 1, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = ch, .rd_cap = sizeof(*word), .rd_bytes = (uint64_t)(uintptr_t)word,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_handles = (uint64_t)(uintptr_t)h,
+        .rd_hcap = 1, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     st = jam_channel_read(&r);
     return st == OK && nb != sizeof(*word) ? ERR_INVALID_ARGS : st;

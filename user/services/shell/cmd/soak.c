@@ -112,8 +112,8 @@ static void stop_load(struct soak *s)
     uint32_t n = 0;
     uint8_t go = 1;
     struct channel_read_args a = {
-        .h = s->load_ctl, .bytes_cap = sizeof(s->load), .bytes = (uint64_t)(uintptr_t)&s->load,
-        .actual_bytes = (uint64_t)(uintptr_t)&n,
+        .h = s->load_ctl, .rd_cap = sizeof(s->load), .rd_bytes = (uint64_t)(uintptr_t)&s->load,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
     };
     jam_channel_write(s->load_ctl, &go, 1, NULL, 0);
     jam_object_wait_one(s->load_ctl, SIG_READABLE | SIG_PEER_CLOSED, now() + STOP_WAIT_NS, NULL);

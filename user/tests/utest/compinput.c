@@ -250,9 +250,9 @@ static bool ctrl_alt_del(struct cs *t, struct sc *a)
     CHECK_ST(jam_object_wait_one(t->init, SIG_READABLE, now() + CT_WAIT, &seen), OK);
     struct initctl_reboot_req q;
     uint32_t n = 0;
-    struct channel_read_args r = { .h = t->init, .bytes_cap = sizeof(q),
-                                   .bytes = (uint64_t)(uintptr_t)&q,
-                                   .actual_bytes = (uint64_t)(uintptr_t)&n };
+    struct channel_read_args r = { .h = t->init, .rd_cap = sizeof(q),
+                                   .rd_bytes = (uint64_t)(uintptr_t)&q,
+                                   .rd_actual = (uint64_t)(uintptr_t)&n };
     CHECK_ST(jam_channel_read(&r), OK);
     CHECK(n == sizeof(q) && q.ordinal == INITCTL_REBOOT);
     CHECK(cs_tap(t, U_A, 0));   /* dropped: the machine is going */

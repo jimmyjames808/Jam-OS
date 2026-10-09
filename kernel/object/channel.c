@@ -485,7 +485,7 @@ static status_t read_wait_locked(struct channel *ch, struct read_wait *rw, struc
         if (chan_handed(w))
             return OK;
         if (ch->closed)
-            return ERR_BAD_STATE;
+            return ERR_CANCELED;   /* our own end closed under us: as channel_call's */
         if (!list_empty(&ch->queue))
             return take_first_locked(ch, r->buf.len, r->hcap, &w->reply, &r->nb, &r->nh,
                                      &rw->was_full);

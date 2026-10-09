@@ -42,9 +42,9 @@ static void rw_client_main(void *arg)
     struct rw_req req = { 0, c->word }, rep = { 0, 0 };
     uint32_t n = 0;
     struct channel_call_args a = {
-        .h = c->ch, .wn = sizeof(req), .wbytes = (uint64_t)(uintptr_t)&req,
-        .rcap = sizeof(rep), .rbytes = (uint64_t)(uintptr_t)&rep,
-        .ractual = (uint64_t)(uintptr_t)&n, .flags = CHANNEL_CALL_TIMEOUT,
+        .h = c->ch, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)&req,
+        .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)&rep,
+        .rd_actual = (uint64_t)(uintptr_t)&n, .flags = CHANNEL_CALL_TIMEOUT,
         .deadline_ns = c->timeout ? c->timeout : RW_WAIT,
     };
     c->st = jam_channel_call(&a);
@@ -66,13 +66,13 @@ static struct channel_reply_wait_args rw_args(handle_t h, const struct rw_req *r
                                               struct rw_req *req, uint32_t *nb, uint64_t timeout)
 {
     struct channel_reply_wait_args a = {
-        .h = h, .wait = wait, .bytes = (uint64_t)(uintptr_t)req, .bytes_cap = sizeof(*req),
-        .actual_bytes = (uint64_t)(uintptr_t)nb, .flags = CHANNEL_REPLY_WAIT_TIMEOUT,
+        .h = h, .wait = wait, .rd_bytes = (uint64_t)(uintptr_t)req, .rd_cap = sizeof(*req),
+        .rd_actual = (uint64_t)(uintptr_t)nb, .flags = CHANNEL_REPLY_WAIT_TIMEOUT,
         .deadline_ns = timeout,
     };
     if (h != HANDLE_INVALID) {
-        a.rbytes = (uint64_t)(uintptr_t)rep;
-        a.rn = sizeof(*rep);
+        a.wr_bytes = (uint64_t)(uintptr_t)rep;
+        a.wr_len = sizeof(*rep);
     }
     return a;
 }
@@ -165,8 +165,8 @@ bool t_reply_wait_gone_caller(void)
     CHECK_EQ(mark, 1);
     struct rw_req stray = { 0, 0 };
     struct channel_read_args rd = {
-        .h = a, .bytes_cap = sizeof(stray), .bytes = (uint64_t)(uintptr_t)&stray,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb,
+        .h = a, .rd_cap = sizeof(stray), .rd_bytes = (uint64_t)(uintptr_t)&stray,
+        .rd_actual = (uint64_t)(uintptr_t)&nb,
     };
     CHECK_ST(jam_channel_read(&rd), OK);   /* the stray reply, queued */
     CHECK(stray.txid == req.txid && stray.word == 8);
@@ -278,15 +278,15 @@ bool t_reply_wait_port(void)
     struct rw_req req, rep;
     uint32_t nb = 0;
     struct channel_read_args rd = {
-        .h = b, .bytes_cap = sizeof(req), .bytes = (uint64_t)(uintptr_t)&req,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb,
+        .h = b, .rd_cap = sizeof(req), .rd_bytes = (uint64_t)(uintptr_t)&req,
+        .rd_actual = (uint64_t)(uintptr_t)&nb,
     };
     CHECK_ST(jam_channel_read(&rd), OK);
     rep = (struct rw_req){ req.txid, 12 };
     uint64_t mark = 0;
     pa.h = b;
-    pa.rbytes = (uint64_t)(uintptr_t)&rep;
-    pa.rn = sizeof(rep);
+    pa.wr_bytes = (uint64_t)(uintptr_t)&rep;
+    pa.wr_len = sizeof(rep);
     pa.mark = (uint64_t)(uintptr_t)&mark;
     pa.deadline_ns = 0;
     CHECK_ST(jam_channel_reply_wait(&pa), ERR_TIMED_OUT);   /* answered; no packet since */
@@ -320,18 +320,18 @@ static bool rw_refusals_args(handle_t a, handle_t b)
     x.flags |= 1u << 5;
     CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);
     x = rw_args(HANDLE_INVALID, NULL, b, &req, &nb, 0);
-    x.rn = 4;   /* reply bytes, but no reply */
+    x.wr_len = 4;   /* reply bytes, but no reply */
     CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);
     x = rw_args(b, &rep, b, &req, &nb, 0);
-    x.rn = 65537;
+    x.wr_len = 65537;
     CHECK_ST(jam_channel_reply_wait(&x), ERR_OUT_OF_RANGE);
     x = rw_args(b, &rep, b, &req, &nb, 0);
-    x.rh = 16;   /* a bad handle array */
-    x.rhn = 1;
+    x.wr_handles = 16;   /* a bad handle array */
+    x.wr_nhandles = 1;
     CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);
     int32_t rs = 99;
     x = rw_args(b, &rep, b, &req, &nb, 0);
-    x.rbytes = 16;   /* a bad reply: nothing sent, its status says so */
+    x.wr_bytes = 16;   /* a bad reply: nothing sent, its status says so */
     x.reply_status = (uint64_t)(uintptr_t)&rs;
     CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);
     CHECK_EQ(rs, ERR_INVALID_ARGS);
@@ -362,7 +362,7 @@ static bool rw_refusals_handles(handle_t a, handle_t b)
     x = rw_args(wo, &rep, ro, &req, &nb, 0);   /* each with its own right: fine */
     CHECK_ST(jam_channel_reply_wait(&x), ERR_TIMED_OUT);
     CHECK_ST(jam_channel_read(&(struct channel_read_args){
-                 .h = a, .bytes_cap = sizeof(req), .bytes = (uint64_t)(uintptr_t)&req }),
+                 .h = a, .rd_cap = sizeof(req), .rd_bytes = (uint64_t)(uintptr_t)&req }),
              OK);   /* that reply */
     CHECK_ST(jam_handle_close(ro), OK);
     CHECK_ST(jam_handle_close(wo), OK);
@@ -384,7 +384,7 @@ static bool rw_refusals_buffers(handle_t a, handle_t b)
     x.mark = 16;
     CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);
     struct channel_read_args rd = {
-        .h = a, .bytes_cap = sizeof(req), .bytes = (uint64_t)(uintptr_t)&req,
+        .h = a, .rd_cap = sizeof(req), .rd_bytes = (uint64_t)(uintptr_t)&req,
     };
     CHECK_ST(jam_channel_read(&rd), OK);   /* the reply went out */
     x = rw_args(HANDLE_INVALID, NULL, b, &req, &nb, 0);
@@ -395,19 +395,19 @@ static bool rw_refusals_buffers(handle_t a, handle_t b)
     x = rw_args(HANDLE_INVALID, NULL, b, &req, &nb, 0);
     CHECK_ST(jam_channel_reply_wait(&x), ERR_BUFFER_TOO_SMALL);
     CHECK_EQ(nb, sizeof(big));
-    x.bytes = (uint64_t)(uintptr_t)big;   /* the request was still queued */
-    x.bytes_cap = sizeof(big);
+    x.rd_bytes = (uint64_t)(uintptr_t)big;   /* the request was still queued */
+    x.rd_cap = sizeof(big);
     CHECK_ST(jam_channel_reply_wait(&x), OK);
     handle_t ev, got = 0;
     CHECK_ST(jam_event_create(&ev), OK);
     CHECK_ST(jam_channel_write(a, &rep, sizeof(rep), &ev, 1), OK);
     x = rw_args(HANDLE_INVALID, NULL, b, &req, &nb, 0);
-    x.bytes = 16;
-    x.handles = (uint64_t)(uintptr_t)&got;
-    x.handles_cap = 1;
-    x.actual_handles = (uint64_t)(uintptr_t)&nh;
+    x.rd_bytes = 16;
+    x.rd_handles = (uint64_t)(uintptr_t)&got;
+    x.rd_hcap = 1;
+    x.rd_hactual = (uint64_t)(uintptr_t)&nh;
     CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);
-    x.bytes = (uint64_t)(uintptr_t)&req;
+    x.rd_bytes = (uint64_t)(uintptr_t)&req;
     CHECK_ST(jam_channel_reply_wait(&x), ERR_TIMED_OUT);   /* it was consumed */
     struct port_packet *badpkt = (struct port_packet *)16;
     handle_t port;
@@ -420,13 +420,63 @@ static bool rw_refusals_buffers(handle_t a, handle_t b)
     return true;
 }
 
+/* A buffer with a size but address 0, in all three calls: refused before
+ * anything happens (review K finding 3). A read leaves the message (and
+ * its handle) queued, a call sends nothing, a reply_wait's reply doesn't
+ * go out; before, each was found only at the copy, after the fact. */
+static bool rw_refusals_zero(handle_t a, handle_t b)
+{
+    struct rw_req req = { 0, 0 }, rep = { 1, 2 };
+    uint32_t nb = 0, nh = 0;
+    handle_t ev, got = 0;
+    signals_t seen = 0;
+    CHECK_ST(jam_event_create(&ev), OK);
+    CHECK_ST(jam_channel_write(a, &rep, sizeof(rep), &ev, 1), OK);
+    struct channel_read_args rd = {
+        .h = b, .rd_cap = sizeof(req), .rd_bytes = (uint64_t)(uintptr_t)&req, .rd_hcap = 1,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+    };
+    CHECK_ST(jam_channel_read(&rd), ERR_INVALID_ARGS);   /* handles to address 0 */
+    rd.rd_handles = (uint64_t)(uintptr_t)&got;
+    rd.rd_bytes = 0;
+    CHECK_ST(jam_channel_read(&rd), ERR_INVALID_ARGS);   /* bytes to address 0 */
+    rd.rd_bytes = (uint64_t)(uintptr_t)&req;
+    CHECK_ST(jam_channel_read(&rd), OK);   /* still queued, with its handle */
+    CHECK_EQ(nh, 1);
+    CHECK_ST(jam_handle_close(got), OK);
+
+    struct channel_call_args ca = {
+        .h = a, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)&req,
+        .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)&rep, .rd_hcap = 1,
+        .flags = CHANNEL_CALL_TIMEOUT, .deadline_ns = 0,
+    };
+    CHECK_ST(jam_channel_call(&ca), ERR_INVALID_ARGS);   /* reply handles to address 0 */
+    ca.rd_hcap = 0;
+    ca.rd_bytes = 0;
+    CHECK_ST(jam_channel_call(&ca), ERR_INVALID_ARGS);   /* reply bytes to address 0 */
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* nothing sent */
+
+    struct channel_reply_wait_args x = rw_args(b, &rep, b, &req, &nb, 0);
+    x.rd_hcap = 1;
+    CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);   /* request handles to 0 */
+    x = rw_args(b, &rep, b, &req, &nb, 0);
+    x.rd_bytes = 0;
+    CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);   /* request bytes to 0 */
+    x = rw_args(b, &rep, b, &req, &nb, 0);
+    x.wr_bytes = 0;
+    CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);   /* reply bytes from 0 */
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* no reply sent */
+    return true;
+}
+
 bool t_reply_wait_refusals(void)
 {
     struct job_info before, after;
     CHECK_ST(info_of(own_job(), &before), OK);
     handle_t a, b;
     CHECK_ST(jam_channel_create(&a, &b), OK);
-    bool ok = rw_refusals_args(a, b) && rw_refusals_handles(a, b) && rw_refusals_buffers(a, b);
+    bool ok = rw_refusals_args(a, b) && rw_refusals_handles(a, b) && rw_refusals_buffers(a, b) &&
+              rw_refusals_zero(a, b);
     CHECK_ST(jam_handle_close(a), OK);
     CHECK_ST(jam_handle_close(b), OK);
     if (!ok)
@@ -467,12 +517,12 @@ static int rw_reader(void)
     __atomic_store_n(&hdr[1], 1, __ATOMIC_RELEASE);   /* ready */
     uint32_t rep[2];
     struct channel_reply_wait_args a = {
-        .h = HANDLE_INVALID, .wait = ch, .bytes_cap = RW_MSG_MAX, .deadline_ns = DEADLINE_NEVER,
+        .h = HANDLE_INVALID, .wait = ch, .rd_cap = RW_MSG_MAX, .deadline_ns = DEADLINE_NEVER,
     };
     for (uint32_t k = 0; k < RW_ENTRIES; k++) {
         uint8_t *e = (uint8_t *)(uintptr_t)(addr + PAGE_SIZE + (uint64_t)k * RW_STRIDE);
-        a.bytes = (uint64_t)(uintptr_t)(e + RW_DATA);
-        a.actual_bytes = (uint64_t)(uintptr_t)(e + RW_LEN);
+        a.rd_bytes = (uint64_t)(uintptr_t)(e + RW_DATA);
+        a.rd_actual = (uint64_t)(uintptr_t)(e + RW_LEN);
         status_t st = jam_channel_reply_wait(&a);
         if (st != OK)
             return st == ERR_PEER_CLOSED ? 0 : 2;
@@ -480,8 +530,8 @@ static int rw_reader(void)
         memcpy(&rep[0], e + RW_DATA, 4);
         rep[1] = k;
         a.h = ch;
-        a.rbytes = (uint64_t)(uintptr_t)rep;
-        a.rn = sizeof(rep);
+        a.wr_bytes = (uint64_t)(uintptr_t)rep;
+        a.wr_len = sizeof(rep);
         a.mark = (uint64_t)(uintptr_t)(e + RW_MARK);
     }
     return 0;

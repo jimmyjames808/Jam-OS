@@ -123,9 +123,9 @@ status_t next_msg(handle_t h, void *buf, uint32_t cap, uint32_t *n)
         handle_t hs[4];
         uint32_t nh = 0;
         struct channel_read_args a = {
-            .h = h, .bytes_cap = cap, .bytes = (uint64_t)(uintptr_t)buf,
-            .actual_bytes = (uint64_t)(uintptr_t)n, .handles = (uint64_t)(uintptr_t)hs,
-            .handles_cap = 4, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = h, .rd_cap = cap, .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .rd_actual = (uint64_t)(uintptr_t)n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_BUFFER_TOO_SMALL) {

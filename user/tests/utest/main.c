@@ -272,17 +272,18 @@ static bool t_bad_pointers(void)
     handle_t got[4];
     uint32_t nb, nh;
     struct channel_read_args ra = {
-        .h = b, .bytes_cap = 64, .bytes = unmapped, .actual_bytes = (uint64_t)(uintptr_t)&nb,
-        .handles = (uint64_t)(uintptr_t)got, .handles_cap = 4,
-        .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = b, .rd_cap = 64, .rd_bytes = unmapped, .rd_actual = (uint64_t)(uintptr_t)&nb,
+        .rd_handles = (uint64_t)(uintptr_t)got, .rd_hcap = 4,
+        .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     CHECK_ST(jam_channel_read(&ra), ERR_INVALID_ARGS);
-    ra.bytes = (uint64_t)(uintptr_t)got;
+    ra.rd_bytes = (uint64_t)(uintptr_t)got;
     CHECK_ST(jam_channel_read(&ra), ERR_SHOULD_WAIT);   /* it was consumed */
     /* A request with a bad buffer: nothing sent, our handle still ours. */
     CHECK_ST(jam_event_create(&e), OK);
     struct channel_call_args ca = {
-        .h = a, .wn = 8, .wbytes = unmapped, .wh = (uint64_t)(uintptr_t)&e, .whn = 1,
+        .h = a, .wr_len = 8, .wr_bytes = unmapped, .wr_handles = (uint64_t)(uintptr_t)&e,
+        .wr_nhandles = 1,
         .deadline_ns = now(),
     };
     CHECK_ST(jam_channel_call(&ca), ERR_INVALID_ARGS);
@@ -347,9 +348,9 @@ static bool t_ping_pong(void)
     for (uint32_t i = 0; i < CALLS; i++) {
         uint32_t req[4] = { 0, i, ~i, 12345 }, rep[4] = { 0 }, ra = 0;
         struct channel_call_args c = {
-            .h = a, .wn = sizeof(req), .wbytes = (uint64_t)(uintptr_t)req,
-            .rcap = sizeof(rep), .rbytes = (uint64_t)(uintptr_t)rep,
-            .ractual = (uint64_t)(uintptr_t)&ra, .deadline_ns = now() + 5 * NS_PER_S,
+            .h = a, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)req,
+            .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+            .rd_actual = (uint64_t)(uintptr_t)&ra, .deadline_ns = now() + 5 * NS_PER_S,
         };
         CHECK_ST(jam_channel_call(&c), OK);
         if (ra != sizeof(rep) || rep[1] != i || rep[2] != ~i || rep[3] != 12345)
@@ -363,9 +364,10 @@ static bool t_ping_pong(void)
     CHECK_ST(jam_event_create(&e), OK);
     uint32_t req = 0, rep = 0;
     struct channel_call_args c = {
-        .h = a, .wn = 4, .wbytes = (uint64_t)(uintptr_t)&req, .wh = (uint64_t)(uintptr_t)&e,
-        .whn = 1, .rcap = 4, .rbytes = (uint64_t)(uintptr_t)&rep,
-        .rh = (uint64_t)(uintptr_t)&back, .rhcap = 1, .rhactual = (uint64_t)(uintptr_t)&nh,
+        .h = a, .wr_len = 4, .wr_bytes = (uint64_t)(uintptr_t)&req,
+        .wr_handles = (uint64_t)(uintptr_t)&e, .wr_nhandles = 1, .rd_cap = 4,
+        .rd_bytes = (uint64_t)(uintptr_t)&rep, .rd_handles = (uint64_t)(uintptr_t)&back,
+        .rd_hcap = 1, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         .deadline_ns = now() + 5 * NS_PER_S,
     };
     CHECK_ST(jam_channel_call(&c), OK);
@@ -419,8 +421,8 @@ static bool t_kill_in_channel_call(void)
     uint8_t buf[64];
     uint32_t nb = 0;
     struct channel_read_args r = {
-        .h = a, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb,
+        .h = a, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+        .rd_actual = (uint64_t)(uintptr_t)&nb,
     };
     CHECK_ST(jam_channel_read(&r), OK);
     CHECK_EQ(nb, 16);
@@ -508,9 +510,9 @@ static bool t_kernel_objects_are_charged(void)
     uint8_t buf[8];
     uint32_t nb = 0, nh = 0;
     struct channel_read_args r = {
-        .h = y, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb, .handles = (uint64_t)(uintptr_t)&ev,
-        .handles_cap = 1, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = y, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_handles = (uint64_t)(uintptr_t)&ev,
+        .rd_hcap = 1, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     CHECK_ST(jam_channel_read(&r), OK);
     CHECK_EQ(nh, 1);

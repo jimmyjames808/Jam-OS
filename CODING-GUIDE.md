@@ -589,8 +589,9 @@ protocol's restart rule says what clients do after `ERR_PEER_CLOSED`.
    maps the state. A deliberate kill neither counts nor waits; it tells
    each instance how the last one ended (killed or crashed). It drops the
    state and calls `keeper_release` when the binding retires, is given up
-   on or is stopped in order. devmgr's and init's `spare.c` are the two
-   copies to follow.
+   on or is stopped in order. All of it is `user/lib/supervise.c`
+   (`<supervise.h>`); devmgr's and init's `spare.c` are its two users to
+   follow.
 3. **The service** calls `svcstate_open` before anything else (the state
    at the fixed address, so pointers inside it stay valid), with its own
    layout version (bump it on any change to the struct) and its binding,

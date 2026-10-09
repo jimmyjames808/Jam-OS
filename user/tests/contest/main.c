@@ -39,8 +39,8 @@ static bool next_key(handle_t k, struct input_key_event *ev)
         return false;
     uint32_t n = 0;
     struct channel_read_args a = {
-        .h = k, .bytes_cap = sizeof(*ev), .bytes = (uint64_t)(uintptr_t)ev,
-        .actual_bytes = (uint64_t)(uintptr_t)&n,
+        .h = k, .rd_cap = sizeof(*ev), .rd_bytes = (uint64_t)(uintptr_t)ev,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
     };
     return jam_channel_read(&a) == OK && n == sizeof(*ev);
 }
@@ -170,10 +170,10 @@ static int steal(void)
     struct devmgr_rep r;
     uint32_t n = 0, got = 0;
     struct channel_call_args a = {
-        .h = dm, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)&q,
-        .wh = (uint64_t)(uintptr_t)&theirs, .whn = 1, .rcap = sizeof(r),
-        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
-        .rhactual = (uint64_t)(uintptr_t)&got,
+        .h = dm, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)&q,
+        .wr_handles = (uint64_t)(uintptr_t)&theirs, .wr_nhandles = 1, .rd_cap = sizeof(r),
+        .rd_bytes = (uint64_t)(uintptr_t)&r, .rd_actual = (uint64_t)(uintptr_t)&n,
+        .rd_hactual = (uint64_t)(uintptr_t)&got,
         .deadline_ns = now() + 5000 * NS_PER_MS,
     };
     status_t st = jam_channel_call(&a);
@@ -213,8 +213,8 @@ static int flood(handle_t con)
         _Alignas(8) uint8_t rep[64];
         uint32_t n = 0, nh = 0;
         struct channel_read_args a = {
-            .h = con, .bytes_cap = sizeof(rep), .bytes = (uint64_t)(uintptr_t)rep,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = con, .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         while (jam_channel_read(&a) == OK)
             ;

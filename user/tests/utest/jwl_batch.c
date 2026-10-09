@@ -59,10 +59,10 @@ static bool refused(size_t n, unsigned nh, unsigned good, uint32_t object, uint3
         FAIL("%s: code %u on @%u (\"%s\")", what, sv->error.code, sv->error.object, sv->error.text);
     uint8_t back[512];
     uint32_t nb = 0, nhb = 0;
-    struct channel_read_args r = { .h = a, .bytes_cap = sizeof(back),
-                                   .bytes = (uint64_t)(uintptr_t)back,
-                                   .actual_bytes = (uint64_t)(uintptr_t)&nb,
-                                   .actual_handles = (uint64_t)(uintptr_t)&nhb };
+    struct channel_read_args r = { .h = a, .rd_cap = sizeof(back),
+                                   .rd_bytes = (uint64_t)(uintptr_t)back,
+                                   .rd_actual = (uint64_t)(uintptr_t)&nb,
+                                   .rd_hactual = (uint64_t)(uintptr_t)&nhb };
     CHECK_ST(jam_channel_read(&r), OK);
     uint32_t w[8];
     memcpy(w, back, sizeof(w));
@@ -162,10 +162,10 @@ bool t_jwl_bad_compositor(void)
         CHECK_ST(jwl_conn_flush(cl), ERR_INVALID_ARGS);
         CHECK_EQ(cl->stats.batches_out, 0);
         uint32_t nb, nh;
-        struct channel_read_args r = { .h = b, .bytes_cap = sizeof(raw),
-                                       .bytes = (uint64_t)(uintptr_t)raw,
-                                       .actual_bytes = (uint64_t)(uintptr_t)&nb,
-                                       .actual_handles = (uint64_t)(uintptr_t)&nh };
+        struct channel_read_args r = { .h = b, .rd_cap = sizeof(raw),
+                                       .rd_bytes = (uint64_t)(uintptr_t)raw,
+                                       .rd_actual = (uint64_t)(uintptr_t)&nb,
+                                       .rd_hactual = (uint64_t)(uintptr_t)&nh };
         CHECK_ST(jam_channel_read(&r), ERR_SHOULD_WAIT);
         jwl_conn_destroy(cl);
         jam_handle_close(b);

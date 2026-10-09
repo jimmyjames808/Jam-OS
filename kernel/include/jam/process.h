@@ -66,8 +66,8 @@ struct uthread;
  *                        each handle a message carries or object a binding
  *                        watches, since that may be what keeps it alive.
  * userboot_root_job sizes the handle and message limits so that everything
- * fits in memory next to the page limit and the kernel's reserve. */
-#define JOB_OBJECT_BYTES   1024
+ * fits in memory next to the page limit and the kernel's reserve.
+ * JOB_OBJECT_BYTES is <jam/abi.h>'s. */
 #define UTHREAD_KMEM_PAGES (THREAD_STACK_SIZE / 4096 + 1)
 
 /* A new job under parent (NULL: a root job) with no limits of its own and

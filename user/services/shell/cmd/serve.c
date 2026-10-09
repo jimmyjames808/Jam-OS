@@ -114,8 +114,8 @@ static status_t give_file(handle_t give, struct jfile *f, struct serve_answer *a
     uint32_t n = 0, nh = 0;
     st = jam_object_wait_one(give, SIG_READABLE | SIG_PEER_CLOSED, now() + 2 * SOON, &seen);
     struct channel_read_args a = {
-        .h = give, .bytes_cap = sizeof(*ans), .bytes = (uint64_t)(uintptr_t)ans,
-        .actual_bytes = (uint64_t)(uintptr_t)&n, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = give, .rd_cap = sizeof(*ans), .rd_bytes = (uint64_t)(uintptr_t)ans,
+        .rd_actual = (uint64_t)(uintptr_t)&n, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     if (st == OK)
         st = jam_channel_read(&a);

@@ -33,10 +33,10 @@ static bool cp_reports(struct cp_run *r, handle_t ch)
     for (;;) {
         struct testscene_report rep;
         uint32_t got[2] = { 0, 0 };
-        struct channel_read_args a = { .h = ch, .bytes_cap = sizeof(rep),
-                                       .bytes = (uint64_t)(uintptr_t)&rep,
-                                       .actual_bytes = (uint64_t)(uintptr_t)&got[0],
-                                       .actual_handles = (uint64_t)(uintptr_t)&got[1] };
+        struct channel_read_args a = { .h = ch, .rd_cap = sizeof(rep),
+                                       .rd_bytes = (uint64_t)(uintptr_t)&rep,
+                                       .rd_actual = (uint64_t)(uintptr_t)&got[0],
+                                       .rd_hactual = (uint64_t)(uintptr_t)&got[1] };
         status_t st = jam_channel_read(&a);
         if (st == ERR_SHOULD_WAIT || st == ERR_PEER_CLOSED)
             return true;

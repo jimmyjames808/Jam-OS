@@ -87,9 +87,9 @@ static status_t take_file(struct share *sh)
     handle_t hs[2] = { 0 };
     uint32_t n = 0, nh = 0;
     struct channel_read_args a = {
-        .h = sh->give, .bytes_cap = sizeof(g), .bytes = (uint64_t)(uintptr_t)&g,
-        .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)hs,
-        .handles_cap = 2, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = sh->give, .rd_cap = sizeof(g), .rd_bytes = (uint64_t)(uintptr_t)&g,
+        .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+        .rd_hcap = 2, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     status_t st = jam_channel_read(&a);
     if (st == ERR_SHOULD_WAIT)

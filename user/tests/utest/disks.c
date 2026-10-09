@@ -132,9 +132,9 @@ static bool attach(handle_t dm, uint8_t type2, enum esp_kind kind, uint32_t *id,
     struct devmgr_rep r;
     uint32_t n = 0;
     struct channel_call_args a = {
-        .h = dm, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)&q,
-        .wh = (uint64_t)(uintptr_t)&client, .whn = 1, .rcap = sizeof(r),
-        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
+        .h = dm, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)&q,
+        .wr_handles = (uint64_t)(uintptr_t)&client, .wr_nhandles = 1, .rd_cap = sizeof(r),
+        .rd_bytes = (uint64_t)(uintptr_t)&r, .rd_actual = (uint64_t)(uintptr_t)&n,
         .deadline_ns = now() + 10 * NS_PER_S,
     };
     CHECK_ST(jam_channel_call(&a), OK);   /* client goes with the request either way */

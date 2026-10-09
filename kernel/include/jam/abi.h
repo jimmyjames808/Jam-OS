@@ -208,37 +208,62 @@ struct process_info {
 #define THREAD_PRIO_DEFAULT  16
 #define THREAD_PRIO_USER_MAX 24
 
+/* channels --------------------------------------------------------------------
+ * A message carries at most CHANNEL_MAX_BYTES bytes and CHANNEL_MAX_HANDLES
+ * handles (more: ERR_OUT_OF_RANGE). At most CHANNEL_MAX_QUEUED messages wait
+ * on one end; a write beyond that fails with ERR_SHOULD_WAIT. A queued
+ * message is charged to a job's JOB_LIMIT_MSG_BYTES: its size, plus
+ * JOB_OBJECT_BYTES for each handle it carries (the object it may be all
+ * that keeps alive). */
+#define CHANNEL_MAX_BYTES   65536
+#define CHANNEL_MAX_HANDLES 64
+#define CHANNEL_MAX_QUEUED  1024
+#define JOB_OBJECT_BYTES    1024
+
+/* The first 4 bytes of a message are its txid. channel_call stamps its own
+ * on the request, with this bit set (the rest a counter of the channel
+ * pair's), and takes the reply that echoes it. A program that picks its
+ * own txids (requests it sends with channel_write and doesn't wait for)
+ * keeps this bit clear, so no reply to them is ever taken for a call's. */
+#define CHANNEL_TXID_KERNEL 0x80000000u
+
 /* argument structs -----------------------------------------------------------
  * Calls with more than six arguments take a pointer to one of these. The
  * syscall dispatcher copies the struct into the kernel before the call, so
  * its fields are read once; the buffers they point at are user memory. */
 
+/* The three channel structs name their fields alike. What the call sends
+ * is wr_*: wr_len bytes at wr_bytes, wr_nhandles handles at wr_handles.
+ * What it receives is rd_*: room for rd_cap bytes at rd_bytes and rd_hcap
+ * handles at rd_handles; rd_actual and rd_hactual are the user addresses
+ * of two uint32_t that get the message's sizes (0: not wanted). A caller
+ * that keeps those two in a row (rd_hactual = rd_actual + 4) gets both in
+ * one copy. */
+
 struct channel_read_args {
     handle_t h;                /* the channel endpoint to read */
-    uint32_t bytes_cap;        /* size of the bytes buffer */
-    uint64_t bytes;            /* user address: bytes_cap bytes */
-    uint64_t actual_bytes;     /* user address of a uint32_t, or 0 */
-    uint64_t handles;          /* user address: handles_cap handle_t */
-    uint32_t handles_cap;      /* entries in the handles buffer */
+    uint32_t rd_cap;           /* size of the bytes buffer */
+    uint64_t rd_bytes;         /* user address: rd_cap bytes */
+    uint64_t rd_handles;       /* user address: rd_hcap handle_t */
+    uint32_t rd_hcap;          /* entries in the handles buffer */
     uint32_t reserved;         /* 0 */
-    uint64_t actual_handles;   /* user address of a uint32_t, or 0. At actual_bytes + 4
-                                * (one struct), the two go out in one copy */
+    uint64_t rd_actual;        /* user address of a uint32_t, or 0 */
+    uint64_t rd_hactual;       /* user address of a uint32_t, or 0 */
 };
 
 struct channel_call_args {
     handle_t h;                /* the channel endpoint to call on */
-    uint32_t wn;               /* request bytes (>= 4: the txid goes first) */
-    uint64_t wbytes;           /* user address of the request */
-    uint64_t wh;               /* user address: whn handle_t to send */
-    uint32_t whn;              /* handles to send */
-    uint32_t rcap;             /* reply buffer bytes */
-    uint64_t rbytes;           /* user address of the reply buffer */
-    uint64_t ractual;          /* user address of a uint32_t, or 0 */
-    uint64_t rh;               /* user address: rhcap handle_t for the reply */
-    uint32_t rhcap;            /* entries in the reply handle buffer */
+    uint32_t wr_len;           /* request bytes (>= 4: the txid goes first) */
+    uint64_t wr_bytes;         /* user address of the request */
+    uint64_t wr_handles;       /* user address: wr_nhandles handle_t to send */
+    uint32_t wr_nhandles;      /* handles to send */
+    uint32_t rd_cap;           /* reply buffer bytes */
+    uint64_t rd_bytes;         /* user address of the reply buffer */
+    uint64_t rd_handles;       /* user address: rd_hcap handle_t for the reply */
+    uint32_t rd_hcap;          /* entries in the reply handle buffer */
     uint32_t flags;            /* CHANNEL_CALL_*; any other bit: ERR_INVALID_ARGS */
-    uint64_t rhactual;         /* user address of a uint32_t, or 0. At ractual + 4 (one
-                                * struct), the two go out in one copy */
+    uint64_t rd_actual;        /* user address of a uint32_t, or 0 */
+    uint64_t rd_hactual;       /* user address of a uint32_t, or 0 */
     uint64_t deadline_ns;      /* absolute, uptime clock; UINT64_MAX = forever.
                                 * With CHANNEL_CALL_TIMEOUT: ns from now */
 };
@@ -255,23 +280,23 @@ struct channel_call_args {
  * port there; the other form's must be 0. */
 struct channel_reply_wait_args {
     handle_t h;                /* the channel end to reply on; HANDLE_INVALID: no reply */
-    uint32_t rn;               /* reply bytes (the call's txid first, as every reply) */
-    uint64_t rbytes;           /* user address of the reply */
-    uint64_t rh;               /* user address: rhn handle_t sent with the reply */
-    uint32_t rhn;              /* handles sent with it */
+    uint32_t wr_len;           /* reply bytes (the call's txid first, as every reply) */
+    uint64_t wr_bytes;         /* user address of the reply */
+    uint64_t wr_handles;       /* user address: wr_nhandles handle_t sent with the reply */
+    uint32_t wr_nhandles;      /* handles sent with it */
     handle_t wait;             /* where the next request comes from: a channel end or a port */
     uint64_t mark;             /* user address of a uint64_t set to 1 once the reply went
                                 * out, before the wait; 0: none */
     uint64_t reply_status;     /* user address of an int32_t: the reply's status, written
                                 * as the call returns when there was a reply to send;
-                                * 0: none. At actual_bytes - 4, with actual_handles
-                                * at actual_bytes + 4, the three go out in one copy */
-    uint64_t bytes;            /* channel: user address of room for the request */
-    uint32_t bytes_cap;        /* channel: its size */
-    uint32_t handles_cap;      /* channel: entries in the handles buffer */
-    uint64_t handles;          /* channel: user address: handles_cap handle_t */
-    uint64_t actual_bytes;     /* channel: user address of a uint32_t, or 0 */
-    uint64_t actual_handles;   /* channel: user address of a uint32_t, or 0 */
+                                * 0: none. At rd_actual - 4, with rd_hactual at
+                                * rd_actual + 4, the three go out in one copy */
+    uint32_t rd_cap;           /* channel: room for the request's bytes */
+    uint32_t rd_hcap;          /* channel: entries in the handles buffer */
+    uint64_t rd_bytes;         /* channel: user address: rd_cap bytes */
+    uint64_t rd_handles;       /* channel: user address: rd_hcap handle_t */
+    uint64_t rd_actual;        /* channel: user address of a uint32_t, or 0 */
+    uint64_t rd_hactual;       /* channel: user address of a uint32_t, or 0 */
     uint64_t packet;           /* port: user address of a struct port_packet */
     uint32_t flags;            /* CHANNEL_REPLY_WAIT_*; any other bit: ERR_INVALID_ARGS */
     uint32_t reserved;         /* 0 */

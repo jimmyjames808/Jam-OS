@@ -19,16 +19,19 @@ _Static_assert(sizeof(struct port_packet) == 48, "port_packet layout");
 _Static_assert(offsetof(struct port_packet, signal.count) == 24, "port_packet layout");
 
 _Static_assert(sizeof(struct channel_read_args) == 48, "channel_read_args layout");
-_Static_assert(offsetof(struct channel_read_args, actual_handles) == 40,
+_Static_assert(offsetof(struct channel_read_args, rd_hcap) == 24 &&
+                   offsetof(struct channel_read_args, rd_hactual) == 40,
                "channel_read_args layout");
 _Static_assert(sizeof(struct channel_call_args) == 80, "channel_call_args layout");
-_Static_assert(offsetof(struct channel_call_args, flags) == 60 &&
+_Static_assert(offsetof(struct channel_call_args, rd_cap) == 28 &&
+                   offsetof(struct channel_call_args, flags) == 52 &&
+                   offsetof(struct channel_call_args, rd_hactual) == 64 &&
                    offsetof(struct channel_call_args, deadline_ns) == 72,
                "channel_call_args layout");
 
 _Static_assert(sizeof(struct channel_reply_wait_args) == 112, "channel_reply_wait_args layout");
 _Static_assert(offsetof(struct channel_reply_wait_args, wait) == 28 &&
-                   offsetof(struct channel_reply_wait_args, bytes_cap) == 56 &&
+                   offsetof(struct channel_reply_wait_args, rd_cap) == 48 &&
                    offsetof(struct channel_reply_wait_args, packet) == 88 &&
                    offsetof(struct channel_reply_wait_args, deadline_ns) == 104,
                "channel_reply_wait_args layout");

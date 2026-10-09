@@ -379,10 +379,10 @@ void services_devmgr_input(handle_t c)
     struct devmgr_rep r;
     uint32_t n = 0, got = 0;
     struct channel_call_args a = {
-        .h = devmgr, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)&q,
-        .wh = (uint64_t)(uintptr_t)&c, .whn = 1, .rcap = sizeof(r),
-        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
-        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * NS_PER_S,
+        .h = devmgr, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)&q,
+        .wr_handles = (uint64_t)(uintptr_t)&c, .wr_nhandles = 1, .rd_cap = sizeof(r),
+        .rd_bytes = (uint64_t)(uintptr_t)&r, .rd_actual = (uint64_t)(uintptr_t)&n,
+        .rd_hactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * NS_PER_S,
     };
     status_t st = jam_channel_call(&a);   /* c goes with the request either way */
     if (st != OK || n < DEVMGR_REP_HDR || r.status != OK)

@@ -68,9 +68,9 @@ static status_t raw_call(handle_t c, const void *req, uint32_t n, handle_t *hs, 
     struct idl_rep_hdr rep = { 0, 0 };
     uint32_t rn = 0;
     struct channel_call_args a = {
-        .h = c, .wn = n, .wbytes = (uint64_t)(uintptr_t)req, .wh = (uint64_t)(uintptr_t)hs,
-        .whn = nh, .rcap = sizeof(rep), .rbytes = (uint64_t)(uintptr_t)&rep,
-        .ractual = (uint64_t)(uintptr_t)&rn, .flags = CHANNEL_CALL_TIMEOUT,
+        .h = c, .wr_len = n, .wr_bytes = (uint64_t)(uintptr_t)req,
+        .wr_handles = (uint64_t)(uintptr_t)hs, .wr_nhandles = nh, .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)&rep,
+        .rd_actual = (uint64_t)(uintptr_t)&rn, .flags = CHANNEL_CALL_TIMEOUT,
         .deadline_ns = CALL_WAIT,
     };
     status_t st = jam_channel_call(&a);

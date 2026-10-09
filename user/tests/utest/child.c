@@ -38,14 +38,14 @@ static int spin(void)
 static int echo(void)
 {
     handle_t ch = startup_handle(SR_USER);
-    static uint8_t buf[CHANNEL_MSG_MAX];
+    static uint8_t buf[CHANNEL_MAX_BYTES];
     handle_t hs[8];
     for (;;) {
         uint32_t nb = 0, nh = 0;
         struct channel_read_args a = {
-            .h = ch, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-            .actual_bytes = (uint64_t)(uintptr_t)&nb, .handles = (uint64_t)(uintptr_t)hs,
-            .handles_cap = 8, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = ch, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = 8, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_SHOULD_WAIT) {
@@ -90,12 +90,12 @@ static int caller(void)
     uint8_t req[16] = { 0 }, rep[16];
     uint32_t ra = 0;
     struct channel_call_args a = {
-        .h = ch, .wn = sizeof(req), .wbytes = (uint64_t)(uintptr_t)req,
-        .rcap = sizeof(rep), .rbytes = (uint64_t)(uintptr_t)rep,
-        .ractual = (uint64_t)(uintptr_t)&ra, .rhcap = 4, .deadline_ns = DEADLINE_NEVER,
+        .h = ch, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)req,
+        .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+        .rd_actual = (uint64_t)(uintptr_t)&ra, .rd_hcap = 4, .deadline_ns = DEADLINE_NEVER,
     };
     handle_t rh[4];
-    a.rh = (uint64_t)(uintptr_t)rh;
+    a.rd_handles = (uint64_t)(uintptr_t)rh;
     status_t st = jam_channel_call(&a);
     printf("utest-caller: channel_call returned %s (it never should)\n", status_str(st));
     return 5;

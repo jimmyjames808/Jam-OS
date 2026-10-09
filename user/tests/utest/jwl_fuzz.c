@@ -326,10 +326,10 @@ static bool feed_conn(const uint8_t *b, size_t n, unsigned nh, uint32_t *seed, s
         t->refused++;
         t->codes[sv->error.code]++;
         uint32_t back[128], nb, nhb;   /* the whole error batch: a short buffer reads nothing */
-        struct channel_read_args r = { .h = a, .bytes_cap = sizeof(back),
-                                       .bytes = (uint64_t)(uintptr_t)back,
-                                       .actual_bytes = (uint64_t)(uintptr_t)&nb,
-                                       .actual_handles = (uint64_t)(uintptr_t)&nhb };
+        struct channel_read_args r = { .h = a, .rd_cap = sizeof(back),
+                                       .rd_bytes = (uint64_t)(uintptr_t)back,
+                                       .rd_actual = (uint64_t)(uintptr_t)&nb,
+                                       .rd_hactual = (uint64_t)(uintptr_t)&nhb };
         CHECK_ST(jam_channel_read(&r), OK);   /* the error is the only message back */
         CHECK(back[0] == JWL_MAGIC && back[4] == JWL_DISPLAY_ID && back[7] == sv->error.code);
     }

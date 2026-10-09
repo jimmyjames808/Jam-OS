@@ -83,15 +83,6 @@ static void tell_desktop(const struct binding *b, bool gave_up, bool first)
                 '!', NOTICE_RASPBERRY);
 }
 
-/* Restarts within the window. */
-static unsigned recent(const struct binding *b, uint64_t t)
-{
-    unsigned n = 0;
-    for (unsigned i = 0; i < SUP_RESTART_LIMIT; i++)
-        n += b->restarted[i] && t - b->restarted[i] < SUP_WINDOW;
-    return n;
-}
-
 /* The dead driver's channel goes (a filesystem service's is kept). */
 static void drop_channel(struct binding *b)
 {
@@ -101,27 +92,21 @@ static void drop_channel(struct binding *b)
     b->serve = HANDLE_INVALID;
 }
 
-/* How long b's restart waits after n restarts in the window. */
-static uint64_t backoff(const struct binding *b, unsigned n)
-{
-    if (b->kind == BIND_FS && (b->killed || n == 0))
-        return 0;   /* a deliberate kill, or the first crash in the window */
-    unsigned step = b->kind == BIND_FS ? n - 1 : n;
-    uint64_t delay = step < 16 ? SUP_BACKOFF_FIRST << step : SUP_BACKOFF_MAX;
-    return delay > SUP_BACKOFF_MAX ? SUP_BACKOFF_MAX : delay;
-}
-
 /* b's driver is gone (or its restart failed): schedule the next start, or
  * give up. `why` says what happened; `expected`: not a problem. A
  * filesystem service's deliberate kill is never counted, so never gives up. */
 static void schedule(struct binding *b, const char *why, bool expected)
 {
     uint64_t t = now();
-    unsigned n = recent(b, t);
+    unsigned n = sup_window_recent(&b->win, t);
     bool deliberate = b->kind == BIND_FS && b->killed;
+    uint64_t at;   /* when the restart is due */
     if (!fs_channel_kept(b))
         drop_channel(b);
-    if (n >= SUP_RESTART_LIMIT && !deliberate) {
+    /* A filesystem service outlives its process: a deliberate kill is never
+     * counted and never gives up. */
+    if (!sup_window_end(&b->win, t, b->killed ? SUP_END_ON_PURPOSE : SUP_END_COUNTED,
+                        b->kind == BIND_FS, &at)) {
         b->state = DEVMGR_SUP_GAVE_UP;
         say(!excused(b) || b->test, "devmgr: %s %s %s after %u restarts in %lu s: giving up%s",
             bdf(b), b->path, why, n, (unsigned long)(SUP_WINDOW / NS_PER_S),
@@ -138,9 +123,7 @@ static void schedule(struct binding *b, const char *why, bool expected)
         }
         return;
     }
-    uint64_t delay = backoff(b, n);
-    b->backoff_ms = (uint32_t)(delay / NS_PER_MS);
-    b->restart_at = t + delay;
+    b->restart_at = at;
     b->deliberate = deliberate;
     b->state = DEVMGR_SUP_RESTARTING;
     /* The channel the restart will serve, handed out from now on. (If this
@@ -152,7 +135,7 @@ static void schedule(struct binding *b, const char *why, bool expected)
         say(false, "devmgr: %s %s %s: not counted, restarted at once", bdf(b), b->path, why);
     else
         say(!expected, "devmgr: %s %s %s: restart %u in %u ms", bdf(b), b->path, why, n + 1,
-            b->backoff_ms);
+            b->win.backoff_ms);
     if (!expected && !deliberate)
         tell_desktop(b, false, n == 0);
 }
@@ -177,7 +160,7 @@ void sup_died(struct binding *b, uint32_t gen)
              * they are gone too (a service in the middle of a request has
              * not ended by itself yet). */
             disk_stopped(b);
-            bool clean = job_empty(b->job, b->path);
+            bool clean = sup_job_empty(b->job, b->path);
             forget_driver(b);
             problems += !clean;
             usb_retire(b, clean ? "ended, device gone" : "device gone, did not end cleanly");
@@ -198,7 +181,7 @@ void sup_died(struct binding *b, uint32_t gen)
         }
     }
     if (!info.killed && info.exit_code == 0 && !b->killed) {
-        bool clean = job_empty(b->job, b->path);
+        bool clean = sup_job_empty(b->job, b->path);
         forget_driver(b);
         close_client(b);
         b->state = DEVMGR_SUP_FINISHED;
@@ -238,10 +221,8 @@ void sup_run_due(void)
         if (b->state != DEVMGR_SUP_RESTARTING || b->restart_at > t)
             continue;
         bool reconnect = b->console_wait;   /* not a restart: the console came back */
-        if (!reconnect && !b->deliberate)   /* a deliberate kill's isn't counted */
-            b->restarted[b->restarts % SUP_RESTART_LIMIT] = t;
-        if (!reconnect)
-            b->restarts++;
+        if (!reconnect)   /* a deliberate kill's isn't counted in the window */
+            sup_window_started(&b->win, t, !b->deliberate);
         b->deliberate = false;
         b->killed = false;   /* if this start fails, that is no deliberate kill */
         b->last = b->kind == BIND_FS ? fs_run(b, true) : start_driver(b);
@@ -252,7 +233,7 @@ void sup_run_due(void)
                     usb_hub_name());
             else
                 say(false, "devmgr: %s %s restarted (restart %u since boot)", bdf(b), b->path,
-                    b->restarts);
+                    b->win.restarts);
             continue;
         }
         if (b->kind == BIND_USB && b->last == ERR_SHOULD_WAIT) {
@@ -284,10 +265,8 @@ void sup_reset(struct binding *b)
     if (b->serve)
         jam_handle_close(b->serve);
     b->serve = HANDLE_INVALID;
-    for (unsigned i = 0; i < SUP_RESTART_LIMIT; i++)
-        b->restarted[i] = 0;
+    sup_window_reset(&b->win);
     b->restart_at = 0;
-    b->backoff_ms = 0;
     if (b->state == DEVMGR_SUP_RESTARTING)
         b->state = DEVMGR_SUP_NONE;
 }

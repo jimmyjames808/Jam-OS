@@ -14,6 +14,7 @@
 #include <jam/driver.h>
 #include <notice.h>
 #include <os.h>
+#include <supervise.h>
 
 #define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers,
                          * filesystem services */
@@ -22,12 +23,6 @@
  * timeout each), then its final halt and reset (about 3 s of bounded
  * waits). */
 #define STOP_WAIT (15 * NS_PER_S)
-
-/* Supervision (supervise.c). */
-#define SUP_BACKOFF_FIRST (100 * NS_PER_MS)
-#define SUP_BACKOFF_MAX   (5 * NS_PER_S)
-#define SUP_WINDOW        (60 * NS_PER_S)
-#define SUP_RESTART_LIMIT 5   /* restarts within SUP_WINDOW; the next death gives up */
 
 /* Port keys: a driver process's SIG_TERMINATED (binding index and start
  * generation, so a stale packet is recognised). */
@@ -103,9 +98,8 @@ struct binding {
     /* Supervision. */
     uint32_t            state;      /* DEVMGR_SUP_* */
     uint64_t            restart_at; /* DEVMGR_SUP_RESTARTING: when */
-    uint64_t            restarted[SUP_RESTART_LIMIT];   /* when the last restarts were (ring) */
-    uint32_t            restarts;   /* since boot */
-    uint32_t            backoff_ms; /* the last backoff */
+    struct sup_window   win;        /* the restart window (<supervise.h>): the last restarts,
+                                     * those since boot, the last backoff */
     /* BIND_USB (usb.c). */
     int32_t             usb_if;     /* its usb_ifs slot; -1: the interface is gone */
     uint32_t            usb_id;     /* usb-bus's device id */
@@ -129,7 +123,7 @@ struct binding {
     /* BIND_FS: what outlives its process (spare.c). Its `fs` channel is
      * kept too: client and serve stay devmgr's from one instance to the
      * next (fs_serve_end), so a restart is not a new channel. */
-    struct fs_kept     *kept;       /* its keeper and state VMO; NULL until its first start */
+    struct sup_kept    *kept;       /* its keeper and state VMO; NULL until its first start */
     bool                deliberate; /* the restart due is a deliberate kill's: not counted */
     uint64_t            kill_at;    /* when DEVMGR_KILL asked for its end (uptime ns; 0: none) */
     uint64_t            ended_at;   /* when its last instance's end was seen (uptime ns) */
@@ -222,16 +216,6 @@ void forget_driver(struct binding *b);
  * with exit 0 by itself (or `excused`) and its job is empty (checked only
  * then: a killed driver's DMA pages may still be quarantined). */
 bool stop_driver(struct binding *b, bool kill, bool excused);
-/* Is the job of a driver that has ended empty? One that isn't yet is
- * looked at again for a while (job_run_due): true for now, and if it is
- * still not empty then it is logged as not ended cleanly and counted in
- * `problems`. False only if it can't be looked at again. */
-bool job_empty(handle_t job, const char *who);
-void job_run_due(void);
-uint64_t job_next_deadline(void);   /* DEADLINE_NEVER: nothing to look at again */
-/* Wait (bounded) until every job being looked at again is decided; false
- * if any was not empty in the end. */
-bool job_settle(void);
 /* DEVMGR_DRIVER_VIEW: the function and each memory BAR as a driver gets
  * them (hs[i] to be sent with rs[i]); *mask: which BARs. */
 status_t driver_view(struct binding *b, handle_t *hs, rights_t *rs, uint32_t *nh, uint32_t *mask);
