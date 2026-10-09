@@ -7,7 +7,7 @@
 # Reconnect: a test server keeps nothing; a client whose call fails with
 # ERR_PEER_CLOSED has lost the server for good.
 
-protocol idltest 3
+protocol idltest 33
 
 1  echo     (u32 value)            -> (u32 value) idempotent
 # Answered when `release` names the key (or at once if it was released
