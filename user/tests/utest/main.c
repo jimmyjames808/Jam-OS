@@ -951,6 +951,7 @@ static const struct {
     { "jwl_bad_events", t_jwl_bad_events },
     { "jwl_bad_batches", t_jwl_bad_batches },
     { "jwl_bad_compositor", t_jwl_bad_compositor },
+    { "jwl_bad_empty_run", t_jwl_bad_empty_run },
     { "jwl_conn_messages", t_jwl_conn_messages },
     { "jwl_conn_batches", t_jwl_conn_batches },
     { "jwl_conn_window", t_jwl_conn_window },

@@ -481,6 +481,7 @@ bool t_jwl_bad_bind(void);
 bool t_jwl_bad_events(void);
 bool t_jwl_bad_batches(void);
 bool t_jwl_bad_compositor(void);
+bool t_jwl_bad_empty_run(void);
 bool t_jwl_conn_messages(void);
 bool t_jwl_conn_batches(void);
 bool t_jwl_conn_window(void);
