@@ -6,6 +6,7 @@
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <devmgr.h>
+#include <idl/crasher.h>
 #include <jam/driver.h>
 #include <os.h>
 #include "utest.h"
@@ -14,30 +15,6 @@
 
 #define TV DEVMGR_TEST_VENDOR
 #define TD DEVMGR_TEST_DEVICE
-
-/* PING: when this instance of the crash-test driver started. */
-static status_t crasher_ping(handle_t ch, uint64_t deadline, uint64_t *started)
-{
-    uint32_t q[2] = { 0, CRASHER_PING };
-    struct {
-        uint32_t txid;       /* ours */
-        int32_t  status;     /* OK */
-        uint64_t started;    /* when this instance of the driver started */
-    } __attribute__((packed)) rep;
-    uint32_t n = 0;
-    struct channel_call_args a = {
-        .h = ch, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)q, .rd_cap = sizeof(rep),
-        .rd_bytes = (uint64_t)(uintptr_t)&rep, .rd_actual = (uint64_t)(uintptr_t)&n,
-        .deadline_ns = deadline,
-    };
-    status_t st = jam_channel_call(&a);
-    if (st != OK)
-        return st;
-    if (n < 8 || (rep.status == OK && n < sizeof(rep)))
-        return ERR_INTERNAL;
-    *started = rep.started;
-    return rep.status;
-}
 
 /* The crash-test driver's channel and process, or false (with a skip or a
  * failure line). */
@@ -58,7 +35,7 @@ static bool crasher(handle_t dm, handle_t *ch, handle_t *proc, bool *skip)
     *ch = hs[0];
     uint64_t started = 0;
     /* up, whenever it started */
-    CHECK_ST(crasher_ping(*ch, now() + 10 * NS_PER_S, &started), OK);
+    CHECK_ST(crasher_ping_until(*ch, now() + 10 * NS_PER_S, &started), OK);
     CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, TV, TD, &r, hs, &nh), OK);
     CHECK_EQ(nh, 2);   /* process and job: no hardware */
     *proc = hs[0];
@@ -74,14 +51,13 @@ static bool crasher(handle_t dm, handle_t *ch, handle_t *proc, bool *skip)
  * crash was asked for. */
 static bool crash_it(handle_t ch, handle_t proc, uint64_t *t)
 {
-    uint32_t q[2] = { 0x77, CRASHER_CRASH };
     *t = now();
-    CHECK_ST(jam_channel_write(ch, q, sizeof(q), NULL, 0), OK);
+    CHECK_ST(crasher_crash(ch), OK);
     struct process_info info;
     CHECK_ST(spawn_wait(proc, 10 * NS_PER_S, &info), OK);
     CHECK(info.killed);   /* a crash: the kernel killed it */
     uint64_t started;
-    CHECK_ST(crasher_ping(ch, now() + 5 * NS_PER_S, &started), ERR_PEER_CLOSED);
+    CHECK_ST(crasher_ping_until(ch, now() + 5 * NS_PER_S, &started), ERR_PEER_CLOSED);
     return true;
 }
 
@@ -98,7 +74,7 @@ static bool reconnect(handle_t dm, handle_t *ch, uint64_t deadline, uint64_t *st
     uint32_t nh = 0;
     for (unsigned stale = 0;; stale++) {
         CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), OK);
-        status_t st = crasher_ping(hs[0], deadline, started);   /* waits for the restart */
+        status_t st = crasher_ping_until(hs[0], deadline, started);   /* waits for the restart */
         if (st != ERR_PEER_CLOSED || now() >= deadline) {
             *ch = hs[0];
             CHECK_ST(st, OK);
@@ -232,8 +208,7 @@ bool t_supervised_give_up(void)
     /* Started again on request, with a fresh history; exit 0 = finished. */
     if (!crasher(dm, &ch, &proc, &skip))
         return false;
-    uint32_t q[3] = { 0x78, CRASHER_EXIT, 0 };
-    CHECK_ST(jam_channel_write(ch, q, sizeof(q), NULL, 0), OK);
+    CHECK_ST(crasher_exit(ch, 0), OK);
     struct process_info info;
     CHECK_ST(spawn_wait(proc, 10 * NS_PER_S, &info), OK);
     CHECK(!info.killed && info.exit_code == 0);

@@ -210,16 +210,10 @@
 #define DEVMGR_SUP_GAVE_UP    3u   /* died too often: no more restarts */
 #define DEVMGR_SUP_FINISHED   4u   /* exited 0 by itself (a one-shot driver) */
 
-/* The software device of the crash-test driver, and its protocol (a
- * request is u32 txid, u32 ordinal; drivers/test/crasher/crasher.c has the
- * same numbers). PING -> u32 txid, i32 status, u64 started_ns (when this
- * instance of the driver started); CRASH and EXIT(u32 code) get no reply:
- * the driver faults, or exits with the code. */
+/* The software device of the crash-test driver (its protocol is abi/idl/
+ * crasher.idl). */
 #define DEVMGR_TEST_VENDOR 0x0000u
 #define DEVMGR_TEST_DEVICE 0xc4a5u
-#define CRASHER_PING       0xc4a50001u
-#define CRASHER_CRASH      0xc4a50002u
-#define CRASHER_EXIT       0xc4a50003u
 
 /* What devmgr gives each driver (and DRIVER_VIEW hands out). None of a
  * driver's hardware handles can be duplicated or passed on (no

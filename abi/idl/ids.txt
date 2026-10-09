@@ -60,8 +60,9 @@
 71      volesp          abi/idl/volumes.idl
 72      disks           abi/idl/volumes.idl
 73      mounts          abi/idl/volumes.idl
+# 90 to 99: devmgr's (M12 track D)
+92      crasher         abi/idl/crasher.idl
 0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
 0x4d4f  standby         user/include/roles.h            # STANDBY_MAGIC "PROM" (promotion)
 0x4f50  update_offer    user/include/update.h           # UPDATE_OFFER_MAGIC "JUPO"
 0x534d  startup         kernel/include/jam/startup.h    # STARTUP_MAGIC "JAMS"
-0xc4a5  crasher         user/include/devmgr.h           # the crash-test driver's (CRASHER_*)

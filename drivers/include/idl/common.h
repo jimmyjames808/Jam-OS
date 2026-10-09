@@ -54,11 +54,11 @@
 #define IDL_ID_VOLESP         0x0047u   /* abi/idl/volumes.idl */
 #define IDL_ID_DISKS          0x0048u   /* abi/idl/volumes.idl */
 #define IDL_ID_MOUNTS         0x0049u   /* abi/idl/volumes.idl */
+#define IDL_ID_CRASHER        0x005cu   /* abi/idl/crasher.idl */
 #define IDL_ID_UPDATE_ANSWER  0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER   0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */
 #define IDL_ID_STARTUP        0x534du   /* kernel/include/jam/startup.h: STARTUP_MAGIC "JAMS" */
-#define IDL_ID_CRASHER        0xc4a5u   /* user/include/devmgr.h: the crash-test driver's (CRASHER_*) */
 
 /* Every request starts with this, every reply with idl_rep_hdr. */
 struct idl_req_hdr {
