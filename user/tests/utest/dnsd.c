@@ -275,12 +275,9 @@ static uint32_t txc = 0x40000000u;   /* our resolves' txids */
  * flight (no answer yet). */
 static status_t asked(handle_t ch, const char *name)
 {
-    uint8_t field[DNS_TEXT_MAX] = { 0 }, bad[DNS_TEXT_MAX] = { 0 };
-    memcpy(field, name, strlen(name));
-    memcpy(bad, "a..b", 4);
     uint32_t t1 = idl_txid_next(&txc), t2 = idl_txid_next(&txc);
-    if (dns_resolve_send(ch, t1, field, DNS_TIMEOUT_MAX) != OK ||
-        dns_resolve_send(ch, t2, bad, DNS_TIMEOUT_MAX) != OK)
+    if (dns_resolve_send(ch, t1, name, (uint32_t)strlen(name), DNS_TIMEOUT_MAX) != OK ||
+        dns_resolve_send(ch, t2, "a..b", 4, DNS_TIMEOUT_MAX) != OK)
         return ERR_INTERNAL;
     for (;;) {   /* each turn a reply, until the second's (bounded by the wait) */
         signals_t seen;
@@ -289,9 +286,8 @@ static status_t asked(handle_t ch, const char *name)
         if (jam_object_wait_one(ch, SIG_READABLE, now() + 2 * S, &seen) != OK ||
             idl_reply_read(ch, rep, sizeof(rep), &m) != OK)
             return ERR_TIMED_OUT;
-        uint8_t n;
-        uint32_t a[4], ttl;
-        status_t st = dns_resolve_result(rep, &m, &n, &a[0], &a[1], &a[2], &a[3], &ttl);
+        uint32_t n, a[DNS_ADDRS_MAX], ttl;
+        status_t st = dns_resolve_result(rep, &m, a, &n, &ttl);
         if (m.txid == t1)
             return st;
         if (m.txid == t2)

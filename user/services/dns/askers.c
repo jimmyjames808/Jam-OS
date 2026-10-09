@@ -58,10 +58,10 @@ void askers_answer(void *ctx, uint64_t cookie, status_t st, const uint32_t *addr
         st = ERR_INTERNAL;   /* the resolver answers OK with an address */
     for (unsigned i = 0; st == OK && i < n && i < DNS_ADDRS_MAX; i++)
         a[i] = addr[i];
-    uint8_t count = st == OK ? (uint8_t)(n < DNS_ADDRS_MAX ? n : DNS_ADDRS_MAX) : 0;
+    uint32_t count = st == OK ? (n < DNS_ADDRS_MAX ? n : DNS_ADDRS_MAX) : 0;
     /* A reply that can't be written: its asker is going (its channel's end
      * comes to the loop). */
-    (void)dns_reply_resolve(q->txn, st, count, a[0], a[1], a[2], a[3], ttl_s);
+    (void)dns_reply_resolve(q->txn, st, a, count, ttl_s);
     request_done(q);
 }
 
@@ -77,7 +77,7 @@ uint64_t askers_tick(uint64_t now)
             continue;
         }
         dns_cancel(&D.r, q->cookie);
-        (void)dns_reply_resolve(q->txn, ERR_TIMED_OUT, 0, 0, 0, 0, 0, 0);
+        (void)dns_reply_resolve(q->txn, ERR_TIMED_OUT, NULL, 0, 0);
         request_done(q);
     }
     return next;
@@ -85,17 +85,17 @@ uint64_t askers_tick(uint64_t now)
 
 /* ---- an opener's channel ---------------------------------------------------------- */
 
-static status_t op_resolve(void *ctx, struct idl_txn txn, const uint8_t name[256],
-                           uint32_t timeout_ms, uint8_t *count, uint32_t *a0, uint32_t *a1,
-                           uint32_t *a2, uint32_t *a3, uint32_t *ttl)
+static status_t op_resolve(void *ctx, struct idl_txn txn, const char *name, uint32_t name_len,
+                           uint32_t timeout_ms, uint32_t *addrs, uint32_t *addrs_len,
+                           uint32_t *ttl)
 {
-    (void)count, (void)a0, (void)a1, (void)a2, (void)a3, (void)ttl;   /* answered with the txn */
+    (void)addrs, (void)addrs_len, (void)ttl;   /* answered with the txn */
     struct asker *a = ctx;
-    char text[DNS_TEXT_MAX];
-    if (strnlen((const char *)name, DNS_TEXT_MAX) == DNS_TEXT_MAX || !timeout_ms ||
-        timeout_ms > DNS_TIMEOUT_MAX)
-        return ERR_INVALID_ARGS;
-    memcpy(text, name, DNS_TEXT_MAX);
+    char text[DNS_NAME_MAX + 1];
+    if (!name_len || !timeout_ms || timeout_ms > DNS_TIMEOUT_MAX)
+        return ERR_INVALID_ARGS;   /* name_len <= DNS_NAME_MAX: the generated server checked */
+    memcpy(text, name, name_len);
+    text[name_len] = 0;
     if (a->inflight >= DNS_PER_OPENER)
         return ERR_NO_RESOURCES;
     struct request *q = NULL;

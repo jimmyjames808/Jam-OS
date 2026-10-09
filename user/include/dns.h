@@ -14,15 +14,13 @@
 #pragma once
 
 #include <stdint.h>
+#include <idl/dns.h>   /* DNS_NAME_MAX (253), DNS_ADDRS_MAX (4), DNS_TIMEOUT_MAX (60000 ms) */
 #include <os.h>
 
-#define DNS_ADDRS_MAX    4u       /* addresses in one answer */
-#define DNS_TEXT_MAX     256u     /* bytes of a name, with its NUL (dns.idl's field) */
 #define DNS_OPENERS      16u      /* channels from /svc/dns's connect at once */
 #define DNS_PROG_OPENERS 12u      /* of them, ordinary ones (/svc/dns): the rest are the
                                    * network's own services' (/svc/dns-sys) */
 #define DNS_PER_OPENER   8u       /* resolves in flight on one opener's channel */
-#define DNS_TIMEOUT_MAX  60000u   /* ms: the longest timeout a resolve may ask for */
 
 /* An answer: n addresses (host order, <netbytes.h>), kept for ttl s. */
 struct dns_answer {

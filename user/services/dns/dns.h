@@ -24,11 +24,13 @@
  * dot-separated, without the root's trailing dot. */
 #pragma once
 
+#include <idl/dns.h>
 #include <netbytes.h>
 #include <os.h>
 
+/* DNS_NAME_MAX is dns.idl's: 253, as text, no trailing dot (RFC 1035 2.3.4:
+ * 255 on the wire). */
 #define DNS_PORT        53
-#define DNS_NAME_MAX    253u   /* as text, no trailing dot (RFC 1035 2.3.4: 255 on the wire) */
 #define DNS_LABEL_MAX   63u
 #define DNS_MSG_MAX     512u   /* a query fits; replies may be longer, up to what arrived */
 #define DNS_MAX_ADDRS   4u     /* A records kept from one answer */

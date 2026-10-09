@@ -45,107 +45,134 @@
 #define DNS_PROTOCOL_ID 30u
 #define DNS_RESOLVE          0x001e0001u
 
+/* Constants (the .idl's `const` lines). */
+/* Limits of the protocol, shared by the resolver and its callers (<dns.h>
+ * has the rest): a host name's length (a DNS name is at most 253 characters
+ * in its text form), the addresses in one answer, and the longest timeout
+ * a resolve may ask for (ms). */
+#define DNS_NAME_MAX 253u
+#define DNS_ADDRS_MAX 4u
+#define DNS_TIMEOUT_MAX 60000u
+
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct dns_resolve_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t name[256];
     uint32_t timeout_ms;
 } __attribute__((packed));
 struct dns_resolve_rep {
     uint32_t txid;
     int32_t  status;
-    uint8_t count;
-    uint32_t addr0;
-    uint32_t addr1;
-    uint32_t addr2;
-    uint32_t addr3;
     uint32_t ttl;
 } __attribute__((packed));
 
-#define DNS_REQ_MAX 268u   /* bytes: the biggest request */
-#define DNS_REP_MAX 29u   /* bytes: the biggest reply */
+#define DNS_REQ_MAX 267u   /* bytes: the biggest request */
+#define DNS_REP_MAX 32u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
 /* dns_resolve_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t dns_resolve_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
+static inline status_t dns_resolve_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *name, uint32_t name_len, uint32_t timeout_ms, uint32_t out_addrs[4], uint32_t *out_addrs_len, uint32_t *out_ttl)
 {
-    struct dns_resolve_req idl_q;
-    struct dns_resolve_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = DNS_RESOLVE;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.name[idl_i] = name[idl_i];
-    idl_q.timeout_ms = timeout_ms;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[267];
+    _Alignas(8) uint8_t idl_b1[32];
+    struct dns_resolve_req *idl_q = (struct dns_resolve_req *)idl_b0;
+    const struct dns_resolve_rep *idl_r = (const struct dns_resolve_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = DNS_RESOLVE;
+    idl_q->timeout_ms = timeout_ms;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, name, name_len, 253, 1) ||
+                             !idl_str_ok(name, name_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_count)
-        *out_count = idl_r.count;
-    if (idl_st == OK && out_addr0)
-        *out_addr0 = idl_r.addr0;
-    if (idl_st == OK && out_addr1)
-        *out_addr1 = idl_r.addr1;
-    if (idl_st == OK && out_addr2)
-        *out_addr2 = idl_r.addr2;
-    if (idl_st == OK && out_addr3)
-        *out_addr3 = idl_r.addr3;
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 32, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 4, 4, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && out_ttl)
-        *out_ttl = idl_r.ttl;
+        *out_ttl = idl_r->ttl;
+    if (idl_st == OK && out_addrs) {
+        if (idl_l0)
+            __builtin_memcpy(out_addrs, idl_p0, idl_l0 * 4);
+    }
+    if (idl_st == OK && out_addrs_len)
+        *out_addrs_len = idl_l0;
     return idl_st;
 }
-/* On an opener's channel: the IPv4 addresses of `name` (NUL-terminated in
- * its 256 bytes; a host name, or a dotted IPv4 address, answered as it
- * is), at most four, and how many seconds the answer may be kept (`ttl`).
- * Answered when the answer comes, from the cache at once. Errors:
- * ERR_NOT_FOUND (no such name, or it has no IPv4 address), ERR_TIMED_OUT
- * (no server answered within the resolver's 10 s, or timeout_ms passed:
- * 1..60000), ERR_IO (the servers failed), ERR_NOT_SUPPORTED (the answer
- * needs TCP), ERR_OUT_OF_RANGE (more than 8 CNAMEs); at once:
- * ERR_INVALID_ARGS (not a name, or no NUL; timeout_ms out of range),
- * ERR_BAD_STATE (no DNS servers yet: see `net`), ERR_NO_RESOURCES (too
- * many in flight). */
-static inline status_t dns_resolve_until(handle_t ch, uint64_t deadline_ns, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
+/* On an opener's channel: the IPv4 addresses of `name` (a host name, or a
+ * dotted IPv4 address, answered as it is), one to ADDRS_MAX of them in the
+ * order the servers gave, and how many seconds the answer may be kept
+ * (`ttl`). Answered when the answer comes, from the cache at once.
+ * `timeout_ms` is the resolver's own bound on the wait (1..TIMEOUT_MAX): it
+ * holds a slot of its own for the query, which the caller's deadline could
+ * not free. Errors: ERR_NOT_FOUND (no such name, or it has no IPv4 address),
+ * ERR_TIMED_OUT (no server answered within the resolver's 10 s, or
+ * timeout_ms passed), ERR_IO (the servers failed), ERR_NOT_SUPPORTED (the
+ * answer needs TCP), ERR_OUT_OF_RANGE (more than 8 CNAMEs); at once:
+ * ERR_INVALID_ARGS (not a name: empty, or past NAME_MAX, or not UTF-8, or a
+ * NUL in it, which the generated server refuses; timeout_ms out of range),
+ * ERR_BAD_STATE (no DNS servers yet: see `net`), ERR_NO_RESOURCES (too many
+ * in flight). */
+static inline status_t dns_resolve_until(handle_t ch, uint64_t deadline_ns, const char *name, uint32_t name_len, uint32_t timeout_ms, uint32_t out_addrs[4], uint32_t *out_addrs_len, uint32_t *out_ttl)
 {
-    return dns_resolve_call(ch, false, deadline_ns, name, timeout_ms, out_count, out_addr0, out_addr1, out_addr2, out_addr3, out_ttl);
+    return dns_resolve_call(ch, false, deadline_ns, name, name_len, timeout_ms, out_addrs, out_addrs_len, out_ttl);
 }
-static inline status_t dns_resolve_within(handle_t ch, uint64_t timeout_ns, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
+static inline status_t dns_resolve_within(handle_t ch, uint64_t timeout_ns, const char *name, uint32_t name_len, uint32_t timeout_ms, uint32_t out_addrs[4], uint32_t *out_addrs_len, uint32_t *out_ttl)
 {
-    return dns_resolve_call(ch, true, timeout_ns, name, timeout_ms, out_count, out_addr0, out_addr1, out_addr2, out_addr3, out_ttl);
+    return dns_resolve_call(ch, true, timeout_ns, name, name_len, timeout_ms, out_addrs, out_addrs_len, out_ttl);
 }
-static inline status_t dns_resolve(handle_t ch, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
+static inline status_t dns_resolve(handle_t ch, const char *name, uint32_t name_len, uint32_t timeout_ms, uint32_t out_addrs[4], uint32_t *out_addrs_len, uint32_t *out_ttl)
 {
-    return dns_resolve_call(ch, false, DEADLINE_NEVER, name, timeout_ms, out_count, out_addr0, out_addr1, out_addr2, out_addr3, out_ttl);
+    return dns_resolve_call(ch, false, DEADLINE_NEVER, name, name_len, timeout_ms, out_addrs, out_addrs_len, out_ttl);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* dns_resolve without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then dns_resolve_result. */
-static inline status_t dns_resolve_send(handle_t ch, uint32_t idl_txid, const uint8_t name[256], uint32_t timeout_ms)
+static inline status_t dns_resolve_send(handle_t ch, uint32_t idl_txid, const char *name, uint32_t name_len, uint32_t timeout_ms)
 {
-    struct dns_resolve_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = DNS_RESOLVE;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.name[idl_i] = name[idl_i];
-    idl_q.timeout_ms = timeout_ms;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[267];
+    struct dns_resolve_req *idl_q = (struct dns_resolve_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = DNS_RESOLVE;
+    idl_q->timeout_ms = timeout_ms;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, name, name_len, 253, 1) ||
+                             !idl_str_ok(name, name_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to dns_resolve_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t dns_resolve_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl)
+static inline status_t dns_resolve_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t out_addrs[4], uint32_t *out_addrs_len, uint32_t *out_ttl)
 {
     const struct dns_resolve_rep *idl_r = (const struct dns_resolve_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 4, 4, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -153,18 +180,14 @@ static inline status_t dns_resolve_result(const void *idl_rep, struct idl_msg *i
         return idl_st;
     }
     idl_m->nh = 0;
-    if (out_count)
-        *out_count = idl_r->count;
-    if (out_addr0)
-        *out_addr0 = idl_r->addr0;
-    if (out_addr1)
-        *out_addr1 = idl_r->addr1;
-    if (out_addr2)
-        *out_addr2 = idl_r->addr2;
-    if (out_addr3)
-        *out_addr3 = idl_r->addr3;
     if (out_ttl)
         *out_ttl = idl_r->ttl;
+    if (out_addrs) {
+        if (idl_l0)
+            __builtin_memcpy(out_addrs, idl_p0, idl_l0 * 4);
+    }
+    if (out_addrs_len)
+        *out_addrs_len = idl_l0;
     return OK;
 }
 
@@ -175,28 +198,30 @@ static inline status_t dns_resolve_result(const void *idl_rep, struct idl_msg *i
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with dns_reply_<method> (now, or later from anywhere). */
 struct dns_ops {
-    status_t (*resolve)(void *ctx, struct idl_txn idl_txn, const uint8_t name[256], uint32_t timeout_ms, uint8_t *out_count, uint32_t *out_addr0, uint32_t *out_addr1, uint32_t *out_addr2, uint32_t *out_addr3, uint32_t *out_ttl);
+    status_t (*resolve)(void *ctx, struct idl_txn idl_txn, const char *name, uint32_t name_len, uint32_t timeout_ms, uint32_t *out_addrs, uint32_t *out_addrs_len, uint32_t *out_ttl);
 };
 
 /* Answer the dns.resolve request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t dns_reply_resolve(struct idl_txn idl_txn, status_t idl_st, uint8_t count, uint32_t addr0, uint32_t addr1, uint32_t addr2, uint32_t addr3, uint32_t ttl)
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't
+ * one). Returns the write's status (idl_reply_write). */
+static inline status_t dns_reply_resolve(struct idl_txn idl_txn, status_t idl_st, const uint32_t *addrs, uint32_t addrs_len, uint32_t ttl)
 {
-    struct dns_resolve_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[32];
+    struct dns_resolve_rep *idl_r = (struct dns_resolve_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.count = count;
-    idl_r.addr0 = addr0;
-    idl_r.addr1 = addr1;
-    idl_r.addr2 = addr2;
-    idl_r.addr3 = addr3;
-    idl_r.ttl = ttl;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->ttl = ttl;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, addrs, addrs_len, 4, 4))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -222,33 +247,39 @@ static inline uint32_t dns_dispatch_on(handle_t ch, const struct dns_ops *ops, v
     case DNS_RESOLVE: {
         const struct dns_resolve_req *idl_q = (const struct dns_resolve_req *)req;
         struct dns_resolve_rep *idl_r = (struct dns_resolve_rep *)rep;
-        uint8_t out_count = 0;
-        uint32_t out_addr0 = 0;
-        uint32_t out_addr1 = 0;
-        uint32_t out_addr2 = 0;
-        uint32_t out_addr3 = 0;
+        uint32_t *out_addrs = (uint32_t *)((uint8_t *)rep + 16);
+        uint32_t out_addrs_len = 0;
         uint32_t out_ttl = 0;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 253, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->resolve) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
         struct idl_txn idl_txn = { ch, idl_h->txid };
-        status_t idl_st = ops->resolve(ctx, idl_txn, idl_q->name, idl_q->timeout_ms, &out_count, &out_addr0, &out_addr1, &out_addr2, &out_addr3, &out_ttl);
+        idl_st = ops->resolve(ctx, idl_txn, (const char *)idl_p0, idl_l0, idl_q->timeout_ms, out_addrs, &out_addrs_len, &out_ttl);
         /* IDL_LATER: the handler answers with dns_reply_resolve. */
         if (idl_st == IDL_LATER)
             return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_addrs_len > 4))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        idl_r->count = out_count;
-        idl_r->addr0 = out_addr0;
-        idl_r->addr1 = out_addr1;
-        idl_r->addr2 = out_addr2;
-        idl_r->addr3 = out_addr3;
         idl_r->ttl = out_ttl;
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 16, out_addrs_len, 4);
+        return idl_rn;
     }
     }
     idl_h->status = ERR_NOT_SUPPORTED;
