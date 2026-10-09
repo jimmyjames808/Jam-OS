@@ -42,6 +42,9 @@
 #      depends on ECAP.PT (no function is ever put on pass-through);
 #   6b. a PCIe-to-PCI bridge with a second edu behind it: both named as
 #      sharing a requester id, and neither gets a domain;
+#   6c. ACS: root ports with and without it (turned on where offered), an
+#      edu below a switch port without it and two as one two-function
+#      device: those three get no domain, edus alone below root ports do;
 #   7. a shell boot with iommu=on, `reboot` (kexec): the jump turns
 #      interrupt remapping, translation and the queue off, and the next
 #      kernel finds them all off, starts the unit and turns interrupt
@@ -253,6 +256,46 @@ have vtd-shared "vtd: 00:1e.0 shares a requester id" "vtd: 01:01.0 shares a requ
 if problems vtd-shared | grep -vE "vtd: (00:1e\.0|01:01\.0) shares a requester id" |
     grep -vF "vtd: unit 0: no domain for 01:01.0"; then
     echo "vtd-shared: a VT-d problem reported (above)"
+    ok=0
+fi
+
+# ACS (kernel/dev/pci_acs.c): four root ports, three with ACS (QEMU's
+# pcie-root-port; disable-acs=on for 00:12.0), which the boot turns on;
+# below 00:10.0 a switch whose downstream port (QEMU's xio3130, no ACS)
+# leads to an edu, 03:00.0; below 00:11.0 two edus as one two-function
+# device (04:00.0 and 04:00.1, no ACS); below 00:12.0 and 00:13.0 an edu
+# each (05:00.0, 06:00.0). The first three get no domain while
+# translating, the last two (and 00:04.0) do: root ports need no ACS.
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_IOMMU=1 \
+    QEMU_EXTRA="-device pcie-root-port,id=rp1,bus=pcie.0,chassis=1,addr=0x10
+        -device x3130-upstream,id=up1,bus=rp1
+        -device xio3130-downstream,id=dn1,bus=up1,chassis=2,slot=1 -device edu,bus=dn1,addr=0
+        -device pcie-root-port,id=rp2,bus=pcie.0,chassis=3,addr=0x11
+        -device edu,bus=rp2,addr=0.0,multifunction=on -device edu,bus=rp2,addr=0.1
+        -device pcie-root-port,id=rp3,bus=pcie.0,chassis=4,addr=0x12,disable-acs=on
+        -device edu,bus=rp3,addr=0
+        -device pcie-root-port,id=rp4,bus=pcie.0,chassis=5,addr=0x13 -device edu,bus=rp4,addr=0" \
+    tools/qemu-test.sh "$out" vtd-acs ktest=pci_acs iommu=on > "$out/vtd-acs.out" 2>&1 ||
+    { echo "vtd-acs: QEMU run failed (see $out/vtd-acs.out)"; ok=0; }
+have vtd-acs "pci: ACS on at 00:10.0 (root port): SV RR CR UF" \
+    "pci: ACS on at 00:11.0 (root port): SV RR CR UF" "pci: no ACS at 00:12.0 (root port)" \
+    "pci: ACS on at 00:13.0 (root port): SV RR CR UF" \
+    "pci: no ACS at 02:00.0 (switch downstream port)" \
+    "pci: no ACS at 04:00.0 (multi-function device, below a port)" \
+    "pci: ACS on at 3 root ports, 0 switch downstream ports and 0 functions of multi-function devices; without it: 1, 1 and 2 below a port" \
+    "vtd:         03:00.0: no DMA for it while translating: the switch port above it has no ACS on (02:00.0)" \
+    "vtd:         04:00.1: no DMA for it while translating: a function of its multi-function device has no ACS on (04:00.0)" \
+    "vtd:         ACS: 3 functions refused for peer-to-peer gaps" \
+    "ktest pci_acs_on_where_offered: 3 ACS capabilities, 3 checked on" \
+    "ktest pci_acs_gap_refused: 3 function(s) refused for an ACS gap, 3 edu(s) allowed" \
+    "ktest: pci_acs_gap_refused              ok" "ktest: pci_acs_check_topology           ok" \
+    "run complete: no problems"
+if problems vtd-acs | grep -vE "vtd: unit 0: no domain for (03:00\.0|04:00\.[01]|00:04\.0): "; then
+    echo "vtd-acs: a VT-d problem reported (above)"
+    ok=0
+fi
+if grep -E "vtd:         (00|05|06):..\..: no DMA" "$out/vtd-acs.log"; then
+    echo "vtd-acs: a function on a root bus or alone below a root port was refused (above)"
     ok=0
 fi
 

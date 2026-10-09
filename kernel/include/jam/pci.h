@@ -1,4 +1,4 @@
-/* The kernel's PCI core (kernel/dev/pci.c, pci_msi.c, pci_report.c). The kernel keeps
+/* The kernel's PCI core (kernel/dev/pci.c, pci_msi.c, pci_report.c, pci_acs.c). The kernel keeps
  * everything a buggy or hostile driver must not do itself: ECAM access, BAR
  * sizing, MSI/MSI-X programming and Bus Master Enable. devmgr (a process)
  * decides which driver gets which device, through resource handles
@@ -27,6 +27,7 @@ struct pci_dev {
     volatile void *cfg;             /* this function's 4 KiB of ECAM */
     /* Capabilities (config offsets; 0 = absent). */
     uint16_t cap_msi, cap_msix, cap_pcie;
+    uint16_t cap_acs;               /* Access Control Services (extended; pci_acs.c) */
     bool     msi_64, msi_maskable;
     uint8_t  msix_table_bar, msix_pba_bar;
     uint32_t msix_table_off, msix_pba_off;
@@ -113,3 +114,73 @@ bool pci_restore_config(struct pci_dev *d, const struct pci_saved_config *in);
 /* Does [phys, phys + len) touch a page holding any function's MSI-X table
  * or PBA? Such pages are never mapped for anyone but the kernel. */
 bool pci_phys_protected(uint64_t phys, uint64_t len);
+
+/* ---- PCIe Access Control Services (pci_acs.c) ---------------------------------------------
+ *
+ * ACS (PCIe 6.0, 6.12 and 7.7.11) decides whether a request from below a
+ * switch's downstream port or a root port, or from one function of a
+ * multi-function device, may go straight to a peer (another device's BAR)
+ * or must go up to the root complex, where the IOMMU sees it. The bits of
+ * its capability and control registers Jam OS turns on: */
+#define PCI_ACS_SV   (1u << 0)   /* source validation: a request's id is from below the port */
+#define PCI_ACS_RR   (1u << 2)   /* peer-to-peer request redirect: requests go up */
+#define PCI_ACS_CR   (1u << 3)   /* peer-to-peer completion redirect: completions too */
+#define PCI_ACS_UF   (1u << 4)   /* upstream forwarding: a request back down its own port goes up */
+#define PCI_ACS_WANT (PCI_ACS_SV | PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_UF)
+
+/* PCIe device/port types (the PCIe capability's register, bits 7:4). */
+#define PCIE_TYPE_ROOT_PORT   0x4
+#define PCIE_TYPE_UPSTREAM    0x5   /* a switch's upstream port */
+#define PCIE_TYPE_DOWNSTREAM  0x6   /* a switch's downstream port */
+#define PCIE_TYPE_NONE        0xff  /* (Jam OS's) no PCIe capability: conventional PCI */
+
+/* One function as the ACS code sees it: where it sits, what it is, its
+ * ACS registers (as read; after pci_acs_enable, as left). */
+struct pci_acs_fn {
+    uint16_t seg;            /* its segment */
+    uint16_t sid;            /* bus 15:8, device 7:3, function 2:0 */
+    uint8_t  type;           /* PCIE_TYPE_*: its PCIe device/port type, or NONE */
+    uint8_t  secondary;      /* a bridge's bus range (header type 1 or 2); 0, 0 for others */
+    uint8_t  subordinate;
+    bool     acs;            /* it has the ACS capability */
+    uint16_t acs_cap;        /* its capability and control registers (0 without it) */
+    uint16_t acs_ctl;
+};
+
+/* d as the ACS code sees it (config reads). */
+void pci_acs_read(struct pci_dev *d, struct pci_acs_fn *out);
+/* The control register `ctl` with every bit of PCI_ACS_WANT the
+ * capability register `cap` offers turned on, the others as they were.
+ * Pure. */
+uint16_t pci_acs_ctl_wanted(uint16_t cap, uint16_t ctl);
+/* Turn ACS on (pci_acs_ctl_wanted) at every root port and switch
+ * downstream port that has the capability, and at every function of a
+ * multi-function device that has it; log each one, and each such port
+ * (or function below a port) without it. Boot only, once: the IOMMU's
+ * boot calls it (vtd_rid_mark) before translation goes on; with iommu=off
+ * the ports stay as the firmware left them. ERR_NO_MEMORY: nothing done. */
+status_t pci_acs_enable(void);
+
+/* Can fns[i] reach a peer, or a peer it, without its requests going up to
+ * the root complex (where the IOMMU sees them), given every function's
+ * registers fns[0..n)? The isolation it needs on its way up:
+ *   - on a root bus (root-complex integrated, the chipset's): none;
+ *   - below a port, a multi-function device's every function (itself
+ *     included) has ACS with the bits it offers of SV RR CR UF on;
+ *   - at each switch on its way up, every downstream port has ACS with
+ *     all four on: the one above it, or its own requests go straight to
+ *     a peer, and every other one, or the device below that port reaches
+ *     it (root ports need none: the owner's decision B; their peers are
+ *     other root ports, through the root complex).
+ * The first gap found, with the function or port that has it in *where
+ * (requester id: bus 15:8, device 7:3, function 2:0). Pure. */
+enum pci_acs_gap {
+    PCI_ACS_ISOLATED = 0,
+    PCI_ACS_GAP_PORT,        /* the switch downstream port above it */
+    PCI_ACS_GAP_PEER_PORT,   /* another downstream port of a switch above it */
+    PCI_ACS_GAP_FUNCTION,    /* a function of its own multi-function device */
+};
+enum pci_acs_gap pci_acs_check(const struct pci_acs_fn *fns, uint32_t n, uint32_t i,
+                               uint16_t *where);
+/* The gap in words, for the log: "the switch port above it has no ACS on". */
+const char *pci_acs_gap_text(enum pci_acs_gap gap);

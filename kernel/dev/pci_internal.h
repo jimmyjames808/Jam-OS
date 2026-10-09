@@ -1,6 +1,7 @@
 /* What pci.c (config access, the walk, BARs, capabilities, the command
- * register), pci_msi.c (MSI and MSI-X programming) and pci_report.c (names,
- * the boot log, the Devices report) share. Nothing else includes it. */
+ * register), pci_msi.c (MSI and MSI-X programming), pci_report.c (names,
+ * the boot log, the Devices report) and pci_acs.c (Access Control
+ * Services) share. Nothing else includes it. */
 #pragma once
 
 #include <stddef.h>
@@ -29,6 +30,7 @@
 #define CAP_ID_MSI     0x05
 #define CAP_ID_PCIE    0x10
 #define CAP_ID_MSIX    0x11
+#define CAP_ID_ACS     0x0d   /* extended */
 
 #define MSI_CTL_ENABLE   (1u << 0)
 #define MSI_CTL_MMC(c)   (((c) >> 1) & 7)

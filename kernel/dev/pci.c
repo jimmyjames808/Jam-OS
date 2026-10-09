@@ -480,6 +480,7 @@ static void read_caps(struct pci_dev *d)
     d->cap_pcie = find_std_cap(d, CAP_ID_PCIE);
     d->cap_msi = find_std_cap(d, CAP_ID_MSI);
     d->cap_msix = find_std_cap(d, CAP_ID_MSIX);
+    d->cap_acs = find_ext_cap(d, CAP_ID_ACS);   /* after cap_pcie: PCIe functions only */
     if (d->cap_msi) {
         uint16_t ctl = rd(d, d->cap_msi + 2, 2);
         d->msi_64 = ctl & MSI_CTL_64;
