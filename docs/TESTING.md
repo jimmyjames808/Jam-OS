@@ -1276,6 +1276,22 @@ that sends anything and a peer that floods. In utest (the `init` run;
 | `fun_window_input` | (with the rest) the wheel at INT32_MIN notches twice is 128 notches the right way, a pointer past every edge is the window's corner (C6) |
 | `con_hostile_compositor` | bin/console as init starts a terminal, its /svc/wayland the test's: eight connections that get garbage at once (no batch, a wrong magic, a message to nothing, 65 empty batches, over 16 KiB, a header naming more handles than it brings, 29 handles, a delete_id of nothing), each dropped and made again, then the fake compositor with hostile values (sizes of 4000x3000, 1x1, 0x0 and negative, the pointer past every edge with a drag, the wheel at INT32_MIN, key codes past every table, every modifier bit, copy and paste with no clipboard, a repeat rate of INT32_MAX with a key held, a junk keymap, an output of negative size, 500 pings, frame callbacks held): it answers `console.size` throughout with a grid inside 480x180, and the close box ends it with 0 |
 
+## The protocols' servers against hostile clients
+
+M12.1's review of M12's protocol and storage lines
+([M12.1-REVIEW-PROTOCOLS.md](M12.1-REVIEW-PROTOCOLS.md)). In utest (the
+`init` run; `run utest only idl_fuzz`, `only fat_`, `only volumes_hostile`
+alone). genidl writes `drivers/include/idl/fuzz.h` for the first: every
+protocol's dispatch over stub handlers, and the shape of each message.
+
+| Test | What it checks |
+|---|---|
+| `idl_fuzz` | every protocol's generated server dispatch (and its client's event dispatch) gets 1,000 messages made from its messages' shapes: valid, cut, lengthened, counts past their maxima, bad UTF-8, bad padding, flipped bits, other ordinals, no txid, with handles of every kind and wrong counts. The request ends at a page with no access, the reply buffer at another (a canary up to it); every handle given is gone after, every request with a txid answered with it, no answer past `REP_MAX` or `REP_HANDLES`, no failure with handles |
+| `fat_hostile` | bin/fat over a RAM disk, 1,600 such messages on a view (`fs`) and an open file (`file`), paths among the strings: each answered, neither channel closed on the client, fat still answering, its job empty when it ends |
+| `fat_unread_flood` | a view writes 300 readdirs of a directory of long names and reads no answer, fat's job limited as volumes limits it: at most a few answers go out before it reads, everyone else is answered meanwhile, the 300 are answered in order once read (finding 1: before, the job filled and every other answer was dropped) |
+| `fat_rename_into_alias` | a directory moved into itself by its 8.3 alias, another case or by the alias as `from`: ERR_INVALID_ARGS, nothing lost (finding 2: FatFs lost the directory) |
+| `volumes_hostile` | volumes' control channel gets 800 such messages (none that stops it or takes a mount away), then a test disk whose `storage` driver answers garbage for 2 s (junk, the right txid with a wrong answer, handles, partitions past counting, a `block` that is an event) and goes: volumes answers throughout, and no test mount is left |
+
 ## The compositor's look
 
 The floating windows' title bars, circles, rounded corners and shadows,

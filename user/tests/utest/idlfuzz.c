@@ -20,10 +20,11 @@
 #include <check.h>
 #include <fs_idl.h>
 #include <idl/fuzz.h>
+#include "disks.h"
 #include "nettest.h"
 #include "utest.h"
 
-#define ROUNDS  240u          /* messages per protocol, each way */
+#define ROUNDS  1000u         /* messages per protocol, each way */
 #define AREA    (20u << 10)   /* room before each guard page: a message's 16 KiB and more */
 #define CANARY  0xc5u
 
@@ -138,8 +139,14 @@ static uint32_t build(struct fz *f, const struct idl_fuzz_proto *p, const struct
         for (uint32_t i = n + 2; i < at; i++)
             b[i] = mutate && rnd(f) % 5 == 0 ? 0xaa : 0;   /* the padding: zeros, mostly */
         uint32_t bytes = count * v->size;
+        /* A str: a path more often than not ("/", names, "." and ".."), so a
+         * server that takes paths gets past its first check. */
+        static const char letters[] = "/abcab/.x/..yz~1";
         for (uint32_t i = 0; i < bytes; i++)
-            b[at + i] = v->str ? (uint8_t)('a' + rnd(f) % 26) : (uint8_t)rnd(f);
+            b[at + i] = v->str ? (uint8_t)letters[rnd(f) % (sizeof(letters) - 1)]
+                               : (uint8_t)rnd(f);
+        if (v->str && bytes && rnd(f) % 2)
+            b[at] = '/';
         if (v->str && bytes && mutate && rnd(f) % 3 == 0)
             b[at + rnd(f) % bytes] = bad[rnd(f) % sizeof(bad)];
         n = at + bytes;
@@ -289,4 +296,236 @@ bool t_idl_fuzz(void)
                "with full stubs\n", (unsigned)IDL_FUZZ_PROTOS, (unsigned long)f.dispatches, events,
                (unsigned long)f.answered, (unsigned long)f.full);
     return ok;
+}
+
+/* ---- live servers: fat and volumes fed the same messages ---------------------------- */
+
+static const struct idl_fuzz_proto *proto_named(const char *name)
+{
+    for (unsigned i = 0; i < IDL_FUZZ_PROTOS; i++)
+        if (!strcmp(idl_fuzz_protos[i].name, name))
+            return &idl_fuzz_protos[i];
+    return NULL;
+}
+
+/* Write the n bytes at b with nh handles hs (gone either way) on ch, then
+ * take every answer that has come, until the one to its txid (a request
+ * with a txid must be answered within 5 s). The status of the write, or
+ * ERR_PEER_CLOSED, or ERR_TIMED_OUT for a request never answered. */
+static status_t send_take(struct fz *f, handle_t ch, uint8_t *b, uint32_t n, handle_t *hs,
+                          uint32_t nh)
+{
+    static uint8_t rep[CHANNEL_MAX_BYTES];
+    uint32_t txid = 0;
+    if (n >= 4) {   /* a txid of ours never has the kernel's bit: its answer would be dropped */
+        memcpy(&txid, b, 4);
+        txid &= ~CHANNEL_TXID_KERNEL;
+        memcpy(b, &txid, 4);
+    }
+    status_t st = jam_channel_write(ch, b, n, hs, nh);
+    drop_peers(f);
+    if (st != OK)
+        return st;
+    uint64_t until = now() + 5 * NS_PER_S;
+    for (;;) {
+        struct idl_msg m;
+        st = idl_reply_read(ch, rep, sizeof(rep), &m);
+        if (st == OK || st == ERR_INTERNAL) {
+            idl_msg_drop(&m);   /* a view or a file it made, or the like: closed */
+            if (txid && m.txid == txid)
+                return OK;
+            continue;
+        }
+        if (st != ERR_SHOULD_WAIT)
+            return st;
+        if (!txid)
+            return OK;   /* nothing to wait for: no txid, never answered */
+        if (now() >= until)
+            return ERR_TIMED_OUT;
+        signals_t seen;
+        (void)jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, until, &seen);
+    }
+}
+
+static struct ramdisk hdisk;
+
+#define HOSTILE_ROUNDS 1600u
+#define HOSTILE_DRIVER_NS (2 * NS_PER_S)   /* how long the hostile storage driver answers */
+
+/* fat over a RAM disk, its `fs` protocol on a view and its `file` protocol
+ * on an open file fed HOSTILE_ROUNDS messages made as idl_fuzz makes them
+ * (paths among the strings, so requests get past the decoding): every
+ * request with a txid is answered, neither channel is closed on us, fat
+ * still answers properly after, and when it ends its job is empty (no
+ * view, file, handle or message left behind). */
+bool t_fat_hostile(void)
+{
+    struct fatrun r;
+    struct tfile file;
+    struct fz f = { .seed = 0xfa7b0057ull };
+    handle_t v;
+    const struct idl_fuzz_proto *pfs = proto_named("fs"), *pfile = proto_named("file");
+    CHECK(pfs && pfile);
+    if (!ramdisk_create(&hdisk, 16 * MIB_SECTORS) || !fat_start(&r, &hdisk, false))
+        return false;
+    CHECK(put_file(&r, "/a", "a file the messages may find"));
+    CHECK_ST(t_mkdir(&r, "/b"), OK);
+    CHECK_ST(fs_view_until(r.fs, now() + FAT_CALL_NS, 0, &v), OK);
+    CHECK_ST(t_open(&r, "/a", FS_READ | FS_WRITE, &file), OK);
+    static uint8_t msg[AREA];
+    for (unsigned k = 0; k < HOSTILE_ROUNDS; k++) {
+        bool on_file = k % 2;
+        const struct idl_fuzz_proto *p = on_file ? pfile : pfs;
+        const struct idl_fuzz_msg *m = &p->msgs[rnd(&f) % p->nmsgs];
+        uint32_t n = build(&f, p, m, msg, AREA);
+        handle_t hs[IDL_HANDLES_MAX];
+        uint32_t nh = handles_for(&f, m, hs);
+        status_t st = send_take(&f, on_file ? file.ch : v, msg, n, hs, nh);
+        if (st != OK)
+            FAIL("round %u: a %s message of %u bytes (ordinal %08x, %u handles): %s", k,
+                 p->name, n, m->ordinal, nh, status_str(st));
+    }
+    uint64_t id = 0, size = 0;
+    uint32_t done = 0;
+    char back[32] = { 0 };
+    CHECK_ST(t_stat_id(&r, "/b", &id), OK);
+    CHECK_ST(t_read(&file, 0, back, sizeof(back) - 1, &done), OK);
+    CHECK_ST(t_stat(&r, "/a", &size, NULL, NULL), OK);
+    t_close(&file);
+    CHECK_ST(jam_handle_close(v), OK);
+    return fat_stop(&r);
+}
+
+/* A volumes request the hostile test must not make: it would stop
+ * volumes, take a real disk's mounts away or start a disk of its own. */
+static bool harmful(uint32_t ordinal)
+{
+    switch (ordinal) {
+    case VOLUMES_REMOUNT:
+    case VOLUMES_KILL:
+    case VOLUMES_TEST_DISK:
+    case VOLUMES_RELEASE_DISK:
+    case VOLUMES_SYNC:
+    case VOLUMES_STOP:
+    case VOLUMES_SET_DISKS:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* One request of volumes' on the hostile driver's channel ch, answered
+ * badly (junk, the right txid with the wrong answer, handles, extreme
+ * values) and then, mostly, as a driver would. */
+static void answer_badly(struct fz *f, handle_t ch, const uint8_t *q, uint32_t n)
+{
+    uint8_t junk[300];
+    const struct idl_req_hdr *h = (const void *)q;
+    struct idl_txn txn = { ch, n >= 4 ? h->txid : 0 };
+    uint32_t ordinal = n >= 8 ? h->ordinal : 0;
+    for (unsigned k = rnd(f) % 4; k--;) {   /* noise first */
+        uint32_t len = rnd(f) % sizeof(junk);
+        for (uint32_t i = 0; i < len; i++)
+            junk[i] = (uint8_t)rnd(f);
+        if (len >= 4 && rnd(f) % 2)
+            memcpy(junk, &txn.txid, 4);
+        handle_t ev = HANDLE_INVALID;
+        if (rnd(f) % 3 == 0)
+            (void)jam_event_create(&ev);
+        (void)jam_channel_write(ch, junk, len, &ev, ev ? 1 : 0);   /* ev goes either way */
+    }
+    if (ordinal != STORAGE_INFO && rnd(f) % 5 == 0)
+        return;   /* never answered (but info: volumes would wait 30 s for it) */
+    static const uint8_t guid[16];
+    static const uint8_t types[] = { 0xef, 0x0c, 0x00, 0xee, 0x0b, 0x83 };
+    if (ordinal == STORAGE_INFO) {
+        uint32_t parts = rnd(f) % 3 == 0 ? 0xffffffffu : rnd(f) % 6;
+        (void)storage_reply_info(txn, OK, "hostile", 7, "disk", 4, rnd(f) % 4 ? 512 : 0,
+                                 rnd(f) % 2 ? UINT64_MAX : 8192, (uint8_t)rnd(f), parts,
+                                 rnd(f), guid);
+    } else if (ordinal == STORAGE_PARTITION) {
+        (void)storage_reply_partition(txn, rnd(f) % 6 ? OK : ERR_IO,
+                                      types[rnd(f) % sizeof(types)], guid, guid, rnd(f),
+                                      rnd(f) % 2 ? UINT64_MAX : 4096, 0, "p", 1);
+    } else if (ordinal == STORAGE_OPEN_PARTITION) {
+        handle_t ev = HANDLE_INVALID;   /* not a `block` channel at all */
+        (void)jam_event_create(&ev);
+        (void)storage_reply_open_partition(txn, rnd(f) % 3 ? OK : ERR_NO_RESOURCES, ev);
+    } else {
+        (void)jam_channel_write(ch, q, n < 8 ? n : 8, NULL, 0);
+    }
+}
+
+/* volumes' control channel fed messages made as idl_fuzz makes them (none
+ * that would stop it, take a mount away or add a disk), then a test disk
+ * whose `storage` driver answers garbage for 2 s and goes: volumes keeps
+ * answering, and the disk leaves no mount behind. */
+bool t_volumes_hostile(void)
+{
+    handle_t vm = volumes(), mine, theirs;
+    struct fz f = { .seed = 0x701b0057ull };
+    struct view v = { 0 };
+    uint32_t state = 0, restarts = 0, backoff = 0, promoted = 0, id = 0;
+    uint8_t spare = 0;
+    const struct idl_fuzz_proto *p = proto_named("volumes");
+    if (!vm)
+        return true;
+    CHECK(p);
+    static uint8_t msg[AREA];
+    unsigned sent = 0;
+    for (unsigned k = 0; k < 800; k++) {
+        const struct idl_fuzz_msg *m = &p->msgs[rnd(&f) % p->nmsgs];
+        uint32_t n = build(&f, p, m, msg, AREA), ordinal = 0;
+        if (n >= 8)
+            memcpy(&ordinal, msg + 4, 4);
+        if (n >= 8 && harmful(ordinal))
+            continue;
+        handle_t hs[IDL_HANDLES_MAX];
+        uint32_t nh = handles_for(&f, m, hs);
+        status_t st = send_take(&f, vm, msg, n, hs, nh);
+        if (st != OK)
+            FAIL("message %u (ordinal %08x, %u bytes, %u handles): %s", k, ordinal, n, nh,
+                 status_str(st));
+        sent++;
+    }
+    CHECK_ST(volumes_supervision_until(vm, now() + 5 * NS_PER_S, "/nothing", 8, &state, &restarts,
+                                       &backoff, &promoted, &spare), ERR_NOT_FOUND);
+    /* The hostile driver. */
+    CHECK_ST(jam_channel_create(&mine, &theirs), OK);
+    CHECK_ST(volumes_test_disk_until(vm, now() + 10 * NS_PER_S, theirs, &id), OK);
+    unsigned asked = 0;
+    for (uint64_t until = now() + HOSTILE_DRIVER_NS; now() < until;) {
+        uint8_t q[256];
+        handle_t hs[8];
+        uint32_t n = 0, nh = 0;
+        status_t st = jam_channel_read(&(struct channel_read_args){
+            .h = mine, .rd_cap = sizeof(q), .rd_bytes = (uint64_t)(uintptr_t)q,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = 8, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        });
+        if (st == ERR_SHOULD_WAIT) {
+            signals_t seen;
+            (void)jam_object_wait_one(mine, SIG_READABLE, until, &seen);
+            continue;
+        }
+        CHECK_ST(st, OK);   /* volumes keeps a disk it was given while its driver is there */
+        for (uint32_t i = 0; i < nh; i++)
+            jam_handle_close(hs[i]);
+        answer_badly(&f, mine, q, n);
+        asked++;
+    }
+    CHECK_ST(jam_handle_close(mine), OK);   /* the driver goes */
+    printf("utest: volumes_hostile: %u messages to volumes, %u requests to the hostile driver\n",
+           sent, asked);
+    CHECK(asked > 0);
+    /* volumes still answers, and nothing of the disk stays mounted */
+    CHECK_ST(volumes_supervision_until(vm, now() + 5 * NS_PER_S, "/nothing", 8, &state, &restarts,
+                                       &backoff, &promoted, &spare), ERR_NOT_FOUND);
+    if (!wait_mounts(vm, &v, false, false))
+        return false;
+    for (unsigned i = 0; i < v.n; i++)
+        if (v.m[i].flags & MOUNTS_TEST)
+            FAIL("a test mount left behind: %s", v.m[i].path);
+    view_close(&v);
+    return true;
 }

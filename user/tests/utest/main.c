@@ -1122,6 +1122,8 @@ static const struct {
     { "fat_unread_flood", t_fat_unread_flood },
     { "fat_rename_into_alias", t_fat_rename_into_alias },
     { "idl_fuzz", t_idl_fuzz },
+    { "fat_hostile", t_fat_hostile },
+    { "volumes_hostile", t_volumes_hostile },
 };
 
 int main(int argc, char **argv)

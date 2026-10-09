@@ -806,3 +806,6 @@ bool t_fat_unread_flood(void);
 bool t_fat_rename_into_alias(void);
 /* idlfuzz.c: every protocol's generated dispatch fed hostile messages (M12.1). */
 bool t_idl_fuzz(void);
+/* idlfuzz.c: fat and volumes fed the same messages, live (M12.1). */
+bool t_fat_hostile(void);
+bool t_volumes_hostile(void);
