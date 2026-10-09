@@ -117,6 +117,12 @@ int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, u
     return sys_channel_write_rights_from(t, h, &b, hs, rs, nhandles);
 }
 
+int64_t sysc_channel_set_flags(handle_t h, uint32_t flags)
+{
+    SYSC_TABLE(t);
+    return sys_channel_set_flags(t, h, flags);
+}
+
 int64_t sysc_channel_read(const struct channel_read_args *a)
 {
     SYSC_TABLE(t);

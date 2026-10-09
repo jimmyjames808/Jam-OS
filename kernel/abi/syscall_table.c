@@ -104,6 +104,11 @@ static int64_t call_channel_reply_wait(const struct syscall_frame *f)
     return sysc_channel_reply_wait(&a);
 }
 
+static int64_t call_channel_set_flags(const struct syscall_frame *f)
+{
+    return sysc_channel_set_flags((handle_t)f->args[0], (uint32_t)f->args[1]);
+}
+
 static int64_t call_event_create(const struct syscall_frame *f)
 {
     return sysc_event_create(f->args[0]);
@@ -500,6 +505,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_channel_read] = call_channel_read,
     [SYS_channel_call] = call_channel_call,
     [SYS_channel_reply_wait] = call_channel_reply_wait,
+    [SYS_channel_set_flags] = call_channel_set_flags,
     [SYS_event_create] = call_event_create,
     [SYS_event_signal] = call_event_signal,
     [SYS_timer_create] = call_timer_create,

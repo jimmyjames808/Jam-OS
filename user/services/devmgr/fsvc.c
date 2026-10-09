@@ -93,6 +93,15 @@ status_t fs_serve_end(struct binding *b, struct spawn_handle *x, rights_t *xr, u
         status_t st = jam_channel_create(&client, &serve);
         if (st != OK)
             return st;
+        /* fat's end receives no handles (no fs request carries one), so
+         * its queue can't hold a channel end and it can always be handed
+         * to the next instance (M12's D2). */
+        st = jam_channel_set_flags(serve, CHANNEL_NO_HANDLES);
+        if (st != OK) {
+            jam_handle_close(client);
+            jam_handle_close(serve);
+            return st;
+        }
         close_client(b);
         if (b->serve)
             jam_handle_close(b->serve);

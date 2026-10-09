@@ -24,27 +24,38 @@ static status_t get_channel(struct handle_table *t, handle_t h, rights_t need,
     return st;
 }
 
-/* Put taken handles back under their old values, newest first. The slots were
- * reserved by handle_take, so handle_untake always succeeds and no handle is
- * lost; the release is a belt-and-braces fallback that should never run. */
-static void untake_all(struct handle_table *t, const handle_t *hs, struct khandle *khs,
-                       uint32_t n)
+/* A send's handles (M12's Q1, Zircon's rule): once the kernel has read
+ * the list, every handle it names is gone from t when the call returns,
+ * whatever the status: sent with the message, or closed. A caller that
+ * wants to try again duplicates first. Only errors found before the list
+ * is read (its length or address, and the arguments abi/syscalls.def
+ * checks before it) leave the handles where they were. */
+
+/* A list the send never took (the call failed before it got that far):
+ * close every value in it that names a handle (a bad one names nothing). */
+static void close_list(struct handle_table *t, const handle_t *hs, uint32_t n)
 {
-    while (n--) {
-        handle_t v;
-        if (handle_untake(t, hs[n], &khs[n], &v) != OK)
-            khandle_release(&khs[n]);
+    if (!hs || n > CHANNEL_MAX_HANDLES)
+        return;   /* not a list the kernel could read */
+    for (uint32_t i = 0; i < n; i++)
+        handle_close(t, hs[i]);
+}
+
+/* After the send, sent or not: free the slots handle_take reserved and
+ * release what the send did not consume (a failed send leaves its
+ * khandles set; a sent message cleared them). */
+static void finish_taken(struct handle_table *t, const handle_t *hs, struct khandle *khs,
+                         uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++) {
+        handle_commit(t, hs[i]);
+        khandle_release(&khs[i]);   /* no lock held: it may close a channel */
     }
 }
 
-/* Release the reserved slots of handles a successful send consumed. */
-static void commit_all(struct handle_table *t, const handle_t *hs, uint32_t n)
-{
-    for (uint32_t i = 0; i < n; i++)
-        handle_commit(t, hs[i]);
-}
-
-/* Take every handle in hs out of t (each needs RIGHT_TRANSFER), or none. */
+/* Take every handle in hs out of t (each needs RIGHT_TRANSFER). If one
+ * can't be taken (a bad value, no RIGHT_TRANSFER, a value twice), the
+ * whole list is consumed all the same, and that error returned. */
 static status_t take_all(struct handle_table *t, const handle_t *hs, struct khandle *khs,
                          uint32_t n)
 {
@@ -55,7 +66,8 @@ static status_t take_all(struct handle_table *t, const handle_t *hs, struct khan
     for (uint32_t i = 0; i < n; i++) {
         status_t st = handle_take(t, hs[i], &khs[i]);
         if (st != OK) {
-            untake_all(t, hs, khs, i);
+            finish_taken(t, hs, khs, i);
+            close_list(t, hs + i, n - i);
             return st;
         }
     }
@@ -98,16 +110,15 @@ status_t sys_channel_write_from(struct handle_table *t, handle_t h, const struct
 {
     struct channel *ch;
     status_t st = get_channel(t, h, RIGHT_WRITE, &ch);
-    if (st != OK)
+    if (st != OK) {
+        close_list(t, handles, nhandles);
         return st;
+    }
     struct khandle khs[CHANNEL_MAX_HANDLES];
     st = take_all(t, handles, khs, nhandles);
     if (st == OK) {
         st = channel_write_from(ch, b, khs, nhandles);
-        if (st != OK)
-            untake_all(t, handles, khs, nhandles);
-        else
-            commit_all(t, handles, nhandles);
+        finish_taken(t, handles, khs, nhandles);
     }
     kobject_unref((struct kobject *)ch);
     return st;
@@ -122,27 +133,17 @@ status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes
 
 /* Write the taken handles khs with their new rights: each arrives with
  * rights[i], a subset of what it has (as handle_duplicate), or RIGHT_SAME.
- * Checked before anything changes, restored if the write fails. */
+ * All are checked before the write. */
 static status_t write_narrowed(struct channel *ch, const struct chan_bytes *b, struct khandle *khs,
                                const rights_t *rights, uint32_t nhandles)
 {
-    rights_t had[CHANNEL_MAX_HANDLES];
-    status_t st = OK;
-    for (uint32_t i = 0; i < nhandles; i++) {
-        had[i] = khs[i].rights;
-        if (rights[i] != RIGHT_SAME && (rights[i] & ~had[i]))
-            st = ERR_INVALID_ARGS;
-    }
-    if (st != OK)
-        return st;
+    for (uint32_t i = 0; i < nhandles; i++)
+        if (rights[i] != RIGHT_SAME && (rights[i] & ~khs[i].rights))
+            return ERR_INVALID_ARGS;
     for (uint32_t i = 0; i < nhandles; i++)
         if (rights[i] != RIGHT_SAME)
             khs[i].rights = rights[i];
-    st = channel_write_from(ch, b, khs, nhandles);
-    if (st != OK)
-        for (uint32_t i = 0; i < nhandles; i++)
-            khs[i].rights = had[i];
-    return st;
+    return channel_write_from(ch, b, khs, nhandles);
 }
 
 status_t sys_channel_write_rights_from(struct handle_table *t, handle_t h,
@@ -153,16 +154,15 @@ status_t sys_channel_write_rights_from(struct handle_table *t, handle_t h,
         return ERR_INVALID_ARGS;
     struct channel *ch;
     status_t st = get_channel(t, h, RIGHT_WRITE, &ch);
-    if (st != OK)
+    if (st != OK) {
+        close_list(t, handles, nhandles);
         return st;
+    }
     struct khandle khs[CHANNEL_MAX_HANDLES];
     st = take_all(t, handles, khs, nhandles);
     if (st == OK) {
         st = write_narrowed(ch, b, khs, rights, nhandles);
-        if (st != OK)
-            untake_all(t, handles, khs, nhandles);
-        else
-            commit_all(t, handles, nhandles);
+        finish_taken(t, handles, khs, nhandles);
     }
     kobject_unref((struct kobject *)ch);
     return st;
@@ -174,6 +174,17 @@ status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void
 {
     struct chan_bytes b = chan_kbytes(bytes, nbytes);
     return sys_channel_write_rights_from(t, h, &b, handles, rights, nhandles);
+}
+
+status_t sys_channel_set_flags(struct handle_table *t, handle_t h, uint32_t flags)
+{
+    struct channel *ch;
+    status_t st = get_channel(t, h, RIGHT_READ, &ch);
+    if (st != OK)
+        return st;
+    st = channel_set_flags(ch, flags);
+    kobject_unref((struct kobject *)ch);
+    return st;
 }
 
 status_t sys_channel_read_into(struct handle_table *t, handle_t h, const struct chan_bytes *b,
@@ -225,12 +236,13 @@ status_t sys_channel_call_from(struct handle_table *t, handle_t h, const struct 
                                uint32_t *ractual, handle_t *rh, uint32_t rhcap,
                                uint32_t *rhactual, uint64_t deadline_ns)
 {
-    if (rhcap && !rh)
-        return ERR_INVALID_ARGS;
     struct channel *ch;
-    status_t st = get_channel(t, h, RIGHT_READ | RIGHT_WRITE, &ch);
-    if (st != OK)
+    status_t st = rhcap && !rh ? ERR_INVALID_ARGS
+                               : get_channel(t, h, RIGHT_READ | RIGHT_WRITE, &ch);
+    if (st != OK) {
+        close_list(t, wh, whn);
         return st;
+    }
     struct khandle wkhs[CHANNEL_MAX_HANDLES], rkhs[CHANNEL_MAX_HANDLES];
     handle_t rsv[CHANNEL_MAX_HANDLES];
     uint32_t cap = rhcap < CHANNEL_MAX_HANDLES ? rhcap : CHANNEL_MAX_HANDLES;
@@ -238,6 +250,7 @@ status_t sys_channel_call_from(struct handle_table *t, handle_t h, const struct 
      * slots before the request goes out: reserve room for all it may carry. */
     st = handle_reserve(t, cap, rsv);
     if (st != OK) {
+        close_list(t, wh, whn);
         kobject_unref((struct kobject *)ch);
         return st;
     }
@@ -249,13 +262,7 @@ status_t sys_channel_call_from(struct handle_table *t, handle_t h, const struct 
             .req = *w, .req_h = wkhs, .req_nh = whn, .rep = *r, .rep_h = rkhs, .rep_hcap = cap,
         };
         st = channel_call_with(ch, &c, deadline_ns);
-        /* channel_call clears the request's khandles only once it is sent, so
-         * a non-NULL first obj means the send failed: put them back. Otherwise
-         * the send consumed them and their reserved slots are freed. */
-        if (whn && wkhs[0].obj)
-            untake_all(t, wh, wkhs, whn);
-        else if (whn)
-            commit_all(t, wh, whn);
+        finish_taken(t, wh, wkhs, whn);   /* sent with the request, or closed */
         if (ractual && (st == OK || st == ERR_BUFFER_TOO_SMALL))
             *ractual = c.rep_nb;
         if (rhactual)
@@ -329,8 +336,8 @@ static bool rw_form_ok(const struct chan_reply_wait *rw)
     return !rw->want_packet && (!rw->req_hcap || rw->req_h);
 }
 
-/* The reply half: send the reply on ch (its handles leave t only if it
- * goes) as a wake that may hand this CPU to its caller (we wait right
+/* The reply half: send the reply on ch (its handles leave t whether it
+ * goes or not) as a wake that may hand this CPU to its caller (we wait right
  * after), then, once it went out, the mark. rw->reply_st gets its status.
  * OK to go on to the wait, else the error that ends the call. */
 static status_t rw_reply(struct handle_table *t, struct channel *ch, struct chan_reply_wait *rw)
@@ -341,10 +348,7 @@ static status_t rw_reply(struct handle_table *t, struct channel *ch, struct chan
         thread_set_handoff(true);
         st = channel_write_from(ch, &rw->reply, khs, rw->reply_nh);
         thread_set_handoff(false);
-        if (st != OK)
-            untake_all(t, rw->reply_h, khs, rw->reply_nh);
-        else
-            commit_all(t, rw->reply_h, rw->reply_nh);
+        finish_taken(t, rw->reply_h, khs, rw->reply_nh);
     }
     rw->replied = true;
     rw->reply_st = st;
@@ -375,8 +379,10 @@ status_t sys_channel_reply_wait(struct handle_table *t, struct chan_reply_wait *
     struct channel *reply;
     struct kobject *wait;
     status_t st = rw_lookup(t, rw, &reply, &wait);
-    if (st != OK)
+    if (st != OK) {
+        close_list(t, rw->reply_h, rw->reply_nh);   /* the reply's handles go all the same */
         return st;
+    }
     rw->is_port = wait->type == OBJ_PORT;
     rw->replied = false;
     rw->req_nb = rw->req_nh = 0;
@@ -386,6 +392,8 @@ status_t sys_channel_reply_wait(struct handle_table *t, struct chan_reply_wait *
                                                                          : CHANNEL_MAX_HANDLES;
     handle_t rsv[CHANNEL_MAX_HANDLES];
     st = rw_form_ok(rw) ? handle_reserve(t, cap, rsv) : ERR_INVALID_ARGS;
+    if (st != OK)
+        close_list(t, rw->reply_h, rw->reply_nh);
     if (st == OK) {
         st = reply ? rw_reply(t, reply, rw) : OK;
         if (st != OK)

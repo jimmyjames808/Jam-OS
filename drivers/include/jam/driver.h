@@ -85,6 +85,9 @@ int      drv_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
     __attribute__((format(printf, 3, 0)));
 
 /* ---- handles, channels, ports, waiting --------------------------------------
+ * A write or call is given its handles for good: they leave our table
+ * whatever the status (sent, or closed), so a caller that may try again
+ * duplicates them first.
  * Same meaning as the syscalls of the same name (abi/syscalls.def). */
 
 status_t drv_handle_close(handle_t h);

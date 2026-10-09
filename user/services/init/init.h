@@ -26,6 +26,18 @@
 #define USB_MOUNTS 8         /* ... the N that are tried */
 #define BOOTFS_PATH "bin/bootfs"   /* the bootfs server, in bootfs */
 
+/* A kept server end (made once, handed to every instance of its service)
+ * receives no handles (CHANNEL_NO_HANDLES, M12's D2): no request of its
+ * protocol carries one, and a queue that holds none can always be sent on
+ * to the next instance (the kernel won't send an end whose queue holds a
+ * channel end). Marked when the channel is made, before any client has
+ * its other end. */
+static inline void kept_end_mark(handle_t srv)
+{
+    if (srv && jam_channel_set_flags(srv, CHANNEL_NO_HANDLES) != OK)
+        printf("init: a kept server end can't be marked: it may receive handles\n");
+}
+
 /* One line into the kernel's RESULTS box (and the log). */
 void init_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* Shell mode (shell.c). Runs for as long as the system does: returns

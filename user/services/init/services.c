@@ -477,8 +477,11 @@ static void make_audio_channels(void)
     for (unsigned k = 0; k < 3; k++)
         if (jam_channel_create(&audio_cli[k], &audio_srv[k]) != OK)
             audio_cli[k] = audio_srv[k] = HANDLE_INVALID;
-    if (audio_cli[0] && audio_cli[1] && audio_cli[2])
+    if (audio_cli[0] && audio_cli[1] && audio_cli[2]) {
+        for (unsigned k = 0; k < 3; k++)
+            kept_end_mark(audio_srv[k]);
         return;
+    }
     for (unsigned k = 0; k < 3; k++) {
         if (audio_cli[k]) {
             jam_handle_close(audio_cli[k]);
@@ -666,11 +669,13 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     net_init(port);
     if (jam_channel_create(&music_cli, &music_srv) != OK)
         music_cli = music_srv = HANDLE_INVALID;
+    kept_end_mark(music_srv);
     services_publish(SVC_AUDIO, audio_cli[0], true);      /* each a channel per opener */
     services_publish(SVC_AUDIOCTL, audio_cli[1], true);
     services_publish(SVC_MUSIC, music_cli, true);   /* a channel per opener (svc.connect) */
     if (jam_channel_create(&serve_cli, &serve_srv) != OK)
         serve_cli = serve_srv = HANDLE_INVALID;
+    kept_end_mark(serve_srv);
     services_publish(SVC_SERVE, serve_cli, true);
     services_publish(SVC_NET, net_svc_channel(), true);
     services_publish(SVC_NET_LISTEN, net_listen_channel(), true);   /* the shell's to give */

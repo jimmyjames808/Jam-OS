@@ -247,6 +247,9 @@ struct process_info {
  * keeps this bit clear, so no reply to them is ever taken for a call's. */
 #define CHANNEL_TXID_KERNEL 0x80000000u
 
+/* channel_set_flags: the end receives no handles (abi/syscalls.def). */
+#define CHANNEL_NO_HANDLES  (1u << 0)
+
 /* argument structs -----------------------------------------------------------
  * Calls with more than six arguments take a pointer to one of these. The
  * syscall dispatcher copies the struct into the kernel before the call, so

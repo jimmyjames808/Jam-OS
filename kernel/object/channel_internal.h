@@ -83,6 +83,11 @@ struct channel {
     struct list_node  callers;       /* chan_waiter */
     bool              closed;        /* we left the pair */
     bool              peer_closed;   /* the peer left the pair */
+    bool              no_handles;    /* CHANNEL_NO_HANDLES: refuses messages with handles */
+    struct job       *reader_job;    /* the job of the table that last received a handle to
+                                      * us (a reference, or NULL): it pays for what waits on
+                                      * our queue once our peer has closed (charge_reader).
+                                      * Changed under the lock; read without it as a hint */
 };
 
 /* The message handed to w, or NULL. Writers store it last, with release

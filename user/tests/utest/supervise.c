@@ -351,14 +351,13 @@ bool t_driver_handle_limits(void)
     CHECK_ST(jam_resource_create(dev, RES_PCI, 0, 0, &x), ERR_ACCESS_DENIED);
     CHECK_ST(jam_pci_bar_resource(dev, tab & 7, &x), ERR_ACCESS_DENIED);
     /* Nothing to pass on: the function and its BARs can't be
-     * duplicated or sent (DR_SERVE is a channel like this one), nor can
-     * the registers as a VMO. */
+     * duplicated or sent (DR_SERVE is a channel like this one: the sends
+     * are tried last, as a refused send closes what it was given), nor
+     * can the registers as a VMO. */
     handle_t ca, cb;
     CHECK_ST(jam_channel_create(&ca, &cb), OK);
     CHECK_ST(jam_handle_duplicate(dev, RIGHT_SAME, &x), ERR_ACCESS_DENIED);
-    CHECK_ST(jam_channel_write(ca, "x", 1, &dev, 1), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_duplicate(hs[1], RIGHT_SAME, &x), ERR_ACCESS_DENIED);
-    CHECK_ST(jam_channel_write(ca, "x", 1, &hs[1], 1), ERR_ACCESS_DENIED);
     /* A register page of the lowest BAR (hs[1]) that isn't the table or
      * the PBA. */
     uint32_t low = (uint32_t)__builtin_ctz(mask), pg = 0;
@@ -368,10 +367,8 @@ bool t_driver_handle_limits(void)
     if (jam_vmo_create_physical(hs[1], pg, 4096, VMO_CACHE_UC, &x) == OK) {
         CHECK_ST(jam_handle_duplicate(x, RIGHT_SAME, &v), ERR_ACCESS_DENIED);
         CHECK_ST(jam_channel_write(ca, "x", 1, &x, 1), ERR_ACCESS_DENIED);
-        CHECK_ST(jam_handle_close(x), OK);
+        CHECK_ST(jam_handle_close(x), ERR_BAD_HANDLE);   /* closed by the refused send */
     }
-    CHECK_ST(jam_handle_close(ca), OK);
-    CHECK_ST(jam_handle_close(cb), OK);
     /* No dma_cap: no DMA memory, no pins. */
     CHECK_ST(jam_vmo_create(4096, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, &x), ERR_INVALID_ARGS);
     CHECK_ST(jam_dma_vmo_create(HANDLE_INVALID, 4096, DRV_VMO_DMA32, &x), ERR_BAD_HANDLE);
@@ -390,7 +387,13 @@ bool t_driver_handle_limits(void)
     pa.flags = 2;   /* not a VMO_PIN_* */
     CHECK_ST(jam_vmo_pin(&pa), ERR_INVALID_ARGS);
     CHECK_ST(jam_handle_close(v), OK);
-    for (uint32_t i = 0; i < nh; i++)
+    CHECK_ST(jam_channel_write(ca, "x", 1, &dev, 1), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_channel_write(ca, "x", 1, &hs[1], 1), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(dev), ERR_BAD_HANDLE);   /* both closed by the refused sends */
+    CHECK_ST(jam_handle_close(hs[1]), ERR_BAD_HANDLE);
+    CHECK_ST(jam_handle_close(ca), OK);
+    CHECK_ST(jam_handle_close(cb), OK);
+    for (uint32_t i = 2; i < nh; i++)
         CHECK_ST(jam_handle_close(hs[i]), OK);
     return true;
 }

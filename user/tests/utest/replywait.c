@@ -487,6 +487,135 @@ bool t_reply_wait_refusals(void)
     return true;
 }
 
+/* M12's Q1: the handles a send is given are gone when it returns, whatever
+ * its status: a refused list (one without RIGHT_TRANSFER), a write whose
+ * peer has gone, a call whose peer has gone, a reply_wait refused for its
+ * wait handle, a write to something that isn't a channel, and
+ * process_start's arg0 with a bad process. Only an error found before the
+ * list is read (its length) leaves them. */
+static bool gone(handle_t h)
+{
+    return jam_event_signal(h, 0, SIG_SIGNALED) == ERR_BAD_HANDLE;
+}
+
+bool t_handles_always_moved(void)
+{
+    struct job_info before, after;
+    CHECK_ST(info_of(own_job(), &before), OK);
+    handle_t a, b, e[2], ro;
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_event_create(&e[1]), OK);
+    CHECK_ST(jam_handle_duplicate(e[1], RIGHT_WAIT | RIGHT_SIGNAL, &ro), OK);   /* no TRANSFER */
+    CHECK_ST(jam_handle_close(e[1]), OK);
+    e[1] = ro;
+    CHECK_ST(jam_channel_write(a, "abcd", 4, e, 2), ERR_ACCESS_DENIED);
+    CHECK(gone(e[0]) && gone(e[1]));
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* nothing sent */
+
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_channel_write(a, "abcd", CHANNEL_MAX_BYTES + 1, e, 1), ERR_OUT_OF_RANGE);
+    CHECK(!gone(e[0]));   /* refused before the list was read: still ours */
+    CHECK_ST(jam_channel_write(e[0], "abcd", 4, e, 1), ERR_WRONG_TYPE);
+    CHECK(gone(e[0]));
+
+    struct rw_req req = { 0, 0 }, rep = { 1, 2 };
+    uint32_t nb = 0;
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    struct channel_reply_wait_args x = rw_args(b, &rep, 0x7fff0000u, &req, &nb, 0);
+    x.wr_handles = (uint64_t)(uintptr_t)e;
+    x.wr_nhandles = 1;
+    CHECK_ST(jam_channel_reply_wait(&x), ERR_BAD_HANDLE);   /* the wait handle */
+    CHECK(gone(e[0]));
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* no reply */
+
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_process_start(e[0], e[0], 0x400000, 0x800000, e[0], 0), ERR_WRONG_TYPE);
+    CHECK(gone(e[0]));
+
+    CHECK_ST(jam_handle_close(b), OK);   /* the peer goes */
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_channel_write(a, "abcd", 4, e, 1), ERR_PEER_CLOSED);
+    CHECK(gone(e[0]));
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    struct channel_call_args ca = {
+        .h = a, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)&req,
+        .wr_handles = (uint64_t)(uintptr_t)e, .wr_nhandles = 1,
+        .flags = CHANNEL_CALL_TIMEOUT, .deadline_ns = RW_WAIT,
+    };
+    CHECK_ST(jam_channel_call(&ca), ERR_PEER_CLOSED);
+    CHECK(gone(e[0]));
+    CHECK_ST(jam_handle_close(a), OK);
+
+    CHECK_ST(info_of(own_job(), &after), OK);
+    CHECK_EQ(after.used[JOB_LIMIT_HANDLES], before.used[JOB_LIMIT_HANDLES]);
+    CHECK_EQ(after.used[JOB_LIMIT_MSG_BYTES], before.used[JOB_LIMIT_MSG_BYTES]);
+    return true;
+}
+
+/* D2 from user space: channel_set_flags needs RIGHT_READ on the end, and a
+ * send refused by the mark closes its handles as every refused send does. */
+bool t_channel_no_handles(void)
+{
+    struct job_info before, after;
+    CHECK_ST(info_of(own_job(), &before), OK);
+    handle_t a, b, wo, e;
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(jam_handle_duplicate(b, RIGHT_WRITE | RIGHT_WAIT, &wo), OK);
+    CHECK_ST(jam_channel_set_flags(wo, CHANNEL_NO_HANDLES), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_channel_set_flags(b, 1u << 9), ERR_INVALID_ARGS);
+    CHECK_ST(jam_channel_set_flags(b, CHANNEL_NO_HANDLES), OK);
+    CHECK_ST(jam_event_create(&e), OK);
+    CHECK_ST(jam_channel_write(a, "abcd", 4, &e, 1), ERR_NOT_SUPPORTED);
+    CHECK(gone(e));
+    CHECK_ST(jam_channel_write(a, "abcd", 4, NULL, 0), OK);   /* plain ones still go */
+    uint8_t buf[8];
+    CHECK_ST(jam_channel_read(&(struct channel_read_args){
+                 .h = b, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf }),
+             OK);
+    CHECK_ST(jam_handle_close(wo), OK);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(b), OK);
+    CHECK_ST(info_of(own_job(), &after), OK);
+    CHECK_EQ(after.used[JOB_LIMIT_HANDLES], before.used[JOB_LIMIT_HANDLES]);
+    CHECK_EQ(after.used[JOB_LIMIT_MSG_BYTES], before.used[JOB_LIMIT_MSG_BYTES]);
+    return true;
+}
+
+/* M12's Q2 from user space: a child in a job of its own writes 8 KiB on a
+ * channel and exits without anybody reading; from then on its job is
+ * charged nothing for them (it would be, until read, before), and ours,
+ * the reader's, is: reading them gives it back. */
+bool t_unread_charged_to_reader(void)
+{
+    handle_t job, proc, a, b;
+    struct job_info before, ji;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(info_of(own_job(), &before), OK);
+    CHECK_ST(child("write-exit", NULL, job, a, &proc), OK);   /* a is the child's */
+    struct process_info info;
+    CHECK_ST(spawn_wait(proc, 20 * NS_PER_S, &info), OK);
+    CHECK(info.state == PROCESS_DEAD && info.exit_code == 0);
+    CHECK_ST(jam_handle_close(proc), OK);
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], 0);   /* the writer's job pays nothing now */
+    CHECK_ST(info_of(own_job(), &ji), OK);
+    CHECK(ji.used[JOB_LIMIT_MSG_BYTES] >= before.used[JOB_LIMIT_MSG_BYTES] + 8 * 1024);
+    static uint8_t buf[1024];
+    unsigned n = 0;
+    while (jam_channel_read(&(struct channel_read_args){
+               .h = b, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf }) == OK)
+        n++;
+    CHECK_EQ(n, 8);
+    CHECK_ST(info_of(own_job(), &ji), OK);
+    CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], before.used[JOB_LIMIT_MSG_BYTES]);
+    CHECK_ST(jam_handle_close(b), OK);
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
 /* ---- the kernel's chanread_reply_wait_kill_loses_nothing ---------------------- */
 
 /* The log VMO's layout: kernel/test/test_chanrw.c's RW_*. */

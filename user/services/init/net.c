@@ -135,16 +135,20 @@ void net_init(handle_t port)
         sys_cli = sys_srv = HANDLE_INVALID;   /* the services share /svc/net with programs */
     if (jam_channel_create(&info_cli, &info_srv) != OK)
         info_cli = info_srv = HANDLE_INVALID;   /* the desktop shows no network */
-    handle_t d;
     if (jam_channel_create(&dns_cli, &dns_srv) != OK)
         dns_cli = dns_srv = HANDLE_INVALID;
-    else if (jam_handle_duplicate(dns_cli, RIGHT_SAME, &d) != OK ||
-             ns_svc_set(SVC_DNS, d, true) != OK)   /* a channel per opener */
-        printf("init: /svc/dns isn't published: no names for programs\n");
     if (jam_channel_create(&dsys_cli, &dsys_srv) != OK)
         dsys_cli = dsys_srv = HANDLE_INVALID;   /* sntp shares the programs' openers */
-    else if (jam_handle_duplicate(dsys_cli, RIGHT_SAME, &d) != OK ||
-             ns_svc_set(SVC_DNS_SYS, d, true) != OK)
+    handle_t kept[] = { ctl_srv, net_srv, listen_srv, low_srv, sys_srv, info_srv, dns_srv,
+                        dsys_srv };
+    for (unsigned i = 0; i < sizeof(kept) / sizeof(kept[0]); i++)
+        kept_end_mark(kept[i]);
+    handle_t d;
+    if (dns_srv && (jam_handle_duplicate(dns_cli, RIGHT_SAME, &d) != OK ||
+                    ns_svc_set(SVC_DNS, d, true) != OK))   /* a channel per opener */
+        printf("init: /svc/dns isn't published: no names for programs\n");
+    if (dsys_srv && (jam_handle_duplicate(dsys_cli, RIGHT_SAME, &d) != OK ||
+                     ns_svc_set(SVC_DNS_SYS, d, true) != OK))
         printf("init: /svc/dns-sys isn't published: no resolver reserve for sntp\n");
 }
 

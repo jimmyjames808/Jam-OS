@@ -9,6 +9,7 @@
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
+#include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/string.h>
 #include <jam/sys.h>
@@ -188,6 +189,150 @@ KTEST(channel_limits_and_args)
     KT_EQ(write_u32(a, 9999), ERR_SHOULD_WAIT);
     kobject_unref(CH(a));
     kobject_unref(CH(b));   /* frees 1024 queued messages */
+}
+
+/* D2: an end marked CHANNEL_NO_HANDLES refuses every message carrying
+ * handles (a write, a call's request, one for a reader waiting there),
+ * takes plain ones, and can be sent on whatever its writers try: its queue
+ * never holds a channel end. The mark is refused while a message with
+ * handles is queued, and never comes off. */
+static void no_handles_reader(void *arg)
+{
+    struct channel *ch = arg;
+    uint8_t buf[16];
+    struct khandle h[1];
+    struct chan_read r = { .buf = chan_kbytes(buf, sizeof(buf)), .h = h, .hcap = 1 };
+    status_t st = channel_read_wait(ch, &r, uptime_ns() + kt_patience_ms(10000) * NS_PER_MS);
+    KT_EQ(st, OK);
+    KT_EQ(r.nh, 0);   /* the plain message, not the refused one */
+}
+
+KTEST(chan_no_handles_mark)
+{
+    uint64_t live = channel_live_count();
+    volatile int destroyed = 0;
+    struct channel *a, *b;
+    KT_EQ(channel_create(&a, &b), OK);
+    KT_EQ(channel_set_flags(b, 1u << 7), ERR_INVALID_ARGS);
+    struct khandle kh = cobj_handle(&destroyed, RIGHTS_BASIC);
+    KT_EQ(channel_write(a, "abcd", 4, &kh, 1), OK);   /* queued on b, with a handle */
+    KT_EQ(channel_set_flags(b, CHANNEL_NO_HANDLES), ERR_BAD_STATE);
+    struct khandle got;
+    uint8_t buf[16];
+    uint32_t nb, nh;
+    KT_EQ(channel_read(b, buf, sizeof(buf), &nb, &got, 1, &nh), OK);
+    khandle_release(&got);
+    KT_EQ(channel_set_flags(b, CHANNEL_NO_HANDLES), OK);
+    KT_EQ(channel_set_flags(b, CHANNEL_NO_HANDLES), OK);   /* again: no change */
+    KT_EQ(channel_set_flags(b, 0), OK);                    /* nothing comes off */
+
+    kh = cobj_handle(&destroyed, RIGHTS_BASIC);
+    KT_EQ(channel_write(a, "abcd", 4, &kh, 1), ERR_NOT_SUPPORTED);
+    KT_ASSERT(kh.obj != NULL);   /* the object layer leaves it (the sys layer closes it) */
+    uint32_t q[2] = { 0, 1 }, rep[2];
+    KT_EQ(channel_call(a, q, sizeof(q), &kh, 1, rep, sizeof(rep), &nb, NULL, 0, NULL, 0),
+          ERR_NOT_SUPPORTED);
+    KT_ASSERT(!(kobject_signals(CH(b)) & SIG_READABLE));   /* nothing queued */
+    /* A reader waiting on b isn't handed one either; it gets the plain one. */
+    struct thread *t = thread_create("no-handles reader", no_handles_reader, b, PRIO_DEFAULT);
+    thread_sleep_ms(5);
+    KT_EQ(channel_write(a, "abcd", 4, &kh, 1), ERR_NOT_SUPPORTED);
+    KT_EQ(write_u32(a, 7), OK);
+    thread_join(t);
+    /* The other direction is not marked. */
+    KT_EQ(channel_write(b, "abcd", 4, &kh, 1), OK);
+    KT_EQ(channel_read(a, buf, sizeof(buf), &nb, &got, 1, &nh), OK);
+    khandle_release(&got);
+
+    /* What the mark is for: a writer can't put a channel end in b's queue,
+     * so b can always be sent on (the cycle rule refuses an end whose
+     * queue holds one). */
+    struct channel *c0, *c1, *s0, *s1;
+    KT_EQ(channel_create(&c0, &c1), OK);
+    KT_EQ(channel_create(&s0, &s1), OK);
+    struct khandle kc = khandle_from_new(CH(c1), RIGHTS_BASIC | RIGHTS_IO);
+    KT_EQ(channel_write(a, "c", 1, &kc, 1), ERR_NOT_SUPPORTED);
+    khandle_release(&kc);
+    kobject_ref(CH(b));   /* the message takes a handle of b's: ours stays */
+    struct khandle kb = khandle_from_new(CH(b), RIGHTS_BASIC | RIGHTS_IO);
+    KT_EQ(channel_write(s0, "b", 1, &kb, 1), OK);
+    kobject_unref(CH(c0));
+    kobject_unref(CH(s0));
+    kobject_unref(CH(s1));   /* drops the message, and b's handle in it */
+    kobject_unref(CH(a));
+    kobject_unref(CH(b));
+    KT_EQ(destroyed, 2);
+    KT_GLOBAL_EQ(channel_live_count(), live);
+}
+
+/* Q2: once the writer closes its end, what it wrote and nobody read is
+ * charged to the reader's job: the job of the table that last received
+ * the reading end (here moved from one table to another, which must count).
+ * A message that job can't pay is dropped with every one after it (its
+ * handles released): the reader reads a prefix of the stream, then
+ * ERR_PEER_CLOSED. Reading credits the reader's job. */
+KTEST(chan_unread_charged_to_reader)
+{
+    uint64_t live = channel_live_count();
+    volatile int destroyed = 0;
+    struct job *jr = kt_fresh_job(), *j2 = kt_fresh_job();
+    struct handle_table tr, t2;
+    handle_table_init(&tr);
+    handle_table_init(&t2);
+    tr.job = jr;
+    t2.job = j2;
+    uint8_t msg[64] = { 0 };
+    uint32_t nb, nh;
+
+    handle_t w, r, r2;
+    KT_EQ(sys_channel_create(&tr, &w, &r), OK);
+    for (int i = 0; i < 4; i++)
+        KT_EQ(sys_channel_write(&tr, w, msg, sizeof(msg), NULL, 0), OK);
+    KT_EQ(job_used(jr, JOB_LIMIT_MSG_BYTES), 0);   /* a kernel thread wrote them: no job */
+    struct khandle kh;
+    KT_EQ(handle_remove(&tr, r, &kh), OK);
+    KT_EQ(handle_insert(&t2, &kh, &r2), OK);   /* the reading end moves to j2's table */
+    KT_EQ(handle_close(&tr, w), OK);           /* the writer closes */
+    uint64_t four = job_used(j2, JOB_LIMIT_MSG_BYTES), one = four / 4;
+    KT_ASSERT(one >= sizeof(msg) && four == 4 * one);
+    KT_EQ(job_used(jr, JOB_LIMIT_MSG_BYTES), 0);
+    KT_EQ(sys_channel_read(&t2, r2, msg, sizeof(msg), &nb, NULL, 0, &nh), OK);
+    KT_EQ(job_used(j2, JOB_LIMIT_MSG_BYTES), 3 * one);   /* reading credits the reader */
+    KT_EQ(handle_close(&t2, r2), OK);                     /* the rest go with the end */
+    KT_EQ(job_used(j2, JOB_LIMIT_MSG_BYTES), 0);
+
+    /* Room for two and a half: two are kept, the other three (one with a
+     * handle) dropped. */
+    KT_EQ(sys_channel_create(&t2, &w, &r), OK);
+    for (uint8_t i = 0; i < 5; i++) {
+        msg[0] = i;
+        if (i == 3) {
+            struct khandle c = cobj_handle(&destroyed, RIGHTS_BASIC);
+            handle_t hc;
+            KT_EQ(handle_insert(&t2, &c, &hc), OK);
+            KT_EQ(sys_channel_write(&t2, w, msg, sizeof(msg), &hc, 1), OK);
+        } else {
+            KT_EQ(sys_channel_write(&t2, w, msg, sizeof(msg), NULL, 0), OK);
+        }
+    }
+    KT_EQ(job_set_limit(j2, JOB_LIMIT_MSG_BYTES, 2 * one + one / 2), OK);
+    KT_EQ(handle_close(&t2, w), OK);
+    KT_EQ(job_used(j2, JOB_LIMIT_MSG_BYTES), 2 * one);
+    KT_EQ(destroyed, 1);   /* the dropped handle */
+    for (uint8_t i = 0; i < 2; i++) {
+        KT_EQ(sys_channel_read(&t2, r, msg, sizeof(msg), &nb, NULL, 0, &nh), OK);
+        KT_EQ(msg[0], i);
+    }
+    KT_EQ(sys_channel_read(&t2, r, msg, sizeof(msg), &nb, NULL, 0, &nh), ERR_PEER_CLOSED);
+    KT_EQ(job_used(j2, JOB_LIMIT_MSG_BYTES), 0);
+
+    handle_table_destroy(&tr);
+    handle_table_destroy(&t2);
+    kt_job_is_empty(jr);
+    kt_job_is_empty(j2);
+    job_unref(jr);
+    job_unref(j2);
+    KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
 KTEST(channel_own_endpoint_rejected)
@@ -439,26 +584,52 @@ KTEST(channel_sys_layer)
 
     struct khandle k1 = cobj_handle(&destroyed, RIGHTS_BASIC);
     struct khandle k2 = cobj_handle(&destroyed, RIGHT_WAIT);   /* no TRANSFER */
-    struct kobject *o1 = k1.obj, *o2 = k2.obj;
+    struct kobject *o1 = k1.obj;
     handle_t h1, h2;
     KT_EQ(handle_insert(&tbl, &k1, &h1), OK);
     KT_EQ(handle_insert(&tbl, &k2, &h2), OK);
     uint32_t used = tbl.used;
+    uint8_t buf[16];
+    uint32_t nb, nh;
+    handle_t rh[4];
 
-    /* One handle without RIGHT_TRANSFER: nothing is sent or removed. */
+    /* A refused list is consumed all the same (M12's Q1). One handle
+     * without RIGHT_TRANSFER: nothing is sent, and both are closed. */
     handle_t send[2] = { h1, h2 };
     KT_EQ(sys_channel_write(&tbl, ha, "abcd", 4, send, 2), ERR_ACCESS_DENIED);
-    KT_EQ(tbl.used, used);
-    KT_ASSERT(peek(&tbl, h1) == o1 && peek(&tbl, h2) == o2);
-    /* The same handle twice: the second take fails, the first goes back. */
+    KT_EQ(tbl.used, used - 2);
+    KT_ASSERT(!peek(&tbl, h1) && !peek(&tbl, h2));
+    KT_EQ(destroyed, 2);
+    KT_EQ(sys_channel_read(&tbl, hb, buf, sizeof(buf), &nb, rh, 4, &nh), ERR_SHOULD_WAIT);
+    /* The same handle twice: the second take fails, the first is closed. */
+    k1 = cobj_handle(&destroyed, RIGHTS_BASIC);
+    KT_EQ(handle_insert(&tbl, &k1, &h1), OK);
     handle_t twice[2] = { h1, h1 };
     KT_EQ(sys_channel_write(&tbl, ha, "abcd", 4, twice, 2), ERR_BAD_HANDLE);
-    KT_ASSERT(peek(&tbl, h1) == o1);
-    /* Sending an endpoint of the channel itself: rejected, still there. */
-    handle_t self[2] = { h1, hb };
-    KT_EQ(sys_channel_write(&tbl, ha, "abcd", 4, self, 2), ERR_NOT_SUPPORTED);
-    KT_EQ(tbl.used, used);
-    KT_ASSERT(peek(&tbl, h1) == o1 && peek(&tbl, hb) != NULL);
+    KT_ASSERT(!peek(&tbl, h1));
+    KT_EQ(destroyed, 3);
+    /* Sending an endpoint of the channel itself: refused, and the list is
+     * closed, that endpoint too (so its peer sees PEER_CLOSED). */
+    handle_t hx, hy;
+    KT_EQ(sys_channel_create(&tbl, &hx, &hy), OK);
+    k1 = cobj_handle(&destroyed, RIGHTS_BASIC);
+    KT_EQ(handle_insert(&tbl, &k1, &h1), OK);
+    handle_t self[2] = { h1, hy };
+    KT_EQ(sys_channel_write(&tbl, hx, "abcd", 4, self, 2), ERR_NOT_SUPPORTED);
+    KT_ASSERT(!peek(&tbl, h1) && !peek(&tbl, hy));
+    KT_EQ(destroyed, 4);
+    KT_ASSERT(kt_signals_of(&tbl, hx) & SIG_PEER_CLOSED);
+    KT_EQ(handle_close(&tbl, hx), OK);
+    /* A write to a handle that isn't a channel: its list goes too. */
+    k1 = cobj_handle(&destroyed, RIGHTS_BASIC);
+    KT_EQ(handle_insert(&tbl, &k1, &h1), OK);
+    o1 = peek(&tbl, h1);
+    handle_t h3;
+    KT_EQ(handle_duplicate(&tbl, h1, RIGHT_SAME, &h3), OK);
+    KT_EQ(sys_channel_write(&tbl, h3, "abcd", 4, &h1, 1), ERR_WRONG_TYPE);
+    KT_ASSERT(!peek(&tbl, h1) && peek(&tbl, h3) == o1);
+    KT_EQ(destroyed, 4);   /* h3 still holds it */
+    h1 = h3;
 
     /* Wrong type and missing rights. */
     KT_EQ(sys_channel_write(&tbl, h1, "abcd", 4, NULL, 0), ERR_WRONG_TYPE);
@@ -466,9 +637,6 @@ KTEST(channel_sys_layer)
     KT_EQ(handle_duplicate(&tbl, ha, RIGHT_READ | RIGHT_WAIT, &ha_ro), OK);
     KT_EQ(handle_duplicate(&tbl, hb, RIGHT_WRITE, &hb_wo), OK);
     KT_EQ(sys_channel_write(&tbl, ha_ro, "abcd", 4, NULL, 0), ERR_ACCESS_DENIED);
-    uint8_t buf[16];
-    uint32_t nb, nh;
-    handle_t rh[4];
     KT_EQ(sys_channel_read(&tbl, hb_wo, buf, sizeof(buf), &nb, rh, 4, &nh), ERR_ACCESS_DENIED);
     KT_EQ(sys_channel_call(&tbl, ha_ro, buf, 4, NULL, 0, buf, 16, &nb, NULL, 0, NULL, 0),
           ERR_ACCESS_DENIED);
@@ -493,18 +661,22 @@ KTEST(channel_sys_layer)
     KT_EQ(sys_channel_read(&tbl, hd2, buf, sizeof(buf), &nb, NULL, 0, &nh), OK);
     KT_ASSERT(nb == 4 && !memcmp(buf, "ping", 4));
 
-    /* A write that fails after the handles were taken puts them back under
-     * the same values. */
+    /* A write or a call that fails after the handles were taken closes
+     * them: they are gone whatever the status. */
     KT_EQ(handle_close(&tbl, hb), OK);
     KT_EQ(handle_close(&tbl, hb_wo), OK);   /* b's last handle: a sees PEER_CLOSED */
     KT_EQ(sys_channel_write(&tbl, ha, "abcd", 4, &h1, 1), ERR_PEER_CLOSED);
-    KT_ASSERT(peek(&tbl, h1) == o1);
+    KT_ASSERT(!peek(&tbl, h1));
+    KT_EQ(destroyed, 5);
+    k1 = cobj_handle(&destroyed, RIGHTS_BASIC);
+    KT_EQ(handle_insert(&tbl, &k1, &h1), OK);
     KT_EQ(sys_channel_call(&tbl, ha, buf, 4, &h1, 1, buf, 16, &nb, rh, 4, &nh, DEADLINE_NEVER),
           ERR_PEER_CLOSED);
-    KT_ASSERT(peek(&tbl, h1) == o1);
+    KT_ASSERT(!peek(&tbl, h1));
+    KT_EQ(destroyed, 6);
 
     handle_table_destroy(&tbl);
-    KT_EQ(destroyed, 2);
+    KT_EQ(destroyed, 6);
     KT_GLOBAL_EQ(channel_live_count(), live);
 }
 

@@ -320,18 +320,18 @@ static status_t gather_handles(const struct spawn_args *a, struct child *c,
 }
 
 /* The message (len bytes of msg, the handles in hs) on a new channel,
- * then the thread starts with the other end. */
+ * then the thread starts with the other end. A write or a start takes the
+ * handles it was given whatever its status (sent, or closed). */
 static status_t start_child(struct child *c, const uint8_t *msg, size_t len, struct handout *hs)
 {
     status_t st = jam_channel_create(&c->ch[0], &c->ch[1]);
-    if (st == OK)   /* the extras with the rights the caller chose */
+    if (st == OK) {   /* the extras with the rights the caller chose */
         st = jam_channel_write_rights(c->ch[0], msg, (uint32_t)len, hs->h, hs->rights, hs->n);
-    if (st == OK)
-        hs->n = 0;   /* all in the message now */
+        hs->n = 0;   /* in the message now, or closed */
+    }
     if (st == OK) {
         st = jam_process_start(c->proc, c->thread, c->entry, c->stack, c->ch[1], 0);
-        if (st == OK)
-            c->ch[1] = HANDLE_INVALID;   /* the child's now */
+        c->ch[1] = HANDLE_INVALID;   /* the child's now, or closed */
     }
     return st;
 }

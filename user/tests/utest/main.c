@@ -279,7 +279,8 @@ static bool t_bad_pointers(void)
     CHECK_ST(jam_channel_read(&ra), ERR_INVALID_ARGS);
     ra.rd_bytes = (uint64_t)(uintptr_t)got;
     CHECK_ST(jam_channel_read(&ra), ERR_SHOULD_WAIT);   /* it was consumed */
-    /* A request with a bad buffer: nothing sent, our handle still ours. */
+    /* A request with a bad buffer: nothing sent, and our handle gone all
+     * the same (a send's handles are consumed whatever the status). */
     CHECK_ST(jam_event_create(&e), OK);
     struct channel_call_args ca = {
         .h = a, .wr_len = 8, .wr_bytes = unmapped, .wr_handles = (uint64_t)(uintptr_t)&e,
@@ -287,8 +288,9 @@ static bool t_bad_pointers(void)
         .deadline_ns = now(),
     };
     CHECK_ST(jam_channel_call(&ca), ERR_INVALID_ARGS);
-    CHECK_ST(jam_event_signal(e, 0, SIG_SIGNALED), OK);
-    CHECK_ST(jam_handle_close(e), OK);
+    CHECK_ST(jam_event_signal(e, 0, SIG_SIGNALED), ERR_BAD_HANDLE);
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* nothing sent */
     CHECK_ST(jam_handle_close(a), OK);
     CHECK_ST(jam_handle_close(b), OK);
 
@@ -415,9 +417,12 @@ static bool t_kill_in_channel_call(void)
     CHECK_EQ(ji.used[JOB_LIMIT_THREADS], 0);
     CHECK_EQ(ji.used[JOB_LIMIT_PAGES], 0);
     CHECK_EQ(ji.used[JOB_LIMIT_HANDLES], 0);
-    /* The request still sits on our end, charged to the dead child's job
-     * until we read it. */
-    CHECK(ji.used[JOB_LIMIT_MSG_BYTES] > 0);
+    /* The request still sits on our end, but its writer has gone: it is
+     * charged to us, the reader, until we read it (M12's Q2). */
+    CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], 0);
+    struct job_info ours;
+    CHECK_ST(info_of(own_job(), &ours), OK);
+    CHECK(ours.used[JOB_LIMIT_MSG_BYTES] > before.used[JOB_LIMIT_MSG_BYTES]);
     uint8_t buf[64];
     uint32_t nb = 0;
     struct channel_read_args r = {
@@ -459,10 +464,12 @@ static bool t_runaway_hits_job_limits(void)
     if (!run_child("handles", JOB_LIMIT_HANDLES, 16, &info))
         return false;
     CHECK_EQ(info.exit_code, 45);
-    if (!run_child("msgs", JOB_LIMIT_MSG_BYTES, 4096, &info))
+    /* 16 KiB: the child's job pays for its startup message too until it
+     * reads it, once spawn has closed the end it was written on (M12's Q2). */
+    if (!run_child("msgs", JOB_LIMIT_MSG_BYTES, 16384, &info))
         return false;
     CHECK_EQ(info.exit_code, 46);
-    if (!run_child("ports", JOB_LIMIT_MSG_BYTES, 4096, &info))
+    if (!run_child("ports", JOB_LIMIT_MSG_BYTES, 16384, &info))
         return false;
     CHECK_EQ(info.exit_code, 47);   /* port packets and bindings are charged too */
     return true;
@@ -577,6 +584,9 @@ static const struct {
     { "reply_wait_second_process", t_reply_wait_second_process },
     { "reply_wait_port", t_reply_wait_port },
     { "reply_wait_refusals", t_reply_wait_refusals },
+    { "handles_always_moved", t_handles_always_moved },
+    { "channel_no_handles", t_channel_no_handles },
+    { "unread_charged_to_reader", t_unread_charged_to_reader },
     { "runaway_hits_job_limits", t_runaway_hits_job_limits },
     { "kernel_objects_are_charged", t_kernel_objects_are_charged },
     { "kill_spinning_and_unstarted", t_kill_spinning_and_unstarted },
@@ -915,6 +925,7 @@ static const struct {
     { "jwl_conn_never_reads", t_jwl_conn_never_reads },
     { "jwl_conn_send_refusals", t_jwl_conn_send_refusals },
     { "jwl_conn_new_ids", t_jwl_conn_new_ids },
+    { "jwl_conn_held_handles", t_jwl_conn_held_handles },
     { "jwl_fuzz_decode", t_jwl_fuzz_decode },
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "jwlc_setup", t_jwlc_setup },

@@ -277,9 +277,23 @@ status_t jwl_conn_next(struct jwl_conn *c, struct jwl_msg *out)
 
 /* ---- sending ---------------------------------------------------------------------- */
 
-/* Write one batch (buf has room for the header at its start). OK;
- * ERR_SHOULD_WAIT: the channel or our job can't take it now (it stays
- * ours, handles too); anything else kills the connection. */
+/* Whether a batch with handles may be written now. A write takes the
+ * handles it is given whatever its status (M12's Q1), and they may lack
+ * RIGHT_DUPLICATE (a keymap's read-only VMO), so such a batch goes only
+ * when the channel has room for it: else it is held with them, still
+ * ours. We are the end's only writer, so room seen stays room. */
+static bool room_now(struct jwl_conn *c)
+{
+    signals_t seen = 0;
+    (void)jam_object_wait_one(c->ch, SIG_WRITABLE | SIG_PEER_CLOSED, 0, &seen);
+    return seen & (SIG_WRITABLE | SIG_PEER_CLOSED);   /* a closed peer: the write says so */
+}
+
+/* Write one batch (buf has room for the header at its start). OK: its
+ * handles went with it. ERR_SHOULD_WAIT: the channel or our job can't
+ * take it now (it stays ours, handles too); anything else kills the
+ * connection. A batch with handles that the write refuses all the same
+ * (our job out of message bytes) kills it too: its handles are gone. */
 static status_t write_batch(struct jwl_conn *c, uint8_t *buf, uint32_t len, const handle_t *h,
                             uint32_t nh)
 {
@@ -287,8 +301,10 @@ static status_t write_batch(struct jwl_conn *c, uint8_t *buf, uint32_t len, cons
     wr32(buf + 4, c->side == JWL_CLIENT ? c->nread : 0);
     wr32(buf + 8, nh);
     wr32(buf + 12, 0);
+    if (nh && !room_now(c))
+        return ERR_SHOULD_WAIT;
     status_t st = jam_channel_write(c->ch, buf, len, h, nh);
-    if (st == ERR_SHOULD_WAIT || st == ERR_NO_MEMORY)
+    if ((st == ERR_SHOULD_WAIT || st == ERR_NO_MEMORY) && !nh)
         return ERR_SHOULD_WAIT;
     if (st != OK)
         return die(c, st);

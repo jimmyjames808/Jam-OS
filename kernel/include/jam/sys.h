@@ -20,8 +20,10 @@
 /* Two new endpoints with RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_SIGNAL. */
 status_t sys_channel_create(struct handle_table *t, handle_t *a, handle_t *b);
 /* Needs RIGHT_WRITE on h and RIGHT_TRANSFER on every sent handle. The sent
- * handles leave t only if the write succeeds; on failure they are all
- * still there under the same values. */
+ * handles leave t whatever the status (M12's Q1): with the message, or
+ * closed, a refused list too (a bad value, a handle without
+ * RIGHT_TRANSFER). Only a list too long to read (ERR_OUT_OF_RANGE) or
+ * missing (ERR_INVALID_ARGS) leaves them. */
 status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes, uint32_t nbytes,
                            const handle_t *handles, uint32_t nhandles);
 /* As sys_channel_write, but handle i arrives with rights[i] (a subset
@@ -31,6 +33,8 @@ status_t sys_channel_write(struct handle_table *t, handle_t h, const void *bytes
 status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void *bytes,
                                   uint32_t nbytes, const handle_t *handles,
                                   const rights_t *rights, uint32_t nhandles);
+/* Needs RIGHT_READ: channel_set_flags on the end h. */
+status_t sys_channel_set_flags(struct handle_table *t, handle_t h, uint32_t flags);
 /* Needs RIGHT_READ. Received handles are inserted into t and their values
  * stored in handles[0 .. *actual_handles). If t has no room for them the
  * read fails (ERR_NO_RESOURCES) and the message stays queued: no handle is
@@ -39,7 +43,7 @@ status_t sys_channel_read(struct handle_table *t, handle_t h, void *bytes, uint3
                           uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
                           uint32_t *actual_handles);
 /* Needs RIGHT_READ | RIGHT_WRITE. Request handles as for sys_channel_write
- * (they stay in t if the request could not be sent). Slots for up to rhcap
+ * (gone whatever the status). Slots for up to rhcap
  * reply handles are reserved before the request is sent, so a full table
  * fails the call up front (ERR_NO_RESOURCES) instead of losing the reply's
  * handles. */
@@ -67,7 +71,7 @@ status_t sys_channel_call_from(struct handle_table *t, handle_t h, const struct 
 struct chan_reply_wait {
     handle_t           h;             /* reply on it; HANDLE_INVALID: no reply */
     struct chan_bytes  reply;         /* the reply's bytes */
-    const handle_t    *reply_h;       /* its handles: they leave t once it is sent */
+    const handle_t    *reply_h;       /* its handles: they leave t whatever the status */
     uint32_t           reply_nh;      /* how many */
     handle_t           wait;          /* a channel end (read from it) or a port */
     struct chan_bytes  mark;          /* room for a uint64_t 1 once the reply went out
