@@ -217,24 +217,24 @@ static status_t u_open_bulk(void *ctx, uint8_t ep_in, uint8_t ep_out, handle_t *
     return bulk_open(d, f, chan_slot(ctx), ep_in, ep_out, buffer, size);
 }
 
-static status_t u_bulk_in(void *ctx, uint32_t offset, uint32_t length, uint32_t timeout_ms,
+static status_t u_bulk_in(void *ctx, uint32_t offset, uint32_t length, uint64_t deadline,
                           uint32_t *actual)
 {
     struct iface *f;
     struct usbdev *d = ctx_dev(ctx, &f);
     if (!d)
         return ERR_PEER_CLOSED;
-    return bulk_transfer(d, f, chan_slot(ctx), true, offset, length, timeout_ms, actual);
+    return bulk_transfer(d, f, chan_slot(ctx), true, offset, length, deadline, actual);
 }
 
-static status_t u_bulk_out(void *ctx, uint32_t offset, uint32_t length, uint32_t timeout_ms,
+static status_t u_bulk_out(void *ctx, uint32_t offset, uint32_t length, uint64_t deadline,
                            uint32_t *actual)
 {
     struct iface *f;
     struct usbdev *d = ctx_dev(ctx, &f);
     if (!d)
         return ERR_PEER_CLOSED;
-    return bulk_transfer(d, f, chan_slot(ctx), false, offset, length, timeout_ms, actual);
+    return bulk_transfer(d, f, chan_slot(ctx), false, offset, length, deadline, actual);
 }
 
 static status_t u_clear_halt(void *ctx, uint8_t endpoint)

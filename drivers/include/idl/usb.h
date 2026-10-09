@@ -146,7 +146,7 @@ struct usb_bulk_in_req {
     uint32_t ordinal;
     uint32_t offset;
     uint32_t length;
-    uint32_t timeout_ms;
+    uint64_t deadline;
 } __attribute__((packed));
 struct usb_bulk_in_rep {
     uint32_t txid;
@@ -158,7 +158,7 @@ struct usb_bulk_out_req {
     uint32_t ordinal;
     uint32_t offset;
     uint32_t length;
-    uint32_t timeout_ms;
+    uint64_t deadline;
 } __attribute__((packed));
 struct usb_bulk_out_rep {
     uint32_t txid;
@@ -562,7 +562,7 @@ static inline status_t usb_open_bulk(handle_t ch, uint8_t ep_in, uint8_t ep_out,
 
 /* usb_bulk_in_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t usb_bulk_in_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+static inline status_t usb_bulk_in_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual)
 {
     struct usb_bulk_in_req idl_q;
     struct usb_bulk_in_rep idl_r;
@@ -571,7 +571,7 @@ static inline status_t usb_bulk_in_call(handle_t ch, bool idl_within, uint64_t i
     idl_q.ordinal = USB_BULK_IN;
     idl_q.offset = offset;
     idl_q.length = length;
-    idl_q.timeout_ms = timeout_ms;
+    idl_q.deadline = deadline;
     status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
                                NULL, idl_within, idl_t);
     if (idl_st == OK)
@@ -583,24 +583,30 @@ static inline status_t usb_bulk_in_call(handle_t ch, bool idl_within, uint64_t i
 /* One bulk-IN transfer of up to `length` bytes into the buffer at `offset`
  * (offset + length <= size). `actual` bytes arrived (a short packet ends it
  * early). A STALL is ERR_IO with the endpoint halted: clear_halt, then go
- * on. No completion within timeout_ms (at most 60000): the transfer is
- * stopped and removed, ERR_TIMED_OUT. */
-static inline status_t usb_bulk_in_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+ * on. `deadline` is when the transfer must be over: an absolute time in
+ * nanoseconds since boot (the clock of the system calls' deadlines), the
+ * transfer's own, not the call's: no completion by then and usb-bus stops
+ * the transfer and removes it, ERR_TIMED_OUT (so the call itself takes a
+ * little longer than its deadline: give it a margin). A deadline already
+ * past is ERR_TIMED_OUT without starting; one more than 60 s away (and so
+ * DEADLINE_NEVER) is ERR_INVALID_ARGS: no transfer may hold the device's
+ * task that long. */
+static inline status_t usb_bulk_in_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual)
 {
-    return usb_bulk_in_call(ch, false, deadline_ns, offset, length, timeout_ms, out_actual);
+    return usb_bulk_in_call(ch, false, deadline_ns, offset, length, deadline, out_actual);
 }
-static inline status_t usb_bulk_in_within(handle_t ch, uint64_t timeout_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+static inline status_t usb_bulk_in_within(handle_t ch, uint64_t timeout_ns, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual)
 {
-    return usb_bulk_in_call(ch, true, timeout_ns, offset, length, timeout_ms, out_actual);
+    return usb_bulk_in_call(ch, true, timeout_ns, offset, length, deadline, out_actual);
 }
-static inline status_t usb_bulk_in(handle_t ch, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+static inline status_t usb_bulk_in(handle_t ch, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual)
 {
-    return usb_bulk_in_call(ch, false, DEADLINE_NEVER, offset, length, timeout_ms, out_actual);
+    return usb_bulk_in_call(ch, false, DEADLINE_NEVER, offset, length, deadline, out_actual);
 }
 
 /* usb_bulk_out_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t usb_bulk_out_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+static inline status_t usb_bulk_out_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual)
 {
     struct usb_bulk_out_req idl_q;
     struct usb_bulk_out_rep idl_r;
@@ -609,7 +615,7 @@ static inline status_t usb_bulk_out_call(handle_t ch, bool idl_within, uint64_t 
     idl_q.ordinal = USB_BULK_OUT;
     idl_q.offset = offset;
     idl_q.length = length;
-    idl_q.timeout_ms = timeout_ms;
+    idl_q.deadline = deadline;
     status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
                                NULL, idl_within, idl_t);
     if (idl_st == OK)
@@ -620,17 +626,17 @@ static inline status_t usb_bulk_out_call(handle_t ch, bool idl_within, uint64_t 
 }
 /* One bulk-OUT transfer of `length` bytes from the buffer at `offset`;
  * errors as bulk_in. */
-static inline status_t usb_bulk_out_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+static inline status_t usb_bulk_out_until(handle_t ch, uint64_t deadline_ns, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual)
 {
-    return usb_bulk_out_call(ch, false, deadline_ns, offset, length, timeout_ms, out_actual);
+    return usb_bulk_out_call(ch, false, deadline_ns, offset, length, deadline, out_actual);
 }
-static inline status_t usb_bulk_out_within(handle_t ch, uint64_t timeout_ns, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+static inline status_t usb_bulk_out_within(handle_t ch, uint64_t timeout_ns, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual)
 {
-    return usb_bulk_out_call(ch, true, timeout_ns, offset, length, timeout_ms, out_actual);
+    return usb_bulk_out_call(ch, true, timeout_ns, offset, length, deadline, out_actual);
 }
-static inline status_t usb_bulk_out(handle_t ch, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual)
+static inline status_t usb_bulk_out(handle_t ch, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual)
 {
-    return usb_bulk_out_call(ch, false, DEADLINE_NEVER, offset, length, timeout_ms, out_actual);
+    return usb_bulk_out_call(ch, false, DEADLINE_NEVER, offset, length, deadline, out_actual);
 }
 
 /* usb_clear_halt_until and _within: idl_t is a deadline, or with idl_within a
@@ -1006,7 +1012,7 @@ static inline status_t usb_open_bulk_result(const void *idl_rep, struct idl_msg 
 
 /* usb_bulk_in without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then usb_bulk_in_result. */
-static inline status_t usb_bulk_in_send(handle_t ch, uint32_t idl_txid, uint32_t offset, uint32_t length, uint32_t timeout_ms)
+static inline status_t usb_bulk_in_send(handle_t ch, uint32_t idl_txid, uint32_t offset, uint32_t length, uint64_t deadline)
 {
     struct usb_bulk_in_req idl_q;
     if (!idl_txid)
@@ -1015,7 +1021,7 @@ static inline status_t usb_bulk_in_send(handle_t ch, uint32_t idl_txid, uint32_t
     idl_q.ordinal = USB_BULK_IN;
     idl_q.offset = offset;
     idl_q.length = length;
-    idl_q.timeout_ms = timeout_ms;
+    idl_q.deadline = deadline;
     return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
 }
 
@@ -1040,7 +1046,7 @@ static inline status_t usb_bulk_in_result(const void *idl_rep, struct idl_msg *i
 
 /* usb_bulk_out without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then usb_bulk_out_result. */
-static inline status_t usb_bulk_out_send(handle_t ch, uint32_t idl_txid, uint32_t offset, uint32_t length, uint32_t timeout_ms)
+static inline status_t usb_bulk_out_send(handle_t ch, uint32_t idl_txid, uint32_t offset, uint32_t length, uint64_t deadline)
 {
     struct usb_bulk_out_req idl_q;
     if (!idl_txid)
@@ -1049,7 +1055,7 @@ static inline status_t usb_bulk_out_send(handle_t ch, uint32_t idl_txid, uint32_
     idl_q.ordinal = USB_BULK_OUT;
     idl_q.offset = offset;
     idl_q.length = length;
-    idl_q.timeout_ms = timeout_ms;
+    idl_q.deadline = deadline;
     return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
 }
 
@@ -1118,8 +1124,8 @@ struct usb_ops {
     status_t (*endpoint_stats)(void *ctx, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open);
     status_t (*set_interface)(void *ctx, uint8_t alt_setting);
     status_t (*open_bulk)(void *ctx, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size);
-    status_t (*bulk_in)(void *ctx, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual);
-    status_t (*bulk_out)(void *ctx, uint32_t offset, uint32_t length, uint32_t timeout_ms, uint32_t *out_actual);
+    status_t (*bulk_in)(void *ctx, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual);
+    status_t (*bulk_out)(void *ctx, uint32_t offset, uint32_t length, uint64_t deadline, uint32_t *out_actual);
     status_t (*clear_halt)(void *ctx, uint8_t endpoint);
 };
 
@@ -1560,7 +1566,7 @@ static inline uint32_t usb_dispatch_on(handle_t ch, const struct usb_ops *ops, v
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->bulk_in(ctx, idl_q->offset, idl_q->length, idl_q->timeout_ms, &out_actual);
+        status_t idl_st = ops->bulk_in(ctx, idl_q->offset, idl_q->length, idl_q->deadline, &out_actual);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -1577,7 +1583,7 @@ static inline uint32_t usb_dispatch_on(handle_t ch, const struct usb_ops *ops, v
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->bulk_out(ctx, idl_q->offset, idl_q->length, idl_q->timeout_ms, &out_actual);
+        status_t idl_st = ops->bulk_out(ctx, idl_q->offset, idl_q->length, idl_q->deadline, &out_actual);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

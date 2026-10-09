@@ -60,10 +60,9 @@ static status_t xfer(struct disk *k, bool in, uint32_t off, uint32_t len, uint32
                      uint32_t *actual)
 {
     *actual = 0;
-    status_t st = in ? usb_bulk_in_until(k->usb, call_deadline(timeout_ms), off, len, timeout_ms,
-                                         actual)
-                     : usb_bulk_out_until(k->usb, call_deadline(timeout_ms), off, len,
-                                          timeout_ms, actual);
+    uint64_t end = drv_clock_ns() + (uint64_t)timeout_ms * NS_PER_MS;   /* the transfer's own */
+    status_t st = in ? usb_bulk_in_until(k->usb, end + CALL_MARGIN, off, len, end, actual)
+                     : usb_bulk_out_until(k->usb, end + CALL_MARGIN, off, len, end, actual);
     if (st == ERR_PEER_CLOSED)
         k->gone = true;
     return st;

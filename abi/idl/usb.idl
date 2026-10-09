@@ -60,12 +60,18 @@ protocol usb 10
 # One bulk-IN transfer of up to `length` bytes into the buffer at `offset`
 # (offset + length <= size). `actual` bytes arrived (a short packet ends it
 # early). A STALL is ERR_IO with the endpoint halted: clear_halt, then go
-# on. No completion within timeout_ms (at most 60000): the transfer is
-# stopped and removed, ERR_TIMED_OUT.
-9  bulk_in  (u32 offset, u32 length, u32 timeout_ms) -> (u32 actual)
+# on. `deadline` is when the transfer must be over: an absolute time in
+# nanoseconds since boot (the clock of the system calls' deadlines), the
+# transfer's own, not the call's: no completion by then and usb-bus stops
+# the transfer and removes it, ERR_TIMED_OUT (so the call itself takes a
+# little longer than its deadline: give it a margin). A deadline already
+# past is ERR_TIMED_OUT without starting; one more than 60 s away (and so
+# DEADLINE_NEVER) is ERR_INVALID_ARGS: no transfer may hold the device's
+# task that long.
+9  bulk_in  (u32 offset, u32 length, u64 deadline) -> (u32 actual)
 # One bulk-OUT transfer of `length` bytes from the buffer at `offset`;
 # errors as bulk_in.
-10 bulk_out  (u32 offset, u32 length, u32 timeout_ms) -> (u32 actual)
+10 bulk_out  (u32 offset, u32 length, u64 deadline) -> (u32 actual)
 # CLEAR_FEATURE(ENDPOINT_HALT) on one of the pair (its address) and reset
 # the endpoint's ring and data toggle.
 11 clear_halt  (u8 endpoint) -> ()

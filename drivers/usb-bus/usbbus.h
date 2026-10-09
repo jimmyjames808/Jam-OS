@@ -612,7 +612,7 @@ void bulk_chan_closed(struct usbdev *d, struct iface *f, int chan);
 status_t bulk_open(struct usbdev *d, struct iface *f, int chan, uint8_t ep_in, uint8_t ep_out,
                    handle_t *buffer, uint32_t *size);
 status_t bulk_transfer(struct usbdev *d, struct iface *f, int chan, bool in, uint32_t offset,
-                       uint32_t length, uint32_t timeout_ms, uint32_t *actual);
+                       uint32_t length, uint64_t deadline, uint32_t *actual);
 status_t bulk_clear_halt(struct usbdev *d, struct iface *f, int chan, uint8_t endpoint);
 
 /* ---- config.c -------------------------------------------------------------- */
