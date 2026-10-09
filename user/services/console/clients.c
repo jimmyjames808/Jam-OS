@@ -2,7 +2,8 @@
  *
  * Each client channel has a level (console.idl new_client): ADMIN (init's),
  * SHELL (the shell's: no set_font), PROGRAM (what the shell hands a
- * program it runs: write, size, clear, open_keys; not show_log). A client
+ * program it runs: write, size, clear, open_keys, open_tty; not
+ * show_log). open_tty's clients are tty.c's. A client
  * can only make channels of a lower level than its own. keys.c has what the levels mean for the
  * keys.
  *
@@ -108,6 +109,7 @@ static status_t op_set_font(void *ctx, uint8_t font)
 static const struct console_ops console_ops = {
     .write = op_write, .size = op_size, .clear = op_clear, .open_keys = op_open_keys,
     .new_client = op_new_client, .show_log = op_show_log, .set_font = op_set_font,
+    .open_tty = op_open_tty,
 };
 
 void clients_init(void)
@@ -203,6 +205,7 @@ void clients_resume(void)
 {
     pending |= deferred;
     deferred = 0;
+    ttys_resume();
 }
 
 void clients_serve_pending(void)

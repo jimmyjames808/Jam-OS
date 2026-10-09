@@ -44,6 +44,7 @@
 #define IDL_ID_NOTIFY         0x0028u   /* abi/idl/notify.idl */
 #define IDL_ID_KEYS           0x0029u   /* abi/idl/console.idl */
 #define IDL_ID_CONN_CTL       0x002au   /* abi/idl/conn_ctl.idl */
+#define IDL_ID_TTY            0x002bu   /* abi/idl/console.idl */
 #define IDL_ID_AUDIO_STREAM   0x0032u   /* abi/idl/audio.idl */
 #define IDL_ID_HDA_STREAM     0x0033u   /* abi/idl/hda.idl */
 #define IDL_ID_NET_SOCKET     0x003cu   /* abi/idl/net.idl */

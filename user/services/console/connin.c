@@ -19,7 +19,12 @@
  *
  * A key the focus can't take (its channel is full: the client isn't
  * reading) is dropped, as in the window; so a paste of more than the
- * channel's 1024 keys in one burst loses its tail. */
+ * channel's 1024 keys in one burst loses its tail.
+ *
+ * While a tty client (console.open_tty) has the focus the bytes are not
+ * keys: they go to its line discipline as they came (tty.c), paste
+ * markers and escape sequences included, which its program asked the
+ * remote terminal for itself (its output reaches it unchanged). */
 #include <termconn.h>
 #include <termkeys.h>
 #include "console.h"
@@ -133,7 +138,10 @@ status_t conn_in_take(void)
             return st;
         for (uint32_t i = 0; i < nh; i++)
             jam_handle_close(hs[i]);   /* the master carries bytes only */
-        for (uint32_t i = 0; i < n; i++)
+        int tty = focus_top_tty();
+        if (tty >= 0)
+            ttys_type((unsigned)tty, inbuf, n);   /* a POSIX reader: the bytes as they came */
+        for (uint32_t i = 0; tty < 0 && i < n; i++)
             in_byte(inbuf[i]);
         more = k == IN_MSGS - 1;
     }

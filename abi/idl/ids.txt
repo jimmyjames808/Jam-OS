@@ -48,6 +48,7 @@
 40      notify          abi/idl/notify.idl
 41      keys            abi/idl/console.idl
 42      conn_ctl        abi/idl/conn_ctl.idl
+43      tty             abi/idl/console.idl
 50      audio_stream    abi/idl/audio.idl
 51      hda_stream      abi/idl/hda.idl
 # 60 to 69: the network's (M12 track P3)

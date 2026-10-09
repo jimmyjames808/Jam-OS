@@ -16,7 +16,7 @@
  * ask devmgr/init for the new one. The console keeps nothing across a
  * restart: what was in the window and the key channels are made again.
  *
- * Protocols `console` (id 12) and `keys` (id 41): one for each
+ * Protocols `console` (id 12), `keys` (id 41) and `tty` (id 43): one for each
  * kind of channel, so a message of one protocol sent on a channel of
  * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
  * Client: <proto>_<method>(ch, args..., &results...)
@@ -38,6 +38,7 @@
 #define CONSOLE_SHOW_LOG         0x000c0009u
 #define CONSOLE_SET_FONT         0x000c000au
 #define CONSOLE_WRITE            0x000c000bu
+#define CONSOLE_OPEN_TTY         0x000c000cu
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct console_size_req {
@@ -99,6 +100,14 @@ struct console_write_req {
     uint32_t ordinal;
 } __attribute__((packed));
 struct console_write_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct console_open_tty_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct console_open_tty_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -385,6 +394,73 @@ static inline status_t console_write(handle_t ch, const uint8_t *text, uint32_t 
     return console_write_call(ch, false, DEADLINE_NEVER, text, text_len);
 }
 
+/* console_open_tty_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_open_tty_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+{
+    struct console_open_tty_req idl_q;
+    struct console_open_tty_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = CONSOLE_OPEN_TTY;
+    handle_t idl_rh[3];
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 3, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
+    idl_n = idl_got[0];
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 3)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_tty)
+            *out_tty = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK) {
+        if (out_input)
+            *out_input = idl_rh[1];
+        else
+            drv_handle_close(idl_rh[1]);
+    }
+    if (idl_st == OK) {
+        if (out_output)
+            *out_output = idl_rh[2];
+        else
+            drv_handle_close(idl_rh[2]);
+    }
+    return idl_st;
+}
+/* A terminal for a POSIX program (docs/M13-PLAN.md, "The terminal
+ * layer"): `tty` a channel of the `tty` protocol (below), `input` the read
+ * end of a pipe (a channel of byte messages) the console writes what is
+ * typed into, after the terminal's line discipline (<ldisc.h>: in
+ * canonical mode one line per message, an empty message the end of file),
+ * `output` the write end of a pipe the console reads and shows (messages
+ * of at most TTY_OUT_MAX bytes; a longer one, or one carrying handles,
+ * ends the terminal's client). Like open_keys, it takes the focus: the
+ * keys typed go to it as bytes (<keybytes.h>, or as they came over a
+ * connection) until its `tty` channel closes, when what it left unread in
+ * `input` goes back to the terminal for the next reader. All levels; at
+ * most 8 at once (ERR_NO_RESOURCES), and a PROGRAM client can't push out
+ * the shell's focus (ERR_NO_RESOURCES when the focus stack is full). */
+static inline status_t console_open_tty_until(handle_t ch, uint64_t deadline_ns, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+{
+    return console_open_tty_call(ch, false, deadline_ns, out_tty, out_input, out_output);
+}
+static inline status_t console_open_tty_within(handle_t ch, uint64_t timeout_ns, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+{
+    return console_open_tty_call(ch, true, timeout_ns, out_tty, out_input, out_output);
+}
+static inline status_t console_open_tty(handle_t ch, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+{
+    return console_open_tty_call(ch, false, DEADLINE_NEVER, out_tty, out_input, out_output);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* console_size without waiting: the request, with the caller's txid (not 0).
@@ -618,6 +694,47 @@ static inline status_t console_write_result(const void *idl_rep, struct idl_msg 
     return OK;
 }
 
+/* console_open_tty without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_open_tty_result. */
+static inline status_t console_open_tty_send(handle_t ch, uint32_t idl_txid)
+{
+    struct console_open_tty_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = CONSOLE_OPEN_TTY;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to console_open_tty_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_open_tty_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+{
+    const struct console_open_tty_rep *idl_r = (const struct console_open_tty_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 3)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_tty)
+        *out_tty = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    if (out_input)
+        *out_input = idl_m->hs[1];
+    else
+        drv_handle_close(idl_m->hs[1]);
+    if (out_output)
+        *out_output = idl_m->hs[2];
+    else
+        drv_handle_close(idl_m->hs[2]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -632,6 +749,7 @@ struct console_ops {
     status_t (*show_log)(void *ctx, uint8_t on, const uint8_t only[32]);
     status_t (*set_font)(void *ctx, uint8_t font);
     status_t (*write)(void *ctx, const uint8_t *text, uint32_t text_len);
+    status_t (*open_tty)(void *ctx, handle_t *out_tty, handle_t *out_input, handle_t *out_output);
 };
 
 /* Answer the console.size request kept in txn: idl_st and, if it is OK, the
@@ -755,6 +873,31 @@ static inline status_t console_reply_write(struct idl_txn idl_txn, status_t idl_
     }
     status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
     return idl_ws;
+}
+
+/* Answer the console.open_tty request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_open_tty(struct idl_txn idl_txn, status_t idl_st, handle_t tty, handle_t input, handle_t output)
+{
+    struct console_open_tty_rep idl_r;
+    handle_t idl_hs[3] = { tty, input, output };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(tty != HANDLE_INVALID && input != HANDLE_INVALID && output != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        if (idl_hs[1] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[1]);
+        if (idl_hs[2] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[2]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 3);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -913,6 +1056,37 @@ static inline uint32_t console_dispatch_on(handle_t ch, const struct console_ops
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case CONSOLE_OPEN_TTY: {
+        const struct console_open_tty_req *idl_q = (const struct console_open_tty_req *)req;
+        struct console_open_tty_rep *idl_r = (struct console_open_tty_rep *)rep;
+        handle_t out_tty = HANDLE_INVALID;
+        handle_t out_input = HANDLE_INVALID;
+        handle_t out_output = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->open_tty) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->open_tty(ctx, &out_tty, &out_input, &out_output);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_tty != HANDLE_INVALID && out_input != HANDLE_INVALID && out_output != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_tty != HANDLE_INVALID)
+                drv_handle_close(out_tty);
+            if (out_input != HANDLE_INVALID)
+                drv_handle_close(out_input);
+            if (out_output != HANDLE_INVALID)
+                drv_handle_close(out_output);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_tty;
+        rhs[1] = out_input;
+        rhs[2] = out_output;
+        *rhn = 3;
         return sizeof(*idl_r);
     }
     }
@@ -1292,5 +1466,943 @@ static inline status_t keys_serve(handle_t ch, const struct keys_ops *ops, void 
         if (idl_st != OK)
             return idl_st;
         idl_s.rn = keys_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
+    }
+}
+
+
+/* ==== protocol `tty` (id 43) ================================================
+ *
+ * tty: the terminal's POSIX side, the channel console.open_tty answers
+ * (docs/M13-PLAN.md, "The terminal layer"; libc's terminal descriptor,
+ * user/posix/sys/tty.c, is this channel and the two pipes). The settings
+ * are the terminal's (one line discipline per console, <ldisc.h>), not the
+ * channel's: a set_attr holds for every client of the terminal, the next
+ * program's too. They are Linux's struct termios field for field (bits,
+ * c_cc indices), which libc passes through unchanged.
+ *
+ * Reconnect: the channel lives as long as the console runs and some
+ * process keeps it. If its peer closes (the console ended, the terminal
+ * hung up), the terminal is gone: libc's reads of the input pipe see the
+ * end of the file and its writes EPIPE; nothing is opened again. */
+
+#define TTY_PROTOCOL_ID 43u
+#define TTY_GET_ATTR         0x002b0001u
+#define TTY_SET_ATTR         0x002b0002u
+#define TTY_DRAIN            0x002b0003u
+#define TTY_FLUSH            0x002b0004u
+#define TTY_GET_SIZE         0x002b0005u
+#define TTY_SIZE             0x002b0006u
+#define TTY_SIGNAL           0x002b0007u
+
+/* Constants (the .idl's `const` lines). */
+/* The most bytes in one message on the output pipe (console.write's). */
+#define TTY_OUT_MAX 2048u
+/* set_attr's `when` (Linux's TCSANOW, TCSADRAIN, TCSAFLUSH). */
+#define TTY_WHEN_NOW 0u
+#define TTY_WHEN_DRAIN 1u
+#define TTY_WHEN_FLUSH 2u
+/* flush's `queue` (Linux's TCIFLUSH, TCOFLUSH, TCIOFLUSH). */
+#define TTY_QUEUE_IN 0u
+#define TTY_QUEUE_OUT 1u
+#define TTY_QUEUE_BOTH 2u
+/* signal's `sig`. */
+#define TTY_SIG_INT 1u
+#define TTY_SIG_QUIT 2u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct tty_get_attr_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct tty_get_attr_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t iflag;
+    uint32_t oflag;
+    uint32_t cflag;
+    uint32_t lflag;
+    uint8_t cc[32];
+    uint32_t ispeed;
+    uint32_t ospeed;
+} __attribute__((packed));
+struct tty_set_attr_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t when;
+    uint32_t iflag;
+    uint32_t oflag;
+    uint32_t cflag;
+    uint32_t lflag;
+    uint8_t cc[32];
+    uint32_t ispeed;
+    uint32_t ospeed;
+} __attribute__((packed));
+struct tty_set_attr_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct tty_drain_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct tty_drain_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct tty_flush_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t queue;
+} __attribute__((packed));
+struct tty_flush_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct tty_get_size_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct tty_get_size_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint16_t cols;
+    uint16_t rows;
+} __attribute__((packed));
+struct tty_size_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    uint16_t cols;
+    uint16_t rows;
+} __attribute__((packed));
+struct tty_signal_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t sig;
+} __attribute__((packed));
+
+#define TTY_REQ_MAX 65u   /* bytes: the biggest message to the server */
+#define TTY_REP_MAX 64u   /* bytes: the biggest message to the client */
+#define TTY_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define TTY_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* tty_get_attr_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t tty_get_attr_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_iflag, uint32_t *out_oflag, uint32_t *out_cflag, uint32_t *out_lflag, uint8_t out_cc[32], uint32_t *out_ispeed, uint32_t *out_ospeed)
+{
+    struct tty_get_attr_req idl_q;
+    struct tty_get_attr_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = TTY_GET_ATTR;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_iflag)
+        *out_iflag = idl_r.iflag;
+    if (idl_st == OK && out_oflag)
+        *out_oflag = idl_r.oflag;
+    if (idl_st == OK && out_cflag)
+        *out_cflag = idl_r.cflag;
+    if (idl_st == OK && out_lflag)
+        *out_lflag = idl_r.lflag;
+    for (uint32_t idl_i = 0; idl_st == OK && out_cc && idl_i < 32; idl_i++)
+        out_cc[idl_i] = idl_r.cc[idl_i];
+    if (idl_st == OK && out_ispeed)
+        *out_ispeed = idl_r.ispeed;
+    if (idl_st == OK && out_ospeed)
+        *out_ospeed = idl_r.ospeed;
+    return idl_st;
+}
+/* The terminal's settings. */
+static inline status_t tty_get_attr_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_iflag, uint32_t *out_oflag, uint32_t *out_cflag, uint32_t *out_lflag, uint8_t out_cc[32], uint32_t *out_ispeed, uint32_t *out_ospeed)
+{
+    return tty_get_attr_call(ch, false, deadline_ns, out_iflag, out_oflag, out_cflag, out_lflag, out_cc, out_ispeed, out_ospeed);
+}
+static inline status_t tty_get_attr_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_iflag, uint32_t *out_oflag, uint32_t *out_cflag, uint32_t *out_lflag, uint8_t out_cc[32], uint32_t *out_ispeed, uint32_t *out_ospeed)
+{
+    return tty_get_attr_call(ch, true, timeout_ns, out_iflag, out_oflag, out_cflag, out_lflag, out_cc, out_ispeed, out_ospeed);
+}
+static inline status_t tty_get_attr(handle_t ch, uint32_t *out_iflag, uint32_t *out_oflag, uint32_t *out_cflag, uint32_t *out_lflag, uint8_t out_cc[32], uint32_t *out_ispeed, uint32_t *out_ospeed)
+{
+    return tty_get_attr_call(ch, false, DEADLINE_NEVER, out_iflag, out_oflag, out_cflag, out_lflag, out_cc, out_ispeed, out_ospeed);
+}
+
+/* tty_set_attr_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t tty_set_attr_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t when, uint32_t iflag, uint32_t oflag, uint32_t cflag, uint32_t lflag, const uint8_t cc[32], uint32_t ispeed, uint32_t ospeed)
+{
+    struct tty_set_attr_req idl_q;
+    struct tty_set_attr_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = TTY_SET_ATTR;
+    idl_q.when = when;
+    idl_q.iflag = iflag;
+    idl_q.oflag = oflag;
+    idl_q.cflag = cflag;
+    idl_q.lflag = lflag;
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_q.cc[idl_i] = cc[idl_i];
+    idl_q.ispeed = ispeed;
+    idl_q.ospeed = ospeed;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* New settings: at once (WHEN_NOW), after the output written so far is
+ * shown (WHEN_DRAIN), or after that with the input not yet read thrown away
+ * (WHEN_FLUSH):
+ * the pipe's unread messages and the line being edited. Every bit is kept
+ * (one that means nothing to the console changes nothing, as on a Linux
+ * pseudo-terminal); `when` > 2: ERR_INVALID_ARGS. */
+static inline status_t tty_set_attr_until(handle_t ch, uint64_t deadline_ns, uint8_t when, uint32_t iflag, uint32_t oflag, uint32_t cflag, uint32_t lflag, const uint8_t cc[32], uint32_t ispeed, uint32_t ospeed)
+{
+    return tty_set_attr_call(ch, false, deadline_ns, when, iflag, oflag, cflag, lflag, cc, ispeed, ospeed);
+}
+static inline status_t tty_set_attr_within(handle_t ch, uint64_t timeout_ns, uint8_t when, uint32_t iflag, uint32_t oflag, uint32_t cflag, uint32_t lflag, const uint8_t cc[32], uint32_t ispeed, uint32_t ospeed)
+{
+    return tty_set_attr_call(ch, true, timeout_ns, when, iflag, oflag, cflag, lflag, cc, ispeed, ospeed);
+}
+static inline status_t tty_set_attr(handle_t ch, uint8_t when, uint32_t iflag, uint32_t oflag, uint32_t cflag, uint32_t lflag, const uint8_t cc[32], uint32_t ispeed, uint32_t ospeed)
+{
+    return tty_set_attr_call(ch, false, DEADLINE_NEVER, when, iflag, oflag, cflag, lflag, cc, ispeed, ospeed);
+}
+
+/* tty_drain_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t tty_drain_call(handle_t ch, bool idl_within, uint64_t idl_t)
+{
+    struct tty_drain_req idl_q;
+    struct tty_drain_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = TTY_DRAIN;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* Answered once the output written before it has been shown. */
+static inline status_t tty_drain_until(handle_t ch, uint64_t deadline_ns)
+{
+    return tty_drain_call(ch, false, deadline_ns);
+}
+static inline status_t tty_drain_within(handle_t ch, uint64_t timeout_ns)
+{
+    return tty_drain_call(ch, true, timeout_ns);
+}
+static inline status_t tty_drain(handle_t ch)
+{
+    return tty_drain_call(ch, false, DEADLINE_NEVER);
+}
+
+/* tty_flush_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t tty_flush_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t queue)
+{
+    struct tty_flush_req idl_q;
+    struct tty_flush_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = TTY_FLUSH;
+    idl_q.queue = queue;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* Throw away input not yet read (QUEUE_IN), output not yet shown
+ * (QUEUE_OUT), or both (QUEUE_BOTH).
+ * `queue` > 2: ERR_INVALID_ARGS. */
+static inline status_t tty_flush_until(handle_t ch, uint64_t deadline_ns, uint8_t queue)
+{
+    return tty_flush_call(ch, false, deadline_ns, queue);
+}
+static inline status_t tty_flush_within(handle_t ch, uint64_t timeout_ns, uint8_t queue)
+{
+    return tty_flush_call(ch, true, timeout_ns, queue);
+}
+static inline status_t tty_flush(handle_t ch, uint8_t queue)
+{
+    return tty_flush_call(ch, false, DEADLINE_NEVER, queue);
+}
+
+/* tty_get_size_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t tty_get_size_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t *out_cols, uint16_t *out_rows)
+{
+    struct tty_get_size_req idl_q;
+    struct tty_get_size_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = TTY_GET_SIZE;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_cols)
+        *out_cols = idl_r.cols;
+    if (idl_st == OK && out_rows)
+        *out_rows = idl_r.rows;
+    return idl_st;
+}
+/* The terminal's size in cells (console.size's). */
+static inline status_t tty_get_size_until(handle_t ch, uint64_t deadline_ns, uint16_t *out_cols, uint16_t *out_rows)
+{
+    return tty_get_size_call(ch, false, deadline_ns, out_cols, out_rows);
+}
+static inline status_t tty_get_size_within(handle_t ch, uint64_t timeout_ns, uint16_t *out_cols, uint16_t *out_rows)
+{
+    return tty_get_size_call(ch, true, timeout_ns, out_cols, out_rows);
+}
+static inline status_t tty_get_size(handle_t ch, uint16_t *out_cols, uint16_t *out_rows)
+{
+    return tty_get_size_call(ch, false, DEADLINE_NEVER, out_cols, out_rows);
+}
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* tty_get_attr without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then tty_get_attr_result. */
+static inline status_t tty_get_attr_send(handle_t ch, uint32_t idl_txid)
+{
+    struct tty_get_attr_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = TTY_GET_ATTR;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to tty_get_attr_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t tty_get_attr_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_iflag, uint32_t *out_oflag, uint32_t *out_cflag, uint32_t *out_lflag, uint8_t out_cc[32], uint32_t *out_ispeed, uint32_t *out_ospeed)
+{
+    const struct tty_get_attr_rep *idl_r = (const struct tty_get_attr_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_iflag)
+        *out_iflag = idl_r->iflag;
+    if (out_oflag)
+        *out_oflag = idl_r->oflag;
+    if (out_cflag)
+        *out_cflag = idl_r->cflag;
+    if (out_lflag)
+        *out_lflag = idl_r->lflag;
+    for (uint32_t idl_i = 0; out_cc && idl_i < 32; idl_i++)
+        out_cc[idl_i] = idl_r->cc[idl_i];
+    if (out_ispeed)
+        *out_ispeed = idl_r->ispeed;
+    if (out_ospeed)
+        *out_ospeed = idl_r->ospeed;
+    return OK;
+}
+
+/* tty_set_attr without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then tty_set_attr_result. */
+static inline status_t tty_set_attr_send(handle_t ch, uint32_t idl_txid, uint8_t when, uint32_t iflag, uint32_t oflag, uint32_t cflag, uint32_t lflag, const uint8_t cc[32], uint32_t ispeed, uint32_t ospeed)
+{
+    struct tty_set_attr_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = TTY_SET_ATTR;
+    idl_q.when = when;
+    idl_q.iflag = iflag;
+    idl_q.oflag = oflag;
+    idl_q.cflag = cflag;
+    idl_q.lflag = lflag;
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_q.cc[idl_i] = cc[idl_i];
+    idl_q.ispeed = ispeed;
+    idl_q.ospeed = ospeed;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to tty_set_attr_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t tty_set_attr_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct tty_set_attr_rep *idl_r = (const struct tty_set_attr_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* tty_drain without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then tty_drain_result. */
+static inline status_t tty_drain_send(handle_t ch, uint32_t idl_txid)
+{
+    struct tty_drain_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = TTY_DRAIN;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to tty_drain_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t tty_drain_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct tty_drain_rep *idl_r = (const struct tty_drain_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* tty_flush without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then tty_flush_result. */
+static inline status_t tty_flush_send(handle_t ch, uint32_t idl_txid, uint8_t queue)
+{
+    struct tty_flush_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = TTY_FLUSH;
+    idl_q.queue = queue;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to tty_flush_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t tty_flush_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct tty_flush_rep *idl_r = (const struct tty_flush_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* tty_get_size without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then tty_get_size_result. */
+static inline status_t tty_get_size_send(handle_t ch, uint32_t idl_txid)
+{
+    struct tty_get_size_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = TTY_GET_SIZE;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to tty_get_size_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t tty_get_size_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_cols, uint16_t *out_rows)
+{
+    const struct tty_get_size_rep *idl_r = (const struct tty_get_size_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_cols)
+        *out_cols = idl_r->cols;
+    if (out_rows)
+        *out_rows = idl_r->rows;
+    return OK;
+}
+
+/* ---- events (one way, txid 0, never answered) -------------------------- */
+
+/* To the client: the terminal is now cols x rows (a window resized, the
+ * remote terminal's resize): libc raises SIGWINCH. Sent to every client
+ * of the terminal; dropped for one whose channel is full. */
+/* The event tty.size, to the client: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t tty_size(handle_t ch, uint16_t cols, uint16_t rows)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct tty_size_msg *idl_q = (struct tty_size_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = TTY_SIZE;
+    idl_q->cols = cols;
+    idl_q->rows = rows;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* To the client: ISIG's key was typed (SIG_INT, SIG_QUIT) while this
+ * client had the focus and no SHELL or ADMIN client's keys were below it
+ * to take it (a pseudo-terminal, a program alone on a terminal): libc
+ * raises SIGINT or SIGQUIT in its process. With a shell below, the shell
+ * gets the key instead (Ctrl+C, or Ctrl+\) and signals the program. */
+/* The event tty.signal, to the client: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t tty_signal(handle_t ch, uint8_t sig)
+{
+    _Alignas(8) uint8_t idl_b0[9];
+    struct tty_signal_msg *idl_q = (struct tty_signal_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = TTY_SIGNAL;
+    idl_q->sig = sig;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The client's handlers of the events from the server: a NULL one drops
+ * its event (handles closed). A handler owns the handles it is given;
+ * its arrays point into the message (copy what it keeps). */
+struct tty_events {
+    void (*size)(void *ctx, uint16_t cols, uint16_t rows);
+    void (*signal)(void *ctx, uint8_t sig);
+};
+
+/* Client: run the event read with idl_reply_read into msg and *m (an
+ * event has txid 0, a reply any other): OK, its handler ran with its
+ * handles; otherwise it is dropped, its handles closed:
+ * ERR_NOT_SUPPORTED (no such event, or no handler), ERR_INVALID_ARGS
+ * (it breaks the format, or isn't an event). */
+static inline status_t tty_event_dispatch(const struct tty_events *idl_tab, void *ctx,
+                                          const void *idl_m, struct idl_msg *m)
+{
+    uint32_t idl_n = m->n, idl_nh = m->nh;
+    const handle_t *idl_hs = m->hs;
+    m->nh = 0;   /* each path below takes them */
+    if (idl_n < sizeof(struct idl_req_hdr) || ((const struct idl_req_hdr *)idl_m)->txid) {
+        idl_close_all(idl_hs, idl_nh);
+        return ERR_INVALID_ARGS;
+    }
+    switch (((const struct idl_req_hdr *)idl_m)->ordinal) {
+    case TTY_SIZE: {
+        const struct tty_size_msg *idl_e = (const struct tty_size_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->size)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->size(ctx, idl_e->cols, idl_e->rows);
+        return OK;
+    }
+    case TTY_SIGNAL: {
+        const struct tty_signal_msg *idl_e = (const struct tty_signal_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->signal)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->signal(ctx, idl_e->sig);
+        return OK;
+    }
+    }
+    idl_close_all(idl_hs, idl_nh);
+    return ERR_NOT_SUPPORTED;
+}
+
+/* Client: read the next message on ch and run it as an event of the
+ * server's (tty_event_dispatch's results). ERR_SHOULD_WAIT: nothing is
+ * queued; ERR_PEER_CLOSED: the server is gone; ERR_INTERNAL: a message
+ * that is no event (a reply to a call that gave up), dropped. For a
+ * channel whose replies come with idl_reply_read, call
+ * tty_event_dispatch for the messages with txid 0 instead. */
+static inline status_t tty_read_event(handle_t ch, const struct tty_events *idl_tab, void *ctx)
+{
+    _Alignas(8) uint8_t idl_b[TTY_REP_MAX];
+    struct idl_msg idl_m;
+    status_t idl_st = idl_reply_read(ch, idl_b, TTY_REP_MAX, &idl_m);
+    if (idl_st == OK && idl_m.txid) {
+        idl_msg_drop(&idl_m);
+        idl_st = ERR_INTERNAL;
+    } else if (idl_st == OK) {
+        idl_st = tty_event_dispatch(idl_tab, ctx, idl_b, &idl_m);
+    }
+    return idl_st;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with tty_reply_<method> (now, or later from anywhere). */
+struct tty_ops {
+    status_t (*get_attr)(void *ctx, uint32_t *out_iflag, uint32_t *out_oflag, uint32_t *out_cflag, uint32_t *out_lflag, uint8_t out_cc[32], uint32_t *out_ispeed, uint32_t *out_ospeed);
+    status_t (*set_attr)(void *ctx, struct idl_txn idl_txn, uint8_t when, uint32_t iflag, uint32_t oflag, uint32_t cflag, uint32_t lflag, const uint8_t cc[32], uint32_t ispeed, uint32_t ospeed);
+    status_t (*drain)(void *ctx, struct idl_txn idl_txn);
+    status_t (*flush)(void *ctx, uint8_t queue);
+    status_t (*get_size)(void *ctx, uint16_t *out_cols, uint16_t *out_rows);
+};
+
+/* Answer the tty.get_attr request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t tty_reply_get_attr(struct idl_txn idl_txn, status_t idl_st, uint32_t iflag, uint32_t oflag, uint32_t cflag, uint32_t lflag, const uint8_t cc[32], uint32_t ispeed, uint32_t ospeed)
+{
+    struct tty_get_attr_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.iflag = iflag;
+    idl_r.oflag = oflag;
+    idl_r.cflag = cflag;
+    idl_r.lflag = lflag;
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_r.cc[idl_i] = cc[idl_i];
+    idl_r.ispeed = ispeed;
+    idl_r.ospeed = ospeed;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the tty.set_attr request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t tty_reply_set_attr(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct tty_set_attr_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the tty.drain request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t tty_reply_drain(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct tty_drain_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the tty.flush request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t tty_reply_flush(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct tty_flush_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the tty.get_size request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t tty_reply_get_size(struct idl_txn idl_txn, status_t idl_st, uint16_t cols, uint16_t rows)
+{
+    struct tty_get_size_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.cols = cols;
+    idl_r.rows = rows;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (TTY_REP_MAX bytes) and the handles it carries
+ * into rhs (TTY_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the message has no txid, a `later` handler
+ * answers it itself, or it has txid 0: an event of the other way, or
+ * none, never answered). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it. */
+static inline uint32_t tty_dispatch_on(handle_t ch, const struct tty_ops *ops, void *ctx,
+                                       const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                       uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    if (n < sizeof(struct idl_req_hdr) || !((const struct idl_req_hdr *)req)->txid) {
+        /* txid 0: an event (or no txid): never answered */
+        return 0;
+    }
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    case TTY_GET_ATTR: {
+        const struct tty_get_attr_req *idl_q = (const struct tty_get_attr_req *)req;
+        struct tty_get_attr_rep *idl_r = (struct tty_get_attr_rep *)rep;
+        uint32_t out_iflag = 0;
+        uint32_t out_oflag = 0;
+        uint32_t out_cflag = 0;
+        uint32_t out_lflag = 0;
+        uint8_t out_cc[32];
+        for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+            out_cc[idl_i] = 0;
+        uint32_t out_ispeed = 0;
+        uint32_t out_ospeed = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->get_attr) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->get_attr(ctx, &out_iflag, &out_oflag, &out_cflag, &out_lflag, out_cc, &out_ispeed, &out_ospeed);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->iflag = out_iflag;
+        idl_r->oflag = out_oflag;
+        idl_r->cflag = out_cflag;
+        idl_r->lflag = out_lflag;
+        for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+            idl_r->cc[idl_i] = out_cc[idl_i];
+        idl_r->ispeed = out_ispeed;
+        idl_r->ospeed = out_ospeed;
+        return sizeof(*idl_r);
+    }
+    case TTY_SET_ATTR: {
+        const struct tty_set_attr_req *idl_q = (const struct tty_set_attr_req *)req;
+        struct tty_set_attr_rep *idl_r = (struct tty_set_attr_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->set_attr) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->set_attr(ctx, idl_txn, idl_q->when, idl_q->iflag, idl_q->oflag, idl_q->cflag, idl_q->lflag, idl_q->cc, idl_q->ispeed, idl_q->ospeed);
+        /* IDL_LATER: the handler answers with tty_reply_set_attr. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case TTY_DRAIN: {
+        const struct tty_drain_req *idl_q = (const struct tty_drain_req *)req;
+        struct tty_drain_rep *idl_r = (struct tty_drain_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->drain) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->drain(ctx, idl_txn);
+        /* IDL_LATER: the handler answers with tty_reply_drain. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case TTY_FLUSH: {
+        const struct tty_flush_req *idl_q = (const struct tty_flush_req *)req;
+        struct tty_flush_rep *idl_r = (struct tty_flush_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->flush) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->flush(ctx, idl_q->queue);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case TTY_GET_SIZE: {
+        const struct tty_get_size_req *idl_q = (const struct tty_get_size_req *)req;
+        struct tty_get_size_rep *idl_r = (struct tty_get_size_rep *)rep;
+        uint16_t out_cols = 0;
+        uint16_t out_rows = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->get_size) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->get_size(ctx, &out_cols, &out_rows);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->cols = out_cols;
+        idl_r->rows = out_rows;
+        return sizeof(*idl_r);
+    }
+    }
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* tty_dispatch_on without the channel (a `later` handler's txn then has none: use tty_dispatch_on). */
+static inline uint32_t tty_dispatch(const struct tty_ops *ops, void *ctx, const void *req, uint32_t n,
+                                    void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return tty_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t tty_take_slot(handle_t ch, const struct idl_slot *slot,
+                                     struct idl_reply *rep)
+{
+    if (slot->qcap < TTY_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by tty_take_slot, or found there by a
+ * successor), which came on ch: as tty_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (TTY_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it never sends it. */
+static inline uint32_t tty_run_slot(handle_t ch, const struct idl_slot *slot,
+                                    const struct tty_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return tty_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
+static inline bool tty_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
+}
+
+/* Take one message off ch and answer it. OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t tty_serve_one(handle_t ch, const struct tty_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[TTY_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[TTY_REP_MAX];
+    handle_t idl_hs[IDL_READ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, idl_n, idl_nh);
+    if (idl_st != OK)
+        return idl_st;
+    if (idl_nh) {
+        idl_close_all(idl_hs, idl_nh);
+        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = tty_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
+    return OK;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
+static inline status_t tty_serve(handle_t ch, const struct tty_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[TTY_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[TTY_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
+    for (;;) {
+        status_t idl_st = idl_serve_next(&idl_s);
+        if (idl_st == ERR_PEER_CLOSED)
+            return OK;
+        if (idl_st != OK)
+            return idl_st;
+        idl_s.rn = tty_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

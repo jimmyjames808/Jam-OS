@@ -605,6 +605,10 @@ bool t_con_conn_shell(void);
 bool t_con_conn_log(void);
 bool t_con_conn_hostile(void);
 bool t_con_conn_backpressure(void);
+/* contty.c: the terminal's POSIX side in the console (open_tty, `tty`). */
+bool t_con_tty_canonical(void);
+bool t_con_tty_raw(void);
+bool t_con_tty_focus(void);
 /* conpaint.c: the console's cells drawn (cellpaint.c, linked in). */
 bool t_conpaint_metrics(void);
 bool t_conpaint_cells(void);
@@ -643,6 +647,11 @@ bool t_comp_seat_move(void);
 bool t_comp_data_selection(void);
 bool t_comp_data_rules(void);
 bool t_termkeys(void);
+/* ldisc.c: the line discipline (<ldisc.h>) and keys into bytes (<keybytes.h>). */
+bool t_ldisc_table(void);
+bool t_ldisc_queue(void);
+bool t_ldisc_read_rules(void);
+bool t_keybytes(void);
 /* comp_paint.c: the compositor's painting, through its test scene
  * (windows with no client) run headless (testscene.h). */
 bool t_comp_paint_overlap(void);

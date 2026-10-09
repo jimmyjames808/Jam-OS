@@ -9,7 +9,8 @@
  * the connection (bytes on a channel to a remote terminal).
  *
  * Front end:
- *   keys.c     the focus stack of key channels, and the keys sent to it
+ *   keys.c     the focus stack of key channels and tty clients, and the keys sent to it
+ *   tty.c      POSIX clients: console.open_tty, the `tty` protocol, the line discipline
  *   paste.c    pasted text typed into the focus
  *   clients.c  the console protocol's clients and their levels
  *   main.c     the kernel log, startup and the event loop
@@ -44,6 +45,7 @@
 #define MAX_CLIENTS 32          /* SR_USER + 0..7 at start (ADMIN), then new_client's */
 #define START_CLIENTS 8
 #define MAX_FOCUS   8
+#define MAX_TTYS    8           /* console.open_tty's clients at once */
 #define PENDING_KEYS 256
 #define RENDER_NS  16000000ull
 /* The window mode's terminal (wlinput.c, term_grid): at most this many
@@ -79,7 +81,7 @@ struct client {
 
 /* Port keys: the kind in the high half, an index in the low. K_KLOG and
  * K_CLIENT are the front end's; the others go to the back end's event. */
-enum { K_KLOG = 1, K_CLIENT, K_ALT, K_WL, K_MASTER, K_CTL };
+enum { K_KLOG = 1, K_CLIENT, K_ALT, K_WL, K_MASTER, K_CTL, K_TTY, K_TTY_OUT };
 #define KEY(kind, i) ((uint64_t)(kind) << 32 | (i))
 
 /* ---- the back end ---------------------------------------------------------------- */
@@ -100,6 +102,9 @@ struct backend {
     void (*ready)(void);
     /* Program output (console.write) of client c, as it was written. */
     void (*write)(struct client *c, const uint8_t *text, uint32_t length);
+    /* A tty client's output or echo, after the line discipline's output
+     * processing: sent as it is (no CR added before an LF). */
+    void (*write_raw)(struct client *c, const uint8_t *text, uint32_t length);
     /* A kernel log line some client asked for (without its newline). */
     void (*log_line)(const char *s, size_t n);
     /* The terminal's size in cells. */
@@ -235,17 +240,67 @@ void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv))
 
 /* ---- keys.c: keys and the focus stack ----------------------------------------- */
 
-extern handle_t focus[MAX_FOCUS];
-extern struct client *focus_client[MAX_FOCUS];   /* the client that opened each */
+/* The focus stack: open_keys channels and tty clients, the newest last. */
+extern handle_t focus[MAX_FOCUS];                /* a key channel, or a tty's channel (our end) */
+extern struct client *focus_client[MAX_FOCUS];   /* the client that opened each (a tty's own) */
+extern int8_t focus_tty[MAX_FOCUS];              /* a tty's slot (tty.c), or -1: a key channel */
 extern unsigned nfocus;
-/* Drop focus i (its client is gone, or it was pushed out). */
+/* Drop focus i (its client is gone, or it was pushed out); a tty's goes
+ * with it (ttys_release). */
 void focus_drop(unsigned i);
 status_t op_open_keys(void *ctx, handle_t *out);
+/* Push h, a tty client's channel (tty: its slot), as the newest focus of
+ * client c; the keys typed before anyone listened go to it.
+ * ERR_NO_RESOURCES: the stack is full and c is a PROGRAM client. */
+status_t focus_push(handle_t h, struct client *c, int tty);
+/* The newest focus's tty slot, or -1 if it is a key channel (or none). */
+int  focus_top_tty(void);
 /* A key typed into the terminal, whatever the back end it came from: to
  * the newest focus a PROGRAM or SHELL or ADMIN client opened (and, for
- * Ctrl+C from a program's, the shell below it too). Typed before anyone
- * listened, it waits for the first. */
+ * Ctrl+C from a program's, the shell below it too); to a tty client as
+ * bytes (tty.c). Ctrl+Alt+C (a window's) never reaches a program: it is
+ * Ctrl+C to the shell's keys. Typed before anyone listened, it waits for
+ * the first. */
 void focus_key(const struct input_key_event *ev);
+/* ev to the newest key channel below focus `below` that a SHELL or ADMIN
+ * client opened: false if there is none (or it can't take it). */
+bool focus_to_shell(const struct input_key_event *ev, unsigned below);
+
+/* ---- tty.c: POSIX clients (console.open_tty, the `tty` protocol) ---------------- */
+
+void ttys_init(void);
+status_t op_open_tty(void *ctx, handle_t *out_tty, handle_t *out_input, handle_t *out_output);
+/* A tty's packet: K_TTY (its requests, or its channel closed) or
+ * K_TTY_OUT (its output). */
+void tty_event(uint32_t kind, uint32_t i);
+/* Bytes typed while tty i has the focus (a key's, or a connection's as
+ * they came), through the line discipline. */
+void ttys_type(unsigned i, const uint8_t *p, size_t n);
+/* A key typed while tty i has the focus: its bytes (<keybytes.h>). */
+void ttys_key(unsigned i, const struct input_key_event *ev);
+/* tty i asked for bracketed paste. */
+bool ttys_bracketed(unsigned i);
+/* Throw away the input not read yet: the line discipline's, and tty i's
+ * pipe's. */
+void ttys_flush_in(unsigned i);
+/* tty i's focus entry was dropped: what it left unread goes back to the
+ * terminal, and its slot is freed. */
+void ttys_release(unsigned i);
+/* Drop tty i's focus entry (it is gone, or broke the protocol). */
+void ttys_hang_up(unsigned i);
+/* What the terminal holds, to its reader: the newest tty, or the keys
+ * focus when no tty is left. */
+void ttys_deliver(void);
+/* The focus changed: ttys_deliver at the loop's next turn (not now: the
+ * caller may be walking the focus stack). */
+void ttys_refocus(void);
+/* The loop's share: when it must run, its turn, and the congested back end
+ * free again. */
+uint64_t ttys_deadline(void);
+void ttys_pump(void);
+void ttys_resume(void);
+/* The terminal's size changed: every tty client is told. */
+void ttys_resized(void);
 
 /* ---- paste.c: pasted text typed into the focus ------------------------------------ */
 

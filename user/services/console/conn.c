@@ -106,6 +106,16 @@ static void conn_write(struct client *c, const uint8_t *text, uint32_t length)
     out_text(text, length);
 }
 
+/* A tty client's bytes: its line discipline did the output processing. */
+static void conn_write_raw(struct client *c, const uint8_t *text, uint32_t length)
+{
+    scan_modes(c, text, length);
+    for (uint32_t i = 0; i < length; i++)
+        out_put(text[i]);
+    if (length)
+        out_cr = text[length - 1] == '\r';
+}
+
 /* A kernel log line as text, one line, with any control character a '?'
  * (the log is checked by the kernel; the remote terminal is not ours to
  * trust with an escape sequence a process logged). */
@@ -205,8 +215,11 @@ static status_t op_resize(void *ctx, uint16_t c, uint16_t r)
     (void)ctx;
     if (!c || !r)
         return ERR_INVALID_ARGS;
+    uint16_t was_c = term_cols, was_r = term_rows;
     term_cols = c < CONN_COLS_MAX ? c : CONN_COLS_MAX;
     term_rows = r < CONN_ROWS_MAX ? r : CONN_ROWS_MAX;
+    if (term_cols != was_c || term_rows != was_r)
+        ttys_resized();   /* the tty clients' size event: SIGWINCH */
     return OK;
 }
 
@@ -319,7 +332,8 @@ static void conn_flush(void)
 }
 
 const struct backend conn_backend = {
-    .init = conn_init, .banner = conn_banner, .write = conn_write, .log_line = conn_log_line,
+    .init = conn_init, .banner = conn_banner, .write = conn_write, .write_raw = conn_write_raw,
+    .log_line = conn_log_line,
     .size = conn_size, .clear = conn_clear, .event = conn_event, .deadline = conn_deadline,
     .flush = conn_flush, .congested = conn_congested,
 };
