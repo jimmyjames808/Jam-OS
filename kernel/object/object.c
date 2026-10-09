@@ -267,6 +267,7 @@ const char *obj_type_name(enum obj_type t)
         [OBJ_INTERRUPT] = "interrupt", [OBJ_RESOURCE] = "resource",
         [OBJ_VMAR] = "vmar", [OBJ_JOB] = "job",
         [OBJ_KLOG] = "klog", [OBJ_SERIAL] = "serial", [OBJ_SCREEN] = "screen",
+        [OBJ_PAGER] = "pager",
     };
     return (unsigned)t < OBJ_TYPE_COUNT && names[t] ? names[t] : "?";
 }

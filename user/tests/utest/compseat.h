@@ -77,6 +77,8 @@ bool cs_start_desk(struct cs *t);
 /* The desktop on, waiting for a boot splash (init's `splash`) that never
  * comes: the background only for 5 s. */
 bool cs_start_splash(struct cs *t);
+/* As cs_start (no desktop), waiting for a boot splash: its overlay may map. */
+bool cs_start_splash_plain(struct cs *t);
 /* As cs_start_desk, its log (SR_STDOUT) the channel end out (consumed). */
 bool cs_start_out(struct cs *t, handle_t out);
 /* As cs_start, with no layout= argument: the compositor's own default. */

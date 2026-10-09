@@ -12,13 +12,14 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <idl/nschan.h>
 #include <os.h>
 #include "utest.h"
 
 #define CYCLES 300   /* /v mounted and unmounted: 600 changes */
 /* What one waiting message may cost our job: the message, its handles
  * and the kernel's 1 KiB per carried handle. More than that is a queue. */
-#define ONE_MESSAGE (NS_MSG_SIZE(NS_MAX_MOUNTS) + NS_MAX_MOUNTS * 1100u + 256u)
+#define ONE_MESSAGE (NSCHAN_REQ_MAX + NS_MAX_MOUNTS * 1100u + 256u)
 
 static const char *const follow[] = { "/boot", "/v", "/w", NULL };
 

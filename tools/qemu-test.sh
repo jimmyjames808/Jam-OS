@@ -74,6 +74,20 @@
 #   1     caching mode on (CAP.CM = 1: new mappings are invalidated too)
 #   cm0   caching mode off (the PC's case)
 #   eim   caching mode on, x2APIC destination ids (ECAP.EIM)
+# QEMU_NVME attaches emulated NVMe drives from disk image files (opened
+# writable, as a real drive is; a test hashes the file before and after).
+# A space-separated list of controllers, each `img[+img...][,prop=val...]`:
+# one `-device nvme` (serial jamos-nvme<N>, a bus address after every other
+# device's) with one `nvme-ns` per image (nsid 1, 2, ...), the props going
+# to every namespace of that controller, e.g.
+#   QEMU_NVME="a.img"                        one drive, one namespace
+#   QEMU_NVME="a.img b.img"                  two drives
+#   QEMU_NVME="a.img+b.img"                  one drive, two namespaces
+#   QEMU_NVME="a.img,logical_block_size=4096,physical_block_size=4096"
+# QEMU_NVME_CTRL: properties for every controller, e.g. "mdts=2". Paths
+# can't hold spaces, `+` or `,`. Unset: no NVMe drive, nothing else changes.
+# tools/nvme-test.sh is the stage-1 test that uses it, with QEMU's trace of
+# every command (QEMU_EXTRA="-trace pci_nvme_admin_cmd -trace pci_nvme_io_cmd -D <file>").
 # QEMU_WORDS: more boot words after the caller's, e.g. "iommu=on" to run
 # an area test with QEMU_IOMMU's unit started (DMA translation and
 # interrupt remapping on).
@@ -98,6 +112,21 @@ cm0) iommu="-device intel-iommu,intremap=on,caching-mode=off,eim=off" ;;
 eim) iommu="-device intel-iommu,intremap=on,caching-mode=on,eim=on" ;;
 *) echo "QEMU_IOMMU=$QEMU_IOMMU: want 1, cm0 or eim"; exit 1 ;;
 esac
+nvme=
+k=0
+for spec in ${QEMU_NVME:-}; do
+    imgs=${spec%%,*} props=${spec#"$imgs"}
+    nvme="$nvme -device nvme,id=nvme$k,serial=jamos-nvme$k${QEMU_NVME_CTRL:+,$QEMU_NVME_CTRL}"
+    m=1
+    for f in $(echo "$imgs" | tr + ' '); do
+        [ -f "$f" ] || { echo "QEMU_NVME: $f is not a file"; exit 1; }
+        nvme="$nvme -blockdev driver=file,node-name=nvf${k}_$m,filename=$f"
+        nvme="$nvme -blockdev driver=raw,node-name=nvb${k}_$m,file=nvf${k}_$m"
+        nvme="$nvme -device nvme-ns,drive=nvb${k}_$m,bus=nvme$k,nsid=$m$props"
+        m=$((m + 1))
+    done
+    k=$((k + 1))
+done
 . "$(dirname "$0")/qemu-host.sh"   # ovmf_code, ovmf_vars, accel, machine
 mkdir -p "$out"
 
@@ -172,7 +201,7 @@ qemu-system-x86_64 -M "$machine" -accel "$accel" -m "${QEMU_MEM:-2G}" -smp "${QE
     -device usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick,bootindex=0 \
     ${QEMU_USB:-} $iommu ${QEMU_EXTRA:-} \
     -device edu,dma_mask=0xffffffff \
-    $nic \
+    $nic $nvme \
     $serial -display none -no-reboot \
     -monitor unix:"$mon",server,nowait &
 qpid=$!
