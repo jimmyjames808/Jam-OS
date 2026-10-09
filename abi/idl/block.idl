@@ -1,7 +1,20 @@
-# block: one partition of a disk, as usb-storage serves it (storage.idl's
-# open_partition). Block numbers are relative to the partition's start;
-# nothing outside it can be reached through this channel. Data moves
-# through a shared buffer (map_buffer), never through messages.
+# block: one partition of a disk, as its driver serves it (storage.idl's
+# open_partition; usb-storage today). Block numbers are relative to the
+# partition's start; nothing outside it can be reached through this
+# channel. Data moves through a shared buffer (map_buffer), never through
+# messages.
+#
+# Several requests in flight: a client may send requests without waiting
+# for the answers, each with its own txid and at its own buffer offset.
+#   - Answers may come in any order, each by its txid: a client that needs
+#     an order waits for an answer before it sends what depends on it
+#     (fat sends one at a time).
+#   - Two requests in flight must not use overlapping buffer ranges, nor
+#     write overlapping blocks: the data is then undefined, but never
+#     anything outside the channel's partition and buffer.
+#   - `sync` covers the writes answered before it was sent.
+#   - `queue_depth` says how many the server works on at once; more are
+#     queued on the channel, not refused (usb-storage: 1).
 # Format: see tools/genidl.py.
 #
 # Restart: usb-storage keeps nothing across a restart. ERR_PEER_CLOSED:
@@ -11,19 +24,29 @@
 # gone is never started (the fence, drivers/usb-storage/block.c), so
 # nothing a dead filesystem service left queued lands after its
 # successor's writes, which come on a channel of their own.
+# `idempotent` is about a driver that is started again: such a request
+# may be sent again on the next driver's channel.
 
 protocol block 15
 
-# Block size in bytes, blocks in the partition, 1 if writes are refused.
-1  info  () -> (u32 block_size, u64 blocks, u8 read_only) idempotent
-# The buffer transfers use: a VMO of `size` bytes (64 KiB) for the client to
-# map. Once per channel (a second call: ERR_BAD_STATE).
-2  map_buffer  () -> (handle buffer, u32 size)
+# Block size in bytes, blocks in the partition, 1 if writes are refused;
+# the most blocks one request moves (with a buffer big enough); requests
+# the server works on at once (more are queued, not refused); the largest
+# buffer map_buffer makes, in bytes.
+1  info  () -> (u32 block_size, u64 blocks, u8 read_only, u32 max_blocks, u16 queue_depth, u32 buffer_max) idempotent
+# The buffer transfers use: a VMO for the client to map, of `size` bytes
+# asked for (0: the server's choice, 64 KiB for usb-storage; more than
+# buffer_max: buffer_max; rounded up to whole pages), and its size. Once
+# per channel (a second call: ERR_BAD_STATE).
+2  map_buffer  (u32 size) -> (handle buffer, u32 size)
 # Read `count` blocks from `lba` into the buffer at `offset` (bytes).
-# lba + count past the partition: ERR_OUT_OF_RANGE; a disk error: ERR_IO.
+# lba + count past the partition, or count blocks past the buffer's end
+# or past max_blocks: ERR_OUT_OF_RANGE; count 0: ERR_INVALID_ARGS; no
+# buffer yet: ERR_BAD_STATE; a disk error: ERR_IO.
 3  read  (u64 lba, u32 count, u32 offset) -> () idempotent
 # Write `count` blocks from the buffer at `offset` to `lba`. Read-only:
 # ERR_ACCESS_DENIED.
 4  write  (u64 lba, u32 count, u32 offset) -> () idempotent
-# Everything written so far is on the medium (SCSI SYNCHRONIZE CACHE).
+# Every write answered before this was sent is on the medium (SCSI
+# SYNCHRONIZE CACHE).
 5  sync  () -> () idempotent

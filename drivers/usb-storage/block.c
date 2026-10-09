@@ -8,10 +8,13 @@
  * serves the whole disk, so the partition table and the space outside the
  * partitions can't be reached by any client.
  *
- * Data: the client maps a 64 KiB buffer VMO of its channel (map_buffer)
- * and names offsets in it. A request moves at most the buffer's 64 KiB;
- * it becomes as many READ(10) / WRITE(10) commands as the bulk buffer
- * needs. usb-storage maps the buffer too and copies each block straight
+ * Data: the client maps a buffer VMO of its channel (map_buffer: the
+ * size it asks for, 64 KiB if it leaves it to us, BLOCK_BUF_MAX at most)
+ * and names offsets in it. A request moves at most the buffer's size; it
+ * becomes as many READ(10) / WRITE(10) commands as the bulk buffer needs.
+ * Requests are worked on one at a time (block.idl's queue_depth 1): a
+ * client may send several without waiting; they wait on the channel and
+ * are answered in the order they came. usb-storage maps the buffer too and copies each block straight
  * between it and usb-bus's bulk buffer (one copy). The client's handle
  * has no RIGHT_RESIZE, so it can neither shrink nor decommit the buffer
  * under that mapping (a fault there would take every partition of the
@@ -49,6 +52,7 @@
  * answer just goes nowhere. Reads are dropped too: nobody would see the
  * data, and the disk has better things to do. */
 #include <idl/block.h>
+#include <idl/storage.h>
 #include "storage.h"
 
 /* An open block channel. */
@@ -61,6 +65,7 @@ struct blk {
     uint16_t gen;        /* bumped at every open and close: in its port key */
     handle_t vmo;        /* the client's buffer (map_buffer), HANDLE_INVALID: not made yet */
     uint8_t *map;        /* that buffer, mapped here (NULL: not made yet) */
+    uint32_t size;       /* its size in bytes (whole pages) */
     uint32_t dropped;    /* requests dropped because the client had gone (the fence) */
     handle_t port;       /* the port ch is bound to (blk_open's) */
 };
@@ -123,6 +128,7 @@ status_t parts_read(struct disk *k)
 {
     k->nparts = 0;
     k->mbr_id = 0;
+    k->scheme = STORAGE_SCHEME_NONE;
     if (!k->block_size)
         return OK;   /* no medium */
     status_t st = scsi_rw(k, false, 0, 1);
@@ -136,6 +142,7 @@ status_t parts_read(struct disk *k)
         return OK;
     }
     k->mbr_id = le32(s + 440);
+    k->scheme = STORAGE_SCHEME_MBR;
     for (int i = 0; i < MAX_PARTS; i++) {
         const uint8_t *e = s + 446 + 16 * i;
         uint64_t start = le32(e + 8), count = le32(e + 12);
@@ -163,22 +170,37 @@ status_t parts_read(struct disk *k)
 
 /* ---- the block protocol ------------------------------------------------------------- */
 
-static status_t b_info(void *ctx, uint32_t *block_size, uint64_t *blocks, uint8_t *read_only)
+static status_t b_info(void *ctx, uint32_t *block_size, uint64_t *blocks, uint8_t *read_only,
+                       uint32_t *max_blocks, uint16_t *queue_depth, uint32_t *buffer_max)
 {
     const struct blk *b = ctx;
     *block_size = b->k->block_size;
     *blocks = b->k->parts[b->part].blocks;
     *read_only = b->ro;
+    *max_blocks = BLOCK_BUF_MAX / b->k->block_size;
+    *queue_depth = QUEUE_DEPTH;
+    *buffer_max = BLOCK_BUF_MAX;
     return OK;
 }
 
-static status_t b_map_buffer(void *ctx, handle_t *buffer, uint32_t *size)
+/* The buffer's size for a client that asked for `want` bytes. */
+static uint32_t buffer_size(uint32_t want)
+{
+    if (!want)
+        return BLOCK_BUF;
+    if (want > BLOCK_BUF_MAX)
+        return BLOCK_BUF_MAX;
+    return (want + BUF_PAGE - 1) & ~(BUF_PAGE - 1);   /* BLOCK_BUF_MAX is whole pages */
+}
+
+static status_t b_map_buffer(void *ctx, uint32_t want, handle_t *buffer, uint32_t *size)
 {
     struct blk *b = ctx;
     if (b->vmo != HANDLE_INVALID)
         return ERR_BAD_STATE;
+    uint32_t bytes = buffer_size(want);
     handle_t vmo, theirs;
-    status_t st = drv_vmo_create(BLOCK_BUF, 0, &vmo);
+    status_t st = drv_vmo_create(bytes, 0, &vmo);
     if (st != OK)
         return st;
     /* The client's handle: to map, read and (writable channel) write, and
@@ -190,15 +212,16 @@ static status_t b_map_buffer(void *ctx, handle_t *buffer, uint32_t *size)
         return st;
     }
     void *map = NULL;
-    if ((st = drv_vmo_map(vmo, 0, BLOCK_BUF, VMAR_READ | VMAR_WRITE, &map)) != OK) {
+    if ((st = drv_vmo_map(vmo, 0, bytes, VMAR_READ | VMAR_WRITE, &map)) != OK) {
         drv_handle_close(theirs);
         drv_handle_close(vmo);
         return st;
     }
     b->vmo = vmo;
     b->map = map;
+    b->size = bytes;
     *buffer = theirs;
-    *size = BLOCK_BUF;
+    *size = bytes;
     return OK;
 }
 
@@ -212,7 +235,7 @@ static status_t check_range(const struct blk *b, uint64_t lba, uint32_t count, u
         return ERR_BAD_STATE;   /* no buffer yet */
     if (!count)
         return ERR_INVALID_ARGS;
-    if (count > BLOCK_BUF / bs || offset > BLOCK_BUF || count * bs > BLOCK_BUF - offset)
+    if (count > b->size / bs || offset > b->size || count * bs > b->size - offset)
         return ERR_OUT_OF_RANGE;
     if (lba >= p->blocks || count > p->blocks - lba)
         return ERR_OUT_OF_RANGE;
@@ -307,8 +330,9 @@ static void blk_close(struct blk *b)
                           KEY_BLK | ((uint64_t)b->gen << 8) | (uint64_t)(b - blks));
     drv_handle_close(b->ch);
     if (b->map)
-        (void)drv_vmo_unmap(b->map, BLOCK_BUF);   /* our own mapping: nothing else to do */
+        (void)drv_vmo_unmap(b->map, b->size);   /* our own mapping: nothing else to do */
     b->map = NULL;
+    b->size = 0;
     if (b->vmo != HANDLE_INVALID)
         drv_handle_close(b->vmo);
     b->ch = b->vmo = HANDLE_INVALID;
@@ -346,6 +370,7 @@ status_t blk_open(struct disk *k, handle_t port, uint8_t index, bool read_only, 
     b->ro = read_only;
     b->vmo = HANDLE_INVALID;
     b->map = NULL;
+    b->size = 0;
     b->dropped = 0;
     b->pending = true;   /* look once: a request may be there already */
     *out = theirs;

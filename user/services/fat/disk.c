@@ -2,6 +2,9 @@
  * disk_ioctl (its diskio.h); here they become `block` calls on the one
  * partition channel fat was given. Data moves through the channel's
  * shared buffer (mapped once), a buffer's worth of sectors per call.
+ * One call at a time, each waited for: block.idl lets a client keep
+ * several in flight, answered in any order, but fat's writes must reach
+ * the disk in the order it makes them.
  *
  * Reads go through the write-through block cache (cache.c), and every
  * write is copied into it once it is on the disk.
@@ -97,13 +100,15 @@ status_t disk_open(handle_t block)
     uint32_t bs = 0, size = 0;
     uint8_t ro = 0;
     handle_t vmo = HANDLE_INVALID;
-    status_t st = block_info_within(block, BLOCK_WAIT, &bs, &vol.blocks, &ro);
+    status_t st = block_info_within(block, BLOCK_WAIT, &bs, &vol.blocks, &ro, NULL, NULL, NULL);
     if (st == OK && bs != FAT_SECTOR) {
         printf("fat %s: %u-byte sectors are not supported (only %u)\n", vol.name, bs, FAT_SECTOR);
         return ERR_NOT_SUPPORTED;
     }
+    /* The server's own size of buffer (usb-storage: 64 KiB): fat sends
+     * one request at a time, each from the buffer's start. */
     if (st == OK)
-        st = block_map_buffer_within(block, BLOCK_WAIT, &vmo, &size);
+        st = block_map_buffer_within(block, BLOCK_WAIT, 0, &vmo, &size);
     if (st == ERR_PEER_CLOSED)
         vol.disk_gone = true;   /* pulled (or its driver stopped) before we got going */
     if (st != OK)

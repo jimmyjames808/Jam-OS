@@ -168,11 +168,10 @@ static void ask_info(struct disk *d)
     txids = (txids + 1) & ~CHANNEL_TXID_KERNEL;
     if (txids == 0)
         txids++;
-    struct storage_info_req q = { .txid = txids, .ordinal = STORAGE_INFO };
-    d->txid = q.txid;
+    d->txid = txids;
     d->deadline = now() + INFO_WAIT;
     d->state = DISK_INFO;
-    status_t st = jam_channel_write(d->ch, &q, sizeof(q), NULL, 0);
+    status_t st = storage_info_send(d->ch, d->txid);
     if (st != OK) {
         char why[48];
         snprintf(why, sizeof(why), "can't ask its driver (%s)", status_str(st));
@@ -187,16 +186,6 @@ static bool boot_disk_taken(const struct disk *d)
         if (&disks[i] != d && disks[i].state == DISK_BOOT && disks[i].test == d->test)
             return true;
     return false;
-}
-
-/* SCSI INQUIRY text: space-padded, not terminated. */
-static void inquiry_text(char *out, const uint8_t *in, unsigned n)
-{
-    while (n > 0 && (in[n - 1] == ' ' || in[n - 1] == 0))
-        n--;
-    for (unsigned i = 0; i < n; i++)
-        out[i] = in[i] >= 0x20 && in[i] < 0x7f ? (char)in[i] : '?';
-    out[n] = 0;
 }
 
 /* Ask the ESP's service, which has just been started, for BOOT_FILE: an
@@ -225,16 +214,11 @@ static void look_at_esp(struct disk *d)
 }
 
 /* Is d the disk the machine booted from, as far as the MBR disk ids can
- * tell? A test disk, or a boot whose loader named no disk, can't tell:
- * yes. */
-static bool booted_from(struct disk *d)
+ * tell (storage.info's)? A test disk, or a boot whose loader named no
+ * disk, can't tell: yes. */
+static bool booted_from(const struct disk *d)
 {
-    if (d->test || !boot_mbr_id)
-        return true;
-    uint32_t id = 0;
-    status_t st = storage_disk_id_until(d->ch, now() + CALL_WAIT, &id);
-    d->mbr_id = st == OK ? id : 0;
-    return d->mbr_id == boot_mbr_id;
+    return d->test || !boot_mbr_id || d->mbr_id == boot_mbr_id;
 }
 
 /* d is a Jam OS disk, but not the one the machine booted from: it waits
@@ -258,21 +242,30 @@ static void release_held(const struct disk *boot)
             not_boot(&disks[i], "the machine booted from another disk");
 }
 
+/* What storage.info said. */
+struct disk_info {
+    char     vendor[9], product[17];   /* trimmed ASCII */
+    uint32_t block_size, partitions;
+    uint64_t blocks;
+};
+
 /* Step 2: storage.info answered. The two partition types decide whether
- * the ESP is worth a look. */
-static void got_info(struct disk *d, const struct storage_info_rep *r)
+ * the ESP is worth a look. Only an MBR's types are looked at: a GPT disk
+ * (never one yet: usb-storage reads MBRs alone) has no Jam OS layout and
+ * no FAT type bytes, so it is no boot disk and gets no mounts. */
+static void got_info(struct disk *d, const struct disk_info *r)
 {
-    char vendor[9], product[17], why[64];
-    inquiry_text(vendor, r->vendor, 8);
-    inquiry_text(product, r->product, 16);
+    char why[64];
     uint8_t *type = d->type;
     status_t st = OK;
     memset(d->type, 0, sizeof(d->type));
-    d->nparts = r->partitions;
-    for (uint8_t i = 0; st == OK && i < MAX_PARTS && i < r->partitions; i++)
-        st = storage_partition_until(d->ch, now() + CALL_WAIT, i, &type[i], NULL, NULL);
-    say(false, "volumes: %s: %s %s, %lu MiB, %u partition(s), types %02x %02x", disk_name(d), vendor,
-        product, (unsigned long)(r->blocks * r->block_size >> 20), r->partitions, type[0], type[1]);
+    d->nparts = r->partitions > 0xff ? 0xff : (uint8_t)r->partitions;
+    for (uint32_t i = 0; st == OK && i < MAX_PARTS && i < r->partitions; i++)
+        st = storage_partition_until(d->ch, now() + CALL_WAIT, i, &type[i], NULL, NULL, NULL,
+                                     NULL, NULL, NULL, NULL);
+    say(false, "volumes: %s: %s %s, %lu MiB, %u partition(s), types %02x %02x", disk_name(d),
+        r->vendor, r->product, (unsigned long)(r->blocks * r->block_size >> 20), r->partitions,
+        type[0], type[1]);
     d->mib = r->blocks * r->block_size >> 20;
     if (st != OK) {
         snprintf(why, sizeof(why), "its partitions can't be read (%s)", status_str(st));
@@ -322,14 +315,22 @@ static void got_stat(struct disk *d, status_t st, bool is_dir)
 static void disk_answers(struct disk *d)
 {
     _Alignas(8) uint8_t buf[STORAGE_REP_MAX];
-    uint32_t n = 0;
-    while (d->state != DISK_FREE && next_msg(d->ch, buf, sizeof(buf), &n) == OK) {
-        const struct storage_info_rep *r = (const void *)buf;
-        if (d->state != DISK_INFO || n < sizeof(struct idl_rep_hdr) || r->txid != d->txid)
-            continue;   /* not what we wait for: an answer that came too late */
-        status_t st = idl_rep_status(buf, n, sizeof(*r));
+    struct idl_msg m;
+    for (int guard = 0; guard < 64 && d->state != DISK_FREE && d->ch; guard++) {
+        status_t st = idl_reply_read(d->ch, buf, sizeof(buf), &m);
+        if (st == ERR_INTERNAL)
+            continue;   /* not storage's: dropped */
+        if (st != OK)
+            return;
+        if (d->state != DISK_INFO || m.txid != d->txid) {
+            idl_msg_drop(&m);   /* not what we wait for: an answer that came too late */
+            continue;
+        }
+        struct disk_info r;
+        st = storage_info_result(buf, &m, r.vendor, NULL, r.product, NULL, &r.block_size,
+                                 &r.blocks, NULL, &r.partitions, &d->mbr_id, NULL);
         if (st == OK) {
-            got_info(d, r);
+            got_info(d, &r);
             continue;
         }
         char why[48];

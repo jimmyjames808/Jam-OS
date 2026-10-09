@@ -32,6 +32,10 @@
  *                  disk its last 64 KiB are overwritten with a pattern,
  *                  read back and restored; on a real stick one block is
  *                  written back unchanged (nothing on it is altered)
+ *   block_in_flight  two READs sent without waiting, each at its own
+ *                  offset of a buffer asked bigger than buffer_max (so
+ *                  capped there): both answered right, by txid; a second
+ *                  map_buffer is refused
  *   storage_fence  a client queues WRITEs and leaves (its channel closes)
  *                  while usb-storage is busy with another channel's READs:
  *                  the WRITEs are dropped, never performed (QEMU disks
@@ -392,22 +396,35 @@ static bool drive_start(struct drive *v, handle_t usb, const char *name)
     st = spawn(&a, &v->proc);
     v->storage = ours;
     CHECK_ST(st, OK);
-    uint8_t vendor[8], product[16];
-    CHECK_ST(storage_info_until(ours, in(BLK_WAIT), vendor, product, &v->bs, &v->blocks,
-                                &v->nparts), OK);
-    v->qemu = !memcmp(vendor, "QEMU    ", 8);
-    CHECK(v->bs == 512 && v->blocks > 0 && v->nparts <= 4);
-    printf("usbtest: %s: \"%.8s\" \"%.16s\" %lu x %u, %u partition(s)\n", name,
-           (const char *)vendor, (const char *)product, (unsigned long)v->blocks, v->bs,
-           v->nparts);
+    char vendor[9], product[17];
+    uint32_t vn = 0, pn = 0, nparts = 0, mbr_id = 0;
+    uint8_t scheme = 0xff, guid[16], zero[16] = { 0 };
+    CHECK_ST(storage_info_until(ours, in(BLK_WAIT), vendor, &vn, product, &pn, &v->bs, &v->blocks,
+                                &scheme, &nparts, &mbr_id, guid), OK);
+    v->qemu = !strcmp(vendor, "QEMU");
+    v->nparts = (uint8_t)nparts;
+    CHECK(v->bs == 512 && v->blocks > 0 && nparts <= 4);
+    /* INQUIRY's text trimmed: no trailing space; MBR only, no GPT GUID */
+    CHECK(vn == strlen(vendor) && (!vn || vendor[vn - 1] != ' '));
+    CHECK(pn == strlen(product) && (!pn || product[pn - 1] != ' '));
+    CHECK(scheme == STORAGE_SCHEME_MBR || scheme == STORAGE_SCHEME_NONE);
+    CHECK(!memcmp(guid, zero, 16));
+    printf("usbtest: %s: \"%s\" \"%s\" %lu x %u, scheme %u, disk id %08x, %u partition(s)\n",
+           name, vendor, product, (unsigned long)v->blocks, v->bs, scheme, mbr_id, v->nparts);
     for (uint8_t i = 0; i < v->nparts; i++) {
-        CHECK_ST(storage_partition_until(ours, soon(), i, &v->parts[i].type, &v->parts[i].start,
-                                         &v->parts[i].blocks), OK);
+        uint8_t tg[16], ug[16];
+        uint64_t attrs = 1;
+        char pname[109];
+        uint32_t pname_len = 1;
+        CHECK_ST(storage_partition_until(ours, soon(), i, &v->parts[i].type, tg, ug,
+                                         &v->parts[i].start, &v->parts[i].blocks, &attrs, pname,
+                                         &pname_len), OK);
         printf("usbtest: %s: partition %u: type %02x, %lu + %lu\n", name, i + 1,
                v->parts[i].type, (unsigned long)v->parts[i].start,
                (unsigned long)v->parts[i].blocks);
         CHECK(v->parts[i].start > 0 && v->parts[i].blocks > 0);
         CHECK(v->parts[i].start + v->parts[i].blocks <= v->blocks);
+        CHECK(!memcmp(tg, zero, 16) && !memcmp(ug, zero, 16) && !attrs && !pname_len);
     }
     return true;
 }
@@ -427,14 +444,18 @@ static bool part_open(const struct drive *v, uint8_t index, bool ro, struct pch 
     *p = (struct pch){ 0 };
     CHECK(v->storage != HANDLE_INVALID);
     CHECK_ST(storage_open_partition_until(v->storage, soon(), index, ro, &p->ch), OK);
-    uint32_t bs = 0, size = 0;
+    uint32_t bs = 0, size = 0, max_blocks = 0, buffer_max = 0;
+    uint16_t depth = 0;
     uint8_t is_ro = 2;
     handle_t vmo;
-    CHECK_ST(block_info_until(p->ch, soon(), &bs, &p->blocks, &is_ro), OK);
+    CHECK_ST(block_info_until(p->ch, soon(), &bs, &p->blocks, &is_ro, &max_blocks, &depth,
+                              &buffer_max), OK);
     CHECK(bs == v->bs && p->blocks == v->parts[index].blocks && is_ro == ro);
+    /* usb-storage: one request at a time, buffers up to 256 KiB */
+    CHECK(depth == 1 && buffer_max >= BUF_SIZE && max_blocks == buffer_max / bs);
     /* no buffer yet: nothing to read into */
     CHECK_ST(block_read_until(p->ch, soon(), 0, 1, 0), ERR_BAD_STATE);
-    CHECK_ST(block_map_buffer_until(p->ch, soon(), &vmo, &size), OK);
+    CHECK_ST(block_map_buffer_until(p->ch, soon(), 0, &vmo, &size), OK);   /* its choice */
     uint64_t va = 0;
     /* usb-storage maps the buffer itself, so it can't be shrunk or
      * decommitted from here; a read-only channel's can't be written
@@ -450,7 +471,7 @@ static bool part_open(const struct drive *v, uint8_t index, bool ro, struct pch 
     CHECK(size == BUF_SIZE);
     CHECK_ST(st, OK);
     p->buf = (uint8_t *)(uintptr_t)va;
-    CHECK_ST(block_map_buffer_until(p->ch, soon(), &vmo, &size), ERR_BAD_STATE);
+    CHECK_ST(block_map_buffer_until(p->ch, soon(), 0, &vmo, &size), ERR_BAD_STATE);
     return true;
 }
 
@@ -528,10 +549,13 @@ static bool check_range(const struct drive *v, struct pch *p)
     uint8_t type;
     uint64_t start, blocks;
     handle_t h;
-    CHECK_ST(storage_partition_until(v->storage, soon(), v->nparts, &type, &start, &blocks),
-             ERR_OUT_OF_RANGE);
+    CHECK_ST(storage_partition_until(v->storage, soon(), v->nparts, &type, NULL, NULL, &start,
+                                     &blocks, NULL, NULL, NULL), ERR_OUT_OF_RANGE);
+    CHECK_ST(storage_partition_until(v->storage, soon(), 0xffffffffu, &type, NULL, NULL, &start,
+                                     &blocks, NULL, NULL, NULL), ERR_OUT_OF_RANGE);
     CHECK_ST(storage_open_partition_until(v->storage, soon(), v->nparts, 0, &h),
              ERR_OUT_OF_RANGE);
+    CHECK_ST(storage_open_partition_until(v->storage, soon(), 0x100, 0, &h), ERR_OUT_OF_RANGE);
     CHECK_ST(storage_open_partition_until(v->storage, soon(), 0, 2, &h), ERR_INVALID_ARGS);
     return true;
 }
@@ -638,6 +662,84 @@ static bool t_storage_write(void)
     part_close(&p);
     part_close(&ro);
     return ok;
+}
+
+/* ---- block_in_flight ------------------------------------------------------------------------ */
+
+/* The answer to a request sent with txid one of want[0..1] on ch: its
+ * status into got[i]. */
+static status_t take_answer(handle_t ch, const uint32_t want[2], status_t got[2], bool seen[2])
+{
+    _Alignas(8) uint8_t buf[BLOCK_REP_MAX];
+    struct idl_msg m;
+    signals_t sig = 0;
+    status_t st = jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, in(BLK_WAIT), &sig);
+    if (st == OK)
+        st = idl_reply_read(ch, buf, sizeof(buf), &m);
+    if (st != OK)
+        return st;
+    for (unsigned i = 0; i < 2; i++)
+        if (m.txid == want[i] && !seen[i]) {
+            seen[i] = true;
+            got[i] = block_read_result(buf, &m);
+            return OK;
+        }
+    idl_msg_drop(&m);
+    return ERR_INTERNAL;   /* a txid we never sent */
+}
+
+/* Two READs in flight on one channel, each at its own offset in a buffer
+ * bigger than the default: both answered (in either order) with the right
+ * blocks. A buffer asked for past buffer_max is capped there; a second
+ * map_buffer is refused. */
+static bool t_block_in_flight(void)
+{
+    struct drive *v = &boot_drive;
+    handle_t ch, vmo;
+    uint32_t bs = 0, max_blocks = 0, buffer_max = 0, size = 0;
+    uint16_t depth = 0;
+    uint64_t blocks = 0, va = 0;
+    uint8_t ro = 0;
+    CHECK(v->storage != HANDLE_INVALID && v->nparts >= 1);
+    CHECK_ST(storage_open_partition_until(v->storage, soon(), 0, 1, &ch), OK);
+    CHECK_ST(block_info_until(ch, soon(), &bs, &blocks, &ro, &max_blocks, &depth, &buffer_max), OK);
+    CHECK(buffer_max >= 2 * BUF_SIZE && blocks >= 2 * BUF_SIZE / bs);
+    CHECK_ST(block_map_buffer_until(ch, soon(), 1u << 20, &vmo, &size), OK);
+    CHECK_EQ(size, buffer_max);   /* 1 MiB asked: capped */
+    handle_t again;
+    CHECK_ST(block_map_buffer_until(ch, soon(), 0, &again, &size), ERR_BAD_STATE);
+    status_t st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, buffer_max, VMAR_READ, &va);
+    jam_handle_close(vmo);
+    CHECK_ST(st, OK);
+    const uint8_t *buf = (const uint8_t *)(uintptr_t)va;
+    uint32_t per = BUF_SIZE / bs;
+    bool ok = true;
+    /* one at a time first: blocks [0, per) at 0, [per, 2 per) at BUF_SIZE */
+    if (block_read_until(ch, in(BLK_WAIT), 0, per, 0) != OK ||
+        block_read_until(ch, in(BLK_WAIT), per, per, BUF_SIZE) != OK)
+        ok = false;
+    static uint8_t first[2 * BUF_SIZE];
+    memcpy(first, buf, sizeof(first));
+    /* then both in flight, swapped: [per, 2 per) at 2 BUF_SIZE, [0, per) at 3 BUF_SIZE */
+    const uint32_t txid[2] = { 0x1f11, 0x1f12 };
+    status_t got[2] = { ERR_INTERNAL, ERR_INTERNAL };
+    bool seen[2] = { false, false };
+    if (ok && (block_read_send(ch, txid[0], per, per, 2 * BUF_SIZE) != OK ||
+               block_read_send(ch, txid[1], 0, per, 3 * BUF_SIZE) != OK))
+        ok = false;
+    for (unsigned i = 0; ok && i < 2; i++)
+        ok = take_answer(ch, txid, got, seen) == OK;
+    bool same = ok && !memcmp(buf + 2 * BUF_SIZE, first + BUF_SIZE, BUF_SIZE) &&
+                !memcmp(buf + 3 * BUF_SIZE, first, BUF_SIZE);
+    jam_vmar_unmap(startup_handle(SR_SELF_VMAR), va, buffer_max);
+    jam_handle_close(ch);
+    CHECK(ok);
+    CHECK_ST(got[0], OK);
+    CHECK_ST(got[1], OK);
+    CHECK(same);
+    printf("usbtest: %s: two READs of 64 KiB in flight at offsets 128 and 192 KiB of a %u KiB "
+           "buffer (queue depth %u): both right\n", cur, buffer_max >> 10, depth);
+    return true;
 }
 
 /* ---- storage_fence ------------------------------------------------------------------------- */
@@ -974,17 +1076,18 @@ void storage_tests(void)
 {
     if (load() != OK || !find_disk(NULL, &boot_raw)) {
         printf("usbtest: storage: no mass-storage device: skipped\n");
-        skipped += 8;
+        skipped += 9;
     } else {
         run("storage_bulk", t_storage_bulk);
         if (!boot_raw.buf) {
-            skipped += 7;   /* it said why */
+            skipped += 8;   /* it said why */
         } else {
             run("storage_stall", t_storage_stall);
             run("storage_bind", t_storage_bind);
             run("storage_esp", t_storage_esp);
             run("storage_range", t_storage_range);
             run("storage_write", t_storage_write);
+            run("block_in_flight", t_block_in_flight);
             run("storage_fence", t_storage_fence);
             run("storage_stop", t_storage_stop);
         }
