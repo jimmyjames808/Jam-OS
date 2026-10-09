@@ -32,7 +32,7 @@ struct block {
 
 static uint8_t      *heap_base, *heap_next, *heap_end;
 static struct block *free_list;
-static bool          heap_lock;
+static lock_t        heap_lock;
 static int           heap_failed;
 
 static void lock(void)

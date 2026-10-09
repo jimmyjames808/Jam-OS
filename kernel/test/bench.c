@@ -56,6 +56,7 @@
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
+#include <jam/panic.h>
 #include <jam/pathstat.h>
 #include <jam/pci.h>
 #include <jam/pcid.h>
@@ -514,10 +515,31 @@ static void kmalloc_all_cpus(void)
 
 static volatile bool yield_done, partner_running;
 static uint64_t yield_switches;
+/* The two threads take user state first (an FPU area, inside a system call
+ * as a user thread that yields is), so each switch also does what
+ * arch_thread_switch does for user threads; with yield_fs each also gets
+ * an FS base of its own, so every switch loads one. */
+static bool yield_user, yield_fs;
+static uint64_t yield_fs_next;
+
+static void yield_setup(void)
+{
+    if (!yield_user)
+        return;
+    struct thread *t = current_thread();
+    if (fpu_ustate_alloc(t) != OK)
+        panic("bench: no FPU area");
+    uint64_t base = yield_fs ? __atomic_add_fetch(&yield_fs_next, 0x1000, __ATOMIC_RELAXED) : 0;
+    irq_disable();
+    t->in_syscall = true;   /* as a user thread is, inside thread_yield's call */
+    t->fs_base = base;      /* the kernel never uses FS: any user address will do */
+    irq_enable();
+}
 
 static void yield_partner(void *arg)
 {
     (void)arg;
+    yield_setup();
     partner_running = true;
     while (!yield_done)
         thread_yield();
@@ -526,6 +548,7 @@ static void yield_partner(void *arg)
 static void yield_timer(void *arg)
 {
     (void)arg;
+    yield_setup();
     while (!partner_running)
         thread_yield();
     uint64_t until;
@@ -546,8 +569,11 @@ static void yield_timer(void *arg)
     yield_done = true;
 }
 
-static void context_switch(void)
+static void context_switch(bool user, bool fs, const char *what)
 {
+    yield_user = user;
+    yield_fs = fs;
+    yield_fs_next = 0x10000000;
     yield_done = partner_running = false;
     yield_switches = 0;
     struct thread *b = spawn_on(cpu_p, yield_partner, NULL);
@@ -560,7 +586,7 @@ static void context_switch(void)
                yield_switches, expect);
         return;
     }
-    result("context switch (yield between 2 threads, P)", samples, SAMPLES);
+    result(what, samples, SAMPLES);
 }
 
 /* ---- ping-pong: cache line, and block/wake ------------------------------ */
@@ -1417,7 +1443,9 @@ static void local_benches(void)
     }
     kfree(keeper);
 
-    context_switch();
+    context_switch(false, false, "context switch (yield between 2 threads, P)");
+    context_switch(true, false, "context switch, 2 threads with user state (P)");
+    context_switch(true, true, "context switch, user state, each its own FS base (P)");
     wakeup(cpu_p);
     chan_call(cpu_p);
 }

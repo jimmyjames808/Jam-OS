@@ -197,11 +197,14 @@ static inline struct uthread *uthread_from_kobject(struct kobject *o)
  * ERR_BAD_STATE if p is dying. */
 status_t uthread_create(struct process *p, const char *name, struct uthread **out);
 /* Start ut (its process must be RUNNING) at entry with stack, rdi = arg0,
- * rsi = arg1. ERR_BAD_STATE if ut was started before or the process isn't
- * running, ERR_NO_RESOURCES over the job's thread limit, ERR_NO_MEMORY if
- * the job refuses UTHREAD_KMEM_PAGES or the kernel thread can't be made. */
+ * rsi = arg1 and its FS base fs_base (process_start's thread: 0).
+ * ERR_INVALID_ARGS for an entry or FS base at or past USER_TOP (the entry's
+ * check also in process_start). ERR_BAD_STATE if ut was started before or
+ * the process isn't running, ERR_NO_RESOURCES over the job's thread limit,
+ * ERR_NO_MEMORY if the job refuses UTHREAD_KMEM_PAGES or the kernel thread
+ * can't be made. */
 status_t uthread_start(struct uthread *ut, uint64_t entry, uint64_t stack, uint64_t arg0,
-                       uint64_t arg1, const cpumask_t *mask);
+                       uint64_t arg1, uint64_t fs_base, const cpumask_t *mask);
 /* prio 0..PRIO_MAX (the syscall layer caps user callers). */
 status_t uthread_set_priority(struct uthread *ut, int prio);
 /* The current user thread leaves for good (thread_exit, process_exit, a

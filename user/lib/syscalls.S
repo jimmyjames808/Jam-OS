@@ -345,15 +345,6 @@ jam_thread_create:
     ret
     .size jam_thread_create, . - jam_thread_create
 
-    .globl jam_thread_start
-    .type jam_thread_start, @function
-jam_thread_start:
-    mov %rcx, %r10
-    mov $SYS_thread_start, %eax
-    syscall
-    ret
-    .size jam_thread_start, . - jam_thread_start
-
     .globl jam_job_create
     .type jam_job_create, @function
 jam_job_create:
@@ -401,6 +392,57 @@ jam_job_kill:
     syscall
     ret
     .size jam_job_kill, . - jam_job_kill
+
+    .globl jam_thread_set_fs_base
+    .type jam_thread_set_fs_base, @function
+jam_thread_set_fs_base:
+    mov $SYS_thread_set_fs_base, %eax
+    syscall
+    ret
+    .size jam_thread_set_fs_base, . - jam_thread_set_fs_base
+
+    .globl jam_thread_yield
+    .type jam_thread_yield, @function
+jam_thread_yield:
+    mov $SYS_thread_yield, %eax
+    syscall
+    ret
+    .size jam_thread_yield, . - jam_thread_yield
+
+    .globl jam_thread_start
+    .type jam_thread_start, @function
+jam_thread_start:
+    mov %rcx, %r10
+    mov $SYS_thread_start, %eax
+    syscall
+    ret
+    .size jam_thread_start, . - jam_thread_start
+
+    .globl jam_futex_wait
+    .type jam_futex_wait, @function
+jam_futex_wait:
+    mov %rcx, %r10
+    mov $SYS_futex_wait, %eax
+    syscall
+    ret
+    .size jam_futex_wait, . - jam_futex_wait
+
+    .globl jam_futex_wake
+    .type jam_futex_wake, @function
+jam_futex_wake:
+    mov $SYS_futex_wake, %eax
+    syscall
+    ret
+    .size jam_futex_wake, . - jam_futex_wake
+
+    .globl jam_futex_requeue
+    .type jam_futex_requeue, @function
+jam_futex_requeue:
+    mov %rcx, %r10
+    mov $SYS_futex_requeue, %eax
+    syscall
+    ret
+    .size jam_futex_requeue, . - jam_futex_requeue
 
     .globl jam_resource_create
     .type jam_resource_create, @function

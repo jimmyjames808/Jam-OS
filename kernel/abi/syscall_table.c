@@ -234,11 +234,6 @@ static int64_t call_thread_create(const struct syscall_frame *f)
                               f->args[4]);
 }
 
-static int64_t call_thread_start(const struct syscall_frame *f)
-{
-    return sysc_thread_start((handle_t)f->args[0], f->args[1], f->args[2], f->args[3], f->args[4]);
-}
-
 static int64_t call_job_create(const struct syscall_frame *f)
 {
     return sysc_job_create((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2]);
@@ -267,6 +262,39 @@ static int64_t call_thread_set_priority(const struct syscall_frame *f)
 static int64_t call_job_kill(const struct syscall_frame *f)
 {
     return sysc_job_kill((handle_t)f->args[0]);
+}
+
+static int64_t call_thread_set_fs_base(const struct syscall_frame *f)
+{
+    return sysc_thread_set_fs_base(f->args[0]);
+}
+
+static int64_t call_thread_yield(const struct syscall_frame *f)
+{
+    (void)f;
+    return sysc_thread_yield();
+}
+
+static int64_t call_thread_start(const struct syscall_frame *f)
+{
+    return sysc_thread_start((handle_t)f->args[0], f->args[1], f->args[2], f->args[3], f->args[4],
+                             f->args[5]);
+}
+
+static int64_t call_futex_wait(const struct syscall_frame *f)
+{
+    return sysc_futex_wait(f->args[0], (uint32_t)f->args[1], f->args[2], (uint32_t)f->args[3]);
+}
+
+static int64_t call_futex_wake(const struct syscall_frame *f)
+{
+    return sysc_futex_wake(f->args[0], (uint32_t)f->args[1], (uint32_t)f->args[2]);
+}
+
+static int64_t call_futex_requeue(const struct syscall_frame *f)
+{
+    return sysc_futex_requeue(f->args[0], (uint32_t)f->args[1], f->args[2], (uint32_t)f->args[3],
+                              (uint32_t)f->args[4]);
 }
 
 static int64_t call_resource_create(const struct syscall_frame *f)
@@ -497,13 +525,18 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_process_start] = call_process_start,
     [SYS_process_kill] = call_process_kill,
     [SYS_thread_create] = call_thread_create,
-    [SYS_thread_start] = call_thread_start,
     [SYS_job_create] = call_job_create,
     [SYS_job_set_limit] = call_job_set_limit,
     [SYS_job_get_info] = call_job_get_info,
     [SYS_process_get_info] = call_process_get_info,
     [SYS_thread_set_priority] = call_thread_set_priority,
     [SYS_job_kill] = call_job_kill,
+    [SYS_thread_set_fs_base] = call_thread_set_fs_base,
+    [SYS_thread_yield] = call_thread_yield,
+    [SYS_thread_start] = call_thread_start,
+    [SYS_futex_wait] = call_futex_wait,
+    [SYS_futex_wake] = call_futex_wake,
+    [SYS_futex_requeue] = call_futex_requeue,
     [SYS_resource_create] = call_resource_create,
     [SYS_pci_enum] = call_pci_enum,
     [SYS_pci_device_open] = call_pci_device_open,

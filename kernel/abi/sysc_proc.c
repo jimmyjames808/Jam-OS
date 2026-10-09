@@ -161,14 +161,14 @@ int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint
 }
 
 int64_t sysc_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0,
-                          uint64_t arg1)
+                          uint64_t arg1, uint64_t fs_base)
 {
     SYSC_TABLE(t);
     struct kobject *to;
     status_t st = handle_get(t, thread, OBJ_THREAD, RIGHT_WRITE, &to, NULL);
     if (st != OK)
         return st;
-    st = uthread_start(uthread_from_kobject(to), entry, stack, arg0, arg1, NULL);
+    st = uthread_start(uthread_from_kobject(to), entry, stack, arg0, arg1, fs_base, NULL);
     kobject_unref(to);
     return st;
 }

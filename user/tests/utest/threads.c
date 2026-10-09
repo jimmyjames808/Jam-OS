@@ -1,7 +1,9 @@
 /* utest: threads. FPU, SSE and AVX state survives preemption (more
  * threads than CPUs, each checking its registers after being preempted),
- * many threads come and go, a job kill takes threads that spin or never
- * started, and a job kill reaps a dead parent's orphans. */
+ * many threads come and go, the FS base (thread_start's and
+ * thread_set_fs_base's), futexes from ring 3, lock_take under
+ * contention, a job kill takes threads that spin or never started, and a
+ * job kill reaps a dead parent's orphans. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -141,16 +143,22 @@ bool t_fpu_state_survives_preemption(void)
 
 /* ---- lock_take ---------------------------------------------------------------- */
 
-#define LOCK_THREADS 6
-#define LOCK_ROUNDS  20000
-static bool     lock_l;
-static uint64_t lock_count;   /* plain reads and writes, only under lock_l */
+/* Many threads on every CPU, each holder now and then sleeping with the
+ * lock held, so the others go to sleep on its futex: no increment is
+ * lost, and the sleeping path (the word at 2) was taken. */
+#define LOCK_THREADS 16
+#define LOCK_ROUNDS  5000
+static lock_t   lock_l;
+static uint64_t lock_count;      /* plain reads and writes, only under lock_l */
+static uint32_t lock_contended;  /* holds that found the word at 2 (RELAXED adds) */
 
 static void lock_worker(void *arg)
 {
     (void)arg;
     for (unsigned i = 0; i < LOCK_ROUNDS; i++) {
         lock_take(&lock_l);
+        if (__atomic_load_n(&lock_l.word, __ATOMIC_RELAXED) == 2)
+            __atomic_add_fetch(&lock_contended, 1, __ATOMIC_RELAXED);
         uint64_t v = lock_count;
         if (i % 64 == 0)
             jam_nanosleep(now() + 50 * NS_PER_US);   /* a holder off the CPU: the others wait */
@@ -164,6 +172,7 @@ bool t_lock_take(void)
     static uint8_t stacks[LOCK_THREADS][8192] __attribute__((aligned(64)));
     handle_t th[LOCK_THREADS];
     lock_count = 0;
+    lock_contended = 0;
     for (unsigned i = 0; i < LOCK_THREADS; i++)
         CHECK_ST(thread_spawn("lock", lock_worker, NULL, stacks[i], sizeof(stacks[i]), &th[i]),
                  OK);
@@ -173,6 +182,134 @@ bool t_lock_take(void)
     uint64_t n = lock_count;
     lock_give(&lock_l);
     CHECK_EQ(n, (uint64_t)LOCK_THREADS * LOCK_ROUNDS);   /* no increment lost */
+    CHECK(__atomic_load_n(&lock_contended, __ATOMIC_RELAXED) > 0);   /* waiters slept */
+    CHECK_EQ(lock_l.word, 0);   /* free, nobody marked asleep */
+    return true;
+}
+
+/* ---- the FS base (thread-local storage) -------------------------------------- */
+
+#define USER_TOP_ADDR 0x7fffffffe000ull   /* the user range's top (kernel/include/jam/uentry.h) */
+#define FS_READS      200
+
+static uint64_t fs_words[4] __attribute__((aligned(64)));
+static uint32_t fs_reads, fs_wrong;   /* the thread's; read once it has ended */
+
+static uint64_t fs_word0(void)
+{
+    uint64_t v;
+    __asm__ volatile("movq %%fs:0, %0" : "=r"(v) :: "memory");
+    return v;
+}
+
+/* Started by jam_thread_start itself (rdi = the word it must see). */
+static _Noreturn void fs_thread(uint64_t want)
+{
+    for (unsigned i = 0; i < FS_READS; i++) {
+        if (fs_word0() != want)
+            fs_wrong++;
+        fs_reads++;
+        if (i % 16 == 0)
+            jam_nanosleep(now() + 20 * NS_PER_US);   /* off the CPU, maybe onto another */
+    }
+    jam_thread_exit();
+}
+
+/* thread_start's FS base is the thread's from its first instruction, and
+ * stays across sleeps; thread_set_fs_base changes the caller's; a base or
+ * entry past the user range is refused with nothing started. */
+bool t_thread_fs_base(void)
+{
+    static uint8_t stack[8192] __attribute__((aligned(64)));
+    fs_words[1] = 0x7e57f5b1ull;
+    fs_words[2] = 0x5e7f5b2ull;
+    fs_reads = fs_wrong = 0;
+    handle_t t;
+    CHECK_ST(jam_thread_create(startup_handle(SR_SELF_PROCESS), "fs", 2, 0, &t), OK);
+    uint64_t top = (((uint64_t)(uintptr_t)stack + sizeof(stack)) & ~15ull) - 8;
+    uint64_t entry = (uint64_t)(uintptr_t)fs_thread, base = (uint64_t)(uintptr_t)&fs_words[1];
+    CHECK_ST(jam_thread_start(t, entry, top, fs_words[1], 0, USER_TOP_ADDR), ERR_INVALID_ARGS);
+    CHECK_ST(jam_thread_start(t, entry, top, fs_words[1], 0, 1ull << 63), ERR_INVALID_ARGS);
+    CHECK_ST(jam_thread_start(t, USER_TOP_ADDR, top, fs_words[1], 0, base), ERR_INVALID_ARGS);
+    /* The old thread_start (74, five arguments) is retired: a stale
+     * program gets ERR_NOT_SUPPORTED, never a start with a stray base. */
+    int64_t old;
+    __asm__ volatile("syscall"
+                     : "=a"(old)
+                     : "a"(74ull), "D"((uint64_t)t), "S"(entry), "d"(top)
+                     : "rcx", "r11", "memory", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5",
+                       "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13",
+                       "xmm14", "xmm15");
+    CHECK_ST((status_t)old, ERR_NOT_SUPPORTED);
+    CHECK_ST(jam_thread_start(t, entry, top, fs_words[1], 0, base), OK);
+    if (!wait_threads(&t, 1))
+        return false;
+    CHECK_EQ(fs_reads, FS_READS);
+    CHECK_EQ(fs_wrong, 0);
+
+    CHECK_ST(jam_thread_set_fs_base((uint64_t)(uintptr_t)&fs_words[2]), OK);
+    CHECK_EQ(fs_word0(), fs_words[2]);
+    jam_nanosleep(now() + 100 * NS_PER_US);
+    CHECK_EQ(fs_word0(), fs_words[2]);
+    CHECK_ST(jam_thread_set_fs_base(USER_TOP_ADDR), ERR_INVALID_ARGS);
+    CHECK_ST(jam_thread_set_fs_base(0xffff800000000000ull), ERR_INVALID_ARGS);
+    CHECK_EQ(fs_word0(), fs_words[2]);   /* unchanged */
+    CHECK_ST(jam_thread_set_fs_base(0), OK);   /* as libos runs */
+    return true;
+}
+
+/* ---- futexes ------------------------------------------------------------------ */
+
+static uint32_t fx_word, fx_seen;   /* the waiter's word; what it saw (RELAXED) */
+static status_t fx_status;
+
+static void fx_waiter(void *arg)
+{
+    (void)arg;
+    /* Wait while the word is 0; the main thread stores 1, then wakes. */
+    while (!__atomic_load_n(&fx_word, __ATOMIC_ACQUIRE)) {
+        status_t st = jam_futex_wait(&fx_word, 0, now() + 10 * NS_PER_S, 0);
+        if (st != OK && st != ERR_BAD_STATE) {
+            fx_status = st;
+            return;
+        }
+    }
+    __atomic_store_n(&fx_seen, 1, __ATOMIC_RELEASE);
+    fx_status = OK;
+}
+
+/* The system calls from ring 3: a changed value, a deadline, bad
+ * addresses and flags, a wake with nobody waiting, and a thread woken. */
+bool t_futex_calls(void)
+{
+    static uint8_t stack[8192] __attribute__((aligned(64)));
+    static uint32_t words[4];
+    words[0] = 5;
+    CHECK_ST(jam_futex_wait(&words[0], 4, DEADLINE_NEVER, 0), ERR_BAD_STATE);
+    uint64_t t0 = now();
+    CHECK_ST(jam_futex_wait(&words[0], 5, t0 + 2 * NS_PER_MS, 0), ERR_TIMED_OUT);
+    CHECK(now() - t0 >= 2 * NS_PER_MS);
+    CHECK_ST(jam_futex_wait(&words[0], 5, 0, 0), ERR_TIMED_OUT);
+    CHECK_ST(jam_futex_wait((const uint32_t *)((uint8_t *)words + 1), 0, 0, 0), ERR_INVALID_ARGS);
+    CHECK_ST(jam_futex_wait((const uint32_t *)8, 0, 0, 0), ERR_INVALID_ARGS);
+    CHECK_ST(jam_futex_wait((const uint32_t *)0xffff800000000000ull, 0, 0, 0), ERR_INVALID_ARGS);
+    CHECK_ST(jam_futex_wait(&words[0], 5, 0, 1), ERR_INVALID_ARGS);
+    CHECK_EQ(jam_futex_wake(&words[0], 1, 0), 0);
+    CHECK_EQ(jam_futex_wake(&words[0], 1, 2), ERR_INVALID_ARGS);
+    CHECK_EQ(jam_futex_requeue(&words[0], 1, &words[1], 1, 0), 0);
+    CHECK_EQ(jam_futex_requeue(&words[0], 1, (const uint32_t *)3, 1, 0), ERR_INVALID_ARGS);
+
+    fx_word = fx_seen = 0;
+    fx_status = ERR_IO;
+    handle_t t;
+    CHECK_ST(thread_spawn("futex", fx_waiter, NULL, stack, sizeof(stack), &t), OK);
+    jam_nanosleep(now() + 2 * NS_PER_MS);   /* most likely asleep by now (either way works) */
+    __atomic_store_n(&fx_word, 1, __ATOMIC_RELEASE);
+    CHECK(jam_futex_wake(&fx_word, UINT32_MAX, 0) >= 0);
+    if (!wait_threads(&t, 1))
+        return false;
+    CHECK_ST(fx_status, OK);
+    CHECK_EQ(fx_seen, 1);
     return true;
 }
 

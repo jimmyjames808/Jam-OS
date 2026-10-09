@@ -140,12 +140,18 @@
 # processes, threads, jobs --------------------------------------------------
 # process_start moves `arg0` (a handle in the caller's table, usually the
 # startup channel) into the new process and starts `thread` there with
-# rdi = its new handle value, rsi = arg1.
+# rdi = its new handle value, rsi = arg1, and FS base 0 (the program sets
+# its own: thread_set_fs_base). An entry at or past the user range's top
+# (0x7fffffffe000) is ERR_INVALID_ARGS, nothing started.
 70  process_create    status    handle_t job, const char *name, uint64_t name_len, uint32_t flags, handle_t *proc_out, handle_t *vmar_out
 71  process_start     status    handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1
 72  process_kill      status    handle_t proc
 73  thread_create     status    handle_t proc, const char *name, uint64_t name_len, uint32_t flags, handle_t *out
-74  thread_start      status    handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1
+# thread_start: as process_start's thread (rdi = arg0, rsi = arg1), with
+# its FS base (thread-local storage) fs_base; an entry or fs_base at or past
+# the user range's top is ERR_INVALID_ARGS, nothing started. (Number 74
+# was thread_start without its FS base until M12: retired.)
+83  thread_start      status    handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1, uint64_t fs_base
 75  job_create        status    handle_t parent, uint32_t flags, handle_t *out
 76  job_set_limit     status    handle_t job, uint32_t kind, uint64_t value
 77  job_get_info      status    handle_t job, struct job_info *out
@@ -155,6 +161,33 @@
 # RIGHT_MANAGE); returns once they are all dead. The jobs take no new
 # processes or child jobs afterwards.
 80  job_kill          status    handle_t job
+
+# threads: thread-local storage, futexes, yield -----------------------------
+# The calling thread's FS base (its thread-local storage pointer, musl's
+# __set_thread_area), from the return on; kept across every switch and
+# move to another CPU. GS stays 0. ERR_INVALID_ARGS at or past the user
+# range's top (0x7fffffffe000). A thread that loads a selector into FS
+# itself has an undefined base until it calls this again.
+81  thread_set_fs_base status   uint64_t base
+# Give up the CPU to a ready thread of the same or a higher priority, if
+# there is one on this CPU (sched_yield); OK.
+82  thread_yield      status    void
+# Futexes: a wait on a 32-bit word of the caller's own
+# memory, named by the process and the word's address (private: threads
+# of one process meet there). flags: 0 (reserved for a shared kind).
+# futex_wait sleeps if *addr == expected when the kernel reads it (after
+# queueing the caller, so a futex_wake that follows a store to the word is
+# never lost) until a futex_wake picks it (OK; spurious wakes are allowed:
+# check the word again) or deadline_ns (ERR_TIMED_OUT); ERR_BAD_STATE at
+# once if *addr != expected; ERR_INVALID_ARGS for flags, an address that
+# isn't 4-aligned, outside user space or not readable.
+85  futex_wait        status    const uint32_t *addr, uint32_t expected, uint64_t deadline_ns, uint32_t flags
+# Wake up to count threads waiting on addr, oldest first: how many.
+86  futex_wake        i64       const uint32_t *addr, uint32_t count, uint32_t flags
+# Wake up to `wake` threads waiting on addr, then move up to `requeue` of
+# the others to wait on addr2 (a futex_wake there wakes them): how many it
+# woke and moved together (musl's condition variables).
+87  futex_requeue     i64       const uint32_t *addr, uint32_t wake, const uint32_t *addr2, uint32_t requeue, uint32_t flags
 
 # hardware ------------------------------------------------------------------
 # Resources (RES_* in <jam/abi.h>): a slice must lie inside its parent,

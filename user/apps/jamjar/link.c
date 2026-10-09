@@ -22,7 +22,7 @@
 
 static struct {
     handle_t    ch, wake;
-    bool        lock;
+    lock_t      lock;
     struct snap snap;                  /* lock */
     struct cmd  q[QUEUE];              /* lock */
     unsigned    nq;                    /* lock */

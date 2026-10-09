@@ -452,8 +452,9 @@ status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *sta
     if (st != OK)
         return st;
     uint64_t top = ((uint64_t)(uintptr_t)stack + stack_size) & ~15ull;
+    /* No thread-local storage in libos: FS base 0, as the first thread's. */
     st = jam_thread_start(t, (uint64_t)(uintptr_t)thread_entry, top - 8,
-                          (uint64_t)(uintptr_t)fn, (uint64_t)(uintptr_t)arg);
+                          (uint64_t)(uintptr_t)fn, (uint64_t)(uintptr_t)arg, 0);
     if (st != OK) {
         jam_handle_close(t);
         return st;

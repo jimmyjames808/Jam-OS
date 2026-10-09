@@ -11,6 +11,7 @@
 #include <jam/percpu.h>
 #include <jam/sched.h>
 #include <jam/string.h>
+#include <jam/syscall_impl.h>
 #include <jam/uentry.h>
 #include <jam/x86.h>
 
@@ -304,6 +305,12 @@ void thread_yield(void)
 {
     PATH_MARK(PATH_MK_YIELD);
     schedule();
+}
+
+int64_t sysc_thread_yield(void)
+{
+    thread_yield();   /* queued behind the ready threads of its priority */
+    return OK;
 }
 
 void thread_set_priority(struct thread *t, int prio)

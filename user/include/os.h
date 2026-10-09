@@ -178,11 +178,14 @@ status_t spawn_wait(handle_t proc, uint64_t timeout_ns, struct process_info *inf
  * exits when fn returns. *out gets its thread handle. */
 status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *stack,
                       size_t stack_size, handle_t *out);
-/* A lock for our threads (user/lib/lock.c): *l false is free. A waiter
- * pauses briefly, then sleeps 20 us between tries. Short holds only;
- * never taken twice by one thread. */
-void     lock_take(bool *l);
-void     lock_give(bool *l);
+/* A lock for our threads (user/lib/lock.c): a zeroed lock_t is free. A
+ * waiter spins briefly, then sleeps on a futex until the holder gives it.
+ * Short holds only; never taken twice by one thread. */
+typedef struct {
+    uint32_t word;   /* 0 free, 1 held, 2 held with sleepers (lock.c) */
+} lock_t;
+void     lock_take(lock_t *l);
+void     lock_give(lock_t *l);
 
 /* files ---------------------------------------------------------------------------
  * The namespace: the mount points a program was given, each with its `fs`

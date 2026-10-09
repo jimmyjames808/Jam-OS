@@ -103,7 +103,7 @@ struct uthread {
     struct thread    *t;             /* (process lock) once started; our join reference */
     int               state;                     /* (process lock) enum ut_state */
     int               prio;                      /* priority its thread starts at */
-    uint64_t          entry, stack, arg0, arg1;  /* thread_start's arguments */
+    uint64_t          entry, stack, arg0, arg1, fs_base;  /* thread_start's arguments */
     char              name[24];                  /* NUL-terminated */
 };
 
@@ -636,6 +636,7 @@ static void uthread_main(void *arg)
     t->aspace = as;
     aspace_switch(NULL, as);
     irq_enable();
+    t->fs_base = u->fs_base;   /* before its first entry to ring 3, which loads it */
     /* A kill from here on is caught by arch_enter_user's return-to-user
      * check, since the cancel flag is set before the thread is woken. */
     arch_enter_user(u->entry, u->stack, u->arg0, u->arg1);
@@ -645,10 +646,16 @@ static void uthread_main(void *arg)
  * otherwise it must already be RUNNING. On failure, *finish says whether
  * the caller must run the teardown (outside the setup mutex). */
 static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, uint64_t arg0,
-                             uint64_t arg1, const cpumask_t *mask, bool from_new, bool *finish)
+                             uint64_t arg1, uint64_t fs_base, const cpumask_t *mask,
+                             bool from_new, bool *finish)
 {
     struct process *p = u->proc;
     *finish = false;
+    /* An entry past the user range would only kill the process at its
+     * first iret (arch_enter_user): refuse the call instead. The FS base
+     * likewise: a non-canonical one would fault the kernel's wrmsr. */
+    if (entry >= USER_TOP || fs_base >= USER_TOP)
+        return ERR_INVALID_ARGS;
     uint64_t f = plock(p);
     status_t st = OK;
     if (u->state != UT_NEW || p->starting)
@@ -665,6 +672,7 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
         u->stack = stack;
         u->arg0 = arg0;
         u->arg1 = arg1;
+        u->fs_base = fs_base;
         p->nthreads++;
         if (from_new) {
             p->state = PROCESS_RUNNING;
@@ -714,10 +722,10 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
 }
 
 status_t uthread_start(struct uthread *u, uint64_t entry, uint64_t stack, uint64_t arg0,
-                       uint64_t arg1, const cpumask_t *mask)
+                       uint64_t arg1, uint64_t fs_base, const cpumask_t *mask)
 {
     bool finish;
-    status_t st = start_thread(u, entry, stack, arg0, arg1, mask, false, &finish);
+    status_t st = start_thread(u, entry, stack, arg0, arg1, fs_base, mask, false, &finish);
     if (finish)
         process_finish(u->proc);
     return st;
@@ -737,7 +745,7 @@ status_t process_start(struct process *p, struct uthread *u, uint64_t entry, uin
     if (st == OK && arg0 && arg0->obj)
         st = handle_insert(&p->handles, arg0, &hv);
     if (st == OK)
-        st = start_thread(u, entry, stack, hv, arg1, mask, true, &finish);
+        st = start_thread(u, entry, stack, hv, arg1, 0, mask, true, &finish);
     if (st != OK && hv != HANDLE_INVALID && handle_remove(&p->handles, hv, arg0) != OK) {
         /* Give arg0 back: no thread of the child ran (see `starting`), so
          * it is where we put it. If it somehow isn't, it is the child's
