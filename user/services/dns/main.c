@@ -147,7 +147,7 @@ static uint64_t turn(status_t *st)
         deadline = d;
     if (D.iface_retry && D.iface_retry < deadline)
         deadline = D.iface_retry;
-    return deadline;
+    return idl_held_deadline(&D.held, deadline);
 }
 
 /* Wait for the port until `deadline` (0: don't wait), then take what else

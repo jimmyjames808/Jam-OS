@@ -63,6 +63,7 @@ struct asker {
     uint32_t gen;
     unsigned inflight;  /* its resolves waiting for an answer */
     bool     pending;   /* requests may be queued */
+    bool     held;      /* ... and left there: its client is behind (D.held) */
     bool     sys;       /* it came through /svc/dns-sys: a system asker (the reserve) */
 };
 
@@ -85,9 +86,14 @@ struct dnsd {
     uint64_t iface_retry;      /* a failed iface or wait is asked again then */
     bool     net_pending;
     handle_t shared;           /* /svc/dns's shared channel (0: closed) */
-    bool     shared_pending;
+    bool     shared_pending, shared_held;
     handle_t shared_sys;       /* /svc/dns-sys's (0: none, or closed) */
-    bool     shared_sys_pending;
+    bool     shared_sys_pending, shared_sys_held;
+    /* The unread bound (tools/genidl.py, "The unread bound"): a channel
+     * whose client has dns's bound of answers unread is not read (held,
+     * not pending) and counted here; askers_serve makes the held ones
+     * pending again when it says so. */
+    struct idl_held held;
     uint32_t refused_shares;   /* connects refused for the ordinary openers' share */
     uint64_t next_cookie;
     struct dns_resolver r;
