@@ -455,3 +455,103 @@ void sup_restarted(const char *name, bool promoted, uint64_t kill_at, uint64_t e
             (unsigned long)((up - from) / NS_PER_US));
     probe_start(name, from, killed, promoted, ch, call);
 }
+
+/* ---- jobs that have ended ---------------------------------------------------------- */
+
+/* Dead is not yet freed: a process that has ended can still be charged a
+ * moment later for what it left on its way out (a request still queued
+ * at the server it called, which the server reads when it gets to it; its
+ * address space's pages, given back on another CPU). A job found not
+ * empty is looked at again until JOB_RECHECK has passed, and only then
+ * called not clean. */
+#define JOB_RECHECK  (2 * NS_PER_S)
+#define JOB_POLL     (20 * NS_PER_MS)
+#define MAX_RECHECKS 16
+
+static struct {
+    handle_t job;        /* a duplicate of the job's handle; 0: a free slot */
+    char     who[32];    /* the process's path, for the log */
+    uint64_t until;      /* when it is called unclean if still not empty */
+} rechecks[MAX_RECHECKS];
+static unsigned job_unclean;      /* jobs not empty in the end, since the start */
+static unsigned recheck_failures; /* ... since sup_job_settle's last call */
+
+/* Is anything still charged to the job? With `log`, say what. False if its
+ * counts can't be read (then it counts as not empty). */
+static bool job_clear(handle_t job, const char *who, bool log)
+{
+    struct job_info ji;
+    if (jam_job_get_info(job, &ji) != OK)
+        return false;
+    bool empty = true;
+    for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
+        if (ji.used[k]) {
+            if (log)
+                SAY("%s left %lu units of job kind %u", who, (unsigned long)ji.used[k], k);
+            empty = false;
+        }
+    return empty;
+}
+
+bool sup_job_empty(handle_t job, const char *who)
+{
+    if (job_clear(job, who, false))
+        return true;
+    for (unsigned i = 0; i < MAX_RECHECKS; i++) {
+        if (rechecks[i].job)
+            continue;
+        if (jam_handle_duplicate(job, RIGHT_SAME, &rechecks[i].job) != OK)
+            break;
+        snprintf(rechecks[i].who, sizeof(rechecks[i].who), "%s", who ? who : "?");
+        rechecks[i].until = now() + JOB_RECHECK;
+        return true;   /* for now: sup_job_run_due decides */
+    }
+    return job_clear(job, who, true);   /* no room to look again: decided now */
+}
+
+void sup_job_run_due(void)
+{
+    uint64_t t = now();
+    for (unsigned i = 0; i < MAX_RECHECKS; i++) {
+        if (!rechecks[i].job)
+            continue;
+        bool empty = job_clear(rechecks[i].job, rechecks[i].who, false);
+        if (!empty && t < rechecks[i].until)
+            continue;
+        if (!empty) {
+            (void)job_clear(rechecks[i].job, rechecks[i].who, true);
+            say_line(true, "%s did not end cleanly: its job was not empty %lu ms after it "
+                     "ended", rechecks[i].who, (unsigned long)(JOB_RECHECK / NS_PER_MS));
+            job_unclean++;
+            recheck_failures++;
+        }
+        jam_handle_close(rechecks[i].job);
+        rechecks[i].job = HANDLE_INVALID;
+    }
+}
+
+uint64_t sup_job_next_deadline(void)
+{
+    for (unsigned i = 0; i < MAX_RECHECKS; i++)
+        if (rechecks[i].job)
+            return now() + JOB_POLL;
+    return DEADLINE_NEVER;
+}
+
+bool sup_job_settle(void)
+{
+    uint64_t end = now() + JOB_RECHECK + JOB_POLL;
+    while (sup_job_next_deadline() != DEADLINE_NEVER && now() < end) {
+        sup_job_run_due();
+        jam_nanosleep(now() + JOB_POLL);
+    }
+    sup_job_run_due();
+    bool ok = recheck_failures == 0;
+    recheck_failures = 0;
+    return ok;
+}
+
+unsigned sup_job_unclean(void)
+{
+    return job_unclean;
+}

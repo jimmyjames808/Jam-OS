@@ -285,8 +285,8 @@ static status_t wait_event(void)
         deadline = disk_next_deadline();
     if (mounts_next_deadline() < deadline)
         deadline = mounts_next_deadline();
-    if (job_next_deadline() < deadline)
-        deadline = job_next_deadline();
+    if (sup_job_next_deadline() < deadline)
+        deadline = sup_job_next_deadline();
     status_t st = jam_port_wait(port, deadline, &pkt);
     if (st != OK)
         return st;
@@ -333,7 +333,7 @@ static status_t run(void)
         sup_run_due();
         disk_run_due();
         mounts_run_due();
-        job_run_due();
+        sup_job_run_due();
     }
 }
 
@@ -390,8 +390,9 @@ static bool stop_all(void)
             jam_handle_close(devs[i].dev);
         usb_bus_gone(&devs[i]);   /* the interface channels we kept */
     }
-    if (!job_settle())
-        ok = false;   /* said which, and counted in problems */
+    if (!sup_job_settle())
+        ok = false;   /* said which, and counted below */
+    problems += sup_job_unclean();   /* jobs not empty in the end (supervise.h) */
     if (problems) {
         say(true, "devmgr: %u driver problem(s) while running (crashes, give-ups: see above)",
             problems);

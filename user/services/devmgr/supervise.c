@@ -160,7 +160,7 @@ void sup_died(struct binding *b, uint32_t gen)
              * they are gone too (a service in the middle of a request has
              * not ended by itself yet). */
             disk_stopped(b);
-            bool clean = job_empty(b->job, b->path);
+            bool clean = sup_job_empty(b->job, b->path);
             forget_driver(b);
             problems += !clean;
             usb_retire(b, clean ? "ended, device gone" : "device gone, did not end cleanly");
@@ -181,7 +181,7 @@ void sup_died(struct binding *b, uint32_t gen)
         }
     }
     if (!info.killed && info.exit_code == 0 && !b->killed) {
-        bool clean = job_empty(b->job, b->path);
+        bool clean = sup_job_empty(b->job, b->path);
         forget_driver(b);
         close_client(b);
         b->state = DEVMGR_SUP_FINISHED;
