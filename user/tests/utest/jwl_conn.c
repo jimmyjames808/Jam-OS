@@ -463,3 +463,50 @@ bool t_jwl_conn_new_ids(void)
     CHECK_EQ(b1, b0);
     return true;
 }
+
+/* A batch with a handle that the channel can't take now is held, and goes
+ * later with a handle that still works: a write takes the handles it is
+ * given whatever its status (M12's Q1), so the transport sends duplicates
+ * and keeps the originals until one went (review W, W1). The client's
+ * queue is filled by hand, from a duplicate of the compositor's end. */
+bool t_jwl_conn_held_handles(void)
+{
+    uint64_t h0, b0, h1, b1;
+    held_now(&h0, &b0);
+    struct pair p;
+    if (!pair_up(&p))
+        return false;
+    handle_t fill;
+    CHECK_ST(jam_handle_duplicate(p.sv->ch, RIGHT_SAME, &fill), OK);
+    uint32_t junk = 0;
+    unsigned queued = 0;
+    while (jam_channel_write(fill, &junk, sizeof(junk), NULL, 0) == OK)
+        queued++;
+    CHECK_EQ(queued, CHANNEL_MAX_QUEUED);
+    union jwl_arg a[1];
+    a[0].h = new_vmo();
+    CHECK(a[0].h != HANDLE_INVALID);
+    CHECK_ST(say(p.sv, 3, &jt_all, JT_EV_HANDLE, a), OK);
+    CHECK_ST(jwl_conn_flush(p.sv), OK);
+    CHECK(p.sv->held != NULL);   /* the channel was full: held, with its handle */
+    for (unsigned i = 0; i < queued; i++)
+        CHECK_ST(jam_channel_read(&(struct channel_read_args){
+                     .h = p.cl->ch, .rd_cap = sizeof(junk),
+                     .rd_bytes = (uint64_t)(uintptr_t)&junk }),
+                 OK);
+    CHECK_ST(jwl_conn_flush(p.sv), OK);
+    CHECK(p.sv->held == NULL);
+    struct jwl_msg m;
+    CHECK_ST(jwl_conn_next(p.cl, &m), OK);
+    CHECK(m.id == 3 && m.opcode == JT_EV_HANDLE && m.nhandles == 1);
+    uint64_t size = 0;
+    CHECK_ST(jam_vmo_get_size(m.args[0].h, &size), OK);   /* a working VMO */
+    CHECK_EQ(size, PAGE_SIZE);
+    CHECK_ST(jam_handle_close(m.args[0].h), OK);
+    CHECK_ST(jam_handle_close(fill), OK);
+    pair_down(&p);
+    held_now(&h1, &b1);
+    CHECK_EQ(h1, h0);
+    CHECK_EQ(b1, b0);
+    return true;
+}

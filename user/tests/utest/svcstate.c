@@ -93,10 +93,6 @@ bool t_svcstate_fresh_and_adopted(void)
     CHECK(new_state(&state, &svc));
     CHECK_ST(jam_handle_duplicate(svc, RIGHT_SAME, &x), ERR_ACCESS_DENIED);
     CHECK_ST(jam_vmo_set_size(svc, 2 * svcstate_size(&L)), ERR_ACCESS_DENIED);
-    CHECK_ST(jam_channel_create(&x, &y), OK);
-    CHECK_ST(jam_channel_write(x, "", 0, &svc, 1), ERR_ACCESS_DENIED);
-    jam_handle_close(x);
-    jam_handle_close(y);
 
     struct svcstate s = { 0 }, t = { 0 };
     enum svcstate_start how;
@@ -128,7 +124,12 @@ bool t_svcstate_fresh_and_adopted(void)
     bad.user_size = 4 * PAGE_SIZE;   /* more than this VMO holds */
     CHECK_ST(svcstate_open(svc, &bad, &s, &how), ERR_OUT_OF_RANGE);
     CHECK_ST(svcstate_create(SVCSTATE_MAX_SIZE + 1, &x), ERR_OUT_OF_RANGE);
-    jam_handle_close(svc);
+    /* Last, as a refused send closes the handle it was given: no transfer. */
+    CHECK_ST(jam_channel_create(&x, &y), OK);
+    CHECK_ST(jam_channel_write(x, "", 0, &svc, 1), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(svc), ERR_BAD_HANDLE);
+    jam_handle_close(x);
+    jam_handle_close(y);
     jam_handle_close(state);
     CHECK_EQ(handles_used(), before);
     return true;

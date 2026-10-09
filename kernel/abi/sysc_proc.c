@@ -82,27 +82,31 @@ int64_t sysc_process_start(handle_t proc, handle_t thread, uint64_t entry, uint6
                            handle_t arg0, uint64_t arg1)
 {
     SYSC_TABLE(t);
+    /* arg0 leaves our table whatever the status (M12's Q1, as a channel
+     * send's handles): moved into the child, or closed. */
     struct kobject *po, *to;
     status_t st = handle_get(t, proc, OBJ_PROCESS, RIGHT_WRITE, &po, NULL);
-    if (st != OK)
+    if (st != OK) {
+        handle_close(t, arg0);
         return st;
+    }
     st = handle_get(t, thread, OBJ_THREAD, RIGHT_WRITE, &to, NULL);
     if (st != OK) {
+        handle_close(t, arg0);
         kobject_unref(po);
         return st;
     }
     struct khandle kh = { NULL, 0 };
     if (arg0 != HANDLE_INVALID)
         st = handle_take(t, arg0, &kh);   /* reserved in our table until we know */
+    if (st != OK)
+        handle_close(t, arg0);   /* no RIGHT_TRANSFER: closed all the same */
     if (st == OK) {
         st = process_start(process_from_kobject(po), uthread_from_kobject(to), entry, stack, &kh,
                            arg1, NULL);
         if (arg0 != HANDLE_INVALID) {
-            handle_t back;
-            if (st == OK || !kh.obj)
-                handle_commit(t, arg0);           /* it lives in the child now */
-            else if (handle_untake(t, arg0, &kh, &back) != OK)
-                khandle_release(&kh);
+            handle_commit(t, arg0);   /* it lives in the child now, or ... */
+            khandle_release(&kh);     /* ... it is closed (a no-op if the child has it) */
         }
     }
     kobject_unref(to);

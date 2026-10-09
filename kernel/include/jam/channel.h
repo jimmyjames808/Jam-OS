@@ -72,7 +72,8 @@ static inline struct chan_bytes chan_ubytes(uint64_t uaddr, uint32_t len)
 status_t channel_create(struct channel **a, struct channel **b);
 
 /* Queue a message on the PEER. On success the khandles are consumed (their
- * .obj set to NULL); on failure they are untouched and still the caller's.
+ * .obj set to NULL); on failure they are untouched and still the caller's
+ * (the system calls then close them: kernel/abi/channel_sys.c, M12's Q1).
  * Sending this channel's own endpoint or its peer, or any endpoint whose own
  * queue already holds an endpoint, is ERR_NOT_SUPPORTED: each could close a
  * reference cycle nobody can reach. Peer gone: ERR_PEER_CLOSED. Peer's

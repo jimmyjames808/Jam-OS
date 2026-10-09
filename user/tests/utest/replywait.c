@@ -487,6 +487,73 @@ bool t_reply_wait_refusals(void)
     return true;
 }
 
+/* M12's Q1: the handles a send is given are gone when it returns, whatever
+ * its status: a refused list (one without RIGHT_TRANSFER), a write whose
+ * peer has gone, a call whose peer has gone, a reply_wait refused for its
+ * wait handle, a write to something that isn't a channel, and
+ * process_start's arg0 with a bad process. Only an error found before the
+ * list is read (its length) leaves them. */
+static bool gone(handle_t h)
+{
+    return jam_event_signal(h, 0, SIG_SIGNALED) == ERR_BAD_HANDLE;
+}
+
+bool t_handles_always_moved(void)
+{
+    struct job_info before, after;
+    CHECK_ST(info_of(own_job(), &before), OK);
+    handle_t a, b, e[2], ro;
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_event_create(&e[1]), OK);
+    CHECK_ST(jam_handle_duplicate(e[1], RIGHT_WAIT | RIGHT_SIGNAL, &ro), OK);   /* no TRANSFER */
+    CHECK_ST(jam_handle_close(e[1]), OK);
+    e[1] = ro;
+    CHECK_ST(jam_channel_write(a, "abcd", 4, e, 2), ERR_ACCESS_DENIED);
+    CHECK(gone(e[0]) && gone(e[1]));
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* nothing sent */
+
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_channel_write(a, "abcd", CHANNEL_MAX_BYTES + 1, e, 1), ERR_OUT_OF_RANGE);
+    CHECK(!gone(e[0]));   /* refused before the list was read: still ours */
+    CHECK_ST(jam_channel_write(e[0], "abcd", 4, e, 1), ERR_WRONG_TYPE);
+    CHECK(gone(e[0]));
+
+    struct rw_req req = { 0, 0 }, rep = { 1, 2 };
+    uint32_t nb = 0;
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    struct channel_reply_wait_args x = rw_args(b, &rep, 0x7fff0000u, &req, &nb, 0);
+    x.wr_handles = (uint64_t)(uintptr_t)e;
+    x.wr_nhandles = 1;
+    CHECK_ST(jam_channel_reply_wait(&x), ERR_BAD_HANDLE);   /* the wait handle */
+    CHECK(gone(e[0]));
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* no reply */
+
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_process_start(e[0], e[0], 0x400000, 0x800000, e[0], 0), ERR_WRONG_TYPE);
+    CHECK(gone(e[0]));
+
+    CHECK_ST(jam_handle_close(b), OK);   /* the peer goes */
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_channel_write(a, "abcd", 4, e, 1), ERR_PEER_CLOSED);
+    CHECK(gone(e[0]));
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    struct channel_call_args ca = {
+        .h = a, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)&req,
+        .wr_handles = (uint64_t)(uintptr_t)e, .wr_nhandles = 1,
+        .flags = CHANNEL_CALL_TIMEOUT, .deadline_ns = RW_WAIT,
+    };
+    CHECK_ST(jam_channel_call(&ca), ERR_PEER_CLOSED);
+    CHECK(gone(e[0]));
+    CHECK_ST(jam_handle_close(a), OK);
+
+    CHECK_ST(info_of(own_job(), &after), OK);
+    CHECK_EQ(after.used[JOB_LIMIT_HANDLES], before.used[JOB_LIMIT_HANDLES]);
+    CHECK_EQ(after.used[JOB_LIMIT_MSG_BYTES], before.used[JOB_LIMIT_MSG_BYTES]);
+    return true;
+}
+
 /* ---- the kernel's chanread_reply_wait_kill_loses_nothing ---------------------- */
 
 /* The log VMO's layout: kernel/test/test_chanrw.c's RW_*. */

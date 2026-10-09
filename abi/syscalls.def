@@ -51,6 +51,14 @@
 17  object_signal     status    handle_t h, signals_t clear, signals_t set
 
 # channels ------------------------------------------------------------------
+# The handles a send is given (channel_write's and channel_write_rights's
+# list, channel_call's request handles, channel_reply_wait's reply
+# handles) leave the caller's table whatever the status, once the kernel
+# has read the list: sent with the message, or closed. A refused list too
+# (a bad value, a handle without RIGHT_TRANSFER, the channel's own end).
+# Only an error found before the list is read (its count or address, a
+# size, a flag) leaves them. A caller that may try again duplicates first.
+# process_start's arg0 follows the same rule.
 20  channel_create    status    handle_t *a, handle_t *b
 21  channel_write     status    handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, uint32_t nhandles
 22  channel_read      status    @channel_read_args
@@ -137,7 +145,8 @@
 # processes, threads, jobs --------------------------------------------------
 # process_start moves `arg0` (a handle in the caller's table, usually the
 # startup channel) into the new process and starts `thread` there with
-# rdi = its new handle value, rsi = arg1.
+# rdi = its new handle value, rsi = arg1. arg0 leaves the caller's table
+# whatever the status (closed if the start fails), as a send's handles.
 70  process_create    status    handle_t job, const char *name, uint64_t name_len, uint32_t flags, handle_t *proc_out, handle_t *vmar_out
 71  process_start     status    handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1
 72  process_kill      status    handle_t proc

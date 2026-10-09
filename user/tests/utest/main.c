@@ -279,7 +279,8 @@ static bool t_bad_pointers(void)
     CHECK_ST(jam_channel_read(&ra), ERR_INVALID_ARGS);
     ra.rd_bytes = (uint64_t)(uintptr_t)got;
     CHECK_ST(jam_channel_read(&ra), ERR_SHOULD_WAIT);   /* it was consumed */
-    /* A request with a bad buffer: nothing sent, our handle still ours. */
+    /* A request with a bad buffer: nothing sent, and our handle gone all
+     * the same (a send's handles are consumed whatever the status). */
     CHECK_ST(jam_event_create(&e), OK);
     struct channel_call_args ca = {
         .h = a, .wr_len = 8, .wr_bytes = unmapped, .wr_handles = (uint64_t)(uintptr_t)&e,
@@ -287,8 +288,9 @@ static bool t_bad_pointers(void)
         .deadline_ns = now(),
     };
     CHECK_ST(jam_channel_call(&ca), ERR_INVALID_ARGS);
-    CHECK_ST(jam_event_signal(e, 0, SIG_SIGNALED), OK);
-    CHECK_ST(jam_handle_close(e), OK);
+    CHECK_ST(jam_event_signal(e, 0, SIG_SIGNALED), ERR_BAD_HANDLE);
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* nothing sent */
     CHECK_ST(jam_handle_close(a), OK);
     CHECK_ST(jam_handle_close(b), OK);
 
@@ -577,6 +579,7 @@ static const struct {
     { "reply_wait_second_process", t_reply_wait_second_process },
     { "reply_wait_port", t_reply_wait_port },
     { "reply_wait_refusals", t_reply_wait_refusals },
+    { "handles_always_moved", t_handles_always_moved },
     { "runaway_hits_job_limits", t_runaway_hits_job_limits },
     { "kernel_objects_are_charged", t_kernel_objects_are_charged },
     { "kill_spinning_and_unstarted", t_kill_spinning_and_unstarted },
@@ -906,6 +909,7 @@ static const struct {
     { "jwl_conn_never_reads", t_jwl_conn_never_reads },
     { "jwl_conn_send_refusals", t_jwl_conn_send_refusals },
     { "jwl_conn_new_ids", t_jwl_conn_new_ids },
+    { "jwl_conn_held_handles", t_jwl_conn_held_handles },
     { "jwl_fuzz_decode", t_jwl_fuzz_decode },
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "jwlc_setup", t_jwlc_setup },

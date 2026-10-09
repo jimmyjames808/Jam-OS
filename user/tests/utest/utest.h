@@ -178,6 +178,7 @@ bool t_reply_wait_gone_caller(void);
 bool t_reply_wait_second_process(void);
 bool t_reply_wait_port(void);
 bool t_reply_wait_refusals(void);
+bool t_handles_always_moved(void);
 int  replywait_child(int argc, char **argv);
 /* keptvmo.c: VMO_KEEP_PAGES and VMAR_KEPT_ONLY, and their child modes
  * ("utest kept-..."). */
@@ -453,6 +454,7 @@ bool t_jwl_conn_window(void);
 bool t_jwl_conn_never_reads(void);
 bool t_jwl_conn_send_refusals(void);
 bool t_jwl_conn_new_ids(void);
+bool t_jwl_conn_held_handles(void);
 bool t_jwl_fuzz_decode(void);
 bool t_jwl_fuzz_conn(void);
 

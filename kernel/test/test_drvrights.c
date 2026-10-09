@@ -39,26 +39,31 @@ KTEST(chan_write_rights)
     uint8_t msg[4] = { 1, 2, 3, 4 }, in[4];
     uint32_t nb = 0, nh = 0;
 
-    /* More rights than it has: refused, the handle stays as it was. */
+    /* More rights than it has: refused, and the handle gone all the same
+     * (a send's handles are consumed whatever the status: M12's Q1). */
     rights_t r = full | RIGHT_MANAGE;
     KT_EQ(sys_channel_write_rights(&t, a, msg, 4, &e, &r, 1), ERR_INVALID_ARGS);
-    KT_EQ(rights_of(&t, e), full);
+    KT_EQ(rights_of(&t, e), 0);
 
-    /* Fewer: it arrives with exactly those, and can't go any further. */
-    r = KEEP | RIGHT_SIGNAL;
-    KT_EQ(sys_channel_write_rights(&t, a, msg, 4, &e, &r, 1), OK);
-    KT_EQ(rights_of(&t, e), 0);   /* gone from the sender */
-    KT_EQ(sys_channel_read(&t, b, in, 4, &nb, &got, 1, &nh), OK);
-    KT_EQ(nh, 1);
-    KT_EQ(rights_of(&t, got), KEEP | RIGHT_SIGNAL);
-    KT_EQ(handle_duplicate(&t, got, RIGHT_SAME, &e2), ERR_ACCESS_DENIED);
-    KT_EQ(sys_channel_write(&t, other_a, msg, 4, &got, 1), ERR_ACCESS_DENIED);
-    r = RIGHT_SAME;
-    KT_EQ(sys_channel_write_rights(&t, other_a, msg, 4, &got, &r, 1), ERR_ACCESS_DENIED);
-    KT_EQ(rights_of(&t, got), KEEP | RIGHT_SIGNAL);   /* still ours */
+    /* Fewer: it arrives with exactly those, and can't go any further (a
+     * write refuses it, and closes it as every refused list). */
+    for (int how = 0; how < 2; how++) {
+        KT_EQ(sys_event_create(&t, &e), OK);
+        r = KEEP | RIGHT_SIGNAL;
+        KT_EQ(sys_channel_write_rights(&t, a, msg, 4, &e, &r, 1), OK);
+        KT_EQ(rights_of(&t, e), 0);   /* gone from the sender */
+        KT_EQ(sys_channel_read(&t, b, in, 4, &nb, &got, 1, &nh), OK);
+        KT_EQ(nh, 1);
+        KT_EQ(rights_of(&t, got), KEEP | RIGHT_SIGNAL);
+        KT_EQ(handle_duplicate(&t, got, RIGHT_SAME, &e2), ERR_ACCESS_DENIED);
+        r = RIGHT_SAME;
+        KT_EQ(how ? sys_channel_write_rights(&t, other_a, msg, 4, &got, &r, 1)
+                  : sys_channel_write(&t, other_a, msg, 4, &got, 1),
+              ERR_ACCESS_DENIED);
+        KT_EQ(rights_of(&t, got), 0);
+    }
 
-    /* RIGHT_SAME passes it unchanged; a failed write (peer gone) puts it
-     * back with its rights. */
+    /* RIGHT_SAME passes it unchanged; a failed write (peer gone) closes it. */
     KT_EQ(sys_event_create(&t, &e), OK);
     r = RIGHT_SAME;
     KT_EQ(sys_channel_write_rights(&t, a, msg, 4, &e, &r, 1), OK);
@@ -67,7 +72,7 @@ KTEST(chan_write_rights)
     KT_EQ(handle_close(&t, b), OK);
     r = KEEP;
     KT_EQ(sys_channel_write_rights(&t, a, msg, 4, &e2, &r, 1), ERR_PEER_CLOSED);
-    KT_EQ(rights_of(&t, e2), full);
+    KT_EQ(rights_of(&t, e2), 0);
     KT_EQ(sys_channel_write_rights(&t, a, msg, 4, &e2, NULL, 1), ERR_INVALID_ARGS);
     handle_table_destroy(&t);
 }
