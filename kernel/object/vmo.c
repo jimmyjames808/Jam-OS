@@ -118,6 +118,7 @@
 #define MID_PAGES     (LEAF_PAGES * TBL_ENTRIES)         /* pages per mid table: 1 GiB */
 #define ROOT_ENTRIES  (VMO_MAX_PAGES / MID_PAGES)        /* 64 */
 #define CONTIG_MAX    (PAGE_SIZE << MAX_ORDER)           /* 4 MiB */
+_Static_assert(CONTIG_MAX == VMO_CONTIGUOUS_MAX, "<jam/abi.h> says what one buddy block holds");
 
 _Static_assert(TBL_ENTRIES * sizeof(uint64_t) == PAGE_SIZE, "a table is one page");
 

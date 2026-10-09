@@ -170,9 +170,7 @@ void dma_quarantine_flush(struct pci_dev *d);
 /* ---- the handle layer (kernel/abi/sysc_hw.c) -------------------------------
  * Same rules as <jam/sys.h>: kernel pointers, the caller's table. */
 
-/* Syscall pins report at most this many pages per call (the address list
- * is built in a kernel buffer). 4096 pages = 16 MiB. */
-#define VMO_PIN_SYS_MAX_PAGES 4096
+/* A pin through the system call: at most VMO_PIN_MAX_PAGES (<jam/abi.h>). */
 
 status_t sys_resource_create(struct handle_table *t, handle_t parent, uint32_t kind,
                              uint64_t base, uint64_t size, handle_t *out);

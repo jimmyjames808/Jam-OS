@@ -315,7 +315,7 @@ static status_t pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t
 {
     if (len == 0 || (len & (PAGE_SIZE - 1)))
         return ERR_INVALID_ARGS;
-    if ((len >> PAGE_SHIFT) > VMO_PIN_SYS_MAX_PAGES)
+    if ((len >> PAGE_SHIFT) > VMO_PIN_MAX_PAGES)
         return ERR_OUT_OF_RANGE;
     struct kobject *vo, *cap;
     status_t st = handle_get(t, vmo, OBJ_VMO, VMO_HANDLE_RIGHTS_PIN, &vo, NULL);
@@ -449,7 +449,7 @@ int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, 
     SYSC_TABLE(t);
     if (len == 0 || (len & (PAGE_SIZE - 1)))
         return ERR_INVALID_ARGS;
-    if ((len >> PAGE_SHIFT) > VMO_PIN_SYS_MAX_PAGES)
+    if ((len >> PAGE_SHIFT) > VMO_PIN_MAX_PAGES)
         return ERR_OUT_OF_RANGE;
     uint64_t n = len >> PAGE_SHIFT;
     uint64_t *buf = kmalloc(n * sizeof(uint64_t));

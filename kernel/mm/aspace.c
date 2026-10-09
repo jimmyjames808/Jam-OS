@@ -153,7 +153,7 @@
 #define CAN_SHIFT 8   /* ASPACE_CAN_x == ASPACE_x << CAN_SHIFT */
 #define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_CAN_READ | ASPACE_CAN_WRITE | \
                    ASPACE_CAN_EXEC)
-#define MAX_MAPPINGS 16384
+#define MAX_MAPPINGS VMAR_MAX_MAPPINGS   /* <jam/abi.h>: 16384 */
 
 #define SIZE_2M   (1ull << 21)
 #define SIZE_1G   (1ull << 30)

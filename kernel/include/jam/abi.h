@@ -112,8 +112,15 @@ struct port_packet {
 #define PORT_BIND_PERSISTENT 1   /* fire on every not-matching -> matching edge */
 
 /* VMOs ------------------------------------------------------------------------
- * vmo_create flags. Bits 0 and 1 (physically contiguous, below 4 GiB) are
- * for drivers: <jam/driver.h>'s DRV_VMO_*. */
+ * vmo_create flags. Bits 0 and 1 are for drivers, with a dma_cap
+ * (<jam/driver.h> also calls them DRV_VMO_*): memory a device reaches by
+ * DMA. */
+
+/* Physically contiguous, committed (zeroed) at creation, at most
+ * VMO_CONTIGUOUS_MAX bytes. */
+#define VMO_CONTIGUOUS (1u << 0)
+/* Every page below 4 GiB. */
+#define VMO_DMA32      (1u << 1)
 
 /* Pages that stay. Every page is committed at creation and charged to the
  * creator's job (vmo_create fails with ERR_NO_MEMORY, nothing made, if the
@@ -126,6 +133,15 @@ struct port_packet {
  * Not together with the drivers' bits (ERR_INVALID_ARGS). There is no
  * clone or copy-on-write child of a VMO, of this kind or any other. */
 #define VMO_KEEP_PAGES (1u << 2)
+
+/* The limits. A VMO's size: 64 GiB of address space (pages are committed
+ * as they are touched; ERR_OUT_OF_RANGE past it). A contiguous VMO's: 4
+ * MiB, the largest block the page allocator has. One vmo_pin: 4096 pages
+ * (16 MiB; ERR_OUT_OF_RANGE past it): the kernel builds the address list
+ * in a buffer of its own. */
+#define VMO_MAX_SIZE       (1ull << 36)
+#define VMO_CONTIGUOUS_MAX (4ull << 20)
+#define VMO_PIN_MAX_PAGES  4096u
 
 /* address spaces ------------------------------------------------------------
  * vmar_map / vmar_protect flags. Same values as ASPACE_* in <jam/aspace.h>
@@ -145,6 +161,10 @@ struct port_packet {
  * (vmar_protect: ERR_ACCESS_DENIED), and its length is what was mapped: a
  * VMO that grows later is mapped again to reach the new pages. */
 #define VMAR_KEPT_ONLY (1u << 4)
+
+/* Mappings an address space holds at most (a vmar_map past it, or an
+ * unmap or protect that would split one more off, is ERR_NO_RESOURCES). */
+#define VMAR_MAX_MAPPINGS 16384u
 
 /* jobs ---------------------------------------------------------------------
  * Every process belongs to a job. A job has a limit on each resource below

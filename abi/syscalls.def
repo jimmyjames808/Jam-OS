@@ -95,7 +95,7 @@
 44  port_wait         status    handle_t port, uint64_t deadline_ns, struct port_packet *out
 
 # VMOs ----------------------------------------------------------------------
-# vmo_create flags: DRV_VMO_CONTIGUOUS / DRV_VMO_DMA32 (bits 0, 1: drivers,
+# vmo_create flags: VMO_CONTIGUOUS / VMO_DMA32 (bits 0, 1: drivers,
 # with a dma_cap) and VMO_KEEP_PAGES (bit 2, <jam/abi.h>): every page
 # committed at creation and charged to the creator's job (ERR_NO_MEMORY, no
 # VMO, if the job can't pay for all of them), and none ever leaves:

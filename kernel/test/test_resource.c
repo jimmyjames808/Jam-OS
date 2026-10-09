@@ -278,7 +278,7 @@ KTEST(resource_sys_rights_and_charges)
     KT_EQ(sys_vmo_create(&t, 2 * PG, 0, HANDLE_INVALID, &rv), OK);
     uint64_t addrs[2], pin;
     KT_EQ(sys_vmo_pin(&t, rv, caph, 0, 2 * PG, addrs, &pin), ERR_ACCESS_DENIED);
-    KT_EQ(sys_vmo_pin(&t, rv, caph, 0, (VMO_PIN_SYS_MAX_PAGES + 1) * PG, addrs, &pin),
+    KT_EQ(sys_vmo_pin(&t, rv, caph, 0, (VMO_PIN_MAX_PAGES + 1) * PG, addrs, &pin),
           ERR_OUT_OF_RANGE);
     KT_EQ(sys_vmo_pin(&t, rv, caph, 0, PG + 1, addrs, &pin), ERR_INVALID_ARGS);
     KT_EQ(sys_vmo_pin(&t, rv, rv, 0, PG, addrs, &pin), ERR_WRONG_TYPE);

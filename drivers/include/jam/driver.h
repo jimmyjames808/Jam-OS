@@ -131,12 +131,13 @@ status_t drv_event_signal(handle_t ev, signals_t clear, signals_t set);
 
 /* ---- memory --------------------------------------------------------------- */
 
-/* drv_vmo_create flags (the same values as the kernel's VMO_CONTIGUOUS /
- * VMO_DMA32, which drivers can't see): memory a device reaches by DMA.
+/* drv_vmo_create flags: <jam/abi.h>'s VMO_CONTIGUOUS and VMO_DMA32, under
+ * the names drivers have always used: memory a device reaches by DMA.
  * Either one uses the driver's DR_DMA capability (no DR_DMA: refused).
- * Contiguous memory is committed (zeroed) at creation, at most 4 MiB. */
-#define DRV_VMO_CONTIGUOUS (1u << 0)
-#define DRV_VMO_DMA32      (1u << 1)   /* every page below 4 GiB */
+ * Contiguous memory is committed (zeroed) at creation, at most
+ * VMO_CONTIGUOUS_MAX (4 MiB). */
+#define DRV_VMO_CONTIGUOUS VMO_CONTIGUOUS
+#define DRV_VMO_DMA32      VMO_DMA32   /* every page below 4 GiB */
 
 status_t drv_vmo_create(uint64_t size, uint32_t flags, handle_t *out);
 status_t drv_vmo_read(handle_t vmo, uint64_t off, void *buf, uint64_t len);

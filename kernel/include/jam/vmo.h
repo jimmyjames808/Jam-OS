@@ -34,14 +34,13 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <jam/abi.h>   /* VMO_KEEP_PAGES */
+#include <jam/abi.h>   /* the flags and limits below */
 #include <jam/object.h>
 #include <jam/status.h>
 
-#define VMO_MAX_SIZE   (1ull << 36)   /* 64 GiB of address space; pages committed on demand */
-#define VMO_CONTIGUOUS (1u << 0)      /* physically contiguous, committed at creation (<= 4 MiB) */
-#define VMO_DMA32      (1u << 1)      /* every page below 4 GiB */
-/* VMO_KEEP_PAGES (1u << 2) is in <jam/abi.h>: user code asks for it. */
+/* The flags (VMO_CONTIGUOUS, VMO_DMA32, VMO_KEEP_PAGES) and the limits
+ * (VMO_MAX_SIZE, VMO_CONTIGUOUS_MAX) are in <jam/abi.h>: user code asks for
+ * them and meets them. */
 #define VMO_CREATE_FLAGS (VMO_CONTIGUOUS | VMO_DMA32 | VMO_KEEP_PAGES)
 
 /* Embeds struct kobject first (type OBJ_VMO), so the casts below are safe. */
