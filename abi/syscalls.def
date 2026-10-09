@@ -30,8 +30,13 @@
 # Register convention (jam/syscall.h): number in rax, arguments in rdi rsi
 # rdx r10 r8 r9, result in rax. Arguments narrower than 64 bits are
 # truncated to their type, as in a C call.
+#
+# Lengths (M12): a length past a call's limit (the limits are in
+# <jam/abi.h>) is ERR_OUT_OF_RANGE, with nothing cut and nothing done.
 
 # basics --------------------------------------------------------------------
+# Print len bytes (at most DEBUG_WRITE_MAX, 4096) to the kernel log as
+# "[name] line" lines.
 1   debug_write       status    const char *buf, uint64_t len
 2   process_exit      noreturn  int64_t code
 3   thread_exit       noreturn  void
@@ -172,7 +177,9 @@
 # (0x7fffffffe000) is ERR_INVALID_ARGS, nothing started. arg0 leaves the
 # caller's table whatever the status (closed if the start fails), as a
 # send's handles.
-70  process_create    status    handle_t job, const char *name, uint64_t name_len, uint32_t flags, handle_t *proc_out, handle_t *vmar_out
+# process_create's and thread_create's names: at most PROCESS_NAME_MAX
+# (31) bytes, else ERR_OUT_OF_RANGE (libos cuts a name to fit first).
+70  process_create   status    handle_t job, const char *name, uint64_t name_len, uint32_t flags, handle_t *proc_out, handle_t *vmar_out
 71  process_start     status    handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1
 72  process_kill      status    handle_t proc
 73  thread_create     status    handle_t proc, const char *name, uint64_t name_len, uint32_t flags, handle_t *out
@@ -315,7 +322,8 @@
 # Blocks until done; returns the result (ktest: tests run; stress: 0 if it
 # passed, else 1; devices: PCI functions; crash: how many tests / 0),
 # ERR_NOT_SUPPORTED for an unknown command (or a kernel
-# without tests), ERR_BAD_STATE while one runs.
+# without tests), ERR_BAD_STATE while one runs; a command past
+# DEBUG_COMMAND_MAX (63) bytes is ERR_OUT_OF_RANGE.
 
 113 debug_command     i64       handle_t root, const char *cmd, uint64_t len
 # Reset the machine (needs RIGHT_ROOT_REBOOT on the root): the ACPI reset
@@ -333,7 +341,8 @@
 # shows (needs RIGHT_ROOT_SERIAL_OUT on the root). At most 4096 bytes per call.
 117 serial_write      status    handle_t root, const void *buf, uint64_t len
 # Name the file this boot's log is saved as (logd, once it has chosen it:
-# "boot-0042"; 1..31 of A-Z a-z 0-9 - _, else ERR_INVALID_ARGS). The kernel
+# "boot-0042"; 1..31 of A-Z a-z 0-9 - _, else ERR_INVALID_ARGS, or
+# ERR_OUT_OF_RANGE past KLOG_NAME_MAX). The kernel
 # only keeps it: if this boot panics, the next boot saves its copy of this
 # boot's log as <name>-crash.txt. Needs RIGHT_READ on a klog reader
 # (whoever follows the log names its copy).
@@ -394,7 +403,7 @@
 # kernel keeps ready in the region reserved at boot, for a reboot or a
 # panic) with the kernel ELF and the bootfs image in two VMOs (RIGHT_READ,
 # each read whole). cmdline: the new kernel's command line (len 0: this
-# boot's, without its one-time words; at most 511 bytes). flags: 0.
+# boot's, without its one-time words; at most KEXEC_CMDLINE_MAX, 511 bytes: ERR_OUT_OF_RANGE past it). flags: 0.
 # ERR_NOT_SUPPORTED: no region (crashkernel=0); ERR_INVALID_ARGS: not a
 # kernel ELF or a bootfs image, a bad command line or flags;
 # ERR_NO_RESOURCES: too big for the region. A refused image changes
@@ -413,7 +422,7 @@
 # len bytes (at most RANDOM_GET_MAX, 256, <jam/abi.h>) from the kernel's
 # generator into buf: ChaCha20 seeded from RDSEED/RDRAND, TSC timings and
 # boot data (<jam/random.h>); unpredictable, never blocks. No handle or
-# right needed. len 0: OK, buf untouched. ERR_INVALID_ARGS: len too big,
-# or buf not all writable (part of it may have been written). libos:
+# right needed. len 0: OK, buf untouched. ERR_OUT_OF_RANGE: len too big;
+# ERR_INVALID_ARGS: buf not all writable (part of it may have been written). libos:
 # os_random.
 150 random_get        status    void *buf, uint64_t len

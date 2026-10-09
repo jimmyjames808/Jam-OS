@@ -63,3 +63,48 @@ bool t_handle_info(void)
     CHECK_ST(jam_handle_close(a), OK);
     return true;
 }
+
+static void quick_thread(void *arg)
+{
+    (void)arg;
+}
+
+/* One rule for a length past a call's limit (review K finding 20):
+ * ERR_OUT_OF_RANGE, nothing cut and nothing done; libos cuts a process's
+ * or a thread's name itself. */
+bool t_length_limits(void)
+{
+    static const char name[] = "a-name-that-is-longer-than-thirty-one-bytes";
+    handle_t job, p, pv, t;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(jam_process_create(job, name, PROCESS_NAME_MAX + 1, 0, &p, &pv), ERR_OUT_OF_RANGE);
+    CHECK_ST(jam_process_create(job, name, PROCESS_NAME_MAX, 0, &p, &pv), OK);
+    CHECK_ST(jam_thread_create(p, name, PROCESS_NAME_MAX + 1, 0, &t), ERR_OUT_OF_RANGE);
+    CHECK_ST(jam_thread_create(p, name, PROCESS_NAME_MAX, 0, &t), OK);
+    CHECK_ST(jam_handle_close(t), OK);
+    CHECK_ST(jam_handle_close(pv), OK);
+    CHECK_ST(jam_handle_close(p), OK);
+    CHECK_ST(jam_handle_close(job), OK);
+
+    /* libos's thread_spawn cuts the name before the call */
+    static uint8_t stack[8192] __attribute__((aligned(16)));
+    CHECK_ST(thread_spawn(name, quick_thread, NULL, stack, sizeof(stack), &t), OK);
+    CHECK_ST(jam_object_wait_one(t, SIG_TERMINATED, now() + 5 * NS_PER_S, NULL), OK);
+    CHECK_ST(jam_handle_close(t), OK);
+
+    /* debug_write refuses rather than cuts: nothing read past the limit */
+    CHECK_ST(jam_debug_write("x", DEBUG_WRITE_MAX + 1), ERR_OUT_OF_RANGE);
+    CHECK_ST(jam_debug_report("x", DEBUG_WRITE_MAX + 1), ERR_OUT_OF_RANGE);
+
+    /* debug_command's, where our starter gave us the power (nothing runs:
+     * the length is refused first) */
+    handle_t root = startup_handle(SR_RESOURCE), dbg;
+    if (root && jam_handle_duplicate(root, RIGHT_ROOT_DEBUG, &dbg) == OK) {
+        char cmd[DEBUG_COMMAND_MAX + 1];
+        for (unsigned i = 0; i < sizeof(cmd); i++)
+            cmd[i] = 'x';
+        CHECK_EQ(jam_debug_command(dbg, cmd, sizeof(cmd)), ERR_OUT_OF_RANGE);
+        CHECK_ST(jam_handle_close(dbg), OK);
+    }
+    return true;
+}

@@ -20,7 +20,7 @@ static int64_t debug_out(uint64_t buf, uint64_t len, bool report_it)
     if (!p)
         return ERR_BAD_STATE;
     if (len > DEBUG_WRITE_MAX)
-        len = DEBUG_WRITE_MAX;
+        return ERR_OUT_OF_RANGE;   /* nothing written */
     char chunk[DEBUG_CHUNK];
     while (len) {
         uint64_t n = len < sizeof(chunk) ? len : sizeof(chunk);

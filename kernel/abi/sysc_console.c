@@ -415,7 +415,9 @@ int64_t sysc_klog_name(handle_t reader, uint64_t uname, uint64_t len)
         return st;
     kobject_unref(r);   /* only the right was needed */
     char name[KLOG_NAME_MAX + 1];
-    if (len == 0 || len >= sizeof(name) || copy_from_user(name, uname, len) != OK)
+    if (len > KLOG_NAME_MAX)
+        return ERR_OUT_OF_RANGE;
+    if (len == 0 || copy_from_user(name, uname, len) != OK)
         return ERR_INVALID_ARGS;
     return kexec_set_log_name(name, len);
 }
@@ -461,7 +463,9 @@ int64_t sysc_debug_command(handle_t root, uint64_t ucmd, uint64_t len)
     if (st != OK)
         return st;
     char cmd[DEBUG_COMMAND_MAX + 1];
-    if (len == 0 || len >= sizeof(cmd))
+    if (len > DEBUG_COMMAND_MAX)
+        return ERR_OUT_OF_RANGE;
+    if (len == 0)
         return ERR_INVALID_ARGS;
     if (copy_from_user(cmd, ucmd, len) != OK)
         return ERR_INVALID_ARGS;

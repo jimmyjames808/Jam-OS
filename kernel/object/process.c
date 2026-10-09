@@ -104,7 +104,7 @@ struct uthread {
     int               state;                     /* (process lock) enum ut_state */
     int               prio;                      /* priority its thread starts at */
     uint64_t          entry, stack, arg0, arg1, fs_base;  /* thread_start's arguments */
-    char              name[24];                  /* NUL-terminated */
+    char              name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
 };
 
 static void copy_name(char *dst, size_t cap, const char *src)

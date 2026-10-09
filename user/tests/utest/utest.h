@@ -752,3 +752,4 @@ bool t_mix_limits(void);
 
 /* handles.c: M12 K3's calls (handle_info, ...). */
 bool t_handle_info(void);
+bool t_length_limits(void);

@@ -232,7 +232,7 @@ static bool t_kexec_refusals(void)
     CHECK_ST(jam_klog_name(v, "boot-0001", 9), ERR_WRONG_TYPE);
     CHECK_ST(jam_klog_name(klog, "a b", 3), ERR_INVALID_ARGS);
     CHECK_ST(jam_klog_name(klog, "", 0), ERR_INVALID_ARGS);
-    CHECK_ST(jam_klog_name(klog, "boot-0001-and-a-name-too-long-to-keep", 37), ERR_INVALID_ARGS);
+    CHECK_ST(jam_klog_name(klog, "boot-0001-and-a-name-too-long-to-keep", 37), ERR_OUT_OF_RANGE);
     CHECK_ST(jam_klog_name(klog, (const char *)8, 4), ERR_INVALID_ARGS);   /* a bad pointer */
     CHECK_ST(jam_handle_close(klog), OK);
     CHECK_ST(jam_handle_close(rd), OK);
@@ -245,6 +245,8 @@ static bool t_kexec_refusals(void)
         CHECK_ST(jam_kexec_load(m, mapo, v, NULL, 0, 0), ERR_ACCESS_DENIED);        /* no READ */
         CHECK_ST(jam_kexec_load(m, v, v, (const char *)8, 4, 0), ERR_INVALID_ARGS); /* pointer */
         CHECK_ST(jam_kexec_load(m, v, v, "a\nb", 3, 0), ERR_INVALID_ARGS);          /* not text */
+        CHECK_ST(jam_kexec_load(m, v, v, (const char *)8, KEXEC_CMDLINE_MAX + 1, 0),
+                 ERR_OUT_OF_RANGE);                                                 /* too long */
         status_t st = jam_kexec_load(m, v, v, NULL, 0, 0);   /* zeros: no ELF */
         CHECK(st == ERR_INVALID_ARGS || st == ERR_NOT_SUPPORTED);
         CHECK_ST(jam_handle_close(mapo), OK);
@@ -1074,6 +1076,7 @@ static const struct {
     { "thread_fs_base", t_thread_fs_base },
     { "futex_calls", t_futex_calls },
     { "handle_info", t_handle_info },
+    { "length_limits", t_length_limits },
 };
 
 int main(int argc, char **argv)
