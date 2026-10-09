@@ -1156,7 +1156,8 @@ int main(int argc, char **argv)
     const char *only = argc == 3 && !strcmp(argv[1], "only") ? argv[2] : NULL;
     if (argc >= 2 && !only)
         return child_main(argc, argv);
-    unsigned n = 0, passed = 0;
+    unsigned n = 0, passed = 0, nfailed = 0;
+    unsigned failed[64];   /* the tests that failed (indexes into tests[]), the first 64 */
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
         if (only && strncmp(tests[i].name, only, strlen(only)))
             continue;
@@ -1166,8 +1167,28 @@ int main(int argc, char **argv)
         if (tests[i].fn()) {
             passed++;
             printf("utest: %s ok (%lu ms)\n", utest_cur, (unsigned long)((now() - t0) / NS_PER_MS));
+        } else if (nfailed < sizeof(failed) / sizeof(failed[0])) {
+            failed[nfailed++] = i;
         }
     }
+    /* The names of the failed tests, in the RESULTS box: a run's printed lines (the "FAILED at
+     * line" of each) are rate-limited by the kernel and a busy run drops some, but reports
+     * are not. As many names as fit in lines of up to 90 characters (a report is one line). */
+    char names[96];
+    int at = 0;
+    for (unsigned k = 0; k < nfailed; k++) {
+        const char *name = tests[failed[k]].name;
+        int need = (int)strlen(name) + 1;
+        if (at && at + need > 90) {
+            jam_debug_report(names, (uint64_t)at);
+            at = 0;
+        }
+        if (!at)
+            at = snprintf(names, sizeof(names), "utest: FAILED tests:");
+        at += snprintf(names + at, sizeof(names) - (size_t)at, " %s", name);
+    }
+    if (at)
+        jam_debug_report(names, (uint64_t)at);
     char line[96];
     int len = passed == n ? snprintf(line, sizeof(line), "utest: %u passed", passed)
                           : snprintf(line, sizeof(line), "utest: %u passed, %u FAILED", passed,

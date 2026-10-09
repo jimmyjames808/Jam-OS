@@ -379,9 +379,17 @@ class Stream:
     def take(self, flags, seq, data):
         if not data and not flags & F_FIN:
             return
-        if seq != self.rcv_nxt or self.guest_fin:
-            self.ack()   # out of order, or a repeat: the ACK says where we are
+        # A segment may start before rcv_nxt and reach past it: a zero-window probe
+        # (one byte) taken when the window opened, and the segment it came from sent
+        # again from its first byte (lwIP does, and any sender may). Its first `old`
+        # bytes are ours already (RFC 9293 3.10.7.4: take the new part). Entirely
+        # old, or past rcv_nxt (a hole before it), or after the FIN: the ACK says
+        # where we are.
+        old = diff(self.rcv_nxt, seq)
+        if self.guest_fin or old < 0 or old > len(data):
+            self.ack()
             return
+        data = data[old:]
         kept = data[:self.window()]   # past our window: dropped, sent again later
         if kept:
             self.to_host += kept
@@ -772,12 +780,39 @@ def _sack_selftest(np):
     return None
 
 
+def _overlap_selftest(np):
+    """A segment sent again from its first byte after its first byte was taken
+    (a zero-window probe is one byte of it; lwIP sends the whole segment again
+    when the window opens): its new part is taken, not dropped as out of order
+    (the relay once stalled a download for good on it), and the ACK says so."""
+    a = _Wire()
+    relay = Relay(a, np, {}, [])
+    c = Stream(relay, (b"\x0a\x02\x15\xae", 41000), (b"\x0a\x02\x15\x05", 5202), a.guest_mac,
+               None, True)
+    c.state = "ESTABLISHED"
+    c.established((c.iss + 1) & M32, 1 << 20, {2: MSS})
+    c.rcv_nxt = base = 1000
+    data = bytes(range(256)) * 6
+    c.take(F_ACK, base, data[:1])                       # the probe
+    c.take(F_ACK, base, data[:MSS])                     # the whole segment again
+    c.take(F_ACK, base, data[:MSS])                     # and once more: all old now
+    c.take(F_ACK, base + MSS - 10, data[MSS - 10:MSS + 40])   # overlapping the end by 10
+    c.take(F_ACK, base + MSS + 60, data[:5])            # a hole before it: dropped
+    if bytes(c.to_host) != (data * 2)[:MSS + 40] or c.rcv_nxt != base + MSS + 40:
+        return "relay selftest: overlapping segments: %d bytes taken, rcv_nxt +%d" % (
+            len(c.to_host), c.rcv_nxt - base)
+    c.take(F_ACK | F_FIN, base + MSS + 30, (data * 2)[MSS + 30:MSS + 40])   # its FIN, 10 old bytes
+    if not c.guest_fin or c.rcv_nxt != base + MSS + 41:
+        return "relay selftest: a FIN on an overlapping segment not taken"
+    return None
+
+
 def selftest(np, tcp, nbytes=300000, drop=0.02, limit=30.0):
     """The relay both ways against tools/tcppeer.py's TCP as the guest, over
     a lossy wire, with real sockets on 127.0.0.1 as the Mac's programs:
     every byte right both ways; and fast recovery by hand (_sack_selftest).
     Returns a problem or None."""
-    problem = _sack_selftest(np)
+    problem = _sack_selftest(np) or _overlap_selftest(np)
     if problem:
         return problem
     lport, hport = np.free_ports(2)

@@ -59,12 +59,16 @@ KTEST(stack_cache_limit_frees)
     stack_release = true;
     for (int i = 0; i < THREADS; i++)
         thread_join(t[i]);
-    /* Reaps happen at each CPU's next switch; let them, then trim. */
-    for (int i = 0; i < 4; i++) {
-        thread_sleep_ms(2);
+    /* Reaps happen at each CPU's next switch; let them, then trim. Not a fixed 8 ms: on a
+     * loaded host a CPU may not switch for longer, so wait (at most 1 s) until the stacks
+     * over the limit have been freed. */
+    for (int i = 0; i < 200; i++) {
+        thread_sleep_ms(5);
         thread_yield();
+        sched_stack_trim();
+        if (sched_stacks_freed() - freed0 >= THREADS - LIMIT)
+            break;
     }
-    sched_stack_trim();
 
     KT_ASSERT(sched_stack_cache_pages() <= LIMIT * 16);
     KT_ASSERT(sched_stacks_freed() - freed0 >= THREADS - LIMIT);

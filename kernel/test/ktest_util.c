@@ -47,6 +47,16 @@ uint64_t kt_free_and_cached_pages(void)
     return free + sched_stack_cache_pages();
 }
 
+uint64_t kt_wait_free_and_cached(uint64_t want)
+{
+    uint64_t now = kt_free_and_cached_pages();
+    for (int i = 0; i < 200 && now != want; i++) {
+        thread_sleep_ms(5);
+        now = kt_free_and_cached_pages();
+    }
+    return now;
+}
+
 uint32_t kt_cur_cpu(void)
 {
     preempt_disable();

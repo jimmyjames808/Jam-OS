@@ -235,9 +235,11 @@ class Conn:
                 self.tcp.count("tcp_%d_probes" % self.server_port)
                 self.ack()
             return
-        if seq != self.rcv_nxt or self.peer_fin:
+        old = diff(self.rcv_nxt, seq)   # the segment's first bytes that are ours already
+        if self.peer_fin or old < 0 or old > len(data) or (old == len(data) and not flags & F_FIN):
             self.ack()   # out of order, or a repeat: the ACK says where we are
             return
+        data = data[old:]   # a segment sent again from its first byte: the new part is taken
         if data:
             if data != stream(self.rx_seed, self.got, len(data)):
                 self.fail("wrong bytes at %d" % self.got)
