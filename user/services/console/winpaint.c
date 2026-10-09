@@ -32,6 +32,7 @@ struct slot_shadow {
     bool         valid;     /* cells and inverse say what it shows */
 };
 static struct slot_shadow slots[2];
+static uint32_t shadow_cols, shadow_rows;   /* the grid both shadows are for (0: none) */
 static int shown = -1;               /* the slot presented last (-1: none) */
 
 /* The frame being drawn: its buffer, and the rows that differ from the
@@ -40,30 +41,33 @@ static struct jwl_frame frame;
 static bool row_damaged[MAX_ROWS];
 static bool all_damaged;             /* a new buffer: damage all of it */
 
-static bool alloc_slot(struct slot_shadow *s)
-{
-    size_t n = (size_t)rows * cols;
-    struct cell *c = malloc(n * sizeof(struct cell));
-    uint8_t *inv = malloc(n);
-    if (!c || !inv) {
-        free(c);
-        free(inv);
-        return false;
-    }
-    free(s->cells);
-    free(s->inverse);
-    s->cells = c;
-    s->inverse = inv;
-    s->valid = false;
-    s->px = NULL;   /* the padding drawn again too (a new grid: maybe a new look) */
-    return true;
-}
-
+/* Both shadows for the grid now, or neither changes: a render draws only
+ * into shadows of the grid it walks (M12.1 C3: one of a new size and one
+ * of the old, after a failed allocation, had the old one written past its
+ * end). */
 bool paint_regrid(void)
 {
-    for (unsigned i = 0; i < 2; i++)
-        if (!alloc_slot(&slots[i]))
-            return false;
+    size_t n = (size_t)rows * cols;
+    struct cell *c[2] = { malloc(n * sizeof(struct cell)), malloc(n * sizeof(struct cell)) };
+    uint8_t *inv[2] = { malloc(n), malloc(n) };
+    if (!c[0] || !c[1] || !inv[0] || !inv[1]) {
+        for (unsigned i = 0; i < 2; i++) {
+            free(c[i]);
+            free(inv[i]);
+        }
+        return false;
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        struct slot_shadow *s = &slots[i];
+        free(s->cells);
+        free(s->inverse);
+        s->cells = c[i];
+        s->inverse = inv[i];
+        s->valid = false;
+        s->px = NULL;   /* the padding drawn again too (a new grid: maybe a new look) */
+    }
+    shadow_cols = cols;
+    shadow_rows = rows;
     return true;
 }
 
@@ -156,10 +160,12 @@ static void check_slot(void)
 void window_render(void)
 {
     struct jwl_window *w = window_now();
-    if (!w || !slots[0].cells) {
+    if (!w) {
         dirty = false;   /* nothing shows it: drawn in full when a window comes */
         return;
     }
+    if ((shadow_cols != cols || shadow_rows != rows) && !paint_regrid())
+        return;   /* no memory for this grid's shadows yet: stay dirty, try again */
     status_t st = jwl_window_begin(w, &frame);
     if (st == ERR_SHOULD_WAIT)
         return;   /* both buffers shown or in a paint: stay dirty, try again */
