@@ -304,7 +304,10 @@ static void release(struct pollset *ps)
     for (uint32_t i = 0; i < NETWAIT_MAX; i++) {
         struct place *pl = &ps->places[i];
         pl->item = NO_ITEM;
-        if (pl->serial && ps->calls - pl->last >= CACHE_AGE)
+        /* A socket's place goes with the call: the set reads its rings at
+         * every look, and the socket's close can't reach this thread's
+         * set to take it out first. */
+        if (pl->serial && (ps->calls - pl->last >= CACHE_AGE || pl->wait.kind == FD_WAIT_SOCK))
             place_drop(ps, pl);
     }
 }
