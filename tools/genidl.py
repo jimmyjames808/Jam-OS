@@ -200,6 +200,9 @@ idl_held_deadline, and once idl_held_due says so the loop looks at each
 channel it held: serves one whose client has read since, holds one that
 hasn't again. While nothing is held this costs nothing but the
 handle_info a request.
+A server that drops a client (its channel failed) closes it with
+idl_give_up: what it wrote and the client hasn't read is withdrawn first
+(channel_withdraw), so a client that keeps its end open holds none of it.
 
 `idempotent`: running the method again on the state its first run left
 gives the same result and the same answer (a read, a write at an explicit
@@ -1248,6 +1251,18 @@ def gen_common(entries):
         "        return false;",
         "    h->n = 0;",
         "    return true;",
+        "}",
+        "",
+        "/* Server: give up on ch's client and close ch. What we wrote that the",
+        " * client hasn't read is taken back first (drv_channel_withdraw: dropped,",
+        " * refunded to our job), so a client that keeps its end open holds none",
+        " * of it. For a client the server drops (one that broke the protocol, or",
+        " * never reads); a client that went, or a server that ends, just closes,",
+        " * so that what the client may still read stays readable. */",
+        "static inline void idl_give_up(handle_t ch)",
+        "{",
+        "    (void)drv_channel_withdraw(ch);",
+        "    drv_handle_close(ch);",
         "}",
         "",
         "/* ---- serving ----------------------------------------------------------- */",

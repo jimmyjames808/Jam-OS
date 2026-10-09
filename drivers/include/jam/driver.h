@@ -97,6 +97,10 @@ status_t drv_handle_close(handle_t h);
 status_t drv_handle_info(handle_t h, struct handle_info *out);
 status_t drv_handle_duplicate(handle_t h, rights_t rights, handle_t *out);
 status_t drv_channel_create(handle_t *a, handle_t *b);
+/* Take back what h wrote that its peer hasn't read (channel_withdraw):
+ * dropped, refunded, its handles closed; how many, or an error
+ * (ERR_BAD_STATE: h is not the end's only handle). */
+int64_t  drv_channel_withdraw(handle_t h);
 status_t drv_channel_write(handle_t h, const void *bytes, uint32_t n, const handle_t *hs,
                            uint32_t nh);
 status_t drv_channel_read(handle_t h, void *bytes, uint32_t cap, uint32_t *actual, handle_t *hs,

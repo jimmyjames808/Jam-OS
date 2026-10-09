@@ -107,13 +107,11 @@ static void close_file(struct fsserver *s, struct fsserver_file *f)
     if (s->closed)
         s->closed(f);
     jam_port_unbind(s->port, f->ch, FILE_KEY + (uint64_t)(f - s->files));
-    jam_handle_close(f->ch);
+    idl_give_up(f->ch);   /* its client is gone, or its channel failed */
     jam_handle_close(f->buf);
     memset(f, 0, sizeof(*f));
 }
 
-/* One round on an fs channel. A client that is gone, or a channel that
- * fails, is dropped. */
 /* Is ch's client behind (full: its protocol's unread_full)? Then it is
  * held (*flag) and counted, and nothing is read from it until a look
  * (fsserver_run) queues it a round again. */
@@ -126,6 +124,8 @@ static bool behind(struct fsserver *s, bool full, bool *flag)
     return true;
 }
 
+/* One round on an fs channel. A client that is gone, or a channel that
+ * fails, is dropped (idl_give_up: what it left unread is taken back). */
 static void serve_fs(struct fsserver *s, unsigned i)
 {
     status_t st = OK;
@@ -138,7 +138,7 @@ static void serve_fs(struct fsserver *s, unsigned i)
         again(s, i);
     } else if (st != ERR_SHOULD_WAIT && s->fs[i]) {
         jam_port_unbind(s->port, s->fs[i], i);
-        jam_handle_close(s->fs[i]);
+        idl_give_up(s->fs[i]);
         s->fs[i] = HANDLE_INVALID;
     }
 }

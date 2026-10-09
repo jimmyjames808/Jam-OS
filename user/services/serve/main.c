@@ -233,7 +233,7 @@ static void ctl_ready(unsigned slot)
     if (serve_own(slot) == ERR_SHOULD_WAIT)
         return;
     (void)netwait_remove(serve_w, ctl_ids[slot]);   /* in the set since on_connect */
-    jam_handle_close(ctls[slot]);
+    idl_give_up(ctls[slot]);   /* gone, or its channel broke: what it left unread taken back */
     ctls[slot] = HANDLE_INVALID;
     ctls_held[slot] = false;
 }

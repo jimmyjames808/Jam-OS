@@ -131,7 +131,7 @@ static void asker_close(unsigned i)
     /* A binding holds its channel (and its charge) until unbound: closing
      * our only handle alone would leave it on the port. */
     (void)jam_port_unbind(D.port, D.a[i].ch, key_of(i));
-    jam_handle_close(D.a[i].ch);
+    idl_give_up(D.a[i].ch);   /* gone, or its channel broke: what it left unread taken back */
     D.a[i].ch = HANDLE_INVALID;
     D.a[i].pending = false;
     D.a[i].inflight = 0;

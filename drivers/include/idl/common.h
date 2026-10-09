@@ -436,6 +436,18 @@ static inline bool idl_held_due(struct idl_held *h)
     return true;
 }
 
+/* Server: give up on ch's client and close ch. What we wrote that the
+ * client hasn't read is taken back first (drv_channel_withdraw: dropped,
+ * refunded to our job), so a client that keeps its end open holds none
+ * of it. For a client the server drops (one that broke the protocol, or
+ * never reads); a client that went, or a server that ends, just closes,
+ * so that what the client may still read stays readable. */
+static inline void idl_give_up(handle_t ch)
+{
+    (void)drv_channel_withdraw(ch);
+    drv_handle_close(ch);
+}
+
 /* ---- serving ----------------------------------------------------------- */
 
 /* A <proto>_serve loop between its system calls: the reply waiting to go

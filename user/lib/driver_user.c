@@ -156,6 +156,11 @@ status_t drv_channel_create(handle_t *a, handle_t *b)
     return jam_channel_create(a, b);
 }
 
+int64_t drv_channel_withdraw(handle_t h)
+{
+    return jam_channel_withdraw(h);
+}
+
 status_t drv_channel_write(handle_t h, const void *bytes, uint32_t n, const handle_t *hs,
                            uint32_t nh)
 {
