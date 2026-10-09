@@ -162,7 +162,7 @@ static inline status_t fs_open_call(handle_t ch, bool idl_within, uint64_t idl_t
     uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
     status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
                                idl_rh, 2, &idl_got[1], idl_within, idl_t);
-    uint32_t idl_rhn = idl_got[1];
+    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
     idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
@@ -457,7 +457,7 @@ static inline status_t fs_view_call(handle_t ch, bool idl_within, uint64_t idl_t
     uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
     status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
                                idl_rh, 1, &idl_got[1], idl_within, idl_t);
-    uint32_t idl_rhn = idl_got[1];
+    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
     idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
@@ -997,7 +997,7 @@ static inline status_t fs_reply_view(struct idl_txn idl_txn, status_t idl_st, ha
  * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
- * handles, or closes them if it can't. */
+ * handles, or closes them if it never sends it. */
 static inline uint32_t fs_dispatch_on(handle_t ch, const struct fs_ops *ops, void *ctx,
                                       const void *req, uint32_t n, void *rep, handle_t *rhs,
                                       uint32_t *rhn)
@@ -1234,7 +1234,7 @@ static inline status_t fs_take_slot(handle_t ch, const struct idl_slot *slot,
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
- * or closes them if it can't. */
+ * or closes them if it never sends it. */
 static inline uint32_t fs_run_slot(handle_t ch, const struct idl_slot *slot,
                                    const struct fs_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
 {
@@ -1280,8 +1280,10 @@ static inline status_t fs_serve_one(handle_t ch, const struct fs_ops *ops, void 
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
     uint32_t idl_rn = fs_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
-    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
-        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
     return OK;
 }
 

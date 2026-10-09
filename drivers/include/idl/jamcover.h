@@ -157,7 +157,7 @@ static inline status_t jamcover_reply_decode(struct idl_txn idl_txn, status_t id
  * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
- * handles, or closes them if it can't. */
+ * handles, or closes them if it never sends it. */
 static inline uint32_t jamcover_dispatch_on(handle_t ch, const struct jamcover_ops *ops, void *ctx,
                                             const void *req, uint32_t n, void *rep, handle_t *rhs,
                                             uint32_t *rhn)
@@ -226,7 +226,7 @@ static inline status_t jamcover_take_slot(handle_t ch, const struct idl_slot *sl
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
- * or closes them if it can't. */
+ * or closes them if it never sends it. */
 static inline uint32_t jamcover_run_slot(handle_t ch, const struct idl_slot *slot,
                                          const struct jamcover_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
 {
@@ -272,8 +272,10 @@ static inline status_t jamcover_serve_one(handle_t ch, const struct jamcover_ops
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
     uint32_t idl_rn = jamcover_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
-    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
-        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
     return OK;
 }
 
