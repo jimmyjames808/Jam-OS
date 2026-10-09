@@ -93,10 +93,6 @@ struct channel {
      * overwritten; 0 is a free entry (no call's txid is 0). The lock. */
     uint32_t          gave_up[CHAN_GAVE_UP];
     uint32_t          gave_up_next;
-    struct job       *reader_job;    /* the job of the table that last received a handle to
-                                      * us (a reference, or NULL): it pays for what waits on
-                                      * our queue once our peer has closed (charge_reader).
-                                      * Changed under the lock; read without it as a hint */
 };
 
 /* The message handed to w, or NULL. Writers store it last, with release

@@ -626,11 +626,11 @@ bool t_channel_no_handles(void)
     return true;
 }
 
-/* M12's Q2 from user space: a child in a job of its own writes 8 KiB on a
- * channel and exits without anybody reading; from then on its job is
- * charged nothing for them (it would be, until read, before), and ours,
- * the reader's, is: reading them gives it back. */
-bool t_unread_charged_to_reader(void)
+/* Unread messages from user space: a child in a job of its own writes
+ * 8 KiB on a channel and exits without anybody reading. Its job still
+ * pays for them, after its exit too, until we read them: each read pays
+ * it back, and our job is where it was. */
+bool t_unread_charged_to_writer(void)
 {
     handle_t job, proc, a, b;
     struct job_info before, ji;
@@ -643,15 +643,20 @@ bool t_unread_charged_to_reader(void)
     CHECK(info.state == PROCESS_DEAD && info.exit_code == 0);
     CHECK_ST(jam_handle_close(proc), OK);
     CHECK_ST(info_of(job, &ji), OK);
-    CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], 0);   /* the writer's job pays nothing now */
-    CHECK_ST(info_of(own_job(), &ji), OK);
-    CHECK(ji.used[JOB_LIMIT_MSG_BYTES] >= before.used[JOB_LIMIT_MSG_BYTES] + 8 * 1024);
+    CHECK(ji.used[JOB_LIMIT_MSG_BYTES] >= 8 * 1024);   /* the writer's job pays, after its exit too */
     static uint8_t buf[1024];
     unsigned n = 0;
     while (jam_channel_read(&(struct channel_read_args){
-               .h = b, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf }) == OK)
-        n++;
+               .h = b, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf }) == OK) {
+        if (++n == 4) {
+            CHECK_ST(info_of(job, &ji), OK);
+            CHECK(ji.used[JOB_LIMIT_MSG_BYTES] >= 4 * 1024 &&
+                  ji.used[JOB_LIMIT_MSG_BYTES] < 8 * 1024);   /* half read, half paid back */
+        }
+    }
     CHECK_EQ(n, 8);
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], 0);
     CHECK_ST(info_of(own_job(), &ji), OK);
     CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], before.used[JOB_LIMIT_MSG_BYTES]);
     CHECK_ST(jam_handle_close(b), OK);

@@ -181,7 +181,8 @@ static int msgs(void)
 }
 
 /* Write WRITE_EXIT_MSGS 1 KiB messages on SR_USER, then exit: nobody has
- * read them yet (utest's unread_charged_to_reader). */
+ * read them yet (utest's unread_charged_to_writer, the kernel's
+ * chan_writer_pays_after_job_exits). */
 #define WRITE_EXIT_MSGS 8
 
 static int write_exit(void)
@@ -191,6 +192,39 @@ static int write_exit(void)
         if (jam_channel_write(startup_handle(SR_USER), buf, sizeof(buf), NULL, 0) != OK)
             return 48;
     return 0;
+}
+
+/* The hostile client of kernel/test/test_chan_pays.c: each message on
+ * SR_USER brings a channel end, as svc.connect's reply does. Write 1 KiB
+ * messages on it until a write is refused (our job's message bytes, or a
+ * full queue), close it, then signal the event SR_USER + 1 and wait for
+ * the next. 0 once SR_USER's other end has closed. */
+static int fill_close(void)
+{
+    handle_t ch = startup_handle(SR_USER), done = startup_handle(SR_USER + 1);
+    static uint8_t buf[1024];
+    for (;;) {
+        signals_t seen = 0;
+        if (jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER, &seen) != OK)
+            return 48;
+        handle_t end = HANDLE_INVALID;
+        uint32_t nb = 0, nh = 0;
+        struct channel_read_args a = {
+            .h = ch, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_handles = (uint64_t)(uintptr_t)&end,
+            .rd_hcap = 1, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        };
+        status_t st = jam_channel_read(&a);
+        if (st == ERR_PEER_CLOSED)
+            return 0;
+        if (st != OK || nh != 1)
+            return 49;
+        while (jam_channel_write(end, buf, sizeof(buf), NULL, 0) == OK)
+            ;
+        jam_handle_close(end);
+        if (jam_event_signal(done, 0, SIG_SIGNALED) != OK)
+            return 50;
+    }
 }
 
 /* With a small job message-byte limit: port packets, then port bindings,
@@ -366,6 +400,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "handles"))    return handles();
     if (!strcmp(m, "msgs"))       return msgs();
     if (!strcmp(m, "write-exit")) return write_exit();
+    if (!strcmp(m, "fill-close")) return fill_close();
     if (!strcmp(m, "ports"))      return ports();
     if (!strcmp(m, "orphan"))     return orphan();
     if (!strcmp(m, "main-exits")) return main_exits();

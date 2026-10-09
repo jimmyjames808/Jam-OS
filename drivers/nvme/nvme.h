@@ -3,7 +3,9 @@
  * identify, the queues' creation, reset and shutdown; queue.c: completion
  * queues, command slots and ids, timeouts and abort, PRPs and reads;
  * cmd.c: submission queues, the ONE place a submission entry is written;
- * selftest.c: the test words' reads.
+ * serve.c: the partition table and the `storage` protocol (digest,
+ * health); block.c: the `block` channels; selftest.c: the test words'
+ * reads.
  *
  * One thread; nothing is locked. Every command is a slot of its queue
  * (struct nvme_slot): its id is the slot's index and the slot's
@@ -171,6 +173,10 @@ struct nvme {
 #define NVME_TEST_LOOP     (1u << 1)   /* ... again and again (a kill lands mid-read) */
 #define NVME_TEST_RESET    (1u << 2)   /* reset the controller with the reads in flight */
 #define NVME_TEST_ABORT    (1u << 3)   /* the first read times out at once: Abort */
+/* A block channel's answers come at least BLK_SLOW_STEP apart, as from a
+ * slow drive (block.c): a client that leaves then has reads out, which
+ * the drain rule waits for (utest's nvme_fence). */
+#define NVME_TEST_SLOW     (1u << 4)
 
 /* A read of `blocks` blocks at `lba` into a buffer whose pages the
  * device reaches at pages[0..npages), starting `offset` bytes in (a
@@ -270,6 +276,9 @@ void     queue_fail_all(struct nvme *c);
 /* Reads: see struct nvme_io. ERR_INVALID_ARGS / ERR_OUT_OF_RANGE before
  * anything is sent; else OK and io->done later. */
 status_t nvme_read(struct nvme *c, struct nvme_io *io);
+/* Take io off the wait list if none of its commands was ever sent (its
+ * done is then never called): true. false: it is out, or not waiting. */
+bool     io_cancel(struct nvme *c, struct nvme_io *io);
 /* Send what the wait list can (slots permitting). */
 void     io_kick(struct nvme *c);
 /* Every read still waiting or out ends with st (the driver stops). */
@@ -319,9 +328,54 @@ status_t ctrl_health(struct nvme *c, struct nvme_health *h);
 void     health_args(const struct nvme *c, struct admin_args *a);
 void     health_parse(const uint8_t *page, struct nvme_health *h);
 
+/* ---- serve.c: the disk's table and `storage` ------------------------------------------ */
+
+/* Port keys (main.c's loop hands every packet but KEY_IRQ to serve_packet). */
+#define KEY_IRQ   1ull
+#define KEY_SERVE 2ull                  /* DR_SERVE */
+#define KEY_CONN  (1ull << 40)          /* | gen << 8 (16 bits) | slot: an svc.connect channel */
+#define KEY_BLK   (1ull << 32)          /* | gen << 8 (16 bits) | slot: a `block` channel */
+
+/* The digest buffer (pinned writable, mapped), then the partition table,
+ * read through it with the library (waits: no client is served yet), and
+ * logged. OK, or what failed: ERR_NO_MEMORY... (no buffer), or the
+ * controller's failure (ctrl_poll's). A table that can't be read is no
+ * failure: the disk is served with no partitions. */
+status_t serve_start(struct nvme *c);
+/* The table in a few words for the RESULTS line: "GPT, 4 partitions". */
+void     serve_describe(char *out, size_t n);
+/* Watch DR_SERVE on c->port; then serve_work answers what is queued on it,
+ * on the connects' channels and on the block channels. false: DR_SERVE
+ * closed (devmgr is stopping us). */
+status_t serve_watch(struct nvme *c);
+bool     serve_work(struct nvme *c);
+/* Something to do without waiting (a pass stopped at its guard). */
+bool     serve_ready(void);
+void     serve_packet(uint64_t key);
+/* The end, after ctrl_stop (every read ended, bus mastering off): every
+ * channel closed, every buffer unpinned. */
+void     serve_stop(struct nvme *c);
+
+/* ---- block.c: `block` channels ----------------------------------------------------------- */
+
+/* A read-only `block` channel limited to partition `part` (index `index`
+ * of the table), bound to c->port; *out: the client's end.
+ * ERR_NO_RESOURCES: BLK_MAX open already. */
+status_t blk_open(struct nvme *c, uint8_t index, uint64_t start, uint64_t blocks, handle_t *out);
+void     blk_packet(uint64_t key);
+/* Serve what the channels have queued; true if any was looked at. */
+bool     blk_serve(struct nvme *c);
+bool     blk_ready(void);
+/* NVME_TEST_SLOW: answer the reads whose time has come; the next such
+ * time (DEADLINE_NEVER: none). */
+void     blk_due(struct nvme *c);
+uint64_t blk_next_due(void);
+/* Every channel closed and its buffer unpinned (bus mastering off). */
+void     blk_close_all(struct nvme *c);
+
 /* ---- selftest.c ---------------------------------------------------------------------- */
 
-/* Parse the test words (nvmetest=selftest,loop,reset,abort). */
+/* Parse the test words (nvmetest=selftest,loop,reset,abort,slow). */
 uint32_t selftest_words(const struct driver_start *s);
 /* Start the test reads (c->test says which); then each call after the
  * loop's work moves them on. false: the test can't run. */

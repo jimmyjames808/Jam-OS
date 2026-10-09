@@ -256,8 +256,9 @@ write, with `handle_replace`.
 - **Read**: the next message into the caller's buffer; what doesn't fit
   stays in the description's leftover buffer (libc's, per process), read
   first next time. `ERR_PEER_CLOSED` with nothing queued is end of file.
-- **Who pays**: the writer's job until the writer closes, then the
-  reader's (M12's Q2). The 1024-message queue bounds a pipe at 64 MiB of
+- **Who pays**: the writer's job, until the reader reads or closes, also
+  after the writer has closed (M12's Q2 as the owner changed it on
+  2026-10-09). The 1024-message queue bounds a pipe at 64 MiB of
   the writer's memory, against Linux's 64 KiB; a writer of single bytes
   fills the queue at 1024 bytes. Measured in BENCH.md (a new line: bytes a
   second through a pipe between two processes, 4 KiB and 64 KiB writes,
@@ -1252,3 +1253,184 @@ left open:
 - **For A1**: `<os.h>` declares the C library's names itself and defines
   `PAGE_SIZE`, which musl's `<limits.h>` also defines: a file that
   includes both needs `#undef PAGE_SIZE` or a header of its own.
+
+## A1 notes
+
+Choices A1 made where the plan left them open, and what the B tracks
+need to know.
+
+**musl and the build**
+- musl 1.2.6 is the whole release tarball, unmodified (third_party/VERSIONS.md
+  has its hash, its signature check and the two advisories against it:
+  the iconv GB18030 one, a slow-down, is not patched, since nothing uses
+  iconv yet).
+- `user/posix/posix.mk` (included at the end of the Makefile) builds it:
+  src/ldso is left out, as the plan says, so `dlopen` and its kin are
+  link errors, not run-time failures. A clean build of musl, the layer
+  and the sysroot takes about 6 s at `make -j10` on the Mac (some 1,300
+  files); after that it is never rebuilt unless its sources change.
+- `build/sysroot/lib/libc.a` holds musl, the overrides, the call layer
+  and libjam's objects in one archive, so `-lc` is the whole C library and
+  a port's link line is crt1.o, crti.o, its objects, libc.a, libgcc,
+  crtn.o (`tools/jamos-cc` does this). `build/musl/libmusl.a` (musl and
+  the overrides alone) is what `tools/checklibjam.py` compares libjam
+  with in `make check`.
+- The overrides are listed in `user/posix/musl/OVERRIDES` with the
+  upstream file's sha256; `tools/checkoverrides.py` checks them before
+  musl is compiled and again in `make check`, with a self-test that a
+  changed, missing, malformed or doubled line is refused. The overrides
+  are thin: each calls the layer through `user/posix/sys/glue.h`
+  (plain C, because they are compiled with musl's flags and headers).
+  `src/process/posix_spawn.c`, `src/thread/pthread_cancel.c` and
+  `src/network/lookup_name.c` are not overridden yet (B3, B4, B6):
+  musl's `posix_spawn` fails cleanly today (its `clone` without
+  `CLONE_THREAD` is `ENOSYS`), and `syscall_cp`'s override only makes the
+  call (cancellation by signal comes with B4's).
+- `tools/jamos-cc` defines `__jamos__` and not `__linux__`, puts musl's
+  headers before the compiler's own, and links the one-word list
+  `posix` unless `--jamos-wants=FILE` names another. posixtest is built
+  with it, so the build tests the wrapper.
+
+**The call layer's shape (for the B tracks)**
+- Every musl system call ends in `__jam_syscall` (`user/posix/sys/calls.c`),
+  a table indexed by Linux's number: `[SYS_x] = lx_x`. A number with no
+  entry is `-ENOSYS`. Every handler has one signature (`lx_call` in
+  `user/posix/sys/calls.h`): six `long`s in, a value or `-errno` out.
+  To add a call: write `lx_<name>` in your area's file, declare it in
+  your area's block of calls.h, and add `[SYS_<name>] = lx_<name>` to
+  your area's block of the table. A number given twice fails the build
+  (`-Woverride-init`). Only calls.c may include `<sys/syscall.h>`: its
+  `SYS_*` names clash with Jam OS's own (`<jam/syscall_nums.h>`).
+- Area files include `layer.h` (libjam through `<jamos/libjam.h>`,
+  which settles `PAGE_SIZE` with musl's `<limits.h>`): `lx_err(st)` is a
+  status's default errno; `lx_self_process()`, `lx_self_vmar()`,
+  `lx_self_thread()`; `lx_handover(&cwd)`, the hand-over's state
+  (umask, ppid, pgid, sid, the signal masks) or NULL.
+- Where each area's code goes: files B1, B2, B3, B5, B4, B6, T2 and X1
+  own as the tracks' table says. Two of A1's files are stand-ins to be
+  replaced: `user/posix/sys/stdfd.c` (descriptors 0 to 2: the null
+  device, the log, or a pipe; B1's descriptor table replaces it and
+  takes its handlers' table lines) and `user/posix/sys/nosig.c`
+  (`rt_sigprocmask` keeps a per-thread mask and nothing else; B4's
+  signal.c replaces it).
+- The start (`user/posix/crt/start.c`) reads the startup message, then
+  the hand-over with `posixfds_read`; without one, stdfd's defaults. A
+  hand-over's pipes and null devices at 0 to 2 are taken; every other
+  descriptor's handles are closed (until B1). A malformed hand-over
+  leaves no descriptors and a line in the log. B1 takes the sink over.
+
+**Choices**
+- The kernel's POSIX calls (thread_set_tid_word, thread_get_info, the
+  CPU times, sys_public_info) are made only in
+  `user/posix/sys/kposix.c`: a change to their shapes is a change to that
+  file. Without sys_public_info's figures (a call that fails), `uname`
+  says "unknown" and `sysconf` one CPU.
+- Thread handles: `clone` keeps each new thread's handle in a table by
+  its id (8,192 threads alive at once at most: `EAGAIN` past it), and the
+  thread closes its own on its way out (`exit`, or `__unmapself` for a
+  detached one). The first thread's is the startup message's. B4's
+  `pthread_kill` and cancellation look threads up there.
+- Futexes: private and shared are the same (no memory is shared between
+  processes); `FUTEX_CMP_REQUEUE`, `WAKE_OP`, the PI and bitset
+  operations and `FUTEX_CLOCK_REALTIME` are `ENOSYS` (musl uses none of
+  them; robust and PI mutexes are not planned).
+- mmap: libc's table of its mappings (`user/posix/sys/maptable.c`) is a
+  VMO of its own, `VMAR_MAX_MAPPINGS` entries, so it is never the limit.
+  `munmap` and `madvise` act only on the table's mappings: the program,
+  its stack and libjam's mappings are never unmapped by libc, and an
+  unmap of a range libc didn't map succeeds and does nothing. `MAP_FIXED`
+  over a table mapping unmaps that part, then maps, under the layer's
+  lock (not atomic against a vmar_map outside the layer: K2's
+  `VMAR_REPLACE` makes it one step); over anything else it is `ENOMEM`,
+  and `MAP_FIXED_NOREPLACE` over anything is `EEXIST`. Flags the layer
+  can't honour (`MAP_GROWSDOWN`, `MAP_HUGETLB`, `MAP_32BIT`, `MAP_SYNC`,
+  unknown bits) are `EINVAL`, stricter than Linux, which ignores unknown
+  bits. `PROT_EXEC` is refused by `mmap` and by `mprotect`, also on the
+  program's own code.
+- brk: the 1 GiB reservation is made at the first `brk` call, not at the
+  start (the same address-space cost, none for a program that never asks);
+  it is a table mapping, so musl's malloc may put its guard page over it
+  with `MAP_FIXED`, and brk keeps a VMO handle of its own for the
+  decommit of pages above a lowered break.
+- Descriptors without a hand-over: a terminal (`SR_CONSOLE`) does not
+  make 0 to 2 a terminal yet (T2's open_tty); such a program writes to
+  the log, as a native program in the foreground does, and reads the
+  null device.
+- The start: the auxiliary vector also has `AT_ENTRY` and the one user's
+  ids (1000, Q7) as `AT_UID`, `AT_EUID`, `AT_GID` and `AT_EGID`;
+  `AT_HWCAP` is CPUID leaf 1's EDX, as Linux's. `TZ` is added (from the
+  wall clock's zone, as a POSIX rule) only when the starter gave none.
+- `uname`: `sysname` is `JamOS` (one word, for scripts), `nodename`
+  `jamos` until the `host.name` setting is read (B2's `/etc`),
+  `release` and `version` the kernel's version from sys_public_info
+  ("unknown" without it). `sched_getaffinity` (musl's
+  `sysconf(_SC_NPROCESSORS_ONLN)`) and `sysinfo` (`_SC_PHYS_PAGES`) come
+  from the same figures.
+- posixtest is `bin/posixtest` (a test program, beside utest), last in
+  `boot/init.cfg`. Its start section starts itself twice with libjam's
+  `spawn`: once with a hard argv and environment, once with a
+  hand-over (a pipe at 1, the null device at 0).
+
+## T1 notes
+
+What track T1 (the console's connection back end) built, and where the plan
+left a choice.
+
+- **Split.** `struct backend` in `user/services/console/console.h`: the
+  front end (clients, focus, keys, kernel log lines, the loop) calls a back
+  end for output, log lines, size, clear, drawing and its own events. The
+  window back end is `winback.c` over the old files; the connection back
+  end is `conn.c` and `connin.c`. A pure refactor commit came first; every
+  terminal test ran unchanged on it.
+- **Starting one.** `bin/console` with the argument `conn` (and `cols=<n>`,
+  `rows=<n>`, default 80x24, for the size until the control channel says
+  another). Startup handles: `SR_USER + 0..7` the ADMIN client channels as
+  for any console; `CONN_MASTER_ROLE` (`SR_USER + 11`) the master, required;
+  `CONN_CTL_ROLE` (`SR_USER + 12`) the control channel, optional;
+  `SR_RESOURCE` optional, `RIGHT_ROOT_KLOG` alone. `<termconn.h>` has the
+  roles and limits.
+- **The control channel is its own protocol, `conn_ctl` (id 42,
+  `abi/idl/conn_ctl.idl`)**, one method, `resize (u16 cols, u16 rows) ->
+  ()`, served by the console. It is the console's link to its owner, not
+  the plan's `session_ctl` (id 92): that one is the SSH side's, and init
+  relays between the two (`ended` is init's to say: the console doesn't
+  know the shell's exit code). Ids 90 to 99 stay free for M13's other
+  protocols.
+- **The master** is a pipe of byte messages both ways, no framing and no
+  handles (a handle sent on it is closed). Out: messages of at most 4096
+  bytes, in order; a bare `\n` becomes `\r\n`; the escape sequences are the
+  remote terminal's to read. In: any size up to 64 KiB, as xterm sends it.
+- **Output is never dropped for a slow reader, and the clients wait.** The
+  output goes into a 64 KiB ring; while less than 4 KiB is free the console
+  serves no client request (their writes wait, as into a full pipe) and
+  starts again as the master drains; the master's own queue holds 1,024
+  messages. Kernel log lines are the one exception: a line that doesn't fit
+  is dropped and a notice says how many bytes. The input path never waits
+  on output, so Ctrl+C is read while output is stalled; a shell blocked in
+  a write cannot read it until the master drains (sshd's job: keep reading,
+  and drop a client that stops).
+- **Hang-up.** The master closed (by the owner, or found closed by a write)
+  ends the console with code 0: its clients see their channels close (a
+  shell exits 2). The console ending closes the owner's ends. The control
+  channel closed changes nothing but that the size stays.
+- **Size limits.** A resize past 480x180 (the window console's grid limits)
+  is reported as 480x180, not refused, so a client's buffers sized for the
+  window hold; zero is `ERR_INVALID_ARGS`. The size changes `console.size`
+  only: nothing is told when it changes (the shell asks); T2's `tty` size
+  event belongs in `conn_ctl_resize`'s handler in `conn.c`.
+- **Keys.** `<termkeys.h>`'s keys go to the focus as a serial terminal's do
+  (usage 0 and the byte for text and control characters). A lone ESC that
+  waits 50 ms alone is the Escape key. A bracketed paste's markers, which
+  termkeys drops, are typed to the client that asked for bracketed paste
+  (the console reads `ESC [ ? 2004 h` and `l` in the output to know), as
+  the window's paste does, and dropped for another. A key the focus's
+  channel can't take is dropped, as in the window; a paste of more than
+  its 1,024 keys in one burst loses the tail (pacing it would hold Ctrl+C
+  behind it).
+- **The log** starts at the end of the kernel's ring (no replay of the
+  boot's), stays off unless a client asks (`console.show_log`), and each
+  line goes out as text with any control character shown as `?`.
+- **Not in T1**: `open_tty`, the line discipline and the `tty` protocol
+  (T2); `/svc/session` and who starts a connection console (X1);
+  `TERM`. A connection console has no alternate screen of its own: the
+  remote terminal's is used, since the escapes pass through.

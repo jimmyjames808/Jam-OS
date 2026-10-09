@@ -547,7 +547,10 @@ Every driver and service is a userspace process from the start.
 - **Channel**: bidirectional endpoint pair; message = up to 64 KiB of bytes +
   up to 64 handles; sending a handle moves it. At most 1024 messages queue on
   one endpoint (then `ERR_SHOULD_WAIT`), and every message's memory is
-  charged to its sender's job until it is read or dropped. Cycle rule: you
+  charged to its sender's job until it is read or dropped (the reading end
+  closes), also after the sender has closed its end or its job has no
+  process left: a close never frees the sender's quota, so a backlog
+  can't be passed on to the reader and the quota filled again. Cycle rule: you
   can't send an endpoint of the channel you are writing to, its peer, or an
   endpoint whose own queue already holds an endpoint.
 - **`channel_call`**: write + wait for the reply whose first 4 bytes (the
@@ -1963,8 +1966,9 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   batches unread at a client, by the kernel's count (`handle_info`'s
   `peer_queued`); past that it holds up to 64 KiB, and a client still
   behind is disconnected ("too slow"). When it disconnects a client it
-  closes its end at once: what the client never read is the client's job's
-  from then on (M12's Q2).
+  closes its end at once and the slot is free, but what the client hasn't
+  read (those batches at most, and the error) stays charged to the
+  compositor's job until the client reads it or closes its end.
 - **A client can hurt only itself.** Every message is checked by libjwl's
   codec (sizes, strings, objects, new ids, versions) and every request by
   its handler; a broken one ends that connection alone (`wl_display.error`)
@@ -2075,6 +2079,27 @@ terminal closes the same way, the first too: its close circle or Super+Q
 (the console ends with code 0) or `exit` (the shell, given `term=<n>`,
 ends with 0), and init closes the terminal (`user/services/init/terms.c`).
 
+The console is a front end (the `console` protocol's clients and levels,
+the focus of key channels, the kernel log's lines, the event loop:
+`main.c`, `clients.c`, `keys.c`, `paste.c`) and a back end that is where
+the terminal is (`struct backend` in `console.h`). The window above is
+one back end (`winback.c` is its way in). The other is a **connection**
+(`conn.c`, `connin.c`; `bin/console` started with the argument `conn`,
+`<termconn.h>`): a terminal whose screen and keyboard are a connection,
+for a remote terminal such as an SSH client's. It holds no screen, no
+Wayland connection and no serial port. Program output goes out as bytes on
+a **master channel** (a pipe of byte messages: each bare `\n` as `\r\n`,
+the escape sequences left for the remote terminal to interpret), and what
+the remote terminal types comes in on it, turned into keys by
+`<termkeys.h>` (a bracketed paste's markers reach the client that asked
+for them). The size comes on a **control channel** (`conn_ctl`,
+`abi/idl/conn_ctl.idl`: `resize`). The native shell runs on it unchanged:
+the kernel log's lines it asks for (`console.show_log`) arrive as text. A
+master read too slowly stops the console serving its clients (their
+writes wait, as into a full pipe) instead of dropping output, and the
+master closing hangs the terminal up. The tests are utest's
+`con_conn_*` ([TESTING.md](docs/TESTING.md)).
+
 - **Cells.** JetBrains Mono at 15 pixels to the em: a cell is the face's
   advance rounded to whole pixels wide (9: 0.6 em is exactly 9 at 15,
   so every glyph sits where the font means it; at 14 it would be 8.4,
@@ -2147,7 +2172,9 @@ and libjwl uses (`user/lib/jwl_data.c`, `jwl_clip_*` in `<jwl_client.h>`).
   `wl_keyboard.enter`, and again when it changes), and only it may read
   it: at most 32 reads each time the user gives it the keys (counted per
   client, not per offer, since a client can make itself new offers), which
-  bounds what a reader can make the owner write and hold for it. Only text
+  bounds what a reader can make the owner write and hold for it (what the
+  owner wrote is charged to its job until the reader reads it or closes
+  its end, also after the owner has closed). Only text
   types go on
   (`text/plain;charset=utf-8`, `text/plain`, `UTF8_STRING`, `TEXT`). The
   selection goes when its owner does. `start_drag` cancels its source at

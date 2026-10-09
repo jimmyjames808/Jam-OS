@@ -1,0 +1,68 @@
+/* Jam OS POSIX programs (musl, user/posix/): static ELF64 at 0x400000,
+ * user/linker.ld's three segments with what musl needs on top:
+ *
+ *   - the ELF and program headers at the start of the first segment, so
+ *     they are mapped and the start (user/posix/crt/start.c) can point
+ *     AT_PHDR at them (__ehdr_start), where musl's __init_tls finds
+ *     PT_TLS;
+ *   - PT_TLS over .tdata and .tbss: thread-local storage (errno, ...),
+ *     whose image sits in the writable segment;
+ *   - .init and .fini (crti.o, crtn.o) and the init and fini arrays
+ *     musl's start and exit walk (__init_array_start, ...).
+ *
+ * Each segment starts on its own page, so every page is read+execute,
+ * read-only or read+write, never writable and executable (W^X). The
+ * program's list (<wants.h>, .jamos.wants) sits in the read-only segment
+ * under a PT_NOTE, as in user/linker.ld. Sections are kept or dropped by
+ * --gc-sections from _start; the ones nothing refers to that must stay
+ * are KEEP. */
+OUTPUT_FORMAT(elf64-x86-64)
+ENTRY(_start)
+
+PHDRS
+{
+    text   PT_LOAD FILEHDR PHDRS FLAGS(5);   /* R X, with the headers */
+    rodata PT_LOAD FLAGS(4);                 /* R */
+    data   PT_LOAD FLAGS(6);                 /* R W */
+    tls    PT_TLS FLAGS(4);                  /* the TLS image, inside data */
+    wants  PT_NOTE FLAGS(4);                 /* the program's list */
+}
+
+SECTIONS
+{
+    . = 0x400000 + SIZEOF_HEADERS;
+    .init : { KEEP(*(.init)) } :text
+    .text : {
+        *(.text.start)
+        *(.text .text.*)
+    } :text
+    .fini : { KEEP(*(.fini)) } :text
+
+    . = ALIGN(4096);
+    .rodata : { *(.rodata .rodata.*) } :rodata
+    .jamos.wants : { KEEP(*(.jamos.wants)) } :rodata :wants
+
+    . = ALIGN(4096);
+    .tdata : { *(.tdata .tdata.*) } :data :tls
+    .tbss : { *(.tbss .tbss.*) } :data :tls
+    .init_array : {
+        PROVIDE_HIDDEN(__init_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+        KEEP(*(.init_array))
+        PROVIDE_HIDDEN(__init_array_end = .);
+    } :data
+    .fini_array : {
+        PROVIDE_HIDDEN(__fini_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+        KEEP(*(.fini_array))
+        PROVIDE_HIDDEN(__fini_array_end = .);
+    } :data
+    .data : { *(.data .data.*) } :data
+    .got : { *(.got) *(.got.plt) } :data
+    .bss : {
+        *(.bss .bss.*)
+        *(COMMON)
+    } :data
+
+    /DISCARD/ : { *(.eh_frame*) *(.note .note.*) *(.comment) *(.interp) *(.dynamic) }
+}

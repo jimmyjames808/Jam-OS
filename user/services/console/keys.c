@@ -1,7 +1,8 @@
 /* console: keys, and the focus stack of open_keys channels (console.h).
  *
- * The keys come to the terminal's window from the compositor (wlinput.c
- * turns them into the console's key events) and go to the newest
+ * The keys come from the back end (the window's, where wlinput.c turns the
+ * compositor's keys into the console's key events; the connection's, which
+ * decodes the bytes typed at the remote terminal) and go to the newest
  * open_keys channel (the focus); keys typed before anyone listened wait
  * for the first. Ctrl+Alt+Del and Super+Enter are the compositor's: they
  * never reach a window. A focus a PROGRAM opened can't hold the keys
@@ -10,9 +11,7 @@
  *
  * A key channel speaks the `keys` protocol (abi/idl/console.idl: its key
  * events, review W14); the console never reads what a client writes on
- * it. The mouse is the window's: the selection's, and the wheel scrolls
- * the console back (M12's Q14 took the mouse reports a client could ask
- * for: a terminal program gets the mouse from M13's terminal layer). */
+ * it. */
 #include "console.h"
 
 /* ---- keys: the focus stack of open_keys channels ------------------------------ */
@@ -28,8 +27,8 @@ static unsigned npending;
  * (ERR_PEER_CLOSED): it is dropped and the one below gets the key. */
 void focus_drop(unsigned i)
 {
-    if (focus[i] == alt_owner)
-        alt_leave();
+    if (back->focus_dropped)
+        back->focus_dropped(focus[i]);
     jam_handle_close(focus[i]);
     for (unsigned j = i; j + 1 < nfocus; j++) {
         focus[j] = focus[j + 1];
@@ -79,29 +78,9 @@ static void send_key(const struct input_key_event *ev)
 
 /* ---- keys to the focus ----------------------------------------------------------- */
 
-void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
+void focus_key(const struct input_key_event *ev)
 {
-    struct input_key_event ev = { usage, state, mods, cp };
-    /* Scrollback: Shift+PageUp/Down. */
-    bool page = usage == 0x4b || usage == 0x4e;
-    if (page && !alt_on && (mods & INPUT_MOD_SHIFT)) {
-        if (state == INPUT_KEY_UP)
-            return;
-        uint32_t step = rows / 2 ? rows / 2 : 1;
-        struct view v = view_now();
-        uint32_t max = view_back_max(&v);
-        if (usage == 0x4b)
-            view_back = view_back + step < max ? view_back + step : max;
-        else
-            view_back = view_back > step ? view_back - step : 0;
-        dirty = true;
-        return;
-    }
-    if (state != INPUT_KEY_UP && view_back) {
-        view_back = 0;
-        dirty = true;
-    }
-    send_key(&ev);
+    send_key(ev);
 }
 
 status_t op_open_keys(void *ctx, handle_t *out)
@@ -127,13 +106,4 @@ status_t op_open_keys(void *ctx, handle_t *out)
         (void)keys_key(mine, pending[i].usage, pending[i].state, pending[i].mods,
                        pending[i].codepoint);
     return OK;
-}
-
-void mouse_event(const struct con_mouse *ev)
-{
-    /* The wheel scrolls back; the rest is the selection's (clip.c). */
-    if (ev->wheel > 0)
-        key_event(0x4b, INPUT_KEY_DOWN, INPUT_MOD_LSHIFT, 0);
-    else if (ev->wheel < 0)
-        key_event(0x4e, INPUT_KEY_DOWN, INPUT_MOD_LSHIFT, 0);
 }

@@ -437,12 +437,9 @@ static bool t_kill_in_channel_call(void)
     CHECK_EQ(ji.used[JOB_LIMIT_THREADS], 0);
     CHECK_EQ(ji.used[JOB_LIMIT_PAGES], 0);
     CHECK_EQ(ji.used[JOB_LIMIT_HANDLES], 0);
-    /* The request still sits on our end, but its writer has gone: it is
-     * charged to us, the reader, until we read it (M12's Q2). */
-    CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], 0);
-    struct job_info ours;
-    CHECK_ST(info_of(own_job(), &ours), OK);
-    CHECK(ours.used[JOB_LIMIT_MSG_BYTES] > before.used[JOB_LIMIT_MSG_BYTES]);
+    /* The request still sits on our end, charged to the dead child's job
+     * until we read it. */
+    CHECK(ji.used[JOB_LIMIT_MSG_BYTES] > 0);
     uint8_t buf[64];
     uint32_t nb = 0;
     struct channel_read_args r = {
@@ -484,12 +481,10 @@ static bool t_runaway_hits_job_limits(void)
     if (!run_child("handles", JOB_LIMIT_HANDLES, 16, &info))
         return false;
     CHECK_EQ(info.exit_code, 45);
-    /* 16 KiB: the child's job pays for its startup message too until it
-     * reads it, once spawn has closed the end it was written on (M12's Q2). */
-    if (!run_child("msgs", JOB_LIMIT_MSG_BYTES, 16384, &info))
+    if (!run_child("msgs", JOB_LIMIT_MSG_BYTES, 4096, &info))
         return false;
     CHECK_EQ(info.exit_code, 46);
-    if (!run_child("ports", JOB_LIMIT_MSG_BYTES, 16384, &info))
+    if (!run_child("ports", JOB_LIMIT_MSG_BYTES, 4096, &info))
         return false;
     CHECK_EQ(info.exit_code, 47);   /* port packets and bindings are charged too */
     return true;
@@ -617,7 +612,7 @@ static const struct {
     { "reply_wait_refusals", t_reply_wait_refusals },
     { "handles_always_moved", t_handles_always_moved },
     { "channel_no_handles", t_channel_no_handles },
-    { "unread_charged_to_reader", t_unread_charged_to_reader },
+    { "unread_charged_to_writer", t_unread_charged_to_writer },
     { "runaway_hits_job_limits", t_runaway_hits_job_limits },
     { "kernel_objects_are_charged", t_kernel_objects_are_charged },
     { "kill_spinning_and_unstarted", t_kill_spinning_and_unstarted },
@@ -666,6 +661,10 @@ static const struct {
     { "supervised_give_up", t_supervised_give_up },
     { "devmgr_addresses", t_devmgr_addresses },
     { "devmgr_kill_process", t_devmgr_kill_process },
+    { "nvme_storage", t_nvme_storage },
+    { "nvme_block", t_nvme_block },
+    { "nvme_inflight", t_nvme_inflight },
+    { "nvme_fence", t_nvme_fence },
     { "disk_mounts", t_disk_mounts },
     { "disk_not_boot", t_disk_not_boot },
     { "disk_other", t_disk_other },
@@ -1089,6 +1088,10 @@ static const struct {
     { "conwin_pointer", t_conwin_pointer },
     { "conwin_pointer_shape", t_conwin_pointer_shape },
     { "con_hostile_compositor", t_con_hostile_compositor },
+    { "con_conn_shell", t_con_conn_shell },
+    { "con_conn_log", t_con_conn_log },
+    { "con_conn_hostile", t_con_conn_hostile },
+    { "con_conn_backpressure", t_con_conn_backpressure },
     { "jwlc_real_compositor", t_jwlc_real_compositor },
     { "jwlc_restore", t_jwlc_restore },
     { "jwlc_clip", t_jwlc_clip },
