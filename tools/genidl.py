@@ -31,7 +31,15 @@ type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
                             fixed-size byte array, 1 <= N <= 4096), or
                             `handle` (RESULTS only, at most 8 per method)
 
-Either list may be empty: `()`.
+Either list may be empty: `()`. A request or reply is at most 16 KiB
+(MSG_MAX, header included). Bulk data goes through a shared VMO.
+
+Message buffers: a generated function keeps them on its stack up to
+IDL_STACK_MAX (4 KiB) together; a method whose request and reply pass it
+(its client calls, _send, reply_<method>) and a protocol whose biggest two
+pass it (<proto>_serve, <proto>_serve_one) take theirs from the heap: per
+call, or once per <proto>_serve (ERR_NO_MEMORY if they can't). Handlers
+fill fixed arrays of such a method straight in the reply.
 
 The file's own comment, above the `protocol` line, must state the
 protocol's restart rule: what a client sees when the server dies and is
@@ -148,7 +156,15 @@ SCALARS = {"u8": ("uint8_t", 1), "u16": ("uint16_t", 2), "u32": ("uint32_t", 4),
            "i32": ("int32_t", 4), "i64": ("int64_t", 8)}
 ARRAY = re.compile(r"u8\[(\d+)\]$")
 ARRAY_MAX = 4096
-MSG_MAX = 8192          # bytes of one request or reply: both sit on a kernel stack
+# Bytes of one request or reply (the M12 reviews' S-4: two 4 KiB paths and
+# more in one request). The kernel takes up to 64 KiB a message; the bound
+# is the server's, which holds its protocol's biggest request and reply at
+# once (<proto>_serve, <proto>_serve_one; a slot's room).
+MSG_MAX = 16384
+# Bytes of message buffers a generated function keeps on its stack (tasks
+# have 32 KiB stacks, <jam/task.h>): a method or protocol needing more takes
+# them from the heap (drv_malloc), once per call, or once per <proto>_serve.
+STACK_MAX = 4096
 HDR = 8                 # txid + ordinal / txid + status
 RESERVED = {"ch", "deadline_ns", "timeout_ns", "ctx", "ops"}
 # Names of the protocol's own functions (<proto>_<name>): no method may take one.
@@ -488,6 +504,14 @@ def gen_common(entries):
         "    uint32_t txid;       /* the request's, echoed */",
         "    int32_t  status;     /* OK: the results follow */",
         "} __attribute__((packed));",
+        "",
+        "/* Bytes of message buffers a generated function keeps on its stack;",
+        " * one that needs more (a method's request and reply, a protocol's",
+        " * biggest two for a server loop) takes them from the heap, once per call",
+        " * (ERR_NO_MEMORY if it can't), or once per <proto>_serve. */",
+        f"#define IDL_STACK_MAX {STACK_MAX}",
+        "/* n rounded up to 8: where a second buffer starts after a first of n bytes. */",
+        "#define IDL_ROUND8(n) (((n) + 7u) & ~7u)",
         "",
         "/* Handles a server reads with a request (all of them are closed: no",
         " * method takes handle arguments). */",
@@ -928,16 +952,47 @@ def gen_common(entries):
     ])
 
 
-def fill_request(m, U, q):
-    """Lines that fill request struct `q` from m's arguments (txid set by the caller)."""
-    out = [f"    {q}.ordinal = {U}_{m.name.upper()};"]
+def fill_request(m, U, q, sep="."):
+    """Lines that fill request struct `q` (q.x, or q->x with sep "->") from
+    m's arguments (txid set by the caller)."""
+    out = [f"    {q}{sep}ordinal = {U}_{m.name.upper()};"]
     for f in m.args:
+        if f.handle:
+            continue
         if f.array:
             out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
-            out.append(f"        {q}.{f.name}[idl_i] = {f.name}[idl_i];")
+            out.append(f"        {q}{sep}{f.name}[idl_i] = {f.name}[idl_i];")
         else:
-            out.append(f"    {q}.{f.name} = {f.name};")
+            out.append(f"    {q}{sep}{f.name} = {f.name};")
     return out
+
+
+def method_max(fields):
+    """Bytes of the biggest message with these fields."""
+    return wire_size(fields)
+
+
+def general(m):
+    """Does m need the general code (buffers of its own size, on the heap
+    when big) rather than the plain one (its two structs on the stack)?"""
+    return method_max(m.args) + method_max(m.results) > STACK_MAX
+
+
+def buffers(sizes, fail_ret):
+    """Lines declaring byte buffers idl_b0, idl_b1, ... of these sizes: on the
+    stack, or one allocation when together they pass STACK_MAX (fail_ret:
+    the line that returns when it can't be had). Returns (lines, free line
+    or None)."""
+    if sum(sizes) <= STACK_MAX:
+        return [f"    _Alignas(8) uint8_t idl_b{i}[{n}];" for i, n in enumerate(sizes)], None
+    total = " + ".join(f"IDL_ROUND8({n})" for n in sizes[:-1]) + \
+        (" + " if len(sizes) > 1 else "") + str(sizes[-1])
+    out = [f"    uint8_t *idl_b0 = (uint8_t *)drv_malloc({total});",
+           "    if (!idl_b0)",
+           f"        {fail_ret}"]
+    for i in range(1, len(sizes)):
+        out.append(f"    uint8_t *idl_b{i} = idl_b{i - 1} + IDL_ROUND8({sizes[i - 1]});")
+    return out, "    drv_free(idl_b0);"
 
 
 def copy_results(m, cond, r):
@@ -958,6 +1013,47 @@ def copy_results(m, cond, r):
     return out
 
 
+def gen_call_general(p, m):
+    """The body of <proto>_<method>_call in buffers of the method's own size."""
+    P, U = p.name, p.name.upper()
+    qmax, rmax = method_max(m.args), method_max(m.results)
+    out, free = buffers([qmax, rmax], "return ERR_NO_MEMORY;")
+    out.append(f"    struct {P}_{m.name}_req *idl_q = (struct {P}_{m.name}_req *)idl_b0;")
+    out.append(f"    const struct {P}_{m.name}_rep *idl_r = (const struct {P}_{m.name}_rep *)idl_b1;")
+    out.append("    uint32_t idl_qn = sizeof(*idl_q);")
+    out.append("    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */")
+    out.append("    idl_q->txid = 0;")
+    out += fill_request(m, U, "idl_q", "->")
+    hres = [f for f in m.results if f.handle]
+    if hres:
+        out.append(f"    handle_t idl_rh[{len(hres)}];")
+    rh = (f"idl_rh, {len(hres)}, &idl_got[1]") if hres else "NULL, 0, &idl_got[1]"
+    out.append(f"    status_t idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, {rmax}, &idl_got[0], "
+               f"{rh},")
+    out.append("                               idl_within, idl_t);")
+    out.append("    if (idl_st == OK)")
+    out.append("        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));")
+    if hres:
+        out.append(f"    if (idl_st == OK && idl_got[1] != {len(hres)})")
+        out.append("        idl_st = ERR_INTERNAL;")
+        out.append("    if (idl_st != OK)")
+        out.append("        idl_close_all(idl_rh, idl_got[1]);")
+    for k, f in enumerate(hres):
+        out.append(f"    if (idl_st == OK) {{")
+        out.append(f"        if (out_{f.name})")
+        out.append(f"            *out_{f.name} = idl_rh[{k}];")
+        out.append("        else")
+        out.append(f"            drv_handle_close(idl_rh[{k}]);")
+        out.append("    }")
+    out += copy_results(m, "idl_st == OK", "idl_r->")
+    if not m.results:
+        out.append("    (void)idl_r;")
+    if free:
+        out.append(free)
+    out.append("    return idl_st;")
+    return out
+
+
 def gen_client_sync(p, m):
     P, U = p.name, p.name.upper()
     params = ["handle_t ch", "bool idl_within", "uint64_t idl_t"] + in_params(m.args) + \
@@ -967,6 +1063,10 @@ def gen_client_sync(p, m):
     out.append(" * timeout from when the call starts (the kernel's clock). */")
     out.append(f"static inline status_t {P}_{m.name}_call({', '.join(params)})")
     out.append("{")
+    if general(m):
+        out += gen_call_general(p, m)
+        out.append("}")
+        return out + gen_call_wrappers(p, m)
     out.append(f"    struct {P}_{m.name}_req idl_q;")
     out.append(f"    struct {P}_{m.name}_rep idl_r;")
     out.append("    uint32_t idl_n = 0;")
@@ -1004,6 +1104,13 @@ def gen_client_sync(p, m):
     out += copy_results(m, "idl_st == OK", "idl_r.")
     out.append("    return idl_st;")
     out.append("}")
+    return out + gen_call_wrappers(p, m)
+
+
+def gen_call_wrappers(p, m):
+    """<proto>_<method>, _until and _within, over _call."""
+    P = p.name
+    out = []
     rest = in_params(m.args) + out_params(m.results)
     names = [f.name for f in m.args] + [f"out_{f.name}" for f in m.results]
     for suffix, time, call in (("_until", "uint64_t deadline_ns", "false, deadline_ns"),
@@ -1027,13 +1134,28 @@ def gen_client_async(p, m):
     out.append(f" * The reply comes on ch: idl_reply_read, then {P}_{m.name}_result. */")
     out.append(f"static inline status_t {P}_{m.name}_send({', '.join(params)})")
     out.append("{")
-    out.append(f"    struct {P}_{m.name}_req idl_q;")
-    out.append("    if (!idl_txid)")
-    out.append("        return ERR_INVALID_ARGS;")
-    out.append("    idl_q.txid = idl_txid;")
-    out += fill_request(m, U, "idl_q")
-    out.append("    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);")
-    out.append("}")
+    if general(m):
+        out.append("    if (!idl_txid)")
+        out.append("        return ERR_INVALID_ARGS;")
+        bufs, free = buffers([method_max(m.args)], "return ERR_NO_MEMORY;")
+        out += bufs
+        out.append(f"    struct {P}_{m.name}_req *idl_q = (struct {P}_{m.name}_req *)idl_b0;")
+        out.append("    uint32_t idl_qn = sizeof(*idl_q);")
+        out.append("    idl_q->txid = idl_txid;")
+        out += fill_request(m, U, "idl_q", "->")
+        out.append("    status_t idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);")
+        if free:
+            out.append(free)
+        out.append("    return idl_st;")
+        out.append("}")
+    else:
+        out.append(f"    struct {P}_{m.name}_req idl_q;")
+        out.append("    if (!idl_txid)")
+        out.append("        return ERR_INVALID_ARGS;")
+        out.append("    idl_q.txid = idl_txid;")
+        out += fill_request(m, U, "idl_q")
+        out.append("    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);")
+        out.append("}")
     hres = [f for f in m.results if f.handle]
     params = ["const void *idl_rep", "struct idl_msg *idl_m"] + out_params(m.results)
     out.append("")
@@ -1075,6 +1197,8 @@ def gen_server_reply(p, m):
     out.append(" * HANDLE_INVALID. Returns the write's status (idl_reply_write). */")
     out.append(f"static inline status_t {P}_reply_{m.name}({', '.join(params)})")
     out.append("{")
+    if general(m):
+        return out + gen_reply_general(p, m) + ["}"]
     out.append(f"    struct {P}_{m.name}_rep idl_r;")
     if hres:
         out.append(f"    handle_t idl_hs[{len(hres)}] = {{ {', '.join(f.name for f in hres)} }};")
@@ -1107,15 +1231,70 @@ def gen_server_reply(p, m):
     return out
 
 
+def gen_reply_general(p, m):
+    """The body of <proto>_reply_<method> in a buffer of the reply's own size."""
+    P = p.name
+    hres = [f for f in m.results if f.handle]
+    out = []
+    if hres:
+        out.append(f"    handle_t idl_hs[{len(hres)}] = {{ {', '.join(f.name for f in hres)} }};")
+    close = [f"        idl_close_all(idl_hs, {len(hres)});"] if hres else []
+    rmax = method_max(m.results)
+    free = None
+    if rmax <= STACK_MAX:
+        out.append(f"    _Alignas(8) uint8_t idl_b0[{rmax}];")
+    else:   # no memory: the client still gets an answer, and the handles are closed
+        out.append(f"    uint8_t *idl_b0 = (uint8_t *)drv_malloc({rmax});")
+        out.append("    if (!idl_b0) {")
+        out.append("        struct idl_rep_hdr idl_h = { 0, ERR_NO_MEMORY };")
+        out += close
+        out.append("        return idl_reply_write(idl_txn, &idl_h, sizeof(idl_h), NULL, 0);")
+        out.append("    }")
+        free = "    drv_free(idl_b0);"
+    out.append(f"    struct {P}_{m.name}_rep *idl_r = (struct {P}_{m.name}_rep *)idl_b0;")
+    out.append("    uint32_t idl_rn = sizeof(*idl_r);")
+    out.append("    if (idl_st > 0)")
+    out.append("        idl_st = ERR_INTERNAL;")
+    if hres:
+        ok = " && ".join(f"{f.name} != HANDLE_INVALID" for f in hres)
+        out.append(f"    if (idl_st == OK && !({ok}))")
+        out.append("        idl_st = ERR_INTERNAL;")
+    for f in m.results:
+        if f.handle:
+            continue
+        if f.array:
+            out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
+            out.append(f"        idl_r->{f.name}[idl_i] = {f.name}[idl_i];")
+        else:
+            out.append(f"    idl_r->{f.name} = {f.name};")
+    out.append("    idl_r->status = idl_st;")
+    out.append("    if (idl_st != OK) {")
+    for k, f in enumerate(hres):
+        out.append(f"        if (idl_hs[{k}] != HANDLE_INVALID)")
+        out.append(f"            drv_handle_close(idl_hs[{k}]);")
+    out.append("        idl_rn = sizeof(struct idl_rep_hdr);")
+    out.append("    }")
+    hs = (f"idl_st == OK ? idl_hs : NULL, idl_st == OK ? {len(hres)} : 0") if hres else "NULL, 0"
+    out.append(f"    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, {hs});")
+    if free:
+        out.append(free)
+    out.append("    return idl_ws;")
+    return out
+
+
 def gen_dispatch_case(p, m):
     P, U = p.name, p.name.upper()
     out = [f"    case {U}_{m.name.upper()}: {{"]
     out.append(f"        const struct {P}_{m.name}_req *idl_q = "
                f"(const struct {P}_{m.name}_req *)req;")
     out.append(f"        struct {P}_{m.name}_rep *idl_r = (struct {P}_{m.name}_rep *)rep;")
+    g = general(m)   # fixed arrays straight into the reply (no copy of them on the stack)
     for f in m.results:
         if f.handle:
             out.append(f"        handle_t out_{f.name} = HANDLE_INVALID;")
+        elif f.array and g:
+            out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
+            out.append(f"            idl_r->{f.name}[idl_i] = 0;")
         elif f.array:
             out.append(f"        uint8_t out_{f.name}[{f.array}];")
             out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
@@ -1131,7 +1310,8 @@ def gen_dispatch_case(p, m):
     out.append("            return sizeof(*idl_h);")
     out.append("        }")
     call = ["ctx"] + (["idl_txn"] if m.later else []) + [f"idl_q->{f.name}" for f in m.args] + \
-           [f"out_{f.name}" if f.array else f"&out_{f.name}" for f in m.results]
+           [(f"idl_r->{f.name}" if g else f"out_{f.name}") if f.array else f"&out_{f.name}"
+            for f in m.results]
     if m.later:
         out.append("        struct idl_txn idl_txn = { ch, idl_h->txid };")
     out.append(f"        status_t idl_st = ops->{m.name}({', '.join(call)});")
@@ -1164,7 +1344,7 @@ def gen_dispatch_case(p, m):
         out.append("        if (idl_h->status != OK)")
         out.append("            return sizeof(*idl_h);")
     for f in m.results:
-        if f.handle:
+        if f.handle or (f.array and g):
             continue
         if f.array:
             out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
@@ -1223,8 +1403,8 @@ def gen_protocol(p):
         out.append(f"#define {U}_{m.name.upper():<16} 0x{p.wire(m):08x}u")
     out.append("")
 
-    req_max = max(wire_size(m.args) for m in p.methods)
-    rep_max = max(wire_size(m.results) for m in p.methods)
+    req_max = p.req_max = max(method_max(m.args) for m in p.methods)
+    rep_max = p.rep_max = max(method_max(m.results) for m in p.methods)
     out.append("/* Messages (packed: no padding bytes ever cross the channel). */")
     for m in p.methods:
         out.append(f"struct {P}_{m.name}_req {{")
@@ -1363,62 +1543,123 @@ def gen_protocol(p):
     out += [
         "}",
         "",
+    ]
+    return out + gen_loops(p)
+
+
+def gen_loops(p):
+    """<proto>_serve_one and <proto>_serve. Their buffers (the protocol's
+    biggest request and reply) are on the stack, or from the heap when
+    together they pass STACK_MAX."""
+    P, U = p.name, p.name.upper()
+    dispatch = f"{P}_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);"
+    one = [
         "/* Take one message off ch and answer it. OK once a message was handled",
         " * (its reply may still have been dropped: the client is gone, or never",
         " * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when",
-        " * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */",
+        " * nothing is queued, ERR_PEER_CLOSED when the client is gone for good.",
         f"static inline status_t {P}_serve_one(handle_t ch, const struct {P}_ops *ops, void *ctx)",
         "{",
-        f"    _Alignas(8) uint8_t idl_q[{U}_REQ_MAX];",
-        f"    _Alignas(8) uint8_t idl_r[{U}_REP_MAX];",
-        "    handle_t idl_hs[IDL_READ_HANDLES];",
-        "    uint32_t idl_n = 0, idl_nh = 0;",
-        "    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, "
-        "IDL_READ_HANDLES,",
-        "                                       &idl_nh);",
-        "    if (idl_st == ERR_BUFFER_TOO_SMALL)",
-        "        return idl_drain(ch, idl_n, idl_nh);",
-        "    if (idl_st != OK)",
-        "        return idl_st;",
-        "    if (idl_nh) {",
-        "        idl_close_all(idl_hs, idl_nh);",
-        "        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);",
-        "        return OK;",
-        "    }",
-        "    handle_t idl_rhs[IDL_REP_HANDLES];",
-        "    uint32_t idl_rhn = 0;",
-        f"    uint32_t idl_rn = {P}_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, "
-        "&idl_rhn);",
-        "    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)",
-        "        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */",
-        "    return OK;",
-        "}",
-        "",
+    ]
+    loop = [
         "/* Serve ch until the client closes it (OK), or a wait or read fails",
         " * (that status: ERR_CANCELED when the driver is being killed). Each reply",
         " * goes out in the system call that takes the next request",
-        " * (idl_serve_next). */",
+        " * (idl_serve_next).",
         f"static inline status_t {P}_serve(handle_t ch, const struct {P}_ops *ops, void *ctx)",
         "{",
-        f"    _Alignas(8) uint8_t idl_q[{U}_REQ_MAX];",
-        f"    _Alignas(8) uint8_t idl_r[{U}_REP_MAX];",
+    ]
+    if p.req_max + p.rep_max <= STACK_MAX:
+        one[3] += " */"
+        loop[3] += " */"
+        bufs = [f"    _Alignas(8) uint8_t idl_q[{U}_REQ_MAX];",
+                f"    _Alignas(8) uint8_t idl_r[{U}_REP_MAX];"]
+        return one + bufs + [
+            "    handle_t idl_hs[IDL_READ_HANDLES];",
+            "    uint32_t idl_n = 0, idl_nh = 0;",
+            "    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, "
+            "IDL_READ_HANDLES,",
+            "                                       &idl_nh);",
+            "    if (idl_st == ERR_BUFFER_TOO_SMALL)",
+            "        return idl_drain(ch, idl_n, idl_nh);",
+            "    if (idl_st != OK)",
+            "        return idl_st;",
+            "    if (idl_nh) {",
+            "        idl_close_all(idl_hs, idl_nh);",
+            "        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);",
+            "        return OK;",
+            "    }",
+            "    handle_t idl_rhs[IDL_REP_HANDLES];",
+            "    uint32_t idl_rhn = 0;",
+            f"    uint32_t idl_rn = {dispatch}",
+            "    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)",
+            "        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */",
+            "    return OK;",
+            "}",
+            "",
+        ] + loop + bufs + [
+            "    handle_t idl_rhs[IDL_REP_HANDLES];",
+            "    struct idl_serve idl_s = {",
+            "        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,",
+            "    };",
+            "    for (;;) {",
+            "        status_t idl_st = idl_serve_next(&idl_s);",
+            "        if (idl_st == ERR_PEER_CLOSED)",
+            "            return OK;",
+            "        if (idl_st != OK)",
+            "            return idl_st;",
+            f"        idl_s.rn = {P}_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, "
+            "&idl_s.rhn);",
+            "    }",
+            "}",
+            "",
+        ]
+    one[3:4] = [" * nothing is queued, ERR_PEER_CLOSED when the client is gone for good;",
+                " * ERR_NO_MEMORY with the message still queued: no room for the buffers",
+                f" * (taken from the heap for each message: {U}_REQ_MAX + {U}_REP_MAX pass",
+                " * IDL_STACK_MAX). */"]
+    loop[3:4] = [" * (idl_serve_next). Its buffers come from the heap, once (ERR_NO_MEMORY",
+                 f" * if they can't): {U}_REQ_MAX + {U}_REP_MAX pass IDL_STACK_MAX. */"]
+    bufs = [f"    uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8({U}_REQ_MAX) + {U}_REP_MAX);",
+            "    if (!idl_q)",
+            "        return ERR_NO_MEMORY;",
+            f"    uint8_t *idl_r = idl_q + IDL_ROUND8({U}_REQ_MAX);"]
+    return one + bufs + [
+        "    handle_t idl_hs[IDL_READ_HANDLES];",
+        "    uint32_t idl_n = 0, idl_nh = 0;",
+        f"    status_t idl_st = drv_channel_read(ch, idl_q, {U}_REQ_MAX, &idl_n, idl_hs, "
+        "IDL_READ_HANDLES,",
+        "                                       &idl_nh);",
+        "    if (idl_st == ERR_BUFFER_TOO_SMALL) {",
+        "        idl_st = idl_drain(ch, idl_n, idl_nh);",
+        "    } else if (idl_st == OK && idl_nh) {",
+        "        idl_close_all(idl_hs, idl_nh);",
+        "        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);",
+        "    } else if (idl_st == OK) {",
+        "        handle_t idl_rhs[IDL_REP_HANDLES];",
+        "        uint32_t idl_rhn = 0;",
+        f"        uint32_t idl_rn = {dispatch}",
+        "        if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)",
+        "            idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */",
+        "    }",
+        "    drv_free(idl_q);",
+        "    return idl_st;",
+        "}",
+        "",
+    ] + loop + bufs + [
         "    handle_t idl_rhs[IDL_REP_HANDLES];",
         "    struct idl_serve idl_s = {",
-        "        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,",
+        f"        .ch = ch, .q = idl_q, .qcap = {U}_REQ_MAX, .r = idl_r, .rhs = idl_rhs,",
         "    };",
-        "    for (;;) {",
-        "        status_t idl_st = idl_serve_next(&idl_s);",
-        "        if (idl_st == ERR_PEER_CLOSED)",
-        "            return OK;",
-        "        if (idl_st != OK)",
-        "            return idl_st;",
+        "    status_t idl_st;",
+        "    while ((idl_st = idl_serve_next(&idl_s)) == OK)",
         f"        idl_s.rn = {P}_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, "
         "&idl_s.rhn);",
-        "    }",
+        "    drv_free(idl_q);",
+        "    return idl_st == ERR_PEER_CLOSED ? OK : idl_st;",
         "}",
         "",
     ]
-    return out
 
 
 def c_names(p):
@@ -1561,6 +1802,12 @@ SELFTESTS = [
                                          f"{RULE}protocol t_b 41\n1 c () -> ()\n"},
      None, "both define t_b_c"),
     ("a method's macro twice", t_ok("1 req_max () -> ()\n"), None, "defines T_REQ_MAX twice"),
+    ("a 16 KiB request", t_ok("1 a (u8[4096] a, u8[4096] b, u8[4096] c, u8[4088] d) -> ()\n"),
+     None, None),
+    ("a request past 16 KiB", t_ok("1 a (u8[4096] a, u8[4096] b, u8[4096] c, u8[4089] d) -> ()\n"),
+     None, "request is 16385 bytes (max 16384)"),
+    ("a reply past 16 KiB", t_ok("1 a () -> (u8[4096] a, u8[4096] b, u8[4096] c, u8[4096] d)\n"),
+     None, "reply is 16392 bytes"),
 ]
 
 

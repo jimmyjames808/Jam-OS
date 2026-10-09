@@ -56,6 +56,14 @@ struct idl_rep_hdr {
     int32_t  status;     /* OK: the results follow */
 } __attribute__((packed));
 
+/* Bytes of message buffers a generated function keeps on its stack;
+ * one that needs more (a method's request and reply, a protocol's
+ * biggest two for a server loop) takes them from the heap, once per call
+ * (ERR_NO_MEMORY if it can't), or once per <proto>_serve. */
+#define IDL_STACK_MAX 4096
+/* n rounded up to 8: where a second buffer starts after a first of n bytes. */
+#define IDL_ROUND8(n) (((n) + 7u) & ~7u)
+
 /* Handles a server reads with a request (all of them are closed: no
  * method takes handle arguments). */
 #define IDL_READ_HANDLES 8

@@ -675,6 +675,8 @@ static inline status_t idltest_serve(handle_t ch, const struct idltest_ops *ops,
 
 #define IDLTEST_TWO_PROTOCOL_ID 34u
 #define IDLTEST_TWO_ECHO             0x00220001u
+#define IDLTEST_TWO_BIG              0x00220002u
+#define IDLTEST_TWO_BIG_LATER        0x00220003u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct idltest_two_echo_req {
@@ -687,9 +689,32 @@ struct idltest_two_echo_rep {
     int32_t  status;
     uint32_t value;
 } __attribute__((packed));
+struct idltest_two_big_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t a[4096];
+    uint8_t b[4096];
+    uint8_t c[4096];
+} __attribute__((packed));
+struct idltest_two_big_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t sum[4096];
+    uint32_t total;
+} __attribute__((packed));
+struct idltest_two_big_later_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t key;
+} __attribute__((packed));
+struct idltest_two_big_later_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t data[4096];
+} __attribute__((packed));
 
-#define IDLTEST_TWO_REQ_MAX 12u   /* bytes: the biggest request */
-#define IDLTEST_TWO_REP_MAX 12u   /* bytes: the biggest reply */
+#define IDLTEST_TWO_REQ_MAX 12296u   /* bytes: the biggest request */
+#define IDLTEST_TWO_REP_MAX 4108u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -722,6 +747,92 @@ static inline status_t idltest_two_echo_within(handle_t ch, uint64_t timeout_ns,
 static inline status_t idltest_two_echo(handle_t ch, uint32_t value, uint32_t *out_value)
 {
     return idltest_two_echo_call(ch, false, DEADLINE_NEVER, value, out_value);
+}
+
+/* idltest_two_big_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_two_big_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t a[4096], const uint8_t b[4096], const uint8_t c[4096], uint8_t out_sum[4096], uint32_t *out_total)
+{
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(12296) + 4108);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(12296);
+    struct idltest_two_big_req *idl_q = (struct idltest_two_big_req *)idl_b0;
+    const struct idltest_two_big_rep *idl_r = (const struct idltest_two_big_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_TWO_BIG;
+    for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+        idl_q->a[idl_i] = a[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+        idl_q->b[idl_i] = b[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+        idl_q->c[idl_i] = c[idl_i];
+    status_t idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 4108, &idl_got[0], NULL, 0, &idl_got[1],
+                               idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    for (uint32_t idl_i = 0; idl_st == OK && out_sum && idl_i < 4096; idl_i++)
+        out_sum[idl_i] = idl_r->sum[idl_i];
+    if (idl_st == OK && out_total)
+        *out_total = idl_r->total;
+    drv_free(idl_b0);
+    return idl_st;
+}
+/* Messages past the old 8 KiB limit and buffers past IDL_STACK_MAX, which
+ * the generated code takes from the heap: sum[i] = a[i] + b[i] + c[i] (mod
+ * 256), total the sum of every byte of the three. */
+static inline status_t idltest_two_big_until(handle_t ch, uint64_t deadline_ns, const uint8_t a[4096], const uint8_t b[4096], const uint8_t c[4096], uint8_t out_sum[4096], uint32_t *out_total)
+{
+    return idltest_two_big_call(ch, false, deadline_ns, a, b, c, out_sum, out_total);
+}
+static inline status_t idltest_two_big_within(handle_t ch, uint64_t timeout_ns, const uint8_t a[4096], const uint8_t b[4096], const uint8_t c[4096], uint8_t out_sum[4096], uint32_t *out_total)
+{
+    return idltest_two_big_call(ch, true, timeout_ns, a, b, c, out_sum, out_total);
+}
+static inline status_t idltest_two_big(handle_t ch, const uint8_t a[4096], const uint8_t b[4096], const uint8_t c[4096], uint8_t out_sum[4096], uint32_t *out_total)
+{
+    return idltest_two_big_call(ch, false, DEADLINE_NEVER, a, b, c, out_sum, out_total);
+}
+
+/* idltest_two_big_later_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_two_big_later_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t key, uint8_t out_data[4096])
+{
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(12) + 4104);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(12);
+    struct idltest_two_big_later_req *idl_q = (struct idltest_two_big_later_req *)idl_b0;
+    const struct idltest_two_big_later_rep *idl_r = (const struct idltest_two_big_later_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_TWO_BIG_LATER;
+    idl_q->key = key;
+    status_t idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 4104, &idl_got[0], NULL, 0, &idl_got[1],
+                               idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    for (uint32_t idl_i = 0; idl_st == OK && out_data && idl_i < 4096; idl_i++)
+        out_data[idl_i] = idl_r->data[idl_i];
+    drv_free(idl_b0);
+    return idl_st;
+}
+/* A big reply answered later: data[i] = key + i (mod 256), when `release_big`
+ * says so. */
+static inline status_t idltest_two_big_later_until(handle_t ch, uint64_t deadline_ns, uint32_t key, uint8_t out_data[4096])
+{
+    return idltest_two_big_later_call(ch, false, deadline_ns, key, out_data);
+}
+static inline status_t idltest_two_big_later_within(handle_t ch, uint64_t timeout_ns, uint32_t key, uint8_t out_data[4096])
+{
+    return idltest_two_big_later_call(ch, true, timeout_ns, key, out_data);
+}
+static inline status_t idltest_two_big_later(handle_t ch, uint32_t key, uint8_t out_data[4096])
+{
+    return idltest_two_big_later_call(ch, false, DEADLINE_NEVER, key, out_data);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -758,6 +869,86 @@ static inline status_t idltest_two_echo_result(const void *idl_rep, struct idl_m
     return OK;
 }
 
+/* idltest_two_big without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then idltest_two_big_result. */
+static inline status_t idltest_two_big_send(handle_t ch, uint32_t idl_txid, const uint8_t a[4096], const uint8_t b[4096], const uint8_t c[4096])
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(12296);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct idltest_two_big_req *idl_q = (struct idltest_two_big_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_TWO_BIG;
+    for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+        idl_q->a[idl_i] = a[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+        idl_q->b[idl_i] = b[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+        idl_q->c[idl_i] = c[idl_i];
+    status_t idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_two_big_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_two_big_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_sum[4096], uint32_t *out_total)
+{
+    const struct idltest_two_big_rep *idl_r = (const struct idltest_two_big_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    for (uint32_t idl_i = 0; out_sum && idl_i < 4096; idl_i++)
+        out_sum[idl_i] = idl_r->sum[idl_i];
+    if (out_total)
+        *out_total = idl_r->total;
+    return OK;
+}
+
+/* idltest_two_big_later without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then idltest_two_big_later_result. */
+static inline status_t idltest_two_big_later_send(handle_t ch, uint32_t idl_txid, uint32_t key)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_two_big_later_req *idl_q = (struct idltest_two_big_later_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_TWO_BIG_LATER;
+    idl_q->key = key;
+    status_t idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_two_big_later_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_two_big_later_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_data[4096])
+{
+    const struct idltest_two_big_later_rep *idl_r = (const struct idltest_two_big_later_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    for (uint32_t idl_i = 0; out_data && idl_i < 4096; idl_i++)
+        out_data[idl_i] = idl_r->data[idl_i];
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -766,6 +957,8 @@ static inline status_t idltest_two_echo_result(const void *idl_rep, struct idl_m
  * with idltest_two_reply_<method> (now, or later from anywhere). */
 struct idltest_two_ops {
     status_t (*echo)(void *ctx, uint32_t value, uint32_t *out_value);
+    status_t (*big)(void *ctx, const uint8_t a[4096], const uint8_t b[4096], const uint8_t c[4096], uint8_t out_sum[4096], uint32_t *out_total);
+    status_t (*big_later)(void *ctx, struct idl_txn idl_txn, uint32_t key, uint8_t out_data[4096]);
 };
 
 /* Answer the idltest_two.echo request kept in txn: idl_st and, if it is OK, the
@@ -784,6 +977,59 @@ static inline status_t idltest_two_reply_echo(struct idl_txn idl_txn, status_t i
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
+/* Answer the idltest_two.big request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t idltest_two_reply_big(struct idl_txn idl_txn, status_t idl_st, const uint8_t sum[4096], uint32_t total)
+{
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(4108);
+    if (!idl_b0) {
+        struct idl_rep_hdr idl_h = { 0, ERR_NO_MEMORY };
+        return idl_reply_write(idl_txn, &idl_h, sizeof(idl_h), NULL, 0);
+    }
+    struct idltest_two_big_rep *idl_r = (struct idltest_two_big_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+        idl_r->sum[idl_i] = sum[idl_i];
+    idl_r->total = total;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_ws;
+}
+
+/* Answer the idltest_two.big_later request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t idltest_two_reply_big_later(struct idl_txn idl_txn, status_t idl_st, const uint8_t data[4096])
+{
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(4104);
+    if (!idl_b0) {
+        struct idl_rep_hdr idl_h = { 0, ERR_NO_MEMORY };
+        return idl_reply_write(idl_txn, &idl_h, sizeof(idl_h), NULL, 0);
+    }
+    struct idltest_two_big_later_rep *idl_r = (struct idltest_two_big_later_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+        idl_r->data[idl_i] = data[idl_i];
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_ws;
+}
+
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (IDLTEST_TWO_REP_MAX bytes) and the handles it carries
  * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
@@ -797,7 +1043,6 @@ static inline uint32_t idltest_two_dispatch_on(handle_t ch, const struct idltest
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -822,12 +1067,52 @@ static inline uint32_t idltest_two_dispatch_on(handle_t ch, const struct idltest
         idl_r->value = out_value;
         return sizeof(*idl_r);
     }
+    case IDLTEST_TWO_BIG: {
+        const struct idltest_two_big_req *idl_q = (const struct idltest_two_big_req *)req;
+        struct idltest_two_big_rep *idl_r = (struct idltest_two_big_rep *)rep;
+        for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+            idl_r->sum[idl_i] = 0;
+        uint32_t out_total = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->big) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->big(ctx, idl_q->a, idl_q->b, idl_q->c, idl_r->sum, &out_total);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->total = out_total;
+        return sizeof(*idl_r);
+    }
+    case IDLTEST_TWO_BIG_LATER: {
+        const struct idltest_two_big_later_req *idl_q = (const struct idltest_two_big_later_req *)req;
+        struct idltest_two_big_later_rep *idl_r = (struct idltest_two_big_later_rep *)rep;
+        for (uint32_t idl_i = 0; idl_i < 4096; idl_i++)
+            idl_r->data[idl_i] = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->big_later) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->big_later(ctx, idl_txn, idl_q->key, idl_r->data);
+        /* IDL_LATER: the handler answers with idltest_two_reply_big_later. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
     }
     idl_h->status = ERR_NOT_SUPPORTED;
     return sizeof(*idl_h);
 }
 
-/* idltest_two_dispatch_on without the channel (the protocol has no `later` method). */
+/* idltest_two_dispatch_on without the channel (a `later` handler's txn then has none: use idltest_two_dispatch_on). */
 static inline uint32_t idltest_two_dispatch(const struct idltest_two_ops *ops, void *ctx, const void *req, uint32_t n,
                                             void *rep, handle_t *rhs, uint32_t *rhn)
 {
@@ -880,50 +1165,54 @@ static inline bool idltest_two_idempotent(uint32_t ordinal)
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
- * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good;
+ * ERR_NO_MEMORY with the message still queued: no room for the buffers
+ * (taken from the heap for each message: IDLTEST_TWO_REQ_MAX + IDLTEST_TWO_REP_MAX pass
+ * IDL_STACK_MAX). */
 static inline status_t idltest_two_serve_one(handle_t ch, const struct idltest_two_ops *ops, void *ctx)
 {
-    _Alignas(8) uint8_t idl_q[IDLTEST_TWO_REQ_MAX];
-    _Alignas(8) uint8_t idl_r[IDLTEST_TWO_REP_MAX];
+    uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8(IDLTEST_TWO_REQ_MAX) + IDLTEST_TWO_REP_MAX);
+    if (!idl_q)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_r = idl_q + IDL_ROUND8(IDLTEST_TWO_REQ_MAX);
     handle_t idl_hs[IDL_READ_HANDLES];
     uint32_t idl_n = 0, idl_nh = 0;
-    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+    status_t idl_st = drv_channel_read(ch, idl_q, IDLTEST_TWO_REQ_MAX, &idl_n, idl_hs, IDL_READ_HANDLES,
                                        &idl_nh);
-    if (idl_st == ERR_BUFFER_TOO_SMALL)
-        return idl_drain(ch, idl_n, idl_nh);
-    if (idl_st != OK)
-        return idl_st;
-    if (idl_nh) {
+    if (idl_st == ERR_BUFFER_TOO_SMALL) {
+        idl_st = idl_drain(ch, idl_n, idl_nh);
+    } else if (idl_st == OK && idl_nh) {
         idl_close_all(idl_hs, idl_nh);
         idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
-        return OK;
+    } else if (idl_st == OK) {
+        handle_t idl_rhs[IDL_REP_HANDLES];
+        uint32_t idl_rhn = 0;
+        uint32_t idl_rn = idltest_two_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+        if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
+            idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
     }
-    handle_t idl_rhs[IDL_REP_HANDLES];
-    uint32_t idl_rhn = 0;
-    uint32_t idl_rn = idltest_two_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
-    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
-        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
-    return OK;
+    drv_free(idl_q);
+    return idl_st;
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
  * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * (idl_serve_next). Its buffers come from the heap, once (ERR_NO_MEMORY
+ * if they can't): IDLTEST_TWO_REQ_MAX + IDLTEST_TWO_REP_MAX pass IDL_STACK_MAX. */
 static inline status_t idltest_two_serve(handle_t ch, const struct idltest_two_ops *ops, void *ctx)
 {
-    _Alignas(8) uint8_t idl_q[IDLTEST_TWO_REQ_MAX];
-    _Alignas(8) uint8_t idl_r[IDLTEST_TWO_REP_MAX];
+    uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8(IDLTEST_TWO_REQ_MAX) + IDLTEST_TWO_REP_MAX);
+    if (!idl_q)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_r = idl_q + IDL_ROUND8(IDLTEST_TWO_REQ_MAX);
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
-        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .ch = ch, .q = idl_q, .qcap = IDLTEST_TWO_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
     };
-    for (;;) {
-        status_t idl_st = idl_serve_next(&idl_s);
-        if (idl_st == ERR_PEER_CLOSED)
-            return OK;
-        if (idl_st != OK)
-            return idl_st;
+    status_t idl_st;
+    while ((idl_st = idl_serve_next(&idl_s)) == OK)
         idl_s.rn = idltest_two_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
-    }
+    drv_free(idl_q);
+    return idl_st == ERR_PEER_CLOSED ? OK : idl_st;
 }

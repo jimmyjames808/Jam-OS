@@ -27,3 +27,10 @@ protocol idltest 33
 protocol idltest_two 34
 
 1  echo     (u32 value)            -> (u32 value)
+# Messages past the old 8 KiB limit and buffers past IDL_STACK_MAX, which
+# the generated code takes from the heap: sum[i] = a[i] + b[i] + c[i] (mod
+# 256), total the sum of every byte of the three.
+2  big      (u8[4096] a, u8[4096] b, u8[4096] c) -> (u8[4096] sum, u32 total)
+# A big reply answered later: data[i] = key + i (mod 256), when `release_big`
+# says so.
+3  big_later   (u32 key)           -> (u8[4096] data) later
