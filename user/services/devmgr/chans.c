@@ -66,8 +66,13 @@ static void on_connect(const struct chan *c, uint32_t txid)
     handle_t h = HANDLE_INVALID;
     if (c->lv == LEVEL_QUERY)
         r.status = add(LEVEL_QUERY, NO_DEVICE, &h);
-    if (jam_channel_write(c->h, &r, sizeof(r), &h, r.status == OK ? 1 : 0) != OK && h)
-        jam_handle_close(h);   /* the caller is gone: so is the new channel's only client */
+    uint32_t nh = r.status == OK ? 1 : 0;
+    if (!nh && h)
+        jam_handle_close(h);   /* never sent */
+    /* h is gone whatever the write's status (a send's handles are always
+     * moved): a caller that is gone takes the new channel's only client with
+     * it, and h is never closed after the write. */
+    (void)jam_channel_write(c->h, &r, sizeof(r), &h, nh);
 }
 
 /* Answer everything queued on c. Returns ERR_SHOULD_WAIT once the queue is
@@ -130,9 +135,9 @@ static status_t serve(const struct chan *c)
             request_handle(q, &from, &r, hs, rs, &nout);
         }
         uint32_t rn = r.status == OK ? sizeof(r) : DEVMGR_REP_HDR;
-        if (jam_channel_write_rights(ch, &r, rn, hs, rs, nout) != OK)
-            for (uint32_t i = 0; i < nout; i++)
-                jam_handle_close(hs[i]);   /* the client is gone */
+        /* hs is gone whatever the write's status (a send's handles are
+         * always moved; the client may be gone): never closed after it. */
+        (void)jam_channel_write_rights(ch, &r, rn, hs, rs, nout);
         sup_run_due();   /* a long burst of requests mustn't hold up a restart */
     }
 }

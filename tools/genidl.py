@@ -78,7 +78,8 @@ in one protocol (the M12 plan's D1), sharing the protocol's ordinals. On
 the wire a request's form with txid 0: a message with txid 0 is an event,
 any other a request or a reply. Their fields are a method's (arrays of
 varying length too) and handles (at most 8): an event's handles are moved
-in every case, sent or closed by the sender's stub when the write fails.
+in every case: sent, lost with a write that failed (the kernel closes
+them), or closed by the stub when it never writes (a field refused).
 The queue's limit is the flow control: <proto>_<event>(ch, fields...)
 returns ERR_SHOULD_WAIT when the peer's queue is full. Generated:
     <proto>_<event>(ch, fields...)      the sender's stub, either way
@@ -203,7 +204,7 @@ handler fills `handle_t *out_x` and the reply moves the handles to the
 client (drv_channel_call_h reserves their slots before the request goes
 out, so a full handle table fails the call up front). A reply with the
 wrong number of handles is ERR_INTERNAL and whatever arrived is closed; a
-failed reply closes the server's handles; a client passing NULL for a
+failed reply loses the server's handles (the kernel closes them); a client passing NULL for a
 handle result gets it closed. Handle ARGUMENTS are refused: if a call
 fails, it can't tell whether the kernel already moved them, so ownership
 would be ambiguous. Pass handles with channel_write or as results.
@@ -983,8 +984,8 @@ def gen_common(entries):
         " * s->nh handles in s->hs. A request carrying more than s->hcap handles,",
         " * or too big for s->q, is answered ERR_INVALID_ARGS (idl_drain) and the",
         " * next one taken. A reply that can't",
-        " * go out (the client is gone, or never called) is dropped and its",
-        " * handles closed, as idl_reply_write's. Otherwise the wait's status:",
+        " * go out (the client is gone, or never called) is dropped (its handles",
+        " * gone all the same, as idl_reply_write's). Otherwise the wait's status:",
         " * ERR_PEER_CLOSED when the client is gone for good and nothing is",
         " * queued, ERR_CANCELED when the thread is being killed. */",
         "static inline status_t idl_serve_next(struct idl_serve *s)",
@@ -1016,8 +1017,9 @@ def gen_common(entries):
         "            idl_a.reply_status = (uint64_t)(uintptr_t)&idl_o.rs;",
         "        }",
         "        status_t idl_st = drv_channel_reply_wait(&idl_a);",
-        "        if (idl_o.rs != OK)",
-        "            idl_close_all(s->rhs, s->rhn);   /* not sent: they're still ours */",
+        "        /* The reply's handles are gone whatever the status (a send's",
+        "         * handles are always moved): never closed here, as their values",
+        "         * may already be another thread's new handles. */",
         "        s->rn = s->rhn = 0;",
         "        if (idl_reply && idl_o.rs != 1 && idl_o.rs != OK && idl_o.rs != ERR_PEER_CLOSED)",
         "            continue;   /* the reply failed and nothing was read: wait again */",
@@ -1099,7 +1101,7 @@ def gen_common(entries):
         "    handle_t    ch;      /* the request's channel; HANDLE_INVALID: nothing waits */",
         "    const void *r;       /* the reply (a slot's reply area): rn bytes */",
         "    uint32_t    rn;",
-        "    uint32_t    nh;      /* handles in hs: moved once the reply is tried */",
+        "    uint32_t    nh;      /* handles in hs: gone once the reply is tried */",
         "    handle_t    hs[IDL_REP_HANDLES];",
         "    uint64_t   *mark;    /* set to 1 by the kernel once it went out; NULL: none */",
         "};",
@@ -1123,14 +1125,14 @@ def gen_common(entries):
         "}",
         "",
         "/* After a channel_reply_wait that tried rep's reply (its status rs: 1 if",
-        " * the kernel never got to it): nothing waits any more, and handles that",
-        " * didn't go are closed (as idl_reply_write's: a client that is gone, or",
-        " * whose queue is full, loses its reply). true: the reply failed and the",
-        " * call ended there, nothing taken: make it again without the reply. */",
+        " * the kernel never got to it): nothing waits any more, and its handles",
+        " * are gone whatever rs says (a send's handles are always moved; a client",
+        " * that is gone, or whose queue is full, loses its reply). Never closed",
+        " * here: their values may already be another thread's new handles. true:",
+        " * the reply failed and the call ended there, nothing taken: make it again",
+        " * without the reply. */",
         "static inline bool idl_reply_tried(struct idl_reply *rep, status_t rs)",
         "{",
-        "    if (rs != OK)",
-        "        idl_close_all(rep->hs, rep->nh);",
         "    rep->ch = HANDLE_INVALID;",
         "    rep->nh = 0;",
         "    return rs != 1 && rs != OK && rs != ERR_PEER_CLOSED;",
@@ -1237,17 +1239,15 @@ def gen_common(entries):
         "#define IDL_LATER 1",
         "",
         "/* Server: write the reply rep (n bytes; its txid is set here) with nh",
-        " * handles to txn. The handles are moved in every case: sent, or closed",
-        " * when the write fails (ERR_PEER_CLOSED: the client is gone; a client",
-        " * that gave up waiting still gets the reply, as a message of its own). */",
+        " * handles to txn. The handles are gone in every case, sent or not (a",
+        " * send's handles are always moved; ERR_PEER_CLOSED: the client is gone;",
+        " * a client that gave up waiting still gets the reply, as a message of",
+        " * its own): the caller never closes them after this. */",
         "static inline status_t idl_reply_write(struct idl_txn txn, void *rep, uint32_t n,",
         "                                       handle_t *hs, uint32_t nh)",
         "{",
         "    ((struct idl_rep_hdr *)rep)->txid = txn.txid;",
-        "    status_t idl_st = drv_channel_write(txn.ch, rep, n, hs, nh);",
-        "    if (idl_st != OK)",
-        "        idl_close_all(hs, nh);",
-        "    return idl_st;",
+        "    return drv_channel_write(txn.ch, rep, n, hs, nh);",
         "}",
         "",
         "/* ---- asynchronous calls ------------------------------------------------ */",
@@ -1456,6 +1456,11 @@ def gen_call_general(p, m):
     out.append("    if (idl_st == OK)")
     out.append(f"        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, {rmax}, &idl_got[0], {rh},")
     out.append("                          idl_within, idl_t);")
+    if hres:
+        # ERR_BUFFER_TOO_SMALL writes the reply's handle count, but none of
+        # its handles reach our table (nor idl_rh): nothing to close then.
+        out.append("    if (idl_st != OK)")
+        out.append("        idl_got[1] = 0;   /* handles arrive only with OK */")
     status = "idl_rep_status_var" if has_var(m.results) else "idl_rep_status"
     out.append("    if (idl_st == OK)")
     out.append(f"        idl_st = {status}(idl_b1, idl_got[0], sizeof(*idl_r));")
@@ -1508,7 +1513,7 @@ def gen_client_sync(p, m):
                    "&idl_got[0],")
         out.append(f"                               idl_rh, {len(hres)}, &idl_got[1], idl_within, "
                    "idl_t);")
-        out.append("    uint32_t idl_rhn = idl_got[1];")
+        out.append("    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */")
         out.append("    idl_n = idl_got[0];")
         out.append("    if (idl_st == OK)")
         out.append("        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));")
@@ -1894,7 +1899,8 @@ def gen_event_send(p, e):
     out.append(f"/* The event {P}.{e.name}, to {to}: written on ch, never answered.")
     out.append(" * ERR_SHOULD_WAIT: the peer's queue is full (its flow control).")
     if hs:
-        out.append(" * The handles are moved in every case: sent, or closed.")
+        out.append(" * The handles are gone in every case: sent, closed, or lost with a")
+        out.append(" * write that failed (the caller never closes them after this).")
     out[-1] += " */"
     out.append(f"static inline status_t {P}_{e.name}({', '.join(params)})")
     out.append("{")
@@ -1927,10 +1933,13 @@ def gen_event_send(p, e):
             out.append(f"    idl_q->{f.name} = {f.name};")
     out += put_vars(fields, "idl_b0", "idl_qn", "ERR_INVALID_ARGS")
     if hs:
-        out.append("    if (idl_st == OK)")
-        out.append(f"        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, {len(hs)});")
+        # Closed only when the kernel never got them (a field refused): a
+        # send's handles are gone whatever its status, and closing them
+        # after it could close another thread's new handles.
         out.append("    if (idl_st != OK)")
-        out.append(f"        idl_close_all(idl_hs, {len(hs)});")
+        out.append(f"        idl_close_all(idl_hs, {len(hs)});   /* never sent */")
+        out.append("    else")
+        out.append(f"        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, {len(hs)});")
     else:
         out.append("    if (idl_st == OK)")
         out.append("        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);")
@@ -2179,13 +2188,13 @@ def gen_protocol(p):
         " * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's",
         " * length: 0 means no reply (the request has no txid, or a `later`",
         " * handler answers it itself). No I/O; the caller sends the reply with the",
-        " * handles, or closes them if it can't. */",
+        " * handles, or closes them if it never sends it. */",
     ]
     if ins:
         head[3:] = [" * length: 0 means no reply (the message has no txid, a `later` handler",
                     " * answers it itself, or it is an event: txid 0, never answered; one no",
                     " * handler takes is dropped). No I/O; the caller sends the reply with the",
-                    " * handles, or closes them if it can't." + ("" if hin else " */")]
+                    " * handles, or closes them if it never sends it." + ("" if hin else " */")]
         if hin:
             head += [" * The idl_nh handles at idl_hs (an event's) are taken in every case:",
                      " * given to its handler, or closed. */"]
@@ -2193,7 +2202,7 @@ def gen_protocol(p):
         head[3:] = [" * length: 0 means no reply (the message has no txid, a `later` handler",
                     " * answers it itself, or it has txid 0: an event of the other way, or",
                     " * none, never answered). No I/O; the caller sends the reply with the",
-                    " * handles, or closes them if it can't. */"]
+                    " * handles, or closes them if it never sends it. */"]
     out += head
     out.append(f"static inline uint32_t {name}(handle_t ch, const struct {P}_ops *ops, void *ctx,")
     if hin:
@@ -2305,7 +2314,7 @@ def gen_protocol(p):
             " * closed, *slot->nh 0 after. Returns the reply's length: 0 means no reply",
             " * (no txid, an event, or a `later` handler answers it itself). No I/O;",
             " * the caller sends the reply with the handles, or closes them if it",
-            " * can't. */",
+            " * never sends it. */",
             f"static inline uint32_t {P}_run_slot(handle_t ch, const struct idl_slot *slot,",
             " " * len(f"static inline uint32_t {P}_run_slot(") +
             f"const struct {P}_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)",
@@ -2326,7 +2335,7 @@ def gen_protocol(p):
             " * answered ERR_INVALID_ARGS without its handler seeing it. Returns the",
             " * reply's length: 0 means no reply (no txid, or a `later` handler",
             " * answers it itself). No I/O; the caller sends the reply with the handles,",
-            " * or closes them if it can't. */",
+            " * or closes them if it never sends it. */",
             f"static inline uint32_t {P}_run_slot(handle_t ch, const struct idl_slot *slot,",
             " " * len(f"static inline uint32_t {P}_run_slot(") +
             f"const struct {P}_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)",
@@ -2409,8 +2418,10 @@ def gen_loops(p):
             "    handle_t idl_rhs[IDL_REP_HANDLES];",
             "    uint32_t idl_rhn = 0;",
             f"    uint32_t idl_rn = {dispatch}",
-            "    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)",
-            "        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */",
+            "    if (!idl_rn)",
+            "        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */",
+            "    else   /* the reply's handles are gone whatever the write's status */",
+            "        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);",
             "    return OK;",
             "}",
             "",
@@ -2456,8 +2467,10 @@ def gen_loops(p):
         "        handle_t idl_rhs[IDL_REP_HANDLES];",
         "        uint32_t idl_rhn = 0;",
         f"        uint32_t idl_rn = {dispatch}",
-        "        if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)",
-        "            idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */",
+        "        if (!idl_rn)",
+        "            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */",
+        "        else   /* the reply's handles are gone whatever the write's status */",
+        "            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);",
         "    }",
         "    drv_free(idl_q);",
         "    return idl_st;",
@@ -2516,8 +2529,10 @@ def gen_loops_h(p, one, loop):
         "        uint32_t idl_rhn = 0;",
         f"        uint32_t idl_rn = {P}_dispatch_h(ch, ops, ctx, idl_q, idl_n, idl_hs, idl_nh, idl_r,",
         "                                         idl_rhs, &idl_rhn);",
-        "        if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)",
-        "            idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */",
+        "        if (!idl_rn)",
+        "            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */",
+        "        else   /* the reply's handles are gone whatever the write's status */",
+        "            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);",
         "    }",
     ] + free + [
         "    return idl_st;",

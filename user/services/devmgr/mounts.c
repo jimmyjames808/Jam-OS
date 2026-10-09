@@ -67,9 +67,10 @@ static void answer(handle_t ch, uint32_t txid, status_t st)
     r.status = st;
     r.count = nh;
     uint32_t n = st == OK ? sizeof(r) : DEVMGR_REP_HDR;
-    if (jam_channel_write(ch, &r, n, hs, nh) != OK)
-        for (uint32_t i = 0; i < nh; i++)
-            jam_handle_close(hs[i]);   /* the caller is gone */
+    /* The duplicates are gone whatever the write's status (a send's handles
+     * are always moved; the caller may be gone): never closed after it, as
+     * their values may already be another thread's new handles. */
+    (void)jam_channel_write(ch, &r, n, hs, nh);
 }
 
 void mounts_update(void)

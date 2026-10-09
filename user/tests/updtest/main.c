@@ -173,10 +173,12 @@ status_t offer(const struct build *b, unsigned handles, uint32_t magic, struct u
                                     .flags = b->flags };
         memcpy(o->bytes, b->bytes, sizeof(o->bytes));
         memcpy(o->manifest, b->manifest, b->manifest_len);
-        st = jam_channel_write(ch, o, sizeof(*o), hs, handles);   /* moves the handles */
+        /* moves the handles, whatever its status: never closed after it */
+        st = jam_channel_write(ch, o, sizeof(*o), hs, handles);
+    } else {   /* a duplicate failed: the ones made were never sent */
+        for (unsigned i = 0; i < nh; i++)
+            jam_handle_close(hs[i]);
     }
-    for (unsigned i = 0; st != OK && i < nh; i++)
-        jam_handle_close(hs[i]);
     free(o);
     if (st == OK)
         st = jam_object_wait_one(ch, SIG_READABLE, now() + ANSWER_WAIT, NULL);

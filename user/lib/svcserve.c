@@ -47,7 +47,9 @@ status_t svc_serve_request(handle_t ch, svc_dispatch_fn dispatch,
     } else {
         rn = dispatch(ctx, q, n, r, rhs, &rhn);
     }
-    if (!rn || drv_channel_write(ch, r, rn, rhs, rhn) != OK)
-        idl_close_all(rhs, rhn);   /* not sent: still ours */
+    if (!rn)
+        idl_close_all(rhs, rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, r, rn, rhs, rhn);
     return OK;
 }
