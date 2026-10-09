@@ -446,10 +446,21 @@ KTEST(pager_close_detaches)
     next(pg, 0, &q);
     is_read(&q, 10, 4, 4);
 
+    struct aspace *as;   /* a page mapped: the close zaps it from the teardown */
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t at = 0;
+    KT_EQ(aspace_map(as, v, 0, 8 * PG, ASPACE_READ, &at), OK);
+    KT_EQ(aspace_fault(as, at + PG, ASPACE_READ), OK);
+    KT_ASSERT(aspace_pte(as, at + PG) != 0);
+
     kobject_ref(pager_kobject(pg));   /* to try a VMO after the close */
     pg_close(pg);
     KT_EQ(rd_end(&a, 0), ERR_IO);
     KT_EQ(vmo_committed(v), 0);
+    KT_EQ(aspace_pte(as, at + PG), 0);
+    KT_EQ(aspace_fault(as, at + PG, ASPACE_READ), ERR_SHOULD_WAIT);
+    KT_EQ(aspace_unmap(as, at, 8 * PG), OK);
+    aspace_unref(as);
     struct vmo *v3;
     KT_EQ(pager_create_vmo(pg, 12, PG, &v3), ERR_BAD_STATE);
     KT_EQ(pager_next(pg, 0, &q), ERR_SHOULD_WAIT);
