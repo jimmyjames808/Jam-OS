@@ -580,8 +580,10 @@ bool t_handles_always_moved(void)
     return true;
 }
 
-/* D2 from user space: channel_set_flags needs RIGHT_READ on the end, and a
- * send refused by the mark closes its handles as every refused send does. */
+/* D2 from user space: channel_set_flags needs RIGHT_READ on the end and
+ * the end's sole handle (a shared end can't be marked by one of its
+ * holders: M12.1's kernel-core finding 1), and a send refused by the mark
+ * closes its handles as every refused send does. */
 bool t_channel_no_handles(void)
 {
     struct job_info before, after;
@@ -591,7 +593,22 @@ bool t_channel_no_handles(void)
     CHECK_ST(jam_handle_duplicate(b, RIGHT_WRITE | RIGHT_WAIT, &wo), OK);
     CHECK_ST(jam_channel_set_flags(wo, CHANNEL_NO_HANDLES), ERR_ACCESS_DENIED);
     CHECK_ST(jam_channel_set_flags(b, 1u << 9), ERR_INVALID_ARGS);
-    CHECK_ST(jam_channel_set_flags(b, CHANNEL_NO_HANDLES), OK);
+    CHECK_ST(jam_channel_set_flags(b, CHANNEL_NO_HANDLES), ERR_BAD_STATE);   /* wo shares it */
+    CHECK_ST(jam_event_create(&e), OK);
+    CHECK_ST(jam_channel_write(a, "abcd", 4, &e, 1), OK);   /* the shared end still takes one */
+    handle_t got = HANDLE_INVALID;
+    uint32_t nh = 0;
+    uint8_t one[8];
+    CHECK_ST(jam_channel_read(&(struct channel_read_args){
+                 .h = b, .rd_cap = sizeof(one), .rd_bytes = (uint64_t)(uintptr_t)one,
+                 .rd_handles = (uint64_t)(uintptr_t)&got, .rd_hcap = 1,
+                 .rd_hactual = (uint64_t)(uintptr_t)&nh }),
+             OK);
+    CHECK_EQ(nh, 1);
+    CHECK_ST(jam_handle_close(got), OK);
+    CHECK_ST(jam_handle_close(wo), OK);
+    CHECK_ST(jam_channel_set_flags(b, CHANNEL_NO_HANDLES), OK);   /* the sole holder */
+    CHECK_ST(jam_handle_duplicate(b, RIGHT_WRITE | RIGHT_WAIT, &wo), OK);
     CHECK_ST(jam_event_create(&e), OK);
     CHECK_ST(jam_channel_write(a, "abcd", 4, &e, 1), ERR_NOT_SUPPORTED);
     CHECK(gone(e));

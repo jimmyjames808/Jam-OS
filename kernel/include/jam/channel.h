@@ -179,8 +179,10 @@ void channel_received(struct kobject *obj, struct job *job);
 /* Set flags on ch (CHANNEL_NO_HANDLES, <jam/abi.h>; one-way: a flag never
  * comes off): from then on a message carrying handles to ch is refused
  * with ERR_NOT_SUPPORTED, as the cycle rule refuses one (the khandles
- * untouched). ERR_BAD_STATE if one is queued on ch already;
- * ERR_INVALID_ARGS for an unknown bit. */
+ * untouched). ERR_BAD_STATE if one is queued on ch already, or if ch has
+ * more than one handle (only its sole holder may mark it: a shared end's
+ * mark would stop the replies of every other holder); ERR_INVALID_ARGS
+ * for an unknown bit. */
 status_t channel_set_flags(struct channel *ch, uint32_t flags);
 
 /* The messages queued on ch now and what they are charged (bytes, plus
