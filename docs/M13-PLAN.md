@@ -738,8 +738,8 @@ free ones, none reused):
 | 91 | `session` (new) | session.idl (new) | `open (u16 cols, u16 rows, str[<=63] term, str[<=4095] command) -> (handle master, handle ctl)` |
 | 92 | `session_ctl` (new) | session.idl | `resize`, `hangup`; event `ended (i32 code)` |
 | 93 | `signal` (new) | signal.idl (new) | event `send (u8 signo, i32 value)` |
-| 61 | `net_stream` (an addition) | `abi/idl/net.idl` | `set_options (u32 flags) -> ()`: no-delay, keep-alive |
-| 62 | `net_listener` (an addition) | net.idl | a reuse flag in `tcp_listener`'s request, or a method, as N1 finds lwIP's shape |
+| 61 | `net_stream` (an addition) | `abi/idl/net.idl` | `set_options (u32 flags, u32 keep_idle, u32 keep_intvl, u32 keep_cnt) -> ()`: no-delay, keep-alive and its three numbers |
+| 62 | `net_listener` (an addition) | net.idl | `tcp_listener`'s request has a `u32 flags` (`NET_LISTEN_REUSE`) |
 
 **Hand-written formats**: the POSIX hand-over message ("JPSX", a version
 word, user/include/posixfds.h, in ids.txt's registry); the master
