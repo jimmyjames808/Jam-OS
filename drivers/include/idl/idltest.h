@@ -10,7 +10,7 @@
  * Reconnect: a test server keeps nothing; a client whose call fails with
  * ERR_PEER_CLOSED has lost the server for good.
  *
- * Protocols `idltest` (id 33), `idltest_two` (id 34) and `idltest_ev` (id 35): one for each
+ * Protocols `idltest` (id 33), `idltest_two` (id 34), `idltest_ev` (id 35) and `idltest_h` (id 36): one for each
  * kind of channel, so a message of one protocol sent on a channel of
  * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
  * Client: <proto>_<method>(ch, args..., &results...)
@@ -128,6 +128,8 @@ struct idltest_sums_rep {
 
 #define IDLTEST_REQ_MAX 78u   /* bytes: the biggest request */
 #define IDLTEST_REP_MAX 78u   /* bytes: the biggest reply */
+#define IDLTEST_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define IDLTEST_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1101,8 +1103,8 @@ static inline status_t idltest_reply_make_vmo(struct idl_txn idl_txn, status_t i
 /* Answer the idltest.bytes request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t idltest_reply_bytes(struct idl_txn idl_txn, status_t idl_st, const uint8_t *data, uint32_t data_len, uint32_t tag)
 {
     _Alignas(8) uint8_t idl_b0[78];
@@ -1124,8 +1126,8 @@ static inline status_t idltest_reply_bytes(struct idl_txn idl_txn, status_t idl_
 /* Answer the idltest.greet request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t idltest_reply_greet(struct idl_txn idl_txn, status_t idl_st, const char *text, uint32_t text_len)
 {
     _Alignas(8) uint8_t idl_b0[42];
@@ -1147,8 +1149,8 @@ static inline status_t idltest_reply_greet(struct idl_txn idl_txn, status_t idl_
 /* Answer the idltest.later_text request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t idltest_reply_later_text(struct idl_txn idl_txn, status_t idl_st, const char *name, uint32_t name_len, const uint8_t *extra, uint32_t extra_len)
 {
     _Alignas(8) uint8_t idl_b0[32];
@@ -1172,8 +1174,8 @@ static inline status_t idltest_reply_later_text(struct idl_txn idl_txn, status_t
 /* Answer the idltest.broken request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t idltest_reply_broken(struct idl_txn idl_txn, status_t idl_st, const char *text, uint32_t text_len, const uint8_t *data, uint32_t data_len)
 {
     _Alignas(8) uint8_t idl_b0[24];
@@ -1197,8 +1199,8 @@ static inline status_t idltest_reply_broken(struct idl_txn idl_txn, status_t idl
 /* Answer the idltest.sums request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t idltest_reply_sums(struct idl_txn idl_txn, status_t idl_st, uint64_t total, uint8_t tag, const uint32_t *b, uint32_t b_len, const int64_t *c, uint32_t c_len)
 {
     _Alignas(8) uint8_t idl_b0[56];
@@ -1222,7 +1224,7 @@ static inline status_t idltest_reply_sums(struct idl_txn idl_txn, status_t idl_s
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (IDLTEST_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (IDLTEST_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1529,7 +1531,7 @@ static inline status_t idltest_take_slot(handle_t ch, const struct idl_slot *slo
 /* Run the request in slot (taken by idltest_take_slot, or found there by a
  * successor), which came on ch: as idltest_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (IDLTEST_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -1671,6 +1673,8 @@ struct idltest_two_big_later_rep {
 
 #define IDLTEST_TWO_REQ_MAX 12296u   /* bytes: the biggest request */
 #define IDLTEST_TWO_REP_MAX 4108u   /* bytes: the biggest reply */
+#define IDLTEST_TWO_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define IDLTEST_TWO_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1998,7 +2002,7 @@ static inline status_t idltest_two_reply_big_later(struct idl_txn idl_txn, statu
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (IDLTEST_TWO_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (IDLTEST_TWO_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -2103,7 +2107,7 @@ static inline status_t idltest_two_take_slot(handle_t ch, const struct idl_slot 
 /* Run the request in slot (taken by idltest_two_take_slot, or found there by a
  * successor), which came on ch: as idltest_two_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (IDLTEST_TWO_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -2201,6 +2205,8 @@ static inline status_t idltest_two_serve(handle_t ch, const struct idltest_two_o
 #define IDLTEST_EV_GIVE             0x00230003u
 #define IDLTEST_EV_RING             0x00230004u
 #define IDLTEST_EV_GIFT             0x00230005u
+#define IDLTEST_EV_BATCH            0x00230006u
+#define IDLTEST_EV_PARCEL           0x00230007u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct idltest_ev_count_req {
@@ -2233,9 +2239,21 @@ struct idltest_ev_gift_msg {   /* an event: txid 0 */
     uint32_t ordinal;
     uint32_t key;
 } __attribute__((packed));
+struct idltest_ev_batch_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t key;
+} __attribute__((packed));
+struct idltest_ev_parcel_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t key;
+} __attribute__((packed));
 
 #define IDLTEST_EV_REQ_MAX 30u   /* bytes: the biggest message to the server */
 #define IDLTEST_EV_REP_MAX 22u   /* bytes: the biggest message to the client */
+#define IDLTEST_EV_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define IDLTEST_EV_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2335,7 +2353,6 @@ static inline status_t idltest_ev_note(handle_t ch, uint32_t key, const char *te
  * write that failed (the caller never closes them after this). */
 static inline status_t idltest_ev_give(handle_t ch, uint32_t key, handle_t obj)
 {
-    handle_t idl_hs[1] = { obj };
     _Alignas(8) uint8_t idl_b0[12];
     struct idltest_ev_give_msg *idl_q = (struct idltest_ev_give_msg *)idl_b0;
     uint32_t idl_qn = sizeof(*idl_q);
@@ -2343,10 +2360,47 @@ static inline status_t idltest_ev_give(handle_t ch, uint32_t key, handle_t obj)
     idl_q->txid = 0;   /* an event */
     idl_q->ordinal = IDLTEST_EV_GIVE;
     idl_q->key = key;
-    if (idl_st != OK)
-        idl_close_all(idl_hs, 1);   /* never sent */
-    else
-        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, 1);
+    handle_t idl_hs[1];
+    uint32_t idl_hn = 0;
+    if (idl_st == OK) {
+        idl_hs[idl_hn++] = obj;
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, idl_hn);
+    } else {   /* never sent: the handles are still ours */
+        if (obj != HANDLE_INVALID)
+            drv_handle_close(obj);
+    }
+    return idl_st;
+}
+
+/* To the server: a key, a VMO (typed) and up to four more handles of any type. */
+/* The event idltest_ev.batch, to the server: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control).
+ * The handles are gone in every case: sent, closed, or lost with a
+ * write that failed (the caller never closes them after this). */
+static inline status_t idltest_ev_batch(handle_t ch, uint32_t key, handle_t first, const handle_t *rest, uint32_t rest_len)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_ev_batch_msg *idl_q = (struct idltest_ev_batch_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = IDLTEST_EV_BATCH;
+    idl_q->key = key;
+    if (idl_st == OK && (rest_len > 4 || (rest_len && !rest)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_hs[5];
+    uint32_t idl_hn = 0;
+    if (idl_st == OK) {
+        idl_hs[idl_hn++] = first;
+        for (uint32_t idl_i = 0; idl_i < rest_len; idl_i++)
+            idl_hs[idl_hn++] = rest[idl_i];
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, idl_hn);
+    } else {   /* never sent: the handles are still ours */
+        if (first != HANDLE_INVALID)
+            drv_handle_close(first);
+        if (rest)
+            idl_close_all(rest, rest_len);
+    }
     return idl_st;
 }
 
@@ -2375,7 +2429,6 @@ static inline status_t idltest_ev_ring(handle_t ch, uint32_t key, const uint8_t 
  * write that failed (the caller never closes them after this). */
 static inline status_t idltest_ev_gift(handle_t ch, uint32_t key, handle_t a, handle_t b)
 {
-    handle_t idl_hs[2] = { a, b };
     _Alignas(8) uint8_t idl_b0[12];
     struct idltest_ev_gift_msg *idl_q = (struct idltest_ev_gift_msg *)idl_b0;
     uint32_t idl_qn = sizeof(*idl_q);
@@ -2383,10 +2436,47 @@ static inline status_t idltest_ev_gift(handle_t ch, uint32_t key, handle_t a, ha
     idl_q->txid = 0;   /* an event */
     idl_q->ordinal = IDLTEST_EV_GIFT;
     idl_q->key = key;
-    if (idl_st != OK)
-        idl_close_all(idl_hs, 2);   /* never sent */
-    else
-        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, 2);
+    handle_t idl_hs[2];
+    uint32_t idl_hn = 0;
+    if (idl_st == OK) {
+        idl_hs[idl_hn++] = a;
+        idl_hs[idl_hn++] = b;
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, idl_hn);
+    } else {   /* never sent: the handles are still ours */
+        if (a != HANDLE_INVALID)
+            drv_handle_close(a);
+        if (b != HANDLE_INVALID)
+            drv_handle_close(b);
+    }
+    return idl_st;
+}
+
+/* To the client: a key and up to four channel ends (a typed list). */
+/* The event idltest_ev.parcel, to the client: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control).
+ * The handles are gone in every case: sent, closed, or lost with a
+ * write that failed (the caller never closes them after this). */
+static inline status_t idltest_ev_parcel(handle_t ch, uint32_t key, const handle_t *hs, uint32_t hs_len)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_ev_parcel_msg *idl_q = (struct idltest_ev_parcel_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = IDLTEST_EV_PARCEL;
+    idl_q->key = key;
+    if (idl_st == OK && (hs_len > 4 || (hs_len && !hs)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_hs[4];
+    uint32_t idl_hn = 0;
+    if (idl_st == OK) {
+        for (uint32_t idl_i = 0; idl_i < hs_len; idl_i++)
+            idl_hs[idl_hn++] = hs[idl_i];
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, idl_hn);
+    } else {   /* never sent: the handles are still ours */
+        if (hs)
+            idl_close_all(hs, hs_len);
+    }
     return idl_st;
 }
 
@@ -2396,6 +2486,7 @@ static inline status_t idltest_ev_gift(handle_t ch, uint32_t key, handle_t a, ha
 struct idltest_ev_events {
     void (*ring)(void *ctx, uint32_t key, const uint8_t *data, uint32_t data_len);
     void (*gift)(void *ctx, uint32_t key, handle_t a, handle_t b);
+    void (*parcel)(void *ctx, uint32_t key, const handle_t *hs, uint32_t hs_len);
 };
 
 /* Client: run the event read with idl_reply_read into msg and *m (an
@@ -2452,6 +2543,25 @@ static inline status_t idltest_ev_event_dispatch(const struct idltest_ev_events 
         idl_tab->gift(ctx, idl_e->key, idl_hs[0], idl_hs[1]);
         return OK;
     }
+    case IDLTEST_EV_PARCEL: {
+        const struct idltest_ev_parcel_msg *idl_e = (const struct idltest_ev_parcel_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh > 4)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->parcel)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st == OK && !(idl_handles_are(idl_hs, idl_nh, IDL_OBJ_CHANNEL)))
+            idl_st = ERR_WRONG_TYPE;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->parcel(ctx, idl_e->key, idl_hs, idl_nh);
+        return OK;
+    }
     }
     idl_close_all(idl_hs, idl_nh);
     return ERR_NOT_SUPPORTED;
@@ -2489,6 +2599,7 @@ struct idltest_ev_ops {
     status_t (*count)(void *ctx, uint32_t *out_notes, uint32_t *out_gifts);
     void (*note)(void *ctx, uint32_t key, const char *text, uint32_t text_len);
     void (*give)(void *ctx, uint32_t key, handle_t obj);
+    void (*batch)(void *ctx, uint32_t key, handle_t first, const handle_t *rest, uint32_t rest_len);
 };
 
 /* Answer the idltest_ev.count request kept in txn: idl_st and, if it is OK, the
@@ -2555,6 +2666,25 @@ static inline status_t idltest_ev_event_in(const struct idltest_ev_ops *idl_tab,
         idl_tab->give(ctx, idl_e->key, idl_hs[0]);
         return OK;
     }
+    case IDLTEST_EV_BATCH: {
+        const struct idltest_ev_batch_msg *idl_e = (const struct idltest_ev_batch_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && (idl_nh < 1 || idl_nh - 1 > 4))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->batch)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st == OK && !(idl_handle_is(idl_hs[0], IDL_OBJ_VMO)))
+            idl_st = ERR_WRONG_TYPE;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->batch(ctx, idl_e->key, idl_hs[0], idl_hs + 1, idl_nh - 1);
+        return OK;
+    }
     }
     idl_close_all(idl_hs, idl_nh);
     return ERR_NOT_SUPPORTED;
@@ -2562,13 +2692,13 @@ static inline status_t idltest_ev_event_in(const struct idltest_ev_ops *idl_tab,
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (IDLTEST_EV_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (IDLTEST_EV_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the message has no txid, a `later` handler
  * answers it itself, or it is an event: txid 0, never answered; one no
  * handler takes is dropped). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it.
- * The idl_nh handles at idl_hs (an event's) are taken in every case:
- * given to its handler, or closed. */
+ * The idl_nh handles at idl_hs (an event's, or a call's arguments) are taken
+ * in every case: given to the handler, or closed. */
 static inline uint32_t idltest_ev_dispatch_h(handle_t ch, const struct idltest_ev_ops *ops, void *ctx,
                                              const void *req, uint32_t n, const handle_t *idl_hs, uint32_t idl_nh,
                                              void *rep, handle_t *rhs, uint32_t *rhn)
@@ -2596,6 +2726,7 @@ static inline uint32_t idltest_ev_dispatch_h(handle_t ch, const struct idltest_e
     switch (((const struct idl_req_hdr *)req)->ordinal) {
     case IDLTEST_EV_NOTE:
     case IDLTEST_EV_GIVE:
+    case IDLTEST_EV_BATCH:
         return sizeof(*idl_h);   /* an event with a txid */
     case IDLTEST_EV_COUNT: {
         const struct idltest_ev_count_req *idl_q = (const struct idltest_ev_count_req *)req;
@@ -2622,7 +2753,7 @@ static inline uint32_t idltest_ev_dispatch_h(handle_t ch, const struct idltest_e
 }
 
 /* idltest_ev_dispatch_h without handles (a loop of your own that reads none:
- * an event that carries some is then dropped). */
+ * an event or call that takes some is then refused). */
 static inline uint32_t idltest_ev_dispatch_on(handle_t ch, const struct idltest_ev_ops *ops, void *ctx,
                                               const void *req, uint32_t n, void *rep, handle_t *rhs,
                                               uint32_t *rhn)
@@ -2655,9 +2786,9 @@ static inline status_t idltest_ev_take_slot(handle_t ch, const struct idl_slot *
 /* Run the message in slot (taken by idltest_ev_take_slot, or found there by a
  * successor), which came on ch: as idltest_ev_dispatch_h, its reply built in
  * slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). The handles it carried
- * (*slot->nh in slot->hs) are taken: given to an event's handler or
- * closed, *slot->nh 0 after. Returns the reply's length: 0 means no reply
+ * (IDLTEST_EV_REP_HANDLES slots; *rhn of them). The handles it carried
+ * (*slot->nh in slot->hs) are taken: given to a handler or closed,
+ * *slot->nh 0 after. Returns the reply's length: 0 means no reply
  * (no txid, an event, or a `later` handler answers it itself). No I/O;
  * the caller sends the reply with the handles, or closes them if it
  * never sends it. */
@@ -2725,6 +2856,1446 @@ static inline status_t idltest_ev_serve(handle_t ch, const struct idltest_ev_ops
     status_t idl_st;
     while ((idl_st = idl_serve_next(&idl_s)) == OK)
         idl_s.rn = idltest_ev_dispatch_h(ch, ops, ctx, idl_q, idl_s.n, idl_hs, idl_s.nh, idl_r,
+                                  idl_rhs, &idl_s.rhn);
+    return idl_st == ERR_PEER_CLOSED ? OK : idl_st;
+}
+
+
+/* ==== protocol `idltest_h` (id 36) ==========================================
+ *
+ * idltest_h: handles as arguments. A client's are gone after the call, whatever
+ * its status; the server hands them to the handler, which owns them (whatever
+ * it returns), and closes them itself when the handler isn't reached. Lists
+ * of handles (`handle[<=N]`: the message's own handle count) and typed handles
+ * (`handle<vmo>`: a handle of another type is refused, closed, ERR_WRONG_TYPE,
+ * before the handler runs). utest only (idlhandle.c).
+ *
+ * Reconnect: as idltest's. */
+
+#define IDLTEST_H_PROTOCOL_ID 36u
+#define IDLTEST_H_TAKE             0x00240001u
+#define IDLTEST_H_VMO_SIZE         0x00240002u
+#define IDLTEST_H_COUNT            0x00240003u
+#define IDLTEST_H_BOUNCE           0x00240004u
+#define IDLTEST_H_MIXED            0x00240005u
+#define IDLTEST_H_PARK             0x00240006u
+#define IDLTEST_H_REFUSE           0x00240007u
+#define IDLTEST_H_CHANS            0x00240008u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct idltest_h_take_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t key;
+} __attribute__((packed));
+struct idltest_h_take_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t held;
+} __attribute__((packed));
+struct idltest_h_vmo_size_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct idltest_h_vmo_size_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t size;
+} __attribute__((packed));
+struct idltest_h_count_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t tag;
+} __attribute__((packed));
+struct idltest_h_count_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t tag;
+    uint32_t count;
+} __attribute__((packed));
+struct idltest_h_bounce_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct idltest_h_bounce_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct idltest_h_mixed_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t n;
+} __attribute__((packed));
+struct idltest_h_mixed_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t n_back;
+} __attribute__((packed));
+struct idltest_h_park_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t key;
+} __attribute__((packed));
+struct idltest_h_park_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t key;
+} __attribute__((packed));
+struct idltest_h_refuse_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct idltest_h_refuse_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct idltest_h_chans_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct idltest_h_chans_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t n;
+} __attribute__((packed));
+
+#define IDLTEST_H_REQ_MAX 12u   /* bytes: the biggest request */
+#define IDLTEST_H_REP_MAX 16u   /* bytes: the biggest reply */
+#define IDLTEST_H_REQ_HANDLES 64   /* handles: read with each message to the server */
+#define IDLTEST_H_REP_HANDLES 64   /* handles: room in a dispatch's rhs */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* idltest_h_take_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_h_take_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t key, handle_t h, uint32_t *out_held)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[12];
+    struct idltest_h_take_req *idl_q = (struct idltest_h_take_req *)idl_b0;
+    const struct idltest_h_take_rep *idl_r = (const struct idltest_h_take_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_H_TAKE;
+    idl_q->key = key;
+    handle_t idl_wh[1];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = h;
+        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 12, &idl_got[0], NULL, 0, &idl_got[1],
+                            idl_within, idl_t);
+    } else {   /* never sent: the handles are still ours */
+        if (h != HANDLE_INVALID)
+            drv_handle_close(h);
+    }
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && out_held)
+        *out_held = idl_r->held;
+    (void)idl_o;
+    return idl_st;
+}
+/* The handler keeps the handle: how many it holds now. */
+static inline status_t idltest_h_take_until(handle_t ch, uint64_t deadline_ns, uint32_t key, handle_t h, uint32_t *out_held)
+{
+    return idltest_h_take_call(ch, false, deadline_ns, key, h, out_held);
+}
+static inline status_t idltest_h_take_within(handle_t ch, uint64_t timeout_ns, uint32_t key, handle_t h, uint32_t *out_held)
+{
+    return idltest_h_take_call(ch, true, timeout_ns, key, h, out_held);
+}
+static inline status_t idltest_h_take(handle_t ch, uint32_t key, handle_t h, uint32_t *out_held)
+{
+    return idltest_h_take_call(ch, false, DEADLINE_NEVER, key, h, out_held);
+}
+
+/* idltest_h_vmo_size_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_h_vmo_size_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t v, uint64_t *out_size)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[16];
+    struct idltest_h_vmo_size_req *idl_q = (struct idltest_h_vmo_size_req *)idl_b0;
+    const struct idltest_h_vmo_size_rep *idl_r = (const struct idltest_h_vmo_size_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_H_VMO_SIZE;
+    handle_t idl_wh[1];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = v;
+        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 16, &idl_got[0], NULL, 0, &idl_got[1],
+                            idl_within, idl_t);
+    } else {   /* never sent: the handles are still ours */
+        if (v != HANDLE_INVALID)
+            drv_handle_close(v);
+    }
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && out_size)
+        *out_size = idl_r->size;
+    (void)idl_o;
+    return idl_st;
+}
+/* A VMO's size in bytes (the handler closes it). */
+static inline status_t idltest_h_vmo_size_until(handle_t ch, uint64_t deadline_ns, handle_t v, uint64_t *out_size)
+{
+    return idltest_h_vmo_size_call(ch, false, deadline_ns, v, out_size);
+}
+static inline status_t idltest_h_vmo_size_within(handle_t ch, uint64_t timeout_ns, handle_t v, uint64_t *out_size)
+{
+    return idltest_h_vmo_size_call(ch, true, timeout_ns, v, out_size);
+}
+static inline status_t idltest_h_vmo_size(handle_t ch, handle_t v, uint64_t *out_size)
+{
+    return idltest_h_vmo_size_call(ch, false, DEADLINE_NEVER, v, out_size);
+}
+
+/* idltest_h_count_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_h_count_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t tag, const handle_t *hs, uint32_t hs_len, uint32_t *out_tag, uint32_t *out_count)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[16];
+    struct idltest_h_count_req *idl_q = (struct idltest_h_count_req *)idl_b0;
+    const struct idltest_h_count_rep *idl_r = (const struct idltest_h_count_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_H_COUNT;
+    idl_q->tag = tag;
+    if (idl_st == OK && (hs_len > 8 || (hs_len && !hs)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_wh[8];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        for (uint32_t idl_i = 0; idl_i < hs_len; idl_i++)
+            idl_wh[idl_wn++] = hs[idl_i];
+        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 16, &idl_got[0], NULL, 0, &idl_got[1],
+                            idl_within, idl_t);
+    } else {   /* never sent: the handles are still ours */
+        if (hs)
+            idl_close_all(hs, hs_len);
+    }
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && out_tag)
+        *out_tag = idl_r->tag;
+    if (idl_st == OK && out_count)
+        *out_count = idl_r->count;
+    (void)idl_o;
+    return idl_st;
+}
+/* How many handles it was given, and the tag back. */
+static inline status_t idltest_h_count_until(handle_t ch, uint64_t deadline_ns, uint32_t tag, const handle_t *hs, uint32_t hs_len, uint32_t *out_tag, uint32_t *out_count)
+{
+    return idltest_h_count_call(ch, false, deadline_ns, tag, hs, hs_len, out_tag, out_count);
+}
+static inline status_t idltest_h_count_within(handle_t ch, uint64_t timeout_ns, uint32_t tag, const handle_t *hs, uint32_t hs_len, uint32_t *out_tag, uint32_t *out_count)
+{
+    return idltest_h_count_call(ch, true, timeout_ns, tag, hs, hs_len, out_tag, out_count);
+}
+static inline status_t idltest_h_count(handle_t ch, uint32_t tag, const handle_t *hs, uint32_t hs_len, uint32_t *out_tag, uint32_t *out_count)
+{
+    return idltest_h_count_call(ch, false, DEADLINE_NEVER, tag, hs, hs_len, out_tag, out_count);
+}
+
+/* idltest_h_bounce_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_h_bounce_call(handle_t ch, bool idl_within, uint64_t idl_t, const handle_t *hs, uint32_t hs_len, handle_t out_back[64], uint32_t *out_back_len)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct idltest_h_bounce_req *idl_q = (struct idltest_h_bounce_req *)idl_b0;
+    const struct idltest_h_bounce_rep *idl_r = (const struct idltest_h_bounce_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_H_BOUNCE;
+    if (idl_st == OK && (hs_len > 64 || (hs_len && !hs)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_rh[64];
+    handle_t idl_wh[64];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        for (uint32_t idl_i = 0; idl_i < hs_len; idl_i++)
+            idl_wh[idl_wn++] = hs[idl_i];
+        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 8, &idl_got[0], idl_rh, 64, &idl_got[1],
+                            idl_within, idl_t);
+    } else {   /* never sent: the handles are still ours */
+        if (hs)
+            idl_close_all(hs, hs_len);
+    }
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] > 64)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        uint32_t idl_hn = idl_got[1];
+        if (out_back) {
+            for (uint32_t idl_i = 0; idl_i < idl_hn; idl_i++)
+                out_back[idl_i] = idl_rh[idl_i];
+        } else {
+            idl_close_all(idl_rh, idl_hn);
+        }
+        if (out_back_len)
+            *out_back_len = idl_hn;
+    }
+    (void)idl_o;
+    return idl_st;
+}
+/* The handles back as they came, up to 64 each way (the kernel's most). */
+static inline status_t idltest_h_bounce_until(handle_t ch, uint64_t deadline_ns, const handle_t *hs, uint32_t hs_len, handle_t out_back[64], uint32_t *out_back_len)
+{
+    return idltest_h_bounce_call(ch, false, deadline_ns, hs, hs_len, out_back, out_back_len);
+}
+static inline status_t idltest_h_bounce_within(handle_t ch, uint64_t timeout_ns, const handle_t *hs, uint32_t hs_len, handle_t out_back[64], uint32_t *out_back_len)
+{
+    return idltest_h_bounce_call(ch, true, timeout_ns, hs, hs_len, out_back, out_back_len);
+}
+static inline status_t idltest_h_bounce(handle_t ch, const handle_t *hs, uint32_t hs_len, handle_t out_back[64], uint32_t *out_back_len)
+{
+    return idltest_h_bounce_call(ch, false, DEADLINE_NEVER, hs, hs_len, out_back, out_back_len);
+}
+
+/* idltest_h_mixed_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_h_mixed_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t end, uint32_t n, const handle_t *rest, uint32_t rest_len, handle_t *out_v, handle_t out_list[3], uint32_t *out_list_len, uint32_t *out_n_back)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[12];
+    struct idltest_h_mixed_req *idl_q = (struct idltest_h_mixed_req *)idl_b0;
+    const struct idltest_h_mixed_rep *idl_r = (const struct idltest_h_mixed_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_H_MIXED;
+    idl_q->n = n;
+    if (idl_st == OK && (rest_len > 4 || (rest_len && !rest)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_rh[4];
+    handle_t idl_wh[5];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = end;
+        for (uint32_t idl_i = 0; idl_i < rest_len; idl_i++)
+            idl_wh[idl_wn++] = rest[idl_i];
+        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 12, &idl_got[0], idl_rh, 4, &idl_got[1],
+                            idl_within, idl_t);
+    } else {   /* never sent: the handles are still ours */
+        if (end != HANDLE_INVALID)
+            drv_handle_close(end);
+        if (rest)
+            idl_close_all(rest, rest_len);
+    }
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && (idl_got[1] < 1 || idl_got[1] - 1 > 3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_rh[0], IDL_OBJ_VMO)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_v)
+            *out_v = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK) {
+        uint32_t idl_hn = idl_got[1] - 1;
+        if (out_list) {
+            for (uint32_t idl_i = 0; idl_i < idl_hn; idl_i++)
+                out_list[idl_i] = idl_rh[1 + idl_i];
+        } else {
+            idl_close_all(idl_rh + 1, idl_hn);
+        }
+        if (out_list_len)
+            *out_list_len = idl_hn;
+    }
+    if (idl_st == OK && out_n_back)
+        *out_n_back = idl_r->n_back;
+    (void)idl_o;
+    return idl_st;
+}
+/* A single and a list each way: gives a new VMO of 4096 bytes and the first
+ * three of `rest` back, and n + 1; closes the channel end. (With n 99 the
+ * handler breaks the protocol and gives a channel end for the VMO.) */
+static inline status_t idltest_h_mixed_until(handle_t ch, uint64_t deadline_ns, handle_t end, uint32_t n, const handle_t *rest, uint32_t rest_len, handle_t *out_v, handle_t out_list[3], uint32_t *out_list_len, uint32_t *out_n_back)
+{
+    return idltest_h_mixed_call(ch, false, deadline_ns, end, n, rest, rest_len, out_v, out_list, out_list_len, out_n_back);
+}
+static inline status_t idltest_h_mixed_within(handle_t ch, uint64_t timeout_ns, handle_t end, uint32_t n, const handle_t *rest, uint32_t rest_len, handle_t *out_v, handle_t out_list[3], uint32_t *out_list_len, uint32_t *out_n_back)
+{
+    return idltest_h_mixed_call(ch, true, timeout_ns, end, n, rest, rest_len, out_v, out_list, out_list_len, out_n_back);
+}
+static inline status_t idltest_h_mixed(handle_t ch, handle_t end, uint32_t n, const handle_t *rest, uint32_t rest_len, handle_t *out_v, handle_t out_list[3], uint32_t *out_list_len, uint32_t *out_n_back)
+{
+    return idltest_h_mixed_call(ch, false, DEADLINE_NEVER, end, n, rest, rest_len, out_v, out_list, out_list_len, out_n_back);
+}
+
+/* idltest_h_park_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_h_park_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t key, handle_t h, uint32_t *out_key)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[12];
+    struct idltest_h_park_req *idl_q = (struct idltest_h_park_req *)idl_b0;
+    const struct idltest_h_park_rep *idl_r = (const struct idltest_h_park_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_H_PARK;
+    idl_q->key = key;
+    handle_t idl_wh[1];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = h;
+        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 12, &idl_got[0], NULL, 0, &idl_got[1],
+                            idl_within, idl_t);
+    } else {   /* never sent: the handles are still ours */
+        if (h != HANDLE_INVALID)
+            drv_handle_close(h);
+    }
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && out_key)
+        *out_key = idl_r->key;
+    (void)idl_o;
+    return idl_st;
+}
+/* Answered later with idltest_h_reply_park: the handle is the handler's to
+ * close, whenever it answers. */
+static inline status_t idltest_h_park_until(handle_t ch, uint64_t deadline_ns, uint32_t key, handle_t h, uint32_t *out_key)
+{
+    return idltest_h_park_call(ch, false, deadline_ns, key, h, out_key);
+}
+static inline status_t idltest_h_park_within(handle_t ch, uint64_t timeout_ns, uint32_t key, handle_t h, uint32_t *out_key)
+{
+    return idltest_h_park_call(ch, true, timeout_ns, key, h, out_key);
+}
+static inline status_t idltest_h_park(handle_t ch, uint32_t key, handle_t h, uint32_t *out_key)
+{
+    return idltest_h_park_call(ch, false, DEADLINE_NEVER, key, h, out_key);
+}
+
+/* idltest_h_refuse_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_h_refuse_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t h)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct idltest_h_refuse_req *idl_q = (struct idltest_h_refuse_req *)idl_b0;
+    const struct idltest_h_refuse_rep *idl_r = (const struct idltest_h_refuse_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_H_REFUSE;
+    handle_t idl_wh[1];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = h;
+        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                            idl_within, idl_t);
+    } else {   /* never sent: the handles are still ours */
+        if (h != HANDLE_INVALID)
+            drv_handle_close(h);
+    }
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
+    return idl_st;
+}
+/* An error from the handler with its handle in hand: it closes it. */
+static inline status_t idltest_h_refuse_until(handle_t ch, uint64_t deadline_ns, handle_t h)
+{
+    return idltest_h_refuse_call(ch, false, deadline_ns, h);
+}
+static inline status_t idltest_h_refuse_within(handle_t ch, uint64_t timeout_ns, handle_t h)
+{
+    return idltest_h_refuse_call(ch, true, timeout_ns, h);
+}
+static inline status_t idltest_h_refuse(handle_t ch, handle_t h)
+{
+    return idltest_h_refuse_call(ch, false, DEADLINE_NEVER, h);
+}
+
+/* idltest_h_chans_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_h_chans_call(handle_t ch, bool idl_within, uint64_t idl_t, const handle_t *cs, uint32_t cs_len, uint32_t *out_n)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[12];
+    struct idltest_h_chans_req *idl_q = (struct idltest_h_chans_req *)idl_b0;
+    const struct idltest_h_chans_rep *idl_r = (const struct idltest_h_chans_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_H_CHANS;
+    if (idl_st == OK && (cs_len > 4 || (cs_len && !cs)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_wh[4];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        for (uint32_t idl_i = 0; idl_i < cs_len; idl_i++)
+            idl_wh[idl_wn++] = cs[idl_i];
+        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 12, &idl_got[0], NULL, 0, &idl_got[1],
+                            idl_within, idl_t);
+    } else {   /* never sent: the handles are still ours */
+        if (cs)
+            idl_close_all(cs, cs_len);
+    }
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && out_n)
+        *out_n = idl_r->n;
+    (void)idl_o;
+    return idl_st;
+}
+/* Channel ends only (a typed list); the handler closes them: how many. */
+static inline status_t idltest_h_chans_until(handle_t ch, uint64_t deadline_ns, const handle_t *cs, uint32_t cs_len, uint32_t *out_n)
+{
+    return idltest_h_chans_call(ch, false, deadline_ns, cs, cs_len, out_n);
+}
+static inline status_t idltest_h_chans_within(handle_t ch, uint64_t timeout_ns, const handle_t *cs, uint32_t cs_len, uint32_t *out_n)
+{
+    return idltest_h_chans_call(ch, true, timeout_ns, cs, cs_len, out_n);
+}
+static inline status_t idltest_h_chans(handle_t ch, const handle_t *cs, uint32_t cs_len, uint32_t *out_n)
+{
+    return idltest_h_chans_call(ch, false, DEADLINE_NEVER, cs, cs_len, out_n);
+}
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* idltest_h_take without waiting: the request, with the caller's txid (not 0).
+ * The handles it is given are gone whatever the status (sent, or closed).
+ * The reply comes on ch: idl_reply_read, then idltest_h_take_result. */
+static inline status_t idltest_h_take_send(handle_t ch, uint32_t idl_txid, uint32_t key, handle_t h)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_h_take_req *idl_q = (struct idltest_h_take_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = idl_txid ? OK : ERR_INVALID_ARGS;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_H_TAKE;
+    idl_q->key = key;
+    handle_t idl_wh[1];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = h;
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
+    } else {   /* never sent: the handles are still ours */
+        if (h != HANDLE_INVALID)
+            drv_handle_close(h);
+    }
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_h_take_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_h_take_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_held)
+{
+    const struct idltest_h_take_rep *idl_r = (const struct idltest_h_take_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_held)
+        *out_held = idl_r->held;
+    return OK;
+}
+
+/* idltest_h_vmo_size without waiting: the request, with the caller's txid (not 0).
+ * The handles it is given are gone whatever the status (sent, or closed).
+ * The reply comes on ch: idl_reply_read, then idltest_h_vmo_size_result. */
+static inline status_t idltest_h_vmo_size_send(handle_t ch, uint32_t idl_txid, handle_t v)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct idltest_h_vmo_size_req *idl_q = (struct idltest_h_vmo_size_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = idl_txid ? OK : ERR_INVALID_ARGS;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_H_VMO_SIZE;
+    handle_t idl_wh[1];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = v;
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
+    } else {   /* never sent: the handles are still ours */
+        if (v != HANDLE_INVALID)
+            drv_handle_close(v);
+    }
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_h_vmo_size_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_h_vmo_size_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_size)
+{
+    const struct idltest_h_vmo_size_rep *idl_r = (const struct idltest_h_vmo_size_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_size)
+        *out_size = idl_r->size;
+    return OK;
+}
+
+/* idltest_h_count without waiting: the request, with the caller's txid (not 0).
+ * The handles it is given are gone whatever the status (sent, or closed).
+ * The reply comes on ch: idl_reply_read, then idltest_h_count_result. */
+static inline status_t idltest_h_count_send(handle_t ch, uint32_t idl_txid, uint32_t tag, const handle_t *hs, uint32_t hs_len)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_h_count_req *idl_q = (struct idltest_h_count_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = idl_txid ? OK : ERR_INVALID_ARGS;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_H_COUNT;
+    idl_q->tag = tag;
+    if (idl_st == OK && (hs_len > 8 || (hs_len && !hs)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_wh[8];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        for (uint32_t idl_i = 0; idl_i < hs_len; idl_i++)
+            idl_wh[idl_wn++] = hs[idl_i];
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
+    } else {   /* never sent: the handles are still ours */
+        if (hs)
+            idl_close_all(hs, hs_len);
+    }
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_h_count_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_h_count_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_tag, uint32_t *out_count)
+{
+    const struct idltest_h_count_rep *idl_r = (const struct idltest_h_count_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_tag)
+        *out_tag = idl_r->tag;
+    if (out_count)
+        *out_count = idl_r->count;
+    return OK;
+}
+
+/* idltest_h_bounce without waiting: the request, with the caller's txid (not 0).
+ * The handles it is given are gone whatever the status (sent, or closed).
+ * The reply comes on ch: idl_reply_read, then idltest_h_bounce_result. */
+static inline status_t idltest_h_bounce_send(handle_t ch, uint32_t idl_txid, const handle_t *hs, uint32_t hs_len)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct idltest_h_bounce_req *idl_q = (struct idltest_h_bounce_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = idl_txid ? OK : ERR_INVALID_ARGS;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_H_BOUNCE;
+    if (idl_st == OK && (hs_len > 64 || (hs_len && !hs)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_wh[64];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        for (uint32_t idl_i = 0; idl_i < hs_len; idl_i++)
+            idl_wh[idl_wn++] = hs[idl_i];
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
+    } else {   /* never sent: the handles are still ours */
+        if (hs)
+            idl_close_all(hs, hs_len);
+    }
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_h_bounce_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_h_bounce_result(const void *idl_rep, struct idl_msg *idl_m, handle_t out_back[64], uint32_t *out_back_len)
+{
+    const struct idltest_h_bounce_rep *idl_r = (const struct idltest_h_bounce_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh > 64)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_back) {
+        for (uint32_t idl_i = 0; idl_i < idl_m->nh; idl_i++)
+            out_back[idl_i] = idl_m->hs[idl_i];
+    } else {
+        idl_close_all(idl_m->hs, idl_m->nh);
+    }
+    if (out_back_len)
+        *out_back_len = idl_m->nh;
+    idl_m->nh = 0;
+    return OK;
+}
+
+/* idltest_h_mixed without waiting: the request, with the caller's txid (not 0).
+ * The handles it is given are gone whatever the status (sent, or closed).
+ * The reply comes on ch: idl_reply_read, then idltest_h_mixed_result. */
+static inline status_t idltest_h_mixed_send(handle_t ch, uint32_t idl_txid, handle_t end, uint32_t n, const handle_t *rest, uint32_t rest_len)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_h_mixed_req *idl_q = (struct idltest_h_mixed_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = idl_txid ? OK : ERR_INVALID_ARGS;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_H_MIXED;
+    idl_q->n = n;
+    if (idl_st == OK && (rest_len > 4 || (rest_len && !rest)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_wh[5];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = end;
+        for (uint32_t idl_i = 0; idl_i < rest_len; idl_i++)
+            idl_wh[idl_wn++] = rest[idl_i];
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
+    } else {   /* never sent: the handles are still ours */
+        if (end != HANDLE_INVALID)
+            drv_handle_close(end);
+        if (rest)
+            idl_close_all(rest, rest_len);
+    }
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_h_mixed_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_h_mixed_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_v, handle_t out_list[3], uint32_t *out_list_len, uint32_t *out_n_back)
+{
+    const struct idltest_h_mixed_rep *idl_r = (const struct idltest_h_mixed_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && (idl_m->nh < 1 || idl_m->nh - 1 > 3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_m->hs[0], IDL_OBJ_VMO)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_v)
+        *out_v = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    if (out_list) {
+        for (uint32_t idl_i = 1; idl_i < idl_m->nh; idl_i++)
+            out_list[idl_i - 1] = idl_m->hs[idl_i];
+    } else {
+        idl_close_all(idl_m->hs + 1, idl_m->nh - 1);
+    }
+    if (out_list_len)
+        *out_list_len = idl_m->nh - 1;
+    idl_m->nh = 0;
+    if (out_n_back)
+        *out_n_back = idl_r->n_back;
+    return OK;
+}
+
+/* idltest_h_park without waiting: the request, with the caller's txid (not 0).
+ * The handles it is given are gone whatever the status (sent, or closed).
+ * The reply comes on ch: idl_reply_read, then idltest_h_park_result. */
+static inline status_t idltest_h_park_send(handle_t ch, uint32_t idl_txid, uint32_t key, handle_t h)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_h_park_req *idl_q = (struct idltest_h_park_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = idl_txid ? OK : ERR_INVALID_ARGS;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_H_PARK;
+    idl_q->key = key;
+    handle_t idl_wh[1];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = h;
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
+    } else {   /* never sent: the handles are still ours */
+        if (h != HANDLE_INVALID)
+            drv_handle_close(h);
+    }
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_h_park_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_h_park_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_key)
+{
+    const struct idltest_h_park_rep *idl_r = (const struct idltest_h_park_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_key)
+        *out_key = idl_r->key;
+    return OK;
+}
+
+/* idltest_h_refuse without waiting: the request, with the caller's txid (not 0).
+ * The handles it is given are gone whatever the status (sent, or closed).
+ * The reply comes on ch: idl_reply_read, then idltest_h_refuse_result. */
+static inline status_t idltest_h_refuse_send(handle_t ch, uint32_t idl_txid, handle_t h)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct idltest_h_refuse_req *idl_q = (struct idltest_h_refuse_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = idl_txid ? OK : ERR_INVALID_ARGS;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_H_REFUSE;
+    handle_t idl_wh[1];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = h;
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
+    } else {   /* never sent: the handles are still ours */
+        if (h != HANDLE_INVALID)
+            drv_handle_close(h);
+    }
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_h_refuse_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_h_refuse_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct idltest_h_refuse_rep *idl_r = (const struct idltest_h_refuse_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* idltest_h_chans without waiting: the request, with the caller's txid (not 0).
+ * The handles it is given are gone whatever the status (sent, or closed).
+ * The reply comes on ch: idl_reply_read, then idltest_h_chans_result. */
+static inline status_t idltest_h_chans_send(handle_t ch, uint32_t idl_txid, const handle_t *cs, uint32_t cs_len)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct idltest_h_chans_req *idl_q = (struct idltest_h_chans_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = idl_txid ? OK : ERR_INVALID_ARGS;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_H_CHANS;
+    if (idl_st == OK && (cs_len > 4 || (cs_len && !cs)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_wh[4];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        for (uint32_t idl_i = 0; idl_i < cs_len; idl_i++)
+            idl_wh[idl_wn++] = cs[idl_i];
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
+    } else {   /* never sent: the handles are still ours */
+        if (cs)
+            idl_close_all(cs, cs_len);
+    }
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_h_chans_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_h_chans_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_n)
+{
+    const struct idltest_h_chans_rep *idl_r = (const struct idltest_h_chans_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_n)
+        *out_n = idl_r->n;
+    return OK;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with idltest_h_reply_<method> (now, or later from anywhere). */
+struct idltest_h_ops {
+    status_t (*take)(void *ctx, uint32_t key, handle_t h, uint32_t *out_held);
+    status_t (*vmo_size)(void *ctx, handle_t v, uint64_t *out_size);
+    status_t (*count)(void *ctx, uint32_t tag, const handle_t *hs, uint32_t hs_len, uint32_t *out_tag, uint32_t *out_count);
+    status_t (*bounce)(void *ctx, const handle_t *hs, uint32_t hs_len, handle_t *out_back, uint32_t *out_back_len);
+    status_t (*mixed)(void *ctx, handle_t end, uint32_t n, const handle_t *rest, uint32_t rest_len, handle_t *out_v, handle_t *out_list, uint32_t *out_list_len, uint32_t *out_n_back);
+    status_t (*park)(void *ctx, struct idl_txn idl_txn, uint32_t key, handle_t h, uint32_t *out_key);
+    status_t (*refuse)(void *ctx, handle_t h);
+    status_t (*chans)(void *ctx, const handle_t *cs, uint32_t cs_len, uint32_t *out_n);
+};
+
+/* Answer the idltest_h.take request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t idltest_h_reply_take(struct idl_txn idl_txn, status_t idl_st, uint32_t held)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_h_take_rep *idl_r = (struct idltest_h_take_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->held = held;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the idltest_h.vmo_size request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t idltest_h_reply_vmo_size(struct idl_txn idl_txn, status_t idl_st, uint64_t size)
+{
+    _Alignas(8) uint8_t idl_b0[16];
+    struct idltest_h_vmo_size_rep *idl_r = (struct idltest_h_vmo_size_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->size = size;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the idltest_h.count request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t idltest_h_reply_count(struct idl_txn idl_txn, status_t idl_st, uint32_t tag, uint32_t count)
+{
+    _Alignas(8) uint8_t idl_b0[16];
+    struct idltest_h_count_rep *idl_r = (struct idltest_h_count_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->tag = tag;
+    idl_r->count = count;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the idltest_h.bounce request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a handle list past its N. Returns the write's status
+ * (idl_reply_write). */
+static inline status_t idltest_h_reply_bounce(struct idl_txn idl_txn, status_t idl_st, const handle_t *back, uint32_t back_len)
+{
+    handle_t idl_hs[64];
+    uint32_t idl_hn = 0;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct idltest_h_bounce_rep *idl_r = (struct idltest_h_bounce_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (back_len > 64 || (back_len && !back) ||
+                         !idl_handles_set(back, back_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (back)
+            idl_close_all(back, back_len);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    } else {
+        for (uint32_t idl_i = 0; idl_i < back_len; idl_i++)
+            idl_hs[idl_hn++] = back[idl_i];
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_hs, idl_hn);
+    return idl_ws;
+}
+
+/* Answer the idltest_h.mixed request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a handle list past its N. Returns the write's status
+ * (idl_reply_write). */
+static inline status_t idltest_h_reply_mixed(struct idl_txn idl_txn, status_t idl_st, handle_t v, const handle_t *list, uint32_t list_len, uint32_t n_back)
+{
+    handle_t idl_hs[4];
+    uint32_t idl_hn = 0;
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_h_mixed_rep *idl_r = (struct idltest_h_mixed_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(v != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (list_len > 3 || (list_len && !list) ||
+                         !idl_handles_set(list, list_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->n_back = n_back;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (v != HANDLE_INVALID)
+            drv_handle_close(v);
+        if (list)
+            idl_close_all(list, list_len);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    } else {
+        idl_hs[idl_hn++] = v;
+        for (uint32_t idl_i = 0; idl_i < list_len; idl_i++)
+            idl_hs[idl_hn++] = list[idl_i];
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_hs, idl_hn);
+    return idl_ws;
+}
+
+/* Answer the idltest_h.park request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t idltest_h_reply_park(struct idl_txn idl_txn, status_t idl_st, uint32_t key)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_h_park_rep *idl_r = (struct idltest_h_park_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->key = key;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the idltest_h.refuse request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t idltest_h_reply_refuse(struct idl_txn idl_txn, status_t idl_st)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct idltest_h_refuse_rep *idl_r = (struct idltest_h_refuse_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the idltest_h.chans request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t idltest_h_reply_chans(struct idl_txn idl_txn, status_t idl_st, uint32_t n)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct idltest_h_chans_rep *idl_r = (struct idltest_h_chans_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->n = n;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (IDLTEST_H_REP_MAX bytes) and the handles it carries
+ * into rhs (IDLTEST_H_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it.
+ * The idl_nh handles at idl_hs (the call's arguments) are taken in every
+ * case: given to its handler, or closed (the handler owns them, whatever it
+ * returns). */
+static inline uint32_t idltest_h_dispatch_h(handle_t ch, const struct idltest_h_ops *ops, void *ctx,
+                                            const void *req, uint32_t n, const handle_t *idl_hs, uint32_t idl_nh,
+                                            void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    if (n < sizeof(uint32_t)) {
+        idl_close_all(idl_hs, idl_nh);
+        return 0;
+    }
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    if (n < sizeof(struct idl_req_hdr)) {
+        idl_close_all(idl_hs, idl_nh);
+        return sizeof(*idl_h);
+    }
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    case IDLTEST_H_TAKE: {
+        const struct idltest_h_take_req *idl_q = (const struct idltest_h_take_req *)req;
+        struct idltest_h_take_rep *idl_r = (struct idltest_h_take_rep *)rep;
+        uint32_t out_held = 0;
+        if (n != sizeof(*idl_q) || idl_nh != 1) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->take) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->take(ctx, idl_q->key, idl_hs[0], &out_held);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->held = out_held;
+        return sizeof(*idl_r);
+    }
+    case IDLTEST_H_VMO_SIZE: {
+        const struct idltest_h_vmo_size_req *idl_q = (const struct idltest_h_vmo_size_req *)req;
+        struct idltest_h_vmo_size_rep *idl_r = (struct idltest_h_vmo_size_rep *)rep;
+        uint64_t out_size = 0;
+        if (n != sizeof(*idl_q) || idl_nh != 1) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->vmo_size) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        if (!(idl_handle_is(idl_hs[0], IDL_OBJ_VMO))) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_WRONG_TYPE;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->vmo_size(ctx, idl_hs[0], &out_size);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->size = out_size;
+        return sizeof(*idl_r);
+    }
+    case IDLTEST_H_COUNT: {
+        const struct idltest_h_count_req *idl_q = (const struct idltest_h_count_req *)req;
+        struct idltest_h_count_rep *idl_r = (struct idltest_h_count_rep *)rep;
+        uint32_t out_tag = 0;
+        uint32_t out_count = 0;
+        if (n != sizeof(*idl_q) || idl_nh > 8) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->count) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->count(ctx, idl_q->tag, idl_hs, idl_nh, &out_tag, &out_count);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->tag = out_tag;
+        idl_r->count = out_count;
+        return sizeof(*idl_r);
+    }
+    case IDLTEST_H_BOUNCE: {
+        const struct idltest_h_bounce_req *idl_q = (const struct idltest_h_bounce_req *)req;
+        struct idltest_h_bounce_rep *idl_r = (struct idltest_h_bounce_rep *)rep;
+        handle_t *out_back = rhs + 0;
+        uint32_t out_back_len = 0;
+        if (n != sizeof(*idl_q) || idl_nh > 64) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->bounce) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->bounce(ctx, idl_hs, idl_nh, out_back, &out_back_len);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_back_len <= 64 && idl_handles_set(out_back, out_back_len)))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            idl_close_all(out_back, out_back_len < 64 ? out_back_len : 64);
+            return sizeof(*idl_h);
+        }
+        *rhn = out_back_len;
+        return sizeof(*idl_r);
+    }
+    case IDLTEST_H_MIXED: {
+        const struct idltest_h_mixed_req *idl_q = (const struct idltest_h_mixed_req *)req;
+        struct idltest_h_mixed_rep *idl_r = (struct idltest_h_mixed_rep *)rep;
+        handle_t out_v = HANDLE_INVALID;
+        handle_t *out_list = rhs + 1;
+        uint32_t out_list_len = 0;
+        uint32_t out_n_back = 0;
+        if (n != sizeof(*idl_q) || idl_nh < 1 || idl_nh - 1 > 4) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->mixed) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        if (!(idl_handle_is(idl_hs[0], IDL_OBJ_CHANNEL))) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_WRONG_TYPE;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->mixed(ctx, idl_hs[0], idl_q->n, idl_hs + 1, idl_nh - 1, &out_v, out_list, &out_list_len, &out_n_back);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_v != HANDLE_INVALID && out_list_len <= 3 && idl_handles_set(out_list, out_list_len)))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_v != HANDLE_INVALID)
+                drv_handle_close(out_v);
+            idl_close_all(out_list, out_list_len < 3 ? out_list_len : 3);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_v;
+        *rhn = 1 + out_list_len;
+        idl_r->n_back = out_n_back;
+        return sizeof(*idl_r);
+    }
+    case IDLTEST_H_PARK: {
+        const struct idltest_h_park_req *idl_q = (const struct idltest_h_park_req *)req;
+        struct idltest_h_park_rep *idl_r = (struct idltest_h_park_rep *)rep;
+        uint32_t out_key = 0;
+        if (n != sizeof(*idl_q) || idl_nh != 1) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->park) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->park(ctx, idl_txn, idl_q->key, idl_hs[0], &out_key);
+        /* IDL_LATER: the handler answers with idltest_h_reply_park. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->key = out_key;
+        return sizeof(*idl_r);
+    }
+    case IDLTEST_H_REFUSE: {
+        const struct idltest_h_refuse_req *idl_q = (const struct idltest_h_refuse_req *)req;
+        struct idltest_h_refuse_rep *idl_r = (struct idltest_h_refuse_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q) || idl_nh != 1) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->refuse) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->refuse(ctx, idl_hs[0]);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case IDLTEST_H_CHANS: {
+        const struct idltest_h_chans_req *idl_q = (const struct idltest_h_chans_req *)req;
+        struct idltest_h_chans_rep *idl_r = (struct idltest_h_chans_rep *)rep;
+        uint32_t out_n = 0;
+        if (n != sizeof(*idl_q) || idl_nh > 4) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->chans) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        if (!(idl_handles_are(idl_hs, idl_nh, IDL_OBJ_CHANNEL))) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_WRONG_TYPE;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->chans(ctx, idl_hs, idl_nh, &out_n);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->n = out_n;
+        return sizeof(*idl_r);
+    }
+    }
+    idl_close_all(idl_hs, idl_nh);
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* idltest_h_dispatch_h without handles (a loop of your own that reads none:
+ * an event or call that takes some is then refused). */
+static inline uint32_t idltest_h_dispatch_on(handle_t ch, const struct idltest_h_ops *ops, void *ctx,
+                                             const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                             uint32_t *rhn)
+{
+    return idltest_h_dispatch_h(ch, ops, ctx, req, n, NULL, 0, rep, rhs, rhn);
+}
+
+/* idltest_h_dispatch_on without the channel (a `later` handler's txn then has none: use idltest_h_dispatch_on). */
+static inline uint32_t idltest_h_dispatch(const struct idltest_h_ops *ops, void *ctx, const void *req, uint32_t n,
+                                          void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return idltest_h_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t idltest_h_take_slot(handle_t ch, const struct idl_slot *slot,
+                                           struct idl_reply *rep)
+{
+    if (slot->qcap < IDLTEST_H_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the message in slot (taken by idltest_h_take_slot, or found there by a
+ * successor), which came on ch: as idltest_h_dispatch_h, its reply built in
+ * slot->r and the handles that reply carries put into rhs
+ * (IDLTEST_H_REP_HANDLES slots; *rhn of them). The handles it carried
+ * (*slot->nh in slot->hs) are taken: given to a handler or closed,
+ * *slot->nh 0 after. Returns the reply's length: 0 means no reply
+ * (no txid, an event, or a `later` handler answers it itself). No I/O;
+ * the caller sends the reply with the handles, or closes them if it
+ * never sends it. */
+static inline uint32_t idltest_h_run_slot(handle_t ch, const struct idl_slot *slot,
+                                          const struct idltest_h_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    uint32_t idl_nh = *slot->nh;
+    *slot->nh = 0;
+    return idltest_h_dispatch_h(ch, ops, ctx, slot->q, *slot->n, slot->hs, idl_nh, slot->r,
+                          rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
+static inline bool idltest_h_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
+}
+
+/* Take one message off ch and answer it. OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t idltest_h_serve_one(handle_t ch, const struct idltest_h_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[IDLTEST_H_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[IDLTEST_H_REP_MAX];
+    handle_t idl_hs[IDLTEST_H_REQ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, IDLTEST_H_REQ_MAX, &idl_n, idl_hs, IDLTEST_H_REQ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL) {
+        idl_st = idl_drain(ch, idl_n, idl_nh);
+    } else if (idl_st == OK) {
+        handle_t idl_rhs[IDLTEST_H_REP_HANDLES];
+        uint32_t idl_rhn = 0;
+        uint32_t idl_rn = idltest_h_dispatch_h(ch, ops, ctx, idl_q, idl_n, idl_hs, idl_nh, idl_r,
+                                         idl_rhs, &idl_rhn);
+        if (!idl_rn)
+            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+        else   /* the reply's handles are gone whatever the write's status */
+            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
+    }
+    return idl_st;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
+static inline status_t idltest_h_serve(handle_t ch, const struct idltest_h_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[IDLTEST_H_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[IDLTEST_H_REP_MAX];
+    handle_t idl_rhs[IDLTEST_H_REP_HANDLES], idl_hs[IDLTEST_H_REQ_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = IDLTEST_H_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
+        .hs = idl_hs, .hcap = IDLTEST_H_REQ_HANDLES,
+    };
+    status_t idl_st;
+    while ((idl_st = idl_serve_next(&idl_s)) == OK)
+        idl_s.rn = idltest_h_dispatch_h(ch, ops, ctx, idl_q, idl_s.n, idl_hs, idl_s.nh, idl_r,
                                   idl_rhs, &idl_s.rhn);
     return idl_st == ERR_PEER_CLOSED ? OK : idl_st;
 }

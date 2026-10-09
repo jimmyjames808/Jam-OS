@@ -226,6 +226,11 @@ status_t drv_channel_call_within(handle_t h, void *wbytes, uint32_t wn, void *rb
     return jam_channel_call(&a);
 }
 
+status_t drv_channel_call_args(const struct channel_call_args *a)
+{
+    return jam_channel_call(a);
+}
+
 status_t drv_channel_reply_wait(const struct channel_reply_wait_args *a)
 {
     return jam_channel_reply_wait(a);
