@@ -110,7 +110,7 @@
  * interface number, n: 0. A USB class driver is bound
  * from its interface's attach until the interface is gone
  * kind 6 TEST        the crash-test driver's software device (a, b, n: 0)
- * kind 7 PCI_BDF     a bus << 8 | device << 3 | function, b and n: 0
+ * kind 7 PCI_BDF     a bus << 8 | device << 3 | function (segment 0), b and n: 0
  * Anything else, or a nonzero field a kind says is 0: ERR_INVALID_ARGS.
  * An address that names nothing is ERR_NOT_FOUND. */
 #define DEVMGR_KIND_SELF 0u
@@ -234,9 +234,9 @@ static inline status_t devmgr_status_call(handle_t ch, bool idl_within, uint64_t
 }
 /* How many drivers devmgr bound, failed to bind and skipped (no driver in
  * the boot image) in its first binding pass. devmgr serves nothing before
- * the pass is over, so the answer is that of a finished pass: init sends it
- * when it starts devmgr and goes on (devmgrctl is for init; this is
- * everyone's). */
+ * the pass is over, so the answer is that of a finished pass and comes
+ * when it is: init sends it when it starts devmgr, goes on, and takes the
+ * answer as the signal that the drivers are there. */
 static inline status_t devmgr_status_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_bound, uint32_t *out_failed, uint32_t *out_skipped)
 {
     return devmgr_status_call(ch, false, deadline_ns, out_bound, out_failed, out_skipped);
