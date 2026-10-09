@@ -622,6 +622,7 @@ static const struct {
     { "devmgr_query_refuses_hda", t_devmgr_query_refuses_hda },
     { "devmgr_device_channel", t_devmgr_device_channel },
     { "devmgr_openers", t_devmgr_openers },
+    { "devmgr_ctl_openers", t_devmgr_ctl_openers },
 
     { "edu_killed_mid_dma", t_edu_killed_mid_dma },
     { "driver_handle_limits", t_driver_handle_limits },
@@ -651,6 +652,8 @@ static const struct {
     { "supervised_restart", t_supervised_restart },
     { "supervised_backoff", t_supervised_backoff },
     { "supervised_give_up", t_supervised_give_up },
+    { "devmgr_addresses", t_devmgr_addresses },
+    { "devmgr_kill_process", t_devmgr_kill_process },
     { "disk_mounts", t_disk_mounts },
     { "disk_not_boot", t_disk_not_boot },
     { "disk_other", t_disk_other },

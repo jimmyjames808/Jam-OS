@@ -29,7 +29,6 @@
  * queued (a binding fires on edges only); each stream's event is bound
  * ONCE and watched again after each wake. The numbers are committed
  * before the loop waits (internal.h). */
-#include <devmgr.h>
 #include <mixmath.h>
 #include "internal.h"
 

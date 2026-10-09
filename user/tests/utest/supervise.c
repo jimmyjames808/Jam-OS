@@ -1,72 +1,51 @@
 /* utest: devmgr's supervision, with the crash-test driver (drv/crasher,
- * DEVMGR_TEST_DRIVER): a crash is restarted, restarts back off, too many
+ * devmgrctl.test_driver): a crash is restarted, restarts back off, too many
  * in a minute give up; and what a driver's handles can't do (with the
- * first PCI function that has MSI-X, DEVMGR_DRIVER_VIEW). */
+ * first PCI function that has MSI-X, devmgrctl.driver_view). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
 #include <devmgr.h>
+#include <idl/crasher.h>
+#include <idl/devmgr.h>
 #include <jam/driver.h>
 #include <os.h>
 #include "utest.h"
 
 /* ---- supervision with the crash-test driver ----------------------------------------- */
 
-#define TV DEVMGR_TEST_VENDOR
-#define TD DEVMGR_TEST_DEVICE
-
-/* PING: when this instance of the crash-test driver started. */
-static status_t crasher_ping(handle_t ch, uint64_t deadline, uint64_t *started)
-{
-    uint32_t q[2] = { 0, CRASHER_PING };
-    struct {
-        uint32_t txid;       /* ours */
-        int32_t  status;     /* OK */
-        uint64_t started;    /* when this instance of the driver started */
-    } __attribute__((packed)) rep;
-    uint32_t n = 0;
-    struct channel_call_args a = {
-        .h = ch, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)q, .rd_cap = sizeof(rep),
-        .rd_bytes = (uint64_t)(uintptr_t)&rep, .rd_actual = (uint64_t)(uintptr_t)&n,
-        .deadline_ns = deadline,
-    };
-    status_t st = jam_channel_call(&a);
-    if (st != OK)
-        return st;
-    if (n < 8 || (rep.status == OK && n < sizeof(rep)))
-        return ERR_INTERNAL;
-    *started = rep.started;
-    return rep.status;
-}
+/* The crash-test driver's address. */
+#define TEST_ADDR DEVMGR_KIND_TEST, 0, 0, 0
 
 /* The crash-test driver's channel and process, or false (with a skip or a
  * failure line). */
 static bool crasher(handle_t dm, handle_t *ch, handle_t *proc, bool *skip)
 {
-    struct devmgr_rep r;
-    handle_t hs[DEVMGR_MAX_HANDLES];
-    uint32_t nh = 0;
     *skip = false;
-    status_t st = dm_call(dm, DEVMGR_TEST_DRIVER, 0, 0, &r, NULL, NULL);
+    status_t st = devmgrctl_test_driver_until(dm, now() + 30 * NS_PER_S);
     if (st == ERR_NOT_FOUND) {
         printf("utest: %s: no drv/crasher: skipped\n", utest_cur);
         *skip = true;
         return false;
     }
     CHECK_ST(st, OK);
-    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), OK);
-    *ch = hs[0];
+    CHECK_ST(devmgr_get_service_until(dm, now() + 30 * NS_PER_S, TEST_ADDR, ch), OK);
     uint64_t started = 0;
     /* up, whenever it started */
-    CHECK_ST(crasher_ping(*ch, now() + 10 * NS_PER_S, &started), OK);
-    CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, TV, TD, &r, hs, &nh), OK);
-    CHECK_EQ(nh, 2);   /* process and job: no hardware */
-    *proc = hs[0];
-    CHECK_ST(jam_handle_close(hs[1]), OK);
-    /* No function behind it: DRIVER_VIEW must not open PCI function 0. */
-    uint32_t vh = 0;
-    CHECK_ST(dm_call(dm, DEVMGR_DRIVER_VIEW, TV, TD, &r, hs, &vh), ERR_NOT_FOUND);
-    CHECK_EQ(vh, 0);
+    CHECK_ST(crasher_ping_until(*ch, now() + 10 * NS_PER_S, &started), OK);
+    handle_t job;
+    uint32_t pci_index;
+    CHECK_ST(devmgr_get_driver_until(dm, now() + 30 * NS_PER_S, TEST_ADDR, proc, &job,
+                                     &pci_index), OK);
+    CHECK_ST(jam_handle_close(job), OK);   /* process and job: no hardware */
+    /* No function behind it: driver_view and get_function must not open PCI function 0. */
+    handle_t fn = HANDLE_INVALID;
+    uint32_t mask;
+    CHECK_ST(devmgrctl_driver_view_until(dm, now() + 30 * NS_PER_S, TEST_ADDR, &fn, &mask),
+             ERR_NOT_FOUND);
+    CHECK_ST(devmgr_get_function_until(dm, now() + 30 * NS_PER_S, TEST_ADDR, &fn),
+             ERR_NOT_SUPPORTED);
+    CHECK_EQ(fn, HANDLE_INVALID);
     return true;
 }
 
@@ -74,14 +53,13 @@ static bool crasher(handle_t dm, handle_t *ch, handle_t *proc, bool *skip)
  * crash was asked for. */
 static bool crash_it(handle_t ch, handle_t proc, uint64_t *t)
 {
-    uint32_t q[2] = { 0x77, CRASHER_CRASH };
     *t = now();
-    CHECK_ST(jam_channel_write(ch, q, sizeof(q), NULL, 0), OK);
+    CHECK_ST(crasher_crash(ch), OK);
     struct process_info info;
     CHECK_ST(spawn_wait(proc, 10 * NS_PER_S, &info), OK);
     CHECK(info.killed);   /* a crash: the kernel killed it */
     uint64_t started;
-    CHECK_ST(crasher_ping(ch, now() + 5 * NS_PER_S, &started), ERR_PEER_CLOSED);
+    CHECK_ST(crasher_ping_until(ch, now() + 5 * NS_PER_S, &started), ERR_PEER_CLOSED);
     return true;
 }
 
@@ -93,21 +71,19 @@ static bool crash_it(handle_t ch, handle_t proc, uint64_t *t)
  * `deadline`. */
 static bool reconnect(handle_t dm, handle_t *ch, uint64_t deadline, uint64_t *started)
 {
-    struct devmgr_rep r;
-    handle_t hs[DEVMGR_MAX_HANDLES];
-    uint32_t nh = 0;
     for (unsigned stale = 0;; stale++) {
-        CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), OK);
-        status_t st = crasher_ping(hs[0], deadline, started);   /* waits for the restart */
+        handle_t svc;
+        CHECK_ST(devmgr_get_service_until(dm, now() + 30 * NS_PER_S, TEST_ADDR, &svc), OK);
+        status_t st = crasher_ping_until(svc, deadline, started);   /* waits for the restart */
         if (st != ERR_PEER_CLOSED || now() >= deadline) {
-            *ch = hs[0];
+            *ch = svc;
             CHECK_ST(st, OK);
             if (stale)
                 printf("utest: %s: %u channel(s) to the dead instance first\n", utest_cur,
                        stale);
             return true;
         }
-        CHECK_ST(jam_handle_close(hs[0]), OK);
+        CHECK_ST(jam_handle_close(svc), OK);
         jam_sleep_until(now() + 2 * NS_PER_MS);
     }
 }
@@ -116,9 +92,6 @@ static bool reconnect(handle_t dm, handle_t *ch, uint64_t deadline, uint64_t *st
  * start (the backoff, and a start). */
 static bool crash_and_reconnect(handle_t dm, handle_t *ch, handle_t *proc, uint64_t *delay_ms)
 {
-    struct devmgr_rep r;
-    handle_t hs[DEVMGR_MAX_HANDLES];
-    uint32_t nh = 0;
     uint64_t t = 0, started = 0;
     if (!crash_it(*ch, *proc, &t))
         return false;
@@ -128,9 +101,11 @@ static bool crash_and_reconnect(handle_t dm, handle_t *ch, handle_t *proc, uint6
         return false;
     CHECK(started > t);
     *delay_ms = (started - t) / NS_PER_MS;
-    CHECK_ST(dm_call(dm, DEVMGR_GET_DRIVER, TV, TD, &r, hs, &nh), OK);
-    *proc = hs[0];
-    CHECK_ST(jam_handle_close(hs[1]), OK);
+    handle_t job;
+    uint32_t pci_index;
+    CHECK_ST(devmgr_get_driver_until(dm, now() + 30 * NS_PER_S, TEST_ADDR, proc, &job,
+                                     &pci_index), OK);
+    CHECK_ST(jam_handle_close(job), OK);
     return true;
 }
 
@@ -140,27 +115,27 @@ static uint32_t sup_restarts0;   /* the crash-test driver's restarts before thes
 bool t_supervised_restart(void)
 {
     handle_t dm = devmgr(), ch, proc;
-    struct devmgr_rep sup;
+    struct dm_sup sup;
     bool skip;
     if (!dm)
         return true;
     if (!crasher(dm, &ch, &proc, &skip))
         return skip;
-    if (!supervision(dm, TV, TD, &sup))
+    if (!supervision(dm, TEST_ADDR, &sup))
         return false;
-    CHECK_EQ(sup.a, DEVMGR_SUP_RUNNING);
-    sup_restarts0 = sup.b;
+    CHECK_EQ(sup.state, DEVMGR_SUP_RUNNING);
+    sup_restarts0 = sup.restarts;
     uint64_t ms = 0;
     if (!crash_and_reconnect(dm, &ch, &proc, &ms))
         return false;
     printf("utest: %s: crashed, restarted and answering %lu ms later\n", utest_cur,
            (unsigned long)ms);
     CHECK(ms >= 100 && ms < 3000);   /* the first backoff is 100 ms */
-    if (!supervision(dm, TV, TD, &sup))
+    if (!supervision(dm, TEST_ADDR, &sup))
         return false;
-    CHECK_EQ(sup.a, DEVMGR_SUP_RUNNING);
-    CHECK_EQ(sup.b, sup_restarts0 + 1);
-    CHECK_EQ(sup.c, 100);
+    CHECK_EQ(sup.state, DEVMGR_SUP_RUNNING);
+    CHECK_EQ(sup.restarts, sup_restarts0 + 1);
+    CHECK_EQ(sup.backoff_ms, 100);
     CHECK_ST(jam_handle_close(ch), OK);
     CHECK_ST(jam_handle_close(proc), OK);
     return true;
@@ -170,7 +145,7 @@ bool t_supervised_restart(void)
 bool t_supervised_backoff(void)
 {
     handle_t dm = devmgr(), ch, proc;
-    struct devmgr_rep sup;
+    struct dm_sup sup;
     bool skip;
     if (!dm)
         return true;
@@ -180,13 +155,13 @@ bool t_supervised_backoff(void)
         uint64_t ms = 0, want = 100ull << k;
         if (!crash_and_reconnect(dm, &ch, &proc, &ms))
             return false;
-        if (!supervision(dm, TV, TD, &sup))
+        if (!supervision(dm, TEST_ADDR, &sup))
             return false;
         printf("utest: %s: restart %u after %lu ms (backoff %u ms)\n", utest_cur, k + 1,
-               (unsigned long)ms, sup.c);
-        CHECK_EQ(sup.c, want);
+               (unsigned long)ms, sup.backoff_ms);
+        CHECK_EQ(sup.backoff_ms, want);
         CHECK(ms >= want && ms < want + 3000);
-        CHECK_EQ(sup.b, sup_restarts0 + 1 + k);
+        CHECK_EQ(sup.restarts, sup_restarts0 + 1 + k);
     }
     CHECK_ST(jam_handle_close(ch), OK);
     CHECK_ST(jam_handle_close(proc), OK);
@@ -198,9 +173,8 @@ bool t_supervised_backoff(void)
  * itself is finished, not restarted. */
 bool t_supervised_give_up(void)
 {
-    handle_t dm = devmgr(), ch, proc, hs[DEVMGR_MAX_HANDLES];
-    struct devmgr_rep sup, r;
-    uint32_t nh = 0;
+    handle_t dm = devmgr(), ch, proc, svc;
+    struct dm_sup sup;
     bool skip;
     if (!dm)
         return true;
@@ -211,42 +185,41 @@ bool t_supervised_give_up(void)
         return false;
     uint64_t until = now() + 5 * NS_PER_S;
     for (;;) {
-        if (!supervision(dm, TV, TD, &sup))
+        if (!supervision(dm, TEST_ADDR, &sup))
             return false;
-        if (sup.a == DEVMGR_SUP_GAVE_UP || now() > until)
+        if (sup.state == DEVMGR_SUP_GAVE_UP || now() > until)
             break;
         jam_sleep_until(now() + 10 * NS_PER_MS);
     }
     printf("utest: %s: after %u restarts: state %u (3 = gave up)\n", utest_cur,
-           sup.b - sup_restarts0, sup.a);
-    CHECK_EQ(sup.a, DEVMGR_SUP_GAVE_UP);
-    CHECK_EQ(sup.b, sup_restarts0 + 5);
-    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), ERR_BAD_STATE);
+           sup.restarts - sup_restarts0, sup.state);
+    CHECK_EQ(sup.state, DEVMGR_SUP_GAVE_UP);
+    CHECK_EQ(sup.restarts, sup_restarts0 + 5);
+    CHECK_ST(devmgr_get_service_until(dm, now() + 30 * NS_PER_S, TEST_ADDR, &svc), ERR_BAD_STATE);
     jam_sleep_until(now() + 300 * NS_PER_MS);   /* no restart comes */
-    if (!supervision(dm, TV, TD, &sup))
+    if (!supervision(dm, TEST_ADDR, &sup))
         return false;
-    CHECK_EQ(sup.a, DEVMGR_SUP_GAVE_UP);
+    CHECK_EQ(sup.state, DEVMGR_SUP_GAVE_UP);
     CHECK_ST(jam_handle_close(ch), OK);
     CHECK_ST(jam_handle_close(proc), OK);
 
     /* Started again on request, with a fresh history; exit 0 = finished. */
     if (!crasher(dm, &ch, &proc, &skip))
         return false;
-    uint32_t q[3] = { 0x78, CRASHER_EXIT, 0 };
-    CHECK_ST(jam_channel_write(ch, q, sizeof(q), NULL, 0), OK);
+    CHECK_ST(crasher_exit(ch, 0), OK);
     struct process_info info;
     CHECK_ST(spawn_wait(proc, 10 * NS_PER_S, &info), OK);
     CHECK(!info.killed && info.exit_code == 0);
     until = now() + 5 * NS_PER_S;
     for (;;) {
-        if (!supervision(dm, TV, TD, &sup))
+        if (!supervision(dm, TEST_ADDR, &sup))
             return false;
-        if (sup.a == DEVMGR_SUP_FINISHED || now() > until)
+        if (sup.state == DEVMGR_SUP_FINISHED || now() > until)
             break;
         jam_sleep_until(now() + 10 * NS_PER_MS);
     }
-    CHECK_EQ(sup.a, DEVMGR_SUP_FINISHED);
-    CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), ERR_BAD_STATE);
+    CHECK_EQ(sup.state, DEVMGR_SUP_FINISHED);
+    CHECK_ST(devmgr_get_service_until(dm, now() + 30 * NS_PER_S, TEST_ADDR, &svc), ERR_BAD_STATE);
     CHECK_ST(jam_handle_close(ch), OK);
     CHECK_ST(jam_handle_close(proc), OK);
     return true;
@@ -258,25 +231,53 @@ bool t_supervised_give_up(void)
  * dma_cap or an interrupt object, write its MSI-X capability, reach any
  * other function (no RES_PCI, no slicing), get DMA memory or pin without
  * a dma_cap. */
+/* The same handle with exactly the rights a driver has: devmgr's replies carry
+ * RIGHT_TRANSFER besides (a reply carries only what can be sent), which a
+ * driver's don't (devmgr.idl, driver_view). h is replaced. */
+static status_t as_driver(handle_t *h, rights_t rights)
+{
+    handle_t narrowed;
+    status_t st = jam_handle_replace(*h, rights, &narrowed);
+    if (st == OK)
+        *h = narrowed;
+    return st;
+}
+
+#define VIEW_HANDLES 7   /* the function and up to six memory BARs */
+
 /* The first function with MSI-X whose table and PBA BARs a driver could
  * get (on the PC some BARs stay unsized and are never handed out, e.g.
- * the VMD controller's): its DRIVER_VIEW handles into hs (*nh), the reply
- * (*r) and its MSI-X capability's offset (*cap). ERR_NOT_FOUND if none. */
-static status_t msix_function(handle_t dm, handle_t *hs, uint32_t *nh, struct devmgr_rep *r,
+ * the VMD controller's): its driver_view handle and each BAR's (driver_bar)
+ * into hs (*nh), as a driver has them, the BAR mask (*mask) and its MSI-X
+ * capability's offset (*cap). ERR_NOT_FOUND if none. */
+static status_t msix_function(handle_t dm, handle_t *hs, uint32_t *nh, uint32_t *mask,
                               uint32_t *cap)
 {
     status_t st = ERR_NOT_FOUND;
     for (uint32_t inst = 0; inst < 32; inst++) {
         *nh = 0;
-        st = devmgr_call(dm, DEVMGR_DRIVER_VIEW, 0xffff, 0xffff, inst, r, hs, DEVMGR_MAX_HANDLES,
-                         nh, now() + 30 * NS_PER_S);
+        *mask = 0;
+        st = devmgrctl_driver_view_until(dm, now() + 30 * NS_PER_S, DEVMGR_KIND_PCI_MSIX, 0, 0,
+                                         inst, &hs[0], mask);
         if (st == ERR_NOT_FOUND)
             break;
+        if (st == OK) {
+            *nh = 1;
+            for (uint32_t bar = 0; bar < 6 && st == OK; bar++)
+                if (*mask & (1u << bar)) {
+                    st = devmgrctl_driver_bar_until(dm, now() + 30 * NS_PER_S,
+                                                    DEVMGR_KIND_PCI_MSIX, 0, 0, inst,
+                                                    (uint8_t)bar, &hs[*nh]);
+                    *nh += st == OK;
+                }
+            for (uint32_t k = 0; st == OK && k < *nh; k++)
+                st = as_driver(&hs[k], k ? DEVMGR_DRV_BAR_RIGHTS : DEVMGR_DRV_DEV_RIGHTS);
+        }
         uint32_t t = 0, p = 0;
         if (st == OK && *nh >= 2 && (*cap = pci_find_cap(hs[0], 0x11)) &&
             jam_pci_config_read(hs[0], *cap + 4, 4, &t) == OK &&
             jam_pci_config_read(hs[0], *cap + 8, 4, &p) == OK &&
-            (r->a & (1u << (t & 7))) && (r->a & (1u << (p & 7))))
+            (*mask & (1u << (t & 7))) && (*mask & (1u << (p & 7))))
             break;
         printf("utest: %s: MSI-X function #%u not usable (%s), trying the next\n", utest_cur,
                inst, st == OK ? "table BAR not handed out" : status_str(st));
@@ -314,20 +315,19 @@ static bool msix_pages_refused(const handle_t *hs, uint32_t mask, uint32_t tab, 
 
 bool t_driver_handle_limits(void)
 {
-    handle_t dm = devmgr(), hs[DEVMGR_MAX_HANDLES], x, v;
-    uint32_t nh = 0;
-    struct devmgr_rep r;
+    handle_t dm = devmgr(), hs[VIEW_HANDLES], x, v;
+    uint32_t nh = 0, mask = 0;
     if (!dm)
         return true;
     uint32_t cap = 0;
-    status_t st = msix_function(dm, hs, &nh, &r, &cap);
+    status_t st = msix_function(dm, hs, &nh, &mask, &cap);
     if (st == ERR_NOT_FOUND) {
         printf("utest: %s: no usable function with MSI-X: skipped\n", utest_cur);
         return true;
     }
     CHECK_ST(st, OK);
     handle_t dev = hs[0];
-    uint32_t mask = r.a, tab = 0, pba = 0, ctl = 0, cmd = 0, id = 0;
+    uint32_t tab = 0, pba = 0, ctl = 0, cmd = 0, id = 0;
     CHECK_ST(jam_pci_config_read(dev, 0, 4, &id), OK);
     printf("utest: %s: using %04x:%04x\n", utest_cur, id & 0xffff, id >> 16);
     CHECK_ST(jam_pci_config_read(dev, cap + 4, 4, &tab), OK);

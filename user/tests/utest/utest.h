@@ -13,7 +13,7 @@
  * bench entry spawns (bench.c). */
 #pragma once
 
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <openkeys.h>
 #include <os.h>
 
@@ -228,10 +228,13 @@ bool t_job_kill_reaps_orphans(void);
 /* drivers.c */
 /* devmgr's control channel, or 0 (with a line saying the test is skipped). */
 handle_t devmgr(void);
-status_t dm_call(handle_t dm, uint32_t op, uint16_t vendor, uint16_t device,
-                 struct devmgr_rep *r, handle_t *hs, uint32_t *nh);
-/* devmgr's supervision view of a device into *r. */
-bool supervision(handle_t dm, uint16_t vendor, uint16_t device, struct devmgr_rep *r);
+/* devmgr's supervision view of the device (kind, a, b, n) (devmgr.supervision's
+ * results). */
+struct dm_sup {
+    uint32_t state, restarts, backoff_ms, held, changed;
+};
+bool supervision(handle_t dm, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                 struct dm_sup *s);
 bool t_driver_processes(void);
 bool t_driver_killed(void);
 bool t_startup_message(void);
@@ -240,6 +243,9 @@ bool t_devmgr_query_channel(void);
 bool t_devmgr_query_refuses_hda(void);
 bool t_devmgr_device_channel(void);
 bool t_devmgr_openers(void);
+bool t_devmgr_ctl_openers(void);
+bool t_devmgr_addresses(void);
+bool t_devmgr_kill_process(void);
 bool t_edu_killed_mid_dma(void);
 
 /* ns.c: the file namespace, against the bootfs server and bin/ramfs. */

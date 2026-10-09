@@ -9,7 +9,6 @@
  * bits are cleared before the rings are looked at, so a signal that comes
  * meanwhile is kept for the next wait. A session's port keys carry its
  * generation, so a packet left from an ended session is ignored. */
-#include <devmgr.h>
 #include <idl/netdev.h>
 #include "dev.h"
 #include "stack.h"

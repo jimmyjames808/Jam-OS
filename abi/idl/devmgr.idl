@@ -1,0 +1,225 @@
+# devmgr: how a program finds a driver devmgr bound, and what only init
+# and the tests may do with one (user/services/devmgr). init starts devmgr
+# and publishes channels to it as the services /svc/devmgr (queries) and
+# /svc/devmgr-ctl (control), each a channel per opener (svc.connect,
+# abi/idl/svc.idl, which the query and the control channels answer).
+#
+# What a channel may ask is fixed by which channel it is, never by who
+# asks (a level is not a kind of channel, so there are two protocols, not
+# three):
+#   QUERY (/svc/devmgr): `devmgr`: status, get_service, get_driver,
+#     get_function, supervision. Anything else (`devmgrctl`) is
+#     ERR_ACCESS_DENIED, and so is get_service of a device that has a
+#     device channel (below).
+#   DEVICE channels, each scoped to one device: made by `device_channel` on
+#     a control channel, at most one per device at a time. One speaks
+#     `devmgr` and answers get_service, get_driver, get_function and
+#     supervision about its own device and nothing else (another device, or
+#     any other method, is ERR_ACCESS_DENIED); `status` is refused too.
+#     Holding a device's channel is the right to use the device: init makes
+#     one for each HD Audio controller and gives them to the mixer (whose
+#     output streams they are), and does the same with each network card
+#     for netstack. While the channel has a client, the query channel won't
+#     hand that device's service out.
+#   CONTROL (/svc/devmgr-ctl): `devmgrctl` and, as the query channel's
+#     holders do, `devmgr`, every device's service included (the tests'
+#     hdatest takes hda's output this way). The test programs only (the
+#     build checks, <wants.h>); init holds one of its own. devmgr runs
+#     until every client end of the control channel it was started with is
+#     gone.
+# GET_SERVICE's channels reach drivers (usb-bus hands out USB interfaces),
+# so even the query channel is for trusted programs only.
+#
+# A device is named by an address of four numbers, (kind, a, b, n): see the
+# KIND_ constants. On a device channel KIND_SELF names its own device;
+# naming it by another kind works too.
+#
+# Supervision: devmgr restarts a driver that dies unexpectedly (crashes, is
+# killed by anyone, `kill` included, or exits with an error; one that exits
+# 0 by itself is finished, not restarted). Backoff 100 ms, doubling per
+# restart within the last 60 s, at most 5 s; the 6th death within 60 s
+# gives up (a log line and a RESULTS line; a real driver's crash or
+# give-up also makes devmgr's exit code 1). Each restart makes the device's
+# handles from scratch: a new dma_cap (Bus Master Enable off until the new
+# driver has quiesced the device), a new interrupt object, the function
+# woken to D0. A driver keeps no state across a restart: whatever a client
+# had set up through the old channel must be set up again.
+#
+# Reconnect (devmgr's supervision): a call on a driver's channel that fails
+# ERR_PEER_CLOSED means the driver died: ask get_service again and retry on
+# the new channel. As soon as the driver has died, get_service hands out
+# the channel its restart will serve; calls on it wait (bounded by the
+# caller's deadline) until the new driver reads them. ERR_BAD_STATE: devmgr
+# gave up on it (or it finished). devmgr itself ended: init restarts it
+# with its whole job (every driver it ran), so every channel to devmgr sees
+# ERR_PEER_CLOSED. The new devmgr binds everything again from scratch. A
+# client that needs devmgr for good opens /svc/devmgr again: init publishes
+# the new devmgr's channels under the same names and tells every namespace
+# that follows its own (the shell's), so libos's svc_get hands out the new
+# one once the old one's peer is gone.
+# Format: see tools/genidl.py.
+
+protocol devmgr 90
+
+# ---- the address of a device ----
+#
+# kind 0 SELF        the device channel's own device (a, b, n: 0)
+# kind 1 PCI_IDS     a vendor id, b device id, n: the n-th function with those
+#                    ids (from 0)
+# kind 2 PCI_CLASS   a class << 16 | subclass << 8 | prog_if, n: the n-th
+#                    function of that class that has a driver (in devmgr's
+#                    enumeration order), whatever its vendor; b: 0. init
+#                    finds the devices it gives away this way
+#                    (CLASS_HDA, CLASS_NET)
+# kind 3 PCI_BOUND   n: the n-th PCI function that has a driver (a, b: 0).
+#                    For get_service: of those, the n-th with a driver
+#                    running now (a client asks each in turn which protocol
+#                    it serves: tests find usb-bus this way, on QEMU and on
+#                    the PC). For every other method: the n-th with a driver
+#                    bound, running or not, so the numbering holds while one
+#                    restarts (init's `kill` once found a PCI driver's
+#                    process this way)
+# kind 4 PCI_MSIX    n: the n-th PCI function with MSI-X that isn't a bridge
+#                    or the boot display, driver or not (a, b: 0); for
+#                    driver_view, which tests use to see what a driver's
+#                    handles can't do
+# kind 5 USB_IFACE   a usb-bus's device id (usbbus.device's `id`), b the
+#                    interface number, n: 0. A USB class driver is bound
+#                    from its interface's attach until the interface is gone
+# kind 6 TEST        the crash-test driver's software device (a, b, n: 0)
+# kind 7 PCI_BDF     a bus << 8 | device << 3 | function (segment 0), b and n: 0
+# Anything else, or a nonzero field a kind says is 0: ERR_INVALID_ARGS.
+# An address that names nothing is ERR_NOT_FOUND.
+const KIND_SELF      0
+const KIND_PCI_IDS   1
+const KIND_PCI_CLASS 2
+const KIND_PCI_BOUND 3
+const KIND_PCI_MSIX  4
+const KIND_USB_IFACE 5
+const KIND_TEST      6
+const KIND_PCI_BDF   7
+
+# PCI classes (class << 16 | subclass << 8 | prog_if) of the devices init
+# claims for their users: HD Audio (04 03 00), the mixer's; Ethernet
+# (02 00 00), netstack's (netdev.idl).
+const CLASS_HDA 0x040300
+const CLASS_NET 0x020000
+
+# A driver's state (supervision's `state`).
+# no driver started (yet)
+const SUP_NONE       0
+const SUP_RUNNING    1
+# died; its restart is due
+const SUP_RESTARTING 2
+# died too often: no more restarts
+const SUP_GAVE_UP    3
+# exited 0 by itself (a one-shot driver)
+const SUP_FINISHED   4
+
+# How many drivers devmgr bound, failed to bind and skipped (no driver in
+# the boot image) in its first binding pass. devmgr serves nothing before
+# the pass is over, so the answer is that of a finished pass and comes
+# when it is: init sends it when it starts devmgr, goes on, and takes the
+# answer as the signal that the drivers are there.
+1  status  () -> (u32 bound, u32 failed, u32 skipped)
+# A channel to the driver, the DR_SERVE channel's duplicate (see "Reconnect"
+# above). The channel is for calls: a driver's own messages go on a channel
+# of its own (usb-bus's DR_EVENTS, usbbus_events). ERR_NOT_FOUND: no such
+# device, or no driver bound to it; ERR_BAD_STATE: bound, but the driver is
+# gone for good; ERR_ACCESS_DENIED: a disk's driver (a disk's `storage`
+# channel opens every partition for writing, so it stays devmgr's own: the
+# one it asks for volumes is volumes'), or, on the query channel, a device
+# that has a device channel, or on a device channel another device.
+2  get_service  (u8 kind, u32 a, u32 b, u32 n) -> (handle<channel> service)
+# Read-only views of the running driver: its process (wait, info) and its
+# job (wait, job_get_info), and the PCI function's index in the kernel's
+# enumeration (0 for a USB or test binding). ERR_BAD_STATE while no driver
+# process runs (a restart is due, or it is gone). The same numbering as
+# `kill`, so the address names the binding, running or not.
+3  get_driver  (u8 kind, u32 a, u32 b, u32 n) -> (handle<process> process, handle<job> job, u32 pci_index)
+# A PCI function's config space, read-only (RIGHTS_BASIC | RIGHT_READ).
+# ERR_NOT_SUPPORTED: a USB or test binding has none; ERR_BAD_STATE while no
+# driver process runs.
+4  get_function  (u8 kind, u32 a, u32 b, u32 n) -> (handle<resource> function)
+# The driver's state (SUP_*), restarts since boot, the last backoff in ms,
+# and for a PCI function its DMA quarantine: pages held now and pages found
+# written while held since boot (0 for others).
+5  supervision  (u8 kind, u32 a, u32 b, u32 n) -> (u32 state, u32 restarts, u32 backoff_ms, u32 dma_quarantined, u32 dma_changed)
+
+# devmgrctl: the control channel's own methods (init's; the tests'). The
+# query methods above go to it too (above, "CONTROL").
+#
+# Reconnect: as devmgr's.
+
+protocol devmgrctl 91
+
+# Kill the driver's job and answer once it is dead, with the koid of the
+# process killed. That is a death like any other: supervision restarts it
+# (not counted as a problem). ERR_NOT_FOUND: no such device, or no driver
+# was started for it.
+1  kill  (u8 kind, u32 a, u32 b, u32 n) -> (u64 koid)
+# Kill the driver if it still runs, then bind the device again from
+# scratch (new interrupt object, dma_cap, channel), with a fresh restart
+# history.
+2  rebind  (u8 kind, u32 a, u32 b, u32 n) -> ()
+# Stop the driver and leave the device without one until `rebind`, for a
+# test that drives the device itself. devmgr touches no filesystem: a disk's
+# mounts go with its driver, so a test lets volumes stop them in order first
+# (volumes.release_disk). For a USB interface's driver, release_usb gets
+# the interface channel it had.
+3  release  (u8 kind, u32 a, u32 b, u32 n) -> ()
+# `release` of the class driver of interface `iface` of usb-bus device
+# `dev`, answered with a duplicate of the interface's `usb` channel it had
+# (usb-bus gives an interface's bulk endpoints to that channel and no
+# other). ERR_PEER_CLOSED: the interface is gone.
+4  release_usb  (u32 dev, u32 iface) -> (handle<channel> usb)
+# A driver's rights, for tests of what drivers can't do: the PCI function
+# with a driver's rights (no RIGHT_MANAGE, no RIGHT_DUPLICATE) and the memory
+# BARs that exist as a mask (bit n: BAR n); each BAR by driver_bar. Without
+# the interrupt object and the dma_cap. The handles come with RIGHT_TRANSFER
+# besides (a reply carries only what can be sent): a test that wants exactly a
+# driver's rights replaces them with DEVMGR_DRV_DEV_RIGHTS and
+# DEVMGR_DRV_BAR_RIGHTS (<devmgr.h>). ERR_NOT_FOUND: no PCI function behind
+# it.
+5  driver_view  (u8 kind, u32 a, u32 b, u32 n) -> (handle<resource> function, u32 bar_mask)
+# Memory BAR `bar` (0 to 5) of the function, as a driver gets it (RIGHT_MAP,
+# the MSI-X table and PBA pages still refused by the kernel; with
+# RIGHT_TRANSFER besides, as above). ERR_NOT_FOUND: no such function or BAR.
+6  driver_bar  (u8 kind, u32 a, u32 b, u32 n, u8 bar) -> (handle<resource> bar)
+# Start the crash-test driver (drv/crasher, `crasher`, abi/idl/crasher.idl)
+# as a supervised driver of the software device KIND_TEST (no hardware),
+# unless it runs already; after a give-up it starts again with a fresh
+# restart history. Its deaths and give-up are expected (not problems).
+# ERR_NOT_FOUND: no drv/crasher in bootfs.
+7  test_driver  () -> ()
+# What the class drivers (the HID keyboards and mice) type into: a client
+# end of the compositor's compctl channel at INPUT level (compctl.idl). init
+# sends one after it restarted the compositor (the first comes as
+# SR_CONSOLE); the class drivers that ended because the old one went away
+# start again connected to it.
+8  set_input  (handle<channel> input) -> ()
+# The client end of a new `disks` channel (volumes.idl): what devmgr tells
+# volumes its disks on. init makes the pair once both run, and again
+# whenever either starts again; devmgr then asks every running disk's
+# driver for a `storage` channel of volumes' own again, and hands each over
+# (disks.attach). Until the first, a disk waits.
+9  set_volumes  (handle<channel> disks) -> ()
+# A new DEVICE channel scoped to the device (see above), the caller's to give
+# to the device's one user. It lasts until its clients are all gone (or
+# devmgr ends: init makes a new one for a new devmgr). ERR_NOT_FOUND: no
+# such device, or no driver for it; ERR_NOT_SUPPORTED: a USB interface (only
+# a PCI function or the crash-test device can have one); ERR_BAD_STATE: it
+# has one already; ERR_NO_RESOURCES: devmgr serves as many channels as it
+# can.
+10 device_channel  (u8 kind, u32 a, u32 b, u32 n) -> (handle<channel> device)
+# Stop, as when the last control client leaves (the USB class drivers, then
+# the bus drivers with their final halt and reset), and exit. The answer
+# comes first; the caller waits for devmgr's process to end. For a kexec
+# reboot, which must leave no device writing memory, while others still hold
+# control channels. (The filesystems are volumes': init stops it first.)
+11 shutdown  () -> ()
+# `kill` of the driver whose process has this koid, wherever the address
+# would put it (a PCI function's driver, a USB interface's class driver):
+# init's `kill <name>` finds the process by name in the kernel's list and
+# asks here, one call. ERR_NOT_FOUND: devmgr runs no such process.
+12 kill_process  (u64 koid) -> ()

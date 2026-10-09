@@ -29,7 +29,7 @@ enum {
     /* 14: SR_CRASHLOG, <jam/startup.h> */
     SR_DEVMGR_DEVICE = 15,  /* a devmgr channel scoped to one device (a client
                              * end, from init only: the mixer's, for the HD
-                             * Audio controller; <devmgr.h> DEVMGR_DEVICE_CHANNEL) */
+                             * Audio controller; devmgrctl.device_channel) */
     SR_STATE = 16,          /* a service's state VMO, made and kept by its
                              * supervisor, handed to each instance with read,
                              * write and map only (<svcstate.h>) */

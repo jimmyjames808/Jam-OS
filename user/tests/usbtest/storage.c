@@ -58,8 +58,8 @@
  *
  * A block request's deadline here is BLK_WAIT: a command's own timeouts
  * (5 s, 10 s for a write) plus its reset recovery, twice. */
-#include <devmgr.h>
 #include <idl/block.h>
+#include <idl/devmgr.h>
 #include <idl/storage.h>
 #include <idl/usb.h>
 #include <idl/usbbus.h>
@@ -128,21 +128,18 @@ static uint64_t usb_wait(void)
  * it), and usb-bus gives an interface's bulk endpoints to one channel
  * only: devmgr's. So volumes is asked to stop the disk's mounts in order
  * (volumes.release_disk: its files closed, the volume clean), then devmgr
- * to let go of the disk (DEVMGR_RELEASE: its driver stops) and hand out a
+ * to let go of the disk (devmgrctl.release_usb: its driver stops) and hand out a
  * duplicate of that channel. Where devmgr has no driver on the disk, a new
  * channel from usb-bus does. */
 static status_t take_disk(const struct raw *r, handle_t *out)
 {
-    struct devmgr_rep rep;
-    uint32_t nh = 0;
     handle_t vm = svc_get(SVC_VOLUMES);
     status_t st = vm ? volumes_release_disk_until(vm, in(60 * NS_PER_S), r->dev_id)
                      : ERR_NOT_FOUND;
     if (st != OK && st != ERR_NOT_FOUND)   /* not found: volumes doesn't have it */
         printf("usbtest: storage: volumes didn't release disk %u (%s)\n", r->dev_id,
                status_str(st));
-    if (dm && devmgr_call(dm, DEVMGR_RELEASE, DEVMGR_USB_IFACE, r->ifnum, r->dev_id, &rep, out, 1,
-                          &nh, in(60 * NS_PER_S)) == OK && nh == 1)
+    if (dm && devmgrctl_release_usb_until(dm, in(60 * NS_PER_S), r->dev_id, r->ifnum, out) == OK)
         return OK;
     return usbbus_open_interface_until(bus, soon(), r->dev_id, r->ifnum, out);
 }
@@ -151,9 +148,8 @@ static status_t take_disk(const struct raw *r, handle_t *out)
  * stick its mounts again. */
 static void give_back(const struct raw *r)
 {
-    struct devmgr_rep rep;
-    status_t st = dm ? devmgr_call(dm, DEVMGR_REBIND, DEVMGR_USB_IFACE, r->ifnum, r->dev_id, &rep,
-                                   NULL, 0, NULL, in(60 * NS_PER_S))
+    status_t st = dm ? devmgrctl_rebind_until(dm, in(60 * NS_PER_S), DEVMGR_KIND_USB_IFACE,
+                                              r->dev_id, r->ifnum, 0)
                      : ERR_NOT_FOUND;
     if (st != OK && st != ERR_NOT_FOUND)
         printf("usbtest: storage: devmgr did not take the disk back (%s)\n", status_str(st));

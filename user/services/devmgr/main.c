@@ -3,7 +3,8 @@
  * starts with a RES_PCI resource (SR_RESOURCE) sliced from the root, and
  * the server ends of its control and query channels (SR_DEVMGR_CTL,
  * SR_DEVMGR; chans.c serves them and the channels made from them; the
- * protocol, and the reconnect rule its clients follow, are in <devmgr.h>).
+ * protocol, and the reconnect rule its clients follow, are in
+ * abi/idl/devmgr.idl).
  *
  * It enumerates every function (pci_enum), matches each against the table
  * below and, for every match whose driver ELF is in bootfs, wakes the
@@ -61,13 +62,13 @@
  * drv/hda, which runs its deliberate DMA faults before serving. The
  * argument "nvmetest=<words>" (a test's) is passed on to every drv/nvme.
  *
- * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
+ * devmgrctl.shutdown (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
  *
  * USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
  * drv/hid, each in a job of its own, supervised the same way), connected
  * to the compositor through the compctl INPUT channel init gives
- * (SR_CONSOLE, then DEVMGR_SET_CONSOLE after a compositor restart).
+ * (SR_CONSOLE, then devmgrctl.set_input after a compositor restart).
  *
  * A mass-storage interface's driver (usb-storage) serves a disk, which is
  * volumes' (user/services/volumes/, since M12's storage split): devmgr
@@ -101,7 +102,7 @@ static const struct {
      * vendors' (the RTX's HDMI audio) are left without a driver, and 04 03 80
      * (Intel's audio DSP) needs firmware this driver doesn't have. Who may
      * use it is init's to say, not this table's: init asks for its device
-     * channel and gives it to the mixer (<devmgr.h> "Trust"). */
+     * channel and gives it to the mixer (abi/idl/devmgr.idl). */
     { 0x8086, 0xffff, 0x040300, "drv/hda", NULL },
     /* The board's Realtek RTL8125: on a `netprobe` boot the listen-only
      * probe (docs/M9-PLAN.md stage 0), on a `netsend` one the ARP send
@@ -423,9 +424,9 @@ int main(int argc, char **argv)
     }
     sup_log("devmgr", sup_sink);
     notice_init(&devmgr_notices, startup_handle(DEVMGR_SR_NOTIFY));
-    /* With a console, class drivers send their input to it. */
+    /* With an input channel, class drivers send their input to it. */
     if (startup_handle(SR_CONSOLE))
-        usb_new_console(startup_handle(SR_CONSOLE));
+        usb_new_input(startup_handle(SR_CONSOLE));
     if (netprobe)
         say(false, "devmgr: netprobe: an RTL8125 (10ec:8125) gets drv/rtl8125, which only "
             "listens");

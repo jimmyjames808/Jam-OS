@@ -1,8 +1,8 @@
 # Review finding, fixed. Run as tools/usbkeys-test.sh does
 # (QEMU_USB with a hub on port 2, usb-kbd id=keys at 2.1). A program started
-# with `run` used to get devmgr's channel and send DEVMGR_SET_CONSOLE: the
+# with `run` used to get devmgr's channel and send set_input (then SET_CONSOLE): the
 # next keyboard connected to it. Now `run` programs get nothing of devmgr's
-# (and devmgr's query channel refuses SET_CONSOLE: utest
+# (and devmgr's query channel refuses set_input: utest
 # devmgr_query_channel), so a keyboard plugged in afterwards types into the
 # shell.
 wait 120 Jam OS shell

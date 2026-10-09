@@ -313,7 +313,7 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 #define SVC_AUDIOCTL   "audioctl"    /* the mixer's volumes, a channel per opener (audioctl.idl) */
 #define SVC_MUSIC      "music"       /* the music player, a channel per opener (music.idl) */
 #define SVC_DEVMGR     "devmgr"      /* devmgr's queries, a channel per opener (<devmgr.h>) */
-#define SVC_DEVMGR_CTL "devmgr-ctl"  /* devmgr's control channel: tests only */
+#define SVC_DEVMGR_CTL "devmgr-ctl"  /* devmgr's control channel, a channel per opener: tests only */
 #define SVC_VOLUMES    "volumes"     /* volumes: the disks and their mounts, a channel per
                                       * opener (<volumes.h>): tests only */
 #define SVC_INIT       "init"        /* init's control channel (initctl.idl): tests only */

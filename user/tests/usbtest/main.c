@@ -31,7 +31,7 @@
  * endpoint, usbtest watches its counters and hid's supervision):
  *   keys           devmgr started hid for it and hid polls the endpoint;
  *                  `sendkey a` reaches hid (press + release)
- *   kill_hid       DEVMGR_KILL of that hid while `c` is down: restarted,
+ *   kill_hid       devmgrctl.kill of that hid while `c` is down: restarted,
  *                  polling again, and `sendkey d` reaches the new one
  *   unplug         device_del: the interface channels see PEER_CLOSED, the
  *                  device leaves the list, hid ends and devmgr frees it
@@ -43,7 +43,7 @@
  * The marker lines ("usbtest: ready for keys", ...) are what the QEMU
  * monitor script waits for. Exit 0 if nothing failed; the summary goes to
  * the RESULTS box. */
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/usb.h>
 #include <idl/usbbus.h>
 #include <wants.h>
@@ -461,10 +461,13 @@ struct kbd {
     char     name[32];   /* hid's process name, "hid-6.1:0" */
 };
 
-static status_t hid_sup(uint32_t id, struct devmgr_rep *r)
+/* hid's supervision for the test keyboard's device `id` (interface 0): its
+ * state and restarts. */
+static status_t hid_sup(uint32_t id, uint32_t *state, uint32_t *restarts)
 {
-    return devmgr_call(dm, DEVMGR_SUPERVISION, DEVMGR_USB_IFACE, 0, id, r, NULL, 0, NULL,
-                       soon());
+    uint32_t backoff, held, changed;
+    return devmgr_supervision_until(dm, soon(), DEVMGR_KIND_USB_IFACE, id, 0, 0, state, restarts,
+                                    &backoff, &held, &changed);
 }
 
 static status_t ep_stats(struct kbd *k, uint64_t *reports, uint64_t *dropped, uint8_t *open)
@@ -488,19 +491,19 @@ static bool open_keys(struct kbd *k)
 static bool hid_ready(struct kbd *k, uint32_t restarts, uint64_t *reports)
 {
     uint64_t end = in(20 * NS_PER_S);
-    struct devmgr_rep r = { 0 };
+    uint32_t state = 0, nrestarts = 0;
     status_t st = ERR_TIMED_OUT;
     uint8_t open = 0;
     while (now() < end) {
         uint64_t dropped = 0;
-        st = hid_sup(k->id, &r);
-        if (st == OK && r.a == DEVMGR_SUP_RUNNING && r.b >= restarts &&
+        st = hid_sup(k->id, &state, &nrestarts);
+        if (st == OK && state == DEVMGR_SUP_RUNNING && nrestarts >= restarts &&
             ep_stats(k, reports, &dropped, &open) == OK && open)
             return true;
         jam_sleep_until(in(20 * NS_PER_MS));
     }
     FAIL("%s not polling the keyboard after 20 s (supervision %s, state %u, restarts %u, open %u)",
-         k->name, status_str(st), r.a, r.b, open);
+         k->name, status_str(st), state, nrestarts, open);
 }
 
 /* Until hid has taken `n` more reports than `base`. */
@@ -530,9 +533,9 @@ static bool gone(handle_t h, uint64_t deadline)
 static bool hid_unbound(uint32_t id)
 {
     uint64_t end = in(10 * NS_PER_S);
-    struct devmgr_rep r;
+    uint32_t state, restarts;
     status_t st = OK;
-    while (now() < end && (st = hid_sup(id, &r)) != ERR_NOT_FOUND)
+    while (now() < end && (st = hid_sup(id, &state, &restarts)) != ERR_NOT_FOUND)
         jam_sleep_until(in(20 * NS_PER_MS));
     CHECK_ST(st, ERR_NOT_FOUND);
     return true;
@@ -553,13 +556,12 @@ static bool t_keys(void)
     return true;
 }
 
-/* DEVMGR_KILL hid while a key is down: devmgr restarts it with a duplicate
+/* devmgrctl.kill of hid while a key is down: devmgr restarts it with a duplicate
  * of the interface channel, and the next key works. */
 static bool t_kill_hid(void)
 {
-    struct devmgr_rep r;
-    CHECK_ST(hid_sup(kb.id, &r), OK);
-    uint32_t restarts = r.b;
+    uint32_t state, restarts, restarts2;
+    CHECK_ST(hid_sup(kb.id, &state, &restarts), OK);
     uint64_t base = 0, dropped = 0;
     uint8_t open = 0;
     CHECK_ST(ep_stats(&kb, &base, &dropped, &open), OK);
@@ -567,16 +569,17 @@ static bool t_kill_hid(void)
     if (!hid_got(&kb, base, 1))   /* the press */
         return false;
     uint64_t t0 = now();
-    CHECK_ST(devmgr_call(dm, DEVMGR_KILL, DEVMGR_USB_IFACE, 0, kb.id, &r, NULL, 0, NULL,
-                         in(20 * NS_PER_S)), OK);
+    uint64_t koid;
+    CHECK_ST(devmgrctl_kill_until(dm, in(20 * NS_PER_S), DEVMGR_KIND_USB_IFACE, kb.id, 0, 0, &koid),
+             OK);
     if (!hid_ready(&kb, restarts + 1, &base))
         return false;
     printf("usbtest: %s restarted and polling again %lu ms after the kill; ready for keys after "
            "the restart\n", kb.name, (unsigned long)((now() - t0) / NS_PER_MS));
     if (!hid_got(&kb, base, 2))   /* `sendkey d` */
         return false;
-    CHECK_ST(hid_sup(kb.id, &r), OK);
-    CHECK(r.a == DEVMGR_SUP_RUNNING && r.b == restarts + 1);
+    CHECK_ST(hid_sup(kb.id, &state, &restarts2), OK);
+    CHECK(state == DEVMGR_SUP_RUNNING && restarts2 == restarts + 1);
     return true;
 }
 
@@ -666,16 +669,13 @@ static bool find_bus(void)
     if (!dm)
         return false;
     for (uint32_t n = 0; n < 16; n++) {
-        struct devmgr_rep r;
-        handle_t hs[1];
-        uint32_t nh = 0;
-        status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, hs, 1, &nh,
-                                  soon());
+        handle_t svc = HANDLE_INVALID;
+        status_t st = devmgr_get_service_until(dm, soon(), DEVMGR_KIND_PCI_BOUND, 0, 0, n, &svc);
         if (st == ERR_NOT_FOUND)
             break;
-        if (st != OK || nh != 1)
+        if (st != OK)
             continue;
-        bus = hs[0];
+        bus = svc;
         struct bus_status b;
         if (get_status(&b) == OK)
             return true;
