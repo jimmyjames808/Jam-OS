@@ -198,6 +198,23 @@ bool t_fun_window_input(void)
     gfx_mouse(&m);
     CHECK(m.released == MOUSE_LEFT && !m.buttons && m.wheel == -2);
 
+    /* a compositor's numbers at their ends (M12.1 C6): INT32_MIN notches
+     * twice is 64 each the right way (before: negated, it stayed
+     * INT32_MIN, and the two wrapped to 0), a position past every edge
+     * is the window's edge */
+    for (int i = 0; i < 2; i++) {
+        CHECK_ST(jwl_wl_pointer_send_axis_discrete(f.conn, f.pointer, 0, INT32_MIN), OK);
+        CHECK_ST(jwl_wl_pointer_send_axis(f.conn, f.pointer, 1000, 0, INT32_MIN), OK);
+        CHECK_ST(jwl_wl_pointer_send_frame(f.conn, f.pointer), OK);
+    }
+    CHECK_ST(jwl_wl_pointer_send_motion(f.conn, f.pointer, 1000, INT32_MIN, INT32_MAX), OK);
+    fake_serve(&f);
+    unsigned news = 0;
+    while (gfx_key(now() + 100 * NS_PER_MS) == KEY_MOUSE)
+        news++;
+    gfx_mouse(&m);
+    CHECK(news >= 2 && m.wheel == 128 && m.x == 0 && m.y == 199);
+
     CHECK_ST(fake_close(&f, s), OK);
     fake_serve(&f);
     CHECK_EQ(key_soon(), KEY_QUIT);

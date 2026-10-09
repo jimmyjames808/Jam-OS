@@ -56,6 +56,8 @@ void pointer_move(struct pointer *p, int dx, int dy)
 
 /* ---- the mouse as the app sees it ----------------------------------------------------- */
 
+#define WHEEL_SUM 10000      /* notches gathered for gfx_mouse, at most either way */
+
 static struct mouse state;   /* what gfx_mouse hands out: edges gather here until it does */
 static bool wanted;          /* gfx_mouse_open asked for the mouse */
 
@@ -95,7 +97,9 @@ bool mouse_at(int x, int y, uint8_t buttons, int wheel)
     state.released |= state.buttons & ~buttons;
     bool edge = buttons != state.buttons || wheel;
     state.buttons = buttons;
-    state.wheel += wheel;
+    /* the notches until the app looks, within WHEEL_SUM either way */
+    int64_t sum = (int64_t)state.wheel + wheel;
+    state.wheel = (int)(sum > WHEEL_SUM ? WHEEL_SUM : sum < -WHEEL_SUM ? -WHEEL_SUM : sum);
     state.reports++;
     return edge;
 }

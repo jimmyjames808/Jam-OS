@@ -48,6 +48,7 @@
 #define BTN_RIGHT      0x111
 #define BTN_MIDDLE     0x112
 #define AXIS_PER_NOTCH (10 * 256)       /* a wheel notch in wl_pointer.axis (fixed 24.8) */
+#define WHEEL_MAX      64               /* notches in one wheel event, at most */
 
 /* What the app asked for before gfx_open (fun.h). */
 static const char *title;
@@ -438,8 +439,19 @@ static void key_of(const struct jwl_event *e, struct fun_key *out)
  * picture's 0 is in the window. */
 static int pixel_of(int32_t fixed, int off)
 {
-    int32_t px = fixed >= 0 ? fixed / 256 : -((-fixed + 255) / 256);
-    return px - off;
+    int64_t f = fixed;   /* -INT32_MIN doesn't fit an int32 */
+    int64_t px = f >= 0 ? f / 256 : -((-f + 255) / 256);
+    return (int)(px - off);
+}
+
+/* Notches of the wheel in one event, as fun.h counts them (+ away from
+ * the user): Wayland's are the other way. At most WHEEL_MAX either way,
+ * whatever the compositor says. */
+static int wheel_of(const struct jwl_event *e)
+{
+    int64_t n = e->axis.discrete ? -(int64_t)e->axis.discrete
+                                 : -(int64_t)e->axis.value / AXIS_PER_NOTCH;
+    return (int)(n > WHEEL_MAX ? WHEEL_MAX : n < -WHEEL_MAX ? -WHEEL_MAX : n);
 }
 
 static uint8_t button_of(uint32_t evdev)
@@ -461,8 +473,7 @@ static enum msg_kind pointer(const struct jwl_event *e)
         uint8_t b = button_of(e->button.button);
         wl.buttons = e->button.pressed ? wl.buttons | b : wl.buttons & ~b;
     } else if (e->axis.axis == JWL_WL_POINTER_AXIS_VERTICAL_SCROLL) {
-        /* down the screen is positive here, away from the user in fun.h */
-        wheel = e->axis.discrete ? -e->axis.discrete : -e->axis.value / AXIS_PER_NOTCH;
+        wheel = wheel_of(e);   /* down the screen is positive there, away from the user here */
     }
     return mouse_at(wl.px, wl.py, wl.buttons, wheel) ? MSG_BUTTON : MSG_MOVE;
 }
