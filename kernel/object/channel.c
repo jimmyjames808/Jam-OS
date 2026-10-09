@@ -291,25 +291,6 @@ static void wake_callers_locked(const struct channel *ch)
         thread_wake(container_of(n, struct chan_waiter, node)->thread);
 }
 
-void channel_received(struct kobject *obj, struct job *job)
-{
-    struct channel *ch = (struct channel *)obj;
-    if (__atomic_load_n(&ch->reader_job, __ATOMIC_RELAXED) == job)
-        return;   /* the same job again: nothing changes */
-    /* A duplicate arriving where the end is shared (a namespace's mount,
-     * handed to each program started) leaves the reader it has: else the
-     * end would keep the last program's job alive (we hold a reference)
-     * long after that program has gone. */
-    if (kobject_handles(obj) != 1)
-        return;
-    job_ref(job);
-    uint64_t f = spin_lock_irqsave(&ch->base.lock);
-    struct job *old = ch->reader_job;
-    __atomic_store_n(&ch->reader_job, job, __ATOMIC_RELAXED);
-    spin_unlock_irqrestore(&ch->base.lock, f);
-    job_unref(old);   /* outside the lock: it may be the last reference */
-}
-
 /* Leave the pair: tell the peer, then empty our own queue. Idempotent. */
 static void channel_close(struct channel *ch)
 {
@@ -367,7 +348,6 @@ static void channel_destroy(struct kobject *obj)
     struct channel *ch = (struct channel *)obj;
     channel_close(ch);
     ASSERT(list_empty(&ch->callers));
-    job_unref(ch->reader_job);
     if (__atomic_sub_fetch(&ch->pair->refs, 1, __ATOMIC_ACQ_REL) == 0)
         kfree(ch->pair);
     __atomic_sub_fetch(&live_endpoints, 1, __ATOMIC_RELAXED);
