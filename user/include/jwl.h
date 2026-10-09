@@ -120,6 +120,12 @@ bool     jwl_interface_same(const struct jwl_interface *a, const struct jwl_inte
 #define JWL_ERROR_NO_MEMORY      2u   /* a cap reached */
 #define JWL_ERROR_IMPLEMENTATION 3u   /* the compositor's own failure */
 
+/* The words the transport puts first in the no_memory error of a client
+ * that reads too slowly (64 KiB of events held). Not a protocol error by
+ * the client: libjwl's client reconnects after it (M12.1 C12) where every
+ * other wl_display.error ends the client for good. */
+#define JWL_SLOW_READER_TEXT "the client reads too slowly"
+
 /* ---- arguments and messages ---------------------------------------------------- */
 
 struct jwl_array {

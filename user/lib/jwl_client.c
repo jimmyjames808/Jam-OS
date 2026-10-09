@@ -16,13 +16,18 @@
  * JWL_EV_DISCONNECTED, and jwlc_rebuild makes them again once the next
  * connection is READY. A connection the compositor ended with
  * wl_display.error is our own fault and would only end the same way
- * again: the client is DEAD instead. */
+ * again: the client is DEAD instead. The exception is the compositor
+ * dropping a client that reads too slowly (no_memory, JWL_SLOW_READER_TEXT;
+ * M12.1 C12): the program was busy, not wrong, and a new connection is
+ * read in time. That connection is lost like a closed channel, but the
+ * next try waits longer with each drop in a row (slow_backoff). */
 #include <jwl_client.h>
 #include <os.h>
 #include "jwlc.h"
 
 #define RETRY_FIRST_MS 50u   /* the pause after the first failed try; doubles to the max */
 #define HELD_RETRY_NS (10 * NS_PER_MS)   /* batches held: written again this often */
+#define SLOW_QUIET_NS (10 * NS_PER_S)    /* this long without a slow-reader drop ends the streak */
 
 /* The globals we bind, by enum index, and the most we bind each at. */
 const struct jwlc_want jwlc_wanted[JWLC_GLOBALS] = {
@@ -109,9 +114,34 @@ static void die(struct jwl_client *c, status_t why)
     jwlc_log(c, "the connection to the compositor is gone for good (%s)", status_str(why));
 }
 
+/* The compositor dropped us as a slow reader: the next try waits 50 ms
+ * after the first drop of a streak, then twice as long after each one
+ * (JWL_SLOW_RECONNECT_MAX_MS at most). A streak ends after SLOW_QUIET_NS
+ * without a drop. One log line per step; at the cap, none. */
+static void slow_backoff(struct jwl_client *c)
+{
+    uint64_t t = now();
+    if (c->slow_ms && t - c->slow_at > SLOW_QUIET_NS)
+        c->slow_ms = 0;
+    c->slow_at = t;
+    uint32_t prev = c->slow_ms;
+    uint32_t ms = prev ? prev * 2 : RETRY_FIRST_MS;
+    if (ms > JWL_SLOW_RECONNECT_MAX_MS)
+        ms = JWL_SLOW_RECONNECT_MAX_MS;
+    c->slow_ms = ms;
+    if (ms != prev)
+        jwlc_log(c, "the compositor dropped us for reading too slowly: connecting again in %u ms%s",
+                 ms, ms == JWL_SLOW_RECONNECT_MAX_MS ? " (and so after each such drop)" : "");
+    c->state = JWLC_DOWN;
+    c->why = ERR_NO_MEMORY;
+    c->retry_at = t + (uint64_t)ms * NS_PER_MS;
+}
+
 /* The connection went (st: why): every id with it. */
 static void lost(struct jwl_client *c, status_t st)
 {
+    bool slow = c->slow_drop;
+    c->slow_drop = false;
     if (c->port != HANDLE_INVALID)
         (void)jam_port_unbind(c->port, c->conn->ch, c->port_key);   /* closing alone doesn't */
     if (c->conn->status == ERR_INVALID_ARGS)
@@ -128,6 +158,10 @@ static void lost(struct jwl_client *c, status_t st)
     jwlc_queue_conn(c, JWL_EV_DISCONNECTED, st);
     if (c->fatal != OK || c->cfg.no_reconnect) {
         die(c, c->fatal != OK ? c->fatal : st);
+        return;
+    }
+    if (slow) {
+        slow_backoff(c);
         return;
     }
     jwlc_log(c, "lost the compositor (%s): connecting again", status_str(st));
@@ -286,7 +320,8 @@ static void advance(struct jwl_client *c)
     c->retry_ms = 0;
     rebuild(c);
     if (c->info.generation > 1) {
-        jwlc_log(c, "connected again (connection %u)", c->info.generation);
+        if (c->slow_ms != JWL_SLOW_RECONNECT_MAX_MS)   /* at the cap, not once per attempt */
+            jwlc_log(c, "connected again (connection %u)", c->info.generation);
         jwlc_queue_conn(c, JWL_EV_RECONNECTED, OK);
     }
 }
@@ -323,6 +358,11 @@ static void read_all(struct jwl_client *c, bool room_only)
             /* wl_display.error (the compositor may keep its end open until
              * we close ours), or a global we need missing */
             lost(c, c->fatal);
+            return;
+        }
+        if (c->slow_drop) {
+            /* dropped as a slow reader: the error was the last thing it sent */
+            lost(c, ERR_NO_MEMORY);
             return;
         }
     }
