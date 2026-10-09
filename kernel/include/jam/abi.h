@@ -437,7 +437,9 @@ struct pci_dev_info {
 #define IRQ_MSIX  (1u << 0)   /* use MSI-X vector `index` (else MSI, index 0) */
 
 /* vmo_pin: pin [offset, offset + len) of a VMO for the device of a
- * dma_cap (abi/syscalls.def has the rules). */
+ * dma_cap (abi/syscalls.def has the rules). Each pin costs the dma_cap's
+ * job (the driver's), not the VMO's holder, one JOB_LIMIT_HANDLES unit
+ * until it goes. */
 struct vmo_pin_args {
     handle_t vmo;              /* the VMO */
     handle_t dma;              /* a dma_cap bound to a function */

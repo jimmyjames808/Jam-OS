@@ -287,9 +287,9 @@
 104 pci_bus_master_off status   handle_t dev
 # A dma_cap for the function `dev` (RIGHT_MANAGE: devmgr's), charged to
 # `job` (RIGHT_MANAGE: a job the caller manages, the driver's own, made
-# first): the cap (one JOB_LIMIT_HANDLES unit) and, while the IOMMU
-# translates, its domain's table pages (JOB_LIMIT_PAGES), now and as pins
-# grow it. It becomes the function's current cap: bus mastering off until
+# first): the cap (one JOB_LIMIT_HANDLES unit), each pin made with it (one
+# unit each, until the pin goes) and, while the IOMMU translates, its
+# domain's table pages (JOB_LIMIT_PAGES), now and as pins grow it. It becomes the function's current cap: bus mastering off until
 # its holder turns it on (dma_cap_bus_master), the device reaching only
 # what the cap pins.
 105 dma_cap_create    status    handle_t dev, handle_t job, handle_t *out
@@ -299,7 +299,10 @@
 # device. RIGHT_WRITE on the VMO; with VMO_PIN_READ_ONLY (the device only
 # reads them) the pages are mapped for it read only and RIGHT_READ is
 # enough, where the IOMMU translates (else the flag changes nothing and
-# RIGHT_WRITE is still needed). ERR_INVALID_ARGS: offset or len not
+# RIGHT_WRITE is still needed). The pin costs the cap's job (the
+# pinner's, never the VMO's holder) one JOB_LIMIT_HANDLES unit until
+# vmo_unpin, the cap's close or the quarantine's release gives it back
+# (ERR_NO_RESOURCES when the job can't pay). ERR_INVALID_ARGS: offset or len not
 # page-aligned, len 0, an unknown flag, reserved not 0;
 # ERR_OUT_OF_RANGE: past the VMO or more than VMO_PIN_MAX_PAGES pages;
 # ERR_ACCESS_DENIED: the rights, or a cap bound to no function;

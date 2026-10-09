@@ -36,6 +36,15 @@
  *       caller pays only for its handle and its own VMO. Only a job the
  *       caller manages may be named. Once the cap is gone the driver's job
  *       is charged for nothing.
+ *   dma_pin_charges_pinner
+ *       A pin's handle unit is the pinner's: the cap's job (the driver's),
+ *       never the VMO's holder (a client that handed the driver a view of
+ *       its buffer). A client with no handle units to spare is pinned all
+ *       the same; a driver with none is refused (ERR_NO_RESOURCES). Each
+ *       unit comes back to the driver's job at the unpin, at the cap's
+ *       close (with the IOMMU) or at the quarantine's release (without),
+ *       and a cap with no job charges nobody. Review M12.1 KDEV finding 4
+ *       / KCORE finding 6.
  *   dma_read_only_pin_rules
  *       A read-only pin (VMO_PIN_READ_ONLY) needs only RIGHT_READ where
  *       the IOMMU makes it read only, and RIGHT_WRITE as any pin where it
@@ -511,6 +520,116 @@ KTEST(dma_cap_charges_driver_job)
     }
     KT_EQ(dp3, 0);
     KT_EQ(dh3, 0);
+}
+
+/* ---- the pinner pays for its pins ------------------------------------------------- */
+
+KTEST(dma_pin_charges_pinner)
+{
+    struct pci_dev *d = kt_edu();
+    if (!d)
+        return;
+    dma_quarantine_flush(d);
+    /* The client made and filled the buffer; the driver holds a handle to
+     * it ("sent" to it), its device and its cap. */
+    struct job *cli = kt_fresh_job(), *drv = kt_fresh_job();
+    struct vmo *v;
+    KT_EQ(vmo_create_for(cli, 2 * PG, 0, &v), OK);
+    KT_EQ(vmo_commit(v, 0, 2 * PG), OK);
+    struct handle_table t;   /* the driver's */
+    handle_table_init(&t);
+    t.job = drv;
+    handle_t dev, cap, vh;
+    struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
+    KT_EQ(handle_insert(&t, &kh, &dev), OK);
+    kobject_ref(vmo_kobject(v));
+    struct khandle kv = khandle_from_new(vmo_kobject(v), RIGHTS_BASIC | RIGHTS_IO | RIGHT_MAP);
+    KT_EQ(handle_insert(&t, &kv, &vh), OK);
+    handle_t jh = kt_job_handle(&t, drv);
+    uint64_t dh0 = job_used(drv, JOB_LIMIT_HANDLES);
+    KT_EQ(sys_dma_cap_create(&t, dev, jh, &cap), OK);
+    struct kobject *capobj;
+    KT_EQ(handle_get(&t, cap, OBJ_DMA_CAP, 0, &capobj, NULL), OK);
+    bool tr = dma_cap_translated(capobj);
+    kobject_unref(capobj);
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
+    uint64_t ch0 = job_used(cli, JOB_LIMIT_HANDLES), cp0 = job_used(cli, JOB_LIMIT_PAGES);
+    uint64_t dh1 = job_used(drv, JOB_LIMIT_HANDLES);   /* + the cap and its handle */
+
+    /* The client can't pay for one more handle unit: it isn't asked to. */
+    struct job_info ci, di;
+    job_get_info(cli, &ci);
+    job_get_info(drv, &di);
+    KT_EQ(job_set_limit(cli, JOB_LIMIT_HANDLES, ch0), OK);
+    uint64_t pa[2], id[3];
+    status_t p0 = sys_vmo_pin(&t, vh, cap, 0, PG, &pa[0], &id[0]);
+    status_t p1 = sys_vmo_pin(&t, vh, cap, 0, PG, &pa[0], &id[1]);
+    status_t p2 = sys_vmo_pin_flags(&t, vh, cap, PG, PG, VMO_PIN_READ_ONLY, &pa[1], &id[2]);
+    uint64_t dh2 = job_used(drv, JOB_LIMIT_HANDLES), ch2 = job_used(cli, JOB_LIMIT_HANDLES);
+    /* The driver can't: refused, nothing charged anywhere. */
+    KT_EQ(job_set_limit(drv, JOB_LIMIT_HANDLES, dh2), OK);
+    uint64_t spare;
+    status_t p3 = sys_vmo_pin(&t, vh, cap, 0, PG, &pa[0], &spare);
+    uint64_t dh3 = job_used(drv, JOB_LIMIT_HANDLES), ch3 = job_used(cli, JOB_LIMIT_HANDLES);
+    KT_EQ(job_set_limit(drv, JOB_LIMIT_HANDLES, di.limit[JOB_LIMIT_HANDLES]), OK);
+    KT_EQ(job_set_limit(cli, JOB_LIMIT_HANDLES, ci.limit[JOB_LIMIT_HANDLES]), OK);
+    /* An unpin gives its unit back to the driver. */
+    status_t u1 = p1 == OK ? sys_vmo_unpin(&t, vh, cap, id[1]) : p1;
+    uint64_t dh4 = job_used(drv, JOB_LIMIT_HANDLES);
+    /* The cap closes with two pins held (a killed driver): with the IOMMU
+     * they go with its domain, without it they wait in the quarantine,
+     * still the driver's, until it releases them. */
+    KT_EQ(handle_close(&t, cap), OK);
+    uint64_t dh5 = job_used(drv, JOB_LIMIT_HANDLES);
+    dma_quarantine_flush(d);
+    uint64_t dh6 = job_used(drv, JOB_LIMIT_HANDLES), ch6 = job_used(cli, JOB_LIMIT_HANDLES);
+    uint64_t cp6 = job_used(cli, JOB_LIMIT_PAGES);
+
+    /* A cap with no job (the kernel's own) charges nobody: not the VMO's
+     * job either. */
+    struct kobject *kcap;
+    KT_EQ(dma_cap_create_for(d, NULL, &kcap), OK);
+    KT_EQ(dma_cap_bus_master(kcap, true), OK);
+    uint64_t kid;
+    status_t pk = vmo_pin(v, kcap, 0, PG, &pa[0], 1, &kid);
+    uint64_t chk = job_used(cli, JOB_LIMIT_HANDLES);
+    if (pk == OK)
+        KT_EQ(vmo_unpin(v, kcap, kid), OK);
+    KT_EQ(dma_cap_bus_master(kcap, false), OK);
+    kobject_unref(kcap);
+    dma_quarantine_flush(d);
+
+    handle_table_destroy(&t);
+    kobject_unref(vmo_kobject(v));
+    kprintf("ktest %s: %s: 3 pins: %s %s %s, the driver's job +%lu handle unit(s), the "
+            "client's +%lu; one past the driver's limit: %s; unpin: %s, the driver's job then "
+            "+%lu, after the close +%lu, after the release +%lu (the client's +%lu); a "
+            "jobless cap's pin: %s, the client's +%lu\n", ktest_current,
+            tr ? "translated" : "not translated", status_str(p0), status_str(p1),
+            status_str(p2), dh2 - dh1, ch2 - ch0, status_str(p3), status_str(u1), dh4 - dh1,
+            dh5 - dh0, dh6 - dh0, ch6 - ch0, status_str(pk), chk - ch0);
+    kt_job_is_empty(drv);
+    kt_job_is_empty(cli);
+    job_unref(drv);
+    job_unref(cli);
+
+    KT_EQ(p0, OK);
+    KT_EQ(p1, OK);
+    KT_EQ(p2, OK);
+    KT_EQ(dh2, dh1 + 3);   /* one unit a pin, the driver's */
+    KT_EQ(ch2, ch0);       /* none the client's */
+    KT_EQ(p3, ERR_NO_RESOURCES);
+    KT_EQ(dh3, dh2);
+    KT_EQ(ch3, ch0);
+    KT_EQ(u1, OK);
+    KT_EQ(dh4, dh1 + 2);
+    if (!tr)                     /* the cap's own unit and its handle gone, its pins held */
+        KT_EQ(dh5, dh0 + 2);
+    KT_EQ(dh6, dh0);             /* every unit back */
+    KT_EQ(ch6, ch0);
+    KT_EQ(cp6, cp0);             /* the pages were the client's already, and stay */
+    KT_EQ(pk, OK);
+    KT_EQ(chk, ch0);
 }
 
 /* ---- read-only pins -------------------------------------------------------------- */

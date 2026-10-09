@@ -70,7 +70,8 @@ void     pci_cmd_unlock(uint64_t flags);
 struct dma_cap {
     struct kobject       base;    /* its lock guards `pins` and `closed` */
     struct pci_dev      *dev;     /* the function it is bound to; NULL: unbound */
-    struct job          *job;     /* charged one handle unit and its domain's tables, or NULL */
+    struct job          *job;     /* charged one handle unit, one per pin made with it (vmo.c)
+                                   * and its domain's tables, or NULL */
     struct list_node     pins;    /* vmo.c's struct vmo_range (cap_node) */
     bool                 closed;  /* last handle gone: no new pins */
     /* The IOMMU domain the device sees memory through (a bound cap of a

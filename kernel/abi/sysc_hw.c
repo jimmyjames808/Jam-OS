@@ -20,7 +20,8 @@
  *   vmo_create_physical    RIGHT_MAP on a RES_ROOT / RES_MMIO
  *   vmo_pin                RIGHT_WRITE on the VMO (RIGHT_READ for a
  *                          VMO_PIN_READ_ONLY pin the IOMMU enforces: the
- *                          cap has a domain); a bound dma_cap
+ *                          cap has a domain); a bound dma_cap, whose
+ *                          job (not the VMO's) pays the pin's unit
  *   vmo_unpin              RIGHT_READ on the VMO; the dma_cap the pin was
  *                          made with
  * A resource made from a handle gets that handle's rights (masked to

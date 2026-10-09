@@ -145,7 +145,11 @@ status_t dma_cap_create(struct kobject **out);
  * past the unit's address width), ERR_NO_RESOURCES (the domain's table
  * cap, or a page pinned 1023 times), ERR_NO_MEMORY, and ERR_TIMED_OUT /
  * ERR_IO (the unit didn't confirm an invalidation: the pages stay pinned
- * for good). The pin holds references on the VMO and the capability until
+ * for good). The pin costs the capability's job (the pinner's, never v's:
+ * the VMO's holder may have given the driver only a read-only view) one
+ * JOB_LIMIT_HANDLES unit (ERR_NO_RESOURCES if it can't pay) until it goes;
+ * a cap with no job (kernel tests) charges nobody. The pin holds
+ * references on the VMO and the capability until
  * vmo_unpin or until the cap's last handle closes (which releases every
  * pin made with it, or for a cap bound to a function hands them to
  * dma_cap.c: freed once the IOMMU took them away, else quarantined).

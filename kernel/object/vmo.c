@@ -140,7 +140,8 @@ struct vmo_range {
     struct vmo      *v;           /* pin: the VMO it pins */
     struct list_node cap_node;
     bool             cap_linked;  /* on the cap's list (cap's lock) */
-    struct job      *charged;     /* pin: charged one JOB_LIMIT_HANDLES unit (the VMO's job) */
+    struct job      *charged;     /* pin: charged one JOB_LIMIT_HANDLES unit (the pinner's
+                                   * job, its cap's; a reference), or NULL */
     /* A pin quarantined by its cap's unclean close (vmo_quarantine_cap_pins)
      * sits on the quarantine's list through cap_node, busy, with no cap.
      * sums: a checksum per page taken then, to see at release whether the
@@ -1063,7 +1064,8 @@ static void range_remove(struct vmo *v, struct vmo_range *r)
         spin_unlock_irqrestore(&r->cap->lock, f);
         kobject_unref(r->cap);
     }
-    job_uncharge(r->charged, JOB_LIMIT_HANDLES, 1);   /* (the VMO still holds the job) */
+    job_uncharge(r->charged, JOB_LIMIT_HANDLES, 1);   /* the pinner's (pin_range_new) */
+    job_unref(r->charged);
     kfree(r);
     kobject_unref(&v->base);
 }
@@ -1160,16 +1162,21 @@ status_t vmo_unmap_kernel(struct vmo *v, void *va)
 }
 
 /* A pin is a kernel allocation that lives until unpin or the cap's
- * close: one handle unit of the VMO's job, like any small object (a
- * driver could otherwise pin one page forever and fill the kernel
- * heap; test: m6r_pins_are_charged). A new busy pin range [first, end)
- * on v, charged and listed; `writes`: the device may write through it. */
-static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end, bool writes,
-                              struct vmo_range **out)
+ * close: one handle unit, like any small object (a driver could otherwise
+ * pin one page forever and fill the kernel heap; test:
+ * m6r_pins_are_charged). The PINNER pays: the unit is its cap's job's
+ * (the driver's, which also pays for the cap and its domain's tables),
+ * never the VMO's, whose holder may have handed the driver no more than a
+ * read-only view (review M12.1 KDEV finding 4, KCORE finding 6; test:
+ * dma_pin_charges_pinner). The range keeps a reference on that job and
+ * gives the unit back to it wherever the range goes (range_remove: an
+ * unpin, the cap's close, the quarantine's release); a pin kept for good
+ * (pin_keep) keeps its unit. A cap made with no job (kernel tests) charges
+ * nobody. A new busy pin range [first, end) on v, charged to `job` and
+ * listed; `writes`: the device may write through it. */
+static status_t pin_range_new(struct vmo *v, struct job *job, uint64_t first, uint64_t end,
+                              bool writes, struct vmo_range **out)
 {
-    uint64_t jf = vlock(v);
-    struct job *job = v->job;
-    vunlock(v, jf);
     status_t st = job_charge(job, JOB_LIMIT_HANDLES, 1);
     if (st != OK)
         return st;
@@ -1183,10 +1190,12 @@ static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end, bool 
     r->first = first;
     r->end = end;
     r->v = v;
+    job_ref(job);
     r->charged = job;
     st = range_add(v, r);
     if (st != OK) {
         job_uncharge(job, JOB_LIMIT_HANDLES, 1);
+        job_unref(job);
         kfree(r);
         return st;
     }
@@ -1334,10 +1343,11 @@ status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, 
      * stays until this pin (on the cap's list) is gone. A read-only pin
      * is read only only where the domain makes it so: without one the
      * device can write whatever it reaches. */
-    struct iommu_domain *dom = dma_cap_from_kobject(dma_cap)->dom;
+    struct dma_cap *c = dma_cap_from_kobject(dma_cap);
+    struct iommu_domain *dom = c->dom;
     bool ro = (flags & VMO_PIN_READ_ONLY) != 0;
     struct vmo_range *r;
-    status_t st = pin_range_new(v, first, end, !(ro && dom), &r);
+    status_t st = pin_range_new(v, c->job, first, end, !(ro && dom), &r);
     if (st != OK)
         return st;
     st = pin_link_cap(r, dma_cap);
