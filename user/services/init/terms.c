@@ -99,6 +99,7 @@ enum { TERM_CLOSED, TERM_OPEN, TERM_CLOSING };
 
 struct term {
     uint8_t  state;      /* TERM_*: under `nocomp` the first is always OPEN */
+    bool     crashed;    /* its shell's last end was a crash or a kill: the next says so */
     handle_t cons;       /* its console's client end (0: none running) */
     char     cmd[TERM_CMD_MAX];   /* its shell's first line, until it has started ("": none) */
 };
@@ -293,7 +294,7 @@ static status_t start_shell(unsigned k)
     char term[8], run[4 + TERM_CMD_MAX];
     snprintf(term, sizeof(term), "term=%u", k + 1);
     snprintf(run, sizeof(run), "run=%s", terms[k].cmd);
-    const char *argv[4] = { svcs[TERM_SHELL(k)].path };
+    const char *argv[5] = { svcs[TERM_SHELL(k)].path };
     int argc = 1;
     if (comp_on())
         argv[argc++] = term;
@@ -301,7 +302,11 @@ static status_t start_shell(unsigned k)
         argv[argc++] = first_arg;
     if (terms[k].cmd[0])
         argv[argc++] = run;
+    if (terms[k].crashed)
+        argv[argc++] = "restarted";   /* it says so: its history is kept (sh_history.c) */
     st = svc_start(TERM_SHELL(k), argc, argv, y, n);
+    if (st == OK)
+        terms[k].crashed = false;
     if (!k)
         first_arg = NULL;
     if (st == OK)
@@ -371,6 +376,11 @@ static void close_term(unsigned k)
 bool terms_ended(unsigned i, bool killed, int64_t code)
 {
     int k = term_of(i);
+    /* A shell that crashed or was killed (not `exit`, not its console gone:
+     * codes 2 and 3) says so when it is started again. */
+    if (k >= 0 && terms[k].state == TERM_OPEN && !is_console(i) &&
+        (killed || (code != 0 && code != 2 && code != 3)))
+        terms[k].crashed = true;
     if (k < 0 || !comp_on())
         return false;   /* not a terminal's; or the one terminal (nocomp): never closes */
     if (terms[k].state == TERM_CLOSING) {
@@ -405,6 +415,7 @@ status_t terms_open(const char *cmd, uint8_t *number)
     if (k == TERM_MAX)
         return ERR_NO_RESOURCES;
     terms[k].state = TERM_OPEN;
+    terms[k].crashed = false;
     snprintf(terms[k].cmd, sizeof(terms[k].cmd), "%s", cmd);
     unsigned both[2] = { TERM_CONSOLE(k), TERM_SHELL(k) };
     for (unsigned j = 0; j < 2; j++) {

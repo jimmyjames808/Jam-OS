@@ -74,7 +74,10 @@ static const struct sh_cmd cmds[] = {
       "  The code, what and where, the backtrace, the log lines before it, the boot\n"
       "  and the build (/data/logs/boot-NNNN-crash.txt). N: the N-th newest (1 is\n"
       "  the newest); list: every saved one, newest first"),
-    C(history, C_SHELL, "history", "the lines typed (up/down recall them)"),
+    C(history, C_SHELL, "history [-c]",
+      "the lines typed, kept in /data/etc/history for every terminal (up/down\n"
+      "  recall them; with text on the line only those that start with it). A\n"
+      "  line typed with a leading space isn't kept. -c: forget them all"),
     C(jobs, C_PROGRAMS, "jobs",
       "the programs started with & (prog &, run prog args &): number, pid, state,\n"
       "  command. Such a program runs on while you type; it gets no keys and no\n"

@@ -1,0 +1,108 @@
+# The shell's history (user/services/shell/sh_history.c; the ROADMAP's
+# follow-up "The shell's history across restarts"): kept in
+# /data/etc/history, shared by the terminals. Command line "shell" (a
+# plain boot: the stick's /data). The text waited for is built from $T,
+# so the typed line never holds it; the history keeps the lines as typed
+# ($T and all).
+#   - a line with a leading space is run and not kept; a repeat is kept
+#     once, in its newest place (`history`'s numbering shows both);
+#   - Up with text on the line steps back only through the lines that
+#     start with it, Down forward and back to what was typed; on an empty
+#     line Up steps through them all;
+#   - a new terminal starts with the shared list (Up recalls a line the
+#     first ran);
+#   - a shell killed and started again says so in a line of its own;
+#   - `history -c` forgets them, the file too: a new terminal starts with
+#     none.
+# Run: QEMU_INPUT=tools/shell-tests/history.txt tools/qemu-test.sh <dir> history shell
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=x
+wait {prompt}
+send history -c
+wait {prompt}
+send echo hone-$T
+wait hone-x
+wait {prompt}
+send echo htwo-$T
+wait htwo-x
+wait {prompt}
+send  echo hsecret-$T
+wait hsecret-x
+wait {prompt}
+send echo hone-$T
+wait hone-x
+wait {prompt}
+# 1 htwo, 2 hone (the repeat moved, kept once), 3 history: no hsecret
+send history
+wait 10 1  echo htwo-$T
+wait 10 2  echo hone-$T
+wait 10 3  history
+wait {prompt}
+# Up with "echo ht" on the line: only the lines that start so (the newest,
+# history and echo hone-$T, don't)
+type echo ht
+type \e[A
+sleep 0.3
+type \r
+wait 10 htwo-x
+wait {prompt}
+# Up, Up, Down, Down: back to "echo h", which is then finished and run
+type echo h
+type \e[A
+type \e[A
+type \e[B
+type \e[B
+sleep 0.3
+type zz-$T\r
+wait 10 hzz-x
+wait {prompt}
+# an empty line: Up steps through every line (the newest: echo hzz-$T;
+# then echo htwo-$T, moved up by its run above)
+type \e[A
+type \e[A
+sleep 0.3
+type \r
+wait 10 htwo-x
+wait {prompt}
+send echo hqueue-$T
+wait hqueue-x
+wait {prompt}
+# a new terminal (it takes the keys): the shared list, a line of the
+# first's recalled by its start
+send term
+wait 30 init: terminal 2 opens
+wait 30 Jam OS shell
+wait 10 {prompt}
+sleep 1
+type echo hq
+type \e[A
+sleep 0.3
+type \r
+wait 10 hqueue-x
+wait {prompt}
+# the first terminal's shell killed: started again, it says so
+send kill shell
+wait 30 init: bin/shell was killed
+wait 30 the shell restarted after a crash: its history is kept
+sleep 1
+# forgotten: this terminal's list and the file
+send history -c
+wait {prompt}
+send history
+wait 10 1  history
+wait {prompt}
+send term
+wait 30 init: terminal 3 opens
+wait 30 Jam OS shell
+wait 10 {prompt}
+sleep 1
+# its list: what terminal 2 ran after the clear (history, term), and its
+# own history moved to the newest place
+send history
+wait 10 1  term
+wait 10 2  history
+wait {prompt}
+send reboot -f
+wait reboot: resetting
