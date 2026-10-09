@@ -7,7 +7,9 @@
  *   the ring    RING_FRAMES frames (341 ms) contiguous: 64 KiB at 16-bit,
  *               128 KiB in 32-bit containers; 8 periods of 2048 frames
  *               (42.7 ms each); the client maps it and writes samples
- *               ahead of the play position
+ *               ahead of the play position. Pinned read only: the
+ *               controller only reads it (with the IOMMU it can't write
+ *               there)
  *   one page    the Buffer Descriptor List at 0 (one entry per period,
  *               each with IOC: an interrupt per period) and the DMA
  *               position buffer at POS_OFF (the controller writes each
@@ -113,10 +115,10 @@ static void tcsel(struct stream *s)
 
 /* ---- buffers ----------------------------------------------------------------- */
 
-/* b: a contiguous DMA32 VMO of `size` bytes, mapped and pinned. Its
- * pages must be contiguous to the device too (one BDL entry spans a
- * period of 4 pages). */
-static status_t dma_buf_make(struct hda *h, struct dma_buf *b, uint64_t size)
+/* b: a contiguous DMA32 VMO of `size` bytes, mapped and pinned (read
+ * only: the controller only reads it). Its pages must be contiguous to
+ * the device too (one BDL entry spans a period of 4 pages). */
+static status_t dma_buf_make(struct hda *h, struct dma_buf *b, uint64_t size, bool read_only)
 {
     uint64_t addrs[RING_BYTES_MAX / PAGE];
     if (size > RING_BYTES_MAX)
@@ -127,7 +129,8 @@ static status_t dma_buf_make(struct hda *h, struct dma_buf *b, uint64_t size)
         st = drv_vmo_map(b->vmo, 0, size, VMAR_READ | VMAR_WRITE, &m);
     b->map = m;
     if (st == OK)
-        st = drv_vmo_pin(b->vmo, h->dma, 0, size, addrs, &b->pin);
+        st = read_only ? drv_vmo_pin_read_only(b->vmo, h->dma, 0, size, addrs, &b->pin)
+                       : drv_vmo_pin(b->vmo, h->dma, 0, size, addrs, &b->pin);
     if (st != OK)
         return st;
     b->pinned = true;
@@ -158,9 +161,9 @@ static void dma_buf_free(struct hda *h, struct dma_buf *b, uint64_t size)
  * them. */
 static status_t buffers_make(struct hda *h, struct stream *s)
 {
-    status_t st = dma_buf_make(h, &s->ring, s->ring_bytes);
+    status_t st = dma_buf_make(h, &s->ring, s->ring_bytes, true);   /* samples: read */
     if (st == OK)
-        st = dma_buf_make(h, &s->page, PAGE);
+        st = dma_buf_make(h, &s->page, PAGE, false);   /* the position buffer: written */
     if (st != OK) {
         drv_log("stream: no DMA buffers (%s)", status_str(st));
         return st;

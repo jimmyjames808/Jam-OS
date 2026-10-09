@@ -164,6 +164,7 @@ int driver_main(const struct driver_start *ds)
     log_totals(t);
     drv_log("stopped (%s): the chip reset, bus mastering %s, nothing pinned%s",
             st == OK ? "devmgr closed our channel" : status_str(st),
-            t->bus_master ? "STILL ON" : "off", t->ring_pinned || t->buf_pinned ? " (NOT)" : "");
+            t->bus_master ? "STILL ON" : "off",
+            t->ring_pinned || t->buf_pinned || t->txbuf_pinned ? " (NOT)" : "");
     return st == OK ? 0 : 1;
 }

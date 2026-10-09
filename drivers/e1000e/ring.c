@@ -3,7 +3,10 @@
  *
  * Both rings (256 legacy descriptors of 16 bytes each, receive first) are
  * one contiguous VMO; the 2 KiB buffers (receive 0..255, then transmit
- * 0..255, two per page) are an ordinary VMO pinned page by page. Neither
+ * 0..255, two per page) are an ordinary VMO pinned page by page, in two
+ * pins: the receive half writable, the transmit half read only (the chip
+ * only reads it; with the IOMMU it can't write there). The rings stay
+ * writable: the chip writes descriptors back. Neither
  * asks for memory below 4 GiB (the 82574 does 64-bit DMA). Transmit
  * buffer i belongs to transmit descriptor i, so a buffer is free again
  * when its descriptor is reaped. None of it is ever shared with netstack:
@@ -49,9 +52,14 @@ static status_t ring_alloc(struct e1k *t)
         st = drv_vmo_create(BUFS_BYTES, 0, &t->buf_vmo);
     if (st == OK)
         st = drv_vmo_map(t->buf_vmo, 0, BUFS_BYTES, VMAR_READ | VMAR_WRITE, (void **)&t->bufs);
-    if (st == OK && (st = drv_vmo_pin(t->buf_vmo, t->dma, 0, BUFS_BYTES, t->buf_addr,
-                                      &t->buf_pin)) == OK)
+    if (st == OK && (st = drv_vmo_pin(t->buf_vmo, t->dma, RX_BUF_OFF, TX_BUF_OFF - RX_BUF_OFF,
+                                      t->buf_addr, &t->buf_pin)) == OK)
         t->buf_pinned = true;
+    if (st == OK && (st = drv_vmo_pin_read_only(t->buf_vmo, t->dma, TX_BUF_OFF,
+                                                BUFS_BYTES - TX_BUF_OFF,
+                                                &t->buf_addr[TX_BUF_OFF / 4096],
+                                                &t->txbuf_pin)) == OK)
+        t->txbuf_pinned = true;
     if (st == OK)
         t->ring_addr = addrs[0];
     return st;
@@ -94,6 +102,8 @@ status_t ring_setup(struct e1k *t)
 
 void ring_free(struct e1k *t)
 {
+    if (t->txbuf_pinned && drv_vmo_unpin(t->buf_vmo, t->dma, t->txbuf_pin) == OK)
+        t->txbuf_pinned = false;
     if (t->buf_pinned && drv_vmo_unpin(t->buf_vmo, t->dma, t->buf_pin) == OK)
         t->buf_pinned = false;
     if (t->ring_pinned && drv_vmo_unpin(t->ring_vmo, t->dma, t->ring_pin) == OK)
