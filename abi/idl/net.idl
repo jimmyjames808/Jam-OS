@@ -177,7 +177,19 @@ const TIMEOUT_MAX   60000
 # port is taken; ERR_INVALID_ARGS: a backlog or ring size not allowed;
 # ERR_NO_RESOURCES: the opener's, all openers' or an ordinary opener's
 # share of listeners or of backlog.
-9  tcp_listener  (u16 port, u32 backlog, u32 tx_bytes, u32 rx_bytes)  -> (handle listener, u16 port)
+#
+# `flags` is 0 or LISTEN_REUSE (anything else: ERR_INVALID_ARGS): POSIX's
+# SO_REUSEADDR, as Linux does it. Without it the port must be free of every
+# connection too: one still in TIME_WAIT, or open, from an earlier listener
+# on the port is ERR_ALREADY_BOUND, so a server restarted at once can't
+# listen. With it a listener can be made on a port whose old connections
+# are in TIME_WAIT, and on one whose open connections came from a listener
+# that was made with it as well; an active listener on the port still
+# makes ERR_ALREADY_BOUND, with or without it (the flag doesn't share a
+# port). A listener's connections keep its flag: they are what a later
+# listener with the flag may stand beside.
+const LISTEN_REUSE 1
+9  tcp_listener  (u16 port, u32 backlog, u32 tx_bytes, u32 rx_bytes, u32 flags)  -> (handle listener, u16 port)
 
 # net_socket: a UDP socket's channel, from net.udp or net.udp_rings (and
 # netctl's dhcp_open, the DHCP socket). Closing it closes the socket.
@@ -221,12 +233,42 @@ protocol net_socket 60
 
 protocol net_stream 61
 
-# Its local address and port (the interface's address now, 0 if it has none;
-# the port netstack picked for a connection `tcp` made, or the listener's
-# for one `accept` gave), the peer's address and port (for an accepted
-# connection too), and the bytes waiting in its rx ring now. (A stream drops
-# nothing, its window stops the sender: it has no count of dropped bytes.)
+# Its local address and port (the address the connection runs on, fixed when
+# it was made, which a closed connection keeps answering; the port netstack
+# picked for a connection `tcp` made, or the listener's for one `accept`
+# gave), the peer's address and port (for an accepted connection too), and
+# the bytes waiting in its rx ring now. (A stream drops nothing, its window
+# stops the sender: it has no count of dropped bytes.) POSIX's getsockname
+# and getpeername are this.
+# Same for a connection `tcp` made that is still CONNECTING: the address the
+# route chose, the peer asked for.
 1  state  ()  -> (u32 address, u16 port, u32 peer, u16 peer_port, u32 queued)
+
+# Options of the connection (POSIX's TCP_NODELAY, SO_KEEPALIVE, TCP_KEEPIDLE,
+# TCP_KEEPINTVL and TCP_KEEPCNT; libjam's net_tcp_set_options). Each call
+# sets all of them at once, none is remembered: `flags` is the whole set of
+# the on/off options (OPT_NODELAY, OPT_KEEPALIVE; any other bit:
+# ERR_INVALID_ARGS), and the three keep-alive numbers apply when
+# OPT_KEEPALIVE is set (a program keeps its own copy for getsockopt):
+# keep_idle, the seconds an idle connection waits
+# before its first probe; keep_intvl, the seconds between probes; keep_cnt,
+# the probes unanswered before the connection is reset (CLOSED,
+# ERR_TIMED_OUT). Each is 0 for the default (7200, 75 and 9, as Linux's) or
+# 1..KEEP_MAX (keep_cnt 1..KEEP_CNT_MAX); else ERR_INVALID_ARGS, and nothing
+# changes.
+#
+# A connection starts with OPT_NODELAY set and OPT_KEEPALIVE clear: bytes a
+# program publishes in its tx ring leave at once, however small (the ring's
+# publish is the push, and a program that wants Nagle's coalescing asks for
+# it: a call with OPT_NODELAY clear holds a small segment back while an
+# earlier one is unacked). A connection a listener accepted starts the same
+# way. Answered at once; a connection that is CLOSED already takes the call
+# and ignores it (OK).
+const OPT_NODELAY    1
+const OPT_KEEPALIVE  2
+const KEEP_MAX       32767
+const KEEP_CNT_MAX   127
+2  set_options  (u32 flags, u32 keep_idle, u32 keep_intvl, u32 keep_cnt)  -> ()
 
 # net_listener: a TCP listener's channel, from net.tcp_listener. Closing it
 # stops listening and resets the connections waiting.

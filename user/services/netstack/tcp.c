@@ -364,7 +364,8 @@ status_t ntcp_listen(const struct ntcp_listen_req *req, struct ntcp_listener **o
     if (!l)
         return ERR_NO_RESOURCES;
     *l = (struct ntcp_listener){ .used = true, .req = *req };
-    status_t st = stack_tcp_listen(req->port, req->backlog, req->rx_size, l, &l->l, &l->port);
+    status_t st = stack_tcp_listen(req->port, req->backlog, req->rx_size, req->reuse, l, &l->l,
+                                   &l->port);
     if (st != OK) {
         *l = (struct ntcp_listener){ 0 };
         return st;
@@ -442,6 +443,16 @@ status_t ntcp_connect(struct ntcp_conn *c, uint32_t to, uint16_t port)
     if (st == OK)
         state_set(c, SOCKRING_STATE_CONNECTING, OK);
     return st;
+}
+
+void ntcp_conn_options(struct ntcp_conn *c, bool nodelay, bool keepalive, uint32_t idle_s,
+                       uint32_t intvl_s, uint32_t cnt)
+{
+    if (!c->t)
+        return;
+    stack_tcp_options(c->t, nodelay, keepalive, idle_s, intvl_s, cnt);
+    if (nodelay && c->connected)
+        stack_tcp_push(c->t);   /* what Nagle held back goes now */
 }
 
 void ntcp_kick(struct ntcp_conn *c)
