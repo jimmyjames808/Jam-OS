@@ -337,6 +337,15 @@ static void drain(handle_t ch)
     }
 }
 
+/* Nothing is queued on ch after the last message: the starter wrote the
+ * whole hand-over before we started, so anything more is part of a
+ * malformed one. */
+static bool nothing_after(handle_t ch)
+{
+    struct handle_info info;
+    return jam_handle_info(ch, &info) == OK && info.queued == 0;
+}
+
 /* Give the checked message in buf to the sink, record by record. A
  * refusal closes the handles of the records after it. */
 static status_t deliver(const struct posixfds_sink *sink)
@@ -371,18 +380,18 @@ static status_t read_all(handle_t ch, const struct posixfds_sink *sink,
             return ERR_NOT_FOUND;
         if (st != OK)
             return ERR_INVALID_ARGS;   /* cut short */
-        if (!check_msg(n, nh, seq, true)) {
+        const struct posixfds_msg *m = (const struct posixfds_msg *)buf;
+        bool last = m->flags & POSIXFDS_LAST;
+        if (!check_msg(n, nh, seq, true) || (last && !nothing_after(ch))) {
             for (uint32_t j = 0; j < nh; j++)
                 jam_handle_close(hbuf[j]);
             return ERR_INVALID_ARGS;
         }
-        const struct posixfds_msg *m = (const struct posixfds_msg *)buf;
         if (seq == 0) {
             *state = m->state;
             memcpy(cwd, buf + sizeof(*m), m->cwd_len);
         }
         *given |= m->nfds > 0;
-        bool last = m->flags & POSIXFDS_LAST;
         st = deliver(sink);
         if (st != OK || last)
             return st;

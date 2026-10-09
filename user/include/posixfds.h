@@ -26,7 +26,8 @@
  *
  * It crosses a process boundary, so the reader checks everything (the
  * rules are on the structs below) and takes the hand-over whole or not at
- * all: a malformed message, or one missing, drops every handle the
+ * all: a malformed message, one missing, or anything queued after the
+ * last (the starter wrote it all before the start), drops every handle the
  * hand-over carried and the child starts with no descriptors. The kinds'
  * own meaning (what a pipe's data is, what a socket's handles are for)
  * is the POSIX layer's; this header fixes only each kind's handle types
