@@ -75,8 +75,9 @@ static bool table_overlaps(uint64_t addr, uint64_t len)
 
 /* Unmap the table's mappings in [addr, end): each entry's part there,
  * trimming, splitting or dropping the entry. A split needs a free entry,
- * checked before anything changes. */
-static long unmap_locked(uint64_t addr, uint64_t end)
+ * checked before anything changes. With kernel false the address space
+ * is left alone (it is being unmapped by someone else: mem_forget). */
+static long drop_locked(uint64_t addr, uint64_t end, bool kernel)
 {
     struct mt_entry *t = mt_entries();
     unsigned i = mt_first_after(addr);
@@ -86,7 +87,7 @@ static long unmap_locked(uint64_t addr, uint64_t end)
         struct mt_entry e = t[i];
         uint64_t s = e.base > addr ? e.base : addr;
         uint64_t f = e.base + e.len < end ? e.base + e.len : end;
-        status_t st = jam_vmar_unmap(lx_self_vmar(), s, f - s);
+        status_t st = kernel ? jam_vmar_unmap(lx_self_vmar(), s, f - s) : OK;
         if (st != OK)
             return lx_err(st);
         if (s == e.base && f == e.base + e.len) {
@@ -107,6 +108,20 @@ static long unmap_locked(uint64_t addr, uint64_t end)
         i++;
     }
     return 0;
+}
+
+static long unmap_locked(uint64_t addr, uint64_t end)
+{
+    return drop_locked(addr, end, true);
+}
+
+void mem_forget(uint64_t addr, uint64_t len)
+{
+    if (!len || addr > UINT64_MAX - len)
+        return;
+    lock_take(&mem_lock);
+    (void)drop_locked(addr, addr + len, false);   /* a split's room: a stack is one entry */
+    lock_give(&mem_lock);
 }
 
 /* What a mapping maps: a VMO made for it (vmo HANDLE_INVALID: a new

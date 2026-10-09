@@ -163,6 +163,13 @@ static void check_joins(void)
     CHECK(detached_done == DETACHED);
     usleep(100 * 1000);   /* the last of them leave after counting */
     CHECK(pt_job_pages() <= before + SLACK_PAGES);
+    /* Their stacks left libc's table of mappings with them: a mapping made
+     * where one was is unmapped whole (else munmap meets a stale entry). */
+    for (int i = 0; i < 20; i++) {
+        void *p = mmap(NULL, 140 * 1024, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
+                       -1, 0);
+        CHECK(p != MAP_FAILED && munmap(p, 140 * 1024) == 0);
+    }
 }
 
 void pt_thread(char **argv __attribute__((unused)))

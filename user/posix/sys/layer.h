@@ -24,6 +24,10 @@ long lx_err(status_t st);
  * them before main and before any handler runs). */
 handle_t lx_self_process(void);
 handle_t lx_self_vmar(void);
+/* [addr, addr + len) is being unmapped outside mem.c (a detached
+ * thread's own stack, by __unmapself): libc's table of mappings forgets
+ * it, so a later mapping there isn't taken for this one (mem.c). */
+void mem_forget(uint64_t addr, uint64_t len);
 /* The calling thread's handle (thread.c). */
 handle_t lx_self_thread(void);
 /* The POSIX hand-over's state and current directory (<posixfds.h>; read

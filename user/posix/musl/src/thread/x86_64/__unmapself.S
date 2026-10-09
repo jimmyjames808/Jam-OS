@@ -4,7 +4,8 @@
  * A detached thread's last steps: unmap its own stack, then end, without
  * touching the stack in between. Its own handle is closed first, in C,
  * while the stack is still there (__jam_unmapself_prepare, which also
- * gives the address space's handle); then vmar_unmap and thread_exit are
+ * takes the stack out of libc's table of mappings and gives the address
+ * space's handle); then vmar_unmap and thread_exit are
  * issued here with registers only. No C runs after the `syscall`s, so the
  * register rule (the vector registers are the caller's) has nothing to
  * protect. The kernel stores 0 at the thread's tid word, and wakes it,
@@ -19,7 +20,7 @@ __unmapself:                        /* rdi = base, rsi = size */
     mov %rdi, %rbx                  /* callee-saved; this never returns */
     mov %rsi, %r12
     sub $8, %rsp                    /* 16-aligned at the call */
-    call __jam_unmapself_prepare    /* eax = the address space's handle */
+    call __jam_unmapself_prepare    /* (rdi, rsi as given); eax = the address space's handle */
     mov %eax, %edi
     mov %rbx, %rsi
     mov %r12, %rdx

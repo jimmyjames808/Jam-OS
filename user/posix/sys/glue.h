@@ -24,9 +24,10 @@ int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
                 int *ctid);
 
 /* __unmapself's first half, on the stack it is about to unmap: this
- * thread's own handle closed and forgotten. Returns the address-space
- * handle __unmapself unmaps through. thread.c. */
-unsigned __jam_unmapself_prepare(void);
+ * thread's own handle closed and forgotten, and the stack [base, base +
+ * size) taken out of libc's table of mappings (it is unmapped next).
+ * Returns the address-space handle __unmapself unmaps through. thread.c. */
+unsigned __jam_unmapself_prepare(void *base, unsigned long size);
 
 /* crt1's start: read the startup message on the channel ch (a handle_t),
  * build Linux's start block (argc, argv, envp, auxv) and run main through
