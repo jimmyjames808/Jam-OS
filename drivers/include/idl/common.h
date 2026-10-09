@@ -60,6 +60,7 @@
 #define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER   0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */
 #define IDL_ID_STARTUP        0x534du   /* kernel/include/jam/startup.h: STARTUP_MAGIC "JAMS" */
+#define IDL_ID_POSIXFDS       0x5853u   /* user/include/posixfds.h: POSIXFDS_MAGIC "JPSX" (the POSIX hand-over) */
 #define IDL_ID_CRASHER        0xc4a5u   /* user/include/devmgr.h: the crash-test driver's (CRASHER_*) */
 
 /* Every request starts with this, every reply with idl_rep_hdr. */
