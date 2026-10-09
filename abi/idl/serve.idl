@@ -13,10 +13,15 @@
 
 protocol serve 31
 
+# A file's name as `share` is given it: at most NAME_MAX bytes of UTF-8 (a
+# longer path keeps its end).
+const NAME_MAX  127
+
 # Serve a file on `port` (SERVE_PORT_MIN and up: any port, the server has
 # the permission for those below 1024 too). `name` is the file's path
-# as the owner gave it (NUL-terminated): for `info`, the log and the
-# Content-Type, never opened by the server. Answers at once with a channel
+# as the owner gave it (1..NAME_MAX bytes, checked UTF-8: the generated
+# server refuses the rest): for `info`, the log and the Content-Type, never
+# opened by the server. Answers at once with a channel
 # `give`: the caller writes one message on it, struct serve_give with the
 # file's two handles (file_give: its `file` channel, open to read, and its
 # transfer buffer), and then reads one answer there, struct serve_answer:
@@ -29,13 +34,13 @@ protocol serve 31
 # SERVE_GIVE_WAIT. ERR_NO_RESOURCES: SERVE_SHARES files served (or
 # waiting for their file) already; ERR_ALREADY_EXISTS: that port is served
 # already; ERR_OUT_OF_RANGE: a port below SERVE_PORT_MIN; ERR_INVALID_ARGS:
-# no name.
-1  share  (u16 port, u8[128] name) -> (handle give)
+# no name (or one that isn't text).
+1  share  (u16 port, str[<=127] name) -> (handle give)
 # What is served: the `index`-th file (0, 1, ...): its port, its name as
 # `share` was given it, its size, the clients connected now, and the
 # requests answered and file bytes sent since it was shared.
 # ERR_NOT_FOUND: past the last.
-2  info  (u32 index) -> (u16 port, u8[128] name, u64 size, u32 clients, u64 requests, u64 bytes)
+2  info  (u32 index) -> (u16 port, str[<=127] name, u64 size, u32 clients, u64 requests, u64 bytes)
 # Stop serving the file on `port` (0: every file): its listener closed and
 # its clients cut off. Answers how many stopped (0: none was served there).
 3  stop  (u16 port) -> (u32 stopped)

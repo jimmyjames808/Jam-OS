@@ -53,7 +53,7 @@ struct client;
 struct share {
     enum share_state state;
     uint16_t   port;             /* asked for, then the listener's */
-    char       name[SERVE_NAME_MAX];
+    char       name[SERVE_NAME_MAX + 1];
     const char *type;            /* its Content-Type (http_content_type) */
     handle_t   give;             /* GIVING: our end of the shell's channel */
     uint32_t   give_id;
@@ -119,7 +119,8 @@ status_t listen_ask(unsigned i);
 /* share.c */
 /* Share slot i (free) for port and name, waiting for its file: *out_give is
  * the end the shell gets. */
-status_t share_giving(unsigned i, uint16_t port, const char *name, handle_t *out_give);
+status_t share_giving(unsigned i, uint16_t port, const char *name, uint32_t name_len,
+                      handle_t *out_give);
 /* Its give channel is readable (the file came) or closed. */
 void     share_give_ready(unsigned i);
 /* Shares whose file didn't come in time freed; the earliest of `until` and

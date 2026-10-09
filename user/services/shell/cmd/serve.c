@@ -43,21 +43,20 @@ static int list(handle_t ch)
     char a[IPV4_TEXT_MAX], size[24];
     unsigned i = 0;
     for (;; i++) {   /* at most SERVE_SHARES answers before ERR_NOT_FOUND */
-        uint8_t name[SERVE_NAME_MAX];
+        char name[SERVE_NAME_MAX + 1];
         uint16_t port = 0;
         uint64_t bytes = 0, requests = 0, sz = 0;
-        uint32_t n = 0;
-        status_t st = serve_info_until(ch, now() + SOON, i, &port, name, &sz, &n, &requests,
-                                       &bytes);
+        uint32_t n = 0, name_len = 0;
+        status_t st = serve_info_until(ch, now() + SOON, i, &port, name, &name_len, &sz, &n,
+                                       &requests, &bytes);
         if (st == ERR_NOT_FOUND)
             break;
         if (st != OK) {
             sh_tty("serve: the server doesn't answer (%s)\n", status_str(st));
             return 1;
         }
-        name[SERVE_NAME_MAX - 1] = 0;
         sh_say("serve: port %u: %s (%s): %u client%s now, %lu request%s, %lu bytes sent\n"
-               "  http://%s:%u/\n", port, (char *)name, sh_human(sz, size, sizeof(size)), n,
+               "  http://%s:%u/\n", port, name, sh_human(sz, size, sizeof(size)), n,
                n == 1 ? "" : "s", (unsigned long)requests, requests == 1 ? "" : "s",
                (unsigned long)bytes, address(a), port);
     }
@@ -129,13 +128,15 @@ static int start(handle_t ch, const char *arg, uint16_t port)
     struct jfile f;
     if (!open_file(arg, abs, &f))
         return 1;
-    uint8_t name[SERVE_NAME_MAX] = { 0 };
-    size_t n = strlen(abs), from = n >= SERVE_NAME_MAX ? n - (SERVE_NAME_MAX - 1) : 0;
-    memcpy(name, abs + from, n - from);   /* a long path keeps its end */
+    size_t n = strlen(abs), from = n > SERVE_NAME_MAX ? n - SERVE_NAME_MAX : 0;
+    while (from < n && ((uint8_t)abs[from] & 0xc0) == 0x80)
+        from++;   /* a long path keeps its end, from a character's first byte */
+    const char *name = abs + from;
+    uint32_t name_len = (uint32_t)(n - from);
     handle_t give = HANDLE_INVALID;
     uint64_t bytes = f.size;
     struct serve_answer ans = { 0 };
-    status_t st = serve_share_until(ch, now() + SOON, port, name, &give);
+    status_t st = serve_share_until(ch, now() + SOON, port, name, name_len, &give);
     if (st == OK)
         st = give_file(give, &f, &ans);   /* f is given away, whatever happens */
     else
