@@ -583,6 +583,39 @@ bool t_channel_no_handles(void)
     return true;
 }
 
+/* M12's Q2 from user space: a child in a job of its own writes 8 KiB on a
+ * channel and exits without anybody reading; from then on its job is
+ * charged nothing for them (it would be, until read, before), and ours,
+ * the reader's, is: reading them gives it back. */
+bool t_unread_charged_to_reader(void)
+{
+    handle_t job, proc, a, b;
+    struct job_info before, ji;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(info_of(own_job(), &before), OK);
+    CHECK_ST(child("write-exit", NULL, job, a, &proc), OK);   /* a is the child's */
+    struct process_info info;
+    CHECK_ST(spawn_wait(proc, 20 * NS_PER_S, &info), OK);
+    CHECK(info.state == PROCESS_DEAD && info.exit_code == 0);
+    CHECK_ST(jam_handle_close(proc), OK);
+    CHECK_ST(info_of(job, &ji), OK);
+    CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], 0);   /* the writer's job pays nothing now */
+    CHECK_ST(info_of(own_job(), &ji), OK);
+    CHECK(ji.used[JOB_LIMIT_MSG_BYTES] >= before.used[JOB_LIMIT_MSG_BYTES] + 8 * 1024);
+    static uint8_t buf[1024];
+    unsigned n = 0;
+    while (jam_channel_read(&(struct channel_read_args){
+               .h = b, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf }) == OK)
+        n++;
+    CHECK_EQ(n, 8);
+    CHECK_ST(info_of(own_job(), &ji), OK);
+    CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], before.used[JOB_LIMIT_MSG_BYTES]);
+    CHECK_ST(jam_handle_close(b), OK);
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
 /* ---- the kernel's chanread_reply_wait_kill_loses_nothing ---------------------- */
 
 /* The log VMO's layout: kernel/test/test_chanrw.c's RW_*. */

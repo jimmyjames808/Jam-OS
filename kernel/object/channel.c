@@ -47,7 +47,9 @@ uint64_t channel_live_count(void)
  * allocated and until it is freed, so a process can't pin kernel memory
  * by filling a peer's queues beyond its job's limit; the charge follows
  * the message, not the queue it sits on. Messages made by kernel threads
- * have no job.
+ * have no job. Once the writer has closed its end, what it wrote and
+ * nobody read is charged to the READER's job instead (M12's Q2,
+ * charge_reader): a reader that never reads pays for its own hoard.
  *
  * Slots. A small message for a reader that is already waiting for it (a
  * reply to a channel_call, or any message for a channel_read_wait reader:
@@ -285,6 +287,94 @@ static void wake_callers_locked(const struct channel *ch)
         thread_wake(container_of(n, struct chan_waiter, node)->thread);
 }
 
+void channel_received(struct kobject *obj, struct job *job)
+{
+    struct channel *ch = (struct channel *)obj;
+    if (__atomic_load_n(&ch->reader_job, __ATOMIC_RELAXED) == job)
+        return;   /* the same job again: nothing changes */
+    /* A duplicate arriving where the end is shared (a namespace's mount,
+     * handed to each program started) leaves the reader it has: else the
+     * end would keep the last program's job alive (we hold a reference)
+     * long after that program has gone. */
+    if (kobject_handles(obj) != 1)
+        return;
+    job_ref(job);
+    uint64_t f = spin_lock_irqsave(&ch->base.lock);
+    struct job *old = ch->reader_job;
+    __atomic_store_n(&ch->reader_job, job, __ATOMIC_RELAXED);
+    spin_unlock_irqrestore(&ch->base.lock, f);
+    job_unref(old);   /* outside the lock: it may be the last reference */
+}
+
+/* Old jobs of messages charge_reader moved, each with the references it
+ * still has to drop (one per message), dropped once unlocked. */
+#define MOVED_JOBS 8
+
+/* peer's writer has closed: charge what waits on peer's queue to peer's
+ * reader job (M12's Q2), message by message, oldest first. A message that
+ * job can't pay is dropped, with every one after it (as if read: what is
+ * left is a prefix of the stream, then ERR_PEER_CLOSED). In rounds, each
+ * under peer's lock, so that the old jobs' references (one per message,
+ * maybe their last) are dropped unlocked. No lock held; peer referenced. */
+static void charge_reader(struct channel *peer)
+{
+    struct list_node dead;
+    list_init(&dead);
+    for (bool more = true; more;) {
+        struct job *old[MOVED_JOBS];
+        uint32_t refs[MOVED_JOBS];
+        unsigned nold = 0;
+        more = false;
+        uint64_t f = spin_lock_irqsave(&peer->base.lock);
+        struct job *rj = peer->reader_job;
+        for (struct list_node *n = peer->queue.next; rj && !peer->closed && n != &peer->queue;) {
+            struct chan_msg *m = container_of(n, struct chan_msg, node);
+            n = n->next;
+            if (m->job == rj)
+                continue;
+            unsigned k = 0;
+            while (k < nold && old[k] != m->job)
+                k++;
+            if (k == MOVED_JOBS) {
+                more = true;   /* a ninth old job: the next round */
+                break;
+            }
+            if (job_charge(rj, JOB_LIMIT_MSG_BYTES, m->charge) != OK) {
+                /* Dropped, with everything after it. */
+                for (struct list_node *d = &m->node; d != &peer->queue;) {
+                    struct list_node *next = d->next;
+                    list_del(d);
+                    list_add_tail(&dead, d);
+                    COUNTER_SUB(&peer->nqueued, 1);
+                    d = next;
+                }
+                if (!chan_nqueued(peer))
+                    kobject_signal_locked(&peer->base, SIG_READABLE, 0);
+                break;
+            }
+            if (m->job) {
+                job_uncharge(m->job, JOB_LIMIT_MSG_BYTES, m->charge);
+                if (k == nold) {
+                    old[nold] = m->job;
+                    refs[nold++] = 0;
+                }
+                refs[k]++;
+            }
+            job_ref(rj);
+            m->job = rj;
+        }
+        spin_unlock_irqrestore(&peer->base.lock, f);
+        for (unsigned k = 0; k < nold; k++)
+            while (refs[k]--)
+                job_unref(old[k]);
+    }
+    while (!list_empty(&dead)) {
+        struct chan_msg *m = list_first(&dead, struct chan_msg, node);
+        list_del(&m->node);
+        chan_msg_drop(m);
+    }
+}
+
 /* Leave the pair: tell the peer, then empty our own queue. Idempotent. */
 static void channel_close(struct channel *ch)
 {
@@ -296,14 +386,20 @@ static void channel_close(struct channel *ch)
     }
     pair->ep[ch->side] = NULL;
     struct channel *peer = pair->ep[!ch->side];
+    bool reader = false;   /* peer is referenced: its queue goes to its reader's job */
     if (peer) {
         spin_lock(&peer->base.lock);
         peer->peer_closed = true;
         wake_callers_locked(peer);
         kobject_signal_locked(&peer->base, SIG_WRITABLE, SIG_PEER_CLOSED);
+        reader = !list_empty(&peer->queue) && kobject_tryref(&peer->base);
         spin_unlock(&peer->base.lock);
     }
     spin_unlock_irqrestore(&pair->lock, f);
+    if (reader) {
+        charge_reader(peer);
+        kobject_unref(&peer->base);
+    }
 
     /* No writer can reach our queue any more: it had to find us in the
      * pair. Take the queued messages out and free them unlocked. */
@@ -340,6 +436,7 @@ static void channel_destroy(struct kobject *obj)
     struct channel *ch = (struct channel *)obj;
     channel_close(ch);
     ASSERT(list_empty(&ch->callers));
+    job_unref(ch->reader_job);
     if (__atomic_sub_fetch(&ch->pair->refs, 1, __ATOMIC_ACQ_REL) == 0)
         kfree(ch->pair);
     __atomic_sub_fetch(&live_endpoints, 1, __ATOMIC_RELAXED);

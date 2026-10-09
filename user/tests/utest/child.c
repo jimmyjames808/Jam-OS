@@ -180,6 +180,19 @@ static int msgs(void)
     return 41;
 }
 
+/* Write WRITE_EXIT_MSGS 1 KiB messages on SR_USER, then exit: nobody has
+ * read them yet (utest's unread_charged_to_reader). */
+#define WRITE_EXIT_MSGS 8
+
+static int write_exit(void)
+{
+    static uint8_t buf[1024];
+    for (unsigned i = 0; i < WRITE_EXIT_MSGS; i++)
+        if (jam_channel_write(startup_handle(SR_USER), buf, sizeof(buf), NULL, 0) != OK)
+            return 48;
+    return 0;
+}
+
 /* With a small job message-byte limit: port packets, then port bindings,
  * are charged to us too, so our job (not the port's per-port caps of 4096
  * each) stops us with ERR_NO_MEMORY. 47 if both were refused that way,
@@ -352,6 +365,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "threads2"))   return threads2();
     if (!strcmp(m, "handles"))    return handles();
     if (!strcmp(m, "msgs"))       return msgs();
+    if (!strcmp(m, "write-exit")) return write_exit();
     if (!strcmp(m, "ports"))      return ports();
     if (!strcmp(m, "orphan"))     return orphan();
     if (!strcmp(m, "main-exits")) return main_exits();
