@@ -1098,7 +1098,12 @@ firmware left on) is the only trace, and DMA works as before the IOMMU
   bits), so drivers and their numbers are unchanged. A read-only pin
   (`VMO_PIN_READ_ONLY`: a transmit buffer, a sound ring) is mapped
   without write permission, so its device's writes there fault; a page is
-  pinned one way at a time in a domain. `vmo_unpin` unmaps,
+  pinned one way at a time in a domain. A read-only pin needs only
+  `RIGHT_READ` there, which never commits memory, so it takes only pages
+  already committed (`ERR_BAD_STATE` over a hole, with or without the
+  IOMMU): the drivers commit their transmit buffers first, and a driver
+  given a read-only view of a client's sparse buffer can't fill it at the
+  client's expense. A writable pin commits what it covers, as before. `vmo_unpin` unmaps,
   invalidates and waits, and only then lets the pages go. A domain's
   table pages are charged to the job `dma_cap_create` is given (the
   driver's: devmgr makes the driver's job first), as is every pin made

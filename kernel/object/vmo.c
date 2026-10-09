@@ -1319,6 +1319,24 @@ static status_t pin_publish(struct vmo *v, struct vmo_range *r, struct kobject *
     return OK;
 }
 
+/* A read-only pin takes only pages already committed, and commits none
+ * (ERR_BAD_STATE): it may be made with no more than RIGHT_READ, which
+ * never allowed a commit, and a driver handed a read-only view of a large
+ * sparse VMO must not fill it at its holder's expense (review M12.1 KDEV
+ * finding 4, KCORE finding 6; test: dma_read_only_pin_needs_committed).
+ * Its range, listed, keeps them committed from here on (decommit and
+ * shrink refuse its pages). */
+static status_t pin_committed(struct vmo *v, uint64_t first, uint64_t end)
+{
+    status_t st = OK;
+    uint64_t f = vlock(v);
+    for (uint64_t idx = first; idx < end && st == OK; idx++)
+        if (!phys_locked(v, idx))
+            st = ERR_BAD_STATE;
+    vunlock(v, f);
+    return st;
+}
+
 status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
                        uint32_t flags, uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id)
 {
@@ -1352,7 +1370,7 @@ status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, 
         return st;
     st = pin_link_cap(r, dma_cap);
     if (st == OK && v->kind == VMO_PAGED)
-        st = commit_pages(v, first, end);
+        st = ro ? pin_committed(v, first, end) : commit_pages(v, first, end);
     if (st != OK) {
         range_remove(v, r);
         return st;

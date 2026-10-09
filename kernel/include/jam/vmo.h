@@ -132,7 +132,8 @@ status_t vmo_unmap_kernel(struct vmo *v, void *va);
  * get bound ones (dma_cap_create_for in <jam/resource.h>) from devmgr. */
 status_t dma_cap_create(struct kobject **out);
 /* Pin [offset, offset+len) (both page-aligned, len > 0) for device DMA:
- * commits the pages, forbids decommitting or shrinking them away, and
+ * commits the pages (a writable pin; a read-only one takes only pages
+ * committed already, below), forbids decommitting or shrinking them away, and
  * writes each page's physical address to phys_out[0..len/PAGE_SIZE) (on
  * a failure too: its contents mean nothing then). With a cap that has an
  * IOMMU domain (dma_cap_translated) each page is also mapped there at
@@ -160,8 +161,11 @@ status_t dma_cap_create(struct kobject **out);
  * another pin already (and a writable pin of a page mapped read only is
  * refused the same way: one permission per page and domain); the pin
  * doesn't count as a write (a sealed VMO takes it). Without a domain the
- * flag changes nothing: the device can write anyway. Any other bit is
- * ERR_INVALID_ARGS. vmo_pin is vmo_pin_flags with flags 0. */
+ * device can write anyway. With or without one, a read-only pin commits
+ * nothing: ERR_BAD_STATE if any page of the range isn't committed (it
+ * may be made with only RIGHT_READ, which never commits; review M12.1
+ * KDEV finding 4). Any other bit is ERR_INVALID_ARGS. vmo_pin is
+ * vmo_pin_flags with flags 0. */
 status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
                        uint32_t flags, uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id);
 static inline status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset,

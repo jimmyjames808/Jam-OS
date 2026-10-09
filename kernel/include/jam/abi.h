@@ -455,10 +455,13 @@ struct vmo_pin_args {
  * with the IOMMU translating (sys_info's SYSINFO_IOMMU: the dma_cap has a
  * domain) they are mapped for it read only, so its writes there are
  * refused and faulted, and the pin needs only RIGHT_READ on the VMO.
- * Without the IOMMU nothing stops a device's write, so the flag changes
- * nothing and the pin needs RIGHT_WRITE as any other. A page is pinned
- * through one dma_cap one way at a time: a read-only pin of a page that
- * cap has pinned writable (or the reverse) is ERR_BAD_STATE. */
+ * Without the IOMMU nothing stops a device's write, so the pin needs
+ * RIGHT_WRITE as any other. A page is pinned through one dma_cap one way
+ * at a time: a read-only pin of a page that cap has pinned writable (or
+ * the reverse) is ERR_BAD_STATE. With or without the IOMMU a read-only pin
+ * commits nothing: every page of its range must be committed already
+ * (vmo_commit by the VMO's holder, a writable pin, or a contiguous VMO),
+ * else ERR_BAD_STATE and nothing happens. */
 #define VMO_PIN_READ_ONLY (1u << 0)
 
 /* console services (abi/syscalls.def 110-119) --------------------------------- */

@@ -298,8 +298,9 @@
 # place until vmo_unpin, and (while the IOMMU translates) mapped for the
 # device. RIGHT_WRITE on the VMO; with VMO_PIN_READ_ONLY (the device only
 # reads them) the pages are mapped for it read only and RIGHT_READ is
-# enough, where the IOMMU translates (else the flag changes nothing and
-# RIGHT_WRITE is still needed). The pin costs the cap's job (the
+# enough, where the IOMMU translates (else RIGHT_WRITE is still needed). A
+# read-only pin commits nothing: every page must be committed already
+# (ERR_BAD_STATE otherwise, with nothing committed or charged). The pin costs the cap's job (the
 # pinner's, never the VMO's holder) one JOB_LIMIT_HANDLES unit until
 # vmo_unpin, the cap's close or the quarantine's release gives it back
 # (ERR_NO_RESOURCES when the job can't pay). ERR_INVALID_ARGS: offset or len not
@@ -308,7 +309,8 @@
 # ERR_ACCESS_DENIED: the rights, or a cap bound to no function;
 # ERR_BAD_STATE: the cap isn't its function's current one, its bus
 # mastering is off, a page is pinned through it the other way (read only
-# or writable) already, or the VMO is sealed and the pin writes.
+# or writable) already, a read-only pin's page isn't committed, or the
+# VMO is sealed and the pin writes.
 106 vmo_pin           status    @vmo_pin_args
 
 # console services ----------------------------------------------------------
