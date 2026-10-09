@@ -144,6 +144,29 @@ static bool check_refused(const struct fatrun *r)
     return file_is(r, "/notes.txt", "notes.txt");
 }
 
+/* The longest name FAT holds, 255 UTF-16 units, as UTF-8 bytes: 765 of
+ * them for 255 characters of three bytes each. Listed, it is that name,
+ * not its 8.3 alias (FF_LFN_BUF). One character more is too long. */
+static bool check_long_utf8(const struct fatrun *r)
+{
+    static char path[2 + 3 * 256];
+    unsigned count = 0;
+    bool found = false;
+    path[0] = '/';
+    for (unsigned i = 0; i < 255; i++)
+        memcpy(path + 1 + 3 * i, "\xe6\x97\xa5", 3);   /* U+65E5 */
+    path[1 + 3 * 255] = '\0';
+    if (!put_file(r, path, "long") || !dir_count(r, "/", path + 1, &count, &found))
+        return false;
+    CHECK(found);
+    if (!file_is(r, path, "long"))
+        return false;
+    CHECK_ST(t_unlink(r, path), OK);
+    memcpy(path + 1 + 3 * 255, "\xe6\x97\xa5", 4);
+    CHECK_ST(t_mkdir(r, path), ERR_NAME_TOO_LONG);
+    return true;
+}
+
 bool t_fat_names(void)
 {
     struct fatrun r;
@@ -151,7 +174,8 @@ bool t_fat_names(void)
     bool repeated = true, found = false;
     if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
         return false;
-    if (!check_kept_names(&r) || !check_case(&r) || !check_refused(&r))
+    if (!check_kept_names(&r) || !check_case(&r) || !check_refused(&r) ||
+        !check_long_utf8(&r))
         return false;
     /* The two holiday files: two entries, two different aliases. */
     CHECK_ST(t_sync(&r), OK);
