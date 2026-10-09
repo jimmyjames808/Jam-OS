@@ -13,7 +13,7 @@ signed off. `version` says which one.
 Set the desktop up as you use it: Jamjar playing a track, two terminals
 (Super+Enter for the second). In one terminal:
 
-- [ ] `utest only comp_live` ends with `utest: 4 passed`. Meanwhile it
+- [ ] `utest only comp_live` ends with `utest: 5 passed` (4 at G1; M12.1 added the fuzzer). Meanwhile it
       connects to the compositor and does everything a broken or nasty
       program could: bad requests of every kind, every per-program limit,
       a program that floods requests and never reads, programs that crash
