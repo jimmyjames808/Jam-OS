@@ -61,6 +61,15 @@ static status_t put_sizes(uint64_t ub, uint32_t nb, uint64_t uh, uint32_t nh)
     return put_words(w, 2);
 }
 
+/* A buffer of n bytes or entries (n > 0) at user address 0. Refused with
+ * ERR_INVALID_ARGS before anything happens: found only at the copy, it
+ * would come after a message left its queue (lost, its handles closed),
+ * or after channel_reply_wait's reply went out. */
+static bool no_buffer(uint64_t addr, uint32_t n)
+{
+    return n && !addr;
+}
+
 int64_t sysc_channel_create(uint64_t a, uint64_t b)
 {
     SYSC_TABLE(t);
@@ -82,6 +91,8 @@ int64_t sysc_channel_write(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t
     SYSC_TABLE(t);
     if (nbytes > CHANNEL_MAX_BYTES || nhandles > CHANNEL_MAX_HANDLES)
         return ERR_OUT_OF_RANGE;
+    if (no_buffer(bytes, nbytes) || no_buffer(handles, nhandles))
+        return ERR_INVALID_ARGS;
     handle_t hs[CHANNEL_MAX_HANDLES];
     if (copy_in(hs, handles, nhandles * sizeof(handle_t)) != OK)
         return ERR_INVALID_ARGS;
@@ -95,6 +106,8 @@ int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, u
     SYSC_TABLE(t);
     if (nbytes > CHANNEL_MAX_BYTES || nhandles > CHANNEL_MAX_HANDLES)
         return ERR_OUT_OF_RANGE;
+    if (no_buffer(bytes, nbytes) || no_buffer(handles, nhandles) || no_buffer(rights, nhandles))
+        return ERR_INVALID_ARGS;
     handle_t hs[CHANNEL_MAX_HANDLES];
     rights_t rs[CHANNEL_MAX_HANDLES];
     if (copy_in(hs, handles, nhandles * sizeof(handle_t)) != OK ||
@@ -107,7 +120,7 @@ int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, u
 int64_t sysc_channel_read(const struct channel_read_args *a)
 {
     SYSC_TABLE(t);
-    if (a->reserved)
+    if (a->reserved || no_buffer(a->rd_bytes, a->rd_cap) || no_buffer(a->rd_handles, a->rd_hcap))
         return ERR_INVALID_ARGS;
     uint32_t bcap = a->rd_cap < CHANNEL_MAX_BYTES ? a->rd_cap : CHANNEL_MAX_BYTES;
     uint32_t hcap = a->rd_hcap < CHANNEL_MAX_HANDLES ? a->rd_hcap : CHANNEL_MAX_HANDLES;
@@ -145,7 +158,9 @@ int64_t sysc_channel_call(const struct channel_call_args *a)
     SYSC_TABLE(t);
     if (a->flags & ~CHANNEL_CALL_TIMEOUT)
         return ERR_INVALID_ARGS;
-    if (a->wr_len < 4)
+    if (a->wr_len < 4 || no_buffer(a->wr_bytes, a->wr_len) ||
+        no_buffer(a->wr_handles, a->wr_nhandles) || no_buffer(a->rd_bytes, a->rd_cap) ||
+        no_buffer(a->rd_handles, a->rd_hcap))
         return ERR_INVALID_ARGS;
     if (a->wr_len > CHANNEL_MAX_BYTES || a->wr_nhandles > CHANNEL_MAX_HANDLES)
         return ERR_OUT_OF_RANGE;
@@ -213,6 +228,9 @@ int64_t sysc_channel_reply_wait(const struct channel_reply_wait_args *a)
 {
     SYSC_TABLE(t);
     if (a->reserved || (a->flags & ~CHANNEL_REPLY_WAIT_TIMEOUT) || !reply_fields_ok(a))
+        return ERR_INVALID_ARGS;
+    if (no_buffer(a->wr_bytes, a->wr_len) || no_buffer(a->wr_handles, a->wr_nhandles) ||
+        no_buffer(a->rd_bytes, a->rd_cap) || no_buffer(a->rd_handles, a->rd_hcap))
         return ERR_INVALID_ARGS;
     if (a->wr_len > CHANNEL_MAX_BYTES || a->wr_nhandles > CHANNEL_MAX_HANDLES)
         return ERR_OUT_OF_RANGE;

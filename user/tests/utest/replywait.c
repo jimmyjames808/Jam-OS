@@ -420,13 +420,63 @@ static bool rw_refusals_buffers(handle_t a, handle_t b)
     return true;
 }
 
+/* A buffer with a size but address 0, in all three calls: refused before
+ * anything happens (review K finding 3). A read leaves the message (and
+ * its handle) queued, a call sends nothing, a reply_wait's reply doesn't
+ * go out; before, each was found only at the copy, after the fact. */
+static bool rw_refusals_zero(handle_t a, handle_t b)
+{
+    struct rw_req req = { 0, 0 }, rep = { 1, 2 };
+    uint32_t nb = 0, nh = 0;
+    handle_t ev, got = 0;
+    signals_t seen = 0;
+    CHECK_ST(jam_event_create(&ev), OK);
+    CHECK_ST(jam_channel_write(a, &rep, sizeof(rep), &ev, 1), OK);
+    struct channel_read_args rd = {
+        .h = b, .rd_cap = sizeof(req), .rd_bytes = (uint64_t)(uintptr_t)&req, .rd_hcap = 1,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+    };
+    CHECK_ST(jam_channel_read(&rd), ERR_INVALID_ARGS);   /* handles to address 0 */
+    rd.rd_handles = (uint64_t)(uintptr_t)&got;
+    rd.rd_bytes = 0;
+    CHECK_ST(jam_channel_read(&rd), ERR_INVALID_ARGS);   /* bytes to address 0 */
+    rd.rd_bytes = (uint64_t)(uintptr_t)&req;
+    CHECK_ST(jam_channel_read(&rd), OK);   /* still queued, with its handle */
+    CHECK_EQ(nh, 1);
+    CHECK_ST(jam_handle_close(got), OK);
+
+    struct channel_call_args ca = {
+        .h = a, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)&req,
+        .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)&rep, .rd_hcap = 1,
+        .flags = CHANNEL_CALL_TIMEOUT, .deadline_ns = 0,
+    };
+    CHECK_ST(jam_channel_call(&ca), ERR_INVALID_ARGS);   /* reply handles to address 0 */
+    ca.rd_hcap = 0;
+    ca.rd_bytes = 0;
+    CHECK_ST(jam_channel_call(&ca), ERR_INVALID_ARGS);   /* reply bytes to address 0 */
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* nothing sent */
+
+    struct channel_reply_wait_args x = rw_args(b, &rep, b, &req, &nb, 0);
+    x.rd_hcap = 1;
+    CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);   /* request handles to 0 */
+    x = rw_args(b, &rep, b, &req, &nb, 0);
+    x.rd_bytes = 0;
+    CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);   /* request bytes to 0 */
+    x = rw_args(b, &rep, b, &req, &nb, 0);
+    x.wr_bytes = 0;
+    CHECK_ST(jam_channel_reply_wait(&x), ERR_INVALID_ARGS);   /* reply bytes from 0 */
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* no reply sent */
+    return true;
+}
+
 bool t_reply_wait_refusals(void)
 {
     struct job_info before, after;
     CHECK_ST(info_of(own_job(), &before), OK);
     handle_t a, b;
     CHECK_ST(jam_channel_create(&a, &b), OK);
-    bool ok = rw_refusals_args(a, b) && rw_refusals_handles(a, b) && rw_refusals_buffers(a, b);
+    bool ok = rw_refusals_args(a, b) && rw_refusals_handles(a, b) && rw_refusals_buffers(a, b) &&
+              rw_refusals_zero(a, b);
     CHECK_ST(jam_handle_close(a), OK);
     CHECK_ST(jam_handle_close(b), OK);
     if (!ok)
