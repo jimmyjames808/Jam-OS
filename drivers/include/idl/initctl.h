@@ -6,8 +6,9 @@
  * publishes it as /svc/init, a new one for each first terminal's shell it
  * starts (that shell, every other terminal's, and the test programs whose
  * lists ask for it, <wants.h>). Each console holds another (startup role
- * SR_USER + 8: reboot and terminal only; the rest ERR_ACCESS_DENIED), and
- * so does the compositor (SR_USER + 3: reboot, terminal and launch), so
+ * CONSOLE_SR_INITCTL: reboot and terminal only; the rest
+ * ERR_ACCESS_DENIED), and so does the compositor (COMP_SR_INITCTL: reboot,
+ * terminal and launch), so
  * what a holder may ask is decided by which channel it holds. Format: see
  * tools/genidl.py.
  *
@@ -38,11 +39,19 @@
 #define INITCTL_TERMINAL         0x00120009u
 #define INITCTL_LAUNCH           0x0012000au
 
+/* Constants (the .idl's `const` lines). */
+/* The most bytes of kill's name, mount's path, terminal's command and
+ * launch's app (the `str[<=N]` below; a callee's buffer holds one more, for
+ * a NUL). */
+#define INITCTL_NAME_MAX 31u
+#define INITCTL_PATH_MAX 15u
+#define INITCTL_COMMAND_MAX 127u
+#define INITCTL_APP_MAX 15u
+
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct initctl_kill_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t name[32];
 } __attribute__((packed));
 struct initctl_kill_rep {
     uint32_t txid;
@@ -68,7 +77,6 @@ struct initctl_reboot_rep {
 struct initctl_mount_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t path[16];
     uint8_t writable;
 } __attribute__((packed));
 struct initctl_mount_rep {
@@ -113,7 +121,6 @@ struct initctl_update_offer_rep {
 struct initctl_terminal_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t command[128];
 } __attribute__((packed));
 struct initctl_terminal_rep {
     uint32_t txid;
@@ -123,7 +130,6 @@ struct initctl_terminal_rep {
 struct initctl_launch_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t app[16];
 } __attribute__((packed));
 struct initctl_launch_rep {
     uint32_t txid;
@@ -131,7 +137,7 @@ struct initctl_launch_rep {
     uint64_t koid;
 } __attribute__((packed));
 
-#define INITCTL_REQ_MAX 136u   /* bytes: the biggest request */
+#define INITCTL_REQ_MAX 137u   /* bytes: the biggest request */
 #define INITCTL_REP_MAX 28u   /* bytes: the biggest reply */
 #define INITCTL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define INITCTL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
@@ -140,46 +146,54 @@ struct initctl_launch_rep {
 
 /* initctl_kill_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t initctl_kill_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t name[32], uint64_t *out_koid)
+static inline status_t initctl_kill_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *name, uint32_t name_len, uint64_t *out_koid)
 {
-    struct initctl_kill_req idl_q;
-    struct initctl_kill_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INITCTL_KILL;
-    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
-        idl_q.name[idl_i] = name[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[41];
+    _Alignas(8) uint8_t idl_b1[16];
+    struct initctl_kill_req *idl_q = (struct initctl_kill_req *)idl_b0;
+    const struct initctl_kill_rep *idl_r = (const struct initctl_kill_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = INITCTL_KILL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, name, name_len, 31, 1) ||
+                             !idl_str_ok(name, name_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 16, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
     if (idl_st == OK && out_koid)
-        *out_koid = idl_r.koid;
+        *out_koid = idl_r->koid;
+    (void)idl_o;
     return idl_st;
 }
-/* Kill the process called `name` (NUL-terminated, no spaces) and answer
- * with its kernel object id once it is dead: a service init runs ("console",
- * "serialin", "devmgr", "bootfs", "mixer", "music", "serve", "logd",
- * "shell"; init
- * starts it again), or
- * what devmgr runs for a USB device: a class driver ("hid-6.1:0",
- * "usb-storage-1:0") or a disk's filesystem service ("fat-data",
- * "fat-usb0"); devmgr
- * restarts it. ERR_NOT_FOUND: no such process; ERR_INVALID_ARGS: not a
- * name; ERR_ACCESS_DENIED: "init" itself. A filesystem service's is
- * answered later, once volumes has killed it (volumes.kill): init serves
- * its other channels meanwhile. */
-static inline status_t initctl_kill_until(handle_t ch, uint64_t deadline_ns, const uint8_t name[32], uint64_t *out_koid)
+/* Kill the process called `name` (printable ASCII without spaces, 1 to 31
+ * bytes) and answer with its kernel object id once it is dead: one of the
+ * processes init itself runs (the services it starts, and the terminals'
+ * consoles and shells: "console", "serialin", "devmgr", "bootfs", "mixer",
+ * "music", "serve", "logd", "shell" and the like, user/services/init/ctl.c
+ * and shell.c; init starts it again), or what devmgr runs for a device (a
+ * driver by its process name, a class driver per USB interface:
+ * "hid-6.1:0", "usb-storage-1:0"), or a disk's filesystem service
+ * ("fat-data", "fat-usb0"); devmgr restarts it. ERR_NOT_FOUND: no such
+ * process; ERR_INVALID_ARGS: not a name (empty, a space or a control
+ * character in it, more than 31 bytes); ERR_ACCESS_DENIED: "init" itself.
+ * A filesystem service's is answered later, once volumes has killed it
+ * (volumes.kill): init serves its other channels meanwhile. */
+static inline status_t initctl_kill_until(handle_t ch, uint64_t deadline_ns, const char *name, uint32_t name_len, uint64_t *out_koid)
 {
-    return initctl_kill_call(ch, false, deadline_ns, name, out_koid);
+    return initctl_kill_call(ch, false, deadline_ns, name, name_len, out_koid);
 }
-static inline status_t initctl_kill_within(handle_t ch, uint64_t timeout_ns, const uint8_t name[32], uint64_t *out_koid)
+static inline status_t initctl_kill_within(handle_t ch, uint64_t timeout_ns, const char *name, uint32_t name_len, uint64_t *out_koid)
 {
-    return initctl_kill_call(ch, true, timeout_ns, name, out_koid);
+    return initctl_kill_call(ch, true, timeout_ns, name, name_len, out_koid);
 }
-static inline status_t initctl_kill(handle_t ch, const uint8_t name[32], uint64_t *out_koid)
+static inline status_t initctl_kill(handle_t ch, const char *name, uint32_t name_len, uint64_t *out_koid)
 {
-    return initctl_kill_call(ch, false, DEADLINE_NEVER, name, out_koid);
+    return initctl_kill_call(ch, false, DEADLINE_NEVER, name, name_len, out_koid);
 }
 
 /* initctl_sync_until and _within: idl_t is a deadline, or with idl_within a
@@ -252,42 +266,50 @@ static inline status_t initctl_reboot(handle_t ch)
 
 /* initctl_mount_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t initctl_mount_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[16], uint8_t writable)
+static inline status_t initctl_mount_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *path, uint32_t path_len, uint8_t writable)
 {
-    struct initctl_mount_req idl_q;
-    struct initctl_mount_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INITCTL_MOUNT;
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    idl_q.writable = writable;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[26];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct initctl_mount_req *idl_q = (struct initctl_mount_req *)idl_b0;
+    const struct initctl_mount_rep *idl_r = (const struct initctl_mount_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = INITCTL_MOUNT;
+    idl_q->writable = writable;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 15, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
     return idl_st;
 }
-/* Make the mount `path` ("/usb0"; NUL-terminated) writable (1) or read-only
- * again (0): volumes restarts its filesystem service on a `block` channel
- * opened that way (volumes.remount), so the mount goes and comes back, and
- * files open on it fail ERR_PEER_CLOSED. Answered later, once volumes has
- * started the service again (init serves its other channels meanwhile;
- * ERR_TIMED_OUT after 25 s); the mount is back a moment later. Only another
- * stick's mounts (/usbN) can be changed: anything else, /boot, /esp and
- * /data included, is ERR_ACCESS_DENIED. ERR_NOT_FOUND: no such mount;
- * ERR_BAD_STATE: its service isn't serving; ERR_INVALID_ARGS: not a path. */
-static inline status_t initctl_mount_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[16], uint8_t writable)
+/* Make the mount `path` ("/usb0": at most 15 bytes) writable (1) or
+ * read-only again (0): volumes restarts its filesystem service on a `block`
+ * channel opened that way (volumes.remount), so the mount goes and comes
+ * back, and files open on it fail ERR_PEER_CLOSED. Answered later, once
+ * volumes has started the service again (init serves its other channels
+ * meanwhile; ERR_TIMED_OUT after 25 s); the mount is back a moment later.
+ * Only another stick's mounts (/usbN) can be changed: anything else, /boot,
+ * /esp and /data included, is ERR_ACCESS_DENIED. ERR_NOT_FOUND: no such
+ * mount; ERR_BAD_STATE: its service isn't serving; ERR_INVALID_ARGS: not a
+ * path, or writable over 1. */
+static inline status_t initctl_mount_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len, uint8_t writable)
 {
-    return initctl_mount_call(ch, false, deadline_ns, path, writable);
+    return initctl_mount_call(ch, false, deadline_ns, path, path_len, writable);
 }
-static inline status_t initctl_mount_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[16], uint8_t writable)
+static inline status_t initctl_mount_within(handle_t ch, uint64_t timeout_ns, const char *path, uint32_t path_len, uint8_t writable)
 {
-    return initctl_mount_call(ch, true, timeout_ns, path, writable);
+    return initctl_mount_call(ch, true, timeout_ns, path, path_len, writable);
 }
-static inline status_t initctl_mount(handle_t ch, const uint8_t path[16], uint8_t writable)
+static inline status_t initctl_mount(handle_t ch, const char *path, uint32_t path_len, uint8_t writable)
 {
-    return initctl_mount_call(ch, false, DEADLINE_NEVER, path, writable);
+    return initctl_mount_call(ch, false, DEADLINE_NEVER, path, path_len, writable);
 }
 
 /* initctl_shell_ready_until and _within: idl_t is a deadline, or with idl_within a
@@ -423,15 +445,15 @@ static inline status_t initctl_update_offer_call(handle_t ch, bool idl_within, u
     }
     return idl_st;
 }
-/* A channel for one offer of a fetched build (<update.h>): the caller
- * writes one struct update_offer on it with the kernel's and the boot
- * image's VMOs; init checks the manifest's signature with the update key
- * in its own boot image (none: every offer refused), copies both files,
- * checks each length and SHA-256 against the manifest in the offer, makes
- * them the kernel's stored copy
- * (kexec_load, this boot's command line) and notes /esp's files as seen,
- * so `reboot` starts the fetched build; then it writes one struct
- * update_answer and closes the channel. Any refusal leaves the stored
+/* A channel for one offer of a fetched build (<update.h>), which speaks the
+ * protocol `update` (abi/idl/update.idl): the caller calls `offer` on it
+ * with the manifest and the kernel's and the boot image's VMOs; init
+ * checks the manifest's signature with the update key in its own boot
+ * image (none: every offer refused), copies both files, checks each
+ * length and SHA-256 against the manifest in the offer, makes them the
+ * kernel's stored copy (kexec_load, this boot's command line) and notes
+ * /esp's files as seen, so `reboot` starts the fetched build; then it
+ * answers the call and closes the channel. Any refusal leaves the stored
  * kernel as it was. A newer offer channel closes an older one; while an
  * offer is still being checked: ERR_BAD_STATE. An offer with
  * UPDATE_OFFER_CHECK_ONLY is checked and answered, nothing loaded. Nothing
@@ -456,21 +478,28 @@ static inline status_t initctl_update_offer(handle_t ch, handle_t *out_offer)
 
 /* initctl_terminal_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t command[128], uint8_t *out_number)
+static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *command, uint32_t command_len, uint8_t *out_number)
 {
-    struct initctl_terminal_req idl_q;
-    struct initctl_terminal_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INITCTL_TERMINAL;
-    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-        idl_q.command[idl_i] = command[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[137];
+    _Alignas(8) uint8_t idl_b1[9];
+    struct initctl_terminal_req *idl_q = (struct initctl_terminal_req *)idl_b0;
+    const struct initctl_terminal_rep *idl_r = (const struct initctl_terminal_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = INITCTL_TERMINAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, command, command_len, 127, 1) ||
+                             !idl_str_ok(command, command_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 9, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
     if (idl_st == OK && out_number)
-        *out_number = idl_r.number;
+        *out_number = idl_r->number;
+    (void)idl_o;
     return idl_st;
 }
 /* Open another terminal: a window of its own on the compositor, with a
@@ -480,10 +509,10 @@ static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint6
  * good when its window is closed or its shell ends with `exit`. Answers at
  * once with the new terminal's number (2 and up; the first terminal is 1);
  * its window opens a moment later, titled "Terminal <number>". `command`
- * (NUL-terminated; "" for none): a line its shell runs first, as if typed
+ * (up to 127 bytes; "" for none): a line its shell runs first, as if typed
  * at its first prompt (shown after the prompt, and in its history), then
  * the shell stays at the prompt; a restarted shell doesn't run it again.
- * ERR_INVALID_ARGS: not NUL-terminated, or a control character in it.
+ * ERR_INVALID_ARGS: more than 127 bytes, or a control character in it.
  * ERR_NOT_SUPPORTED: no compositor runs (a boot without one: one terminal
  * only); ERR_NO_RESOURCES: 16 terminals are open, the most there may be
  * (<deskapps.h> TERMINALS_MAX; the compositor then posts its "No more
@@ -491,39 +520,46 @@ static inline status_t initctl_terminal_call(handle_t ch, bool idl_within, uint6
  * (`term [command]`), the compositor's (Super+Enter, the search box's "Run
  * ... in a terminal": the compositor types into every terminal anyway, so
  * a command adds nothing to what it can do); the consoles' too. */
-static inline status_t initctl_terminal_until(handle_t ch, uint64_t deadline_ns, const uint8_t command[128], uint8_t *out_number)
+static inline status_t initctl_terminal_until(handle_t ch, uint64_t deadline_ns, const char *command, uint32_t command_len, uint8_t *out_number)
 {
-    return initctl_terminal_call(ch, false, deadline_ns, command, out_number);
+    return initctl_terminal_call(ch, false, deadline_ns, command, command_len, out_number);
 }
-static inline status_t initctl_terminal_within(handle_t ch, uint64_t timeout_ns, const uint8_t command[128], uint8_t *out_number)
+static inline status_t initctl_terminal_within(handle_t ch, uint64_t timeout_ns, const char *command, uint32_t command_len, uint8_t *out_number)
 {
-    return initctl_terminal_call(ch, true, timeout_ns, command, out_number);
+    return initctl_terminal_call(ch, true, timeout_ns, command, command_len, out_number);
 }
-static inline status_t initctl_terminal(handle_t ch, const uint8_t command[128], uint8_t *out_number)
+static inline status_t initctl_terminal(handle_t ch, const char *command, uint32_t command_len, uint8_t *out_number)
 {
-    return initctl_terminal_call(ch, false, DEADLINE_NEVER, command, out_number);
+    return initctl_terminal_call(ch, false, DEADLINE_NEVER, command, command_len, out_number);
 }
 
 /* initctl_launch_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t initctl_launch_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t app[16], uint64_t *out_koid)
+static inline status_t initctl_launch_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *app, uint32_t app_len, uint64_t *out_koid)
 {
-    struct initctl_launch_req idl_q;
-    struct initctl_launch_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INITCTL_LAUNCH;
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.app[idl_i] = app[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[25];
+    _Alignas(8) uint8_t idl_b1[16];
+    struct initctl_launch_req *idl_q = (struct initctl_launch_req *)idl_b0;
+    const struct initctl_launch_rep *idl_r = (const struct initctl_launch_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = INITCTL_LAUNCH;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, app, app_len, 15, 1) ||
+                             !idl_str_ok(app, app_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 16, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
     if (idl_st == OK && out_koid)
-        *out_koid = idl_r.koid;
+        *out_koid = idl_r->koid;
+    (void)idl_o;
     return idl_st;
 }
-/* Start a desktop app: `app` (NUL-terminated) is one of init's fixed list
+/* Start a desktop app: `app` (at most 15 bytes) is one of init's fixed list
  * of programs the desktop may start (<deskapps.h>: "jamjar"), nothing
  * else: the program in the boot image, never one from /data. It gets what
  * the shell would give it (its list, <wants.h>: the services and mounts
@@ -536,33 +572,39 @@ static inline status_t initctl_launch_call(handle_t ch, bool idl_within, uint64_
  * not in the boot image); ERR_INVALID_ARGS: not a name; ERR_NO_RESOURCES:
  * DESKAPPS_RUNNING run already; spawn's errors. The compositor's channel
  * (the search box) and the shell's; the consoles' ERR_ACCESS_DENIED. */
-static inline status_t initctl_launch_until(handle_t ch, uint64_t deadline_ns, const uint8_t app[16], uint64_t *out_koid)
+static inline status_t initctl_launch_until(handle_t ch, uint64_t deadline_ns, const char *app, uint32_t app_len, uint64_t *out_koid)
 {
-    return initctl_launch_call(ch, false, deadline_ns, app, out_koid);
+    return initctl_launch_call(ch, false, deadline_ns, app, app_len, out_koid);
 }
-static inline status_t initctl_launch_within(handle_t ch, uint64_t timeout_ns, const uint8_t app[16], uint64_t *out_koid)
+static inline status_t initctl_launch_within(handle_t ch, uint64_t timeout_ns, const char *app, uint32_t app_len, uint64_t *out_koid)
 {
-    return initctl_launch_call(ch, true, timeout_ns, app, out_koid);
+    return initctl_launch_call(ch, true, timeout_ns, app, app_len, out_koid);
 }
-static inline status_t initctl_launch(handle_t ch, const uint8_t app[16], uint64_t *out_koid)
+static inline status_t initctl_launch(handle_t ch, const char *app, uint32_t app_len, uint64_t *out_koid)
 {
-    return initctl_launch_call(ch, false, DEADLINE_NEVER, app, out_koid);
+    return initctl_launch_call(ch, false, DEADLINE_NEVER, app, app_len, out_koid);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* initctl_kill without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then initctl_kill_result. */
-static inline status_t initctl_kill_send(handle_t ch, uint32_t idl_txid, const uint8_t name[32])
+static inline status_t initctl_kill_send(handle_t ch, uint32_t idl_txid, const char *name, uint32_t name_len)
 {
-    struct initctl_kill_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = INITCTL_KILL;
-    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
-        idl_q.name[idl_i] = name[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[41];
+    struct initctl_kill_req *idl_q = (struct initctl_kill_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = INITCTL_KILL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, name, name_len, 31, 1) ||
+                             !idl_str_ok(name, name_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to initctl_kill_send (read with
@@ -646,17 +688,23 @@ static inline status_t initctl_reboot_result(const void *idl_rep, struct idl_msg
 
 /* initctl_mount without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then initctl_mount_result. */
-static inline status_t initctl_mount_send(handle_t ch, uint32_t idl_txid, const uint8_t path[16], uint8_t writable)
+static inline status_t initctl_mount_send(handle_t ch, uint32_t idl_txid, const char *path, uint32_t path_len, uint8_t writable)
 {
-    struct initctl_mount_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = INITCTL_MOUNT;
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    idl_q.writable = writable;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[26];
+    struct initctl_mount_req *idl_q = (struct initctl_mount_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = INITCTL_MOUNT;
+    idl_q->writable = writable;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 15, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to initctl_mount_send (read with
@@ -807,16 +855,22 @@ static inline status_t initctl_update_offer_result(const void *idl_rep, struct i
 
 /* initctl_terminal without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then initctl_terminal_result. */
-static inline status_t initctl_terminal_send(handle_t ch, uint32_t idl_txid, const uint8_t command[128])
+static inline status_t initctl_terminal_send(handle_t ch, uint32_t idl_txid, const char *command, uint32_t command_len)
 {
-    struct initctl_terminal_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = INITCTL_TERMINAL;
-    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-        idl_q.command[idl_i] = command[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[137];
+    struct initctl_terminal_req *idl_q = (struct initctl_terminal_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = INITCTL_TERMINAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, command, command_len, 127, 1) ||
+                             !idl_str_ok(command, command_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to initctl_terminal_send (read with
@@ -840,16 +894,22 @@ static inline status_t initctl_terminal_result(const void *idl_rep, struct idl_m
 
 /* initctl_launch without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then initctl_launch_result. */
-static inline status_t initctl_launch_send(handle_t ch, uint32_t idl_txid, const uint8_t app[16])
+static inline status_t initctl_launch_send(handle_t ch, uint32_t idl_txid, const char *app, uint32_t app_len)
 {
-    struct initctl_launch_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = INITCTL_LAUNCH;
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.app[idl_i] = app[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[25];
+    struct initctl_launch_req *idl_q = (struct initctl_launch_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = INITCTL_LAUNCH;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, app, app_len, 15, 1) ||
+                             !idl_str_ok(app, app_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to initctl_launch_send (read with
@@ -878,16 +938,16 @@ static inline status_t initctl_launch_result(const void *idl_rep, struct idl_msg
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with initctl_reply_<method> (now, or later from anywhere). */
 struct initctl_ops {
-    status_t (*kill)(void *ctx, struct idl_txn idl_txn, const uint8_t name[32], uint64_t *out_koid);
+    status_t (*kill)(void *ctx, struct idl_txn idl_txn, const char *name, uint32_t name_len, uint64_t *out_koid);
     status_t (*sync)(void *ctx, struct idl_txn idl_txn);
     status_t (*reboot)(void *ctx);
-    status_t (*mount)(void *ctx, struct idl_txn idl_txn, const uint8_t path[16], uint8_t writable);
+    status_t (*mount)(void *ctx, struct idl_txn idl_txn, const char *path, uint32_t path_len, uint8_t writable);
     status_t (*shell_ready)(void *ctx);
     status_t (*reboot_firmware)(void *ctx);
     status_t (*kernel_load)(void *ctx, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms);
     status_t (*update_offer)(void *ctx, handle_t *out_offer);
-    status_t (*terminal)(void *ctx, const uint8_t command[128], uint8_t *out_number);
-    status_t (*launch)(void *ctx, const uint8_t app[16], uint64_t *out_koid);
+    status_t (*terminal)(void *ctx, const char *command, uint32_t command_len, uint8_t *out_number);
+    status_t (*launch)(void *ctx, const char *app, uint32_t app_len, uint64_t *out_koid);
 };
 
 /* Answer the initctl.kill request kept in txn: idl_st and, if it is OK, the
@@ -896,14 +956,18 @@ struct initctl_ops {
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t initctl_reply_kill(struct idl_txn idl_txn, status_t idl_st, uint64_t koid)
 {
-    struct initctl_kill_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[16];
+    struct initctl_kill_rep *idl_r = (struct initctl_kill_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.koid = koid;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->koid = koid;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the initctl.sync request kept in txn: idl_st and, if it is OK, the
@@ -942,13 +1006,17 @@ static inline status_t initctl_reply_reboot(struct idl_txn idl_txn, status_t idl
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t initctl_reply_mount(struct idl_txn idl_txn, status_t idl_st)
 {
-    struct initctl_mount_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct initctl_mount_rep *idl_r = (struct initctl_mount_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the initctl.shell_ready request kept in txn: idl_st and, if it is OK, the
@@ -1026,14 +1094,18 @@ static inline status_t initctl_reply_update_offer(struct idl_txn idl_txn, status
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t initctl_reply_terminal(struct idl_txn idl_txn, status_t idl_st, uint8_t number)
 {
-    struct initctl_terminal_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[9];
+    struct initctl_terminal_rep *idl_r = (struct initctl_terminal_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.number = number;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->number = number;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the initctl.launch request kept in txn: idl_st and, if it is OK, the
@@ -1042,14 +1114,18 @@ static inline status_t initctl_reply_terminal(struct idl_txn idl_txn, status_t i
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t initctl_reply_launch(struct idl_txn idl_txn, status_t idl_st, uint64_t koid)
 {
-    struct initctl_launch_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[16];
+    struct initctl_launch_rep *idl_r = (struct initctl_launch_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.koid = koid;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->koid = koid;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -1076,14 +1152,24 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         const struct initctl_kill_req *idl_q = (const struct initctl_kill_req *)req;
         struct initctl_kill_rep *idl_r = (struct initctl_kill_rep *)rep;
         uint64_t out_koid = 0;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 31, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->kill) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
         struct idl_txn idl_txn = { ch, idl_h->txid };
-        status_t idl_st = ops->kill(ctx, idl_txn, idl_q->name, &out_koid);
+        idl_st = ops->kill(ctx, idl_txn, (const char *)idl_p0, idl_l0, &out_koid);
         /* IDL_LATER: the handler answers with initctl_reply_kill. */
         if (idl_st == IDL_LATER)
             return 0;
@@ -1133,14 +1219,24 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         const struct initctl_mount_req *idl_q = (const struct initctl_mount_req *)req;
         struct initctl_mount_rep *idl_r = (struct initctl_mount_rep *)rep;
         (void)idl_r;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 15, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->mount) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
         struct idl_txn idl_txn = { ch, idl_h->txid };
-        status_t idl_st = ops->mount(ctx, idl_txn, idl_q->path, idl_q->writable);
+        idl_st = ops->mount(ctx, idl_txn, (const char *)idl_p0, idl_l0, idl_q->writable);
         /* IDL_LATER: the handler answers with initctl_reply_mount. */
         if (idl_st == IDL_LATER)
             return 0;
@@ -1229,13 +1325,23 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         const struct initctl_terminal_req *idl_q = (const struct initctl_terminal_req *)req;
         struct initctl_terminal_rep *idl_r = (struct initctl_terminal_rep *)rep;
         uint8_t out_number = 0;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 127, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->terminal) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->terminal(ctx, idl_q->command, &out_number);
+        idl_st = ops->terminal(ctx, (const char *)idl_p0, idl_l0, &out_number);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -1246,13 +1352,23 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         const struct initctl_launch_req *idl_q = (const struct initctl_launch_req *)req;
         struct initctl_launch_rep *idl_r = (struct initctl_launch_rep *)rep;
         uint64_t out_koid = 0;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 15, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->launch) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->launch(ctx, idl_q->app, &out_koid);
+        idl_st = ops->launch(ctx, (const char *)idl_p0, idl_l0, &out_koid);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

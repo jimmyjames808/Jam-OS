@@ -8,8 +8,14 @@
  * Files: main.c (sections, the child modes), start.c (argv, the
  * environment, the auxiliary vector, the hand-over: children started
  * with libjam's spawn), mem.c (mmap and friends, brk, malloc), thread.c
- * (pthreads, TLS, errno). start.c is the only one that includes libjam
- * (<jamos/libjam.h>); mem.c the only one with Linux's call numbers. */
+ * (pthreads, TLS, errno), pipe.c (pipes and socketpair, and the pipe
+ * bench), fds.c (dup and fcntl, memfd, eventfd, the one user, /dev and
+ * /etc), poll.c (poll, select, epoll on pipes; a child started with
+ * libjam's spawn), proc.c (posix_spawn, the waits, the ids, groups,
+ * execve, system and popen, the hand-over cut short). start.c, fds.c,
+ * poll.c and proc.c are the ones that include libjam (<jamos/libjam.h>:
+ * children started with a hand-over); mem.c the only one with Linux's
+ * call numbers. */
 #pragma once
 
 #include <stdbool.h>
@@ -32,12 +38,19 @@ int  pt_failures(void);
 void pt_start(char **argv);
 void pt_mem(char **argv);
 void pt_thread(char **argv);
+void pt_pipe(char **argv);
+void pt_fds(char **argv);
+void pt_poll(char **argv);
+void pt_proc(char **argv);
 
 /* The child modes start.c's checks start this program in (main.c runs
  * them instead of the sections): each checks what it was given and exits
  * 0 if all of it was right. */
 int  pt_child_start(int argc, char **argv);
 int  pt_child_handover(void);
+int  pt_child_devetc(void);
+int  pt_child_poll(void);
+int  pt_child_proc(int argc, char **argv);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

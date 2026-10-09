@@ -49,7 +49,7 @@ What the design defends against today:
   a program to get something it wasn't granted is a bug
   ([SECURITY.md](SECURITY.md)).
 - **Crashing services and drivers.** Each is a process: a crash ends that
-  process, devmgr or init starts it again, and the kernel goes on. fat
+  process, devmgr, volumes or init starts it again, and the kernel goes on. fat
   and the mixer outlive their process: a successor carries on from the
   dead one's state and its clients see no error, no lost write and no gap
   in the sound ([Services that outlive their
@@ -136,7 +136,7 @@ Every driver and service is a userspace process from the start.
  libos runtime (syscalls, malloc, channels, IDL stubs, ELF loader,
    the file namespace)
  ─────────────────────────────────────────────────────────────
- Services (processes): devmgr · console · serialin · bootfs ·
+ Services (processes): devmgr · volumes · console · serialin · bootfs ·
    fat (one per volume) · logd · mixer · music
    netstack (lwIP) · dhcp · dns · netlog
    later: power
@@ -178,13 +178,14 @@ Every driver and service is a userspace process from the start.
   from then on (quiet: the log still goes to the ring and serial; a panic
   draws as always); init gets the argument `splash`, starts the console
   quiet and then `bin/splash` before every other service, and starts the
-  shell only once the animation has played, or 20 s after the splash's
+  shell only once the animation has played (the splash's `played` event on
+  the channel it shares with init, `splashch`), or 20 s after the splash's
   start, whichever comes first: a splash that hangs is killed then (its
   window goes) and the log says so. The splash opens a full-screen window
   like any app (but takes no keys), starts the video and its sound
   together once the mixer is up (2 s at most, then silently), plays to the
-  end, holds the last frame at least 0.5 s and until the shell calls
-  `initctl.shell_ready`, and fades out. No key skips it: what is typed
+  end, holds the last frame at least 0.5 s and until init's `go` event
+  (sent when the shell calls `initctl.shell_ready`), and fades out. No key skips it: what is typed
   meanwhile reaches the shell once it is up (below). `run splash` from the
   shell takes the keys, and there a key skips it.
 - **The desktop** ([docs/G1-PLAN.md](docs/G1-PLAN.md), as built: I1): on
@@ -278,7 +279,8 @@ Every driver and service is a userspace process from the start.
   - *contiguous*: one buddy block, up to 4 MiB, committed at creation;
   - *DMA32*: like contiguous, below 4 GiB;
   - *physical*: a fixed physical range (MMIO, framebuffer), never freed.
-  Contiguous and DMA32 VMOs need a `dma_cap` handle at the syscall layer.
+  Contiguous and DMA32 VMOs are made by `dma_vmo_create`, which needs a
+  `dma_cap` bound to a device; `vmo_create` makes paged VMOs only.
   Guards: a pinned or kernel-mapped range can't be decommitted or cut off by
   a shrink (`ERR_BAD_STATE`); pins hold references on both the VMO and the
   `dma_cap`.
@@ -311,7 +313,10 @@ Every driver and service is a userspace process from the start.
   pin also maps its pages in the cap's IOMMU domain, and an unpin waits
   for the unit's invalidation before the pages may go; the addresses a
   driver gets are the same physical ones either way
-  ([The IOMMU](#the-iommu)).
+  ([The IOMMU](#the-iommu)). A pin is charged to the job of the cap (the
+  driver's), never to the VMO's holder, and a read-only pin
+  (`VMO_PIN_READ_ONLY`, for memory the device only reads) takes only
+  pages already committed.
 - **TLB**: a kernel unmap does a synchronous range shootdown to all CPUs (a
   full flush above 64 pages). User address spaces keep a mask of the CPUs
   running them, so a shootdown interrupts only those, and a "gather" frees
@@ -427,15 +432,29 @@ Every driver and service is a userspace process from the start.
   `(slot + 1) << 15 | generation` (17 + 15 bits; 0 is never valid); freed
   slots are reused FIFO so a stale value takes a long time to come back.
 - Rights: `READ WRITE EXEC MAP DUPLICATE TRANSFER SIGNAL WAIT INSPECT
-  MANAGE RESIZE`. `RIGHT_SAME` is only a sentinel for duplicate/replace ("keep the
-  rights"). `MANAGE` (jobs only): change limits, kill. `RESIZE` (VMOs, with
+  MANAGE SLICE RESIZE`, then the root resource's powers (`RIGHT_ROOT_*`,
+  bits 16 and up: each call that needs one checks for it alone).
+  `RIGHT_SAME` is only a sentinel for duplicate/replace ("keep the
+  rights"). `MANAGE` (jobs, PCI functions): change limits, kill; turn bus mastering off. `SLICE`
+  (resources): make a smaller resource inside. `RESIZE` (VMOs, with
   `WRITE`): change the size, decommit; a service that maps a buffer it
   shares hands the other side a handle without it.
-- Sending handles uses **in-transit slots**: `handle_take` reserves the slot,
-  then `handle_commit` (sent) or `handle_untake` (put back under the same
-  value). A failed send never loses a handle.
-- Types (`kernel/include/jam/object.h`): `event timer channel port vmo
-  dma_cap process thread interrupt resource vmar job klog serial screen`.
+- Sending handles uses **in-transit slots**: `handle_take` reserves the
+  slot, `handle_commit` frees it. **A send's handles are always moved**:
+  once the kernel has read the list they have left the sender's table
+  whatever the status, sent with the message or closed (a refused list
+  too: a bad value, a handle without `RIGHT_TRANSFER`, the channel's own
+  end). A caller that may try again duplicates first, and nothing closes
+  a handle after a send: its value may be another thread's new handle by
+  then.
+- Types (`<jam/abi.h>`, `OBJ_*`): `event timer channel port vmo dma_cap
+  process thread interrupt resource vmar job klog serial screen pager`.
+  `handle_info` (13) says what a handle names with no right needed: the
+  type, the handle's rights, the object's id, a related id (a channel
+  end's peer, a thread's process, a process's job) and, for a channel end,
+  what waits on it and what it wrote that waits unread at its peer. The
+  keeper and the compositor check handles with it, and the generated IDL
+  servers check a typed handle argument with it.
 - **Processes** (`kernel/object/process.c`): a handle table, an address
   space, a job and user threads (`thread` objects wrapping scheduler
   threads). NEW (the parent maps the program, makes a thread) → RUNNING
@@ -519,7 +538,43 @@ Every driver and service is a userspace process from the start.
   `@struct` in `abi/syscalls.def`), the result in rax (`OK`, a negative
   `ERR_*`, or a value). The wrappers `jam_<name>` (`user/lib/syscalls.S`,
   declared in `user/include/jam_syscalls.h`) are generated, out-of-line C
-  functions.
+  functions. A call that goes away leaves its number unused for good (17,
+  50, 74, 96, 100 and 101 so far), so a program built before gets
+  `ERR_NOT_SUPPORTED`, never another call.
+- **What every call follows** (the comments in `abi/syscalls.def` say what
+  each does and which errors it gives):
+  - *Limits* are in `<jam/abi.h>` (`CHANNEL_MAX_BYTES`,
+    `CHANNEL_MAX_HANDLES`, `PROCESS_NAME_MAX`, `DEBUG_WRITE_MAX`, ...): a
+    length past one is `ERR_OUT_OF_RANGE`, with nothing cut and nothing
+    done. A buffer address of 0 is refused.
+  - *Time* is a deadline on the uptime clock (`DEADLINE_NEVER`: none) in
+    every call that waits, `sleep_until` included; `channel_call` and
+    `channel_reply_wait` can take a timeout instead (a flag), so a caller
+    needs no `clock_get` first.
+  - *Status codes* (`<jam/status.h>`) include what the filesystems answer
+    (`ERR_NOT_DIR`, `ERR_IS_DIR`, `ERR_NOT_EMPTY`, `ERR_NAME_TOO_LONG` and
+    `ERR_BUSY`, each one POSIX errno), `ERR_CANCELED` (a wait ended by the
+    close of its own channel end) and `ERR_INTERRUPTED` (a wait ended by
+    `thread_interrupt`).
+  - *Handles* a send is given are always moved
+    ([Objects and handles](#objects-and-handles)); `handle_info` (13) names
+    a handle's type with no right needed.
+  - *Threads*: each thread has its own FS base (`thread_set_fs_base`, for
+    thread-local storage), private futexes (`futex_wait`, `futex_wake`,
+    `futex_requeue`: libos's lock and musl's wait on them), `thread_yield`,
+    `thread_set_tid_word` (cleared and woken when the thread ends, for
+    `pthread_join`), `thread_interrupt` (POSIX's `EINTR`) and
+    `thread_get_info`. `sys_public_info` gives any program the version,
+    the machine, the CPUs and the memory (`uname`, `sysconf`) with no
+    handle or right.
+  - *Drivers*: `dma_cap_create` takes the job that pays for the cap, its
+    pins and its IOMMU tables; `dma_vmo_create` makes the contiguous and
+    DMA32 VMOs; `vmo_pin` takes its arguments in a struct, with
+    `VMO_PIN_READ_ONLY`; `pci_bus_master_off` (devmgr's) turns bus mastering
+    off and only a function's current `dma_cap` turns it on
+    ([Drivers and services](#drivers-and-services)).
+  - *Pagers* (160 to 164): a process that supplies the pages of VMOs made
+    from its pager object, for M12.5 ([docs/M12.5-PLAN.md](docs/M12.5-PLAN.md)).
 - **The register rule: a system call is a C function call.** The kernel
   keeps every general register but rax, rcx and r11 (the instruction
   itself overwrites rcx and r11), and keeps MXCSR and the x87 control
@@ -545,16 +600,22 @@ Every driver and service is a userspace process from the start.
 ## IPC
 
 - **Channel**: bidirectional endpoint pair; message = up to 64 KiB of bytes +
-  up to 64 handles; sending a handle moves it. At most 1024 messages queue on
+  up to 64 handles (`CHANNEL_MAX_*` in `<jam/abi.h>`); sending a handle
+  moves it, always. At most 1024 messages queue on
   one endpoint (then `ERR_SHOULD_WAIT`), and every message's memory is
   charged to its sender's job until it is read or dropped (the reading end
   closes), also after the sender has closed its end or its job has no
   process left: a close never frees the sender's quota, so a backlog
   can't be passed on to the reader and the quota filled again. Cycle rule: you
   can't send an endpoint of the channel you are writing to, its peer, or an
-  endpoint whose own queue already holds an endpoint.
+  endpoint whose own queue already holds an endpoint. An end marked with
+  `channel_set_flags(CHANNEL_NO_HANDLES)` (init's and devmgr's kept server
+  ends; only its sole holder may mark it) receives no handles, so its
+  queue never holds an endpoint and it can always be sent on.
 - **`channel_call`**: write + wait for the reply whose first 4 bytes (the
-  txid) match. The kernel stamps the txid; only the calling thread gets the
+  txid) match. The kernel stamps the txid (bit 31 set and the rest a counter of the
+  channel pair's, so it is never one a writer picked for a request it sent
+  without waiting); only the calling thread gets the
   reply; a reply arriving after a timeout stays queued as a normal message;
   closing your own endpoint mid-call returns `ERR_CANCELED`; calling on a
   closed endpoint returns `ERR_BAD_STATE`. The request hands the server
@@ -605,24 +666,76 @@ Every driver and service is a userspace process from the start.
 - **`object_wait_one`** for simple waits.
 - **Protocols** are written in a small IDL (`abi/idl/*.idl`), turned into C
   structs, client stubs and server dispatch by `tools/genidl.py`
-  (`drivers/include/idl/`). Today: `null`, `edu` and `idltest` (tests), `usbbus` and
-  `usb` (usb-bus to devmgr and to class drivers), `input` and `console`,
-  `storage` and `block` (usb-storage to devmgr and to a filesystem),
-  `fs` and `file` (a filesystem to programs), `fsctl` (devmgr stopping a
-  filesystem; its counters, for tests), `initctl` and `logctl` (init's and logd's control
-  channels), `hda` (the HD Audio driver), `audio` and `audioctl` (the
-  mixer), `netdev` (a network driver to netstack: rings and events),
-  `netctl` (netstack's control channel), `net` (UDP and TCP sockets and ping for
-  programs, `/svc/net`), `dns` (the resolver, `/svc/dns`). devmgr's own
-  protocol is still written by hand (`user/include/devmgr.h`). Planned:
-  `power`. Bulk data
+  (`drivers/include/idl/`). `abi/idl/ids.txt` is the registry of every
+  protocol id, the hand-written ones' too: the id is the top half of a
+  message's second word (a request's ordinal is `(id << 16) | method`), so
+  a message sent to the wrong server is refused (`ERR_NOT_SUPPORTED`)
+  instead of taken for one of its methods, and `genidl` refuses a protocol
+  that is not listed there. A file may define several protocols, one for
+  each kind of channel of a service (`audio` and `audio_stream`). Today,
+  by who serves them:
+  - **Drivers**: `usb` (one interface, to its class driver), `usbbus` and
+    `usbbus_events` (usb-bus: the bus, and its attach events to devmgr),
+    `storage` and `block` (a disk, and each of its partitions: usb-storage
+    to volumes and to a filesystem), `input` (hid and serialin to the
+    compositor), `hda` and `hda_stream` (the HD Audio driver), `netdev` and
+    `netdev_session` (a network driver to netstack: rings and events).
+  - **devmgr**: `devmgr` (queries: a device is named by an address of
+    four numbers, `(kind, a, b, n)`) and `devmgrctl` (the control channel:
+    kill, rebind, release, device channels), and `crasher` (the crash-test
+    driver, for the supervision tests).
+  - **volumes and the filesystems**: `volumes` (mounts, remount, kill,
+    sync, test disks), `volesp` (the ESP made writable, init's alone),
+    `disks` (devmgr's disks, told to volumes) and `mounts` (what volumes
+    tells its watchers), `fs` and `file` (a filesystem to programs),
+    `fsctl` (volumes stopping a filesystem service; its counters, for
+    tests).
+  - **Sound**: `audio` and `audio_stream`, `audioctl` (the mixer),
+    `music`.
+  - **Network**: `netctl` (netstack's control channel), `net` and its
+    `net_socket`, `net_stream` and `net_listener` (UDP and TCP sockets
+    and ping for programs, `/svc/net`), `dns` (the resolver,
+    `/svc/dns`), `serve` (the file server).
+  - **The desktop**: `compctl` (the compositor's control channels),
+    `console` and `keys` (the terminals), `conn_ctl` (the size of a
+    connection terminal), `notify` (notices), `jamcover` (the album-cover
+    helper).
+  - **init and the service machinery**: `initctl` (init's control
+    channels), `logctl` and `crashres` (logd's: the flush, and what became
+    of a panicked boot's log), `svc` (a channel per opener, served by every
+    service that hands them out), `keepch` (the keep channel of a service
+    that outlives its process), `nschan` (a program's namespace),
+    `update` (one offer of a fetched build), `splashch` (the boot splash
+    and init).
+  - Tests: `null`, `edu` and `idltest`.
+
+  Still written by hand, each named in `ids.txt`: the startup message
+  (`startup`), a warm spare's promotion message (`standby`) and the POSIX
+  hand-over (`posixfds`), all read before `main` or by libos itself; and
+  the plain byte channels and shared-memory layouts (the mixer's, the
+  sockets' and netdev's rings, a state VMO). Planned: `power`. Bulk data
   (disk blocks, packets, file contents) moves through a shared VMO ring;
   messages carry offsets. Every protocol's file states its restart rule
   (a paragraph beginning `Restart:` or `Reconnect:`, which `genidl`
-  checks): either a restart is not seen (`fs`, `file`, `audio`,
-  `audioctl`: [Services that outlive their
+  checks): either a restart is not seen (the `kept` protocols: `fs`,
+  `file`, `audio`, `audio_stream`, `audioctl`: [Services that outlive their
   process](#services-that-outlive-their-process)), or what a client does
   after `PEER_CLOSED` and what it loses.
+- **What a message can hold** (`tools/genidl.py` has the whole language):
+  scalars; `u8[N]`, a fixed byte array; **varying arrays**, `u8[<=N]` to
+  `i64[<=N]` and `str[<=N]` (a well-formed UTF-8 string), sent as a count
+  and the elements after the fixed part, checked by the generated server
+  before a handler runs; **handles**, `handle` (any), `handle<vmo>` (of
+  that type: the server checks it with `handle_info`, `ERR_WRONG_TYPE`)
+  and `handle[<=N]` (up to 64 in a list), as arguments, results or event
+  fields, moved by the send and owned by the handler that gets them; and
+  **events** (`event`), one-way messages in either direction that nothing
+  answers, with txid 0, so a protocol can send a stream of notifications
+  (`usbbus_events`, `mounts`, the keep channel) without a call each, the
+  queue's limit being the flow control. A request or reply is at most
+  16 KiB (`MSG_MAX`). A `const` line gives a protocol its flags and
+  states. A method is `later` (answered after its handler returned:
+  `initctl.kill`, `volumes.remount`) or `idempotent` (safe to run again).
 - **Generated calls in three shapes** (`tools/genidl.py` has the
   details): the blocking `<proto>_<method>` / `_until` (a deadline) /
   `_within` (a timeout the kernel starts from its own clock, so the
@@ -632,8 +745,9 @@ Every driver and service is a userspace process from the start.
   decoded by `<proto>_<method>_result`); and on the server, a method
   marked `later` may keep its request (`struct idl_txn`) and answer it
   after its handler returned, with `<proto>_reply_<method>`. One channel
-  end uses blocking calls or calls that don't wait, never both (the
-  kernel's txids could match the caller's). `<proto>_serve` sends each
+  end may use both kinds: the kernel's txids for blocking calls have bit
+  31 set and `idl_txid_next` never sets it, so a reply to one kind is
+  never taken for the other's. `<proto>_serve` sends each
   reply in the `channel_reply_wait` that waits for the next request: one
   system call per request.
 - **Requests in slots**, for a server whose requests must outlive it:
@@ -661,8 +775,8 @@ port, so while it handles one request every other client waits behind it.
   request.** No blocking call to another process, no wait for a process
   to end, no sleep longer than its own hardware needs. Instead it
   - **answers later**: keeps the request and replies when the answer is
-    there (a `later` method and `<proto>_reply_<method>`; hda's
-    `wait_period` and devmgr's `MOUNTS` waiters do this by hand);
+    there (a `later` method and `<proto>_reply_<method>`: init's `kill`,
+    `sync` and `mount`; hda's `wait_period` does it by hand);
   - **calls without waiting**: sends the request
     (`<proto>_<method>_send`), goes on serving, and takes the reply from
     its port like any other event (`idl_reply_read`,
@@ -671,7 +785,10 @@ port, so while it handles one request every other client waits behind it.
     (`<jam/task.h>`, libos): straight-line code that gives the loop back
     at each wait (`task_wait`) and is run again when its deadline passes
     or the loop kicks it. usb-bus runs every port and every device this
-    way, so a slow device holds up only itself.
+    way, so a slow device holds up only itself, and so does volumes: a
+    remount, the ESP's write, a sync, a stop, a kill and the start of a
+    filesystem service are tasks that send each request without waiting
+    and answer theirs later (`user/services/volumes/calls.c`).
 - **Allowed:** short waits with a deadline on the loop's own hardware (a
   register poll, a command the device answers within milliseconds:
   [CODING-GUIDE](CODING-GUIDE.md#every-hardware-wait-is-bounded)), and
@@ -679,10 +796,13 @@ port, so while it handles one request every other client waits behind it.
   or a thread of its own that serves nothing else.
 - **Data at packet or sample rate** goes through shared rings with an
   event, not a call each (the mixer's streams, `netdev`, sockets).
-- **Not followed everywhere yet:** devmgr's and init's loops still make
-  blocking calls of up to 2 to 25 s (listed in
-  [ARCH-CHECK](docs/history/ARCH-CHECK.md#0-and-8-service-loops-that-wait-on-one-thing-at-a-time));
-  they move to these tools one at a time. The network's services and
+- **Not followed everywhere yet:** init's loop still makes a few calls of
+  up to a few seconds, each with a deadline (to the compositor, the
+  consoles and the mixer, while it starts them and while it stops
+  everything for a reboot; what waits on volumes or devmgr is sent
+  without waiting and answered later). The older list is
+  [ARCH-CHECK](docs/history/ARCH-CHECK.md#0-and-8-service-loops-that-wait-on-one-thing-at-a-time);
+  the rest move to these tools one at a time. The network's services and
   drivers follow the rule from the start
   ([Networking](#networking), "the service-loop rule, as applied").
 
@@ -803,13 +923,15 @@ port, so while it handles one request every other client waits behind it.
 
 | Component | Uses | Provides | Built |
 |---|---|---|---|
-| devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
-| usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (libos's cooperative tasks, `<jam/task.h>`: [How a service waits](#how-a-service-waits)) | yes |
+| devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision; `devmgr` and `devmgrctl` (devices named by an address `(kind, a, b, n)`); the `usbbus` service to trusted clients; each disk's `storage` channel, told to volumes (it holds no filesystem and no mount) | yes |
+| volumes | the `storage` channels devmgr tells it of, init's control and ESP channels | every disk's partitions' filesystem services (fat) and their supervision with a warm spare, the mounts (`/data`, `/esp`, `/usbN`) told to init and every other watcher, the ESP made writable for init's `update` write alone ([Storage](#storage)) | yes |
+| usb-bus | its PCI device (xHCI) | one `usb` channel per interface, sent to devmgr as an event on a channel of its own as the interface appears (`usbbus_events`, `DR_EVENTS`); hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (libos's cooperative tasks, `<jam/task.h>`: [How a service waits](#how-a-service-waits)) | yes |
 | hid | a `usb` interface | `input` events (a boot keyboard's usages and modifiers, no layout; mouse in boot or report protocol) to the compositor, which lights its LEDs | yes |
 | console | a window on `/svc/wayland` and COM1's output (the root's `RIGHT_ROOT_SERIAL_OUT`), the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log ([Debugging](#debugging)), and its keys to the focused client (`keys`) | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
-| usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` to devmgr, a `block` channel per partition | yes |
-| fat | one partition's `block` channel, a state VMO and a keep channel from devmgr | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr; outlives its process ([below](#services-that-outlive-their-process)) | yes |
+| usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` (devmgr asks it for a channel of volumes' own), a `block` channel per partition | yes |
+| nvme | its PCI function (an NVMe controller: MSI-X, DMA queues) | `storage` and `block` for an internal drive, read-only, up to 32 requests in flight ([M12.7-PLAN](docs/M12.7-PLAN.md)) | only on a boot with the word `nvmetest=` until the PC has checked it |
+| fat | one partition's `block` channel, a state VMO and a keep channel from volumes | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to volumes; outlives its process ([below](#services-that-outlive-their-process)) | yes |
 | bootfs | the bootfs image VMO | `fs` and `file` for `/boot`, read-only | yes |
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |
 | hda | its PCI device (Intel HD Audio) | `hda` ([Audio](#audio)) | yes |
@@ -872,27 +994,32 @@ Rules for userspace drivers:
   transferable (no `RIGHT_DUPLICATE`/`RIGHT_TRANSFER`, handed over with
   `channel_write_rights`), so nothing of the device outlives its job.
 - **Reconnect rule**: a client whose call fails with `PEER_CLOSED` asks
-  devmgr for the service again (`GET_SERVICE`) and retries; from the
+  devmgr for the service again (`devmgr.get_service`) and retries; from the
   moment the driver died devmgr hands out the channel its restart will
   serve, and calls on it wait for the new driver. Drivers keep no state
   across a restart; each protocol's IDL says what a client must set up
   again (`input` and `console` define theirs).
-- **Kill**: the shell's `kill <name>` asks init (`initctl.kill`), which
-  kills its own services itself and asks devmgr to kill what devmgr runs:
-  a USB class driver, a filesystem service (`fat-<mount>`: `fat-data`,
-  `fat-usb0`, found by its mount, since a promoted spare's process is
-  called `fat-spare`) or a PCI driver (usb-bus, hda), found by name
-  through devmgr's bindings. Whoever supervises it starts it again. The
-  shell refuses to kill init. `storm` kills services at a fixed rate the
-  same way ([below](#the-demonstration-storm)).
-- **Authority**: devmgr has a query channel (look things up), a control
-  channel (change bindings), the ESP channel (init's alone: the boot
-  stick's ESP made writable for `update`, which no other channel may
-  ask, [Storage](#storage)) and *device channels*, each scoped to one
-  device and made on the control channel (`DEVMGR_DEVICE_CHANNEL` in
-  `user/include/devmgr.h`): a device channel answers about its own device
-  alone (its service, its driver, its supervision), and while a device
-  has one the query channel refuses its service (`ERR_ACCESS_DENIED`).
+- **Kill**: the shell's `kill <name>` asks init (`initctl.kill`, a
+  string), which kills its own services itself, asks volumes
+  (`volumes.kill`) to kill a filesystem service (`fat-<mount>`:
+  `fat-data`, `fat-usb0`, found by its mount, since a promoted spare's
+  process is called `fat-spare`) and asks devmgr (`devmgrctl.kill_process`,
+  by the koid of the process the name has in the kernel's list) to kill a
+  driver: a PCI driver (usb-bus, hda) or a USB class driver, one per
+  interface. Whoever supervises it starts it again. The shell refuses to
+  kill init. `storm` kills services at a fixed rate the same way
+  ([below](#the-demonstration-storm)).
+- **Authority**: what a channel to devmgr may ask is fixed by which
+  channel it is. devmgr has a query channel (`/svc/devmgr`, a channel per
+  opener, the `devmgr` protocol: look things up), a control channel
+  (`/svc/devmgr-ctl`, also one per opener, `devmgrctl` besides the
+  queries: kill, rebind, release; only init and the tests hold it) and
+  *device channels*, each scoped to one device and made on the control
+  channel (`devmgrctl.device_channel`, at most one a device): a device
+  channel answers about its own device alone (its service, its driver,
+  its supervision), and while a device has one the query channel refuses
+  its service (`ERR_ACCESS_DENIED`). The boot stick's ESP, made writable
+  for `update`, is volumes', not devmgr's ([Storage](#storage)).
   Holding the channel is the right to use the device; there is no flag
   and no role. init decides who gets which: every HD Audio controller's
   to the mixer (each has one output stream, the mixer's), and every
@@ -911,7 +1038,7 @@ A service like that keeps three kinds of state apart:
 1. **Kernel objects its clients hold the other end of** (a mount's `fs`
    channel and views, an open file's channel and buffer VMO, a mixer
    stream's channel, ring and event, an opener's channel, the mixer's
-   channels to the hda driver): kept alive by the supervisor (devmgr for
+   channels to the hda driver): kept alive by the supervisor (volumes for
    fat, init for the mixer), which holds a duplicate of each. Clients'
    handles never change.
 2. **What the service knows** (the volume, every open file, what it holds
@@ -923,18 +1050,18 @@ A service like that keeps three kinds of state apart:
    directory cursors, the mixer's mixing buffers, mappings): rebuilt by
    the successor.
 
-**The keep channel** (`<keep.h>`, `user/lib/keep.c`, written by hand
-because it carries handles in one-way messages): a service sends its
-supervisor `KEEP_PUT` (a slot number of its own and up to 4 duplicates)
-before it records the slot in its state and before it answers, and
-`KEEP_DROP` after it has forgotten it; the supervisor's keeper hands a
-successor every slot back (`KEEP_RESTORE`, 64 handles a message, then
-`KEEP_DONE`). Order makes it exact without a reply: a slot the keeper
+**The keep channel** (the `keepch` protocol, `abi/idl/keepch.idl`; libos's
+`<keep.h>`, `user/lib/keep.c`, and the supervision module `<supervise.h>`
+that devmgr, volumes and init share): events only, since the order of the
+messages is what makes it safe. A service sends its supervisor's keeper
+`put` (a slot number of its own and up to 4 duplicates) before it records
+the slot in its state and before it answers, and `drop` after it has
+forgotten it; the keeper hands a successor every slot back (`restore`,
+64 handles a message, then `done`). Order makes it exact without a reply: a slot the keeper
 returns that the state doesn't know (a death between the two) is closed
 by the successor, and a slot the state knows that the keeper didn't
 return is dropped from the state. The keeper takes channels, VMOs and
-events only (told apart by three questions that change nothing: there
-is no system call that names a handle's type yet), never widens rights,
+events only (told apart by `handle_info`), never widens rights,
 holds at most 256 slots and 256 handles per service, charged to its own
 job, and hands them only to the next instance of the same binding. It
 closes them all when the service is given up on, its disk goes, or it is
@@ -992,7 +1119,7 @@ crafted request can't crash every successor in turn.
   it is one message with the handles a new process would have been given
   by role (up to 64), its arguments and the time of the kill
   (`struct standby_msg`, `<jam/startup.h>`); from then on it starts as any
-  program and its code doesn't know it was a spare. devmgr keeps one
+  program and its code doesn't know it was a spare. volumes keeps one
   spare fat (`fat-spare`) for every mount, started 1 s after the first
   filesystem service and again 50 ms after each promotion, with `/data`'s
   `block` channel opened in advance; init keeps one spare mixer. Each
@@ -1000,7 +1127,7 @@ crafted request can't crash every successor in turn.
   restarts start a process instead (still handed the state and the keep
   channel), for comparing.
 - **Deliberate kills don't count.** A kill (the shell's `kill`, `storm`,
-  `DEVMGR_KILL`, `initctl.kill`) neither counts toward giving up nor
+  `initctl.kill`, `volumes.kill`) neither counts toward giving up nor
   waits: the spare is promoted at once. A crash or an error exit counts as
   for any service (fat: given up on at the sixth death in 60 s, the
   mixer at the eleventh); the first crash in a window is restarted at
@@ -1014,8 +1141,10 @@ crafted request can't crash every successor in turn.
   successor logs one restart line (`fat /data: restart (killed, ...)`,
   `mixer: restart (killed, ...)`): what it found in progress, what became
   of it, and where the time went; the mixer adds the lead left.
-- A supervisor's own death still takes its services with it (devmgr's
-  job holds every fat): surviving devmgr or init is not built.
+- A supervisor's own death still takes its services with it (volumes'
+  job holds every fat): surviving volumes or init is not built. init
+  starts a volumes that died again with fresh channels; every mount went
+  with it and comes back once devmgr has told the new one of its disks.
 
 ### Security
 
@@ -1412,7 +1541,7 @@ memory is static (lwIP's 6 MiB heap, mostly TCP's unacked bytes, 1152
 receive buffers, 1024 of them for TCP segments that came past a hole,
 fixed pools: 384 TCP pcbs, 5632 segments); a full pool drops the frame
 and counts it. `stack.c` is the only
-file that sees lwIP. The calls that may wait (devmgr's GET_SERVICE,
+file that sees lwIP. The calls that may wait (devmgr's `get_service`,
 `netdev.info` and `open`, 2 s each) run on a thread of its own that
 serves nothing (`connect.c`), which hands the session to the loop; a
 session that closes is asked for again, the address and ARP table kept.
@@ -1427,7 +1556,8 @@ restarts:
   opener: `iface`, `wait_change` (answers when the address or DNS servers
   change), `counts`, `chip_counts`, `echo` (a ping, built by netstack),
   and `udp_rings(port, tx, rx)`, a socket: a channel of its own
-  (`sock_connect`, `sock_state`; closing it closes the socket) and its
+  (the `net_socket` protocol: `connect`, `state`, `rings`; closing it
+  closes the socket) and its
   **rings** (`user/include/sockring.h`): one VMO netstack makes and maps,
   a header page, a tx ring the program writes and an rx ring netstack
   writes (4 KiB to 2 MiB each; UDP's 16 and 32 KiB by default), and two
@@ -1460,8 +1590,10 @@ restarts:
   [M9.5-PLAN](docs/M9.5-PLAN.md#track-c-part-1-built-tcp-inside-netstack)):
   `tcp(address, port, tx, rx)` opens a connection (CONNECTING at once; the
   status line says OPEN, or CLOSED and why), `tcp_listener(port, backlog,
-  tx, rx)` listens (only an opener of `/svc/net-listen`, ports from 1024,
-  or of `/svc/net-low`, any port but DHCP's 67 and 68),
+  tx, rx, flags)` listens (only an opener of `/svc/net-listen`, ports from
+  1024, or of `/svc/net-low`, any port but DHCP's 67 and 68; the flag
+  `NET_LISTEN_REUSE` is POSIX's `SO_REUSEADDR`: a listener may stand on a
+  port whose old connections are in TIME_WAIT),
   and `accept` on the listener's channel is answered when a connection
   comes (a wait set watches that channel). A connection is a socket like
   a UDP one, but its rings carry a byte stream: SOCKRING_END on the tx ring
@@ -1504,9 +1636,12 @@ restarts:
   source, and a segment whose ACK is for bytes never sent is dropped before
   lwIP (RFC 5961), as is a segment with no ACK, RST or SYN flag on a
   connection past its SYN (RFC 9293: lwIP would take its bytes). Closing
-  a connection with bytes unread resets it.
+  a connection with bytes unread resets it. A connection's
+  `net_stream.set_options` sets no-delay (on at the start: bytes a program
+  publishes leave at once) and keep-alive with its idle time, probe
+  interval and probe count.
 - **`/svc/net-sys`**, the network's own services' reserve: the same
-  protocol on a third shared channel (netstack's SR_USER + 3), whose
+  protocol on a third shared channel (netstack's `NETSTACK_SR_NET_SYS`), whose
   openers are counted apart from programs', so no program can take the
   openers, sockets, requests or ring bytes dns, netlog, sntp and
   `bin/update` need. Like the listen permission it is fixed at connect by
@@ -1516,7 +1651,7 @@ restarts:
   program on `/data`. libos's `net_svc` opens it when the namespace has
   it.
 - **`/svc/net-listen`**, the listen permission: the same protocol on a
-  second shared channel init makes and publishes (netstack's SR_USER + 2),
+  second shared channel init makes and publishes (`NETSTACK_SR_NET_LISTEN`),
   whose openers may also bind a fixed UDP port from 1024 to 49151, where
   servers live and where a peer sends unasked, and listen for TCP
   connections (`listen_may_accept`, `user/services/netstack/listen.h`).
@@ -1536,7 +1671,7 @@ restarts:
   the narrower one below.
 - **`/svc/net-low`**, the permission to listen on ports below 1024
   too, where the well-known services live (a fourth shared channel,
-  netstack's SR_USER + 4, the same mechanism): its openers may also take
+  `NETSTACK_SR_NET_LOW`, the same mechanism): its openers may also take
   ports 1 to 1023 for UDP and TCP, all but the DHCP ports 67 and 68
   (netctl's socket's). The shell gives it only to a program whose list
   says `svc net listen low` (it grants `/svc/net` and this channel; the
@@ -1568,7 +1703,7 @@ own on a random port with a random id (`os_random`), 16 names at most and
 8 askers each; A records only, CNAMEs followed, a cache of 32 names (TTL
 at most a day). libos's `dns_lookup` (`<dns.h>`) is the client. Its fair
 shares are netstack's: **`/svc/dns-sys`** is the same protocol on a second
-shared channel (dns's SR_USER + 1), whose openers are the network's own
+shared channel (`DNS_SR_DNS_SYS`), whose openers are the network's own
 services (init grants it to sntp; `tools/checkwants.py` allows `svc
 dns-sys` only under `user/services/`, `allow` refuses it for `/data`;
 libos's `dns_svc` prefers it). Ordinary openers (`/svc/dns`) get 12 of the
@@ -1617,11 +1752,18 @@ with no time backs off from 16 s to 1024 s. It sets the clock with
 
 **update** (`user/services/update`, `user/services/init/update.c`). The
 shell's `update [-n | -m | -w] [-r] [-f] [address]` takes an offer channel from init
-(`initctl.update_offer`) and runs `bin/update` with that channel and
+(`initctl.update_offer`) and runs `bin/update` with that channel
+(`UPDATE_SR_OFFER`) and
 `/svc/net-sys` only. It fetches the manifest, kernel and boot image from the
 Mac (`net.host`, UDP port 5022, `tools/update-server.py`: a request names
 a snapshot, a file, an offset and a length; 32 in flight; the server keeps
-no state per client) and offers them to init as read-only VMOs. init
+no state per client) and offers them to init: one call, `offer`, of the
+`update` protocol (`abi/idl/update.idl`) on the offer channel, with the
+manifest's bytes and the files as read-only VMOs, answered when everything
+below is done (a stick write can take seconds). What init refuses before it
+looks at the manifest is the generated server's (a wrong size, a manifest
+over 1024 bytes, more than three handles or one that is no VMO); every check
+of the offer itself is a verdict and a reason in the answer. init
 first checks the manifest's signature: Ed25519 (RFC 8032, SHA-512;
 Monocypher, `third_party/monocypher`) over every byte before its
 signature line, against the public key in the running build's own boot
@@ -1695,7 +1837,7 @@ a `make flash`.
 | bin/fetch | `/svc/net`, `/svc/dns`, the file (or pipe) its body goes to, the shell's stop channel | yes: HTTP answers (`<http.h>`) |
 | bin/serve | `/svc/net` and `/svc/net-low`; the files the shell hands it, read-only | yes: HTTP requests (`<http.h>`) |
 | bin/speed | `/svc/net` and `/svc/net-listen`, `/svc/dns`, the shell's stop channel | its own 16-byte hello and report |
-| init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), devmgr's ESP channel (`update`'s stick write) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
+| init | the fetched build's copies, `kexec_load`, the update key's public half (its boot image's), volumes' ESP channel, `volesp` (`update`'s stick write) | the manifest only (a strict parser, then its signature); the files it copied are only hashed |
 
 **The service-loop rule, as applied** ([How a service waits](#how-a-service-waits)):
 each driver runs one loop on one port (its interrupt, netstack's event,
@@ -1785,14 +1927,19 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   data is copied into a fresh VMO, bss is zero; the stack has a no-access
   guard page below it.
 - **Startup message**: every process starts with one channel message holding
-  argv, environment, and handles by role (`kernel/include/jam/startup.h`):
-  SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB, STDOUT, BOOTFS (read/map/exec,
-  never write), RESOURCE, DEVMGR and DEVMGR_CTL (devmgr's own server
-  ends), DEVMGR_DEVICE (a devmgr device channel: the mixer's sound cards),
-  CONSOLE, NS (the namespace: mounts and
-  services, below), AUDIO and AUDIO_CTL (the mixer's server ends), CRASHLOG
-  (init and logd on the boot after a panic: the panicked boot's log) and
-  program-specific ones (SR_USER + n). A program reaches a service by its
+  argv, environment, and handles by role. The kernel gives the first
+  process its own (`kernel/include/jam/startup.h`): SELF_PROCESS,
+  SELF_VMAR, SELF_THREAD, JOB, BOOTFS (read/map/exec, never write),
+  RESOURCE and CRASHLOG (init and logd on the boot after a panic: the
+  panicked boot's log). The rest are user space's (`<roles.h>`): STDOUT,
+  DEVMGR and DEVMGR_CTL (devmgr's own server ends), DEVMGR_DEVICE (a devmgr
+  device channel: the mixer's sound cards), CONSOLE, NS (the namespace:
+  mounts and services, below), AUDIO and AUDIO_CTL (the mixer's server
+  ends), STATE, KEEP and STANDBY (a service that outlives its process,
+  below), SIGNALS (a POSIX program's), and the roles a program's starter
+  gives it alone, `SR_USER + n`, which `<roles.h>` names for each program
+  (`NETSTACK_SR_NET`, `COMP_SR_INITCTL`, `LOGD_SR_CTL`, ...) so that the
+  starter and the program say the same name. A program reaches a service by its
   name in the namespace, not by a startup role, so a new service costs no
   startup slot. `printf` writes to the STDOUT channel when there is
   one, else through `debug_write` (lines prefixed `[process-name]` in the
@@ -1805,12 +1952,13 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   init's that answers it `reboot` and `terminal`), the
   console (the first terminal; with the compositor it gets
   `/svc/wayland` and no screen), the boot splash (once; the shell waits
-  for it), serialin, devmgr, the
+  for it), serialin, devmgr, volumes (right after devmgr), the
   mixer, the music player, netstack, dhcp (without a static address), dns,
   logd (once `/data` is there), netlog (when `net.host` is set), sntp
   (once `/data` is there, unless `ntp = off`), the file server (`serve`,
   after netstack) and the shell, restarting
-  any that die (killing devmgr takes its drivers with its job), backing
+  any that die (killing devmgr takes its drivers with its job, volumes its
+  filesystem services), backing
   off up to 5 s; one that dies more than 10 times in a minute is given up
   on, except the compositor, which nobody could do without (every
   terminal is equal: one given up on closes, as does one whose window is
@@ -1820,10 +1968,12 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   serialin's or the shell's that the compositor's or the console's took
   with it doesn't count); for the
   regression run the programs in `boot/init.cfg`. It builds the first namespace (`/boot` at once, `/data`
-  and `/esp` when devmgr reports their filesystem services) and publishes
+  and `/esp` when volumes tells it of their filesystem services: a watch
+  on volumes, `volumes.watch`) and publishes
   its services in it under `/svc` (`audio` and `audioctl`, the mixer's,
   each a channel per opener; `music`, a channel per opener; `devmgr`, a
-  channel per opener, and `devmgr-ctl`, each devmgr's;
+  channel per opener, and `devmgr-ctl`, each devmgr's, and `volumes`, the
+  same for the tests;
   `init`, the shell's control channel; `logd`, a channel per opener;
   `net`, netstack's sockets for programs, `net-listen`, the same with the
   listen permission, `net-low`, the same on ports below 1024 too,
@@ -1837,9 +1987,11 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   mixer and `/svc/wayland`, the file server `/svc/net` and `/svc/net-low` (no mount: the
   shell hands it each file); they are sent every later change (a mount gone, or back with a
   new service, a new devmgr's channels), each change replacing the one
-  they haven't read yet (below). Its control channel (`abi/idl/initctl.idl`) serves
+  they haven't read yet (below). Its control channel (`abi/idl/initctl.idl`; names and paths are strings,
+  `str[<=N]`) serves
   `kill <name>` ([Drivers and services](#drivers-and-services)), `sync`,
-  `mount` (`-w`/`-r` for a `/usbN`, passed on to devmgr), `shell_ready`
+  `mount` (`-w`/`-r` for a `/usbN`, passed on to volumes; `kill`, `sync` and
+  `mount` are answered later, when volumes or devmgr has answered), `shell_ready`
   (the shell is up: the splash gives the screen back), `reboot`,
   which syncs `/data` and every `/usbN` first (2 s at most) and has logd
   write out the log's last lines before the restart (a kexec, or the
@@ -1848,7 +2000,9 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   screen through it first, `compctl.blank`), and `terminal` (another
   terminal window); the shell holds one end, and the compositor and each
   console another that answers only `reboot` (Ctrl+Alt+Del) and
-  `terminal` (Super+Enter).
+  `terminal` (Super+Enter), the compositor's also `launch` (a desktop
+  app). `kernel_load`, `reboot_firmware` and `update_offer` are the
+  shell's alone.
 - **Namespace**: each process has a table of mount point → `fs` channel
   (`/boot`, `/esp`, `/data`, `/usbN`) and of services → their channel
   (`/svc/<name>`), given by whoever started it (startup role
@@ -1857,12 +2011,14 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   when it next looks up a path, and some never do again (logd), so a
   starter that follows its mounts for a running program keeps a
   duplicate of the program's end and sends each change as the whole
-  namespace (`NS_SET`) after taking back the one not read yet
+  namespace (`nschan.set`) after taking back the one not read yet
   (`ns_update`): the program's end holds at most one message however
-  often the mounts change, and its next lookup sees the latest. `NS_SET`
+  often the mounts change, and its next lookup sees the latest. `set`
   replaces only what the starter gave; mounts the program made itself
   (`ns_mount`) stay unless the set has one of the same path
-  (`user/include/os.h`, "files", has the protocol). libos finds a path's mount and calls
+  (`abi/idl/nschan.idl` has the protocol, `user/lib/ns.c` the reader). A
+  namespace holds up to 8 mounts and 32 services, each name up to 31
+  bytes. libos finds a path's mount and calls
   that mount's service (`abi/idl/fs.idl`, `abi/idl/file.idl`; file data
   through a shared buffer VMO); `..` never leaves a mount. `/boot` is the
   bootfs image served by a process (`user/services/bootfs/`). No global
@@ -2214,10 +2370,10 @@ each request goes out without waiting and its answer comes to the port
 
 | Feature | The compositor's channel | What it can ask |
 | --- | --- | --- |
-| The search box's apps | init's control channel (SR_USER + 3) | `initctl.launch(app)`: init starts the app only if it is in `<deskapps.h>` (today Jamjar), the program in the boot image, with what its own list asks for (as the shell would give it) and `/svc/wayland`, no console, in a job of its own it cleans up; `initctl.terminal(command)`: a new terminal whose shell runs the command first ("Run ... in a terminal"); and `reboot` |
-| Notices | `/svc/notify`'s server end (SR_USER + 5) | serves it: each `svc.connect` is a channel of the `notify` protocol (`abi/idl/notify.idl`, its own since M12), which may `notify`, `post` (an event), `notify_wait` and `withdraw` and nothing else |
-| The volume popover | the mixer's desktop channel (SR_USER + 6) | `audioctl.desk` (the master volume, what plays, the output's name) and `set_master`; no stream, no sound card |
-| The network popover | netstack's read-only control channel (SR_USER + 7) | `netctl.info`, `stats`, `device`, `summary`; nothing that changes the address |
+| The search box's apps | init's control channel (`COMP_SR_INITCTL`) | `initctl.launch(app)`: init starts the app only if it is in `<deskapps.h>` (today Jamjar), the program in the boot image, with what its own list asks for (as the shell would give it) and `/svc/wayland`, no console, in a job of its own it cleans up; `initctl.terminal(command)`: a new terminal whose shell runs the command first ("Run ... in a terminal"); and `reboot` |
+| Notices | `/svc/notify`'s server end (`COMP_SR_NOTIFY`) | serves it: each `svc.connect` is a channel of the `notify` protocol (`abi/idl/notify.idl`, its own since M12), which may `notify`, `post` (an event), `notify_wait` and `withdraw` and nothing else |
+| The volume popover | the mixer's desktop channel (`COMP_SR_MIXER`) | `audioctl.desk` (the master volume, what plays, the output's name) and `set_master`; no stream, no sound card |
+| The network popover | netstack's read-only control channel (`COMP_SR_NETINFO`) | `netctl.info`, `stats`, `device`, `summary`; nothing that changes the address |
 
 - **Launching.** The search box's rows are `<deskapps.h>`'s list, the
   same one init decides by, and the compositor names an app by its
@@ -2229,9 +2385,10 @@ each request goes out without waiting and its answer comes to the port
   compositor can do: it types into every terminal anyway.
 - **Notices.** Posters hold `/svc/notify` (init makes the shared channel
   once and keeps both ends, as `/svc/wayland`'s, so a restarted
-  compositor serves the same one and posters connect again): devmgr (a
+  compositor serves the same one and posters connect again): volumes (a
   stick mounted, with its size and where, once a mount, and pulled out;
-  not the drivers stopped at a reboot), netstack (connected with an
+  not the filesystems stopped at a reboot), devmgr (a driver that crashed
+  or was given up on), netstack (connected with an
   address, disconnected), and the shell (`notify`, through its namespace:
   `svc notify` is for `user/services/` only). `<notice.h>` is the side for
   a service whose loop mustn't wait. A card's button press goes back to
@@ -2504,15 +2661,17 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   (previous build)").
 - **On the PC only init writes the ESP, and only for `update`** (a
   build it has checked and loaded, [Networking](#networking)). The power
-  is a channel: devmgr makes the ESP's partition writable only when asked
-  on its ESP channel (`DEVMGR_ESP_WRITE`), whose one client end init made
-  when it started devmgr (devmgr's startup role `DEVMGR_SR_ESP`) and gives
-  to nobody; the control channel the shell and the tests hold can't ask
-  it. devmgr stops the ESP's fat in order and starts it again on a
-  `block` channel opened read-write, hands init a channel to it, and lists
-  no `/esp` meanwhile, so the writable channel is in no namespace, the
-  shell's included; then the same back to read-only (the volume marked
-  clean), and `/esp` comes back. init's writer (`user/services/init/espwrite.c`,
+  is a channel: volumes makes the ESP's partition writable only when asked
+  on its ESP channel (`volesp.open_writable`), whose one client end init
+  made when it started volumes (volumes' startup role `VOLUMES_SR_ESP`)
+  and gives to nobody; the control channel the shell and the tests hold
+  can't ask it. volumes stops the ESP's fat in order and starts it again
+  on a `block` channel opened read-write, answers with a channel to it
+  (the call is `later`: volumes serves its others meanwhile), and lists no
+  `/esp` meanwhile (every watcher is told `unmounted`), so the writable
+  channel is in no namespace, the shell's included; then the same back to
+  read-only (`close_writable`: the volume marked clean), and `/esp`
+  comes back. init's writer (`user/services/init/espwrite.c`,
   on update.c's worker thread) keeps one of the boot menu's two entries
   booting a whole build at every moment: the new build goes under `*.new`
   names and is read back and checked against the signed manifest's
@@ -2610,7 +2769,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   so they survive fat's death too. A pulled stick loses what was held; a
   held write that fails stops fat writing until it starts again (fail
   closed: FatFs's idea of the volume is then ahead of the disk).
-- **fat outlives its process.** devmgr keeps, per mount, the `fs`
+- **fat outlives its process.** volumes keeps, per mount, the `fs`
   channel's both ends (so the mount stays listed and calls wait for the
   successor), a state VMO and a keeper. fat's state (`struct fat_state`,
   `user/services/fat/fat.h`) is FatFs's `FATFS` and every open file's
@@ -2624,6 +2783,17 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   off (`FF_FS_LOCK 0`): it is state FatFs keeps outside the struct, so fat
   keeps its own rules (one writer, no unlink or rename of an open file)
   matched by directory entry, so an 8.3 alias can't open a file twice.
+- **A disk's two protocols** (`abi/idl/storage.idl`, `block.idl`): a driver
+  serves `storage` for the whole disk (its size, partition scheme and disk
+  id, each partition's type, GUIDs, name and place) and opens a `block`
+  channel for one partition, limited to its blocks (read-only where the
+  mount is: the driver refuses every write). Data moves through a buffer
+  the client maps once (`map_buffer`), never through messages. A client
+  may have several requests in flight, each answered by its txid in any
+  order (`queue_depth` says how many the server works at once: usb-storage
+  one, and fat sends one at a time). Nothing is given the whole disk; the
+  one thing that reads it whole is `storage.digest`, which answers a
+  hash.
 - **The fence** (`drivers/usb-storage/block.c`): usb-storage looks at a
   `block` channel's peer before it starts each request and drops the
   request, unanswered, if the client has gone. A channel's queued
@@ -2647,50 +2817,65 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
 - Only the boot disk's blank data partition (no boot signature) is
   formatted; one that holds another filesystem or a damaged FAT is left
   alone. fat formats only when it is started with an explicit flag
-  (`FAT_ARG_FORMAT` in `user/include/fatsvc.h`), and devmgr gives the flag
+  (`FAT_ARG_FORMAT` in `user/include/fatsvc.h`), and volumes gives the flag
   to that one partition; on any other partition of any disk fat writes
   nothing it wasn't asked to write through the `fs` protocol.
-- devmgr is the only client of a disk's `storage` channel. The disk Jam OS
+- **volumes** (`user/services/volumes/`, `abi/idl/volumes.idl`) owns the
+  disks, their filesystem services and the mounts; devmgr holds no
+  filesystem and no mount. devmgr asks each running disk driver for a
+  `storage` channel of volumes' own (`svc.connect` on the driver's
+  channel; `devmgr.get_service` refuses a disk's driver to everyone else)
+  and hands it over on the DISKS channel (`disks.attach`, and `disks.gone`
+  when the device is); init makes that channel's pair whenever devmgr or
+  volumes starts. volumes is the only client of a disk's `storage`
+  channel. The disk Jam OS
   booted from is the one with partition 1 of type 0xEF holding
   boot/jamos.elf (it looks through a read-only fat service) and partition
   2 of type 0x0C: they are `/esp` and `/data`. With two Jam OS sticks in,
   the one the machine booted from: Limine names the disk it read the
   kernel from by its MBR disk id, the kernel passes it on to init and
-  devmgr (`bootdisk=0x<id>`) and to the kernel it kexecs (`bootdisk=N` on
+  volumes (`bootdisk=0x<id>`) and to the kernel it kexecs (`bootdisk=N` on
   that one's command line), and usb-storage reads each disk's id
   (`storage.info`). A Jam OS disk with another id waits for that one
-  (up to 10 s after devmgr started, at least 3 s) and is then not the boot
+  (up to 10 s after volumes started, at least 3 s) and is then not the boot
   disk; if that one never comes (the stick was swapped) it may be after
   all. `make usb` gives every stick a random id (`tools/mkimage.py`); on
   a stick made before, whose id is 0, the first Jam OS disk found is the
   boot disk, as before. Each mount is a fat service
-  holding one partition's `block` channel, supervised by devmgr (a
-  restart is not seen: above); init gets the mounts' `fs` channels from
-  devmgr (`DEVMGR_MOUNTS` in `user/include/devmgr.h`), with a generation
-  that moves whenever a mount comes or goes or its `fs` channel changes
-  (a remount), never for a restart.
+  holding one partition's `block` channel, supervised by volumes (a
+  restart is not seen: above); init follows the mounts through a watch
+  (`volumes.watch`): `mounted` events carry each mount's `fs` channel,
+  `unmounted` says one is gone, and `settled` ends a change, each with a
+  generation that moves whenever a mount comes or goes or its `fs` channel
+  changes (a remount), never for a restart. A watcher that falls 256
+  events behind is dropped and watches again for the whole list. The tests'
+  disks (`volumes.test_disk`, a software `storage` channel) mount as
+  `/data-test`, `/usb0-test` and so on, which no namespace takes.
 - Any other stick: each partition whose MBR type says FAT (01 04 06 0B 0C
   0E EF) gets a fat service and the lowest free `/usbN`, one at a time so
   the numbers follow the order found; a stick with no partition table
   whose block 0 is a FAT boot sector is served by usb-storage as one
   partition over the whole disk (a block 0 that holds a partition table
-  is never taken for one, whatever else it holds). GPT is not read. A partition that turns
+  is never taken for one, whatever else it holds). usb-storage reads an
+  MBR and nothing else, so a GPT stick shows its protective partition
+  (type 0xEE), which volumes leaves alone ([M12.7-PLAN](docs/M12.7-PLAN.md)
+  reads GPT for internal drives). A partition that turns
   out to hold no FAT volume is left alone and said so in the log.
 - Read-only is enforced below the filesystem: a `/usbN` partition's
   `block` channel is opened read-only, and usb-storage refuses every write
   on such a channel, so a bug in fat or FatFs can't change someone's
-  stick. `mount -w /usbN` (the shell asks init, init asks devmgr:
-  `DEVMGR_REMOUNT`) stops that fat and starts a new one on a channel
-  opened read-write; `mount -r` goes back. The stop is in order (devmgr's
+  stick. `mount -w /usbN` (the shell asks init, init asks volumes:
+  `volumes.remount`) stops that fat and starts a new one on a channel
+  opened read-write; `mount -r` goes back. The stop is in order (volumes'
   own `fsctl` channel to each fat, `abi/idl/fsctl.idl`): files closed and
   flushed, the volume marked clean, then the exit, so a program writing
   at that moment gets an error for the write that came too late and loses
   none that was answered. The mount is gone
   for a moment either way, and files open on it are closed: a stop in
-  order also ends what devmgr kept for the mount (its `fs` channel, its
+  order also ends what volumes kept for the mount (its `fs` channel, its
   state, the keeper's handles), so the new fat starts fresh. `/boot` and
   `/esp` can never be made writable by `mount` and `/data` never
-  read-only: init passes on nothing but `/usbN`, and devmgr remounts
+  read-only: init passes on nothing but `/usbN`, and volumes remounts
   nothing else that way (making the ESP writable for `update` is the
   ESP channel's alone, above).
 - logd follows the kernel log from its first byte into
@@ -2865,9 +3050,11 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
 - **The next boot after a panic** checks the record and the ring as
   untrusted input and copies the log into a VMO for init (`SR_CRASHLOG`).
   init gives it to logd, which writes `/data/logs/<name>-crash.txt` (never
-  overwriting) and syncs before it opens this boot's own log, and answers
-  on a channel of init's (`<crashlog.h>`). The boot's first shell waits for
-  the answer (20 s for `/data`, 60 s for the save) and prints
+  overwriting) and syncs before it opens this boot's own log, and tells
+  init what became of it in one `crashres.result` event on a channel of
+  init's (`<crashlog.h>`). init holds the boot's first shell back for the
+  answer (20 s for `/data`, 60 s for the save) and starts it with the
+  one-line note as its argument `note=<line>`, which the shell prints:
   `the last boot panicked: <message> (saved as ...). Code JAM-...:
   crashlog shows the details`, or why it was not saved; init finds the
   code in the panic's lines (`<crashinfo.h>`). On the desktop, once that
@@ -2883,8 +3070,10 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   and calls `kexec_load` (`RIGHT_ROOT_KEXEC` on the root resource) to replace
   the stored kernel. It syncs and flushes the log as before, stops the
   sound's clients for good (the music player, the splash and the mixer:
-  the hda driver ends only once its client has gone), stops devmgr in
-  order (`DEVMGR_SHUTDOWN`) and calls `kexec_reboot` (the other CPUs
+  the hda driver ends only once its client has gone), stops volumes
+  (`volumes.stop`: every writable mount synced, every filesystem service
+  stopped), then devmgr in order (`devmgrctl.shutdown`), and calls
+  `kexec_reboot` (the other CPUs
   halted, the kernel's screen quiet, the image verified, bus mastering
   off, the IOMMU off, the jump). Any failure before the jump falls back to the firmware
   reset; `reboot -f` always uses it, after the same sync, log flush and
@@ -2894,7 +3083,8 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   a triple fault, a second apart, each said on the screen first (the
   panic screen's reset leaves its screen up, and draws its last words
   before the triple fault). M9's `update` hands init a fetched
-  build on an offer channel (initctl.update_offer, `<update.h>`): init
+  build on an offer channel (`initctl.update_offer`, then `update.offer`
+  on it, `<update.h>`): init
   checks the manifest's signature with its build's key, copies the files
   into VMOs of its own, checks each length and SHA-256 against
   the manifest, calls `kexec_load` with the copies and notes `/esp`'s
@@ -2933,9 +3123,9 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   programs with every line, a program `run` starts with its own lines and
   the kernel's. With the compositor what matters to a user is a desktop
   notice in plain words, posted by whoever knows it (init: a service's
-  crash, the first in its minute, and giving one up; devmgr: a driver's,
-  the Jam OS stick pulled out and back, its data partition not opening,
-  other sticks; netstack: connected or not), and no terminal shows the
+  crash, the first in its minute, and giving one up; devmgr: a driver's;
+  volumes: the Jam OS stick pulled out and back, its data partition not
+  opening, other sticks; netstack: connected or not), and no terminal shows the
   log or depends on the first one (the full-screen console's yellow
   notice lines went with it: M12's Q14). `verbose` shows the whole log as
   it comes; `nosplash` and the safe mode show the kernel's text log until

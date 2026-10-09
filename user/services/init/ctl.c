@@ -59,7 +59,10 @@
 #include <volumes.h>
 #include "init.h"
 
-#define NAME_MAX    32                /* initctl.kill's name field */
+#define NAME_MAX    (INITCTL_NAME_MAX + 1)      /* initctl.kill's name, with a NUL */
+#define MOUNT_NAME_MAX (INITCTL_PATH_MAX + 1)   /* initctl.mount's path, with a NUL */
+#define APP_NAME_MAX   (INITCTL_APP_MAX + 1)    /* initctl.launch's app, with a NUL */
+_Static_assert(TERM_CMD_MAX == INITCTL_COMMAND_MAX + 1, "initctl.terminal's command and ours");
 #define MAX_PROCS   512               /* processes read from the kernel's list */
 #define MOUNT_WAIT  (25 * NS_PER_S)   /* volumes.remount: its service's stop, then a start */
 #define KILL_WAIT   (15 * NS_PER_S)   /* a KILL: devmgr or volumes waits for it to die */
@@ -323,17 +326,18 @@ static status_t later_devmgr_name(struct idl_txn txn, const char *name)
 
 /* ---- the protocol ---------------------------------------------------------------- */
 
-static status_t op_kill(void *ctx, struct idl_txn txn, const uint8_t name[32],
+static status_t op_kill(void *ctx, struct idl_txn txn, const char *name, uint32_t name_len,
                         uint64_t *out_koid)
 {
     const struct ctl *c = ctx;
-    const char *who = (const char *)name;
+    char who[NAME_MAX];   /* name_len is at most NAME_MAX - 1: the protocol's cap */
     if (!c->admin)
         return ERR_ACCESS_DENIED;
-    size_t len = strnlen(who, NAME_MAX);
-    if (!len || len == NAME_MAX)
+    if (!name_len || name_len >= sizeof(who))
         return ERR_INVALID_ARGS;
-    for (size_t i = 0; i < len; i++)
+    memcpy(who, name, name_len);
+    who[name_len] = '\0';
+    for (size_t i = 0; i < name_len; i++)
         if (who[i] <= ' ' || who[i] > '~')
             return ERR_INVALID_ARGS;
     if (!strcmp(who, "init"))
@@ -386,12 +390,11 @@ static status_t op_reboot_firmware(void *ctx)
 }
 
 /* "/usbN" -> N; false for any other path. */
-static bool usb_mount(const uint8_t path[16], unsigned *n)
+static bool usb_mount(const char *p, size_t len, unsigned *n)
 {
     static const char prefix[] = USB_MOUNT;
-    const char *p = (const char *)path;
-    size_t len = strnlen(p, 16), at = sizeof(prefix) - 1;
-    if (len <= at || len == 16 || strncmp(p, prefix, at) != 0)
+    size_t at = sizeof(prefix) - 1;
+    if (len <= at || strncmp(p, prefix, at) != 0)
         return false;
     *n = 0;
     for (; at < len; at++) {
@@ -402,25 +405,26 @@ static bool usb_mount(const uint8_t path[16], unsigned *n)
     return true;
 }
 
-static status_t op_mount(void *ctx, struct idl_txn txn, const uint8_t path[16],
+static status_t op_mount(void *ctx, struct idl_txn txn, const char *path, uint32_t path_len,
                          uint8_t writable)
 {
     const struct ctl *c = ctx;
+    char p[MOUNT_NAME_MAX];   /* path_len is at most MOUNT_NAME_MAX - 1: the protocol's cap */
     unsigned n = 0;
     if (!c->admin)
         return ERR_ACCESS_DENIED;
-    if (writable > 1 || strnlen((const char *)path, 16) == 16 || path[0] != '/')
+    if (writable > 1 || !path_len || path_len >= sizeof(p) || path[0] != '/')
         return ERR_INVALID_ARGS;
-    if (!usb_mount(path, &n))
+    memcpy(p, path, path_len);
+    p[path_len] = '\0';
+    if (!usb_mount(p, path_len, &n))
         return ERR_ACCESS_DENIED;   /* /boot, /esp, /data: not ours to change */
     handle_t vm = shell_volumes();
-    const char *p = (const char *)path;
     struct later *l = vm ? later_new(LATER_MOUNT, txn, vm, p, MOUNT_WAIT) : NULL;
     status_t st = !vm ? ERR_NOT_FOUND : !l ? ERR_NO_RESOURCES : OK;
     if (l) {
         l->writable = writable;
-        st = later_sent(l, volumes_remount_send(vm, l->txid, p, (uint32_t)strnlen(p, 16),
-                                                writable));
+        st = later_sent(l, volumes_remount_send(vm, l->txid, p, path_len, writable));
         if (st == IDL_LATER)
             return st;   /* said and answered when volumes answers */
     }
@@ -456,31 +460,34 @@ static status_t op_update_offer(void *ctx, handle_t *out_offer)
     return update_offer_new(ctl_port, KEY_UPDATE, out_offer);
 }
 
-static status_t op_terminal(void *ctx, const uint8_t command[TERM_CMD_MAX], uint8_t *out_number)
+static status_t op_terminal(void *ctx, const char *command, uint32_t command_len,
+                            uint8_t *out_number)
 {
     (void)ctx;   /* every holder: the shell's, the compositor's and the consoles' */
-    const char *cmd = (const char *)command;
-    size_t n = strnlen(cmd, TERM_CMD_MAX);
-    if (n == TERM_CMD_MAX)
+    char cmd[TERM_CMD_MAX];   /* command_len is at most TERM_CMD_MAX - 1: the protocol's cap */
+    if (command_len >= sizeof(cmd))
         return ERR_INVALID_ARGS;
-    for (size_t i = 0; i < n; i++)
-        if (command[i] < ' ' || command[i] == 0x7f)
+    for (uint32_t i = 0; i < command_len; i++)
+        if ((uint8_t)command[i] < ' ' || command[i] == 0x7f)
             return ERR_INVALID_ARGS;   /* one line, as typed */
+    memcpy(cmd, command, command_len);
+    cmd[command_len] = '\0';
     status_t st = terms_open(cmd, out_number);
     if (st != OK)
         printf("init: no new terminal: %s\n", status_str(st));
     return st;
 }
 
-static status_t op_launch(void *ctx, const uint8_t app[16], uint64_t *out_koid)
+static status_t op_launch(void *ctx, const char *app, uint32_t app_len, uint64_t *out_koid)
 {
     const struct ctl *c = ctx;
+    char name[APP_NAME_MAX];   /* app_len is at most APP_NAME_MAX - 1: the protocol's cap */
     if (!c->launch)
         return ERR_ACCESS_DENIED;
-    char name[16];
-    memcpy(name, app, sizeof(name));
-    if (strnlen(name, sizeof(name)) == sizeof(name))
+    if (app_len >= sizeof(name))
         return ERR_INVALID_ARGS;
+    memcpy(name, app, app_len);
+    name[app_len] = '\0';
     return apps_launch(name, out_koid);
 }
 

@@ -35,9 +35,29 @@ lx_call lx_clock_gettime, lx_clock_getres, lx_clock_settime, lx_clock_nanosleep,
 /* The machine and randomness (misc.c). */
 lx_call lx_uname, lx_getrandom, lx_sysinfo, lx_sched_getaffinity;
 
-/* Descriptors 0 to 2 before the descriptor table exists (stdfd.c). */
-lx_call lx_read, lx_write, lx_readv, lx_writev, lx_close, lx_fstat, lx_ioctl, lx_lseek,
-        lx_fcntl;
+/* The descriptor table: the calls that route to a descriptor's kind (fd.c). */
+lx_call lx_read, lx_write, lx_readv, lx_writev, lx_pread64, lx_pwrite64, lx_preadv,
+        lx_pwritev, lx_lseek, lx_close, lx_fstat, lx_ioctl, lx_fsync, lx_fdatasync,
+        lx_ftruncate, lx_getdents64;
+
+/* Pipes, dup and fcntl, memfd and eventfd (pipe.c, dup.c, memfd.c,
+ * eventfd.c; /dev and /etc are dev.c's and etc.c's, reached through the
+ * path calls). */
+lx_call lx_pipe, lx_pipe2, lx_socketpair, lx_dup, lx_dup2, lx_dup3, lx_fcntl, lx_memfd_create,
+        lx_eventfd, lx_eventfd2;
+
+/* The one user (user.c). */
+lx_call lx_getuid, lx_geteuid, lx_getgid, lx_getegid, lx_getresuid, lx_getresgid, lx_setuid,
+        lx_setgid, lx_setreuid, lx_setregid, lx_setresuid, lx_setresgid, lx_setfsuid,
+        lx_setfsgid, lx_getgroups, lx_setgroups;
+
+/* poll, select and epoll (poll.c, select.c, epoll.c). */
+lx_call lx_poll, lx_ppoll, lx_select, lx_pselect6, lx_epoll_create, lx_epoll_create1,
+        lx_epoll_ctl, lx_epoll_wait, lx_epoll_pwait;
+
+/* Processes (proc.c: ids, groups, sessions, waits; spawn.c: execve). */
+lx_call lx_getpid, lx_getppid, lx_getpgid, lx_setpgid, lx_getsid, lx_setsid, lx_wait4,
+        lx_waitid, lx_execve;
 
 /* Signals before signals exist (nosig.c). */
 lx_call lx_rt_sigprocmask;

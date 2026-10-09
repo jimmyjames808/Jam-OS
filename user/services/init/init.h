@@ -143,11 +143,11 @@ void     splash_overdue(void);
 /* The splash's channel: ours bound on port with key (call splash_event on
  * its packets), *theirs to hand over as its SR_USER + SPLASH_INIT_ROLE. */
 status_t splash_channel(handle_t port, uint64_t key, handle_t *theirs);
-/* A packet on the channel: SPLASH_PLAYED, or the splash closed it. */
+/* A packet on the channel: `played`, or the splash closed it. */
 void     splash_event(void);
 /* The splash process ended (it is never started again). */
 void     splash_ended(void);
-/* initctl.shell_ready: SPLASH_GO to a splash still holding the screen. */
+/* initctl.shell_ready: `go` to a splash still holding the screen. */
 void     splash_shell_ready(void);
 
 /* ---- shell.c and services.c: shell mode's services --------------------------------- */

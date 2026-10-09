@@ -92,6 +92,10 @@ bool t_logd_without_data(void);
 bool t_logd_data_goes_away(void);
 bool t_logd_kernel_log(void);
 bool t_logd_openers(void);
+bool t_logd_crash_result(void);
+/* chanwire.c: the wire of init's channels with the splash and with logd (P6b). */
+bool t_splashch_wire(void);
+bool t_crashres_wire(void);
 bool t_klog_lines(void);
 
 /* audio.c: <audio.h>'s conversions and resampler, <wav.h>'s parser. */
@@ -753,11 +757,13 @@ bool t_sockring_exchange(void);
 /* netwait.c and netwaitrun.c: wait sets (<netwait.h>) over fake sockets
  * (fakesock.c): the calls, timeouts, wakes and costs; a socket's life and
  * plain handles; random traffic checked look by look against the rings;
- * a fake netstack thread against the test blocking in the set. */
+ * a fake netstack thread against the test blocking in the set; edge
+ * entries and netwait_block on a channel. */
 bool t_netwait_api(void);
 bool t_netwait_states(void);
 bool t_netwait_level(void);
 bool t_netwait_stress(void);
+bool t_netwait_edge(void);
 
 /* dhcp.c and dhcpc.c: the DHCP client's messages and its state machine
  * (user/services/dhcp/msg.c, client.c); dns.c and dnsres.c: the
@@ -808,6 +814,8 @@ bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
 bool t_update_build_net(void);
 bool t_update_signature(void);
+/* updoffer.c: the offer call of `update` between update_make_offer and update_answer_reply. */
+bool t_update_offer_call(void);
 bool t_updwire_golden(void);
 bool t_updwire_hostile(void);
 bool t_updfetch_clean(void);
@@ -862,3 +870,5 @@ bool t_idl_fuzz(void);
 /* idlfuzz.c: fat and volumes fed the same messages, live (M12.1). */
 bool t_fat_hostile(void);
 bool t_volumes_hostile(void);
+/* initctl.c: init's control channel with names as strings (P6b). */
+bool t_initctl_strings(void);

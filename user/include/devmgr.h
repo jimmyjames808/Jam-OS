@@ -7,13 +7,6 @@
 
 #include <os.h>
 
-/* init -> the boot's first shell, on its SR_USER + 2 channel, queued before it
- * starts: the u32, then the one line it prints under its own, without a
- * newline or a NUL (at most INIT_SHELL_NOTE_MAX bytes): what happened to
- * the boot before, if it panicked (init's lastboot.c). */
-#define INIT_SHELL_NOTE     2u
-#define INIT_SHELL_NOTE_MAX 256u
-
 /* devmgr's startup role: a duplicate of /svc/notify's shared channel, for
  * the desktop's notices of drivers that crash or
  * are given up on (<notice.h>). SR_USER + 0 was the ESP channel's until

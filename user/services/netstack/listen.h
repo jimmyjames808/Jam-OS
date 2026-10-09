@@ -6,8 +6,8 @@
  * below 1024, where the well-known services live, a narrower one. netstack
  * learns them from the channel an opener came through, never from anything
  * the opener says: init makes the shared channels and keeps their server
- * ends, /svc/net (SR_USER + 1), /svc/net-listen (SR_USER + 2) and
- * /svc/net-low (SR_USER + 4); an opener from the second is a
+ * ends, /svc/net (NETSTACK_SR_NET), /svc/net-listen (NETSTACK_SR_NET_LISTEN) and
+ * /svc/net-low (NETSTACK_SR_NET_LOW); an opener from the second is a
  * listening one (struct opener's `listen`, set once at connect), one from
  * the third a listening one that may also take a low port (`low` too). The
  * shell gives /svc/net-listen only to a program whose list says `svc net

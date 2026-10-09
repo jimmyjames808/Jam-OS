@@ -1,5 +1,5 @@
 /* Jam OS's status codes as Linux's errno values: the default answer for
- * each ERR_* (the kernel review's mapping, M12-REVIEW-KERNEL.md's errno
+ * each ERR_* (the kernel review's mapping, docs/history/M12-REVIEW-KERNEL.md's errno
  * row), one to one where it can be. A handler whose call means something
  * else by a status says so itself before falling back on this (a write's
  * ERR_PEER_CLOSED is EPIPE, a read's is the end of the file; a full

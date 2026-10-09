@@ -62,7 +62,7 @@ replaced by `posix_spawn`).
 
 What M12 built for it, and what is still missing. "Have it" means on main
 or in an M12 track already merged; the K review's numbers are
-[M12-REVIEW-KERNEL.md](M12-REVIEW-KERNEL.md)'s findings.
+[M12-REVIEW-KERNEL.md](history/M12-REVIEW-KERNEL.md)'s findings.
 
 | Need | State | Where |
 |---|---|---|
@@ -73,7 +73,7 @@ or in an M12 track already merged; the K review's numbers are
 | Handles always moved on a send (Q1) | have it | `abi/syscalls.def` "channels" |
 | `handle_info` (Q11) | have it: type, rights, koids, a channel end's queue counts | `kernel/include/jam/abi.h` |
 | The file protocol for POSIX (Q8) | have it: paths as `str[<=4095]`, batched `readdir`, `FS_EXCL`, `is_dir`, `id` (`st_ino`), unlink's `UNLINK_DIR`, rename's `RENAME_REPLACE` | `abi/idl/fs.idl`, `abi/idl/file.idl` (P5) |
-| A pipe is a channel of byte messages (Q17) | decided, and `SR_STDOUT` already is one | `user/lib/printf.c` |
+| A pipe is a channel of byte messages (Q17) | decided, and `SR_STDOUT` already is one | `user/lib/stdio.c` |
 | The heap reserves 1 GiB (Q16) | P6a, running | `user/lib/heap.c` |
 | Waiting on many sockets and handles | have it: wait sets, level-triggered, O(ready) | `user/include/netwait.h` |
 | Sockets, TCP, the listen permission | have it: `net`, `net_socket`, `net_stream`, `net_listener`; `/svc/net-listen`, `/svc/net-low` | `abi/idl/net.idl` |
@@ -738,8 +738,8 @@ free ones, none reused):
 | 91 | `session` (new) | session.idl (new) | `open (u16 cols, u16 rows, str[<=63] term, str[<=4095] command) -> (handle master, handle ctl)` |
 | 92 | `session_ctl` (new) | session.idl | `resize`, `hangup`; event `ended (i32 code)` |
 | 93 | `signal` (new) | signal.idl (new) | event `send (u8 signo, i32 value)` |
-| 61 | `net_stream` (an addition) | `abi/idl/net.idl` | `set_options (u32 flags) -> ()`: no-delay, keep-alive |
-| 62 | `net_listener` (an addition) | net.idl | a reuse flag in `tcp_listener`'s request, or a method, as N1 finds lwIP's shape |
+| 61 | `net_stream` (an addition) | `abi/idl/net.idl` | `set_options (u32 flags, u32 keep_idle, u32 keep_intvl, u32 keep_cnt) -> ()`: no-delay, keep-alive and its three numbers |
+| 62 | `net_listener` (an addition) | net.idl | `tcp_listener`'s request has a `u32 flags` (`NET_LISTEN_REUSE`) |
 
 **Hand-written formats**: the POSIX hand-over message ("JPSX", a version
 word, user/include/posixfds.h, in ids.txt's registry); the master
@@ -1199,15 +1199,14 @@ left open:
 
 - **libjam.a** (`build/uobj/libjam.a`, built by `make`) is libos's objects
   less `user/lib/heap.c`, `user/lib/string.c`, `user/lib/stdio.c` (the
-  printf family, moved out of `user/lib/printf.c`) and
+  printf family, moved out of the old printf.c) and
   `user/lib/startmain.c` (environ and `libos_start`, which calls main). It
   still holds dr_mp3, Monocypher and the driver API: a program that never
   calls them doesn't link them. What it needs from a C library is exactly
   malloc, calloc, free, memcpy, memmove, memset, memcmp, strlen, strnlen,
   strcmp, strncmp, strchr, strrchr, strstr, printf, snprintf and
   vsnprintf; under musl its own log lines therefore go to descriptor 1.
-  `user/lib/printf.c` keeps `status_str` alone for now, so K1's line there
-  merges cleanly; it becomes status.c (a rename) once K1 is merged.
+  `user/lib/status.c` (once printf.c) holds `status_str` alone.
 - **Startup**: `startup_read(ch, &argc, &argv)` (`<os.h>`) is the parser
   both starts call: the environment follows `argv[argc]`. It uses no
   heap, printf or thread-local storage, so the POSIX crt calls it before
@@ -1308,9 +1307,9 @@ need to know.
   (umask, ppid, pgid, sid, the signal masks) or NULL.
 - Where each area's code goes: files B1, B2, B3, B5, B4, B6, T2 and X1
   own as the tracks' table says. Two of A1's files are stand-ins to be
-  replaced: `user/posix/sys/stdfd.c` (descriptors 0 to 2: the null
-  device, the log, or a pipe; B1's descriptor table replaces it and
-  takes its handlers' table lines) and `user/posix/sys/nosig.c`
+  replaced: stdfd.c (descriptors 0 to 2: the null device, the log, or
+  a pipe; B1's descriptor table replaced it and took its handlers'
+  table lines, and B2's kinds its pipe, null and log) and `user/posix/sys/nosig.c`
   (`rt_sigprocmask` keeps a per-thread mask and nothing else; B4's
   signal.c replaces it).
 - The start (`user/posix/crt/start.c`) reads the startup message, then
@@ -1434,3 +1433,270 @@ left a choice.
   (T2); `/svc/session` and who starts a connection console (X1);
   `TERM`. A connection console has no alternate screen of its own: the
   remote terminal's is used, since the escapes pass through.
+
+## B2 notes
+
+Track B2 (pipes, dup, /dev and /etc) as built, with the choices the plan
+left open. The files: `user/posix/sys/kinds.h` (the kinds' header),
+pipe.c, dup.c, dev.c, etc.c, memfd.c (and memfd.h), eventfd.c and user.c.
+
+- **The stand-ins are gone.** B1's stdfd.c (its pipe, null and log
+  kinds and fcntl's four commands) is replaced: fd.c's `fd_adopters`
+  point at `pipe_adopt`, `dev_adopt`, `etc_adopt`, `memfd_adopt` and
+  `eventfd_adopt`, and the log kind and `stdfd_default` (descriptors 0 to
+  2 without a hand-over) are dev.c's.
+- **Paths.** /dev and /etc are reached through B1's path calls, which ask
+  kinds.h first: `dev_path`/`dev_open`/`dev_stat`/`dev_unlink`,
+  `etc_path`/`etc_open`/`etc_stat` (each open installs its descriptor
+  itself). Until B1's open calls them, posixtest checks those paths only
+  through a hand-over and says so. Listing /dev and /etc is not built
+  (they stat as directories). /dev/tty is ENXIO (no terminal yet: T2's)
+  and /dev/ptmx ENOENT (section 9).
+- **A pipe's leftover moves to a child** with the descriptor (A2's data
+  for the kind): the bytes are the description's, and the child is the
+  next reader in the usual case (a shell handing its input on). A
+  leftover bigger than a hand-over's data (`POSIXFDS_DATA_MAX`, 4 KiB)
+  refuses that descriptor's hand-over (ENOBUFS) rather than lose or
+  reorder bytes. A spawn that fails after asking loses them.
+- **Pipes**: `pipe2` takes `O_CLOEXEC` and `O_NONBLOCK` only (`O_DIRECT`,
+  packet mode, is EINVAL); `F_GETPIPE_SZ` is 64 KiB (a message), and
+  `F_SETPIPE_SZ` changes nothing and says 64 KiB. A message carrying
+  handles (none of ours do) has them closed. SIGPIPE is not sent until
+  signals exist (B4): EPIPE alone.
+- **socketpair** is `AF_UNIX`, `SOCK_STREAM` only (datagrams and
+  `SOCK_SEQPACKET`: EOPNOTSUPP); a handed-over end is the pipe kind with
+  `O_RDWR`, which the child takes as a socketpair end. `send`/`recv` on
+  it come with the socket calls (B6), which must route a socketpair end
+  to its read and write.
+- **fcntl**: `F_SETFL` changes `O_APPEND` and `O_NONBLOCK`; `O_ASYNC` is
+  EINVAL (no SIGIO is ever sent), `O_DIRECT` and `O_NOATIME` are ignored.
+  Record locks are checked (type, whence, the access mode) and always
+  granted, `F_GETLK` says `F_UNLCK`. `F_SETOWN` keeps nothing. Anything
+  unknown is EINVAL.
+- **memfd and shm_open** are kept VMOs (`VMO_KEEP_PAGES`). A kept VMO
+  never shrinks, so a smaller `ftruncate` keeps the pages and shrinks
+  the file in libc; growing over them again zeroes them. The size and
+  the seals are the process's own: a child starts with the parent's, and
+  each keeps its own after (they share the pages). Seals hold in this
+  process only; a process that must trust a size checks the VMO. A
+  read-only descriptor's VMO goes out without write or resize rights.
+  `shm_open`'s names are the process's own (no service holds them; at
+  most 64): another process sees an object only through a descriptor.
+  `MAP_SHARED` of a memfd: B1's mmap calls `memfd_vmo`.
+- **eventfd**: the counter is in the description (the plan's "a counter
+  in memory"), the event's user bits 24 (readable) and 25 (writable)
+  follow it, for the waits and for poll. A child gets a copy of the
+  counter and an event of its own, not the parent's: the hand-over's
+  kind has no shared memory for the counter, and a shared event over two
+  counters would say ready wrongly. Sharing it needs a VMO in the kind.
+- **The one user**: the set calls succeed for 1000 (and -1) and are
+  EPERM otherwise; `setgroups` is EPERM; `getgroups` is {1000}. musl's
+  set calls go through `__synccall`, which needs signals once the process
+  has a second thread (B4).
+- **/etc**: passwd, group, hosts (localhost, and 127.0.1.1 for `jamos`,
+  uname's nodename), services, resolv.conf (empty), shells. There is no
+  `host.name` setting yet (<settings.h>), so the name stays `jamos`.
+- **For poll (B5)**: each `fd_ops` table has a commented `.ready, .arm`
+  line. Pipe ends are ready to read with a leftover or the channel's
+  `SIG_READABLE`/`SIG_PEER_CLOSED`, to write on `SIG_WRITABLE`. Eventfd
+  uses its event's bits. /dev, /etc and memfd have none (always ready).
+- **For the review**: the layer's global names (`dev_open`,
+  `pipe_adopt`, `fd_new`, ...) share the program's namespace in libc.a:
+  a port that defines one of them fails to link. Hiding them (a prefix
+  reserved for the layer, or localizing them when libc.a is made) is a
+  question for the whole layer.
+
+## B5 notes
+
+Track B5 (`poll`, `select`, `epoll`) as built, with the choices the plan
+left open. The model and its argument are in `user/posix/sys/ready.h`;
+the cache in `user/posix/sys/poll.c`'s header; epoll's rules in
+`user/posix/sys/epoll.c`'s.
+
+**What changed outside B5's files**
+- `<netwait.h>` gained two things. `NETWAIT_EDGE` (handles only): an
+  entry reported ready is armed instead of staying pending, and its read
+  and write signals are bound apart, so a read edge is seen while the
+  write side stays up (epoll's `EPOLLET` on a socketpair). And
+  `netwait_block`: sleep until a packet is queued, taking none, which is
+  how a waiter looks at libc's own state (a pipe's leftover) between the
+  set's look and the sleep without losing a wake. utest `netwait_edge`.
+- fd.h and fd.c (B1's): `struct fd_desc` has a `serial` (never 0, never
+  given twice), set in `fd_new`; `fd_put` calls `epoll_forget(d)` before
+  the kind's close (declared in fd.h).
+- pipe.c and eventfd.c (B2's): the `.ready`/`.arm` lines and their two
+  small functions.
+- calls.c and calls.h: B5's block (poll, ppoll, select, pselect6, the
+  five epoll calls); posixtest's main.c and pt.h: the poll section and
+  the `--child-poll` mode.
+
+**Choices**
+- **The cache** is keyed by the description's serial, not its address
+  or handle: a description freed and another made at the same address
+  with a handle of the same value is never taken for the old one (whose
+  binding the kernel ended when its handle closed). A place keeps what
+  the kind's arm said and the interest; any difference binds again.
+  Places not asked for in 64 calls go, and so does one the set reports
+  ready when the call didn't ask for it. The set is freed by a
+  thread-specific key's destructor (pthread_exit runs it), so thread.c
+  is not touched.
+- **The order of a look**: the set (a past deadline), then each kind's
+  `ready`, then `netwait_block`. A kind's `ready` takes no lock and makes
+  no system call (it runs under epoll's lock); pipe.c's reads the
+  leftover's two counters with relaxed atomic loads, while pipe.c writes
+  them under the description's lock with plain stores (a stale answer is
+  corrected by the next look, since a leftover only comes off the
+  channel, whose rise queues a packet).
+- **Hang-ups**: the set's HUP is POLLHUP, but POLLERR for a handle with
+  no read signals (a pipe's write end whose reader is gone, as Linux).
+- **select**: a descriptor only in the exception set is checked (EBADF)
+  and left out, since POLLPRI never comes; a hang-up counts as writable
+  as well as readable, so a writer finds out (EPIPE). select is its own
+  file because fd.h's `fd_set` (the table's call) and `<sys/select.h>`'s
+  `fd_set` (the type) can't meet in one file; epoll.c renames the call
+  with a `#define` around its include of fd.h, since `<sys/epoll.h>`
+  brings `<sys/types.h>` and the type. **For B1**: renaming `fd_set`
+  (say `fd_place`) would end both work-arounds; any kind file that
+  includes `<sys/types.h>` under `_GNU_SOURCE` meets the same clash.
+- **epoll**: an item is (number, description) and holds no reference:
+  `epoll_forget` takes it out of every set when the description goes
+  (a global list of sets, skipped while no set has an item). A kind with
+  no arm (a file, /dev) is EPERM, an epoll descriptor in a set or in
+  poll/select EINVAL. Unknown event bits are EINVAL (Linux ignores them);
+  `EPOLLEXCLUSIVE` and `EPOLLWAKEUP` are accepted and do nothing.
+  `EPOLLET` on a socket is EOPNOTSUPP until a socket entry can be an edge
+  one (B6). A full set is ENOSPC. A child is never handed an epoll
+  descriptor (`give` is ENOTSUP). A look asks the set for no more events
+  than the caller's array holds, so turns of a few reach every ready item.
+- **Edge-triggered** = a rise of the kind's signals (or of its own
+  `ready`, for a leftover another thread read into the buffer). A second
+  message into a pipe that wasn't drained is no edge (Linux before 5.5
+  behaves so too); a program that drains to EAGAIN, as `epoll(7)` asks,
+  sees every write.
+- **Masks**: ppoll, pselect6 and epoll_pwait set nosig.c's mask for the
+  wait and put it back after; B4's signal.c makes it one step with the
+  wait. **EINTR**: `netwait_block` is the system call wait K1 made
+  interruptible; ERR_INTERRUPTED is returned as EINTR and B4 decides
+  restarts.
+
+**For later tracks**
+- **B6 (sockets)**: a socket's `arm` gives `FD_WAIT_SOCK`. poll does not
+  cache a socket's place: it goes at the end of the call, because the
+  set reads the rings at every look and a socket's close can't reach
+  another thread's set to take it out first. Keeping them (tinyssh's loop
+  would bind and unbind its socket each call) needs the rings to outlive
+  every place, e.g. the description keeping them mapped until its places
+  are gone. epoll is safe as it is (`epoll_forget` runs before the
+  kind's close). Edge entries for sockets are B6's too.
+- **T2 (terminals)**: `struct fd_wait` has one handle; a terminal is read
+  through its input pipe and written through its output pipe. The arm
+  gets the interest, so a poll for one side works; for both at once,
+  fd_wait needs a second part (poll.c's place and epoll.c's item would
+  then hold two entries).
+- **B3 (spawn)**: an epoll descriptor's `give` is ENOTSUP: leave it out
+  of a child's hand-over.
+
+## B3 notes
+
+Track B3 (processes) as built, with the choices the plan left open (the
+safest reasonable option each time):
+
+- **Files.** `user/posix/sys/proc.c` (ids, groups, sessions, the child
+  table, `wait4`/`waitid`), `user/posix/sys/spawn.c` (`posix_spawn`'s
+  request, the program, the state, `execve`), `user/posix/sys/spawnfd.c`
+  (the copy of the descriptor table and the file actions; split from
+  spawn.c to keep each file one job), `user/posix/sys/proc.h` and
+  `user/posix/sys/spawn.h`; the override of `src/process/posix_spawn.c`
+  (thin: it reads musl's attributes and file actions into
+  `struct jam_spawn_req`, `user/posix/sys/glue.h`); the extension
+  `posix_spawnattr_setgrants_np` in `user/posix/include/jamos/spawn.h`
+  (the list kept in `posix_spawnattr_t`'s spare bytes; NULL, the default,
+  is everything the parent has).
+- **The table copy** holds a reference to each description (B1's
+  `fd_next`), not descriptor numbers: another thread's close mid-spawn
+  changes nothing. File actions apply to the copy; an open action opens
+  in the parent with `O_CLOEXEC` and keeps only the reference; nothing is
+  exported (`ops->give`) until every action worked. A description in two
+  slots (a `dup2`) becomes two descriptions in the child (the hand-over
+  can't say "the same"). A kind without `give` (the log, epoll) is left
+  out, as `FD_CLOEXEC` would.
+- **The program.** `/boot/<x>` is the boot image's `<x>`; `/bin/<x>` and
+  `/usr/bin/<x>` are the boot image's `bin/<x>` and `usr/bin/<x>` (there
+  is no other `/bin`; musl's `system`, `popen` and default `PATH` name
+  `/bin/sh` and `/bin`). Any other path: `ENOENT` if missing, else
+  `EACCES` (no program from a file system until M12.5's loader), checked
+  with `fs_stat` before spawn reads anything. `posix_spawnp` searches the
+  caller's `PATH` (musl's default without one).
+- **Ids.** In the hand-over, `pgid` and `sid` 0 mean "the child's own
+  pid" (nobody knows it before `process_create`). Without a hand-over a
+  program's parent is 1 and it leads a group and a session of its own
+  (so its `setsid` is `EPERM`, as a session leader's). `setpgid` accepts
+  a group of our session that exists (ours, or a child's), or the
+  target's own pid; a session leader can't change group. A child is told
+  its group and session once, at the start: a later `setpgid(child, g)`
+  changes our table, not what the child's `getpgid(0)` says.
+- **Waits.** One port with every child bound (`SIG_TERMINATED`,
+  `PORT_BIND_ONCE`, keyed by a serial number, never a pid). One waiting
+  thread at a time blocks on the port; the others sleep on a futex word
+  bumped whenever an end is noticed or the reader leaves; a non-reader
+  that notices an end (a `WNOHANG` drain, the signal thread) queues a
+  key-0 packet so the reader looks again. At most 4,096 children unreaped
+  at once (`PORT_MAX_BINDINGS`): `posix_spawn` is `EAGAIN` past it (the
+  child is killed). `WUNTRACED`/`WCONTINUED`/`WSTOPPED` are accepted and
+  never report (no stops). `rusage` gives the child's CPU time as user
+  time.
+- **Exit status.** A code `LX_EXIT_SIGNAL` (0x10000) plus N is
+  `WIFSIGNALED` with `WTERMSIG` N (B4 exits that way for a signal's
+  default action); killed by the kernel is SIGKILL.
+- **For B4.** `lx_sigchld_hook(pid)` in proc.c is the one place a
+  child's end is noticed (called once per child, no lock held): today it
+  does nothing, and an end is only noticed by a wait. B4's signal thread
+  should wait on `lx_child_port()` too and hand each packet to
+  `lx_child_packet()`, which notices the end, wakes the waits (and the
+  blocked reader) and calls the hook. `lx_exec_child()` is the pid
+  `execve` is waiting for, to forward every signal to. The child's
+  signal channel (`SR_SIGNALS`) is not made yet: spawn.c's `start` is
+  where B4 adds it (an extra handle) and the table (`lx_child_add`) where
+  it keeps the parent's end.
+- **execve** closes all of our descriptors after the spawn (a pipe end
+  held by the waiting caller would hide its end of file), then waits and
+  exits with the child's status; other threads of the caller keep
+  running until then. The child gets our parent's pid, group and session.
+  `execve` returns `-1` and `errno` (and nothing changes) if the program
+  can't be started.
+- **Scheduling attributes** (`POSIX_SPAWN_SETSCHEDPARAM`,
+  `SETSCHEDULER`): `ENOSYS` (musl's setters are `ENOSYS` already).
+  `POSIX_SPAWN_RESETIDS` and `USEVFORK` do nothing (one user; no vfork).
+- **Not done here, waiting for B1:** the umask (`spawnfd_umask` gives the
+  hand-over's, or 022) and the current directory (`getcwd`, else the
+  hand-over's, else `/`) until B1's file.c and dir.c keep them;
+  `addchdir` checks its directory with libjam's `fs_stat`.
+- **/bin/sh until a POSIX shell** (`user/posix/progs/sh/`, bootfs
+  `bin/sh`): `sh -c` of one simple command only (words, quotes,
+  backslashes; anything else, `|`, `;`, `$`, globs, ..., is refused with
+  exit 2), run with `execvp`; 127 not found, 126 not runnable. It exists
+  so `system` and `popen` work; the native shell's builtins still win
+  over it. posixtest's `ls` is a tiny one at bootfs `test/ls`
+  (`user/posix/progs/ls/`, libjam's `fs_readdir`), not on any `PATH` but
+  the test's own, so sbase's `ls` is never shadowed.
+- **posixtest's list** gains `mount /boot r`: its children list `/boot`.
+- **A hand-over cut short.** posix_spawn writes all of it before
+  `process_start`, so a parent killed mid-spawn leaves no child, or one
+  with everything; the test kills a spawning parent at random times in
+  its own job and checks every process in that job ends, and feeds the
+  reader a first message without its last to check it gives up at once
+  with every handle closed.
+- **Found, not changed:** B1's `fd.h` declares `fd_set`, which is also
+  `<sys/select.h>`'s type (included by `<sys/wait.h>` and
+  `<sys/time.h>`): a layer file can't include both (spawn.c avoids
+  `<sys/wait.h>` for that).
+- **Found, not changed (kernel):** killing a process while it loops
+  libjam's `spawn` of short-lived children panics the kernel about 60 ms
+  later at 2 CPUs (3 runs of 3; 0 of 4 at 4 and 8 CPUs): a page fault
+  in `thread_reap` (`kernel/sched/thread.c`), in its inlined `stack_put`
+  writing below a `stack_top` of 0, so a thread reaped twice or after it
+  was freed and reused. No POSIX code is needed for it (the native
+  `spawn` loop alone does it; the same loop without the kill, or killing
+  a loop that only creates processes and threads it never starts, does
+  not). posixtest's hand-over check (the parent killed mid-spawn) is what
+  reaches it: `QEMU_SMP=2 tools/qemu-test.sh build/test init init`.

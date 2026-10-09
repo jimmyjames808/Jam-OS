@@ -67,10 +67,9 @@ static unsigned number(const char *s)
 /* One kill and the first answer after it. */
 static status_t kill_once(uint64_t *us)
 {
-    uint8_t name[32] = "mixer";
     uint64_t koid = 0, w, c, p;
     uint64_t t0 = now();
-    status_t st = initctl_kill_until(initctl, now() + LONG, name, &koid);
+    status_t st = initctl_kill_until(initctl, now() + LONG, "mixer", 5, &koid);
     if (st == OK)
         st = audio_stream_position_until(probe.ch, now() + LONG, &w, &c, &p);
     *us = (now() - t0) / NS_PER_US;

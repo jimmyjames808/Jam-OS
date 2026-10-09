@@ -193,6 +193,27 @@ $(POSIXTEST).bootfs: $(POSIXTEST) tools/checkwants.py
 BOOTFS_FILES += bin/posixtest=$(POSIXTEST).bootfs
 $(BOOTFS): $(POSIXTEST).bootfs
 
+# The layer's own small programs (user/posix/progs/<name>/: its .c files
+# and its list, `wants`), built with jamos-cc as posixtest is: sh, /bin/sh
+# until a POSIX shell (`sh -c` of a simple command, for system and popen),
+# and ls, a tiny one at test/ls for posixtest's popen check until sbase's.
+POSIX_PROGS := sh=bin/sh ls=test/ls
+define POSIX_PROG_RULES
+$(BUILD)/user/posix-$(1): $(wildcard $(POSIX)/progs/$(1)/*.c) $(POSIX)/progs/$(1)/wants \
+                          $(SYSROOT_LIBS) tools/jamos-cc | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+	@mkdir -p $$(dir $$@)
+	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -std=gnu17 -O2 -g -Wall -Wextra \
+	    -Werror -Wvla -D_GNU_SOURCE -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc \
+	    -Idrivers/include --jamos-wants=$(POSIX)/progs/$(1)/wants \
+	    $(wildcard $(POSIX)/progs/$(1)/*.c) -o $$@
+$(BUILD)/user/posix-$(1).bootfs: $(BUILD)/user/posix-$(1) tools/checkwants.py
+	$(STRIP) --strip-debug $$< -o $$@
+	python3 tools/checkwants.py $(POSIX)/progs/$(1)=$$@
+$(BOOTFS): $(BUILD)/user/posix-$(1).bootfs
+BOOTFS_FILES += $(2)=$(BUILD)/user/posix-$(1).bootfs
+endef
+$(foreach p,$(POSIX_PROGS),$(eval $(call POSIX_PROG_RULES,$(word 1,$(subst =, ,$(p))),$(word 2,$(subst =, ,$(p))))))
+
 # `make check`: the overrides still match upstream, and the check refuses
 # a changed, a missing and a malformed one; no name libjam defines is one
 # musl's libc defines.

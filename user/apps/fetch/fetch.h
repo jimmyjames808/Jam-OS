@@ -3,10 +3,10 @@
  * the body goes and starts this with only that, its list (the network and
  * the resolver: `svc net`, `svc dns`) and two channels of its own, so a
  * hostile server reaches nothing else of the shell's. Its handles:
- *   SR_USER + 0, 1  the file to write (file_give / file_adopt), or
- *   SR_USER + 3     a channel the body goes down in messages of at most
+ *   PROGRAM_SR_FILE, 1  the file to write (file_give / file_adopt), or
+ *   PROGRAM_SR_BODY     a channel the body goes down in messages of at most
  *                   FETCH_MSG bytes (the shell puts them in its pipe)
- *   SR_USER + 2     the shell's stop channel: a byte (or its close) on it
+ *   PROGRAM_SR_STOP     the shell's stop channel: a byte (or its close) on it
  *                   is Ctrl+C: it stops at once, closing the connection
  *   SR_STDOUT       its lines (progress, the end), the shell's own
  * argv: fetch <url> file|pipe.

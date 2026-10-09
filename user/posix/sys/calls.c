@@ -44,16 +44,76 @@ static lx_call *const calls[] = {
     [SYS_sysinfo] = lx_sysinfo,
     [SYS_sched_getaffinity] = lx_sched_getaffinity,
 
-    /* descriptors 0 to 2, until the descriptor table: stdfd.c */
+    /* the descriptor table: fd.c */
     [SYS_read] = lx_read,
     [SYS_write] = lx_write,
     [SYS_readv] = lx_readv,
     [SYS_writev] = lx_writev,
+    [SYS_pread64] = lx_pread64,
+    [SYS_pwrite64] = lx_pwrite64,
+    [SYS_preadv] = lx_preadv,
+    [SYS_pwritev] = lx_pwritev,
+    [SYS_lseek] = lx_lseek,
     [SYS_close] = lx_close,
     [SYS_fstat] = lx_fstat,
     [SYS_ioctl] = lx_ioctl,
-    [SYS_lseek] = lx_lseek,
+    [SYS_fsync] = lx_fsync,
+    [SYS_fdatasync] = lx_fdatasync,
+    [SYS_ftruncate] = lx_ftruncate,
+    [SYS_getdents64] = lx_getdents64,
+
+    /* pipes, dup and fcntl, memfd, eventfd: pipe.c, dup.c, memfd.c, eventfd.c */
+    [SYS_pipe] = lx_pipe,
+    [SYS_pipe2] = lx_pipe2,
+    [SYS_socketpair] = lx_socketpair,
+    [SYS_dup] = lx_dup,
+    [SYS_dup2] = lx_dup2,
+    [SYS_dup3] = lx_dup3,
     [SYS_fcntl] = lx_fcntl,
+    [SYS_memfd_create] = lx_memfd_create,
+    [SYS_eventfd] = lx_eventfd,
+    [SYS_eventfd2] = lx_eventfd2,
+
+    /* the one user: user.c */
+    [SYS_getuid] = lx_getuid,
+    [SYS_geteuid] = lx_geteuid,
+    [SYS_getgid] = lx_getgid,
+    [SYS_getegid] = lx_getegid,
+    [SYS_getresuid] = lx_getresuid,
+    [SYS_getresgid] = lx_getresgid,
+    [SYS_setuid] = lx_setuid,
+    [SYS_setgid] = lx_setgid,
+    [SYS_setreuid] = lx_setreuid,
+    [SYS_setregid] = lx_setregid,
+    [SYS_setresuid] = lx_setresuid,
+    [SYS_setresgid] = lx_setresgid,
+    [SYS_setfsuid] = lx_setfsuid,
+    [SYS_setfsgid] = lx_setfsgid,
+    [SYS_getgroups] = lx_getgroups,
+    [SYS_setgroups] = lx_setgroups,
+
+    /* poll, select and epoll: poll.c, epoll.c */
+    [SYS_poll] = lx_poll,
+    [SYS_ppoll] = lx_ppoll,
+    [SYS_select] = lx_select,
+    [SYS_pselect6] = lx_pselect6,
+    [SYS_epoll_create] = lx_epoll_create,
+    [SYS_epoll_create1] = lx_epoll_create1,
+    [SYS_epoll_ctl] = lx_epoll_ctl,
+    [SYS_epoll_wait] = lx_epoll_wait,
+    [SYS_epoll_pwait] = lx_epoll_pwait,
+
+    /* processes: proc.c, spawn.c (fork, vfork and clone without CLONE_VM
+     * have no entry: -ENOSYS) */
+    [SYS_getpid] = lx_getpid,
+    [SYS_getppid] = lx_getppid,
+    [SYS_getpgid] = lx_getpgid,
+    [SYS_setpgid] = lx_setpgid,
+    [SYS_getsid] = lx_getsid,
+    [SYS_setsid] = lx_setsid,
+    [SYS_wait4] = lx_wait4,
+    [SYS_waitid] = lx_waitid,
+    [SYS_execve] = lx_execve,
 
     /* signals, until signals: nosig.c */
     [SYS_rt_sigprocmask] = lx_rt_sigprocmask,

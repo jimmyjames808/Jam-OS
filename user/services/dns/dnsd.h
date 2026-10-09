@@ -24,8 +24,8 @@
 #include <net.h>
 #include "dns.h"
 
-#define SR_DNS     (SR_USER + 0)   /* the server end of /svc/dns's shared channel */
-#define SR_DNS_SYS (SR_USER + 1)   /* /svc/dns-sys's: the network's own services' */
+#define SR_DNS     DNS_SR_DNS         /* the server end of /svc/dns's shared channel */
+#define SR_DNS_SYS DNS_SR_DNS_SYS     /* /svc/dns-sys's: the network's own services' */
 
 /* Port keys: the low byte says what fired, the bits above a slot's
  * generation (a stale packet for a reused slot is ignored). */

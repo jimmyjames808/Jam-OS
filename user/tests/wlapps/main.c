@@ -5,7 +5,7 @@
  *     run wlapps [size=WxH] [win=WxH] [settle=S] [hold=S] [tile] <prog>[:<arg>]...
  *
  * It starts `bin/compositor headless size=WxH` (default 1280x800) with an
- * image of ours to compose into (SR_USER + 1), publishes the compositor in
+ * image of ours to compose into (COMP_SR_IMAGE), publishes the compositor in
  * its own namespace as /svc/wayland, and starts each program (bin/<prog>,
  * with <arg> as its one argument if given: `fractal:fullscreen`) in a job
  * of their own with only that service in their namespace and
@@ -134,7 +134,7 @@ static status_t start_compositor(const struct opts *o, struct comp *k)
     snprintf(size, sizeof(size), "size=%dx%d", o->w, o->h);
     const char *argv[] = { "bin/compositor", "headless", size,
                            o->tile ? "layout=tiling" : "layout=floating" };
-    struct spawn_handle x[] = { { SR_USER + 0, theirs }, { SR_USER + 1, dup } };
+    struct spawn_handle x[] = { { COMP_SR_WAYLAND, theirs }, { COMP_SR_IMAGE, dup } };
     struct spawn_args a = { .path = "bin/compositor", .argc = 4, .argv = argv,
                             .job = k->job, .extra = x, .nextra = 2 };
     if (st == OK) {

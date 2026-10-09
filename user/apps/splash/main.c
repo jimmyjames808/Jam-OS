@@ -18,8 +18,8 @@
  *      frame is shown when the media clock reaches it (the sound's
  *      position once it plays): late frames are dropped, none is early;
  *   3. plays to its end: no key skips it;
- *   4. tells init SPLASH_PLAYED (init starts the shell), holds the last
- *      frame until init says SPLASH_GO (the shell is up) or closes the
+ *   4. tells init `played` (init starts the shell), holds the last
+ *      frame until init says `go` (the shell is up) or closes the
  *      channel, at most HOLD_MAX, and in any case for LINGER after an
  *      animation that played to its end (the logo stays a moment);
  *   5. fades the picture into the background and closes its window: the
@@ -34,6 +34,7 @@
  * Anything that goes wrong on the way
  * ends it early (the desktop then shows at once); a panic draws over it
  * whatever it is doing (the kernel's). */
+#include <idl/splashch.h>
 #include <wants.h>
 #include "splash_int.h"
 
@@ -132,10 +133,33 @@ static bool play(const uint8_t *mpg, size_t len, uint64_t since)
     return skipped;
 }
 
-static void tell_init(uint32_t msg)
+static void tell_init(void)
 {
     if (init_ch)
-        (void)jam_channel_write(init_ch, &msg, sizeof(msg), NULL, 0);   /* gone: no matter */
+        (void)splashch_played(init_ch);   /* gone: no matter */
+}
+
+static void on_go(void *ctx)
+{
+    *(bool *)ctx = true;
+}
+
+/* Wait until init says `go` or is gone (true), or until `until` (false). A
+ * message that is no `go` is dropped by the reader and changes nothing. */
+static bool wait_go(uint64_t until)
+{
+    static const struct splashch_events events = { .go = on_go };
+    bool go = false;
+    while (now() < until) {
+        status_t st = splashch_read_event(init_ch, &events, &go);
+        if (go || st == ERR_PEER_CLOSED)
+            return true;   /* `go`, or init gone: the same */
+        signals_t seen = 0;
+        if (st == ERR_SHOULD_WAIT &&
+            jam_object_wait_one(init_ch, SIG_READABLE | SIG_PEER_CLOSED, until, &seen) != OK)
+            return false;
+    }
+    return false;
 }
 
 /* Hold the last frame until init says go (or is gone), or HOLD_MAX; and,
@@ -146,14 +170,12 @@ static void hold(uint64_t ended, bool linger)
         (void)gfx_key(now() + HOLD_ALONE);
         return;
     }
-    signals_t seen = 0;
-    status_t st = jam_object_wait_one(init_ch, SIG_READABLE | SIG_PEER_CLOSED, now() + HOLD_MAX,
-                                      &seen);
+    bool up = wait_go(now() + HOLD_MAX);
     uint64_t t = now();
     if (linger && t < ended + LINGER)
         jam_sleep_until(ended + LINGER);
     printf("splash: %s %lu ms after the end; giving the screen back %lu ms after it\n",
-           st == ERR_TIMED_OUT ? "no shell yet" : "the shell is up",
+           up ? "the shell is up" : "no shell yet",
            (unsigned long)((t - ended) / NS_PER_MS), (unsigned long)((now() - ended) / NS_PER_MS));
 }
 
@@ -208,7 +230,7 @@ int main(int argc, char **argv)
         gfx_close();
     if (st != OK) {
         printf("splash: not playing (%s)\n", status_str(st));
-        tell_init(SPLASH_PLAYED);
+        tell_init();
         return 1;
     }
     if (init_ch && has_arg(argc, argv, "--hang")) {
@@ -219,7 +241,7 @@ int main(int argc, char **argv)
     bool skipped = play(mpg, len, since);
     if (skipped)
         sound_stop();
-    tell_init(SPLASH_PLAYED);
+    tell_init();
     hold(now(), !skipped);   /* a skip wants it gone: no linger */
     fade_out();
     sound_wait(now() + NS_PER_S);   /* the sound's tail, or its fade */

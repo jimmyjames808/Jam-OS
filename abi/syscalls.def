@@ -92,8 +92,34 @@
 # is read or dropped (the reading end closes), also after the writer has
 # closed its end: a close frees nothing of the writer's quota.
 20  channel_create    status    handle_t *a, handle_t *b
+# channel_write: nbytes (at most CHANNEL_MAX_BYTES; the first 4 bytes of a
+# message are its txid, by convention) and nhandles (at most
+# CHANNEL_MAX_HANDLES, each needing RIGHT_TRANSFER) go to the peer's queue,
+# or straight to the channel_call waiting there for that txid. Needs
+# RIGHT_WRITE on h. ERR_SHOULD_WAIT: CHANNEL_MAX_QUEUED messages wait
+# already; ERR_PEER_CLOSED: the peer is gone; ERR_OUT_OF_RANGE: past a
+# limit; ERR_NOT_SUPPORTED: a handle the cycle rule refuses (the channel's
+# own end, its peer, an end whose queue holds a channel end) or a peer
+# marked CHANNEL_NO_HANDLES.
 21  channel_write     status    handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, uint32_t nhandles
+# channel_read (struct channel_read_args, <jam/abi.h>): the oldest message
+# into rd_bytes and rd_handles, its sizes into rd_actual and rd_hactual.
+# Needs RIGHT_READ. Never waits: ERR_SHOULD_WAIT if nothing is queued,
+# ERR_PEER_CLOSED if nothing is queued and the peer is gone.
+# ERR_BUFFER_TOO_SMALL (the sizes are still written) leaves the message
+# queued. A fault writing the buffers loses the message, its handles
+# closed (ERR_INVALID_ARGS).
 22  channel_read      status    @channel_read_args
+# channel_call (struct channel_call_args): the request, its first 4 bytes
+# replaced by a txid of the kernel's (CHANNEL_TXID_KERNEL set, the rest a
+# counter of the channel pair's), is written as channel_write does; then
+# the call waits for the reply with that txid, which only this thread gets
+# (never channel_read), until deadline_ns (ERR_TIMED_OUT; with
+# CHANNEL_CALL_TIMEOUT in flags it is a timeout from the kernel's own
+# clock). Needs RIGHT_WRITE and RIGHT_READ on h. wr_len is at least 4.
+# ERR_PEER_CLOSED: the peer closed; ERR_CANCELED: this end was closed, or
+# the thread killed; ERR_BUFFER_TOO_SMALL: the reply didn't fit (its sizes
+# are written, the reply and its handles dropped).
 23  channel_call      status    @channel_call_args
 # A server's reply and its wait for the next request, in one call (struct
 # channel_reply_wait_args, <jam/abi.h>). First the reply: a channel_write

@@ -66,8 +66,7 @@ SH_CMD(mount)
     uint64_t total, free_bytes;
     bool ro;
     char label[17];
-    uint8_t field[16] = { 0 };
-    if (path[0] != '/' || strlen(path) >= sizeof(field) || strchr(path + 1, '/')) {
+    if (path[0] != '/' || strlen(path) > INITCTL_PATH_MAX || strchr(path + 1, '/')) {
         sh_tty("mount: %s: not a mount point (try `mount`)\n", path);
         return 1;
     }
@@ -96,10 +95,9 @@ SH_CMD(mount)
         sh_tty("mount: no init to ask\n");   /* a shell init didn't start */
         return 1;
     }
-    memcpy(field, path, strlen(path));
     sh_flush();
     uint64_t t0 = now();
-    st = initctl_mount_until(sh_initctl(), now() + MOUNT_WAIT, field, writable);
+    st = initctl_mount_until(sh_initctl(), now() + MOUNT_WAIT, path, (uint32_t)strlen(path), writable);
     if (st != OK) {
         sh_tty("mount: %s: %s\n", path,
                st == ERR_ACCESS_DENIED ? "only another stick's mounts (/usbN) can be changed"

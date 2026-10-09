@@ -34,6 +34,7 @@
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc devmgr\n"
           "svc devmgr-ctl\n"
+          "svc init\n"
           "svc volumes\n"
           "svc wayland\n"
           "mount * rw\n"
@@ -675,6 +676,9 @@ static const struct {
     { "logd_data_goes_away", t_logd_data_goes_away },
     { "logd_kernel_log", t_logd_kernel_log },
     { "logd_openers", t_logd_openers },
+    { "logd_crash_result", t_logd_crash_result },
+    { "splashch_wire", t_splashch_wire },
+    { "crashres_wire", t_crashres_wire },
     { "klog_lines", t_klog_lines },
     { "fat_format", t_fat_format },
     { "fat_files", t_fat_files },
@@ -801,6 +805,7 @@ static const struct {
     { "update_manifest_damage", t_update_manifest_damage },
     { "update_build_net", t_update_build_net },
     { "update_signature", t_update_signature },
+    { "update_offer_call", t_update_offer_call },
     { "updwire_golden", t_updwire_golden },
     { "updwire_hostile", t_updwire_hostile },
     { "updfetch_clean", t_updfetch_clean },
@@ -850,6 +855,7 @@ static const struct {
     { "netwait_states", t_netwait_states },
     { "netwait_level", t_netwait_level },
     { "netwait_stress", t_netwait_stress },
+    { "netwait_edge", t_netwait_edge },
     { "settings_parse", t_settings_parse },
     { "settings_edit", t_settings_edit },
     { "settings_file", t_settings_file },
@@ -1158,6 +1164,7 @@ static const struct {
     { "idl_fuzz", t_idl_fuzz },
     { "fat_hostile", t_fat_hostile },
     { "volumes_hostile", t_volumes_hostile },
+    { "initctl_strings", t_initctl_strings },
 };
 
 int main(int argc, char **argv)

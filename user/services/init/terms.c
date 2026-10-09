@@ -22,9 +22,9 @@
  *
  *   console   bin/console: root with CONSOLE_ROOT (klog, the screen,
  *             serial output; reboot on Ctrl+Alt+Del), the server end of a
- *             console channel (SR_USER + 0) and a control channel of init's
+ *             console channel (CONSOLE_SR_CHANNEL) and a control channel of init's
  *             of its own that answers only `reboot` and `terminal`
- *             (SR_USER + 8, ctl.c: Ctrl+Alt+Del goes through init, which
+ *             (CONSOLE_SR_INITCTL, ctl.c: Ctrl+Alt+Del goes through init, which
  *             syncs /data first; with a compositor the compositor keeps
  *             Ctrl+Alt+Del and Super+Enter, which never reach it), and the
  *             log writers' table read-only (CONSOLE_WRITERS_ROLE,
@@ -35,7 +35,7 @@
  *             but for the commands whose output it is) except the first
  *             terminal's on a `verbose` boot, which shows the log as it
  *             comes. With a compositor each also gets /svc/wayland's
- *             client end (SR_USER + 10: window mode, the screen is the
+ *             client end (CONSOLE_SR_WAYLAND: window mode, the screen is the
  *             compositor's, so no RIGHT_ROOT_SCREEN) and "term=<n>", its
  *             terminal's number (the system's news is the desktop's
  *             notices, not a terminal's),
@@ -45,18 +45,17 @@
  *             console as console.set_font)
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
  *             console.new_client), root with SHELL_ROOT,
- *             RES_PCI with RIGHTS_BASIC (SR_USER + 1), and init's whole
+ *             RES_PCI with RIGHTS_BASIC (SHELL_SR_PCI), and init's whole
  *             namespace as it is (SR_NS, followed: every mount, /data's
  *             etc included, and every service: devmgr's channels, init's
  *             control channel /svc/init (ctl.c: kill, sync, reboot,
  *             mount, terminal), the mixer's, the music player's, logd's,
- *             netstack's /svc/net). The first terminal's shell also gets a
- *             channel from init (SR_USER + 2), and /svc/init is made anew
- *             each time it starts (the old one's holders see
- *             ERR_PEER_CLOSED, and the other shells are sent the new one);
- *             on the boot after a panic it waits for logd's answer
- *             (lastboot.c) and finds its one line queued on that channel
- *             (INIT_SHELL_NOTE) when it starts. With a compositor every
+ *             netstack's /svc/net). The first terminal's shell has
+ *             /svc/init made anew each time it starts (the old one's
+ *             holders see ERR_PEER_CLOSED, and the other shells are sent
+ *             the new one); on the boot after a panic it waits for logd's
+ *             answer (lastboot.c) and is started with the one line to
+ *             print as an argument, "note=<line>". With a compositor every
  *             terminal's shell gets "term=<n>" (`exit` closes its
  *             terminal; without a compositor it gets none, and `exit` says the
  *             one terminal stays), and the first
@@ -77,6 +76,7 @@
 #include <settings.h>
 #include "init.h"
 
+#define NOTE_ARG_MAX (5 + 256)   /* "note=" and lastboot.c's banner (BANNER_MAX) */
 #define FONT_KEY "terminal.font"   /* smooth or bitmap: the terminal windows' font */
 
 /* The root's powers (<jam/abi.h> RIGHT_ROOT_*; neither can map or slice):
@@ -89,7 +89,6 @@
                       RIGHT_ROOT_REBOOT)
 #define SHELL_ROOT   (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_DEBUG | \
                       RIGHT_ROOT_REBOOT | RIGHT_ROOT_VMEX)
-#define WAYLAND_ROLE 10   /* the console's SR_USER + this: /svc/wayland */
 
 enum { TERM_CLOSED, TERM_OPEN, TERM_CLOSING };
 
@@ -102,7 +101,6 @@ struct term {
 static struct term terms[TERM_MAX];
 
 static handle_t port;
-static handle_t to_shell;    /* init's end of the first shell's SR_USER + 2 channel */
 static bool quiet_console;   /* the next first console starts quiet (the splash's, no compositor) */
 static bool console_ever;    /* the first terminal's console has started this boot */
 /* An argument for the first shell started ("soak=3": run the soak test), or NULL. */
@@ -172,16 +170,16 @@ static unsigned console_handles(unsigned k, handle_t b, struct spawn_handle *x)
         rights &= ~RIGHT_ROOT_SCREEN;   /* the compositor's */
     unsigned nx = 0;
     x[nx++] = (struct spawn_handle){ SR_RESOURCE, services_root_with(rights) };
-    x[nx++] = (struct spawn_handle){ SR_USER + 0, b };
+    x[nx++] = (struct spawn_handle){ CONSOLE_SR_CHANNEL, b };
     /* The full-screen console's notices (with a compositor they are the
      * desktop's). */
     handle_t writers = k || wayland ? HANDLE_INVALID : writers_for_console();
     if (writers)
         x[nx++] = (struct spawn_handle){ CONSOLE_WRITERS_ROLE, writers };
     if (ctl)
-        x[nx++] = (struct spawn_handle){ SR_USER + 8, ctl };
+        x[nx++] = (struct spawn_handle){ CONSOLE_SR_INITCTL, ctl };
     if (wayland)
-        x[nx++] = (struct spawn_handle){ SR_USER + WAYLAND_ROLE, wayland };
+        x[nx++] = (struct spawn_handle){ CONSOLE_SR_WAYLAND, wayland };
     return nx;
 }
 
@@ -221,33 +219,12 @@ static status_t start_console(unsigned k)
     return OK;
 }
 
-/* The line the boot's first shell prints after a panic (lastboot.c), queued
- * on its init channel before it starts. */
-static void queue_banner(handle_t to)
+/* The first shell's own: a new /svc/init, its control channel of init's,
+ * published before the shell is given our namespace (a new one each time:
+ * the old one's holders see ERR_PEER_CLOSED). The other terminals' shells
+ * follow the namespace: they are sent the new one. */
+static void first_shell_extras(void)
 {
-    const char *b = lastboot_banner();
-    size_t n = strlen(b);
-    if (!to || !n)
-        return;
-    struct { uint32_t kind; char text[INIT_SHELL_NOTE_MAX]; } m = { INIT_SHELL_NOTE, { 0 } };
-    if (n > sizeof(m.text))
-        n = sizeof(m.text);
-    memcpy(m.text, b, n);
-    if (jam_channel_write(to, &m, (uint32_t)(sizeof(m.kind) + n), NULL, 0) != OK)
-        printf("init: the shell can't be given the last boot's line\n");
-}
-
-/* The first shell's own: its init channel (*mine: init's end; *theirs:
- * its) with the last boot's line, and a new /svc/init. */
-static void first_shell_extras(handle_t *mine, handle_t *theirs)
-{
-    if (jam_channel_create(mine, theirs) != OK)
-        *mine = *theirs = HANDLE_INVALID;
-    queue_banner(*mine);
-    /* Its control channel of init's: /svc/init, published before the
-     * shell is given our namespace (a new one each time: the old one's
-     * holders see ERR_PEER_CLOSED). The other terminals' shells follow
-     * the namespace: they are sent the new one. */
     handle_t ctl;
     if (ctl_new(CTL_SHELL, port, KEY_CTL + CTL_SHELL, &ctl) == OK) {
         services_publish(SVC_INIT, ctl, false);
@@ -261,7 +238,6 @@ static void first_shell_extras(handle_t *mine, handle_t *theirs)
 static status_t start_shell(unsigned k)
 {
     handle_t c = HANDLE_INVALID, pci = HANDLE_INVALID, p2 = HANDLE_INVALID;
-    handle_t mine = HANDLE_INVALID, theirs = HANDLE_INVALID;
     /* A SHELL-level console channel: no input sources of its own. */
     status_t st = console_new_client_until(terms[k].cons, now() + 5 * NS_PER_S, 1, &c);
     if (st != OK)
@@ -270,32 +246,36 @@ static status_t start_shell(unsigned k)
         jam_handle_replace(pci, RIGHTS_BASIC, &p2) != OK)
         p2 = HANDLE_INVALID;
     if (!k)
-        first_shell_extras(&mine, &theirs);
+        first_shell_extras();
     struct spawn_handle x[] = {
         { SR_CONSOLE, c },
         { SR_RESOURCE, services_root_with(RIGHTS_BASIC | SHELL_ROOT) },
-        { SR_USER + 1, p2 },
-        { SR_USER + 2, theirs },
+        { SHELL_SR_PCI, p2 },
     };
     /* Leave out the ones we don't have. */
-    struct spawn_handle y[4];
+    struct spawn_handle y[3];
     unsigned n = 0;
-    for (unsigned j = 0; j < 4; j++)
+    for (unsigned j = 0; j < 3; j++)
         if (x[j].h)
             y[n++] = x[j];
     /* Its terminal's number (with a compositor: `exit` closes it); the
      * boot's first shell gets the boot word's command (shell_first_arg),
      * and one init restarts later is an ordinary shell; the command
      * initctl.terminal asked for, once. */
-    char term[8], run[4 + TERM_CMD_MAX];
+    char term[8], run[4 + TERM_CMD_MAX], note[NOTE_ARG_MAX];
     snprintf(term, sizeof(term), "term=%u", k + 1);
     snprintf(run, sizeof(run), "run=%s", terms[k].cmd);
-    const char *argv[5] = { svcs[TERM_SHELL(k)].path };
+    const char *argv[6] = { svcs[TERM_SHELL(k)].path };
     int argc = 1;
     if (comp_on())
         argv[argc++] = term;
     if (!k && first_arg)
         argv[argc++] = first_arg;
+    const char *banner = !k ? lastboot_banner() : "";   /* once: after a panic */
+    if (banner[0]) {
+        snprintf(note, sizeof(note), "note=%s", banner);
+        argv[argc++] = note;
+    }
     if (terms[k].cmd[0])
         argv[argc++] = run;
     if (terms[k].crashed)
@@ -307,17 +287,7 @@ static status_t start_shell(unsigned k)
         first_arg = NULL;
     if (st == OK)
         terms[k].cmd[0] = '\0';   /* once: a restarted shell is an ordinary one */
-    if (st != OK) {
-        if (mine)
-            jam_handle_close(mine);
-        return st;
-    }
-    if (!k) {
-        if (to_shell)
-            jam_handle_close(to_shell);
-        to_shell = mine;
-    }
-    return OK;
+    return st;
 }
 
 status_t terms_start(unsigned i)
@@ -336,10 +306,6 @@ void terms_closed(unsigned i)
     if (is_console(i) && terms[k].cons) {
         jam_handle_close(terms[k].cons);   /* the shell (and serialin) see PEER_CLOSED */
         terms[k].cons = HANDLE_INVALID;
-    }
-    if (i == SHELL && to_shell) {
-        jam_handle_close(to_shell);
-        to_shell = HANDLE_INVALID;
     }
 }
 

@@ -2,7 +2,7 @@
  * ctl.c serves a channel of the test's own (requests written without
  * waiting, ctl_serve run, the replies read), over the same core
  * user/tests/utest/netstack.c drives; then bin/netstack as a process,
- * started the way init will start it (its control channel at SR_USER + 0),
+ * started the way init will start it (its control channel at NETSTACK_SR_CTL),
  * called with the blocking client and killed.
  *
  * Covered: set_ipv4 and info agree; every kind of address set_ipv4 must
@@ -250,7 +250,7 @@ bool t_netctl_process(void)
     CHECK_ST(new_job(&job), OK);
     CHECK_ST(jam_channel_create(&cli, &srv), OK);
     const char *argv[] = { "bin/netstack" };
-    struct spawn_handle x = { SR_USER + 0, srv };
+    struct spawn_handle x = { NETSTACK_SR_CTL, srv };
     struct spawn_args a = {
         .path = "bin/netstack", .argc = 1, .argv = argv, .job = job, .extra = &x, .nextra = 1,
     };

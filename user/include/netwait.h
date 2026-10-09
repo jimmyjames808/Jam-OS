@@ -35,6 +35,20 @@
  * So a wait costs the packets that came and the entries still pending (the
  * ready ones), never one look at every entry: O(ready), not O(entries).
  *
+ * **Edge entries** (NETWAIT_EDGE, handles only: epoll's EPOLLET). An edge
+ * entry reported ready is armed instead of staying pending: only a packet,
+ * the next rise of one of its signals, brings it back. Its read signals
+ * (with its hup ones) and its write signals are bound apart, so a read
+ * signal rising is seen while a write signal stays up, and the other way
+ * round. A signal that stays up is reported once; it rises again only
+ * after it went down (the reader drained the channel).
+ *
+ * **Waiting outside the set** (netwait_block): a caller that keeps state
+ * of its own beside the set (the POSIX layer's bytes already read off a
+ * pipe) looks with a past deadline, looks at its own state, then blocks
+ * in netwait_block, which sleeps until a packet is queued and takes none:
+ * a change between the two looks queued a packet, so the block returns.
+ *
  * **Why no wake is lost** (the socket rings' argument, <sockring.h>
  * "Waking"): the set raises a flag, fences and looks; netstack publishes,
  * fences and reads the flag; one of the two sees the other's write. The
@@ -108,6 +122,7 @@
 #define NETWAIT_HUP    (1u << 2)   /* readiness only: always reported */
 #define NETWAIT_ERROR  (1u << 3)   /* readiness only: always reported */
 #define NETWAIT_RX_END (1u << 4)   /* readiness only: with NETWAIT_READ */
+#define NETWAIT_EDGE   (1u << 5)   /* interest only, handles only: an edge entry (above) */
 #define NETWAIT_INTEREST (NETWAIT_READ | NETWAIT_WRITE)
 
 struct netwait;   /* a set: netwait_create */
@@ -165,13 +180,15 @@ void     netwait_destroy(struct netwait *w);
  * RIGHT_WAIT; ERR_NO_MEMORY: the job's message bytes). */
 status_t netwait_add_sock(struct netwait *w, const struct netwait_sock *s, uint32_t interest,
                           void *user, uint32_t *out_id);
-/* Add a handle (its read, write and hup signals as above). Errors as
- * netwait_add_sock's, and ERR_INVALID_ARGS for no signals at all. */
+/* Add a handle (its read, write and hup signals as above); interest may
+ * add NETWAIT_EDGE. Errors as netwait_add_sock's, and ERR_INVALID_ARGS for
+ * no signals at all. (netwait_add_sock refuses NETWAIT_EDGE with
+ * ERR_NOT_SUPPORTED: a socket's edges are not built yet.) */
 status_t netwait_add_handle(struct netwait *w, const struct netwait_handle *h,
                             uint32_t interest, void *user, uint32_t *out_id);
 /* A new interest for entry id; it is looked at again by the next wait.
  * ERR_NOT_FOUND: no such entry (removed); ERR_INVALID_ARGS: an unknown bit;
- * a handle's binding errors. */
+ * ERR_NOT_SUPPORTED: NETWAIT_EDGE for a socket; a handle's binding errors. */
 status_t netwait_modify(struct netwait *w, uint32_t id, uint32_t interest);
 /* Take entry id out: its bindings go, the flags the set raised in a
  * socket's rings are lowered (unless netstack is gone), and its late
@@ -191,6 +208,12 @@ uint32_t netwait_count(const struct netwait *w);
  * ready; ERR_INVALID_ARGS: max 0. */
 status_t netwait_wait(struct netwait *w, uint64_t deadline, struct netwait_ready *out,
                       uint32_t max, uint32_t *out_n);
+/* Sleep until a packet is queued on the set's port, or the deadline,
+ * taking none: the next netwait_wait takes it ("Waiting outside the set"
+ * above). Any thread may call it: it reads only the port. OK: a packet
+ * is queued; ERR_TIMED_OUT; ERR_INTERRUPTED (thread_interrupt: EINTR);
+ * ERR_CANCELED (the thread was cancelled). */
+status_t netwait_block(struct netwait *w, uint64_t deadline);
 /* From any thread: make the set's current wait, or its next one, return
  * (ERR_CANCELED if nothing is ready). Wakes before the wait returns
  * count as one. The port's errors (ERR_NO_MEMORY). */

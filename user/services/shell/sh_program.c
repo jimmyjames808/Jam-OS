@@ -160,7 +160,7 @@ static unsigned program_handles(const struct wants *w, bool bg, struct spawn_han
         x[nx++] = (struct spawn_handle){ SR_CONSOLE, h };
     }
     /* In a pipe or the background: its printf goes down a channel to us
-     * (libos printf.c). */
+     * (libos stdio.c). */
     if ((bg || sh_piped()) && jam_channel_create(out_r, &out_w) == OK) {
         xr[nx] = RIGHT_SAME;
         x[nx++] = (struct spawn_handle){ SR_STDOUT, out_w };
@@ -421,7 +421,7 @@ static status_t helper_setup(struct helper *h, struct spawn_handle *x, unsigned 
     if (st == OK && (st = jam_channel_create(&h->out_r, &out_w)) == OK)
         x[(*nx)++] = (struct spawn_handle){ SR_STDOUT, out_w };
     if (st == OK && (st = jam_channel_create(&h->stop_w, &stop_r)) == OK)
-        x[(*nx)++] = (struct spawn_handle){ SR_USER + 2, stop_r };
+        x[(*nx)++] = (struct spawn_handle){ PROGRAM_SR_STOP, stop_r };
     return st;
 }
 

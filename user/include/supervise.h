@@ -1,5 +1,5 @@
 /* What a supervisor shares (user/lib/supervise.c; docs/M11.6-PLAN.md,
- * docs/M12-REVIEW-STORAGE.md "The shared supervision module"). A
+ * docs/history/M12-REVIEW-STORAGE.md "The shared supervision module"). A
  * supervisor is a process that starts other processes and starts them
  * again when they end: init (the mixer and the other services), devmgr
  * (the drivers) and, after the storage split, volumes (the filesystem

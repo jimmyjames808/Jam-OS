@@ -61,8 +61,8 @@ SH_CMD(play)
         return 1;
     struct spawn_handle x[4];
     file_give(&f, &x[0].h, &x[1].h);   /* to bin/play: SR_USER + 0 and + 1 */
-    x[0].role = SR_USER + 0;
-    x[1].role = SR_USER + 1;
+    x[0].role = PROGRAM_SR_FILE;
+    x[1].role = PROGRAM_SR_BUF;
     const char *args[8] = { "play" };
     int n = 1;
     for (int k = 1; k <= i && n < 7; k++)
