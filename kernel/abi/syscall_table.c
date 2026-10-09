@@ -275,6 +275,22 @@ static int64_t call_thread_set_fs_base(const struct syscall_frame *f)
     return sysc_thread_set_fs_base(f->args[0]);
 }
 
+static int64_t call_futex_wait(const struct syscall_frame *f)
+{
+    return sysc_futex_wait(f->args[0], (uint32_t)f->args[1], f->args[2], (uint32_t)f->args[3]);
+}
+
+static int64_t call_futex_wake(const struct syscall_frame *f)
+{
+    return sysc_futex_wake(f->args[0], (uint32_t)f->args[1], (uint32_t)f->args[2]);
+}
+
+static int64_t call_futex_requeue(const struct syscall_frame *f)
+{
+    return sysc_futex_requeue(f->args[0], (uint32_t)f->args[1], f->args[2], (uint32_t)f->args[3],
+                              (uint32_t)f->args[4]);
+}
+
 static int64_t call_resource_create(const struct syscall_frame *f)
 {
     return sysc_resource_create((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2], f->args[3],
@@ -504,6 +520,9 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_thread_set_priority] = call_thread_set_priority,
     [SYS_job_kill] = call_job_kill,
     [SYS_thread_set_fs_base] = call_thread_set_fs_base,
+    [SYS_futex_wait] = call_futex_wait,
+    [SYS_futex_wake] = call_futex_wake,
+    [SYS_futex_requeue] = call_futex_requeue,
     [SYS_resource_create] = call_resource_create,
     [SYS_pci_enum] = call_pci_enum,
     [SYS_pci_device_open] = call_pci_device_open,

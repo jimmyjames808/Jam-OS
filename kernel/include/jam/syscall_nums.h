@@ -51,6 +51,9 @@
 #define SYS_thread_set_priority  79
 #define SYS_job_kill             80
 #define SYS_thread_set_fs_base   81
+#define SYS_futex_wait           85
+#define SYS_futex_wake           86
+#define SYS_futex_requeue        87
 #define SYS_resource_create      90
 #define SYS_pci_enum             91
 #define SYS_pci_device_open      92

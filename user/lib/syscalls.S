@@ -411,6 +411,32 @@ jam_thread_set_fs_base:
     ret
     .size jam_thread_set_fs_base, . - jam_thread_set_fs_base
 
+    .globl jam_futex_wait
+    .type jam_futex_wait, @function
+jam_futex_wait:
+    mov %rcx, %r10
+    mov $SYS_futex_wait, %eax
+    syscall
+    ret
+    .size jam_futex_wait, . - jam_futex_wait
+
+    .globl jam_futex_wake
+    .type jam_futex_wake, @function
+jam_futex_wake:
+    mov $SYS_futex_wake, %eax
+    syscall
+    ret
+    .size jam_futex_wake, . - jam_futex_wake
+
+    .globl jam_futex_requeue
+    .type jam_futex_requeue, @function
+jam_futex_requeue:
+    mov %rcx, %r10
+    mov $SYS_futex_requeue, %eax
+    syscall
+    ret
+    .size jam_futex_requeue, . - jam_futex_requeue
+
     .globl jam_resource_create
     .type jam_resource_create, @function
 jam_resource_create:

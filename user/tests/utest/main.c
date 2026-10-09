@@ -1035,6 +1035,7 @@ static const struct {
     { "comp_look_tiled", t_comp_look_tiled },
     { "comp_look_wallpaper", t_comp_look_wallpaper },
     { "thread_fs_base", t_thread_fs_base },
+    { "futex_calls", t_futex_calls },
 };
 
 int main(int argc, char **argv)

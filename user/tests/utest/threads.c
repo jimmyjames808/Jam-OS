@@ -1,8 +1,9 @@
 /* utest: threads. FPU, SSE and AVX state survives preemption (more
  * threads than CPUs, each checking its registers after being preempted),
  * many threads come and go, the FS base (thread_start's and
- * thread_set_fs_base's), a job kill takes threads that spin or never
- * started, and a job kill reaps a dead parent's orphans. */
+ * thread_set_fs_base's), futexes from ring 3, lock_take under
+ * contention, a job kill takes threads that spin or never started, and a
+ * job kill reaps a dead parent's orphans. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -235,6 +236,61 @@ bool t_thread_fs_base(void)
     CHECK_ST(jam_thread_set_fs_base(0xffff800000000000ull), ERR_INVALID_ARGS);
     CHECK_EQ(fs_word0(), fs_words[2]);   /* unchanged */
     CHECK_ST(jam_thread_set_fs_base(0), OK);   /* as libos runs */
+    return true;
+}
+
+/* ---- futexes ------------------------------------------------------------------ */
+
+static uint32_t fx_word, fx_seen;   /* the waiter's word; what it saw (RELAXED) */
+static status_t fx_status;
+
+static void fx_waiter(void *arg)
+{
+    (void)arg;
+    /* Wait while the word is 0; the main thread stores 1, then wakes. */
+    while (!__atomic_load_n(&fx_word, __ATOMIC_ACQUIRE)) {
+        status_t st = jam_futex_wait(&fx_word, 0, now() + 10 * NS_PER_S, 0);
+        if (st != OK && st != ERR_BAD_STATE) {
+            fx_status = st;
+            return;
+        }
+    }
+    __atomic_store_n(&fx_seen, 1, __ATOMIC_RELEASE);
+    fx_status = OK;
+}
+
+/* The system calls from ring 3: a changed value, a deadline, bad
+ * addresses and flags, a wake with nobody waiting, and a thread woken. */
+bool t_futex_calls(void)
+{
+    static uint8_t stack[8192] __attribute__((aligned(64)));
+    static uint32_t words[4];
+    words[0] = 5;
+    CHECK_ST(jam_futex_wait(&words[0], 4, DEADLINE_NEVER, 0), ERR_BAD_STATE);
+    uint64_t t0 = now();
+    CHECK_ST(jam_futex_wait(&words[0], 5, t0 + 2 * NS_PER_MS, 0), ERR_TIMED_OUT);
+    CHECK(now() - t0 >= 2 * NS_PER_MS);
+    CHECK_ST(jam_futex_wait(&words[0], 5, 0, 0), ERR_TIMED_OUT);
+    CHECK_ST(jam_futex_wait((const uint32_t *)((uint8_t *)words + 1), 0, 0, 0), ERR_INVALID_ARGS);
+    CHECK_ST(jam_futex_wait((const uint32_t *)8, 0, 0, 0), ERR_INVALID_ARGS);
+    CHECK_ST(jam_futex_wait((const uint32_t *)0xffff800000000000ull, 0, 0, 0), ERR_INVALID_ARGS);
+    CHECK_ST(jam_futex_wait(&words[0], 5, 0, 1), ERR_INVALID_ARGS);
+    CHECK_EQ(jam_futex_wake(&words[0], 1, 0), 0);
+    CHECK_EQ(jam_futex_wake(&words[0], 1, 2), ERR_INVALID_ARGS);
+    CHECK_EQ(jam_futex_requeue(&words[0], 1, &words[1], 1, 0), 0);
+    CHECK_EQ(jam_futex_requeue(&words[0], 1, (const uint32_t *)3, 1, 0), ERR_INVALID_ARGS);
+
+    fx_word = fx_seen = 0;
+    fx_status = ERR_IO;
+    handle_t t;
+    CHECK_ST(thread_spawn("futex", fx_waiter, NULL, stack, sizeof(stack), &t), OK);
+    jam_nanosleep(now() + 2 * NS_PER_MS);   /* most likely asleep by now (either way works) */
+    __atomic_store_n(&fx_word, 1, __ATOMIC_RELEASE);
+    CHECK(jam_futex_wake(&fx_word, UINT32_MAX, 0) >= 0);
+    if (!wait_threads(&t, 1))
+        return false;
+    CHECK_ST(fx_status, OK);
+    CHECK_EQ(fx_seen, 1);
     return true;
 }
 
