@@ -259,14 +259,14 @@ static void take_locked(void)
 
 /* ---- paths ------------------------------------------------------------------------ */
 
-/* The next name of p ("a" of "//a/b"): its length, *name at it; 0 at the
- * end of the path. */
-static size_t next_name(const char *p, const char **name)
+/* The next name of p ("a" of "//a/b"), which ends at `end` or its NUL:
+ * its length, *name at it; 0 at the end of the path. */
+static size_t next_name(const char *p, const char *end, const char **name)
 {
-    while (*p == '/')
+    while (p < end && *p == '/')
         p++;
     size_t l = 0;
-    while (p[l] && p[l] != '/')
+    while (p + l < end && p[l] && p[l] != '/')
         l++;
     *name = p;
     return l;
@@ -282,14 +282,14 @@ static bool is_dotdot(const char *name, size_t l)
     return l == 2 && name[0] == '.' && name[1] == '.';
 }
 
-/* The names of in (NUL-terminated) joined by '/' into out, "." dropped and
- * ".." taking the name before it (none: it stays at the root). The result
- * is never longer than in. */
-static void clean(const char *in, char *out)
+/* The names of in (len bytes, or up to its NUL) joined by '/' into out,
+ * "." dropped and ".." taking the name before it (none: it stays at the
+ * root), NUL-terminated. The result is never longer than in. */
+static void clean(const char *in, size_t len, char *out)
 {
     size_t n = 0, l;
     const char *name;
-    for (const char *p = in; (l = next_name(p, &name)) != 0; p = name + l) {
+    for (const char *p = in; (l = next_name(p, in + len, &name)) != 0; p = name + l) {
         if (is_dotdot(name, l)) {
             while (n && out[n - 1] != '/')
                 n--;
@@ -305,11 +305,11 @@ static void clean(const char *in, char *out)
     out[n] = '\0';
 }
 
-status_t fs_path_clean(const uint8_t path[FS_PATH_MAX], char out[FS_PATH_MAX])
+status_t fs_path_clean(const char *path, uint32_t len, char *out)
 {
-    if (strnlen((const char *)path, FS_PATH_MAX) == FS_PATH_MAX)
+    if (strnlen(path, len) != len)
         return ERR_INVALID_ARGS;
-    clean((const char *)path, out);
+    clean(path, len, out);
     return OK;
 }
 
@@ -331,7 +331,8 @@ status_t ns_resolve(const char *path, uint8_t rel[FS_PATH_MAX], handle_t *fs, un
     /* The mount: the first real name. "." and ".." before it stay at "/". */
     const char *name, *p = path;
     size_t len;
-    while ((len = next_name(p, &name)) != 0 && (is_dot(name, len) || is_dotdot(name, len)))
+    const char *end = path + strlen(path);
+    while ((len = next_name(p, end, &name)) != 0 && (is_dot(name, len) || is_dotdot(name, len)))
         p = name + len;
     memset(rel, 0, FS_PATH_MAX);
     rel[0] = '/';
@@ -339,7 +340,7 @@ status_t ns_resolve(const char *path, uint8_t rel[FS_PATH_MAX], handle_t *fs, un
     *mount = 0;
     if (!len)
         return OK;
-    clean(name + len, (char *)rel + 1);   /* shorter than path: it fits */
+    clean(name + len, (size_t)(end - name - len), (char *)rel + 1);   /* shorter: it fits */
 
     status_t st = ERR_NOT_FOUND;
     ns_lock();

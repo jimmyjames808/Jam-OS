@@ -255,20 +255,16 @@ bool t_ns_path_rules(void)
     CHECK_ST(fs_unlink("/"), ERR_ACCESS_DENIED);
     CHECK_ST(fs_sync("/"), ERR_INVALID_ARGS);
     /* fs_path_clean, as the services use it. */
-    uint8_t in[FS_PATH_MAX];
-    char out[FS_PATH_MAX];
-    memset(in, 0, sizeof(in));
-    memcpy(in, "/a/./b//../c/", 13);
-    CHECK_ST(fs_path_clean(in, out), OK);
+    char out[32];
+    CHECK_ST(fs_path_clean("/a/./b//../c/", 13, out), OK);
     CHECK(!strcmp(out, "a/c"));
-    memcpy(in, "../../x\0", 8);
-    CHECK_ST(fs_path_clean(in, out), OK);
+    CHECK_ST(fs_path_clean("../../x", 7, out), OK);
     CHECK(!strcmp(out, "x"));
-    memcpy(in, "/\0", 2);
-    CHECK_ST(fs_path_clean(in, out), OK);
+    CHECK_ST(fs_path_clean("/", 1, out), OK);
     CHECK(!out[0]);
-    memset(in, 'a', sizeof(in));   /* no NUL in the field */
-    CHECK_ST(fs_path_clean(in, out), ERR_INVALID_ARGS);
+    CHECK_ST(fs_path_clean("/a/bcd", 4, out), OK);   /* its length, not a NUL, ends it */
+    CHECK(!strcmp(out, "a/b"));
+    CHECK_ST(fs_path_clean("/a\0b", 4, out), ERR_INVALID_ARGS);   /* a NUL inside */
     return true;
 }
 

@@ -31,11 +31,11 @@ static size_t pop(const char *out, size_t len)
     return len > 0 ? len - 1 : 0;
 }
 
-status_t path_resolve(const uint8_t in[FS_PATH_MAX], char out[FS_PATH_MAX])
+status_t path_resolve(const char *in, uint32_t in_len, char out[FAT_PATH_MAX])
 {
-    const char *s = (const char *)in;
-    size_t n = strnlen(s, FS_PATH_MAX);
-    if (n == FS_PATH_MAX || (n > 0 && s[0] != '/'))
+    const char *s = in;
+    size_t n = in_len;
+    if (n >= FAT_PATH_MAX || strnlen(s, n) != n || (n > 0 && s[0] != '/'))
         return ERR_INVALID_ARGS;
     size_t len = 0;   /* out holds "/a/b" without a NUL; "" is the root */
     for (size_t i = 0; i < n;) {

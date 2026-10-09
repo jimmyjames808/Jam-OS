@@ -109,7 +109,7 @@ static bool check_refused(const struct fatrun *r)
     };
     struct tfile f;
     unsigned before = 0, after = 0;
-    uint8_t full[FS_PATH_MAX];
+    static char full[FS_PATH_LEN + 2], other[FS_PATH_LEN + 1];
     if (!dir_count(r, "/", NULL, &before, NULL))
         return false;
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -121,11 +121,21 @@ static bool check_refused(const struct fatrun *r)
             FAIL("renaming to \"%s\" was not refused ERR_INVALID_ARGS", bad[i]);
         CHECK_ST(t_stat(r, bad[i], NULL, NULL, NULL), ERR_INVALID_ARGS);
     }
-    /* A path field with no NUL in its 256 bytes. */
-    memset(full, 'a', sizeof(full));
-    full[0] = '/';
-    CHECK_ST(fs_stat_until(r->fs, now() + FAT_CALL_NS, full, NULL, NULL, NULL), ERR_INVALID_ARGS);
-    CHECK_ST(fs_mkdir_until(r->fs, now() + FAT_CALL_NS, full), ERR_INVALID_ARGS);
+    /* The longest path the protocol carries (4095 bytes: names of 200
+     * bytes), twice in one rename (over 8 KiB: the request fits fat's
+     * slot), and one byte more (the generated client refuses it). */
+    memset(full, 'a', FS_PATH_LEN);
+    for (unsigned k = 0; k < FS_PATH_LEN; k += 201)
+        full[k] = '/';
+    full[FS_PATH_LEN] = '\0';
+    memcpy(other, full, sizeof(other));
+    other[FS_PATH_LEN - 1] = 'b';
+    CHECK_ST(t_stat(r, full, NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_rename(r, full, other), ERR_NOT_FOUND);
+    full[FS_PATH_LEN] = 'a';
+    full[FS_PATH_LEN + 1] = '\0';
+    CHECK_ST(t_stat(r, full, NULL, NULL, NULL), ERR_INVALID_ARGS);
+    CHECK_ST(t_mkdir(r, full), ERR_INVALID_ARGS);
     /* Not UTF-8. */
     CHECK_ST(t_mkdir(r, "/bad\xff\xfeutf8"), ERR_INVALID_ARGS);
     if (!dir_count(r, "/", NULL, &after, NULL))

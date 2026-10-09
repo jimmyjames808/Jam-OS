@@ -193,8 +193,22 @@ static bool check_reads(const struct fatrun *r)
     CHECK_ST(file_truncate_until(f.ch, now() + FAT_CALL_NS, 0), ERR_ACCESS_DENIED);
     CHECK_ST(file_read_until(f.ch, now() + FAT_CALL_NS, 0, FAT_BUF + 1, &done),
              ERR_INVALID_ARGS);
-    CHECK_ST(file_stat_until(f.ch, now() + FAT_CALL_NS, &size, &mtime), OK);
-    CHECK(size == 10 && mtime_is_now(mtime));
+    uint8_t is_dir = 1;
+    uint64_t id = 0, path_id = 0;
+    CHECK_ST(file_stat_until(f.ch, now() + FAT_CALL_NS, &size, &is_dir, &mtime, &id), OK);
+    CHECK(size == 10 && mtime_is_now(mtime) && !is_dir);
+    CHECK_ST(t_stat_id(r, "/hello.txt", &path_id), OK);
+    CHECK(id == path_id && id > 1);   /* 1: the root's */
+    /* The root's listing: one batch, its record the same file. */
+    static struct tbatch b;
+    struct fs_dirent e;
+    uint32_t at = 0;
+    CHECK_ST(t_batch(r, "/", 0, &b), OK);
+    CHECK(b.count == 1 && !b.next && fs_dirent_get(b.entries, b.len, &at, &e) && at == b.len);
+    CHECK(e.id == id && e.size == 10 && !e.is_dir && mtime_is_now(e.mtime) && e.name_len == 9 &&
+          !memcmp(e.name, "hello.txt", 9));
+    CHECK_ST(t_stat_id(r, "/", &path_id), OK);
+    CHECK_EQ(path_id, 1);
     t_close(&f);
     CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &f), OK);
     CHECK_ST(t_read(&f, 0, got, 5, &done), ERR_ACCESS_DENIED);    /* opened FS_WRITE */
@@ -251,7 +265,7 @@ static bool check_growth(const struct fatrun *r)
     CHECK_ST(t_unlink(r, "/junk.bin"), OK);   /* its clusters are free, still full of 0xa5 */
     CHECK_ST(t_open(r, "/gap.bin", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
     CHECK_ST(t_write(&f, 5000, "end", 3, &done), OK);
-    CHECK_ST(file_stat_until(f.ch, now() + FAT_CALL_NS, &size, NULL), OK);
+    CHECK_ST(file_stat_until(f.ch, now() + FAT_CALL_NS, &size, NULL, NULL, NULL), OK);
     CHECK_EQ(size, 5003);
     CHECK_ST(t_read(&f, 0, got, 5003, &done), OK);
     CHECK_EQ(done, 5003);
@@ -361,12 +375,11 @@ static bool check_open_files(const struct fatrun *r)
  * and fat goes on answering. */
 static bool check_shrunk_buffer(const struct fatrun *r)
 {
-    uint8_t p[FS_PATH_MAX] = "/hello.txt";
     handle_t ch, vmo;
     uint64_t size = 0;
     uint32_t n = 0;
-    CHECK_ST(fs_open_until(r->fs, now() + FAT_CALL_NS, p, FS_READ | FS_WRITE, &ch, &vmo, &size),
-             OK);
+    CHECK_ST(fs_open_until(r->fs, now() + FAT_CALL_NS, "/hello.txt", 10, FS_READ | FS_WRITE, &ch,
+                           &vmo, &size), OK);
     CHECK_ST(jam_vmo_set_size(vmo, 0), ERR_ACCESS_DENIED);
     CHECK_ST(jam_vmo_decommit(vmo, 0, 4096), ERR_ACCESS_DENIED);
     CHECK_ST(file_read_until(ch, now() + FAT_CALL_NS, 0, 2, &n), OK);

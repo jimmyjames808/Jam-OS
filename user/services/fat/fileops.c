@@ -287,11 +287,14 @@ static status_t op_truncate(void *ctx, uint64_t size)
     return fr_status(fr);
 }
 
-static status_t op_stat(void *ctx, uint64_t *out_size, uint64_t *out_mtime)
+static status_t op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime,
+                        uint64_t *out_id)
 {
     struct fat_open *f = open_of(ctx);
     WORD date = 0, time = 0;
     *out_size = f_size(&f->fil);
+    *out_is_dir = 0;   /* fs.open opens files only */
+    *out_id = f->place;
     /* The directory entry's time: that of the last sync or close that
      * followed a write. The entry stays where it is while the file is open
      * (above). */
@@ -485,6 +488,8 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
         return ERR_WRONG_TYPE;
     if (!exists && !(flags & FS_CREATE))
         return ERR_NOT_FOUND;
+    if (exists && (flags & FS_EXCL))
+        return ERR_ALREADY_EXISTS;
     struct fat_file *f = NULL;
     struct fat_open *o = exists ? open_at(place) : NULL, *spare = NULL;
     find_slots(&f, &spare);

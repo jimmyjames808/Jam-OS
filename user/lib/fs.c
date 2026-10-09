@@ -14,6 +14,12 @@
 
 #define BUF_MAX (1u << 20)   /* a bigger transfer buffer than this is a broken service */
 
+/* ns_resolve's path inside the mount, as the protocol's str. */
+static uint32_t rel_len(const uint8_t rel[FS_PATH_MAX])
+{
+    return (uint32_t)strnlen((const char *)rel, FS_PATH_MAX);
+}
+
 /* ---- open files --------------------------------------------------------------- */
 
 /* Map f's buffer VMO: whole pages, at most BUF_MAX. */
@@ -46,7 +52,8 @@ status_t file_open(const char *path, uint32_t flags, struct jfile *out)
     if (!fs)
         return ERR_WRONG_TYPE;   /* "/" is a directory */
     struct jfile f = { 0 };
-    st = fs_open_within(fs, FS_CALL_TIMEOUT, rel, flags, &f.ch, &f.buf_vmo, &f.size);
+    st = fs_open_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), flags, &f.ch,
+                        &f.buf_vmo, &f.size);
     jam_handle_close(fs);
     if (st != OK)
         return st;
@@ -152,7 +159,7 @@ status_t file_sync(struct jfile *f)
 
 status_t file_stat(struct jfile *f, uint64_t *size, uint64_t *mtime)
 {
-    return file_stat_within(f->ch, FS_CALL_TIMEOUT, size, mtime);
+    return file_stat_within(f->ch, FS_CALL_TIMEOUT, size, NULL, mtime, NULL);
 }
 
 status_t file_truncate(struct jfile *f, uint64_t size)
@@ -228,7 +235,8 @@ status_t fs_stat(const char *path, uint64_t *size, bool *is_dir, uint64_t *mtime
     unsigned mount;
     status_t st = ns_resolve(path, rel, &fs, &mount);
     if (st == OK && fs) {   /* else "/" or "/svc": directories; a service is neither */
-        st = fs_stat_within(fs, FS_CALL_TIMEOUT, rel, &sz, &dir, &mt);
+        st = fs_stat_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), &sz, &dir, &mt,
+                            NULL);
         jam_handle_close(fs);
     } else if (st == OK && mount == NS_AT_SVC && rel[1]) {
         dir = 0;
@@ -273,10 +281,64 @@ static status_t svc_entry(uint32_t index, struct fs_entry *out)
     return OK;
 }
 
+/* One batch of fs.readdir's entries: of directory `path` (as asked), entry
+ * `first` on, `count` of them; `next` the cookie after them (0: the last). */
+struct batch {
+    char     path[FS_PATH_MAX];
+    uint32_t first;
+    uint32_t next;
+    uint32_t count;
+    uint32_t len;
+    uint8_t  entries[FS_READDIR_BYTES];
+};
+
+/* The last batch a fs_readdir was given (NULL: none); the thread using it
+ * takes it out under the lock, so two threads never share one. */
+static struct batch *cached;
+static lock_t cached_lock;
+
+/* Every record of b in order: OK, or ERR_INTERNAL for a malformed batch
+ * (the service is broken). Entry k into *out if k < b->count. */
+static status_t batch_entry(const struct batch *b, uint32_t k, struct fs_entry *out)
+{
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < b->count; i++) {
+        struct fs_dirent e;
+        if (!fs_dirent_get(b->entries, b->len, &at, &e))
+            return ERR_INTERNAL;
+        if (i == k && out) {
+            memcpy(out->name, e.name, e.name_len);
+            out->name[e.name_len] = '\0';
+            out->is_dir = e.is_dir;
+            out->size = e.size;
+            out->mtime = e.mtime;
+            out->id = e.id;
+        }
+    }
+    return at == b->len ? OK : ERR_INTERNAL;
+}
+
+/* The batch after b (or the first, if b holds none) from the service. */
+static status_t next_batch(handle_t fs, const uint8_t rel[FS_PATH_MAX], struct batch *b,
+                           bool first)
+{
+    uint32_t cookie = first ? 0 : b->next, start = first ? 0 : b->first + b->count;
+    uint16_t count = 0;
+    b->count = 0;
+    status_t st = fs_readdir_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), cookie,
+                                    &b->next, &count, b->entries, &b->len);
+    b->first = start;
+    b->count = st == OK ? count : 0;
+    if (st == OK)
+        st = batch_entry(b, b->count, NULL);
+    if (st == OK && !b->count && b->next)
+        st = ERR_INTERNAL;   /* an empty batch that isn't the last: it would never end */
+    return st;
+}
+
 status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out)
 {
-    uint8_t rel[FS_PATH_MAX], dir = 0;
-    uint64_t size = 0;
+    uint8_t rel[FS_PATH_MAX];
     handle_t fs;
     unsigned mount;
     status_t st = ns_resolve(path, rel, &fs, &mount);
@@ -287,12 +349,40 @@ status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out)
         return rel[1] ? ERR_WRONG_TYPE : svc_entry(index, out);
     if (!fs)
         return root_entry(index, out);
-    st = fs_readdir_within(fs, FS_CALL_TIMEOUT, rel, index, (uint8_t *)out->name, &dir, &size);
+    lock_take(&cached_lock);
+    struct batch *b = cached;
+    cached = NULL;
+    lock_give(&cached_lock);
+    /* Going on from the last batch: the same directory, further on; index
+     * 0 starts a listing afresh. */
+    bool going_on = b && index && index >= b->first && !strcmp(b->path, path);
+    if (!b)
+        b = malloc(sizeof(*b));
+    if (!b)
+        st = ERR_NO_MEMORY;
+    if (st == OK && !going_on) {
+        memcpy(b->path, path, strlen(path) + 1);   /* ns_resolve: shorter than FS_PATH_MAX */
+        st = next_batch(fs, rel, b, true);
+    }
+    while (st == OK && index >= b->first + b->count) {
+        if (!b->next) {
+            st = ERR_NOT_FOUND;
+            break;
+        }
+        st = next_batch(fs, rel, b, false);
+    }
     jam_handle_close(fs);
-    if (st == OK && out->name[FS_PATH_MAX - 1])
-        st = ERR_INTERNAL;   /* a name without its NUL */
-    out->is_dir = dir != 0;
-    out->size = size;
+    if (st == OK)
+        st = batch_entry(b, index - b->first, out);
+    if (b && st != OK && st != ERR_NOT_FOUND)
+        b->path[0] = '\0';   /* nothing to go on from */
+    lock_take(&cached_lock);
+    if (!cached) {
+        cached = b;
+        b = NULL;
+    }
+    lock_give(&cached_lock);
+    free(b);
     return st;
 }
 
@@ -304,7 +394,7 @@ status_t fs_mkdir(const char *path)
     status_t st = on_mount(path, rel, &fs, &mount, ERR_ALREADY_EXISTS);
     if (st != OK)
         return st;
-    st = fs_mkdir_within(fs, FS_CALL_TIMEOUT, rel);
+    st = fs_mkdir_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel));
     jam_handle_close(fs);
     return st;
 }
@@ -317,7 +407,9 @@ status_t fs_unlink(const char *path)
     status_t st = on_mount(path, rel, &fs, &mount, ERR_ACCESS_DENIED);
     if (st != OK)
         return st;
-    st = fs_unlink_within(fs, FS_CALL_TIMEOUT, rel);
+    st = fs_unlink_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), 0);
+    if (st == ERR_IS_DIR)   /* a directory: remove it as one */
+        st = fs_unlink_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), FS_UNLINK_DIR);
     jam_handle_close(fs);
     return st;
 }
@@ -333,8 +425,10 @@ status_t fs_rename(const char *from, const char *to)
     st = on_mount(to, rel_to, &fs_to, &mount_to, ERR_ACCESS_DENIED);
     if (st == OK) {
         jam_handle_close(fs_to);
-        st = mount == mount_to ? fs_rename_within(fs, FS_CALL_TIMEOUT, rel_from, rel_to)
-                               : ERR_NOT_SUPPORTED;
+        st = mount == mount_to
+                 ? fs_rename_within(fs, FS_CALL_TIMEOUT, (const char *)rel_from,
+                                    rel_len(rel_from), (const char *)rel_to, rel_len(rel_to), 0)
+                 : ERR_NOT_SUPPORTED;
     }
     jam_handle_close(fs);
     return st;

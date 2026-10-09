@@ -50,12 +50,33 @@ status_t t_read(struct tfile *f, uint64_t off, void *dst, uint32_t n, uint32_t *
 status_t t_write(struct tfile *f, uint64_t off, const void *src, uint32_t n, uint32_t *done);
 status_t t_stat(const struct fatrun *r, const char *path, uint64_t *size, bool *is_dir,
                 uint64_t *mtime);
-/* name: FS_PATH_MAX bytes. */
+/* fs.stat's id. */
+status_t t_stat_id(const struct fatrun *r, const char *path, uint64_t *id);
+/* One fs.readdir batch. */
+struct tbatch {
+    uint32_t next;
+    uint16_t count;
+    uint32_t len;
+    uint8_t  entries[FS_READDIR_BYTES];
+};
+status_t t_batch(const struct fatrun *r, const char *path, uint32_t cookie, struct tbatch *b);
+/* Entry `index` of the listing, as libos lists it: the batches in turn
+ * (index 0 starts afresh, a later index goes on from the last batch). name:
+ * FS_NAME_MAX bytes. */
 status_t t_readdir(const struct fatrun *r, const char *path, uint32_t index, char *name,
                    bool *is_dir);
+/* The first entry of the batch at `cookie` (fat's cookie is the entry's
+ * index): straight from fat's cursors, nothing kept here. */
+status_t t_readdir_at(const struct fatrun *r, const char *path, uint32_t cookie, char *name,
+                      bool *is_dir);
 status_t t_mkdir(const struct fatrun *r, const char *path);
+/* A file, or a directory (it stats the path first: FS_UNLINK_DIR for a
+ * directory). */
 status_t t_unlink(const struct fatrun *r, const char *path);
+status_t t_unlink_flags(const struct fatrun *r, const char *path, uint32_t flags);
 status_t t_rename(const struct fatrun *r, const char *from, const char *to);
+status_t t_rename_flags(const struct fatrun *r, const char *from, const char *to,
+                        uint32_t flags);
 status_t t_sync(const struct fatrun *r);
 status_t t_free(const struct fatrun *r, uint64_t *total, uint64_t *free_bytes);
 

@@ -20,7 +20,12 @@
  *
  * The cursors are fat's own memory, not its state (fat.h): a fat that
  * takes over from another starts with none, and a listing in progress goes
- * on from a fresh walk (fs.readdir takes an index). */
+ * on from a fresh walk (fs.readdir takes an index).
+ *
+ * fs.readdir answers a batch of entries, as many as fit: the entry that
+ * didn't fit has been read already, and the next batch starts with it. So
+ * each cursor keeps the last entry it read too, and a request for it costs
+ * nothing: a listing in batches stays one read per entry. */
 #include "fat.h"
 
 #define READDIR_MAX 65536u   /* a FAT directory holds at most this many entries */
@@ -29,8 +34,11 @@ struct dir_cursor {
     bool     open;                /* dir is an open FatFs directory */
     DIR      dir;                 /* positioned before entry `next` */
     uint32_t next;                /* the index the next f_readdir returns */
+    bool     has_last;            /* last holds entry next - 1 */
+    FILINFO  last;
+    uint64_t last_place;          /* ... and its entry's place */
     uint64_t used;                /* dirs_clock when last used: the LRU order */
-    char     path[FS_PATH_MAX];   /* the resolved path it lists */
+    char     path[FAT_PATH_MAX];  /* the resolved path it lists */
 };
 
 static struct dir_cursor cursors[FAT_DIR_CURSORS];
@@ -42,6 +50,7 @@ static void forget(struct dir_cursor *c)
     if (c->open)
         (void)f_closedir(&c->dir);   /* it only marks the DIR closed (no FatFs lock) */
     c->open = false;
+    c->has_last = false;
 }
 
 void dirs_forget(void)
@@ -62,7 +71,8 @@ static struct dir_cursor *pick(const char *path, uint32_t index)
     struct dir_cursor *lru = &cursors[0];
     for (unsigned i = 0; i < FAT_DIR_CURSORS; i++) {
         struct dir_cursor *c = &cursors[i];
-        if (c->open && c->next <= index && !strcmp(c->path, path))
+        if (c->open && (c->next <= index || (c->has_last && c->next - 1 == index)) &&
+            !strcmp(c->path, path))
             return c;
         if (c->used < lru->used)
             lru = c;
@@ -82,20 +92,26 @@ static status_t open_at_start(struct dir_cursor *c, const char *path)
         return fr_status(fr);
     c->open = true;
     c->next = 0;
-    memcpy(c->path, path, strnlen(path, FS_PATH_MAX - 1) + 1);
+    c->has_last = false;
+    memcpy(c->path, path, strnlen(path, FAT_PATH_MAX - 1) + 1);
     return OK;
 }
 
-status_t dirs_read(const char *path, uint32_t index, FILINFO *fi)
+status_t dirs_read(const char *path, uint32_t index, FILINFO *fi, uint64_t *place)
 {
     if (index >= READDIR_MAX)
         return ERR_NOT_FOUND;
     struct dir_cursor *c = pick(path, index);
     c->used = ++dirs_clock;
     status_t st = c->open ? OK : open_at_start(c, path);
+    if (st == OK && c->has_last && c->next - 1 == index) {
+        *fi = c->last;   /* the entry the last batch had no room for */
+        *place = c->last_place;
+        return OK;
+    }
     fi->fname[0] = '\0';
     while (st == OK && c->next <= index) {
-        FRESULT fr = f_readdir(&c->dir, fi);
+        FRESULT fr = ffx_readdir(&c->dir, fi, place);
         entries_read++;
         if (fr != FR_OK) {
             st = fr_status(fr);
@@ -103,6 +119,9 @@ status_t dirs_read(const char *path, uint32_t index, FILINFO *fi)
             st = ERR_NOT_FOUND;   /* the end: stays there for the next index */
         } else {
             c->next++;
+            c->last = *fi;
+            c->last_place = *place;
+            c->has_last = true;
         }
     }
     if (st != OK && st != ERR_NOT_FOUND)
