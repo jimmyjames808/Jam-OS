@@ -366,6 +366,11 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 /* The compositor's notices: a notify.idl channel per opener (<notice.h>);
  * user/services/ only (the shell's `notify`) */
 #define SVC_NOTIFY     "notify"
+/* init's sessions: a Jam OS shell on a connection console, a channel per
+ * opener (session.idl, docs/M13-PLAN.md section 9; not built yet). It is a
+ * whole shell, so only a boot-image service, port or test may ask for it
+ * (tools/checkwants.py), and `allow` refuses it for a program on /data. */
+#define SVC_SESSION    "session"
 
 /* A channel to service `name` for the caller, who closes it. */
 status_t svc_open(const char *name, handle_t *out);

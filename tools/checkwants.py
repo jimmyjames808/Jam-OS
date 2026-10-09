@@ -17,6 +17,7 @@ same rules: printable ASCII lines, each one of
                           (/svc/net-low, never named on its own)
     mount <point> r|rw    <point>: /boot /esp /data /usb* *
     right <name>          klog sysinfo clock debug
+    posix                 a POSIX program (once; it grants nothing)
 
 and, the build's own policy, the services that kill drivers and services
 (devmgr-ctl, init), the disks' and mounts' (volumes) and the file server's (serve: with it a program could
@@ -25,7 +26,8 @@ only for a program whose source is under user/tests/,
 and netstack's and the resolver's reserves for the network's own services
 (net-sys, dns-sys), the desktop's notices (notify) and the low ports (`svc net listen low`: the system's
 ports, where a program could pose as a service) only for one under
-user/services/.
+user/services/, and init's sessions (session: a whole shell) only for one
+under user/services/, user/ports/ or user/tests/.
 A program without a list is fine (it gets its terminal only). Prints how
 many lists it checked (-v: each one); exits 1, naming each problem, if any.
 
@@ -39,6 +41,8 @@ POINTS = {"/boot", "/esp", "/data", "/usb*", "*"}
 RIGHTS = {"klog", "sysinfo", "clock", "debug"}
 TESTS_ONLY = {"devmgr-ctl", "init", "serve", "volumes"}
 SERVICES_ONLY = {"net-sys", "dns-sys", "notify"}
+SESSION = "session"   # a whole shell: services, ports and tests only
+SESSION_DIRS = ("user/services/", "user/ports/", "user/tests/")
 LISTEN = {"net-listen", "net-low"}   # given only as `svc net listen [low]` (<wants.h>)
 TEXT_MAX = 1024
 WANTS_MAX = 24
@@ -75,9 +79,10 @@ def notes(data):
     return out
 
 
-def check_text(text, in_tests, svcs, in_services=False):
-    """The problems of one list's text; its wants as shown."""
-    problems, shown, n = [], [], 0
+def check_text(text, in_tests, svcs, in_services=False, src=""):
+    """The problems of one list's text; its wants as shown. src: the
+    program's source directory (for `svc session`)."""
+    problems, shown, n, posix = [], [], 0, False
     if len(text) + 1 > TEXT_MAX:
         problems.append("the list is longer than %d bytes" % (TEXT_MAX - 1))
     if any(c != 0x0a and not 0x20 <= c <= 0x7e for c in text):
@@ -86,7 +91,11 @@ def check_text(text, in_tests, svcs, in_services=False):
         if not line:
             continue
         w = line.split(" ")
-        if len(w) == 3 and w[:3] == ["svc", "net", "listen"]:
+        if w == ["posix"]:
+            if posix:
+                problems.append("'posix' twice")
+            posix = True
+        elif len(w) == 3 and w[:3] == ["svc", "net", "listen"]:
             n += 2   # /svc/net and /svc/net-listen
         elif len(w) == 4 and w == ["svc", "net", "listen", "low"]:
             if not in_services:
@@ -102,6 +111,8 @@ def check_text(text, in_tests, svcs, in_services=False):
                 problems.append("'%s': only a test program (user/tests/) may ask for it" % line)
             elif w[1] in SERVICES_ONLY and not in_services:
                 problems.append("'%s': only a service (user/services/) may ask for it" % line)
+            elif w[1] == SESSION and not (in_tests or in_services or src.startswith(SESSION_DIRS)):
+                problems.append("'%s': only a service, a port or a test may ask for it" % line)
             n += 1
         elif len(w) == 3 and w[0] == "mount" and w[1] in POINTS and w[2] in ("r", "rw"):
             n += 1
@@ -109,7 +120,7 @@ def check_text(text, in_tests, svcs, in_services=False):
             pass
         else:
             problems.append("'%s': not a want (svc <name>, svc net listen [low], "
-                            "mount <point> r|rw, right <name>)" % line)
+                            "mount <point> r|rw, right <name>, posix)" % line)
             continue
         shown.append(line)
     if n > WANTS_MAX:
@@ -121,14 +132,17 @@ def selftest():
     """check_text on lists it must take and lists it must refuse; 0 on PASS."""
     svcs = services()
     take = [b"svc net\n", b"svc net listen\n", b"svc net listen\nsvc dns\nmount /data rw\n",
-            b"right clock\n", b"svc init\n", b"svc volumes\n"]
+            b"right clock\n", b"svc init\n", b"svc volumes\n", b"posix\n",
+            b"posix\nsvc net\nmount /data rw\n", b"svc session\n"]
     take_services = [b"svc net listen low\n", b"svc net-sys\n"]
     refuse = [b"svc net-listen\n", b"svc dns listen\n", b"svc net listen now\n",
               b"svc net Listen\n", b"svc nope\n", b"right listen\n", b"svc init\n",
               b"svc net-sys\n", b"svc dns-sys\n", b"svc serve\n", b"svc volumes\n",
               b"svc net listen low\n",
               b"svc net-low\n", b"svc net listen lower\n", b"svc net listen low now\n",
-              b"mount /data rw\n" * 21 + b"svc net listen\nsvc net listen\n"]   # 25 wants
+              b"mount /data rw\n" * 21 + b"svc net listen\nsvc net listen\n",   # 25 wants
+              b"posix\nposix\n", b"posix now\n", b"Posix\n", b"svc posix\n",
+              b"svc session\n"]
     fails = []
     for t in take:
         problems, _ = check_text(t, True, svcs)
@@ -138,8 +152,11 @@ def selftest():
         problems, _ = check_text(t, False, svcs, True)
         if problems:
             fails.append("refused %r for a service: %s" % (t, problems))
+    problems, _ = check_text(b"svc session\nposix\n", False, svcs, False, "user/ports/sshd")
+    if problems:
+        fails.append("refused svc session for a port: %s" % problems)
     for t in refuse:
-        problems, _ = check_text(t, False, svcs)
+        problems, _ = check_text(t, False, svcs, False, "user/apps/x")
         if not problems:
             fails.append("took %r" % t)
     for f in fails:
@@ -174,7 +191,7 @@ def main(args):
             continue
         lists += 1
         problems, shown = check_text(texts[0], src.startswith("user/tests/"), svcs,
-                                     src.startswith("user/services/"))
+                                     src.startswith("user/services/"), src)
         for p in problems:
             print("checkwants: %s (%s): %s" % (name, src, p))
         bad += len(problems)
