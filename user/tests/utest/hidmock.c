@@ -146,8 +146,8 @@ static status_t m_info(void *ctx, uint16_t *vendor, uint16_t *product, uint8_t *
 }
 
 static status_t m_get_descriptor(void *ctx, uint8_t type, uint8_t index, uint16_t lang,
-                                 uint16_t length, uint8_t recip, uint16_t *actual,
-                                 uint8_t data[1024])
+                                 uint16_t length, uint8_t recip, uint8_t *data,
+                                 uint32_t *data_len)
 {
     struct mock *m = ctx;
     const uint8_t *src = NULL;
@@ -165,25 +165,25 @@ static status_t m_get_descriptor(void *ctx, uint8_t type, uint8_t index, uint16_
     } else {
         return ERR_NOT_SUPPORTED;   /* a STALL */
     }
-    *actual = n < length ? n : length;
-    memcpy(data, src, *actual);
+    *data_len = n < length ? n : length;
+    memcpy(data, src, *data_len);
     return OK;
 }
 
 static status_t m_control_in(void *ctx, uint8_t type, uint8_t request, uint16_t value,
-                             uint16_t index, uint16_t length, uint16_t *actual,
-                             uint8_t data[1024])
+                             uint16_t index, uint16_t length, uint8_t *data,
+                             uint32_t *data_len)
 {
     (void)ctx, (void)type, (void)request, (void)value, (void)index, (void)length, (void)data;
-    *actual = 0;
+    *data_len = 0;
     return ERR_NOT_SUPPORTED;
 }
 
 static status_t m_control_out(void *ctx, uint8_t type, uint8_t request, uint16_t value,
-                              uint16_t index, uint16_t length, const uint8_t data[64])
+                              uint16_t index, const uint8_t *data, uint32_t length)
 {
     struct mock *m = ctx;
-    if ((type & 0x1f) != 1 || index != m->itf->num || length > 64) {
+    if ((type & 0x1f) != 1 || index != m->itf->num) {
         m->refused++;   /* usb-bus: not this interface */
         return ERR_ACCESS_DENIED;
     }

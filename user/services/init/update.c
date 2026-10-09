@@ -22,7 +22,7 @@
  * asks (UPDATE_OFFER_WRITE: the shell's plain `update`, and `update -w`;
  * `update -m` doesn't): then, once the build is loaded, the worker writes
  * it to the stick's ESP too (espwrite.c, which alone
- * holds the ESP writable, through devmgr's ESP channel that only init
+ * holds the ESP writable, through volumes' ESP channel that only init
  * has), and the answer comes when that is done. A failed stick write
  * leaves the build loaded and the stick bootable (UPDATE_NOT_WRITTEN).
  * init never reboots for an update: the owner's `reboot` (kexec) starts
@@ -214,7 +214,7 @@ static void worker_main(void *arg)
     __atomic_store_n(&c->done, true, __ATOMIC_RELEASE);   /* update_event's ACQUIRE load */
     struct port_packet pkt = { .key = offer_key, .type = PORT_PACKET_USER };
     for (int i = 0; i < QUEUE_TRIES && jam_port_queue(offer_port, &pkt) != OK; i++)
-        jam_nanosleep(now() + 10 * NS_PER_MS);   /* a full port: the loop is far behind */
+        jam_sleep_until(now() + 10 * NS_PER_MS);   /* a full port: the loop is far behind */
 }
 
 /* This build's update key: the public key file in our boot image
@@ -448,7 +448,7 @@ static void answer(struct check *c)
 }
 
 /* The stick write (UPDATE_OFFER_WRITE), the build loaded: started on the
- * worker with a duplicate of devmgr's ESP channel (true: answered when it
+ * worker with a duplicate of volumes' ESP channel (true: answered when it
  * is done), or not (false: c->a says why). */
 static bool start_write(struct check *c)
 {
@@ -467,7 +467,7 @@ static bool start_write(struct check *c)
         w->menu_size = c->m.file[UPDATE_MENU].size;
         w->menu_sha256 = c->m.file[UPDATE_MENU].sha256;
     }
-    handle_t esp = shell_devmgr_esp();
+    handle_t esp = shell_volumes_esp();
     status_t st = worker_stuck ? ERR_BAD_STATE : esp ? OK : ERR_NOT_FOUND;
     if (st == OK)
         st = jam_handle_duplicate(esp, RIGHT_SAME, &w->esp);

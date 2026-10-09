@@ -19,14 +19,17 @@
 
 #define VMAR_HANDLE_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
 
-/* A name argument: at most PROCESS_NAME_MAX - 1 bytes are kept. */
+/* A name argument (dst: PROCESS_NAME_MAX + 1 bytes): one longer than
+ * PROCESS_NAME_MAX is ERR_OUT_OF_RANGE, nothing cut (libos cuts a name
+ * itself); a fault ERR_INVALID_ARGS. */
 static status_t copy_name(char *dst, uint64_t uname, uint64_t len)
 {
-    if (len >= PROCESS_NAME_MAX)
-        len = PROCESS_NAME_MAX - 1;
-    status_t st = copy_in(dst, uname, len);
-    dst[st == OK ? len : 0] = '\0';
-    return st;
+    if (len > PROCESS_NAME_MAX)
+        return ERR_OUT_OF_RANGE;
+    if (copy_in(dst, uname, len) != OK)
+        return ERR_INVALID_ARGS;
+    dst[len] = '\0';
+    return OK;
 }
 
 int64_t sysc_process_create(handle_t job, uint64_t name, uint64_t name_len, uint32_t flags,
@@ -35,11 +38,12 @@ int64_t sysc_process_create(handle_t job, uint64_t name, uint64_t name_len, uint
     SYSC_TABLE(t);
     if (flags)
         return ERR_INVALID_ARGS;
-    char kname[PROCESS_NAME_MAX];
-    if (copy_name(kname, name, name_len) != OK)
-        return ERR_INVALID_ARGS;
+    char kname[PROCESS_NAME_MAX + 1];
+    status_t st = copy_name(kname, name, name_len);
+    if (st != OK)
+        return st;
     struct kobject *jo;
-    status_t st = handle_get(t, job, OBJ_JOB, RIGHT_WRITE, &jo, NULL);
+    st = handle_get(t, job, OBJ_JOB, RIGHT_WRITE, &jo, NULL);
     if (st != OK)
         return st;
     struct process *p;
@@ -151,11 +155,12 @@ int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint
     SYSC_TABLE(t);
     if (flags)
         return ERR_INVALID_ARGS;
-    char kname[PROCESS_NAME_MAX];
-    if (copy_name(kname, name, name_len) != OK)
-        return ERR_INVALID_ARGS;
+    char kname[PROCESS_NAME_MAX + 1];
+    status_t st = copy_name(kname, name, name_len);
+    if (st != OK)
+        return st;
     struct kobject *po;
-    status_t st = handle_get(t, proc, OBJ_PROCESS, RIGHT_WRITE, &po, NULL);
+    st = handle_get(t, proc, OBJ_PROCESS, RIGHT_WRITE, &po, NULL);
     if (st != OK)
         return st;
     struct uthread *u;

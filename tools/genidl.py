@@ -34,8 +34,10 @@ type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
                             fixed-size byte array, 1 <= N <= 4096), or
                             u8[<=N] (up to N bytes), u16[<=N] .. i64[<=N]
                             (up to N of those scalars), or str[<=N] (a
-                            string of up to N bytes of UTF-8), or `handle`
-                            (RESULTS only, at most 8 per method)
+                            string of up to N bytes of UTF-8), or a handle:
+                            `handle`, `handle<vmo>` (a typed one),
+                            `handle[<=N]` (up to N of them), `handle<type>[<=N]`
+                            (see "Handles" below)
 
 Either list may be empty: `()`.
 
@@ -77,7 +79,7 @@ Events (`event`): one-way messages, never answered, in either direction
 in one protocol (the M12 plan's D1), sharing the protocol's ordinals. On
 the wire a request's form with txid 0: a message with txid 0 is an event,
 any other a request or a reply. Their fields are a method's (arrays of
-varying length too) and handles (at most 8): an event's handles are moved
+varying length too) and handles ("Handles", below): an event's handles are moved
 in every case: sent, lost with a write that failed (the kernel closes
 them), or closed by the stub when it never writes (a field refused).
 The queue's limit is the flow control: <proto>_<event>(ch, fields...)
@@ -124,8 +126,9 @@ of its state, and a successor runs the one in progress again,
 <proto>_take_slot and _run_slot). genidl insists the two agree: a kept
 protocol's rule says so, and a protocol whose rule says so is kept. A
 dead instance's handles die with it, so nothing to a kept protocol's
-server may carry handles (an event's, and handle arguments when they
-come). The header has <PROTO>_KEPT.
+server may carry handles (no call's argument, no event's), and what it
+sends back carries at most IDL_REP_HANDLES (a reply waits in a slot).
+The header has <PROTO>_KEPT.
 
 A file may hold several protocols, one for each kind of channel of one
 service (an opener's and a stream's): each `protocol` line starts one,
@@ -193,21 +196,59 @@ Every method also gets, for code that must not block (ARCHITECTURE.md
     <proto>_reply_<method>(txn, status, results...)
         a reply from anywhere (a later method's, or one a hand-written loop
         answers itself)
-Don't mix the two kinds of client calls on one channel end: a reply to an
-asynchronous call whose txid happens to equal a blocking call's waiting
-on the same end would go to that call (channel_call's txids are the
-kernel's).
+Blocking and asynchronous calls may share a channel end: the txids the
+kernel stamps on a blocking call have bit 31 set (CHANNEL_TXID_KERNEL),
+and idl_txid_next, which hands out an asynchronous call's txid, never
+sets it, so a reply to one kind is never taken for the other's. (An
+asynchronous client keeps one idl_txid_next counter for the end.)
 
-Handles travel server -> client in replies, and either way in events
-(above). In replies, the server's
-handler fills `handle_t *out_x` and the reply moves the handles to the
-client (drv_channel_call_h reserves their slots before the request goes
-out, so a full handle table fails the call up front). A reply with the
-wrong number of handles is ERR_INTERNAL and whatever arrived is closed; a
-failed reply loses the server's handles (the kernel closes them); a client passing NULL for a
-handle result gets it closed. Handle ARGUMENTS are refused: if a call
-fails, it can't tell whether the kernel already moved them, so ownership
-would be ambiguous. Pass handles with channel_write or as results.
+Handles. A message carries them beside its bytes: in a request (a
+call's arguments, an event to the server), in a reply (results), in an
+event to the client. A send's handles are always moved: whatever the
+status of the write or the call (the kernel's rule), they are gone from
+the sender's table, and a stub never closes one after the system call
+(its value may already be another thread's new handle). A stub closes
+them only when it never makes the call (an argument it refuses:
+ERR_INVALID_ARGS, a buffer it cannot get: ERR_NO_MEMORY). Spelled:
+    handle            one handle; in C a handle_t
+    handle[<=N]       up to N handles (1 <= N <= 64): the message's own
+                      handle count says how many. In C a pointer and a
+                      count, as a varying array: const handle_t *x,
+                      uint32_t x_len for an argument; handle_t out_x[N],
+                      uint32_t *out_x_len at a client for a result;
+                      handle_t *out_x (room for N, in the reply) and
+                      uint32_t *out_x_len in a handler. A message has at
+                      most one list, it is the last handle field, and the
+                      singles and the list together are at most 64.
+    handle<type>      a handle to a kernel object of that type: event
+                      timer channel port vmo dma_cap process thread
+                      interrupt resource vmar job klog serial screen
+                      (also handle<type>[<=N], every one of the type).
+                      Rights stay prose.
+Wire order: the single handles in the order declared, then the list.
+In a request, the client stub's handles are given as parameters and
+are moved by the call (<proto>_<method>, _until, _within, _send). The
+generated server counts them (a message with the wrong number is
+ERR_INVALID_ARGS), checks the types (one handle_info per typed handle:
+a wrong type is ERR_WRONG_TYPE) and only then runs the handler, which is
+given them (handle_t, or const handle_t *, uint32_t for a list) and
+OWNS them, whatever status it returns: it closes them or keeps them. A
+request the handler is never reached with (a wrong size, count or type,
+no handler, a short message) has its handles closed by the server loop,
+and a `kept` protocol, whose requests a successor runs again, takes none.
+In a reply the handler fills `handle_t *out_x` (and out_x_len for a list):
+on a status other than OK the server closes what it filled (only
+out_x_len of a list: set it as you fill), and a handle left
+HANDLE_INVALID, or a list past its N, is ERR_INTERNAL; a client passing
+NULL for a result gets it closed. drv_channel_call_h reserves the
+reply's slots before the request goes out, so a full handle table fails
+the call up front. A reply with the wrong number of handles, or (a typed
+result) of the wrong type, is ERR_INTERNAL at the client, whatever
+arrived closed. A server whose messages carry handles reads them with
+each message (<PROTO>_REQ_HANDLES, at least IDL_READ_HANDLES) and a
+dispatch's rhs has <PROTO>_REP_HANDLES slots (at least IDL_REP_HANDLES);
+a hand-written loop must use those, not the two minimums. Events carry
+handles the same way (above).
 
 Wire format (packed little-endian structs, no padding):
     request  u32 txid (channel_call stamps it), u32 ordinal, the args
@@ -215,9 +256,10 @@ Wire format (packed little-endian structs, no padding):
              status is OK
 The ordinal on the wire is (id << 16) | ordinal, so a request sent to a
 server of another protocol fails with ERR_NOT_SUPPORTED instead of being
-taken for a different method. A request of the wrong size, one carrying
-handles, or one too big for any method gets ERR_INVALID_ARGS; one shorter
-than 4 bytes (no txid) is dropped without a reply.
+taken for a different method. A request of the wrong size, one with the
+wrong number of handles, or one too big for any method gets
+ERR_INVALID_ARGS (its handles closed); one shorter than 4 bytes (no txid)
+is dropped without a reply.
 
 Run from the repository root (the Makefile does)."""
 import glob
@@ -376,27 +418,48 @@ static inline bool idl_str_ok(const char *s, uint32_t n)
     }
     return true;
 }"""
+# common.h's idl_handle_is, as C: the one place the object type of a handle is
+# asked (a typed `handle<type>`, the M12 plan's D4).
+IS_HANDLE = r"""static inline bool idl_handle_is(handle_t h, uint32_t type)
+{
+    struct handle_info idl_i;
+    return drv_handle_info(h, &idl_i) == OK && idl_i.type == type;
+}"""
 BANNER = "Generated by tools/genidl.py from {src}. Do not edit:\n" \
          " * change the .idl and run `make idl`."
 
 
-REP_HANDLES_MAX = 8
-EVENT_HANDLES_MAX = 8   # handles in one event (IDL_READ_HANDLES, IDL_REP_HANDLES)
+IDL_READ_HANDLES = 8     # IDL_READ_HANDLES: handles a server reads with each message, at least
+REP_HANDLES_MAX = 8      # IDL_REP_HANDLES: a reply's handles in a slot (a kept protocol's most)
+HANDLES_MAX = 64         # CHANNEL_MAX_HANDLES: handles one message carries
+# The kernel's object types (enum obj_type in the kernel's headers), by the name
+# `handle<name>` takes. A header that holds the enum is checked against this.
+OBJ_TYPES = {"event": 1, "timer": 2, "channel": 3, "port": 4, "vmo": 5, "dma_cap": 6,
+             "process": 7, "thread": 8, "interrupt": 9, "resource": 10, "vmar": 11, "job": 12,
+             "klog": 13, "serial": 14, "screen": 15}
+OBJ_HEADERS = ("kernel/include/jam/abi.h", "kernel/include/jam/object.h")
+# `handle`, `handle<type>`, `handle[<=N]`, `handle<type>[<=N]`.
+HANDLE = re.compile(r"handle(?:<([a-z_]+)>)?(?:\[<=(\d+)\])?$")
 
 
 class Field:
     """One argument, result or event field. kind: "scalar" (u8 .. i64),
     "fixed" (u8[N]), "var" (u8[<=N], str[<=N], u32[<=N] ...: ctype the
-    element's, size its bytes, array N) or "handle"."""
-    def __init__(self, kind, ctype, name, size, array=0, is_str=False):
+    element's, size its bytes, array N), "handle" (one, maybe typed: htype)
+    or "hlist" (handle[<=N]: up to N handles, the message's handles past
+    its single ones)."""
+    def __init__(self, kind, ctype, name, size, array=0, is_str=False, htype=None):
         self.kind, self.ctype, self.name, self.size, self.array = kind, ctype, name, size, array
         self.handle = kind == "handle"
+        self.hlist = kind == "hlist"
+        self.anyh = self.handle or self.hlist
+        self.htype = htype    # the object type a handle must be (a key of OBJ_TYPES), or None
         self.var = kind == "var"
         self.str = is_str
-        self.max = array if self.var else 0   # a varying array's N
-        if self.var:
+        self.max = array if self.var or self.hlist else 0   # a varying array's, a list's N
+        if self.var or self.hlist:
             self.array = 0
-        self.wire = 0 if self.var or self.handle else size   # bytes in the packed struct
+        self.wire = 0 if self.var or self.anyh else size   # bytes in the packed struct
 
     def member(self):
         """The field in the message's packed struct (handles travel apart)."""
@@ -406,28 +469,56 @@ class Field:
     def in_params(self):
         """The C parameters that pass it in (a client's argument, a server's
         reply_<method> result, a handler's argument): a varying array as a
-        pointer and its length in elements (a str's bytes: no NUL)."""
+        pointer and its length in elements (a str's bytes: no NUL), a handle
+        list as a pointer and a count."""
         if self.var:
             return [f"const {self.ctype} *{self.name}", f"uint32_t {self.name}_len"]
+        if self.hlist:
+            return [f"const handle_t *{self.name}", f"uint32_t {self.name}_len"]
         return [f"const uint8_t {self.name}[{self.array}]" if self.array else
                 f"{self.ctype} {self.name}"]
 
     def out_params(self):
         """The C parameters that take it out at a client: a varying array
         into room for all N elements (a str's with a NUL after them: N + 1)
-        and its length."""
+        and its length; a handle list into room for N and its count."""
         if self.var:
             n = f"{self.max} + 1" if self.str else self.max
             return [f"{self.ctype} out_{self.name}[{n}]", f"uint32_t *out_{self.name}_len"]
+        if self.hlist:
+            return [f"handle_t out_{self.name}[{self.max}]", f"uint32_t *out_{self.name}_len"]
         return [f"uint8_t out_{self.name}[{self.array}]" if self.array else
                 f"{self.ctype} *out_{self.name}"]
 
     def handler_out_params(self):
         """A handler's: a varying array into room for N elements, in the
-        reply (a str's without a NUL)."""
+        reply (a str's without a NUL); a handle list into room for N, in
+        the reply's handles."""
         if self.var:
             return [f"{self.ctype} *out_{self.name}", f"uint32_t *out_{self.name}_len"]
+        if self.hlist:
+            return [f"handle_t *out_{self.name}", f"uint32_t *out_{self.name}_len"]
         return self.out_params()
+
+
+def hsingles(fields):
+    """The single handle fields, in order (they come first on the wire)."""
+    return [f for f in fields if f.handle]
+
+
+def hlist_of(fields):
+    """The handle list (at most one, the last handle field), or None."""
+    return next((f for f in fields if f.hlist), None)
+
+
+def hmax(fields):
+    """The most handles a message with these fields carries."""
+    lst = hlist_of(fields)
+    return len(hsingles(fields)) + (lst.max if lst else 0)
+
+
+def has_handles(fields):
+    return any(f.anyh for f in fields)
 
 
 def in_params(fields):
@@ -497,7 +588,7 @@ def fail(src, lineno, msg):
     sys.exit(f"{src}:{lineno}: {msg}")
 
 
-def parse_fields(src, lineno, text, what, allow_handles=False):
+def parse_fields(src, lineno, text, what):
     text = text.strip()
     if not (text.startswith("(") and text.endswith(")")):
         fail(src, lineno, f"{what}: want '(<type> <name>, ...)' or '()'")
@@ -527,12 +618,19 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
             else:
                 ctype, size = SCALARS[v.group(1)]
                 fields.append(Field("var", ctype, name, size, n))
-        elif t == "handle":
-            if not allow_handles:
-                fail(src, lineno, f"{what}: handle arguments aren't supported (if a call fails "
-                                  "it can't tell whether they were moved); return handles "
-                                  "as results, or send them with channel_write")
-            fields.append(Field("handle", "handle_t", name, 0))
+        elif HANDLE.match(t):
+            hm = HANDLE.match(t)
+            ty, n = hm.group(1), hm.group(2)
+            if ty is not None and ty not in OBJ_TYPES:
+                fail(src, lineno, f"{what}: {t}: unknown object type '{ty}' "
+                                  f"(want {', '.join(OBJ_TYPES)})")
+            if n is None:
+                fields.append(Field("handle", "handle_t", name, 0, htype=ty))
+            else:
+                if not 1 <= int(n) <= HANDLES_MAX:
+                    fail(src, lineno, f"{what}: {t}: N not in 1..{HANDLES_MAX} (a message "
+                                      "carries that many handles at most)")
+                fields.append(Field("hlist", "handle_t", name, 0, int(n), htype=ty))
         elif a:
             n = int(a.group(1))
             if not 1 <= n <= ARRAY_MAX:
@@ -543,10 +641,20 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
             fields.append(Field("scalar", ctype, name, size))
         else:
             fail(src, lineno, f"{what}: unknown type '{t}' (want {' '.join(SCALARS)}, u8[N], "
-                              "u8[<=N], str[<=N] or handle)")
+                              "u8[<=N], str[<=N], handle, handle<type>, handle[<=N])")
     for f in fields:
-        if f.var and any(g.name == f.name + "_len" for g in fields):
+        if (f.var or f.hlist) and any(g.name == f.name + "_len" for g in fields):
             fail(src, lineno, f"{what}: '{f.name}_len' is {f.name}'s length")
+    lists = [f for f in fields if f.hlist]
+    if len(lists) > 1:
+        fail(src, lineno, f"{what}: more than one handle list ({lists[0].name}, "
+                          f"{lists[1].name}): a list's count is the message's own handle count")
+    if lists and any(g.anyh for g in fields[fields.index(lists[0]) + 1:]):
+        fail(src, lineno, f"{what}: the handle list '{lists[0].name}' must be the last "
+                          "handle field (the single handles come first)")
+    if hmax(fields) > HANDLES_MAX:
+        fail(src, lineno, f"{what}: up to {hmax(fields)} handles (a message carries "
+                          f"{HANDLES_MAX} at most)")
     return fields
 
 
@@ -615,14 +723,14 @@ def parse_method(src, lineno, line, p, doc):
             fail(src, lineno, f"{mname}: an event's fields go one way: '(<fields>) event' to "
                               "the server, or '-> (<fields>) event' to the client")
         way = "in" if m.group(3) is not None else "out"
-        fields = parse_fields(src, lineno, m.group(3) or m.group(4), f"{mname} fields",
-                              allow_handles=True)
-        if way == "in" and p.kept and any(f.handle for f in fields):
+        fields = parse_fields(src, lineno, m.group(3) or m.group(4), f"{mname} fields")
+        if way == "in" and p.kept and has_handles(fields):
             fail(src, lineno, f"{mname}: '{p.name}' is kept: its requests are replayed from "
                               "slots by a successor, which can't have a dead instance's "
                               "handles, so nothing to its server carries any")
-        if sum(1 for f in fields if f.handle) > EVENT_HANDLES_MAX:
-            fail(src, lineno, f"{mname}: more than {EVENT_HANDLES_MAX} handles")
+        if way == "out" and p.kept and hmax(fields) > REP_HANDLES_MAX:
+            fail(src, lineno, f"{mname}: '{p.name}' is kept: a message to its client waits in "
+                              f"a slot with room for {REP_HANDLES_MAX} handles")
         if method_max(fields) > MSG_MAX:
             fail(src, lineno, f"{mname}: the event is {method_max(fields)} bytes (max {MSG_MAX})")
         p.methods.append(Method(ordinal, mname, fields if way == "in" else [],
@@ -631,9 +739,14 @@ def parse_method(src, lineno, line, p, doc):
     if m.group(3) is None or m.group(4) is None:
         fail(src, lineno, want)
     args = parse_fields(src, lineno, m.group(3), f"{mname} arguments")
-    results = parse_fields(src, lineno, m.group(4), f"{mname} results", allow_handles=True)
-    if sum(1 for f in results if f.handle) > REP_HANDLES_MAX:
-        fail(src, lineno, f"{mname}: more than {REP_HANDLES_MAX} handle results")
+    results = parse_fields(src, lineno, m.group(4), f"{mname} results")
+    if p.kept and has_handles(args):
+        fail(src, lineno, f"{mname}: '{p.name}' is kept: its requests are replayed from "
+                          "slots by a successor, which can't have a dead instance's "
+                          "handles, so nothing to its server carries any")
+    if p.kept and hmax(results) > REP_HANDLES_MAX:
+        fail(src, lineno, f"{mname}: '{p.name}' is kept: a reply waits in a slot with room "
+                          f"for {REP_HANDLES_MAX} handles")
     for size, what in ((method_max(args), "request"), (method_max(results), "reply")):
         if size > MSG_MAX:
             fail(src, lineno, f"{mname}: {what} is {size} bytes (max {MSG_MAX})")
@@ -861,11 +974,20 @@ def gen_common(entries):
         "/* n rounded up to 8: where a second buffer starts after a first of n bytes. */",
         "#define IDL_ROUND8(n) (((n) + 7u) & ~7u)",
         "",
-        "/* Handles a server reads with a message (only an event takes any: a",
-        " * method's request with handles is refused, its handles closed). */",
+        "/* Handles a server reads with a message, and room for a reply's handles, at",
+        " * least: a protocol whose messages carry more has its own <PROTO>_REQ_HANDLES",
+        " * and <PROTO>_REP_HANDLES (never under these). A request with handles for a",
+        " * method that takes none is refused, its handles closed. IDL_REP_HANDLES is",
+        " * also the most a reply carries in a slot (a kept protocol's). */",
         "#define IDL_READ_HANDLES 8",
-        "/* Handles one reply can carry (methods' handle results). */",
         f"#define IDL_REP_HANDLES {REP_HANDLES_MAX}",
+        "/* Handles one message carries at most (the kernel's CHANNEL_MAX_HANDLES): the",
+        " * room idl_reply_read has for a reply's or an event's. */",
+        f"#define IDL_HANDLES_MAX {HANDLES_MAX}",
+        "",
+        "/* The kernel's object types, as handle_info names them (enum obj_type in",
+        " * <jam/abi.h>): what a `handle<type>` must be. */",
+    ] + [f"#define IDL_OBJ_{n.upper():<10} OBJ_{n.upper()}" for n in OBJ_TYPES] + [
         "",
         "/* Client: the status of a reply of n bytes to a call that wants `want`",
         " * bytes back on success. A server that breaks the format (a positive",
@@ -894,10 +1016,58 @@ def gen_common(entries):
         "    return drv_channel_call_h(ch, q, qn, r, rcap, rn, rh, rhcap, rhn, t);",
         "}",
         "",
+        "/* Client: idl_call with up to 64 handles sent along (wh, wnh of them), which",
+        " * leave the caller's table whatever the status: sent, or closed by the kernel",
+        " * (a send's handles are always moved). */",
+        "static inline status_t idl_call_h(handle_t ch, void *q, uint32_t qn, const handle_t *wh,",
+        "                                  uint32_t wnh, void *r, uint32_t rcap, uint32_t *rn,",
+        "                                  handle_t *rh, uint32_t rhcap, uint32_t *rhn, bool within,",
+        "                                  uint64_t t)",
+        "{",
+        "    struct channel_call_args idl_a = {",
+        "        .h = ch,",
+        "        .wr_len = qn,",
+        "        .wr_bytes = (uint64_t)(uintptr_t)q,",
+        "        .wr_handles = (uint64_t)(uintptr_t)wh,",
+        "        .wr_nhandles = wnh,",
+        "        .rd_cap = rcap,",
+        "        .rd_bytes = (uint64_t)(uintptr_t)r,",
+        "        .rd_handles = (uint64_t)(uintptr_t)rh,",
+        "        .rd_hcap = rhcap,",
+        "        .flags = within ? CHANNEL_CALL_TIMEOUT : 0,",
+        "        .rd_actual = (uint64_t)(uintptr_t)rn,",
+        "        .rd_hactual = (uint64_t)(uintptr_t)rhn,",
+        "        .deadline_ns = t,",
+        "    };",
+        "    return drv_channel_call_args(&idl_a);",
+        "}",
+        "",
         "static inline void idl_close_all(const handle_t *hs, uint32_t n)",
         "{",
         "    for (uint32_t idl_i = 0; idl_i < n; idl_i++)",
         "        drv_handle_close(hs[idl_i]);",
+        "}",
+        "",
+        "/* Is every one of the n handles at hs set (not HANDLE_INVALID)? */",
+        "static inline bool idl_handles_set(const handle_t *hs, uint32_t n)",
+        "{",
+        "    for (uint32_t idl_i = 0; idl_i < n; idl_i++)",
+        "        if (hs[idl_i] == HANDLE_INVALID)",
+        "            return false;",
+        "    return true;",
+        "}",
+        "",
+        "/* Does h name an object of this type (IDL_OBJ_*)? The one place a generated",
+        " * `handle<type>` is checked: a system call (handle_info) for each handle. */",
+    ] + IS_HANDLE.split("\n") + [
+        "",
+        "/* Are all n handles at hs of this type? */",
+        "static inline bool idl_handles_are(const handle_t *hs, uint32_t n, uint32_t type)",
+        "{",
+        "    for (uint32_t idl_i = 0; idl_i < n; idl_i++)",
+        "        if (!idl_handle_is(hs[idl_i], type))",
+        "            return false;",
+        "    return true;",
         "}",
         "",
         "/* Server: answer the request whose first n bytes are at req with a bare",
@@ -1269,7 +1439,7 @@ def gen_common(entries):
         "    uint32_t txid;                    /* its txid: which call it answers */",
         "    uint32_t n;                       /* its bytes */",
         "    uint32_t nh;                      /* handles in hs, still to be taken */",
-        "    handle_t hs[IDL_REP_HANDLES];",
+        "    handle_t hs[IDL_HANDLES_MAX];",
         "};",
         "",
         "/* Client: close the handles of a reply nobody takes (its txid matches no",
@@ -1285,13 +1455,13 @@ def gen_common(entries):
         " * with that method's <proto>_<method>_result (or idl_msg_drop it).",
         " * ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the server is gone",
         " * (every call still waiting fails). A message too big for rep or with",
-        " * more than IDL_REP_HANDLES handles, or without a txid, is no reply of",
+        " * more than IDL_HANDLES_MAX handles, or without a txid, is no reply of",
         " * the protocol: dropped, its handles closed, ERR_INTERNAL with m->txid",
         " * set (0 if it had none) so its call can fail. */",
         "static inline status_t idl_reply_read(handle_t ch, void *rep, uint32_t cap, struct idl_msg *m)",
         "{",
         "    m->txid = m->n = m->nh = 0;",
-        "    status_t idl_st = drv_channel_read(ch, rep, cap, &m->n, m->hs, IDL_REP_HANDLES, &m->nh);",
+        "    status_t idl_st = drv_channel_read(ch, rep, cap, &m->n, m->hs, IDL_HANDLES_MAX, &m->nh);",
         "    if (idl_st == ERR_BUFFER_TOO_SMALL) {",
         "        uint32_t idl_got = 0;",
         "        idl_st = idl_discard(ch, m->n, m->nh, &m->txid, &idl_got);",
@@ -1316,7 +1486,7 @@ def fill_request(m, U, q, sep="."):
     m's arguments (txid set by the caller)."""
     out = [f"    {q}{sep}ordinal = {U}_{m.name.upper()};"]
     for f in m.args:
-        if f.handle or f.var:
+        if f.anyh or f.var:
             continue
         if f.array:
             out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
@@ -1337,24 +1507,28 @@ def has_var(fields):
 
 def general(m):
     """Does m need the general code (buffers of its own size, on the heap
-    when big; varying arrays) rather than the plain one (its two structs on
-    the stack)?"""
+    when big; varying arrays; handle arguments and lists; typed handles)
+    rather than the plain one (its two structs on the stack)?"""
     return has_var(m.args) or has_var(m.results) or \
-        method_max(m.args) + method_max(m.results) > STACK_MAX
+        method_max(m.args) + method_max(m.results) > STACK_MAX or \
+        has_handles(m.args) or hlist_of(m.results) is not None or \
+        any(f.htype for f in m.results)
 
 
 def buffers(sizes, fail_ret):
     """Lines declaring byte buffers idl_b0, idl_b1, ... of these sizes: on the
     stack, or one allocation when together they pass STACK_MAX (fail_ret:
-    the line that returns when it can't be had). Returns (lines, free line
-    or None)."""
+    the line, or lines, that return when it can't be had). Returns (lines,
+    free line or None)."""
     if sum(sizes) <= STACK_MAX:
         return [f"    _Alignas(8) uint8_t idl_b{i}[{n}];" for i, n in enumerate(sizes)], None
     total = " + ".join(f"IDL_ROUND8({n})" for n in sizes[:-1]) + \
         (" + " if len(sizes) > 1 else "") + str(sizes[-1])
-    out = [f"    uint8_t *idl_b0 = (uint8_t *)drv_malloc({total});",
-           "    if (!idl_b0)",
-           f"        {fail_ret}"]
+    out = [f"    uint8_t *idl_b0 = (uint8_t *)drv_malloc({total});"]
+    if isinstance(fail_ret, str):
+        out += ["    if (!idl_b0)", f"        {fail_ret}"]
+    else:
+        out += ["    if (!idl_b0) {"] + [f"        {l}" for l in fail_ret] + ["    }"]
     for i in range(1, len(sizes)):
         out.append(f"    uint8_t *idl_b{i} = idl_b{i - 1} + IDL_ROUND8({sizes[i - 1]});")
     return out, "    drv_free(idl_b0);"
@@ -1366,7 +1540,7 @@ def copy_results(m, cond, r):
     out = []
     pre = f"{cond} && " if cond else ""
     for f in m.results:
-        if f.handle or f.var:
+        if f.anyh or f.var:
             continue
         if f.array:
             out.append(f"    for (uint32_t idl_i = 0; {pre}out_{f.name} && "
@@ -1436,11 +1610,83 @@ def copy_vars(m, cond):
     return out
 
 
+def paren(test):
+    """A C test as an operand of &&."""
+    return f"({test})" if "||" in test else test
+
+
+def count_bad(fields, nh):
+    """A C test that `nh`, the handles a message arrived with, don't fit
+    fields' handles: not one for each single handle, or past the list's N."""
+    k, lst = len(hsingles(fields)), hlist_of(fields)
+    if lst is None:
+        return f"{nh} != {k}"
+    return f"{nh} < {k} || {nh} - {k} > {lst.max}" if k else f"{nh} > {lst.max}"
+
+
+def typed_expr(fields, hs, nh):
+    """A C test that every typed handle of fields, among the message's
+    handles at `hs` (`nh` of them, counted by count_bad), is of its type;
+    None if none is typed."""
+    tests, k = [], 0
+    for f in fields:
+        if f.handle:
+            if f.htype:
+                tests.append(f"idl_handle_is({hs}[{k}], IDL_OBJ_{f.htype.upper()})")
+            k += 1
+        elif f.hlist and f.htype:
+            tests.append(f"idl_handles_are({hs} + {k}, {nh} - {k}, IDL_OBJ_{f.htype.upper()})"
+                         if k else f"idl_handles_are({hs}, {nh}, IDL_OBJ_{f.htype.upper()})")
+    return " && ".join(tests) or None
+
+
+def list_check(fields, ind="    "):
+    """Lines that make idl_st ERR_INVALID_ARGS if a handle list argument is past
+    its N (or is a NULL with a count), once idl_st is OK."""
+    out = []
+    for f in fields:
+        if f.hlist:
+            out.append(f"{ind}if (idl_st == OK && ({f.name}_len > {f.max} || "
+                       f"({f.name}_len && !{f.name})))")
+            out.append(f"{ind}    idl_st = ERR_INVALID_ARGS;")
+    return out
+
+
+def given_close(fields, ind="    "):
+    """Lines that close every handle a caller gave in fields (by their
+    parameters): used when the stub never writes the message, since a
+    send's handles are gone whatever its status."""
+    out = []
+    for f in fields:
+        if f.handle:
+            out.append(f"{ind}if ({f.name} != HANDLE_INVALID)")
+            out.append(f"{ind}    drv_handle_close({f.name});")
+        elif f.hlist:
+            out.append(f"{ind}if ({f.name})")
+            out.append(f"{ind}    idl_close_all({f.name}, {f.name}_len);")
+    return out
+
+
+def collect_handles(fields, arr, cnt, ind="    "):
+    """Lines that put the handles given in fields (singles, then the list's)
+    into arr, counted in cnt (declared by the caller, 0)."""
+    out = []
+    for f in fields:
+        if f.handle:
+            out.append(f"{ind}{arr}[{cnt}++] = {f.name};")
+        elif f.hlist:
+            out.append(f"{ind}for (uint32_t idl_i = 0; idl_i < {f.name}_len; idl_i++)")
+            out.append(f"{ind}    {arr}[{cnt}++] = {f.name}[idl_i];")
+    return out
+
+
 def gen_call_general(p, m):
     """The body of <proto>_<method>_call in buffers of the method's own size."""
     P, U = p.name, p.name.upper()
     qmax, rmax = method_max(m.args), method_max(m.results)
-    out, free = buffers([qmax, rmax], "return ERR_NO_MEMORY;")
+    harg = has_handles(m.args)
+    out, free = buffers([qmax, rmax], given_close(m.args, "") + ["return ERR_NO_MEMORY;"]
+                        if harg else "return ERR_NO_MEMORY;")
     out.append(f"    struct {P}_{m.name}_req *idl_q = (struct {P}_{m.name}_req *)idl_b0;")
     out.append(f"    const struct {P}_{m.name}_rep *idl_r = (const struct {P}_{m.name}_rep *)idl_b1;")
     out.append("    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);")
@@ -1448,15 +1694,30 @@ def gen_call_general(p, m):
     out.append("    status_t idl_st = OK;")
     out.append("    idl_q->txid = 0;")
     out += fill_request(m, U, "idl_q", "->")
+    out += list_check(m.args)
     out += put_vars(m.args, "idl_b0", "idl_qn", "ERR_INVALID_ARGS")
-    hres = [f for f in m.results if f.handle]
-    if hres:
-        out.append(f"    handle_t idl_rh[{len(hres)}];")
-    rh = (f"idl_rh, {len(hres)}, &idl_got[1]") if hres else "NULL, 0, &idl_got[1]"
-    out.append("    if (idl_st == OK)")
-    out.append(f"        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, {rmax}, &idl_got[0], {rh},")
-    out.append("                          idl_within, idl_t);")
-    if hres:
+    hres, rlist, rmaxh = hsingles(m.results), hlist_of(m.results), hmax(m.results)
+    if rmaxh:
+        out.append(f"    handle_t idl_rh[{rmaxh}];")
+    rh = (f"idl_rh, {rmaxh}, &idl_got[1]") if rmaxh else "NULL, 0, &idl_got[1]"
+    if harg:
+        # The request's handles are the kernel's from the call on, whatever the
+        # status; the stub closes them only when it never calls.
+        out.append(f"    handle_t idl_wh[{hmax(m.args)}];")
+        out.append("    uint32_t idl_wn = 0;")
+        out.append("    if (idl_st == OK) {")
+        out += collect_handles(m.args, "idl_wh", "idl_wn", "        ")
+        out.append("        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, "
+                   f"{rmax}, &idl_got[0], {rh},")
+        out.append("                            idl_within, idl_t);")
+        out.append("    } else {   /* never sent: the handles are still ours */")
+        out += given_close(m.args, "        ")
+        out.append("    }")
+    else:
+        out.append("    if (idl_st == OK)")
+        out.append(f"        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, {rmax}, &idl_got[0], {rh},")
+        out.append("                          idl_within, idl_t);")
+    if rmaxh:
         # ERR_BUFFER_TOO_SMALL writes the reply's handle count, but none of
         # its handles reach our table (nor idl_rh): nothing to close then.
         out.append("    if (idl_st != OK)")
@@ -1465,9 +1726,13 @@ def gen_call_general(p, m):
     out.append("    if (idl_st == OK)")
     out.append(f"        idl_st = {status}(idl_b1, idl_got[0], sizeof(*idl_r));")
     out += get_vars(m.results, "idl_b1", "idl_got[0]", "ERR_INTERNAL")
-    if hres:
-        out.append(f"    if (idl_st == OK && idl_got[1] != {len(hres)})")
+    if rmaxh:
+        out.append(f"    if (idl_st == OK && {paren(count_bad(m.results, 'idl_got[1]'))})")
         out.append("        idl_st = ERR_INTERNAL;")
+        te = typed_expr(m.results, "idl_rh", "idl_got[1]")
+        if te:   # a server that sends the wrong type breaks the protocol
+            out.append(f"    if (idl_st == OK && !({te}))")
+            out.append("        idl_st = ERR_INTERNAL;")
         out.append("    if (idl_st != OK)")
         out.append("        idl_close_all(idl_rh, idl_got[1]);")
     for k, f in enumerate(hres):
@@ -1476,6 +1741,19 @@ def gen_call_general(p, m):
         out.append(f"            *out_{f.name} = idl_rh[{k}];")
         out.append("        else")
         out.append(f"            drv_handle_close(idl_rh[{k}]);")
+        out.append("    }")
+    if rlist:
+        k, n = len(hres), rlist.name
+        out.append("    if (idl_st == OK) {")
+        out.append(f"        uint32_t idl_hn = idl_got[1]{f' - {k}' if k else ''};")
+        out.append(f"        if (out_{n}) {{")
+        out.append("            for (uint32_t idl_i = 0; idl_i < idl_hn; idl_i++)")
+        out.append(f"                out_{n}[idl_i] = idl_rh[{f'{k} + ' if k else ''}idl_i];")
+        out.append("        } else {")
+        out.append(f"            idl_close_all(idl_rh{f' + {k}' if k else ''}, idl_hn);")
+        out.append("        }")
+        out.append(f"        if (out_{n}_len)")
+        out.append(f"            *out_{n}_len = idl_hn;")
         out.append("    }")
     out += copy_results(m, "idl_st == OK", "idl_r->")
     out += copy_vars(m, "idl_st == OK")
@@ -1563,23 +1841,39 @@ def gen_client_async(p, m):
     P, U = p.name, p.name.upper()
     out = [""]
     params = ["handle_t ch", "uint32_t idl_txid"] + in_params(m.args)
+    harg = has_handles(m.args)
     out.append(f"/* {P}_{m.name} without waiting: the request, with the caller's txid (not 0).")
+    if harg:
+        out.append(" * The handles it is given are gone whatever the status (sent, or closed).")
     out.append(f" * The reply comes on ch: idl_reply_read, then {P}_{m.name}_result. */")
     out.append(f"static inline status_t {P}_{m.name}_send({', '.join(params)})")
     out.append("{")
     if general(m):
-        out.append("    if (!idl_txid)")
-        out.append("        return ERR_INVALID_ARGS;")
-        bufs, free = buffers([method_max(m.args)], "return ERR_NO_MEMORY;")
+        if not harg:
+            out.append("    if (!idl_txid)")
+            out.append("        return ERR_INVALID_ARGS;")
+        bufs, free = buffers([method_max(m.args)], given_close(m.args, "") +
+                             ["return ERR_NO_MEMORY;"] if harg else "return ERR_NO_MEMORY;")
         out += bufs
         out.append(f"    struct {P}_{m.name}_req *idl_q = (struct {P}_{m.name}_req *)idl_b0;")
         out.append("    uint32_t idl_qn = sizeof(*idl_q);")
-        out.append("    status_t idl_st = OK;")
+        out.append("    status_t idl_st = " + ("idl_txid ? OK : ERR_INVALID_ARGS;" if harg else "OK;"))
         out.append("    idl_q->txid = idl_txid;")
         out += fill_request(m, U, "idl_q", "->")
+        out += list_check(m.args)
         out += put_vars(m.args, "idl_b0", "idl_qn", "ERR_INVALID_ARGS")
-        out.append("    if (idl_st == OK)")
-        out.append("        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);")
+        if harg:
+            out.append(f"    handle_t idl_wh[{hmax(m.args)}];")
+            out.append("    uint32_t idl_wn = 0;")
+            out.append("    if (idl_st == OK) {")
+            out += collect_handles(m.args, "idl_wh", "idl_wn", "        ")
+            out.append("        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);")
+            out.append("    } else {   /* never sent: the handles are still ours */")
+            out += given_close(m.args, "        ")
+            out.append("    }")
+        else:
+            out.append("    if (idl_st == OK)")
+            out.append("        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);")
         if free:
             out.append(free)
         out.append("    return idl_st;")
@@ -1592,7 +1886,7 @@ def gen_client_async(p, m):
         out += fill_request(m, U, "idl_q")
         out.append("    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);")
         out.append("}")
-    hres = [f for f in m.results if f.handle]
+    hres, rlist = hsingles(m.results), hlist_of(m.results)
     params = ["const void *idl_rep", "struct idl_msg *idl_m"] + out_params(m.results)
     out.append("")
     out.append(f"/* The status and results of a reply to {P}_{m.name}_send (read with")
@@ -1607,8 +1901,12 @@ def gen_client_async(p, m):
         out += get_vars(m.results, "idl_rep", "idl_m->n", "ERR_INTERNAL")
     else:
         out.append("    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));")
-    out.append(f"    if (idl_st == OK && idl_m->nh != {len(hres)})")
+    out.append(f"    if (idl_st == OK && {paren(count_bad(m.results, 'idl_m->nh'))})")
     out.append("        idl_st = ERR_INTERNAL;")
+    te = typed_expr(m.results, "idl_m->hs", "idl_m->nh")
+    if te:
+        out.append(f"    if (idl_st == OK && !({te}))")
+        out.append("        idl_st = ERR_INTERNAL;")
     out.append("    if (idl_st != OK) {")
     out.append("        idl_msg_drop(idl_m);")
     out.append("        return idl_st;")
@@ -1618,6 +1916,17 @@ def gen_client_async(p, m):
         out.append(f"        *out_{f.name} = idl_m->hs[{k}];")
         out.append("    else")
         out.append(f"        drv_handle_close(idl_m->hs[{k}]);")
+    if rlist:
+        k, n = len(hres), rlist.name
+        out.append(f"    if (out_{n}) {{")
+        out.append(f"        for (uint32_t idl_i = {k}; idl_i < idl_m->nh; idl_i++)")
+        out.append(f"            out_{n}[idl_i{f' - {k}' if k else ''}] = idl_m->hs[idl_i];")
+        out.append("    } else {")
+        out.append(f"        idl_close_all(idl_m->hs{f' + {k}' if k else ''}, "
+                   f"idl_m->nh{f' - {k}' if k else ''});")
+        out.append("    }")
+        out.append(f"    if (out_{n}_len)")
+        out.append(f"        *out_{n}_len = idl_m->nh{f' - {k}' if k else ''};")
     out.append("    idl_m->nh = 0;")
     if not m.results:
         out.append("    (void)idl_r;")
@@ -1636,9 +1945,14 @@ def gen_server_reply(p, m):
     out.append(f"/* Answer the {P}.{m.name} request kept in txn: idl_st and, if it is OK, the")
     out.append(" * results (handles are moved in every case: sent, or closed). A positive")
     out.append(" * status is ERR_INTERNAL, and so is OK with a handle result left")
+    extra = []
     if has_var(m.results):
-        out.append(" * HANDLE_INVALID, or a varying result past its N (or a str that isn't")
-        out.append(" * one). Returns the write's status (idl_reply_write). */")
+        extra.append("a varying result past its N (or a str that isn't one)")
+    if hlist_of(m.results):
+        extra.append("a handle list past its N")
+    if extra:
+        out.append(f" * HANDLE_INVALID, or {' or '.join(extra)}. Returns the write's status")
+        out.append(" * (idl_reply_write). */")
     else:
         out.append(" * HANDLE_INVALID. Returns the write's status (idl_reply_write). */")
     out.append(f"static inline status_t {P}_reply_{m.name}({', '.join(params)})")
@@ -1680,11 +1994,14 @@ def gen_server_reply(p, m):
 def gen_reply_general(p, m):
     """The body of <proto>_reply_<method> in a buffer of the reply's own size."""
     P = p.name
-    hres = [f for f in m.results if f.handle]
+    hres, rlist, hm = hsingles(m.results), hlist_of(m.results), hmax(m.results)
     out = []
-    if hres:
+    if rlist:
+        out.append(f"    handle_t idl_hs[{hm}];")
+        out.append("    uint32_t idl_hn = 0;")
+    elif hres:
         out.append(f"    handle_t idl_hs[{len(hres)}] = {{ {', '.join(f.name for f in hres)} }};")
-    close = [f"        idl_close_all(idl_hs, {len(hres)});"] if hres else []
+    close = given_close(m.results, "        ") if hm else []
     rmax = method_max(m.results)
     free = None
     if rmax <= STACK_MAX:
@@ -1705,8 +2022,13 @@ def gen_reply_general(p, m):
         ok = " && ".join(f"{f.name} != HANDLE_INVALID" for f in hres)
         out.append(f"    if (idl_st == OK && !({ok}))")
         out.append("        idl_st = ERR_INTERNAL;")
+    if rlist:
+        n = rlist.name
+        out.append(f"    if (idl_st == OK && ({n}_len > {rlist.max} || ({n}_len && !{n}) ||")
+        out.append(f"                         !idl_handles_set({n}, {n}_len)))")
+        out.append("        idl_st = ERR_INTERNAL;")
     for f in m.results:
-        if f.handle or f.var:
+        if f.anyh or f.var:
             continue
         if f.array:
             out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
@@ -1716,12 +2038,23 @@ def gen_reply_general(p, m):
     out += put_vars(m.results, "idl_b0", "idl_rn", "ERR_INTERNAL")
     out.append("    idl_r->status = idl_st;")
     out.append("    if (idl_st != OK) {")
-    for k, f in enumerate(hres):
-        out.append(f"        if (idl_hs[{k}] != HANDLE_INVALID)")
-        out.append(f"            drv_handle_close(idl_hs[{k}]);")
+    if rlist:
+        out += given_close(m.results, "        ")
+    else:
+        for k, f in enumerate(hres):
+            out.append(f"        if (idl_hs[{k}] != HANDLE_INVALID)")
+            out.append(f"            drv_handle_close(idl_hs[{k}]);")
     out.append("        idl_rn = sizeof(struct idl_rep_hdr);")
+    if rlist:
+        out.append("    } else {")
+        out += collect_handles(m.results, "idl_hs", "idl_hn", "        ")
     out.append("    }")
-    hs = (f"idl_st == OK ? idl_hs : NULL, idl_st == OK ? {len(hres)} : 0") if hres else "NULL, 0"
+    if rlist:
+        hs = "idl_hs, idl_hn"
+    elif hres:
+        hs = f"idl_st == OK ? idl_hs : NULL, idl_st == OK ? {len(hres)} : 0"
+    else:
+        hs = "NULL, 0"
     out.append(f"    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, {hs});")
     if free:
         out.append(free)
@@ -1729,7 +2062,11 @@ def gen_reply_general(p, m):
     return out
 
 
-def gen_dispatch_case(p, m):
+def gen_dispatch_case(p, m, percase=False):
+    """The switch case of call m in <proto>_dispatch_h/_on. percase: the
+    protocol's calls take handles, so each case counts the handles it
+    arrived with and closes them when it refuses the request (otherwise a
+    request with handles was refused, closed, before the switch)."""
     P, U = p.name, p.name.upper()
     out = [f"    case {U}_{m.name.upper()}: {{"]
     out.append(f"        const struct {P}_{m.name}_req *idl_q = "
@@ -1737,9 +2074,13 @@ def gen_dispatch_case(p, m):
     out.append(f"        struct {P}_{m.name}_rep *idl_r = (struct {P}_{m.name}_rep *)rep;")
     g = general(m)   # fixed arrays straight into the reply (no copy of them on the stack)
     room = dict(var_layout(m.results)[0])   # where each varying result is written
+    hres, rlist = hsingles(m.results), hlist_of(m.results)
     for f in m.results:
         if f.handle:
             out.append(f"        handle_t out_{f.name} = HANDLE_INVALID;")
+        elif f.hlist:   # filled in the reply's handles, past the single ones
+            out.append(f"        handle_t *out_{f.name} = rhs + {len(hres)};")
+            out.append(f"        uint32_t out_{f.name}_len = 0;")
         elif f.var:
             out.append(f"        {f.ctype} *out_{f.name} = ({f.ctype} *)((uint8_t *)rep + {room[f]});")
             out.append(f"        uint32_t out_{f.name}_len = 0;")
@@ -1754,30 +2095,62 @@ def gen_dispatch_case(p, m):
             out.append(f"        {f.ctype} out_{f.name} = 0;")
     if not m.results:
         out.append("        (void)idl_r;")
+    bad = count_bad(m.args, "idl_nh") if percase else None
+    if percase and not has_handles(m.args):
+        bad = "idl_nh"
+    # A refusal: the handles are closed (they would be the handler's otherwise).
+    refuse = (["        {", "            idl_close_all(idl_hs, idl_nh);",
+               "            return sizeof(*idl_h);", "        }"] if percase else
+              ["            return sizeof(*idl_h);"])
     vargs = [f for f in m.args if f.var]
     if vargs:
         out.append("        uint32_t idl_o = sizeof(*idl_q);")
         out.append("        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;")
         out += get_vars(m.args, "req", "n", "ERR_INVALID_ARGS", "        ")
-        out.append("        if (idl_st != OK)")
+        if percase:
+            out.append(f"        if (idl_st == OK && {paren(bad)})")
+            out.append("            idl_st = ERR_INVALID_ARGS;")
+        out.append("        if (idl_st != OK)" + (" {" if percase else ""))
     else:
-        out.append("        if (n != sizeof(*idl_q))")
-    out.append("            return sizeof(*idl_h);")
+        out.append(f"        if (n != sizeof(*idl_q){f' || {bad}' if percase else ''})" +
+                   (" {" if percase else ""))
+    if percase:
+        out.append("            idl_close_all(idl_hs, idl_nh);")
+        out.append("            return sizeof(*idl_h);")
+        out.append("        }")
+    else:
+        out.append("            return sizeof(*idl_h);")
     out.append(f"        if (!ops->{m.name}) {{")
+    if percase:
+        out.append("            idl_close_all(idl_hs, idl_nh);")
     out.append("            idl_h->status = ERR_NOT_SUPPORTED;")
     out.append("            return sizeof(*idl_h);")
     out.append("        }")
+    te = typed_expr(m.args, "idl_hs", "idl_nh")
+    if te:   # the handler gets the types it asked for, or never runs
+        out.append(f"        if (!({te})) {{")
+        out.append("            idl_close_all(idl_hs, idl_nh);")
+        out.append("            idl_h->status = ERR_WRONG_TYPE;")
+        out.append("            return sizeof(*idl_h);")
+        out.append("        }")
     call = ["ctx"] + (["idl_txn"] if m.later else [])
-    k = 0
+    k, h = 0, 0
     for f in m.args:
         if f.var:
             cast = "const char" if f.str else f"const {f.ctype}"
             call += [f"({cast} *)idl_p{k}", f"idl_l{k}"]
             k += 1
+        elif f.handle:
+            call.append(f"idl_hs[{h}]")
+            h += 1
+        elif f.hlist:
+            call += [f"idl_hs + {h}" if h else "idl_hs", f"idl_nh - {h}" if h else "idl_nh"]
         else:
             call.append(f"idl_q->{f.name}")
     for f in m.results:
         if f.var:
+            call += [f"out_{f.name}", f"&out_{f.name}_len"]
+        elif f.hlist:
             call += [f"out_{f.name}", f"&out_{f.name}_len"]
         elif f.array:
             call.append(f"idl_r->{f.name}" if g else f"out_{f.name}")
@@ -1787,15 +2160,24 @@ def gen_dispatch_case(p, m):
         out.append("        struct idl_txn idl_txn = { ch, idl_h->txid };")
     decl = "idl_st =" if vargs else "status_t idl_st ="
     out.append(f"        {decl} ops->{m.name}({', '.join(call)});")
-    hres = [f for f in m.results if f.handle]
+
+    def close_results(ind):
+        """Lines that close the results a handler set (it failed, or answers later)."""
+        c = []
+        for f in hres:
+            c.append(f"{ind}if (out_{f.name} != HANDLE_INVALID)")
+            c.append(f"{ind}    drv_handle_close(out_{f.name});")
+        if rlist:   # as many as it counted, in the room it had
+            n = rlist.name
+            c.append(f"{ind}idl_close_all(out_{n}, out_{n}_len < {rlist.max} ? "
+                     f"out_{n}_len : {rlist.max});")
+        return c
     if m.later:
         out.append(f"        /* IDL_LATER: the handler answers with {P}_reply_{m.name}. */")
-        out.append("        if (idl_st == IDL_LATER)" + (" {" if hres else ""))
-        for f in hres:
-            out.append(f"            if (out_{f.name} != HANDLE_INVALID)")
-            out.append(f"                drv_handle_close(out_{f.name});")
+        out.append("        if (idl_st == IDL_LATER)" + (" {" if hres or rlist else ""))
+        out += close_results("            ")
         out.append("            return 0;")
-        if hres:
+        if hres or rlist:
             out.append("        }")
     out.append("        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;")
     for f in m.results:   # a handler's varying result past N, or not a str
@@ -1805,25 +2187,31 @@ def gen_dispatch_case(p, m):
                 bad += f" || !idl_str_ok(out_{f.name}, out_{f.name}_len)"
             out.append(f"        if (idl_h->status == OK && ({bad}))")
             out.append("            idl_h->status = ERR_INTERNAL;")
-    if hres:
-        ok = " && ".join(f"out_{f.name} != HANDLE_INVALID" for f in hres)
+    if hres or rlist:
+        oks = [f"out_{f.name} != HANDLE_INVALID" for f in hres]
+        if rlist:
+            n = rlist.name
+            oks.append(f"out_{n}_len <= {rlist.max} && idl_handles_set(out_{n}, out_{n}_len)")
+        ok = " && ".join(oks)
         out.append(f"        if (idl_h->status == OK && !({ok}))")
         out.append("            idl_h->status = ERR_INTERNAL;   "
                    "/* a handle result left unset */")
         out.append("        if (idl_h->status != OK) {")
-        for f in hres:
-            out.append(f"            if (out_{f.name} != HANDLE_INVALID)")
-            out.append(f"                drv_handle_close(out_{f.name});")
+        out += close_results("            ")
         out.append("            return sizeof(*idl_h);")
         out.append("        }")
         for k, f in enumerate(hres):
             out.append(f"        rhs[{k}] = out_{f.name};")
-        out.append(f"        *rhn = {len(hres)};")
+        if rlist:
+            out.append(f"        *rhn = {len(hres)} + out_{rlist.name}_len;"
+                       if hres else f"        *rhn = out_{rlist.name}_len;")
+        else:
+            out.append(f"        *rhn = {len(hres)};")
     else:
         out.append("        if (idl_h->status != OK)")
         out.append("            return sizeof(*idl_h);")
     for f in m.results:
-        if f.handle or f.var or (f.array and g):
+        if f.anyh or f.var or (f.array and g):
             continue
         if f.array:
             out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
@@ -1882,8 +2270,9 @@ def gen_file(protos):
 
 
 def takes_handles(p):
-    """Does an event to p's server carry handles (so its loops read them)?"""
-    return any(f.handle for m in p.methods if m.event == "in" for f in m.args)
+    """Does a request or an event to p's server carry handles (so its loops
+    read them, and <proto>_dispatch_h takes them)?"""
+    return any(has_handles(m.args) for m in p.methods)
 
 
 def gen_event_send(p, e):
@@ -1891,7 +2280,7 @@ def gen_event_send(p, e):
     end it goes from."""
     P, U = p.name, p.name.upper()
     fields = e.fields
-    hs = [f for f in fields if f.handle]
+    hs = [f for f in fields if f.anyh]
     params = ["handle_t ch"] + in_params(fields)
     to = "the server" if e.event == "in" else "the client"
     out = [""]
@@ -1904,9 +2293,6 @@ def gen_event_send(p, e):
     out[-1] += " */"
     out.append(f"static inline status_t {P}_{e.name}({', '.join(params)})")
     out.append("{")
-    if hs:
-        out.append(f"    handle_t idl_hs[{len(hs)}] = {{ {', '.join(f.name for f in hs)} }};")
-    close = [f"        idl_close_all(idl_hs, {len(hs)});"] if hs else []
     size = method_max(fields)
     free = None
     if size <= STACK_MAX:
@@ -1914,7 +2300,7 @@ def gen_event_send(p, e):
     else:
         out.append(f"    uint8_t *idl_b0 = (uint8_t *)drv_malloc({size});")
         out.append("    if (!idl_b0) {")
-        out += close
+        out += given_close(fields, "        ")
         out.append("        return ERR_NO_MEMORY;")
         out.append("    }")
         free = "    drv_free(idl_b0);"
@@ -1924,22 +2310,27 @@ def gen_event_send(p, e):
     out.append("    idl_q->txid = 0;   /* an event */")
     out.append(f"    idl_q->ordinal = {U}_{e.name.upper()};")
     for f in fields:
-        if f.handle or f.var:
+        if f.anyh or f.var:
             continue
         if f.array:
             out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
             out.append(f"        idl_q->{f.name}[idl_i] = {f.name}[idl_i];")
         else:
             out.append(f"    idl_q->{f.name} = {f.name};")
+    out += list_check(fields)
     out += put_vars(fields, "idl_b0", "idl_qn", "ERR_INVALID_ARGS")
     if hs:
         # Closed only when the kernel never got them (a field refused): a
         # send's handles are gone whatever its status, and closing them
         # after it could close another thread's new handles.
-        out.append("    if (idl_st != OK)")
-        out.append(f"        idl_close_all(idl_hs, {len(hs)});   /* never sent */")
-        out.append("    else")
-        out.append(f"        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, {len(hs)});")
+        out.append(f"    handle_t idl_hs[{hmax(fields)}];")
+        out.append("    uint32_t idl_hn = 0;")
+        out.append("    if (idl_st == OK) {")
+        out += collect_handles(fields, "idl_hs", "idl_hn", "        ")
+        out.append("        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, idl_hn);")
+        out.append("    } else {   /* never sent: the handles are still ours */")
+        out += given_close(fields, "        ")
+        out.append("    }")
     else:
         out.append("    if (idl_st == OK)")
         out.append("        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);")
@@ -1950,9 +2341,9 @@ def gen_event_send(p, e):
     return out
 
 
-def event_call(e, fields_src, hs):
+def event_call(e, fields_src, hs, nh):
     """The handler call's arguments for event e, its varying fields read by
-    get_vars and its handles in hs[]."""
+    get_vars and its handles at hs (nh of them)."""
     call, k, h = ["ctx"], 0, 0
     for f in e.fields:
         if f.var:
@@ -1962,6 +2353,8 @@ def event_call(e, fields_src, hs):
         elif f.handle:
             call.append(f"{hs}[{h}]")
             h += 1
+        elif f.hlist:
+            call += [f"{hs} + {h}" if h else hs, f"{nh} - {h}" if h else nh]
         else:
             call.append(f"{fields_src}->{f.name}")
     return call
@@ -1972,7 +2365,6 @@ def gen_event_case(p, e, hs, nh, ind="    "):
     hs) and runs its handler in table `tab`. Returns lines; on any refusal
     the handles are closed."""
     P, U = p.name, p.name.upper()
-    k = sum(1 for f in e.fields if f.handle)
     out = [f"{ind}case {U}_{e.name.upper()}: {{"]
     out.append(f"{ind}    const struct {P}_{e.name}_msg *idl_e = (const struct {P}_{e.name}_msg *)idl_m;")
     out.append(f"{ind}    uint32_t idl_o = sizeof(*idl_e);")
@@ -1981,15 +2373,19 @@ def gen_event_case(p, e, hs, nh, ind="    "):
     if not has_var(e.fields):
         out.append(f"{ind}    if (idl_o != idl_n)")
         out.append(f"{ind}        idl_st = ERR_INVALID_ARGS;")
-    out.append(f"{ind}    if (idl_st == OK && {nh} != {k})")
+    out.append(f"{ind}    if (idl_st == OK && {paren(count_bad(e.fields, nh))})")
     out.append(f"{ind}        idl_st = ERR_INVALID_ARGS;")
     out.append(f"{ind}    if (idl_st == OK && !idl_tab->{e.name})")
     out.append(f"{ind}        idl_st = ERR_NOT_SUPPORTED;")
+    te = typed_expr(e.fields, hs, nh)
+    if te:
+        out.append(f"{ind}    if (idl_st == OK && !({te}))")
+        out.append(f"{ind}        idl_st = ERR_WRONG_TYPE;")
     out.append(f"{ind}    if (idl_st != OK) {{")
     out.append(f"{ind}        idl_close_all({hs}, {nh});")
     out.append(f"{ind}        return idl_st;")
     out.append(f"{ind}    }}")
-    out.append(f"{ind}    idl_tab->{e.name}({', '.join(event_call(e, 'idl_e', hs))});")
+    out.append(f"{ind}    idl_tab->{e.name}({', '.join(event_call(e, 'idl_e', hs, nh))});")
     out.append(f"{ind}    return OK;")
     out.append(f"{ind}}}")
     return out
@@ -2094,6 +2490,7 @@ def gen_protocol(p):
     ins = [m for m in p.methods if m.event == "in"]
     outs = [m for m in p.methods if m.event == "out"]
     hin = takes_handles(p)
+    percase = any(has_handles(m.args) for m in calls)   # calls take handles: counted in each case
     out = [f"#define {U}_PROTOCOL_ID {p.pid}u"]
     if p.kept:
         out.append(f"#define {U}_KEPT 1u   /* its restart is not seen; nothing to its server "
@@ -2131,10 +2528,14 @@ def gen_protocol(p):
         out.append("} __attribute__((packed));")
     if ins or outs:
         out += ["", f"#define {U}_REQ_MAX {req_max}u   /* bytes: the biggest message to the server */",
-                f"#define {U}_REP_MAX {rep_max}u   /* bytes: the biggest message to the client */", ""]
+                f"#define {U}_REP_MAX {rep_max}u   /* bytes: the biggest message to the client */"]
     else:
         out += ["", f"#define {U}_REQ_MAX {req_max}u   /* bytes: the biggest request */",
-                f"#define {U}_REP_MAX {rep_max}u   /* bytes: the biggest reply */", ""]
+                f"#define {U}_REP_MAX {rep_max}u   /* bytes: the biggest reply */"]
+    p.req_handles = max([IDL_READ_HANDLES] + [hmax(m.args) for m in calls + ins])
+    p.rep_handles = max([REP_HANDLES_MAX] + [hmax(m.results) for m in calls + outs])
+    out += [f"#define {U}_REQ_HANDLES {read_h(p, True)}   /* handles: read with each message to the server */",
+            f"#define {U}_REP_HANDLES {rep_h(p, True)}   /* handles: room in a dispatch's rhs */", ""]
 
     out.append("/* ---- client ---------------------------------------------------------- */")
     for m in calls:
@@ -2185,7 +2586,7 @@ def gen_protocol(p):
     head = [
         f"/* Decode the request of n bytes at req, which came on ch, call its handler,",
         f" * encode the reply into rep ({U}_REP_MAX bytes) and the handles it carries",
-        " * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's",
+        f" * into rhs ({U}_REP_HANDLES slots; *rhn of them). Returns the reply's",
         " * length: 0 means no reply (the request has no txid, or a `later`",
         " * handler answers it itself). No I/O; the caller sends the reply with the",
         " * handles, or closes them if it never sends it. */",
@@ -2196,13 +2597,21 @@ def gen_protocol(p):
                     " * handler takes is dropped). No I/O; the caller sends the reply with the",
                     " * handles, or closes them if it never sends it." + ("" if hin else " */")]
         if hin:
-            head += [" * The idl_nh handles at idl_hs (an event's) are taken in every case:",
-                     " * given to its handler, or closed. */"]
+            head += [" * The idl_nh handles at idl_hs (an event's, or a call's arguments) are taken",
+                     " * in every case: given to the handler, or closed. */"]
     elif outs:
         head[3:] = [" * length: 0 means no reply (the message has no txid, a `later` handler",
                     " * answers it itself, or it has txid 0: an event of the other way, or",
                     " * none, never answered). No I/O; the caller sends the reply with the",
-                    " * handles, or closes them if it never sends it. */"]
+                    " * handles, or closes them if it never sends it." + ("" if hin else " */")]
+        if hin:
+            head += [" * The idl_nh handles at idl_hs (a call's arguments) are taken in every case:",
+                     " * given to the handler, or closed. */"]
+    elif hin:
+        head[-1] = " * handles, or closes them if it never sends it."
+        head += [" * The idl_nh handles at idl_hs (the call's arguments) are taken in every",
+                 " * case: given to its handler, or closed (the handler owns them, whatever it",
+                 " * returns). */"]
     out += head
     out.append(f"static inline uint32_t {name}(handle_t ch, const struct {P}_ops *ops, void *ctx,")
     if hin:
@@ -2230,9 +2639,11 @@ def gen_protocol(p):
                     "        else" if hin else None]
             if hin:
                 out.append("    " + close[0])
+        if hin and not ins:
+            out.append("    " + close[0])
         out += ["        return 0;", "    }"]
         out = [l for l in out if l is not None]
-        if hin:
+        if hin and not percase:
             out += ["    if (idl_nh) {   /* a request with handles: only an event takes any */",
                     "        idl_close_all(idl_hs, idl_nh);",
                     "        idl_h->txid = ((const struct idl_req_hdr *)req)->txid;",
@@ -2245,7 +2656,21 @@ def gen_protocol(p):
         for e in ins:   # an event with a txid: refused, the sender may be waiting
             out.append(f"    case {U}_{e.name.upper()}:")
         if ins:
+            if percase:
+                out.append("        idl_close_all(idl_hs, idl_nh);")
             out.append("        return sizeof(*idl_h);   /* an event with a txid */")
+    elif hin:   # calls take handles, no events: a short message's are closed
+        out += ["    if (n < sizeof(uint32_t)) {",
+                "        idl_close_all(idl_hs, idl_nh);",
+                "        return 0;",
+                "    }",
+                "    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;",
+                "    idl_h->status = ERR_INVALID_ARGS;",
+                "    if (n < sizeof(struct idl_req_hdr)) {",
+                "        idl_close_all(idl_hs, idl_nh);",
+                "        return sizeof(*idl_h);",
+                "    }",
+                "    switch (((const struct idl_req_hdr *)req)->ordinal) {"]
     else:
         out += ["    if (n < sizeof(uint32_t))",
                 "        return 0;",
@@ -2255,9 +2680,11 @@ def gen_protocol(p):
                 "        return sizeof(*idl_h);",
                 "    switch (((const struct idl_req_hdr *)req)->ordinal) {"]
     for m in calls:
-        out += gen_dispatch_case(p, m)
+        out += gen_dispatch_case(p, m, percase)
+    out += ["    }"]
+    if percase:
+        out.append("    idl_close_all(idl_hs, idl_nh);")
     out += [
-        "    }",
         "    idl_h->status = ERR_NOT_SUPPORTED;",
         "    return sizeof(*idl_h);",
         "}",
@@ -2267,7 +2694,7 @@ def gen_protocol(p):
         pad2 = " " * len(f"static inline uint32_t {P}_dispatch_on(")
         out += [
             f"/* {P}_dispatch_h without handles (a loop of your own that reads none:",
-            " * an event that carries some is then dropped). */",
+            " * an event or call that takes some is then refused). */",
             f"static inline uint32_t {P}_dispatch_on(handle_t ch, const struct {P}_ops *ops, void *ctx,",
             pad2 + "const void *req, uint32_t n, void *rep, handle_t *rhs,",
             pad2 + "uint32_t *rhn)",
@@ -2309,9 +2736,9 @@ def gen_protocol(p):
             f"/* Run the message in slot (taken by {P}_take_slot, or found there by a",
             f" * successor), which came on ch: as {P}_dispatch_h, its reply built in",
             " * slot->r and the handles that reply carries put into rhs",
-            " * (IDL_REP_HANDLES slots; *rhn of them). The handles it carried",
-            " * (*slot->nh in slot->hs) are taken: given to an event's handler or",
-            " * closed, *slot->nh 0 after. Returns the reply's length: 0 means no reply",
+            f" * ({U}_REP_HANDLES slots; *rhn of them). The handles it carried",
+            " * (*slot->nh in slot->hs) are taken: given to a handler or closed,",
+            " * *slot->nh 0 after. Returns the reply's length: 0 means no reply",
             " * (no txid, an event, or a `later` handler answers it itself). No I/O;",
             " * the caller sends the reply with the handles, or closes them if it",
             " * never sends it. */",
@@ -2331,7 +2758,7 @@ def gen_protocol(p):
             f"/* Run the request in slot (taken by {P}_take_slot, or found there by a",
             f" * successor), which came on ch: as {P}_dispatch_on, its reply built",
             " * in slot->r and the handles that reply carries put into rhs",
-            " * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is",
+            f" * ({U}_REP_HANDLES slots; *rhn of them). A request that carried handles is",
             " * answered ERR_INVALID_ARGS without its handler seeing it. Returns the",
             " * reply's length: 0 means no reply (no txid, or a `later` handler",
             " * answers it itself). No I/O; the caller sends the reply with the handles,",
@@ -2371,7 +2798,29 @@ def gen_protocol(p):
     return out + gen_loops(p)
 
 
+def read_h(p, value=False):
+    """What names the handles p's loops read with each message (and room for
+    them): IDL_READ_HANDLES, or its own <PROTO>_REQ_HANDLES past that (value:
+    what that macro is defined as)."""
+    if p.req_handles <= IDL_READ_HANDLES:
+        return "IDL_READ_HANDLES"
+    return str(p.req_handles) if value else f"{p.name.upper()}_REQ_HANDLES"
+
+
+def rep_h(p, value=False):
+    """The same for the handles of a reply, or of an event to the client."""
+    if p.rep_handles <= REP_HANDLES_MAX:
+        return "IDL_REP_HANDLES"
+    return str(p.rep_handles) if value else f"{p.name.upper()}_REP_HANDLES"
+
+
 def gen_loops(p):
+    """_gen_loops, with this protocol's own room for handles."""
+    return [l.replace("IDL_READ_HANDLES", read_h(p)).replace("IDL_REP_HANDLES", rep_h(p))
+            for l in _gen_loops(p)]
+
+
+def _gen_loops(p):
     """<proto>_serve_one and <proto>_serve. Their buffers (the protocol's
     biggest request and reply) are on the stack, or from the heap when
     together they pass STACK_MAX."""
@@ -2560,7 +3009,8 @@ def c_names(p):
     P, U = p.name, p.name.upper()
     names = [f"{P}_{x}" for x in ("ops", "dispatch_on", "dispatch", "take_slot", "run_slot",
                                   "idempotent", "serve_one", "serve")]
-    names += [f"{U}_{x}" for x in ("PROTOCOL_ID", "REQ_MAX", "REP_MAX")]
+    names += [f"{U}_{x}" for x in ("PROTOCOL_ID", "REQ_MAX", "REP_MAX", "REQ_HANDLES",
+                                   "REP_HANDLES")]
     names += [f"{U}_{c[0]}" for c in p.consts]
     if p.kept:
         names.append(f"{U}_KEPT")
@@ -2593,8 +3043,30 @@ def check_c_names(protos):
             seen[n] = p
 
 
+def check_obj_types():
+    """OBJ_TYPES agrees with the kernel's enum obj_type, wherever the repository
+    has it (a tree without the kernel, genidl's selftest, has nothing to check)."""
+    for path in OBJ_HEADERS:
+        if not os.path.isfile(path):
+            continue
+        m = re.search(r"enum obj_type\s*\{(.*?)\};", open(path).read(), re.S)
+        if not m:
+            continue
+        have, n = {}, 0
+        for name, val in re.findall(r"\bOBJ_([A-Z_]+)\s*(?:=\s*(\d+))?\s*,", m.group(1)):
+            n = int(val) if val else n
+            have[name.lower()] = n
+            n += 1
+        want = {k: v for k, v in have.items() if k not in ("none", "type_count")}
+        if want != OBJ_TYPES:
+            sys.exit(f"{path}: enum obj_type is {want}, but tools/genidl.py's OBJ_TYPES "
+                     f"(the names `handle<type>` takes) is {OBJ_TYPES}: update it")
+        return
+
+
 def outputs_for(idl_dir, out_dir, ids_file):
     """{path: text} of every generated file, from the .idl files in idl_dir."""
+    check_obj_types()
     files = [parse(f) for f in sorted(glob.glob(os.path.join(idl_dir, "*.idl")))]
     protos = [p for f in files for p in f]
     names = {}
@@ -2737,7 +3209,42 @@ SELFTESTS = [
     ("an event answered later", t_ok("1 a (u32 x) event later\n"), None, "never answered"),
     ("a method without results", t_ok("1 a (u32 x)\n"), None, "want '<ordinal>"),
     ("nine handles", t_ok("1 a (handle a, handle b, handle c, handle d, handle e, handle f, "
-                          "handle g, handle h, handle i) event\n"), None, "more than 8"),
+                          "handle g, handle h, handle i) event\n"), None, None),
+    ("65 handles", t_ok("1 a (" + ", ".join(f"handle h{i}" for i in range(65)) + ") event\n"),
+     None, "up to 65 handles"),
+    ("handle arguments", t_ok("1 a (u32 x, handle h, handle g) -> (u32 y)\n"), None, None),
+    ("handle lists", t_ok("1 a (handle[<=64] h) -> (handle[<=64] g)\n"
+                          "2 b (handle[<=1] h) event\n3 c -> (handle[<=9] h) event\n"), None, None),
+    ("a handle list of none", t_ok("1 a (handle[<=0] h) -> ()\n"), None, "N not in 1..64"),
+    ("a handle list past 64", t_ok("1 a () -> (handle[<=65] h)\n"), None, "N not in 1..64"),
+    ("singles and a list past 64", t_ok("1 a (handle s, handle[<=64] h) -> ()\n"), None,
+     "up to 65 handles"),
+    ("singles and a list", t_ok("1 a (handle s, u32 x, handle[<=63] h) -> ()\n"), None, None),
+    ("two handle lists", t_ok("1 a (handle[<=2] h, handle[<=3] g) -> ()\n"), None,
+     "more than one handle list"),
+    ("a handle list before a handle", t_ok("1 a (handle[<=2] h, u32 x, handle g) -> ()\n"),
+     None, "must be the last handle field"),
+    ("a handle list and its length", t_ok("1 a (handle[<=2] h, u32 h_len) -> ()\n"), None,
+     "is h's length"),
+    ("typed handles", t_ok("1 a (handle<vmo> v, handle<channel>[<=3] c) -> "
+                           "(handle<event> e, handle<port>[<=2] p)\n"), None, None),
+    ("a type that is none", t_ok("1 a (handle<nothing> v) -> ()\n"), None,
+     "unknown object type 'nothing'"),
+    ("a type in capitals", t_ok("1 a (handle<VMO> v) -> ()\n"), None, "unknown type"),
+    ("a kept protocol, a handle argument", {"t.idl": "# Restart: the restart is not seen.\n\n"
+                                                      "protocol t 40 kept\n1 a (handle h) -> ()\n"},
+     None, "is kept"),
+    ("a kept protocol, a handle list argument",
+     {"t.idl": "# Restart: the restart is not seen.\n\nprotocol t 40 kept\n"
+               "1 a (handle[<=2] h) -> ()\n"}, None, "is kept"),
+    ("a kept protocol, eight handles back", {"t.idl": "# Restart: the restart is not seen.\n\n"
+                                                      "protocol t 40 kept\n"
+                                                      "1 a () -> (handle[<=8] h)\n"}, None, None),
+    ("a kept protocol, nine handles back", {"t.idl": "# Restart: the restart is not seen.\n\n"
+                                                      "protocol t 40 kept\n"
+                                                      "1 a () -> (handle[<=9] h)\n"}, None,
+     "room for 8 handles"),
+    ("handle arguments, later", t_ok("1 a (handle h) -> (u32 x) later\n"), None, None),
     ("an event past 16 KiB", t_ok("1 a -> (u8[4096] a, u8[4096] b, u8[4096] c, u8[4096] d) "
                                   "event\n"), None, "the event is 16392 bytes"),
     ("an event's names", t_ok("1 a () event\n2 a_msg () -> ()\n"), None, "defines t_a_msg"),

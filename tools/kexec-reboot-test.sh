@@ -1,7 +1,7 @@
 #!/bin/sh
 # `reboot` by kexec (docs/history/M8.5-PLAN.md, "Revision 2"): the screen goes to
 # the splash background at once, init syncs, flushes the log, stops
-# devmgr's drivers in order and starts the kernel's stored copy of the
+# volumes' filesystem services and devmgr's drivers in order and starts the kernel's stored copy of the
 # system: no firmware reset, so QEMU (-no-reboot) keeps running. Four runs:
 #   kexec     a plain boot with the splash, `reboot` with the stick
 #             unchanged: no file is read ("the stored kernel, no files
@@ -34,7 +34,7 @@
 # The kexec run has a sound card (intel-hda, as on the PC): the mixer
 # holds a channel to the hda driver, and a reboot that left it running
 # waited devmgr's whole stop timeout (30 s on the PC); devmgr must stop
-# within 2 s. The new kernel starts every CPU itself (INIT-SIPI-SIPI:
+# within 2 s, and volumes (first) too. The new kernel starts every CPU itself (INIT-SIPI-SIPI:
 # there is no loader to park them); QEMU_SMP and QEMU_XHCI pass through.
 # Usage: tools/kexec-reboot-test.sh <outdir> [run ...]; exit 0 on PASS.
 set -u
@@ -88,6 +88,10 @@ run_kexec() {
     ms=$(grep -ao "devmgr stopped in [0-9]* ms" "$log" | head -1 | tr -dc 0-9)
     [ -n "$ms" ] && [ "$ms" -lt 2000 ] ||
         fail kexec "devmgr took ${ms:-?} ms to stop (a driver left waiting for its clients?)"
+    # volumes (the filesystem services) stops first, as quickly
+    ms=$(grep -ao "(volumes in [0-9]* ms)" "$log" | head -1 | tr -dc 0-9)
+    [ -n "$ms" ] && [ "$ms" -lt 2000 ] ||
+        fail kexec "volumes took ${ms:-?} ms to stop (a filesystem service that didn't end?)"
     # devmgr names each driver it waited for: none may outlive its client end
     # (a duplicate still held: the mixer's keeper once kept hda's 30 s).
     grep -a "devmgr: stopping: .* still runs" "$log" &&

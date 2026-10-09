@@ -1,6 +1,6 @@
 # fat carries on from a dead instance's state (user/services/fat/adopt.c);
 # use tools/fat-restart-test.sh (it checks the log and the stick afterwards).
-# On the boot stick's /data, through devmgr: `kill fat-data` right after a
+# On the boot stick's /data, through volumes: `kill fat-data` right after a
 # write that was never synced (and right after a file was closed, which
 # fat finishes after its client has gone): the successor carries on, the
 # data is there; a copy of the kernel then a kill, its checksum the
@@ -8,7 +8,7 @@
 # goes and nothing is given up on. Booted once with the warm spare and once
 # with `nospare` (the same script: a new process adopts the state just
 # the same).
-# devmgr's and fat's lines reach the serial port through the kernel log,
+# volumes' and fat's lines reach the serial port through the kernel log,
 # the shell's through the console: their order isn't fixed, hence `seen`.
 # (The markers are echoed as fr-""1 so the typed line itself never matches.)
 wait 120 Jam OS shell

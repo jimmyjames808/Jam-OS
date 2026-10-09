@@ -161,7 +161,7 @@ static void menu_check(const char *old_path, const char *new_path)
     uint8_t *old = NULL, *nw = NULL, *menu = NULL, *prev = NULL;
     uint64_t old_len = 0, new_len = 0, n = 0, prev_len = 0;
     for (uint64_t end = now() + ESP_WAIT; now() < end && !esp_has("/esp/boot/jamos.elf");)
-        jam_nanosleep(now() + 100 * NS_PER_MS);   /* /esp coming back */
+        jam_sleep_until(now() + 100 * NS_PER_MS);   /* /esp coming back */
     status_t st = read_small(old_path, &old, &old_len);
     if (st == OK)
         st = read_small(new_path, &nw, &new_len);

@@ -17,7 +17,7 @@
  * is usage 0x06, codepoint 'c', a CTRL bit in mods), Enter '\n', Tab
  * '\t', Backspace '\b', Escape 0x1b; 0 for keys that type nothing
  * (arrows, F-keys, modifiers, locks). Ctrl+Alt+Del is just usage 0x4c DOWN
- * with CTRL and ALT set: the console decides. See <jam/abi.h> "input".
+ * with CTRL and ALT set: the console decides. The constants are below.
  *
  * Protocol `input` (id 11). Client: input_<method>(ch, args..., &results...)
  * (and input_<method>_until with a deadline, _within with a timeout), or
@@ -35,6 +35,32 @@
 #define INPUT_MOUSE            0x000b0002u
 #define INPUT_TEXT             0x000b0003u
 #define INPUT_READY            0x000b0004u
+
+/* Constants (the .idl's `const` lines). */
+/* key's state. */
+#define INPUT_KEY_UP 0u
+#define INPUT_KEY_DOWN 1u
+#define INPUT_KEY_REPEAT 2u
+/* ready's kind. */
+#define INPUT_READY_KEYBOARD 1u
+#define INPUT_READY_MOUSE 2u
+/* key's mods: the HID boot report's modifier byte. */
+#define INPUT_MOD_LCTRL (1u << 0)
+#define INPUT_MOD_LSHIFT (1u << 1)
+#define INPUT_MOD_LALT (1u << 2)
+#define INPUT_MOD_LGUI (1u << 3)
+#define INPUT_MOD_RCTRL (1u << 4)
+#define INPUT_MOD_RSHIFT (1u << 5)
+#define INPUT_MOD_RALT (1u << 6)
+#define INPUT_MOD_RGUI (1u << 7)
+/* Either Ctrl (LCTRL | RCTRL), either Shift, either Alt. */
+#define INPUT_MOD_CTRL 0x11u
+#define INPUT_MOD_SHIFT 0x22u
+#define INPUT_MOD_ALT 0x44u
+/* mouse's buttons: the HID boot mouse report's button bits. */
+#define INPUT_BTN_LEFT (1u << 0)
+#define INPUT_BTN_RIGHT (1u << 1)
+#define INPUT_BTN_MIDDLE (1u << 2)
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct input_key_req {
@@ -85,6 +111,8 @@ struct input_ready_rep {
 
 #define INPUT_REQ_MAX 74u   /* bytes: the biggest request */
 #define INPUT_REP_MAX 8u   /* bytes: the biggest reply */
+#define INPUT_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define INPUT_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -434,7 +462,7 @@ static inline status_t input_reply_ready(struct idl_txn idl_txn, status_t idl_st
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (INPUT_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (INPUT_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -547,7 +575,7 @@ static inline status_t input_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by input_take_slot, or found there by a
  * successor), which came on ch: as input_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (INPUT_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

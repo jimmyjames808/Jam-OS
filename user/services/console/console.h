@@ -21,6 +21,7 @@
 #include <idl/console.h>
 #include <idl/input.h>
 #include <jwl_client.h>
+#include <openkeys.h>
 #include <os.h>
 #include <utf8.h>
 #include "cells.h"

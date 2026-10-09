@@ -9,7 +9,7 @@
  *
  * Restart: usb-storage keeps nothing across a restart. ERR_PEER_CLOSED:
  * the stick is gone, or usb-storage ended: the client (a filesystem
- * service) ends too; devmgr starts a new one on a new channel when the
+ * service) ends too; volumes starts a new one on a new channel when the
  * disk is back. The other way round: a request from a client that has
  * gone is never started (the fence, drivers/usb-storage/block.c), so
  * nothing a dead filesystem service left queued lands after its
@@ -87,6 +87,8 @@ struct block_sync_rep {
 
 #define BLOCK_REQ_MAX 24u   /* bytes: the biggest request */
 #define BLOCK_REP_MAX 21u   /* bytes: the biggest reply */
+#define BLOCK_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define BLOCK_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -535,7 +537,7 @@ static inline status_t block_reply_sync(struct idl_txn idl_txn, status_t idl_st)
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (BLOCK_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (BLOCK_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -678,7 +680,7 @@ static inline status_t block_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by block_take_slot, or found there by a
  * successor), which came on ch: as block_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (BLOCK_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

@@ -2,12 +2,10 @@
  * loop), chans.c (its channels: reading requests, what each channel may
  * ask), request.c (the answers), bind.c (starting and stopping a driver: its handles, its job),
  * supervise.c (what happens when a driver dies: restart with backoff, or
- * give up), usb.c (the USB interfaces usb-bus reports), disk.c (the disks
- * usb-storage serves: which one is the boot disk) and fsvc.c (their
- * filesystem services; disk.h between the two), mounts.c (DEVMGR_MOUNTS: the list of mounts, its generation
- * and the calls waiting for it to change), spare.c (what outlives a
- * filesystem service's process: its keeper and state VMO, and the warm
- * spare fat). The protocol is in <devmgr.h>. */
+ * give up), usb.c (the USB interfaces usb-bus reports), disks.c (the
+ * disks usb-storage serves, told to volumes on the DISKS channel). The
+ * protocol is in <devmgr.h>. The disks' filesystems and mounts are
+ * volumes' (user/services/volumes/), since M12's storage split. */
 #pragma once
 
 #include <devmgr.h>
@@ -16,8 +14,7 @@
 #include <os.h>
 #include <supervise.h>
 
-#define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers,
-                         * filesystem services */
+#define MAX_DEVS  128   /* PCI functions, the crash-test driver, USB class drivers */
 /* How long a driver gets to end by itself when asked to stop, before its
  * job is killed. usb-bus takes longest: a Disable Slot per device (1 s
  * timeout each), then its final halt and reset (about 3 s of bounded
@@ -28,40 +25,33 @@
  * generation, so a stale packet is recognised). */
 #define KEY_DRIVER         (1ull << 32)
 #define KEY_OF(i, gen)     (KEY_DRIVER | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
-/* A driver wrote on its DR_SERVE channel by itself (usb-bus:
- * usbbus.interface_attached): binding index and start generation. */
+/* A driver wrote on its DR_SERVE channel by itself (a disk's driver, a
+ * filesystem service: answers, disk.c): binding index and start generation. */
 #define KEY_EVENTS         (1ull << 33)
 #define KEY_EV_OF(i, gen)  (KEY_EVENTS | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 /* A kept USB interface channel closed (the device went): usb_ifs slot and
  * its generation. */
 #define KEY_USBIF          (1ull << 34)
 #define KEY_IF_OF(i, gen)  (KEY_USBIF | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
-/* A test disk's `storage` channel has something to read, or closed: disks
- * slot and its generation. */
-#define KEY_DISK           (1ull << 35)
-#define KEY_DISK_OF(i, gen) (KEY_DISK | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 /* One of devmgr's channels has something to read, or closed (chans.c):
  * its slot and the slot's generation. */
 #define KEY_CHAN           (1ull << 36)
 #define KEY_CHAN_OF(i, gen) (KEY_CHAN | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
-/* The warm spare fat's process terminated (spare.c). */
-#define KEY_SPARE          (1ull << 37)
-/* A filesystem service's keep channel has something to read (spare.c):
- * binding index and the keeper's generation. */
-#define KEY_KEEP           (1ull << 38)
-#define KEY_KEEP_OF(i, gen) (KEY_KEEP | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
+/* A usb-bus's events channel (usb.c, usbbus_events) has something to read,
+ * or closed: its slot and the slot's generation. */
+#define KEY_BUSEV          (1ull << 39)
+#define KEY_BUSEV_OF(i, gen) (KEY_BUSEV | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 #define KEY_INDEX(k)       ((uint32_t)((k) >> 16) & 0xffffu)
 #define KEY_GEN(k)         ((uint32_t)(k) & 0xffffu)
 
 /* What a channel of devmgr's may ask (chans.c): the query channel the
  * queries, but never a device that has a device channel; a device channel
  * the queries about its own device alone; the control channel everything
- * but ESP_WRITE; init's ESP channel ESP_WRITE alone (<devmgr.h> "Trust"). */
+ * (<devmgr.h> "Trust"). */
 enum level {
     LEVEL_QUERY,
     LEVEL_DEVICE,
     LEVEL_CONTROL,
-    LEVEL_ESP,
 };
 
 /* Which channel a request came on, for request.c. */
@@ -75,8 +65,6 @@ enum bind_kind {
     BIND_PCI,    /* a PCI function (pci_enum) */
     BIND_SOFT,   /* no hardware: the crash-test driver */
     BIND_USB,    /* a USB interface usb-bus reported (usb.c); path NULL: a free slot */
-    BIND_FS,     /* a filesystem service on one partition of a disk (disk.c); path NULL: a
-                  * free slot */
 };
 
 struct binding {
@@ -107,31 +95,10 @@ struct binding {
     bool                console_wait; /* its restart waits for a (new) console */
     uint32_t            input_gen;  /* its current run got DR_INPUT from console number
                                      * input_gen (0: none) */
-    char                name[32];   /* its process name: "hid-<path>:<if>"; BIND_FS:
-                                     * "fat-data" */
-    /* A disk's driver (a BIND_USB running STORAGE_DRIVER) and BIND_FS (disk.c). */
-    uint32_t            disk;       /* its disks slot + 1; 0: none */
-    uint8_t             part;       /* BIND_FS: the partition it serves (storage.idl's index) */
-    handle_t            ctl;        /* BIND_FS: our end of its `fsctl` channel (0: none) */
-    /* BIND_FS on a disk that isn't the boot disk (disk.c): a /usbN mount. */
-    bool                other;      /* it is one: never given FAT_ARG_FORMAT */
-    bool                rw;         /* its `block` channel is opened read-write (`mount -w`;
-                                     * the boot disk's ESP: init's ESP_WRITE) */
-    bool                ready;      /* it answered its first fs.stat: a mount */
-    uint8_t             usbn;       /* the N of /usbN */
-    uint32_t            probe;      /* that fs.stat's transaction id */
-    /* BIND_FS: what outlives its process (spare.c). Its `fs` channel is
-     * kept too: client and serve stay devmgr's from one instance to the
-     * next (fs_serve_end), so a restart is not a new channel. */
-    struct sup_kept    *kept;       /* its keeper and state VMO; NULL until its first start */
-    bool                deliberate; /* the restart due is a deliberate kill's: not counted */
-    uint64_t            kill_at;    /* when DEVMGR_KILL asked for its end (uptime ns; 0: none) */
-    uint64_t            ended_at;   /* when its last instance's end was seen (uptime ns) */
-    uint32_t            promoted;   /* restarts that promoted the warm spare, since boot */
-    /* Bumped with every new `fs` channel (fs_serve_end): the mount's
-     * generation in DEVMGR_MOUNTS. A restart on the kept channel doesn't
-     * move it: fat keeps its views (and open files) across its deaths. */
-    uint32_t            chan_gen;
+    char                name[32];   /* its process name: "hid-<path>:<if>" */
+    /* A disk's driver (a BIND_USB running STORAGE_DRIVER: disks.c). */
+    bool                disk;       /* it is one: its channel is never handed out */
+    uint32_t            disk_txid;  /* the svc.connect asked of it for volumes (0: none) */
 };
 
 extern struct binding devs[MAX_DEVS];
@@ -149,10 +116,6 @@ extern bool           hidboot;
  * passed on to drv/hda, which runs its deliberate DMA faults before
  * serving (M11 stage 5). */
 extern bool           vtdtest;
-/* The argument "bootdisk=0x<id>": the MBR disk id of the disk the machine
- * booted from (the loader's, passed on by the kernel and init); 0: not
- * known. disk.c takes the Jam OS disk with that id as the boot disk. */
-extern uint32_t       boot_mbr_id;
 /* The argument "vlan=<id>" or "vlan=none" (the kernel's, through init;
  * <jam/netdev.h> netdev_vlan_args): the network's mode, a VLAN or
  * NETFRAME_MODE_UNTAGGED, passed on as the same word (netdev_mode_word)
@@ -172,7 +135,7 @@ extern unsigned       nbound, nfailed, nskipped;
 extern bool           shutdown_asked;
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-const char *bdf(const struct binding *b);   /* "00:04.0", "usb 6.1:0", "fat-data", "test" */
+const char *bdf(const struct binding *b);   /* "00:04.0", "usb 6.1:0", "test" */
 bool in_bootfs(const char *path);
 
 /* chans.c. Take the channels init gave (the startup message); false if
@@ -225,14 +188,17 @@ unsigned mem_bars(const struct binding *b);
 void close_client(struct binding *b);
 /* The next message on h didn't fit (ERR_BUFFER_TOO_SMALL: n bytes, nh
  * handles): take it off the queue anyway, unanswered, and close its
- * handles. (usb.c) */
+ * handles. (usb.c, disks.c) */
 void discard(handle_t h, uint32_t n, uint32_t nh);
 
-/* usb.c: the interfaces usb-bus reports on its DR_SERVE channel, and
- * their class drivers. */
+/* usb.c: the interfaces usb-bus reports on its events channel, and their
+ * class drivers. */
 #define MAX_USB_IFS 64
-/* b's driver wrote on its channel by itself (KEY_EVENTS). */
-void usb_driver_events(struct binding *b);
+/* b (a usb-bus) is about to start: its events channel (DR_EVENTS), whose
+ * other end devmgr serves. Nothing for any other driver. */
+status_t usb_bus_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
+/* A usb-bus's events channel's KEY_BUSEV packet. */
+void usb_bus_events(uint64_t key);
 /* A kept interface channel's KEY_USBIF packet. */
 void usb_if_closed(uint64_t key);
 /* b's driver (a usb-bus) is gone: forget the interfaces it reported (their
@@ -264,107 +230,25 @@ const char *usb_hub_name(void);
 /* Could b's driver have ended because the console went away? */
 bool usb_console_gone(const struct binding *b);
 
-/* disk.c: the disks usb-storage serves (and DEVMGR_TEST_DISK's), and the
- * filesystem services of the boot disk. */
+/* disks.c: the disks usb-storage serves, told to volumes (<volumes.h>,
+ * the DISKS channel). */
 #define STORAGE_DRIVER "drv/usb-storage"
-#define PART_ESP  DEVMGR_PART_ESP    /* the boot disk's ESP, read-only, at /esp */
-#define PART_DATA DEVMGR_PART_DATA   /* the boot disk's data partition, at /data */
-/* b is a BIND_USB binding about to run STORAGE_DRIVER for usb-bus device
- * `id`: give it a disk (b->disk). False: too many disks. */
-bool disk_attach(struct binding *b, uint32_t id);
-/* b (a disk's driver) won't run again: forget its disk. */
-void disk_detach(struct binding *b);
-/* b's process started (bind.c): a disk's driver is asked what it holds; a
- * filesystem service is a mount from now on. */
-void disk_started(struct binding *b);
-/* b's process is gone (bind.c): a disk's driver takes the disk's mounts
- * with it; a filesystem service is no mount until it is back. */
-void disk_stopped(struct binding *b);
-/* b (a disk's driver, or a BIND_FS) has something to read on its channel:
- * the answers to what devmgr asked without waiting. */
-void disk_events(struct binding *b);
-/* A test disk's KEY_DISK packet. */
-void disk_key(uint64_t key);
-/* DEVMGR_TEST_DISK: ch (consumed) is a `storage` channel; *id: the disk's. */
-status_t disk_test(handle_t ch, uint32_t *id);
-/* b (BIND_FS) died, its process still held. True if that is the end of it
- * (b freed, no restart): the ESP's service ended before it answered the
- * boot-disk check, so the disk is not the boot disk; or a /usbN service
- * ended by itself with FAT_EXIT_NO_VOLUME (`no_volume`): the partition
- * holds no FAT volume and is left alone. */
-bool fs_check_ended(struct binding *b, bool no_volume);
-/* FAT_ARG_FORMAT for the one service that may format a blank partition
- * (the boot disk's data partition), NULL for every other. */
-const char *fs_format_arg(const struct binding *b);
-/* For an instance that replaces one that ended: FAT_ARG_KILLED after a
- * deliberate kill, FAT_ARG_CRASHED after any other end; NULL for a first
- * start (fat counts only crashes against the request in progress). */
-const char *fs_end_arg(const struct binding *b);
-/* DEVMGR_REMOUNT: /usbN (a test disk's: /usbN-test) read-write or
- * read-only. ERR_NOT_FOUND: no such mount; ERR_BAD_STATE: its service
- * isn't serving. */
-status_t disk_remount(unsigned n, bool test, bool writable);
-/* DEVMGR_ESP_WRITE: the boot disk's ESP read-write (*out: a channel to its
- * service, which is no mount meanwhile) or read-only again (out unused).
- * ERR_NOT_FOUND: no boot disk with an ESP service; ERR_BAD_STATE: it
- * isn't serving. */
-status_t disk_esp_write(bool writable, handle_t *out);
-/* A BIND_FS binding's handle for its service: FAT_SR_BLOCK, a new `block`
- * channel on its partition. ERR_PEER_CLOSED: the disk is gone. */
-status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
-/* Close b's `fsctl` channel, if it has one. */
-void     fs_ctl_close(struct binding *b);
-/* The mount point b (BIND_FS) serves: "/data", "/esp-test", "/usb0". The
- * string is good until the next call. */
-const char *fs_mount_path(const struct binding *b);
-/* b (BIND_FS) won't run again: free its slot. */
-void fs_retire(struct binding *b);
-/* DEVMGR_FS_SVC: the filesystem service on partition `part` of disk `id`,
- * or NULL. */
-struct binding *fs_find(uint32_t id, uint32_t part);
-/* DEVMGR_FS_MOUNT: the filesystem service of mount `which`
- * (DEVMGR_MOUNT_*; flags DEVMGR_MOUNT_TEST: a test disk's), or NULL. */
-struct binding *fs_find_mount(uint32_t which, uint32_t flags);
-/* b's (BIND_FS) DR_SERVE: a duplicate of the `fs` server end devmgr keeps
- * across its restarts (a new channel only when there is none, or its
- * client end was closed). */
-status_t fs_serve_end(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
-/* Does b (BIND_FS) keep its `fs` channel while no instance runs? Then it
- * stays a mount meanwhile, and calls on it wait for the next instance. */
-bool     fs_channel_kept(const struct binding *b);
-/* devmgr is stopping: fs.sync each mounted data partition while its disk
- * still works (the services are killed when their disk's driver goes). */
-void disk_sync_all(void);
-/* Give up on what did not answer in time, and start the next /usbN
- * service that waits its turn. Called after every event. */
-void disk_run_due(void);
-/* When disk_run_due has something to do next, or DEADLINE_NEVER. */
-uint64_t disk_next_deadline(void);
-
-/* A mount: a running filesystem service of the boot disk, or of another
- * disk once its volume is mounted. */
-struct mount {
-    char     path[16];   /* the mount point */
-    uint32_t bind;       /* devs index of its filesystem service */
-    uint32_t gen;        /* that binding's `fs` channel's generation (chan_gen): a new
-                          * channel is a new mount, a restart on the kept one isn't */
-};
-/* The mounts as they are now into out (DEVMGR_MAX_MOUNTS slots). Returns
- * how many. */
-unsigned disk_mounts(struct mount *out);
-
-/* mounts.c: DEVMGR_MOUNTS. */
-/* Something that may have changed the mounts happened: if the list differs
- * from the one last handed out, the generation moves on and every waiting
- * call is answered. */
-void mounts_update(void);
-/* A DEVMGR_MOUNTS request (txid, known generation) that came on ch:
- * answered now if the generation differs, else kept waiting. */
-void mounts_request(handle_t ch, uint32_t txid, uint32_t known);
-/* Answer the calls that waited DEVMGR_MOUNTS_WAIT (ERR_TIMED_OUT). */
-void mounts_run_due(void);
-/* When mounts_run_due has something to do next, or DEADLINE_NEVER. */
-uint64_t mounts_next_deadline(void);
+/* DEVMGR_SET_VOLUMES: ch (consumed) is the client end of a new DISKS
+ * channel: every running disk's driver is asked for a `storage` channel
+ * for it again. */
+void     disks_set_volumes(handle_t ch);
+/* b (a disk's driver) started: a `storage` channel of volumes' own is
+ * asked of it without waiting (svc.connect), and handed to volumes
+ * (DISKS_ATTACH) when it comes (disks_events). */
+void     disks_started(struct binding *b);
+/* b (a disk's driver) has something to read on its channel: the answer to
+ * that svc.connect. */
+void     disks_events(struct binding *b);
+/* b (a disk's driver) won't run again: the device is gone (DISKS_GONE). */
+void     disks_gone(struct binding *b);
+/* Before a disk's driver is stopped on purpose (DEVMGR_RELEASE): volumes
+ * syncs every writable mount (DISKS_SYNC), and answers once it has. */
+void     disks_sync(void);
 
 /* supervise.c. */
 /* b's driver process (start generation `gen`) terminated. */
@@ -376,36 +260,3 @@ uint64_t sup_next_deadline(void);
 /* Forget b's supervision: no restart is due any more, the kept channel
  * end goes; the restart history is cleared. */
 void sup_reset(struct binding *b);
-
-/* spare.c: a filesystem service that outlives its process
- * (docs/M11.6-PLAN.md): per BIND_FS binding a keeper and a state VMO, and
- * one warm spare fat for every mount. */
-/* `on`: keep a warm spare (no boot word `nospare`). */
-void     spare_init(bool on);
-/* Start b (BIND_FS): for a `restart` after a death, the warm spare if one
- * waits, else (and for any other start) a new process (start_driver);
- * either way with its state and a new keep channel, whose keeper then
- * hands it what was kept. A restart is measured: the log says when it ran
- * and when it first answered. Errors as start_driver's. */
-status_t fs_run(struct binding *b, bool restart);
-/* b's state VMO (made the first time) and a new keep channel into x
- * (SR_STATE, SR_KEEP), for its next instance. One that can't be made is
- * said and left out: that instance starts fresh. */
-void     fs_kept_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
-/* The `block` channel opened in advance for b (the boot disk's /data)
- * into *out, if there is one and its disk still answers: true. */
-bool     fs_block_prepared(const struct binding *b, handle_t *out);
-/* b won't run again as it was (retired, given up on, stopped in order):
- * what its keeper kept closes (its clients see ERR_PEER_CLOSED), its state
- * VMO goes, and a `block` channel opened in advance for it. */
-void     fs_kept_release(struct binding *b);
-/* Start the warm spare (and open /data's `block` channel for it) when due. */
-void     spare_due(void);
-uint64_t spare_next_deadline(void);   /* DEADLINE_NEVER: nothing due */
-/* The port's packets: KEY_SPARE (the spare ended), KEY_KEEP (a keep channel). */
-void     spare_event(void);
-void     spare_keep_event(uint64_t key);
-/* SUPERVISION: is a warm spare waiting now? */
-bool     spare_waits(void);
-/* devmgr is stopping: the spare goes, and the `block` channel it had. */
-void     spare_stop(void);

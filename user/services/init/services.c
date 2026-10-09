@@ -24,10 +24,7 @@
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
  *             server ends of its control and query channels
  *             (SR_DEVMGR_CTL, SR_DEVMGR; init keeps a client end of each
- *             and publishes them as /svc/devmgr-ctl and /svc/devmgr), the
- *             server end of the ESP channel (DEVMGR_SR_ESP: the ESP made
- *             writable, for `update -w`; init keeps the client end and
- *             hands it to nobody, update.c's stick write alone uses it) and
+ *             and publishes them as /svc/devmgr-ctl and /svc/devmgr) and
  *             what its HID drivers type into (SR_CONSOLE): an INPUT-level
  *             compctl channel of the compositor's (none while the
  *             compositor restarts: it is sent once one runs,
@@ -39,10 +36,23 @@
  *             only then publishes the two names, so no program
  *             can ask the query channel for hda before it is the mixer's.
  *             "nousb" (the safe mode boot entry) is passed on: no USB
- *             controller driver. Its mounts (/data, /esp) are followed from
- *             then on (mounts.c). The NIC's device channel goes to netstack
+ *             controller driver. The NIC's device channel goes to netstack
  *             the same way: each network card's goes to netstack (net.c),
- *             whose /svc/net (a channel per opener) init publishes here
+ *             whose /svc/net (a channel per opener) init publishes here.
+ *             Once volumes runs too, devmgr gets the client end of a new
+ *             DISKS channel (DEVMGR_SET_VOLUMES, <volumes.h>), on which it
+ *             hands volumes its disks
+ *   volumes   bin/volumes, right after devmgr: the server ends of its
+ *             control channel (VOLUMES_SR_CTL; init keeps the client end
+ *             and publishes it as /svc/volumes, a channel per opener, for
+ *             tests), the ESP channel (VOLUMES_SR_ESP: the ESP made
+ *             writable, for `update -w`; init keeps the client end and
+ *             hands it to nobody, update.c's stick write alone uses it)
+ *             and a new DISKS channel (VOLUMES_SR_DISKS; its client end
+ *             to devmgr), a duplicate of /svc/notify's channel (the
+ *             sticks' notices), and the words "nospare" and
+ *             "bootdisk=0x<id>". Its mounts (/data, /esp, /usbN) are
+ *             followed from then on (mounts.c)
  *   mixer     bin/mixer, once devmgr runs: a duplicate of each HD Audio
  *             controller's device channel (SR_DEVMGR_DEVICE, one handle
  *             each; none without one: the mixer then has no output), and the
@@ -94,14 +104,17 @@
  * its HID drivers, which end when their compositor goes, come back
  * connected to it. devmgr dying (killed, or a crash)
  * takes its whole job with it: every driver it started (usb-bus, each
- * hid). A new devmgr binds them again from scratch (the kernel's safe
- * rebind: a new dma_cap with Bus Master Enable off until usb-bus has
- * reset the controller; the dead one's DMA pages stay quarantined until
- * then), connected to the compositor (or the console). /svc/devmgr and /svc/devmgr-ctl name
- * the new devmgr's channels, and the followers are told.
- * The mounts that came from the dead devmgr leave the namespace (the
- * shell's and logd's too) until the new one serves them again; logd then
- * carries on in the same file. */
+ * hid, each usb-storage). A new devmgr binds them again from scratch (the
+ * kernel's safe rebind: a new dma_cap with Bus Master Enable off until
+ * usb-bus has reset the controller; the dead one's DMA pages stay
+ * quarantined until then), connected to the compositor (or the console).
+ * /svc/devmgr and /svc/devmgr-ctl name the new devmgr's channels, and the
+ * followers are told; volumes gets a new DISKS channel. The mounts on the
+ * dead devmgr's disks leave the namespace (the shell's and logd's too)
+ * until volumes serves them again; logd then carries on in the same file.
+ * volumes dying takes its filesystem services with it: every mount leaves
+ * the namespace, and comes back once the new volumes has been told of the
+ * disks again (a new DISKS channel to devmgr). */
 #include <devmgr.h>
 #include <idl/console.h>
 #include <idl/logctl.h>
@@ -109,6 +122,7 @@
 #include <mixer.h>
 #include <os.h>
 #include <splash.h>
+#include <volumes.h>
 #include "init.h"
 
 /* The root's powers each service gets (<jam/abi.h> RIGHT_ROOT_*; none can
@@ -119,7 +133,8 @@
 static handle_t root, port;
 static handle_t devmgr;     /* devmgr's control channel, client end (0: none running) */
 static handle_t devmgr_q;   /* its query channel, client end */
-static handle_t devmgr_esp; /* its ESP channel, client end: never handed on (update.c's) */
+static handle_t volumes;    /* volumes' control channel, client end (0: none running) */
+static handle_t volumes_esp; /* its ESP channel, client end: never handed on (update.c's) */
 /* Its device channels for the HD Audio controllers, the mixer's, and for
  * the network cards, held for netstack (0: none). */
 static handle_t devmgr_hda[INIT_MAX_CLAIMED], devmgr_net[INIT_MAX_CLAIMED];
@@ -144,9 +159,14 @@ handle_t shell_devmgr(void)
     return devmgr;
 }
 
-handle_t shell_devmgr_esp(void)
+handle_t shell_volumes(void)
 {
-    return devmgr_esp;
+    return volumes;
+}
+
+handle_t shell_volumes_esp(void)
+{
+    return volumes_esp;
 }
 
 void services_settings(unsigned i)
@@ -275,21 +295,19 @@ static status_t start_devmgr(void)
         return OK;
     }
     handle_t pci = HANDLE_INVALID, a = HANDLE_INVALID, b = HANDLE_INVALID, c = HANDLE_INVALID;
-    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID, ea = HANDLE_INVALID, eb = HANDLE_INVALID;
+    handle_t qa = HANDLE_INVALID, qb = HANDLE_INVALID;
     status_t st = jam_resource_create(root, RES_PCI, 0, 0, &pci);
     if (st == OK)
         st = jam_channel_create(&a, &b);
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
-    if (st == OK)
-        st = jam_channel_create(&ea, &eb);
     /* What its HID drivers type into: the compositor (an INPUT channel; none
      * while it restarts: comp_restarted sends one). */
     if (st == OK && comp_input_channel(&c) != OK)
         c = HANDLE_INVALID;
     if (st != OK) {
-        handle_t left[] = { pci, a, b, qa, qb, ea, eb };
-        for (unsigned k = 0; k < 7; k++)
+        handle_t left[] = { pci, a, b, qa, qb };
+        for (unsigned k = 0; k < 5; k++)
             if (left[k])
                 jam_handle_close(left[k]);
         return st;
@@ -300,8 +318,6 @@ static status_t start_devmgr(void)
         argv[argc++] = "nousb";
     if (init_vtdtest)
         argv[argc++] = "vtdtest";   /* drv/hda's deliberate DMA faults */
-    if (init_nospare)
-        argv[argc++] = "nospare";   /* no warm spare fat either */
     if (init_hidboot)
         argv[argc++] = "hidboot";
     if (init_netprobe)
@@ -312,14 +328,11 @@ static status_t start_devmgr(void)
         argv[argc++] = "net";
     if (init_vlan)
         argv[argc++] = init_vlan;
-    if (init_bootdisk)
-        argv[argc++] = init_bootdisk;
-    struct spawn_handle x[6] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb },
-                                 { DEVMGR_SR_ESP, eb } };
-    unsigned nx = 4;
+    struct spawn_handle x[5] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb } };
+    unsigned nx = 3;
     if (c)
         x[nx++] = (struct spawn_handle){ SR_CONSOLE, c };
-    /* Without it (no compositor) a stick's news is in the log alone. */
+    /* Without it (no compositor) a driver's news is in the log alone. */
     x[nx] = (struct spawn_handle){ DEVMGR_SR_NOTIFY, comp_notify_client() };
     if (x[nx].h)
         nx++;
@@ -327,12 +340,10 @@ static status_t start_devmgr(void)
     if (st != OK) {
         jam_handle_close(a);
         jam_handle_close(qa);
-        jam_handle_close(ea);
         return st;
     }
     devmgr = a;
     devmgr_q = qa;
-    devmgr_esp = ea;
     /* Its first binding pass (usb-bus on the PC's controller). */
     struct devmgr_rep r;
     st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL, now() + 30 * NS_PER_S);
@@ -350,13 +361,97 @@ static status_t start_devmgr(void)
     services_publish(SVC_DEVMGR, devmgr_q, true);   /* a channel per opener (svc.connect) */
     services_publish(SVC_DEVMGR_CTL, devmgr, false);
     tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
+    /* devmgr was started again while volumes runs: a new DISKS channel
+     * (volumes forgets the old one's disks, and the new devmgr tells of
+     * them again). Else volumes' start makes it. */
+    handle_t dc, ds;
+    if (volumes && jam_channel_create(&dc, &ds) == OK) {
+        struct volumes_rep r;
+        st = volumes_call_h(volumes, VOLUMES_SET_DISKS, ds, &r, now() + 5 * NS_PER_S);
+        if (st != OK)
+            printf("init: volumes didn't take the new disks channel (%s)\n", status_str(st));
+        services_set_volumes(devmgr, dc);
+    }
+    return OK;
+}
+
+/* volumes: started right after devmgr. */
+static status_t start_volumes(void)
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size;
+    if (bootfs_default(&fs) != OK || bootfs_lookup(fs, svcs[VOLUMES].path, &data, &size) != OK) {
+        printf("init: no %s in bootfs: no disks, no /data\n", svcs[VOLUMES].path);
+        svcs[VOLUMES].given_up = true;
+        return OK;
+    }
+    handle_t a = HANDLE_INVALID, b = HANDLE_INVALID, ea = HANDLE_INVALID, eb = HANDLE_INVALID;
+    handle_t dc = HANDLE_INVALID, ds = HANDLE_INVALID;
+    status_t st = jam_channel_create(&a, &b);
+    if (st == OK)
+        st = jam_channel_create(&ea, &eb);
+    if (st == OK)
+        st = jam_channel_create(&dc, &ds);
+    if (st != OK) {
+        handle_t left[] = { a, b, ea, eb, dc, ds };
+        for (unsigned k = 0; k < 6; k++)
+            if (left[k])
+                jam_handle_close(left[k]);
+        return st;
+    }
+    const char *argv[3] = { svcs[VOLUMES].path };
+    int argc = 1;
+    if (init_nospare)
+        argv[argc++] = "nospare";   /* no warm spare fat either */
+    if (init_bootdisk)
+        argv[argc++] = init_bootdisk;
+    struct spawn_handle x[4] = { { VOLUMES_SR_CTL, b }, { VOLUMES_SR_ESP, eb },
+                                 { VOLUMES_SR_DISKS, ds } };
+    unsigned nx = 3;
+    /* Without it (`nocomp`) a stick's news is the console's notices alone. */
+    x[nx] = (struct spawn_handle){ VOLUMES_SR_NOTIFY, comp_notify_client() };
+    if (x[nx].h)
+        nx++;
+    st = svc_start(VOLUMES, argc, argv, x, nx);   /* consumes them all */
+    if (st != OK) {
+        jam_handle_close(a);
+        jam_handle_close(ea);
+        jam_handle_close(dc);
+        return st;
+    }
+    volumes = a;
+    volumes_esp = ea;
+    services_publish(SVC_VOLUMES, volumes, true);   /* a channel per opener (svc.connect) */
+    tell_mounts();   /* a restart: the shell's /svc/volumes is the dead one's */
     handle_t watch;
-    st = jam_handle_duplicate(devmgr, RIGHT_SAME, &watch);
+    st = jam_handle_duplicate(volumes, RIGHT_SAME, &watch);
     if (st == OK)
         st = mounts_watch(watch, port, KEY_MOUNTS);
     if (st != OK)
-        printf("init: not following devmgr's mounts (%s)\n", status_str(st));
+        printf("init: not following volumes' mounts (%s)\n", status_str(st));
+    if (devmgr)
+        services_set_volumes(devmgr, dc);   /* its disks, from now on */
+    else
+        jam_handle_close(dc);   /* the next devmgr gets a pair of its own */
     return OK;
+}
+
+void services_set_volumes(handle_t dm, handle_t disks)
+{
+    struct devmgr_req q = { 0, DEVMGR_SET_VOLUMES, 0, 0, 0 };
+    struct devmgr_rep r;
+    uint32_t n = 0, got = 0;
+    struct channel_call_args a = {
+        .h = dm, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)&q,
+        .wr_handles = (uint64_t)(uintptr_t)&disks, .wr_nhandles = 1, .rd_cap = sizeof(r),
+        .rd_bytes = (uint64_t)(uintptr_t)&r, .rd_actual = (uint64_t)(uintptr_t)&n,
+        .rd_hactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * NS_PER_S,
+    };
+    status_t st = jam_channel_call(&a);   /* disks goes with the request either way */
+    if (st != OK || n < DEVMGR_REP_HDR || r.status != OK)
+        printf("init: devmgr didn't take the disks channel (%s)\n",
+               status_str(st != OK ? st : r.status));
 }
 
 void services_devmgr_input(handle_t c)
@@ -414,6 +509,22 @@ static status_t start_logd(void)
     logd_ctl = mine;
     services_publish(SVC_LOGD, logd_ctl, true);   /* a channel per opener (svc.connect) */
     return OK;
+}
+
+status_t shell_stop_volumes(uint64_t deadline)
+{
+    struct svc *s = &svcs[VOLUMES];
+    if (!volumes || !s->running || s->given_up)
+        return OK;   /* none, or stopped already (a kexec that failed after it) */
+    struct volumes_rep r;
+    status_t st = volumes_call(volumes, VOLUMES_SHUTDOWN, 0, 0, 0, &r, NULL, 0, NULL, deadline);
+    signals_t seen;
+    if (st == OK)
+        st = jam_object_wait_one(s->proc, SIG_TERMINATED, deadline, &seen);
+    if (st != OK)
+        jam_job_kill(s->job);
+    s->given_up = true;   /* not again: the machine is about to restart */
+    return st;
 }
 
 status_t shell_stop_devmgr(uint64_t deadline)
@@ -569,6 +680,7 @@ status_t services_start(unsigned i)
            : i == SPLASH     ? start_splash()
            : i == SERIALIN   ? start_serialin()
            : i == DEVMGR     ? start_devmgr()
+           : i == VOLUMES    ? start_volumes()
            : i == MIXER      ? start_mixer()
            : i == MUSIC      ? start_music()
            : i == NETSTACK   ? net_start()
@@ -588,7 +700,6 @@ void services_closed(unsigned i)
     if (i == DEVMGR && devmgr) {
         jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(devmgr_q);
-        jam_handle_close(devmgr_esp);
         for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++) {
             if (devmgr_hda[k])
                 jam_handle_close(devmgr_hda[k]);
@@ -597,13 +708,21 @@ void services_closed(unsigned i)
         }
         memset(devmgr_hda, 0, sizeof(devmgr_hda));
         memset(devmgr_net, 0, sizeof(devmgr_net));
-        devmgr = devmgr_q = devmgr_esp = HANDLE_INVALID;
+        devmgr = devmgr_q = HANDLE_INVALID;
         services_publish(SVC_DEVMGR, HANDLE_INVALID, false);
         services_publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);
-        mounts_unwatch();       /* its fat services went with its job */
         net_devmgr_gone();
         tell_mounts();
         printf("init: devmgr and its drivers are gone: starting them again\n");
+    }
+    if (i == VOLUMES && volumes) {
+        jam_handle_close(volumes);   /* the shell's copies see PEER_CLOSED */
+        jam_handle_close(volumes_esp);
+        volumes = volumes_esp = HANDLE_INVALID;
+        services_publish(SVC_VOLUMES, HANDLE_INVALID, false);
+        mounts_unwatch();       /* its fat services went with its job */
+        tell_mounts();
+        printf("init: volumes and its filesystems are gone: starting them again\n");
     }
     if (i == LOGD && logd_ctl) {
         jam_handle_close(logd_ctl);

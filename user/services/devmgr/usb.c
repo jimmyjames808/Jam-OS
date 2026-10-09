@@ -1,10 +1,13 @@
 /* devmgr: USB interfaces and their class drivers.
  *
- * usb-bus writes `usbbus.interface_attached` (abi/idl/usbbus.idl) on its
- * DR_SERVE channel, txid 0, by itself, for each interface of a device it
- * configured, with ONE handle: that interface's `usb` channel. devmgr
- * keeps the channel in usb_ifs until the device goes (usb-bus closes its
- * end: PEER_CLOSED) or the usb-bus that reported it dies.
+ * usb-bus sends `usbbus_events.interface_attached` (abi/idl/usbbus.idl)
+ * for each interface of a device it configured, on DR_EVENTS, a channel
+ * devmgr makes for it when it starts it (usb_bus_handles) and serves from
+ * the other end (usb_bus_events): the event carries ONE handle, that
+ * interface's `usb` channel. devmgr keeps the channel in usb_ifs until the
+ * device goes (usb-bus closes its end: PEER_CLOSED) or the usb-bus that
+ * reported it dies. The DR_SERVE channel, whose client end anyone may be
+ * handed (GET_SERVICE), carries `usbbus` requests and replies alone.
  *
  * Class drivers: an interface of class 3 (HID, every subclass: drv/hid
  * itself skips the ones that aren't boot keyboards or mice, exit 0) gets
@@ -24,9 +27,10 @@
  *
  * A mass-storage interface's driver (STORAGE_DRIVER, for the interfaces
  * usb_match gives it) is a class driver like hid, with two differences: it
- * serves devmgr the `storage` protocol on a DR_SERVE channel, and it gets
- * no DR_INPUT. Its binding carries a disk (disk.c), which asks it for its
- * partitions and mounts the boot disk's.
+ * serves the `storage` protocol on a DR_SERVE channel, and it gets no
+ * DR_INPUT. Its binding is a disk's (b->disk): devmgr asks it for a
+ * `storage` channel of volumes' own and hands it over (disks.c), and
+ * tells volumes when the device has gone.
  *
  * How a hid ends decides what happens:
  *   - its interface is gone (unplugged, or its usb-bus died): the binding
@@ -42,13 +46,29 @@
 
 #define CONNECT_WAIT (2 * NS_PER_S)   /* compctl.connect_input */
 
+/* What usb-bus said of an interface (usbbus_events.interface_attached). */
+struct if_info {
+    uint32_t id;                   /* usb-bus's device id */
+    uint16_t vendor, product;
+    uint8_t  interface_number, class_code, subclass, protocol, speed;
+    char     path[24];             /* its port as usbbus.device tells it, NUL-terminated */
+};
+
 struct usb_if {
     handle_t ch;        /* our end of the interface's `usb` channel; 0: a free slot */
     uint32_t bus;       /* devs index of the usb-bus that reported it */
     int32_t  bind;      /* devs index of its class driver's binding; -1: none */
     uint16_t gen;       /* bumped at every use of the slot: in its port key */
-    struct usbbus_interface_attached_req info;   /* what usb-bus said about it */
+    struct if_info info;   /* what usb-bus said about it */
 };
+
+/* A usb-bus's events channel: devmgr's end, and the usb-bus's binding. */
+#define MAX_BUS_EVENTS 8
+static struct bus_events {
+    handle_t ch;        /* 0: a free slot */
+    uint32_t bus;       /* devs index of the usb-bus */
+    uint16_t gen;       /* bumped at every use of the slot: in its port key */
+} bev[MAX_BUS_EVENTS];
 
 static struct usb_if usb_ifs[MAX_USB_IFS];
 static handle_t console;       /* our client end of the console (0: none) */
@@ -56,10 +76,7 @@ static uint32_t console_gen;   /* bumped with every console we are given */
 
 static const char *if_path(const struct usb_if *u)
 {
-    static char p[25];
-    memcpy(p, u->info.path, 24);
-    p[24] = 0;
-    return p;
+    return u->info.path;
 }
 
 static void drop(struct usb_if *u)
@@ -119,7 +136,7 @@ static bool closed(handle_t h)
 
 /* ---- class drivers ------------------------------------------------------------------- */
 
-static const char *usb_match(const struct usbbus_interface_attached_req *m)
+static const char *usb_match(const struct if_info *m)
 {
     if (m->class_code == 3)
         return "drv/hid";
@@ -133,7 +150,7 @@ const char *usb_driver_arg(const struct binding *b)
     return hidboot && b->path && !strcmp(b->path, "drv/hid") ? "hidboot" : NULL;
 }
 
-static const char *what(const struct usbbus_interface_attached_req *m)
+static const char *what(const struct if_info *m)
 {
     if (m->class_code == 3 && m->subclass == 1 && m->protocol == 1)
         return "boot keyboard";
@@ -179,7 +196,8 @@ void usb_retire(struct binding *b, const char *why)
     b->state = DEVMGR_SUP_NONE;
     b->console_wait = false;
     b->input_gen = 0;
-    disk_detach(b);   /* a disk's driver: the disk is forgotten with it */
+    disks_gone(b);   /* a disk's driver: volumes forgets the disk */
+    b->disk = false;
     b->path = NULL;   /* a free slot now */
 }
 
@@ -240,7 +258,7 @@ status_t usb_channel(const struct binding *b, handle_t *out)
 static void bind_interface(unsigned slot, const char *path)
 {
     struct usb_if *u = &usb_ifs[slot];
-    const struct usbbus_interface_attached_req *m = &u->info;
+    const struct if_info *m = &u->info;
     struct binding *b = new_binding();
     if (!b) {
         say(true, "devmgr: usb %04x:%04x if%u -> %s: no room for another driver", m->vendor,
@@ -255,12 +273,7 @@ static void bind_interface(unsigned slot, const char *path)
     /* "drv/hid" on port 6.1, interface 0: "hid-6.1:0" */
     snprintf(b->name, sizeof(b->name), "%s-%s:%u", path + 4, if_path(u), m->interface_number);
     u->bind = (int32_t)(b - devs);
-    if (strcmp(path, STORAGE_DRIVER) == 0 && !disk_attach(b, m->id)) {
-        say(true, "devmgr: usb %04x:%04x if%u -> %s: no room for another disk", m->vendor,
-            m->product, m->interface_number, path);
-        usb_retire(b, "not started");
-        return;
-    }
+    b->disk = strcmp(path, STORAGE_DRIVER) == 0;   /* its disk is volumes' (disks.c) */
     b->last = start_driver(b);
     if (b->last == ERR_SHOULD_WAIT) {
         b->state = DEVMGR_SUP_RESTARTING;
@@ -281,8 +294,7 @@ static void bind_interface(unsigned slot, const char *path)
         b->input_gen || b->disk ? "" : ", no console: to the log");
 }
 
-static void attached(struct binding *bus, const struct usbbus_interface_attached_req *m,
-                     handle_t ch)
+static void attached(struct binding *bus, const struct if_info *m, handle_t ch)
 {
     unsigned slot = MAX_USB_IFS;
     for (unsigned i = 0; i < MAX_USB_IFS && slot == MAX_USB_IFS; i++)
@@ -312,41 +324,88 @@ static void attached(struct binding *bus, const struct usbbus_interface_attached
         bind_interface(slot, path);
 }
 
-/* Only a usb-bus reports interfaces: any other driver writing
- * interface_attached on its DR_SERVE would get a class driver started on a
- * channel it serves itself -- with a console input source (a compromised
- * driver could type into the shell). */
+/* Only a usb-bus reports interfaces: it alone gets an events channel, so
+ * no other driver can have a class driver started on a channel it serves
+ * itself -- with a console input source (a compromised driver could type
+ * into the shell). */
 static bool is_usb_bus(const struct binding *b)
 {
     return b->kind == BIND_PCI && b->path && strcmp(b->path, "drv/usb-bus") == 0;
 }
 
-void usb_driver_events(struct binding *b)
+/* Slot e's channel is done (its usb-bus ended): what it still holds,
+ * unread events and their handles, goes with it. */
+static void bus_events_drop(struct bus_events *e)
 {
-    bool bus = is_usb_bus(b);
-    for (int guard = 0; guard < 1024 && b->client; guard++) {
-        _Alignas(8) uint8_t buf[sizeof(struct usbbus_interface_attached_req)];
-        handle_t hs[4];
-        uint32_t n = 0, nh = 0;
-        struct channel_read_args a = {
-            .h = b->client, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
-            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
-            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-        };
-        status_t st = jam_channel_read(&a);
-        if (st == ERR_BUFFER_TOO_SMALL) {
-            discard(b->client, n, nh);   /* not ours (a late reply nobody waits for) */
-            continue;
-        }
+    jam_port_unbind(port, e->ch, KEY_BUSEV_OF(e - bev, e->gen));
+    jam_handle_close(e->ch);
+    e->ch = HANDLE_INVALID;
+}
+
+status_t usb_bus_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
+{
+    if (!is_usb_bus(b))
+        return OK;
+    struct bus_events *e = NULL;
+    for (unsigned i = 0; i < MAX_BUS_EVENTS; i++) {
+        if (bev[i].ch && bev[i].bus == (uint32_t)(b - devs))
+            bus_events_drop(&bev[i]);   /* the last start's: it is over */
+        if (!bev[i].ch && !e)
+            e = &bev[i];
+    }
+    if (!e) {
+        say(true, "devmgr: %s: more than %u usb-bus events channels", bdf(b), MAX_BUS_EVENTS);
+        return ERR_NO_RESOURCES;
+    }
+    handle_t ours, theirs;
+    status_t st = jam_channel_create(&ours, &theirs);
+    if (st != OK)
+        return st;
+    e->gen++;
+    st = jam_port_bind(port, ours, KEY_BUSEV_OF(e - bev, e->gen), SIG_READABLE | SIG_PEER_CLOSED,
+                       PORT_BIND_PERSISTENT);
+    if (st != OK) {
+        jam_handle_close(ours);
+        jam_handle_close(theirs);
+        return st;
+    }
+    e->ch = ours;
+    e->bus = (uint32_t)(b - devs);
+    x[*n] = (struct spawn_handle){ SR_DRIVER(DR_EVENTS), theirs };
+    xr[(*n)++] = DEVMGR_DRV_CHAN_RIGHTS;
+    return OK;
+}
+
+static void ev_interface_attached(void *ctx, uint32_t id, uint16_t vendor, uint16_t product,
+                                  uint8_t interface_number, uint8_t class_code,
+                                  uint8_t subclass, uint8_t protocol, uint8_t speed,
+                                  const char *path, uint32_t path_len, handle_t usb)
+{
+    const struct bus_events *e = ctx;
+    struct if_info m = { .id = id, .vendor = vendor, .product = product,
+                         .interface_number = interface_number, .class_code = class_code,
+                         .subclass = subclass, .protocol = protocol, .speed = speed };
+    memcpy(m.path, path, path_len < sizeof(m.path) ? path_len : sizeof(m.path) - 1);
+    attached(&devs[e->bus], &m, usb);
+}
+
+static const struct usbbus_events_ops ev_ops = { .interface_attached = ev_interface_attached };
+
+void usb_bus_events(uint64_t key)
+{
+    uint32_t slot = KEY_INDEX(key);
+    if (slot >= MAX_BUS_EVENTS || !bev[slot].ch || KEY_GEN(key) != bev[slot].gen)
+        return;   /* stale */
+    struct bus_events *e = &bev[slot];
+    /* Everything queued: the binding fires on an edge, and a message left
+     * unread would never ring again. (A usb-bus has a few events per
+     * device; the bound is only against one that never stops.) */
+    for (int guard = 0; guard < 4096 && e->ch; guard++) {
+        status_t st = usbbus_events_serve_one(e->ch, &ev_ops, e);
+        if (st == ERR_PEER_CLOSED)
+            bus_events_drop(e);   /* the usb-bus ended */
         if (st != OK)
             return;
-        const struct usbbus_interface_attached_req *m = (const void *)buf;
-        if (!bus || n != sizeof(*m) || m->ordinal != USBBUS_INTERFACE_ATTACHED || nh != 1) {
-            for (uint32_t i = 0; i < nh; i++)
-                jam_handle_close(hs[i]);
-            continue;
-        }
-        attached(b, m, hs[0]);
     }
 }
 
@@ -378,6 +437,9 @@ void usb_bus_gone(struct binding *b)
 {
     if (b->kind != BIND_PCI)
         return;
+    for (unsigned i = 0; i < MAX_BUS_EVENTS; i++)
+        if (bev[i].ch && bev[i].bus == (uint32_t)(b - devs))
+            bus_events_drop(&bev[i]);
     for (unsigned i = 0; i < MAX_USB_IFS; i++)
         if (usb_ifs[i].ch && usb_ifs[i].bus == (uint32_t)(b - devs))
             if_gone(&usb_ifs[i]);

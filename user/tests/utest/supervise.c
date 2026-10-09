@@ -108,7 +108,7 @@ static bool reconnect(handle_t dm, handle_t *ch, uint64_t deadline, uint64_t *st
             return true;
         }
         CHECK_ST(jam_handle_close(hs[0]), OK);
-        jam_nanosleep(now() + 2 * NS_PER_MS);
+        jam_sleep_until(now() + 2 * NS_PER_MS);
     }
 }
 
@@ -215,14 +215,14 @@ bool t_supervised_give_up(void)
             return false;
         if (sup.a == DEVMGR_SUP_GAVE_UP || now() > until)
             break;
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
     }
     printf("utest: %s: after %u restarts: state %u (3 = gave up)\n", utest_cur,
            sup.b - sup_restarts0, sup.a);
     CHECK_EQ(sup.a, DEVMGR_SUP_GAVE_UP);
     CHECK_EQ(sup.b, sup_restarts0 + 5);
     CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), ERR_BAD_STATE);
-    jam_nanosleep(now() + 300 * NS_PER_MS);   /* no restart comes */
+    jam_sleep_until(now() + 300 * NS_PER_MS);   /* no restart comes */
     if (!supervision(dm, TV, TD, &sup))
         return false;
     CHECK_EQ(sup.a, DEVMGR_SUP_GAVE_UP);
@@ -243,7 +243,7 @@ bool t_supervised_give_up(void)
             return false;
         if (sup.a == DEVMGR_SUP_FINISHED || now() > until)
             break;
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
     }
     CHECK_EQ(sup.a, DEVMGR_SUP_FINISHED);
     CHECK_ST(dm_call(dm, DEVMGR_GET_SERVICE, TV, TD, &r, hs, &nh), ERR_BAD_STATE);

@@ -39,6 +39,7 @@
  * over the window, the buttons and the wheel. */
 #pragma once
 
+#include <openkeys.h>
 #include <os.h>
 
 /* ---- colours: 0xRRGGBB ------------------------------------------------------------ */

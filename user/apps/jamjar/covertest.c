@@ -355,7 +355,7 @@ static bool ask_and_work(uint64_t h, const char *p)
 
 static void pause_ms(uint64_t ms)
 {
-    jam_nanosleep(now() + ms * NS_PER_MS);
+    jam_sleep_until(now() + ms * NS_PER_MS);
 }
 
 /* cover.c's second try, with the real helper: a decode that timed out

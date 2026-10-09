@@ -149,7 +149,7 @@ static int steal(void)
             ;
         while (steal_src && input_serve_one(steal_src, &st_input, NULL) == OK)
             ;
-        jam_nanosleep(now() + 20 * NS_PER_MS);
+        jam_sleep_until(now() + 20 * NS_PER_MS);
     }
     printf("contest: steal: done\n");
     return 0;

@@ -201,7 +201,7 @@ int wl_fun_crash(void)
 {
     if (!hold_screen(0x700010, 0x100008, "wltest --crash-test: dying with a window open"))
         return 1;
-    jam_nanosleep(now() + 500 * NS_PER_MS);
+    jam_sleep_until(now() + 500 * NS_PER_MS);
     say("wltest: crash test: faulting now\n");
     volatile int *p;
     __asm__("" : "=r"(p) : "0"((uintptr_t)8));   /* hide the null from the compiler */
@@ -215,7 +215,7 @@ int wl_fun_hang(void)
         return 1;
     say("wltest: hang test: holding the screen\n");
     for (;;)
-        jam_nanosleep(now() + NS_PER_S);
+        jam_sleep_until(now() + NS_PER_S);
 }
 
 /* The pointer: exact without acceleration and for slow movement with it,

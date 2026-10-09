@@ -198,7 +198,7 @@ static void files_main(void *arg)
                 write_cycle(fs, mount, &seed);
             jam_handle_close(fs);
         }
-        jam_nanosleep(now() + (any ? 20 : 200) * NS_PER_MS);
+        jam_sleep_until(now() + (any ? 20 : 200) * NS_PER_MS);
     }
 }
 
@@ -249,7 +249,7 @@ static void memory_main(void *arg)
     while (!stopped()) {
         memory_round(&seed);
         if (rnd(&seed) % 16 == 0)
-            jam_nanosleep(now() + NS_PER_MS);
+            jam_sleep_until(now() + NS_PER_MS);
     }
 }
 
@@ -299,7 +299,7 @@ static void calls_main(void *arg)
             failed("a call's reply is not its request", "calls", OK);   /* past the txid */
         add(&res.calls);
         if (rnd(&seed) % 64 == 0)
-            jam_nanosleep(now() + NS_PER_MS);
+            jam_sleep_until(now() + NS_PER_MS);
     }
 }
 
@@ -329,7 +329,7 @@ static void spawn_main(void *arg)
             add(&res.spawns);
         }
         jam_handle_close(job);
-        jam_nanosleep(now() + 25 * NS_PER_MS);
+        jam_sleep_until(now() + 25 * NS_PER_MS);
     }
 }
 
@@ -373,7 +373,7 @@ int main(int argc, char **argv)
     if (ctl)
         jam_object_wait_one(ctl, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER, NULL);
     else
-        jam_nanosleep(now() + seconds * NS_PER_S);
+        jam_sleep_until(now() + seconds * NS_PER_S);
     __atomic_store_n(&stop, true, __ATOMIC_RELEASE);
     for (unsigned i = 0; i < NTHREADS; i++)
         if (jam_object_wait_one(th[i], SIG_TERMINATED, now() + 120 * NS_PER_S, NULL) != OK)

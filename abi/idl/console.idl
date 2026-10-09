@@ -19,7 +19,7 @@ protocol console 12
 # A channel on which the console sends this client the keys typed while it
 # is the focused client (the most recent open_keys wins; closing the
 # channel gives focus back). Each message is one struct input_key_event
-# (<jam/abi.h>).
+# (<openkeys.h>).
 4  open_keys      () -> (handle keys)
 # 5 (connect_input) and 6 (lend_screen): gone with the full-screen console
 # (M12's Q14); not reused.

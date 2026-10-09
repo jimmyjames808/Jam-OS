@@ -22,9 +22,10 @@
  * build.
  *
  * Then what a firmware reset does too (stop_everything: /data synced,
- * logd's last lines written, the volume left clean, devmgr's shutdown,
- * DEVMGR_SHUTDOWN: the filesystems stopped clean, the class drivers, then
- * the bus drivers' final halt and reset, so no device is left writing
+ * logd's last lines written, the volume left clean, volumes' shutdown,
+ * VOLUMES_SHUTDOWN: every writable mount synced and the filesystem
+ * services stopped, then devmgr's, DEVMGR_SHUTDOWN: the class drivers,
+ * then the bus drivers' final halt and reset, so no device is left writing
  * memory or in the middle of a transfer), and kexec_reboot. Any step that
  * fails before the jump returns, and ctl.c resets through the firmware
  * instead (init_reboot_firmware: the same steps, then the reboot system
@@ -44,7 +45,7 @@
 #define KERNEL_MAX  (64ull << 20)
 #define BOOTFS_MAX  (256ull << 20)
 #define LOG_WAIT    NS_PER_S          /* logd's flush, as before a firmware reboot */
-#define STOP_WAIT   (30 * NS_PER_S)   /* devmgr's shutdown: every driver stopped */
+#define STOP_WAIT   (30 * NS_PER_S)   /* volumes' or devmgr's shutdown */
 #define NOTICE_SHOW (3 * NS_PER_S)    /* the notice on the screen before the reboot goes on */
 
 /* A file as noted: its size and modification time. */
@@ -173,22 +174,29 @@ static void say_stored_instead(status_t why)
         comp_blank(true);
         return;
     }
-    jam_nanosleep(now() + NOTICE_SHOW);
+    jam_sleep_until(now() + NOTICE_SHOW);
     comp_blank(true);   /* dark again until the next splash */
 }
 
 /* What every restart does before the reset or the jump: /data synced,
  * logd's last lines written (the sync's line included), the volume left
- * clean, then devmgr's shutdown in order (DEVMGR_SHUTDOWN). Returns how
- * long devmgr took, in ms; `how` names the restart in the log line that
- * says devmgr had to be killed. */
-static uint64_t stop_everything(const char *how)
+ * clean, then volumes' shutdown (VOLUMES_SHUTDOWN: its filesystem
+ * services stopped) and devmgr's in order (DEVMGR_SHUTDOWN). *vol_ms: how
+ * long volumes took; returns how long devmgr took, in ms. `how` names the
+ * restart in the log line that says one had to be killed. */
+static uint64_t stop_everything(const char *how, uint64_t *vol_ms)
 {
     mounts_sync();
     shell_flush_log(now() + LOG_WAIT);
     mounts_settle();
     uint64_t t0 = now();
-    status_t st = shell_stop_devmgr(now() + STOP_WAIT);
+    status_t st = shell_stop_volumes(now() + STOP_WAIT);
+    if (st != OK)   /* what /data held was synced just now */
+        printf("init: %s: volumes didn't stop in order (%s): its job was killed\n", how,
+               status_str(st));
+    *vol_ms = (now() - t0) / NS_PER_MS;
+    t0 = now();
+    st = shell_stop_devmgr(now() + STOP_WAIT);
     if (st != OK)   /* its drivers' DMA caps are closed either way: bus mastering is off */
         printf("init: %s: devmgr didn't stop in order (%s): its job was killed\n", how,
                status_str(st));
@@ -207,9 +215,10 @@ status_t init_reboot_kexec(void)
         if (st != OK)
             say_stored_instead(st);   /* a refused image left the stored one armed */
     }
-    uint64_t ms = stop_everything("kexec");
+    uint64_t vol_ms, ms = stop_everything("kexec", &vol_ms);
     /* Seen only on the serial port: logd has stopped, the screen is dark. */
-    printf("init: kexec: devmgr stopped in %lu ms, jumping\n", (unsigned long)ms);
+    printf("init: kexec: devmgr stopped in %lu ms (volumes in %lu ms), jumping\n",
+           (unsigned long)ms, (unsigned long)vol_ms);
     status_t st = jam_kexec_reboot(shell_root());   /* returns only if it failed */
     printf("init: kexec: the jump failed (%s)\n", status_str(st));
     return st;
@@ -217,10 +226,11 @@ status_t init_reboot_kexec(void)
 
 status_t init_reboot_firmware(void)
 {
-    uint64_t ms = stop_everything("firmware reset");
+    uint64_t vol_ms, ms = stop_everything("firmware reset", &vol_ms);
     /* On the serial port, and on the screen once the kernel takes it
      * back for its own lines (the reset's). */
-    printf("init: firmware reset: devmgr stopped in %lu ms, resetting\n", (unsigned long)ms);
+    printf("init: firmware reset: devmgr stopped in %lu ms (volumes in %lu ms), resetting\n",
+           (unsigned long)ms, (unsigned long)vol_ms);
     status_t st = jam_reboot(shell_root());   /* returns only if it failed */
     printf("init: firmware reset: the reset failed (%s)\n", status_str(st));
     return st;

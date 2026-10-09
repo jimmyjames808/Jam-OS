@@ -39,13 +39,13 @@ jam_clock_get:
     ret
     .size jam_clock_get, . - jam_clock_get
 
-    .globl jam_nanosleep
-    .type jam_nanosleep, @function
-jam_nanosleep:
-    mov $SYS_nanosleep, %eax
+    .globl jam_sleep_until
+    .type jam_sleep_until, @function
+jam_sleep_until:
+    mov $SYS_sleep_until, %eax
     syscall
     ret
-    .size jam_nanosleep, . - jam_nanosleep
+    .size jam_sleep_until, . - jam_sleep_until
 
     .globl jam_debug_report
     .type jam_debug_report, @function
@@ -79,6 +79,14 @@ jam_handle_replace:
     ret
     .size jam_handle_replace, . - jam_handle_replace
 
+    .globl jam_handle_info
+    .type jam_handle_info, @function
+jam_handle_info:
+    mov $SYS_handle_info, %eax
+    syscall
+    ret
+    .size jam_handle_info, . - jam_handle_info
+
     .globl jam_object_wait_one
     .type jam_object_wait_one, @function
 jam_object_wait_one:
@@ -87,14 +95,6 @@ jam_object_wait_one:
     syscall
     ret
     .size jam_object_wait_one, . - jam_object_wait_one
-
-    .globl jam_object_signal
-    .type jam_object_signal, @function
-jam_object_signal:
-    mov $SYS_object_signal, %eax
-    syscall
-    ret
-    .size jam_object_signal, . - jam_object_signal
 
     .globl jam_channel_create
     .type jam_channel_create, @function

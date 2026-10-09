@@ -546,8 +546,13 @@ fractions. User programs may use floating point and SIMD freely.
 2. New method: the next ordinal; never renumber or change an existing
    method's arguments (add a new method instead). Comment lines above a
    method are copied into the generated header.
-3. Handles travel only as results. Bulk data goes through a shared VMO,
-   not large `u8[N]` arrays (max 4096 per array, 8192 per message).
+3. Handles: `handle` (one), `handle<vmo>` (one of that object type,
+   checked by the generated server before the handler runs:
+   `ERR_WRONG_TYPE`), `handle[<=N]` (up to N, N <= 64: a pointer and a
+   count in C), as arguments, results or event fields. A send's handles
+   are always moved, whatever the status: never close them after the
+   call; a handler owns the handles it is given. Bulk data goes through a
+   shared VMO, not large arrays (a message is at most 16 KiB).
 4. `make idl`; commit `drivers/include/idl/<name>.h`. Never edit it.
 5. Server: fill a `static const struct <name>_ops`, call `<name>_serve`
    (it answers each request in the `channel_reply_wait` that waits for

@@ -54,7 +54,7 @@
  * **Warm spares.** A program started with SR_STANDBY waits in libos's
  * startup, before main, holding nothing but that channel, until its
  * supervisor promotes it (standby_promote: the handles by role, the
- * arguments and the time of the kill, <jam/startup.h> struct
+ * arguments and the time of the kill, <roles.h> struct
  * standby_msg). From then on it is started like any program: its code
  * doesn't know it was a spare.
  *

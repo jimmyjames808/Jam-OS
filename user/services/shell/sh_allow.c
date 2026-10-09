@@ -159,11 +159,12 @@ status_t sh_allow_remove(const char *name, unsigned *removed)
 /* ---- the file itself ----------------------------------------------------------------- */
 
 /* Services no program from /data may have, whatever the owner says: with
- * devmgr's control channel a program gets the filesystems' own channels
- * (DEVMGR_MOUNTS: /data unguarded, so it could approve itself) and any
- * driver's hardware; with its query channel usb-bus, and through it any
- * USB device's interfaces; with init's, every service and the reboot. The
- * build allows the last two only in user/tests/ (tools/checkwants.py), and
+ * volumes' channel a program gets the filesystems' own channels
+ * (VOLUMES_MOUNTS: /data unguarded, so it could approve itself); with
+ * devmgr's control channel any driver's hardware; with its query channel
+ * usb-bus, and through it any USB device's interfaces; with init's, every
+ * service and the reboot. The build allows volumes', devmgr's control
+ * channel and init's only in user/tests/ (tools/checkwants.py), and
  * a file on /data is never one of the tree's tests. Nor netstack's and the
  * resolver's reserves for the network's own services (net-sys, dns-sys): a
  * program could use them up. Nor the ports below 1024 (net-low):
@@ -175,8 +176,8 @@ status_t sh_allow_remove(const char *name, unsigned *removed)
  * read on the network without the listen permission. Nor the root's debug
  * power: `debug_command` panics the machine, crashes it on purpose and runs
  * the stress test. */
-static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_INIT, SVC_NET_SYS,
-                                       SVC_DNS_SYS, SVC_SERVE, SVC_NET_LISTEN_LOW };
+static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_VOLUMES, SVC_INIT,
+                                       SVC_NET_SYS, SVC_DNS_SYS, SVC_SERVE, SVC_NET_LISTEN_LOW };
 
 const char *sh_wants_refused(const struct wants *w)
 {
