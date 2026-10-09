@@ -1,6 +1,4 @@
-/* What select.c needs of poll.c: a header without fd.h, whose fd_set
- * (the descriptor table's call) is not <sys/select.h>'s fd_set (the
- * type). */
+/* What select.c needs of poll.c (poll_run), in a header of its own. */
 #pragma once
 
 #include <stdbool.h>

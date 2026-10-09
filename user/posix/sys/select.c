@@ -1,9 +1,7 @@
 /* select and pselect (docs/M13-PLAN.md section 7): the sets made into
  * pollfds and given to poll_run (poll.c), the answers made back into
  * sets as Linux's select makes them. FD_SETSIZE is 1024.
- *
- * Its own file because fd.h's fd_set (the table's call) and
- * <sys/select.h>'s fd_set (the type) can't meet in one. */
+ */
 #include <errno.h>
 #include <limits.h>
 #include <poll.h>

@@ -135,7 +135,7 @@ long fd_alloc(long min)
     return r;
 }
 
-void fd_set(long fd, struct fd_desc *d, bool cloexec_on)
+void fd_place(long fd, struct fd_desc *d, bool cloexec_on)
 {
     lock_take(&table_lock);
     slots[fd] = d;
@@ -157,7 +157,7 @@ long fd_install(struct fd_desc *d, long min, bool cloexec_on)
     if (fd < 0)
         fd_put(d);
     else
-        fd_set(fd, d, cloexec_on);
+        fd_place(fd, d, cloexec_on);
     return fd;
 }
 
