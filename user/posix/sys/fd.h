@@ -161,7 +161,12 @@ struct fd_desc {
                          * atomic (fd_status, fd_status_set) */
     lock_t    lock;     /* the offset and the kind's per-call state (above) */
     int64_t   offset;   /* a file's or directory's position; lock */
+    uint64_t  serial;   /* never 0, never given twice: poll's cache key (ready.h) */
 };
+
+/* d's last reference is going: take it out of every epoll set, before
+ * its kind closes its handles (epoll.c; fd_put calls it). */
+void epoll_forget(struct fd_desc *d);
 
 /* ---- descriptions -------------------------------------------------------------- */
 

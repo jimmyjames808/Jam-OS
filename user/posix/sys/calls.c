@@ -65,6 +65,17 @@ static lx_call *const calls[] = {
     /* fcntl until B2's: stdfd.c */
     [SYS_fcntl] = lx_fcntl,
 
+    /* poll, select and epoll: poll.c, epoll.c */
+    [SYS_poll] = lx_poll,
+    [SYS_ppoll] = lx_ppoll,
+    [SYS_select] = lx_select,
+    [SYS_pselect6] = lx_pselect6,
+    [SYS_epoll_create] = lx_epoll_create,
+    [SYS_epoll_create1] = lx_epoll_create1,
+    [SYS_epoll_ctl] = lx_epoll_ctl,
+    [SYS_epoll_wait] = lx_epoll_wait,
+    [SYS_epoll_pwait] = lx_epoll_pwait,
+
     /* signals, until signals: nosig.c */
     [SYS_rt_sigprocmask] = lx_rt_sigprocmask,
 };

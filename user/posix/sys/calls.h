@@ -43,5 +43,9 @@ lx_call lx_read, lx_write, lx_readv, lx_writev, lx_pread64, lx_pwrite64, lx_prea
 /* fcntl's table-only commands until B2's fcntl (stdfd.c). */
 lx_call lx_fcntl;
 
+/* poll, select and epoll (poll.c, select.c, epoll.c). */
+lx_call lx_poll, lx_ppoll, lx_select, lx_pselect6, lx_epoll_create, lx_epoll_create1,
+        lx_epoll_ctl, lx_epoll_wait, lx_epoll_pwait;
+
 /* Signals before signals exist (nosig.c). */
 lx_call lx_rt_sigprocmask;
