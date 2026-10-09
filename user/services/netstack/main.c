@@ -63,8 +63,9 @@ struct loop {
     handle_t   port;
     handle_t   ctl;           /* netctl's server end, 0 once its clients are all gone */
     bool       ctl_pending;   /* it may have requests queued */
+    bool       ctl_held;      /* ... left there: its clients are behind (progs.h's net_held) */
     handle_t   info;          /* the read-only one's (0: none, or its clients are gone) */
-    bool       info_pending;
+    bool       info_pending, info_held;
     struct notice_box notes;  /* the desktop's notices */
     bool       connected;     /* the link up with an address, as last told */
     struct dev dev;           /* the network card */
@@ -109,7 +110,7 @@ static void serve_info(void)
 {
     status_t st = ctl_serve(l.info, true);
     l.info_pending = st == OK;
-    if (st == OK || st == ERR_SHOULD_WAIT)
+    if (progs_behind(st == CTL_HELD, &l.info_held) || st == OK || st == ERR_SHOULD_WAIT)
         return;
     (void)jam_port_unbind(l.port, l.info, KEY_INFO);
     jam_handle_close(l.info);
@@ -146,7 +147,7 @@ static void serve_ctl(void)
 {
     status_t st = ctl_serve(l.ctl, false);
     l.ctl_pending = st == OK;   /* the budget was spent: more may be queued */
-    if (st == OK || st == ERR_SHOULD_WAIT)
+    if (progs_behind(st == CTL_HELD, &l.ctl_held) || st == OK || st == ERR_SHOULD_WAIT)
         return;
     /* Its clients are gone (or the channel broke): the network keeps the
      * address it has; nobody can change it until netstack starts again. */
@@ -224,6 +225,14 @@ int main(int argc, char **argv)
         return 1;
     nstack_log("serving");
     for (;;) {
+        if (idl_held_due(&net_held)) {   /* channels held back by the unread bound */
+            l.ctl_pending |= l.ctl_held && l.ctl;
+            l.info_pending |= l.info_held && l.info;
+            l.ctl_held = l.info_held = false;
+            progs_unheld();
+            tcpsock_unheld();
+            listen_unheld();
+        }
         if (l.ctl_pending)
             serve_ctl();
         if (l.info_pending)
@@ -245,6 +254,7 @@ int main(int argc, char **argv)
         tell_link();
         if (retry < deadline)
             deadline = retry;
+        deadline = idl_held_deadline(&net_held, deadline);
         if (sock_tcp_card())   /* frames put now: the next turn's dev_work publishes them */
             deadline = 0;
         /* Work left over (a budget ran out): look at the port without

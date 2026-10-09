@@ -44,6 +44,9 @@ bool     listen_packet(const struct port_packet *p);
 void     listen_serve(void);
 /* Requests may be left on one (its budget ran out). */
 bool     listen_pending(void);
+/* The channels held back by the unread bound pending again (progs.h's
+ * net_held). */
+void     listen_unheld(void);
 /* May opener o take UDP port `port` (0: netstack's pick)? */
 bool     listen_may_bind(const struct opener *o, uint16_t port);
 /* May opener o accept connections on TCP port `port` (0: netstack's pick)? */

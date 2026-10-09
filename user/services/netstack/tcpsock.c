@@ -25,6 +25,7 @@ struct tsock {
     handle_t          theirs;      /* the program's end, until it is handed out */
     uint32_t          gen;         /* the slot's generation */
     bool              pending;     /* requests may be queued */
+    bool              held;        /* ... and left there: its client is behind (net_held) */
     bool              charged;     /* counted against its opener and class */
     uint8_t           cls;         /* its opener's class */
     unsigned          opener;      /* the opener charged, and its generation then */
@@ -43,6 +44,7 @@ struct tlisten {
     handle_t              ch;          /* our end of its channel; 0: the slot is free */
     uint32_t              gen;         /* the slot's generation */
     bool                  pending;     /* requests may be queued */
+    bool                  held;        /* ... and left there: its client is behind (net_held) */
     uint8_t               cls;         /* its opener's class */
     unsigned              opener;      /* its opener and that opener's generation */
     uint32_t              opener_gen;
@@ -282,6 +284,8 @@ static void ts_serve(struct tsock *t)
 {
     t->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
+        if (progs_behind(net_stream_unread_full(t->ch), &t->held))
+            return;
         status_t st = net_stream_serve_one(t->ch, &sock_ops, t);
         if (st == OK)
             continue;
@@ -476,6 +480,8 @@ static void l_serve(struct tlisten *l)
 {
     l->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
+        if (progs_behind(net_listener_unread_full(l->ch), &l->held))
+            return;
         status_t st = net_listener_serve_one(l->ch, &listener_ops, l);
         if (st == OK)
             continue;
@@ -521,6 +527,18 @@ bool tcpsock_packet(const struct port_packet *p)
             ring_kick(&ts[i]);
     }
     return true;
+}
+
+void tcpsock_unheld(void)
+{
+    for (unsigned i = 0; i < NET_LISTENERS_MAX; i++) {
+        tl[i].pending |= tl[i].held;
+        tl[i].held = false;
+    }
+    for (unsigned i = 0; i < NET_TCP_MAX; i++) {
+        ts[i].pending |= ts[i].held;
+        ts[i].held = false;
+    }
 }
 
 void tcpsock_serve(void)

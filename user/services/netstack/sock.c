@@ -439,6 +439,8 @@ void sock_serve(unsigned i)
     struct sock *s = &pg.s[i];
     s->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
+        if (progs_behind(net_socket_unread_full(s->ch), &s->held))
+            return;
         status_t st = net_socket_serve_one(s->ch, &sock_ops, s);
         if (st == OK)
             continue;

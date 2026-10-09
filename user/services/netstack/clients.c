@@ -390,10 +390,41 @@ uint32_t progs_shared_dispatch(void *ctx, const void *req, uint32_t n, void *rep
     return net_dispatch(&shared_ops, ctx, req, n, rep, rhs, rhn);
 }
 
+struct idl_held net_held;
+
+/* Is ch's client behind (its protocol's unread bound, from full)? Then it
+ * is held (*held) and counted, and nothing is read from it now. */
+bool progs_behind(bool full, bool *held)
+{
+    if (!full)
+        return false;
+    *held = true;
+    idl_hold(&net_held);
+    return true;
+}
+
+void progs_unheld(void)
+{
+    for (uint8_t c = 0; c < CLASSES; c++) {
+        pg.shared_pending[c] |= pg.shared_held[c];
+        pg.shared_held[c] = false;
+    }
+    for (unsigned i = 0; i < NET_OPENERS; i++) {
+        pg.o[i].pending |= pg.o[i].held;
+        pg.o[i].held = false;
+    }
+    for (unsigned i = 0; i < SOCK_SLOTS; i++) {
+        pg.s[i].pending |= pg.s[i].held;
+        pg.s[i].held = false;
+    }
+}
+
 static void serve_shared(uint8_t cls)
 {
     pg.shared_pending[cls] = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
+        if (progs_behind(net_unread_full(pg.shared[cls]), &pg.shared_held[cls]))
+            return;
         status_t st = svc_serve_request(pg.shared[cls], progs_shared_dispatch, progs_connect,
                                         (void *)&kinds[cls]);
         if (st == OK)
@@ -429,6 +460,8 @@ static void serve_opener(unsigned i)
     struct opener *o = &pg.o[i];
     o->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
+        if (progs_behind(net_unread_full(o->ch), &o->held))
+            return;
         status_t st = net_serve_one(o->ch, &opener_ops, o);
         if (st == OK)
             continue;

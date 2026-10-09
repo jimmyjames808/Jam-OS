@@ -86,6 +86,7 @@ struct opener {
     handle_t ch;          /* our end of its channel; 0: the slot is free */
     uint32_t gen;         /* the slot's generation */
     bool     pending;     /* requests may be queued */
+    bool     held;        /* ... and left there: its client is behind (net_held) */
     uint8_t  cls;         /* CLASS_PROG or CLASS_SYS */
     bool     listen;      /* came through /svc/net-listen: may listen (listen.h) */
     bool     low;         /* came through /svc/net-low: ... on low ports too */
@@ -108,6 +109,7 @@ struct sock {
     handle_t           ch;          /* our end of its channel; 0: the slot is free */
     uint32_t           gen;         /* the slot's generation */
     bool               pending;     /* requests may be queued */
+    bool               held;        /* ... and left there: its client is behind (net_held) */
     bool               dhcp;        /* netctl's DHCP socket (belongs to no opener) */
     uint8_t            cls;         /* its opener's class (CLASS_SYS for the DHCP socket) */
     unsigned           opener;      /* the opener that made it, and that opener's ... */
@@ -155,6 +157,7 @@ struct progs {
     struct dev    *dev;              /* the card: iface, chip_counts, its tx ring's room */
     handle_t       shared[CLASSES];  /* the shared channels (0: none, or their clients gone) */
     bool           shared_pending[CLASSES];
+    bool           shared_held[CLASSES];   /* left unread: their clients are behind */
     struct opener  o[NET_OPENERS];
     struct sock    s[SOCK_SLOTS];
     struct later   l[LATER_MAX];
@@ -184,6 +187,14 @@ uint64_t progs_tick(void);
 /* Is there more to do at once: a channel with requests left (its budget
  * ran out), a tx ring with records the card has room for? */
 bool     progs_pending(void);
+/* The unread bound (tools/genidl.py, "The unread bound"): a channel whose
+ * client has its protocol's bound of answers unread is not read (marked
+ * held, not pending) and counted here; when net_held says it is time, the
+ * loop makes every held channel pending again (progs_unheld,
+ * tcpsock_unheld, listen_unheld), and serving it looks again. */
+extern struct idl_held net_held;
+void     progs_unheld(void);
+bool     progs_behind(bool full, bool *held);
 /* Publish what this turn put in the rx rings (after the card's frames
  * went to lwIP), waking the programs that sleep. */
 void     progs_flush(void);
