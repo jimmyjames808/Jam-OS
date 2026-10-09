@@ -19,6 +19,10 @@
 #include "fat.h"
 
 static handle_t view_ch[FAT_VIEWS];   /* our end of slot i's channel */
+/* Bit i: slot i's client has left too many answers unread (unread_full):
+ * it is not armed until it has read them (views_unheld). */
+static uint32_t held;
+_Static_assert(FAT_VIEWS <= 32, "held is a word");
 
 /* Wait (ONCE) for slot i's next request or its client's close. */
 static status_t arm(unsigned i)
@@ -39,6 +43,7 @@ static void close_channel(unsigned i)
 static void drop(unsigned i)
 {
     kept->views[i].used = false;
+    held &= ~(1u << i);
     close_channel(i);
 }
 
@@ -87,12 +92,32 @@ void views_event(uint64_t key)
         .ch = view_ch[i], .id = FAT_CHAN_VIEW(i, kept->views[i].gen), .proto = FAT_PROTO_FS,
         .flags = kept->views[i].flags,
     };
+    if (unread_full(c.ch)) {
+        held |= 1u << i;   /* it reads its answers first: views_unheld looks again */
+        return;
+    }
     files_reap();
     status_t st = serve_one(&c);   /* one per turn: main.c's loop */
     if (st == OK || st == ERR_SHOULD_WAIT)
         st = arm(i);   /* fires at once if more is queued */
     if (st != OK)
         drop(i);   /* the client is gone, or the channel failed */
+}
+
+bool views_held(void)
+{
+    return held != 0;
+}
+
+void views_unheld(void)
+{
+    for (unsigned i = 0; i < FAT_VIEWS; i++) {
+        if (!(held & (1u << i)) || unread_full(view_ch[i]))
+            continue;
+        held &= ~(1u << i);
+        if (arm(i) != OK)   /* fires at once: its requests are queued */
+            drop(i);
+    }
 }
 
 /* ---- a successor's views (adopt.c) ------------------------------------------------- */

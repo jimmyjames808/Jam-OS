@@ -801,3 +801,5 @@ bool t_volumes_release_disk(void);
 bool t_volumes_new_channel(void);
 /* volwatch.c: volumes answers while a remount waits (S2b). */
 bool t_volumes_loop_answers(void);
+/* fat_hostile.c: fat against clients that misbehave (M12.1). */
+bool t_fat_unread_flood(void);
