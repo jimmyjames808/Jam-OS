@@ -745,8 +745,9 @@ Every driver and service is a userspace process from the start.
   decoded by `<proto>_<method>_result`); and on the server, a method
   marked `later` may keep its request (`struct idl_txn`) and answer it
   after its handler returned, with `<proto>_reply_<method>`. One channel
-  end uses blocking calls or calls that don't wait, never both (the
-  kernel's txids could match the caller's). `<proto>_serve` sends each
+  end may use both kinds: the kernel's txids for blocking calls have bit
+  31 set and `idl_txid_next` never sets it, so a reply to one kind is
+  never taken for the other's. `<proto>_serve` sends each
   reply in the `channel_reply_wait` that waits for the next request: one
   system call per request.
 - **Requests in slots**, for a server whose requests must outlive it:
