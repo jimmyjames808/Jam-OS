@@ -826,7 +826,7 @@ Rules for userspace drivers:
   (`dma_cap_bus_master`, `drv_dma_bus_master`), which a driver does only
   after quiescing its device (reset it, or see its DMA engine idle), so a
   transfer a dead driver left queued never runs with the new driver's bus
-  mastering. Nobody else turns it on (`pci_bus_master` only turns it off).
+  mastering. Nobody else turns it on (`pci_bus_master_off` only turns it off).
   Closing the current cap clears Bus Master Enable (an older cap's close
   leaves it alone); pins still held then are *quarantined*, not freed
   (Fuchsia's BTI quarantine): the pages stay, charged to their VMO's job,

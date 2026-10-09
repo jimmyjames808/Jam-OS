@@ -59,7 +59,7 @@ bool pci_cfg_write_changes_power(struct pci_dev *d, uint32_t off, uint32_t width
 /* Width 1, 2 or 4, offset aligned to it and < 4096: else ERR_INVALID_ARGS. */
 status_t pci_cfg_access_ok(uint32_t off, uint32_t width);
 /* Serialises every change of a command register made on a process's
- * behalf: filtered config writes (check + write), pci_bus_master and the
+ * behalf: filtered config writes (check + write), pci_bus_master_off and the
  * dma_cap close path (BME off + read-back). A spinlock (irqsave), ranked
  * above the PCI core's config lock. */
 uint64_t pci_cmd_lock(void);
@@ -182,7 +182,7 @@ status_t sys_pci_config_read(struct handle_table *t, handle_t dev, uint32_t off,
 status_t sys_pci_config_write(struct handle_table *t, handle_t dev, uint32_t off, uint32_t width,
                               uint32_t value);
 status_t sys_pci_bar_resource(struct handle_table *t, handle_t dev, uint32_t bar, handle_t *out);
-status_t sys_pci_bus_master(struct handle_table *t, handle_t dev, uint32_t enable);
+status_t sys_pci_bus_master_off(struct handle_table *t, handle_t dev);
 status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t offset,
                                  uint64_t size, uint32_t cache, handle_t *out);
 status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out);

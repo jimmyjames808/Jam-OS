@@ -351,7 +351,7 @@ void kill_driver(struct binding *b)
     if (b->job)
         jam_job_kill(b->job);   /* returns once everything in it is dead */
     if (b->kind == BIND_PCI && b->dev)
-        jam_pci_bus_master(b->dev, 0);
+        jam_pci_bus_master_off(b->dev);
 }
 
 void forget_driver(struct binding *b)

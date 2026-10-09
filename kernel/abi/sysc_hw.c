@@ -11,8 +11,8 @@
  *   pci_config_write       RIGHT_WRITE on a RES_PCI_DEV (+ the filter; with
  *                          RIGHT_MANAGE too, the PM power state may change)
  *   pci_bar_resource       RIGHT_SLICE on a RES_PCI_DEV
- *   pci_bus_master         RIGHT_MANAGE on a RES_PCI_DEV, and only to turn
- *                          it OFF (on is the current dma_cap's)
+ *   pci_bus_master_off     RIGHT_MANAGE on a RES_PCI_DEV (on is the
+ *                          current dma_cap's)
  *   dma_cap_create         RIGHT_MANAGE on a RES_PCI_DEV (devmgr's copy)
  *   dma_cap_bus_master     a dma_cap handle (any rights): its function's
  *                          current cap; on 0 or 1
@@ -215,19 +215,15 @@ status_t sys_pci_bar_resource(struct handle_table *t, handle_t dev, uint32_t bar
     return st == OK ? publish_res(t, res, r, out) : st;
 }
 
-status_t sys_pci_bus_master(struct handle_table *t, handle_t dev, uint32_t enable)
+/* Only off: the function's current dma_cap turns it on, once its driver
+ * has quiesced the device (dma_cap_bus_master). */
+status_t sys_pci_bus_master_off(struct handle_table *t, handle_t dev)
 {
     struct kobject *obj;
     struct pci_dev *d;
     status_t st = get_dev(t, dev, RIGHT_MANAGE, &obj, &d);
     if (st != OK)
         return st;
-    if (enable) {
-        /* Only the function's current dma_cap turns it on, once its
-         * driver has quiesced the device (dma_cap_bus_master). */
-        kobject_unref(obj);
-        return ERR_ACCESS_DENIED;
-    }
     uint64_t f = pci_cmd_lock();
     st = pci_set_bus_master(d, false);
     pci_cmd_unlock(f);
@@ -414,10 +410,10 @@ int64_t sysc_pci_bar_resource(handle_t dev, uint32_t bar, uint64_t out)
     return st == OK ? sysc_put_handle(t, out, h) : st;
 }
 
-int64_t sysc_pci_bus_master(handle_t dev, uint32_t enable)
+int64_t sysc_pci_bus_master_off(handle_t dev)
 {
     SYSC_TABLE(t);
-    return sys_pci_bus_master(t, dev, enable);
+    return sys_pci_bus_master_off(t, dev);
 }
 
 int64_t sysc_dma_cap_bus_master(handle_t dma, uint32_t on)

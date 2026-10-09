@@ -302,11 +302,6 @@ static int64_t call_pci_bar_resource(const struct syscall_frame *f)
     return sysc_pci_bar_resource((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2]);
 }
 
-static int64_t call_pci_bus_master(const struct syscall_frame *f)
-{
-    return sysc_pci_bus_master((handle_t)f->args[0], (uint32_t)f->args[1]);
-}
-
 static int64_t call_interrupt_create_msi(const struct syscall_frame *f)
 {
     return sysc_interrupt_create_msi((handle_t)f->args[0], (uint32_t)f->args[1],
@@ -343,6 +338,11 @@ static int64_t call_vmo_unpin(const struct syscall_frame *f)
 static int64_t call_dma_vmo_create(const struct syscall_frame *f)
 {
     return sysc_dma_vmo_create((handle_t)f->args[0], f->args[1], (uint32_t)f->args[2], f->args[3]);
+}
+
+static int64_t call_pci_bus_master_off(const struct syscall_frame *f)
+{
+    return sysc_pci_bus_master_off((handle_t)f->args[0]);
 }
 
 static int64_t call_klog_open(const struct syscall_frame *f)
@@ -508,7 +508,6 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_pci_config_read] = call_pci_config_read,
     [SYS_pci_config_write] = call_pci_config_write,
     [SYS_pci_bar_resource] = call_pci_bar_resource,
-    [SYS_pci_bus_master] = call_pci_bus_master,
     [SYS_interrupt_create_msi] = call_interrupt_create_msi,
     [SYS_interrupt_ack] = call_interrupt_ack,
     [SYS_vmo_create_physical] = call_vmo_create_physical,
@@ -516,6 +515,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_vmo_pin] = call_vmo_pin,
     [SYS_vmo_unpin] = call_vmo_unpin,
     [SYS_dma_vmo_create] = call_dma_vmo_create,
+    [SYS_pci_bus_master_off] = call_pci_bus_master_off,
     [SYS_klog_open] = call_klog_open,
     [SYS_klog_read] = call_klog_read,
     [SYS_framebuffer_take] = call_framebuffer_take,

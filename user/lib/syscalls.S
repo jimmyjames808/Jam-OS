@@ -453,14 +453,6 @@ jam_pci_bar_resource:
     ret
     .size jam_pci_bar_resource, . - jam_pci_bar_resource
 
-    .globl jam_pci_bus_master
-    .type jam_pci_bus_master, @function
-jam_pci_bus_master:
-    mov $SYS_pci_bus_master, %eax
-    syscall
-    ret
-    .size jam_pci_bus_master, . - jam_pci_bus_master
-
     .globl jam_interrupt_create_msi
     .type jam_interrupt_create_msi, @function
 jam_interrupt_create_msi:
@@ -520,6 +512,14 @@ jam_dma_vmo_create:
     syscall
     ret
     .size jam_dma_vmo_create, . - jam_dma_vmo_create
+
+    .globl jam_pci_bus_master_off
+    .type jam_pci_bus_master_off, @function
+jam_pci_bus_master_off:
+    mov $SYS_pci_bus_master_off, %eax
+    syscall
+    ret
+    .size jam_pci_bus_master_off, . - jam_pci_bus_master_off
 
     .globl jam_klog_open
     .type jam_klog_open, @function

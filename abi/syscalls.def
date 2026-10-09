@@ -168,11 +168,9 @@
 93  pci_config_read   status    handle_t dev, uint32_t offset, uint32_t width, uint32_t *value
 94  pci_config_write  status    handle_t dev, uint32_t offset, uint32_t width, uint32_t value
 95  pci_bar_resource  status    handle_t dev, uint32_t bar, handle_t *out
-# Bus Master Enable OFF (enable = 0) needs RIGHT_MANAGE on the device
-# (devmgr has it, drivers don't). Turning it on is refused
-# (ERR_ACCESS_DENIED): only the function's current dma_cap does that
-# (dma_cap_bus_master).
-96  pci_bus_master    status    handle_t dev, uint32_t enable
+# pci_bus_master_off (104, below) turns a function's bus mastering off.
+# (Number 96 was pci_bus_master, with an `enable` argument that could only
+# be 0, until M12: retired.)
 # Interrupt objects: MSI or MSI-X (flags IRQ_MSIX) vector `index` of the
 # function; bind to a port PERSISTENT for SIG_INTERRUPT; ack re-arms.
 97  interrupt_create_msi status handle_t dev, uint32_t index, uint32_t flags, handle_t *out
@@ -192,6 +190,10 @@
 # reaches by DMA, which the dma_cap `dma` lets it ask for: one bound to a
 # function (ERR_ACCESS_DENIED otherwise), any rights.
 103 dma_vmo_create    status    handle_t dma, uint64_t size, uint32_t flags, handle_t *out
+# Bus Master Enable off; needs RIGHT_MANAGE on the device (devmgr has it,
+# drivers don't). Nothing turns it on but the function's current dma_cap
+# (dma_cap_bus_master).
+104 pci_bus_master_off status   handle_t dev
 
 # console services ----------------------------------------------------------
 # Rights are on a RES_ROOT handle: each call that takes the root needs its
