@@ -64,6 +64,7 @@ FONT_TOOL  := build/host/fontpreview
 FONT_CHECK := build/host/fontcheck
 # The partition table library on the Mac, sanitised (tools/gptcheck.c, below).
 GPT_CHECK  := build/host/gptcheck
+ROOTPORT_CHECK := build/host/rootportcheck
 # The files a stick has once `update -w` has written a build: its own and
 # the previous one (what boot/limine.conf may name; `make check`).
 STICK_FILES := /boot/jamos.elf /boot/bootfs.img /boot/prev-jamos.elf /boot/prev-bootfs.img
@@ -615,6 +616,8 @@ check: all
 	$(MAKE) -s $(PT_LIB_OBJ) $(GPT_CHECK)
 	python3 tools/mkgpt.py --cases $(BUILD)/gptcheck
 	$(GPT_CHECK) $(BUILD)/gptcheck
+	$(MAKE) -s $(ROOTPORT_CHECK)
+	$(ROOTPORT_CHECK)
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
@@ -754,6 +757,15 @@ $(GPT_CHECK): $(GPT_SRCS) tools/gptcheck.h drivers/include/jam/parttable.h \
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
 	    -fno-sanitize-recover=all -Ikernel/include -Idrivers/include -Idrivers/lib -o $@ $(GPT_SRCS)
+
+# rootportcheck (tools/rootportcheck.c): usb-bus's root port handling (the
+# driver's own rootport.c) against a model of PORTSC with the controller's
+# event rule (xHCI 4.19.2), which QEMU doesn't have; `make check` runs it.
+$(ROOTPORT_CHECK): tools/rootportcheck.c drivers/usb-bus/rootport.c drivers/usb-bus/usbbus.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
+	    -fno-sanitize-recover=all -Ikernel/include -Idrivers/include -o $@ \
+	    tools/rootportcheck.c drivers/usb-bus/rootport.c
 
 $(BUILD)/fontpreview.png: $(FONT_TOOL)
 	$(FONT_TOOL) $@

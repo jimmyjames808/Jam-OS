@@ -76,7 +76,12 @@ that a bug fix comes with a test is in
   driver rules and, under ASan and UBSan, gives what `tools/mkgpt.py
   --cases` says on each of its images, refuses each GPT header rule
   broken alone, and lists nothing outside the disk on thousands of
-  mutated tables and a short fuzz pass (`build/host/gptcheck`).
+  mutated tables and a short fuzz pass (`build/host/gptcheck`); usb-bus's
+  root port handling (`drivers/usb-bus/rootport.c`) leaves no port change
+  unseen under the controller's event rule (xHCI 4.19.2: an event only
+  when a port's change bits go from none to some), which QEMU doesn't
+  model: a stick pushed back in, or a connector bouncing, at every point
+  of a port's handling (`build/host/rootportcheck`).
 
 ## Running QEMU: tools/qemu-test.sh
 
