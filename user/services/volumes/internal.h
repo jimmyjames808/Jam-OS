@@ -86,7 +86,8 @@ struct vol {
      * couldn't be made (they go on client then). */
     handle_t            own;
     handle_t            own_serve;  /* its server end, kept across restarts as serve is */
-    uint64_t            client_key; /* the port watches fs_asker for answers under it (0: not) */
+    uint64_t            client_key; /* the port watches own and client for answers under it
+                                     * (fs_watch_answers; 0: not) */
     uint32_t            gen;        /* bumped at every start: in its port key */
     bool                killed;     /* ended by volumes.kill */
     status_t            last;       /* the last start's status */
@@ -247,6 +248,10 @@ void     fs_close_client(struct vol *b);
 /* Where volumes asks b's service things itself (stat probes, syncs) and
  * reads the answers: our own channel, or the shared one if there is none. */
 handle_t fs_asker(const struct vol *b);
+/* What b's instance answers by itself (fs.stat's probe, disk.c), and what
+ * lands on the shared channel unread (dropped, fs_answers), come to the
+ * port under client_key, if they don't already. */
+void     fs_watch_answers(struct vol *b);
 /* b's process (start generation `gen`) terminated. */
 void     sup_died(struct vol *b, uint32_t gen);
 /* b's fsctl channel: an answer came, or it closed (KEY_FSCTL). */

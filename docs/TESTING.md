@@ -1065,7 +1065,7 @@ fat and the mixer carry on from a dead instance's state
   `disk_fs_restart` (devmgr's kept `fs` channel: the mount
   never goes), `disk_own_channel` (volumes' syncs on a channel of its
   own, which a restart keeps too, answered at once while a client floods
-  the shared one and fat holds it back), and the exact deaths: `fat_restart_steps` (a script of
+  the shared one and reads everything on it), and the exact deaths: `fat_restart_steps` (a script of
   every kind of request run undisturbed, then with fat ended at a held
   write, the commit, a block write of the send, before and after the
   answer: the same answers and the RAM disks the same byte for byte),

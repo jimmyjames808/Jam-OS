@@ -270,11 +270,7 @@ static status_t adopt(struct vol *b, handle_t proc, handle_t job)
     b->state = VOLUMES_SUP_RUNNING;
     b->promoted++;
     b->spare_now = true;   /* its process is called "fat-spare" */
-    if (b->client && !b->client_key) {   /* a new `fs` channel: its answers are watched */
-        uint64_t key = KEY_EV_OF(b - vols, b->gen);
-        if (jam_port_bind(port, fs_asker(b), key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
-            b->client_key = key;
-    }
+    fs_watch_answers(b);   /* a new `fs` channel: its answers are watched */
     disk_started(b);
     return OK;
 }

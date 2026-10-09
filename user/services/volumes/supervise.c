@@ -60,17 +60,18 @@ static void tell_desktop(const struct vol *b, bool gave_up, bool first)
 
 /* ---- the process --------------------------------------------------------------------- */
 
-/* What b's instance answers on its `fs` channel by itself (fs.stat's
- * probe, disk.c): the port watches the end we ask on (fs_asker). */
-static void watch_answers(struct vol *b)
+void fs_watch_answers(struct vol *b)
 {
-    if (b->client && !b->client_key) {
-        uint64_t key = KEY_EV_OF(b - vols, b->gen);
-        if (jam_port_bind(port, fs_asker(b), key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
-            b->client_key = key;
-        else
-            say(false, "volumes: %s: can't watch its channel for answers", b->name);
+    if (!b->client || b->client_key)
+        return;
+    uint64_t key = KEY_EV_OF(b - vols, b->gen);
+    if (jam_port_bind(port, b->client, key, SIG_READABLE, PORT_BIND_PERSISTENT) != OK ||
+        (b->own && jam_port_bind(port, b->own, key, SIG_READABLE, PORT_BIND_PERSISTENT) != OK)) {
+        (void)jam_port_unbind(port, b->client, key);
+        say(false, "volumes: %s: can't watch its channel for answers", b->name);
+        return;
     }
+    b->client_key = key;
 }
 
 status_t fs_spawn(struct vol *b)
@@ -128,7 +129,7 @@ status_t fs_spawn(struct vol *b)
     b->killed = false;
     b->spare_now = false;
     b->state = VOLUMES_SUP_RUNNING;
-    watch_answers(b);
+    fs_watch_answers(b);
     disk_started(b);
     return OK;
 }
@@ -136,8 +137,10 @@ status_t fs_spawn(struct vol *b)
 void fs_close_client(struct vol *b)
 {
     call_fail(fs_asker(b));   /* an fs.sync a task waits for: no answer comes now */
-    if (fs_asker(b) && b->client_key)
-        jam_port_unbind(port, fs_asker(b), b->client_key);
+    if (b->client && b->client_key)
+        jam_port_unbind(port, b->client, b->client_key);
+    if (b->own && b->client_key)
+        jam_port_unbind(port, b->own, b->client_key);
     b->client_key = 0;
     if (b->client)
         jam_handle_close(b->client);
