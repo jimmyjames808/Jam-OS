@@ -25,6 +25,7 @@ static const struct {
     { "thread", pt_thread },
     { "pipe", pt_pipe },
     { "fds", pt_fds },
+    { "poll", pt_poll },
     { "files", pt_files },
 };
 
@@ -43,6 +44,8 @@ int main(int argc, char **argv)
         return pt_child_handover();
     if (argc >= 2 && !strcmp(argv[1], "--child-devetc"))
         return pt_child_devetc();
+    if (argc >= 2 && !strcmp(argv[1], "--child-poll"))
+        return pt_child_poll();
     if (argc >= 2 && !strcmp(argv[1], "--child-files"))
         return pt_child_files();
     if (argc >= 2 && !strcmp(argv[1], "--child-rofs"))

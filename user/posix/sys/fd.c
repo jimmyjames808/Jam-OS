@@ -39,6 +39,8 @@ static lock_t          table_lock;
 
 /* ---- descriptions ---------------------------------------------------------------- */
 
+static uint64_t serials;   /* the last description's serial: atomic */
+
 struct fd_desc *fd_new(const struct fd_ops *ops, uint32_t status, void *priv)
 {
     struct fd_desc *d = calloc(1, sizeof(*d));
@@ -48,6 +50,7 @@ struct fd_desc *fd_new(const struct fd_ops *ops, uint32_t status, void *priv)
     d->priv = priv;
     d->refs = 1;
     d->status = status;
+    d->serial = __atomic_add_fetch(&serials, 1, __ATOMIC_RELAXED);
     return d;
 }
 
@@ -60,6 +63,7 @@ void fd_put(struct fd_desc *d)
 {
     if (__atomic_sub_fetch(&d->refs, 1, __ATOMIC_ACQ_REL))
         return;
+    epoll_forget(d);
     if (d->ops->close)
         d->ops->close(d);
     free(d);

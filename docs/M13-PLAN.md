@@ -1506,3 +1506,93 @@ pipe.c, dup.c, dev.c, etc.c, memfd.c (and memfd.h), eventfd.c and user.c.
   a port that defines one of them fails to link. Hiding them (a prefix
   reserved for the layer, or localizing them when libc.a is made) is a
   question for the whole layer.
+
+## B5 notes
+
+Track B5 (`poll`, `select`, `epoll`) as built, with the choices the plan
+left open. The model and its argument are in `user/posix/sys/ready.h`;
+the cache in `user/posix/sys/poll.c`'s header; epoll's rules in
+`user/posix/sys/epoll.c`'s.
+
+**What changed outside B5's files**
+- `<netwait.h>` gained two things. `NETWAIT_EDGE` (handles only): an
+  entry reported ready is armed instead of staying pending, and its read
+  and write signals are bound apart, so a read edge is seen while the
+  write side stays up (epoll's `EPOLLET` on a socketpair). And
+  `netwait_block`: sleep until a packet is queued, taking none, which is
+  how a waiter looks at libc's own state (a pipe's leftover) between the
+  set's look and the sleep without losing a wake. utest `netwait_edge`.
+- fd.h and fd.c (B1's): `struct fd_desc` has a `serial` (never 0, never
+  given twice), set in `fd_new`; `fd_put` calls `epoll_forget(d)` before
+  the kind's close (declared in fd.h).
+- pipe.c and eventfd.c (B2's): the `.ready`/`.arm` lines and their two
+  small functions.
+- calls.c and calls.h: B5's block (poll, ppoll, select, pselect6, the
+  five epoll calls); posixtest's main.c and pt.h: the poll section and
+  the `--child-poll` mode.
+
+**Choices**
+- **The cache** is keyed by the description's serial, not its address
+  or handle: a description freed and another made at the same address
+  with a handle of the same value is never taken for the old one (whose
+  binding the kernel ended when its handle closed). A place keeps what
+  the kind's arm said and the interest; any difference binds again.
+  Places not asked for in 64 calls go, and so does one the set reports
+  ready when the call didn't ask for it. The set is freed by a
+  thread-specific key's destructor (pthread_exit runs it), so thread.c
+  is not touched.
+- **The order of a look**: the set (a past deadline), then each kind's
+  `ready`, then `netwait_block`. A kind's `ready` takes no lock and makes
+  no system call (it runs under epoll's lock); pipe.c's reads the
+  leftover's two counters with relaxed atomic loads, while pipe.c writes
+  them under the description's lock with plain stores (a stale answer is
+  corrected by the next look, since a leftover only comes off the
+  channel, whose rise queues a packet).
+- **Hang-ups**: the set's HUP is POLLHUP, but POLLERR for a handle with
+  no read signals (a pipe's write end whose reader is gone, as Linux).
+- **select**: a descriptor only in the exception set is checked (EBADF)
+  and left out, since POLLPRI never comes; a hang-up counts as writable
+  as well as readable, so a writer finds out (EPIPE). select is its own
+  file because fd.h's `fd_set` (the table's call) and `<sys/select.h>`'s
+  `fd_set` (the type) can't meet in one file; epoll.c renames the call
+  with a `#define` around its include of fd.h, since `<sys/epoll.h>`
+  brings `<sys/types.h>` and the type. **For B1**: renaming `fd_set`
+  (say `fd_place`) would end both work-arounds; any kind file that
+  includes `<sys/types.h>` under `_GNU_SOURCE` meets the same clash.
+- **epoll**: an item is (number, description) and holds no reference:
+  `epoll_forget` takes it out of every set when the description goes
+  (a global list of sets, skipped while no set has an item). A kind with
+  no arm (a file, /dev) is EPERM, an epoll descriptor in a set or in
+  poll/select EINVAL. Unknown event bits are EINVAL (Linux ignores them);
+  `EPOLLEXCLUSIVE` and `EPOLLWAKEUP` are accepted and do nothing.
+  `EPOLLET` on a socket is EOPNOTSUPP until a socket entry can be an edge
+  one (B6). A full set is ENOSPC. A child is never handed an epoll
+  descriptor (`give` is ENOTSUP). A look asks the set for no more events
+  than the caller's array holds, so turns of a few reach every ready item.
+- **Edge-triggered** = a rise of the kind's signals (or of its own
+  `ready`, for a leftover another thread read into the buffer). A second
+  message into a pipe that wasn't drained is no edge (Linux before 5.5
+  behaves so too); a program that drains to EAGAIN, as `epoll(7)` asks,
+  sees every write.
+- **Masks**: ppoll, pselect6 and epoll_pwait set nosig.c's mask for the
+  wait and put it back after; B4's signal.c makes it one step with the
+  wait. **EINTR**: `netwait_block` is the system call wait K1 made
+  interruptible; ERR_INTERRUPTED is returned as EINTR and B4 decides
+  restarts.
+
+**For later tracks**
+- **B6 (sockets)**: a socket's `arm` gives `FD_WAIT_SOCK`. poll does not
+  cache a socket's place: it goes at the end of the call, because the
+  set reads the rings at every look and a socket's close can't reach
+  another thread's set to take it out first. Keeping them (tinyssh's loop
+  would bind and unbind its socket each call) needs the rings to outlive
+  every place, e.g. the description keeping them mapped until its places
+  are gone. epoll is safe as it is (`epoll_forget` runs before the
+  kind's close). Edge entries for sockets are B6's too.
+- **T2 (terminals)**: `struct fd_wait` has one handle; a terminal is read
+  through its input pipe and written through its output pipe. The arm
+  gets the interest, so a poll for one side works; for both at once,
+  fd_wait needs a second part (poll.c's place and epoll.c's item would
+  then hold two entries).
+- **B3 (spawn)**: an epoll descriptor's `give` is ENOTSUP: leave it out
+  of a child's hand-over.
