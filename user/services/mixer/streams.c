@@ -456,7 +456,8 @@ void serve_svc(struct mixer *m)
 {
     status_t st = serve_audio(m, m->svc, 0);
     m->svc_pending = st == OK;
-    if (st != OK && st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED)
+    m->svc_held = st == REQ_HELD;
+    if (st != OK && st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED && st != REQ_HELD)
         printf("mixer: reading the service channel: %s\n", status_str(st));
 }
 
@@ -471,6 +472,8 @@ void serve_stream(struct mixer *m, struct stream *s)
             continue;
         if (st == ERR_PEER_CLOSED)
             stream_drop(m, s, "its channel closed");
+        else if (st == REQ_HELD)
+            w->held = true;
         else if (st != ERR_SHOULD_WAIT)
             printf("mixer: reading stream %u's channel: %s\n", s->id, status_str(st));
         return;
@@ -654,7 +657,8 @@ void serve_desk(struct mixer *m)
 {
     status_t st = serve_control(m, m->desk, KEY_DESK);
     m->desk_pending = st == OK;
-    if (st == OK || st == ERR_SHOULD_WAIT)
+    m->desk_held = st == REQ_HELD;
+    if (st == OK || st == ERR_SHOULD_WAIT || st == REQ_HELD)
         return;
     if (st != ERR_PEER_CLOSED)
         printf("mixer: reading the desktop's channel: %s\n", status_str(st));
@@ -667,6 +671,7 @@ void serve_ctl(struct mixer *m)
 {
     status_t st = serve_control(m, m->ctl, KEY_CTL);
     m->ctl_pending = st == OK;
-    if (st != OK && st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED)
+    m->ctl_held = st == REQ_HELD;
+    if (st != OK && st != ERR_SHOULD_WAIT && st != ERR_PEER_CLOSED && st != REQ_HELD)
         printf("mixer: reading the control channel: %s\n", status_str(st));
 }

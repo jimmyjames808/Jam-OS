@@ -155,8 +155,9 @@ int main(int argc, char **argv)
     printf("mixer: serving; %u streams at most, each a ring of %u frames; the output opens "
            "while one plays\n", MIXER_MAX_STREAMS, RING_FRAMES);
     for (;;) {
+        held_look(m);
         serve_all(m);
-        uint64_t deadline = keep_tick(m, out_tick(m));
+        uint64_t deadline = idl_held_deadline(&m->held, keep_tick(m, out_tick(m)));
         if (anything_pending(m))
             continue;
         state_commit(m);
