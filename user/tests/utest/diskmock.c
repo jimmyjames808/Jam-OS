@@ -186,6 +186,12 @@ static status_t s_open_partition(void *ctx, uint32_t index, uint8_t read_only, h
     uint64_t start, blocks;
     if (index > 1 || !mbr_entry(m, index, &type, &start, &blocks))
         return ERR_OUT_OF_RANGE;
+    uint32_t left = __atomic_load_n(&m->refuse_opens, __ATOMIC_RELAXED);
+    while (left && !__atomic_compare_exchange_n(&m->refuse_opens, &left, left - 1, false,
+                                                __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        ;
+    if (left)
+        return ERR_NO_RESOURCES;
     unsigned slot = 0;
     while (slot < DM_MAX_OPEN && m->blk[slot].ch)
         slot++;

@@ -10,7 +10,9 @@
  *                         gets the whole list
  *   volumes_release_disk  the disk's mounts stop in order (the volume
  *                         left clean) and stay gone while the disk is
- *                         still there */
+ *                         still there
+ *   volumes_new_channel   a restart that failed after the mount's channel
+ *                         went: the watch is told of the new one */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -88,6 +90,59 @@ static bool data_clean(bool *known)
     bool fat32 = !memcmp(bs + 82, "FAT32", 5), fat16 = !memcmp(bs + 54, "FAT16", 5);
     *known = fat32 || fat16;
     return fat32 ? (fat[7] & 0x08) != 0 : fat16 ? (fat[3] & 0x80) != 0 : false;
+}
+
+/* A mount's restart that fails after its `fs` channel went: killed twice
+ * in a row, the second restart finds no warm spare ready yet (the first
+ * took it), so it starts a process, whose `block` channel the disk
+ * refuses: the start fails and the channel goes with it. The restart
+ * after that serves a new channel, and the watch must say so (`unmounted`,
+ * `mounted`), or every namespace keeps the dead one. Either way the
+ * channel the watch last gave answers. */
+bool t_volumes_new_channel(void)
+{
+    handle_t vm = volumes();
+    struct view v = { 0 };
+    uint32_t id = 0, state = 0, restarts = 0, backoff = 0, promoted = 0;
+    uint8_t spare = 0;
+    uint64_t koid = 0;
+    bool skip;
+    if (!vm)
+        return true;
+    if (!attach(vm, DM_TYPE_FAT32, ESP_BOOT, &id, &skip))
+        return skip;
+    if (!wait_mounts(vm, &v, true, true))
+        return false;
+    struct fatrun data = mount_of(&v, DATA);
+    if (!put_file(&data, "/a.txt", "before the kills"))
+        return false;
+    CHECK_ST(t_sync(&data), OK);
+    uint32_t gen0 = mount_gen(&v, DATA);
+    CHECK_ST(volumes_kill_until(vm, now() + 30 * NS_PER_S, DATA, sizeof(DATA) - 1, &koid), OK);
+    /* the kill's restart runs right after its answer, before volumes reads
+     * the next request: this one sees it done (and the spare used) */
+    CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, DATA, sizeof(DATA) - 1, &state,
+                                       &restarts, &backoff, &promoted, &spare), OK);
+    CHECK_EQ(state, VOLUMES_SUP_RUNNING);
+    __atomic_store_n(&mock.refuse_opens, 2, __ATOMIC_RELAXED);
+    CHECK_ST(volumes_kill_until(vm, now() + 30 * NS_PER_S, DATA, sizeof(DATA) - 1, &koid), OK);
+    uint64_t until = now() + 15 * NS_PER_S;
+    do {
+        CHECK(now() < until);
+        jam_sleep_until(now() + 20 * NS_PER_MS);
+        CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, DATA, sizeof(DATA) - 1,
+                                           &state, &restarts, &backoff, &promoted, &spare), OK);
+    } while (state != VOLUMES_SUP_RUNNING || dm_count(&mock.refuse_opens));
+    /* whatever the watch had to say by now, then the channel it gave */
+    while (view_next(vm, &v, now() + 500 * NS_PER_MS) == OK)
+        ;
+    bool moved = mount_gen(&v, DATA) != gen0;
+    printf("utest: %s: %u restarts, %u from the spare; the mount's channel %s\n", utest_cur,
+           restarts, promoted, moved ? "is a new one" : "stayed");
+    data = mount_of(&v, DATA);
+    CHECK(data.fs != HANDLE_INVALID);
+    CHECK(file_is(&data, "/a.txt", "before the kills"));
+    return detach(vm, &v);
 }
 
 bool t_volumes_release_disk(void)

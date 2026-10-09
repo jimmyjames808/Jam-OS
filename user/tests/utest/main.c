@@ -1096,6 +1096,7 @@ static const struct {
     { "fat_open_moved", t_fat_open_moved },
     { "volumes_watch", t_volumes_watch },
     { "volumes_release_disk", t_volumes_release_disk },
+    { "volumes_new_channel", t_volumes_new_channel },
 };
 
 int main(int argc, char **argv)

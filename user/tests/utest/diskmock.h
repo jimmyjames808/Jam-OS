@@ -46,6 +46,8 @@ struct diskmock {
     uint32_t        closed[2];            /* `block` channels whose client went, per partition */
     uint32_t        reads, writes, syncs; /* block requests answered OK */
     uint32_t        refused;              /* block requests refused (range, read-only) */
+    uint32_t        refuse_opens;         /* the test's: refuse this many open_partition calls
+                                           * to come (ERR_NO_RESOURCES), as a full driver would */
     uint8_t         stack[16384] __attribute__((aligned(16)));   /* the thread's */
 };
 

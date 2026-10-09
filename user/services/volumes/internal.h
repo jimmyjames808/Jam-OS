@@ -98,7 +98,7 @@ struct vol {
     uint64_t            kill_at;    /* when volumes.kill asked for its end (uptime ns; 0: none) */
     uint64_t            ended_at;   /* when its last instance's end was seen (uptime ns) */
     uint32_t            promoted;   /* restarts that promoted the warm spare, since boot */
-    /* Bumped with every new `fs` channel (fs_serve_end): a new mount
+    /* Bumped with every new `fs` channel (fs_new_channel): a new mount
      * for the watches (mounts.c). A restart on the kept channel doesn't
      * move it: fat keeps its views (and open files) across its deaths. */
     uint32_t            chan_gen;

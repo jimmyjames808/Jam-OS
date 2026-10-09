@@ -72,7 +72,6 @@ bool fs_channel_kept(const struct vol *b)
 
 status_t fs_new_channel(struct vol *b, handle_t *client, handle_t *serve)
 {
-    (void)b;
     status_t st = jam_channel_create(client, serve);
     if (st != OK)
         return st;
@@ -80,8 +79,10 @@ status_t fs_new_channel(struct vol *b, handle_t *client, handle_t *serve)
     if (st != OK) {
         jam_handle_close(*client);
         jam_handle_close(*serve);
+        return st;
     }
-    return st;
+    b->chan_gen++;   /* a new mount for the watches, whoever made it */
+    return OK;
 }
 
 status_t fs_serve_end(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
@@ -98,7 +99,6 @@ status_t fs_serve_end(struct vol *b, struct spawn_handle *x, rights_t *xr, unsig
             jam_handle_close(b->serve);
         b->client = client;
         b->serve = serve;
-        b->chan_gen++;   /* a new mount for the watches */
     }
     handle_t h;
     status_t st = jam_handle_duplicate(b->serve, RIGHT_SAME, &h);
