@@ -395,20 +395,16 @@ status_t data_source_request(struct comp_client *cl, struct jwl_msg *m)
 
 /* ---- wl_data_offer ------------------------------------------------------------------- */
 
-/* Is h a channel end we can read (and so pass on)? A read of nothing
- * says so without taking a message: a channel's queue answers
- * ERR_SHOULD_WAIT, or ERR_BUFFER_TOO_SMALL with something queued (left
- * there); any other object ERR_WRONG_TYPE. An empty message taken here
- * carried nothing. */
-static bool is_channel(handle_t h)
+/* The rights the source's client gets on a receive's channel end, of
+ * those h has, if h is a channel end we may write on and pass on (a
+ * write-only end, as a pipe's, is fine); else 0. */
+static rights_t pass_rights(handle_t h)
 {
-    uint8_t none;
-    uint32_t got[2] = { 0, 0 };
-    struct channel_read_args a = { .h = h, .rd_cap = 0, .rd_bytes = (uint64_t)(uintptr_t)&none,
-                                   .rd_actual = (uint64_t)(uintptr_t)&got[0],
-                                   .rd_hactual = (uint64_t)(uintptr_t)&got[1] };
-    status_t st = jam_channel_read(&a);
-    return st == ERR_SHOULD_WAIT || st == ERR_BUFFER_TOO_SMALL || st == OK;
+    struct handle_info i;
+    const rights_t need = RIGHT_WRITE | RIGHT_TRANSFER;
+    if (jam_handle_info(h, &i) != OK || i.type != OBJ_CHANNEL || (i.rights & need) != need)
+        return 0;
+    return i.rights & (need | RIGHT_WAIT);
 }
 
 /* Which of text_types mime_type is, or NTYPES. */
@@ -438,8 +434,8 @@ static status_t on_receive(void *data, uint32_t self, const char *mime_type, han
     struct data_res *o = data;
     (void)self;
     handle_t w = HANDLE_INVALID;
-    if (!may_receive(o, mime_type) || !is_channel(fd) ||
-        jam_handle_replace(fd, RIGHT_WRITE | RIGHT_WAIT | RIGHT_TRANSFER, &w) != OK) {
+    rights_t r = may_receive(o, mime_type) ? pass_rights(fd) : 0;
+    if (!r || jam_handle_replace(fd, r, &w) != OK) {
         jam_handle_close(fd);   /* the reader sees an empty transfer */
         return OK;
     }
