@@ -131,6 +131,7 @@ bool t_idl_answer_later(void);
 bool t_idl_later_blocking_clients(void);
 bool t_idl_later_handles(void);
 bool t_idl_async_through_port(void);
+bool t_idl_txid_next(void);
 /* idlserve.c: the generated server loop (on channel_reply_wait) and the
  * generated clients' timeouts (_within), on the test protocol null. */
 bool t_idl_serve_reply_wait(void);

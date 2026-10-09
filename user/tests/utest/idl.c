@@ -417,3 +417,22 @@ bool t_idl_async_through_port(void)
     CHECK_ST(jam_handle_close(port), OK);
     return true;
 }
+
+/* idl_txid_next stays below CHANNEL_TXID_KERNEL (the kernel's txids for
+ * blocking calls have bit 31 set): after 0x7fffffff it wraps to 1, never
+ * 0, so an asynchronous call's reply is never taken for a blocking one's. */
+bool t_idl_txid_next(void)
+{
+    uint32_t last = 0;
+    CHECK_EQ(idl_txid_next(&last), 1);
+    last = 0x7ffffffeu;
+    CHECK_EQ(idl_txid_next(&last), 0x7fffffffu);
+    CHECK_EQ(idl_txid_next(&last), 1);
+    last = 0xfffffffeu;   /* a counter from before: back below bit 31 too */
+    CHECK_EQ(idl_txid_next(&last), 0x7fffffffu);
+    last = 0xffffffffu;
+    CHECK_EQ(idl_txid_next(&last), 1);
+    for (unsigned i = 0; i < 1000; i++)
+        CHECK((idl_txid_next(&last) & CHANNEL_TXID_KERNEL) == 0 && last);
+    return true;
+}

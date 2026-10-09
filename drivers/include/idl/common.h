@@ -435,13 +435,15 @@ static inline status_t idl_reply_write(struct idl_txn txn, void *rep, uint32_t n
 
 /* ---- asynchronous calls ------------------------------------------------ */
 
-/* Client: the next txid from the counter *last, never 0. Use one counter
- * per channel end, and only asynchronous calls on that end (a blocking
- * call's txid comes from the kernel and could match one of these). */
+/* Client: the next txid from the counter *last: never 0, and never with
+ * CHANNEL_TXID_KERNEL (bit 31) set, which marks the txids the kernel
+ * stamps on blocking calls: after 0x7fffffff it wraps to 1. Use one
+ * counter per channel end. */
 static inline uint32_t idl_txid_next(uint32_t *last)
 {
-    if (++*last == 0)
-        ++*last;
+    *last = (*last + 1) & ~CHANNEL_TXID_KERNEL;
+    if (*last == 0)
+        *last = 1;
     return *last;
 }
 
