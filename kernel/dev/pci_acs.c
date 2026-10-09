@@ -251,7 +251,7 @@ status_t pci_acs_enable(void)
         fmt_bits(bits, sizeof(bits), offered);
         fmt_bits(missing, sizeof(missing), (uint16_t)(PCI_ACS_WANT & ~offered));
         kprintf("pci: ACS on at %s (%s): %s%s%s%s\n", bdf, kind_names[kind], bits,
-                (a->acs_ctl & offered) == offered ? " (on already)" : "",
+                offered && (a->acs_ctl & offered) == offered ? " (on already)" : "",
                 kind != MULTI_FN && offered != PCI_ACS_WANT ? "; not offered: " : "",
                 kind != MULTI_FN && offered != PCI_ACS_WANT ? missing : "");
         if ((back & offered) != offered) {
