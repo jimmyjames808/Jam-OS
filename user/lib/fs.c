@@ -49,8 +49,8 @@ status_t file_open(const char *path, uint32_t flags, struct jfile *out)
     status_t st = ns_resolve(path, rel, &fs, &mount);
     if (st != OK)
         return st;
-    if (!fs)
-        return ERR_WRONG_TYPE;   /* "/" is a directory */
+    if (!fs)   /* "/" and "/svc" are directories; a service is neither */
+        return mount == NS_AT_SVC && rel[1] ? ERR_WRONG_TYPE : ERR_IS_DIR;
     struct jfile f = { 0 };
     st = fs_open_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), flags, &f.ch,
                         &f.buf_vmo, &f.size);
@@ -346,7 +346,7 @@ status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out)
         return st;
     memset(out, 0, sizeof(*out));
     if (!fs && mount == NS_AT_SVC)
-        return rel[1] ? ERR_WRONG_TYPE : svc_entry(index, out);
+        return rel[1] ? ERR_NOT_DIR : svc_entry(index, out);   /* a service is no directory */
     if (!fs)
         return root_entry(index, out);
     lock_take(&cached_lock);

@@ -228,7 +228,7 @@ static bool check_open_flags(const struct fatrun *r)
     CHECK_ST(t_open(r, "/hello.txt", FS_READ | FS_CREATE, &f), ERR_INVALID_ARGS);
     CHECK_ST(t_open(r, "/hello.txt", FS_READ | FS_TRUNCATE, &f), ERR_INVALID_ARGS);
     CHECK_ST(t_open(r, "/hello.txt", FS_READ | 0x100, &f), ERR_INVALID_ARGS);
-    CHECK_ST(t_open(r, "/", FS_READ, &f), ERR_WRONG_TYPE);
+    CHECK_ST(t_open(r, "/", FS_READ, &f), ERR_IS_DIR);
     /* FS_APPEND: at the end, whatever the offset says. */
     CHECK_ST(t_open(r, "/hello.txt", FS_WRITE | FS_APPEND, &f), OK);
     CHECK_ST(t_write(&f, 0, " more", 5, &done), OK);
@@ -331,8 +331,8 @@ static bool check_open_files(const struct fatrun *r)
     char back[16] = "";
     uint32_t done = 0;
     CHECK_ST(t_open(r, "/hello.txt", FS_WRITE | FS_TRUNCATE, &f), OK);
-    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &w), ERR_BAD_STATE);
-    CHECK_ST(t_open(r, "/HELLO.TXT", FS_READ | FS_WRITE, &w), ERR_BAD_STATE);
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &w), ERR_BUSY);
+    CHECK_ST(t_open(r, "/HELLO.TXT", FS_READ | FS_WRITE, &w), ERR_BUSY);
     CHECK_ST(t_write(&f, 0, "so far", 6, &done), OK);
     CHECK_ST(t_open(r, "/Hello.txt", FS_READ, &g), OK);   /* one file, whatever the case */
     CHECK_EQ(g.size, 6);
@@ -341,14 +341,14 @@ static bool check_open_files(const struct fatrun *r)
     CHECK_EQ(done, 12);
     CHECK(!memcmp(back, "so far, more", 12));
     CHECK_ST(t_write(&g, 0, "no", 2, &done), ERR_ACCESS_DENIED);   /* the reader can't write */
-    CHECK_ST(t_unlink(r, "/hello.txt"), ERR_BAD_STATE);
-    CHECK_ST(t_rename(r, "/hello.txt", "/other.txt"), ERR_BAD_STATE);
+    CHECK_ST(t_unlink(r, "/hello.txt"), ERR_BUSY);
+    CHECK_ST(t_rename(r, "/hello.txt", "/other.txt"), ERR_BUSY);
     /* The writer goes first: the reader keeps the file, and nobody may
      * write it until the reader has gone too. */
     t_close(&f);
     CHECK_ST(t_read(&g, 6, back, 6, &done), OK);
     CHECK_EQ(done, 6);
-    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &w), ERR_BAD_STATE);
+    CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &w), ERR_BUSY);
     t_close(&g);
     CHECK_ST(t_open(r, "/hello.txt", FS_WRITE, &f), OK);
     CHECK_ST(t_open(r, "/hello.txt", FS_READ, &g), OK);
@@ -420,6 +420,40 @@ bool t_fat_files(void)
     return fat_stop(&r) && ramdisk_destroy(&disk);
 }
 
+/* The error codes M13 maps to errno one to one (the M12 plan's Q9), and
+ * FS_EXCL: in /docs, which holds a.txt and sub/. */
+static bool check_codes(const struct fatrun *r)
+{
+    static char name[300];
+    struct tfile f;
+    CHECK_ST(t_unlink_flags(r, "/docs/sub", 0), ERR_IS_DIR);
+    CHECK_ST(t_unlink_flags(r, "/docs/a.txt", FS_UNLINK_DIR), ERR_NOT_DIR);
+    CHECK_ST(t_unlink_flags(r, "/docs/a.txt", 2), ERR_INVALID_ARGS);
+    /* A file on the way, or nothing there. */
+    CHECK_ST(t_stat(r, "/docs/a.txt/x", NULL, NULL, NULL), ERR_NOT_DIR);
+    CHECK_ST(t_mkdir(r, "/docs/a.txt/sub"), ERR_NOT_DIR);
+    CHECK_ST(t_open(r, "/docs/a.txt/new", FS_WRITE | FS_CREATE, &f), ERR_NOT_DIR);
+    CHECK_ST(t_rename(r, "/docs/a.txt/x", "/y"), ERR_NOT_DIR);
+    CHECK_ST(t_rename(r, "/docs/a.txt", "/docs/a.txt/y"), ERR_NOT_DIR);
+    CHECK_ST(t_stat(r, "/docs/none/x", NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_mkdir(r, "/docs/none/sub"), ERR_NOT_FOUND);
+    /* 255 UTF-16 units fit a name; 256 don't. */
+    name[0] = '/';
+    memset(name + 1, 'n', 256);
+    name[257] = '\0';
+    CHECK_ST(t_stat(r, name, NULL, NULL, NULL), ERR_NAME_TOO_LONG);
+    CHECK_ST(t_open(r, name, FS_WRITE | FS_CREATE, &f), ERR_NAME_TOO_LONG);
+    name[256] = '\0';
+    CHECK_ST(t_stat(r, name, NULL, NULL, NULL), ERR_NOT_FOUND);
+    /* FS_EXCL: with FS_CREATE, only a new file. */
+    CHECK_ST(t_open(r, "/docs/a.txt", FS_WRITE | FS_CREATE | FS_EXCL, &f), ERR_ALREADY_EXISTS);
+    CHECK_ST(t_open(r, "/docs/x.txt", FS_WRITE | FS_EXCL, &f), ERR_INVALID_ARGS);
+    CHECK_ST(t_open(r, "/docs/x.txt", FS_WRITE | FS_CREATE | FS_EXCL, &f), OK);
+    t_close(&f);
+    CHECK_ST(t_unlink(r, "/docs/x.txt"), OK);
+    return true;
+}
+
 /* rename: within and across directories, and what it refuses. */
 static bool check_rename(const struct fatrun *r)
 {
@@ -461,7 +495,7 @@ bool t_fat_dirs(void)
     if (!put_file(&r, "/docs/a.txt", "file a") || !put_file(&r, "/docs/sub/b.txt", "file b"))
         return false;
     CHECK_ST(t_mkdir(&r, "/docs/a.txt"), ERR_ALREADY_EXISTS);
-    CHECK_ST(t_open(&r, "/docs", FS_READ, &f), ERR_WRONG_TYPE);
+    CHECK_ST(t_open(&r, "/docs", FS_READ, &f), ERR_IS_DIR);
 
     /* readdir: every entry once, "." and ".." left out. */
     if (!dir_count(&r, "/docs", "a.txt", &n, &found))
@@ -473,7 +507,7 @@ bool t_fat_dirs(void)
     CHECK(!strcmp(name, "a.txt") && !dir);
     CHECK_ST(t_readdir(&r, "/docs", 2, name, &dir), ERR_NOT_FOUND);
     CHECK_ST(t_readdir(&r, "/docs", 0xffffffffu, name, &dir), ERR_NOT_FOUND);
-    CHECK_ST(t_readdir(&r, "/docs/a.txt", 0, name, &dir), ERR_WRONG_TYPE);
+    CHECK_ST(t_readdir(&r, "/docs/a.txt", 0, name, &dir), ERR_NOT_DIR);
     CHECK_ST(t_readdir(&r, "/nodir", 0, name, &dir), ERR_NOT_FOUND);
 
     /* "." and ".." are resolved, and ".." never leaves the volume. */
@@ -488,9 +522,9 @@ bool t_fat_dirs(void)
     CHECK_ST(t_stat(&r, "docs", &size, &dir, NULL), ERR_INVALID_ARGS);   /* not absolute */
     CHECK_ST(t_stat(&r, "", &size, &dir, NULL), OK);                     /* the root */
 
-    if (!check_rename(&r))
+    if (!check_codes(&r) || !check_rename(&r))
         return false;
-    CHECK_ST(t_unlink(&r, "/moved"), ERR_BAD_STATE);   /* not empty */
+    CHECK_ST(t_unlink(&r, "/moved"), ERR_NOT_EMPTY);   /* not empty */
     CHECK_ST(t_unlink(&r, "/"), ERR_ACCESS_DENIED);
     CHECK_ST(t_unlink(&r, "/moved/nothing"), ERR_NOT_FOUND);
     CHECK_ST(t_unlink(&r, "/moved/b.txt"), OK);
@@ -527,8 +561,8 @@ bool t_fat_open_moved(void)
     if (!put_file(&r, "/d/f.txt", "new"))     /* the old path: a new file, not the open one */
         return false;
     CHECK_ST(t_write(&w, 0, "moved", 5, &done), OK);
-    CHECK_ST(t_unlink(&r, "/e/f.txt"), ERR_BAD_STATE);   /* open, under its new path */
-    CHECK_ST(t_open(&r, "/E/F.TXT", FS_WRITE, &x), ERR_BAD_STATE);
+    CHECK_ST(t_unlink(&r, "/e/f.txt"), ERR_BUSY);   /* open, under its new path */
+    CHECK_ST(t_open(&r, "/E/F.TXT", FS_WRITE, &x), ERR_BUSY);
     CHECK_ST(t_unlink(&r, "/d/f.txt"), OK);              /* not the open one */
     t_close(&w);
     if (!file_is(&r, "/e/f.txt", "moved"))
@@ -541,8 +575,8 @@ bool t_fat_open_moved(void)
     CHECK_EQ(g.size, 6);
     CHECK_ST(t_read(&g, 0, back, sizeof(back), &done), OK);
     CHECK(done == 6 && !memcmp(back, "shared", 6));
-    CHECK_ST(t_open(&r, "/ALONGN~1.TXT", FS_WRITE, &x), ERR_BAD_STATE);
-    CHECK_ST(t_rename(&r, "/ALONGN~1.TXT", "/x.txt"), ERR_BAD_STATE);
+    CHECK_ST(t_open(&r, "/ALONGN~1.TXT", FS_WRITE, &x), ERR_BUSY);
+    CHECK_ST(t_rename(&r, "/ALONGN~1.TXT", "/x.txt"), ERR_BUSY);
     t_close(&g);
     t_close(&w);
     return fat_stop(&r) && ramdisk_destroy(&disk);

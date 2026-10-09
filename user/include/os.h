@@ -193,8 +193,8 @@ void     lock_give(lock_t *l);
  * channel (abi/idl/fs.idl, file.idl), and the services (below: "/svc").
  * A mount point is "/" and one name
  * ("/boot", "/data"). The calls below take absolute paths of at most
- * FS_PATH_MAX - 1 bytes (longer, or not starting with '/':
- * ERR_INVALID_ARGS; the `fs` protocol itself carries paths of up to 4095
+ * FS_PATH_MAX - 1 bytes (longer: ERR_NAME_TOO_LONG; not starting with
+ * '/': ERR_INVALID_ARGS; the `fs` protocol itself carries paths of up to 4095
  * bytes, FS_PATH_LEN: libos's limit goes up to it when nothing shares it
  * any more), find the mount by the path's first name and send the
  * rest to its `fs` service. Inside a mount "." and ".." are resolved here,

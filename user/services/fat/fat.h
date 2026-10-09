@@ -525,7 +525,8 @@ void     cache_stats(struct fat_cache_stats *out);
  * NUL) -> "/a/b" ("/" for the root): "" or starting with '/'; "." and ".."
  * resolved (".." at the root stays there); every name one FAT and Windows
  * accept as a long name (no control characters, none of " * : < > ? \ |,
- * not ending in '.' or ' '). ERR_INVALID_ARGS otherwise. */
+ * not ending in '.' or ' ') and at most FF_MAX_LFN (255) UTF-16 units long
+ * (ERR_NAME_TOO_LONG). ERR_INVALID_ARGS otherwise. */
 status_t path_resolve(const char *in, uint32_t len, char out[FAT_PATH_MAX]);
 bool     path_is_root(const char *p);
 /* Is `p` below directory `dir` (compared without case, as FAT does)? */
@@ -538,6 +539,10 @@ bool     path_inside(const char *p, const char *dir);
 void     name_shown(char *s);
 /* The generic FRESULT -> ERR_* mapping (the methods refine FR_DENIED). */
 status_t fr_status(FRESULT r);
+/* fr_status for a call on path p (resolved), with FR_NO_PATH (no directory
+ * on the way) told apart: ERR_NOT_DIR when a name on the way is a file,
+ * else ERR_NOT_FOUND. */
+status_t fr_path_status(FRESULT r, const char *p);
 /* A FAT date and time (the clock's own zone) as seconds since 1970 counted
  * as if it were UTC; 0 for no date. */
 uint64_t fat_unix_time(WORD date, WORD time);
@@ -554,8 +559,8 @@ extern const struct fsctl_ops fat_ctl_ops;
 
 /* Entry `index` of directory `path` (resolved) into *fi and its entry's
  * place into *place, as a walk from its start would find it, from a cursor
- * where one can go on. ERR_NOT_FOUND: past the end; ERR_WRONG_TYPE: path
- * is a file. */
+ * where one can go on. ERR_NOT_FOUND: past the end, or no such directory;
+ * ERR_NOT_DIR: path, or a name on the way, is a file. */
 status_t dirs_read(const char *path, uint32_t index, FILINFO *fi, uint64_t *place);
 /* Close every cursor: before anything that adds, removes or renames an
  * entry. */

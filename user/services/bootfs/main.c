@@ -108,7 +108,7 @@ static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t
     if (st != OK)
         return st;
     if (!e)
-        return ERR_WRONG_TYPE;   /* a directory */
+        return ERR_IS_DIR;
     /* The entry is the file's state: nothing to release when it closes. */
     st = fsserver_open(ctx, (void *)(uintptr_t)e, false, out_file, out_buffer, &f);
     if (st == OK)
@@ -160,7 +160,7 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
     if (st != OK)
         return st;
     if (e)
-        return ERR_WRONG_TYPE;   /* a file */
+        return ERR_NOT_DIR;
     uint32_t seen = 0, len = 0;
     uint16_t count = 0;
     *out_next = 0;

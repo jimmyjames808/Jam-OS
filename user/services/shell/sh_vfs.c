@@ -113,7 +113,11 @@ const char *sh_why(status_t st)
     case ERR_PEER_CLOSED:    return "its filesystem is gone";
     case ERR_INVALID_ARGS:   return "not a valid name";
     case ERR_WRONG_TYPE:     return "is a directory";
-    case ERR_BAD_STATE:      return "in use, or a directory with entries";
+    case ERR_IS_DIR:         return "is a directory";
+    case ERR_NOT_DIR:        return "not a directory";
+    case ERR_NOT_EMPTY:      return "a directory with entries";
+    case ERR_BUSY:           return "in use";
+    case ERR_NAME_TOO_LONG:  return "the name is too long";
     case ERR_CANCELED:       return "interrupted";
     default:                 return status_str(st);
     }

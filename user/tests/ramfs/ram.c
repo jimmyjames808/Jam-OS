@@ -6,7 +6,7 @@
  *
  * Bounded: RAMFS_NODES nodes (ERR_NO_RESOURCES past them) and
  * RAMFS_CAPACITY bytes of file data (ERR_NO_SPACE). A file that is open
- * can't be removed (ERR_BAD_STATE), so an open file's node never goes.
+ * can't be removed (ERR_BUSY), so an open file's node never goes.
  * The errors are the fat service's, so what is tested here holds there. */
 #include "ramfs.h"
 
@@ -152,7 +152,7 @@ static status_t open_node(const char *path, uint32_t len, uint32_t flags, int *o
     if (i < 0)
         st = create(dir, name, false, &i);
     if (st == OK && nodes[i].dir)
-        st = ERR_WRONG_TYPE;
+        st = ERR_IS_DIR;
     if (st == OK && (flags & FS_TRUNCATE))
         st = resize(&nodes[i], 0);
     *out = i;
@@ -230,7 +230,7 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
     if (dir < 0)
         return ERR_NOT_FOUND;
     if (!nodes[dir].dir)
-        return ERR_WRONG_TYPE;
+        return ERR_NOT_DIR;
     uint32_t len = 0;
     uint16_t count = 0;
     *out_next = 0;
@@ -287,8 +287,10 @@ static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32
         return ERR_ACCESS_DENIED;
     if (nodes[i].dir != !!(flags & FS_UNLINK_DIR))
         return nodes[i].dir ? ERR_IS_DIR : ERR_NOT_DIR;
-    if (nodes[i].opens || (nodes[i].dir && !empty_dir(i)))
-        return ERR_BAD_STATE;   /* open, or a directory with entries */
+    if (nodes[i].opens)
+        return ERR_BUSY;
+    if (nodes[i].dir && !empty_dir(i))
+        return ERR_NOT_EMPTY;
     stored -= nodes[i].size;
     free(nodes[i].data);
     memset(&nodes[i], 0, sizeof(nodes[i]));

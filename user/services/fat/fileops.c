@@ -46,7 +46,7 @@
  * its rule instead, by entry: a file open at all can't be opened for
  * writing (opening it to read shares the FIL above, a writer's too), and
  * an open file can't be removed or renamed (files_is_open, fsops.c). Each
- * is refused with ERR_BAD_STATE, as FatFs's FR_LOCKED was.
+ * is refused with ERR_BUSY.
  *
  * A file is `unsynced` from its first change until its next f_sync; when
  * the last unsynced file is flushed the volume is settled (marked clean,
@@ -482,10 +482,10 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
     uint64_t place = 0;
     FRESULT fr = ffx_stat(path, &fi, &place);
     if (fr != FR_OK && fr != FR_NO_FILE)
-        return fr_status(fr);
+        return fr_path_status(fr, path);
     bool exists = fr == FR_OK;
     if (exists && (fi.fattrib & AM_DIR))
-        return ERR_WRONG_TYPE;
+        return ERR_IS_DIR;
     if (!exists && !(flags & FS_CREATE))
         return ERR_NOT_FOUND;
     if (exists && (flags & FS_EXCL))
@@ -494,7 +494,7 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
     struct fat_open *o = exists ? open_at(place) : NULL, *spare = NULL;
     find_slots(&f, &spare);
     if (o && (flags & FS_WRITE))
-        return ERR_BAD_STATE;   /* open already: a writer has its file to itself */
+        return ERR_BUSY;   /* open already: a writer has its file to itself */
     if (!f || (!o && !spare))
         return ERR_NO_RESOURCES;
     undo_open(o ? o : spare);

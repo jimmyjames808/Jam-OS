@@ -8,7 +8,7 @@
  * has unwritten changes. Each method runs as an operation (request.c): its
  * writes are held (hold.c) and go out together after its commit, before
  * it is answered, and so do the flush and the clean mark. An open file
- * can't be removed or renamed (ERR_BAD_STATE: fat's lock, fileops.c). */
+ * can't be removed or renamed (ERR_BUSY: fat's lock, fileops.c). */
 #include "fat.h"
 
 /* A changing method on a read-only volume. */
@@ -56,7 +56,7 @@ static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t
     if (st != OK)
         return st;
     if (path_is_root(p))
-        return ERR_WRONG_TYPE;
+        return ERR_IS_DIR;
     return files_open(p, flags, out_file, out_buffer, out_size);
 }
 
@@ -78,7 +78,7 @@ static status_t op_stat(void *ctx, const char *path, uint32_t path_len, uint64_t
         *out_id = FAT_ROOT_ID;
         return OK;
     }
-    st = fr_status(ffx_stat(p, &fi, &place));
+    st = fr_path_status(ffx_stat(p, &fi, &place), p);
     if (st != OK)
         return st;
     *out_is_dir = (fi.fattrib & AM_DIR) ? 1 : 0;
@@ -108,9 +108,9 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
         if (r == ERR_NOT_FOUND && i == cookie) {
             /* Nothing at the cookie: the end, if p is a directory. */
             bool dir = false;
-            st = fr_status(kind_of(p, &dir));
+            st = fr_path_status(kind_of(p, &dir), p);
             if (st == OK && !dir)
-                st = ERR_WRONG_TYPE;
+                st = ERR_NOT_DIR;
             break;
         }
         if (r == ERR_NOT_FOUND)
@@ -154,7 +154,7 @@ static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len)
     dirs_forget();
     FRESULT fr = f_mkdir(p);
     /* FR_DENIED: no free cluster, or no room in a fixed root directory. */
-    return settled(fr == FR_DENIED ? ERR_NO_SPACE : fr_status(fr));
+    return settled(fr == FR_DENIED ? ERR_NO_SPACE : fr_path_status(fr, p));
 }
 
 static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32_t flags)
@@ -169,7 +169,7 @@ static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32
         return st;
     if (path_is_root(p))
         return ERR_ACCESS_DENIED;
-    st = fr_status(kind_of(p, &dir));
+    st = fr_path_status(kind_of(p, &dir), p);
     if (st == OK && dir != !!(flags & FS_UNLINK_DIR))
         st = dir ? ERR_IS_DIR : ERR_NOT_DIR;   /* not the kind the caller meant */
     if (st != OK)
@@ -183,7 +183,7 @@ static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32
     FRESULT fr = files_is_open(p) ? FR_LOCKED : f_unlink(p);   /* fat's lock (fileops.c) */
     /* FR_DENIED: a directory that is not empty, or a read-only file. */
     if (fr == FR_DENIED && dir)
-        return ERR_BAD_STATE;
+        return ERR_NOT_EMPTY;
     return settled(fr_status(fr));
 }
 
@@ -203,11 +203,17 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
         return st;
     /* FatFs would move a directory into itself and lose it: a loop no
      * path reaches. */
-    if (path_is_root(pf) || path_is_root(pt) || path_inside(pt, pf))
-        return ERR_INVALID_ARGS;
+    bool from_dir = false;
+    if (path_is_root(pf) || path_is_root(pt) ||
+        (path_inside(pt, pf) && kind_of(pf, &from_dir) == FR_OK && from_dir))
+        return ERR_INVALID_ARGS;   /* (a file "into itself": FatFs finds no path) */
     dirs_forget();
     FRESULT fr = files_is_open(pf) ? FR_LOCKED : f_rename(pf, pt);   /* fat's lock (fileops.c) */
-    /* FR_DENIED: no room for the new entry. */
+    /* FR_DENIED: no room for the new entry. FR_NO_PATH: on either path. */
+    if (fr == FR_NO_PATH) {
+        status_t sf = fr_path_status(fr, pf);
+        return sf == ERR_NOT_DIR ? sf : fr_path_status(fr, pt);
+    }
     return settled(fr == FR_DENIED ? ERR_NO_SPACE : fr_status(fr));
 }
 

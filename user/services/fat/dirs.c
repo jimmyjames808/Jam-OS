@@ -81,15 +81,15 @@ static struct dir_cursor *pick(const char *path, uint32_t index)
     return lru;
 }
 
-/* Open c on `path` at entry 0. ERR_WRONG_TYPE: the path is a file. */
+/* Open c on `path` at entry 0. ERR_NOT_DIR: the path is a file. */
 static status_t open_at_start(struct dir_cursor *c, const char *path)
 {
     FILINFO fi;
     FRESULT fr = f_opendir(&c->dir, path);
     if (fr == FR_NO_PATH && f_stat(path, &fi) == FR_OK)
-        return ERR_WRONG_TYPE;
+        return ERR_NOT_DIR;
     if (fr != FR_OK)
-        return fr_status(fr);
+        return fr_path_status(fr, path);
     c->open = true;
     c->next = 0;
     c->has_last = false;

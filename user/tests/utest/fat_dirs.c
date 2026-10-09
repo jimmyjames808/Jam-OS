@@ -153,7 +153,7 @@ static bool interleaved(const struct fatrun *r)
     CHECK(!strcmp(name, "f0000.txt"));
     CHECK_ST(t_readdir_at(r, "/d1", 7, name, NULL), OK);
     CHECK(!strcmp(name, "f0007.txt"));
-    CHECK_ST(t_readdir_at(r, "/d1/f0002.txt", 0, name, NULL), ERR_WRONG_TYPE);
+    CHECK_ST(t_readdir_at(r, "/d1/f0002.txt", 0, name, NULL), ERR_NOT_DIR);
     CHECK_ST(t_readdir_at(r, "/nothing", 0, name, NULL), ERR_NOT_FOUND);
     return true;
 }

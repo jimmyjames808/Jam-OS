@@ -326,8 +326,10 @@ static int find_locked(const char *prefix, const char *name, size_t len)
 
 status_t ns_resolve(const char *path, uint8_t rel[FS_PATH_MAX], handle_t *fs, unsigned *mount)
 {
-    if (!path || path[0] != '/' || strnlen(path, FS_PATH_MAX) == FS_PATH_MAX)
+    if (!path || path[0] != '/')
         return ERR_INVALID_ARGS;
+    if (strnlen(path, FS_PATH_MAX) == FS_PATH_MAX)
+        return ERR_NAME_TOO_LONG;
     /* The mount: the first real name. "." and ".." before it stay at "/". */
     const char *name, *p = path;
     size_t len;
