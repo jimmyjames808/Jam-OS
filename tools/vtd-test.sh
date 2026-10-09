@@ -146,12 +146,15 @@ domain_ok() {
 # problems <name>: the VT-d problems reported, but for what the tests
 # provoke: the refusals, edu's faults, vtd_unit_fault_storm_masked's storm,
 # dma_iommu_unconfirmed_close_keeps_pages's switch with the queue off
-# (ERR_BAD_STATE, -8), and vtd_domain_shared_rid_refused's refusal of edu.
+# (ERR_BAD_STATE, -8), dma_iommu_failed_map_unconfirmed_keeps_pages's undo
+# with the queue off (the same), and vtd_domain_shared_rid_refused's
+# refusal of edu.
 problems() {
     grep -E "vtd: [^ ]" "$out/$1.log" | grep -vF "the queue refused descriptor" |
         grep -vE "vtd: fault: unit 0: (00:04\.0 |ff:1f\.7 interrupt, index)" |
         grep -vE "vtd: fault: unit 0: (fault storm|the fault storm is over)" |
         grep -vF "vtd: unit 0: 00:04.0 to domain 1 (blocking): the invalidation failed (-8)" |
+        grep -vE "vtd: unit 0 domain [0-9]+ \(driver\): an invalidation failed \(-8\)" |
         grep -vF "vtd: unit 0: no domain for 00:04.0: its requester id is shared"
 }
 
@@ -207,6 +210,7 @@ dma_on() {
         "ktest: dma_quarantine_phys_and_clean_close" "ktest: dma_cap_owner_rules" \
         "ktest: dma_stale_write_after_rebind" "the IOMMU translating; 2 page(s) freed at once" \
         "ktest: dma_iommu_unconfirmed_close_keeps_pages ok" \
+        "ktest: dma_iommu_failed_map_unconfirmed_keeps_pages ok" \
         "run complete: no problems"
     if problems "$1"; then
         echo "$1: a VT-d problem reported (above)"
