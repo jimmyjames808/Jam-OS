@@ -75,6 +75,10 @@ extern bool init_splashhang;
  * test entry): devmgr is started with it, so it passes it to drv/hda,
  * which runs its deliberate DMA faults before serving (M11 stage 5). */
 extern bool init_vtdtest;
+/* The option word "nvmetest=<words>" (main.c, a test's; NULL: none):
+ * devmgr is started with it and passes it on to every drv/nvme (its test
+ * reads: drivers/nvme/selftest.c). */
+extern const char *init_nvmetest;
 /* The option word "verbose" (main.c; the kernel's, from the boot entry
  * Developer > "Jam OS (text log, no splash)"): the first terminal shows
  * the log as it comes. Every other boot keeps it off every terminal's
