@@ -786,8 +786,8 @@ port, so while it handles one request every other client waits behind it.
 |---|---|---|---|
 | devmgr | the PCI resource | enumeration, driver binding, BAR/MSI/DMA hand-off, supervision, the `usbbus` service to trusted clients; every disk's filesystem services and the mounts ([Storage](#storage)) | yes |
 | usb-bus | its PCI device (xHCI) | one `usb` channel per interface; hubs are handled inside it (bus topology, not a class device); every port's attach and every device's requests in a task of their own, so a slow device delays only itself (libos's cooperative tasks, `<jam/task.h>`: [How a service waits](#how-a-service-waits)) | yes |
-| hid | a `usb` interface | `input` events (boot keyboard, keyboard layout; mouse in boot or report protocol) to the console | yes |
-| console | the framebuffer and COM1's output (the root's `RIGHT_ROOT_SCREEN` and `RIGHT_ROOT_SERIAL_OUT`, which no other program holds), `input`, the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log or its notices ([Debugging](#debugging)), and lending the screen to a program | yes |
+| hid | a `usb` interface | `input` events (a boot keyboard's usages and modifiers, no layout; mouse in boot or report protocol) to the compositor, which lights its LEDs | yes |
+| console | a window on `/svc/wayland` and COM1's output (the root's `RIGHT_ROOT_SERIAL_OUT`), the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log ([Debugging](#debugging)), and its keys to the focused client (`keys`) | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` to devmgr, a `block` channel per partition | yes |
 | fat | one partition's `block` channel, a state VMO and a keep channel from devmgr | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to devmgr; outlives its process ([below](#services-that-outlive-their-process)) | yes |
@@ -2772,9 +2772,8 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   the shell's `crashlog` (the saved report: the code, what and where, the
   backtrace, the log lines before it, the boot and the build; `crashlog
   list`, `crashlog N`).
-- **`reboot`** (initctl.reboot, so also Ctrl+Alt+Del): the shell (or the
-  console) blanks the screen first (`console.blank`: the splash background,
-  nothing drawn). init starts the stored kernel as it is unless `/esp`
+- **`reboot`** (initctl.reboot, so also Ctrl+Alt+Del): init blanks the
+  screen first (`compctl.blank`: the splash background, nothing drawn). init starts the stored kernel as it is unless `/esp`
   has another kernel or boot image than the ones it noted (size and
   modification time) when `/esp` was first mounted; then it reads both
   and calls `kexec_load` (`RIGHT_ROOT_KEXEC` on the root resource) to replace
