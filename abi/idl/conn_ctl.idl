@@ -1,0 +1,27 @@
+# conn_ctl: the control channel of a connection console (bin/console started
+# with the argument "conn", user/services/console/conn.c; docs/M13-PLAN.md,
+# "The terminal layer"). A connection console is a terminal whose screen and
+# keyboard are a connection: program output goes out as bytes on its master
+# channel and the bytes typed come in on it (hand-written, <termconn.h>); the
+# size of the remote terminal's window comes on this channel, so the
+# programs on the console (console.size) see it change.
+#
+# Who serves it: the console. Who calls it: the process that made the
+# console's channels and holds their other ends (init's session service, a
+# library's pseudo-terminal), with the remote terminal's size when it
+# changes. The console takes it on its startup role CONN_CTL_ROLE; without
+# one the size stays what its arguments said.
+#
+# Restart: a connection console keeps nothing across a restart. Its owner
+# made the master and control channels for one console, so when the console
+# ends (the master hung up, or it crashed) both of the owner's ends see
+# ERR_PEER_CLOSED and the owner ends the session, or starts a console again
+# with new channels; nothing is asked again.
+
+protocol conn_ctl 42
+
+# The remote terminal is now cols x rows cells. The console answers
+# console.size with it from now on (a grid wider than 480 or taller than 180
+# is reported as 480 x 180: the window console's own limits, so every client's
+# buffers sized for them hold). 0 for either: ERR_INVALID_ARGS.
+1  resize  (u16 cols, u16 rows) -> ()

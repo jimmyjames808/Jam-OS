@@ -25,14 +25,23 @@
  * terminal.font): the window's cells in JetBrains Mono (smooth, the
  * default) or the 8x16 bitmap; console.set_font changes it later.
  *
+ * "conn": a connection console (conn.c, <termconn.h>): no screen and no
+ * COM1, the programs' output goes out as bytes on a master channel and the
+ * keys come in on it; "cols=<n>" and "rows=<n>" (its owner's, from the
+ * remote terminal) are its size at the start. Its kernel log stays off
+ * unless a client asks (console.show_log), and starts at the log's end.
+ *
  * Startup handles:
  *   SR_RESOURCE     the root resource with RIGHT_ROOT_KLOG (klog_open) and
- *                   RIGHT_ROOT_SERIAL_OUT (serial_write)
+ *                   RIGHT_ROOT_SERIAL_OUT (serial_write); a connection
+ *                   console's has RIGHT_ROOT_KLOG alone, or none is given
  *   SR_USER + n     server ends of `console` channels (n = 0..7): init's;
  *                   clients share one by duplicating the client end
  *   SR_USER + 10    the client end of /svc/wayland's shared channel
  *                   (WAYLAND_ROLE): the window (window.c). Without it the
  *                   console has no screen: COM1 only
+ *   SR_USER + 11, 12  a connection console's master and control channels
+ *                   (CONN_MASTER_ROLE, CONN_CTL_ROLE)
  *
  * The text: a grid of cells (cells.h's). Committed lines live in a
  * scrollback ring; the line the programs are writing (the "current line",
@@ -165,6 +174,8 @@ static void port_event(const struct port_packet *pkt)
 /* Read the kernel log written before we started: its last part drawn. */
 static void read_boot_log(void)
 {
+    if (!root)
+        return;   /* a connection console with no kernel log to show */
     status_t st = jam_klog_open(root, &klog);
     if (st != OK) {
         printf("console: no kernel log (%s)\n", status_str(st));
@@ -181,6 +192,10 @@ static void read_boot_log(void)
     uint64_t end = 0;
     char c;
     jam_klog_read(klog, UINT64_MAX, &c, 1, &end);
+    if (!back->replay_log) {
+        klog_pos = end;   /* only the lines logged from now on */
+        return;
+    }
     draw_from = end > CATCH_UP_DRAWN ? end - CATCH_UP_DRAWN : 0;
     catching_up = true;
     klog_event();   /* the boot log so far */
@@ -209,7 +224,7 @@ static int serve(void)
             printf("console: port_wait: %s\n", status_str(st));
             return 1;
         }
-        if (st == ERR_TIMED_OUT)
+        if (st == ERR_TIMED_OUT && back->tick)
             back->tick();
         clients_serve_pending();
         paste_pump();   /* a paste's keys, as fast as the focus reads them */
@@ -224,12 +239,16 @@ static void take_args(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "nolog"))
             log_off = true;
+        else if (!strcmp(argv[i], "conn"))
+            back = &conn_backend;
         else if (!strncmp(argv[i], "term=", 5) && terminal_number(argv[i] + 5))
             term_no = terminal_number(argv[i] + 5);   /* 1 to TERMINALS_MAX */
         else if (!strncmp(argv[i], "font=", 5) && term_font_parse(argv[i] + 5) >= 0)
             font_bitmap = term_font_parse(argv[i] + 5) == 1;
+        else
+            conn_arg(argv[i]);   /* cols=, rows= */
     }
-    if (term_no > 1)
+    if (term_no > 1 || back == &conn_backend)
         log_off = true;   /* the log, on a `verbose` boot, is the first terminal's */
 }
 

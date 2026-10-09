@@ -1132,3 +1132,67 @@ Ctrl+Alt+C always reaches the shell on the desktop. **Q7** A: one user
 authorized_keys holds a key, `ssh = off` stops it. **Q9** A: sbase in
 /boot/usr/bin after the shell's builtins. **Q10** A: the `jamos-cc`
 wrapper.
+
+## T1 notes
+
+What track T1 (the console's connection back end) built, and where the plan
+left a choice.
+
+- **Split.** `struct backend` in `user/services/console/console.h`: the
+  front end (clients, focus, keys, kernel log lines, the loop) calls a back
+  end for output, log lines, size, clear, drawing and its own events. The
+  window back end is `winback.c` over the old files; the connection back
+  end is `conn.c` and `connin.c`. A pure refactor commit came first; every
+  terminal test ran unchanged on it.
+- **Starting one.** `bin/console` with the argument `conn` (and `cols=<n>`,
+  `rows=<n>`, default 80x24, for the size until the control channel says
+  another). Startup handles: `SR_USER + 0..7` the ADMIN client channels as
+  for any console; `CONN_MASTER_ROLE` (`SR_USER + 11`) the master, required;
+  `CONN_CTL_ROLE` (`SR_USER + 12`) the control channel, optional;
+  `SR_RESOURCE` optional, `RIGHT_ROOT_KLOG` alone. `<termconn.h>` has the
+  roles and limits.
+- **The control channel is its own protocol, `conn_ctl` (id 42,
+  `abi/idl/conn_ctl.idl`)**, one method, `resize (u16 cols, u16 rows) ->
+  ()`, served by the console. It is the console's link to its owner, not
+  the plan's `session_ctl` (id 92): that one is the SSH side's, and init
+  relays between the two (`ended` is init's to say: the console doesn't
+  know the shell's exit code). Ids 90 to 99 stay free for M13's other
+  protocols.
+- **The master** is a pipe of byte messages both ways, no framing and no
+  handles (a handle sent on it is closed). Out: messages of at most 4096
+  bytes, in order; a bare `\n` becomes `\r\n`; the escape sequences are the
+  remote terminal's to read. In: any size up to 64 KiB, as xterm sends it.
+- **Output is never dropped for a slow reader, and the clients wait.** The
+  output goes into a 64 KiB ring; while less than 4 KiB is free the console
+  serves no client request (their writes wait, as into a full pipe) and
+  starts again as the master drains; the master's own queue holds 1,024
+  messages. Kernel log lines are the one exception: a line that doesn't fit
+  is dropped and a notice says how many bytes. The input path never waits
+  on output, so Ctrl+C is read while output is stalled; a shell blocked in
+  a write cannot read it until the master drains (sshd's job: keep reading,
+  and drop a client that stops).
+- **Hang-up.** The master closed (by the owner, or found closed by a write)
+  ends the console with code 0: its clients see their channels close (a
+  shell exits 2). The console ending closes the owner's ends. The control
+  channel closed changes nothing but that the size stays.
+- **Size limits.** A resize past 480x180 (the window console's grid limits)
+  is reported as 480x180, not refused, so a client's buffers sized for the
+  window hold; zero is `ERR_INVALID_ARGS`. The size changes `console.size`
+  only: nothing is told when it changes (the shell asks); T2's `tty` size
+  event belongs in `conn_ctl_resize`'s handler in `conn.c`.
+- **Keys.** `<termkeys.h>`'s keys go to the focus as a serial terminal's do
+  (usage 0 and the byte for text and control characters). A lone ESC that
+  waits 50 ms alone is the Escape key. A bracketed paste's markers, which
+  termkeys drops, are typed to the client that asked for bracketed paste
+  (the console reads `ESC [ ? 2004 h` and `l` in the output to know), as
+  the window's paste does, and dropped for another. A key the focus's
+  channel can't take is dropped, as in the window; a paste of more than
+  its 1,024 keys in one burst loses the tail (pacing it would hold Ctrl+C
+  behind it).
+- **The log** starts at the end of the kernel's ring (no replay of the
+  boot's), stays off unless a client asks (`console.show_log`), and each
+  line goes out as text with any control character shown as `?`.
+- **Not in T1**: `open_tty`, the line discipline and the `tty` protocol
+  (T2); `/svc/session` and who starts a connection console (X1);
+  `TERM`. A connection console has no alternate screen of its own: the
+  remote terminal's is used, since the escapes pass through.

@@ -2045,6 +2045,27 @@ terminal closes the same way, the first too: its close circle or Super+Q
 (the console ends with code 0) or `exit` (the shell, given `term=<n>`,
 ends with 0), and init closes the terminal (`user/services/init/terms.c`).
 
+The console is a front end (the `console` protocol's clients and levels,
+the focus of key channels, the kernel log's lines, the event loop:
+`main.c`, `clients.c`, `keys.c`, `paste.c`) and a back end that is where
+the terminal is (`struct backend` in `console.h`). The window above is
+one back end (`winback.c` is its way in). The other is a **connection**
+(`conn.c`, `connin.c`; `bin/console` started with the argument `conn`,
+`<termconn.h>`): a terminal whose screen and keyboard are a connection,
+for a remote terminal such as an SSH client's. It holds no screen, no
+Wayland connection and no serial port. Program output goes out as bytes on
+a **master channel** (a pipe of byte messages: each bare `\n` as `\r\n`,
+the escape sequences left for the remote terminal to interpret), and what
+the remote terminal types comes in on it, turned into keys by
+`<termkeys.h>` (a bracketed paste's markers reach the client that asked
+for them). The size comes on a **control channel** (`conn_ctl`,
+`abi/idl/conn_ctl.idl`: `resize`). The native shell runs on it unchanged:
+the kernel log's lines it asks for (`console.show_log`) arrive as text. A
+master read too slowly stops the console serving its clients (their
+writes wait, as into a full pipe) instead of dropping output, and the
+master closing hangs the terminal up. The tests are utest's
+`con_conn_*` ([TESTING.md](docs/TESTING.md)).
+
 - **Cells.** JetBrains Mono at 15 pixels to the em: a cell is the face's
   advance rounded to whole pixels wide (9: 0.6 em is exactly 9 at 15,
   so every glyph sits where the font means it; at 14 it would be 8.4,

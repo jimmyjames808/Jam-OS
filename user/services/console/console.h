@@ -79,7 +79,7 @@ struct client {
 
 /* Port keys: the kind in the high half, an index in the low. K_KLOG and
  * K_CLIENT are the front end's; the others go to the back end's event. */
-enum { K_KLOG = 1, K_CLIENT, K_ALT, K_WL };
+enum { K_KLOG = 1, K_CLIENT, K_ALT, K_WL, K_MASTER, K_CTL };
 #define KEY(kind, i) ((uint64_t)(kind) << 32 | (i))
 
 /* ---- the back end ---------------------------------------------------------------- */
@@ -87,6 +87,9 @@ enum { K_KLOG = 1, K_CLIENT, K_ALT, K_WL };
 /* Where the terminal is. The front end calls these, all on the console's
  * one thread, from the event loop; a hook may be NULL where it says so. */
 struct backend {
+    /* Draw the kernel log written before the console started (its last
+     * part): a terminal with a screen shows it; a connection's is new. */
+    bool replay_log;
     /* Set up (the console's port exists, the clients are bound): false
      * after saying why, and the console ends. */
     bool (*init)(void);
@@ -113,7 +116,7 @@ struct backend {
      * a port packet). */
     uint64_t (*deadline)(void);
     /* The loop's wait timed out: the back end's own work (a key repeat, a
-     * reconnect's try), before the clients are served. */
+     * reconnect's try), before the clients are served (NULL: none). */
     void (*tick)(void);
     /* After the clients: draw what changed, send what is queued. */
     void (*flush)(void);
@@ -121,8 +124,10 @@ struct backend {
      * end serves no client's request until it can (NULL: never). */
     bool (*congested)(void);
 };
-extern const struct backend win_backend;
+extern const struct backend win_backend, conn_backend;
 extern const struct backend *back;   /* the one this console runs */
+/* conn.c: a "cols=<n>" or "rows=<n>" argument (anything else is ignored). */
+void conn_arg(const char *arg);
 
 /* main.c */
 extern handle_t root;              /* SR_RESOURCE */
@@ -419,6 +424,22 @@ bool   window_copy(const char *text, size_t n);
 /* Ask for the selection's text: it comes to paste_start (JWL_EV_PASTE). */
 void   window_paste(void);
 
+/* ---- conn.c, connin.c: the connection mode ----------------------------------------- */
+
+/* The master channel m, kept for conn_in_take; false: no memory. */
+bool conn_in_init(handle_t m);
+/* Take the bytes the remote terminal typed off the master (a turn's
+ * share: at most a few messages and a few ms) and type them into the
+ * focus. OK, or the master's error: ERR_PEER_CLOSED is the owner hanging
+ * up. */
+status_t conn_in_take(void);
+/* When conn_in_idle must run: 0 if input is left, else the time a lone
+ * Escape is due (DEADLINE_NEVER: none). */
+uint64_t conn_in_deadline(void);
+/* Each turn: the rest of an interrupted take, and a lone ESC that has
+ * waited long enough typed as the Escape key. */
+status_t conn_in_idle(void);
+
 /* ---- clients.c ------------------------------------------------------------------ */
 
 /* Startup's client channels (SR_USER + 0..7): ADMIN, on the port. */
@@ -437,3 +458,6 @@ void client_event(unsigned i);
  * loop must not sleep, and calls clients_serve_pending for another round. */
 bool clients_pending(void);
 void clients_serve_pending(void);
+/* The back end was congested (back->congested) and no longer is: the
+ * clients whose requests waited get a round. */
+void clients_resume(void);

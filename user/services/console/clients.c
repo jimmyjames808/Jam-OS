@@ -137,6 +137,10 @@ unsigned client_count(void)
  * binding (it fires on an edge) won't fire again: the main loop comes back
  * for them. */
 static uint32_t pending;
+/* Clients whose round stopped because the back end was congested, with
+ * requests maybe waiting: bit i is clients[i]; clients_resume moves them
+ * to pending. */
+static uint32_t deferred;
 _Static_assert(MAX_CLIENTS <= 32, "pending is a 32-bit mask");
 
 void client_event(unsigned i)
@@ -144,13 +148,19 @@ void client_event(unsigned i)
     if (i >= MAX_CLIENTS)
         return;
     pending &= ~(1u << i);
+    deferred &= ~(1u << i);
     if (!clients[i])
         return;
     uint64_t t0 = now();
     status_t st = OK;
-    for (unsigned n = 0; n < CLIENT_BUDGET && now() - t0 < CLIENT_BUDGET_NS; n++)
+    for (unsigned n = 0; n < CLIENT_BUDGET && now() - t0 < CLIENT_BUDGET_NS; n++) {
+        if (back->congested && back->congested()) {
+            deferred |= 1u << i;   /* its requests wait, so its writers do: no output is dropped */
+            return;
+        }
         if ((st = console_serve_one(clients[i], &console_ops, &client_info[i])) != OK)
             break;
+    }
     if (st == OK) {
         pending |= 1u << i;   /* the budget ran out first */
         return;
@@ -187,6 +197,12 @@ bool clients_show_all(void)
 bool clients_pending(void)
 {
     return pending != 0;
+}
+
+void clients_resume(void)
+{
+    pending |= deferred;
+    deferred = 0;
 }
 
 void clients_serve_pending(void)
