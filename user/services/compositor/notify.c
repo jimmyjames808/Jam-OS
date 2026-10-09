@@ -6,7 +6,9 @@
  * until one is pressed, which the plumbing hears (ctl_notify_answered).
  * Cards slide in from the right while they fade in, and out the same way.
  * At most NOTIFY_MAX at once: a new one pushes out the oldest without
- * buttons (or the oldest at all).
+ * buttons (or the oldest at all); a card with buttons pushed out that way
+ * is answered to its poster as dismissed (NOTIFY_DISMISSED, notify.idl:
+ * ctl_notify_answered), so its notify_wait never hangs (review C11/DQ3).
  *
  * Held while the boot splash is up (the owner: no notice over the
  * splash): while the compositor waits for it (comp.splash_until), while a
@@ -26,6 +28,7 @@
  * makes it a compctl method for services. Every notice still goes to the
  * first terminal too: that is the poster's to do, not the card's.
  * popdraw.c draws the cards from the boxes here. */
+#include <idl/notify.h>
 #include "desk.h"
 
 struct notify_state notes;
@@ -99,7 +102,9 @@ static void drop(unsigned i)
     place();
 }
 
-/* Room for one more: the oldest without buttons goes (else the oldest). */
+/* Room for one more: the oldest without buttons goes (else the oldest, and
+ * its poster, waiting for a press that can't come now, is told it was
+ * dismissed). */
 static void make_room(void)
 {
     if (notes.n < NOTIFY_MAX)
@@ -109,7 +114,11 @@ static void make_room(void)
             drop(i);
             return;
         }
+    uint32_t id = notes.cards[notes.n - 1].id;
+    bool pressed = notes.cards[notes.n - 1].leaving != 0;   /* (answered when it left) */
     drop(notes.n - 1);
+    if (!pressed)
+        ctl_notify_answered(id, NOTIFY_DISMISSED);
 }
 
 /* Is the boot splash up: waited for, on the screen or fading out? */
@@ -143,8 +152,12 @@ static void hold_room(void)
         i = 0;
     printf("compositor: notice %u dropped: more than %u came during the splash\n",
            notes.held[i].id, NOTIFY_MAX);
+    uint32_t id = notes.held[i].id;
+    bool buttons = notes.held[i].nbuttons != 0;
     memmove(&notes.held[i], &notes.held[i + 1], (notes.nheld - i - 1) * sizeof(notes.held[0]));
     notes.nheld--;
+    if (buttons)
+        ctl_notify_answered(id, NOTIFY_DISMISSED);   /* its poster is told, not left waiting */
 }
 
 /* The held notices shown (the splash is over), oldest first. */

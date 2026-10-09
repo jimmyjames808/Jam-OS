@@ -12,6 +12,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <idl/nschan.h>
 #include <jam/bootfs.h>
 #include <os.h>
 #include "utest.h"
@@ -272,7 +273,7 @@ bool t_ns_path_rules(void)
 bool t_ns_mount_point_names(void)
 {
     handle_t a, b;
-    static const char *const bad[] = { "t", "/", "/a/b", "/.", "/..", "/0123456789abcdef", "" };
+    static const char *const bad[] = { "t", "/", "/a/b", "/.", "/..", "/0123456789abcdef0123456789abcde", "" };
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         CHECK_ST(jam_channel_create(&a, &b), OK);
         CHECK_ST(ns_mount(bad[i], a), ERR_INVALID_ARGS);
@@ -280,6 +281,99 @@ bool t_ns_mount_point_names(void)
         CHECK_ST(jam_handle_close(b), OK);
     }
     CHECK_ST(ns_unmount("/nosuch"), ERR_NOT_FOUND);
+    return true;
+}
+
+/* What nschan_serve_one's handlers saw. */
+struct seen_ev {
+    unsigned mounts, unmounts, sets;
+    char     path[NS_NAME_MAX];
+    uint8_t  connect;
+    uint32_t nh;
+};
+
+static void seen_mount(void *ctx, const uint8_t *paths, uint32_t paths_len, const uint8_t *connect,
+                       uint32_t connect_len, const handle_t *hs, uint32_t nh)
+{
+    struct seen_ev *e = ctx;
+    e->mounts++;
+    e->nh = nh;
+    if (paths_len == NS_NAME_MAX && connect_len == 1) {
+        memcpy(e->path, paths, NS_NAME_MAX);
+        e->connect = connect[0];
+    }
+    for (uint32_t i = 0; i < nh; i++)
+        jam_handle_close(hs[i]);
+}
+
+static void seen_unmount(void *ctx, const uint8_t *paths, uint32_t paths_len)
+{
+    struct seen_ev *e = ctx;
+    e->unmounts++;
+    if (paths_len == NS_NAME_MAX)
+        memcpy(e->path, paths, NS_NAME_MAX);
+}
+
+/* The M12 caps (nschan.idl): a mount point of 30 name bytes (31 with its slash) and a service
+ * name of SVC_NAME_MAX (24) bytes are accepted and travel as nschan events
+ * whole; one byte more is refused. */
+bool t_ns_long_names(void)
+{
+    static const char mount31[] = "/0123456789012345678901234567890";   /* 32 bytes: one too many */
+    char mount30[NS_NAME_MAX], svc24[SVC_NAME_MAX + 2], svc25[SVC_NAME_MAX + 2], path[NS_NAME_MAX];
+    snprintf(mount30, sizeof(mount30), "%s", mount31);
+    mount30[NS_NAME_MAX - 1] = '\0';   /* "/" and 30 digits: the longest mount point, 31 bytes */
+    CHECK_EQ(strlen(mount30), NS_NAME_MAX - 1);
+    memset(svc24, 'a', SVC_NAME_MAX);
+    svc24[SVC_NAME_MAX] = '\0';
+    memset(svc25, 'a', SVC_NAME_MAX + 1);
+    svc25[SVC_NAME_MAX + 1] = '\0';
+    CHECK_EQ(NS_NAME_MAX, 32);
+    CHECK_EQ(SVC_NAME_MAX, 24);
+
+    /* In our own table. */
+    handle_t a, b;
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(ns_mount(mount30, a), OK);
+    CHECK_ST(ns_unmount(mount30), OK);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(ns_mount(mount31, a), ERR_INVALID_ARGS);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(ns_svc_set(svc24, a, false), OK);
+    handle_t got;
+    CHECK_ST(svc_open(svc24, &got), OK);
+    CHECK_ST(jam_handle_close(got), OK);
+    CHECK_ST(ns_svc_remove(svc24), OK);
+    CHECK_ST(jam_handle_close(b), OK);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(ns_svc_set(svc25, a, false), ERR_INVALID_ARGS);
+    CHECK_ST(jam_handle_close(b), OK);
+
+    /* On the wire: ns_send_one's event, read as a program's libos reads it. */
+    static const struct nschan_ops ops = { .mount = seen_mount, .unmount = seen_unmount };
+    handle_t to, theirs;
+    CHECK_ST(jam_channel_create(&to, &theirs), OK);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(ns_send_one(to, mount30, a), OK);
+    struct seen_ev e = { 0 };
+    CHECK_ST(nschan_serve_one(theirs, &ops, &e), OK);
+    CHECK(e.mounts == 1 && e.nh == 1 && e.connect == 0 && !strcmp(e.path, mount30));
+    CHECK_ST(jam_handle_close(b), OK);   /* the handle arrived and was closed by the handler */
+    snprintf(path, sizeof(path), "/svc/%s", svc24);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(ns_send_one(to, path, a), OK);
+    CHECK_ST(nschan_serve_one(theirs, &ops, &e), OK);
+    CHECK(e.mounts == 2 && !strcmp(e.path, path));
+    CHECK_ST(jam_handle_close(b), OK);
+    CHECK_ST(ns_send_one(to, mount30, HANDLE_INVALID), OK);
+    CHECK_ST(nschan_serve_one(theirs, &ops, &e), OK);
+    CHECK(e.unmounts == 1 && !strcmp(e.path, mount30));
+    CHECK_ST(nschan_serve_one(theirs, &ops, &e), ERR_SHOULD_WAIT);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(ns_send_one(to, mount31, a), ERR_INVALID_ARGS);   /* never sent: a is closed */
+    CHECK_ST(jam_handle_close(b), OK);
+    CHECK_ST(jam_handle_close(to), OK);
+    CHECK_ST(jam_handle_close(theirs), OK);
     return true;
 }
 
@@ -500,8 +594,16 @@ bool t_ns_mounts_reach_a_running_child(void)
     return ram_stop(RAM, &r);
 }
 
-/* Messages that are no ns_msg are dropped (handles closed); a good one
- * after them still mounts. */
+/* One nschan mount event of the given arrays and handle (nh 0 or 1). */
+static status_t mount_ev(handle_t to, const void *paths, uint32_t paths_len, const void *connect,
+                         uint32_t connect_len, handle_t *h, uint32_t nh)
+{
+    return nschan_mount(to, paths, paths_len, connect, connect_len, h, nh);
+}
+
+/* Events that break nschan's rules are dropped (handles closed) and ones
+ * that name no valid entry are skipped; a good one after them still
+ * mounts. */
 bool t_ns_malformed_messages(void)
 {
     struct ram r;
@@ -514,30 +616,59 @@ bool t_ns_malformed_messages(void)
     CHECK_ST(jam_handle_replace(theirs, RIGHT_READ | RIGHT_WAIT | RIGHT_TRANSFER, &theirs), OK);
     struct spawn_handle x = { SR_NS, theirs };
     CHECK_ST(ns_child_start("ns-only", RAM, NULL, x, NULL, &proc), OK);
-    struct ns_msg m;
-    memset(&m, 0, sizeof(m));
+    uint8_t boot[NS_NAME_MAX] = "/boot", noslash[NS_NAME_MAX] = "boot", two[2 * NS_NAME_MAX] = "/a";
+    memcpy(two + NS_NAME_MAX, "/b", 3);
+    static const uint8_t c0[2] = { 0, 0 }, c1[1] = { 1 }, c2[1] = { 2 };
+
+    struct nschan_mount_msg m = { 0, NSCHAN_MOUNT };
     CHECK_ST(jam_channel_write(to, &m, 3, NULL, 0), OK);              /* too short */
-    m.kind = NS_MOUNT;
-    m.count = NS_MAX_ENTRIES + 1;
-    CHECK_ST(jam_channel_write(to, &m, sizeof(m), NULL, 0), OK);      /* too many */
-    m.count = 1;
-    memcpy(m.path[0], "/boot", 6);
-    CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), NULL, 0), OK); /* no handle for it */
+    CHECK_ST(jam_channel_write(to, &m, sizeof(m), NULL, 0), OK);      /* no arrays at all */
+    /* Lengths that disagree: a path that is not a whole record, two records
+     * for one connect byte, one record and no handle, two bytes of connect for one path. */
     CHECK_ST(jam_channel_create(&junk_a, &junk_b), OK);
-    CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1) + 1, &junk_a, 1), OK);   /* wrong size */
-    m.kind = 77;
-    CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), NULL, 0), OK); /* no such kind */
-    m.kind = NS_MOUNT;
-    m.connect = 2;
+    CHECK_ST(mount_ev(to, boot, NS_NAME_MAX - 1, c0, 1, &junk_a, 1), OK);
+    CHECK_ST(mount_ev(to, two, sizeof(two), c0, 1, NULL, 0), OK);
+    CHECK_ST(mount_ev(to, boot, NS_NAME_MAX, c0, 1, NULL, 0), OK);    /* no handle for it */
     CHECK_ST(ns_channel(RAM, &fs), OK);
-    CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, 1), OK);  /* connect past count */
-    m.connect = 1;
+    CHECK_ST(mount_ev(to, boot, NS_NAME_MAX, c0, 2, &fs, 1), OK);
+    /* A connect byte past 1; a mount that can't connect; a path that is not "/name". */
     CHECK_ST(ns_channel(RAM, &fs), OK);
-    CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, 1), OK);  /* a mount can't connect */
-    m.connect = 0;
-    memcpy(m.path[0], "boot", 5);
+    CHECK_ST(mount_ev(to, boot, NS_NAME_MAX, c2, 1, &fs, 1), OK);
     CHECK_ST(ns_channel(RAM, &fs), OK);
-    CHECK_ST(jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, 1), OK);  /* not "/name" */
+    CHECK_ST(mount_ev(to, boot, NS_NAME_MAX, c1, 1, &fs, 1), OK);
+    CHECK_ST(ns_channel(RAM, &fs), OK);
+    CHECK_ST(mount_ev(to, noslash, NS_NAME_MAX, c0, 1, &fs, 1), OK);
+    /* A record with no NUL in it. */
+    uint8_t full[NS_NAME_MAX];
+    memset(full, '/', sizeof(full));
+    CHECK_ST(ns_channel(RAM, &fs), OK);
+    CHECK_ST(mount_ev(to, full, NS_NAME_MAX, c0, 1, &fs, 1), OK);
+    /* Not an event the reader takes: an unmount with a handle, a mount
+     * with a txid, an ordinal of another protocol, an unknown one, one
+     * too many entries (41 records), one bigger than any message. */
+    struct nschan_unmount_msg um = { 0, NSCHAN_UNMOUNT };
+    CHECK_ST(ns_channel(RAM, &fs), OK);
+    uint8_t um_bytes[sizeof(um) + 2 + NS_NAME_MAX];
+    memcpy(um_bytes, &um, sizeof(um));
+    uint16_t one_rec = NS_NAME_MAX;
+    memcpy(um_bytes + sizeof(um), &one_rec, 2);
+    memcpy(um_bytes + sizeof(um) + 2, boot, NS_NAME_MAX);
+    CHECK_ST(jam_channel_write(to, um_bytes, sizeof(um_bytes), &fs, 1), OK);
+    m.txid = 5;
+    CHECK_ST(jam_channel_write(to, &m, sizeof(m), NULL, 0), OK);
+    m.txid = 0;
+    m.ordinal = (NSCHAN_PROTOCOL_ID + 1) << 16 | 1;
+    CHECK_ST(jam_channel_write(to, &m, sizeof(m), NULL, 0), OK);
+    m.ordinal = NSCHAN_PROTOCOL_ID << 16 | 77;
+    CHECK_ST(jam_channel_write(to, &m, sizeof(m), NULL, 0), OK);
+    static uint8_t many[sizeof(m) + 2 + 41 * NS_NAME_MAX + 2 + 41];
+    memset(many, 0, sizeof(many));
+    m.ordinal = NSCHAN_MOUNT;
+    memcpy(many, &m, sizeof(m));
+    uint16_t n41 = 41 * NS_NAME_MAX, c41 = 41;
+    memcpy(many + sizeof(m), &n41, 2);
+    memcpy(many + sizeof(m) + 2 + 41 * NS_NAME_MAX, &c41, 2);
+    CHECK_ST(jam_channel_write(to, many, sizeof(many), NULL, 0), OK);
     static uint8_t huge[8192];
     CHECK_ST(jam_channel_write(to, huge, sizeof(huge), NULL, 0), OK); /* bigger than any */
     /* The junk channel's end was closed by the child when it dropped the

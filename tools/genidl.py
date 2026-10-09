@@ -436,7 +436,7 @@ HANDLES_MAX = 64         # CHANNEL_MAX_HANDLES: handles one message carries
 # `handle<name>` takes. A header that holds the enum is checked against this.
 OBJ_TYPES = {"event": 1, "timer": 2, "channel": 3, "port": 4, "vmo": 5, "dma_cap": 6,
              "process": 7, "thread": 8, "interrupt": 9, "resource": 10, "vmar": 11, "job": 12,
-             "klog": 13, "serial": 14, "screen": 15}
+             "klog": 13, "serial": 14, "screen": 15, "pager": 16}
 OBJ_HEADERS = ("kernel/include/jam/abi.h", "kernel/include/jam/object.h")
 # `handle`, `handle<type>`, `handle[<=N]`, `handle<type>[<=N]`.
 HANDLE = re.compile(r"handle(?:<([a-z_]+)>)?(?:\[<=(\d+)\])?$")

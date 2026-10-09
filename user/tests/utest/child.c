@@ -377,6 +377,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "impostor"))   return impostor();
     if (!strcmp(m, "raise-own-limit")) return raise_own_limit();
     if (!strncmp(m, "bench-", 6)) return bench_child(argc, argv);
+    if (!strncmp(m, "fuzz-", 5))  return fuzz_child(argc, argv);
     if (!strncmp(m, "svcstate-", 9)) return svcstate_child(argc, argv);
     if (!strncmp(m, "rw-", 3))    return replywait_child(argc, argv);
     if (!strncmp(m, "kept-", 5))  return kept_child(argc, argv);

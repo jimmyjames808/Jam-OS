@@ -7,7 +7,10 @@
  * goes when either end closes it. libos's svc_open calls it on a service
  * whose namespace entry says it hands them out (<os.h>, "services"); a
  * service that doesn't answers ERR_NOT_SUPPORTED, as for any other
- * protocol's method. The music player does (user/services/music).
+ * protocol's method. Every service that hands out a channel per opener
+ * serves it: the mixer (audio, audioctl), the music player, netstack, dns
+ * and serve, devmgr, volumes, logd, and the compositor (its `wayland` and
+ * `notify`).
  * Reconnect: a channel from connect sees ERR_PEER_CLOSED when the service
  * ends; open the service again (svc_open), which calls connect on the
  * shared channel the restarted service serves. A service that outlives

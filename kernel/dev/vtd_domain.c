@@ -545,6 +545,13 @@ status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_
                 f->sid >> 8, (f->sid >> 3) & 0x1f, f->sid & 7);
         return ERR_ACCESS_DENIED;
     }
+    if (f->acs_gap) {   /* vtd_rid.c, pci_acs.c */
+        kprintf("vtd: unit %u: no domain for %02x:%02x.%x: %s (%02x:%02x.%x)\n",
+                f->ctl->unit->index, f->sid >> 8, (f->sid >> 3) & 0x1f, f->sid & 7,
+                pci_acs_gap_text(f->acs_gap), f->acs_where >> 8, (f->acs_where >> 3) & 0x1f,
+                f->acs_where & 7);
+        return ERR_ACCESS_DENIED;
+    }
     struct iommu_domain *id = kzalloc(sizeof(*id));
     if (!id)
         return ERR_NO_MEMORY;

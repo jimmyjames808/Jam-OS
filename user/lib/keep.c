@@ -1,4 +1,6 @@
-/* The keep channel, both sides (<keep.h> has the protocol and its rules).
+/* The keep channel, both sides (<keep.h> has the rules, abi/idl/keepch.idl
+ * the messages: IDL events both ways, the generated code reads and checks
+ * their format).
  *
  * The service's side duplicates and sends (keep_put, keep_drop) and, in a
  * successor, reads the keeper's restore (keep_restore). The keeper's side
@@ -22,40 +24,6 @@ static void close_all(const handle_t *hs, unsigned n)
         jam_handle_close(hs[i]);
 }
 
-/* One message off ch into buf/hs (OK, or the read's status). */
-static status_t read_msg(handle_t ch, void *buf, uint32_t cap, handle_t *hs, uint32_t hcap,
-                         uint32_t *nb, uint32_t *nh)
-{
-    *nb = *nh = 0;
-    struct channel_read_args a = {
-        .h = ch,
-        .rd_cap = cap,
-        .rd_bytes = (uint64_t)(uintptr_t)buf,
-        .rd_actual = (uint64_t)(uintptr_t)nb,
-        .rd_handles = (uint64_t)(uintptr_t)hs,
-        .rd_hcap = hcap,
-        .rd_hactual = (uint64_t)(uintptr_t)nh,
-    };
-    return jam_channel_read(&a);
-}
-
-/* The message at the head of ch was too big for its reader: read it whole
- * (nb bytes) and throw it away with its handles, so it can't block the
- * queue. ERR_NO_MEMORY: no room to read it into (it stays queued). */
-static status_t discard_head(handle_t ch, uint32_t nb)
-{
-    void *buf = malloc(nb ? nb : 1);
-    if (!buf)
-        return ERR_NO_MEMORY;
-    handle_t hs[CHANNEL_MAX_HANDLES];
-    uint32_t got = 0, nh = 0;
-    status_t st = read_msg(ch, buf, nb, hs, CHANNEL_MAX_HANDLES, &got, &nh);
-    if (st == OK)
-        close_all(hs, nh);
-    free(buf);
-    return st;
-}
-
 /* ---- the service's side --------------------------------------------------------- */
 
 status_t keep_put(handle_t keep, uint32_t slot, const handle_t *hs, unsigned n)
@@ -74,17 +42,15 @@ status_t keep_put(handle_t keep, uint32_t slot, const handle_t *hs, unsigned n)
         close_all(d, made);
         return st;
     }
-    struct keep_msg m = { .txid = 0, .kind = KEEP_PUT, .slot = slot, .count = n };
     /* The duplicates are gone whatever the write's status (a send's handles
      * are always moved): never closed here again, as their values may
      * already be another thread's new handles. */
-    return jam_channel_write(keep, &m, sizeof(m), d, n);
+    return keepch_put(keep, slot, d, n);
 }
 
 status_t keep_drop(handle_t keep, uint32_t slot)
 {
-    struct keep_msg m = { .txid = 0, .kind = KEEP_DROP, .slot = slot, .count = 0 };
-    return jam_channel_write(keep, &m, sizeof(m), NULL, 0);
+    return keepch_drop(keep, slot);
 }
 
 /* A successor's restore in progress. */
@@ -95,6 +61,8 @@ struct restore_run {
     uint32_t             seen[KEEP_MAX_SLOTS];    /* slot numbers so far */
     unsigned             nseen;                   /* entries of seen */
     uint32_t             handles;                 /* handles so far, taken or not */
+    bool                 done;                    /* the keeper's done came, with the right totals */
+    bool                 bad;                     /* a restore or done that breaks the rules */
     struct keep_restored got;                     /* what the caller gets */
 };
 
@@ -106,37 +74,37 @@ static bool seen_before(const struct restore_run *r, uint32_t slot)
     return false;
 }
 
-/* m (nb bytes, nh handles) is a well-formed KEEP_RESTORE that fits what
- * came before it: sizes, counts, no slot twice, no more than a keeper
- * may hold. */
-static bool restore_ok(const struct restore_run *r, const struct keep_restore *m, uint32_t nb,
-                       uint32_t nh)
+/* A restore of ns slots (their handle counts, nh handles in all) that fits
+ * what came before it: counts for every slot and none else, each 1 to
+ * KEEP_SLOT_HANDLES, summing to the handles, no slot twice, no more than a
+ * keeper may hold. (The generated reader has checked the arrays' sizes.) */
+static bool restore_ok(const struct restore_run *r, const uint32_t *slots, uint32_t ns,
+                       const uint8_t *counts, uint32_t nc, uint32_t nh)
 {
-    if (nb < KEEP_RESTORE_SIZE(0) || m->txid || m->reserved)
+    if (ns < 1 || ns > KEEP_BATCH || nc != ns)
         return false;
-    if (m->nslots < 1 || m->nslots > KEEP_BATCH || nb != KEEP_RESTORE_SIZE(m->nslots))
-        return false;
-    if (m->nslots > KEEP_MAX_SLOTS - r->nseen)
+    if (ns > KEEP_MAX_SLOTS - r->nseen)
         return false;
     uint32_t sum = 0;
-    for (unsigned i = 0; i < m->nslots; i++) {
-        uint32_t c = m->slot[i].count;
-        if (c < 1 || c > KEEP_SLOT_HANDLES || seen_before(r, m->slot[i].slot))
+    for (unsigned i = 0; i < ns; i++) {
+        uint32_t c = counts[i];
+        if (c < 1 || c > KEEP_SLOT_HANDLES || seen_before(r, slots[i]))
             return false;
         for (unsigned j = 0; j < i; j++)
-            if (m->slot[j].slot == m->slot[i].slot)
+            if (slots[j] == slots[i])
                 return false;
         sum += c;
     }
     return sum == nh && nh <= KEEP_MAX_HANDLES - r->handles;
 }
 
-/* Hand each slot of a checked KEEP_RESTORE to take(); close the refused. */
-static void hand_slots(struct restore_run *r, const struct keep_restore *m, handle_t *hs)
+/* Hand each slot of a checked restore to take(); close the refused. */
+static void hand_slots(struct restore_run *r, const uint32_t *slots, const uint8_t *counts,
+                       uint32_t ns, const handle_t *hs)
 {
     unsigned off = 0;
-    for (unsigned i = 0; i < m->nslots; i++) {
-        uint32_t slot = m->slot[i].slot, c = m->slot[i].count;
+    for (unsigned i = 0; i < ns; i++) {
+        uint32_t slot = slots[i], c = counts[i];
         r->seen[r->nseen++] = slot;
         r->handles += c;
         r->got.slots++;
@@ -155,51 +123,53 @@ static void hand_slots(struct restore_run *r, const struct keep_restore *m, hand
     }
 }
 
-/* Wait (until deadline_ns) for one message from the keeper. */
-static status_t restore_read(handle_t keep, uint64_t deadline_ns, struct keep_restore *m,
-                             handle_t *hs, uint32_t *nb, uint32_t *nh)
+/* keepch's events from the keeper. Both own their handles. */
+static void on_restore(void *ctx, const uint32_t *slots, uint32_t ns, const uint8_t *counts,
+                       uint32_t nc, const handle_t *hs, uint32_t nh)
 {
-    for (;;) {
-        status_t st = read_msg(keep, m, sizeof(*m), hs, KEEP_BATCH, nb, nh);
-        if (st == ERR_BUFFER_TOO_SMALL) {
-            (void)discard_head(keep, *nb);   /* malformed either way */
-            return ERR_INVALID_ARGS;
-        }
-        if (st != ERR_SHOULD_WAIT)
-            return st;
-        signals_t seen = 0;
-        st = jam_object_wait_one(keep, SIG_READABLE | SIG_PEER_CLOSED, deadline_ns, &seen);
-        if (st != OK)
-            return st;
+    struct restore_run *r = ctx;
+    if (r->done || r->bad || !restore_ok(r, slots, ns, counts, nc, nh)) {
+        close_all(hs, nh);
+        r->bad = true;
+        return;
     }
+    hand_slots(r, slots, counts, ns, hs);
+}
+
+static void on_done(void *ctx, uint32_t slots, uint32_t handles)
+{
+    struct restore_run *r = ctx;
+    r->done = !r->bad && slots == r->got.slots && handles == r->handles;
+    r->bad = !r->done;
 }
 
 status_t keep_restore(handle_t keep, uint64_t deadline_ns, keep_take_fn take, void *ctx,
                       struct keep_restored *out)
 {
+    static const struct keepch_events events = { .restore = on_restore, .done = on_done };
     struct restore_run *r = calloc(1, sizeof(*r));
     if (!r)
         return ERR_NO_MEMORY;
     r->keep = keep;
     r->take = take;
     r->ctx = ctx;
-    struct keep_restore m;
-    handle_t hs[KEEP_BATCH];
     status_t st;
     for (;;) {
-        uint32_t nb = 0, nh = 0;
-        st = restore_read(keep, deadline_ns, &m, hs, &nb, &nh);
-        if (st != OK)
-            break;
-        if (nb >= 8 && m.kind == KEEP_RESTORE && restore_ok(r, &m, nb, nh)) {
-            hand_slots(r, &m, hs);
+        st = keepch_read_event(keep, &events, r);
+        if (st == ERR_SHOULD_WAIT) {
+            signals_t seen = 0;
+            st = jam_object_wait_one(keep, SIG_READABLE | SIG_PEER_CLOSED, deadline_ns, &seen);
+            if (st == OK)
+                continue;
+        } else if (st == OK) {
+            if (r->bad || r->done) {
+                st = r->done ? OK : ERR_INVALID_ARGS;
+                break;
+            }
             continue;
+        } else if (st != ERR_PEER_CLOSED && st != ERR_NO_MEMORY) {
+            st = ERR_INVALID_ARGS;   /* no event of the keeper's: dropped, its handles closed */
         }
-        const struct keep_msg *d = (const struct keep_msg *)&m;
-        bool done = nb == sizeof(*d) && nh == 0 && d->kind == KEEP_DONE && !d->txid &&
-                    d->slot == r->got.slots && d->count == r->handles;
-        close_all(hs, nh);
-        st = done ? OK : ERR_INVALID_ARGS;
         break;
     }
     if (out)
@@ -288,54 +258,43 @@ static void refuse(struct keeper *k, const char *why, const handle_t *hs, unsign
         printf("keep: refused a message from the service: %s\n", why);
 }
 
-/* Act on one message the service sent (nb bytes, nh handles). */
-static void apply(struct keeper *k, const struct keep_msg *m, uint32_t nb, const handle_t *hs,
-                  uint32_t nh)
+/* keepch's events from the service (the generated server has checked the
+ * format: a put of 0 to KEEP_SLOT_HANDLES handles, a drop with none; what
+ * it refuses never gets here, keeper_take counts it). Both count
+ * themselves handled. */
+static void on_put(void *ctx, uint32_t slot, const handle_t *hs, uint32_t n)
 {
-    const char *why = NULL;
-    if (nb != sizeof(*m) || m->txid)
-        why = "malformed";
-    else if (m->kind == KEEP_PUT && (m->count < 1 || m->count > KEEP_SLOT_HANDLES))
-        why = "a put of no handles, or too many";
-    else if (m->kind == KEEP_PUT && m->count != nh)
-        why = "a put whose count isn't its handles";
-    else if (m->kind == KEEP_DROP && (m->count || nh))
-        why = "a drop with handles";
-    else if (m->kind != KEEP_PUT && m->kind != KEEP_DROP)
-        why = "an unknown kind";
-    else if (m->kind == KEEP_PUT)
-        why = put_slot(k, m->slot, hs, nh);
-    if (why) {
-        refuse(k, why, hs, nh);
-        return;
-    }
-    if (m->kind == KEEP_DROP) {
-        /* A drop of a slot we never kept (its put was refused) is no error. */
-        struct keep_slot *s = find_slot(k, m->slot);
-        if (s) {
-            forget(k, s);
-            k->drops++;
-        }
+    struct keeper *k = ctx;
+    k->handled++;
+    const char *why = n < 1 ? "a put of no handles" : put_slot(k, slot, hs, n);
+    if (why)
+        refuse(k, why, hs, n);
+}
+
+static void on_drop(void *ctx, uint32_t slot)
+{
+    struct keeper *k = ctx;
+    k->handled++;
+    /* A drop of a slot we never kept (its put was refused) is no error. */
+    struct keep_slot *s = find_slot(k, slot);
+    if (s) {
+        forget(k, s);
+        k->drops++;
     }
 }
 
 status_t keeper_take(struct keeper *k)
 {
+    static const struct keepch_ops ops = { .put = on_put, .drop = on_drop };
     if (k->ch == HANDLE_INVALID)
         return ERR_BAD_STATE;
-    struct keep_msg m;
-    handle_t hs[KEEP_SLOT_HANDLES];
-    uint32_t nb = 0, nh = 0;
-    status_t st = read_msg(k->ch, &m, sizeof(m), hs, KEEP_SLOT_HANDLES, &nb, &nh);
-    if (st == ERR_BUFFER_TOO_SMALL) {
-        st = discard_head(k->ch, nb);
-        if (st != OK)
-            return st;
-        refuse(k, "a message too big", NULL, 0);
-        return OK;
-    }
-    if (st == OK)
-        apply(k, &m, nb, hs, nh);
+    uint32_t before = k->handled;
+    status_t st = keepch_serve_one(k->ch, &ops, k);
+    /* A message was taken off the queue and no handler ran: the generated
+     * server refused it (malformed, too big, a txid, the wrong direction)
+     * and closed its handles. */
+    if (st == OK && k->handled == before)
+        refuse(k, "malformed", NULL, 0);
     return st;
 }
 
@@ -372,11 +331,12 @@ status_t keeper_attach(struct keeper *k, handle_t *service_end)
 
 /* Restore messages being built: whole slots, at most KEEP_BATCH handles. */
 struct batch {
-    struct keep_restore msg;               /* the message */
+    uint32_t            slot[KEEP_BATCH];     /* the message's slot numbers */
+    uint8_t             count[KEEP_BATCH];    /* ... and their handle counts */
     struct keep_slot   *s[KEEP_BATCH];     /* its slots, in order */
     handle_t            h[KEEP_BATCH];     /* their duplicates */
     unsigned            nh;                /* handles in it */
-    uint32_t            slots, handles;    /* sent so far, all batches (KEEP_DONE's) */
+    uint32_t            slots, handles;    /* sent so far, all batches (done's) */
 };
 
 /* Duplicates of slots s[0..n) into b->h; ERR_* and none made on failure. */
@@ -395,14 +355,13 @@ static status_t dup_slots(struct batch *b, struct keep_slot *const *s, unsigned 
     return st;
 }
 
-/* Send slots s[0..n) (nh handles) as one KEEP_RESTORE. */
+/* Send slots s[0..n) (nh handles) as one restore event. */
 static status_t send_slots(struct keeper *k, struct batch *b, struct keep_slot *const *s,
                            unsigned n, unsigned nh)
 {
-    b->msg = (struct keep_restore){ .txid = 0, .kind = KEEP_RESTORE, .nslots = n };
     for (unsigned i = 0; i < n; i++) {
-        b->msg.slot[i].slot = s[i]->id;
-        b->msg.slot[i].count = s[i]->n;
+        b->slot[i] = s[i]->id;
+        b->count[i] = (uint8_t)s[i]->n;
     }
     status_t st = dup_slots(b, s, n);
     if (st != OK)
@@ -410,7 +369,7 @@ static status_t send_slots(struct keeper *k, struct batch *b, struct keep_slot *
     /* The duplicates are gone whatever the write's status (a send's handles
      * are always moved): never closed after it, as their values may already
      * be another thread's new handles. */
-    st = jam_channel_write(k->ch, &b->msg, KEEP_RESTORE_SIZE(n), b->h, nh);
+    st = keepch_restore(k->ch, b->slot, n, b->count, n, b->h, nh);
     if (st != OK)
         return st;
     b->slots += n;
@@ -461,10 +420,8 @@ status_t keeper_restore(struct keeper *k)
     }
     if (st == OK)
         st = flush(k, b, n);
-    struct keep_msg done = { .txid = 0, .kind = KEEP_DONE, .slot = b->slots,
-                             .count = b->handles };
     if (st == OK)
-        st = jam_channel_write(k->ch, &done, sizeof(done), NULL, 0);
+        st = keepch_done(k->ch, b->slots, b->handles);
     free(b);
     return st;
 }
