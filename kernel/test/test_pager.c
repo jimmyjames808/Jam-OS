@@ -921,7 +921,7 @@ static void ufix_killed(struct ufix *f, const char *why)
 {
     thread_join(f->u.t);
     KT_ASSERT(killed_for(f->log0, f->name, why));
-    KT_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), f->faults0 + 1);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), f->faults0 + 1);
     KT_EQ(stored(&f->us, 0), 0);
 }
 
@@ -1006,11 +1006,9 @@ KTEST(pager_fault_interrupt)
     KT_ASSERT(kf_waiting(&k));
     KT_ASSERT(thread_interrupt_pending(k.t));
     none_queued(pg);   /* still the one request: nobody asked again */
-    uint64_t t0 = uptime_ns();
     KT_EQ(supply(pg, 16, 0, 1), OK);
     KT_EQ(kf_end(&k), OK);
-    KT_EQ(k.slept, ERR_INTERRUPTED);   /* the latched interrupt, taken by the sleep */
-    KT_ASSERT(uptime_ns() - t0 < 5 * NS_PER_S);
+    KT_EQ(k.slept, ERR_INTERRUPTED);   /* the latched interrupt (else OK, 10 s later) */
     KT_EQ(aspace_unmap(as, a, PG), OK);
     aspace_unref(as);
     put(v);
@@ -1037,7 +1035,7 @@ KTEST(pager_fault_user_supplied)
     wait_stored(&f.us, 0, word(20, 1));
     KT_ASSERT(thread_interrupt_pending(f.u.t));
     ut_stop(&f.u);
-    KT_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), f.faults0);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), f.faults0);
     none_queued(f.pg);
     ufix_end(&f);
 }
@@ -1103,7 +1101,7 @@ KTEST(pager_fault_user_killed)
     next(f.pg, 0, &q);
     thread_sleep_ms(5);
     ut_stop(&f.u);
-    KT_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), f.faults0);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), f.faults0);
     KT_EQ(supply(f.pg, 24, 0, 4), OK);
     KT_EQ(vmo_committed(f.v), 4 * PG);
     ufix_end(&f);
@@ -1160,7 +1158,7 @@ KTEST(pager_fault_user_many)
         wait_stored(&us, 8 * i, word(26, 2));
     for (unsigned i = 0; i < N; i++)
         ut_stop(&u[i]);
-    KT_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0);
     none_queued(pg);
     uas_free(&us);
     put(v);
@@ -1304,8 +1302,11 @@ KTEST(pager_fault_copy_cancel_and_held)
     mutex_init(&m, "kt pager copy");
     uint64_t held = __atomic_load_n(&aspace_pager_waits_held, __ATOMIC_RELAXED);
     cp_start(&c, us.as, U_FILE + PG, CP_FROM, &m);   /* joins the request above */
-    thread_sleep_ms(10);
-    KT_EQ(__atomic_load_n(&aspace_pager_waits_held, __ATOMIC_RELAXED), held + 1);
+    uint64_t deadline = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    while (__atomic_load_n(&aspace_pager_waits_held, __ATOMIC_RELAXED) == held &&
+           uptime_ns() < deadline)
+        thread_sleep_ms(1);
+    KT_GLOBAL_EQ(__atomic_load_n(&aspace_pager_waits_held, __ATOMIC_RELAXED), held + 1);
     KT_EQ(supply(pg, 29, 0, 2), OK);
     KT_EQ(cp_end(&c), OK);
     KT_EQ(c.word, word(29, 1));
@@ -1349,7 +1350,9 @@ KTEST(pager_fault_hostile)
     KT_EQ(vmo_write(us.data, PG - 8, &t0, 8), OK);
     ut_start(&u[N], &us, "pk2-bystander", U_DATA + PG - 8, U_DATA + 64);
     wait_stored(&us, 64, t0);
-    KT_ASSERT(uptime_ns() - t0 < NS_PER_S);   /* before the deadline */
+    /* Before the deadline: had the waits kept the region lock, the
+     * bystander's fault would have waited for them to die. */
+    KT_IDLE_ASSERT(__atomic_load_n(&c.st, __ATOMIC_ACQUIRE) == ERR_INTERNAL);
     uint64_t w;
     KT_EQ(vmo_read(gv, 0, &w, 8), OK);
     KT_EQ(w, word(31, 0));
@@ -1360,7 +1363,7 @@ KTEST(pager_fault_hostile)
     KT_EQ(cp_end(&c), ERR_IO);
     KT_ASSERT(uptime_ns() - t0 >= NS_PER_S);
     KT_ASSERT(killed_for(log0, "pk2-hostile", "page fault: the file's pager didn't answer"));
-    KT_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0 + N);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0 + N);
     for (unsigned i = 0; i < N; i++)
         KT_EQ(stored(&us, 8 * i), 0);
     none_queued(bad);   /* every request failed, none delivered */
