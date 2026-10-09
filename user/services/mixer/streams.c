@@ -442,6 +442,8 @@ status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner)
     uint32_t gen = owner ? m->nums->c[owner - 1].gen : 0;
     uint32_t key = owner ? (KEY_CLIENT + owner - 1) | gen << 8 : KEY_SVC;
     for (int i = 0; i < BUDGET; i++) {
+        if (!keep_gate(m))   /* an open_output needs a put: left queued, keep_tick wakes us */
+            return OK;
         status_t st = serve_one(m, ch, key, owner, NULL);
         if (st != OK)
             return st;
@@ -635,6 +637,8 @@ static status_t ctl_serve_one(struct mixer *m, handle_t ch, uint32_t key)
 status_t serve_control(struct mixer *m, handle_t ch, uint32_t key)
 {
     for (int i = 0; i < BUDGET; i++) {
+        if (!keep_gate(m))   /* a connect needs a put: left queued, keep_tick wakes us */
+            return OK;
         status_t st = ctl_serve_one(m, ch, key);
         if (st != OK)
             return st;

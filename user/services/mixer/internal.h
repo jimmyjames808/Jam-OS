@@ -88,6 +88,20 @@
 #define KEEP_OUT       64u           /* the driver's stream channel and ring */
 #define KEEP_DRIVER    65u           /* the driver's channel (from devmgr) */
 
+#define KEEP_SLOTS     (KEEP_DRIVER + 1u)
+/* The keep channel's queue is the keeper's (init's loop reads it): a mixer
+ * that outruns it under churn, or while init is busy restarting it, finds
+ * it full. Nothing is ever refused or lost for that (state.c): a request
+ * that needs a put waits in its channel until there is room, a drop that
+ * finds it full is remembered and sent again, and both are tried again every
+ * KEEP_RETRY_NS. A put that finds no room all the same (a request that
+ * makes two) waits KEEP_ROOM_WAIT for it at most; a keeper that has made no
+ * room for KEEP_STUCK_NS has stopped, and the requests that need it are
+ * refused, said in the log. */
+#define KEEP_RETRY_NS  (2 * NS_PER_MS)
+#define KEEP_ROOM_WAIT (10 * NS_PER_MS)
+#define KEEP_STUCK_NS  (2 * NS_PER_S)
+
 /* What the last request that made something made (struct mixer_state's
  * made_kind). */
 #define MADE_STREAM    1u
@@ -239,6 +253,12 @@ struct mixer {
     struct stream_own own_s[MIXER_MAX_STREAMS];  /* by the index of nums->s */
     struct out_own    own_out;
     handle_t      keep;            /* our end of the keep channel (SR_KEEP), or 0: nothing kept */
+    bool          drop_due[KEEP_SLOTS];   /* slots to tell the keeper to drop: its queue was full */
+    unsigned      drops_due;       /* how many are true */
+    bool          driver_to_keep;  /* the driver's channel is to be put to the keeper (keep_tick) */
+    bool          keep_blocked;    /* its queue was full when a request that needs it came */
+    uint64_t      blocked_since;   /* since when (ns), or 0 */
+    unsigned      blocks;          /* times (logged, the first few) */
     struct idl_reply reply;        /* the last request's reply, waiting for the loop's next
                                     * take or port wait (req_answer) */
     unsigned      cur_slot;        /* the request slot being run (do_open_output's) */
@@ -269,8 +289,18 @@ const char *state_check(const struct mixer_state *n);
  * (the caller refuses what it would have kept). OK and nothing sent
  * without a keep channel. */
 status_t keep_slot_put(struct mixer *m, uint32_t slot, const handle_t *hs, unsigned n);
-/* The keeper forgets slot (after the state has). */
+/* The keeper forgets slot (after the state has). One that finds the keep
+ * channel's queue full is not lost: keep_tick tries it again. */
 void     keep_slot_drop(struct mixer *m, uint32_t slot);
+/* May a request that could need a put be taken now, or does the keeper's
+ * queue have no room (left queued in its channel; m->keep_blocked)? True
+ * also when there is no keeper, when it has gone, and when it has made no
+ * room for KEEP_STUCK_NS (the put then refuses the request, said). */
+bool     keep_gate(struct mixer *m);
+/* The loop's: drops the keeper was too full for, and whether room is back
+ * (m->keep_blocked clear). Returns the deadline the loop may wait until,
+ * brought forward to the next try while anything waits for the keeper. */
+uint64_t keep_tick(struct mixer *m, uint64_t deadline);
 /* Read the next request from ch (whose port key is `key`: an `audioctl`
  * channel if ctl, else an `audio` one) into a request slot, with the
  * protocol's generated take (<proto>_take_slot). OK with *slot set: a

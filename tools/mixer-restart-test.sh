@@ -19,7 +19,8 @@
 # mixramp also keeps the mixer busy with other calls (volume, position, a
 # stream opened and closed), so some kills land while a request is in
 # progress; each restart's line says what it found and did, and every call
-# must still succeed. Then it prints the lead left at the restarts,
+# must still succeed; the keeper must never have refused a slot to keep or to
+# drop (the churn outruns it). Then it prints the lead left at the restarts,
 # kill-to-first-answer (mixramp's own, and init's probe) with and without
 # the spare, and what the restarts found in progress.
 # QEMU_SMP passes through. Usage: tools/mixer-restart-test.sh <outdir>;
@@ -72,6 +73,11 @@ check() {   # check <name>: the log and the WAV of one boot
     never "the driver's stream can't be taken over" "$log"
     never "mixer: output closed (the driver" "$log"
     never "keep: refused" "$log"
+    # The churn opener outruns init's keeper (the keep channel's queue
+    # holds 1024 messages): a put waits for room and a drop is tried
+    # again, neither is ever given up (user/services/mixer/state.c).
+    never "the keeper can't keep slot" "$log"
+    never "the keeper can't be told to drop slot" "$log"
     never "can't be handed over" "$log"
     # One output for the whole ramp: opened once, closed once at its end.
     # (hda's line: the churn opener's lines can fill the mixer's log share

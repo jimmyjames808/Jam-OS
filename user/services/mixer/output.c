@@ -97,9 +97,11 @@ status_t out_find(struct mixer *m)
                             &jack, &count, nodes, text);
         if (st == OK && pin) {
             m->own_out.svc = ch;
-            /* Not kept: a successor asks devmgr again, which costs it time
-             * but no client anything. */
-            m->own_out.svc_kept = keep_slot_put(m, KEEP_DRIVER, &ch, 1) == OK && m->keep;
+            /* Kept by keep_tick, not here: this runs inside a request that
+             * has one put to make (the stream's). Unkept, a successor asks
+             * devmgr again, which costs it time but no client anything. */
+            m->own_out.svc_kept = false;
+            m->driver_to_keep = m->keep != HANDLE_INVALID;
             printf("mixer: playing through sound card %u (codec %u, dac %02x, pin %02x)\n", i,
                    codec, dac, pin);
             return OK;
@@ -129,6 +131,7 @@ void out_forget_driver(struct mixer *m)
     if (w->svc_kept)
         keep_slot_drop(m, KEEP_DRIVER);
     w->svc_kept = false;
+    m->driver_to_keep = false;
 }
 
 /* Ask for the end of the period after frame `after`, without waiting
@@ -412,6 +415,8 @@ static status_t out_open(struct mixer *m)
 {
     struct out *o = &m->nums->out;
     struct out_own *w = &m->own_out;
+    if (!keep_gate(m))   /* its put needs room: out_need tries again soon */
+        return ERR_SHOULD_WAIT;
     status_t st = out_find(m);
     if (st == OK)
         st = open_stream(m);
@@ -496,6 +501,10 @@ status_t out_need(struct mixer *m)
     status_t st = out_open(m);
     if (out_reopen_soon(m, st)) {
         o->retry_at = now() + OUT_REOPEN_RETRY_NS;
+        return st;
+    }
+    if (st == ERR_SHOULD_WAIT) {   /* the keeper's queue is full: not a failure */
+        o->retry_at = now() + KEEP_RETRY_NS;
         return st;
     }
     if (st != OK) {
