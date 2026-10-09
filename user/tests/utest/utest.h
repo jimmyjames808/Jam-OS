@@ -26,6 +26,17 @@ int bench_child(int argc, char **argv);
 /* "utest fuzz-calls|fuzz-chans <seed> <ms>": a hostile child for the
  * kernel's fuzz tests (fuzz.c, kernel/test/test_fuzz.c). */
 int fuzz_child(int argc, char **argv);
+/* "utest posix-<what>": a child of the POSIX hand-over's tests (posixfds.c). */
+int posixfds_child(int argc, char **argv);
+/* posixfds.c, posixfds_bad.c: the POSIX hand-over (<posixfds.h>) and
+ * spawn's stack_size. */
+bool t_posixfds_round_trip(void);
+bool t_posixfds_many_handles(void);
+bool t_posixfds_spawn_child(void);
+bool t_spawn_stack_size(void);
+bool t_posixfds_malformed(void);
+bool t_posixfds_fuzz(void);
+bool t_posixfds_writer_refuses(void);
 
 /* hid.c: the HID driver process against a mock usb-bus and console. */
 bool t_hid_typing(void);
