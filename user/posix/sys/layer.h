@@ -6,9 +6,9 @@
  *
  * Handlers return Linux's way: a value, or -errno; lx_err gives a
  * status's errno. They run in whatever thread made the call, so shared
- * state has a lock_t of its own (each file says which); none of them
- * calls malloc (musl's malloc calls mmap and brk, which are handlers
- * here). */
+ * state has a lock_t of its own (each file says which). mem.c and
+ * maptable.c never call malloc: musl's malloc calls mmap and brk, which
+ * are theirs. */
 #pragma once
 
 #include <stdbool.h>

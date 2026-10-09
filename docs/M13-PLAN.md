@@ -1194,3 +1194,125 @@ left open:
 - **For A1**: `<os.h>` declares the C library's names itself and defines
   `PAGE_SIZE`, which musl's `<limits.h>` also defines: a file that
   includes both needs `#undef PAGE_SIZE` or a header of its own.
+
+## A1 notes
+
+Choices A1 made where the plan left them open, and what the B tracks
+need to know.
+
+**musl and the build**
+- musl 1.2.6 is the whole release tarball, unmodified (third_party/VERSIONS.md
+  has its hash, its signature check and the two advisories against it:
+  the iconv GB18030 one, a slow-down, is not patched, since nothing uses
+  iconv yet).
+- `user/posix/posix.mk` (included at the end of the Makefile) builds it:
+  src/ldso is left out, as the plan says, so `dlopen` and its kin are
+  link errors, not run-time failures. A clean build of musl, the layer
+  and the sysroot takes about 6 s at `make -j10` on the Mac (some 1,300
+  files); after that it is never rebuilt unless its sources change.
+- `build/sysroot/lib/libc.a` holds musl, the overrides, the call layer
+  and libjam's objects in one archive, so `-lc` is the whole C library and
+  a port's link line is crt1.o, crti.o, its objects, libc.a, libgcc,
+  crtn.o (`tools/jamos-cc` does this). `build/musl/libmusl.a` (musl and
+  the overrides alone) is what `tools/checklibjam.py` compares libjam
+  with in `make check`.
+- The overrides are listed in `user/posix/musl/OVERRIDES` with the
+  upstream file's sha256; `tools/checkoverrides.py` checks them before
+  musl is compiled and again in `make check`, with a self-test that a
+  changed, missing, malformed or doubled line is refused. The overrides
+  are thin: each calls the layer through `user/posix/sys/glue.h`
+  (plain C, because they are compiled with musl's flags and headers).
+  `src/process/posix_spawn.c`, `src/thread/pthread_cancel.c` and
+  `src/network/lookup_name.c` are not overridden yet (B3, B4, B6):
+  musl's `posix_spawn` fails cleanly today (its `clone` without
+  `CLONE_THREAD` is `ENOSYS`), and `syscall_cp`'s override only makes the
+  call (cancellation by signal comes with B4's).
+- `tools/jamos-cc` defines `__jamos__` and not `__linux__`, puts musl's
+  headers before the compiler's own, and links the one-word list
+  `posix` unless `--jamos-wants=FILE` names another. posixtest is built
+  with it, so the build tests the wrapper.
+
+**The call layer's shape (for the B tracks)**
+- Every musl system call ends in `__jam_syscall` (`user/posix/sys/calls.c`),
+  a table indexed by Linux's number: `[SYS_x] = lx_x`. A number with no
+  entry is `-ENOSYS`. Every handler has one signature (`lx_call` in
+  `user/posix/sys/calls.h`): six `long`s in, a value or `-errno` out.
+  To add a call: write `lx_<name>` in your area's file, declare it in
+  your area's block of calls.h, and add `[SYS_<name>] = lx_<name>` to
+  your area's block of the table. A number given twice fails the build
+  (`-Woverride-init`). Only calls.c may include `<sys/syscall.h>`: its
+  `SYS_*` names clash with Jam OS's own (`<jam/syscall_nums.h>`).
+- Area files include `layer.h` (libjam through `<jamos/libjam.h>`,
+  which settles `PAGE_SIZE` with musl's `<limits.h>`): `lx_err(st)` is a
+  status's default errno; `lx_self_process()`, `lx_self_vmar()`,
+  `lx_self_thread()`; `lx_handover(&cwd)`, the hand-over's state
+  (umask, ppid, pgid, sid, the signal masks) or NULL.
+- Where each area's code goes: files B1, B2, B3, B5, B4, B6, T2 and X1
+  own as the tracks' table says. Two of A1's files are stand-ins to be
+  replaced: `user/posix/sys/stdfd.c` (descriptors 0 to 2: the null
+  device, the log, or a pipe; B1's descriptor table replaces it and
+  takes its handlers' table lines) and `user/posix/sys/nosig.c`
+  (`rt_sigprocmask` keeps a per-thread mask and nothing else; B4's
+  signal.c replaces it).
+- The start (`user/posix/crt/start.c`) reads the startup message, then
+  the hand-over with `posixfds_read`; without one, stdfd's defaults. A
+  hand-over's pipes and null devices at 0 to 2 are taken; every other
+  descriptor's handles are closed (until B1). A malformed hand-over
+  leaves no descriptors and a line in the log. B1 takes the sink over.
+
+**Choices**
+- The kernel's POSIX calls (thread_set_tid_word, thread_get_info, the
+  CPU times, sys_public_info) are used only in
+  `user/posix/sys/kposix.c`, each behind `#ifdef SYS_<call>`. The field
+  names it uses (`thread_info.tid` and `.cpu_ns`, `process_info.cpu_ns`,
+  `sys_public_info.version`, `.cpus_online`, `.total_pages`,
+  `.page_size`) are A1's reading of the plan's table: if K1 chose others,
+  that file is the one to change. Without thread_set_tid_word the layer
+  makes no thread but the first (`pthread_create` is `EAGAIN`: nothing
+  could release musl's thread list lock), the first thread's id is 1,
+  and posixtest's thread section says it is waiting.
+- Thread handles: `clone` keeps each new thread's handle in a table by
+  its id (8,192 threads alive at once at most: `EAGAIN` past it), and the
+  thread closes its own on its way out (`exit`, or `__unmapself` for a
+  detached one). The first thread's is the startup message's. B4's
+  `pthread_kill` and cancellation look threads up there.
+- Futexes: private and shared are the same (no memory is shared between
+  processes); `FUTEX_CMP_REQUEUE`, `WAKE_OP`, the PI and bitset
+  operations and `FUTEX_CLOCK_REALTIME` are `ENOSYS` (musl uses none of
+  them; robust and PI mutexes are not planned).
+- mmap: libc's table of its mappings (`user/posix/sys/maptable.c`) is a
+  VMO of its own, `VMAR_MAX_MAPPINGS` entries, so it is never the limit.
+  `munmap` and `madvise` act only on the table's mappings: the program,
+  its stack and libjam's mappings are never unmapped by libc, and an
+  unmap of a range libc didn't map succeeds and does nothing. `MAP_FIXED`
+  over a table mapping unmaps that part, then maps, under the layer's
+  lock (not atomic against a vmar_map outside the layer: K2's
+  `VMAR_REPLACE` makes it one step); over anything else it is `ENOMEM`,
+  and `MAP_FIXED_NOREPLACE` over anything is `EEXIST`. Flags the layer
+  can't honour (`MAP_GROWSDOWN`, `MAP_HUGETLB`, `MAP_32BIT`, `MAP_SYNC`,
+  unknown bits) are `EINVAL`, stricter than Linux, which ignores unknown
+  bits. `PROT_EXEC` is refused by `mmap` and by `mprotect`, also on the
+  program's own code.
+- brk: the 1 GiB reservation is made at the first `brk` call, not at the
+  start (the same address-space cost, none for a program that never asks);
+  it is a table mapping, so musl's malloc may put its guard page over it
+  with `MAP_FIXED`, and brk keeps a VMO handle of its own for the
+  decommit of pages above a lowered break.
+- Descriptors without a hand-over: a terminal (`SR_CONSOLE`) does not
+  make 0 to 2 a terminal yet (T2's open_tty); such a program writes to
+  the log, as a native program in the foreground does, and reads the
+  null device.
+- The start: the auxiliary vector also has `AT_ENTRY` and the one user's
+  ids (1000, Q7) as `AT_UID`, `AT_EUID`, `AT_GID` and `AT_EGID`;
+  `AT_HWCAP` is CPUID leaf 1's EDX, as Linux's. `TZ` is added (from the
+  wall clock's zone, as a POSIX rule) only when the starter gave none.
+- `uname`: `sysname` is `JamOS` (one word, for scripts), `nodename`
+  `jamos` until the `host.name` setting is read (B2's `/etc`),
+  `release` and `version` the kernel's version from sys_public_info
+  ("unknown" without it). `sched_getaffinity` (musl's
+  `sysconf(_SC_NPROCESSORS_ONLN)`) and `sysinfo` (`_SC_PHYS_PAGES`) come
+  from the same figures.
+- posixtest is `bin/posixtest` (a test program, beside utest), last in
+  `boot/init.cfg`. Its start section starts itself twice with libjam's
+  `spawn`: once with a hard argv and environment, once with a
+  hand-over (a pipe at 1, the null device at 0).
