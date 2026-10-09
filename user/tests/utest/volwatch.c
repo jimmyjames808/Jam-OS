@@ -80,6 +80,18 @@ bool t_volumes_watch(void)
     return wait_usb(vm, &v, -1);
 }
 
+/* Is text somewhere in the mock's data partition (a file's data, written
+ * through to the medium)? */
+static bool on_medium(const char *text)
+{
+    const uint8_t *p = mock.ram + (uint64_t)DM_DATA_START * DM_BLOCK;
+    size_t n = strlen(text), size = (size_t)DM_DATA_BLOCKS * DM_BLOCK;
+    for (size_t i = 0; i + n <= size; i++)
+        if (p[i] == (uint8_t)text[0] && !memcmp(p + i, text, n))
+            return true;
+    return false;
+}
+
 /* Is the mock's data partition's FAT marked clean (entry 1's clean bit:
  * bit 15 on FAT16, bit 27 on FAT32)? *known false on FAT12 (no bit). */
 static bool data_clean(bool *known)
@@ -163,9 +175,12 @@ bool t_volumes_release_disk(void)
     uint32_t closed0 = dm_count(&mock.closed[0]), closed1 = dm_count(&mock.closed[1]);
     CHECK_ST(volumes_release_disk_until(vm, now() + 30 * NS_PER_S, id ^ 1u), ERR_NOT_FOUND);
     CHECK_ST(volumes_release_disk_until(vm, now() + 30 * NS_PER_S, id), OK);
-    /* both services stopped: their `block` channels closed, the volume clean */
-    CHECK_EQ(dm_count(&mock.closed[0]), closed0 + 1);
-    CHECK_EQ(dm_count(&mock.closed[1]), closed1 + 1);
+    /* both services stopped: their `block` channels closed (the mock's
+     * thread counts them as it sees them), the file and the volume on
+     * the medium, the volume clean */
+    if (!wait_count(&mock.closed[0], closed0 + 1) || !wait_count(&mock.closed[1], closed1 + 1))
+        return false;
+    CHECK(on_medium("written before the release"));
     bool clean = data_clean(&known);
     if (known)
         CHECK(clean);
