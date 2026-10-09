@@ -318,14 +318,27 @@ status_t drv_vmo_unmap(void *addr, uint64_t len)
     return jam_vmar_unmap(startup_handle(SR_SELF_VMAR), first, span);
 }
 
-status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint64_t *addrs,
-                     uint64_t *pin_id)
+static status_t pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint32_t flags,
+                    uint64_t *addrs, uint64_t *pin_id)
 {
     struct vmo_pin_args a = {
         .vmo = vmo, .dma = dma, .offset = off, .len = len,
         .addrs = (uint64_t)(uintptr_t)addrs, .pin_id = (uint64_t)(uintptr_t)pin_id,
+        .flags = flags,
     };
     return jam_vmo_pin(&a);
+}
+
+status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint64_t *addrs,
+                     uint64_t *pin_id)
+{
+    return pin(vmo, dma, off, len, 0, addrs, pin_id);
+}
+
+status_t drv_vmo_pin_read_only(handle_t vmo, handle_t dma, uint64_t off, uint64_t len,
+                               uint64_t *addrs, uint64_t *pin_id)
+{
+    return pin(vmo, dma, off, len, VMO_PIN_READ_ONLY, addrs, pin_id);
 }
 
 status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id)

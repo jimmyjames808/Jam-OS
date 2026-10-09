@@ -255,7 +255,14 @@ static status_t check_pages(const uint64_t *pages, size_t n)
     return OK;
 }
 
-status_t vtd_dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n)
+/* One run, writable or not. */
+static status_t map_pages(struct vtd_dom *d, uint64_t pa, uint64_t k, bool writable,
+                          struct vtd_pt_gather *g)
+{
+    return writable ? vtd_pt_map(&d->pt, pa, k, g) : vtd_pt_map_ro(&d->pt, pa, k, g);
+}
+
+static status_t dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n, bool writable)
 {
     status_t st = check_pages(pages, n);
     if (st != OK)
@@ -266,7 +273,7 @@ status_t vtd_dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n)
     size_t done = 0;
     while (done < n && st == OK) {
         size_t k = run_len(pages + done, n - done);
-        st = vtd_pt_map(&d->pt, pages[done], k, &g);
+        st = map_pages(d, pages[done], k, writable, &g);
         if (st == OK)
             done += k;
     }
@@ -282,6 +289,16 @@ status_t vtd_dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n)
     }
     mutex_unlock(&d->lock);
     return st;
+}
+
+status_t vtd_dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n)
+{
+    return dom_map(d, pages, n, true);
+}
+
+status_t vtd_dom_map_ro(struct vtd_dom *d, const uint64_t *pages, size_t n)
+{
+    return dom_map(d, pages, n, false);
 }
 
 status_t vtd_dom_map_range(struct vtd_dom *d, uint64_t pa, uint64_t pages)
@@ -301,9 +318,16 @@ status_t vtd_dom_unmap(struct vtd_dom *d, const uint64_t *pages, size_t n)
     if (st != OK)
         return st;
     mutex_lock(&d->lock);
+    /* One permission for the whole list (one pin's pages), so the undo
+     * below can put a page whose last pin it took back as it was. */
+    bool writable = false;
     for (size_t i = 0; i < n && st == OK; i++) {
         uint32_t pins;
-        st = vtd_pt_lookup(&d->pt, pages[i], &pins);
+        bool w;
+        st = vtd_pt_lookup_perm(&d->pt, pages[i], &pins, &w);
+        if (st == OK && i && w != writable)
+            st = ERR_INVALID_ARGS;   /* nothing changed yet */
+        writable = w;
     }
     struct vtd_pt_gather g;
     vtd_pt_gather_init(&g);
@@ -318,7 +342,7 @@ status_t vtd_dom_unmap(struct vtd_dom *d, const uint64_t *pages, size_t n)
         /* A page listed twice with one pin: put the earlier runs back. */
         for (size_t i = 0; i < done;) {
             size_t k = run_len(pages + i, done - i);
-            (void)vtd_pt_map(&d->pt, pages[i], k, &g);
+            (void)map_pages(d, pages[i], k, writable, &g);
             i += k;
         }
     }
@@ -566,6 +590,11 @@ status_t iommu_detach(struct iommu_domain *id)
     status_t st = f->cur == id->dom ? vtd_fn_switch_locked(f, f->home) : ERR_BAD_STATE;
     mutex_unlock(&f->ctl->lock);
     return st;
+}
+
+status_t iommu_map_ro(struct iommu_domain *id, const uint64_t *pages, size_t n)
+{
+    return vtd_dom_map_ro(id->dom, pages, n);
 }
 
 status_t iommu_map(struct iommu_domain *id, const uint64_t *pages, size_t n)

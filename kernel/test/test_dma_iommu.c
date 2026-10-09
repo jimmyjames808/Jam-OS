@@ -9,6 +9,17 @@
  *       changes and the unit records a write fault naming edu at that
  *       address; to a page once pinned, after its unpin (which waited for
  *       the invalidation), the same.
+ *   dma_iommu_read_only_pin
+ *       A read-only pin (VMO_PIN_READ_ONLY), made through the system call
+ *       layer with a VMO handle that can only read: the device reads the
+ *       page (its bytes reach another, writable, pinned page), and its
+ *       write there is refused: the page keeps its bytes and the unit
+ *       records a write fault naming edu at that address. The domain's
+ *       leaf for it has read and no write permission, the writable pin's
+ *       both. The same page pinned writable through the cap is refused
+ *       while the read-only pin holds it. The domain's table pages for
+ *       the pins are charged to the driver's job (the cap's), not to the
+ *       VMO's holder's.
  *   dma_iommu_kill_mid_dma
  *       A driver killed while its device has a transfer into its pinned
  *       page queued. Its pages are freed only once the unit has dropped
@@ -165,6 +176,101 @@ KTEST(dma_iommu_unpinned_page_blocked)
     KT_ASSERT(landed);
     KT_ASSERT(other_kept && other_fault);
     KT_ASSERT(unpin_kept && unpin_fault);
+}
+
+/* ---- a read-only pin ----------------------------------------------------------------------- */
+
+/* The domain leaf of pa in cap's domain: present, and writable or not. */
+static bool leaf_writable(struct kobject *cap, uint64_t pa, bool *writable)
+{
+    struct vtd_dom *dom = dma_cap_from_kobject(cap)->dom->dom;
+    uint32_t pins;
+    mutex_lock(&dom->lock);
+    status_t st = vtd_pt_lookup_perm(&dom->pt, pa, &pins, writable);
+    mutex_unlock(&dom->lock);
+    return st == OK;
+}
+
+KTEST(dma_iommu_read_only_pin)
+{
+    struct pci_dev *d = edu_translated();
+    if (!d)
+        return;
+    volatile uint8_t *r = kt_edu_regs(d);
+    KT_ASSERT(kt_edu_idle(r));
+    /* devmgr's job holds the VMO, the driver's the cap (siblings: neither
+     * count holds the other's). */
+    struct job *mgr = kt_fresh_job(), *drv = kt_fresh_job();
+    struct handle_table t;
+    handle_table_init(&t);
+    t.job = mgr;
+    handle_t dev, cap, vh, vro;
+    struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
+    KT_EQ(handle_insert(&t, &kh, &dev), OK);
+    KT_EQ(sys_dma_cap_create(&t, dev, kt_job_handle(&t, drv), &cap), OK);
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
+    /* Page 0: the device only reads it (0xc3). Pages 1 and 2 writable:
+     * 1 gets what was read (0 before), 2 holds what the device then
+     * tries to write into page 0 (0x5a). */
+    KT_EQ(sys_vmo_create(&t, 3 * PG, 0, &vh), OK);
+    KT_EQ(sys_vmo_commit(&t, vh, 0, 3 * PG), OK);
+    struct kobject *vo, *capobj;
+    KT_EQ(handle_get(&t, vh, OBJ_VMO, 0, &vo, NULL), OK);
+    KT_EQ(handle_get(&t, cap, OBJ_DMA_CAP, 0, &capobj, NULL), OK);
+    struct vmo *v = vmo_from_kobject(vo);
+    vmo_fill(v, 0, 0xc3);
+    vmo_fill(v, PG, 0);
+    vmo_fill(v, 2 * PG, 0x5a);
+    KT_EQ(handle_duplicate(&t, vh, RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP, &vro), OK);
+
+    uint64_t dp0 = job_used(drv, JOB_LIMIT_PAGES), mp0 = job_used(mgr, JOB_LIMIT_PAGES);
+    uint64_t pro, prw[2], idro, idrw;
+    KT_EQ(sys_vmo_pin(&t, vro, cap, 0, PG, &pro, &idro), ERR_ACCESS_DENIED);   /* writable */
+    KT_EQ(sys_vmo_pin_flags(&t, vro, cap, 0, PG, VMO_PIN_READ_ONLY, &pro, &idro), OK);
+    uint64_t dp1 = job_used(drv, JOB_LIMIT_PAGES), mp1 = job_used(mgr, JOB_LIMIT_PAGES);
+    KT_EQ(sys_vmo_pin(&t, vh, cap, PG, 2 * PG, prw, &idrw), OK);
+    uint64_t again;
+    status_t mixed = sys_vmo_pin(&t, vh, cap, 0, PG, &again, &again);
+    bool ro_w = true, rw_w = false;
+    bool ro_there = leaf_writable(capobj, pro, &ro_w), rw_there = leaf_writable(capobj, prw[0], &rw_w);
+
+    kt_vtd_faults_watch(true);
+    /* Page 2 -> edu -> page 0: the write is refused. First: QEMU's unit
+     * records the fault only when it walks the tables; a translation
+     * cached by a read of the page first refuses the write unrecorded. */
+    bool ok = kt_edu_dma(r, prw[1], 0, LEN, false) && kt_edu_dma(r, 0, pro, LEN, true);
+    bool ro_kept = vmo_is(v, 0, 0xc3), ro_fault = write_faulted(d, pro);
+    kt_vtd_faults_watch(false);
+    /* Page 0 -> edu -> page 1: the read works. */
+    ok = ok && kt_edu_dma(r, pro, 0, LEN, false) && kt_edu_dma(r, 0, prw[0], LEN, true);
+    bool read_landed = vmo_is(v, PG, 0xc3);
+
+    KT_EQ(sys_vmo_unpin(&t, vro, cap, idro), OK);   /* RIGHT_READ is enough */
+    KT_EQ(sys_vmo_unpin(&t, vh, cap, idrw), OK);
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 0), OK);
+    kobject_unref(capobj);
+    kobject_unref(vo);
+    handle_table_destroy(&t);
+    dma_quarantine_flush(d);   /* the domain gone */
+    kprintf("ktest %s: read-only leaf %s, writable leaf %s; the read %s; the write to the "
+            "read-only page %s, fault %s; a writable pin of it: %s; the pin's tables: %lu "
+            "page(s) to the driver's job, %lu to the VMO's holder's\n", ktest_current,
+            !ro_there ? "MISSING" : ro_w ? "WRITABLE" : "read only",
+            !rw_there ? "MISSING" : rw_w ? "writable" : "READ ONLY",
+            read_landed ? "landed" : "DID NOT LAND", ro_kept ? "refused" : "LANDED",
+            ro_fault ? "recorded" : "MISSING", status_str(mixed), dp1 - dp0, mp1 - mp0);
+    kt_job_is_empty(drv);
+    kt_job_is_empty(mgr);
+    job_unref(drv);
+    job_unref(mgr);
+    KT_ASSERT(ro_there && !ro_w);
+    KT_ASSERT(rw_there && rw_w);
+    KT_EQ(mixed, ERR_BAD_STATE);
+    KT_ASSERT(ok);
+    KT_ASSERT(read_landed);
+    KT_ASSERT(ro_kept && ro_fault);
+    KT_ASSERT(dp1 > dp0);   /* a new path of tables down to the page */
+    KT_EQ(mp1, mp0);
 }
 
 /* ---- a driver killed mid-DMA --------------------------------------------------------------- */

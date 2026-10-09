@@ -260,7 +260,8 @@ static status_t walk(struct vtd_pt *pt, uint64_t iova, struct path *p, struct vt
 
 /* ---- one page ---------------------------------------------------------------------- */
 
-static status_t map_one(struct vtd_pt *pt, uint64_t iova, struct vtd_pt_gather *g)
+/* perm: VTD_PTE_R, or VTD_PTE_R | VTD_PTE_W. */
+static status_t map_one(struct vtd_pt *pt, uint64_t iova, uint64_t perm, struct vtd_pt_gather *g)
 {
     struct path p;
     status_t st = walk(pt, iova, &p, g);
@@ -269,12 +270,14 @@ static status_t map_one(struct vtd_pt *pt, uint64_t iova, struct vtd_pt_gather *
     uint64_t *e = &p.table[1][index_of(iova, 1)];
     if (present(*e)) {
         unsigned pins = sw_bits(*e);
+        if ((*e & (VTD_PTE_R | VTD_PTE_W)) != perm)
+            return ERR_BAD_STATE;   /* one permission per page (the file header) */
         if (pins >= VTD_PT_MAX_PINS)
             return ERR_NO_RESOURCES;
         put(e, with_sw(*e, pins + 1));
         return OK;
     }
-    uint64_t leaf = iova | VTD_PTE_R | VTD_PTE_W | (pt->geom.snoop ? VTD_PTE_SNP : 0);
+    uint64_t leaf = iova | perm | (pt->geom.snoop ? VTD_PTE_SNP : 0);
     put(e, with_sw(leaf, 1));
     flush(pt, e, sizeof(*e));
     used_add(pt, &p, 1, +1);
@@ -389,13 +392,14 @@ status_t vtd_pt_destroy(struct vtd_pt *pt)
     return OK;
 }
 
-status_t vtd_pt_map(struct vtd_pt *pt, uint64_t pa, uint64_t n, struct vtd_pt_gather *g)
+static status_t map_run(struct vtd_pt *pt, uint64_t pa, uint64_t n, uint64_t perm,
+                        struct vtd_pt_gather *g)
 {
     status_t st = check_run(pt, pa, n);
     if (st != OK)
         return st;
     for (uint64_t i = 0; i < n; i++) {
-        st = map_one(pt, pa + (i << PAGE_SHIFT), g);
+        st = map_one(pt, pa + (i << PAGE_SHIFT), perm, g);
         if (st == OK)
             continue;
         /* All or nothing: each page before i got exactly one pin here. */
@@ -404,6 +408,16 @@ status_t vtd_pt_map(struct vtd_pt *pt, uint64_t pa, uint64_t n, struct vtd_pt_ga
         return st;
     }
     return OK;
+}
+
+status_t vtd_pt_map(struct vtd_pt *pt, uint64_t pa, uint64_t n, struct vtd_pt_gather *g)
+{
+    return map_run(pt, pa, n, VTD_PTE_R | VTD_PTE_W, g);
+}
+
+status_t vtd_pt_map_ro(struct vtd_pt *pt, uint64_t pa, uint64_t n, struct vtd_pt_gather *g)
+{
+    return map_run(pt, pa, n, VTD_PTE_R, g);
 }
 
 status_t vtd_pt_unmap(struct vtd_pt *pt, uint64_t pa, uint64_t n, struct vtd_pt_gather *g)
@@ -440,6 +454,13 @@ status_t vtd_pt_gather_finish(struct vtd_pt *pt, struct vtd_pt_gather *g)
 
 status_t vtd_pt_lookup(const struct vtd_pt *pt, uint64_t iova, uint32_t *out_pins)
 {
+    bool w;
+    return vtd_pt_lookup_perm(pt, iova, out_pins, &w);
+}
+
+status_t vtd_pt_lookup_perm(const struct vtd_pt *pt, uint64_t iova, uint32_t *out_pins,
+                            bool *writable)
+{
     if (iova >= 1ull << pt->geom.addr_bits)
         return ERR_NOT_FOUND;
     const uint64_t *table = table_at(pt->root);
@@ -453,5 +474,6 @@ status_t vtd_pt_lookup(const struct vtd_pt *pt, uint64_t iova, uint32_t *out_pin
     if (!present(e))
         return ERR_NOT_FOUND;
     *out_pins = sw_bits(e);
+    *writable = (e & VTD_PTE_W) != 0;
     return OK;
 }

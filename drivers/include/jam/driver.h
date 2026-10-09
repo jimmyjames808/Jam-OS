@@ -148,6 +148,11 @@ status_t drv_vmo_unmap(void *addr, uint64_t len);
 /* DMA: one device address per page into addrs[len / 4096]. */
 status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint64_t *addrs,
                      uint64_t *pin_id);
+/* The same for memory the device only reads (a transmit buffer, a sound
+ * stream): with the IOMMU the device can't write it (VMO_PIN_READ_ONLY).
+ * A page is pinned one way at a time (ERR_BAD_STATE). */
+status_t drv_vmo_pin_read_only(handle_t vmo, handle_t dma, uint64_t off, uint64_t len,
+                               uint64_t *addrs, uint64_t *pin_id);
 /* Needs the dma_cap the pin was made with (anyone else: ERR_ACCESS_DENIED). */
 status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);
 /* Bus Master Enable of the DR_DMA cap's function. A driver starts

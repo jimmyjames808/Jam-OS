@@ -36,6 +36,13 @@
  *       caller pays only for its handle and its own VMO. Only a job the
  *       caller manages may be named. Once the cap is gone the driver's job
  *       is charged for nothing.
+ *   dma_read_only_pin_rules
+ *       A read-only pin (VMO_PIN_READ_ONLY) needs only RIGHT_READ where
+ *       the IOMMU makes it read only, and RIGHT_WRITE as any pin where it
+ *       doesn't (the device could write through it); a sealed VMO takes a
+ *       read-only pin only in the first case. Unpinning needs RIGHT_READ.
+ *       An unknown flag is refused. (The device's refused write is
+ *       test_dma_iommu.c's dma_iommu_read_only_pin.)
  *   m6r_pins_are_charged
  *       Every pin is a kernel allocation, so it is charged: otherwise a
  *       driver pins one page over and over and fills the kernel heap.
@@ -504,6 +511,64 @@ KTEST(dma_cap_charges_driver_job)
     }
     KT_EQ(dp3, 0);
     KT_EQ(dh3, 0);
+}
+
+/* ---- read-only pins -------------------------------------------------------------- */
+
+KTEST(dma_read_only_pin_rules)
+{
+    struct pci_dev *d = kt_edu();
+    if (!d)
+        return;
+    struct job *j = kt_fresh_job();
+    struct handle_table t;
+    handle_table_init(&t);
+    t.job = j;
+    handle_t dev, cap, vh, vro;
+    struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
+    KT_EQ(handle_insert(&t, &kh, &dev), OK);
+    KT_EQ(sys_dma_cap_create(&t, dev, kt_job_handle(&t, j), &cap), OK);
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
+    KT_EQ(sys_vmo_create(&t, PG, 0, &vh), OK);
+    KT_EQ(handle_duplicate(&t, vh, RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP, &vro), OK);
+    struct kobject *capobj;
+    KT_EQ(handle_get(&t, cap, OBJ_DMA_CAP, 0, &capobj, NULL), OK);
+    bool tr = dma_cap_translated(capobj);
+
+    uint64_t pa, id, id2;
+    KT_EQ(sys_vmo_pin_flags(&t, vh, cap, 0, PG, 2, &pa, &id), ERR_INVALID_ARGS);
+    KT_EQ(sys_vmo_pin(&t, vro, cap, 0, PG, &pa, &id), ERR_ACCESS_DENIED);
+    status_t ro_read = sys_vmo_pin_flags(&t, vro, cap, 0, PG, VMO_PIN_READ_ONLY, &pa, &id);
+    if (ro_read == OK)
+        KT_EQ(sys_vmo_unpin(&t, vro, cap, id), OK);
+    /* With RIGHT_WRITE a read-only pin works either way, and RIGHT_READ
+     * undoes it. */
+    KT_EQ(sys_vmo_pin_flags(&t, vh, cap, 0, PG, VMO_PIN_READ_ONLY, &pa, &id2), OK);
+    KT_EQ(sys_vmo_unpin(&t, vro, cap, id2), OK);
+
+    /* A sealed VMO: nothing may change its bytes, a device included. */
+    struct vmo *sv;
+    KT_EQ(vmo_create(PG, 0, &sv), OK);
+    KT_EQ(vmo_commit(sv, 0, PG), OK);
+    KT_EQ(vmo_seal(sv), OK);
+    status_t sealed_rw = vmo_pin(sv, capobj, 0, PG, &pa, 1, &id);
+    status_t sealed_ro = vmo_pin_flags(sv, capobj, 0, PG, VMO_PIN_READ_ONLY, &pa, 1, &id);
+    if (sealed_ro == OK)
+        KT_EQ(vmo_unpin(sv, capobj, id), OK);
+    kobject_unref(vmo_kobject(sv));
+
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 0), OK);
+    kobject_unref(capobj);
+    handle_table_destroy(&t);
+    dma_quarantine_flush(d);
+    kt_job_is_empty(j);
+    job_unref(j);
+    kprintf("ktest %s: %s: a read-only pin with RIGHT_READ: %s; of a sealed VMO: %s (a "
+            "writable one: %s)\n", ktest_current, tr ? "translated" : "not translated",
+            status_str(ro_read), status_str(sealed_ro), status_str(sealed_rw));
+    KT_EQ(ro_read, tr ? OK : ERR_ACCESS_DENIED);
+    KT_EQ(sealed_ro, tr ? OK : ERR_BAD_STATE);
+    KT_EQ(sealed_rw, ERR_BAD_STATE);
 }
 
 /* ---- unpin needs nothing but a writable VMO handle ------------------------------- */

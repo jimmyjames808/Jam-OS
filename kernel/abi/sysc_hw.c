@@ -18,8 +18,11 @@
  *   dma_cap_bus_master     a dma_cap handle (any rights): its function's
  *                          current cap; on 0 or 1
  *   vmo_create_physical    RIGHT_MAP on a RES_ROOT / RES_MMIO
- *   vmo_pin / vmo_unpin    RIGHT_WRITE on the VMO; a bound dma_cap (unpin:
- *                          the one the pin was made with)
+ *   vmo_pin                RIGHT_WRITE on the VMO (RIGHT_READ for a
+ *                          VMO_PIN_READ_ONLY pin the IOMMU enforces: the
+ *                          cap has a domain); a bound dma_cap
+ *   vmo_unpin              RIGHT_READ on the VMO; the dma_cap the pin was
+ *                          made with
  * A resource made from a handle gets that handle's rights (masked to
  * RES_RIGHTS), so a device handle without RIGHT_MANAGE only yields BAR
  * resources without it; a physical VMO made from a resource handle
@@ -37,7 +40,8 @@
 #include "sysc.h"
 
 #define PHYS_VMO_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP)
-#define VMO_HANDLE_RIGHTS_PIN RIGHT_WRITE
+#define VMO_HANDLE_RIGHTS_PIN RIGHT_WRITE   /* a pin the device may write through */
+#define VMO_HANDLE_RIGHTS_PIN_RO RIGHT_READ /* one it can only read: the IOMMU's */
 
 /* Insert a fresh object (refs = 1) into t; on failure it is gone. */
 static status_t insert_new(struct handle_table *t, struct kobject *obj, rights_t rights,
@@ -315,17 +319,20 @@ status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t job, 
 
 /* vmo_pin on handles; on success *keep / *keep_cap (if keep is non-NULL)
  * hold references on the VMO and the cap, so the pin can be undone even if
- * the handles go meanwhile. */
+ * the handles go meanwhile. A read-only pin needs only RIGHT_READ where
+ * the IOMMU makes it read only (the cap has a domain); without one the
+ * device may write through it, so it needs what any pin does. */
 static status_t pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,
-                    uint64_t len, uint64_t *addrs, uint64_t *pin_id, struct vmo **keep,
-                    struct kobject **keep_cap)
+                    uint64_t len, uint32_t flags, uint64_t *addrs, uint64_t *pin_id,
+                    struct vmo **keep, struct kobject **keep_cap)
 {
-    if (len == 0 || (len & (PAGE_SIZE - 1)))
+    if (len == 0 || (len & (PAGE_SIZE - 1)) || (flags & ~VMO_PIN_READ_ONLY))
         return ERR_INVALID_ARGS;
     if ((len >> PAGE_SHIFT) > VMO_PIN_MAX_PAGES)
         return ERR_OUT_OF_RANGE;
     struct kobject *vo, *cap;
-    status_t st = handle_get(t, vmo, OBJ_VMO, VMO_HANDLE_RIGHTS_PIN, &vo, NULL);
+    rights_t have;
+    status_t st = handle_get(t, vmo, OBJ_VMO, 0, &vo, &have);
     if (st != OK)
         return st;
     st = handle_get(t, dma, OBJ_DMA_CAP, 0, &cap, NULL);
@@ -333,10 +340,16 @@ static status_t pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t
         kobject_unref(vo);
         return st;
     }
-    if (!dma_cap_device(cap))
+    rights_t need = (flags & VMO_PIN_READ_ONLY) && dma_cap_translated(cap)
+                        ? VMO_HANDLE_RIGHTS_PIN_RO
+                        : VMO_HANDLE_RIGHTS_PIN;
+    if ((have & need) != need)
+        st = ERR_ACCESS_DENIED;
+    else if (!dma_cap_device(cap))
         st = ERR_ACCESS_DENIED;   /* unbound caps are for kernel tests only */
     else
-        st = vmo_pin(vmo_from_kobject(vo), cap, offset, len, addrs, len >> PAGE_SHIFT, pin_id);
+        st = vmo_pin_flags(vmo_from_kobject(vo), cap, offset, len, flags, addrs,
+                           len >> PAGE_SHIFT, pin_id);
     if (st == OK && keep) {
         *keep = vmo_from_kobject(vo);
         *keep_cap = cap;
@@ -347,16 +360,19 @@ static status_t pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t
     return st;
 }
 
-status_t sys_vmo_pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,
-                     uint64_t len, uint64_t *addrs, uint64_t *pin_id)
+status_t sys_vmo_pin_flags(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,
+                           uint64_t len, uint32_t flags, uint64_t *addrs, uint64_t *pin_id)
 {
-    return pin(t, vmo, dma, offset, len, addrs, pin_id, NULL, NULL);
+    return pin(t, vmo, dma, offset, len, flags, addrs, pin_id, NULL, NULL);
 }
 
+/* RIGHT_READ is enough: taking a pin away gives nobody anything, and only
+ * the pin's own cap may (a read-only pin may have been made with a
+ * read-only handle, and its maker must be able to undo it). */
 status_t sys_vmo_unpin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t pin_id)
 {
     struct kobject *vo, *cap;
-    status_t st = handle_get(t, vmo, OBJ_VMO, VMO_HANDLE_RIGHTS_PIN, &vo, NULL);
+    status_t st = handle_get(t, vmo, OBJ_VMO, RIGHT_READ, &vo, NULL);
     if (st != OK)
         return st;
     st = handle_get(t, dma, OBJ_DMA_CAP, 0, &cap, NULL);
@@ -453,7 +469,8 @@ int64_t sysc_dma_cap_create(handle_t dev, handle_t job, uint64_t out)
 int64_t sysc_vmo_pin(const struct vmo_pin_args *a)
 {
     SYSC_TABLE(t);
-    if (a->len == 0 || (a->len & (PAGE_SIZE - 1)) || a->flags || a->reserved)
+    if (a->len == 0 || (a->len & (PAGE_SIZE - 1)) || (a->flags & ~VMO_PIN_READ_ONLY) ||
+        a->reserved)
         return ERR_INVALID_ARGS;
     if ((a->len >> PAGE_SHIFT) > VMO_PIN_MAX_PAGES)
         return ERR_OUT_OF_RANGE;
@@ -464,7 +481,7 @@ int64_t sysc_vmo_pin(const struct vmo_pin_args *a)
     uint64_t id = 0;
     struct vmo *v = NULL;
     struct kobject *cap = NULL;
-    status_t st = pin(t, a->vmo, a->dma, a->offset, a->len, buf, &id, &v, &cap);
+    status_t st = pin(t, a->vmo, a->dma, a->offset, a->len, a->flags, buf, &id, &v, &cap);
     if (st == OK) {
         /* Nobody learned the pin if a copy fails: undo it (on the objects
          * themselves, whatever happened to the handles meanwhile). */

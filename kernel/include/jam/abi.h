@@ -364,9 +364,19 @@ struct vmo_pin_args {
     uint64_t len;              /* page-aligned: 1 .. VMO_PIN_MAX_PAGES pages */
     uint64_t addrs;            /* user address: len / 4096 uint64_t, one device address a page */
     uint64_t pin_id;           /* user address of a uint64_t: the pin's id, for vmo_unpin */
-    uint32_t flags;            /* none yet: 0 (any bit: ERR_INVALID_ARGS) */
+    uint32_t flags;            /* VMO_PIN_*; any other bit: ERR_INVALID_ARGS */
     uint32_t reserved;         /* 0 */
 };
+
+/* The device only reads the pages (a transmit buffer, a sound stream):
+ * with the IOMMU translating (sys_info's SYSINFO_IOMMU: the dma_cap has a
+ * domain) they are mapped for it read only, so its writes there are
+ * refused and faulted, and the pin needs only RIGHT_READ on the VMO.
+ * Without the IOMMU nothing stops a device's write, so the flag changes
+ * nothing and the pin needs RIGHT_WRITE as any other. A page is pinned
+ * through one dma_cap one way at a time: a read-only pin of a page that
+ * cap has pinned writable (or the reverse) is ERR_BAD_STATE. */
+#define VMO_PIN_READ_ONLY (1u << 0)
 
 /* input (abi/idl/input.idl, console.idl) ------------------------------------- */
 

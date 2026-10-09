@@ -123,12 +123,19 @@ status_t iommu_detach(struct iommu_domain *d);
  * the new mappings are invalidated (one batch, one wait). All or nothing.
  * ERR_INVALID_ARGS (n = 0, an unaligned page), ERR_OUT_OF_RANGE (past the
  * unit's address width), ERR_NO_RESOURCES (the domain's table cap),
- * ERR_NO_MEMORY, ERR_TIMED_OUT. */
+ * ERR_NO_MEMORY, ERR_TIMED_OUT, ERR_BAD_STATE (a page mapped read only
+ * already: one permission per page and domain).
+ * iommu_map_ro: the same, read only: the device's writes to the pages
+ * are refused (and faulted, recorded as any); ERR_BAD_STATE for a page
+ * mapped writable already. */
 status_t iommu_map(struct iommu_domain *d, const uint64_t *pages, size_t n);
+status_t iommu_map_ro(struct iommu_domain *d, const uint64_t *pages, size_t n);
 
 /* Drop one pin of each of pages[0..n); mappings whose pins reach 0 are
  * removed, the unit's caches invalidated (one batch) and waited for. Only
  * after OK may the pages be reused. ERR_NOT_FOUND (a page not mapped:
- * nothing changed), ERR_TIMED_OUT (the invalidation failed: the pages
+ * nothing changed), ERR_INVALID_ARGS (pages mapped writable and read only
+ * in one call: nothing changed; a pin's pages are all one or the other),
+ * ERR_TIMED_OUT (the invalidation failed: the pages
  * must NOT be reused; the emptied table pages are kept). */
 status_t iommu_unmap(struct iommu_domain *d, const uint64_t *pages, size_t n);

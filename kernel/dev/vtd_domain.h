@@ -169,9 +169,10 @@ status_t vtd_dom_new(struct vtd_ctl *ctl, struct job *job, uint32_t max_tables, 
 /* Free a domain no entry names (users 0): vtd_did_free, then its tables.
  * ERR_BAD_STATE, or vtd_did_free's error (nothing freed). */
 status_t vtd_dom_free(struct vtd_dom *d);
-/* Map/unmap pages[0..n) at their own addresses (iommu_map's contract).
- * Takes "vtd domain". */
+/* Map/unmap pages[0..n) at their own addresses (iommu_map's,
+ * iommu_map_ro's and iommu_unmap's contracts). Takes "vtd domain". */
 status_t vtd_dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n);
+status_t vtd_dom_map_ro(struct vtd_dom *d, const uint64_t *pages, size_t n);
 status_t vtd_dom_unmap(struct vtd_dom *d, const uint64_t *pages, size_t n);
 /* Map [pa, pa + pages * 4 KiB) (an RMRR). */
 status_t vtd_dom_map_range(struct vtd_dom *d, uint64_t pa, uint64_t pages);

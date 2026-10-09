@@ -140,7 +140,8 @@ status_t dma_cap_create(struct kobject **out);
  * ERR_WRONG_TYPE if dma_cap isn't a DMA capability, ERR_BUFFER_TOO_SMALL
  * if phys_cap (entries) is too small, ERR_BAD_STATE if the cap is bound to
  * a function whose Bus Master Enable is off, or that has a newer cap,
- * or its last handle is gone. From the domain: ERR_OUT_OF_RANGE (a page
+ * or its last handle is gone, or if the pin writes (no VMO_PIN_READ_ONLY,
+ * or no domain) and v is sealed. From the domain: ERR_OUT_OF_RANGE (a page
  * past the unit's address width), ERR_NO_RESOURCES (the domain's table
  * cap, or a page pinned 1023 times), ERR_NO_MEMORY, and ERR_TIMED_OUT /
  * ERR_IO (the unit didn't confirm an invalidation: the pages stay pinned
@@ -148,9 +149,23 @@ status_t dma_cap_create(struct kobject **out);
  * vmo_unpin or until the cap's last handle closes (which releases every
  * pin made with it, or for a cap bound to a function hands them to
  * dma_cap.c: freed once the IOMMU took them away, else quarantined).
- * Thread context, no spinlock held. */
-status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
-                 uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id);
+ * Thread context, no spinlock held.
+ * flags: VMO_PIN_READ_ONLY (<jam/abi.h>), the device only reads the
+ * pages: with a domain they are mapped there read only (its writes
+ * fault), ERR_BAD_STATE if one of them is mapped there writable by
+ * another pin already (and a writable pin of a page mapped read only is
+ * refused the same way: one permission per page and domain); the pin
+ * doesn't count as a write (a sealed VMO takes it). Without a domain the
+ * flag changes nothing: the device can write anyway. Any other bit is
+ * ERR_INVALID_ARGS. vmo_pin is vmo_pin_flags with flags 0. */
+status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
+                       uint32_t flags, uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id);
+static inline status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset,
+                               uint64_t len, uint64_t *phys_out, uint64_t phys_cap,
+                               uint64_t *pin_id)
+{
+    return vmo_pin_flags(v, dma_cap, offset, len, 0, phys_out, phys_cap, pin_id);
+}
 /* Undo a pin. Only the capability it was made with may: ERR_NOT_FOUND if
  * pin_id isn't a live pin of v, ERR_ACCESS_DENIED if it was made with
  * another dma_cap (a client sharing the VMO must not free a page a device
