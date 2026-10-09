@@ -76,7 +76,12 @@ that a bug fix comes with a test is in
   driver rules and, under ASan and UBSan, gives what `tools/mkgpt.py
   --cases` says on each of its images, refuses each GPT header rule
   broken alone, and lists nothing outside the disk on thousands of
-  mutated tables and a short fuzz pass (`build/host/gptcheck`).
+  mutated tables and a short fuzz pass (`build/host/gptcheck`); usb-bus's
+  root port handling (`drivers/usb-bus/rootport.c`) leaves no port change
+  unseen under the controller's event rule (xHCI 4.19.2: an event only
+  when a port's change bits go from none to some), which QEMU doesn't
+  model: a stick pushed back in, or a connector bouncing, at every point
+  of a port's handling (`build/host/rootportcheck`).
 
 ## Running QEMU: tools/qemu-test.sh
 
@@ -848,6 +853,7 @@ matters `QEMU_XHCI`) pass through.
 | Script | What |
 |---|---|
 | `tools/usb-test.sh <outdir>` | the `init` run with a hub, a test keyboard behind it, a CCID device, a mouse and a keyboard; the monitor script answers usbtest's markers (keys, kill hid, unplug, replug, unplug the hub) |
+| `tools/replug-test.sh <outdir> [name] [rounds] [once]` | a stick on port 2 pulled and pushed back in quickly, 81 times by default, by a driver on QEMU's monitor and the log: from usb-bus's "attached" line to the pull 0, 30 or 150 ms, from its "detached" line to the replug 0 to 100 ms (or the replug right after the pull); every replug must attach within 4 s. QEMU refuses a device_add of a drive whose last device it hasn't freed yet (some 70 ms after the pull): the driver tries again, as `serial-feed.py` does; `once` sends each device_add once, as `serial-feed.py` did before, and those replugs are lost (what `screen-test.sh`'s "stick is back" sometimes waited for). About two minutes |
 | `tools/usb-early-test.sh <outdir>` | input early in boot (`usb-early.txt`): a plain boot with a hub (a keyboard, a disk and a slow keyboard behind it), a mouse and a slow keyboard on root ports; the slow ones have the serial number `jamos-test-slow`, which usb-bus treats as a device that doesn't answer (its first two attempts on a port each take a second and fail). The compositor's "input ready: the first keyboard and mouse" line must come under `EARLY_MAX` s (1.5) and before either slow device attached; both slow ports are tried again after 100 and 200 ms and attach on the third attempt; prints the times |
 | `tools/bootdisk-test.sh <outdir>` | the boot disk with two Jam OS sticks in (`bootdisk.txt`): a copy of the image with another MBR disk id and a file of its own on its data partition, on qemu-xhci port 2; `/data` must be the boot stick's and the copy's data partition `/usb1`, before and after a `reboot` (kexec), and the kernel must name the boot stick's id both times (the second from the kernel before) |
 | `tools/storage-test.sh <outdir>` | the `init` run with two more usb-storage disks behind a hub: usbtest's storage checks (bulk transfers, a STALL and reset recovery, usb-storage taking over a disk left mid-READ, the ESP's boot sector read through `block`, read-only and out-of-range requests refused, a write read back, and the fence: WRITEs a client queued and left behind, while usb-storage was busy with another channel's READs, are dropped and never land, and usb-storage logs `its client left with 4 request(s) queued: dropped`), the second disk read while a READ waits on the slow one (usb-bus runs each device's transfers apart), the monitor script unplugging the second disk while it is being read, and READs timing out on a disk QEMU throttles to 4 KiB/s |

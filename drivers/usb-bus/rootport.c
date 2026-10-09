@@ -14,18 +14,56 @@
  * plugged in again: any connect change starts the count over. A device
  * that left or reconnected during the attempt (the PC's gaming mouse drops
  * off the bus and comes back while it starts) costs no attempt: its own
- * port change starts it over. */
+ * port change starts it over.
+ *
+ * Change bits (xHCI 1.2 5.4.8: CSC, PEC, WRC, OCC, PRC, PLC, CEC are
+ * RW1CS, cleared by writing 1; hc_portsc_write keeps the RWS bits and
+ * never writes PED) and events (4.19.2): the controller posts a Port
+ * Status Change event only when the OR of a port's change bits goes from
+ * 0 to 1, so a change that comes while another change bit is still set
+ * posts none. Two rules follow, so no change is ever left unseen:
+ *   - root_take_changes clears until it reads no change bit, and the
+ *     port's status is taken from that last read: a change that lands
+ *     between a read and its clear (a stick pushed back in just as its
+ *     unplug is handled, a connector bouncing) is seen, not left set, and
+ *     the status isn't the stale one from before it;
+ *   - a pass that ends with a change bit still set (one that came during
+ *     a reset, which clears only its own bits) marks the port changed,
+ *     as its event would have. */
 #include "usbbus.h"
 
 static uint8_t root_fail[256];       /* failed attach attempts in a row, per root port */
 static uint64_t root_retry_at[256];  /* when to try a failed port again (ns); 0: not waiting */
 static uint8_t root_oc[256];         /* port power restores after over-current, per root port */
+static uint8_t root_again[256];      /* passes in a row that ended with a change bit set */
+
+/* Passes in a row that may end with a change bit still set before the
+ * port is left to its events: a bit that can't be cleared would otherwise
+ * run its port's task over and over. */
+#define AGAIN_MAX 8
 
 void root_ports_reset(void)
 {
     __builtin_memset(root_fail, 0, sizeof(root_fail));
     __builtin_memset(root_oc, 0, sizeof(root_oc));
     __builtin_memset(root_retry_at, 0, sizeof(root_retry_at));
+    __builtin_memset(root_again, 0, sizeof(root_again));
+}
+
+/* PORTSC as it is now, with every change bit seen since the last call:
+ * each is cleared, and PORTSC read again, until a read shows none (4
+ * rounds at most: each round past the first needs another change to have
+ * come in meanwhile; one left over is root_port's to see). 0xffffffff:
+ * the controller is gone. */
+static uint32_t root_take_changes(struct hc *h, uint32_t p)
+{
+    uint32_t seen = 0, v = hc_portsc(h, p);
+    for (int i = 0; i < 4 && v != 0xffffffffu && (v & PS_CHANGES); i++) {
+        seen |= v & PS_CHANGES;
+        hc_portsc_write(h, p, v & PS_CHANGES);
+        v = hc_portsc(h, p);
+    }
+    return v == 0xffffffffu ? v : v | seen;
 }
 
 static bool root_reset(struct hc *h, uint32_t p, uint32_t *v)
@@ -39,8 +77,11 @@ static bool root_reset(struct hc *h, uint32_t p, uint32_t *v)
             if ((*v & PS_PRC) && !(*v & PS_PR))
                 break;
         }
+        /* The reset's own change bits; a connect change that came
+         * meanwhile (the device left or bounced) stays for root_failed
+         * and the next pass. */
         *v = hc_portsc(h, p);
-        hc_portsc_write(h, p, *v & (PS_PRC | PS_PEC | PS_CSC));
+        hc_portsc_write(h, p, *v & (PS_PRC | PS_PEC));
         if (!(*v & PS_PRC)) {
             drv_report("usb %u: FAILED at port reset: no PRC 500 ms after PR (PORTSC %08x)", p, *v);
             return false;
@@ -209,20 +250,18 @@ static void root_attach(struct hc *h, uint32_t p)
         root_failed(h, p);
 }
 
-void root_port(struct hc *h, uint32_t p)
+static void root_pass(struct hc *h, uint32_t p)
 {
-    uint32_t v = hc_portsc(h, p);
+    uint32_t v = root_take_changes(h, p);
     if (v == 0xffffffffu)
         return;
-    if (v & PS_CHANGES)
-        hc_portsc_write(h, p, v & PS_CHANGES);
     if (v & PS_OCC) {
         drv_log("usb %u: over-current (PORTSC %08x)", p, v);
         root_over_current(h, p);
-        uint32_t w = hc_portsc(h, p);
-        if (w & PS_CHANGES)
-            hc_portsc_write(h, p, w & PS_CHANGES);
-        v = (w & ~PS_CHANGES) | ((v | w) & PS_CHANGES);   /* keep every change seen */
+        uint32_t w = root_take_changes(h, p);
+        if (w == 0xffffffffu)
+            return;
+        v = w | (v & PS_CHANGES);   /* the status now, every change seen */
     }
     struct usbdev *d = child_at(-1, (uint8_t)p);
     if (!(v & PS_CCS)) {
@@ -247,4 +286,26 @@ void root_port(struct hc *h, uint32_t p)
         return;
     }
     root_attach(h, p);
+}
+
+/* One pass over root port p (a port task's work), then the check that
+ * keeps its events coming: a change bit still set means the controller
+ * posts no event for the port until it is cleared (4.19.2), so the port
+ * is marked for another pass now. */
+void root_port(struct hc *h, uint32_t p)
+{
+    root_pass(h, p);
+    uint32_t v = hc_portsc(h, p);
+    if (v == 0xffffffffu || !(v & PS_CHANGES) || h->stopping) {
+        root_again[p] = 0;
+        return;
+    }
+    if (root_again[p] < AGAIN_MAX) {
+        root_again[p]++;
+        h->port_changed[p / 32] |= 1u << (p % 32);
+    } else if (root_again[p] == AGAIN_MAX) {
+        root_again[p]++;   /* logged once, until a pass ends clean */
+        drv_log("usb %u: change bits stay set after %u passes (PORTSC %08x): left to "
+                "the port's events", p, AGAIN_MAX, v);
+    }
 }
