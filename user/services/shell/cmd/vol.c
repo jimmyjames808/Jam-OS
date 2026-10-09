@@ -84,7 +84,7 @@ SH_CMD(vol)
         sh_say("vol: master %s\n", vol_str(got, a, sizeof(a)));
     if (st == OK && master)
         sh_keep_setting("vol", "volume", sh_db(got, a, sizeof(a)));
-    else
+    else if (st == OK)
         sh_say("vol: stream %lu %s\n", (unsigned long)id, vol_str(got, a, sizeof(a)));
     return st == OK ? 0 : 1;
 }
