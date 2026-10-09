@@ -127,7 +127,7 @@ bool t_fat_view_limits(void)
     for (uint64_t until = now() + 5 * NS_PER_S; st == ERR_NO_RESOURCES && now() < until;) {
         st = fs_view_until(r.fs, now() + FAT_CALL_NS, 0, &v[0]);   /* once fat saw it close */
         if (st == ERR_NO_RESOURCES)
-            jam_nanosleep(now() + 10 * NS_PER_MS);
+            jam_sleep_until(now() + 10 * NS_PER_MS);
     }
     CHECK_ST(st, OK);
     CHECK(fat_stop(&r));

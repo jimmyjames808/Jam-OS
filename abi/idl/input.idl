@@ -14,11 +14,36 @@
 # is usage 0x06, codepoint 'c', a CTRL bit in mods), Enter '\n', Tab
 # '\t', Backspace '\b', Escape 0x1b; 0 for keys that type nothing
 # (arrows, F-keys, modifiers, locks). Ctrl+Alt+Del is just usage 0x4c DOWN
-# with CTRL and ALT set: the console decides. See <jam/abi.h> "input".
+# with CTRL and ALT set: the console decides. The constants are below.
 
 protocol input 11
 
-1  key    (u16 usage, u8 state, u8 mods, u32 codepoint) -> ()
+# key's state.
+const KEY_UP         0
+const KEY_DOWN       1
+const KEY_REPEAT     2
+# ready's kind.
+const READY_KEYBOARD 1
+const READY_MOUSE    2
+# key's mods: the HID boot report's modifier byte.
+const MOD_LCTRL      1 << 0
+const MOD_LSHIFT     1 << 1
+const MOD_LALT       1 << 2
+const MOD_LGUI       1 << 3
+const MOD_RCTRL      1 << 4
+const MOD_RSHIFT     1 << 5
+const MOD_RALT       1 << 6
+const MOD_RGUI       1 << 7
+# Either Ctrl (LCTRL | RCTRL), either Shift, either Alt.
+const MOD_CTRL       0x11
+const MOD_SHIFT      0x22
+const MOD_ALT        0x44
+# mouse's buttons: the HID boot mouse report's button bits.
+const BTN_LEFT       1 << 0
+const BTN_RIGHT      1 << 1
+const BTN_MIDDLE     1 << 2
+
+1  key   (u16 usage, u8 state, u8 mods, u32 codepoint) -> ()
 # buttons: bit 0 left, 1 right, 2 middle.
 2  mouse  (i16 dx, i16 dy, i8 wheel, u8 buttons) -> ()
 # Raw bytes from a terminal (the serial source): printable text and VT100

@@ -71,6 +71,15 @@ struct phdr {
 static uint64_t down(uint64_t x) { return x & ~(PAGE_SIZE - 1); }
 static uint64_t up(uint64_t x) { return (x + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1); }
 
+/* A process's or thread's name as the kernel takes it: cut to
+ * PROCESS_NAME_MAX bytes here (the kernel refuses a longer one,
+ * ERR_OUT_OF_RANGE). */
+static uint64_t name_len(const char *name)
+{
+    size_t n = strlen(name);
+    return n < PROCESS_NAME_MAX ? n : PROCESS_NAME_MAX;
+}
+
 /* Map one PT_LOAD segment of the program into vmar. */
 static status_t load_segment(handle_t vmar, const struct image *img, const struct phdr *ph)
 {
@@ -272,7 +281,7 @@ static status_t load_child(const struct image *img, const char *name, struct chi
     if (st == OK)
         st = make_stack(c->vmar, &c->stack);
     if (st == OK)
-        st = jam_thread_create(c->proc, name, strlen(name), 0, &c->thread);
+        st = jam_thread_create(c->proc, name, name_len(name), 0, &c->thread);
     return st;
 }
 
@@ -396,7 +405,7 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
     if (st == OK && a->ns && a->ns_out && a->ns_back_out)
         st = jam_handle_duplicate(c.ns[1], RIGHT_READ, &c.ns_back);
     if (st == OK)
-        st = jam_process_create(a->job, name, strlen(name), 0, &c.proc, &c.vmar);
+        st = jam_process_create(a->job, name, name_len(name), 0, &c.proc, &c.vmar);
     if (st != OK) {
         close_extras(a);
         close_child(&c);
@@ -448,7 +457,7 @@ status_t thread_spawn(const char *name, void (*fn)(void *), void *arg, void *sta
                       size_t stack_size, handle_t *out)
 {
     handle_t self = startup_handle(SR_SELF_PROCESS), t;
-    status_t st = jam_thread_create(self, name, strlen(name), 0, &t);
+    status_t st = jam_thread_create(self, name, name_len(name), 0, &t);
     if (st != OK)
         return st;
     uint64_t top = ((uint64_t)(uintptr_t)stack + stack_size) & ~15ull;

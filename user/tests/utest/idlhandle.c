@@ -932,6 +932,125 @@ bool t_idl_events_handle_lists(void)
     return true;
 }
 
+/* ---- typed handles ----------------------------------------------------------- */
+
+/* `handle<type>`: the generated server asks handle_info before the handler runs
+ * and refuses another type with ERR_WRONG_TYPE, every handle of the message
+ * closed; the generated client does the same for a result (ERR_INTERNAL: the
+ * server broke the protocol); events likewise. */
+bool t_idl_handle_typed(void)
+{
+    static uint8_t stack[16384] __attribute__((aligned(16)));
+    static struct hthread srv;
+    handle_t c, th, vmo, ev, x, y;
+    srv = (struct hthread){ .st = ERR_INTERNAL };
+    CHECK_ST(jam_channel_create(&c, &srv.sv), OK);
+    CHECK_ST(thread_spawn("idl-h", h_serve, &srv, stack, sizeof(stack), &th), OK);
+
+    /* A VMO is right; a channel end and an event are not, and never reach the handler. */
+    uint64_t size = 0;
+    CHECK_ST(jam_vmo_create(8192, 0, &vmo), OK);
+    CHECK_ST(idltest_h_vmo_size_within(c, CALL_WAIT, vmo, &size), OK);
+    CHECK_EQ(size, 8192);
+    CHECK(srv.s.ran == 1);
+    CHECK_ST(jam_channel_create(&x, &y), OK);
+    CHECK_ST(idltest_h_vmo_size_within(c, CALL_WAIT, x, &size), ERR_WRONG_TYPE);
+    if (!gone(x) || !closed(y))
+        return false;
+    CHECK_ST(jam_event_create(&ev), OK);
+    CHECK_ST(idltest_h_vmo_size_within(c, CALL_WAIT, ev, &size), ERR_WRONG_TYPE);
+    if (!gone(ev))
+        return false;
+    CHECK(srv.s.ran == 1);
+
+    /* A single and a list: the wrong single closes the list's handles too. */
+    handle_t a[3], b[3], list[3], v;
+    uint32_t list_len, n_back;
+    if (!pairs(a, b, 3))
+        return false;
+    CHECK_ST(jam_vmo_create(4096, 0, &vmo), OK);   /* not a channel end */
+    CHECK_ST(idltest_h_mixed_within(c, CALL_WAIT, vmo, 1, a, 3, &v, list, &list_len, &n_back),
+             ERR_WRONG_TYPE);
+    for (unsigned i = 0; i < 3; i++)
+        if (!gone(a[i]) || !closed(b[i]))
+            return false;
+    CHECK(srv.s.ran == 1);
+
+    /* A typed list: every one must be of the type. */
+    uint32_t n = 0;
+    handle_t m1[3], m1p[3];
+    if (!pairs(m1, m1p, 3))
+        return false;
+    CHECK_ST(idltest_h_chans_within(c, CALL_WAIT, m1, 3, &n), OK);
+    CHECK_EQ(n, 3);
+    for (unsigned i = 0; i < 3; i++)
+        if (!gone(m1[i]) || !closed(m1p[i]))
+            return false;
+    CHECK_ST(jam_channel_create(&m1[0], &m1p[0]), OK);
+    CHECK_ST(jam_vmo_create(4096, 0, &m1[1]), OK);
+    CHECK_ST(jam_channel_create(&m1[2], &m1p[2]), OK);
+    CHECK_ST(idltest_h_chans_within(c, CALL_WAIT, m1, 3, &n), ERR_WRONG_TYPE);
+    if (!gone(m1[0]) || !gone(m1[1]) || !gone(m1[2]) || !closed(m1p[0]) || !closed(m1p[2]))
+        return false;
+    CHECK(srv.s.ran == 2);
+
+    /* A result of the wrong type: the client breaks the call (ERR_INTERNAL),
+     * closing everything that came with it. */
+    handle_t end, endp, r[2], rp[2];
+    if (!pairs(r, rp, 2))
+        return false;
+    CHECK_ST(jam_channel_create(&end, &endp), OK);
+    CHECK_ST(idltest_h_mixed_within(c, CALL_WAIT, end, 99, r, 2, &v, list, &list_len, &n_back),
+             ERR_INTERNAL);
+    if (!closed(endp) || !closed(rp[0]) || !closed(rp[1]))
+        return false;
+    CHECK_ST(jam_handle_close(c), OK);
+    if (!wait_threads(&th, 1))
+        return false;
+    CHECK_ST(srv.st, OK);
+    CHECK_ST(jam_handle_close(srv.sv), OK);
+
+    /* The same through an asynchronous call's _result. */
+    handle_t sv;
+    CHECK_ST(jam_channel_create(&c, &sv), OK);
+    struct hsrv s = { 0 };
+    uint32_t last = 0, t = idl_txid_next(&last);
+    _Alignas(8) uint8_t rep[IDLTEST_H_REP_MAX];
+    struct idl_msg m;
+    if (!pairs(r, rp, 2))
+        return false;
+    CHECK_ST(jam_channel_create(&end, &endp), OK);
+    CHECK_ST(idltest_h_mixed_send(c, t, end, 99, r, 2), OK);
+    CHECK_ST(idltest_h_serve_one(sv, &ops, &s), OK);
+    CHECK_ST(idl_reply_read(c, rep, sizeof(rep), &m), OK);
+    CHECK_ST(idltest_h_mixed_result(rep, &m, &v, list, &list_len, &n_back), ERR_INTERNAL);
+    CHECK_EQ(m.nh, 0);
+    if (!closed(endp))
+        return false;
+
+    /* A typed handle in an event to the server (the first of batch is a VMO), and a
+     * typed list to the client (parcel's are channel ends). */
+    struct hsrv es = { .first = HANDLE_INVALID };
+    CHECK_ST(jam_channel_create(&x, &y), OK);
+    CHECK_ST(idltest_ev_batch(c, 1, x, NULL, 0), OK);   /* a channel end for a VMO */
+    CHECK_ST(idltest_ev_serve_one(sv, &ev_ops, &es), OK);
+    CHECK_EQ(es.batches, 0);
+    if (!closed(y))
+        return false;
+    handle_t p[2], pp[2];
+    CHECK_ST(jam_channel_create(&p[0], &pp[0]), OK);
+    CHECK_ST(jam_vmo_create(4096, 0, &p[1]), OK);
+    CHECK_ST(idltest_ev_parcel(sv, 2, p, 2), OK);
+    struct pclient k = { 0 };
+    CHECK_ST(idltest_ev_read_event(c, &ev_events, &k), ERR_WRONG_TYPE);
+    CHECK_EQ(k.parcels, 0);
+    if (!closed(pp[0]))
+        return false;
+    CHECK_ST(jam_handle_close(c), OK);
+    CHECK_ST(jam_handle_close(sv), OK);
+    return true;
+}
+
 /* ---- blocking and asynchronous calls on one end ------------------------------ */
 
 static status_t echo_h(void *ctx, uint32_t value, uint32_t *out_value)

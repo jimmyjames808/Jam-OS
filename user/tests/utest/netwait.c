@@ -126,7 +126,7 @@ static struct fsock *helper_sock;
 static void helper(void *arg)
 {
     (void)arg;
-    (void)jam_nanosleep(now() + 20 * NS_PER_MS);
+    (void)jam_sleep_until(now() + 20 * NS_PER_MS);
     if (helper_sock)
         (void)stack_rx(helper_sock, 1, UINT64_MAX);
     else

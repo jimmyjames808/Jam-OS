@@ -6,8 +6,9 @@
  * reference counted, because three parties can outlive each other:
  *   - the port's binding list (one reference, which also stands for the
  *     binding's reference on the watched object); whoever takes the
- *     binding off the list (unbind, port destroy, or dequeuing a spent
- *     ONCE packet) first detaches it from the object, then drops both;
+ *     binding off the list (unbind, port destroy, the object's last
+ *     handle closing (port_object_closed), or dequeuing a spent ONCE
+ *     packet) first detaches it from the object, then drops both;
  *   - the queue (one reference while its entry is queued), dropped by
  *     whoever dequeues or drains it.
  * The observer registration needs no reference of its own: it is always
@@ -256,8 +257,26 @@ status_t port_create(struct port **out)
     return OK;
 }
 
+static status_t bind(struct port *p, struct kobject *obj, uint64_t key, signals_t mask,
+                     uint32_t flags, bool held);
+
 status_t port_bind(struct port *p, struct kobject *obj, uint64_t key, signals_t mask,
                    uint32_t flags)
+{
+    return bind(p, obj, key, mask, flags, false);
+}
+
+status_t port_bind_held(struct port *p, struct kobject *obj, uint64_t key, signals_t mask,
+                        uint32_t flags)
+{
+    return bind(p, obj, key, mask, flags, true);
+}
+
+/* held: refuse (ERR_BAD_HANDLE) once obj has no handle left, checked under
+ * obj's lock as port_object_closed scans it, so a binding is either made
+ * before that scan (which ends it) or not at all. */
+static status_t bind(struct port *p, struct kobject *obj, uint64_t key, signals_t mask,
+                     uint32_t flags, bool held)
 {
     if (obj->type == OBJ_PORT)
         return ERR_NOT_SUPPORTED;   /* "port" would nest inside "port" */
@@ -298,9 +317,61 @@ status_t port_bind(struct port *p, struct kobject *obj, uint64_t key, signals_t 
     }
     p->nbindings++;
     list_add_tail(&p->bindings, &b->port_node);
-    kobject_observe(obj, &b->obs);   /* fires now if already matching */
+    if (!kobject_observe_if(obj, &b->obs, held)) {   /* fires now if already matching */
+        list_del(&b->port_node);
+        p->nbindings--;
+        spin_unlock_irqrestore(&p->bindings_lock, f);
+        kobject_unref(obj);
+        binding_put(b);
+        return ERR_BAD_HANDLE;   /* its last handle closed while we bound it */
+    }
     spin_unlock_irqrestore(&p->bindings_lock, f);
     return OK;
+}
+
+/* ---- the watched object's last handle ------------------------------------ */
+
+#define CLOSED_BATCH 16
+
+void port_object_closed(struct kobject *obj)
+{
+    for (;;) {
+        struct port_binding *found[CLOSED_BATCH];
+        unsigned n = 0;
+        /* Under obj's lock every binding on its observer list is alive and
+         * so is its port, unless the port's last reference is gone (its
+         * destroy detaches the binding itself): take a reference on each. */
+        uint64_t f = spin_lock_irqsave(&obj->lock);
+        for (struct list_node *x = obj->observers.next; x != &obj->observers && n < CLOSED_BATCH;
+             x = x->next) {
+            struct observer *o = container_of(x, struct observer, node);
+            if (o->fire != binding_fire)
+                continue;
+            struct port_binding *b = container_of(o, struct port_binding, obs);
+            if (!kobject_tryref(&b->port->base))
+                continue;
+            __atomic_add_fetch(&b->refs, 1, __ATOMIC_RELAXED);
+            found[n++] = b;
+        }
+        spin_unlock_irqrestore(&obj->lock, f);
+        for (unsigned i = 0; i < n; i++) {
+            struct port_binding *b = found[i];
+            struct port *p = b->port;
+            struct list_node doomed;
+            list_init(&doomed);
+            f = spin_lock_irqsave(&p->bindings_lock);
+            if (b->port_node.next) {   /* still listed: nobody unbound it meanwhile */
+                detach_locked(b);
+                list_add_tail(&doomed, &b->reap_node);
+            }
+            spin_unlock_irqrestore(&p->bindings_lock, f);
+            reap(&doomed);        /* a queued packet keeps its binding (and stays) */
+            binding_put(b);       /* ours */
+            kobject_unref(&p->base);
+        }
+        if (n < CLOSED_BATCH)
+            return;
+    }
 }
 
 status_t port_unbind(struct port *p, struct kobject *obj, uint64_t key)
@@ -337,6 +408,7 @@ status_t port_queue_user(struct port *p, const struct port_packet *pkt)
     e->job = job;
     e->pkt = *pkt;
     e->pkt.type = PORT_PACKET_USER;
+    e->pkt.status = OK;   /* the kernel's field: a queuer can't fake ERR_CANCELED */
     stat_add(&live_user_packets, 1);
     uint64_t f = spin_lock_irqsave(&p->base.lock);
     if (p->user_queued >= PORT_MAX_USER_PACKETS) {

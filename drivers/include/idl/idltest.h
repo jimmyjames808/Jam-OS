@@ -10,7 +10,7 @@
  * Reconnect: a test server keeps nothing; a client whose call fails with
  * ERR_PEER_CLOSED has lost the server for good.
  *
- * Protocols `idltest` (id 33), `idltest_two` (id 34), `idltest_ev` (id 35) and `idltest_h` (id 36): one for each
+ * Protocols `idltest` (id 33), `idltest_two` (id 34), `idltest_ev` (id 35) and `idltest_h` (id 37): one for each
  * kind of channel, so a message of one protocol sent on a channel of
  * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
  * Client: <proto>_<method>(ch, args..., &results...)
@@ -2861,7 +2861,7 @@ static inline status_t idltest_ev_serve(handle_t ch, const struct idltest_ev_ops
 }
 
 
-/* ==== protocol `idltest_h` (id 36) ==========================================
+/* ==== protocol `idltest_h` (id 37) ==========================================
  *
  * idltest_h: handles as arguments. A client's are gone after the call, whatever
  * its status; the server hands them to the handler, which owns them (whatever
@@ -2872,15 +2872,15 @@ static inline status_t idltest_ev_serve(handle_t ch, const struct idltest_ev_ops
  *
  * Reconnect: as idltest's. */
 
-#define IDLTEST_H_PROTOCOL_ID 36u
-#define IDLTEST_H_TAKE             0x00240001u
-#define IDLTEST_H_VMO_SIZE         0x00240002u
-#define IDLTEST_H_COUNT            0x00240003u
-#define IDLTEST_H_BOUNCE           0x00240004u
-#define IDLTEST_H_MIXED            0x00240005u
-#define IDLTEST_H_PARK             0x00240006u
-#define IDLTEST_H_REFUSE           0x00240007u
-#define IDLTEST_H_CHANS            0x00240008u
+#define IDLTEST_H_PROTOCOL_ID 37u
+#define IDLTEST_H_TAKE             0x00250001u
+#define IDLTEST_H_VMO_SIZE         0x00250002u
+#define IDLTEST_H_COUNT            0x00250003u
+#define IDLTEST_H_BOUNCE           0x00250004u
+#define IDLTEST_H_MIXED            0x00250005u
+#define IDLTEST_H_PARK             0x00250006u
+#define IDLTEST_H_REFUSE           0x00250007u
+#define IDLTEST_H_CHANS            0x00250008u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct idltest_h_take_req {

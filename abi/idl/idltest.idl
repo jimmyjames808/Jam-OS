@@ -88,7 +88,7 @@ protocol idltest_ev 35
 #
 # Reconnect: as idltest's.
 
-protocol idltest_h 36
+protocol idltest_h 37
 
 # The handler keeps the handle: how many it holds now.
 1  take     (u32 key, handle h)    -> (u32 held)

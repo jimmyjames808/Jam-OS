@@ -85,17 +85,38 @@ int64_t sysc_channel_create(uint64_t a, uint64_t b)
     return OK;
 }
 
+/* A send's handle list, read first (M12's K-C: every handle in a list the
+ * kernel could read is consumed whatever the status, an argument error
+ * included): too long (ERR_OUT_OF_RANGE), no buffer for it or a fault
+ * (ERR_INVALID_ARGS) leave the handles where they are; OK: hs has them. */
+static status_t read_list(handle_t *hs, uint64_t handles, uint32_t n)
+{
+    if (n > CHANNEL_MAX_HANDLES)
+        return ERR_OUT_OF_RANGE;
+    if (no_buffer(handles, n) || copy_in(hs, handles, n * sizeof(handle_t)) != OK)
+        return ERR_INVALID_ARGS;
+    return OK;
+}
+
+/* A refusal after the list was read: its handles go too. */
+static status_t refuse(struct handle_table *t, const handle_t *hs, uint32_t n, status_t st)
+{
+    close_all(t, hs, n);
+    return st;
+}
+
 int64_t sysc_channel_write(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles,
                            uint32_t nhandles)
 {
     SYSC_TABLE(t);
-    if (nbytes > CHANNEL_MAX_BYTES || nhandles > CHANNEL_MAX_HANDLES)
-        return ERR_OUT_OF_RANGE;
-    if (no_buffer(bytes, nbytes) || no_buffer(handles, nhandles))
-        return ERR_INVALID_ARGS;
     handle_t hs[CHANNEL_MAX_HANDLES];
-    if (copy_in(hs, handles, nhandles * sizeof(handle_t)) != OK)
-        return ERR_INVALID_ARGS;
+    status_t st = read_list(hs, handles, nhandles);
+    if (st != OK)
+        return st;
+    if (nbytes > CHANNEL_MAX_BYTES)
+        return refuse(t, hs, nhandles, ERR_OUT_OF_RANGE);
+    if (no_buffer(bytes, nbytes))
+        return refuse(t, hs, nhandles, ERR_INVALID_ARGS);
     struct chan_bytes b = chan_ubytes(bytes, nbytes);
     return sys_channel_write_from(t, h, &b, hs, nhandles);
 }
@@ -104,15 +125,16 @@ int64_t sysc_channel_write_rights(handle_t h, uint64_t bytes, uint32_t nbytes, u
                                   uint64_t rights, uint32_t nhandles)
 {
     SYSC_TABLE(t);
-    if (nbytes > CHANNEL_MAX_BYTES || nhandles > CHANNEL_MAX_HANDLES)
-        return ERR_OUT_OF_RANGE;
-    if (no_buffer(bytes, nbytes) || no_buffer(handles, nhandles) || no_buffer(rights, nhandles))
-        return ERR_INVALID_ARGS;
     handle_t hs[CHANNEL_MAX_HANDLES];
     rights_t rs[CHANNEL_MAX_HANDLES];
-    if (copy_in(hs, handles, nhandles * sizeof(handle_t)) != OK ||
+    status_t st = read_list(hs, handles, nhandles);
+    if (st != OK)
+        return st;
+    if (nbytes > CHANNEL_MAX_BYTES)
+        return refuse(t, hs, nhandles, ERR_OUT_OF_RANGE);
+    if (no_buffer(bytes, nbytes) || no_buffer(rights, nhandles) ||
         copy_in(rs, rights, nhandles * sizeof(rights_t)) != OK)
-        return ERR_INVALID_ARGS;
+        return refuse(t, hs, nhandles, ERR_INVALID_ARGS);
     struct chan_bytes b = chan_ubytes(bytes, nbytes);
     return sys_channel_write_rights_from(t, h, &b, hs, rs, nhandles);
 }
@@ -162,20 +184,20 @@ static uint64_t deadline_of(uint64_t d, bool timeout)
 int64_t sysc_channel_call(const struct channel_call_args *a)
 {
     SYSC_TABLE(t);
+    handle_t wh[CHANNEL_MAX_HANDLES], rh[CHANNEL_MAX_HANDLES];
+    status_t lst = read_list(wh, a->wr_handles, a->wr_nhandles);
+    if (lst != OK)
+        return lst;
     if (a->flags & ~CHANNEL_CALL_TIMEOUT)
-        return ERR_INVALID_ARGS;
-    if (a->wr_len < 4 || no_buffer(a->wr_bytes, a->wr_len) ||
-        no_buffer(a->wr_handles, a->wr_nhandles) || no_buffer(a->rd_bytes, a->rd_cap) ||
+        return refuse(t, wh, a->wr_nhandles, ERR_INVALID_ARGS);
+    if (a->wr_len < 4 || no_buffer(a->wr_bytes, a->wr_len) || no_buffer(a->rd_bytes, a->rd_cap) ||
         no_buffer(a->rd_handles, a->rd_hcap))
-        return ERR_INVALID_ARGS;
-    if (a->wr_len > CHANNEL_MAX_BYTES || a->wr_nhandles > CHANNEL_MAX_HANDLES)
-        return ERR_OUT_OF_RANGE;
+        return refuse(t, wh, a->wr_nhandles, ERR_INVALID_ARGS);
+    if (a->wr_len > CHANNEL_MAX_BYTES)
+        return refuse(t, wh, a->wr_nhandles, ERR_OUT_OF_RANGE);
     uint32_t rcap = a->rd_cap < CHANNEL_MAX_BYTES ? a->rd_cap : CHANNEL_MAX_BYTES;
     uint32_t rhcap = a->rd_hcap < CHANNEL_MAX_HANDLES ? a->rd_hcap : CHANNEL_MAX_HANDLES;
 
-    handle_t wh[CHANNEL_MAX_HANDLES], rh[CHANNEL_MAX_HANDLES];
-    if (copy_in(wh, a->wr_handles, a->wr_nhandles * sizeof(handle_t)) != OK)
-        return ERR_INVALID_ARGS;
     struct chan_bytes w = chan_ubytes(a->wr_bytes, a->wr_len), r = chan_ubytes(a->rd_bytes, rcap);
     uint32_t nb = 0, nh = 0;
     status_t st = sys_channel_call_from(t, a->h, &w, wh, a->wr_nhandles, &r, &nb, rh, rhcap, &nh,
@@ -233,16 +255,17 @@ static bool reply_fields_ok(const struct channel_reply_wait_args *a)
 int64_t sysc_channel_reply_wait(const struct channel_reply_wait_args *a)
 {
     SYSC_TABLE(t);
-    if (a->reserved || (a->flags & ~CHANNEL_REPLY_WAIT_TIMEOUT) || !reply_fields_ok(a))
-        return ERR_INVALID_ARGS;
-    if (no_buffer(a->wr_bytes, a->wr_len) || no_buffer(a->wr_handles, a->wr_nhandles) ||
-        no_buffer(a->rd_bytes, a->rd_cap) || no_buffer(a->rd_handles, a->rd_hcap))
-        return ERR_INVALID_ARGS;
-    if (a->wr_len > CHANNEL_MAX_BYTES || a->wr_nhandles > CHANNEL_MAX_HANDLES)
-        return ERR_OUT_OF_RANGE;
     handle_t rh[CHANNEL_MAX_HANDLES], hs[CHANNEL_MAX_HANDLES];
-    if (copy_in(rh, a->wr_handles, a->wr_nhandles * sizeof(handle_t)) != OK)
-        return ERR_INVALID_ARGS;
+    status_t lst = read_list(rh, a->wr_handles, a->wr_nhandles);
+    if (lst != OK)
+        return lst;
+    if (a->reserved || (a->flags & ~CHANNEL_REPLY_WAIT_TIMEOUT) || !reply_fields_ok(a))
+        return refuse(t, rh, a->wr_nhandles, ERR_INVALID_ARGS);
+    if (no_buffer(a->wr_bytes, a->wr_len) || no_buffer(a->rd_bytes, a->rd_cap) ||
+        no_buffer(a->rd_handles, a->rd_hcap))
+        return refuse(t, rh, a->wr_nhandles, ERR_INVALID_ARGS);
+    if (a->wr_len > CHANNEL_MAX_BYTES)
+        return refuse(t, rh, a->wr_nhandles, ERR_OUT_OF_RANGE);
     struct chan_reply_wait rw = {
         .h = a->h, .reply = chan_ubytes(a->wr_bytes, a->wr_len), .reply_h = rh,
         .reply_nh = a->wr_nhandles,

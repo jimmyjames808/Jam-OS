@@ -14,13 +14,13 @@ int64_t sysc_debug_write(uint64_t buf, uint64_t len);
 int64_t sysc_process_exit(int64_t code);
 int64_t sysc_thread_exit(void);
 int64_t sysc_clock_get(void);
-int64_t sysc_nanosleep(uint64_t deadline_ns);
+int64_t sysc_sleep_until(uint64_t deadline_ns);
 int64_t sysc_debug_report(uint64_t buf, uint64_t len);
 int64_t sysc_handle_close(handle_t h);
 int64_t sysc_handle_duplicate(handle_t h, rights_t rights, uint64_t out);
 int64_t sysc_handle_replace(handle_t h, rights_t rights, uint64_t out);
+int64_t sysc_handle_info(handle_t h, uint64_t out);
 int64_t sysc_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns, uint64_t observed);
-int64_t sysc_object_signal(handle_t h, signals_t clear, signals_t set);
 int64_t sysc_channel_create(uint64_t a, uint64_t b);
 int64_t sysc_channel_write(handle_t h, uint64_t bytes, uint32_t nbytes, uint64_t handles,
                            uint32_t nhandles);

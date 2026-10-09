@@ -81,8 +81,8 @@ static void killer(void *arg)
 {
     (void)arg;
     while (!__atomic_load_n(&started, __ATOMIC_ACQUIRE))   /* main releases it */
-        (void)jam_nanosleep(now() + 10 * NS_PER_MS);
-    (void)jam_nanosleep(now() + FIRST_MS * NS_PER_MS);
+        (void)jam_sleep_until(now() + 10 * NS_PER_MS);
+    (void)jam_sleep_until(now() + FIRST_MS * NS_PER_MS);
     for (unsigned i = 0; i < kills; i++) {
         uint64_t us = 0;
         status_t st = kill_once(&us);
@@ -91,7 +91,7 @@ static void killer(void *arg)
             printf("mixramp: kill %u: %s\n", i + 1, status_str(st));
         }
         took_us[done_kills++] = us;
-        (void)jam_nanosleep(now() + (uint64_t)interval_ms * NS_PER_MS);
+        (void)jam_sleep_until(now() + (uint64_t)interval_ms * NS_PER_MS);
     }
 }
 
@@ -126,7 +126,7 @@ static void busy(void *arg)
             /* The churn opener's last close not seen yet (its cap is
              * MIXER_STREAMS_PER_CLIENT): not a restart's doing. */
             busy_full++;
-            (void)jam_nanosleep(now() + NS_PER_MS);
+            (void)jam_sleep_until(now() + NS_PER_MS);
         } else if (st != OK) {
             busy_errors++;
             printf("mixramp: a call (kind %u) failed: %s\n", i % 3, status_str(st));

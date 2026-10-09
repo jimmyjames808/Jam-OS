@@ -570,7 +570,7 @@ bool t_comp_connections(void)
     status_t st;
     while ((st = svc_connect_within(p.svc, CT_WAIT, &extra)) == ERR_NO_RESOURCES &&
            now() < until)
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     CHECK_ST(st, OK);
     jam_handle_close(extra);
     for (unsigned i = 0; i < 62; i++)
@@ -636,7 +636,7 @@ static bool crash_case(struct ct_comp *p, struct ct_client *good, const char *mo
     uint64_t until = now() + CT_WAIT;
     for (unsigned kind = 1; kind < JOB_LIMIT_COUNT; kind++) {
         while (ct_job_used(job, kind) && now() < until)
-            jam_nanosleep(now() + NS_PER_MS);
+            jam_sleep_until(now() + NS_PER_MS);
         if (ct_job_used(job, kind))
             FAIL("the crashed client's job keeps %lu units of kind %u",
                  (unsigned long)ct_job_used(job, kind), kind);

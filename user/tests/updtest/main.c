@@ -511,7 +511,7 @@ status_t esp_file(const char *path, handle_t *v, uint64_t *n)
             jam_handle_close(c);   /* /esp is there: the file isn't */
             return st;
         }
-        jam_nanosleep(now() + 100 * NS_PER_MS);
+        jam_sleep_until(now() + 100 * NS_PER_MS);
     }
     return st;
 }

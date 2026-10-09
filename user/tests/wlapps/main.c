@@ -156,7 +156,7 @@ static status_t first_picture(const struct opts *o, struct comp *k)
         if (px[i] & 0xffffff)
             i++;
         else
-            jam_nanosleep(now() + NS_PER_MS);
+            jam_sleep_until(now() + NS_PER_MS);
     }
     if (i < n)
         return ERR_TIMED_OUT;
@@ -243,7 +243,7 @@ static void show(const struct opts *o, const uint32_t *px)
 /* Wait the settle time, then the verdict: true for PASS. */
 static bool check(const struct opts *o, const struct comp *k, const handle_t *procs)
 {
-    jam_nanosleep(now() + (uint64_t)o->settle * NS_PER_S);
+    jam_sleep_until(now() + (uint64_t)o->settle * NS_PER_S);
     if (!all_running(o, procs))
         return false;
     uint64_t n = drawn(o, k), want = (uint64_t)o->ww * (uint64_t)o->wh / 10 * o->napps;

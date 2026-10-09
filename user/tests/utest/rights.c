@@ -71,7 +71,10 @@ bool t_root_powers(void)
     CHECK_EQ(jam_debug_command(h, "help", 4), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_close(h), OK);
     CHECK((h = root_without(RIGHT_ROOT_VMEX)) != HANDLE_INVALID);
-    CHECK_ST(jam_vmo_make_exec(v, h, &out), ERR_ACCESS_DENIED);
+    handle_t v2;
+    CHECK_ST(jam_handle_duplicate(v, RIGHT_SAME, &v2), OK);
+    CHECK_ST(jam_vmo_make_exec(v2, h, &out), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(v2), ERR_BAD_HANDLE);   /* gone, whatever the status */
     CHECK_ST(jam_handle_close(h), OK);
     struct fb_info fbi;
     handle_t fbv, owner;
@@ -169,13 +172,16 @@ bool t_vmo_make_exec(void)
     CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), v, 0, PAGE_SIZE, VMAR_READ, &addr), OK);
     CHECK_ST(jam_vmo_make_exec(v, vmex, &x), ERR_BAD_STATE);
     CHECK_ST(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), addr, PAGE_SIZE), OK);
-    /* Not a VMO, a VMO without RIGHT_READ: refused, and kept. */
-    CHECK_ST(jam_vmo_make_exec(vmex, vmex, &x), ERR_WRONG_TYPE);
+    /* Not a VMO, a VMO without RIGHT_READ: refused, and gone all the same
+     * (M12's K-C). */
+    CHECK_ST(jam_event_create(&w), OK);
+    CHECK_ST(jam_vmo_make_exec(w, vmex, &x), ERR_WRONG_TYPE);
+    CHECK_ST(jam_handle_close(w), ERR_BAD_HANDLE);
     if (!own_copy(&v, &size))
         return false;
     CHECK_ST(jam_handle_replace(v, RIGHT_MAP, &v), OK);
     CHECK_ST(jam_vmo_make_exec(v, vmex, &x), ERR_ACCESS_DENIED);
-    CHECK_ST(jam_handle_close(v), OK);
+    CHECK_ST(jam_handle_close(v), ERR_BAD_HANDLE);
     CHECK_ST(jam_handle_close(vmex), OK);
     return true;
 }

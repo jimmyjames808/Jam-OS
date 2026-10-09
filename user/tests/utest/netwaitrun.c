@@ -175,10 +175,10 @@ static void stress_stack(void *arg)
         if (stack_turn(&seed)) {
             idle = 0;
             if (fuzz_rand(&seed) % 16 == 0)   /* now and then: the program catches up and sleeps */
-                (void)jam_nanosleep(now() + fuzz_rand(&seed) % 200 * NS_PER_US);
+                (void)jam_sleep_until(now() + fuzz_rand(&seed) % 200 * NS_PER_US);
         } else if (++idle >= 2 * net.n) {
             idle = 0;
-            (void)jam_nanosleep(now() + 100 * NS_PER_US);
+            (void)jam_sleep_until(now() + 100 * NS_PER_US);
         }
         if (turn % 256 == 0 && stack_finished())
             break;
@@ -292,7 +292,7 @@ bool t_netwait_stress(void)
     /* Everything came; netstack still takes the last of what was sent. */
     for (uint64_t until = now() + 5 * NS_PER_S;
          ok && !__atomic_load_n(&stress_done, __ATOMIC_ACQUIRE) && now() < until;)
-        (void)jam_nanosleep(now() + NS_PER_MS);
+        (void)jam_sleep_until(now() + NS_PER_MS);
     __atomic_store_n(&stress_stop, true, __ATOMIC_RELEASE);
     bool joined = th == HANDLE_INVALID || wait_threads(&th, 1);
     ok = ok && joined && stress_check(w, waits);

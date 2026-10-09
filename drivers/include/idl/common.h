@@ -40,9 +40,10 @@
 #define IDL_ID_IDLTEST       0x0021u   /* abi/idl/idltest.idl */
 #define IDL_ID_IDLTEST_TWO   0x0022u   /* abi/idl/idltest.idl */
 #define IDL_ID_IDLTEST_EV    0x0023u   /* abi/idl/idltest.idl */
-#define IDL_ID_IDLTEST_H     0x0024u   /* abi/idl/idltest.idl */
+#define IDL_ID_USBBUS_EVENTS 0x0024u   /* abi/idl/usbbus.idl */
+#define IDL_ID_IDLTEST_H     0x0025u   /* abi/idl/idltest.idl */
 #define IDL_ID_UPDATE_ANSWER 0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
-#define IDL_ID_STANDBY       0x4d4fu   /* kernel/include/jam/startup.h: STANDBY_MAGIC "PROM" (promotion) */
+#define IDL_ID_STANDBY       0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER  0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */
 #define IDL_ID_STARTUP       0x534du   /* kernel/include/jam/startup.h: STARTUP_MAGIC "JAMS" */
 #define IDL_ID_CRASHER       0xc4a5u   /* user/include/devmgr.h: the crash-test driver's (CRASHER_*) */
@@ -77,23 +78,23 @@ struct idl_rep_hdr {
  * room idl_reply_read has for a reply's or an event's. */
 #define IDL_HANDLES_MAX 64
 
-/* The kernel's object types, as handle_info names them: what `handle<type>`
- * must be (tools/genidl.py checks the numbers against the kernel's enum). */
-#define IDL_OBJ_EVENT      1u
-#define IDL_OBJ_TIMER      2u
-#define IDL_OBJ_CHANNEL    3u
-#define IDL_OBJ_PORT       4u
-#define IDL_OBJ_VMO        5u
-#define IDL_OBJ_DMA_CAP    6u
-#define IDL_OBJ_PROCESS    7u
-#define IDL_OBJ_THREAD     8u
-#define IDL_OBJ_INTERRUPT  9u
-#define IDL_OBJ_RESOURCE   10u
-#define IDL_OBJ_VMAR       11u
-#define IDL_OBJ_JOB        12u
-#define IDL_OBJ_KLOG       13u
-#define IDL_OBJ_SERIAL     14u
-#define IDL_OBJ_SCREEN     15u
+/* The kernel's object types, as handle_info names them (enum obj_type in
+ * <jam/abi.h>): what a `handle<type>` must be. */
+#define IDL_OBJ_EVENT      OBJ_EVENT
+#define IDL_OBJ_TIMER      OBJ_TIMER
+#define IDL_OBJ_CHANNEL    OBJ_CHANNEL
+#define IDL_OBJ_PORT       OBJ_PORT
+#define IDL_OBJ_VMO        OBJ_VMO
+#define IDL_OBJ_DMA_CAP    OBJ_DMA_CAP
+#define IDL_OBJ_PROCESS    OBJ_PROCESS
+#define IDL_OBJ_THREAD     OBJ_THREAD
+#define IDL_OBJ_INTERRUPT  OBJ_INTERRUPT
+#define IDL_OBJ_RESOURCE   OBJ_RESOURCE
+#define IDL_OBJ_VMAR       OBJ_VMAR
+#define IDL_OBJ_JOB        OBJ_JOB
+#define IDL_OBJ_KLOG       OBJ_KLOG
+#define IDL_OBJ_SERIAL     OBJ_SERIAL
+#define IDL_OBJ_SCREEN     OBJ_SCREEN
 
 /* Client: the status of a reply of n bytes to a call that wants `want`
  * bytes back on success. A server that breaks the format (a positive
@@ -286,10 +287,8 @@ static inline bool idl_handles_set(const handle_t *hs, uint32_t n)
  * `handle<type>` is checked: a system call (handle_info) for each handle. */
 static inline bool idl_handle_is(handle_t h, uint32_t type)
 {
-    /* TODO(K3): handle_info(h, &info): info.type == type. */
-    (void)h;
-    (void)type;
-    return true;
+    struct handle_info idl_i;
+    return drv_handle_info(h, &idl_i) == OK && idl_i.type == type;
 }
 
 /* Are all n handles at hs of this type? */

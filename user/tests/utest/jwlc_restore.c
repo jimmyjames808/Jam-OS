@@ -67,7 +67,7 @@ static bool until(struct jwl_client *c, struct jwl_window *w,
             (void)jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED,
                                       now() + 5 * NS_PER_MS, &seen);
         else
-            (void)jam_nanosleep(now() + NS_PER_MS);
+            (void)jam_sleep_until(now() + NS_PER_MS);
         CHECK_ST(jwl_client_dispatch(c), OK);
         struct jwl_event ev;
         while (jwl_client_next_event(c, &ev) == OK) {
@@ -136,7 +136,7 @@ bool t_jwlc_restore(void)
     CHECK(key[0] != key[1] && key[1] != key[2] && key[0] != key[2]);
     /* a | [b / c]: a full height, b and c a quarter each */
     CHECK(wh[0] > wh[1] + 100 && ww[1] == ww[2] && wh[1] < H / 2);
-    (void)jam_nanosleep(now() + 50 * NS_PER_MS);   /* a loop turn writes the state */
+    (void)jam_sleep_until(now() + 50 * NS_PER_MS);   /* a loop turn writes the state */
 
     CHECK_ST(jam_process_kill(r.p.proc), OK);
     for (unsigned i = 3; i-- > 0;) {   /* c, b, a: each back before the next connects */

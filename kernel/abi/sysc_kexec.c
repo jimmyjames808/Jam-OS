@@ -29,8 +29,10 @@ int64_t sysc_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, uint64_
     status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_KEXEC);
     if (st != OK)
         return st;
-    char cmd[KEXEC_CMDLINE];
-    if (flags || len >= sizeof(cmd) || copy_in(cmd, ucmd, len) != OK || !printable(cmd, len))
+    char cmd[KEXEC_CMDLINE_MAX + 1];
+    if (len > KEXEC_CMDLINE_MAX)
+        return ERR_OUT_OF_RANGE;
+    if (flags || copy_in(cmd, ucmd, len) != OK || !printable(cmd, len))
         return ERR_INVALID_ARGS;
     cmd[len] = '\0';
     struct kobject *k, *b;
