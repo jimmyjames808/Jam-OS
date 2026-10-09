@@ -43,7 +43,8 @@ const SUP_FINISHED   4
 # whole list. ERR_NO_RESOURCES: as many watches as volumes keeps.
 1  watch  () -> (handle<channel> events)
 # The mount `mount` (another stick's /usbN, or a test disk's /usbN-test)
-# writable (1) or read-only (0): its service stops in order (fsctl.stop:
+# writable (1) or read-only (0), answered later (volumes serves its other
+# requests meanwhile): its service stops in order (fsctl.stop:
 # its files closed, everything flushed, the volume clean) and starts again
 # on a `block` channel opened the new way (read-only: the disk itself
 # refuses every write). The mount's channel is a new one (`unmounted`,
@@ -52,14 +53,17 @@ const SUP_FINISHED   4
 # Answered once the new instance runs; OK at once if it is that way
 # already. ERR_NOT_FOUND: no such mount, or not one that can be asked for
 # (/esp, /data: they are what they are); ERR_BAD_STATE: its service isn't
-# serving; ERR_INVALID_ARGS: writable past 1.
+# serving, or another remount or a release of it is under way;
+# ERR_INVALID_ARGS: writable past 1.
 2  remount  (str[<=15] mount, u8 writable) -> () later
 # Kill the mount's filesystem service (a deliberate kill: not counted,
 # restarted at once, the warm spare promoted; its clients see nothing but
 # the time it took). Answered once it is dead, with the koid of the
-# process killed. ERR_NOT_FOUND: no such mount, or no instance runs (its
-# restart is due).
-3  kill  (str[<=15] mount) -> (u64 koid)
+# process killed; while its restart is under way, once the new instance
+# runs (then that one is killed). ERR_NOT_FOUND: no such mount, or no
+# instance runs (its restart is due later); ERR_BAD_STATE: it is being
+# stopped in order (a remount, the ESP made writable, a release).
+3  kill  (str[<=15] mount) -> (u64 koid) later
 # The mount's service: its state (SUP_*), restarts since boot, the last
 # backoff in ms, the restarts that promoted the warm spare, and 1 while a
 # spare waits. ERR_NOT_FOUND: no such mount.

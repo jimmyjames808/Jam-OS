@@ -233,7 +233,8 @@ static inline status_t volumes_remount_call(handle_t ch, bool idl_within, uint64
     return idl_st;
 }
 /* The mount `mount` (another stick's /usbN, or a test disk's /usbN-test)
- * writable (1) or read-only (0): its service stops in order (fsctl.stop:
+ * writable (1) or read-only (0), answered later (volumes serves its other
+ * requests meanwhile): its service stops in order (fsctl.stop:
  * its files closed, everything flushed, the volume clean) and starts again
  * on a `block` channel opened the new way (read-only: the disk itself
  * refuses every write). The mount's channel is a new one (`unmounted`,
@@ -242,7 +243,8 @@ static inline status_t volumes_remount_call(handle_t ch, bool idl_within, uint64
  * Answered once the new instance runs; OK at once if it is that way
  * already. ERR_NOT_FOUND: no such mount, or not one that can be asked for
  * (/esp, /data: they are what they are); ERR_BAD_STATE: its service isn't
- * serving; ERR_INVALID_ARGS: writable past 1. */
+ * serving, or another remount or a release of it is under way;
+ * ERR_INVALID_ARGS: writable past 1. */
 static inline status_t volumes_remount_until(handle_t ch, uint64_t deadline_ns, const char *mount, uint32_t mount_len, uint8_t writable)
 {
     return volumes_remount_call(ch, false, deadline_ns, mount, mount_len, writable);
@@ -285,8 +287,10 @@ static inline status_t volumes_kill_call(handle_t ch, bool idl_within, uint64_t 
 /* Kill the mount's filesystem service (a deliberate kill: not counted,
  * restarted at once, the warm spare promoted; its clients see nothing but
  * the time it took). Answered once it is dead, with the koid of the
- * process killed. ERR_NOT_FOUND: no such mount, or no instance runs (its
- * restart is due). */
+ * process killed; while its restart is under way, once the new instance
+ * runs (then that one is killed). ERR_NOT_FOUND: no such mount, or no
+ * instance runs (its restart is due later); ERR_BAD_STATE: it is being
+ * stopped in order (a remount, the ESP made writable, a release). */
 static inline status_t volumes_kill_until(handle_t ch, uint64_t deadline_ns, const char *mount, uint32_t mount_len, uint64_t *out_koid)
 {
     return volumes_kill_call(ch, false, deadline_ns, mount, mount_len, out_koid);
@@ -890,7 +894,7 @@ static inline status_t volumes_set_disks_result(const void *idl_rep, struct idl_
 struct volumes_ops {
     status_t (*watch)(void *ctx, handle_t *out_events);
     status_t (*remount)(void *ctx, struct idl_txn idl_txn, const char *mount, uint32_t mount_len, uint8_t writable);
-    status_t (*kill)(void *ctx, const char *mount, uint32_t mount_len, uint64_t *out_koid);
+    status_t (*kill)(void *ctx, struct idl_txn idl_txn, const char *mount, uint32_t mount_len, uint64_t *out_koid);
     status_t (*supervision)(void *ctx, const char *mount, uint32_t mount_len, uint32_t *out_state, uint32_t *out_restarts, uint32_t *out_backoff_ms, uint32_t *out_promoted, uint8_t *out_spare_waits);
     status_t (*test_disk)(void *ctx, handle_t storage, uint32_t *out_id);
     status_t (*release_disk)(void *ctx, struct idl_txn idl_txn, uint32_t id);
@@ -1183,7 +1187,11 @@ static inline uint32_t volumes_dispatch_h(handle_t ch, const struct volumes_ops 
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        idl_st = ops->kill(ctx, (const char *)idl_p0, idl_l0, &out_koid);
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        idl_st = ops->kill(ctx, idl_txn, (const char *)idl_p0, idl_l0, &out_koid);
+        /* IDL_LATER: the handler answers with volumes_reply_kill. */
+        if (idl_st == IDL_LATER)
+            return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

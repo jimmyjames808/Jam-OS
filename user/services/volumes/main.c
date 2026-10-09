@@ -23,6 +23,10 @@
  * booted from: disk.c's boot-disk check) and "nospare" (no warm spare fat:
  * a restart starts a process).
  *
+ * Its loop never waits inside a request: what waits for another process
+ * runs as a cooperative task beside it (calls.c), and a request that
+ * waits is answered later by its task (request.c).
+ *
  * It runs until every client end of init's control channel is gone (init
  * closes its own at the end of a test run), or volumes.stop (a reboot):
  * then every writable mount is synced, the spare and every filesystem
@@ -82,12 +86,15 @@ static status_t wait_event(void)
         deadline = disk_next_deadline();
     if (sup_job_next_deadline() < deadline)
         deadline = sup_job_next_deadline();
+    deadline = task_next_wake(tasks, deadline);
     status_t st = jam_port_wait(port, deadline, &pkt);
     if (st != OK)
         return st;
     if (chans_packet(pkt.key))
         return OK;   /* chans_serve reads what came */
-    if ((pkt.key & KEY_FAT) && KEY_INDEX(pkt.key) < nvols) {
+    if (pkt.key & KEY_FSCTL) {
+        fsctl_key(pkt.key);
+    } else if ((pkt.key & KEY_FAT) && KEY_INDEX(pkt.key) < nvols) {
         sup_died(&vols[KEY_INDEX(pkt.key)], KEY_GEN(pkt.key));
     } else if ((pkt.key & KEY_EVENTS) && KEY_INDEX(pkt.key) < nvols) {
         struct vol *b = &vols[KEY_INDEX(pkt.key)];
@@ -103,6 +110,15 @@ static status_t wait_event(void)
         spare_keep_event(pkt.key);
     }
     return OK;
+}
+
+/* Every task whose wait may be over runs (each looks at its condition
+ * again: something may have come). False if one ran over its stack. */
+static bool run_tasks(void)
+{
+    task_kick(tasks);
+    task_run(tasks);
+    return !task_overflowed(tasks);
 }
 
 /* Serve until the life channel's clients are all gone (ERR_PEER_CLOSED)
@@ -124,7 +140,30 @@ static status_t run(void)
         sup_run_due();
         disk_run_due();
         sup_job_run_due();
+        if (!run_tasks())
+            return ERR_INTERNAL;
     }
+}
+
+/* The stop (volumes.stop's task, or one started now with nobody to
+ * answer) and every other task run to their end; the port is still
+ * watched for what they wait for, no request is served. */
+static bool finish(void)
+{
+    (void)stop_start((struct idl_txn){ 0 });   /* nothing if volumes.stop began it */
+    while (task_live(tasks) && !task_overflowed(tasks)) {
+        status_t st = wait_event();
+        if (st != OK && st != ERR_TIMED_OUT)
+            break;
+        sup_job_run_due();
+        run_tasks();
+    }
+    if (task_live(tasks)) {
+        say(true, "volumes: %u task(s) didn't end: stopping without them", task_live(tasks));
+        (void)stop_all();
+        return false;
+    }
+    return stop_result();
 }
 
 /* Every client is gone, or volumes.stop: no more restarts. Every writable
@@ -141,7 +180,6 @@ bool stop_all(void)
     unsigned stopped = 0;
     stopping = true;
     spare_stop();      /* the warm spare, and the `block` channel it had */
-    disk_sync_all();   /* before anything under the filesystems goes */
     for (unsigned i = 0; i < nvols; i++) {
         struct vol *b = &vols[i];
         sup_reset(b);
@@ -205,6 +243,10 @@ int main(int argc, char **argv)
         say(true, "volumes: no port (%s)", status_str(st));
         return 1;
     }
+    if (!calls_init()) {
+        say(true, "volumes: no memory for its tasks");
+        return 1;
+    }
     notice_init(&notices, startup_handle(VOLUMES_SR_NOTIFY));
     spare_init(!nospare);
     handle_t disks_end = startup_handle(VOLUMES_SR_DISKS);
@@ -217,7 +259,7 @@ int main(int argc, char **argv)
         say(true, "volumes: serving failed (%s)", status_str(st));
         ok = false;
     }
-    if (!stop_all())
+    if (!finish())
         ok = false;
     return ok ? 0 : 1;
 }

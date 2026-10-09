@@ -124,6 +124,11 @@ static status_t b_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset
 static status_t b_sync(void *ctx)
 {
     struct dm_block *b = ctx;
+    uint32_t hold = __atomic_load_n(&b->m->hold_sync_ms, __ATOMIC_RELAXED);
+    if (hold) {   /* a stick slow to flush: the whole disk waits */
+        bump(&b->m->held);
+        jam_sleep_until(now() + (uint64_t)hold * NS_PER_MS);
+    }
     bump(&b->m->syncs);
     return OK;
 }

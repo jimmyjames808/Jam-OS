@@ -783,3 +783,5 @@ bool t_fat_open_moved(void);
 bool t_volumes_watch(void);
 bool t_volumes_release_disk(void);
 bool t_volumes_new_channel(void);
+/* volwatch.c: volumes answers while a remount waits (S2b). */
+bool t_volumes_loop_answers(void);

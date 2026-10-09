@@ -36,6 +36,7 @@
  * crashed / Jam OS started it again"); a deliberate kill, another stick's
  * service and anything while volumes stops are not. */
 #include <fatsvc.h>
+#include <idl/fsctl.h>
 #include "disk.h"
 
 /* b ending is never a problem of ours: a test disk's, or the filesystem
@@ -133,6 +134,7 @@ status_t fs_spawn(struct vol *b)
 
 void fs_close_client(struct vol *b)
 {
+    call_fail(b->client);   /* an fs.sync a task waits for: no answer comes now */
     if (b->client && b->client_key)
         jam_port_unbind(port, b->client, b->client_key);
     b->client_key = 0;
@@ -159,15 +161,38 @@ void fs_forget(struct vol *b)
     disk_stopped(b);   /* no mount until it is back, unless its kept channel is one */
 }
 
+/* Wait until b's process has ended, or deadline (ERR_TIMED_OUT). In a
+ * task the loop goes on meanwhile (sup_died leaves a process being
+ * stopped alone, and every round wakes the task to look again);
+ * ERR_PEER_CLOSED: b was retired meanwhile. Outside one, a plain wait
+ * (only after a kill: the kernel has ended it already). */
+static status_t wait_ended(struct vol *b, uint64_t deadline)
+{
+    signals_t seen;
+    if (!in_task())
+        return jam_object_wait_one(b->proc, SIG_TERMINATED, deadline, &seen);
+    uint32_t serial = b->serial;
+    for (;;) {
+        if (b->serial != serial || !b->proc)
+            return ERR_PEER_CLOSED;
+        if (jam_object_wait_one(b->proc, SIG_TERMINATED, 0, &seen) == OK)
+            return OK;
+        if (now() >= deadline)
+            return ERR_TIMED_OUT;
+        task_wait(tasks, deadline);
+    }
+}
+
 bool fs_stop(struct vol *b, bool kill, bool excused_end)
 {
     if (!b->proc)
         return true;
     fs_close_client(b);   /* a serving instance sees its client gone */
-    signals_t seen;
     if (kill)
         fs_kill(b);
-    status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED, now() + STOP_WAIT, &seen);
+    status_t st = wait_ended(b, now() + STOP_WAIT);
+    if (st == ERR_PEER_CLOSED)
+        return false;   /* retired meanwhile, its process with it */
     bool ok = st == OK;
     if (st != OK) {
         say(true, "volumes: %s %s did not stop in %lu s: killing its job", b->name, b->path,
@@ -183,6 +208,33 @@ bool fs_stop(struct vol *b, bool kill, bool excused_end)
         ok = sup_job_empty(b->job, b->path);
     fs_forget(b);
     return ok;
+}
+
+status_t fs_stop_in_order(struct vol *b)
+{
+    uint32_t serial = b->serial;
+    status_t st = ERR_NOT_SUPPORTED;
+    b->stopping = true;   /* its end is ours: no restart */
+    if (b->ctl) {
+        struct call c;
+        call_begin(&c, b->ctl);
+        st = fsctl_stop_send(b->ctl, c.txid);
+        if (st == OK)
+            st = call_wait(&c, now() + SYNC_WAIT);
+        else
+            call_end(&c);
+        if (st == OK)
+            st = fsctl_stop_result(c.rep, &c.m);
+    }
+    if (b->serial != serial)
+        return ERR_PEER_CLOSED;   /* retired meanwhile: its disk went, or volumes stops */
+    if (st != OK)
+        say(false, "volumes: %s: its filesystem service did not stop in order (%s): killed%s",
+            fs_mount_path(b), status_str(st), b->rw ? "; what it had not synced is lost" : "");
+    if (!fs_stop(b, st != OK, true) && b->serial != serial)
+        return ERR_PEER_CLOSED;
+    b->stopping = false;
+    return st;
 }
 
 /* ---- supervision ------------------------------------------------------------------------ */
@@ -244,6 +296,8 @@ static void schedule(struct vol *b, const char *why, bool expected)
 void sup_died(struct vol *b, uint32_t gen)
 {
     struct process_info info;
+    if (b->stopping)
+        return;   /* a task stops it in order: its end is that task's (it looks every round) */
     if (b->state != VOLUMES_SUP_RUNNING || !b->proc || gen != (b->gen & 0xffffu) ||
         jam_process_get_info(b->proc, &info) != OK || info.state != PROCESS_DEAD)
         return;   /* a stale packet, or it was handled already */
@@ -292,42 +346,70 @@ status_t sup_kill(struct vol *b, uint64_t *koid)
     return st;
 }
 
+/* Is b's restart due to be started (not under way already, not held
+ * back by its disk's release)? */
+static bool restart_waits(const struct vol *b)
+{
+    const struct disk *d = disk_of(b);
+    return b->state == VOLUMES_SUP_RESTARTING && !b->starting && !(d && d->releasing);
+}
+
 uint64_t sup_next_deadline(void)
 {
     uint64_t next = spare_next_deadline();
     for (unsigned i = 0; i < nvols; i++)
-        if (vols[i].state == VOLUMES_SUP_RESTARTING && vols[i].restart_at < next)
+        if (restart_waits(&vols[i]) && vols[i].restart_at < next)
             next = vols[i].restart_at;
     return next;
 }
 
+/* A restart's task: the start (a new `block` channel: a call), then what
+ * came of it. */
+static void restart_main(void *arg)
+{
+    struct vol *b = arg;
+    uint32_t serial = b->serial;
+    status_t st = fs_run(b, true);
+    if (b->serial != serial || stopping)
+        return;   /* retired meanwhile (its disk went), or volumes stops */
+    b->starting = false;
+    task_kick(tasks);   /* a kill may wait for this restart (request.c) */
+    b->last = st;
+    if (st == OK) {
+        say(false, "volumes: %s %s restarted (restart %u since boot)", b->name, b->path,
+            b->win.restarts);
+        return;
+    }
+    if (st == ERR_PEER_CLOSED) {
+        say(false, "volumes: %s %s: its disk went before its restart", b->name, b->path);
+        fs_retire(b);
+        return;
+    }
+    char why[48];
+    snprintf(why, sizeof(why), "could not be restarted (%s)", status_str(st));
+    if (!excused(b))
+        problems++;
+    schedule(b, why, excused(b));
+}
+
 void sup_run_due(void)
 {
+    if (stopping)
+        return;   /* no more restarts */
     for (unsigned i = 0; i < nvols; i++) {
         struct vol *b = &vols[i];
         uint64_t t = now();
-        if (b->state != VOLUMES_SUP_RESTARTING || b->restart_at > t)
+        if (!restart_waits(b) || b->restart_at > t)
             continue;
         /* a deliberate kill's isn't counted in the window */
         sup_window_started(&b->win, t, !b->deliberate);
         b->deliberate = false;
         b->killed = false;   /* if this start fails, that is no deliberate kill */
-        b->last = fs_run(b, true);
-        if (b->last == OK) {
-            say(false, "volumes: %s %s restarted (restart %u since boot)", b->name, b->path,
-                b->win.restarts);
-            continue;
+        b->starting = true;
+        if (!task_start(tasks, restart_main, b)) {
+            b->starting = false;   /* every task is busy: again in a moment */
+            b->restart_at = t + 100 * NS_PER_MS;
         }
-        if (b->last == ERR_PEER_CLOSED) {
-            say(false, "volumes: %s %s: its disk went before its restart", b->name, b->path);
-            fs_retire(b);
-            continue;
-        }
-        char why[48];
-        snprintf(why, sizeof(why), "could not be restarted (%s)", status_str(b->last));
-        if (!excused(b))
-            problems++;
-        schedule(b, why, excused(b));
     }
     spare_due();   /* after the restarts: a promotion is what makes it due */
 }

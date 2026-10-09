@@ -13,7 +13,9 @@
  * What happens to a disk (enum disk_state):
  *   1. its channel comes: storage.info is asked without waiting (a stick
  *      may take seconds to spin up, and volumes must keep serving);
- *   2. the answer comes: fewer than two partitions, or types other than
+ *   2. the answer comes; then each partition's (storage.partition, one at
+ *      a time, again without waiting: DISK_PARTS): fewer than two
+ *      partitions, or types other than
  *      0xEF then 0x0C, and the disk is not the boot disk (step 4). When
  *      the boot loader named the disk the machine booted from (its MBR
  *      disk id: volumes' argument bootdisk=0x<id>), a disk with another id
@@ -201,17 +203,31 @@ static void ask_boot_file(struct disk *d)
         d->deadline = now();   /* disk_run_due gives up on it */
 }
 
-/* Start the ESP's service and ask it for BOOT_FILE (step 2's end). */
-static void look_at_esp(struct disk *d)
+/* The ESP's service started (or didn't): ask it for BOOT_FILE. */
+static void esp_started(struct disk *d, unsigned part, status_t st)
 {
-    char why[64];
-    status_t st = fs_start(d, PART_ESP, false);
+    (void)part;
+    if (d->state != DISK_ESP)
+        return;   /* given up on meanwhile */
     if (st != OK) {
+        char why[64];
         snprintf(why, sizeof(why), "no filesystem service for its ESP (%s)", status_str(st));
         leave_alone(d, why);
         return;
     }
     ask_boot_file(d);
+}
+
+/* Start the ESP's service, then ask it for BOOT_FILE (step 2's end). The
+ * start counts against ESP_WAIT too. */
+static void look_at_esp(struct disk *d)
+{
+    d->state = DISK_ESP;
+    d->txid = 0;   /* nothing asked yet */
+    d->deadline = now() + ESP_WAIT;
+    status_t st = fs_start(d, PART_ESP, false, esp_started);
+    if (st != OK)
+        esp_started(d, PART_ESP, st);
 }
 
 /* Is d the disk the machine booted from, as far as the MBR disk ids can
@@ -243,35 +259,23 @@ static void release_held(const struct disk *boot)
             not_boot(&disks[i], "the machine booted from another disk");
 }
 
-/* What storage.info said. */
-struct disk_info {
-    char     vendor[9], product[17];   /* trimmed ASCII */
-    uint32_t block_size, partitions;
-    uint64_t blocks;
-};
-
-/* Step 2: storage.info answered. The two partition types decide whether
- * the ESP is worth a look. Only an MBR's types are looked at: a GPT disk
- * (never one yet: usb-storage reads MBRs alone) has no Jam OS layout and
- * no FAT type bytes, so it is no boot disk and gets no mounts. */
-static void got_info(struct disk *d, const struct disk_info *r)
+/* Step 2's end: storage.info answered, and each partition it listed (st:
+ * the first failure). The two partition types decide whether the ESP is
+ * worth a look. Only an MBR's types are looked at: a GPT disk (never one
+ * yet: usb-storage reads MBRs alone) has no Jam OS layout and no FAT type
+ * bytes, so it is no boot disk and gets no mounts. */
+static void got_partitions(struct disk *d, status_t st)
 {
     char why[64];
-    uint8_t *type = d->type;
-    status_t st = OK;
-    memset(d->type, 0, sizeof(d->type));
-    d->nparts = r->partitions > 0xff ? 0xff : (uint8_t)r->partitions;
-    for (uint32_t i = 0; st == OK && i < MAX_PARTS && i < r->partitions; i++)
-        st = storage_partition_until(d->ch, now() + CALL_WAIT, i, &type[i], NULL, NULL, NULL,
-                                     NULL, NULL, NULL, NULL);
+    const uint8_t *type = d->type;
     say(false, "volumes: %s: %s %s, %lu MiB, %u partition(s), types %02x %02x", disk_name(d),
-        r->vendor, r->product, (unsigned long)(r->blocks * r->block_size >> 20), r->partitions,
+        d->vendor, d->product, (unsigned long)(d->blocks * d->block_size >> 20), d->partitions,
         type[0], type[1]);
-    d->mib = r->blocks * r->block_size >> 20;
+    d->mib = d->blocks * d->block_size >> 20;
     if (st != OK) {
         snprintf(why, sizeof(why), "its partitions can't be read (%s)", status_str(st));
         leave_alone(d, why);
-    } else if (r->partitions < 2 || type[0] != TYPE_ESP || type[1] != TYPE_FAT32_LBA) {
+    } else if (d->partitions < 2 || type[0] != TYPE_ESP || type[1] != TYPE_FAT32_LBA) {
         not_boot(d, "not a Jam OS stick (an ESP, then a FAT32 data partition)");
     } else if (!booted_from(d) && boot_disk_taken(d)) {
         /* Its id says why, whether the boot disk came first or not. */
@@ -285,6 +289,21 @@ static void got_info(struct disk *d, const struct disk_info *r)
     } else {
         look_at_esp(d);
     }
+}
+
+/* The boot disk's data partition's service started (or didn't). */
+static void data_started(struct disk *d, unsigned part, status_t st)
+{
+    (void)part;
+    say(!d->test, "volumes: %s is the boot disk: its ESP is mounted, its data partition %s%s",
+        disk_name(d), st == OK ? "too" : "is not: ", st == OK ? "" : status_str(st));
+    if (st != OK && !d->test) {
+        problems++;
+        notice_post(&notices, "Your files can't be saved",
+                    "Its data partition didn't open.", '!',
+                    NOTICE_RASPBERRY);
+    }
+    mounts_update();
 }
 
 /* Step 3: the ESP's service answered the stat. */
@@ -305,22 +324,34 @@ static void got_stat(struct disk *d, status_t st, bool is_dir)
     d->boot_down = false;
     release_held(d);
     disk_told_boot(d, true);   /* back after it was pulled out */
-    st = fs_start(d, PART_DATA, false);
-    say(!d->test, "volumes: %s is the boot disk: its ESP is mounted, its data partition %s%s",
-        disk_name(d), st == OK ? "too" : "is not: ", st == OK ? "" : status_str(st));
-    if (st != OK && !d->test) {
-        problems++;
-        notice_post(&notices, "Your files can't be saved",
-                    "Its data partition didn't open.", '!',
-                    NOTICE_RASPBERRY);
-    }
-    mounts_update();
+    st = fs_start(d, PART_DATA, false, data_started);
+    if (st != OK)
+        data_started(d, PART_DATA, st);
+    mounts_update();   /* /esp now */
 }
 
-/* Read what d's driver answered. */
+/* Ask d's driver for partition d->part_next, or decide once each it
+ * listed has answered (MAX_PARTS at most are looked at). */
+static void ask_partition(struct disk *d)
+{
+    if (d->part_next >= MAX_PARTS || d->part_next >= d->partitions) {
+        got_partitions(d, OK);
+        return;
+    }
+    d->txid = call_txid();
+    d->deadline = now() + CALL_WAIT;
+    d->state = DISK_PARTS;
+    status_t st = storage_partition_send(d->ch, d->txid, d->part_next);
+    if (st != OK)
+        got_partitions(d, st);
+}
+
+/* Read what d's driver answered: storage.info's and storage.partition's
+ * answers to the steps, and those a task waits for (a `block` channel). */
 static void disk_answers(struct disk *d)
 {
-    _Alignas(8) uint8_t buf[STORAGE_REP_MAX];
+    _Alignas(8) uint8_t buf[CALL_REP_MAX];
+    _Static_assert(STORAGE_REP_MAX <= CALL_REP_MAX, "storage's answers fit");
     struct idl_msg m;
     for (int guard = 0; guard < 64 && d->state != DISK_FREE && d->ch; guard++) {
         status_t st = idl_reply_read(d->ch, buf, sizeof(buf), &m);
@@ -328,15 +359,28 @@ static void disk_answers(struct disk *d)
             continue;   /* not storage's: dropped */
         if (st != OK)
             return;
-        if (d->state != DISK_INFO || m.txid != d->txid) {
-            idl_msg_drop(&m);   /* not what we wait for: an answer that came too late */
+        if ((d->state != DISK_INFO && d->state != DISK_PARTS) || m.txid != d->txid) {
+            if (!call_offer(d->ch, buf, &m))
+                idl_msg_drop(&m);   /* nobody waits for it: an answer that came too late */
             continue;
         }
-        struct disk_info r;
-        st = storage_info_result(buf, &m, r.vendor, NULL, r.product, NULL, &r.block_size,
-                                 &r.blocks, NULL, &r.partitions, &d->mbr_id, NULL);
+        if (d->state == DISK_PARTS) {
+            st = storage_partition_result(buf, &m, &d->type[d->part_next], NULL, NULL, NULL,
+                                          NULL, NULL, NULL, NULL);
+            d->part_next++;
+            if (st == OK)
+                ask_partition(d);
+            else
+                got_partitions(d, st);
+            continue;
+        }
+        st = storage_info_result(buf, &m, d->vendor, NULL, d->product, NULL, &d->block_size,
+                                 &d->blocks, NULL, &d->partitions, &d->mbr_id, NULL);
         if (st == OK) {
-            got_info(d, &r);
+            memset(d->type, 0, sizeof(d->type));
+            d->nparts = d->partitions > 0xff ? 0xff : (uint8_t)d->partitions;
+            d->part_next = 0;
+            ask_partition(d);
             continue;
         }
         char why[48];
@@ -345,12 +389,22 @@ static void disk_answers(struct disk *d)
     }
 }
 
-/* Read what b (a filesystem service) answered. */
+/* Read what b (a filesystem service) answered: the fs.stat probes of the
+ * steps, and what a task waits for (an fs.sync). */
 void fs_answers(struct vol *b)
 {
-    _Alignas(8) uint8_t buf[64];
-    uint32_t n = 0;
-    while (b->client && next_msg(b->client, buf, sizeof(buf), &n) == OK) {
+    _Alignas(8) uint8_t buf[CALL_REP_MAX];
+    struct idl_msg msg;
+    while (b->client) {
+        status_t rs = idl_reply_read(b->client, buf, sizeof(buf), &msg);
+        if (rs == ERR_INTERNAL)
+            continue;   /* nothing we ask is answered that big: dropped */
+        if (rs != OK)
+            return;
+        if (call_offer(b->client, buf, &msg))
+            continue;
+        idl_msg_drop(&msg);   /* fs.stat's answer carries none */
+        uint32_t n = msg.n;
         const struct fs_stat_rep *r = (const void *)buf;
         struct disk *d = disk_of(b);
         if (b->other) {
@@ -385,6 +439,7 @@ static void close_ch(struct disk *d)
 {
     if (!d->ch)
         return;
+    call_fail(d->ch);   /* what tasks asked of it (a `block` channel) won't come */
     jam_port_unbind(port, d->ch, KEY_DISK_OF(d - disks, d->gen));
     jam_handle_close(d->ch);
     d->ch = HANDLE_INVALID;
@@ -627,6 +682,8 @@ void disk_run_due(void)
             continue;
         if (d->state == DISK_INFO)
             leave_alone(d, "its driver did not answer storage.info");
+        else if (d->state == DISK_PARTS)
+            got_partitions(d, ERR_TIMED_OUT);
         else if (d->state == DISK_ESP)
             not_boot(d, "its ESP's filesystem service did not answer");
         else if (d->state == DISK_HELD)
@@ -639,43 +696,69 @@ uint64_t disk_next_deadline(void)
 {
     uint64_t next = DEADLINE_NEVER;
     for (unsigned i = 0; i < MAX_DISKS; i++)
-        if ((disks[i].state == DISK_INFO || disks[i].state == DISK_ESP ||
+        if ((disks[i].state == DISK_INFO || disks[i].state == DISK_PARTS ||
+             disks[i].state == DISK_ESP ||
              disks[i].state == DISK_HELD) && disks[i].deadline < next)
             next = disks[i].deadline;
     return next;
 }
 
+/* One mount's fs.sync, while disk_sync_all waits for them all. */
+struct one_sync {
+    bool         test;        /* a test disk's: a failure isn't worth a report */
+    char         disk[24], path[16];
+    status_t     st;          /* the send's, then the answer's */
+    struct call  c;
+};
+
 status_t disk_sync_all(void)
 {
-    status_t first = OK;
+    struct one_sync *s = calloc(MAX_VOLS, sizeof(*s));
+    if (!s)
+        return ERR_NO_MEMORY;
+    unsigned n = 0;
     for (unsigned i = 0; i < MAX_DISKS; i++) {
         const struct disk *d = &disks[i];
-        for (unsigned part = 0; part < MAX_PARTS; part++) {
+        for (unsigned part = 0; part < MAX_PARTS && n < MAX_VOLS; part++) {
             if ((d->state != DISK_BOOT && d->state != DISK_OTHER) || !d->fs[part])
                 continue;
-            const struct vol *b = &vols[d->fs[part] - 1];
+            struct vol *b = &vols[d->fs[part] - 1];
             bool writable = b->other ? b->rw && b->ready : part == PART_DATA;
             if (!writable || b->state != VOLUMES_SUP_RUNNING || !b->client)
                 continue;
-            status_t st = fs_sync_until(b->client, now() + SYNC_WAIT);
-            say(st != OK && !d->test, "volumes: %s: %s synced (%s)", disk_name(d),
-                fs_mount_path(b), status_str(st));
-            if (first == OK)
-                first = st;
+            struct one_sync *o = &s[n++];
+            o->test = d->test;
+            snprintf(o->disk, sizeof(o->disk), "%s", disk_name(d));
+            snprintf(o->path, sizeof(o->path), "%s", fs_mount_path(b));
+            call_begin(&o->c, b->client);   /* all sent at once, then waited for */
+            o->st = fs_sync_send(b->client, o->c.txid);
+            if (o->st != OK)
+                call_end(&o->c);
         }
     }
+    uint64_t deadline = now() + SYNC_WAIT;
+    status_t first = OK;
+    for (unsigned i = 0; i < n; i++) {
+        struct one_sync *o = &s[i];
+        if (o->st == OK)
+            o->st = call_wait(&o->c, deadline);
+        if (o->st == OK)
+            o->st = fs_sync_result(o->c.rep, &o->c.m);
+        say(o->st != OK && !o->test, "volumes: %s: %s synced (%s)", o->disk, o->path,
+            status_str(o->st));
+        if (first == OK)
+            first = o->st;
+    }
+    free(s);
     return first;
 }
 
-/* b (running) stops in order: fsctl.stop, so its files are closed and the
- * volume is clean; killed if it doesn't answer. Its process is gone after. */
-static void stop_in_order(struct vol *b)
+bool disk_exists(uint32_t id)
 {
-    status_t st = b->ctl ? fsctl_stop_until(b->ctl, now() + SYNC_WAIT) : ERR_NOT_SUPPORTED;
-    if (st != OK)
-        say(false, "volumes: %s: its filesystem service did not stop in order (%s): killed",
-            fs_mount_path(b), status_str(st));
-    fs_stop(b, st != OK, true);
+    for (unsigned i = 0; i < MAX_DISKS; i++)
+        if (disks[i].state != DISK_FREE && disks[i].id == id)
+            return true;
+    return false;
 }
 
 status_t disk_release(uint32_t id)
@@ -686,14 +769,23 @@ status_t disk_release(uint32_t id)
             d = &disks[i];
     if (!d)
         return ERR_NOT_FOUND;
+    uint16_t gen = d->gen;   /* moves if its channel goes meanwhile: its mounts went then */
     unsigned n = 0;
+    d->releasing = true;
     for (unsigned part = 0; part < MAX_PARTS; part++) {
         struct vol *b = d->fs[part] ? &vols[d->fs[part] - 1] : NULL;
-        if (b && b->proc && b->state == VOLUMES_SUP_RUNNING) {
-            stop_in_order(b);
-            n++;
-        }
+        if (!b || !b->proc || b->state != VOLUMES_SUP_RUNNING || b->busy)
+            continue;
+        uint32_t serial = b->serial;
+        b->busy = true;
+        (void)fs_stop_in_order(b);   /* said if it had to be killed */
+        if (b->serial == serial)
+            b->busy = false;
+        n++;
+        if (d->gen != gen || d->state == DISK_FREE || stopping)
+            return OK;   /* gone meanwhile, its mounts with it */
     }
+    d->releasing = false;
     say(false, "volumes: %s released: %u filesystem service(s) stopped in order; no mounts "
         "until it is attached again", disk_name(d), n);
     drop_services(d, DISK_ALONE);   /* what is left (a restart due) goes; the mounts change */

@@ -12,7 +12,9 @@
  *                         left clean) and stay gone while the disk is
  *                         still there
  *   volumes_new_channel   a restart that failed after the mount's channel
- *                         went: the watch is told of the new one */
+ *                         went: the watch is told of the new one
+ *   volumes_loop_answers  while a remount waits for a slow disk, volumes
+ *                         answers other requests at once (S2b) */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -131,11 +133,17 @@ bool t_volumes_new_channel(void)
     CHECK_ST(t_sync(&data), OK);
     uint32_t gen0 = mount_gen(&v, DATA);
     CHECK_ST(volumes_kill_until(vm, now() + 30 * NS_PER_S, DATA, sizeof(DATA) - 1, &koid), OK);
-    /* the kill's restart runs right after its answer, before volumes reads
-     * the next request: this one sees it done (and the spare used) */
-    CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, DATA, sizeof(DATA) - 1, &state,
-                                       &restarts, &backoff, &promoted, &spare), OK);
-    CHECK_EQ(state, VOLUMES_SUP_RUNNING);
+    /* the kill's restart starts right after its answer, and runs once its
+     * `block` channel has come (a call to the disk, answered later: a
+     * moment) */
+    uint64_t up_by = now() + 15 * NS_PER_S;
+    do {
+        CHECK(now() < up_by);
+        CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, DATA, sizeof(DATA) - 1,
+                                           &state, &restarts, &backoff, &promoted, &spare), OK);
+        if (state != VOLUMES_SUP_RUNNING)
+            jam_sleep_until(now() + 5 * NS_PER_MS);
+    } while (state != VOLUMES_SUP_RUNNING);
     __atomic_store_n(&mock.refuse_opens, 2, __ATOMIC_RELAXED);
     CHECK_ST(volumes_kill_until(vm, now() + 30 * NS_PER_S, DATA, sizeof(DATA) - 1, &koid), OK);
     uint64_t until = now() + 15 * NS_PER_S;
@@ -195,4 +203,88 @@ bool t_volumes_release_disk(void)
     CHECK(!mounted(&v, ESP) && !mounted(&v, DATA));
     CHECK_EQ(dm_count(&mock.opened[0]) + dm_count(&mock.opened[1]), opened);
     return detach(vm, &v);
+}
+
+#define HOLD_MS    3000u                 /* how late the mock answers each flush */
+#define ANSWER_MAX (500 * NS_PER_MS)     /* a request answered while a remount waits */
+
+static struct diskmock other;   /* a second disk, attached while the first one waits */
+
+/* volumes' loop never waits inside a request: while a remount waits for
+ * a disk that takes HOLD_MS to flush (its filesystem service stops in
+ * order, and its last write's sync is held), volumes answers
+ * `supervision` and takes a second disk (test_disk) at once; the remount
+ * is answered once the flush is through, the mount read-only again with
+ * the file on it. Before S2b each waited behind the remount. */
+bool t_volumes_loop_answers(void)
+{
+    handle_t vm = volumes();
+    struct view v = { 0 };
+    uint32_t id = 0, id2 = 0, state = 0, restarts = 0, backoff = 0, promoted = 0;
+    uint8_t spare = 0;
+    bool skip;
+    char usbn[16];
+    if (!vm)
+        return true;
+    if (!attach(vm, DM_TYPE_FAT32, ESP_OTHER, &id, &skip))
+        return skip;
+    if (!wait_usb(vm, &v, 1))
+        return false;
+    snprintf(usbn, sizeof(usbn), "%s", usb_path(&v));
+    uint32_t len = (uint32_t)strlen(usbn);
+    CHECK_ST(remount(vm, usbn, true), OK);
+    if (!wait_usb(vm, &v, 0))
+        return false;
+    struct fatrun r = mount_of(&v, usbn);
+    if (!put_file(&r, "/held.txt", "written before a slow flush"))
+        return false;
+    /* From now on the disk takes HOLD_MS to answer a flush: the remount's
+     * stop in order waits for it. */
+    uint32_t held0 = dm_count(&mock.held), txid = 0x5b2b0001u;
+    __atomic_store_n(&mock.hold_sync_ms, HOLD_MS, __ATOMIC_RELAXED);
+    uint64_t t0 = now();
+    CHECK_ST(volumes_remount_send(vm, txid, usbn, len, 0), OK);
+    if (!wait_count(&mock.held, held0 + 1))
+        return false;
+    uint64_t held_at = now();
+    /* volumes answers meanwhile */
+    uint64_t t1 = now();
+    CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, usbn, len, &state, &restarts,
+                                       &backoff, &promoted, &spare), OK);
+    uint64_t sup_ns = now() - t1;
+    handle_t client2;
+    if (!dm_start(&other, 0x83, 0x83, &client2))
+        return false;
+    t1 = now();
+    CHECK_ST(volumes_test_disk_until(vm, now() + 10 * NS_PER_S, client2, &id2), OK);
+    uint64_t attach_ns = now() - t1;
+    bool still_held = now() < held_at + (uint64_t)HOLD_MS * NS_PER_MS;
+    printf("utest: %s: while the remount waited: supervision answered in %lu us, test_disk in "
+           "%lu us\n", utest_cur, (unsigned long)(sup_ns / 1000), (unsigned long)(attach_ns / 1000));
+    CHECK(still_held);   /* else the test proved nothing: both came after the flush */
+    CHECK(sup_ns < ANSWER_MAX);
+    CHECK(attach_ns < ANSWER_MAX);
+    CHECK(id2 != id);
+    /* the remount's answer, once the flush is through */
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(vm, SIG_READABLE, now() + 30 * NS_PER_S, &seen), OK);
+    _Alignas(8) uint8_t rep[VOLUMES_REP_MAX];
+    struct idl_msg m;
+    CHECK_ST(idl_reply_read(vm, rep, sizeof(rep), &m), OK);
+    CHECK_EQ(m.txid, txid);
+    CHECK_ST(volumes_remount_result(rep, &m), OK);
+    uint64_t took = now() - t0;
+    printf("utest: %s: the remount answered after %lu ms\n", utest_cur,
+           (unsigned long)(took / NS_PER_MS));
+    CHECK(took >= (uint64_t)HOLD_MS * NS_PER_MS * 9 / 10);   /* it did wait for the flush */
+    __atomic_store_n(&mock.hold_sync_ms, 0, __ATOMIC_RELAXED);
+    if (!wait_usb(vm, &v, 1))
+        return false;
+    r = mount_of(&v, usbn);
+    CHECK(file_is(&r, "/held.txt", "written before a slow flush"));
+    if (!dm_stop(&other))
+        return false;
+    if (!detach(vm, &v))
+        return false;
+    return wait_usb(vm, &v, -1);
 }

@@ -10,7 +10,12 @@
  * until it is retired, given up on or stopped in order (a remount): each
  * instance is handed a duplicate of the server end (fs_serve_end), so a
  * restart after a death (spare.c) is the same channel and the same mount.
- * A remount is a new channel: the service stopped in order. */
+ * A remount is a new channel: the service stopped in order.
+ *
+ * A start waits for its `block` channel (storage.open_partition, a call to
+ * the disk's driver), so every start runs in a task (calls.c): fs_start's
+ * own (start_main), a restart's (supervise.c), a remount's and the ESP
+ * write's (fs_restart, in their request's task). */
 #include <fatsvc.h>
 #include <fs_idl.h>
 #include <idl/fsctl.h>
@@ -33,9 +38,34 @@ const char *fs_mount_path(const struct vol *b)
 
 void fs_ctl_close(struct vol *b)
 {
-    if (b->ctl)
+    if (b->ctl) {
+        jam_port_unbind(port, b->ctl, KEY_FSCTL_OF(b - vols, b->ctl_gen));
+        call_fail(b->ctl);   /* a task waiting for fsctl.stop's answer: none comes */
         jam_handle_close(b->ctl);
+    }
     b->ctl = HANDLE_INVALID;
+}
+
+void fsctl_key(uint64_t key)
+{
+    uint32_t i = KEY_INDEX(key);
+    if (i >= nvols || !vols[i].ctl || KEY_GEN(key) != (vols[i].ctl_gen & 0xffffu))
+        return;   /* stale */
+    struct vol *b = &vols[i];
+    _Alignas(8) uint8_t buf[CALL_REP_MAX];
+    _Static_assert(FSCTL_REP_MAX <= CALL_REP_MAX, "fsctl's answers fit");
+    struct idl_msg m;
+    for (int guard = 0; guard < 64 && b->ctl; guard++) {
+        status_t st = idl_reply_read(b->ctl, buf, sizeof(buf), &m);
+        if (st == ERR_INTERNAL)
+            continue;
+        if (st == ERR_PEER_CLOSED)
+            call_fail(b->ctl);   /* the service ended without answering */
+        if (st != OK)
+            return;
+        if (!call_offer(b->ctl, buf, &m))
+            idl_msg_drop(&m);
+    }
 }
 
 void fs_retire(struct vol *b)
@@ -50,6 +80,10 @@ void fs_retire(struct vol *b)
     b->state = VOLUMES_SUP_NONE;
     b->disk = 0;
     b->path = NULL;   /* a free slot now */
+    b->serial++;      /* the tasks at work on it stop */
+    b->starting = b->stopping = b->busy = false;
+    if (tasks)
+        task_kick(tasks);
 }
 
 struct vol *fs_find_mount(const char *path, uint32_t len)
@@ -109,6 +143,31 @@ status_t fs_serve_end(struct vol *b, struct spawn_handle *x, rights_t *xr, unsig
     return OK;
 }
 
+status_t fs_open_block(struct vol *b, bool read_only, handle_t *out)
+{
+    const struct disk *d = disk_of(b);
+    if (!d || !d->ch || d->state == DISK_FREE || d->state == DISK_DOWN)
+        return ERR_PEER_CLOSED;
+    if (!in_task())   /* nobody to give the CPU to: the call as it was */
+        return storage_open_partition_until(d->ch, now() + CALL_WAIT, b->part, read_only, out);
+    uint32_t serial = b->serial;
+    struct call c;
+    call_begin(&c, d->ch);
+    status_t st = storage_open_partition_send(d->ch, c.txid, b->part, read_only);
+    if (st != OK) {
+        call_end(&c);
+        return st;
+    }
+    st = call_wait(&c, now() + CALL_WAIT);
+    if (st == OK)
+        st = storage_open_partition_result(c.rep, &c.m, out);
+    if (st == OK && (b->serial != serial || stopping)) {
+        jam_handle_close(*out);   /* b went meanwhile: nobody to give it to */
+        st = ERR_PEER_CLOSED;
+    }
+    return st;
+}
+
 status_t fs_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
     const struct disk *d = disk_of(b);
@@ -121,8 +180,7 @@ status_t fs_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigne
     bool read_only = !b->other && b->part == PART_DATA ? false : !b->rw;
     status_t st = OK;
     if (!fs_block_prepared(b, &blk))
-        st = storage_open_partition_until(d->ch, now() + CALL_WAIT, b->part, read_only,
-                                          &blk);
+        st = fs_open_block(b, read_only, &blk);   /* waits, in a task */
     if (st != OK)
         return st;
     x[*n] = (struct spawn_handle){ FAT_SR_BLOCK, blk };
@@ -135,8 +193,11 @@ status_t fs_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigne
     fs_ctl_close(b);
     if (jam_channel_create(&ours, &theirs) == OK &&
         jam_channel_set_flags(theirs, CHANNEL_NO_HANDLES) == OK &&
-        jam_channel_set_flags(ours, CHANNEL_NO_HANDLES) == OK) {
-        b->ctl = ours;
+        jam_channel_set_flags(ours, CHANNEL_NO_HANDLES) == OK &&
+        jam_port_bind(port, ours, KEY_FSCTL_OF(b - vols, b->ctl_gen + 1),
+                      SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT) == OK) {
+        b->ctl = ours;   /* its answers come to the loop (fsctl_key) */
+        b->ctl_gen++;
         x[*n] = (struct spawn_handle){ FAT_SR_CTL, theirs };
         xr[(*n)++] = FAT_CHAN_RIGHTS;
     } else {
@@ -194,8 +255,10 @@ static struct vol *fs_slot(struct disk *d, unsigned part, bool other)
         b = &vols[nvols++];
     if (!b)
         return NULL;
-    uint32_t gen = b->gen;   /* kept across uses: stale port packets stay stale */
-    *b = (struct vol){ .path = FAT_PATH, .test = d->test, .gen = gen,
+    uint32_t gen = b->gen, serial = b->serial, ctl_gen = b->ctl_gen;
+    /* kept across uses: stale port packets stay stale, old tasks stopped */
+    *b = (struct vol){ .path = FAT_PATH, .test = d->test, .gen = gen, .serial = serial + 1,
+                       .ctl_gen = ctl_gen,
                        .disk = (uint32_t)(d - disks) + 1, .part = (uint8_t)part,
                        .other = other, .usbn = (uint8_t)usbn };
     snprintf(b->name, sizeof(b->name), "fat-%s", fs_mount_path(b) + 1);
@@ -203,8 +266,31 @@ static struct vol *fs_slot(struct disk *d, unsigned part, bool other)
     return b;
 }
 
-/* Start the filesystem service on partition `part` of d. */
-status_t fs_start(struct disk *d, unsigned part, bool other)
+/* fs_start's task: the start, then what its caller wanted done. */
+static void start_main(void *arg)
+{
+    struct vol *b = arg;
+    uint32_t serial = b->serial;
+    struct disk *d = disk_of(b);
+    unsigned part = b->part;
+    bool other = b->other;
+    void (*done)(struct disk *, unsigned, status_t) = b->on_started;
+    b->last = fs_run(b, false);
+    if (b->serial != serial || stopping)
+        return;   /* retired meanwhile: its disk moved on without it */
+    b->starting = false;
+    task_kick(tasks);   /* a kill may wait for this start (request.c) */
+    status_t st = b->last;
+    say(false, "volumes: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1, FAT_PATH,
+        fs_mount_path(b), other || part == PART_ESP ? ", read-only" : "", status_str(st));
+    if (st != OK)
+        fs_retire(b);
+    if (done)
+        done(d, part, st);
+}
+
+status_t fs_start(struct disk *d, unsigned part, bool other,
+                  void (*done)(struct disk *d, unsigned part, status_t st))
 {
     if (!in_bootfs(FAT_PATH)) {
         say(false, "volumes: %s: %s is not in bootfs: no filesystem", disk_name(d), FAT_PATH);
@@ -215,13 +301,14 @@ status_t fs_start(struct disk *d, unsigned part, bool other)
         say(false, "volumes: %s partition %u: no room for another mount", disk_name(d), part + 1);
         return ERR_NO_RESOURCES;
     }
-    b->last = fs_run(b, false);
-    status_t st = b->last;
-    say(false, "volumes: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1, FAT_PATH,
-        fs_mount_path(b), other || part == PART_ESP ? ", read-only" : "", status_str(st));
-    if (st != OK)
+    b->starting = true;
+    b->on_started = done;
+    if (!task_start(tasks, start_main, b)) {
+        say(false, "volumes: %s partition %u: no task for its start", disk_name(d), part + 1);
         fs_retire(b);
-    return st;
+        return ERR_NO_RESOURCES;
+    }
+    return OK;
 }
 
 /* d moves to `state`, one in which nothing of it is mounted, and its
@@ -312,6 +399,15 @@ static bool fat_type(uint8_t type)
            type == 0x0c || type == 0x0e || type == TYPE_ESP;
 }
 
+/* A /usbN service's start went: one that failed lets the next one go. */
+static void other_started(struct disk *d, unsigned part, status_t st)
+{
+    (void)d;
+    (void)part;
+    if (st != OK)
+        others_pump();
+}
+
 /* Start the next /usbN service that is waited for, unless one is still
  * finding out whether its partition holds a volume. One at a time, so the
  * numbers go to the volumes in the order they were found, with no gap
@@ -321,16 +417,17 @@ void others_pump(void)
     for (unsigned i = 0; i < nvols; i++) {
         const struct vol *b = &vols[i];
         bool alive = b->state == VOLUMES_SUP_RUNNING || b->state == VOLUMES_SUP_RESTARTING;
-        if (b->path && b->other && !b->ready && alive)
+        if (b->path && b->other && !b->ready && (alive || b->starting))
             return;
     }
     for (unsigned i = 0; i < MAX_DISKS; i++) {
         struct disk *d = &disks[i];
-        for (unsigned part = 0; part < MAX_PARTS && d->state == DISK_OTHER; part++) {
+        for (unsigned part = 0; part < MAX_PARTS && d->state == DISK_OTHER && !d->releasing;
+             part++) {
             if (!(d->want & 1u << part))
                 continue;
             d->want &= (uint8_t)~(1u << part);
-            if (fs_start(d, part, true) == OK)
+            if (fs_start(d, part, true, other_started) == OK)
                 return;
         }
     }
@@ -384,22 +481,19 @@ bool fs_check_ended(struct vol *b, bool no_volume)
     return true;
 }
 
-/* b's running service stopped in order and started again on a `block`
- * channel opened read-write or read-only (its slot freed if it can't
- * start). */
-static status_t fs_restart(struct vol *b, bool writable)
+status_t fs_restart(struct vol *b, bool writable)
 {
     uint64_t t0 = now();
+    uint32_t serial = b->serial;
     char path[16];
     snprintf(path, sizeof(path), "%s", fs_mount_path(b));
     /* The service stops in order (fsctl.stop): its files closed, what was
      * written on the stick, the volume clean; a write that comes later
-     * fails instead of being lost. Only one that doesn't answer is killed. */
-    status_t stopped = b->ctl ? fsctl_stop_until(b->ctl, now() + SYNC_WAIT) : ERR_NOT_SUPPORTED;
-    if (stopped != OK)
-        say(false, "volumes: %s: its filesystem service did not stop in order (%s): killed%s",
-            path, status_str(stopped), b->rw ? "; what it had not synced is lost" : "");
-    fs_stop(b, stopped != OK, true);
+     * fails instead of being lost. Only one that doesn't answer is killed
+     * (said, with what that loses). */
+    status_t stopped = fs_stop_in_order(b);
+    if (stopped == ERR_PEER_CLOSED || b->serial != serial || stopping)
+        return ERR_PEER_CLOSED;   /* its disk went meanwhile, or volumes stops */
     b->state = VOLUMES_SUP_NONE;
     sup_reset(b);
     /* Stopped in order: it kept nothing, and the next one starts fresh on a
@@ -407,6 +501,8 @@ static status_t fs_restart(struct vol *b, bool writable)
     fs_kept_release(b);
     b->rw = writable;
     b->last = fs_run(b, false);   /* a new `block` channel, opened the new way */
+    if (b->serial != serial || stopping)
+        return ERR_PEER_CLOSED;
     status_t st = b->last;
     say(false, "volumes: %s: its filesystem service started again, %s (%s), %lu ms after "
         "the remount was asked for", path, writable ? "read-write" : "read-only",
@@ -418,29 +514,19 @@ static status_t fs_restart(struct vol *b, bool writable)
     return st;
 }
 
-status_t disk_remount(struct vol *b, bool writable)
+status_t disk_can_restart(const struct vol *b, bool writable)
 {
-    if (!b->path || !b->other)
-        return ERR_NOT_FOUND;
-    if (b->state != VOLUMES_SUP_RUNNING || !b->proc || !b->ready)
-        return ERR_BAD_STATE;   /* not mounted (yet, or no longer) */
-    if (b->rw == writable)
-        return OK;
-    return fs_restart(b, writable);
+    if (b->busy || b->stopping || b->starting)
+        return ERR_BAD_STATE;   /* something else is under way on it */
+    if (b->state != VOLUMES_SUP_RUNNING || !b->proc || !b->client || (b->other && !b->ready))
+        return ERR_BAD_STATE;   /* not serving: not mounted (yet, or no longer), restarting */
+    return b->rw == writable ? OK : IDL_LATER;
 }
 
-status_t disk_esp_write(bool writable, handle_t *out)
+struct vol *disk_esp(void)
 {
-    struct vol *b = NULL;
-    for (unsigned i = 0; i < MAX_DISKS && !b; i++)
+    for (unsigned i = 0; i < MAX_DISKS; i++)
         if (disks[i].state == DISK_BOOT && !disks[i].test && disks[i].fs[PART_ESP])
-            b = &vols[disks[i].fs[PART_ESP] - 1];
-    if (!b)
-        return ERR_NOT_FOUND;
-    if (b->state != VOLUMES_SUP_RUNNING || !b->proc || !b->client)
-        return ERR_BAD_STATE;   /* stopped, or restarting after a crash */
-    status_t st = b->rw == writable ? OK : fs_restart(b, writable);
-    if (st == OK && writable)
-        st = jam_handle_duplicate(b->client, RIGHT_SAME, out);
-    return st;
+            return &vols[disks[i].fs[PART_ESP] - 1];
+    return NULL;
 }

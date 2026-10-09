@@ -36,7 +36,8 @@
  * **The `block` channel of /data is opened in advance** while a spare waits,
  * so the promotion that matters most needs no call to usb-storage; any
  * other mount's is opened at its promotion (a call, CALL_WAIT at most, as
- * every start makes). It is a channel of its own, not the dead fat's:
+ * every start makes, waited for in the start's task). Opening it in
+ * advance is a task of its own too (prepare_main). It is a channel of its own, not the dead fat's:
  * usb-storage's fence (drivers/usb-storage/block.c) drops what a dead
  * client left queued, so nothing of the dead fat lands after its
  * successor's writes.
@@ -76,6 +77,7 @@ static struct {
     handle_t block;       /* 0: none */
     uint32_t block_for;   /* ... for this service (vols index + 1) */
     uint64_t block_try;   /* the next try to open it (uptime ns) */
+    bool     opening;     /* prepare_main is at it */
 } adv;
 
 void spare_init(bool on)
@@ -122,25 +124,45 @@ static struct vol *data_binding(void)
     return NULL;
 }
 
-/* Open /data's channel for the spare, unless it has one for the /data
- * that runs now. */
+/* prepare_block's task: the call to the disk's driver, waited for. */
+static void prepare_main(void *arg)
+{
+    struct vol *b = arg;
+    uint32_t serial = b->serial;
+    handle_t h = HANDLE_INVALID;
+    status_t st = fs_open_block(b, false, &h);
+    adv.opening = false;
+    if (st == OK && (b->serial != serial || data_binding() != b || adv.block)) {
+        jam_handle_close(h);   /* /data moved on meanwhile: the next round opens another */
+        return;
+    }
+    if (st != OK) {
+        if (st != ERR_PEER_CLOSED || !stopping) {
+            adv.block_try = now() + BLOCK_RETRY;
+            say(false, "volumes: can't open /data's block channel for the spare (%s)",
+                status_str(st));
+        }
+        return;
+    }
+    adv.block = h;
+    adv.block_for = (uint32_t)(b - vols) + 1;
+}
+
+/* Open /data's channel for the spare (in a task), unless it has one for
+ * the /data that runs now. */
 static void prepare_block(uint64_t t)
 {
     struct vol *b = data_binding();
     uint32_t want = b ? (uint32_t)(b - vols) + 1 : 0;
     if (adv.block && (adv.block_for != want || peer_closed(adv.block)))
         drop_block();
-    if (adv.block || !b || t < adv.block_try)
+    if (adv.block || adv.opening || !b || t < adv.block_try || stopping)
         return;
-    status_t st = storage_open_partition_until(disk_of(b)->ch, now() + CALL_WAIT, b->part,
-                                               false, &adv.block);
-    if (st != OK) {
-        adv.block = HANDLE_INVALID;
-        adv.block_try = t + BLOCK_RETRY;
-        say(false, "volumes: can't open /data's block channel for the spare (%s)", status_str(st));
-        return;
+    adv.opening = true;
+    if (!task_start(tasks, prepare_main, b)) {
+        adv.opening = false;
+        adv.block_try = t + BLOCK_RETRY;   /* every task is busy */
     }
-    adv.block_for = want;
 }
 
 bool fs_block_prepared(const struct vol *b, handle_t *out)
@@ -177,8 +199,8 @@ uint64_t spare_next_deadline(void)
 {
     if (!sup_spare_waits(&spare))
         return sup_spare_next(&spare);
-    return !adv.block && adv.block_try > now() && data_binding() ? adv.block_try
-                                                                  : DEADLINE_NEVER;
+    return !adv.block && !adv.opening && adv.block_try > now() && data_binding()
+               ? adv.block_try : DEADLINE_NEVER;
 }
 
 void spare_stop(void)
