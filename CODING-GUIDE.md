@@ -438,6 +438,18 @@ fractions. User programs may use floating point and SIMD freely.
   hangs holds up everyone who asks the loop anything (one `kill` can hold
   devmgr's loop for its 15 s wait today).
   The model and the tools: [ARCHITECTURE.md](ARCHITECTURE.md#how-a-service-waits).
+- A loop that serves **reads nothing more from a client that has left
+  its protocol's bound of answers unread** (8 answers or 8 KiB unless the
+  protocol's `unread` line raises it): ask `<proto>_unread_full(ch)`
+  before each `<proto>_serve_one`, `<proto>_take_slot`,
+  `svc_serve_request` or read of your own, leave that channel unserved
+  (not armed, not pending), count it with `idl_hold`, wait no later than
+  `idl_held_deadline`, and look at it again when `idl_held_due` says so.
+  `<proto>_serve` does all this itself. The model and the API:
+  [tools/genidl.py](tools/genidl.py)'s "The unread bound".
+  *Why:* an answer waiting unread is charged to the server that wrote it,
+  so one client that never reads would fill the server's job and every
+  other client's answers would be lost.
 
 ### Recursion and the stack
 

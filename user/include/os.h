@@ -388,7 +388,10 @@ bool     ns_svc_at(unsigned i, char out[SVC_NAME_MAX + 1]);
  * dispatch(ctx, ...), a wrapper of the protocol's generated
  * <proto>_dispatch. Returns as a generated <proto>_serve_one does: OK once
  * a message was handled, else the read's status (ERR_SHOULD_WAIT: nothing
- * queued; ERR_PEER_CLOSED: every client is gone). One thread at a time. */
+ * queued; ERR_PEER_CLOSED: every client is gone). One thread at a time.
+ * As with <proto>_serve_one, the unread bound is the caller's: ask the
+ * protocol's <proto>_unread_full(ch) first (tools/genidl.py, "The unread
+ * bound"). */
 typedef uint32_t (*svc_dispatch_fn)(void *ctx, const void *req, uint32_t n, void *rep,
                                     handle_t *rhs, uint32_t *rhn);
 status_t svc_serve_request(handle_t ch, svc_dispatch_fn dispatch,
