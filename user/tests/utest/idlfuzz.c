@@ -490,6 +490,14 @@ bool t_volumes_hostile(void)
     }
     CHECK_ST(volumes_supervision_until(vm, now() + 5 * NS_PER_S, "/nothing", 8, &state, &restarts,
                                        &backoff, &promoted, &spare), ERR_NOT_FOUND);
+    /* The test mounts there are now (an earlier test's, still going):
+     * after the hostile disk, no other. */
+    CHECK_ST(view_next(vm, &v, now() + WAIT_MOUNT), OK);
+    char before[VIEW_MAX][16];
+    unsigned nbefore = 0;
+    for (unsigned i = 0; i < v.n; i++)
+        if (v.m[i].flags & MOUNTS_TEST)
+            memcpy(before[nbefore++], v.m[i].path, sizeof(before[0]));
     /* The hostile driver. */
     CHECK_ST(jam_channel_create(&mine, &theirs), OK);
     CHECK_ST(volumes_test_disk_until(vm, now() + 10 * NS_PER_S, theirs, &id), OK);
@@ -523,9 +531,13 @@ bool t_volumes_hostile(void)
                                        &backoff, &promoted, &spare), ERR_NOT_FOUND);
     if (!wait_mounts(vm, &v, false, false))
         return false;
-    for (unsigned i = 0; i < v.n; i++)
-        if (v.m[i].flags & MOUNTS_TEST)
-            FAIL("a test mount left behind: %s", v.m[i].path);
+    for (unsigned i = 0; i < v.n; i++) {
+        bool old = false;
+        for (unsigned k = 0; k < nbefore && !old; k++)
+            old = !strcmp(before[k], v.m[i].path);
+        if ((v.m[i].flags & MOUNTS_TEST) && !old)
+            FAIL("the hostile disk left a mount behind: %s", v.m[i].path);
+    }
     view_close(&v);
     return true;
 }
