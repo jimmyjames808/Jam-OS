@@ -304,8 +304,8 @@ static bool kept_kind(handle_t svc, handle_t h)
     return true;
 }
 
-/* The kinds the keeper keeps and refuses, as it tells them apart without
- * a system call that names a handle's type. */
+/* The kinds the keeper keeps and refuses, as handle_info tells them
+ * apart. */
 static bool keep_kinds(handle_t svc)
 {
     handle_t h, x, y;
@@ -325,6 +325,19 @@ static bool keep_kinds(handle_t svc)
     CHECK_ST(jam_channel_create(&x, &y), OK);   /* a channel end whose peer has gone */
     jam_handle_close(y);
     CHECK(kept_kind(svc, x));
+    /* handle_info tells a channel end whatever its state and rights: one
+     * we may not wait on, and one whose peer's queue is full (neither
+     * writable nor peer-closed) were refused while the keeper probed. */
+    CHECK_ST(jam_channel_create(&x, &y), OK);
+    CHECK_ST(jam_handle_replace(x, RIGHT_DUPLICATE | RIGHT_TRANSFER, &h), OK);
+    CHECK(kept_kind(svc, h));
+    jam_handle_close(y);
+    CHECK_ST(jam_channel_create(&x, &y), OK);
+    for (unsigned i = 0; i < CHANNEL_MAX_QUEUED; i++)
+        CHECK_ST(jam_channel_write(x, "full", 4, NULL, 0), OK);
+    CHECK_ST(jam_channel_write(x, "full", 4, NULL, 0), ERR_SHOULD_WAIT);
+    CHECK(kept_kind(svc, x));
+    jam_handle_close(y);
     CHECK_ST(jam_event_create(&x), OK);         /* an event without RIGHT_SIGNAL */
     CHECK_ST(jam_handle_replace(x, RIGHTS_BASIC, &h), OK);
     CHECK(kept_kind(svc, h));
