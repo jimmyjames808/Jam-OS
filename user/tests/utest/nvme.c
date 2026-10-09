@@ -141,6 +141,51 @@ static bool region(handle_t s, const char *name, uint64_t lba, uint64_t count)
     return true;
 }
 
+/* storage.digest: its refusals, the ESP's digest equal to the hash of
+ * the same blocks read through a block channel, and the region lines. */
+static bool digests(handle_t s, const struct disk *dk)
+{
+    struct disk d = *dk;
+    uint8_t mbr_type, type[16], uniq[16];
+    uint64_t start, blocks, attr;
+    char name[109];
+    uint32_t nl;
+    handle_t blk;
+    /* digest's refusals. */
+    uint8_t sum[SHA256_BYTES], want[SHA256_BYTES];
+    CHECK_ST(storage_digest_within(s, WAIT, 0, 0, sum), ERR_INVALID_ARGS);
+    CHECK_ST(storage_digest_within(s, WAIT, d.blocks, 1, sum), ERR_OUT_OF_RANGE);
+    CHECK_ST(storage_digest_within(s, WAIT, d.blocks - 1, 2, sum), ERR_OUT_OF_RANGE);
+    CHECK_ST(storage_digest_within(s, WAIT, 0, STORAGE_DIGEST_MAX / d.bs + 1, sum),
+             ERR_OUT_OF_RANGE);
+    /* digest = the same blocks read through a block channel (the ESP). */
+    CHECK_ST(storage_partition_within(s, WAIT, 0, &mbr_type, type, uniq, &start, &blocks, &attr,
+                                      name, &nl), OK);
+    const uint8_t *map;
+    if (!open_ro(s, 0, &blk, &map))
+        return false;
+    if (!hash_through(blk, map, d.bs, 0, blocks, want))
+        return false;
+    CHECK_ST(storage_digest_within(s, 4 * WAIT, start, blocks, sum), OK);
+    CHECK(!memcmp(sum, want, SHA256_BYTES));
+    unmap(map);
+    jam_handle_close(blk);
+    /* The region lines the script checks against the host's. */
+    if (!region(s, "gpt-head", 0, 34))
+        return false;
+    for (uint32_t i = 0; i < 2; i++) {
+        char part[8];
+        CHECK_ST(storage_partition_within(s, WAIT, i, &mbr_type, type, uniq, &start, &blocks,
+                                          &attr, name, &nl), OK);
+        snprintf(part, sizeof(part), "part%u", i + 1);
+        if (!region(s, part, start, blocks))
+            return false;
+    }
+    if (!region(s, "gpt-tail", d.blocks - 33, 33))
+        return false;
+    return true;
+}
+
 bool t_nvme_storage(void)
 {
     handle_t s, blk;
@@ -179,37 +224,7 @@ bool t_nvme_storage(void)
     printf("utest: %s: %.*s, serial %.*s, firmware %.*s; host read commands %lu, host write "
            "commands %lu\n", utest_cur, (int)ml, model, (int)sl, serial, (int)fl, fw,
            (unsigned long)hr, (unsigned long)hw);
-    /* digest's refusals. */
-    uint8_t sum[SHA256_BYTES], want[SHA256_BYTES];
-    CHECK_ST(storage_digest_within(s, WAIT, 0, 0, sum), ERR_INVALID_ARGS);
-    CHECK_ST(storage_digest_within(s, WAIT, d.blocks, 1, sum), ERR_OUT_OF_RANGE);
-    CHECK_ST(storage_digest_within(s, WAIT, d.blocks - 1, 2, sum), ERR_OUT_OF_RANGE);
-    CHECK_ST(storage_digest_within(s, WAIT, 0, STORAGE_DIGEST_MAX / d.bs + 1, sum),
-             ERR_OUT_OF_RANGE);
-    /* digest = the same blocks read through a block channel (the ESP). */
-    CHECK_ST(storage_partition_within(s, WAIT, 0, &mbr_type, type, uniq, &start, &blocks, &attr,
-                                      name, &nl), OK);
-    const uint8_t *map;
-    if (!open_ro(s, 0, &blk, &map))
-        return false;
-    if (!hash_through(blk, map, d.bs, 0, blocks, want))
-        return false;
-    CHECK_ST(storage_digest_within(s, 4 * WAIT, start, blocks, sum), OK);
-    CHECK(!memcmp(sum, want, SHA256_BYTES));
-    unmap(map);
-    jam_handle_close(blk);
-    /* The region lines the script checks against the host's. */
-    if (!region(s, "gpt-head", 0, 34))
-        return false;
-    for (uint32_t i = 0; i < 2; i++) {
-        char part[8];
-        CHECK_ST(storage_partition_within(s, WAIT, i, &mbr_type, type, uniq, &start, &blocks,
-                                          &attr, name, &nl), OK);
-        snprintf(part, sizeof(part), "part%u", i + 1);
-        if (!region(s, part, start, blocks))
-            return false;
-    }
-    if (!region(s, "gpt-tail", d.blocks - 33, 33))
+    if (!digests(s, &d))
         return false;
     jam_handle_close(s);
     return true;
