@@ -1942,3 +1942,11 @@ files2.c, fileskid.c and ptfiles.h; `tools/shell-tests/posix-files.txt`.
   no call answers it yet), `statx` (ENOSYS: musl falls back to fstatat),
   listing /dev and /etc (B2's), delete-on-close for an open file
   unlinked.
+
+**B1's question, answered (2026-10-09, by Q5's recommendation):** fat
+keeps one writable open per file, and a descriptor open for writing isn't
+handed to a child (EBUSY). Redirections are opened by the child itself:
+S1 and the shell use `posix_spawn_file_actions_addopen` for `>`, `>>` and
+`2>`, never a parent's writable descriptor. A file shared for writing
+between a parent and a child waits for Q5's (B), the `file` clone, with
+M15's shell.
