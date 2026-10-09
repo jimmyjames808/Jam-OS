@@ -225,7 +225,8 @@ struct pci_dev *kt_edu(void);
 /* Its registers: memory decode on, BAR 0's first page mapped uncached. */
 volatile uint8_t *kt_edu_regs(struct pci_dev *d);
 /* Start one transfer of len bytes: RAM at src into the buffer (to_ram
- * false, dst is ignored), or the buffer to RAM at dst (src ignored). */
+ * false, dst is ignored), or the buffer to RAM at dst (src ignored). The
+ * buffer's side is always the buffer's start (EDU_BUF in ktest_util.c). */
 void kt_edu_dma_start(volatile uint8_t *r, uint64_t src, uint64_t dst, uint32_t len,
                       bool to_ram);
 /* Wait (kt_patience_ms(2000) at most) until the engine is idle: false if

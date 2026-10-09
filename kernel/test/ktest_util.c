@@ -143,6 +143,10 @@ struct kobject *kt_pci_dev_res(struct pci_dev *d)
 #define EDU_DMA_CMD 0x98
 #define EDU_RUN     0x1u   /* command: start; reads 1 while running */
 #define EDU_TO_RAM  0x2u   /* command: the buffer -> RAM */
+#define EDU_BUF     0x40000u   /* the buffer's address on the device's side: edu takes it
+                                * as given, and one outside [EDU_BUF, EDU_BUF + 4096) is a
+                                * guest error QEMU logs and then copies through anyway, to
+                                * its own memory beside the buffer (QEMU 8 stops instead) */
 
 struct pci_dev *kt_edu(void)
 {
@@ -165,8 +169,8 @@ volatile uint8_t *kt_edu_regs(struct pci_dev *d)
 void kt_edu_dma_start(volatile uint8_t *r, uint64_t src, uint64_t dst, uint32_t len,
                       bool to_ram)
 {
-    *(volatile uint64_t *)(r + EDU_DMA_SRC) = src;
-    *(volatile uint64_t *)(r + EDU_DMA_DST) = dst;
+    *(volatile uint64_t *)(r + EDU_DMA_SRC) = to_ram ? EDU_BUF : src;
+    *(volatile uint64_t *)(r + EDU_DMA_DST) = to_ram ? dst : EDU_BUF;
     *(volatile uint64_t *)(r + EDU_DMA_CNT) = len;
     *(volatile uint64_t *)(r + EDU_DMA_CMD) = EDU_RUN | (to_ram ? EDU_TO_RAM : 0);
 }
