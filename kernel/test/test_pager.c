@@ -8,10 +8,17 @@
  * threads in vmo_read, which waits for its page like a fault will. Each
  * test ends by closing the pager's handle (pg_close), which is also what
  * frees a pager whose VMOs died: a GONE link holds the pager until it is
- * answered or the pager closes. */
+ * answered or the pager closes.
+ *
+ * The fault path (the last section) has readers of its own: kernel
+ * threads faulting or copying through an address space, and ring-3
+ * threads (of no process) whose kills are read back from the log. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/handle.h>
+#include <jam/irq.h>
+#include <jam/klog.h>
+#include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/pager.h>
@@ -22,6 +29,8 @@
 #include <jam/string.h>
 #include <jam/sys.h>
 #include <jam/time.h>
+#include <jam/uentry.h>
+#include <jam/usercopy.h>
 #include <jam/vmo.h>
 
 #define PG     PAGE_SIZE
@@ -458,7 +467,7 @@ KTEST(pager_close_detaches)
     KT_EQ(rd_end(&a, 0), ERR_IO);
     KT_EQ(vmo_committed(v), 0);
     KT_EQ(aspace_pte(as, at + PG), 0);
-    KT_EQ(aspace_fault(as, at + PG, ASPACE_READ), ERR_SHOULD_WAIT);
+    KT_EQ(aspace_fault(as, at + PG, ASPACE_READ), ERR_PEER_CLOSED);   /* gone: no wait */
     KT_EQ(aspace_unmap(as, at, 8 * PG), OK);
     aspace_unref(as);
     struct vmo *v3;
@@ -529,36 +538,6 @@ KTEST(pager_refusals)
     KT_EQ(aspace_map(as, v, 0, PG, ASPACE_READ | ASPACE_WRITE, &a), ERR_ACCESS_DENIED);
     KT_EQ(aspace_map(as, v, 0, PG, ASPACE_READ | ASPACE_CAN_WRITE, &a), ERR_ACCESS_DENIED);
     KT_EQ(aspace_mapping_count(as), 0);
-    aspace_unref(as);
-    put(v);
-    pg_close(pg);
-}
-
-/* A fault on an absent page of a pager VMO installs nothing and says
- * ERR_SHOULD_WAIT (the fault path's wait is not built yet); a present
- * page maps as usual, read-only, and a detach takes it out of the
- * mapping. */
-KTEST(pager_fault_should_wait)
-{
-    struct pager *pg = pg_new(NULL, ANSWER);
-    struct vmo *v;
-    KT_EQ(pager_create_vmo(pg, 15, 2 * PG, &v), OK);
-    struct aspace *as;
-    KT_EQ(aspace_create(&as), OK);
-    uint64_t a = 0;
-    KT_EQ(aspace_map(as, v, 0, 2 * PG, ASPACE_READ, &a), OK);
-    KT_EQ(aspace_fault(as, a, ASPACE_READ), ERR_SHOULD_WAIT);
-    KT_EQ(aspace_pte(as, a), 0);
-    none_queued(pg);   /* a fault doesn't ask yet: the waiting fault path will */
-    KT_EQ(supply(pg, 15, 0, 1), OK);
-    KT_EQ(aspace_fault(as, a, ASPACE_READ), OK);
-    KT_EQ(aspace_pte(as, a) & 0x000ffffffffff000ull, vmo_page_phys(v, 0));
-    KT_EQ(aspace_fault(as, a, ASPACE_WRITE), ERR_ACCESS_DENIED);
-    KT_EQ(aspace_fault(as, a + PG, ASPACE_READ), ERR_SHOULD_WAIT);
-    KT_EQ(pager_op(pg, 15, PAGER_OP_DETACH, 0, 0, 0), OK);
-    KT_EQ(aspace_pte(as, a), 0);
-    KT_EQ(aspace_fault(as, a, ASPACE_READ), ERR_SHOULD_WAIT);
-    KT_EQ(aspace_unmap(as, a, 2 * PG), OK);
     aspace_unref(as);
     put(v);
     pg_close(pg);
@@ -722,6 +701,679 @@ KTEST(pager_kthread_sweep)
     KT_ASSERT(k.served > 0);
     none_queued(k.pg);
     pg_close(k.pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+/* ---- the fault path (PK2) ---------------------------------------------------- */
+
+/* A fault on a pager VMO's absent page asks the pager and waits for it
+ * without the region lock, then looks again from the start; it ends as
+ * <jam/aspace.h> says. Three kinds of faulter: kernel threads calling
+ * aspace_fault (struct kf), kernel threads copying through an address
+ * space as a system call does (struct cp, with copy_from_user and
+ * friends), and ring-3 threads running a three-instruction program
+ * (struct ut), whose kill messages are read back from the kernel log. */
+
+extern uint64_t user_faults;   /* uentry.c: user threads killed for a fault */
+
+/* A kernel thread in aspace_fault, then (then_sleep) in an interruptible
+ * sleep, to see whether an interrupt that came during the fault's wait is
+ * still latched for it. */
+struct kf {
+    struct aspace *as;
+    uint64_t       addr;
+    bool           then_sleep;
+    status_t       st, slept;   /* ERR_INTERNAL until set */
+    struct thread *t;
+};
+
+static void kf_main(void *arg)
+{
+    struct kf *k = arg;
+    status_t st = aspace_fault(k->as, k->addr, ASPACE_READ);
+    if (k->then_sleep)
+        k->slept = thread_sleep_until_interruptible(uptime_ns() + 10 * NS_PER_S);
+    __atomic_store_n(&k->st, st, __ATOMIC_RELEASE);
+}
+
+static void kf_start(struct kf *k, struct aspace *as, uint64_t addr, bool then_sleep)
+{
+    *k = (struct kf){ .as = as, .addr = addr, .then_sleep = then_sleep, .st = ERR_INTERNAL,
+                      .slept = ERR_INTERNAL };
+    k->t = thread_create("pager-kfault", kf_main, k, PRIO_DEFAULT);
+}
+
+static bool kf_waiting(struct kf *k)
+{
+    return __atomic_load_n(&k->st, __ATOMIC_ACQUIRE) == ERR_INTERNAL;
+}
+
+static status_t kf_end(struct kf *k)
+{
+    thread_join(k->t);
+    return k->st;
+}
+
+/* The address space a test maps a pager VMO into. */
+#define U_CODE 0x10000000ull   /* the program (read, execute) */
+#define U_DATA 0x10200000ull   /* where it stores what it read (read, write) */
+#define U_FILE 0x20000000ull   /* the pager VMO (read) */
+
+struct uas {
+    struct aspace *as;
+    struct vmo    *code, *data;
+    uint64_t       file_len;    /* bytes of the pager VMO mapped at U_FILE */
+};
+
+/* The program each ring-3 thread runs: rsi = where to load from, rdi =
+ * where to store it; then it spins until it is cancelled. */
+static const uint8_t uprog[] = {
+    0x48, 0x8b, 0x06,   /* mov rax, [rsi] */
+    0x48, 0x89, 0x07,   /* mov [rdi], rax */
+    0xeb, 0xfe,         /* jmp . */
+};
+
+static void uas_new(struct uas *u, struct vmo *file, uint64_t len)
+{
+    KT_EQ(aspace_create(&u->as), OK);
+    KT_EQ(vmo_create(PG, 0, &u->code), OK);
+    KT_EQ(vmo_write(u->code, 0, uprog, sizeof(uprog)), OK);
+    uint64_t a = U_CODE;
+    KT_EQ(aspace_map(u->as, u->code, 0, PG, ASPACE_READ | ASPACE_EXEC | ASPACE_FIXED, &a), OK);
+    KT_EQ(vmo_create(PG, 0, &u->data), OK);
+    a = U_DATA;
+    KT_EQ(aspace_map(u->as, u->data, 0, PG, ASPACE_READ | ASPACE_WRITE | ASPACE_FIXED, &a), OK);
+    u->file_len = len;
+    a = U_FILE;
+    KT_EQ(aspace_map(u->as, file, 0, len, ASPACE_READ | ASPACE_FIXED, &a), OK);
+}
+
+/* The pager VMO's mapping goes now (a dead thread's reaper may drop the
+ * last address-space reference later); the rest with the references. */
+static void uas_free(struct uas *u)
+{
+    (void)aspace_unmap(u->as, U_FILE, u->file_len);   /* (a test may have done it) */
+    aspace_unref(u->as);
+    put(u->code);
+    put(u->data);
+}
+
+/* The word at U_DATA + off (0 until a thread stores there). */
+static uint64_t stored(struct uas *u, uint64_t off)
+{
+    uint64_t w = 0;
+    KT_EQ(vmo_read(u->data, off, &w, 8), OK);
+    return w;
+}
+
+/* Wait (a broken kernel fails, not hangs) for the word at U_DATA + off. */
+static void wait_stored(struct uas *u, uint64_t off, uint64_t want)
+{
+    uint64_t deadline = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    while (stored(u, off) != want && uptime_ns() < deadline)
+        thread_sleep_ms(1);
+    KT_EQ(stored(u, off), want);
+}
+
+/* A ring-3 thread of no process (its kill ends just the thread). */
+struct ut {
+    struct aspace *as;
+    uint64_t       load, store;
+    struct thread *t;
+};
+
+static void ut_main(void *arg)
+{
+    struct ut *u = arg;
+    struct thread *t = current_thread();
+    KT_ASSERT(fpu_ustate_alloc(t) == OK);
+    aspace_ref(u->as);   /* the thread's, dropped when it is reaped */
+    irq_disable();
+    t->aspace = u->as;
+    aspace_switch(NULL, u->as);
+    irq_enable();
+    arch_enter_user(U_CODE, U_DATA + PG, u->store, u->load);
+}
+
+static void ut_start(struct ut *u, struct uas *as, const char *name, uint64_t load, uint64_t store)
+{
+    u->as = as->as;
+    u->load = load;
+    u->store = store;
+    u->t = thread_create(name, ut_main, u, PRIO_DEFAULT);
+}
+
+/* Cancel a thread that is spinning in ring 3 (or waiting) and join it. */
+static void ut_stop(struct ut *u)
+{
+    thread_cancel(u->t);
+    thread_join(u->t);
+}
+
+static bool has(const char *s, size_t n, const char *needle)
+{
+    size_t m = strlen(needle);
+    for (size_t i = 0; i + m <= n; i++)
+        if (!memcmp(s + i, needle, m))
+            return true;
+    return false;
+}
+
+/* Did the log say, since position `from`, on one line, that thread `name`
+ * was killed for `why`? */
+static bool killed_for(uint64_t from, const char *name, const char *why)
+{
+    enum { CAP = 256 * 1024 };
+    char *buf = kmalloc(CAP);
+    KT_ASSERT(buf);
+    char quoted[40];
+    ksnprintf(quoted, sizeof(quoted), "killed thread \"%s\"", name);
+    uint64_t deadline = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
+    bool found = false;
+    while (!found && uptime_ns() < deadline) {
+        uint64_t first, pos = klog_head() - from > CAP ? klog_head() - CAP : from;
+        size_t n = klog_read_at(pos, buf, CAP, &first);
+        for (size_t i = 0; i < n && !found;) {
+            size_t e = i;
+            while (e < n && buf[e] != '\n')
+                e++;
+            found = has(buf + i, e - i, quoted) && has(buf + i, e - i, why);
+            i = e + 1;
+        }
+        if (!found)
+            thread_sleep_ms(5);
+    }
+    kfree(buf);
+    return found;
+}
+
+/* One ring-3 thread faulting on a pager VMO: the job, the pager, the VMO
+ * (key, 4 pages), the address space, the thread. */
+struct ufix {
+    struct job    *j;
+    struct pager  *pg;
+    struct vmo    *v;
+    struct uas     us;
+    struct ut      u;
+    uint64_t       key, log0, faults0;
+    const char    *name;
+    bool           closed;   /* the test closed the pager itself */
+};
+
+static void ufix_start(struct ufix *f, uint64_t answer_ns, uint64_t key, const char *name,
+                       uint64_t page)
+{
+    f->j = kt_fresh_job();
+    f->pg = pg_new(f->j, answer_ns);
+    f->key = key;
+    f->name = name;
+    f->closed = false;
+    KT_EQ(pager_create_vmo(f->pg, key, 4 * PG, &f->v), OK);
+    uas_new(&f->us, f->v, 4 * PG);
+    f->log0 = klog_head();
+    f->faults0 = __atomic_load_n(&user_faults, __ATOMIC_RELAXED);
+    ut_start(&f->u, &f->us, name, U_FILE + page * PG + 8, U_DATA);
+}
+
+/* The thread was killed for `why` (a fault of its own) and stored nothing. */
+static void ufix_killed(struct ufix *f, const char *why)
+{
+    thread_join(f->u.t);
+    KT_ASSERT(killed_for(f->log0, f->name, why));
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), f->faults0 + 1);
+    KT_EQ(stored(&f->us, 0), 0);
+}
+
+static void ufix_end(struct ufix *f)
+{
+    uas_free(&f->us);
+    if (f->v)
+        put(f->v);
+    if (!f->closed)
+        pg_close(f->pg);
+    kt_job_is_empty(f->j);
+    job_unref(f->j);
+}
+
+/* A kernel thread's own fault: it waits without the region lock (the
+ * address space maps, unmaps and counts meanwhile), the supply ends it
+ * with the page installed; a write is refused without asking, and a
+ * detached VMO's absent page is ERR_PEER_CLOSED at once. */
+KTEST(pager_fault_wait)
+{
+    struct pager *pg = pg_new(NULL, ANSWER);
+    struct vmo *v, *other;
+    KT_EQ(pager_create_vmo(pg, 15, 2 * PG, &v), OK);
+    KT_EQ(vmo_create(PG, 0, &other), OK);
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t a = 0, b = 0;
+    KT_EQ(aspace_map(as, v, 0, 2 * PG, ASPACE_READ, &a), OK);
+
+    struct kf k;
+    kf_start(&k, as, a + 8, false);
+    struct pager_request q;
+    next(pg, 0, &q);
+    is_read(&q, 15, 0, 2);
+    thread_sleep_ms(5);
+    KT_ASSERT(kf_waiting(&k));
+    /* The region lock is free while it waits. */
+    KT_EQ(aspace_map(as, other, 0, PG, ASPACE_READ | ASPACE_WRITE, &b), OK);
+    KT_EQ(aspace_fault(as, b, ASPACE_WRITE), OK);
+    KT_EQ(aspace_mapping_count(as), 2);
+    KT_EQ(aspace_unmap(as, b, PG), OK);
+    KT_EQ(aspace_pte(as, a), 0);
+    KT_ASSERT(kf_waiting(&k));
+
+    KT_EQ(supply(pg, 15, 0, 2), OK);
+    KT_EQ(kf_end(&k), OK);
+    KT_EQ(aspace_pte(as, a) & 0x000ffffffffff000ull, vmo_page_phys(v, 0));
+    KT_EQ(aspace_fault(as, a, ASPACE_WRITE), ERR_ACCESS_DENIED);
+    KT_EQ(pager_op(pg, 15, PAGER_OP_DETACH, 0, 0, 0), OK);
+    KT_EQ(aspace_pte(as, a), 0);
+    KT_EQ(aspace_fault(as, a, ASPACE_READ), ERR_PEER_CLOSED);
+    none_queued(pg);
+    KT_EQ(aspace_unmap(as, a, 2 * PG), OK);
+    aspace_unref(as);
+    put(other);
+    put(v);
+    pg_close(pg);
+}
+
+/* A fault's wait is not interruptible (M13's thread_interrupt): an
+ * interrupt during it is a spurious wakeup, the page still arrives, and
+ * the interrupt stays latched for the thread's next interruptible wait,
+ * which it ends at once. */
+KTEST(pager_fault_interrupt)
+{
+    struct pager *pg = pg_new(NULL, ANSWER);
+    struct vmo *v;
+    KT_EQ(pager_create_vmo(pg, 16, PG, &v), OK);
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t a = 0;
+    KT_EQ(aspace_map(as, v, 0, PG, ASPACE_READ, &a), OK);
+
+    struct kf k;
+    kf_start(&k, as, a, true);
+    struct pager_request q;
+    next(pg, 0, &q);
+    thread_sleep_ms(5);
+    thread_interrupt(k.t);
+    thread_interrupt(k.t);   /* latched once, not counted */
+    thread_sleep_ms(20);
+    KT_ASSERT(kf_waiting(&k));
+    KT_ASSERT(thread_interrupt_pending(k.t));
+    none_queued(pg);   /* still the one request: nobody asked again */
+    KT_EQ(supply(pg, 16, 0, 1), OK);
+    KT_EQ(kf_end(&k), OK);
+    KT_EQ(k.slept, ERR_INTERRUPTED);   /* the latched interrupt (else OK, 10 s later) */
+    KT_EQ(aspace_unmap(as, a, PG), OK);
+    aspace_unref(as);
+    put(v);
+    pg_close(pg);
+}
+
+/* A ring-3 thread's load from an absent page waits for the supply and then
+ * completes with the right bytes; the rest of the address space works
+ * meanwhile, an interrupt doesn't end the wait, and nobody is killed. */
+KTEST(pager_fault_user_supplied)
+{
+    struct ufix f;
+    ufix_start(&f, ANSWER, 20, "pk2-supplied", 1);
+    struct pager_request q;
+    next(f.pg, 0, &q);
+    is_read(&q, 20, 1, 3);
+    thread_sleep_ms(10);
+    KT_EQ(stored(&f.us, 0), 0);
+    KT_EQ(aspace_mapping_count(f.us.as), 3);   /* the region lock is free */
+    thread_interrupt(f.u.t);
+    thread_sleep_ms(10);
+    KT_EQ(stored(&f.us, 0), 0);
+    KT_EQ(supply(f.pg, 20, 1, 3), OK);
+    wait_stored(&f.us, 0, word(20, 1));
+    KT_ASSERT(thread_interrupt_pending(f.u.t));
+    ut_stop(&f.u);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), f.faults0);
+    none_queued(f.pg);
+    ufix_end(&f);
+}
+
+/* PAGER_OP_FAIL, with either status: the thread is killed, "couldn't
+ * read it". */
+KTEST(pager_fault_user_failed)
+{
+    static const status_t how[] = { ERR_IO, ERR_OUT_OF_RANGE };
+    for (unsigned i = 0; i < 2; i++) {
+        struct ufix f;
+        ufix_start(&f, ANSWER, 21, i ? "pk2-failed-oor" : "pk2-failed-io", 2);
+        struct pager_request q;
+        next(f.pg, 0, &q);
+        is_read(&q, 21, 2, 2);
+        KT_EQ(pager_op(f.pg, 21, PAGER_OP_FAIL, 2 * PG, PG, how[i]), OK);
+        ufix_killed(&f, "page fault: the file's pager couldn't read it");
+        ufix_end(&f);
+    }
+}
+
+/* The VMO detached, or the pager's last handle closed, while the thread
+ * waits: killed, "is gone". */
+KTEST(pager_fault_user_detached)
+{
+    for (unsigned i = 0; i < 2; i++) {
+        struct ufix f;
+        ufix_start(&f, ANSWER, 22, i ? "pk2-closed" : "pk2-detached", 0);
+        struct pager_request q;
+        next(f.pg, 0, &q);
+        if (i) {
+            pg_close(f.pg);
+            f.closed = true;
+        } else {
+            KT_EQ(pager_op(f.pg, 22, PAGER_OP_DETACH, 0, 0, 0), OK);
+        }
+        ufix_killed(&f, "page fault: the file's pager is gone");
+        ufix_end(&f);
+    }
+}
+
+/* No answer in the pager's answer time: killed at the deadline, "didn't
+ * answer", and the request is gone from the queue. */
+KTEST(pager_fault_user_timed_out)
+{
+    struct ufix f;
+    uint64_t t0 = uptime_ns();
+    ufix_start(&f, 30 * NS_PER_MS, 23, "pk2-late", 3);
+    ufix_killed(&f, "page fault: the file's pager didn't answer");
+    KT_ASSERT(uptime_ns() - t0 >= 30 * NS_PER_MS);
+    none_queued(f.pg);
+    ufix_end(&f);
+}
+
+/* Killed while it waits: the thread just goes (no fault of its own: no
+ * kill message, no count), and its request stays for the pager, whose
+ * answer still lands. */
+KTEST(pager_fault_user_killed)
+{
+    struct ufix f;
+    ufix_start(&f, ANSWER, 24, "pk2-cancel", 0);
+    struct pager_request q;
+    next(f.pg, 0, &q);
+    thread_sleep_ms(5);
+    ut_stop(&f.u);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), f.faults0);
+    KT_EQ(supply(f.pg, 24, 0, 4), OK);
+    KT_EQ(vmo_committed(f.v), 4 * PG);
+    ufix_end(&f);
+}
+
+/* Unmapped by another thread while it waits, with the mapping holding the
+ * VMO's last reference but the waiter's: the VMO lives on (no
+ * PAGER_REQ_GONE, the supply finds it), the retry finds no mapping and
+ * the thread is killed as for any unmapped address, and only then does
+ * the VMO die. */
+KTEST(pager_fault_user_unmapped)
+{
+    struct ufix f;
+    ufix_start(&f, ANSWER, 25, "pk2-unmapped", 1);
+    struct pager_request q;
+    next(f.pg, 0, &q);
+    thread_sleep_ms(5);
+    put(f.v);
+    f.v = NULL;
+    KT_EQ(aspace_unmap(f.us.as, U_FILE, 4 * PG), OK);
+    thread_sleep_ms(5);
+    none_queued(f.pg);   /* no GONE: the waiter holds the VMO */
+    KT_EQ(supply(f.pg, 25, 1, 3), OK);
+    ufix_killed(&f, "): page fault at");
+    next(f.pg, 0, &q);   /* the waiter's reference was the last */
+    KT_EQ(q.kind, PAGER_REQ_GONE);
+    KT_EQ(q.key, 25);
+    KT_EQ(pager_op(f.pg, 25, PAGER_OP_DETACH, 0, 0, 0), OK);
+    ufix_end(&f);
+}
+
+/* Eight ring-3 threads load from one absent page: one request, one supply,
+ * every thread gets its bytes. */
+KTEST(pager_fault_user_many)
+{
+    enum { N = 8 };
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_new(j, ANSWER);
+    struct vmo *v;
+    KT_EQ(pager_create_vmo(pg, 26, 4 * PG, &v), OK);
+    struct uas us;
+    uas_new(&us, v, 4 * PG);
+    uint64_t faults0 = __atomic_load_n(&user_faults, __ATOMIC_RELAXED);
+    static struct ut u[N];
+    for (unsigned i = 0; i < N; i++)
+        ut_start(&u[i], &us, "pk2-many", U_FILE + 2 * PG + 8 * i, U_DATA + 8 * i);
+    struct pager_request q;
+    next(pg, 0, &q);
+    is_read(&q, 26, 2, 2);
+    thread_sleep_ms(20);   /* let them all join (a late one finds the page anyway) */
+    none_queued(pg);
+    KT_EQ(supply(pg, 26, 2, 2), OK);
+    for (unsigned i = 0; i < N; i++)
+        wait_stored(&us, 8 * i, word(26, 2));
+    for (unsigned i = 0; i < N; i++)
+        ut_stop(&u[i]);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0);
+    none_queued(pg);
+    uas_free(&us);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+/* A kernel thread copying from (or to) user memory through an address
+ * space, as a system call does, optionally holding a mutex across it. */
+enum cp_how { CP_FROM, CP_STR, CP_TO };
+
+struct cp {
+    struct aspace *as;
+    uint64_t       addr;
+    enum cp_how    how;
+    struct mutex  *hold;
+    uint64_t       word;
+    status_t       st;   /* ERR_INTERNAL until it returns */
+    struct thread *t;
+};
+
+static void cp_main(void *arg)
+{
+    struct cp *c = arg;
+    struct thread *t = current_thread();
+    aspace_ref(c->as);
+    irq_disable();
+    t->aspace = c->as;
+    aspace_switch(NULL, c->as);
+    irq_enable();
+    if (c->hold)
+        mutex_lock(c->hold);
+    status_t st;
+    if (c->how == CP_FROM) {
+        st = copy_from_user(&c->word, c->addr, sizeof(c->word));
+    } else if (c->how == CP_STR) {
+        char s[16];
+        st = copy_str_from_user(s, c->addr, sizeof(s), NULL);
+    } else {
+        st = copy_to_user(c->addr, &c->word, sizeof(c->word));
+    }
+    if (c->hold)
+        mutex_unlock(c->hold);
+    irq_disable();
+    t->aspace = NULL;
+    aspace_switch(c->as, NULL);
+    irq_enable();
+    aspace_unref(c->as);
+    __atomic_store_n(&c->st, st, __ATOMIC_RELEASE);
+}
+
+static void cp_start(struct cp *c, struct aspace *as, uint64_t addr, enum cp_how how,
+                     struct mutex *hold)
+{
+    *c = (struct cp){ .as = as, .addr = addr, .how = how, .hold = hold, .st = ERR_INTERNAL };
+    c->t = thread_create("pager-copy", cp_main, c, PRIO_DEFAULT);
+}
+
+static status_t cp_end(struct cp *c)
+{
+    thread_join(c->t);
+    return c->st;
+}
+
+/* The copies: a supplied page is copied; every way a pager fails one is
+ * ERR_IO for the copy (PAGER_OP_FAIL with either status, detach, no
+ * answer in time), for strings too; a copy to a pager mapping is refused
+ * at once without asking (it is never writable). */
+KTEST(pager_fault_copies)
+{
+    struct pager *pg = pg_new(NULL, ANSWER), *slow = pg_new(NULL, 30 * NS_PER_MS);
+    struct vmo *v, *sv;
+    KT_EQ(pager_create_vmo(pg, 27, 8 * PG, &v), OK);
+    KT_EQ(pager_create_vmo(slow, 28, PG, &sv), OK);
+    struct uas us;
+    uas_new(&us, v, 8 * PG);
+    uint64_t s = U_FILE + 8 * PG;
+    KT_EQ(aspace_map(us.as, sv, 0, PG, ASPACE_READ | ASPACE_FIXED, &s), OK);
+    struct cp c;
+    struct pager_request q;
+
+    cp_start(&c, us.as, U_FILE + 16, CP_FROM, NULL);   /* supplied */
+    next(pg, 0, &q);
+    is_read(&q, 27, 0, 8);
+    KT_EQ(supply(pg, 27, 0, 1), OK);   /* the request's first page only */
+    thread_sleep_ms(5);
+    KT_EQ(pager_op(pg, 27, PAGER_OP_FAIL, PG, PG, ERR_IO), OK);   /* the rest fails */
+    KT_EQ(cp_end(&c), OK);   /* its own page came: OK (a request is answered whole) */
+    KT_EQ(c.word, word(27, 0));
+
+    static const status_t how[] = { ERR_IO, ERR_OUT_OF_RANGE };
+    for (unsigned i = 0; i < 2; i++) {   /* failed */
+        cp_start(&c, us.as, U_FILE + (2 + i) * PG, i ? CP_STR : CP_FROM, NULL);
+        next(pg, 0, &q);
+        KT_EQ(pager_op(pg, 27, PAGER_OP_FAIL, (2 + i) * PG, PG, how[i]), OK);
+        KT_EQ(cp_end(&c), ERR_IO);
+    }
+
+    cp_start(&c, us.as, U_FILE + 5 * PG, CP_TO, NULL);   /* never writable: no wait */
+    KT_EQ(cp_end(&c), ERR_INVALID_ARGS);
+    none_queued(pg);
+
+    cp_start(&c, us.as, s, CP_FROM, NULL);   /* no answer in time */
+    KT_EQ(cp_end(&c), ERR_IO);
+
+    cp_start(&c, us.as, U_FILE + 6 * PG, CP_FROM, NULL);   /* detached while it waits */
+    next(pg, 0, &q);
+    KT_EQ(pager_op(pg, 27, PAGER_OP_DETACH, 0, 0, 0), OK);
+    KT_EQ(cp_end(&c), ERR_IO);
+    cp_start(&c, us.as, U_FILE, CP_STR, NULL);   /* and after: at once */
+    KT_EQ(cp_end(&c), ERR_IO);
+
+    uas_free(&us);
+    put(v);
+    put(sv);
+    pg_close(pg);
+    pg_close(slow);
+}
+
+/* A copy killed while it waits returns ERR_CANCELED. A copy that waits
+ * with a mutex held is reported (aspace_pager_waits_held): PK2's audit
+ * found no such copy in the kernel, and this is how a new one shows. */
+KTEST(pager_fault_copy_cancel_and_held)
+{
+    struct pager *pg = pg_new(NULL, ANSWER);
+    struct vmo *v;
+    KT_EQ(pager_create_vmo(pg, 29, 2 * PG, &v), OK);
+    struct uas us;
+    uas_new(&us, v, 2 * PG);
+    struct cp c;
+    struct pager_request q;
+
+    cp_start(&c, us.as, U_FILE, CP_FROM, NULL);
+    next(pg, 0, &q);
+    thread_sleep_ms(5);
+    thread_cancel(c.t);
+    KT_EQ(cp_end(&c), ERR_CANCELED);
+
+    static struct mutex m;
+    mutex_init(&m, "kt pager copy");
+    uint64_t held = __atomic_load_n(&aspace_pager_waits_held, __ATOMIC_RELAXED);
+    cp_start(&c, us.as, U_FILE + PG, CP_FROM, &m);   /* joins the request above */
+    uint64_t deadline = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    while (__atomic_load_n(&aspace_pager_waits_held, __ATOMIC_RELAXED) == held &&
+           uptime_ns() < deadline)
+        thread_sleep_ms(1);
+    KT_GLOBAL_EQ(__atomic_load_n(&aspace_pager_waits_held, __ATOMIC_RELAXED), held + 1);
+    KT_EQ(supply(pg, 29, 0, 2), OK);
+    KT_EQ(cp_end(&c), OK);
+    KT_EQ(c.word, word(29, 1));
+    none_queued(pg);
+
+    uas_free(&us);
+    put(v);
+    pg_close(pg);
+}
+
+/* The hostile pager: it never answers. Every thread that touches its pages
+ * waits until the deadline and dies; meanwhile the same address space
+ * maps, unmaps and faults its other pages, another address space reads a
+ * healthy pager's VMO, and afterwards nothing is left: no request, no
+ * charge. */
+KTEST(pager_fault_hostile)
+{
+    enum { N = 3 };
+    struct job *j = kt_fresh_job();
+    struct pager *bad = pg_new(j, NS_PER_S), *good = pg_new(NULL, ANSWER);
+    struct vmo *v, *gv, *scratch;
+    KT_EQ(pager_create_vmo(bad, 30, 4 * PG, &v), OK);
+    KT_EQ(pager_create_vmo(good, 31, PG, &gv), OK);
+    KT_EQ(supply(good, 31, 0, 1), OK);
+    KT_EQ(vmo_create(PG, 0, &scratch), OK);
+    struct uas us;
+    uas_new(&us, v, 4 * PG);
+    uint64_t log0 = klog_head(), faults0 = __atomic_load_n(&user_faults, __ATOMIC_RELAXED);
+    uint64_t t0 = uptime_ns();
+    static struct ut u[N + 1];
+    for (unsigned i = 0; i < N; i++)
+        ut_start(&u[i], &us, "pk2-hostile", U_FILE + (i % 2) * 2 * PG, U_DATA + 8 * i);
+    struct cp c;
+    cp_start(&c, us.as, U_FILE + 3 * PG, CP_FROM, NULL);
+    thread_sleep_ms(20);
+
+    /* The kernel goes on, and so does the rest of the address space. */
+    uint64_t a = 0;
+    KT_EQ(aspace_map(us.as, scratch, 0, PG, ASPACE_READ, &a), OK);
+    KT_EQ(aspace_unmap(us.as, a, PG), OK);
+    KT_EQ(vmo_write(us.data, PG - 8, &t0, 8), OK);
+    ut_start(&u[N], &us, "pk2-bystander", U_DATA + PG - 8, U_DATA + 64);
+    wait_stored(&us, 64, t0);
+    /* Before the deadline: had the waits kept the region lock, the
+     * bystander's fault would have waited for them to die. */
+    KT_IDLE_ASSERT(__atomic_load_n(&c.st, __ATOMIC_ACQUIRE) == ERR_INTERNAL);
+    uint64_t w;
+    KT_EQ(vmo_read(gv, 0, &w, 8), OK);
+    KT_EQ(w, word(31, 0));
+    ut_stop(&u[N]);
+
+    for (unsigned i = 0; i < N; i++)
+        thread_join(u[i].t);
+    KT_EQ(cp_end(&c), ERR_IO);
+    KT_ASSERT(uptime_ns() - t0 >= NS_PER_S);
+    KT_ASSERT(killed_for(log0, "pk2-hostile", "page fault: the file's pager didn't answer"));
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0 + N);
+    for (unsigned i = 0; i < N; i++)
+        KT_EQ(stored(&us, 8 * i), 0);
+    none_queued(bad);   /* every request failed, none delivered */
+
+    uas_free(&us);
+    put(v);
+    put(gv);
+    put(scratch);
+    pg_close(bad);
+    pg_close(good);
     kt_job_is_empty(j);
     job_unref(j);
 }

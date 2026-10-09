@@ -76,7 +76,10 @@ void     vmo_umap_remove(struct vmo *v, struct vmo_umap *u);
  * install it at va in as with `perms` (ASPACE_READ/WRITE/EXEC) and the
  * VMO's cache type, through aspace_set_pte_locked. The caller holds as's
  * region lock and has created the page tables for va. ERR_OUT_OF_RANGE if
- * idx is past the VMO's end, ERR_NO_MEMORY if it couldn't be committed. */
+ * idx is past the VMO's end, ERR_NO_MEMORY if it couldn't be committed,
+ * ERR_SHOULD_WAIT if idx is an absent page of a pager VMO: nothing is
+ * installed or asked for, and aspace_fault asks the pager
+ * (vmo_page_request) and waits without the region lock. */
 status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t va,
                        unsigned perms);
 
@@ -99,5 +102,9 @@ uint64_t aspace_pt_pages(struct aspace *as);
 uint64_t aspace_fault_count(struct aspace *as);
 /* Number of mappings. */
 uint32_t aspace_mapping_count(struct aspace *as);
+/* Faults that waited for a pager while their thread held a mutex (atomic;
+ * each one is also reported on the console). Must stay 0: see PK2's audit
+ * in docs/M12.5-PLAN.md. */
+extern uint64_t aspace_pager_waits_held;
 /* Physical address of the page holding `offset`, 0 if not committed. */
 uint64_t vmo_page_phys(struct vmo *v, uint64_t offset);
