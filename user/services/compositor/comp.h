@@ -533,9 +533,6 @@ status_t surface_create(struct comp_client *cl, uint32_t compositor, uint32_t id
  * now, or had another role (the caller posts the role's error). */
 status_t surface_set_role(struct comp_surface *s, enum comp_role role,
                           const struct comp_role_ops *ops, void *data);
-/* The role object went (xdg_toplevel.destroy): the surface keeps its role,
- * which may be given again, and loses ops, data and window (unmapped). */
-void     surface_drop_role(struct comp_surface *s);
 
 /* wl_registry.bind of wl_shm: the formats sent. */
 status_t shm_bind(struct comp_client *cl, uint32_t id, uint32_t version);
