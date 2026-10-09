@@ -108,7 +108,7 @@ bool t_idl_events_to_server(void)
     /* Events: run, nothing answered. */
     CHECK_ST(idltest_ev_note(c, 1, "hello", 5), OK);
     handle_t vmo;
-    CHECK_ST(jam_vmo_create(8192, 0, HANDLE_INVALID, &vmo), OK);
+    CHECK_ST(jam_vmo_create(8192, 0, &vmo), OK);
     CHECK_ST(idltest_ev_give(c, 2, vmo), OK);
     CHECK_ST(idltest_ev_serve_one(sv, &ops, &s), OK);
     CHECK(s.notes == 1 && s.key == 1 && strcmp(s.text, "hello") == 0);
@@ -269,7 +269,7 @@ bool t_idl_events_to_client(void)
     CHECK_ST(idltest_ev_ring(sv, 5, (const uint8_t *)"\1\2\3", 3), OK);
     handle_t x, y, vmo;
     CHECK_ST(jam_channel_create(&x, &y), OK);
-    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &vmo), OK);
+    CHECK_ST(jam_vmo_create(4096, 0, &vmo), OK);
     CHECK_ST(idltest_ev_gift(sv, 6, vmo, x), OK);
     CHECK_ST(idltest_ev_read_event(c, &events, &k), OK);
     CHECK(k.rings == 1 && k.key == 5 && k.len == 3 && k.data[2] == 3);
@@ -287,7 +287,7 @@ bool t_idl_events_to_client(void)
      * handle too few, a reply that is no event. */
     static const struct idltest_ev_events none = { 0 };
     CHECK_ST(jam_channel_create(&x, &y), OK);
-    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &vmo), OK);
+    CHECK_ST(jam_vmo_create(4096, 0, &vmo), OK);
     CHECK_ST(idltest_ev_gift(sv, 7, vmo, x), OK);
     CHECK_ST(idltest_ev_read_event(c, &none, &k), ERR_NOT_SUPPORTED);
     if (!closed(y))
