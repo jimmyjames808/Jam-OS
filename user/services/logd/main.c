@@ -5,7 +5,7 @@
  *                else of the root's);
  *   SR_NS        a namespace holding /data, a view that leaves its top-level
  *                etc alone (<fsview.h>);
- *   SR_USER + 2  the server end of its `logctl` channel (LOGD_SR_CTL).
+ *   LOGD_SR_CTL  the server end of its `logctl` channel (LOGD_SR_CTL).
  * It opens a kernel log reader and reads from byte 0, so the file starts
  * with what was logged before /data (or logd) existed, as far back as the
  * kernel's ring still holds it; then it follows the log, appending each

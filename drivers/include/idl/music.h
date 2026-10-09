@@ -4,8 +4,9 @@
  * music: the background music player (user/services/music), which plays
  * a folder's MP3 and WAV files in shuffle until it is stopped. init starts
  * it in shell mode and keeps both ends of this channel, so a restarted
- * player serves the same channel; the shell holds a client end (startup
- * role SR_USER + 4) for its `music` command. The plan is
+ * player serves the same channel (startup role MUSIC_SR_CTL); init
+ * publishes the client end as /svc/music, a channel per opener, for the
+ * shell's `music` command. The plan is
  * docs/history/A2-PLAN.md, "Music player".
  * Format: see tools/genidl.py.
  *

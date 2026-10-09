@@ -1,6 +1,6 @@
 /* netstack: the network stack, lwIP in one process (docs/M9-PLAN.md
  * "netstack: lwIP, single-threaded"). init starts it (its net.c) with
- *   SR_USER + 0       the server end of its control channel
+ *   NETSTACK_SR_CTL       the server end of its control channel
  *                     (abi/idl/netctl.idl); init keeps a duplicate, so a
  *                     restarted netstack serves the same channel
  *   SR_DEVMGR_DEVICE  devmgr's device channel for each network card
@@ -10,22 +10,22 @@
  *                     The first one's closing (devmgr died, with every
  *                     driver) ends netstack, and init starts it again
  *                     with the new devmgr's
- *   SR_USER + 1       the server end of /svc/net's shared channel
+ *   NETSTACK_SR_NET       the server end of /svc/net's shared channel
  *                     (abi/idl/net.idl), programs' sockets and pings
  *                     (progs.h); init keeps a duplicate and publishes the
  *                     client end
- *   SR_USER + 2       the server end of /svc/net-listen's: the same, for
+ *   NETSTACK_SR_NET_LISTEN       the server end of /svc/net-listen's: the same, for
  *                     the programs that may listen (listen.h)
- *   SR_USER + 3       the same for /svc/net-sys, the network's own
+ *   NETSTACK_SR_NET_SYS       the same for /svc/net-sys, the network's own
  *                     services' (their openers use a reserve no program
  *                     can take: progs.h)
- *   SR_USER + 4       the same for /svc/net-low, the programs
+ *   NETSTACK_SR_NET_LOW       the same for /svc/net-low, the programs
  *                     that may listen on ports below 1024 too (listen.h)
- *   SR_USER + 5       the server end of the read-only control channel
+ *   NETSTACK_SR_NETINFO       the server end of the read-only control channel
  *                     (netctl.idl: info, stats, device and summary only),
  *                     kept by init as the other one is; its client end is
  *                     the compositor's (the network popover)
- *   SR_USER + 6       a duplicate of /svc/notify's shared channel: the
+ *   NETSTACK_SR_NOTIFY       a duplicate of /svc/notify's shared channel: the
  *                     desktop's "Connected" (the link
  *                     up with an address) and "Disconnected" (<notice.h>)
  *
@@ -47,13 +47,13 @@
 #include "tcp.h"
 #include "tcpsock.h"
 
-#define SR_NETCTL     (SR_USER + 0)
-#define SR_NET        (SR_USER + 1)
-#define SR_NET_LISTEN (SR_USER + 2)
-#define SR_NET_SYS    (SR_USER + 3)
-#define SR_NET_LISTEN_LOW (SR_USER + 4)
-#define SR_NETINFO    (SR_USER + 5)
-#define SR_NOTIFY     (SR_USER + 6)
+#define SR_NETCTL     NETSTACK_SR_CTL
+#define SR_NET        NETSTACK_SR_NET
+#define SR_NET_LISTEN NETSTACK_SR_NET_LISTEN
+#define SR_NET_SYS    NETSTACK_SR_NET_SYS
+#define SR_NET_LISTEN_LOW NETSTACK_SR_NET_LOW
+#define SR_NETINFO    NETSTACK_SR_NETINFO
+#define SR_NOTIFY     NETSTACK_SR_NOTIFY
 #define KEY_CTL   1u
 #define KEY_INFO  6u   /* 2-5: the shared channels (clients.c, listen.c) */
 #define RX_TICK   (10 * NS_PER_S)   /* rx_tick's line: at most one in 10 s */
@@ -183,7 +183,7 @@ static status_t setup(void)
 {
     l.ctl = startup_handle(SR_NETCTL);
     if (!l.ctl) {
-        printf("netstack: started without its control channel (SR_USER + 0): ending\n");
+        printf("netstack: started without its control channel (NETSTACK_SR_CTL): ending\n");
         return ERR_BAD_HANDLE;
     }
     status_t st = jam_port_create(&l.port);

@@ -4,9 +4,9 @@
  * mixer, /svc/audio), so a crafted file decoded here (WAV, or MP3 through
  * dr_mp3) can reach the sound output and nothing else: no namespace, no
  * console, no root. Its handles:
- *   SR_USER + 0   the open file's `file` channel   (file_give / file_adopt)
- *   SR_USER + 1   its transfer buffer
- *   SR_USER + 2   the shell's stop channel: a message (or its close) asks
+ *   PROGRAM_SR_FILE   the open file's `file` channel   (file_give / file_adopt)
+ *   PROGRAM_SR_BUF   its transfer buffer
+ *   PROGRAM_SR_STOP   the shell's stop channel: a message (or its close) asks
  *                 it to stop, as Ctrl+C does; it fades out and says where
  *   SR_STDOUT     its lines, which the shell prints as its own
  * argv: play [-s] [-v dB | -n] <name> (the checks are the shell's; name is
@@ -30,9 +30,9 @@
 JAM_WANTS("svc audio\n");
 
 #define CHUNK 4096u   /* frames read and written at a time (93 ms at 44.1 kHz) */
-#define ROLE_FILE (SR_USER + 0)
-#define ROLE_BUF  (SR_USER + 1)
-#define ROLE_STOP (SR_USER + 2)
+#define ROLE_FILE PROGRAM_SR_FILE
+#define ROLE_BUF  PROGRAM_SR_BUF
+#define ROLE_STOP PROGRAM_SR_STOP
 
 /* The shell asked us to stop (Ctrl+C), or is gone. */
 static bool stop_asked(void)

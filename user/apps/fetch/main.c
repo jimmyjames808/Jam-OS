@@ -12,9 +12,9 @@
 JAM_WANTS("svc net\n"
           "svc dns\n");
 
-#define ROLE_FILE (SR_USER + 0)
-#define ROLE_BUF  (SR_USER + 1)
-#define ROLE_BODY (SR_USER + 3)
+#define ROLE_FILE PROGRAM_SR_FILE
+#define ROLE_BUF  PROGRAM_SR_BUF
+#define ROLE_BODY PROGRAM_SR_BODY
 #define OUT_BUF   (64u * 1024)
 #define PIPE_WAIT (30 * NS_PER_S)   /* the shell takes its pipe's bytes long before this */
 

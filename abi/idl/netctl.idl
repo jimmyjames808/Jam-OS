@@ -1,7 +1,7 @@
 # netctl: netstack's control channel (user/services/netstack): the
 # interface's address and DNS servers, and what netstack knows about the
 # interface. Served by netstack on the channel it is started with
-# (startup role SR_USER + 0). init makes it once and keeps the server
+# (startup role NETSTACK_SR_CTL). init makes it once and keeps the server
 # end across netstack's restarts; it uses the client end itself (a static
 # address from the settings file) and gives a duplicate to the DHCP
 # client. Never published in the namespace: programs reach the network

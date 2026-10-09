@@ -1,7 +1,7 @@
 /* utest: the desktop's plumbing (track D2b) on the compositor as init
  * wires it, headless with the seat's harness (compseat.h): /svc/notify's
- * shared channel (SR_USER + 5), and fake ends of the mixer's desktop
- * channel (SR_USER + 6) and netstack's read-only one (SR_USER + 7).
+ * shared channel (COMP_SR_NOTIFY), and fake ends of the mixer's desktop
+ * channel (COMP_SR_MIXER) and netstack's read-only one (COMP_SR_NETINFO).
  *
  * t_comp_notify: notify.idl (review W9: its own protocol): a channel from
  * /svc/notify's svc.connect may notify, post, notify_wait and withdraw,

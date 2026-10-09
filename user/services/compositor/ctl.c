@@ -1,10 +1,10 @@
 /* compctl's channels (abi/idl/compctl.idl), /svc/notify's channels
  * (abi/idl/notify.idl) and the compositor's requests to init (seat.h).
  *
- * The compositor starts with init's ADMIN channel (SR_USER + 2; a test
+ * The compositor starts with init's ADMIN channel (COMP_SR_ADMIN; a test
  * may start it without one). new_client makes narrower ones (INPUT: for
  * devmgr, add_source only), at most CTL_MAX at once, each with its level
- * fixed when it is made. /svc/notify's shared channel (SR_USER + 5,
+ * fixed when it is made. /svc/notify's shared channel (COMP_SR_NOTIFY,
  * init's) makes a channel of the `notify` protocol for each svc.connect
  * on it, at most NOTIFY_CHANNELS at once (review W9: its own protocol,
  * no longer a level of compctl's). Every channel is served by the loop
@@ -17,7 +17,7 @@
  * layout is no longer the one init knows (the user's Super+T: wm.c calls
  * ctl_layout_changed), and init saves it.
  *
- * init's control channel (SR_USER + 3) answers us `reboot`, `terminal`
+ * init's control channel (COMP_SR_INITCTL) answers us `reboot`, `terminal`
  * and `launch` only. Each request is written without waiting for the
  * answer, and the channel is read whenever it is readable (init_event), so
  * the answers never pile up.
@@ -49,9 +49,7 @@
 #include "desk.h"
 #include "seat.h"
 
-#define CTL_ROLE     2                     /* SR_USER + this: init's ADMIN channel */
-#define INITCTL_ROLE 3                     /* SR_USER + this: init's control channel */
-#define NOTIFY_ROLE  5                     /* SR_USER + this: /svc/notify's shared channel */
+
 #define REBOOT_WAIT  (60 * NS_PER_S)       /* init's kexec: sync (2 s) + drivers stopped (30 s) */
 #define REBOOT_TXID  0x0cad0002u           /* our reboot request's transaction id */
 #define TERM_TXID    0x7e570002u           /* our terminal request's */
@@ -106,19 +104,19 @@ static status_t ctl_add(handle_t ch, uint8_t level)
 
 status_t ctl_init(void)
 {
-    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
+    handle_t init = startup_handle(COMP_SR_INITCTL);
     /* Without it Ctrl+Alt+Del resets the machine itself; Super+Enter does nothing. */
     watching = init != HANDLE_INVALID &&
                jam_port_bind(comp.port, init, SEAT_KEY_INIT, SIG_READABLE | SIG_PEER_CLOSED,
                              PORT_BIND_PERSISTENT) == OK;
     /* Without it no service posts notices (they still say them in the log). */
-    note_svc = startup_handle(SR_USER + NOTIFY_ROLE);
+    note_svc = startup_handle(COMP_SR_NOTIFY);
     if (note_svc && jam_port_bind(comp.port, note_svc, SEAT_KEY_NOTE,
                                   SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT) != OK)
         note_svc = HANDLE_INVALID;
     note_ready = note_svc != HANDLE_INVALID;   /* connects may be queued from before us */
     deskctl_init();
-    handle_t ch = startup_handle(SR_USER + CTL_ROLE);
+    handle_t ch = startup_handle(COMP_SR_ADMIN);
     return ch == HANDLE_INVALID ? OK : ctl_add(ch, L_ADMIN);
 }
 
@@ -469,7 +467,7 @@ void ctl_reboot(void)
     reboot_at = now() + REBOOT_WAIT;
     printf("compositor: Ctrl+Alt+Del: rebooting\n");
     blank(true);   /* nothing drawn until the next boot's splash */
-    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
+    handle_t init = startup_handle(COMP_SR_INITCTL);
     status_t st = watching ? initctl_reboot_send(init, REBOOT_TXID) : ERR_NOT_FOUND;
     if (st != OK) {
         printf("compositor: init: %s\n", status_str(st));
@@ -492,7 +490,7 @@ void ctl_terminal_run(const char *cmd, bool busy)
         while (len && ((uint8_t)cmd[len] & 0xc0) == 0x80)
             len--;
     }
-    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
+    handle_t init = startup_handle(COMP_SR_INITCTL);
     status_t st = watching ? initctl_terminal_send(init, TERM_TXID, cmd, len) : ERR_NOT_FOUND;
     if (st == OK) {
         term_asked = true;
@@ -519,7 +517,7 @@ void ctl_launch(const char *app)
     status_t st = ERR_BAD_STATE;   /* one at a time */
     if (!rebooting && !launch_asked) {
         snprintf(launch_app, sizeof(launch_app), "%s", app);
-        handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
+        handle_t init = startup_handle(COMP_SR_INITCTL);
         st = strlen(app) > INITCTL_APP_MAX ? ERR_INVALID_ARGS
              : watching ? initctl_launch_send(init, LAUNCH_TXID, app, (uint32_t)strlen(app))
                         : ERR_NOT_FOUND;
@@ -539,7 +537,7 @@ void ctl_run_in_terminal(const char *cmd)
 /* init's channel is readable: its answers, by their transaction ids. */
 static void init_event(void)
 {
-    handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
+    handle_t init = startup_handle(COMP_SR_INITCTL);
     for (;;) {   /* bounded: init answers only what we asked, two at most */
         uint8_t rep[64];
         struct idl_msg m;

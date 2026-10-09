@@ -6,8 +6,9 @@
  * publishes it as /svc/init, a new one for each first terminal's shell it
  * starts (that shell, every other terminal's, and the test programs whose
  * lists ask for it, <wants.h>). Each console holds another (startup role
- * SR_USER + 8: reboot and terminal only; the rest ERR_ACCESS_DENIED), and
- * so does the compositor (SR_USER + 3: reboot, terminal and launch), so
+ * CONSOLE_SR_INITCTL: reboot and terminal only; the rest
+ * ERR_ACCESS_DENIED), and so does the compositor (COMP_SR_INITCTL: reboot,
+ * terminal and launch), so
  * what a holder may ask is decided by which channel it holds. Format: see
  * tools/genidl.py.
  *
@@ -444,15 +445,15 @@ static inline status_t initctl_update_offer_call(handle_t ch, bool idl_within, u
     }
     return idl_st;
 }
-/* A channel for one offer of a fetched build (<update.h>): the caller
- * writes one struct update_offer on it with the kernel's and the boot
- * image's VMOs; init checks the manifest's signature with the update key
- * in its own boot image (none: every offer refused), copies both files,
- * checks each length and SHA-256 against the manifest in the offer, makes
- * them the kernel's stored copy
- * (kexec_load, this boot's command line) and notes /esp's files as seen,
- * so `reboot` starts the fetched build; then it writes one struct
- * update_answer and closes the channel. Any refusal leaves the stored
+/* A channel for one offer of a fetched build (<update.h>), which speaks the
+ * protocol `update` (abi/idl/update.idl): the caller calls `offer` on it
+ * with the manifest and the kernel's and the boot image's VMOs; init
+ * checks the manifest's signature with the update key in its own boot
+ * image (none: every offer refused), copies both files, checks each
+ * length and SHA-256 against the manifest in the offer, makes them the
+ * kernel's stored copy (kexec_load, this boot's command line) and notes
+ * /esp's files as seen, so `reboot` starts the fetched build; then it
+ * answers the call and closes the channel. Any refusal leaves the stored
  * kernel as it was. A newer offer channel closes an older one; while an
  * offer is still being checked: ERR_BAD_STATE. An offer with
  * UPDATE_OFFER_CHECK_ONLY is checked and answered, nothing loaded. Nothing

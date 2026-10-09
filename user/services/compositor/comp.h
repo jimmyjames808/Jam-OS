@@ -571,7 +571,7 @@ extern struct comp_output output;
 
 /* The framebuffer (SR_RESOURCE with RIGHT_ROOT_SCREEN), or with headless,
  * no root or no framebuffer (ERR_NOT_FOUND) an image of w by h in memory
- * (SR_USER + 1 if the starter gave one); scene_init for its size comes
+ * (COMP_SR_IMAGE if the starter gave one); scene_init for its size comes
  * after. ERR_BAD_STATE: someone else owns the screen; others: no memory, a
  * framebuffer that isn't 32 bits a pixel. */
 status_t output_open(bool headless, int32_t w, int32_t h);

@@ -1,8 +1,8 @@
 /* utest: the console in window mode (bin/console, user/services/console)
  * against a compositor that misbehaves (M12.1, review 2b's hostile
  * tests). The console runs as init starts a terminal: its ADMIN channel
- * (SR_USER + 0) is ours, and so is the /svc/wayland it gets (SR_USER +
- * 10): every svc.connect it makes is answered here.
+ * (CONSOLE_SR_CHANNEL) is ours, and so is the /svc/wayland it gets
+ * (CONSOLE_SR_WAYLAND): every svc.connect it makes is answered here.
  *
  * t_con_hostile_compositor:
  *   1. each of its first connections gets garbage at once (bytes that are
@@ -32,7 +32,6 @@
 #include "jwlcfake.h"
 #include "utest.h"
 
-#define WAYLAND_ROLE 10   /* the console's SR_USER + this: /svc/wayland (init's terms.c) */
 #define CON_WAIT     (5 * NS_PER_S)
 #define KEY_LEFTMETA 125u
 #define KEY_C        46u
@@ -320,8 +319,8 @@ bool t_con_hostile_compositor(void)
     CHECK_ST(jam_channel_create(&k.admin, &admin_theirs), OK);
     CHECK_ST(jam_channel_create(&k.svc, &svc_theirs), OK);
     const char *argv[] = { "console", "term=3" };
-    struct spawn_handle x[] = { { SR_USER + 0, admin_theirs },
-                                { SR_USER + WAYLAND_ROLE, svc_theirs } };
+    struct spawn_handle x[] = { { CONSOLE_SR_CHANNEL, admin_theirs },
+                                { CONSOLE_SR_WAYLAND, svc_theirs } };
     struct spawn_args a = { .path = "bin/console", .name = "console-hostile", .argc = 2,
                             .argv = argv, .job = k.job, .extra = x, .nextra = 2 };
     CHECK_ST(spawn(&a, &k.proc), OK);

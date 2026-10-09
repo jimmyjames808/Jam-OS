@@ -32,9 +32,8 @@ static inline uint32_t testscene_pm(uint32_t rgb, uint32_t a)
     return out;
 }
 
-/* The report channel's startup role: SR_USER + this (SR_USER + 2 and 3
- * are compctl's and init's, ctl.c). */
-#define TESTSCENE_REPORT_ROLE 4u
+/* The report channel's startup role is COMP_SR_REPORT (COMP_SR_ADMIN and
+ * COMP_SR_INITCTL are compctl's and init's, ctl.c). */
 
 /* One paint, sent on the report channel as one message. */
 struct testscene_report {

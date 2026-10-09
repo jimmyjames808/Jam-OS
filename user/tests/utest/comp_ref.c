@@ -63,8 +63,8 @@ bool cp_run(const char *const *cmds, unsigned n, struct cp_run *r)
     CHECK(n <= 24 - 6);
     for (unsigned i = 0; i < n; i++)
         argv[6 + i] = cmds[i];
-    struct spawn_handle x[] = { { SR_USER + 0, svc_theirs }, { SR_USER + 1, image },
-                                { SR_USER + TESTSCENE_REPORT_ROLE, rep_theirs } };
+    struct spawn_handle x[] = { { COMP_SR_WAYLAND, svc_theirs }, { COMP_SR_IMAGE, image },
+                                { COMP_SR_REPORT, rep_theirs } };
     struct spawn_args a = { .path = "bin/compositor", .argc = (int)(6 + n), .argv = argv,
                             .job = job, .extra = x, .nextra = 3 };
     CHECK_ST(spawn(&a, &proc), OK);

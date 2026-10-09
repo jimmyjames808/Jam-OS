@@ -25,11 +25,6 @@
 #include "fattest.h"
 #include "utest.h"
 
-/* logd's startup handles (user/services/logd/logd.h has the same numbers). */
-#define LOGD_SR_FS  (SR_USER + 0)
-#define LOGD_SR_LOG (SR_USER + 1)
-#define LOGD_SR_CTL (SR_USER + 2)
-
 #define DISK_SECTORS (16 * MIB_SECTORS)
 #define LOG1         "/logs/boot-0001.txt"   /* the first log on a blank /data */
 #define END_NS       (10 * NS_PER_S)   /* for logd to end once its log has */

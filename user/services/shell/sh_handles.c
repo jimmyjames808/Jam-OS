@@ -6,7 +6,7 @@
  *                 debug_command), RIGHT_ROOT_REBOOT (reboot when init
  *                 doesn't answer) and RIGHT_ROOT_VMEX (programs from /data);
  *                 no RIGHT_MAP / RIGHT_SLICE
- *   SR_USER + 1   RES_PCI, RIGHTS_BASIC only (pci_enum for `devices`)
+ *   SHELL_SR_PCI   RES_PCI, RIGHTS_BASIC only (pci_enum for `devices`)
  *   SR_NS         init's whole namespace, as it is (every mount writable,
  *                 /data's etc included: the shell is where `allow` marks
  *                 programs) and kept up to date, with every service under
@@ -29,7 +29,7 @@ static handle_t root, pci;
 void sh_handles_init(void)
 {
     root = startup_handle(SR_RESOURCE);
-    pci = startup_handle(SR_USER + 1);
+    pci = startup_handle(SHELL_SR_PCI);
 }
 
 handle_t sh_music(void)

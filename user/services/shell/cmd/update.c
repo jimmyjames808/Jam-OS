@@ -113,7 +113,7 @@ SH_CMD(update)
             sh_tty("update: the system can't take an update now (%s)\n", status_str(st));
         return 1;
     }
-    struct spawn_handle x[3] = { { SR_USER + 0, ch } };
+    struct spawn_handle x[3] = { { UPDATE_SR_OFFER, ch } };
     const char *args[] = { "update", host, mode, s.version, git, force ? "force" : NULL, NULL };
     sh_flush();
     int code = sh_run_helper(UPDATE_PATH, force ? 6 : 5, args, x, 1);

@@ -13,7 +13,6 @@
 
 #include <os.h>
 
-#define LOGD_SR_CRASH_RESULT (SR_USER + 3)
 #define CRASHLOG_PATH_MAX    96   /* a path in a result with its NUL (crashres: 95 bytes) */
 
 /* What logd said (crashres.result), as init reads it. */

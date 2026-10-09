@@ -1,11 +1,11 @@
 /* dns: the resolver process (docs/M9-PLAN.md, "DHCP and DNS: processes
  * of their own"; dnsd.h says how its files split the work). init starts
  * it in shell mode once netstack runs, with
- *   SR_USER + 0   the server end of /svc/dns's shared channel
+ *   DNS_SR_DNS   the server end of /svc/dns's shared channel
  *                 (abi/idl/dns.idl); init keeps both ends, so a restarted
  *                 resolver serves the same channel, and publishes the
  *                 client end (a channel per opener)
- *   SR_USER + 1   /svc/dns-sys's, the same: its openers are the network's
+ *   DNS_SR_DNS_SYS   /svc/dns-sys's, the same: its openers are the network's
  *                 own services, which may use the reserve (askers.c's
  *                 fair shares); without it there is no reserve (said)
  *   SR_NS         /svc/net and nothing else: its sockets, and the DNS
@@ -99,7 +99,7 @@ static status_t setup(void)
 {
     handle_t shared = startup_handle(SR_DNS);
     if (!shared) {
-        printf("dns: started without /svc/dns's channel (SR_USER + 0): ending\n");
+        printf("dns: started without /svc/dns's channel (DNS_SR_DNS): ending\n");
         return ERR_BAD_HANDLE;
     }
     /* Before anything is served: nobody waits on us yet. */
@@ -110,7 +110,7 @@ static status_t setup(void)
     }
     handle_t shared_sys = startup_handle(SR_DNS_SYS);
     if (!shared_sys)
-        printf("dns: started without /svc/dns-sys's channel (SR_USER + 1): no reserve for the "
+        printf("dns: started without /svc/dns-sys's channel (DNS_SR_DNS_SYS): no reserve for the "
                "network's services\n");
     socks_init();
     dns_init(&D.r, &D.io);

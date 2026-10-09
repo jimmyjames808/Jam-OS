@@ -18,8 +18,8 @@
  *   build to the stick too; load, `update -m`: into memory only; check,
  *   `update -n`: checked, nothing loaded or written; force: a build whose
  *   network default differs from this one's is taken)
- *   SR_USER + 0   the offer channel (initctl.update_offer)
- *   SR_USER + 2   the shell's stop channel: Ctrl+C (or the shell gone)
+ *   UPDATE_SR_OFFER   the offer channel (initctl.update_offer)
+ *   PROGRAM_SR_STOP   the shell's stop channel: Ctrl+C (or the shell gone)
  * Its lines are the shell's, in plain words (the polish track: "Downloading
  * Jam OS 0.0.40 (12.3 MB)", "Type reboot to start it"); the detailed
  * ones (sizes, gits, times, init's verdict and the steps of its write)
@@ -36,8 +36,8 @@
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc net-sys\n");   /* the network's reserve (tools/checkwants.py: services only) */
 
-#define ROLE_OFFER  (SR_USER + 0)
-#define ROLE_STOP   (SR_USER + 2)
+#define ROLE_OFFER  UPDATE_SR_OFFER
+#define ROLE_STOP   PROGRAM_SR_STOP
 #define UP_WAIT     (10 * NS_PER_S)    /* for the network's address */
 #define ANSWER_WAIT (60 * NS_PER_S)    /* init copies and hashes the build */
 #define WRITE_WAIT  (300 * NS_PER_S)   /* ... and writes it to the stick (`write`) */

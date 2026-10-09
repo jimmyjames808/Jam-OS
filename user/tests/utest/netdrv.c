@@ -249,9 +249,11 @@ static bool start(void)
     CHECK_ST(jam_channel_create(&fk.sys, &sys_srv), OK);
     CHECK_ST(jam_channel_create(&fk.low, &low_srv), OK);
     const char *argv[] = { "bin/netstack" };
-    struct spawn_handle x[] = { { SR_USER + 0, ctl_srv }, { SR_DEVMGR_DEVICE, dev_cli },
-                                { SR_USER + 1, net_srv }, { SR_USER + 2, listen_srv },
-                                { SR_USER + 3, sys_srv }, { SR_USER + 4, low_srv } };
+    struct spawn_handle x[] = { { NETSTACK_SR_CTL, ctl_srv }, { SR_DEVMGR_DEVICE, dev_cli },
+                                { NETSTACK_SR_NET, net_srv },
+                                { NETSTACK_SR_NET_LISTEN, listen_srv },
+                                { NETSTACK_SR_NET_SYS, sys_srv },
+                                { NETSTACK_SR_NET_LOW, low_srv } };
     struct spawn_args a = {
         .path = "bin/netstack", .argc = 1, .argv = argv, .job = fk.job, .extra = x, .nextra = 6,
     };

@@ -3,7 +3,22 @@
  * <jam/startup.h> has the startup message and the roles the kernel itself
  * gives (SR_SELF_*, SR_JOB, SR_BOOTFS, SR_RESOURCE, SR_CRASHLOG); these
  * fill the numbers between them, and are user space's alone: the kernel
- * never looks at them. <os.h> includes this. */
+ * never looks at them. <os.h> includes this.
+ *
+ * Two kinds. The roles up to SR_SIGNALS mean the same in every process
+ * that has them (a service's end of its keep channel, a namespace). The
+ * numbers from SR_USER on mean something to the one program they are
+ * given to and nothing to another: SR_USER + 0 is the music player's
+ * channel, the compositor's /svc/wayland and the network stack's control
+ * channel. The roles of the programs init and the shell start are named
+ * below, `<PROGRAM>_SR_<WHAT>`, so that the starter (init, the shell, a
+ * test) and the program say the same name and no bare `SR_USER + n`
+ * stands for a role in either. Some services keep theirs in a header of
+ * their own: fat's in <fatsvc.h>, volumes' in <volumes.h>, devmgr's in
+ * <devmgr.h>, the mixer's in <mixer.h>, the console's last two in
+ * <logwriters.h> and user/services/console/console.h (WAYLAND_ROLE, its
+ * clients), the splash's in <splash.h>. A test program's own children
+ * (utest's modes, ramfs) number theirs as they like. */
 #pragma once
 
 #include <stdint.h>
@@ -74,4 +89,62 @@ struct standby_msg {
     uint32_t strings_len;                   /* bytes of strings after the struct */
     uint32_t reserved;                      /* 0 */
     /* then strings_len bytes, as in struct startup_msg */
+};
+
+/* ---- the roles of the programs init and the shell start (SR_USER + n) ------------
+ *
+ * Handles are named by what they are, with the program that gets them. A
+ * "server end" is what the program serves; init keeps the other end (and,
+ * for a service that restarts, both: the restarted one serves the same
+ * channel) and publishes the client end as /svc/<name>. */
+enum {
+    /* bin/bootfs */
+    BOOTFS_SR_FS = SR_USER + 0,         /* the server end of its `fs` channel */
+    /* bin/serialin */
+    SERIALIN_SR_INPUT = SR_USER + 0,    /* the `input` channel to the compositor */
+    /* bin/music, bin/serve */
+    MUSIC_SR_CTL = SR_USER + 0,         /* the server end of the `music` channel */
+    SERVE_SR_CTL = SR_USER + 0,         /* the server end of the `serve` channel */
+    /* bin/netstack (and the network card's device channels, SR_DEVMGR_DEVICE) */
+    NETSTACK_SR_CTL = SR_USER + 0,      /* the server end of its control channel */
+    NETSTACK_SR_NET = SR_USER + 1,      /* /svc/net's shared channel, server end */
+    NETSTACK_SR_NET_LISTEN = SR_USER + 2,   /* /svc/net-listen's */
+    NETSTACK_SR_NET_SYS = SR_USER + 3,  /* /svc/net-sys's: the network's own services' */
+    NETSTACK_SR_NET_LOW = SR_USER + 4,  /* /svc/net-low's: ports below 1024 too */
+    NETSTACK_SR_NETINFO = SR_USER + 5,  /* the read-only control channel, server end */
+    NETSTACK_SR_NOTIFY = SR_USER + 6,   /* a duplicate of /svc/notify's shared channel */
+    /* bin/dhcp, bin/dns */
+    DHCP_SR_NETCTL = SR_USER + 0,       /* a client end of netstack's control channel */
+    DNS_SR_DNS = SR_USER + 0,           /* /svc/dns's shared channel, server end */
+    DNS_SR_DNS_SYS = SR_USER + 1,       /* /svc/dns-sys's */
+    /* bin/compositor */
+    COMP_SR_WAYLAND = SR_USER + 0,      /* /svc/wayland's shared channel, server end */
+    COMP_SR_IMAGE = SR_USER + 1,        /* a headless image's VMO (the tests) */
+    COMP_SR_ADMIN = SR_USER + 2,        /* the server end of a compctl channel (ADMIN) */
+    COMP_SR_INITCTL = SR_USER + 3,      /* init's control channel for it (reboot, terminal,
+                                         * launch) */
+    COMP_SR_REPORT = SR_USER + 4,       /* the paint report channel (its test scene) */
+    COMP_SR_NOTIFY = SR_USER + 5,       /* /svc/notify's shared channel, server end */
+    COMP_SR_MIXER = SR_USER + 6,        /* the mixer's desktop channel, client end */
+    COMP_SR_NETINFO = SR_USER + 7,      /* netstack's read-only channel, client end */
+    /* bin/console (the terminals; its own header has the rest of them) */
+    CONSOLE_SR_CHANNEL = SR_USER + 0,   /* the server end of the console's channel */
+    CONSOLE_SR_INITCTL = SR_USER + 8,   /* init's control channel for it (reboot, terminal) */
+    CONSOLE_SR_WAYLAND = SR_USER + 10,  /* /svc/wayland's client end (window mode) */
+    /* bin/logd */
+    LOGD_SR_FS = SR_USER + 0,           /* an `fs` channel to use as /data (tests) */
+    LOGD_SR_LOG = SR_USER + 1,          /* a channel whose messages are the log (tests) */
+    LOGD_SR_CTL = SR_USER + 2,          /* the server end of its `logctl` channel */
+    LOGD_SR_CRASH_RESULT = SR_USER + 3, /* the channel it sends the panicked boot's result
+                                         * on (crashres, <crashlog.h>) */
+    /* bin/shell */
+    SHELL_SR_PCI = SR_USER + 1,         /* RES_PCI with RIGHTS_BASIC (pci_enum for `devices`) */
+    /* a program the shell runs for a command (play, fetch, speed, update) */
+    PROGRAM_SR_FILE = SR_USER + 0,      /* the open file's `file` channel (file_give) */
+    PROGRAM_SR_BUF = SR_USER + 1,       /* its transfer buffer */
+    PROGRAM_SR_STOP = SR_USER + 2,      /* the shell's stop channel: a message (or its close)
+                                         * asks the program to end (Ctrl+C) */
+    PROGRAM_SR_BODY = SR_USER + 3,      /* fetch's: the channel a body goes down in */
+    /* bin/update */
+    UPDATE_SR_OFFER = SR_USER + 0,      /* the offer channel (initctl.update_offer) */
 };

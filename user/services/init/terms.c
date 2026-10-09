@@ -22,9 +22,9 @@
  *
  *   console   bin/console: root with CONSOLE_ROOT (klog, the screen,
  *             serial output; reboot on Ctrl+Alt+Del), the server end of a
- *             console channel (SR_USER + 0) and a control channel of init's
+ *             console channel (CONSOLE_SR_CHANNEL) and a control channel of init's
  *             of its own that answers only `reboot` and `terminal`
- *             (SR_USER + 8, ctl.c: Ctrl+Alt+Del goes through init, which
+ *             (CONSOLE_SR_INITCTL, ctl.c: Ctrl+Alt+Del goes through init, which
  *             syncs /data first; with a compositor the compositor keeps
  *             Ctrl+Alt+Del and Super+Enter, which never reach it), and the
  *             log writers' table read-only (CONSOLE_WRITERS_ROLE,
@@ -35,7 +35,7 @@
  *             but for the commands whose output it is) except the first
  *             terminal's on a `verbose` boot, which shows the log as it
  *             comes. With a compositor each also gets /svc/wayland's
- *             client end (SR_USER + 10: window mode, the screen is the
+ *             client end (CONSOLE_SR_WAYLAND: window mode, the screen is the
  *             compositor's, so no RIGHT_ROOT_SCREEN) and "term=<n>", its
  *             terminal's number (the system's news is the desktop's
  *             notices, not a terminal's),
@@ -45,7 +45,7 @@
  *             console as console.set_font)
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
  *             console.new_client), root with SHELL_ROOT,
- *             RES_PCI with RIGHTS_BASIC (SR_USER + 1), and init's whole
+ *             RES_PCI with RIGHTS_BASIC (SHELL_SR_PCI), and init's whole
  *             namespace as it is (SR_NS, followed: every mount, /data's
  *             etc included, and every service: devmgr's channels, init's
  *             control channel /svc/init (ctl.c: kill, sync, reboot,
@@ -89,7 +89,6 @@
                       RIGHT_ROOT_REBOOT)
 #define SHELL_ROOT   (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_DEBUG | \
                       RIGHT_ROOT_REBOOT | RIGHT_ROOT_VMEX)
-#define WAYLAND_ROLE 10   /* the console's SR_USER + this: /svc/wayland */
 
 enum { TERM_CLOSED, TERM_OPEN, TERM_CLOSING };
 
@@ -171,16 +170,16 @@ static unsigned console_handles(unsigned k, handle_t b, struct spawn_handle *x)
         rights &= ~RIGHT_ROOT_SCREEN;   /* the compositor's */
     unsigned nx = 0;
     x[nx++] = (struct spawn_handle){ SR_RESOURCE, services_root_with(rights) };
-    x[nx++] = (struct spawn_handle){ SR_USER + 0, b };
+    x[nx++] = (struct spawn_handle){ CONSOLE_SR_CHANNEL, b };
     /* The full-screen console's notices (with a compositor they are the
      * desktop's). */
     handle_t writers = k || wayland ? HANDLE_INVALID : writers_for_console();
     if (writers)
         x[nx++] = (struct spawn_handle){ CONSOLE_WRITERS_ROLE, writers };
     if (ctl)
-        x[nx++] = (struct spawn_handle){ SR_USER + 8, ctl };
+        x[nx++] = (struct spawn_handle){ CONSOLE_SR_INITCTL, ctl };
     if (wayland)
-        x[nx++] = (struct spawn_handle){ SR_USER + WAYLAND_ROLE, wayland };
+        x[nx++] = (struct spawn_handle){ CONSOLE_SR_WAYLAND, wayland };
     return nx;
 }
 
@@ -251,7 +250,7 @@ static status_t start_shell(unsigned k)
     struct spawn_handle x[] = {
         { SR_CONSOLE, c },
         { SR_RESOURCE, services_root_with(RIGHTS_BASIC | SHELL_ROOT) },
-        { SR_USER + 1, p2 },
+        { SHELL_SR_PCI, p2 },
     };
     /* Leave out the ones we don't have. */
     struct spawn_handle y[3];
