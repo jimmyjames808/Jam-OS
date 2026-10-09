@@ -220,27 +220,25 @@ KTEST(object_wait_many_waiters)
 
 /* ---- user signal bits ---------------------------------------------------------- */
 
-KTEST(m45_object_signal_user_bits)
+/* An event's user bits (event_signal: object_signal, user bits on any
+ * object, went in M12). */
+KTEST(m45_event_signal_user_bits)
 {
     struct handle_table t;
     handle_table_init(&t);
-    handle_t ev, a, b, weak;
+    handle_t ev, weak;
     KT_EQ(sys_event_create(&t, &ev), OK);
-    KT_EQ(sys_channel_create(&t, &a, &b), OK);
 
-    KT_EQ(sys_object_signal(&t, ev, 0, 1u << 24), OK);
+    KT_EQ(sys_event_signal(&t, ev, 0, 0x81000000u), OK);
+    KT_EQ(kt_signals_of(&t, ev) & SIG_USER_ALL, 0x81000000u);
+    KT_EQ(sys_event_signal(&t, ev, 1u << 31, 0), OK);
     KT_EQ(kt_signals_of(&t, ev) & SIG_USER_ALL, 1u << 24);
-    KT_EQ(sys_object_signal(&t, a, 0, 0x81000000u), OK);
-    KT_EQ(kt_signals_of(&t, a) & SIG_USER_ALL, 0x81000000u);
-    KT_EQ(sys_object_signal(&t, a, 1u << 24, 0), OK);
-    KT_EQ(kt_signals_of(&t, a) & SIG_USER_ALL, 0x80000000u);
-    KT_ASSERT(kt_signals_of(&t, a) & SIG_WRITABLE);   /* kernel bits untouched */
 
-    /* Kernel-owned bits are off limits, and the right is required. */
-    KT_EQ(sys_object_signal(&t, a, 0, SIG_READABLE), ERR_INVALID_ARGS);
-    KT_EQ(sys_object_signal(&t, a, SIG_WRITABLE, 0), ERR_INVALID_ARGS);
+    /* Kernel-owned bits other than SIG_SIGNALED are off limits, and the
+     * right is required. */
+    KT_EQ(sys_event_signal(&t, ev, 0, SIG_READABLE), ERR_INVALID_ARGS);
     KT_EQ(handle_duplicate(&t, ev, RIGHTS_BASIC, &weak), OK);
-    KT_EQ(sys_object_signal(&t, weak, 0, 1u << 25), ERR_ACCESS_DENIED);
+    KT_EQ(sys_event_signal(&t, weak, 0, 1u << 25), ERR_ACCESS_DENIED);
 
     /* A user bit wakes a waiter like any signal. */
     signals_t seen = 0;

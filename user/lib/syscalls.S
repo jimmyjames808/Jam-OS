@@ -88,14 +88,6 @@ jam_object_wait_one:
     ret
     .size jam_object_wait_one, . - jam_object_wait_one
 
-    .globl jam_object_signal
-    .type jam_object_signal, @function
-jam_object_signal:
-    mov $SYS_object_signal, %eax
-    syscall
-    ret
-    .size jam_object_signal, . - jam_object_signal
-
     .globl jam_channel_create
     .type jam_channel_create, @function
 jam_channel_create:

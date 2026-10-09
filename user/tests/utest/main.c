@@ -112,8 +112,20 @@ static bool t_basics(void)
     CHECK_ST(jam_event_signal(e, 0, SIG_SIGNALED), OK);
     CHECK_ST(jam_object_wait_one(e, SIG_SIGNALED, DEADLINE_NEVER, &seen), OK);
     CHECK(seen & SIG_SIGNALED);
-    CHECK_ST(jam_object_signal(e, 0, 1u << 24), OK);
-    CHECK_ST(jam_object_signal(e, 0, SIG_SIGNALED), ERR_INVALID_ARGS);   /* kernel bits */
+    CHECK_ST(jam_event_signal(e, 0, 1u << 24), OK);
+    CHECK_ST(jam_event_signal(e, 0, SIG_READABLE), ERR_INVALID_ARGS);   /* kernel bits */
+    /* object_signal (17) is retired: a stale program gets
+     * ERR_NOT_SUPPORTED, never another call. */
+    int64_t old;
+    __asm__ volatile("syscall"
+                     : "=a"(old)
+                     : "a"(17ull), "D"((uint64_t)e), "S"(0ull), "d"((uint64_t)(1u << 25))
+                     : "rcx", "r11", "memory", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5",
+                       "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13",
+                       "xmm14", "xmm15");
+    CHECK_ST((status_t)old, ERR_NOT_SUPPORTED);
+    CHECK_ST(jam_object_wait_one(e, SIG_USER_ALL, 0, &seen), OK);
+    CHECK_EQ(seen & SIG_USER_ALL, 1u << 24);   /* bit 25 was never set */
 
     CHECK_ST(jam_timer_create(&tm), OK);
     CHECK_ST(jam_timer_set(tm, now() + 5 * NS_PER_MS), OK);

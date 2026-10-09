@@ -361,7 +361,7 @@ bool t_netserver_rx(void)
     for (uint32_t i = 0; i < NETDEV_SLOTS + 5; i++)
         srv_rx(&b.v, f, 64);
     srv_rx_done(&b.v);
-    CHECK_ST(jam_object_signal(s.to_stack, NETDEV_SIG_LINK, 0), OK);
+    CHECK_ST(jam_event_signal(s.to_stack, NETDEV_SIG_LINK, 0), OK);
     b.c.changes++;
     srv_link(&b.v);
     CHECK_ST(jam_object_wait_one(s.to_stack, NETDEV_SIG_LINK, 0, &seen), OK);

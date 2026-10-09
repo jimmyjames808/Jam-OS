@@ -81,7 +81,7 @@ typedef uint32_t signals_t;
 #define SIG_SIGNALED    (1u << 3)   /* events, timers */
 #define SIG_TERMINATED  (1u << 4)   /* processes, threads: gone for good */
 #define SIG_INTERRUPT   (1u << 5)   /* interrupt objects: fired, not acked yet */
-#define SIG_USER_ALL    0xff000000u /* bits 24-31: free for userspace (sys_object_signal) */
+#define SIG_USER_ALL    0xff000000u /* bits 24-31: an event's, free for user space (event_signal) */
 
 /* Deadlines are absolute nanoseconds of uptime. Also defined (identically)
  * in <jam/sched.h>; a kernel file that includes both fails to build if the

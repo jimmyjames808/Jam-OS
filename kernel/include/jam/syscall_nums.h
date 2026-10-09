@@ -12,7 +12,6 @@
 #define SYS_handle_duplicate     11
 #define SYS_handle_replace       12
 #define SYS_object_wait_one      16
-#define SYS_object_signal        17
 #define SYS_channel_create       20
 #define SYS_channel_write        21
 #define SYS_channel_read         22

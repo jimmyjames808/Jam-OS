@@ -51,7 +51,8 @@
 
 # waiting and signals -------------------------------------------------------
 16  object_wait_one   status    handle_t h, signals_t mask, uint64_t deadline_ns, signals_t *observed
-17  object_signal     status    handle_t h, signals_t clear, signals_t set
+# (Number 17 was object_signal, user bits on any object, until M12:
+# retired. An event's user bits are event_signal's.)
 
 # channels ------------------------------------------------------------------
 # The handles a send is given (channel_write's and channel_write_rights's

@@ -128,9 +128,6 @@ status_t sys_port_queue(struct handle_table *t, handle_t port,
                         const struct port_packet *pkt);                    /* RIGHT_WRITE */
 status_t sys_port_wait(struct handle_table *t, handle_t port, uint64_t deadline_ns,
                        struct port_packet *out);                           /* RIGHT_READ */
-/* RIGHT_SIGNAL, any type: set/clear the user bits (SIG_USER_ALL only; the
- * kernel owns the rest). Wakes waiters and ports like any signal change. */
-status_t sys_object_signal(struct handle_table *t, handle_t h, signals_t clear, signals_t set);
 /* RIGHT_WAIT, any type. */
 status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
                              uint64_t deadline_ns, signals_t *observed);

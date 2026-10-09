@@ -112,12 +112,6 @@ int64_t sysc_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns, u
     return st;
 }
 
-int64_t sysc_object_signal(handle_t h, signals_t clear, signals_t set)
-{
-    SYSC_TABLE(t);
-    return sys_object_signal(t, h, clear, set);
-}
-
 /* ---- events and timers ------------------------------------------------------------ */
 
 int64_t sysc_event_create(uint64_t out)
