@@ -25,6 +25,7 @@
  *       quarantined), none is left on the cap, the function is back home
  *       (its context entry no longer names the dead cap's domain) and every
  *       page and table comes back (the harness's leak check). */
+#include <jam/aspace_vmo.h>
 #include <jam/handle.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
@@ -36,7 +37,6 @@
 #include <jam/sched.h>
 #include <jam/string.h>
 #include <jam/sys.h>
-#include <jam/aspace_vmo.h>
 #include <jam/vmo.h>
 #include <jam/x86.h>
 
