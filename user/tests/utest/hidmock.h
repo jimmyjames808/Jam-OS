@@ -2,6 +2,7 @@
  * and the tests that drive it (hid.c). */
 #pragma once
 
+#include <openkeys.h>
 #include <os.h>
 
 extern const char *hcur;   /* the hid test running (hid.c sets it) */

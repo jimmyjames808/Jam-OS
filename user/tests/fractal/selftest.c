@@ -268,7 +268,7 @@ static void test_pool_rest(uint32_t n)
     pool_rest();
     uint64_t deadline = now() + 5 * NS_PER_S;
     while (pool_asleep() < n - 1 && now() < deadline)
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     uint32_t asleep = pool_asleep();
     pool_set_spin(0);   /* back to the default: any still spinning sleep soon */
     say("fractal: pool_rest: %u of %u workers asleep\n", asleep, n - 1);

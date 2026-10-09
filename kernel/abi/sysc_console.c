@@ -37,8 +37,7 @@
 #define FB_VMO_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP)
 #define CHUNK         512     /* bytes copied per step (on the stack) */
 #define KLOG_READ_MAX KLOG_SIZE   /* one read: the whole ring at most */
-#define SERIAL_IO_MAX 4096
-#define KLOG_NAME_MAX 32      /* klog_name: what kexec keeps (KEXEC_NAME) */
+#define SERIAL_READ_MAX 4096    /* serial_read: bytes per call at most */
 #define LINES_MAX     256     /* klog_lines: marks per call */
 #define LINES_STEP    32      /* ... copied per step (512 bytes on the stack) */
 
@@ -415,8 +414,10 @@ int64_t sysc_klog_name(handle_t reader, uint64_t uname, uint64_t len)
     if (st != OK)
         return st;
     kobject_unref(r);   /* only the right was needed */
-    char name[KLOG_NAME_MAX];
-    if (len == 0 || len >= sizeof(name) || copy_from_user(name, uname, len) != OK)
+    char name[KLOG_NAME_MAX + 1];
+    if (len > KLOG_NAME_MAX)
+        return ERR_OUT_OF_RANGE;
+    if (len == 0 || copy_from_user(name, uname, len) != OK)
         return ERR_INVALID_ARGS;
     return kexec_set_log_name(name, len);
 }
@@ -461,8 +462,10 @@ int64_t sysc_debug_command(handle_t root, uint64_t ucmd, uint64_t len)
     status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_DEBUG);
     if (st != OK)
         return st;
-    char cmd[64];
-    if (len == 0 || len >= sizeof(cmd))
+    char cmd[DEBUG_COMMAND_MAX + 1];
+    if (len > DEBUG_COMMAND_MAX)
+        return ERR_OUT_OF_RANGE;
+    if (len == 0)
         return ERR_INVALID_ARGS;
     if (copy_from_user(cmd, ucmd, len) != OK)
         return ERR_INVALID_ARGS;
@@ -501,8 +504,8 @@ int64_t sysc_serial_read(handle_t h, uint64_t buf, uint64_t cap)
     status_t st = handle_get(t, h, OBJ_SERIAL, RIGHT_READ, &s, NULL);
     if (st != OK)
         return st;
-    if (cap > SERIAL_IO_MAX)
-        cap = SERIAL_IO_MAX;
+    if (cap > SERIAL_READ_MAX)
+        cap = SERIAL_READ_MAX;
     char chunk[CHUNK];
     uint64_t done = 0;
     while (done < cap) {
@@ -526,7 +529,7 @@ int64_t sysc_serial_write(handle_t root, uint64_t buf, uint64_t len)
     status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_SERIAL_OUT);
     if (st != OK)
         return st;
-    if (len > SERIAL_IO_MAX)
+    if (len > SERIAL_WRITE_MAX)
         return ERR_OUT_OF_RANGE;
     char chunk[CHUNK];
     while (len) {

@@ -85,7 +85,7 @@ uint64_t drv_clock_ns(void)
 
 status_t drv_sleep_until(uint64_t deadline_ns)
 {
-    return jam_nanosleep(deadline_ns);
+    return jam_sleep_until(deadline_ns);
 }
 
 _Noreturn void drv_exit(int code)

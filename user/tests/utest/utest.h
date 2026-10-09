@@ -14,6 +14,7 @@
 #pragma once
 
 #include <devmgr.h>
+#include <openkeys.h>
 #include <os.h>
 
 #define CMD_BME         0x04    /* PCI command register: Bus Master Enable */
@@ -748,3 +749,8 @@ bool t_mix_unity_is_exact(void);
 bool t_mix_volume_and_master(void);
 bool t_mix_dither(void);
 bool t_mix_limits(void);
+
+/* handles.c: M12 K3's calls (handle_info, ...). */
+bool t_handle_info(void);
+bool t_length_limits(void);
+bool t_replace_consumes(void);

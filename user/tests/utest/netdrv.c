@@ -274,7 +274,7 @@ static bool stop(void)
             break;
         if (now() > end)
             FAIL("netstack's job still has %lu units of kind %u", (unsigned long)ji.used[k], k);
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
     }
     jam_handle_close(fk.job);
     return true;
@@ -369,7 +369,7 @@ static bool link_is(bool up)
     for (uint64_t end = now() + WAIT; link != up && now() < end;) {
         CHECK_ST(netctl_info(fk.ctl, &a, &m, &g, &d1, &d2, mac, &device, &link), OK);
         if (link != up)
-            jam_nanosleep(now() + NS_PER_MS);
+            jam_sleep_until(now() + NS_PER_MS);
     }
     CHECK_EQ(link, up);
     return true;
@@ -399,7 +399,7 @@ bool t_netdrv_link_flap(void)
             CHECK(announced());   /* the gratuitous ARP of each link-up */
     }
     CHECK(ping(2, true));   /* still answering, and its lines are out by now */
-    jam_nanosleep(now() + 200 * NS_PER_MS);
+    jam_sleep_until(now() + 200 * NS_PER_MS);
     unsigned lines = klog_count(klog, &pos, "netstack: link ");
     CHECK(lines >= 11 && lines <= 12);   /* changes 1-11 of the session (and the 12th's note) */
     jam_handle_close(klog);

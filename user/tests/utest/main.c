@@ -102,7 +102,7 @@ static bool t_basics(void)
 {
     uint64_t t0 = now();
     CHECK(t0 > 0);
-    CHECK_ST(jam_nanosleep(t0 + 2 * NS_PER_MS), OK);
+    CHECK_ST(jam_sleep_until(t0 + 2 * NS_PER_MS), OK);
     CHECK(now() >= t0 + 2 * NS_PER_MS);
 
     handle_t e, tm, port;
@@ -112,19 +112,35 @@ static bool t_basics(void)
     CHECK_ST(jam_event_signal(e, 0, SIG_SIGNALED), OK);
     CHECK_ST(jam_object_wait_one(e, SIG_SIGNALED, DEADLINE_NEVER, &seen), OK);
     CHECK(seen & SIG_SIGNALED);
-    CHECK_ST(jam_object_signal(e, 0, 1u << 24), OK);
-    CHECK_ST(jam_object_signal(e, 0, SIG_SIGNALED), ERR_INVALID_ARGS);   /* kernel bits */
+    CHECK_ST(jam_event_signal(e, 0, 1u << 24), OK);
+    CHECK_ST(jam_event_signal(e, 0, SIG_READABLE), ERR_INVALID_ARGS);   /* kernel bits */
+    /* object_signal (17) is retired: a stale program gets
+     * ERR_NOT_SUPPORTED, never another call. */
+    int64_t old;
+    __asm__ volatile("syscall"
+                     : "=a"(old)
+                     : "a"(17ull), "D"((uint64_t)e), "S"(0ull), "d"((uint64_t)(1u << 25))
+                     : "rcx", "r11", "memory", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5",
+                       "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13",
+                       "xmm14", "xmm15");
+    CHECK_ST((status_t)old, ERR_NOT_SUPPORTED);
+    CHECK_ST(jam_object_wait_one(e, SIG_USER_ALL, 0, &seen), OK);
+    CHECK_EQ(seen & SIG_USER_ALL, 1u << 24);   /* bit 25 was never set */
+    for (status_t s = OK; s >= ERR_BUSY; s--)   /* every status named in libos too */
+        CHECK(strcmp(status_str(s), "?") != 0);
+    CHECK(!strcmp(status_str(ERR_NAME_TOO_LONG), "ERR_NAME_TOO_LONG"));
 
     CHECK_ST(jam_timer_create(&tm), OK);
     CHECK_ST(jam_timer_set(tm, now() + 5 * NS_PER_MS), OK);
     CHECK_ST(jam_object_wait_one(tm, SIG_SIGNALED, now() + NS_PER_S, &seen), OK);
 
     CHECK_ST(jam_port_create(&port), OK);
-    struct port_packet p = { .key = 7, .type = PORT_PACKET_USER }, out;
+    struct port_packet p = { .key = 7, .type = PORT_PACKET_USER, .status = ERR_CANCELED }, out;
     p.user.data[0] = 42;
     CHECK_ST(jam_port_queue(port, &p), OK);
     CHECK_ST(jam_port_wait(port, now(), &out), OK);
     CHECK(out.key == 7 && out.type == PORT_PACKET_USER && out.user.data[0] == 42);
+    CHECK_ST(out.status, OK);   /* the kernel's field, not the queuer's */
     CHECK_ST(jam_port_bind(port, e, 9, SIG_SIGNALED, PORT_BIND_ONCE), OK);
     CHECK_ST(jam_port_wait(port, now() + NS_PER_S, &out), OK);
     CHECK(out.key == 9 && out.type == PORT_PACKET_SIGNAL);
@@ -217,7 +233,7 @@ static bool t_kexec_refusals(void)
     CHECK_ST(jam_klog_name(v, "boot-0001", 9), ERR_WRONG_TYPE);
     CHECK_ST(jam_klog_name(klog, "a b", 3), ERR_INVALID_ARGS);
     CHECK_ST(jam_klog_name(klog, "", 0), ERR_INVALID_ARGS);
-    CHECK_ST(jam_klog_name(klog, "boot-0001-and-a-name-too-long-to-keep", 37), ERR_INVALID_ARGS);
+    CHECK_ST(jam_klog_name(klog, "boot-0001-and-a-name-too-long-to-keep", 37), ERR_OUT_OF_RANGE);
     CHECK_ST(jam_klog_name(klog, (const char *)8, 4), ERR_INVALID_ARGS);   /* a bad pointer */
     CHECK_ST(jam_handle_close(klog), OK);
     CHECK_ST(jam_handle_close(rd), OK);
@@ -230,6 +246,8 @@ static bool t_kexec_refusals(void)
         CHECK_ST(jam_kexec_load(m, mapo, v, NULL, 0, 0), ERR_ACCESS_DENIED);        /* no READ */
         CHECK_ST(jam_kexec_load(m, v, v, (const char *)8, 4, 0), ERR_INVALID_ARGS); /* pointer */
         CHECK_ST(jam_kexec_load(m, v, v, "a\nb", 3, 0), ERR_INVALID_ARGS);          /* not text */
+        CHECK_ST(jam_kexec_load(m, v, v, (const char *)8, KEXEC_CMDLINE_MAX + 1, 0),
+                 ERR_OUT_OF_RANGE);                                                 /* too long */
         status_t st = jam_kexec_load(m, v, v, NULL, 0, 0);   /* zeros: no ELF */
         CHECK(st == ERR_INVALID_ARGS || st == ERR_NOT_SUPPORTED);
         CHECK_ST(jam_handle_close(mapo), OK);
@@ -401,7 +419,7 @@ static bool t_kill_in_channel_call(void)
     signals_t seen;
     /* The request arriving means the child is (about to be) blocked. */
     CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + 10 * NS_PER_S, &seen), OK);
-    jam_nanosleep(now() + 30 * NS_PER_MS);
+    jam_sleep_until(now() + 30 * NS_PER_MS);
     CHECK_ST(info_of(job, &ji), OK);
     CHECK_EQ(ji.used[JOB_LIMIT_THREADS], 2);   /* main (in the call) + the sleeper */
     CHECK(ji.used[JOB_LIMIT_PAGES] >= 16);      /* its heap */
@@ -1058,6 +1076,9 @@ static const struct {
     { "comp_look_wallpaper", t_comp_look_wallpaper },
     { "thread_fs_base", t_thread_fs_base },
     { "futex_calls", t_futex_calls },
+    { "handle_info", t_handle_info },
+    { "length_limits", t_length_limits },
+    { "replace_consumes", t_replace_consumes },
 };
 
 int main(int argc, char **argv)

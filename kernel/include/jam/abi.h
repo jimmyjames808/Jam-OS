@@ -20,6 +20,8 @@ typedef uint32_t handle_t;
 #define HANDLE_INVALID 0u
 
 typedef uint32_t rights_t;
+/* The generic rights, bits 0 .. 15 (11 used); the root's powers, bits
+ * 16 .. 30; RIGHT_SAME, bit 31. */
 #define RIGHT_READ      (1u << 0)
 #define RIGHT_WRITE     (1u << 1)
 #define RIGHT_EXEC      (1u << 2)
@@ -34,20 +36,20 @@ typedef uint32_t rights_t;
 /* VMOs: change the size or decommit pages (with RIGHT_WRITE). A service
  * that maps a buffer it shares hands the other side a handle without it,
  * so the buffer can't shrink under the mapping. */
-#define RIGHT_RESIZE    (1u << 19)
+#define RIGHT_RESIZE    (1u << 11)
 /* Powers over the whole system, on the root resource (RES_ROOT) only: each
  * call that needs one checks for it alone, so a program is given exactly
  * the powers it uses (a slice never has them). */
-#define RIGHT_ROOT_KLOG    (1u << 11)  /* klog_open: read the kernel log */
-#define RIGHT_ROOT_SERIAL  (1u << 12)  /* serial_open: the serial port's input */
-#define RIGHT_ROOT_SYSINFO (1u << 13)  /* sys_info, cpu_stat, proc_list */
-#define RIGHT_ROOT_CLOCK   (1u << 14)  /* rtc_read: the real-time clock */
-#define RIGHT_ROOT_REBOOT  (1u << 15)  /* reboot, kexec_reboot */
-#define RIGHT_ROOT_KEXEC   (1u << 16)  /* kexec_load: replace the stored kernel */
-#define RIGHT_ROOT_DEBUG   (1u << 17)  /* debug_command: the kernel's tests and debug commands */
-#define RIGHT_ROOT_VMEX    (1u << 18)  /* vmo_make_exec: run code from a VMO a process made */
-#define RIGHT_ROOT_SCREEN  (1u << 20)  /* framebuffer_take: the screen */
-#define RIGHT_ROOT_SERIAL_OUT (1u << 21)  /* serial_write: the serial port's output */
+#define RIGHT_ROOT_KLOG    (1u << 16)  /* klog_open: read the kernel log */
+#define RIGHT_ROOT_SERIAL  (1u << 17)  /* serial_open: the serial port's input */
+#define RIGHT_ROOT_SYSINFO (1u << 18)  /* sys_info, cpu_stat, proc_list */
+#define RIGHT_ROOT_CLOCK   (1u << 19)  /* rtc_read: the real-time clock */
+#define RIGHT_ROOT_REBOOT  (1u << 20)  /* reboot, kexec_reboot */
+#define RIGHT_ROOT_KEXEC   (1u << 21)  /* kexec_load: replace the stored kernel */
+#define RIGHT_ROOT_DEBUG   (1u << 22)  /* debug_command: the kernel's tests and debug commands */
+#define RIGHT_ROOT_VMEX    (1u << 23)  /* vmo_make_exec: run code from a VMO a process made */
+#define RIGHT_ROOT_SCREEN  (1u << 24)  /* framebuffer_take: the screen */
+#define RIGHT_ROOT_SERIAL_OUT (1u << 25)  /* serial_write: the serial port's output */
 #define RIGHTS_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SERIAL | RIGHT_ROOT_SYSINFO | \
                      RIGHT_ROOT_CLOCK | RIGHT_ROOT_REBOOT | RIGHT_ROOT_KEXEC |   \
                      RIGHT_ROOT_DEBUG | RIGHT_ROOT_VMEX | RIGHT_ROOT_SCREEN |    \
@@ -64,6 +66,47 @@ typedef uint32_t rights_t;
 #define JOB_RIGHTS_OWN (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
 #define JOB_RIGHTS     (JOB_RIGHTS_OWN | RIGHT_MANAGE)
 
+/* Handles a process holds at most (a call that would make one more fails
+ * with ERR_NO_RESOURCES). */
+#define HANDLE_TABLE_MAX 65536
+
+/* The kinds of kernel object a handle names (handle_info's type). */
+enum obj_type {
+    OBJ_NONE = 0,           /* none (the kernel's lookups: "any type") */
+    OBJ_EVENT = 1,
+    OBJ_TIMER = 2,
+    OBJ_CHANNEL = 3,        /* one end of a channel */
+    OBJ_PORT = 4,
+    OBJ_VMO = 5,
+    OBJ_DMA_CAP = 6,        /* permission to pin memory for device DMA */
+    OBJ_PROCESS = 7,
+    OBJ_THREAD = 8,
+    OBJ_INTERRUPT = 9,      /* a device interrupt vector */
+    OBJ_RESOURCE = 10,      /* authority over a piece of hardware */
+    OBJ_VMAR = 11,          /* a handle to an address space */
+    OBJ_JOB = 12,           /* resource limits for a group of processes */
+    OBJ_KLOG = 13,          /* a reader of the kernel log */
+    OBJ_SERIAL = 14,        /* COM1 input */
+    OBJ_SCREEN = 15,        /* ownership of the boot framebuffer */
+    OBJ_TYPE_COUNT,
+};
+
+/* handle_info: what a handle names, and what its holder could learn by
+ * trying calls on it (no right needed). */
+struct handle_info {
+    uint32_t type;              /* enum obj_type */
+    rights_t rights;            /* the handle's own rights */
+    uint64_t koid;              /* the object's id (never reused) */
+    uint64_t related_koid;      /* a channel end: its peer's (0 once the peer has
+                                 * closed); a thread: its process's; a process: its
+                                 * job's (0 once torn down); else 0 */
+    /* A channel end only (else 0): */
+    uint32_t queued;            /* messages waiting on it, to be read */
+    uint32_t peer_queued;       /* messages it wrote that wait, unread, at its peer */
+    uint64_t peer_queued_bytes; /* the bytes of those */
+    uint64_t reserved;          /* 0 */
+};
+
 /* signals ------------------------------------------------------------------ */
 
 typedef uint32_t signals_t;
@@ -75,7 +118,7 @@ typedef uint32_t signals_t;
 #define SIG_SIGNALED    (1u << 3)   /* events, timers */
 #define SIG_TERMINATED  (1u << 4)   /* processes, threads: gone for good */
 #define SIG_INTERRUPT   (1u << 5)   /* interrupt objects: fired, not acked yet */
-#define SIG_USER_ALL    0xff000000u /* bits 24-31: free for userspace (sys_object_signal) */
+#define SIG_USER_ALL    0xff000000u /* bits 24-31: an event's, free for user space (event_signal) */
 
 /* Deadlines are absolute nanoseconds of uptime. Also defined (identically)
  * in <jam/sched.h>; a kernel file that includes both fails to build if the
@@ -95,7 +138,7 @@ enum port_packet_type {
 struct port_packet {
     uint64_t key;                /* chosen by whoever bound/queued it */
     uint32_t type;               /* enum port_packet_type */
-    int32_t  status;             /* OK; ERR_CANCELED is reserved for binding teardown */
+    int32_t  status;             /* OK (port_queue's too); ERR_CANCELED: a binding's teardown */
     union {                      /* which one: `type` */
         struct {
             signals_t trigger;   /* the mask it was bound with */
@@ -110,6 +153,12 @@ struct port_packet {
 
 #define PORT_BIND_ONCE       0   /* fire once, then the binding is gone */
 #define PORT_BIND_PERSISTENT 1   /* fire on every not-matching -> matching edge */
+
+/* A port holds at most PORT_MAX_USER_PACKETS user packets (port_queue past
+ * it: ERR_NO_RESOURCES; signal packets never count, each binding owns
+ * one) and PORT_MAX_BINDINGS bindings (port_bind past it: the same). */
+#define PORT_MAX_USER_PACKETS 4096
+#define PORT_MAX_BINDINGS     4096
 
 /* VMOs ------------------------------------------------------------------------
  * VMO flags. Bits 0 and 1 are dma_vmo_create's, for drivers (a dma_cap
@@ -227,6 +276,10 @@ struct process_info {
  * above are the kernel's (and, later, a capability's). */
 #define THREAD_PRIO_DEFAULT  16
 #define THREAD_PRIO_USER_MAX 24
+
+/* A process's or a thread's name (process_create, thread_create): at most
+ * this many bytes. */
+#define PROCESS_NAME_MAX 31
 
 /* channels --------------------------------------------------------------------
  * A message carries at most CHANNEL_MAX_BYTES bytes and CHANNEL_MAX_HANDLES
@@ -406,80 +459,16 @@ struct vmo_pin_args {
  * cap has pinned writable (or the reverse) is ERR_BAD_STATE. */
 #define VMO_PIN_READ_ONLY (1u << 0)
 
-/* input (abi/idl/input.idl, console.idl) ------------------------------------- */
-
-#define INPUT_KEY_UP     0
-#define INPUT_KEY_DOWN   1
-#define INPUT_KEY_REPEAT 2
-
-/* input.ready's kind */
-#define INPUT_READY_KEYBOARD 1
-#define INPUT_READY_MOUSE    2
-
-/* The HID boot report's modifier byte. */
-#define INPUT_MOD_LCTRL  (1u << 0)
-#define INPUT_MOD_LSHIFT (1u << 1)
-#define INPUT_MOD_LALT   (1u << 2)
-#define INPUT_MOD_LGUI   (1u << 3)
-#define INPUT_MOD_RCTRL  (1u << 4)
-#define INPUT_MOD_RSHIFT (1u << 5)
-#define INPUT_MOD_RALT   (1u << 6)
-#define INPUT_MOD_RGUI   (1u << 7)
-#define INPUT_MOD_CTRL   (INPUT_MOD_LCTRL | INPUT_MOD_RCTRL)
-#define INPUT_MOD_SHIFT  (INPUT_MOD_LSHIFT | INPUT_MOD_RSHIFT)
-#define INPUT_MOD_ALT    (INPUT_MOD_LALT | INPUT_MOD_RALT)
-
-/* A console.open_keys channel carries plain messages, no protocol header,
- * and its message kinds are told apart by their size:
- *
- *   console -> client   struct input_key_event (8 bytes): one key, to the
- *                       focused client. Every client gets these.
- *   console -> client   struct input_mouse_event (12 bytes): one mouse
- *                       report, to the focused client, and only if it asked.
- *   client -> console   struct input_want (8 bytes): which events besides
- *                       keys the client wants from now on. The console
- *                       reads it before it passes on the next mouse report.
- *
- * A client that never writes on the channel only ever reads key events,
- * so one that knows nothing of the mouse needs no size check. Anything
- * else a client writes (another size, unknown bits, a non-zero reserved
- * field, handles) loses it the channel: the console closes its end. While
- * the focused client wants the mouse it gets every report, the wheel
- * included; otherwise the wheel scrolls the console's text back (while
- * the console has the screen) and the rest of the report is dropped. */
-struct input_key_event {
-    uint16_t usage;       /* HID keyboard page usage id, 0 for text from a terminal */
-    uint8_t  state;       /* INPUT_KEY_* */
-    uint8_t  mods;        /* INPUT_MOD_* */
-    uint32_t codepoint;   /* the character typed, or 0 */
-};
-
-#define INPUT_EVENT_MOUSE 1u         /* input_mouse_event.kind */
-
-#define INPUT_BTN_LEFT   (1u << 0)   /* the HID boot mouse report's button bits */
-#define INPUT_BTN_RIGHT  (1u << 1)
-#define INPUT_BTN_MIDDLE (1u << 2)
-
-/* One mouse report as its driver sent it (input.idl `mouse`): movement is
- * relative and in the mouse's own counts, so a pointer position, its
- * speed and its limits are the client's business. A report lost to a full
- * channel loses movement only: each one carries every button's state. */
-struct input_mouse_event {
-    uint32_t kind;        /* INPUT_EVENT_MOUSE */
-    int16_t  dx, dy;      /* counts moved since the last report: +x right, +y down */
-    int8_t   wheel;       /* notches turned: + away from the user */
-    uint8_t  buttons;     /* INPUT_BTN_* held down now */
-    uint16_t reserved;    /* 0 */
-};
-
-#define INPUT_WANT_MOUSE (1u << 0)   /* input_want.events: mouse reports */
-
-struct input_want {
-    uint32_t events;      /* INPUT_WANT_*: replaces what was asked for before */
-    uint32_t reserved;    /* 0 */
-};
-
 /* console services (abi/syscalls.def 110-119) --------------------------------- */
+
+/* The longest argument each takes, in bytes: debug_write's and
+ * debug_report's text, serial_write's, debug_command's command, the log
+ * file's name (klog_name), and kexec_load's command line. */
+#define DEBUG_WRITE_MAX    4096
+#define SERIAL_WRITE_MAX   4096
+#define DEBUG_COMMAND_MAX  63
+#define KLOG_NAME_MAX      31
+#define KEXEC_CMDLINE_MAX  511
 
 /* klog_lines: who wrote the log line starting at byte `pos` of the log. */
 #define KLOG_WRITER_KERNEL  0ull            /* the kernel itself (never in a mark) */

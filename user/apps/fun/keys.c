@@ -3,7 +3,7 @@
  * same messages come from the compositor instead (wl.c's wl_next), with
  * one more: the window's new size (KEY_RESIZE).
  *
- * The channel's messages are told apart by size (<jam/abi.h>): a key is a
+ * The channel's messages are told apart by size (<openkeys.h>): a key is a
  * struct input_key_event; a mouse report, which only comes after
  * gfx_mouse_open asked for it, a struct input_mouse_event. gfx_key is the
  * one place an app waits for both: a mouse report comes back from it as

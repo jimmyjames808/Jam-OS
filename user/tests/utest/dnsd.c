@@ -325,7 +325,7 @@ static bool openers_come_and_go(handle_t sys)
                 used += __atomic_load_n(&D.a[k].ch, __ATOMIC_ACQUIRE) != 0;
             if (used <= DNS_PROG_OPENERS + 1 && (!r || msg_bytes() <= want))
                 break;
-            jam_nanosleep(now() + NS_PER_MS);
+            jam_sleep_until(now() + NS_PER_MS);
         } while (now() < until);
         if (!r)
             base = msg_bytes();   /* after one round: everything it makes once is made */

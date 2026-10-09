@@ -180,7 +180,7 @@ static bool t_open_close(void)
     uint64_t end = now() + SOON;   /* the close reaches the driver on another channel */
     status_t st;
     while ((st = out_open(&o)) == ERR_BAD_STATE && now() < end)
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
     CHECK_ST(st, OK);
     out_close(&o);
     return true;
@@ -225,7 +225,7 @@ static bool t_pattern(void)
     CHECK(hz >= RATE * 98 / 100 && hz <= RATE * 102 / 100);
     CHECK_ST(hda_stop_until(o.ch, soon()), OK);
     CHECK_ST(hda_position_until(o.ch, soon(), &frames, &off), OK);
-    jam_nanosleep(now() + 100 * NS_PER_MS);
+    jam_sleep_until(now() + 100 * NS_PER_MS);
     CHECK_ST(hda_position_until(o.ch, soon(), &frames2, &off), OK);
     CHECK_EQ(frames2, frames);
     CHECK_ST(hda_wait_period_until(o.ch, soon(), frames, &frames2, &off), ERR_BAD_STATE);
@@ -246,7 +246,7 @@ static bool t_close_stops(void)
     uint64_t end = now() + SOON;
     status_t st;
     while ((st = out_open(&o)) == ERR_BAD_STATE && now() < end)
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
     CHECK_ST(st, OK);
     CHECK_ST(hda_position_until(o.ch, soon(), &frames, &off), OK);
     CHECK_EQ(frames, 0);
@@ -263,7 +263,7 @@ static bool quarantine_clean(void)
         CHECK_ST(devmgr_call(dm, DEVMGR_SUPERVISION, vid, did, 0, &r, NULL, 0, NULL, soon()), OK);
         if (!r.d)
             break;
-        jam_nanosleep(now() + 100 * NS_PER_MS);
+        jam_sleep_until(now() + 100 * NS_PER_MS);
     } while (now() < end);
     printf("hdatest: kill: state %u, %u restart(s), quarantine %u page(s) held, %u written\n",
            r.a, r.b, r.d, r.e);

@@ -5,6 +5,7 @@
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/sched.h>
+#include <jam/string.h>
 #include <jam/sys.h>
 #include <jam/time.h>
 
@@ -220,27 +221,25 @@ KTEST(object_wait_many_waiters)
 
 /* ---- user signal bits ---------------------------------------------------------- */
 
-KTEST(m45_object_signal_user_bits)
+/* An event's user bits (event_signal: object_signal, user bits on any
+ * object, went in M12). */
+KTEST(m45_event_signal_user_bits)
 {
     struct handle_table t;
     handle_table_init(&t);
-    handle_t ev, a, b, weak;
+    handle_t ev, weak;
     KT_EQ(sys_event_create(&t, &ev), OK);
-    KT_EQ(sys_channel_create(&t, &a, &b), OK);
 
-    KT_EQ(sys_object_signal(&t, ev, 0, 1u << 24), OK);
+    KT_EQ(sys_event_signal(&t, ev, 0, 0x81000000u), OK);
+    KT_EQ(kt_signals_of(&t, ev) & SIG_USER_ALL, 0x81000000u);
+    KT_EQ(sys_event_signal(&t, ev, 1u << 31, 0), OK);
     KT_EQ(kt_signals_of(&t, ev) & SIG_USER_ALL, 1u << 24);
-    KT_EQ(sys_object_signal(&t, a, 0, 0x81000000u), OK);
-    KT_EQ(kt_signals_of(&t, a) & SIG_USER_ALL, 0x81000000u);
-    KT_EQ(sys_object_signal(&t, a, 1u << 24, 0), OK);
-    KT_EQ(kt_signals_of(&t, a) & SIG_USER_ALL, 0x80000000u);
-    KT_ASSERT(kt_signals_of(&t, a) & SIG_WRITABLE);   /* kernel bits untouched */
 
-    /* Kernel-owned bits are off limits, and the right is required. */
-    KT_EQ(sys_object_signal(&t, a, 0, SIG_READABLE), ERR_INVALID_ARGS);
-    KT_EQ(sys_object_signal(&t, a, SIG_WRITABLE, 0), ERR_INVALID_ARGS);
+    /* Kernel-owned bits other than SIG_SIGNALED are off limits, and the
+     * right is required. */
+    KT_EQ(sys_event_signal(&t, ev, 0, SIG_READABLE), ERR_INVALID_ARGS);
     KT_EQ(handle_duplicate(&t, ev, RIGHTS_BASIC, &weak), OK);
-    KT_EQ(sys_object_signal(&t, weak, 0, 1u << 25), ERR_ACCESS_DENIED);
+    KT_EQ(sys_event_signal(&t, weak, 0, 1u << 25), ERR_ACCESS_DENIED);
 
     /* A user bit wakes a waiter like any signal. */
     signals_t seen = 0;
@@ -282,4 +281,73 @@ KTEST(auditD_handle_generation_no_wrap)
         kobject_unref(got);
     handle_table_destroy(&t);
     KT_EQ(st, ERR_BAD_HANDLE);   /* 15-bit generation + FIFO reuse: no wrap */
+}
+
+/* ---- status codes ------------------------------------------------------------------ */
+
+/* Every status has a name, Q9's five filesystem codes (M12) too. */
+KTEST(status_codes_named)
+{
+    for (status_t s = OK; s >= ERR_BUSY; s--)
+        KT_ASSERT(strcmp(status_str(s), "ERR_?") != 0);
+    KT_ASSERT(!strcmp(status_str(ERR_NOT_DIR), "ERR_NOT_DIR"));
+    KT_ASSERT(!strcmp(status_str(ERR_IS_DIR), "ERR_IS_DIR"));
+    KT_ASSERT(!strcmp(status_str(ERR_NOT_EMPTY), "ERR_NOT_EMPTY"));
+    KT_ASSERT(!strcmp(status_str(ERR_NAME_TOO_LONG), "ERR_NAME_TOO_LONG"));
+    KT_ASSERT(!strcmp(status_str(ERR_BUSY), "ERR_BUSY"));
+    KT_ASSERT(!strcmp(status_str(ERR_BUSY - 1), "ERR_?"));
+}
+
+/* ---- handle_info --------------------------------------------------------------------- */
+
+static uint64_t koid_of(struct handle_table *t, handle_t h)
+{
+    struct kobject *o;
+    KT_EQ(handle_get(t, h, OBJ_NONE, 0, &o, NULL), OK);
+    uint64_t k = o->koid;
+    kobject_unref(o);
+    return k;
+}
+
+/* handle_info (M12's Q11): the type, the handle's rights, the koid, a
+ * channel end's peer and what waits on each side. */
+KTEST(handle_info_names_the_object)
+{
+    struct handle_table t;
+    handle_table_init(&t);
+    handle_t ev, weak, a, b;
+    struct handle_info i;
+    KT_EQ(sys_event_create(&t, &ev), OK);
+    KT_EQ(handle_info(&t, ev, &i), OK);
+    KT_EQ(i.type, OBJ_EVENT);
+    KT_EQ(i.koid, koid_of(&t, ev));
+    KT_EQ(i.related_koid, 0);
+    KT_EQ(i.queued + i.peer_queued + i.peer_queued_bytes + i.reserved, 0);
+    rights_t full = i.rights;
+    KT_EQ(handle_duplicate(&t, ev, RIGHT_WAIT, &weak), OK);
+    KT_EQ(handle_info(&t, weak, &i), OK);   /* no right needed */
+    KT_EQ(i.rights, RIGHT_WAIT);
+    KT_ASSERT(full != RIGHT_WAIT && (full & RIGHT_SIGNAL));
+
+    KT_EQ(sys_channel_create(&t, &a, &b), OK);
+    KT_EQ(sys_channel_write(&t, a, "abc", 3, NULL, 0), OK);
+    KT_EQ(sys_channel_write(&t, a, "defgh", 5, NULL, 0), OK);
+    KT_EQ(handle_info(&t, a, &i), OK);
+    KT_EQ(i.type, OBJ_CHANNEL);
+    KT_EQ(i.related_koid, koid_of(&t, b));
+    KT_EQ(i.queued, 0);
+    KT_EQ(i.peer_queued, 2);
+    KT_EQ(i.peer_queued_bytes, 8);
+    KT_EQ(handle_info(&t, b, &i), OK);
+    KT_EQ(i.related_koid, koid_of(&t, a));
+    KT_EQ(i.queued, 2);
+    KT_EQ(i.peer_queued, 0);
+    KT_EQ(handle_close(&t, b), OK);
+    KT_EQ(handle_info(&t, a, &i), OK);
+    KT_EQ(i.related_koid, 0);   /* the peer has gone */
+    KT_EQ(i.peer_queued, 0);
+
+    KT_EQ(handle_info(&t, b, &i), ERR_BAD_HANDLE);
+    KT_EQ(handle_info(&t, HANDLE_INVALID, &i), ERR_BAD_HANDLE);
+    handle_table_destroy(&t);
 }
