@@ -15,11 +15,11 @@
  * Message bytes. Everything we write to a client is charged to our job
  * until the client reads it; libjwl's window bounds that to JWL_WINDOW
  * batches a connection. A client we disconnect may never read what we
- * wrote, so its slot is kept ("lingering", nothing else of it) until it
- * closes its end too: what stays charged to us is bounded by
- * COMP_CLIENTS_MAX windows, however often a client reconnects. Each slot's
- * port binding on its channel end is charged to us too (about 1.2 KiB):
- * free_client unbinds it, as closing the handle doesn't.
+ * wrote: we close our end at once, its slot is free at once, and what it
+ * never read is charged to its own job from then on (M12's Q2: the reader
+ * pays once the writer closes). Each slot's port binding on its channel
+ * end is charged to us too (about 1.2 KiB): free_client unbinds it, as
+ * closing the handle doesn't.
  *
  * Destructors are libjwl's: a destructor request reaches its handler with
  * the id already freed (delete_id queued) and the object's data in the
@@ -99,15 +99,16 @@ static status_t make_conn(handle_t mine, struct comp_client *cl)
     return st;
 }
 
+/* The slot is free; our end of its channel is closed, so what the client
+ * never read is its own job's from now on (Q2). */
 static void free_client(struct comp_client *cl)
 {
-    jwl_conn_destroy(cl->conn);
-    if (cl->raw != HANDLE_INVALID) {
+    if (cl->conn) {
         /* Closing the handle doesn't unbind it: the port's binding holds
          * the channel end and its charge (about 1.2 KiB of our message
-         * bytes) until the port goes. A fired ONCE binding is gone already. */
-        (void)jam_port_unbind(comp.port, cl->raw, 1 + cl->slot);
-        jam_handle_close(cl->raw);
+         * bytes) until the port goes. */
+        (void)jam_port_unbind(comp.port, cl->conn->ch, 1 + cl->slot);
+        jwl_conn_destroy(cl->conn);
     }
     clients[cl->slot] = NULL;
     free(cl);
@@ -129,16 +130,11 @@ status_t conn_connect(void *ctx, handle_t *out)
     if (!cl)
         return st;
     cl->slot = slot;
-    cl->raw = HANDLE_INVALID;
     clients[slot] = cl;
     if (st == OK)
-        st = jam_handle_duplicate(mine, RIGHT_SAME, &cl->raw);
+        st = make_conn(mine, cl);   /* consumes mine */
     if (st == OK)
-        st = make_conn(mine, cl);
-    else if (mine != HANDLE_INVALID)
-        jam_handle_close(mine);
-    if (st == OK)
-        st = jam_port_bind(comp.port, cl->raw, 1 + slot, SIG_READABLE | SIG_PEER_CLOSED,
+        st = jam_port_bind(comp.port, cl->conn->ch, 1 + slot, SIG_READABLE | SIG_PEER_CLOSED,
                            PORT_BIND_PERSISTENT);
     if (st != OK) {
         if (theirs != HANDLE_INVALID)
@@ -257,7 +253,9 @@ static void log_gone(const struct comp_client *cl, enum comp_gone why)
                cl->conn->error.text);
 }
 
-/* cl's connection is dead: everything of it goes, in this turn. */
+/* cl's connection is dead: everything of it goes, in this turn, its slot
+ * and our end of its channel too (what it may still read, the error last,
+ * is its own job's from then on: Q2). */
 static void client_die(struct comp_client *cl)
 {
     enum comp_gone why = why_gone(cl->conn);
@@ -265,34 +263,14 @@ static void client_die(struct comp_client *cl)
     log_gone(cl, why);
     for (unsigned i = 0; i < sizeof(teardowns) / sizeof(teardowns[0]); i++)
         teardowns[i](cl);
-    jwl_conn_destroy(cl->conn);   /* our raw duplicate keeps the channel end open */
-    cl->conn = NULL;
-    signals_t seen = 0;
-    (void)jam_object_wait_one(cl->raw, SIG_PEER_CLOSED, 0, &seen);   /* a look, no wait */
-    if (seen & SIG_PEER_CLOSED) {
-        free_client(cl);
-        return;
-    }
-    /* It may still read what we wrote: keep the end until it closes its own. */
-    cl->lingering = true;
-    (void)jam_port_unbind(comp.port, cl->raw, 1 + cl->slot);
-    if (jam_port_bind(comp.port, cl->raw, 1 + cl->slot, SIG_PEER_CLOSED, PORT_BIND_ONCE) != OK)
-        free_client(cl);   /* can't watch it: let it go now */
+    free_client(cl);
 }
 
 void conn_ready(uint64_t key)
 {
     struct comp_client *cl = key >= 1 && key <= COMP_CLIENTS_MAX ? clients[key - 1] : NULL;
-    if (!cl)
-        return;
-    if (!cl->lingering) {
-        cl->ready = true;
-        return;
-    }
-    signals_t seen = 0;
-    (void)jam_object_wait_one(cl->raw, SIG_PEER_CLOSED, 0, &seen);
-    if (seen & SIG_PEER_CLOSED)
-        free_client(cl);   /* else a packet of its old binding: still lingering */
+    if (cl)
+        cl->ready = true;   /* a packet of a gone client's binding at most reads nothing */
 }
 
 void conn_serve_all(void)
