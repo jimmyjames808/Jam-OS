@@ -536,11 +536,13 @@ bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
 /* Clients lost every way, round after round: nothing stays charged to the compositor. */
 bool t_comp_lost_clients(void);
+bool t_comp_fuzz(void);
 /* The same against the desktop's compositor (/svc/wayland): `utest only comp_live`. */
 bool t_comp_live_bad_requests(void);
 bool t_comp_live_caps(void);
 bool t_comp_live_client_crash(void);
 bool t_comp_live_never_reads(void);
+bool t_comp_live_fuzz(void);
 bool t_comp_regions(void);
 /* conwin.c: the console's window mode: its grid and padding, the view,
  * terminal.font, keys and pointer (wlinput.c, view.c, linked in). */

@@ -1229,6 +1229,8 @@ its message bytes the same).
 | Test | What it checks |
 |---|---|
 | `comp_lost_clients` | 4 rounds of a client that closes after a round trip, one disconnected for a bad request and then closed (its slot lingers until then), and one that crashes holding a window: after each round the compositor's handles and message bytes are back at the start (until 2026-10-07 each client whose end was closed before its slot was freed left its port binding, 1216 bytes, on the compositor's job) |
+| `comp_fuzz` | 48 seeded rounds (`user/tests/utest/comp_fuzz.c`, M12.1): a client sets up what a real one has (every global, a seat, surfaces, a toplevel, a pool and buffer, a region, a positioner, a clipboard source and device, a cursor shape device), then writes JWL2 batches of its own: real opcodes with arguments chosen to hurt (the int32 ends, caps' edges, other objects' ids, strings without their NUL or not UTF-8, handles of every kind or none), sizes that lie, batches of noise; it never reads. After each round a healthy client round-trips, and at the end the compositor holds the handles and message bytes it held before. A failure names the round and its seed |
+| `comp_live_fuzz` | 16 of those rounds against the desktop's own compositor (`utest only comp_live`, `g1-hostile.txt`), which must keep serving |
 
 ## Copy and paste
 
