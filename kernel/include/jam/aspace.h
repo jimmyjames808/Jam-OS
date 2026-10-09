@@ -73,8 +73,14 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
 /* Resolve a fault at addr for `access` (ASPACE_READ/WRITE/EXEC): commit
  * the VMO page if needed and install the page-table entry. OK: retry the
  * access. ERR_NOT_FOUND: nothing mapped there. ERR_ACCESS_DENIED: the
- * mapping doesn't allow that access. ERR_NO_MEMORY: couldn't commit.
+ * mapping doesn't allow that access. ERR_NO_MEMORY: couldn't commit (or a
+ * pager's page went again 8 times before the retry saw it).
  * ERR_OUT_OF_RANGE: the VMO was shrunk below the mapped page.
+ * A pager VMO's absent page is waited for, without the region lock, until
+ * its pager answers, the request's deadline or a kill: ERR_IO (the pager
+ * couldn't read it), ERR_PEER_CLOSED (the pager is gone: detached or
+ * closed), ERR_TIMED_OUT (it didn't answer), ERR_CANCELED (the thread was
+ * killed; thread_interrupt doesn't end the wait).
  * May sleep (region lock): call with interrupts on and no spinlock held. */
 status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access);
 

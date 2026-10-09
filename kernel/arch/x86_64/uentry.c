@@ -54,7 +54,7 @@ _Static_assert(GDT_USER_DATA == GDT_USER_BASE + 8 && GDT_USER_CODE == GDT_USER_B
 void syscall_entry(void);
 _Noreturn void enter_user_iret(uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1,
                                uint64_t kstack_top);
-size_t copy_user_raw(void *dst, const void *src, size_t n);
+status_t copy_user_raw(void *dst, const void *src, size_t n);
 long copy_str_user_raw(char *dst, const char *usrc, size_t n);
 void fpu_save(void *area);
 
@@ -271,6 +271,44 @@ static const struct ex_entry *ex_find(uint64_t rip)
 #define PF_RSVD    (1u << 3)
 #define PF_FETCH   (1u << 4)
 
+/* Why a user-mode fault that aspace_fault couldn't resolve kills its
+ * thread's process (the kill message). */
+static const char *fault_reason(status_t s)
+{
+    switch (s) {
+    case ERR_NO_MEMORY:
+        return "page fault: out of memory (or the job's page limit)";
+    case ERR_OUT_OF_RANGE:
+        return "bus error: page past the end of a shrunk VMO";
+    case ERR_IO:
+        return "page fault: the file's pager couldn't read it";
+    case ERR_PEER_CLOSED:
+        return "page fault: the file's pager is gone";
+    case ERR_TIMED_OUT:
+        return "page fault: the file's pager didn't answer";
+    default:
+        return "page fault";   /* nothing mapped there, or not with that access */
+    }
+}
+
+/* What a user copy returns when aspace_fault couldn't resolve its fault:
+ * ERR_IO for every way a pager failed the page, ERR_CANCELED if the
+ * thread was killed while it waited, ERR_INVALID_ARGS for the rest (a bad
+ * pointer). Never -1, which copy_str_user_raw returns for "no NUL". */
+static status_t copy_status(status_t s)
+{
+    switch (s) {
+    case ERR_IO:
+    case ERR_PEER_CLOSED:
+    case ERR_TIMED_OUT:
+        return ERR_IO;
+    case ERR_CANCELED:
+        return ERR_CANCELED;
+    default:
+        return ERR_INVALID_ARGS;
+    }
+}
+
 bool trap_page_fault(struct trap_frame *f)
 {
     uint64_t addr = read_cr2();   /* before anything can fault or sleep */
@@ -287,22 +325,27 @@ bool trap_page_fault(struct trap_frame *f)
         panic("user copy faulted with interrupts off (at %lx, address %lx)", f->rip, addr);
 
     struct thread *t = current_thread();
+    status_t s = ERR_NOT_FOUND;   /* no address space: nothing to resolve */
     if (uaddr && t->aspace) {
         unsigned access = (f->error & PF_FETCH) ? ASPACE_EXEC
                         : (f->error & PF_WRITE) ? ASPACE_WRITE : ASPACE_READ;
         /* The interrupted code ran with interrupts on (user mode, or a user
-         * copy), on this thread's stack with no spinlock: it may sleep. */
+         * copy), on this thread's stack with no spinlock: it may sleep,
+         * for seconds if the page is a pager's. */
         irq_enable();
-        status_t s = aspace_fault(t->aspace, addr, access);
+        s = aspace_fault(t->aspace, addr, access);
         irq_disable();
         if (s == OK)
             return true;   /* retry the access */
-        if (!fix && s == ERR_NO_MEMORY)
-            kill_current("page fault: out of memory (or the job's page limit)", f->rip, addr);
-        if (!fix && s == ERR_OUT_OF_RANGE)
-            kill_current("bus error: page past the end of a shrunk VMO", f->rip, addr);
+        /* Killed while it waited: the return to ring 3 ends the thread
+         * (return_to_user_work), with no fault of its own to report. */
+        if (!fix && s == ERR_CANCELED)
+            return true;
+        if (!fix)
+            kill_current(fault_reason(s), f->rip, addr);
     }
     if (fix) {
+        f->rax = (uint64_t)(int64_t)copy_status(s);   /* the fixups return it (usercopy.S) */
         f->rip = fix->fixup;
         return true;
     }
@@ -326,7 +369,7 @@ status_t copy_from_user(void *dst, uint64_t usrc, size_t n)
         return OK;
     PATH_COUNT(PATH_UCOPY_IN);
     PATH_ADD(PATH_UCOPY_IN_B, n);
-    return copy_user_raw(dst, (const void *)usrc, n) ? ERR_INVALID_ARGS : OK;
+    return copy_user_raw(dst, (const void *)usrc, n);
 }
 
 status_t copy_to_user(uint64_t udst, const void *src, size_t n)
@@ -338,7 +381,7 @@ status_t copy_to_user(uint64_t udst, const void *src, size_t n)
         return OK;
     PATH_COUNT(PATH_UCOPY_OUT);
     PATH_ADD(PATH_UCOPY_OUT_B, n);
-    return copy_user_raw((void *)udst, src, n) ? ERR_INVALID_ARGS : OK;
+    return copy_user_raw((void *)udst, src, n);
 }
 
 status_t copy_str_from_user(char *dst, uint64_t usrc, size_t cap, size_t *len)
@@ -359,9 +402,9 @@ status_t copy_str_from_user(char *dst, uint64_t usrc, size_t cap, size_t *len)
         return OK;
     }
     dst[(r == -1 ? n : 1) - 1] = '\0';   /* never hand back an unterminated buffer */
-    if (r == -1 && !clipped)
-        return ERR_OUT_OF_RANGE;
-    return ERR_INVALID_ARGS;
+    if (r == -1)
+        return clipped ? ERR_INVALID_ARGS : ERR_OUT_OF_RANGE;
+    return (status_t)r;   /* a fault: its status (copy_status) */
 }
 
 /* ---- switching threads, entering ring 3 ------------------------------------ */

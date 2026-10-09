@@ -20,7 +20,12 @@
  *   - region lock (`lock`, a mutex, class "aspace"): the mapping list, and
  *     creating or freeing page-table pages. map, unmap, protect and fault
  *     hold it throughout, so a fault never races an unmap in the same
- *     address space.
+ *     address space. The one exception is a fault on a pager VMO's absent
+ *     page (<jam/pager.h>): it asks the pager under the lock, drops the
+ *     lock to wait (seconds, maybe), holding a VMO reference of its own,
+ *     and then starts again from find, trusting nothing it saw before: the
+ *     mapping may be gone, moved or changed by then. FAULT_ROUNDS bounds
+ *     the retries.
  *   - "vmo" (the VMO object lock): the VMO's page table and reverse map. A
  *     fault looks the page up and installs its entry under it, and decommit
  *     and shrink clear entries under it, so those two are atomic with
@@ -128,7 +133,9 @@
 #include <jam/cpu.h>
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
+#include <jam/kprintf.h>
 #include <jam/mm.h>
+#include <jam/pager.h>
 #include <jam/panic.h>
 #include <jam/pcid.h>
 #include <jam/process.h>
@@ -920,6 +927,58 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
     return OK;
 }
 
+/* A fault waits for a pager this many times at most before it gives up
+ * (ERR_NO_MEMORY): its page was taken away again between each supply and
+ * the retry's look (vmo.c's FETCH_ROUNDS, the same rule for vmo_read). */
+#define FAULT_ROUNDS 8
+
+/* Faults that waited for a pager with a mutex held (the caller's: the
+ * region lock is dropped by then). PK2's audit found no copy that does;
+ * one appearing later is reported here, since it could make another
+ * process wait for this pager too. */
+uint64_t aspace_pager_waits_held;
+
+static void wait_held_check(void)
+{
+    struct thread *t = current_thread();
+    if (!t->sleep_depth)
+        return;
+    __atomic_add_fetch(&aspace_pager_waits_held, 1, __ATOMIC_RELAXED);
+    kprintf("aspace: thread \"%s\" waits for a pager holding %u mutex(es)\n", t->name,
+            t->sleep_depth);
+    preempt_disable();
+    lockdep_print_held();
+    preempt_enable();
+}
+
+/* The region lock is held and page idx of v (a pager VMO, through a
+ * mapping) was absent: ask the pager for it, drop the region lock, wait,
+ * and say how it went. OK: look again (from find: the mapping may have
+ * changed meanwhile). The region lock is not held on return. */
+static status_t fault_wait(struct aspace *as, struct vmo *v, uint64_t idx)
+{
+    /* Our own reference: an unmap while we wait may drop the mapping's,
+     * and the VMO's death fails its requests; a waiter must not be the
+     * one that lets it die (it outlives our wait instead). */
+    kobject_ref(vmo_kobject(v));
+    struct pager_req *r = NULL;
+    status_t st = vmo_page_request(v, idx, &r);   /* spinlocks only: fine here */
+    mutex_unlock(&as->lock);
+    if (st == OK && r) {
+        wait_held_check();
+        st = pager_req_wait(r);   /* cancellable, never interruptible: a load can't restart */
+        pager_req_put(r);
+        if (st == ERR_OUT_OF_RANGE)
+            st = ERR_IO;   /* PAGER_OP_FAIL's "past the file's end": it couldn't read it */
+        /* A request is answered whole: one failed for its other pages may
+         * still have brought ours. */
+        if (st != OK && st != ERR_CANCELED && vmo_page_phys(v, idx << PAGE_SHIFT))
+            st = OK;
+    }
+    kobject_unref(vmo_kobject(v));
+    return st;
+}
+
 status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access)
 {
     if (addr < USER_BASE || addr >= USER_TOP)
@@ -928,22 +987,37 @@ status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access)
     if (!need)
         need = ASPACE_READ;
     __atomic_add_fetch(&as->faults, 1, __ATOMIC_RELAXED);
-    mutex_lock(&as->lock);
-    struct mapping *m = find(as, addr);
-    status_t st;
-    if (!m) {
-        st = ERR_NOT_FOUND;
-    } else if (need & ~m->flags) {
-        st = ERR_ACCESS_DENIED;
-    } else {
-        uint64_t va = ALIGN_DOWN(addr, PAGE_SIZE);
-        st = pt_prepare(as, va);
-        if (st == OK)
-            st = vmo_fault_map(m->vmo, (m->vmo_off + (va - m->base)) >> PAGE_SHIFT, as, va,
-                               m->flags);
+    for (unsigned rounds = 0;;) {
+        mutex_lock(&as->lock);
+        struct mapping *m = find(as, addr);
+        status_t st;
+        uint64_t idx = 0;
+        if (!m) {
+            st = ERR_NOT_FOUND;
+        } else if (need & ~m->flags) {
+            st = ERR_ACCESS_DENIED;
+        } else {
+            uint64_t va = ALIGN_DOWN(addr, PAGE_SIZE);
+            idx = (m->vmo_off + (va - m->base)) >> PAGE_SHIFT;
+            st = pt_prepare(as, va);
+            if (st == OK)
+                st = vmo_fault_map(m->vmo, idx, as, va, m->flags);
+        }
+        if (st != ERR_SHOULD_WAIT) {
+            mutex_unlock(&as->lock);
+            return st;
+        }
+        /* A pager VMO's absent page: wait for it without the region lock
+         * (it guards every other fault, map and unmap of the process),
+         * then start again from find. */
+        if (++rounds > FAULT_ROUNDS) {
+            mutex_unlock(&as->lock);
+            return ERR_NO_MEMORY;
+        }
+        st = fault_wait(as, m->vmo, idx);
+        if (st != OK)
+            return st;
     }
-    mutex_unlock(&as->lock);
-    return st;
 }
 
 /* ---- switching ---------------------------------------------------------- */
