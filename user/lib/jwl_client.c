@@ -22,6 +22,7 @@
 #include "jwlc.h"
 
 #define RETRY_FIRST_MS 50u   /* the pause after the first failed try; doubles to the max */
+#define HELD_RETRY_NS (10 * NS_PER_MS)   /* batches held: written again this often */
 
 /* The globals we bind, by enum index, and the most we bind each at. */
 const struct jwlc_want jwlc_wanted[JWLC_GLOBALS] = {
@@ -357,7 +358,15 @@ uint64_t jwl_client_deadline(const struct jwl_client *c)
     uint64_t d = c->state == JWLC_DOWN    ? c->retry_at
                : c->state == JWLC_READY   ? jwlc_seat_deadline(c)
                                           : DEADLINE_NEVER;
-    return clip < d ? clip : d;
+    d = clip < d ? clip : d;
+    /* Batches held (the channel was full, or our job out of message
+     * bytes): nothing tells us when they may go, and the compositor may
+     * be waiting for them (a commit) to send anything (M12.1 C5). */
+    if (c->conn && c->conn->held) {
+        uint64_t retry = now() + HELD_RETRY_NS;
+        d = retry < d ? retry : d;
+    }
+    return d;
 }
 
 /* Until something may have happened: the channel, a timer, or deadline. */

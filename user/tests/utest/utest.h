@@ -500,6 +500,7 @@ bool t_jwl_fuzz_conn(void);
 bool t_jwlc_setup(void);
 bool t_jwlc_window(void);
 bool t_jwlc_window_sizes(void);
+bool t_jwlc_held_retry(void);
 bool t_jwlc_keyboard(void);
 bool t_jwlc_keyboard_hostile(void);
 bool t_jwlc_key_burst(void);

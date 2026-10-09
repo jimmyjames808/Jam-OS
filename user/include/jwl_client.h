@@ -154,6 +154,7 @@ handle_t jwl_client_channel(const struct jwl_client *c);
  * key means "call jwl_client_dispatch". Errors: port_bind's. */
 status_t jwl_client_bind_port(struct jwl_client *c, handle_t port, uint64_t key);
 /* When dispatch has work of its own to do (a key repeat, a reconnect,
+ * a paste, requests held because the channel was full,
  * messages it left unread): an absolute deadline, DEADLINE_NEVER for
  * none, 0 for now. */
 uint64_t jwl_client_deadline(const struct jwl_client *c);

@@ -966,6 +966,7 @@ static const struct {
     { "jwlc_setup", t_jwlc_setup },
     { "jwlc_window", t_jwlc_window },
     { "jwlc_window_sizes", t_jwlc_window_sizes },
+    { "jwlc_held_retry", t_jwlc_held_retry },
     { "jwlc_keyboard", t_jwlc_keyboard },
     { "jwlc_keyboard_hostile", t_jwlc_keyboard_hostile },
     { "jwlc_key_burst", t_jwlc_key_burst },
