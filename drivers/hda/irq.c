@@ -100,6 +100,15 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     struct loop *l = ctx;
     if (rate != STREAM_RATE || channels != 2)
         return ERR_NOT_SUPPORTED;
+    /* The last client may have closed its stream channel a moment ago
+     * without this loop having seen it yet: the mixer closes its output
+     * and asks for a new one at once when a sound starts right as the last
+     * ended, and the request can come first (seen under KVM). Its close
+     * then goes first. */
+    signals_t seen;
+    if (l->st.open && l->stream_ch &&
+        drv_object_wait_one(l->stream_ch, SIG_PEER_CLOSED, 0, &seen) == OK)
+        stream_ch_close(l, "the client closed its channel");
     if (l->st.open)
         return ERR_BAD_STATE;
     handle_t ours, theirs;
