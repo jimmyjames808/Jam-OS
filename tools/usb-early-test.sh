@@ -12,7 +12,7 @@
 # test_slow): its first two attempts on a port each take a second and
 # fail, so its port is tried again after 100 ms and then 200 ms, and it
 # attaches on the third. Checked (tools/shell-tests/usb-early.txt): the
-# compositor's line (the console's under nocomp) "input ready: the first
+# compositor's line "input ready: the first
 # keyboard and mouse N s after the kernel started" with N under EARLY_MAX (default 1.5 s; QEMU's kernel
 # takes ~0.3 s to reach user space); that line before either slow
 # device attached; both slow ports' two failed attempts and their retries

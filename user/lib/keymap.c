@@ -21,6 +21,14 @@ uint32_t keymap_hid_of_evdev(uint32_t code)
     return code < KEYMAP_CODES ? keymap_hid_by_evdev[code] : 0;
 }
 
+uint32_t keymap_hid_keypad_nav(uint32_t usage)
+{
+    /* 0x59..0x63: keypad 1..9, 0, '.' */
+    static const uint8_t nav[11] = { 0x4d, 0x51, 0x4e, 0x50, 0, 0x4f, 0x4a, 0x52, 0x4b, 0x49,
+                                     0x4c };
+    return usage >= 0x59 && usage <= 0x63 ? nav[usage - 0x59] : 0;
+}
+
 uint32_t keymap_mods_of_hid(uint8_t hid_mods)
 {
     /* hid's byte: bits 0-3 left Ctrl, Shift, Alt, GUI; 4-7 the right ones. */

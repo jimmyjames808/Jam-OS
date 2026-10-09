@@ -8,7 +8,7 @@
  *
  * It gets no terminal channel (sh_program.c): no keys, since the shell
  * keeps the keyboard (on a console channel of its own a program could
- * open_keys and take them), no screen to borrow, and Ctrl+C is the
+ * open_keys and take them), and Ctrl+C is the
  * foreground program's alone. What it prints comes down an output channel
  * (SR_STDOUT) which the shell copies to the screen whenever it waits: at
  * the prompt, for a foreground program, in a sleep. When the shell is busy

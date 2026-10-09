@@ -11,6 +11,12 @@
  * `audioctl.device`: every method but open_output.
  * Format: see tools/genidl.py.
  *
+ * Two kinds of channel, so two protocols in the file (the M12 plan's Q5):
+ * `hda`, the driver's own (and its query channels), and `hda_stream`, the
+ * output stream's. A driver's channel can't be sent the stream's methods,
+ * nor a stream's the driver's: either answers the other's
+ * ERR_NOT_SUPPORTED.
+ *
  * The driver reads the controller and every codec's widget graph, picks
  * the path from a DAC to the headphones and sets it up muted, with the
  * pin's output off, and serves one output stream on that path's DAC. The
@@ -28,13 +34,16 @@
  * devmgr again (DEVMGR_GET_SERVICE) and retry. The driver keeps nothing
  * across a restart.
  *
- * Protocol `hda` (id 21). Client: hda_<method>(ch, args..., &results...)
- * (and hda_<method>_until with a deadline, _within with a timeout), or
- * hda_<method>_send and hda_<method>_result without waiting. Server:
- * fill a struct hda_ops and run hda_serve(ch, &ops, ctx), or
- * hda_serve_one / hda_dispatch_on for a loop of your own, or
- * hda_take_slot / hda_run_slot for requests read into slots that outlive
- * the server; hda_reply_<method> answers a request later. */
+ * Protocols `hda` (id 21) and `hda_stream` (id 51): one for each
+ * kind of channel, so a message of one protocol sent on a channel of
+ * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
+ * Client: <proto>_<method>(ch, args..., &results...)
+ * (and <proto>_<method>_until with a deadline, _within with a timeout), or
+ * <proto>_<method>_send and <proto>_<method>_result without waiting. Server:
+ * fill a struct <proto>_ops and run <proto>_serve(ch, &ops, ctx), or
+ * <proto>_serve_one / <proto>_dispatch_on for a loop of your own, or
+ * <proto>_take_slot / <proto>_run_slot for requests read into slots that outlive
+ * the server; <proto>_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -43,10 +52,6 @@
 #define HDA_DUMP             0x00150001u
 #define HDA_INFO             0x00150002u
 #define HDA_OPEN_OUTPUT      0x00150003u
-#define HDA_START            0x00150004u
-#define HDA_STOP             0x00150005u
-#define HDA_POSITION         0x00150006u
-#define HDA_WAIT_PERIOD      0x00150007u
 #define HDA_SET_GAIN         0x00150008u
 #define HDA_GET_GAIN         0x00150009u
 #define HDA_SET_BITS         0x0015000au
@@ -79,9 +84,6 @@ struct hda_info_rep {
     uint32_t formats;
     uint32_t amp;
     uint32_t jack;
-    uint32_t count;
-    uint8_t nodes[8];
-    uint8_t text[240];
 } __attribute__((packed));
 struct hda_open_output_req {
     uint32_t txid;
@@ -95,43 +97,6 @@ struct hda_open_output_rep {
     int32_t  status;
     uint32_t size;
     uint32_t period;
-} __attribute__((packed));
-struct hda_start_req {
-    uint32_t txid;
-    uint32_t ordinal;
-} __attribute__((packed));
-struct hda_start_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
-struct hda_stop_req {
-    uint32_t txid;
-    uint32_t ordinal;
-} __attribute__((packed));
-struct hda_stop_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
-struct hda_position_req {
-    uint32_t txid;
-    uint32_t ordinal;
-} __attribute__((packed));
-struct hda_position_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint64_t frames;
-    uint32_t offset;
-} __attribute__((packed));
-struct hda_wait_period_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint64_t after;
-} __attribute__((packed));
-struct hda_wait_period_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint64_t frames;
-    uint32_t offset;
 } __attribute__((packed));
 struct hda_set_gain_req {
     uint32_t txid;
@@ -176,12 +141,8 @@ struct hda_jacks_req {
 struct hda_jacks_rep {
     uint32_t txid;
     int32_t  status;
-    uint32_t count;
     uint32_t state;
     uint32_t changes;
-    uint8_t pins[16];
-    uint8_t states[16];
-    uint8_t text[1024];
 } __attribute__((packed));
 struct hda_query_req {
     uint32_t txid;
@@ -198,11 +159,10 @@ struct hda_output_name_req {
 struct hda_output_name_rep {
     uint32_t txid;
     int32_t  status;
-    uint8_t name[48];
 } __attribute__((packed));
 
-#define HDA_REQ_MAX 16u   /* bytes: the biggest request */
-#define HDA_REP_MAX 1076u   /* bytes: the biggest reply */
+#define HDA_REQ_MAX 14u   /* bytes: the biggest request */
+#define HDA_REP_MAX 1077u   /* bytes: the biggest reply */
 #define HDA_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define HDA_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
@@ -259,37 +219,61 @@ static inline status_t hda_dump(handle_t ch, handle_t *out_text, uint32_t *out_l
 
 /* hda_info_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t hda_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+static inline status_t hda_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint8_t out_nodes[8], uint32_t *out_nodes_len, char out_text[239 + 1], uint32_t *out_text_len)
 {
-    struct hda_info_req idl_q;
-    struct hda_info_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = HDA_INFO;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[287];
+    struct hda_info_req *idl_q = (struct hda_info_req *)idl_b0;
+    const struct hda_info_rep *idl_r = (const struct hda_info_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = HDA_INFO;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 287, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 8, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 239, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && out_codec)
-        *out_codec = idl_r.codec;
+        *out_codec = idl_r->codec;
     if (idl_st == OK && out_pin)
-        *out_pin = idl_r.pin;
+        *out_pin = idl_r->pin;
     if (idl_st == OK && out_dac)
-        *out_dac = idl_r.dac;
+        *out_dac = idl_r->dac;
     if (idl_st == OK && out_pcm)
-        *out_pcm = idl_r.pcm;
+        *out_pcm = idl_r->pcm;
     if (idl_st == OK && out_formats)
-        *out_formats = idl_r.formats;
+        *out_formats = idl_r->formats;
     if (idl_st == OK && out_amp)
-        *out_amp = idl_r.amp;
+        *out_amp = idl_r->amp;
     if (idl_st == OK && out_jack)
-        *out_jack = idl_r.jack;
-    if (idl_st == OK && out_count)
-        *out_count = idl_r.count;
-    for (uint32_t idl_i = 0; idl_st == OK && out_nodes && idl_i < 8; idl_i++)
-        out_nodes[idl_i] = idl_r.nodes[idl_i];
-    for (uint32_t idl_i = 0; idl_st == OK && out_text && idl_i < 240; idl_i++)
-        out_text[idl_i] = idl_r.text[idl_i];
+        *out_jack = idl_r->jack;
+    if (idl_st == OK && out_nodes) {
+        if (idl_l0)
+            __builtin_memcpy(out_nodes, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_nodes_len)
+        *out_nodes_len = idl_l0;
+    if (idl_st == OK && out_text) {
+        if (idl_l1)
+            __builtin_memcpy(out_text, idl_p1, idl_l1 * 1);
+        out_text[idl_l1] = 0;
+    }
+    if (idl_st == OK && out_text_len)
+        *out_text_len = idl_l1;
     return idl_st;
 }
 /* What the driver chose and set up. codec, pin, dac: the path's codec
@@ -300,19 +284,19 @@ static inline status_t hda_info_call(handle_t ch, bool idl_within, uint64_t idl_
  * minus 1, 14:8 steps, 6:0 the step that is 0 dB; 0: it has none). jack:
  * the path's pin as `jacks` tracks it: 0 unknown (not a jack with presence
  * detection, or not read yet), 1 unplugged, 2 plugged in. nodes: the path's node ids
- * from the DAC to the pin, `count` of them. text: what is set on each
- * node, read back from the codec, as one line (NUL-terminated). */
-static inline status_t hda_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+ * from the DAC to the pin (none without a path). text: what is set on each
+ * node, read back from the codec, as one line (ASCII, up to 239 bytes). */
+static inline status_t hda_info_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint8_t out_nodes[8], uint32_t *out_nodes_len, char out_text[239 + 1], uint32_t *out_text_len)
 {
-    return hda_info_call(ch, false, deadline_ns, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
+    return hda_info_call(ch, false, deadline_ns, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_nodes, out_nodes_len, out_text, out_text_len);
 }
-static inline status_t hda_info_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+static inline status_t hda_info_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint8_t out_nodes[8], uint32_t *out_nodes_len, char out_text[239 + 1], uint32_t *out_text_len)
 {
-    return hda_info_call(ch, true, timeout_ns, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
+    return hda_info_call(ch, true, timeout_ns, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_nodes, out_nodes_len, out_text, out_text_len);
 }
-static inline status_t hda_info(handle_t ch, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+static inline status_t hda_info(handle_t ch, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint8_t out_nodes[8], uint32_t *out_nodes_len, char out_text[239 + 1], uint32_t *out_text_len)
 {
-    return hda_info_call(ch, false, DEADLINE_NEVER, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_count, out_nodes, out_text);
+    return hda_info_call(ch, false, DEADLINE_NEVER, out_codec, out_pin, out_dac, out_pcm, out_formats, out_amp, out_jack, out_nodes, out_nodes_len, out_text, out_text_len);
 }
 
 /* hda_open_output_until and _within: idl_t is a deadline, or with idl_within a
@@ -361,9 +345,9 @@ static inline status_t hda_open_output_call(handle_t ch, bool idl_within, uint64
  * One output stream, 48 kHz, 2 channels: rate 48000, channels 2, bits 16,
  * 20, 24 or 32, as the DAC takes them (info's `pcm`, bits 17-20; anything
  * else: ERR_NOT_SUPPORTED); a second open while one is open:
- * ERR_BAD_STATE. Results: `stream`, a new channel that speaks this
- * protocol for start/stop/position/wait_period (they are refused on the
- * driver's own channel, which devmgr shares among clients); `ring`, the
+ * ERR_BAD_STATE. Results: `stream`, a new channel that speaks `hda_stream`
+ * below (start, stop, position, wait_period: the driver's own channel,
+ * which devmgr shares among clients, never does); `ring`, the
  * sample ring as a VMO to map (read, write, map: nothing else), `size`
  * bytes (16384 frames, 341 ms: 65536 at 16-bit, 131072 otherwise) in
  * `period`-byte periods (2048 frames, 42.7 ms). Frames are left, right:
@@ -376,8 +360,8 @@ static inline status_t hda_open_output_call(handle_t ch, bool idl_within, uint64
  * [frames, frames + size / 4) (from the last position it was given) and
  * one that stops writing plays silence within one ring. Write a period or
  * more ahead: the controller fetches a little ahead of the position.
- * Reconnect: when the driver dies, `stream` reports ERR_PEER_CLOSED and
- * the stream is gone; get the service again and open a new one. */
+ * When the driver dies, `stream` reports ERR_PEER_CLOSED and the stream is
+ * gone; get the service again and open a new one. */
 static inline status_t hda_open_output_until(handle_t ch, uint64_t deadline_ns, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
 {
     return hda_open_output_call(ch, false, deadline_ns, rate, channels, bits, out_stream, out_ring, out_size, out_period);
@@ -389,142 +373,6 @@ static inline status_t hda_open_output_within(handle_t ch, uint64_t timeout_ns, 
 static inline status_t hda_open_output(handle_t ch, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period)
 {
     return hda_open_output_call(ch, false, DEADLINE_NEVER, rate, channels, bits, out_stream, out_ring, out_size, out_period);
-}
-
-/* hda_start_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t hda_start_call(handle_t ch, bool idl_within, uint64_t idl_t)
-{
-    struct hda_start_req idl_q;
-    struct hda_start_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = HDA_START;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-/* On the stream channel: the path is unmuted at the gain (get_gain), then
- * the DMA engine runs (RUN set) from where it was. If a step of the
- * unmuting fails, the path is muted again, the stream stays stopped and
- * start fails with that step's status (the log names the step). */
-static inline status_t hda_start_until(handle_t ch, uint64_t deadline_ns)
-{
-    return hda_start_call(ch, false, deadline_ns);
-}
-static inline status_t hda_start_within(handle_t ch, uint64_t timeout_ns)
-{
-    return hda_start_call(ch, true, timeout_ns);
-}
-static inline status_t hda_start(handle_t ch)
-{
-    return hda_start_call(ch, false, DEADLINE_NEVER);
-}
-
-/* hda_stop_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t hda_stop_call(handle_t ch, bool idl_within, uint64_t idl_t)
-{
-    struct hda_stop_req idl_q;
-    struct hda_stop_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = HDA_STOP;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-/* On the stream channel: the DMA engine stops (RUN clear, waited for),
- * then the path is muted again (every amp on it muted; the pin's output
- * off too where no amp can mute); the position stays. A wait_period in progress is answered
- * ERR_BAD_STATE. */
-static inline status_t hda_stop_until(handle_t ch, uint64_t deadline_ns)
-{
-    return hda_stop_call(ch, false, deadline_ns);
-}
-static inline status_t hda_stop_within(handle_t ch, uint64_t timeout_ns)
-{
-    return hda_stop_call(ch, true, timeout_ns);
-}
-static inline status_t hda_stop(handle_t ch)
-{
-    return hda_stop_call(ch, false, DEADLINE_NEVER);
-}
-
-/* hda_position_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t hda_position_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_frames, uint32_t *out_offset)
-{
-    struct hda_position_req idl_q;
-    struct hda_position_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = HDA_POSITION;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_frames)
-        *out_frames = idl_r.frames;
-    if (idl_st == OK && out_offset)
-        *out_offset = idl_r.offset;
-    return idl_st;
-}
-/* On the stream channel: frames played since the open, and the play
- * position as a byte offset into the ring. */
-static inline status_t hda_position_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_frames, uint32_t *out_offset)
-{
-    return hda_position_call(ch, false, deadline_ns, out_frames, out_offset);
-}
-static inline status_t hda_position_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_frames, uint32_t *out_offset)
-{
-    return hda_position_call(ch, true, timeout_ns, out_frames, out_offset);
-}
-static inline status_t hda_position(handle_t ch, uint64_t *out_frames, uint32_t *out_offset)
-{
-    return hda_position_call(ch, false, DEADLINE_NEVER, out_frames, out_offset);
-}
-
-/* hda_wait_period_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t hda_wait_period_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
-{
-    struct hda_wait_period_req idl_q;
-    struct hda_wait_period_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = HDA_WAIT_PERIOD;
-    idl_q.after = after;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_frames)
-        *out_frames = idl_r.frames;
-    if (idl_st == OK && out_offset)
-        *out_offset = idl_r.offset;
-    return idl_st;
-}
-/* On the stream channel: answers once the period holding frame `after`
- * has played (frames >= the next multiple of period / 4 above `after`),
- * with position's results. ERR_BAD_STATE if the stream is stopped (or is
- * stopped meanwhile), ERR_TIMED_OUT if it makes no progress for four
- * periods (the DMA engine stalled). */
-static inline status_t hda_wait_period_until(handle_t ch, uint64_t deadline_ns, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
-{
-    return hda_wait_period_call(ch, false, deadline_ns, after, out_frames, out_offset);
-}
-static inline status_t hda_wait_period_within(handle_t ch, uint64_t timeout_ns, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
-{
-    return hda_wait_period_call(ch, true, timeout_ns, after, out_frames, out_offset);
-}
-static inline status_t hda_wait_period(handle_t ch, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
-{
-    return hda_wait_period_call(ch, false, DEADLINE_NEVER, after, out_frames, out_offset);
 }
 
 /* hda_set_gain_until and _within: idl_t is a deadline, or with idl_within a
@@ -652,52 +500,84 @@ static inline status_t hda_set_bits(handle_t ch, uint32_t bits, uint32_t *out_bi
 
 /* hda_jacks_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t hda_jacks_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+static inline status_t hda_jacks_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint32_t *out_pins_len, uint8_t out_states[16], uint32_t *out_states_len, char out_text[1023 + 1], uint32_t *out_text_len)
 {
-    struct hda_jacks_req idl_q;
-    struct hda_jacks_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = HDA_JACKS;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[1077];
+    struct hda_jacks_req *idl_q = (struct hda_jacks_req *)idl_b0;
+    const struct hda_jacks_rep *idl_r = (const struct hda_jacks_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = HDA_JACKS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_count)
-        *out_count = idl_r.count;
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 1077, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 16, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 16, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 1023, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && out_state)
-        *out_state = idl_r.state;
+        *out_state = idl_r->state;
     if (idl_st == OK && out_changes)
-        *out_changes = idl_r.changes;
-    for (uint32_t idl_i = 0; idl_st == OK && out_pins && idl_i < 16; idl_i++)
-        out_pins[idl_i] = idl_r.pins[idl_i];
-    for (uint32_t idl_i = 0; idl_st == OK && out_states && idl_i < 16; idl_i++)
-        out_states[idl_i] = idl_r.states[idl_i];
-    for (uint32_t idl_i = 0; idl_st == OK && out_text && idl_i < 1024; idl_i++)
-        out_text[idl_i] = idl_r.text[idl_i];
+        *out_changes = idl_r->changes;
+    if (idl_st == OK && out_pins) {
+        if (idl_l0)
+            __builtin_memcpy(out_pins, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_pins_len)
+        *out_pins_len = idl_l0;
+    if (idl_st == OK && out_states) {
+        if (idl_l1)
+            __builtin_memcpy(out_states, idl_p1, idl_l1 * 1);
+    }
+    if (idl_st == OK && out_states_len)
+        *out_states_len = idl_l1;
+    if (idl_st == OK && out_text) {
+        if (idl_l2)
+            __builtin_memcpy(out_text, idl_p2, idl_l2 * 1);
+        out_text[idl_l2] = 0;
+    }
+    if (idl_st == OK && out_text_len)
+        *out_text_len = idl_l2;
     return idl_st;
 }
 /* ---- the jacks (docs/history/A1-PLAN.md, stage 4) ----
  * Every pin the codecs describe as a jack with presence detection, as the
- * driver tracks it (debounced; not read anew for this call). count: how
- * many (at most 16); pins and states: each one's node and state, in the
- * driver's order (its unsolicited response tag is its index + 1): 0
- * unknown, 1 unplugged, 2 plugged in. state and changes: the path's pin
- * (info's jack) and how often it changed since the driver started. text:
- * a line on how changes are found (unsolicited responses or polling),
- * then a line per jack ("pin 1b headphones (front): plugged in, ..."),
- * each ending in \n, NUL-terminated. */
-static inline status_t hda_jacks_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+ * driver tracks it (debounced; not read anew for this call). pins and
+ * states: each one's node and state, in the driver's order (its
+ * unsolicited response tag is its index + 1), at most 16 of each and as many
+ * states as pins: 0 unknown, 1 unplugged, 2 plugged in. state and changes:
+ * the path's pin (info's jack) and how often it changed since the driver
+ * started. text: a line on how changes are found (unsolicited responses or
+ * polling), then a line per jack ("pin 1b headphones (front): plugged in,
+ * ..."), each ending in \n (ASCII, up to 1023 bytes). */
+static inline status_t hda_jacks_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint32_t *out_pins_len, uint8_t out_states[16], uint32_t *out_states_len, char out_text[1023 + 1], uint32_t *out_text_len)
 {
-    return hda_jacks_call(ch, false, deadline_ns, out_count, out_state, out_changes, out_pins, out_states, out_text);
+    return hda_jacks_call(ch, false, deadline_ns, out_state, out_changes, out_pins, out_pins_len, out_states, out_states_len, out_text, out_text_len);
 }
-static inline status_t hda_jacks_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+static inline status_t hda_jacks_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint32_t *out_pins_len, uint8_t out_states[16], uint32_t *out_states_len, char out_text[1023 + 1], uint32_t *out_text_len)
 {
-    return hda_jacks_call(ch, true, timeout_ns, out_count, out_state, out_changes, out_pins, out_states, out_text);
+    return hda_jacks_call(ch, true, timeout_ns, out_state, out_changes, out_pins, out_pins_len, out_states, out_states_len, out_text, out_text_len);
 }
-static inline status_t hda_jacks(handle_t ch, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+static inline status_t hda_jacks(handle_t ch, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint32_t *out_pins_len, uint8_t out_states[16], uint32_t *out_states_len, char out_text[1023 + 1], uint32_t *out_text_len)
 {
-    return hda_jacks_call(ch, false, DEADLINE_NEVER, out_count, out_state, out_changes, out_pins, out_states, out_text);
+    return hda_jacks_call(ch, false, DEADLINE_NEVER, out_state, out_changes, out_pins, out_pins_len, out_states, out_states_len, out_text, out_text_len);
 }
 
 /* hda_query_until and _within: idl_t is a deadline, or with idl_within a
@@ -730,7 +610,7 @@ static inline status_t hda_query_call(handle_t ch, bool idl_within, uint64_t idl
     return idl_st;
 }
 /* ---- query channels ----
- * A new channel the driver serves with every method above but open_output
+ * A new channel the driver serves with every method of `hda` but open_output
  * and query (ERR_ACCESS_DENIED on it): the dump, info, the gain, the bits
  * and the jacks, so its holder can look and turn the gain but never take
  * the one output stream. Closing it is the end of it; it does not keep the
@@ -752,36 +632,54 @@ static inline status_t hda_query(handle_t ch, handle_t *out_channel)
 
 /* hda_output_name_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t hda_output_name_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_name[48])
+static inline status_t hda_output_name_call(handle_t ch, bool idl_within, uint64_t idl_t, char out_name[47 + 1], uint32_t *out_name_len)
 {
-    struct hda_output_name_req idl_q;
-    struct hda_output_name_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = HDA_OUTPUT_NAME;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[57];
+    struct hda_output_name_req *idl_q = (struct hda_output_name_req *)idl_b0;
+    const struct hda_output_name_rep *idl_r = (const struct hda_output_name_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = HDA_OUTPUT_NAME;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    for (uint32_t idl_i = 0; idl_st == OK && out_name && idl_i < 48; idl_i++)
-        out_name[idl_i] = idl_r.name[idl_i];
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 57, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 47, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_name) {
+        if (idl_l0)
+            __builtin_memcpy(out_name, idl_p0, idl_l0 * 1);
+        out_name[idl_l0] = 0;
+    }
+    if (idl_st == OK && out_name_len)
+        *out_name_len = idl_l0;
     return idl_st;
 }
 /* The output's name for people (the desktop's volume popover): the codec
  * and what the path's pin is, e.g. "ALC897 headphones" (a Realtek codec:
  * "ALC" and its device id), "QEMU line-out" (QEMU's codecs), else
  * "Codec 1234:5678 line-out" ("" with no path). Also on a query channel. */
-static inline status_t hda_output_name_until(handle_t ch, uint64_t deadline_ns, uint8_t out_name[48])
+static inline status_t hda_output_name_until(handle_t ch, uint64_t deadline_ns, char out_name[47 + 1], uint32_t *out_name_len)
 {
-    return hda_output_name_call(ch, false, deadline_ns, out_name);
+    return hda_output_name_call(ch, false, deadline_ns, out_name, out_name_len);
 }
-static inline status_t hda_output_name_within(handle_t ch, uint64_t timeout_ns, uint8_t out_name[48])
+static inline status_t hda_output_name_within(handle_t ch, uint64_t timeout_ns, char out_name[47 + 1], uint32_t *out_name_len)
 {
-    return hda_output_name_call(ch, true, timeout_ns, out_name);
+    return hda_output_name_call(ch, true, timeout_ns, out_name, out_name_len);
 }
-static inline status_t hda_output_name(handle_t ch, uint8_t out_name[48])
+static inline status_t hda_output_name(handle_t ch, char out_name[47 + 1], uint32_t *out_name_len)
 {
-    return hda_output_name_call(ch, false, DEADLINE_NEVER, out_name);
+    return hda_output_name_call(ch, false, DEADLINE_NEVER, out_name, out_name_len);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -827,21 +725,39 @@ static inline status_t hda_dump_result(const void *idl_rep, struct idl_msg *idl_
  * The reply comes on ch: idl_reply_read, then hda_info_result. */
 static inline status_t hda_info_send(handle_t ch, uint32_t idl_txid)
 {
-    struct hda_info_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = HDA_INFO;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[8];
+    struct hda_info_req *idl_q = (struct hda_info_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = HDA_INFO;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to hda_info_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t hda_info_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240])
+static inline status_t hda_info_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint8_t out_nodes[8], uint32_t *out_nodes_len, char out_text[239 + 1], uint32_t *out_text_len)
 {
     const struct hda_info_rep *idl_r = (const struct hda_info_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 8, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 239, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -863,12 +779,19 @@ static inline status_t hda_info_result(const void *idl_rep, struct idl_msg *idl_
         *out_amp = idl_r->amp;
     if (out_jack)
         *out_jack = idl_r->jack;
-    if (out_count)
-        *out_count = idl_r->count;
-    for (uint32_t idl_i = 0; out_nodes && idl_i < 8; idl_i++)
-        out_nodes[idl_i] = idl_r->nodes[idl_i];
-    for (uint32_t idl_i = 0; out_text && idl_i < 240; idl_i++)
-        out_text[idl_i] = idl_r->text[idl_i];
+    if (out_nodes) {
+        if (idl_l0)
+            __builtin_memcpy(out_nodes, idl_p0, idl_l0 * 1);
+    }
+    if (out_nodes_len)
+        *out_nodes_len = idl_l0;
+    if (out_text) {
+        if (idl_l1)
+            __builtin_memcpy(out_text, idl_p1, idl_l1 * 1);
+        out_text[idl_l1] = 0;
+    }
+    if (out_text_len)
+        *out_text_len = idl_l1;
     return OK;
 }
 
@@ -913,133 +836,6 @@ static inline status_t hda_open_output_result(const void *idl_rep, struct idl_ms
         *out_size = idl_r->size;
     if (out_period)
         *out_period = idl_r->period;
-    return OK;
-}
-
-/* hda_start without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then hda_start_result. */
-static inline status_t hda_start_send(handle_t ch, uint32_t idl_txid)
-{
-    struct hda_start_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = HDA_START;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to hda_start_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t hda_start_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct hda_start_rep *idl_r = (const struct hda_start_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
-}
-
-/* hda_stop without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then hda_stop_result. */
-static inline status_t hda_stop_send(handle_t ch, uint32_t idl_txid)
-{
-    struct hda_stop_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = HDA_STOP;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to hda_stop_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t hda_stop_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct hda_stop_rep *idl_r = (const struct hda_stop_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
-}
-
-/* hda_position without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then hda_position_result. */
-static inline status_t hda_position_send(handle_t ch, uint32_t idl_txid)
-{
-    struct hda_position_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = HDA_POSITION;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to hda_position_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t hda_position_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_frames, uint32_t *out_offset)
-{
-    const struct hda_position_rep *idl_r = (const struct hda_position_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    if (out_frames)
-        *out_frames = idl_r->frames;
-    if (out_offset)
-        *out_offset = idl_r->offset;
-    return OK;
-}
-
-/* hda_wait_period without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then hda_wait_period_result. */
-static inline status_t hda_wait_period_send(handle_t ch, uint32_t idl_txid, uint64_t after)
-{
-    struct hda_wait_period_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = HDA_WAIT_PERIOD;
-    idl_q.after = after;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to hda_wait_period_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t hda_wait_period_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_frames, uint32_t *out_offset)
-{
-    const struct hda_wait_period_rep *idl_r = (const struct hda_wait_period_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    if (out_frames)
-        *out_frames = idl_r->frames;
-    if (out_offset)
-        *out_offset = idl_r->offset;
     return OK;
 }
 
@@ -1156,21 +952,43 @@ static inline status_t hda_set_bits_result(const void *idl_rep, struct idl_msg *
  * The reply comes on ch: idl_reply_read, then hda_jacks_result. */
 static inline status_t hda_jacks_send(handle_t ch, uint32_t idl_txid)
 {
-    struct hda_jacks_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = HDA_JACKS;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[8];
+    struct hda_jacks_req *idl_q = (struct hda_jacks_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = HDA_JACKS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to hda_jacks_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t hda_jacks_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024])
+static inline status_t hda_jacks_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint32_t *out_pins_len, uint8_t out_states[16], uint32_t *out_states_len, char out_text[1023 + 1], uint32_t *out_text_len)
 {
     const struct hda_jacks_rep *idl_r = (const struct hda_jacks_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 16, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 16, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 1023, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -1178,18 +996,29 @@ static inline status_t hda_jacks_result(const void *idl_rep, struct idl_msg *idl
         return idl_st;
     }
     idl_m->nh = 0;
-    if (out_count)
-        *out_count = idl_r->count;
     if (out_state)
         *out_state = idl_r->state;
     if (out_changes)
         *out_changes = idl_r->changes;
-    for (uint32_t idl_i = 0; out_pins && idl_i < 16; idl_i++)
-        out_pins[idl_i] = idl_r->pins[idl_i];
-    for (uint32_t idl_i = 0; out_states && idl_i < 16; idl_i++)
-        out_states[idl_i] = idl_r->states[idl_i];
-    for (uint32_t idl_i = 0; out_text && idl_i < 1024; idl_i++)
-        out_text[idl_i] = idl_r->text[idl_i];
+    if (out_pins) {
+        if (idl_l0)
+            __builtin_memcpy(out_pins, idl_p0, idl_l0 * 1);
+    }
+    if (out_pins_len)
+        *out_pins_len = idl_l0;
+    if (out_states) {
+        if (idl_l1)
+            __builtin_memcpy(out_states, idl_p1, idl_l1 * 1);
+    }
+    if (out_states_len)
+        *out_states_len = idl_l1;
+    if (out_text) {
+        if (idl_l2)
+            __builtin_memcpy(out_text, idl_p2, idl_l2 * 1);
+        out_text[idl_l2] = 0;
+    }
+    if (out_text_len)
+        *out_text_len = idl_l2;
     return OK;
 }
 
@@ -1230,21 +1059,35 @@ static inline status_t hda_query_result(const void *idl_rep, struct idl_msg *idl
  * The reply comes on ch: idl_reply_read, then hda_output_name_result. */
 static inline status_t hda_output_name_send(handle_t ch, uint32_t idl_txid)
 {
-    struct hda_output_name_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = HDA_OUTPUT_NAME;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[8];
+    struct hda_output_name_req *idl_q = (struct hda_output_name_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = HDA_OUTPUT_NAME;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to hda_output_name_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t hda_output_name_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_name[48])
+static inline status_t hda_output_name_result(const void *idl_rep, struct idl_msg *idl_m, char out_name[47 + 1], uint32_t *out_name_len)
 {
     const struct hda_output_name_rep *idl_r = (const struct hda_output_name_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 47, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -1252,8 +1095,13 @@ static inline status_t hda_output_name_result(const void *idl_rep, struct idl_ms
         return idl_st;
     }
     idl_m->nh = 0;
-    for (uint32_t idl_i = 0; out_name && idl_i < 48; idl_i++)
-        out_name[idl_i] = idl_r->name[idl_i];
+    if (out_name) {
+        if (idl_l0)
+            __builtin_memcpy(out_name, idl_p0, idl_l0 * 1);
+        out_name[idl_l0] = 0;
+    }
+    if (out_name_len)
+        *out_name_len = idl_l0;
     return OK;
 }
 
@@ -1265,18 +1113,14 @@ static inline status_t hda_output_name_result(const void *idl_rep, struct idl_ms
  * with hda_reply_<method> (now, or later from anywhere). */
 struct hda_ops {
     status_t (*dump)(void *ctx, handle_t *out_text, uint32_t *out_length, uint32_t *out_codecs);
-    status_t (*info)(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8], uint8_t out_text[240]);
+    status_t (*info)(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac, uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp, uint32_t *out_jack, uint8_t *out_nodes, uint32_t *out_nodes_len, char *out_text, uint32_t *out_text_len);
     status_t (*open_output)(void *ctx, uint32_t rate, uint8_t channels, uint8_t bits, handle_t *out_stream, handle_t *out_ring, uint32_t *out_size, uint32_t *out_period);
-    status_t (*start)(void *ctx);
-    status_t (*stop)(void *ctx);
-    status_t (*position)(void *ctx, uint64_t *out_frames, uint32_t *out_offset);
-    status_t (*wait_period)(void *ctx, uint64_t after, uint64_t *out_frames, uint32_t *out_offset);
     status_t (*set_gain)(void *ctx, int32_t centibels, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max);
     status_t (*get_gain)(void *ctx, int32_t *out_gain, uint32_t *out_step, int32_t *out_min, int32_t *out_max);
     status_t (*set_bits)(void *ctx, uint32_t bits, uint32_t *out_bits, uint32_t *out_pcm);
-    status_t (*jacks)(void *ctx, uint32_t *out_count, uint32_t *out_state, uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16], uint8_t out_text[1024]);
+    status_t (*jacks)(void *ctx, uint32_t *out_state, uint32_t *out_changes, uint8_t *out_pins, uint32_t *out_pins_len, uint8_t *out_states, uint32_t *out_states_len, char *out_text, uint32_t *out_text_len);
     status_t (*query)(void *ctx, handle_t *out_channel);
-    status_t (*output_name)(void *ctx, uint8_t out_name[48]);
+    status_t (*output_name)(void *ctx, char *out_name, uint32_t *out_name_len);
 };
 
 /* Answer the hda.dump request kept in txn: idl_st and, if it is OK, the
@@ -1305,28 +1149,33 @@ static inline status_t hda_reply_dump(struct idl_txn idl_txn, status_t idl_st, h
 /* Answer the hda.info request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t hda_reply_info(struct idl_txn idl_txn, status_t idl_st, uint32_t codec, uint32_t pin, uint32_t dac, uint32_t pcm, uint32_t formats, uint32_t amp, uint32_t jack, uint32_t count, const uint8_t nodes[8], const uint8_t text[240])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t hda_reply_info(struct idl_txn idl_txn, status_t idl_st, uint32_t codec, uint32_t pin, uint32_t dac, uint32_t pcm, uint32_t formats, uint32_t amp, uint32_t jack, const uint8_t *nodes, uint32_t nodes_len, const char *text, uint32_t text_len)
 {
-    struct hda_info_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[287];
+    struct hda_info_rep *idl_r = (struct hda_info_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.codec = codec;
-    idl_r.pin = pin;
-    idl_r.dac = dac;
-    idl_r.pcm = pcm;
-    idl_r.formats = formats;
-    idl_r.amp = amp;
-    idl_r.jack = jack;
-    idl_r.count = count;
-    for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
-        idl_r.nodes[idl_i] = nodes[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 240; idl_i++)
-        idl_r.text[idl_i] = text[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->codec = codec;
+    idl_r->pin = pin;
+    idl_r->dac = dac;
+    idl_r->pcm = pcm;
+    idl_r->formats = formats;
+    idl_r->amp = amp;
+    idl_r->jack = jack;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, nodes, nodes_len, 8, 1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, text, text_len, 239, 1) ||
+                             !idl_str_ok(text, text_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the hda.open_output request kept in txn: idl_st and, if it is OK, the
@@ -1352,70 +1201,6 @@ static inline status_t hda_reply_open_output(struct idl_txn idl_txn, status_t id
     idl_r.size = size;
     idl_r.period = period;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 2);
-}
-
-/* Answer the hda.start request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t hda_reply_start(struct idl_txn idl_txn, status_t idl_st)
-{
-    struct hda_start_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the hda.stop request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t hda_reply_stop(struct idl_txn idl_txn, status_t idl_st)
-{
-    struct hda_stop_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the hda.position request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t hda_reply_position(struct idl_txn idl_txn, status_t idl_st, uint64_t frames, uint32_t offset)
-{
-    struct hda_position_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.frames = frames;
-    idl_r.offset = offset;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the hda.wait_period request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t hda_reply_wait_period(struct idl_txn idl_txn, status_t idl_st, uint64_t frames, uint32_t offset)
-{
-    struct hda_wait_period_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.frames = frames;
-    idl_r.offset = offset;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Answer the hda.set_gain request kept in txn: idl_st and, if it is OK, the
@@ -1476,25 +1261,30 @@ static inline status_t hda_reply_set_bits(struct idl_txn idl_txn, status_t idl_s
 /* Answer the hda.jacks request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t hda_reply_jacks(struct idl_txn idl_txn, status_t idl_st, uint32_t count, uint32_t state, uint32_t changes, const uint8_t pins[16], const uint8_t states[16], const uint8_t text[1024])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t hda_reply_jacks(struct idl_txn idl_txn, status_t idl_st, uint32_t state, uint32_t changes, const uint8_t *pins, uint32_t pins_len, const uint8_t *states, uint32_t states_len, const char *text, uint32_t text_len)
 {
-    struct hda_jacks_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[1077];
+    struct hda_jacks_rep *idl_r = (struct hda_jacks_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.count = count;
-    idl_r.state = state;
-    idl_r.changes = changes;
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_r.pins[idl_i] = pins[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_r.states[idl_i] = states[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
-        idl_r.text[idl_i] = text[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->state = state;
+    idl_r->changes = changes;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, pins, pins_len, 16, 1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, states, states_len, 16, 1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, text, text_len, 1023, 1) ||
+                             !idl_str_ok(text, text_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the hda.query request kept in txn: idl_st and, if it is OK, the
@@ -1521,18 +1311,24 @@ static inline status_t hda_reply_query(struct idl_txn idl_txn, status_t idl_st, 
 /* Answer the hda.output_name request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t hda_reply_output_name(struct idl_txn idl_txn, status_t idl_st, const uint8_t name[48])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t hda_reply_output_name(struct idl_txn idl_txn, status_t idl_st, const char *name, uint32_t name_len)
 {
-    struct hda_output_name_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[57];
+    struct hda_output_name_rep *idl_r = (struct hda_output_name_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    for (uint32_t idl_i = 0; idl_i < 48; idl_i++)
-        idl_r.name[idl_i] = name[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, name, name_len, 47, 1) ||
+                             !idl_str_ok(name, name_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -1593,21 +1389,22 @@ static inline uint32_t hda_dispatch_on(handle_t ch, const struct hda_ops *ops, v
         uint32_t out_formats = 0;
         uint32_t out_amp = 0;
         uint32_t out_jack = 0;
-        uint32_t out_count = 0;
-        uint8_t out_nodes[8];
-        for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
-            out_nodes[idl_i] = 0;
-        uint8_t out_text[240];
-        for (uint32_t idl_i = 0; idl_i < 240; idl_i++)
-            out_text[idl_i] = 0;
+        uint8_t *out_nodes = (uint8_t *)((uint8_t *)rep + 38);
+        uint32_t out_nodes_len = 0;
+        char *out_text = (char *)((uint8_t *)rep + 48);
+        uint32_t out_text_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->info) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->info(ctx, &out_codec, &out_pin, &out_dac, &out_pcm, &out_formats, &out_amp, &out_jack, &out_count, out_nodes, out_text);
+        status_t idl_st = ops->info(ctx, &out_codec, &out_pin, &out_dac, &out_pcm, &out_formats, &out_amp, &out_jack, out_nodes, &out_nodes_len, out_text, &out_text_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_nodes_len > 8))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_text_len > 239 || !idl_str_ok(out_text, out_text_len)))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->codec = out_codec;
@@ -1617,12 +1414,10 @@ static inline uint32_t hda_dispatch_on(handle_t ch, const struct hda_ops *ops, v
         idl_r->formats = out_formats;
         idl_r->amp = out_amp;
         idl_r->jack = out_jack;
-        idl_r->count = out_count;
-        for (uint32_t idl_i = 0; idl_i < 8; idl_i++)
-            idl_r->nodes[idl_i] = out_nodes[idl_i];
-        for (uint32_t idl_i = 0; idl_i < 240; idl_i++)
-            idl_r->text[idl_i] = out_text[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 38, out_nodes_len, 1);
+        idl_place(rep, &idl_rn, 48, out_text_len, 1);
+        return idl_rn;
     }
     case HDA_OPEN_OUTPUT: {
         const struct hda_open_output_req *idl_q = (const struct hda_open_output_req *)req;
@@ -1653,76 +1448,6 @@ static inline uint32_t hda_dispatch_on(handle_t ch, const struct hda_ops *ops, v
         *rhn = 2;
         idl_r->size = out_size;
         idl_r->period = out_period;
-        return sizeof(*idl_r);
-    }
-    case HDA_START: {
-        const struct hda_start_req *idl_q = (const struct hda_start_req *)req;
-        struct hda_start_rep *idl_r = (struct hda_start_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->start) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->start(ctx);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
-    case HDA_STOP: {
-        const struct hda_stop_req *idl_q = (const struct hda_stop_req *)req;
-        struct hda_stop_rep *idl_r = (struct hda_stop_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->stop) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->stop(ctx);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
-    case HDA_POSITION: {
-        const struct hda_position_req *idl_q = (const struct hda_position_req *)req;
-        struct hda_position_rep *idl_r = (struct hda_position_rep *)rep;
-        uint64_t out_frames = 0;
-        uint32_t out_offset = 0;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->position) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->position(ctx, &out_frames, &out_offset);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        idl_r->frames = out_frames;
-        idl_r->offset = out_offset;
-        return sizeof(*idl_r);
-    }
-    case HDA_WAIT_PERIOD: {
-        const struct hda_wait_period_req *idl_q = (const struct hda_wait_period_req *)req;
-        struct hda_wait_period_rep *idl_r = (struct hda_wait_period_rep *)rep;
-        uint64_t out_frames = 0;
-        uint32_t out_offset = 0;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->wait_period) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->wait_period(ctx, idl_q->after, &out_frames, &out_offset);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        idl_r->frames = out_frames;
-        idl_r->offset = out_offset;
         return sizeof(*idl_r);
     }
     case HDA_SET_GAIN: {
@@ -1793,38 +1518,37 @@ static inline uint32_t hda_dispatch_on(handle_t ch, const struct hda_ops *ops, v
     case HDA_JACKS: {
         const struct hda_jacks_req *idl_q = (const struct hda_jacks_req *)req;
         struct hda_jacks_rep *idl_r = (struct hda_jacks_rep *)rep;
-        uint32_t out_count = 0;
         uint32_t out_state = 0;
         uint32_t out_changes = 0;
-        uint8_t out_pins[16];
-        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-            out_pins[idl_i] = 0;
-        uint8_t out_states[16];
-        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-            out_states[idl_i] = 0;
-        uint8_t out_text[1024];
-        for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
-            out_text[idl_i] = 0;
+        uint8_t *out_pins = (uint8_t *)((uint8_t *)rep + 18);
+        uint32_t out_pins_len = 0;
+        uint8_t *out_states = (uint8_t *)((uint8_t *)rep + 36);
+        uint32_t out_states_len = 0;
+        char *out_text = (char *)((uint8_t *)rep + 54);
+        uint32_t out_text_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->jacks) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->jacks(ctx, &out_count, &out_state, &out_changes, out_pins, out_states, out_text);
+        status_t idl_st = ops->jacks(ctx, &out_state, &out_changes, out_pins, &out_pins_len, out_states, &out_states_len, out_text, &out_text_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_pins_len > 16))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_states_len > 16))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_text_len > 1023 || !idl_str_ok(out_text, out_text_len)))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        idl_r->count = out_count;
         idl_r->state = out_state;
         idl_r->changes = out_changes;
-        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-            idl_r->pins[idl_i] = out_pins[idl_i];
-        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-            idl_r->states[idl_i] = out_states[idl_i];
-        for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
-            idl_r->text[idl_i] = out_text[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 18, out_pins_len, 1);
+        idl_place(rep, &idl_rn, 36, out_states_len, 1);
+        idl_place(rep, &idl_rn, 54, out_text_len, 1);
+        return idl_rn;
     }
     case HDA_QUERY: {
         const struct hda_query_req *idl_q = (const struct hda_query_req *)req;
@@ -1852,22 +1576,23 @@ static inline uint32_t hda_dispatch_on(handle_t ch, const struct hda_ops *ops, v
     case HDA_OUTPUT_NAME: {
         const struct hda_output_name_req *idl_q = (const struct hda_output_name_req *)req;
         struct hda_output_name_rep *idl_r = (struct hda_output_name_rep *)rep;
-        uint8_t out_name[48];
-        for (uint32_t idl_i = 0; idl_i < 48; idl_i++)
-            out_name[idl_i] = 0;
+        char *out_name = (char *)((uint8_t *)rep + 10);
+        uint32_t out_name_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->output_name) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->output_name(ctx, out_name);
+        status_t idl_st = ops->output_name(ctx, out_name, &out_name_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_name_len > 47 || !idl_str_ok(out_name, out_name_len)))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        for (uint32_t idl_i = 0; idl_i < 48; idl_i++)
-            idl_r->name[idl_i] = out_name[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 10, out_name_len, 1);
+        return idl_rn;
     }
     }
     idl_h->status = ERR_NOT_SUPPORTED;
@@ -1975,5 +1700,609 @@ static inline status_t hda_serve(handle_t ch, const struct hda_ops *ops, void *c
         if (idl_st != OK)
             return idl_st;
         idl_s.rn = hda_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
+    }
+}
+
+
+/* ==== protocol `hda_stream` (id 51) =========================================
+ *
+ * hda_stream: the output stream's own channel, the `stream` that open_output
+ * gave. Served by the driver, one at a time; closing it stops the stream and
+ * releases it.
+ *
+ * Reconnect: when the driver dies, the channel reports ERR_PEER_CLOSED and
+ * the stream is gone; get the service again (hda's rule) and open a new one. */
+
+#define HDA_STREAM_PROTOCOL_ID 51u
+#define HDA_STREAM_START            0x00330001u
+#define HDA_STREAM_STOP             0x00330002u
+#define HDA_STREAM_POSITION         0x00330003u
+#define HDA_STREAM_WAIT_PERIOD      0x00330004u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct hda_stream_start_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_stream_start_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct hda_stream_stop_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_stream_stop_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct hda_stream_position_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct hda_stream_position_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t frames;
+    uint32_t offset;
+} __attribute__((packed));
+struct hda_stream_wait_period_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint64_t after;
+} __attribute__((packed));
+struct hda_stream_wait_period_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t frames;
+    uint32_t offset;
+} __attribute__((packed));
+
+#define HDA_STREAM_REQ_MAX 16u   /* bytes: the biggest request */
+#define HDA_STREAM_REP_MAX 20u   /* bytes: the biggest reply */
+#define HDA_STREAM_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define HDA_STREAM_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* hda_stream_start_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_stream_start_call(handle_t ch, bool idl_within, uint64_t idl_t)
+{
+    struct hda_stream_start_req idl_q;
+    struct hda_stream_start_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_STREAM_START;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* The path is unmuted at the gain (hda.get_gain), then the DMA engine runs
+ * (RUN set) from where it was. If a step of the unmuting fails, the path is
+ * muted again, the stream stays stopped and start fails with that step's
+ * status (the log names the step). */
+static inline status_t hda_stream_start_until(handle_t ch, uint64_t deadline_ns)
+{
+    return hda_stream_start_call(ch, false, deadline_ns);
+}
+static inline status_t hda_stream_start_within(handle_t ch, uint64_t timeout_ns)
+{
+    return hda_stream_start_call(ch, true, timeout_ns);
+}
+static inline status_t hda_stream_start(handle_t ch)
+{
+    return hda_stream_start_call(ch, false, DEADLINE_NEVER);
+}
+
+/* hda_stream_stop_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_stream_stop_call(handle_t ch, bool idl_within, uint64_t idl_t)
+{
+    struct hda_stream_stop_req idl_q;
+    struct hda_stream_stop_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_STREAM_STOP;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* The DMA engine stops (RUN clear, waited for), then the path is muted
+ * again (every amp on it muted; the pin's output off too where no amp can
+ * mute); the position stays. A wait_period in progress is answered
+ * ERR_BAD_STATE. */
+static inline status_t hda_stream_stop_until(handle_t ch, uint64_t deadline_ns)
+{
+    return hda_stream_stop_call(ch, false, deadline_ns);
+}
+static inline status_t hda_stream_stop_within(handle_t ch, uint64_t timeout_ns)
+{
+    return hda_stream_stop_call(ch, true, timeout_ns);
+}
+static inline status_t hda_stream_stop(handle_t ch)
+{
+    return hda_stream_stop_call(ch, false, DEADLINE_NEVER);
+}
+
+/* hda_stream_position_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_stream_position_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_frames, uint32_t *out_offset)
+{
+    struct hda_stream_position_req idl_q;
+    struct hda_stream_position_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_STREAM_POSITION;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_frames)
+        *out_frames = idl_r.frames;
+    if (idl_st == OK && out_offset)
+        *out_offset = idl_r.offset;
+    return idl_st;
+}
+/* Frames played since the open, and the play position as a byte offset into
+ * the ring. */
+static inline status_t hda_stream_position_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_stream_position_call(ch, false, deadline_ns, out_frames, out_offset);
+}
+static inline status_t hda_stream_position_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_stream_position_call(ch, true, timeout_ns, out_frames, out_offset);
+}
+static inline status_t hda_stream_position(handle_t ch, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_stream_position_call(ch, false, DEADLINE_NEVER, out_frames, out_offset);
+}
+
+/* hda_stream_wait_period_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t hda_stream_wait_period_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
+{
+    struct hda_stream_wait_period_req idl_q;
+    struct hda_stream_wait_period_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = HDA_STREAM_WAIT_PERIOD;
+    idl_q.after = after;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_frames)
+        *out_frames = idl_r.frames;
+    if (idl_st == OK && out_offset)
+        *out_offset = idl_r.offset;
+    return idl_st;
+}
+/* Answers once the period holding frame `after` has played (frames >= the
+ * next multiple of period / 4 above `after`), with position's results.
+ * ERR_BAD_STATE if the stream is stopped (or is stopped meanwhile),
+ * ERR_TIMED_OUT if it makes no progress for four periods (the DMA engine
+ * stalled). */
+static inline status_t hda_stream_wait_period_until(handle_t ch, uint64_t deadline_ns, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_stream_wait_period_call(ch, false, deadline_ns, after, out_frames, out_offset);
+}
+static inline status_t hda_stream_wait_period_within(handle_t ch, uint64_t timeout_ns, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_stream_wait_period_call(ch, true, timeout_ns, after, out_frames, out_offset);
+}
+static inline status_t hda_stream_wait_period(handle_t ch, uint64_t after, uint64_t *out_frames, uint32_t *out_offset)
+{
+    return hda_stream_wait_period_call(ch, false, DEADLINE_NEVER, after, out_frames, out_offset);
+}
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* hda_stream_start without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_stream_start_result. */
+static inline status_t hda_stream_start_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_stream_start_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_STREAM_START;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_stream_start_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_stream_start_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct hda_stream_start_rep *idl_r = (const struct hda_stream_start_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* hda_stream_stop without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_stream_stop_result. */
+static inline status_t hda_stream_stop_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_stream_stop_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_STREAM_STOP;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_stream_stop_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_stream_stop_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct hda_stream_stop_rep *idl_r = (const struct hda_stream_stop_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* hda_stream_position without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_stream_position_result. */
+static inline status_t hda_stream_position_send(handle_t ch, uint32_t idl_txid)
+{
+    struct hda_stream_position_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_STREAM_POSITION;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_stream_position_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_stream_position_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_frames, uint32_t *out_offset)
+{
+    const struct hda_stream_position_rep *idl_r = (const struct hda_stream_position_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_frames)
+        *out_frames = idl_r->frames;
+    if (out_offset)
+        *out_offset = idl_r->offset;
+    return OK;
+}
+
+/* hda_stream_wait_period without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then hda_stream_wait_period_result. */
+static inline status_t hda_stream_wait_period_send(handle_t ch, uint32_t idl_txid, uint64_t after)
+{
+    struct hda_stream_wait_period_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = HDA_STREAM_WAIT_PERIOD;
+    idl_q.after = after;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to hda_stream_wait_period_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t hda_stream_wait_period_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_frames, uint32_t *out_offset)
+{
+    const struct hda_stream_wait_period_rep *idl_r = (const struct hda_stream_wait_period_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_frames)
+        *out_frames = idl_r->frames;
+    if (out_offset)
+        *out_offset = idl_r->offset;
+    return OK;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with hda_stream_reply_<method> (now, or later from anywhere). */
+struct hda_stream_ops {
+    status_t (*start)(void *ctx);
+    status_t (*stop)(void *ctx);
+    status_t (*position)(void *ctx, uint64_t *out_frames, uint32_t *out_offset);
+    status_t (*wait_period)(void *ctx, uint64_t after, uint64_t *out_frames, uint32_t *out_offset);
+};
+
+/* Answer the hda_stream.start request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_stream_reply_start(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct hda_stream_start_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda_stream.stop request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_stream_reply_stop(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct hda_stream_stop_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda_stream.position request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_stream_reply_position(struct idl_txn idl_txn, status_t idl_st, uint64_t frames, uint32_t offset)
+{
+    struct hda_stream_position_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.frames = frames;
+    idl_r.offset = offset;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the hda_stream.wait_period request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t hda_stream_reply_wait_period(struct idl_txn idl_txn, status_t idl_st, uint64_t frames, uint32_t offset)
+{
+    struct hda_stream_wait_period_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.frames = frames;
+    idl_r.offset = offset;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (HDA_STREAM_REP_MAX bytes) and the handles it carries
+ * into rhs (HDA_STREAM_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it. */
+static inline uint32_t hda_stream_dispatch_on(handle_t ch, const struct hda_stream_ops *ops, void *ctx,
+                                              const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                              uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    (void)ch;
+    if (n < sizeof(uint32_t))
+        return 0;
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    if (n < sizeof(struct idl_req_hdr))
+        return sizeof(*idl_h);
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    case HDA_STREAM_START: {
+        const struct hda_stream_start_req *idl_q = (const struct hda_stream_start_req *)req;
+        struct hda_stream_start_rep *idl_r = (struct hda_stream_start_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->start) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->start(ctx);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case HDA_STREAM_STOP: {
+        const struct hda_stream_stop_req *idl_q = (const struct hda_stream_stop_req *)req;
+        struct hda_stream_stop_rep *idl_r = (struct hda_stream_stop_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->stop) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->stop(ctx);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case HDA_STREAM_POSITION: {
+        const struct hda_stream_position_req *idl_q = (const struct hda_stream_position_req *)req;
+        struct hda_stream_position_rep *idl_r = (struct hda_stream_position_rep *)rep;
+        uint64_t out_frames = 0;
+        uint32_t out_offset = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->position) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->position(ctx, &out_frames, &out_offset);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->frames = out_frames;
+        idl_r->offset = out_offset;
+        return sizeof(*idl_r);
+    }
+    case HDA_STREAM_WAIT_PERIOD: {
+        const struct hda_stream_wait_period_req *idl_q = (const struct hda_stream_wait_period_req *)req;
+        struct hda_stream_wait_period_rep *idl_r = (struct hda_stream_wait_period_rep *)rep;
+        uint64_t out_frames = 0;
+        uint32_t out_offset = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->wait_period) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->wait_period(ctx, idl_q->after, &out_frames, &out_offset);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->frames = out_frames;
+        idl_r->offset = out_offset;
+        return sizeof(*idl_r);
+    }
+    }
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* hda_stream_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t hda_stream_dispatch(const struct hda_stream_ops *ops, void *ctx, const void *req, uint32_t n,
+                                           void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return hda_stream_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t hda_stream_take_slot(handle_t ch, const struct idl_slot *slot,
+                                            struct idl_reply *rep)
+{
+    if (slot->qcap < HDA_STREAM_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by hda_stream_take_slot, or found there by a
+ * successor), which came on ch: as hda_stream_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (HDA_STREAM_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it never sends it. */
+static inline uint32_t hda_stream_run_slot(handle_t ch, const struct idl_slot *slot,
+                                           const struct hda_stream_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return hda_stream_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
+static inline bool hda_stream_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
+}
+
+/* Take one message off ch and answer it. OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t hda_stream_serve_one(handle_t ch, const struct hda_stream_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[HDA_STREAM_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[HDA_STREAM_REP_MAX];
+    handle_t idl_hs[IDL_READ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, idl_n, idl_nh);
+    if (idl_st != OK)
+        return idl_st;
+    if (idl_nh) {
+        idl_close_all(idl_hs, idl_nh);
+        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = hda_stream_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
+    return OK;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
+static inline status_t hda_stream_serve(handle_t ch, const struct hda_stream_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[HDA_STREAM_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[HDA_STREAM_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
+    for (;;) {
+        status_t idl_st = idl_serve_next(&idl_s);
+        if (idl_st == ERR_PEER_CLOSED)
+            return OK;
+        if (idl_st != OK)
+            return idl_st;
+        idl_s.rn = hda_stream_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

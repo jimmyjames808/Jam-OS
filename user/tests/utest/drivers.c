@@ -237,10 +237,11 @@ bool t_devmgr_query_refuses_hda(void)
             break;
         if (st != OK)
             continue;
-        uint32_t codec, pin, dac, pcm, formats, amp, jack, count;
-        uint8_t nodes[8], text[240];
+        uint32_t codec, pin, dac, pcm, formats, amp, jack, nodes_len, text_len;
+        uint8_t nodes[8];
+        char text[240];
         st = hda_info_until(ch, now() + 10 * NS_PER_S, &codec, &pin, &dac, &pcm, &formats, &amp,
-                            &jack, &count, nodes, text);
+                            &jack, nodes, &nodes_len, text, &text_len);
         bool hda = st != ERR_NOT_SUPPORTED;   /* another driver's service */
         uint8_t mac[6];
         char chip[16 + 1];

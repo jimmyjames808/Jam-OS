@@ -252,9 +252,9 @@ static void adopt_out(struct mixer *m, struct found *f)
         st = jam_port_bind(m->port, w->ch, KEY_OUT | (uint64_t)++o->gen << 8,
                            SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT);
     if (st == OK)   /* the dead one may have died before it started it; else a no-op */
-        st = hda_start_until(w->ch, now() + CALL_WAIT);
+        st = hda_stream_start_until(w->ch, now() + CALL_WAIT);
     if (st == OK)
-        st = hda_position_until(w->ch, now() + CALL_WAIT, &pos, &off);
+        st = hda_stream_position_until(w->ch, now() + CALL_WAIT, &pos, &off);
     if (st != OK) {
         printf("mixer: the driver's stream can't be taken over (%s): it is opened again\n",
                status_str(st));
@@ -322,7 +322,8 @@ static const char *rerun(struct mixer *m, unsigned slot, handle_t ch, struct str
         req_status(m, slot, ch, ERR_INTERNAL);
         return "answered ERR_INTERNAL (in progress at two crashes)";
     }
-    if (sl->nhandles || n > (ctl ? REQ_CAP_CTL : REQ_CAP_AUDIO)) {
+    uint32_t cap = ctl ? REQ_CAP_CTL : s ? REQ_CAP_STREAM : REQ_CAP_AUDIO;
+    if (sl->nhandles || n > cap) {
         req_status(m, slot, ch, ERR_INVALID_ARGS);   /* as req_take answers it */
         return "refused, as before";
     }

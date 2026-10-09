@@ -52,12 +52,6 @@ static void result(const char *fmt, ...)
     unlock();
 }
 
-static void put(uint8_t out[256], const char *s)
-{
-    memset(out, 0, 256);
-    memcpy(out, s, strnlen(s, 255));
-}
-
 static const char *why(status_t st)
 {
     return st == ERR_NOT_FOUND ? "no such folder, or no audio output" : status_str(st);
@@ -65,12 +59,11 @@ static const char *why(status_t st)
 
 static void play(const struct cmd *c)
 {
-    uint8_t folder[256], first[256], reading = 0;
+    uint8_t reading = 0;
     uint32_t found = 0;
-    put(folder, c->folder);
-    put(first, c->first);
-    status_t st = music_play_until(L.ch, now() + CALL_NS, folder, first, c->ordered, &found,
-                                   &reading);
+    status_t st = music_start_until(L.ch, now() + CALL_NS, c->folder, (uint32_t)strlen(c->folder),
+                                    c->first, (uint32_t)strlen(c->first), c->ordered, &found,
+                                    &reading);
     if (st != OK)
         result("can't play it: %s", why(st));
     else if (!found && !reading)
@@ -102,20 +95,27 @@ static void run(const struct cmd *c)
 /* `status`: the path, folder and note. */
 static void ask_status(void)
 {
-    uint8_t playing = 0, folder[256], path[256], title[128], note[128];
-    uint32_t tracks = 0, bad = 0, started = 0;
+    uint8_t playing = 0;
+    uint32_t tracks = 0, bad = 0, started = 0, folder_len, path_len, title_len, note_len;
     uint64_t elapsed = 0, length = 0;
     int32_t volume = 0;
-    if (music_status_until(L.ch, now() + CALL_NS, &playing, &tracks, &bad, &started, &elapsed,
-                           &length, &volume, folder, path, title, note) != OK)
+    char *text = malloc(2 * 4096 + 2 * 128);   /* folder, path, title, note */
+    if (!text)
         return;
-    folder[255] = path[255] = note[127] = 0;
+    char *folder = text, *path = folder + 4096, *title = path + 4096, *note = title + 128;
+    if (music_status_until(L.ch, now() + CALL_NS, &playing, &tracks, &bad, &started, &elapsed,
+                           &length, &volume, folder, &folder_len, path, &path_len, title,
+                           &title_len, note, &note_len) != OK) {
+        free(text);
+        return;
+    }
     lock();
-    memcpy(L.snap.path, path, sizeof(L.snap.path));
-    memcpy(L.snap.folder, folder, sizeof(L.snap.folder));
-    memcpy(L.snap.note, note, sizeof(L.snap.note));
+    snprintf(L.snap.path, sizeof(L.snap.path), "%s", path);
+    snprintf(L.snap.folder, sizeof(L.snap.folder), "%s", folder);
+    snprintf(L.snap.note, sizeof(L.snap.note), "%s", note);
     L.snap.tracks = tracks;
     unlock();
+    free(text);
 }
 
 /* `stereo`; true if the track heard (or the state) changed. */

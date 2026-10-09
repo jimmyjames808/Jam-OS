@@ -15,8 +15,9 @@
  * every terminal closed the desktop shows its wallpaper and top bar, and
  * Super+Enter or the search box opens one. A shell that ends because its
  * console did (codes 2 and 3: its console channel closed) is no `exit`.
- * Under `nocomp` there is one terminal, the full-screen console: it and
- * its shell are started again whatever happens, however often
+ * Without a compositor (none in bootfs: M12's Q14 took the boot word
+ * `nocomp`) there is one terminal, a console with no screen (COM1): it
+ * and its shell are started again whatever happens, however often
  * (terms_never_given_up), and never close.
  *
  *   console   bin/console: root with CONSOLE_ROOT (klog, the screen,
@@ -27,10 +28,9 @@
  *             syncs /data first; with a compositor the compositor keeps
  *             Ctrl+Alt+Del and Super+Enter, which never reach it), and the
  *             log writers' table read-only (CONSOLE_WRITERS_ROLE,
- *             writers.c: under `nocomp` only, the console's notices);
- *             init keeps the client end. With the splash under `nocomp`
- *             (the argument "quiet") it draws nothing until the splash
- *             has borrowed the screen and given it back. Every console
+ *             writers.c: without a compositor only, the console's notices);
+ *             init keeps the client end (the console no longer reads
+ *             them, nor "quiet": M12's Q14). Every console
  *             gets "nolog" (the quiet boot: the kernel log off the screen,
  *             but for the commands whose output it is) except the first
  *             terminal's on a `verbose` boot, which shows the log as it
@@ -44,7 +44,7 @@
  *             first console starts, so it is then sent to each running
  *             console as console.set_font)
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
- *             console.new_client; no connect_input), root with SHELL_ROOT,
+ *             console.new_client), root with SHELL_ROOT,
  *             RES_PCI with RIGHTS_BASIC (SR_USER + 1), and init's whole
  *             namespace as it is (SR_NS, followed: every mount, /data's
  *             etc included, and every service: devmgr's channels, init's
@@ -58,7 +58,7 @@
  *             (lastboot.c) and finds its one line queued on that channel
  *             (INIT_SHELL_NOTE) when it starts. With a compositor every
  *             terminal's shell gets "term=<n>" (`exit` closes its
- *             terminal; under `nocomp` it gets none, and `exit` says the
+ *             terminal; without a compositor it gets none, and `exit` says the
  *             one terminal stays), and the first
  *             time it starts "run=<line>" when initctl.terminal asked for
  *             a command (the compositor's "Run ... in a terminal": the
@@ -68,12 +68,8 @@
  * hardware beyond the calls made for them.
  *
  * A new console gets a new channel, so the shell on it (whose channel
- * then closes) exits and comes back connected to it. Under `nocomp` the
- * first console is also the input's hub: it takes serialin with it, and
- * devmgr gets the new channel (DEVMGR_SET_CONSOLE): its HID drivers,
- * which end when their console goes, come back connected to it. With a
- * compositor the input is the compositor's (comp.c), and a console's
- * keys come to its window. */
+ * then closes) exits and comes back connected to it. The input is the
+ * compositor's (comp.c), and a console's keys come to its window. */
 #include <devmgr.h>
 #include <idl/console.h>
 #include <logwriters.h>
@@ -98,7 +94,8 @@
 enum { TERM_CLOSED, TERM_OPEN, TERM_CLOSING };
 
 struct term {
-    uint8_t  state;      /* TERM_*: under `nocomp` the first is always OPEN */
+    uint8_t  state;      /* TERM_*: without a compositor the first is always OPEN */
+    bool     crashed;    /* its shell's last end was a crash or a kill: the next says so */
     handle_t cons;       /* its console's client end (0: none running) */
     char     cmd[TERM_CMD_MAX];   /* its shell's first line, until it has started ("": none) */
 };
@@ -106,7 +103,7 @@ static struct term terms[TERM_MAX];
 
 static handle_t port;
 static handle_t to_shell;    /* init's end of the first shell's SR_USER + 2 channel */
-static bool quiet_console;   /* the next first console starts quiet (the splash's, nocomp) */
+static bool quiet_console;   /* the next first console starts quiet (the splash's, no compositor) */
 static bool console_ever;    /* the first terminal's console has started this boot */
 /* An argument for the first shell started ("soak=3": run the soak test), or NULL. */
 static const char *first_arg;
@@ -161,17 +158,6 @@ bool terms_extra_open(void)
         if (terms[k].state != TERM_CLOSED)
             return true;
     return false;
-}
-
-/* devmgr takes a new console (after the console restarted, under
- * `nocomp`: with a compositor the keys are its): its HID drivers come
- * back connected to it. */
-static void tell_devmgr(void)
-{
-    handle_t c = HANDLE_INVALID;
-    if (shell_devmgr() && !comp_on() &&
-        jam_handle_duplicate(terms[0].cons, RIGHT_SAME, &c) == OK)
-        services_devmgr_input(c);
 }
 
 /* Terminal k's console's handles (x has room for 5), how many. */
@@ -232,8 +218,6 @@ static status_t start_console(unsigned k)
     if (terms[k].cons)
         jam_handle_close(terms[k].cons);
     terms[k].cons = a;
-    if (!k)
-        tell_devmgr();   /* a restart: devmgr reconnects its HID drivers */
     return OK;
 }
 
@@ -306,7 +290,7 @@ static status_t start_shell(unsigned k)
     char term[8], run[4 + TERM_CMD_MAX];
     snprintf(term, sizeof(term), "term=%u", k + 1);
     snprintf(run, sizeof(run), "run=%s", terms[k].cmd);
-    const char *argv[4] = { svcs[TERM_SHELL(k)].path };
+    const char *argv[5] = { svcs[TERM_SHELL(k)].path };
     int argc = 1;
     if (comp_on())
         argv[argc++] = term;
@@ -314,7 +298,11 @@ static status_t start_shell(unsigned k)
         argv[argc++] = first_arg;
     if (terms[k].cmd[0])
         argv[argc++] = run;
+    if (terms[k].crashed)
+        argv[argc++] = "restarted";   /* it says so: its history is kept (sh_history.c) */
     st = svc_start(TERM_SHELL(k), argc, argv, y, n);
+    if (st == OK)
+        terms[k].crashed = false;
     if (!k)
         first_arg = NULL;
     if (st == OK)
@@ -384,8 +372,13 @@ static void close_term(unsigned k)
 bool terms_ended(unsigned i, bool killed, int64_t code)
 {
     int k = term_of(i);
+    /* A shell that crashed or was killed (not `exit`, not its console gone:
+     * codes 2 and 3) says so when it is started again. */
+    if (k >= 0 && terms[k].state == TERM_OPEN && !is_console(i) &&
+        (killed || (code != 0 && code != 2 && code != 3)))
+        terms[k].crashed = true;
     if (k < 0 || !comp_on())
-        return false;   /* not a terminal's; or the one terminal (nocomp): never closes */
+        return false;   /* not a terminal's; or the one terminal (no compositor): never closes */
     if (terms[k].state == TERM_CLOSING) {
         close_term((unsigned)k);   /* closed once neither runs */
         return true;
@@ -418,6 +411,7 @@ status_t terms_open(const char *cmd, uint8_t *number)
     if (k == TERM_MAX)
         return ERR_NO_RESOURCES;
     terms[k].state = TERM_OPEN;
+    terms[k].crashed = false;
     snprintf(terms[k].cmd, sizeof(terms[k].cmd), "%s", cmd);
     unsigned both[2] = { TERM_CONSOLE(k), TERM_SHELL(k) };
     for (unsigned j = 0; j < 2; j++) {

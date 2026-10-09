@@ -26,31 +26,19 @@
 #include <idl/common.h>
 
 #define MUSIC_PROTOCOL_ID 24u
-#define MUSIC_START            0x00180001u
 #define MUSIC_STOP             0x00180002u
 #define MUSIC_NEXT             0x00180003u
 #define MUSIC_STATUS           0x00180004u
 #define MUSIC_SET_VOLUME       0x00180005u
 #define MUSIC_PREV             0x00180006u
-#define MUSIC_PLAY             0x00180007u
 #define MUSIC_LEVELS           0x00180008u
 #define MUSIC_PAUSE            0x00180009u
 #define MUSIC_SLEEP            0x0018000au
 #define MUSIC_SPECTRUM         0x0018000bu
 #define MUSIC_STEREO           0x0018000cu
+#define MUSIC_START            0x0018000du
 
 /* Messages (packed: no padding bytes ever cross the channel). */
-struct music_start_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint8_t folder[256];
-} __attribute__((packed));
-struct music_start_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint32_t found;
-    uint8_t reading;
-} __attribute__((packed));
 struct music_stop_req {
     uint32_t txid;
     uint32_t ordinal;
@@ -82,10 +70,6 @@ struct music_status_rep {
     uint64_t elapsed_ms;
     uint64_t length_ms;
     int32_t volume;
-    uint8_t folder[256];
-    uint8_t path[256];
-    uint8_t title[128];
-    uint8_t note[128];
 } __attribute__((packed));
 struct music_set_volume_req {
     uint32_t txid;
@@ -104,19 +88,6 @@ struct music_prev_req {
 struct music_prev_rep {
     uint32_t txid;
     int32_t  status;
-} __attribute__((packed));
-struct music_play_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint8_t folder[256];
-    uint8_t first[256];
-    uint8_t order;
-} __attribute__((packed));
-struct music_play_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint32_t found;
-    uint8_t reading;
 } __attribute__((packed));
 struct music_levels_req {
     uint32_t txid;
@@ -187,61 +158,24 @@ struct music_stereo_rep {
     uint8_t right[64];
     uint8_t level;
 } __attribute__((packed));
+struct music_start_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t order;
+} __attribute__((packed));
+struct music_start_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t found;
+    uint8_t reading;
+} __attribute__((packed));
 
-#define MUSIC_REQ_MAX 521u   /* bytes: the biggest request */
-#define MUSIC_REP_MAX 809u   /* bytes: the biggest reply */
+#define MUSIC_REQ_MAX 8203u   /* bytes: the biggest request */
+#define MUSIC_REP_MAX 8493u   /* bytes: the biggest reply */
 #define MUSIC_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define MUSIC_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
-
-/* music_start_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t music_start_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
-{
-    struct music_start_req idl_q;
-    struct music_start_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = MUSIC_START;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.folder[idl_i] = folder[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_found)
-        *out_found = idl_r.found;
-    if (idl_st == OK && out_reading)
-        *out_reading = idl_r.reading;
-    return idl_st;
-}
-/* Play `folder` (an absolute path, NUL-terminated): every .mp3 and .wav
- * file under it (any depth; case-insensitive; names starting with '.'
- * left out) in shuffle, back to back, until `stop`. Answers once the
- * folder has been read and the player's mixer stream is open, with the
- * number of files found; 0 files: nothing plays (the player stays
- * stopped). A folder that takes longer than half a second to read is read
- * on after the answer, between the player's other calls: `reading` 1 and
- * `found` the files so far; it plays once the folder is read (or stops,
- * with a note, if there is nothing to play). Already playing (or
- * reading): the old folder stops (5 ms fade) and the new one starts. ERR_NOT_FOUND: no such folder (or a path under no mount),
- * or no audio output (the mixer's open_output: the shell's `music`
- * checks the folder itself first to tell them apart); ERR_WRONG_TYPE: it
- * is a file; ERR_INVALID_ARGS: not an absolute path; the mixer's other
- * errors from opening a stream. */
-static inline status_t music_start_until(handle_t ch, uint64_t deadline_ns, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
-{
-    return music_start_call(ch, false, deadline_ns, folder, out_found, out_reading);
-}
-static inline status_t music_start_within(handle_t ch, uint64_t timeout_ns, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
-{
-    return music_start_call(ch, true, timeout_ns, folder, out_found, out_reading);
-}
-static inline status_t music_start(handle_t ch, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading)
-{
-    return music_start_call(ch, false, DEADLINE_NEVER, folder, out_found, out_reading);
-}
 
 /* music_stop_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
@@ -260,7 +194,9 @@ static inline status_t music_stop_call(handle_t ch, bool idl_within, uint64_t id
         *out_was_playing = idl_r.was_playing;
     return idl_st;
 }
-/* Stop playing, with the 5 ms fade. `was_playing`: 1 if it was. */
+/* (Ordinals 1 and 7 were `start` and `play`, now one method, `start` at 13:
+ * not reused.)
+ * Stop playing, with the 5 ms fade. `was_playing`: 1 if it was. */
 static inline status_t music_stop_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_was_playing)
 {
     return music_stop_call(ch, false, deadline_ns, out_was_playing);
@@ -306,39 +242,93 @@ static inline status_t music_next(handle_t ch)
 
 /* music_status_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t music_status_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
+static inline status_t music_status_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, char out_folder[4095 + 1], uint32_t *out_folder_len, char out_path[4095 + 1], uint32_t *out_path_len, char out_title[127 + 1], uint32_t *out_title_len, char out_note[127 + 1], uint32_t *out_note_len)
 {
-    struct music_status_req idl_q;
-    struct music_status_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = MUSIC_STATUS;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(8) + 8493);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(8);
+    struct music_status_req *idl_q = (struct music_status_req *)idl_b0;
+    const struct music_status_rep *idl_r = (const struct music_status_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = MUSIC_STATUS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8493, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    const void *idl_p3 = NULL;
+    uint32_t idl_l3 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 4095, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 4095, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 127, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 127, 1, &idl_p3, &idl_l3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p3, idl_l3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && out_playing)
-        *out_playing = idl_r.playing;
+        *out_playing = idl_r->playing;
     if (idl_st == OK && out_tracks)
-        *out_tracks = idl_r.tracks;
+        *out_tracks = idl_r->tracks;
     if (idl_st == OK && out_bad)
-        *out_bad = idl_r.bad;
+        *out_bad = idl_r->bad;
     if (idl_st == OK && out_started)
-        *out_started = idl_r.started;
+        *out_started = idl_r->started;
     if (idl_st == OK && out_elapsed_ms)
-        *out_elapsed_ms = idl_r.elapsed_ms;
+        *out_elapsed_ms = idl_r->elapsed_ms;
     if (idl_st == OK && out_length_ms)
-        *out_length_ms = idl_r.length_ms;
+        *out_length_ms = idl_r->length_ms;
     if (idl_st == OK && out_volume)
-        *out_volume = idl_r.volume;
-    for (uint32_t idl_i = 0; idl_st == OK && out_folder && idl_i < 256; idl_i++)
-        out_folder[idl_i] = idl_r.folder[idl_i];
-    for (uint32_t idl_i = 0; idl_st == OK && out_path && idl_i < 256; idl_i++)
-        out_path[idl_i] = idl_r.path[idl_i];
-    for (uint32_t idl_i = 0; idl_st == OK && out_title && idl_i < 128; idl_i++)
-        out_title[idl_i] = idl_r.title[idl_i];
-    for (uint32_t idl_i = 0; idl_st == OK && out_note && idl_i < 128; idl_i++)
-        out_note[idl_i] = idl_r.note[idl_i];
+        *out_volume = idl_r->volume;
+    if (idl_st == OK && out_folder) {
+        if (idl_l0)
+            __builtin_memcpy(out_folder, idl_p0, idl_l0 * 1);
+        out_folder[idl_l0] = 0;
+    }
+    if (idl_st == OK && out_folder_len)
+        *out_folder_len = idl_l0;
+    if (idl_st == OK && out_path) {
+        if (idl_l1)
+            __builtin_memcpy(out_path, idl_p1, idl_l1 * 1);
+        out_path[idl_l1] = 0;
+    }
+    if (idl_st == OK && out_path_len)
+        *out_path_len = idl_l1;
+    if (idl_st == OK && out_title) {
+        if (idl_l2)
+            __builtin_memcpy(out_title, idl_p2, idl_l2 * 1);
+        out_title[idl_l2] = 0;
+    }
+    if (idl_st == OK && out_title_len)
+        *out_title_len = idl_l2;
+    if (idl_st == OK && out_note) {
+        if (idl_l3)
+            __builtin_memcpy(out_note, idl_p3, idl_l3 * 1);
+        out_note[idl_l3] = 0;
+    }
+    if (idl_st == OK && out_note_len)
+        *out_note_len = idl_l3;
+    drv_free(idl_b0);
     return idl_st;
 }
 /* What the player is doing. `playing`: 1, 0, 2 while it reads the
@@ -348,20 +338,22 @@ static inline status_t music_status_call(handle_t ch, bool idl_within, uint64_t 
  * inside) and are skipped; `started`: tracks started since `start`.
  * The track heard now: `elapsed_ms` into it, `length_ms` (0: unknown),
  * `path` (absolute), `title` ("Artist - Title" from the path, see the
- * player's main.c). `folder`: the last one started. `volume`: the
+ * player's main.c). `folder`: the last one started. A text that is not
+ * UTF-8 (a file name from a stick) comes with a '?' for each bad piece, and
+ * a title or note longer than 127 bytes is cut between characters. `volume`: the
  * player's own, in centibels. `note`: why it stopped by itself, if it did
  * ("" otherwise). */
-static inline status_t music_status_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
+static inline status_t music_status_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, char out_folder[4095 + 1], uint32_t *out_folder_len, char out_path[4095 + 1], uint32_t *out_path_len, char out_title[127 + 1], uint32_t *out_title_len, char out_note[127 + 1], uint32_t *out_note_len)
 {
-    return music_status_call(ch, false, deadline_ns, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_path, out_title, out_note);
+    return music_status_call(ch, false, deadline_ns, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_folder_len, out_path, out_path_len, out_title, out_title_len, out_note, out_note_len);
 }
-static inline status_t music_status_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
+static inline status_t music_status_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, char out_folder[4095 + 1], uint32_t *out_folder_len, char out_path[4095 + 1], uint32_t *out_path_len, char out_title[127 + 1], uint32_t *out_title_len, char out_note[127 + 1], uint32_t *out_note_len)
 {
-    return music_status_call(ch, true, timeout_ns, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_path, out_title, out_note);
+    return music_status_call(ch, true, timeout_ns, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_folder_len, out_path, out_path_len, out_title, out_title_len, out_note, out_note_len);
 }
-static inline status_t music_status(handle_t ch, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
+static inline status_t music_status(handle_t ch, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, char out_folder[4095 + 1], uint32_t *out_folder_len, char out_path[4095 + 1], uint32_t *out_path_len, char out_title[127 + 1], uint32_t *out_title_len, char out_note[127 + 1], uint32_t *out_note_len)
 {
-    return music_status_call(ch, false, DEADLINE_NEVER, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_path, out_title, out_note);
+    return music_status_call(ch, false, DEADLINE_NEVER, out_playing, out_tracks, out_bad, out_started, out_elapsed_ms, out_length_ms, out_volume, out_folder, out_folder_len, out_path, out_path_len, out_title, out_title_len, out_note, out_note_len);
 }
 
 /* music_set_volume_until and _within: idl_t is a deadline, or with idl_within a
@@ -429,49 +421,6 @@ static inline status_t music_prev_within(handle_t ch, uint64_t timeout_ns)
 static inline status_t music_prev(handle_t ch)
 {
     return music_prev_call(ch, false, DEADLINE_NEVER);
-}
-
-/* music_play_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t music_play_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
-{
-    struct music_play_req idl_q;
-    struct music_play_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = MUSIC_PLAY;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.folder[idl_i] = folder[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.first[idl_i] = first[idl_i];
-    idl_q.order = order;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_found)
-        *out_found = idl_r.found;
-    if (idl_st == OK && out_reading)
-        *out_reading = idl_r.reading;
-    return idl_st;
-}
-/* `start` with options. `first`: an absolute path (NUL-terminated) of a
- * file under `folder` that plays first ("" for none; a file that is not in
- * the folder's list is ignored, with a line in the log); `order` 1: the
- * files play in the order of their paths (byte order), over and over,
- * instead of in shuffle; 0: shuffle, as `start`. The answer and the
- * errors are `start`'s; ERR_INVALID_ARGS also for an `order` above 1. */
-static inline status_t music_play_until(handle_t ch, uint64_t deadline_ns, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
-{
-    return music_play_call(ch, false, deadline_ns, folder, first, order, out_found, out_reading);
-}
-static inline status_t music_play_within(handle_t ch, uint64_t timeout_ns, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
-{
-    return music_play_call(ch, true, timeout_ns, folder, first, order, out_found, out_reading);
-}
-static inline status_t music_play(handle_t ch, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading)
-{
-    return music_play_call(ch, false, DEADLINE_NEVER, folder, first, order, out_found, out_reading);
 }
 
 /* music_levels_until and _within: idl_t is a deadline, or with idl_within a
@@ -699,42 +648,72 @@ static inline status_t music_stereo(handle_t ch, uint8_t *out_playing, uint32_t 
     return music_stereo_call(ch, false, DEADLINE_NEVER, out_playing, out_serial, out_elapsed_ms, out_length_ms, out_volume, out_sleep_s, out_left, out_right, out_level);
 }
 
-/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
-
-/* music_start without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then music_start_result. */
-static inline status_t music_start_send(handle_t ch, uint32_t idl_txid, const uint8_t folder[256])
+/* music_start_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t music_start_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *folder, uint32_t folder_len, const char *first, uint32_t first_len, uint8_t order, uint32_t *out_found, uint8_t *out_reading)
 {
-    struct music_start_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = MUSIC_START;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.folder[idl_i] = folder[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to music_start_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t music_start_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_found, uint8_t *out_reading)
-{
-    const struct music_start_rep *idl_r = (const struct music_start_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    if (out_found)
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(8203) + 13);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(8203);
+    struct music_start_req *idl_q = (struct music_start_req *)idl_b0;
+    const struct music_start_rep *idl_r = (const struct music_start_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = MUSIC_START;
+    idl_q->order = order;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, folder, folder_len, 4095, 1) ||
+                             !idl_str_ok(folder, folder_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, first, first_len, 4095, 1) ||
+                             !idl_str_ok(first, first_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 13, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && out_found)
         *out_found = idl_r->found;
-    if (out_reading)
+    if (idl_st == OK && out_reading)
         *out_reading = idl_r->reading;
-    return OK;
+    (void)idl_o;
+    drv_free(idl_b0);
+    return idl_st;
 }
+/* Play `folder` (an absolute path): every .mp3 and .wav file under it (any
+ * depth; case-insensitive; names starting with '.' left out), back to back,
+ * until `stop`. `order` 0: in shuffle; 1: in the order of their paths (byte
+ * order), over and over. `first`: an absolute path of a file under `folder`
+ * that plays first ("" for none; a file that is not in the folder's list is
+ * ignored, with a line in the log). Answers once the folder has been read
+ * and the player's mixer stream is open, with the number of files found; 0
+ * files: nothing plays (the player stays stopped). A folder that takes
+ * longer than half a second to read is read on after the answer, between the
+ * player's other calls: `reading` 1 and `found` the files so far; it plays
+ * once the folder is read (or stops, with a note, if there is nothing to
+ * play). Already playing (or reading): the old folder stops (5 ms fade) and
+ * the new one starts. ERR_NOT_FOUND: no such folder (or a path under no
+ * mount), or no audio output (the mixer's open_output: the shell's `music`
+ * checks the folder itself first to tell them apart); ERR_NOT_DIR: it is
+ * a file; ERR_INVALID_ARGS: not an absolute path, or an `order` above 1; the
+ * mixer's other errors from opening a stream. */
+static inline status_t music_start_until(handle_t ch, uint64_t deadline_ns, const char *folder, uint32_t folder_len, const char *first, uint32_t first_len, uint8_t order, uint32_t *out_found, uint8_t *out_reading)
+{
+    return music_start_call(ch, false, deadline_ns, folder, folder_len, first, first_len, order, out_found, out_reading);
+}
+static inline status_t music_start_within(handle_t ch, uint64_t timeout_ns, const char *folder, uint32_t folder_len, const char *first, uint32_t first_len, uint8_t order, uint32_t *out_found, uint8_t *out_reading)
+{
+    return music_start_call(ch, true, timeout_ns, folder, folder_len, first, first_len, order, out_found, out_reading);
+}
+static inline status_t music_start(handle_t ch, const char *folder, uint32_t folder_len, const char *first, uint32_t first_len, uint8_t order, uint32_t *out_found, uint8_t *out_reading)
+{
+    return music_start_call(ch, false, DEADLINE_NEVER, folder, folder_len, first, first_len, order, out_found, out_reading);
+}
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* music_stop without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then music_stop_result. */
@@ -801,21 +780,53 @@ static inline status_t music_next_result(const void *idl_rep, struct idl_msg *id
  * The reply comes on ch: idl_reply_read, then music_status_result. */
 static inline status_t music_status_send(handle_t ch, uint32_t idl_txid)
 {
-    struct music_status_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = MUSIC_STATUS;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[8];
+    struct music_status_req *idl_q = (struct music_status_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = MUSIC_STATUS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to music_status_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t music_status_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128])
+static inline status_t music_status_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, char out_folder[4095 + 1], uint32_t *out_folder_len, char out_path[4095 + 1], uint32_t *out_path_len, char out_title[127 + 1], uint32_t *out_title_len, char out_note[127 + 1], uint32_t *out_note_len)
 {
     const struct music_status_rep *idl_r = (const struct music_status_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    const void *idl_p3 = NULL;
+    uint32_t idl_l3 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 4095, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 127, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 127, 1, &idl_p3, &idl_l3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p3, idl_l3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -837,14 +848,34 @@ static inline status_t music_status_result(const void *idl_rep, struct idl_msg *
         *out_length_ms = idl_r->length_ms;
     if (out_volume)
         *out_volume = idl_r->volume;
-    for (uint32_t idl_i = 0; out_folder && idl_i < 256; idl_i++)
-        out_folder[idl_i] = idl_r->folder[idl_i];
-    for (uint32_t idl_i = 0; out_path && idl_i < 256; idl_i++)
-        out_path[idl_i] = idl_r->path[idl_i];
-    for (uint32_t idl_i = 0; out_title && idl_i < 128; idl_i++)
-        out_title[idl_i] = idl_r->title[idl_i];
-    for (uint32_t idl_i = 0; out_note && idl_i < 128; idl_i++)
-        out_note[idl_i] = idl_r->note[idl_i];
+    if (out_folder) {
+        if (idl_l0)
+            __builtin_memcpy(out_folder, idl_p0, idl_l0 * 1);
+        out_folder[idl_l0] = 0;
+    }
+    if (out_folder_len)
+        *out_folder_len = idl_l0;
+    if (out_path) {
+        if (idl_l1)
+            __builtin_memcpy(out_path, idl_p1, idl_l1 * 1);
+        out_path[idl_l1] = 0;
+    }
+    if (out_path_len)
+        *out_path_len = idl_l1;
+    if (out_title) {
+        if (idl_l2)
+            __builtin_memcpy(out_title, idl_p2, idl_l2 * 1);
+        out_title[idl_l2] = 0;
+    }
+    if (out_title_len)
+        *out_title_len = idl_l2;
+    if (out_note) {
+        if (idl_l3)
+            __builtin_memcpy(out_note, idl_p3, idl_l3 * 1);
+        out_note[idl_l3] = 0;
+    }
+    if (out_note_len)
+        *out_note_len = idl_l3;
     return OK;
 }
 
@@ -907,44 +938,6 @@ static inline status_t music_prev_result(const void *idl_rep, struct idl_msg *id
     }
     idl_m->nh = 0;
     (void)idl_r;
-    return OK;
-}
-
-/* music_play without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then music_play_result. */
-static inline status_t music_play_send(handle_t ch, uint32_t idl_txid, const uint8_t folder[256], const uint8_t first[256], uint8_t order)
-{
-    struct music_play_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = MUSIC_PLAY;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.folder[idl_i] = folder[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.first[idl_i] = first[idl_i];
-    idl_q.order = order;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to music_play_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t music_play_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_found, uint8_t *out_reading)
-{
-    const struct music_play_rep *idl_r = (const struct music_play_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    if (out_found)
-        *out_found = idl_r->found;
-    if (out_reading)
-        *out_reading = idl_r->reading;
     return OK;
 }
 
@@ -1149,6 +1142,54 @@ static inline status_t music_stereo_result(const void *idl_rep, struct idl_msg *
     return OK;
 }
 
+/* music_start without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then music_start_result. */
+static inline status_t music_start_send(handle_t ch, uint32_t idl_txid, const char *folder, uint32_t folder_len, const char *first, uint32_t first_len, uint8_t order)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(8203);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct music_start_req *idl_q = (struct music_start_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = MUSIC_START;
+    idl_q->order = order;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, folder, folder_len, 4095, 1) ||
+                             !idl_str_ok(folder, folder_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, first, first_len, 4095, 1) ||
+                             !idl_str_ok(first, first_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
+}
+
+/* The status and results of a reply to music_start_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t music_start_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_found, uint8_t *out_reading)
+{
+    const struct music_start_rep *idl_r = (const struct music_start_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_found)
+        *out_found = idl_r->found;
+    if (out_reading)
+        *out_reading = idl_r->reading;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -1156,36 +1197,18 @@ static inline status_t music_stereo_result(const void *idl_rep, struct idl_msg *
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with music_reply_<method> (now, or later from anywhere). */
 struct music_ops {
-    status_t (*start)(void *ctx, const uint8_t folder[256], uint32_t *out_found, uint8_t *out_reading);
     status_t (*stop)(void *ctx, uint8_t *out_was_playing);
     status_t (*next)(void *ctx);
-    status_t (*status)(void *ctx, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint8_t out_folder[256], uint8_t out_path[256], uint8_t out_title[128], uint8_t out_note[128]);
+    status_t (*status)(void *ctx, uint8_t *out_playing, uint32_t *out_tracks, uint32_t *out_bad, uint32_t *out_started, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, char *out_folder, uint32_t *out_folder_len, char *out_path, uint32_t *out_path_len, char *out_title, uint32_t *out_title_len, char *out_note, uint32_t *out_note_len);
     status_t (*set_volume)(void *ctx, int32_t centibels, int32_t *out_centibels);
     status_t (*prev)(void *ctx);
-    status_t (*play)(void *ctx, const uint8_t folder[256], const uint8_t first[256], uint8_t order, uint32_t *out_found, uint8_t *out_reading);
     status_t (*levels)(void *ctx, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[16], uint8_t *out_level);
     status_t (*pause)(void *ctx, uint8_t on, uint8_t *out_paused);
     status_t (*sleep)(void *ctx, uint32_t seconds, uint32_t *out_seconds);
     status_t (*spectrum)(void *ctx, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_bands[64], uint8_t *out_level);
     status_t (*stereo)(void *ctx, uint8_t *out_playing, uint32_t *out_serial, uint64_t *out_elapsed_ms, uint64_t *out_length_ms, int32_t *out_volume, uint32_t *out_sleep_s, uint8_t out_left[64], uint8_t out_right[64], uint8_t *out_level);
+    status_t (*start)(void *ctx, const char *folder, uint32_t folder_len, const char *first, uint32_t first_len, uint8_t order, uint32_t *out_found, uint8_t *out_reading);
 };
-
-/* Answer the music.start request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t music_reply_start(struct idl_txn idl_txn, status_t idl_st, uint32_t found, uint8_t reading)
-{
-    struct music_start_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.found = found;
-    idl_r.reading = reading;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
 
 /* Answer the music.stop request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
@@ -1221,31 +1244,45 @@ static inline status_t music_reply_next(struct idl_txn idl_txn, status_t idl_st)
 /* Answer the music.status request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t music_reply_status(struct idl_txn idl_txn, status_t idl_st, uint8_t playing, uint32_t tracks, uint32_t bad, uint32_t started, uint64_t elapsed_ms, uint64_t length_ms, int32_t volume, const uint8_t folder[256], const uint8_t path[256], const uint8_t title[128], const uint8_t note[128])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t music_reply_status(struct idl_txn idl_txn, status_t idl_st, uint8_t playing, uint32_t tracks, uint32_t bad, uint32_t started, uint64_t elapsed_ms, uint64_t length_ms, int32_t volume, const char *folder, uint32_t folder_len, const char *path, uint32_t path_len, const char *title, uint32_t title_len, const char *note, uint32_t note_len)
 {
-    struct music_status_rep idl_r;
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(8493);
+    if (!idl_b0) {
+        struct idl_rep_hdr idl_h = { 0, ERR_NO_MEMORY };
+        return idl_reply_write(idl_txn, &idl_h, sizeof(idl_h), NULL, 0);
+    }
+    struct music_status_rep *idl_r = (struct music_status_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.playing = playing;
-    idl_r.tracks = tracks;
-    idl_r.bad = bad;
-    idl_r.started = started;
-    idl_r.elapsed_ms = elapsed_ms;
-    idl_r.length_ms = length_ms;
-    idl_r.volume = volume;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_r.folder[idl_i] = folder[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_r.path[idl_i] = path[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-        idl_r.title[idl_i] = title[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-        idl_r.note[idl_i] = note[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->playing = playing;
+    idl_r->tracks = tracks;
+    idl_r->bad = bad;
+    idl_r->started = started;
+    idl_r->elapsed_ms = elapsed_ms;
+    idl_r->length_ms = length_ms;
+    idl_r->volume = volume;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, folder, folder_len, 4095, 1) ||
+                             !idl_str_ok(folder, folder_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, title, title_len, 127, 1) ||
+                             !idl_str_ok(title, title_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, note, note_len, 127, 1) ||
+                             !idl_str_ok(note, note_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_ws;
 }
 
 /* Answer the music.set_volume request kept in txn: idl_st and, if it is OK, the
@@ -1276,23 +1313,6 @@ static inline status_t music_reply_prev(struct idl_txn idl_txn, status_t idl_st)
     idl_r.status = idl_st;
     if (idl_st != OK)
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the music.play request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t music_reply_play(struct idl_txn idl_txn, status_t idl_st, uint32_t found, uint8_t reading)
-{
-    struct music_play_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.found = found;
-    idl_r.reading = reading;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
@@ -1402,6 +1422,27 @@ static inline status_t music_reply_stereo(struct idl_txn idl_txn, status_t idl_s
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
+/* Answer the music.start request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t music_reply_start(struct idl_txn idl_txn, status_t idl_st, uint32_t found, uint8_t reading)
+{
+    _Alignas(8) uint8_t idl_b0[13];
+    struct music_start_rep *idl_r = (struct music_start_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->found = found;
+    idl_r->reading = reading;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (MUSIC_REP_MAX bytes) and the handles it carries
  * into rhs (MUSIC_REP_HANDLES slots; *rhn of them). Returns the reply's
@@ -1423,25 +1464,6 @@ static inline uint32_t music_dispatch_on(handle_t ch, const struct music_ops *op
     if (n < sizeof(struct idl_req_hdr))
         return sizeof(*idl_h);
     switch (((const struct idl_req_hdr *)req)->ordinal) {
-    case MUSIC_START: {
-        const struct music_start_req *idl_q = (const struct music_start_req *)req;
-        struct music_start_rep *idl_r = (struct music_start_rep *)rep;
-        uint32_t out_found = 0;
-        uint8_t out_reading = 0;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->start) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->start(ctx, idl_q->folder, &out_found, &out_reading);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        idl_r->found = out_found;
-        idl_r->reading = out_reading;
-        return sizeof(*idl_r);
-    }
     case MUSIC_STOP: {
         const struct music_stop_req *idl_q = (const struct music_stop_req *)req;
         struct music_stop_rep *idl_r = (struct music_stop_rep *)rep;
@@ -1485,26 +1507,30 @@ static inline uint32_t music_dispatch_on(handle_t ch, const struct music_ops *op
         uint64_t out_elapsed_ms = 0;
         uint64_t out_length_ms = 0;
         int32_t out_volume = 0;
-        uint8_t out_folder[256];
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            out_folder[idl_i] = 0;
-        uint8_t out_path[256];
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            out_path[idl_i] = 0;
-        uint8_t out_title[128];
-        for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-            out_title[idl_i] = 0;
-        uint8_t out_note[128];
-        for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-            out_note[idl_i] = 0;
+        char *out_folder = (char *)((uint8_t *)rep + 43);
+        uint32_t out_folder_len = 0;
+        char *out_path = (char *)((uint8_t *)rep + 4140);
+        uint32_t out_path_len = 0;
+        char *out_title = (char *)((uint8_t *)rep + 8237);
+        uint32_t out_title_len = 0;
+        char *out_note = (char *)((uint8_t *)rep + 8366);
+        uint32_t out_note_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->status) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->status(ctx, &out_playing, &out_tracks, &out_bad, &out_started, &out_elapsed_ms, &out_length_ms, &out_volume, out_folder, out_path, out_title, out_note);
+        status_t idl_st = ops->status(ctx, &out_playing, &out_tracks, &out_bad, &out_started, &out_elapsed_ms, &out_length_ms, &out_volume, out_folder, &out_folder_len, out_path, &out_path_len, out_title, &out_title_len, out_note, &out_note_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_folder_len > 4095 || !idl_str_ok(out_folder, out_folder_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_path_len > 4095 || !idl_str_ok(out_path, out_path_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_title_len > 127 || !idl_str_ok(out_title, out_title_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_note_len > 127 || !idl_str_ok(out_note, out_note_len)))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->playing = out_playing;
@@ -1514,15 +1540,12 @@ static inline uint32_t music_dispatch_on(handle_t ch, const struct music_ops *op
         idl_r->elapsed_ms = out_elapsed_ms;
         idl_r->length_ms = out_length_ms;
         idl_r->volume = out_volume;
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            idl_r->folder[idl_i] = out_folder[idl_i];
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            idl_r->path[idl_i] = out_path[idl_i];
-        for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-            idl_r->title[idl_i] = out_title[idl_i];
-        for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-            idl_r->note[idl_i] = out_note[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 43, out_folder_len, 1);
+        idl_place(rep, &idl_rn, 4140, out_path_len, 1);
+        idl_place(rep, &idl_rn, 8237, out_title_len, 1);
+        idl_place(rep, &idl_rn, 8366, out_note_len, 1);
+        return idl_rn;
     }
     case MUSIC_SET_VOLUME: {
         const struct music_set_volume_req *idl_q = (const struct music_set_volume_req *)req;
@@ -1555,25 +1578,6 @@ static inline uint32_t music_dispatch_on(handle_t ch, const struct music_ops *op
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
-    case MUSIC_PLAY: {
-        const struct music_play_req *idl_q = (const struct music_play_req *)req;
-        struct music_play_rep *idl_r = (struct music_play_rep *)rep;
-        uint32_t out_found = 0;
-        uint8_t out_reading = 0;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->play) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->play(ctx, idl_q->folder, idl_q->first, idl_q->order, &out_found, &out_reading);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        idl_r->found = out_found;
-        idl_r->reading = out_reading;
         return sizeof(*idl_r);
     }
     case MUSIC_LEVELS: {
@@ -1717,6 +1721,41 @@ static inline uint32_t music_dispatch_on(handle_t ch, const struct music_ops *op
         idl_r->level = out_level;
         return sizeof(*idl_r);
     }
+    case MUSIC_START: {
+        const struct music_start_req *idl_q = (const struct music_start_req *)req;
+        struct music_start_rep *idl_r = (struct music_start_rep *)rep;
+        uint32_t out_found = 0;
+        uint8_t out_reading = 0;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        const void *idl_p1 = NULL;
+        uint32_t idl_l1 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p1, &idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
+            return sizeof(*idl_h);
+        if (!ops->start) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        idl_st = ops->start(ctx, (const char *)idl_p0, idl_l0, (const char *)idl_p1, idl_l1, idl_q->order, &out_found, &out_reading);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->found = out_found;
+        idl_r->reading = out_reading;
+        return sizeof(*idl_r);
+    }
     }
     idl_h->status = ERR_NOT_SUPPORTED;
     return sizeof(*idl_h);
@@ -1776,52 +1815,56 @@ static inline bool music_idempotent(uint32_t ordinal)
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
- * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good;
+ * ERR_NO_MEMORY with the message still queued: no room for the buffers
+ * (taken from the heap for each message: MUSIC_REQ_MAX + MUSIC_REP_MAX pass
+ * IDL_STACK_MAX). */
 static inline status_t music_serve_one(handle_t ch, const struct music_ops *ops, void *ctx)
 {
-    _Alignas(8) uint8_t idl_q[MUSIC_REQ_MAX];
-    _Alignas(8) uint8_t idl_r[MUSIC_REP_MAX];
+    uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8(MUSIC_REQ_MAX) + MUSIC_REP_MAX);
+    if (!idl_q)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_r = idl_q + IDL_ROUND8(MUSIC_REQ_MAX);
     handle_t idl_hs[IDL_READ_HANDLES];
     uint32_t idl_n = 0, idl_nh = 0;
-    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+    status_t idl_st = drv_channel_read(ch, idl_q, MUSIC_REQ_MAX, &idl_n, idl_hs, IDL_READ_HANDLES,
                                        &idl_nh);
-    if (idl_st == ERR_BUFFER_TOO_SMALL)
-        return idl_drain(ch, idl_n, idl_nh);
-    if (idl_st != OK)
-        return idl_st;
-    if (idl_nh) {
+    if (idl_st == ERR_BUFFER_TOO_SMALL) {
+        idl_st = idl_drain(ch, idl_n, idl_nh);
+    } else if (idl_st == OK && idl_nh) {
         idl_close_all(idl_hs, idl_nh);
         idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
-        return OK;
+    } else if (idl_st == OK) {
+        handle_t idl_rhs[IDL_REP_HANDLES];
+        uint32_t idl_rhn = 0;
+        uint32_t idl_rn = music_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+        if (!idl_rn)
+            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+        else   /* the reply's handles are gone whatever the write's status */
+            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
     }
-    handle_t idl_rhs[IDL_REP_HANDLES];
-    uint32_t idl_rhn = 0;
-    uint32_t idl_rn = music_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
-    if (!idl_rn)
-        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
-    else   /* the reply's handles are gone whatever the write's status */
-        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
-    return OK;
+    drv_free(idl_q);
+    return idl_st;
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
  * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * (idl_serve_next). Its buffers come from the heap, once (ERR_NO_MEMORY
+ * if they can't): MUSIC_REQ_MAX + MUSIC_REP_MAX pass IDL_STACK_MAX. */
 static inline status_t music_serve(handle_t ch, const struct music_ops *ops, void *ctx)
 {
-    _Alignas(8) uint8_t idl_q[MUSIC_REQ_MAX];
-    _Alignas(8) uint8_t idl_r[MUSIC_REP_MAX];
+    uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8(MUSIC_REQ_MAX) + MUSIC_REP_MAX);
+    if (!idl_q)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_r = idl_q + IDL_ROUND8(MUSIC_REQ_MAX);
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
-        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .ch = ch, .q = idl_q, .qcap = MUSIC_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
     };
-    for (;;) {
-        status_t idl_st = idl_serve_next(&idl_s);
-        if (idl_st == ERR_PEER_CLOSED)
-            return OK;
-        if (idl_st != OK)
-            return idl_st;
+    status_t idl_st;
+    while ((idl_st = idl_serve_next(&idl_s)) == OK)
         idl_s.rn = music_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
-    }
+    drv_free(idl_q);
+    return idl_st == ERR_PEER_CLOSED ? OK : idl_st;
 }

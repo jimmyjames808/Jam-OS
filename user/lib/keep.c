@@ -339,10 +339,19 @@ status_t keeper_take(struct keeper *k)
     return st;
 }
 
-void keeper_drain(struct keeper *k)
+bool keeper_drain_upto(struct keeper *k, unsigned max)
 {
-    for (unsigned i = 0; i < CHANNEL_MAX_QUEUED && keeper_take(k) == OK; i++)
-        ;
+    for (unsigned i = 0; i < max; i++)
+        if (keeper_take(k) != OK)
+            return false;   /* empty (or the service gone and its queue read) */
+    signals_t seen = 0;
+    return k->ch != HANDLE_INVALID &&
+           jam_object_wait_one(k->ch, SIG_READABLE, 0, &seen) == OK;
+}
+
+bool keeper_drain(struct keeper *k)
+{
+    return keeper_drain_upto(k, CHANNEL_MAX_QUEUED);
 }
 
 status_t keeper_attach(struct keeper *k, handle_t *service_end)

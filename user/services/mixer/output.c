@@ -91,15 +91,18 @@ status_t out_find(struct mixer *m)
             return st;   /* devmgr is gone */
         if (st != OK)
             continue;    /* no driver running for it now */
-        uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, count;
-        uint8_t nodes[8], text[240];
+        uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, nodes_len, text_len;
+        uint8_t nodes[8];
+        char text[240];
         st = hda_info_until(ch, now() + FIND_WAIT, &codec, &pin, &dac, &pcm, &formats, &amp,
-                            &jack, &count, nodes, text);
+                            &jack, nodes, &nodes_len, text, &text_len);
         if (st == OK && pin) {
             m->own_out.svc = ch;
-            /* Not kept: a successor asks devmgr again, which costs it time
-             * but no client anything. */
-            m->own_out.svc_kept = keep_slot_put(m, KEEP_DRIVER, &ch, 1) == OK && m->keep;
+            /* Kept by keep_tick, not here: this runs inside a request that
+             * has one put to make (the stream's). Unkept, a successor asks
+             * devmgr again, which costs it time but no client anything. */
+            m->own_out.svc_kept = false;
+            m->driver_to_keep = m->keep != HANDLE_INVALID;
             printf("mixer: playing through sound card %u (codec %u, dac %02x, pin %02x)\n", i,
                    codec, dac, pin);
             return OK;
@@ -112,9 +115,10 @@ status_t out_find(struct mixer *m)
 const char *out_name(struct mixer *m)
 {
     if (!m->out_name[0] && (m->own_out.svc || out_find(m) == OK)) {
-        uint8_t name[48] = { 0 };
-        if (hda_output_name_until(m->own_out.svc, now() + CALL_WAIT, name) == OK)
-            snprintf(m->out_name, sizeof(m->out_name), "%.*s", 47, (const char *)name);
+        char name[48];
+        uint32_t len;
+        if (hda_output_name_until(m->own_out.svc, now() + CALL_WAIT, name, &len) == OK)
+            snprintf(m->out_name, sizeof(m->out_name), "%.*s", 47, name);
     }
     return m->out_name;
 }
@@ -129,6 +133,7 @@ void out_forget_driver(struct mixer *m)
     if (w->svc_kept)
         keep_slot_drop(m, KEEP_DRIVER);
     w->svc_kept = false;
+    m->driver_to_keep = false;
 }
 
 /* Ask for the end of the period after frame `after`, without waiting
@@ -136,8 +141,8 @@ void out_forget_driver(struct mixer *m)
 void out_send_wait(struct mixer *m, uint64_t after)
 {
     struct out *o = &m->nums->out;
-    struct hda_wait_period_req q = {
-        .txid = TXID_BASE | (++m->nums->next_txid & 0xffff), .ordinal = HDA_WAIT_PERIOD,
+    struct hda_stream_wait_period_req q = {
+        .txid = TXID_BASE | (++m->nums->next_txid & 0xffff), .ordinal = HDA_STREAM_WAIT_PERIOD,
         .after = after,
     };
     o->waiting = true;
@@ -349,10 +354,11 @@ status_t out_map(struct mixer *m, handle_t vmo, uint32_t size, uint32_t period)
  * bits 17-20 are 16, 20, 24 and 32 bits), 16 if it can't say. */
 static uint32_t best_bits(const struct out_own *w)
 {
-    uint32_t codec, pin = 0, dac, pcm = 0, formats, amp, jack, count;
-    uint8_t nodes[8], text[240];
+    uint32_t codec, pin = 0, dac, pcm = 0, formats, amp, jack, nodes_len, text_len;
+    uint8_t nodes[8];
+    char text[240];
     if (hda_info_until(w->svc, now() + CALL_WAIT, &codec, &pin, &dac, &pcm, &formats, &amp, &jack,
-                       &count, nodes, text) != OK)
+                       nodes, &nodes_len, text, &text_len) != OK)
         return 16;
     return pcm & (1u << 20) ? 32 : pcm & (1u << 19) ? 24 : pcm & (1u << 18) ? 20 : 16;
 }
@@ -402,7 +408,7 @@ static status_t open_stream(struct mixer *m)
     state_commit(m);
     out_publish(m);
     if (st == OK)
-        st = hda_start_until(ch, now() + CALL_WAIT);
+        st = hda_stream_start_until(ch, now() + CALL_WAIT);
     if (st == OK)
         out_send_wait(m, 0);
     return st;
@@ -412,6 +418,8 @@ static status_t out_open(struct mixer *m)
 {
     struct out *o = &m->nums->out;
     struct out_own *w = &m->own_out;
+    if (!keep_gate(m))   /* its put needs room: out_need tries again soon */
+        return ERR_SHOULD_WAIT;
     status_t st = out_find(m);
     if (st == OK)
         st = open_stream(m);
@@ -498,6 +506,10 @@ status_t out_need(struct mixer *m)
         o->retry_at = now() + OUT_REOPEN_RETRY_NS;
         return st;
     }
+    if (st == ERR_SHOULD_WAIT) {   /* the keeper's queue is full: not a failure */
+        o->retry_at = now() + KEEP_RETRY_NS;
+        return st;
+    }
     if (st != OK) {
         if (!o->retry_at)
             printf("mixer: can't open the output (%s): trying again every %u ms\n",
@@ -521,7 +533,7 @@ void out_serve(struct mixer *m)
     struct out_own *w = &m->own_out;
     w->pending = false;
     for (int i = 0; i < 16 && w->ch; i++) {
-        struct hda_wait_period_rep r;
+        struct hda_stream_wait_period_rep r;
         uint32_t n = 0, nh = 0;
         struct channel_read_args a = {
             .h = w->ch, .rd_cap = sizeof(r), .rd_bytes = (uint64_t)(uintptr_t)&r,
@@ -578,7 +590,7 @@ uint64_t out_position(struct mixer *m)
 {
     uint64_t frames = 0;
     uint32_t off = 0;
-    if (m->own_out.ch && hda_position_until(m->own_out.ch, now() + CALL_WAIT, &frames, &off) == OK)
+    if (m->own_out.ch && hda_stream_position_until(m->own_out.ch, now() + CALL_WAIT, &frames, &off) == OK)
         return frames;
     return m->nums->out.played;
 }

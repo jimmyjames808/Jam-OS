@@ -12,7 +12,7 @@
  *   focus.c     the keyboard focus and its rules, the keys no client sees,
  *               the window manager's hooks' defaults;
  *   sources.c   input sources: the `input` protocol, a budget each;
- *   ctl.c       compctl's channels (levels, connect_input, blank,
+ *   ctl.c       compctl's channels (levels, add_source, blank,
  *               new_client, stats, the layout) and the requests to init
  *               (Ctrl+Alt+Del's reboot, Super+Enter's terminal);
  *   testwin.c   the `testwin` test power's windows.
@@ -92,9 +92,11 @@ void     seat_input_serial(struct comp_client *cl, uint32_t serial);
 /* keyboard.c */
 status_t keyboard_init(void);
 status_t keyboard_create(struct comp_client *cl, uint32_t id, uint32_t version);
-/* A key from source src (input.key): usage, INPUT_KEY_*, hid's modifier
- * byte. */
+/* A key from source src (input.key): usage, INPUT_KEY_UP or DOWN, hid's
+ * modifier byte. */
 void     keyboard_key(unsigned src, uint16_t usage, uint8_t state, uint8_t mods);
+/* The keyboards' lights for the locks on now (INPUT_LED_*). */
+uint8_t  keyboard_leds(void);
 /* A terminal's bytes from source src (input.text) as the key presses that
  * type them. */
 void     keyboard_text(unsigned src, struct termkeys *t, const uint8_t *bytes, unsigned n);
@@ -129,7 +131,11 @@ void     focus_window_mapped(struct comp_window *w);
 void     focus_window_gone(struct comp_window *w);
 
 /* sources.c */
-status_t sources_connect(handle_t *out);
+/* compctl.add_source: serve the `input` channel end ch (consumed: closed
+ * if it can't be, ERR_NO_RESOURCES with SOURCES_MAX already). */
+status_t sources_add(handle_t ch);
+/* The locks changed: every keyboard source is sent its lights (input.leds). */
+void     sources_leds(uint8_t leds);
 void     sources_packet(unsigned slot);
 void     sources_serve(void);
 bool     sources_more(void);
@@ -156,16 +162,23 @@ void     ctl_terminal_run(const char *cmd, bool busy);
  * Every call to another process is sent without waiting; the answers
  * come to the port (SEAT_KEY_DESK + n). */
 #define CTL_MAX         8u   /* ADMIN and INPUT compctl channels at once */
-#define NOTIFY_CHANNELS 8u   /* NOTIFY ones, apart */
+#define NOTIFY_CHANNELS 8u   /* /svc/notify's channels (notify.idl), apart */
 #define CTL_ALL         (CTL_MAX + NOTIFY_CHANNELS)
 void     deskctl_init(void);
 void     deskctl_packet(uint64_t key);
 uint64_t deskctl_deadline(void);
-/* compctl's notice methods for the channel in `slot` (its generation
- * `gen`: a slot used again is another channel). */
-status_t deskctl_notify(unsigned slot, uint32_t gen, const uint8_t title[64],
-                        const uint8_t body[96], uint8_t icon, uint8_t tint,
-                        const uint8_t buttons[72], uint32_t *out_id);
+/* A notice as notify.idl's notify and post give it (ctl.c copies the
+ * texts, NUL-terminated; the generated server checked their length and
+ * UTF-8; "" ends the buttons). */
+struct deskctl_note {
+    char    title[64], body[96];
+    char    buttons[3][24];
+    uint8_t icon, tint;
+};
+/* notify.idl's methods for the channel in `slot` (its generation `gen`:
+ * a slot used again is another channel). */
+status_t deskctl_notify(unsigned slot, uint32_t gen, const struct deskctl_note *note,
+                        uint32_t *out_id);
 status_t deskctl_notify_wait(unsigned slot, uint32_t gen, struct idl_txn txn, uint32_t *out_id,
                              uint8_t *out_button);
 status_t deskctl_withdraw(unsigned slot, uint32_t gen, uint32_t id);

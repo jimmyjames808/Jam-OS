@@ -7,7 +7,9 @@
 # from init's start, 0.1 s apart, each the dark screen or a frame of the
 # video (the compositor shows only the splash's background until the
 # splash's window maps: no desktop, terminal or pointer before it), two
-# frames a second apart, then the terminal.
+# frames a second apart, then the terminal. Then the splash's self-test
+# and its alpha demo (`run splash --alpha`, a full-screen window) from the
+# shell.
 wait 120 init: hello from ring 3
 shots comp-early 12 0.1
 wait 120 splash: waited
@@ -25,5 +27,15 @@ wait 60 right-after
 wait {prompt}
 sleep 1
 shot comp-shell
+send run splash --selftest
+wait 240 splash: selftest
+wait 240 run: bin/splash exited
+wait {prompt}
+send run splash --alpha
+wait 60 splash: alpha demo drawn
+sleep 1
+shot splash-alpha
+wait 60 run: bin/splash exited
+wait {prompt}
 send reboot -f
 wait reboot: resetting

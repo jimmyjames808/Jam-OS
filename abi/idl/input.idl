@@ -1,24 +1,35 @@
 # input: an input source (a HID driver, the serial port) feeding the
-# console. The console serves it on each channel console.connect_input
-# hands out; the source calls it. Format: see tools/genidl.py.
+# compositor (user/services/compositor/sources.c). The compositor serves
+# it on each channel whose end compctl.add_source gives it; the source sends its
+# events on it, and the compositor sends a keyboard its lights. Every
+# message is an event (M12's Q4): nothing waits for the other side, and
+# the queue's limit is the flow control: a source keeps what the full
+# queue refuses and sends it later (hid never drops a key event; mouse
+# movement may merge). Format: see tools/genidl.py.
 #
-# Restart: if the channel's peer closes (the console restarted), a HID
+# Restart: if the channel's peer closes (the compositor restarted), a HID
 # driver exits 0 and devmgr rebinds it, which connects it to the new
-# console. Keys sent to the old console and not yet taken are lost.
+# compositor (serialin exits 0 and init starts it again). Events sent to
+# the old compositor and not yet taken are lost, and so are the keys
+# held down there; the new compositor sends each keyboard its lights again
+# once it says it is ready.
 #
 # usage: the HID Keyboard/Keypad page (0x07) usage id (4 = a ... 0x39 =
-# Caps Lock, 0x4c = Delete, 0x50..0x52 arrows, 0xe0..0xe7 modifiers).
-# state: INPUT_KEY_UP / DOWN / REPEAT; mods: INPUT_MOD_* (the HID boot
-# report's modifier byte); codepoint: the character in the US layout with
-# Shift, Caps Lock and Num Lock applied (Ctrl, Alt and GUI are NOT: Ctrl+C
-# is usage 0x06, codepoint 'c', a CTRL bit in mods), Enter '\n', Tab
-# '\t', Backspace '\b', Escape 0x1b; 0 for keys that type nothing
-# (arrows, F-keys, modifiers, locks). Ctrl+Alt+Del is just usage 0x4c DOWN
-# with CTRL and ALT set: the console decides. The constants are below.
+# Caps Lock, 0x4c = Delete, 0x50..0x52 arrows, 0x59..0x63 the keypad's
+# digits, 0xe0..0xe7 modifiers), as the keyboard reports it: no character
+# (M12's Q15: the layout is libos's keymap, <keymap.h>, which the
+# compositor's clients decode with), no repeats (Wayland clients repeat
+# keys themselves, at the rate wl_keyboard.repeat_info says), the keypad's
+# keys as themselves whatever Num Lock says. state: INPUT_KEY_UP or DOWN;
+# mods: INPUT_MOD_* (the HID boot report's modifier byte). Ctrl+Alt+Del is
+# just usage 0x4c DOWN with CTRL and ALT set: the compositor decides. The
+# lock keys are sent as keys: the compositor keeps the locks and lights
+# them (leds). The constants are below.
 
 protocol input 11
 
-# key's state.
+# key's state (KEY_REPEAT: never on this protocol; the console's key
+# channels, <openkeys.h>, carry it).
 const KEY_UP         0
 const KEY_DOWN       1
 const KEY_REPEAT     2
@@ -42,17 +53,32 @@ const MOD_ALT        0x44
 const BTN_LEFT       1 << 0
 const BTN_RIGHT      1 << 1
 const BTN_MIDDLE     1 << 2
+# leds' bits: the boot keyboard's output report (HID LED page 1..3).
+const LED_NUM        1 << 0
+const LED_CAPS       1 << 1
+const LED_SCROLL     1 << 2
 
-1  key   (u16 usage, u8 state, u8 mods, u32 codepoint) -> ()
-# buttons: bit 0 left, 1 right, 2 middle.
-2  mouse  (i16 dx, i16 dy, i8 wheel, u8 buttons) -> ()
+# 1 to 4 (key with its US character, mouse, text in a fixed array and
+# ready, all calls answered): gone (M12's review W6), not reused.
+
+# A key pressed or let go (UP or DOWN only: anything else is dropped).
+5  key    (u16 usage, u8 state, u8 mods) event
+# The mouse: counts moved since the last report (+x right, +y down), the
+# wheel's notches (+ away from the user), the buttons held now (BTN_*).
+# A source may merge reports whose buttons are the same.
+6  mouse  (i16 dx, i16 dy, i8 wheel, u8 buttons) event
 # Raw bytes from a terminal (the serial source): printable text and VT100
 # escape sequences (arrows: ESC [ A..D), CR or LF for Enter, 0x7f or 0x08
-# for Backspace.
-3  text   (u16 length, u8[64] bytes) -> ()
-# The source is ready: a keyboard (INPUT_READY_KEYBOARD) or a mouse
-# (INPUT_READY_MOUSE), its USB vendor and product id; its reports flow
-# from now on. hid calls it once per start; the console logs each with
-# the time since the kernel started, so the boot log says when the first
-# keyboard and mouse could be used.
-4  ready  (u8 kind, u16 vendor, u16 product) -> ()
+# for Backspace; typed as the keys that make them.
+7  text   (u8[<=64] bytes) event
+# The source is ready: a keyboard (READY_KEYBOARD) or a mouse
+# (READY_MOUSE), its USB vendor and product id; its reports flow from now
+# on. hid sends it once per start; the compositor logs each with the time
+# since the kernel started, so the boot log says when the first keyboard
+# and mouse could be used, and sends a keyboard its lights.
+8  ready  (u8 kind, u16 vendor, u16 product) event
+# To the source: the keyboard's lights (LED_*), the locks as the
+# compositor keeps them: after the source's ready (a keyboard), and to
+# every keyboard whenever a lock key changes one. A keyboard starts dark
+# and lights what it is told.
+9  leds   -> (u8 leds) event

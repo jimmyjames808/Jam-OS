@@ -1,0 +1,60 @@
+# notify: the desktop's notices (user/services/compositor: ctl.c serves
+# the channels, deskctl.c and notify.c have the cards). Its own protocol
+# since M12 (review W9, DQ2): /svc/notify is another service than compctl,
+# with its own name, cap and posters.
+#
+# /svc/notify is a shared channel init makes once and keeps (both ends, as
+# /svc/wayland's), whose server end each compositor is started with
+# (SR_USER + 5). The svc protocol's connect on it (abi/idl/svc.idl)
+# answers a new channel of this protocol, so whoever holds it may post
+# notices and nothing more: init publishes it for the programs whose list
+# asks (`svc notify`: the shell's `notify`), gives a duplicate to devmgr
+# (drivers that crash), volumes (sticks) and netstack (connected,
+# disconnected), and connects for its own (the update's, the crash after
+# a panic). <notice.h> is the posters' side for a service. At most
+# NOTIFY_CHANNELS (8) channels at once: past that the connect is
+# ERR_NO_RESOURCES. Format: see tools/genidl.py.
+#
+# Texts are UTF-8 (str: checked by the generated server); a control
+# character in any (below 0x20, or 0x7f) is ERR_INVALID_ARGS from the
+# compositor, and is dropped with a post. `icon`: the letter on the card's
+# tile ('A'-'Z', '0'-'9'; 0 for an "i"); `tint`: the tile's jam colour (the
+# TINT_ constants below).
+#
+# Reconnect: the compositor keeps nothing across a restart. The channel
+# closes with it and its notices go with it: after ERR_PEER_CLOSED connect
+# again on /svc/notify (calls wait there for the next compositor, bounded
+# by the caller's deadline); a notify_wait still waiting ends with
+# ERR_PEER_CLOSED.
+
+protocol notify 40
+
+const TINT_BLACKCURRANT 0
+const TINT_RASPBERRY    1
+const TINT_APRICOT      2
+
+# A notice on the desktop: a frosted card in the top right (docs/G1-PLAN.md
+# "The look"). `title` (not empty) and `body` (one line, "" for none) are
+# cut short on the card to fit. Up to three buttons: `button1` .. `button3`
+# (the first empty one ends the list): a card without buttons fades away
+# after about 5 s (or a click), one with buttons stays until one is
+# pressed, which is told to this channel (notify_wait); then the card goes.
+# Answers the notice's id (never 0). At most 3 cards with buttons from a
+# channel at once (and five cards on the screen: a new one pushes out the
+# oldest without buttons): ERR_NO_RESOURCES. ERR_NOT_SUPPORTED: the
+# compositor runs without a desktop (`nodesk`). A channel that closes
+# takes its cards with buttons with it.
+1  notify       (str[<=63] title, str[<=95] body, u8 icon, u8 tint, str[<=23] button1, str[<=23] button2, str[<=23] button3) -> (u32 id)
+# Answered when a button of a notice posted on this channel was pressed:
+# the notice's id and the button (0 the first). Presses not yet taken are
+# kept, at most 4 (older ones are dropped: said in the log), and answered
+# at once in the order they came. One call waits per channel: a second
+# while one waits is ERR_BAD_STATE.
+2  notify_wait  () -> (u32 id, u8 button) later
+# Take a notice posted on this channel off the screen (it fades away).
+# ERR_NOT_FOUND: no such notice from this channel on the screen now.
+3  withdraw     (u32 id) -> ()
+# A notice without buttons, nothing answered (review W10: a service's loop
+# never waits for it; its id isn't needed): as notify's, and a notice the
+# compositor refuses (bad text, `nodesk`) is said in its log only.
+4  post         (str[<=63] title, str[<=95] body, u8 icon, u8 tint) event

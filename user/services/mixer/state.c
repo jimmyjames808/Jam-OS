@@ -35,17 +35,18 @@
 #include <keep.h>
 #include "internal.h"
 
-/* The biggest reply of either protocol (svc.connect's is smaller). */
-#define REP_CAP (AUDIO_REP_MAX > AUDIOCTL_REP_MAX ? AUDIO_REP_MAX : AUDIOCTL_REP_MAX)
-
-_Static_assert(REQ_CAP_AUDIO >= REQ_CAP_CTL, "the slot holds the bigger request");
+/* The biggest request and reply of the three protocols (svc.connect's are
+ * smaller). */
+#define MAX2(a, b) ((a) > (b) ? (a) : (b))
+#define REQ_CAP    MAX2(MAX2(REQ_CAP_AUDIO, REQ_CAP_STREAM), REQ_CAP_CTL)
+#define REP_CAP    MAX2(MAX2(AUDIO_REP_MAX, AUDIO_STREAM_REP_MAX), AUDIOCTL_REP_MAX)
 _Static_assert(MIXER_MAX_STREAMS <= KEEP_CLIENT - KEEP_STREAM, "stream keep slots");
 _Static_assert(MIXER_CLIENTS <= KEEP_OUT - KEEP_CLIENT, "opener keep slots");
 
 static const struct svcstate_layout layout = {
     .kind = STATE_KIND,
     .layout = STATE_LAYOUT,
-    .req_cap = REQ_CAP_AUDIO,
+    .req_cap = REQ_CAP,
     .rep_cap = REP_CAP,
     .user_size = sizeof(struct mixer_saved),
 };
@@ -163,11 +164,55 @@ const char *state_check(const struct mixer_state *n)
 
 /* ---- the keeper ------------------------------------------------------------------- */
 
+/* Does the keep channel's queue have room for a message (or has the keeper
+ * gone, which the next write says)? */
+static bool keep_has_room(const struct mixer *m)
+{
+    signals_t seen = 0;
+    return jam_object_wait_one(m->keep, SIG_WRITABLE | SIG_PEER_CLOSED, 0, &seen) == OK;
+}
+
+bool keep_gate(struct mixer *m)
+{
+    if (!m->keep || keep_has_room(m)) {
+        m->blocked_since = 0;
+        return true;
+    }
+    uint64_t t = now();
+    if (!m->blocked_since)
+        m->blocked_since = t;
+    if (t - m->blocked_since >= KEEP_STUCK_NS)
+        return true;   /* stopped: its put refuses the request */
+    if (!m->keep_blocked && m->blocks++ < 8)
+        printf("mixer: the keeper's queue is full: requests that need it wait\n");
+    m->keep_blocked = true;
+    return false;
+}
+
+/* A put is never recorded in the state before it is queued (the order
+ * <keep.h> relies on: a successor finds a queued put whatever moment this
+ * process dies at, but not one that was only meant), so it can't be put
+ * off: the requests that make one are taken only when the queue has room
+ * (keep_gate), and one put finds it. A request that makes two (or a
+ * thread of init's that reads slowly) may find the queue full: it waits
+ * KEEP_ROOM_WAIT, and only then is refused, the caller refusing what it
+ * would have kept. */
 status_t keep_slot_put(struct mixer *m, uint32_t slot, const handle_t *hs, unsigned n)
 {
     if (!m->keep)
         return OK;
+    bool was_due = slot < KEEP_SLOTS && m->drop_due[slot];
+    uint64_t until = now() + KEEP_ROOM_WAIT;
     status_t st = keep_put(m->keep, slot, hs, n);
+    while (st == ERR_SHOULD_WAIT && now() < until) {
+        signals_t seen = 0;
+        (void)jam_object_wait_one(m->keep, SIG_WRITABLE | SIG_PEER_CLOSED, until, &seen);
+        st = keep_put(m->keep, slot, hs, n);
+    }
+    if (st == OK && was_due) {   /* the put replaces what the keeper held there */
+        m->drop_due[slot] = false;
+        m->drops_due--;
+    }
     if (st != OK)
         printf("mixer: the keeper can't keep slot %u (%s): refused\n", slot, status_str(st));
     return st;
@@ -178,13 +223,60 @@ void keep_slot_drop(struct mixer *m, uint32_t slot)
     if (!m->keep)
         return;
     status_t st = keep_drop(m->keep, slot);
+    if (st == ERR_SHOULD_WAIT && slot < KEEP_SLOTS) {   /* not lost: keep_tick tells it */
+        if (!m->drop_due[slot])
+            m->drops_due++;
+        m->drop_due[slot] = true;
+        return;
+    }
+    if (slot < KEEP_SLOTS && m->drop_due[slot]) {   /* told now (or never will be): no longer due */
+        m->drop_due[slot] = false;
+        m->drops_due--;
+    }
     if (st != OK)   /* it holds the slot until it gives the mixer up: a client's end stays */
         printf("mixer: the keeper can't be told to drop slot %u (%s)\n", slot, status_str(st));
 }
 
+uint64_t keep_tick(struct mixer *m, uint64_t deadline)
+{
+    if (!m->keep)
+        return deadline;
+    if (m->keep_blocked && keep_has_room(m)) {
+        m->keep_blocked = false;   /* the requests left queued are taken again */
+        m->blocked_since = 0;
+    }
+    /* The driver's channel is kept as soon as the queue has room (not with
+     * the request that found the driver: that one's put is the stream's). */
+    struct out_own *w = &m->own_out;
+    if (m->driver_to_keep && w->svc && !m->keep_blocked) {
+        status_t st = keep_put(m->keep, KEEP_DRIVER, &w->svc, 1);
+        if (st == OK)
+            w->svc_kept = true;
+        if (st != ERR_SHOULD_WAIT)
+            m->driver_to_keep = false;   /* kept, or not to be (a successor asks devmgr again) */
+    }
+    for (uint32_t slot = 0; m->drops_due && slot < KEEP_SLOTS; slot++) {
+        if (!m->drop_due[slot])
+            continue;
+        status_t st = keep_drop(m->keep, slot);
+        if (st == ERR_SHOULD_WAIT)
+            break;   /* still full: the rest wait too */
+        m->drop_due[slot] = false;
+        m->drops_due--;
+        if (st != OK)
+            printf("mixer: the keeper can't be told to drop slot %u (%s)\n", slot,
+                   status_str(st));
+    }
+    if (!m->drops_due && !m->keep_blocked && !m->driver_to_keep)
+        return deadline;
+    uint64_t next = now() + KEEP_RETRY_NS;
+    return deadline < next ? deadline : next;
+}
+
 /* ---- requests in slots ------------------------------------------------------------ */
 
-status_t req_take(struct mixer *m, handle_t ch, uint32_t key, bool ctl, unsigned *slot)
+status_t req_take(struct mixer *m, handle_t ch, uint32_t key, enum req_proto proto,
+                  unsigned *slot)
 {
     unsigned i;
     struct idl_slot is;
@@ -192,13 +284,16 @@ status_t req_take(struct mixer *m, handle_t ch, uint32_t key, bool ctl, unsigned
     /* The protocol's generated take, which sends the reply waiting first: a
      * message too long for the slot is answered ERR_INVALID_ARGS there, one
      * under 4 bytes (no txid) dropped. */
-    status_t st = ctl ? audioctl_take_slot(ch, &is, &m->reply)
-                      : audio_take_slot(ch, &is, &m->reply);
+    status_t st = proto == PROTO_CTL    ? audioctl_take_slot(ch, &is, &m->reply)
+                  : proto == PROTO_STREAM ? audio_stream_take_slot(ch, &is, &m->reply)
+                                          : audio_take_slot(ch, &is, &m->reply);
     *slot = REQ_NONE;
     if (!svcstate_taken(&m->state, i) || st != OK)
         return st;
     uint32_t n = *is.n, nh = *is.nh;
-    if (nh || n > (ctl ? REQ_CAP_CTL : REQ_CAP_AUDIO)) {
+    uint32_t cap = proto == PROTO_CTL ? REQ_CAP_CTL : proto == PROTO_STREAM ? REQ_CAP_STREAM
+                                                                            : REQ_CAP_AUDIO;
+    if (nh || n > cap) {
         idl_close_all(m->state.handles, nh);
         req_status(m, i, ch, ERR_INVALID_ARGS);
         return OK;

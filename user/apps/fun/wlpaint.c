@@ -3,8 +3,8 @@
  * The window has two buffers (libjwl's, in a pool the compositor reads),
  * and each present writes into whichever the compositor isn't reading.
  * Both are kept up to date without copying a whole frame: a present
- *   1. compares the back buffer with what was shown (scr.shown), as on a
- *      borrowed screen, in pieces of PSEG pixels by bands of PBAND rows,
+ *   1. compares the back buffer with what was shown (scr.shown), in
+ *      pieces of PSEG pixels by bands of PBAND rows,
  *      and copies each changed piece to scr.shown; each one is marked in
  *      `pend` (changed since the last commit: its damage) and in
  *      `owed[i]` for both buffers (what buffer i doesn't have yet);
@@ -252,7 +252,7 @@ void wl_present(bool all)
         return;
     pool_run(compare_band, &all, (uint32_t)bands());
     if (!changed())
-        return;   /* as on a borrowed screen: nothing to write, nothing to wait for */
+        return;   /* nothing to write, nothing to wait for */
     wl_wait_frame();
     struct jwl_frame fr;
     if (free_buffer(&fr) != OK)

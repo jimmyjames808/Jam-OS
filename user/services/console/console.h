@@ -3,19 +3,17 @@
  *   text.c     the text model (scrollback, the current line) and the
  *              alternate screen's grid
  *   term.c     program output as a small terminal: escapes, UTF-8
- *   screen.c   drawing the cells on the framebuffer, and lending it out
- *   window.c   the window mode: the terminal as a Wayland client
+ *   screen.c   what the screen shows: the cells walked for winpaint.c
+ *   window.c   the window: the terminal as a Wayland client
  *   winpaint.c ... drawing the cells into its window's buffers
  *   wlinput.c  ... its size, and Wayland's keys and pointer as input events
  *   cellpaint.c a cell drawn in the 8x16 bitmap or the smooth font (cells.h)
  *   view.c     which lines of the text the screen shows
  *   select.c   the mouse's selection: its geometry and its text
  *   clip.c     ... in the window: the mouse and the keys that copy and paste
- *   keys.c     the focus stack of key channels, and the input sources
+ *   keys.c     the keys, and the focus stack of key channels
  *   paste.c    pasted text typed into the focus
  *   clients.c  the console protocol's clients and their levels
- *   notices.c  the few things worth a line while the kernel log is off
- *              the screen
  *   main.c     the kernel log, startup and the event loop */
 #pragma once
 
@@ -33,7 +31,6 @@
 #define SCROLLBACK 4000         /* committed lines kept */
 #define MAX_CLIENTS 32          /* SR_USER + 0..7 at start (ADMIN), then new_client's */
 #define START_CLIENTS 8
-#define MAX_SOURCES 16
 #define MAX_FOCUS   8
 #define PENDING_KEYS 256
 #define RENDER_NS  16000000ull
@@ -57,7 +54,6 @@
 #define A_STAMP   ATTR(C_DARK, C_BLACK)
 #define A_PROC    ATTR(C_BGREEN, C_BLACK)
 #define A_OUT     ATTR(C_WHITE, C_BLACK)
-#define A_NOTICE  ATTR(C_BYELLOW, C_BLACK)
 
 /* Client levels (console.idl new_client): see main.c. */
 enum { L_ADMIN, L_SHELL, L_PROGRAM };
@@ -70,22 +66,22 @@ struct client {
 };
 
 /* Port keys: the kind in the high half, an index in the low. */
-enum { K_KLOG = 1, K_CLIENT, K_SOURCE, K_ALT, K_LEASE, K_INIT, K_WL };
+enum { K_KLOG = 1, K_CLIENT, K_ALT, K_WL };
 #define KEY(kind, i) ((uint64_t)(kind) << 32 | (i))
 
 /* main.c */
 extern handle_t root;              /* SR_RESOURCE */
 extern handle_t port;              /* everything we wait for */
-/* Kernel log lines logged so far go into the scrollback (or, while the
- * log is off the screen, to notices.c). */
+/* Kernel log lines logged so far go into the scrollback (those that are
+ * shown: console.show_log). */
 void klog_event(void);
 
 /* ---- view.c: which lines the screen shows ------------------------------------
  *
  * Lines are numbered as the scrollback numbers them: 0 to committed - 1
- * the committed ones, `committed` the current line (the cursor's). On the
- * full-screen console (nocomp) the current line is always the bottom row,
- * as it ever was. In a window (from_top) the text starts at the top as in
+ * the committed ones, `committed` the current line (the cursor's). Without
+ * a window (no compositor: nothing shows it) the current line is the
+ * bottom row. In a window (from_top) the text starts at the top as in
  * any terminal: the screen's first row is line `top` (0 at the start, the
  * current line after a clear) until the current line reaches the bottom
  * row; from then on the screen scrolls, the current line on the bottom
@@ -126,8 +122,6 @@ bool text_init(void);
 /* A kernel log line (without its newline), wrapped at cols, above the
  * current line. */
 void kernel_line(const char *s, size_t n);
-/* A notice (notices.c), the same way, in its own colour. */
-void notice_out(const char *s, size_t n);
 /* The glyph for code point cp (not a control character): ASCII, a Latin
  * letter, the box drawing and block elements as they are, anything else
  * '?'. */
@@ -169,36 +163,16 @@ void out_char(uint8_t ch);
 /* ESC [ p m. */
 void sgr(uint32_t p);
 
-/* ---- screen.c: the framebuffer ----------------------------------------------- */
+/* ---- screen.c: what the screen shows ----------------------------------------- */
 
-/* Take the framebuffer from the kernel and size cols x rows to it; false:
- * serial only. */
-bool screen_init(void);
-/* The shadow grid for cols x rows. */
-bool screen_alloc(void);
-/* Draw the cells that changed since the last render. */
+/* Draw the cells that changed since the last render (into the window). */
 void render(void);
 /* What the screen shows now, cell by cell: show(x, y, cell, marks) for
  * each of the rows x cols cells (the scrollback's view and the current
  * line, or the alternate screen); marks: CELL_CURSOR, CELL_SELECTED. */
 void grid_walk(void (*show)(uint32_t x, uint32_t y, struct cell c, uint8_t inv));
-/* Quiet (the boot splash is coming, init's argument "quiet"): draw nothing
- * until a lent screen comes back, or until `until` (uptime ns) if nobody
- * borrows it, so the kernel's dark splash background stays up with no
- * text on it. */
-void screen_quiet(uint64_t until);
-status_t op_lend_screen(void *ctx, uint32_t *w, uint32_t *h, uint32_t *pitch, uint8_t *rs,
-                        uint8_t *gs, uint8_t *bs, uint64_t *size, handle_t *screen,
-                        handle_t *out_lease);
-/* A program has the screen (lend_screen) and hasn't given it back. */
-bool screen_lent(void);
-/* console.blank: on, the whole screen the splash background and nothing
- * drawn; off, all of it drawn again. */
-void screen_blank(bool on);
-/* The lease's other end closed: the screen is ours again. */
-void lease_ended(void);
 
-/* ---- keys.c: keys and input sources ----------------------------------------- */
+/* ---- keys.c: keys and the focus stack ----------------------------------------- */
 
 extern handle_t focus[MAX_FOCUS];
 extern struct client *focus_client[MAX_FOCUS];   /* the client that opened each */
@@ -206,32 +180,12 @@ extern unsigned nfocus;
 /* Drop focus i (its client is gone, or it was pushed out). */
 void focus_drop(unsigned i);
 status_t op_open_keys(void *ctx, handle_t *out);
-status_t op_connect_input(void *ctx, handle_t *out);
-/* Input source i is readable (or gone). */
-void source_event(unsigned i);
-/* A key, from an input source or the window (terminal: from a terminal's
- * text, where PageUp scrolls back without Shift): Ctrl+Alt+Del, the
- * scrollback's keys, or to the focus. */
-void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp, bool terminal);
-/* A mouse report, from an input source or the window: to the focus if
- * it asked for the mouse, else the wheel scrolls back. */
-void mouse_event(const struct input_mouse_event *ev);
-/* Does the focus (the newest key channel) want the mouse? Then the
- * window's pointer is its, not the selection's. */
-bool focus_wants_mouse(void);
-/* Super+Enter: ask init for another terminal (initctl.terminal), without
- * waiting; a refusal is said on this terminal. */
-void terminal_ask(void);
-/* Something came on init's control channel: the answer to a request of
- * ours (a failed reboot, a terminal or not), or init's end closed while
- * a reboot is asked for (reset the machine). */
-void init_event(void);
-/* Watch init's control channel for answers (at start). */
-void init_watch(void);
-/* When the console resets the machine itself if init hasn't
- * (DEADLINE_NEVER: no reboot asked for); reboot_due does it then. */
-uint64_t reboot_deadline(void);
-void reboot_due(void);
+/* A key from the window: the scrollback's keys, or to the focus. */
+void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp);
+/* A mouse report from the window (con_mouse: wlinput.c): the wheel
+ * scrolls back. */
+struct con_mouse;
+void mouse_event(const struct con_mouse *ev);
 
 /* ---- paste.c: pasted text typed into the focus ------------------------------------ */
 
@@ -298,8 +252,13 @@ int  term_font_parse(const char *value);
  * left modifier keys. false: a key with no HID usage (dropped). */
 bool key_of_wayland(uint32_t code, uint32_t state, uint32_t mods, uint32_t cp,
                     struct input_key_event *out);
-/* The key asks for another terminal: Super+Enter pressed. */
-bool asks_terminal(const struct input_key_event *ev);
+/* A wl_pointer event as a mouse report: whole pixels moved, the wheel in
+ * notches (+ away from the user), the buttons held (INPUT_BTN_*). */
+struct con_mouse {
+    int16_t dx, dy;
+    int8_t  wheel;
+    uint8_t buttons;
+};
 /* What mouse_of_wayland keeps between pointer events. */
 struct pointer_track {
     int32_t x, y;        /* the last position, surface coordinates, fixed 24.8 */
@@ -309,7 +268,7 @@ struct pointer_track {
  * held, the wheel in notches, + away from the user); false: it makes
  * none (enter, leave, no movement, another axis or button). */
 bool mouse_of_wayland(struct pointer_track *p, const struct jwl_event *ev,
-                      struct input_mouse_event *out);
+                      struct con_mouse *out);
 /* The pointer's shape at surface pixel (x, y) of a window with a cols x
  * rows grid of l's cells inside its padding (wp-cursor-shape-v1's): the
  * text bar over the text, the arrow over the padding. */
@@ -399,37 +358,6 @@ void   clip_clear(void);
 bool   window_copy(const char *text, size_t n);
 /* Ask for the selection's text: it comes to paste_start (JWL_EV_PASTE). */
 void   window_paste(void);
-
-/* ---- notices.c: while the kernel log is off the screen ---------------------------- */
-
-/* Who wrote a log line, from the kernel's mark on it (klog_lines) and
- * init's table of the system's writers (<logwriters.h>): only the kernel's
- * own lines and those of init's, devmgr's and logd's real processes can
- * make notices. W_OTHER: anyone else, or not known (no mark, no table). */
-enum log_writer { W_KERNEL, W_INIT, W_DEVMGR, W_LOGD, W_OTHER };
-
-/* A kernel log line (without its newline) that `w` wrote: follow what it
- * says, and turn it into a notice if announce (the log is not on the
- * screen) and it is one. */
-void     notice_take(const char *s, size_t n, bool announce, enum log_writer w);
-/* When notice_tick has something to do next (uptime ns), or DEADLINE_NEVER. */
-uint64_t notice_deadline(void);
-/* Announce what has settled; nothing while the log is shown. */
-void     notice_tick(bool shown);
-/* What was read so far is known (the log before the console started):
- * only what changes from now on is news. whole_log: that log began at the
- * boot's first line (it hasn't wrapped). */
-void     notice_settle(bool whole_log);
-/* For the selftest (selftest.c): the last notice put on the screen ("" if
- * none), and everything forgotten (no log lines from then on). */
-const char *notice_last(void);
-void        notice_reset(void);
-
-/* ---- selftest.c ------------------------------------------------------------------ */
-
-/* `run console selftest`: the notices made of log lines, checked without
- * a screen; the exit code is the number of failures. */
-int console_selftest(void);
 
 /* ---- clients.c ------------------------------------------------------------------ */
 

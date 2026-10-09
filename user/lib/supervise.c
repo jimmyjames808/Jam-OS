@@ -364,8 +364,17 @@ bool sup_kept_listening(const struct sup_kept *k, uint16_t gen)
 
 void sup_kept_event(struct sup_kept *k)
 {
-    if (k->bound)
-        keeper_drain(&k->keeper);   /* a persistent binding fires again only on a new edge */
+    if (!k->bound)
+        return;
+    /* A persistent binding fires again only on a new edge, and a service
+     * that writes as fast as we read (the mixer under churn) leaves the
+     * queue not empty after our bound: no edge, and it finds the queue
+     * full until the next restart took it. So we come back by a packet of
+     * our own, after what else the loop has to do. */
+    if (keeper_drain(&k->keeper)) {
+        struct port_packet p = { .key = k->key, .type = PORT_PACKET_USER };
+        (void)jam_port_queue(k->port, &p);
+    }
 }
 
 void sup_kept_release(struct sup_kept *k)

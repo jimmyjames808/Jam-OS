@@ -99,11 +99,6 @@ static void log_text(const char *s, size_t n, size_t stamp, uint8_t attr)
     commit(l);
 }
 
-void notice_out(const char *s, size_t n)
-{
-    log_text(s, n, 0, A_NOTICE);
-}
-
 void kernel_line(const char *s, size_t n)
 {
     /* "[    1.234567] " then the text; "[name] " after the stamp: a process. */

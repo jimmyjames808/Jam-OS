@@ -1,4 +1,4 @@
-/* jamjar: the music player's window, on the screen borrowed from the console.
+/* jamjar: the music player's window.
  *
  *   jamjar, run jamjar         the library and the player
  *   ... noplayer               the library only: the player is left alone

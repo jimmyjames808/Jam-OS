@@ -106,7 +106,7 @@ void paste_pump(void)
             paste_free();
             return;
         }
-        status_t st = jam_channel_write(paste.to, &ev, sizeof(ev), NULL, 0);
+        status_t st = keys_key(paste.to, ev.usage, ev.state, ev.mods, ev.codepoint);
         if (st == ERR_SHOULD_WAIT) {
             paste.retry_at = now() + PASTE_RETRY_NS;
             return;

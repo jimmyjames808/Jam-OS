@@ -1,5 +1,5 @@
-/* utest's mock usb-bus and mock console for the hid driver (hidmock.c),
- * and the tests that drive it (hid.c). */
+/* utest's mock usb-bus and mock compositor (the `input` channel's server)
+ * for the hid driver (hidmock.c), and the tests that drive it (hid.c). */
 #pragma once
 
 #include <openkeys.h>
@@ -57,12 +57,11 @@ struct ev {
     uint16_t usage;                  /* key usage */
     int16_t  dx, dy;                 /* mouse movement */
     int8_t   wheel;                  /* mouse wheel */
-    uint32_t cp;                     /* key codepoint */
     uint64_t t;                      /* when it arrived (uptime ns) */
 };
 
 #define MAX_CTL 32
-#define MAX_EV  512
+#define MAX_EV  2048
 
 /* One hid under test: the mock usb-bus and console it talks to. */
 struct mock {
@@ -81,6 +80,8 @@ struct mock {
     unsigned  nctl;                   /* how many */
     struct ev ev[MAX_EV];             /* input events, in order */
     unsigned  nev;                    /* how many */
+    unsigned  readies;                /* input.ready events */
+    bool      hold_input;             /* don't read the input channel (its queue fills) */
 };
 
 /* Start drv/hid on interface `ifn` of dev, with a console unless

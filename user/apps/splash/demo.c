@@ -25,7 +25,7 @@ static const uint32_t colours[7] = { 0x8e1b3b, 0xa9234a, 0xc8274d, GOLD, 0xc8274
 
 int splash_alpha_demo(void)
 {
-    status_t st = gfx_open_on(SPLASH_BG);
+    status_t st = gfx_open_fullscreen(SPLASH_BG);   /* the logo where the screen's middle is */
     if (st != OK) {
         printf("splash: no screen (%s)\n", status_str(st));
         return 1;

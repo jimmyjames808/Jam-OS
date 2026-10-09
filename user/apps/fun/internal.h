@@ -10,10 +10,8 @@
 #define PBAND 16
 #define PSEG  64
 
-/* gfx.c: present rows y0 .. y1 - 1 only (what changed in them). */
-void gfx_present_rows(int y0, int y1);
 /* gfx.c: n pixels from s to d (a plain loop of wide stores, never rep
- * movsb: write-combining memory likes it best, and QEMU too). */
+ * movsb: QEMU likes it best). */
 void px_copy(uint32_t *restrict d, const uint32_t *restrict s, int n);
 /* Whether n pixels are the same. */
 static inline bool px_same(const uint32_t *a, const uint32_t *b, int n)
@@ -27,8 +25,7 @@ static inline bool px_same(const uint32_t *a, const uint32_t *b, int n)
     return !diff;
 }
 
-/* What keys.c reads: from the console's key channel, or from the window
- * (wl.c). */
+/* What keys.c reads from the window (wl.c). */
 enum msg_kind {
     MSG_KEY,      /* a key event */
     MSG_MOVE,     /* the mouse moved (mouse.c has it) */
@@ -36,20 +33,13 @@ enum msg_kind {
     MSG_RESIZE,   /* the window took a new size: scr is new (gfx_resizable) */
 };
 
-/* mouse.c: one mouse report from the console into the pointer and the
- * buttons. True if it is one the app must see by itself (a button or the
- * wheel changed), false for plain movement, which may be merged. */
-bool mouse_report(const struct input_mouse_event *ev);
-/* mouse.c: the same for a pointer whose place is known (a window's: x, y
- * in scr's pixels, clamped here), the buttons held (MOUSE_*) and the
- * wheel's notches since the last call. */
+/* mouse.c: the pointer over the window (x, y in scr's pixels, clamped
+ * here), the buttons held (MOUSE_*) and the wheel's notches since the
+ * last call. True if it is one the app must see by itself (a button or
+ * the wheel changed), false for plain movement, which may be merged. */
 bool mouse_at(int x, int y, uint8_t buttons, int wheel);
 /* mouse.c: the app asked for the mouse (gfx_mouse_open). */
 bool mouse_wanted(void);
-/* mouse.c: draw the arrow into the back buffer for a present, and take it
- * out again after (the app's frame never keeps it). */
-void pointer_paint(void);
-void pointer_unpaint(void);
 /* mouse.c: gfx_close's part: no mouse, no arrow. */
 void mouse_close(void);
 
@@ -65,7 +55,7 @@ void     wl_close(void);
  * come): a key, the pointer, a new size. ERR_TIMED_OUT: none came;
  * ERR_BAD_HANDLE: the keys aren't ours (gfx_open_screen);
  * ERR_PEER_CLOSED: the compositor is gone for good. */
-status_t wl_next(uint64_t deadline, struct input_key_event *ev, enum msg_kind *kind);
+status_t wl_next(uint64_t deadline, struct fun_key *ev, enum msg_kind *kind);
 /* wl.c, for wlpaint.c: read the compositor's news until the frame
  * callback of the last commit came (bounded: a hidden window's come once
  * a second); and until a buffer is free or `until`. */

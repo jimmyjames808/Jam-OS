@@ -3,7 +3,7 @@
  * A channel per holder: the shell's answers everything; the compositor's
  * `reboot` (Ctrl+Alt+Del), `terminal` (Super+Enter, the search box's
  * "Run ... in a terminal") and `launch` (the search box's apps); each
- * terminal's console's only `reboot` and `terminal` (under `nocomp`
+ * terminal's console's only `reboot` and `terminal` (without a compositor
  * nobody's Super+Enter). Which requests a channel takes is a property of
  * the channel, never of who is asking.
  *

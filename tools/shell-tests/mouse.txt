@@ -1,41 +1,40 @@
 # The mouse, end to end: run by tools/mouse-test.sh (QEMU_USB = a usb-kbd
 # on xhci port 2 and a usb-mouse on port 3; the command line "shell", at
 # OVMF's 1280x800). QEMU's monitor moves the mouse and presses its buttons
-# (`mouse_move dx dy [dz]`, `mouse_button <bits>`: 1 left, 2 right); the
-# reports go usb-bus -> drv/hid -> console, and from there only to a
-# focused client that asked for them.
+# (`mouse_move dx dy [dz]`, `mouse_button <bits>`: 1 left, 2 right;
+# serial-feed's `pointer x y` puts it somewhere exact); the reports go
+# usb-bus -> drv/hid -> the compositor, which moves its pointer and sends
+# the window under it wl_pointer's events.
 #
 # The client that asks is `wltest --mouse` (user/tests/wltest/fun.c),
-# which goes through libfun as an app does: under `nocomp` the console's
-# screen and key channel, and libfun's pointer (user/apps/fun/mouse.c),
-# which makes a position out of the relative counts. It says every edge on
-# the console: "wltest: mouse: left down at X,Y", "... left click at X,Y"
-# (or "drag from X,Y to X,Y"), "... chord at X,Y", "... wheel +1 at X,Y".
-# The pointer starts in the middle of the screen, (640, 400) at 1280x800,
-# and is put somewhere exact by pushing it into the top-left corner (it is
-# clamped there) and moving on from (0, 0); `noaccel` makes a count a
-# pixel.
+# which goes through libfun as an app does: its window, and libfun's
+# mouse (user/apps/fun/mouse.c). It says every edge on the console:
+# "wltest: mouse: left down at X,Y", "... left click at X,Y" (or "drag
+# from X,Y to X,Y"), "... chord at X,Y", "... wheel +1 at X,Y", in its
+# window's pixels. The windows tile (the default): wltest's opens beside
+# the first terminal, in the right half (x 643..1274, y 46..794), and
+# takes the keys; the clicks are in it, at (960, 420) and around.
 wait 120 Jam OS shell
 wait {prompt}
 # "report mouse ready", or with hidboot "boot mouse ready" (mouse-test.sh
 # checks which).
 seen 30 mouse ready
-# The shell never asked for the mouse: moving it, clicking and turning the
-# wheel sends it nothing (its line editor would misread any message), and
-# the wheel scrolls the console back as before.
+# The shell never asked for the mouse: moving it, clicking in the
+# terminal (a selection, the terminal's own) and turning the wheel sends
+# it nothing (its line editor would misread any message).
 send help
 wait Commands:
 wait {prompt}
-monitor mouse_move 60 -40
+pointer 300 400
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 2
 sleep 0.2
 monitor mouse_button 0
 monitor mouse_move 0 0 1
-monitor mouse_move 0 0 1
+monitor mouse_move 0 0 -1
 sleep 0.7
-shot mouse-scrollback
+shot mouse-shell
 send echo mouse-$HOME
 wait mouse-/
 wait {prompt}
@@ -45,134 +44,93 @@ send run wltest --mouse nomouse
 wait run: bin/wltest started
 wait 30 wltest: mouse: ready
 sleep 1
-monitor mouse_move 200 100
+pointer 960 420
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
-monitor mouse_move -90 40 1
+monitor mouse_move -9 4 1
 type x
 sleep 0.5
 type q
 wait 30 wltest: mouse: 0 clicks (0 left, 0 right, 0 middle), 0 drags, 0 chords, wheel 0 (0 notches), 2 keys, 0 mouse reports
 wait run: bin/wltest exited with code 0
 wait {prompt}
-# The wire format, checked by a client of its own (contest mouse says what
-# each step expects): the mouse moves, then a key ends the step.
-send run contest mouse
-wait 30 contest: mouse: step 1
-monitor mouse_move 20 20
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-sleep 0.3
-type a
-wait 30 contest: mouse: step 2
-monitor mouse_move 7 -3
-monitor mouse_move 0 0 1
-sleep 0.1
-monitor mouse_move 0 0 1
-sleep 0.1
-monitor mouse_move 0 0 -1
-sleep 0.2
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 3
-sleep 0.2
-monitor mouse_button 0
-sleep 0.3
-type b
-wait 30 contest: mouse: step 3
-monitor mouse_move -5 9
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-sleep 0.3
-type c
-wait 30 contest: mouse: step 4
-monitor mouse_move 11 11
-sleep 0.3
-type d
-wait 30 contest: mouse: step 5
-monitor mouse_move 1 1
-wait 30 contest: mouse: all held
-wait run: bin/contest exited with code 0
-wait {prompt}
-# wltest asked: the pointer starts in the middle of the screen; 10 pixels
-# in, a left click.
+# wltest asked: a left click where the pointer is put, then a right click
+# held for a screenshot, a chord, a drag each way and the wheel, each
+# said at the pointer's place in the window.
 send run wltest --mouse noaccel
 wait run: bin/wltest started
-wait 30 wltest: mouse: ready, 1280x800 (the screen), pointer at 640,400
+wait 30 wltest: mouse: ready, {ww}x{wh} (a window), pointer at
 sleep 1
-monitor mouse_move 10 10
+pointer 960 420
 sleep 0.3
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
-wait 10 wltest: mouse: left down at 650,410
-wait 10 wltest: mouse: left click at 650,410
-# Somewhere exact: a right click, the button held for a screenshot.
-monitor mouse_move -2000 -2000
-sleep 0.4
-monitor mouse_move 621 419
-sleep 0.4
+wait 10 wltest: mouse: left down at {cx},{cy}
+wait 10 wltest: mouse: left click at {cx},{cy}
 monitor mouse_button 2
-wait 10 wltest: mouse: right down at 621,419
+wait 10 wltest: mouse: right down at {cx},{cy}
 sleep 0.5
 shot mouse-right-held
 monitor mouse_button 0
-wait 10 wltest: mouse: right click at 621,419
+wait 10 wltest: mouse: right click at {cx},{cy}
 # A chord: left, then right as well; both let go at once.
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 3
-wait 10 wltest: mouse: chord at 621,419 (left and right held)
+wait 10 wltest: mouse: chord at {cx},{cy} (left and right held)
 sleep 0.2
 monitor mouse_button 0
-wait 10 wltest: mouse: left click at 621,419
-wait 10 wltest: mouse: right click at 621,419
+wait 10 wltest: mouse: left click at {cx},{cy}
+wait 10 wltest: mouse: right click at {cx},{cy}
 # Drags: left down, moved, up; then the right button back the other way.
+# (steps of 6 and 3 counts: the acceleration takes them 1:1, 60 and 30
+# pixels in all)
 monitor mouse_button 1
 sleep 0.2
-monitor mouse_move 100 50
+monitor mouse_move 6 3
+monitor mouse_move 6 3
+monitor mouse_move 6 3
+monitor mouse_move 6 3
+monitor mouse_move 6 3
+monitor mouse_move 6 3
+monitor mouse_move 6 3
+monitor mouse_move 6 3
+monitor mouse_move 6 3
+monitor mouse_move 6 3
 sleep 0.3
 monitor mouse_button 0
-wait 10 wltest: mouse: left drag from 621,419 to 721,469
+wait 10 wltest: mouse: left drag from {cx},{cy} to {dx},{dy}
 monitor mouse_button 2
 sleep 0.2
-monitor mouse_move -200 -100
+monitor mouse_move -6 -3
+monitor mouse_move -6 -3
+monitor mouse_move -6 -3
+monitor mouse_move -6 -3
+monitor mouse_move -6 -3
+monitor mouse_move -6 -3
+monitor mouse_move -6 -3
+monitor mouse_move -6 -3
+monitor mouse_move -6 -3
+monitor mouse_move -6 -3
 sleep 0.3
 monitor mouse_button 0
-wait 10 wltest: mouse: right drag from 721,469 to 521,369
+wait 10 wltest: mouse: right drag from {dx},{dy} to {cx},{cy}
 # The wheel, a notch each way.
 monitor mouse_move 0 0 1
-wait 10 wltest: mouse: wheel +1 at 521,369 (now 1)
+wait 10 wltest: mouse: wheel
 sleep 0.2
 monitor mouse_move 0 0 -1
-wait 10 wltest: mouse: wheel -1 at 521,369 (now 0)
+wait 10 wltest: mouse: wheel
 sleep 0.5
 shot mouse-wltest
 type q
 wait 30 wltest: mouse: 4 clicks (2 left, 2 right, 0 middle), 2 drags, 1 chords, wheel 0 (2 notches), 1 keys,
 wait run: bin/wltest exited with code 0
 wait {prompt}
-# With acceleration (the default) a quick push goes twice as far: 100
-# counts to the right of the middle land 200 pixels on.
-send run wltest --mouse
-wait run: bin/wltest started
-wait 30 wltest: mouse: ready, 1280x800 (the screen), pointer at 640,400
-sleep 1
-monitor mouse_move 100 0
-sleep 0.4
-monitor mouse_button 1
-sleep 0.2
-monitor mouse_button 0
-wait 10 wltest: mouse: left click at 840,400
-type q
-wait run: bin/wltest exited with code 0
-wait {prompt}
-# wltest is gone: the first report after it finds its key channel closed,
-# and the keys and the wheel are the shell's again.
-monitor mouse_move 30 30
+# wltest is gone: the keys and the mouse are the shell's terminal's again.
+pointer 300 400
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0

@@ -62,6 +62,10 @@ grep -aqE "mixtest: 14 passed[[:space:]]*$" "$log" ||
 grep -aqE "mixer: stream [0-9]+ \(tone-a\) opened.*" "$log" &&
     grep -aqE "mixer: stream [0-9]+ \(tone-b\) opened" "$log" ||
     { echo "mixer: the tone programs' streams were not opened"; ok=0; }
+# `vol 99 -6` (no such stream) says so and nothing more: it once went on to
+# print "vol: stream 99 mute" with whatever was left in `got`.
+! grep -aqF -- "vol: stream 99" "$log" ||
+    { echo "mixer: \`vol 99 -6\` printed a stream line after its error"; ok=0; }
 for want in "(tone-b) closed (its channel closed)" \
             "init: bin/mixer was killed" \
             "mixer: restart (killed" \

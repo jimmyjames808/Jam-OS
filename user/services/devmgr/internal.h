@@ -104,7 +104,7 @@ struct binding {
 extern struct binding devs[MAX_DEVS];
 extern unsigned       ndevs;
 extern handle_t       pci_res, port;
-/* The desktop's notices (DEVMGR_SR_NOTIFY; none under `nocomp`). */
+/* The desktop's notices (DEVMGR_SR_NOTIFY). */
 extern struct notice_box devmgr_notices;
 /* Problems for the exit code: real drivers that crashed or were given up
  * on, and drivers that didn't end cleanly. */
@@ -219,17 +219,14 @@ status_t usb_channel(const struct binding *b, handle_t *out);
 void usb_retire(struct binding *b, const char *why);
 /* Is b's interface gone? */
 bool usb_gone(const struct binding *b);
-/* The console to connect class drivers to: devmgr's client end of it,
- * from SR_CONSOLE or DEVMGR_SET_CONSOLE (consumed). A new one restarts the
- * class drivers waiting for it. With the argument "comp" (init's, when
- * the compositor draws the screen) it is an INPUT-level compctl channel
- * instead (abi/idl/compctl.idl): the keys and the mouse go to the
- * compositor; "the console" in this file's names then means it. */
+/* The compositor to connect class drivers to: an INPUT-level compctl
+ * channel (abi/idl/compctl.idl), from SR_CONSOLE or DEVMGR_SET_CONSOLE
+ * (consumed): the keys and the mouse go to the compositor ("the console"
+ * in this file's names means it: track D renames them). A new one
+ * restarts the class drivers waiting for it. */
 void usb_new_console(handle_t ch);
-/* What the class drivers type into, for the log: "console" or "compositor". */
+/* What the class drivers type into, for the log: "compositor". */
 const char *usb_hub_name(void);
-/* The argument "comp" (main.c). */
-extern bool comp_input;
 /* Could b's driver have ended because the console went away? */
 bool usb_console_gone(const struct binding *b);
 

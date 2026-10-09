@@ -2,8 +2,7 @@
 # the same library and player as jamjar.txt, by keys only, for the
 # screenshots at the PC's size (UI scale 2): the library, playing, the
 # search, the help, the roulette and the big view; then q, and the music
-# plays on. On the compositor's boot jamjar is a window (a tile beside
-# the terminal's), on `nocomp`'s the whole screen: its size is either.
+# plays on. jamjar is a window (a tile beside the terminal's).
 wait 120 Jam OS shell
 wait {prompt}
 seen 60 init: /data mounted
