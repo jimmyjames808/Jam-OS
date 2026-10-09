@@ -823,6 +823,8 @@ static const struct {
     { "idl_slot_reply_after", t_idl_slot_reply_after },
     { "idl_wrong_protocol", t_idl_wrong_protocol },
     { "idl_big_messages", t_idl_big_messages },
+    { "idl_var_arrays", t_idl_var_arrays },
+    { "idl_var_refused", t_idl_var_refused },
     { "keep_put_drop_restore", t_keep_put_drop_restore },
     { "keep_restore_batches", t_keep_restore_batches },
     { "keep_unknown_slots", t_keep_unknown_slots },

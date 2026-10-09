@@ -83,6 +83,126 @@ static inline status_t idl_rep_status(const void *rep, uint32_t n, uint32_t want
     return n == want ? OK : ERR_INTERNAL;
 }
 
+/* Client: idl_rep_status for a reply with varying arrays: on success at
+ * least `fixed` bytes (the arrays follow, checked as they are read). */
+static inline status_t idl_rep_status_var(const void *rep, uint32_t n, uint32_t fixed)
+{
+    const struct idl_rep_hdr *h = (const struct idl_rep_hdr *)rep;
+    if (n < sizeof(*h) || h->status > 0)
+        return ERR_INTERNAL;
+    if (h->status != OK)
+        return n == sizeof(*h) ? h->status : ERR_INTERNAL;
+    return n >= fixed ? OK : ERR_INTERNAL;
+}
+
+/* ---- varying arrays (u8[<=N], str[<=N], u32[<=N] ...) ------------------ */
+
+/* On the wire, after the message's fixed part, in the order declared: a u16
+ * count of elements, zero bytes up to a multiple of the element's size
+ * (from the message's start), the elements. */
+
+/* Put len elements of sz bytes from p at *m + *o, if len <= max; *o moves
+ * past them. false: too many (or none to read: p NULL). */
+static inline bool idl_put(void *m, uint32_t *o, const void *p, uint32_t len, uint32_t max,
+                           uint32_t sz)
+{
+    uint8_t *idl_b = (uint8_t *)m;
+    uint16_t idl_c = (uint16_t)len;
+    if (len > max || (len && !p))
+        return false;
+    __builtin_memcpy(idl_b + *o, &idl_c, 2);
+    *o += 2;
+    while (*o % sz)
+        idl_b[(*o)++] = 0;
+    if (len)
+        __builtin_memcpy(idl_b + *o, p, len * sz);
+    *o += len * sz;
+    return true;
+}
+
+/* Read the array at *o in the message m of n bytes (*o <= n): *p at its
+ * elements (aligned to sz, if m is 8-aligned), *len of them. false: it
+ * runs past n, has more than max, or a padding byte isn't 0. */
+static inline bool idl_get(const void *m, uint32_t n, uint32_t *o, uint32_t max, uint32_t sz,
+                           const void **p, uint32_t *len)
+{
+    const uint8_t *idl_b = (const uint8_t *)m;
+    uint16_t idl_c;
+    if (n - *o < 2)
+        return false;
+    __builtin_memcpy(&idl_c, idl_b + *o, 2);
+    *o += 2;
+    while (*o % sz) {
+        if (*o >= n || idl_b[*o])
+            return false;
+        (*o)++;
+    }
+    if (idl_c > max || (n - *o) / sz < idl_c)
+        return false;
+    *p = idl_b + *o;
+    *len = idl_c;
+    *o += idl_c * sz;
+    return true;
+}
+
+/* Server: the array a handler wrote at offset `from` of the reply m (len
+ * elements of sz bytes) to its place at *o (never after `from`); *o moves
+ * past it. */
+static inline void idl_place(void *m, uint32_t *o, uint32_t from, uint32_t len, uint32_t sz)
+{
+    uint8_t *idl_b = (uint8_t *)m;
+    uint16_t idl_c = (uint16_t)len;
+    __builtin_memcpy(idl_b + *o, &idl_c, 2);
+    *o += 2;
+    while (*o % sz)
+        idl_b[(*o)++] = 0;
+    if (len && *o != from)
+        __builtin_memmove(idl_b + *o, idl_b + from, len * sz);
+    *o += len * sz;
+}
+
+/* Is s (n bytes) a str: well-formed UTF-8 (Unicode's Table 3-7: no overlong
+ * forms, no surrogates, nothing past U+10FFFF; the rules of <utf8.h>) with
+ * no NUL? */
+static inline bool idl_str_ok(const char *s, uint32_t n)
+{
+    const uint8_t *idl_b = (const uint8_t *)s;
+    for (uint32_t idl_i = 0; idl_i < n;) {
+        uint8_t idl_c = idl_b[idl_i];
+        uint32_t idl_len;
+        uint8_t idl_lo = 0x80, idl_hi = 0xbf;
+        if (idl_c == 0)
+            return false;
+        if (idl_c < 0x80) {
+            idl_i++;
+            continue;
+        }
+        if (idl_c >= 0xc2 && idl_c <= 0xdf)
+            idl_len = 2;
+        else if (idl_c >= 0xe0 && idl_c <= 0xef)
+            idl_len = 3;
+        else if (idl_c >= 0xf0 && idl_c <= 0xf4)
+            idl_len = 4;
+        else
+            return false;   /* a continuation byte, C0, C1 or F5..FF */
+        if (idl_c == 0xe0)
+            idl_lo = 0xa0;   /* below: overlong */
+        else if (idl_c == 0xed)
+            idl_hi = 0x9f;   /* above: a surrogate */
+        else if (idl_c == 0xf0)
+            idl_lo = 0x90;   /* below: overlong */
+        else if (idl_c == 0xf4)
+            idl_hi = 0x8f;   /* above: past U+10FFFF */
+        if (n - idl_i < idl_len || idl_b[idl_i + 1] < idl_lo || idl_b[idl_i + 1] > idl_hi)
+            return false;
+        for (uint32_t idl_k = 2; idl_k < idl_len; idl_k++)
+            if (idl_b[idl_i + idl_k] < 0x80 || idl_b[idl_i + idl_k] > 0xbf)
+                return false;
+        idl_i += idl_len;
+    }
+    return true;
+}
+
 /* Client: one call on ch: the request q (qn bytes) out, the reply into r
  * (rcap bytes, *rn of them) and its handles into rh (rhcap slots, *rhn of
  * them). t is a deadline, or with `within` a timeout from when the call

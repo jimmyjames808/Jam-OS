@@ -146,6 +146,9 @@ bool t_idl_slot_reply_after(void);
 /* idlproto.c: several protocols in one .idl file (idltest, idltest_two). */
 bool t_idl_wrong_protocol(void);
 bool t_idl_big_messages(void);
+/* idlarray.c: arrays of varying length (u8[<=N], str[<=N]) on idltest. */
+bool t_idl_var_arrays(void);
+bool t_idl_var_refused(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;

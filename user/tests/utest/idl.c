@@ -179,7 +179,7 @@ bool t_idl_answer_later(void)
     if (!next_reply(c, rep, &m, t[7]))
         return false;
     CHECK_ST(idltest_wait_result(rep, &m, &key, &order), ERR_INTERNAL);
-    uint8_t big[64] = { 0 };
+    uint8_t big[IDLTEST_REP_MAX + 8] = { 0 };   /* more than any reply of the protocol */
     big[0] = 0x2a;
     CHECK_ST(jam_channel_write(sv, big, sizeof(big), NULL, 0), OK);
     CHECK_ST(jam_channel_write(sv, big, 2, NULL, 0), OK);

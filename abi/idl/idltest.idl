@@ -18,6 +18,18 @@ protocol idltest 33
 # A VMO of `size` bytes, answered when `release` names `key`.
 4  make_vmo (u32 key, u32 size)    -> (handle vmo, u32 size_back) later
 
+# ---- arrays of varying length (idlarray.c) ----
+# data reversed, and tag + 1.
+5  bytes    (u32 tag, u8[<=64] data) -> (u8[<=64] data, u32 tag)
+# "<word>, <name>".
+6  greet    (str[<=16] name, str[<=8] word) -> (str[<=32] text)
+# Answered later with idltest_reply_later_text (by the test).
+7  later_text (u32 key)            -> (str[<=16] name, u8[<=4] extra) later
+# A handler that breaks its results' rules: how 1, a text of 9 bytes; 2, a
+# text that isn't UTF-8; 3, data of 5 bytes; 4, a NUL in the text; else
+# "ok" and 4 bytes.
+8  broken   (u32 how)              -> (str[<=8] text, u8[<=4] data)
+
 # idltest_two: a second protocol in the file (a protocol for each kind of
 # channel): its methods' ordinals are its own, and a server of either
 # protocol refuses the other's messages. utest only (idlproto.c).

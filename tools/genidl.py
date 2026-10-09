@@ -29,10 +29,37 @@ id                          1..65535, listed in abi/idl/ids.txt (the registry
 ordinal                     1..65535, unique in the protocol
 type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
                             fixed-size byte array, 1 <= N <= 4096), or
-                            `handle` (RESULTS only, at most 8 per method)
+                            u8[<=N] (up to N bytes), or str[<=N] (a string
+                            of up to N bytes of UTF-8), or `handle`
+                            (RESULTS only, at most 8 per method)
 
 Either list may be empty: `()`. A request or reply is at most 16 KiB
 (MSG_MAX, header included). Bulk data goes through a shared VMO.
+
+Arrays of varying length, u8[<=N] and str[<=N] (1 <= N <= 65535, within
+the message's 16 KiB): on the wire, after the message's fixed part (its
+other fields, in a packed struct) and in the order declared, a u16 count
+of elements, zero bytes up to a multiple of the element's size from the
+message's start (none for bytes), the elements. In C each is two
+parameters, a pointer and a length in elements (`x`, `x_len`; a field may
+not be named `x_len` beside `x`):
+    a client's argument, a handler's    const uint8_t *x, uint32_t x_len
+                                        (str: const char *, no NUL)
+    a client's result                   uint8_t out_x[N], uint32_t *out_x_len
+                                        (str: char out_x[N + 1], NUL-terminated)
+    a handler's result                  uint8_t *out_x (room for N, in the
+                                        reply), uint32_t *out_x_len
+    reply_<method>'s result             as a client's argument
+A str is well-formed UTF-8 (<utf8.h>'s rules) without a NUL. The
+generated server refuses a request whose array is past its N, runs past
+the message or leaves bytes over, whose padding isn't zero, or whose str
+isn't one (ERR_INVALID_ARGS, before any handler sees it); the generated
+client refuses the same in its own arguments before sending
+(ERR_INVALID_ARGS) and in a reply (ERR_INTERNAL); a handler's or
+reply_<method>'s result that breaks them is answered ERR_INTERNAL. A
+handler's argument points into the request: copy what it keeps (a
+`later` handler especially). Records stay byte arrays of a C struct (the
+M12 plan's D2).
 
 Message buffers: a generated function keeps them on its stack up to
 IDL_STACK_MAX (4 KiB) together; a method whose request and reply pass it
@@ -155,6 +182,7 @@ SCALARS = {"u8": ("uint8_t", 1), "u16": ("uint16_t", 2), "u32": ("uint32_t", 4),
            "u64": ("uint64_t", 8), "i8": ("int8_t", 1), "i16": ("int16_t", 2),
            "i32": ("int32_t", 4), "i64": ("int64_t", 8)}
 ARRAY = re.compile(r"u8\[(\d+)\]$")
+VAR = re.compile(r"(u8|str)\[<=(\d+)\]$")   # a varying array: up to N elements
 ARRAY_MAX = 4096
 # Bytes of one request or reply (the M12 reviews' S-4: two 4 KiB paths and
 # more in one request). The kernel takes up to 64 KiB a message; the bound
@@ -175,6 +203,126 @@ C_KEYWORDS = set("""auto break case char const continue default do double else e
     float for goto if inline int long register restrict return short signed sizeof static
     struct switch typedef union unsigned void volatile while _Bool _Alignas _Alignof _Atomic
     _Noreturn _Static_assert _Thread_local bool true false NULL""".split())
+# common.h's helpers for varying arrays, as C.
+VAR_HELPERS = r"""/* Client: idl_rep_status for a reply with varying arrays: on success at
+ * least `fixed` bytes (the arrays follow, checked as they are read). */
+static inline status_t idl_rep_status_var(const void *rep, uint32_t n, uint32_t fixed)
+{
+    const struct idl_rep_hdr *h = (const struct idl_rep_hdr *)rep;
+    if (n < sizeof(*h) || h->status > 0)
+        return ERR_INTERNAL;
+    if (h->status != OK)
+        return n == sizeof(*h) ? h->status : ERR_INTERNAL;
+    return n >= fixed ? OK : ERR_INTERNAL;
+}
+
+/* ---- varying arrays (u8[<=N], str[<=N], u32[<=N] ...) ------------------ */
+
+/* On the wire, after the message's fixed part, in the order declared: a u16
+ * count of elements, zero bytes up to a multiple of the element's size
+ * (from the message's start), the elements. */
+
+/* Put len elements of sz bytes from p at *m + *o, if len <= max; *o moves
+ * past them. false: too many (or none to read: p NULL). */
+static inline bool idl_put(void *m, uint32_t *o, const void *p, uint32_t len, uint32_t max,
+                           uint32_t sz)
+{
+    uint8_t *idl_b = (uint8_t *)m;
+    uint16_t idl_c = (uint16_t)len;
+    if (len > max || (len && !p))
+        return false;
+    __builtin_memcpy(idl_b + *o, &idl_c, 2);
+    *o += 2;
+    while (*o % sz)
+        idl_b[(*o)++] = 0;
+    if (len)
+        __builtin_memcpy(idl_b + *o, p, len * sz);
+    *o += len * sz;
+    return true;
+}
+
+/* Read the array at *o in the message m of n bytes (*o <= n): *p at its
+ * elements (aligned to sz, if m is 8-aligned), *len of them. false: it
+ * runs past n, has more than max, or a padding byte isn't 0. */
+static inline bool idl_get(const void *m, uint32_t n, uint32_t *o, uint32_t max, uint32_t sz,
+                           const void **p, uint32_t *len)
+{
+    const uint8_t *idl_b = (const uint8_t *)m;
+    uint16_t idl_c;
+    if (n - *o < 2)
+        return false;
+    __builtin_memcpy(&idl_c, idl_b + *o, 2);
+    *o += 2;
+    while (*o % sz) {
+        if (*o >= n || idl_b[*o])
+            return false;
+        (*o)++;
+    }
+    if (idl_c > max || (n - *o) / sz < idl_c)
+        return false;
+    *p = idl_b + *o;
+    *len = idl_c;
+    *o += idl_c * sz;
+    return true;
+}
+
+/* Server: the array a handler wrote at offset `from` of the reply m (len
+ * elements of sz bytes) to its place at *o (never after `from`); *o moves
+ * past it. */
+static inline void idl_place(void *m, uint32_t *o, uint32_t from, uint32_t len, uint32_t sz)
+{
+    uint8_t *idl_b = (uint8_t *)m;
+    uint16_t idl_c = (uint16_t)len;
+    __builtin_memcpy(idl_b + *o, &idl_c, 2);
+    *o += 2;
+    while (*o % sz)
+        idl_b[(*o)++] = 0;
+    if (len && *o != from)
+        __builtin_memmove(idl_b + *o, idl_b + from, len * sz);
+    *o += len * sz;
+}
+
+/* Is s (n bytes) a str: well-formed UTF-8 (Unicode's Table 3-7: no overlong
+ * forms, no surrogates, nothing past U+10FFFF; the rules of <utf8.h>) with
+ * no NUL? */
+static inline bool idl_str_ok(const char *s, uint32_t n)
+{
+    const uint8_t *idl_b = (const uint8_t *)s;
+    for (uint32_t idl_i = 0; idl_i < n;) {
+        uint8_t idl_c = idl_b[idl_i];
+        uint32_t idl_len;
+        uint8_t idl_lo = 0x80, idl_hi = 0xbf;
+        if (idl_c == 0)
+            return false;
+        if (idl_c < 0x80) {
+            idl_i++;
+            continue;
+        }
+        if (idl_c >= 0xc2 && idl_c <= 0xdf)
+            idl_len = 2;
+        else if (idl_c >= 0xe0 && idl_c <= 0xef)
+            idl_len = 3;
+        else if (idl_c >= 0xf0 && idl_c <= 0xf4)
+            idl_len = 4;
+        else
+            return false;   /* a continuation byte, C0, C1 or F5..FF */
+        if (idl_c == 0xe0)
+            idl_lo = 0xa0;   /* below: overlong */
+        else if (idl_c == 0xed)
+            idl_hi = 0x9f;   /* above: a surrogate */
+        else if (idl_c == 0xf0)
+            idl_lo = 0x90;   /* below: overlong */
+        else if (idl_c == 0xf4)
+            idl_hi = 0x8f;   /* above: past U+10FFFF */
+        if (n - idl_i < idl_len || idl_b[idl_i + 1] < idl_lo || idl_b[idl_i + 1] > idl_hi)
+            return false;
+        for (uint32_t idl_k = 2; idl_k < idl_len; idl_k++)
+            if (idl_b[idl_i + idl_k] < 0x80 || idl_b[idl_i + idl_k] > 0xbf)
+                return false;
+        idl_i += idl_len;
+    }
+    return true;
+}"""
 BANNER = "Generated by tools/genidl.py from {src}. Do not edit:\n" \
          " * change the .idl and run `make idl`."
 
@@ -184,10 +332,17 @@ REP_HANDLES_MAX = 8
 
 class Field:
     """One argument, result or event field. kind: "scalar" (u8 .. i64),
-    "fixed" (u8[N]) or "handle"."""
-    def __init__(self, kind, ctype, name, size, array=0):
+    "fixed" (u8[N]), "var" (u8[<=N], str[<=N], u32[<=N] ...: ctype the
+    element's, size its bytes, array N) or "handle"."""
+    def __init__(self, kind, ctype, name, size, array=0, is_str=False):
         self.kind, self.ctype, self.name, self.size, self.array = kind, ctype, name, size, array
         self.handle = kind == "handle"
+        self.var = kind == "var"
+        self.str = is_str
+        self.max = array if self.var else 0   # a varying array's N
+        if self.var:
+            self.array = 0
+        self.wire = 0 if self.var or self.handle else size   # bytes in the packed struct
 
     def member(self):
         """The field in the message's packed struct (handles travel apart)."""
@@ -196,16 +351,28 @@ class Field:
 
     def in_params(self):
         """The C parameters that pass it in (a client's argument, a server's
-        reply_<method> result)."""
+        reply_<method> result, a handler's argument): a varying array as a
+        pointer and its length in elements (a str's bytes: no NUL)."""
+        if self.var:
+            return [f"const {self.ctype} *{self.name}", f"uint32_t {self.name}_len"]
         return [f"const uint8_t {self.name}[{self.array}]" if self.array else
                 f"{self.ctype} {self.name}"]
 
     def out_params(self):
-        """The C parameters that take it out (a client's result, a handler's)."""
+        """The C parameters that take it out at a client: a varying array
+        into room for all N elements (a str's with a NUL after them: N + 1)
+        and its length."""
+        if self.var:
+            n = f"{self.max} + 1" if self.str else self.max
+            return [f"{self.ctype} out_{self.name}[{n}]", f"uint32_t *out_{self.name}_len"]
         return [f"uint8_t out_{self.name}[{self.array}]" if self.array else
                 f"{self.ctype} *out_{self.name}"]
 
     def handler_out_params(self):
+        """A handler's: a varying array into room for N elements, in the
+        reply (a str's without a NUL)."""
+        if self.var:
+            return [f"{self.ctype} *out_{self.name}", f"uint32_t *out_{self.name}_len"]
         return self.out_params()
 
 
@@ -222,8 +389,27 @@ def handler_out_params(fields):
 
 
 def wire_size(fields):
-    """Bytes of a message with these fields: the header and the packed struct."""
-    return HDR + sum(f.size for f in fields)
+    """Bytes of a message's fixed part: the header and the packed struct
+    (all of it, without varying arrays)."""
+    return HDR + sum(f.wire for f in fields)
+
+
+def align(n, a):
+    return (n + a - 1) // a * a
+
+
+def var_layout(fields):
+    """Where each varying array's elements start when every one before it
+    is full (the room a handler fills, in the reply), and the biggest
+    message: [(field, offset)], max bytes. On the wire each is a u16 count,
+    zeros to the element's size, the elements, after the fixed part."""
+    o, out = wire_size(fields), []
+    for f in fields:
+        if f.var:
+            o = align(o + 2, f.size)
+            out.append((f, o))
+            o += f.max * f.size
+    return out, o
 
 
 class Method:
@@ -267,8 +453,17 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
                               f"({', '.join(sorted(RESERVED))}, idl_*, out_*)")
         if any(f.name == name for f in fields):
             fail(src, lineno, f"{what}: '{name}' twice")
-        a = ARRAY.match(t)
-        if t == "handle":
+        a, v = ARRAY.match(t), VAR.match(t)
+        if v:
+            n = int(v.group(2))
+            if not 1 <= n <= 65535:
+                fail(src, lineno, f"{what}: {t}: N not in 1..65535 (the count is a u16)")
+            if v.group(1) == "str":
+                fields.append(Field("var", "char", name, 1, n, is_str=True))
+            else:
+                ctype, size = SCALARS[v.group(1)]
+                fields.append(Field("var", ctype, name, size, n))
+        elif t == "handle":
             if not allow_handles:
                 fail(src, lineno, f"{what}: handle arguments aren't supported (if a call fails "
                                   "it can't tell whether they were moved); return handles "
@@ -283,8 +478,11 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
             ctype, size = SCALARS[t]
             fields.append(Field("scalar", ctype, name, size))
         else:
-            fail(src, lineno, f"{what}: unknown type '{t}' (want {' '.join(SCALARS)}, u8[N] "
-                              "or handle)")
+            fail(src, lineno, f"{what}: unknown type '{t}' (want {' '.join(SCALARS)}, u8[N], "
+                              "u8[<=N], str[<=N] or handle)")
+    for f in fields:
+        if f.var and any(g.name == f.name + "_len" for g in fields):
+            fail(src, lineno, f"{what}: '{f.name}_len' is {f.name}'s length")
     return fields
 
 
@@ -329,7 +527,7 @@ def parse_method(src, lineno, line, p, doc):
     results = parse_fields(src, lineno, m.group(4), f"{mname} results", allow_handles=True)
     if sum(1 for f in results if f.handle) > REP_HANDLES_MAX:
         fail(src, lineno, f"{mname}: more than {REP_HANDLES_MAX} handle results")
-    for size, what in ((wire_size(args), "request"), (wire_size(results), "reply")):
+    for size, what in ((method_max(args), "request"), (method_max(results), "reply")):
         if size > MSG_MAX:
             fail(src, lineno, f"{mname}: {what} is {size} bytes (max {MSG_MAX})")
     p.methods.append(Method(ordinal, mname, args, results, doc, "later" in words,
@@ -532,6 +730,7 @@ def gen_common(entries):
         "    return n == want ? OK : ERR_INTERNAL;",
         "}",
         "",
+    ] + VAR_HELPERS.split("\n") + ["",
         "/* Client: one call on ch: the request q (qn bytes) out, the reply into r",
         " * (rcap bytes, *rn of them) and its handles into rh (rhcap slots, *rhn of",
         " * them). t is a deadline, or with `within` a timeout from when the call",
@@ -957,7 +1156,7 @@ def fill_request(m, U, q, sep="."):
     m's arguments (txid set by the caller)."""
     out = [f"    {q}{sep}ordinal = {U}_{m.name.upper()};"]
     for f in m.args:
-        if f.handle:
+        if f.handle or f.var:
             continue
         if f.array:
             out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
@@ -969,13 +1168,19 @@ def fill_request(m, U, q, sep="."):
 
 def method_max(fields):
     """Bytes of the biggest message with these fields."""
-    return wire_size(fields)
+    return var_layout(fields)[1]
+
+
+def has_var(fields):
+    return any(f.var for f in fields)
 
 
 def general(m):
     """Does m need the general code (buffers of its own size, on the heap
-    when big) rather than the plain one (its two structs on the stack)?"""
-    return method_max(m.args) + method_max(m.results) > STACK_MAX
+    when big; varying arrays) rather than the plain one (its two structs on
+    the stack)?"""
+    return has_var(m.args) or has_var(m.results) or \
+        method_max(m.args) + method_max(m.results) > STACK_MAX
 
 
 def buffers(sizes, fail_ret):
@@ -1001,7 +1206,7 @@ def copy_results(m, cond, r):
     out = []
     pre = f"{cond} && " if cond else ""
     for f in m.results:
-        if f.handle:
+        if f.handle or f.var:
             continue
         if f.array:
             out.append(f"    for (uint32_t idl_i = 0; {pre}out_{f.name} && "
@@ -1013,6 +1218,64 @@ def copy_results(m, cond, r):
     return out
 
 
+def put_vars(fields, buf, off, err, ind="    "):
+    """Lines that append fields' varying arrays to the message in buf (its
+    length in `off`), setting idl_st to err if one is too long (or not a
+    str), once idl_st is OK."""
+    out = []
+    for f in fields:
+        if not f.var:
+            continue
+        ok = f"idl_put({buf}, &{off}, {f.name}, {f.name}_len, {f.max}, {f.size})"
+        if f.str:
+            ok += f" ||\n{ind}                         !idl_str_ok({f.name}, {f.name}_len)"
+            ok = f"!{ok}"
+            out.append(f"{ind}if (idl_st == OK && ({ok}))")
+        else:
+            out.append(f"{ind}if (idl_st == OK && !{ok})")
+        out.append(f"{ind}    idl_st = {err};")
+    return out
+
+
+def get_vars(fields, buf, n, err, ind="    "):
+    """Lines that read fields' varying arrays from the message in buf (n
+    bytes; idl_o past its fixed part) into idl_p<k> and idl_l<k>, setting
+    idl_st to err if they don't fill the message exactly, once idl_st is
+    OK."""
+    out = []
+    for k, f in enumerate(f for f in fields if f.var):
+        out.append(f"{ind}const void *idl_p{k} = NULL;")
+        out.append(f"{ind}uint32_t idl_l{k} = 0;")
+    for k, f in enumerate(f for f in fields if f.var):
+        out.append(f"{ind}if (idl_st == OK && !idl_get({buf}, {n}, &idl_o, {f.max}, {f.size}, "
+                   f"&idl_p{k}, &idl_l{k}))")
+        out.append(f"{ind}    idl_st = {err};")
+        if f.str:
+            out.append(f"{ind}if (idl_st == OK && !idl_str_ok((const char *)idl_p{k}, idl_l{k}))")
+            out.append(f"{ind}    idl_st = {err};")
+    if any(f.var for f in fields):
+        out.append(f"{ind}if (idl_st == OK && idl_o != {n})")
+        out.append(f"{ind}    idl_st = {err};")
+    return out
+
+
+def copy_vars(m, cond):
+    """Lines that copy the varying results read by get_vars to the caller's
+    out_ arrays (a str's with a NUL after it) and lengths."""
+    out = []
+    pre = f"{cond} && " if cond else ""
+    for k, f in enumerate(f for f in m.results if f.var):
+        out.append(f"    if ({pre}out_{f.name}) {{")
+        out.append(f"        if (idl_l{k})")
+        out.append(f"            __builtin_memcpy(out_{f.name}, idl_p{k}, idl_l{k} * {f.size});")
+        if f.str:
+            out.append(f"        out_{f.name}[idl_l{k}] = 0;")
+        out.append("    }")
+        out.append(f"    if ({pre}out_{f.name}_len)")
+        out.append(f"        *out_{f.name}_len = idl_l{k};")
+    return out
+
+
 def gen_call_general(p, m):
     """The body of <proto>_<method>_call in buffers of the method's own size."""
     P, U = p.name, p.name.upper()
@@ -1020,19 +1283,23 @@ def gen_call_general(p, m):
     out, free = buffers([qmax, rmax], "return ERR_NO_MEMORY;")
     out.append(f"    struct {P}_{m.name}_req *idl_q = (struct {P}_{m.name}_req *)idl_b0;")
     out.append(f"    const struct {P}_{m.name}_rep *idl_r = (const struct {P}_{m.name}_rep *)idl_b1;")
-    out.append("    uint32_t idl_qn = sizeof(*idl_q);")
+    out.append("    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);")
     out.append("    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */")
+    out.append("    status_t idl_st = OK;")
     out.append("    idl_q->txid = 0;")
     out += fill_request(m, U, "idl_q", "->")
+    out += put_vars(m.args, "idl_b0", "idl_qn", "ERR_INVALID_ARGS")
     hres = [f for f in m.results if f.handle]
     if hres:
         out.append(f"    handle_t idl_rh[{len(hres)}];")
     rh = (f"idl_rh, {len(hres)}, &idl_got[1]") if hres else "NULL, 0, &idl_got[1]"
-    out.append(f"    status_t idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, {rmax}, &idl_got[0], "
-               f"{rh},")
-    out.append("                               idl_within, idl_t);")
     out.append("    if (idl_st == OK)")
-    out.append("        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));")
+    out.append(f"        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, {rmax}, &idl_got[0], {rh},")
+    out.append("                          idl_within, idl_t);")
+    status = "idl_rep_status_var" if has_var(m.results) else "idl_rep_status"
+    out.append("    if (idl_st == OK)")
+    out.append(f"        idl_st = {status}(idl_b1, idl_got[0], sizeof(*idl_r));")
+    out += get_vars(m.results, "idl_b1", "idl_got[0]", "ERR_INTERNAL")
     if hres:
         out.append(f"    if (idl_st == OK && idl_got[1] != {len(hres)})")
         out.append("        idl_st = ERR_INTERNAL;")
@@ -1046,8 +1313,9 @@ def gen_call_general(p, m):
         out.append(f"            drv_handle_close(idl_rh[{k}]);")
         out.append("    }")
     out += copy_results(m, "idl_st == OK", "idl_r->")
-    if not m.results:
-        out.append("    (void)idl_r;")
+    out += copy_vars(m, "idl_st == OK")
+    if not has_var(m.results):
+        out.append("    (void)idl_o;")
     if free:
         out.append(free)
     out.append("    return idl_st;")
@@ -1112,7 +1380,7 @@ def gen_call_wrappers(p, m):
     P = p.name
     out = []
     rest = in_params(m.args) + out_params(m.results)
-    names = [f.name for f in m.args] + [f"out_{f.name}" for f in m.results]
+    names = [re.match(r".*?(\w+)(\[.*\])?$", x).group(1) for x in rest]
     for suffix, time, call in (("_until", "uint64_t deadline_ns", "false, deadline_ns"),
                                ("_within", "uint64_t timeout_ns", "true, timeout_ns"),
                                ("", None, "false, DEADLINE_NEVER")):
@@ -1141,9 +1409,12 @@ def gen_client_async(p, m):
         out += bufs
         out.append(f"    struct {P}_{m.name}_req *idl_q = (struct {P}_{m.name}_req *)idl_b0;")
         out.append("    uint32_t idl_qn = sizeof(*idl_q);")
+        out.append("    status_t idl_st = OK;")
         out.append("    idl_q->txid = idl_txid;")
         out += fill_request(m, U, "idl_q", "->")
-        out.append("    status_t idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);")
+        out += put_vars(m.args, "idl_b0", "idl_qn", "ERR_INVALID_ARGS")
+        out.append("    if (idl_st == OK)")
+        out.append("        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);")
         if free:
             out.append(free)
         out.append("    return idl_st;")
@@ -1165,7 +1436,12 @@ def gen_client_async(p, m):
     out.append(f"static inline status_t {P}_{m.name}_result({', '.join(params)})")
     out.append("{")
     out.append(f"    const struct {P}_{m.name}_rep *idl_r = (const struct {P}_{m.name}_rep *)idl_rep;")
-    out.append("    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));")
+    if has_var(m.results):
+        out.append("    uint32_t idl_o = sizeof(*idl_r);")
+        out.append("    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));")
+        out += get_vars(m.results, "idl_rep", "idl_m->n", "ERR_INTERNAL")
+    else:
+        out.append("    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));")
     out.append(f"    if (idl_st == OK && idl_m->nh != {len(hres)})")
     out.append("        idl_st = ERR_INTERNAL;")
     out.append("    if (idl_st != OK) {")
@@ -1181,6 +1457,7 @@ def gen_client_async(p, m):
     if not m.results:
         out.append("    (void)idl_r;")
     out += copy_results(m, None, "idl_r->")
+    out += copy_vars(m, None)
     out.append("    return OK;")
     out.append("}")
     return out
@@ -1194,7 +1471,11 @@ def gen_server_reply(p, m):
     out.append(f"/* Answer the {P}.{m.name} request kept in txn: idl_st and, if it is OK, the")
     out.append(" * results (handles are moved in every case: sent, or closed). A positive")
     out.append(" * status is ERR_INTERNAL, and so is OK with a handle result left")
-    out.append(" * HANDLE_INVALID. Returns the write's status (idl_reply_write). */")
+    if has_var(m.results):
+        out.append(" * HANDLE_INVALID, or a varying result past its N (or a str that isn't")
+        out.append(" * one). Returns the write's status (idl_reply_write). */")
+    else:
+        out.append(" * HANDLE_INVALID. Returns the write's status (idl_reply_write). */")
     out.append(f"static inline status_t {P}_reply_{m.name}({', '.join(params)})")
     out.append("{")
     if general(m):
@@ -1260,13 +1541,14 @@ def gen_reply_general(p, m):
         out.append(f"    if (idl_st == OK && !({ok}))")
         out.append("        idl_st = ERR_INTERNAL;")
     for f in m.results:
-        if f.handle:
+        if f.handle or f.var:
             continue
         if f.array:
             out.append(f"    for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
             out.append(f"        idl_r->{f.name}[idl_i] = {f.name}[idl_i];")
         else:
             out.append(f"    idl_r->{f.name} = {f.name};")
+    out += put_vars(m.results, "idl_b0", "idl_rn", "ERR_INTERNAL")
     out.append("    idl_r->status = idl_st;")
     out.append("    if (idl_st != OK) {")
     for k, f in enumerate(hres):
@@ -1289,9 +1571,13 @@ def gen_dispatch_case(p, m):
                f"(const struct {P}_{m.name}_req *)req;")
     out.append(f"        struct {P}_{m.name}_rep *idl_r = (struct {P}_{m.name}_rep *)rep;")
     g = general(m)   # fixed arrays straight into the reply (no copy of them on the stack)
+    room = dict(var_layout(m.results)[0])   # where each varying result is written
     for f in m.results:
         if f.handle:
             out.append(f"        handle_t out_{f.name} = HANDLE_INVALID;")
+        elif f.var:
+            out.append(f"        {f.ctype} *out_{f.name} = ({f.ctype} *)((uint8_t *)rep + {room[f]});")
+            out.append(f"        uint32_t out_{f.name}_len = 0;")
         elif f.array and g:
             out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
             out.append(f"            idl_r->{f.name}[idl_i] = 0;")
@@ -1303,18 +1589,39 @@ def gen_dispatch_case(p, m):
             out.append(f"        {f.ctype} out_{f.name} = 0;")
     if not m.results:
         out.append("        (void)idl_r;")
-    out.append("        if (n != sizeof(*idl_q))")
+    vargs = [f for f in m.args if f.var]
+    if vargs:
+        out.append("        uint32_t idl_o = sizeof(*idl_q);")
+        out.append("        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;")
+        out += get_vars(m.args, "req", "n", "ERR_INVALID_ARGS", "        ")
+        out.append("        if (idl_st != OK)")
+    else:
+        out.append("        if (n != sizeof(*idl_q))")
     out.append("            return sizeof(*idl_h);")
     out.append(f"        if (!ops->{m.name}) {{")
     out.append("            idl_h->status = ERR_NOT_SUPPORTED;")
     out.append("            return sizeof(*idl_h);")
     out.append("        }")
-    call = ["ctx"] + (["idl_txn"] if m.later else []) + [f"idl_q->{f.name}" for f in m.args] + \
-           [(f"idl_r->{f.name}" if g else f"out_{f.name}") if f.array else f"&out_{f.name}"
-            for f in m.results]
+    call = ["ctx"] + (["idl_txn"] if m.later else [])
+    k = 0
+    for f in m.args:
+        if f.var:
+            cast = "const char" if f.str else f"const {f.ctype}"
+            call += [f"({cast} *)idl_p{k}", f"idl_l{k}"]
+            k += 1
+        else:
+            call.append(f"idl_q->{f.name}")
+    for f in m.results:
+        if f.var:
+            call += [f"out_{f.name}", f"&out_{f.name}_len"]
+        elif f.array:
+            call.append(f"idl_r->{f.name}" if g else f"out_{f.name}")
+        else:
+            call.append(f"&out_{f.name}")
     if m.later:
         out.append("        struct idl_txn idl_txn = { ch, idl_h->txid };")
-    out.append(f"        status_t idl_st = ops->{m.name}({', '.join(call)});")
+    decl = "idl_st =" if vargs else "status_t idl_st ="
+    out.append(f"        {decl} ops->{m.name}({', '.join(call)});")
     hres = [f for f in m.results if f.handle]
     if m.later:
         out.append(f"        /* IDL_LATER: the handler answers with {P}_reply_{m.name}. */")
@@ -1326,6 +1633,13 @@ def gen_dispatch_case(p, m):
         if hres:
             out.append("        }")
     out.append("        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;")
+    for f in m.results:   # a handler's varying result past N, or not a str
+        if f.var:
+            bad = f"out_{f.name}_len > {f.max}"
+            if f.str:
+                bad += f" || !idl_str_ok(out_{f.name}, out_{f.name}_len)"
+            out.append(f"        if (idl_h->status == OK && ({bad}))")
+            out.append("            idl_h->status = ERR_INTERNAL;")
     if hres:
         ok = " && ".join(f"out_{f.name} != HANDLE_INVALID" for f in hres)
         out.append(f"        if (idl_h->status == OK && !({ok}))")
@@ -1344,14 +1658,21 @@ def gen_dispatch_case(p, m):
         out.append("        if (idl_h->status != OK)")
         out.append("            return sizeof(*idl_h);")
     for f in m.results:
-        if f.handle or (f.array and g):
+        if f.handle or f.var or (f.array and g):
             continue
         if f.array:
             out.append(f"        for (uint32_t idl_i = 0; idl_i < {f.array}; idl_i++)")
             out.append(f"            idl_r->{f.name}[idl_i] = out_{f.name}[idl_i];")
         else:
             out.append(f"        idl_r->{f.name} = out_{f.name};")
-    out.append("        return sizeof(*idl_r);")
+    if has_var(m.results):
+        out.append("        uint32_t idl_rn = sizeof(*idl_r);")
+        for f in m.results:
+            if f.var:
+                out.append(f"        idl_place(rep, &idl_rn, {room[f]}, out_{f.name}_len, {f.size});")
+        out.append("        return idl_rn;")
+    else:
+        out.append("        return sizeof(*idl_r);")
     out.append("    }")
     return out
 
@@ -1410,12 +1731,12 @@ def gen_protocol(p):
         out.append(f"struct {P}_{m.name}_req {{")
         out.append("    uint32_t txid;")
         out.append("    uint32_t ordinal;")
-        out += [f"    {f.member()}" for f in m.args if not f.handle]
+        out += [f"    {f.member()}" for f in m.args if f.wire]
         out.append("} __attribute__((packed));")
         out.append(f"struct {P}_{m.name}_rep {{")
         out.append("    uint32_t txid;")
         out.append("    int32_t  status;")
-        out += [f"    {f.member()}" for f in m.results if not f.handle]
+        out += [f"    {f.member()}" for f in m.results if f.wire]
         out.append("} __attribute__((packed));")
     out += ["", f"#define {U}_REQ_MAX {req_max}u   /* bytes: the biggest request */",
             f"#define {U}_REP_MAX {rep_max}u   /* bytes: the biggest reply */", ""]
@@ -1808,6 +2129,14 @@ SELFTESTS = [
      None, "request is 16385 bytes (max 16384)"),
     ("a reply past 16 KiB", t_ok("1 a () -> (u8[4096] a, u8[4096] b, u8[4096] c, u8[4096] d)\n"),
      None, "reply is 16392 bytes"),
+    ("arrays of varying length", t_ok("1 a (u8[<=16] a, str[<=4096] b) -> (str[<=1] c)\n"),
+     None, None),
+    ("a str up to 16 KiB", t_ok("1 a (str[<=16374] a) -> ()\n"), None, None),
+    ("a str past 16 KiB", t_ok("1 a (str[<=16375] a) -> ()\n"), None, "request is 16385"),
+    ("an array of none", t_ok("1 a (u8[<=0] a) -> ()\n"), None, "N not in 1..65535"),
+    ("an array past a u16", t_ok("1 a () -> (u8[<=65536] a)\n"), None, "N not in 1..65535"),
+    ("a str[N]", t_ok("1 a (str[8] a) -> ()\n"), None, "unknown type 'str[8]'"),
+    ("x and x_len", t_ok("1 a (str[<=8] x, u32 x_len) -> ()\n"), None, "is x's length"),
 ]
 
 
