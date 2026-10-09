@@ -3,7 +3,8 @@
  * starts with a RES_PCI resource (SR_RESOURCE) sliced from the root, and
  * the server ends of its control and query channels (SR_DEVMGR_CTL,
  * SR_DEVMGR; chans.c serves them and the channels made from them; the
- * protocol, and the reconnect rule its clients follow, are in <devmgr.h>).
+ * protocol, and the reconnect rule its clients follow, are in
+ * abi/idl/devmgr.idl).
  *
  * It enumerates every function (pci_enum), matches each against the table
  * below and, for every match whose driver ELF is in bootfs, wakes the
@@ -60,7 +61,7 @@
  * "vtdtest" (with "iommu=on", the IOMMU checks test entry) is passed on to
  * drv/hda, which runs its deliberate DMA faults before serving.
  *
- * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
+ * devmgrctl.shutdown (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
  *
  * USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
@@ -100,7 +101,7 @@ static const struct {
      * vendors' (the RTX's HDMI audio) are left without a driver, and 04 03 80
      * (Intel's audio DSP) needs firmware this driver doesn't have. Who may
      * use it is init's to say, not this table's: init asks for its device
-     * channel and gives it to the mixer (<devmgr.h> "Trust"). */
+     * channel and gives it to the mixer (abi/idl/devmgr.idl). */
     { 0x8086, 0xffff, 0x040300, "drv/hda", NULL },
     /* The board's Realtek RTL8125: on a `netprobe` boot the listen-only
      * probe (docs/M9-PLAN.md stage 0), on a `netsend` one the ARP send

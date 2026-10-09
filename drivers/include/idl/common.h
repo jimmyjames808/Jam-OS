@@ -13,7 +13,6 @@
 #define IDL_ID_NONE           0x0000u   /* reserved: not IDL (keep's, the namespace's kinds) */
 #define IDL_ID_NULL           0x0001u   /* abi/idl/null.idl */
 #define IDL_ID_EDU            0x0002u   /* abi/idl/edu.idl */
-#define IDL_ID_DEVMGR         0x0003u   /* user/include/devmgr.h: hand-written until track D's .idl */
 #define IDL_ID_USB            0x000au   /* abi/idl/usb.idl */
 #define IDL_ID_INPUT          0x000bu   /* abi/idl/input.idl */
 #define IDL_ID_CONSOLE        0x000cu   /* abi/idl/console.idl */
@@ -54,6 +53,8 @@
 #define IDL_ID_VOLESP         0x0047u   /* abi/idl/volumes.idl */
 #define IDL_ID_DISKS          0x0048u   /* abi/idl/volumes.idl */
 #define IDL_ID_MOUNTS         0x0049u   /* abi/idl/volumes.idl */
+#define IDL_ID_DEVMGR         0x005au   /* abi/idl/devmgr.idl */
+#define IDL_ID_DEVMGRCTL      0x005bu   /* abi/idl/devmgr.idl */
 #define IDL_ID_CRASHER        0x005cu   /* abi/idl/crasher.idl */
 #define IDL_ID_UPDATE_ANSWER  0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */

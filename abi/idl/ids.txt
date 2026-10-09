@@ -17,7 +17,6 @@
 0       none            -                       # reserved: not IDL (keep's, the namespace's kinds)
 1       null            abi/idl/null.idl
 2       edu             abi/idl/edu.idl
-3       devmgr          user/include/devmgr.h           # hand-written until track D's .idl
 10      usb             abi/idl/usb.idl
 11      input           abi/idl/input.idl
 12      console         abi/idl/console.idl
@@ -61,6 +60,8 @@
 72      disks           abi/idl/volumes.idl
 73      mounts          abi/idl/volumes.idl
 # 90 to 99: devmgr's (M12 track D)
+90      devmgr          abi/idl/devmgr.idl
+91      devmgrctl       abi/idl/devmgr.idl
 92      crasher         abi/idl/crasher.idl
 0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
 0x4d4f  standby         user/include/roles.h            # STANDBY_MAGIC "PROM" (promotion)

@@ -4,12 +4,12 @@
  *     one-shot driver, like hid on an interface that is not a boot
  *     keyboard or mouse). Not restarted; its job must be empty.
  *   - anything else -- a crash (the kernel killed it), a kill by anyone
- *     (DEVMGR_KILL included), an exit with an error: restarted. The rest
+ *     (devmgrctl.kill included), an exit with an error: restarted. The rest
  *     of its job is killed first. Backoff: 100 ms after the first death,
  *     doubling with every restart in the last 60 s, at most 5 s. The death
  *     after 5 restarts within 60 s gives up: no more restarts, a log line
  *     and a RESULTS line. A real driver's crash, error exit or give-up is
- *     a problem (devmgr exits 1 at the end); a DEVMGR_KILL, and anything
+ *     a problem (devmgr exits 1 at the end); a devmgrctl.kill, and anything
  *     the crash-test driver does, is expected. (The filesystem services of
  *     the disks are volumes', supervised there by the rule of a service
  *     that outlives its process: user/services/volumes/supervise.c.)
@@ -20,7 +20,7 @@
  * has died, devmgr makes the channel the restarted driver will serve and
  * GET_SERVICE hands it out: clients that saw ERR_PEER_CLOSED reconnect at
  * once and their calls wait in the channel until the new driver reads
- * them (the reconnect rule, <devmgr.h>).
+ * them (the reconnect rule, abi/idl/devmgr.idl).
  *
  * On the desktop (devmgr_notices, <notice.h>) a real driver's first crash
  * in its window and its give-up are notices in plain words ("Sound

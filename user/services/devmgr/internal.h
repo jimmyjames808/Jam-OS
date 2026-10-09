@@ -4,11 +4,12 @@
  * supervise.c (what happens when a driver dies: restart with backoff, or
  * give up), usb.c (the USB interfaces usb-bus reports), disks.c (the
  * disks usb-storage serves, told to volumes on the DISKS channel). The
- * protocol is in <devmgr.h>. The disks' filesystems and mounts are
+ * protocol is abi/idl/devmgr.idl (<devmgr.h> keeps the driver rights). The disks' filesystems and mounts are
  * volumes' (user/services/volumes/), since M12's storage split. */
 #pragma once
 
 #include <devmgr.h>
+#include <idl/devmgr.h>
 #include <jam/driver.h>
 #include <notice.h>
 #include <os.h>
@@ -47,7 +48,7 @@
 /* What a channel of devmgr's may ask (chans.c): the query channel the
  * queries, but never a device that has a device channel; a device channel
  * the queries about its own device alone; the control channel everything
- * (<devmgr.h> "Trust"). */
+ * (abi/idl/devmgr.idl). */
 enum level {
     LEVEL_QUERY,
     LEVEL_DEVICE,
@@ -81,7 +82,7 @@ struct binding {
     uint64_t            client_key; /* the port watches client for events under it (0: not) */
     handle_t            serve;      /* the driver's end, kept while its restart is due */
     uint32_t            gen;        /* bumped at every start: in its port key */
-    bool                killed;     /* ended by DEVMGR_KILL */
+    bool                killed;     /* ended by devmgrctl.kill */
     status_t            last;       /* the last start's status */
     /* Supervision. */
     uint32_t            state;      /* DEVMGR_SUP_* */
@@ -129,9 +130,9 @@ extern uint64_t       devmgr_started;   /* when devmgr started (uptime, ns) */
  * its match-table row asks for one and devmgr was given it ("netprobe" or
  * "netsend" or "net" for drv/rtl8125), else NULL. */
 const char *pci_driver_arg(const char *path);
-/* The first binding pass's counts, for DEVMGR_STATUS. */
+/* The first binding pass's counts, for devmgr.status. */
 extern unsigned       nbound, nfailed, nskipped;
-/* DEVMGR_SHUTDOWN was answered: the loop stops as if every client had left. */
+/* devmgrctl.shutdown was answered: the loop stops as if every client had left. */
 extern bool           shutdown_asked;
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -154,15 +155,15 @@ bool     chans_packet(uint64_t key);
 /* Does device `dev` (a devs index) have a device channel? Then the query
  * channel never hands out its service. */
 bool     chans_device_owned(uint32_t dev);
-/* DEVMGR_DEVICE_CHANNEL: a new channel scoped to device `dev`; *out: the
+/* devmgrctl.device_channel: a new channel scoped to device `dev`; *out: the
  * client end. ERR_BAD_STATE: it has one already (until that one's clients
  * are all gone); ERR_NO_RESOURCES: no free slot. */
 status_t chans_new_device(uint32_t dev, handle_t *out);
 
-/* request.c. Answer one request that came on the channel `from` says: the
- * reply, and *nh handles in hs, each to be sent with rs[i]. */
-void request_handle(const struct devmgr_req *q, const struct request_from *from,
-                    struct devmgr_rep *r, handle_t *hs, rights_t *rs, uint32_t *nh);
+/* request.c: the handlers of the two protocols. Their ctx is the
+ * `struct request_from` of the channel a request came on. */
+extern const struct devmgr_ops    devmgr_ops;
+extern const struct devmgrctl_ops devmgrctl_ops;
 
 /* bind.c. Start b's driver (state RUNNING on success): its handles from
  * scratch (for a PCI function: woken to D0, a new dma_cap, interrupt
@@ -179,9 +180,12 @@ void forget_driver(struct binding *b);
  * with exit 0 by itself (or `excused`) and its job is empty (checked only
  * then: a killed driver's DMA pages may still be quarantined). */
 bool stop_driver(struct binding *b, bool kill, bool excused);
-/* DEVMGR_DRIVER_VIEW: the function and each memory BAR as a driver gets
- * them (hs[i] to be sent with rs[i]); *mask: which BARs. */
-status_t driver_view(struct binding *b, handle_t *hs, rights_t *rs, uint32_t *nh, uint32_t *mask);
+/* devmgrctl.driver_view: b's PCI function with a driver's rights (plus
+ * RIGHT_TRANSFER, to be sent), and *mask: which memory BARs it has. */
+status_t driver_function(struct binding *b, handle_t *out, uint32_t *mask);
+/* devmgrctl.driver_bar: memory BAR n as a driver gets it (plus RIGHT_TRANSFER).
+ * ERR_NOT_FOUND: no such BAR. */
+status_t driver_bar(struct binding *b, unsigned n, handle_t *out);
 unsigned mem_bars(const struct binding *b);
 
 /* Close b's client end (and stop watching it). */
@@ -211,7 +215,7 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
 /* The word a BIND_USB binding's driver is started with after its name:
  * "hidboot" for drv/hid when devmgr was given it, else NULL. */
 const char *usb_driver_arg(const struct binding *b);
-/* DEVMGR_RELEASE: a duplicate of the interface channel b's driver had (the
+/* devmgrctl.release_usb: a duplicate of the interface channel b's driver had (the
  * one channel usb-bus lets open the interface's bulk endpoints), for a
  * test that drives the interface itself. ERR_PEER_CLOSED: it is gone. */
 status_t usb_channel(const struct binding *b, handle_t *out);
@@ -232,7 +236,7 @@ bool usb_input_gone(const struct binding *b);
 /* disks.c: the disks usb-storage serves, told to volumes (the DISKS
  * channel's `disks` events, abi/idl/volumes.idl). */
 #define STORAGE_DRIVER "drv/usb-storage"
-/* DEVMGR_SET_VOLUMES: ch (consumed) is the client end of a new DISKS
+/* devmgrctl.set_volumes: ch (consumed) is the client end of a new DISKS
  * channel: every running disk's driver is asked for a `storage` channel
  * for it again. */
 void     disks_set_volumes(handle_t ch);

@@ -14,18 +14,16 @@
  * image.
  *
  * kill <name> reaches the processes init has authority over: its own
- * services (shell.c: their jobs are init's), through devmgr's KILL what
- * devmgr runs for a USB device, a class driver per interface ("hid-6.1:0",
- * "usb-storage-1:0"), and through volumes.kill a filesystem service per
- * mount ("fat-data" is /data's, "fat-usb0-test" /usb0-test's), whatever
- * its process is called now (a restarted one is volumes' warm spare
- * promoted, which keeps the name "fat-spare", and `kill fat-spare` names
- * the first of those: volumes knows which). For devmgr's, the kernel's process
- * list says which process has the name; devmgr's bindings on each USB
- * device are then asked for theirs (GET_DRIVER) until one matches, and
- * that one is killed. devmgr's PCI drivers ("usb-bus", "hda") are found
- * the same way among the functions with a driver bound (GET_DRIVER
- * 0xffff/0xffff); devmgr restarts them like any driver that dies.
+ * services (shell.c: their jobs are init's), through devmgrctl.kill_process
+ * what devmgr runs (a PCI function's driver, "usb-bus" or "hda", and for a
+ * USB device a class driver per interface, "hid-6.1:0", "usb-storage-1:0"),
+ * and through volumes.kill a filesystem service per mount ("fat-data" is
+ * /data's, "fat-usb0-test" /usb0-test's), whatever its process is called
+ * now (a restarted one is volumes' warm spare promoted, which keeps the
+ * name "fat-spare", and `kill fat-spare` names the first of those: volumes
+ * knows which). For devmgr's, the kernel's process list says which process
+ * has the name and devmgr finds the binding that runs it; it restarts a
+ * driver that dies, like any.
  *
  * reboot is a kexec into a fresh copy of the system: the kernel's stored
  * one, or the files on /esp if they changed (reboot.c); if that can't be
@@ -54,20 +52,15 @@
  * screen back (splash.c). kernel_load (the shell's `kernel load`) makes
  * /esp's kernel and boot image the stored copy now (reboot.c);
  * update_offer hands out a channel for a fetched build (update.c). */
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/initctl.h>
-#include <idl/usbbus.h>
 #include <os.h>
 #include <volumes.h>
 #include "init.h"
 
 #define NAME_MAX    32                /* initctl.kill's name field */
 #define MAX_PROCS   512               /* processes read from the kernel's list */
-#define MAX_PCI_DRIVERS 64            /* bound PCI functions looked through */
-#define MAX_DEVICES 128               /* USB devices looked at */
-#define MAX_IFACES  8                 /* interface numbers tried on each */
 #define MOUNT_WAIT  (25 * NS_PER_S)   /* volumes.remount: its service's stop, then a start */
-#define CALL_WAIT   (5 * NS_PER_S)    /* a devmgr, volumes or usb-bus call */
 #define KILL_WAIT   (15 * NS_PER_S)   /* a KILL: devmgr or volumes waits for it to die */
 #define SYNC_WAIT   (6 * NS_PER_S)    /* volumes.sync: it gives each mount 5 s */
 #define ROUND       16                /* requests answered before the main loop gets a turn */
@@ -88,27 +81,6 @@ static handle_t ctl_port;
 
 /* ---- kill: what devmgr runs for a USB device, and volumes for a mount --------------- */
 
-/* usb-bus: the driver devmgr bound that answers usbbus.status. */
-static handle_t find_usb_bus(handle_t dm)
-{
-    for (uint32_t n = 0; n < 16; n++) {
-        struct devmgr_rep r;
-        handle_t h = HANDLE_INVALID;
-        uint32_t nh = 0;
-        status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &h, 1, &nh,
-                                  now() + CALL_WAIT);
-        if (st == ERR_NOT_FOUND)
-            break;
-        if (st != OK || nh != 1)
-            continue;
-        if (usbbus_status_until(h, now() + CALL_WAIT, NULL, NULL, NULL, NULL, NULL, NULL,
-                                NULL) == OK)
-            return h;
-        jam_handle_close(h);
-    }
-    return HANDLE_INVALID;
-}
-
 /* The koid of the first process called name in the kernel's list. */
 static bool koid_named(const char *name, uint64_t *koid)
 {
@@ -126,84 +98,17 @@ static bool koid_named(const char *name, uint64_t *koid)
     return found;
 }
 
-/* The koid of the process devmgr runs for this binding, asked on ch. */
-static status_t binding_koid(handle_t ch, uint16_t vendor, uint16_t device, uint32_t id,
-                             uint64_t *koid)
-{
-    struct devmgr_rep r;
-    handle_t hs[3];
-    uint32_t nh = 0;
-    status_t st = devmgr_call(ch, DEVMGR_GET_DRIVER, vendor, device, id, &r, hs, 3, &nh,
-                              now() + CALL_WAIT);
-    struct process_info info;
-    if (st == OK)
-        st = nh ? jam_process_get_info(hs[0], &info) : ERR_INTERNAL;
-    for (uint32_t i = 0; i < nh; i++)
-        jam_handle_close(hs[i]);
-    if (st == OK)
-        *koid = info.koid;
-    return st;
-}
-
-/* What devmgr runs for USB device `id`: a class driver per interface.
- * Kill the one whose process is `koid`. ERR_NOT_FOUND: none is. */
-static status_t kill_on_device(handle_t dm, uint32_t id, uint64_t koid)
-{
-    for (uint16_t n = 0; n < MAX_IFACES; n++) {
-        uint64_t have = 0;
-        if (binding_koid(dm, DEVMGR_USB_IFACE, n, id, &have) != OK || have != koid)
-            continue;
-        struct devmgr_rep r;
-        return devmgr_call(dm, DEVMGR_KILL, DEVMGR_USB_IFACE, n, id, &r, NULL, 0, NULL,
-                           now() + KILL_WAIT);
-    }
-    return ERR_NOT_FOUND;
-}
-
-/* devmgr's PCI drivers: kill the one whose process is `koid`.
- * ERR_NOT_FOUND: none is. */
-static status_t kill_pci_driver(handle_t dm, uint64_t koid)
-{
-    for (uint32_t n = 0; n < MAX_PCI_DRIVERS; n++) {
-        uint64_t have = 0;
-        status_t st = binding_koid(dm, 0xffff, 0xffff, n, &have);
-        if (st == ERR_NOT_FOUND)
-            break;   /* past the last bound function */
-        if (st != OK || have != koid)
-            continue;
-        struct devmgr_rep r;
-        return devmgr_call(dm, DEVMGR_KILL, 0xffff, 0xffff, n, &r, NULL, 0, NULL,
-                           now() + KILL_WAIT);
-    }
-    return ERR_NOT_FOUND;
-}
-
 /* Kill the process called name if devmgr runs it: a PCI function's
  * driver ("hda"), or for a USB device a class driver ("hid-6.1:0",
- * "usb-storage-1:0"). (volumes' filesystem services are volumes.kill's:
- * later_kill.) */
+ * "usb-storage-1:0"). The kernel's process list says which process has the
+ * name; devmgr finds it among its drivers (devmgrctl.kill_process).
+ * (volumes' filesystem services are volumes.kill's: later_kill.) */
 static status_t kill_devmgr_process(const char *name, uint64_t *koid)
 {
     handle_t dm = shell_devmgr();
     if (!dm || !koid_named(name, koid))
         return ERR_NOT_FOUND;
-    status_t st = kill_pci_driver(dm, *koid);
-    if (st != ERR_NOT_FOUND)
-        return st;
-    handle_t bus = find_usb_bus(dm);
-    if (!bus)
-        return ERR_NOT_FOUND;
-    for (uint32_t i = 0; i < MAX_DEVICES && st == ERR_NOT_FOUND; i++) {
-        uint32_t id = 0;
-        if (usbbus_device_until(bus, now() + CALL_WAIT, i, &id, NULL, NULL, NULL, NULL, NULL,
-                                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                                NULL) != OK)
-            break;   /* past the last device, or usb-bus is gone */
-        st = kill_on_device(dm, id, *koid);
-    }
-    jam_handle_close(bus);
-    return st;
+    return devmgrctl_kill_process_until(dm, now() + KILL_WAIT, *koid);
 }
 
 /* ---- answered later: what waits for volumes -------------------------------------- */

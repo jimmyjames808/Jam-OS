@@ -337,7 +337,7 @@ bool     comp_notice_run(const char *title, const char *body, char icon, uint8_t
 
 /* services.c: devmgr's class drivers type into what ch leads to (consumed):
  * the first console's channel, or the compositor's INPUT channel
- * (DEVMGR_SET_CONSOLE); nothing if no devmgr runs. */
+ * (devmgrctl.set_input); nothing if no devmgr runs. */
 void     services_devmgr_input(handle_t ch);
 /* services.c: a new compositor runs: devmgr gets an INPUT channel of it. */
 void     comp_restarted(void);
@@ -363,7 +363,7 @@ void     services_settings(unsigned i);
 bool     services_devmgr_up(void);
 /* services.c, for main.c's test mode too: devmgr (dm: its control
  * channel) tells its disks on the DISKS channel whose client end is
- * `disks` (consumed; <volumes.h>): DEVMGR_SET_VOLUMES. Said in the log if
+ * `disks` (consumed; <volumes.h>): devmgrctl.set_volumes. Said in the log if
  * it fails. */
 void     services_set_volumes(handle_t dm, handle_t disks);
 /* The mixer's shared audioctl channel, init's client end (0: none): the
@@ -372,7 +372,7 @@ handle_t services_audioctl(void);
 /* A duplicate of the mixer's desktop channel's client end (audioctl.idl:
  * desk and set_master only), for the compositor; HANDLE_INVALID if none. */
 handle_t services_audio_desk(void);
-/* devmgr's device channels (<devmgr.h> DEVMGR_DEVICE_CHANNEL, asked on its
+/* devmgr's device channels (devmgrctl.device_channel, asked on its
  * control channel devmgr_ctl) for every PCI function of class `cls` that
  * has a driver, at most `max`, into out[]: init gives them to the class's
  * user (the sound cards to the mixer), and while they exist the query
@@ -405,7 +405,7 @@ handle_t shell_console(void);
 void     shell_flush_log(uint64_t deadline);
 /* For a reboot (reboot.c), in this order: volumes syncs every writable
  * mount, stops its filesystem services and exits (volumes.stop), then
- * devmgr stops every driver in order and exits (DEVMGR_SHUTDOWN); each
+ * devmgr stops every driver in order and exits (devmgrctl.shutdown); each
  * waited for until deadline, and its job killed if it doesn't. Neither is
  * started again. OK, or what went wrong. */
 status_t shell_stop_volumes(uint64_t deadline);

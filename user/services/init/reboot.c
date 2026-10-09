@@ -24,7 +24,7 @@
  * Then what a firmware reset does too (stop_everything: /data synced,
  * logd's last lines written, the volume left clean, volumes' shutdown,
  * volumes.stop: every writable mount synced and the filesystem
- * services stopped, then devmgr's, DEVMGR_SHUTDOWN: the class drivers,
+ * services stopped, then devmgr's, devmgrctl.shutdown: the class drivers,
  * then the bus drivers' final halt and reset, so no device is left writing
  * memory or in the middle of a transfer), and kexec_reboot. Any step that
  * fails before the jump returns, and ctl.c resets through the firmware
@@ -34,7 +34,6 @@
  * through a command, a NIC writing a ring) is what the stopped drivers
  * are for. The screen shows only the splash background: init blanks it
  * first (compctl.blank). */
-#include <devmgr.h>
 #include <idl/console.h>
 #include <os.h>
 #include "init.h"
@@ -179,7 +178,7 @@ static void say_stored_instead(status_t why)
 /* What every restart does before the reset or the jump: /data synced,
  * logd's last lines written (the sync's line included), the volume left
  * clean, then volumes' stop (volumes.stop: its filesystem
- * services stopped) and devmgr's in order (DEVMGR_SHUTDOWN). *vol_ms: how
+ * services stopped) and devmgr's in order (devmgrctl.shutdown). *vol_ms: how
  * long volumes took; returns how long devmgr took, in ms. `how` names the
  * restart in the log line that says one had to be killed. */
 static uint64_t stop_everything(const char *how, uint64_t *vol_ms)

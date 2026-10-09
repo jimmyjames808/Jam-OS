@@ -35,6 +35,7 @@
  * same way. init exits 0 if every program (and devmgr, volumes and the
  * bootfs server) exited 0. */
 #include <devmgr.h>
+#include <idl/devmgr.h>
 #include <os.h>
 #include <volumes.h>
 #include "init.h"
@@ -260,14 +261,13 @@ static bool start_devmgr(handle_t console)
     devmgr_ch = a;
     devmgr_q = qa;
     /* Wait for its first binding pass. */
-    struct devmgr_rep r;
-    st = devmgr_call(devmgr_ch, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL,
-                     now() + 30 * NS_PER_S);
+    uint32_t bound, failed, skipped;
+    st = devmgr_status_until(devmgr_ch, now() + 30 * NS_PER_S, &bound, &failed, &skipped);
     if (st != OK) {
         init_say("init: devmgr doesn't answer (%s)", status_str(st));
         return false;
     }
-    printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped\n", r.a, r.b, r.c);
+    printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped\n", bound, failed, skipped);
     /* The device channels first, then /svc/devmgr: nobody can ask the
      * query channel for these drivers before init holds them. */
     (void)services_claim_class(devmgr_ch, DEVMGR_CLASS_HDA, devmgr_hda, INIT_MAX_CLAIMED);
@@ -278,7 +278,7 @@ static bool start_devmgr(handle_t console)
         (void)ns_svc_set(SVC_DEVMGR, dq, true);   /* per opener; without it the tests skip */
     if (jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &dc) == OK)
         (void)ns_svc_set(SVC_DEVMGR_CTL, dc, false);
-    return r.b == 0;
+    return failed == 0;
 }
 
 /* volumes: started after devmgr, stopped before it. devmgr tells it of

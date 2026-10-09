@@ -651,6 +651,8 @@ static const struct {
     { "supervised_restart", t_supervised_restart },
     { "supervised_backoff", t_supervised_backoff },
     { "supervised_give_up", t_supervised_give_up },
+    { "devmgr_addresses", t_devmgr_addresses },
+    { "devmgr_kill_process", t_devmgr_kill_process },
     { "disk_mounts", t_disk_mounts },
     { "disk_not_boot", t_disk_not_boot },
     { "disk_other", t_disk_other },

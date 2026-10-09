@@ -9,7 +9,7 @@
  * (ARCHITECTURE.md "How a service waits"); it reads only d->cards and
  * d->ncards, which never change once it runs. It ends when the loop's end
  * of its channel closes. */
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/netdev.h>
 #include "dev.h"
 
@@ -19,20 +19,8 @@ static uint8_t  stack[16 * 1024] __attribute__((aligned(16)));
 /* The driver's channel for card i, from devmgr. */
 static status_t driver_channel(const struct dev *d, unsigned i, handle_t *out)
 {
-    struct devmgr_rep r;
-    handle_t ch = HANDLE_INVALID;
-    uint32_t nh = 0;
-    status_t st = devmgr_call(d->cards[i], DEVMGR_GET_SERVICE, 0, 0, 0, &r, &ch, 1, &nh,
-                              now() + DEV_CALL_WAIT);
-    if (st == OK && nh != 1)
-        st = ERR_INTERNAL;   /* not devmgr's format */
-    if (st != OK) {
-        if (nh)
-            jam_handle_close(ch);
-        return st;
-    }
-    *out = ch;
-    return OK;
+    return devmgr_get_service_until(d->cards[i], now() + DEV_CALL_WAIT, DEVMGR_KIND_SELF, 0, 0, 0,
+                                    out);
 }
 
 /* Card i: its info and a session, into f and hs. */
