@@ -581,11 +581,29 @@ static void run_first(const char *line)
 
 /* init's arguments, in any order: "term=<n>" (with a compositor: terminal
  * n's shell, which `exit` closes), "soak=<minutes>" (the boot word's soak
- * test), "run=<line>" (initctl.terminal's command) and "restarted" (the
- * shell before this one crashed or was killed: said, so a restart isn't a
- * mystery). */
+ * test), "run=<line>" (initctl.terminal's command), "note=<line>" (the
+ * boot before this one panicked: the line to print under the banner) and
+ * "restarted" (the shell before this one crashed or was killed: said, so a
+ * restart isn't a mystery). */
 static const char *soak_arg, *run_arg;
+static char note_arg[BOOT_NOTE_MAX + 1];
 static bool restarted;
+
+const char *sh_boot_note(void)
+{
+    return note_arg;
+}
+
+/* "note=<line>": the line, cut at BOOT_NOTE_MAX bytes, anything but
+ * printable ASCII shown as '?' (init's line is its own, but it is text
+ * from another process). */
+static void take_note(const char *line)
+{
+    size_t n = 0;
+    for (; line[n] && n < BOOT_NOTE_MAX; n++)
+        note_arg[n] = line[n] >= ' ' && line[n] <= '~' ? line[n] : '?';
+    note_arg[n] = '\0';
+}
 
 static void take_args(int argc, char **argv)
 {
@@ -597,6 +615,8 @@ static void take_args(int argc, char **argv)
             soak_arg = a + 5;
         else if (!strncmp(a, "run=", 4) && a[4])
             run_arg = a + 4;
+        else if (!strncmp(a, "note=", 5))
+            take_note(a + 5);
         else if (!strcmp(a, "restarted"))
             restarted = true;
     }

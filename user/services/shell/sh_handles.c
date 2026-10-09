@@ -7,9 +7,6 @@
  *                 doesn't answer) and RIGHT_ROOT_VMEX (programs from /data);
  *                 no RIGHT_MAP / RIGHT_SLICE
  *   SR_USER + 1   RES_PCI, RIGHTS_BASIC only (pci_enum for `devices`)
- *   SR_USER + 2   a channel from init: on the boot after a panic the first
- *                 shell finds a line to print on it (INIT_SHELL_NOTE:
- *                 sh_boot_note)
  *   SR_NS         init's whole namespace, as it is (every mount writable,
  *                 /data's etc included: the shell is where `allow` marks
  *                 programs) and kept up to date, with every service under
@@ -27,14 +24,12 @@
 #include <devmgr.h>
 #include "sh_core.h"
 
-static handle_t root, pci, from_init;
-static char note[INIT_SHELL_NOTE_MAX + 1];   /* INIT_SHELL_NOTE's line, until taken */
+static handle_t root, pci;
 
 void sh_handles_init(void)
 {
     root = startup_handle(SR_RESOURCE);
     pci = startup_handle(SR_USER + 1);
-    from_init = startup_handle(SR_USER + 2);
 }
 
 handle_t sh_music(void)
@@ -65,32 +60,6 @@ handle_t sh_root(void)
 handle_t sh_pci(void)
 {
     return pci;
-}
-
-const char *sh_boot_note(void)
-{
-    static char taken[INIT_SHELL_NOTE_MAX + 1];
-    while (from_init) {
-        struct { uint32_t kind; char text[INIT_SHELL_NOTE_MAX]; } m = { 0, { 0 } };
-        uint32_t n = 0, nh = 0;
-        handle_t h[2] = { HANDLE_INVALID, HANDLE_INVALID };
-        struct channel_read_args a = {
-            .h = from_init, .rd_cap = sizeof(m), .rd_bytes = (uint64_t)(uintptr_t)&m,
-            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)h,
-            .rd_hcap = 2, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-        };
-        if (jam_channel_read(&a) != OK)
-            break;   /* nothing new (or init's end is gone) */
-        for (uint32_t i = 0; i < nh; i++)
-            jam_handle_close(h[i]);
-        if (n > sizeof(m.kind) && m.kind == INIT_SHELL_NOTE && nh == 0) {
-            memcpy(note, m.text, n - sizeof(m.kind));
-            note[n - sizeof(m.kind)] = '\0';
-        }
-    }
-    memcpy(taken, note, sizeof(taken));
-    note[0] = '\0';
-    return taken;
 }
 
 /* 0 while there is none: a restart in progress, or no devmgr at all. */
