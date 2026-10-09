@@ -85,10 +85,11 @@
 #include "disk.h"
 
 struct disk disks[MAX_DISKS];
-/* Transaction ids of the requests written without waiting. The kernel
- * numbers channel_call's from 1 up, so these are billions of calls away
- * from any id a caller on the same channel could be waiting for. */
-uint32_t txids = 0xd15c0000u;
+/* Transaction ids of the requests written without waiting: bit 31 clear,
+ * as <jam/abi.h> CHANNEL_TXID_KERNEL asks of a writer that picks its own,
+ * so no reply to them is ever taken for a channel_call's (the kernel's
+ * have it set). */
+uint32_t txids = 0x515c0000u;
 static uint32_t test_ids;   /* test disks made so far */
 
 const char *disk_name(const struct disk *d)
@@ -164,7 +165,8 @@ void not_boot(struct disk *d, const char *why)
 /* Step 1: ask d's driver what it holds. */
 static void ask_info(struct disk *d)
 {
-    if (++txids == 0)
+    txids = (txids + 1) & ~CHANNEL_TXID_KERNEL;
+    if (txids == 0)
         txids++;
     struct storage_info_req q = { .txid = txids, .ordinal = STORAGE_INFO };
     d->txid = q.txid;

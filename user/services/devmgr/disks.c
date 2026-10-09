@@ -22,7 +22,9 @@
 #include "internal.h"
 
 static handle_t vol;          /* our end of the DISKS channel (0: none) */
-static uint32_t connects = 0xd15c0000u;   /* the svc.connect txids, as disk.c's were */
+/* The svc.connect txids: bit 31 clear, as <jam/abi.h> CHANNEL_TXID_KERNEL
+ * asks of a writer that picks its own. */
+static uint32_t connects = 0x515c0000u;
 
 /* The DISKS channel is dead: dropped until init sends a new one. */
 static void drop_vol(void)
@@ -52,7 +54,8 @@ void disks_started(struct binding *b)
     b->disk_txid = 0;
     if (!b->disk || !b->client || !vol)
         return;
-    if (++connects == 0)
+    connects = (connects + 1) & ~CHANNEL_TXID_KERNEL;
+    if (connects == 0)
         connects++;
     status_t st = svc_connect_send(b->client, connects);
     if (st != OK) {

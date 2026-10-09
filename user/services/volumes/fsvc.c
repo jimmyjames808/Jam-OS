@@ -366,7 +366,8 @@ uint32_t ask_stat(const struct vol *b, const char *path, status_t *st)
 {
     struct fs_stat_req q;
     memset(&q, 0, sizeof(q));
-    if (++txids == 0)
+    txids = (txids + 1) & ~CHANNEL_TXID_KERNEL;
+    if (txids == 0)
         txids++;
     q.txid = txids;
     q.ordinal = FS_STAT;
