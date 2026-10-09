@@ -6,6 +6,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <jam/status.h>
 
 #define USER_BASE 0x0000000000001000ull
 #define USER_TOP  0x00007fffffffe000ull
@@ -24,6 +25,12 @@ struct trap_frame;
  * default FPU state. The thread must already have an address space
  * (current_thread()->aspace) and a user FPU area. */
 _Noreturn void arch_enter_user(uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1);
+
+/* The current thread's FS base in ring 3 (thread-local storage), from now
+ * on: ERR_INVALID_ARGS at or past USER_TOP, ERR_BAD_STATE for a thread
+ * without user state. Its first entry to ring 3 loads current_thread()->
+ * fs_base, so a thread's first value is set there before it starts. */
+status_t thread_set_fs_base(uint64_t base);
 
 /* Called by schedule() with interrupts off and the run queue lock held,
  * just before switching from prev to next: TSS rsp0 and the per-CPU

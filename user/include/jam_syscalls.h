@@ -60,13 +60,14 @@ status_t jam_process_create(handle_t job, const char *name, uint64_t name_len, u
 status_t jam_process_start(handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1);
 status_t jam_process_kill(handle_t proc);
 status_t jam_thread_create(handle_t proc, const char *name, uint64_t name_len, uint32_t flags, handle_t *out);
-status_t jam_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1);
+status_t jam_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1, uint64_t fs_base);
 status_t jam_job_create(handle_t parent, uint32_t flags, handle_t *out);
 status_t jam_job_set_limit(handle_t job, uint32_t kind, uint64_t value);
 status_t jam_job_get_info(handle_t job, struct job_info *out);
 status_t jam_process_get_info(handle_t proc, struct process_info *out);
 status_t jam_thread_set_priority(handle_t thread, int32_t prio);
 status_t jam_job_kill(handle_t job);
+status_t jam_thread_set_fs_base(uint64_t base);
 status_t jam_resource_create(handle_t parent, uint32_t kind, uint64_t base, uint64_t size, handle_t *out);
 status_t jam_pci_enum(handle_t pci, uint32_t index, struct pci_dev_info *out);
 status_t jam_pci_device_open(handle_t pci, uint32_t index, handle_t *out);

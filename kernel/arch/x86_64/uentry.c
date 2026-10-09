@@ -1,7 +1,23 @@
 /* Ring 3: syscall setup, the C side of the syscall and trap returns, user
  * page faults and user copies, killing a faulting user thread, the first
- * entry into ring 3, and the per-switch state (TSS rsp0, FPU, address
- * space). The assembly halves are syscall.S, isr.S and usercopy.S.
+ * entry into ring 3, and the per-switch state (TSS rsp0, FPU, FS base,
+ * address space). The assembly halves are syscall.S, isr.S and usercopy.S.
+ *
+ * The FS base (thread-local storage). Each user thread has one
+ * (t->fs_base: thread_start's last argument, thread_set_fs_base); GS
+ * stays 0. FSGSBASE is off (cpu.c), so user code can't write the base
+ * itself, and the kernel never reads it back: it only writes MSR_FS_BASE,
+ * when a user thread is switched in, and only when the CPU may hold
+ * another value. What user code CAN do is load a selector into FS, which
+ * sets the base from a descriptor: every descriptor it may load has base
+ * 0, and a null selector leaves the base (AMD) or zeroes it (Intel). So
+ * after a user thread ran, the CPU's base is what was last loaded, or 0.
+ * c->fs_base is the last value loaded and c->fs_tid the last user thread
+ * switched in: the load is skipped when the incoming thread wants the
+ * value loaded and either that value is 0 (it can't have changed) or the
+ * incoming thread is the one that last ran (whatever it did to FS since
+ * is its own doing). A thread that loads FS itself thus keeps a base of 0
+ * or loses it again at a switch: only thread_set_fs_base sets it.
  *
  * Invariant: while a thread runs in ring 3 its kernel stack is empty, it
  * holds no locks, and this CPU's TSS rsp0 and kernel_rsp both point at the
@@ -67,6 +83,43 @@ void syscall_init_cpu(void)
      * it #GP in user mode instead of entering wherever firmware left it. */
     wrmsr(MSR_SYSENTER_CS, 0);
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
+    /* What this CPU's FS base holds is known from here on (top). */
+    struct cpu *c = this_cpu();
+    wrmsr(MSR_FS_BASE, 0);
+    c->fs_base = 0;
+    c->fs_tid = 0;
+}
+
+/* Interrupts off: give user thread t its FS base on this CPU (top). */
+static void fs_load(struct cpu *c, struct thread *t)
+{
+    uint64_t base = t->fs_base;
+    if (base != c->fs_base || (base && c->fs_tid != t->id)) {
+        wrmsr(MSR_FS_BASE, base);
+        c->fs_base = base;
+    }
+    c->fs_tid = t->id;
+}
+
+status_t thread_set_fs_base(uint64_t base)
+{
+    /* Canonical and in the user half: wrmsr faults on a non-canonical
+     * value, and FS-relative accesses only ever reach user memory. */
+    if (base >= USER_TOP)
+        return ERR_INVALID_ARGS;
+    struct thread *t = current_thread();
+    if (!t->ustate)
+        return ERR_BAD_STATE;   /* a kernel thread: it has no ring 3 */
+    irq_disable();
+    t->fs_base = base;
+    fs_load(this_cpu(), t);
+    irq_enable();
+    return OK;
+}
+
+int64_t sysc_thread_set_fs_base(uint64_t base)
+{
+    return thread_set_fs_base(base);
 }
 
 static uint32_t preempt_count_now(void)
@@ -324,8 +377,10 @@ void arch_thread_switch(struct thread *prev, struct thread *next)
             fpu_save(prev->ustate);
         }
     }
-    if (next->ustate)
+    if (next->ustate) {
         fpu_load(next);   /* skipped if this CPU still holds its state (fpu.c) */
+        fs_load(c, next);
+    }
     PATH_SW_MARK(prev, next, PATH_MK_ARCH_FPU);
     if (prev->aspace != next->aspace)
         PATH_SW_COUNT(prev, next, PATH_CR3);
@@ -360,9 +415,12 @@ _Noreturn void arch_enter_user(uint64_t entry, uint64_t stack, uint64_t arg0, ui
     c->kernel_rsp = (uint64_t)t->stack_top;
     t->in_syscall = false;   /* in ring 3 from here: its registers are live */
     fpu_reset_and_load(t);
-    /* No TLS yet (FS is not saved per thread). The user GS base sits in
-     * KERNEL_GS_BASE until the swapgs; keep both zero. */
-    wrmsr(MSR_FS_BASE, 0);
+    /* Its FS base (top), loaded whatever this CPU last had: its first
+     * entry is no hot path. The user GS base sits in KERNEL_GS_BASE until
+     * the swapgs; it stays zero. */
+    wrmsr(MSR_FS_BASE, t->fs_base);
+    c->fs_base = t->fs_base;
+    c->fs_tid = t->id;
     wrmsr(MSR_KERNEL_GS_BASE, 0);
     enter_user_iret(entry, stack, arg0, arg1, (uint64_t)t->stack_top);
 }

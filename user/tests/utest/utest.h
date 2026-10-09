@@ -187,6 +187,7 @@ bool t_kept_vmo_client_and_compositor(void);
 int  kept_child(int argc, char **argv);
 bool t_many_threads(void);
 bool t_lock_take(void);
+bool t_thread_fs_base(void);
 bool t_kill_spinning_and_unstarted(void);
 bool t_job_kill_reaps_orphans(void);
 

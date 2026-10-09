@@ -136,12 +136,17 @@
 # processes, threads, jobs --------------------------------------------------
 # process_start moves `arg0` (a handle in the caller's table, usually the
 # startup channel) into the new process and starts `thread` there with
-# rdi = its new handle value, rsi = arg1.
+# rdi = its new handle value, rsi = arg1, and FS base 0 (the program sets
+# its own: thread_set_fs_base). An entry at or past the user range's top
+# (0x7fffffffe000) is ERR_INVALID_ARGS, nothing started.
 70  process_create    status    handle_t job, const char *name, uint64_t name_len, uint32_t flags, handle_t *proc_out, handle_t *vmar_out
 71  process_start     status    handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1
 72  process_kill      status    handle_t proc
 73  thread_create     status    handle_t proc, const char *name, uint64_t name_len, uint32_t flags, handle_t *out
-74  thread_start      status    handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1
+# thread_start: as process_start's thread (rdi = arg0, rsi = arg1), with
+# its FS base (thread-local storage) fs_base; an entry or fs_base at or past
+# the user range's top is ERR_INVALID_ARGS, nothing started.
+74  thread_start      status    handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0, uint64_t arg1, uint64_t fs_base
 75  job_create        status    handle_t parent, uint32_t flags, handle_t *out
 76  job_set_limit     status    handle_t job, uint32_t kind, uint64_t value
 77  job_get_info      status    handle_t job, struct job_info *out
@@ -151,6 +156,14 @@
 # RIGHT_MANAGE); returns once they are all dead. The jobs take no new
 # processes or child jobs afterwards.
 80  job_kill          status    handle_t job
+
+# threads (M12 K4) ------------------------------------------------------------
+# The calling thread's FS base (its thread-local storage pointer, musl's
+# __set_thread_area), from the return on; kept across every switch and
+# move to another CPU. GS stays 0. ERR_INVALID_ARGS at or past the user
+# range's top (0x7fffffffe000). A thread that loads a selector into FS
+# itself has an undefined base until it calls this again.
+81  thread_set_fs_base status   uint64_t base
 
 # hardware ------------------------------------------------------------------
 # Resources (RES_* in <jam/abi.h>): a slice must lie inside its parent,

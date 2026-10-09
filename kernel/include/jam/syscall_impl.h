@@ -57,13 +57,14 @@ int64_t sysc_process_kill(handle_t proc);
 int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint32_t flags,
                            uint64_t out);
 int64_t sysc_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0,
-                          uint64_t arg1);
+                          uint64_t arg1, uint64_t fs_base);
 int64_t sysc_job_create(handle_t parent, uint32_t flags, uint64_t out);
 int64_t sysc_job_set_limit(handle_t job, uint32_t kind, uint64_t value);
 int64_t sysc_job_get_info(handle_t job, uint64_t out);
 int64_t sysc_process_get_info(handle_t proc, uint64_t out);
 int64_t sysc_thread_set_priority(handle_t thread, int32_t prio);
 int64_t sysc_job_kill(handle_t job);
+int64_t sysc_thread_set_fs_base(uint64_t base);
 int64_t sysc_resource_create(handle_t parent, uint32_t kind, uint64_t base, uint64_t size,
                              uint64_t out);
 int64_t sysc_pci_enum(handle_t pci, uint32_t index, uint64_t out);

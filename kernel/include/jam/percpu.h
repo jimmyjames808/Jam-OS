@@ -54,6 +54,9 @@ struct cpu {
      * before idle): a remote wakeup needs no IPI. See idle_loop. */
     bool           idle_polling;
     struct thread *current;                              /* the thread running here */
+    /* The FS base this CPU last loaded, and the id of the last user thread
+     * switched in since (arch_thread_switch, uentry.c). Interrupts off. */
+    uint64_t       fs_base, fs_tid;
 
     /* Lock checker: locks held right now, innermost last. */
     uint32_t         held_depth;

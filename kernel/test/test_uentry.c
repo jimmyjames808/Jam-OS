@@ -19,6 +19,7 @@
 #include <jam/spinlock.h>
 #include <jam/string.h>
 #include <jam/syscall.h>
+#include <jam/syscall_nums.h>
 #include <jam/time.h>
 #include <jam/uentry.h>
 #include <jam/uentry_test.h>
@@ -32,6 +33,11 @@
 #define TSN_EXIT   0x7004   /* leave ring 3 for good (thread_exit) */
 #define TSN_GETCPU 0x7005   /* return this CPU's index */
 #define TSN_BADRET 0x7006   /* set the return RIP >= USER_TOP, then return */
+#define TSN_CHECK  0x7007   /* prog->checks++; prog->bad++ unless arg0 == prog->expect */
+#define TSN_HOP    0x7008   /* move to the next CPU (by index), then return 0 */
+#define TSN_MEET   0x7009   /* wait (yielding) until arg0 threads have called it */
+
+static volatile uint32_t meet_count;   /* TSN_MEET's callers so far; a test resets it */
 
 /* ---- a hand-built user address space -------------------------------------- */
 
@@ -54,6 +60,8 @@ struct uspace {
 struct uprog {
     volatile uint64_t report[8];   /* values the program reported */
     volatile unsigned reported;    /* how many */
+    uint64_t          expect;      /* what TSN_CHECK wants to see */
+    volatile uint64_t checks, bad; /* TSN_CHECK calls, and those that saw something else */
 };
 
 /* thread -> (page tables, program) so the CR3 hook and the syscall handlers
@@ -156,6 +164,29 @@ static bool utest_syscall(struct syscall_frame *f, int64_t *ret)
     case TSN_GETCPU:
         *ret = percpu_index();
         return true;
+    case TSN_CHECK: {
+        struct uprog *p = reg_prog(current_thread());
+        if (p) {
+            p->checks++;
+            if (f->args[0] != p->expect)
+                p->bad++;
+        }
+        *ret = 0;
+        return true;
+    }
+    case TSN_MEET:
+        __atomic_add_fetch(&meet_count, 1, __ATOMIC_ACQ_REL);
+        while (__atomic_load_n(&meet_count, __ATOMIC_ACQUIRE) < f->args[0])
+            thread_yield();
+        *ret = 0;
+        return true;
+    case TSN_HOP: {
+        cpumask_t m;
+        cpumask_one(&m, (percpu_index() + 1) % cpu_count);
+        thread_set_affinity(current_thread(), &m);   /* moves before it returns */
+        *ret = 0;
+        return true;
+    }
     case TSN_BADRET:
         /* Corrupt the return RIP. The syscall exit guard must kill the
          * thread rather than let sysret fault in ring 0 on the user stack. */
@@ -308,12 +339,42 @@ static void e_movd_to_xmm(struct emit *e, unsigned x)
     eb(e, 0x66); eb(e, 0x0f); eb(e, 0x6e); eb(e, 0xc0 | (x << 3));
 }
 
+/* mov rbx, imm64 (a counter: system calls keep rbx) */
+static void e_mov_rbx(struct emit *e, uint64_t imm)
+{
+    static const uint8_t R_RBX[2] = { 0x48, 0xbb };
+    mov_imm(e, R_RBX, imm);
+}
+/* mov rdi, fs:[disp32] */
+static void e_rdi_from_fs(struct emit *e, uint32_t disp)
+{
+    eb(e, 0x64); eb(e, 0x48); eb(e, 0x8b); eb(e, 0x3c); eb(e, 0x25);
+    for (int i = 0; i < 4; i++)
+        eb(e, (disp >> (8 * i)) & 0xff);
+}
+/* dec rbx ; jnz target */
+static void e_loop_rbx(struct emit *e, const uint8_t *target)
+{
+    eb(e, 0x48); eb(e, 0xff); eb(e, 0xcb);
+    eb(e, 0x0f); eb(e, 0x85);
+    int32_t rel = (int32_t)(target - (e->p + 4));
+    for (int i = 0; i < 4; i++)
+        eb(e, ((uint32_t)rel >> (8 * i)) & 0xff);
+}
+/* thread_set_fs_base(base): the real system call; its status in rax */
+static void e_set_fs_base(struct emit *e, uint64_t base)
+{
+    mov_imm(e, R_RDI, base);
+    e_call_nr(e, SYS_thread_set_fs_base);
+}
+
 /* ---- running a user thread ------------------------------------------------- */
 
 struct urun {
     struct uspace *u;                   /* the address space */
     struct uprog  *prog;                /* where the program reports */
     uint64_t       entry, arg0, arg1;   /* where it starts and its two arguments */
+    uint64_t       fs_base;             /* its FS base at the first entry */
 };
 
 static void user_thread(void *arg)
@@ -322,6 +383,7 @@ static void user_thread(void *arg)
     struct thread *t = current_thread();
     if (fpu_ustate_alloc(t) != OK)
         panic("utest: no FPU area");
+    t->fs_base = r->fs_base;   /* as uthread_main sets it, before the first entry */
     reg_add(t, r->u->pml4, r->prog);
     /* Point CR3 at the test tables now; the hook keeps them loaded across
      * any later switch and restores the kernel tables when we leave. */
@@ -366,7 +428,7 @@ KTEST(uentry_syscall_roundtrip)
     e_report_rax(&e, 1);         /* report[1] = cpu index */
     e_call_nr(&e, TSN_EXIT);
 
-    struct urun r = { &u, &prog, UCODE, 0, 0 };
+    struct urun r = { &u, &prog, UCODE, 0, 0, 0 };
     struct thread *t = user_spawn(&r, 1 % cpu_count);
     user_join(t);
 
@@ -411,7 +473,7 @@ KTEST(uentry_syscall_smp)
         uspace_create(&u[i]);
         struct emit e = { u[i].code, (uint8_t *)u[i].code + PAGE_SIZE };
         loop_prog(&e);
-        r[i] = (struct urun){ &u[i], &prog[i], UCODE, 0, 0 };
+        r[i] = (struct urun){ &u[i], &prog[i], UCODE, 0, 0, 0 };
         t[i] = user_spawn(&r[i], i % cpu_count);
     }
     for (int i = 0; i < N; i++) {
@@ -452,7 +514,7 @@ KTEST(uentry_preempt_and_cancel)
 
     volatile uint64_t *counter = u.data;
     *counter = 0;
-    struct urun r = { &u, &prog, UCODE, 0, 0 };
+    struct urun r = { &u, &prog, UCODE, 0, 0, 0 };
     struct thread *t = user_spawn(&r, 1);
 
     uint64_t a = counter_after_20ms(counter, 0);
@@ -495,7 +557,7 @@ KTEST(uentry_fpu_switch)
             e_report_rax(&e, x);
         }
         e_call_nr(&e, TSN_EXIT);
-        r[i] = (struct urun){ &u[i], &prog[i], UCODE, 0, 0 };
+        r[i] = (struct urun){ &u[i], &prog[i], UCODE, 0, 0, 0 };
         /* Both pinned to CPU 1 so they interleave through the yields. */
         t[i] = user_spawn(&r[i], 1);
     }
@@ -519,7 +581,7 @@ static void fault_case(void (*build)(struct emit *e))
     struct uprog prog = { 0 };
     struct emit e = { u.code, (uint8_t *)u.code + PAGE_SIZE };
     build(&e);
-    struct urun r = { &u, &prog, UCODE, 0, 0 };
+    struct urun r = { &u, &prog, UCODE, 0, 0, 0 };
     struct thread *t = user_spawn(&r, 1 % cpu_count);
     user_join(t);   /* the fault kill calls thread_exit, so the join returns */
     uspace_destroy(&u);
@@ -555,7 +617,7 @@ KTEST(uentry_bad_return)
      * sysret-RIP guard is covered by the syscall exit check in uentry.c. */
     mov_imm(&e, R_RAX, USER_TOP);
     eb(&e, 0xff); eb(&e, 0xe0);   /* jmp rax */
-    struct urun r = { &u, &prog, UCODE, 0, 0 };
+    struct urun r = { &u, &prog, UCODE, 0, 0, 0 };
     struct thread *t = user_spawn(&r, 1 % cpu_count);
     user_join(t);
     uspace_destroy(&u);
@@ -653,7 +715,7 @@ KTEST(uentry_sysret_guard)
     struct emit e = { u.code, (uint8_t *)u.code + PAGE_SIZE };
     e_call_nr(&e, TSN_BADRET);   /* the handler corrupts the return RIP */
     e_call_nr(&e, TSN_EXIT);     /* never reached: the guard kills us first */
-    struct urun r = { &u, &prog, UCODE, 0, 0 };
+    struct urun r = { &u, &prog, UCODE, 0, 0, 0 };
     struct thread *t = user_spawn(&r, 1 % cpu_count);
     user_join(t);
     uspace_destroy(&u);
@@ -688,7 +750,7 @@ KTEST(uentry_nmi_in_user)
     nmi_seen = 0;
     __atomic_store_n(&uentry_test_nmi, count_nmi, __ATOMIC_RELEASE);
 
-    struct urun r = { &u, &prog, UCODE, 0, 0 };
+    struct urun r = { &u, &prog, UCODE, 0, 0, 0 };
     struct thread *t = user_spawn(&r, 1);
     while (*counter == 0)
         thread_yield();   /* wait until it is looping in ring 3 */
@@ -705,5 +767,141 @@ KTEST(uentry_nmi_in_user)
     thread_cancel(t);
     user_join(t);
     __atomic_store_n(&uentry_test_nmi, NULL, __ATOMIC_RELEASE);
+    uspace_destroy(&u);
+}
+
+/* ---- the FS base (thread-local storage) ------------------------------------ */
+
+/* A program that checks fs:[0] against its magic `iters` times, yielding
+ * and moving to the next CPU in turn between checks. With `set`, it sets
+ * its FS base with thread_set_fs_base first (and reports the status). */
+static void fs_checker(struct emit *e, bool set, uint64_t base, uint64_t iters)
+{
+    if (set) {
+        e_set_fs_base(e, base);
+        e_report_rax(e, 0);
+    }
+    e_mov_rbx(e, iters);
+    const uint8_t *loop = e->p;
+    e_rdi_from_fs(e, 0);
+    e_call_nr(e, TSN_CHECK);
+    e_call_nr(e, TSN_YIELD);
+    e_rdi_from_fs(e, 0);
+    e_call_nr(e, TSN_CHECK);
+    e_call_nr(e, TSN_HOP);
+    e_loop_rbx(e, loop);
+    e_call_nr(e, TSN_EXIT);
+}
+
+/* Threads with FS bases of their own (some the same value in different
+ * address spaces, some different) keep them across switches between each
+ * other and moves to every CPU: each reads its own magic through FS
+ * after every yield and every hop. Half get their base before their first
+ * entry (as thread_start's argument does), half set it in ring 3. */
+KTEST(uentry_fs_base_switches_and_migrates)
+{
+    enum { N = 8, ITERS = 200 };
+    struct uspace u[N];
+    struct uprog prog[N] = { 0 };
+    struct urun r[N];
+    struct thread *t[N];
+    for (int i = 0; i < N; i++) {
+        uspace_create(&u[i]);
+        /* Odd ones all use UDATA itself; even ones an offset of their own. */
+        uint64_t off = (i & 1) ? 0 : 64 * (uint64_t)(i + 1);
+        uint64_t magic = 0x5a5a000000000000ull | (uint64_t)i << 8 | 0x11;
+        *(volatile uint64_t *)((uint8_t *)u[i].data + off) = magic;
+        prog[i].expect = magic;
+        bool set = i % 4 >= 2;
+        struct emit e = { u[i].code, (uint8_t *)u[i].code + PAGE_SIZE };
+        fs_checker(&e, set, UDATA + off, ITERS);
+        r[i] = (struct urun){ &u[i], &prog[i], UCODE, 0, 0, set ? 0 : UDATA + off };
+        t[i] = user_spawn(&r[i], (uint32_t)i % cpu_count);
+    }
+    for (int i = 0; i < N; i++)
+        user_join(t[i]);
+    for (int i = 0; i < N; i++) {
+        KT_EQ(prog[i].checks, 2 * ITERS);   /* it ran to the end (a bad base faults) */
+        KT_EQ(prog[i].bad, 0);
+        if (i % 4 >= 2)
+            KT_EQ(prog[i].report[0], OK);
+        uspace_destroy(&u[i]);
+    }
+}
+
+/* A thread that loads a selector into FS (its base becomes 0) must not
+ * take the FS base of another thread that wants the same value: B checks
+ * its magic after every yield while A, on the same CPU with the same base
+ * in its own address space, clobbers its FS between yields. A switch that
+ * skipped the load because the value matched the CPU's last one would
+ * leave B with A's base of 0 (and B would fault reading through it). */
+KTEST(uentry_fs_base_clobber_stays_own)
+{
+    enum { ITERS = 300 };
+    struct uspace u[2];
+    struct uprog prog[2] = { 0 };
+    struct urun r[2];
+    struct thread *t[2];
+    meet_count = 0;
+    for (int i = 0; i < 2; i++) {
+        uspace_create(&u[i]);
+        *(volatile uint64_t *)u[i].data = 0xf5f5f5f500000000ull + (uint64_t)i;
+        prog[i].expect = 0xf5f5f5f500000000ull + (uint64_t)i;
+        struct emit e = { u[i].code, (uint8_t *)u[i].code + PAGE_SIZE };
+        mov_imm(&e, R_RDI, 2);
+        e_call_nr(&e, TSN_MEET);   /* both running, so their yields alternate */
+        e_mov_rbx(&e, ITERS);
+        const uint8_t *loop = e.p;
+        if (i == 0) {
+            mov_imm(&e, R_RAX, GDT_USER_DATA | 3);
+            eb(&e, 0x8e); eb(&e, 0xe0);   /* mov fs, ax: the base is now 0 */
+        } else {
+            e_rdi_from_fs(&e, 0);
+            e_call_nr(&e, TSN_CHECK);
+        }
+        e_call_nr(&e, TSN_YIELD);
+        e_loop_rbx(&e, loop);
+        e_call_nr(&e, TSN_EXIT);
+        r[i] = (struct urun){ &u[i], &prog[i], UCODE, 0, 0, UDATA };
+        t[i] = user_spawn(&r[i], 1 % cpu_count);   /* one CPU: they alternate */
+    }
+    for (int i = 0; i < 2; i++)
+        user_join(t[i]);
+    KT_EQ(prog[1].checks, ITERS);
+    KT_EQ(prog[1].bad, 0);
+    for (int i = 0; i < 2; i++)
+        uspace_destroy(&u[i]);
+}
+
+/* thread_set_fs_base refuses a base at or past USER_TOP (a non-canonical
+ * one would fault the kernel's wrmsr) and keeps the old one. */
+KTEST(uentry_fs_base_bad_refused)
+{
+    struct uspace u;
+    uspace_create(&u);
+    struct uprog prog = { 0 };
+    *(volatile uint64_t *)((uint8_t *)u.data + 8) = 0x600df5ull;
+    struct emit e = { u.code, (uint8_t *)u.code + PAGE_SIZE };
+    e_set_fs_base(&e, UDATA + 8);
+    e_report_rax(&e, 0);
+    e_set_fs_base(&e, USER_TOP);
+    e_report_rax(&e, 1);
+    e_set_fs_base(&e, 0x8000000000000000ull);   /* non-canonical */
+    e_report_rax(&e, 2);
+    e_set_fs_base(&e, 0xffff800000000000ull);   /* the kernel's half */
+    e_report_rax(&e, 3);
+    e_rdi_from_fs(&e, 0);
+    eb(&e, 0x48); eb(&e, 0x89); eb(&e, 0xf8);   /* mov rax, rdi */
+    e_report_rax(&e, 4);                        /* still the old base's word */
+    e_call_nr(&e, TSN_EXIT);
+    struct urun r = { &u, &prog, UCODE, 0, 0, 0 };
+    struct thread *t = user_spawn(&r, 1 % cpu_count);
+    user_join(t);
+    KT_EQ(prog.reported, 5);
+    KT_EQ(prog.report[0], OK);
+    KT_EQ((int64_t)prog.report[1], ERR_INVALID_ARGS);
+    KT_EQ((int64_t)prog.report[2], ERR_INVALID_ARGS);
+    KT_EQ((int64_t)prog.report[3], ERR_INVALID_ARGS);
+    KT_EQ(prog.report[4], 0x600df5ull);
     uspace_destroy(&u);
 }

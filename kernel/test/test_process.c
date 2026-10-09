@@ -277,7 +277,7 @@ KTEST(proc_start_bad_entry_refused)
     struct khandle none = { NULL, 0 };
     KT_EQ(process_start(p, u, USER_TOP, 0x800000, &none, 0, NULL), ERR_INVALID_ARGS);
     KT_EQ(process_start(p, u, 0xffff800000001000ull, 0x800000, &none, 0, NULL), ERR_INVALID_ARGS);
-    KT_EQ(uthread_start(u, USER_TOP, 0x800000, 0, 0, NULL), ERR_INVALID_ARGS);
+    KT_EQ(uthread_start(u, USER_TOP, 0x800000, 0, 0, 0, NULL), ERR_INVALID_ARGS);
     struct process_info info;
     process_get_info(p, &info);
     KT_EQ(info.state, PROCESS_NEW);
@@ -464,7 +464,7 @@ static void window_hook(void *arg)
     struct dbg_process_start *h = arg;
     if (h->p != window_p)
         return;
-    window_st = uthread_start(window_u2, 0x400000, 0x800000, 0, 0, NULL);
+    window_st = uthread_start(window_u2, 0x400000, 0x800000, 0, 0, 0, NULL);
     h->fail = true;
 }
 
@@ -494,7 +494,7 @@ KTEST(proc_start_window_refuses_other_threads)
     KT_EQ(info.state, PROCESS_NEW);     /* as if never started */
     KT_EQ(info.threads, 0);
     KT_EQ(job_used(j, JOB_LIMIT_THREADS), 0);
-    KT_EQ(uthread_start(window_u2, 0x400000, 0x800000, 0, 0, NULL), ERR_BAD_STATE);
+    KT_EQ(uthread_start(window_u2, 0x400000, 0x800000, 0, 0, 0, NULL), ERR_BAD_STATE);
 
     khandle_release(&arg0);
     kobject_unref(uthread_kobject(u1));

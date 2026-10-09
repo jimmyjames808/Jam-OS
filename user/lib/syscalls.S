@@ -403,6 +403,14 @@ jam_job_kill:
     ret
     .size jam_job_kill, . - jam_job_kill
 
+    .globl jam_thread_set_fs_base
+    .type jam_thread_set_fs_base, @function
+jam_thread_set_fs_base:
+    mov $SYS_thread_set_fs_base, %eax
+    syscall
+    ret
+    .size jam_thread_set_fs_base, . - jam_thread_set_fs_base
+
     .globl jam_resource_create
     .type jam_resource_create, @function
 jam_resource_create:

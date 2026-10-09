@@ -139,6 +139,10 @@ struct thread {
                                       * are not live (fpu.c keeps only the control
                                       * words). Written only by the thread itself,
                                       * with interrupts off; read by its own switches */
+    uint64_t          fs_base;       /* its FS base in ring 3 (thread-local storage):
+                                      * set before it first enters ring 3, then only by
+                                      * the thread itself, with interrupts off; loaded
+                                      * by its switches (uentry.c) */
 
     /* Set once by thread_cancel, never cleared: every cancellable wait
      * returns ERR_CANCELED from then on. */

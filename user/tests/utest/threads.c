@@ -1,6 +1,7 @@
 /* utest: threads. FPU, SSE and AVX state survives preemption (more
  * threads than CPUs, each checking its registers after being preempted),
- * many threads come and go, a job kill takes threads that spin or never
+ * many threads come and go, the FS base (thread_start's and
+ * thread_set_fs_base's), a job kill takes threads that spin or never
  * started, and a job kill reaps a dead parent's orphans. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
@@ -173,6 +174,67 @@ bool t_lock_take(void)
     uint64_t n = lock_count;
     lock_give(&lock_l);
     CHECK_EQ(n, (uint64_t)LOCK_THREADS * LOCK_ROUNDS);   /* no increment lost */
+    return true;
+}
+
+/* ---- the FS base (thread-local storage) -------------------------------------- */
+
+#define USER_TOP_ADDR 0x7fffffffe000ull   /* the user range's top (kernel/include/jam/uentry.h) */
+#define FS_READS      200
+
+static uint64_t fs_words[4] __attribute__((aligned(64)));
+static uint32_t fs_reads, fs_wrong;   /* the thread's; read once it has ended */
+
+static uint64_t fs_word0(void)
+{
+    uint64_t v;
+    __asm__ volatile("movq %%fs:0, %0" : "=r"(v) :: "memory");
+    return v;
+}
+
+/* Started by jam_thread_start itself (rdi = the word it must see). */
+static _Noreturn void fs_thread(uint64_t want)
+{
+    for (unsigned i = 0; i < FS_READS; i++) {
+        if (fs_word0() != want)
+            fs_wrong++;
+        fs_reads++;
+        if (i % 16 == 0)
+            jam_nanosleep(now() + 20 * NS_PER_US);   /* off the CPU, maybe onto another */
+    }
+    jam_thread_exit();
+}
+
+/* thread_start's FS base is the thread's from its first instruction, and
+ * stays across sleeps; thread_set_fs_base changes the caller's; a base or
+ * entry past the user range is refused with nothing started. */
+bool t_thread_fs_base(void)
+{
+    static uint8_t stack[8192] __attribute__((aligned(64)));
+    fs_words[1] = 0x7e57f5b1ull;
+    fs_words[2] = 0x5e7f5b2ull;
+    fs_reads = fs_wrong = 0;
+    handle_t t;
+    CHECK_ST(jam_thread_create(startup_handle(SR_SELF_PROCESS), "fs", 2, 0, &t), OK);
+    uint64_t top = (((uint64_t)(uintptr_t)stack + sizeof(stack)) & ~15ull) - 8;
+    uint64_t entry = (uint64_t)(uintptr_t)fs_thread, base = (uint64_t)(uintptr_t)&fs_words[1];
+    CHECK_ST(jam_thread_start(t, entry, top, fs_words[1], 0, USER_TOP_ADDR), ERR_INVALID_ARGS);
+    CHECK_ST(jam_thread_start(t, entry, top, fs_words[1], 0, 1ull << 63), ERR_INVALID_ARGS);
+    CHECK_ST(jam_thread_start(t, USER_TOP_ADDR, top, fs_words[1], 0, base), ERR_INVALID_ARGS);
+    CHECK_ST(jam_thread_start(t, entry, top, fs_words[1], 0, base), OK);
+    if (!wait_threads(&t, 1))
+        return false;
+    CHECK_EQ(fs_reads, FS_READS);
+    CHECK_EQ(fs_wrong, 0);
+
+    CHECK_ST(jam_thread_set_fs_base((uint64_t)(uintptr_t)&fs_words[2]), OK);
+    CHECK_EQ(fs_word0(), fs_words[2]);
+    jam_nanosleep(now() + 100 * NS_PER_US);
+    CHECK_EQ(fs_word0(), fs_words[2]);
+    CHECK_ST(jam_thread_set_fs_base(USER_TOP_ADDR), ERR_INVALID_ARGS);
+    CHECK_ST(jam_thread_set_fs_base(0xffff800000000000ull), ERR_INVALID_ARGS);
+    CHECK_EQ(fs_word0(), fs_words[2]);   /* unchanged */
+    CHECK_ST(jam_thread_set_fs_base(0), OK);   /* as libos runs */
     return true;
 }
 
