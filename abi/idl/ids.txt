@@ -70,3 +70,4 @@
 0x4d4f  standby         user/include/roles.h            # STANDBY_MAGIC "PROM" (promotion)
 0x4f50  update_offer    user/include/update.h           # UPDATE_OFFER_MAGIC "JUPO"
 0x534d  startup         kernel/include/jam/startup.h    # STARTUP_MAGIC "JAMS"
+0x5853  posixfds        user/include/posixfds.h         # POSIXFDS_MAGIC "JPSX" (the POSIX hand-over)

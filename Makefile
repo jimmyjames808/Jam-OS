@@ -306,6 +306,29 @@ $(UOBJ)/libos.a: $(LIBOS_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
+# libjam.a: libos without its C library (heap, string functions, the printf
+# family, environ and the call of main), for POSIX programs, which get
+# those from musl (docs/M13-PLAN.md section 2; <os.h>). The same objects
+# as libos's: libos is libjam plus LIBJAM_LIBC. `make check` links it
+# against a stub C library (tools/libjam-stub.c, tools/checklibjam.py):
+# every symbol libjam needs from a C library is one the stub has, and none
+# that libjam defines is a C library's.
+LIBJAM_LIBC := user/lib/heap.c user/lib/string.c user/lib/stdio.c user/lib/startmain.c
+LIBJAM_OBJS := $(filter-out $(LIBJAM_LIBC:%=$(UOBJ)/%.o),$(LIBOS_OBJS))
+
+$(UOBJ)/libjam.a: $(LIBJAM_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $^
+all: $(UOBJ)/libjam.a
+
+LIBJAM_LINK := $(BUILD)/libjam-link
+$(LIBJAM_LINK): $(UOBJ)/libjam.a tools/libjam-stub.c tools/checklibjam.py
+	$(CC) $(filter-out -I% -MMD -MP,$(USER_CFLAGS)) -c tools/libjam-stub.c -o $@-stub.o
+	$(LD) $(USER_LDFLAGS) --fatal-warnings -e _start $@-stub.o \
+	    --whole-archive $(UOBJ)/libjam.a --no-whole-archive $(LIBGCC) -o $@
+	python3 tools/checklibjam.py $(CROSS)nm $(UOBJ)/libjam.a
+check: $(LIBJAM_LINK)
+
 # libfun (user/apps/fun, <fun.h>): the screen, drawing, text, keys and
 # thread pool of the apps, which link it before libos.
 # fbbench (user/tests) measures libfun's own drawing code too, and

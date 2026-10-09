@@ -4,6 +4,12 @@
  * message (argv, environment, handles by role; <jam/startup.h>), then calls
  * main(argc, argv) and passes its return value to process_exit.
  *
+ * libjam.a is libos without its C library: no malloc (heap.c), no string
+ * functions (string.c), no printf family (stdio.c), no crt0, environ or
+ * call of main (startmain.c). A POSIX program links it under musl, whose
+ * functions of those names its code then calls (docs/M13-PLAN.md
+ * section 2). Native programs link libos.a, which is libjam and those.
+ *
  * User code sees only a few kernel headers (<jam/abi.h>, <jam/status.h>,
  * <jam/startup.h>, <jam/syscall_nums.h>, <jam/bootfs.h>): the build copies
  * them into an include directory of their own, so kernel internals are
@@ -48,6 +54,16 @@ uint32_t os_random_u32(void);
 
 /* startup message ----------------------------------------------------------- */
 
+/* Read the startup message on ch (the channel the program started with,
+ * in rdi) into the table startup_handle reads; for a warm spare, wait for
+ * its promotion first (which may end the process: <roles.h>). *argc and
+ * *argv: its strings (argv[argc] is NULL, and the environment's
+ * "KEY=value" strings follow it, NULL-terminated). Never fails: an
+ * unusable message leaves argc 0 and no handles, startup_status() saying
+ * why and a line in the log. libos's start calls it before main; a POSIX
+ * program's crt calls it itself (it uses no heap, no printf and no
+ * thread-local storage). Once, at the start. */
+void        startup_read(handle_t ch, int *argc, char ***argv);
 /* The channel the startup message came on (still open). */
 handle_t    startup_channel(void);
 /* The first handle with this role (enum startup_role), or HANDLE_INVALID. */
@@ -124,6 +140,8 @@ struct spawn_handle {
     handle_t h;      /* the handle (moved) */
 };
 
+struct posixfds_out;   /* <posixfds.h> */
+
 struct spawn_args {
     /* The program: a bootfs name ("bin/utest"), or an absolute path read
      * through our namespace ("/data/x"; see files below). With `vmo` set,
@@ -160,15 +178,31 @@ struct spawn_args {
     /* With ns_out: NULL, or where a duplicate of the child's own end goes
      * (RIGHT_READ only), for ns_update to take back what it hasn't read. */
     handle_t                  *ns_back_out;
+    /* Its first thread's stack: bytes of address space (rounded up to
+     * whole pages), committed as the child touches them, with a guard
+     * page below. 0: SPAWN_STACK_DEFAULT. More than SPAWN_STACK_MAX:
+     * ERR_OUT_OF_RANGE. Its pages are charged to the caller's job, as
+     * every VMO spawn makes is. */
+    uint64_t                   stack_size;
+    /* NULL, or the POSIX hand-over (<posixfds.h>) for a POSIX program:
+     * written on its startup channel right after the startup message,
+     * before it starts (posixfds_write). Its handles are consumed
+     * whatever happens, as the extras are. */
+    const struct posixfds_out *handover;
 };
+
+#define SPAWN_STACK_DEFAULT (128ull << 10)   /* a native program's */
+#define SPAWN_STACK_MAX     (1ull << 30)     /* 1 GiB of address space */
 
 /* Load a program (spawn_args.path) into a new process and start it. Its
  * startup message has argv, SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB (a
  * duplicate of a->job with JOB_RIGHTS_OWN: the child can't change its own
  * limits), BOOTFS (a duplicate of ours), NS (when a->ns is set) and the
- * extras, which are consumed whatever happens. *proc gets the process
- * handle. ERR_OUT_OF_RANGE: too many extras (STARTUP_MAX_HANDLES - 6 fit
- * next to a namespace, one more without). */
+ * extras, which are consumed whatever happens (and so are the
+ * hand-over's). *proc gets the process handle. ERR_OUT_OF_RANGE: too many
+ * extras (STARTUP_MAX_HANDLES - 6 fit next to a namespace, one more
+ * without), or a stack bigger than SPAWN_STACK_MAX. A hand-over refused
+ * by posixfds_write fails the spawn with its error. */
 status_t spawn(const struct spawn_args *a, handle_t *proc);
 /* Drivers: the startup role that hands a driver process a handle with
  * driver role `r` (DR_* in <jam/driver.h>). user/lib/driver_crt.c turns
@@ -332,6 +366,11 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 /* The compositor's notices: a notify.idl channel per opener (<notice.h>);
  * user/services/ only (the shell's `notify`) */
 #define SVC_NOTIFY     "notify"
+/* init's sessions: a Jam OS shell on a connection console, a channel per
+ * opener (session.idl, docs/M13-PLAN.md section 9; not built yet). It is a
+ * whole shell, so only a boot-image service, port or test may ask for it
+ * (tools/checkwants.py), and `allow` refuses it for a program on /data. */
+#define SVC_SESSION    "session"
 
 /* A channel to service `name` for the caller, who closes it. */
 status_t svc_open(const char *name, handle_t *out);

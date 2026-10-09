@@ -39,6 +39,10 @@ enum {
                              * it before main for one struct standby_msg
                              * (below), which brings the handles and arguments
                              * the program then starts with */
+    SR_SIGNALS = 19,        /* a POSIX program's signal channel, its server end:
+                             * the starter keeps the client end and sends the
+                             * `signal` protocol's events on it (docs/M13-PLAN.md
+                             * section 6) */
 };
 
 /* The promotion message: the one message on SR_STANDBY, from the

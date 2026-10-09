@@ -150,6 +150,10 @@ static bool want_line(struct wants *w, char *line)
         return want_mount(w, word[1], word[2]);
     if (n == 2 && !strcmp(word[0], "right"))
         return want_right(w, word[1]);
+    if (n == 1 && !strcmp(word[0], "posix") && !w->posix) {
+        w->posix = true;   /* grants nothing: it says how to start it */
+        return true;
+    }
     return false;
 }
 
