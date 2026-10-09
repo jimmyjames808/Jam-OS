@@ -508,6 +508,10 @@ static void waiter(void *arg)
  * handle a message carries are message bytes, and all of it comes back. */
 static bool t_kernel_objects_are_charged(void)
 {
+    /* The waiter's stack below is ours (.bss): its pages are committed
+     * (and charged) before the count starts, wherever the link put it. */
+    static uint8_t stack[8192] __attribute__((aligned(16)));
+    memset(stack, 0, sizeof(stack));
     struct job_info a, b;
     CHECK_ST(info_of(own_job(), &a), OK);
 #define USED(k) (info_of(own_job(), &b) == OK ? b.used[k] - a.used[k] : 999999)
@@ -546,7 +550,6 @@ static bool t_kernel_objects_are_charged(void)
     CHECK_EQ(USED(JOB_LIMIT_MSG_BYTES), 0);
 
     /* a thread: its kernel stack (64 KiB) and more, while it runs */
-    static uint8_t stack[8192] __attribute__((aligned(16)));
     handle_t th;
     CHECK_ST(thread_spawn("waiter", waiter, (void *)(uintptr_t)ev, stack, sizeof(stack), &th),
              OK);
