@@ -1102,6 +1102,7 @@ static const struct {
     { "volumes_watch", t_volumes_watch },
     { "volumes_release_disk", t_volumes_release_disk },
     { "volumes_new_channel", t_volumes_new_channel },
+    { "volumes_loop_answers", t_volumes_loop_answers },
 };
 
 int main(int argc, char **argv)

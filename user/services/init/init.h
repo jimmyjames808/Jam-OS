@@ -101,6 +101,9 @@ void     mounts_unwatch(void);
 /* Every writable mount on the stick: volumes.sync, given up after 2 s
  * (said in the log, with /data's line). Nothing to do without volumes. */
 void     mounts_sync(void);
+/* What a volumes.sync asked at t0 came to (st), said in the log as
+ * mounts_sync says it (ctl.c's initctl.sync, answered later). */
+void     mounts_synced(status_t st, uint64_t t0);
 /* /data once more, without a word, for at most 1 s: after logd's last
  * write, so the volume is left marked clean. */
 void     mounts_settle(void);

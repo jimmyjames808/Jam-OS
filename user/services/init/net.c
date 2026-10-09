@@ -84,14 +84,29 @@
  * or the next /data sends the address again. A DHCP client that runs when
  * a static address appears is killed, and the address goes once its end
  * has come to the loop (net_ended): the client shares netctl's client end,
- * whose answers only one reader may take. */
+ * whose answers only one reader may take.
+ *
+ * The settings are read off the loop, by a thread of their own (the
+ * reader): a read of /data waits behind every write queued for the stick,
+ * and logd writes from the moment /data is there, so on a slow stick each
+ * read can take seconds, in which the loop would answer nobody (the
+ * shell's `update` and netstack's answers timed out behind them). The loop
+ * asks; the reader reads `net.address`, `net.host`, `netlog`, `ntp` and
+ * `ntp.server` once and hands the values back with a packet under
+ * KEY_NETCTL; what waited for them goes on then: the static address
+ * (net_settings), and the starts of netlog, sntp and the DHCP client, each
+ * of which asks for a read of its own (a start gets the settings as they
+ * are then). */
 #include <idl/netctl.h>
 #include <ipv4.h>
 #include <settings.h>
 #include "init.h"
 
 #define CALL_WAIT      NS_PER_S          /* for netstack's answer to a netctl call */
-#define DHCP_DATA_WAIT (10 * NS_PER_S)   /* the DHCP client waits this long for /data */
+#define DHCP_DATA_WAIT (10 * NS_PER_S)   /* the DHCP client waits this long for /data, and
+                                          * then as long for its settings to be read */
+#define READER_STACK   (64u << 10)       /* the settings reader's: settings_get, fs calls */
+#define QUEUE_TRIES    100               /* a full port: tries 10 ms apart */
 
 static handle_t ctl_srv, ctl_cli;   /* netctl's two ends, made once (0: none, or given up) */
 static handle_t net_srv, net_cli;   /* /svc/net's two ends, the same */
@@ -116,6 +131,138 @@ static struct {
     bool               dns;         /* that call is set_dns (else set_ipv4) */
     uint64_t           deadline;    /* its answer by then (uptime ns) */
 } addr;
+
+/* ---- the settings, read off the loop ------------------------------------------- */
+
+/* What net.c uses of /data/etc/settings, as one read found it. */
+struct net_cfg {
+    uint32_t gen;                                                 /* the newest request it answers */
+    status_t address_st, host_st, netlog_st, ntp_st, server_st;   /* settings_get's */
+    char     address[SETTINGS_VALUE_MAX], host[SETTINGS_VALUE_MAX], server[SETTINGS_VALUE_MAX];
+    char     netlog[8], ntp[8];
+};
+
+/* The services whose start waits for a read of its own. */
+enum { FRESH_NETLOG, FRESH_SNTP, FRESH_DHCP, FRESH_COUNT };
+
+static struct {
+    handle_t        port;      /* the reader's: a packet is a request (its key: the gen) */
+    handle_t        thread;    /* 0: none yet, or none could start */
+    bool            failed;    /* it couldn't start: the loop reads by itself */
+    uint32_t        asked;     /* the newest request's gen (0: none yet) */
+    struct net_cfg *ready;     /* the reader's newest result, not taken yet (atomic) */
+    struct net_cfg *have;      /* the loop's: the newest taken (NULL: none yet) */
+    uint32_t        apply;     /* the read whose net.address goes to netstack (0: none) */
+    uint32_t        fresh[FRESH_COUNT];   /* the read each start waits for (0: not asked) */
+    uint64_t        dhcp_asked;           /* when the DHCP client's read was asked */
+    bool            dhcp_ok;              /* net_dhcp_wait let it start on a read just made */
+} rd;
+static uint8_t reader_stack[READER_STACK] __attribute__((aligned(16)));
+
+static void apply_address(void);
+
+/* One read of the settings into c, answering request gen. */
+static void cfg_read(struct net_cfg *c, uint32_t gen)
+{
+    memset(c, 0, sizeof(*c));
+    c->gen = gen;
+    c->address_st = settings_get(SETTINGS_FILE, "net.address", c->address, sizeof(c->address));
+    c->host_st = settings_get(SETTINGS_FILE, "net.host", c->host, sizeof(c->host));
+    c->netlog_st = settings_get(SETTINGS_FILE, "netlog", c->netlog, sizeof(c->netlog));
+    c->ntp_st = settings_get(SETTINGS_FILE, "ntp", c->ntp, sizeof(c->ntp));
+    c->server_st = settings_get(SETTINGS_FILE, "ntp.server", c->server, sizeof(c->server));
+}
+
+/* The reader thread: each request (several queued: one read answers them
+ * all) read, handed over in rd.ready, and the loop woken (KEY_NETCTL). It
+ * touches nothing else of net.c's, and prints nothing. */
+static void reader_main(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        struct port_packet pkt;
+        if (jam_port_wait(rd.port, DEADLINE_NEVER, &pkt) != OK)
+            return;
+        uint32_t gen = (uint32_t)pkt.key;
+        while (jam_port_wait(rd.port, 0, &pkt) == OK)
+            gen = (uint32_t)pkt.key;   /* asked in order: the last is the newest */
+        struct net_cfg *c;
+        while (!(c = malloc(sizeof(*c))))
+            jam_sleep_until(now() + 100 * NS_PER_MS);
+        cfg_read(c, gen);
+        free(__atomic_exchange_n(&rd.ready, c, __ATOMIC_ACQ_REL));   /* one the loop never took */
+        struct port_packet done = { .key = KEY_NETCTL, .type = PORT_PACKET_USER };
+        for (int i = 0; i < QUEUE_TRIES && jam_port_queue(loop_port, &done) != OK; i++)
+            jam_sleep_until(now() + 10 * NS_PER_MS);   /* a full port: the loop is far behind */
+    }
+}
+
+/* The static address goes once the read it waited for is here. */
+static void cfg_applied(void)
+{
+    if (rd.apply && rd.have && rd.have->gen >= rd.apply) {
+        rd.apply = 0;
+        apply_address();
+    }
+}
+
+/* Take the reader's newest result, if one came. */
+static void cfg_take(void)
+{
+    struct net_cfg *c = __atomic_exchange_n(&rd.ready, NULL, __ATOMIC_ACQ_REL);
+    if (!c)
+        return;
+    free(rd.have);
+    rd.have = c;
+    cfg_applied();
+}
+
+/* Ask for a read of the settings: the gen of the read that answers it.
+ * Without a reader thread (none could start) the read is made here, in
+ * the loop, as before. */
+static uint32_t cfg_ask(void)
+{
+    if (++rd.asked == 0)
+        rd.asked = 1;   /* never 0 */
+    uint32_t gen = rd.asked;
+    if (!rd.thread && !rd.failed) {
+        status_t st = rd.port ? OK : jam_port_create(&rd.port);
+        if (st == OK)
+            st = thread_spawn("settings", reader_main, NULL, reader_stack, sizeof(reader_stack),
+                              &rd.thread);
+        if (st != OK) {
+            printf("init: no thread to read the settings (%s): read in the loop\n",
+                   status_str(st));
+            rd.failed = true;
+        }
+    }
+    struct port_packet pkt = { .key = gen, .type = PORT_PACKET_USER };
+    if (rd.failed || jam_port_queue(rd.port, &pkt) != OK) {
+        struct net_cfg *c = malloc(sizeof(*c));
+        if (c) {
+            cfg_read(c, gen);
+            free(__atomic_exchange_n(&rd.ready, c, __ATOMIC_ACQ_REL));
+        }
+        cfg_take();
+    }
+    return gen;
+}
+
+/* Has the read for service k's start come? Asked on its first call; true
+ * once (the next start asks for another). */
+static bool cfg_fresh(unsigned k)
+{
+    cfg_take();
+    if (!rd.fresh[k]) {
+        rd.fresh[k] = cfg_ask();
+        if (k == FRESH_DHCP)
+            rd.dhcp_asked = now();
+    }
+    if (!rd.have || rd.have->gen < rd.fresh[k])
+        return false;
+    rd.fresh[k] = 0;
+    return true;
+}
 
 void net_init(handle_t port)
 {
@@ -220,11 +367,12 @@ status_t net_start(void)
     return svc_start1(NETSTACK, x, n + nc);   /* consumes them */
 }
 
-/* /data's settings have a static address: *c (v: its text). */
+/* The settings as last read have a static address: *c (v: its text). */
 static bool static_address(char v[SETTINGS_VALUE_MAX], struct ipv4_config *c)
 {
-    if (settings_get(SETTINGS_FILE, "net.address", v, SETTINGS_VALUE_MAX) != OK)
+    if (!rd.have || rd.have->address_st != OK)
         return false;
+    snprintf(v, SETTINGS_VALUE_MAX, "%s", rd.have->address);
     if (ipv4_config_parse(v, c))
         return true;
     printf("init: settings: net.address = %s is not <address>/<prefix> [<gateway> [<dns> "
@@ -295,13 +443,21 @@ static void addr_send(bool dns)
     addr.deadline = now() + CALL_WAIT;
 }
 
-void net_settings(void)
+/* The read net_settings asked for has come: its static address, if it
+ * has one, to netstack. */
+static void apply_address(void)
 {
     if (!static_address(addr.text, &addr.c))
         return;
     no_dhcp();
     addr.want = true;
     addr_send(false);
+}
+
+void net_settings(void)
+{
+    rd.apply = cfg_ask();   /* apply_address once it is read */
+    cfg_applied();          /* read already (no reader thread: read in the loop) */
 }
 
 /* One answer off netctl's client end: the awaited call's, or nobody's. */
@@ -325,6 +481,7 @@ static void addr_answer(const void *rep, struct idl_msg *m)
 
 void net_netctl_event(void)
 {
+    cfg_take();   /* the reader's packet comes under this key too */
     for (unsigned k = 0; k < 8 && addr.txid; k++) {   /* a few stale answers at most */
         _Alignas(8) uint8_t rep[NETCTL_REP_MAX];
         struct idl_msg m;
@@ -376,7 +533,17 @@ uint64_t net_dhcp_wait(uint64_t t, bool data)
     static uint64_t since;   /* the first time it could have started */
     if (!since)
         since = t;
-    return data || t >= since + DHCP_DATA_WAIT ? 0 : since + DHCP_DATA_WAIT;
+    rd.dhcp_ok = false;
+    if (!data)
+        return t >= since + DHCP_DATA_WAIT ? 0 : since + DHCP_DATA_WAIT;
+    /* Its settings read first: they may say the address is static (the
+     * reader's packet wakes the loop). A read that doesn't come within
+     * DHCP_DATA_WAIT isn't waited for any longer. */
+    if (cfg_fresh(FRESH_DHCP)) {
+        rd.dhcp_ok = true;
+        return 0;
+    }
+    return t >= rd.dhcp_asked + DHCP_DATA_WAIT ? 0 : rd.dhcp_asked + DHCP_DATA_WAIT;
 }
 
 /* svc i's program is in bootfs; else it is given up on, said once. */
@@ -396,7 +563,7 @@ status_t net_dhcp_start(void)
 {
     char v[SETTINGS_VALUE_MAX];
     struct ipv4_config c;
-    if (static_address(v, &c)) {
+    if (rd.dhcp_ok && static_address(v, &c)) {   /* the settings read just now */
         no_dhcp();
         return OK;
     }
@@ -480,14 +647,15 @@ static uint64_t netlog_boot_id(void)
  * off. *host gets the address as text. Says why not, once. */
 static bool netlog_wanted(char host[IPV4_TEXT_MAX])
 {
-    char v[SETTINGS_VALUE_MAX], off[8];
+    const struct net_cfg *c = rd.have;
+    const char *v = c->host;
     uint32_t a;
     const char *end = NULL;
-    if (settings_get(SETTINGS_FILE, "netlog", off, sizeof(off)) == OK && !strcmp(off, "off")) {
+    if (c->netlog_st == OK && !strcmp(c->netlog, "off")) {
         printf("init: netlog = off in the settings: the log is not sent over the network\n");
         return false;
     }
-    if (settings_get(SETTINGS_FILE, "net.host", v, sizeof(v)) != OK) {
+    if (c->host_st != OK) {
         printf("init: no net.host in the settings: the log is not sent over the network\n");
         return false;
     }
@@ -505,6 +673,8 @@ status_t net_netlog_start(void)
     const void *data;
     uint64_t size;
     char host[IPV4_TEXT_MAX], boot[17];
+    if (!cfg_fresh(FRESH_NETLOG))
+        return OK;   /* not yet: its settings are being read (their packet wakes the loop) */
     if (!netlog_wanted(host) || bootfs_default(&fs) != OK ||
         bootfs_lookup(fs, svcs[NETLOG].path, &data, &size) != OK) {
         svcs[NETLOG].given_up = true;   /* not this boot (bootfs without it: a test image) */
@@ -523,15 +693,19 @@ status_t net_netlog_start(void)
 
 status_t net_sntp_start(void)
 {
-    char server[SETTINGS_VALUE_MAX] = "", off[8];
-    if (settings_get(SETTINGS_FILE, "ntp", off, sizeof(off)) == OK && !strcmp(off, "off")) {
+    char server[SETTINGS_VALUE_MAX] = "";
+    if (!cfg_fresh(FRESH_SNTP))
+        return OK;   /* not yet: its settings are being read (their packet wakes the loop) */
+    const struct net_cfg *c = rd.have;
+    if (c->ntp_st == OK && !strcmp(c->ntp, "off")) {
         printf("init: ntp = off in the settings: the clock is not set from the network\n");
         svcs[SNTP].given_up = true;   /* not this boot */
         return OK;
     }
     if (!in_bootfs(SNTP, "the clock is not set from the network"))
         return OK;
-    (void)settings_get(SETTINGS_FILE, "ntp.server", server, sizeof(server));   /* none: "" */
+    if (c->server_st == OK)   /* none: "" */
+        snprintf(server, sizeof(server), "%s", c->server);
     struct spawn_handle x[] = { { SR_RESOURCE, HANDLE_INVALID } };
     if (jam_handle_duplicate(shell_root(), RIGHTS_BASIC | RIGHT_ROOT_CLOCK, &x[0].h) != OK)
         return ERR_NO_RESOURCES;
