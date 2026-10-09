@@ -10,9 +10,11 @@
  * (nettcp_bulk_rings, the test as the peer on the fake driver too); a
  * connection's options through net_stream.set_options: the ranges, Nagle's
  * algorithm seen on the wire, and a keep-alive that ends a connection whose
- * peer says nothing (nettcp_options). The bytes themselves are tools/tcp-test.sh's (QEMU, a real peer) and the
- * in-process nettcp_* tests'. Each ends with netstack killed and its job
- * empty. */
+ * peer says nothing (nettcp_options); a listener's address reuse
+ * (tcp_listener's flags): refused flags, and a listener made again on a
+ * port whose connection is in TIME_WAIT (nettcp_reuse_api). The bytes
+ * themselves are tools/tcp-test.sh's (QEMU, a real peer) and the in-process
+ * nettcp_* tests'. Each ends with netstack killed and its job empty. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -278,10 +280,10 @@ bool t_nettcp_bulk_rings(void)
 
 /* What netstack sent the peer on p's connection until `quiet` passed after
  * the last of it: segments with data (and their bytes), empty ones that are
- * a keep-alive's (one byte before p->rcv) and resets; p->rcv moves on over
- * the data. */
+ * a keep-alive's (one byte before p->rcv), FINs and resets; p->rcv moves on
+ * over the data and the FIN. */
 struct seen {
-    unsigned segs, probes, resets;
+    unsigned segs, probes, resets, fins;
     uint32_t bytes;
 };
 
@@ -296,15 +298,23 @@ static bool drain(struct tp *p, uint64_t quiet, struct seen *w)
         if (!pkt_is_ipv4(f, n, PEER_IP, 6, &t, &len) || len < 20 || pkt_get16(t + 2) != p->port)
             continue;
         size_t hl = (size_t)(t[12] >> 4) * 4, paylen = len - hl;
-        uint32_t seq = pkt_get32(t + 4);
-        if (t[13] & TP_RST) {
+        uint32_t seq = pkt_get32(t + 4), flags = t[13];
+        if (flags & TP_RST) {
             w->resets++;
-        } else if (paylen && seq == p->rcv) {
+            continue;
+        }
+        if (!paylen && !(flags & TP_FIN) && seq == p->rcv - 1)
+            w->probes++;
+        if (seq != p->rcv)   /* (a repeat, or out of order: not new) */
+            continue;
+        if (paylen) {
             w->segs++;
             w->bytes += (uint32_t)paylen;
             p->rcv += (uint32_t)paylen;
-        } else if (!paylen && seq == p->rcv - 1) {
-            w->probes++;
+        }
+        if (flags & TP_FIN) {   /* its FIN takes one sequence number */
+            w->fins++;
+            p->rcv++;
         }
     }
     return true;
@@ -317,13 +327,13 @@ static bool peer_acks(struct tp *p)
     return true;
 }
 
-/* A peer connects from port `from` to a listener on `port`; the program
- * accepts. */
-static bool peer_accepted(struct tp *p, uint16_t port, uint16_t from, struct net_sock *s,
-                          handle_t lo, struct net_listener *l)
+/* A peer connects from port `from` to a new listener on `port` (flags as
+ * net_tcp_listen_flags'); the program accepts. */
+static bool peer_accepted(struct tp *p, uint16_t port, uint16_t from, uint32_t flags,
+                          struct net_sock *s, handle_t lo, struct net_listener *l)
 {
     uint8_t f[PKT_FRAME_MAX];
-    CHECK_ST(net_tcp_listen(lo, port, 4, 0, 0, l), OK);
+    CHECK_ST(net_tcp_listen_flags(lo, port, 4, 0, 0, flags, l), OK);
     *p = (struct tp){ .ip = PEER_IP, .mac = pkt_peer_mac, .port = from, .our = l->port,
                       .snd = 0x52000000u, .win = 0xffff };
     CHECK(netdrv_send(f, tp_frame(f, p, TP_SYN, NULL, 0)));
@@ -344,7 +354,7 @@ bool t_nettcp_options(void)
     CHECK(netdrv_start());
     CHECK(netdrv_ping(1, true));   /* netstack knows the peer's MAC */
     CHECK(connect_on(netdrv_net_listen(), &lo));
-    CHECK(peer_accepted(&p, 5200, 40200, &s, lo, &l));
+    CHECK(peer_accepted(&p, 5200, 40200, 0, &s, lo, &l));
     /* The ranges: a bit that is none of the options, a time or a count past
      * its largest, each refused with nothing changed. */
     CHECK_ST(net_tcp_set_options(&s, 4, 0, 0, 0), ERR_INVALID_ARGS);
@@ -391,6 +401,63 @@ bool t_nettcp_options(void)
     CHECK_ST(net_tcp_set_options(&s, 0, 0, 0, 0), OK);   /* a closed connection: nothing to set */
     net_close(&s);
     net_listener_close(&l);
+    jam_handle_close(lo);
+    CHECK(netdrv_stop());
+    return true;
+}
+
+/* ---- a listener's address reuse ---------------------------------------------------- */
+
+/* Wait until netstack has `want` listeners (a closed one goes in its own
+ * time). */
+static bool listeners_are(unsigned want)
+{
+    struct net_counters c;
+    uint64_t end = now() + NETDRV_WAIT;
+    do {
+        CHECK(counts(&c));
+        if (c.tcp_listeners == want)
+            return true;
+        jam_sleep_until(now() + 10 * NS_PER_MS);
+    } while (now() < end);
+    FAIL("netstack has %u listeners, want %u", c.tcp_listeners, want);
+}
+
+bool t_nettcp_reuse_api(void)
+{
+    handle_t lo;
+    struct net_listener l, x;
+    struct net_sock s;
+    struct tp p;
+    struct seen w;
+    uint8_t f[PKT_FRAME_MAX];
+    CHECK(netdrv_start());
+    CHECK(netdrv_ping(1, true));   /* netstack knows the peer's MAC */
+    CHECK(connect_on(netdrv_net_listen(), &lo));
+    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, 2, &x), ERR_INVALID_ARGS);   /* no such flag */
+    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, ~0u, &x), ERR_INVALID_ARGS);
+    CHECK(peer_accepted(&p, 5300, 40300, NET_LISTEN_REUSE, &s, lo, &l));
+    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, NET_LISTEN_REUSE, &x), ERR_ALREADY_BOUND);
+    CHECK_ST(net_tcp_listen(lo, 5300, 4, 0, 0, &x), ERR_ALREADY_BOUND);   /* an active listener */
+    /* The program closes first: its FIN, the peer's ACK and FIN, ours: the
+     * connection is CLOSED and lwIP holds its TIME_WAIT. */
+    CHECK_ST(net_shutdown(&s), OK);
+    CHECK(drain(&p, NETDRV_QUIET, &w));
+    CHECK_EQ(w.fins, 1);
+    CHECK(peer_acks(&p));
+    CHECK(netdrv_send(f, tp_frame(f, &p, TP_FIN | TP_ACK, NULL, 0)));
+    p.snd++;
+    CHECK_ST(net_tcp_wait_closed(&s, now() + NETDRV_WAIT), OK);
+    CHECK(drain(&p, NETDRV_QUIET, &w));   /* its ACK of the peer's FIN */
+    net_close(&s);
+    net_listener_close(&l);
+    CHECK(listeners_are(0));
+    /* Without the flag the port is held; with it a listener is made at once. */
+    CHECK_ST(net_tcp_listen(lo, 5300, 4, 0, 0, &x), ERR_ALREADY_BOUND);
+    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, NET_LISTEN_REUSE, &l), OK);
+    CHECK_EQ(l.port, 5300);
+    net_listener_close(&l);
+    CHECK(listeners_are(0));
     jam_handle_close(lo);
     CHECK(netdrv_stop());
     return true;

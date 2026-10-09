@@ -177,7 +177,19 @@ const TIMEOUT_MAX   60000
 # port is taken; ERR_INVALID_ARGS: a backlog or ring size not allowed;
 # ERR_NO_RESOURCES: the opener's, all openers' or an ordinary opener's
 # share of listeners or of backlog.
-9  tcp_listener  (u16 port, u32 backlog, u32 tx_bytes, u32 rx_bytes)  -> (handle listener, u16 port)
+#
+# `flags` is 0 or LISTEN_REUSE (anything else: ERR_INVALID_ARGS): POSIX's
+# SO_REUSEADDR, as Linux does it. Without it the port must be free of every
+# connection too: one still in TIME_WAIT, or open, from an earlier listener
+# on the port is ERR_ALREADY_BOUND, so a server restarted at once can't
+# listen. With it a listener can be made on a port whose old connections
+# are in TIME_WAIT, and on one whose open connections came from a listener
+# that was made with it as well; an active listener on the port still
+# makes ERR_ALREADY_BOUND, with or without it (the flag doesn't share a
+# port). A listener's connections keep its flag: they are what a later
+# listener with the flag may stand beside.
+const LISTEN_REUSE 1
+9  tcp_listener  (u16 port, u32 backlog, u32 tx_bytes, u32 rx_bytes, u32 flags)  -> (handle listener, u16 port)
 
 # net_socket: a UDP socket's channel, from net.udp or net.udp_rings (and
 # netctl's dhcp_open, the DHCP socket). Closing it closes the socket.

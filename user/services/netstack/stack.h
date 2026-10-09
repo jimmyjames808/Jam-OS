@@ -287,10 +287,13 @@ status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ct
 /* Listen on `port` (0: lwIP picks one) on any local address, backlog
  * half-open and not-yet-accepted connections at most (1..STACK_TCP_BACKLOG),
  * each announcing at most `window` (the largest its SYN allows, above).
- * ERR_ALREADY_BOUND: the port is taken; ERR_NO_RESOURCES: no listener free;
- * ERR_INVALID_ARGS: a bad backlog. */
-status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, void *lctx,
-                          struct stack_tcp_listen **out, uint16_t *out_port);
+ * `reuse` is SO_REUSEADDR: connections of the port in TIME_WAIT don't stop
+ * it, nor do open ones that came from a listener made with it too.
+ * ERR_ALREADY_BOUND: the port is taken (a listener on it, with or without
+ * `reuse`); ERR_NO_RESOURCES: no listener free; ERR_INVALID_ARGS: a bad
+ * backlog. */
+status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, bool reuse,
+                          void *lctx, struct stack_tcp_listen **out, uint16_t *out_port);
 /* Stop listening. Half-open connections are dropped; those already given
  * to hooks.accepted are the caller's. */
 void     stack_tcp_unlisten(struct stack_tcp_listen *l);

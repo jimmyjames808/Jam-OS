@@ -167,6 +167,12 @@
  * connection, and a flood of SYNs can never take a program's pcb. */
 #define MEMP_NUM_TCP_PCB        (256 + 128)
 #define MEMP_NUM_TCP_PCB_LISTEN 16    /* stack.h's STACK_TCP_LISTENERS */
+/* SO_REUSEADDR for listeners (net.idl's LISTEN_REUSE; stack.c sets
+ * SOF_REUSEADDR on those pcbs only): a bind skips the TIME_WAIT pcbs, and
+ * the open ones only when both are flagged; two listeners on a port stay
+ * refused (tcp_listen checks). UDP's pcbs are never flagged, so its bind
+ * is as it was. */
+#define SO_REUSE                1
 /* Queued segments, every connection's: to send, the bulk senders' part of
  * the heap in full ones (about 3500) and the last STACK_SEGS_KEEP_BULK
  * (1024, as many as 15 connections at 64240 bytes queue), which

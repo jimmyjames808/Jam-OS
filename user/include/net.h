@@ -362,6 +362,12 @@ struct net_listener {
  * net listen`); on any other ERR_ACCESS_DENIED. net.tcp_listener's errors. */
 status_t net_tcp_listen(handle_t net, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
                         uint32_t rx_bytes, struct net_listener *out);
+/* The same with flags: 0, or NET_LISTEN_REUSE (SO_REUSEADDR: a listener
+ * may be made on a port whose earlier connections are in TIME_WAIT, or open
+ * ones of an earlier listener made with the flag too; without it those are
+ * ERR_ALREADY_BOUND. Another active listener on the port always is). */
+status_t net_tcp_listen_flags(handle_t net, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
+                              uint32_t rx_bytes, uint32_t flags, struct net_listener *out);
 /* The next connection, waiting for one until the deadline (ERR_TIMED_OUT;
  * a deadline already past: ERR_SHOULD_WAIT when none is waiting): the
  * socket into *out, its peer's address and port into *peer and *peer_port

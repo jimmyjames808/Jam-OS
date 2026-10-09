@@ -439,18 +439,21 @@ static status_t l_new(struct opener *o, const struct ntcp_listen_req *req, struc
 }
 
 status_t tcpsock_op_listener(void *ctx, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
-                             uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
+                             uint32_t rx_bytes, uint32_t flags, handle_t *out_listener,
+                             uint16_t *out_port)
 {
     struct opener *o = ctx;
     uint32_t tx = tx_bytes ? tx_bytes : NET_TCP_TX, rx = rx_bytes ? rx_bytes : NET_TCP_RX;
     if (!listen_may_accept(o, port))
         return ERR_ACCESS_DENIED;
-    if (!backlog || backlog > NET_BACKLOG_MAX || !sockring_size_ok(tx) || !sockring_size_ok(rx))
+    if (!backlog || backlog > NET_BACKLOG_MAX || !sockring_size_ok(tx) || !sockring_size_ok(rx) ||
+        (flags & ~NET_LISTEN_REUSE))
         return ERR_INVALID_ARGS;
     if (!listener_ok(o, backlog))
         return ERR_NO_RESOURCES;
     struct ntcp_listen_req req = { .port = port, .backlog = backlog, .rx_size = rx,
-                                   .rings = l_rings, .drop = l_drop };
+                                   .reuse = flags & NET_LISTEN_REUSE, .rings = l_rings,
+                                   .drop = l_drop };
     struct tlisten *l;
     status_t st = l_new(o, &req, &l, out_listener);
     if (st != OK)

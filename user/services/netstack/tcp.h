@@ -82,6 +82,7 @@ struct ntcp_listen_req {
     uint16_t      port;      /* 0: lwIP picks one */
     uint32_t      backlog;   /* 1..STACK_TCP_BACKLOG */
     uint32_t      rx_size;   /* its connections' rx rings: windows of min(this, STACK_TCP_WND) */
+    bool          reuse;     /* SO_REUSEADDR (stack_tcp_listen) */
     ntcp_rings_fn rings;
     ntcp_drop_fn  drop;
     void         *owner;

@@ -15,6 +15,12 @@
  *                     starts the idle time again, switching it off stops the
  *                     probes, and a peer that never answers gets `cnt`
  *                     probes and then a reset: CLOSED, ERR_TIMED_OUT
+ *   nettcp_reuse      a listener with address reuse (net.idl's LISTEN_REUSE):
+ *                     two active listeners never share a port; with the flag
+ *                     one is made on a port whose connections are in TIME_WAIT
+ *                     (without it, ERR_ALREADY_BOUND), and beside open
+ *                     connections of an earlier listener that had the flag too,
+ *                     never beside those of one that hadn't
  *
  * The options' protocol side (the ranges, the reply) is nettcpsock.c's. */
 #define CHECK_PROG "utest"
@@ -172,6 +178,102 @@ bool t_nettcp_keepalive(void)
     CHECK_EQ(st.state, SOCKRING_STATE_CLOSED);
     CHECK_EQ(st.error, ERR_TIMED_OUT);
     fix_free(&x);
+    CHECK(fix_down());
+    return true;
+}
+
+/* ---- a listener's address reuse -------------------------------------------------------- */
+
+/* A peer connects from port `from` to listener l and the program accepts;
+ * then the program closes first (its END, the peer's ACK and FIN, ours):
+ * the connection is CLOSED, freed, and lwIP keeps its TIME_WAIT. */
+static bool time_wait_connection(struct ntcp_listener *l, uint16_t from)
+{
+    struct cx x;
+    struct tp_seg s[8];
+    unsigned n;
+    CHECK(fix_handshake(&x, l->port, from, 8192));
+    tp_send(&x.p, TP_ACK, NULL, 0);
+    CHECK(fix_accept(l, &x));
+    if (sockring_finish(&x.prog.tx))
+        ntcp_kick(x.c);
+    CHECK(fix_turn(&x, s, 8, &n, false));
+    CHECK(n >= 1 && (s[n - 1].flags & TP_FIN));
+    tp_absorb(&x.p, s, n, NULL, 0, &(size_t){ 0 });
+    tp_send(&x.p, TP_ACK, NULL, 0);
+    tp_send(&x.p, TP_FIN | TP_ACK, NULL, 0);
+    CHECK(fix_turn(&x, s, 8, &n, false));
+    CHECK_EQ(fix_status(&x).state, SOCKRING_STATE_CLOSED);
+    CHECK_EQ(fix_status(&x).error, OK);
+    fix_free(&x);
+    return true;
+}
+
+/* A peer connects from port `from` to listener l and the program accepts;
+ * the connection stays open. */
+static bool open_connection(struct ntcp_listener *l, uint16_t from, struct cx *x)
+{
+    CHECK(fix_handshake(x, l->port, from, 8192));
+    tp_send(&x->p, TP_ACK, NULL, 0);
+    CHECK(fix_accept(l, x));
+    CHECK_EQ(fix_status(x).state, SOCKRING_STATE_OPEN);
+    return true;
+}
+
+bool t_nettcp_reuse(void)
+{
+    struct ntcp_listener *a, *b, *c;
+    struct cx y, z;
+    struct tp_seg s[8];
+    unsigned n;
+    CHECK(fix_up());
+    struct ntcp_listen_req req = { .port = 7300, .backlog = 4, .rx_size = 8192,
+                                   .rings = fix_lst_rings, .drop = fix_lst_drop, .reuse = true };
+    /* Two active listeners never share a port, flag or not. */
+    CHECK_ST(ntcp_listen(&req, &a), OK);
+    CHECK_ST(ntcp_listen(&req, &b), ERR_ALREADY_BOUND);
+    req.reuse = false;
+    CHECK_ST(ntcp_listen(&req, &b), ERR_ALREADY_BOUND);
+    /* Its connection closed by us first leaves a TIME_WAIT on the port. */
+    CHECK(time_wait_connection(a, 30100));
+    CHECK(fix_counts().time_wait >= 1);
+    ntcp_unlisten(a);
+    CHECK_ST(ntcp_listen(&req, &b), ERR_ALREADY_BOUND);   /* without the flag: the port is held */
+    req.reuse = true;
+    CHECK_ST(ntcp_listen(&req, &b), OK);                  /* with it: made at once */
+    /* ... and it works: a peer connects, the program accepts. */
+    CHECK(open_connection(b, 30101, &y));
+    /* The listener closed, its open connection (it has the flag too) stays: a
+     * listener with the flag can stand beside it, one without can't. */
+    ntcp_unlisten(b);
+    req.reuse = false;
+    CHECK_ST(ntcp_listen(&req, &c), ERR_ALREADY_BOUND);
+    req.reuse = true;
+    CHECK_ST(ntcp_listen(&req, &c), OK);
+    CHECK(open_connection(c, 30102, &z));   /* beside the first still */
+    ntcp_unlisten(c);
+    ntcp_conn_abort(y.c, ERR_CANCELED);
+    ntcp_conn_abort(z.c, ERR_CANCELED);
+    CHECK(fix_turn(&y, s, 8, &n, true));
+    fix_free(&y);
+    fix_free(&z);
+    /* A listener made without the flag: its open connection doesn't have it,
+     * so no listener may stand beside that connection, flag or not (as Linux
+     * wants both to ask) until it is gone. */
+    req.port = 7301;
+    req.reuse = false;
+    CHECK_ST(ntcp_listen(&req, &a), OK);
+    CHECK(open_connection(a, 30103, &y));
+    ntcp_unlisten(a);
+    CHECK_ST(ntcp_listen(&req, &b), ERR_ALREADY_BOUND);
+    req.reuse = true;
+    CHECK_ST(ntcp_listen(&req, &b), ERR_ALREADY_BOUND);
+    ntcp_conn_abort(y.c, ERR_CANCELED);
+    CHECK(fix_turn(&y, s, 8, &n, true));
+    fix_free(&y);
+    CHECK_ST(ntcp_listen(&req, &b), OK);   /* nothing holds the port now */
+    ntcp_unlisten(b);
+    tp_forget();
     CHECK(fix_down());
     return true;
 }

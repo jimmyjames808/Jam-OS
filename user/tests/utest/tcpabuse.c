@@ -114,7 +114,7 @@ bool t_nettcp_pool_full(void)
     }
     struct stack_tcp_listen *spare;
     uint16_t port;
-    CHECK_ST(stack_tcp_listen(0, 1, SOCKRING_MIN, NULL, &spare, &port), ERR_NO_RESOURCES);
+    CHECK_ST(stack_tcp_listen(0, 1, SOCKRING_MIN, false, NULL, &spare, &port), ERR_NO_RESOURCES);
     uint32_t half = fix_counts().half_open;
     CHECK_EQ(half, STACK_TCP_LISTENERS * (STACK_TCP_BACKLOG - 1));
     /* Until full: no TIME_WAIT left to recycle, every pcb in use. */

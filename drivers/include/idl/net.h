@@ -103,6 +103,34 @@
  * ERR_INVALID_ARGS, and the call is refused before it holds anything. */
 #define NET_WAIT_FOREVER 0xffffffffu
 #define NET_TIMEOUT_MAX 60000u
+/* On an opener's channel that came through /svc/net-listen or
+ * /svc/net-low (the listen permissions, netstack's listen.h;
+ * ERR_ACCESS_DENIED on any other): listen on TCP port `port` (NET_PORT_LOW
+ * and up; through /svc/net-low from 1, but not 67 or 68; 0:
+ * netstack picks one, NET_PORT_EPHEMERAL and up) for at most `backlog`
+ * (1..NET_BACKLOG_MAX) connections half-open or waiting for accept. Each
+ * gets rings of tx_bytes and rx_bytes (0: NET_TCP_TX, NET_TCP_RX) when its
+ * handshake finishes, so bytes that come before accept wait in them; one
+ * whose tx ring doesn't fit its opener's ring bytes then gets NET_TCP_TX,
+ * and one that doesn't fit the limits even so is reset. Results: the
+ * listener's channel (net_listener: accept; closing it stops listening and
+ * resets the connections waiting) and its port. ERR_ACCESS_DENIED also for a port
+ * below NET_PORT_LOW on a /svc/net-listen opener; ERR_ALREADY_BOUND: the
+ * port is taken; ERR_INVALID_ARGS: a backlog or ring size not allowed;
+ * ERR_NO_RESOURCES: the opener's, all openers' or an ordinary opener's
+ * share of listeners or of backlog.
+ *
+ * `flags` is 0 or LISTEN_REUSE (anything else: ERR_INVALID_ARGS): POSIX's
+ * SO_REUSEADDR, as Linux does it. Without it the port must be free of every
+ * connection too: one still in TIME_WAIT, or open, from an earlier listener
+ * on the port is ERR_ALREADY_BOUND, so a server restarted at once can't
+ * listen. With it a listener can be made on a port whose old connections
+ * are in TIME_WAIT, and on one whose open connections came from a listener
+ * that was made with it as well; an active listener on the port still
+ * makes ERR_ALREADY_BOUND, with or without it (the flag doesn't share a
+ * port). A listener's connections keep its flag: they are what a later
+ * listener with the flag may stand beside. */
+#define NET_LISTEN_REUSE 1u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct net_iface_req {
@@ -212,6 +240,7 @@ struct net_tcp_listener_req {
     uint32_t backlog;
     uint32_t tx_bytes;
     uint32_t rx_bytes;
+    uint32_t flags;
 } __attribute__((packed));
 struct net_tcp_listener_rep {
     uint32_t txid;
@@ -219,7 +248,7 @@ struct net_tcp_listener_rep {
     uint16_t port;
 } __attribute__((packed));
 
-#define NET_REQ_MAX 22u   /* bytes: the biggest request */
+#define NET_REQ_MAX 26u   /* bytes: the biggest request */
 #define NET_REP_MAX 266u   /* bytes: the biggest reply */
 #define NET_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define NET_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
@@ -690,7 +719,7 @@ static inline status_t net_tcp(handle_t ch, uint32_t address, uint16_t port, uin
 
 /* net_tcp_listener_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t net_tcp_listener_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
+static inline status_t net_tcp_listener_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, uint32_t flags, handle_t *out_listener, uint16_t *out_port)
 {
     struct net_tcp_listener_req idl_q;
     struct net_tcp_listener_rep idl_r;
@@ -701,6 +730,7 @@ static inline status_t net_tcp_listener_call(handle_t ch, bool idl_within, uint6
     idl_q.backlog = backlog;
     idl_q.tx_bytes = tx_bytes;
     idl_q.rx_bytes = rx_bytes;
+    idl_q.flags = flags;
     handle_t idl_rh[1];
     uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
     status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
@@ -723,33 +753,17 @@ static inline status_t net_tcp_listener_call(handle_t ch, bool idl_within, uint6
         *out_port = idl_r.port;
     return idl_st;
 }
-/* On an opener's channel that came through /svc/net-listen or
- * /svc/net-low (the listen permissions, netstack's listen.h;
- * ERR_ACCESS_DENIED on any other): listen on TCP port `port` (NET_PORT_LOW
- * and up; through /svc/net-low from 1, but not 67 or 68; 0:
- * netstack picks one, NET_PORT_EPHEMERAL and up) for at most `backlog`
- * (1..NET_BACKLOG_MAX) connections half-open or waiting for accept. Each
- * gets rings of tx_bytes and rx_bytes (0: NET_TCP_TX, NET_TCP_RX) when its
- * handshake finishes, so bytes that come before accept wait in them; one
- * whose tx ring doesn't fit its opener's ring bytes then gets NET_TCP_TX,
- * and one that doesn't fit the limits even so is reset. Results: the
- * listener's channel (net_listener: accept; closing it stops listening and
- * resets the connections waiting) and its port. ERR_ACCESS_DENIED also for a port
- * below NET_PORT_LOW on a /svc/net-listen opener; ERR_ALREADY_BOUND: the
- * port is taken; ERR_INVALID_ARGS: a backlog or ring size not allowed;
- * ERR_NO_RESOURCES: the opener's, all openers' or an ordinary opener's
- * share of listeners or of backlog. */
-static inline status_t net_tcp_listener_until(handle_t ch, uint64_t deadline_ns, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
+static inline status_t net_tcp_listener_until(handle_t ch, uint64_t deadline_ns, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, uint32_t flags, handle_t *out_listener, uint16_t *out_port)
 {
-    return net_tcp_listener_call(ch, false, deadline_ns, port, backlog, tx_bytes, rx_bytes, out_listener, out_port);
+    return net_tcp_listener_call(ch, false, deadline_ns, port, backlog, tx_bytes, rx_bytes, flags, out_listener, out_port);
 }
-static inline status_t net_tcp_listener_within(handle_t ch, uint64_t timeout_ns, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
+static inline status_t net_tcp_listener_within(handle_t ch, uint64_t timeout_ns, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, uint32_t flags, handle_t *out_listener, uint16_t *out_port)
 {
-    return net_tcp_listener_call(ch, true, timeout_ns, port, backlog, tx_bytes, rx_bytes, out_listener, out_port);
+    return net_tcp_listener_call(ch, true, timeout_ns, port, backlog, tx_bytes, rx_bytes, flags, out_listener, out_port);
 }
-static inline status_t net_tcp_listener(handle_t ch, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
+static inline status_t net_tcp_listener(handle_t ch, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, uint32_t flags, handle_t *out_listener, uint16_t *out_port)
 {
-    return net_tcp_listener_call(ch, false, DEADLINE_NEVER, port, backlog, tx_bytes, rx_bytes, out_listener, out_port);
+    return net_tcp_listener_call(ch, false, DEADLINE_NEVER, port, backlog, tx_bytes, rx_bytes, flags, out_listener, out_port);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -1118,7 +1132,7 @@ static inline status_t net_tcp_result(const void *idl_rep, struct idl_msg *idl_m
 
 /* net_tcp_listener without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then net_tcp_listener_result. */
-static inline status_t net_tcp_listener_send(handle_t ch, uint32_t idl_txid, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes)
+static inline status_t net_tcp_listener_send(handle_t ch, uint32_t idl_txid, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, uint32_t flags)
 {
     struct net_tcp_listener_req idl_q;
     if (!idl_txid)
@@ -1129,6 +1143,7 @@ static inline status_t net_tcp_listener_send(handle_t ch, uint32_t idl_txid, uin
     idl_q.backlog = backlog;
     idl_q.tx_bytes = tx_bytes;
     idl_q.rx_bytes = rx_bytes;
+    idl_q.flags = flags;
     return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
 }
 
@@ -1170,7 +1185,7 @@ struct net_ops {
     status_t (*echo)(void *ctx, struct idl_txn idl_txn, uint32_t address, uint16_t seq, uint16_t size, uint32_t timeout_ms, uint32_t *out_rtt_us, uint8_t *out_ttl, uint16_t *out_size);
     status_t (*udp_rings)(void *ctx, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes);
     status_t (*tcp)(void *ctx, uint32_t address, uint16_t port, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes);
-    status_t (*tcp_listener)(void *ctx, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port);
+    status_t (*tcp_listener)(void *ctx, uint16_t port, uint32_t backlog, uint32_t tx_bytes, uint32_t rx_bytes, uint32_t flags, handle_t *out_listener, uint16_t *out_port);
 };
 
 /* Answer the net.iface request kept in txn: idl_st and, if it is OK, the
@@ -1652,7 +1667,7 @@ static inline uint32_t net_dispatch_on(handle_t ch, const struct net_ops *ops, v
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->tcp_listener(ctx, idl_q->port, idl_q->backlog, idl_q->tx_bytes, idl_q->rx_bytes, &out_listener, &out_port);
+        status_t idl_st = ops->tcp_listener(ctx, idl_q->port, idl_q->backlog, idl_q->tx_bytes, idl_q->rx_bytes, idl_q->flags, &out_listener, &out_port);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status == OK && !(out_listener != HANDLE_INVALID))
             idl_h->status = ERR_INTERNAL;   /* a handle result left unset */

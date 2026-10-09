@@ -25,6 +25,14 @@
  *       connect with keep-alive on (idle 1 s, every 1 s, 3 probes), stay
  *       idle for <seconds>, check the connection is still OPEN (the peer
  *       answers each probe and counts it), then carry 64 bytes each way.
+ *   tcptest relisten <port> <bytes>
+ *       listen on <port> with address reuse, accept the peer's connection
+ *       (tools/tcp-test.sh makes it connect), write <bytes> of stream
+ *       (peer port + 1) & 0xff and shut down first, read the peer's <bytes>
+ *       of stream (its port & 0xff) to its end, wait for CLOSED and close it
+ *       (TIME_WAIT on our side), close the listener; then a listener on the
+ *       same port without reuse must be refused (ERR_ALREADY_BOUND) and one
+ *       with it made at once.
  *
  * Byte i of stream `seed` is (i * 131 + (i >> 8) * 7 + seed) & 0xff, as
  * tools/tcppeer.py makes them. The last line is "tcptest: PASS ..." or
@@ -52,6 +60,7 @@ uint64_t tt_rate10(uint64_t n, uint64_t ns);
 /* opts.c: tcptest small and tcptest keepalive. */
 int tt_small(uint32_t addr, uint16_t port, uint32_t writes, uint32_t size, bool nagle);
 int tt_keepalive(uint32_t addr, uint16_t port, uint32_t hold_s);
+int tt_relisten(uint16_t port, uint64_t bytes);
 
 /* serve.c */
 int tt_serve(uint16_t port, uint32_t conns, uint64_t bytes);

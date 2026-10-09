@@ -17,9 +17,11 @@ them.
                               round trip, so the guest's bytes in flight
                               can be seen (below). Several servers: a
                               comma-separated list.
-  --tcp-connect ADDR:PORT:CONNS:BYTES
+  --tcp-connect ADDR:PORT:CONNS:BYTES[,...]
                               CONNS connections to the guest's listener at
                               ADDR:PORT, all at once from ports 40000 and up
+                              (a comma-separated list of those takes the
+                              ports in order, the first list's from 40000)
                               (a SYN again each second until one is
                               answered): from port P, BYTES of stream P & 0xff
                               and a FIN sent, BYTES of stream (P + 1) & 0xff
@@ -273,7 +275,8 @@ class Tcp:
     def __init__(self, peer, np, serve=None, connect=None):
         self.peer, self.np = peer, np
         self.serve = {p: (n, d) for p, n, d in (serve or [])}
-        self.connect = connect
+        # one (addr, port, conns, bytes), or a list of them
+        self.connect = [connect] if connect and not isinstance(connect[0], tuple) else connect
         self.conns = {}                       # (their addr, their port, our port) -> Conn
         self.connect_started = False
         for k in ("tcp_ok", "tcp_bad", "tcp_bytes_in", "tcp_bytes_out", "tcp_retransmits"):
@@ -347,13 +350,14 @@ class Tcp:
         now = time.monotonic()
         if self.connect and not self.connect_started and self.peer.guest_mac is not None:
             self.connect_started = True
-            addr, port, n, nbytes = self.connect
-            for i in range(n):
-                p = CLIENT_PORT0 + i
-                c = Conn(self, (self.np.ip_bytes(self.np.PING_FROM), p), (addr, port),
-                         self.peer.guest_mac, ((p + 1) & 0xFF, p & 0xFF), nbytes, True)
-                c.last = 0.0   # its first SYN now
-                self.conns[(addr, port, p)] = c
+            p = CLIENT_PORT0   # each connection from a port of its own, the lists' in order
+            for addr, port, n, nbytes in self.connect:
+                for i in range(n):
+                    c = Conn(self, (self.np.ip_bytes(self.np.PING_FROM), p), (addr, port),
+                             self.peer.guest_mac, ((p + 1) & 0xFF, p & 0xFF), nbytes, True)
+                    c.last = 0.0   # its first SYN now
+                    self.conns[(addr, port, p)] = c
+                    p += 1
         for c in list(self.conns.values()):
             c.tick(now)
 
