@@ -126,6 +126,7 @@ status_t sys_port_bind(struct handle_table *t, handle_t port, handle_t obj, uint
 status_t sys_port_unbind(struct handle_table *t, handle_t port, handle_t obj, uint64_t key);
 status_t sys_port_queue(struct handle_table *t, handle_t port,
                         const struct port_packet *pkt);                    /* RIGHT_WRITE */
+/* The two waits are interruptible (thread_interrupt: ERR_INTERRUPTED). */
 status_t sys_port_wait(struct handle_table *t, handle_t port, uint64_t deadline_ns,
                        struct port_packet *out);                           /* RIGHT_READ */
 /* RIGHT_WAIT, any type. */

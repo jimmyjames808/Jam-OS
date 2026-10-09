@@ -31,5 +31,8 @@ typedef int status_t;
 #define ERR_NOT_EMPTY      -23   /* the directory still holds entries (ENOTEMPTY) */
 #define ERR_NAME_TOO_LONG  -24   /* a name or path past its limit (ENAMETOOLONG) */
 #define ERR_BUSY           -25   /* in use: open, mounted, or locked by another (EBUSY) */
+/* An interruptible wait (object_wait_one, port_wait, futex_wait,
+ * sleep_until) ended by thread_interrupt (POSIX's EINTR). */
+#define ERR_INTERRUPTED    -26
 
 const char *status_str(status_t s);

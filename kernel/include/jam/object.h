@@ -101,5 +101,9 @@ bool kobject_observe_if(struct kobject *obj, struct observer *o, bool held);
  * (if non-NULL) gets the signals at that moment. */
 status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_ns,
                          signals_t *observed);
+/* The system call's form: also ERR_INTERRUPTED, when thread_interrupt
+ * ends it (or ended it before it began) with the signals not matching. */
+status_t object_wait_one_interruptible(struct kobject *obj, signals_t mask,
+                                       uint64_t deadline_ns, signals_t *observed);
 
 const char *obj_type_name(enum obj_type t);

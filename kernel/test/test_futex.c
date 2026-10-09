@@ -393,3 +393,56 @@ KTEST(futex_no_lost_wake)
         KT_EQ(futex_queued(as, ring_word(k)), 0);
     cleanup(as);
 }
+
+/* ---- thread_interrupt ---------------------------------------------------------- */
+
+/* Before: an interrupt latched before the wait ends it at once (twice is
+ * still once: the wait after runs to its deadline). */
+static int64_t intr_st[2];
+static void intr_before_body(struct fx_thread *x)
+{
+    put32(FBASE, 0);
+    thread_interrupt(current_thread());
+    thread_interrupt(current_thread());
+    intr_st[0] = futex_wait(FBASE, 0, uptime_ns() + 5 * NS_PER_S, 0);
+    intr_st[1] = futex_wait(FBASE, 0, uptime_ns() + NS_PER_MS, 0);
+    x->st = OK;
+}
+
+/* Two waits in a row on FBASE: x->st the first's, x->arg gets the second's. */
+static void two_waits(struct fx_thread *x)
+{
+    x->st = futex_wait(FBASE, 0, uptime_ns() + kt_patience_ms(5000) * NS_PER_MS, 0);
+    x->arg = (uint64_t)futex_wait(FBASE, 0, uptime_ns() + 5 * NS_PER_MS, 0);
+}
+
+/* During: an interrupt ends a queued waiter's wait, taking it off the
+ * queue, and only that wait. A wake that picked the waiter first wins:
+ * OK, and the interrupt ends its next wait instead (none lost). */
+KTEST(futex_interrupt_before_during_after)
+{
+    struct aspace *as = fx_space();
+    KT_EQ(fx_run(as, intr_before_body, 0), OK);
+    KT_EQ(intr_st[0], ERR_INTERRUPTED);
+    KT_EQ(intr_st[1], ERR_TIMED_OUT);
+
+    struct fx_thread x = { .as = as, .fn = two_waits };
+    struct thread *t = fx_spawn(&x, -1);
+    until_queued(as, FBASE, 1);
+    thread_interrupt(t);
+    thread_join(t);
+    KT_EQ(x.st, ERR_INTERRUPTED);
+    KT_EQ((int64_t)x.arg, ERR_TIMED_OUT);
+    KT_EQ(futex_queued(as, FBASE), 0);
+
+    struct fx_thread y = { .as = as, .fn = two_waits };
+    t = fx_spawn(&y, -1);
+    until_queued(as, FBASE, 1);
+    KT_EQ(fx_run(as, wake_all, FBASE), 1);   /* picked: the wake is the waiter's ... */
+    thread_interrupt(t);                     /* ... before this comes */
+    thread_join(t);
+    KT_EQ(y.st, OK);
+    KT_EQ((int64_t)y.arg, ERR_INTERRUPTED);
+    KT_EQ(futex_queued(as, FBASE), 0);
+    cleanup(as);
+}

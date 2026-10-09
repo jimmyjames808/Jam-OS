@@ -1,7 +1,9 @@
-/* System calls 130-133: read-only system information for the shell's
- * uname / free / lscpu / top / ps / date. Each needs a power on a RES_ROOT
- * handle (sysinfo_check_root): RIGHT_ROOT_SYSINFO for sys_info, cpu_stat
- * and proc_list, RIGHT_ROOT_CLOCK for rtc_read; none changes anything.
+/* System calls 130-133 and 136: read-only system information for the
+ * shell's uname / free / lscpu / top / ps / date. Each of 130-133 needs a
+ * power on a RES_ROOT handle (sysinfo_check_root): RIGHT_ROOT_SYSINFO for
+ * sys_info, cpu_stat and proc_list, RIGHT_ROOT_CLOCK for rtc_read; 136,
+ * sys_public_info, none (what POSIX's uname and sysconf tell any
+ * program). None changes anything.
  * sysinfo_check_root is also every other root call's check (kernel/abi/
  * sysc_console.c, sysc_kexec.c, vmo_sys.c). The structs are in
  * <jam/abi.h>; the rules every sysc_* follows are in sysc.h. */
@@ -132,6 +134,20 @@ int64_t sysc_proc_list(handle_t root, uint64_t out, uint32_t cap)
     st = copy_out(out, buf, (size_t)n * sizeof(*buf));
     kfree(buf);
     return st == OK ? (int64_t)n : ERR_INVALID_ARGS;
+}
+
+/* No power needed: what uname and sysconf tell any program. */
+int64_t sysc_sys_public_info(uint64_t out)
+{
+    struct sys_public_info s;
+    memset(&s, 0, sizeof(s));
+    trimmed(s.version, sizeof(s.version), jamos_version);
+    trimmed(s.machine, sizeof(s.machine), "x86_64");
+    s.mem_total_pages = pmm_total_pages();
+    s.page_size = PAGE_SIZE;
+    for (uint32_t i = 0; i < cpu_count; i++)
+        s.cpus_online += cpus[i] && cpu_online(cpus[i]);
+    return copy_to_user(out, &s, sizeof(s)) == OK ? OK : ERR_INVALID_ARGS;
 }
 
 int64_t sysc_rtc_read(handle_t root, uint64_t out)

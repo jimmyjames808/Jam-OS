@@ -127,9 +127,10 @@ static bool t_basics(void)
     CHECK_ST((status_t)old, ERR_NOT_SUPPORTED);
     CHECK_ST(jam_object_wait_one(e, SIG_USER_ALL, 0, &seen), OK);
     CHECK_EQ(seen & SIG_USER_ALL, 1u << 24);   /* bit 25 was never set */
-    for (status_t s = OK; s >= ERR_BUSY; s--)   /* every status named in libos too */
+    for (status_t s = OK; s >= ERR_INTERRUPTED; s--)   /* every status named in libos too */
         CHECK(strcmp(status_str(s), "?") != 0);
     CHECK(!strcmp(status_str(ERR_NAME_TOO_LONG), "ERR_NAME_TOO_LONG"));
+    CHECK(!strcmp(status_str(ERR_INTERRUPTED), "ERR_INTERRUPTED"));
 
     CHECK_ST(jam_timer_create(&tm), OK);
     CHECK_ST(jam_timer_set(tm, now() + 5 * NS_PER_MS), OK);
@@ -507,6 +508,10 @@ static void waiter(void *arg)
  * handle a message carries are message bytes, and all of it comes back. */
 static bool t_kernel_objects_are_charged(void)
 {
+    /* The waiter's stack below is ours (.bss): its pages are committed
+     * (and charged) before the count starts, wherever the link put it. */
+    static uint8_t stack[8192] __attribute__((aligned(16)));
+    memset(stack, 0, sizeof(stack));
     struct job_info a, b;
     CHECK_ST(info_of(own_job(), &a), OK);
 #define USED(k) (info_of(own_job(), &b) == OK ? b.used[k] - a.used[k] : 999999)
@@ -545,7 +550,6 @@ static bool t_kernel_objects_are_charged(void)
     CHECK_EQ(USED(JOB_LIMIT_MSG_BYTES), 0);
 
     /* a thread: its kernel stack (64 KiB) and more, while it runs */
-    static uint8_t stack[8192] __attribute__((aligned(16)));
     handle_t th;
     CHECK_ST(thread_spawn("waiter", waiter, (void *)(uintptr_t)ev, stack, sizeof(stack), &th),
              OK);
@@ -1131,6 +1135,10 @@ static const struct {
     { "comp_look_wallpaper", t_comp_look_wallpaper },
     { "thread_fs_base", t_thread_fs_base },
     { "futex_calls", t_futex_calls },
+    { "posix_ids", t_posix_ids },
+    { "thread_interrupt_calls", t_thread_interrupt_calls },
+    { "cpu_ns", t_cpu_ns },
+    { "sys_public_info", t_sys_public_info },
     { "handle_info", t_handle_info },
     { "length_limits", t_length_limits },
     { "replace_consumes", t_replace_consumes },

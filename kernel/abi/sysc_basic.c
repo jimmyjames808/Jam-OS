@@ -2,8 +2,9 @@
  * events, timers and ports. The rules all sysc_* follow are in sysc.h.
  *
  * Blocking calls (sleep_until, object_wait_one, port_wait) use the
- * cancellable waits, so a thread whose process is killed stops waiting at
- * once (ERR_CANCELED) and leaves on its way back to user mode. */
+ * interruptible waits: a thread whose process is killed stops waiting at
+ * once (ERR_CANCELED) and leaves on its way back to user mode, and
+ * thread_interrupt ends the wait with ERR_INTERRUPTED (wait.c). */
 #include <jam/abi.h>
 #include <jam/port.h>
 #include <jam/sched.h>
@@ -66,10 +67,7 @@ int64_t sysc_clock_get(void)
 
 int64_t sysc_sleep_until(uint64_t deadline_ns)
 {
-    while (uptime_ns() < deadline_ns)
-        if (thread_block_cancellable(NULL, NULL, deadline_ns) != OK)
-            return ERR_CANCELED;
-    return OK;
+    return thread_sleep_until_interruptible(deadline_ns);
 }
 
 /* ---- handles ---------------------------------------------------------------- */
@@ -116,7 +114,8 @@ int64_t sysc_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns, u
     SYSC_TABLE(t);
     signals_t seen = 0;
     status_t st = sys_object_wait_one(t, h, mask, deadline_ns, &seen);
-    if (observed && (st == OK || st == ERR_TIMED_OUT || st == ERR_CANCELED) &&
+    if (observed && (st == OK || st == ERR_TIMED_OUT || st == ERR_CANCELED ||
+                     st == ERR_INTERRUPTED) &&
         copy_to_user(observed, &seen, sizeof(seen)) != OK)
         return ERR_INVALID_ARGS;
     return st;
