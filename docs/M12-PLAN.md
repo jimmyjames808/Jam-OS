@@ -273,7 +273,7 @@ recommendation.
 
 ### The reviews' questions, answered (2026-10-07)
 
-Stage B: the four reviews (docs/M12-REVIEW-KERNEL.md, -PROTOCOLS.md,
+Stage B: the four reviews (docs/history/M12-REVIEW-KERNEL.md, -PROTOCOLS.md,
 -WAYLAND.md, -STORAGE.md) raised 20 questions the answers above left
 open. The owner took the reviews' recommendations for all of them ("your
 recommendation for the rest unless unsure or very important") and was
