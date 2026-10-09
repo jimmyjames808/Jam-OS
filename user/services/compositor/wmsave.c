@@ -93,6 +93,13 @@ static bool written;               /* last is what the current copy holds */
 
 /* ---- describing ------------------------------------------------------------------------- */
 
+/* v held to [lo, hi]: what is written always passes the check (check()'s
+ * bounds), whatever a window's numbers became. */
+static int32_t held_to(int32_t v, int32_t lo, int32_t hi)
+{
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
 uint64_t wm_save_sum(const struct wm_save *d)
 {
     const uint8_t *p = (const uint8_t *)d;
@@ -186,8 +193,11 @@ void wm_save_describe(struct wm_save *d)
         saved[d->nwins] = ww;
         d->wins[d->nwins++] = (struct wm_save_window){
             .key = ww->key, .rank = ww->focused_at,
-            .fx = ww->float_x, .fy = ww->float_y, .fw = ww->float_w, .fh = ww->float_h,
-            .min_w = ww->min_w, .min_h = ww->min_h, .screen = (uint8_t)si,
+            .fx = held_to(ww->float_x, -PLACE_MAX, PLACE_MAX),
+            .fy = held_to(ww->float_y, -PLACE_MAX, PLACE_MAX),
+            .fw = held_to(ww->float_w, 0, SIDE_MAX), .fh = held_to(ww->float_h, 0, SIDE_MAX),
+            .min_w = held_to(ww->min_w, 0, SIDE_MAX), .min_h = held_to(ww->min_h, 0, SIDE_MAX),
+            .screen = (uint8_t)si,
             .want = (uint8_t)ww->want, .before_fs = (uint8_t)ww->before_fs,
             .flags = (uint8_t)((ww->minimised ? WM_SAVE_MINIMISED : 0) |
                                (ww->float_placed ? WM_SAVE_FLOAT_PLACED : 0) |
