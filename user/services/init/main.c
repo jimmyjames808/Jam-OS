@@ -72,6 +72,7 @@ bool init_splashhang;
 bool init_verbose;
 bool init_nospare;
 bool init_vtdtest;
+const char *init_nvmetest;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -237,6 +238,8 @@ static bool start_devmgr(handle_t console)
             argv[argc++] = "hidboot";
         if (init_vlan)
             argv[argc++] = init_vlan;
+        if (init_nvmetest)
+            argv[argc++] = init_nvmetest;
         struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b },
                                     { SR_DEVMGR, qb }, { SR_CONSOLE, console } };
         struct spawn_args sa = {
@@ -551,6 +554,7 @@ int main(int argc, char **argv)
      * or "vlan=none", "bootdisk=0x<id>", "splashhang", "nospare" (no warm
      * spare mixer: spare.c; passed on to volumes: no warm spare fat),
      * "vtdtest" (passed on to devmgr: drv/hda's IOMMU fault checks),
+     * "nvmetest=<words>" (passed on to devmgr: drv/nvme's test reads),
      * "verbose" (the log on the first terminal's screen: terms.c). */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
@@ -566,6 +570,8 @@ int main(int argc, char **argv)
         init_splashhang |= !strcmp(argv[i], "splashhang");
         init_nospare |= !strcmp(argv[i], "nospare");
         init_vtdtest |= !strcmp(argv[i], "vtdtest");
+        if (!strncmp(argv[i], "nvmetest=", 9))
+            init_nvmetest = argv[i];
         init_verbose |= !strcmp(argv[i], "verbose");
     }
     /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain
