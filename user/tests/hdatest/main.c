@@ -168,14 +168,20 @@ static bool t_open_close(void)
     uint32_t sz, pd;
     CHECK_ST(hda_open_output_until(hda, soon(), 44100, 2, 16, &a, &b, &sz, &pd),
              ERR_NOT_SUPPORTED);
-    CHECK_ST(hda_start_until(hda, soon()), ERR_NOT_SUPPORTED);
+    CHECK_ST(hda_stream_start_until(hda, soon()), ERR_NOT_SUPPORTED);
+    /* and the stream's channel speaks hda_stream alone (Q5) */
+    int32_t g, gmin, gmax;
+    uint32_t gstep;
+    CHECK_ST(hda_open_output_until(o.ch, soon(), 48000, 2, 16, &a, &b, &sz, &pd),
+             ERR_NOT_SUPPORTED);
+    CHECK_ST(hda_get_gain_until(o.ch, soon(), &g, &gstep, &gmin, &gmax), ERR_NOT_SUPPORTED);
     uint64_t frames = 1;
     uint32_t off = 1;
-    CHECK_ST(hda_position_until(o.ch, soon(), &frames, &off), OK);
+    CHECK_ST(hda_stream_position_until(o.ch, soon(), &frames, &off), OK);
     CHECK_EQ(frames, 0);
     CHECK_EQ(off, 0);
-    CHECK_ST(hda_wait_period_until(o.ch, soon(), 0, &frames, &off), ERR_BAD_STATE);
-    CHECK_ST(hda_stop_until(o.ch, soon()), OK);
+    CHECK_ST(hda_stream_wait_period_until(o.ch, soon(), 0, &frames, &off), ERR_BAD_STATE);
+    CHECK_ST(hda_stream_stop_until(o.ch, soon()), OK);
     out_close(&o);
     uint64_t end = now() + SOON;   /* the close reaches the driver on another channel */
     status_t st;
@@ -193,7 +199,7 @@ static bool play(struct out *o, uint64_t until, uint64_t *hz)
     uint64_t frames = 0, written = o->size / 4, t0 = 0, f0 = 0, t1 = 0, f1 = 0;
     uint32_t off = 0;
     while (frames < until) {
-        CHECK_ST(hda_wait_period_until(o->ch, soon(), frames, &frames, &off), OK);
+        CHECK_ST(hda_stream_wait_period_until(o->ch, soon(), frames, &frames, &off), OK);
         uint64_t t = now();
         CHECK_EQ(off, (frames * 4) % o->size);
         if (!t0) {
@@ -215,7 +221,7 @@ static bool t_pattern(void)
     struct out o;
     CHECK_ST(out_open(&o), OK);
     put(&o, 0, o.size / 4);
-    CHECK_ST(hda_start_until(o.ch, soon()), OK);
+    CHECK_ST(hda_stream_start_until(o.ch, soon()), OK);
     uint64_t hz = 0, frames, frames2;
     uint32_t off;
     bool ok = play(&o, PATTERN_FRAMES + o.size / 4 + o.period / 4, &hz);
@@ -223,12 +229,12 @@ static bool t_pattern(void)
     printf("hdatest: pattern: %u frames played ahead, position rate %lu Hz\n", PATTERN_FRAMES,
            (unsigned long)hz);
     CHECK(hz >= RATE * 98 / 100 && hz <= RATE * 102 / 100);
-    CHECK_ST(hda_stop_until(o.ch, soon()), OK);
-    CHECK_ST(hda_position_until(o.ch, soon(), &frames, &off), OK);
+    CHECK_ST(hda_stream_stop_until(o.ch, soon()), OK);
+    CHECK_ST(hda_stream_position_until(o.ch, soon(), &frames, &off), OK);
     jam_sleep_until(now() + 100 * NS_PER_MS);
-    CHECK_ST(hda_position_until(o.ch, soon(), &frames2, &off), OK);
+    CHECK_ST(hda_stream_position_until(o.ch, soon(), &frames2, &off), OK);
     CHECK_EQ(frames2, frames);
-    CHECK_ST(hda_wait_period_until(o.ch, soon(), frames, &frames2, &off), ERR_BAD_STATE);
+    CHECK_ST(hda_stream_wait_period_until(o.ch, soon(), frames, &frames2, &off), ERR_BAD_STATE);
     out_close(&o);
     return true;
 }
@@ -239,8 +245,8 @@ static bool t_close_stops(void)
     uint64_t frames = 0;
     uint32_t off;
     CHECK_ST(out_open(&o), OK);
-    CHECK_ST(hda_start_until(o.ch, soon()), OK);
-    CHECK_ST(hda_wait_period_until(o.ch, soon(), 0, &frames, &off), OK);
+    CHECK_ST(hda_stream_start_until(o.ch, soon()), OK);
+    CHECK_ST(hda_stream_wait_period_until(o.ch, soon(), 0, &frames, &off), OK);
     CHECK(frames > 0);
     out_close(&o);   /* running: the driver stops it */
     uint64_t end = now() + SOON;
@@ -248,7 +254,7 @@ static bool t_close_stops(void)
     while ((st = out_open(&o)) == ERR_BAD_STATE && now() < end)
         jam_sleep_until(now() + 10 * NS_PER_MS);
     CHECK_ST(st, OK);
-    CHECK_ST(hda_position_until(o.ch, soon(), &frames, &off), OK);
+    CHECK_ST(hda_stream_position_until(o.ch, soon(), &frames, &off), OK);
     CHECK_EQ(frames, 0);
     out_close(&o);
     return true;
@@ -281,11 +287,11 @@ static bool t_kill(void)
     uint32_t off;
     CHECK_ST(out_open(&o), OK);
     put(&o, 0, o.size / 4);
-    CHECK_ST(hda_start_until(o.ch, soon()), OK);
-    CHECK_ST(hda_wait_period_until(o.ch, soon(), 0, &frames, &off), OK);
+    CHECK_ST(hda_stream_start_until(o.ch, soon()), OK);
+    CHECK_ST(hda_stream_wait_period_until(o.ch, soon(), 0, &frames, &off), OK);
     struct devmgr_rep r;
     CHECK_ST(devmgr_call(dm, DEVMGR_KILL, vid, did, 0, &r, NULL, 0, NULL, soon()), OK);
-    CHECK_ST(hda_position_until(o.ch, soon(), &frames, &off), ERR_PEER_CLOSED);
+    CHECK_ST(hda_stream_position_until(o.ch, soon(), &frames, &off), ERR_PEER_CLOSED);
     out_close(&o);   /* nothing written to the old ring: it is quarantined */
     /* The channel the restart will serve (0xffff/0xffff finds running drivers only). */
     handle_t ch;
@@ -295,9 +301,9 @@ static bool t_kill(void)
     jam_handle_close(hda);
     hda = ch;
     CHECK_ST(out_open(&o), OK);
-    CHECK_ST(hda_start_until(o.ch, soon()), OK);
-    CHECK_ST(hda_wait_period_until(o.ch, soon(), 0, &frames, &off), OK);
-    CHECK_ST(hda_wait_period_until(o.ch, soon(), frames, &frames, &off), OK);
+    CHECK_ST(hda_stream_start_until(o.ch, soon()), OK);
+    CHECK_ST(hda_stream_wait_period_until(o.ch, soon(), 0, &frames, &off), OK);
+    CHECK_ST(hda_stream_wait_period_until(o.ch, soon(), frames, &frames, &off), OK);
     CHECK(frames >= 2 * o.period / 4);
     out_close(&o);
     return quarantine_clean();

@@ -22,14 +22,17 @@ static const char *vol_str(int32_t cb, char *buf, size_t size)
 
 static int list(handle_t ctl)
 {
-    uint32_t count = 0;
+    uint32_t len = 0;
     int32_t master = 0;
     uint8_t raw[640];
-    status_t st = audioctl_streams_until(ctl, now() + SOON, &count, &master, raw);
+    status_t st = audioctl_streams_until(ctl, now() + SOON, &master, raw, &len);
+    if (st == OK && len % sizeof(struct mixer_stream_info))
+        st = ERR_INTERNAL;
     if (st != OK) {
         sh_say("vol: the mixer doesn't answer: %s\n", status_str(st));
         return 1;
     }
+    uint32_t count = len / sizeof(struct mixer_stream_info);
     char a[24];
     sh_say("master %s\n", vol_str(master, a, sizeof(a)));
     if (!count) {
@@ -81,7 +84,7 @@ SH_CMD(vol)
         sh_say("vol: master %s\n", vol_str(got, a, sizeof(a)));
     if (st == OK && master)
         sh_keep_setting("vol", "volume", sh_db(got, a, sizeof(a)));
-    else
+    else if (st == OK)
         sh_say("vol: stream %lu %s\n", (unsigned long)id, vol_str(got, a, sizeof(a)));
     return st == OK ? 0 : 1;
 }

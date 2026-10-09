@@ -115,12 +115,15 @@ static status_t do_dump(void *ctx, handle_t *out_text, uint32_t *out_length, uin
     return OK;
 }
 
-static void copy_text(uint8_t *to, size_t size, const char *from)
+/* from, cut to the room for size - 1 bytes and NUL-terminated, into to;
+ * its length (the protocol's str: ASCII here, so a cut is always whole). */
+static uint32_t copy_text(char *to, size_t size, const char *from)
 {
     size_t i = 0;
     for (; i + 1 < size && from[i]; i++)
-        to[i] = (uint8_t)from[i];
+        to[i] = from[i];
     to[i] = 0;
+    return (uint32_t)i;
 }
 
 /* The path in words and what is set on it: hda.info's text and the log's. */
@@ -154,14 +157,15 @@ static const struct jack *path_jack(const struct state *s)
 
 static status_t do_info(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint32_t *out_dac,
                         uint32_t *out_pcm, uint32_t *out_formats, uint32_t *out_amp,
-                        uint32_t *out_jack, uint32_t *out_count, uint8_t out_nodes[8],
-                        uint8_t out_text[TEXT_MAX])
+                        uint32_t *out_jack, uint8_t *out_nodes, uint32_t *out_nodes_len,
+                        char *out_text, uint32_t *out_text_len)
 {
     struct state *s = ctx;
     const struct path *p = &s->path;
     char text[TEXT_MAX];
     path_text(s, text, sizeof(text));
-    copy_text(out_text, TEXT_MAX, text);
+    *out_text_len = copy_text(out_text, TEXT_MAX, text);
+    *out_nodes_len = 0;
     *out_jack = path_jack(s) ? path_jack(s)->state : JACK_UNKNOWN;
     const struct widget *dac = p->n ? hda_widget(s->best, p->nid[0]) : NULL;
     if (p->rule == PATH_NONE || s->set != OK || !dac)
@@ -172,9 +176,8 @@ static status_t do_info(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint3
     *out_pcm = hda_output_pcm(&s->out);
     *out_formats = dac->formats;
     *out_amp = dac->caps & WCAP_OUT_AMP ? dac->amp_out : 0;
-    *out_count = p->n;
     for (unsigned i = 0; i < p->n && i < 8; i++)
-        out_nodes[i] = p->nid[i];
+        out_nodes[(*out_nodes_len)++] = p->nid[i];
     return OK;
 }
 
@@ -218,9 +221,9 @@ static status_t do_set_bits(void *ctx, uint32_t bits, uint32_t *out_bits, uint32
 
 #define JACK_TEXT 1024   /* hda.jacks's text */
 
-static status_t do_jacks(void *ctx, uint32_t *out_count, uint32_t *out_state,
-                         uint32_t *out_changes, uint8_t out_pins[16], uint8_t out_states[16],
-                         uint8_t out_text[JACK_TEXT])
+static status_t do_jacks(void *ctx, uint32_t *out_state, uint32_t *out_changes,
+                         uint8_t *out_pins, uint32_t *out_pins_len, uint8_t *out_states,
+                         uint32_t *out_states_len, char *out_text, uint32_t *out_text_len)
 {
     struct state *s = ctx;
     const struct jacks *js = &s->jacks;
@@ -246,9 +249,9 @@ static status_t do_jacks(void *ctx, uint32_t *out_count, uint32_t *out_state,
                                     hda_jack_mode_str(j->mode), j->tag, j->unsols,
                                     j == pj ? "; the path's pin" : "");
     }
-    copy_text(out_text, JACK_TEXT, text);
+    *out_text_len = copy_text(out_text, JACK_TEXT, text);
     drv_free(text);
-    *out_count = js->n;
+    *out_pins_len = *out_states_len = js->n < 16 ? js->n : 16;
     *out_state = pj ? pj->state : JACK_UNKNOWN;
     *out_changes = pj ? pj->changes : 0;
     return OK;
@@ -257,9 +260,10 @@ static status_t do_jacks(void *ctx, uint32_t *out_count, uint32_t *out_state,
 /* "ALC897 headphones": the path's codec (a Realtek's by its part number,
  * QEMU's as QEMU, any other's ids) and its pin's kind (hda_jack_name's
  * names: the configuration default's device). "" with no path. */
-static status_t do_output_name(void *ctx, uint8_t out_name[48])
+static status_t do_output_name(void *ctx, char *out_name, uint32_t *out_name_len)
 {
     struct state *s = ctx;
+    *out_name_len = 0;
     if (s->path.rule == PATH_NONE || !s->best || !s->path.n)
         return OK;
     uint32_t vendor = s->best->vendor;
@@ -273,7 +277,7 @@ static status_t do_output_name(void *ctx, uint8_t out_name[48])
     else
         drv_snprintf(codec, sizeof(codec), "Codec %04x:%04x", vendor >> 16, vendor & 0xffff);
     drv_snprintf(name, sizeof(name), "%s %s", codec, hda_jack_name(&j));
-    copy_text(out_name, 48, name);
+    *out_name_len = copy_text(out_name, 48, name);
     return OK;
 }
 

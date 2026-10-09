@@ -873,6 +873,7 @@ static const struct {
     { "keep_restore_batches", t_keep_restore_batches },
     { "keep_unknown_slots", t_keep_unknown_slots },
     { "keep_refusals", t_keep_refusals },
+    { "keep_drain_bounded", t_keep_drain_bounded },
     { "keep_restore_refusals", t_keep_restore_refusals },
     { "svcstate_fresh_and_adopted", t_svcstate_fresh_and_adopted },
     { "svcstate_slots", t_svcstate_slots },

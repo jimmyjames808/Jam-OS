@@ -138,10 +138,10 @@ void kept_given_up(unsigned i)
 /* One cheap call on the shared audioctl channel: audioctl.streams. */
 static status_t probe_call(handle_t ch, uint64_t deadline)
 {
-    uint32_t count = 0;
+    uint32_t len = 0;
     int32_t master = 0;
     uint8_t list[640];
-    return audioctl_streams_until(ch, deadline, &count, &master, list);
+    return audioctl_streams_until(ch, deadline, &master, list, &len);
 }
 
 /* Say how long svc i's restart took to get it running (at `up`), after

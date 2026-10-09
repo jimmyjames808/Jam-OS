@@ -114,6 +114,7 @@ bool t_keep_put_drop_restore(void);
 bool t_keep_restore_batches(void);
 bool t_keep_unknown_slots(void);
 bool t_keep_refusals(void);
+bool t_keep_drain_bounded(void);
 bool t_keep_restore_refusals(void);
 
 /* svcstate.c: the state VMO (<svcstate.h>), warm spares, and the

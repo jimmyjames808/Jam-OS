@@ -2156,7 +2156,7 @@ each request goes out without waiting and its answer comes to the port
   the console's notices made from them, are as before.
 - **Volume and network.** The mixer serves its desktop channel as it does
   `audioctl`, refusing every method but `desk` and `set_master`; the
-  music player names its stream's track (`audio.stream_set_title`), which
+  music player names its stream's track (`audio_stream.set_title`), which
   `desk` reports while it plays; the output's name is the hda driver's
   (`hda.output_name`: "ALC897 headphones"). The popover's 0-100% is the
   master on a dB scale (100% 0 dB, 0.6 dB a percent less, 0% silence).
@@ -2265,8 +2265,9 @@ late answer goes only to the program that asked; init's keeper keeps it
 across the mixer's restarts (below). An opener holds at most 4 of the 16 streams
 (`MIXER_STREAMS_PER_CLIENT` in `user/include/mixer.h`, where the number is
 argued): a program looping over the library can't starve the others.
-`open_output` gives a client a stream of its own: a channel (start,
-stop, drain, position, its volume; closing it ends the stream), a ring
+`open_output` gives a client a stream of its own: a channel (the
+`audio_stream` protocol: start, stop, drain, position, its volume;
+closing it ends the stream), a ring
 VMO (a header page with the client's `write` and the mixer's `read`
 counts, then 1.37 s of 48 kHz stereo frames) and an event. The client
 writes frames into its mapping with no call; the event is signalled
@@ -2349,8 +2350,9 @@ state and a 64 KiB buffer while a file plays). Decoding costs about
 [docs/history/A2-PLAN.md](docs/history/A2-PLAN.md#music-player)) is a service init starts
 after the mixer, in a job of its own, so it plays on while the shell runs
 other commands, through Ctrl+C and a restart of the shell. init makes its
-`music` channel (`abi/idl/music.idl`: start, stop, next, status,
-set_volume, prev, play, levels, pause, sleep, spectrum, stereo) once and
+`music` channel (`abi/idl/music.idl`: start (a folder, the file to play first,
+shuffle or in order), stop, next, status, set_volume, prev, levels, pause,
+sleep, spectrum, stereo) once and
 keeps both ends, as
 the mixer's, and publishes it as `/svc/music`. Each opener gets a channel
 of its own (the player answers the `svc` protocol's `connect` on its
