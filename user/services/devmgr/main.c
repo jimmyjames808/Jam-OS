@@ -133,6 +133,12 @@ uint16_t net_vlan;
 uint64_t devmgr_started;
 bool shutdown_asked;
 
+/* The supervision module's lines (<supervise.h>) go where say's do. */
+static void sup_sink(bool report_it, const char *line)
+{
+    say(report_it, "%s", line);
+}
+
 void say(bool report_it, const char *fmt, ...)
 {
     char buf[200];
@@ -450,6 +456,7 @@ int main(int argc, char **argv)
         say(true, "devmgr: no port (%s)", status_str(st));
         return 1;
     }
+    sup_log("devmgr", sup_sink);
     spare_init(!nospare);
     notice_init(&devmgr_notices, startup_handle(DEVMGR_SR_NOTIFY));
     /* With a console, class drivers send their input to it. */
