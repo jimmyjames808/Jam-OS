@@ -92,7 +92,9 @@ char  *strstr(const char *hay, const char *needle);   /* the first needle, or NU
 
 /* heap: a VMO mapped into our address space on first use ---------------------- */
 
-#define HEAP_SIZE (16u << 20)   /* address space reserved; pages commit on touch */
+/* Address space reserved: 1 GiB (M12 Q16: the job's page limit is the real bound).
+ * Pages commit on touch, so a program that uses little pays for little. */
+#define HEAP_SIZE (1u << 30)
 
 void *malloc(size_t n);         /* 16-byte aligned; NULL when out of memory */
 void *calloc(size_t n, size_t size);

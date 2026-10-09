@@ -702,6 +702,7 @@ static const struct {
     { "fat_view_limits", t_fat_view_limits },
     { "ns_changes_stay_bounded", t_ns_changes_stay_bounded },
     { "heap_reuses_freed_space", t_heap_reuses_freed_space },
+    { "heap_large_alloc", t_heap_large_alloc },
     { "ns_fat_mount", t_ns_fat_mount },
     { "spawn_from_vmo", t_spawn_from_vmo },
     { "audio_formats", t_audio_formats },
