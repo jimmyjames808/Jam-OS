@@ -133,6 +133,8 @@ for c in $cases; do
     # Level 1 has no client that reads: the driver's test word reads the
     # namespace's ends (drivers/nvme/selftest.c), so the trace has Reads.
     [ $level = 1 ] && words="${words:+$words }nvmetest=selftest"
+    # devmgr binds drv/nvme only on a boot with an nvmetest= word (main.c).
+    case " $words " in *" nvmetest="*) ;; *) words="${words:+$words }nvmetest=on" ;; esac
     # shellcheck disable=SC2086
     python3 tools/nvme-img.py "$img" windows --block-size $bs $dmg
     before2=
