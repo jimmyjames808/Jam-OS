@@ -480,11 +480,8 @@ static bool answer_desk(struct cs *t, uint32_t txid)
 
 static bool answer_summary(struct cs *t, uint32_t txid, uint64_t rx)
 {
-    struct netctl_summary_rep r = { .txid = txid, .status = OK, .link = 1, .address = 0x0a00020f,
-                                    .mask = 0xffffff00, .speed = 1000, .rx_bytes = rx,
-                                    .tx_bytes = rx / 2 };
-    snprintf((char *)r.chip, sizeof(r.chip), "e1000e");
-    CHECK_ST(jam_channel_write(t->net, &r, sizeof(r), NULL, 0), OK);
+    CHECK_ST(netctl_reply_summary((struct idl_txn){ .ch = t->net, .txid = txid }, OK, 1,
+                                  0x0a00020f, 0xffffff00, 1000, rx, rx / 2, "e1000e", 6), OK);
     return true;
 }
 

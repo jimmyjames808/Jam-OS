@@ -70,10 +70,10 @@ static status_t dns_answer(struct conn *c, handle_t ch, uint32_t txid, uint64_t 
         struct idl_msg m;
         status_t st = idl_reply_read(ch, rep, sizeof(rep), &m);
         if ((st == OK || st == ERR_INTERNAL) && m.txid == txid) {
-            uint8_t n = 0;
+            uint32_t n = 0;
             uint32_t a[DNS_ADDRS_MAX] = { 0 }, ttl = 0;
             if (st == OK)
-                st = dns_resolve_result(rep, &m, &n, &a[0], &a[1], &a[2], &a[3], &ttl);
+                st = dns_resolve_result(rep, &m, a, &n, &ttl);
             if (st == OK && (!n || n > DNS_ADDRS_MAX))
                 st = ERR_INTERNAL;
             if (st == OK)
@@ -97,11 +97,9 @@ status_t conn_resolve(struct conn *c, const char *host, uint32_t *addr)
     const char *end = NULL;
     if (ipv4_parse(host, addr, &end) && !*end)
         return OK;   /* an address needs no resolver */
-    uint8_t field[DNS_TEXT_MAX] = { 0 };
-    size_t len = strnlen(host, DNS_TEXT_MAX);
-    if (len == DNS_TEXT_MAX)
+    size_t len = strnlen(host, DNS_NAME_MAX + 1);
+    if (!len || len > DNS_NAME_MAX)
         return ERR_INVALID_ARGS;
-    memcpy(field, host, len);
     handle_t ch;
     uint32_t id = 0, last = 0, txid = idl_txid_next(&last);
     status_t st = svc_open(SVC_DNS, &ch);
@@ -110,7 +108,7 @@ status_t conn_resolve(struct conn *c, const char *host, uint32_t *addr)
     struct netwait_handle h = { ch, SIG_READABLE, 0, SIG_PEER_CLOSED };
     st = netwait_add_handle(c->w, &h, NETWAIT_READ, TAG_DNS, &id);
     if (st == OK)
-        st = dns_resolve_send(ch, txid, field, DNS_MS);
+        st = dns_resolve_send(ch, txid, host, (uint32_t)len, DNS_MS);
     if (st == OK)
         st = dns_answer(c, ch, txid, now() + CONNECT_WAIT, addr);
     if (id)

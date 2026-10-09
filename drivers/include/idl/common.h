@@ -10,47 +10,51 @@
 
 /* The protocol id registry (abi/idl/ids.txt): every protocol's id, the
  * hand-written ones' too (the top half of the word after their txid). */
-#define IDL_ID_NONE          0x0000u   /* reserved: not IDL (keep's, the namespace's kinds) */
-#define IDL_ID_NULL          0x0001u   /* abi/idl/null.idl */
-#define IDL_ID_EDU           0x0002u   /* abi/idl/edu.idl */
-#define IDL_ID_DEVMGR        0x0003u   /* user/include/devmgr.h: hand-written until track D's .idl */
-#define IDL_ID_USB           0x000au   /* abi/idl/usb.idl */
-#define IDL_ID_INPUT         0x000bu   /* abi/idl/input.idl */
-#define IDL_ID_CONSOLE       0x000cu   /* abi/idl/console.idl */
-#define IDL_ID_USBBUS        0x000du   /* abi/idl/usbbus.idl */
-#define IDL_ID_STORAGE       0x000eu   /* abi/idl/storage.idl */
-#define IDL_ID_BLOCK         0x000fu   /* abi/idl/block.idl */
-#define IDL_ID_FS            0x0010u   /* abi/idl/fs.idl */
-#define IDL_ID_FILE          0x0011u   /* abi/idl/file.idl */
-#define IDL_ID_INITCTL       0x0012u   /* abi/idl/initctl.idl */
-#define IDL_ID_LOGCTL        0x0013u   /* abi/idl/logctl.idl */
-#define IDL_ID_FSCTL         0x0014u   /* abi/idl/fsctl.idl */
-#define IDL_ID_HDA           0x0015u   /* abi/idl/hda.idl */
-#define IDL_ID_AUDIO         0x0016u   /* abi/idl/audio.idl */
-#define IDL_ID_AUDIOCTL      0x0017u   /* abi/idl/audioctl.idl */
-#define IDL_ID_MUSIC         0x0018u   /* abi/idl/music.idl */
-#define IDL_ID_SVC           0x0019u   /* abi/idl/svc.idl */
-#define IDL_ID_JAMCOVER      0x001au   /* abi/idl/jamcover.idl */
-#define IDL_ID_NETDEV        0x001bu   /* abi/idl/netdev.idl */
-#define IDL_ID_NETCTL        0x001cu   /* abi/idl/netctl.idl */
-#define IDL_ID_NET           0x001du   /* abi/idl/net.idl */
-#define IDL_ID_DNS           0x001eu   /* abi/idl/dns.idl */
-#define IDL_ID_SERVE         0x001fu   /* abi/idl/serve.idl */
-#define IDL_ID_COMPCTL       0x0020u   /* abi/idl/compctl.idl */
-#define IDL_ID_IDLTEST       0x0021u   /* abi/idl/idltest.idl */
-#define IDL_ID_IDLTEST_TWO   0x0022u   /* abi/idl/idltest.idl */
-#define IDL_ID_IDLTEST_EV    0x0023u   /* abi/idl/idltest.idl */
-#define IDL_ID_USBBUS_EVENTS 0x0024u   /* abi/idl/usbbus.idl */
-#define IDL_ID_IDLTEST_H     0x0025u   /* abi/idl/idltest.idl */
-#define IDL_ID_NOTIFY        0x0028u   /* abi/idl/notify.idl */
-#define IDL_ID_KEYS          0x0029u   /* abi/idl/console.idl */
-#define IDL_ID_AUDIO_STREAM  0x0032u   /* abi/idl/audio.idl */
-#define IDL_ID_HDA_STREAM    0x0033u   /* abi/idl/hda.idl */
-#define IDL_ID_UPDATE_ANSWER 0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
-#define IDL_ID_STANDBY       0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
-#define IDL_ID_UPDATE_OFFER  0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */
-#define IDL_ID_STARTUP       0x534du   /* kernel/include/jam/startup.h: STARTUP_MAGIC "JAMS" */
-#define IDL_ID_CRASHER       0xc4a5u   /* user/include/devmgr.h: the crash-test driver's (CRASHER_*) */
+#define IDL_ID_NONE           0x0000u   /* reserved: not IDL (keep's, the namespace's kinds) */
+#define IDL_ID_NULL           0x0001u   /* abi/idl/null.idl */
+#define IDL_ID_EDU            0x0002u   /* abi/idl/edu.idl */
+#define IDL_ID_DEVMGR         0x0003u   /* user/include/devmgr.h: hand-written until track D's .idl */
+#define IDL_ID_USB            0x000au   /* abi/idl/usb.idl */
+#define IDL_ID_INPUT          0x000bu   /* abi/idl/input.idl */
+#define IDL_ID_CONSOLE        0x000cu   /* abi/idl/console.idl */
+#define IDL_ID_USBBUS         0x000du   /* abi/idl/usbbus.idl */
+#define IDL_ID_STORAGE        0x000eu   /* abi/idl/storage.idl */
+#define IDL_ID_BLOCK          0x000fu   /* abi/idl/block.idl */
+#define IDL_ID_FS             0x0010u   /* abi/idl/fs.idl */
+#define IDL_ID_FILE           0x0011u   /* abi/idl/file.idl */
+#define IDL_ID_INITCTL        0x0012u   /* abi/idl/initctl.idl */
+#define IDL_ID_LOGCTL         0x0013u   /* abi/idl/logctl.idl */
+#define IDL_ID_FSCTL          0x0014u   /* abi/idl/fsctl.idl */
+#define IDL_ID_HDA            0x0015u   /* abi/idl/hda.idl */
+#define IDL_ID_AUDIO          0x0016u   /* abi/idl/audio.idl */
+#define IDL_ID_AUDIOCTL       0x0017u   /* abi/idl/audioctl.idl */
+#define IDL_ID_MUSIC          0x0018u   /* abi/idl/music.idl */
+#define IDL_ID_SVC            0x0019u   /* abi/idl/svc.idl */
+#define IDL_ID_JAMCOVER       0x001au   /* abi/idl/jamcover.idl */
+#define IDL_ID_NETDEV         0x001bu   /* abi/idl/netdev.idl */
+#define IDL_ID_NETCTL         0x001cu   /* abi/idl/netctl.idl */
+#define IDL_ID_NET            0x001du   /* abi/idl/net.idl */
+#define IDL_ID_DNS            0x001eu   /* abi/idl/dns.idl */
+#define IDL_ID_SERVE          0x001fu   /* abi/idl/serve.idl */
+#define IDL_ID_COMPCTL        0x0020u   /* abi/idl/compctl.idl */
+#define IDL_ID_IDLTEST        0x0021u   /* abi/idl/idltest.idl */
+#define IDL_ID_IDLTEST_TWO    0x0022u   /* abi/idl/idltest.idl */
+#define IDL_ID_IDLTEST_EV     0x0023u   /* abi/idl/idltest.idl */
+#define IDL_ID_USBBUS_EVENTS  0x0024u   /* abi/idl/usbbus.idl */
+#define IDL_ID_IDLTEST_H      0x0025u   /* abi/idl/idltest.idl */
+#define IDL_ID_NOTIFY         0x0028u   /* abi/idl/notify.idl */
+#define IDL_ID_KEYS           0x0029u   /* abi/idl/console.idl */
+#define IDL_ID_AUDIO_STREAM   0x0032u   /* abi/idl/audio.idl */
+#define IDL_ID_HDA_STREAM     0x0033u   /* abi/idl/hda.idl */
+#define IDL_ID_NET_SOCKET     0x003cu   /* abi/idl/net.idl */
+#define IDL_ID_NET_STREAM     0x003du   /* abi/idl/net.idl */
+#define IDL_ID_NET_LISTENER   0x003eu   /* abi/idl/net.idl */
+#define IDL_ID_NETDEV_SESSION 0x003fu   /* abi/idl/netdev.idl */
+#define IDL_ID_UPDATE_ANSWER  0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
+#define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
+#define IDL_ID_UPDATE_OFFER   0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */
+#define IDL_ID_STARTUP        0x534du   /* kernel/include/jam/startup.h: STARTUP_MAGIC "JAMS" */
+#define IDL_ID_CRASHER        0xc4a5u   /* user/include/devmgr.h: the crash-test driver's (CRASHER_*) */
 
 /* Every request starts with this, every reply with idl_rep_hdr. */
 struct idl_req_hdr {

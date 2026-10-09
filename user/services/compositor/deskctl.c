@@ -420,7 +420,7 @@ static uint64_t rate(uint64_t now_count, uint64_t then_count, uint64_t dt)
 
 /* An answer to our summary into net.now. */
 static void take_summary(uint8_t link, uint32_t addr, uint32_t speed, uint64_t rx,
-                         uint64_t tx, const uint8_t chip[16])
+                         uint64_t tx, const char *chip)
 {
     uint64_t t = now(), dt = t - net.at;
     struct desk_net *d = &net.now;
@@ -431,7 +431,7 @@ static void take_summary(uint8_t link, uint32_t addr, uint32_t speed, uint64_t r
                  (addr >> 16) & 0xff, (addr >> 8) & 0xff, addr & 0xff);
     else
         d->address[0] = '\0';
-    snprintf(d->nic, sizeof(d->nic), "%.*s", 15, (const char *)chip);
+    snprintf(d->nic, sizeof(d->nic), "%.*s", 15, chip);
     d->mbps = link == 1 ? speed : 0;
     if (!net.known || d->up != net.said.up || strcmp(d->address, net.said.address) ||
         strcmp(d->nic, net.said.nic) || d->mbps != net.said.mbps) {
@@ -465,10 +465,12 @@ static void net_event(void)
             idl_msg_drop(&m);
             continue;
         }
-        uint8_t link = 0, chip[16];
-        uint32_t addr = 0, mask = 0, speed = 0;
+        uint8_t link = 0;
+        char chip[16 + 1];
+        uint32_t addr = 0, mask = 0, speed = 0, chip_len = 0;
         uint64_t rx = 0, tx = 0;
-        st = netctl_summary_result(rep, &m, &link, &addr, &mask, &speed, &rx, &tx, chip);
+        st = netctl_summary_result(rep, &m, &link, &addr, &mask, &speed, &rx, &tx, chip,
+                                   &chip_len);
         net.sum.txid = 0;
         net.sum.answered = now();
         if (st != OK)

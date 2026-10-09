@@ -20,7 +20,7 @@ protocol serve 31
 # `share` was given it, its size, the clients connected now, and the
 # requests answered and file bytes sent since it was shared.
 # ERR_NOT_FOUND: past the last.
-2  info  (u32 index) -> (u16 port, u8[128] name, u64 size, u32 clients, u64 requests, u64 bytes)
+2  info  (u32 index) -> (u16 port, str[<=127] name, u64 size, u32 clients, u64 requests, u64 bytes)
 # Stop serving the file on `port` (0: every file): its listener closed and
 # its clients cut off. Answers how many stopped (0: none was served there).
 3  stop  (u16 port) -> (u32 stopped)

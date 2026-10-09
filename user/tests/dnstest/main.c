@@ -148,10 +148,9 @@ static struct {
 static void busy_thread(void *arg)
 {
     (void)arg;
-    uint8_t name[256] = "a..b";
     uint32_t txid = 0x60000000u;
     while (!busy.stop) {
-        if (dns_resolve_send(busy.ch, ++txid, name, 1000) == OK) {
+        if (dns_resolve_send(busy.ch, ++txid, "a..b", 4, 1000) == OK) {
             busy.written++;
             continue;
         }

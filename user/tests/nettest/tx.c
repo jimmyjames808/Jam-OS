@@ -22,13 +22,15 @@ bool t_session(void)
     CHECK_ST(netdev_open_until(nic, soon(), &h[0], &h[1], &h[2], &h[3], &h[4]), ERR_BAD_STATE);
     CHECK_ST(netdev_open_until(s.ch, soon(), &h[0], &h[1], &h[2], &h[3], &h[4]),
              ERR_NOT_SUPPORTED);
-    uint8_t m[6], chip[16];
+    uint8_t m[6];
+    char chip[16 + 1];
     uint16_t vlan = 0, mtu = 0;
-    uint32_t link, speed, changes;
-    CHECK_ST(netdev_info_until(s.ch, soon(), m, &vlan, &mtu, &link, &speed, &changes, chip), OK);
+    uint32_t link, speed, changes, chip_len;
+    CHECK_ST(netdev_session_info_until(s.ch, soon(), m, &vlan, &mtu, &link, &speed, &changes, chip,
+                                       &chip_len), OK);
     CHECK_EQ(vlan, 21);
     CHECK_EQ(mtu, NETDEV_MTU);
-    CHECK(!memcmp(chip, "82574L", 7));
+    CHECK(chip_len == 6 && !strcmp(chip, "82574L"));
     /* The rights netdev.h names: no duplicate, no resize, to_driver only
      * signals. */
     handle_t x;

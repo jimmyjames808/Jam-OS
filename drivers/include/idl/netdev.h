@@ -8,6 +8,11 @@
  * alone, <devmgr.h> DEVMGR_CLASS_NET) and its control channel (a test
  * program under user/tests/). Format: see tools/genidl.py.
  *
+ * Two kinds of channel speak it, a protocol each: the driver's own
+ * channel (`netdev`: info, stats and open) and a session's (`netdev_session`,
+ * below: info and stats), so `open` on a session channel is not a method
+ * there at all (ERR_NOT_SUPPORTED, from the generated server).
+ *
  * Control only: frames never travel in calls. `open` hands out two ring
  * VMOs and two events; their layout, the wake bits, the trust rules and
  * the rights are in <jam/netdev.h>, with the ring code both sides use.
@@ -23,13 +28,16 @@
  * get the channel from devmgr again (DEVMGR_GET_SERVICE) and `open` again.
  * The driver keeps nothing across a restart.
  *
- * Protocol `netdev` (id 27). Client: netdev_<method>(ch, args..., &results...)
- * (and netdev_<method>_until with a deadline, _within with a timeout), or
- * netdev_<method>_send and netdev_<method>_result without waiting. Server:
- * fill a struct netdev_ops and run netdev_serve(ch, &ops, ctx), or
- * netdev_serve_one / netdev_dispatch_on for a loop of your own, or
- * netdev_take_slot / netdev_run_slot for requests read into slots that outlive
- * the server; netdev_reply_<method> answers a request later. */
+ * Protocols `netdev` (id 27) and `netdev_session` (id 63): one for each
+ * kind of channel, so a message of one protocol sent on a channel of
+ * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
+ * Client: <proto>_<method>(ch, args..., &results...)
+ * (and <proto>_<method>_until with a deadline, _within with a timeout), or
+ * <proto>_<method>_send and <proto>_<method>_result without waiting. Server:
+ * fill a struct <proto>_ops and run <proto>_serve(ch, &ops, ctx), or
+ * <proto>_serve_one / <proto>_dispatch_on for a loop of your own, or
+ * <proto>_take_slot / <proto>_run_slot for requests read into slots that outlive
+ * the server; <proto>_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -53,7 +61,6 @@ struct netdev_info_rep {
     uint32_t link;
     uint32_t speed;
     uint32_t changes;
-    uint8_t chip[16];
 } __attribute__((packed));
 struct netdev_stats_req {
     uint32_t txid;
@@ -62,7 +69,6 @@ struct netdev_stats_req {
 struct netdev_stats_rep {
     uint32_t txid;
     int32_t  status;
-    uint8_t counts[256];
 } __attribute__((packed));
 struct netdev_open_req {
     uint32_t txid;
@@ -74,7 +80,7 @@ struct netdev_open_rep {
 } __attribute__((packed));
 
 #define NETDEV_REQ_MAX 8u   /* bytes: the biggest request */
-#define NETDEV_REP_MAX 264u   /* bytes: the biggest reply */
+#define NETDEV_REP_MAX 266u   /* bytes: the biggest reply */
 #define NETDEV_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define NETDEV_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
@@ -82,31 +88,49 @@ struct netdev_open_rep {
 
 /* netdev_info_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t netdev_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
+static inline status_t netdev_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
 {
-    struct netdev_info_req idl_q;
-    struct netdev_info_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = NETDEV_INFO;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[48];
+    struct netdev_info_req *idl_q = (struct netdev_info_req *)idl_b0;
+    const struct netdev_info_rep *idl_r = (const struct netdev_info_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = NETDEV_INFO;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 48, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 16, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
     for (uint32_t idl_i = 0; idl_st == OK && out_mac && idl_i < 6; idl_i++)
-        out_mac[idl_i] = idl_r.mac[idl_i];
+        out_mac[idl_i] = idl_r->mac[idl_i];
     if (idl_st == OK && out_vlan)
-        *out_vlan = idl_r.vlan;
+        *out_vlan = idl_r->vlan;
     if (idl_st == OK && out_mtu)
-        *out_mtu = idl_r.mtu;
+        *out_mtu = idl_r->mtu;
     if (idl_st == OK && out_link)
-        *out_link = idl_r.link;
+        *out_link = idl_r->link;
     if (idl_st == OK && out_speed)
-        *out_speed = idl_r.speed;
+        *out_speed = idl_r->speed;
     if (idl_st == OK && out_changes)
-        *out_changes = idl_r.changes;
-    for (uint32_t idl_i = 0; idl_st == OK && out_chip && idl_i < 16; idl_i++)
-        out_chip[idl_i] = idl_r.chip[idl_i];
+        *out_changes = idl_r->changes;
+    if (idl_st == OK && out_chip) {
+        if (idl_l0)
+            __builtin_memcpy(out_chip, idl_p0, idl_l0 * 1);
+        out_chip[idl_l0] = 0;
+    }
+    if (idl_st == OK && out_chip_len)
+        *out_chip_len = idl_l0;
     return idl_st;
 }
 /* The card. mac: its address (6 bytes, as on the wire). vlan: the mode,
@@ -118,50 +142,68 @@ static inline status_t netdev_info_call(handle_t ch, bool idl_within, uint64_t i
  * full duplex). speed: Mb/s, 0 while down. changes: link changes since
  * the driver started (each also signals NETDEV_SIG_LINK on the session's
  * to_stack event): compare with the count you saw last. chip: its name
- * (printable ASCII, NUL-padded), e.g. "RTL8125B", "82574L". */
-static inline status_t netdev_info_until(handle_t ch, uint64_t deadline_ns, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
+ * (printable ASCII, at most 16 bytes), e.g. "RTL8125B", "82574L". */
+static inline status_t netdev_info_until(handle_t ch, uint64_t deadline_ns, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
 {
-    return netdev_info_call(ch, false, deadline_ns, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip);
+    return netdev_info_call(ch, false, deadline_ns, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip, out_chip_len);
 }
-static inline status_t netdev_info_within(handle_t ch, uint64_t timeout_ns, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
+static inline status_t netdev_info_within(handle_t ch, uint64_t timeout_ns, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
 {
-    return netdev_info_call(ch, true, timeout_ns, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip);
+    return netdev_info_call(ch, true, timeout_ns, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip, out_chip_len);
 }
-static inline status_t netdev_info(handle_t ch, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
+static inline status_t netdev_info(handle_t ch, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
 {
-    return netdev_info_call(ch, false, DEADLINE_NEVER, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip);
+    return netdev_info_call(ch, false, DEADLINE_NEVER, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip, out_chip_len);
 }
 
 /* netdev_stats_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t netdev_stats_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256])
+static inline status_t netdev_stats_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    struct netdev_stats_req idl_q;
-    struct netdev_stats_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = NETDEV_STATS;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[266];
+    struct netdev_stats_req *idl_q = (struct netdev_stats_req *)idl_b0;
+    const struct netdev_stats_rep *idl_r = (const struct netdev_stats_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = NETDEV_STATS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    for (uint32_t idl_i = 0; idl_st == OK && out_counts && idl_i < 256; idl_i++)
-        out_counts[idl_i] = idl_r.counts[idl_i];
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 266, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 256, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_counts) {
+        if (idl_l0)
+            __builtin_memcpy(out_counts, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_counts_len)
+        *out_counts_len = idl_l0;
     return idl_st;
 }
 /* The counts, as <jam/netdev.h>'s struct netdev_stats (little-endian, its
- * reserved fields 0): the driver's since it started, and the chip's own. */
-static inline status_t netdev_stats_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256])
+ * reserved fields 0): the driver's since it started, and the chip's own.
+ * `counts` is that struct's bytes, NETDEV_STATS_SIZE of them; a client that
+ * is given fewer (a driver built before the struct grew) reads the rest as
+ * zeros. */
+static inline status_t netdev_stats_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    return netdev_stats_call(ch, false, deadline_ns, out_counts);
+    return netdev_stats_call(ch, false, deadline_ns, out_counts, out_counts_len);
 }
-static inline status_t netdev_stats_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256])
+static inline status_t netdev_stats_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    return netdev_stats_call(ch, true, timeout_ns, out_counts);
+    return netdev_stats_call(ch, true, timeout_ns, out_counts, out_counts_len);
 }
-static inline status_t netdev_stats(handle_t ch, uint8_t out_counts[256])
+static inline status_t netdev_stats(handle_t ch, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
-    return netdev_stats_call(ch, false, DEADLINE_NEVER, out_counts);
+    return netdev_stats_call(ch, false, DEADLINE_NEVER, out_counts, out_counts_len);
 }
 
 /* netdev_open_until and _within: idl_t is a deadline, or with idl_within a
@@ -219,7 +261,7 @@ static inline status_t netdev_open_call(handle_t ch, bool idl_within, uint64_t i
 }
 /* A session: the rings and events of <jam/netdev.h>. Results: `session`,
  * a channel of its own (closing it ends the session; info and stats work
- * on it too, open is refused there with ERR_NOT_SUPPORTED); `tx` and `rx`,
+ * on it too, as netdev_session's); `tx` and `rx`,
  * the two ring VMOs (NETDEV_RING_BYTES each, NETDEV_RING_RIGHTS: map them
  * read-write and check their headers, netdev_end_attach); `to_driver`
  * (NETDEV_TO_DRIVER_RIGHTS: signal NETDEV_SIG_TX on it) and `to_stack`
@@ -247,21 +289,35 @@ static inline status_t netdev_open(handle_t ch, handle_t *out_session, handle_t 
  * The reply comes on ch: idl_reply_read, then netdev_info_result. */
 static inline status_t netdev_info_send(handle_t ch, uint32_t idl_txid)
 {
-    struct netdev_info_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = NETDEV_INFO;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[8];
+    struct netdev_info_req *idl_q = (struct netdev_info_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = NETDEV_INFO;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to netdev_info_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t netdev_info_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16])
+static inline status_t netdev_info_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
 {
     const struct netdev_info_rep *idl_r = (const struct netdev_info_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 16, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -281,8 +337,13 @@ static inline status_t netdev_info_result(const void *idl_rep, struct idl_msg *i
         *out_speed = idl_r->speed;
     if (out_changes)
         *out_changes = idl_r->changes;
-    for (uint32_t idl_i = 0; out_chip && idl_i < 16; idl_i++)
-        out_chip[idl_i] = idl_r->chip[idl_i];
+    if (out_chip) {
+        if (idl_l0)
+            __builtin_memcpy(out_chip, idl_p0, idl_l0 * 1);
+        out_chip[idl_l0] = 0;
+    }
+    if (out_chip_len)
+        *out_chip_len = idl_l0;
     return OK;
 }
 
@@ -290,21 +351,33 @@ static inline status_t netdev_info_result(const void *idl_rep, struct idl_msg *i
  * The reply comes on ch: idl_reply_read, then netdev_stats_result. */
 static inline status_t netdev_stats_send(handle_t ch, uint32_t idl_txid)
 {
-    struct netdev_stats_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = NETDEV_STATS;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[8];
+    struct netdev_stats_req *idl_q = (struct netdev_stats_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = NETDEV_STATS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to netdev_stats_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t netdev_stats_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_counts[256])
+static inline status_t netdev_stats_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_counts[256], uint32_t *out_counts_len)
 {
     const struct netdev_stats_rep *idl_r = (const struct netdev_stats_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 256, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -312,8 +385,12 @@ static inline status_t netdev_stats_result(const void *idl_rep, struct idl_msg *
         return idl_st;
     }
     idl_m->nh = 0;
-    for (uint32_t idl_i = 0; out_counts && idl_i < 256; idl_i++)
-        out_counts[idl_i] = idl_r->counts[idl_i];
+    if (out_counts) {
+        if (idl_l0)
+            __builtin_memcpy(out_counts, idl_p0, idl_l0 * 1);
+    }
+    if (out_counts_len)
+        *out_counts_len = idl_l0;
     return OK;
 }
 
@@ -373,50 +450,61 @@ static inline status_t netdev_open_result(const void *idl_rep, struct idl_msg *i
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with netdev_reply_<method> (now, or later from anywhere). */
 struct netdev_ops {
-    status_t (*info)(void *ctx, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, uint8_t out_chip[16]);
-    status_t (*stats)(void *ctx, uint8_t out_counts[256]);
+    status_t (*info)(void *ctx, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char *out_chip, uint32_t *out_chip_len);
+    status_t (*stats)(void *ctx, uint8_t *out_counts, uint32_t *out_counts_len);
     status_t (*open)(void *ctx, handle_t *out_session, handle_t *out_tx, handle_t *out_rx, handle_t *out_to_driver, handle_t *out_to_stack);
 };
 
 /* Answer the netdev.info request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t netdev_reply_info(struct idl_txn idl_txn, status_t idl_st, const uint8_t mac[6], uint16_t vlan, uint16_t mtu, uint32_t link, uint32_t speed, uint32_t changes, const uint8_t chip[16])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t netdev_reply_info(struct idl_txn idl_txn, status_t idl_st, const uint8_t mac[6], uint16_t vlan, uint16_t mtu, uint32_t link, uint32_t speed, uint32_t changes, const char *chip, uint32_t chip_len)
 {
-    struct netdev_info_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[48];
+    struct netdev_info_rep *idl_r = (struct netdev_info_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     for (uint32_t idl_i = 0; idl_i < 6; idl_i++)
-        idl_r.mac[idl_i] = mac[idl_i];
-    idl_r.vlan = vlan;
-    idl_r.mtu = mtu;
-    idl_r.link = link;
-    idl_r.speed = speed;
-    idl_r.changes = changes;
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_r.chip[idl_i] = chip[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+        idl_r->mac[idl_i] = mac[idl_i];
+    idl_r->vlan = vlan;
+    idl_r->mtu = mtu;
+    idl_r->link = link;
+    idl_r->speed = speed;
+    idl_r->changes = changes;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, chip, chip_len, 16, 1) ||
+                             !idl_str_ok(chip, chip_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the netdev.stats request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t netdev_reply_stats(struct idl_txn idl_txn, status_t idl_st, const uint8_t counts[256])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t netdev_reply_stats(struct idl_txn idl_txn, status_t idl_st, const uint8_t *counts, uint32_t counts_len)
 {
-    struct netdev_stats_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[266];
+    struct netdev_stats_rep *idl_r = (struct netdev_stats_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_r.counts[idl_i] = counts[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, counts, counts_len, 256, 1))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the netdev.open request kept in txn: idl_st and, if it is OK, the
@@ -472,57 +560,56 @@ static inline uint32_t netdev_dispatch_on(handle_t ch, const struct netdev_ops *
     case NETDEV_INFO: {
         const struct netdev_info_req *idl_q = (const struct netdev_info_req *)req;
         struct netdev_info_rep *idl_r = (struct netdev_info_rep *)rep;
-        uint8_t out_mac[6];
         for (uint32_t idl_i = 0; idl_i < 6; idl_i++)
-            out_mac[idl_i] = 0;
+            idl_r->mac[idl_i] = 0;
         uint16_t out_vlan = 0;
         uint16_t out_mtu = 0;
         uint32_t out_link = 0;
         uint32_t out_speed = 0;
         uint32_t out_changes = 0;
-        uint8_t out_chip[16];
-        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-            out_chip[idl_i] = 0;
+        char *out_chip = (char *)((uint8_t *)rep + 32);
+        uint32_t out_chip_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->info) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->info(ctx, out_mac, &out_vlan, &out_mtu, &out_link, &out_speed, &out_changes, out_chip);
+        status_t idl_st = ops->info(ctx, idl_r->mac, &out_vlan, &out_mtu, &out_link, &out_speed, &out_changes, out_chip, &out_chip_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_chip_len > 16 || !idl_str_ok(out_chip, out_chip_len)))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        for (uint32_t idl_i = 0; idl_i < 6; idl_i++)
-            idl_r->mac[idl_i] = out_mac[idl_i];
         idl_r->vlan = out_vlan;
         idl_r->mtu = out_mtu;
         idl_r->link = out_link;
         idl_r->speed = out_speed;
         idl_r->changes = out_changes;
-        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-            idl_r->chip[idl_i] = out_chip[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 32, out_chip_len, 1);
+        return idl_rn;
     }
     case NETDEV_STATS: {
         const struct netdev_stats_req *idl_q = (const struct netdev_stats_req *)req;
         struct netdev_stats_rep *idl_r = (struct netdev_stats_rep *)rep;
-        uint8_t out_counts[256];
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            out_counts[idl_i] = 0;
+        uint8_t *out_counts = (uint8_t *)((uint8_t *)rep + 10);
+        uint32_t out_counts_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->stats) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->stats(ctx, out_counts);
+        status_t idl_st = ops->stats(ctx, out_counts, &out_counts_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_counts_len > 256))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            idl_r->counts[idl_i] = out_counts[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 10, out_counts_len, 1);
+        return idl_rn;
     }
     case NETDEV_OPEN: {
         const struct netdev_open_req *idl_q = (const struct netdev_open_req *)req;
@@ -669,5 +756,515 @@ static inline status_t netdev_serve(handle_t ch, const struct netdev_ops *ops, v
         if (idl_st != OK)
             return idl_st;
         idl_s.rn = netdev_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
+    }
+}
+
+
+/* ==== protocol `netdev_session` (id 63) =====================================
+ *
+ * netdev_session: a session's channel, the one `open` hands out. It answers
+ * info and stats as the driver's channel does and nothing else; closing it
+ * ends the session.
+ *
+ * Reconnect: when the session channel closes (ERR_PEER_CLOSED), the driver
+ * ended the session or died: as netdev's rule above. */
+
+#define NETDEV_SESSION_PROTOCOL_ID 63u
+#define NETDEV_SESSION_INFO             0x003f0001u
+#define NETDEV_SESSION_STATS            0x003f0002u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct netdev_session_info_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct netdev_session_info_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t mac[6];
+    uint16_t vlan;
+    uint16_t mtu;
+    uint32_t link;
+    uint32_t speed;
+    uint32_t changes;
+} __attribute__((packed));
+struct netdev_session_stats_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct netdev_session_stats_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+
+#define NETDEV_SESSION_REQ_MAX 8u   /* bytes: the biggest request */
+#define NETDEV_SESSION_REP_MAX 266u   /* bytes: the biggest reply */
+#define NETDEV_SESSION_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define NETDEV_SESSION_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* netdev_session_info_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netdev_session_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[48];
+    struct netdev_session_info_req *idl_q = (struct netdev_session_info_req *)idl_b0;
+    const struct netdev_session_info_rep *idl_r = (const struct netdev_session_info_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = NETDEV_SESSION_INFO;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 48, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 16, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    for (uint32_t idl_i = 0; idl_st == OK && out_mac && idl_i < 6; idl_i++)
+        out_mac[idl_i] = idl_r->mac[idl_i];
+    if (idl_st == OK && out_vlan)
+        *out_vlan = idl_r->vlan;
+    if (idl_st == OK && out_mtu)
+        *out_mtu = idl_r->mtu;
+    if (idl_st == OK && out_link)
+        *out_link = idl_r->link;
+    if (idl_st == OK && out_speed)
+        *out_speed = idl_r->speed;
+    if (idl_st == OK && out_changes)
+        *out_changes = idl_r->changes;
+    if (idl_st == OK && out_chip) {
+        if (idl_l0)
+            __builtin_memcpy(out_chip, idl_p0, idl_l0 * 1);
+        out_chip[idl_l0] = 0;
+    }
+    if (idl_st == OK && out_chip_len)
+        *out_chip_len = idl_l0;
+    return idl_st;
+}
+/* As netdev.info. */
+static inline status_t netdev_session_info_until(handle_t ch, uint64_t deadline_ns, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
+{
+    return netdev_session_info_call(ch, false, deadline_ns, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip, out_chip_len);
+}
+static inline status_t netdev_session_info_within(handle_t ch, uint64_t timeout_ns, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
+{
+    return netdev_session_info_call(ch, true, timeout_ns, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip, out_chip_len);
+}
+static inline status_t netdev_session_info(handle_t ch, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
+{
+    return netdev_session_info_call(ch, false, DEADLINE_NEVER, out_mac, out_vlan, out_mtu, out_link, out_speed, out_changes, out_chip, out_chip_len);
+}
+
+/* netdev_session_stats_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t netdev_session_stats_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t out_counts[256], uint32_t *out_counts_len)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[266];
+    struct netdev_session_stats_req *idl_q = (struct netdev_session_stats_req *)idl_b0;
+    const struct netdev_session_stats_rep *idl_r = (const struct netdev_session_stats_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = NETDEV_SESSION_STATS;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 266, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 256, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_counts) {
+        if (idl_l0)
+            __builtin_memcpy(out_counts, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_counts_len)
+        *out_counts_len = idl_l0;
+    return idl_st;
+}
+/* As netdev.stats. */
+static inline status_t netdev_session_stats_until(handle_t ch, uint64_t deadline_ns, uint8_t out_counts[256], uint32_t *out_counts_len)
+{
+    return netdev_session_stats_call(ch, false, deadline_ns, out_counts, out_counts_len);
+}
+static inline status_t netdev_session_stats_within(handle_t ch, uint64_t timeout_ns, uint8_t out_counts[256], uint32_t *out_counts_len)
+{
+    return netdev_session_stats_call(ch, true, timeout_ns, out_counts, out_counts_len);
+}
+static inline status_t netdev_session_stats(handle_t ch, uint8_t out_counts[256], uint32_t *out_counts_len)
+{
+    return netdev_session_stats_call(ch, false, DEADLINE_NEVER, out_counts, out_counts_len);
+}
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* netdev_session_info without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then netdev_session_info_result. */
+static inline status_t netdev_session_info_send(handle_t ch, uint32_t idl_txid)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct netdev_session_info_req *idl_q = (struct netdev_session_info_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = NETDEV_SESSION_INFO;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to netdev_session_info_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t netdev_session_info_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char out_chip[16 + 1], uint32_t *out_chip_len)
+{
+    const struct netdev_session_info_rep *idl_r = (const struct netdev_session_info_rep *)idl_rep;
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 16, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    for (uint32_t idl_i = 0; out_mac && idl_i < 6; idl_i++)
+        out_mac[idl_i] = idl_r->mac[idl_i];
+    if (out_vlan)
+        *out_vlan = idl_r->vlan;
+    if (out_mtu)
+        *out_mtu = idl_r->mtu;
+    if (out_link)
+        *out_link = idl_r->link;
+    if (out_speed)
+        *out_speed = idl_r->speed;
+    if (out_changes)
+        *out_changes = idl_r->changes;
+    if (out_chip) {
+        if (idl_l0)
+            __builtin_memcpy(out_chip, idl_p0, idl_l0 * 1);
+        out_chip[idl_l0] = 0;
+    }
+    if (out_chip_len)
+        *out_chip_len = idl_l0;
+    return OK;
+}
+
+/* netdev_session_stats without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then netdev_session_stats_result. */
+static inline status_t netdev_session_stats_send(handle_t ch, uint32_t idl_txid)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct netdev_session_stats_req *idl_q = (struct netdev_session_stats_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = NETDEV_SESSION_STATS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to netdev_session_stats_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t netdev_session_stats_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_counts[256], uint32_t *out_counts_len)
+{
+    const struct netdev_session_stats_rep *idl_r = (const struct netdev_session_stats_rep *)idl_rep;
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 256, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_counts) {
+        if (idl_l0)
+            __builtin_memcpy(out_counts, idl_p0, idl_l0 * 1);
+    }
+    if (out_counts_len)
+        *out_counts_len = idl_l0;
+    return OK;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with netdev_session_reply_<method> (now, or later from anywhere). */
+struct netdev_session_ops {
+    status_t (*info)(void *ctx, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu, uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes, char *out_chip, uint32_t *out_chip_len);
+    status_t (*stats)(void *ctx, uint8_t *out_counts, uint32_t *out_counts_len);
+};
+
+/* Answer the netdev_session.info request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t netdev_session_reply_info(struct idl_txn idl_txn, status_t idl_st, const uint8_t mac[6], uint16_t vlan, uint16_t mtu, uint32_t link, uint32_t speed, uint32_t changes, const char *chip, uint32_t chip_len)
+{
+    _Alignas(8) uint8_t idl_b0[48];
+    struct netdev_session_info_rep *idl_r = (struct netdev_session_info_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    for (uint32_t idl_i = 0; idl_i < 6; idl_i++)
+        idl_r->mac[idl_i] = mac[idl_i];
+    idl_r->vlan = vlan;
+    idl_r->mtu = mtu;
+    idl_r->link = link;
+    idl_r->speed = speed;
+    idl_r->changes = changes;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, chip, chip_len, 16, 1) ||
+                             !idl_str_ok(chip, chip_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the netdev_session.stats request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t netdev_session_reply_stats(struct idl_txn idl_txn, status_t idl_st, const uint8_t *counts, uint32_t counts_len)
+{
+    _Alignas(8) uint8_t idl_b0[266];
+    struct netdev_session_stats_rep *idl_r = (struct netdev_session_stats_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, counts, counts_len, 256, 1))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (NETDEV_SESSION_REP_MAX bytes) and the handles it carries
+ * into rhs (NETDEV_SESSION_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it. */
+static inline uint32_t netdev_session_dispatch_on(handle_t ch, const struct netdev_session_ops *ops, void *ctx,
+                                                  const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                                  uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    (void)ch;
+    if (n < sizeof(uint32_t))
+        return 0;
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    if (n < sizeof(struct idl_req_hdr))
+        return sizeof(*idl_h);
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    case NETDEV_SESSION_INFO: {
+        const struct netdev_session_info_req *idl_q = (const struct netdev_session_info_req *)req;
+        struct netdev_session_info_rep *idl_r = (struct netdev_session_info_rep *)rep;
+        for (uint32_t idl_i = 0; idl_i < 6; idl_i++)
+            idl_r->mac[idl_i] = 0;
+        uint16_t out_vlan = 0;
+        uint16_t out_mtu = 0;
+        uint32_t out_link = 0;
+        uint32_t out_speed = 0;
+        uint32_t out_changes = 0;
+        char *out_chip = (char *)((uint8_t *)rep + 32);
+        uint32_t out_chip_len = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->info) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->info(ctx, idl_r->mac, &out_vlan, &out_mtu, &out_link, &out_speed, &out_changes, out_chip, &out_chip_len);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_chip_len > 16 || !idl_str_ok(out_chip, out_chip_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->vlan = out_vlan;
+        idl_r->mtu = out_mtu;
+        idl_r->link = out_link;
+        idl_r->speed = out_speed;
+        idl_r->changes = out_changes;
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 32, out_chip_len, 1);
+        return idl_rn;
+    }
+    case NETDEV_SESSION_STATS: {
+        const struct netdev_session_stats_req *idl_q = (const struct netdev_session_stats_req *)req;
+        struct netdev_session_stats_rep *idl_r = (struct netdev_session_stats_rep *)rep;
+        uint8_t *out_counts = (uint8_t *)((uint8_t *)rep + 10);
+        uint32_t out_counts_len = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->stats) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->stats(ctx, out_counts, &out_counts_len);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_counts_len > 256))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 10, out_counts_len, 1);
+        return idl_rn;
+    }
+    }
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* netdev_session_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t netdev_session_dispatch(const struct netdev_session_ops *ops, void *ctx, const void *req, uint32_t n,
+                                               void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return netdev_session_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t netdev_session_take_slot(handle_t ch, const struct idl_slot *slot,
+                                                struct idl_reply *rep)
+{
+    if (slot->qcap < NETDEV_SESSION_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by netdev_session_take_slot, or found there by a
+ * successor), which came on ch: as netdev_session_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (NETDEV_SESSION_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it never sends it. */
+static inline uint32_t netdev_session_run_slot(handle_t ch, const struct idl_slot *slot,
+                                               const struct netdev_session_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return netdev_session_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
+static inline bool netdev_session_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
+}
+
+/* Take one message off ch and answer it. OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t netdev_session_serve_one(handle_t ch, const struct netdev_session_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[NETDEV_SESSION_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[NETDEV_SESSION_REP_MAX];
+    handle_t idl_hs[IDL_READ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, idl_n, idl_nh);
+    if (idl_st != OK)
+        return idl_st;
+    if (idl_nh) {
+        idl_close_all(idl_hs, idl_nh);
+        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = netdev_session_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
+    return OK;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
+static inline status_t netdev_session_serve(handle_t ch, const struct netdev_session_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[NETDEV_SESSION_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[NETDEV_SESSION_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
+    for (;;) {
+        status_t idl_st = idl_serve_next(&idl_s);
+        if (idl_st == ERR_PEER_CLOSED)
+            return OK;
+        if (idl_st != OK)
+            return idl_st;
+        idl_s.rn = netdev_session_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

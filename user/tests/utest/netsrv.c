@@ -192,7 +192,9 @@ static bool get_stats(struct bench *b, struct netdev_stats *out)
     uint8_t counts[NETDEV_STATS_SIZE];
     CHECK_ST(netdev_stats_send(b->cli, idl_txid_next(&b->txid)), OK);
     CHECK_ST(reply(b, b->cli, rep, &m), OK);
-    CHECK_ST(netdev_stats_result(rep, &m, counts), OK);
+    uint32_t n = 0;
+    CHECK_ST(netdev_stats_result(rep, &m, counts, &n), OK);
+    CHECK_EQ(n, NETDEV_STATS_SIZE);
     memcpy(out, counts, sizeof(*out));
     return true;
 }
@@ -216,22 +218,40 @@ bool t_netserver_session(void)
     /* info */
     _Alignas(8) uint8_t rep[NETDEV_REP_MAX];
     struct idl_msg m;
-    uint8_t mac[6], chip[16];
+    uint8_t mac[6];
+    char chip[16 + 1];
     uint16_t vlan = 0, mtu = 0;
-    uint32_t link = 0, speed = 0, changes = 0;
+    uint32_t link = 0, speed = 0, changes = 0, chip_len = 0;
     CHECK_ST(netdev_info_send(b.cli, idl_txid_next(&b.txid)), OK);
     CHECK_ST(reply(&b, b.cli, rep, &m), OK);
-    CHECK_ST(netdev_info_result(rep, &m, mac, &vlan, &mtu, &link, &speed, &changes, chip), OK);
+    CHECK_ST(netdev_info_result(rep, &m, mac, &vlan, &mtu, &link, &speed, &changes, chip,
+                                &chip_len), OK);
     CHECK(vlan == 21 && mtu == 1500 && link == NETDEV_LINK_UP && speed == 1000 && changes == 3);
-    CHECK(mac[5] == 1 && !memcmp(chip, "FAKE\0", 5));
+    CHECK(mac[5] == 1 && chip_len == 4 && !strcmp(chip, "FAKE"));
     /* one session; a second open is refused while it has a client */
     CHECK(open_side(&b, &s));
     CHECK_ST(do_open(&b, b.cli, &s2), ERR_BAD_STATE);
     CHECK_ST(do_open(&b, s.session, &s2), ERR_NOT_SUPPORTED);   /* not on the session */
-    /* info works on the session channel too */
+    /* info and stats work on the session channel too, as netdev_session's
+     * (netdev's own methods are another protocol there, and the other way) */
+    CHECK_ST(netdev_session_info_send(s.session, idl_txid_next(&b.txid)), OK);
+    CHECK_ST(reply(&b, s.session, rep, &m), OK);
+    CHECK_ST(netdev_session_info_result(rep, &m, mac, &vlan, &mtu, &link, &speed, &changes, chip,
+                                        &chip_len), OK);
+    CHECK(vlan == 21 && chip_len == 4 && !strcmp(chip, "FAKE"));
+    uint8_t counts[NETDEV_STATS_SIZE];
+    uint32_t counts_len = 0;
+    CHECK_ST(netdev_session_stats_send(s.session, idl_txid_next(&b.txid)), OK);
+    CHECK_ST(reply(&b, s.session, rep, &m), OK);
+    CHECK_ST(netdev_session_stats_result(rep, &m, counts, &counts_len), OK);
+    CHECK_EQ(counts_len, NETDEV_STATS_SIZE);
     CHECK_ST(netdev_info_send(s.session, idl_txid_next(&b.txid)), OK);
     CHECK_ST(reply(&b, s.session, rep, &m), OK);
-    CHECK_ST(netdev_info_result(rep, &m, mac, &vlan, &mtu, &link, &speed, &changes, chip), OK);
+    CHECK_ST(netdev_info_result(rep, &m, mac, &vlan, &mtu, &link, &speed, &changes, chip,
+                                &chip_len), ERR_NOT_SUPPORTED);
+    CHECK_ST(netdev_session_stats_send(b.cli, idl_txid_next(&b.txid)), OK);
+    CHECK_ST(reply(&b, b.cli, rep, &m), OK);
+    CHECK_ST(netdev_session_stats_result(rep, &m, counts, &counts_len), ERR_NOT_SUPPORTED);
     /* the opener goes away: the session ends, and a new open works */
     side_close(&s);
     pump(&b);

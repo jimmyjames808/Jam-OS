@@ -237,25 +237,27 @@ status_t tcpsock_op_tcp(void *ctx, uint32_t address, uint16_t port, uint32_t tx_
     return OK;
 }
 
-static status_t ts_state(void *ctx, uint16_t *out_port, uint32_t *out_peer,
-                         uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped)
+static status_t ts_state(void *ctx, uint32_t *out_address, uint16_t *out_port,
+                         uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued)
 {
     struct tsock *t = ctx;
+    struct stack_state st;
+    stack_get(&st);
+    *out_address = st.ip.address;
     *out_port = t->port;
     *out_peer = t->peer;
     *out_peer_port = t->peer_port;
     *out_queued = t->c ? t->c->r.rx.size - sockring_room(&t->c->r.rx) : 0;
-    *out_dropped = 0;   /* a stream drops nothing: its window stops the sender */
     return OK;
 }
 
-static const struct net_ops sock_ops = { .sock_state = ts_state };
+static const struct net_stream_ops sock_ops = { .state = ts_state };
 
 static void ts_serve(struct tsock *t)
 {
     t->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
-        status_t st = net_serve_one(t->ch, &sock_ops, t);
+        status_t st = net_stream_serve_one(t->ch, &sock_ops, t);
         if (st == OK)
             continue;
         if (st == ERR_PEER_CLOSED)
@@ -323,6 +325,8 @@ static status_t l_accept(void *ctx, struct idl_txn txn, uint32_t timeout_ms,
 {
     struct tlisten *l = ctx;
     struct taken k;
+    if (timeout_ms != NET_WAIT_FOREVER && timeout_ms > NET_TIMEOUT_MAX)
+        return ERR_INVALID_ARGS;
     if (l->waiting)
         return ERR_BAD_STATE;
     if (!l->l->n) {
@@ -348,7 +352,7 @@ static status_t l_accept(void *ctx, struct idl_txn txn, uint32_t timeout_ms,
     return OK;
 }
 
-static const struct net_ops listener_ops = { .accept = l_accept };
+static const struct net_listener_ops listener_ops = { .accept = l_accept };
 
 /* Answer l's waiting accept: with a connection (st OK), or st. */
 static void l_answer(struct tlisten *l, status_t st)
@@ -357,7 +361,7 @@ static void l_answer(struct tlisten *l, status_t st)
     if (st == OK)
         st = l_take(l, &k);
     l->waiting = false;
-    (void)net_reply_accept(l->txn, st, k.socket, k.ring, k.to_stack, k.to_prog, k.peer,
+    (void)net_listener_reply_accept(l->txn, st, k.socket, k.ring, k.to_stack, k.to_prog, k.peer,
                            k.peer_port, k.tx, k.rx);   /* failing: its handles closed, the socket
                                                         * with them, and netstack sees that */
 }
@@ -444,7 +448,7 @@ static void l_serve(struct tlisten *l)
 {
     l->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
-        status_t st = net_serve_one(l->ch, &listener_ops, l);
+        status_t st = net_listener_serve_one(l->ch, &listener_ops, l);
         if (st == OK)
             continue;
         if (st == ERR_PEER_CLOSED)

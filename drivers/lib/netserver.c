@@ -1,7 +1,7 @@
 /* netserver: the netdev server every network driver links (drv/rtl8125,
- * drv/e1000e): the netdev protocol on DR_SERVE and on a session's
- * channel, the session's rings and events, and the frames between them
- * and the driver (<jam/netserver.h> has the model).
+ * drv/e1000e): the netdev protocol on DR_SERVE and netdev_session on a
+ * session's channel, the session's rings and events, and the frames
+ * between them and the driver (<jam/netserver.h> has the model).
  *
  * The rings are netstack's to write at any moment, so everything read
  * from them goes through <jam/netdev.h>'s ring code: its counts read once
@@ -131,15 +131,19 @@ static status_t op_open(void *ctx, handle_t *session, handle_t *tx, handle_t *rx
 }
 
 static status_t op_info(void *ctx, uint8_t mac[6], uint16_t *vlan, uint16_t *mtu, uint32_t *link,
-                        uint32_t *speed, uint32_t *changes, uint8_t chip[16])
+                        uint32_t *speed, uint32_t *changes, char *chip, uint32_t *chip_len)
 {
     struct srv *v = ctx;
     struct srv_info i = { 0 };
     v->dev->info(v->ctx, &i);
     for (unsigned k = 0; k < 6; k++)
         mac[k] = i.mac[k];
-    for (unsigned k = 0; k < 16; k++)
-        chip[k] = (uint8_t)i.chip[k];
+    uint32_t n = 0;   /* the name: printable ASCII up to its NUL (a str) */
+    while (n < sizeof(i.chip) && i.chip[n] >= ' ' && i.chip[n] < 0x7f) {
+        chip[n] = i.chip[n];
+        n++;
+    }
+    *chip_len = n;
     *vlan = i.vlan;
     *mtu = NETDEV_MTU;
     *link = i.link;
@@ -148,7 +152,7 @@ static status_t op_info(void *ctx, uint8_t mac[6], uint16_t *vlan, uint16_t *mtu
     return OK;
 }
 
-static status_t op_stats(void *ctx, uint8_t counts[256])
+static status_t op_stats(void *ctx, uint8_t *counts, uint32_t *counts_len)
 {
     struct srv *v = ctx;
     struct netdev_stats s = v->st;
@@ -162,12 +166,15 @@ static status_t op_stats(void *ctx, uint8_t counts[256])
     for (unsigned k = 0; k < sizeof(s.reserved) / sizeof(s.reserved[0]); k++)
         s.reserved[k] = 0;
     __builtin_memcpy(counts, &s, NETDEV_STATS_SIZE);
+    *counts_len = NETDEV_STATS_SIZE;
     return OK;
 }
 
-/* DR_SERVE: every method. A session channel: open is refused. */
+/* DR_SERVE (netdev): info, stats and open. A session's channel
+ * (netdev_session): info and stats; open is not its method at all. Their
+ * handlers are the same. */
 static const struct netdev_ops serve_ops = { .info = op_info, .stats = op_stats, .open = op_open };
-static const struct netdev_ops session_ops = { .info = op_info, .stats = op_stats };
+static const struct netdev_session_ops session_ops = { .info = op_info, .stats = op_stats };
 
 status_t srv_init(struct srv *v, handle_t port, handle_t serve, const struct srv_dev *dev,
                   void *ctx)
@@ -192,18 +199,29 @@ bool srv_packet(struct srv *v, const struct port_packet *p)
     return true;
 }
 
-/* Up to BUDGET requests from ch. True: the budget ran out (more may be
- * there). *closed: the channel's clients are all gone. */
-static bool serve_some(handle_t ch, const struct netdev_ops *ops, void *ctx, bool *closed)
+/* Up to BUDGET requests from ch, served by `one` (netdev_serve_one or
+ * netdev_session_serve_one, ctx the server). True: the budget ran out (more
+ * may be there). *closed: the channel's clients are all gone. */
+static bool serve_some(handle_t ch, status_t (*one)(handle_t, void *), void *ctx, bool *closed)
 {
     for (unsigned n = 0; n < BUDGET; n++) {
-        status_t st = netdev_serve_one(ch, ops, ctx);
+        status_t st = one(ch, ctx);
         if (st == OK)
             continue;
         *closed = st != ERR_SHOULD_WAIT;   /* ERR_PEER_CLOSED, or the channel broke */
         return false;
     }
     return true;
+}
+
+static status_t serve_driver_one(handle_t ch, void *ctx)
+{
+    return netdev_serve_one(ch, &serve_ops, ctx);
+}
+
+static status_t serve_session_one(handle_t ch, void *ctx)
+{
+    return netdev_session_serve_one(ch, &session_ops, ctx);
 }
 
 /* One frame out of the tx ring and to the driver, counted either way. */
@@ -259,7 +277,7 @@ bool srv_work(struct srv *v)
 {
     if (v->serve_ready) {
         bool closed = false;
-        v->serve_ready = serve_some(v->serve, &serve_ops, v, &closed);
+        v->serve_ready = serve_some(v->serve, serve_driver_one, v, &closed);
         if (closed && !v->stopping) {
             v->stopping = true;
             drv_log("netdev: DR_SERVE's clients are gone");
@@ -267,7 +285,7 @@ bool srv_work(struct srv *v)
     }
     if (v->open && v->session_ready) {
         bool closed = false;
-        v->session_ready = serve_some(v->s.ch, &session_ops, v, &closed);
+        v->session_ready = serve_some(v->s.ch, serve_session_one, v, &closed);
         if (closed)
             session_end(v, "its channel closed");
     }

@@ -50,6 +50,11 @@
 41      keys            abi/idl/console.idl
 50      audio_stream    abi/idl/audio.idl
 51      hda_stream      abi/idl/hda.idl
+# 60 to 69: the network's (M12 track P3)
+60      net_socket      abi/idl/net.idl
+61      net_stream      abi/idl/net.idl
+62      net_listener    abi/idl/net.idl
+63      netdev_session  abi/idl/netdev.idl
 0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
 0x4d4f  standby         user/include/roles.h            # STANDBY_MAGIC "PROM" (promotion)
 0x4f50  update_offer    user/include/update.h           # UPDATE_OFFER_MAGIC "JUPO"

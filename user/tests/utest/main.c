@@ -919,6 +919,7 @@ static const struct {
     { "netsock_slow_reader", t_netsock_slow_reader },
     { "netsock_busy_client", t_netsock_busy_client },
     { "netsock_len_lies", t_netsock_len_lies },
+    { "netsock_short_counts", t_netsock_short_counts },
     { "netsock_dhcp", t_netsock_dhcp },
     { "netsock_shares", t_netsock_shares },
     { "netsock_hostile_rings", t_netsock_hostile_rings },
