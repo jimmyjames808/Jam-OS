@@ -1,6 +1,7 @@
 /* <jam/netserver.h>: the netdev server every network driver links
- * (drivers/lib/netserver.c): abi/idl/netdev.idl on the driver's DR_SERVE
- * channel, and the session's rings and events of <jam/netdev.h>.
+ * (drivers/lib/netserver.c): abi/idl/netdev.idl's netdev on the driver's
+ * DR_SERVE channel and its netdev_session on a session's, and the
+ * session's rings and events of <jam/netdev.h>.
  *
  * It knows nothing of the chip. The driver hands it a struct srv_dev: a
  * send function (the driver's transmit path: the copy, the tag and the

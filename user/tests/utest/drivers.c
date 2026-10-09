@@ -242,11 +242,13 @@ bool t_devmgr_query_refuses_hda(void)
         st = hda_info_until(ch, now() + 10 * NS_PER_S, &codec, &pin, &dac, &pcm, &formats, &amp,
                             &jack, &count, nodes, text);
         bool hda = st != ERR_NOT_SUPPORTED;   /* another driver's service */
-        uint8_t mac[6], chip[16];
+        uint8_t mac[6];
+        char chip[16 + 1];
         uint16_t vlan, mtu;
-        uint32_t link, speed, changes;
+        uint32_t link, speed, changes, chip_len;
         bool nic = !hda && netdev_info_until(ch, now() + 10 * NS_PER_S, mac, &vlan, &mtu, &link,
-                                             &speed, &changes, chip) != ERR_NOT_SUPPORTED;
+                                             &speed, &changes, chip, &chip_len) !=
+                               ERR_NOT_SUPPORTED;
         CHECK_ST(jam_handle_close(ch), OK);
         hdas += hda;
         bool claimed = hda || nic;   /* init holds a network card's device channel too */

@@ -114,7 +114,7 @@ bool t_rx_flood(void)
     /* netstack stalls: the ring fills, the driver drops and counts, and
      * still answers. */
     (void)jam_nanosleep(now() + FLOOD_WAIT);
-    CHECK(get_stats(s.ch, &b));
+    CHECK(get_session_stats(s.ch, &b));
     printf("nettest: flood: %lu given, %lu dropped for a full ring, %lu missed by the chip\n",
            (unsigned long)(b.rx_frames - a.rx_frames),
            (unsigned long)(b.rx_ring_full - a.rx_ring_full),

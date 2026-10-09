@@ -43,9 +43,10 @@ static status_t open_card(const struct dev *d, unsigned i, struct dev_found *f, 
     if (st != OK)
         return st;
     uint16_t mtu;
-    uint8_t chip[16];
+    char chip[16 + 1];
+    uint32_t chip_len = 0;
     st = netdev_info_until(svc, now() + DEV_CALL_WAIT, f->mac, &f->vlan, &mtu, &f->link,
-                           &f->speed, &f->changes, chip);
+                           &f->speed, &f->changes, chip, &chip_len);
     if (st == OK && (mtu != NETDEV_MTU || !netframe_mode_ok(f->vlan)))
         st = ERR_NOT_SUPPORTED;   /* not the card netdev.idl describes */
     if (st == OK)
@@ -53,9 +54,9 @@ static status_t open_card(const struct dev *d, unsigned i, struct dev_found *f, 
                                &hs[DEV_H_RX], &hs[DEV_H_TO_DRIVER], &hs[DEV_H_TO_STACK]);
     jam_handle_close(svc);   /* the session is a channel of its own */
     if (st == OK) {
-        for (unsigned k = 0; k < sizeof(f->chip); k++)   /* printable or NUL only */
-            f->chip[k] = chip[k] >= ' ' && chip[k] < 0x7f ? (char)chip[k] : 0;
-        f->chip[sizeof(f->chip) - 1] = 0;
+        memset(f->chip, 0, sizeof(f->chip));
+        for (unsigned k = 0; k < chip_len && k < sizeof(f->chip) - 1; k++)   /* printable only */
+            f->chip[k] = chip[k] >= ' ' && chip[k] < 0x7f ? chip[k] : '?';
         f->card = i;
     }
     return st;

@@ -164,12 +164,13 @@ static status_t summary(const struct pair *p, uint8_t *link, uint32_t *addr, uin
 {
     _Alignas(8) uint8_t rep[NETCTL_REP_MAX];
     struct idl_msg m;
-    uint32_t mask, speed;
-    uint8_t chip[16];
+    uint32_t mask, speed, chip_len;
+    char chip[16 + 1];
     status_t st = netctl_summary_send(p->cli, 5);
     if (st == OK)
         st = pump(p, rep, sizeof(rep), &m);
-    return st == OK ? netctl_summary_result(rep, &m, link, addr, &mask, &speed, rx, tx, chip) : st;
+    return st == OK ? netctl_summary_result(rep, &m, link, addr, &mask, &speed, rx, tx, chip, &chip_len)
+                      : st;
 }
 
 bool t_netctl_read_only(void)

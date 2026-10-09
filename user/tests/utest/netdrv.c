@@ -51,7 +51,7 @@ static struct fake fk;
 
 static status_t f_info(void *ctx, uint8_t out_mac[6], uint16_t *out_vlan, uint16_t *out_mtu,
                        uint32_t *out_link, uint32_t *out_speed, uint32_t *out_changes,
-                       uint8_t out_chip[16])
+                       char *out_chip, uint32_t *out_chip_len)
 {
     struct fake *f = ctx;
     memcpy(out_mac, pkt_our_mac, 6);
@@ -60,16 +60,17 @@ static status_t f_info(void *ctx, uint8_t out_mac[6], uint16_t *out_vlan, uint16
     *out_link = f->link;
     *out_speed = f->link ? 1000 : 0;
     *out_changes = f->changes;
-    memset(out_chip, 0, 16);
     memcpy(out_chip, "FAKE", 4);
+    *out_chip_len = 4;
     return OK;
 }
 
-static status_t f_stats(void *ctx, uint8_t out_counts[256])
+static status_t f_stats(void *ctx, uint8_t *out_counts, uint32_t *out_counts_len)
 {
     (void)ctx;
     memset(out_counts, 0, 256);
     out_counts[0] = 42;   /* rx_frames: netsock.c looks for it */
+    *out_counts_len = 256;
     return OK;
 }
 
@@ -113,13 +114,18 @@ static status_t f_open(void *ctx, handle_t *out_session, handle_t *out_tx, handl
 }
 
 static const struct netdev_ops ops = { .info = f_info, .stats = f_stats, .open = f_open };
+static const struct netdev_session_ops session_ops = { .info = f_info, .stats = f_stats };
 
-/* One netdev request off ch, answered. */
+/* One request off ch, answered: the driver's channel speaks netdev, the
+ * session's netdev_session. */
 static bool serve(handle_t ch)
 {
     signals_t seen;
     CHECK_ST(jam_object_wait_one(ch, SIG_READABLE, now() + WAIT, &seen), OK);
-    CHECK_ST(netdev_serve_one(ch, &ops, &fk), OK);
+    if (ch == fk.session)
+        CHECK_ST(netdev_session_serve_one(ch, &session_ops, &fk), OK);
+    else
+        CHECK_ST(netdev_serve_one(ch, &ops, &fk), OK);
     return true;
 }
 
@@ -301,14 +307,15 @@ static bool ping(uint32_t seq, bool arp)
 /* netctl.device's sessions and counts. */
 static bool device(uint32_t *sessions, uint64_t *ring_errors, uint64_t *rx_bad)
 {
-    uint8_t session, chip[16];
+    uint8_t session;
+    char chip[16 + 1];
     uint16_t vlan;
-    uint32_t speed;
+    uint32_t speed, chip_len;
     uint64_t tx_full;
     CHECK_ST(netctl_device(fk.ctl, &session, &vlan, &speed, sessions, ring_errors, rx_bad,
-                           &tx_full, chip), OK);
+                           &tx_full, chip, &chip_len), OK);
     CHECK_EQ(vlan, 21);
-    CHECK(!memcmp(chip, "FAKE", 5));
+    CHECK(chip_len == 4 && !strcmp(chip, "FAKE"));
     return true;
 }
 
