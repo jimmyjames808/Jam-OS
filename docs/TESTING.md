@@ -707,7 +707,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 
 The channels init and logd share with the rest, tested as bytes on the wire
 (utest, the `init` run; `tools/shell-tests/ctl-wire.txt` runs them from the
-shell with `run utest only <name>`). Each names its protocol's file:
+shell with `utest only <name>`, [above](#shell-scripts)). Each names its protocol's file:
 
 | Test | What it checks |
 |---|---|
