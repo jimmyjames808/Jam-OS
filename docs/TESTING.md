@@ -127,6 +127,43 @@ make run                                                  # interactive: the she
 make debug                                                # the same, stopped for gdb on :1234
 ```
 
+### Another machine for the tests
+
+QEMU on an Apple Silicon Mac emulates x86 (TCG): slow, and a few
+QEMUs at once fill it. An x86 PC runs the same tests under KVM, many at
+once: the full kernel test in about 25 s, the whole regression in
+minutes. `tools/remote-test.sh` runs any test command there:
+
+```sh
+JAMOS_REMOTE=jamos-pc tools/remote-test.sh tools/qemu-test.sh build/test init init
+JAMOS_REMOTE=jamos-pc QEMU_SMP=8 tools/remote-test.sh tools/qemu-test.sh build/test kt8 ktest
+JAMOS_REMOTE=jamos-pc tools/remote-test.sh tools/mixer-test.sh build/test/mixer
+```
+
+It copies the checkout (no `.git`, no `build/`) to `~/work/<checkout's
+name>` there, runs `make image` (so the image is never stale), runs the
+command with the `QEMU_*`, `KTESTS` and `JAMOS_*` variables, and copies
+back the output directories its arguments name under `build/` (but stick
+images); its exit status is the command's. Without `JAMOS_REMOTE`, or
+when the machine doesn't answer in 5 s, the command runs here.
+
+The machine: Windows with its OpenSSH server (a key login), and WSL2's
+Ubuntu 24.04 behind `wsl` with:
+- KVM: `/dev/kvm` in group `kvm` (WSL's `/etc/wsl.conf`: `[boot]
+  command = "chgrp kvm /dev/kvm && chmod 660 /dev/kvm && sysctl -w
+  net.core.rmem_max=8388608"`, the last for the network peer's bursts);
+- the Mac's versions of the tools: QEMU 10.0.2 in `~/qemu-10`, and
+  x86_64-elf binutils 2.45.1 and gcc 15.2 in `~/cross` (from source);
+- OVMF, mtools, ffmpeg, python3 with numpy and PIL, xkbcli
+  (libxkbcommon-tools), the `en_US.UTF-8` locale;
+- `/bin/sh` as bash, as the Mac's: the scripts are written for it.
+
+`tools/qemu-host.sh` holds what differs between the hosts (the firmware,
+KVM or TCG, the split irqchip KVM's interrupt remapping needs). A test
+that only fails on the faster host is usually a test that assumed an
+order: a line the fast boot prints before the shell's prompt wants a
+`seen`, not a `wait`. The flash test is macOS only (`hdiutil`).
+
 ### The network peer
 
 With `QEMU_NET=1` the machine gets QEMU's e1000e (8086:10d3, its option
