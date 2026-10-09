@@ -436,6 +436,33 @@ extern struct comp comp;
 
 /* The next event serial (never 0). */
 uint32_t comp_serial(void);
+
+/* A budget for one kind of log line that clients or posters can cause
+ * (review C5): printf waits for room on the log's channel when its reader
+ * is behind, so nothing a client does may write to it without bound. At
+ * most COMP_LOG_PER_S lines of a kind a second; the lines past that are
+ * counted, and said in one line ("N more <what>") with the next allowed. */
+#define COMP_LOG_PER_S 10u
+struct comp_log {
+    uint64_t start;                /* this second's start (uptime ns) */
+    uint32_t lines, quiet;         /* said in it, and held back */
+};
+static inline bool comp_log_ok(struct comp_log *l, const char *what)
+{
+    uint64_t t = now();
+    if (t - l->start >= NS_PER_S) {
+        if (l->quiet)
+            printf("compositor: %u more %s not logged\n", l->quiet, what);
+        l->start = t;
+        l->lines = l->quiet = 0;
+    }
+    if (l->lines >= COMP_LOG_PER_S) {
+        l->quiet++;
+        return false;
+    }
+    l->lines++;
+    return true;
+}
 /* Milliseconds of uptime, as wl_callback.done and input events carry. */
 static inline uint32_t comp_ms(uint64_t ns)
 {

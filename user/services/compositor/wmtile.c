@@ -383,8 +383,10 @@ static void add_missing(struct desk_screen *s)
             continue;
         struct tile_node *t = split_target(s, fresh);
         if (t && !split_fits(t, ww) && (spill || (spill = screens_spill()))) {
-            printf("compositor: no room for another tile on screen %d: a new screen, %d\n",
-                   screens_index(s) + 1, screens_index(spill) + 1);
+            static struct comp_log said;   /* a client mapping windows in a loop */
+            if (comp_log_ok(&said, "windows spilled to new screens"))
+                printf("compositor: no room for another tile on screen %d: a new screen, %d\n",
+                       screens_index(s) + 1, screens_index(spill) + 1);
             ww->screen = spill;   /* (screens_spill: at the end, so its turn comes) */
             spilled = true;
             continue;

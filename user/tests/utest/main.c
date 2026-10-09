@@ -1069,6 +1069,7 @@ static const struct {
     { "comp_super_enter", t_comp_super_enter },
     { "comp_notify", t_comp_notify },
     { "comp_notify_splash", t_comp_notify_splash },
+    { "comp_notify_flood", t_comp_notify_flood },
     { "comp_launch", t_comp_launch },
     { "comp_volume_net", t_comp_volume_net },
     { "comp_no_keyboard", t_comp_no_keyboard },

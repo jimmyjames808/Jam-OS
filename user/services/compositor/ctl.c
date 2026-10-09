@@ -309,7 +309,8 @@ static void op_post(void *ctx, const char *title, uint32_t title_len, const char
     text_in(n.body, sizeof(n.body), body, body_len);
     uint32_t id;
     status_t st = deskctl_notify(slot_of(c), c->gen, &n, &id);
-    if (st != OK)
+    static struct comp_log said;   /* any program on /svc/notify can post */
+    if (st != OK && comp_log_ok(&said, "notices refused"))
         printf("compositor: a notice posted on channel %u refused (%s)\n", slot_of(c),
                status_str(st));
 }

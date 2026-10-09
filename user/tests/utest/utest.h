@@ -508,6 +508,7 @@ bool t_comp_super_enter(void);
 /* compplumb.c: the desktop's plumbing (D2b) */
 bool t_comp_notify(void);
 bool t_comp_notify_splash(void);
+bool t_comp_notify_flood(void);
 bool t_comp_launch(void);
 bool t_comp_volume_net(void);
 bool t_comp_no_keyboard(void);
