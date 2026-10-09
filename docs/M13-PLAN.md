@@ -256,8 +256,9 @@ write, with `handle_replace`.
 - **Read**: the next message into the caller's buffer; what doesn't fit
   stays in the description's leftover buffer (libc's, per process), read
   first next time. `ERR_PEER_CLOSED` with nothing queued is end of file.
-- **Who pays**: the writer's job until the writer closes, then the
-  reader's (M12's Q2). The 1024-message queue bounds a pipe at 64 MiB of
+- **Who pays**: the writer's job, until the reader reads or closes, also
+  after the writer has closed (M12's Q2 as the owner changed it on
+  2026-10-09). The 1024-message queue bounds a pipe at 64 MiB of
   the writer's memory, against Linux's 64 KiB; a writer of single bytes
   fills the queue at 1024 bytes. Measured in BENCH.md (a new line: bytes a
   second through a pipe between two processes, 4 KiB and 64 KiB writes,

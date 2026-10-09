@@ -285,9 +285,10 @@ struct process_info {
  * A message carries at most CHANNEL_MAX_BYTES bytes and CHANNEL_MAX_HANDLES
  * handles (more: ERR_OUT_OF_RANGE). At most CHANNEL_MAX_QUEUED messages wait
  * on one end; a write beyond that fails with ERR_SHOULD_WAIT. A queued
- * message is charged to a job's JOB_LIMIT_MSG_BYTES: its size, plus
- * JOB_OBJECT_BYTES for each handle it carries (the object it may be all
- * that keeps alive). */
+ * message is charged to its writer's job's JOB_LIMIT_MSG_BYTES: its size,
+ * plus JOB_OBJECT_BYTES for each handle it carries (the object it may be
+ * all that keeps alive), until it is read or dropped with the reading end,
+ * also after the writer has closed its end. */
 #define CHANNEL_MAX_BYTES   65536
 #define CHANNEL_MAX_HANDLES 64
 #define CHANNEL_MAX_QUEUED  1024

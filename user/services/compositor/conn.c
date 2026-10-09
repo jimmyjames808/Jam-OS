@@ -17,11 +17,12 @@
  * batches a connection, by the kernel's count of what the client hasn't
  * read, asked at each flush (conn_held_deadline: when to ask again while
  * one is behind). A client we disconnect may never read what we
- * wrote: we close our end at once, its slot is free at once, and what it
- * never read is charged to its own job from then on (M12's Q2: the reader
- * pays once the writer closes). Each slot's port binding on its channel
- * end is charged to us too (about 1.2 KiB): free_client unbinds it, as
- * closing the handle doesn't.
+ * wrote: we close our end at once and its slot is free at once, but what
+ * it hasn't read (the window's batches at most, and the error) stays
+ * charged to our job until it reads it or closes its end: a writer pays
+ * for its messages until they are read or dropped. Each slot's port
+ * binding on its channel end is charged to us too (about 1.2 KiB):
+ * free_client unbinds it, as closing the handle doesn't.
  *
  * Destructors are libjwl's: a destructor request reaches its handler with
  * the id already freed (delete_id queued) and the object's data in the
@@ -109,8 +110,8 @@ static status_t make_conn(handle_t mine, struct comp_client *cl)
     return st;
 }
 
-/* The slot is free; our end of its channel is closed, so what the client
- * never read is its own job's from now on (Q2). */
+/* The slot is free; our end of its channel is closed (what the client
+ * hasn't read stays ours to pay for until it reads it or closes). */
 static void free_client(struct comp_client *cl)
 {
     if (cl->conn) {
@@ -265,7 +266,7 @@ static void log_gone(const struct comp_client *cl, enum comp_gone why)
 
 /* cl's connection is dead: everything of it goes, in this turn, its slot
  * and our end of its channel too (what it may still read, the error last,
- * is its own job's from then on: Q2). */
+ * waits for it there). */
 static void client_die(struct comp_client *cl)
 {
     enum comp_gone why = why_gone(cl->conn);
