@@ -507,6 +507,7 @@ DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
 # object (checked by checkdriver.py with the rest of it).
 DRV_LIB_rtl8125 := netserver
 DRV_LIB_e1000e  := netserver
+DRV_LIB_nvme    := sha256
 DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c)) \
                $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(DRV_LIB_$(1)))
 

@@ -32,7 +32,9 @@
 #   0  no driver yet: the drive is on the PCI bus (class NVMe), nothing
 #      sent it a write, the trace is clean (the firmware's own reads and
 #      admin commands)
-#   1  drivers/nvme (N1): the controller line is logged, Identify worked
+#   1  drivers/nvme (N1): the controller line is logged, Identify worked,
+#      and the boot word nvmetest=selftest makes it read (nothing else
+#      reads yet): the namespace's ends are hashed
 #   2  + the partition library (N3): "GPT, 4 partitions, read-only"
 #   3  + volumes and the shell (N4): disks, /nvme0, disk digest, mount -w,
 #      disk smart, as the plan's P1 types them
@@ -122,6 +124,9 @@ for c in $cases; do
     damaged) dmg="--damage primary-header" ;;
     *) echo "nvme-test: no case '$c'"; exit 2 ;;
     esac
+    # Level 1 has no client that reads: the driver's test word reads the
+    # namespace's ends (drivers/nvme/selftest.c), so the trace has Reads.
+    [ $level = 1 ] && words="${words:+$words }nvmetest=selftest"
     # shellcheck disable=SC2086
     python3 tools/nvme-img.py "$img" windows --block-size $bs $dmg
     before2=
@@ -211,6 +216,7 @@ for c in $cases; do
     want "NVMe"   # level 0: the PCI report names the function
     L1() {
         want "nvme [0-9a-f:.]+: .*namespace"
+        if [ $level = 1 ]; then want "selftest: both ends read and hashed"; fi
         if [ $c = twons ]; then want "namespace 2: not served"; fi
     }
     L2() {
