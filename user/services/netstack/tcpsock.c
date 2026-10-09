@@ -250,6 +250,11 @@ static status_t ts_state(void *ctx, uint32_t *out_address, uint16_t *out_port,
     return OK;
 }
 
+/* lwIP keeps these in milliseconds in 32 bits and adds the idle time to
+ * count * interval: the largest of each, together, must fit. */
+_Static_assert((uint64_t)NET_STREAM_KEEP_MAX * 1000 * (NET_STREAM_KEEP_CNT_MAX + 1) <= UINT32_MAX,
+               "keep-alive times fit lwIP's 32-bit milliseconds");
+
 /* Linux's keep-alive defaults, which a 0 asks for. */
 #define KEEP_IDLE_DEFAULT  7200u
 #define KEEP_INTVL_DEFAULT 75u
