@@ -31,11 +31,13 @@
 #include <jam/boot.h>
 #include <jam/status.h>
 
-/* The region's size: the stored kernel needs about 12 MiB (kernel 4 MiB
- * with its bss, bootfs 4.3, the kernel file again 3.3, tables and stack
- * 0.6, measured in QEMU), so 32 leaves room for a bigger log ring and
- * a bigger bootfs. ktest kexec_region_has_room says when it gets tight. */
-#define KEXEC_DEFAULT_MIB 32
+/* The region's size: the stored kernel needed about 12 MiB at first
+ * (kernel 4 MiB with its bss, bootfs 4.3, the kernel file again 3.3,
+ * tables and stack 0.6, measured in QEMU) and about 25 MiB at M12 (bootfs
+ * 10.5, the kernel file 5.4), past kexec_region_has_room's three
+ * quarters of 32: 48 leaves room for a bigger log ring and a bigger
+ * bootfs. ktest kexec_region_has_room says when it gets tight. */
+#define KEXEC_DEFAULT_MIB 48
 #define KEXEC_KERNEL_MODULE "jamos.elf"   /* the pristine kernel: a module path's suffix */
 /* A crash loop halts on its panic screen instead of jumping again: a
  * panic this soon after a start that was itself a panic's, or the
