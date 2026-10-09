@@ -1063,6 +1063,7 @@ static const struct {
     { "comp_client_crash", t_comp_client_crash },
     { "comp_never_reads", t_comp_never_reads },
     { "comp_lost_clients", t_comp_lost_clients },
+    { "comp_slow_clients_kept", t_comp_slow_clients_kept },
     { "comp_fuzz", t_comp_fuzz },
     { "comp_chaos", t_comp_chaos },
     { "comp_live_bad_requests", t_comp_live_bad_requests },

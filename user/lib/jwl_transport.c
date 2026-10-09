@@ -31,6 +31,8 @@
  * Dying: the first error that ends a connection is kept in c->status and
  * every call returns it from then on; every handle still in the
  * connection (unread arguments, unwritten batches) is closed at once. The
+ * compositor also takes back what the client hasn't read (channel_withdraw),
+ * so that once it closes nothing but the error stays charged to it. The
  * channel itself stays open until jwl_conn_destroy, so a compositor's
  * wl_display.error is read by the client before it sees the close. */
 #include <jwl.h>
@@ -95,6 +97,12 @@ static void drop_held(struct jwl_conn *c)
 /* The connection ends with st (the first reason is kept). */
 static status_t die(struct jwl_conn *c, status_t st)
 {
+    /* The compositor gives up on the client: what it wrote and the client
+     * hasn't read (the window's batches) is taken back, refunded to its
+     * job, so a client that keeps a dead end open holds none of it; only
+     * the error jwl_conn_post_error writes after this stays. */
+    if (c->status == OK && c->side == JWL_SERVER)
+        (void)jam_channel_withdraw(c->ch);
     if (c->status == OK)
         c->status = st;
     drop_out(c);
