@@ -201,11 +201,12 @@ void serve_device_ready(struct usbdev *d)
         m.protocol = f->proto;
         m.speed = d->speed;
         copy_str(m.path, sizeof(m.path), d->path);
+        /* b is gone whatever the write's status (a send's handles are
+         * always moved): never closed after it. */
         status_t st = drv_channel_write(g_hc.serve, &m, sizeof(m), &b, 1);
         if (st != OK) {
             drv_log("usb %s: interface %u: can't tell devmgr (%s)", d->path, f->number,
                     status_str(st));
-            drv_handle_close(b);
             chan_close(c);
             continue;
         }
@@ -390,8 +391,10 @@ static void serve_bus(struct hc *h)
         handle_t rhs[IDL_REP_HANDLES];
         uint32_t rhn = 0;
         uint32_t rn = usbbus_dispatch(&bus_ops, NULL, q, n, r, rhs, &rhn);
-        if (!rn || drv_channel_write(h->serve, r, rn, rhs, rhn) != OK)
-            idl_close_all(rhs, rhn);
+        if (!rn)
+            idl_close_all(rhs, rhn);   /* no reply: never sent */
+        else   /* the reply's handles are gone whatever the write's status */
+            (void)drv_channel_write(h->serve, r, rn, rhs, rhn);
     }
     /* 64 taken and maybe more queued: the binding is edge-triggered and the
      * channel stays readable, so no packet will say so. Come back. */
