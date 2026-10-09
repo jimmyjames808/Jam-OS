@@ -454,6 +454,44 @@ static bool check_codes(const struct fatrun *r)
     return true;
 }
 
+/* FS_RENAME_REPLACE (POSIX rename): what is at `to` goes, but not the file
+ * itself under another case; a file for a file, an empty directory for a
+ * directory; never an open file. In /docs (a.txt, sub/b.txt). */
+static bool check_replace(const struct fatrun *r)
+{
+    struct tfile f;
+    uint64_t size = 0;
+    if (!put_file(r, "/docs/r1.txt", "one") || !put_file(r, "/docs/r2.txt", "two"))
+        return false;
+    CHECK_ST(t_rename(r, "/docs/r1.txt", "/docs/r2.txt"), ERR_ALREADY_EXISTS);
+    CHECK_ST(t_rename_flags(r, "/docs/r1.txt", "/docs/r2.txt", FS_RENAME_REPLACE), OK);
+    CHECK_ST(t_stat(r, "/docs/r1.txt", &size, NULL, NULL), ERR_NOT_FOUND);
+    if (!file_is(r, "/docs/r2.txt", "one"))
+        return false;
+    CHECK_ST(t_rename_flags(r, "/docs/r2.txt", "/docs/R2.TXT", FS_RENAME_REPLACE), OK);
+    if (!file_is(r, "/docs/r2.txt", "one"))   /* renamed, not removed */
+        return false;
+    CHECK_ST(t_rename_flags(r, "/docs/r2.txt", "/docs/sub", FS_RENAME_REPLACE), ERR_IS_DIR);
+    CHECK_ST(t_mkdir(r, "/docs/e1"), OK);
+    CHECK_ST(t_mkdir(r, "/docs/e2"), OK);
+    CHECK_ST(t_rename_flags(r, "/docs/e1", "/docs/r2.txt", FS_RENAME_REPLACE), ERR_NOT_DIR);
+    CHECK_ST(t_rename_flags(r, "/docs/e1", "/docs/sub", FS_RENAME_REPLACE), ERR_NOT_EMPTY);
+    CHECK_ST(t_rename_flags(r, "/docs/e1", "/docs/e2", FS_RENAME_REPLACE), OK);
+    CHECK_ST(t_stat(r, "/docs/e1", &size, NULL, NULL), ERR_NOT_FOUND);
+    if (!put_file(r, "/docs/r3.txt", "three"))
+        return false;
+    CHECK_ST(t_open(r, "/docs/r2.txt", FS_READ, &f), OK);
+    CHECK_ST(t_rename_flags(r, "/docs/r3.txt", "/docs/r2.txt", FS_RENAME_REPLACE), ERR_BUSY);
+    t_close(&f);
+    CHECK_ST(t_rename_flags(r, "/docs/r3.txt", "/docs/r2.txt", FS_RENAME_REPLACE), OK);
+    if (!file_is(r, "/docs/r2.txt", "three"))
+        return false;
+    CHECK_ST(t_rename_flags(r, "/docs/r2.txt", "/docs/x", 2), ERR_INVALID_ARGS);
+    CHECK_ST(t_unlink(r, "/docs/r2.txt"), OK);
+    CHECK_ST(t_unlink(r, "/docs/e2"), OK);
+    return true;
+}
+
 /* rename: within and across directories, and what it refuses. */
 static bool check_rename(const struct fatrun *r)
 {
@@ -522,7 +560,7 @@ bool t_fat_dirs(void)
     CHECK_ST(t_stat(&r, "docs", &size, &dir, NULL), ERR_INVALID_ARGS);   /* not absolute */
     CHECK_ST(t_stat(&r, "", &size, &dir, NULL), OK);                     /* the root */
 
-    if (!check_codes(&r) || !check_rename(&r))
+    if (!check_codes(&r) || !check_replace(&r) || !check_rename(&r))
         return false;
     CHECK_ST(t_unlink(&r, "/moved"), ERR_NOT_EMPTY);   /* not empty */
     CHECK_ST(t_unlink(&r, "/"), ERR_ACCESS_DENIED);

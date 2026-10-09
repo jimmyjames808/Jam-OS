@@ -187,14 +187,43 @@ static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32
     return settled(fr_status(fr));
 }
 
+/* A replacing rename's first half: what is at pt goes, unless it is pf's
+ * own entry (another case of its name, or its 8.3 alias), or nothing is
+ * there. A file replaces a file, a directory an empty directory. Both
+ * halves are one request, so its writes go out together after its commit
+ * (request.c): a crash never leaves `to` gone and `from` not renamed (but
+ * a power cut in the middle of their going out can, as FAT has no
+ * journal). */
+static status_t make_way(const char *pf, const char *pt)
+{
+    FILINFO ff, ft;
+    uint64_t place_f = 0, place_t = 0;
+    FRESULT fr = ffx_stat(pt, &ft, &place_t);
+    if (fr != FR_OK)
+        return fr == FR_NO_FILE || fr == FR_NO_PATH ? OK : fr_status(fr);   /* f_rename says */
+    fr = ffx_stat(pf, &ff, &place_f);
+    if (fr != FR_OK)
+        return fr_path_status(fr, pf);
+    if (place_f == place_t)
+        return OK;   /* the same entry: a rename of its name only */
+    bool from_dir = ff.fattrib & AM_DIR, to_dir = ft.fattrib & AM_DIR;
+    if (from_dir != to_dir)
+        return to_dir ? ERR_IS_DIR : ERR_NOT_DIR;
+    if (files_is_open(pt))
+        return ERR_BUSY;
+    fr = f_unlink(pt);
+    /* FR_DENIED: a directory with entries, or a read-only file. */
+    if (fr == FR_DENIED)
+        return to_dir ? ERR_NOT_EMPTY : ERR_ACCESS_DENIED;
+    return fr_status(fr);
+}
+
 static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const char *to,
                           uint32_t to_len, uint32_t flags)
 {
     (void)ctx;
     char pf[FAT_PATH_MAX], pt[FAT_PATH_MAX];
     status_t st = flags & ~FS_RENAME_REPLACE ? ERR_INVALID_ARGS : writable();
-    if (st == OK && flags)
-        st = ERR_NOT_SUPPORTED;   /* a replacing rename: not yet */
     if (st == OK)
         st = path_resolve(from, from_len, pf);
     if (st == OK)
@@ -207,8 +236,15 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
     if (path_is_root(pf) || path_is_root(pt) ||
         (path_inside(pt, pf) && kind_of(pf, &from_dir) == FR_OK && from_dir))
         return ERR_INVALID_ARGS;   /* (a file "into itself": FatFs finds no path) */
+    if (files_is_open(pf))
+        return ERR_BUSY;   /* fat's lock (fileops.c) */
     dirs_forget();
-    FRESULT fr = files_is_open(pf) ? FR_LOCKED : f_rename(pf, pt);   /* fat's lock (fileops.c) */
+    if (flags & FS_RENAME_REPLACE) {
+        st = make_way(pf, pt);
+        if (st != OK)
+            return settled(st);
+    }
+    FRESULT fr = f_rename(pf, pt);
     /* FR_DENIED: no room for the new entry. FR_NO_PATH: on either path. */
     if (fr == FR_NO_PATH) {
         status_t sf = fr_path_status(fr, pf);

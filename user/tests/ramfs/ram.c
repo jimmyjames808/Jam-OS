@@ -319,8 +319,6 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
     int dir;
     if (flags & ~FS_RENAME_REPLACE)
         return ERR_INVALID_ARGS;
-    if (flags)
-        return ERR_NOT_SUPPORTED;   /* for now */
     if (clean_path(from, from_len, rel_from) != OK)
         return ERR_INVALID_ARGS;
     int i = walk(rel_from);
@@ -331,8 +329,20 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
         return st;
     if (i == 0 || below(dir, i))
         return ERR_INVALID_ARGS;   /* the root, or a directory into itself */
-    if (child(dir, name, strlen(name)) >= 0)
-        return ERR_ALREADY_EXISTS;
+    int t = child(dir, name, strlen(name));
+    if (t >= 0 && t != i) {   /* something else is there: it goes, or the rename doesn't */
+        if (!(flags & FS_RENAME_REPLACE))
+            return ERR_ALREADY_EXISTS;
+        if (nodes[t].dir != nodes[i].dir)
+            return nodes[t].dir ? ERR_IS_DIR : ERR_NOT_DIR;
+        if (nodes[t].opens)
+            return ERR_BUSY;
+        if (nodes[t].dir && !empty_dir(t))
+            return ERR_NOT_EMPTY;
+        stored -= nodes[t].size;
+        free(nodes[t].data);
+        memset(&nodes[t], 0, sizeof(nodes[t]));
+    }
     nodes[i].parent = dir;
     memcpy(nodes[i].name, name, strlen(name) + 1);
     return OK;
