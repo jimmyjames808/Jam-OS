@@ -1,7 +1,7 @@
 /* System calls: debug output, exit, time, handles, waiting and signals,
  * events, timers and ports. The rules all sysc_* follow are in sysc.h.
  *
- * Blocking calls (nanosleep, object_wait_one, port_wait) use the
+ * Blocking calls (sleep_until, object_wait_one, port_wait) use the
  * cancellable waits, so a thread whose process is killed stops waiting at
  * once (ERR_CANCELED) and leaves on its way back to user mode. */
 #include <jam/abi.h>
@@ -12,8 +12,6 @@
 #include <jam/time.h>
 #include "sysc.h"
 
-/* debug_write copies at most this much per call (the rest is dropped). */
-#define DEBUG_WRITE_MAX 4096
 #define DEBUG_CHUNK     256
 
 static int64_t debug_out(uint64_t buf, uint64_t len, bool report_it)
@@ -22,7 +20,7 @@ static int64_t debug_out(uint64_t buf, uint64_t len, bool report_it)
     if (!p)
         return ERR_BAD_STATE;
     if (len > DEBUG_WRITE_MAX)
-        len = DEBUG_WRITE_MAX;
+        return ERR_OUT_OF_RANGE;   /* nothing written */
     char chunk[DEBUG_CHUNK];
     while (len) {
         uint64_t n = len < sizeof(chunk) ? len : sizeof(chunk);
@@ -66,7 +64,7 @@ int64_t sysc_clock_get(void)
     return (int64_t)uptime_ns();
 }
 
-int64_t sysc_nanosleep(uint64_t deadline_ns)
+int64_t sysc_sleep_until(uint64_t deadline_ns)
 {
     while (uptime_ns() < deadline_ns)
         if (thread_block_cancellable(NULL, NULL, deadline_ns) != OK)
@@ -101,6 +99,16 @@ int64_t sysc_handle_replace(handle_t h, rights_t rights, uint64_t out)
     return st == OK ? sysc_put_handle(t, out, nh) : st;
 }
 
+int64_t sysc_handle_info(handle_t h, uint64_t out)
+{
+    SYSC_TABLE(t);
+    struct handle_info info;
+    status_t st = handle_info(t, h, &info);
+    if (st == OK && copy_to_user(out, &info, sizeof(info)) != OK)
+        return ERR_INVALID_ARGS;
+    return st;
+}
+
 /* ---- waiting and signals ------------------------------------------------------ */
 
 int64_t sysc_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns, uint64_t observed)
@@ -112,12 +120,6 @@ int64_t sysc_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns, u
         copy_to_user(observed, &seen, sizeof(seen)) != OK)
         return ERR_INVALID_ARGS;
     return st;
-}
-
-int64_t sysc_object_signal(handle_t h, signals_t clear, signals_t set)
-{
-    SYSC_TABLE(t);
-    return sys_object_signal(t, h, clear, set);
 }
 
 /* ---- events and timers ------------------------------------------------------------ */

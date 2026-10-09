@@ -128,9 +128,6 @@ status_t sys_port_queue(struct handle_table *t, handle_t port,
                         const struct port_packet *pkt);                    /* RIGHT_WRITE */
 status_t sys_port_wait(struct handle_table *t, handle_t port, uint64_t deadline_ns,
                        struct port_packet *out);                           /* RIGHT_READ */
-/* RIGHT_SIGNAL, any type: set/clear the user bits (SIG_USER_ALL only; the
- * kernel owns the rest). Wakes waiters and ports like any signal change. */
-status_t sys_object_signal(struct handle_table *t, handle_t h, signals_t clear, signals_t set);
 /* RIGHT_WAIT, any type. */
 status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
                              uint64_t deadline_ns, signals_t *observed);
@@ -161,7 +158,7 @@ status_t sys_vmo_set_size(struct handle_table *t, handle_t h, uint64_t size);
 status_t sys_vmo_commit(struct handle_table *t, handle_t h, uint64_t offset,
                         uint64_t len);                                      /* RIGHT_WRITE */
 /* vmo_make_exec (abi/syscalls.def): RIGHT_ROOT_VMEX on root; h is gone
- * once this succeeds, and if the VMO turns out shared (ERR_BAD_STATE). */
+ * whatever the status. */
 status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, handle_t *out);
 /* RIGHT_WRITE | RIGHT_RESIZE. */
 status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset, uint64_t len);

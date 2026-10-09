@@ -214,7 +214,7 @@ static void worker_main(void *arg)
     __atomic_store_n(&c->done, true, __ATOMIC_RELEASE);   /* update_event's ACQUIRE load */
     struct port_packet pkt = { .key = offer_key, .type = PORT_PACKET_USER };
     for (int i = 0; i < QUEUE_TRIES && jam_port_queue(offer_port, &pkt) != OK; i++)
-        jam_nanosleep(now() + 10 * NS_PER_MS);   /* a full port: the loop is far behind */
+        jam_sleep_until(now() + 10 * NS_PER_MS);   /* a full port: the loop is far behind */
 }
 
 /* This build's update key: the public key file in our boot image

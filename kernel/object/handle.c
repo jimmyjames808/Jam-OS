@@ -395,6 +395,32 @@ status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, h
     return st;
 }
 
+status_t handle_info(struct handle_table *t, handle_t h, struct handle_info *out)
+{
+    struct kobject *obj;
+    rights_t rights;
+    status_t st = handle_get(t, h, OBJ_NONE, 0, &obj, &rights);
+    if (st != OK)
+        return st;
+    *out = (struct handle_info){ .type = obj->type, .rights = rights, .koid = obj->koid };
+    switch (obj->type) {
+    case OBJ_CHANNEL:
+        channel_get_info((struct channel *)obj, &out->related_koid, &out->queued,
+                         &out->peer_queued, &out->peer_queued_bytes);
+        break;
+    case OBJ_THREAD:
+        out->related_koid = uthread_process_koid(uthread_from_kobject(obj));
+        break;
+    case OBJ_PROCESS:
+        out->related_koid = process_job_koid(process_from_kobject(obj));
+        break;
+    default:
+        break;
+    }
+    kobject_unref(obj);   /* no lock held: it may be the last reference */
+    return OK;
+}
+
 status_t handle_take(struct handle_table *t, handle_t h, struct khandle *out)
 {
     uint64_t f = spin_lock_irqsave(&t->lock);
@@ -413,10 +439,15 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
     PATH_COUNT(PATH_HANDLE);
     struct handle_slot *s = decode(t, h);
     status_t st = s ? OK : ERR_BAD_HANDLE;
+    struct khandle gone = { 0 };
     if (st == OK) {
         rights_t r = rights == RIGHT_SAME ? s->rights : rights;
         if ((r & s->rights) != r) {
+            /* h goes whatever the status (M12's K-C): closed. */
             st = ERR_INVALID_ARGS;
+            gone = free_slot_locked(t, s);
+            t->charged--;
+            uncharge(t, 1);
         } else {
             /* One slot out, one in: the charge stays as it is. */
             struct khandle kh = free_slot_locked(t, s);
@@ -424,6 +455,7 @@ status_t handle_replace(struct handle_table *t, handle_t h, rights_t rights, han
         }
     }
     spin_unlock_irqrestore(&t->lock, f);
+    khandle_release(&gone);   /* outside the lock: may run on_zero_handles */
     return st;
 }
 

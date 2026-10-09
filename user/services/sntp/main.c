@@ -241,7 +241,7 @@ static handle_t wait_up(void)
         if (!said)
             printf("sntp: no network (%s): trying again every second\n", status_str(st));
         said = true;
-        (void)jam_nanosleep(now() + NET_RETRY);
+        (void)jam_sleep_until(now() + NET_RETRY);
     }
 }
 
@@ -268,6 +268,6 @@ int main(int argc, char **argv)
                    (unsigned long)(backoff / NS_PER_S));
             backoff = backoff * 2 > RETRY_MAX ? RETRY_MAX : backoff * 2;
         }
-        (void)jam_nanosleep(now() + wait);
+        (void)jam_sleep_until(now() + wait);
     }
 }

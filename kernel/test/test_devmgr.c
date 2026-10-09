@@ -52,6 +52,8 @@
 #define DM_GET_DRIVER  0x00030003u
 #define DM_REBIND      0x00030005u
 #define DM_MAX_HANDLES 8u
+/* devmgr's control channel's startup role, as user/include/roles.h has it. */
+#define SR_DEVMGR_CTL  10
 
 struct dm_req {
     uint32_t txid, ordinal;    /* channel txid; DM_* request */

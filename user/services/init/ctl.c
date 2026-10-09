@@ -235,7 +235,8 @@ static status_t kill_devmgr_process(const char *name, uint64_t *koid)
         uint32_t id = 0;
         if (usbbus_device_until(bus, now() + CALL_WAIT, i, &id, NULL, NULL, NULL, NULL, NULL,
                                 NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL) != OK)
+                                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                                NULL) != OK)
             break;   /* past the last device, or usb-bus is gone */
         st = kill_on_device(dm, id, *koid);
     }

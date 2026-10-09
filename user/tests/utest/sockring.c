@@ -545,7 +545,7 @@ static bool stack_pass(struct fake_stack *f)
 static void stack_thread(void *arg)
 {
     struct fake_stack *f = arg;
-    (void)jam_nanosleep(now() + 20 * NS_PER_MS);   /* start late: the tx ring fills */
+    (void)jam_sleep_until(now() + 20 * NS_PER_MS);   /* start late: the tx ring fills */
     while (!__atomic_load_n(&f->stop, __ATOMIC_ACQUIRE)) {
         (void)jam_event_signal(f->to_stack, SOCKRING_SIG_TX | SOCKRING_SIG_RX_ROOM, 0);
         sockring_awake(&f->s.tx);

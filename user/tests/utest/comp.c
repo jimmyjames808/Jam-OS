@@ -41,7 +41,7 @@ bool ct_handles_back(const struct ct_comp *p, uint64_t want)
 {
     uint64_t until = now() + CT_WAIT;
     while (ct_handles(p) != want && now() < until)
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     if (ct_handles(p) != want)
         FAIL("the compositor holds %lu handles, want %lu", (unsigned long)ct_handles(p),
              (unsigned long)want);
@@ -57,7 +57,7 @@ bool ct_msg_back(const struct ct_comp *p, uint64_t want)
 {
     uint64_t until = now() + CT_WAIT;   /* what it wrote last may not be read yet */
     while (ct_msg_bytes(p) > want && now() < until)
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     if (ct_msg_bytes(p) > want)
         FAIL("the compositor's job keeps %lu message bytes, want at most %lu",
              (unsigned long)ct_msg_bytes(p), (unsigned long)want);
@@ -126,7 +126,7 @@ bool ct_stop(struct ct_comp *p)
     uint64_t until = now() + CT_WAIT;   /* dead is not yet freed */
     for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++) {
         while (ct_job_used(p->job, k) && now() < until)
-            jam_nanosleep(now() + NS_PER_MS);
+            jam_sleep_until(now() + NS_PER_MS);
         if (ct_job_used(p->job, k))
             FAIL("the compositor left %lu units of job kind %u",
                  (unsigned long)ct_job_used(p->job, k), k);

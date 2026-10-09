@@ -278,7 +278,10 @@ recommendation for the rest unless unsure or very important") and was
 asked one, S3.
 
 - **Kernel (K-A to K-F)**: A, "the reader's job" is the job whose handle
-  table last received the reading end; B, the receives-no-handles mark
+  table last received the reading end; refined in K1 (2026-10-09, the owner's
+  call): only a table that receives the end as its *only* handle to it
+  becomes the reader (an end shared with many, as init's `/boot`, would
+  otherwise keep a dead program's job alive); B, the receives-no-handles mark
   is a one-way call on an end the caller holds, refused while handles
   are queued there; C, every handle in a send's list is consumed on every
   outcome, a refused list included (process_start's arg0, handle_replace

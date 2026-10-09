@@ -50,6 +50,7 @@
 
 #define EP_STATE_HALTED 2   /* xHCI 6.2.3: the endpoint context's EP State */
 #define MAX_PARKED      16  /* buffers kept pinned until the controller is reset */
+#define BULK_MAX_NS     (60 * NS_PER_S)   /* the furthest deadline a transfer may be given */
 
 /* Buffers whose endpoints the controller may still run (the device left
  * and its slot couldn't be disabled, or usb-bus is stopping): they stay
@@ -298,10 +299,11 @@ static bool branch_lost(struct usbdev *d, uint64_t *next)
     return v == 0xffffffff || !(v & PS_CCS) || (v & PS_CSC);
 }
 
-/* Wait for d's queued TD; its completion code (CC_TIMEOUT, CC_GONE: ours). */
-static uint32_t td_wait(struct hc *h, struct usbdev *d, uint32_t timeout_ms)
+/* Wait for d's queued TD until the deadline; its completion code
+ * (CC_TIMEOUT, CC_GONE: ours). */
+static uint32_t td_wait(struct hc *h, struct usbdev *d, uint64_t deadline)
 {
-    uint64_t deadline = drv_clock_ns() + (uint64_t)timeout_ms * NS_PER_MS, look = 0;
+    uint64_t look = 0;
     bool lost = false;
     while (!d->td.done && !lost && !d->gone && !h->dead && !h->stopping &&
            drv_clock_ns() < deadline) {
@@ -331,16 +333,19 @@ static status_t td_status(const struct usbdev *d, const struct ep *e, uint32_t c
 }
 
 status_t bulk_transfer(struct usbdev *d, struct iface *f, int chan, bool in, uint32_t offset,
-                       uint32_t length, uint32_t timeout_ms, uint32_t *actual)
+                       uint32_t length, uint64_t deadline, uint32_t *actual)
 {
     struct hc *h = &g_hc;
     const struct bulk *b = f->bulk;
     if (!b || b->chan != chan)
         return ERR_BAD_STATE;
-    if (!length || !timeout_ms || timeout_ms > 60000)
+    uint64_t t = drv_clock_ns();
+    if (!length || deadline > t + BULK_MAX_NS)
         return ERR_INVALID_ARGS;
     if (offset > BULK_SIZE || length > BULK_SIZE - offset)
         return ERR_OUT_OF_RANGE;
+    if (deadline <= t)
+        return ERR_TIMED_OUT;   /* over before it began */
     struct ep *e = &d->eps[ep_dci(in ? b->in : b->out)];
     if (!e->configured)
         return ERR_BAD_STATE;
@@ -357,7 +362,7 @@ status_t bulk_transfer(struct usbdev *d, struct iface *f, int chan, bool in, uin
         h->bulk_peak = h->bulk_running;
     td_queue(d, e, b, in, offset, length);
     hc_doorbell(h, d->slot, e->dci);
-    uint32_t cc = td_wait(h, d, timeout_ms);
+    uint32_t cc = td_wait(h, d, deadline);
     if (cc == CC_TIMEOUT || cc == CC_GONE) {
         if (!h->dead)
             ep_stop(d, e->dci, &e->ring);   /* the TD comes off the ring */

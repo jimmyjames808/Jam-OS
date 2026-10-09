@@ -176,7 +176,7 @@ static void say_stored_instead(status_t why)
         comp_blank(true);
         return;
     }
-    jam_nanosleep(now() + NOTICE_SHOW);
+    jam_sleep_until(now() + NOTICE_SHOW);
     (void)console_blank_until(c, now() + NS_PER_S, 1);   /* dark again until the next splash */
     comp_blank(true);
 }

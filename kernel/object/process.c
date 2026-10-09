@@ -85,7 +85,7 @@ struct process {
     uint32_t            nthreads;                /* (L) started threads that haven't left */
     uint64_t            cpu_done;                /* (L) CPU time (TSC) of the threads that left */
     struct list_node    threads;                 /* (L) struct uthread, every one not destroyed */
-    char                name[PROCESS_NAME_MAX];  /* NUL-terminated */
+    char                name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
     /* debug_write ("process output" lock): the current, unfinished line and
      * the rate limit (see process_debug_write) */
     spinlock_t          out_lock;
@@ -104,7 +104,7 @@ struct uthread {
     int               state;                     /* (process lock) enum ut_state */
     int               prio;                      /* priority its thread starts at */
     uint64_t          entry, stack, arg0, arg1, fs_base;  /* thread_start's arguments */
-    char              name[24];                  /* NUL-terminated */
+    char              name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
 };
 
 static void copy_name(char *dst, size_t cap, const char *src)
@@ -247,6 +247,19 @@ struct aspace *process_aspace(struct process *p)
 const char *process_name(struct process *p)
 {
     return p->name;
+}
+
+uint64_t process_job_koid(struct process *p)
+{
+    uint64_t f = plock(p);
+    uint64_t koid = p->job ? job_kobject(p->job)->koid : 0;
+    punlock(p, f);
+    return koid;
+}
+
+uint64_t uthread_process_koid(struct uthread *u)
+{
+    return u->proc->base.koid;
 }
 
 void process_get_info(struct process *p, struct process_info *out)

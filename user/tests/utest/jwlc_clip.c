@@ -53,7 +53,7 @@ static bool next_of(struct cl *k, uint32_t type, uint64_t timeout, struct jwl_ev
         while (jwl_client_next_event(k->c, out) == OK)
             if (out->type == type)
                 return true;
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     }
     FAIL("no event %u within %lu ms", type, (unsigned long)(timeout / NS_PER_MS));
 }
@@ -64,7 +64,7 @@ static bool until_available(struct cl *k)
     uint64_t deadline = now() + CT_WAIT;
     while (!jwl_clip_available(k->c) && now() < deadline) {
         pump_all();
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     }
     CHECK(jwl_clip_available(k->c));
     return true;
@@ -130,7 +130,7 @@ static bool pastes_leave_nothing(struct cl *a, const char *want, size_t n)
         struct port_packet pkt;
         while (jam_port_wait(clip_port, 0, &pkt) == OK)
             ;
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     }
     uint64_t left = ct_job_used(own_job(), JOB_LIMIT_MSG_BYTES);
     if (left > base)

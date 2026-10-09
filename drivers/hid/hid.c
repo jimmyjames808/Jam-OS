@@ -168,10 +168,9 @@ void hid_key(struct hid *h, uint16_t usage, uint8_t state, uint8_t mods, uint32_
 
 void hid_set_leds(struct hid *h, uint8_t leds)
 {
-    uint8_t data[64] = { leds };
     status_t st = usb_control_out_until(h->usb, deadline(USB_TIMEOUT), REQ_OUT_CLASS_IFACE,
-                                        HID_SET_REPORT, HID_REPORT_OUTPUT << 8, h->iface, 1,
-                                        data);
+                                        HID_SET_REPORT, HID_REPORT_OUTPUT << 8, h->iface, &leds,
+                                        1);
     if (st != OK && !gone(h, st) && log_nth(++h->led_errors))
         drv_log("hid %04x:%04x if %u: SET_REPORT(LEDs 0x%x) failed (%s)", h->vendor, h->product,
                 h->iface, leds, status_str(st));
@@ -195,9 +194,8 @@ void hid_mouse(struct hid *h, int16_t dx, int16_t dy, int8_t wheel, uint8_t butt
 
 static status_t class_out(struct hid *h, uint8_t request, uint16_t value)
 {
-    uint8_t none[64] = { 0 };
     return usb_control_out_until(h->usb, deadline(USB_TIMEOUT), REQ_OUT_CLASS_IFACE, request,
-                                 value, h->iface, 0, none);
+                                 value, h->iface, NULL, 0);
 }
 
 /* The steps of setup() return what it does: 0..: the driver ends with
@@ -229,13 +227,13 @@ static int read_info(struct hid *h)
 /* The configuration descriptor: our HID descriptor and endpoint. */
 static int read_config(struct hid *h)
 {
-    uint16_t n = 0;
+    uint32_t n = 0;
     status_t st = usb_get_descriptor_until(h->usb, deadline(USB_TIMEOUT), DESC_CONFIG, 0, 0, 9,
-                                           0, &n, h->buf);
+                                           0, h->buf, &n);
     if (st == OK && n >= 4) {
         uint16_t total = (uint16_t)(h->buf[2] | h->buf[3] << 8);
         st = usb_get_descriptor_until(h->usb, deadline(USB_TIMEOUT), DESC_CONFIG, 0, 0,
-                                      total < BUF_SIZE ? total : BUF_SIZE, 0, &n, h->buf);
+                                      total < BUF_SIZE ? total : BUF_SIZE, 0, h->buf, &n);
     } else if (st == OK) {
         st = ERR_OUT_OF_RANGE;   /* shorter than its header */
     }
@@ -257,11 +255,12 @@ static int read_report_desc(struct hid *h, char *coll, uint32_t cap)
     coll[0] = 0;
     if (!h->report_desc_len)
         return -1;
-    uint16_t want = h->report_desc_len < BUF_SIZE ? h->report_desc_len : BUF_SIZE, n = 0;
+    uint16_t want = h->report_desc_len < BUF_SIZE ? h->report_desc_len : BUF_SIZE;
+    uint32_t n = 0;
     /* wIndex of an interface-recipient GET_DESCRIPTOR is the
      * interface; `lang` carries it too for a usb-bus that passes it. */
     status_t st = usb_get_descriptor_until(h->usb, deadline(USB_TIMEOUT), DESC_REPORT, 0,
-                                           h->iface, want, 1, &n, h->buf);
+                                           h->iface, want, 1, h->buf, &n);
     if (gone(h, st))
         return 0;
     if (st == OK) {

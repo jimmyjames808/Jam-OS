@@ -196,7 +196,7 @@ bool t_comp_early_keys(void)
      * the next window, b's */
     ct_close(&a.k);
     CHECK(cs_client(&t, &b));
-    jam_nanosleep(now() + QUIET);   /* a's windows taken away */
+    jam_sleep_until(now() + QUIET);   /* a's windows taken away */
     CHECK(cs_tap(&t, U_X, 0));
     CHECK(cs_window(&b, 10, 10, 64, 64));
     CHECK(ct_await(&b.k, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER, b.kb, CT_WAIT));
@@ -206,9 +206,9 @@ bool t_comp_early_keys(void)
     /* but not one typed more than 5 s before a window takes the keys */
     ct_close(&b.k);
     CHECK(cs_client(&t, &c));
-    jam_nanosleep(now() + QUIET);
+    jam_sleep_until(now() + QUIET);
     CHECK(cs_tap(&t, U_A, 0));
-    jam_nanosleep(now() + STALE);
+    jam_sleep_until(now() + STALE);
     CHECK(cs_window(&c, 10, 10, 64, 64));
     CHECK(ct_await(&c.k, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER, c.kb, CT_WAIT));
     CHECK(cs_sync(&c, NULL));

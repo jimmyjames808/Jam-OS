@@ -28,8 +28,8 @@
  * generation, so a stale packet is recognised). */
 #define KEY_DRIVER         (1ull << 32)
 #define KEY_OF(i, gen)     (KEY_DRIVER | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
-/* A driver wrote on its DR_SERVE channel by itself (usb-bus:
- * usbbus.interface_attached): binding index and start generation. */
+/* A driver wrote on its DR_SERVE channel by itself (a disk's driver, a
+ * filesystem service: answers, disk.c): binding index and start generation. */
 #define KEY_EVENTS         (1ull << 33)
 #define KEY_EV_OF(i, gen)  (KEY_EVENTS | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 /* A kept USB interface channel closed (the device went): usb_ifs slot and
@@ -50,6 +50,10 @@
  * binding index and the keeper's generation. */
 #define KEY_KEEP           (1ull << 38)
 #define KEY_KEEP_OF(i, gen) (KEY_KEEP | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
+/* A usb-bus's events channel (usb.c, usbbus_events) has something to read,
+ * or closed: its slot and the slot's generation. */
+#define KEY_BUSEV          (1ull << 39)
+#define KEY_BUSEV_OF(i, gen) (KEY_BUSEV | (uint64_t)(i) << 16 | ((gen) & 0xffffu))
 #define KEY_INDEX(k)       ((uint32_t)((k) >> 16) & 0xffffu)
 #define KEY_GEN(k)         ((uint32_t)(k) & 0xffffu)
 
@@ -228,11 +232,14 @@ void close_client(struct binding *b);
  * handles. (usb.c) */
 void discard(handle_t h, uint32_t n, uint32_t nh);
 
-/* usb.c: the interfaces usb-bus reports on its DR_SERVE channel, and
- * their class drivers. */
+/* usb.c: the interfaces usb-bus reports on its events channel, and their
+ * class drivers. */
 #define MAX_USB_IFS 64
-/* b's driver wrote on its channel by itself (KEY_EVENTS). */
-void usb_driver_events(struct binding *b);
+/* b (a usb-bus) is about to start: its events channel (DR_EVENTS), whose
+ * other end devmgr serves. Nothing for any other driver. */
+status_t usb_bus_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
+/* A usb-bus's events channel's KEY_BUSEV packet. */
+void usb_bus_events(uint64_t key);
 /* A kept interface channel's KEY_USBIF packet. */
 void usb_if_closed(uint64_t key);
 /* b's driver (a usb-bus) is gone: forget the interfaces it reported (their

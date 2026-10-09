@@ -1,5 +1,5 @@
 /* contest: `run contest mouse`: the mouse on a console key channel, as
- * <jam/abi.h> "input" describes it. tools/shell-tests/mouse.txt runs it
+ * <openkeys.h> describes it. tools/shell-tests/mouse.txt runs it
  * with a USB mouse in QEMU: at each "contest: mouse: step N" the script
  * moves the mouse and clicks through QEMU's monitor, then types a letter
  * over the serial port, which ends the step (a key always arrives).

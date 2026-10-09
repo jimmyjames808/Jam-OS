@@ -25,5 +25,11 @@ typedef int status_t;
 #define ERR_IO             -18   /* the device failed the request (a disk error) */
 #define ERR_ALREADY_EXISTS -19   /* the name is taken */
 #define ERR_NO_SPACE       -20   /* the medium is full */
+/* For the filesystems (M12, Q9): each maps to one POSIX errno. */
+#define ERR_NOT_DIR        -21   /* a path names a file where a directory must be (ENOTDIR) */
+#define ERR_IS_DIR         -22   /* a directory where a file must be (EISDIR) */
+#define ERR_NOT_EMPTY      -23   /* the directory still holds entries (ENOTEMPTY) */
+#define ERR_NAME_TOO_LONG  -24   /* a name or path past its limit (ENAMETOOLONG) */
+#define ERR_BUSY           -25   /* in use: open, mounted, or locked by another (EBUSY) */
 
 const char *status_str(status_t s);

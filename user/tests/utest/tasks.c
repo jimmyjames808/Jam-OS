@@ -77,7 +77,7 @@ bool t_tasks_yield_and_wait(void)
     CHECK(next > t0 && next <= t0 + SHORT_NS);   /* a's deadline */
     CHECK(!task_run(set));         /* nobody's wait is over yet */
 
-    CHECK_ST(jam_nanosleep(next + NS_PER_MS), OK);
+    CHECK_ST(jam_sleep_until(next + NS_PER_MS), OK);
     CHECK(task_run(set));
     CHECK(!strcmp(trail, "abA1"));
     CHECK_EQ(task_live(set), 1);
@@ -170,7 +170,7 @@ bool t_tasks_start_slots_cap(void)
     CHECK(task_start(set, task_looker, NULL));
     uint64_t next = task_next_wake(set, UINT64_MAX);
     CHECK(next > t0 && next <= now() + SHORT_NS);
-    CHECK_ST(jam_nanosleep(next), OK);
+    CHECK_ST(jam_sleep_until(next), OK);
     CHECK(task_run(set));   /* looked again, and waits on */
     CHECK(!strcmp(trail, "l"));
     CHECK_EQ(task_live(set), 1);

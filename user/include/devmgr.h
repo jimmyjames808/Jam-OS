@@ -112,9 +112,8 @@
  * (see the reconnect rule above). Vendor and device 0xffff name the
  * instance-th function that has a driver bound, whatever it is (a client
  * asks each in turn which protocol it serves: tests find usb-bus this way
- * on QEMU and on the PC). Don't read from the channel: messages a driver
- * writes by itself are devmgr's (usb-bus's interface_attached); only
- * channel_call it. */
+ * on QEMU and on the PC). The channel is for calls: a driver's own
+ * messages go on a channel of their own (usb-bus's DR_EVENTS). */
 #define DEVMGR_GET_SERVICE  0x00030002u
 /* (dev) -> 3 handles, read-only views of a bound driver: its process
  * (RIGHTS_BASIC: wait, info), its job (RIGHTS_BASIC: wait, job_get_info)
