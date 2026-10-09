@@ -362,12 +362,21 @@ static void disk_answers(struct disk *d)
 }
 
 /* Read what b (a filesystem service) answered: the fs.stat probes of the
- * steps, and what a task waits for (an fs.sync). */
+ * steps, and what a task waits for (an fs.sync). 64 a turn, as every
+ * other channel: a service that writes as fast as we read (one a hostile
+ * stick took over) must not keep the loop from its port. Its persistent
+ * binding fires only on a new message, so a turn that stops with more
+ * queued comes back by a packet of its own, after what else is waiting. */
 void fs_answers(struct vol *b)
 {
     _Alignas(8) uint8_t buf[CALL_REP_MAX];
     struct idl_msg msg;
-    while (b->client) {
+    for (int guard = 0; b->client; guard++) {
+        if (guard == 64) {
+            struct port_packet p = { .key = b->client_key, .type = PORT_PACKET_USER };
+            (void)jam_port_queue(port, &p);   /* lost: the next answer's edge brings us back */
+            return;
+        }
         status_t rs = idl_reply_read(b->client, buf, sizeof(buf), &msg);
         if (rs == ERR_INTERNAL)
             continue;   /* nothing we ask is answered that big: dropped */
