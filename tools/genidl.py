@@ -155,21 +155,47 @@ REP_HANDLES_MAX = 8
 
 
 class Field:
-    def __init__(self, ctype, name, size, array, handle=False):
-        self.ctype, self.name, self.size, self.array = ctype, name, size, array
-        self.handle = handle
+    """One argument, result or event field. kind: "scalar" (u8 .. i64),
+    "fixed" (u8[N]) or "handle"."""
+    def __init__(self, kind, ctype, name, size, array=0):
+        self.kind, self.ctype, self.name, self.size, self.array = kind, ctype, name, size, array
+        self.handle = kind == "handle"
 
     def member(self):
+        """The field in the message's packed struct (handles travel apart)."""
         return f"{self.ctype} {self.name}[{self.array}];" if self.array else \
                f"{self.ctype} {self.name};"
 
-    def in_param(self):
-        return f"const uint8_t {self.name}[{self.array}]" if self.array else \
-               f"{self.ctype} {self.name}"
+    def in_params(self):
+        """The C parameters that pass it in (a client's argument, a server's
+        reply_<method> result)."""
+        return [f"const uint8_t {self.name}[{self.array}]" if self.array else
+                f"{self.ctype} {self.name}"]
 
-    def out_param(self):
-        return f"uint8_t out_{self.name}[{self.array}]" if self.array else \
-               f"{self.ctype} *out_{self.name}"
+    def out_params(self):
+        """The C parameters that take it out (a client's result, a handler's)."""
+        return [f"uint8_t out_{self.name}[{self.array}]" if self.array else
+                f"{self.ctype} *out_{self.name}"]
+
+    def handler_out_params(self):
+        return self.out_params()
+
+
+def in_params(fields):
+    return [p for f in fields for p in f.in_params()]
+
+
+def out_params(fields):
+    return [p for f in fields for p in f.out_params()]
+
+
+def handler_out_params(fields):
+    return [p for f in fields for p in f.handler_out_params()]
+
+
+def wire_size(fields):
+    """Bytes of a message with these fields: the header and the packed struct."""
+    return HDR + sum(f.size for f in fields)
 
 
 class Method:
@@ -218,15 +244,15 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
                 fail(src, lineno, f"{what}: handle arguments aren't supported (if a call fails "
                                   "it can't tell whether they were moved); return handles "
                                   "as results, or send them with channel_write")
-            fields.append(Field("handle_t", name, 0, 0, handle=True))
+            fields.append(Field("handle", "handle_t", name, 0))
         elif a:
             n = int(a.group(1))
             if not 1 <= n <= ARRAY_MAX:
                 fail(src, lineno, f"{what}: array size {n} not in 1..{ARRAY_MAX}")
-            fields.append(Field("uint8_t", name, n, n))
+            fields.append(Field("fixed", "uint8_t", name, n, n))
         elif t in SCALARS:
             ctype, size = SCALARS[t]
-            fields.append(Field(ctype, name, size, 0))
+            fields.append(Field("scalar", ctype, name, size))
         else:
             fail(src, lineno, f"{what}: unknown type '{t}' (want {' '.join(SCALARS)}, u8[N] "
                               "or handle)")
@@ -300,10 +326,9 @@ def parse(src):
         results = parse_fields(src, lineno, m.group(4), f"{mname} results", allow_handles=True)
         if sum(1 for f in results if f.handle) > REP_HANDLES_MAX:
             fail(src, lineno, f"{mname}: more than {REP_HANDLES_MAX} handle results")
-        for size, what in ((sum(f.size for f in args), "request"),
-                           (sum(f.size for f in results), "reply")):
-            if HDR + size > MSG_MAX:
-                fail(src, lineno, f"{mname}: {what} is {HDR + size} bytes (max {MSG_MAX})")
+        for size, what in ((wire_size(args), "request"), (wire_size(results), "reply")):
+            if size > MSG_MAX:
+                fail(src, lineno, f"{mname}: {what} is {size} bytes (max {MSG_MAX})")
         methods.append(Method(ordinal, mname, args, results, doc, "later" in words,
                               "idempotent" in words))
         doc = []
@@ -893,8 +918,8 @@ def copy_results(m, cond, r):
 
 def gen_client_sync(p, m):
     P, U = p.name, p.name.upper()
-    params = ["handle_t ch", "bool idl_within", "uint64_t idl_t"] + \
-             [f.in_param() for f in m.args] + [f.out_param() for f in m.results]
+    params = ["handle_t ch", "bool idl_within", "uint64_t idl_t"] + in_params(m.args) + \
+             out_params(m.results)
     out = [""]
     out.append(f"/* {P}_{m.name}_until and _within: idl_t is a deadline, or with idl_within a")
     out.append(" * timeout from when the call starts (the kernel's clock). */")
@@ -937,7 +962,7 @@ def gen_client_sync(p, m):
     out += copy_results(m, "idl_st == OK", "idl_r.")
     out.append("    return idl_st;")
     out.append("}")
-    rest = [f.in_param() for f in m.args] + [f.out_param() for f in m.results]
+    rest = in_params(m.args) + out_params(m.results)
     names = [f.name for f in m.args] + [f"out_{f.name}" for f in m.results]
     for suffix, time, call in (("_until", "uint64_t deadline_ns", "false, deadline_ns"),
                                ("_within", "uint64_t timeout_ns", "true, timeout_ns"),
@@ -955,7 +980,7 @@ def gen_client_sync(p, m):
 def gen_client_async(p, m):
     P, U = p.name, p.name.upper()
     out = [""]
-    params = ["handle_t ch", "uint32_t idl_txid"] + [f.in_param() for f in m.args]
+    params = ["handle_t ch", "uint32_t idl_txid"] + in_params(m.args)
     out.append(f"/* {P}_{m.name} without waiting: the request, with the caller's txid (not 0).")
     out.append(f" * The reply comes on ch: idl_reply_read, then {P}_{m.name}_result. */")
     out.append(f"static inline status_t {P}_{m.name}_send({', '.join(params)})")
@@ -968,7 +993,7 @@ def gen_client_async(p, m):
     out.append("    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);")
     out.append("}")
     hres = [f for f in m.results if f.handle]
-    params = ["const void *idl_rep", "struct idl_msg *idl_m"] + [f.out_param() for f in m.results]
+    params = ["const void *idl_rep", "struct idl_msg *idl_m"] + out_params(m.results)
     out.append("")
     out.append(f"/* The status and results of a reply to {P}_{m.name}_send (read with")
     out.append(" * idl_reply_read). The reply's handles are taken in every case: moved to")
@@ -1000,7 +1025,7 @@ def gen_client_async(p, m):
 def gen_server_reply(p, m):
     P = p.name
     hres = [f for f in m.results if f.handle]
-    params = ["struct idl_txn idl_txn", "status_t idl_st"] + [f.in_param() for f in m.results]
+    params = ["struct idl_txn idl_txn", "status_t idl_st"] + in_params(m.results)
     out = [""]
     out.append(f"/* Answer the {P}.{m.name} request kept in txn: idl_st and, if it is OK, the")
     out.append(" * results (handles are moved in every case: sent, or closed). A positive")
@@ -1127,8 +1152,8 @@ def gen_protocol(p):
         out.append(f"#define {U}_{m.name.upper():<16} 0x{p.wire(m):08x}u")
     out.append("")
 
-    req_max = max(HDR + sum(f.size for f in m.args) for m in p.methods)
-    rep_max = max(HDR + sum(f.size for f in m.results) for m in p.methods)
+    req_max = max(wire_size(m.args) for m in p.methods)
+    rep_max = max(wire_size(m.results) for m in p.methods)
     out.append("/* Messages (packed: no padding bytes ever cross the channel). */")
     for m in p.methods:
         out.append(f"struct {P}_{m.name}_req {{")
@@ -1162,7 +1187,7 @@ def gen_protocol(p):
     out.append(f"struct {P}_ops {{")
     for m in p.methods:
         params = ["void *ctx"] + (["struct idl_txn idl_txn"] if m.later else []) + \
-                 [f.in_param() for f in m.args] + [f.out_param() for f in m.results]
+                 in_params(m.args) + handler_out_params(m.results)
         out.append(f"    status_t (*{m.name})({', '.join(params)});")
     out.append("};")
     for m in p.methods:
@@ -1325,22 +1350,28 @@ def gen_protocol(p):
     return "\n".join(out)
 
 
-def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("gen", "check"):
-        sys.exit(__doc__)
-    protos = [parse(f) for f in sorted(glob.glob(os.path.join(IDL_DIR, "*.idl")))]
+def outputs_for(idl_dir, out_dir, ids_file):
+    """{path: text} of every generated file, from the .idl files in idl_dir."""
+    protos = [parse(f) for f in sorted(glob.glob(os.path.join(idl_dir, "*.idl")))]
     ids = {}
     for p in protos:
         if p.pid in ids:
             sys.exit(f"{p.src}: protocol id {p.pid} is also {ids[p.pid]}'s")
         ids[p.pid] = p.name
-    entries = parse_ids(IDS_FILE)
-    check_ids(IDS_FILE, entries, protos)
-    outputs = {os.path.join(OUT_DIR, "common.h"): gen_common(entries)}
+    entries = parse_ids(ids_file)
+    check_ids(ids_file, entries, protos)
+    outputs = {os.path.join(out_dir, "common.h"): gen_common(entries)}
     for p in protos:
         if p.name == "common":
             sys.exit(f"{p.src}: 'common' is reserved")
-        outputs[os.path.join(OUT_DIR, p.name + ".h")] = gen_protocol(p)
+        outputs[os.path.join(out_dir, p.name + ".h")] = gen_protocol(p)
+    return outputs
+
+
+def run(mode, idl_dir=IDL_DIR, out_dir=OUT_DIR, ids_file=IDS_FILE):
+    """`gen` or `check`. Exits with the reason on a bad .idl, and in `check`
+    on an output that is stale, missing or left over."""
+    outputs = outputs_for(idl_dir, out_dir, ids_file)
     stale = []
     for path, text in outputs.items():
         try:
@@ -1349,15 +1380,15 @@ def main():
             old = None
         if old == text:
             continue
-        if sys.argv[1] == "gen":
-            os.makedirs(OUT_DIR, exist_ok=True)
+        if mode == "gen":
+            os.makedirs(out_dir, exist_ok=True)
             open(path, "w").write(text)
             print(f"genidl: wrote {path}")
         else:
             stale.append(path)
-    for path in sorted(glob.glob(os.path.join(OUT_DIR, "*.h"))):
+    for path in sorted(glob.glob(os.path.join(out_dir, "*.h"))):
         if path not in outputs:
-            if sys.argv[1] == "gen":
+            if mode == "gen":
                 os.remove(path)
                 print(f"genidl: removed {path} (no .idl for it)")
             else:
@@ -1365,6 +1396,12 @@ def main():
     if stale:
         sys.exit("genidl: generated files are stale or edited by hand "
                  f"({', '.join(stale)}):\nrun `make idl` and commit the result")
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in ("gen", "check"):
+        sys.exit(__doc__)
+    run(sys.argv[1])
 
 
 if __name__ == "__main__":
