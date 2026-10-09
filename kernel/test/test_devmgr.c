@@ -392,6 +392,9 @@ KTEST(devmgr_refused_start_leaves_nothing)
     KT_EQ(job_set_limit(m.job, JOB_LIMIT_THREADS, JOB_NO_LIMIT), OK);
     KT_EQ(st, ERR_NO_RESOURCES);
     dm_wait_idle(&m);
+    dma_quarantine_flush(d);   /* as check_nothing_left does: with the IOMMU the stopped
+                                * driver's dma_cap goes on the release thread, and on a fast
+                                * host it may not be gone yet */
     for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
         ref.used[k] = job_used(m.job, k);   /* devmgr alone */
     KT_EQ(ref.used[JOB_LIMIT_THREADS], info.threads);
