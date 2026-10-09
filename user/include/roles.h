@@ -25,7 +25,7 @@
 #include <jam/startup.h>
 
 enum {
-    SR_STDOUT = 5,          /* channel; libos prints through debug_write instead */
+    SR_STDOUT = 5,          /* channel: libos prints there when given, else through debug_write */
     SR_DEVMGR = 8,          /* devmgr's query channel, its server end (clients
                              * open /svc/devmgr): the `devmgr` protocol
                              * (abi/idl/devmgr.idl), get_service of a device
