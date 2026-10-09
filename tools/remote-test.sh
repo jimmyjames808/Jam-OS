@@ -14,7 +14,8 @@
 #
 # JAMOS_REMOTE: an ssh host whose login runs Windows' OpenSSH, with WSL's
 # Ubuntu behind `wsl` (docs/TESTING.md, "Another machine for the tests").
-# The QEMU_*, KTESTS and JAMOS_* variables go with the command. Each
+# The QEMU_*, KTESTS, JAMOS_* and PC_RUNS variables go with the command
+# (others: `tools/remote-test.sh env VAR=value <command>`). Each
 # checkout has a directory of its own there (~/work/<its name>), so several
 # checkouts (agents' worktrees) test at once; one checkout's builds take
 # turns (flock), its tests don't.
@@ -43,7 +44,7 @@ rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude 
 {
     echo "set -u; cd ~/$dir || exit 2"
     echo 'export PATH=$HOME/cross/bin:$HOME/qemu-10/bin:$HOME/mtools/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8'
-    env | grep -E '^(QEMU_[A-Z0-9_]*|KTESTS|JAMOS_[A-Z0-9_]*)=' | grep -v '^JAMOS_REMOTE\(_ONLY\)\?=' |
+    env | grep -E '^(QEMU_[A-Z0-9_]*|KTESTS|JAMOS_[A-Z0-9_]*|PC_RUNS)=' | grep -v '^JAMOS_REMOTE\(_ONLY\)\?=' |
         while IFS= read -r kv; do printf 'export %q\n' "$kv"; done
     echo 'flock ~/work/.build-$(basename "$PWD").lock sh -c "make -s -j16 && make -s -j16 image" > build-remote.log 2>&1 ||
         { tail -20 build-remote.log; echo "remote-test: the build failed"; exit 2; }'
