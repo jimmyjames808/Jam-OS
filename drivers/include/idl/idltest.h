@@ -33,6 +33,7 @@
 #define IDLTEST_GREET            0x00210006u
 #define IDLTEST_LATER_TEXT       0x00210007u
 #define IDLTEST_BROKEN           0x00210008u
+#define IDLTEST_SUMS             0x00210009u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct idltest_echo_req {
@@ -112,6 +113,17 @@ struct idltest_broken_req {
 struct idltest_broken_rep {
     uint32_t txid;
     int32_t  status;
+} __attribute__((packed));
+struct idltest_sums_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t tag;
+} __attribute__((packed));
+struct idltest_sums_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t total;
+    uint8_t tag;
 } __attribute__((packed));
 
 #define IDLTEST_REQ_MAX 78u   /* bytes: the biggest request */
@@ -493,6 +505,75 @@ static inline status_t idltest_broken(handle_t ch, uint32_t how, char out_text[8
     return idltest_broken_call(ch, false, DEADLINE_NEVER, how, out_text, out_text_len, out_data, out_data_len);
 }
 
+/* idltest_sums_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_sums_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t tag, const uint16_t *a, uint32_t a_len, const uint32_t *b, uint32_t b_len, const uint64_t *c, uint32_t c_len, uint64_t *out_total, uint8_t *out_tag, uint32_t out_b[4], uint32_t *out_b_len, int64_t out_c[2], uint32_t *out_c_len)
+{
+    _Alignas(8) uint8_t idl_b0[72];
+    _Alignas(8) uint8_t idl_b1[56];
+    struct idltest_sums_req *idl_q = (struct idltest_sums_req *)idl_b0;
+    const struct idltest_sums_rep *idl_r = (const struct idltest_sums_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = IDLTEST_SUMS;
+    idl_q->tag = tag;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, a, a_len, 8, 2))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, b, b_len, 4, 4))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, c, c_len, 2, 8))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 56, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 4, 4, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 2, 8, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_total)
+        *out_total = idl_r->total;
+    if (idl_st == OK && out_tag)
+        *out_tag = idl_r->tag;
+    if (idl_st == OK && out_b) {
+        if (idl_l0)
+            __builtin_memcpy(out_b, idl_p0, idl_l0 * 4);
+    }
+    if (idl_st == OK && out_b_len)
+        *out_b_len = idl_l0;
+    if (idl_st == OK && out_c) {
+        if (idl_l1)
+            __builtin_memcpy(out_c, idl_p1, idl_l1 * 8);
+    }
+    if (idl_st == OK && out_c_len)
+        *out_c_len = idl_l1;
+    return idl_st;
+}
+/* Arrays of wider scalars, each aligned to its element's size on the wire:
+ * total the sum of a, b and c, tag back, b back, and c negated.
+ * ERR_BAD_STATE if the handler is given a misaligned array. */
+static inline status_t idltest_sums_until(handle_t ch, uint64_t deadline_ns, uint8_t tag, const uint16_t *a, uint32_t a_len, const uint32_t *b, uint32_t b_len, const uint64_t *c, uint32_t c_len, uint64_t *out_total, uint8_t *out_tag, uint32_t out_b[4], uint32_t *out_b_len, int64_t out_c[2], uint32_t *out_c_len)
+{
+    return idltest_sums_call(ch, false, deadline_ns, tag, a, a_len, b, b_len, c, c_len, out_total, out_tag, out_b, out_b_len, out_c, out_c_len);
+}
+static inline status_t idltest_sums_within(handle_t ch, uint64_t timeout_ns, uint8_t tag, const uint16_t *a, uint32_t a_len, const uint32_t *b, uint32_t b_len, const uint64_t *c, uint32_t c_len, uint64_t *out_total, uint8_t *out_tag, uint32_t out_b[4], uint32_t *out_b_len, int64_t out_c[2], uint32_t *out_c_len)
+{
+    return idltest_sums_call(ch, true, timeout_ns, tag, a, a_len, b, b_len, c, c_len, out_total, out_tag, out_b, out_b_len, out_c, out_c_len);
+}
+static inline status_t idltest_sums(handle_t ch, uint8_t tag, const uint16_t *a, uint32_t a_len, const uint32_t *b, uint32_t b_len, const uint64_t *c, uint32_t c_len, uint64_t *out_total, uint8_t *out_tag, uint32_t out_b[4], uint32_t *out_b_len, int64_t out_c[2], uint32_t *out_c_len)
+{
+    return idltest_sums_call(ch, false, DEADLINE_NEVER, tag, a, a_len, b, b_len, c, c_len, out_total, out_tag, out_b, out_b_len, out_c, out_c_len);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* idltest_echo without waiting: the request, with the caller's txid (not 0).
@@ -860,6 +941,74 @@ static inline status_t idltest_broken_result(const void *idl_rep, struct idl_msg
     return OK;
 }
 
+/* idltest_sums without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then idltest_sums_result. */
+static inline status_t idltest_sums_send(handle_t ch, uint32_t idl_txid, uint8_t tag, const uint16_t *a, uint32_t a_len, const uint32_t *b, uint32_t b_len, const uint64_t *c, uint32_t c_len)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[72];
+    struct idltest_sums_req *idl_q = (struct idltest_sums_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = IDLTEST_SUMS;
+    idl_q->tag = tag;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, a, a_len, 8, 2))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, b, b_len, 4, 4))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, c, c_len, 2, 8))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to idltest_sums_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_sums_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_total, uint8_t *out_tag, uint32_t out_b[4], uint32_t *out_b_len, int64_t out_c[2], uint32_t *out_c_len)
+{
+    const struct idltest_sums_rep *idl_r = (const struct idltest_sums_rep *)idl_rep;
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 4, 4, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 2, 8, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_total)
+        *out_total = idl_r->total;
+    if (out_tag)
+        *out_tag = idl_r->tag;
+    if (out_b) {
+        if (idl_l0)
+            __builtin_memcpy(out_b, idl_p0, idl_l0 * 4);
+    }
+    if (out_b_len)
+        *out_b_len = idl_l0;
+    if (out_c) {
+        if (idl_l1)
+            __builtin_memcpy(out_c, idl_p1, idl_l1 * 8);
+    }
+    if (out_c_len)
+        *out_c_len = idl_l1;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -875,6 +1024,7 @@ struct idltest_ops {
     status_t (*greet)(void *ctx, const char *name, uint32_t name_len, const char *word, uint32_t word_len, char *out_text, uint32_t *out_text_len);
     status_t (*later_text)(void *ctx, struct idl_txn idl_txn, uint32_t key, char *out_name, uint32_t *out_name_len, uint8_t *out_extra, uint32_t *out_extra_len);
     status_t (*broken)(void *ctx, uint32_t how, char *out_text, uint32_t *out_text_len, uint8_t *out_data, uint32_t *out_data_len);
+    status_t (*sums)(void *ctx, uint8_t tag, const uint16_t *a, uint32_t a_len, const uint32_t *b, uint32_t b_len, const uint64_t *c, uint32_t c_len, uint64_t *out_total, uint8_t *out_tag, uint32_t *out_b, uint32_t *out_b_len, int64_t *out_c, uint32_t *out_c_len);
 };
 
 /* Answer the idltest.echo request kept in txn: idl_st and, if it is OK, the
@@ -1035,6 +1185,32 @@ static inline status_t idltest_reply_broken(struct idl_txn idl_txn, status_t idl
                              !idl_str_ok(text, text_len)))
         idl_st = ERR_INTERNAL;
     if (idl_st == OK && !idl_put(idl_b0, &idl_rn, data, data_len, 4, 1))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the idltest.sums request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't
+ * one). Returns the write's status (idl_reply_write). */
+static inline status_t idltest_reply_sums(struct idl_txn idl_txn, status_t idl_st, uint64_t total, uint8_t tag, const uint32_t *b, uint32_t b_len, const int64_t *c, uint32_t c_len)
+{
+    _Alignas(8) uint8_t idl_b0[56];
+    struct idltest_sums_rep *idl_r = (struct idltest_sums_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->total = total;
+    idl_r->tag = tag;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, b, b_len, 4, 4))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, c, c_len, 2, 8))
         idl_st = ERR_INTERNAL;
     idl_r->status = idl_st;
     if (idl_st != OK) {
@@ -1275,6 +1451,52 @@ static inline uint32_t idltest_dispatch_on(handle_t ch, const struct idltest_ops
         uint32_t idl_rn = sizeof(*idl_r);
         idl_place(rep, &idl_rn, 10, out_text_len, 1);
         idl_place(rep, &idl_rn, 20, out_data_len, 1);
+        return idl_rn;
+    }
+    case IDLTEST_SUMS: {
+        const struct idltest_sums_req *idl_q = (const struct idltest_sums_req *)req;
+        struct idltest_sums_rep *idl_r = (struct idltest_sums_rep *)rep;
+        uint64_t out_total = 0;
+        uint8_t out_tag = 0;
+        uint32_t *out_b = (uint32_t *)((uint8_t *)rep + 20);
+        uint32_t out_b_len = 0;
+        int64_t *out_c = (int64_t *)((uint8_t *)rep + 40);
+        uint32_t out_c_len = 0;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        const void *idl_p1 = NULL;
+        uint32_t idl_l1 = 0;
+        const void *idl_p2 = NULL;
+        uint32_t idl_l2 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 8, 2, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4, 4, &idl_p1, &idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 2, 8, &idl_p2, &idl_l2))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
+            return sizeof(*idl_h);
+        if (!ops->sums) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        idl_st = ops->sums(ctx, idl_q->tag, (const uint16_t *)idl_p0, idl_l0, (const uint32_t *)idl_p1, idl_l1, (const uint64_t *)idl_p2, idl_l2, &out_total, &out_tag, out_b, &out_b_len, out_c, &out_c_len);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_b_len > 4))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_c_len > 2))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->total = out_total;
+        idl_r->tag = out_tag;
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 20, out_b_len, 4);
+        idl_place(rep, &idl_rn, 40, out_c_len, 8);
         return idl_rn;
     }
     }

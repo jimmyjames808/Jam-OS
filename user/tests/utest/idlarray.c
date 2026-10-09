@@ -297,3 +297,145 @@ bool t_idl_var_refused(void)
     CHECK_ST(jam_handle_close(sv), OK);
     return true;
 }
+
+/* ---- arrays of wider scalars (u16[<=N] ... i64[<=N]) ------------------------- */
+
+static status_t s_sums(void *ctx, uint8_t tag, const uint16_t *a, uint32_t a_len,
+                       const uint32_t *b, uint32_t b_len, const uint64_t *c, uint32_t c_len,
+                       uint64_t *out_total, uint8_t *out_tag, uint32_t *out_b,
+                       uint32_t *out_b_len, int64_t *out_c, uint32_t *out_c_len)
+{
+    struct arr_server *s = ctx;
+    s->ran++;
+    if ((uintptr_t)a % 2 || (uintptr_t)b % 4 || (uintptr_t)c % 8 || (uintptr_t)out_b % 4 ||
+        (uintptr_t)out_c % 8)
+        return ERR_BAD_STATE;
+    uint64_t t = 0;
+    for (uint32_t i = 0; i < a_len; i++)
+        t += a[i];
+    for (uint32_t i = 0; i < b_len; i++) {
+        t += b[i];
+        out_b[i] = b[i];
+    }
+    for (uint32_t i = 0; i < c_len; i++) {
+        t += c[i];
+        out_c[i] = -(int64_t)c[i];
+    }
+    *out_total = t;
+    *out_tag = tag;
+    *out_b_len = b_len;
+    *out_c_len = c_len;
+    return OK;
+}
+
+static const struct idltest_ops sum_ops = { .sums = s_sums };
+
+/* One sums call through _send, serve_one and _result. */
+static bool sums(handle_t c, handle_t sv, struct arr_server *s, uint8_t tag, const uint16_t *a,
+                 uint32_t na, const uint32_t *b, uint32_t nb, const uint64_t *cc, uint32_t nc,
+                 status_t want)
+{
+    static uint32_t last;
+    uint32_t t = idl_txid_next(&last), nb2 = 9, nc2 = 9, b2[4];
+    int64_t c2[2];
+    uint64_t total = 0, sum = 0;
+    uint8_t tag2 = 0;
+    CHECK_ST(idltest_sums_send(c, t, tag, a, na, b, nb, cc, nc), OK);
+    CHECK_ST(idltest_serve_one(sv, &sum_ops, s), OK);
+    _Alignas(8) uint8_t rep[IDLTEST_REP_MAX];
+    struct idl_msg m;
+    CHECK_ST(idl_reply_read(c, rep, sizeof(rep), &m), OK);
+    CHECK_EQ(m.txid, t);
+    CHECK_ST(idltest_sums_result(rep, &m, &total, &tag2, b2, &nb2, c2, &nc2), want);
+    if (want != OK)
+        return true;
+    for (uint32_t i = 0; i < na; i++)
+        sum += a[i];
+    for (uint32_t i = 0; i < nb; i++)
+        sum += b[i];
+    for (uint32_t i = 0; i < nc; i++)
+        sum += cc[i];
+    CHECK(total == sum && tag2 == tag && nb2 == nb && nc2 == nc);
+    for (uint32_t i = 0; i < nb; i++)
+        CHECK_EQ(b2[i], b[i]);
+    for (uint32_t i = 0; i < nc; i++)
+        CHECK(c2[i] == -(int64_t)cc[i]);
+    return true;
+}
+
+bool t_idl_scalar_arrays(void)
+{
+    handle_t c, sv;
+    CHECK_ST(jam_channel_create(&c, &sv), OK);
+    struct arr_server s = { 0 };
+    static const uint16_t a[9] = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    static const uint32_t b[5] = { 100000, 200000, 300000, 400000, 500000 };
+    static const uint64_t cc[3] = { 1ull << 40, 3, 5 };
+
+    /* Every length from none to full, each array aligned to its element
+     * (the handler checks; the results are moved into place after it). */
+    for (uint32_t na = 0; na <= 8; na += 3)
+        for (uint32_t nb = 0; nb <= 4; nb++)
+            for (uint32_t nc = 0; nc <= 2; nc++)
+                if (!sums(c, sv, &s, (uint8_t)(na + nb + nc), a, na, b, nb, cc, nc, OK))
+                    return false;
+    unsigned ran = s.ran;
+
+    /* Past N: the client refuses. */
+    uint32_t last = 50;
+    CHECK_ST(idltest_sums_send(c, idl_txid_next(&last), 0, a, 9, b, 0, cc, 0), ERR_INVALID_ARGS);
+    CHECK_ST(idltest_sums_send(c, idl_txid_next(&last), 0, a, 0, b, 5, cc, 0), ERR_INVALID_ARGS);
+    CHECK_ST(idltest_sums_send(c, idl_txid_next(&last), 0, a, 0, b, 0, cc, 3), ERR_INVALID_ARGS);
+
+    /* By hand: tag, a (1: count at 9, a pad byte at 11, the element at 12),
+     * b (none: count at 14, pad 16), c (none: count at 16, pad to 24). */
+    _Alignas(8) uint8_t q[32] = { 0 };
+    struct idltest_sums_req h = { 0, IDLTEST_SUMS, 7 };
+    memcpy(q, &h, sizeof(h));
+    uint16_t one = 1, none = 0, elem = 42;
+    memcpy(q + 9, &one, 2);
+    memcpy(q + 12, &elem, 2);
+    memcpy(q + 14, &none, 2);
+    memcpy(q + 16, &none, 2);
+    status_t st;
+    if (!raw(c, sv, &s, q, 24, &st))
+        return false;
+    CHECK_ST(st, ERR_NOT_SUPPORTED);   /* well-formed: the server has no sums */
+    struct arr_server s2 = { 0 };
+    uint32_t txid = 77;
+    memcpy(q, &txid, 4);
+    CHECK_ST(jam_channel_write(c, q, 24, NULL, 0), OK);
+    CHECK_ST(idltest_serve_one(sv, &sum_ops, &s2), OK);
+    _Alignas(8) uint8_t rep[IDLTEST_REP_MAX];
+    struct idl_msg m;
+    uint64_t total = 0;
+    CHECK_ST(idl_reply_read(c, rep, sizeof(rep), &m), OK);
+    CHECK_ST(idltest_sums_result(rep, &m, &total, NULL, NULL, NULL, NULL, NULL), OK);
+    CHECK_EQ(total, 42);
+    /* A padding byte not 0, a count past N, the last padding cut short. */
+    q[11] = 1;
+    if (!raw(c, sv, &s2, q, 24, &st))
+        return false;
+    CHECK_ST(st, ERR_INVALID_ARGS);
+    q[11] = 0;
+    q[23] = 1;
+    if (!raw(c, sv, &s2, q, 24, &st))
+        return false;
+    CHECK_ST(st, ERR_INVALID_ARGS);
+    q[23] = 0;
+    uint16_t nine = 9;
+    memcpy(q + 9, &nine, 2);
+    if (!raw(c, sv, &s2, q, 24, &st))
+        return false;
+    CHECK_ST(st, ERR_INVALID_ARGS);
+    memcpy(q + 9, &one, 2);
+    if (!raw(c, sv, &s2, q, 20, &st))
+        return false;
+    CHECK_ST(st, ERR_INVALID_ARGS);
+    CHECK_EQ(s2.ran, 1);
+    CHECK_EQ(s.ran, ran);
+
+    CHECK_ST(jam_handle_close(c), OK);
+    CHECK_ST(jam_handle_close(sv), OK);
+    return true;
+}

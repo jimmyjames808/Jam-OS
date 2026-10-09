@@ -29,25 +29,26 @@ id                          1..65535, listed in abi/idl/ids.txt (the registry
 ordinal                     1..65535, unique in the protocol
 type                        u8 u16 u32 u64 i8 i16 i32 i64, or u8[N] (a
                             fixed-size byte array, 1 <= N <= 4096), or
-                            u8[<=N] (up to N bytes), or str[<=N] (a string
-                            of up to N bytes of UTF-8), or `handle`
+                            u8[<=N] (up to N bytes), u16[<=N] .. i64[<=N]
+                            (up to N of those scalars), or str[<=N] (a
+                            string of up to N bytes of UTF-8), or `handle`
                             (RESULTS only, at most 8 per method)
 
 Either list may be empty: `()`. A request or reply is at most 16 KiB
 (MSG_MAX, header included). Bulk data goes through a shared VMO.
 
-Arrays of varying length, u8[<=N] and str[<=N] (1 <= N <= 65535, within
+Arrays of varying length, u8[<=N] .. i64[<=N] and str[<=N] (1 <= N <= 65535, within
 the message's 16 KiB): on the wire, after the message's fixed part (its
 other fields, in a packed struct) and in the order declared, a u16 count
 of elements, zero bytes up to a multiple of the element's size from the
 message's start (none for bytes), the elements. In C each is two
 parameters, a pointer and a length in elements (`x`, `x_len`; a field may
 not be named `x_len` beside `x`):
-    a client's argument, a handler's    const uint8_t *x, uint32_t x_len
+    a client's argument, a handler's    const uint32_t *x, uint32_t x_len
                                         (str: const char *, no NUL)
-    a client's result                   uint8_t out_x[N], uint32_t *out_x_len
+    a client's result                   uint32_t out_x[N], uint32_t *out_x_len
                                         (str: char out_x[N + 1], NUL-terminated)
-    a handler's result                  uint8_t *out_x (room for N, in the
+    a handler's result                  uint32_t *out_x (room for N, in the
                                         reply), uint32_t *out_x_len
     reply_<method>'s result             as a client's argument
 A str is well-formed UTF-8 (<utf8.h>'s rules) without a NUL. The
@@ -57,8 +58,10 @@ isn't one (ERR_INVALID_ARGS, before any handler sees it); the generated
 client refuses the same in its own arguments before sending
 (ERR_INVALID_ARGS) and in a reply (ERR_INTERNAL); a handler's or
 reply_<method>'s result that breaks them is answered ERR_INTERNAL. A
-handler's argument points into the request: copy what it keeps (a
-`later` handler especially). Records stay byte arrays of a C struct (the
+handler's argument points into the request, and a handler's result into
+the reply, each aligned to its element's size (the request and reply
+buffers given to <proto>_dispatch_on are 8-aligned): copy what it keeps
+(a `later` handler especially). Records stay byte arrays of a C struct (the
 M12 plan's D2).
 
 Message buffers: a generated function keeps them on its stack up to
@@ -182,7 +185,7 @@ SCALARS = {"u8": ("uint8_t", 1), "u16": ("uint16_t", 2), "u32": ("uint32_t", 4),
            "u64": ("uint64_t", 8), "i8": ("int8_t", 1), "i16": ("int16_t", 2),
            "i32": ("int32_t", 4), "i64": ("int64_t", 8)}
 ARRAY = re.compile(r"u8\[(\d+)\]$")
-VAR = re.compile(r"(u8|str)\[<=(\d+)\]$")   # a varying array: up to N elements
+VAR = re.compile(r"(u8|u16|u32|u64|i8|i16|i32|i64|str)\[<=(\d+)\]$")   # varying: up to N elements
 ARRAY_MAX = 4096
 # Bytes of one request or reply (the M12 reviews' S-4: two 4 KiB paths and
 # more in one request). The kernel takes up to 64 KiB a message; the bound
@@ -2137,6 +2140,11 @@ SELFTESTS = [
     ("an array past a u16", t_ok("1 a () -> (u8[<=65536] a)\n"), None, "N not in 1..65535"),
     ("a str[N]", t_ok("1 a (str[8] a) -> ()\n"), None, "unknown type 'str[8]'"),
     ("x and x_len", t_ok("1 a (str[<=8] x, u32 x_len) -> ()\n"), None, "is x's length"),
+    ("arrays of every scalar", t_ok("1 a (u16[<=2] a, u32[<=2] b, u64[<=2] c, i8[<=2] d, "
+                                    "i16[<=2] e, i32[<=2] f) -> (i64[<=2025] g)\n"), None, None),
+    ("u64s up to 16 KiB", t_ok("1 a (u8 x, u64[<=2046] a) -> ()\n"), None, None),
+    ("u64s past 16 KiB, padding counted", t_ok("1 a (u8 x, u64[<=2047] a) -> ()\n"), None,
+     "request is 16392"),
 ]
 
 

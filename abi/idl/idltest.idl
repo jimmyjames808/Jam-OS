@@ -29,6 +29,10 @@ protocol idltest 33
 # text that isn't UTF-8; 3, data of 5 bytes; 4, a NUL in the text; else
 # "ok" and 4 bytes.
 8  broken   (u32 how)              -> (str[<=8] text, u8[<=4] data)
+# Arrays of wider scalars, each aligned to its element's size on the wire:
+# total the sum of a, b and c, tag back, b back, and c negated.
+# ERR_BAD_STATE if the handler is given a misaligned array.
+9  sums     (u8 tag, u16[<=8] a, u32[<=4] b, u64[<=2] c) -> (u64 total, u8 tag, u32[<=4] b, i64[<=2] c)
 
 # idltest_two: a second protocol in the file (a protocol for each kind of
 # channel): its methods' ordinals are its own, and a server of either
