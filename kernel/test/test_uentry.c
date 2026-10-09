@@ -36,8 +36,12 @@
 #define TSN_CHECK  0x7007   /* prog->checks++; prog->bad++ unless arg0 == prog->expect */
 #define TSN_HOP    0x7008   /* move to the next CPU (by index), then return 0 */
 #define TSN_MEET   0x7009   /* wait (yielding) until arg0 threads have called it */
+#define TSN_MARK   0x700a   /* append arg0 to mark_log */
 
 static volatile uint32_t meet_count;   /* TSN_MEET's callers so far; a test resets it */
+#define MARK_MAX 1024
+static uint8_t  mark_log[MARK_MAX];     /* TSN_MARK's arguments, in call order */
+static uint32_t mark_n;                 /* how many (a test resets it) */
 
 /* ---- a hand-built user address space -------------------------------------- */
 
@@ -180,6 +184,13 @@ static bool utest_syscall(struct syscall_frame *f, int64_t *ret)
             thread_yield();
         *ret = 0;
         return true;
+    case TSN_MARK: {
+        uint32_t i = __atomic_fetch_add(&mark_n, 1, __ATOMIC_RELAXED);
+        if (i < MARK_MAX)
+            mark_log[i] = (uint8_t)f->args[0];
+        *ret = 0;
+        return true;
+    }
     case TSN_HOP: {
         cpumask_t m;
         cpumask_one(&m, (percpu_index() + 1) % cpu_count);
@@ -904,4 +915,48 @@ KTEST(uentry_fs_base_bad_refused)
     KT_EQ((int64_t)prog.report[3], ERR_INVALID_ARGS);
     KT_EQ(prog.report[4], 0x600df5ull);
     uspace_destroy(&u);
+}
+
+/* ---- thread_yield ------------------------------------------------------------ */
+
+/* Two ring-3 threads on one CPU, each marking the log and calling the real
+ * thread_yield in turn: the log alternates between them (without a yield
+ * that switches, each would run its whole loop in one time slice). */
+KTEST(uentry_thread_yield_alternates)
+{
+    KT_NEEDS_IDLE("counts switches between two threads on one CPU");
+    enum { ITERS = 200 };
+    struct uspace u[2];
+    struct uprog prog[2] = { 0 };
+    struct urun r[2];
+    struct thread *t[2];
+    meet_count = 0;
+    mark_n = 0;
+    for (int i = 0; i < 2; i++) {
+        uspace_create(&u[i]);
+        struct emit e = { u[i].code, (uint8_t *)u[i].code + PAGE_SIZE };
+        mov_imm(&e, R_RDI, 2);
+        e_call_nr(&e, TSN_MEET);
+        e_mov_rbx(&e, ITERS);
+        const uint8_t *loop = e.p;
+        mov_imm(&e, R_RDI, (uint64_t)i);
+        e_call_nr(&e, TSN_MARK);
+        e_call_nr(&e, SYS_thread_yield);
+        e_loop_rbx(&e, loop);
+        e_report_rax(&e, 0);   /* the last yield's status */
+        e_call_nr(&e, TSN_EXIT);
+        r[i] = (struct urun){ &u[i], &prog[i], UCODE, 0, 0, 0 };
+        t[i] = user_spawn(&r[i], 1 % cpu_count);
+    }
+    for (int i = 0; i < 2; i++)
+        user_join(t[i]);
+    KT_EQ(mark_n, 2 * ITERS);
+    unsigned turns = 0;
+    for (uint32_t k = 1; k < 2 * ITERS; k++)
+        turns += mark_log[k] != mark_log[k - 1];
+    KT_ASSERT(turns >= ITERS);   /* about 2 * ITERS when every yield switches */
+    for (int i = 0; i < 2; i++) {
+        KT_EQ(prog[i].report[0], OK);
+        uspace_destroy(&u[i]);
+    }
 }

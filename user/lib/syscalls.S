@@ -411,6 +411,14 @@ jam_thread_set_fs_base:
     ret
     .size jam_thread_set_fs_base, . - jam_thread_set_fs_base
 
+    .globl jam_thread_yield
+    .type jam_thread_yield, @function
+jam_thread_yield:
+    mov $SYS_thread_yield, %eax
+    syscall
+    ret
+    .size jam_thread_yield, . - jam_thread_yield
+
     .globl jam_futex_wait
     .type jam_futex_wait, @function
 jam_futex_wait:

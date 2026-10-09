@@ -65,6 +65,7 @@ int64_t sysc_process_get_info(handle_t proc, uint64_t out);
 int64_t sysc_thread_set_priority(handle_t thread, int32_t prio);
 int64_t sysc_job_kill(handle_t job);
 int64_t sysc_thread_set_fs_base(uint64_t base);
+int64_t sysc_thread_yield(void);
 int64_t sysc_futex_wait(uint64_t addr, uint32_t expected, uint64_t deadline_ns, uint32_t flags);
 int64_t sysc_futex_wake(uint64_t addr, uint32_t count, uint32_t flags);
 int64_t sysc_futex_requeue(uint64_t addr, uint32_t wake, uint64_t addr2, uint32_t requeue,

@@ -275,6 +275,12 @@ static int64_t call_thread_set_fs_base(const struct syscall_frame *f)
     return sysc_thread_set_fs_base(f->args[0]);
 }
 
+static int64_t call_thread_yield(const struct syscall_frame *f)
+{
+    (void)f;
+    return sysc_thread_yield();
+}
+
 static int64_t call_futex_wait(const struct syscall_frame *f)
 {
     return sysc_futex_wait(f->args[0], (uint32_t)f->args[1], f->args[2], (uint32_t)f->args[3]);
@@ -520,6 +526,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_thread_set_priority] = call_thread_set_priority,
     [SYS_job_kill] = call_job_kill,
     [SYS_thread_set_fs_base] = call_thread_set_fs_base,
+    [SYS_thread_yield] = call_thread_yield,
     [SYS_futex_wait] = call_futex_wait,
     [SYS_futex_wake] = call_futex_wake,
     [SYS_futex_requeue] = call_futex_requeue,

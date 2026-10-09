@@ -164,6 +164,9 @@
 # range's top (0x7fffffffe000). A thread that loads a selector into FS
 # itself has an undefined base until it calls this again.
 81  thread_set_fs_base status   uint64_t base
+# Give up the CPU to a ready thread of the same or a higher priority, if
+# there is one on this CPU (sched_yield); OK.
+82  thread_yield      status    void
 # Futexes: a wait on a 32-bit word of the caller's own
 # memory, named by the process and the word's address (private: threads
 # of one process meet there). flags: 0 (reserved for a shared kind).
