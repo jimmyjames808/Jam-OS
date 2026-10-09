@@ -44,7 +44,7 @@
  *             first console starts, so it is then sent to each running
  *             console as console.set_font)
  *   shell     bin/shell: a SHELL-level console channel (SR_CONSOLE:
- *             console.new_client; no connect_input), root with SHELL_ROOT,
+ *             console.new_client), root with SHELL_ROOT,
  *             RES_PCI with RIGHTS_BASIC (SR_USER + 1), and init's whole
  *             namespace as it is (SR_NS, followed: every mount, /data's
  *             etc included, and every service: devmgr's channels, init's

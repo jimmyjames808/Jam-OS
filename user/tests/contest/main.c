@@ -92,18 +92,15 @@ static void st_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods)
 }
 static const struct input_ops st_input = { .key = st_key };
 
-static status_t sc_connect_input(void *ctx, handle_t *out)
+static void sc_add_source(void *ctx, handle_t source)
 {
     (void)ctx;
-    handle_t theirs;
-    status_t st = jam_channel_create(&steal_src, &theirs);
-    if (st == OK) {
-        printf("contest: steal: a driver connected its input to us\n");
-        *out = theirs;
-    }
-    return st;
+    if (steal_src)
+        jam_handle_close(steal_src);
+    steal_src = source;
+    printf("contest: steal: a driver connected its input to us\n");
 }
-static const struct compctl_ops st_comp = { .connect_input = sc_connect_input };
+static const struct compctl_ops st_comp = { .add_source = sc_add_source };
 
 static int steal(void)
 {

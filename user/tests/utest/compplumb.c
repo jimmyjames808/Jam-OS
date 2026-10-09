@@ -5,7 +5,7 @@
  *
  * t_comp_notify: compctl's NOTIFY level: a channel from /svc/notify's
  * svc.connect may notify, notify_wait and withdraw, and nothing else (every
- * ADMIN method and connect_input refused); an INPUT channel may not
+ * ADMIN method refused, an add_source's end closed); an INPUT channel may not
  * notify; bad text, tints, icons and buttons refused; three cards with
  * buttons a channel; withdraw only one's own; a button pressed is
  * answered to the poster's notify_wait (kept until it asks when it isn't
@@ -164,7 +164,11 @@ static bool notify_refusals(struct cs *t, handle_t n)
              ERR_ACCESS_DENIED);
     CHECK_ST(compctl_set_layout_within(n, CT_WAIT, 1), ERR_ACCESS_DENIED);
     CHECK_ST(compctl_layout_wait_within(n, CT_WAIT, 1, &l), ERR_ACCESS_DENIED);
-    CHECK_ST(compctl_connect_input_within(n, CT_WAIT, &h), ERR_ACCESS_DENIED);
+    handle_t src;
+    CHECK_ST(jam_channel_create(&h, &src), OK);
+    CHECK_ST(compctl_add_source(n, h), OK);   /* no source from a NOTIFY channel: closed */
+    CHECK_ST(jam_object_wait_one(src, SIG_PEER_CLOSED, now() + CT_WAIT, NULL), OK);
+    jam_handle_close(src);
     /* an INPUT channel can't post */
     CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 1, &in), OK);
     note_make(&x, "Hello", "", NULL, NULL);

@@ -2,7 +2,8 @@
  *
  * Reads what arrives on the serial port (the kernel's serial_open object,
  * interrupt-driven) and passes it on as `input.text` events (abi/idl/
- * input.idl) on the channel init got for it from compctl.connect_input:
+ * input.idl) on the channel whose other end init gave the compositor
+ * (compctl.add_source):
  * the same path a HID driver's keys take. So a serial terminal, or a QEMU
  * test writing to the serial port, can type into the focused window, and
  * so into the shell. An event the compositor's full queue refuses is sent

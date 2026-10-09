@@ -316,7 +316,7 @@ bool t_comp_seat_reserved(void)
 static bool two_keyboards(struct cs *t, struct sc *a)
 {
     handle_t kb2;
-    CHECK_ST(compctl_connect_input_within(t->ctl, CT_WAIT, &kb2), OK);
+    CHECK(cs_add_source(t->ctl, &kb2));
     ct_clear(&a->k);
     CHECK(cs_key(t, U_A, INPUT_KEY_DOWN, 0));
     CHECK_ST(input_key(kb2, U_A, INPUT_KEY_DOWN, 0), OK);

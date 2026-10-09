@@ -12,7 +12,7 @@
  *   focus.c     the keyboard focus and its rules, the keys no client sees,
  *               the window manager's hooks' defaults;
  *   sources.c   input sources: the `input` protocol, a budget each;
- *   ctl.c       compctl's channels (levels, connect_input, blank,
+ *   ctl.c       compctl's channels (levels, add_source, blank,
  *               new_client, stats, the layout) and the requests to init
  *               (Ctrl+Alt+Del's reboot, Super+Enter's terminal);
  *   testwin.c   the `testwin` test power's windows.
@@ -131,7 +131,9 @@ void     focus_window_mapped(struct comp_window *w);
 void     focus_window_gone(struct comp_window *w);
 
 /* sources.c */
-status_t sources_connect(handle_t *out);
+/* compctl.add_source: serve the `input` channel end ch (consumed: closed
+ * if it can't be, ERR_NO_RESOURCES with SOURCES_MAX already). */
+status_t sources_add(handle_t ch);
 /* The locks changed: every keyboard source is sent its lights (input.leds). */
 void     sources_leds(uint8_t leds);
 void     sources_packet(unsigned slot);

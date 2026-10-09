@@ -3,7 +3,7 @@
  *
  * The compositor starts with init's ADMIN channel (SR_USER + 2; a test
  * may start it without one). new_client makes narrower ones (INPUT: for
- * devmgr and serialin, connect_input only; NOTIFY: the notices only), at
+ * devmgr, add_source only; NOTIFY: the notices only), at
  * most CTL_MAX ADMIN and INPUT ones at once and NOTIFY_CHANNELS NOTIFY
  * ones, each with its level fixed when it is made. /svc/notify's shared
  * channel (SR_USER + 5, init's) makes a NOTIFY channel for each svc.connect
@@ -130,12 +130,18 @@ static void blank(bool on)
     scene_damage(box_make(0, 0, scene.width, scene.height));
 }
 
-static status_t op_connect_input(void *ctx, handle_t *out)
+/* add_source (an event: nothing is answered): served, or closed (another
+ * level, or SOURCES_MAX at once: the source sees its peer close). */
+static void op_add_source(void *ctx, handle_t source)
 {
     const struct ctl *c = ctx;
-    if (c->level != L_ADMIN && c->level != L_INPUT)
-        return ERR_ACCESS_DENIED;
-    return sources_connect(out);
+    if (c->level != L_ADMIN && c->level != L_INPUT) {
+        jam_handle_close(source);
+        return;
+    }
+    status_t st = sources_add(source);
+    if (st != OK)
+        printf("compositor: an input source refused (%s)\n", status_str(st));
 }
 
 static status_t op_blank(void *ctx, uint8_t on)
@@ -300,7 +306,7 @@ static status_t op_withdraw(void *ctx, uint32_t id)
 }
 
 static const struct compctl_ops ctl_ops = {
-    .connect_input = op_connect_input, .blank = op_blank, .new_client = op_new_client,
+    .add_source = op_add_source, .blank = op_blank, .new_client = op_new_client,
     .stats = op_stats, .set_layout = op_set_layout, .layout_wait = op_layout_wait,
     .notify = op_notify, .notify_wait = op_notify_wait, .withdraw = op_withdraw,
 };

@@ -87,6 +87,11 @@ uint32_t cs_window(struct sc *c, int32_t x, int32_t y, int32_t w, int32_t h);
 /* The fake source: a key (usage, INPUT_KEY_*, modifier byte), a key
  * pressed and released, a mouse report (the buttons held: t->buttons),
  * the left button, the pointer to (x, y) in 1:1 steps. */
+/* A new input source through compctl.add_source on ctl: our end in *out. */
+bool cs_add_source(handle_t ctl, handle_t *out);
+/* The compositor closed source end src (refused it), or (refused false)
+ * still holds it 100 ms on. */
+bool cs_refused(handle_t src, bool refused);
 /* The compositor has taken every event the source sent (a call on the
  * ADMIN channel: the loop serves the sources before it). */
 bool cs_flush(struct cs *t);

@@ -23,6 +23,24 @@
 #include "compseat.h"
 #include "utest.h"
 
+bool cs_add_source(handle_t ctl, handle_t *out)
+{
+    handle_t mine, theirs;
+    CHECK_ST(jam_channel_create(&mine, &theirs), OK);
+    CHECK_ST(compctl_add_source(ctl, mine), OK);
+    *out = theirs;
+    return true;
+}
+
+bool cs_refused(handle_t src, bool refused)
+{
+    signals_t seen = 0;
+    status_t st = jam_object_wait_one(src, SIG_PEER_CLOSED,
+                                      now() + (refused ? CT_WAIT : 100 * NS_PER_MS), &seen);
+    CHECK(refused ? st == OK && (seen & SIG_PEER_CLOSED) : st == ERR_TIMED_OUT);
+    return true;
+}
+
 /* The compositor with the desktop or not, layout= (NULL: none, its
  * default) and one more argument (NULL: none). */
 static bool start(struct cs *t, bool desk, const char *layout, const char *more)
@@ -55,7 +73,7 @@ static bool start(struct cs *t, bool desk, const char *layout, const char *more)
                             .job = t->p.job,
                             .extra = x, .nextra = 7 };
     CHECK_ST(spawn(&a, &t->p.proc), OK);
-    CHECK_ST(compctl_connect_input_within(t->ctl, CT_WAIT, &t->src), OK);
+    CHECK(cs_add_source(t->ctl, &t->src));
     CHECK_ST(input_ready(t->src, INPUT_READY_KEYBOARD, 0x1234, 1), OK);
     CHECK_ST(input_ready(t->src, INPUT_READY_MOUSE, 0x1234, 2), OK);
     CHECK(cs_flush(t));
@@ -323,7 +341,7 @@ static bool ctl_levels(struct cs *t)
     CHECK_ST(compctl_stats_within(in, CT_WAIT, &u[0], &u[1], &u[2], &u[3], &v[0], &v[1], &v[2],
                                   &u[4], &u[5], &u[6], &u[7], &u[8], &v[3], &u[9], &u[10]),
              ERR_ACCESS_DENIED);
-    CHECK_ST(compctl_connect_input_within(in, CT_WAIT, &h), OK);
+    CHECK(cs_add_source(in, &h));   /* an INPUT channel may add a source */
     CHECK_ST(input_ready(h, INPUT_READY_MOUSE, 1, 2), OK);
     CHECK_ST(input_ready(h, 7, 1, 2), OK);   /* not a kind: dropped, nothing answered */
     CHECK(cs_flush(t));
@@ -340,21 +358,29 @@ bool t_comp_seat_ctl(void)
     struct cs t;
     CHECK(cs_start(&t));
     CHECK(ctl_levels(&t));
-    /* 16 sources at once (the test's own is one of them) */
+    /* 16 sources at once (the test's own is one of them): a 17th's end is
+     * closed by the compositor (add_source is an event: no answer) */
     handle_t more[16];
+    for (unsigned i = 0; i < 16; i++)
+        CHECK(cs_add_source(t.ctl, &more[i]));
+    CHECK(cs_flush(&t));
     for (unsigned i = 0; i < 15; i++)
-        CHECK_ST(compctl_connect_input_within(t.ctl, CT_WAIT, &more[i]), OK);
-    CHECK_ST(compctl_connect_input_within(t.ctl, CT_WAIT, &more[15]), ERR_NO_RESOURCES);
+        CHECK(cs_refused(more[i], false));
+    CHECK(cs_refused(more[15], true));
+    jam_handle_close(more[15]);
     for (unsigned i = 0; i < 15; i++)
         jam_handle_close(more[i]);
     /* a source going lets its slot be used again */
     uint64_t until = now() + CT_WAIT;
-    status_t st;
-    while ((st = compctl_connect_input_within(t.ctl, CT_WAIT, &more[0])) == ERR_NO_RESOURCES &&
-           now() < until)
-        jam_sleep_until(now() + NS_PER_MS);
-    CHECK_ST(st, OK);
-    jam_handle_close(more[0]);
+    bool taken = false;
+    while (!taken && now() < until) {
+        CHECK(cs_add_source(t.ctl, &more[0]));
+        CHECK(cs_flush(&t));
+        taken = jam_object_wait_one(more[0], SIG_PEER_CLOSED, now() + 20 * NS_PER_MS, NULL) ==
+                ERR_TIMED_OUT;
+        jam_handle_close(more[0]);
+    }
+    CHECK(taken);
     CHECK(cs_stop(&t));
     return true;
 }
@@ -428,8 +454,8 @@ bool t_comp_seat_leds(void)
     CHECK(cs_start(&t));   /* its source said keyboard, then mouse */
     CHECK_EQ(lights(t.src), INPUT_LED_NUM);
     handle_t kb2, mouse;
-    CHECK_ST(compctl_connect_input_within(t.ctl, CT_WAIT, &kb2), OK);
-    CHECK_ST(compctl_connect_input_within(t.ctl, CT_WAIT, &mouse), OK);
+    CHECK(cs_add_source(t.ctl, &kb2));
+    CHECK(cs_add_source(t.ctl, &mouse));
     CHECK_ST(input_ready(mouse, INPUT_READY_MOUSE, 1, 2), OK);
     CHECK_ST(input_ready(kb2, INPUT_READY_KEYBOARD, 1, 3), OK);
     CHECK(cs_flush(&t));

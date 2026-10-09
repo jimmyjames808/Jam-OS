@@ -19,8 +19,8 @@
  *             when the shell says it is ready (initctl.shell_ready)
  *   compositor  bin/compositor, first of all with a compositor: comp.c
  *   serialin  bin/serialin: root with RIGHT_ROOT_SERIAL (serial_open) and an `input`
- *             channel (SR_USER + 0) from compctl.connect_input (the
- *             compositor's: init asks on its own channel)
+ *             channel (SR_USER + 0) whose other end init gives the
+ *             compositor (compctl.add_source, on init's own channel)
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
  *             server ends of its control and query channels
  *             (SR_DEVMGR_CTL, SR_DEVMGR; init keeps a client end of each

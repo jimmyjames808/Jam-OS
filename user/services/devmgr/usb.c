@@ -18,10 +18,10 @@
  *             (usb-bus lets a new reader open an endpoint whose old report
  *             channel is dead). Replies to a dead hid's calls that were
  *             still queued are drained before the next start;
- *   DR_INPUT  a new source from compctl.connect_input on the
- *             compositor's INPUT channel, which init gives us
- *             (SR_CONSOLE, and DEVMGR_SET_CONSOLE again when the
- *             compositor restarts).
+ *   DR_INPUT  a new source's channel, whose other end goes to the
+ *             compositor (compctl.add_source, an event) on its INPUT
+ *             channel, which init gives us (SR_CONSOLE, and
+ *             DEVMGR_SET_CONSOLE again when the compositor restarts).
  *             Without one hid logs each key DOWN (keytest, init + utest).
  * Both arrive without RIGHT_DUPLICATE / RIGHT_TRANSFER.
  *
@@ -44,7 +44,6 @@
 #include <idl/usbbus.h>
 #include "internal.h"
 
-#define CONNECT_WAIT (2 * NS_PER_S)   /* compctl.connect_input */
 
 /* What usb-bus said of an interface (usbbus_events.interface_attached). */
 struct if_info {
@@ -210,22 +209,22 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
     handle_t in = HANDLE_INVALID;
     if (console && !b->disk) {   /* a disk's driver has nothing to type */
         if (closed(console))
-            return ERR_SHOULD_WAIT;   /* the console is restarting: wait for the new one */
-        /* A connect_input that timed out earlier may have been answered
-         * late: its source channel sits in our queue, holding one of the
-         * console's MAX_SOURCES slots until we take it off (and close it). */
-        drain(console);
-        handle_t src;
-        status_t st = compctl_connect_input_until(console, now() + CONNECT_WAIT, &src);
-        if (st == ERR_PEER_CLOSED)
-            return ERR_SHOULD_WAIT;
+            return ERR_SHOULD_WAIT;   /* the compositor is restarting: wait for the new one */
+        /* The source's channel: our end goes to the compositor
+         * (compctl.add_source, an event: nothing waits, nothing comes
+         * late), the other to the driver. */
+        handle_t mine, theirs;
+        status_t st = jam_channel_create(&mine, &theirs);
         if (st != OK)
             return st;
-        st = jam_handle_replace(src, DEVMGR_DRV_CHAN_RIGHTS | RIGHT_TRANSFER, &in);
+        st = compctl_add_source(console, mine);   /* mine is gone either way */
         if (st != OK) {
-            jam_handle_close(src);
-            return st;
+            jam_handle_close(theirs);
+            return st == ERR_PEER_CLOSED || st == ERR_SHOULD_WAIT ? ERR_SHOULD_WAIT : st;
         }
+        st = jam_handle_replace(theirs, DEVMGR_DRV_CHAN_RIGHTS | RIGHT_TRANSFER, &in);
+        if (st != OK)
+            return st;   /* theirs is gone either way */
     }
     /* The dead driver's calls may have left replies behind. */
     drain(u->ch);

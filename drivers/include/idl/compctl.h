@@ -8,7 +8,7 @@
  * drivers' input sources) and for serialin. Format: see tools/genidl.py.
  *
  * Levels, fixed on a channel when it is made: 0 ADMIN (init's: every
- * method), 1 INPUT (devmgr's and serialin's: connect_input only), 2 NOTIFY
+ * method), 1 INPUT (devmgr's: add_source only), 2 NOTIFY
  * (notify, notify_wait and withdraw only: the desktop's notices). Any
  * other method on a narrower channel: ERR_ACCESS_DENIED.
  *
@@ -27,7 +27,7 @@
  * ERR_PEER_CLOSED ask init for a new channel (init restarts the
  * compositor and makes the narrower channels again). An input source's
  * channel closes with it: a HID driver exits 0 and devmgr binds it again,
- * which connects it to the new compositor (as when the console restarts);
+ * which connects it to the new compositor (serialin likewise, by init);
  * keys sent to the old one and not yet taken are lost, and so are the keys
  * held down (the new compositor starts with none held, Num Lock on). A
  * layout_wait still waiting ends with ERR_PEER_CLOSED: init asks the new
@@ -49,7 +49,6 @@
 #include <idl/common.h>
 
 #define COMPCTL_PROTOCOL_ID 32u
-#define COMPCTL_CONNECT_INPUT    0x00200001u
 #define COMPCTL_BLANK            0x00200002u
 #define COMPCTL_NEW_CLIENT       0x00200003u
 #define COMPCTL_STATS            0x00200004u
@@ -58,16 +57,9 @@
 #define COMPCTL_NOTIFY           0x00200007u
 #define COMPCTL_NOTIFY_WAIT      0x00200008u
 #define COMPCTL_WITHDRAW         0x00200009u
+#define COMPCTL_ADD_SOURCE       0x0020000au
 
 /* Messages (packed: no padding bytes ever cross the channel). */
-struct compctl_connect_input_req {
-    uint32_t txid;
-    uint32_t ordinal;
-} __attribute__((packed));
-struct compctl_connect_input_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
 struct compctl_blank_req {
     uint32_t txid;
     uint32_t ordinal;
@@ -161,59 +153,17 @@ struct compctl_withdraw_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
+struct compctl_add_source_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
 
-#define COMPCTL_REQ_MAX 242u   /* bytes: the biggest request */
-#define COMPCTL_REP_MAX 112u   /* bytes: the biggest reply */
+#define COMPCTL_REQ_MAX 242u   /* bytes: the biggest message to the server */
+#define COMPCTL_REP_MAX 112u   /* bytes: the biggest message to the client */
 #define COMPCTL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define COMPCTL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
-
-/* compctl_connect_input_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t compctl_connect_input_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_source)
-{
-    struct compctl_connect_input_req idl_q;
-    struct compctl_connect_input_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = COMPCTL_CONNECT_INPUT;
-    handle_t idl_rh[1];
-    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
-                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
-    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
-    idl_n = idl_got[0];
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && idl_rhn != 1)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK)
-        idl_close_all(idl_rh, idl_rhn);
-    if (idl_st == OK) {
-        if (out_source)
-            *out_source = idl_rh[0];
-        else
-            drv_handle_close(idl_rh[0]);
-    }
-    return idl_st;
-}
-/* A new input source: the compositor serves the `input` protocol
- * (abi/idl/input.idl, unchanged) on its end; the caller hands the other end
- * to the source (a HID driver, serialin), which calls `input` on it. At
- * most 16 sources at once: ERR_NO_RESOURCES. ADMIN and INPUT. */
-static inline status_t compctl_connect_input_until(handle_t ch, uint64_t deadline_ns, handle_t *out_source)
-{
-    return compctl_connect_input_call(ch, false, deadline_ns, out_source);
-}
-static inline status_t compctl_connect_input_within(handle_t ch, uint64_t timeout_ns, handle_t *out_source)
-{
-    return compctl_connect_input_call(ch, true, timeout_ns, out_source);
-}
-static inline status_t compctl_connect_input(handle_t ch, handle_t *out_source)
-{
-    return compctl_connect_input_call(ch, false, DEADLINE_NEVER, out_source);
-}
 
 /* compctl_blank_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
@@ -551,39 +501,6 @@ static inline status_t compctl_withdraw(handle_t ch, uint32_t id)
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
-/* compctl_connect_input without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then compctl_connect_input_result. */
-static inline status_t compctl_connect_input_send(handle_t ch, uint32_t idl_txid)
-{
-    struct compctl_connect_input_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = COMPCTL_CONNECT_INPUT;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to compctl_connect_input_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t compctl_connect_input_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_source)
-{
-    const struct compctl_connect_input_rep *idl_r = (const struct compctl_connect_input_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 1)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    if (out_source)
-        *out_source = idl_m->hs[0];
-    else
-        drv_handle_close(idl_m->hs[0]);
-    idl_m->nh = 0;
-    return OK;
-}
-
 /* compctl_blank without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then compctl_blank_result. */
 static inline status_t compctl_blank_send(handle_t ch, uint32_t idl_txid, uint8_t on)
@@ -874,14 +791,48 @@ static inline status_t compctl_withdraw_result(const void *idl_rep, struct idl_m
     return OK;
 }
 
+/* ---- events (one way, txid 0, never answered) -------------------------- */
+
+/* A new input source (review W8: an event, so nothing waits and no answer
+ * comes late): the caller makes a channel, hands one end to the source (a
+ * HID driver, serialin), which sends the `input` protocol's events on it
+ * (abi/idl/input.idl), and gives the compositor the other, which serves it.
+ * At most 16 sources at once: past that the compositor closes the end it
+ * was given (the source sees its peer close, as on a compositor restart).
+ * ADMIN and INPUT; on another channel the end is closed. */
+/* The event compctl.add_source, to the server: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control).
+ * The handles are gone in every case: sent, closed, or lost with a
+ * write that failed (the caller never closes them after this). */
+static inline status_t compctl_add_source(handle_t ch, handle_t source)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct compctl_add_source_msg *idl_q = (struct compctl_add_source_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = COMPCTL_ADD_SOURCE;
+    handle_t idl_hs[1];
+    uint32_t idl_hn = 0;
+    if (idl_st == OK) {
+        idl_hs[idl_hn++] = source;
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, idl_hn);
+    } else {   /* never sent: the handles are still ours */
+        if (source != HANDLE_INVALID)
+            drv_handle_close(source);
+    }
+    return idl_st;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
  * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
  * also gets the request's txn, and may return IDL_LATER and answer it
- * with compctl_reply_<method> (now, or later from anywhere). */
+ * with compctl_reply_<method> (now, or later from anywhere). An event's
+ * handler returns nothing (nothing is answered; a NULL one drops it),
+ * owns the handles it is given, and its arrays point into the message. */
 struct compctl_ops {
-    status_t (*connect_input)(void *ctx, handle_t *out_source);
     status_t (*blank)(void *ctx, uint8_t on);
     status_t (*new_client)(void *ctx, uint8_t level, handle_t *out_client);
     status_t (*stats)(void *ctx, uint64_t *out_paints, uint64_t *out_painted_px, uint64_t *out_last_paint_ns, uint64_t *out_worst_paint_ns, uint32_t *out_clients, uint32_t *out_surfaces, uint32_t *out_windows, uint64_t *out_connected, uint64_t *out_refused, uint64_t *out_gone_closed, uint64_t *out_gone_protocol, uint64_t *out_gone_slow, uint32_t *out_sources, uint64_t *out_keys, uint64_t *out_reserved_keys);
@@ -890,28 +841,8 @@ struct compctl_ops {
     status_t (*notify)(void *ctx, const uint8_t title[64], const uint8_t body[96], uint8_t icon, uint8_t tint, const uint8_t buttons[72], uint32_t *out_id);
     status_t (*notify_wait)(void *ctx, struct idl_txn idl_txn, uint32_t *out_id, uint8_t *out_button);
     status_t (*withdraw)(void *ctx, uint32_t id);
+    void (*add_source)(void *ctx, handle_t source);
 };
-
-/* Answer the compctl.connect_input request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t compctl_reply_connect_input(struct idl_txn idl_txn, status_t idl_st, handle_t source)
-{
-    struct compctl_connect_input_rep idl_r;
-    handle_t idl_hs[1] = { source };
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st == OK && !(source != HANDLE_INVALID))
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK) {
-        if (idl_hs[0] != HANDLE_INVALID)
-            drv_handle_close(idl_hs[0]);
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    }
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
-}
 
 /* Answer the compctl.blank request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
@@ -1058,49 +989,72 @@ static inline status_t compctl_reply_withdraw(struct idl_txn idl_txn, status_t i
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
+/* Run the event (txid 0) of n bytes at m with nh handles in hs: OK, or
+ * ERR_NOT_SUPPORTED (no such event, or no handler) or ERR_INVALID_ARGS
+ * (it breaks the event's format), its handles closed. */
+static inline status_t compctl_event_in(const struct compctl_ops *idl_tab, void *ctx,
+                                        const void *idl_m, uint32_t idl_n, const handle_t *idl_hs, uint32_t idl_nh)
+{
+    switch (((const struct idl_req_hdr *)idl_m)->ordinal) {
+    case COMPCTL_ADD_SOURCE: {
+        const struct compctl_add_source_msg *idl_e = (const struct compctl_add_source_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 1)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->add_source)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st == OK && !(idl_handle_is(idl_hs[0], IDL_OBJ_CHANNEL)))
+            idl_st = ERR_WRONG_TYPE;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->add_source(ctx, idl_hs[0]);
+        return OK;
+    }
+    }
+    idl_close_all(idl_hs, idl_nh);
+    return ERR_NOT_SUPPORTED;
+}
+
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (COMPCTL_REP_MAX bytes) and the handles it carries
  * into rhs (COMPCTL_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
- * handler answers it itself). No I/O; the caller sends the reply with the
- * handles, or closes them if it never sends it. */
-static inline uint32_t compctl_dispatch_on(handle_t ch, const struct compctl_ops *ops, void *ctx,
-                                           const void *req, uint32_t n, void *rep, handle_t *rhs,
-                                           uint32_t *rhn)
+ * length: 0 means no reply (the message has no txid, a `later` handler
+ * answers it itself, or it is an event: txid 0, never answered; one no
+ * handler takes is dropped). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it.
+ * The idl_nh handles at idl_hs (an event's, or a call's arguments) are taken
+ * in every case: given to the handler, or closed. */
+static inline uint32_t compctl_dispatch_h(handle_t ch, const struct compctl_ops *ops, void *ctx,
+                                          const void *req, uint32_t n, const handle_t *idl_hs, uint32_t idl_nh,
+                                          void *rep, handle_t *rhs, uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    if (n < sizeof(uint32_t))
+    if (n < sizeof(struct idl_req_hdr) || !((const struct idl_req_hdr *)req)->txid) {
+        /* txid 0: an event (or no txid): never answered */
+        if (n >= sizeof(struct idl_req_hdr))
+            (void)compctl_event_in(ops, ctx, req, n, idl_hs, idl_nh);
+        else
+            idl_close_all(idl_hs, idl_nh);
         return 0;
+    }
+    if (idl_nh) {   /* a request with handles: only an event takes any */
+        idl_close_all(idl_hs, idl_nh);
+        idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+        idl_h->status = ERR_INVALID_ARGS;
+        return sizeof(*idl_h);
+    }
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
-    if (n < sizeof(struct idl_req_hdr))
-        return sizeof(*idl_h);
     switch (((const struct idl_req_hdr *)req)->ordinal) {
-    case COMPCTL_CONNECT_INPUT: {
-        const struct compctl_connect_input_req *idl_q = (const struct compctl_connect_input_req *)req;
-        struct compctl_connect_input_rep *idl_r = (struct compctl_connect_input_rep *)rep;
-        handle_t out_source = HANDLE_INVALID;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->connect_input) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->connect_input(ctx, &out_source);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status == OK && !(out_source != HANDLE_INVALID))
-            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
-        if (idl_h->status != OK) {
-            if (out_source != HANDLE_INVALID)
-                drv_handle_close(out_source);
-            return sizeof(*idl_h);
-        }
-        rhs[0] = out_source;
-        *rhn = 1;
-        return sizeof(*idl_r);
-    }
+    case COMPCTL_ADD_SOURCE:
+        return sizeof(*idl_h);   /* an event with a txid */
     case COMPCTL_BLANK: {
         const struct compctl_blank_req *idl_q = (const struct compctl_blank_req *)req;
         struct compctl_blank_rep *idl_r = (struct compctl_blank_rep *)rep;
@@ -1283,6 +1237,15 @@ static inline uint32_t compctl_dispatch_on(handle_t ch, const struct compctl_ops
     return sizeof(*idl_h);
 }
 
+/* compctl_dispatch_h without handles (a loop of your own that reads none:
+ * an event or call that takes some is then refused). */
+static inline uint32_t compctl_dispatch_on(handle_t ch, const struct compctl_ops *ops, void *ctx,
+                                           const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                           uint32_t *rhn)
+{
+    return compctl_dispatch_h(ch, ops, ctx, req, n, NULL, 0, rep, rhs, rhn);
+}
+
 /* compctl_dispatch_on without the channel (a `later` handler's txn then has none: use compctl_dispatch_on). */
 static inline uint32_t compctl_dispatch(const struct compctl_ops *ops, void *ctx, const void *req, uint32_t n,
                                         void *rep, handle_t *rhs, uint32_t *rhn)
@@ -1305,21 +1268,22 @@ static inline status_t compctl_take_slot(handle_t ch, const struct idl_slot *slo
     return idl_take(ch, slot);
 }
 
-/* Run the request in slot (taken by compctl_take_slot, or found there by a
- * successor), which came on ch: as compctl_dispatch_on, its reply built
- * in slot->r and the handles that reply carries put into rhs
- * (COMPCTL_REP_HANDLES slots; *rhn of them). A request that carried handles is
- * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
- * answers it itself). No I/O; the caller sends the reply with the handles,
- * or closes them if it never sends it. */
+/* Run the message in slot (taken by compctl_take_slot, or found there by a
+ * successor), which came on ch: as compctl_dispatch_h, its reply built in
+ * slot->r and the handles that reply carries put into rhs
+ * (COMPCTL_REP_HANDLES slots; *rhn of them). The handles it carried
+ * (*slot->nh in slot->hs) are taken: given to a handler or closed,
+ * *slot->nh 0 after. Returns the reply's length: 0 means no reply
+ * (no txid, an event, or a `later` handler answers it itself). No I/O;
+ * the caller sends the reply with the handles, or closes them if it
+ * never sends it. */
 static inline uint32_t compctl_run_slot(handle_t ch, const struct idl_slot *slot,
                                         const struct compctl_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
 {
-    *rhn = 0;
-    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
-        return idl_refuse(slot);
-    return compctl_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+    uint32_t idl_nh = *slot->nh;
+    *slot->nh = 0;
+    return compctl_dispatch_h(ch, ops, ctx, slot->q, *slot->n, slot->hs, idl_nh, slot->r,
+                          rhs, rhn);
 }
 
 /* Is the method with this wire ordinal idempotent (its keyword in the
@@ -1344,25 +1308,21 @@ static inline status_t compctl_serve_one(handle_t ch, const struct compctl_ops *
     _Alignas(8) uint8_t idl_r[COMPCTL_REP_MAX];
     handle_t idl_hs[IDL_READ_HANDLES];
     uint32_t idl_n = 0, idl_nh = 0;
-    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+    status_t idl_st = drv_channel_read(ch, idl_q, COMPCTL_REQ_MAX, &idl_n, idl_hs, IDL_READ_HANDLES,
                                        &idl_nh);
-    if (idl_st == ERR_BUFFER_TOO_SMALL)
-        return idl_drain(ch, idl_n, idl_nh);
-    if (idl_st != OK)
-        return idl_st;
-    if (idl_nh) {
-        idl_close_all(idl_hs, idl_nh);
-        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
-        return OK;
+    if (idl_st == ERR_BUFFER_TOO_SMALL) {
+        idl_st = idl_drain(ch, idl_n, idl_nh);
+    } else if (idl_st == OK) {
+        handle_t idl_rhs[IDL_REP_HANDLES];
+        uint32_t idl_rhn = 0;
+        uint32_t idl_rn = compctl_dispatch_h(ch, ops, ctx, idl_q, idl_n, idl_hs, idl_nh, idl_r,
+                                         idl_rhs, &idl_rhn);
+        if (!idl_rn)
+            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+        else   /* the reply's handles are gone whatever the write's status */
+            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
     }
-    handle_t idl_rhs[IDL_REP_HANDLES];
-    uint32_t idl_rhn = 0;
-    uint32_t idl_rn = compctl_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
-    if (!idl_rn)
-        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
-    else   /* the reply's handles are gone whatever the write's status */
-        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
-    return OK;
+    return idl_st;
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
@@ -1373,16 +1333,14 @@ static inline status_t compctl_serve(handle_t ch, const struct compctl_ops *ops,
 {
     _Alignas(8) uint8_t idl_q[COMPCTL_REQ_MAX];
     _Alignas(8) uint8_t idl_r[COMPCTL_REP_MAX];
-    handle_t idl_rhs[IDL_REP_HANDLES];
+    handle_t idl_rhs[IDL_REP_HANDLES], idl_hs[IDL_READ_HANDLES];
     struct idl_serve idl_s = {
-        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .ch = ch, .q = idl_q, .qcap = COMPCTL_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
+        .hs = idl_hs, .hcap = IDL_READ_HANDLES,
     };
-    for (;;) {
-        status_t idl_st = idl_serve_next(&idl_s);
-        if (idl_st == ERR_PEER_CLOSED)
-            return OK;
-        if (idl_st != OK)
-            return idl_st;
-        idl_s.rn = compctl_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
-    }
+    status_t idl_st;
+    while ((idl_st = idl_serve_next(&idl_s)) == OK)
+        idl_s.rn = compctl_dispatch_h(ch, ops, ctx, idl_q, idl_s.n, idl_hs, idl_s.nh, idl_r,
+                                  idl_rhs, &idl_s.rhn);
+    return idl_st == ERR_PEER_CLOSED ? OK : idl_st;
 }

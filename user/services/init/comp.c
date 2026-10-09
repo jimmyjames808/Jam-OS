@@ -135,7 +135,19 @@ status_t comp_input_channel(handle_t *out)
 
 status_t comp_source(handle_t *out)
 {
-    return admin ? compctl_connect_input_until(admin, now() + CALL_WAIT, out) : ERR_BAD_STATE;
+    if (!admin)
+        return ERR_BAD_STATE;
+    handle_t mine, theirs;
+    status_t st = jam_channel_create(&mine, &theirs);
+    if (st != OK)
+        return st;
+    st = compctl_add_source(admin, mine);   /* an event: mine is gone either way */
+    if (st != OK) {
+        jam_handle_close(theirs);
+        return st;
+    }
+    *out = theirs;
+    return OK;
 }
 
 void comp_blank(bool on)

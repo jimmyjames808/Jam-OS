@@ -3,7 +3,7 @@
  *
  * input: an input source (a HID driver, the serial port) feeding the
  * compositor (user/services/compositor/sources.c). The compositor serves
- * it on each channel compctl.connect_input hands out; the source sends its
+ * it on each channel whose end compctl.add_source gives it; the source sends its
  * events on it, and the compositor sends a keyboard its lights. Every
  * message is an event (M12's Q4): nothing waits for the other side, and
  * the queue's limit is the flow control: a source keeps what the full

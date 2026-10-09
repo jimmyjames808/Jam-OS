@@ -5,7 +5,7 @@
 # drivers' input sources) and for serialin. Format: see tools/genidl.py.
 #
 # Levels, fixed on a channel when it is made: 0 ADMIN (init's: every
-# method), 1 INPUT (devmgr's and serialin's: connect_input only), 2 NOTIFY
+# method), 1 INPUT (devmgr's: add_source only), 2 NOTIFY
 # (notify, notify_wait and withdraw only: the desktop's notices). Any
 # other method on a narrower channel: ERR_ACCESS_DENIED.
 #
@@ -24,7 +24,7 @@
 # ERR_PEER_CLOSED ask init for a new channel (init restarts the
 # compositor and makes the narrower channels again). An input source's
 # channel closes with it: a HID driver exits 0 and devmgr binds it again,
-# which connects it to the new compositor (as when the console restarts);
+# which connects it to the new compositor (serialin likewise, by init);
 # keys sent to the old one and not yet taken are lost, and so are the keys
 # held down (the new compositor starts with none held, Num Lock on). A
 # layout_wait still waiting ends with ERR_PEER_CLOSED: init asks the new
@@ -36,11 +36,9 @@
 
 protocol compctl 32
 
-# A new input source: the compositor serves the `input` protocol
-# (abi/idl/input.idl, unchanged) on its end; the caller hands the other end
-# to the source (a HID driver, serialin), which calls `input` on it. At
-# most 16 sources at once: ERR_NO_RESOURCES. ADMIN and INPUT.
-1  connect_input  () -> (handle source)
+# 1 (connect_input, a call answering the source's channel): gone (review
+# W8), not reused: add_source.
+
 # Blank the screen (on 1): the splash's background over all of it and no
 # window drawn, until on 0. Input still goes to the windows. For init's
 # reboot by kexec: the screen stays that colour until the next boot's
@@ -95,3 +93,12 @@ protocol compctl 32
 # ERR_NOT_FOUND: no such notice from this channel on the screen now.
 # NOTIFY and ADMIN.
 9  withdraw  (u32 id) -> ()
+
+# A new input source (review W8: an event, so nothing waits and no answer
+# comes late): the caller makes a channel, hands one end to the source (a
+# HID driver, serialin), which sends the `input` protocol's events on it
+# (abi/idl/input.idl), and gives the compositor the other, which serves it.
+# At most 16 sources at once: past that the compositor closes the end it
+# was given (the source sees its peer close, as on a compositor restart).
+# ADMIN and INPUT; on another channel the end is closed.
+10 add_source  (handle<channel> source) event

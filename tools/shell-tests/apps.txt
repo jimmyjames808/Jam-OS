@@ -1,6 +1,7 @@
 # Programs that draw with libfun in windows, from the shell: run by
 # tools/apps-test.sh (QEMU_USB = a usb-kbd on xhci port 2 and a usb-mouse
-# on port 3; the command line "shell": the desktop). The self-tests of the
+# on port 3; the command line "shell": the desktop; Super+1 through
+# QEMU's monitor). The self-tests of the
 # test programs fractal (user/tests/fractal: its maths, the parallel
 # render, libfun's pool) and wltest (libfun's pointer); then fractal
 # explored through the serial terminal (arrows arrive as ESC [ A..D,
@@ -10,10 +11,10 @@
 # stirs and with one click in its window; then a program killed (a click
 # on the terminal, whose shell then has the keys, and Ctrl+C: the shell
 # kills its job) and one that crashes (a page fault) with its window up:
-# the compositor takes each window away. The windows tile: a program's
-# opens beside the first terminal, in the right half; the clicks are
-# placed by the screen's size (the compositor's "ready" line), so the same
-# script runs at 1280x800 and at 2560x1440 (APPS_HD=1).
+# the compositor takes each window away. A program's window (libfun's
+# default: maximised at 1280x800, 1600x1000 above) takes the keys; the
+# clicks are placed by the screen's size (the compositor's "ready" line),
+# so the same script runs at 1280x800 and at 2560x1440 (APPS_HD=1).
 # tools/shell-tests/mouse.txt drives the mouse further.
 wait 120 Jam OS shell
 wait {prompt}
@@ -76,12 +77,16 @@ type \x03
 wait 30 run: bin/fractal
 wait {prompt}
 # Killed with its window up: a program that reads no keys has them all
-# the same (its window took them), so a click on the first terminal
-# gives them to the shell, and Ctrl+C there kills its job: the window goes
+# the same (its window took them; at 1280x800 a maximised window on a
+# screen of its own), so Super+1 back to the first screen and a click on
+# the first terminal give them to the shell, and Ctrl+C there kills its
+# job: the window goes
 send run wltest --hang-test
 wait 30 wltest: hang test: holding the screen
 sleep 1
 shot apps-hang
+monitor sendkey meta_l-1
+sleep 1
 pointer 300 400
 monitor mouse_button 1
 sleep 0.2
