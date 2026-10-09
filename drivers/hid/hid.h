@@ -6,8 +6,8 @@
 #pragma once
 
 #include <idl/input.h>   /* INPUT_KEY_*, INPUT_MOD_*, INPUT_READY_* */
-#include <jam/driver.h>
 #include <idl/input.h>
+#include <jam/driver.h>
 #include "report.h"
 
 #define BUF_SIZE 1024   /* h->buf: descriptors, then reports */

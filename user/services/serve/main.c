@@ -108,8 +108,8 @@ static status_t on_share(void *ctx, struct idl_txn txn, uint16_t port, const cha
     return share_start((unsigned)free_slot, txn, port, name, name_len, size, file, buffer);
 }
 
-static status_t on_info(void *ctx, uint32_t index, uint16_t *port, uint8_t name[128],
-                        uint64_t *size, uint32_t *nclients, uint64_t *requests, uint64_t *bytes)
+static status_t on_info(void *ctx, uint32_t index, uint16_t *port, char *name,
+                        uint32_t *name_len, uint64_t *size, uint32_t *nclients, uint64_t *requests, uint64_t *bytes)
 {
     (void)ctx;
     for (unsigned i = 0; i < SERVE_SHARES; i++) {
@@ -117,7 +117,8 @@ static status_t on_info(void *ctx, uint32_t index, uint16_t *port, uint8_t name[
         if (sh->state != S_SERVING || index--)
             continue;
         *port = sh->port;
-        memcpy(name, sh->name, SERVE_NAME_MAX);
+        *name_len = (uint32_t)strnlen(sh->name, SERVE_NAME_MAX - 1);
+        memcpy(name, sh->name, *name_len);
         *size = sh->size;
         *nclients = sh->clients;
         *requests = sh->requests;
