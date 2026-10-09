@@ -17,6 +17,11 @@
  * reference goes (whichever is first). Closing tells the peer and releases
  * every message still queued on the closing endpoint.
  *
+ * Who pays: a message is charged to its writer's job (JOB_LIMIT_MSG_BYTES)
+ * from the write until it is read or released, also after the writer has
+ * closed its end or its job has no process left (the message holds a
+ * reference on the job). A kernel thread's messages are charged to no job.
+ *
  * Transaction ids: the first 4 bytes of every message are a txid.
  * channel_call stamps a fresh txid on its request and takes the reply
  * whose first 4 bytes match it: CHANNEL_TXID_KERNEL (bit 31) set, the rest
@@ -167,14 +172,6 @@ struct chan_read {
  * held; a fault writing user memory is ERR_INVALID_ARGS, the message lost
  * (as channel_read_into). */
 status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t deadline_ns);
-
-/* A handle to the end obj (a channel) was just put into a table of job's
- * (NULL: a kernel table): if it is the end's only handle, that job is its
- * reader's from now on (M12's Q2), the one charged for what waits on its
- * queue once its writer has closed. A duplicate of a shared end changes
- * nothing. The caller holds a reference on obj. Called by the handle
- * table. */
-void channel_received(struct kobject *obj, struct job *job);
 
 /* Set flags on ch (CHANNEL_NO_HANDLES, <jam/abi.h>; one-way: a flag never
  * comes off): from then on a message carrying handles to ch is refused

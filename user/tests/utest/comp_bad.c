@@ -561,7 +561,8 @@ bool t_comp_connections(void)
     handle_t extra = HANDLE_INVALID;
     CHECK_ST(svc_connect_within(p.svc, CT_WAIT, &extra), ERR_NO_RESOURCES);
     /* disconnected for an error, neither read nor closed: its slot is free
-     * at once (the compositor closed its end: Q2 charges the error to us) */
+     * at once (the compositor closed its end; the error stays charged to
+     * the compositor until we read it or close ours) */
     uint32_t obj, code;
     CHECK(bad_batch(&k, &obj, &code));
     signals_t seen = 0;
@@ -743,16 +744,15 @@ bool t_comp_live_never_reads(void)
 #define LOST_ROUNDS 4
 
 /* Each way a client goes, LOST_ROUNDS times over: one that closes its end
- * after a round trip, one disconnected for a bad request (its error
- * unread and its end still open: the compositor's message bytes are back
- * before it reads or closes, as Q2 charges the error to the reader once
- * the compositor closed; until M12 its slot lingered, charged to the
- * compositor, until it closed), one that crashes holding a window. After
- * every round the compositor's handles and message bytes are back where
- * they began: a client gone, however it went, leaves nothing charged to
- * the compositor's job (its port binding on the client's channel goes
- * with the client; until 2026-10-07 each lost client left one, 1216
- * bytes). */
+ * after a round trip, one disconnected for a bad request (its slot free
+ * at once, its error unread and its end still open: the error stays
+ * charged to the compositor, its writer, until the client reads it), one
+ * that crashes holding a window. After every round the
+ * compositor's handles and message bytes are back where they began: a
+ * client gone, however it went, leaves nothing charged to the
+ * compositor's job once it has read or closed (its port binding on the
+ * client's channel goes with the client; until 2026-10-07 each lost
+ * client left one, 1216 bytes). */
 bool t_comp_lost_clients(void)
 {
     static struct ct_client good, k;
@@ -771,9 +771,9 @@ bool t_comp_lost_clients(void)
         CHECK(bad_batch(&k, &obj, &code));
         signals_t seen = 0;
         CHECK_ST(jam_object_wait_one(k.c->ch, SIG_PEER_CLOSED, now() + CT_WAIT, &seen), OK);
-        if (!held_back(&p, base))
-            FAIL("round %u: the error unread is still the compositor's", r);
         CHECK(ct_expect_error(&k, obj, code));
+        if (!held_back(&p, base))
+            FAIL("round %u: the error read is still the compositor's", r);
         ct_close(&k);
         CHECK(crash_case(&p, &good, "wl-crash"));
         CHECK_ST(ct_roundtrip(&good), OK);
