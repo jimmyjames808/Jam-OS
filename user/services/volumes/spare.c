@@ -269,6 +269,7 @@ static status_t adopt(struct vol *b, handle_t proc, handle_t job)
     b->killed = false;
     b->state = VOLUMES_SUP_RUNNING;
     b->promoted++;
+    b->spare_now = true;   /* its process is called "fat-spare" */
     if (b->client && !b->client_key) {   /* a new `fs` channel: its answers are watched */
         uint64_t key = KEY_EV_OF(b - vols, b->gen);
         if (jam_port_bind(port, b->client, key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)

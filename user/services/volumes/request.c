@@ -92,6 +92,26 @@ static status_t v_remount(void *ctx, struct idl_txn txn, const char *mount, uint
     return later(txn, &(struct op){ .b = b, .writable = writable != 0 }, remount_main);
 }
 
+/* The filesystem service volumes.kill names: a mount's path ("/data"),
+ * or a process name: a mount's service's own ("fat-data", whatever its
+ * process is called now), or "fat-spare", the first service whose
+ * process is the warm spare promoted (the name it keeps). */
+static struct vol *kill_target(const char *name, uint32_t len)
+{
+    if (len && name[0] == '/')
+        return fs_find_mount(name, len);
+    for (unsigned i = 0; i < nvols; i++)
+        if (vols[i].path && strlen(vols[i].name) == len && !memcmp(vols[i].name, name, len))
+            return &vols[i];
+    static const char spare[] = "fat-spare";
+    if (len != sizeof(spare) - 1 || memcmp(name, spare, len))
+        return NULL;
+    for (unsigned i = 0; i < nvols; i++)
+        if (vols[i].path && vols[i].proc && vols[i].spare_now)
+            return &vols[i];
+    return NULL;
+}
+
 /* A kill that came while its restart was under way: once the new
  * instance runs (or the restart failed), that one is killed. */
 static void kill_main(void *arg)
@@ -113,7 +133,7 @@ static status_t v_kill(void *ctx, struct idl_txn txn, const char *mount, uint32_
                        uint64_t *out_koid)
 {
     (void)ctx;
-    struct vol *b = fs_find_mount(mount, len);
+    struct vol *b = kill_target(mount, len);
     if (!b || (b->state == VOLUMES_SUP_NONE && !b->starting))
         return ERR_NOT_FOUND;
     if (b->busy || b->stopping)

@@ -118,6 +118,7 @@ struct vol {
     bool                stopping;   /* a task stops it in order: its end is that task's,
                                      * not supervision's (sup_died leaves it alone) */
     bool                busy;       /* a remount, an ESP write or a release is under way */
+    bool                spare_now;  /* its instance is the warm spare promoted ("fat-spare") */
     /* fs_start's: told how the start went (in the task, once it is known). */
     void              (*on_started)(struct disk *d, unsigned part, status_t st);
 };

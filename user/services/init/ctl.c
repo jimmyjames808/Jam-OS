@@ -18,8 +18,9 @@
  * devmgr runs for a USB device, a class driver per interface ("hid-6.1:0",
  * "usb-storage-1:0"), and through volumes.kill a filesystem service per
  * mount ("fat-data" is /data's, "fat-usb0-test" /usb0-test's), whatever
- * its process is called: a restarted one is volumes' warm spare promoted,
- * which keeps the name "fat-spare". For devmgr's, the kernel's process
+ * its process is called now (a restarted one is volumes' warm spare
+ * promoted, which keeps the name "fat-spare", and `kill fat-spare` names
+ * the first of those: volumes knows which). For devmgr's, the kernel's process
  * list says which process has the name; devmgr's bindings on each USB
  * device are then asked for theirs (GET_DRIVER) until one matches, and
  * that one is killed. devmgr's PCI drivers ("usb-bus", "hda") are found
@@ -363,24 +364,18 @@ static status_t later_sent(struct later *l, status_t st)
     return IDL_LATER;
 }
 
-/* volumes.kill of the filesystem service called name ("fat-data" is
- * /data's, "fat-usb0-test" /usb0-test's: found by its mount, whatever its
- * process is called), answered later. ERR_NOT_FOUND: no volumes to ask,
- * or not such a name. */
+/* volumes.kill of the filesystem service called name ("fat-data", or
+ * "fat-spare": volumes finds it by name), answered later. ERR_NOT_FOUND:
+ * no volumes to ask. */
 static status_t later_kill(struct idl_txn txn, const char *name)
 {
-    char path[16];
-    size_t n = strlen(name);
     handle_t vm = shell_volumes();
-    if (!vm || strncmp(name, "fat-", 4) || n == 4 || n - 4 >= sizeof(path) - 1)
+    if (!vm)
         return ERR_NOT_FOUND;
-    path[0] = '/';
-    memcpy(path + 1, name + 4, n - 4);
-    path[n - 3] = '\0';
     struct later *l = later_new(LATER_KILL, txn, vm, name, KILL_WAIT);
     if (!l)
         return ERR_NO_RESOURCES;
-    return later_sent(l, volumes_kill_send(vm, l->txid, path, (uint32_t)(n - 3)));
+    return later_sent(l, volumes_kill_send(vm, l->txid, name, (uint32_t)strlen(name)));
 }
 
 /* ---- the protocol ---------------------------------------------------------------- */

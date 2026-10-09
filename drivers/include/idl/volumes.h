@@ -286,7 +286,10 @@ static inline status_t volumes_kill_call(handle_t ch, bool idl_within, uint64_t 
 }
 /* Kill the mount's filesystem service (a deliberate kill: not counted,
  * restarted at once, the warm spare promoted; its clients see nothing but
- * the time it took). Answered once it is dead, with the koid of the
+ * the time it took). `mount` may also be the service's process name:
+ * "fat-data" (whatever its process is called now), or "fat-spare", the
+ * first service whose process is the warm spare promoted (a promoted
+ * spare keeps that name). Answered once it is dead, with the koid of the
  * process killed; while its restart is under way, once the new instance
  * runs (then that one is killed). ERR_NOT_FOUND: no such mount, or no
  * instance runs (its restart is due later); ERR_BAD_STATE: it is being

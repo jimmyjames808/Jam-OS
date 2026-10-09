@@ -126,6 +126,7 @@ status_t fs_spawn(struct vol *b)
     b->job = job;
     b->proc = proc;
     b->killed = false;
+    b->spare_now = false;
     b->state = VOLUMES_SUP_RUNNING;
     watch_answers(b);
     disk_started(b);
