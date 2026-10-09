@@ -62,7 +62,7 @@ replaced by `posix_spawn`).
 
 What M12 built for it, and what is still missing. "Have it" means on main
 or in an M12 track already merged; the K review's numbers are
-[M12-REVIEW-KERNEL.md](M12-REVIEW-KERNEL.md)'s findings.
+[M12-REVIEW-KERNEL.md](history/M12-REVIEW-KERNEL.md)'s findings.
 
 | Need | State | Where |
 |---|---|---|
@@ -73,7 +73,7 @@ or in an M12 track already merged; the K review's numbers are
 | Handles always moved on a send (Q1) | have it | `abi/syscalls.def` "channels" |
 | `handle_info` (Q11) | have it: type, rights, koids, a channel end's queue counts | `kernel/include/jam/abi.h` |
 | The file protocol for POSIX (Q8) | have it: paths as `str[<=4095]`, batched `readdir`, `FS_EXCL`, `is_dir`, `id` (`st_ino`), unlink's `UNLINK_DIR`, rename's `RENAME_REPLACE` | `abi/idl/fs.idl`, `abi/idl/file.idl` (P5) |
-| A pipe is a channel of byte messages (Q17) | decided, and `SR_STDOUT` already is one | `user/lib/printf.c` |
+| A pipe is a channel of byte messages (Q17) | decided, and `SR_STDOUT` already is one | `user/lib/stdio.c` |
 | The heap reserves 1 GiB (Q16) | P6a, running | `user/lib/heap.c` |
 | Waiting on many sockets and handles | have it: wait sets, level-triggered, O(ready) | `user/include/netwait.h` |
 | Sockets, TCP, the listen permission | have it: `net`, `net_socket`, `net_stream`, `net_listener`; `/svc/net-listen`, `/svc/net-low` | `abi/idl/net.idl` |
@@ -1199,15 +1199,14 @@ left open:
 
 - **libjam.a** (`build/uobj/libjam.a`, built by `make`) is libos's objects
   less `user/lib/heap.c`, `user/lib/string.c`, `user/lib/stdio.c` (the
-  printf family, moved out of `user/lib/printf.c`) and
+  printf family, moved out of the old printf.c) and
   `user/lib/startmain.c` (environ and `libos_start`, which calls main). It
   still holds dr_mp3, Monocypher and the driver API: a program that never
   calls them doesn't link them. What it needs from a C library is exactly
   malloc, calloc, free, memcpy, memmove, memset, memcmp, strlen, strnlen,
   strcmp, strncmp, strchr, strrchr, strstr, printf, snprintf and
   vsnprintf; under musl its own log lines therefore go to descriptor 1.
-  `user/lib/printf.c` keeps `status_str` alone for now, so K1's line there
-  merges cleanly; it becomes status.c (a rename) once K1 is merged.
+  `user/lib/status.c` (once printf.c) holds `status_str` alone.
 - **Startup**: `startup_read(ch, &argc, &argv)` (`<os.h>`) is the parser
   both starts call: the environment follows `argv[argc]`. It uses no
   heap, printf or thread-local storage, so the POSIX crt calls it before

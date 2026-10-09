@@ -160,7 +160,7 @@ static unsigned program_handles(const struct wants *w, bool bg, struct spawn_han
         x[nx++] = (struct spawn_handle){ SR_CONSOLE, h };
     }
     /* In a pipe or the background: its printf goes down a channel to us
-     * (libos printf.c). */
+     * (libos stdio.c). */
     if ((bg || sh_piped()) && jam_channel_create(out_r, &out_w) == OK) {
         xr[nx] = RIGHT_SAME;
         x[nx++] = (struct spawn_handle){ SR_STDOUT, out_w };
