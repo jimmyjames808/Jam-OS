@@ -39,7 +39,7 @@ static status_t u_info(void *ctx, uint16_t *vendor, uint16_t *product, uint8_t *
 }
 
 static status_t u_get_descriptor(void *ctx, uint8_t type, uint8_t index, uint16_t lang,
-                                 uint16_t length, uint8_t ir, uint16_t *actual, uint8_t data[1024])
+                                 uint16_t length, uint8_t ir, uint8_t *data, uint32_t *data_len)
 {
     struct iface *f;
     struct usbdev *d = ctx_dev(ctx, &f);
@@ -50,7 +50,7 @@ static status_t u_get_descriptor(void *ctx, uint8_t type, uint8_t index, uint16_
     uint32_t n = 0;
     uint32_t cc = usb_control(d, ir ? 0x81 : 0x80, 6, (uint16_t)(type << 8 | index),
                               ir ? f->number : lang, length, data, &n, 1000);
-    *actual = (uint16_t)n;
+    *data_len = n;
     return cc_status(cc);
 }
 
@@ -81,7 +81,7 @@ static status_t check_request(const struct iface *f, uint8_t rt, uint8_t req, ui
 }
 
 static status_t u_control_in(void *ctx, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
-                             uint16_t length, uint16_t *actual, uint8_t data[1024])
+                             uint16_t length, uint8_t *data, uint32_t *data_len)
 {
     struct iface *f;
     struct usbdev *d = ctx_dev(ctx, &f);
@@ -94,19 +94,19 @@ static status_t u_control_in(void *ctx, uint8_t rt, uint8_t req, uint16_t value,
         return st;
     uint32_t n = 0;
     uint32_t cc = usb_control(d, rt, req, value, index, length, data, &n, 1000);
-    *actual = (uint16_t)n;
+    *data_len = n;
     return cc_status(cc);
 }
 
 static status_t u_control_out(void *ctx, uint8_t rt, uint8_t req, uint16_t value, uint16_t index,
-                              uint16_t length, const uint8_t data[64])
+                              const uint8_t *data, uint32_t length)
 {
     struct iface *f;
     struct usbdev *d = ctx_dev(ctx, &f);
     if (!d)
         return ERR_PEER_CLOSED;
-    if ((rt & 0x80) || length > 64)
-        return ERR_INVALID_ARGS;
+    if (rt & 0x80)
+        return ERR_INVALID_ARGS;   /* (the array is at most 64 bytes: the stub checked) */
     status_t st = check_request(f, rt, req, index);
     if (st != OK)
         return st;

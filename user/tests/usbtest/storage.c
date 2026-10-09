@@ -334,8 +334,7 @@ static bool t_storage_stall(void)
     /* a CBW that isn't one: the device refuses it and wants reset recovery */
     status_t bad = raw_cbw(r, 0x12345678, sense, 6, true, 18);
     CHECK(bad == ERR_IO || bad == OK);
-    const uint8_t none[64] = { 0 };
-    CHECK_ST(usb_control_out_until(r->ch, soon(), 0x21, 0xff, 0, r->ifnum, 0, none), OK);
+    CHECK_ST(usb_control_out_until(r->ch, soon(), 0x21, 0xff, 0, r->ifnum, NULL, 0), OK);
     CHECK_ST(usb_clear_halt_until(r->ch, usb_wait(), r->ep_in), OK);
     CHECK_ST(usb_clear_halt_until(r->ch, usb_wait(), r->ep_out), OK);
     const uint8_t inquiry[6] = { 0x12, 0, 0, 0, 36 };

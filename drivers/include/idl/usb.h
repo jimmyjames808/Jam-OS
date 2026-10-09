@@ -12,7 +12,9 @@
  * interface comes back.
  *
  * speed: 1 full (12 Mb/s), 2 low (1.5), 3 high (480), 4 super (5 Gb/s),
- * 5 super+ (10). Descriptor and control data are at most 1024 bytes.
+ * 5 super+ (10). Descriptor and control data are at most 1024 bytes, and
+ * travel as arrays of the bytes that came (or go): their length is the
+ * count.
  *
  * Protocol `usb` (id 10). Client: usb_<method>(ch, args..., &results...)
  * (and usb_<method>_until with a deadline, _within with a timeout), or
@@ -69,8 +71,6 @@ struct usb_get_descriptor_req {
 struct usb_get_descriptor_rep {
     uint32_t txid;
     int32_t  status;
-    uint16_t actual;
-    uint8_t data[1024];
 } __attribute__((packed));
 struct usb_control_in_req {
     uint32_t txid;
@@ -84,8 +84,6 @@ struct usb_control_in_req {
 struct usb_control_in_rep {
     uint32_t txid;
     int32_t  status;
-    uint16_t actual;
-    uint8_t data[1024];
 } __attribute__((packed));
 struct usb_control_out_req {
     uint32_t txid;
@@ -94,8 +92,6 @@ struct usb_control_out_req {
     uint8_t request;
     uint16_t value;
     uint16_t index;
-    uint16_t length;
-    uint8_t data[64];
 } __attribute__((packed));
 struct usb_control_out_rep {
     uint32_t txid;
@@ -235,122 +231,155 @@ static inline status_t usb_info(handle_t ch, uint16_t *out_vendor, uint16_t *out
 
 /* usb_get_descriptor_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t usb_get_descriptor_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
+static inline status_t usb_get_descriptor_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint8_t out_data[1024], uint32_t *out_data_len)
 {
-    struct usb_get_descriptor_req idl_q;
-    struct usb_get_descriptor_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = USB_GET_DESCRIPTOR;
-    idl_q.type = type;
-    idl_q.index = index;
-    idl_q.lang = lang;
-    idl_q.length = length;
-    idl_q.interface_recipient = interface_recipient;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[15];
+    _Alignas(8) uint8_t idl_b1[1034];
+    struct usb_get_descriptor_req *idl_q = (struct usb_get_descriptor_req *)idl_b0;
+    const struct usb_get_descriptor_rep *idl_r = (const struct usb_get_descriptor_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = USB_GET_DESCRIPTOR;
+    idl_q->type = type;
+    idl_q->index = index;
+    idl_q->lang = lang;
+    idl_q->length = length;
+    idl_q->interface_recipient = interface_recipient;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_actual)
-        *out_actual = idl_r.actual;
-    for (uint32_t idl_i = 0; idl_st == OK && out_data && idl_i < 1024; idl_i++)
-        out_data[idl_i] = idl_r.data[idl_i];
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 1034, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 1024, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_data) {
+        if (idl_l0)
+            __builtin_memcpy(out_data, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_data_len)
+        *out_data_len = idl_l0;
     return idl_st;
 }
 /* GET_DESCRIPTOR from the device (standard request, recipient device,
  * wIndex = `lang`) or, with `interface_recipient` 1, from this interface
  * (HID report descriptors): usb-bus then sets wIndex to this interface's
- * number itself and ignores `lang`. `length` <= 1024; `actual` bytes of
- * `data` are valid. */
-static inline status_t usb_get_descriptor_until(handle_t ch, uint64_t deadline_ns, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
+ * number itself and ignores `lang`. `length` (1..1024) is how much to ask
+ * for; `data` holds the bytes that came (at most `length`). */
+static inline status_t usb_get_descriptor_until(handle_t ch, uint64_t deadline_ns, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint8_t out_data[1024], uint32_t *out_data_len)
 {
-    return usb_get_descriptor_call(ch, false, deadline_ns, type, index, lang, length, interface_recipient, out_actual, out_data);
+    return usb_get_descriptor_call(ch, false, deadline_ns, type, index, lang, length, interface_recipient, out_data, out_data_len);
 }
-static inline status_t usb_get_descriptor_within(handle_t ch, uint64_t timeout_ns, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
+static inline status_t usb_get_descriptor_within(handle_t ch, uint64_t timeout_ns, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint8_t out_data[1024], uint32_t *out_data_len)
 {
-    return usb_get_descriptor_call(ch, true, timeout_ns, type, index, lang, length, interface_recipient, out_actual, out_data);
+    return usb_get_descriptor_call(ch, true, timeout_ns, type, index, lang, length, interface_recipient, out_data, out_data_len);
 }
-static inline status_t usb_get_descriptor(handle_t ch, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024])
+static inline status_t usb_get_descriptor(handle_t ch, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint8_t out_data[1024], uint32_t *out_data_len)
 {
-    return usb_get_descriptor_call(ch, false, DEADLINE_NEVER, type, index, lang, length, interface_recipient, out_actual, out_data);
+    return usb_get_descriptor_call(ch, false, DEADLINE_NEVER, type, index, lang, length, interface_recipient, out_data, out_data_len);
 }
 
 /* usb_control_in_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t usb_control_in_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024])
+static inline status_t usb_control_in_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint8_t out_data[1024], uint32_t *out_data_len)
 {
-    struct usb_control_in_req idl_q;
-    struct usb_control_in_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = USB_CONTROL_IN;
-    idl_q.request_type = request_type;
-    idl_q.request = request;
-    idl_q.value = value;
-    idl_q.index = index;
-    idl_q.length = length;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[16];
+    _Alignas(8) uint8_t idl_b1[1034];
+    struct usb_control_in_req *idl_q = (struct usb_control_in_req *)idl_b0;
+    const struct usb_control_in_rep *idl_r = (const struct usb_control_in_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = USB_CONTROL_IN;
+    idl_q->request_type = request_type;
+    idl_q->request = request;
+    idl_q->value = value;
+    idl_q->index = index;
+    idl_q->length = length;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_actual)
-        *out_actual = idl_r.actual;
-    for (uint32_t idl_i = 0; idl_st == OK && out_data && idl_i < 1024; idl_i++)
-        out_data[idl_i] = idl_r.data[idl_i];
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 1034, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 1024, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_data) {
+        if (idl_l0)
+            __builtin_memcpy(out_data, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_data_len)
+        *out_data_len = idl_l0;
     return idl_st;
 }
 /* A control transfer on endpoint 0 addressed to THIS interface: usb-bus
  * refuses (ERR_ACCESS_DENIED) a recipient other than the interface or one
  * of its endpoints, and a wIndex naming another interface. Class requests
  * (HID: SET_PROTOCOL, SET_IDLE, GET_REPORT, SET_REPORT) go through here.
- * IN: bmRequestType bit 7 set, `length` <= 1024 bytes come back. */
-static inline status_t usb_control_in_until(handle_t ch, uint64_t deadline_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024])
+ * IN: bmRequestType bit 7 set; `length` (<= 1024) is how much to ask for
+ * and `data` holds the bytes that came. */
+static inline status_t usb_control_in_until(handle_t ch, uint64_t deadline_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint8_t out_data[1024], uint32_t *out_data_len)
 {
-    return usb_control_in_call(ch, false, deadline_ns, request_type, request, value, index, length, out_actual, out_data);
+    return usb_control_in_call(ch, false, deadline_ns, request_type, request, value, index, length, out_data, out_data_len);
 }
-static inline status_t usb_control_in_within(handle_t ch, uint64_t timeout_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024])
+static inline status_t usb_control_in_within(handle_t ch, uint64_t timeout_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint8_t out_data[1024], uint32_t *out_data_len)
 {
-    return usb_control_in_call(ch, true, timeout_ns, request_type, request, value, index, length, out_actual, out_data);
+    return usb_control_in_call(ch, true, timeout_ns, request_type, request, value, index, length, out_data, out_data_len);
 }
-static inline status_t usb_control_in(handle_t ch, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024])
+static inline status_t usb_control_in(handle_t ch, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint8_t out_data[1024], uint32_t *out_data_len)
 {
-    return usb_control_in_call(ch, false, DEADLINE_NEVER, request_type, request, value, index, length, out_actual, out_data);
+    return usb_control_in_call(ch, false, DEADLINE_NEVER, request_type, request, value, index, length, out_data, out_data_len);
 }
 
 /* usb_control_out_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t usb_control_out_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
+static inline status_t usb_control_out_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, const uint8_t *data, uint32_t data_len)
 {
-    struct usb_control_out_req idl_q;
-    struct usb_control_out_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = USB_CONTROL_OUT;
-    idl_q.request_type = request_type;
-    idl_q.request = request;
-    idl_q.value = value;
-    idl_q.index = index;
-    idl_q.length = length;
-    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
-        idl_q.data[idl_i] = data[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[80];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct usb_control_out_req *idl_q = (struct usb_control_out_req *)idl_b0;
+    const struct usb_control_out_rep *idl_r = (const struct usb_control_out_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = USB_CONTROL_OUT;
+    idl_q->request_type = request_type;
+    idl_q->request = request;
+    idl_q->value = value;
+    idl_q->index = index;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, data, data_len, 64, 1))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
     return idl_st;
 }
-/* OUT: up to 64 bytes of data (`length` of `data`). */
-static inline status_t usb_control_out_until(handle_t ch, uint64_t deadline_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
+/* OUT: bmRequestType bit 7 clear; wLength is the length of `data` (up to 64
+ * bytes, none for a request without a data stage). */
+static inline status_t usb_control_out_until(handle_t ch, uint64_t deadline_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, const uint8_t *data, uint32_t data_len)
 {
-    return usb_control_out_call(ch, false, deadline_ns, request_type, request, value, index, length, data);
+    return usb_control_out_call(ch, false, deadline_ns, request_type, request, value, index, data, data_len);
 }
-static inline status_t usb_control_out_within(handle_t ch, uint64_t timeout_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
+static inline status_t usb_control_out_within(handle_t ch, uint64_t timeout_ns, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, const uint8_t *data, uint32_t data_len)
 {
-    return usb_control_out_call(ch, true, timeout_ns, request_type, request, value, index, length, data);
+    return usb_control_out_call(ch, true, timeout_ns, request_type, request, value, index, data, data_len);
 }
-static inline status_t usb_control_out(handle_t ch, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
+static inline status_t usb_control_out(handle_t ch, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, const uint8_t *data, uint32_t data_len)
 {
-    return usb_control_out_call(ch, false, DEADLINE_NEVER, request_type, request, value, index, length, data);
+    return usb_control_out_call(ch, false, DEADLINE_NEVER, request_type, request, value, index, data, data_len);
 }
 
 /* usb_open_interrupt_in_until and _within: idl_t is a deadline, or with idl_within a
@@ -690,26 +719,38 @@ static inline status_t usb_info_result(const void *idl_rep, struct idl_msg *idl_
  * The reply comes on ch: idl_reply_read, then usb_get_descriptor_result. */
 static inline status_t usb_get_descriptor_send(handle_t ch, uint32_t idl_txid, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient)
 {
-    struct usb_get_descriptor_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = USB_GET_DESCRIPTOR;
-    idl_q.type = type;
-    idl_q.index = index;
-    idl_q.lang = lang;
-    idl_q.length = length;
-    idl_q.interface_recipient = interface_recipient;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[15];
+    struct usb_get_descriptor_req *idl_q = (struct usb_get_descriptor_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = USB_GET_DESCRIPTOR;
+    idl_q->type = type;
+    idl_q->index = index;
+    idl_q->lang = lang;
+    idl_q->length = length;
+    idl_q->interface_recipient = interface_recipient;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to usb_get_descriptor_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t usb_get_descriptor_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_actual, uint8_t out_data[1024])
+static inline status_t usb_get_descriptor_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_data[1024], uint32_t *out_data_len)
 {
     const struct usb_get_descriptor_rep *idl_r = (const struct usb_get_descriptor_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 1024, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -717,10 +758,12 @@ static inline status_t usb_get_descriptor_result(const void *idl_rep, struct idl
         return idl_st;
     }
     idl_m->nh = 0;
-    if (out_actual)
-        *out_actual = idl_r->actual;
-    for (uint32_t idl_i = 0; out_data && idl_i < 1024; idl_i++)
-        out_data[idl_i] = idl_r->data[idl_i];
+    if (out_data) {
+        if (idl_l0)
+            __builtin_memcpy(out_data, idl_p0, idl_l0 * 1);
+    }
+    if (out_data_len)
+        *out_data_len = idl_l0;
     return OK;
 }
 
@@ -728,26 +771,38 @@ static inline status_t usb_get_descriptor_result(const void *idl_rep, struct idl
  * The reply comes on ch: idl_reply_read, then usb_control_in_result. */
 static inline status_t usb_control_in_send(handle_t ch, uint32_t idl_txid, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length)
 {
-    struct usb_control_in_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = USB_CONTROL_IN;
-    idl_q.request_type = request_type;
-    idl_q.request = request;
-    idl_q.value = value;
-    idl_q.index = index;
-    idl_q.length = length;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[16];
+    struct usb_control_in_req *idl_q = (struct usb_control_in_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = USB_CONTROL_IN;
+    idl_q->request_type = request_type;
+    idl_q->request = request;
+    idl_q->value = value;
+    idl_q->index = index;
+    idl_q->length = length;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to usb_control_in_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t usb_control_in_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_actual, uint8_t out_data[1024])
+static inline status_t usb_control_in_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_data[1024], uint32_t *out_data_len)
 {
     const struct usb_control_in_rep *idl_r = (const struct usb_control_in_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 1024, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -755,30 +810,36 @@ static inline status_t usb_control_in_result(const void *idl_rep, struct idl_msg
         return idl_st;
     }
     idl_m->nh = 0;
-    if (out_actual)
-        *out_actual = idl_r->actual;
-    for (uint32_t idl_i = 0; out_data && idl_i < 1024; idl_i++)
-        out_data[idl_i] = idl_r->data[idl_i];
+    if (out_data) {
+        if (idl_l0)
+            __builtin_memcpy(out_data, idl_p0, idl_l0 * 1);
+    }
+    if (out_data_len)
+        *out_data_len = idl_l0;
     return OK;
 }
 
 /* usb_control_out without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then usb_control_out_result. */
-static inline status_t usb_control_out_send(handle_t ch, uint32_t idl_txid, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64])
+static inline status_t usb_control_out_send(handle_t ch, uint32_t idl_txid, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, const uint8_t *data, uint32_t data_len)
 {
-    struct usb_control_out_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = USB_CONTROL_OUT;
-    idl_q.request_type = request_type;
-    idl_q.request = request;
-    idl_q.value = value;
-    idl_q.index = index;
-    idl_q.length = length;
-    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
-        idl_q.data[idl_i] = data[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[80];
+    struct usb_control_out_req *idl_q = (struct usb_control_out_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = USB_CONTROL_OUT;
+    idl_q->request_type = request_type;
+    idl_q->request = request;
+    idl_q->value = value;
+    idl_q->index = index;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, data, data_len, 64, 1))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to usb_control_out_send (read with
@@ -1050,9 +1111,9 @@ static inline status_t usb_clear_halt_result(const void *idl_rep, struct idl_msg
  * with usb_reply_<method> (now, or later from anywhere). */
 struct usb_ops {
     status_t (*info)(void *ctx, uint16_t *out_vendor, uint16_t *out_product, uint8_t *out_speed, uint8_t *out_interface_number, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_endpoints, uint8_t *out_alt_setting, uint8_t *out_address);
-    status_t (*get_descriptor)(void *ctx, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint16_t *out_actual, uint8_t out_data[1024]);
-    status_t (*control_in)(void *ctx, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint16_t *out_actual, uint8_t out_data[1024]);
-    status_t (*control_out)(void *ctx, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, const uint8_t data[64]);
+    status_t (*get_descriptor)(void *ctx, uint8_t type, uint8_t index, uint16_t lang, uint16_t length, uint8_t interface_recipient, uint8_t *out_data, uint32_t *out_data_len);
+    status_t (*control_in)(void *ctx, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, uint16_t length, uint8_t *out_data, uint32_t *out_data_len);
+    status_t (*control_out)(void *ctx, uint8_t request_type, uint8_t request, uint16_t value, uint16_t index, const uint8_t *data, uint32_t data_len);
     status_t (*open_interrupt_in)(void *ctx, uint8_t endpoint, handle_t *out_reports, uint16_t *out_max_packet, uint8_t *out_interval_ms);
     status_t (*endpoint_stats)(void *ctx, uint8_t endpoint, uint64_t *out_reports, uint64_t *out_dropped, uint64_t *out_errors, uint8_t *out_open);
     status_t (*set_interface)(void *ctx, uint8_t alt_setting);
@@ -1090,37 +1151,45 @@ static inline status_t usb_reply_info(struct idl_txn idl_txn, status_t idl_st, u
 /* Answer the usb.get_descriptor request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t usb_reply_get_descriptor(struct idl_txn idl_txn, status_t idl_st, uint16_t actual, const uint8_t data[1024])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't
+ * one). Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_get_descriptor(struct idl_txn idl_txn, status_t idl_st, const uint8_t *data, uint32_t data_len)
 {
-    struct usb_get_descriptor_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[1034];
+    struct usb_get_descriptor_rep *idl_r = (struct usb_get_descriptor_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.actual = actual;
-    for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
-        idl_r.data[idl_i] = data[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, data, data_len, 1024, 1))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the usb.control_in request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t usb_reply_control_in(struct idl_txn idl_txn, status_t idl_st, uint16_t actual, const uint8_t data[1024])
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't
+ * one). Returns the write's status (idl_reply_write). */
+static inline status_t usb_reply_control_in(struct idl_txn idl_txn, status_t idl_st, const uint8_t *data, uint32_t data_len)
 {
-    struct usb_control_in_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[1034];
+    struct usb_control_in_rep *idl_r = (struct usb_control_in_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.actual = actual;
-    for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
-        idl_r.data[idl_i] = data[idl_i];
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, data, data_len, 1024, 1))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the usb.control_out request kept in txn: idl_st and, if it is OK, the
@@ -1129,13 +1198,17 @@ static inline status_t usb_reply_control_in(struct idl_txn idl_txn, status_t idl
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t usb_reply_control_out(struct idl_txn idl_txn, status_t idl_st)
 {
-    struct usb_control_out_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct usb_control_out_rep *idl_r = (struct usb_control_out_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the usb.open_interrupt_in request kept in txn: idl_st and, if it is OK, the
@@ -1323,58 +1396,64 @@ static inline uint32_t usb_dispatch_on(handle_t ch, const struct usb_ops *ops, v
     case USB_GET_DESCRIPTOR: {
         const struct usb_get_descriptor_req *idl_q = (const struct usb_get_descriptor_req *)req;
         struct usb_get_descriptor_rep *idl_r = (struct usb_get_descriptor_rep *)rep;
-        uint16_t out_actual = 0;
-        uint8_t out_data[1024];
-        for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
-            out_data[idl_i] = 0;
+        uint8_t *out_data = (uint8_t *)((uint8_t *)rep + 10);
+        uint32_t out_data_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->get_descriptor) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->get_descriptor(ctx, idl_q->type, idl_q->index, idl_q->lang, idl_q->length, idl_q->interface_recipient, &out_actual, out_data);
+        status_t idl_st = ops->get_descriptor(ctx, idl_q->type, idl_q->index, idl_q->lang, idl_q->length, idl_q->interface_recipient, out_data, &out_data_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_data_len > 1024))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        idl_r->actual = out_actual;
-        for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
-            idl_r->data[idl_i] = out_data[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 10, out_data_len, 1);
+        return idl_rn;
     }
     case USB_CONTROL_IN: {
         const struct usb_control_in_req *idl_q = (const struct usb_control_in_req *)req;
         struct usb_control_in_rep *idl_r = (struct usb_control_in_rep *)rep;
-        uint16_t out_actual = 0;
-        uint8_t out_data[1024];
-        for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
-            out_data[idl_i] = 0;
+        uint8_t *out_data = (uint8_t *)((uint8_t *)rep + 10);
+        uint32_t out_data_len = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->control_in) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->control_in(ctx, idl_q->request_type, idl_q->request, idl_q->value, idl_q->index, idl_q->length, &out_actual, out_data);
+        status_t idl_st = ops->control_in(ctx, idl_q->request_type, idl_q->request, idl_q->value, idl_q->index, idl_q->length, out_data, &out_data_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_data_len > 1024))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        idl_r->actual = out_actual;
-        for (uint32_t idl_i = 0; idl_i < 1024; idl_i++)
-            idl_r->data[idl_i] = out_data[idl_i];
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 10, out_data_len, 1);
+        return idl_rn;
     }
     case USB_CONTROL_OUT: {
         const struct usb_control_out_req *idl_q = (const struct usb_control_out_req *)req;
         struct usb_control_out_rep *idl_r = (struct usb_control_out_rep *)rep;
         (void)idl_r;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 64, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->control_out) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->control_out(ctx, idl_q->request_type, idl_q->request, idl_q->value, idl_q->index, idl_q->length, idl_q->data);
+        idl_st = ops->control_out(ctx, idl_q->request_type, idl_q->request, idl_q->value, idl_q->index, (const uint8_t *)idl_p0, idl_l0);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

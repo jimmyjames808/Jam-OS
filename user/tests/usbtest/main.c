@@ -12,6 +12,9 @@
  *                  interface is refused (usb-bus's own)
  *   access         a class driver's channel refuses other interfaces,
  *                  device-recipient and state-changing standard requests
+ *   arrays         the arrays' limits (control_out past 64 bytes, a
+ *                  descriptor of 0 or past 1024 bytes) are refused, by the
+ *                  stubs and by usb-bus from a request by hand
  * on QEMU's devices (vendor 0627) only:
  *   stall_recovered an unknown class request STALLs (ERR_NOT_SUPPORTED)
  *                  and the next request on endpoint 0 works
@@ -200,9 +203,9 @@ static bool t_interfaces(void)
             uint8_t sp = 0, n2 = 0, c2 = 0, s2 = 0, p2 = 0, e2 = 0, a2 = 0, ad = 0;
             status_t st = usb_info_until(ch, soon(), &v, &p, &sp, &n2, &c2, &s2, &p2, &e2,
                                          &a2, &ad);
-            uint16_t actual = 0;
+            uint32_t actual = 0;
             static uint8_t buf[1024];
-            status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, &actual, buf);
+            status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, buf, &actual);
             jam_handle_close(ch);
             CHECK_ST(st, OK);
             CHECK(v == d->vid && p == d->pid && sp == d->speed && n2 == num && c2 == cls &&
@@ -246,22 +249,21 @@ static bool t_access(void)
         return true;
     }
     static uint8_t buf[1024];
-    uint16_t actual;
-    uint8_t out[64] = { 0 };
+    uint32_t actual;
     /* device recipient: GET_STATUS(device) */
-    status_t a = usb_control_in_until(ch, soon(), 0x80, 0, 0, 0, 2, &actual, buf);
+    status_t a = usb_control_in_until(ch, soon(), 0x80, 0, 0, 0, 2, buf, &actual);
     /* another interface's wIndex */
     status_t b = usb_control_in_until(ch, soon(), 0xa1, 1, 0x0100, (uint16_t)(num + 1), 8,
-                                      &actual, buf);
+                                      buf, &actual);
     /* SET_CONFIGURATION (standard, device) and SET_INTERFACE by hand */
-    status_t c = usb_control_out_until(ch, soon(), 0x00, 9, 1, 0, 0, out);
-    status_t e = usb_control_out_until(ch, soon(), 0x01, 11, 0, num, 0, out);
+    status_t c = usb_control_out_until(ch, soon(), 0x00, 9, 1, 0, NULL, 0);
+    status_t e = usb_control_out_until(ch, soon(), 0x01, 11, 0, num, NULL, 0);
     /* an OUT endpoint address, and one that isn't the interface's */
     handle_t rep;
     uint16_t mp;
     uint8_t iv;
     status_t f = usb_open_interrupt_in_until(ch, soon(), 0x0f, &rep, &mp, &iv);
-    status_t g = usb_control_in_until(ch, soon(), 0x80, 6, 0x0100, 0, 2000, &actual, buf);
+    status_t g = usb_control_in_until(ch, soon(), 0x80, 6, 0x0100, 0, 2000, buf, &actual);
     jam_handle_close(ch);
     CHECK_ST(a, ERR_ACCESS_DENIED);
     CHECK_ST(b, ERR_ACCESS_DENIED);
@@ -269,6 +271,65 @@ static bool t_access(void)
     CHECK_ST(e, ERR_ACCESS_DENIED);
     CHECK_ST(f, ERR_INVALID_ARGS);
     CHECK(g == ERR_INVALID_ARGS || g == ERR_ACCESS_DENIED);
+    return true;
+}
+
+/* The arrays' limits (usb.idl): the stubs refuse a control_out of more
+ * than 64 bytes and a descriptor asking for none or more than 1024, and
+ * usb-bus refuses a control_out whose count says more than 64 or runs
+ * past the message from a client that skipped the stubs. */
+static bool t_arrays(void)
+{
+    const struct dev *d;
+    uint8_t num;
+    handle_t ch;
+    if (!first_iface(&d, &num, &ch, false)) {
+        printf("usbtest: arrays: no device with an interface: skipped\n");
+        skipped++;
+        return true;
+    }
+    static uint8_t buf[1024], big[65];
+    uint32_t got = 0;
+    status_t a = usb_control_out_until(ch, soon(), 0x21, 9, 0, num, big, sizeof(big));
+    status_t b = usb_control_out_until(ch, soon(), 0x21, 9, 0, num, NULL, 3);
+    status_t c = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 0, 0, buf, &got);
+    status_t e = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 1025, 0, buf, &got);
+    /* A control_out by hand whose count says 65 (all there), then one whose
+     * count says 3 with 1 byte after it. */
+    _Alignas(8) uint8_t q[sizeof(struct usb_control_out_req) + 2 + 65];
+    memset(q, 0, sizeof(q));
+    struct usb_control_out_req *r = (void *)q;
+    r->txid = 7;
+    r->ordinal = USB_CONTROL_OUT;
+    r->request_type = 0x21;
+    r->request = 9;
+    r->index = num;
+    status_t st[2] = { ERR_INTERNAL, ERR_INTERNAL };
+    for (int k = 0; k < 2; k++) {
+        uint16_t count = k == 0 ? 65 : 3;
+        memcpy(q + sizeof(*r), &count, 2);
+        uint32_t qn = (uint32_t)sizeof(*r) + 2 + (k == 0 ? 65 : 1);
+        _Alignas(8) uint8_t rep[64];
+        uint32_t n = 0, nh = 0;
+        handle_t hs[4];
+        struct channel_read_args ra = {
+            .h = ch, .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        };
+        signals_t seen = 0;
+        if (jam_channel_write(ch, q, qn, NULL, 0) == OK &&
+            jam_object_wait_one(ch, SIG_READABLE, soon(), &seen) == OK &&
+            jam_channel_read(&ra) == OK && n >= sizeof(struct usb_control_out_rep))
+            st[k] = ((const struct usb_control_out_rep *)rep)->status;
+    }
+    jam_handle_close(ch);
+    CHECK_ST(a, ERR_INVALID_ARGS);
+    CHECK_ST(b, ERR_INVALID_ARGS);
+    CHECK_ST(c, ERR_INVALID_ARGS);
+    CHECK_ST(e, ERR_INVALID_ARGS);
+    CHECK_ST(st[0], ERR_INVALID_ARGS);
+    CHECK_ST(st[1], ERR_INVALID_ARGS);
     return true;
 }
 
@@ -284,10 +345,10 @@ static bool t_stall_recovered(void)
     }
     static uint8_t buf[1024];
     for (int round = 0; round < 3; round++) {
-        uint16_t actual = 0;
+        uint32_t actual = 0;
         /* class request 0x55 to the interface: nobody implements it */
-        status_t st = usb_control_in_until(ch, soon(), 0xa1, 0x55, 0, num, 8, &actual, buf);
-        status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, &actual, buf);
+        status_t st = usb_control_in_until(ch, soon(), 0xa1, 0x55, 0, num, 8, buf, &actual);
+        status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, buf, &actual);
         if (st != ERR_NOT_SUPPORTED || st2 != OK || actual != 18) {
             jam_handle_close(ch);
             FAIL("round %d: unknown request %s (want ERR_NOT_SUPPORTED), then GET_DESCRIPTOR %s "
@@ -631,6 +692,7 @@ int main(int argc, char **argv)
     run("device_list", t_device_list);
     run("interfaces", t_interfaces);
     run("access", t_access);
+    run("arrays", t_arrays);
     run("stall_recovered", t_stall_recovered);
     run("set_interface", t_set_interface);
     storage_tests();
