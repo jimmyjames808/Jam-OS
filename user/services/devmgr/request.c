@@ -95,14 +95,12 @@ static void unbind(struct binding *b)
     close_client(b);
 }
 
-/* RELEASE: b is left without a driver until REBIND. A disk's filesystems
- * are synced first (volumes', on the DISKS channel): they go with its
- * driver. For a USB interface the caller gets the channel the driver had
- * (hs[0]). */
+/* RELEASE: b is left without a driver until REBIND. A disk's mounts go
+ * with its driver: the caller asked volumes to stop them first
+ * (volumes.release_disk). For a USB interface the caller gets the channel
+ * the driver had (hs[0]). */
 static void release(struct binding *b, struct devmgr_rep *r, handle_t *hs, uint32_t *nh)
 {
-    if (b->disk)
-        disks_sync();
     unbind(b);
     say(false, "devmgr: %s %s released: no driver until it is bound again", bdf(b), b->path);
     if (b->kind == BIND_USB && (r->status = usb_channel(b, &hs[0])) == OK)

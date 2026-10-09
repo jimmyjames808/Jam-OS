@@ -4,28 +4,29 @@
  * (bin/volumes) that init starts right after devmgr, with the server ends
  * of its control channel, the ESP channel (shell mode) and the DISKS
  * channel, and a channel for the desktop's notices (<volumes.h>: the
- * protocol, the roles, and the rules its clients follow). Until M12's
- * storage split (track S1b) all of this was devmgr's.
+ * roles and who may ask what; abi/idl/volumes.idl: the protocols). Until
+ * M12's storage split all of this was devmgr's.
  *
  * A disk reaches volumes on the DISKS channel: devmgr asks each running
  * usb-storage for a `storage` channel of volumes' own (svc.connect) and
- * hands it over (DISKS_ATTACH), and says when the device has gone
- * (DISKS_GONE). Test disks come on the control channel (TEST_DISK).
+ * hands it over (disks.attach), and says when the device has gone
+ * (disks.gone). Test disks come on the control channel
+ * (volumes.test_disk).
  * volumes starts a filesystem service per partition that holds one (fat,
  * in a job of its own under volumes'), supervises it by the rule of a
  * service that outlives its process (supervise.c, spare.c: its `fs`
  * channel, keeper and state outlive each instance; a warm spare is
- * promoted for a restart), and hands the mounts' channels to init
- * (VOLUMES_MOUNTS, mounts.c).
+ * promoted for a restart), and hands the mounts' channels to init and to
+ * every other watch (volumes.watch, mounts.c).
  *
  * Its words: "bootdisk=0x<id>" (the MBR disk id of the disk the machine
  * booted from: disk.c's boot-disk check) and "nospare" (no warm spare fat:
  * a restart starts a process).
  *
  * It runs until every client end of init's control channel is gone (init
- * closes its own at the end of a test run), or SHUTDOWN (a reboot): then
- * every writable mount is synced, the spare and every filesystem service
- * stop, and it exits 0 if nothing went wrong meanwhile (a boot-disk
+ * closes its own at the end of a test run), or volumes.stop (a reboot):
+ * then every writable mount is synced, the spare and every filesystem
+ * service stop, and it exits 0 if nothing went wrong meanwhile (a boot-disk
  * service that crashed or was given up on, one that didn't end cleanly).
  * When it dies otherwise, init starts it again with fresh channels: every
  * mount went with its job, and comes back once devmgr has told the new
@@ -79,8 +80,6 @@ static status_t wait_event(void)
     uint64_t deadline = sup_next_deadline();
     if (disk_next_deadline() < deadline)
         deadline = disk_next_deadline();
-    if (mounts_next_deadline() < deadline)
-        deadline = mounts_next_deadline();
     if (sup_job_next_deadline() < deadline)
         deadline = sup_job_next_deadline();
     status_t st = jam_port_wait(port, deadline, &pkt);
@@ -113,7 +112,7 @@ static status_t run(void)
     for (;;) {
         status_t st = chans_serve();
         if (stopping)
-            return ERR_PEER_CLOSED;   /* SHUTDOWN: as if every client had gone */
+            return ERR_PEER_CLOSED;   /* volumes.stop: as if every client had gone */
         if (st != ERR_SHOULD_WAIT)
             return st;
         st = chans_arm();
@@ -124,18 +123,20 @@ static status_t run(void)
             return st;
         sup_run_due();
         disk_run_due();
-        mounts_run_due();
         sup_job_run_due();
     }
 }
 
-/* Every client is gone, or SHUTDOWN: no more restarts. Every writable
+/* Every client is gone, or volumes.stop: no more restarts. Every writable
  * mount is synced while its disk still works, then the spare and every
  * filesystem service stop (killed: what they hold is on the stick, and
- * their disks are about to go with devmgr's drivers anyway). True if
- * nothing went wrong while running. */
-static bool stop_all(void)
+ * their disks are about to go with devmgr's drivers anyway). */
+bool stop_all(void)
 {
+    static bool done, result;
+    if (done)
+        return result;
+    done = true;
     bool ok = true;
     unsigned stopped = 0;
     stopping = true;
@@ -161,7 +162,9 @@ static bool stop_all(void)
             "above)", problems);
         ok = false;
     }
+    mounts_close_all();
     say(false, "volumes: %u filesystem service(s) stopped; exiting", stopped);
+    result = ok;
     return ok;
 }
 

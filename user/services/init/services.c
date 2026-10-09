@@ -376,8 +376,7 @@ static status_t start_devmgr(void)
      * them again). Else volumes' start makes it. */
     handle_t dc, ds;
     if (volumes && jam_channel_create(&dc, &ds) == OK) {
-        struct volumes_rep r;
-        st = volumes_call_h(volumes, VOLUMES_SET_DISKS, ds, &r, now() + 5 * NS_PER_S);
+        st = volumes_set_disks_until(volumes, now() + 5 * NS_PER_S, ds);   /* ds goes */
         if (st != OK)
             printf("init: volumes didn't take the new disks channel (%s)\n", status_str(st));
         services_set_volumes(devmgr, dc);
@@ -526,8 +525,7 @@ status_t shell_stop_volumes(uint64_t deadline)
     struct svc *s = &svcs[VOLUMES];
     if (!volumes || !s->running || s->given_up)
         return OK;   /* none, or stopped already (a kexec that failed after it) */
-    struct volumes_rep r;
-    status_t st = volumes_call(volumes, VOLUMES_SHUTDOWN, 0, 0, 0, &r, NULL, 0, NULL, deadline);
+    status_t st = volumes_stop_until(volumes, deadline);
     signals_t seen;
     if (st == OK)
         st = jam_object_wait_one(s->proc, SIG_TERMINATED, deadline, &seen);

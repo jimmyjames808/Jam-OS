@@ -1094,6 +1094,8 @@ static const struct {
     { "length_limits", t_length_limits },
     { "replace_consumes", t_replace_consumes },
     { "fat_open_moved", t_fat_open_moved },
+    { "volumes_watch", t_volumes_watch },
+    { "volumes_release_disk", t_volumes_release_disk },
 };
 
 int main(int argc, char **argv)

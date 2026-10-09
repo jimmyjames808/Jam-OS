@@ -1,48 +1,27 @@
-/* utest: volumes (devmgr's storage side until M12's split), against the
- * mock usb-storage of diskmock.c handed over with VOLUMES_TEST_DISK on
- * /svc/volumes, with the real fat service
- * on its partitions: the boot disk's two partitions become mounts, a disk
- * that isn't the boot disk gets read-only /usbN mounts for its FAT volumes
- * and is never formatted, a killed filesystem service comes
- * back on the channel volumes kept, and a disk that goes takes
- * its mounts with it. A test disk's mounts are /esp-test and /data-test;
- * whatever the real stick has mounted is left alone and ignored here.
+/* utest: volumes, against the mock usb-storage of diskmock.c handed over
+ * with volumes.test_disk on /svc/volumes, with the real fat service on its
+ * partitions: the boot disk's two partitions become mounts, a disk that
+ * isn't the boot disk gets read-only /usbN mounts for its FAT volumes and
+ * is never formatted, a killed filesystem service comes back on the
+ * channel volumes kept, and a disk that goes takes its mounts with it. A
+ * test disk's mounts are /esp-test and /data-test; whatever the real stick
+ * has mounted is left alone and ignored here.
  *
  * Each test first makes the mock's ESP what it needs (a fat of the test's
  * own formats it and writes boot/jamos.elf, or doesn't), then hands the
- * disk to volumes. The calls on a mount's channel are fattest.h's. */
+ * disk to volumes, and follows the mounts through a watch of its own
+ * (struct view, disks.h). The calls on a mount's channel are fattest.h's. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
-#include <devmgr.h>
 #include <fatsvc.h>
 #include <idl/storage.h>
-#include <os.h>
-#include <volumes.h>
-#include "diskmock.h"
-#include "fattest.h"
+#include "disks.h"
 #include "utest.h"
 
-#define ESP  "/esp-test"
-#define DATA "/data-test"
+struct diskmock mock;
 
-/* What a test puts on the mock's ESP. */
-enum esp_kind {
-    ESP_BOOT,    /* a FAT volume with boot/jamos.elf: the boot disk */
-    ESP_OTHER,   /* a FAT volume without it: someone else's stick */
-    ESP_BLANK,   /* no volume at all */
-};
-
-/* VOLUMES_MOUNTS as last answered: the generation and each mount's channel. */
-struct view {
-    struct volumes_mounts_rep rep;                  /* the answer */
-    handle_t                 hs[VOLUMES_MAX_MOUNTS];   /* its channels (ours to close) */
-};
-
-static struct diskmock mock;
-
-/* volumes' control channel (/svc/volumes, one of our own), or 0. */
-static handle_t volumes(void)
+handle_t volumes(void)
 {
     handle_t vm = svc_get(SVC_VOLUMES);
     if (!vm)
@@ -51,50 +30,175 @@ static handle_t volumes(void)
     return vm;
 }
 
-static void view_close(struct view *v)
+/* ---- the view: a watch, as a table ------------------------------------------------- */
+
+static int view_find(const struct view *v, const char *path, uint32_t len)
 {
-    for (uint32_t i = 0; i < v->rep.count; i++)
-        jam_handle_close(v->hs[i]);
-    v->rep.count = 0;
+    for (unsigned i = 0; i < v->n; i++)
+        if (strlen(v->m[i].path) == len && !memcmp(v->m[i].path, path, len))
+            return (int)i;
+    return -1;
 }
 
-/* v's mount `path` as fattest.h's calls take it (fs 0: not mounted). */
-static struct fatrun mount_of(const struct view *v, const char *path)
+static void view_drop(struct view *v, int i)
+{
+    jam_handle_close(v->m[i].fs);
+    v->m[i] = v->m[--v->n];
+}
+
+static void ev_mounted(void *ctx, const char *path, uint32_t len, uint32_t gen, uint8_t flags,
+                       handle_t fs)
+{
+    struct view *v = ctx;
+    v->events++;
+    v->settled = false;
+    int i = view_find(v, path, len);
+    if (i >= 0)
+        view_drop(v, i);   /* mounted again without unmounted: kept as the new one */
+    if (v->n == VIEW_MAX || len >= sizeof(v->m[0].path)) {
+        jam_handle_close(fs);
+        return;
+    }
+    memcpy(v->m[v->n].path, path, len);
+    v->m[v->n].path[len] = '\0';
+    v->m[v->n].flags = flags;
+    v->m[v->n].gen = gen;
+    v->m[v->n++].fs = fs;
+}
+
+static void ev_unmounted(void *ctx, const char *path, uint32_t len, uint32_t gen)
+{
+    struct view *v = ctx;
+    (void)gen;
+    v->events++;
+    v->settled = false;
+    int i = view_find(v, path, len);
+    if (i >= 0)
+        view_drop(v, i);
+}
+
+static void ev_settled(void *ctx, uint32_t gen)
+{
+    struct view *v = ctx;
+    v->events++;
+    v->generation = gen;
+    v->settled = true;
+}
+
+static const struct mounts_events view_events = {
+    .mounted = ev_mounted, .unmounted = ev_unmounted, .settled = ev_settled,
+};
+
+status_t view_next(handle_t vm, struct view *v, uint64_t deadline)
+{
+    if (!v->watch) {
+        status_t st = volumes_watch_until(vm, now() + 10 * NS_PER_S, &v->watch);
+        if (st != OK) {
+            v->watch = HANDLE_INVALID;
+            return st;
+        }
+    }
+    v->settled = false;
+    while (!v->settled) {
+        status_t st = mounts_read_event(v->watch, &view_events, v);
+        if (st == ERR_SHOULD_WAIT) {
+            signals_t seen = 0;
+            st = jam_object_wait_one(v->watch, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
+        }
+        if (st != OK)
+            return st;
+    }
+    return OK;
+}
+
+void view_close(struct view *v)
+{
+    while (v->n)
+        view_drop(v, (int)v->n - 1);
+    if (v->watch)
+        jam_handle_close(v->watch);
+    *v = (struct view){ 0 };
+}
+
+struct fatrun mount_of(const struct view *v, const char *path)
 {
     struct fatrun r = { 0 };
-    for (uint32_t i = 0; i < v->rep.count; i++)
-        if (strcmp(v->rep.mounts[i].path, path) == 0)
-            r.fs = v->hs[i];
+    int i = view_find(v, path, (uint32_t)strlen(path));
+    if (i >= 0)
+        r.fs = v->m[i].fs;
     return r;
 }
 
-static bool mounted(const struct view *v, const char *path)
+bool mounted(const struct view *v, const char *path)
 {
     return mount_of(v, path).fs != HANDLE_INVALID;
 }
 
-/* Follow VOLUMES_MOUNTS from v's generation until the test disk's mounts
- * are as wanted (each there or not), for 15 s at most. */
-static bool wait_mounts(handle_t vm, struct view *v, bool want_esp, bool want_data)
+uint32_t mount_gen(const struct view *v, const char *path)
 {
-    uint64_t until = now() + 15 * NS_PER_S;
-    /* v is the list as it is unless volumes says otherwise: generation 0
-     * (nothing asked yet) is answered at once, any other when it changes */
-    while (!v->rep.generation || mounted(v, ESP) != want_esp || mounted(v, DATA) != want_data) {
-        struct view next;
-        if (now() > until)
+    int i = view_find(v, path, (uint32_t)strlen(path));
+    return i >= 0 ? v->m[i].gen : 0;
+}
+
+bool wait_mounts(handle_t vm, struct view *v, bool want_esp, bool want_data)
+{
+    uint64_t until = now() + WAIT_MOUNT;
+    while (!v->generation || mounted(v, ESP) != want_esp || mounted(v, DATA) != want_data) {
+        status_t st = view_next(vm, v, until);
+        if (st == ERR_TIMED_OUT)
             FAIL("mounts after 15 s: %s %s, want %s %s", mounted(v, ESP) ? ESP : "-",
                  mounted(v, DATA) ? DATA : "-", want_esp ? ESP : "-", want_data ? DATA : "-");
-        status_t st = volumes_mounts(vm, v->rep.generation, &next.rep, next.hs);
-        if (st == ERR_TIMED_OUT)
-            continue;
         CHECK_ST(st, OK);
-        CHECK(next.rep.generation != 0 && next.rep.generation != v->rep.generation);
-        view_close(v);
-        *v = next;
+        CHECK(v->generation != 0);
     }
     return true;
 }
+
+const char *usb_path(const struct view *v)
+{
+    for (unsigned i = 0; i < v->n; i++) {
+        const char *p = v->m[i].path;
+        size_t n = strlen(p);
+        if (n > 9 && !strncmp(p, "/usb", 4) && !strcmp(p + n - 5, "-test"))
+            return p;
+    }
+    return NULL;
+}
+
+bool wait_usb(handle_t vm, struct view *v, int want)
+{
+    uint64_t until = now() + WAIT_MOUNT;
+    for (;;) {
+        const char *p = v->generation ? usb_path(v) : NULL;
+        uint8_t ro = 0;
+        if (v->generation && want < 0 && !p)
+            return true;
+        if (p && want >= 0 &&
+            fs_statfs_until(mount_of(v, p).fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL) == OK &&
+            ro == want)
+            return true;
+        status_t st = view_next(vm, v, until);
+        if (st == ERR_TIMED_OUT)
+            FAIL("/usbN-test after 15 s: %s, want %s", p ? p : "none",
+                 want < 0 ? "none" : want ? "read-only" : "read-write");
+        CHECK_ST(st, OK);
+    }
+}
+
+bool view_quiet(const struct view *v)
+{
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(v->watch, SIG_READABLE, now() + NS_PER_S, &seen), ERR_TIMED_OUT);
+    return true;
+}
+
+status_t remount(handle_t vm, const char *path, bool writable)
+{
+    return volumes_remount_until(vm, now() + 30 * NS_PER_S, path, (uint32_t)strlen(path),
+                                 writable);
+}
+
+/* ---- the mock disk ------------------------------------------------------------------- */
 
 /* Format the mock's ESP and put a file on it: a fat of our own, on a
  * writable `block` channel, run to its end. */
@@ -104,8 +208,7 @@ static bool make_esp(handle_t storage, enum esp_kind kind)
     handle_t blk, serve;
     if (kind == ESP_BLANK)
         return true;
-    CHECK_ST(storage_open_partition_until(storage, now() + 5 * NS_PER_S, VOLUMES_PART_ESP, 0, &blk),
-             OK);
+    CHECK_ST(storage_open_partition_until(storage, now() + 5 * NS_PER_S, PART_ESP, 0, &blk), OK);
     CHECK_ST(jam_channel_create(&r.fs, &serve), OK);
     CHECK_ST(new_job(&r.job), OK);
     const char *argv[] = { "fat", "utest-esp", FAT_ARG_FORMAT };
@@ -125,9 +228,7 @@ static bool make_esp(handle_t storage, enum esp_kind kind)
     return fat_wait(&r, 0);
 }
 
-/* Make a mock disk and hand it to volumes; *id: its name for
- * VOLUMES_FS_SVC. False with *skip when bootfs has no fat. */
-static bool attach(handle_t vm, uint8_t type2, enum esp_kind kind, uint32_t *id, bool *skip)
+bool attach(handle_t vm, uint8_t type2, enum esp_kind kind, uint32_t *id, bool *skip)
 {
     const struct bootfs_view *b;
     const void *data;
@@ -140,24 +241,12 @@ static bool attach(handle_t vm, uint8_t type2, enum esp_kind kind, uint32_t *id,
     }
     if (!dm_start(&mock, DM_TYPE_ESP, type2, &client) || !make_esp(client, kind))
         return false;
-    struct volumes_req q = { 0, VOLUMES_TEST_DISK, 0, 0, 0 };
-    struct volumes_rep r;
-    uint32_t n = 0;
-    struct channel_call_args a = {
-        .h = vm, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)&q,
-        .wr_handles = (uint64_t)(uintptr_t)&client, .wr_nhandles = 1, .rd_cap = sizeof(r),
-        .rd_bytes = (uint64_t)(uintptr_t)&r, .rd_actual = (uint64_t)(uintptr_t)&n,
-        .deadline_ns = now() + 10 * NS_PER_S,
-    };
-    CHECK_ST(jam_channel_call(&a), OK);   /* client goes with the request either way */
-    CHECK(n >= VOLUMES_REP_HDR);
-    CHECK_ST(r.status, OK);
-    *id = r.a;
+    /* client goes with the request either way */
+    CHECK_ST(volumes_test_disk_until(vm, now() + 10 * NS_PER_S, client, id), OK);
     return true;
 }
 
-/* The mock is pulled, and volumes has dropped its mounts. */
-static bool detach(handle_t vm, struct view *v)
+bool detach(handle_t vm, struct view *v)
 {
     if (!dm_stop(&mock))
         return false;
@@ -167,7 +256,7 @@ static bool detach(handle_t vm, struct view *v)
     return true;
 }
 
-static bool wait_count(const uint32_t *counter, uint32_t want)
+bool wait_count(const uint32_t *counter, uint32_t want)
 {
     uint64_t until = now() + 15 * NS_PER_S;
     while (dm_count(counter) < want) {
@@ -177,16 +266,17 @@ static bool wait_count(const uint32_t *counter, uint32_t want)
     return true;
 }
 
+/* ---- the tests ----------------------------------------------------------------------- */
+
 /* The boot disk: both partitions are mounted, the ESP read-only and the
  * blank data partition formatted, and the channels are real filesystems.
- * They come from the control channel's VOLUMES_MOUNTS and from nowhere
- * else. */
+ * They come from a watch and from nowhere else: devmgr's query channel
+ * can't reach volumes at all. */
 bool t_disk_mounts(void)
 {
-    handle_t vm = volumes(), hs[VOLUMES_MAX_HANDLES];
+    handle_t vm = volumes(), w;
     struct view v = { 0 };
-    struct volumes_rep r;
-    uint32_t id = 0, nh = 0;
+    uint32_t id = 0;
     uint64_t size = 0;
     uint8_t ro = 0;
     bool skip, is_dir = true;
@@ -214,69 +304,18 @@ bool t_disk_mounts(void)
     if (!put_file(&data, "/logs/boot-0001.txt", "hello") ||
         !file_is(&data, "/logs/boot-0001.txt", "hello"))
         return false;
-
-    /* the same generation again: no answer before VOLUMES_MOUNTS_WAIT */
-    struct view same;
-    uint64_t t0 = now();
-    CHECK_ST(volumes_mounts(vm, v.rep.generation, &same.rep, same.hs), ERR_TIMED_OUT);
-    CHECK(now() - t0 >= VOLUMES_MOUNTS_WAIT - 100 * NS_PER_MS);
-    /* a filesystem's channel is not GET_SERVICE's to give, and the query
-     * channel gets no mounts at all */
-    CHECK_ST(volumes_call(vm, VOLUMES_GET_SERVICE, VOLUMES_FS_SVC, VOLUMES_PART_DATA, id, &r, hs,
-                         VOLUMES_MAX_HANDLES, &nh, now() + 10 * NS_PER_S), ERR_ACCESS_DENIED);
-    CHECK_EQ(nh, 0);
-    if (svc_get(SVC_DEVMGR))
-        CHECK_ST(volumes_mounts(svc_get(SVC_DEVMGR), 0, &same.rep, same.hs),
-                 ERR_ACCESS_DENIED);
+    /* the flags: the ESP read-only, both a test disk's */
+    for (unsigned i = 0; i < v.n; i++)
+        if (!strcmp(v.m[i].path, ESP) || !strcmp(v.m[i].path, DATA))
+            CHECK_EQ(v.m[i].flags, MOUNTS_TEST | (!strcmp(v.m[i].path, ESP) ? MOUNTS_READ_ONLY : 0));
+    /* nothing changed: nothing more is said */
+    if (!view_quiet(&v))
+        return false;
+    /* devmgr's query channel is no way to volumes */
+    if (svc_get(SVC_DEVMGR)) {
+        CHECK(volumes_watch_until(svc_get(SVC_DEVMGR), now() + 10 * NS_PER_S, &w) != OK);
+    }
     return detach(vm, &v);
-}
-
-/* A test disk's /usbN-test mount in v (the first), or NULL. */
-static const char *usb_path(const struct view *v)
-{
-    for (uint32_t i = 0; i < v->rep.count; i++) {
-        const char *p = v->rep.mounts[i].path;
-        size_t n = strnlen(p, sizeof(v->rep.mounts[i].path));
-        if (n > 9 && !strncmp(p, "/usb", 4) && !strcmp(p + n - 5, "-test"))
-            return p;
-    }
-    return NULL;
-}
-
-/* Follow VOLUMES_MOUNTS until the test disk's /usbN-test is there and
- * answers statfs with read_only == want (0 or 1), or, want < 0, is gone;
- * for 15 s at most. */
-static bool wait_usb(handle_t vm, struct view *v, int want)
-{
-    uint64_t until = now() + 15 * NS_PER_S;
-    for (;;) {
-        const char *p = v->rep.generation ? usb_path(v) : NULL;
-        uint8_t ro = 0;
-        if (v->rep.generation && want < 0 && !p)
-            return true;
-        if (p && want >= 0 &&
-            fs_statfs_until(mount_of(v, p).fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL) == OK &&
-            ro == want)
-            return true;
-        if (now() > until)
-            FAIL("/usbN-test after 15 s: %s, want %s", p ? p : "none",
-                 want < 0 ? "none" : want ? "read-only" : "read-write");
-        struct view next;
-        status_t st = volumes_mounts(vm, v->rep.generation, &next.rep, next.hs);
-        if (st == ERR_TIMED_OUT)
-            continue;
-        CHECK_ST(st, OK);
-        view_close(v);
-        *v = next;
-    }
-}
-
-static status_t remount(handle_t vm, unsigned n, bool writable)
-{
-    struct volumes_rep r;
-    return volumes_call(vm, VOLUMES_REMOUNT, VOLUMES_USB_MOUNT, (uint16_t)n,
-                       VOLUMES_REMOUNT_TEST | (writable ? VOLUMES_REMOUNT_WRITE : 0), &r, NULL, 0,
-                       NULL, now() + 30 * NS_PER_S);
 }
 
 /* Is the mock's data partition still blank (it starts as zeros)? */
@@ -310,7 +349,7 @@ static bool nothing_to_mount(handle_t vm, bool *skip)
     CHECK_EQ(dm_count(&mock.writes), 0);
     CHECK_EQ(dm_count(&mock.refused), 0);     /* nothing even tried */
     CHECK(data_blank());
-    CHECK_ST(volumes_mounts(vm, 0, &v.rep, v.hs), OK);
+    CHECK_ST(view_next(vm, &v, now() + 10 * NS_PER_S), OK);   /* a new watch: the list */
     CHECK(!mounted(&v, ESP) && !mounted(&v, DATA) && !usb_path(&v));
     return detach(vm, &v);
 }
@@ -351,17 +390,17 @@ bool t_disk_not_boot(void)
 /* Someone else's stick: an ESP-typed FAT volume without boot/jamos.elf and
  * a blank FAT32-typed partition. The FAT volume is mounted read-only at
  * /usbN-test on a `block` channel opened read-only (the disk itself would
- * refuse a write); VOLUMES_REMOUNT reopens it read-write with a new
+ * refuse a write); volumes.remount reopens it read-write with a new
  * service and a new channel, and back. The blank partition is never
  * opened for writing, never mounted and never formatted, in either mode. */
 bool t_disk_other(void)
 {
     handle_t vm = volumes(), old;
     struct view v = { 0 };
-    struct volumes_rep r;
     struct tfile f;
     uint32_t id = 0;
     bool skip;
+    char usbn[16];
     if (!vm)
         return true;
     if (!attach(vm, DM_TYPE_FAT32, ESP_OTHER, &id, &skip))
@@ -370,8 +409,8 @@ bool t_disk_other(void)
     if (!wait_usb(vm, &v, 1) || !wait_count(&mock.closed[1], 1))
         return false;
     CHECK(!mounted(&v, ESP) && !mounted(&v, DATA));
-    unsigned n = (unsigned)(usb_path(&v)[4] - '0');
-    struct fatrun usb = mount_of(&v, usb_path(&v));
+    snprintf(usbn, sizeof(usbn), "%s", usb_path(&v));
+    struct fatrun usb = mount_of(&v, usbn);
     /* make_esp's channel, the boot-disk check's, the /usbN service's; the
      * blank partition's once, read-only, and its service gave up */
     CHECK_EQ(dm_count(&mock.opened[0]), 3);
@@ -384,24 +423,25 @@ bool t_disk_other(void)
     CHECK_EQ(dm_count(&mock.writes), writes);
     CHECK_EQ(dm_count(&mock.refused), 0);   /* fat refused: the disk never had to */
 
-    /* only /usbN, only on the control channel */
-    CHECK_ST(remount(vm, 9, true), ERR_NOT_FOUND);
-    CHECK_ST(volumes_call(vm, VOLUMES_REMOUNT, VOLUMES_FS_SVC, VOLUMES_PART_ESP, id, &r, NULL, 0, NULL,
-                         now() + 10 * NS_PER_S), ERR_INVALID_ARGS);
+    /* only /usbN, only writable 0 or 1, only on volumes' channel */
+    CHECK_ST(remount(vm, "/usb9-test", true), ERR_NOT_FOUND);
+    CHECK_ST(remount(vm, "/data", true), ERR_NOT_FOUND);
+    CHECK_ST(volumes_remount_until(vm, now() + 10 * NS_PER_S, usbn, (uint32_t)strlen(usbn), 2),
+             ERR_INVALID_ARGS);
     if (svc_get(SVC_DEVMGR))
-        CHECK_ST(remount(svc_get(SVC_DEVMGR), n, true), ERR_ACCESS_DENIED);
+        CHECK(remount(svc_get(SVC_DEVMGR), usbn, true) != OK);
 
     /* read-write: a new service on a new channel, the old one dead */
     CHECK_ST(jam_handle_duplicate(usb.fs, RIGHT_SAME, &old), OK);
-    CHECK_ST(remount(vm, n, true), OK);
+    CHECK_ST(remount(vm, usbn, true), OK);
     if (!wait_usb(vm, &v, 0))
         return false;
     struct fatrun before = { .fs = old };
     CHECK_ST(t_stat(&before, "/readme.txt", NULL, NULL, NULL), ERR_PEER_CLOSED);
     CHECK_ST(jam_handle_close(old), OK);
-    usb = mount_of(&v, usb_path(&v));
+    usb = mount_of(&v, usbn);
     CHECK_EQ(dm_count(&mock.opened_rw), 2);
-    CHECK_ST(remount(vm, n, true), OK);   /* already: nothing restarts */
+    CHECK_ST(remount(vm, usbn, true), OK);   /* already: nothing restarts */
     CHECK_EQ(dm_count(&mock.opened[0]), 4);
     if (!put_file(&usb, "/new.txt", "written after mount -w") ||
         !file_is(&usb, "/new.txt", "written after mount -w"))
@@ -409,10 +449,10 @@ bool t_disk_other(void)
     CHECK(dm_count(&mock.writes) > writes);
 
     /* and read-only again: what was written is there, nothing more goes in */
-    CHECK_ST(remount(vm, n, false), OK);
+    CHECK_ST(remount(vm, usbn, false), OK);
     if (!wait_usb(vm, &v, 1))
         return false;
-    usb = mount_of(&v, usb_path(&v));
+    usb = mount_of(&v, usbn);
     writes = dm_count(&mock.writes);
     if (!file_is(&usb, "/new.txt", "written after mount -w"))
         return false;
@@ -429,31 +469,20 @@ bool t_disk_other(void)
     return wait_usb(vm, &v, -1);
 }
 
-/* VOLUMES_MOUNTS from v's generation doesn't move: the call waits its
- * VOLUMES_MOUNTS_WAIT and says ERR_TIMED_OUT. */
-static bool generation_stays(handle_t vm, const struct view *v)
-{
-    struct view next;
-    status_t st = volumes_mounts(vm, v->rep.generation, &next.rep, next.hs);
-    if (st == OK)
-        view_close(&next);
-    CHECK_ST(st, ERR_TIMED_OUT);
-    return true;
-}
-
 /* Killing a filesystem service (a deliberate kill: restarted at once, not
  * counted): volumes kept its `fs` channel, so the mount never went and the
  * channel clients had still works, served by the new instance (on a new
  * `block` channel), which carries on from the dead one's state: a file it
  * had open stays open, what was written to it and not synced is there,
- * and the generation doesn't move (namespaces need nothing new); what was
- * on the volume is still there; the other mount never moved. */
+ * and the watch hears nothing (namespaces need nothing new); what was on
+ * the volume is still there; the other mount never moved. */
 bool t_disk_fs_restart(void)
 {
     handle_t vm = volumes(), old;
     struct view v = { 0 };
-    struct volumes_rep r;
-    uint32_t id = 0;
+    uint32_t id = 0, state = 0, restarts = 0, backoff = 0, promoted = 0;
+    uint8_t spare = 0;
+    uint64_t koid = 0;
     bool skip, is_dir = false;
     if (!vm)
         return true;
@@ -471,8 +500,8 @@ bool t_disk_fs_restart(void)
     char got[8] = { 0 };
     CHECK_ST(t_open(&data, "/unsynced.txt", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
     CHECK_ST(t_write(&f, 0, "kept", 4, &done), OK);   /* no sync: fat holds it */
-    CHECK_ST(volumes_call(vm, VOLUMES_KILL, VOLUMES_FS_SVC, VOLUMES_PART_DATA, id, &r, NULL, 0, NULL,
-                         now() + 30 * NS_PER_S), OK);
+    CHECK_ST(volumes_kill_until(vm, now() + 30 * NS_PER_S, DATA, sizeof(DATA) - 1, &koid), OK);
+    CHECK(koid != 0);
     /* the channel we had: a call on it waits for the next instance */
     CHECK_ST(t_stat(&before, "/kept", NULL, &is_dir, NULL), OK);
     CHECK(is_dir);
@@ -481,7 +510,7 @@ bool t_disk_fs_restart(void)
     CHECK_EQ(done, 4);
     CHECK(!memcmp(got, "kept", 4));
     t_close(&f);
-    if (!generation_stays(vm, &v))
+    if (!view_quiet(&v))
         return false;
     CHECK(mounted(&v, ESP) && mounted(&v, DATA));
     CHECK(file_is(&data, "/unsynced.txt", "kept"));
@@ -490,16 +519,16 @@ bool t_disk_fs_restart(void)
     CHECK_EQ(dm_count(&mock.opened[1]), 2);
     CHECK_EQ(dm_count(&mock.closed[1]), 1);
     CHECK_EQ(dm_count(&mock.opened[0]), 2);
-    CHECK_ST(volumes_call(vm, VOLUMES_SUPERVISION, VOLUMES_FS_SVC, VOLUMES_PART_DATA, id, &r, NULL, 0,
-                         NULL, now() + 10 * NS_PER_S), OK);
-    CHECK_EQ(r.a, VOLUMES_SUP_RUNNING);
-    CHECK_EQ(r.b, 1);   /* one restart */
-    CHECK_EQ(r.c, 0);   /* at once */
-    CHECK(r.d <= 1);    /* from the warm spare, if one waited */
-    /* the same service by its mount (init's `kill fat-data-test`) */
-    CHECK_ST(volumes_call(vm, VOLUMES_SUPERVISION, VOLUMES_FS_MOUNT, VOLUMES_MOUNT_DATA,
-                         VOLUMES_MOUNT_TEST, &r, NULL, 0, NULL, now() + 10 * NS_PER_S), OK);
-    CHECK_EQ(r.b, 1);
+    CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, DATA, sizeof(DATA) - 1, &state,
+                                       &restarts, &backoff, &promoted, &spare), OK);
+    CHECK_EQ(state, VOLUMES_SUP_RUNNING);
+    CHECK_EQ(restarts, 1);   /* one restart */
+    CHECK_EQ(backoff, 0);    /* at once */
+    CHECK(promoted <= 1);    /* from the warm spare, if one waited */
+    /* a mount that isn't there */
+    CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, "/nowhere", 8, &state,
+                                       &restarts, &backoff, &promoted, &spare), ERR_NOT_FOUND);
+    CHECK_ST(volumes_kill_until(vm, now() + 10 * NS_PER_S, "/nowhere", 8, &koid), ERR_NOT_FOUND);
     CHECK_ST(jam_handle_close(old), OK);
     return detach(vm, &v);
 }

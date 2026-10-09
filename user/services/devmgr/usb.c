@@ -198,7 +198,7 @@ void usb_retire(struct binding *b, const char *why)
     b->state = DEVMGR_SUP_NONE;
     b->console_wait = false;
     b->input_gen = 0;
-    disks_gone(b);   /* a disk's driver: volumes forgets the disk */
+    disks_device_gone(b);   /* a disk's driver: volumes forgets the disk */
     b->disk = false;
     b->path = NULL;   /* a free slot now */
 }

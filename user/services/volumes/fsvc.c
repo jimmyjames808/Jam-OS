@@ -3,7 +3,7 @@
  * partition, its handles and its mount path, the /usbN services of disks
  * that aren't the boot disk (one started at a time, so the numbers follow
  * the order the volumes were found in), a service that ended,
- * VOLUMES_REMOUNT, and VOLUMES_ESP_WRITE (the boot disk's ESP read-write
+ * volumes.remount, and volesp (the boot disk's ESP read-write
  * for init alone: the same stop and restart, and no mount meanwhile).
  *
  * A service's `fs` channel is volumes', both ends, from its first start
@@ -52,28 +52,14 @@ void fs_retire(struct vol *b)
     b->path = NULL;   /* a free slot now */
 }
 
-struct vol *fs_find(uint32_t id, uint32_t part)
+struct vol *fs_find_mount(const char *path, uint32_t len)
 {
-    for (unsigned i = 0; i < MAX_DISKS; i++)
-        if (disks[i].state != DISK_FREE && disks[i].id == id && part < MAX_PARTS &&
-            disks[i].fs[part])
-            return &vols[disks[i].fs[part] - 1];
-    return NULL;
-}
-
-struct vol *fs_find_mount(uint32_t which, uint32_t flags)
-{
-    bool test = flags & VOLUMES_MOUNT_TEST;
-    if (flags & ~VOLUMES_MOUNT_TEST)
-        return NULL;
     for (unsigned i = 0; i < nvols; i++) {
         struct vol *b = &vols[i];
-        if (!b->path || b->test != test)
+        if (!b->path)
             continue;
-        bool hit = which >= VOLUMES_MOUNT_USB ? b->other && b->usbn == which - VOLUMES_MOUNT_USB
-                   : which == VOLUMES_MOUNT_ESP ? !b->other && b->part == PART_ESP
-                   : which == VOLUMES_MOUNT_DATA && !b->other && b->part == PART_DATA;
-        if (hit)
+        const char *p = fs_mount_path(b);
+        if (strlen(p) == len && !memcmp(p, path, len))
             return b;
     }
     return NULL;
@@ -112,7 +98,7 @@ status_t fs_serve_end(struct vol *b, struct spawn_handle *x, rights_t *xr, unsig
             jam_handle_close(b->serve);
         b->client = client;
         b->serve = serve;
-        b->chan_gen++;   /* a new mount for VOLUMES_MOUNTS */
+        b->chan_gen++;   /* a new mount for the watches */
     }
     handle_t h;
     status_t st = jam_handle_duplicate(b->serve, RIGHT_SAME, &h);
@@ -131,7 +117,7 @@ status_t fs_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigne
     handle_t blk;
     /* Read-only unless it is the boot disk's data partition, another
      * disk's partition after `mount -w`, or the boot disk's ESP while init
-     * writes it (ESP_WRITE). */
+     * writes it (volesp). */
     bool read_only = !b->other && b->part == PART_DATA ? false : !b->rw;
     status_t st = OK;
     if (!fs_block_prepared(b, &blk))
@@ -432,13 +418,9 @@ static status_t fs_restart(struct vol *b, bool writable)
     return st;
 }
 
-status_t disk_remount(unsigned n, bool test, bool writable)
+status_t disk_remount(struct vol *b, bool writable)
 {
-    struct vol *b = NULL;
-    for (unsigned i = 0; i < nvols && !b; i++)
-        if (vols[i].path && vols[i].other && vols[i].test == test && vols[i].usbn == n)
-            b = &vols[i];
-    if (!b)
+    if (!b->path || !b->other)
         return ERR_NOT_FOUND;
     if (b->state != VOLUMES_SUP_RUNNING || !b->proc || !b->ready)
         return ERR_BAD_STATE;   /* not mounted (yet, or no longer) */

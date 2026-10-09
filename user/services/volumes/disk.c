@@ -81,6 +81,7 @@
  * /data-test, and "one boot disk at a time" counts them separately, so a
  * test never takes /data away. */
 #include <fs_idl.h>
+#include <idl/fsctl.h>
 #include <idl/storage.h>
 #include "disk.h"
 
@@ -433,11 +434,13 @@ static bool take_ch(struct disk *d, handle_t ch)
     return true;
 }
 
-/* DISKS_ATTACH: disk id's driver runs; ch (consumed) is a `storage`
+/* disks.attach: disk id's driver runs; ch (consumed) is a `storage`
  * channel of ours. A disk that was there under that id (its driver
  * restarted) starts again at step 1 in its slot. */
-static void attach(uint32_t id, handle_t ch)
+static void attach(void *ctx, uint32_t id, uint8_t bus, handle_t ch)
 {
+    (void)ctx;
+    (void)bus;   /* USB's ids alone, so far */
     struct disk *d = disk_named(id);
     if (d && d->state != DISK_DOWN)
         drop_services(d, DISK_DOWN);   /* its old channel's end not seen yet */
@@ -455,14 +458,18 @@ static void attach(uint32_t id, handle_t ch)
     ask_info(d);
 }
 
-/* The SYNC call (txid) on the DISKS channel: answered once every writable
- * mount has been synced. */
-static void sync_request(uint32_t txid)
+/* disks.gone: the device is gone for good. */
+static void gone(void *ctx, uint32_t id)
 {
-    disk_sync_all();
-    struct volumes_rep r = { .txid = txid, .status = OK };
-    (void)jam_channel_write(disks_ch, &r, VOLUMES_REP_HDR, NULL, 0);
+    (void)ctx;
+    struct disk *d = disk_named(id);
+    if (!d)
+        return;
+    say(false, "volumes: %s: the device is gone", disk_name(d));
+    forget(d);
 }
+
+static const struct disks_ops disks_ops = { .attach = attach, .gone = gone };
 
 void disks_set(handle_t ch)
 {
@@ -490,19 +497,7 @@ void disks_event(uint64_t key)
     if (!disks_ch || key != (KEY_DISKS | disks_gen))
         return;   /* stale */
     for (int guard = 0; guard < 64; guard++) {
-        _Alignas(8) uint8_t buf[64];
-        handle_t hs[4];
-        uint32_t n = 0, nh = 0;
-        struct channel_read_args a = {
-            .h = disks_ch, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
-            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
-            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-        };
-        status_t st = jam_channel_read(&a);
-        if (st == ERR_BUFFER_TOO_SMALL) {
-            discard(disks_ch, n, nh);   /* nothing devmgr sends is that big */
-            continue;
-        }
+        status_t st = disks_serve_one(disks_ch, &disks_ops, NULL);
         if (st == ERR_PEER_CLOSED) {
             /* devmgr ended: its drivers went with it. */
             jam_port_unbind(port, disks_ch, KEY_DISKS | disks_gen);
@@ -513,20 +508,6 @@ void disks_event(uint64_t key)
         }
         if (st != OK)
             return;
-        const struct disks_msg *m = (const struct disks_msg *)buf;
-        bool whole = n == sizeof(*m);
-        if (whole && m->ordinal == DISKS_ATTACH && nh == 1 && !m->txid) {
-            attach(m->id, hs[0]);
-            continue;
-        }
-        for (uint32_t i = 0; i < nh; i++)
-            jam_handle_close(hs[i]);
-        if (whole && m->ordinal == DISKS_GONE && !nh && !m->txid && disk_named(m->id)) {
-            say(false, "volumes: %s: the device is gone", disk_name(disk_named(m->id)));
-            forget(disk_named(m->id));
-        } else if (whole && m->ordinal == DISKS_SYNC && !nh && m->txid) {
-            sync_request(m->txid);
-        }
     }
 }
 
@@ -659,8 +640,9 @@ uint64_t disk_next_deadline(void)
     return next;
 }
 
-void disk_sync_all(void)
+status_t disk_sync_all(void)
 {
+    status_t first = OK;
     for (unsigned i = 0; i < MAX_DISKS; i++) {
         const struct disk *d = &disks[i];
         for (unsigned part = 0; part < MAX_PARTS; part++) {
@@ -671,10 +653,46 @@ void disk_sync_all(void)
             if (!writable || b->state != VOLUMES_SUP_RUNNING || !b->client)
                 continue;
             status_t st = fs_sync_until(b->client, now() + SYNC_WAIT);
-            say(st != OK && !d->test, "volumes: %s: %s synced before stopping (%s)", disk_name(d),
+            say(st != OK && !d->test, "volumes: %s: %s synced (%s)", disk_name(d),
                 fs_mount_path(b), status_str(st));
+            if (first == OK)
+                first = st;
         }
     }
+    return first;
+}
+
+/* b (running) stops in order: fsctl.stop, so its files are closed and the
+ * volume is clean; killed if it doesn't answer. Its process is gone after. */
+static void stop_in_order(struct vol *b)
+{
+    status_t st = b->ctl ? fsctl_stop_until(b->ctl, now() + SYNC_WAIT) : ERR_NOT_SUPPORTED;
+    if (st != OK)
+        say(false, "volumes: %s: its filesystem service did not stop in order (%s): killed",
+            fs_mount_path(b), status_str(st));
+    fs_stop(b, st != OK, true);
+}
+
+status_t disk_release(uint32_t id)
+{
+    struct disk *d = NULL;
+    for (unsigned i = 0; i < MAX_DISKS && !d; i++)
+        if (disks[i].state != DISK_FREE && disks[i].id == id)
+            d = &disks[i];
+    if (!d)
+        return ERR_NOT_FOUND;
+    unsigned n = 0;
+    for (unsigned part = 0; part < MAX_PARTS; part++) {
+        struct vol *b = d->fs[part] ? &vols[d->fs[part] - 1] : NULL;
+        if (b && b->proc && b->state == VOLUMES_SUP_RUNNING) {
+            stop_in_order(b);
+            n++;
+        }
+    }
+    say(false, "volumes: %s released: %u filesystem service(s) stopped in order; no mounts "
+        "until it is attached again", disk_name(d), n);
+    drop_services(d, DISK_ALONE);   /* what is left (a restart due) goes; the mounts change */
+    return OK;
 }
 
 unsigned disk_mounts(struct mount *out)
@@ -683,7 +701,7 @@ unsigned disk_mounts(struct mount *out)
     for (unsigned i = 0; i < MAX_DISKS; i++) {
         bool mounted = disks[i].state == DISK_BOOT || disks[i].state == DISK_OTHER;
         for (unsigned part = 0; part < MAX_PARTS && mounted; part++) {
-            if (!disks[i].fs[part] || n == VOLUMES_MAX_MOUNTS)
+            if (!disks[i].fs[part] || n == MAX_VOLS)
                 continue;
             const struct vol *b = &vols[disks[i].fs[part] - 1];
             /* Running, or between two instances on the channel it kept
@@ -694,8 +712,11 @@ unsigned disk_mounts(struct mount *out)
             if (b->other && !b->ready)
                 continue;   /* no volume mounted yet (or none at all) */
             if (!b->other && b->part == PART_ESP && b->rw)
-                continue;   /* init's while it writes the stick (ESP_WRITE): nobody else's */
-            out[n] = (struct mount){ .vol = (uint32_t)(b - vols), .gen = b->chan_gen };
+                continue;   /* init's while it writes the stick (volesp): nobody else's */
+            bool ro = b->other ? !b->rw : b->part == PART_ESP;
+            out[n] = (struct mount){ .vol = (uint32_t)(b - vols), .gen = b->chan_gen,
+                                     .flags = (uint8_t)((ro ? MOUNTS_READ_ONLY : 0) |
+                                                        (disks[i].test ? MOUNTS_TEST : 0)) };
             snprintf(out[n].path, sizeof(out[n].path), "%s", fs_mount_path(b));
             n++;
         }

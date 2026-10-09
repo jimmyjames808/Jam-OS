@@ -42,6 +42,10 @@
 #define IDL_ID_IDLTEST_EV    0x0023u   /* abi/idl/idltest.idl */
 #define IDL_ID_USBBUS_EVENTS 0x0024u   /* abi/idl/usbbus.idl */
 #define IDL_ID_IDLTEST_H     0x0025u   /* abi/idl/idltest.idl */
+#define IDL_ID_VOLUMES       0x0026u   /* abi/idl/volumes.idl */
+#define IDL_ID_VOLESP        0x0027u   /* abi/idl/volumes.idl */
+#define IDL_ID_DISKS         0x0028u   /* abi/idl/volumes.idl */
+#define IDL_ID_MOUNTS        0x0029u   /* abi/idl/volumes.idl */
 #define IDL_ID_UPDATE_ANSWER 0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY       0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER  0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */

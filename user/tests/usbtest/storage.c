@@ -63,6 +63,7 @@
 #include <idl/storage.h>
 #include <idl/usb.h>
 #include <idl/usbbus.h>
+#include <idl/volumes.h>
 #include "usbtest.h"
 
 #define BLK_WAIT   (60 * NS_PER_S)
@@ -125,14 +126,21 @@ static uint64_t usb_wait(void)
 /* The `usb` channel to drive disk r through. devmgr binds a usb-storage of
  * its own to every disk (and mounts the boot stick's partitions through
  * it), and usb-bus gives an interface's bulk endpoints to one channel
- * only: devmgr's. So devmgr is asked to let go of the disk
- * (DEVMGR_RELEASE: its driver stops, the mounts go) and hands out a
+ * only: devmgr's. So volumes is asked to stop the disk's mounts in order
+ * (volumes.release_disk: its files closed, the volume clean), then devmgr
+ * to let go of the disk (DEVMGR_RELEASE: its driver stops) and hand out a
  * duplicate of that channel. Where devmgr has no driver on the disk, a new
  * channel from usb-bus does. */
 static status_t take_disk(const struct raw *r, handle_t *out)
 {
     struct devmgr_rep rep;
     uint32_t nh = 0;
+    handle_t vm = svc_get(SVC_VOLUMES);
+    status_t st = vm ? volumes_release_disk_until(vm, in(60 * NS_PER_S), r->dev_id)
+                     : ERR_NOT_FOUND;
+    if (st != OK && st != ERR_NOT_FOUND)   /* not found: volumes doesn't have it */
+        printf("usbtest: storage: volumes didn't release disk %u (%s)\n", r->dev_id,
+               status_str(st));
     if (dm && devmgr_call(dm, DEVMGR_RELEASE, DEVMGR_USB_IFACE, r->ifnum, r->dev_id, &rep, out, 1,
                           &nh, in(60 * NS_PER_S)) == OK && nh == 1)
         return OK;

@@ -2,7 +2,7 @@
  * stick (an MBR, an ESP, a data partition), served through the `storage`
  * protocol and one `block` channel per opened partition by a thread of
  * utest, the way usb-storage serves the real one. disks.c hands its
- * `storage` channel to volumes (VOLUMES_TEST_DISK).
+ * `storage` channel to volumes (volumes.test_disk).
  *
  * It differs from ramdisk.h's RAM disk in being a whole disk: a partition
  * table, several `block` channels at once and one after another, and the

@@ -84,18 +84,22 @@ extern bool init_verbose;
 
 /* ---- mounts.c -------------------------------------------------------------------- */
 
-/* Follow volumes' mounts (VOLUMES_MOUNTS, <volumes.h>) on a thread of its
- * own: each answer's mounts go into init's namespace, those no longer
- * listed leave it. volumes_ctl: a duplicate of volumes' control channel,
- * consumed. After every change a PORT_PACKET_USER with `key` is queued on
- * port (0: nobody is told). One volumes at a time: mounts_unwatch first. */
+/* Follow volumes' mounts through a watch (volumes.watch, the `mounts`
+ * events of abi/idl/volumes.idl), bound on port under `key`: no thread,
+ * nothing waits. volumes_ctl: a duplicate of volumes' control channel,
+ * consumed (kept to watch again, and for mounts_sync). One volumes at a
+ * time: mounts_unwatch first. */
 status_t mounts_watch(handle_t volumes_ctl, handle_t port, uint64_t key);
-/* Stop following (volumes is gone, or about to be told to stop: close our
- * other ends of its control channel first) and unmount what came from it.
- * Waits for the thread, at most 2 s. */
+/* `key`'s packet: what the watch said goes into init's namespace (a mount
+ * in, a mount out). True once a change is whole (`settled`): tell the
+ * followers then. A watch that closed while volumes runs (it fell behind)
+ * is made again. */
+bool     mounts_event(void);
+/* Stop following (volumes is gone, or about to be told to stop) and
+ * unmount what came from it. */
 void     mounts_unwatch(void);
-/* Everything written to /data is on the stick: fs.sync, given up after
- * 2 s (said in the log). Nothing to do without a /data. */
+/* Every writable mount on the stick: volumes.sync, given up after 2 s
+ * (said in the log, with /data's line). Nothing to do without volumes. */
 void     mounts_sync(void);
 /* /data once more, without a word, for at most 1 s: after logd's last
  * write, so the volume is left marked clean. */
@@ -152,7 +156,7 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MU
 
 /* Port keys of shell mode's loop: a service's index (its process ended),
  * or one of these. */
-#define KEY_MOUNTS   0x100u   /* the mounts watcher changed the namespace */
+#define KEY_MOUNTS   0x100u   /* volumes' watch: mount events (mounts.c) */
 #define KEY_CTL      0x200u   /* + CTL_*: requests on a control channel */
 #define KEY_SPLASH   0x300u   /* the splash's channel (splash.c) */
 #define KEY_LASTBOOT 0x400u   /* logd's answer about the last boot's log (lastboot.c) */
@@ -389,7 +393,7 @@ handle_t shell_root(void);
 handle_t shell_devmgr(void);
 /* volumes' control channel, or 0 while none runs. */
 handle_t shell_volumes(void);
-/* volumes' ESP channel (VOLUMES_ESP_WRITE), init's alone: or 0 while no
+/* volumes' ESP channel (volesp), init's alone: or 0 while no
  * volumes runs (or none started in shell mode). Only update.c uses it. */
 handle_t shell_volumes_esp(void);
 /* init's (ADMIN) console channel, or 0 while no console runs. */
@@ -398,7 +402,7 @@ handle_t shell_console(void);
  * until deadline at most. Nothing to do without a logd. */
 void     shell_flush_log(uint64_t deadline);
 /* For a reboot (reboot.c), in this order: volumes syncs every writable
- * mount, stops its filesystem services and exits (VOLUMES_SHUTDOWN), then
+ * mount, stops its filesystem services and exits (volumes.stop), then
  * devmgr stops every driver in order and exits (DEVMGR_SHUTDOWN); each
  * waited for until deadline, and its job killed if it doesn't. Neither is
  * started again. OK, or what went wrong. */

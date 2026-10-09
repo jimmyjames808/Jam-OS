@@ -1,0 +1,177 @@
+# volumes: the disks, their filesystem services (bin/fat) and the mounts
+# they make (user/services/volumes). init starts it right after devmgr and
+# holds its control channel; tests reach it at /svc/volumes (a channel per
+# opener: svc.connect, abi/idl/svc.idl, which the control channel answers
+# too). Mounts are named by their path: the boot disk's "/esp" (read-only)
+# and "/data", another stick's FAT volumes "/usb0", "/usb1", ... (read-only
+# until `remount`), and a test disk's "/esp-test", "/data-test",
+# "/usb0-test", ...
+#
+# Supervision of the filesystem services, by the rule of a service that
+# outlives its process (<supervise.h>): exit 0 is the end of it; a
+# deliberate kill (`kill`) is not counted and is restarted at once; a crash
+# or any other exit is counted, the first in a minute restarted at once,
+# later ones with backoff (100 ms doubling to 5 s), and the 6th counted
+# death in a minute gives up. A restart is the warm spare promoted when one
+# waits (one fat started with SR_STANDBY alone, "fat-spare"), else a new
+# process; either way on a new `block` channel and the same `fs` channel,
+# so it is no change of the mounts.
+#
+# Reconnect (init's supervision): when volumes ends, every channel it made
+# closes: each mount's `fs` channel and everything opened through it, the
+# watch channels, the ESP's writable channel. What its filesystem services
+# held and had not written is lost (up to their hold's ~1 MiB a mount).
+# Open /svc/volumes again (init has the next one's control channel); the
+# next volumes mounts what devmgr hands it, and a new watch lists it.
+
+protocol volumes 38
+
+# A mount's service (supervision's `state`).
+const SUP_NONE       0
+const SUP_RUNNING    1
+# died; its restart is due
+const SUP_RESTARTING 2
+# died too often: no more restarts
+const SUP_GAVE_UP    3
+# exited 0 by itself
+const SUP_FINISHED   4
+
+# A new watch: a channel on which volumes sends `mounts` events (below):
+# every mount there is now, then `settled`, then each change. volumes'
+# end receives nothing. A watcher that leaves MOUNTS_UNREAD_MAX events
+# unread is dropped (its channel closed): it watches again, and gets the
+# whole list. ERR_NO_RESOURCES: as many watches as volumes keeps.
+1  watch  () -> (handle<channel> events)
+# The mount `mount` (another stick's /usbN, or a test disk's /usbN-test)
+# writable (1) or read-only (0): its service stops in order (fsctl.stop:
+# its files closed, everything flushed, the volume clean) and starts again
+# on a `block` channel opened the new way (read-only: the disk itself
+# refuses every write). The mount's channel is a new one (`unmounted`,
+# then `mounted` once its volume is mounted again), and files open on the
+# old one fail ERR_PEER_CLOSED. Nothing is ever formatted, in either mode.
+# Answered once the new instance runs; OK at once if it is that way
+# already. ERR_NOT_FOUND: no such mount, or not one that can be asked for
+# (/esp, /data: they are what they are); ERR_BAD_STATE: its service isn't
+# serving; ERR_INVALID_ARGS: writable past 1.
+2  remount  (str[<=15] mount, u8 writable) -> () later
+# Kill the mount's filesystem service (a deliberate kill: not counted,
+# restarted at once, the warm spare promoted; its clients see nothing but
+# the time it took). Answered once it is dead, with the koid of the
+# process killed. ERR_NOT_FOUND: no such mount, or no instance runs (its
+# restart is due).
+3  kill  (str[<=15] mount) -> (u64 koid)
+# The mount's service: its state (SUP_*), restarts since boot, the last
+# backoff in ms, the restarts that promoted the warm spare, and 1 while a
+# spare waits. ERR_NOT_FOUND: no such mount.
+4  supervision  (str[<=15] mount) -> (u32 state, u32 restarts, u32 backoff_ms, u32 promoted, u8 spare_waits)
+# A software disk for tests: `storage` speaks storage.idl, and volumes
+# treats it like a usb-storage disk (the same questions, the same boot-disk
+# check, the same supervision of its services), with one difference: its
+# mounts are the /...-test ones, and "the boot disk" is counted among test
+# disks only, so a test never takes /data away. Gone once the channel's
+# server end closes. ERR_NO_RESOURCES: too many disks.
+5  test_disk  (handle<channel> storage) -> (u32 id)
+# Disk `id` let go (a test disk's id from test_disk, or devmgr's from
+# disks.attach): each of its mounts stops in order (its files closed, the
+# volume clean) and goes, and the disk is not mounted again until it comes
+# back (a new disks.attach). For a test that drives the disk itself
+# (usbtest asks this, then devmgr's release). Answered once all have
+# stopped. ERR_NOT_FOUND: no such disk.
+6  release_disk  (u32 id) -> () later
+# Every writable mount (fs.sync each), answered once all have answered,
+# with the first failure. Each is given 5 s.
+7  sync  () -> () later
+# Stop, for a reboot: every writable mount synced, then every filesystem
+# service stopped (and the warm spare); answered then, and volumes exits
+# (0 if nothing went wrong while it ran). Requests after it: the channel
+# closes.
+8  stop  () -> () later
+# The server end of a new disks channel (devmgr was started again, and
+# init made the pair). The disks of the old one are forgotten, without
+# notices.
+9  set_disks  (handle<channel> disks) -> ()
+
+# volesp: the boot disk's ESP made writable, for init's stick write
+# (`update -w`, user/services/init/espwrite.c) alone: init made this
+# channel when it started volumes, and gives it to nobody; volumes serves
+# nothing else on it, and nothing of this on any other channel. While
+# writable, /esp is no mount (every watch is told `unmounted`), so no
+# namespace holds the writable channel.
+#
+# Reconnect: ERR_PEER_CLOSED: volumes ended; the ESP is read-only again
+# with the next volumes, and init has a new ESP channel for it.
+
+protocol volesp 39
+
+# The ESP's service stops in order and starts again on a `block` channel
+# opened read-write; `fs` is a channel to it, the caller's alone. Called
+# while it is writable already: another handle to the same channel. A
+# crash meanwhile restarts it writable; a pulled stick ends it (the
+# stick's next mount is read-only). ERR_NOT_FOUND: no boot disk with an
+# ESP service; ERR_BAD_STATE: it isn't serving.
+1  open_writable  () -> (handle<channel> fs) later
+# Back to read-only: it stops in order (everything on the stick, the
+# volume clean), starts again read-only, and /esp is a mount again (a new
+# channel). OK at once if it is read-only already.
+2  close_writable  () -> () later
+
+# disks: the disks devmgr's drivers serve, told to volumes (devmgr's
+# user/services/devmgr/disks.c sends, volumes serves). init makes a new
+# pair whenever devmgr or volumes starts, and hands one end to each
+# (devmgr's SET_VOLUMES; volumes' startup role or `volumes.set_disks`).
+# One way: devmgr waits for nothing.
+#
+# Reconnect: when the channel's peer closes, the other side drops it and
+# waits for the next: devmgr announces every disk again on a new channel;
+# volumes forgets every disk the old one announced, without notices.
+
+protocol disks 40
+
+# Buses (attach's `bus`).
+const BUS_USB 1
+const BUS_NVME 2
+
+# A disk is there: its driver runs. `storage` is a channel of volumes'
+# own (devmgr asked the driver's DR_SERVE for it: svc.connect). `id` names
+# the disk while the device is there (USB: usb-bus's device id; a later
+# bus picks ids in its own range, never with the top bit, which test
+# disks use). A driver started again after a crash is announced again
+# with the same id. ERR_PEER_CLOSED on `storage` alone means the driver
+# ended, not that the device went.
+1  attach  (u32 id, u8 bus, handle<channel> storage) event
+# The device is gone (unplugged, or its bus driver ended): the disk will
+# not come back under this id.
+2  gone  (u32 id) event
+
+# mounts: what volumes sends on a watch channel (volumes.watch). The
+# events of one change all carry its generation, and `settled` ends it;
+# a new watch gets every mount there is with the current generation, then
+# `settled`. A generation is never 0, and a volumes that init started
+# again counts from somewhere else (the clock), so it is never taken for
+# the dead one's.
+#
+# A mount's channel stays the same across its service's restarts (they
+# are no change): a new channel comes with `unmounted` then `mounted` (a
+# remount, the ESP made writable and back, a service started again after
+# it was given up on). Init puts each in its namespace (/boot excepted)
+# and tells its followers at `settled`.
+#
+# Reconnect: ERR_PEER_CLOSED: volumes ended (every mount went with it), or
+# this watcher fell MOUNTS_UNREAD_MAX events behind; watch again.
+
+protocol mounts 41
+
+# `mounted`'s flags.
+const READ_ONLY 1
+# a test disk's: nobody's namespace wants it
+const TEST      2
+# events a watcher may leave unread before it is dropped
+const UNREAD_MAX 256
+
+# A mount, and its `fs` channel (abi/idl/fs.idl): a duplicate of volumes'
+# client end, the watcher's to keep or close.
+1  mounted  -> (str[<=15] path, u32 generation, u8 flags, handle<channel> fs) event
+# The mount `path` is gone: its channel is closed or about to be.
+2  unmounted  -> (str[<=15] path, u32 generation) event
+# The list is whole as of `generation`: tell the namespaces now.
+3  settled  -> (u32 generation) event

@@ -16,17 +16,15 @@
  * kill <name> reaches the processes init has authority over: its own
  * services (shell.c: their jobs are init's), through devmgr's KILL what
  * devmgr runs for a USB device, a class driver per interface ("hid-6.1:0",
- * "usb-storage-1:0"), and through volumes' KILL a filesystem service per
- * mounted partition ("fat-data", "fat-usb0"). The kernel's process list
- * says which process has the name; devmgr's bindings on each USB device,
- * and volumes' services on each disk, are then asked for theirs
- * (GET_DRIVER) until one matches, and that one is killed. devmgr's PCI
- * drivers ("usb-bus", "hda") are found the same way among the functions
- * with a driver bound (GET_DRIVER 0xffff/0xffff); devmgr restarts them
- * like any driver that dies. A filesystem service is asked for by its
- * mount first (VOLUMES_FS_MOUNT: "fat-data" is /data's), whatever its
- * process is called: a restarted one is volumes' warm spare promoted,
- * which keeps the name "fat-spare".
+ * "usb-storage-1:0"), and through volumes.kill a filesystem service per
+ * mount ("fat-data" is /data's, "fat-usb0-test" /usb0-test's), whatever
+ * its process is called: a restarted one is volumes' warm spare promoted,
+ * which keeps the name "fat-spare". For devmgr's, the kernel's process
+ * list says which process has the name; devmgr's bindings on each USB
+ * device are then asked for theirs (GET_DRIVER) until one matches, and
+ * that one is killed. devmgr's PCI drivers ("usb-bus", "hda") are found
+ * the same way among the functions with a driver bound (GET_DRIVER
+ * 0xffff/0xffff); devmgr restarts them like any driver that dies.
  *
  * reboot is a kexec into a fresh copy of the system: the kernel's stored
  * one, or the files on /esp if they changed (reboot.c); if that can't be
@@ -38,7 +36,7 @@
  * in order. sync flushes the same way.
  *
  * mount (the shell's `mount -w /usb0`, `mount -r /usb0`) is passed on to
- * volumes (VOLUMES_REMOUNT) for /usbN and refused for every other path:
+ * volumes (volumes.remount) for /usbN and refused for every other path:
  * /boot, /esp and /data are what they are.
  *
  * shell_ready (the shell, once it is up) lets the boot splash give the
@@ -57,8 +55,7 @@
 #define MAX_PCI_DRIVERS 64            /* bound PCI functions looked through */
 #define MAX_DEVICES 128               /* USB devices looked at */
 #define MAX_IFACES  8                 /* interface numbers tried on each */
-#define MAX_PARTS   4                 /* partitions tried on each (an MBR's) */
-#define MOUNT_WAIT  (25 * NS_PER_S)   /* volumes' REMOUNT: a sync, then its service's stop */
+#define MOUNT_WAIT  (25 * NS_PER_S)   /* volumes.remount: its service's stop, then a start */
 #define CALL_WAIT   (5 * NS_PER_S)    /* a devmgr, volumes or usb-bus call */
 #define KILL_WAIT   (15 * NS_PER_S)   /* a KILL: devmgr or volumes waits for it to die */
 #define ROUND       16                /* requests answered before the main loop gets a turn */
@@ -76,7 +73,7 @@ static struct ctl ctls[CTL_COUNT] = {
 };
 static handle_t ctl_port;
 
-/* ---- kill: what devmgr and volumes run for a USB device ----------------------------- */
+/* ---- kill: what devmgr runs for a USB device, and volumes for a mount --------------- */
 
 /* usb-bus: the driver devmgr bound that answers usbbus.status. */
 static handle_t find_usb_bus(handle_t dm)
@@ -116,8 +113,7 @@ static bool koid_named(const char *name, uint64_t *koid)
     return found;
 }
 
-/* The koid of the process devmgr (or volumes: the same wire) runs for
- * this binding, asked on ch. */
+/* The koid of the process devmgr runs for this binding, asked on ch. */
 static status_t binding_koid(handle_t ch, uint16_t vendor, uint16_t device, uint32_t id,
                              uint64_t *koid)
 {
@@ -136,23 +132,17 @@ static status_t binding_koid(handle_t ch, uint16_t vendor, uint16_t device, uint
     return st;
 }
 
-/* What hangs off USB device `id`: devmgr's class driver per interface
- * (dm), volumes' filesystem service per partition of a disk (vm). Kill
- * the one whose process is `koid`. ERR_NOT_FOUND: none is. */
-static status_t kill_on_device(handle_t dm, handle_t vm, uint32_t id, uint64_t koid)
+/* What devmgr runs for USB device `id`: a class driver per interface.
+ * Kill the one whose process is `koid`. ERR_NOT_FOUND: none is. */
+static status_t kill_on_device(handle_t dm, uint32_t id, uint64_t koid)
 {
-    const struct { handle_t ch; uint16_t vendor; uint16_t count; } kinds[] = {
-        { dm, DEVMGR_USB_IFACE, MAX_IFACES }, { vm, VOLUMES_FS_SVC, MAX_PARTS },
-    };
-    for (unsigned k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
-        for (uint16_t n = 0; kinds[k].ch && n < kinds[k].count; n++) {
-            uint64_t have = 0;
-            if (binding_koid(kinds[k].ch, kinds[k].vendor, n, id, &have) != OK || have != koid)
-                continue;
-            struct devmgr_rep r;
-            return devmgr_call(kinds[k].ch, DEVMGR_KILL, kinds[k].vendor, n, id, &r, NULL, 0,
-                               NULL, now() + KILL_WAIT);
-        }
+    for (uint16_t n = 0; n < MAX_IFACES; n++) {
+        uint64_t have = 0;
+        if (binding_koid(dm, DEVMGR_USB_IFACE, n, id, &have) != OK || have != koid)
+            continue;
+        struct devmgr_rep r;
+        return devmgr_call(dm, DEVMGR_KILL, DEVMGR_USB_IFACE, n, id, &r, NULL, 0, NULL,
+                           now() + KILL_WAIT);
     }
     return ERR_NOT_FOUND;
 }
@@ -175,52 +165,27 @@ static status_t kill_pci_driver(handle_t dm, uint64_t koid)
     return ERR_NOT_FOUND;
 }
 
-/* "fat-data", "fat-esp", "fat-usb0", each maybe ending "-test": the
- * filesystem service of that mount, as volumes names it by mount
- * (VOLUMES_FS_MOUNT). False: not such a name. */
-static bool fs_mount_named(const char *name, uint16_t *which, uint32_t *flags)
-{
-    char m[NAME_MAX];
-    if (strncmp(name, "fat-", 4))
-        return false;
-    snprintf(m, sizeof(m), "%s", name + 4);
-    size_t n = strlen(m);
-    *flags = n > 5 && !strcmp(m + n - 5, "-test") ? VOLUMES_MOUNT_TEST : 0;
-    if (*flags)
-        m[n - 5] = '\0';
-    if (!strcmp(m, "data"))
-        *which = VOLUMES_MOUNT_DATA;
-    else if (!strcmp(m, "esp"))
-        *which = VOLUMES_MOUNT_ESP;
-    else if (!strncmp(m, "usb", 3) && m[3] >= '0' && m[3] <= '9' && !m[4])   /* /usb0../usb9 */
-        *which = (uint16_t)(VOLUMES_MOUNT_USB + (unsigned)(m[3] - '0'));
-    else
-        return false;
-    return true;
-}
-
-/* Kill the filesystem service of the mount `name` names ("fat-data"),
- * found by its mount rather than its process name: a restarted one is a
- * promoted spare, still called "fat-spare". ERR_NOT_FOUND: not such a
- * name, or no such mount. */
+/* Kill the filesystem service of the mount `name` names ("fat-data" is
+ * /data's, "fat-usb0-test" /usb0-test's: volumes.kill), found by its
+ * mount rather than its process name: a restarted one is a promoted
+ * spare, still called "fat-spare". ERR_NOT_FOUND: not such a name, no
+ * such mount, or none of its instances runs. */
 static status_t kill_fs_mount(handle_t vm, const char *name, uint64_t *koid)
 {
-    uint16_t which;
-    uint32_t flags;
-    if (!vm || !fs_mount_named(name, &which, &flags))
+    char path[16];
+    size_t n = strlen(name);
+    if (!vm || strncmp(name, "fat-", 4) || n == 4 || n - 4 >= sizeof(path) - 1)
         return ERR_NOT_FOUND;
-    status_t st = binding_koid(vm, VOLUMES_FS_MOUNT, which, flags, koid);
-    if (st == ERR_BAD_STATE || st == ERR_NOT_FOUND)
-        return ERR_NOT_FOUND;   /* none runs */
-    struct volumes_rep r;
-    return st != OK ? st : volumes_call(vm, VOLUMES_KILL, VOLUMES_FS_MOUNT, which, flags, &r,
-                                        NULL, 0, NULL, now() + KILL_WAIT);
+    path[0] = '/';
+    memcpy(path + 1, name + 4, n - 4);
+    path[n - 3] = '\0';
+    status_t st = volumes_kill_until(vm, now() + KILL_WAIT, path, (uint32_t)(n - 3), koid);
+    return st == ERR_INVALID_ARGS ? ERR_NOT_FOUND : st;
 }
 
-/* Kill the process called name if devmgr or volumes runs it: a PCI
- * function's driver ("hda"), or for a USB device a class driver
- * ("hid-6.1:0", "usb-storage-1:0") or a disk's filesystem service
- * ("fat-data"). */
+/* Kill the process called name if devmgr or volumes runs it: a mount's
+ * filesystem service ("fat-data"), a PCI function's driver ("hda"), or
+ * for a USB device a class driver ("hid-6.1:0", "usb-storage-1:0"). */
 static status_t kill_devmgr_process(const char *name, uint64_t *koid)
 {
     handle_t dm = shell_devmgr(), vm = shell_volumes();
@@ -240,7 +205,7 @@ static status_t kill_devmgr_process(const char *name, uint64_t *koid)
                                 NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
                                 NULL) != OK)
             break;   /* past the last device, or usb-bus is gone */
-        st = kill_on_device(dm, vm, id, *koid);
+        st = kill_on_device(dm, id, *koid);
     }
     jam_handle_close(bus);
     return st;
@@ -322,10 +287,9 @@ static status_t op_mount(void *ctx, const uint8_t path[16], uint8_t writable)
     if (!usb_mount(path, &n))
         return ERR_ACCESS_DENIED;   /* /boot, /esp, /data: not ours to change */
     handle_t vm = shell_volumes();
-    struct volumes_rep r;
-    status_t st = vm ? volumes_call(vm, VOLUMES_REMOUNT, VOLUMES_USB_MOUNT, (uint16_t)n,
-                                    writable ? VOLUMES_REMOUNT_WRITE : 0, &r, NULL, 0, NULL,
-                                    now() + MOUNT_WAIT)
+    const char *p = (const char *)path;
+    status_t st = vm ? volumes_remount_until(vm, now() + MOUNT_WAIT, p,
+                                             (uint32_t)strnlen(p, 16), writable)
                      : ERR_NOT_FOUND;
     printf("init: mount %s %s: %s\n", writable ? "-w" : "-r", (const char *)path, status_str(st));
     return st;
