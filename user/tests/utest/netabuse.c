@@ -177,22 +177,26 @@ static bool raw(handle_t ch, const void *msg, uint32_t n, handle_t h, status_t w
     return true;
 }
 
-/* Garbage of every shape on ch. */
-static bool garbage(handle_t ch, status_t big)
+/* Garbage of every shape on ch, a channel of the protocol `id` whose method
+ * `ord` takes `size` bytes (nothing in `ord`'s request but its two header
+ * words and fixed fields). */
+static bool garbage(handle_t ch, uint32_t id, uint32_t ord, uint32_t size, status_t big)
 {
     static uint8_t huge[8192];
-    struct idl_req_hdr h = { 77, (NET_PROTOCOL_ID << 16) | 99 };
+    struct idl_req_hdr h = { 77, (id << 16) | 99 };
     handle_t ev;
     CHECK(raw(ch, "\x01\x02", 2, 0, NO_ANSWER));
     CHECK(raw(ch, "\x05\0\0\0\x01\x02", 6, 0, ANY_ERROR));
     CHECK(raw(ch, &h, sizeof(h), 0, ERR_NOT_SUPPORTED));
     h.ordinal = NETCTL_INFO;   /* another protocol's method */
     CHECK(raw(ch, &h, sizeof(h), 0, ERR_NOT_SUPPORTED));
-    struct net_sock_connect_req q = { .txid = 78, .ordinal = NET_SOCK_CONNECT };
-    CHECK(raw(ch, &q, sizeof(q) - 1, 0, ERR_INVALID_ARGS));   /* a byte short */
+    uint8_t q[64] = { 78 };   /* txid 78, then the method's ordinal */
+    memcpy(q + 4, &ord, sizeof(ord));
+    CHECK(size <= sizeof(q));
+    CHECK(raw(ch, q, size - 1, 0, ERR_INVALID_ARGS));   /* a byte short */
     memcpy(huge, &h, sizeof(h));
     CHECK(raw(ch, huge, sizeof(huge), 0, big));
-    h.ordinal = NET_IFACE;
+    h.ordinal = ord;
     CHECK_ST(jam_event_create(&ev), OK);
     CHECK(raw(ch, &h, sizeof(h), ev, ERR_INVALID_ARGS));   /* no method takes handles */
     return true;
@@ -206,27 +210,29 @@ bool t_netsock_hostile(void)
     CHECK(netdrv_ping(1, true));
     CHECK(opener(&o));
     CHECK_ST(net_udp_open(o, 6000, &s), OK);
-    CHECK(garbage(o, ERR_INVALID_ARGS));
-    CHECK(garbage(s.ch, ERR_INVALID_ARGS));
-    CHECK(garbage(netdrv_net(), ANY_ERROR));
+    CHECK(garbage(o, NET_PROTOCOL_ID, NET_ECHO, sizeof(struct net_echo_req), ERR_INVALID_ARGS));
+    CHECK(garbage(s.ch, NET_SOCKET_PROTOCOL_ID, NET_SOCKET_CONNECT,
+                  sizeof(struct net_socket_connect_req), ERR_INVALID_ARGS));
+    CHECK(garbage(netdrv_net(), NET_PROTOCOL_ID, NET_ECHO, sizeof(struct net_echo_req),
+                  ANY_ERROR));
     /* Each kind of channel refuses the other's methods. */
     uint16_t a16;
     uint32_t a32;
     struct net_info in;
     handle_t h;
-    CHECK_ST(net_sock_state(o, &a16, &a32, &a16, &a32, &a32), ERR_NOT_SUPPORTED);
+    CHECK_ST(net_socket_state(o, &a16, &a32, &a16, &a32, &a32), ERR_NOT_SUPPORTED);
     CHECK_ST(net_info(s.ch, &in), ERR_NOT_SUPPORTED);
     CHECK_ST(net_udp_until(netdrv_net(), now() + NETDRV_WAIT, 0, &h, &a16), ERR_NOT_SUPPORTED);
     handle_t hs[3];
     CHECK_ST(net_udp_rings_until(netdrv_net(), now() + NETDRV_WAIT, 0, 0, 0, &h, &hs[0], &hs[1],
                                  &hs[2], &a16, &a32, &a32), ERR_NOT_SUPPORTED);
-    CHECK_ST(net_sock_rings_until(o, now() + NETDRV_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &a32,
+    CHECK_ST(net_socket_rings_until(o, now() + NETDRV_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &a32,
                                   &a32), ERR_NOT_SUPPORTED);
     CHECK_ST(net_echo_until(netdrv_net(), now() + NETDRV_WAIT, PEER_IP, 1, 0, 100, NULL, NULL,
                             NULL), ERR_NOT_SUPPORTED);
     CHECK_ST(net_info(netdrv_net(), &in), OK);   /* answered at once: allowed there */
     /* A socket's rings once; sizes that aren't ring sizes. */
-    CHECK_ST(net_sock_rings_until(s.ch, now() + NETDRV_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &a32,
+    CHECK_ST(net_socket_rings_until(s.ch, now() + NETDRV_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &a32,
                                   &a32), ERR_BAD_STATE);
     static const uint32_t bad[] = { 1, 2048, 5000, SOCKRING_MAX * 2, 0xffffffffu };
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
@@ -297,7 +303,7 @@ bool t_netsock_slow_reader(void)
     CHECK(netdrv_ping(2, false));
     uint16_t port, pp;
     uint32_t peer, queued, dropped;
-    CHECK_ST(net_sock_state(sa.ch, &port, &peer, &pp, &queued, &dropped), OK);
+    CHECK_ST(net_socket_state(sa.ch, &port, &peer, &pp, &queued, &dropped), OK);
     CHECK_EQ(queued, kept * sockring_dgram_bytes(sizeof(big)));   /* bytes in its rx ring */
     CHECK_EQ(dropped, more);
     CHECK(counters(&c));

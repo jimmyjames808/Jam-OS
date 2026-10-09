@@ -149,7 +149,7 @@ status_t net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port)
 {
     handle_t hs[3] = { 0 };
     uint32_t tx = 0, rx = 0;
-    status_t st = net_sock_rings_until(ch, now() + CALL_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &tx,
+    status_t st = net_socket_rings_until(ch, now() + CALL_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &tx,
                                        &rx);
     if (st != OK) {
         jam_handle_close(ch);
@@ -174,7 +174,7 @@ void net_close(struct net_sock *s)
 
 status_t net_connect(struct net_sock *s, uint32_t addr, uint16_t port)
 {
-    return net_sock_connect_until(s->ch, now() + CALL_WAIT, addr, port);
+    return net_socket_connect_until(s->ch, now() + CALL_WAIT, addr, port);
 }
 
 status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint64_t deadline,

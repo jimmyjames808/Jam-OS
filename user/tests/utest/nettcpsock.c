@@ -87,13 +87,13 @@ static bool listeners(void)
     handle_t hs[4];
     uint32_t a, b, c;
     uint16_t p;
-    CHECK_ST(net_accept_until(l[0].ch, now() + NETDRV_WAIT, 0, &hs[0], &hs[1], &hs[2], &hs[3], &a,
-                              &p, &b, &c), ERR_SHOULD_WAIT);
-    CHECK_ST(net_accept_until(l[0].ch, now() + NETDRV_WAIT, 50, &hs[0], &hs[1], &hs[2], &hs[3], &a,
-                              &p, &b, &c), ERR_TIMED_OUT);
+    CHECK_ST(net_listener_accept_until(l[0].ch, now() + NETDRV_WAIT, 0, &hs[0], &hs[1], &hs[2],
+                                       &hs[3], &a, &p, &b, &c), ERR_SHOULD_WAIT);
+    CHECK_ST(net_listener_accept_until(l[0].ch, now() + NETDRV_WAIT, 50, &hs[0], &hs[1], &hs[2],
+                                       &hs[3], &a, &p, &b, &c), ERR_TIMED_OUT);
     CHECK_ST(net_tcp_accept_send(&l[1]), OK);
-    CHECK_ST(net_accept_until(l[1].ch, now() + NETDRV_WAIT, 0, &hs[0], &hs[1], &hs[2], &hs[3], &a,
-                              &p, &b, &c), ERR_BAD_STATE);
+    CHECK_ST(net_listener_accept_until(l[1].ch, now() + NETDRV_WAIT, 0, &hs[0], &hs[1], &hs[2],
+                                       &hs[3], &a, &p, &b, &c), ERR_BAD_STATE);
     struct net_sock s;
     CHECK_ST(net_tcp_accept(&l[1], now() + 50 * NS_PER_MS, &s, NULL, NULL), ERR_TIMED_OUT);
     struct net_counters cn;
@@ -227,6 +227,27 @@ bool t_nettcp_bulk_rings(void)
     struct net_counters c;
     CHECK(counts(&c));
     CHECK_EQ(c.tcp_refused, 0);
+    /* A protocol for each kind of channel: a connection's channel
+     * (net_stream) is no opener's, socket's or listener's, and a listener's
+     * is none of the others. */
+    uint16_t port, peer_port;
+    uint32_t peer, queued, dropped, got;
+    handle_t hs[4];
+    struct net_info in;
+    CHECK_ST(net_stream_state_until(s[0].ch, now() + NETDRV_WAIT, &port, &peer, &peer_port,
+                                    &queued, &dropped), OK);
+    CHECK(port && peer == PEER_IP && peer_port >= 40000);
+    CHECK_ST(net_stream_state_until(l.ch, now() + NETDRV_WAIT, &port, &peer, &peer_port, &queued,
+                                    &dropped), ERR_NOT_SUPPORTED);
+    CHECK_ST(net_stream_state_until(lo, now() + NETDRV_WAIT, &port, &peer, &peer_port, &queued,
+                                    &dropped), ERR_NOT_SUPPORTED);
+    CHECK_ST(net_socket_state(s[0].ch, &port, &peer, &peer_port, &queued, &dropped),
+             ERR_NOT_SUPPORTED);
+    CHECK_ST(net_listener_accept_until(s[0].ch, now() + NETDRV_WAIT, 0, &hs[0], &hs[1], &hs[2],
+                                       &hs[3], &peer, &port, &got, &queued),
+             ERR_INVALID_ARGS);   /* longer than any request a connection's protocol has */
+    CHECK_ST(net_info(s[0].ch, &in), ERR_NOT_SUPPORTED);
+    CHECK_ST(net_info(l.ch, &in), ERR_NOT_SUPPORTED);
     for (unsigned i = 0; i < N; i++)
         net_close(&s[i]);
     net_listener_close(&l);

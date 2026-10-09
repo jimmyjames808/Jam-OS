@@ -249,13 +249,13 @@ static status_t ts_state(void *ctx, uint16_t *out_port, uint32_t *out_peer,
     return OK;
 }
 
-static const struct net_ops sock_ops = { .sock_state = ts_state };
+static const struct net_stream_ops sock_ops = { .state = ts_state };
 
 static void ts_serve(struct tsock *t)
 {
     t->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
-        status_t st = net_serve_one(t->ch, &sock_ops, t);
+        status_t st = net_stream_serve_one(t->ch, &sock_ops, t);
         if (st == OK)
             continue;
         if (st == ERR_PEER_CLOSED)
@@ -348,7 +348,7 @@ static status_t l_accept(void *ctx, struct idl_txn txn, uint32_t timeout_ms,
     return OK;
 }
 
-static const struct net_ops listener_ops = { .accept = l_accept };
+static const struct net_listener_ops listener_ops = { .accept = l_accept };
 
 /* Answer l's waiting accept: with a connection (st OK), or st. */
 static void l_answer(struct tlisten *l, status_t st)
@@ -357,7 +357,7 @@ static void l_answer(struct tlisten *l, status_t st)
     if (st == OK)
         st = l_take(l, &k);
     l->waiting = false;
-    (void)net_reply_accept(l->txn, st, k.socket, k.ring, k.to_stack, k.to_prog, k.peer,
+    (void)net_listener_reply_accept(l->txn, st, k.socket, k.ring, k.to_stack, k.to_prog, k.peer,
                            k.peer_port, k.tx, k.rx);   /* failing: its handles closed, the socket
                                                         * with them, and netstack sees that */
 }
@@ -444,7 +444,7 @@ static void l_serve(struct tlisten *l)
 {
     l->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
-        status_t st = net_serve_one(l->ch, &listener_ops, l);
+        status_t st = net_listener_serve_one(l->ch, &listener_ops, l);
         if (st == OK)
             continue;
         if (st == ERR_PEER_CLOSED)

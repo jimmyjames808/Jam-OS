@@ -414,7 +414,7 @@ bool t_netwait_udp(void)
 /* ---- a netstack that lies -------------------------------------------------------------- */
 
 /* The hand-made netstack: one socket's rings, served by a thread for the
- * one sock_rings call net_sock_adopt makes. */
+ * one net_socket.rings call net_sock_adopt makes. */
 static struct {
     handle_t far, vmo, to_stack, to_prog;
     uint8_t *map;
@@ -452,11 +452,11 @@ static status_t l_rings(void *ctx, uint32_t tx, uint32_t rx, handle_t *out_ring,
 static void l_serve(void *arg)
 {
     (void)arg;
-    static const struct net_ops ops = { .sock_rings = l_rings };
+    static const struct net_socket_ops ops = { .rings = l_rings };
     signals_t seen;
     L.st = jam_object_wait_one(L.far, SIG_READABLE, now() + NETDRV_WAIT, &seen);
     if (L.st == OK)
-        L.st = net_serve_one(L.far, &ops, NULL);
+        L.st = net_socket_serve_one(L.far, &ops, NULL);
 }
 
 /* A record of len bytes (the header saying `say`) into the rx ring. */

@@ -227,7 +227,7 @@ status_t net_udp_open_rings(handle_t net, uint16_t port, uint32_t tx_bytes, uint
 status_t net_udp_open_async(handle_t net, uint32_t txid, uint16_t port);
 status_t net_udp_opened(const void *rep, struct idl_msg *m, struct net_sock *out);
 /* A socket whose channel came from elsewhere (netctl's dhcp_open), on
- * port: asks for its rings (net.sock_rings, blocking) and maps them. On a
+ * port: asks for its rings (net_socket.rings, blocking) and maps them. On a
  * failure the channel is closed and *s is empty. */
 status_t net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port);
 /* Unbind it (net_sock_bind), unmap its rings and close everything

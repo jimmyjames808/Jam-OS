@@ -6,7 +6,7 @@
  *
  * Covered: a UDP datagram both ways through a socket (ports, bytes,
  * checksums), a sock_recv answered later when the datagram comes, timeouts,
- * sock_connect's filter, the destinations a program can't send to; ping
+ * net_socket.connect's filter, the destinations a program can't send to; ping
  * (the request's bytes, the reply's round trip and TTL, another opener's
  * echo id not answered, an unreachable, a timeout); iface and wait_change;
  * the limits (sockets per opener and in all, openers, requests in flight);
@@ -223,7 +223,7 @@ bool t_netsock_udp(void)
     CHECK_ST(netdrv_recv(f, &(uint32_t){ 0 }, NETDRV_QUIET), ERR_TIMED_OUT);   /* none left */
     uint16_t port, peer_port;
     uint32_t peer, queued, dropped;
-    CHECK_ST(net_sock_state(s.ch, &port, &peer, &peer_port, &queued, &dropped), OK);
+    CHECK_ST(net_socket_state(s.ch, &port, &peer, &peer_port, &queued, &dropped), OK);
     CHECK(port == 5000 && peer == PEER_IP && peer_port == 40000 && !queued && !dropped);
     net_close(&s);
     net_close(&e);

@@ -1,10 +1,11 @@
-/* netstack: programs' TCP (tcpsock.c): net.idl's tcp, tcp_listener and
- * accept on top of tcp.c's connections.
+/* netstack: programs' TCP (tcpsock.c): net.idl's tcp and tcp_listener, and
+ * net_listener.accept, on top of tcp.c's connections.
  *
- * A TCP socket is a slot here, a channel of its own (sock_state on it;
- * closing it closes the connection), its rings (sockmem.h, byte-stream
- * framing) and tcp.c's connection. A listener is a slot, a channel
- * (accept on it; closing it stops listening) and tcp.c's listener. A
+ * A TCP socket is a slot here, a channel of its own (net_stream: state
+ * on it; closing it closes the connection), its rings (sockmem.h,
+ * byte-stream framing) and tcp.c's connection. A listener is a slot, a
+ * channel (net_listener: accept on it; closing it stops listening) and
+ * tcp.c's listener. A
  * listener's connection gets its socket, channel and rings when lwIP
  * finishes its handshake, charged to the listener's opener from then on
  * (so its bytes wait in its rings until the program accepts it); accept

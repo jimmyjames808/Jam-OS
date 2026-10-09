@@ -23,21 +23,22 @@
 # (10.2.21.5 is 0x0a021505); ports are numbers. A datagram is at most
 # NET_DGRAM_MAX (1472) bytes: one Ethernet frame, never fragmented.
 #
-# Three kinds of channel speak this protocol:
-# - an opener's channel: iface, wait_change, counts, chip_counts, udp,
-#   udp_rings, echo, tcp, tcp_listener. At most NET_OPENERS openers
-#   (connect: ERR_NO_RESOURCES; NET_PROG_OPENERS of them ordinary ones).
-#   Closing it closes its sockets and listeners too.
-# - a socket's channel (from `udp` or `udp_rings`, netctl's dhcp_open,
-#   tcp or accept): the sock_* methods (a TCP socket's only
-#   sock_state). Closing it closes the socket.
-# - a listener's channel (from tcp_listener): accept. Closing it stops
-#   listening.
-# A method sent to another kind of channel is ERR_NOT_SUPPORTED.
+# A protocol for each kind of channel (the file holds four): `net` is the
+# opener's channel (and the shared channels', which answer connect, iface
+# and counts); a socket's channel speaks net_socket (a UDP socket, and
+# netctl's DHCP socket), a TCP connection's net_stream, a listener's
+# net_listener. A method sent to another kind of channel is
+# ERR_NOT_SUPPORTED, from the generated server: no kind has the others'
+# methods. The opener's methods are iface, wait_change, counts,
+# chip_counts, udp, udp_rings, echo, tcp and tcp_listener; at most
+# NET_OPENERS openers (connect: ERR_NO_RESOURCES; NET_PROG_OPENERS of them
+# ordinary ones). Closing an opener's channel closes its sockets and
+# listeners too; closing a socket's, a connection's or a listener's closes
+# it.
 #
 # A socket's datagrams travel through its rings (<sockring.h>: one VMO
 # with a tx and an rx ring, and two events), never in a call: udp_rings
-# makes a socket with its rings, sock_rings gives a socket its rings.
+# makes a socket with its rings, net_socket.rings gives a socket its rings.
 #
 # Limits, so one program can't use netstack up (<net.h>):
 # NET_SOCKETS_PER_OPENER (16) sockets an opener, NET_SOCKETS_MAX (48) in
@@ -74,23 +75,27 @@ protocol net 29
 # the changes to the address, gateway and DNS servers since netstack
 # started (1 at the start): pass it to wait_change.
 1  iface  ()  -> (u32 address, u32 mask, u32 gateway, u32 dns1, u32 dns2, u8[6] mac, u8 device, u8 link, u16 vlan, u32 speed, u32 version)
+
 # On an opener's channel: answered when iface's `version` is no longer
 # `version` (at once if it isn't), with the new one; ERR_TIMED_OUT after
 # timeout_ms (NET_WAIT_FOREVER: no timeout). How a program waits for an
 # address (<net.h> net_wait_up) or for new DNS servers.
 2  wait_change  (u32 version, u32 timeout_ms)  -> (u32 version) later
+
 # On an opener's channel (or the shared one): netstack's counts, as
 # <net.h>'s struct net_counters (little-endian, its reserved fields 0).
 3  counts  ()  -> (u8[256] counts)
+
 # On an opener's channel: the network card's own counts, as the driver
 # answers netdev.stats (<jam/netdev.h> struct netdev_stats). ERR_NOT_FOUND:
 # no session with a card's driver; ERR_PEER_CLOSED: the session ended
 # before the driver answered.
 4  chip_counts  ()  -> (u8[256] counts) later
+
 # On an opener's channel: a UDP socket on local port `port`, any local
-# address, without its rings yet (sock_rings gives them). port 0: netstack
+# address, without its rings yet (net_socket.rings gives them). port 0: netstack
 # picks one (49152 and up). Results: `socket`, a channel of its own that
-# speaks the sock_* methods (closing it closes the socket), and its port.
+# speaks net_socket (closing it closes the socket), and its port.
 # ERR_ACCESS_DENIED: a port below 1024 on an opener that didn't come
 # through /svc/net-low (and 67 or 68 on any: netctl's DHCP socket
 # has one), or one below 49152 on an opener that came through neither it
@@ -99,6 +104,7 @@ protocol net 29
 # NET_SOCKETS_PER_OPENER sockets, NET_SOCKETS_MAX are open, or an
 # ordinary opener's NET_PROG_SOCKETS are.
 5  udp  (u16 port)  -> (handle socket, u16 port)
+
 # On an opener's channel: an ICMP echo request (a ping) to `address` with
 # `size` bytes of data (0..NET_DGRAM_MAX) and sequence number `seq`, from
 # the opener's own echo id (netstack picks it: no opener sees another's
@@ -110,42 +116,19 @@ protocol net 29
 # link down, no route; or an echo with this seq to this address is in
 # flight), ERR_NO_RESOURCES (NET_LATER_PER_OPENER in flight already).
 6  echo  (u32 address, u16 seq, u16 size, u32 timeout_ms)  -> (u32 rtt_us, u8 ttl, u16 size) later
-# On an opener's channel: udp(port) and the socket's sock_rings(tx_bytes,
-# rx_bytes) in one call: the socket's channel, its rings' VMO and events
+
+# On an opener's channel: udp(port) and the socket's net_socket.rings(
+# tx_bytes, rx_bytes) in one call: the socket's channel, its rings' VMO and events
 # (<sockring.h>: SOCKRING_VMO_RIGHTS, SOCKRING_TO_STACK_RIGHTS,
 # SOCKRING_TO_PROG_RIGHTS; datagram framing), its port and the rings'
 # sizes. The errors of both.
-15  udp_rings  (u16 port, u32 tx_bytes, u32 rx_bytes)  -> (handle socket, handle ring, handle to_stack, handle to_prog, u16 port, u32 tx_bytes, u32 rx_bytes)
-
-# Ordinals 16 and 17 are not used again.
-
-# On a socket's channel: from now on only datagrams from address:port go
-# into its rx ring (others are dropped, not counted as dropped), and a tx
-# record to 0:0 goes there. Address 0 and port 0: any sender again.
-# Datagrams in the ring already stay. ERR_INVALID_ARGS: an address a
-# program can't send to; ERR_NOT_SUPPORTED on the DHCP socket.
-18  sock_connect  (u32 address, u16 port)  -> ()
-# On a socket's channel: its local port, the peer sock_connect set (0: none),
-# bytes waiting in its rx ring now, and datagrams dropped since it opened
-# (its rx ring was full; also the status line's rx_dropped).
-19  sock_state  ()  -> (u16 port, u32 peer, u16 peer_port, u32 queued, u32 dropped)
-# On a socket's channel: the socket's rings (<sockring.h>, datagram
-# framing): their VMO and events with the rights the header names, and
-# the rings' sizes. tx_bytes and rx_bytes: 0 for SOCKRING_UDP_TX and
-# SOCKRING_UDP_RX, else a ring size (sockring_size_ok). After it the
-# socket's datagrams go only through the rings: a tx record netstack
-# refuses (an address a program can't send to, port 0, no route) counts in
-# the status line's tx_refused, with its reason in `error`, and a datagram
-# that doesn't fit the rx ring in rx_dropped. Once a socket: ERR_BAD_STATE
-# for a second. ERR_INVALID_ARGS: a size not allowed; ERR_NO_RESOURCES:
-# over the opener's or all sockets' ring bytes; ERR_NO_MEMORY: no memory.
-20  sock_rings  (u32 tx_bytes, u32 rx_bytes)  -> (handle ring, handle to_stack, handle to_prog, u32 tx_bytes, u32 rx_bytes)
+7  udp_rings  (u16 port, u32 tx_bytes, u32 rx_bytes)  -> (handle socket, handle ring, handle to_stack, handle to_prog, u16 port, u32 tx_bytes, u32 rx_bytes)
 
 # On an opener's channel: a TCP connection to address:port from a port
 # netstack picks, with its rings (<sockring.h>, byte-stream framing;
 # tx_bytes and rx_bytes 0 for NET_TCP_TX and NET_TCP_RX, else a ring size):
-# its socket's channel, the rings' VMO and events (as udp_rings'), its
-# local port and the rings' sizes. Answered at once, CONNECTING: the
+# its socket's channel (net_stream), the rings' VMO and events (as
+# udp_rings'), its local port and the rings' sizes. Answered at once, CONNECTING: the
 # status line says when it is OPEN, or CLOSED and why (SOCKRING_SIG_STATE):
 # ERR_NOT_FOUND refused (a reset for our SYN), ERR_TIMED_OUT no answer or
 # the peer stopped answering, ERR_PEER_CLOSED reset by the peer,
@@ -160,7 +143,8 @@ protocol net 29
 # send to, port 0, a ring size not allowed); ERR_BAD_STATE (no address, no
 # route or the link down); ERR_NO_RESOURCES (the opener's, all openers' or
 # an ordinary opener's share of connections or ring bytes; no local port).
-21  tcp  (u32 address, u16 port, u32 tx_bytes, u32 rx_bytes)  -> (handle socket, handle ring, handle to_stack, handle to_prog, u16 port, u32 tx_bytes, u32 rx_bytes)
+8  tcp  (u32 address, u16 port, u32 tx_bytes, u32 rx_bytes)  -> (handle socket, handle ring, handle to_stack, handle to_prog, u16 port, u32 tx_bytes, u32 rx_bytes)
+
 # On an opener's channel that came through /svc/net-listen or
 # /svc/net-low (the listen permissions, netstack's listen.h;
 # ERR_ACCESS_DENIED on any other): listen on TCP port `port` (NET_PORT_LOW
@@ -171,20 +155,73 @@ protocol net 29
 # handshake finishes, so bytes that come before accept wait in them; one
 # whose tx ring doesn't fit its opener's ring bytes then gets NET_TCP_TX,
 # and one that doesn't fit the limits even so is reset. Results: the
-# listener's channel (accept; closing it stops listening and resets the
-# connections waiting) and its port. ERR_ACCESS_DENIED also for a port
+# listener's channel (net_listener: accept; closing it stops listening and
+# resets the connections waiting) and its port. ERR_ACCESS_DENIED also for a port
 # below NET_PORT_LOW on a /svc/net-listen opener; ERR_ALREADY_BOUND: the
 # port is taken; ERR_INVALID_ARGS: a backlog or ring size not allowed;
 # ERR_NO_RESOURCES: the opener's, all openers' or an ordinary opener's
 # share of listeners or of backlog.
-22  tcp_listener  (u16 port, u32 backlog, u32 tx_bytes, u32 rx_bytes)  -> (handle listener, u16 port)
-# On a listener's channel: the oldest connection waiting, now the
-# caller's: tcp's results (its status OPEN, or CLOSED already if
-# the peer closed it meanwhile; its rx ring holds what came), and its
-# peer's address and port. Answered when there is one: timeout_ms 0 at
-# once (ERR_SHOULD_WAIT: none waiting), else ERR_TIMED_OUT after timeout_ms
-# (NET_WAIT_FOREVER: never). One at a time a listener: ERR_BAD_STATE while
-# another waits. A loop or a wait set sends it without waiting
-# (net_accept_send) and watches the channel for SIG_READABLE: the
-# answer is there.
-23  accept  (u32 timeout_ms)  -> (handle socket, handle ring, handle to_stack, handle to_prog, u32 peer, u16 peer_port, u32 tx_bytes, u32 rx_bytes) later
+9  tcp_listener  (u16 port, u32 backlog, u32 tx_bytes, u32 rx_bytes)  -> (handle listener, u16 port)
+
+# net_socket: a UDP socket's channel, from net.udp or net.udp_rings (and
+# netctl's dhcp_open, the DHCP socket). Closing it closes the socket.
+#
+# Reconnect: as net's: when netstack ends, the channel sees ERR_PEER_CLOSED
+# and the socket is gone; open the socket again from a new opener.
+
+protocol net_socket 60
+
+# From now on only datagrams from address:port go into its rx ring (others
+# are dropped, not counted as dropped), and a tx record to 0:0 goes there.
+# Address 0 and port 0: any sender again. Datagrams in the ring already
+# stay. ERR_INVALID_ARGS: an address a program can't send to;
+# ERR_NOT_SUPPORTED on the DHCP socket.
+1  connect  (u32 address, u16 port)  -> ()
+# Its local port, the peer `connect` set (0: none), bytes waiting in its rx
+# ring now, and datagrams dropped since it opened (its rx ring was full;
+# also the status line's rx_dropped).
+2  state  ()  -> (u16 port, u32 peer, u16 peer_port, u32 queued, u32 dropped)
+# The socket's rings (<sockring.h>, datagram framing): their VMO and events
+# with the rights the header names, and the rings' sizes. tx_bytes and
+# rx_bytes: 0 for SOCKRING_UDP_TX and SOCKRING_UDP_RX, else a ring size
+# (sockring_size_ok). After it the socket's datagrams go only through the
+# rings: a tx record netstack refuses (an address a program can't send to,
+# port 0, no route) counts in the status line's tx_refused, with its reason
+# in `error`, and a datagram that doesn't fit the rx ring in rx_dropped.
+# Once a socket: ERR_BAD_STATE for a second. ERR_INVALID_ARGS: a size not
+# allowed; ERR_NO_RESOURCES: over the opener's or all sockets' ring bytes;
+# ERR_NO_MEMORY: no memory.
+3  rings  (u32 tx_bytes, u32 rx_bytes)  -> (handle ring, handle to_stack, handle to_prog, u32 tx_bytes, u32 rx_bytes)
+
+# net_stream: a TCP connection's channel, from net.tcp or net_listener.accept.
+# Closing it closes the connection: with a FIN after what netstack took from
+# the tx ring, or a reset if bytes the program never read are left in the rx
+# ring. The bytes go through its rings (<sockring.h>), never through calls.
+#
+# Reconnect: as net's: when netstack ends, the channel sees ERR_PEER_CLOSED
+# and the connection is gone (its status line says CLOSED, ERR_PEER_CLOSED).
+
+protocol net_stream 61
+
+# Its local port, the peer's address and port, and the bytes waiting in its
+# rx ring now. `dropped` is always 0: a stream drops nothing, its window
+# stops the sender.
+1  state  ()  -> (u16 port, u32 peer, u16 peer_port, u32 queued, u32 dropped)
+
+# net_listener: a TCP listener's channel, from net.tcp_listener. Closing it
+# stops listening and resets the connections waiting.
+#
+# Reconnect: as net's: when netstack ends, the channel sees ERR_PEER_CLOSED
+# and the listener is gone; listen again from a new opener.
+
+protocol net_listener 62
+
+# The oldest connection waiting, now the caller's: net.tcp's results (its
+# status OPEN, or CLOSED already if the peer closed it meanwhile; its rx ring
+# holds what came; the socket speaks net_stream), and its peer's address and
+# port. Answered when there is one: timeout_ms 0 at once (ERR_SHOULD_WAIT:
+# none waiting), else ERR_TIMED_OUT after timeout_ms (NET_WAIT_FOREVER:
+# never). One at a time a listener: ERR_BAD_STATE while another waits. A loop
+# or a wait set sends it without waiting (net_listener_accept_send) and
+# watches the channel for SIG_READABLE: the answer is there.
+1  accept  (u32 timeout_ms)  -> (handle socket, handle ring, handle to_stack, handle to_prog, u32 peer, u16 peer_port, u32 tx_bytes, u32 rx_bytes) later

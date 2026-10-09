@@ -45,6 +45,9 @@
 34      idltest_two     abi/idl/idltest.idl
 35      idltest_ev      abi/idl/idltest.idl
 # 60 to 69: the network's (M12 track P3)
+60      net_socket      abi/idl/net.idl
+61      net_stream      abi/idl/net.idl
+62      net_listener    abi/idl/net.idl
 63      netdev_session  abi/idl/netdev.idl
 0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
 0x4d4f  standby         kernel/include/jam/startup.h    # STANDBY_MAGIC "PROM" (promotion)

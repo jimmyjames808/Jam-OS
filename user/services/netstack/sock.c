@@ -424,10 +424,10 @@ static status_t op_rings(void *ctx, uint32_t tx_bytes, uint32_t rx_bytes, handle
     return OK;
 }
 
-static const struct net_ops sock_ops = {
-    .sock_connect = op_connect,
-    .sock_state = op_state,
-    .sock_rings = op_rings,
+static const struct net_socket_ops sock_ops = {
+    .connect = op_connect,
+    .state = op_state,
+    .rings = op_rings,
 };
 
 void sock_serve(unsigned i)
@@ -435,7 +435,7 @@ void sock_serve(unsigned i)
     struct sock *s = &pg.s[i];
     s->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
-        status_t st = net_serve_one(s->ch, &sock_ops, s);
+        status_t st = net_socket_serve_one(s->ch, &sock_ops, s);
         if (st == OK)
             continue;
         if (st == ERR_PEER_CLOSED)

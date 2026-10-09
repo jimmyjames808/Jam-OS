@@ -18,7 +18,7 @@
  *   chip_counts, udp, udp_rings, echo. What it starts is its own: its
  *   sockets (closed with it), its requests in flight (dropped with it) and
  *   its ICMP echo id;
- * - a socket's channel (sock.c): the sock_* methods; closing it closes
+ * - a socket's channel (sock.c): net_socket; closing it closes
  *   the socket. netctl's dhcp_open makes the one socket that belongs to
  *   no opener.
  * And each socket's rings (<sockring.h>), its to_stack event bound
@@ -114,7 +114,7 @@ struct sock {
     uint32_t           opener_gen;  /* ... generation then */
     struct stack_udp  *u;           /* lwIP's socket */
     uint16_t           port;        /* its local port */
-    uint32_t           peer;        /* sock_connect's peer (0: anyone) */
+    uint32_t           peer;        /* connect's peer (0: anyone) */
     uint16_t           peer_port;
     struct sockmem     m;           /* its rings' memory (m.vmo 0: none yet) */
     struct sockring    r;           /* our ends: tx consumer, rx producer */
@@ -212,7 +212,7 @@ status_t sock_open(unsigned slot, uint16_t port, bool dhcp, handle_t *out, uint1
                    unsigned *out_i);
 /* Make socket i's rings, *tx and *rx bytes (0: the defaults; the sizes
  * made come back): the program's VMO and events into hs (ring, to_stack,
- * to_prog). The errors: net.idl's sock_rings. */
+ * to_prog). The errors: net_socket.rings. */
 status_t sock_rings_make(unsigned i, uint32_t *tx, uint32_t *rx, handle_t hs[3]);
 /* Close socket i: its rings unmapped and shrunk to nothing, its channel. */
 void     sock_close(unsigned i);
