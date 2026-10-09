@@ -519,6 +519,7 @@ bool t_comp_no_keyboard(void);
 bool t_comp_early_keys(void);
 bool t_comp_screen_on_top(void);
 bool t_jwlc_reconnect(void);
+bool t_jwlc_connect_pending(void);
 bool t_jwlc_protocol_error(void);
 bool t_jwlc_blocking(void);
 /* funwin.c: libfun's window (gfx_open on a compositor), over the same fake. */

@@ -44,7 +44,7 @@
  * JWL_SERVICE, a call that can wait up to svc_open's 5 s while a
  * restarted compositor comes up; a loop that serves others gives its own
  * that doesn't (one that answers ERR_SHOULD_WAIT until it has a channel is
- * asked again at the next pause).
+ * asked again every 50 ms).
  *
  * Threads: a client and everything made from it belong to one thread. */
 #pragma once
@@ -85,8 +85,8 @@ struct jwl_window;
 
 struct jwl_client_config {
     /* A new connection's channel end into *out (the client owns it). NULL:
-     * svc_open(JWL_SERVICE). ERR_SHOULD_WAIT: not yet, ask again at the
-     * next pause; any other error: the same. */
+     * svc_open(JWL_SERVICE). ERR_SHOULD_WAIT: not yet, asked again 50 ms
+     * later; any other error: again after a pause that grows to a second. */
     status_t (*connect)(void *ctx, handle_t *out);
     void     *connect_ctx;
     bool      no_reconnect;   /* a lost connection stays lost: the client is dead */

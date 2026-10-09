@@ -184,7 +184,15 @@ static void try_connect(struct jwl_client *c)
         die(c, st);
         return;
     }
-    if (st != ERR_SHOULD_WAIT && c->retry_ms == 0)
+    if (st == ERR_SHOULD_WAIT) {
+        /* Not a failure: the connect function is still at it (a thread
+         * of the program's waiting for the compositor). Look again soon,
+         * not later and later: the answer may be there any moment
+         * (M12.1 C13: up to a second late, before). */
+        c->retry_at = now() + (uint64_t)RETRY_FIRST_MS * NS_PER_MS;
+        return;
+    }
+    if (c->retry_ms == 0)
         jwlc_log(c, "can't reach the compositor (%s): trying again", status_str(st));
     c->retry_ms = c->retry_ms ? c->retry_ms * 2 : RETRY_FIRST_MS;
     if (c->retry_ms > JWL_RECONNECT_MAX_MS)

@@ -973,6 +973,7 @@ static const struct {
     { "jwlc_pointer", t_jwlc_pointer },
     { "jwlc_no_keyboard", t_jwlc_no_keyboard },
     { "jwlc_reconnect", t_jwlc_reconnect },
+    { "jwlc_connect_pending", t_jwlc_connect_pending },
     { "jwlc_protocol_error", t_jwlc_protocol_error },
     { "jwlc_blocking", t_jwlc_blocking },
     { "jwlc_fuzz_events", t_jwlc_fuzz_events },
