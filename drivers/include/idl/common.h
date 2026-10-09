@@ -468,7 +468,23 @@ struct idl_serve {
     uint32_t  nh;
     uint32_t  umsgs;  /* the unread bound (the protocol's); 0: none */
     uint32_t  ubytes;
+    bool      uknown; /* uq and ub hold: what the client may have unread, at most */
+    uint32_t  uq;     /* ... messages of ours (what it read since only lowers it) */
+    uint64_t  ub;     /* ... and their bytes */
 };
+
+/* What s's client has unread now (handle_info): into s->uq and s->ub.
+ * false if it can't be told. */
+static inline bool idl_serve_measure(struct idl_serve *s)
+{
+    struct handle_info idl_i;
+    if (drv_handle_info(s->ch, &idl_i) != OK)
+        return false;
+    s->uq = idl_i.peer_queued;
+    s->ub = idl_i.peer_queued_bytes;
+    s->uknown = true;
+    return true;
+}
 
 /* idl_serve_next's unread bound: would the reply waiting in s leave the
  * client with s->umsgs messages or s->ubytes bytes of ours unread? Then it
@@ -476,20 +492,32 @@ struct idl_serve {
  * the bound: the loop looks again every IDL_UNREAD_LOOK_NS (one thread
  * serves this one channel, so only this client waits), and at once when
  * the client goes (its queued requests are then taken and dropped as
- * usual, and the loop ends). OK: take the next request; else the wait's
- * status (ERR_CANCELED: the thread is being killed). */
+ * usual, and the loop ends). The kernel is asked only when what was
+ * sent since it was last asked could reach the bound (s->uq and s->ub
+ * count every reply as if unread): a client that reads each answer
+ * costs one handle_info every umsgs replies. OK: take the next request;
+ * else the wait's status (ERR_CANCELED: the thread is being killed). */
 static inline status_t idl_serve_hold(struct idl_serve *s)
 {
-    struct handle_info idl_i;
-    if (!s->umsgs || drv_handle_info(s->ch, &idl_i) != OK)
+    uint32_t idl_one = s->rn != 0;
+    if (!s->umsgs)
         return OK;
-    if (idl_i.peer_queued + (s->rn != 0) < s->umsgs &&
-        idl_i.peer_queued_bytes + s->rn < s->ubytes)
+    if (s->uknown && s->uq + idl_one < s->umsgs && s->ub + s->rn < s->ubytes) {
+        s->uq += idl_one;   /* as if it stays unread */
+        s->ub += s->rn;
         return OK;
+    }
+    if (!idl_serve_measure(s))
+        return OK;   /* not a channel we can ask about: its serving says so */
+    if (s->uq + idl_one < s->umsgs && s->ub + s->rn < s->ubytes) {
+        s->uq += idl_one;
+        s->ub += s->rn;
+        return OK;
+    }
     if (s->rn)   /* its handles are gone whatever the write's status */
         (void)drv_channel_write(s->ch, s->r, s->rn, s->rhs, s->rhn);
     s->rn = s->rhn = 0;
-    while (idl_unread_full(s->ch, s->umsgs, s->ubytes)) {
+    while (idl_serve_measure(s) && (s->uq >= s->umsgs || s->ub >= s->ubytes)) {
         signals_t idl_seen = 0;
         status_t idl_st = drv_object_wait_one(s->ch, SIG_PEER_CLOSED,
                                               drv_clock_ns() + IDL_UNREAD_LOOK_NS, &idl_seen);
