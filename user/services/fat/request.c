@@ -214,14 +214,6 @@ status_t fat_wait(uint64_t deadline, struct port_packet *pkt)
     return idl_wait_after(vol.port, deadline, pkt, &reply);
 }
 
-bool unread_full(handle_t ch)
-{
-    struct handle_info i;
-    if (jam_handle_info(ch, &i) != OK)
-        return false;   /* not a channel we hold: its serving says so */
-    return i.peer_queued >= FAT_UNREAD_MSGS || i.peer_queued_bytes >= FAT_UNREAD_BYTES;
-}
-
 /* Run the request in `slot` with c's protocol's generated run (fs: through
  * the view's checks, fs_view_dispatch), its reply into the slot. */
 static uint32_t dispatch(const struct fat_chan *c, unsigned slot, handle_t *rhs, uint32_t *rhn)

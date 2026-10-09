@@ -93,6 +93,7 @@ struct fat_vol {
     handle_t    keep;         /* SR_KEEP: the keep channel (keeper.c), or HANDLE_INVALID */
     handle_t    serve;        /* the fs channel (FAT_SR_SERVE) */
     handle_t    ctl;          /* this instance's fsctl channel, or HANDLE_INVALID */
+    struct idl_held held;     /* channels held back by the unread bound (request.c's note) */
     /* How the last instance ended, from argv (FAT_ARG_KILLED, FAT_ARG_CRASHED):
      * NULL for a first start. Only a crash counts against the request in
      * progress (adopt.c: the bad-request rule). */
@@ -368,19 +369,15 @@ status_t fat_wait(uint64_t deadline, struct port_packet *pkt);
 
 /* Answers a client leaves unread are charged to fat's job (its
  * JOB_LIMIT_MSG_BYTES, 1 MiB from volumes) until it reads them. A channel
- * whose client has FAT_UNREAD_MSGS answers or FAT_UNREAD_BYTES unread is
- * served no more until it reads them: its requests wait in it (charged to
- * the client), it is left unarmed, and fat looks at it again every
- * FAT_UNREAD_POLL. So a client that never reads holds at most about
- * 16 KiB of fat's job per channel (a readdir answer past the mark), not
- * all of it: the fs channel, 32 views and 32 files stay well under 1 MiB.
- * A client that reads its answers (every libos call does, before its
- * next) is never held back. */
-#define FAT_UNREAD_MSGS  8u
-#define FAT_UNREAD_BYTES (8u << 10)
-#define FAT_UNREAD_POLL  (2 * NS_PER_MS)
-/* Has ch's client left that much unread? (false if it can't be told) */
-bool     unread_full(handle_t ch);
+ * whose client has its protocol's unread bound unread (fs_unread_full,
+ * file_unread_full: 8 answers or 8 KiB) is served no more until it reads
+ * them (tools/genidl.py, "The unread bound"): its requests wait in it
+ * (charged to the client), it is left unarmed and counted in vol.held,
+ * and fat looks at it again every IDL_UNREAD_LOOK_NS. So a client that
+ * never reads holds at most about 16 KiB of fat's job per channel (a
+ * readdir answer past the mark), not all of it: the fs channel, 32 views
+ * and 32 files stay well under 1 MiB. A client that reads its answers
+ * (every libos call does, before its next) is never held back. */
 
 /* ---- adopt.c ---------------------------------------------------------------------- */
 
@@ -593,9 +590,9 @@ uint64_t dirs_entries_read(void);
 status_t views_add(void *host, handle_t ch, uint32_t flags);
 /* The port said a view's channel has news (key's slot and gen): serve it. */
 void     views_event(uint64_t key);
-/* Views held back for answers their clients left unread (unread_full):
- * any? Look again: those read since are armed again. */
-bool     views_held(void);
+/* Views held back for answers their clients left unread (fs_unread_full):
+ * look again (vol.held said so): those read since are armed again, the
+ * rest held again. */
 void     views_unheld(void);
 /* Close the channel of every view the state doesn't know (after an undo:
  * views an undone fs.view made). */
@@ -623,8 +620,7 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
                     uint64_t *out_size);
 /* The port said slot's channel has news (key's gen): serve it. */
 void     files_event(uint64_t key);
-/* As views_held and views_unheld, for open files. */
-bool     files_held(void);
+/* As views_unheld, for open files. */
 void     files_unheld(void);
 /* Finish every file whose client has closed it (called before each fs
  * request, so a close followed by an fs call is seen in that order). */
