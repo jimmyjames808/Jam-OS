@@ -160,14 +160,14 @@ bool t_logd_writes_the_log(void)
     for (unsigned i = 0; i < 3; i++)
         if (!say_line(&l, i, all, sizeof(all)))
             return false;
-    jam_nanosleep(now() + 500 * NS_PER_MS);   /* the file is made; the first sync is done */
+    jam_sleep_until(now() + 500 * NS_PER_MS);   /* the file is made; the first sync is done */
     /* then one every 50 ms for 2.5 s: a file.sync every 250 ms, so about
      * 10, each one block.sync at the disk. A sync per line would be 50. */
     uint32_t syncs = ramdisk_syncs(&disk);
     for (unsigned i = 3; i < 53; i++) {
         if (!say_line(&l, i, all, sizeof(all)))
             return false;
-        jam_nanosleep(now() + 50 * NS_PER_MS);
+        jam_sleep_until(now() + 50 * NS_PER_MS);
     }
     syncs = ramdisk_syncs(&disk) - syncs;
     if (syncs < 6 || syncs > 14)
@@ -182,7 +182,7 @@ bool t_logd_writes_the_log(void)
      * the line in the file and on the disk when it answers. */
     if (!logd_start(&l, fat.fs, HANDLE_INVALID) || !say_line(&l, 100, second, sizeof(second)))
         return false;
-    jam_nanosleep(now() + 400 * NS_PER_MS);   /* the file is made, its first sync done */
+    jam_sleep_until(now() + 400 * NS_PER_MS);   /* the file is made, its first sync done */
     if (!say_line(&l, 101, second, sizeof(second)))
         return false;
     syncs = ramdisk_syncs(&disk);
@@ -217,7 +217,7 @@ bool t_logd_without_data(void)
     for (unsigned i = 0; now() < until; i++) {
         if (!say_line(&l, i, NULL, 0))
             return false;
-        jam_nanosleep(now() + 50 * NS_PER_MS);
+        jam_sleep_until(now() + 50 * NS_PER_MS);
         while (fs_serve_one(server, &none, NULL) == OK)
             asked++;
     }
@@ -257,14 +257,14 @@ bool t_logd_data_goes_away(void)
         if (!say_line(&l, i, all, sizeof(all)))
             return false;
     /* written, and synced a second after that at the latest */
-    jam_nanosleep(now() + 1500 * NS_PER_MS);
+    jam_sleep_until(now() + 1500 * NS_PER_MS);
     CHECK(ramdisk_syncs(&disk) >= 1);
     if (!ramdisk_unplug(&disk))
         return false;
     for (unsigned i = 5; i < 25; i++) {
         if (!say_line(&l, i, NULL, 0))
             return false;
-        jam_nanosleep(now() + 100 * NS_PER_MS);
+        jam_sleep_until(now() + 100 * NS_PER_MS);
     }
     if (!logd_alive(&l) || !logd_end(&l))
         return false;
@@ -344,11 +344,11 @@ bool t_logd_kernel_log(void)
      * the log, the next a second later, with everything logged so far. */
     for (uint64_t until = now() + 10 * NS_PER_S; size < 1000;) {
         CHECK(now() < until);
-        jam_nanosleep(now() + 50 * NS_PER_MS);
+        jam_sleep_until(now() + 50 * NS_PER_MS);
         status_t st = t_stat(&fat, LOG1, &size, NULL, NULL);
         CHECK(st == OK || st == ERR_NOT_FOUND);
     }
-    jam_nanosleep(now() + 2 * NS_PER_S);
+    jam_sleep_until(now() + 2 * NS_PER_S);
     CHECK_ST(jam_job_kill(l.job), OK);   /* the kernel log never ends */
     CHECK_ST(spawn_wait(l.proc, END_NS, &info), OK);
     CHECK_ST(jam_handle_close(l.proc), OK);
@@ -357,7 +357,7 @@ bool t_logd_kernel_log(void)
     /* the marker is among the last bytes of the file */
     for (uint64_t until = now() + 10 * NS_PER_S; !contains(got, n, marker);) {
         CHECK(now() < until);
-        jam_nanosleep(now() + 50 * NS_PER_MS);
+        jam_sleep_until(now() + 50 * NS_PER_MS);
         if (!file_end(&fat, LOG1, false, got, sizeof(got), &n))
             return false;
     }

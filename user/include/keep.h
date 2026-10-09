@@ -41,14 +41,9 @@
  * told (there is no reply); its slot is simply not restored. The kept
  * handles live in the keeper's handle table, charged to its job.
  *
- * Telling the type apart: there is no system call that names a handle's
- * type, so the keeper asks three questions that change nothing:
- * vmo_get_size works only on a VMO, event_signal with nothing to set or
- * clear only on an event, and only a channel end ever has SIG_WRITABLE or
- * SIG_PEER_CLOSED (it has one of them unless its peer's queue is full;
- * then, or without RIGHT_WAIT to look, it is refused: fail closed).
- * utest's keep_refusals pins this; a system call that names a handle's
- * type would make it exact.
+ * Telling the type apart: handle_info names it (and the handle's rights),
+ * whatever the handle's other rights and state. utest's keep_refusals
+ * pins this.
  *
  * Neither side is thread-safe: a keeper and a service's keep channel are
  * each used by one thread at a time. */

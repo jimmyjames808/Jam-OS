@@ -80,7 +80,7 @@ static bool listeners(void)
     uint64_t until = now() + NETDRV_WAIT;   /* netstack sees the close in its own time */
     while ((st = net_tcp_listen(lo2, 0, NET_BACKLOG_MAX, 0, 0, &l[n])) == ERR_NO_RESOURCES &&
            now() < until)
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
     CHECK_ST(st, OK);
     CHECK(l[n++].port >= NET_PORT_EPHEMERAL);
     /* accept: at once, timing out, one at a time. */

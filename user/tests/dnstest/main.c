@@ -169,7 +169,7 @@ static bool t_busy(void)
     CHECK_ST(svc_open(SVC_DNS, &busy.ch), OK);
     CHECK_ST(thread_spawn("busy", busy_thread, NULL, stack, sizeof(stack), &th), OK);
     while (busy.written < 256)   /* well past a turn's budget: the flood is on */
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     uint64_t worst = 0;
     for (unsigned i = 0; i < BUSY_NAMES; i++) {
         char name[16];
@@ -183,7 +183,7 @@ static bool t_busy(void)
         worst = ms > worst ? ms : worst;
     }
     uint64_t before = busy.written;
-    jam_nanosleep(now() + 50 * NS_PER_MS);
+    jam_sleep_until(now() + 50 * NS_PER_MS);
     CHECK(busy.written > before);   /* still flooding: it was served meanwhile */
     busy.stop = true;
     signals_t seen;
@@ -219,7 +219,7 @@ static bool setup(handle_t *th)
     CHECK(i.dns[0] != 0);
     CHECK_ST(svc_open(SVC_DNS, &slow.ch), OK);
     CHECK_ST(thread_spawn("slow", slow_thread, NULL, stack, sizeof(stack), th), OK);
-    jam_nanosleep(now() + 300 * NS_PER_MS);   /* its query is out before the others start */
+    jam_sleep_until(now() + 300 * NS_PER_MS);   /* its query is out before the others start */
     CHECK(slow_waiting());
     return true;
 }

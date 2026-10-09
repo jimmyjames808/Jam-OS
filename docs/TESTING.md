@@ -404,8 +404,8 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   (`drivers/hda/vtdtest.c`; the "IOMMU checks" entry above) before it
   serves; only in shell mode, and a reboot doesn't keep it.
 - `nospare`: init keeps no warm spare of the mixer
-  (`user/services/init/spare.c`), and devmgr none of fat
-  (`user/services/devmgr/spare.c`), so a restart starts a process, as
+  (`user/services/init/spare.c`), and volumes none of fat
+  (`user/services/volumes/spare.c`), so a restart starts a process, as
   before spares (it still hands the new instance its state and keep
   channel, and keeps the restart rule for a deliberate kill): the switch
   for comparing restart times. A reboot keeps it.

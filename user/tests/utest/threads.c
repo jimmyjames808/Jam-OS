@@ -161,7 +161,7 @@ static void lock_worker(void *arg)
             __atomic_add_fetch(&lock_contended, 1, __ATOMIC_RELAXED);
         uint64_t v = lock_count;
         if (i % 64 == 0)
-            jam_nanosleep(now() + 50 * NS_PER_US);   /* a holder off the CPU: the others wait */
+            jam_sleep_until(now() + 50 * NS_PER_US);   /* a holder off the CPU: the others wait */
         lock_count = v + 1;
         lock_give(&lock_l);
     }
@@ -210,7 +210,7 @@ static _Noreturn void fs_thread(uint64_t want)
             fs_wrong++;
         fs_reads++;
         if (i % 16 == 0)
-            jam_nanosleep(now() + 20 * NS_PER_US);   /* off the CPU, maybe onto another */
+            jam_sleep_until(now() + 20 * NS_PER_US);   /* off the CPU, maybe onto another */
     }
     jam_thread_exit();
 }
@@ -249,7 +249,7 @@ bool t_thread_fs_base(void)
 
     CHECK_ST(jam_thread_set_fs_base((uint64_t)(uintptr_t)&fs_words[2]), OK);
     CHECK_EQ(fs_word0(), fs_words[2]);
-    jam_nanosleep(now() + 100 * NS_PER_US);
+    jam_sleep_until(now() + 100 * NS_PER_US);
     CHECK_EQ(fs_word0(), fs_words[2]);
     CHECK_ST(jam_thread_set_fs_base(USER_TOP_ADDR), ERR_INVALID_ARGS);
     CHECK_ST(jam_thread_set_fs_base(0xffff800000000000ull), ERR_INVALID_ARGS);
@@ -303,7 +303,7 @@ bool t_futex_calls(void)
     fx_status = ERR_IO;
     handle_t t;
     CHECK_ST(thread_spawn("futex", fx_waiter, NULL, stack, sizeof(stack), &t), OK);
-    jam_nanosleep(now() + 2 * NS_PER_MS);   /* most likely asleep by now (either way works) */
+    jam_sleep_until(now() + 2 * NS_PER_MS);   /* most likely asleep by now (either way works) */
     __atomic_store_n(&fx_word, 1, __ATOMIC_RELEASE);
     CHECK(jam_futex_wake(&fx_word, UINT32_MAX, 0) >= 0);
     if (!wait_threads(&t, 1))
@@ -355,7 +355,7 @@ bool t_kill_spinning_and_unstarted(void)
     handle_t job, proc, p2, v2;
     CHECK_ST(new_job(&job), OK);
     CHECK_ST(child("spin", NULL, job, HANDLE_INVALID, &proc), OK);
-    jam_nanosleep(now() + 30 * NS_PER_MS);
+    jam_sleep_until(now() + 30 * NS_PER_MS);
     CHECK_ST(jam_process_kill(proc), OK);
     struct process_info info;
     CHECK_ST(spawn_wait(proc, 5 * NS_PER_S, &info), OK);

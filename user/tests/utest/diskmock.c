@@ -207,7 +207,7 @@ static void serve(void *arg)
         if (pkt.key == KEY_STORAGE) {
             while (storage_serve_one(m->storage, &storage_ops, m) == OK)
                 ;
-            continue;   /* devmgr gone: the test stops us */
+            continue;   /* volumes gone: the test stops us */
         }
         struct dm_block *b = &m->blk[(pkt.key - KEY_BLOCK) % DM_MAX_OPEN];
         if (pkt.key < KEY_BLOCK || !b->ch)

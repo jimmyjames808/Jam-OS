@@ -268,7 +268,7 @@ static bool blocking_ping(handle_t net, bool reply, status_t want)
     if (reply)
         CHECK(netdrv_send(g, pkt_echo_reply_to(g, req, 8 + 24)));
     for (uint64_t end = now() + 2 * NETDRV_WAIT; !p.done && now() < end;)
-        jam_nanosleep(now() + 5 * NS_PER_MS);
+        jam_sleep_until(now() + 5 * NS_PER_MS);
     CHECK(p.done);
     jam_handle_close(th);
     CHECK_ST(p.st, want);
@@ -289,7 +289,7 @@ bool t_netsock_ping(void)
     CHECK(opener(&o2));
     /* Answered: the round trip, the TTL, the size. */
     CHECK(echo_out(o, &txid, PEER_IP, 7, 32, NETDRV_WAIT / NS_PER_MS, req, &n));
-    jam_nanosleep(now() + 2 * NS_PER_MS);
+    jam_sleep_until(now() + 2 * NS_PER_MS);
     CHECK(netdrv_send(g, pkt_echo_reply_to(g, req, 8 + 32)));
     CHECK_ST(reply_of(o, txid, NETDRV_WAIT, &rtt, &ttl, &size), OK);
     CHECK(rtt >= 2000 && rtt < NETDRV_WAIT / 1000);

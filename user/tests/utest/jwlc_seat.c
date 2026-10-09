@@ -77,7 +77,7 @@ bool t_jwlc_keyboard(void)
     /* held: the library repeats it once the delay has passed */
     uint64_t d = jwl_client_deadline(c);
     CHECK(d != DEADLINE_NEVER && d >= pressed);
-    (void)jam_nanosleep(d + 3 * NS_PER_MS);
+    (void)jam_sleep_until(d + 3 * NS_PER_MS);
     CHECK_ST(jwl_client_dispatch(c), OK);
     CHECK(expect_key(c, JWL_KEY_REPEATED, 'A', KEYMAP_MOD_SHIFT));
     CHECK_ST(jwl_client_next_event(c, &ev), ERR_SHOULD_WAIT);   /* one a dispatch, no burst */
@@ -88,7 +88,7 @@ bool t_jwlc_keyboard(void)
         released = ev.key.state == JWL_KEY_RELEASED;
     CHECK(released);
     CHECK_EQ(jwl_client_deadline(c), DEADLINE_NEVER);
-    (void)jam_nanosleep(now() + 30 * NS_PER_MS);
+    (void)jam_sleep_until(now() + 30 * NS_PER_MS);
     CHECK_ST(jwl_client_dispatch(c), OK);
     CHECK_ST(jwl_client_next_event(c, &ev), ERR_SHOULD_WAIT);
     CHECK_ST(fake_key(&f, KEY_1, true), OK);   /* Shift is still down */

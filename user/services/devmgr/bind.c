@@ -108,15 +108,11 @@ static status_t pci_handles(struct binding *b, handle_t job, struct spawn_handle
 /* DR_SERVE: the end a restart kept (clients may have queued calls on it
  * already), else a new channel whose other end becomes b->client. A USB
  * class driver serves nobody, unless it is a disk's (usb-storage serves
- * devmgr `storage`). A filesystem service serves `fs` under the same role
- * (<fatsvc.h>: FAT_SR_SERVE), on a channel devmgr keeps both ends of
- * across its restarts (fs_serve_end). */
+ * `storage`, and a channel of volumes' own through svc.connect: disks.c). */
 static status_t add_serve(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
     if (b->kind == BIND_USB && !b->disk)
         return OK;
-    if (b->kind == BIND_FS)
-        return fs_serve_end(b, x, xr, n);
     if (!b->serve) {
         handle_t client;
         status_t st = jam_channel_create(&client, &b->serve);
@@ -142,25 +138,17 @@ static void add_arg(const char **argv, int *argc, const char *w)
 static status_t spawn_driver(const struct binding *b, handle_t job, const struct spawn_handle *x,
                              const rights_t *xr, unsigned n, handle_t *proc)
 {
-    /* A USB class driver is named after its interface ("hid-6.1:0"), a
-     * filesystem service after its mount ("fat-data"): in the log, in
-     * `ps`, for the shell's `kill`. The service is also told its mount,
-     * and the one that may format a blank partition is told so; a hid,
-     * "hidboot" when devmgr was; a PCI driver, its match-table row's word
+    /* A USB class driver is named after its interface ("hid-6.1:0"): in
+     * the log, in `ps`, for the shell's `kill`. A hid is told "hidboot"
+     * when devmgr was; a PCI driver, its match-table row's word
      * ("netprobe"), and a network card's (class 02) the network mode when
      * there is one ("vlan=21", "vlan=none": without it the driver keeps
      * the network off); drv/hda, "vtdtest" when devmgr was (the IOMMU
      * checks entry). */
-    const char *name = b->kind == BIND_USB || b->kind == BIND_FS ? b->name : NULL;
-    char mount[16] = "", vlan[NETDEV_MODE_TEXT] = "";
+    const char *name = b->kind == BIND_USB ? b->name : NULL;
+    char vlan[NETDEV_MODE_TEXT] = "";
     const char *argv[5] = { name ? name : b->path };
     int argc = 1;
-    if (b->kind == BIND_FS) {
-        snprintf(mount, sizeof(mount), "%s", fs_mount_path(b));
-        add_arg(argv, &argc, mount);
-        add_arg(argv, &argc, fs_format_arg(b));
-        add_arg(argv, &argc, fs_end_arg(b));   /* "killed", "crashed" or none */
-    }
     if (b->kind == BIND_USB)
         add_arg(argv, &argc, usb_driver_arg(b));   /* "hidboot" or none */
     if (b->kind == BIND_PCI) {
@@ -180,11 +168,11 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
     return spawn(&a, proc);
 }
 
-/* What the driver writes on its own (usb-bus: interface_attached): the
+/* What a disk's driver or a filesystem service writes (its answers): the
  * port watches its client end. */
 static void watch_events(struct binding *b)
 {
-    if (b->client && !b->client_key) {
+    if (b->disk && b->client && !b->client_key) {
         uint64_t key = KEY_EV_OF(b - devs, b->gen);
         if (jam_port_bind(port, b->client, key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
             b->client_key = key;
@@ -206,10 +194,11 @@ status_t start_driver(struct binding *b)
     if (st == OK)
         st = b->kind == BIND_PCI   ? pci_handles(b, job, x, xr, &n)
              : b->kind == BIND_USB ? usb_handles(b, x, xr, &n)
-             : b->kind == BIND_FS  ? fs_handles(b, x, xr, &n)
                                    : OK;
     if (st == OK)
         st = add_serve(b, x, xr, &n);
+    if (st == OK)
+        st = usb_bus_handles(b, x, xr, &n);   /* a usb-bus's DR_EVENTS */
     if (st == OK) {
         st = spawn_driver(b, job, x, xr, n, &proc);   /* consumes the extras either way */
         n = 0;
@@ -237,7 +226,7 @@ status_t start_driver(struct binding *b)
     b->killed = false;
     b->state = DEVMGR_SUP_RUNNING;
     watch_events(b);
-    disk_started(b);
+    disks_started(b);   /* a disk's driver: a channel for volumes */
     return OK;
 }
 
@@ -274,7 +263,7 @@ void forget_driver(struct binding *b)
     if (b->job)
         jam_handle_close(b->job);
     b->proc = b->job = HANDLE_INVALID;
-    disk_stopped(b);   /* a disk's driver, or a filesystem service: its mounts went with it */
+    b->disk_txid = 0;   /* a disk's driver: its answer won't come */
 }
 
 bool stop_driver(struct binding *b, bool kill, bool excused)

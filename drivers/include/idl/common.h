@@ -40,12 +40,14 @@
 #define IDL_ID_IDLTEST        0x0021u   /* abi/idl/idltest.idl */
 #define IDL_ID_IDLTEST_TWO    0x0022u   /* abi/idl/idltest.idl */
 #define IDL_ID_IDLTEST_EV     0x0023u   /* abi/idl/idltest.idl */
+#define IDL_ID_USBBUS_EVENTS  0x0024u   /* abi/idl/usbbus.idl */
+#define IDL_ID_IDLTEST_H      0x0025u   /* abi/idl/idltest.idl */
 #define IDL_ID_NET_SOCKET     0x003cu   /* abi/idl/net.idl */
 #define IDL_ID_NET_STREAM     0x003du   /* abi/idl/net.idl */
 #define IDL_ID_NET_LISTENER   0x003eu   /* abi/idl/net.idl */
 #define IDL_ID_NETDEV_SESSION 0x003fu   /* abi/idl/netdev.idl */
 #define IDL_ID_UPDATE_ANSWER  0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
-#define IDL_ID_STANDBY        0x4d4fu   /* kernel/include/jam/startup.h: STANDBY_MAGIC "PROM" (promotion) */
+#define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER   0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */
 #define IDL_ID_STARTUP        0x534du   /* kernel/include/jam/startup.h: STARTUP_MAGIC "JAMS" */
 #define IDL_ID_CRASHER        0xc4a5u   /* user/include/devmgr.h: the crash-test driver's (CRASHER_*) */
@@ -69,11 +71,34 @@ struct idl_rep_hdr {
 /* n rounded up to 8: where a second buffer starts after a first of n bytes. */
 #define IDL_ROUND8(n) (((n) + 7u) & ~7u)
 
-/* Handles a server reads with a message (only an event takes any: a
- * method's request with handles is refused, its handles closed). */
+/* Handles a server reads with a message, and room for a reply's handles, at
+ * least: a protocol whose messages carry more has its own <PROTO>_REQ_HANDLES
+ * and <PROTO>_REP_HANDLES (never under these). A request with handles for a
+ * method that takes none is refused, its handles closed. IDL_REP_HANDLES is
+ * also the most a reply carries in a slot (a kept protocol's). */
 #define IDL_READ_HANDLES 8
-/* Handles one reply can carry (methods' handle results). */
 #define IDL_REP_HANDLES 8
+/* Handles one message carries at most (the kernel's CHANNEL_MAX_HANDLES): the
+ * room idl_reply_read has for a reply's or an event's. */
+#define IDL_HANDLES_MAX 64
+
+/* The kernel's object types, as handle_info names them (enum obj_type in
+ * <jam/abi.h>): what a `handle<type>` must be. */
+#define IDL_OBJ_EVENT      OBJ_EVENT
+#define IDL_OBJ_TIMER      OBJ_TIMER
+#define IDL_OBJ_CHANNEL    OBJ_CHANNEL
+#define IDL_OBJ_PORT       OBJ_PORT
+#define IDL_OBJ_VMO        OBJ_VMO
+#define IDL_OBJ_DMA_CAP    OBJ_DMA_CAP
+#define IDL_OBJ_PROCESS    OBJ_PROCESS
+#define IDL_OBJ_THREAD     OBJ_THREAD
+#define IDL_OBJ_INTERRUPT  OBJ_INTERRUPT
+#define IDL_OBJ_RESOURCE   OBJ_RESOURCE
+#define IDL_OBJ_VMAR       OBJ_VMAR
+#define IDL_OBJ_JOB        OBJ_JOB
+#define IDL_OBJ_KLOG       OBJ_KLOG
+#define IDL_OBJ_SERIAL     OBJ_SERIAL
+#define IDL_OBJ_SCREEN     OBJ_SCREEN
 
 /* Client: the status of a reply of n bytes to a call that wants `want`
  * bytes back on success. A server that breaks the format (a positive
@@ -221,10 +246,62 @@ static inline status_t idl_call(handle_t ch, void *q, uint32_t qn, void *r, uint
     return drv_channel_call_h(ch, q, qn, r, rcap, rn, rh, rhcap, rhn, t);
 }
 
+/* Client: idl_call with up to 64 handles sent along (wh, wnh of them), which
+ * leave the caller's table whatever the status: sent, or closed by the kernel
+ * (a send's handles are always moved). */
+static inline status_t idl_call_h(handle_t ch, void *q, uint32_t qn, const handle_t *wh,
+                                  uint32_t wnh, void *r, uint32_t rcap, uint32_t *rn,
+                                  handle_t *rh, uint32_t rhcap, uint32_t *rhn, bool within,
+                                  uint64_t t)
+{
+    struct channel_call_args idl_a = {
+        .h = ch,
+        .wr_len = qn,
+        .wr_bytes = (uint64_t)(uintptr_t)q,
+        .wr_handles = (uint64_t)(uintptr_t)wh,
+        .wr_nhandles = wnh,
+        .rd_cap = rcap,
+        .rd_bytes = (uint64_t)(uintptr_t)r,
+        .rd_handles = (uint64_t)(uintptr_t)rh,
+        .rd_hcap = rhcap,
+        .flags = within ? CHANNEL_CALL_TIMEOUT : 0,
+        .rd_actual = (uint64_t)(uintptr_t)rn,
+        .rd_hactual = (uint64_t)(uintptr_t)rhn,
+        .deadline_ns = t,
+    };
+    return drv_channel_call_args(&idl_a);
+}
+
 static inline void idl_close_all(const handle_t *hs, uint32_t n)
 {
     for (uint32_t idl_i = 0; idl_i < n; idl_i++)
         drv_handle_close(hs[idl_i]);
+}
+
+/* Is every one of the n handles at hs set (not HANDLE_INVALID)? */
+static inline bool idl_handles_set(const handle_t *hs, uint32_t n)
+{
+    for (uint32_t idl_i = 0; idl_i < n; idl_i++)
+        if (hs[idl_i] == HANDLE_INVALID)
+            return false;
+    return true;
+}
+
+/* Does h name an object of this type (IDL_OBJ_*)? The one place a generated
+ * `handle<type>` is checked: a system call (handle_info) for each handle. */
+static inline bool idl_handle_is(handle_t h, uint32_t type)
+{
+    struct handle_info idl_i;
+    return drv_handle_info(h, &idl_i) == OK && idl_i.type == type;
+}
+
+/* Are all n handles at hs of this type? */
+static inline bool idl_handles_are(const handle_t *hs, uint32_t n, uint32_t type)
+{
+    for (uint32_t idl_i = 0; idl_i < n; idl_i++)
+        if (!idl_handle_is(hs[idl_i], type))
+            return false;
+    return true;
 }
 
 /* Server: answer the request whose first n bytes are at req with a bare
@@ -595,7 +672,7 @@ struct idl_msg {
     uint32_t txid;                    /* its txid: which call it answers */
     uint32_t n;                       /* its bytes */
     uint32_t nh;                      /* handles in hs, still to be taken */
-    handle_t hs[IDL_REP_HANDLES];
+    handle_t hs[IDL_HANDLES_MAX];
 };
 
 /* Client: close the handles of a reply nobody takes (its txid matches no
@@ -611,13 +688,13 @@ static inline void idl_msg_drop(struct idl_msg *m)
  * with that method's <proto>_<method>_result (or idl_msg_drop it).
  * ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the server is gone
  * (every call still waiting fails). A message too big for rep or with
- * more than IDL_REP_HANDLES handles, or without a txid, is no reply of
+ * more than IDL_HANDLES_MAX handles, or without a txid, is no reply of
  * the protocol: dropped, its handles closed, ERR_INTERNAL with m->txid
  * set (0 if it had none) so its call can fail. */
 static inline status_t idl_reply_read(handle_t ch, void *rep, uint32_t cap, struct idl_msg *m)
 {
     m->txid = m->n = m->nh = 0;
-    status_t idl_st = drv_channel_read(ch, rep, cap, &m->n, m->hs, IDL_REP_HANDLES, &m->nh);
+    status_t idl_st = drv_channel_read(ch, rep, cap, &m->n, m->hs, IDL_HANDLES_MAX, &m->nh);
     if (idl_st == ERR_BUFFER_TOO_SMALL) {
         uint32_t idl_got = 0;
         idl_st = idl_discard(ch, m->n, m->nh, &m->txid, &idl_got);

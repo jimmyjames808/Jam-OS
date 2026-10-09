@@ -98,6 +98,27 @@ static struct chan_waiter *find_caller_locked(struct channel *peer, uint32_t txi
     return NULL;
 }
 
+/* ch's lock held: remember that the call for txid gave up its reply. */
+static void gave_up_locked(struct channel *ch, uint32_t txid)
+{
+    ch->gave_up[ch->gave_up_next] = txid;
+    ch->gave_up_next = (ch->gave_up_next + 1) % CHAN_GAVE_UP;
+}
+
+/* peer's lock held: was txid a call on peer that gave up? If so it is
+ * forgotten now (one reply each). */
+static bool gave_up_take_locked(struct channel *peer, uint32_t txid)
+{
+    if (!(txid & CHANNEL_TXID_KERNEL))
+        return false;   /* not a call's: a writer's own txid */
+    for (unsigned i = 0; i < CHAN_GAVE_UP; i++)
+        if (peer->gave_up[i] == txid) {
+            peer->gave_up[i] = 0;
+            return true;
+        }
+    return false;
+}
+
 /* peer's lock held: the reader (channel_read_wait) that has waited on
  * peer longest, or NULL. */
 static struct chan_waiter *find_reader_locked(struct channel *peer)
@@ -161,16 +182,21 @@ static void hand_to_locked(struct channel *peer, struct chan_waiter *w, struct c
 }
 
 /* peer's lock held (and the pair lock): give m to the caller waiting for
- * its txid; else, if nothing is queued, to the reader waiting longest, if
+ * its txid; else, if that call gave up, *drop it (M12's D5: nobody would
+ * read it); else, if nothing is queued, to the reader waiting longest, if
  * it fits; else queue it. *filled: the queue just became full. A slot
  * message is never queued: *must_queue instead (and nothing changes). */
 static status_t hand_over_locked(struct channel *ch, struct channel *peer, struct chan_msg *m,
-                                 bool *filled, bool *must_queue)
+                                 bool *filled, bool *must_queue, bool *drop)
 {
     if (m->nhandles && peer->no_handles)
         return ERR_NOT_SUPPORTED;   /* channel_set_flags: it receives no handles */
     uint32_t txid = msg_txid(m);
     struct chan_waiter *w = txid ? find_caller_locked(peer, txid) : NULL;
+    if (!w && gave_up_take_locked(peer, txid)) {
+        *drop = true;
+        return OK;
+    }
     if (w) {
         /* A reply to a channel_call. If no other request is queued for us,
          * we (the server) are most likely about to block for the next one,
@@ -219,7 +245,7 @@ static status_t send_once(struct channel *ch, struct chan_msg *m, bool *must_que
 {
     struct chan_pair *pair = ch->pair;
     status_t st;
-    bool filled = false;
+    bool filled = false, drop = false;
     bool carry = carries_channel(m);
     uint64_t cf = carry ? spin_lock_irqsave(&carry_lock) : 0;
     uint64_t f = spin_lock_irqsave(&pair->lock);
@@ -233,7 +259,7 @@ static status_t send_once(struct channel *ch, struct chan_msg *m, bool *must_que
     if (st == OK) {
         DBG_HOOK(DBG_CHANNEL_CARRIED, ch);
         spin_lock(&peer->base.lock);
-        st = hand_over_locked(ch, peer, m, &filled, must_queue);
+        st = hand_over_locked(ch, peer, m, &filled, must_queue, &drop);
         spin_unlock(&peer->base.lock);
     }
     if (filled) {
@@ -247,6 +273,8 @@ static status_t send_once(struct channel *ch, struct chan_msg *m, bool *must_que
     spin_unlock_irqrestore(&pair->lock, f);
     if (carry)
         spin_unlock_irqrestore(&carry_lock, cf);
+    if (drop)
+        chan_msg_drop(m);   /* a reply to a call that gave up: sent, and gone */
     PATH_MARK(PATH_MK_SENT);
     return st;
 }
@@ -380,8 +408,10 @@ static status_t wait_reply(struct channel *ch, struct chan_waiter *w, uint64_t d
     }
     bool locked;
     status_t st = wait_reply_locked(ch, w, &f, deadline_ns, &locked);
-    if (locked && w->node.next)   /* not answered: still listed */
+    if (locked && w->node.next) {   /* not answered: still listed */
         chan_waiter_unlist_locked(ch, w);
+        gave_up_locked(ch, w->txid);   /* its reply, if it comes, is dropped (D5) */
+    }
     struct chan_msg *offered = w->slot;   /* NULL if a writer took it */
     w->slot = NULL;
     if (locked)

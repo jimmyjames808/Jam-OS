@@ -221,6 +221,8 @@ struct net_tcp_listener_rep {
 
 #define NET_REQ_MAX 22u   /* bytes: the biggest request */
 #define NET_REP_MAX 266u   /* bytes: the biggest reply */
+#define NET_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define NET_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1217,8 +1219,8 @@ static inline status_t net_reply_wait_change(struct idl_txn idl_txn, status_t id
 /* Answer the net.counts request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t net_reply_counts(struct idl_txn idl_txn, status_t idl_st, const uint8_t *counts, uint32_t counts_len)
 {
     _Alignas(8) uint8_t idl_b0[266];
@@ -1239,8 +1241,8 @@ static inline status_t net_reply_counts(struct idl_txn idl_txn, status_t idl_st,
 /* Answer the net.chip_counts request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t net_reply_chip_counts(struct idl_txn idl_txn, status_t idl_st, const uint8_t *counts, uint32_t counts_len)
 {
     _Alignas(8) uint8_t idl_b0[266];
@@ -1382,7 +1384,7 @@ static inline status_t net_reply_tcp_listener(struct idl_txn idl_txn, status_t i
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NET_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (NET_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1694,7 +1696,7 @@ static inline status_t net_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by net_take_slot, or found there by a
  * successor), which came on ch: as net_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (NET_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -1827,6 +1829,8 @@ struct net_socket_rings_rep {
 
 #define NET_SOCKET_REQ_MAX 16u   /* bytes: the biggest request */
 #define NET_SOCKET_REP_MAX 28u   /* bytes: the biggest reply */
+#define NET_SOCKET_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define NET_SOCKET_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2179,7 +2183,7 @@ static inline status_t net_socket_reply_rings(struct idl_txn idl_txn, status_t i
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NET_SOCKET_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (NET_SOCKET_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -2306,7 +2310,7 @@ static inline status_t net_socket_take_slot(handle_t ch, const struct idl_slot *
 /* Run the request in slot (taken by net_socket_take_slot, or found there by a
  * successor), which came on ch: as net_socket_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (NET_SOCKET_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -2416,6 +2420,8 @@ struct net_stream_state_rep {
 
 #define NET_STREAM_REQ_MAX 8u   /* bytes: the biggest request */
 #define NET_STREAM_REP_MAX 24u   /* bytes: the biggest reply */
+#define NET_STREAM_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define NET_STREAM_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2535,7 +2541,7 @@ static inline status_t net_stream_reply_state(struct idl_txn idl_txn, status_t i
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NET_STREAM_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (NET_STREAM_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -2609,7 +2615,7 @@ static inline status_t net_stream_take_slot(handle_t ch, const struct idl_slot *
 /* Run the request in slot (taken by net_stream_take_slot, or found there by a
  * successor), which came on ch: as net_stream_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (NET_STREAM_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -2717,6 +2723,8 @@ struct net_listener_accept_rep {
 
 #define NET_LISTENER_REQ_MAX 12u   /* bytes: the biggest request */
 #define NET_LISTENER_REP_MAX 22u   /* bytes: the biggest reply */
+#define NET_LISTENER_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define NET_LISTENER_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2896,7 +2904,7 @@ static inline status_t net_listener_reply_accept(struct idl_txn idl_txn, status_
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NET_LISTENER_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (NET_LISTENER_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -3000,7 +3008,7 @@ static inline status_t net_listener_take_slot(handle_t ch, const struct idl_slot
 /* Run the request in slot (taken by net_listener_take_slot, or found there by a
  * successor), which came on ch: as net_listener_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (NET_LISTENER_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

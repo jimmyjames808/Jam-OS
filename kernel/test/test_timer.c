@@ -128,7 +128,7 @@ KTEST(oneshot_timer_early_wake_leaves_queue)
 
 /* A far-future deadline (anything whose TSC value overflows
  * 64 bits: INT64_MAX on a >2 GHz TSC, UINT64_MAX-1 even at 1 GHz) must not
- * wrap to the past. User code reaches this through nanosleep, object/port
+ * wrap to the past. User code reaches this through sleep_until, object/port
  * waits and timer_set (which parks the prio-28 timer service on it). */
 static volatile uint64_t far_blocks;
 static uint64_t far_deadline;
@@ -136,7 +136,7 @@ static uint64_t far_deadline;
 static void far_sleeper(void *arg)
 {
     (void)arg;
-    const uint64_t deadline = far_deadline;   /* as sysc_nanosleep would loop */
+    const uint64_t deadline = far_deadline;   /* as sysc_sleep_until would loop */
     while (uptime_ns() < deadline) {
         __atomic_add_fetch(&far_blocks, 1, __ATOMIC_RELAXED);
         if (thread_block_cancellable(NULL, NULL, deadline) != OK)

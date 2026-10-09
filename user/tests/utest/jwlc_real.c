@@ -61,7 +61,7 @@ static bool until_flag(struct jwl_client *c, const bool *flag)
             (void)jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED,
                                       now() + 5 * NS_PER_MS, &seen);
         else
-            (void)jam_nanosleep(now() + NS_PER_MS);
+            (void)jam_sleep_until(now() + NS_PER_MS);
         CHECK_ST(jwl_client_dispatch(c), OK);
     }
     return *flag;
@@ -128,7 +128,7 @@ bool t_jwlc_real_compositor(void)
         if (ch != HANDLE_INVALID)
             (void)jam_object_wait_one(ch, SIG_PEER_CLOSED, now() + 5 * NS_PER_MS, &seen);
         else
-            (void)jam_nanosleep(jwl_client_deadline(c));
+            (void)jam_sleep_until(jwl_client_deadline(c));
         CHECK_ST(jwl_client_dispatch(c), OK);
     }
     CHECK(in->generation == 2 && r.starts == 2);   /* and ready again */

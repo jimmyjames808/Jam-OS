@@ -7,8 +7,13 @@
  *   DR_USB    the `usb` channel of this one interface (abi/idl/usb.idl);
  *             usb-bus closes it when the stick is unplugged
  *   DR_SERVE  the channel it serves `storage` on (abi/idl/storage.idl);
- *             whoever started it holds the other end. Without one there
- *             is nobody to serve: exit 0 before the device is touched.
+ *             whoever started it holds the other end (devmgr). Without
+ *             one there is nobody to serve: exit 0 before the device is
+ *             touched. It also answers the svc protocol's connect
+ *             (abi/idl/svc.idl) with a `storage` channel of the caller's
+ *             own (MAX_CONNS at once): devmgr asks for one for volumes,
+ *             which is the disk's one real client, so nothing volumes
+ *             reads is ever queued on a channel devmgr holds too.
  *
  * Start: usb.info (class 08/06/50, or exit 2); the configuration
  * descriptor (this interface's bulk IN and OUT endpoints); GET MAX LUN
@@ -19,9 +24,10 @@
  * (a driver that crashed) answers the first command with a STALL or not
  * at all; the transport's reset recovery (bot.c) gets it back.
  *
- * Then it serves: `storage` on DR_SERVE (the disk, its partitions, and
- * open_partition, which makes a `block` channel limited to one partition),
- * and every open block channel (block.c). Everything arrives on one port;
+ * Then it serves: `storage` on DR_SERVE and on each connect's channel
+ * (the disk, its partitions, and open_partition, which makes a `block`
+ * channel limited to one partition), and every open block channel
+ * (block.c). Everything arrives on one port;
  * a packet only marks its channel pending, and the loop serves one
  * request at a time, so one SCSI command runs at a time.
  *
@@ -36,16 +42,19 @@
  *
  * Ending: DR_USB closed, or usb-bus answering ERR_PEER_CLOSED: the stick
  * is gone, exit 0 (devmgr binds a new driver when it comes back). DR_SERVE
- * closed: we are being stopped, exit 0. Either way the process's end
+ * closed: we are being stopped, exit 0 (a connect's channel closed ends
+ * that channel alone: volumes was started again). Either way the process's end
  * closes every block channel, which is how clients learn of it
  * (ERR_PEER_CLOSED). Exit 1: no DR_USB, or the port failed; 2: not a
  * Bulk-Only SCSI interface; 3: the device couldn't be brought up, or
  * stopped answering (devmgr restarts the driver, with backoff). */
 #include <idl/storage.h>
+#include <idl/svc.h>
 #include <idl/usb.h>
 #include "storage.h"
 
 #define USB_TIMEOUT (5 * NS_PER_S)   /* a control request or a descriptor */
+#define MAX_CONNS   4                /* connects' channels at once (one per volumes) */
 
 #define DESC_CONFIG    2
 #define DESC_INTERFACE 4
@@ -54,6 +63,13 @@
 static struct disk disk;
 static handle_t port, serve;
 static bool serve_pending, serve_closed;
+
+/* A `storage` channel made by svc.connect on DR_SERVE. */
+static struct conn {
+    handle_t ch;        /* our end; HANDLE_INVALID: a free slot */
+    bool     pending;   /* may have requests queued */
+    uint16_t gen;       /* bumped at every close: in its port key */
+} conns[MAX_CONNS];
 
 static uint64_t soon(void)
 {
@@ -98,8 +114,8 @@ static int identify(struct disk *k)
         return 2;
     }
     static uint8_t cfg[1024];
-    uint16_t n = 0;
-    st = usb_get_descriptor_until(k->usb, soon(), DESC_CONFIG, 0, 0, sizeof(cfg), 0, &n, cfg);
+    uint32_t n = 0;
+    st = usb_get_descriptor_until(k->usb, soon(), DESC_CONFIG, 0, 0, sizeof(cfg), 0, cfg, &n);
     if (n > sizeof(cfg))
         n = sizeof(cfg);   /* whatever usb-bus says, the buffer ends here */
     if (st != OK || !find_endpoints(k, alt, cfg, n)) {
@@ -222,6 +238,89 @@ static const struct storage_ops storage_ops = {
     .disk_id = s_disk_id,
 };
 
+/* ---- svc.connect: a `storage` channel of the caller's own ------------------------------ */
+
+static uint64_t conn_key(const struct conn *c)
+{
+    return KEY_CONN | ((uint64_t)c->gen << 8) | (uint64_t)(c - conns);
+}
+
+static void conn_close(struct conn *c)
+{
+    if (c->ch == HANDLE_INVALID)
+        return;
+    (void)drv_port_unbind(port, c->ch, conn_key(c));
+    drv_handle_close(c->ch);
+    c->ch = HANDLE_INVALID;
+    c->pending = false;
+    c->gen++;
+}
+
+static status_t s_connect(void *ctx, handle_t *out)
+{
+    (void)ctx;
+    for (unsigned i = 0; i < MAX_CONNS; i++) {
+        struct conn *c = &conns[i];
+        if (c->ch != HANDLE_INVALID)
+            continue;
+        handle_t theirs;
+        status_t st = drv_channel_create(&c->ch, &theirs);
+        if (st != OK) {
+            c->ch = HANDLE_INVALID;
+            return st;
+        }
+        st = drv_port_bind(port, c->ch, conn_key(c), SIG_READABLE | SIG_PEER_CLOSED,
+                           PORT_BIND_PERSISTENT);
+        if (st != OK) {
+            drv_handle_close(c->ch);
+            drv_handle_close(theirs);
+            c->ch = HANDLE_INVALID;
+            return st;
+        }
+        c->pending = true;   /* look once: the port says only what comes later */
+        *out = theirs;
+        return OK;
+    }
+    return ERR_NO_RESOURCES;
+}
+
+static const struct svc_ops svc_ops = { .connect = s_connect };
+static const struct svc_ops no_svc_ops = { 0 };   /* a connect's channel makes no more */
+
+/* Take one message off ch and answer it, as storage_serve_one does, with
+ * the svc protocol's connect next to `storage` (on DR_SERVE alone:
+ * `connect`). OK once a message was handled; else drv_channel_read's
+ * status (ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the client is
+ * gone for good). */
+static status_t serve_one(handle_t ch, struct disk *k, bool connect)
+{
+    _Static_assert(SVC_REQ_MAX <= STORAGE_REQ_MAX && SVC_REP_MAX <= STORAGE_REP_MAX,
+                   "a connect fits where a storage request does");
+    _Alignas(8) uint8_t q[STORAGE_REQ_MAX], r[STORAGE_REP_MAX];
+    handle_t hs[IDL_READ_HANDLES], rhs[IDL_REP_HANDLES];
+    uint32_t n = 0, nh = 0, rhn = 0, rn;
+    status_t st = drv_channel_read(ch, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
+    if (st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, n, nh);
+    if (st != OK)
+        return st;
+    if (nh) {
+        idl_close_all(hs, nh);
+        idl_reply_status(ch, q, n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    const struct idl_req_hdr *h = (const struct idl_req_hdr *)q;
+    if (n >= sizeof(*h) && h->ordinal >> 16 == SVC_PROTOCOL_ID)
+        rn = svc_dispatch(connect ? &svc_ops : &no_svc_ops, k, q, n, r, rhs, &rhn);
+    else
+        rn = storage_dispatch(&storage_ops, k, q, n, r, rhs, &rhn);
+    if (rn)
+        (void)drv_channel_write(ch, r, rn, rhs, rhn);   /* its handles go either way */
+    else
+        idl_close_all(rhs, rhn);
+    return OK;
+}
+
 /* ---- the loop --------------------------------------------------------------------------- */
 
 static void packet(struct disk *k, const struct port_packet *p)
@@ -232,6 +331,9 @@ static void packet(struct disk *k, const struct port_packet *p)
         k->gone = true;
     else if ((p->key & ~0xffffffull) == KEY_BLK)
         blk_packet(p);
+    else if ((p->key & ~0xffffffull) == KEY_CONN && (p->key & 0xff) < MAX_CONNS &&
+             conn_key(&conns[p->key & 0xff]) == p->key)
+        conns[p->key & 0xff].pending = true;
 }
 
 /* What is queued on DR_SERVE; true if there was anything. */
@@ -242,12 +344,34 @@ static bool serve_storage(struct disk *k)
     serve_pending = false;
     status_t st = OK;
     for (int guard = 0; guard < 16 && st == OK; guard++)
-        st = storage_serve_one(serve, &storage_ops, k);
+        st = serve_one(serve, k, true);
     if (st == OK)
         serve_pending = true;   /* maybe more: the port won't say so again */
     else if (st != ERR_SHOULD_WAIT)
         serve_closed = true;
     return true;
+}
+
+/* What is queued on each connect's channel; true if there was anything.
+ * One whose client has gone is closed: that client's volumes ended. */
+static bool serve_conns(struct disk *k)
+{
+    bool did = false;
+    for (unsigned i = 0; i < MAX_CONNS; i++) {
+        struct conn *c = &conns[i];
+        if (c->ch == HANDLE_INVALID || !c->pending)
+            continue;
+        did = true;
+        c->pending = false;
+        status_t st = OK;
+        for (int guard = 0; guard < 16 && st == OK; guard++)
+            st = serve_one(c->ch, k, false);
+        if (st == OK)
+            c->pending = true;
+        else if (st != ERR_SHOULD_WAIT)
+            conn_close(c);
+    }
+    return did;
 }
 
 /* Serve until the device goes or DR_SERVE closes. 0, or the exit code. */
@@ -260,6 +384,8 @@ static int run(struct disk *k)
             return 3;
         }
         bool did = serve_storage(k);
+        if (serve_conns(k))
+            did = true;
         if (blk_serve())
             did = true;
         if (did)
@@ -343,6 +469,8 @@ int driver_main(const struct driver_start *s)
         r = bring_up(k);
     if (r == 0 && !k->gone)
         r = run(k);
+    for (unsigned i = 0; i < MAX_CONNS; i++)
+        conn_close(&conns[i]);
     blk_close_all();
     return r;
 }

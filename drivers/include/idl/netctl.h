@@ -156,6 +156,8 @@ struct netctl_summary_rep {
 
 #define NETCTL_REQ_MAX 20u   /* bytes: the biggest request */
 #define NETCTL_REP_MAX 96u   /* bytes: the biggest reply */
+#define NETCTL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define NETCTL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1035,8 +1037,8 @@ static inline status_t netctl_reply_stats(struct idl_txn idl_txn, status_t idl_s
 /* Answer the netctl.device request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t netctl_reply_device(struct idl_txn idl_txn, status_t idl_st, uint8_t session, uint16_t vlan, uint32_t speed, uint32_t sessions, uint64_t ring_errors, uint64_t rx_bad, uint64_t tx_full, const char *chip, uint32_t chip_len)
 {
     _Alignas(8) uint8_t idl_b0[61];
@@ -1086,8 +1088,8 @@ static inline status_t netctl_reply_dhcp_open(struct idl_txn idl_txn, status_t i
 /* Answer the netctl.summary request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t netctl_reply_summary(struct idl_txn idl_txn, status_t idl_st, uint8_t link, uint32_t address, uint32_t mask, uint32_t speed, uint64_t rx_bytes, uint64_t tx_bytes, const char *chip, uint32_t chip_len)
 {
     _Alignas(8) uint8_t idl_b0[55];
@@ -1114,7 +1116,7 @@ static inline status_t netctl_reply_summary(struct idl_txn idl_txn, status_t idl
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NETCTL_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (NETCTL_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1381,7 +1383,7 @@ static inline status_t netctl_take_slot(handle_t ch, const struct idl_slot *slot
 /* Run the request in slot (taken by netctl_take_slot, or found there by a
  * successor), which came on ch: as netctl_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (NETCTL_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

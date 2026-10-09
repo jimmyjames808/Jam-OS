@@ -89,7 +89,7 @@ bool t_jwlc_reconnect(void)
     while (jwl_client_info(c)->generation < 3 && now() < t0 + 5 * NS_PER_S) {
         fake_pump(&f, c);
         uint64_t d = jwl_client_deadline(c);
-        (void)jam_nanosleep(d < now() + 20 * NS_PER_MS ? d : now() + 20 * NS_PER_MS);
+        (void)jam_sleep_until(d < now() + 20 * NS_PER_MS ? d : now() + 20 * NS_PER_MS);
     }
     fake_pump(&f, c);
     CHECK_EQ(jwl_client_info(c)->generation, 3);

@@ -83,7 +83,7 @@ bool t_rx_census(void)
         ok = census_frame(f, len, &seen);
         n++;
     }
-    (void)jam_nanosleep(now() + 200 * NS_PER_MS);   /* anything more would have come by now */
+    (void)jam_sleep_until(now() + 200 * NS_PER_MS);   /* anything more would have come by now */
     uint32_t extra = netdev_ready(&s.rxe);
     sess_close(&s);
     CHECK(ok);
@@ -113,7 +113,7 @@ bool t_rx_flood(void)
     go(&s, 2);
     /* netstack stalls: the ring fills, the driver drops and counts, and
      * still answers. */
-    (void)jam_nanosleep(now() + FLOOD_WAIT);
+    (void)jam_sleep_until(now() + FLOOD_WAIT);
     CHECK(get_session_stats(s.ch, &b));
     printf("nettest: flood: %lu given, %lu dropped for a full ring, %lu missed by the chip\n",
            (unsigned long)(b.rx_frames - a.rx_frames),

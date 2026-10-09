@@ -328,7 +328,8 @@ KTEST(port_user_packets_fifo)
     enum { N = 100 };
     for (uint64_t i = 0; i < N; i++) {
         struct port_packet pkt = {
-            .key = 1000 + i, .type = PORT_PACKET_SIGNAL /* forced to USER */, .status = 5,
+            .key = 1000 + i, .type = PORT_PACKET_SIGNAL /* forced to USER */,
+            .status = ERR_CANCELED /* forced to OK */,
             .user = { { i, i * 3, ~i, 42 } },
         };
         KT_EQ(port_queue_user(p, &pkt), OK);
@@ -339,7 +340,7 @@ KTEST(port_user_packets_fifo)
         KT_EQ(port_wait(p, DEADLINE_NEVER, &pkt), OK);
         KT_EQ(pkt.key, 1000 + i);
         KT_EQ(pkt.type, PORT_PACKET_USER);
-        KT_EQ(pkt.status, 5);
+        KT_EQ(pkt.status, OK);   /* the kernel's: ERR_CANCELED is a binding's teardown */
         KT_ASSERT(pkt.user.data[0] == i && pkt.user.data[1] == i * 3 &&
                   pkt.user.data[2] == ~i && pkt.user.data[3] == 42);
     }
@@ -874,6 +875,90 @@ KTEST(m45_port_binding_cap)
     KT_EQ(sys_port_bind(&t, port, ev, PORT_MAX_BINDINGS, SIG_SIGNALED, PORT_BIND_PERSISTENT),
           OK);
 
+    handle_table_destroy(&t);
+    port_get_stats(&now);
+    KT_GLOBAL_EQ(now.bindings, before.bindings);
+    KT_GLOBAL_EQ(now.ports, before.ports);
+}
+
+/* ---- a binding ends with its object's last handle (M12's question E) ------------ */
+
+KTEST(port_binding_ends_with_last_handle)
+{
+    struct port_stats before, now;
+    port_get_stats(&before);
+    struct handle_table t;
+    handle_table_init(&t);
+    handle_t port, ev, e2, e2b;
+    KT_EQ(sys_port_create(&t, &port), OK);
+    KT_EQ(sys_event_create(&t, &ev), OK);
+    KT_EQ(sys_event_create(&t, &e2), OK);
+    KT_EQ(handle_duplicate(&t, e2, RIGHT_SAME, &e2b), OK);
+    KT_EQ(sys_port_bind(&t, port, ev, 1, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);
+    KT_EQ(sys_port_bind(&t, port, e2, 2, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);
+    KT_EQ(sys_port_bind(&t, port, e2, 3, SIG_SIGNALED, PORT_BIND_ONCE), OK);
+    port_get_stats(&now);
+    KT_GLOBAL_EQ(now.bindings - before.bindings, 3);
+
+    /* ev fires, then its only handle closes: the binding ends, and with it
+     * the binding's reference on ev (ours is the last); its packet stays. */
+    struct kobject *evo;
+    KT_EQ(handle_get(&t, ev, OBJ_EVENT, 0, &evo, NULL), OK);
+    KT_EQ(sys_event_signal(&t, ev, 0, SIG_SIGNALED), OK);
+    KT_EQ(handle_close(&t, ev), OK);
+    KT_EQ(__atomic_load_n(&evo->refs, __ATOMIC_ACQUIRE), 1);
+    KT_ASSERT(list_empty(&evo->observers));
+    kobject_unref(evo);
+    struct port_packet pkt;
+    KT_EQ(sys_port_wait(&t, port, 0, &pkt), OK);
+    KT_EQ(pkt.key, 1);
+    port_get_stats(&now);
+    KT_GLOBAL_EQ(now.bindings - before.bindings, 2);
+
+    /* e2 has another handle: its bindings stay and fire. */
+    KT_EQ(handle_close(&t, e2), OK);
+    port_get_stats(&now);
+    KT_GLOBAL_EQ(now.bindings - before.bindings, 2);
+    KT_EQ(sys_event_signal(&t, e2b, 0, SIG_SIGNALED), OK);
+    KT_EQ(sys_port_wait(&t, port, 0, &pkt), OK);
+    KT_EQ(pkt.key, 2);
+    KT_EQ(sys_port_wait(&t, port, 0, &pkt), OK);
+    KT_EQ(pkt.key, 3);   /* the ONCE one: spent, retired */
+    KT_EQ(handle_close(&t, e2b), OK);   /* the last: the PERSISTENT one ends */
+    port_get_stats(&now);
+    KT_GLOBAL_EQ(now.bindings, before.bindings);
+    KT_EQ(sys_port_wait(&t, port, 0, &pkt), ERR_TIMED_OUT);
+
+    handle_table_destroy(&t);
+    port_get_stats(&now);
+    KT_GLOBAL_EQ(now.bindings, before.bindings);
+    KT_GLOBAL_EQ(now.ports, before.ports);
+}
+
+/* A binding made as the object's last handle closes (port_bind_held): made
+ * before port_object_closed's scan, ended by it; after, refused. Either
+ * way nothing is left once the bind has returned. */
+KTEST(port_bind_on_a_closed_object_refused)
+{
+    struct port_stats before, now;
+    port_get_stats(&before);
+    struct port *p;
+    KT_EQ(port_create(&p), OK);
+    struct handle_table t;
+    handle_table_init(&t);
+    handle_t ev;
+    KT_EQ(sys_event_create(&t, &ev), OK);
+    struct kobject *o;
+    KT_EQ(handle_get(&t, ev, OBJ_EVENT, 0, &o, NULL), OK);
+    KT_EQ(port_bind_held(p, o, 1, SIG_SIGNALED, PORT_BIND_PERSISTENT), OK);
+    KT_EQ(handle_close(&t, ev), OK);   /* the scan ends it */
+    KT_ASSERT(list_empty(&o->observers));
+    KT_EQ(port_bind_held(p, o, 2, SIG_SIGNALED, PORT_BIND_PERSISTENT), ERR_BAD_HANDLE);
+    KT_ASSERT(list_empty(&o->observers));
+    KT_EQ(port_bind(p, o, 3, SIG_SIGNALED, PORT_BIND_ONCE), OK);   /* the kernel's own: as before */
+    KT_EQ(port_unbind(p, o, 3), OK);
+    kobject_unref(o);
+    kobject_unref(&p->base);
     handle_table_destroy(&t);
     port_get_stats(&now);
     KT_GLOBAL_EQ(now.bindings, before.bindings);

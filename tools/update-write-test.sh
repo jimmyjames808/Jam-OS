@@ -241,7 +241,7 @@ grep -aq "init: update: .* and stored, and written to the stick" "$log" ||
     fail "run 2: not exactly one kexec (the reboot after update -m: update -w rebooted?)"
 [ "$(grep -ac "reboot: resetting" "$log")" -eq 1 ] ||
     fail "run 2: a firmware reset before the last one"
-grep -a "update: fetched\|init: update: \|devmgr: /esp" "$log" | sed 's/^/update-write-test: /'
+grep -a "update: fetched\|init: update: \|volumes: /esp" "$log" | sed 's/^/update-write-test: /'
 esp "$out/wtest-2.img" jamos.elf "$out/jamos-B.elf" &&
     esp "$out/wtest-2.img" bootfs.img "$out/bootfs-B.img" ||
     fail "run 2: the stick's build isn't B"

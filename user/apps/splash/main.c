@@ -57,7 +57,7 @@ static bool keys;          /* the keys are ours (run from the shell): a key skip
 static bool wait_key(uint64_t deadline)
 {
     if (!keys) {
-        jam_nanosleep(deadline);
+        jam_sleep_until(deadline);
         return false;
     }
     return gfx_key(deadline) != KEY_NONE;
@@ -150,7 +150,7 @@ static void hold(uint64_t ended, bool linger)
                                       &seen);
     uint64_t t = now();
     if (linger && t < ended + LINGER)
-        jam_nanosleep(ended + LINGER);
+        jam_sleep_until(ended + LINGER);
     printf("splash: %s %lu ms after the end; giving the screen back %lu ms after it\n",
            st == ERR_TIMED_OUT ? "no shell yet" : "the shell is up",
            (unsigned long)((t - ended) / NS_PER_MS), (unsigned long)((now() - ended) / NS_PER_MS));
@@ -165,7 +165,7 @@ static void fade_out(void)
         uint32_t a = 255u / (uint32_t)(FADE_STEPS - k + 1);
         fill_pm(&scr.s, 0, 0, scr.w, scr.h, argb_pm(CONSOLE_BG, a));
         gfx_present();
-        jam_nanosleep(now() + FADE_STEP);
+        jam_sleep_until(now() + FADE_STEP);
     }
 }
 
@@ -213,7 +213,7 @@ int main(int argc, char **argv)
     if (init_ch && has_arg(argc, argv, "--hang")) {
         printf("splash: hanging, as asked (--hang)\n");
         for (;;)
-            jam_nanosleep(DEADLINE_NEVER);
+            jam_sleep_until(DEADLINE_NEVER);
     }
     bool skipped = play(mpg, len, since);
     if (skipped)

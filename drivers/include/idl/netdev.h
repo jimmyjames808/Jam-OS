@@ -81,6 +81,8 @@ struct netdev_open_rep {
 
 #define NETDEV_REQ_MAX 8u   /* bytes: the biggest request */
 #define NETDEV_REP_MAX 266u   /* bytes: the biggest reply */
+#define NETDEV_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define NETDEV_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -456,8 +458,8 @@ struct netdev_ops {
 /* Answer the netdev.info request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t netdev_reply_info(struct idl_txn idl_txn, status_t idl_st, const uint8_t mac[6], uint16_t vlan, uint16_t mtu, uint32_t link, uint32_t speed, uint32_t changes, const char *chip, uint32_t chip_len)
 {
     _Alignas(8) uint8_t idl_b0[48];
@@ -486,8 +488,8 @@ static inline status_t netdev_reply_info(struct idl_txn idl_txn, status_t idl_st
 /* Answer the netdev.stats request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t netdev_reply_stats(struct idl_txn idl_txn, status_t idl_st, const uint8_t *counts, uint32_t counts_len)
 {
     _Alignas(8) uint8_t idl_b0[266];
@@ -536,7 +538,7 @@ static inline status_t netdev_reply_open(struct idl_txn idl_txn, status_t idl_st
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NETDEV_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (NETDEV_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -678,7 +680,7 @@ static inline status_t netdev_take_slot(handle_t ch, const struct idl_slot *slot
 /* Run the request in slot (taken by netdev_take_slot, or found there by a
  * successor), which came on ch: as netdev_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (NETDEV_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -797,6 +799,8 @@ struct netdev_session_stats_rep {
 
 #define NETDEV_SESSION_REQ_MAX 8u   /* bytes: the biggest request */
 #define NETDEV_SESSION_REP_MAX 266u   /* bytes: the biggest reply */
+#define NETDEV_SESSION_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define NETDEV_SESSION_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1032,8 +1036,8 @@ struct netdev_session_ops {
 /* Answer the netdev_session.info request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t netdev_session_reply_info(struct idl_txn idl_txn, status_t idl_st, const uint8_t mac[6], uint16_t vlan, uint16_t mtu, uint32_t link, uint32_t speed, uint32_t changes, const char *chip, uint32_t chip_len)
 {
     _Alignas(8) uint8_t idl_b0[48];
@@ -1062,8 +1066,8 @@ static inline status_t netdev_session_reply_info(struct idl_txn idl_txn, status_
 /* Answer the netdev_session.stats request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t netdev_session_reply_stats(struct idl_txn idl_txn, status_t idl_st, const uint8_t *counts, uint32_t counts_len)
 {
     _Alignas(8) uint8_t idl_b0[266];
@@ -1083,7 +1087,7 @@ static inline status_t netdev_session_reply_stats(struct idl_txn idl_txn, status
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (NETDEV_SESSION_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (NETDEV_SESSION_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1186,7 +1190,7 @@ static inline status_t netdev_session_take_slot(handle_t ch, const struct idl_sl
 /* Run the request in slot (taken by netdev_session_take_slot, or found there by a
  * successor), which came on ch: as netdev_session_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (NETDEV_SESSION_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

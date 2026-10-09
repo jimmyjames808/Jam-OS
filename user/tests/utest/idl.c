@@ -226,7 +226,7 @@ static bool kept_at_least(const struct server *s, uint32_t n)
 {
     uint64_t end = now() + CALL_WAIT;
     while (__atomic_load_n(&s->nkept, __ATOMIC_ACQUIRE) < n)
-        CHECK(now() < end && jam_nanosleep(now() + NS_PER_MS) == OK);
+        CHECK(now() < end && jam_sleep_until(now() + NS_PER_MS) == OK);
     return true;
 }
 
@@ -261,7 +261,7 @@ bool t_idl_later_blocking_clients(void)
     CHECK(w[0].st == OK && w[0].got_key == 5);
     CHECK(w[1].st == OK && w[1].got_key == 6);
 
-    /* A call that gives up: its late reply comes as a plain message. */
+    /* A call that gives up: the kernel drops its late reply (M12's D5). */
     uint32_t key = 0, order = 0;
     CHECK_ST(idltest_wait_until(c, now() + 20 * NS_PER_MS, 9, &key, &order), ERR_TIMED_OUT);
     if (!kept_at_least(&srv.s, 3))
@@ -270,9 +270,7 @@ bool t_idl_later_blocking_clients(void)
     CHECK_EQ(woken, 1);
     _Alignas(8) uint8_t rep[IDLTEST_REP_MAX];
     struct idl_msg m;
-    CHECK_ST(idl_reply_read(c, rep, sizeof(rep), &m), OK);
-    CHECK(m.txid != 0);
-    idl_msg_drop(&m);
+    CHECK_ST(idl_reply_read(c, rep, sizeof(rep), &m), ERR_SHOULD_WAIT);
 
     CHECK_ST(jam_handle_close(c), OK);
     if (!wait_threads(th, 1))

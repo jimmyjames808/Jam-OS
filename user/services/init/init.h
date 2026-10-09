@@ -1,19 +1,19 @@
 /* init: what its files share. main.c starts init (the init.cfg programs,
  * keytest); shell.c is the shell mode, where init starts and supervises
  * the bootfs server, the compositor (comp.c), the console, serialin,
- * devmgr, the mixer, the music
+ * devmgr, volumes, the mixer, the music
  * player, netstack, logd, netlog, sntp and the shell, each started as services.c says; splash.c
  * the boot splash that plays first in shell mode; lastboot.c the boot
  * before this one, if it panicked (its log saved by logd, one line for the
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
- * step with devmgr's mounts; ctl.c serves init's control channels
+ * step with volumes' mounts; ctl.c serves init's control channels
  * (abi/idl/initctl.idl); settings.c the clock and the volumes from
  * /data/etc/settings; net.c the network services (netstack, dhcp, dns, netlog, sntp); update.c
  * checks a fetched build and makes it the stored kernel (<update.h>).
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
  * program it starts is given. /boot is the bootfs server's channel, which
- * main.c or shell.c mounts; the rest come from devmgr (mounts.c). */
+ * main.c or shell.c mounts; the rest come from volumes (mounts.c). */
 #pragma once
 
 #include <deskapps.h>
@@ -84,13 +84,13 @@ extern bool init_verbose;
 
 /* ---- mounts.c -------------------------------------------------------------------- */
 
-/* Follow devmgr's mounts (DEVMGR_MOUNTS, <devmgr.h>) on a thread of its
+/* Follow volumes' mounts (VOLUMES_MOUNTS, <volumes.h>) on a thread of its
  * own: each answer's mounts go into init's namespace, those no longer
- * listed leave it. devmgr_ctl: a duplicate of devmgr's control channel,
+ * listed leave it. volumes_ctl: a duplicate of volumes' control channel,
  * consumed. After every change a PORT_PACKET_USER with `key` is queued on
- * port (0: nobody is told). One devmgr at a time: mounts_unwatch first. */
-status_t mounts_watch(handle_t devmgr_ctl, handle_t port, uint64_t key);
-/* Stop following (devmgr is gone, or about to be told to stop: close our
+ * port (0: nobody is told). One volumes at a time: mounts_unwatch first. */
+status_t mounts_watch(handle_t volumes_ctl, handle_t port, uint64_t key);
+/* Stop following (volumes is gone, or about to be told to stop: close our
  * other ends of its control channel first) and unmount what came from it.
  * Waits for the thread, at most 2 s. */
 void     mounts_unwatch(void);
@@ -144,8 +144,8 @@ void     splash_shell_ready(void);
 /* The services, in the order they are started; then the other terminals'
  * consoles and shells (terms.c), a pair each, started only when one is
  * opened. */
-enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, MIXER, MUSIC, NETSTACK, DHCP, DNS,
-       LOGD, NETLOG, SNTP, SERVE, SHELL, TERMS, NSVC = TERMS + 2 * (TERM_MAX - 1) };
+enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MUSIC, NETSTACK,
+       DHCP, DNS, LOGD, NETLOG, SNTP, SERVE, SHELL, TERMS, NSVC = TERMS + 2 * (TERM_MAX - 1) };
 /* Terminal k's (0: the first, the system's) console and shell. */
 #define TERM_CONSOLE(k) ((k) ? TERMS + 2 * ((k) - 1) : CONSOLE)
 #define TERM_SHELL(k)   ((k) ? TERMS + 2 * ((k) - 1) + 1 : SHELL)
@@ -355,6 +355,11 @@ bool     services_console_up(void);
  * mixer's master volume, the music player's volume. */
 void     services_settings(unsigned i);
 bool     services_devmgr_up(void);
+/* services.c, for main.c's test mode too: devmgr (dm: its control
+ * channel) tells its disks on the DISKS channel whose client end is
+ * `disks` (consumed; <volumes.h>): DEVMGR_SET_VOLUMES. Said in the log if
+ * it fails. */
+void     services_set_volumes(handle_t dm, handle_t disks);
 /* The mixer's shared audioctl channel, init's client end (0: none): the
  * one /svc/audioctl's openers connect through. */
 handle_t services_audioctl(void);
@@ -382,17 +387,22 @@ unsigned services_net_devices(handle_t *out, unsigned max);
 handle_t shell_root(void);
 /* devmgr's control channel, or 0 while none runs. */
 handle_t shell_devmgr(void);
-/* devmgr's ESP channel (DEVMGR_ESP_WRITE), init's alone: or 0 while no
- * devmgr runs (or none started in shell mode). Only update.c uses it. */
-handle_t shell_devmgr_esp(void);
+/* volumes' control channel, or 0 while none runs. */
+handle_t shell_volumes(void);
+/* volumes' ESP channel (VOLUMES_ESP_WRITE), init's alone: or 0 while no
+ * volumes runs (or none started in shell mode). Only update.c uses it. */
+handle_t shell_volumes_esp(void);
 /* init's (ADMIN) console channel, or 0 while no console runs. */
 handle_t shell_console(void);
 /* logd writes out and syncs the log up to now (logctl.flush), waited for
  * until deadline at most. Nothing to do without a logd. */
 void     shell_flush_log(uint64_t deadline);
-/* For a kexec reboot (reboot.c): devmgr stops every driver in order and
- * exits (DEVMGR_SHUTDOWN), waited for until deadline; if it doesn't, its
- * job is killed. It is not started again. OK, or what went wrong. */
+/* For a reboot (reboot.c), in this order: volumes syncs every writable
+ * mount, stops its filesystem services and exits (VOLUMES_SHUTDOWN), then
+ * devmgr stops every driver in order and exits (DEVMGR_SHUTDOWN); each
+ * waited for until deadline, and its job killed if it doesn't. Neither is
+ * started again. OK, or what went wrong. */
+status_t shell_stop_volumes(uint64_t deadline);
 status_t shell_stop_devmgr(uint64_t deadline);
 
 /* ---- settings.c: /data/etc/settings (<settings.h>) ------------------------------- */
@@ -548,7 +558,7 @@ void     update_event(void);
 /* One stick write: what to write, and how far it got. */
 struct esp_write {
     /* Given. */
-    handle_t       esp;                        /* devmgr's ESP channel (the caller's) */
+    handle_t       esp;                        /* volumes' ESP channel (the caller's) */
     handle_t       vmo[UPDATE_FILES];          /* init's checked copies of the new build */
     uint64_t       size[UPDATE_FILES];         /* their sizes in bytes */
     const uint8_t *sha256[UPDATE_FILES];       /* the signed manifest's SHA-256s */

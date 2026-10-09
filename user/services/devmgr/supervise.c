@@ -10,19 +10,9 @@
  *     after 5 restarts within 60 s gives up: no more restarts, a log line
  *     and a RESULTS line. A real driver's crash, error exit or give-up is
  *     a problem (devmgr exits 1 at the end); a DEVMGR_KILL, and anything
- *     the crash-test driver does, is expected. So is the filesystem
- *     service of someone else's stick ending (excused): a stick that
- *     fails its reads is that stick's trouble, said in the log and no
- *     more; it is restarted and given up on like any other.
- *
- * A filesystem service (BIND_FS) outlives its process (spare.c,
- * docs/M11.6-PLAN.md Q5): its `fs` channel stays devmgr's, so its mount
- * never goes away while it restarts and calls on it wait for the next
- * instance; a deliberate kill (DEVMGR_KILL) is not counted and restarts
- * at once; a crash or an error exit is counted as above, but the first in
- * the window restarts at once and only later ones back off (100 ms,
- * doubling, at most 5 s). Its restart promotes the warm spare when one
- * waits.
+ *     the crash-test driver does, is expected. (The filesystem services of
+ *     the disks are volumes', supervised there by the rule of a service
+ *     that outlives its process: user/services/volumes/supervise.c.)
  *
  * The restart itself is a start from scratch (bind.c: new dma_cap, so Bus
  * Master Enable stays off until the new driver has quiesced the device;
@@ -35,16 +25,14 @@
  * On the desktop (devmgr_notices, <notice.h>) a real driver's first crash
  * in its window and its give-up are notices in plain words ("Sound
  * driver crashed / Jam OS started it again"); a deliberate kill, the
- * crash-test driver, another stick's filesystem service and anything at
- * a shutdown are not. The log lines are as they were. */
-#include <fatsvc.h>
+ * crash-test driver and anything at a shutdown are not. The log lines are
+ * as they were. */
 #include "internal.h"
 
-/* b ending is never a problem of ours: a test's, or the filesystem service
- * of a stick that isn't the boot disk. */
+/* b ending is never a problem of ours: a test's. */
 static bool excused(const struct binding *b)
 {
-    return b->test || (b->kind == BIND_FS && b->other);
+    return b->test;
 }
 
 /* What a user calls b's driver, for a notice ("Sound driver"). */
@@ -55,10 +43,6 @@ static void plain_name(const struct binding *b, char *buf, size_t n)
         { "drv/hid", "Keyboard and mouse driver" }, { "drv/usb-storage", "USB stick driver" },
         { "drv/rtl8125", "Network driver" },    { "drv/e1000e", "Network driver" },
     };
-    if (b->kind == BIND_FS) {
-        snprintf(buf, n, "File system");
-        return;
-    }
     for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         if (b->path && !strcmp(b->path, names[i].path)) {
             snprintf(buf, n, "%s", names[i].name);
@@ -83,7 +67,7 @@ static void tell_desktop(const struct binding *b, bool gave_up, bool first)
                 '!', NOTICE_RASPBERRY);
 }
 
-/* The dead driver's channel goes (a filesystem service's is kept). */
+/* The dead driver's channel goes. */
 static void drop_channel(struct binding *b)
 {
     close_client(b);
@@ -93,50 +77,34 @@ static void drop_channel(struct binding *b)
 }
 
 /* b's driver is gone (or its restart failed): schedule the next start, or
- * give up. `why` says what happened; `expected`: not a problem. A
- * filesystem service's deliberate kill is never counted, so never gives up. */
+ * give up. `why` says what happened; `expected`: not a problem. */
 static void schedule(struct binding *b, const char *why, bool expected)
 {
     uint64_t t = now();
     unsigned n = sup_window_recent(&b->win, t);
-    bool deliberate = b->kind == BIND_FS && b->killed;
     uint64_t at;   /* when the restart is due */
-    if (!fs_channel_kept(b))
-        drop_channel(b);
-    /* A filesystem service outlives its process: a deliberate kill is never
-     * counted and never gives up. */
-    if (!sup_window_end(&b->win, t, b->killed ? SUP_END_ON_PURPOSE : SUP_END_COUNTED,
-                        b->kind == BIND_FS, &at)) {
+    drop_channel(b);
+    if (!sup_window_end(&b->win, t, b->killed ? SUP_END_ON_PURPOSE : SUP_END_COUNTED, false,
+                        &at)) {
         b->state = DEVMGR_SUP_GAVE_UP;
         say(!excused(b) || b->test, "devmgr: %s %s %s after %u restarts in %lu s: giving up%s",
             bdf(b), b->path, why, n, (unsigned long)(SUP_WINDOW / NS_PER_S),
-            b->test ? " (the crash-test driver: expected)"
-            : excused(b) ? " (another stick's filesystem: left alone)" : "");
+            b->test ? " (the crash-test driver: expected)" : "");
         if (!excused(b))
             problems++;
-        if (!deliberate)
-            tell_desktop(b, true, false);
-        if (b->kind == BIND_FS) {
-            drop_channel(b);   /* its clients see ERR_PEER_CLOSED: the mount is gone */
-            fs_kept_release(b);
-            mounts_update();
-        }
+        tell_desktop(b, true, false);
         return;
     }
     b->restart_at = at;
-    b->deliberate = deliberate;
     b->state = DEVMGR_SUP_RESTARTING;
     /* The channel the restart will serve, handed out from now on. (If this
      * fails, start_driver makes one and GET_SERVICE says ERR_BAD_STATE
-     * meanwhile.) A filesystem service's is the one it had. */
+     * meanwhile.) */
     if (b->kind != BIND_USB && !b->client && jam_channel_create(&b->client, &b->serve) != OK)
         b->client = b->serve = HANDLE_INVALID;
-    if (deliberate)
-        say(false, "devmgr: %s %s %s: not counted, restarted at once", bdf(b), b->path, why);
-    else
-        say(!expected, "devmgr: %s %s %s: restart %u in %u ms", bdf(b), b->path, why, n + 1,
-            b->win.backoff_ms);
-    if (!expected && !deliberate)
+    say(!expected, "devmgr: %s %s %s: restart %u in %u ms", bdf(b), b->path, why, n + 1,
+        b->win.backoff_ms);
+    if (!expected)
         tell_desktop(b, false, n == 0);
 }
 
@@ -147,19 +115,14 @@ void sup_died(struct binding *b, uint32_t gen)
         jam_process_get_info(b->proc, &info) != OK || info.state != PROCESS_DEAD)
         return;   /* a stale packet, or it was handled already */
     kill_driver(b);   /* whatever else its job started */
-    b->ended_at = now();
-    bool no_volume = !info.killed && !b->killed && info.exit_code == FAT_EXIT_NO_VOLUME;
-    if (b->kind == BIND_FS && fs_check_ended(b, no_volume))
-        return;   /* no FAT volume on someone else's partition: no restart, no problem */
     if (b->kind == BIND_USB) {
         /* A USB class driver (usb.c): its interface gone = the end of it,
          * however it ended; exit 0 because the console went = reconnect. */
         if (usb_gone(b)) {
-            /* A disk's filesystem services go first: they map buffers its
+            /* A disk's filesystem services (volumes') map buffers its
              * driver made, which stay charged to the driver's job until
-             * they are gone too (a service in the middle of a request has
-             * not ended by itself yet). */
-            disk_stopped(b);
+             * volumes has killed them too: sup_job_empty looks again for a
+             * while before it calls the job not clean. */
             bool clean = sup_job_empty(b->job, b->path);
             forget_driver(b);
             problems += !clean;
@@ -206,7 +169,7 @@ void sup_died(struct binding *b, uint32_t gen)
 
 uint64_t sup_next_deadline(void)
 {
-    uint64_t next = spare_next_deadline();
+    uint64_t next = DEADLINE_NEVER;
     for (unsigned i = 0; i < ndevs; i++)
         if (devs[i].state == DEVMGR_SUP_RESTARTING && devs[i].restart_at < next)
             next = devs[i].restart_at;
@@ -221,11 +184,10 @@ void sup_run_due(void)
         if (b->state != DEVMGR_SUP_RESTARTING || b->restart_at > t)
             continue;
         bool reconnect = b->console_wait;   /* not a restart: the console came back */
-        if (!reconnect)   /* a deliberate kill's isn't counted in the window */
-            sup_window_started(&b->win, t, !b->deliberate);
-        b->deliberate = false;
+        if (!reconnect)
+            sup_window_started(&b->win, t, true);
         b->killed = false;   /* if this start fails, that is no deliberate kill */
-        b->last = b->kind == BIND_FS ? fs_run(b, true) : start_driver(b);
+        b->last = start_driver(b);
         if (b->last == OK) {
             b->console_wait = false;
             if (reconnect)
@@ -245,11 +207,6 @@ void sup_run_due(void)
             usb_retire(b, "device gone before its restart");
             continue;
         }
-        if (b->kind == BIND_FS && b->last == ERR_PEER_CLOSED) {
-            say(false, "devmgr: %s %s: its disk went before its restart", bdf(b), b->path);
-            fs_retire(b);
-            continue;
-        }
         b->console_wait = false;
         char why[48];
         snprintf(why, sizeof(why), "could not be restarted (%s)", status_str(b->last));
@@ -257,7 +214,6 @@ void sup_run_due(void)
             problems++;
         schedule(b, why, excused(b));
     }
-    spare_due();   /* after the restarts: a promotion is what makes it due */
 }
 
 void sup_reset(struct binding *b)

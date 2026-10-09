@@ -233,7 +233,7 @@ static bool job_drained(handle_t job)
             return true;
         if (now() > end)
             FAIL("netstack's job still has %lu units of kind %u", (unsigned long)ji.used[k], k);
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
     }
 }
 

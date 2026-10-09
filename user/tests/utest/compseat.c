@@ -340,7 +340,7 @@ bool t_comp_seat_ctl(void)
     status_t st;
     while ((st = compctl_connect_input_within(t.ctl, CT_WAIT, &more[0])) == ERR_NO_RESOURCES &&
            now() < until)
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     CHECK_ST(st, OK);
     jam_handle_close(more[0]);
     CHECK(cs_stop(&t));

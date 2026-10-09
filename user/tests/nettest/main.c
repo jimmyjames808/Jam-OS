@@ -93,7 +93,7 @@ bool wait_link(void)
             return true;
         if (now() > end)
             FAIL("no link in %lu s", (unsigned long)(LINK_WAIT / NS_PER_S));
-        (void)jam_nanosleep(now() + 50 * NS_PER_MS);
+        (void)jam_sleep_until(now() + 50 * NS_PER_MS);
     }
 }
 

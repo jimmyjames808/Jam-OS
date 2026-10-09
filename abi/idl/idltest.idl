@@ -74,3 +74,38 @@ protocol idltest_ev 35
 # To the client: a ring, and two handles given.
 4  ring     -> (u32 key, u8[<=8] data) event
 5  gift     -> (u32 key, handle a, handle b) event
+# To the server: a key, a VMO (typed) and up to four more handles of any type.
+6  batch    (u32 key, handle<vmo> first, handle[<=4] rest) event
+# To the client: a key and up to four channel ends (a typed list).
+7  parcel   -> (u32 key, handle<channel>[<=4] hs) event
+
+# idltest_h: handles as arguments. A client's are gone after the call, whatever
+# its status; the server hands them to the handler, which owns them (whatever
+# it returns), and closes them itself when the handler isn't reached. Lists
+# of handles (`handle[<=N]`: the message's own handle count) and typed handles
+# (`handle<vmo>`: a handle of another type is refused, closed, ERR_WRONG_TYPE,
+# before the handler runs). utest only (idlhandle.c).
+#
+# Reconnect: as idltest's.
+
+protocol idltest_h 37
+
+# The handler keeps the handle: how many it holds now.
+1  take     (u32 key, handle h)    -> (u32 held)
+# A VMO's size in bytes (the handler closes it).
+2  vmo_size (handle<vmo> v)        -> (u64 size)
+# How many handles it was given, and the tag back.
+3  count    (u32 tag, handle[<=8] hs) -> (u32 tag, u32 count)
+# The handles back as they came, up to 64 each way (the kernel's most).
+4  bounce   (handle[<=64] hs)      -> (handle[<=64] back)
+# A single and a list each way: gives a new VMO of 4096 bytes and the first
+# three of `rest` back, and n + 1; closes the channel end. (With n 99 the
+# handler breaks the protocol and gives a channel end for the VMO.)
+5  mixed   (handle<channel> end, u32 n, handle[<=4] rest) -> (handle<vmo> v, handle[<=3] list, u32 n_back)
+# Answered later with idltest_h_reply_park: the handle is the handler's to
+# close, whenever it answers.
+6  park     (u32 key, handle h)    -> (u32 key) later
+# An error from the handler with its handle in hand: it closes it.
+7  refuse   (handle h)             -> ()
+# Channel ends only (a typed list); the handler closes them: how many.
+8  chans    (handle<channel>[<=4] cs) -> (u32 n)

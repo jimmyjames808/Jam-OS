@@ -9,7 +9,7 @@
  * Each round is one asm block (the compiler can't touch the registers in
  * between): set our own MXCSR and control word, push 1.0 on the x87
  * stack, load the vector registers from a pattern, then either block in
- * nanosleep (the `syscall` instruction directly) or fault in fresh pages
+ * sleep_until (the `syscall` instruction directly) or fault in fresh pages
  * and spin, then FXSAVE (and, with AVX, the ymm upper halves) to look at
  * what came back. */
 #define CHECK_PROG "utest"
@@ -44,9 +44,9 @@ struct round {
     const uint8_t *pat;      /* xmm0-15 from 256 bytes, or ymm0-15 from 512 */
     uint8_t       *fx;       /* FXSAVE image afterwards (512 bytes, 16-aligned) */
     uint8_t       *hi;       /* ymm0-15 upper halves afterwards (256 bytes; AVX only) */
-    uint64_t       deadline; /* != 0: block in nanosleep until then */
+    uint64_t       deadline; /* != 0: block in sleep_until until then */
     uint8_t       *pages;    /* else: fault in these PAGES pages, spinning on each */
-    int64_t        st;       /* nanosleep's result */
+    int64_t        st;       /* sleep_until's result */
     uint32_t       mxcsr;    /* OWN_MXCSR, then DEF_MXCSR to leave with */
     uint32_t       def_mxcsr;
     uint16_t       fcw;      /* OWN_FCW */
@@ -67,7 +67,7 @@ struct round {
       [hi] "i"(offsetof(struct round, hi)), [dl] "i"(offsetof(struct round, deadline)),   \
       [pg] "i"(offsetof(struct round, pages)), [st] "i"(offsetof(struct round, st)),      \
       [mx] "i"(offsetof(struct round, mxcsr)), [dmx] "i"(offsetof(struct round, def_mxcsr)), \
-      [cw] "i"(offsetof(struct round, fcw)), [nr] "i"(SYS_nanosleep), [np] "i"(PAGES),     \
+      [cw] "i"(offsetof(struct round, fcw)), [nr] "i"(SYS_sleep_until), [np] "i"(PAGES),     \
       [sp] "i"(SPINS)                                                                  \
     : "rax", "rcx", "rdx", "rsi", "rdi", "r11", "memory", "cc", "xmm0", "xmm1", "xmm2",  \
       "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12",  \
@@ -237,7 +237,7 @@ static void round_run(struct round *r)
 
 /* ---- the tests ------------------------------------------------------------------ */
 
-/* Block in a system call (nanosleep straight through `syscall`): MXCSR and
+/* Block in a system call (sleep_until straight through `syscall`): MXCSR and
  * the control word survive, the rest comes back zeroed. "kept" is allowed
  * for a round that didn't block (preempted past its deadline before the
  * call) and for a boot with the rule off ("nofpucall"); never anything
@@ -257,7 +257,7 @@ bool t_fpu_call_keeps_control_words(void)
         enum came_back c = classify(&r);
         ok = r.st == OK && c != OTHER && control_words_kept(&r);
         if (r.st != OK || c == OTHER)
-            printf("utest: fpu call round %u: nanosleep %s, xmm0 %x %x, ftw %x\n", i,
+            printf("utest: fpu call round %u: sleep_until %s, xmm0 %x %x, ftw %x\n", i,
                    status_str((status_t)r.st), fx[FX_XMM], fx[FX_XMM + 1], fx[FX_FTW]);
         zeroed += c == ZEROED;
         kept += c == KEPT;

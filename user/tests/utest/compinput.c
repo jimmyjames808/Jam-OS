@@ -329,7 +329,7 @@ static bool two_keyboards(struct cs *t, struct sc *a)
     uint64_t until = now() + CT_WAIT;   /* the release comes when the compositor sees it go */
     uint32_t got[8];
     while (keys_got(&a->k, got, 8) < 4 && now() < until) {
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
         CHECK(cs_sync(a, NULL));
     }
     CHECK(keys_are(&a->k, want, 4));

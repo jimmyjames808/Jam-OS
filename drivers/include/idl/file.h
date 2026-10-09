@@ -8,7 +8,7 @@
  * channel closes the file (a written file's directory entry is updated
  * then, as by sync). Format: see tools/genidl.py.
  *
- * Restart: fat's restart is not seen: devmgr's keeper holds this channel
+ * Restart: fat's restart is not seen: volumes' keeper holds this channel
  * and the buffer VMO across fat's death, the successor carries on with
  * the file as the last answered request left it (an answered write is
  * never lost, synced or not), and the request in progress is finished
@@ -89,6 +89,8 @@ struct file_sync_rep {
 
 #define FILE_REQ_MAX 20u   /* bytes: the biggest request */
 #define FILE_REP_MAX 24u   /* bytes: the biggest reply */
+#define FILE_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define FILE_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -507,7 +509,7 @@ static inline status_t file_reply_sync(struct idl_txn idl_txn, status_t idl_st)
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (FILE_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (FILE_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -641,7 +643,7 @@ static inline status_t file_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by file_take_slot, or found there by a
  * successor), which came on ch: as file_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (FILE_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

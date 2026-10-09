@@ -28,8 +28,8 @@ bool t_random_get(void)
     CHECK_ST(jam_random_get(NULL, 0), OK);   /* nothing asked, nothing touched */
 
     /* Refused: too long, and memory that isn't ours to write. */
-    CHECK_ST(jam_random_get(a, RANDOM_GET_MAX + 1), ERR_INVALID_ARGS);
-    CHECK_ST(jam_random_get(a, UINT64_MAX), ERR_INVALID_ARGS);
+    CHECK_ST(jam_random_get(a, RANDOM_GET_MAX + 1), ERR_OUT_OF_RANGE);
+    CHECK_ST(jam_random_get(a, UINT64_MAX), ERR_OUT_OF_RANGE);
     CHECK_ST(jam_random_get(NULL, 8), ERR_INVALID_ARGS);
     CHECK_ST(jam_random_get((void *)16, 8), ERR_INVALID_ARGS);
     CHECK_ST(jam_random_get((void *)0xffff800000001000ull, 8), ERR_INVALID_ARGS);
