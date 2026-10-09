@@ -26,6 +26,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include "fd.h"
+#include "files.h"
 #include "kinds.h"
 
 /* The reserved mark: a slot fd_alloc gave out, not filled yet. */
@@ -348,6 +349,8 @@ void fd_stage_default(void)
 /* The hand-over's kinds, as this program takes them: one line per kind,
  * each the kind's own file's (fd.h). */
 fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
+    [POSIXFDS_FILE] = file_adopt_fd,
+    [POSIXFDS_DIR] = dir_adopt_fd,
     [POSIXFDS_PIPE] = pipe_adopt,
     [POSIXFDS_DEV] = dev_adopt,
     [POSIXFDS_ETC] = etc_adopt,

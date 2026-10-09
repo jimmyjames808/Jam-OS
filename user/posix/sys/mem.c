@@ -10,8 +10,11 @@
  * job then.
  *
  * What the address space allows: never write with execute, and no
- * execute on anonymous memory at all (EACCES: no JIT). A file mapping
- * needs the descriptor table: ENODEV until it exists. mremap is ENOSYS
+ * execute on anonymous memory at all (EACCES: no JIT). A descriptor's
+ * mapping is file.c's file_map: MAP_PRIVATE a copy of the file (or
+ * memfd) in a VMO of its own, MAP_SHARED a memfd's own VMO (of a file:
+ * ENODEV until M12.5's pager); either is then mapped and kept in the
+ * table as an anonymous one is. mremap is ENOSYS
  * (musl's realloc copies). MAP_FIXED over one of the table's mappings
  * unmaps that part first, then maps; over anything else (the program, its
  * stack, libjam's mappings) it fails with ENOMEM rather than replace what
@@ -25,6 +28,7 @@
  * each call's kernel calls, so two threads never interleave a split. */
 #include <errno.h>
 #include <sys/mman.h>
+#include "files.h"
 #include "maptable.h"
 
 #define BRK_SIZE (1ull << 30)   /* the break's reservation */
@@ -105,24 +109,36 @@ static long unmap_locked(uint64_t addr, uint64_t end)
     return 0;
 }
 
-/* A new VMO of len bytes mapped with perms (at *addr exactly if fixed),
- * entered in the table. */
-static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bool populate)
-{
-    if (!mt_room(1))
-        return -ENOMEM;
+/* What a mapping maps: a VMO made for it (vmo HANDLE_INVALID: a new
+ * anonymous one) or a descriptor's (file_map), from vmo_off. */
+struct map_src {
     handle_t vmo;
-    status_t st = jam_vmo_create(len, 0, &vmo);
+    uint64_t vmo_off;
+};
+
+/* src's VMO (or a new one) mapped for len bytes with perms (at *addr
+ * exactly if fixed), entered in the table. src->vmo is consumed. */
+static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bool populate,
+                    const struct map_src *src)
+{
+    handle_t vmo = src->vmo;
+    if (!mt_room(1)) {
+        if (vmo)
+            jam_handle_close(vmo);
+        return -ENOMEM;
+    }
+    status_t st = vmo ? OK : jam_vmo_create(len, 0, &vmo);
     if (st != OK)
         return lx_err(st);
-    st = jam_vmar_map(lx_self_vmar(), vmo, 0, len, perms | (fixed ? VMAR_FIXED : 0), addr);
+    st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len, perms | (fixed ? VMAR_FIXED : 0),
+                      addr);
     if (st != OK) {
         jam_handle_close(vmo);
         return st == ERR_ALREADY_BOUND || st == ERR_NO_RESOURCES ? -ENOMEM : lx_err(st);
     }
     if (populate)
-        (void)jam_vmo_commit(vmo, 0, len);   /* a hint: pages still come on touch if not */
-    struct mt_entry e = { *addr, len, 0, vmo, 0 };
+        (void)jam_vmo_commit(vmo, src->vmo_off, len);   /* a hint: pages still come on touch */
+    struct mt_entry e = { *addr, len, src->vmo_off, vmo, 0 };
     mt_insert(&e);
     return 0;
 }
@@ -136,8 +152,6 @@ static long mmap_check(long addr, long len, long prot, long flags, long off)
         return -EINVAL;
     if ((flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) && !page_aligned((uint64_t)addr))
         return -EINVAL;
-    if (!(flags & MAP_ANONYMOUS))
-        return -ENODEV;   /* a file: the descriptor table isn't built yet */
     uint32_t perms;
     return vmar_perms(prot, &perms);
 }
@@ -151,11 +165,21 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     (void)vmar_perms(prot, &perms);   /* checked above */
     uint64_t size = page_round((uint64_t)len), at = (uint64_t)addr;
     bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
+    struct map_src src = { HANDLE_INVALID, 0 };
+    if (!(flags & MAP_ANONYMOUS)) {   /* outside mem_lock: reading a file may malloc */
+        bool shared = (flags & MAP_TYPE) != MAP_PRIVATE;
+        r = file_map(fd, off, size, shared, &src.vmo, &src.vmo_off);
+        if (r)
+            return r;
+    }
     lock_take(&mem_lock);
     if (fixed && table_overlaps(at, size))
         r = flags & MAP_FIXED ? unmap_locked(at, at + size) : -EEXIST;
     if (!r)
-        r = map_new(&at, size, perms, fixed, flags & MAP_POPULATE);
+        r = map_new(&at, size, perms, fixed, flags & MAP_POPULATE, &src);
+    else if (src.vmo)
+        jam_handle_close(src.vmo);
+    src.vmo = HANDLE_INVALID;
     if (r == -ENOMEM && (flags & MAP_FIXED_NOREPLACE))
         r = -EEXIST;
     lock_give(&mem_lock);
@@ -234,7 +258,8 @@ long lx_mremap(long a, long b, long c, long d, long e, long f)
 static bool brk_reserve(void)
 {
     uint64_t addr = 0;
-    if (map_new(&addr, BRK_SIZE, VMAR_READ | VMAR_WRITE, false, false))
+    const struct map_src fresh = { HANDLE_INVALID, 0 };
+    if (map_new(&addr, BRK_SIZE, VMAR_READ | VMAR_WRITE, false, false, &fresh))
         return false;
     handle_t vmo = mt_entries()[mt_first_after(addr)].vmo;
     if (jam_handle_duplicate(vmo, RIGHT_SAME, &brk_vmo) != OK) {
