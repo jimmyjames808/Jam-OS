@@ -57,7 +57,7 @@ QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$devs" QEMU_INPUT=tools/shell-test
     { echo "mixer: the script failed"; grep "serial-feed: .*no '" "$out/mixer.out" || true; ok=0; }
 log="$out/mixer.log"
 grep -aE "mixtest: [0-9]+ passed" "$log" | tail -1
-grep -aqE "mixtest: 14 passed($|\r)" "$log" ||
+grep -aqE "mixtest: 14 passed[[:space:]]*$" "$log" ||
     { echo "mixer: mixtest did not pass 14 of 14"; grep -a "FAILED" "$log" | head -5; ok=0; }
 grep -aqE "mixer: stream [0-9]+ \(tone-a\) opened.*" "$log" &&
     grep -aqE "mixer: stream [0-9]+ \(tone-b\) opened" "$log" ||

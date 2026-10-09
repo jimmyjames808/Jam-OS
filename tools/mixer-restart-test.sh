@@ -74,7 +74,9 @@ check() {   # check <name>: the log and the WAV of one boot
     never "keep: refused" "$log"
     never "can't be handed over" "$log"
     # One output for the whole ramp: opened once, closed once at its end.
-    need 1 "mixer: output open:" "$log"
+    # (hda's line: the churn opener's lines can fill the mixer's log share
+    # on a fast host, and the mixer's own line is then dropped with them.)
+    need 1 "\[hda\] stream: open on descriptor" "$log"
     stats "$name: lead left at the restarts" "lead left" "frames" "$log"
     grep -ao "lead left [0-9]* frames ([0-9]* ms)" "$log" | awk '{print $5}' | tr -d '(' |
         sort -n | awk -v l="$name" '{v[NR]=$1} END {if (NR) printf "mixer-restart: %s: lead left in ms: least %d, median %d, most %d\n", l, v[1], v[int((NR+1)/2)], v[NR]}'

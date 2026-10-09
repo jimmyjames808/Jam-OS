@@ -154,7 +154,10 @@ Ubuntu 24.04 behind `wsl` with:
   net.core.rmem_max=8388608"`, the last for the network peer's bursts);
 - the Mac's versions of the tools: QEMU 10.0.2 in `~/qemu-10`, and
   x86_64-elf binutils 2.45.1 and gcc 15.2 in `~/cross` (from source);
-- OVMF, mtools, ffmpeg, python3 with numpy and PIL, xkbcli
+- mtools 4.0.49 built against GNU libiconv 1.17 (`--enable-extra-encodings`,
+  for code page 437) in `~/mtools` and `~/libiconv`: glibc's iconv turns
+  "Ÿ" into "Y", and mtools then keeps no long name;
+- OVMF, ffmpeg, python3 with numpy and PIL, xkbcli
   (libxkbcommon-tools), the `en_US.UTF-8` locale;
 - `/bin/sh` as bash, as the Mac's: the scripts are written for it.
 
@@ -162,7 +165,8 @@ Ubuntu 24.04 behind `wsl` with:
 KVM or TCG, the split irqchip KVM's interrupt remapping needs). A test
 that only fails on the faster host is usually a test that assumed an
 order: a line the fast boot prints before the shell's prompt wants a
-`seen`, not a `wait`. The flash test is macOS only (`hdiutil`).
+`seen`, not a `wait`. The flash test is macOS only (`hdiutil`), and the
+storage test runs emulated there too (its comment says why).
 
 ### The network peer
 

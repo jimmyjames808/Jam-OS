@@ -37,7 +37,7 @@ rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude 
     { echo "remote-test: copying to $host failed" >&2; exit 2; }
 {
     echo "set -u; cd ~/$dir || exit 2"
-    echo 'export PATH=$HOME/cross/bin:$HOME/qemu-10/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8'
+    echo 'export PATH=$HOME/cross/bin:$HOME/qemu-10/bin:$HOME/mtools/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8'
     env | grep -E '^(QEMU_[A-Z0-9_]*|KTESTS|JAMOS_[A-Z0-9_]*)=' | grep -v '^JAMOS_REMOTE=' |
         while IFS= read -r kv; do printf 'export %q\n' "$kv"; done
     echo 'flock ~/work/.build-$(basename "$PWD").lock make -s -j16 image > build-remote.log 2>&1 ||

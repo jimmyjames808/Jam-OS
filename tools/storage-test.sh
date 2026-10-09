@@ -25,6 +25,13 @@
 # Usage: tools/storage-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
 out=$1 name=${2:-storage}
+# Emulated (TCG) even where KVM is there: when usb-storage resets the
+# 4 KiB/s disk (storage_timeout), QEMU drains its throttled requests inside
+# the CPU that wrote the doorbell, for seconds. Under KVM the other CPUs
+# run on, see that one take no timer interrupt for 5 s and the watchdog
+# panics, rightly; under TCG they all wait together. Real hardware never
+# stops a CPU for a USB reset.
+export QEMU_ACCEL=${QEMU_ACCEL:-tcg}
 mkdir -p "$out"
 disk="$out/$name-disk2.img"
 # The second disk: the image's layout (tools/mkimage.py), both partitions FAT32.
