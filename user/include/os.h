@@ -339,7 +339,7 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 #define SVC_NET_LISTEN_LOW "net-low"
 #define SVC_SERVE      "serve"       /* the file server, a channel per opener (serve.idl) */
 #define SVC_WAYLAND    "wayland"     /* the compositor: windows, a connection per opener (<jwl.h>) */
-/* The compositor's notices: a compctl NOTIFY channel per opener (<notice.h>);
+/* The compositor's notices: a notify.idl channel per opener (<notice.h>);
  * user/services/ only (the shell's `notify`) */
 #define SVC_NOTIFY     "notify"
 

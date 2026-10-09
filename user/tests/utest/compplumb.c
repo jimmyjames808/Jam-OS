@@ -3,13 +3,16 @@
  * shared channel (SR_USER + 5), and fake ends of the mixer's desktop
  * channel (SR_USER + 6) and netstack's read-only one (SR_USER + 7).
  *
- * t_comp_notify: compctl's NOTIFY level: a channel from /svc/notify's
- * svc.connect may notify, notify_wait and withdraw, and nothing else (every
- * ADMIN method refused, an add_source's end closed); an INPUT channel may not
- * notify; bad text, tints, icons and buttons refused; three cards with
- * buttons a channel; withdraw only one's own; a button pressed is
- * answered to the poster's notify_wait (kept until it asks when it isn't
- * waiting); without the desktop ERR_NOT_SUPPORTED.
+ * t_comp_notify: notify.idl (review W9: its own protocol): a channel from
+ * /svc/notify's svc.connect may notify, post, notify_wait and withdraw,
+ * and nothing of compctl's (ERR_NOT_SUPPORTED, an add_source's end
+ * closed); compctl's channels, ADMIN's too, can't post (and compctl has no
+ * NOTIFY level to make); bad text, tints, icons and buttons refused, the
+ * strings' limits and UTF-8 by the generated stubs (W11); a post (W10, an
+ * event) makes a card as a notify does (the ids count it) and a bad one
+ * makes none; three cards with buttons a channel; withdraw only one's own;
+ * a button pressed is answered to the poster's notify_wait (kept until it
+ * asks when it isn't waiting); without the desktop ERR_NOT_SUPPORTED.
  * t_comp_notify_splash: while the compositor waits for the boot splash a
  * notice gets its id but no card: its poster may withdraw it (dropped
  * unseen), and a click where its button would be answers nothing; when
@@ -33,6 +36,7 @@
 #include <idl/initctl.h>
 #include <idl/input.h>
 #include <idl/netctl.h>
+#include <idl/notify.h>
 #include <idl/svc.h>
 #include <jwl.h>
 #include <jwl/wayland.h>
@@ -55,27 +59,24 @@
 
 /* ---- small helpers ------------------------------------------------------------------ */
 
-/* A notice's fields, NUL-padded. */
+/* A notice's fields. */
 struct note {
-    uint8_t title[64], body[96], buttons[72];
+    const char *title, *body, *b0, *b1;
 };
 
 static void note_make(struct note *n, const char *title, const char *body, const char *b0,
                       const char *b1)
 {
-    memset(n, 0, sizeof(*n));
-    snprintf((char *)n->title, sizeof(n->title), "%s", title);
-    snprintf((char *)n->body, sizeof(n->body), "%s", body);
-    if (b0)
-        snprintf((char *)n->buttons, 24, "%s", b0);
-    if (b1)
-        snprintf((char *)n->buttons + 24, 24, "%s", b1);
+    *n = (struct note){ title, body, b0 ? b0 : "", b1 ? b1 : "" };
 }
 
 static status_t post(handle_t ch, const struct note *n, uint8_t icon, uint8_t tint,
                      uint32_t *id)
 {
-    return compctl_notify_within(ch, CT_WAIT, n->title, n->body, icon, tint, n->buttons, id);
+    return notify_notify_within(ch, CT_WAIT, n->title, (uint32_t)strlen(n->title), n->body,
+                                (uint32_t)strlen(n->body), icon, tint, n->b0,
+                                (uint32_t)strlen(n->b0), n->b1, (uint32_t)strlen(n->b1), "", 0,
+                                id);
 }
 
 /* A click of the left button at (x, y), the pointer left there. */
@@ -103,13 +104,13 @@ static status_t press_answer(handle_t ch, uint32_t *id, uint8_t *button)
 {
     signals_t seen;
     status_t st = jam_object_wait_one(ch, SIG_READABLE, now() + CT_WAIT, &seen);
-    uint8_t rep[COMPCTL_REP_MAX];
+    uint8_t rep[NOTIFY_REP_MAX];
     struct idl_msg m;
     if (st == OK)
         st = idl_reply_read(ch, rep, sizeof(rep), &m);
     if (st == OK && m.txid != WAIT_TX)
         st = ERR_INTERNAL;
-    return st == OK ? compctl_notify_wait_result(rep, &m, id, button) : st;
+    return st == OK ? notify_notify_wait_result(rep, &m, id, button) : st;
 }
 
 /* ---- t_comp_notify_splash ------------------------------------------------------------ */
@@ -129,12 +130,12 @@ bool t_comp_notify_splash(void)
     note_make(&x, "Held", "", NULL, NULL);
     CHECK_ST(post(n, &x, 0, 0, &id), OK);
     CHECK(id != 0);
-    CHECK_ST(compctl_withdraw_within(n, CT_WAIT, id), OK);
-    CHECK_ST(compctl_withdraw_within(n, CT_WAIT, id), ERR_NOT_FOUND);
+    CHECK_ST(notify_withdraw_within(n, CT_WAIT, id), OK);
+    CHECK_ST(notify_withdraw_within(n, CT_WAIT, id), ERR_NOT_FOUND);
     /* one with buttons, waited for: no card to press yet */
     note_make(&x, "Update written", "", "Reboot", "Later");
     CHECK_ST(post(n, &x, 'U', 2, &held), OK);
-    CHECK_ST(compctl_notify_wait_send(n, WAIT_TX), OK);
+    CHECK_ST(notify_notify_wait_send(n, WAIT_TX), OK);
     CHECK(press_first_button(&t));
     CHECK_ST(jam_object_wait_one(n, SIG_READABLE, now() + SHORT, &seen), ERR_TIMED_OUT);
     /* no splash in 5 s: the desktop, the held card, its press answered */
@@ -156,25 +157,27 @@ static bool notify_refusals(struct cs *t, handle_t n)
     uint32_t v[4], id = 0;
     uint8_t l = 0;
     struct note x;
-    CHECK_ST(compctl_blank_within(n, CT_WAIT, 1), ERR_ACCESS_DENIED);
-    CHECK_ST(compctl_new_client_within(n, CT_WAIT, 2, &h), ERR_ACCESS_DENIED);
-    CHECK_ST(compctl_new_client_within(n, CT_WAIT, 1, &h), ERR_ACCESS_DENIED);
+    /* compctl's methods on a notify channel: another protocol */
+    CHECK_ST(compctl_blank_within(n, CT_WAIT, 1), ERR_NOT_SUPPORTED);
+    CHECK_ST(compctl_new_client_within(n, CT_WAIT, 1, &h), ERR_NOT_SUPPORTED);
     CHECK_ST(compctl_stats_within(n, CT_WAIT, &u[0], &u[1], &u[2], &u[3], &v[0], &v[1], &v[2],
                                   &u[4], &u[5], &u[6], &u[7], &u[8], &v[3], &u[9], &u[10]),
-             ERR_ACCESS_DENIED);
-    CHECK_ST(compctl_set_layout_within(n, CT_WAIT, 1), ERR_ACCESS_DENIED);
-    CHECK_ST(compctl_layout_wait_within(n, CT_WAIT, 1, &l), ERR_ACCESS_DENIED);
+             ERR_NOT_SUPPORTED);
+    CHECK_ST(compctl_set_layout_within(n, CT_WAIT, 1), ERR_NOT_SUPPORTED);
+    CHECK_ST(compctl_layout_wait_within(n, CT_WAIT, 1, &l), ERR_NOT_SUPPORTED);
     handle_t src;
     CHECK_ST(jam_channel_create(&h, &src), OK);
-    CHECK_ST(compctl_add_source(n, h), OK);   /* no source from a NOTIFY channel: closed */
+    CHECK_ST(compctl_add_source(n, h), OK);   /* no source from a notify channel: closed */
     CHECK_ST(jam_object_wait_one(src, SIG_PEER_CLOSED, now() + CT_WAIT, NULL), OK);
     jam_handle_close(src);
-    /* an INPUT channel can't post */
+    /* compctl's channels can't post, ADMIN's neither; no NOTIFY level */
     CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 1, &in), OK);
     note_make(&x, "Hello", "", NULL, NULL);
-    CHECK_ST(post(in, &x, 0, 0, &id), ERR_ACCESS_DENIED);
+    CHECK_ST(post(in, &x, 0, 0, &id), ERR_NOT_SUPPORTED);
+    CHECK_ST(post(t->ctl, &x, 0, 0, &id), ERR_NOT_SUPPORTED);
+    CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 2, &h), ERR_INVALID_ARGS);
     jam_handle_close(in);
-    /* bad text, tint, icon, a button label with no end */
+    /* bad text, tint, icon */
     note_make(&x, "", "body", NULL, NULL);
     CHECK_ST(post(n, &x, 0, 0, &id), ERR_INVALID_ARGS);
     note_make(&x, "Hi", "a\nb", NULL, NULL);
@@ -182,8 +185,38 @@ static bool notify_refusals(struct cs *t, handle_t n)
     note_make(&x, "Hi", "", NULL, NULL);
     CHECK_ST(post(n, &x, 0, 3, &id), ERR_INVALID_ARGS);
     CHECK_ST(post(n, &x, '!', 0, &id), ERR_INVALID_ARGS);
-    memset(x.buttons, 'x', 24);
+    /* the strings' limits and UTF-8 (W11): refused before they are sent */
+    note_make(&x, "Hi", "", "a label of twenty-four b", NULL);   /* 24 bytes: one too many */
     CHECK_ST(post(n, &x, 0, 0, &id), ERR_INVALID_ARGS);
+    note_make(&x, "a title of sixty-four bytes, one more than the most it may have!", "",
+              NULL, NULL);
+    CHECK_EQ(strlen(x.title), 64);
+    CHECK_ST(post(n, &x, 0, 0, &id), ERR_INVALID_ARGS);
+    note_make(&x, "Hi \xc3", "", NULL, NULL);   /* half a character */
+    CHECK_ST(post(n, &x, 0, 0, &id), ERR_INVALID_ARGS);
+    return true;
+}
+
+/* post (W10): an event, a card all the same (the ids count it: they go up
+ * one a card), nothing answered; a bad one makes no card. */
+static bool notify_posts(handle_t n)
+{
+    struct note x;
+    uint32_t a = 0, b = 0, c = 0;
+    note_make(&x, "Before", "", NULL, NULL);
+    CHECK_ST(post(n, &x, 0, 0, &a), OK);
+    CHECK_ST(notify_post(n, "Posted", 6, "no answer", 9, 'N', 0), OK);
+    CHECK_ST(notify_post(n, "Bad", 3, "a\tb", 3, 0, 0), OK);   /* refused: said in the log */
+    CHECK_ST(notify_post(n, "Bad tint", 8, "", 0, 0, 7), OK);
+    note_make(&x, "After", "", NULL, NULL);
+    CHECK_ST(post(n, &x, 0, 0, &b), OK);
+    CHECK_EQ(b, a + 2);   /* the post's card between them, none for the bad ones */
+    CHECK_ST(notify_withdraw_within(n, CT_WAIT, a + 1), OK);   /* the post's: this channel's */
+    CHECK_ST(notify_withdraw_within(n, CT_WAIT, a), OK);
+    CHECK_ST(notify_withdraw_within(n, CT_WAIT, b), OK);
+    CHECK_ST(post(n, &x, 0, 0, &c), OK);
+    CHECK_ST(notify_withdraw_within(n, CT_WAIT, c), OK);
+    jam_sleep_until(now() + SHORT);   /* every card gone */
     return true;
 }
 
@@ -194,17 +227,17 @@ static bool notify_caps(handle_t n, handle_t other)
     note_make(&x, "Plain", "it fades", NULL, NULL);
     CHECK_ST(post(n, &x, 'P', 2, &id), OK);
     CHECK(id != 0);
-    CHECK_ST(compctl_withdraw_within(other, CT_WAIT, id), ERR_NOT_FOUND);   /* not its own */
-    CHECK_ST(compctl_withdraw_within(n, CT_WAIT, id), OK);
-    CHECK_ST(compctl_withdraw_within(n, CT_WAIT, id), ERR_NOT_FOUND);       /* leaving */
+    CHECK_ST(notify_withdraw_within(other, CT_WAIT, id), ERR_NOT_FOUND);   /* not its own */
+    CHECK_ST(notify_withdraw_within(n, CT_WAIT, id), OK);
+    CHECK_ST(notify_withdraw_within(n, CT_WAIT, id), ERR_NOT_FOUND);       /* leaving */
     note_make(&x, "Asks", "", "Yes", "No");
     for (unsigned i = 0; i < 3; i++)
         CHECK_ST(post(n, &x, 0, 1, &ids[i]), OK);
     CHECK_ST(post(n, &x, 0, 1, &id), ERR_NO_RESOURCES);   /* three with buttons a channel */
     CHECK_ST(post(other, &x, 0, 1, &id), OK);              /* another channel's own three */
     for (unsigned i = 0; i < 3; i++)
-        CHECK_ST(compctl_withdraw_within(n, CT_WAIT, ids[i]), OK);
-    CHECK_ST(compctl_withdraw_within(other, CT_WAIT, id), OK);
+        CHECK_ST(notify_withdraw_within(n, CT_WAIT, ids[i]), OK);
+    CHECK_ST(notify_withdraw_within(other, CT_WAIT, id), OK);
     jam_sleep_until(now() + SHORT);   /* every card gone */
     return true;
 }
@@ -217,8 +250,8 @@ static bool notify_presses(struct cs *t, handle_t n)
     /* waiting: the press answers it */
     note_make(&x, "Update written", "", "Reboot", "Later");
     CHECK_ST(post(n, &x, 'U', 2, &id), OK);
-    CHECK_ST(compctl_notify_wait_send(n, WAIT_TX), OK);
-    CHECK_ST(compctl_notify_wait_within(n, CT_WAIT, &got, &b), ERR_BAD_STATE);   /* one waits */
+    CHECK_ST(notify_notify_wait_send(n, WAIT_TX), OK);
+    CHECK_ST(notify_notify_wait_within(n, CT_WAIT, &got, &b), ERR_BAD_STATE);   /* one waits */
     CHECK(press_first_button(t));
     CHECK_ST(press_answer(n, &got, &b), OK);
     CHECK(got == id && b == 0);
@@ -227,7 +260,7 @@ static bool notify_presses(struct cs *t, handle_t n)
     CHECK_ST(post(n, &x, 'U', 2, &id), OK);
     CHECK(press_first_button(t));
     jam_sleep_until(now() + SHORT);
-    CHECK_ST(compctl_notify_wait_within(n, CT_WAIT, &got, &b), OK);
+    CHECK_ST(notify_notify_wait_within(n, CT_WAIT, &got, &b), OK);
     CHECK(got == id && b == 0);
     return true;
 }
@@ -240,13 +273,12 @@ bool t_comp_notify(void)
     CHECK_ST(svc_connect_within(t.note, CT_WAIT, &n), OK);
     CHECK_ST(svc_connect_within(t.note, CT_WAIT, &other), OK);
     CHECK(notify_refusals(&t, n));
+    CHECK(notify_posts(n));
     CHECK(notify_caps(n, other));
     CHECK(notify_presses(&t, n));
-    /* ADMIN may post too (init's own notices) */
     struct note x;
     uint32_t id = 0;
-    note_make(&x, "From init", "", NULL, NULL);
-    CHECK_ST(post(t.ctl, &x, 0, 0, &id), OK);
+    note_make(&x, "Nowhere", "", NULL, NULL);
     jam_handle_close(other);
     jam_handle_close(n);
     CHECK(cs_stop(&t));

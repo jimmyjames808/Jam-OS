@@ -1,15 +1,15 @@
-/* compctl's channels (abi/idl/compctl.idl) and the compositor's requests
- * to init (seat.h).
+/* compctl's channels (abi/idl/compctl.idl), /svc/notify's channels
+ * (abi/idl/notify.idl) and the compositor's requests to init (seat.h).
  *
  * The compositor starts with init's ADMIN channel (SR_USER + 2; a test
  * may start it without one). new_client makes narrower ones (INPUT: for
- * devmgr, add_source only; NOTIFY: the notices only), at
- * most CTL_MAX ADMIN and INPUT ones at once and NOTIFY_CHANNELS NOTIFY
- * ones, each with its level fixed when it is made. /svc/notify's shared
- * channel (SR_USER + 5, init's) makes a NOTIFY channel for each svc.connect
- * on it. Every channel is served by the loop with a budget, as an input
- * source is; one whose peer closes is dropped (and its notices with
- * buttons go: deskctl.c has the notices).
+ * devmgr, add_source only), at most CTL_MAX at once, each with its level
+ * fixed when it is made. /svc/notify's shared channel (SR_USER + 5,
+ * init's) makes a channel of the `notify` protocol for each svc.connect
+ * on it, at most NOTIFY_CHANNELS at once (review W9: its own protocol,
+ * no longer a level of compctl's). Every channel is served by the loop
+ * with a budget, as an input source is; one whose peer closes is dropped
+ * (and its notices with buttons go: deskctl.c has the notices).
  *
  * The layout: init starts the compositor with the saved one (`layout=`)
  * and may send it again (set_layout: /data came after the start); it
@@ -44,6 +44,7 @@
  *     ("Jamjar"); a refusal ends the busy cursor at once. */
 #include <idl/compctl.h>
 #include <idl/initctl.h>
+#include <idl/notify.h>
 #include <idl/svc.h>
 #include "desk.h"
 #include "seat.h"
@@ -56,7 +57,8 @@
 #define TERM_TXID    0x7e570002u           /* our terminal request's */
 #define LAUNCH_TXID  0x1a0c0002u           /* our launch request's */
 
-enum { L_ADMIN, L_INPUT, L_NOTIFY, L_LAST = L_NOTIFY };
+/* compctl's levels, and L_NOTIFY: a notify.idl channel (not compctl). */
+enum { L_ADMIN, L_INPUT, L_NOTIFY, L_LAST = L_INPUT };
 
 struct ctl {
     handle_t ch;          /* our end; HANDLE_INVALID (0): a free slot */
@@ -267,48 +269,72 @@ void ctl_layout_changed(enum comp_layout layout)
     layout_now(layout);
 }
 
-/* ---- the notices (deskctl.c): NOTIFY and ADMIN ------------------------------------------ */
-
-static bool may_notify(const struct ctl *c)
-{
-    return c->level == L_NOTIFY || c->level == L_ADMIN;
-}
+/* ---- the notices (deskctl.c): /svc/notify's channels ------------------------------------- */
 
 static unsigned slot_of(const struct ctl *c)
 {
     return (unsigned)(c - ctls);
 }
 
-static status_t op_notify(void *ctx, const uint8_t title[64], const uint8_t body[96],
-                          uint8_t icon, uint8_t tint, const uint8_t buttons[72], uint32_t *out_id)
+/* A str argument (n bytes, no NUL) into a NUL-terminated buffer of cap. */
+static void text_in(char *out, size_t cap, const char *s, uint32_t n)
+{
+    n = n < cap - 1 ? n : (uint32_t)(cap - 1);   /* the server checked n against the IDL's */
+    memcpy(out, s, n);
+    out[n] = 0;
+}
+
+static status_t op_notify(void *ctx, const char *title, uint32_t title_len, const char *body,
+                          uint32_t body_len, uint8_t icon, uint8_t tint, const char *b1,
+                          uint32_t b1_len, const char *b2, uint32_t b2_len, const char *b3,
+                          uint32_t b3_len, uint32_t *out_id)
 {
     const struct ctl *c = ctx;
-    if (!may_notify(c))
-        return ERR_ACCESS_DENIED;
-    return deskctl_notify(slot_of(c), c->gen, title, body, icon, tint, buttons, out_id);
+    struct deskctl_note n = { .icon = icon, .tint = tint };
+    text_in(n.title, sizeof(n.title), title, title_len);
+    text_in(n.body, sizeof(n.body), body, body_len);
+    text_in(n.buttons[0], sizeof(n.buttons[0]), b1, b1_len);
+    text_in(n.buttons[1], sizeof(n.buttons[1]), b2, b2_len);
+    text_in(n.buttons[2], sizeof(n.buttons[2]), b3, b3_len);
+    return deskctl_notify(slot_of(c), c->gen, &n, out_id);
+}
+
+/* post: a notify without buttons whose answer nobody reads (review W10). */
+static void op_post(void *ctx, const char *title, uint32_t title_len, const char *body,
+                    uint32_t body_len, uint8_t icon, uint8_t tint)
+{
+    const struct ctl *c = ctx;
+    struct deskctl_note n = { .icon = icon, .tint = tint };
+    text_in(n.title, sizeof(n.title), title, title_len);
+    text_in(n.body, sizeof(n.body), body, body_len);
+    uint32_t id;
+    status_t st = deskctl_notify(slot_of(c), c->gen, &n, &id);
+    if (st != OK)
+        printf("compositor: a notice posted on channel %u refused (%s)\n", slot_of(c),
+               status_str(st));
 }
 
 static status_t op_notify_wait(void *ctx, struct idl_txn txn, uint32_t *out_id,
                                uint8_t *out_button)
 {
     const struct ctl *c = ctx;
-    if (!may_notify(c))
-        return ERR_ACCESS_DENIED;
     return deskctl_notify_wait(slot_of(c), c->gen, txn, out_id, out_button);
 }
 
 static status_t op_withdraw(void *ctx, uint32_t id)
 {
     const struct ctl *c = ctx;
-    if (!may_notify(c))
-        return ERR_ACCESS_DENIED;
     return deskctl_withdraw(slot_of(c), c->gen, id);
 }
+
+static const struct notify_ops note_ops = {
+    .notify = op_notify, .notify_wait = op_notify_wait, .withdraw = op_withdraw,
+    .post = op_post,
+};
 
 static const struct compctl_ops ctl_ops = {
     .add_source = op_add_source, .blank = op_blank, .new_client = op_new_client,
     .stats = op_stats, .set_layout = op_set_layout, .layout_wait = op_layout_wait,
-    .notify = op_notify, .notify_wait = op_notify_wait, .withdraw = op_withdraw,
 };
 
 /* ---- serving ------------------------------------------------------------------------ */
@@ -317,7 +343,8 @@ static void serve_ctl(struct ctl *c)
 {
     c->more = false;
     for (unsigned n = 0; n < SEAT_BUDGET; n++) {
-        status_t st = compctl_serve_one(c->ch, &ctl_ops, c);
+        status_t st = c->level == L_NOTIFY ? notify_serve_one(c->ch, &note_ops, c)
+                                           : compctl_serve_one(c->ch, &ctl_ops, c);
         if (st == ERR_SHOULD_WAIT) {
             c->ready = false;
             return;
@@ -336,7 +363,7 @@ static void serve_ctl(struct ctl *c)
 static void init_event(void);
 static void reboot_due(void);
 
-/* /svc/notify's svc.connect: a new NOTIFY channel. */
+/* /svc/notify's svc.connect: a new notify channel. */
 static status_t note_connect(void *ctx, handle_t *out)
 {
     (void)ctx;

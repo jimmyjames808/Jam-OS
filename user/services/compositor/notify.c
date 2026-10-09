@@ -22,7 +22,7 @@
  * as many as can show: past that the oldest without buttons is dropped
  * (else the oldest), as when cards are shown.
  *
- * notify_post is the compositor's own way in; the plumbing (a later track)
+ * notify_card_post is the compositor's own way in; the plumbing (a later track)
  * makes it a compctl method for services. Every notice still goes to the
  * first terminal too: that is the poster's to do, not the card's.
  * popdraw.c draws the cards from the boxes here. */
@@ -118,7 +118,7 @@ static bool held(void)
     return comp.splash_until || screens_overlay() || anim_running() == ANIM_FADE;
 }
 
-/* Card c (made by notify_post) on the screen from t, on top. */
+/* Card c (made by notify_card_post) on the screen from t, on top. */
 static void show(const struct notify_card *c, uint64_t t)
 {
     make_room();
@@ -158,7 +158,7 @@ static void reveal(uint64_t t)
     notes.nheld = 0;
 }
 
-uint32_t notify_post(const struct notify_spec *n)
+uint32_t notify_card_post(const struct notify_spec *n)
 {
     if (!desk_on() || !n || !n->title)
         return 0;
@@ -208,7 +208,7 @@ static void leave(unsigned i)
         c->leaving = now();
 }
 
-void notify_withdraw(uint32_t id)
+void notify_card_withdraw(uint32_t id)
 {
     for (unsigned i = 0; i < notes.nheld; i++)
         if (notes.held[i].id == id) {   /* never shown: just dropped */

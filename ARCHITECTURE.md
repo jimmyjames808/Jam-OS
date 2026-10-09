@@ -2113,7 +2113,7 @@ each request goes out without waiting and its answer comes to the port
 | Feature | The compositor's channel | What it can ask |
 | --- | --- | --- |
 | The search box's apps | init's control channel (SR_USER + 3) | `initctl.launch(app)`: init starts the app only if it is in `<deskapps.h>` (today Jamjar), the program in the boot image, with what its own list asks for (as the shell would give it) and `/svc/wayland`, no console, in a job of its own it cleans up; `initctl.terminal(command)`: a new terminal whose shell runs the command first ("Run ... in a terminal"); and `reboot` |
-| Notices | `/svc/notify`'s server end (SR_USER + 5) | serves it: each `svc.connect` is a compctl NOTIFY channel, which may `notify`, `notify_wait` and `withdraw` and nothing else |
+| Notices | `/svc/notify`'s server end (SR_USER + 5) | serves it: each `svc.connect` is a channel of the `notify` protocol (`abi/idl/notify.idl`, its own since M12), which may `notify`, `post` (an event), `notify_wait` and `withdraw` and nothing else |
 | The volume popover | the mixer's desktop channel (SR_USER + 6) | `audioctl.desk` (the master volume, what plays, the output's name) and `set_master`; no stream, no sound card |
 | The network popover | netstack's read-only control channel (SR_USER + 7) | `netctl.info`, `stats`, `device`, `summary`; nothing that changes the address |
 

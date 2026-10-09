@@ -1312,11 +1312,11 @@ read-only one (`user/tests/utest/compplumb.c`), and the services' sides:
 
 | Test | What it checks |
 |---|---|
-| `comp_notify` | a NOTIFY channel from `/svc/notify` may notify, notify_wait and withdraw, every ADMIN method and connect_input refused; an INPUT channel may not notify; bad text, tint, icon and button labels refused; three cards with buttons a channel; withdraw only one's own; a click on a button answers the poster's notify_wait, or is kept for its next one; ADMIN may post; `nodesk`: ERR_NOT_SUPPORTED |
+| `comp_notify` | a `notify` channel from `/svc/notify` may notify, post, notify_wait and withdraw, compctl's methods there are another protocol's (ERR_NOT_SUPPORTED, an add_source's end closed); compctl's channels, ADMIN's too, can't post and there is no NOTIFY level; bad text, tint, icon refused, and the strings' limits and UTF-8 by the stubs; a post makes a card (the ids count it) and a bad one none; three cards with buttons a channel; withdraw only one's own; a click on a button answers the poster's notify_wait, or is kept for its next one; `nodesk`: ERR_NOT_SUPPORTED |
 | `comp_notify_splash` | started with `splash` (no splash ever comes): a notice gets its id but no card; its poster can withdraw it; a click where its button would be answers nothing; after the 5 s wait the card shows and its press answers the notify_wait sent during the splash |
 | `comp_launch` | the search box: "jamj", Enter sends `initctl.launch("jamjar")`; the cursor busy (the image round the pointer) until init refuses, or until a window titled Jamjar maps; "ls" as `initctl.terminal("ls")`, busy until "Terminal 3" (init's answer) maps, not "Terminal 2" |
 | `comp_volume_net` | `audioctl.desk` and `netctl.summary` asked at the start; the volume icon (found from the layout icon, by clicking along the strip) asks again; the slider sends `set_master` on the popover's dB scale (three quarters: -15 dB; the left end: silence); the network popover asks every second while open |
-| `comp_seat_ctl` | (with the levels) a NOTIFY channel is ADMIN's to make, not INPUT's; level 3 is no level |
+| `comp_seat_ctl` | (with the levels) level 2 (NOTIFY, gone to notify.idl) and 3 are no level; a 17th input source's end is closed and a slot used again |
 | `netctl_read_only` | netstack's read-only control channel answers info and summary as the full one does and refuses set_ipv4, set_dns, clear and dhcp_open; summary counts a frame's bytes |
 | `conwin_pointer_shape` | the terminal window's pointer: the text bar over the grid's cells, the arrow over the padding |
 | `jwlc_real_compositor` | (with the rest) libjwl binds wp_cursor_shape_manager_v1 and `jwl_client_set_cursor` goes |

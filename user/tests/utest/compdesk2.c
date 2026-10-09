@@ -348,7 +348,7 @@ static uint32_t post(const char *title, unsigned nbuttons)
 {
     struct notify_spec n = { .title = title, .body = "one line", .letter = title[0],
                              .buttons = { "Reboot", "Later" }, .nbuttons = nbuttons };
-    return notify_post(&n);
+    return notify_card_post(&n);
 }
 
 static bool notify_steps(void)
@@ -391,7 +391,7 @@ static bool notify_steps(void)
         has_oldest |= notes.cards[i].id == oldest;
     }
     CHECK(has_keep && !has_oldest);
-    notify_withdraw(keep);
+    notify_card_withdraw(keep);
     for (unsigned i = 0; i < notes.n; i++)
         CHECK(notes.cards[i].id != keep);
     return true;
@@ -401,7 +401,7 @@ static bool notify_steps(void)
 static bool terminals_full_steps(void)
 {
     while (notes.n)
-        notify_withdraw(notes.cards[0].id);   /* (animations off: gone at once) */
+        notify_card_withdraw(notes.cards[0].id);   /* (animations off: gone at once) */
     uint32_t a = desk_terminals_full();
     CHECK(a);
     CHECK_EQ(notes.n, 1);
@@ -461,7 +461,7 @@ static bool held_steps(void)
     /* no splash: at once */
     uint32_t now_one = post("Now", 0);
     CHECK(card(now_one) && notes.nheld == 0);
-    notify_withdraw(now_one);
+    notify_card_withdraw(now_one);
     CHECK_EQ(notes.n, 0);
     /* the wait for the splash: held, none shown, the loop not woken */
     comp.splash_until = now() + 5 * NS_PER_S;
@@ -475,7 +475,7 @@ static bool held_steps(void)
     notify_tick(now() + 6 * NS_PER_S);   /* long past a card's 5 s: still held */
     CHECK_EQ(notes.n, 0);
     /* withdrawn while held: dropped unseen */
-    notify_withdraw(gone);
+    notify_card_withdraw(gone);
     CHECK(!notify_live(gone));
     CHECK_EQ(notes.nheld, 2);
     /* the splash's overlay up: still held */

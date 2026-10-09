@@ -8,20 +8,10 @@
  * drivers' input sources) and for serialin. Format: see tools/genidl.py.
  *
  * Levels, fixed on a channel when it is made: 0 ADMIN (init's: every
- * method), 1 INPUT (devmgr's: add_source only), 2 NOTIFY
- * (notify, notify_wait and withdraw only: the desktop's notices). Any
- * other method on a narrower channel: ERR_ACCESS_DENIED.
- *
- * /svc/notify: a shared channel init makes once and keeps (both ends, as
- * /svc/wayland's), whose server end each compositor is started with
- * (SR_USER + 5). The svc protocol's connect on it (abi/idl/svc.idl)
- * answers a new NOTIFY channel, so whoever holds it may post notices and
- * nothing more: init publishes it (not under `nocomp`) for the programs
- * whose list asks (`svc notify`: the shell's `notify`) and gives a
- * duplicate to devmgr (a stick added or removed) and netstack (connected,
- * disconnected). <notice.h> is the posters' side. At most NOTIFY_CHANNELS
- * (8) NOTIFY channels at once, apart from the other levels' CTL_MAX:
- * ERR_NO_RESOURCES past that.
+ * method), 1 INPUT (devmgr's: add_source only). Any other method on an
+ * INPUT channel: ERR_ACCESS_DENIED. The desktop's notices are a protocol
+ * of their own on /svc/notify's channels (abi/idl/notify.idl; review W9:
+ * its NOTIFY level and methods 7 to 9 went there).
  *
  * Reconnect: the compositor keeps nothing across a restart. After
  * ERR_PEER_CLOSED ask init for a new channel (init restarts the
@@ -34,10 +24,7 @@
  * compositor again, which answers at once if the layout it came back with
  * isn't the one init knows (the state it keeps across a restart has every
  * screen's layout, a switch the old one hadn't reported yet included:
- * review W18), and init saves it. A NOTIFY channel closes too, and
- * its notices go with the compositor: connect again on /svc/notify (calls
- * wait there for the next compositor, bounded by the caller's deadline);
- * a notify_wait still waiting ends with ERR_PEER_CLOSED.
+ * review W18), and init saves it.
  *
  * Protocol `compctl` (id 32). Client: compctl_<method>(ch, args..., &results...)
  * (and compctl_<method>_until with a deadline, _within with a timeout), or
@@ -56,9 +43,6 @@
 #define COMPCTL_STATS            0x00200004u
 #define COMPCTL_SET_LAYOUT       0x00200005u
 #define COMPCTL_LAYOUT_WAIT      0x00200006u
-#define COMPCTL_NOTIFY           0x00200007u
-#define COMPCTL_NOTIFY_WAIT      0x00200008u
-#define COMPCTL_WITHDRAW         0x00200009u
 #define COMPCTL_ADD_SOURCE       0x0020000au
 
 /* Messages (packed: no padding bytes ever cross the channel). */
@@ -122,45 +106,12 @@ struct compctl_layout_wait_rep {
     int32_t  status;
     uint8_t now;
 } __attribute__((packed));
-struct compctl_notify_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint8_t title[64];
-    uint8_t body[96];
-    uint8_t icon;
-    uint8_t tint;
-    uint8_t buttons[72];
-} __attribute__((packed));
-struct compctl_notify_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint32_t id;
-} __attribute__((packed));
-struct compctl_notify_wait_req {
-    uint32_t txid;
-    uint32_t ordinal;
-} __attribute__((packed));
-struct compctl_notify_wait_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint32_t id;
-    uint8_t button;
-} __attribute__((packed));
-struct compctl_withdraw_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint32_t id;
-} __attribute__((packed));
-struct compctl_withdraw_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
 struct compctl_add_source_msg {   /* an event: txid 0 */
     uint32_t txid;
     uint32_t ordinal;
 } __attribute__((packed));
 
-#define COMPCTL_REQ_MAX 242u   /* bytes: the biggest message to the server */
+#define COMPCTL_REQ_MAX 9u   /* bytes: the biggest message to the server */
 #define COMPCTL_REP_MAX 112u   /* bytes: the biggest message to the client */
 #define COMPCTL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define COMPCTL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
@@ -230,10 +181,10 @@ static inline status_t compctl_new_client_call(handle_t ch, bool idl_within, uin
     }
     return idl_st;
 }
-/* A new channel with less authority: level 1 (INPUT) or 2 (NOTIFY). A
- * caller may only make a level above its own: ERR_ACCESS_DENIED otherwise,
- * ERR_INVALID_ARGS for a level > 2. At most 8 ADMIN and INPUT channels at
- * once, and NOTIFY_CHANNELS NOTIFY ones: ERR_NO_RESOURCES. ADMIN only. */
+/* A new channel with less authority: level 1 (INPUT). A caller may only
+ * make a level above its own: ERR_ACCESS_DENIED otherwise,
+ * ERR_INVALID_ARGS for a level > 1 (2, NOTIFY, went with the notices to
+ * notify.idl). At most 8 channels at once: ERR_NO_RESOURCES. ADMIN only. */
 static inline status_t compctl_new_client_until(handle_t ch, uint64_t deadline_ns, uint8_t level, handle_t *out_client)
 {
     return compctl_new_client_call(ch, false, deadline_ns, level, out_client);
@@ -377,128 +328,6 @@ static inline status_t compctl_layout_wait_within(handle_t ch, uint64_t timeout_
 static inline status_t compctl_layout_wait(handle_t ch, uint8_t layout, uint8_t *out_now)
 {
     return compctl_layout_wait_call(ch, false, DEADLINE_NEVER, layout, out_now);
-}
-
-/* compctl_notify_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t compctl_notify_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t title[64], const uint8_t body[96], uint8_t icon, uint8_t tint, const uint8_t buttons[72], uint32_t *out_id)
-{
-    struct compctl_notify_req idl_q;
-    struct compctl_notify_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = COMPCTL_NOTIFY;
-    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
-        idl_q.title[idl_i] = title[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 96; idl_i++)
-        idl_q.body[idl_i] = body[idl_i];
-    idl_q.icon = icon;
-    idl_q.tint = tint;
-    for (uint32_t idl_i = 0; idl_i < 72; idl_i++)
-        idl_q.buttons[idl_i] = buttons[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_id)
-        *out_id = idl_r.id;
-    return idl_st;
-}
-/* A notice on the desktop: a frosted card in the top right (docs/G1-PLAN.md
- * "The look"). `title` (NUL-terminated, not empty) and `body` (one line,
- * "" for none) are UTF-8, cut short on the card to fit; a control
- * character in either: ERR_INVALID_ARGS. `icon`: the letter on the card's
- * tile ('A'-'Z', '0'-'9'; 0 for an "i"); `tint`: the tile's jam colour, 0
- * blackcurrant, 1 raspberry, 2 apricot. `buttons`: up to three button
- * labels of 24 bytes each (NUL-padded; the first empty one ends the list):
- * a card without buttons fades away after about 5 s (or a click), one with
- * buttons stays until one is pressed, which is told to this channel
- * (notify_wait); then the card goes. Answers the notice's id (never 0).
- * At most NOTIFY_BUTTON_CARDS (3) cards with buttons from a channel at once
- * (and five cards on the screen: a new one pushes out the oldest without
- * buttons): ERR_NO_RESOURCES. ERR_NOT_SUPPORTED: the compositor runs
- * without a desktop (`nodesk`). A channel that closes takes its cards with
- * buttons with it. NOTIFY and ADMIN. */
-static inline status_t compctl_notify_until(handle_t ch, uint64_t deadline_ns, const uint8_t title[64], const uint8_t body[96], uint8_t icon, uint8_t tint, const uint8_t buttons[72], uint32_t *out_id)
-{
-    return compctl_notify_call(ch, false, deadline_ns, title, body, icon, tint, buttons, out_id);
-}
-static inline status_t compctl_notify_within(handle_t ch, uint64_t timeout_ns, const uint8_t title[64], const uint8_t body[96], uint8_t icon, uint8_t tint, const uint8_t buttons[72], uint32_t *out_id)
-{
-    return compctl_notify_call(ch, true, timeout_ns, title, body, icon, tint, buttons, out_id);
-}
-static inline status_t compctl_notify(handle_t ch, const uint8_t title[64], const uint8_t body[96], uint8_t icon, uint8_t tint, const uint8_t buttons[72], uint32_t *out_id)
-{
-    return compctl_notify_call(ch, false, DEADLINE_NEVER, title, body, icon, tint, buttons, out_id);
-}
-
-/* compctl_notify_wait_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t compctl_notify_wait_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_id, uint8_t *out_button)
-{
-    struct compctl_notify_wait_req idl_q;
-    struct compctl_notify_wait_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = COMPCTL_NOTIFY_WAIT;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && out_id)
-        *out_id = idl_r.id;
-    if (idl_st == OK && out_button)
-        *out_button = idl_r.button;
-    return idl_st;
-}
-/* Answered when a button of a notice posted on this channel was pressed:
- * the notice's id and the button (0 the first). Presses not yet taken are
- * kept, at most 4 (older ones are dropped: said in the log), and answered
- * at once in the order they came. One call waits per channel: a second
- * while one waits is ERR_BAD_STATE. NOTIFY and ADMIN. */
-static inline status_t compctl_notify_wait_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_id, uint8_t *out_button)
-{
-    return compctl_notify_wait_call(ch, false, deadline_ns, out_id, out_button);
-}
-static inline status_t compctl_notify_wait_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_id, uint8_t *out_button)
-{
-    return compctl_notify_wait_call(ch, true, timeout_ns, out_id, out_button);
-}
-static inline status_t compctl_notify_wait(handle_t ch, uint32_t *out_id, uint8_t *out_button)
-{
-    return compctl_notify_wait_call(ch, false, DEADLINE_NEVER, out_id, out_button);
-}
-
-/* compctl_withdraw_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t compctl_withdraw_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id)
-{
-    struct compctl_withdraw_req idl_q;
-    struct compctl_withdraw_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = COMPCTL_WITHDRAW;
-    idl_q.id = id;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-/* Take a notice posted on this channel off the screen (it fades away).
- * ERR_NOT_FOUND: no such notice from this channel on the screen now.
- * NOTIFY and ADMIN. */
-static inline status_t compctl_withdraw_until(handle_t ch, uint64_t deadline_ns, uint32_t id)
-{
-    return compctl_withdraw_call(ch, false, deadline_ns, id);
-}
-static inline status_t compctl_withdraw_within(handle_t ch, uint64_t timeout_ns, uint32_t id)
-{
-    return compctl_withdraw_call(ch, true, timeout_ns, id);
-}
-static inline status_t compctl_withdraw(handle_t ch, uint32_t id)
-{
-    return compctl_withdraw_call(ch, false, DEADLINE_NEVER, id);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -690,109 +519,6 @@ static inline status_t compctl_layout_wait_result(const void *idl_rep, struct id
     return OK;
 }
 
-/* compctl_notify without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then compctl_notify_result. */
-static inline status_t compctl_notify_send(handle_t ch, uint32_t idl_txid, const uint8_t title[64], const uint8_t body[96], uint8_t icon, uint8_t tint, const uint8_t buttons[72])
-{
-    struct compctl_notify_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = COMPCTL_NOTIFY;
-    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
-        idl_q.title[idl_i] = title[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 96; idl_i++)
-        idl_q.body[idl_i] = body[idl_i];
-    idl_q.icon = icon;
-    idl_q.tint = tint;
-    for (uint32_t idl_i = 0; idl_i < 72; idl_i++)
-        idl_q.buttons[idl_i] = buttons[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to compctl_notify_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t compctl_notify_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_id)
-{
-    const struct compctl_notify_rep *idl_r = (const struct compctl_notify_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    if (out_id)
-        *out_id = idl_r->id;
-    return OK;
-}
-
-/* compctl_notify_wait without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then compctl_notify_wait_result. */
-static inline status_t compctl_notify_wait_send(handle_t ch, uint32_t idl_txid)
-{
-    struct compctl_notify_wait_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = COMPCTL_NOTIFY_WAIT;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to compctl_notify_wait_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t compctl_notify_wait_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_id, uint8_t *out_button)
-{
-    const struct compctl_notify_wait_rep *idl_r = (const struct compctl_notify_wait_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    if (out_id)
-        *out_id = idl_r->id;
-    if (out_button)
-        *out_button = idl_r->button;
-    return OK;
-}
-
-/* compctl_withdraw without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then compctl_withdraw_result. */
-static inline status_t compctl_withdraw_send(handle_t ch, uint32_t idl_txid, uint32_t id)
-{
-    struct compctl_withdraw_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = COMPCTL_WITHDRAW;
-    idl_q.id = id;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to compctl_withdraw_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t compctl_withdraw_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct compctl_withdraw_rep *idl_r = (const struct compctl_withdraw_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
-}
-
 /* ---- events (one way, txid 0, never answered) -------------------------- */
 
 /* A new input source (review W8: an event, so nothing waits and no answer
@@ -840,9 +566,6 @@ struct compctl_ops {
     status_t (*stats)(void *ctx, uint64_t *out_paints, uint64_t *out_painted_px, uint64_t *out_last_paint_ns, uint64_t *out_worst_paint_ns, uint32_t *out_clients, uint32_t *out_surfaces, uint32_t *out_windows, uint64_t *out_connected, uint64_t *out_refused, uint64_t *out_gone_closed, uint64_t *out_gone_protocol, uint64_t *out_gone_slow, uint32_t *out_sources, uint64_t *out_keys, uint64_t *out_reserved_keys);
     status_t (*set_layout)(void *ctx, uint8_t layout);
     status_t (*layout_wait)(void *ctx, struct idl_txn idl_txn, uint8_t layout, uint8_t *out_now);
-    status_t (*notify)(void *ctx, const uint8_t title[64], const uint8_t body[96], uint8_t icon, uint8_t tint, const uint8_t buttons[72], uint32_t *out_id);
-    status_t (*notify_wait)(void *ctx, struct idl_txn idl_txn, uint32_t *out_id, uint8_t *out_button);
-    status_t (*withdraw)(void *ctx, uint32_t id);
     void (*add_source)(void *ctx, handle_t source);
 };
 
@@ -940,54 +663,6 @@ static inline status_t compctl_reply_layout_wait(struct idl_txn idl_txn, status_
     if (idl_st != OK)
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     idl_r.now = now;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the compctl.notify request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t compctl_reply_notify(struct idl_txn idl_txn, status_t idl_st, uint32_t id)
-{
-    struct compctl_notify_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.id = id;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the compctl.notify_wait request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t compctl_reply_notify_wait(struct idl_txn idl_txn, status_t idl_st, uint32_t id, uint8_t button)
-{
-    struct compctl_notify_wait_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.id = id;
-    idl_r.button = button;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the compctl.withdraw request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t compctl_reply_withdraw(struct idl_txn idl_txn, status_t idl_st)
-{
-    struct compctl_withdraw_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
@@ -1176,62 +851,6 @@ static inline uint32_t compctl_dispatch_h(handle_t ch, const struct compctl_ops 
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->now = out_now;
-        return sizeof(*idl_r);
-    }
-    case COMPCTL_NOTIFY: {
-        const struct compctl_notify_req *idl_q = (const struct compctl_notify_req *)req;
-        struct compctl_notify_rep *idl_r = (struct compctl_notify_rep *)rep;
-        uint32_t out_id = 0;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->notify) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->notify(ctx, idl_q->title, idl_q->body, idl_q->icon, idl_q->tint, idl_q->buttons, &out_id);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        idl_r->id = out_id;
-        return sizeof(*idl_r);
-    }
-    case COMPCTL_NOTIFY_WAIT: {
-        const struct compctl_notify_wait_req *idl_q = (const struct compctl_notify_wait_req *)req;
-        struct compctl_notify_wait_rep *idl_r = (struct compctl_notify_wait_rep *)rep;
-        uint32_t out_id = 0;
-        uint8_t out_button = 0;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->notify_wait) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        struct idl_txn idl_txn = { ch, idl_h->txid };
-        status_t idl_st = ops->notify_wait(ctx, idl_txn, &out_id, &out_button);
-        /* IDL_LATER: the handler answers with compctl_reply_notify_wait. */
-        if (idl_st == IDL_LATER)
-            return 0;
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        idl_r->id = out_id;
-        idl_r->button = out_button;
-        return sizeof(*idl_r);
-    }
-    case COMPCTL_WITHDRAW: {
-        const struct compctl_withdraw_req *idl_q = (const struct compctl_withdraw_req *)req;
-        struct compctl_withdraw_rep *idl_r = (struct compctl_withdraw_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->withdraw) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->withdraw(ctx, idl_q->id);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
         return sizeof(*idl_r);
     }
     }
