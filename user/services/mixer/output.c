@@ -450,6 +450,8 @@ void out_close(struct mixer *m, const char *why)
     if (w->vmo)
         jam_handle_close(w->vmo);
     bool was = w->ch != HANDLE_INVALID && w->ring;
+    if (w->ch)
+        w->closed_at = now();
     w->ring = NULL;
     w->ch = w->vmo = HANDLE_INVALID;
     o->waiting = false;
@@ -479,12 +481,23 @@ static bool any_audible(const struct mixer *m)
     return false;
 }
 
+/* st from opening the output is our own last stream not let go of yet. */
+bool out_reopen_soon(const struct mixer *m, status_t st)
+{
+    return st == ERR_BAD_STATE && m->own_out.closed_at &&
+           now() - m->own_out.closed_at < OUT_REOPEN_GRACE_NS;
+}
+
 status_t out_need(struct mixer *m)
 {
     struct out *o = &m->nums->out;
     if (m->own_out.ch || !any_audible(m))
         return OK;
     status_t st = out_open(m);
+    if (out_reopen_soon(m, st)) {
+        o->retry_at = now() + OUT_REOPEN_RETRY_NS;
+        return st;
+    }
     if (st != OK) {
         if (!o->retry_at)
             printf("mixer: can't open the output (%s): trying again every %u ms\n",

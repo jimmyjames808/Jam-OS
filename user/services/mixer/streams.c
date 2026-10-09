@@ -284,8 +284,9 @@ static status_t do_start(void *ctx)
     stream_set_idle(c->m, s, false);
     status_t st = out_need(c->m);
     /* No driver at all, or another program has its output (a test):
-     * nothing would be heard, so say so. Anything else is tried again. */
-    if (st == ERR_NOT_FOUND || st == ERR_BAD_STATE) {
+     * nothing would be heard, so say so. Anything else is tried again,
+     * our own output just closed among it (out_reopen_soon). */
+    if (st == ERR_NOT_FOUND || (st == ERR_BAD_STATE && !out_reopen_soon(c->m, st))) {
         s->playing = false;
         c->m->nums->out.retry_at = 0;
         return st;

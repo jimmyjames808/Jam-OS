@@ -165,7 +165,13 @@ struct out_own {
     bool     pending;      /* its channel may have messages */
     bool     kept;         /* ch and vmo are put to the keeper (KEEP_OUT) */
     bool     svc_kept;     /* svc is (KEEP_DRIVER) */
+    uint64_t closed_at;    /* when ch was last closed: the driver may still hold its stream
+                            * a moment (the keeper lets go of its copy after us) */
 };
+/* After closing our own output, the driver's ERR_BAD_STATE (its stream is
+ * taken) is still ours for this long: tried again soon, not reported. */
+#define OUT_REOPEN_GRACE_NS (500 * NS_PER_MS)
+#define OUT_REOPEN_RETRY_NS (10 * NS_PER_MS)
 
 /* An opener's own `audio` or `audioctl` channel (clients.c): its numbers
  * (in the state). */
@@ -335,6 +341,7 @@ status_t out_find(struct mixer *m);
 /* Open the driver's output if a stream plays and it is closed (and no
  * retry is due later); OK if it is open now. */
 status_t out_need(struct mixer *m);
+bool out_reopen_soon(const struct mixer *m, status_t st);   /* st is our own last stream's */
 /* Close it (the driver stops and mutes): every stream's period history
  * goes, as it played or never will. */
 void     out_close(struct mixer *m, const char *why);
