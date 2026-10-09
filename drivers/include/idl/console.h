@@ -28,25 +28,15 @@
 #include <idl/common.h>
 
 #define CONSOLE_PROTOCOL_ID 12u
-#define CONSOLE_WRITE            0x000c0001u
 #define CONSOLE_SIZE             0x000c0002u
 #define CONSOLE_CLEAR            0x000c0003u
 #define CONSOLE_OPEN_KEYS        0x000c0004u
 #define CONSOLE_NEW_CLIENT       0x000c0007u
 #define CONSOLE_SHOW_LOG         0x000c0009u
 #define CONSOLE_SET_FONT         0x000c000au
+#define CONSOLE_WRITE            0x000c000bu
 
 /* Messages (packed: no padding bytes ever cross the channel). */
-struct console_write_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint16_t length;
-    uint8_t text[2048];
-} __attribute__((packed));
-struct console_write_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
 struct console_size_req {
     uint32_t txid;
     uint32_t ordinal;
@@ -101,6 +91,14 @@ struct console_set_font_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
+struct console_write_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct console_write_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
 
 #define CONSOLE_REQ_MAX 2058u   /* bytes: the biggest request */
 #define CONSOLE_REP_MAX 12u   /* bytes: the biggest reply */
@@ -108,38 +106,6 @@ struct console_set_font_rep {
 #define CONSOLE_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
-
-/* console_write_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t console_write_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t length, const uint8_t text[2048])
-{
-    struct console_write_req idl_q;
-    struct console_write_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = CONSOLE_WRITE;
-    idl_q.length = length;
-    for (uint32_t idl_i = 0; idl_i < 2048; idl_i++)
-        idl_q.text[idl_i] = text[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-/* Write text (UTF-8; \n, \r, \b, \t and ESC [ ... m colours understood). */
-static inline status_t console_write_until(handle_t ch, uint64_t deadline_ns, uint16_t length, const uint8_t text[2048])
-{
-    return console_write_call(ch, false, deadline_ns, length, text);
-}
-static inline status_t console_write_within(handle_t ch, uint64_t timeout_ns, uint16_t length, const uint8_t text[2048])
-{
-    return console_write_call(ch, true, timeout_ns, length, text);
-}
-static inline status_t console_write(handle_t ch, uint16_t length, const uint8_t text[2048])
-{
-    return console_write_call(ch, false, DEADLINE_NEVER, length, text);
-}
 
 /* console_size_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
@@ -376,40 +342,47 @@ static inline status_t console_set_font(handle_t ch, uint8_t font)
     return console_set_font_call(ch, false, DEADLINE_NEVER, font);
 }
 
+/* console_write_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t console_write_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t *text, uint32_t text_len)
+{
+    _Alignas(8) uint8_t idl_b0[2058];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct console_write_req *idl_q = (struct console_write_req *)idl_b0;
+    const struct console_write_rep *idl_r = (const struct console_write_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = CONSOLE_WRITE;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, text, text_len, 2048, 1))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
+    return idl_st;
+}
+/* Write text: up to 2048 bytes, as the program wrote them (UTF-8; \n, \r,
+ * \b, \t and ESC [ ... m colours understood; bytes, not a str: a
+ * program's output may be any bytes, and the terminal shows them). Also
+ * copied to COM1. All levels. */
+static inline status_t console_write_until(handle_t ch, uint64_t deadline_ns, const uint8_t *text, uint32_t text_len)
+{
+    return console_write_call(ch, false, deadline_ns, text, text_len);
+}
+static inline status_t console_write_within(handle_t ch, uint64_t timeout_ns, const uint8_t *text, uint32_t text_len)
+{
+    return console_write_call(ch, true, timeout_ns, text, text_len);
+}
+static inline status_t console_write(handle_t ch, const uint8_t *text, uint32_t text_len)
+{
+    return console_write_call(ch, false, DEADLINE_NEVER, text, text_len);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
-
-/* console_write without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then console_write_result. */
-static inline status_t console_write_send(handle_t ch, uint32_t idl_txid, uint16_t length, const uint8_t text[2048])
-{
-    struct console_write_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = CONSOLE_WRITE;
-    idl_q.length = length;
-    for (uint32_t idl_i = 0; idl_i < 2048; idl_i++)
-        idl_q.text[idl_i] = text[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to console_write_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t console_write_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct console_write_rep *idl_r = (const struct console_write_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
-}
 
 /* console_size without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then console_size_result. */
@@ -605,6 +578,43 @@ static inline status_t console_set_font_result(const void *idl_rep, struct idl_m
     return OK;
 }
 
+/* console_write without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then console_write_result. */
+static inline status_t console_write_send(handle_t ch, uint32_t idl_txid, const uint8_t *text, uint32_t text_len)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[2058];
+    struct console_write_req *idl_q = (struct console_write_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = CONSOLE_WRITE;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, text, text_len, 2048, 1))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to console_write_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t console_write_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct console_write_rep *idl_r = (const struct console_write_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -612,29 +622,14 @@ static inline status_t console_set_font_result(const void *idl_rep, struct idl_m
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with console_reply_<method> (now, or later from anywhere). */
 struct console_ops {
-    status_t (*write)(void *ctx, uint16_t length, const uint8_t text[2048]);
     status_t (*size)(void *ctx, uint16_t *out_cols, uint16_t *out_rows);
     status_t (*clear)(void *ctx);
     status_t (*open_keys)(void *ctx, handle_t *out_keys);
     status_t (*new_client)(void *ctx, uint8_t level, handle_t *out_client);
     status_t (*show_log)(void *ctx, uint8_t on, const uint8_t only[32]);
     status_t (*set_font)(void *ctx, uint8_t font);
+    status_t (*write)(void *ctx, const uint8_t *text, uint32_t text_len);
 };
-
-/* Answer the console.write request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t console_reply_write(struct idl_txn idl_txn, status_t idl_st)
-{
-    struct console_write_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
 
 /* Answer the console.size request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
@@ -740,6 +735,25 @@ static inline status_t console_reply_set_font(struct idl_txn idl_txn, status_t i
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
+/* Answer the console.write request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t console_reply_write(struct idl_txn idl_txn, status_t idl_st)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct console_write_rep *idl_r = (struct console_write_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (CONSOLE_REP_MAX bytes) and the handles it carries
  * into rhs (CONSOLE_REP_HANDLES slots; *rhn of them). Returns the reply's
@@ -761,22 +775,6 @@ static inline uint32_t console_dispatch_on(handle_t ch, const struct console_ops
     if (n < sizeof(struct idl_req_hdr))
         return sizeof(*idl_h);
     switch (((const struct idl_req_hdr *)req)->ordinal) {
-    case CONSOLE_WRITE: {
-        const struct console_write_req *idl_q = (const struct console_write_req *)req;
-        struct console_write_rep *idl_r = (struct console_write_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->write) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->write(ctx, idl_q->length, idl_q->text);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
     case CONSOLE_SIZE: {
         const struct console_size_req *idl_q = (const struct console_size_req *)req;
         struct console_size_rep *idl_r = (struct console_size_rep *)rep;
@@ -885,6 +883,30 @@ static inline uint32_t console_dispatch_on(handle_t ch, const struct console_ops
             return sizeof(*idl_h);
         }
         status_t idl_st = ops->set_font(ctx, idl_q->font);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case CONSOLE_WRITE: {
+        const struct console_write_req *idl_q = (const struct console_write_req *)req;
+        struct console_write_rep *idl_r = (struct console_write_rep *)rep;
+        (void)idl_r;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 2048, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
+            return sizeof(*idl_h);
+        if (!ops->write) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        idl_st = ops->write(ctx, (const uint8_t *)idl_p0, idl_l0);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);

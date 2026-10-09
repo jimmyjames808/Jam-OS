@@ -151,13 +151,12 @@ static int steal(void)
  * (tools/shell-tests/basic.txt). Empty writes, so nothing floods the log. */
 static int flood(handle_t con)
 {
-    static struct console_write_req q = { .ordinal = CONSOLE_WRITE };
     if (!con)
         return 1;
     printf("contest: flood: writing flat out\n");
-    for (;;) {
-        while (jam_channel_write(con, &q, sizeof(q), NULL, 0) == OK)
-            ;
+    for (uint32_t txid = 1;; txid = (txid + 1) & 0xffffff) {   /* bit 31 clear: ours */
+        while (console_write_send(con, txid ? txid : 1, (const uint8_t *)"", 0) == OK)
+            txid = (txid + 1) & 0xffffff;
         /* The queue is full: throw the replies away and fill it again. */
         _Alignas(8) uint8_t rep[64];
         uint32_t n = 0, nh = 0;
@@ -294,9 +293,9 @@ int main(int argc, char **argv)
     }
     uint16_t cols = 0, rows = 0;
     CHECK(console_size(con, &cols, &rows) == OK && cols >= 40 && rows >= 10);
-    uint8_t line[2048] = "contest: \033[96mhello\033[0m from the console protocol\n";
-    CHECK(console_write(con, (uint16_t)strlen((char *)line), line) == OK);
-    CHECK(console_write(con, 3000, line) == ERR_INVALID_ARGS);
+    uint8_t line[2100] = "contest: \033[96mhello\033[0m from the console protocol\n";
+    CHECK(console_write(con, line, (uint32_t)strlen((char *)line)) == OK);
+    CHECK(console_write(con, line, 2049) == ERR_INVALID_ARGS);   /* past the 2048 bytes */
 
     /* A program's channel: no new channels. */
     handle_t extra;
@@ -318,6 +317,6 @@ int main(int argc, char **argv)
     printf("contest: %d checks, %d failed\n", checks, failed);
     uint8_t done[2048];
     int n = snprintf((char *)done, sizeof(done), "contest: %d checks, %d failed\n", checks, failed);
-    console_write(con, (uint16_t)n, done);
+    console_write(con, done, (uint32_t)n);
     return failed ? 1 : 0;
 }

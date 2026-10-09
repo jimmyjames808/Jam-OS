@@ -166,11 +166,9 @@ static void say_stored_instead(status_t why)
     handle_t c = terms_any_console();   /* every terminal may be closed: then the log only */
     if (!c)
         return;
-    uint8_t text[2048] = { 0 };
-    memcpy(text, line, (size_t)n);
     uint64_t deadline = now() + NS_PER_S;
     comp_blank(false);   /* the terminal's window shows it */
-    if (console_write_until(c, deadline, (uint16_t)n, text) != OK) {
+    if (console_write_until(c, deadline, (const uint8_t *)line, (uint32_t)n) != OK) {
         comp_blank(true);
         return;
     }

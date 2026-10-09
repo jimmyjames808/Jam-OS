@@ -64,7 +64,7 @@ void sh_flush(void)
 {
     if (!on)
         return;
-    status_t st = console_write(con, (uint16_t)on, obuf);
+    status_t st = console_write(con, obuf, on);
     on = 0;
     if (st == ERR_PEER_CLOSED)
         jam_process_exit(2);

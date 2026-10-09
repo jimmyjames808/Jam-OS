@@ -12,8 +12,9 @@
 
 protocol console 12
 
-# Write text (UTF-8; \n, \r, \b, \t and ESC [ ... m colours understood).
-1  write  (u16 length, u8[2048] text) -> ()
+# 1 (write with a length and a fixed 2048-byte array): gone (the review's
+# finding 18), not reused: 11.
+
 2  size   () -> (u16 cols, u16 rows)
 3  clear  () -> ()
 # A channel on which the console sends this client the keys typed while it
@@ -56,6 +57,11 @@ protocol console 12
 # no window (no compositor) has nothing to change: OK. ADMIN channels
 # only: ERR_ACCESS_DENIED otherwise; ERR_INVALID_ARGS for a font > 1.
 10 set_font       (u8 font) -> ()
+# Write text: up to 2048 bytes, as the program wrote them (UTF-8; \n, \r,
+# \b, \t and ESC [ ... m colours understood; bytes, not a str: a
+# program's output may be any bytes, and the terminal shows them). Also
+# copied to COM1. All levels.
+11 write          (u8[<=2048] text) -> ()
 
 # keys: the channel console.open_keys answers (review W14, DQ1: events
 # from the console to its client, in the IDL; the struct a size told apart

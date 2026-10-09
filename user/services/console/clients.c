@@ -18,10 +18,8 @@
 static handle_t clients[MAX_CLIENTS];
 static struct client client_info[MAX_CLIENTS];
 
-static status_t op_write(void *ctx, uint16_t length, const uint8_t text[2048])
+static status_t op_write(void *ctx, const uint8_t *text, uint32_t length)
 {
-    if (length > 2048)
-        return ERR_INVALID_ARGS;
     /* Kernel lines logged before this write go above it: e.g. a ktest's
      * output before the shell's summary line. */
     klog_event();
