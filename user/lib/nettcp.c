@@ -220,19 +220,44 @@ status_t net_shutdown(struct net_sock *s)
     return OK;
 }
 
+/* ---- options and ends ----------------------------------------------------------------- */
+
+status_t net_tcp_set_options(struct net_sock *s, uint32_t flags, uint32_t keep_idle,
+                             uint32_t keep_intvl, uint32_t keep_cnt)
+{
+    if (!s->ch)
+        return ERR_BAD_STATE;
+    return net_stream_set_options_until(s->ch, now() + CALL_WAIT, flags, keep_idle, keep_intvl,
+                                        keep_cnt);
+}
+
+status_t net_tcp_ends(const struct net_sock *s, struct net_tcp_ends *out)
+{
+    if (!s->ch)
+        return ERR_BAD_STATE;
+    return net_stream_state_until(s->ch, now() + CALL_WAIT, &out->local, &out->local_port,
+                                  &out->peer, &out->peer_port, &out->queued);
+}
+
 /* ---- listeners ---------------------------------------------------------------------------- */
 
-status_t net_tcp_listen(handle_t net, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
-                        uint32_t rx_bytes, struct net_listener *out)
+status_t net_tcp_listen_flags(handle_t net, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
+                              uint32_t rx_bytes, uint32_t flags, struct net_listener *out)
 {
     handle_t ch = HANDLE_INVALID;
     uint16_t got = 0;
     *out = (struct net_listener){ 0 };
     status_t st = net_tcp_listener_until(net, now() + CALL_WAIT, port, backlog, tx_bytes,
-                                         rx_bytes, &ch, &got);
+                                         rx_bytes, flags, &ch, &got);
     if (st == OK)
         *out = (struct net_listener){ .ch = ch, .port = got };
     return st;
+}
+
+status_t net_tcp_listen(handle_t net, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
+                        uint32_t rx_bytes, struct net_listener *out)
+{
+    return net_tcp_listen_flags(net, port, backlog, tx_bytes, rx_bytes, 0, out);
 }
 
 status_t net_tcp_accept_send(struct net_listener *l)

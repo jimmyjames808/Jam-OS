@@ -729,8 +729,8 @@ static err_t tcp_accept_cb(void *lctx, struct tcp_pcb *pcb, err_t err)
     return ERR_OK;
 }
 
-status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, void *lctx,
-                          struct stack_tcp_listen **out, uint16_t *out_port)
+status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, bool reuse,
+                          void *lctx, struct stack_tcp_listen **out, uint16_t *out_port)
 {
     if (!started || !tcp_hooks)
         return ERR_BAD_STATE;
@@ -740,6 +740,8 @@ status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, void
     if (!pcb)
         return ERR_NO_RESOURCES;
     tcp_setprio(pcb, TCP_PRIO_MIN);   /* its half-open connections inherit it */
+    if (reuse)
+        ip_set_option(pcb, SOF_REUSEADDR);   /* before the bind; its connections inherit it */
     err_t e = tcp_bind(pcb, IP4_ADDR_ANY, port);
     if (e != ERR_OK) {
         tcp_abort(pcb);
@@ -750,7 +752,8 @@ status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, void
     struct tcp_pcb *l = tcp_listen_with_backlog_and_err(pcb, (u8_t)backlog, &e);
     if (!l) {
         tcp_abort(pcb);   /* lwIP keeps the bound pcb when it has no listener for it */
-        return ERR_NO_RESOURCES;
+        return e == ERR_USE ? ERR_ALREADY_BOUND : ERR_NO_RESOURCES;   /* (a reuse bind that
+                                                                       * found a listener) */
     }
     tcp_arg(l, lctx);
     tcp_accept(l, tcp_accept_cb);
@@ -982,12 +985,32 @@ void stack_tcp_abort(struct stack_tcp *t)
     tcp_abort(pcb);
 }
 
-void stack_tcp_ends(struct stack_tcp *t, uint32_t *peer, uint16_t *peer_port, uint16_t *port)
+void stack_tcp_ends(struct stack_tcp *t, uint32_t *peer, uint16_t *peer_port, uint32_t *local,
+                    uint16_t *port)
 {
     struct tcp_pcb *pcb = pcb_of(t);
     *peer = from_lwip(ip_2_ip4(&pcb->remote_ip));
     *peer_port = pcb->remote_port;
+    *local = from_lwip(ip_2_ip4(&pcb->local_ip));
     *port = pcb->local_port;
+}
+
+void stack_tcp_options(struct stack_tcp *t, bool nodelay, bool keepalive, uint32_t idle_s,
+                       uint32_t intvl_s, uint32_t cnt)
+{
+    struct tcp_pcb *pcb = pcb_of(t);
+    if (nodelay)
+        tcp_nagle_disable(pcb);
+    else
+        tcp_nagle_enable(pcb);
+    if (!keepalive) {
+        ip_reset_option(pcb, SOF_KEEPALIVE);
+        return;
+    }
+    pcb->keep_idle = idle_s * 1000u;   /* lwIP's are milliseconds */
+    pcb->keep_intvl = intvl_s * 1000u;
+    pcb->keep_cnt = cnt;
+    ip_set_option(pcb, SOF_KEEPALIVE);
 }
 
 /* pcbs on a list (all, or those in state `only`): bounded by lwIP's pool. */

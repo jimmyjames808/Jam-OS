@@ -1,6 +1,9 @@
-/* A small heap: one VMO of HEAP_SIZE mapped read-write into our address
- * space on the first malloc (pages are committed when first touched, and
- * charged to our job then, for good). Blocks come from a bump pointer;
+/* A small heap: one VMO of HEAP_SIZE (1 GiB of address space, M12 Q16)
+ * mapped read-write into our address space on the first malloc. Only the
+ * address space is reserved: pages are committed when first touched, and
+ * charged to our job then, for good, so the job's page limit is what
+ * bounds a program, not the heap's size (and a large allocation that is
+ * only partly used costs the part used). Blocks come from a bump pointer;
  * freed blocks go on a free list kept in address order, and a freed block
  * merges with a free neighbour on either side, or gives its space back to
  * the bump pointer when it is the last block. malloc takes the first

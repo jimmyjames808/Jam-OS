@@ -50,10 +50,11 @@ typedef uint32_t rights_t;
 #define RIGHT_ROOT_VMEX    (1u << 23)  /* vmo_make_exec: run code from a VMO a process made */
 #define RIGHT_ROOT_SCREEN  (1u << 24)  /* framebuffer_take: the screen */
 #define RIGHT_ROOT_SERIAL_OUT (1u << 25)  /* serial_write: the serial port's output */
+#define RIGHT_ROOT_PAGER   (1u << 26)  /* pager_create: supply other processes' pages */
 #define RIGHTS_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SERIAL | RIGHT_ROOT_SYSINFO | \
                      RIGHT_ROOT_CLOCK | RIGHT_ROOT_REBOOT | RIGHT_ROOT_KEXEC |   \
                      RIGHT_ROOT_DEBUG | RIGHT_ROOT_VMEX | RIGHT_ROOT_SCREEN |    \
-                     RIGHT_ROOT_SERIAL_OUT)
+                     RIGHT_ROOT_SERIAL_OUT | RIGHT_ROOT_PAGER)
 #define RIGHT_SAME      0x80000000u /* in duplicate: keep the same rights */
 
 #define RIGHTS_BASIC (RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT | RIGHT_INSPECT)
@@ -88,6 +89,7 @@ enum obj_type {
     OBJ_KLOG = 13,          /* a reader of the kernel log */
     OBJ_SERIAL = 14,        /* COM1 input */
     OBJ_SCREEN = 15,        /* ownership of the boot framebuffer */
+    OBJ_PAGER = 16,         /* supplies the pages of its VMOs (pager_create) */
     OBJ_TYPE_COUNT,
 };
 
@@ -99,7 +101,9 @@ struct handle_info {
     uint64_t koid;              /* the object's id (never reused) */
     uint64_t related_koid;      /* a channel end: its peer's (0 once the peer has
                                  * closed); a thread: its process's; a process: its
-                                 * job's (0 once torn down); else 0 */
+                                 * job's (0 once torn down); a pager VMO: its
+                                 * pager's (how a service that maps client VMOs
+                                 * tells one, and refuses it); else 0 */
     /* A channel end only (else 0): */
     uint32_t queued;            /* messages waiting on it, to be read */
     uint32_t peer_queued;       /* messages it wrote that wait, unread, at its peer */
@@ -458,6 +462,58 @@ struct vmo_pin_args {
  * through one dma_cap one way at a time: a read-only pin of a page that
  * cap has pinned writable (or the reverse) is ERR_BAD_STATE. */
 #define VMO_PIN_READ_ONLY (1u << 0)
+
+/* pagers (abi/syscalls.def 160-164) -------------------------------------------
+ * A pager (OBJ_PAGER) supplies the pages of the VMOs made from it (pager
+ * VMOs), each under a key the pager chooses: a fault or a vmo_read on an
+ * absent page queues a request in the pager, which the pager reads with
+ * pager_next and answers with pager_supply or pager_op. Requests stay in
+ * the pager object until they are answered, so a pager outlives its
+ * process: a successor takes the delivered ones again (PAGER_NEXT_AGAIN). */
+
+/* pager_create's handle: the pager's holder reads requests (READ), makes
+ * VMOs and answers (WRITE), and binds it to a port (WAIT: SIG_READABLE
+ * while an undelivered request is queued). */
+#define PAGER_RIGHTS     (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
+/* pager_create_vmo's handle: read and map only. Never RIGHT_WRITE (the
+ * pages are the pager's), RIGHT_RESIZE (the size is the pager's) or
+ * RIGHT_EXEC. */
+#define PAGER_VMO_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP)
+
+/* pager_create's answer time: how long a request may wait for its answer,
+ * 1 ms .. 600 s (ERR_OUT_OF_RANGE outside). */
+#define PAGER_ANSWER_MIN_NS 1000000ull
+#define PAGER_ANSWER_MAX_NS 600000000000ull
+
+/* pager_next's flag: first put every delivered request that has no answer
+ * yet back in the queue (a successor's first call). */
+#define PAGER_NEXT_AGAIN (1u << 0)
+
+/* pager_supply's most bytes in one call (1 MiB). */
+#define PAGER_SUPPLY_MAX (1u << 20)
+
+/* A read request asks for the page touched and the absent pages after it,
+ * up to this many in all (64 KiB), stopping at a present page, a page
+ * another request covers, or the VMO's end. */
+#define PAGER_REQ_PAGES 16u
+
+/* pager_op's ops. */
+#define PAGER_OP_FAIL       1   /* fail the range's requests with arg (ERR_IO or ERR_OUT_OF_RANGE) */
+#define PAGER_OP_INVALIDATE 2   /* drop the range's present pages (not built yet) */
+#define PAGER_OP_SET_SIZE   3   /* offset is the new size (not built yet) */
+#define PAGER_OP_DETACH     4   /* cut the key's VMO off for good, or take its PAGER_REQ_GONE */
+
+/* struct pager_request's kinds. */
+#define PAGER_REQ_READ 1   /* supply [offset, offset + len), or fail it */
+#define PAGER_REQ_GONE 2   /* the key's VMO has no handle and no mapping left */
+
+struct pager_request {
+    uint64_t key;        /* the VMO's key */
+    uint64_t offset;     /* bytes, page-aligned */
+    uint64_t len;        /* bytes, page-aligned; 0 for PAGER_REQ_GONE */
+    uint32_t kind;       /* PAGER_REQ_* */
+    uint32_t reserved;   /* 0 */
+};
 
 /* console services (abi/syscalls.def 110-119) --------------------------------- */
 

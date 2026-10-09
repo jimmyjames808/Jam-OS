@@ -221,7 +221,8 @@ struct jwl_window *window_now(void);
 /* Draw what changed into the window's free buffer and present it. */
 void window_render(void);
 /* The window's shadow grids for cols x rows (at start and after a
- * regrid); false: no memory. */
+ * regrid); false: no memory, and neither changed (window_render tries
+ * again, and draws nothing until both are of the grid it walks). */
 bool paint_regrid(void);
 /* Every cell of both buffers drawn again at the next render. */
 void paint_forget(void);

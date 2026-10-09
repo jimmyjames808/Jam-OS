@@ -290,6 +290,12 @@ bool anim_now(struct anim_draw *out)
 
 /* ---- starting --------------------------------------------------------------------------- */
 
+bool anim_picturable(struct comp_box f)
+{
+    uint64_t px = (uint64_t)(f.x2 - f.x1) * (uint64_t)(f.y2 - f.y1);
+    return !box_empty(f) && px <= (uint64_t)scene.width * (uint64_t)scene.height;
+}
+
 /* A picture animation of w: its snapshot from the frame, centres and
  * scales from and to. False: none (animations off, no memory). */
 static bool begin(enum anim_kind kind, struct comp_window *w, uint64_t ms)
@@ -298,7 +304,7 @@ static bool begin(enum anim_kind kind, struct comp_window *w, uint64_t ms)
     if (!an.on || !w)
         return false;
     struct comp_box f = window_frame(w);
-    if (box_empty(f) || anim_snapshot(w, &an.snap) != OK)
+    if (box_empty(f) || !anim_picturable(f) || anim_snapshot(w, &an.snap) != OK)
         return false;
     an.kind = kind;
     an.start = now();

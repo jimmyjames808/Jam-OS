@@ -367,6 +367,8 @@ static status_t start_devmgr(void)
         argv[argc++] = "net";
     if (init_vlan)
         argv[argc++] = init_vlan;
+    if (init_nvmetest)
+        argv[argc++] = init_nvmetest;   /* drv/nvme's test reads */
     struct spawn_handle x[5] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb } };
     unsigned nx = 3;
     if (c)

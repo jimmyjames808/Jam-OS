@@ -322,6 +322,28 @@ status_t net_read(struct net_sock *s, void *buf, size_t cap, uint64_t deadline, 
  * the last byte. Reading goes on. ERR_BAD_STATE: no rings. */
 status_t net_shutdown(struct net_sock *s);
 
+/* A connection's options (net_stream.set_options): TCP_NODELAY and
+ * SO_KEEPALIVE with TCP_KEEPIDLE, TCP_KEEPINTVL and TCP_KEEPCNT. `flags`
+ * is the whole set of NET_STREAM_OPT_NODELAY and NET_STREAM_OPT_KEEPALIVE
+ * wanted; the three numbers (seconds, seconds, probes) are 0 for the
+ * defaults (7200, 75 and 9) and apply when keep-alive is on. A connection
+ * starts with NODELAY on and keep-alive off, one a listener accepted
+ * too. With keep-alive on, an idle connection is probed and, when the
+ * peer answers none, ends CLOSED with ERR_TIMED_OUT. net_stream.set_options'
+ * errors (ERR_INVALID_ARGS: a bit or a number out of range, nothing
+ * changes); ERR_BAD_STATE: no connection. */
+status_t net_tcp_set_options(struct net_sock *s, uint32_t flags, uint32_t keep_idle,
+                             uint32_t keep_intvl, uint32_t keep_cnt);
+/* A connection's ends (net_stream.state): getsockname and getpeername. */
+struct net_tcp_ends {
+    uint32_t local;        /* the address it runs on */
+    uint16_t local_port;
+    uint32_t peer;
+    uint16_t peer_port;
+    uint32_t queued;       /* bytes waiting in its rx ring now */
+};
+status_t net_tcp_ends(const struct net_sock *s, struct net_tcp_ends *out);
+
 /* A listener (net.tcp_listener): its channel (closing it stops listening)
  * and its port. */
 struct net_listener {
@@ -340,6 +362,12 @@ struct net_listener {
  * net listen`); on any other ERR_ACCESS_DENIED. net.tcp_listener's errors. */
 status_t net_tcp_listen(handle_t net, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
                         uint32_t rx_bytes, struct net_listener *out);
+/* The same with flags: 0, or NET_LISTEN_REUSE (SO_REUSEADDR: a listener
+ * may be made on a port whose earlier connections are in TIME_WAIT, or open
+ * ones of an earlier listener made with the flag too; without it those are
+ * ERR_ALREADY_BOUND. Another active listener on the port always is). */
+status_t net_tcp_listen_flags(handle_t net, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
+                              uint32_t rx_bytes, uint32_t flags, struct net_listener *out);
 /* The next connection, waiting for one until the deadline (ERR_TIMED_OUT;
  * a deadline already past: ERR_SHOULD_WAIT when none is waiting): the
  * socket into *out, its peer's address and port into *peer and *peer_port

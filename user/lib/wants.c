@@ -74,7 +74,7 @@ static bool want_svc(struct wants *w, const char *name)
         if (!((name[i] >= 'a' && name[i] <= 'z') || (name[i] >= '0' && name[i] <= '9') ||
               name[i] == '-'))
             return false;
-    char g[24];
+    char g[sizeof("/svc/") + SVC_NAME_MAX];
     snprintf(g, sizeof(g), "/svc/%s", name);
     return add_grant(w, g, name);
 }

@@ -156,8 +156,13 @@ static const struct comp_window *full_screen(void)
             continue;
         if (w->flags & COMP_WIN_ANIMATED)
             return NULL;
-        bool all = inside(out, window_surface_box(w)) && paint_opaque_over(w, out) &&
-                   !shape_corner_meets(w, out);
+        /* the buffer itself, not only its view, covers the output: the
+         * rows are copied from it (a view bigger than its buffer is
+         * padded, paint.c's draw_pad; review C7) */
+        struct comp_box buf = box_make(window_shown_x(w), window_shown_y(w), w->surface->width,
+                                       w->surface->height);
+        bool all = inside(out, window_surface_box(w)) && inside(out, buf) &&
+                   paint_opaque_over(w, out) && !shape_corner_meets(w, out);
         return all ? w : NULL;
     }
     return NULL;

@@ -93,14 +93,6 @@ status_t surface_set_role(struct comp_surface *s, enum comp_role role,
     return OK;
 }
 
-void surface_drop_role(struct comp_surface *s)
-{
-    if (s->window)
-        window_destroy(s->window);
-    s->role_ops = NULL;
-    s->role_data = NULL;
-}
-
 /* ---- requests --------------------------------------------------------------------- */
 
 static status_t on_destroy(void *data, uint32_t self)

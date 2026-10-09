@@ -14,7 +14,7 @@
 # protocol's .idl, or the header of one that stays hand-written (its id is
 # the top half of the word after its txid: a magic number's, for some).
 
-0       none            -                       # reserved: not IDL (keep's, the namespace's kinds)
+0       none            -                       # reserved: not IDL
 1       null            abi/idl/null.idl
 2       edu             abi/idl/edu.idl
 10      usb             abi/idl/usb.idl
@@ -59,6 +59,9 @@
 71      volesp          abi/idl/volumes.idl
 72      disks           abi/idl/volumes.idl
 73      mounts          abi/idl/volumes.idl
+# 80 to 89: libos's (M12 track P6a)
+80      keepch          abi/idl/keepch.idl
+81      nschan          abi/idl/nschan.idl
 # 90 to 99: devmgr's (M12 track D)
 90      devmgr          abi/idl/devmgr.idl
 91      devmgrctl       abi/idl/devmgr.idl

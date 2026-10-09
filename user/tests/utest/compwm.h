@@ -60,6 +60,8 @@ bool fk_open_min(struct fk *f, int32_t w, int32_t h, int32_t min_w, int32_t min_
 /* fk_open, resizable, presenting key (0: none) before its initial commit
  * (jam_window_memory_v1.identify): the key it got in *got. */
 bool fk_open_keyed(struct fk *f, int32_t w, int32_t h, uint64_t key, uint64_t *got);
+/* The same up to its initial commit: configured, no buffer yet. */
+bool fk_keyed(struct fk *f, int32_t w, int32_t h, uint64_t key, uint64_t *got);
 void fk_close_all(void);
 struct comp_window *win(unsigned i);
 /* A press at (x, y) with button (and seat.mods held): did the window

@@ -105,6 +105,7 @@ bool     jwl_interface_same(const struct jwl_interface *a, const struct jwl_inte
 #define JWL_HANDLES_QUEUED 28u          /* handles received and not yet taken, at most */
 #define JWL_WINDOW         32u          /* batches the compositor leaves unread at a client */
 #define JWL_HELD_MAX       65536u       /* heap bytes of batches held back past the window */
+#define JWL_EMPTY_RUN      64u          /* batches in a row with no message, at most */
 #define JWL_OBJECTS_MAX    4096u        /* ids in each side's range on one connection */
 #define JWL_MAGIC          0x324c574au  /* "JWL2" as bytes: the transport's version */
 
@@ -310,7 +311,12 @@ status_t jwl_sig_parse(const char *s, struct jwl_sig *out);
  *     8  0
  *    12  0
  * A batch is at most JWL_BATCH_MAX bytes and JWL_BATCH_HANDLES handles; a
- * message never spans two batches.
+ * message never spans two batches. A batch with no message (handles only,
+ * or nothing at all) is allowed, but more than JWL_EMPTY_RUN of them in a
+ * row is a protocol error: reading them costs the reader without anything
+ * to show for it, so a peer writing them flat out could keep the reader
+ * in one jwl_conn_next for ever (libjwl never sends an empty batch, and an
+ * honest run of handles alone is at most JWL_HANDLES_QUEUED long).
  *
  * Handles are a queue per connection and direction, as fds are on a Unix
  * socket: a batch's handles join the end of the queue, and each 'h'
@@ -368,6 +374,7 @@ struct jwl_conn {
     uint32_t in_len, in_at;             /* bytes in in[], decoded so far */
     handle_t in_h[JWL_HANDLES_QUEUED];
     uint32_t in_nh, in_hat;             /* handles in the queue, taken so far */
+    uint32_t empty_run;                 /* batches read in a row with no message */
     /* sending: the batch being filled (its header written when it goes) */
     uint8_t  out[JWL_BATCH_MAX];
     uint32_t out_len;                   /* JWL_HEADER_BYTES while empty */
@@ -398,8 +405,9 @@ void     jwl_conn_destroy(struct jwl_conn *c);
  * connection is dead, and that status comes back from every call after
  * (ERR_PEER_CLOSED: the peer closed; ERR_INVALID_ARGS: a protocol error,
  * in c->error, and on the compositor's side already sent). Reads at most
- * one batch per message returned, and every queued batch with no message
- * left for the caller, which the channel's 1024-message cap bounds. */
+ * one batch per message returned, and the batches with no message left
+ * for the caller before it: at most JWL_EMPTY_RUN + 1 with no message at
+ * all (on a client, also those whose messages all went to zombies). */
 status_t jwl_conn_next(struct jwl_conn *c, struct jwl_msg *out);
 
 /* A new object of iface at version, in our own range, for a message to

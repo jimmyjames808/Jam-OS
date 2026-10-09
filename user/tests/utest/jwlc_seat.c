@@ -104,6 +104,51 @@ bool t_jwlc_keyboard(void)
     return fake_all_gone(&f, c, h0, b0);
 }
 
+/* A compositor's keyboard numbers out of range (M12.1 C4): a repeat rate
+ * of INT32_MAX a second is taken as 1000 (before, NS_PER_S / rate was 0:
+ * a held key's next repeat was always due, and the program spun), and
+ * held, the key repeats with the deadline in the future; a negative delay
+ * is none; a key code past every table types nothing. */
+bool t_jwlc_keyboard_hostile(void)
+{
+    uint64_t h0, b0;
+    fake_held(&h0, &b0);
+    struct fake f;
+    fake_init(&f);
+    f.repeat_rate = INT32_MAX;
+    f.repeat_delay = -5;
+    struct jwl_client *c = fake_ready(&f);
+    CHECK(c);
+    CHECK_EQ(jwl_client_info(c)->repeat_rate, 1000);
+    CHECK_EQ(jwl_client_info(c)->repeat_delay, 0);
+    struct jwl_window_config wc = { .width = 20, .height = 20 };
+    struct jwl_window *w;
+    struct fake_surface *s;
+    CHECK(fake_window(&f, c, &wc, 0, &w, &s));
+    CHECK_ST(fake_kb_enter(&f, s), OK);
+    CHECK_ST(fake_key(&f, 0xffffffffu, true), OK);
+    CHECK_ST(fake_key(&f, 0xffffffffu, false), OK);
+    CHECK_ST(fake_key(&f, KEY_A, true), OK);
+    CHECK(fake_pump(&f, c));
+    struct jwl_event ev;
+    CHECK(fake_next_of(c, JWL_EV_KEY, &ev));
+    CHECK(ev.key.code == 0xffffffffu && ev.key.sym == 0 && ev.key.cp == 0);
+    CHECK(fake_next_of(c, JWL_EV_KEY, &ev) && ev.key.state == JWL_KEY_RELEASED);
+    CHECK(fake_next_of(c, JWL_EV_KEY, &ev) && ev.key.cp == 'a');
+    (void)jam_sleep_until(now() + 2 * NS_PER_MS);
+    uint64_t before = now();
+    CHECK_ST(jwl_client_dispatch(c), OK);   /* the first repeat: the next one 1 ms on */
+    uint64_t after = now();
+    CHECK(fake_next_of(c, JWL_EV_KEY, &ev) && ev.key.state == JWL_KEY_REPEATED);
+    uint64_t d = jwl_client_deadline(c);
+    if (d < before + NS_PER_MS || d > after + NS_PER_MS)
+        FAIL("the next repeat %ld us after the dispatch began, want 1 ms",
+             (long)((int64_t)(d - before) / 1000));
+    CHECK_ST(fake_key(&f, KEY_A, false), OK);
+    CHECK(fake_pump(&f, c));
+    return fake_all_gone(&f, c, h0, b0);
+}
+
 /* A burst of keys far past the event queue (the compositor hands over
  * every key typed before the window was up at once): each dispatch reads
  * only while the queue has room and leaves the rest in the connection,

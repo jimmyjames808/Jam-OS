@@ -257,9 +257,10 @@ static bool overlay_runs(struct cp_run *desk, struct cp_run *over, struct cp_run
                          struct cp_run *end)
 {
     static const char *const d[] = { OV_DESK };
-    static const char *const o[] = { OV_DESK, OV_SPLASH };
-    static const char *const m[] = { OV_DESK, OV_SPLASH, OV_FADE };
-    static const char *const e[] = { OV_DESK, OV_SPLASH, OV_FADE, "tick=250", "paint" };
+    /* (a boot overlay is one only in the boot's wait for the splash: DQ1) */
+    static const char *const o[] = { OV_DESK, "splash", OV_SPLASH };
+    static const char *const m[] = { OV_DESK, "splash", OV_SPLASH, OV_FADE };
+    static const char *const e[] = { OV_DESK, "splash", OV_SPLASH, OV_FADE, "tick=250", "paint" };
     CHECK(cp_run(d, sizeof(d) / sizeof(d[0]), desk));
     CHECK(cp_run(o, sizeof(o) / sizeof(o[0]), over));
     CHECK(cp_run(m, sizeof(m) / sizeof(m[0]), mid));
@@ -364,8 +365,8 @@ static unsigned not_overlay(const struct cp_run *r)
 
 static bool overlay_open_runs(struct cp_run *before, struct cp_run *under)
 {
-    static const char *const b[] = { OO_DESK, OO_TERM, "paint", OO_OVER, "tick=100", "paint" };
-    static const char *const u[] = { OO_DESK, OO_OVER, "paint", OO_TERM, "tick=100", "paint" };
+    static const char *const b[] = { OO_DESK, OO_TERM, "paint", "splash", OO_OVER, "tick=100", "paint" };
+    static const char *const u[] = { OO_DESK, "splash", OO_OVER, "paint", OO_TERM, "tick=100", "paint" };
     CHECK(cp_run(b, sizeof(b) / sizeof(b[0]), before));
     CHECK(cp_run(u, sizeof(u) / sizeof(u[0]), under));
     CHECK_EQ(not_overlay(before), 0);

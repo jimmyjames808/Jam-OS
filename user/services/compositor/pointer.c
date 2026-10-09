@@ -405,8 +405,12 @@ static status_t on_set_cursor(void *data, uint32_t self, uint32_t serial, uint32
     sc->cursor_set = true;   /* a surface replaces a shape */
     sc->shape_set = false;
     sc->cursor = s;
-    sc->hot_x = hot_x;
-    sc->hot_y = hot_y;
+    /* held to a buffer's size either way: the pointer's place less it never
+     * overflows (review C6); a hot spot further out shows nothing either way */
+    sc->hot_x = hot_x < -COMP_BUFFER_SIDE_MAX ? -COMP_BUFFER_SIDE_MAX
+                : hot_x > COMP_BUFFER_SIDE_MAX ? COMP_BUFFER_SIDE_MAX : hot_x;
+    sc->hot_y = hot_y < -COMP_BUFFER_SIDE_MAX ? -COMP_BUFFER_SIDE_MAX
+                : hot_y > COMP_BUFFER_SIDE_MAX ? COMP_BUFFER_SIDE_MAX : hot_y;
     if (over && over->surface->client == cl)
         cursor_update();
     return OK;

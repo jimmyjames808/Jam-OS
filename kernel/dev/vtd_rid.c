@@ -15,7 +15,17 @@
  * The check is pure (vtd_rid_shared, over a list of bridges, tested on a
  * made-up topology); vtd_rid_mark reads the real one from config space
  * once, at boot, and sets each function's `shared`. The PC has no such
- * bridge (its bridges are PCIe root ports), so nothing there is refused. */
+ * bridge (its bridges are PCIe root ports), so nothing there is refused.
+ *
+ * The same way, a function a peer could reach, or that could reach a
+ * peer, without its requests going up to the root complex (a PCIe
+ * switch's downstream port without ACS, a multi-function device without
+ * it: pci_acs.c, the owner's decision B of the M12.1 kernel-devices
+ * review) gets no DMA capability while translating: its driver could
+ * point its device at the other's BARs and take that device over, or the
+ * other's driver it. vtd_rid_mark turns ACS on first (pci_acs_enable),
+ * then sets each function's `acs_gap` (pci_acs_check). */
+#include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
 #include <jam/report.h>
@@ -75,11 +85,49 @@ static bool bridge_of(struct pci_dev *d, struct vtd_bridge *out)
     return true;
 }
 
+/* Every function's acs_gap (pci_acs_check over the topology as
+ * pci_acs_enable left it), and a log line for each one a driver could ask
+ * for: covered, not a bridge, not the display (never given a cap). A log
+ * line, not the RESULTS box: the refusal itself, when a driver asks, is
+ * the line that matters (iommu_domain_create). */
+static status_t acs_mark(uint32_t n)
+{
+    struct pci_acs_fn *fns = kmalloc((n ? n : 1) * sizeof(*fns));
+    if (!fns)
+        return ERR_NO_MEMORY;
+    for (uint32_t i = 0; i < n; i++)
+        pci_acs_read(vtd_fn_at(i)->dev, &fns[i]);
+    uint32_t refused = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        struct vtd_fn *f = vtd_fn_at(i);
+        uint16_t where = 0;
+        f->acs_gap = (uint8_t)pci_acs_check(fns, n, i, &where);
+        f->acs_where = where;
+        if (!f->acs_gap || !f->ctl || (f->dev->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY)))
+            continue;
+        refused++;
+        kprintf("vtd:         %02x:%02x.%x: no DMA for it while translating: %s (%02x:%02x.%x), "
+                "so a peer could reach it, or it a peer, without the IOMMU\n", f->sid >> 8,
+                (f->sid >> 3) & 0x1f, f->sid & 7, pci_acs_gap_text(f->acs_gap), where >> 8,
+                (where >> 3) & 0x1f, where & 7);
+    }
+    kprintf("vtd:         ACS: %u function%s refused for peer-to-peer gaps\n", refused,
+            refused == 1 ? "" : "s");
+    kfree(fns);
+    return OK;
+}
+
 status_t vtd_rid_mark(void)
 {
+    /* Peer-to-peer requests up to the root complex first (pci_acs.c), so
+     * the unit sees them once translation is on. */
+    if (pci_acs_enable() != OK)
+        return ERR_NO_MEMORY;
     uint32_t n = 0;
     for (uint32_t i = 0; vtd_fn_at(i); i++)
         n++;
+    if (acs_mark(n) != OK)
+        return ERR_NO_MEMORY;
     struct vtd_bridge *br = kmalloc((n ? n : 1) * sizeof(*br));
     if (!br)
         return ERR_NO_MEMORY;

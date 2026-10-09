@@ -236,7 +236,9 @@ recommendation.
   review's question A).
 - **Q1 (A)**: handles given to a send are always moved, whatever the status.
 - **Q2 (B)**: once a writer closes its end, what it wrote and nobody read
-  is charged to the reader's job.
+  is charged to the reader's job. Changed by the owner on 2026-10-09
+  (M12.1 kernel core review, finding 2): it stays charged to the writer's
+  job until read or dropped.
 - **Q3 (A)**: `u8[<=N]` and a checked `str[<=N]`.
 - **Q4 (A)**: one-way `event` methods, which may carry handles.
 - **Q5 (A)**: a protocol per kind of channel.

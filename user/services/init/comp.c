@@ -85,6 +85,7 @@
 #include <idl/compctl.h>
 #include <idl/notify.h>
 #include <idl/svc.h>
+#include <notice.h>
 #include <settings.h>
 #include <svcstate.h>
 #include "init.h"
@@ -326,6 +327,15 @@ bool comp_notice_run(const char *title, const char *body, char icon, uint8_t tin
  * comp_notice_run notice's first one opens its terminal. */
 static void note_pressed(uint32_t id, uint8_t button)
 {
+    if (!notice_pressed(button)) {   /* pushed off the screen by newer cards: no press */
+        if (id && id == run_id)
+            run_id = 0;
+        if (id && id == reboot_id) {
+            reboot_id = 0;
+            printf("init: the Reboot notice was pushed off the screen: dismissed\n");
+        }
+        return;
+    }
     if (id && id == run_id && button == 0) {
         run_id = 0;
         uint8_t n;

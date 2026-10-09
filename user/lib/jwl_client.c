@@ -22,6 +22,7 @@
 #include "jwlc.h"
 
 #define RETRY_FIRST_MS 50u   /* the pause after the first failed try; doubles to the max */
+#define HELD_RETRY_NS (10 * NS_PER_MS)   /* batches held: written again this often */
 
 /* The globals we bind, by enum index, and the most we bind each at. */
 const struct jwlc_want jwlc_wanted[JWLC_GLOBALS] = {
@@ -183,7 +184,15 @@ static void try_connect(struct jwl_client *c)
         die(c, st);
         return;
     }
-    if (st != ERR_SHOULD_WAIT && c->retry_ms == 0)
+    if (st == ERR_SHOULD_WAIT) {
+        /* Not a failure: the connect function is still at it (a thread
+         * of the program's waiting for the compositor). Look again soon,
+         * not later and later: the answer may be there any moment
+         * (M12.1 C13: up to a second late, before). */
+        c->retry_at = now() + (uint64_t)RETRY_FIRST_MS * NS_PER_MS;
+        return;
+    }
+    if (c->retry_ms == 0)
         jwlc_log(c, "can't reach the compositor (%s): trying again", status_str(st));
     c->retry_ms = c->retry_ms ? c->retry_ms * 2 : RETRY_FIRST_MS;
     if (c->retry_ms > JWL_RECONNECT_MAX_MS)
@@ -357,7 +366,15 @@ uint64_t jwl_client_deadline(const struct jwl_client *c)
     uint64_t d = c->state == JWLC_DOWN    ? c->retry_at
                : c->state == JWLC_READY   ? jwlc_seat_deadline(c)
                                           : DEADLINE_NEVER;
-    return clip < d ? clip : d;
+    d = clip < d ? clip : d;
+    /* Batches held (the channel was full, or our job out of message
+     * bytes): nothing tells us when they may go, and the compositor may
+     * be waiting for them (a commit) to send anything (M12.1 C5). */
+    if (c->conn && c->conn->held) {
+        uint64_t retry = now() + HELD_RETRY_NS;
+        d = retry < d ? retry : d;
+    }
+    return d;
 }
 
 /* Until something may have happened: the channel, a timer, or deadline. */

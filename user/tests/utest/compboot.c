@@ -18,7 +18,10 @@
  * its, the keys stay the other window's, and still are once it has gone.
  * t_comp_no_keyboard: a window whose client has no wl_keyboard (the boot
  * splash's) never takes the keys: not when it maps over the focused
- * window, not when it is clicked. */
+ * window, not when it is clicked.
+ * t_comp_overlay_late: the same client, with no boot wait for the splash,
+ * has an ordinary full-screen window, not an overlay (review DQ1): a window
+ * mapped after it is above it. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -277,7 +280,8 @@ static bool screen_on_top(bool desk)
     struct cs t;
     memset(&a, 0, sizeof(a));
     memset(&s, 0, sizeof(s));
-    CHECK(desk ? cs_start_desk(&t) : cs_start(&t));
+    /* (the boot's wait for the splash: only then is it an overlay, review DQ1) */
+    CHECK(desk ? cs_start_splash(&t) : cs_start_splash_plain(&t));
     CHECK(keyless_client(&t, &s));
     CHECK(fullscreen_window(&s));
     CHECK(cs_client(&t, &a));
@@ -317,6 +321,40 @@ static bool screen_on_top(bool desk)
 bool t_comp_screen_on_top(void)
 {
     return screen_on_top(false) && screen_on_top(true);
+}
+
+/* The same client with no wait for the splash (it is over, or never was):
+ * an ordinary full-screen window, not an overlay (review DQ1), so a's
+ * window, mapped after it, is above it and a click on a reaches a. */
+static bool late_overlay(bool desk)
+{
+    static struct sc a, s;
+    struct cs t;
+    memset(&a, 0, sizeof(a));
+    memset(&s, 0, sizeof(s));
+    CHECK(desk ? cs_start_desk(&t) : cs_start(&t));
+    CHECK(keyless_client(&t, &s));
+    CHECK(fullscreen_window(&s));
+    CHECK(cs_client(&t, &a));
+    CHECK(cs_window(&a, 10, 10, 64, 64));
+    CHECK(ct_await(&a.k, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER, a.kb, CT_WAIT));
+    ct_clear(&a.k);
+    ct_clear(&s.k);
+    CHECK(cs_pointer_to(&t, 20, 20));
+    CHECK(cs_button(&t, true));
+    CHECK(cs_button(&t, false));
+    CHECK(cs_sync(&a, &s));
+    CHECK(find_ev(&a, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON));
+    CHECK(!find_ev(&s, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON));
+    ct_close(&s.k);
+    ct_close(&a.k);
+    CHECK(cs_stop(&t));
+    return true;
+}
+
+bool t_comp_overlay_late(void)
+{
+    return late_overlay(false) && late_overlay(true);
 }
 
 bool t_comp_no_keyboard(void)

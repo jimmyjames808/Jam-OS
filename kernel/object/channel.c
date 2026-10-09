@@ -642,6 +642,14 @@ status_t channel_set_flags(struct channel *ch, uint32_t flags)
         return ERR_INVALID_ARGS;
     if (!flags)
         return OK;
+    /* Only the end's sole holder marks it: an end is shared (every
+     * program's duplicate of a /svc end), the mark is the end's, not the
+     * handle's, and never comes off, so a holder of one copy could
+     * otherwise stop every handle-carrying reply to all the others. A
+     * second handle can only come from the holder's own (a duplicate or a
+     * send), so a check without a lock is enough. */
+    if (kobject_handles(&ch->base) > 1)
+        return ERR_BAD_STATE;
     status_t st = OK;
     /* Under our lock, as the writer's check (hand_over_locked): a message
      * with handles is either queued before this looks, or refused after. */

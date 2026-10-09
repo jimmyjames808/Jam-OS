@@ -1116,6 +1116,31 @@ firmware left on) is the only trace, and DMA works as before the IOMMU
   them in the RESULTS box, read from the PCI topology
   (`kernel/dev/vtd_rid.c`), and their DMA stays blocked. The PC has no
   such bridge.
+- **Peer to peer (ACS).** A request for another device's BAR can reach it
+  without going up to the root complex, so without the IOMMU: below a
+  PCIe switch, or between the functions of one multi-function device,
+  unless PCIe Access Control Services send it up. So the IOMMU's boot
+  first turns ACS on (source validation, request and completion
+  redirect, upstream forwarding: the bits each offers) at every root
+  port and switch downstream port that has it, and at every function of
+  a multi-function device that has it, a log line each
+  (`pci: ACS on at 00:1c.0 (root port): SV RR CR UF`; `pci: no ACS at
+  ...` for a port without it), as Linux does when its IOMMU is on
+  (`kernel/dev/pci_acs.c`; with `iommu=off` the ports stay as the
+  firmware left them). Then, as for shared requester ids, a function
+  whose way up still has a gap gets no `dma_cap` while the IOMMU
+  translates (`ERR_ACCESS_DENIED`; a `vtd:` log line at boot naming the
+  gap, another at the refusal): one below a switch whose downstream
+  ports don't all have ACS on (its own port's, or its device's requests
+  go straight to a peer; another's, or that port's device reaches it),
+  or one of a multi-function device below a port whose functions don't
+  all have it. Functions on a root bus (the chipset's) and devices alone
+  below a root port are never refused for it, ACS or not: the root
+  complex's own routing between root ports isn't treated as a gap (the
+  owner's decision B of the M12.1 kernel-devices review). On the PC every
+  device sits alone on its root port but the RTX: without ACS on its
+  functions, its HDMI audio (01:00.1) is refused, which no driver asks
+  for (the display, 01:00.0, never gets a cap anyway).
 - **Safe rebind with the IOMMU.** Making a cap turns the function's Bus
   Master Enable off and points its context entry at the new, empty domain
   in one step: whatever the previous driver left queued reaches nothing.
@@ -1900,6 +1925,29 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   Wayland's model and wire format over channels, handles where Linux
   passes file descriptors, `wl_shm` pools as VMOs; our own compositor,
   not a port ([docs/G1-PLAN.md](docs/G1-PLAN.md)).
+- **The transport (JWL2, `<jwl.h>`).** Each client is a channel of its
+  own from `/svc/wayland`'s `svc.connect`. One channel message is a batch:
+  a 16-byte header, then whole Wayland messages, at most 16 KiB and 28
+  handles; handles are a queue per connection, as fds are on a socket, and
+  each `fd` argument takes the next. The compositor leaves at most 32
+  batches unread at a client, by the kernel's count (`handle_info`'s
+  `peer_queued`); past that it holds up to 64 KiB, and a client still
+  behind is disconnected ("too slow"). When it disconnects a client it
+  closes its end at once: what the client never read is the client's job's
+  from then on (M12's Q2).
+- **A client can hurt only itself.** Every message is checked by libjwl's
+  codec (sizes, strings, objects, new ids, versions) and every request by
+  its handler; a broken one ends that connection alone (`wl_display.error`)
+  and everything it made goes in the same turn. Each client is held to
+  caps (`comp.h`: 64 surfaces, 64 pools of 256 MiB in all, 256 buffers,
+  4096 region boxes, frame callbacks, ...) and served 64 messages or 2 ms a
+  turn; 64 connections at once in all. A pool must be a kept VMO, mapped
+  `VMAR_KEPT_ONLY` read-only ([Memory](#memory)), and a buffer is checked
+  to lie inside it when made (pools only grow), so no client can make a
+  read of its pixels fault or reach past them. The compositor never waits
+  on anyone, and the log lines a client or a poster can cause are rationed
+  (`comp_log_ok`), since `printf` waits for the log's reader
+  ([M12.1-REVIEW-COMPOSITOR](docs/M12.1-REVIEW-COMPOSITOR.md)).
 - Windows float or tile, per virtual screen. Tiling is dwindle
   (`wmtile.c`): each screen keeps a binary tree of splits whose leaves
   are its windows, a new window halving the focused tile along its longer
@@ -1918,18 +1966,17 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 - Mode setting and vsync only through the Intel iGPU (documented by
   Intel); the NVIDIA card (GSP firmware, no practical open path) stays a
   plain framebuffer. The IOMMU matters most for GPUs.
-- The HID driver handles a mouse as well as a keyboard and sends events
-  through a protocol a compositor can take over. Keyboards stay in the
-  boot protocol. A mouse whose report descriptor has a wheel is driven in
-  the report protocol, decoded with the layout a small bounded parser
+- The HID driver handles a mouse as well as a keyboard and sends both to
+  the compositor as `input` events (`abi/idl/input.idl`: key usages and
+  the modifier byte, mouse reports; the compositor owns the lock keys and
+  sends each keyboard its lights). Keyboards stay in the boot protocol. A
+  mouse whose report descriptor has a wheel is driven in the report
+  protocol, decoded with the layout a small bounded parser
   (`drivers/hid/report.c`) finds in the descriptor, since a real mouse's
-  boot protocol has no wheel; the boot word `hidboot` keeps every mouse
-  in the boot protocol. The horizontal wheel is parsed but not sent: the
-  `input` protocol has no field for it. Until there is one, the
-  console passes mouse reports on to the client that has the key focus, on
-  its key channel, and only if that client asked for them (the wire format
-  is in `<jam/abi.h>` with the key event's); the apps library turns them
-  into a pointer and draws its arrow.
+  boot protocol has no wheel; the boot word `hidboot` keeps every mouse in
+  the boot protocol. The horizontal wheel is parsed but not sent: the
+  `input` protocol has no field for it. Programs get the pointer as
+  Wayland's `wl_pointer` (the apps library draws in a window).
 
 ### Smooth text
 
@@ -2057,10 +2104,10 @@ and libjwl uses (`user/lib/jwl_data.c`, `jwl_clip_*` in `<jwl_client.h>`).
   of file. A shim for ported Wayland programs (G2) maps `receive(fd)` and
   `send(fd)` onto the same two ends. The compositor never reads or writes
   the data, so a slow or hostile owner can't hold it up; it checks that
-  the handle is a channel end (a zero-byte read: a channel answers
-  `ERR_SHOULD_WAIT` or `ERR_BUFFER_TOO_SMALL`, anything else
-  `ERR_WRONG_TYPE`) and passes it on with write, wait and transfer only,
-  so the owner can't read what the reader writes back.
+  the handle is a channel end with write and transfer rights
+  (`handle_info`: a write-only end, as a pipe's, will do) and passes it on
+  with write, wait and transfer only, so the owner can't read what the
+  reader writes back.
 - **The rules.** Only the client with the keyboard focus may set the
   selection, with the serial of an input event the seat sent it (the
   last eight key presses, button presses and keyboard enters are kept
@@ -2134,7 +2181,7 @@ each request goes out without waiting and its answer comes to the port
   the channel that posted it (`notify_wait`, kept if it isn't waiting), and
   a channel that closes takes its cards with buttons along. The
   compositor never acts on a button itself: init's own "Update written"
-  notice (posted on its ADMIN channel) has a Reboot button that init
+  notice (posted on a notify channel of init's own) has a Reboot button that init
   answers by rebooting, as `initctl.reboot` does, and its "Jam OS
   restarted after a problem" (the boot after a panic) a Details button
   that init answers by opening a terminal running `crashlog`, as

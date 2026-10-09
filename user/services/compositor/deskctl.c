@@ -146,7 +146,9 @@ status_t deskctl_notify(unsigned slot, uint32_t gen, const struct deskctl_note *
         return ERR_NOT_SUPPORTED;
     (void)waiter(slot, gen);
     own(id, slot, gen, n.nbuttons != 0);
-    printf("compositor: notice %u: %s%s%s\n", id, n.title, n.body[0] ? ": " : "", n.body);
+    static struct comp_log said;   /* any program on /svc/notify can post */
+    if (comp_log_ok(&said, "notices"))
+        printf("compositor: notice %u: %s%s%s\n", id, n.title, n.body[0] ? ": " : "", n.body);
     *out_id = id;
     return OK;
 }
@@ -204,7 +206,10 @@ void ctl_notify_answered(uint32_t id, uint32_t button)
     struct waiter *w = &waiters[owned[i].slot];
     if (w->gen != owned[i].gen)
         return;   /* its channel closed meanwhile */
-    printf("compositor: notice %u: button %u pressed\n", id, button);
+    if (button == NOTIFY_DISMISSED)
+        printf("compositor: notice %u: pushed off the screen: dismissed\n", id);
+    else
+        printf("compositor: notice %u: button %u pressed\n", id, button);
     if (w->waiting) {
         w->waiting = false;
         /* A failed write: its caller is gone, and the channel goes with it. */

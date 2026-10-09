@@ -146,6 +146,7 @@ struct jwlc_clip {
     struct jwlc_offer_rec selection;  /* the selection's offer; id 0: none */
     handle_t rx;                      /* a paste's end of its channel; HANDLE_INVALID: none */
     uint64_t rx_deadline;             /* when it is given up */
+    bool     rx_more;                 /* the last tick left messages unread (its budget) */
     char    *buf;                     /* what came so far, cap bytes of room */
     size_t   got, cap;
     char    *pasted;                  /* the last paste that ended OK (NUL-terminated) */

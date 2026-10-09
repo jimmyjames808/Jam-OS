@@ -120,6 +120,7 @@ struct wm_window *wm_create(struct comp_surface *s, const struct wm_ops *ops, vo
 void wm_destroy(struct wm_window *ww)
 {
     wm_unmap(ww);
+    alttab_forget(ww);   /* a list open while Alt is held may show it */
     if (ww->prev)
         ww->prev->next = ww->next;
     else
@@ -489,9 +490,22 @@ void wm_set_app_id(struct wm_window *ww, const char *app_id)
     copy_text(ww->app_id, app_id);
 }
 
+/* A limit the client sent, held to what a buffer can be: one past it
+ * means nothing more, and would overflow the tiler's and the floating
+ * place's sums and fail the arrangement's check after a restart (review
+ * C4). */
+static int32_t side_limit(int32_t v)
+{
+    return v < 0 ? 0 : v > COMP_BUFFER_SIDE_MAX ? COMP_BUFFER_SIDE_MAX : v;
+}
+
 void wm_set_limits(struct wm_window *ww, int32_t min_w, int32_t min_h, int32_t max_w,
                    int32_t max_h)
 {
+    min_w = side_limit(min_w);
+    min_h = side_limit(min_h);
+    max_w = side_limit(max_w);
+    max_h = side_limit(max_h);
     if (ww->min_w == min_w && ww->min_h == min_h && ww->max_w == max_w && ww->max_h == max_h)
         return;
     ww->min_w = min_w;

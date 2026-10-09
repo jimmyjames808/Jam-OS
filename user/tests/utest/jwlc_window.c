@@ -264,3 +264,51 @@ bool t_jwlc_window_sizes(void)
     CHECK(!strcmp(s->title, "renamed") && !s3->fullscreen);
     return fake_all_gone(&f, c, h0, b0);
 }
+
+/* Requests held because the compositor's queue was full go by themselves
+ * (M12.1 C5): a client whose channel is full holds its next batch, and its
+ * deadline is then at most 10 ms away (before: never, so a request the
+ * compositor waited for, a commit, sat until something else woke the
+ * program); once the queue has room, the dispatch at that deadline writes
+ * it and the compositor answers it. */
+bool t_jwlc_held_retry(void)
+{
+    uint64_t h0, b0;
+    fake_held(&h0, &b0);
+    struct fake f;
+    fake_init(&f);
+    struct jwl_client *c = fake_ready(&f);
+    CHECK(c);
+    CHECK_EQ(jwl_client_deadline(c), DEADLINE_NEVER);
+    handle_t mine = jwl_client_channel(c), fake_end = f.conn->ch;
+    uint8_t junk = 0;
+    unsigned filled = 0;
+    while (jam_channel_write(mine, &junk, 1, NULL, 0) == OK)
+        filled++;   /* the compositor's queue, full */
+    CHECK_EQ(filled, CHANNEL_MAX_QUEUED);
+    struct jwl_conn *k = jwl_client_conn(c);
+    struct jwl_callback cb = { 0 };
+    uint32_t id;
+    CHECK_ST(jwl_conn_make(k, &jwl_wl_callback_interface, 1, &cb, &id), OK);
+    CHECK_ST(jwl_wl_display_sync(k, JWL_DISPLAY_ID, id), OK);
+    cb.id = id;
+    CHECK_ST(jwl_client_flush(c), OK);
+    CHECK(k->held != NULL);
+    uint64_t d = jwl_client_deadline(c);
+    CHECK(d <= now() + 10 * NS_PER_MS);
+    for (unsigned i = 0; i < filled; i++) {   /* the compositor takes the junk */
+        uint32_t nb = 0, nh = 0;
+        struct channel_read_args r = { .h = fake_end, .rd_cap = 1,
+                                       .rd_bytes = (uint64_t)(uintptr_t)&junk,
+                                       .rd_actual = (uint64_t)(uintptr_t)&nb,
+                                       .rd_hactual = (uint64_t)(uintptr_t)&nh };
+        CHECK_ST(jam_channel_read(&r), OK);
+    }
+    (void)jam_sleep_until(d);
+    CHECK_ST(jwl_client_dispatch(c), OK);   /* what the program's loop does at its deadline */
+    CHECK(k->held == NULL);
+    CHECK(fake_pump(&f, c));
+    CHECK(cb.done);
+    CHECK_EQ(jwl_client_deadline(c), DEADLINE_NEVER);
+    return fake_all_gone(&f, c, h0, b0);
+}

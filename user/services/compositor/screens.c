@@ -21,9 +21,12 @@
  *     such a screen's last window goes while it is current, the view goes
  *     back to the normal screen left of it, and it goes;
  *   - minimised windows stay on their screen, hidden, listed by its chips;
- *   - a full-screen window whose client takes no keys (the boot splash's:
- *     libjwl's no_keyboard) is a boot overlay instead, not an app to
- *     switch between: on no screen, over whichever is current, the strip
+ *   - the first full-screen window whose client takes no keys (the boot
+ *     splash's: libjwl's no_keyboard), asked for while the boot's wait for
+ *     the splash is on (comp.splash_until, init's `splash` argument), is a
+ *     boot overlay instead, not an app to switch between (any later such
+ *     window, or one asked for after the wait, is an ordinary full-screen
+ *     window: review DQ1): on no screen, over whichever is current, the strip
  *     included (strip.c shows none under it) and every window (the scene
  *     keeps it on top: COMP_WIN_OVERLAY); no screen, dot, chip or Alt+Tab
  *     row, no slide; never the keys (focus.c), so typing reaches the
@@ -46,6 +49,7 @@ static struct {
     struct desk_screen *order[DESK_SCREENS_MAX];   /* left to right */
     unsigned n, cur;
     enum comp_layout deflt;        /* new screens' arrangement */
+    bool overlay_given;            /* the boot overlay has been made: no other (DQ1) */
 } sc;
 
 static void cleanup(void);
@@ -436,10 +440,14 @@ static unsigned normal_near(unsigned i)
 }
 
 /* Is ww to be a boot overlay: asked to be full screen by a client that
- * takes no keys. */
+ * takes no keys, and either it already is one, or it is the first, asked for
+ * during the boot's wait for the splash (review DQ1: after that, such a
+ * client has an ordinary full-screen window, and can't cover the desktop). */
 static bool overlay_wanted(const struct wm_window *ww)
 {
-    return ww->want == WM_FULLSCREEN && !seat_takes_keys(ww->surface->client);
+    if (ww->want != WM_FULLSCREEN || seat_takes_keys(ww->surface->client))
+        return false;
+    return ww->overlay || (comp.splash_until && !sc.overlay_given);
 }
 
 /* ww a boot overlay, or no more (onto the current screen, a normal one). */
@@ -449,6 +457,7 @@ static void set_overlay(struct wm_window *ww, bool on)
     ww->home = NULL;
     ww->minimised = false;
     if (on) {
+        sc.overlay_given = true;
         ww->screen = NULL;
         ww->win->flags |= COMP_WIN_OVERLAY;
         window_raise(ww->win);
