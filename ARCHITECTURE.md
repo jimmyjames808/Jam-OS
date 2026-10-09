@@ -2100,6 +2100,25 @@ writes wait, as into a full pipe) instead of dropping output, and the
 master closing hangs the terminal up. The tests are utest's
 `con_conn_*` ([TESTING.md](docs/TESTING.md)).
 
+A POSIX program sees a terminal through `console.open_tty` (`tty.c`, any
+client level): a `tty` channel (protocol `tty`: `termios` settings,
+drain, flush, the size, and the events `size` and `signal`) and a data
+channel, a pipe both ways, so its one handle tells readable, writable and
+hung up. The console has one **line discipline** for the terminal
+(`<ldisc.h>`, a pure libos module: canonical editing, echo, `ISIG`,
+`VMIN`/`VTIME`'s rules, `OPOST`): the settings outlast the program that
+set them, as on Unix. A tty client takes the focus like `open_keys` (the
+newest wins): the window's keys reach it as xterm's bytes
+(`<keybytes.h>`, `<termkeys.h>`'s inverse), a connection's bytes as they
+came. With `ISIG` on, Ctrl+C flushes the input and goes to the shell's
+keys below the program as today (or, with no shell below, to the tty as
+the `signal` event); with it off it is the byte 3; Ctrl+Alt+C in a window
+is always Ctrl+C to the shell. Input a program leaves unread goes back to
+the terminal when it ends, for the next reader, or as keys to the shell
+when no POSIX reader is left. libc's terminal descriptor is
+`user/posix/sys/tty.c`; the tests are utest's `con_tty_*`, `ldisc_*`,
+`keybytes` and posixtest's tty section.
+
 - **Cells.** JetBrains Mono at 15 pixels to the em: a cell is the face's
   advance rounded to whole pixels wide (9: 0.6 em is exactly 9 at 15,
   so every glyph sits where the font means it; at 14 it would be 8.4,

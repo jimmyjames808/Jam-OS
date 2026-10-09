@@ -1321,6 +1321,25 @@ that sends anything and a peer that floods. In utest (the `init` run;
 | `con_conn_log` | a connection console given the root with `RIGHT_ROOT_KLOG` alone: a client's `console.show_log` gets a line a process logs as text (CR LF), an escape sequence in it shown as `?`, no line from before the console started and no ESC byte at all on the master (skipped without that right: the `init` run has it, `run utest only` doesn't) |
 | `con_conn_hostile` | 6 messages of junk (777 bytes and 64 KiB, mostly ESC, `[` and `~`), sequences without an end, and a message with a handle on the master; short, unknown-ordinal and half-bodied requests on the control channel; the console still answers `console.size` and `resize`, keeps the size when the control channel is closed, and ends with 0 when the master is |
 | `con_conn_backpressure` | 2600 writes of 2048 bytes (5.3 MB, more than the master's 1024 messages hold) with nobody reading the master: the writer's call times out (the console stopped serving) and so does another client's `console.size`; the master then read to the end: every byte there, all `x`, in messages of at most 4096, and the console serves again |
+| `con_tty_canonical` | the terminal's POSIX side (`console.open_tty`, the `tty` protocol) on a connection console: a line typed with an erase in it is echoed (`\b \b`) and arrives on the data channel as one message; output's LF shown as CR LF; Ctrl+D at the start of a line is an empty message; the settings' defaults; `get_size`, and `conn_ctl.resize` as the `size` event; Ctrl+C with no shell below (an ADMIN client's tty) as the `signal` event, the line typed before it flushed |
+| `con_tty_raw` | `set_attr` now: `ICANON`, `ECHO` and `ISIG` off, Ctrl+C is the byte 3 and no event, no echo; `set_attr` after a drain answered only once the output written before it is on the master, `drain` the same; `flush` of the input and `set_attr` after a flush leave nothing to read; a bad `when` or `queue` refused; the next client finds raw mode (the settings are the terminal's) |
+| `con_tty_focus` | a SHELL client's keys below a PROGRAM client's tty: the keys go to the tty, `ISIG`'s Ctrl+C to the shell's keys (not the tty); a line typed and not read and a line half typed reach the shell's keys as keys when the tty closes; an output message over `TTY_OUT_MAX` hangs the tty up; 8 ttys at once, the 9th refused |
+| `ldisc_table` | `<ldisc.h>` alone: 32 byte sequences under termios settings, each with its echo and its records (erase, word erase, kill with `ECHOKE` and `ECHOK`, reprint, end of file, `ECHO` off and `ECHONL`, `ECHOCTL`, a tab erased, `ICRNL`/`IGNCR`/`INLCR`, `ISIG` and `NOFLSH`, Ctrl+Z doing nothing, `VLNEXT`, `IEXTEN` off, raw bytes, a UTF-8 character erased), and `MAX_CANON` |
+| `ldisc_queue` | output processing (`ONLCR`, `OCRNL`, `OPOST` off) and the column a tab is erased from; canonical mode turned off with a line half typed; a peeked record closed; records put back at the front; the queue's record and byte limits |
+| `ldisc_read_rules` | `ld_read_deadline`: canonical mode, and the four cases of `VMIN` and `VTIME` |
+| `keybytes` | `<keybytes.h>` against xterm's bytes (text as UTF-8, Enter, Backspace, Tab and Shift+Tab, Ctrl and Alt, the cursor keys in both cursor modes and with modifiers, Home, End, Insert, Delete, the page keys, F1 to F12, a release and a modifier alone giving none); every key `<termkeys.h>` knows through both and back, and its sequences back through both |
+
+posixtest's tty section (the `init` run; `posixtest tty`) drives a
+connection console of its own: a child started with a PROGRAM client as
+`SR_CONSOLE` and no hand-over finds descriptors 0 to 2 a terminal
+(`isatty`, `ttyname` `/dev/tty`, `tcgetattr`'s defaults, `TIOCGWINSZ`),
+reads a typed line canonically (the echo on the master, a short read and
+its rest), goes raw with `tcsetattr` (Ctrl+C the byte 3; `poll` for
+writing, and for the typing), times out a read with `VMIN` 0 and `VTIME`
+2, gets `EAGAIN` with `O_NONBLOCK`, and goes back with `TCSADRAIN`; a
+second child gets a terminal as descriptor 0 in a hand-over
+(`POSIXFDS_TTY`) and writes through it. A resize as SIGWINCH waits for
+signals (M13's B4).
 
 ## The protocols' servers against hostile clients
 
