@@ -66,7 +66,7 @@
  * USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
  * drv/hid, each in a job of its own, supervised the same way), connected
  * to the compositor through the compctl INPUT channel init gives
- * (SR_CONSOLE, then DEVMGR_SET_CONSOLE after a compositor restart).
+ * (SR_CONSOLE, then devmgrctl.set_input after a compositor restart).
  *
  * A mass-storage interface's driver (usb-storage) serves a disk, which is
  * volumes' (user/services/volumes/, since M12's storage split): devmgr
@@ -417,9 +417,9 @@ int main(int argc, char **argv)
     }
     sup_log("devmgr", sup_sink);
     notice_init(&devmgr_notices, startup_handle(DEVMGR_SR_NOTIFY));
-    /* With a console, class drivers send their input to it. */
+    /* With an input channel, class drivers send their input to it. */
     if (startup_handle(SR_CONSOLE))
-        usb_new_console(startup_handle(SR_CONSOLE));
+        usb_new_input(startup_handle(SR_CONSOLE));
     if (netprobe)
         say(false, "devmgr: netprobe: an RTL8125 (10ec:8125) gets drv/rtl8125, which only "
             "listens");

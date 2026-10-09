@@ -116,9 +116,9 @@ static status_t rebind(struct binding *b)
     if (b->kind == BIND_USB && b->last == ERR_PEER_CLOSED) {
         usb_retire(b, "device gone");
     } else if (b->kind == BIND_USB && b->last == ERR_SHOULD_WAIT) {
-        b->state = DEVMGR_SUP_RESTARTING;   /* once the console is back */
+        b->state = DEVMGR_SUP_RESTARTING;   /* once the input channel is back */
         b->restart_at = DEADLINE_NEVER;
-        b->console_wait = true;
+        b->input_wait = true;
         b->last = OK;
     }
     return b->last;

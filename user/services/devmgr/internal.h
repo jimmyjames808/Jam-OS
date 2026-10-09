@@ -92,8 +92,8 @@ struct binding {
     int32_t             usb_if;     /* its usb_ifs slot; -1: the interface is gone */
     uint32_t            usb_id;     /* usb-bus's device id */
     uint8_t             usb_ifnum;  /* the interface number */
-    bool                console_wait; /* its restart waits for a (new) console */
-    uint32_t            input_gen;  /* its current run got DR_INPUT from console number
+    bool                input_wait; /* its restart waits for a (new) input channel */
+    uint32_t            input_gen;  /* its current run got DR_INPUT from input channel number
                                      * input_gen (0: none) */
     char                name[32];   /* its process name: "hid-<path>:<if>" */
     /* A disk's driver (a BIND_USB running STORAGE_DRIVER: disks.c). */
@@ -205,8 +205,8 @@ void usb_if_closed(uint64_t key);
  * class drivers see their channels close and end by themselves). */
 void usb_bus_gone(struct binding *b);
 /* A BIND_USB binding's handles for its driver: DR_USB (a duplicate of the
- * kept channel) and, with a console, DR_INPUT. ERR_PEER_CLOSED: the
- * interface is gone; ERR_SHOULD_WAIT: the console is restarting. */
+ * kept channel) and, with an input channel, DR_INPUT. ERR_PEER_CLOSED: the
+ * interface is gone; ERR_SHOULD_WAIT: the compositor is restarting. */
 status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
 /* The word a BIND_USB binding's driver is started with after its name:
  * "hidboot" for drv/hid when devmgr was given it, else NULL. */
@@ -220,15 +220,14 @@ void usb_retire(struct binding *b, const char *why);
 /* Is b's interface gone? */
 bool usb_gone(const struct binding *b);
 /* The compositor to connect class drivers to: an INPUT-level compctl
- * channel (abi/idl/compctl.idl), from SR_CONSOLE or DEVMGR_SET_CONSOLE
- * (consumed): the keys and the mouse go to the compositor ("the console"
- * in this file's names means it: track D renames them). A new one
+ * channel (abi/idl/compctl.idl), from SR_CONSOLE or devmgrctl.set_input
+ * (consumed): the keys and the mouse go to the compositor. A new one
  * restarts the class drivers waiting for it. */
-void usb_new_console(handle_t ch);
+void usb_new_input(handle_t ch);
 /* What the class drivers type into, for the log: "compositor". */
 const char *usb_hub_name(void);
-/* Could b's driver have ended because the console went away? */
-bool usb_console_gone(const struct binding *b);
+/* Could b's driver have ended because the compositor went away? */
+bool usb_input_gone(const struct binding *b);
 
 /* disks.c: the disks usb-storage serves, told to volumes (the DISKS
  * channel's `disks` events, abi/idl/volumes.idl). */

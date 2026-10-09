@@ -115,7 +115,7 @@ static status_t serve(const struct chan *c)
         if (denied) {
             r.status = ERR_ACCESS_DENIED;
         } else if (takes_handle && q->ordinal == DEVMGR_SET_CONSOLE) {
-            usb_new_console(in[0]);
+            usb_new_input(in[0]);
             r.status = OK;
         } else if (takes_handle) {
             disks_set_volumes(in[0]);
