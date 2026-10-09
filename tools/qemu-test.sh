@@ -255,4 +255,7 @@ grep -qE "starting the stored kernel: the next boot|$stuck" "$log" && { echo "$n
 grep -qE "Halting|Idling|system halted" "$log" || { echo "$name: TIMEOUT"; exit 1; }
 # A run that ended but said so (a utest, usbtest or driver test FAILED):
 # kernel/main.c's RESULTS line.
-grep -q "run FINISHED WITH PROBLEMS" "$log" && { echo "$name: FINISHED WITH PROBLEMS"; exit 1; }
+if grep -q "run FINISHED WITH PROBLEMS" "$log"; then
+    echo "$name: FINISHED WITH PROBLEMS"
+    exit 1
+fi
