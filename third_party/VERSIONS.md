@@ -165,3 +165,25 @@ Vendored third-party code:
   COPYING-wayland-protocols); README.md there has every file's source and
   sha256. The generated user/include/jwl/*.h and user/lib/jwl_*.c carry the
   XML's copyright block.
+- musl/: musl 1.2.6 (2026-03-20), the C library of POSIX programs
+  (docs/M13-PLAN.md section 1), from
+  https://musl.libc.org/releases/musl-1.2.6.tar.gz (sha256
+  d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a),
+  its signature (musl-1.2.6.tar.gz.asc) checked good against the project
+  key, fingerprint 8364 8929 0BB6 B70F 99FF DA05 56BC DB59 3020 450F, as
+  musl.libc.org publishes it. The whole tarball, unmodified (its
+  dist/config.mak is a sample). MIT (COPYRIGHT). Built by
+  user/posix/posix.mk (not musl's configure), less ldso/ and src/ldso
+  (no dynamic linking) and the files user/posix/musl/OVERRIDES replaces
+  with ours, each listed with its upstream sha256, which
+  tools/checkoverrides.py checks before every build: a new release that
+  changed one of them stops the build until the override is brought up
+  to date. musl's advisories as of 2026-10-09 against 1.2.6
+  (https://musl.libc.org/releases.html): CVE-2026-40200 (qsort, 32-bit
+  only: not us) and CVE-2026-6042 (iconv's GB18030 decoder pathologically
+  slow, a denial of service for a program that converts untrusted GB18030
+  text); upstream's patch for the second
+  (https://www.openwall.com/lists/musl/2026/04/03/2/1, src/locale/iconv.c
+  and a new src/locale/gb18030utf.h) is not applied: no Jam OS program
+  uses iconv yet. Apply it as an override before one does, or take the
+  next release.
