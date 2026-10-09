@@ -412,11 +412,13 @@ static bool t_device(void)
 {
     handle_t q[QUERY_MAX + 1];
     CHECK_ST(audioctl_device_until(ctl(), now() + LONG, 0, &q[0]), OK);
-    uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, count;
-    uint8_t nodes[8], text[240];
+    uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, nodes_len, text_len;
+    uint8_t nodes[8];
+    char text[240];
     CHECK_ST(hda_info_until(q[0], soon(), &codec, &pin, &dac, &pcm, &formats, &amp, &jack,
-                            &count, nodes, text), OK);
-    CHECK(pin != 0);
+                            nodes, &nodes_len, text, &text_len), OK);
+    CHECK(pin != 0 && nodes_len >= 2 && nodes_len <= 8 && nodes[nodes_len - 1] == pin);
+    CHECK(text_len == strlen(text) && text_len > 0);
     int32_t gain, min, max;
     uint32_t step;
     status_t gst = hda_get_gain_until(q[0], soon(), &gain, &step, &min, &max);
@@ -430,7 +432,7 @@ static bool t_device(void)
              ERR_ACCESS_DENIED);
     CHECK(!stream && !ring);
     CHECK_ST(hda_query_until(q[0], soon(), &other), ERR_ACCESS_DENIED);
-    CHECK_ST(hda_start_until(q[0], soon()), ERR_NOT_SUPPORTED);
+    CHECK_ST(hda_stream_start_until(q[0], soon()), ERR_NOT_SUPPORTED);
     /* Bounded: the driver serves QUERY_MAX at once. */
     unsigned got = 1;
     status_t st = OK;

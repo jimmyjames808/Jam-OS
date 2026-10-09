@@ -41,6 +41,7 @@
 #define IDL_ID_IDLTEST_TWO   0x0022u   /* abi/idl/idltest.idl */
 #define IDL_ID_IDLTEST_EV    0x0023u   /* abi/idl/idltest.idl */
 #define IDL_ID_AUDIO_STREAM  0x0032u   /* abi/idl/audio.idl */
+#define IDL_ID_HDA_STREAM    0x0033u   /* abi/idl/hda.idl */
 #define IDL_ID_UPDATE_ANSWER 0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY       0x4d4fu   /* kernel/include/jam/startup.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER  0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */

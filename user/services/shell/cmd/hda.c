@@ -27,16 +27,16 @@
 /* hda.info's line: the path the driver set up, or why there is none. */
 static void print_path(handle_t ch)
 {
-    uint32_t codec, pin, dac, pcm, formats, amp, jack, count;
-    uint8_t nodes[8], text[240];
+    uint32_t codec, pin, dac, pcm, formats, amp, jack, nodes_len, text_len;
+    uint8_t nodes[8];
+    char text[240];
     status_t st = hda_info_until(ch, now() + DUMP_WAIT, &codec, &pin, &dac, &pcm, &formats, &amp,
-                                 &jack, &count, nodes, text);
+                                 &jack, nodes, &nodes_len, text, &text_len);
     if (st != OK) {
         sh_say("hda: path: %s\n", status_str(st));
         return;
     }
-    text[sizeof(text) - 1] = 0;
-    sh_say("hda: path: %s\n", (const char *)text);
+    sh_say("hda: path: %s\n", text);
 }
 
 /* "hda: gain -30.0 dB (step 47; -65.3 to 0.0 dB)", or why there is none. */
@@ -57,21 +57,20 @@ static void say_gain(status_t st, int32_t gain, uint32_t step, int32_t min, int3
 /* hda.jacks's lines, each with "hda: jack " before it. */
 static void print_jacks(handle_t ch)
 {
-    uint32_t count = 0, state = 0, changes = 0;
+    uint32_t pins_len = 0, states_len = 0, text_len = 0, state = 0, changes = 0;
     uint8_t pins[16], states[16];
     char *text = malloc(1024);
     if (!text) {
         sh_say("hda: jacks: no memory\n");
         return;
     }
-    status_t st = hda_jacks_until(ch, now() + DUMP_WAIT, &count, &state, &changes, pins, states,
-                                  (uint8_t *)text);
+    status_t st = hda_jacks_until(ch, now() + DUMP_WAIT, &state, &changes, pins, &pins_len, states,
+                                  &states_len, text, &text_len);
     if (st != OK) {
         sh_say("hda: jacks: %s\n", status_str(st));
         free(text);
         return;
     }
-    text[1023] = 0;
     for (char *line = text; *line;) {
         char *end = strchr(line, '\n');
         if (end)
@@ -123,10 +122,11 @@ handle_t sh_hda(void)
             break;
         if (st != OK)
             continue;
-        uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, count;
-        uint8_t nodes[8], text[240];
+        uint32_t codec, pin = 0, dac, pcm, formats, amp, jack, nodes_len, text_len;
+        uint8_t nodes[8];
+        char text[240];
         st = hda_info_until(ch, now() + DUMP_WAIT, &codec, &pin, &dac, &pcm, &formats, &amp,
-                            &jack, &count, nodes, text);
+                            &jack, nodes, &nodes_len, text, &text_len);
         if (st == OK && pin)
             return ch;
         jam_handle_close(ch);
