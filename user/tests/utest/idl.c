@@ -226,7 +226,7 @@ static bool kept_at_least(const struct server *s, uint32_t n)
 {
     uint64_t end = now() + CALL_WAIT;
     while (__atomic_load_n(&s->nkept, __ATOMIC_ACQUIRE) < n)
-        CHECK(now() < end && jam_nanosleep(now() + NS_PER_MS) == OK);
+        CHECK(now() < end && jam_sleep_until(now() + NS_PER_MS) == OK);
     return true;
 }
 

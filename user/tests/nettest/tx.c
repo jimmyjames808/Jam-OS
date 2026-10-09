@@ -73,7 +73,7 @@ static bool drained(struct sess *s, uint64_t want)
         if (now() > end)
             FAIL("the driver consumed %lu of %lu", (unsigned long)s->txe.hdr->consumed,
                  (unsigned long)want);
-        (void)jam_nanosleep(now() + NS_PER_MS);
+        (void)jam_sleep_until(now() + NS_PER_MS);
     }
     return true;
 }
@@ -131,7 +131,7 @@ static bool bad_counts(struct sess *s)
     /* Backwards: nothing taken, an error counted, then put right. */
     __atomic_store_n(&s->txe.hdr->produced, s->txe.count - 3, __ATOMIC_RELEASE);
     (void)jam_event_signal(s->to_driver, 0, NETDEV_SIG_TX);
-    (void)jam_nanosleep(now() + 200 * NS_PER_MS);
+    (void)jam_sleep_until(now() + 200 * NS_PER_MS);
     CHECK(get_stats(nic, &c));
     CHECK_EQ(c.tx_frames, b.tx_frames);
     CHECK(c.ring_errors > b.ring_errors);
@@ -217,7 +217,7 @@ static bool settled(void)
         CHECK(get_stats(nic, &b));
         if (b.tx_done == b.tx_frames && b.chip_tx_ok == b.tx_frames)
             break;
-        (void)jam_nanosleep(now() + 20 * NS_PER_MS);
+        (void)jam_sleep_until(now() + 20 * NS_PER_MS);
     } while (now() < end);
     printf("nettest: tx: the driver queued %lu frames since it started, the chip sent %lu "
            "(reaped %lu); refused %lu bad length, %lu tagged, %lu flags; ring errors %lu\n",

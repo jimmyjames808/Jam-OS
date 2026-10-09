@@ -185,7 +185,7 @@ static void play(struct audio_out *a, const int16_t *pcm, uint64_t from, uint64_
         } else if (!a->s.started && mixer_start(&a->s, now() + NS_PER_S) != OK) {
             return;   /* less than a ring left: audio_write never started it */
         } else {
-            jam_nanosleep(now() + POLL / 2);
+            jam_sleep_until(now() + POLL / 2);
         }
         if (now() - last_poll < POLL)
             continue;
@@ -239,7 +239,7 @@ static void sound_main(void *arg)
     /* The video starts the clock. */
     while (!__atomic_load_n(&t0, __ATOMIC_ACQUIRE) &&
            !__atomic_load_n(&stop_asked, __ATOMIC_ACQUIRE))
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     /* With the sound ready in time, video and sound start together: from
      * frame 0, the clock held at 0 until it is heard. Late, the sound joins
      * where the animation is by the time it is heard: at boot the splash's
@@ -292,5 +292,5 @@ void sound_stop(void)
 void sound_wait(uint64_t deadline)
 {
     while (!__atomic_load_n(&ended, __ATOMIC_ACQUIRE) && now() < deadline)
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
 }

@@ -23,7 +23,7 @@ status_t jam_debug_write(const char *buf, uint64_t len);
 _Noreturn void jam_process_exit(int64_t code);
 _Noreturn void jam_thread_exit(void);
 int64_t jam_clock_get(void);
-status_t jam_nanosleep(uint64_t deadline_ns);
+status_t jam_sleep_until(uint64_t deadline_ns);
 status_t jam_debug_report(const char *buf, uint64_t len);
 status_t jam_handle_close(handle_t h);
 status_t jam_handle_duplicate(handle_t h, rights_t rights, handle_t *out);

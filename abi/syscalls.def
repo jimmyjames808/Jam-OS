@@ -36,7 +36,10 @@
 2   process_exit      noreturn  int64_t code
 3   thread_exit       noreturn  void
 4   clock_get         i64       void
-5   nanosleep         status    uint64_t deadline_ns
+# Sleep until the uptime clock reaches deadline_ns (a deadline, as every
+# call takes: M12's rule for time). Named nanosleep until M12, the same
+# number and arguments.
+5   sleep_until       status    uint64_t deadline_ns
 # debug_write, and the line also goes into the RESULTS box at the end of the
 # boot (at most a few dozen lines from all processes together).
 6   debug_report      status    const char *buf, uint64_t len

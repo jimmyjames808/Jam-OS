@@ -102,7 +102,7 @@ static bool t_basics(void)
 {
     uint64_t t0 = now();
     CHECK(t0 > 0);
-    CHECK_ST(jam_nanosleep(t0 + 2 * NS_PER_MS), OK);
+    CHECK_ST(jam_sleep_until(t0 + 2 * NS_PER_MS), OK);
     CHECK(now() >= t0 + 2 * NS_PER_MS);
 
     handle_t e, tm, port;
@@ -401,7 +401,7 @@ static bool t_kill_in_channel_call(void)
     signals_t seen;
     /* The request arriving means the child is (about to be) blocked. */
     CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + 10 * NS_PER_S, &seen), OK);
-    jam_nanosleep(now() + 30 * NS_PER_MS);
+    jam_sleep_until(now() + 30 * NS_PER_MS);
     CHECK_ST(info_of(job, &ji), OK);
     CHECK_EQ(ji.used[JOB_LIMIT_THREADS], 2);   /* main (in the call) + the sleeper */
     CHECK(ji.used[JOB_LIMIT_PAGES] >= 16);      /* its heap */

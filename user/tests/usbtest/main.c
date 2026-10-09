@@ -417,7 +417,7 @@ static bool hid_ready(struct kbd *k, uint32_t restarts, uint64_t *reports)
         if (st == OK && r.a == DEVMGR_SUP_RUNNING && r.b >= restarts &&
             ep_stats(k, reports, &dropped, &open) == OK && open)
             return true;
-        jam_nanosleep(in(20 * NS_PER_MS));
+        jam_sleep_until(in(20 * NS_PER_MS));
     }
     FAIL("%s not polling the keyboard after 20 s (supervision %s, state %u, restarts %u, open %u)",
          k->name, status_str(st), r.a, r.b, open);
@@ -434,7 +434,7 @@ static bool hid_got(struct kbd *k, uint64_t base, uint64_t n)
             CHECK(dropped == 0);
             return true;
         }
-        jam_nanosleep(in(10 * NS_PER_MS));
+        jam_sleep_until(in(10 * NS_PER_MS));
     }
     FAIL("%s took %lu report(s) in 15 s, want %lu", k->name, (unsigned long)(reports - base),
          (unsigned long)n);
@@ -453,7 +453,7 @@ static bool hid_unbound(uint32_t id)
     struct devmgr_rep r;
     status_t st = OK;
     while (now() < end && (st = hid_sup(id, &r)) != ERR_NOT_FOUND)
-        jam_nanosleep(in(20 * NS_PER_MS));
+        jam_sleep_until(in(20 * NS_PER_MS));
     CHECK_ST(st, ERR_NOT_FOUND);
     return true;
 }

@@ -1,7 +1,7 @@
 /* System calls: debug output, exit, time, handles, waiting and signals,
  * events, timers and ports. The rules all sysc_* follow are in sysc.h.
  *
- * Blocking calls (nanosleep, object_wait_one, port_wait) use the
+ * Blocking calls (sleep_until, object_wait_one, port_wait) use the
  * cancellable waits, so a thread whose process is killed stops waiting at
  * once (ERR_CANCELED) and leaves on its way back to user mode. */
 #include <jam/abi.h>
@@ -64,7 +64,7 @@ int64_t sysc_clock_get(void)
     return (int64_t)uptime_ns();
 }
 
-int64_t sysc_nanosleep(uint64_t deadline_ns)
+int64_t sysc_sleep_until(uint64_t deadline_ns)
 {
     while (uptime_ns() < deadline_ns)
         if (thread_block_cancellable(NULL, NULL, deadline_ns) != OK)

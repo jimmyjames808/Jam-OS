@@ -88,7 +88,7 @@ static bool kjob_pages(handle_t job, uint64_t want)
         CHECK_ST(jam_job_get_info(job, &ji), OK);
         if (ji.used[JOB_LIMIT_PAGES] == want)
             return true;
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     } while (now() < end);
     FAIL("the job uses %lu pages, not %lu", (unsigned long)ji.used[JOB_LIMIT_PAGES],
          (unsigned long)want);

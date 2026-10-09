@@ -375,7 +375,7 @@ static void wait_a_while(const struct jwl_client *c, uint64_t deadline)
         signals_t seen;
         (void)jam_object_wait_one(c->conn->ch, SIG_READABLE | SIG_PEER_CLOSED, d, &seen);
     } else if (d != DEADLINE_NEVER) {
-        (void)jam_nanosleep(d);
+        (void)jam_sleep_until(d);
     }
 }
 

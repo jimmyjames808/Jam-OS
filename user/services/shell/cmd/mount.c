@@ -79,7 +79,7 @@ SH_CMD(mount)
      * main loop sends every follower the change after the mounts watcher
      * made it), so a mount just announced may take a moment to arrive. */
     status_t st = ERR_NOT_FOUND;
-    for (uint64_t until = now() + SEEN_WAIT; sh_is_mount(path); jam_nanosleep(now() + POLL)) {
+    for (uint64_t until = now() + SEEN_WAIT; sh_is_mount(path); jam_sleep_until(now() + POLL)) {
         st = fs_statfs(path, &total, &free_bytes, &ro, label);
         if (st != ERR_NOT_FOUND || now() >= until)
             break;
@@ -109,7 +109,7 @@ SH_CMD(mount)
     }
     /* The service was started again: the mount is back once its volume is
      * mounted and init has passed us the new channel. */
-    for (uint64_t until = now() + BACK_WAIT; now() < until; jam_nanosleep(now() + POLL)) {
+    for (uint64_t until = now() + BACK_WAIT; now() < until; jam_sleep_until(now() + POLL)) {
         if (fs_statfs(path, &total, &free_bytes, &ro, label) == OK && ro != writable) {
             sh_say("mount: %s is now %s (in %lu ms)\n", path, how,
                    (unsigned long)((now() - t0) / NS_PER_MS));

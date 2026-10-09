@@ -475,7 +475,7 @@ static bool run_one(const char *c)
         if (numbers(s, v, 1, -1, &rest) != 1 || rest || v[0] < 0 || v[0] > 600000)
             return false;
         printf("compositor: testscene: holding %ld ms after paint %u\n", (long)v[0], npaints);
-        jam_nanosleep(now() + (uint64_t)v[0] * NS_PER_MS);
+        jam_sleep_until(now() + (uint64_t)v[0] * NS_PER_MS);
         return true;
     }
     static const char *const win_cmds[] = { "move", "raise", "map", "unmap" };

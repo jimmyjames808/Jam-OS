@@ -123,7 +123,7 @@ bool t_reply_wait_mark_before_wait(void)
      * and the server is still waiting for its next request. */
     uint64_t end = now() + NS_PER_S;
     while (!__atomic_load_n(&rw_mark, __ATOMIC_ACQUIRE) && now() < end)
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     CHECK_EQ(__atomic_load_n(&rw_mark, __ATOMIC_ACQUIRE), 1);
     CHECK(!__atomic_load_n(&rw_server_back, __ATOMIC_ACQUIRE));
     CHECK_ST(jam_handle_close(a), OK);   /* its wait ends: nothing queued, the peer gone */

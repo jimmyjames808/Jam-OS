@@ -33,9 +33,9 @@ static int64_t call_clock_get(const struct syscall_frame *f)
     return sysc_clock_get();
 }
 
-static int64_t call_nanosleep(const struct syscall_frame *f)
+static int64_t call_sleep_until(const struct syscall_frame *f)
 {
-    return sysc_nanosleep(f->args[0]);
+    return sysc_sleep_until(f->args[0]);
 }
 
 static int64_t call_debug_report(const struct syscall_frame *f)
@@ -493,7 +493,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_process_exit] = call_process_exit,
     [SYS_thread_exit] = call_thread_exit,
     [SYS_clock_get] = call_clock_get,
-    [SYS_nanosleep] = call_nanosleep,
+    [SYS_sleep_until] = call_sleep_until,
     [SYS_debug_report] = call_debug_report,
     [SYS_handle_close] = call_handle_close,
     [SYS_handle_duplicate] = call_handle_duplicate,

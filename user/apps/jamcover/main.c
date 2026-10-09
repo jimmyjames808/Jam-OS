@@ -30,7 +30,7 @@ static status_t do_decode(void *ctx, uint64_t len, uint32_t large, uint32_t *out
     if (h->crash)
         *(volatile uint32_t *)0 = 1;   /* a decoder bug, as a page fault */
     while (h->hang)
-        jam_nanosleep(DEADLINE_NEVER);
+        jam_sleep_until(DEADLINE_NEVER);
     if (!len || len > JAMCOVER_IN_BYTES)
         return ERR_INVALID_ARGS;
     int w = 0, ht = 0;

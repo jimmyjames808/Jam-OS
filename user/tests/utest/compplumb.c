@@ -90,7 +90,7 @@ static bool click(struct cs *t, int32_t x, int32_t y)
 /* The newest card's first button (one without a body), once it slid in. */
 static bool press_first_button(struct cs *t)
 {
-    jam_nanosleep(now() + SHORT);
+    jam_sleep_until(now() + SHORT);
     int32_t x1 = OUT_W - LOOK_NOTE_RIGHT - LOOK_NOTE_W;
     int32_t bx = x1 + LOOK_NOTE_PAD_X + LOOK_NOTE_TILE + 10, by = LOOK_NOTE_TOP + LOOK_NOTE_PAD_Y +
                                                                     18 + 8;
@@ -138,7 +138,7 @@ bool t_comp_notify_splash(void)
     CHECK(press_first_button(&t));
     CHECK_ST(jam_object_wait_one(n, SIG_READABLE, now() + SHORT, &seen), ERR_TIMED_OUT);
     /* no splash in 5 s: the desktop, the held card, its press answered */
-    jam_nanosleep(t0 + 5 * NS_PER_S + SHORT);
+    jam_sleep_until(t0 + 5 * NS_PER_S + SHORT);
     CHECK(press_first_button(&t));
     CHECK_ST(press_answer(n, &got, &b), OK);
     CHECK(got == held && b == 0);
@@ -201,7 +201,7 @@ static bool notify_caps(handle_t n, handle_t other)
     for (unsigned i = 0; i < 3; i++)
         CHECK_ST(compctl_withdraw_within(n, CT_WAIT, ids[i]), OK);
     CHECK_ST(compctl_withdraw_within(other, CT_WAIT, id), OK);
-    jam_nanosleep(now() + SHORT);   /* every card gone */
+    jam_sleep_until(now() + SHORT);   /* every card gone */
     return true;
 }
 
@@ -219,10 +219,10 @@ static bool notify_presses(struct cs *t, handle_t n)
     CHECK_ST(press_answer(n, &got, &b), OK);
     CHECK(got == id && b == 0);
     /* not waiting: kept for the next notify_wait, answered at once */
-    jam_nanosleep(now() + SHORT);   /* the card has gone */
+    jam_sleep_until(now() + SHORT);   /* the card has gone */
     CHECK_ST(post(n, &x, 'U', 2, &id), OK);
     CHECK(press_first_button(t));
-    jam_nanosleep(now() + SHORT);
+    jam_sleep_until(now() + SHORT);
     CHECK_ST(compctl_notify_wait_within(n, CT_WAIT, &got, &b), OK);
     CHECK(got == id && b == 0);
     return true;
@@ -273,7 +273,7 @@ static bool around_is(const struct cs *t, uint64_t was, bool same)
 {
     uint64_t until = now() + CT_WAIT;
     while ((around(t) == was) != same && now() < until)
-        jam_nanosleep(now() + 5 * NS_PER_MS);
+        jam_sleep_until(now() + 5 * NS_PER_MS);
     if ((around(t) == was) != same)
         FAIL("the cursor is %s", same ? "still busy" : "not busy");
     return true;
@@ -374,7 +374,7 @@ static bool launch_app(struct cs *t, uint64_t idle)
     r = (struct initctl_launch_rep){ .txid = q.txid, .status = OK, .koid = 77 };
     CHECK_ST(jam_channel_write(t->init, &r, sizeof(r), NULL, 0), OK);
     CHECK(around_is(t, idle, false));
-    jam_nanosleep(now() + SHORT);
+    jam_sleep_until(now() + SHORT);
     CHECK(around(t) != idle);   /* still busy: no window yet */
     static struct xw w;
     CHECK(xdg_window(t, &w, "Jamjar"));
@@ -395,7 +395,7 @@ static bool run_in_terminal(struct cs *t, uint64_t idle)
     CHECK(around_is(t, idle, false));
     static struct xw w;
     CHECK(xdg_window(t, &w, "Terminal 2"));   /* not its window */
-    jam_nanosleep(now() + SHORT);
+    jam_sleep_until(now() + SHORT);
     CHECK(around(t) != idle);
     static struct xw w3;
     CHECK(xdg_window(t, &w3, "Terminal 3"));
@@ -410,9 +410,9 @@ bool t_comp_launch(void)
     struct cs t;
     CHECK(cs_start_desk(&t));
     CHECK(cs_pointer_to(&t, PX, PY));
-    jam_nanosleep(now() + SHORT);
+    jam_sleep_until(now() + SHORT);
     uint64_t idle = around(&t);
-    jam_nanosleep(now() + SHORT);
+    jam_sleep_until(now() + SHORT);
     CHECK(around(&t) == idle);   /* nothing moves there: the arrow on the wallpaper */
     CHECK(launch_app(&t, idle));
     CHECK(run_in_terminal(&t, idle));
@@ -506,7 +506,7 @@ static bool volume_slider(struct cs *t, int32_t mode_x1)
 {
     /* the volume icon: two icons right of the layout one (strip.c) */
     int32_t vol_x2 = mode_x1 + 3 * LOOK_ICON_W + 2 * LOOK_ISLAND_GAP;
-    jam_nanosleep(now() + 600 * NS_PER_MS);   /* the last answer is stale: asked again */
+    jam_sleep_until(now() + 600 * NS_PER_MS);   /* the last answer is stale: asked again */
     CHECK(click(t, vol_x2 - LOOK_ICON_W / 2 + 1, LOOK_STRIP_H / 2));
     union { struct idl_req_hdr h; struct audioctl_set_master_req s; uint8_t b[64]; } q;
     uint32_t n = 0;
@@ -542,7 +542,7 @@ static bool volume_slider(struct cs *t, int32_t mode_x1)
 static bool network_popover(struct cs *t, int32_t mode_x1)
 {
     int32_t net_x = mode_x1 + LOOK_ICON_W + LOOK_ISLAND_GAP + LOOK_ICON_W / 2;
-    jam_nanosleep(now() + 600 * NS_PER_MS);
+    jam_sleep_until(now() + 600 * NS_PER_MS);
     CHECK(click(t, net_x, LOOK_STRIP_H / 2));
     union { struct idl_req_hdr h; uint8_t b[64]; } q;
     uint32_t n = 0;

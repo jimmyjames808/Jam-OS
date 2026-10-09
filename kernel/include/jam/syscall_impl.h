@@ -14,7 +14,7 @@ int64_t sysc_debug_write(uint64_t buf, uint64_t len);
 int64_t sysc_process_exit(int64_t code);
 int64_t sysc_thread_exit(void);
 int64_t sysc_clock_get(void);
-int64_t sysc_nanosleep(uint64_t deadline_ns);
+int64_t sysc_sleep_until(uint64_t deadline_ns);
 int64_t sysc_debug_report(uint64_t buf, uint64_t len);
 int64_t sysc_handle_close(handle_t h);
 int64_t sysc_handle_duplicate(handle_t h, rights_t rights, uint64_t out);

@@ -189,7 +189,7 @@ static void wait_once(uint64_t until)
     if (ch != HANDLE_INVALID)   /* a timeout or a wake: the caller looks either way */
         (void)jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, d, &seen);
     else
-        (void)jam_nanosleep(d);
+        (void)jam_sleep_until(d);
 }
 
 /* The window's first configure, then scr the size it gives. */

@@ -39,13 +39,13 @@ jam_clock_get:
     ret
     .size jam_clock_get, . - jam_clock_get
 
-    .globl jam_nanosleep
-    .type jam_nanosleep, @function
-jam_nanosleep:
-    mov $SYS_nanosleep, %eax
+    .globl jam_sleep_until
+    .type jam_sleep_until, @function
+jam_sleep_until:
+    mov $SYS_sleep_until, %eax
     syscall
     ret
-    .size jam_nanosleep, . - jam_nanosleep
+    .size jam_sleep_until, . - jam_sleep_until
 
     .globl jam_debug_report
     .type jam_debug_report, @function

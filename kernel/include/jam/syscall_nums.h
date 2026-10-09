@@ -6,7 +6,7 @@
 #define SYS_process_exit         2
 #define SYS_thread_exit          3
 #define SYS_clock_get            4
-#define SYS_nanosleep            5
+#define SYS_sleep_until          5
 #define SYS_debug_report         6
 #define SYS_handle_close         10
 #define SYS_handle_duplicate     11
