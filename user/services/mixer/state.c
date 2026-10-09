@@ -35,17 +35,18 @@
 #include <keep.h>
 #include "internal.h"
 
-/* The biggest reply of either protocol (svc.connect's is smaller). */
-#define REP_CAP (AUDIO_REP_MAX > AUDIOCTL_REP_MAX ? AUDIO_REP_MAX : AUDIOCTL_REP_MAX)
-
-_Static_assert(REQ_CAP_AUDIO >= REQ_CAP_CTL, "the slot holds the bigger request");
+/* The biggest request and reply of the three protocols (svc.connect's are
+ * smaller). */
+#define MAX2(a, b) ((a) > (b) ? (a) : (b))
+#define REQ_CAP    MAX2(MAX2(REQ_CAP_AUDIO, REQ_CAP_STREAM), REQ_CAP_CTL)
+#define REP_CAP    MAX2(MAX2(AUDIO_REP_MAX, AUDIO_STREAM_REP_MAX), AUDIOCTL_REP_MAX)
 _Static_assert(MIXER_MAX_STREAMS <= KEEP_CLIENT - KEEP_STREAM, "stream keep slots");
 _Static_assert(MIXER_CLIENTS <= KEEP_OUT - KEEP_CLIENT, "opener keep slots");
 
 static const struct svcstate_layout layout = {
     .kind = STATE_KIND,
     .layout = STATE_LAYOUT,
-    .req_cap = REQ_CAP_AUDIO,
+    .req_cap = REQ_CAP,
     .rep_cap = REP_CAP,
     .user_size = sizeof(struct mixer_saved),
 };
@@ -274,7 +275,8 @@ uint64_t keep_tick(struct mixer *m, uint64_t deadline)
 
 /* ---- requests in slots ------------------------------------------------------------ */
 
-status_t req_take(struct mixer *m, handle_t ch, uint32_t key, bool ctl, unsigned *slot)
+status_t req_take(struct mixer *m, handle_t ch, uint32_t key, enum req_proto proto,
+                  unsigned *slot)
 {
     unsigned i;
     struct idl_slot is;
@@ -282,13 +284,16 @@ status_t req_take(struct mixer *m, handle_t ch, uint32_t key, bool ctl, unsigned
     /* The protocol's generated take, which sends the reply waiting first: a
      * message too long for the slot is answered ERR_INVALID_ARGS there, one
      * under 4 bytes (no txid) dropped. */
-    status_t st = ctl ? audioctl_take_slot(ch, &is, &m->reply)
-                      : audio_take_slot(ch, &is, &m->reply);
+    status_t st = proto == PROTO_CTL    ? audioctl_take_slot(ch, &is, &m->reply)
+                  : proto == PROTO_STREAM ? audio_stream_take_slot(ch, &is, &m->reply)
+                                          : audio_take_slot(ch, &is, &m->reply);
     *slot = REQ_NONE;
     if (!svcstate_taken(&m->state, i) || st != OK)
         return st;
     uint32_t n = *is.n, nh = *is.nh;
-    if (nh || n > (ctl ? REQ_CAP_CTL : REQ_CAP_AUDIO)) {
+    uint32_t cap = proto == PROTO_CTL ? REQ_CAP_CTL : proto == PROTO_STREAM ? REQ_CAP_STREAM
+                                                                            : REQ_CAP_AUDIO;
+    if (nh || n > cap) {
         idl_close_all(m->state.handles, nh);
         req_status(m, i, ch, ERR_INVALID_ARGS);
         return OK;

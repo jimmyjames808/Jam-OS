@@ -236,10 +236,14 @@ static void pause_ms(uint64_t ms)
 static status_t streams(struct mixer_stream_info *e, uint32_t *n, int32_t *master)
 {
     uint8_t raw[640];
-    status_t st = audioctl_streams_until(ctl(), soon(), n, master, raw);
-    if (st == OK && *n <= MIXER_MAX_STREAMS)
-        memcpy(e, raw, *n * sizeof(*e));
-    return st == OK && *n > MIXER_MAX_STREAMS ? ERR_INTERNAL : st;
+    uint32_t len = 0;
+    status_t st = audioctl_streams_until(ctl(), soon(), master, raw, &len);
+    *n = len / sizeof(*e);
+    if (st == OK && (len % sizeof(*e) || *n > MIXER_MAX_STREAMS))
+        return ERR_INTERNAL;
+    if (st == OK)
+        memcpy(e, raw, len);
+    return st;
 }
 
 /* The listed stream called name (at volume `vol`, unless it is 1), within
@@ -281,17 +285,25 @@ static void gap(void)
 
 static bool t_protocol(void)
 {
-    uint8_t name[16] = "proto";
+    const char *name = "proto";
     handle_t ch, ring, ev;
     uint32_t id, frames, lead;
-    CHECK_ST(audio_open_output_until(svc(), soon(), 44100, 2, 16, name, &ch, &ring, &ev, &id,
+    CHECK_ST(audio_open_output_until(svc(), soon(), 44100, 2, 16, name, 5, &ch, &ring, &ev, &id,
                                      &frames, &lead), ERR_NOT_SUPPORTED);
-    CHECK_ST(audio_open_output_until(svc(), soon(), 48000, 1, 16, name, &ch, &ring, &ev, &id,
+    CHECK_ST(audio_open_output_until(svc(), soon(), 48000, 1, 16, name, 5, &ch, &ring, &ev, &id,
                                      &frames, &lead), ERR_NOT_SUPPORTED);
+    /* a name that is not UTF-8, or too long, never reaches the mixer */
+    CHECK_ST(audio_open_output_until(svc(), soon(), 48000, 2, 16, "\xff\xfe", 2, &ch, &ring, &ev,
+                                     &id, &frames, &lead), ERR_INVALID_ARGS);
+    CHECK_ST(audio_open_output_until(svc(), soon(), 48000, 2, 16, "0123456789abcdef", 16, &ch,
+                                     &ring, &ev, &id, &frames, &lead), ERR_INVALID_ARGS);
     CHECK_ST(audio_stream_start_until(svc(), soon()), ERR_NOT_SUPPORTED);
     struct mixer_stream s[1];
     CHECK_ST(mixer_open(svc(), "proto", soon(), &s[0]), OK);
     CHECK(s[0].frames >= 4096 && s[0].lead > 0);
+    /* a stream's channel speaks audio_stream alone (Q5): the opener's method is not its */
+    CHECK_ST(audio_open_output_until(s[0].ch, soon(), 48000, 2, 16, name, 5, &ch, &ring, &ev, &id,
+                                     &frames, &lead), ERR_NOT_SUPPORTED);
     uint64_t f;
     CHECK_ST(audio_stream_drain_until(s[0].ch, soon(), &f), ERR_BAD_STATE);
     int32_t got = 1;
@@ -576,35 +588,39 @@ static bool t_desk(void)
     uint32_t n = 0;
     int32_t master = 1, cb = 0;
     static uint8_t list[640];
-    CHECK_ST(audioctl_streams_until(d, soon(), &n, &master, list), ERR_ACCESS_DENIED);
+    CHECK_ST(audioctl_streams_until(d, soon(), &master, list, &n), ERR_ACCESS_DENIED);
     CHECK_ST(audioctl_set_volume_until(d, soon(), 1, -60, &cb), ERR_ACCESS_DENIED);
     CHECK_ST(audioctl_device_until(d, soon(), 0, &h), ERR_ACCESS_DENIED);
     CHECK_ST(audioctl_desk_channel_until(d, soon(), &h), ERR_ACCESS_DENIED);
     CHECK(!h);
     /* nothing plays: its master, the output's name */
-    uint8_t playing = 9, title[64], output[48];
-    CHECK_ST(audioctl_desk_until(d, soon(), &master, &playing, title, output), OK);
+    uint8_t playing = 9;
+    char title[64], output[48];
+    uint32_t title_len = 99, output_len = 0;
+    CHECK_ST(audioctl_desk_until(d, soon(), &master, &playing, title, &title_len, output,
+                                 &output_len), OK);
     CHECK_EQ(master, 0);
     CHECK_EQ(playing, 0);
-    CHECK(!strncmp((const char *)output, "QEMU ", 5));
+    CHECK_EQ(title_len, 0);
+    CHECK(!strncmp(output, "QEMU ", 5) && output_len == strlen(output));
     /* the master volume set on it is the mixer's */
     CHECK_ST(audioctl_set_master_until(d, soon(), -200, &cb), OK);
-    CHECK_ST(audioctl_streams_until(ctl(), soon(), &n, &master, list), OK);
+    CHECK_ST(audioctl_streams_until(ctl(), soon(), &master, list, &n), OK);
     CHECK_EQ(master, -200);
     /* a stream of silence with a title: what plays */
     struct mixer_stream s;
     CHECK_ST(mixer_open(svc(), "desk", soon(), &s), OK);
-    uint8_t t[64] = "Artist - Title";
-    CHECK_ST(audio_stream_set_title_until(s.ch, soon(), t), OK);
+    CHECK_ST(audio_stream_set_title_until(s.ch, soon(), "Artist - Title", 14), OK);
     static int16_t quiet[2 * CHUNK];
     size_t done = 0;
     for (unsigned k = 0; k < 8; k++)
         CHECK_ST(mixer_write(&s, quiet, CHUNK, now() + LONG, &done), OK);
     CHECK_ST(mixer_start(&s, soon()), OK);
     pause_ms(100);
-    CHECK_ST(audioctl_desk_until(d, soon(), &master, &playing, title, output), OK);
+    CHECK_ST(audioctl_desk_until(d, soon(), &master, &playing, title, &title_len, output,
+                                 &output_len), OK);
     CHECK_EQ(playing, 1);
-    CHECK(!strcmp((const char *)title, "Artist - Title"));
+    CHECK(!strcmp(title, "Artist - Title") && title_len == 14);
     CHECK_EQ(master, -200);
     mixer_close(&s);
     CHECK_ST(audioctl_set_master_until(d, soon(), 0, &cb), OK);

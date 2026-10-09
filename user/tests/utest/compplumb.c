@@ -437,10 +437,8 @@ static status_t asked(handle_t ch, uint64_t wait, void *q, uint32_t cap, uint32_
 
 static bool answer_desk(struct cs *t, uint32_t txid)
 {
-    struct audioctl_desk_rep r = { .txid = txid, .status = OK, .master = -180, .playing = 1 };
-    snprintf((char *)r.title, sizeof(r.title), "Artist - Song");
-    snprintf((char *)r.output, sizeof(r.output), "QEMU line-out");
-    CHECK_ST(jam_channel_write(t->mix, &r, sizeof(r), NULL, 0), OK);
+    CHECK_ST(audioctl_reply_desk((struct idl_txn){ .ch = t->mix, .txid = txid }, OK, -180, 1,
+                                 "Artist - Song", 13, "QEMU line-out", 13), OK);
     return true;
 }
 

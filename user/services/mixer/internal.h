@@ -79,7 +79,9 @@
 #define MIXER_CLIENTS 24u       /* openers' channels at once (clients.c) */
 
 #define STATE_KIND     0x6d697872u   /* "mixr": the state's svcstate kind */
-#define STATE_LAYOUT   3u            /* struct mixer_saved's layout version */
+#define STATE_LAYOUT   4u            /* struct mixer_saved's layout version (4: audio and
+                                      * audio_stream are two protocols: the requests in
+                                      * the slots have new ordinals and formats) */
 #define DEVICE_QUEUE   8u            /* audioctl.device requests handed to device.c's thread */
 
 /* The keeper's slots (<keep.h>): which handles each one holds, in order. */
@@ -106,8 +108,9 @@
  * made_kind). */
 #define MADE_STREAM    1u
 #define MADE_CLIENT    2u
-#define REQ_CAP_AUDIO  (AUDIO_REQ_MAX + 8)   /* bytes read from an `audio` channel at most */
-#define REQ_CAP_CTL    AUDIOCTL_REQ_MAX      /* ... and from an `audioctl` channel */
+#define REQ_CAP_AUDIO  (AUDIO_REQ_MAX + 8)         /* bytes read from an `audio` channel at most */
+#define REQ_CAP_STREAM (AUDIO_STREAM_REQ_MAX + 8)  /* ... from an `audio_stream` one */
+#define REQ_CAP_CTL    AUDIOCTL_REQ_MAX            /* ... and from an `audioctl` channel */
 
 /* One period a stream gave frames to: its frames [from, from + n) went to
  * the driver's frames [at, at + n). */
@@ -301,15 +304,22 @@ bool     keep_gate(struct mixer *m);
  * (m->keep_blocked clear). Returns the deadline the loop may wait until,
  * brought forward to the next try while anything waits for the keeper. */
 uint64_t keep_tick(struct mixer *m, uint64_t deadline);
-/* Read the next request from ch (whose port key is `key`: an `audioctl`
- * channel if ctl, else an `audio` one) into a request slot, with the
- * protocol's generated take (<proto>_take_slot). OK with *slot set: a
+/* The protocol of a channel the mixer reads requests from. */
+enum req_proto {
+    PROTO_AUDIO,     /* an opener's, or the shared one: `audio` */
+    PROTO_STREAM,    /* a stream's: `audio_stream` */
+    PROTO_CTL,       /* `audioctl` */
+};
+/* Read the next request from ch (whose port key is `key`, and whose
+ * protocol is proto) into a request slot, with the protocol's generated
+ * take (<proto>_take_slot). OK with *slot set: a
  * request to run (svcstate_request); OK with *slot REQ_NONE: a message
  * was taken and answered or dropped as the generated server does
  * (handles, too long, under 4 bytes); else the read's status
  * (ERR_SHOULD_WAIT: empty; ERR_PEER_CLOSED). */
 #define REQ_NONE (~0u)
-status_t req_take(struct mixer *m, handle_t ch, uint32_t key, bool ctl, unsigned *slot);
+status_t req_take(struct mixer *m, handle_t ch, uint32_t key, enum req_proto proto,
+                  unsigned *slot);
 /* Answer the request in slot on ch: the numbers committed (the request
  * counted), the slot committed, then the reply in the slot's reply area
  * (rn bytes with hs[0..nh), moved; nothing if rn is 0: answered later or

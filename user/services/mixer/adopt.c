@@ -322,7 +322,8 @@ static const char *rerun(struct mixer *m, unsigned slot, handle_t ch, struct str
         req_status(m, slot, ch, ERR_INTERNAL);
         return "answered ERR_INTERNAL (in progress at two crashes)";
     }
-    if (sl->nhandles || n > (ctl ? REQ_CAP_CTL : REQ_CAP_AUDIO)) {
+    uint32_t cap = ctl ? REQ_CAP_CTL : s ? REQ_CAP_STREAM : REQ_CAP_AUDIO;
+    if (sl->nhandles || n > cap) {
         req_status(m, slot, ch, ERR_INVALID_ARGS);   /* as req_take answers it */
         return "refused, as before";
     }

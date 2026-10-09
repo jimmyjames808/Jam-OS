@@ -22,11 +22,14 @@ static uint64_t ring_bytes(const struct mixer_stream *s)
 
 status_t mixer_open(handle_t svc, const char *name, uint64_t deadline, struct mixer_stream *s)
 {
-    uint8_t label[16] = { 0 };
-    for (size_t i = 0; name && name[i] && i < sizeof(label) - 1; i++)
-        label[i] = (uint8_t)name[i];
+    /* The label is up to 15 bytes of UTF-8 to the protocol; the mixer keeps
+     * only printable ASCII, so that is all we send. */
+    char label[16] = { 0 };
+    uint32_t len = 0;
+    for (; name && name[len] && len < sizeof(label) - 1; len++)
+        label[len] = name[len] >= 0x20 && name[len] < 0x7f ? name[len] : '?';
     struct mixer_stream o = { 0 };
-    status_t st = audio_open_output_until(svc, deadline, MIXER_RATE, MIXER_CHANNELS, 16, label,
+    status_t st = audio_open_output_until(svc, deadline, MIXER_RATE, MIXER_CHANNELS, 16, label, len,
                                           &o.ch, &o.vmo, &o.event, &o.id, &o.frames, &o.lead);
     if (st != OK)
         return st;

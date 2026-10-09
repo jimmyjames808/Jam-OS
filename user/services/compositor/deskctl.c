@@ -323,9 +323,12 @@ static void volume_event(void)
             return;
         }
         if (m.txid && m.txid == vol.desk.txid) {
-            uint8_t playing = 0, title[64], output[48];
+            uint8_t playing = 0;
+            char title[64], output[48];
+            uint32_t title_len = 0, output_len = 0;
             int32_t master = 0;
-            st = audioctl_desk_result(rep, &m, &master, &playing, title, output);
+            st = audioctl_desk_result(rep, &m, &master, &playing, title, &title_len, output,
+                                      &output_len);
             vol.desk.txid = 0;
             vol.desk.answered = now();
             if (st != OK)
@@ -334,8 +337,8 @@ static void volume_event(void)
             if (!vol.master.txid && !vol.want)
                 vol.master_cb = master;   /* else ours is newer */
             vol.playing = playing == 1;
-            snprintf(vol.title, sizeof(vol.title), "%.*s", 63, (const char *)title);
-            snprintf(vol.output, sizeof(vol.output), "%.*s", 47, (const char *)output);
+            snprintf(vol.title, sizeof(vol.title), "%.*s", 63, title);
+            snprintf(vol.output, sizeof(vol.output), "%.*s", 47, output);
             if (pop.kind == POP_VOLUME && !pop.dragging)
                 pop_refresh(now());
         } else if (m.txid && m.txid == vol.master.txid) {

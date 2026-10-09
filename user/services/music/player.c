@@ -22,6 +22,7 @@
  *     (what was in the old ring is lost); REOPENS in a row without a
  *     write in between and it stops. */
 #include <idl/audio.h>
+#include <utf8.h>
 #include "music.h"
 
 #define CHUNK    1024u   /* frames read and written at a time: 21-128 ms of sound */
@@ -222,6 +223,31 @@ static void mss(uint64_t ms, char *buf, size_t size)
 
 static void reopen(struct player *p, status_t st);
 
+/* A title as audio_stream.set_title takes it: UTF-8 of at most 63 bytes,
+ * cut between characters; a control character, and each bad piece (<utf8.h>),
+ * becomes one '?'. Returns its length. */
+static uint32_t label_of(const char *title, char out[64])
+{
+    uint32_t n = 0, len = (uint32_t)strlen(title);
+    for (uint32_t i = 0; i < len;) {
+        uint32_t cp = 0;
+        int k = utf8_seq((const uint8_t *)title + i, len - i, &cp);
+        if (k > 0 && !utf8_is_control(cp)) {
+            if (n + (uint32_t)k > 63)
+                break;
+            memcpy(out + n, title + i, (uint32_t)k);
+            n += (uint32_t)k;
+        } else {
+            if (n + 1 > 63)
+                break;
+            out[n++] = '?';
+        }
+        i += k > 0 ? (uint32_t)k : (uint32_t)-k;
+    }
+    out[n] = '\0';
+    return n;
+}
+
 /* Track i from its beginning. OK; or the file's failure (said in the log,
  * counted). again: after `next`, the track that was queued behind the one
  * skipped starts over. */
@@ -266,9 +292,9 @@ static status_t open_track(struct player *p, uint32_t i, bool again)
     p->cur = i;
     p->cur_frames = 0;
     /* What the desktop's volume popover shows as playing (audioctl.desk). */
-    uint8_t t64[64] = { 0 };
-    snprintf((char *)t64, sizeof(t64), "%s", title);
-    (void)audio_stream_set_title_until(p->a.s.ch, now() + SOON, t64);   /* only a label */
+    char label[64];
+    uint32_t llen = label_of(title, label);
+    (void)audio_stream_set_title_until(p->a.s.ch, now() + SOON, label, llen);   /* only a label */
     uint64_t ms = p->src.frames && p->src.rate ? p->src.frames * 1000 / p->src.rate : 0;
     mark(p, i, ++p->serial, (int64_t)p->a.s.write, ms);
     if (!again)
