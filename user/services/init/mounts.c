@@ -211,7 +211,11 @@ void mounts_sync(void)
     if (!ctl)
         return;   /* no volumes: nothing was written */
     uint64_t t0 = now();
-    status_t st = volumes_sync_until(ctl, t0 + SYNC_WAIT);
+    mounts_synced(volumes_sync_until(ctl, t0 + SYNC_WAIT), t0);
+}
+
+void mounts_synced(status_t st, uint64_t t0)
+{
     bool data = find(have, nhave, DATA_MOUNT) >= 0;
     if (st == OK && data)
         printf("init: " DATA_MOUNT " synced in %lu ms\n",
