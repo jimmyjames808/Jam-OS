@@ -12,6 +12,9 @@
  *                  interface is refused (usb-bus's own)
  *   access         a class driver's channel refuses other interfaces,
  *                  device-recipient and state-changing standard requests
+ *   arrays         the arrays' limits (control_out past 64 bytes, a
+ *                  descriptor of 0 or past 1024 bytes) are refused, by the
+ *                  stubs and by usb-bus from a request by hand
  * on QEMU's devices (vendor 0627) only:
  *   stall_recovered an unknown class request STALLs (ERR_NOT_SUPPORTED)
  *                  and the next request on endpoint 0 works
@@ -85,23 +88,18 @@ status_t load(void)
     ndevs = 0;
     for (uint32_t i = 0; i < MAX_DEV; i++) {
         struct dev *d = &devs[ndevs];
-        uint8_t path[24], name[40], serial[24];
+        uint32_t pathn, namen, serialn;
         status_t st = usbbus_device_until(bus, soon(), i, &d->id, &d->parent, &d->vid, &d->pid,
                                           &d->bcd, &d->speed, &d->address, &d->slot,
                                           &d->root_port, &d->port, &d->level, &d->route,
                                           &d->tt_slot, &d->tt_port, &d->cls, &d->sub, &d->proto,
                                           &d->nconfigs, &d->config, &d->nifs, &d->mps0,
-                                          &d->hub_ports, path, name, serial);
+                                          &d->hub_ports, d->path, &pathn, d->name, &namen,
+                                          d->serial, &serialn);
         if (st == ERR_OUT_OF_RANGE)
             return OK;
         if (st != OK)
             return st;
-        memcpy(d->path, path, 24);
-        d->path[24] = 0;
-        memcpy(d->name, name, 40);
-        d->name[40] = 0;
-        memcpy(d->serial, serial, 24);
-        d->serial[24] = 0;
         ndevs++;
     }
     return OK;
@@ -185,10 +183,14 @@ static bool t_interfaces(void)
         if (!d->config)
             continue;
         for (uint8_t k = 0; k < d->nifs; k++) {
-            uint8_t num = 0, alt = 0, nalts = 0, cls = 0, sub = 0, proto = 0, nep = 0, eps[8];
+            uint8_t num = 0, alt = 0, nalts = 0, cls = 0, sub = 0, proto = 0, eps[8];
+            uint32_t nep = 0;
             CHECK_ST(usbbus_interface_until(bus, soon(), d->id, k, &num, &alt, &nalts, &cls,
-                                            &sub, &proto, &nep, eps), OK);
+                                            &sub, &proto, eps, &nep), OK);
             CHECK(nep <= 8 && nalts >= 1);
+            CHECK(cls != 3 || nep >= 1);   /* a HID interface has its interrupt endpoint */
+            for (uint32_t e = 0; e < nep; e++)
+                CHECK(eps[e] != 0 && eps[e] != 0x80);   /* addresses, not endpoint 0 */
             handle_t ch;
             if (cls == 9 || d->hub_ports) {   /* hubs are usb-bus's own: refused */
                 CHECK_ST(usbbus_open_interface_until(bus, soon(), d->id, num, &ch),
@@ -200,9 +202,9 @@ static bool t_interfaces(void)
             uint8_t sp = 0, n2 = 0, c2 = 0, s2 = 0, p2 = 0, e2 = 0, a2 = 0, ad = 0;
             status_t st = usb_info_until(ch, soon(), &v, &p, &sp, &n2, &c2, &s2, &p2, &e2,
                                          &a2, &ad);
-            uint16_t actual = 0;
+            uint32_t actual = 0;
             static uint8_t buf[1024];
-            status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, &actual, buf);
+            status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, buf, &actual);
             jam_handle_close(ch);
             CHECK_ST(st, OK);
             CHECK(v == d->vid && p == d->pid && sp == d->speed && n2 == num && c2 == cls &&
@@ -222,9 +224,10 @@ static bool first_iface(const struct dev **dd, uint8_t *num, handle_t *ch, bool 
         struct dev *d = &devs[i];
         if (!d->config || d->hub_ports || (qemu_only && d->vid != 0x0627))
             continue;
-        uint8_t n = 0, alt, nalts, cls, sub, proto, nep, eps[8];
+        uint8_t n = 0, alt, nalts, cls, sub, proto, eps[8];
+        uint32_t nep;
         if (usbbus_interface_until(bus, soon(), d->id, 0, &n, &alt, &nalts, &cls, &sub,
-                                   &proto, &nep, eps) != OK)
+                                   &proto, eps, &nep) != OK)
             continue;
         if (usbbus_open_interface_until(bus, soon(), d->id, n, ch) != OK)
             continue;
@@ -246,22 +249,21 @@ static bool t_access(void)
         return true;
     }
     static uint8_t buf[1024];
-    uint16_t actual;
-    uint8_t out[64] = { 0 };
+    uint32_t actual;
     /* device recipient: GET_STATUS(device) */
-    status_t a = usb_control_in_until(ch, soon(), 0x80, 0, 0, 0, 2, &actual, buf);
+    status_t a = usb_control_in_until(ch, soon(), 0x80, 0, 0, 0, 2, buf, &actual);
     /* another interface's wIndex */
     status_t b = usb_control_in_until(ch, soon(), 0xa1, 1, 0x0100, (uint16_t)(num + 1), 8,
-                                      &actual, buf);
+                                      buf, &actual);
     /* SET_CONFIGURATION (standard, device) and SET_INTERFACE by hand */
-    status_t c = usb_control_out_until(ch, soon(), 0x00, 9, 1, 0, 0, out);
-    status_t e = usb_control_out_until(ch, soon(), 0x01, 11, 0, num, 0, out);
+    status_t c = usb_control_out_until(ch, soon(), 0x00, 9, 1, 0, NULL, 0);
+    status_t e = usb_control_out_until(ch, soon(), 0x01, 11, 0, num, NULL, 0);
     /* an OUT endpoint address, and one that isn't the interface's */
     handle_t rep;
     uint16_t mp;
     uint8_t iv;
     status_t f = usb_open_interrupt_in_until(ch, soon(), 0x0f, &rep, &mp, &iv);
-    status_t g = usb_control_in_until(ch, soon(), 0x80, 6, 0x0100, 0, 2000, &actual, buf);
+    status_t g = usb_control_in_until(ch, soon(), 0x80, 6, 0x0100, 0, 2000, buf, &actual);
     jam_handle_close(ch);
     CHECK_ST(a, ERR_ACCESS_DENIED);
     CHECK_ST(b, ERR_ACCESS_DENIED);
@@ -269,6 +271,65 @@ static bool t_access(void)
     CHECK_ST(e, ERR_ACCESS_DENIED);
     CHECK_ST(f, ERR_INVALID_ARGS);
     CHECK(g == ERR_INVALID_ARGS || g == ERR_ACCESS_DENIED);
+    return true;
+}
+
+/* The arrays' limits (usb.idl): the stubs refuse a control_out of more
+ * than 64 bytes and a descriptor asking for none or more than 1024, and
+ * usb-bus refuses a control_out whose count says more than 64 or runs
+ * past the message from a client that skipped the stubs. */
+static bool t_arrays(void)
+{
+    const struct dev *d;
+    uint8_t num;
+    handle_t ch;
+    if (!first_iface(&d, &num, &ch, false)) {
+        printf("usbtest: arrays: no device with an interface: skipped\n");
+        skipped++;
+        return true;
+    }
+    static uint8_t buf[1024], big[65];
+    uint32_t got = 0;
+    status_t a = usb_control_out_until(ch, soon(), 0x21, 9, 0, num, big, sizeof(big));
+    status_t b = usb_control_out_until(ch, soon(), 0x21, 9, 0, num, NULL, 3);
+    status_t c = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 0, 0, buf, &got);
+    status_t e = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 1025, 0, buf, &got);
+    /* A control_out by hand whose count says 65 (all there), then one whose
+     * count says 3 with 1 byte after it. */
+    _Alignas(8) uint8_t q[sizeof(struct usb_control_out_req) + 2 + 65];
+    memset(q, 0, sizeof(q));
+    struct usb_control_out_req *r = (void *)q;
+    r->txid = 7;
+    r->ordinal = USB_CONTROL_OUT;
+    r->request_type = 0x21;
+    r->request = 9;
+    r->index = num;
+    status_t st[2] = { ERR_INTERNAL, ERR_INTERNAL };
+    for (int k = 0; k < 2; k++) {
+        uint16_t count = k == 0 ? 65 : 3;
+        memcpy(q + sizeof(*r), &count, 2);
+        uint32_t qn = (uint32_t)sizeof(*r) + 2 + (k == 0 ? 65 : 1);
+        _Alignas(8) uint8_t rep[64];
+        uint32_t n = 0, nh = 0;
+        handle_t hs[4];
+        struct channel_read_args ra = {
+            .h = ch, .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        };
+        signals_t seen = 0;
+        if (jam_channel_write(ch, q, qn, NULL, 0) == OK &&
+            jam_object_wait_one(ch, SIG_READABLE, soon(), &seen) == OK &&
+            jam_channel_read(&ra) == OK && n >= sizeof(struct usb_control_out_rep))
+            st[k] = ((const struct usb_control_out_rep *)rep)->status;
+    }
+    jam_handle_close(ch);
+    CHECK_ST(a, ERR_INVALID_ARGS);
+    CHECK_ST(b, ERR_INVALID_ARGS);
+    CHECK_ST(c, ERR_INVALID_ARGS);
+    CHECK_ST(e, ERR_INVALID_ARGS);
+    CHECK_ST(st[0], ERR_INVALID_ARGS);
+    CHECK_ST(st[1], ERR_INVALID_ARGS);
     return true;
 }
 
@@ -284,10 +345,10 @@ static bool t_stall_recovered(void)
     }
     static uint8_t buf[1024];
     for (int round = 0; round < 3; round++) {
-        uint16_t actual = 0;
+        uint32_t actual = 0;
         /* class request 0x55 to the interface: nobody implements it */
-        status_t st = usb_control_in_until(ch, soon(), 0xa1, 0x55, 0, num, 8, &actual, buf);
-        status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, &actual, buf);
+        status_t st = usb_control_in_until(ch, soon(), 0xa1, 0x55, 0, num, 8, buf, &actual);
+        status_t st2 = usb_get_descriptor_until(ch, soon(), 1, 0, 0, 18, 0, buf, &actual);
         if (st != ERR_NOT_SUPPORTED || st2 != OK || actual != 18) {
             jam_handle_close(ch);
             FAIL("round %d: unknown request %s (want ERR_NOT_SUPPORTED), then GET_DESCRIPTOR %s "
@@ -314,14 +375,15 @@ static bool t_set_interface(void)
         skipped++;
         return true;
     }
-    uint8_t num = 0, alt, nalts, cls, sub, proto, nep = 0, eps[8];
+    uint8_t num = 0, alt, nalts, cls, sub, proto, eps[8];
+    uint32_t nep = 0;
     CHECK_ST(usbbus_interface_until(bus, soon(), d->id, 0, &num, &alt, &nalts, &cls, &sub,
-                                    &proto, &nep, eps), OK);
+                                    &proto, eps, &nep), OK);
     handle_t ch, rep = HANDLE_INVALID;
     CHECK_ST(usbbus_open_interface_until(bus, soon(), d->id, num, &ch), OK);
     uint16_t mp;
     uint8_t iv, ep = 0;
-    for (uint8_t i = 0; i < nep && !ep; i++)
+    for (uint32_t i = 0; i < nep && !ep; i++)
         if ((eps[i] & 0x80) && usb_open_interrupt_in_until(ch, soon(), eps[i], &rep, &mp,
                                                             &iv) == OK)
             ep = eps[i];
@@ -361,6 +423,24 @@ static bool t_serve_backlog(void)
     status_t st = get_status(&b);
     if (st != OK)
         FAIL("%u requests queued, then usbbus.status: %s", sent, status_str(st));
+    /* Their replies are ours to take off the channel: nobody else reads it. */
+    unsigned drained = 0;
+    for (;;) {
+        uint8_t rep[256];
+        uint32_t n = 0, nh = 0;
+        handle_t hs[4];
+        struct channel_read_args ra = {
+            .h = bus, .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        };
+        if (jam_channel_read(&ra) != OK)
+            break;
+        for (uint32_t i = 0; i < nh; i++)
+            jam_handle_close(hs[i]);
+        drained++;
+    }
+    CHECK(drained >= sent);   /* every one answered */
     return true;
 }
 
@@ -536,6 +616,10 @@ static bool t_replug(void)
     if (!hid_ready(&kb, 0, &base))
         return false;
     printf("usbtest: a new %s polls it; ready for keys again\n", kb.name);
+    /* The interface was reported on usb-bus's events channel, devmgr's: on
+     * the channel we hold nothing is ever queued but replies to our calls
+     * (none are owed now). */
+    CHECK(jam_object_wait_one(bus, SIG_READABLE, 0, NULL) != OK);
     return hid_got(&kb, base, 2);   /* `sendkey b` */
 }
 
@@ -631,6 +715,7 @@ int main(int argc, char **argv)
     run("device_list", t_device_list);
     run("interfaces", t_interfaces);
     run("access", t_access);
+    run("arrays", t_arrays);
     run("stall_recovered", t_stall_recovered);
     run("set_interface", t_set_interface);
     storage_tests();

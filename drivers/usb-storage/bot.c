@@ -60,10 +60,9 @@ static status_t xfer(struct disk *k, bool in, uint32_t off, uint32_t len, uint32
                      uint32_t *actual)
 {
     *actual = 0;
-    status_t st = in ? usb_bulk_in_until(k->usb, call_deadline(timeout_ms), off, len, timeout_ms,
-                                         actual)
-                     : usb_bulk_out_until(k->usb, call_deadline(timeout_ms), off, len,
-                                          timeout_ms, actual);
+    uint64_t end = drv_clock_ns() + (uint64_t)timeout_ms * NS_PER_MS;   /* the transfer's own */
+    status_t st = in ? usb_bulk_in_until(k->usb, end + CALL_MARGIN, off, len, end, actual)
+                     : usb_bulk_out_until(k->usb, end + CALL_MARGIN, off, len, end, actual);
     if (st == ERR_PEER_CLOSED)
         k->gone = true;
     return st;
@@ -81,10 +80,9 @@ static status_t clear_halt(struct disk *k, uint8_t ep)
  * pipes' toggles back at DATA0 on both sides. */
 static void reset_recovery(struct disk *k, const char *why)
 {
-    const uint8_t none[64] = { 0 };
     k->resets++;
     status_t r = usb_control_out_until(k->usb, call_deadline(STEP_MS), REQ_CLASS_IFACE_OUT,
-                                       BOT_RESET, 0, k->ifnum, 0, none);
+                                       BOT_RESET, 0, k->ifnum, NULL, 0);
     if (r == ERR_PEER_CLOSED) {
         k->gone = true;
         return;
@@ -187,10 +185,10 @@ status_t bot_run(struct disk *k, const struct bot_cmd *c, uint32_t *moved, bool 
 
 unsigned bot_luns(struct disk *k)
 {
-    uint16_t n = 0;
+    uint32_t n = 0;
     static uint8_t data[1024];
     status_t st = usb_control_in_until(k->usb, call_deadline(STEP_MS), REQ_CLASS_IFACE_IN,
-                                       BOT_GET_MAX_LUN, 0, k->ifnum, 1, &n, data);
+                                       BOT_GET_MAX_LUN, 0, k->ifnum, 1, data, &n);
     if (st == ERR_PEER_CLOSED)
         k->gone = true;
     /* A device with one unit may STALL the request (3.2). */

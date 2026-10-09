@@ -33,6 +33,8 @@
                                    * drv_dma_bus_master) */
 #define DR_USB       4            /* a `usb` interface channel (usb-bus serves it) */
 #define DR_INPUT     5            /* an `input` channel to the console (it serves it) */
+#define DR_EVENTS    6            /* a channel the driver writes its events on (usb-bus: the
+                                   * `usbbus_events` protocol; devmgr serves it) */
 #define DR_BAR(n)    (0x10 + (n)) /* RES_MMIO for BAR n (0..5) */
 #define DR_IRQ(n)    (0x20 + (n)) /* interrupt object n (MSI 0, or MSI-X n) */
 
