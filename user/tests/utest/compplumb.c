@@ -23,6 +23,10 @@
  * (review C5): its lines about them stay within their budget (a few a
  * second), so it never waits on the log, and it answers the poster's next
  * call and a client's round trip.
+ * t_comp_notify_dismissed: two channels post three cards with buttons each:
+ * the fifth card shows nothing more than five, and the sixth pushes out the
+ * first channel's oldest, which that channel's notify_wait answers as
+ * NOTIFY_DISMISSED (review C11/DQ3), once; the other cards stay up.
  * t_comp_launch: the search box's rows reach init: an app as
  * initctl.launch with its command name ("jamjar"), what is typed as
  * initctl.terminal's command; the cursor is busy from Enter until init
@@ -149,6 +153,44 @@ bool t_comp_notify_splash(void)
     CHECK_ST(press_answer(n, &got, &b), OK);
     CHECK(got == held && b == 0);
     jam_handle_close(n);
+    CHECK(cs_stop(&t));
+    return true;
+}
+
+/* ---- t_comp_notify_dismissed --------------------------------------------------------- */
+
+bool t_comp_notify_dismissed(void)
+{
+    struct cs t;
+    handle_t a, b;
+    struct note x;
+    uint32_t ida[3], idb[3], got = 0;
+    uint8_t btn = 0;
+    signals_t seen;
+    CHECK(cs_start_desk(&t));
+    CHECK_ST(svc_connect_within(t.note, CT_WAIT, &a), OK);
+    CHECK_ST(svc_connect_within(t.note, CT_WAIT, &b), OK);
+    note_make(&x, "Update written", "", "Reboot", "Later");
+    CHECK_ST(notify_notify_wait_send(a, WAIT_TX), OK);
+    for (unsigned i = 0; i < 3; i++)
+        CHECK_ST(post(a, &x, 'U', 2, &ida[i]), OK);
+    /* five cards up: a's three and b's first two; nobody told */
+    CHECK_ST(post(b, &x, 'B', 1, &idb[0]), OK);
+    CHECK_ST(post(b, &x, 'B', 1, &idb[1]), OK);
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + SHORT, &seen), ERR_TIMED_OUT);
+    /* a sixth, all with buttons: a's oldest goes, and a is told */
+    CHECK_ST(post(b, &x, 'B', 1, &idb[2]), OK);
+    CHECK_ST(press_answer(a, &got, &btn), OK);
+    CHECK(got == ida[0] && btn == NOTIFY_DISMISSED);
+    /* once: no more answers, and its other cards are still up (withdrawn
+     * by a: they were there) */
+    CHECK_ST(notify_notify_wait_send(a, WAIT_TX), OK);
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + SHORT, &seen), ERR_TIMED_OUT);
+    CHECK_ST(notify_withdraw_within(a, CT_WAIT, ida[0]), ERR_NOT_FOUND);
+    CHECK_ST(notify_withdraw_within(a, CT_WAIT, ida[1]), OK);
+    CHECK_ST(notify_withdraw_within(a, CT_WAIT, ida[2]), OK);
+    jam_handle_close(a);
+    jam_handle_close(b);
     CHECK(cs_stop(&t));
     return true;
 }

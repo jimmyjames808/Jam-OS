@@ -518,10 +518,12 @@ bool t_comp_super_enter(void);
 /* compplumb.c: the desktop's plumbing (D2b) */
 bool t_comp_notify(void);
 bool t_comp_notify_splash(void);
+bool t_comp_notify_dismissed(void);
 bool t_comp_notify_flood(void);
 bool t_comp_launch(void);
 bool t_comp_volume_net(void);
 bool t_comp_no_keyboard(void);
+bool t_comp_overlay_late(void);
 bool t_comp_early_keys(void);
 bool t_comp_screen_on_top(void);
 bool t_jwlc_reconnect(void);
@@ -672,7 +674,9 @@ bool t_desk_search(void);
 bool t_desk_popover(void);
 bool t_desk_notify(void);
 bool t_desk_notify_held(void);
+bool t_desk_notify_dismissed(void);
 bool t_desk_overlay(void);
+bool t_desk_overlay_first(void);
 /* compwmseat.c: the window manager with the real seat: drag, close box,
  * Super+Q, Super+F, Super+T on an xdg toplevel. */
 bool t_wm_seat(void);
