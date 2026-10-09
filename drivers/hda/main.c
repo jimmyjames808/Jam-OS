@@ -115,14 +115,20 @@ static status_t do_dump(void *ctx, handle_t *out_text, uint32_t *out_length, uin
     return OK;
 }
 
-/* from, cut to the room for size - 1 bytes and NUL-terminated, into to;
- * its length (the protocol's str: ASCII here, so a cut is always whole). */
-static uint32_t copy_text(char *to, size_t size, const char *from)
+/* The protocol's most bytes of each text result (abi/idl/hda.idl): info's
+ * str[<=239], jacks' str[<=1023], output_name's str[<=47]. */
+#define INFO_TEXT_LEN 239u
+#define JACKS_TEXT_LEN 1023u
+#define NAME_LEN      47u
+
+/* from, cut to max bytes, into to (a str result: exactly max bytes of
+ * room in the reply, so no NUL); its length. ASCII here, so a cut is
+ * always whole. */
+static uint32_t copy_text(char *to, size_t max, const char *from)
 {
     size_t i = 0;
-    for (; i + 1 < size && from[i]; i++)
+    for (; i < max && from[i]; i++)
         to[i] = from[i];
-    to[i] = 0;
     return (uint32_t)i;
 }
 
@@ -164,7 +170,7 @@ static status_t do_info(void *ctx, uint32_t *out_codec, uint32_t *out_pin, uint3
     const struct path *p = &s->path;
     char text[TEXT_MAX];
     path_text(s, text, sizeof(text));
-    *out_text_len = copy_text(out_text, TEXT_MAX, text);
+    *out_text_len = copy_text(out_text, INFO_TEXT_LEN, text);
     *out_nodes_len = 0;
     *out_jack = path_jack(s) ? path_jack(s)->state : JACK_UNKNOWN;
     const struct widget *dac = p->n ? hda_widget(s->best, p->nid[0]) : NULL;
@@ -249,7 +255,7 @@ static status_t do_jacks(void *ctx, uint32_t *out_state, uint32_t *out_changes,
                                     hda_jack_mode_str(j->mode), j->tag, j->unsols,
                                     j == pj ? "; the path's pin" : "");
     }
-    *out_text_len = copy_text(out_text, JACK_TEXT, text);
+    *out_text_len = copy_text(out_text, JACKS_TEXT_LEN, text);
     drv_free(text);
     *out_pins_len = *out_states_len = js->n < 16 ? js->n : 16;
     *out_state = pj ? pj->state : JACK_UNKNOWN;
@@ -277,7 +283,7 @@ static status_t do_output_name(void *ctx, char *out_name, uint32_t *out_name_len
     else
         drv_snprintf(codec, sizeof(codec), "Codec %04x:%04x", vendor >> 16, vendor & 0xffff);
     drv_snprintf(name, sizeof(name), "%s %s", codec, hda_jack_name(&j));
-    *out_name_len = copy_text(out_name, 48, name);
+    *out_name_len = copy_text(out_name, NAME_LEN, name);
     return OK;
 }
 
