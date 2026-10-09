@@ -2,8 +2,8 @@
  * kernel/dev/vtd_*.c) without its formats. The design is
  * docs/M11-PLAN.md; the hardware's model is in kernel/dev/vtd_domain.h.
  *
- * Everything here is behind the boot word `iommu=on` (off by default).
- * Without it, or on a machine with no VT-d unit, no function changes
+ * On by default (since 2026-10-07); the boot word `iommu=off` turns it off.
+ * With that word, or on a machine with no VT-d unit, no function changes
  * anything: iommu_translating() is false, the boot calls return at once,
  * iommu_domain_create says ERR_NOT_SUPPORTED (the caller keeps today's
  * behaviour: physical addresses, the pin quarantine) and the jump call
@@ -82,7 +82,7 @@ bool iommu_translating(void);
  * counters and faults), the domains each covered function's context entry
  * names and their mapped page counts, the per-requester DMA fault counts,
  * and the interrupt remapping table's entries in use. Says so and stops
- * when no unit translates (booted without iommu=on). Thread context; takes
+ * when no unit translates (iommu=off, or no unit). Thread context; takes
  * each unit's context mutex while it reads. */
 void iommu_report(void);
 
@@ -123,8 +123,11 @@ status_t iommu_detach(struct iommu_domain *d);
  * the new mappings are invalidated (one batch, one wait). All or nothing.
  * ERR_INVALID_ARGS (n = 0, an unaligned page), ERR_OUT_OF_RANGE (past the
  * unit's address width), ERR_NO_RESOURCES (the domain's table cap),
- * ERR_NO_MEMORY, ERR_TIMED_OUT, ERR_BAD_STATE (a page mapped read only
- * already: one permission per page and domain).
+ * ERR_NO_MEMORY, ERR_BAD_STATE (a page mapped read only already: one
+ * permission per page and domain); ERR_TIMED_OUT or ERR_IO when an
+ * invalidation wasn't confirmed, including the undo of a map that failed
+ * part way (its first leaves were present for a moment): then the pages
+ * must NOT be reused, as after a failed iommu_unmap.
  * iommu_map_ro: the same, read only: the device's writes to the pages
  * are refused (and faulted, recorded as any); ERR_BAD_STATE for a page
  * mapped writable already. */
@@ -136,6 +139,6 @@ status_t iommu_map_ro(struct iommu_domain *d, const uint64_t *pages, size_t n);
  * after OK may the pages be reused. ERR_NOT_FOUND (a page not mapped:
  * nothing changed), ERR_INVALID_ARGS (pages mapped writable and read only
  * in one call: nothing changed; a pin's pages are all one or the other),
- * ERR_TIMED_OUT (the invalidation failed: the pages
+ * ERR_TIMED_OUT or ERR_IO (the invalidation failed: the pages
  * must NOT be reused; the emptied table pages are kept). */
 status_t iommu_unmap(struct iommu_domain *d, const uint64_t *pages, size_t n);

@@ -365,6 +365,7 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   reboot keeps it. `reset=none` (a test aid) tries none: `reboot -f`
   halts, and the panic screen's reset at 15 s fails, so it shows what it
   says then ("Jam OS couldn't restart the PC", `tools/kdump-test.sh`).
+  Not kept by a reboot.
 - `panichold=<ms>` (a test aid): a panic that restarts holds its screen
   ("Jam OS hit a problem and is restarting") that long instead of 1.5 s,
   at most 5000, for a screenshot (`tools/kdump-test.sh`). Not kept by a

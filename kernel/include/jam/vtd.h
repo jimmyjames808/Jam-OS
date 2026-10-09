@@ -10,11 +10,11 @@
  * changed. Each unit's register mapping is kept for the units' code
  * (kernel/dev/vtd_unit.c).
  *
- * With the boot word `iommu=on` (off by default), vtd_units_start then
- * runs each unit's invalidation queue and its fault reporting and turns
- * interrupt remapping on (kernel/dev/vtd_irq.c), and iommu_boot
- * (<jam/iommu.h>) turns DMA translation on. Without it no VT-d register
- * is ever written. The design for the IOMMU itself is docs/M11-PLAN.md. */
+ * Unless the boot word `iommu=off` says not to (the IOMMU is on by
+ * default), vtd_units_start then runs each unit's invalidation queue and
+ * its fault reporting and turns interrupt remapping on
+ * (kernel/dev/vtd_irq.c), and iommu_boot (<jam/iommu.h>) turns DMA
+ * translation on. With `iommu=off` no VT-d register is ever written. The design for the IOMMU itself is docs/M11-PLAN.md. */
 #pragma once
 
 #include <stdbool.h>
@@ -189,15 +189,15 @@ void vtd_describe_fault(char *buf, size_t n, uint64_t lo, uint64_t hi);
 
 /* ---- the units (kernel/dev/vtd_unit.c) -------------------------------------- */
 
-/* The boot words: true with `iommu=on` and no `iommu=off` (off wins).
- * Off by default. kexec keeps either word. */
+/* The boot words: true unless `iommu=off` (on by default; `iommu=on`
+ * says so explicitly, and off wins). kexec keeps either word. */
 bool vtd_iommu_wanted(const char *cmdline);
 
-/* With `iommu=on`: start every unit the probe could read: its invalidation
+/* Unless `iommu=off`: start every unit the probe could read: its invalidation
  * queue, its fault interrupt and the thread that logs faults ("vtd:"
  * lines; a problem goes to the RESULTS box); then interrupt remapping
- * (<jam/irq_remap.h>). Translation stays as the firmware left it. Without
- * the word it does nothing at all. Once, at boot, after vtd_probe and
+ * (<jam/irq_remap.h>). Translation stays as the firmware left it. With
+ * `iommu=off` it does nothing at all. Once, at boot, after vtd_probe and
  * before any MSI is programmed; interrupts on, no lock held. */
 void vtd_units_start(void);
 
