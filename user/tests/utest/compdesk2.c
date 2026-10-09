@@ -41,7 +41,12 @@
  * under it, staying put while screens change; not minimised; it fades out
  * when it goes (over the strip, its box), ending with the strip back and
  * nothing left of it; asked out of full screen it is a window on the
- * current screen. A client with keys still gets a screen of its own. */
+ * current screen. A client with keys still gets a screen of its own.
+ * t_desk_overlay_first: a keyless client's full-screen window is a boot
+ * overlay only while the boot's wait for the splash is on and only the
+ * first (review DQ1): with no wait, or a second one, it is an ordinary
+ * full-screen window on a screen of its own; the first stays an overlay
+ * after the wait ends. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -553,8 +558,8 @@ static bool held_steps(void)
     CHECK(!notify_live(gone));
     CHECK_EQ(notes.nheld, 2);
     /* the splash's overlay up: still held */
+    CHECK(fk_open_full(&fks[1], &fake_keyless));   /* (the wait is on still: the first) */
     comp.splash_until = 0;
-    CHECK(fk_open_full(&fks[1], &fake_keyless));
     CHECK(screens_overlay());
     uint32_t c = post("USB stick added", 0);
     notify_tick(now() + 7 * NS_PER_S);
@@ -601,10 +606,10 @@ static bool held_cap_steps(void)
     CHECK_EQ(notes.nheld, NOTIFY_MAX);
     CHECK(notify_live(keep) && !notify_live(oldest) && notify_live(last));
     CHECK_EQ(notes.held[0].id, keep);
-    comp.splash_until = 0;
     /* the overlay fades out: held until the fade ends */
     anim_init(true);
     CHECK(fk_open_full(&fks[1], &fake_keyless));
+    comp.splash_until = 0;
     static struct comp_buffer shown;   /* a buffer to take its picture from */
     fks[1].s.buffer = &shown;
     wm_destroy(fks[1].ww);
@@ -629,7 +634,13 @@ static bool held_cap_steps(void)
 bool t_desk_notify_held(void)
 {
     desk_test_start(COMP_FLOATING);
-    bool ok = held_steps() && held_cap_steps();
+    bool ok = held_steps();
+    comp.splash_until = 0;
+    fk_close_all();
+    if (ok) {
+        desk_test_start(COMP_FLOATING);   /* (only the first overlay of a boot: a new one) */
+        ok = held_cap_steps();
+    }
     comp.splash_until = 0;
     anim_init(false);
     fk_close_all();
@@ -663,6 +674,7 @@ static bool overlay_steps(void)
 {
     CHECK(fk_open(&fks[0], 320, 200, false));   /* the first terminal */
     seat_focus(win(0));
+    comp.splash_until = now() + 5 * NS_PER_S;      /* the boot's wait for the splash */
     CHECK(fk_open_full(&fks[1], &fake_keyless));   /* the splash */
     struct wm_window *ov = fks[1].ww;
     CHECK(ov->overlay && !ov->screen && mapped(1));
@@ -748,14 +760,25 @@ static bool overlay_fade_steps(void)
     CHECK_EQ(screens_count(), 1);
     CHECK(mapped(0) && mapped(2));
     anim_init(false);
-    /* one that leaves full screen: a window on the current screen */
+    return true;
+}
+
+/* A boot overlay that leaves full screen: a window on the current screen,
+ * and not an overlay again when it asks for full screen once more. */
+static bool overlay_leave_steps(void)
+{
+    CHECK(fk_open(&fks[0], 320, 200, false));
+    comp.splash_until = now() + 5 * NS_PER_S;
     CHECK(fk_open_full(&fks[1], &fake_keyless));
     CHECK(fks[1].ww->overlay);
     wm_request_fullscreen(fks[1].ww, false);
     CHECK(!fks[1].ww->overlay && fks[1].ww->screen == screens_cur());
     CHECK(!(win(1)->flags & COMP_WIN_OVERLAY));
     CHECK(fk_draw(&fks[1]));
-    CHECK_EQ(strip_count(STRIP_CHIP), 3);
+    CHECK_EQ(strip_count(STRIP_CHIP), 2);
+    wm_request_fullscreen(fks[1].ww, true);   /* the one overlay is spent: an ordinary window */
+    CHECK(!fks[1].ww->overlay && !(win(1)->flags & COMP_WIN_OVERLAY));
+    CHECK(!screens_overlay());
     return true;
 }
 
@@ -763,7 +786,67 @@ bool t_desk_overlay(void)
 {
     desk_test_start(COMP_FLOATING);
     bool ok = overlay_steps() && overlay_fade_steps();
+    comp.splash_until = 0;
     anim_init(false);
+    fk_close_all();
+    if (ok) {
+        desk_test_start(COMP_FLOATING);
+        ok = overlay_leave_steps();
+    }
+    comp.splash_until = 0;
+    fk_close_all();
+    return ok;
+}
+
+/* Who may be a boot overlay (review DQ1): a keyless client's full-screen
+ * toplevel, but only the first, and only while the boot's wait for the
+ * splash is on. */
+static bool overlay_first_steps(void)
+{
+    CHECK(fk_open(&fks[0], 320, 200, false));
+    seat_focus(win(0));
+    /* no wait for the splash (it is over, or never was): an ordinary
+     * full-screen window, on a screen of its own, in the strip */
+    CHECK_EQ(comp.splash_until, 0);
+    CHECK(fk_open_full(&fks[1], &fake_keyless));
+    CHECK(!fks[1].ww->overlay && !(win(1)->flags & COMP_WIN_OVERLAY));
+    CHECK(fks[1].ww->screen && fks[1].ww->screen->kind == SCREEN_FULL);
+    CHECK(!screens_overlay());
+    CHECK_EQ(screens_count(), 2);
+    wm_destroy(fks[1].ww);
+    fks[1].ww = NULL;
+    CHECK_EQ(screens_count(), 1);
+    /* the wait on: the first is the overlay; a second, in the wait still, is
+     * not (it is a full-screen window as above) */
+    comp.splash_until = now() + 5 * NS_PER_S;
+    CHECK(fk_open_full(&fks[2], &fake_keyless));
+    CHECK(fks[2].ww->overlay && (win(2)->flags & COMP_WIN_OVERLAY));
+    CHECK(fk_open_full(&fks[3], &fake_keyless));
+    CHECK(!fks[3].ww->overlay && !(win(3)->flags & COMP_WIN_OVERLAY));
+    CHECK(fks[3].ww->screen && fks[3].ww->screen->kind == SCREEN_FULL);
+    CHECK_EQ(scene.top, win(2));   /* the overlay still the top */
+    /* the wait over: the first stays one, even asking again; later ones
+     * are windows */
+    comp.splash_until = 0;
+    wm_request_fullscreen(fks[2].ww, true);
+    CHECK(fks[2].ww->overlay && (win(2)->flags & COMP_WIN_OVERLAY));
+    CHECK(fk_open_full(&fks[4], &fake_keyless));
+    CHECK(!fks[4].ww->overlay && fks[4].ww->screen);
+    /* it goes, and the wait is on again (a test's, not a boot's: one
+     * overlay a boot): the next is still no overlay */
+    wm_destroy(fks[2].ww);
+    fks[2].ww = NULL;
+    comp.splash_until = now() + 5 * NS_PER_S;
+    CHECK(fk_open_full(&fks[5], &fake_keyless));
+    CHECK(!fks[5].ww->overlay && !screens_overlay());
+    return true;
+}
+
+bool t_desk_overlay_first(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = overlay_first_steps();
+    comp.splash_until = 0;
     fk_close_all();
     return ok;
 }

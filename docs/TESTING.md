@@ -1310,6 +1310,7 @@ clock fixed (`user/tests/utest/compdesk.c`, `compdesk2.c`):
 | `desk_notify` | cards stacked from under the strip, the newest on top; the plain one goes after 5 s, the one with buttons stays until a button (`ctl_notify_answered`); a click sends a plain card; at most 5; a terminal refused (`desk_terminals_full`): "No more terminals / 16 is the most. Close one first.", its text within the card, no second card while it is up, again once it has gone (its 5 s, or a click); none without the desktop |
 | `desk_notify_held` | no card while the boot splash is up (the wait for it, its overlay, its fade-out): each notice gets its id and waits; one withdrawn meanwhile never shows; when the splash is over they show in the order they came, their 5 s counted from then (one with buttons still waits for a press); at most 5 wait, the oldest without buttons dropped; with no splash a notice shows at once; nothing wakes the loop while they wait |
 | `desk_overlay` | a full-screen window whose client takes no keys (the splash's) is a boot overlay: no screen or dot of its own, no chip, no Alt+Tab row, never cycled to, not minimised; the whole output over the strip (hidden under it) and every window focused or opened after it; screens change under it without moving it; its fade (200 ms, over the strip, its box only) ends with the strip back and its snapshot freed; out of full screen it is a window on the current screen; a client with keys still gets a screen of its own |
+| `desk_overlay_first` | a keyless client's full-screen window is a boot overlay only while the boot's wait for the splash is on (`comp.splash_until`) and only the first (M12.1 review DQ1): with no wait, or a second one in the wait, it is an ordinary full-screen window on a screen of its own; the first stays an overlay after the wait ends and when it asks for full screen again; once it has gone, the next is still none |
 
 The plumbing behind the hooks (track D2b,
 [ARCHITECTURE](../ARCHITECTURE.md#the-desktops-plumbing)), with bin/compositor
@@ -1349,7 +1350,10 @@ reaches it, the keys stay where they were (M12.1 review C3). The other composito
 that start it headless pass `nodesk` (`comptest.h`): the window manager
 alone, the whole output the windows'; `comp_screen_on_top` runs both ways
 (a boot overlay over a window that takes the keys: a click where the strip
-is reaches it, the keys stay the window's, before and after it goes).
+is reaches it, the keys stay the window's, before and after it goes; it
+starts the compositor waiting for the splash, `cs_start_splash_plain`, as
+a boot overlay is one only then: `comp_overlay_late` has none, a window
+mapped after the keyless full-screen one is above it and takes the click: DQ1).
 `comp_paint_overlay` paints it in the test scene (`top=...,F`, `close=`,
 `animate`, `tick=`): its own pixels on all of the output, copied straight
 from its buffer; half-way through its fade neither picture; at the end

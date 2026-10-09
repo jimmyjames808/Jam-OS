@@ -108,6 +108,11 @@ bool cs_start_splash(struct cs *t)
     return start(t, true, "layout=floating", "splash");
 }
 
+bool cs_start_splash_plain(struct cs *t)
+{
+    return start(t, false, "layout=floating", "splash");
+}
+
 bool cs_start_default(struct cs *t)
 {
     return start(t, false, NULL, NULL);
