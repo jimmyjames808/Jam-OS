@@ -427,6 +427,41 @@ bool t_devmgr_openers(void)
     return true;
 }
 
+/* /svc/devmgr-ctl hands each opener a control channel of its own too
+ * (svc.connect): init keeps the end it started devmgr with for itself, reads
+ * the answers to the calls it sends without waiting there, and so a request
+ * and its answer on one opener's channel are no other opener's. Each is a
+ * control channel (it answers devmgrctl), and a closed one's slot is free
+ * again. */
+bool t_devmgr_ctl_openers(void)
+{
+    handle_t a = HANDLE_INVALID, b = HANDLE_INVALID;
+    if (svc_open(SVC_DEVMGR_CTL, &a) != OK)
+        return true;   /* no devmgr: skipped */
+    CHECK_ST(svc_open(SVC_DEVMGR_CTL, &b), OK);
+    CHECK_ST(devmgr_status_send(a, 9), OK);   /* asked, not waited for */
+    signals_t seen = 0;
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + TENS, &seen), OK);
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);
+    _Alignas(8) uint8_t rep[DEVMGR_REP_MAX];
+    struct idl_msg m;
+    uint32_t bound, failed, skipped;
+    CHECK_ST(idl_reply_read(a, rep, sizeof(rep), &m), OK);
+    CHECK_EQ(m.txid, 9);
+    CHECK_ST(devmgr_status_result(rep, &m, &bound, &failed, &skipped), OK);
+    /* Both are control channels. */
+    CHECK_ST(devmgrctl_kill_process_until(a, now() + TENS, 0), ERR_NOT_FOUND);
+    CHECK_ST(devmgrctl_kill_process_until(b, now() + TENS, 0), ERR_NOT_FOUND);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(b), OK);
+    for (unsigned i = 0; i < 40; i++) {
+        CHECK_ST(svc_open(SVC_DEVMGR_CTL, &a), OK);
+        CHECK_ST(devmgrctl_kill_process_until(a, now() + TENS, 0), ERR_NOT_FOUND);
+        CHECK_ST(jam_handle_close(a), OK);
+    }
+    return true;
+}
+
 /* Wait (up to 10 s) for edu's DMA quarantine to be empty; *sup: the
  * supervision view then. */
 static bool quarantine_released(handle_t dm, struct dm_sup *sup)

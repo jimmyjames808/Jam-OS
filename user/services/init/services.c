@@ -360,7 +360,7 @@ static status_t start_devmgr(void)
     if (nics)
         printf("init: %u network card(s): held for netstack\n", nics);
     services_publish(SVC_DEVMGR, devmgr_q, true);   /* a channel per opener (svc.connect) */
-    services_publish(SVC_DEVMGR_CTL, devmgr, false);
+    services_publish(SVC_DEVMGR_CTL, devmgr, true);   /* a channel per opener; init's own stays init's */
     tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
     /* devmgr was started again while volumes runs: a new DISKS channel
      * (volumes forgets the old one's disks, and the new devmgr tells of

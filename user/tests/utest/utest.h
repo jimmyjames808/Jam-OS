@@ -240,6 +240,7 @@ bool t_devmgr_query_channel(void);
 bool t_devmgr_query_refuses_hda(void);
 bool t_devmgr_device_channel(void);
 bool t_devmgr_openers(void);
+bool t_devmgr_ctl_openers(void);
 bool t_devmgr_addresses(void);
 bool t_devmgr_kill_process(void);
 bool t_edu_killed_mid_dma(void);
