@@ -64,15 +64,43 @@ static status_t look(const char *rel, const struct bootfs_entry **file)
 
 /* ---- fs ---------------------------------------------------------------------------- */
 
-static status_t op_open(void *ctx, const uint8_t path[256], uint32_t flags, handle_t *out_file,
-                        handle_t *out_buffer, uint64_t *out_size)
+/* A path as the protocol carries it, cleaned into rel (FS_PATH_LEN + 1
+ * bytes). */
+static status_t clean_path(const char *path, uint32_t len, char *rel)
 {
-    char rel[FS_PATH_MAX];
+    return fs_path_clean(path, len, rel) == OK ? OK : ERR_INVALID_ARGS;
+}
+
+/* Ids (fs.stat): a file is its entry's index + 1; a directory, implied by
+ * the names, is known by the first entry inside it; the root has its own. */
+#define ID_DIR  (1ull << 32)
+#define ID_ROOT (2ull << 32)
+
+/* The directory rel's id: the first entry inside it (it has one, or look
+ * would not have found it). */
+static uint64_t dir_id(const char *rel)
+{
+    if (!rel[0])
+        return ID_ROOT;
+    for (uint32_t i = 0; i < image->count; i++) {
+        const char *name = name_of(i);
+        if (name && inside(name, rel))
+            return ID_DIR + i;
+    }
+    return ID_ROOT;
+}
+
+static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
+                        handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+{
+    char rel[FS_PATH_LEN + 1];
     const struct bootfs_entry *e;
     struct fsserver_file *f;
-    if ((flags & ~FS_FLAGS) || !(flags & (FS_READ | FS_WRITE)) || fs_path_clean(path, rel) != OK)
+    if ((flags & ~FS_FLAGS) || !(flags & (FS_READ | FS_WRITE)) ||
+        clean_path(path, path_len, rel) != OK)
         return ERR_INVALID_ARGS;
-    if ((flags & (FS_CREATE | FS_TRUNCATE | FS_APPEND)) && !(flags & FS_WRITE))
+    if ((flags & (FS_CREATE | FS_TRUNCATE | FS_APPEND | FS_GATHER | FS_EXCL)) &&
+        !(flags & FS_WRITE))
         return ERR_INVALID_ARGS;
     if (flags & FS_WRITE)
         return ERR_ACCESS_DENIED;
@@ -80,7 +108,7 @@ static status_t op_open(void *ctx, const uint8_t path[256], uint32_t flags, hand
     if (st != OK)
         return st;
     if (!e)
-        return ERR_WRONG_TYPE;   /* a directory */
+        return ERR_IS_DIR;
     /* The entry is the file's state: nothing to release when it closes. */
     st = fsserver_open(ctx, (void *)(uintptr_t)e, false, out_file, out_buffer, &f);
     if (st == OK)
@@ -88,13 +116,13 @@ static status_t op_open(void *ctx, const uint8_t path[256], uint32_t flags, hand
     return st;
 }
 
-static status_t op_stat(void *ctx, const uint8_t path[256], uint64_t *out_size,
-                        uint8_t *out_is_dir, uint64_t *out_mtime)
+static status_t op_stat(void *ctx, const char *path, uint32_t path_len, uint64_t *out_size,
+                        uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
     (void)ctx;
-    char rel[FS_PATH_MAX];
+    char rel[FS_PATH_LEN + 1];
     const struct bootfs_entry *e;
-    status_t st = fs_path_clean(path, rel);
+    status_t st = clean_path(path, path_len, rel);
     if (st == OK)
         st = look(rel, &e);
     if (st != OK)
@@ -102,6 +130,7 @@ static status_t op_stat(void *ctx, const uint8_t path[256], uint64_t *out_size,
     *out_size = e ? e->size : 0;
     *out_is_dir = !e;
     *out_mtime = 0;   /* the image keeps no times */
+    *out_id = e ? (uint64_t)(e - entries) + 1 : dir_id(rel);
     return OK;
 }
 
@@ -116,48 +145,78 @@ static bool first_child(uint32_t i, const char *dir, const char *child, size_t l
     return true;
 }
 
-static status_t op_readdir(void *ctx, const uint8_t path[256], uint32_t index,
-                           uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+/* The cookie is the number of the directory's entries before the next
+ * one, counted as a walk of the table finds them. */
+static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint32_t cookie,
+                           uint32_t *out_next, uint16_t *out_count, uint8_t *out_entries,
+                           uint32_t *out_entries_len)
 {
     (void)ctx;
-    char rel[FS_PATH_MAX];
+    char rel[FS_PATH_LEN + 1];
     const struct bootfs_entry *e;
-    status_t st = fs_path_clean(path, rel);
+    status_t st = clean_path(path, path_len, rel);
     if (st == OK)
         st = look(rel, &e);
     if (st != OK)
         return st;
     if (e)
-        return ERR_WRONG_TYPE;   /* a file */
-    uint32_t seen = 0;
+        return ERR_NOT_DIR;
+    uint32_t seen = 0, len = 0;
+    uint16_t count = 0;
+    *out_next = 0;
     for (uint32_t i = 0; i < image->count; i++) {
         const char *name = name_of(i), *rest = name ? inside(name, rel) : NULL;
         if (!rest)
             continue;
         const char *slash = strchr(rest, '/');
-        size_t len = slash ? (size_t)(slash - rest) : strlen(rest);
-        if (!first_child(i, rel, rest, len) || seen++ != index)
+        size_t n = slash ? (size_t)(slash - rest) : strlen(rest);
+        if (!first_child(i, rel, rest, n) || seen++ < cookie)
             continue;
-        memcpy(out_name, rest, len);   /* out_name is zeroed: shorter than BOOTFS_NAME_MAX */
-        *out_is_dir = slash != NULL;
-        *out_size = slash ? 0 : entries[i].size;
-        return OK;
+        char sub[BOOTFS_NAME_MAX];   /* the subdirectory's path: shorter than name */
+        memcpy(sub, name, (size_t)(rest - name) + n);
+        sub[(rest - name) + n] = '\0';
+        const struct fs_dirent d = {
+            .id = slash ? dir_id(sub) : (uint64_t)i + 1, .size = slash ? 0 : entries[i].size,
+            .is_dir = slash != NULL, .name_len = (uint32_t)n, .name = rest,
+        };
+        if (!fs_dirent_put(out_entries, FS_READDIR_BYTES, &len, &d)) {
+            *out_next = seen - 1;   /* it goes first in the next batch */
+            break;
+        }
+        count++;
     }
-    return ERR_NOT_FOUND;
+    *out_count = count;
+    *out_entries_len = len;
+    return OK;
 }
 
-/* mkdir and unlink: nothing here can change. */
-static status_t op_read_only(void *ctx, const uint8_t path[256])
+/* mkdir, unlink and rename: nothing here can change. */
+static status_t refuse(const char *path, uint32_t path_len)
+{
+    char rel[FS_PATH_LEN + 1];
+    return clean_path(path, path_len, rel) == OK ? ERR_ACCESS_DENIED : ERR_INVALID_ARGS;
+}
+
+static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len)
 {
     (void)ctx;
-    char rel[FS_PATH_MAX];
-    return fs_path_clean(path, rel) == OK ? ERR_ACCESS_DENIED : ERR_INVALID_ARGS;
+    return refuse(path, path_len);
 }
 
-static status_t op_rename(void *ctx, const uint8_t from[256], const uint8_t to[256])
+static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32_t flags)
 {
-    status_t st = op_read_only(ctx, from);
-    return st == ERR_ACCESS_DENIED ? op_read_only(ctx, to) : st;
+    (void)ctx;
+    return flags & ~FS_UNLINK_DIR ? ERR_INVALID_ARGS : refuse(path, path_len);
+}
+
+static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const char *to,
+                          uint32_t to_len, uint32_t flags)
+{
+    (void)ctx;
+    if (flags & ~FS_RENAME_REPLACE)
+        return ERR_INVALID_ARGS;
+    status_t st = refuse(from, from_len);
+    return st == ERR_ACCESS_DENIED ? refuse(to, to_len) : st;
 }
 
 static status_t op_sync(void *ctx)
@@ -209,17 +268,21 @@ static status_t file_op_truncate(void *ctx, uint64_t size)
     return ERR_ACCESS_DENIED;
 }
 
-static status_t file_op_stat(void *ctx, uint64_t *out_size, uint64_t *out_mtime)
+static status_t file_op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir,
+                             uint64_t *out_mtime, uint64_t *out_id)
 {
     struct fsserver_file *f = ctx;
-    *out_size = ((const struct bootfs_entry *)f->ctx)->size;
+    const struct bootfs_entry *e = f->ctx;
+    *out_size = e->size;
+    *out_is_dir = 0;
     *out_mtime = 0;
+    *out_id = (uint64_t)(e - entries) + 1;
     return OK;
 }
 
 static const struct fs_ops fs_ops = {
-    .open = op_open, .stat = op_stat, .readdir = op_readdir, .mkdir = op_read_only,
-    .unlink = op_read_only, .rename = op_rename, .sync = op_sync, .statfs = op_statfs,
+    .open = op_open, .stat = op_stat, .readdir = op_readdir, .mkdir = op_mkdir,
+    .unlink = op_unlink, .rename = op_rename, .sync = op_sync, .statfs = op_statfs,
 };
 
 static const struct file_ops file_ops = {

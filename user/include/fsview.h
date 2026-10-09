@@ -24,7 +24,7 @@
 bool     fs_view_in_etc(const char *clean);
 /* Whether a view with `flags` may make the request of n bytes at req:
  * OK, or ERR_ACCESS_DENIED. A request this can't read (too short, not an
- * fs method, a path field without its NUL) is OK here: the protocol's own
+ * fs method, a path it can't take apart) is OK here: the protocol's own
  * dispatch refuses it. */
 status_t fs_view_check(uint32_t flags, const void *req, uint32_t n);
 
@@ -35,7 +35,9 @@ status_t fs_view_check(uint32_t flags, const void *req, uint32_t n);
  * checked with fs_view_check and then given to fs_dispatch(ops, ctx, ...),
  * and statfs on a read-only view says read-only. Returns as fs_serve_one
  * does: OK once a message was handled, else the read's status
- * (ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the client is gone). */
+ * (ERR_SHOULD_WAIT: nothing queued; ERR_PEER_CLOSED: the client is gone),
+ * or ERR_NO_MEMORY with the message still queued (its buffers come from
+ * the heap). */
 status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops, void *ctx,
                            status_t (*add)(void *host, handle_t ch, uint32_t flags), void *host);
 

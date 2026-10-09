@@ -215,11 +215,9 @@ enum comp_gone {
 
 struct comp_client {
     unsigned slot;                 /* in conn.c's table; the port key is 1 + slot */
-    struct jwl_conn *conn;         /* NULL once dead */
-    handle_t raw;                  /* our end of its channel (a duplicate): the port watches it */
+    struct jwl_conn *conn;         /* its connection; the port watches its channel end */
     bool ready;                    /* its channel may have messages (a port packet came) */
     bool more;                     /* its budget ran out with messages left */
-    bool lingering;                /* dead by our hand: waiting for it to close its end */
     uint32_t nsurfaces, npools, nbuffers, nregions, noutputs;
     uint64_t pool_bytes;           /* bytes of its pools mapped, in total */
     uint32_t rects;                /* boxes in all its regions (struct comp_region.charge) */
@@ -461,10 +459,11 @@ void     conn_ready(uint64_t key);
 void     conn_serve_all(void);
 /* Flush every live client's events (after a paint answered callbacks). */
 void     conn_flush_all(void);
-/* Does any client still have messages its budget left (don't sleep), or
- * events a full channel held back (try again soon)? */
+/* Does any client still have messages its budget left (don't sleep)? */
 bool     conn_more(void);
-bool     conn_held(void);
+/* When to flush again for a client behind (its window full, or events
+ * held back), DEADLINE_NEVER while none is. */
+uint64_t conn_held_deadline(void);
 /* Every live client, for code that walks them (frame callbacks). */
 struct comp_client *conn_client_at(unsigned slot);
 

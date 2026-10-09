@@ -957,6 +957,8 @@ static const struct {
     { "jwl_conn_send_refusals", t_jwl_conn_send_refusals },
     { "jwl_conn_new_ids", t_jwl_conn_new_ids },
     { "jwl_conn_held_handles", t_jwl_conn_held_handles },
+    { "jwl_conn_held_merged", t_jwl_conn_held_merged },
+    { "jwl_conn_handle_queue", t_jwl_conn_handle_queue },
     { "jwl_fuzz_decode", t_jwl_fuzz_decode },
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "jwlc_setup", t_jwlc_setup },
@@ -1092,6 +1094,7 @@ static const struct {
     { "handle_info", t_handle_info },
     { "length_limits", t_length_limits },
     { "replace_consumes", t_replace_consumes },
+    { "fat_open_moved", t_fat_open_moved },
 };
 
 int main(int argc, char **argv)

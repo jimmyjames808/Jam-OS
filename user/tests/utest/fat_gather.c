@@ -148,7 +148,7 @@ static bool grow_in_steps(const struct fatrun *r)
     CHECK_ST(t_open(r, "/grown.bin", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
     CHECK_ST(t_write(&f, 0, pattern, FAT_BUF, &done), OK);
     CHECK_ST(file_truncate_until(f.ch, now() + FAT_CALL_NS, FAT_BUF + GROW), OK);
-    CHECK_ST(file_stat_until(f.ch, now() + FAT_CALL_NS, &size, NULL), OK);
+    CHECK_ST(file_stat_until(f.ch, now() + FAT_CALL_NS, &size, NULL, NULL, NULL), OK);
     CHECK_EQ(size, FAT_BUF + GROW);
     for (uint32_t off = 0; off < FAT_BUF + GROW; off += GROW / 4) {
         CHECK_ST(t_read(&f, off, got, FAT_BUF, &done), OK);

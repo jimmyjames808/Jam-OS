@@ -23,12 +23,6 @@
 
 #define RETRY_FIRST_MS 50u   /* the pause after the first failed try; doubles to the max */
 
-/* What an untyped new id may name: everything this library binds. */
-static const struct jwl_interface *const known[] = {
-    &jwl_wl_compositor_interface, &jwl_wl_shm_interface,    &jwl_xdg_wm_base_interface,
-    &jwl_wl_seat_interface,       &jwl_wl_output_interface,
-};
-
 /* The globals we bind, by enum index, and the most we bind each at. */
 const struct jwlc_want jwlc_wanted[JWLC_GLOBALS] = {
     [JWLC_COMPOSITOR] = { &jwl_wl_compositor_interface, JWL_CLIENT_COMPOSITOR_VERSION, true },
@@ -141,12 +135,13 @@ static void lost(struct jwl_client *c, status_t st)
     c->retry_at = now() + (uint64_t)c->retry_ms * NS_PER_MS;
 }
 
-/* A connection on ch (consumed): the registry's requests go. */
+/* A connection on ch (consumed): the registry's requests go. No `known`
+ * list: no event carries an untyped new id (only wl_registry.bind has one,
+ * a request), so nothing the compositor sends may name one. */
 static status_t start(struct jwl_client *c, handle_t ch)
 {
     struct jwl_conn_config cc = { .ch = ch, .side = JWL_CLIENT,
-                                  .display = &jwl_wl_display_interface, .known = known,
-                                  .nknown = sizeof(known) / sizeof(known[0]) };
+                                  .display = &jwl_wl_display_interface };
     status_t st = jwl_conn_create(&cc, &c->conn);
     if (st != OK) {
         c->conn = NULL;

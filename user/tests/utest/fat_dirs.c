@@ -96,9 +96,9 @@ bool t_fat_dir_linear(void)
 static bool entry_is_fresh(const struct fatrun *r, const char *dir, uint32_t index)
 {
     static char now_names[SMALL_N + 8][FS_PATH_MAX];
-    char got[FS_PATH_MAX];
+    char got[FS_NAME_MAX];
     unsigned n = 0;
-    status_t st = t_readdir(r, dir, index, got, NULL);
+    status_t st = t_readdir_at(r, dir, index, got, NULL);
     /* Listing it all from 0 opens fat's cursor again from the start. */
     if (!list_all(r, dir, now_names, SMALL_N + 8, &n))
         return false;
@@ -117,20 +117,20 @@ static bool entry_is_fresh(const struct fatrun *r, const char *dir, uint32_t ind
  * made, one renamed; each next answer as from the start. */
 static bool changes_mid_listing(const struct fatrun *r)
 {
-    char name[FS_PATH_MAX];
+    char name[FS_NAME_MAX];
     struct tfile f;
     for (uint32_t i = 0; i < 10; i++)
-        CHECK_ST(t_readdir(r, "/d0", i, name, NULL), OK);
+        CHECK_ST(t_readdir_at(r, "/d0", i, name, NULL), OK);
     CHECK_ST(t_unlink(r, "/d0/f0003.txt"), OK);
     if (!entry_is_fresh(r, "/d0", 10))
         return false;
     for (uint32_t i = 11; i < 20; i++)
-        CHECK_ST(t_readdir(r, "/d0", i, name, NULL), OK);
+        CHECK_ST(t_readdir_at(r, "/d0", i, name, NULL), OK);
     CHECK_ST(t_open(r, "/d0/new.txt", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
     t_close(&f);
     if (!entry_is_fresh(r, "/d0", 20) || !entry_is_fresh(r, "/d0", SMALL_N))
         return false;
-    CHECK_ST(t_readdir(r, "/d0", 25, name, NULL), OK);
+    CHECK_ST(t_readdir_at(r, "/d0", 25, name, NULL), OK);
     CHECK_ST(t_rename(r, "/d0/f0001.txt", "/d0/a much longer name than before.txt"), OK);
     return entry_is_fresh(r, "/d0", 26) && entry_is_fresh(r, "/d0", 0);
 }
@@ -139,22 +139,22 @@ static bool changes_mid_listing(const struct fatrun *r)
  * then a listing started again: every answer the one at that index. */
 static bool interleaved(const struct fatrun *r)
 {
-    char name[FS_PATH_MAX], want[16], dir[16];
+    char name[FS_NAME_MAX], want[16], dir[16];
     for (uint32_t i = 0; i < SMALL_N; i++)
         for (unsigned d = 1; d < DIRS; d++) {
             snprintf(dir, sizeof(dir), "/d%u", d);
             snprintf(want, sizeof(want), "f%04u.txt", i);
-            CHECK_ST(t_readdir(r, dir, i, name, NULL), OK);
+            CHECK_ST(t_readdir_at(r, dir, i, name, NULL), OK);
             if (strcmp(name, want))
                 FAIL("%s entry %u: \"%s\", not %s", dir, i, name, want);
         }
-    CHECK_ST(t_readdir(r, "/d1", SMALL_N, name, NULL), ERR_NOT_FOUND);
-    CHECK_ST(t_readdir(r, "/d1", 0, name, NULL), OK);
+    CHECK_ST(t_readdir_at(r, "/d1", SMALL_N, name, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_readdir_at(r, "/d1", 0, name, NULL), OK);
     CHECK(!strcmp(name, "f0000.txt"));
-    CHECK_ST(t_readdir(r, "/d1", 7, name, NULL), OK);
+    CHECK_ST(t_readdir_at(r, "/d1", 7, name, NULL), OK);
     CHECK(!strcmp(name, "f0007.txt"));
-    CHECK_ST(t_readdir(r, "/d1/f0002.txt", 0, name, NULL), ERR_WRONG_TYPE);
-    CHECK_ST(t_readdir(r, "/nothing", 0, name, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_readdir_at(r, "/d1/f0002.txt", 0, name, NULL), ERR_NOT_DIR);
+    CHECK_ST(t_readdir_at(r, "/nothing", 0, name, NULL), ERR_NOT_FOUND);
     return true;
 }
 
@@ -163,12 +163,12 @@ static bool held_dirs_change(const struct fatrun *r)
 {
     char name[FS_PATH_MAX];
     CHECK_ST(t_mkdir(r, "/empty"), OK);
-    CHECK_ST(t_readdir(r, "/empty", 0, name, NULL), ERR_NOT_FOUND);
-    CHECK_ST(t_readdir(r, "/d2", 3, name, NULL), OK);
+    CHECK_ST(t_readdir_at(r, "/empty", 0, name, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_readdir_at(r, "/d2", 3, name, NULL), OK);
     CHECK_ST(t_rename(r, "/d2", "/moved"), OK);
-    CHECK_ST(t_readdir(r, "/moved", 4, name, NULL), OK);
+    CHECK_ST(t_readdir_at(r, "/moved", 4, name, NULL), OK);
     CHECK(!strcmp(name, "f0004.txt"));
-    CHECK_ST(t_readdir(r, "/d2", 0, name, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_readdir_at(r, "/d2", 0, name, NULL), ERR_NOT_FOUND);
     CHECK_ST(t_unlink(r, "/empty"), OK);
     return true;
 }

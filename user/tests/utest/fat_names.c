@@ -109,7 +109,7 @@ static bool check_refused(const struct fatrun *r)
     };
     struct tfile f;
     unsigned before = 0, after = 0;
-    uint8_t full[FS_PATH_MAX];
+    static char full[FS_PATH_LEN + 2], other[FS_PATH_LEN + 1];
     if (!dir_count(r, "/", NULL, &before, NULL))
         return false;
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -121,17 +121,50 @@ static bool check_refused(const struct fatrun *r)
             FAIL("renaming to \"%s\" was not refused ERR_INVALID_ARGS", bad[i]);
         CHECK_ST(t_stat(r, bad[i], NULL, NULL, NULL), ERR_INVALID_ARGS);
     }
-    /* A path field with no NUL in its 256 bytes. */
-    memset(full, 'a', sizeof(full));
-    full[0] = '/';
-    CHECK_ST(fs_stat_until(r->fs, now() + FAT_CALL_NS, full, NULL, NULL, NULL), ERR_INVALID_ARGS);
-    CHECK_ST(fs_mkdir_until(r->fs, now() + FAT_CALL_NS, full), ERR_INVALID_ARGS);
+    /* The longest path the protocol carries (4095 bytes: names of 200
+     * bytes), twice in one rename (over 8 KiB: the request fits fat's
+     * slot), and one byte more (the generated client refuses it). */
+    memset(full, 'a', FS_PATH_LEN);
+    for (unsigned k = 0; k < FS_PATH_LEN; k += 201)
+        full[k] = '/';
+    full[FS_PATH_LEN] = '\0';
+    memcpy(other, full, sizeof(other));
+    other[FS_PATH_LEN - 1] = 'b';
+    CHECK_ST(t_stat(r, full, NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(t_rename(r, full, other), ERR_NOT_FOUND);
+    full[FS_PATH_LEN] = 'a';
+    full[FS_PATH_LEN + 1] = '\0';
+    CHECK_ST(t_stat(r, full, NULL, NULL, NULL), ERR_INVALID_ARGS);
+    CHECK_ST(t_mkdir(r, full), ERR_INVALID_ARGS);
     /* Not UTF-8. */
     CHECK_ST(t_mkdir(r, "/bad\xff\xfeutf8"), ERR_INVALID_ARGS);
     if (!dir_count(r, "/", NULL, &after, NULL))
         return false;
     CHECK_EQ(after, before);   /* nothing was made */
     return file_is(r, "/notes.txt", "notes.txt");
+}
+
+/* The longest name FAT holds, 255 UTF-16 units, as UTF-8 bytes: 765 of
+ * them for 255 characters of three bytes each. Listed, it is that name,
+ * not its 8.3 alias (FF_LFN_BUF). One character more is too long. */
+static bool check_long_utf8(const struct fatrun *r)
+{
+    static char path[2 + 3 * 256];
+    unsigned count = 0;
+    bool found = false;
+    path[0] = '/';
+    for (unsigned i = 0; i < 255; i++)
+        memcpy(path + 1 + 3 * i, "\xe6\x97\xa5", 3);   /* U+65E5 */
+    path[1 + 3 * 255] = '\0';
+    if (!put_file(r, path, "long") || !dir_count(r, "/", path + 1, &count, &found))
+        return false;
+    CHECK(found);
+    if (!file_is(r, path, "long"))
+        return false;
+    CHECK_ST(t_unlink(r, path), OK);
+    memcpy(path + 1 + 3 * 255, "\xe6\x97\xa5", 4);
+    CHECK_ST(t_mkdir(r, path), ERR_NAME_TOO_LONG);
+    return true;
 }
 
 bool t_fat_names(void)
@@ -141,7 +174,8 @@ bool t_fat_names(void)
     bool repeated = true, found = false;
     if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
         return false;
-    if (!check_kept_names(&r) || !check_case(&r) || !check_refused(&r))
+    if (!check_kept_names(&r) || !check_case(&r) || !check_refused(&r) ||
+        !check_long_utf8(&r))
         return false;
     /* The two holiday files: two entries, two different aliases. */
     CHECK_ST(t_sync(&r), OK);

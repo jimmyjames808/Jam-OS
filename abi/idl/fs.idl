@@ -1,11 +1,17 @@
 # fs: one mounted filesystem, as a filesystem service serves it (fat for
 # /data and /esp, the bootfs server for /boot). libos's namespace sends a
 # path here with the mount point stripped: "/logs/boot-0001.txt" for
-# /data/logs/boot-0001.txt. Paths are '/'-separated UTF-8, NUL-terminated
-# in a 256-byte field (at most 255 bytes); "." and ".." are resolved by the
-# server and never leave the mount. Errors are ERR_* (the server maps its
-# own codes): ERR_NOT_FOUND, ERR_ALREADY_EXISTS, ERR_NO_SPACE (full),
-# ERR_ACCESS_DENIED (read-only), ERR_INVALID_ARGS (a bad name), ERR_IO.
+# /data/logs/boot-0001.txt. Paths are '/'-separated UTF-8 of at most 4095
+# bytes (str: the generated server refuses a longer one, or one that isn't
+# UTF-8 or holds a NUL, with ERR_INVALID_ARGS); "." and ".." are resolved
+# by the server and never leave the mount. Errors are ERR_* (the server
+# maps its own codes): ERR_NOT_FOUND (nothing there), ERR_ALREADY_EXISTS,
+# ERR_NOT_DIR (a directory was needed, or a name on the way is a file),
+# ERR_IS_DIR (a file was needed), ERR_NOT_EMPTY, ERR_NAME_TOO_LONG (a name
+# past what the filesystem holds: fat, 255 UTF-16 units), ERR_BUSY (an open
+# file in the way), ERR_NO_SPACE (full), ERR_ACCESS_DENIED (read-only),
+# ERR_INVALID_ARGS (a name the filesystem can't hold, a bad flag),
+# ERR_NO_RESOURCES (too many open files or views), ERR_IO.
 # Format: see tools/genidl.py.
 #
 # Restart: fat's restart is not seen (ARCHITECTURE.md, "Services that
@@ -23,24 +29,52 @@
 
 protocol fs 16 kept
 
-# Open a file (not a directory). flags: FS_READ 1, FS_WRITE 2, FS_CREATE 4,
-# FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32 (<os.h>). `file` speaks the file protocol;
-# `buffer` is the VMO its reads and writes go through; `size` is the file's
-# size now. Closing `file` closes the file.
-1  open  (u8[256] path, u32 flags) -> (handle file, handle buffer, u64 size)
+# fs.unlink's flags: remove a directory (empty), not a file (unlinkat's
+# AT_REMOVEDIR).
+const UNLINK_DIR      1
+# fs.rename's flags: replace what is at `to` (POSIX rename).
+const RENAME_REPLACE  1
+# The longest path (bytes, without a NUL) and name in a readdir record.
+const PATH_LEN        4095
+const NAME_LEN        765
+# readdir's records: their fixed part, and the most a batch holds (bytes,
+# `entries`' size below).
+const DIRENT_FIXED    28
+const READDIR_BYTES   8192
+
+# Open a file (not a directory: ERR_IS_DIR). flags: FS_READ 1, FS_WRITE 2,
+# FS_CREATE 4, FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32, FS_EXCL 64 (with
+# FS_CREATE: ERR_ALREADY_EXISTS if it is there) (<os.h>). `file` speaks the
+# file protocol; `buffer` is the VMO its reads and writes go through;
+# `size` is the file's size now. Closing `file` closes the file.
+1  open  (str[<=4095] path, u32 flags) -> (handle file, handle buffer, u64 size)
 # A file or directory: its size (0 for a directory), 1 if a directory,
-# the modification time (Unix seconds, 0 if unknown).
-2  stat  (u8[256] path) -> (u64 size, u8 is_dir, u64 mtime)
-# Entry `index` (0-based) of directory `path`, "." and ".." left out.
-# Past the last: ERR_NOT_FOUND. Entries may shift if the directory changes
-# between calls. Asked in order (0, 1, 2, ...), a listing costs the service
-# one entry read per entry: fat keeps a cursor per directory being listed.
-3  readdir  (u8[256] path, u32 index) -> (u8[256] name, u8 is_dir, u64 size)
-4  mkdir  (u8[256] path) -> ()
-# Remove a file, or an empty directory.
-5  unlink  (u8[256] path) -> ()
-# Rename or move within this filesystem.
-6  rename  (u8[256] from, u8[256] to) -> ()
+# the modification time (Unix seconds, 0 if unknown), and its id: the same
+# for every path that reaches it while it stays where it is (fat: the
+# place of its directory entry, so a rename gives it a new one; the root
+# has its own).
+2  stat  (str[<=4095] path) -> (u64 size, u8 is_dir, u64 mtime, u64 id)
+# Entries of directory `path` from `cookie` (0: the first), "." and ".."
+# left out, as many as fit in `entries`: `count` records, each DIRENT_FIXED
+# bytes of u64 id, u64 size (0 for a directory), u64 mtime, u16 name_len,
+# u8 is_dir, u8 0 (little-endian, packed), then the name (UTF-8, no NUL,
+# 1 to NAME_LEN bytes), the next record right after (<fs_idl.h> reads and
+# writes them). `next` is the cookie to go on with; 0: that was the last. A
+# cookie is the server's own (fat's and bootfs's: the index of the next
+# entry); entries may shift if the directory changes between calls.
+3  readdir  (str[<=4095] path, u32 cookie) -> (u32 next, u16 count, u8[<=8192] entries)
+# A new directory (ERR_ALREADY_EXISTS: something is there).
+4  mkdir  (str[<=4095] path) -> ()
+# Remove a file, or with FS_UNLINK_DIR an empty directory: ERR_IS_DIR,
+# ERR_NOT_DIR for the other kind; ERR_NOT_EMPTY: a directory with entries;
+# ERR_BUSY: an open file. The root: ERR_ACCESS_DENIED.
+5  unlink  (str[<=4095] path, u32 flags) -> ()
+# Rename or move within this filesystem. ERR_BUSY: `from` is an open file;
+# ERR_INVALID_ARGS: a directory into itself, or the root. Something at
+# `to` (but `from` itself under another name or case): ERR_ALREADY_EXISTS,
+# or with FS_RENAME_REPLACE it goes (a file for a file, an empty directory
+# for a directory: ERR_IS_DIR, ERR_NOT_DIR, ERR_NOT_EMPTY, ERR_BUSY).
+6  rename  (str[<=4095] from, str[<=4095] to, u32 flags) -> ()
 # Everything written through this filesystem is on the medium.
 7  sync  () -> ()
 # Bytes in the filesystem and bytes free, 1 if read-only, and the volume
