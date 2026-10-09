@@ -98,7 +98,7 @@ cm0) iommu="-device intel-iommu,intremap=on,caching-mode=off" ;;
 eim) iommu="-device intel-iommu,intremap=on,caching-mode=on,eim=on" ;;
 *) echo "QEMU_IOMMU=$QEMU_IOMMU: want 1, cm0 or eim"; exit 1 ;;
 esac
-ovmf=$(brew --prefix qemu)/share/qemu
+. "$(dirname "$0")/qemu-host.sh"   # ovmf_code, ovmf_vars, accel, machine
 mkdir -p "$out"
 
 img="$out/$name.img"
@@ -119,7 +119,7 @@ if [ "${QEMU_MENU_AT:-}" = efi ]; then
 else
     mcopy -o -i "$img@@1M" "$out/$name.conf" ::/boot/limine/limine.conf
 fi
-cp "$ovmf/edk2-i386-vars.fd" "$out/$name.vars"
+cp "$ovmf_vars" "$out/$name.vars"
 
 log="$out/$name.log" mon="build/.qemu-$name.sock"   # unix socket paths max out at 104 bytes
 nic="-nic none"
@@ -162,8 +162,8 @@ if [ -n "${QEMU_INPUT:-}" ]; then
 else
     serial="-serial file:$log"
 fi
-qemu-system-x86_64 -M q35 -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEMU_CPU:-max}" \
-    -drive if=pflash,format=raw,readonly=on,file="$ovmf/edk2-x86_64-code.fd" \
+qemu-system-x86_64 -M "$machine" -accel "$accel" -m "${QEMU_MEM:-2G}" -smp "${QEMU_SMP:-4}" -cpu "${QEMU_CPU:-max}" \
+    -drive if=pflash,format=raw,readonly=on,file="$ovmf_code" \
     -drive if=pflash,format=raw,file="$out/$name.vars" \
     -device virtio-rng-pci,vectors=2 \
     -device qemu-xhci,id=xhci${QEMU_XHCI:+,$QEMU_XHCI} \

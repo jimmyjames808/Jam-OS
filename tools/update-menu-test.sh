@@ -217,11 +217,11 @@ open(sys.argv[1], "w").write("timeout: 0\ndefault_entry: %s\n" % sys.argv[2] + "
 EOF
         mcopy -o -i "$i@@1M" "$out/$2.conf" ::/EFI/BOOT/limine.conf
     fi
-    ovmf=$(brew --prefix qemu)/share/qemu
-    cp "$ovmf/edk2-i386-vars.fd" "$out/$2.vars"
+    . "$(dirname "$0")/qemu-host.sh"   # ovmf_code, ovmf_vars, accel, machine
+    cp "$ovmf_vars" "$out/$2.vars"
     rm -f "$out/$2.log"
-    qemu-system-x86_64 -M q35 -m 2G -smp 2 -cpu max -snapshot \
-        -drive if=pflash,format=raw,readonly=on,file="$ovmf/edk2-x86_64-code.fd" \
+    qemu-system-x86_64 -M "$machine" -accel "$accel" -m 2G -smp 2 -cpu max -snapshot \
+        -drive if=pflash,format=raw,readonly=on,file="$ovmf_code" \
         -drive if=pflash,format=raw,file="$out/$2.vars" \
         -device qemu-xhci,id=xhci -drive if=none,id=stick,format=raw,file="$i" \
         -device usb-storage,bus=xhci.0,port=1,drive=stick,bootindex=0 \
