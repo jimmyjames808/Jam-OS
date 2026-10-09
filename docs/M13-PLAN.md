@@ -1307,9 +1307,9 @@ need to know.
   (umask, ppid, pgid, sid, the signal masks) or NULL.
 - Where each area's code goes: files B1, B2, B3, B5, B4, B6, T2 and X1
   own as the tracks' table says. Two of A1's files are stand-ins to be
-  replaced: `user/posix/sys/stdfd.c` (descriptors 0 to 2: the null
-  device, the log, or a pipe; B1's descriptor table replaces it and
-  takes its handlers' table lines) and `user/posix/sys/nosig.c`
+  replaced: stdfd.c (descriptors 0 to 2: the null device, the log, or
+  a pipe; B1's descriptor table replaced it and took its handlers'
+  table lines, and B2's kinds its pipe, null and log) and `user/posix/sys/nosig.c`
   (`rt_sigprocmask` keeps a per-thread mask and nothing else; B4's
   signal.c replaces it).
 - The start (`user/posix/crt/start.c`) reads the startup message, then

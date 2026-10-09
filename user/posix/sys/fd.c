@@ -26,7 +26,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include "fd.h"
-#include "stdfd.h"
+#include "kinds.h"
 
 /* The reserved mark: a slot fd_alloc gave out, not filled yet. */
 static struct fd_desc reserved_mark;
@@ -269,7 +269,7 @@ struct staged {
 
 static struct staged staged[FD_MAX];   /* before main: one thread */
 static unsigned      nstaged;
-static bool          stage_default;    /* no hand-over: stdfd's defaults */
+static bool          stage_default;    /* no hand-over: stdfd_default (dev.c) */
 static uint8_t      *stage_data;       /* mapped stage_vmo, made at the first data */
 static handle_t      stage_vmo;
 static uint64_t      stage_used;
@@ -348,8 +348,11 @@ void fd_stage_default(void)
 /* The hand-over's kinds, as this program takes them: one line per kind,
  * each the kind's own file's (fd.h). */
 fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
-    [POSIXFDS_PIPE] = stdfd_adopt_pipe,
-    [POSIXFDS_DEV] = stdfd_adopt_dev,
+    [POSIXFDS_PIPE] = pipe_adopt,
+    [POSIXFDS_DEV] = dev_adopt,
+    [POSIXFDS_ETC] = etc_adopt,
+    [POSIXFDS_MEMFD] = memfd_adopt,
+    [POSIXFDS_EVENTFD] = eventfd_adopt,
 };
 
 /* "posix: descriptor <n> (<kind>) left out: <why>\n" in the log. */
