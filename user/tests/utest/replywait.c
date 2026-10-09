@@ -490,9 +490,10 @@ bool t_reply_wait_refusals(void)
 /* M12's Q1: the handles a send is given are gone when it returns, whatever
  * its status: a refused list (one without RIGHT_TRANSFER), a write whose
  * peer has gone, a call whose peer has gone, a reply_wait refused for its
- * wait handle, a write to something that isn't a channel, and
- * process_start's arg0 with a bad process. Only an error found before the
- * list is read (its length) leaves them. */
+ * wait handle, a write to something that isn't a channel, process_start's
+ * arg0 with a bad process, and every other argument error once the list
+ * was read (K-C). Only a list the kernel can't read (too long, no buffer)
+ * leaves them. */
 static bool gone(handle_t h)
 {
     return jam_event_signal(h, 0, SIG_SIGNALED) == ERR_BAD_HANDLE;
@@ -516,12 +517,38 @@ bool t_handles_always_moved(void)
 
     CHECK_ST(jam_event_create(&e[0]), OK);
     CHECK_ST(jam_channel_write(a, "abcd", CHANNEL_MAX_BYTES + 1, e, 1), ERR_OUT_OF_RANGE);
-    CHECK(!gone(e[0]));   /* refused before the list was read: still ours */
+    CHECK(gone(e[0]));   /* an argument error after the list was read: gone (K-C) */
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_channel_write(a, NULL, 4, e, 1), ERR_INVALID_ARGS);   /* no bytes buffer */
+    CHECK(gone(e[0]));
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    CHECK_ST(jam_channel_write(a, "abcd", 4, e, CHANNEL_MAX_HANDLES + 1), ERR_OUT_OF_RANGE);
+    CHECK(!gone(e[0]));   /* a list too long to read: still ours */
+    CHECK_ST(jam_channel_write(a, "abcd", 4, NULL, 1), ERR_INVALID_ARGS);   /* none to read */
+    CHECK(!gone(e[0]));
+    CHECK_ST(jam_channel_write_rights(a, "abcd", 4, e, NULL, 1), ERR_INVALID_ARGS);
+    CHECK(gone(e[0]));   /* no rights list: the handle list was read */
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    struct channel_call_args bad = { .h = a, .wr_len = 4, .wr_bytes = (uint64_t)(uintptr_t)"abcd",
+                                    .wr_handles = (uint64_t)(uintptr_t)e, .wr_nhandles = 1,
+                                    .flags = 0x80 };
+    CHECK_ST(jam_channel_call(&bad), ERR_INVALID_ARGS);   /* a bad flag */
+    CHECK(gone(e[0]));
+    CHECK_ST(jam_object_wait_one(b, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* nothing sent */
+    struct rw_req req = { 0, 0 }, rep = { 1, 2 };
+    uint32_t nb = 0;
+    CHECK_ST(jam_event_create(&e[0]), OK);
+    struct channel_reply_wait_args rx = rw_args(b, &rep, b, &req, &nb, 0);
+    rx.wr_handles = (uint64_t)(uintptr_t)e;
+    rx.wr_nhandles = 1;
+    rx.reserved = 1;
+    CHECK_ST(jam_channel_reply_wait(&rx), ERR_INVALID_ARGS);   /* reserved set */
+    CHECK(gone(e[0]));
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, 0, &seen), ERR_TIMED_OUT);   /* no reply */
+    CHECK_ST(jam_event_create(&e[0]), OK);
     CHECK_ST(jam_channel_write(e[0], "abcd", 4, e, 1), ERR_WRONG_TYPE);
     CHECK(gone(e[0]));
 
-    struct rw_req req = { 0, 0 }, rep = { 1, 2 };
-    uint32_t nb = 0;
     CHECK_ST(jam_event_create(&e[0]), OK);
     struct channel_reply_wait_args x = rw_args(b, &rep, 0x7fff0000u, &req, &nb, 0);
     x.wr_handles = (uint64_t)(uintptr_t)e;
