@@ -748,3 +748,5 @@ bool t_mix_unity_is_exact(void);
 bool t_mix_volume_and_master(void);
 bool t_mix_dither(void);
 bool t_mix_limits(void);
+/* fat.c: an open file is known by its directory entry (P5). */
+bool t_fat_open_moved(void);

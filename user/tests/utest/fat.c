@@ -492,6 +492,49 @@ bool t_fat_dirs(void)
     return fat_stop(&r) && ramdisk_destroy(&disk);
 }
 
+/* fat knows an open file by its directory entry, not by a path (the M11.6
+ * review's finding 5): a directory renamed above an open file leaves no
+ * stale path behind, so a new file at the old path is a file of its own;
+ * the open file is still locked under its new path; and a file reached by
+ * its 8.3 alias is the file a writer has open. */
+bool t_fat_open_moved(void)
+{
+    struct fatrun r;
+    struct tfile w, g, x;
+    uint32_t done = 0;
+    char back[16] = "";
+    if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
+        return false;
+    CHECK_ST(t_mkdir(&r, "/d"), OK);
+    if (!put_file(&r, "/d/f.txt", "old"))
+        return false;
+    CHECK_ST(t_open(&r, "/d/f.txt", FS_WRITE, &w), OK);
+    CHECK_ST(t_rename(&r, "/d", "/e"), OK);   /* the directory moves, the file stays open */
+    CHECK_ST(t_mkdir(&r, "/d"), OK);
+    if (!put_file(&r, "/d/f.txt", "new"))     /* the old path: a new file, not the open one */
+        return false;
+    CHECK_ST(t_write(&w, 0, "moved", 5, &done), OK);
+    CHECK_ST(t_unlink(&r, "/e/f.txt"), ERR_BAD_STATE);   /* open, under its new path */
+    CHECK_ST(t_open(&r, "/E/F.TXT", FS_WRITE, &x), ERR_BAD_STATE);
+    CHECK_ST(t_unlink(&r, "/d/f.txt"), OK);              /* not the open one */
+    t_close(&w);
+    if (!file_is(&r, "/e/f.txt", "moved"))
+        return false;
+
+    /* An 8.3 alias is the same file: it shares the writer's view. */
+    CHECK_ST(t_open(&r, "/a long name.txt", FS_WRITE | FS_CREATE, &w), OK);
+    CHECK_ST(t_write(&w, 0, "shared", 6, &done), OK);
+    CHECK_ST(t_open(&r, "/ALONGN~1.TXT", FS_READ, &g), OK);
+    CHECK_EQ(g.size, 6);
+    CHECK_ST(t_read(&g, 0, back, sizeof(back), &done), OK);
+    CHECK(done == 6 && !memcmp(back, "shared", 6));
+    CHECK_ST(t_open(&r, "/ALONGN~1.TXT", FS_WRITE, &x), ERR_BAD_STATE);
+    CHECK_ST(t_rename(&r, "/ALONGN~1.TXT", "/x.txt"), ERR_BAD_STATE);
+    t_close(&g);
+    t_close(&w);
+    return fat_stop(&r) && ramdisk_destroy(&disk);
+}
+
 /* A full disk: what fits is written, then ERR_NO_SPACE; what was written
  * stays readable; removing a file makes room again. */
 bool t_fat_full_disk(void)
