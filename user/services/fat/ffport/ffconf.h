@@ -9,7 +9,9 @@
  * - read-write with f_mkfs (a blank data partition is formatted), volume
  *   labels (statfs, and "JAMOS-DATA" after a format);
  * - long file names with a static working buffer (fat is single-threaded)
- *   and a UTF-8 API; code page 437 for the short aliases;
+ *   and a UTF-8 API; code page 437 for the short aliases; FILINFO holds a
+ *   whole long name in UTF-8 (FF_LFN_BUF: FatFs gives the 8.3 alias for a
+ *   name that doesn't fit);
  * - no relative paths: fat resolves "." and ".." itself before FatFs sees
  *   a path (path.c);
  * - one volume, 512-byte sectors only (every stick seen so far), 32-bit
@@ -49,7 +51,7 @@
 #define FF_USE_LFN     1
 #define FF_MAX_LFN     255
 #define FF_LFN_UNICODE 2     /* UTF-8 */
-#define FF_LFN_BUF     255
+#define FF_LFN_BUF     765   /* 255 UTF-16 units as UTF-8: up to 3 bytes each */
 #define FF_SFN_BUF     12
 #define FF_FS_RPATH    0
 #define FF_PATH_DEPTH  10

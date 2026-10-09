@@ -1,9 +1,10 @@
 /* utest: libjwl's transport refusing malformed batches (<jwl.h>): each
  * written raw into a compositor connection's channel, refused with the
  * right wl_display.error, which is read back raw from the client's end
- * (the JWL1 header, then the error event), with every handle the batch
- * brought closed; and a client refusing a compositor that breaks the
- * transport (it sends nothing back). */
+ * (the JWL2 header, then the error event), with every handle the batch
+ * brought closed (and those waiting from batches before it); and a client
+ * refusing a compositor that breaks the transport (it sends nothing
+ * back). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -14,14 +15,14 @@
 
 static uint8_t raw[JWL_BATCH_MAX + 64];
 
-/* A batch header at the start of w. */
-static void header(struct jt_wr *w, uint32_t magic, uint32_t acked, uint32_t nfds, uint32_t res)
+/* A batch header at the start of w: the magic, nfds, two reserved words. */
+static void header(struct jt_wr *w, uint32_t magic, uint32_t nfds, uint32_t res8, uint32_t res12)
 {
     w->n = 0;
     jt_w32(w, magic);
-    jt_w32(w, acked);
     jt_w32(w, nfds);
-    jt_w32(w, res);
+    jt_w32(w, res8);
+    jt_w32(w, res12);
 }
 
 static handle_t vmo(void)
@@ -31,18 +32,24 @@ static handle_t vmo(void)
     return h;
 }
 
-/* The compositor reads raw[0..n) with nh new VMOs: after `good` messages
- * it must be dead with (object, code), having written exactly that error
- * to the client. */
-static bool refused(size_t n, unsigned nh, unsigned good, uint32_t object, uint32_t code,
-                    const char *what)
+/* The compositor reads a batch of only `ahead` new VMOs (when not 0), then
+ * raw[0..n) with nh new VMOs: after `good` messages it must be dead with
+ * (object, code), having written exactly that error to the client. */
+static bool refused_after(unsigned ahead, size_t n, unsigned nh, unsigned good, uint32_t object,
+                          uint32_t code, const char *what)
 {
-    handle_t a, b, hs[20];
+    handle_t a, b, hs[32];
     CHECK_ST(jam_channel_create(&a, &b), OK);
     struct jwl_conn *sv;
     struct jwl_conn_config cfg = { .ch = b, .side = JWL_SERVER, .display = &jt_display,
                                    .known = jt_known, .nknown = JT_NKNOWN };
     CHECK_ST(jwl_conn_create(&cfg, &sv), OK);
+    if (ahead) {
+        uint32_t first[4] = { JWL_MAGIC, ahead, 0, 0 };
+        for (unsigned i = 0; i < ahead; i++)
+            hs[i] = vmo();
+        CHECK_ST(jam_channel_write(a, first, sizeof(first), hs, ahead), OK);
+    }
     for (unsigned i = 0; i < nh; i++)
         hs[i] = vmo();
     CHECK_ST(jam_channel_write(a, raw, (uint32_t)n, hs, nh), OK);
@@ -76,7 +83,7 @@ static bool refused(size_t n, unsigned nh, unsigned good, uint32_t object, uint3
 
 #define REFUSED(n, nh, good, object, code, what)                     \
     do {                                                              \
-        if (!refused(n, nh, good, object, code, what))                \
+        if (!refused_after(0, n, nh, good, object, code, what))       \
             return false;                                             \
     } while (0)
 
@@ -89,34 +96,36 @@ bool t_jwl_bad_batches(void)
     b0 = ji.used[JOB_LIMIT_MSG_BYTES];
     struct jt_wr w = { .b = raw };
     const uint32_t M = JWL_DISPLAY_ID, BAD = JWL_ERROR_INVALID_METHOD;
-    header(&w, 0x314c574b, 0, 0, 0);
-    REFUSED(w.n, 0, 0, M, BAD, "a bad magic");
-    header(&w, JWL_MAGIC, 0, 0, 1);
-    REFUSED(w.n, 0, 0, M, BAD, "the reserved word set");
+    header(&w, 0x314c574a, 0, 0, 0);
+    REFUSED(w.n, 0, 0, M, BAD, "a JWL1 header");
     header(&w, JWL_MAGIC, 0, 1, 0);
+    REFUSED(w.n, 0, 0, M, BAD, "the reserved word at 8 set");
+    header(&w, JWL_MAGIC, 0, 0, 1);
+    REFUSED(w.n, 0, 0, M, BAD, "the reserved word at 12 set");
+    header(&w, JWL_MAGIC, 1, 0, 0);
     REFUSED(w.n, 0, 0, M, BAD, "nfds 1, no handle");
     header(&w, JWL_MAGIC, 0, 0, 0);
     REFUSED(w.n, 1, 0, M, BAD, "nfds 0, a handle");
     REFUSED(8, 0, 0, M, BAD, "half a header");
     REFUSED(0, 0, 0, M, BAD, "an empty channel message");
-    header(&w, JWL_MAGIC, 1, 0, 0);
-    REFUSED(w.n, 0, 0, M, BAD, "acknowledging a batch never sent");
     header(&w, JWL_MAGIC, 0, 0, 0);
     memset(raw + w.n, 0, JWL_BATCH_MAX + 4 - w.n);
     REFUSED(JWL_BATCH_MAX + 4, 0, 0, M, BAD, "a batch over 16 KiB");
-    header(&w, JWL_MAGIC, 0, 17, 0);
-    REFUSED(w.n, 17, 0, M, BAD, "17 handles");
-    /* a good message, then a handle nobody uses */
-    header(&w, JWL_MAGIC, 0, 1, 0);
+    header(&w, JWL_MAGIC, 29, 0, 0);
+    REFUSED(w.n, 29, 0, M, BAD, "29 handles");
+    /* 28 handles waiting (a batch of them alone is fine), then one more */
+    header(&w, JWL_MAGIC, 1, 0, 0);
+    if (!refused_after(JWL_HANDLES_QUEUED, w.n, 1, 0, M, BAD, "29 handles waiting"))
+        return false;
+    /* a good message, then a bad one: the bad one's own error; a handle no
+     * message takes yet waits (as on a socket), closed with the rest */
+    header(&w, JWL_MAGIC, 1, 0, 0);
     jt_begin(&w, JWL_DISPLAY_ID, 1);
     jt_w32(&w, 2);
     jt_end(&w);
-    REFUSED(w.n, 1, 1, M, BAD, "a handle no message takes");
-    /* a good message, then a bad one: the bad one's own error */
     jt_begin(&w, 9, 0);
     jt_end(&w);
-    w.b[8] = 0;   /* nfds 0 now */
-    REFUSED(w.n, 0, 1, M, JWL_ERROR_INVALID_OBJECT, "a message to nothing");
+    REFUSED(w.n, 1, 1, M, JWL_ERROR_INVALID_OBJECT, "a message to nothing");
     /* half a message at the end */
     header(&w, JWL_MAGIC, 0, 0, 0);
     jt_begin(&w, JWL_DISPLAY_ID, 1);
@@ -134,8 +143,8 @@ bool t_jwl_bad_batches(void)
 bool t_jwl_bad_compositor(void)
 {
     struct jt_wr w = { .b = raw };
-    struct { uint32_t acked, nfds, nh; const char *what; } cases[] = {
-        { 1, 0, 0, "a compositor acknowledging" },
+    struct { uint32_t res8, nfds, nh; const char *what; } cases[] = {
+        { 1, 0, 0, "a compositor's reserved word set" },
         { 0, 2, 1, "nfds 2, one handle" },
     };
     for (unsigned i = 0; i < 3; i++) {
@@ -147,7 +156,7 @@ bool t_jwl_bad_compositor(void)
         header(&w, JWL_MAGIC, 0, 0, 0);
         CHECK_ST(jam_channel_write(b, raw, (uint32_t)w.n, NULL, 0), OK);   /* empty: fine */
         if (i < 2) {
-            header(&w, JWL_MAGIC, cases[i].acked, cases[i].nfds, 0);
+            header(&w, JWL_MAGIC, cases[i].nfds, cases[i].res8, 0);
             handle_t h = cases[i].nh ? vmo() : HANDLE_INVALID;
             CHECK_ST(jam_channel_write(b, raw, (uint32_t)w.n, &h, cases[i].nh), OK);
         } else {
@@ -158,7 +167,7 @@ bool t_jwl_bad_compositor(void)
         }
         struct jwl_msg m;
         CHECK_ST(jwl_conn_next(cl, &m), ERR_INVALID_ARGS);
-        CHECK_EQ(cl->nread, i < 2 ? 1 : 2);   /* a refused header isn't counted read */
+        CHECK_EQ(cl->stats.batches_in, 2);
         CHECK_ST(jwl_conn_flush(cl), ERR_INVALID_ARGS);
         CHECK_EQ(cl->stats.batches_out, 0);
         uint32_t nb, nh;

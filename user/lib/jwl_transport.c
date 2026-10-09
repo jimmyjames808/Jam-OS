@@ -1,28 +1,29 @@
 /* libjwl's transport (<jwl.h>): a Wayland connection over a channel.
  *
  * Receiving: one channel message (a batch) at a time into c->in, its
- * header checked (magic, reserved, the handle count it claims against the
- * handles it carries, the acknowledgement), then its messages decoded one
- * per jwl_conn_next. A batch's handles are taken by its 'h' arguments in
- * order; a batch whose messages leave handles unused is refused when its
- * last byte is used up, before the next batch is read.
+ * handles onto the end of the connection's queue (c->in_h: what earlier
+ * batches brought and no message took yet, at most JWL_HANDLES_QUEUED),
+ * its header checked (magic, reserved words, the handle count it claims
+ * against the handles it carries), then its messages decoded one per
+ * jwl_conn_next, each 'h' argument taking the queue's next handle.
  *
  * Sending: jwl_send (what the generated stubs call) checks the message
  * against the object it is sent on, its objects and its new ids against
  * the map, and encodes it into c->out behind room for the header, which is
- * written when the batch goes (so a held batch carries the newest
- * acknowledgement).
+ * written when the batch goes. A message's handles go in its own batch.
  *
  * Destructors (the tables' destructor bits) are kept here, on both sides
  * and both directions, so the map can't drift from what was said: once a
  * destructor is sent or received, its object is forgotten (the compositor
  * frees a client's id and queues delete_id; a client keeps a zombie until
- * delete_id). A batch goes when it is full or at
- * jwl_conn_flush. The compositor writes at most JWL_WINDOW batches past
- * the client's last acknowledgement; the rest wait in c->held, in order,
- * up to JWL_HELD_MAX bytes, and past that the client is disconnected with
- * no_memory. A client's batches have no window (they are charged to the
- * client's own job), but a channel that is full holds them the same way.
+ * delete_id). A batch goes when it is full or at jwl_conn_flush. The
+ * compositor leaves at most JWL_WINDOW batches unread at the client, by
+ * the kernel's count (handle_info's peer_queued, asked once a flush); the
+ * rest wait in c->held, in order, merged into blocks of up to a batch
+ * each, up to JWL_HELD_MAX bytes of the heap's (the blocks' bookkeeping
+ * counted), and past that the client is disconnected with no_memory. A
+ * client's batches have no window (they are charged to the client's own
+ * job), but a channel that is full holds them the same way.
  *
  * Dying: the first error that ends a connection is kept in c->status and
  * every call returns it from then on; every handle still in the
@@ -32,13 +33,24 @@
 #include <jwl.h>
 #include <os.h>
 
-/* A sealed batch not written yet. */
+/* Sealed batches not written yet, merged: a run of whole messages, up to
+ * a batch's bytes and handles, that goes as one batch. Its room grows as
+ * messages join it (doubling, up to JWL_BATCH_MAX), so a client held back
+ * behind one tiny batch a turn costs a few blocks, not one each. */
 struct jwl_held {
     struct jwl_held *next;
-    uint32_t len, nh;                   /* bytes (the header's room included), handles */
+    uint32_t len, cap, nh;              /* bytes (the header's room included), room, handles */
     handle_t h[JWL_BATCH_HANDLES];
     uint8_t  bytes[];
 };
+
+#define HEAP_BLOCK 16u   /* libos's heap: a block's header, sizes rounded to 16 (heap.c) */
+
+/* What a held block of cap bytes takes from the heap, as held_bytes counts. */
+static uint32_t held_cost(uint32_t cap)
+{
+    return ((uint32_t)sizeof(struct jwl_held) + cap + 15u) / 16u * 16u + HEAP_BLOCK;
+}
 
 static uint32_t rd32(const uint8_t *p)
 {
@@ -109,7 +121,7 @@ static status_t broken_batch(struct jwl_conn *c, const char *what)
 
 static bool window_open(const struct jwl_conn *c)
 {
-    return c->side == JWL_CLIENT || c->nsent - c->peer_acked < JWL_WINDOW;
+    return c->side == JWL_CLIENT || c->peer_queued < JWL_WINDOW;
 }
 
 static bool destructor(const struct jwl_interface *iface, bool request, uint32_t opcode);
@@ -175,38 +187,30 @@ bool jwl_conn_backlogged(const struct jwl_conn *c)
 
 /* ---- receiving -------------------------------------------------------------------- */
 
-static status_t check_header(struct jwl_conn *c)
+/* nh: the handles the channel message carried. */
+static status_t check_header(struct jwl_conn *c, uint32_t nh)
 {
     if (c->in_len < JWL_HEADER_BYTES)
         return broken_batch(c, "shorter than its header");
-    uint32_t acked = rd32(c->in + 4);
     if (rd32(c->in) != JWL_MAGIC)
-        return broken_batch(c, "without the JWL1 header");
-    if (rd32(c->in + 12) != 0)
-        return broken_batch(c, "header with its reserved word set");
-    if (rd32(c->in + 8) != c->in_nh)
+        return broken_batch(c, "without the JWL2 header");
+    if (rd32(c->in + 8) != 0 || rd32(c->in + 12) != 0)
+        return broken_batch(c, "header with a reserved word set");
+    if (rd32(c->in + 4) != nh)
         return broken_batch(c, "header naming more or fewer handles than it carries");
-    if (c->side == JWL_CLIENT) {
-        if (acked != 0)
-            return broken_batch(c, "from the compositor acknowledging");
-        c->nread++;
-        return OK;
-    }
-    if (acked - c->peer_acked > c->nsent - c->peer_acked)
-        return broken_batch(c, "acknowledging batches never sent");
-    c->peer_acked = acked;
     return OK;
 }
 
 static status_t read_batch(struct jwl_conn *c)
 {
     uint32_t nb = 0, nh = 0;
+    handle_t h[JWL_BATCH_HANDLES];
     struct channel_read_args a = {
         .h = c->ch,
         .rd_cap = JWL_BATCH_MAX,
         .rd_bytes = (uint64_t)(uintptr_t)c->in,
         .rd_actual = (uint64_t)(uintptr_t)&nb,
-        .rd_handles = (uint64_t)(uintptr_t)c->in_h,
+        .rd_handles = (uint64_t)(uintptr_t)h,
         .rd_hcap = JWL_BATCH_HANDLES,
         .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
@@ -214,15 +218,24 @@ static status_t read_batch(struct jwl_conn *c)
     if (st == ERR_SHOULD_WAIT)
         return st;
     if (st == ERR_BUFFER_TOO_SMALL)
-        return broken_batch(c, "over 16 KiB or 16 handles");
+        return broken_batch(c, "over 16 KiB or 28 handles");
     if (st != OK)
         return die(c, st);
     c->in_len = nb;
     c->in_at = nb < JWL_HEADER_BYTES ? nb : JWL_HEADER_BYTES;
-    c->in_nh = nh;
-    c->in_hat = 0;
     c->stats.batches_in++;
-    return check_header(c);
+    /* the handles join the queue, what is left of it moved to its front */
+    uint32_t left = c->in_nh - c->in_hat;
+    memmove(c->in_h, c->in_h + c->in_hat, left * sizeof(handle_t));
+    c->in_nh = left;
+    c->in_hat = 0;
+    if (nh > JWL_HANDLES_QUEUED - left) {
+        close_handles(h, nh);
+        return broken_batch(c, "leaving more than 28 handles untaken");
+    }
+    memcpy(c->in_h + left, h, nh * sizeof(handle_t));
+    c->in_nh += nh;
+    return check_header(c, nh);
 }
 
 /* A message the transport takes itself: the compositor's delete_id, on a
@@ -242,8 +255,6 @@ status_t jwl_conn_next(struct jwl_conn *c, struct jwl_msg *out)
         if (c->status != OK)
             return c->status;
         if (c->in_at >= c->in_len) {
-            if (c->in_hat < c->in_nh)
-                return broken_batch(c, "with handles its messages don't use");
             status_t st = read_batch(c);
             if (st != OK)
                 return st;
@@ -303,8 +314,8 @@ static status_t write_batch(struct jwl_conn *c, uint8_t *buf, uint32_t len, cons
 {
     uint32_t nh = hn ? *hn : 0;
     wr32(buf, JWL_MAGIC);
-    wr32(buf + 4, c->side == JWL_CLIENT ? c->nread : 0);
-    wr32(buf + 8, nh);
+    wr32(buf + 4, nh);
+    wr32(buf + 8, 0);
     wr32(buf + 12, 0);
     if (nh && !room_now(c))
         return ERR_SHOULD_WAIT;
@@ -315,10 +326,8 @@ static status_t write_batch(struct jwl_conn *c, uint8_t *buf, uint32_t len, cons
         *hn = 0;   /* gone whatever the status: sent, or closed by the kernel */
     if (st != OK)
         return die(c, st);
-    if (c->side == JWL_CLIENT)
-        c->told = c->nread;
-    else
-        c->nsent++;
+    if (c->side == JWL_SERVER)
+        c->peer_queued++;
     c->stats.batches_out++;
     return OK;
 }
@@ -331,28 +340,67 @@ static status_t overflow(struct jwl_conn *c)
                                "the client reads too slowly: 64 KiB of events held");
 }
 
-/* The batch being filled joins the held ones. */
+/* The last held block, grown to room for want bytes (it fits a batch):
+ * NULL when the heap or JWL_HELD_MAX won't have it (it stays as it was). */
+static struct jwl_held *grow_tail(struct jwl_conn *c, uint32_t want)
+{
+    struct jwl_held *t = c->held_tail;
+    if (want <= t->cap)
+        return t;
+    uint32_t cap = t->cap * 2 > JWL_BATCH_MAX ? JWL_BATCH_MAX : t->cap * 2;
+    if (cap < want)
+        cap = want;
+    uint32_t bytes = c->held_bytes - held_cost(t->cap) + held_cost(cap);
+    struct jwl_held *n = bytes <= JWL_HELD_MAX ? malloc(sizeof(*n) + cap) : NULL;
+    if (!n)
+        return NULL;
+    memcpy(n, t, sizeof(*t) + t->len);
+    n->cap = cap;
+    struct jwl_held **link = &c->held;   /* the blocks are few: see JWL_HELD_MAX */
+    while (*link != t)
+        link = &(*link)->next;
+    *link = n;
+    c->held_tail = n;
+    c->held_bytes = bytes;
+    free(t);
+    return n;
+}
+
+/* The batch being filled joins the held ones: its messages appended to
+ * the last held block while the bytes and handles fit a batch, else a
+ * block of its own. held_bytes counts what the heap gives the blocks. */
 static status_t hold(struct jwl_conn *c)
 {
-    if (c->out_len > JWL_HELD_MAX - c->held_bytes)
-        return overflow(c);
-    struct jwl_held *b = malloc(sizeof(*b) + c->out_len);
-    if (!b)
-        return overflow(c);
-    b->next = NULL;
-    b->len = c->out_len;
-    b->nh = c->out_nh;
-    memcpy(b->h, c->out_h, c->out_nh * sizeof(handle_t));
-    memcpy(b->bytes, c->out, c->out_len);
-    if (c->held_tail)
-        c->held_tail->next = b;
-    else
-        c->held = b;
-    c->held_tail = b;
-    c->held_bytes += b->len;
+    uint32_t add = c->out_len - JWL_HEADER_BYTES;   /* its messages, without its header */
+    struct jwl_held *t = c->held_tail;
+    if (t && t->len + add <= JWL_BATCH_MAX && t->nh + c->out_nh <= JWL_BATCH_HANDLES) {
+        t = grow_tail(c, t->len + add);
+        if (!t)
+            return overflow(c);
+        memcpy(t->bytes + t->len, c->out + JWL_HEADER_BYTES, add);
+        t->len += add;
+    } else {
+        if (held_cost(c->out_len) > JWL_HELD_MAX - c->held_bytes)
+            return overflow(c);
+        t = malloc(sizeof(*t) + c->out_len);
+        if (!t)
+            return overflow(c);
+        t->next = NULL;
+        t->len = t->cap = c->out_len;
+        t->nh = 0;
+        memcpy(t->bytes, c->out, c->out_len);
+        if (c->held_tail)
+            c->held_tail->next = t;
+        else
+            c->held = t;
+        c->held_tail = t;
+        c->held_bytes += held_cost(t->cap);
+    }
+    memcpy(t->h + t->nh, c->out_h, c->out_nh * sizeof(handle_t));
+    t->nh += c->out_nh;
     if (c->held_bytes > c->stats.held_peak)
         c->stats.held_peak = c->held_bytes;
-    c->out_len = JWL_HEADER_BYTES;   /* its handles are the held batch's now */
+    c->out_len = JWL_HEADER_BYTES;   /* its handles are the held block's now */
     c->out_nh = 0;
     return OK;
 }
@@ -387,9 +435,26 @@ static status_t drain(struct jwl_conn *c)
         c->held = b->next;
         if (!c->held)
             c->held_tail = NULL;
-        c->held_bytes -= b->len;
+        c->held_bytes -= held_cost(b->cap);
         free(b);
     }
+    return OK;
+}
+
+/* Compositor: how many of its batches the client hasn't read, from the
+ * kernel, once a flush that has something to write (they go by it) or
+ * while the window is closed (jwl_conn_backlogged: what waits to be sent,
+ * pointer motion, waits for it to open). */
+static status_t look(struct jwl_conn *c)
+{
+    if (c->side == JWL_CLIENT ||
+        (!c->held && c->out_len == JWL_HEADER_BYTES && window_open(c)))
+        return OK;
+    struct handle_info info;
+    status_t st = jam_handle_info(c->ch, &info);
+    if (st != OK)
+        return die(c, st);
+    c->peer_queued = info.peer_queued;
     return OK;
 }
 
@@ -397,13 +462,11 @@ status_t jwl_conn_flush(struct jwl_conn *c)
 {
     if (c->status != OK)
         return c->status;
-    status_t st = drain(c);
+    status_t st = look(c);
+    if (st == OK)
+        st = drain(c);
     if (st == OK)
         st = seal(c);
-    if (st == OK && c->side == JWL_CLIENT && !c->held && c->nread - c->told >= JWL_WINDOW / 2) {
-        uint8_t ack[JWL_HEADER_BYTES];
-        (void)write_batch(c, ack, sizeof(ack), NULL, 0);   /* a full channel: next turn */
-    }
     return c->status;
 }
 

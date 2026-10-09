@@ -2,9 +2,9 @@
  * runs on a view's requests, and the one-request server loop step that
  * answers fs.view itself.
  *
- * The check reads only the fields it needs (the method's path fields and
- * open's flags), from a request of exactly that method's size: anything
- * else is left to the generated dispatch, which refuses it. A path is
+ * The check reads only the fields it needs (the method's paths and open's
+ * flags), from a request it can read: anything else is left to the
+ * generated dispatch, which refuses it. A path is
  * judged as the service will walk it: fs_path_clean resolves "." and ".."
  * first, so "/x/../etc/allow" is etc's. */
 #include <fsview.h>
@@ -28,51 +28,70 @@ bool fs_view_in_etc(const char *clean)
            lower(clean[start + 2]) == 'c';
 }
 
-/* A path field (256 bytes, maybe without its NUL) at or under etc. One
- * that can't be cleaned counts as etc's: refusing it costs nothing, the
- * service would refuse it too. */
-static bool field_in_etc(const uint8_t path[FS_PATH_MAX])
+/* A path (len bytes) at or under etc. One that can't be cleaned counts as
+ * etc's: refusing it costs nothing, the service would refuse it too. */
+static bool path_in_etc(const char *path, uint32_t len)
 {
-    char clean[FS_PATH_MAX];
-    return fs_path_clean(path, clean) != OK || fs_view_in_etc(clean);
+    char clean[FS_PATH_LEN + 1];
+    return fs_path_clean(path, len, clean) != OK || fs_view_in_etc(clean);
 }
 
 /* A change at path (two paths for a rename, else to is NULL). */
-static status_t change(uint32_t flags, const uint8_t *path, const uint8_t *to)
+static status_t change(uint32_t flags, const char *path, uint32_t len, const char *to,
+                       uint32_t to_len)
 {
     if (flags & FS_VIEW_READ_ONLY)
         return ERR_ACCESS_DENIED;
-    if ((flags & FS_VIEW_GUARD_ETC) && (field_in_etc(path) || (to && field_in_etc(to))))
+    if ((flags & FS_VIEW_GUARD_ETC) &&
+        (path_in_etc(path, len) || (to && path_in_etc(to, to_len))))
         return ERR_ACCESS_DENIED;
     return OK;
+}
+
+/* The path (a str) at *o of the request of n bytes: false if it can't be
+ * read (the dispatch refuses the request then). */
+static bool path_at(const void *req, uint32_t n, uint32_t *o, const char **path, uint32_t *len)
+{
+    const void *p = NULL;
+    if (!idl_get(req, n, o, FS_PATH_LEN, 1, &p, len))
+        return false;
+    *path = p;
+    return true;
 }
 
 status_t fs_view_check(uint32_t flags, const void *req, uint32_t n)
 {
     const struct idl_req_hdr *h = req;
+    const char *path = NULL, *to = NULL;
+    uint32_t len = 0, to_len = 0, o = 0;
     if (!flags || n < sizeof(*h))
         return OK;
     switch (h->ordinal) {
     case FS_OPEN: {
         const struct fs_open_req *q = req;
         const uint32_t writes = FS_WRITE | FS_CREATE | FS_TRUNCATE | FS_APPEND;
-        return n == sizeof(*q) && (q->flags & writes) ? change(flags, q->path, NULL) : OK;
+        o = sizeof(*q);
+        if (n < sizeof(*q) || !(q->flags & writes) || !path_at(req, n, &o, &path, &len))
+            return OK;
+        return change(flags, path, len, NULL, 0);
     }
-    case FS_MKDIR: {
-        const struct fs_mkdir_req *q = req;
-        return n == sizeof(*q) ? change(flags, q->path, NULL) : OK;
-    }
-    case FS_UNLINK: {
-        const struct fs_unlink_req *q = req;
-        return n == sizeof(*q) ? change(flags, q->path, NULL) : OK;
-    }
-    case FS_RENAME: {
-        const struct fs_rename_req *q = req;
-        return n == sizeof(*q) ? change(flags, q->from, q->to) : OK;
-    }
+    case FS_MKDIR:
+        o = sizeof(struct fs_mkdir_req);
+        break;
+    case FS_UNLINK:
+        o = sizeof(struct fs_unlink_req);
+        break;
+    case FS_RENAME:
+        o = sizeof(struct fs_rename_req);
+        if (n < o || !path_at(req, n, &o, &path, &len) || !path_at(req, n, &o, &to, &to_len))
+            return OK;
+        return change(flags, path, len, to, to_len);
     default:
         return OK;   /* stat, readdir, sync, statfs: they change nothing */
     }
+    if (n < o || !path_at(req, n, &o, &path, &len))
+        return OK;
+    return change(flags, path, len, NULL, 0);
 }
 
 /* A bare status for the request at req (n bytes) into rep: its length
@@ -126,18 +145,24 @@ uint32_t fs_view_dispatch(const struct fs_view_server *v, const void *req, uint3
 status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops, void *ctx,
                            status_t (*add)(void *host, handle_t ch, uint32_t flags), void *host)
 {
-    _Alignas(8) uint8_t q[FS_REQ_MAX];
-    _Alignas(8) uint8_t r[FS_REP_MAX];
+    /* Off the stack: an fs request and reply are 16 KiB together. */
+    uint8_t *q = malloc(IDL_ROUND8(FS_REQ_MAX) + FS_REP_MAX);
+    if (!q)
+        return ERR_NO_MEMORY;
+    uint8_t *r = q + IDL_ROUND8(FS_REQ_MAX);
     handle_t hs[IDL_READ_HANDLES];
     uint32_t n = 0, nh = 0;
-    status_t st = drv_channel_read(ch, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
+    status_t st = drv_channel_read(ch, q, FS_REQ_MAX, &n, hs, IDL_READ_HANDLES, &nh);
     if (st == ERR_BUFFER_TOO_SMALL)
-        return idl_drain(ch, n, nh);
-    if (st != OK)
+        st = idl_drain(ch, n, nh);
+    if (st != OK) {
+        free(q);
         return st;
+    }
     if (nh) {
         idl_close_all(hs, nh);
         idl_reply_status(ch, q, n, ERR_INVALID_ARGS);
+        free(q);
         return OK;
     }
     const struct fs_view_server v = {
@@ -150,5 +175,6 @@ status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops
         idl_close_all(rhs, rhn);   /* no reply: never sent */
     else   /* the reply's handles are gone whatever the write's status */
         (void)drv_channel_write(ch, r, rn, rhs, rhn);
+    free(q);
     return OK;
 }

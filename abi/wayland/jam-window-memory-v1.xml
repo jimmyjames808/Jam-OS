@@ -19,6 +19,15 @@
       once: a second window presenting it is a new window. The worst a
       client can do with a key is put its own window in a place one of its
       own windows had.
+
+      A key of 0 (key_hi and key_lo both 0) is no key, both ways: a client
+      presents it when it has none, and the compositor answers it when it
+      has none to give (the toplevel or its surface is gone, or no random
+      key could be made), which the client keeps as none.
+
+      Upstream's proposed session-management protocol (xdg-session-
+      management) does the same job for ported toolkits; a compositor may
+      offer it beside this one.
     </description>
 
     <request name="destroy" type="destructor">
@@ -43,7 +52,9 @@
     <event name="key">
       <description summary="a toplevel's key">
         The toplevel's key, to be presented after a reconnect. The
-        toplevel is null if the client destroyed it meanwhile.
+        toplevel is null if the client destroyed it meanwhile. A key of 0
+        (both words) means the toplevel has none: it is placed as a new
+        window, and a later identify of it may still get one.
       </description>
       <arg name="toplevel" type="object" interface="xdg_toplevel" allow-null="true"/>
       <arg name="key_hi" type="uint"/>

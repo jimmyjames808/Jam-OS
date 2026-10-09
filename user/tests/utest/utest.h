@@ -486,6 +486,8 @@ bool t_jwl_conn_never_reads(void);
 bool t_jwl_conn_send_refusals(void);
 bool t_jwl_conn_new_ids(void);
 bool t_jwl_conn_held_handles(void);
+bool t_jwl_conn_held_merged(void);
+bool t_jwl_conn_handle_queue(void);
 bool t_jwl_fuzz_decode(void);
 bool t_jwl_fuzz_conn(void);
 
@@ -773,3 +775,5 @@ bool t_replace_consumes(void);
 bool t_hid_leds(void);
 bool t_hid_queue_full(void);
 bool t_comp_seat_leds(void);
+/* fat.c: an open file is known by its directory entry (P5). */
+bool t_fat_open_moved(void);

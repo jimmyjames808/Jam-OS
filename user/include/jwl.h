@@ -24,7 +24,8 @@
  * interface's name as a string and its version first), string (a u32
  * length counting the NUL, the bytes, the NUL, padding to 4; length 0 is
  * a null string) and array (a u32 length, the bytes, padding). An fd is
- * not in the bytes: it is the next handle of the batch.
+ * not in the bytes: it is the next handle of the connection's queue (the
+ * transport's "handles", below), as on a Unix socket.
  *
  * Strict on everything the wire format defines, and fail closed: a size
  * that isn't a multiple of 4 or overruns, a message over JWL_MSG_MAX, an
@@ -100,11 +101,12 @@ bool     jwl_interface_same(const struct jwl_interface *a, const struct jwl_inte
 #define JWL_ARGS_MAX       20u          /* arguments of one message */
 #define JWL_HEADER_BYTES   16u          /* the transport header of a batch */
 #define JWL_BATCH_MAX      16384u       /* a batch's bytes, its header included */
-#define JWL_BATCH_HANDLES  16u          /* handles one batch carries */
-#define JWL_WINDOW         32u          /* batches the compositor sends ahead of the acks */
-#define JWL_HELD_MAX       65536u       /* bytes of batches held back past the window */
+#define JWL_BATCH_HANDLES  28u          /* handles one batch carries (libwayland's per flush) */
+#define JWL_HANDLES_QUEUED 28u          /* handles received and not yet taken, at most */
+#define JWL_WINDOW         32u          /* batches the compositor leaves unread at a client */
+#define JWL_HELD_MAX       65536u       /* heap bytes of batches held back past the window */
 #define JWL_OBJECTS_MAX    4096u        /* ids in each side's range on one connection */
-#define JWL_MAGIC          0x314c574au  /* "JWL1" as bytes: the transport's version */
+#define JWL_MAGIC          0x324c574au  /* "JWL2" as bytes: the transport's version */
 
 #define JWL_DISPLAY_ID     1u           /* wl_display, on every connection */
 #define JWL_CLIENT_ID_MAX  0xfeffffffu  /* client ids: 1 .. this (Wayland's split) */
@@ -301,25 +303,34 @@ status_t jwl_sig_parse(const char *s, struct jwl_sig *out);
 /* ---- the transport (jwl_transport.c) -------------------------------------------
  *
  * One channel message is one batch: a 16-byte header, then whole Wayland
- * messages (none for a batch that only acknowledges). Header words (u32,
- * host order):
+ * messages (none, for a batch that only brings handles). Header words
+ * (u32, host order):
  *     0  JWL_MAGIC
- *     4  acked: from a client, how many of the compositor's batches it has
- *        read so far (mod 2^32); from the compositor, 0
- *     8  nfds: handles the batch's 'h' arguments use, equal to the
- *        handles the channel message carries
+ *     4  nfds: the handles the channel message carries
+ *     8  0
  *    12  0
  * A batch is at most JWL_BATCH_MAX bytes and JWL_BATCH_HANDLES handles; a
  * message never spans two batches.
  *
+ * Handles are a queue per connection and direction, as fds are on a Unix
+ * socket: a batch's handles join the end of the queue, and each 'h'
+ * argument takes the next one, whichever batch brought it (this one or an
+ * earlier one). A message whose handle hasn't come is a protocol error,
+ * and so is a batch that would leave more than JWL_HANDLES_QUEUED handles
+ * waiting untaken. libjwl sends a message's handles in the batch that
+ * carries it; a shim for libwayland cuts a flush's bytes into batches at
+ * message boundaries (each message's 8-byte header says its size) and
+ * sends the flush's fds with the first.
+ *
  * Flow control. A message queued on a channel is charged to its sender's
- * job until it is read, so the compositor sends at most JWL_WINDOW
- * batches a client hasn't acknowledged. Past that it keeps batches in its
- * own memory, up to JWL_HELD_MAX bytes, and then disconnects the client
- * (wl_display.error, no_memory). A client acknowledges in the header of
- * everything it sends, and jwl_conn_flush sends a batch with no messages
- * when half the window is read and nothing else went out: so a client
- * must call jwl_conn_flush after reading, every turn of its loop.
+ * job until it is read, so the compositor leaves at most JWL_WINDOW of its
+ * batches unread at a client, by the kernel's count (handle_info's
+ * peer_queued on its end, asked once per jwl_conn_flush that has
+ * something to write). Past that it keeps batches in its own memory,
+ * merged into blocks of up to a batch each, up to JWL_HELD_MAX bytes of
+ * its heap (the blocks' bookkeeping counted), and then disconnects the
+ * client (wl_display.error, no_memory). A client says nothing about what
+ * it read: it only reads.
  *
  * Errors. On the compositor's side every protocol error the transport or
  * the codec finds is sent to the client as wl_display.error at once, and
@@ -342,7 +353,7 @@ struct jwl_conn_stats {
     uint64_t batches_in, batches_out;   /* channel messages read and written */
     uint64_t msgs_in, msgs_out;         /* Wayland messages decoded and encoded */
     uint64_t dropped;                   /* messages to zombies dropped */
-    uint32_t held_peak;                 /* most bytes held back at once */
+    uint32_t held_peak;                 /* most held_bytes at once */
 };
 
 struct jwl_conn {
@@ -352,22 +363,20 @@ struct jwl_conn {
     struct jwl_error error;             /* the protocol error that killed it, if one did */
     struct jwl_map map;
     const struct jwl_interface *display;
-    /* receiving: the batch being decoded */
+    /* receiving: the batch being decoded, and the handles' queue */
     uint8_t  in[JWL_BATCH_MAX];
     uint32_t in_len, in_at;             /* bytes in in[], decoded so far */
-    handle_t in_h[JWL_BATCH_HANDLES];
-    uint32_t in_nh, in_hat;             /* handles carried, taken so far */
-    uint32_t nread;                     /* client: compositor batches read (mod 2^32) */
-    uint32_t told;                      /* client: nread as last sent in a header */
+    handle_t in_h[JWL_HANDLES_QUEUED];
+    uint32_t in_nh, in_hat;             /* handles in the queue, taken so far */
     /* sending: the batch being filled (its header written when it goes) */
     uint8_t  out[JWL_BATCH_MAX];
     uint32_t out_len;                   /* JWL_HEADER_BYTES while empty */
     handle_t out_h[JWL_BATCH_HANDLES];
     uint32_t out_nh;
-    uint32_t nsent;                     /* compositor: batches written (mod 2^32) */
-    uint32_t peer_acked;                /* compositor: the client's last ack */
+    uint32_t peer_queued;               /* compositor: its batches the client hasn't read,
+                                           as the kernel said at this flush, and since */
     struct jwl_held *held, *held_tail;  /* sealed batches not written yet, oldest first */
-    uint32_t held_bytes;
+    uint32_t held_bytes;                /* the heap's bytes they take (at most JWL_HELD_MAX) */
     struct jwl_conn_stats stats;
 };
 
@@ -433,10 +442,11 @@ status_t jwl_send(struct jwl_conn *c, uint32_t id, uint32_t opcode, const struct
  * connection's status. */
 status_t jwl_conn_delete(struct jwl_conn *c, uint32_t id);
 
-/* Write what is waiting: the batch being filled, then held batches as far
- * as the window lets (compositor), or an acknowledgement (client). OK
- * (some may still be held: the window, or a full channel); a dead
- * connection's status. Call once per loop turn. */
+/* Write what is waiting: held batches, then the batch being filled, as
+ * far as the window (compositor) and the channel let. OK (some may still
+ * be held: the window, or a full channel); a dead connection's status.
+ * Call once per loop turn; the compositor, also while batches are held
+ * (jwl_conn_backlogged): nothing tells it the client read. */
 status_t jwl_conn_flush(struct jwl_conn *c);
 
 /* Compositor: send wl_display.error (object, code, text cut to fit) past

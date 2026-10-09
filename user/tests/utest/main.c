@@ -956,6 +956,8 @@ static const struct {
     { "jwl_conn_send_refusals", t_jwl_conn_send_refusals },
     { "jwl_conn_new_ids", t_jwl_conn_new_ids },
     { "jwl_conn_held_handles", t_jwl_conn_held_handles },
+    { "jwl_conn_held_merged", t_jwl_conn_held_merged },
+    { "jwl_conn_handle_queue", t_jwl_conn_handle_queue },
     { "jwl_fuzz_decode", t_jwl_fuzz_decode },
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "jwlc_setup", t_jwlc_setup },
@@ -1094,6 +1096,7 @@ static const struct {
     { "hid_leds", t_hid_leds },
     { "hid_queue_full", t_hid_queue_full },
     { "comp_seat_leds", t_comp_seat_leds },
+    { "fat_open_moved", t_fat_open_moved },
 };
 
 int main(int argc, char **argv)
