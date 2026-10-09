@@ -79,7 +79,18 @@ ff="ffmpeg -hide_banner -loglevel error -y"
 $ff -i "$out/src-a44.wav" -c:a libmp3lame -b:a 192k "$out/a44.mp3"
 $ff -i "$out/src-v48.wav" -c:a libmp3lame -q:a 2 -id3v2_version 0 "$out/v48.mp3"
 $ff -i "$out/src-m22.wav" -c:a libmp3lame -b:a 64k -write_xing 0 "$out/m22.mp3"
-$ff -f lavfi -i "nullsrc=s=400x400,geq=random(1)*255:128:128" -frames:v 1 "$out/art.png"
+# The cover: 400x400 of noise, so it stays big (ffmpeg's own noise
+# compresses to 19 KB in some versions).
+python3 - "$out/art.png" <<'PY'
+import random, struct, sys, zlib
+w = h = 400
+rnd = random.Random(400)
+raw = b"".join(b"\0" + rnd.randbytes(w * 3) for _ in range(h))
+def chunk(t, d):
+    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                              + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+PY
 $ff -i "$out/src-tag.wav" -i "$out/art.png" -map 0 -map 1 -c:a libmp3lame -b:a 128k -c:v copy \
     -id3v2_version 3 -write_id3v1 1 -metadata title="A tone" -metadata artist="Jam OS" \
     -metadata:s:v comment="Cover (front)" "$out/tag.mp3"

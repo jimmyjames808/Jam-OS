@@ -228,6 +228,11 @@ class Peer:
         self.vlan, self.log_file = vlan, log
         self.qemu = ("127.0.0.1", qemu)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Room for a burst: under KVM the guest sends faster than this
+        # reads, and Linux's default (208 KiB) dropped frames (the Mac's
+        # is 768 KiB). Linux caps it at net.core.rmem_max (the PC's WSL
+        # raises that: docs/TESTING.md).
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
         self.sock.bind(("127.0.0.1", listen))
         self.listen = self.sock.getsockname()[1]
         self.counts = {"frames": 0, "good": 0, "bad": 0, "arp_replies": 0, "echo_replies": 0,

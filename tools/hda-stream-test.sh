@@ -33,7 +33,7 @@ QEMU_TIMEOUT=${QEMU_TIMEOUT:-200} QEMU_EXTRA="$devs" QEMU_INPUT=tools/shell-test
     { echo "hda-stream: the script failed"; grep "serial-feed: .*no '" "$out/hda-stream.out" || true; ok=0; }
 log="$out/hda-stream.log"
 grep -E "hdatest: [0-9]+ passed" "$log" | tail -1
-grep -qE "hdatest: 4 passed$|hdatest: 4 passed\r" "$log" ||
+grep -qE "hdatest: 4 passed[[:space:]]*$" "$log" ||
     { echo "hda-stream: hdatest did not pass 4 of 4"; grep "FAILED" "$log" | head -5; ok=0; }
 for want in "stream: open on descriptor 4, tag 1, format 0x0011 (48 kHz 16-bit stereo), converter 0/02" \
             "stream: closed (the client closed its channel)" \

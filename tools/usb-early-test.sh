@@ -24,7 +24,7 @@ out=$1 name=usb-early
 mkdir -p "$out"
 early_max=${EARLY_MAX:-1.5}
 disk="$out/$name-disk.img"
-dd if=/dev/zero of="$disk" bs=1m count=4 2>/dev/null
+dd if=/dev/zero of="$disk" bs=1048576 count=4 2>/dev/null
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-120} QEMU_INPUT=tools/shell-tests/usb-early.txt \
 QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2 \
 -device usb-kbd,bus=xhci.0,port=2.1 \

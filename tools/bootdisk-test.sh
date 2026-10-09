@@ -13,7 +13,8 @@ out=$1 name=bootdisk
 mkdir -p "$out"
 other="$out/$name-other.img"
 cp build/jamos.img "$other"
-printf '\x5a\x5a\x0f\x0f' | dd of="$other" bs=1 seek=440 conv=notrunc 2>/dev/null
+# (octal: dash's printf, Ubuntu's /bin/sh, has no \x)
+printf '\132\132\017\017' | dd of="$other" bs=1 seek=440 conv=notrunc 2>/dev/null
 echo "the other stick" > "$out/other-stick.txt"
 mcopy -o -i "$other@@64M" "$out/other-stick.txt" ::/other-stick.txt
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-180} QEMU_INPUT=tools/shell-tests/bootdisk.txt \

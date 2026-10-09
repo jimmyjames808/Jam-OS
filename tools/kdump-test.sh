@@ -68,7 +68,7 @@ boot() {
 }
 
 # The panicking boot's log reached the shell's prompt and logd's file.
-UP="wait 120 Jam OS shell|wait {prompt}|wait 60 logd: writing /data/logs/boot-0001.txt"
+UP="wait 120 Jam OS shell|wait {prompt}|seen 60 logd: writing /data/logs/boot-0001.txt"
 
 # The calm panic screen's lines on the serial port (debug/panicscreen.c).
 RESTARTING='panic screen: "Jam OS hit a problem and is restarting", JAM-KP-'

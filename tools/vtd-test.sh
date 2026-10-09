@@ -60,7 +60,7 @@ set -eu
 out=$1
 mkdir -p "$out"
 ok=1
-iommu="-device intel-iommu,intremap=on,caching-mode=on"
+iommu="-device intel-iommu,intremap=on,caching-mode=on,eim=off"   # (KVM's default is on)
 trace="-trace vtd_reg_read -trace vtd_reg_write"
 
 # have <name> <fixed string>...: every string is in <name>'s log.
@@ -221,7 +221,7 @@ dma_on vtd-dma 1
 dma_on vtd-dma-cm0 cm0
 
 # A unit without pass-through (pt=off): the same tests, nothing else built.
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="-device intel-iommu,intremap=on,caching-mode=on,pt=off" \
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="-device intel-iommu,intremap=on,caching-mode=on,pt=off,eim=off" \
     tools/qemu-test.sh "$out" vtd-nopt ktest=vtd_domain iommu=on > "$out/vtd-nopt.out" 2>&1 ||
     { echo "vtd-nopt: QEMU run failed (see $out/vtd-nopt.out)"; ok=0; }
 domain_ok vtd-nopt

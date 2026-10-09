@@ -93,8 +93,8 @@ fi
 iommu=
 case ${QEMU_IOMMU:-} in
 '') ;;
-1) iommu="-device intel-iommu,intremap=on,caching-mode=on" ;;
-cm0) iommu="-device intel-iommu,intremap=on,caching-mode=off" ;;
+1) iommu="-device intel-iommu,intremap=on,caching-mode=on,eim=off" ;;   # (KVM's default is on)
+cm0) iommu="-device intel-iommu,intremap=on,caching-mode=off,eim=off" ;;
 eim) iommu="-device intel-iommu,intremap=on,caching-mode=on,eim=on" ;;
 *) echo "QEMU_IOMMU=$QEMU_IOMMU: want 1, cm0 or eim"; exit 1 ;;
 esac
