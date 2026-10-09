@@ -98,8 +98,10 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
  * (ERR_CANCELED). The reply goes only to this caller, never to
  * channel_read. If it doesn't fit rbytes/rh, the call returns
  * ERR_BUFFER_TOO_SMALL with the sizes it needed, and the reply (with its
- * handles) is dropped. A reply that arrives after its caller gave up is
- * queued like any other message. Any number of threads may call at once. */
+ * handles) is dropped. A reply that arrives after its caller gave up (a
+ * deadline, a cancel) is dropped too, by the kernel, for the end's last 16
+ * calls given up (M12's D5); an older one is queued as any message. Any
+ * number of threads may call at once. */
 status_t channel_call(struct channel *ch, void *wbytes, uint32_t wn, struct khandle *wh,
                       uint32_t whn, void *rbytes, uint32_t rcap, uint32_t *ractual,
                       struct khandle *rh, uint32_t rhcap, uint32_t *rhactual,

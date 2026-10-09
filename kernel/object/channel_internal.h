@@ -27,6 +27,9 @@ struct chan_pair {
  * holding the header, the handles and the bytes of a small message. */
 #define CHAN_SLOT_SIZE 512
 
+/* Calls given up that an end remembers (struct channel's gave_up). */
+#define CHAN_GAVE_UP 16
+
 /* One queued message. The khandles follow the header, then the bytes. */
 struct chan_msg {
     struct list_node node;      /* on the receiver's queue */
@@ -84,6 +87,12 @@ struct channel {
     bool              closed;        /* we left the pair */
     bool              peer_closed;   /* the peer left the pair */
     bool              no_handles;    /* CHANNEL_NO_HANDLES: refuses messages with handles */
+    /* The txids of the last CHAN_GAVE_UP channel_calls on this end that
+     * ended without their reply (a deadline, a cancel): a reply that comes
+     * for one later is dropped, not queued (M12's D5). A ring, oldest
+     * overwritten; 0 is a free entry (no call's txid is 0). The lock. */
+    uint32_t          gave_up[CHAN_GAVE_UP];
+    uint32_t          gave_up_next;
     struct job       *reader_job;    /* the job of the table that last received a handle to
                                       * us (a reference, or NULL): it pays for what waits on
                                       * our queue once our peer has closed (charge_reader).

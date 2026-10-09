@@ -136,8 +136,8 @@ bool t_reply_wait_mark_before_wait(void)
 }
 
 /* Our second reply_wait's reply goes to the caller that is still waiting
- * for its txid; a reply after its caller gave up is queued on the
- * caller's end as a stray message, and goes out all the same (mark set);
+ * for its txid; a reply after its caller gave up goes out all the same
+ * (mark set) and the kernel drops it (M12's D5: nothing queued);
  * with the caller's end closed, the reply fails with ERR_PEER_CLOSED (no
  * mark) and the wait goes on, here on another channel. */
 bool t_reply_wait_gone_caller(void)
@@ -168,8 +168,7 @@ bool t_reply_wait_gone_caller(void)
         .h = a, .rd_cap = sizeof(stray), .rd_bytes = (uint64_t)(uintptr_t)&stray,
         .rd_actual = (uint64_t)(uintptr_t)&nb,
     };
-    CHECK_ST(jam_channel_read(&rd), OK);   /* the stray reply, queued */
-    CHECK(stray.txid == req.txid && stray.word == 8);
+    CHECK_ST(jam_channel_read(&rd), ERR_SHOULD_WAIT);   /* the late reply: dropped */
 
     /* The caller's end gone: no reply, no mark, and the wait still goes on. */
     CHECK_ST(jam_channel_create(&x, &y), OK);
