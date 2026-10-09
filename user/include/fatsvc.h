@@ -11,6 +11,12 @@
  *   FAT_SR_CTL     optional: the server end of an `fsctl` channel
  *                  (abi/idl/fsctl.idl): its holder can have fat stop in
  *                  order (files closed, volume clean, exit 0).
+ *   FAT_SR_OWN     optional: the server end of a second `fs` channel, the
+ *                  spawner's own (volumes' stat probes and syncs), served
+ *                  as FAT_SR_SERVE's is, so that its calls never wait
+ *                  behind (or are read by) the clients of the shared one.
+ *                  Its close ends nothing: fat serves on until
+ *                  FAT_SR_SERVE's client goes.
  *   SR_RESOURCE    optional: the root resource, used only to read the
  *                  real-time clock for file timestamps. Without it every
  *                  timestamp is 2026-01-01 00:00:00.
@@ -56,6 +62,7 @@
 #define FAT_SR_BLOCK (SR_USER + 0)
 #define FAT_SR_SERVE (SR_USER + 2)   /* SR_DRIVER(DR_SERVE) */
 #define FAT_SR_CTL   (SR_USER + 3)
+#define FAT_SR_OWN   (SR_USER + 4)
 
 /* SR_STATE's size: room for fat's layout (svcstate_size of it, about
  * 1.3 MiB) and its growth. Pages are committed only as fat uses them, so

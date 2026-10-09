@@ -107,23 +107,38 @@ static void close_file(struct fsserver *s, struct fsserver_file *f)
     if (s->closed)
         s->closed(f);
     jam_port_unbind(s->port, f->ch, FILE_KEY + (uint64_t)(f - s->files));
-    jam_handle_close(f->ch);
+    idl_give_up(f->ch);   /* its client is gone, or its channel failed */
     jam_handle_close(f->buf);
     memset(f, 0, sizeof(*f));
 }
 
+/* Is ch's client behind (full: its protocol's unread_full)? Then it is
+ * held (*flag) and counted, and nothing is read from it until a look
+ * (fsserver_run) queues it a round again. */
+static bool behind(struct fsserver *s, bool full, bool *flag)
+{
+    if (!full)
+        return false;
+    *flag = true;
+    idl_hold(&s->held);
+    return true;
+}
+
 /* One round on an fs channel. A client that is gone, or a channel that
- * fails, is dropped. */
+ * fails, is dropped (idl_give_up: what it left unread is taken back). */
 static void serve_fs(struct fsserver *s, unsigned i)
 {
     status_t st = OK;
-    for (unsigned n = 0; st == OK && s->fs[i] && n < FSSERVER_ROUND; n++)
+    for (unsigned n = 0; st == OK && s->fs[i] && n < FSSERVER_ROUND; n++) {
+        if (behind(s, fs_unread_full(s->fs[i]), &s->fs_held[i]))
+            return;
         st = fs_view_serve_one(s->fs[i], s->fs_flags[i], s->fs_ops, s, add_view, s);
+    }
     if (st == OK && s->fs[i]) {
         again(s, i);
     } else if (st != ERR_SHOULD_WAIT && s->fs[i]) {
         jam_port_unbind(s->port, s->fs[i], i);
-        jam_handle_close(s->fs[i]);
+        idl_give_up(s->fs[i]);
         s->fs[i] = HANDLE_INVALID;
     }
 }
@@ -132,8 +147,11 @@ static void serve_file(struct fsserver *s, unsigned i)
 {
     struct fsserver_file *f = &s->files[i];
     status_t st = OK;
-    for (unsigned n = 0; st == OK && f->ch && n < FSSERVER_ROUND; n++)
+    for (unsigned n = 0; st == OK && f->ch && n < FSSERVER_ROUND; n++) {
+        if (behind(s, file_unread_full(f->ch), &f->held))
+            return;
         st = file_serve_one(f->ch, s->file_ops, f);
+    }
     if (st == OK && f->ch)
         again(s, FILE_KEY + i);
     else if (st != ERR_SHOULD_WAIT && f->ch)
@@ -151,11 +169,30 @@ static bool in_use(const struct fsserver *s)
     return false;
 }
 
+/* A round queued for every channel held back (behind): it looks again. */
+static void look_again(struct fsserver *s)
+{
+    for (unsigned i = 0; i < FSSERVER_MAX_FS; i++) {
+        if (s->fs_held[i] && s->fs[i])
+            again(s, i);
+        s->fs_held[i] = false;
+    }
+    for (unsigned i = 0; i < FSSERVER_MAX_FILES; i++) {
+        if (s->files[i].held && s->files[i].ch)
+            again(s, FILE_KEY + i);
+        s->files[i].held = false;
+    }
+}
+
 status_t fsserver_run(struct fsserver *s)
 {
     while (in_use(s)) {
+        if (idl_held_due(&s->held))   /* the held ones: a round looks again */
+            look_again(s);
         struct port_packet pkt;
-        status_t st = jam_port_wait(s->port, DEADLINE_NEVER, &pkt);
+        status_t st = jam_port_wait(s->port, idl_held_deadline(&s->held, DEADLINE_NEVER), &pkt);
+        if (st == ERR_TIMED_OUT)
+            continue;
         if (st != OK)
             return st;
         if (pkt.key < FSSERVER_MAX_FS)

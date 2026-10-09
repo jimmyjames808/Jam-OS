@@ -131,10 +131,21 @@ static void asker_close(unsigned i)
     /* A binding holds its channel (and its charge) until unbound: closing
      * our only handle alone would leave it on the port. */
     (void)jam_port_unbind(D.port, D.a[i].ch, key_of(i));
-    jam_handle_close(D.a[i].ch);
+    idl_give_up(D.a[i].ch);   /* gone, or its channel broke: what it left unread taken back */
     D.a[i].ch = HANDLE_INVALID;
     D.a[i].pending = false;
     D.a[i].inflight = 0;
+}
+
+/* Is ch's client behind (dns's unread bound)? Then it is held (*held) and
+ * counted, and nothing is read from it now. */
+static bool behind(handle_t ch, bool *held)
+{
+    if (!dns_unread_full(ch))
+        return false;
+    *held = true;
+    idl_hold(&D.held);
+    return true;
 }
 
 static void serve_asker(unsigned i)
@@ -142,6 +153,8 @@ static void serve_asker(unsigned i)
     struct asker *a = &D.a[i];
     a->pending = false;
     for (unsigned k = 0; k < BUDGET; k++) {
+        if (behind(a->ch, &a->held))
+            return;
         status_t st = dns_serve_one(a->ch, &asker_ops, a);
         if (st == OK)
             continue;
@@ -206,10 +219,12 @@ static uint32_t shared_dispatch(void *ctx, const void *req, uint32_t n, void *re
 }
 
 /* One of the shared channels (*ch; sys: /svc/dns-sys's). */
-static void serve_shared(handle_t *ch, bool *pending, bool sys)
+static void serve_shared(handle_t *ch, bool *pending, bool *held, bool sys)
 {
     *pending = false;
     for (unsigned k = 0; k < BUDGET; k++) {
+        if (behind(*ch, held))
+            return;
         status_t st = svc_serve_request(*ch, shared_dispatch, on_connect, sys ? &D : NULL);
         if (st == OK)
             continue;
@@ -258,10 +273,19 @@ void askers_packet(uint64_t key)
 
 void askers_serve(void)
 {
+    if (idl_held_due(&D.held)) {   /* the held ones: serving them looks again */
+        D.shared_pending |= D.shared_held;
+        D.shared_sys_pending |= D.shared_sys_held;
+        D.shared_held = D.shared_sys_held = false;
+        for (unsigned i = 0; i < DNS_OPENERS; i++) {
+            D.a[i].pending |= D.a[i].held;
+            D.a[i].held = false;
+        }
+    }
     if (D.shared && D.shared_pending)
-        serve_shared(&D.shared, &D.shared_pending, false);
+        serve_shared(&D.shared, &D.shared_pending, &D.shared_held, false);
     if (D.shared_sys && D.shared_sys_pending)
-        serve_shared(&D.shared_sys, &D.shared_sys_pending, true);
+        serve_shared(&D.shared_sys, &D.shared_sys_pending, &D.shared_sys_held, true);
     for (unsigned i = 0; i < DNS_OPENERS; i++)
         if (D.a[i].ch && D.a[i].pending)
             serve_asker(i);

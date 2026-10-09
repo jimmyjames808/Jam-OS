@@ -533,6 +533,90 @@ bool t_disk_fs_restart(void)
     return detach(vm, &v);
 }
 
+/* volumes asks its filesystem services its own things (fs.sync, a
+ * restart's first-answer probe) on a channel of its own, never handed out.
+ * Two threads flood the mount's shared `fs` channel with stats and read
+ * whatever comes back on it, as a program reading its end may: volumes'
+ * syncs are still answered at once, before and after the service is
+ * killed and restarted on the channels it kept. Before, a sync's answer on
+ * the shared channel was taken by such a reader (or queued behind its
+ * flood): volumes waited its 5 s and called the sync failed. */
+struct flood {
+    handle_t ch;        /* a duplicate of the mount's shared channel */
+    uint32_t txid;      /* the next stat's */
+    uint32_t sent, got; /* stats sent, messages read (anyone's) */
+    uint8_t  buf[FS_REP_MAX] __attribute__((aligned(8)));
+};
+static volatile bool flood_stop;
+
+static void flood_main(void *arg)
+{
+    struct flood *f = arg;
+    while (!flood_stop) {
+        for (unsigned k = 0; k < 4; k++)
+            f->sent += fs_stat_send(f->ch, f->txid++, "/", 1) == OK;
+        for (;;) {   /* a reader waiting on the end: what comes is handed to it */
+            uint32_t n = 0, nh = 0;
+            struct channel_reply_wait_args a = {
+                .h = HANDLE_INVALID, .wait = f->ch, .rd_bytes = (uint64_t)(uintptr_t)f->buf,
+                .rd_cap = sizeof(f->buf), .rd_actual = (uint64_t)(uintptr_t)&n,
+                .rd_hactual = (uint64_t)(uintptr_t)&nh, .deadline_ns = now() + 2 * NS_PER_MS,
+            };
+            if (jam_channel_reply_wait(&a) != OK)
+                break;
+            f->got++;
+        }
+    }
+}
+
+bool t_disk_own_channel(void)
+{
+    static uint8_t stacks[2][16384] __attribute__((aligned(16)));
+    static struct flood fl[2];
+    handle_t vm = volumes(), th[2];
+    struct view v = { 0 };
+    uint32_t id = 0;
+    uint64_t koid = 0;
+    bool skip;
+    if (!vm)
+        return true;
+    if (!attach(vm, DM_TYPE_FAT32, ESP_BOOT, &id, &skip))
+        return skip;
+    if (!wait_mounts(vm, &v, true, true))
+        return false;
+    struct fatrun data = mount_of(&v, DATA);
+    flood_stop = false;
+    for (unsigned i = 0; i < 2; i++) {
+        fl[i] = (struct flood){ .txid = 0x100 | (uint32_t)i << 24 };
+        CHECK_ST(jam_handle_duplicate(data.fs, RIGHT_SAME, &fl[i].ch), OK);
+        CHECK_ST(thread_spawn("flood", flood_main, &fl[i], stacks[i], sizeof(stacks[i]), &th[i]),
+                 OK);
+    }
+    jam_sleep_until(now() + 200 * NS_PER_MS);
+    bool ok = true;
+    for (unsigned k = 0; ok && k < 2; k++) {
+        uint64_t t0 = now();
+        status_t st = volumes_sync_until(vm, now() + 20 * NS_PER_S);
+        uint64_t ms = (now() - t0) / NS_PER_MS;
+        printf("utest: disk_own_channel: sync %u: %s in %lu ms, %u stats sent, %u messages read "
+               "by the flood\n", k, status_str(st), (unsigned long)ms, fl[0].sent + fl[1].sent,
+               fl[0].got + fl[1].got);
+        ok = st == OK && ms < 2000;   /* not SYNC_WAIT's 5 s, its answer taken */
+        if (ok && k == 0)   /* the next instance gets volumes' own channel too */
+            ok = volumes_kill_until(vm, now() + 30 * NS_PER_S, DATA, sizeof(DATA) - 1,
+                                    &koid) == OK;
+    }
+    flood_stop = true;
+    if (!wait_threads(th, 2))
+        return false;
+    CHECK(ok);
+    CHECK(fl[0].got + fl[1].got > 0);   /* the flood read its end */
+    for (unsigned i = 0; i < 2; i++)
+        CHECK_ST(jam_handle_close(fl[i].ch), OK);
+    CHECK_ST(t_mkdir(&data, "/after"), OK);
+    return detach(vm, &v);
+}
+
 /* The disk goes away: its mounts go with it, and the services' channels
  * are dead. A second disk then mounts from scratch. */
 bool t_disk_vanishes(void)

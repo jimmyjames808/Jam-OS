@@ -145,6 +145,14 @@ jam_channel_set_flags:
     ret
     .size jam_channel_set_flags, . - jam_channel_set_flags
 
+    .globl jam_channel_withdraw
+    .type jam_channel_withdraw, @function
+jam_channel_withdraw:
+    mov $SYS_channel_withdraw, %eax
+    syscall
+    ret
+    .size jam_channel_withdraw, . - jam_channel_withdraw
+
     .globl jam_event_create
     .type jam_event_create, @function
 jam_event_create:

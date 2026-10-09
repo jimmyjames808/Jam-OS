@@ -68,7 +68,7 @@ static struct {
     bool     armed;   /* ch is bound to the port (ONCE) ... */
     uint32_t gen;     /* ... with this generation in its key */
 } fh[FAT_MAX_FILES];
-/* Bit i: slot i's client has left too many answers unread (unread_full):
+/* Bit i: slot i's client has left too many answers unread (file_unread_full):
  * it is not armed until it has read them (files_unheld). */
 static uint32_t held;
 _Static_assert(FAT_MAX_FILES <= 32, "held is a word");
@@ -565,8 +565,9 @@ void files_event(uint64_t key)
     if (!f->used || f->gen != FAT_KEY_GEN(key))
         return;   /* a packet of a file closed since */
     fh[slot].armed = false;
-    if (unread_full(fh[slot].ch)) {
+    if (file_unread_full(fh[slot].ch)) {
         held |= 1u << slot;   /* it reads its answers first: files_unheld looks again */
+        idl_hold(&vol.held);
         return;
     }
     const struct fat_chan c = chan_of(f);
@@ -577,17 +578,16 @@ void files_event(uint64_t key)
         close_op(f);   /* the client closed it (ERR_PEER_CLOSED), or we can't go on */
 }
 
-bool files_held(void)
-{
-    return held != 0;
-}
-
 void files_unheld(void)
 {
     for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
         struct fat_file *f = &kept->files[i];
-        if (!(held & (1u << i)) || (f->used && unread_full(fh[i].ch)))
+        if (!(held & (1u << i)))
             continue;
+        if (f->used && file_unread_full(fh[i].ch)) {
+            idl_hold(&vol.held);   /* still behind */
+            continue;
+        }
         held &= ~(1u << i);
         if (f->used && arm(f) != OK)   /* fires at once: its requests are queued */
             close_op(f);

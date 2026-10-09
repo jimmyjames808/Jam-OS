@@ -361,28 +361,24 @@ static void disk_answers(struct disk *d)
     }
 }
 
-/* Read what b (a filesystem service) answered: the fs.stat probes of the
- * steps, and what a task waits for (an fs.sync). 64 a turn, as every
- * other channel: a service that writes as fast as we read (one a hostile
- * stick took over) must not keep the loop from its port. Its persistent
- * binding fires only on a new message, so a turn that stops with more
- * queued comes back by a packet of its own, after what else is waiting. */
-void fs_answers(struct vol *b)
+/* Read what b (a filesystem service) answered on ch: the fs.stat probes
+ * of the steps, and what a task waits for (an fs.sync). 64 a turn, as
+ * every other channel: a service that writes as fast as we read (one a
+ * hostile stick took over) must not keep the loop from its port. False if
+ * more may be left. */
+static bool answers_on(struct vol *b, handle_t ch)
 {
     _Alignas(8) uint8_t buf[CALL_REP_MAX];
     struct idl_msg msg;
     for (int guard = 0; b->client; guard++) {
-        if (guard == 64) {
-            struct port_packet p = { .key = b->client_key, .type = PORT_PACKET_USER };
-            (void)jam_port_queue(port, &p);   /* lost: the next answer's edge brings us back */
-            return;
-        }
-        status_t rs = idl_reply_read(b->client, buf, sizeof(buf), &msg);
+        if (guard == 64)
+            return false;
+        status_t rs = idl_reply_read(ch, buf, sizeof(buf), &msg);
         if (rs == ERR_INTERNAL)
             continue;   /* nothing we ask is answered that big: dropped */
         if (rs != OK)
-            return;
-        if (call_offer(b->client, buf, &msg))
+            return true;
+        if (call_offer(ch, buf, &msg))
             continue;
         idl_msg_drop(&msg);   /* fs.stat's answer carries none */
         uint32_t n = msg.n;
@@ -406,6 +402,24 @@ void fs_answers(struct vol *b)
             continue;   /* not what we wait for: a late answer to someone's call */
         status_t st = idl_rep_status(buf, n, sizeof(*r));
         got_stat(d, st, st == OK && r->is_dir);
+    }
+    return true;
+}
+
+/* What b's service answered: on our own channel, and what lands on the
+ * shared one, read and dropped as before (an answer nobody reads keeps
+ * the channel held back for every holder: the unread bound). The
+ * persistent bindings fire only on a new message, so a turn that stops
+ * with more queued comes back by a packet of its own, after what else is
+ * waiting. */
+void fs_answers(struct vol *b)
+{
+    bool done = answers_on(b, fs_asker(b));
+    if (b->own && b->client && !answers_on(b, b->client))
+        done = false;
+    if (!done) {
+        struct port_packet p = { .key = b->client_key, .type = PORT_PACKET_USER };
+        (void)jam_port_queue(port, &p);   /* lost: the next answer's edge brings us back */
     }
 }
 
@@ -712,8 +726,8 @@ status_t disk_sync_all(void)
             o->test = d->test;
             snprintf(o->disk, sizeof(o->disk), "%s", disk_name(d));
             snprintf(o->path, sizeof(o->path), "%s", fs_mount_path(b));
-            call_begin(&o->c, b->client);   /* all sent at once, then waited for */
-            o->st = fs_sync_send(b->client, o->c.txid);
+            call_begin(&o->c, fs_asker(b));   /* all sent at once, then waited for */
+            o->st = fs_sync_send(fs_asker(b), o->c.txid);
             if (o->st != OK)
                 call_end(&o->c);
         }

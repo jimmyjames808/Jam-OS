@@ -104,7 +104,8 @@ bool fs_channel_kept(const struct vol *b)
     return b->client && b->serve;
 }
 
-status_t fs_new_channel(struct vol *b, handle_t *client, handle_t *serve)
+/* A channel pair whose server end receives no handles. */
+static status_t fs_pair(handle_t *client, handle_t *serve)
 {
     status_t st = jam_channel_create(client, serve);
     if (st != OK)
@@ -113,10 +114,25 @@ status_t fs_new_channel(struct vol *b, handle_t *client, handle_t *serve)
     if (st != OK) {
         jam_handle_close(*client);
         jam_handle_close(*serve);
-        return st;
     }
+    return st;
+}
+
+status_t fs_new_channel(struct vol *b, handle_t *client, handle_t *serve)
+{
+    status_t st = fs_pair(client, serve);
+    if (st != OK)
+        return st;
+    /* Without our own one our calls go on the shared channel, as before. */
+    if (!b->own && fs_pair(&b->own, &b->own_serve) != OK)
+        b->own = b->own_serve = HANDLE_INVALID;
     b->chan_gen++;   /* a new mount for the watches, whoever made it */
     return OK;
+}
+
+handle_t fs_asker(const struct vol *b)
+{
+    return b->own ? b->own : b->client;
 }
 
 status_t fs_serve_end(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
@@ -124,15 +140,15 @@ status_t fs_serve_end(struct vol *b, struct spawn_handle *x, rights_t *xr, unsig
     if (!fs_channel_kept(b)) {
         /* The first start, or the last one failed after its client end
          * went (fs_spawn closes it): a new channel. */
-        handle_t client, serve;
-        status_t st = fs_new_channel(b, &client, &serve);   /* marked: receives no handles */
-        if (st != OK)
-            return st;
-        fs_close_client(b);
+        fs_close_client(b);   /* our own channel goes with it: made again beside the new */
         if (b->serve)
             jam_handle_close(b->serve);
-        b->client = client;
-        b->serve = serve;
+        b->serve = HANDLE_INVALID;
+        status_t st = fs_new_channel(b, &b->client, &b->serve);   /* marked: receives no handles */
+        if (st != OK) {
+            b->client = b->serve = HANDLE_INVALID;
+            return st;
+        }
     }
     handle_t h;
     status_t st = jam_handle_duplicate(b->serve, RIGHT_SAME, &h);
@@ -140,6 +156,10 @@ status_t fs_serve_end(struct vol *b, struct spawn_handle *x, rights_t *xr, unsig
         return st;
     x[*n] = (struct spawn_handle){ FAT_SR_SERVE, h };
     xr[(*n)++] = RIGHT_SAME;
+    if (b->own_serve && jam_handle_duplicate(b->own_serve, RIGHT_SAME, &h) == OK) {
+        x[*n] = (struct spawn_handle){ FAT_SR_OWN, h };
+        xr[(*n)++] = RIGHT_SAME;
+    }
     return OK;
 }
 
@@ -458,7 +478,7 @@ uint32_t ask_stat(const struct vol *b, const char *path, status_t *st)
     txids = (txids + 1) & ~CHANNEL_TXID_KERNEL;
     if (txids == 0)
         txids++;
-    *st = fs_stat_send(b->client, txids, path, (uint32_t)strlen(path));
+    *st = fs_stat_send(fs_asker(b), txids, path, (uint32_t)strlen(path));
     return txids;
 }
 

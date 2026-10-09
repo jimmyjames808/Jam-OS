@@ -784,3 +784,61 @@ bool t_comp_lost_clients(void)
     CHECK(ct_stop(&p));
     return true;
 }
+
+/* ---- slow clients dropped and kept open ------------------------------------------- */
+
+#define SLOW_ROUNDS 6
+#define SLOW_ERROR  256u   /* at most what one error batch costs the compositor */
+
+/* A client floods requests and reads nothing until the compositor drops
+ * it ("too slow"), then keeps its dead end open, SLOW_ROUNDS times. The
+ * compositor withdraws what each one hadn't read (channel_withdraw) before
+ * it writes the error and closes: its job holds the errors and nothing
+ * more, however many such ends are kept, and each client still reads its
+ * error first. Before, each kept end held the whole window (about 512 KiB)
+ * of the compositor's job until the client closed it. */
+bool t_comp_slow_clients_kept(void)
+{
+    static struct ct_client good, k[SLOW_ROUNDS];
+    struct ct_comp p;
+    CHECK(ct_start(&p, 320, 200));
+    CHECK(ct_open(&p, &good));
+    CHECK(ct_bind_all(&good));
+    struct held base = held_now(&p);
+    for (unsigned r = 0; r < SLOW_ROUNDS; r++) {
+        CHECK(ct_open(&p, &k[r]));
+        for (unsigned i = 0; i < FLOOD; i++) {
+            uint32_t id = ct_new(&k[r], &jwl_wl_registry_interface, 1);
+            CHECK(id);
+            CHECK_ST(jwl_wl_display_get_registry(k[r].c, JWL_DISPLAY_ID, id), OK);
+        }
+        CHECK_ST(jwl_conn_flush(k[r].c), OK);
+        signals_t closed = 0;
+        CHECK_ST(jam_object_wait_one(k[r].c->ch, SIG_PEER_CLOSED, now() + CT_WAIT, &closed), OK);
+        CHECK_ST(ct_roundtrip(&good), OK);   /* served meanwhile */
+    }
+    uint64_t held = p.job ? ct_msg_bytes(&p) : 0;
+    printf("utest: comp_slow_clients_kept: %u slow clients dropped and kept open: %lu message "
+           "bytes of the compositor's (%lu before)\n", SLOW_ROUNDS, (unsigned long)held,
+           (unsigned long)base.msg);
+    if (p.job && held > base.msg + SLOW_ROUNDS * SLOW_ERROR)
+        FAIL("the dropped clients' ends hold %lu bytes of the compositor's job",
+             (unsigned long)(held - base.msg));
+    for (unsigned r = 0; r < SLOW_ROUNDS; r++) {
+        struct jwl_msg m;
+        status_t st;
+        uint64_t deadline = now() + CT_WAIT;
+        while ((st = jwl_conn_next(k[r].c, &m)) == ERR_SHOULD_WAIT) {
+            signals_t seen;
+            CHECK_ST(jam_object_wait_one(k[r].c->ch, SIG_READABLE, deadline, &seen), OK);
+        }
+        CHECK_ST(st, OK);   /* the error, first: nothing of the window is left */
+        CHECK(m.iface == &jwl_wl_display_interface && m.opcode == JWL_WL_DISPLAY_EV_ERROR);
+        CHECK_EQ(m.args[1].u, JWL_ERROR_NO_MEMORY);
+        ct_close(&k[r]);
+    }
+    CHECK(held_back(&p, base));
+    ct_close(&good);
+    CHECK(ct_stop(&p));
+    return true;
+}

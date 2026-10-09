@@ -15,10 +15,13 @@
 #define CTL_BUDGET 16u
 
 /* Serve up to CTL_BUDGET requests from ch. OK: the budget was spent (more
- * may be queued); else the read's status: ERR_SHOULD_WAIT (none left),
- * ERR_PEER_CLOSED (no client end is left). read_only: the read-only
- * channel (the compositor's): info, stats, device and summary; the rest
- * ERR_ACCESS_DENIED. */
+ * may be queued); CTL_HELD: its clients have the unread bound of answers
+ * unread (netctl_unread_full): nothing more is read until a look
+ * (progs.h's net_held); else the read's status: ERR_SHOULD_WAIT (none
+ * left), ERR_PEER_CLOSED (no client end is left). read_only: the
+ * read-only channel (the compositor's): info, stats, device and summary;
+ * the rest ERR_ACCESS_DENIED. */
+#define CTL_HELD ERR_BUSY
 status_t ctl_serve(handle_t ch, bool read_only);
 
 /* Where netctl.device's answer comes from: main.c points it at the card

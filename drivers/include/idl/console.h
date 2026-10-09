@@ -116,6 +116,8 @@ struct console_open_tty_rep {
 #define CONSOLE_REP_MAX 12u   /* bytes: the biggest reply */
 #define CONSOLE_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define CONSOLE_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define CONSOLE_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define CONSOLE_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1086,6 +1088,15 @@ static inline uint32_t console_dispatch(const struct console_ops *ops, void *ctx
     return console_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left CONSOLE_UNREAD_MSGS
+ * messages or CONSOLE_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool console_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, CONSOLE_UNREAD_MSGS, CONSOLE_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -1130,7 +1141,8 @@ static inline bool console_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * console_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -1163,8 +1175,8 @@ static inline status_t console_serve_one(handle_t ch, const struct console_ops *
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with CONSOLE_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t console_serve(handle_t ch, const struct console_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[CONSOLE_REQ_MAX];
@@ -1172,6 +1184,7 @@ static inline status_t console_serve(handle_t ch, const struct console_ops *ops,
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = CONSOLE_UNREAD_MSGS, .ubytes = CONSOLE_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);
@@ -1215,6 +1228,8 @@ struct keys_key_msg {   /* an event: txid 0 */
 #define KEYS_REP_MAX 16u   /* bytes: the biggest message to the client */
 #define KEYS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define KEYS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define KEYS_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define KEYS_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1357,6 +1372,15 @@ static inline uint32_t keys_dispatch(const struct keys_ops *ops, void *ctx, cons
     return keys_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left KEYS_UNREAD_MSGS
+ * messages or KEYS_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool keys_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, KEYS_UNREAD_MSGS, KEYS_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -1401,7 +1425,8 @@ static inline bool keys_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * keys_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -1434,8 +1459,8 @@ static inline status_t keys_serve_one(handle_t ch, const struct keys_ops *ops, v
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with KEYS_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t keys_serve(handle_t ch, const struct keys_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[KEYS_REQ_MAX];
@@ -1443,6 +1468,7 @@ static inline status_t keys_serve(handle_t ch, const struct keys_ops *ops, void 
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = KEYS_UNREAD_MSGS, .ubytes = KEYS_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);
@@ -1570,6 +1596,8 @@ struct tty_signal_msg {   /* an event: txid 0 */
 #define TTY_REP_MAX 64u   /* bytes: the biggest message to the client */
 #define TTY_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define TTY_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define TTY_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define TTY_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2296,6 +2324,15 @@ static inline uint32_t tty_dispatch(const struct tty_ops *ops, void *ctx, const 
     return tty_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left TTY_UNREAD_MSGS
+ * messages or TTY_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool tty_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, TTY_UNREAD_MSGS, TTY_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -2340,7 +2377,8 @@ static inline bool tty_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * tty_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -2373,8 +2411,8 @@ static inline status_t tty_serve_one(handle_t ch, const struct tty_ops *ops, voi
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with TTY_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t tty_serve(handle_t ch, const struct tty_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[TTY_REQ_MAX];
@@ -2382,6 +2420,7 @@ static inline status_t tty_serve(handle_t ch, const struct tty_ops *ops, void *c
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = TTY_UNREAD_MSGS, .ubytes = TTY_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);

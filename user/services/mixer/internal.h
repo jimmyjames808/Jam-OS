@@ -151,6 +151,7 @@ struct stream {
 struct stream_own {
     handle_t    ch, vmo, event;    /* our ends (0: a free slot) */
     bool        pending;           /* the channel may have messages */
+    bool        held;              /* ... left unread for its client's answers (REQ_HELD) */
     bool        took;              /* frames taken since its `read` was last published */
     bool        wake;              /* its client waited for room when they were taken */
 };
@@ -203,6 +204,7 @@ struct client {
 struct client_own {
     handle_t ch;        /* our end, bound PERSISTENT (0: a free slot) */
     bool     pending;   /* its channel may have messages */
+    bool     held;      /* ... left unread for its client's answers (REQ_HELD) */
 };
 
 /* Everything the mixer knows: the numbers a successor would carry on
@@ -247,11 +249,13 @@ struct mixer {
     struct svcstate     state;     /* the state VMO, mapped */
     handle_t      port, svc, ctl;
     handle_t      desk;            /* the desktop's channel (SR_AUDIO_DESK), or 0 */
-    bool          desk_pending;
+    bool          desk_pending, desk_held;
     char          out_name[48];    /* the output's name (hda.output_name), "" not known yet */
     handle_t      cards[MIXER_CARDS];   /* devmgr's device channels, one per sound card */
     unsigned      ncards;
     bool          svc_pending, ctl_pending;
+    bool          svc_held, ctl_held;   /* left unread for answers unread (REQ_HELD) */
+    struct idl_held held;          /* how many are held, and when to look again (held_look) */
     struct client_own own_c[MIXER_CLIENTS];      /* by the index of nums->c */
     struct stream_own own_s[MIXER_MAX_STREAMS];  /* by the index of nums->s */
     struct out_own    own_out;
@@ -315,9 +319,16 @@ enum req_proto {
  * take (<proto>_take_slot). OK with *slot set: a
  * request to run (svcstate_request); OK with *slot REQ_NONE: a message
  * was taken and answered or dropped as the generated server does
- * (handles, too long, under 4 bytes); else the read's status
+ * (handles, too long, under 4 bytes); REQ_HELD: nothing taken, ch's
+ * client has the protocol's unread bound of answers unread (tools/
+ * genidl.py, "The unread bound"): the caller marks ch held (not pending),
+ * and held_look makes it pending again; else the read's status
  * (ERR_SHOULD_WAIT: empty; ERR_PEER_CLOSED). */
 #define REQ_NONE (~0u)
+#define REQ_HELD ERR_BUSY
+/* Every channel held back (REQ_HELD) pending again, when m->held says it
+ * is time: serving it looks again, and holds it again if still behind. */
+void     held_look(struct mixer *m);
 status_t req_take(struct mixer *m, handle_t ch, uint32_t key, enum req_proto proto,
                   unsigned *slot);
 /* Answer the request in slot on ch: the numbers committed (the request

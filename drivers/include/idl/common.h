@@ -377,6 +377,79 @@ static inline status_t idl_drain(handle_t ch, uint32_t n, uint32_t nh)
     return idl_st;
 }
 
+/* ---- the unread bound (tools/genidl.py: The unread bound) ---------------- */
+
+/* A server reads no more requests from a channel whose client has this
+ * many messages, or bytes, from it unread (a protocol's own:
+ * <PROTO>_UNREAD_MSGS, <PROTO>_UNREAD_BYTES), and looks again this long
+ * after. */
+#define IDL_UNREAD_MSGS    8u
+#define IDL_UNREAD_BYTES   8192u
+#define IDL_UNREAD_LOOK_NS 2000000ull
+
+/* Server: has ch's client left msgs messages, or bytes bytes, of ours
+ * unread (handle_info's peer_queued, peer_queued_bytes)? false if it
+ * can't be told (ch isn't a channel we hold: serving it says so). */
+static inline bool idl_unread_full(handle_t ch, uint32_t msgs, uint32_t bytes)
+{
+    struct handle_info idl_i;
+    if (drv_handle_info(ch, &idl_i) != OK)
+        return false;
+    return idl_i.peer_queued >= msgs || idl_i.peer_queued_bytes >= bytes;
+}
+
+/* A server loop's channels held back by the unread bound: how many, and
+ * when the loop looks at them again. The loop keeps which ones (a flag per
+ * channel). A channel whose client is behind (<proto>_unread_full) is left
+ * unserved, its requests queued: not armed again, not marked pending; and
+ * counted with idl_hold. The loop's port wait ends no later than
+ * idl_held_deadline; once idl_held_due says so, it looks at every channel
+ * it held: one whose client has read since is served again (armed, or
+ * marked pending), one still behind is held again with idl_hold. A
+ * channel dropped while held needs nothing: the count only says when to
+ * look. Zero-initialised: nothing held. */
+struct idl_held {
+    uint32_t n;         /* channels held since the last look */
+    uint64_t look_at;   /* when to look at them (uptime ns) */
+};
+
+/* A channel held: the first since the last look sets when to look. */
+static inline void idl_hold(struct idl_held *h)
+{
+    if (h->n++ == 0)
+        h->look_at = drv_clock_ns() + IDL_UNREAD_LOOK_NS;
+}
+
+/* The deadline for the loop's wait: `deadline`, or the next look if one
+ * is due sooner. */
+static inline uint64_t idl_held_deadline(const struct idl_held *h, uint64_t deadline)
+{
+    return h->n && h->look_at < deadline ? h->look_at : deadline;
+}
+
+/* Time to look at the held channels? true: the count is cleared; look at
+ * each one held, and idl_hold again those whose clients are still behind.
+ * Costs nothing while nothing is held. */
+static inline bool idl_held_due(struct idl_held *h)
+{
+    if (!h->n || drv_clock_ns() < h->look_at)
+        return false;
+    h->n = 0;
+    return true;
+}
+
+/* Server: give up on ch's client and close ch. What we wrote that the
+ * client hasn't read is taken back first (drv_channel_withdraw: dropped,
+ * refunded to our job), so a client that keeps its end open holds none
+ * of it. For a client the server drops (one that broke the protocol, or
+ * never reads); a client that went, or a server that ends, just closes,
+ * so that what the client may still read stays readable. */
+static inline void idl_give_up(handle_t ch)
+{
+    (void)drv_channel_withdraw(ch);
+    drv_handle_close(ch);
+}
+
 /* ---- serving ----------------------------------------------------------- */
 
 /* A <proto>_serve loop between its system calls: the reply waiting to go
@@ -395,7 +468,68 @@ struct idl_serve {
                        * request with handles queued, for idl_drain */
     uint32_t  hcap;
     uint32_t  nh;
+    uint32_t  umsgs;  /* the unread bound (the protocol's); 0: none */
+    uint32_t  ubytes;
+    bool      uknown; /* uq and ub hold: what the client may have unread, at most */
+    uint32_t  uq;     /* ... messages of ours (what it read since only lowers it) */
+    uint64_t  ub;     /* ... and their bytes */
 };
+
+/* What s's client has unread now (handle_info): into s->uq and s->ub.
+ * false if it can't be told. */
+static inline bool idl_serve_measure(struct idl_serve *s)
+{
+    struct handle_info idl_i;
+    if (drv_handle_info(s->ch, &idl_i) != OK)
+        return false;
+    s->uq = idl_i.peer_queued;
+    s->ub = idl_i.peer_queued_bytes;
+    s->uknown = true;
+    return true;
+}
+
+/* idl_serve_next's unread bound: would the reply waiting in s leave the
+ * client with s->umsgs messages or s->ubytes bytes of ours unread? Then it
+ * goes out alone, and nothing is taken until the client has read below
+ * the bound: the loop looks again every IDL_UNREAD_LOOK_NS (one thread
+ * serves this one channel, so only this client waits), and at once when
+ * the client goes (its queued requests are then taken and dropped as
+ * usual, and the loop ends). The kernel is asked only when what was
+ * sent since it was last asked could reach the bound (s->uq and s->ub
+ * count every reply as if unread): a client that reads each answer
+ * costs one handle_info every umsgs replies. OK: take the next request;
+ * else the wait's status (ERR_CANCELED: the thread is being killed). */
+static inline status_t idl_serve_hold(struct idl_serve *s)
+{
+    uint32_t idl_one = s->rn != 0;
+    if (!s->umsgs)
+        return OK;
+    if (s->uknown && s->uq + idl_one < s->umsgs && s->ub + s->rn < s->ubytes) {
+        s->uq += idl_one;   /* as if it stays unread */
+        s->ub += s->rn;
+        return OK;
+    }
+    if (!idl_serve_measure(s))
+        return OK;   /* not a channel we can ask about: its serving says so */
+    if (s->uq + idl_one < s->umsgs && s->ub + s->rn < s->ubytes) {
+        s->uq += idl_one;
+        s->ub += s->rn;
+        return OK;
+    }
+    if (s->rn)   /* its handles are gone whatever the write's status */
+        (void)drv_channel_write(s->ch, s->r, s->rn, s->rhs, s->rhn);
+    s->rn = s->rhn = 0;
+    while (idl_serve_measure(s) && (s->uq >= s->umsgs || s->ub >= s->ubytes)) {
+        signals_t idl_seen = 0;
+        status_t idl_st = drv_object_wait_one(s->ch, SIG_PEER_CLOSED,
+                                              drv_clock_ns() + IDL_UNREAD_LOOK_NS, &idl_seen);
+        if (idl_st == OK)
+            return OK;   /* the client is gone: what it left queued is taken and dropped */
+        if (idl_st != ERR_TIMED_OUT)
+            return idl_st;
+    }
+    return OK;
+}
 
 /* Server: send the reply waiting in s, if any, and take the next request
  * into s->q, in one system call (drv_channel_reply_wait), waiting for one
@@ -406,10 +540,14 @@ struct idl_serve {
  * go out (the client is gone, or never called) is dropped (its handles
  * gone all the same, as idl_reply_write's). Otherwise the wait's status:
  * ERR_PEER_CLOSED when the client is gone for good and nothing is
- * queued, ERR_CANCELED when the thread is being killed. */
+ * queued, ERR_CANCELED when the thread is being killed. A client with
+ * the unread bound unread waits first (idl_serve_hold). */
 static inline status_t idl_serve_next(struct idl_serve *s)
 {
     for (;;) {
+        status_t idl_hs = idl_serve_hold(s);
+        if (idl_hs != OK)
+            return idl_hs;
         bool idl_reply = s->rn != 0;
         /* The reply's status (1: never a status, the reply wasn't tried)
          * and the request's sizes, in a row: the kernel writes them in one

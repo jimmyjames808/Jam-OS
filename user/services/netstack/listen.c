@@ -14,6 +14,7 @@ struct lchan {
     uint64_t                  key;       /* its port key (main.c's 1, clients.c's 2 and 4) */
     handle_t                  ch;        /* its server end (0: none, or its clients gone) */
     bool                      pending;   /* requests may be queued on it */
+    bool                      held;      /* ... and left there: its clients are behind */
     const struct opener_kind *kind;      /* progs_connect's ctx: what its openers may do */
     const char               *name;      /* for the log */
 };
@@ -65,6 +66,8 @@ static void chan_serve(struct lchan *c)
         return;
     c->pending = false;
     for (unsigned k = 0; k < PROGS_BUDGET; k++) {
+        if (progs_behind(net_unread_full(c->ch), &c->held))
+            return;
         status_t st = svc_serve_request(c->ch, progs_shared_dispatch, progs_connect,
                                         (void *)c->kind);
         if (st == OK)
@@ -81,6 +84,14 @@ static void chan_serve(struct lchan *c)
         return;
     }
     c->pending = true;
+}
+
+void listen_unheld(void)
+{
+    for (unsigned i = 0; i < CHANNELS; i++) {
+        chans[i].pending |= chans[i].held;
+        chans[i].held = false;
+    }
 }
 
 void listen_serve(void)

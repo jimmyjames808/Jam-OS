@@ -76,6 +76,8 @@ struct null_make_vmo_rep {
 #define NULL_REP_MAX 24u   /* bytes: the biggest reply */
 #define NULL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define NULL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define NULL_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define NULL_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -557,6 +559,15 @@ static inline uint32_t null_dispatch(const struct null_ops *ops, void *ctx, cons
     return null_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left NULL_UNREAD_MSGS
+ * messages or NULL_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool null_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, NULL_UNREAD_MSGS, NULL_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -601,7 +612,8 @@ static inline bool null_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * null_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -634,8 +646,8 @@ static inline status_t null_serve_one(handle_t ch, const struct null_ops *ops, v
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with NULL_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t null_serve(handle_t ch, const struct null_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[NULL_REQ_MAX];
@@ -643,6 +655,7 @@ static inline status_t null_serve(handle_t ch, const struct null_ops *ops, void 
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = NULL_UNREAD_MSGS, .ubytes = NULL_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);

@@ -278,6 +278,14 @@ uint64_t keep_tick(struct mixer *m, uint64_t deadline)
 status_t req_take(struct mixer *m, handle_t ch, uint32_t key, enum req_proto proto,
                   unsigned *slot)
 {
+    bool behind = proto == PROTO_CTL      ? audioctl_unread_full(ch)
+                  : proto == PROTO_STREAM ? audio_stream_unread_full(ch)
+                                          : audio_unread_full(ch);
+    *slot = REQ_NONE;
+    if (behind) {
+        idl_hold(&m->held);
+        return REQ_HELD;
+    }
     unsigned i;
     struct idl_slot is;
     svcstate_prepare(&m->state, key, &i, &is);
@@ -300,6 +308,24 @@ status_t req_take(struct mixer *m, handle_t ch, uint32_t key, enum req_proto pro
     }
     *slot = i;
     return OK;
+}
+
+void held_look(struct mixer *m)
+{
+    if (!idl_held_due(&m->held))
+        return;
+    m->svc_pending |= m->svc_held;
+    m->ctl_pending |= m->ctl_held;
+    m->desk_pending |= m->desk_held;
+    m->svc_held = m->ctl_held = m->desk_held = false;
+    for (unsigned i = 0; i < MIXER_CLIENTS; i++) {
+        m->own_c[i].pending |= m->own_c[i].held;
+        m->own_c[i].held = false;
+    }
+    for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++) {
+        m->own_s[i].pending |= m->own_s[i].held;
+        m->own_s[i].held = false;
+    }
 }
 
 void req_answer(struct mixer *m, unsigned slot, handle_t ch, uint32_t rn, handle_t *hs,

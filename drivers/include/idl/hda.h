@@ -165,6 +165,8 @@ struct hda_output_name_rep {
 #define HDA_REP_MAX 1077u   /* bytes: the biggest reply */
 #define HDA_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define HDA_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define HDA_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define HDA_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1606,6 +1608,15 @@ static inline uint32_t hda_dispatch(const struct hda_ops *ops, void *ctx, const 
     return hda_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left HDA_UNREAD_MSGS
+ * messages or HDA_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool hda_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, HDA_UNREAD_MSGS, HDA_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -1650,7 +1661,8 @@ static inline bool hda_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * hda_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -1683,8 +1695,8 @@ static inline status_t hda_serve_one(handle_t ch, const struct hda_ops *ops, voi
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with HDA_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t hda_serve(handle_t ch, const struct hda_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[HDA_REQ_MAX];
@@ -1692,6 +1704,7 @@ static inline status_t hda_serve(handle_t ch, const struct hda_ops *ops, void *c
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = HDA_UNREAD_MSGS, .ubytes = HDA_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);
@@ -1762,6 +1775,8 @@ struct hda_stream_wait_period_rep {
 #define HDA_STREAM_REP_MAX 20u   /* bytes: the biggest reply */
 #define HDA_STREAM_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define HDA_STREAM_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define HDA_STREAM_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define HDA_STREAM_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2210,6 +2225,15 @@ static inline uint32_t hda_stream_dispatch(const struct hda_stream_ops *ops, voi
     return hda_stream_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left HDA_STREAM_UNREAD_MSGS
+ * messages or HDA_STREAM_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool hda_stream_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, HDA_STREAM_UNREAD_MSGS, HDA_STREAM_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -2254,7 +2278,8 @@ static inline bool hda_stream_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * hda_stream_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -2287,8 +2312,8 @@ static inline status_t hda_stream_serve_one(handle_t ch, const struct hda_stream
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with HDA_STREAM_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t hda_stream_serve(handle_t ch, const struct hda_stream_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[HDA_STREAM_REQ_MAX];
@@ -2296,6 +2321,7 @@ static inline status_t hda_stream_serve(handle_t ch, const struct hda_stream_ops
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = HDA_STREAM_UNREAD_MSGS, .ubytes = HDA_STREAM_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);

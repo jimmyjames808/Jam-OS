@@ -78,8 +78,16 @@ struct vol {
     /* The service while it runs. */
     handle_t            job, proc;  /* its job and process, 0 while none runs */
     handle_t            client;     /* our end of its `fs` channel (the watches get duplicates) */
-    uint64_t            client_key; /* the port watches client for answers under it (0: not) */
     handle_t            serve;      /* the service's end, kept across its restarts */
+    /* Our own `fs` channel to it (FAT_SR_OWN), never handed to anyone: our
+     * stat probes and syncs go there (fs_asker), so they never wait behind
+     * a client's requests on the shared one, and no client reading its
+     * end can take their answers. Made and closed with client; 0 if it
+     * couldn't be made (they go on client then). */
+    handle_t            own;
+    handle_t            own_serve;  /* its server end, kept across restarts as serve is */
+    uint64_t            client_key; /* the port watches own and client for answers under it
+                                     * (fs_watch_answers; 0: not) */
     uint32_t            gen;        /* bumped at every start: in its port key */
     bool                killed;     /* ended by volumes.kill */
     status_t            last;       /* the last start's status */
@@ -234,8 +242,16 @@ bool     fs_stop(struct vol *b, bool kill, bool excused);
  * answer within SYNC_WAIT; its process is gone after. OK, or why it was
  * killed; ERR_PEER_CLOSED: b was retired meanwhile (touch nothing of it). */
 status_t fs_stop_in_order(struct vol *b);
-/* Close b's client end (and stop watching it). */
+/* Close b's client end, and our own channel's two ends (and stop watching
+ * for answers). */
 void     fs_close_client(struct vol *b);
+/* Where volumes asks b's service things itself (stat probes, syncs) and
+ * reads the answers: our own channel, or the shared one if there is none. */
+handle_t fs_asker(const struct vol *b);
+/* What b's instance answers by itself (fs.stat's probe, disk.c), and what
+ * lands on the shared channel unread (dropped, fs_answers), come to the
+ * port under client_key, if they don't already. */
+void     fs_watch_answers(struct vol *b);
 /* b's process (start generation `gen`) terminated. */
 void     sup_died(struct vol *b, uint32_t gen);
 /* b's fsctl channel: an answer came, or it closed (KEY_FSCTL). */
@@ -323,12 +339,13 @@ void     fs_retire(struct vol *b);
 struct vol *fs_find_mount(const char *path, uint32_t len);
 /* b's FAT_SR_SERVE: a duplicate of the `fs` server end volumes keeps
  * across its restarts (a new channel only when there is none, or its
- * client end was closed). */
+ * client end was closed); and FAT_SR_OWN, our own channel's, the same way. */
 status_t fs_serve_end(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
 /* A new `fs` channel for b (client and serve), its server end marked
  * "receives no handles" (no fs request carries one), so its queue can't
  * hold a channel end and it can always be handed to the next instance
- * (M12's D2). */
+ * (M12's D2); and our own one beside it (b->own, b->own_serve) if there is
+ * none. */
 status_t fs_new_channel(struct vol *b, handle_t *client, handle_t *serve);
 /* Does b keep its `fs` channel while no instance runs? Then it stays a
  * mount meanwhile, and calls on it wait for the next instance. */

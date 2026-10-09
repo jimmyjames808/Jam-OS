@@ -119,6 +119,8 @@ void clients_serve(struct mixer *m)
             w->pending = true;   /* its budget is spent: more may be queued */
         } else if (st == ERR_PEER_CLOSED) {
             clients_drop(m, i);
+        } else if (st == REQ_HELD) {
+            w->held = true;   /* held_look makes it pending again */
         } else if (st != ERR_SHOULD_WAIT) {
             printf("mixer: reading an opener's channel: %s\n", status_str(st));
         }

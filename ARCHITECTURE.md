@@ -606,7 +606,12 @@ Every driver and service is a userspace process from the start.
   charged to its sender's job until it is read or dropped (the reading end
   closes), also after the sender has closed its end or its job has no
   process left: a close never frees the sender's quota, so a backlog
-  can't be passed on to the reader and the quota filled again. Cycle rule: you
+  can't be passed on to the reader and the quota filled again. A writer
+  that gives up on a reader takes its backlog back first:
+  `channel_withdraw` drops what the end wrote that its peer hasn't read
+  (refunded, its handles closed; the end's sole holder only), so a reader
+  that never reads and keeps its end open holds no more than what was
+  written after (a last error, say). Cycle rule: you
   can't send an endpoint of the channel you are writing to, its peer, or an
   endpoint whose own queue already holds an endpoint. An end marked with
   `channel_set_flags(CHANNEL_NO_HANDLES)` (init's and devmgr's kept server
@@ -2122,9 +2127,10 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   batches unread at a client, by the kernel's count (`handle_info`'s
   `peer_queued`); past that it holds up to 64 KiB, and a client still
   behind is disconnected ("too slow"). When it disconnects a client it
-  closes its end at once and the slot is free, but what the client hasn't
-  read (those batches at most, and the error) stays charged to the
-  compositor's job until the client reads it or closes its end.
+  withdraws what the client hasn't read (`channel_withdraw`), writes the
+  error, and closes its end at once; the slot is free, and only the small
+  error stays charged to the compositor's job until the client reads it
+  or closes its end.
 - **A client can hurt only itself.** Every message is checked by libjwl's
   codec (sizes, strings, objects, new ids, versions) and every request by
   its handler; a broken one ends that connection alone (`wl_display.error`)

@@ -270,11 +270,7 @@ static status_t adopt(struct vol *b, handle_t proc, handle_t job)
     b->state = VOLUMES_SUP_RUNNING;
     b->promoted++;
     b->spare_now = true;   /* its process is called "fat-spare" */
-    if (b->client && !b->client_key) {   /* a new `fs` channel: its answers are watched */
-        uint64_t key = KEY_EV_OF(b - vols, b->gen);
-        if (jam_port_bind(port, b->client, key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
-            b->client_key = key;
-    }
+    fs_watch_answers(b);   /* a new `fs` channel: its answers are watched */
     disk_started(b);
     return OK;
 }
@@ -328,7 +324,7 @@ static status_t probe_call(handle_t ch, uint64_t deadline)
 static void restarted(struct vol *b, bool promoted, uint64_t up)
 {
     handle_t ch = HANDLE_INVALID;
-    if (!b->client || jam_handle_duplicate(b->client, RIGHT_SAME, &ch) != OK)
+    if (!b->client || jam_handle_duplicate(fs_asker(b), RIGHT_SAME, &ch) != OK)
         ch = HANDLE_INVALID;
     sup_restarted(b->name, promoted, b->kill_at, b->ended_at, up, ch, probe_call);
 }

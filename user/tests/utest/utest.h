@@ -84,6 +84,7 @@ bool t_disk_mounts(void);
 bool t_disk_not_boot(void);
 bool t_disk_other(void);
 bool t_disk_fs_restart(void);
+bool t_disk_own_channel(void);
 bool t_disk_vanishes(void);
 
 /* logd.c: bin/logd with the fat service over a RAM disk as its /data. */
@@ -165,6 +166,10 @@ bool t_idl_txid_next(void);
 bool t_idl_serve_reply_wait(void);
 bool t_idl_serve_gone_client(void);
 bool t_idl_within_times_out(void);
+/* idlunread.c: the unread bound of the generated servers, and its child
+ * ("utest unread-serve|unread-loop": the server, in a job of its own). */
+bool t_idl_unread_bound(void);
+int unread_child(int argc, char **argv);
 /* idlslot.c: requests read into slots (<proto>_take_slot, _run_slot), a
  * reply that waits for the next system call (struct idl_reply) and the
  * `idempotent` keyword, on the test protocol idltest. */
@@ -592,6 +597,7 @@ bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
 /* Clients lost every way, round after round: nothing stays charged to the compositor. */
 bool t_comp_lost_clients(void);
+bool t_comp_slow_clients_kept(void);
 bool t_comp_fuzz(void);
 bool t_comp_chaos(void);
 /* The same against the desktop's compositor (/svc/wayland): `utest only comp_live`. */

@@ -46,6 +46,9 @@ void     tcpsock_serve(void);
 uint64_t tcpsock_tick(uint64_t t);
 /* A channel known to have requests left, or an accept to answer. */
 bool     tcpsock_pending(void);
+/* The channels held back by the unread bound pending again (progs.h's
+ * net_held). */
+void     tcpsock_unheld(void);
 /* Opener `slot` is going: its listeners closed, its sockets reset. */
 void     tcpsock_close_opener(unsigned slot);
 /* The TCP counts for net.counts. */

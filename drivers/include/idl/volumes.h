@@ -150,6 +150,8 @@ struct volumes_set_disks_rep {
 #define VOLUMES_REP_MAX 25u   /* bytes: the biggest reply */
 #define VOLUMES_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define VOLUMES_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define VOLUMES_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define VOLUMES_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1381,6 +1383,15 @@ static inline uint32_t volumes_dispatch(const struct volumes_ops *ops, void *ctx
     return volumes_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left VOLUMES_UNREAD_MSGS
+ * messages or VOLUMES_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool volumes_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, VOLUMES_UNREAD_MSGS, VOLUMES_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -1426,7 +1437,8 @@ static inline bool volumes_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * volumes_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -1455,8 +1467,8 @@ static inline status_t volumes_serve_one(handle_t ch, const struct volumes_ops *
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with VOLUMES_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t volumes_serve(handle_t ch, const struct volumes_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[VOLUMES_REQ_MAX];
@@ -1465,6 +1477,7 @@ static inline status_t volumes_serve(handle_t ch, const struct volumes_ops *ops,
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = VOLUMES_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
         .hs = idl_hs, .hcap = IDL_READ_HANDLES,
+        .umsgs = VOLUMES_UNREAD_MSGS, .ubytes = VOLUMES_UNREAD_BYTES,
     };
     status_t idl_st;
     while ((idl_st = idl_serve_next(&idl_s)) == OK)
@@ -1512,6 +1525,8 @@ struct volesp_close_writable_rep {
 #define VOLESP_REP_MAX 8u   /* bytes: the biggest reply */
 #define VOLESP_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define VOLESP_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define VOLESP_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define VOLESP_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1805,6 +1820,15 @@ static inline uint32_t volesp_dispatch(const struct volesp_ops *ops, void *ctx, 
     return volesp_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left VOLESP_UNREAD_MSGS
+ * messages or VOLESP_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool volesp_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, VOLESP_UNREAD_MSGS, VOLESP_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -1849,7 +1873,8 @@ static inline bool volesp_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * volesp_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -1882,8 +1907,8 @@ static inline status_t volesp_serve_one(handle_t ch, const struct volesp_ops *op
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with VOLESP_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t volesp_serve(handle_t ch, const struct volesp_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[VOLESP_REQ_MAX];
@@ -1891,6 +1916,7 @@ static inline status_t volesp_serve(handle_t ch, const struct volesp_ops *ops, v
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = VOLESP_UNREAD_MSGS, .ubytes = VOLESP_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);
@@ -1941,6 +1967,8 @@ struct disks_gone_msg {   /* an event: txid 0 */
 #define DISKS_REP_MAX 8u   /* bytes: the biggest message to the client */
 #define DISKS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define DISKS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define DISKS_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define DISKS_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2118,6 +2146,15 @@ static inline uint32_t disks_dispatch(const struct disks_ops *ops, void *ctx, co
     return disks_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left DISKS_UNREAD_MSGS
+ * messages or DISKS_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool disks_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, DISKS_UNREAD_MSGS, DISKS_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -2163,7 +2200,8 @@ static inline bool disks_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * disks_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -2192,8 +2230,8 @@ static inline status_t disks_serve_one(handle_t ch, const struct disks_ops *ops,
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with DISKS_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t disks_serve(handle_t ch, const struct disks_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[DISKS_REQ_MAX];
@@ -2202,6 +2240,7 @@ static inline status_t disks_serve(handle_t ch, const struct disks_ops *ops, voi
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = DISKS_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
         .hs = idl_hs, .hcap = IDL_READ_HANDLES,
+        .umsgs = DISKS_UNREAD_MSGS, .ubytes = DISKS_UNREAD_BYTES,
     };
     status_t idl_st;
     while ((idl_st = idl_serve_next(&idl_s)) == OK)
@@ -2264,6 +2303,8 @@ struct mounts_settled_msg {   /* an event: txid 0 */
 #define MOUNTS_REP_MAX 30u   /* bytes: the biggest message to the client */
 #define MOUNTS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define MOUNTS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define MOUNTS_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define MOUNTS_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2499,6 +2540,15 @@ static inline uint32_t mounts_dispatch(const struct mounts_ops *ops, void *ctx, 
     return mounts_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left MOUNTS_UNREAD_MSGS
+ * messages or MOUNTS_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool mounts_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, MOUNTS_UNREAD_MSGS, MOUNTS_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -2543,7 +2593,8 @@ static inline bool mounts_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * mounts_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -2576,8 +2627,8 @@ static inline status_t mounts_serve_one(handle_t ch, const struct mounts_ops *op
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with MOUNTS_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t mounts_serve(handle_t ch, const struct mounts_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[MOUNTS_REQ_MAX];
@@ -2585,6 +2636,7 @@ static inline status_t mounts_serve(handle_t ch, const struct mounts_ops *ops, v
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = MOUNTS_UNREAD_MSGS, .ubytes = MOUNTS_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);

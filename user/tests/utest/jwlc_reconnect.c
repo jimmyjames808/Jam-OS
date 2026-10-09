@@ -274,8 +274,8 @@ bool t_jwlc_slow_reader(void)
         status_t why = OK;
         CHECK(read_until_dropped(c, &keys, &why));
         CHECK_EQ(why, ERR_NO_MEMORY);
-        if (!keys)   /* the window's batches (the held ones are not sent) come first */
-            FAIL("drop %u: no key read before the drop", n + 1);
+        if (keys)   /* the window's batches were taken back (channel_withdraw): the error alone */
+            FAIL("drop %u: %u keys read before the drop", n + 1, keys);
         CHECK_EQ(jwl_client_info(c)->error_code, JWL_ERROR_NO_MEMORY);
         CHECK(wait_generation(&f, c, n + 2));
         uint64_t took = now() - t0, want = (50u << n) * NS_PER_MS;

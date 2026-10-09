@@ -233,6 +233,8 @@ status_t ctl_serve(handle_t ch, bool read_only)
 {
     static const bool full = false, ro = true;
     for (unsigned i = 0; i < CTL_BUDGET; i++) {
+        if (netctl_unread_full(ch))
+            return CTL_HELD;   /* its clients read their answers first */
         status_t st = netctl_serve_one(ch, &ops, (void *)(read_only ? &ro : &full));
         if (st != OK)
             return st;

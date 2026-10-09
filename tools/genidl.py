@@ -29,6 +29,7 @@ right above a method are copied into the header):
     <ordinal> <event> (<type> <field>, ...) event         to the server
     <ordinal> <event> -> (<type> <field>, ...) event      to the client
     const <NAME> <value>                                  a constant
+    unread <answers> <bytes>                              the unread bound
 
 name, method, arg, result   C identifiers (lower case by convention)
 id                          1..65535, listed in abi/idl/ids.txt (the registry
@@ -170,6 +171,39 @@ slot once it went out. The loop and a
 successor's re-run of the request in progress are then the same code.
 <PROTO>_REQ_MAX and <PROTO>_REP_MAX size the slots.
 
+The unread bound. A message waiting unread is charged to its writer's
+job until it is read (the kernel's rule), so a server pays for every
+answer (and event) a client leaves unread: a client that sends requests
+and never reads would fill the server's job, and then every other
+client's answers are lost. So a server reads no more requests from a
+channel whose client has <PROTO>_UNREAD_MSGS messages or
+<PROTO>_UNREAD_BYTES bytes from it unread (handle_info's peer_queued and
+peer_queued_bytes; IDL_UNREAD_MSGS 8 and IDL_UNREAD_BYTES 8 KiB unless
+the protocol's `unread <answers> <bytes>` line says more, at most 1024
+and 1 MiB): its requests wait in the channel, charged to the client, and
+the server looks again shortly (IDL_UNREAD_LOOK_NS, 2 ms), however busy
+its other clients keep it. Nothing is dropped and the loop never waits
+for that client; one that reads its answers before its next call (every
+blocking call does) is never held back. A shared end (every holder's
+duplicate of one end) is one client: one holder that reads nothing holds
+back the others on it, not the server's other channels. Events to the
+client count too: a client that calls while it leaves the server's
+events unread is held back once they reach the bound, so a protocol whose
+clients may do that raises it. <proto>_serve keeps the rule itself (its
+reply goes out alone, and it waits in steps of IDL_UNREAD_LOOK_NS for the
+client to read or go). A loop of the server's own keeps it with
+<proto>_unread_full(ch), asked before each <proto>_serve_one,
+<proto>_take_slot or hand-written read, and a struct idl_held: a channel
+whose client is behind is left unserved (not armed, not pending) and
+counted with idl_hold, the port wait ends no later than
+idl_held_deadline, and once idl_held_due says so the loop looks at each
+channel it held: serves one whose client has read since, holds one that
+hasn't again. While nothing is held this costs nothing but the
+handle_info a request.
+A server that drops a client (its channel failed) closes it with
+idl_give_up: what it wrote and the client hasn't read is withdrawn first
+(channel_withdraw), so a client that keeps its end open holds none of it.
+
 `idempotent`: running the method again on the state its first run left
 gives the same result and the same answer (a read, a write at an explicit
 offset, a stat). Recorded in <proto>_idempotent(wire ordinal), for a server
@@ -296,7 +330,8 @@ HDR = 8                 # txid + ordinal / txid + status
 RESERVED = {"ch", "deadline_ns", "timeout_ns", "ctx", "ops"}
 # Names of the protocol's own functions (<proto>_<name>): no method may take one.
 RESERVED_METHODS = ("dispatch", "dispatch_on", "dispatch_h", "serve", "serve_one", "take_slot",
-                    "run_slot", "idempotent", "ops", "events", "event_dispatch", "read_event")
+                    "run_slot", "idempotent", "ops", "events", "event_dispatch", "read_event",
+                    "unread_full")
 KEYWORDS = ("later", "idempotent", "event")   # after a method's results
 C_KEYWORDS = set("""auto break case char const continue default do double else enum extern
     float for goto if inline int long register restrict return short signed sizeof static
@@ -583,6 +618,7 @@ class Protocol:
         self.doc = doc   # the comment above the protocol line, copied into the header
         self.consts = []   # (NAME, its C value, the comment above it)
         self.kept = False  # `kept`: its restart is not seen (requests replayed from slots)
+        self.unread = None  # `unread <answers> <bytes>`: its unread bound (None: the default)
 
     def wire(self, m):
         return (self.pid << 16) | m.ordinal
@@ -789,6 +825,28 @@ def parse_const(src, lineno, line, p, doc):
     p.consts.append((name, c, doc))
 
 
+# The unread bound (the module comment, "The unread bound"): the default,
+# and the most a protocol may raise it to (CHANNEL_MAX_QUEUED messages; 1 MiB,
+# a service's whole JOB_LIMIT_MSG_BYTES as volumes gives fat).
+UNREAD_MSGS, UNREAD_BYTES = 8, 8192
+UNREAD_MSGS_MAX, UNREAD_BYTES_MAX = 1024, 1 << 20
+
+
+def parse_unread(src, lineno, line, p):
+    """An `unread <answers> <bytes>` line of protocol p: its unread bound, at
+    least the default (it only ever raises it)."""
+    toks = line.split()
+    if len(toks) != 3 or not toks[1].isdigit() or not toks[2].isdigit():
+        fail(src, lineno, "want 'unread <answers> <bytes>' (two numbers)")
+    if p.unread is not None:
+        fail(src, lineno, f"protocol '{p.name}': unread twice")
+    n, b = int(toks[1]), int(toks[2])
+    if not UNREAD_MSGS <= n <= UNREAD_MSGS_MAX or not UNREAD_BYTES <= b <= UNREAD_BYTES_MAX:
+        fail(src, lineno, f"unread: answers in {UNREAD_MSGS}..{UNREAD_MSGS_MAX}, bytes in "
+                          f"{UNREAD_BYTES}..{UNREAD_BYTES_MAX} (the default is the least)")
+    p.unread = (n, b)
+
+
 def parse(src):
     """The protocols of one .idl file, in the order it defines them."""
     protos, p = [], None
@@ -848,6 +906,8 @@ def parse(src):
             fail(src, lineno, "the first statement must be 'protocol <name> <id>'")
         if line.startswith("const ") or line == "const":
             parse_const(src, lineno, line, p, doc)
+        elif line.split()[0] == "unread":
+            parse_unread(src, lineno, line, p)
         else:
             parse_method(src, lineno, line, p, doc)
         doc, above = [], []
@@ -1132,6 +1192,79 @@ def gen_common(entries):
         "    return idl_st;",
         "}",
         "",
+        "/* ---- the unread bound (tools/genidl.py: The unread bound) ---------------- */",
+        "",
+        "/* A server reads no more requests from a channel whose client has this",
+        " * many messages, or bytes, from it unread (a protocol's own:",
+        " * <PROTO>_UNREAD_MSGS, <PROTO>_UNREAD_BYTES), and looks again this long",
+        " * after. */",
+        f"#define IDL_UNREAD_MSGS    {UNREAD_MSGS}u",
+        f"#define IDL_UNREAD_BYTES   {UNREAD_BYTES}u",
+        "#define IDL_UNREAD_LOOK_NS 2000000ull",
+        "",
+        "/* Server: has ch's client left msgs messages, or bytes bytes, of ours",
+        " * unread (handle_info's peer_queued, peer_queued_bytes)? false if it",
+        " * can't be told (ch isn't a channel we hold: serving it says so). */",
+        "static inline bool idl_unread_full(handle_t ch, uint32_t msgs, uint32_t bytes)",
+        "{",
+        "    struct handle_info idl_i;",
+        "    if (drv_handle_info(ch, &idl_i) != OK)",
+        "        return false;",
+        "    return idl_i.peer_queued >= msgs || idl_i.peer_queued_bytes >= bytes;",
+        "}",
+        "",
+        "/* A server loop's channels held back by the unread bound: how many, and",
+        " * when the loop looks at them again. The loop keeps which ones (a flag per",
+        " * channel). A channel whose client is behind (<proto>_unread_full) is left",
+        " * unserved, its requests queued: not armed again, not marked pending; and",
+        " * counted with idl_hold. The loop's port wait ends no later than",
+        " * idl_held_deadline; once idl_held_due says so, it looks at every channel",
+        " * it held: one whose client has read since is served again (armed, or",
+        " * marked pending), one still behind is held again with idl_hold. A",
+        " * channel dropped while held needs nothing: the count only says when to",
+        " * look. Zero-initialised: nothing held. */",
+        "struct idl_held {",
+        "    uint32_t n;         /* channels held since the last look */",
+        "    uint64_t look_at;   /* when to look at them (uptime ns) */",
+        "};",
+        "",
+        "/* A channel held: the first since the last look sets when to look. */",
+        "static inline void idl_hold(struct idl_held *h)",
+        "{",
+        "    if (h->n++ == 0)",
+        "        h->look_at = drv_clock_ns() + IDL_UNREAD_LOOK_NS;",
+        "}",
+        "",
+        "/* The deadline for the loop's wait: `deadline`, or the next look if one",
+        " * is due sooner. */",
+        "static inline uint64_t idl_held_deadline(const struct idl_held *h, uint64_t deadline)",
+        "{",
+        "    return h->n && h->look_at < deadline ? h->look_at : deadline;",
+        "}",
+        "",
+        "/* Time to look at the held channels? true: the count is cleared; look at",
+        " * each one held, and idl_hold again those whose clients are still behind.",
+        " * Costs nothing while nothing is held. */",
+        "static inline bool idl_held_due(struct idl_held *h)",
+        "{",
+        "    if (!h->n || drv_clock_ns() < h->look_at)",
+        "        return false;",
+        "    h->n = 0;",
+        "    return true;",
+        "}",
+        "",
+        "/* Server: give up on ch's client and close ch. What we wrote that the",
+        " * client hasn't read is taken back first (drv_channel_withdraw: dropped,",
+        " * refunded to our job), so a client that keeps its end open holds none",
+        " * of it. For a client the server drops (one that broke the protocol, or",
+        " * never reads); a client that went, or a server that ends, just closes,",
+        " * so that what the client may still read stays readable. */",
+        "static inline void idl_give_up(handle_t ch)",
+        "{",
+        "    (void)drv_channel_withdraw(ch);",
+        "    drv_handle_close(ch);",
+        "}",
+        "",
         "/* ---- serving ----------------------------------------------------------- */",
         "",
         "/* A <proto>_serve loop between its system calls: the reply waiting to go",
@@ -1150,7 +1283,68 @@ def gen_common(entries):
         "                       * request with handles queued, for idl_drain */",
         "    uint32_t  hcap;",
         "    uint32_t  nh;",
+        "    uint32_t  umsgs;  /* the unread bound (the protocol's); 0: none */",
+        "    uint32_t  ubytes;",
+        "    bool      uknown; /* uq and ub hold: what the client may have unread, at most */",
+        "    uint32_t  uq;     /* ... messages of ours (what it read since only lowers it) */",
+        "    uint64_t  ub;     /* ... and their bytes */",
         "};",
+        "",
+        "/* What s's client has unread now (handle_info): into s->uq and s->ub.",
+        " * false if it can't be told. */",
+        "static inline bool idl_serve_measure(struct idl_serve *s)",
+        "{",
+        "    struct handle_info idl_i;",
+        "    if (drv_handle_info(s->ch, &idl_i) != OK)",
+        "        return false;",
+        "    s->uq = idl_i.peer_queued;",
+        "    s->ub = idl_i.peer_queued_bytes;",
+        "    s->uknown = true;",
+        "    return true;",
+        "}",
+        "",
+        "/* idl_serve_next's unread bound: would the reply waiting in s leave the",
+        " * client with s->umsgs messages or s->ubytes bytes of ours unread? Then it",
+        " * goes out alone, and nothing is taken until the client has read below",
+        " * the bound: the loop looks again every IDL_UNREAD_LOOK_NS (one thread",
+        " * serves this one channel, so only this client waits), and at once when",
+        " * the client goes (its queued requests are then taken and dropped as",
+        " * usual, and the loop ends). The kernel is asked only when what was",
+        " * sent since it was last asked could reach the bound (s->uq and s->ub",
+        " * count every reply as if unread): a client that reads each answer",
+        " * costs one handle_info every umsgs replies. OK: take the next request;",
+        " * else the wait's status (ERR_CANCELED: the thread is being killed). */",
+        "static inline status_t idl_serve_hold(struct idl_serve *s)",
+        "{",
+        "    uint32_t idl_one = s->rn != 0;",
+        "    if (!s->umsgs)",
+        "        return OK;",
+        "    if (s->uknown && s->uq + idl_one < s->umsgs && s->ub + s->rn < s->ubytes) {",
+        "        s->uq += idl_one;   /* as if it stays unread */",
+        "        s->ub += s->rn;",
+        "        return OK;",
+        "    }",
+        "    if (!idl_serve_measure(s))",
+        "        return OK;   /* not a channel we can ask about: its serving says so */",
+        "    if (s->uq + idl_one < s->umsgs && s->ub + s->rn < s->ubytes) {",
+        "        s->uq += idl_one;",
+        "        s->ub += s->rn;",
+        "        return OK;",
+        "    }",
+        "    if (s->rn)   /* its handles are gone whatever the write's status */",
+        "        (void)drv_channel_write(s->ch, s->r, s->rn, s->rhs, s->rhn);",
+        "    s->rn = s->rhn = 0;",
+        "    while (idl_serve_measure(s) && (s->uq >= s->umsgs || s->ub >= s->ubytes)) {",
+        "        signals_t idl_seen = 0;",
+        "        status_t idl_st = drv_object_wait_one(s->ch, SIG_PEER_CLOSED,",
+        "                                              drv_clock_ns() + IDL_UNREAD_LOOK_NS, &idl_seen);",
+        "        if (idl_st == OK)",
+        "            return OK;   /* the client is gone: what it left queued is taken and dropped */",
+        "        if (idl_st != ERR_TIMED_OUT)",
+        "            return idl_st;",
+        "    }",
+        "    return OK;",
+        "}",
         "",
         "/* Server: send the reply waiting in s, if any, and take the next request",
         " * into s->q, in one system call (drv_channel_reply_wait), waiting for one",
@@ -1161,10 +1355,14 @@ def gen_common(entries):
         " * go out (the client is gone, or never called) is dropped (its handles",
         " * gone all the same, as idl_reply_write's). Otherwise the wait's status:",
         " * ERR_PEER_CLOSED when the client is gone for good and nothing is",
-        " * queued, ERR_CANCELED when the thread is being killed. */",
+        " * queued, ERR_CANCELED when the thread is being killed. A client with",
+        " * the unread bound unread waits first (idl_serve_hold). */",
         "static inline status_t idl_serve_next(struct idl_serve *s)",
         "{",
         "    for (;;) {",
+        "        status_t idl_hs = idl_serve_hold(s);",
+        "        if (idl_hs != OK)",
+        "            return idl_hs;",
         "        bool idl_reply = s->rn != 0;",
         "        /* The reply's status (1: never a status, the reply wasn't tried)",
         "         * and the request's sizes, in a row: the kernel writes them in one",
@@ -2539,7 +2737,17 @@ def gen_protocol(p):
     p.req_handles = max([IDL_READ_HANDLES] + [hmax(m.args) for m in calls + ins])
     p.rep_handles = max([REP_HANDLES_MAX] + [hmax(m.results) for m in calls + outs])
     out += [f"#define {U}_REQ_HANDLES {read_h(p, True)}   /* handles: read with each message to the server */",
-            f"#define {U}_REP_HANDLES {rep_h(p, True)}   /* handles: room in a dispatch's rhs */", ""]
+            f"#define {U}_REP_HANDLES {rep_h(p, True)}   /* handles: room in a dispatch's rhs */"]
+    if p.unread:
+        out += [f"#define {U}_UNREAD_MSGS {p.unread[0]}u   /* the unread bound (its `unread` line): "
+                "messages ... */",
+                f"#define {U}_UNREAD_BYTES {p.unread[1]}u   /* ... or bytes a client may leave "
+                "unread */"]
+    else:
+        out += [f"#define {U}_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */",
+                f"#define {U}_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave "
+                "unread */"]
+    out.append("")
 
     out.append("/* ---- client ---------------------------------------------------------- */")
     for m in calls:
@@ -2719,6 +2927,15 @@ def gen_protocol(p):
         f"    return {P}_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);",
         "}",
         "",
+        f"/* The unread bound (tools/genidl.py): has ch's client left {U}_UNREAD_MSGS",
+        f" * messages or {U}_UNREAD_BYTES bytes of ours unread? Then a loop of the",
+        " * server's own reads nothing more from ch for now: it leaves ch unserved",
+        " * and looks again later (struct idl_held). */",
+        f"static inline bool {P}_unread_full(handle_t ch)",
+        "{",
+        f"    return idl_unread_full(ch, {U}_UNREAD_MSGS, {U}_UNREAD_BYTES);",
+        "}",
+        "",
         f"/* Take the next message on ch into slot (idl_take), a slot with room for",
         f" * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The",
         f" * reply waiting in *rep (NULL or empty: none) goes out first in the same",
@@ -2831,7 +3048,8 @@ def _gen_loops(p):
     P, U = p.name, p.name.upper()
     dispatch = f"{P}_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);"
     one = [
-        "/* Take one message off ch and answer it. OK once a message was handled",
+        f"/* Take one message off ch and answer it (the unread bound is the caller's:",
+        f" * {P}_unread_full first). OK once a message was handled",
         " * (its reply may still have been dropped: the client is gone, or never",
         " * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when",
         " * nothing is queued, ERR_PEER_CLOSED when the client is gone for good.",
@@ -2841,15 +3059,15 @@ def _gen_loops(p):
     loop = [
         "/* Serve ch until the client closes it (OK), or a wait or read fails",
         " * (that status: ERR_CANCELED when the driver is being killed). Each reply",
-        " * goes out in the system call that takes the next request",
-        " * (idl_serve_next).",
+        " * goes out in the system call that takes the next request, and a client",
+        f" * with {U}_UNREAD_MSGS answers unread waits until it reads (idl_serve_next).",
         f"static inline status_t {P}_serve(handle_t ch, const struct {P}_ops *ops, void *ctx)",
         "{",
     ]
     if takes_handles(p):
         return gen_loops_h(p, one, loop)
     if p.req_max + p.rep_max <= STACK_MAX:
-        one[3] += " */"
+        one[4] += " */"
         loop[3] += " */"
         bufs = [f"    _Alignas(8) uint8_t idl_q[{U}_REQ_MAX];",
                 f"    _Alignas(8) uint8_t idl_r[{U}_REP_MAX];"]
@@ -2882,6 +3100,7 @@ def _gen_loops(p):
             "    handle_t idl_rhs[IDL_REP_HANDLES];",
             "    struct idl_serve idl_s = {",
             "        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,",
+            f"        .umsgs = {U}_UNREAD_MSGS, .ubytes = {U}_UNREAD_BYTES,",
             "    };",
             "    for (;;) {",
             "        status_t idl_st = idl_serve_next(&idl_s);",
@@ -2895,12 +3114,13 @@ def _gen_loops(p):
             "}",
             "",
         ]
-    one[3:4] = [" * nothing is queued, ERR_PEER_CLOSED when the client is gone for good;",
+    one[4:5] = [" * nothing is queued, ERR_PEER_CLOSED when the client is gone for good;",
                 " * ERR_NO_MEMORY with the message still queued: no room for the buffers",
                 f" * (taken from the heap for each message: {U}_REQ_MAX + {U}_REP_MAX pass",
                 " * IDL_STACK_MAX). */"]
-    loop[3:4] = [" * (idl_serve_next). Its buffers come from the heap, once (ERR_NO_MEMORY",
-                 f" * if they can't): {U}_REQ_MAX + {U}_REP_MAX pass IDL_STACK_MAX. */"]
+    loop[3:4] = [f" * with {U}_UNREAD_MSGS answers unread waits until it reads (idl_serve_next).",
+                 " * Its buffers come from the heap, once (ERR_NO_MEMORY if they can't):",
+                 f" * {U}_REQ_MAX + {U}_REP_MAX pass IDL_STACK_MAX. */"]
     bufs = [f"    uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8({U}_REQ_MAX) + {U}_REP_MAX);",
             "    if (!idl_q)",
             "        return ERR_NO_MEMORY;",
@@ -2933,6 +3153,7 @@ def _gen_loops(p):
         "    handle_t idl_rhs[IDL_REP_HANDLES];",
         "    struct idl_serve idl_s = {",
         f"        .ch = ch, .q = idl_q, .qcap = {U}_REQ_MAX, .r = idl_r, .rhs = idl_rhs,",
+        f"        .umsgs = {U}_UNREAD_MSGS, .ubytes = {U}_UNREAD_BYTES,",
         "    };",
         "    status_t idl_st;",
         "    while ((idl_st = idl_serve_next(&idl_s)) == OK)",
@@ -2952,19 +3173,20 @@ def gen_loops_h(p, one, loop):
     P, U = p.name, p.name.upper()
     heap = p.req_max + p.rep_max > STACK_MAX
     if heap:
-        one[3:4] = [" * nothing is queued, ERR_PEER_CLOSED when the client is gone for good;",
+        one[4:5] = [" * nothing is queued, ERR_PEER_CLOSED when the client is gone for good;",
                     " * ERR_NO_MEMORY with the message still queued: no room for the buffers",
                     f" * (taken from the heap for each message: {U}_REQ_MAX + {U}_REP_MAX pass",
                     " * IDL_STACK_MAX). */"]
-        loop[3:4] = [" * (idl_serve_next). Its buffers come from the heap, once (ERR_NO_MEMORY",
-                     f" * if they can't): {U}_REQ_MAX + {U}_REP_MAX pass IDL_STACK_MAX. */"]
+        loop[3:4] = [f" * with {U}_UNREAD_MSGS answers unread waits until it reads (idl_serve_next).",
+                     " * Its buffers come from the heap, once (ERR_NO_MEMORY if they can't):",
+                     f" * {U}_REQ_MAX + {U}_REP_MAX pass IDL_STACK_MAX. */"]
         bufs = [f"    uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8({U}_REQ_MAX) + {U}_REP_MAX);",
                 "    if (!idl_q)",
                 "        return ERR_NO_MEMORY;",
                 f"    uint8_t *idl_r = idl_q + IDL_ROUND8({U}_REQ_MAX);"]
         free = ["    drv_free(idl_q);"]
     else:
-        one[3] += " */"
+        one[4] += " */"
         loop[3] += " */"
         bufs = [f"    _Alignas(8) uint8_t idl_q[{U}_REQ_MAX];",
                 f"    _Alignas(8) uint8_t idl_r[{U}_REP_MAX];"]
@@ -2996,6 +3218,7 @@ def gen_loops_h(p, one, loop):
         "    struct idl_serve idl_s = {",
         f"        .ch = ch, .q = idl_q, .qcap = {U}_REQ_MAX, .r = idl_r, .rhs = idl_rhs,",
         "        .hs = idl_hs, .hcap = IDL_READ_HANDLES,",
+        f"        .umsgs = {U}_UNREAD_MSGS, .ubytes = {U}_UNREAD_BYTES,",
         "    };",
         "    status_t idl_st;",
         "    while ((idl_st = idl_serve_next(&idl_s)) == OK)",
@@ -3012,9 +3235,9 @@ def c_names(p):
     """Every name protocol p's header defines at file scope."""
     P, U = p.name, p.name.upper()
     names = [f"{P}_{x}" for x in ("ops", "dispatch_on", "dispatch", "take_slot", "run_slot",
-                                  "idempotent", "serve_one", "serve")]
+                                  "idempotent", "serve_one", "serve", "unread_full")]
     names += [f"{U}_{x}" for x in ("PROTOCOL_ID", "REQ_MAX", "REP_MAX", "REQ_HANDLES",
-                                   "REP_HANDLES")]
+                                   "REP_HANDLES", "UNREAD_MSGS", "UNREAD_BYTES")]
     names += [f"{U}_{c[0]}" for c in p.consts]
     if p.kept:
         names.append(f"{U}_KEPT")
@@ -3453,6 +3676,17 @@ SELFTESTS = [
                                          "protocol t 40\n1 a () -> ()\n"}, None, "mark it kept"),
     ("another word", {"t.idl": f"{RULE}protocol t 40 kep\n1 a () -> ()\n"}, None,
      "want 'protocol <name> <id> [kept]'"),
+    ("an unread bound", t_ok("unread 16 65536\n1 a () -> ()\n"), None, None),
+    ("an unread bound at its most", t_ok("1 a () -> ()\nunread 1024 1048576\n"), None, None),
+    ("an unread bound twice", t_ok("unread 16 65536\nunread 16 65536\n1 a () -> ()\n"), None,
+     "unread twice"),
+    ("an unread bound under the default", t_ok("unread 4 65536\n1 a () -> ()\n"), None,
+     "answers in 8..1024"),
+    ("an unread bound past 1 MiB", t_ok("unread 8 1048577\n1 a () -> ()\n"), None,
+     "answers in 8..1024"),
+    ("an unread bound without bytes", t_ok("unread 8\n1 a () -> ()\n"), None,
+     "want 'unread <answers> <bytes>'"),
+    ("a method named unread_full", t_ok("1 unread_full () -> ()\n"), None, "reserved"),
 ]
 
 
