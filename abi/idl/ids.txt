@@ -14,7 +14,7 @@
 # protocol's .idl, or the header of one that stays hand-written (its id is
 # the top half of the word after its txid: a magic number's, for some).
 
-0       none            -                       # reserved: not IDL (keep's, the namespace's kinds)
+0       none            -                       # reserved: not IDL
 1       null            abi/idl/null.idl
 2       edu             abi/idl/edu.idl
 3       devmgr          user/include/devmgr.h           # hand-written until track D's .idl
@@ -60,6 +60,8 @@
 71      volesp          abi/idl/volumes.idl
 72      disks           abi/idl/volumes.idl
 73      mounts          abi/idl/volumes.idl
+# 80 to 89: libos's (M12 track P6a)
+80      keepch          abi/idl/keepch.idl
 0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
 0x4d4f  standby         user/include/roles.h            # STANDBY_MAGIC "PROM" (promotion)
 0x4f50  update_offer    user/include/update.h           # UPDATE_OFFER_MAGIC "JUPO"

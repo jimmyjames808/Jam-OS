@@ -10,7 +10,7 @@
 
 /* The protocol id registry (abi/idl/ids.txt): every protocol's id, the
  * hand-written ones' too (the top half of the word after their txid). */
-#define IDL_ID_NONE           0x0000u   /* reserved: not IDL (keep's, the namespace's kinds) */
+#define IDL_ID_NONE           0x0000u   /* reserved: not IDL */
 #define IDL_ID_NULL           0x0001u   /* abi/idl/null.idl */
 #define IDL_ID_EDU            0x0002u   /* abi/idl/edu.idl */
 #define IDL_ID_DEVMGR         0x0003u   /* user/include/devmgr.h: hand-written until track D's .idl */
@@ -54,6 +54,7 @@
 #define IDL_ID_VOLESP         0x0047u   /* abi/idl/volumes.idl */
 #define IDL_ID_DISKS          0x0048u   /* abi/idl/volumes.idl */
 #define IDL_ID_MOUNTS         0x0049u   /* abi/idl/volumes.idl */
+#define IDL_ID_KEEPCH         0x0050u   /* abi/idl/keepch.idl */
 #define IDL_ID_UPDATE_ANSWER  0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER   0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */

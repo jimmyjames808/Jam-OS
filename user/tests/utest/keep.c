@@ -1,4 +1,5 @@
-/* utest: the keep channel (<keep.h>), both sides in this one process: a
+/* utest: the keep channel (<keep.h>; its messages are the IDL protocol
+ * keepch, abi/idl/keepch.idl), both sides in this one process: a
  * fake service puts and drops slots and "dies" (closes its handles as the
  * kernel would), the keeper (libos's) keeps their objects alive and
  * restores them to a fake successor, which takes the slots its state
@@ -146,8 +147,39 @@ bool t_keep_put_drop_restore(void)
     return true;
 }
 
-/* 100 slots of 2 handles come back as KEEP_RESTOREs of whole slots, none
- * over 64 handles, then a KEEP_DONE with the totals. */
+/* What the fake successor of t_keep_restore_batches reads. */
+struct tally {
+    unsigned msgs, slots, total;   /* restore events, their slots and handles */
+    bool     sums;                 /* every restore's counts add up to its handles */
+    bool     done;                 /* the done event came ... */
+    uint32_t done_slots, done_handles;   /* ... with these totals */
+};
+
+static void tally_restore(void *ctx, const uint32_t *slots, uint32_t ns, const uint8_t *counts,
+                          uint32_t nc, const handle_t *hs, uint32_t nh)
+{
+    struct tally *t = ctx;
+    unsigned sum = 0;
+    for (unsigned i = 0; i < nc; i++)
+        sum += counts[i];
+    t->sums = t->sums && ns == nc && sum == nh && nh <= KEEP_BATCH && slots != NULL;
+    for (unsigned i = 0; i < nh; i++)
+        jam_handle_close(hs[i]);
+    t->msgs++;
+    t->slots += ns;
+    t->total += nh;
+}
+
+static void tally_done(void *ctx, uint32_t slots, uint32_t handles)
+{
+    struct tally *t = ctx;
+    t->done = true;
+    t->done_slots = slots;
+    t->done_handles = handles;
+}
+
+/* 100 slots of 2 handles come back as restore events of whole slots, none
+ * over 64 handles, then a done with the totals. */
 bool t_keep_restore_batches(void)
 {
     uint64_t before = handles_used();
@@ -167,34 +199,13 @@ bool t_keep_restore_batches(void)
     CHECK_ST(keeper_attach(&k, &svc2), OK);
     CHECK_ST(keeper_restore(&k), OK);
 
-    struct keep_restore m;
-    handle_t hs[KEEP_BATCH];
-    unsigned msgs = 0, slots = 0, total = 0;
-    for (;;) {
-        uint32_t nb = 0, nh = 0;
-        struct channel_read_args a = {
-            .h = svc2, .rd_cap = sizeof(m), .rd_bytes = (uint64_t)(uintptr_t)&m,
-            .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_handles = (uint64_t)(uintptr_t)hs,
-            .rd_hcap = KEEP_BATCH, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-        };
-        CHECK_ST(jam_channel_read(&a), OK);
-        for (unsigned i = 0; i < nh; i++)
-            jam_handle_close(hs[i]);
-        if (m.kind == KEEP_DONE) {
-            const struct keep_msg *d = (const struct keep_msg *)&m;
-            CHECK(d->slot == 100 && d->count == 200 && nh == 0);
-            break;
-        }
-        CHECK(m.kind == KEEP_RESTORE && nb == KEEP_RESTORE_SIZE(m.nslots) && nh <= KEEP_BATCH);
-        unsigned sum = 0;
-        for (unsigned i = 0; i < m.nslots; i++)
-            sum += m.slot[i].count;
-        CHECK_EQ(sum, nh);   /* whole slots */
-        msgs++;
-        slots += m.nslots;
-        total += nh;
-    }
-    CHECK(msgs == 4 && slots == 100 && total == 200);   /* 32 + 32 + 32 + 4 slots */
+    static const struct keepch_events ev = { .restore = tally_restore, .done = tally_done };
+    struct tally t = { .sums = true };
+    while (!t.done)
+        CHECK_ST(keepch_read_event(svc2, &ev, &t), OK);
+    CHECK(t.sums && t.done_slots == 100 && t.done_handles == 200);
+    CHECK(t.msgs == 4 && t.slots == 100 && t.total == 200);   /* 32 + 32 + 32 + 4 slots */
+    CHECK_ST(keepch_read_event(svc2, &ev, &t), ERR_SHOULD_WAIT);
 
     /* A second restore, read by keep_restore. */
     CHECK_ST(keeper_restore(&k), OK);
@@ -231,7 +242,7 @@ bool t_keep_unknown_slots(void)
     struct keep_restored got;
     CHECK_ST(keep_restore(svc2, SOON, state_take, &s, &got), OK);
     CHECK(got.slots == 3 && got.taken == 1 && got.handles == 1);
-    take_all();   /* the successor's two KEEP_DROPs */
+    take_all();   /* the successor's two drops */
     CHECK(k.nslots == 1 && k.drops == 2);
     CHECK(peer_gone(cli[0]) && !peer_gone(cli[1]) && peer_gone(cli[2]));
     state_close(&s);
@@ -349,38 +360,49 @@ static bool keep_kinds(handle_t svc)
     CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &x), OK);
     CHECK_ST(jam_handle_replace(x, RIGHT_READ | RIGHT_TRANSFER, &h), OK);
     CHECK_ST(keep_put(svc, 1, &h, 1), ERR_ACCESS_DENIED);
-    struct keep_msg m = { 0, KEEP_PUT, 1, 1 };
+    struct keepch_put_msg m = { 0, KEEPCH_PUT, 1 };
     CHECK_ST(raw(svc, &m, sizeof(m), &h, 1), OK);
     return refused_one();
 }
 
-/* Malformed messages: each refused, its handles closed, the queue clear. */
+/* Malformed messages: each refused (by the generated server, which the
+ * keeper counts), its handles closed, the queue clear. */
 static bool keep_malformed(handle_t svc)
 {
-    struct keep_msg m = { 0, KEEP_PUT, 1, 1 };
-    CHECK_ST(raw(svc, &m, 12, NULL, 1), OK);   /* short */
+    struct keepch_put_msg m = { 0, KEEPCH_PUT, 1 };
+    CHECK_ST(raw(svc, &m, 11, NULL, 1), OK);   /* short */
     CHECK(refused_one());
     m.txid = 5;
     CHECK_ST(raw(svc, &m, sizeof(m), NULL, 1), OK);   /* a txid */
     CHECK(refused_one());
-    m = (struct keep_msg){ 0, KEEP_PUT, 1, 0 };
+    m.txid = 0;
     CHECK_ST(raw(svc, &m, sizeof(m), NULL, 0), OK);   /* a put of nothing */
     CHECK(refused_one());
-    m.count = 5;
-    CHECK_ST(raw(svc, &m, sizeof(m), NULL, 5), OK);   /* too many for a slot */
+    CHECK_ST(raw(svc, &m, sizeof(m), NULL, KEEP_SLOT_HANDLES + 1), OK);   /* too many for a slot */
     CHECK(refused_one());
-    m.count = 2;
-    CHECK_ST(raw(svc, &m, sizeof(m), NULL, 1), OK);   /* a count that isn't its handles */
+    CHECK_ST(raw(svc, &m, sizeof(m) + 1, NULL, 1), OK);   /* a byte too many */
     CHECK(refused_one());
-    m = (struct keep_msg){ 0, KEEP_DROP, 1, 0 };
-    CHECK_ST(raw(svc, &m, sizeof(m), NULL, 1), OK);   /* a drop with a handle */
+    struct keepch_drop_msg d = { 0, KEEPCH_DROP, 1 };
+    CHECK_ST(raw(svc, &d, sizeof(d), NULL, 1), OK);   /* a drop with a handle */
     CHECK(refused_one());
-    m = (struct keep_msg){ 0, 9, 1, 1 };
-    CHECK_ST(raw(svc, &m, sizeof(m), NULL, 1), OK);   /* an unknown kind */
+    struct keepch_done_msg wrong = { 0, KEEPCH_DONE, 1, 1 };
+    CHECK_ST(raw(svc, &wrong, sizeof(wrong), NULL, 0), OK);   /* an event of the other way */
+    CHECK(refused_one());
+    struct keepch_put_msg other = { 0, (KEEPCH_PROTOCOL_ID << 16) | 9, 1 };
+    CHECK_ST(raw(svc, &other, sizeof(other), NULL, 1), OK);   /* an unknown ordinal */
+    CHECK(refused_one());
+    other.ordinal = KEEPCH_PUT ^ (1u << 16);                  /* another protocol's put */
+    CHECK_ST(raw(svc, &other, sizeof(other), NULL, 1), OK);
     CHECK(refused_one());
     static uint8_t big[300];
     CHECK_ST(raw(svc, big, sizeof(big), NULL, 3), OK);   /* too big: thrown away whole */
-    return refused_one();
+    CHECK(refused_one());
+    /* A drop of a slot that was never kept is no error: handled, not refused. */
+    uint32_t refused = k.refused;
+    CHECK_ST(keep_drop(svc, 77), OK);
+    CHECK_ST(keeper_take(&k), OK);
+    CHECK(k.refused == refused && k.drops == 0);
+    return true;
 }
 
 /* Put one fresh event as slot id; keeper_take it. */
@@ -454,36 +476,39 @@ bool t_keep_refusals(void)
     return true;
 }
 
-/* A fake keeper's one or two messages (each with fresh events) on a
- * channel of their own, then keep_restore's status. deadline_ns 0: the
- * keeper closes its end after them. */
-static status_t fake_restore(const void *m1, uint32_t n1, unsigned h1, const void *m2,
-                             uint32_t n2, unsigned h2, uint64_t deadline_ns)
+/* A fake keeper's messages are queued on kp (the keeper's end, ours to
+ * close) for the successor's end sp: keep_restore's status, both ends
+ * closed. deadline_ns 0: the keeper closes its end after them. */
+static status_t run_restore(handle_t kp, handle_t sp, uint64_t deadline_ns)
 {
-    handle_t kp, sp;
-    status_t st = jam_channel_create(&kp, &sp);
-    if (st != OK)
-        return st;
-    if (m1)
-        st = raw(kp, m1, n1, NULL, h1);
-    if (st == OK && m2)
-        st = raw(kp, m2, n2, NULL, h2);
     if (!deadline_ns) {
         jam_handle_close(kp);
         kp = HANDLE_INVALID;
         deadline_ns = SOON;
     }
     unsigned count = 0;
-    if (st == OK)
-        st = keep_restore(sp, deadline_ns, keep_all, &count, NULL);
+    status_t st = keep_restore(sp, deadline_ns, keep_all, &count, NULL);
     if (kp != HANDLE_INVALID)
         jam_handle_close(kp);
     jam_handle_close(sp);
     return st;
 }
 
-/* A successor refuses a malformed restore (and closes what it carried),
- * and gives up at its deadline or when the keeper goes. */
+/* A restore event for ns slots, counts[0..nc), with nh fresh events. */
+static status_t send_restore(handle_t kp, const uint32_t *slots, unsigned ns,
+                             const uint8_t *counts, unsigned nc, unsigned nh)
+{
+    handle_t ev[KEEP_BATCH + 1];
+    if (nh > KEEP_BATCH + 1)
+        return ERR_INVALID_ARGS;
+    for (unsigned i = 0; i < nh; i++) {
+        status_t st = jam_event_create(&ev[i]);
+        if (st != OK)
+            return st;
+    }
+    return keepch_restore(kp, slots, ns, counts, nc, ev, nh);
+}
+
 /* A keeper that listens to a running service stops after a bound; if
  * messages are left it says so, for its loop to come back to (a binding
  * fires on an edge only, and the mixer under churn writes as fast as init
@@ -523,42 +548,92 @@ bool t_keep_drain_bounded(void)
     return true;
 }
 
+/* A successor refuses a malformed restore (and closes what it carried),
+ * and gives up at its deadline or when the keeper goes. */
 bool t_keep_restore_refusals(void)
 {
     uint64_t before = handles_used();
-    struct keep_restore r = { .kind = KEEP_RESTORE, .nslots = 1, .slot = { { 3, 1 } } };
-    struct keep_msg done = { 0, KEEP_DONE, 1, 1 };
-    CHECK_ST(fake_restore(&r, KEEP_RESTORE_SIZE(1), 1, &done, sizeof(done), 0, SOON), OK);
+    static const uint32_t three[1] = { 3 }, twice[2] = { 3, 3 };
+    static const uint8_t one[1] = { 1 }, ones[2] = { 1, 1 }, two[1] = { 2 }, zero[1] = { 0 },
+                         five[1] = { KEEP_SLOT_HANDLES + 1 };
+    handle_t kp, sp, e;
 
-    struct keep_restore bad = r;
-    bad.nslots = 0;
-    CHECK_ST(fake_restore(&bad, KEEP_RESTORE_SIZE(0), 0, NULL, 0, 0, SOON), ERR_INVALID_ARGS);
-    CHECK_ST(fake_restore(&r, KEEP_RESTORE_SIZE(1), 2, NULL, 0, 0, SOON), ERR_INVALID_ARGS);
-    bad = r;
-    bad.nslots = 2;
-    bad.slot[1] = bad.slot[0];   /* one slot twice */
-    CHECK_ST(fake_restore(&bad, KEEP_RESTORE_SIZE(2), 2, NULL, 0, 0, SOON), ERR_INVALID_ARGS);
-    CHECK_ST(fake_restore(&bad, KEEP_RESTORE_SIZE(1), 2, NULL, 0, 0, SOON), ERR_INVALID_ARGS);
-    CHECK_ST(fake_restore(&r, KEEP_RESTORE_SIZE(1), 1, &r, KEEP_RESTORE_SIZE(1), 1, SOON),
-             ERR_INVALID_ARGS);   /* the same slot in two messages */
-    bad = r;
-    bad.slot[0].count = KEEP_SLOT_HANDLES + 1;
-    CHECK_ST(fake_restore(&bad, KEEP_RESTORE_SIZE(1), KEEP_SLOT_HANDLES + 1, NULL, 0, 0, SOON),
-             ERR_INVALID_ARGS);
-    bad = r;
-    bad.reserved = 1;
-    CHECK_ST(fake_restore(&bad, KEEP_RESTORE_SIZE(1), 1, NULL, 0, 0, SOON), ERR_INVALID_ARGS);
-    struct keep_msg wrong = { 0, KEEP_DONE, 1, 2 };   /* totals that don't match */
-    CHECK_ST(fake_restore(&r, KEEP_RESTORE_SIZE(1), 1, &wrong, sizeof(wrong), 0, SOON),
-             ERR_INVALID_ARGS);
-    wrong = (struct keep_msg){ 0, KEEP_PUT, 1, 1 };   /* a kind a keeper doesn't send */
-    CHECK_ST(fake_restore(&wrong, sizeof(wrong), 1, NULL, 0, 0, SOON), ERR_INVALID_ARGS);
+    /* A good one: a restore, then its done. */
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
+    CHECK_ST(send_restore(kp, three, 1, one, 1, 1), OK);
+    CHECK_ST(keepch_done(kp, 1, 1), OK);
+    CHECK_ST(run_restore(kp, sp, SOON), OK);
+
+    /* No slots; a count of 0; one over a slot's most; counts that disagree
+     * with the handles (too few and too many); counts for fewer slots than
+     * there are; one slot twice. */
+    static const struct {
+        const uint32_t *slots; unsigned ns;
+        const uint8_t *counts; unsigned nc;
+        unsigned nh;
+    } bad[] = {
+        { three, 0, one, 0, 0 },
+        { three, 1, zero, 1, 0 },
+        { three, 1, five, 1, KEEP_SLOT_HANDLES + 1 },
+        { three, 1, two, 1, 1 },
+        { three, 1, one, 1, 2 },
+        { twice, 2, one, 1, 2 },
+        { twice, 2, ones, 2, 2 },
+    };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        CHECK_ST(jam_channel_create(&kp, &sp), OK);
+        CHECK_ST(send_restore(kp, bad[i].slots, bad[i].ns, bad[i].counts, bad[i].nc, bad[i].nh),
+                 OK);
+        CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
+    }
+
+    /* The same slot in two messages. */
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
+    CHECK_ST(send_restore(kp, three, 1, one, 1, 1), OK);
+    CHECK_ST(send_restore(kp, three, 1, one, 1, 1), OK);
+    CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
+
+    /* Totals in done that don't match what came; a done before any restore
+     * claiming slots. */
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
+    CHECK_ST(send_restore(kp, three, 1, one, 1, 1), OK);
+    CHECK_ST(keepch_done(kp, 1, 2), OK);
+    CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
+    CHECK_ST(keepch_done(kp, 1, 0), OK);
+    CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);   /* nothing kept: done(0, 0) is right */
+    CHECK_ST(keepch_done(kp, 0, 0), OK);
+    CHECK_ST(run_restore(kp, sp, SOON), OK);
+
+    /* An event a keeper doesn't send (a put), one that breaks the format (a
+     * restore cut short, a done with a txid), one too big, a reply. */
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
+    CHECK_ST(jam_event_create(&e), OK);
+    CHECK_ST(keepch_put(kp, 1, &e, 1), OK);
+    CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
+    struct keepch_restore_msg h = { 0, KEEPCH_RESTORE };
+    uint8_t cutmsg[sizeof(h) + 1] = { 0 };   /* a restore's header and a stray byte */
+    memcpy(cutmsg, &h, sizeof(h));
+    CHECK_ST(raw(kp, cutmsg, sizeof(cutmsg), NULL, 1), OK);
+    CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
+    struct keepch_done_msg dt = { 5, KEEPCH_DONE, 0, 0 };
+    CHECK_ST(raw(kp, &dt, sizeof(dt), NULL, 0), OK);
+    CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
     static uint8_t big[1024];
-    CHECK_ST(fake_restore(big, sizeof(big), 2, NULL, 0, 0, SOON), ERR_INVALID_ARGS);
+    CHECK_ST(raw(kp, big, sizeof(big), NULL, 2), OK);
+    CHECK_ST(run_restore(kp, sp, SOON), ERR_INVALID_ARGS);
 
-    CHECK_ST(fake_restore(&r, KEEP_RESTORE_SIZE(1), 1, NULL, 0, 0, now() + 20 * NS_PER_MS),
-             ERR_TIMED_OUT);
-    CHECK_ST(fake_restore(&r, KEEP_RESTORE_SIZE(1), 1, NULL, 0, 0, 0), ERR_PEER_CLOSED);
+    /* No done: a deadline passes, or the keeper goes. */
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
+    CHECK_ST(send_restore(kp, three, 1, one, 1, 1), OK);
+    CHECK_ST(run_restore(kp, sp, now() + 20 * NS_PER_MS), ERR_TIMED_OUT);
+    CHECK_ST(jam_channel_create(&kp, &sp), OK);
+    CHECK_ST(send_restore(kp, three, 1, one, 1, 1), OK);
+    CHECK_ST(run_restore(kp, sp, 0), ERR_PEER_CLOSED);
     CHECK_EQ(handles_used(), before);
     return true;
 }
