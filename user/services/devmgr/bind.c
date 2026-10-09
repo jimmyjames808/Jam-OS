@@ -197,6 +197,8 @@ status_t start_driver(struct binding *b)
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     for (unsigned i = 0; st == OK && i < sizeof(limits) / sizeof(limits[0]); i++)
         st = jam_job_set_limit(job, limits[i].kind, limits[i].value);
+    if (b->kind == BIND_PCI)
+        b->disk = disks_pci_driver(b->path);   /* a PCI disk's: its disk is volumes' */
     if (st == OK)
         st = b->kind == BIND_PCI   ? pci_handles(b, job, x, xr, &n)
              : b->kind == BIND_USB ? usb_handles(b, x, xr, &n)
@@ -270,6 +272,7 @@ void forget_driver(struct binding *b)
         jam_handle_close(b->job);
     b->proc = b->job = HANDLE_INVALID;
     b->disk_txid = 0;   /* a disk's driver: its answer won't come */
+    disks_driver_ended(b);
 }
 
 bool stop_driver(struct binding *b, bool kill, bool excused)

@@ -368,9 +368,10 @@ static status_t idl_fz_block_map_buffer(void *ctx, uint32_t size, handle_t *out_
     *out_size = (uint32_t)0x5a5a5a5a5a5a5a5aull;
     return OK;
 }
-static status_t idl_fz_block_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t idl_fz_block_read(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint32_t count, uint32_t offset)
 {
     (void)ctx;
+    (void)idl_txn;
     (void)lba;
     (void)count;
     (void)offset;
@@ -378,9 +379,10 @@ static status_t idl_fz_block_read(void *ctx, uint64_t lba, uint32_t count, uint3
         return ERR_IO;
     return OK;
 }
-static status_t idl_fz_block_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t idl_fz_block_write(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint32_t count, uint32_t offset)
 {
     (void)ctx;
+    (void)idl_txn;
     (void)lba;
     (void)count;
     (void)offset;
@@ -388,9 +390,10 @@ static status_t idl_fz_block_write(void *ctx, uint64_t lba, uint32_t count, uint
         return ERR_IO;
     return OK;
 }
-static status_t idl_fz_block_sync(void *ctx)
+static status_t idl_fz_block_sync(void *ctx, struct idl_txn idl_txn)
 {
     (void)ctx;
+    (void)idl_txn;
     if (!idl_fuzz_full)
         return ERR_IO;
     return OK;
@@ -937,6 +940,21 @@ static status_t idl_fz_devmgrctl_kill_process(void *ctx, uint64_t koid)
         return ERR_IO;
     return OK;
 }
+static status_t idl_fz_devmgrctl_disk_storage(void *ctx, struct idl_txn idl_txn, uint8_t kind, uint32_t a, uint32_t b, uint32_t n, handle_t *out_storage)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)kind;
+    (void)a;
+    (void)b;
+    (void)n;
+    (void)out_storage;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_storage) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
 static const struct devmgrctl_ops idl_fz_devmgrctl_ops = {
     .kill = idl_fz_devmgrctl_kill,
     .rebind = idl_fz_devmgrctl_rebind,
@@ -950,6 +968,7 @@ static const struct devmgrctl_ops idl_fz_devmgrctl_ops = {
     .device_channel = idl_fz_devmgrctl_device_channel,
     .shutdown = idl_fz_devmgrctl_shutdown,
     .kill_process = idl_fz_devmgrctl_kill_process,
+    .disk_storage = idl_fz_devmgrctl_disk_storage,
 };
 static uint32_t idl_fz_devmgrctl_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -969,6 +988,7 @@ static const struct idl_fuzz_msg idl_fz_devmgrctl_msgs[] = {
     { 0x005b000au, 21u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x005b000bu, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x005b000cu, 16u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x005b000du, 21u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- dns ---- */
@@ -3488,10 +3508,68 @@ static status_t idl_fz_storage_open_partition(void *ctx, uint32_t index, uint8_t
         return ERR_NO_MEMORY;
     return OK;
 }
+static status_t idl_fz_storage_ident(void *ctx, char *out_model, uint32_t *out_model_len, char *out_serial, uint32_t *out_serial_len, char *out_firmware, uint32_t *out_firmware_len)
+{
+    (void)ctx;
+    (void)out_model;
+    (void)out_model_len;
+    (void)out_serial;
+    (void)out_serial_len;
+    (void)out_firmware;
+    (void)out_firmware_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    __builtin_memset(out_model, 'a', 40u * sizeof(*out_model));
+    *out_model_len = 40;
+    __builtin_memset(out_serial, 'a', 20u * sizeof(*out_serial));
+    *out_serial_len = 20;
+    __builtin_memset(out_firmware, 'a', 8u * sizeof(*out_firmware));
+    *out_firmware_len = 8;
+    return OK;
+}
+static status_t idl_fz_storage_digest(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)lba;
+    (void)count;
+    (void)out_sha256;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    __builtin_memset(out_sha256, 0x5a, 32);
+    return OK;
+}
+static status_t idl_fz_storage_health(void *ctx, struct idl_txn idl_txn, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)out_units_read;
+    (void)out_units_written;
+    (void)out_host_reads;
+    (void)out_host_writes;
+    (void)out_power_cycles;
+    (void)out_unsafe_shutdowns;
+    (void)out_percent_used;
+    (void)out_critical;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_units_read = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_units_written = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_host_reads = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_host_writes = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_power_cycles = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_unsafe_shutdowns = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_percent_used = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_critical = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
 static const struct storage_ops idl_fz_storage_ops = {
     .info = idl_fz_storage_info,
     .partition = idl_fz_storage_partition,
     .open_partition = idl_fz_storage_open_partition,
+    .ident = idl_fz_storage_ident,
+    .digest = idl_fz_storage_digest,
+    .health = idl_fz_storage_health,
 };
 static uint32_t idl_fz_storage_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -3503,6 +3581,9 @@ static const struct idl_fuzz_msg idl_fz_storage_msgs[] = {
     { 0x000e0001u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x000e0002u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x000e0003u, 13u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x000e0004u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x000e0005u, 24u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x000e0006u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- svc ---- */
@@ -4167,7 +4248,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "keys", 41, KEYS_REQ_MAX, KEYS_REP_MAX, KEYS_REP_HANDLES, idl_fz_keys_serve, idl_fz_keys_event, idl_fz_keys_msgs, 1 },
     { "crasher", 92, CRASHER_REQ_MAX, CRASHER_REP_MAX, CRASHER_REP_HANDLES, idl_fz_crasher_serve, NULL, idl_fz_crasher_msgs, 3 },
     { "devmgr", 90, DEVMGR_REQ_MAX, DEVMGR_REP_MAX, DEVMGR_REP_HANDLES, idl_fz_devmgr_serve, NULL, idl_fz_devmgr_msgs, 5 },
-    { "devmgrctl", 91, DEVMGRCTL_REQ_MAX, DEVMGRCTL_REP_MAX, DEVMGRCTL_REP_HANDLES, idl_fz_devmgrctl_serve, NULL, idl_fz_devmgrctl_msgs, 12 },
+    { "devmgrctl", 91, DEVMGRCTL_REQ_MAX, DEVMGRCTL_REP_MAX, DEVMGRCTL_REP_HANDLES, idl_fz_devmgrctl_serve, NULL, idl_fz_devmgrctl_msgs, 13 },
     { "dns", 30, DNS_REQ_MAX, DNS_REP_MAX, DNS_REP_HANDLES, idl_fz_dns_serve, NULL, idl_fz_dns_msgs, 1 },
     { "edu", 2, EDU_REQ_MAX, EDU_REP_MAX, EDU_REP_HANDLES, idl_fz_edu_serve, NULL, idl_fz_edu_msgs, 4 },
     { "file", 17, FILE_REQ_MAX, FILE_REP_MAX, FILE_REP_HANDLES, idl_fz_file_serve, NULL, idl_fz_file_msgs, 5 },
@@ -4196,7 +4277,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "nschan", 81, NSCHAN_REQ_MAX, NSCHAN_REP_MAX, NSCHAN_REP_HANDLES, idl_fz_nschan_serve, NULL, idl_fz_nschan_msgs, 3 },
     { "null", 1, NULL_REQ_MAX, NULL_REP_MAX, NULL_REP_HANDLES, idl_fz_null_serve, NULL, idl_fz_null_msgs, 4 },
     { "serve", 31, SERVE_REQ_MAX, SERVE_REP_MAX, SERVE_REP_HANDLES, idl_fz_serve_serve, NULL, idl_fz_serve_msgs, 3 },
-    { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 3 },
+    { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 6 },
     { "svc", 25, SVC_REQ_MAX, SVC_REP_MAX, SVC_REP_HANDLES, idl_fz_svc_serve, NULL, idl_fz_svc_msgs, 1 },
     { "usb", 10, USB_REQ_MAX, USB_REP_MAX, USB_REP_HANDLES, idl_fz_usb_serve, NULL, idl_fz_usb_msgs, 11 },
     { "usbbus", 13, USBBUS_REQ_MAX, USBBUS_REP_MAX, USBBUS_REP_HANDLES, idl_fz_usbbus_serve, NULL, idl_fz_usbbus_msgs, 5 },

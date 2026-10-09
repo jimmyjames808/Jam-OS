@@ -71,6 +71,13 @@ bool t_font_threads(void);
 /* "utest font-write": writes into a font, which must kill it. */
 int  font_write_child(void);
 
+/* nvme.c: drv/nvme's storage and block protocols on an NVMe drive (skipped
+ * without one). */
+bool t_nvme_storage(void);
+bool t_nvme_block(void);
+bool t_nvme_inflight(void);
+bool t_nvme_fence(void);
+
 /* disks.c: devmgr's disks and mounts against the mock usb-storage
  * (diskmock.c), with the fat service on its partitions. */
 bool t_disk_mounts(void);

@@ -11,24 +11,28 @@
  *   DR_IRQ(0)   MSI-X vector 0: the admin and the I/O completion queues
  *               (without one: polled every millisecond)
  *   DR_PCIDEV   its function
- *   DR_SERVE    the channel it serves on (until `storage` is served,
- *               every request is answered ERR_NOT_SUPPORTED); closed:
- *               devmgr is stopping us
+ *   DR_SERVE    the channel it serves `storage` on (abi/idl/storage.idl),
+ *               with svc.connect: a `storage` channel of the caller's own
+ *               (devmgr asks one for volumes); closed: devmgr is stopping
+ *               us
  * Arguments: `pci=<bus>:<dev>.<fn>` (devmgr's: the name in the log), and
  * the test words `nvmetest=selftest[,loop][,reset][,abort]` (selftest.c).
  *
  * Start (ctrl.c): the controller disabled before bus mastering, the admin
  * queue, enabled, identify (the controller; the first usable namespace),
- * one I/O queue pair on vector 0. Then its health log once (the drive's
- * own count of write commands: the witness that nothing was written), a
- * RESULTS line, and the loop. One thread, one port: the interrupt and
- * DR_SERVE arrive there; the loop also wakes at the nearest command's
+ * one I/O queue pair on vector 0. Then the partition table (serve.c),
+ * its health log once (the drive's own count of write commands: the
+ * witness that nothing was written), a RESULTS line, and the loop. One
+ * thread, one port: the interrupt, DR_SERVE and every channel it serves
+ * (serve.c, block.c) arrive there; the loop also wakes at the nearest command's
  * deadline (and every second while commands are out, so a lost interrupt
  * costs a second, never an answer).
  *
- * Ending: DR_SERVE closed: reads failed, the I/O queues deleted, the
+ * Ending: DR_SERVE closed: reads failed (answered ERR_PEER_CLOSED), the
+ * I/O queues deleted, the
  * normal shutdown notification (the drive saves its state, its unsafe
- * shutdown count doesn't grow), bus mastering off, everything unpinned,
+ * shutdown count doesn't grow), bus mastering off, every channel closed
+ * and everything unpinned,
  * exit 0. Exit 0 also when the controller has nothing to serve (no usable
  * namespace, not the NVM command set: said in the RESULTS box). Exit 1:
  * missing handles, or a command outside the read-only list (cmd.c); 3:
@@ -37,14 +41,11 @@
 #include <idl/common.h>
 #include "nvme.h"
 
-#define KEY_IRQ   1ull
-#define KEY_SERVE 2ull
 #define POLL_BUSY NS_PER_S          /* commands out: look at least this often */
 #define POLL_NOIRQ NS_PER_MS        /* no interrupt object: polled */
 
 static struct nvme ctrl;
 static char name[32];
-static bool serve_pending;
 
 /* The name in the log: "nvme 02:00.0" from devmgr's pci= word. */
 static void set_name(struct nvme *c, const struct driver_start *s)
@@ -98,67 +99,42 @@ static void report(struct nvme *c)
     drv_log("%s: %s (serial %s, firmware %s), NVMe %u.%u, namespace %u: %lu blocks of %u bytes",
             c->name, c->model, c->serial, c->firmware, c->vs >> 16, (c->vs >> 8) & 0xff,
             c->ns.nsid, (unsigned long)c->ns.blocks, c->ns.block_size);
-    /* The RESULTS box cuts long lines: the model and the size. */
+    /* The RESULTS box cuts long lines: the model, the size, the table. */
+    char table[80];
+    serve_describe(table, sizeof(table));
     unsigned shift = 20 - (unsigned)__builtin_ctz(c->ns.block_size);
-    drv_report("%s: %s, %lu MiB, read-only", c->name, c->model,
-               (unsigned long)(c->ns.blocks >> shift));
+    drv_report("%s: %s, %lu MiB, %s, read-only", c->name, c->model,
+               (unsigned long)(c->ns.blocks >> shift), table);
     drv_log("%s: queues of %u entries, %u bytes a command at most, %s", c->name, c->io.depth,
             c->max_cmd, c->irq != HANDLE_INVALID ? "msi-x vector 0" : "polled");
-}
-
-/* Everything queued on DR_SERVE answered ERR_NOT_SUPPORTED (the storage
- * protocol isn't served yet). false: devmgr closed it. */
-static bool serve_drain(struct nvme *c)
-{
-    for (int guard = 0; guard < 64; guard++) {
-        _Alignas(8) uint8_t q[256];
-        handle_t hs[IDL_READ_HANDLES];
-        uint32_t n = 0, nh = 0;
-        status_t st = drv_channel_read(c->serve, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
-        if (st == ERR_BUFFER_TOO_SMALL)
-            st = idl_drain(c->serve, n, nh);
-        else if (st == OK) {
-            idl_close_all(hs, nh);
-            idl_reply_status(c->serve, q, n, ERR_NOT_SUPPORTED);
-        }
-        if (st == ERR_SHOULD_WAIT)
-            return true;
-        if (st != OK)
-            return false;
-    }
-    serve_pending = true;   /* maybe more: the port won't say so again */
-    return true;
 }
 
 /* Until DR_SERVE closes. OK, or why the controller can't go on. */
 static status_t run(struct nvme *c)
 {
-    status_t st = drv_port_bind(c->port, c->serve, KEY_SERVE, SIG_READABLE | SIG_PEER_CLOSED,
-                                PORT_BIND_PERSISTENT);
-    serve_pending = true;   /* look once: requests may be there already */
+    status_t st = serve_watch(c);
     while (st == OK) {
         if ((st = ctrl_poll(c)) != OK)
             break;
-        if (serve_pending) {
-            serve_pending = false;
-            if (!serve_drain(c))
-                break;
-        }
+        if (!serve_work(c))
+            break;   /* DR_SERVE closed */
+        blk_due(c);
         uint64_t now = drv_clock_ns(), d = queue_next_deadline(c);
+        d = d < blk_next_due() ? d : blk_next_due();
         if (c->admin.busy || c->io.busy || c->wait_head)
             d = d < now + POLL_BUSY ? d : now + POLL_BUSY;
         if (c->irq == HANDLE_INVALID)
             d = d < now + POLL_NOIRQ ? d : now + POLL_NOIRQ;
         struct port_packet p;
-        st = drv_port_wait(c->port, serve_pending ? 0 : d, &p);
+        st = drv_port_wait(c->port, serve_ready() ? 0 : d, &p);
         if (st == ERR_TIMED_OUT) {
             c->polls++;
             st = OK;
         } else if (st == OK && p.key == KEY_IRQ) {
             c->irqs += p.signal.count;
             (void)drv_interrupt_ack(c->irq);   /* before the queues are read: no fire lost */
-        } else if (st == OK && p.key == KEY_SERVE) {
-            serve_pending = true;
+        } else if (st == OK) {
+            serve_packet(p.key);
         }
     }
     return st;
@@ -183,14 +159,17 @@ int driver_main(const struct driver_start *s)
         ctrl_stop(c);
         return 0;
     }
+    if (st == OK)
+        st = serve_start(c);
     if (st == OK) {
         report(c);
-        if (c->test && !selftest_start(c))
+        if ((c->test & NVME_TEST_SELFTEST) && !selftest_start(c))
             drv_report("%s: selftest: FAILED to start", c->name);
         st = run(c);
     }
     c->stopping = true;
     ctrl_stop(c);
+    serve_stop(c);
     selftest_stop(c);
     drv_log("%s: stopped (%s): %lu read(s), %lu failed, %lu completion(s) (%lu stale), %lu "
             "interrupt(s), %lu poll(s), %lu abort(s), %u reset(s); bus mastering %s", c->name,

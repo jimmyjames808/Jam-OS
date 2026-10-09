@@ -1,24 +1,29 @@
 # storage: one disk, as its driver serves it: usb-storage
-# (drivers/usb-storage) on its DR_SERVE channel (devmgr's), and on a
+# (drivers/usb-storage, a stick) and drv/nvme (drivers/nvme, an internal
+# drive, read-only), each on its DR_SERVE channel (devmgr's), and on a
 # channel of volumes' own it makes when devmgr asks it (svc.connect,
-# abi/idl/svc.idl: volumes is the disk's one real client). The disk's
-# partitions are listed here, and each is opened as its own `block`
+# abi/idl/svc.idl: volumes is the disk's one real client; a test with
+# devmgr's control channel may get one too, devmgrctl.disk_storage). The
+# disk's partitions are listed here, and each is opened as its own `block`
 # channel: nothing is ever given the whole disk, with one exception: a
 # disk with no partition table whose block 0 is a FAT boot sector (a
 # "superfloppy") is listed as one partition, of scheme 0, that covers it.
+# What reads the disk whole is `digest`, which gives a hash, never the data.
 #
-# Shaped for GPT now, built for MBR alone: usb-storage reads an MBR and
-# nothing else, so a GPT disk shows its protective MBR (scheme 1, one
-# partition of type 0xEE, which volumes leaves alone), and every GUID and
-# name is zeros or empty. A GPT reader fills them in without changing the
-# protocol.
+# usb-storage reads an MBR and nothing else, so a GPT disk shows its
+# protective MBR (scheme 1, one partition of type 0xEE, which volumes leaves
+# alone), and every GUID and name is zeros or empty. drv/nvme reads GPT and
+# MBR with the partition library (<jam/parttable.h>): a GPT disk lists its
+# GPT partitions, with their GUIDs and names. usb-storage answers the
+# methods from `ident` on ERR_NOT_SUPPORTED.
 # Format: see tools/genidl.py.
 #
-# Restart: when the stick goes away, or usb-storage ends, the channel's
-# peer closes, and so does every `block` channel opened from it.
-# usb-storage keeps nothing across a restart: volumes finds the disk again
+# Restart: when the stick goes away, or the driver ends, the channel's
+# peer closes, and so does every `block` channel opened from it. Neither
+# driver keeps anything across a restart: volumes finds the disk again
 # when devmgr hands it the restarted driver's channel (its partitions
-# listed and opened again).
+# listed and opened again). A `digest` or `health` in progress is lost
+# with the channel: ask again.
 
 protocol storage 14
 
@@ -47,5 +52,27 @@ const SCHEME_GPT  2
 # (ERR_ACCESS_DENIED); volumes opens the ESP that way, and every
 # partition of a disk that isn't the boot disk until `mount -w` asks.
 # Past the last partition: ERR_OUT_OF_RANGE; read_only past 1:
-# ERR_INVALID_ARGS.
+# ERR_INVALID_ARGS. drv/nvme (M12.7's stage 1) answers read_only 0
+# ERR_ACCESS_DENIED on every disk.
 3  open_partition  (u32 index, u8 read_only) -> (handle block)
+# The drive's identity (NVMe Identify Controller): model, serial number and
+# firmware revision (ASCII, trailing spaces trimmed, anything else '?').
+4  ident  () -> (str[<=40] model, str[<=20] serial, str[<=8] firmware) idempotent
+# The SHA-256 of `count` blocks from `lba` of the whole disk (not a
+# partition: the region list's GPT areas lie outside every partition),
+# read in the driver: the data never leaves it. Reads only, on any disk.
+# Answered once the last block is hashed; several are queued and run one
+# after another. count 0: ERR_INVALID_ARGS; past the disk, or more than
+# DIGEST_MAX bytes: ERR_OUT_OF_RANGE; DIGEST_QUEUE waiting already:
+# ERR_NO_RESOURCES; a read failed: ERR_IO (or ERR_TIMED_OUT).
+const DIGEST_MAX   0x40000000
+const DIGEST_QUEUE 8
+5  digest  (u64 lba, u64 count) -> (u8[32] sha256) later
+# The drive's health log (NVMe's SMART / Health Information, log page 02h):
+# data units read and written (thousands of 512-byte units), host read and
+# write commands completed, power cycles, unsafe shutdowns, percentage of
+# its life used, and the critical warning bits. "host write commands" not
+# moving across a session is the drive's own witness that nothing was
+# written. 128-bit counters are given as their low 64 bits. Asked of the
+# drive each time (ERR_IO if it fails).
+6  health  () -> (u64 units_read, u64 units_written, u64 host_reads, u64 host_writes, u64 power_cycles, u64 unsafe_shutdowns, u8 percent_used, u8 critical) later idempotent
