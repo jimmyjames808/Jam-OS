@@ -93,6 +93,8 @@ int      drv_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
  * Same meaning as the syscalls of the same name (abi/syscalls.def). */
 
 status_t drv_handle_close(handle_t h);
+/* What h names (handle_info): its object's type (enum obj_type), rights and ids. */
+status_t drv_handle_info(handle_t h, struct handle_info *out);
 status_t drv_handle_duplicate(handle_t h, rights_t rights, handle_t *out);
 status_t drv_channel_create(handle_t *a, handle_t *b);
 status_t drv_channel_write(handle_t h, const void *bytes, uint32_t n, const handle_t *hs,
@@ -115,6 +117,10 @@ status_t drv_channel_call_h(handle_t h, void *wbytes, uint32_t wn, void *rbytes,
 status_t drv_channel_call_within(handle_t h, void *wbytes, uint32_t wn, void *rbytes,
                                  uint32_t rcap, uint32_t *ractual, handle_t *rh, uint32_t rhcap,
                                  uint32_t *rhactual, uint64_t timeout_ns);
+/* channel_call with all its arguments (struct channel_call_args, <jam/abi.h>):
+ * the request's own handles too, which leave the caller's table whatever the
+ * status. Generated clients of methods with handle arguments use it. */
+status_t drv_channel_call_args(const struct channel_call_args *a);
 /* A server's reply and its wait for the next request in one call
  * (channel_reply_wait; the rules are in abi/syscalls.def). Generated
  * <proto>_serve loops use it. */

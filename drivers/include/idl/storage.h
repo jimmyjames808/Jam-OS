@@ -82,6 +82,8 @@ struct storage_disk_id_rep {
 
 #define STORAGE_REQ_MAX 10u   /* bytes: the biggest request */
 #define STORAGE_REP_MAX 45u   /* bytes: the biggest reply */
+#define STORAGE_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define STORAGE_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -481,7 +483,7 @@ static inline status_t storage_reply_disk_id(struct idl_txn idl_txn, status_t id
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (STORAGE_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (STORAGE_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -622,7 +624,7 @@ static inline status_t storage_take_slot(handle_t ch, const struct idl_slot *slo
 /* Run the request in slot (taken by storage_take_slot, or found there by a
  * successor), which came on ch: as storage_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (STORAGE_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

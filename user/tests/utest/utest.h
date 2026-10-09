@@ -155,6 +155,20 @@ bool t_idl_scalar_arrays(void);
 /* idlevent.c: events both ways, with arrays and handles (idltest_ev). */
 bool t_idl_events_to_server(void);
 bool t_idl_events_to_client(void);
+/* idlhandle.c: handle arguments, lists and typed handles in requests, replies
+ * and events (idltest_h, idltest_ev), and blocking beside asynchronous calls
+ * on one end. */
+bool t_idl_handle_args(void);
+bool t_idl_handle_args_fail(void);
+bool t_idl_handle_lists(void);
+bool t_idl_handle_lists_async(void);
+bool t_idl_handle_server_refuses(void);
+bool t_idl_handle_slot(void);
+bool t_idl_handle_later(void);
+bool t_idl_handle_results_refused(void);
+bool t_idl_handle_typed(void);
+bool t_idl_events_handle_lists(void);
+bool t_idl_txid_mixing(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
