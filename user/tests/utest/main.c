@@ -982,6 +982,7 @@ static const struct {
     { "jwlc_reconnect", t_jwlc_reconnect },
     { "jwlc_connect_pending", t_jwlc_connect_pending },
     { "jwlc_protocol_error", t_jwlc_protocol_error },
+    { "jwlc_slow_reader", t_jwlc_slow_reader },
     { "jwlc_blocking", t_jwlc_blocking },
     { "jwlc_fuzz_events", t_jwlc_fuzz_events },
     { "jwlc_fuzz_batches", t_jwlc_fuzz_batches },

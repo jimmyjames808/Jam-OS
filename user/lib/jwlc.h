@@ -161,6 +161,11 @@ struct jwl_client {
     struct jwl_conn *conn;            /* NULL while DOWN or DEAD */
     uint64_t retry_at;                /* DOWN: the next try */
     uint32_t retry_ms;                /* the pause after the next failure */
+    uint32_t slow_ms;                 /* the pause after the last slow-reader drop in a row
+                                         (0: none lately; JWL_SLOW_RECONNECT_MAX_MS: the cap) */
+    uint64_t slow_at;                 /* when that drop was */
+    bool     slow_drop;               /* the compositor's no_memory "reads too slowly" came
+                                         on this connection: recoverable, not fatal */
     status_t fatal;                   /* OK; else never again, and why (wl_display.error
                                          came: ERR_INVALID_ARGS; a global missing:
                                          ERR_NOT_SUPPORTED) */
