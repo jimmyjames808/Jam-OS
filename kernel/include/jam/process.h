@@ -197,7 +197,8 @@ static inline struct uthread *uthread_from_kobject(struct kobject *o)
  * ERR_BAD_STATE if p is dying. */
 status_t uthread_create(struct process *p, const char *name, struct uthread **out);
 /* Start ut (its process must be RUNNING) at entry with stack, rdi = arg0,
- * rsi = arg1. ERR_BAD_STATE if ut was started before or the process isn't
+ * rsi = arg1. ERR_INVALID_ARGS for an entry at or past USER_TOP (also from
+ * process_start). ERR_BAD_STATE if ut was started before or the process isn't
  * running, ERR_NO_RESOURCES over the job's thread limit, ERR_NO_MEMORY if
  * the job refuses UTHREAD_KMEM_PAGES or the kernel thread can't be made. */
 status_t uthread_start(struct uthread *ut, uint64_t entry, uint64_t stack, uint64_t arg0,

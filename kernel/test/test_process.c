@@ -20,6 +20,7 @@
 #include <jam/startup.h>
 #include <jam/string.h>
 #include <jam/time.h>
+#include <jam/uentry.h>
 #include <jam/userboot.h>
 
 
@@ -259,6 +260,32 @@ KTEST(proc_never_started)
     struct khandle none = { NULL, 0 };
     KT_EQ(process_start(p, u, 0x400000, 0, &none, 0, NULL), ERR_BAD_STATE);
     kobject_unref(uthread_kobject(u));   /* its reference on p was the last */
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+/* An entry outside user space is the caller's argument error: the start
+ * fails and the process stays as it was (it used to start, and its first
+ * entry to ring 3 killed it). */
+KTEST(proc_start_bad_entry_refused)
+{
+    struct job *j = kt_fresh_job();
+    struct process *p;
+    KT_EQ(process_create(j, "badentry", &p), OK);
+    struct uthread *u;
+    KT_EQ(uthread_create(p, "t", &u), OK);
+    struct khandle none = { NULL, 0 };
+    KT_EQ(process_start(p, u, USER_TOP, 0x800000, &none, 0, NULL), ERR_INVALID_ARGS);
+    KT_EQ(process_start(p, u, 0xffff800000001000ull, 0x800000, &none, 0, NULL), ERR_INVALID_ARGS);
+    KT_EQ(uthread_start(u, USER_TOP, 0x800000, 0, 0, NULL), ERR_INVALID_ARGS);
+    struct process_info info;
+    process_get_info(p, &info);
+    KT_EQ(info.state, PROCESS_NEW);
+    KT_EQ(info.threads, 0);
+    KT_EQ(job_used(j, JOB_LIMIT_THREADS), 0);
+    kobject_unref(uthread_kobject(u));
+    process_kill(p, PROCESS_KILLED_CODE, true);   /* never started: torn down here */
+    kobject_unref(process_kobject(p));
     kt_job_is_empty(j);
     job_unref(j);
 }

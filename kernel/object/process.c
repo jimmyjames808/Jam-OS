@@ -649,6 +649,10 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
 {
     struct process *p = u->proc;
     *finish = false;
+    /* An entry past the user range would only kill the process at its
+     * first iret (arch_enter_user): refuse the call instead. */
+    if (entry >= USER_TOP)
+        return ERR_INVALID_ARGS;
     uint64_t f = plock(p);
     status_t st = OK;
     if (u->state != UT_NEW || p->starting)
