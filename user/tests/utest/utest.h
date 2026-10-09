@@ -835,3 +835,5 @@ bool t_volumes_release_disk(void);
 bool t_volumes_new_channel(void);
 /* volwatch.c: volumes answers while a remount waits (S2b). */
 bool t_volumes_loop_answers(void);
+/* initctl.c: init's control channel with names as strings (P6b). */
+bool t_initctl_strings(void);

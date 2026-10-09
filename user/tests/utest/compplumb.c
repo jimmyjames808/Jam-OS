@@ -445,18 +445,32 @@ static bool search_run(struct cs *t, const uint16_t *keys, unsigned n)
     return true;
 }
 
-/* The next request on init's end, of `want` bytes and ordinal: into q. */
-static bool init_asked(struct cs *t, void *q, uint32_t want, uint32_t ordinal)
+/* What was asked of init: the request's txid and its one string (initctl's
+ * launch and terminal: a u16 count and the bytes after the header). */
+struct asked {
+    uint32_t txid;
+    char     text[130];
+};
+
+/* The next request on init's end, of ordinal and a string: into *a. */
+static bool init_asked(struct cs *t, struct asked *a, uint32_t ordinal)
 {
     signals_t seen;
     CHECK_ST(jam_object_wait_one(t->init, SIG_READABLE, now() + CT_WAIT, &seen), OK);
+    uint8_t q[8 + 2 + 128];
     uint32_t n = 0;
-    struct channel_read_args r = { .h = t->init, .rd_cap = want,
+    struct channel_read_args r = { .h = t->init, .rd_cap = sizeof(q),
                                    .rd_bytes = (uint64_t)(uintptr_t)q,
                                    .rd_actual = (uint64_t)(uintptr_t)&n };
     CHECK_ST(jam_channel_read(&r), OK);
-    CHECK_EQ(n, want);
+    CHECK(n >= 10);
+    uint16_t count;
+    memcpy(&count, q + 8, 2);
+    CHECK_EQ(n, 10 + (uint32_t)count);
     CHECK_EQ(((const struct idl_req_hdr *)q)->ordinal, ordinal);
+    a->txid = ((const struct idl_req_hdr *)q)->txid;
+    memcpy(a->text, q + 10, count);
+    a->text[count] = '\0';
     return true;
 }
 
@@ -514,18 +528,18 @@ static void xw_close(struct xw *w)
 static bool launch_app(struct cs *t, uint64_t idle)
 {
     static const uint16_t jamj[] = { U_J, U_A, U_M, U_J };
-    struct initctl_launch_req q;
+    struct asked q;
     /* refused: busy, then not */
     CHECK(search_run(t, jamj, 4));
-    CHECK(init_asked(t, &q, sizeof(q), INITCTL_LAUNCH));
-    CHECK(!strcmp((const char *)q.app, "jamjar"));
+    CHECK(init_asked(t, &q, INITCTL_LAUNCH));
+    CHECK(!strcmp(q.text, "jamjar"));
     CHECK(around_is(t, idle, false));
     struct initctl_launch_rep r = { .txid = q.txid, .status = ERR_NOT_FOUND };
     CHECK_ST(jam_channel_write(t->init, &r, 8, NULL, 0), OK);
     CHECK(around_is(t, idle, true));
     /* started: busy until a window called Jamjar maps */
     CHECK(search_run(t, jamj, 4));
-    CHECK(init_asked(t, &q, sizeof(q), INITCTL_LAUNCH));
+    CHECK(init_asked(t, &q, INITCTL_LAUNCH));
     r = (struct initctl_launch_rep){ .txid = q.txid, .status = OK, .koid = 77 };
     CHECK_ST(jam_channel_write(t->init, &r, sizeof(r), NULL, 0), OK);
     CHECK(around_is(t, idle, false));
@@ -541,10 +555,10 @@ static bool launch_app(struct cs *t, uint64_t idle)
 static bool run_in_terminal(struct cs *t, uint64_t idle)
 {
     static const uint16_t ls[] = { U_L, U_S };
-    struct initctl_terminal_req q;
+    struct asked q;
     CHECK(search_run(t, ls, 2));
-    CHECK(init_asked(t, &q, sizeof(q), INITCTL_TERMINAL));
-    CHECK(!strcmp((const char *)q.command, "ls"));
+    CHECK(init_asked(t, &q, INITCTL_TERMINAL));
+    CHECK(!strcmp(q.text, "ls"));
     struct initctl_terminal_rep r = { .txid = q.txid, .status = OK, .number = 3 };
     CHECK_ST(jam_channel_write(t->init, &r, sizeof(r), NULL, 0), OK);
     CHECK(around_is(t, idle, false));

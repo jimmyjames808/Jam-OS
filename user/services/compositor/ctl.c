@@ -484,10 +484,16 @@ void ctl_terminal_run(const char *cmd, bool busy)
             desk_launch_failed();
         return;
     }
-    uint8_t line[128] = { 0 };
-    snprintf((char *)line, sizeof(line), "%s", cmd);
+    /* At most INITCTL_COMMAND_MAX bytes, cut between characters (the
+     * protocol takes UTF-8 only). */
+    uint32_t len = (uint32_t)strlen(cmd);
+    if (len > INITCTL_COMMAND_MAX) {
+        len = INITCTL_COMMAND_MAX;
+        while (len && ((uint8_t)cmd[len] & 0xc0) == 0x80)
+            len--;
+    }
     handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
-    status_t st = watching ? initctl_terminal_send(init, TERM_TXID, line) : ERR_NOT_FOUND;
+    status_t st = watching ? initctl_terminal_send(init, TERM_TXID, cmd, len) : ERR_NOT_FOUND;
     if (st == OK) {
         term_asked = true;
         term_busy = busy;
@@ -512,11 +518,11 @@ void ctl_launch(const char *app)
     }
     status_t st = ERR_BAD_STATE;   /* one at a time */
     if (!rebooting && !launch_asked) {
-        uint8_t name[16] = { 0 };
-        snprintf((char *)name, sizeof(name), "%s", app);
         snprintf(launch_app, sizeof(launch_app), "%s", app);
         handle_t init = startup_handle(SR_USER + INITCTL_ROLE);
-        st = watching ? initctl_launch_send(init, LAUNCH_TXID, name) : ERR_NOT_FOUND;
+        st = strlen(app) > INITCTL_APP_MAX ? ERR_INVALID_ARGS
+             : watching ? initctl_launch_send(init, LAUNCH_TXID, app, (uint32_t)strlen(app))
+                        : ERR_NOT_FOUND;
         launch_asked = st == OK;
     }
     if (st != OK) {

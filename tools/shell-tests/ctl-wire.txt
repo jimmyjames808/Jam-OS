@@ -1,0 +1,17 @@
+# The wire of init's channels and logd's (M12 P6b), against the live
+# system: every malformed form of initctl's strings (kill's name, mount's
+# path, terminal's command, launch's app) is refused and init keeps
+# answering (utest only initctl_strings, user/tests/utest/initctl.c).
+# Run:
+#   QEMU_INPUT=tools/shell-tests/ctl-wire.txt tools/qemu-test.sh build/test ctl-wire shell
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+
+send utest only initctl_strings; echo wire-$T-$?
+wait 60 wire-x-0
+seen 5 utest: 1 passed
+
+send reboot -f
+wait reboot: resetting

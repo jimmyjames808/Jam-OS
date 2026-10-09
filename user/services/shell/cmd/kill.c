@@ -52,15 +52,14 @@ SH_CMD(kill)
         sh_tty("kill: %s is not restarted by anyone: not killing it\n", argv[1]);
         return 1;
     }
-    uint8_t name[32] = { 0 };
     uint64_t koid = 0;
-    status_t st = strlen(argv[1]) < sizeof(name) ? OK : ERR_INVALID_ARGS;
+    status_t st = strlen(argv[1]) <= INITCTL_NAME_MAX ? OK : ERR_INVALID_ARGS;
     if (st == OK && !sh_initctl())
         st = ERR_BAD_HANDLE;   /* a shell init didn't start */
     if (st == OK) {
-        memcpy(name, argv[1], strlen(argv[1]));
         sh_flush();
-        st = initctl_kill_until(sh_initctl(), now() + KILL_WAIT, name, &koid);
+        st = initctl_kill_until(sh_initctl(), now() + KILL_WAIT, argv[1],
+                                (uint32_t)strlen(argv[1]), &koid);
     }
     if (st == OK) {
         sh_say("shell: killed process %lu (%s)\n", (unsigned long)koid, argv[1]);

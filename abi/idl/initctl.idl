@@ -14,19 +14,28 @@
 
 protocol initctl 18
 
-# Kill the process called `name` (NUL-terminated, no spaces) and answer
-# with its kernel object id once it is dead: a service init runs ("console",
-# "serialin", "devmgr", "bootfs", "mixer", "music", "serve", "logd",
-# "shell"; init
-# starts it again), or
-# what devmgr runs for a USB device: a class driver ("hid-6.1:0",
-# "usb-storage-1:0") or a disk's filesystem service ("fat-data",
-# "fat-usb0"); devmgr
-# restarts it. ERR_NOT_FOUND: no such process; ERR_INVALID_ARGS: not a
-# name; ERR_ACCESS_DENIED: "init" itself. A filesystem service's is
-# answered later, once volumes has killed it (volumes.kill): init serves
-# its other channels meanwhile.
-1  kill  (u8[32] name) -> (u64 koid) later
+# The most bytes of kill's name, mount's path, terminal's command and
+# launch's app (the `str[<=N]` below; a callee's buffer holds one more, for
+# a NUL).
+const NAME_MAX     31
+const PATH_MAX     15
+const COMMAND_MAX  127
+const APP_MAX      15
+
+# Kill the process called `name` (printable ASCII without spaces, 1 to 31
+# bytes) and answer with its kernel object id once it is dead: one of the
+# processes init itself runs (the services it starts, and the terminals'
+# consoles and shells: "console", "serialin", "devmgr", "bootfs", "mixer",
+# "music", "serve", "logd", "shell" and the like, user/services/init/ctl.c
+# and shell.c; init starts it again), or what devmgr runs for a device (a
+# driver by its process name, a class driver per USB interface:
+# "hid-6.1:0", "usb-storage-1:0"), or a disk's filesystem service
+# ("fat-data", "fat-usb0"); devmgr restarts it. ERR_NOT_FOUND: no such
+# process; ERR_INVALID_ARGS: not a name (empty, a space or a control
+# character in it, more than 31 bytes); ERR_ACCESS_DENIED: "init" itself.
+# A filesystem service's is answered later, once volumes has killed it
+# (volumes.kill): init serves its other channels meanwhile.
+1  kill  (str[<=31] name) -> (u64 koid) later
 # Everything written to /data, and to every writable /usbN, is on its
 # stick (volumes.sync: fs.sync each, at once, each given 5 s); answered
 # later, when volumes has answered or after 6 s (ERR_TIMED_OUT). OK also
@@ -41,16 +50,17 @@ protocol initctl 18
 # compositor (compctl.blank), or under `nocomp` the caller does
 # (console.blank).
 3  reboot  () -> ()
-# Make the mount `path` ("/usb0"; NUL-terminated) writable (1) or read-only
-# again (0): volumes restarts its filesystem service on a `block` channel
-# opened that way (volumes.remount), so the mount goes and comes back, and
-# files open on it fail ERR_PEER_CLOSED. Answered later, once volumes has
-# started the service again (init serves its other channels meanwhile;
-# ERR_TIMED_OUT after 25 s); the mount is back a moment later. Only another
-# stick's mounts (/usbN) can be changed: anything else, /boot, /esp and
-# /data included, is ERR_ACCESS_DENIED. ERR_NOT_FOUND: no such mount;
-# ERR_BAD_STATE: its service isn't serving; ERR_INVALID_ARGS: not a path.
-4  mount  (u8[16] path, u8 writable) -> () later
+# Make the mount `path` ("/usb0": at most 15 bytes) writable (1) or
+# read-only again (0): volumes restarts its filesystem service on a `block`
+# channel opened that way (volumes.remount), so the mount goes and comes
+# back, and files open on it fail ERR_PEER_CLOSED. Answered later, once
+# volumes has started the service again (init serves its other channels
+# meanwhile; ERR_TIMED_OUT after 25 s); the mount is back a moment later.
+# Only another stick's mounts (/usbN) can be changed: anything else, /boot,
+# /esp and /data included, is ERR_ACCESS_DENIED. ERR_NOT_FOUND: no such
+# mount; ERR_BAD_STATE: its service isn't serving; ERR_INVALID_ARGS: not a
+# path, or writable over 1.
+4  mount  (str[<=15] path, u8 writable) -> () later
 # The shell is up: it has written its banner and reads its keys. init
 # tells the boot splash (bin/splash) to hand the screen back to the
 # console; nothing to do if no splash is waiting (a later shell's call).
@@ -94,10 +104,10 @@ protocol initctl 18
 # good when its window is closed or its shell ends with `exit`. Answers at
 # once with the new terminal's number (2 and up; the first terminal is 1);
 # its window opens a moment later, titled "Terminal <number>". `command`
-# (NUL-terminated; "" for none): a line its shell runs first, as if typed
+# (up to 127 bytes; "" for none): a line its shell runs first, as if typed
 # at its first prompt (shown after the prompt, and in its history), then
 # the shell stays at the prompt; a restarted shell doesn't run it again.
-# ERR_INVALID_ARGS: not NUL-terminated, or a control character in it.
+# ERR_INVALID_ARGS: more than 127 bytes, or a control character in it.
 # ERR_NOT_SUPPORTED: no compositor runs (a boot without one: one terminal
 # only); ERR_NO_RESOURCES: 16 terminals are open, the most there may be
 # (<deskapps.h> TERMINALS_MAX; the compositor then posts its "No more
@@ -105,8 +115,8 @@ protocol initctl 18
 # (`term [command]`), the compositor's (Super+Enter, the search box's "Run
 # ... in a terminal": the compositor types into every terminal anyway, so
 # a command adds nothing to what it can do); the consoles' too.
-9  terminal  (u8[128] command) -> (u8 number)
-# Start a desktop app: `app` (NUL-terminated) is one of init's fixed list
+9  terminal  (str[<=127] command) -> (u8 number)
+# Start a desktop app: `app` (at most 15 bytes) is one of init's fixed list
 # of programs the desktop may start (<deskapps.h>: "jamjar"), nothing
 # else: the program in the boot image, never one from /data. It gets what
 # the shell would give it (its list, <wants.h>: the services and mounts
@@ -119,4 +129,4 @@ protocol initctl 18
 # not in the boot image); ERR_INVALID_ARGS: not a name; ERR_NO_RESOURCES:
 # DESKAPPS_RUNNING run already; spawn's errors. The compositor's channel
 # (the search box) and the shell's; the consoles' ERR_ACCESS_DENIED.
-10 launch  (u8[16] app) -> (u64 koid)
+10 launch  (str[<=15] app) -> (u64 koid)

@@ -34,6 +34,7 @@
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc devmgr\n"
           "svc devmgr-ctl\n"
+          "svc init\n"
           "svc volumes\n"
           "svc wayland\n"
           "mount * rw\n"
@@ -1142,6 +1143,7 @@ static const struct {
     { "volumes_release_disk", t_volumes_release_disk },
     { "volumes_new_channel", t_volumes_new_channel },
     { "volumes_loop_answers", t_volumes_loop_answers },
+    { "initctl_strings", t_initctl_strings },
 };
 
 int main(int argc, char **argv)

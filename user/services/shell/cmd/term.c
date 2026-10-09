@@ -9,11 +9,11 @@
 #include "sh.h"
 
 #define INIT_WAIT (5 * NS_PER_S)
-#define CMD_MAX   128   /* initctl.terminal's command, its NUL included */
+#define CMD_MAX   (INITCTL_COMMAND_MAX + 1)   /* initctl.terminal's command, with a NUL */
 
 SH_CMD(term)
 {
-    uint8_t cmd[CMD_MAX] = { 0 };
+    char cmd[CMD_MAX] = { 0 };
     size_t o = 0;
     for (int i = 1; i < argc; i++) {
         size_t n = strlen(argv[i]);
@@ -31,7 +31,7 @@ SH_CMD(term)
         return 1;
     }
     uint8_t n = 0;
-    status_t st = initctl_terminal_until(sh_initctl(), now() + INIT_WAIT, cmd, &n);
+    status_t st = initctl_terminal_until(sh_initctl(), now() + INIT_WAIT, cmd, (uint32_t)o, &n);
     if (st == ERR_NOT_SUPPORTED) {
         sh_tty("term: more terminals need the compositor, and this boot has none\n");
         return 1;
