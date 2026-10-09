@@ -300,13 +300,24 @@ static status_t serve_request(handle_t ch, struct player *p)
     return OK;
 }
 
+/* The unread bound (tools/genidl.py, "The unread bound"): channels whose
+ * clients have music's bound of answers unread, left unread this turn;
+ * the wait ends in time to look again (every turn looks at every channel). */
+static struct idl_held held;
+
 /* Up to BUDGET requests from ch: ERR_SHOULD_WAIT once it is empty (or the
- * budget is spent: `more` says so), else the read's status. */
+ * budget is spent: `more` says so; or its client is behind: held), else
+ * the read's status. */
 static status_t serve_some(struct player *p, handle_t ch)
 {
     status_t st = OK;
-    for (unsigned n = 0; n < BUDGET && st == OK; n++)
+    for (unsigned n = 0; n < BUDGET && st == OK; n++) {
+        if (music_unread_full(ch)) {
+            idl_hold(&held);
+            return ERR_SHOULD_WAIT;
+        }
         st = serve_request(ch, p);
+    }
     if (st == OK) {
         more = true;   /* a client writing flat out doesn't hold up the music */
         return ERR_SHOULD_WAIT;
@@ -319,6 +330,7 @@ static status_t serve_some(struct player *p, handle_t ch)
 static status_t serve_all(struct player *p)
 {
     more = false;
+    held = (struct idl_held){ 0 };
     status_t st = serve_some(p, p->ctl);
     if (st != ERR_SHOULD_WAIT)
         return st;
@@ -377,7 +389,7 @@ int main(int argc, char **argv)
             continue;   /* requests left over from their turn: no sleeping on them */
         /* Stopped or paused: a channel, or the sleep timer's end. */
         struct port_packet pkt;
-        uint64_t until = p->sleep_at ? p->sleep_at : DEADLINE_NEVER;
+        uint64_t until = idl_held_deadline(&held, p->sleep_at ? p->sleep_at : DEADLINE_NEVER);
         st = jam_port_wait(port, until, &pkt);
         if (st != OK && st != ERR_TIMED_OUT) {
             printf("music: waiting on its channels: %s: ending\n", status_str(st));
