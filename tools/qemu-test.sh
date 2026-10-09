@@ -259,3 +259,4 @@ if grep -q "run FINISHED WITH PROBLEMS" "$log"; then
     echo "$name: FINISHED WITH PROBLEMS"
     exit 1
 fi
+exit 0
