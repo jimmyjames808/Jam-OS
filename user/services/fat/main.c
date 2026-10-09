@@ -178,9 +178,30 @@ static status_t run(handle_t serve, handle_t ctl)
      * means nothing (the fs channel's clients decide when fat ends). */
     if (st == OK && ctl)
         st = jam_port_bind(vol.port, ctl, FAT_KEY_CTL, SIG_READABLE, PORT_BIND_PERSISTENT);
+    bool fs_held = false;   /* the fs channel's clients left too much unread (unread_full) */
+    uint64_t look_at = 0;   /* when the channels held back are looked at again */
     while (st == OK && !vol.disk_gone && !stopping) {
         struct port_packet pkt;
-        st = fat_wait(&pkt);
+        /* Every FAT_UNREAD_POLL while a channel is held back, however busy
+         * the others keep fat: has its client read its answers since? */
+        bool held = fs_held || views_held() || files_held();
+        if (held && now() >= look_at) {
+            if (fs_held && !unread_full(serve)) {
+                fs_held = false;
+                st = arm_fs(serve);   /* fires at once: its requests are queued */
+                if (st != OK)
+                    break;
+            }
+            views_unheld();
+            files_unheld();
+            look_at = now() + FAT_UNREAD_POLL;
+            held = fs_held || views_held() || files_held();
+        }
+        st = fat_wait(held ? look_at : DEADLINE_NEVER, &pkt);
+        if (st == ERR_TIMED_OUT) {
+            st = OK;
+            continue;
+        }
         if (st != OK)
             break;
         if (pkt.key == FAT_KEY_CTL) {
@@ -196,6 +217,10 @@ static status_t run(handle_t serve, handle_t ctl)
         } else if (pkt.key & FAT_KEY_VIEW_BIT) {
             views_event(pkt.key);
         } else if (pkt.key == FAT_KEY_FS) {
+            if (unread_full(serve)) {
+                fs_held = true;   /* its clients read their answers first */
+                continue;
+            }
             files_reap();
             st = serve_one(&fs);
             if (st == ERR_PEER_CLOSED)

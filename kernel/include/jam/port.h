@@ -77,6 +77,11 @@ status_t port_queue_user(struct port *p, const struct port_packet *pkt);
  * reaches deadline_ns (ERR_TIMED_OUT; DEADLINE_NEVER waits forever), or the
  * thread is cancelled with nothing queued (ERR_CANCELED). */
 status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out);
+/* The system call's form: also ERR_INTERRUPTED, when thread_interrupt
+ * ends it (or ended it before it began) with nothing queued. Not
+ * channel_reply_wait's: a server's wait for its next request isn't. */
+status_t port_wait_interruptible(struct port *p, uint64_t deadline_ns,
+                                 struct port_packet *out);
 
 /* Live counts across all ports, for leak tests. */
 struct port_stats {

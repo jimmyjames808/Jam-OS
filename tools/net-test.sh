@@ -42,7 +42,7 @@ cat > "$peer_py" <<'PY'
 """The net-test.sh scenarios' peer: tools/netpeer.py's Peer plus the
 nettest frames (user/tests/nettest/nettest.h: the census RX_* and the
 flood RX_FLOOD; rx.c's good_len)."""
-import argparse, json, os, select, signal, struct, sys
+import argparse, json, os, select, signal, struct, sys, time
 sys.path.insert(0, "tools")
 import netpeer as np
 
@@ -105,6 +105,10 @@ class NetTestPeer(np.Peer):
             for i in range(FLOOD):
                 self.send(ntframe(60, "nettest-flood %d" % i))
                 self.nt["flood_sent"] += 1
+                if i % 16 == 15:
+                    time.sleep(0.001)   # QEMU's UDP socket holds ~270 small frames (Linux's
+                                        # 208 KiB default, a 768-byte skb each): a burst of
+                                        # 300 into a QEMU that reads late loses some
 
     def summary(self, expect_none=False):
         s = super().summary(expect_none)

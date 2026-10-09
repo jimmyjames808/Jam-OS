@@ -529,6 +529,14 @@ void pmm_free_page_phys(uint64_t pa)
     pmm_free_pages(pfn_to_page(pa >> PAGE_SHIFT), 0);
 }
 
+uint64_t pmm_total_pages(void)
+{
+    spin_lock(&lock);
+    uint64_t n = total_pages;
+    spin_unlock(&lock);
+    return n;
+}
+
 void pmm_stats(uint64_t *total, uint64_t *free)
 {
     /* Objects parked in the heap's per-CPU magazines hold slab pages that

@@ -127,9 +127,10 @@ static bool t_basics(void)
     CHECK_ST((status_t)old, ERR_NOT_SUPPORTED);
     CHECK_ST(jam_object_wait_one(e, SIG_USER_ALL, 0, &seen), OK);
     CHECK_EQ(seen & SIG_USER_ALL, 1u << 24);   /* bit 25 was never set */
-    for (status_t s = OK; s >= ERR_BUSY; s--)   /* every status named in libos too */
+    for (status_t s = OK; s >= ERR_INTERRUPTED; s--)   /* every status named in libos too */
         CHECK(strcmp(status_str(s), "?") != 0);
     CHECK(!strcmp(status_str(ERR_NAME_TOO_LONG), "ERR_NAME_TOO_LONG"));
+    CHECK(!strcmp(status_str(ERR_INTERRUPTED), "ERR_INTERRUPTED"));
 
     CHECK_ST(jam_timer_create(&tm), OK);
     CHECK_ST(jam_timer_set(tm, now() + 5 * NS_PER_MS), OK);
@@ -507,6 +508,10 @@ static void waiter(void *arg)
  * handle a message carries are message bytes, and all of it comes back. */
 static bool t_kernel_objects_are_charged(void)
 {
+    /* The waiter's stack below is ours (.bss): its pages are committed
+     * (and charged) before the count starts, wherever the link put it. */
+    static uint8_t stack[8192] __attribute__((aligned(16)));
+    memset(stack, 0, sizeof(stack));
     struct job_info a, b;
     CHECK_ST(info_of(own_job(), &a), OK);
 #define USED(k) (info_of(own_job(), &b) == OK ? b.used[k] - a.used[k] : 999999)
@@ -545,7 +550,6 @@ static bool t_kernel_objects_are_charged(void)
     CHECK_EQ(USED(JOB_LIMIT_MSG_BYTES), 0);
 
     /* a thread: its kernel stack (64 KiB) and more, while it runs */
-    static uint8_t stack[8192] __attribute__((aligned(16)));
     handle_t th;
     CHECK_ST(thread_spawn("waiter", waiter, (void *)(uintptr_t)ev, stack, sizeof(stack), &th),
              OK);
@@ -1131,6 +1135,10 @@ static const struct {
     { "comp_look_wallpaper", t_comp_look_wallpaper },
     { "thread_fs_base", t_thread_fs_base },
     { "futex_calls", t_futex_calls },
+    { "posix_ids", t_posix_ids },
+    { "thread_interrupt_calls", t_thread_interrupt_calls },
+    { "cpu_ns", t_cpu_ns },
+    { "sys_public_info", t_sys_public_info },
     { "handle_info", t_handle_info },
     { "length_limits", t_length_limits },
     { "replace_consumes", t_replace_consumes },
@@ -1142,6 +1150,11 @@ static const struct {
     { "volumes_release_disk", t_volumes_release_disk },
     { "volumes_new_channel", t_volumes_new_channel },
     { "volumes_loop_answers", t_volumes_loop_answers },
+    { "fat_unread_flood", t_fat_unread_flood },
+    { "fat_rename_into_alias", t_fat_rename_into_alias },
+    { "idl_fuzz", t_idl_fuzz },
+    { "fat_hostile", t_fat_hostile },
+    { "volumes_hostile", t_volumes_hostile },
 };
 
 int main(int argc, char **argv)
@@ -1151,7 +1164,8 @@ int main(int argc, char **argv)
     const char *only = argc == 3 && !strcmp(argv[1], "only") ? argv[2] : NULL;
     if (argc >= 2 && !only)
         return child_main(argc, argv);
-    unsigned n = 0, passed = 0;
+    unsigned n = 0, passed = 0, nfailed = 0;
+    unsigned failed[64];   /* the tests that failed (indexes into tests[]), the first 64 */
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
         if (only && strncmp(tests[i].name, only, strlen(only)))
             continue;
@@ -1161,8 +1175,28 @@ int main(int argc, char **argv)
         if (tests[i].fn()) {
             passed++;
             printf("utest: %s ok (%lu ms)\n", utest_cur, (unsigned long)((now() - t0) / NS_PER_MS));
+        } else if (nfailed < sizeof(failed) / sizeof(failed[0])) {
+            failed[nfailed++] = i;
         }
     }
+    /* The names of the failed tests, in the RESULTS box: a run's printed lines (the "FAILED at
+     * line" of each) are rate-limited by the kernel and a busy run drops some, but reports
+     * are not. As many names as fit in lines of up to 90 characters (a report is one line). */
+    char names[96];
+    int at = 0;
+    for (unsigned k = 0; k < nfailed; k++) {
+        const char *name = tests[failed[k]].name;
+        int need = (int)strlen(name) + 1;
+        if (at && at + need > 90) {
+            jam_debug_report(names, (uint64_t)at);
+            at = 0;
+        }
+        if (!at)
+            at = snprintf(names, sizeof(names), "utest: FAILED tests:");
+        at += snprintf(names + at, sizeof(names) - (size_t)at, " %s", name);
+    }
+    if (at)
+        jam_debug_report(names, (uint64_t)at);
     char line[96];
     int len = passed == n ? snprintf(line, sizeof(line), "utest: %u passed", passed)
                           : snprintf(line, sizeof(line), "utest: %u passed, %u FAILED", passed,

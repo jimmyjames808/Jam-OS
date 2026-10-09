@@ -504,3 +504,60 @@ KTEST(proc_start_window_refuses_other_threads)
     kt_job_is_empty(j);
     job_unref(j);
 }
+
+/* ---- what POSIX needs: the tid word, CPU time ---------------------------------- */
+
+/* "utest tidword": joiners that unmap a thread's stack and tid word the
+ * moment the word reads 0, 300 times. The kernel clears it only once the
+ * thread has left user mode for good, so the thread never faults on its
+ * own stack: the child exits 0, nobody killed. */
+KTEST(proc_tid_word_join_unmap)
+{
+    uint64_t faults = __atomic_load_n(&user_faults, __ATOMIC_RELAXED);
+    struct job *j = kt_fresh_job();
+    struct process_info info = finish(start(j, "tidword", NULL, NULL));
+    KT_ASSERT(!info.killed);
+    KT_EQ(info.exit_code, 0);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+static uint64_t cpu_ns_of(struct process *p)
+{
+    struct process_info info;
+    process_get_info(p, &info);
+    return info.cpu_ns;
+}
+
+/* A process's CPU time grows while it runs ("spin") and stands still
+ * while every thread of it waits ("caller", blocked in its channel_call,
+ * its other thread asleep). */
+KTEST(proc_cpu_ns_only_while_running)
+{
+    struct job *j = kt_fresh_job();
+    struct process *spin = start(j, "spin", NULL, NULL);
+    uint64_t s0 = cpu_ns_of(spin), end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
+    while (cpu_ns_of(spin) < s0 + 5 * NS_PER_MS && uptime_ns() < end)
+        thread_sleep_ms(5);
+    KT_ASSERT(cpu_ns_of(spin) >= s0 + 5 * NS_PER_MS);
+    process_kill(spin, PROCESS_KILLED_CODE, true);
+    finish(spin);
+
+    struct channel *mine, *theirs;
+    KT_EQ(channel_create(&mine, &theirs), OK);
+    struct khandle kh = khandle_from_new((struct kobject *)theirs, RIGHTS_BASIC | RIGHTS_IO);
+    struct process *caller = start(j, "caller", NULL, &kh);
+    KT_EQ(object_wait_one((struct kobject *)mine, SIG_READABLE, uptime_ns() + 10 * NS_PER_S, NULL),
+          OK);
+    thread_sleep_ms(5);   /* from its request to its block: microseconds */
+    uint64_t c0 = cpu_ns_of(caller);
+    KT_ASSERT(c0 > 0);
+    thread_sleep_ms(50);
+    KT_ASSERT(cpu_ns_of(caller) - c0 < NS_PER_MS);   /* not its 50 ms: it never ran */
+    process_kill(caller, PROCESS_KILLED_CODE, true);
+    finish(caller);
+    kobject_unref((struct kobject *)mine);
+    kt_job_is_empty(j);
+    job_unref(j);
+}

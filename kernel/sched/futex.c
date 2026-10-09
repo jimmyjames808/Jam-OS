@@ -140,10 +140,13 @@ status_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_ns, uin
             spin_unlock_irqrestore(&b->lock, f);
             return ERR_TIMED_OUT;
         }
-        /* Woken (or not even blocked) by a wake, the deadline, a cancel or
-         * for nothing: the loop looks again under the lock. */
-        if (thread_block_cancellable_unlocked(&b->lock, f, deadline_ns) == ERR_CANCELED)
-            return waiter_leave(&w) ? OK : ERR_CANCELED;
+        /* Woken (or not even blocked) by a wake, the deadline, a cancel, an
+         * interrupt or for nothing: the loop looks again under the lock. A
+         * wake that picked us wins over a cancel or an interrupt, which
+         * would otherwise lose it (the waker counted us woken). */
+        st = thread_block_interruptible_unlocked(&b->lock, f, deadline_ns);
+        if (st != OK)
+            return waiter_leave(&w) ? OK : thread_interrupt_consume(st);
     }
 }
 

@@ -118,6 +118,11 @@ def needle_of(text):
             out += b"(?P=" + name.encode() + b")"
         else:
             out += b"(?P<" + name.encode() + b">-?[0-9]+)"
+            if m.end() == len(text):
+                # A number last in the text: the serial port may deliver it in two reads
+                # ("127" as "12", then "7"), and the match must not end before the line
+                # does: wait for the character after it.
+                out += rb"(?=[^0-9])"
             named.add(name)
         at = m.end()
     return re.compile(out + re.escape(text[at:].encode()))

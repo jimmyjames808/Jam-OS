@@ -271,8 +271,42 @@ struct process_info {
     uint32_t state;       /* PROCESS_* */
     uint32_t killed;      /* 1 if it was killed rather than exiting */
     uint32_t threads;     /* live threads */
-    uint32_t reserved;    /* 0 */
+    uint32_t pid;         /* its small id: unique among live processes (below) */
     uint64_t koid;        /* the process's kernel object id */
+    uint64_t cpu_ns;      /* CPU time of all its threads so far */
+};
+
+/* Small ids, for POSIX's pid and tid: a process's pid and a thread's tid
+ * are taken when it is made (process_create, thread_create) and given
+ * back when its last handle and reference are gone (a dead process whose
+ * handle its parent still holds keeps its pid), each in its own space of
+ * 1 .. IDS_MAX - 1. Unique among those not given back; handed out in
+ * rising order, wrapping, and one given back is not handed out again
+ * until the order has gone once round all of them. Never 0. */
+#define IDS_MAX (1u << 22)
+
+/* thread_get_info: one thread. */
+#define THREAD_NEW     0   /* made, not started */
+#define THREAD_RUNNING 1   /* started (running, ready or waiting) */
+#define THREAD_DEAD    2   /* left: thread_exit, its process's end */
+struct thread_info {
+    uint64_t koid;          /* the thread's kernel object id */
+    uint64_t process_koid;  /* its process's */
+    uint64_t cpu_ns;        /* its CPU time so far */
+    uint32_t tid;           /* its small id (above) */
+    uint32_t pid;           /* its process's */
+    uint32_t state;         /* THREAD_* */
+    int32_t  priority;      /* its base priority (thread_set_priority) */
+};
+
+/* sys_public_info: what any program may know of the system (uname,
+ * sysconf); no handle needed. */
+struct sys_public_info {
+    char     version[32];       /* Jam OS's version, "0.1.0", NUL-terminated */
+    char     machine[16];       /* "x86_64" */
+    uint64_t mem_total_pages;   /* pages the kernel manages */
+    uint32_t page_size;         /* 4096 */
+    uint32_t cpus_online;       /* CPUs running now */
 };
 
 /* Thread priorities: 0 (lowest) .. 31. User threads start at
@@ -441,7 +475,9 @@ struct pci_dev_info {
 #define IRQ_MSIX  (1u << 0)   /* use MSI-X vector `index` (else MSI, index 0) */
 
 /* vmo_pin: pin [offset, offset + len) of a VMO for the device of a
- * dma_cap (abi/syscalls.def has the rules). */
+ * dma_cap (abi/syscalls.def has the rules). Each pin costs the dma_cap's
+ * job (the driver's), not the VMO's holder, one JOB_LIMIT_HANDLES unit
+ * until it goes. */
 struct vmo_pin_args {
     handle_t vmo;              /* the VMO */
     handle_t dma;              /* a dma_cap bound to a function */
@@ -457,10 +493,13 @@ struct vmo_pin_args {
  * with the IOMMU translating (sys_info's SYSINFO_IOMMU: the dma_cap has a
  * domain) they are mapped for it read only, so its writes there are
  * refused and faulted, and the pin needs only RIGHT_READ on the VMO.
- * Without the IOMMU nothing stops a device's write, so the flag changes
- * nothing and the pin needs RIGHT_WRITE as any other. A page is pinned
- * through one dma_cap one way at a time: a read-only pin of a page that
- * cap has pinned writable (or the reverse) is ERR_BAD_STATE. */
+ * Without the IOMMU nothing stops a device's write, so the pin needs
+ * RIGHT_WRITE as any other. A page is pinned through one dma_cap one way
+ * at a time: a read-only pin of a page that cap has pinned writable (or
+ * the reverse) is ERR_BAD_STATE. With or without the IOMMU a read-only pin
+ * commits nothing: every page of its range must be committed already
+ * (vmo_commit by the VMO's holder, a writable pin, or a contiguous VMO),
+ * else ERR_BAD_STATE and nothing happens. */
 #define VMO_PIN_READ_ONLY (1u << 0)
 
 /* pagers (abi/syscalls.def 160-164) -------------------------------------------

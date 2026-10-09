@@ -297,6 +297,11 @@ status_t drv_vmo_write(handle_t vmo, uint64_t off, const void *buf, uint64_t len
     return jam_vmo_write(vmo, off, buf, len);
 }
 
+status_t drv_vmo_commit(handle_t vmo, uint64_t off, uint64_t len)
+{
+    return jam_vmo_commit(vmo, off, len);
+}
+
 /* Map the pages holding [off, off + len) of vmo; *addr points at off
  * itself. */
 static status_t map_pages(handle_t vmo, uint64_t off, uint64_t len, uint32_t flags, void **addr)

@@ -324,6 +324,20 @@ static bool device(uint32_t *sessions, uint64_t *ring_errors, uint64_t *rx_bad)
     return true;
 }
 
+/* netctl.info says the link is `up` (within WAIT). */
+static bool link_is(bool up)
+{
+    uint32_t a, m, g, d1, d2;
+    uint8_t mac[6], device = 0, link = !up;
+    for (uint64_t end = now() + WAIT; link != up && now() < end;) {
+        CHECK_ST(netctl_info(fk.ctl, &a, &m, &g, &d1, &d2, mac, &device, &link), OK);
+        if (link != up)
+            jam_sleep_until(now() + NS_PER_MS);
+    }
+    CHECK_EQ(link, up);
+    return true;
+}
+
 bool t_netdrv_ping_and_link(void)
 {
     static uint8_t f[NETDEV_FRAME_MAX];
@@ -339,6 +353,10 @@ bool t_netdrv_ping_and_link(void)
     fk.changes++;
     CHECK_ST(jam_event_signal(fk.to_stack, 0, NETDEV_SIG_LINK), OK);
     CHECK(serve(fk.session));
+    /* The answer is read by netstack's loop a moment after we wrote it, and a frame in the
+     * rx ring by then is taken first (a ping answered just as the link went: right, and
+     * not what this checks): wait until it has the link down. */
+    CHECK(link_is(false));
     CHECK(drv_send(f, pkt_echo(f, pkt_peer_mac, PEER_IP, OUR_IP, 2, 8)));
     CHECK_ST(drv_recv(f, &n, QUIET), ERR_TIMED_OUT);
     fk.link = NETDEV_LINK_UP;
@@ -371,20 +389,6 @@ static unsigned klog_count(handle_t klog, uint64_t *pos, const char *what)
             n++;
         *pos = first + (uint64_t)(end + 1 - buf);
     }
-}
-
-/* netctl.info says the link is `up` (within WAIT). */
-static bool link_is(bool up)
-{
-    uint32_t a, m, g, d1, d2;
-    uint8_t mac[6], device = 0, link = !up;
-    for (uint64_t end = now() + WAIT; link != up && now() < end;) {
-        CHECK_ST(netctl_info(fk.ctl, &a, &m, &g, &d1, &d2, mac, &device, &link), OK);
-        if (link != up)
-            jam_sleep_until(now() + NS_PER_MS);
-    }
-    CHECK_EQ(link, up);
-    return true;
 }
 
 /* A flapping link: netstack logs the first changes and then one in 64, as

@@ -45,7 +45,14 @@ _Static_assert(sizeof(struct pci_dev_info) == 176 && offsetof(struct pci_dev_inf
                    offsetof(struct pci_dev_info, bar) == 24,
                "pci_dev_info layout");
 _Static_assert(sizeof(struct job_info) == 88, "job_info layout");
-_Static_assert(sizeof(struct process_info) == 32, "process_info layout");
+_Static_assert(sizeof(struct process_info) == 40 && offsetof(struct process_info, pid) == 20 &&
+                   offsetof(struct process_info, cpu_ns) == 32,
+               "process_info layout");
+_Static_assert(sizeof(struct thread_info) == 40 && offsetof(struct thread_info, tid) == 24,
+               "thread_info layout");
+_Static_assert(sizeof(struct sys_public_info) == 64 &&
+                   offsetof(struct sys_public_info, mem_total_pages) == 48,
+               "sys_public_info layout");
 _Static_assert(sizeof(struct fb_info) == 32 && offsetof(struct fb_info, size) == 24,
                "fb_info layout");
 _Static_assert(sizeof(struct klog_line) == 16 && offsetof(struct klog_line, writer) == 8,

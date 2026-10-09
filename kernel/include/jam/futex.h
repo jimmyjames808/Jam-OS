@@ -17,7 +17,10 @@ struct aspace;
  * woken (spurious wakes are allowed: callers check their word again);
  * ERR_BAD_STATE at once if the word held something else; ERR_TIMED_OUT;
  * ERR_INVALID_ARGS for flags, an unaligned address, or one outside user
- * space or not readable; ERR_CANCELED once the thread is being killed.
+ * space or not readable; ERR_CANCELED once the thread is being killed;
+ * ERR_INTERRUPTED when thread_interrupt ends the wait (or ended it before
+ * it began) and no wake picked this thread (a wake wins: OK, and the
+ * interrupt stays for the next interruptible wait).
  * The word is read after the thread is queued, so a wake that follows a
  * store to it is never lost: either the read sees the store, or the wake
  * sees the waiter. */

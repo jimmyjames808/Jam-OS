@@ -1133,6 +1133,64 @@ authorized_keys holds a key, `ssh = off` stops it. **Q9** A: sbase in
 /boot/usr/bin after the shell's builtins. **Q10** A: the `jamos-cc`
 wrapper.
 
+## K1 notes
+
+Choices K1 made where the plan left them open (the safest reasonable
+option each time):
+
+- **Numbers.** `thread_set_tid_word` 84, `thread_interrupt` 88,
+  `thread_get_info` 89 (the threads group's free numbers) and
+  `sys_public_info` 136 (the system information's range), all four in one
+  block at the end of the threads group of `abi/syscalls.def`, so a merge
+  beside another track's lines is a plain append. `ERR_INTERRUPTED` is -26.
+- **Ids.** One space for pids and one for tids, each 1 .. 2^22 - 1
+  (`IDS_MAX`; a tid is below 2^30 as musl needs). An id is taken when the
+  object is made and given back when it is destroyed, not when it dies:
+  a dead child whose handle its parent holds (a zombie, to POSIX) keeps
+  its pid. Ids go out in rising order from a cursor; one given back
+  behind the cursor is reached only after the wrap, and one given back
+  ahead of it is held until the wrap, so no value is handed out again in
+  the lap in which it was given back. The bitmaps are 2 MiB of the
+  kernel's .bss (two spaces, used and held, 512 KiB each); a full space
+  is `ERR_NO_RESOURCES` from `process_create` or `thread_create`.
+- **The tid word** is cleared only while the process runs: a thread
+  leaving a dying process leaves it alone (nobody in the process is left
+  to join it, and futexes are private). A store that faults is skipped
+  with no wake. The address is checked for alignment and the user range
+  when it is set, not for being mapped.
+- **thread_interrupt** needs `RIGHT_SIGNAL` on the thread, so thread
+  handles gain it (`THREAD_RIGHTS`); a thread not started or already gone
+  is `ERR_BAD_STATE`. A wait whose condition is met (a futex wake that
+  picked the thread, a packet queued, the signals matched, a deadline
+  passed: `ERR_TIMED_OUT` before `ERR_INTERRUPTED`) returns its own result
+  and leaves the interrupt latched for the next interruptible wait, so a
+  futex wake is never lost to an interrupt. The interruptible waits are
+  only the system calls' (`sys_object_wait_one`, `sys_port_wait`,
+  `futex_wait`, `sleep_until`); `channel_reply_wait`'s port wait, the
+  kernel's own waits and the fault path are never interrupted. libc may
+  see a spurious `ERR_INTERRUPTED` (an interrupt latched after it already
+  ran the signal's handler at a call boundary): it restarts the call when
+  nothing is pending. Two interrupts that meet in one wait end it once,
+  so B4's rule is: the signal thread marks a signal pending before it
+  calls `thread_interrupt`, and the woken thread looks at the pending set
+  after its call returns; then no signal is lost however the interrupts
+  fall.
+- **cpu_ns** counts kernel time in the thread's own calls too (Linux's
+  user + system); `process_info.cpu_ns` is the threads that left plus the
+  live ones, as `proc_list`'s.
+- **sys_public_info**: version, machine, total pages, page size, CPUs
+  online; not the free pages (they stay behind `RIGHT_ROOT_SYSINFO`, and
+  counting them drains the heap's caches).
+- **Not done, for PK1's `vmo_read` wait.** Making a pager VMO's read
+  interruptible would take: a `vmo_read_interruptible` for the system call
+  only (the kernel's own readers keep the plain wait), its wait on the
+  page through `thread_block_interruptible`/`waitqueue_wait_interruptible`
+  returning `ERR_INTERRUPTED` only while the page is still absent and
+  through `thread_interrupt_consume`, and a rule for a read cut short:
+  `vmo_read` returns no byte count, so the simplest is "nothing promised
+  in the buffer, read again" (a read has no side effects). The fault path
+  (PK2) must stay uninterruptible: a fault has no `EINTR`.
+
 ## A2 notes
 
 Track A2 (libjam and the hand-over) as built, with the choices the plan

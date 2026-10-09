@@ -53,9 +53,12 @@
 #define SYS_thread_set_fs_base   81
 #define SYS_thread_yield         82
 #define SYS_thread_start         83
+#define SYS_thread_set_tid_word  84
 #define SYS_futex_wait           85
 #define SYS_futex_wake           86
 #define SYS_futex_requeue        87
+#define SYS_thread_interrupt     88
+#define SYS_thread_get_info      89
 #define SYS_resource_create      90
 #define SYS_pci_enum             91
 #define SYS_pci_device_open      92
@@ -88,6 +91,7 @@
 #define SYS_rtc_read             133
 #define SYS_wallclock_get        134
 #define SYS_wallclock_set        135
+#define SYS_sys_public_info      136
 #define SYS_kexec_load           140
 #define SYS_kexec_reboot         141
 #define SYS_random_get           150

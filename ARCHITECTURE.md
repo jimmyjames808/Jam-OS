@@ -457,6 +457,13 @@ Every driver and service is a userspace process from the start.
   process writes with the process's koid (the kernel's own lines have no
   mark), which `klog_lines` gives a reader: the name in front of a line is
   only what its creator called the process, the mark is who wrote it.
+  Besides its koid, each process and user thread has a small id (POSIX's
+  pid and tid, `kernel/lib/idspace.c`): taken at create, given back when
+  the object is destroyed, handed out in rising order and not again
+  until the order has gone once round (2^22 values). A thread's tid word
+  (`thread_set_tid_word`, musl's `pthread_join`) is cleared and woken on
+  its way out, after its last user instruction and before it leaves the
+  address space.
 - `resource` is the root of hardware authority (MMIO ranges, PCI devices).
   Userboot hands init the root; init passes a PCI slice to devmgr, which
   gives each driver only its own device, BARs and interrupt.
@@ -776,6 +783,15 @@ port, so while it handles one request every other client waits behind it.
   BLOCKED -> RUNNING by CAS, and `thread_wake` does the same on its on-CPU
   path, so neither can overwrite a state the other set. Killing a process
   blocked in `channel_call` on a hung server relies on this.
+- **Interruptible waits** (POSIX's `EINTR`, for libc's signals):
+  `thread_interrupt(t)` sets a second per-thread flag and wakes t the same
+  way. The interruptible waits are the system calls' own `object_wait_one`,
+  `port_wait`, `futex_wait` and `sleep_until`; they return
+  `ERR_INTERRUPTED` and take the flag, which is latched (one that comes
+  outside such a wait ends the next one at once) and not counted. A wait
+  whose condition is met wins and leaves the flag for the next; every
+  other wait (`channel_call`, `channel_reply_wait`, the kernel's own) sees
+  a spurious wakeup.
 - Every optimisation above that has a switch can be turned off at boot, and
   the benchmark measures its lines both ways in one run
   ([BENCH.md](docs/BENCH.md)).
@@ -1098,10 +1114,18 @@ firmware left on) is the only trace, and DMA works as before the IOMMU
   bits), so drivers and their numbers are unchanged. A read-only pin
   (`VMO_PIN_READ_ONLY`: a transmit buffer, a sound ring) is mapped
   without write permission, so its device's writes there fault; a page is
-  pinned one way at a time in a domain. `vmo_unpin` unmaps,
+  pinned one way at a time in a domain. A read-only pin needs only
+  `RIGHT_READ` there, which never commits memory, so it takes only pages
+  already committed (`ERR_BAD_STATE` over a hole, with or without the
+  IOMMU): the drivers commit their transmit buffers first, and a driver
+  given a read-only view of a client's sparse buffer can't fill it at the
+  client's expense. A writable pin commits what it covers, as before. `vmo_unpin` unmaps,
   invalidates and waits, and only then lets the pages go. A domain's
   table pages are charged to the job `dma_cap_create` is given (the
-  driver's: devmgr makes the driver's job first) and capped at 2048 per
+  driver's: devmgr makes the driver's job first), as is every pin made
+  with the cap (one handle unit each until the unpin, the cap's close or
+  the quarantine's release; never the VMO's holder, who may have given
+  the driver only a read-only view), and capped at 2048 per
   domain (8 MiB): a leaf
   table maps 2 MiB, so that is up to 4 GiB of pins dense within 2 MiB
   blocks, but only about 2040 pages spread one per block (usb-bus pins

@@ -234,6 +234,13 @@ bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_thread_fs_base(void);
 bool t_futex_calls(void);
+/* posixk.c: what the kernel gives POSIX (ids, the tid word,
+ * thread_interrupt, CPU time, sys_public_info); "utest tidword". */
+bool t_posix_ids(void);
+bool t_thread_interrupt_calls(void);
+bool t_cpu_ns(void);
+bool t_sys_public_info(void);
+int  tidword_child(void);
 bool t_kill_spinning_and_unstarted(void);
 bool t_job_kill_reaps_orphans(void);
 
@@ -835,3 +842,11 @@ bool t_volumes_release_disk(void);
 bool t_volumes_new_channel(void);
 /* volwatch.c: volumes answers while a remount waits (S2b). */
 bool t_volumes_loop_answers(void);
+/* fat_hostile.c: fat against clients that misbehave (M12.1). */
+bool t_fat_unread_flood(void);
+bool t_fat_rename_into_alias(void);
+/* idlfuzz.c: every protocol's generated dispatch fed hostile messages (M12.1). */
+bool t_idl_fuzz(void);
+/* idlfuzz.c: fat and volumes fed the same messages, live (M12.1). */
+bool t_fat_hostile(void);
+bool t_volumes_hostile(void);
