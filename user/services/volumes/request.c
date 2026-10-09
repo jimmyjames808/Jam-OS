@@ -1,99 +1,125 @@
-/* volumes: the answers to its protocol's requests (<volumes.h>): which
- * filesystem service a request names (find), and what each method does
- * with it. chans.c reads the requests off volumes' channels and decides
- * what each channel may ask (devmgr's request.c answered these before the
- * storage split, with the same wire). */
+/* volumes: the answers to its protocols' requests (abi/idl/volumes.idl):
+ * `volumes` on the control channels, `volesp` on init's ESP channel.
+ * chans.c reads the requests and decides which protocol a channel speaks.
+ * A mount is named by its path ("/data", "/usb0-test"): fs_find_mount.
+ *
+ * The `later` methods (remount, release_disk, sync, stop, and volesp's
+ * two) are answered by their handlers before they return, for now: each
+ * waits inside the request for the filesystem services it stops or syncs
+ * (bounded: SYNC_WAIT, STOP_WAIT). */
 #include "disk.h"
 
-static struct vol *find(const struct volumes_req *q)
+/* ---- volumes ------------------------------------------------------------------------- */
+
+static status_t v_watch(void *ctx, handle_t *out_events)
 {
-    if (q->vendor == VOLUMES_FS_SVC)
-        return fs_find(q->instance, q->device);
-    if (q->vendor == VOLUMES_FS_MOUNT)
-        return fs_find_mount(q->device, q->instance);
-    return NULL;
+    (void)ctx;
+    return mounts_watch(out_events);
 }
 
-/* GET_DRIVER: read-only views of b's process and job. */
-static void get_driver(const struct vol *b, bool known, struct volumes_rep *r, handle_t *hs,
-                       uint32_t *nh)
+/* /usbN or /usbN-test: the mounts remount may change. */
+static status_t v_remount(void *ctx, struct idl_txn txn, const char *mount, uint32_t len,
+                          uint8_t writable)
 {
-    if (!known) {
-        r->status = ERR_NOT_FOUND;
-        return;
-    }
-    if (!b->proc) {
-        r->status = ERR_BAD_STATE;
-        return;
-    }
-    r->a = 0;
-    const handle_t src[2] = { b->proc, b->job };
-    uint32_t got = 0;
-    while (got < 2 && (r->status = jam_handle_duplicate(src[got], RIGHTS_BASIC, &hs[got])) == OK)
-        got++;
-    if (r->status != OK)   /* all or nothing: close what was duplicated */
-        while (got > 0)
-            jam_handle_close(hs[--got]);
-    *nh = got;
+    (void)ctx;
+    (void)txn;
+    if (writable > 1)
+        return ERR_INVALID_ARGS;
+    struct vol *b = fs_find_mount(mount, len);
+    if (!b || !b->other)
+        return ERR_NOT_FOUND;   /* /esp and /data are what they are */
+    return disk_remount(b, writable);
 }
 
-/* SUPERVISION: b's state, restarts, backoff, promotions, and the spare. */
-static void supervision(const struct vol *b, struct volumes_rep *r)
+static status_t v_kill(void *ctx, const char *mount, uint32_t len, uint64_t *out_koid)
 {
-    if (!b) {
-        r->status = ERR_NOT_FOUND;
-        return;
-    }
-    r->a = b->state;
-    r->b = b->win.restarts;
-    r->c = b->win.backoff_ms;
-    r->d = b->promoted;
-    r->e = spare_waits();
+    (void)ctx;
+    struct vol *b = fs_find_mount(mount, len);
+    if (!b || b->state == VOLUMES_SUP_NONE)
+        return ERR_NOT_FOUND;
+    return sup_kill(b, out_koid);
 }
 
-void request_handle(const struct volumes_req *q, enum level lv, struct volumes_rep *r,
-                    handle_t *hs, uint32_t *nh)
+static status_t v_supervision(void *ctx, const char *mount, uint32_t len, uint32_t *out_state,
+                              uint32_t *out_restarts, uint32_t *out_backoff_ms,
+                              uint32_t *out_promoted, uint8_t *out_spare_waits)
 {
-    (void)lv;   /* chans.c lets the ESP channel ask ESP_WRITE alone */
-    *nh = 0;
-    r->status = OK;
-    if (q->ordinal == VOLUMES_SHUTDOWN) {
-        stopping = true;   /* run() sees it once this reply is sent */
-        return;
-    }
-    if (q->ordinal == VOLUMES_REMOUNT) {
-        bool valid = q->vendor == VOLUMES_USB_MOUNT && !(q->instance & ~3u);
-        r->status = valid ? disk_remount(q->device, q->instance & VOLUMES_REMOUNT_TEST,
-                                         q->instance & VOLUMES_REMOUNT_WRITE)
-                          : ERR_INVALID_ARGS;
-        return;
-    }
-    if (q->ordinal == VOLUMES_ESP_WRITE) {   /* only on init's ESP channel (chans.c) */
-        bool writable = q->instance & VOLUMES_ESP_WRITABLE;
-        if (q->vendor || q->device || (q->instance & ~VOLUMES_ESP_WRITABLE))
-            r->status = ERR_INVALID_ARGS;
-        else if ((r->status = disk_esp_write(writable, &hs[0])) == OK && writable)
-            *nh = 1;
-        return;
-    }
-    struct vol *b = find(q);
-    bool known = b && b->path && b->state != VOLUMES_SUP_NONE;   /* an instance was started */
-    switch (q->ordinal) {
-    case VOLUMES_GET_SERVICE:
-        /* A filesystem's channel is MOUNTS's to hand out, never this. */
-        r->status = ERR_ACCESS_DENIED;
-        return;
-    case VOLUMES_GET_DRIVER:
-        get_driver(b, known, r, hs, nh);
-        return;
-    case VOLUMES_KILL:
-        r->status = known ? sup_kill(b) : ERR_NOT_FOUND;
-        return;
-    case VOLUMES_SUPERVISION:
-        supervision(b, r);
-        return;
-    default:
-        r->status = ERR_NOT_SUPPORTED;
-        return;
-    }
+    (void)ctx;
+    const struct vol *b = fs_find_mount(mount, len);
+    if (!b)
+        return ERR_NOT_FOUND;
+    *out_state = b->state;
+    *out_restarts = b->win.restarts;
+    *out_backoff_ms = b->win.backoff_ms;
+    *out_promoted = b->promoted;
+    *out_spare_waits = spare_waits();
+    return OK;
 }
+
+static status_t v_test_disk(void *ctx, handle_t storage, uint32_t *out_id)
+{
+    (void)ctx;
+    return disk_test(storage, out_id);
+}
+
+static status_t v_release_disk(void *ctx, struct idl_txn txn, uint32_t id)
+{
+    (void)ctx;
+    (void)txn;
+    return disk_release(id);
+}
+
+static status_t v_sync(void *ctx, struct idl_txn txn)
+{
+    (void)ctx;
+    (void)txn;
+    return disk_sync_all();
+}
+
+static status_t v_stop(void *ctx, struct idl_txn txn)
+{
+    (void)ctx;
+    (void)txn;
+    (void)stop_all();   /* what went wrong is said, and is the exit code's */
+    return OK;
+}
+
+static status_t v_set_disks(void *ctx, handle_t disks)
+{
+    (void)ctx;
+    disks_set(disks);
+    return OK;
+}
+
+const struct volumes_ops volumes_ops = {
+    .watch = v_watch,
+    .remount = v_remount,
+    .kill = v_kill,
+    .supervision = v_supervision,
+    .test_disk = v_test_disk,
+    .release_disk = v_release_disk,
+    .sync = v_sync,
+    .stop = v_stop,
+    .set_disks = v_set_disks,
+};
+
+/* ---- volesp ------------------------------------------------------------------------------ */
+
+static status_t e_open(void *ctx, struct idl_txn txn, handle_t *out_fs)
+{
+    (void)ctx;
+    (void)txn;
+    return disk_esp_write(true, out_fs);
+}
+
+static status_t e_close(void *ctx, struct idl_txn txn)
+{
+    (void)ctx;
+    (void)txn;
+    return disk_esp_write(false, NULL);
+}
+
+const struct volesp_ops volesp_ops = {
+    .open_writable = e_open,
+    .close_writable = e_close,
+};

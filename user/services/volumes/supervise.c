@@ -15,13 +15,13 @@
  *   - FAT_EXIT_NO_VOLUME from another stick's partition: no FAT volume
  *     there, left alone (disk.c's fs_check_ended); the ESP's service
  *     ending before it answered the boot-disk check: not the boot disk.
- *   - anything else -- a crash, a kill by anyone (VOLUMES_KILL included),
+ *   - anything else -- a crash, a kill by anyone (volumes.kill included),
  *     an exit with an error: restarted, by the rule of a service that
  *     outlives its process (spare.c, docs/M11.6-PLAN.md Q5; the restart
  *     window is the supervision module's, <supervise.h>): its `fs` channel
  *     stays volumes', so its mount never goes away while it restarts and
  *     calls on it wait for the next instance; a deliberate kill
- *     (VOLUMES_KILL) is not counted and restarts at once; a crash or an
+ *     (volumes.kill) is not counted and restarts at once; a crash or an
  *     error exit is counted, the first in the window restarts at once and
  *     later ones back off (100 ms, doubling, at most 5 s); the death after
  *     5 counted restarts within 60 s gives up: no more restarts, its mount
@@ -276,10 +276,13 @@ void sup_died(struct vol *b, uint32_t gen)
     schedule(b, why, expected);
 }
 
-status_t sup_kill(struct vol *b)
+status_t sup_kill(struct vol *b, uint64_t *koid)
 {
-    if (b->state != VOLUMES_SUP_RUNNING)
-        return OK;   /* nothing runs */
+    struct process_info info;
+    if (b->state != VOLUMES_SUP_RUNNING || !b->proc ||
+        jam_process_get_info(b->proc, &info) != OK)
+        return ERR_NOT_FOUND;   /* nothing runs */
+    *koid = info.koid;
     b->kill_at = now();   /* its restart is timed from here (spare.c) */
     fs_kill(b);
     signals_t seen;

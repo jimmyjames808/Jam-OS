@@ -24,7 +24,9 @@
  * process in a job of its own (a child of init's job) with the root
  * resource to read with (SR_RESOURCE: TEST_ROOT's powers) and init's
  * namespace as it is then (SR_NS: /boot, what volumes has mounted
- * (mounts.c), devmgr's query and control channels as /svc/devmgr and
+ * (mounts.c: its watch is read on init's port while a program runs, and
+ * once more before the next starts), devmgr's query and control channels
+ * as /svc/devmgr and
  * /svc/devmgr-ctl, and volumes' as /svc/volumes); it waits for each to
  * finish and reports how it ended: the lines go into the kernel's RESULTS
  * box. At the end it closes its end of volumes' channel, which stops
@@ -56,6 +58,9 @@ static handle_t devmgr_hda[INIT_MAX_CLAIMED], devmgr_net[INIT_MAX_CLAIMED];
  * its process and job: 0: no volumes. */
 static handle_t volumes_ch, volumes_proc, volumes_job;
 static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs server */
+/* volumes' watch (KEY_MOUNTS) and the program that runs (KEY_PROGRAM). */
+static handle_t port;
+#define KEY_PROGRAM 1u
 
 bool init_hidboot;
 bool init_netprobe;
@@ -96,9 +101,33 @@ void init_say(const char *fmt, ...)
     jam_debug_report(buf, (uint64_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
 }
 
+/* Wait for proc to end, for timeout_ns at most, following volumes'
+ * mounts meanwhile (spawn_wait's results). */
+static status_t wait_program(handle_t proc, uint64_t timeout_ns, struct process_info *info)
+{
+    uint64_t deadline = now() + timeout_ns;
+    if (!port || jam_port_bind(port, proc, KEY_PROGRAM, SIG_TERMINATED, PORT_BIND_ONCE) != OK)
+        return spawn_wait(proc, timeout_ns, info);
+    status_t st;
+    for (;;) {
+        struct port_packet pkt;
+        st = jam_port_wait(port, deadline, &pkt);
+        if (st != OK || pkt.key == KEY_PROGRAM)
+            break;
+        if (pkt.key == KEY_MOUNTS)
+            (void)mounts_event();
+    }
+    if (st != OK) {
+        (void)jam_port_unbind(port, proc, KEY_PROGRAM);
+        return st;
+    }
+    return jam_process_get_info(proc, info);
+}
+
 /* Run one program to completion. Returns true if it exited 0. */
 static bool run(int argc, char **argv)
 {
+    (void)mounts_event();   /* what volumes mounted so far: the program's namespace has it */
     handle_t job, proc;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK) {
@@ -128,7 +157,7 @@ static bool run(int argc, char **argv)
         return false;
     }
     struct process_info info;
-    st = spawn_wait(proc, RUN_TIMEOUT_S * NS_PER_S, &info);
+    st = wait_program(proc, RUN_TIMEOUT_S * NS_PER_S, &info);
     if (st == ERR_TIMED_OUT) {
         /* Its whole job: whatever it started (even orphans) goes too, and
          * job_kill returns once all of it is dead. */
@@ -306,7 +335,7 @@ static bool start_volumes(void)
     handle_t watch;
     st = jam_handle_duplicate(volumes_ch, RIGHT_SAME, &watch);
     if (st == OK)
-        st = mounts_watch(watch, HANDLE_INVALID, 0);
+        st = mounts_watch(watch, port, KEY_MOUNTS);
     if (st != OK)
         printf("init: not following volumes' mounts (%s)\n", status_str(st));
     return true;
@@ -570,6 +599,12 @@ int main(int argc, char **argv)
     if (st != OK) {
         init_say("init: no init.cfg in bootfs (%s)", status_str(st));
         return 1;
+    }
+    st = jam_port_create(&port);
+    if (st != OK) {
+        init_say("init: no port (%s): volumes' mounts only as they are before each program",
+                 status_str(st));
+        port = HANDLE_INVALID;
     }
     bool ok = start_bootfs();
     ok &= start_devmgr(HANDLE_INVALID);

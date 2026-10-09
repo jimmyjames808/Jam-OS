@@ -50,6 +50,10 @@
 #define IDL_ID_NET_STREAM     0x003du   /* abi/idl/net.idl */
 #define IDL_ID_NET_LISTENER   0x003eu   /* abi/idl/net.idl */
 #define IDL_ID_NETDEV_SESSION 0x003fu   /* abi/idl/netdev.idl */
+#define IDL_ID_VOLUMES        0x0046u   /* abi/idl/volumes.idl */
+#define IDL_ID_VOLESP         0x0047u   /* abi/idl/volumes.idl */
+#define IDL_ID_DISKS          0x0048u   /* abi/idl/volumes.idl */
+#define IDL_ID_MOUNTS         0x0049u   /* abi/idl/volumes.idl */
 #define IDL_ID_UPDATE_ANSWER  0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER   0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */

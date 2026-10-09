@@ -13,18 +13,25 @@
 #define POLL_NS (5 * NS_PER_MS)   /* how often the server looks at `stop` */
 
 static status_t op_info(void *ctx, uint32_t *out_block_size, uint64_t *out_blocks,
-                        uint8_t *out_read_only)
+                        uint8_t *out_read_only, uint32_t *out_max_blocks,
+                        uint16_t *out_queue_depth, uint32_t *out_buffer_max)
 {
     struct ramdisk *rd = ctx;
     *out_block_size = RAMDISK_SECTOR;
     *out_blocks = rd->blocks;
     *out_read_only = rd->read_only;
+    *out_max_blocks = RAMDISK_BUF / RAMDISK_SECTOR;
+    *out_queue_depth = 1;
+    *out_buffer_max = RAMDISK_BUF;
     return OK;
 }
 
-static status_t op_map_buffer(void *ctx, handle_t *out_buffer, uint32_t *out_size)
+/* One size of buffer, whatever is asked: RAMDISK_BUF (its buffer_max, and
+ * what fat's 0 leaves to the server). */
+static status_t op_map_buffer(void *ctx, uint32_t size, handle_t *out_buffer, uint32_t *out_size)
 {
     struct ramdisk *rd = ctx;
+    (void)size;
     if (rd->buf_given)
         return ERR_BAD_STATE;
     status_t st = jam_handle_duplicate(rd->buf_vmo,

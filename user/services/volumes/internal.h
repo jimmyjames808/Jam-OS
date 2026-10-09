@@ -3,15 +3,16 @@
  * request.c (the answers), supervise.c (a filesystem service's start, its
  * end, its restart with backoff or giving up), disk.c (the disks devmgr
  * tells of and the test disks: which one is the boot disk) and fsvc.c
- * (their filesystem services; disk.h between the two), mounts.c
- * (VOLUMES_MOUNTS: the list of mounts, its generation and the calls
- * waiting for it to change), spare.c (what outlives a filesystem
- * service's process: its keeper and state VMO, and the warm spare fat).
- * The protocol is in <volumes.h>. Until M12's storage split (S1b) all of
- * this was devmgr's (user/services/devmgr/), and its log lines keep their
- * words with the prefix "volumes: ". */
+ * (their filesystem services; disk.h between the two), mounts.c (the
+ * list of mounts, its generation and the watches told of each change),
+ * spare.c (what outlives a filesystem service's process: its keeper and
+ * state VMO, and the warm spare fat). The protocols are
+ * abi/idl/volumes.idl; the startup roles <volumes.h>. Until M12's storage
+ * split all of this was devmgr's (user/services/devmgr/), and its log
+ * lines keep their words with the prefix "volumes: ". */
 #pragma once
 
+#include <idl/volumes.h>
 #include <notice.h>
 #include <os.h>
 #include <supervise.h>
@@ -52,8 +53,8 @@
 #define KEY_INDEX(k)       ((uint32_t)((k) >> 16) & 0xffffu)
 #define KEY_GEN(k)         ((uint32_t)(k) & 0xffffu)
 
-/* What a channel of volumes' may ask (chans.c): the control channels
- * everything but ESP_WRITE; init's ESP channel ESP_WRITE alone
+/* What a channel of volumes' speaks (chans.c): the control channels
+ * `volumes` (and svc.connect); init's ESP channel `volesp` alone
  * (<volumes.h> "Trust"). */
 enum level {
     LEVEL_CONTROL,
@@ -68,11 +69,11 @@ struct vol {
     bool                test;       /* a test disk's: its deaths and giving up are expected */
     /* The service while it runs. */
     handle_t            job, proc;  /* its job and process, 0 while none runs */
-    handle_t            client;     /* our end of its `fs` channel (MOUNTS hands out duplicates) */
+    handle_t            client;     /* our end of its `fs` channel (the watches get duplicates) */
     uint64_t            client_key; /* the port watches client for answers under it (0: not) */
     handle_t            serve;      /* the service's end, kept across its restarts */
     uint32_t            gen;        /* bumped at every start: in its port key */
-    bool                killed;     /* ended by VOLUMES_KILL */
+    bool                killed;     /* ended by volumes.kill */
     status_t            last;       /* the last start's status */
     /* Supervision. */
     uint32_t            state;      /* VOLUMES_SUP_* */
@@ -85,7 +86,7 @@ struct vol {
     /* On a disk that isn't the boot disk (disk.c): a /usbN mount. */
     bool                other;      /* it is one: never given FAT_ARG_FORMAT */
     bool                rw;         /* its `block` channel is opened read-write (`mount -w`;
-                                     * the boot disk's ESP: init's ESP_WRITE) */
+                                     * the boot disk's ESP: init's volesp.open_writable) */
     bool                ready;      /* it answered its first fs.stat: a mount */
     uint8_t             usbn;       /* the N of /usbN */
     uint32_t            probe;      /* that fs.stat's transaction id */
@@ -94,11 +95,11 @@ struct vol {
      * (fs_serve_end), so a restart is not a new channel. */
     struct sup_kept    *kept;       /* its keeper and state VMO; NULL until its first start */
     bool                deliberate; /* the restart due is a deliberate kill's: not counted */
-    uint64_t            kill_at;    /* when VOLUMES_KILL asked for its end (uptime ns; 0: none) */
+    uint64_t            kill_at;    /* when volumes.kill asked for its end (uptime ns; 0: none) */
     uint64_t            ended_at;   /* when its last instance's end was seen (uptime ns) */
     uint32_t            promoted;   /* restarts that promoted the warm spare, since boot */
-    /* Bumped with every new `fs` channel (fs_serve_end): the mount's
-     * generation in VOLUMES_MOUNTS. A restart on the kept channel doesn't
+    /* Bumped with every new `fs` channel (fs_new_channel): a new mount
+     * for the watches (mounts.c). A restart on the kept channel doesn't
      * move it: fat keeps its views (and open files) across its deaths. */
     uint32_t            chan_gen;
 };
@@ -116,7 +117,7 @@ extern unsigned   problems;
  * known. disk.c takes the Jam OS disk with that id as the boot disk. */
 extern uint32_t   boot_mbr_id;
 extern uint64_t   volumes_started;   /* when volumes started (uptime, ns) */
-/* SHUTDOWN was answered, or the last control client left: the loop
+/* volumes.stop was asked, or the last control client left: the loop
  * stops, and nothing that happens from then on is news to the desktop. */
 extern bool       stopping;
 /* The disks being forgotten are no news either (the DISKS channel
@@ -134,6 +135,12 @@ bool in_bootfs(const char *path);
  * handles. (chans.c) */
 void discard(handle_t h, uint32_t n, uint32_t nh);
 
+/* main.c. Every client is gone, or volumes.stop: no more restarts, every
+ * writable mount synced, the spare and every filesystem service stopped.
+ * Once only (later calls do nothing). True if nothing went wrong while
+ * running. */
+bool     stop_all(void);
+
 /* chans.c. Take the channels init gave (the startup message); false if
  * there is none to live by (no control channel). */
 bool     chans_init(void);
@@ -147,10 +154,10 @@ status_t chans_arm(void);
 /* A port packet: true if it was a channel's. */
 bool     chans_packet(uint64_t key);
 
-/* request.c. Answer one request that came on a channel of level lv: the
- * reply, and *nh handles in hs. */
-void request_handle(const struct volumes_req *q, enum level lv, struct volumes_rep *r,
-                    handle_t *hs, uint32_t *nh);
+/* request.c: the handlers of `volumes` (the control channels) and
+ * `volesp` (init's ESP channel). */
+extern const struct volumes_ops volumes_ops;
+extern const struct volesp_ops  volesp_ops;
 
 /* supervise.c: a filesystem service's process. */
 /* Start b's service (state RUNNING on success): its job, its handles
@@ -169,8 +176,9 @@ bool     fs_stop(struct vol *b, bool kill, bool excused);
 void     fs_close_client(struct vol *b);
 /* b's process (start generation `gen`) terminated. */
 void     sup_died(struct vol *b, uint32_t gen);
-/* VOLUMES_KILL: b's instance killed on purpose, and its restart scheduled. */
-status_t sup_kill(struct vol *b);
+/* volumes.kill: b's instance killed on purpose (*koid: its process's),
+ * and its restart scheduled. ERR_NOT_FOUND: no instance runs. */
+status_t sup_kill(struct vol *b, uint64_t *koid);
 /* Start every restart that is due. */
 void     sup_run_due(void);
 /* The earliest due restart, or DEADLINE_NEVER. */
@@ -179,10 +187,10 @@ uint64_t sup_next_deadline(void);
  * end goes; the restart history is cleared. */
 void     sup_reset(struct vol *b);
 
-/* disk.c: the disks devmgr tells of (and VOLUMES_TEST_DISK's), and the
+/* disk.c: the disks devmgr tells of (and volumes.test_disk's), and the
  * filesystem services of the boot disk. */
-#define PART_ESP  VOLUMES_PART_ESP    /* the boot disk's ESP, read-only, at /esp */
-#define PART_DATA VOLUMES_PART_DATA   /* the boot disk's data partition, at /data */
+#define PART_ESP  0u   /* partition 1 of the boot disk: its ESP, read-only, at /esp */
+#define PART_DATA 1u   /* partition 2: its data partition, at /data */
 /* The DISKS channel (server end, consumed; HANDLE_INVALID: none): the old
  * one's disks are forgotten, without notices. */
 void     disks_set(handle_t ch);
@@ -199,7 +207,7 @@ void     disk_started(struct vol *b);
 void     disk_stopped(struct vol *b);
 /* A disk's KEY_DISK packet. */
 void     disk_key(uint64_t key);
-/* VOLUMES_TEST_DISK: ch (consumed) is a `storage` channel; *id: the disk's. */
+/* volumes.test_disk: ch (consumed) is a `storage` channel; *id: the disk's. */
 status_t disk_test(handle_t ch, uint32_t *id);
 /* b died, its process still held. True if that is the end of it (b
  * freed, no restart): the ESP's service ended before it answered the
@@ -214,15 +222,19 @@ const char *fs_format_arg(const struct vol *b);
  * deliberate kill, FAT_ARG_CRASHED after any other end; NULL for a first
  * start (fat counts only crashes against the request in progress). */
 const char *fs_end_arg(const struct vol *b);
-/* VOLUMES_REMOUNT: /usbN (a test disk's: /usbN-test) read-write or
- * read-only. ERR_NOT_FOUND: no such mount; ERR_BAD_STATE: its service
+/* volumes.remount: b (a /usbN or /usbN-test mount) read-write or
+ * read-only. ERR_NOT_FOUND: not such a mount; ERR_BAD_STATE: its service
  * isn't serving. */
-status_t disk_remount(unsigned n, bool test, bool writable);
-/* VOLUMES_ESP_WRITE: the boot disk's ESP read-write (*out: a channel to
- * its service, which is no mount meanwhile) or read-only again (out
- * unused). ERR_NOT_FOUND: no boot disk with an ESP service;
- * ERR_BAD_STATE: it isn't serving. */
+status_t disk_remount(struct vol *b, bool writable);
+/* volesp: the boot disk's ESP read-write (*out: a channel to its service,
+ * which is no mount meanwhile) or read-only again (out unused).
+ * ERR_NOT_FOUND: no boot disk with an ESP service; ERR_BAD_STATE: it
+ * isn't serving. */
 status_t disk_esp_write(bool writable, handle_t *out);
+/* volumes.release_disk: disk id's mounts stopped in order and gone; the
+ * disk isn't mounted again until it is attached again. ERR_NOT_FOUND: no
+ * such disk. */
+status_t disk_release(uint32_t id);
 /* b's handles for its service: FAT_SR_BLOCK, a new `block` channel on its
  * partition, FAT_SR_CTL, and its state and keep channel.
  * ERR_PEER_CLOSED: the disk is gone. */
@@ -234,12 +246,9 @@ void     fs_ctl_close(struct vol *b);
 const char *fs_mount_path(const struct vol *b);
 /* b won't run again: free its slot. */
 void     fs_retire(struct vol *b);
-/* VOLUMES_FS_SVC: the filesystem service on partition `part` of disk
- * `id`, or NULL. */
-struct vol *fs_find(uint32_t id, uint32_t part);
-/* VOLUMES_FS_MOUNT: the filesystem service of mount `which`
- * (VOLUMES_MOUNT_*; flags VOLUMES_MOUNT_TEST: a test disk's), or NULL. */
-struct vol *fs_find_mount(uint32_t which, uint32_t flags);
+/* The filesystem service of the mount called path (len bytes, no NUL:
+ * "/data", "/usb0-test"), running or not, or NULL. */
+struct vol *fs_find_mount(const char *path, uint32_t len);
 /* b's FAT_SR_SERVE: a duplicate of the `fs` server end volumes keeps
  * across its restarts (a new channel only when there is none, or its
  * client end was closed). */
@@ -252,8 +261,9 @@ status_t fs_new_channel(struct vol *b, handle_t *client, handle_t *serve);
 /* Does b keep its `fs` channel while no instance runs? Then it stays a
  * mount meanwhile, and calls on it wait for the next instance. */
 bool     fs_channel_kept(const struct vol *b);
-/* Every writable mount: fs.sync while its disk still works. */
-void     disk_sync_all(void);
+/* Every writable mount: fs.sync while its disk still works, SYNC_WAIT
+ * each. The first failure (OK: none). */
+status_t disk_sync_all(void);
 /* Give up on what did not answer in time, and start the next /usbN
  * service that waits its turn. Called after every event. */
 void     disk_run_due(void);
@@ -269,25 +279,24 @@ struct mount {
     uint32_t vol;        /* vols index of its filesystem service */
     uint32_t gen;        /* that service's `fs` channel's generation (chan_gen): a new
                           * channel is a new mount, a restart on the kept one isn't */
+    uint8_t  flags;      /* MOUNTS_READ_ONLY, MOUNTS_TEST */
 };
-/* The mounts as they are now into out (VOLUMES_MAX_MOUNTS slots).
- * Returns how many. */
+/* The mounts as they are now into out (MAX_VOLS slots). Returns how many. */
 unsigned disk_mounts(struct mount *out);
 
-/* mounts.c: VOLUMES_MOUNTS. */
+/* mounts.c: the list of mounts and the watches (volumes.watch, the
+ * `mounts` events). */
 /* Something that may have changed the mounts happened: if the list differs
- * from the one last handed out, the generation moves on and every waiting
- * call is answered. */
+ * from the one the watches were last told, the generation moves on and
+ * each watch is told what changed. */
 void     mounts_update(void);
-/* A VOLUMES_MOUNTS request (txid, known generation) that came on ch:
- * answered now if the generation differs, else kept waiting. */
-void     mounts_request(handle_t ch, uint32_t txid, uint32_t known);
-/* ch is about to be closed: the calls waiting on it are dropped. */
-void     mounts_forget(handle_t ch);
-/* Answer the calls that waited VOLUMES_MOUNTS_WAIT (ERR_TIMED_OUT). */
-void     mounts_run_due(void);
-/* When mounts_run_due has something to do next, or DEADLINE_NEVER. */
-uint64_t mounts_next_deadline(void);
+/* volumes.watch: a new watch (*out: the watcher's end). It gets the list
+ * once its end has gone out with the reply (mounts_list_new). */
+status_t mounts_watch(handle_t *out);
+/* After a reply went out: the new watches get the whole list. */
+void     mounts_list_new(void);
+/* volumes is stopping: every watch closes. */
+void     mounts_close_all(void);
 
 /* spare.c: a filesystem service that outlives its process
  * (docs/M11.6-PLAN.md): per service a keeper and a state VMO, and one

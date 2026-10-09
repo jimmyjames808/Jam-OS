@@ -1099,6 +1099,9 @@ static const struct {
     { "hid_queue_full", t_hid_queue_full },
     { "comp_seat_leds", t_comp_seat_leds },
     { "fat_open_moved", t_fat_open_moved },
+    { "volumes_watch", t_volumes_watch },
+    { "volumes_release_disk", t_volumes_release_disk },
+    { "volumes_new_channel", t_volumes_new_channel },
 };
 
 int main(int argc, char **argv)

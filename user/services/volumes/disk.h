@@ -45,7 +45,7 @@ struct disk {
     uint32_t        txid;       /* DISK_INFO, DISK_ESP: the request not answered yet */
     uint64_t        deadline;   /* DISK_INFO, DISK_ESP: when it is given up on; DISK_HELD:
                                  * when it is looked at anyway */
-    uint32_t        mbr_id;     /* its MBR disk id (storage.disk_id), 0: none or unknown */
+    uint32_t        mbr_id;     /* its MBR disk id (storage.info), 0: none or unknown */
     uint8_t         nparts;     /* partitions it lists (at most MAX_PARTS are looked at) */
     uint8_t         type[MAX_PARTS];   /* their MBR types */
     uint32_t        fs[MAX_PARTS];     /* vols index + 1 of each partition's service; 0: none */

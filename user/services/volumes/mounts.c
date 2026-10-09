@@ -1,143 +1,214 @@
-/* volumes: VOLUMES_MOUNTS (<volumes.h>): the list of mounts, its generation,
- * and the calls waiting for it to change.
+/* volumes: the list of mounts, its generation, and the watches
+ * (volumes.watch): channels on which each change is sent as `mounts`
+ * events (abi/idl/volumes.idl).
  *
- * The mounts themselves are disk.c's (the boot disk's running filesystem
- * services). This file keeps the list as it was last handed out: whenever
- * something may have changed it (a service started or ended, a disk came
- * or went) mounts_update compares, and only a real difference moves the
- * generation on. A mount with a new `fs` channel (a remount, a service
- * started again after it was given up on) differs by its channel's
- * generation, so it is a new generation even though the path is the same;
- * a filesystem service restarted on the channel volumes kept is not (fat
- * keeps its views and files across its deaths: namespaces need nothing
- * new). Generations count up from a number taken from the clock
+ * The mounts themselves are disk.c's (disk_mounts). This file keeps the
+ * list as the watches were last told it: whenever something may have
+ * changed it (a service started or ended, a disk came or went)
+ * mounts_update compares, and only a real difference moves the generation
+ * on. A mount with a new `fs` channel (a remount, a service started again
+ * after it was given up on) differs by its channel's generation, so it is
+ * `unmounted` and `mounted` again even though the path is the same; a
+ * filesystem service restarted on the channel volumes kept is no change
+ * (fat keeps its views and files across its deaths: namespaces need
+ * nothing new). Generations count up from a number taken from the clock
  * (first_generation says why).
  *
- * A call whose caller already has the current generation is kept in
- * waiters[] (its channel and transaction id) and answered by the next
- * change, or with ERR_TIMED_OUT after VOLUMES_MOUNTS_WAIT: volumes never
- * holds a call longer than that, so a caller that gave up leaves at most
- * one small reply behind, and the table can't fill with dead calls. A
- * waiting call keeps the handle of the channel it came on: when chans.c
- * drops a channel (an opener's, whose clients are all gone) its calls go
- * first (mounts_forget), so no reply is ever written to a closed handle. */
+ * A watch is one end of a channel volumes made (the watcher has the
+ * other), marked to receive no handles: nothing comes back on it. A new
+ * one gets the whole list (every mount, then `settled`) once its end has
+ * gone out in the reply (mounts_list_new): sent before, the `fs` channels
+ * in its queue would make the kernel refuse to send the end at all. A
+ * watcher that leaves MOUNTS_UNREAD_MAX events unread (<jam/abi.h>'s
+ * handle_info: peer_queued), whose end is closed, or whose queue refuses
+ * an event is dropped: its channel is closed, and it watches again. */
 #include "internal.h"
 
-#define MAX_WAITERS 8
+#define MAX_WATCHES 16
 
-struct waiter {
-    handle_t ch;         /* the channel the call came on; 0: a free slot */
-    uint32_t txid;       /* its transaction id */
-    uint64_t deadline;   /* answered ERR_TIMED_OUT then */
+struct watch {
+    handle_t ch;      /* our end; 0: a free slot */
+    bool     listed;  /* it has had the whole list */
 };
 
-static struct mount  cur[VOLUMES_MAX_MOUNTS];   /* the list of generation `generation` */
+static struct mount  cur[MAX_VOLS];   /* the list of generation `generation` */
 static unsigned      ncur;
-static uint32_t      generation;               /* 0 only until first_generation() */
-static struct waiter waiters[MAX_WAITERS];
+static uint32_t      generation;      /* 0 only until first_generation() */
+static struct watch  watches[MAX_WATCHES];
 
 /* The first generation comes from the clock (uptime in ms, made odd: never
- * 0, which in a request matches nothing). A volumes that init started again
- * after the first one died would otherwise count 1, 2, ... like the first,
- * and a caller still holding the old one's generation 2 would wait for a
- * change instead of getting the new one's channels. */
+ * 0). A volumes that init started again after the first one died would
+ * otherwise count 1, 2, ... like the first, and a watcher might take the
+ * new one's for the old one's. */
 static void first_generation(void)
 {
     if (!generation)
         generation = (uint32_t)(now() / NS_PER_MS) | 1;
 }
 
-/* Answer request txid on ch: the list with a channel per mount when st is
- * OK, else the bare status. */
-static void answer(handle_t ch, uint32_t txid, status_t st)
+static void drop(struct watch *w, const char *why)
 {
-    struct volumes_mounts_rep r;
-    handle_t hs[VOLUMES_MAX_MOUNTS];
-    uint32_t nh = 0;
-    memset(&r, 0, sizeof(r));
-    r.txid = txid;
-    r.generation = generation;
-    while (st == OK && nh < ncur) {
-        st = jam_handle_duplicate(vols[cur[nh].vol].client, RIGHT_SAME, &hs[nh]);
-        if (st == OK) {
-            memcpy(r.mounts[nh].path, cur[nh].path, sizeof(r.mounts[nh].path));
-            nh++;
-        }
+    if (why)
+        say(false, "volumes: a watch %s: dropped", why);
+    jam_handle_close(w->ch);
+    *w = (struct watch){ 0 };
+}
+
+/* May w be sent n more events? Dropped (false) if its watcher is gone or
+ * has left too many unread. */
+static bool room(struct watch *w, unsigned n)
+{
+    struct handle_info info;
+    if (jam_handle_info(w->ch, &info) != OK || !info.related_koid) {
+        drop(w, NULL);   /* the watcher closed its end: nobody to tell */
+        return false;
     }
-    if (st != OK)   /* all or nothing */
-        while (nh > 0)
-            jam_handle_close(hs[--nh]);
-    r.status = st;
-    r.count = nh;
-    uint32_t n = st == OK ? sizeof(r) : VOLUMES_REP_HDR;
-    (void)jam_channel_write(ch, &r, n, hs, nh);   /* the handles go either way (K1) */
+    if (info.peer_queued + n > MOUNTS_UNREAD_MAX) {
+        char why[64];
+        snprintf(why, sizeof(why), "left %u events unread", info.peer_queued);
+        drop(w, why);
+        return false;
+    }
+    return true;
+}
+
+/* `mounted` for m, with a duplicate of its channel: OK, or why not. */
+static status_t tell_mounted(handle_t ch, const struct mount *m)
+{
+    handle_t fs;
+    status_t st = jam_handle_duplicate(vols[m->vol].client, RIGHT_SAME, &fs);
+    if (st != OK)
+        return st;
+    return mounts_mounted(ch, m->path, (uint32_t)strnlen(m->path, sizeof(m->path)), generation,
+                          m->flags, fs);   /* fs goes either way */
+}
+
+static bool same_mount(const struct mount *a, const struct mount *b)
+{
+    return a->vol == b->vol && a->gen == b->gen && !strcmp(a->path, b->path);
+}
+
+/* Is m in list l (n entries)? */
+static bool listed(const struct mount *l, unsigned n, const struct mount *m)
+{
+    for (unsigned i = 0; i < n; i++)
+        if (same_mount(&l[i], m))
+            return true;
+    return false;
+}
+
+/* Tell w the change from old (nold) to cur: what went, what came, then
+ * `settled`. False if it was dropped. */
+static bool tell_change(struct watch *w, const struct mount *old, unsigned nold)
+{
+    unsigned n = 1;
+    for (unsigned i = 0; i < nold; i++)
+        n += !listed(cur, ncur, &old[i]);
+    for (unsigned i = 0; i < ncur; i++)
+        n += !listed(old, nold, &cur[i]);
+    if (!room(w, n))
+        return false;
+    status_t st = OK;
+    for (unsigned i = 0; st == OK && i < nold; i++)
+        if (!listed(cur, ncur, &old[i]))
+            st = mounts_unmounted(w->ch, old[i].path,
+                                  (uint32_t)strnlen(old[i].path, sizeof(old[i].path)), generation);
+    for (unsigned i = 0; st == OK && i < ncur; i++)
+        if (!listed(old, nold, &cur[i]))
+            st = tell_mounted(w->ch, &cur[i]);
+    if (st == OK)
+        st = mounts_settled(w->ch, generation);
+    if (st != OK) {
+        char why[48];
+        snprintf(why, sizeof(why), "couldn't be told (%s)", status_str(st));
+        drop(w, why);
+        return false;
+    }
+    return true;
+}
+
+/* The whole list to a new watch w. */
+static void tell_all(struct watch *w)
+{
+    w->listed = true;
+    if (!room(w, ncur + 1))
+        return;
+    status_t st = OK;
+    for (unsigned i = 0; st == OK && i < ncur; i++)
+        st = tell_mounted(w->ch, &cur[i]);
+    if (st == OK)
+        st = mounts_settled(w->ch, generation);
+    if (st != OK) {
+        char why[48];
+        snprintf(why, sizeof(why), "couldn't be told the mounts (%s)", status_str(st));
+        drop(w, why);
+    }
 }
 
 void mounts_update(void)
 {
-    struct mount fresh[VOLUMES_MAX_MOUNTS] = { 0 };
+    static struct mount fresh[MAX_VOLS], old[MAX_VOLS];
+    memset(fresh, 0, sizeof(fresh));
     unsigned n = disk_mounts(fresh);
     bool same = n == ncur;
     first_generation();
     for (unsigned i = 0; same && i < n; i++)
-        same = fresh[i].vol == cur[i].vol && fresh[i].gen == cur[i].gen;
+        same = same_mount(&fresh[i], &cur[i]) && fresh[i].flags == cur[i].flags;
     if (same)
         return;
+    memcpy(old, cur, sizeof(old));
+    unsigned nold = ncur;
     memcpy(cur, fresh, sizeof(cur));
     ncur = n;
     if (++generation == 0)
         generation = 1;
-    char list[VOLUMES_MAX_MOUNTS * 17 + 8] = " (none)";
+    char list[MAX_VOLS * 17 + 8] = " (none)";
     for (unsigned i = 0, at = 0; i < n; i++)
         at += (unsigned)snprintf(list + at, sizeof(list) - at, " %s", cur[i].path);
     say(false, "volumes: mounts, generation %u:%s", generation, list);
-    for (unsigned i = 0; i < MAX_WAITERS; i++) {
-        if (!waiters[i].ch)
-            continue;
-        answer(waiters[i].ch, waiters[i].txid, OK);
-        waiters[i].ch = HANDLE_INVALID;
-    }
+    for (unsigned i = 0; i < MAX_WATCHES; i++)
+        if (watches[i].ch && watches[i].listed)
+            (void)tell_change(&watches[i], old, nold);
 }
 
-void mounts_request(handle_t ch, uint32_t txid, uint32_t known)
+status_t mounts_watch(handle_t *out)
+{
+    struct watch *w = NULL;
+    for (unsigned i = 0; i < MAX_WATCHES; i++) {
+        struct handle_info info;
+        if (watches[i].ch && (jam_handle_info(watches[i].ch, &info) != OK || !info.related_koid))
+            drop(&watches[i], NULL);   /* its watcher has gone */
+        if (!watches[i].ch && !w)
+            w = &watches[i];
+    }
+    if (!w)
+        return ERR_NO_RESOURCES;
+    handle_t mine, theirs;
+    status_t st = jam_channel_create(&mine, &theirs);
+    if (st != OK)
+        return st;
+    st = jam_channel_set_flags(mine, CHANNEL_NO_HANDLES);   /* nothing comes back */
+    if (st != OK) {
+        jam_handle_close(mine);
+        jam_handle_close(theirs);
+        return st;
+    }
+    *w = (struct watch){ .ch = mine };
+    *out = theirs;
+    return OK;
+}
+
+void mounts_list_new(void)
 {
     first_generation();
-    if (known != generation) {
-        answer(ch, txid, OK);
-        return;
-    }
-    for (unsigned i = 0; i < MAX_WAITERS; i++) {
-        if (waiters[i].ch)
-            continue;
-        waiters[i] = (struct waiter){ ch, txid, now() + VOLUMES_MOUNTS_WAIT };
-        return;
-    }
-    answer(ch, txid, ERR_NO_RESOURCES);
+    for (unsigned i = 0; i < MAX_WATCHES; i++)
+        if (watches[i].ch && !watches[i].listed)
+            tell_all(&watches[i]);
 }
 
-void mounts_forget(handle_t ch)
+void mounts_close_all(void)
 {
-    for (unsigned i = 0; i < MAX_WAITERS; i++)
-        if (waiters[i].ch == ch)
-            waiters[i].ch = HANDLE_INVALID;
-}
-
-void mounts_run_due(void)
-{
-    uint64_t t = now();
-    for (unsigned i = 0; i < MAX_WAITERS; i++) {
-        if (!waiters[i].ch || waiters[i].deadline > t)
-            continue;
-        answer(waiters[i].ch, waiters[i].txid, ERR_TIMED_OUT);
-        waiters[i].ch = HANDLE_INVALID;
-    }
-}
-
-uint64_t mounts_next_deadline(void)
-{
-    uint64_t next = DEADLINE_NEVER;
-    for (unsigned i = 0; i < MAX_WAITERS; i++)
-        if (waiters[i].ch && waiters[i].deadline < next)
-            next = waiters[i].deadline;
-    return next;
+    for (unsigned i = 0; i < MAX_WATCHES; i++)
+        if (watches[i].ch)
+            drop(&watches[i], NULL);
 }

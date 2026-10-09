@@ -37,8 +37,10 @@ static uint32_t le32(const uint8_t *p)
 static bool mbr_entry(const struct diskmock *m, unsigned index, uint8_t *type, uint64_t *start,
                       uint64_t *blocks)
 {
+    if (index >= 4)
+        return false;
     const uint8_t *e = m->ram + MBR_TABLE + 16 * index;
-    if (index >= 4 || !e[4])
+    if (!e[4])
         return false;
     *type = e[4];
     *start = le32(e + 8);
@@ -48,7 +50,8 @@ static bool mbr_entry(const struct diskmock *m, unsigned index, uint8_t *type, u
 
 /* ---- block ----------------------------------------------------------------------- */
 
-static status_t b_info(void *ctx, uint32_t *block_size, uint64_t *blocks, uint8_t *read_only)
+static status_t b_info(void *ctx, uint32_t *block_size, uint64_t *blocks, uint8_t *read_only,
+                       uint32_t *max_blocks, uint16_t *queue_depth, uint32_t *buffer_max)
 {
     const struct dm_block *b = ctx;
     uint8_t type;
@@ -57,12 +60,17 @@ static status_t b_info(void *ctx, uint32_t *block_size, uint64_t *blocks, uint8_
         return ERR_BAD_STATE;
     *block_size = DM_BLOCK;
     *read_only = b->ro;
+    *max_blocks = DM_BUFFER / DM_BLOCK;
+    *queue_depth = 1;
+    *buffer_max = DM_BUFFER;
     return OK;
 }
 
-static status_t b_map_buffer(void *ctx, handle_t *buffer, uint32_t *size)
+/* One size of buffer, whatever is asked: DM_BUFFER (its buffer_max). */
+static status_t b_map_buffer(void *ctx, uint32_t want, handle_t *buffer, uint32_t *size)
 {
     struct dm_block *b = ctx;
+    (void)want;
     if (b->vmo)
         return ERR_BAD_STATE;
     status_t st = jam_vmo_create(DM_BUFFER, 0, &b->vmo);
@@ -135,38 +143,55 @@ static void block_close(struct dm_block *b)
 
 /* ---- storage --------------------------------------------------------------------- */
 
-static status_t s_info(void *ctx, uint8_t vendor[8], uint8_t product[16], uint32_t *block_size,
-                       uint64_t *blocks, uint8_t *partitions)
+static status_t s_info(void *ctx, char *vendor, uint32_t *vendor_len, char *product,
+                       uint32_t *product_len, uint32_t *block_size, uint64_t *blocks,
+                       uint8_t *scheme, uint32_t *partitions, uint32_t *mbr_id,
+                       uint8_t disk_guid[16])
 {
     struct diskmock *m = ctx;
     uint8_t type;
     uint64_t start, n;
-    memcpy(vendor, "JAMOS   ", 8);
-    memcpy(product, "utest RAM disk  ", 16);
+    memcpy(vendor, "JAMOS", *vendor_len = 5);
+    memcpy(product, "utest RAM disk", *product_len = 14);
     *block_size = DM_BLOCK;
     *blocks = DM_BLOCKS;
+    *scheme = STORAGE_SCHEME_MBR;
     *partitions = 0;
     while (mbr_entry(m, *partitions, &type, &start, &n))
         (*partitions)++;
+    *mbr_id = le32(m->ram + 440);
+    memset(disk_guid, 0, 16);
     bump(&m->infos);
     return OK;
 }
 
-static status_t s_partition(void *ctx, uint8_t index, uint8_t *type, uint64_t *start,
-                            uint64_t *blocks)
+static status_t s_partition(void *ctx, uint32_t index, uint8_t *mbr_type, uint8_t type_guid[16],
+                            uint8_t unique_guid[16], uint64_t *start, uint64_t *blocks,
+                            uint64_t *attributes, char *name, uint32_t *name_len)
 {
     struct diskmock *m = ctx;
+    (void)name;
     bump(&m->partitions);
-    return mbr_entry(m, index, type, start, blocks) ? OK : ERR_OUT_OF_RANGE;
+    memset(type_guid, 0, 16);
+    memset(unique_guid, 0, 16);
+    *attributes = 0;
+    *name_len = 0;
+    return mbr_entry(m, index, mbr_type, start, blocks) ? OK : ERR_OUT_OF_RANGE;
 }
 
-static status_t s_open_partition(void *ctx, uint8_t index, uint8_t read_only, handle_t *block)
+static status_t s_open_partition(void *ctx, uint32_t index, uint8_t read_only, handle_t *block)
 {
     struct diskmock *m = ctx;
     uint8_t type;
     uint64_t start, blocks;
     if (index > 1 || !mbr_entry(m, index, &type, &start, &blocks))
         return ERR_OUT_OF_RANGE;
+    uint32_t left = __atomic_load_n(&m->refuse_opens, __ATOMIC_RELAXED);
+    while (left && !__atomic_compare_exchange_n(&m->refuse_opens, &left, left - 1, false,
+                                                __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        ;
+    if (left)
+        return ERR_NO_RESOURCES;
     unsigned slot = 0;
     while (slot < DM_MAX_OPEN && m->blk[slot].ch)
         slot++;
@@ -184,7 +209,8 @@ static status_t s_open_partition(void *ctx, uint8_t index, uint8_t read_only, ha
         *block = HANDLE_INVALID;
         return st;
     }
-    m->blk[slot] = (struct dm_block){ .m = m, .ch = ours, .part = index, .ro = read_only != 0 };
+    m->blk[slot] = (struct dm_block){ .m = m, .ch = ours, .part = (uint8_t)index,
+                                      .ro = read_only != 0 };
     bump(&m->opened[index]);
     if (!read_only)
         bump(&m->opened_rw);

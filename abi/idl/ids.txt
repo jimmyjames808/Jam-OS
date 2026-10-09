@@ -55,6 +55,11 @@
 61      net_stream      abi/idl/net.idl
 62      net_listener    abi/idl/net.idl
 63      netdev_session  abi/idl/netdev.idl
+# 70 to 79: volumes' (M12 track S2a)
+70      volumes         abi/idl/volumes.idl
+71      volesp          abi/idl/volumes.idl
+72      disks           abi/idl/volumes.idl
+73      mounts          abi/idl/volumes.idl
 0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
 0x4d4f  standby         user/include/roles.h            # STANDBY_MAGIC "PROM" (promotion)
 0x4f50  update_offer    user/include/update.h           # UPDATE_OFFER_MAGIC "JUPO"

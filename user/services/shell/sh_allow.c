@@ -160,7 +160,7 @@ status_t sh_allow_remove(const char *name, unsigned *removed)
 
 /* Services no program from /data may have, whatever the owner says: with
  * volumes' channel a program gets the filesystems' own channels
- * (VOLUMES_MOUNTS: /data unguarded, so it could approve itself); with
+ * (volumes.watch: /data unguarded, so it could approve itself); with
  * devmgr's control channel any driver's hardware; with its query channel
  * usb-bus, and through it any USB device's interfaces; with init's, every
  * service and the reboot. The build allows volumes', devmgr's control

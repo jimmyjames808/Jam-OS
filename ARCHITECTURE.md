@@ -2556,7 +2556,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   kernel from by its MBR disk id, the kernel passes it on to init and
   devmgr (`bootdisk=0x<id>`) and to the kernel it kexecs (`bootdisk=N` on
   that one's command line), and usb-storage reads each disk's id
-  (`storage.disk_id`). A Jam OS disk with another id waits for that one
+  (`storage.info`). A Jam OS disk with another id waits for that one
   (up to 10 s after devmgr started, at least 3 s) and is then not the boot
   disk; if that one never comes (the stick was swapped) it may be after
   all. `make usb` gives every stick a random id (`tools/mkimage.py`); on
