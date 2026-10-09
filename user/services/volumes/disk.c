@@ -273,6 +273,11 @@ static void got_info(struct disk *d, const struct disk_info *r)
         leave_alone(d, why);
     } else if (r->partitions < 2 || type[0] != TYPE_ESP || type[1] != TYPE_FAT32_LBA) {
         not_boot(d, "not a Jam OS stick (an ESP, then a FAT32 data partition)");
+    } else if (!booted_from(d) && boot_disk_taken(d)) {
+        /* Its id says why, whether the boot disk came first or not. */
+        say(false, "volumes: %s: disk id %08x, but the machine booted from disk id %08x",
+            disk_name(d), d->mbr_id, boot_mbr_id);
+        not_boot(d, "the machine booted from another disk");
     } else if (boot_disk_taken(d)) {
         not_boot(d, "another disk is the boot disk already");
     } else if (!booted_from(d)) {
