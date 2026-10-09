@@ -655,11 +655,13 @@ int driver_main(const struct driver_start *s)
      * counts keys this way). */
     if (h->kind && r == 0) {
         drv_log("hid %04x:%04x if %u: %s after %lu report(s), %lu event(s) (%lu phantom, "
-                "%lu short, %lu of another id, %lu input error(s))", h->vendor, h->product,
-                h->iface, h->stop == STOP_CONSOLE_GONE ? "console gone" : "device gone",
+                "%lu short, %lu of another id, %lu input error(s), %lu waited for room)",
+                h->vendor, h->product, h->iface,
+                h->stop == STOP_CONSOLE_GONE ? "console gone" : "device gone",
                 (unsigned long)h->nreports, (unsigned long)h->events,
                 (unsigned long)h->kbd.rollover, (unsigned long)h->kbd.short_reports,
-                (unsigned long)h->other_reports, (unsigned long)h->input_errors);
+                (unsigned long)h->other_reports, (unsigned long)h->input_errors,
+                (unsigned long)h->waited);
         const char *why =
             h->stop == STOP_CONSOLE_GONE ? "console gone" : "unplugged or usb-bus stopped";
         if (h->kind == HID_KEYBOARD)
