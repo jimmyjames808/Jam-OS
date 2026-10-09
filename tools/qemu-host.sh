@@ -15,4 +15,4 @@ if [ -z "$accel" ]; then
     if [ -w /dev/kvm ]; then accel=kvm; else accel=tcg; fi
 fi
 machine=q35
-[ "$accel" = kvm ] && machine=q35,kernel-irqchip=split
+if [ "$accel" = kvm ]; then machine=q35,kernel-irqchip=split; fi   # (no && : set -e)
