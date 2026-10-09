@@ -69,9 +69,12 @@ that a bug fix comes with a test is in
   `svc net-listen`, a listen on another service and a list over its 24
   wants; the FAT32 checker finds each kind of damage it knows in volumes
   it makes and damages (`tools/fatcheck.py --selftest`); the update signing tool passes Monocypher's Ed25519 vectors
-  (`build/host/jamos-sign self-test`); and libfun's smooth text holds up
+  (`build/host/jamos-sign self-test`); libfun's smooth text holds up
   against hostile input under ASan and UBSan (`build/host/fontcheck
-  --check`, [below](#smooth-text)).
+  --check`, [below](#smooth-text)); and the partition table library
+  (`drivers/lib/parttable.c`, `drivers/lib/parttable_gpt.c`) keeps to the
+  driver rules and, under ASan and UBSan, gives what `tools/mkgpt.py
+  --cases` says on each of its images (`build/host/gptcheck`).
 
 ## Running QEMU: tools/qemu-test.sh
 
@@ -1423,6 +1426,8 @@ of them. Each file's header says more.
 | `tools/serial-feed.py` | types a shell script into QEMU's serial port (`QEMU_INPUT`) |
 | `tools/mkstick.py` | disk images standing in for other people's sticks (`tools/sticks-test.sh`, `tools/soak-test.sh`) |
 | `tools/fatcheck.py <image>[@@offset] [-p N] [--require-clean]` | a read-only FAT32 checker for an image or a stick's raw device (the kill storm's, on the Mac): the FATs agree, every chain is valid (in range, no loop, no cross-link, never into a free, reserved or bad cluster), directory entries are sane (short names, `.` and `..`, long names' order and checksums), each file's size matches its chain, and lost clusters are counted and listed; FSInfo and the dirty bit are notes (`--require-clean`: dirty is damage). Exit 0 clean, 1 damage, 2 lost clusters only, 3 not FAT32. `--selftest` damages small volumes it makes in each of those ways (part of `make check`) |
+| `tools/mkgpt.py` | disk images with a GPT (the PC's Windows-like layout, Jam OS's, damaged and hostile ones) or an MBR, sparse; `--cases <dir>` makes every case `build/host/gptcheck` checks, each with the partitions it must list |
+| `build/host/gptcheck <dir>` | the partition table library on the Mac (`tools/gptcheck.c`) against `tools/mkgpt.py --cases`'s images; part of `make check` |
 | `tools/fat-label.py` | checks, or with `--fix` repairs, a FAT volume's label in an image the way other systems read it (the Makefile runs it on every image; `tools/data-test.sh` checks with it) |
 | `tools/checkdocs.py` | the docs check of `make check` |
 | `tools/checkwants.py` | every boot-image program's list ([`<wants.h>`](../user/include/wants.h)) checked by the rules libos applies to a program on `/data`, before the Makefile packs the boot image: the build's approval |
