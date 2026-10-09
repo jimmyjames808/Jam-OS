@@ -581,9 +581,9 @@ KTEST(vmo_concurrent_writers)
         /* Round 0 fills the scheduler's stack cache; after that, every
          * page (including racing commits' losers) must come back. */
         if (round == 0)
-            warm = kt_free_pages();
+            warm = ktest_accounted_pages();   /* settled: the joined threads are reaped a little late */
         else
-            KT_GLOBAL_EQ(kt_free_pages(), warm);
+            KT_GLOBAL_EQ(kt_wait_free_and_cached(warm), warm);
     }
 }
 
@@ -660,9 +660,12 @@ static void dc_round(void)
 KTEST(vmo_concurrent_decommit)
 {
     dc_round();
-    uint64_t warm = kt_free_pages();   /* thread stacks are cached now */
+    /* Thread stacks are cached now. The joined threads are reaped by their CPUs a little
+     * after thread_join returns (their stacks, thread objects and slabs), so the count is
+     * taken once it stops moving, and the last one waited for. */
+    uint64_t warm = ktest_accounted_pages();
     dc_round();
-    KT_GLOBAL_EQ(kt_free_pages(), warm);      /* pages freed by whoever let go last */
+    KT_GLOBAL_EQ(kt_wait_free_and_cached(warm), warm);   /* pages freed by whoever let go last */
 }
 
 /* ---- handle layer ---------------------------------------------------------- */
