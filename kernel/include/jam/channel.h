@@ -147,8 +147,9 @@ struct chan_read {
 
 /* channel_read_into, waiting for a message if none is queued: until one
  * comes, deadline_ns passes (ERR_TIMED_OUT), the peer closes with nothing
- * queued (ERR_PEER_CLOSED), ch itself closes (ERR_BAD_STATE) or the thread
- * is cancelled (ERR_CANCELED). The queue is looked at before blocking, so
+ * queued (ERR_PEER_CLOSED), or ch itself closes (its last handle closed
+ * by another thread) or the thread is cancelled (ERR_CANCELED, for both:
+ * as channel_call's). The queue is looked at before blocking, so
  * no read ever comes back empty-handed for a message that is there. While
  * it waits the thread is listed on ch with its free message slot on
  * offer, and a writer hands it the next message that fits r directly

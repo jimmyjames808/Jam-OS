@@ -72,7 +72,8 @@
 # that error, nothing read. So *reply_status neither OK nor
 # ERR_PEER_CLOSED: the reply failed; otherwise the result is the wait's:
 # as channel_read's (ERR_BUFFER_TOO_SMALL leaves the message queued) or
-# port_wait's, ERR_TIMED_OUT, ERR_CANCELED, ERR_PEER_CLOSED (nothing
+# port_wait's, ERR_TIMED_OUT, ERR_CANCELED (`wait`'s channel end closed
+# by another thread, as for channel_call), ERR_PEER_CLOSED (nothing
 # queued, the peer gone). *reply_status is written as the call returns,
 # with the sizes (after the request's bytes and handles), in one copy
 # when the three follow each other in memory; a fault there loses the
