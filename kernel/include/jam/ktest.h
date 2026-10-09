@@ -189,6 +189,13 @@ uint64_t kt_free_pages_settled(void);
  * per-test leak check counts them: a helper thread's stack just moves
  * between the two. */
 uint64_t kt_free_and_cached_pages(void);
+/* Wait (at most 1 s) for kt_free_and_cached_pages() to come back to `want`; returns
+ * the last reading. A thread joined just now is reaped by its CPU a little after the
+ * joiner woke (its stack goes back to the cache, its thread object to the heap, its
+ * slab maybe to the page allocator): on a fast host a count taken at once can still
+ * miss those pages. A real leak never comes back, so the caller's check after it
+ * (KT_GLOBAL_EQ(..., want)) still fails. */
+uint64_t kt_wait_free_and_cached(uint64_t want);
 /* The CPU the caller runs on (it may move right after). */
 uint32_t kt_cur_cpu(void);
 /* Pin the current thread to `cpu` (it moves there before this returns);

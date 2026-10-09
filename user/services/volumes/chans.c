@@ -35,23 +35,6 @@ struct chan {
 
 static struct chan chans[MAX_CHANS];
 
-void discard(handle_t h, uint32_t n, uint32_t nh)
-{
-    uint8_t *big = malloc(n ? n : 1);
-    handle_t *bh = malloc((nh ? nh : 1) * sizeof(handle_t));
-    uint32_t n2 = 0, nh2 = 0;
-    struct channel_read_args a = {
-        .h = h, .rd_cap = n, .rd_bytes = (uint64_t)(uintptr_t)big,
-        .rd_actual = (uint64_t)(uintptr_t)&n2, .rd_handles = (uint64_t)(uintptr_t)bh,
-        .rd_hcap = nh, .rd_hactual = (uint64_t)(uintptr_t)&nh2,
-    };
-    if (big && bh && jam_channel_read(&a) == OK)
-        for (uint32_t i = 0; i < nh2; i++)
-            jam_handle_close(bh[i]);
-    free(big);
-    free(bh);
-}
-
 static status_t add_control(handle_t *out);
 
 /* svc.connect on a control channel: a control channel of the caller's
@@ -106,7 +89,14 @@ static status_t serve(const struct chan *c)
             .rd_hcap = VOLUMES_REQ_HANDLES, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         });
         if (st == ERR_BUFFER_TOO_SMALL) {
-            discard(ch, n, nh);   /* nothing of ours is that big */
+            /* Nothing of ours is that big: taken off, its handles closed,
+             * answered ERR_INVALID_ARGS (as a generated server does), so its
+             * caller isn't left waiting for its deadline. */
+            st = idl_drain(ch, n, nh);
+            if (st == ERR_NO_MEMORY)
+                return ERR_SHOULD_WAIT;   /* still queued: the channel's next turn */
+            if (st != OK)
+                return st;
             continue;
         }
         if (st != OK)

@@ -99,12 +99,24 @@
  * (nobody maps them: no entries to zap) and the size never moved. So a
  * reader of any page below the size always finds it committed, and an
  * address space that filled its entries for one (ASPACE_KEPT_ONLY) never
- * has them zapped. A kept VMO may also be sealed: the two don't meet. */
+ * has them zapped. A kept VMO may also be sealed: the two don't meet.
+ *
+ * Pager VMOs (vmo_create_pager, <jam/pager.h>): a paged VMO whose absent
+ * pages come from its pager, never zero-filled. Only the pager puts a page
+ * in (vmo_pager_publish, under this lock, if the slot is still absent and
+ * the VMO isn't detached) and only a detach takes them out (a decommit of
+ * everything); every other call that would commit, write, decommit,
+ * resize, seal, pin or kernel-map one is refused at its entry, and so is
+ * a writable user mapping. A reader of an absent page (vmo_read here; a
+ * fault through vmo_page_request) joins or queues a request under this
+ * lock and then the pager's ("vmo" -> "pager"), and waits for it with no
+ * lock held. `pv` is fixed at creation, so the refusals need no lock. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/dbghook.h>
 #include <jam/iommu.h>
 #include <jam/mm.h>
+#include <jam/pager.h>
 #include <jam/panic.h>
 #include <jam/process.h>
 #include <jam/report.h>
@@ -140,7 +152,8 @@ struct vmo_range {
     struct vmo      *v;           /* pin: the VMO it pins */
     struct list_node cap_node;
     bool             cap_linked;  /* on the cap's list (cap's lock) */
-    struct job      *charged;     /* pin: charged one JOB_LIMIT_HANDLES unit (the VMO's job) */
+    struct job      *charged;     /* pin: charged one JOB_LIMIT_HANDLES unit (the pinner's
+                                   * job, its cap's; a reference), or NULL */
     /* A pin quarantined by its cap's unclean close (vmo_quarantine_cap_pins)
      * sits on the quarantine's list through cap_node, busy, with no cap.
      * sums: a checksum per page taken then, to see at release whether the
@@ -165,6 +178,8 @@ struct vmo {
     struct list_node ranges;              /* struct vmo_range: kernel mappings and pins */
     struct list_node umaps;               /* struct vmo_umap: user mappings (reverse map) */
     struct mutex     resize;              /* serialises vmo_set_size */
+    struct pager_vmo *pv;                 /* a pager VMO: its link (fixed at creation), else NULL */
+    bool             pdetached;           /* a pager VMO cut off: nothing published any more; lock */
     uint64_t       **root[ROOT_ENTRIES];  /* paged: root[r][m][l] = phys */
 };
 
@@ -363,9 +378,9 @@ static status_t get_page(struct vmo *v, uint64_t idx, bool commit, struct page *
             return OK;
         }
         vunlock(v, f);
-        if (!commit) {
+        if (!commit || v->pv) {   /* a pager VMO's page is its pager's to commit */
             *out = NULL;
-            return OK;
+            return commit ? ERR_NOT_SUPPORTED : OK;
         }
         fresh = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
         if (!fresh)
@@ -422,6 +437,8 @@ static void vmo_destroy(struct kobject *obj)
     if (v->kind == VMO_PAGED) {
         drop_from_locked(v, 0);
         ASSERT(v->committed == 0 && v->tables == 0);
+        if (v->pv)
+            pager_vmo_gone(v->pv);   /* PAGER_REQ_GONE, or the link goes */
     } else if (v->kind == VMO_CONTIG) {
         contig_free_head(v->phys >> PAGE_SHIFT, v->size >> PAGE_SHIFT);
         if (v->job)
@@ -578,6 +595,33 @@ uint64_t vmo_committed(struct vmo *v)
     return pages << PAGE_SHIFT;
 }
 
+/* A pager VMO's reader found page idx absent: wait for its pager to
+ * supply it (OK: look again). ERR_OUT_OF_RANGE past the size,
+ * ERR_CANCELED if the thread is killed, ERR_NO_MEMORY if its job can't pay
+ * for the request; ERR_IO for every way the pager can fail it (a read
+ * error, detached or gone, no answer in time). */
+static status_t pager_fetch(struct vmo *v, uint64_t idx)
+{
+    struct pager_req *r;
+    status_t st = vmo_page_request(v, idx, &r);
+    if (st == ERR_OUT_OF_RANGE || st == ERR_NO_MEMORY)
+        return st;   /* past the size (as for any VMO), or no request */
+    if (st == OK && r) {
+        st = pager_req_wait(r);
+        pager_req_put(r);
+    }
+    /* A request is answered whole: one failed for its other pages may
+     * still have brought this one. */
+    if (st != OK && st != ERR_CANCELED && vmo_page_phys(v, idx << PAGE_SHIFT))
+        st = OK;
+    return st == OK || st == ERR_CANCELED ? st : ERR_IO;
+}
+
+/* A pager VMO's page is fetched again at most this many times for one
+ * read before the read gives up (ERR_NO_MEMORY): a page dropped again
+ * between its supply and the read's next look, each time. */
+#define FETCH_ROUNDS 8
+
 status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len)
 {
     if (v->kind == VMO_PHYS)
@@ -589,19 +633,25 @@ status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len)
         return OK;
     }
     char *dst = buf;
+    unsigned rounds = 0;
     while (len) {
         uint64_t in = offset & (PAGE_SIZE - 1);
         uint64_t n = PAGE_SIZE - in < len ? PAGE_SIZE - in : len;
         struct page *p;
         status_t st = get_page(v, offset >> PAGE_SHIFT, false, &p);
+        if (st == OK && !p && v->pv)
+            st = ++rounds > FETCH_ROUNDS ? ERR_NO_MEMORY : pager_fetch(v, offset >> PAGE_SHIFT);
         if (st != OK)
             return st;
+        if (!p && v->pv)
+            continue;   /* fetched: look again */
         if (p) {
             memcpy(dst, (char *)page_to_virt(p) + in, n);
             page_put(p);
         } else {
             memset(dst, 0, n);
         }
+        rounds = 0;
         dst += n;
         offset += n;
         len -= n;
@@ -636,8 +686,8 @@ static status_t write_bytes(struct vmo *v, uint64_t offset, const void *buf, uin
 
 status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len)
 {
-    if (v->kind == VMO_PHYS)
-        return ERR_NOT_SUPPORTED;
+    if (v->kind == VMO_PHYS || v->pv)
+        return ERR_NOT_SUPPORTED;   /* a pager VMO's bytes are its pager's */
     if (!in_bounds(offset, len, vmo_size(v)))
         return ERR_OUT_OF_RANGE;
     status_t st = writer_enter(v);
@@ -800,8 +850,8 @@ static status_t set_size_kept(struct vmo *v, uint64_t size)
 
 status_t vmo_set_size(struct vmo *v, uint64_t size)
 {
-    if (v->kind != VMO_PAGED)
-        return ERR_NOT_SUPPORTED;
+    if (v->kind != VMO_PAGED || v->pv)
+        return ERR_NOT_SUPPORTED;   /* a pager VMO's size is its pager's */
     if (size > VMO_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
     size = ALIGN_UP(size, PAGE_SIZE);
@@ -832,6 +882,8 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
 
 status_t vmo_commit(struct vmo *v, uint64_t offset, uint64_t len)
 {
+    if (v->pv)
+        return ERR_NOT_SUPPORTED;   /* only its pager puts a page in */
     if (!in_bounds(offset, len, vmo_size(v)))
         return ERR_OUT_OF_RANGE;
     if (v->kind != VMO_PAGED || len == 0)
@@ -890,8 +942,8 @@ static status_t decommit_pages(struct vmo *v, uint64_t offset, uint64_t len)
 
 status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
 {
-    if (v->kind != VMO_PAGED)
-        return ERR_NOT_SUPPORTED;
+    if (v->kind != VMO_PAGED || v->pv)
+        return ERR_NOT_SUPPORTED;   /* only its pager takes a page out */
     if (vmo_is_kept(v))
         return ERR_BAD_STATE;   /* its pages never leave (the file header) */
     status_t st = writer_enter(v);
@@ -905,8 +957,9 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
 status_t vmo_seal(struct vmo *v)
 {
     uint64_t f = vlock(v);
-    bool ok = v->kind == VMO_PAGED && list_empty(&v->umaps) && list_empty(&v->ranges) &&
-              v->writers == 0;
+    /* A pager VMO's pages arrive after the seal: never sealed unchecked. */
+    bool ok = v->kind == VMO_PAGED && !v->pv && list_empty(&v->umaps) &&
+              list_empty(&v->ranges) && v->writers == 0;
     if (ok)
         v->sealed = true;
     vunlock(v, f);
@@ -923,6 +976,7 @@ status_t vmo_umap_add(struct vmo *v, struct vmo_umap *u, bool check)
     status_t st = !check                            ? OK
                   : u->end > v->size >> PAGE_SHIFT  ? ERR_OUT_OF_RANGE
                   : u->writable && v->sealed        ? ERR_BAD_STATE
+                  : u->writable && v->pv            ? ERR_ACCESS_DENIED   /* the pager's pages */
                                                     : OK;
     if (st != OK) {
         vunlock(v, f);
@@ -997,6 +1051,12 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
                 return st;
             }
         }
+        if (v->kind == VMO_PAGED && !pa && v->pv) {
+            /* A pager VMO's absent page: the caller asks the pager for it
+             * (vmo_page_request) and waits, with no lock held. */
+            vunlock(v, f);
+            return ERR_SHOULD_WAIT;
+        }
         if (v->kind == VMO_PAGED && !pa) {
             /* Not committed and no page of ours yet: get one, then retry. */
             vunlock(v, f);
@@ -1013,6 +1073,108 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
             page_put(fresh);
         return OK;
     }
+}
+
+/* ---- pager VMOs (<jam/pager.h>) ------------------------------------------- */
+
+status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, struct vmo **out)
+{
+    struct vmo *v;
+    status_t st = vmo_new(size, 0, &v);
+    if (st != OK)
+        return st;
+    if (job && (st = vmo_set_job(v, job)) != OK) {
+        kobject_unref(&v->base);   /* (no link yet: pv stays the caller's) */
+        return st;
+    }
+    v->pv = pv;
+    *out = v;
+    return OK;
+}
+
+bool vmo_is_pager(const struct vmo *v)
+{
+    return v->pv != NULL;
+}
+
+uint64_t vmo_pager_koid(struct vmo *v)
+{
+    return v->pv ? pager_vmo_pager_koid(v->pv) : 0;
+}
+
+bool vmo_page_present_locked(struct vmo *v, uint64_t idx)
+{
+    uint64_t *s = slot_locked(v, idx, false);
+    return s && *s;
+}
+
+/* With the lock held, page idx absent: where a request for it ends, past
+ * the absent pages after it (PAGER_REQ_PAGES in all at most, not past the
+ * size). */
+static uint64_t absent_end_locked(struct vmo *v, uint64_t idx)
+{
+    uint64_t last = v->size >> PAGE_SHIFT, end = idx + 1;
+    while (end < last && end - idx < PAGER_REQ_PAGES && !vmo_page_present_locked(v, end))
+        end++;
+    return end;
+}
+
+status_t vmo_page_request(struct vmo *v, uint64_t idx, struct pager_req **out)
+{
+    if (!v->pv)
+        return ERR_NOT_SUPPORTED;
+    struct pager_req *spare, *r = NULL;
+    status_t st = pager_req_alloc(v->pv, &spare);   /* before the locks: it allocates */
+    if (st != OK)
+        return st;
+    uint64_t f = vlock(v);
+    if (idx >= v->size >> PAGE_SHIFT)
+        st = ERR_OUT_OF_RANGE;
+    else if (v->pdetached)
+        st = ERR_PEER_CLOSED;
+    else if (!vmo_page_present_locked(v, idx))
+        st = pager_join_vlocked(v->pv, idx, absent_end_locked(v, idx), &spare, &r);
+    vunlock(v, f);
+    if (spare)
+        pager_req_free(spare);
+    if (st == OK)
+        *out = r;
+    return st;
+}
+
+status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, struct list_node *dead)
+{
+    uint64_t f = vlock(v);
+    status_t st = v->pdetached ? ERR_PEER_CLOSED
+                  : idx >= v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE
+                                                 : OK;
+    uint64_t *s = st == OK ? slot_locked(v, idx, false) : NULL;
+    if (st == OK && !(s && *s)) {
+        s = charge_slot_locked(v, idx, s);
+        if (s) {
+            *s = page_to_phys(p);   /* the table takes our reference */
+            v->committed++;
+            p = NULL;
+            pager_arrived_vlocked(v->pv, v, idx, dead);
+        } else {
+            st = ERR_NO_MEMORY;
+        }
+    }
+    vunlock(v, f);
+    if (p)
+        page_put(p);   /* refused, or present already (a second answer) */
+    return st;
+}
+
+void vmo_pager_detach(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    v->pdetached = true;
+    uint64_t size = v->size;
+    vunlock(v, f);
+    /* No range can exist (pins and kernel mappings are refused), so this
+     * takes every page. */
+    (void)decommit_pages(v, 0, size);
 }
 
 uint64_t vmo_page_phys(struct vmo *v, uint64_t offset)
@@ -1063,7 +1225,8 @@ static void range_remove(struct vmo *v, struct vmo_range *r)
         spin_unlock_irqrestore(&r->cap->lock, f);
         kobject_unref(r->cap);
     }
-    job_uncharge(r->charged, JOB_LIMIT_HANDLES, 1);   /* (the VMO still holds the job) */
+    job_uncharge(r->charged, JOB_LIMIT_HANDLES, 1);   /* the pinner's (pin_range_new) */
+    job_unref(r->charged);
     kfree(r);
     kobject_unref(&v->base);
 }
@@ -1082,6 +1245,8 @@ static struct vmo_range *range_find_locked(const struct vmo *v, enum range_kind 
 status_t vmo_map_kernel(struct vmo *v, uint64_t offset, uint64_t len, unsigned vm_flags,
                         void **va)
 {
+    if (v->pv)
+        return ERR_NOT_SUPPORTED;   /* the kernel never waits for a pager */
     if (len == 0 || (vm_flags & ~VM_WRITE))
         return ERR_INVALID_ARGS;
     if (offset > VMO_MAX_SIZE || len > VMO_MAX_SIZE)
@@ -1160,16 +1325,21 @@ status_t vmo_unmap_kernel(struct vmo *v, void *va)
 }
 
 /* A pin is a kernel allocation that lives until unpin or the cap's
- * close: one handle unit of the VMO's job, like any small object (a
- * driver could otherwise pin one page forever and fill the kernel
- * heap; test: m6r_pins_are_charged). A new busy pin range [first, end)
- * on v, charged and listed; `writes`: the device may write through it. */
-static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end, bool writes,
-                              struct vmo_range **out)
+ * close: one handle unit, like any small object (a driver could otherwise
+ * pin one page forever and fill the kernel heap; test:
+ * m6r_pins_are_charged). The PINNER pays: the unit is its cap's job's
+ * (the driver's, which also pays for the cap and its domain's tables),
+ * never the VMO's, whose holder may have handed the driver no more than a
+ * read-only view (review M12.1 KDEV finding 4, KCORE finding 6; test:
+ * dma_pin_charges_pinner). The range keeps a reference on that job and
+ * gives the unit back to it wherever the range goes (range_remove: an
+ * unpin, the cap's close, the quarantine's release); a pin kept for good
+ * (pin_keep) keeps its unit. A cap made with no job (kernel tests) charges
+ * nobody. A new busy pin range [first, end) on v, charged to `job` and
+ * listed; `writes`: the device may write through it. */
+static status_t pin_range_new(struct vmo *v, struct job *job, uint64_t first, uint64_t end,
+                              bool writes, struct vmo_range **out)
 {
-    uint64_t jf = vlock(v);
-    struct job *job = v->job;
-    vunlock(v, jf);
     status_t st = job_charge(job, JOB_LIMIT_HANDLES, 1);
     if (st != OK)
         return st;
@@ -1183,10 +1353,12 @@ static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end, bool 
     r->first = first;
     r->end = end;
     r->v = v;
+    job_ref(job);
     r->charged = job;
     st = range_add(v, r);
     if (st != OK) {
         job_uncharge(job, JOB_LIMIT_HANDLES, 1);
+        job_unref(job);
         kfree(r);
         return st;
     }
@@ -1310,9 +1482,29 @@ static status_t pin_publish(struct vmo *v, struct vmo_range *r, struct kobject *
     return OK;
 }
 
+/* A read-only pin takes only pages already committed, and commits none
+ * (ERR_BAD_STATE): it may be made with no more than RIGHT_READ, which
+ * never allowed a commit, and a driver handed a read-only view of a large
+ * sparse VMO must not fill it at its holder's expense (review M12.1 KDEV
+ * finding 4, KCORE finding 6; test: dma_read_only_pin_needs_committed).
+ * Its range, listed, keeps them committed from here on (decommit and
+ * shrink refuse its pages). */
+static status_t pin_committed(struct vmo *v, uint64_t first, uint64_t end)
+{
+    status_t st = OK;
+    uint64_t f = vlock(v);
+    for (uint64_t idx = first; idx < end && st == OK; idx++)
+        if (!phys_locked(v, idx))
+            st = ERR_BAD_STATE;
+    vunlock(v, f);
+    return st;
+}
+
 status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
                        uint32_t flags, uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id)
 {
+    if (v->pv)
+        return ERR_NOT_SUPPORTED;   /* a device can't wait for a pager */
     if (!dma_cap || !pin_id || (flags & ~VMO_PIN_READ_ONLY))
         return ERR_INVALID_ARGS;
     if (dma_cap->type != OBJ_DMA_CAP)
@@ -1334,15 +1526,16 @@ status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, 
      * stays until this pin (on the cap's list) is gone. A read-only pin
      * is read only only where the domain makes it so: without one the
      * device can write whatever it reaches. */
-    struct iommu_domain *dom = dma_cap_from_kobject(dma_cap)->dom;
+    struct dma_cap *c = dma_cap_from_kobject(dma_cap);
+    struct iommu_domain *dom = c->dom;
     bool ro = (flags & VMO_PIN_READ_ONLY) != 0;
     struct vmo_range *r;
-    status_t st = pin_range_new(v, first, end, !(ro && dom), &r);
+    status_t st = pin_range_new(v, c->job, first, end, !(ro && dom), &r);
     if (st != OK)
         return st;
     st = pin_link_cap(r, dma_cap);
     if (st == OK && v->kind == VMO_PAGED)
-        st = commit_pages(v, first, end);
+        st = ro ? pin_committed(v, first, end) : commit_pages(v, first, end);
     if (st != OK) {
         range_remove(v, r);
         return st;

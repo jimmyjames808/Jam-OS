@@ -149,10 +149,6 @@ extern const unsigned         fat_nlimits;
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 bool in_bootfs(const char *path);
-/* The next message on h didn't fit (ERR_BUFFER_TOO_SMALL: n bytes, nh
- * handles): take it off the queue anyway, unanswered, and close its
- * handles. (chans.c) */
-void discard(handle_t h, uint32_t n, uint32_t nh);
 
 /* main.c. Every client is gone, or volumes.stop: no more restarts, the
  * spare and every filesystem service stopped (killed: the mounts were

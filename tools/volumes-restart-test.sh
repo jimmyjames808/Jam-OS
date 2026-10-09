@@ -32,6 +32,9 @@ never() {   # never <text>
 }
 need 1 "init: volumes and its filesystems are gone"
 need 1 "init: devmgr and its drivers are gone"
+need 1 "init: kill volumes: OK"
+need 1 "init: kill devmgr: OK"
+need 1 "init: kill usb-storage-1:0: OK"
 need 1 "volumes: disk [0-9]*: its driver ended"
 need 4 "init: /data mounted"
 need 4 "init: /esp mounted"
@@ -46,12 +49,20 @@ if [ -f "$img" ]; then
         { echo "volumes-restart: the stick's /vr.txt doesn't hold what was written"; ok=0; }
     mtype -i "$img@@64M" ::/logs/boot-0001.txt > "$out/vr-boot.txt" 2>/dev/null || true
     # (what the kernel logged while /data was away may be missing: logd
-    # saves what it still has when /data is back)
-    for line in "init: kill volumes: OK" "init: kill devmgr: OK" "init: kill usb-storage-1:0: OK" \
+    # saves what it still has when /data is back. And a kill's own line,
+    # "init: kill X: OK", is logged as X and its filesystem die: logd's
+    # write of it that was not yet synced (it syncs every 250 ms: a sudden
+    # stop loses the last quarter second, by design) goes with them. So the
+    # file is checked for what is logged after each death, when logd has
+    # /data again, and the kills themselves in the serial log above.)
+    for line in "init: volumes and its filesystems are gone" "init: devmgr and its drivers are gone" \
                 "init: /data synced in"; do
         grep -q "$line" "$out/vr-boot.txt" ||
             { echo "volumes-restart: boot-0001.txt on the stick lacks \"$line\""; ok=0; }
     done
+    n=$(grep -ac "init: /data is gone" "$out/vr-boot.txt" || true)
+    [ "$n" -ge 3 ] ||
+        { echo "volumes-restart: boot-0001.txt on the stick has \"init: /data is gone\" $n times, wanted 3 or more"; ok=0; }
     ! mdir -i "$img@@64M" ::/logs/boot-0002.txt > /dev/null 2>&1 ||
         { echo "volumes-restart: logd started a second boot log"; ok=0; }
     rm -f "$img"
