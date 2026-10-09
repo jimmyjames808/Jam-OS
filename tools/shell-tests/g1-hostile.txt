@@ -2,8 +2,9 @@
 # part is docs/G1-SIGNOFF.md): Jamjar and a second terminal open on the
 # default (compositor) boot, then utest's comp_live tests connect to the
 # desktop's own compositor and send it every bad request, every
-# per-client cap, a client that floods and never reads, and clients that
-# crash holding windows (one between attach and commit). The desktop must
+# per-client cap, a client that floods and never reads, clients that
+# crash holding windows (one between attach and commit), and a fuzzer's
+# batches (comp_live_fuzz, M12.1). The desktop must
 # answer throughout: Jamjar and both terminals stay, the first terminal
 # keeps answering. Then the compositor itself is killed: init starts it
 # again, both consoles and Jamjar connect again on their own, and the
@@ -41,7 +42,7 @@ sleep 1
 # ---- the hostile clients -----------------------------------------------------------------
 send utest only comp_live; echo hostile-$T-$?
 wait 300 hostile-x-0
-seen 5 utest: 4 passed
+seen 5 utest: 5 passed
 send jobs | grep jamjar && echo ok-$T-jamjar
 wait 10 ok-x-jamjar
 shot g1-hostile-after

@@ -14,7 +14,11 @@
  * resize arrows on its edges and corners, the hand on its circles, the arrow
  * on it; then the client asks for the text bar and the hand by name
  * (wp-cursor-shape-v1), a stale serial ignored, a shape there isn't an
- * error. The pictures are compared pixel for pixel with cursors.c's. */
+ * error. The pictures are compared pixel for pixel with cursors.c's.
+ * t_wm_seat_overlay_keys: a client with no wl_keyboard maps a full-screen
+ * toplevel (a boot overlay: over everything) and then binds a keyboard; a
+ * click on it reaches it as a button, but never gives it the keys (review
+ * C3): the window that had them keeps them. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -289,6 +293,94 @@ bool t_wm_seat_cursors(void)
     CHECK(cs_start(&t));
     CHECK(cs_client(&t, &a));
     bool ok = toplevel(&a, &w) && frame_cursor_steps(&t) && shape_steps(&t, &a);
+    ct_close(&a.k);
+    CHECK(cs_stop(&t));
+    return ok;
+}
+
+/* ---- a boot overlay never takes the keys ---------------------------------------------- */
+
+/* Client b with a seat and a pointer but no keyboard: a full-screen
+ * toplevel, asked for before its first buffer, mapped: a boot overlay. */
+static bool overlay(struct ct_client *b, uint32_t *seat, uint32_t *ptr)
+{
+    struct top t;
+    CHECK((*seat = ct_new(b, &jwl_wl_seat_interface, 5)) != 0);
+    CHECK_ST(jwl_wl_registry_bind(b->c, b->registry, 4, "wl_seat", 5, *seat), OK);
+    CHECK((*ptr = ct_new(b, &jwl_wl_pointer_interface, 5)) != 0);
+    CHECK_ST(jwl_wl_seat_get_pointer(b->c, *seat, *ptr), OK);
+    CHECK((t.wm = ct_new(b, &jwl_xdg_wm_base_interface, 1)) != 0);
+    CHECK_ST(jwl_wl_registry_bind(b->c, b->registry, 5, "xdg_wm_base", 1, t.wm), OK);
+    t.s = ct_new(b, &jwl_wl_surface_interface, 4);
+    t.xs = ct_new(b, &jwl_xdg_surface_interface, 1);
+    t.top = ct_new(b, &jwl_xdg_toplevel_interface, 1);
+    CHECK_ST(jwl_wl_compositor_create_surface(b->c, b->compositor, t.s), OK);
+    CHECK_ST(jwl_xdg_wm_base_get_xdg_surface(b->c, t.wm, t.xs, t.s), OK);
+    CHECK_ST(jwl_xdg_surface_get_toplevel(b->c, t.xs, t.top), OK);
+    CHECK_ST(jwl_xdg_toplevel_set_fullscreen(b->c, t.top, 0), OK);
+    ct_clear(b);
+    CHECK_ST(jwl_wl_surface_commit(b->c, t.s), OK);
+    CHECK_ST(ct_roundtrip(b), OK);
+    int32_t w = -1, h = -1;
+    uint32_t serial = last_configure(b, &t, &w, &h);
+    CHECK(serial);
+    CHECK(w == OUT_W && h == OUT_H);
+    CHECK_ST(jwl_xdg_surface_ack_configure(b->c, t.xs, serial), OK);
+    uint32_t size = OUT_W * OUT_H * 4;
+    uint32_t pool = ct_pool(b, size, NULL), buf = ct_new(b, &jwl_wl_buffer_interface, 1);
+    CHECK(pool && buf);
+    CHECK_ST(jwl_wl_shm_pool_create_buffer(b->c, pool, buf, 0, OUT_W, OUT_H, OUT_W * 4,
+                                           JWL_WL_SHM_FORMAT_XRGB8888), OK);
+    CHECK_ST(jwl_wl_surface_attach(b->c, t.s, buf, 0, 0), OK);
+    CHECK_ST(jwl_wl_surface_commit(b->c, t.s), OK);
+    CHECK_ST(ct_roundtrip(b), OK);
+    CHECK(!b->errored);
+    return true;
+}
+
+static bool overlay_key_steps(struct cs *t, struct sc *a, struct ct_client *b)
+{
+    uint32_t seat, ptr, kb;
+    CHECK(overlay(b, &seat, &ptr));
+    /* it binds a keyboard after it mapped */
+    CHECK((kb = ct_new(b, &jwl_wl_keyboard_interface, 5)) != 0);
+    CHECK_ST(jwl_wl_seat_get_keyboard(b->c, seat, kb), OK);
+    CHECK_ST(ct_roundtrip(b), OK);
+    ct_clear(b);
+    ct_clear(&a->k);
+    /* a click: on it (over everything), as a button */
+    CHECK(cs_pointer_to(t, OUT_W / 2, OUT_H / 2));
+    CHECK(cs_button(t, true));
+    CHECK(cs_button(t, false));
+    CHECK(cs_sync(a, NULL));
+    CHECK_ST(ct_roundtrip(b), OK);
+    CHECK(ct_find(b, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON, ptr));
+    /* ... but not the keys: they stay with a's window */
+    CHECK(!ct_find(b, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER, kb));
+    CHECK(!find_ev(a, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_LEAVE));
+    ct_clear(&a->k);
+    CHECK(cs_tap(t, U_A, 0));
+    CHECK(cs_sync(a, NULL));
+    CHECK_ST(ct_roundtrip(b), OK);
+    static const uint32_t want[] = { DOWN(KEY_A), UP(KEY_A) };
+    CHECK(keys_are(&a->k, want, 2));
+    CHECK(no_keys(b));
+    CHECK(!a->k.errored && !b->errored);
+    return true;
+}
+
+bool t_wm_seat_overlay_keys(void)
+{
+    static struct sc a;
+    static struct ct_client b;
+    struct cs t;
+    struct top w;
+    CHECK(cs_start(&t));
+    CHECK(cs_client(&t, &a));
+    CHECK(ct_open(&t.p, &b));
+    CHECK(ct_bind_all(&b));
+    bool ok = toplevel(&a, &w) && overlay_key_steps(&t, &a, &b);
+    ct_close(&b);
     ct_close(&a.k);
     CHECK(cs_stop(&t));
     return ok;

@@ -194,6 +194,11 @@ struct anim_draw {
 };
 bool     anim_now(struct anim_draw *out);   /* false: no picture to draw */
 
+/* May a frame f have a picture: no bigger than the output (its area). A
+ * client's window may be up to 8192x8192 at its buffer's size: its
+ * picture would be 256 MiB, painted on the loop's thread at each map and
+ * unmap (review C2); such a window opens and closes without one. */
+bool     anim_picturable(struct comp_box f);
 /* animdraw.c: w's picture (ERR_NO_MEMORY: none, the animation is skipped),
  * and giving one back; the picture where it meets t. */
 status_t anim_snapshot(const struct comp_window *w, struct anim_snap *out);
@@ -346,6 +351,9 @@ extern struct alttab_state alttab;
 void     alttab_step(bool back);
 /* Alt let go (go: to the selected window) or Esc (not). */
 void     alttab_end(bool go);
+/* ww is going (wm_destroy): its row leaves the list, the selection
+ * following; a list left empty ends. */
+void     alttab_forget(const struct wm_window *ww);
 struct comp_box alttab_box(void);
 struct comp_box alttab_row_box(unsigned i);   /* empty: scrolled out */
 bool     alttab_press(int32_t x, int32_t y);

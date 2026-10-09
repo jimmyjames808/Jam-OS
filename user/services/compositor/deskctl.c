@@ -146,7 +146,9 @@ status_t deskctl_notify(unsigned slot, uint32_t gen, const struct deskctl_note *
         return ERR_NOT_SUPPORTED;
     (void)waiter(slot, gen);
     own(id, slot, gen, n.nbuttons != 0);
-    printf("compositor: notice %u: %s%s%s\n", id, n.title, n.body[0] ? ": " : "", n.body);
+    static struct comp_log said;   /* any program on /svc/notify can post */
+    if (comp_log_ok(&said, "notices"))
+        printf("compositor: notice %u: %s%s%s\n", id, n.title, n.body[0] ? ": " : "", n.body);
     *out_id = id;
     return OK;
 }

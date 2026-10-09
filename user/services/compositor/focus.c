@@ -67,11 +67,14 @@ bool seat_takes_keys(struct comp_client *cl)
 
 /* Can w take the focus: mapped, its client alive and taking keys (it has a
  * wl_keyboard: a client without one, the boot splash, never takes the keys
- * from the window that has them, by mapping or by a click). */
+ * from the window that has them, by mapping or by a click), and no boot
+ * overlay. An overlay's client had no wl_keyboard when it mapped, but may
+ * bind one later: its window, over every other and the whole output, must
+ * still never get the keys (review C3). */
 static bool focusable(const struct comp_window *w)
 {
-    return w && (w->flags & COMP_WIN_MAPPED) && client_alive(w->surface->client) &&
-           seat_takes_keys(w->surface->client);
+    return w && (w->flags & COMP_WIN_MAPPED) && !(w->flags & COMP_WIN_OVERLAY) &&
+           client_alive(w->surface->client) && seat_takes_keys(w->surface->client);
 }
 
 void seat_focus(struct comp_window *w)

@@ -7,6 +7,39 @@ of [PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-2-g1-alone): it runs alone,
 after wave 1 and before M12, so that M12 reviews the compositor's
 protocol with every other interface.
 
+**As built since G1 (M12 and M12.1, 2026-10-09): read this first.** The
+"As built" notes below are as of G1's sign-off. Where M12 changed the
+code they are out of date in these ways (the code and ARCHITECTURE's
+"Graphics" sections are current):
+- **The transport is JWL2** (`<jwl.h>`, review W2-W5): the header's
+  second word is the batch's handle count, not `acked`; handles are a
+  queue per connection (28 a batch and 28 waiting), each `fd` argument
+  taking the next, across batches; the compositor's window of 32 batches
+  is counted by the kernel (`handle_info`'s `peer_queued`), not by the
+  client; held batches merge into blocks, 64 KiB of heap in all. A client
+  the compositor disconnects loses its slot and our end of its channel at
+  once (Q2): no lingering slots.
+- **Input is events** (`abi/idl/input.idl`, W6-W8): key (usage, UP or
+  DOWN, the modifier byte), mouse, text and ready from a source, `leds` to
+  each keyboard (the compositor owns the locks); no REPEAT. A source comes
+  by `compctl.add_source(handle)`, an event, not `connect_input`.
+- **Notices are their own protocol** (`abi/idl/notify.idl`, W9-W11):
+  notify, post (an event), notify_wait and withdraw on `/svc/notify`'s
+  channels, strings as `str[<=n]`. compctl keeps ADMIN and INPUT; init
+  posts on a notify channel of its own.
+- **`nocomp` is gone** (Q14, W13, W14), with the console's
+  `connect_input`, `lend_screen` and `blank` and its mouse forwarding:
+  the desktop is the only way Jam OS draws.
+- **The clipboard** checks a receive's handle with `handle_info` (a
+  channel end with write and transfer rights: a write-only end will do).
+- **M12.1's review** ([M12.1-REVIEW-COMPOSITOR.md](M12.1-REVIEW-COMPOSITOR.md))
+  fixed: Alt+Tab's list keeping a window that went; an animation's
+  picture of a frame of any size; a boot overlay taking the keys; client
+  size limits past 8192 (now held to it, so the remembered arrangement
+  always passes its check); unbounded log lines from clients and posters
+  (now rationed). It added the fuzz and chaos tests (`comp_fuzz`,
+  `comp_live_fuzz`, `comp_chaos`).
+
 Goal ([roadmap](ROADMAP.md#later)): **a compositor of our own on the
 firmware framebuffer that speaks the Wayland protocol. Apps draw into
 their own surfaces, input goes only to the focused client, a crashed app
@@ -727,6 +760,10 @@ reference, not libwayland's code.)
 | 8-11 | nfds | how many handles the batch's `fd` arguments use (must equal the handles the channel message carries) |
 | 12-15 | reserved | 0 |
 
+(M12 made it JWL2: the second word is the handle count, the window is
+the kernel's count, handles queue per connection; see the note at the
+top.)
+
 - **An `fd` argument is a handle.** The batch's handles travel in the
   channel message's own handle list (moved, as every handle is), and
   the `fd` arguments take them in order, as file descriptors follow the
@@ -1009,7 +1046,7 @@ end but never unbound it from the port, and a port binding holds its
 object and its charge (`BINDING_CHARGE`, 192 + 1024 bytes) until it is
 unbound or the port goes; closing the last handle doesn't remove it
 (the kernel's rule, `port.h`). Only the lingering slots, whose `ONCE`
-binding retires when its packet is read, were clean. `free_client` now
+binding retires when its packet is read, were clean (M12 removed them). `free_client` now
 unbinds first. libjwl's paste did the same with each transfer's channel
 (`jwl_data.c`'s `paste_end`, in the terminal's job): fixed likewise.
 Tests: `comp_lost_clients`, message bytes in every headless hostile
@@ -1307,8 +1344,8 @@ and a control channel of init's that answers only `reboot` and
 `layout=` from `display.layout` (floating before `/data` is there; once
 it is, init sends the saved one with the new `compctl.set_layout`) and
 `hz=` from `display.hz` when it is set. The boot word `nocomp` (menu
-"Jam OS (no compositor)", kept by kexec) leaves it out: the console as
-before. init publishes `/svc/wayland` (the shell passes it to the
+"Jam OS (no compositor)", kept by kexec) left it out: the console as
+before (gone in M12). init publishes `/svc/wayland` (the shell passes it to the
 programs that ask; the splash's grants have it); from the ADMIN channel
 it makes devmgr's INPUT channel (SR_CONSOLE and DEVMGR_SET_CONSOLE, with
 the devmgr argument `comp` saying which protocol it is; a new one after
@@ -1682,7 +1719,7 @@ go out with ids of ours, answers come to the port). New methods:
 `initctl.launch(u8[16] app) -> (u64 koid)` (the compositor's and the
 shell's channels; consoles refused) and `initctl.terminal(u8[128] command)
 -> (u8 number)` (a command its new shell runs first, once); compctl's
-level 2 NOTIFY with `notify(u8[64] title, u8[96] body, u8 icon, u8 tint,
+level 2 NOTIFY (M12: the `notify` protocol of its own) with `notify(u8[64] title, u8[96] body, u8 icon, u8 tint,
 u8[72] buttons) -> (u32 id)`, `notify_wait() -> (u32 id, u8 button) later`
 and `withdraw(u32 id)` (NOTIFY and ADMIN), and `/svc/notify`, whose
 svc.connect makes a NOTIFY channel; `audioctl.desk() -> (i32 master, u8
@@ -1736,7 +1773,7 @@ above) for the clipboard's selection only. **The transfer:** where
 Wayland passes a pipe's write end (`wl_data_offer.receive(mime, fd)`,
 passed on as `wl_data_source.send(mime, fd)`), a Jam OS reader passes one
 end of a channel it made and keeps the other; the compositor checks that
-the handle is a channel end (a zero-byte read) and hands it to the owner
+the handle is a channel end (a zero-byte read; since M12 `handle_info`) and hands it to the owner
 with write, wait and transfer only; the owner writes the text as channel
 messages of bytes (at most 64 KiB each, no handles) and closes its end,
 which the reader sees as the end of the data (`ERR_PEER_CLOSED`, a pipe's

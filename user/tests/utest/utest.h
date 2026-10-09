@@ -508,6 +508,7 @@ bool t_comp_super_enter(void);
 /* compplumb.c: the desktop's plumbing (D2b) */
 bool t_comp_notify(void);
 bool t_comp_notify_splash(void);
+bool t_comp_notify_flood(void);
 bool t_comp_launch(void);
 bool t_comp_volume_net(void);
 bool t_comp_no_keyboard(void);
@@ -535,11 +536,14 @@ bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
 /* Clients lost every way, round after round: nothing stays charged to the compositor. */
 bool t_comp_lost_clients(void);
+bool t_comp_fuzz(void);
+bool t_comp_chaos(void);
 /* The same against the desktop's compositor (/svc/wayland): `utest only comp_live`. */
 bool t_comp_live_bad_requests(void);
 bool t_comp_live_caps(void);
 bool t_comp_live_client_crash(void);
 bool t_comp_live_never_reads(void);
+bool t_comp_live_fuzz(void);
 bool t_comp_regions(void);
 /* conwin.c: the console's window mode: its grid and padding, the view,
  * terminal.font, keys and pointer (wlinput.c, view.c, linked in). */
@@ -633,6 +637,8 @@ bool t_wm_save_restore(void);
 bool t_wm_save_late(void);
 bool t_wm_save_full(void);
 bool t_wm_save_bad(void);
+bool t_wm_save_big_min(void);
+bool t_wm_save_unmapped(void);
 bool t_wm_focus_dir(void);
 bool t_wm_swap(void);
 bool t_wm_reflow(void);
@@ -646,8 +652,10 @@ bool t_desk_minimise(void);
 bool t_desk_room(void);
 bool t_desk_strip(void);
 bool t_desk_anim(void);
+bool t_desk_anim_big(void);
 bool t_desk_cursors(void);
 bool t_desk_alttab(void);
+bool t_desk_alttab_gone(void);
 bool t_desk_search(void);
 bool t_desk_popover(void);
 bool t_desk_notify(void);
@@ -657,6 +665,7 @@ bool t_desk_overlay(void);
  * Super+Q, Super+F, Super+T on an xdg toplevel. */
 bool t_wm_seat(void);
 bool t_wm_seat_cursors(void);
+bool t_wm_seat_overlay_keys(void);
 bool t_xdg_toplevel(void);
 bool t_xdg_tiling(void);
 bool t_xdg_tile_resize(void);

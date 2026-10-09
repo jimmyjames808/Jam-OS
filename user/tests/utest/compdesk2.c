@@ -7,6 +7,9 @@
  * next, Shift+Tab back, wrapping; letting go of Alt goes there (to its
  * screen, restored); Esc cancels; the list shows only once Alt was held
  * LOOK_ALTTAB_SHOW_MS.
+ * t_desk_alttab_gone: windows destroyed while the list is open (review
+ * C1): their rows go, the selection stays on a live window, the last one
+ * gone ends the list.
  * t_desk_search: Super tapped alone opens and closes it (not with another
  * key or a click between, nor held too long); typing filters (names
  * starting with the text first), the rows the most recently run first, the
@@ -153,6 +156,77 @@ bool t_desk_alttab(void)
 {
     desk_test_start(COMP_FLOATING);
     bool ok = alttab_steps();
+    fk_close_all();
+    return ok;
+}
+
+/* Is ww in the list's rows? (A pointer compared, never read.) */
+static bool listed(const struct wm_window *ww)
+{
+    for (unsigned i = 0; i < alttab.n; i++)
+        if (alttab.rows[i].ww == ww)
+            return true;
+    return false;
+}
+
+/* The list open (Alt held), and listed windows destroyed by their clients
+ * (review C1): each row goes with its window, the selection stays on a
+ * live one, the list showing; letting go of Alt goes there; the last one
+ * gone ends the list. */
+static bool alttab_gone_steps(void)
+{
+    for (unsigned i = 0; i < 3; i++) {
+        CHECK(fk_open(&fks[i], 300, 200, false));
+        seat_focus(win(i));
+    }
+    CHECK(key(U_TAB, ALT));
+    CHECK(key(U_TAB, ALT));
+    desk_tick(alttab.since + (LOOK_ALTTAB_SHOW_MS + 1) * NS_PER_MS);
+    CHECK(alttab.active && alttab.shown);
+    CHECK_EQ(alttab.n, 3);
+    struct wm_window *sel = alttab.rows[alttab.sel].ww, *other = NULL;
+    for (unsigned i = 0; i < 3; i++)
+        if (fks[i].ww != sel && fks[i].ww != alttab.rows[0].ww)
+            other = fks[i].ww;
+    CHECK(other && other != sel);
+    /* a row that isn't the selected one */
+    wm_destroy(other);
+    for (unsigned i = 0; i < 3; i++)
+        if (fks[i].ww == other)
+            fks[i].ww = NULL;
+    CHECK(!listed(other));
+    CHECK_EQ(alttab.n, 2);
+    CHECK(alttab.rows[alttab.sel].ww == sel);
+    /* the selected one: the next row is selected */
+    wm_destroy(sel);
+    for (unsigned i = 0; i < 3; i++)
+        if (fks[i].ww == sel)
+            fks[i].ww = NULL;
+    CHECK(!listed(sel));
+    CHECK_EQ(alttab.n, 1);
+    CHECK_EQ(alttab.sel, 0);
+    struct wm_window *last = alttab.rows[0].ww;
+    CHECK(last && last->win);
+    desk_key_up(U_LALT);
+    CHECK(!alttab.active);
+    CHECK_EQ(seat.focused, last->win);
+    /* every window gone while the list is open: it ends */
+    CHECK(key(U_TAB, ALT));
+    CHECK(alttab.active);
+    for (unsigned i = 0; i < 3; i++)
+        if (fks[i].ww) {
+            wm_destroy(fks[i].ww);
+            fks[i].ww = NULL;
+        }
+    CHECK(!alttab.active && !alttab.n);
+    desk_key_up(U_LALT);
+    return true;
+}
+
+bool t_desk_alttab_gone(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = alttab_gone_steps();
     fk_close_all();
     return ok;
 }
