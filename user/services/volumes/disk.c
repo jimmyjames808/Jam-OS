@@ -119,34 +119,6 @@ static struct disk *disk_alloc(void)
     return NULL;
 }
 
-/* The next message queued on h into buf (cap bytes): OK and *n, or
- * jam_channel_read's status once nothing is left. Nothing volumes asked for
- * comes with handles or is bigger than cap: handles are closed, a message
- * that doesn't fit is dropped. */
-status_t next_msg(handle_t h, void *buf, uint32_t cap, uint32_t *n)
-{
-    for (int guard = 0; guard < 64; guard++) {
-        handle_t hs[4];
-        uint32_t nh = 0;
-        struct channel_read_args a = {
-            .h = h, .rd_cap = cap, .rd_bytes = (uint64_t)(uintptr_t)buf,
-            .rd_actual = (uint64_t)(uintptr_t)n, .rd_handles = (uint64_t)(uintptr_t)hs,
-            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-        };
-        status_t st = jam_channel_read(&a);
-        if (st == ERR_BUFFER_TOO_SMALL) {
-            discard(h, *n, nh);
-            continue;
-        }
-        if (st != OK)
-            return st;
-        for (uint32_t i = 0; i < nh; i++)
-            jam_handle_close(hs[i]);
-        return OK;
-    }
-    return ERR_SHOULD_WAIT;
-}
-
 /* ---- the steps --------------------------------------------------------------- */
 
 /* d's driver doesn't answer: nothing of it is mounted. */

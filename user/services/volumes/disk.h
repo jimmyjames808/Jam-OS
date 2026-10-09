@@ -71,9 +71,6 @@ extern uint32_t txids;   /* the last transaction id written without waiting */
 /* disk.c */
 const char *disk_name(const struct disk *d);      /* "disk 7", "test disk 2" (static buffer) */
 struct disk *disk_of(const struct vol *b);    /* b's disk, or NULL */
-/* The next message queued on h into buf (cap bytes): OK and *n, or
- * jam_channel_read's status once nothing is left. */
-status_t    next_msg(handle_t h, void *buf, uint32_t cap, uint32_t *n);
 void        leave_alone(struct disk *d, const char *why);   /* its driver doesn't answer */
 void        not_boot(struct disk *d, const char *why);      /* step 4 */
 
