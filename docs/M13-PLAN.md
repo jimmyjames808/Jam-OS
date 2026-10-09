@@ -1553,12 +1553,9 @@ the cache in `user/posix/sys/poll.c`'s header; epoll's rules in
 - **select**: a descriptor only in the exception set is checked (EBADF)
   and left out, since POLLPRI never comes; a hang-up counts as writable
   as well as readable, so a writer finds out (EPIPE). select is its own
-  file because fd.h's `fd_set` (the table's call) and `<sys/select.h>`'s
-  `fd_set` (the type) can't meet in one file; epoll.c renames the call
-  with a `#define` around its include of fd.h, since `<sys/epoll.h>`
-  brings `<sys/types.h>` and the type. **For B1**: renaming `fd_set`
-  (say `fd_place`) would end both work-arounds; any kind file that
-  includes `<sys/types.h>` under `_GNU_SOURCE` meets the same clash.
+  file (select.c, poll.c's core through pollcore.h). The table's call
+  that clashed with `<sys/select.h>`'s `fd_set` type is `fd_place` since
+  B1, so no file needs a rename around fd.h.
 - **epoll**: an item is (number, description) and holds no reference:
   `epoll_forget` takes it out of every set when the description goes
   (a global list of sets, skipped while no set has an item). A kind with
@@ -1596,3 +1593,112 @@ the cache in `user/posix/sys/poll.c`'s header; epoll's rules in
   then hold two entries).
 - **B3 (spawn)**: an epoll descriptor's `give` is ENOTSUP: leave it out
   of a child's hand-over.
+
+## B1 notes
+
+Track B1 (files and directories) as built, with the choices the plan
+left open. The files: `user/posix/sys/fd.h` and fd.c (the table),
+files.h (what the file side shares), path.c (paths, the current
+directory, a mount's answers as errno), fobj.c (a file's one open in a
+process), file.c (the file kind, open, truncate, mmap of a
+descriptor), dir.c (the directory kind, getdents64, mkdir, unlink,
+rmdir, rename, chdir, getcwd), meta.c (the stat family, statfs, access,
+chmod and the rest FAT has no answer for); posixtest's files.c,
+files2.c, fileskid.c and ptfiles.h; `tools/shell-tests/posix-files.txt`.
+
+- **The kind interface** (fd.h): `struct fd_ops` per kind (read and
+  write take an iovec and a position, FD_AT_OFFSET for the description's
+  own; `write_at` for pwritev2's RWF_NOAPPEND; seek, stat, ioctl, sync,
+  truncate, getdents, setfl, path; ready and arm for poll; give for
+  posix_spawn; close), `struct fd_desc` (refcounted; a lock for the
+  offset and the kind's per-call state; status flags read and set
+  atomically). Slots: `fd_get`/`fd_put`, `fd_alloc` + `fd_place` (a
+  reserved slot, so EMFILE comes before an open's side effects),
+  `fd_install`, `fd_replace` (EBUSY onto a reserved slot, as Linux's
+  dup2), `fd_next`, `fd_give`. A NULL hook answers what Linux answers a
+  kind without the call (ESPIPE, ENOTTY, ENOTDIR, EINVAL).
+- **The hand-over is staged.** start.c reads it before musl runs, so
+  fd_stage only records (no malloc): records in a static array, their
+  data in a VMO mapped for the purpose (committed as touched). A
+  constructor at priority 101 (before any of the program's) makes the
+  descriptors through `fd_adopters`, one line per POSIXFDS kind; a kind
+  without an adopter is left out with a line in the log.
+- **One open per file per process** (fobj.c). fat lets a file have one
+  writable open and nothing else beside it but reads (ERR_BUSY), which
+  the plan's "fat already serves several opens of one file" missed for
+  writers. So every description of a file in a process shares one open,
+  found by the mount and fs.stat's id; it is opened again to write when
+  a description first needs it. The process then holds the file's only
+  writable open, so it knows the size, and **O_APPEND is the layer's**
+  (a write at that size under the open's lock: exact for every
+  description in the process). No FS_APPEND, and no FS_GATHER (writes
+  go through as POSIX programs expect of the page cache's readers).
+- **A writable file can't be handed to a child** while the parent holds
+  it: the child's own open (section 3) is ERR_BUSY, so `fd_give` is
+  EBUSY. A read-only file is given (its own open, at the parent's
+  offset, M13 Q5). `cmd > file` therefore needs the open done in the
+  child (posix_spawn's `addopen`, B3) or a change to fat's rule (several
+  writers of one file, or the file protocol's "clone" of Q5's (B)): a
+  question for the owner, not decided here.
+- **Paths**: up to 4096 bytes with the NUL (the `fs` protocol's), called
+  on the mount's channel directly (libos's file calls stop at 256).
+  ".." stops at a mount's root as the plan says, so `chdir("/data/..")`
+  stays in /data. A trailing slash, "." or ".." at the end means only a
+  directory will do (ENOTDIR; EISDIR for O_CREAT). Paths under /dev and
+  /etc go to B2's kinds.h first; any other change there is EACCES (/dev)
+  or EROFS (/etc).
+- **open** refuses unknown flags with EINVAL (openat2's rule; open(2)
+  ignores them), access mode 3 too; O_TMPFILE is EOPNOTSUPP, O_PATH
+  works for files (stat, fchdir and the *at calls on directories;
+  read and write EBADF), O_SYNC and O_DSYNC sync after each write.
+  O_CREAT on a read-only mount opens a file that is there (Linux's
+  order), O_RDONLY|O_TRUNC truncates (Linux's).
+- **Errors in Linux's order** where FAT allows: mkdir and O_CREAT look
+  for the name before write access (EEXIST before EROFS); unlink, rmdir
+  and rename ask for write access first (EROFS for a missing name on a
+  read-only mount). A refusal is EROFS when the mount says it is
+  read-only (fs.statfs, remembered a second per mount), else EACCES.
+  "/" and /svc are read-only: mkdir there is EROFS, rmdir of a mount
+  point EBUSY, rename across mounts EXDEV.
+- **stat**: modes as the plan says, but on a read-only mount the write
+  bits go (0555 for directories and /boot's programs, 0444 for files:
+  the plan's 0444 for everything would make directories unsearchable to
+  `test -x`). A program under /boot is a file in a `bin` or `sbin`
+  directory. /svc's services stat as sockets (S_IFSOCK 0666). st_dev is
+  the mount's place in the namespace (1 on), st_nlink 1, st_blocks from
+  the size. statfs: FAT's magic (MSDOS) or ramfs's for the boot image,
+  4096-byte blocks, ST_RDONLY from the mount.
+- **getdents64** gives "." and ".." first (the services leave them out);
+  d_off is a position (2 + the batch's cookie << 16 | the entry in it),
+  which seekdir takes back. A listing started again (from ".", or after
+  any lseek: rewinddir, seekdir) asks the service afresh.
+- **pwrite**: musl 1.2.6's pwrite is pwritev2 with RWF_NOAPPEND, so
+  preadv2 and pwritev2 are here: it writes where it is told even with
+  O_APPEND (POSIX's rule; Linux's pwrite(2) appends). RWF_DSYNC and
+  RWF_SYNC sync; RWF_NOWAIT and RWF_APPEND are EOPNOTSUPP.
+- **unlink of an open file** is EBUSY (fat's rule); musl's tmpfile
+  ignores its unlink's failure, so the name stays until removed.
+- **mmap** of a descriptor (mem.c, A1's file: the call to file.c's
+  `file_map` and the source VMO in `map_new`): MAP_PRIVATE is a copy of
+  the file, or of a memfd, zero past the end; MAP_SHARED of a memfd is
+  its own VMO (B2's `memfd_vmo`); of a file ENODEV until M12.5. EACCES
+  for a descriptor not open for reading, ENODEV for a kind with no
+  mapping.
+- **Found and fixed in A1's code**: a detached thread's stack, unmapped
+  by `__unmapself` itself, stayed in libc's table of mappings, so a
+  later mapping at that address could not be unmapped (ENOENT);
+  `__jam_unmapself_prepare` now takes the base and size and the table
+  forgets the range (`mem_forget`). posixtest's thread section checks it.
+- **fd_set is fd_place** (B5's note): `fd_set` is `<sys/select.h>`'s type.
+- **The 10,000 files** take about 2.5 minutes on QEMU's USB stick (8 ms a
+  file made, 7 removed: fat writes each entry through), so the init run's
+  files section lists 300 (two readdir batches) and the 10,000 are the
+  files-many section, run by `tools/shell-tests/posix-files.txt`
+  (`QEMU_TIMEOUT=600`). posixtest's list asks for /data (rw) and /boot
+  (r) so the shell gives them.
+- **The errno table** (posixtest files.c) has each row's man page and
+  error; it was written from the man pages and POSIX, not run on Linux.
+- **Not done**: `prlimit`/`getrlimit` (RLIMIT_NOFILE's 1024 is FD_MAX but
+  no call answers it yet), `statx` (ENOSYS: musl falls back to fstatat),
+  listing /dev and /etc (B2's), delete-on-close for an open file
+  unlinked.
