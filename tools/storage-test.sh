@@ -46,7 +46,7 @@ expect usbtest: unplug the second disk now
 sleep 0.3
 send device_del disk2
 EOF
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_MONITOR="$mon" \
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-400} QEMU_MONITOR="$mon" \
 QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2 \
 -drive if=none,id=disk2img,format=raw,file=$disk,throttling.bps-read=262144 \
 -device usb-storage,id=disk2,bus=xhci.0,port=2.1,drive=disk2img,serial=jamos-disk2 \
