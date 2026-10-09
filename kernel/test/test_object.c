@@ -285,17 +285,19 @@ KTEST(auditD_handle_generation_no_wrap)
 
 /* ---- status codes ------------------------------------------------------------------ */
 
-/* Every status has a name, Q9's five filesystem codes (M12) too. */
+/* Every status has a name, Q9's five filesystem codes (M12) and the
+ * interrupted wait's too. */
 KTEST(status_codes_named)
 {
-    for (status_t s = OK; s >= ERR_BUSY; s--)
+    for (status_t s = OK; s >= ERR_INTERRUPTED; s--)
         KT_ASSERT(strcmp(status_str(s), "ERR_?") != 0);
     KT_ASSERT(!strcmp(status_str(ERR_NOT_DIR), "ERR_NOT_DIR"));
     KT_ASSERT(!strcmp(status_str(ERR_IS_DIR), "ERR_IS_DIR"));
     KT_ASSERT(!strcmp(status_str(ERR_NOT_EMPTY), "ERR_NOT_EMPTY"));
     KT_ASSERT(!strcmp(status_str(ERR_NAME_TOO_LONG), "ERR_NAME_TOO_LONG"));
     KT_ASSERT(!strcmp(status_str(ERR_BUSY), "ERR_BUSY"));
-    KT_ASSERT(!strcmp(status_str(ERR_BUSY - 1), "ERR_?"));
+    KT_ASSERT(!strcmp(status_str(ERR_INTERRUPTED), "ERR_INTERRUPTED"));
+    KT_ASSERT(!strcmp(status_str(ERR_INTERRUPTED - 1), "ERR_?"));
 }
 
 /* ---- handle_info --------------------------------------------------------------------- */

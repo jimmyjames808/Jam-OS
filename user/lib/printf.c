@@ -314,6 +314,7 @@ const char *status_str(status_t s)
     case ERR_NOT_EMPTY:        return "ERR_NOT_EMPTY";
     case ERR_NAME_TOO_LONG:    return "ERR_NAME_TOO_LONG";
     case ERR_BUSY:             return "ERR_BUSY";
+    case ERR_INTERRUPTED:      return "ERR_INTERRUPTED";
     }
     return "?";
 }
