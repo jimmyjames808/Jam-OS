@@ -92,6 +92,18 @@
 #define NET_TCP              0x001d0008u
 #define NET_TCP_LISTENER     0x001d0009u
 
+/* Constants (the .idl's `const` lines). */
+/* The rule for time in this protocol (the M12 plan's Q19): a call has its
+ * caller's deadline, and a method carries a `timeout_ms` only where the
+ * server bounds a wait the caller's deadline cannot (it holds a slot of its
+ * own for the wait: an echo in flight, a change awaited, a connection
+ * awaited). Every such timeout is 1 to TIMEOUT_MAX milliseconds; where a
+ * wait may be endless it can also be WAIT_FOREVER (wait_change, accept); 0
+ * is accepted only where it means "don't wait" (accept). Anything else is
+ * ERR_INVALID_ARGS, and the call is refused before it holds anything. */
+#define NET_WAIT_FOREVER 0xffffffffu
+#define NET_TIMEOUT_MAX 60000u
+
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct net_iface_req {
     uint32_t txid;
@@ -291,8 +303,9 @@ static inline status_t net_wait_change_call(handle_t ch, bool idl_within, uint64
 }
 /* On an opener's channel: answered when iface's `version` is no longer
  * `version` (at once if it isn't), with the new one; ERR_TIMED_OUT after
- * timeout_ms (NET_WAIT_FOREVER: no timeout). How a program waits for an
- * address (<net.h> net_wait_up) or for new DNS servers. */
+ * timeout_ms (1..TIMEOUT_MAX, or WAIT_FOREVER: no timeout; else
+ * ERR_INVALID_ARGS). How a program waits for an address (<net.h>
+ * net_wait_up) or for new DNS servers. */
 static inline status_t net_wait_change_until(handle_t ch, uint64_t deadline_ns, uint32_t version, uint32_t timeout_ms, uint32_t *out_version)
 {
     return net_wait_change_call(ch, false, deadline_ns, version, timeout_ms, out_version);
@@ -492,9 +505,9 @@ static inline status_t net_echo_call(handle_t ch, bool idl_within, uint64_t idl_
  * the opener's own echo id (netstack picks it: no opener sees another's
  * replies). Answered when the reply comes: the round trip in microseconds,
  * the reply's TTL and its data's size; ERR_TIMED_OUT after timeout_ms
- * (1..60000); ERR_NOT_FOUND: a router or the host said it is unreachable
+ * (1..TIMEOUT_MAX); ERR_NOT_FOUND: a router or the host said it is unreachable
  * (ICMP destination unreachable). At once: ERR_INVALID_ARGS (not a unicast
- * address, a size or timeout out of range), ERR_BAD_STATE (no address, the
+ * address, a size out of range, a timeout_ms that isn't 1..TIMEOUT_MAX), ERR_BAD_STATE (no address, the
  * link down, no route; or an echo with this seq to this address is in
  * flight), ERR_NO_RESOURCES (NET_LATER_PER_OPENER in flight already). */
 static inline status_t net_echo_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint16_t seq, uint16_t size, uint32_t timeout_ms, uint32_t *out_rtt_us, uint8_t *out_ttl, uint16_t *out_size)
@@ -2755,8 +2768,8 @@ static inline status_t net_listener_accept_call(handle_t ch, bool idl_within, ui
  * status OPEN, or CLOSED already if the peer closed it meanwhile; its rx ring
  * holds what came; the socket speaks net_stream), and its peer's address and
  * port. Answered when there is one: timeout_ms 0 at once (ERR_SHOULD_WAIT:
- * none waiting), else ERR_TIMED_OUT after timeout_ms (NET_WAIT_FOREVER:
- * never). One at a time a listener: ERR_BAD_STATE while another waits. A loop
+ * none waiting), else ERR_TIMED_OUT after timeout_ms (1..NET_TIMEOUT_MAX, or
+ * NET_WAIT_FOREVER: never; else ERR_INVALID_ARGS). One at a time a listener: ERR_BAD_STATE while another waits. A loop
  * or a wait set sends it without waiting (net_listener_accept_send) and
  * watches the channel for SIG_READABLE: the answer is there. */
 static inline status_t net_listener_accept_until(handle_t ch, uint64_t deadline_ns, uint32_t timeout_ms, handle_t *out_socket, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes)

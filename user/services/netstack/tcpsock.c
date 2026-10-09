@@ -323,6 +323,8 @@ static status_t l_accept(void *ctx, struct idl_txn txn, uint32_t timeout_ms,
 {
     struct tlisten *l = ctx;
     struct taken k;
+    if (timeout_ms != NET_WAIT_FOREVER && timeout_ms > NET_TIMEOUT_MAX)
+        return ERR_INVALID_ARGS;
     if (l->waiting)
         return ERR_BAD_STATE;
     if (!l->l->n) {

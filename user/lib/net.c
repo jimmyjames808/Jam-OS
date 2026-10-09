@@ -28,7 +28,9 @@ status_t net_svc_open(handle_t *out)
     return st == ERR_NOT_FOUND ? svc_open(SVC_NET, out) : st;
 }
 
-/* The time from now to deadline in ms, rounded up, as a timeout_ms. */
+/* The time from now to deadline in ms, rounded up, as a timeout_ms: at most
+ * NET_TIMEOUT_MAX (a longer wait asks again), NET_WAIT_FOREVER for no
+ * deadline, 0 for one already past. */
 static uint32_t timeout_of(uint64_t deadline)
 {
     if (deadline == DEADLINE_NEVER)
@@ -37,7 +39,7 @@ static uint32_t timeout_of(uint64_t deadline)
     if (deadline <= t)
         return 0;
     uint64_t ms = (deadline - t + NS_PER_MS - 1) / NS_PER_MS;
-    return ms >= NET_WAIT_FOREVER ? NET_WAIT_FOREVER - 1 : (uint32_t)ms;
+    return ms > NET_TIMEOUT_MAX ? NET_TIMEOUT_MAX : (uint32_t)ms;
 }
 
 /* The call's own deadline: MARGIN past netstack's (a deadline already
@@ -77,7 +79,13 @@ status_t net_wait_up(handle_t net, uint64_t deadline, struct net_info *out)
         uint32_t ms = timeout_of(deadline), v;
         if (!ms)
             return ERR_TIMED_OUT;
-        st = net_wait_change_until(net, call_deadline(deadline), i.version, ms, &v);
+        /* netstack answers by its timeout, the call a little later: a
+         * deadline past TIMEOUT_MAX is waited for in turns. */
+        uint64_t until = ms == NET_WAIT_FOREVER ? DEADLINE_NEVER
+                                                : now() + (uint64_t)ms * NS_PER_MS;
+        st = net_wait_change_until(net, call_deadline(until), i.version, ms, &v);
+        if (st == ERR_TIMED_OUT && ms == NET_TIMEOUT_MAX && now() < deadline)
+            continue;   /* its timeout, not ours: look again, wait again */
         if (st != OK)
             return st;
     }
@@ -204,8 +212,8 @@ status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint
     uint16_t got = 0;
     if (!ms)
         return ERR_TIMED_OUT;
-    if (ms > NET_ECHO_TIMEOUT_MAX)
-        ms = NET_ECHO_TIMEOUT_MAX;
+    if (ms > NET_TIMEOUT_MAX)
+        ms = NET_TIMEOUT_MAX;
     status_t st = net_echo_until(net, now() + (uint64_t)ms * NS_PER_MS + MARGIN, addr, seq, size,
                                  ms, &rtt, &t, &got);
     if (st == OK && rtt_us)

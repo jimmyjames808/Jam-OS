@@ -66,6 +66,17 @@
 
 protocol net 29
 
+# The rule for time in this protocol (the M12 plan's Q19): a call has its
+# caller's deadline, and a method carries a `timeout_ms` only where the
+# server bounds a wait the caller's deadline cannot (it holds a slot of its
+# own for the wait: an echo in flight, a change awaited, a connection
+# awaited). Every such timeout is 1 to TIMEOUT_MAX milliseconds; where a
+# wait may be endless it can also be WAIT_FOREVER (wait_change, accept); 0
+# is accepted only where it means "don't wait" (accept). Anything else is
+# ERR_INVALID_ARGS, and the call is refused before it holds anything.
+const WAIT_FOREVER  0xffffffff
+const TIMEOUT_MAX   60000
+
 # On an opener's channel (or the shared one): the interface. Its address,
 # mask and gateway (0: none), the DNS servers (0: none), its MAC address;
 # `device` 1 while a network card's driver has a session with netstack,
@@ -78,8 +89,9 @@ protocol net 29
 
 # On an opener's channel: answered when iface's `version` is no longer
 # `version` (at once if it isn't), with the new one; ERR_TIMED_OUT after
-# timeout_ms (NET_WAIT_FOREVER: no timeout). How a program waits for an
-# address (<net.h> net_wait_up) or for new DNS servers.
+# timeout_ms (1..TIMEOUT_MAX, or WAIT_FOREVER: no timeout; else
+# ERR_INVALID_ARGS). How a program waits for an address (<net.h>
+# net_wait_up) or for new DNS servers.
 2  wait_change  (u32 version, u32 timeout_ms)  -> (u32 version) later
 
 # On an opener's channel (or the shared one): netstack's counts, as
@@ -114,9 +126,9 @@ protocol net 29
 # the opener's own echo id (netstack picks it: no opener sees another's
 # replies). Answered when the reply comes: the round trip in microseconds,
 # the reply's TTL and its data's size; ERR_TIMED_OUT after timeout_ms
-# (1..60000); ERR_NOT_FOUND: a router or the host said it is unreachable
+# (1..TIMEOUT_MAX); ERR_NOT_FOUND: a router or the host said it is unreachable
 # (ICMP destination unreachable). At once: ERR_INVALID_ARGS (not a unicast
-# address, a size or timeout out of range), ERR_BAD_STATE (no address, the
+# address, a size out of range, a timeout_ms that isn't 1..TIMEOUT_MAX), ERR_BAD_STATE (no address, the
 # link down, no route; or an echo with this seq to this address is in
 # flight), ERR_NO_RESOURCES (NET_LATER_PER_OPENER in flight already).
 6  echo  (u32 address, u16 seq, u16 size, u32 timeout_ms)  -> (u32 rtt_us, u8 ttl, u16 size) later
@@ -224,8 +236,8 @@ protocol net_listener 62
 # status OPEN, or CLOSED already if the peer closed it meanwhile; its rx ring
 # holds what came; the socket speaks net_stream), and its peer's address and
 # port. Answered when there is one: timeout_ms 0 at once (ERR_SHOULD_WAIT:
-# none waiting), else ERR_TIMED_OUT after timeout_ms (NET_WAIT_FOREVER:
-# never). One at a time a listener: ERR_BAD_STATE while another waits. A loop
+# none waiting), else ERR_TIMED_OUT after timeout_ms (1..NET_TIMEOUT_MAX, or
+# NET_WAIT_FOREVER: never; else ERR_INVALID_ARGS). One at a time a listener: ERR_BAD_STATE while another waits. A loop
 # or a wait set sends it without waiting (net_listener_accept_send) and
 # watches the channel for SIG_READABLE: the answer is there.
 1  accept  (u32 timeout_ms)  -> (handle socket, handle ring, handle to_stack, handle to_prog, u32 peer, u16 peer_port, u32 tx_bytes, u32 rx_bytes) later

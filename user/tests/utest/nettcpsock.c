@@ -91,6 +91,12 @@ static bool listeners(void)
                                        &hs[3], &a, &p, &b, &c), ERR_SHOULD_WAIT);
     CHECK_ST(net_listener_accept_until(l[0].ch, now() + NETDRV_WAIT, 50, &hs[0], &hs[1], &hs[2],
                                        &hs[3], &a, &p, &b, &c), ERR_TIMED_OUT);
+    CHECK_ST(net_listener_accept_until(l[0].ch, now() + NETDRV_WAIT, NET_TIMEOUT_MAX + 1, &hs[0],
+                                       &hs[1], &hs[2], &hs[3], &a, &p, &b, &c),
+             ERR_INVALID_ARGS);   /* the timeout rule: 0, 1..NET_TIMEOUT_MAX, NET_WAIT_FOREVER */
+    CHECK_ST(net_listener_accept_until(l[0].ch, now() + NETDRV_WAIT, NET_WAIT_FOREVER - 1, &hs[0],
+                                       &hs[1], &hs[2], &hs[3], &a, &p, &b, &c),
+             ERR_INVALID_ARGS);
     CHECK_ST(net_tcp_accept_send(&l[1]), OK);
     CHECK_ST(net_listener_accept_until(l[1].ch, now() + NETDRV_WAIT, 0, &hs[0], &hs[1], &hs[2],
                                        &hs[3], &a, &p, &b, &c), ERR_BAD_STATE);

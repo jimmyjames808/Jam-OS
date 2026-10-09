@@ -320,6 +320,8 @@ bool t_netsock_ping(void)
              ERR_INVALID_ARGS);   /* the subnet's broadcast (M9-REVIEW item 4) */
     CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, PEER_IP, 1, 0, 0, NULL, NULL, NULL),
              ERR_INVALID_ARGS);
+    CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, PEER_IP, 1, 0, NET_TIMEOUT_MAX + 1, NULL,
+                            NULL, NULL), ERR_INVALID_ARGS);   /* the timeout rule: 1..TIMEOUT_MAX */
     CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, PEER_IP, 1, NET_DGRAM_MAX + 1, 100, NULL,
                             NULL, NULL), ERR_INVALID_ARGS);
     CHECK(blocking_ping(o2, true, OK));
@@ -381,6 +383,17 @@ bool t_netsock_iface(void)
     CHECK_ST(net_wait_change_until(o, now() + NETDRV_WAIT, i.version, 100, &v), OK);
     CHECK_ST(net_info(o, &i), OK);
     CHECK_EQ(i.dns[0], GW_IP);
+    /* The timeout rule: 1..NET_TIMEOUT_MAX, or NET_WAIT_FOREVER; anything
+     * else is refused at once, a stale version or not. */
+    static const uint32_t bad[] = { 0, NET_TIMEOUT_MAX + 1, NET_WAIT_FOREVER - 1 };
+    for (unsigned k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
+        CHECK_ST(net_wait_change_until(o, now() + NETDRV_WAIT, i.version, bad[k], &v),
+                 ERR_INVALID_ARGS);
+        CHECK_ST(net_wait_change_until(o, now() + NETDRV_WAIT, i.version - 1, bad[k], &v),
+                 ERR_INVALID_ARGS);
+    }
+    CHECK_ST(net_wait_change_until(o, now() + NETDRV_WAIT, i.version - 1, NET_TIMEOUT_MAX, &v),
+             OK);   /* the largest timeout is allowed (a changed version answers at once) */
     /* Cleared: no address, and net_wait_up waits for one. */
     CHECK_ST(netctl_clear(netdrv_ctl()), OK);
     CHECK_ST(net_wait_up(o, now() + 200 * NS_PER_MS, &i), ERR_TIMED_OUT);

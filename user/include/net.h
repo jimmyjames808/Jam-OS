@@ -49,6 +49,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <idl/net.h>   /* NET_WAIT_FOREVER and NET_TIMEOUT_MAX (the protocol's timeouts) */
 #include <os.h>
 #include <sockring.h>
 
@@ -62,8 +63,6 @@
 #define NET_LATER_MAX          64u     /* ... of all openers together */
 #define NET_PROG_LATER         48u     /* ... of them ordinary openers' */
 #define NET_PROG_RING_BYTES    (16u << 20)  /* ring bytes of ordinary openers' sockets */
-#define NET_WAIT_FOREVER       0xffffffffu   /* a timeout_ms that never passes */
-#define NET_ECHO_TIMEOUT_MAX   60000u  /* ms: the longest echo timeout */
 #define NET_PORT_LOW           1024u   /* ports below: only on /svc/net-low; up to ... */
 #define NET_PORT_EPHEMERAL     49152u  /* ... here only on /svc/net-listen; port 0: from here */
 #define NET_PORT_DHCP_SERVER   67u
@@ -256,7 +255,7 @@ status_t net_send(struct net_sock *s, const void *data, size_t len);
  * ERR_TIMED_OUT then; ERR_PEER_CLOSED: netstack is gone. */
 status_t net_recvfrom(struct net_sock *s, struct net_dgram *d, uint64_t deadline);
 /* One ping: an echo request of size data bytes, sequence seq, answered by
- * the deadline (at most NET_ECHO_TIMEOUT_MAX ms from now). *rtt_us and
+ * the deadline (at most NET_TIMEOUT_MAX ms from now). *rtt_us and
  * *ttl (may be NULL): the round trip and the reply's TTL. ERR_TIMED_OUT:
  * no answer; ERR_NOT_FOUND: unreachable, said a router; ERR_BAD_STATE: no
  * address or no link. */
