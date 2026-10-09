@@ -116,7 +116,8 @@ static void tcsel(struct stream *s)
 /* ---- buffers ----------------------------------------------------------------- */
 
 /* b: a contiguous DMA32 VMO of `size` bytes, mapped and pinned (read
- * only: the controller only reads it). Its pages must be contiguous to
+ * only: the controller only reads it; contiguous, it is committed from
+ * the start, as a read-only pin needs). Its pages must be contiguous to
  * the device too (one BDL entry spans a period of 4 pages). */
 static status_t dma_buf_make(struct hda *h, struct dma_buf *b, uint64_t size, bool read_only)
 {
