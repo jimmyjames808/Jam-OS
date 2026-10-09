@@ -54,8 +54,7 @@ static status_t raw(struct ct_client *k, const uint32_t *words, unsigned n, bool
     unsigned at = 0;
     if (header) {
         b[0] = JWL_MAGIC;
-        b[1] = k->c->nread;
-        b[2] = b[3] = 0;
+        b[1] = b[2] = b[3] = 0;   /* no handles */
         at = 4;
     }
     for (unsigned i = 0; i < n && at < 32; i++)
@@ -334,7 +333,7 @@ static bool bad_too_new(struct ct_client *k, uint32_t *obj, uint32_t *code)
 
 static bool bad_batch(struct ct_client *k, uint32_t *obj, uint32_t *code)
 {
-    const uint32_t m[] = { 0x6c6c6568, 0x0000006f };   /* "hello": no JWL1 header */
+    const uint32_t m[] = { 0x6c6c6568, 0x0000006f };   /* "hello": no JWL2 header */
     *obj = JWL_DISPLAY_ID;
     *code = JWL_ERROR_INVALID_METHOD;
     CHECK_ST(raw(k, m, 2, false), OK);
@@ -690,10 +689,14 @@ static bool never_reads(struct ct_comp *p)
         CHECK(r);
         CHECK_ST(jwl_wl_display_get_registry(k.c, JWL_DISPLAY_ID, r), OK);
     }
-    CHECK_ST(jwl_conn_flush(k.c), OK);   /* nothing read: no acknowledgement in it */
+    CHECK_ST(jwl_conn_flush(k.c), OK);
     CHECK_ST(ct_roundtrip(&good), OK);   /* served meanwhile */
-    /* Read without ever acknowledging: the window's batches, then the error. */
+    /* Nothing read until the compositor gives up and closes its end (the
+     * window is what the kernel says we haven't read: reading earlier
+     * would let it send more). Then the window's batches, then the error. */
     uint64_t deadline = now() + CT_WAIT;
+    signals_t closed = 0;
+    CHECK_ST(jam_object_wait_one(k.c->ch, SIG_PEER_CLOSED, deadline, &closed), OK);
     unsigned events = 0;
     for (;;) {
         struct jwl_msg m;
@@ -712,7 +715,7 @@ static bool never_reads(struct ct_comp *p)
         events++;
     }
     CHECK(events < FLOOD * 6);   /* cut off before everything was sent */
-    CHECK(k.c->nread <= JWL_WINDOW + 1);   /* the window, and the error past it */
+    CHECK(k.c->stats.batches_in <= JWL_WINDOW + 1);   /* the window, and the error past it */
     ct_close(&k);
     CHECK_ST(ct_roundtrip(&good), OK);
     CHECK(held_back(p, base));

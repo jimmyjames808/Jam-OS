@@ -14,7 +14,9 @@
  *
  * Message bytes. Everything we write to a client is charged to our job
  * until the client reads it; libjwl's window bounds that to JWL_WINDOW
- * batches a connection. A client we disconnect may never read what we
+ * batches a connection, by the kernel's count of what the client hasn't
+ * read, asked at each flush (conn_held_deadline: when to ask again while
+ * one is behind). A client we disconnect may never read what we
  * wrote: we close our end at once, its slot is free at once, and what it
  * never read is charged to its own job from then on (M12's Q2: the reader
  * pays once the writer closes). Each slot's port binding on its channel
@@ -33,8 +35,15 @@
 #include "comp.h"
 
 #define LOG_PER_S 10u   /* disconnect lines a second at most (a client may reconnect in a loop) */
+/* A client behind (batches held): nothing says when it reads, so its queue
+ * is looked at again after HELD_LOOK_MIN, the wait doubling while nothing
+ * held goes, up to HELD_LOOK_MAX (a client stuck for good costs a few
+ * looks a second; one that catches up waits at most that). */
+#define HELD_LOOK_MIN (10 * NS_PER_MS)
+#define HELD_LOOK_MAX (320 * NS_PER_MS)
 
 static struct comp_client *clients[COMP_CLIENTS_MAX];
+static uint64_t held_wait = HELD_LOOK_MIN, held_look = DEADLINE_NEVER;   /* while one is behind */
 
 /* What a bind's untyped new_id may name: the globals' interfaces. */
 static const struct jwl_interface *const known[] = {
@@ -285,12 +294,27 @@ void conn_serve_all(void)
 
 void conn_flush_all(void)
 {
+    bool behind = false, moved = false;
     for (unsigned i = 0; i < COMP_CLIENTS_MAX; i++) {
         struct comp_client *cl = clients[i];
         if (!cl || !cl->conn)
             continue;
-        if (jwl_conn_flush(cl->conn) != OK)
+        bool held = cl->conn->held != NULL;
+        uint64_t out = cl->conn->stats.batches_out;
+        if (jwl_conn_flush(cl->conn) != OK) {
             client_die(cl);
+            continue;
+        }
+        moved |= held && cl->conn->stats.batches_out != out;
+        behind |= cl->conn->held != NULL;
+    }
+    uint64_t t = now();
+    if (!behind || moved || held_look == DEADLINE_NEVER) {
+        held_wait = HELD_LOOK_MIN;
+        held_look = behind ? t + held_wait : DEADLINE_NEVER;
+    } else if (t >= held_look) {
+        held_wait = held_wait * 2 > HELD_LOOK_MAX ? HELD_LOOK_MAX : held_wait * 2;
+        held_look = t + held_wait;
     }
 }
 
@@ -302,12 +326,7 @@ bool conn_more(void)
     return false;
 }
 
-bool conn_held(void)
+uint64_t conn_held_deadline(void)
 {
-    for (unsigned i = 0; i < COMP_CLIENTS_MAX; i++) {
-        const struct jwl_conn *c = clients[i] ? clients[i]->conn : NULL;
-        if (c && c->held && c->nsent - c->peer_acked < JWL_WINDOW)
-            return true;   /* the window is open: a full channel held it back */
-    }
-    return false;
+    return held_look;
 }

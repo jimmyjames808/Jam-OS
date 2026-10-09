@@ -1,11 +1,11 @@
 /* utest: libjwl's transport (<jwl.h>) over real channels, a client and a
  * compositor connection in one process: requests and events both ways
  * with handles for fds, new ids and the delete_id handshake, batching
- * (16 KiB and 16 handles a batch), the flow-control window and the held
- * bytes behind it (a client that reads late catches up; one that never
- * reads is disconnected with no_memory, and reads the error), the
- * half-window acknowledgement, every malformed batch refused with
- * wl_display.error, and jwl_send's own refusals. Each test ends with
+ * (16 KiB and 28 handles a batch), handles queued across batches, the
+ * flow-control window by the kernel's count and the held bytes behind it
+ * (a client that reads late catches up; one that never reads is
+ * disconnected with no_memory, and reads the error), and jwl_send's own
+ * refusals. Each test ends with
  * the job's handles and message bytes back where they started. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
@@ -158,7 +158,7 @@ bool t_jwl_conn_messages(void)
     return true;
 }
 
-/* Many messages and handles: batches of at most 16 KiB and 16 handles,
+/* Many messages and handles: batches of at most 16 KiB and 28 handles,
  * every message arriving once, in order. */
 bool t_jwl_conn_batches(void)
 {
@@ -182,8 +182,8 @@ bool t_jwl_conn_batches(void)
     CHECK_ST(jwl_conn_flush(p.cl), OK);
     uint64_t batches = p.cl->stats.batches_out - before;
     /* 186 88-byte messages fill a batch: 17 batches, the last with 24 and
-     * room for 8 two-handle messages; the other 32 need 4 more batches */
-    CHECK_EQ(batches, 21);
+     * room for 14 two-handle messages; the other 26 need 2 more batches */
+    CHECK_EQ(batches, 19);
     struct jwl_msg m;
     for (unsigned i = 0; i < 3000; i++) {
         CHECK_ST(jwl_conn_next(p.sv, &m), OK);
@@ -232,14 +232,15 @@ static unsigned drain(struct pair *p, uint32_t *seq, bool *in_order)
 }
 
 /* n full batches held: their bytes and each block's bookkeeping (the
- * block's header and the heap's, under 128 bytes). */
+ * block's header, its 28 handles' room and the heap's, under 256 bytes). */
 static bool held_full(uint32_t bytes, unsigned n)
 {
-    return bytes > n * JWL_BATCH_MAX && bytes <= n * (JWL_BATCH_MAX + 128);
+    return bytes > n * JWL_BATCH_MAX && bytes <= n * (JWL_BATCH_MAX + 256);
 }
 
-/* A client that reads late: the window fills, batches are held, and once
- * it reads and acknowledges every event arrives, in order. */
+/* A client that reads late: the window fills (the kernel's count of what
+ * it hasn't read), batches are held, and once it reads every event
+ * arrives, in order, with the client saying nothing. */
 bool t_jwl_conn_window(void)
 {
     uint64_t h0, b0, h1, b1;
@@ -256,35 +257,26 @@ bool t_jwl_conn_window(void)
     CHECK(held_full(p.sv->held_bytes, 2));
     CHECK_EQ(drain(&p, &got, &in_order), JWL_WINDOW * POKED_PER_BATCH);
     uint64_t out = p.cl->stats.batches_out;
-    CHECK_ST(jwl_conn_flush(p.cl), OK);   /* nothing to say: an acknowledgement alone */
-    CHECK_EQ(p.cl->stats.batches_out, out + 1);
-    struct jwl_msg m;
-    CHECK_ST(jwl_conn_next(p.sv, &m), ERR_SHOULD_WAIT);
-    CHECK_EQ(p.sv->peer_acked, JWL_WINDOW);
+    CHECK_ST(jwl_conn_flush(p.cl), OK);   /* nothing to say: no acknowledgement in JWL2 */
+    CHECK_EQ(p.cl->stats.batches_out, out);
+    CHECK(jwl_conn_backlogged(p.sv));     /* until it looks again */
     CHECK_ST(jwl_conn_flush(p.sv), OK);
     CHECK(!jwl_conn_backlogged(p.sv) && p.sv->held_bytes == 0);
     CHECK_EQ(drain(&p, &got, &in_order), 2 * POKED_PER_BATCH);
     CHECK(in_order && got == sent);
     CHECK(held_full(p.sv->stats.held_peak, 2));
-    /* an acknowledgement goes when half the window is read, not before;
-     * a request first, so the count told is the count read */
-    union jwl_arg a = { .u = 1 };
-    CHECK_ST(say(p.cl, 4, &jt_thing, 0, &a), OK);
-    CHECK_ST(jwl_conn_flush(p.cl), OK);
-    CHECK_EQ(p.cl->told, p.cl->nread);
-    CHECK_ST(poke(&p, 15 * POKED_PER_BATCH, &sent), OK);
+    /* the window is what the client hasn't read, whenever it reads: 31
+     * batches unread, then one more goes, the next is held */
+    CHECK_ST(poke(&p, 31 * POKED_PER_BATCH, &sent), OK);
     CHECK_ST(jwl_conn_flush(p.sv), OK);
-    CHECK_EQ(drain(&p, &got, &in_order), 15 * POKED_PER_BATCH);
-    out = p.cl->stats.batches_out;
-    CHECK_ST(jwl_conn_flush(p.cl), OK);
-    CHECK_EQ(p.cl->stats.batches_out, out);
-    CHECK_ST(poke(&p, POKED_PER_BATCH, &sent), OK);
+    CHECK_ST(poke(&p, 2 * POKED_PER_BATCH, &sent), OK);
+    CHECK_ST(jwl_conn_flush(p.sv), OK);
+    CHECK(held_full(p.sv->held_bytes, 1) && p.sv->peer_queued == JWL_WINDOW);
+    CHECK_EQ(drain(&p, &got, &in_order), JWL_WINDOW * POKED_PER_BATCH);
     CHECK_ST(jwl_conn_flush(p.sv), OK);
     CHECK_EQ(drain(&p, &got, &in_order), POKED_PER_BATCH);
-    CHECK_ST(jwl_conn_flush(p.cl), OK);
-    CHECK_EQ(p.cl->stats.batches_out, out + 1);
-    CHECK_ST(jwl_conn_flush(p.cl), OK);
-    CHECK_EQ(p.cl->stats.batches_out, out + 1);
+    CHECK(in_order && got == sent && !jwl_conn_backlogged(p.sv));
+    CHECK_EQ(p.cl->stats.batches_out, out);
     CHECK(in_order);
     pair_down(&p);
     held_now(&h1, &b1);
@@ -366,10 +358,7 @@ bool t_jwl_conn_held_merged(void)
     uint64_t in0 = p.cl->stats.batches_in;
     for (unsigned turn = 0; got < sent && turn < 16; turn++) {
         (void)drain(&p, &got, &in_order);
-        CHECK_ST(jwl_conn_flush(p.cl), OK);   /* the acknowledgement */
-        struct jwl_msg m;
-        CHECK_ST(jwl_conn_next(p.sv, &m), ERR_SHOULD_WAIT);
-        CHECK_ST(jwl_conn_flush(p.sv), OK);
+        CHECK_ST(jwl_conn_flush(p.sv), OK);   /* it looks: the client read them */
     }
     CHECK(in_order && got == sent && p.sv->held_bytes == 0);
     uint64_t batches = p.cl->stats.batches_in - in0;
@@ -378,6 +367,73 @@ bool t_jwl_conn_held_merged(void)
     pair_down(&p);
     held_now(&h1, &b1);
     CHECK_EQ(h1, h0);
+    CHECK_EQ(b1, b0);
+    return true;
+}
+
+/* A batch the client writes raw: the header (nfds = nh), the words, and
+ * nh new VMOs of pages[0..nh) pages each. */
+static bool raw_batch(struct pair *p, const uint32_t *words, unsigned n, unsigned nh,
+                      const unsigned *pages)
+{
+    static uint32_t b[64];
+    handle_t hs[JWL_BATCH_HANDLES];
+    b[0] = JWL_MAGIC;
+    b[1] = nh;
+    b[2] = b[3] = 0;
+    if (n)
+        memcpy(b + 4, words, n * 4);
+    for (unsigned i = 0; i < nh; i++)
+        CHECK_ST(jam_vmo_create(pages[i] * PAGE_SIZE, 0, &hs[i]), OK);
+    CHECK_ST(jam_channel_write(p->cl->ch, b, (4 + n) * 4, hs, nh), OK);
+    return true;
+}
+
+/* m is jt_all.give with VMOs of pages a and b (closed here). */
+static bool gave(struct jwl_msg *m, uint64_t a, uint64_t b)
+{
+    uint64_t sa = 0, sb = 0;
+    CHECK(m->id == 3 && m->opcode == JT_GIVE && m->nhandles == 2);
+    CHECK_ST(jam_vmo_get_size(m->args[0].h, &sa), OK);
+    CHECK_ST(jam_vmo_get_size(m->args[1].h, &sb), OK);
+    jwl_msg_close_handles(m);
+    CHECK(sa == a * PAGE_SIZE && sb == b * PAGE_SIZE);
+    return true;
+}
+
+/* Handles are a queue per connection, as fds on a socket (review W,
+ * DQ4): a batch may bring handles before the message that takes them (a
+ * batch of handles alone), or a message's two handles may come in two
+ * batches; each 'h' takes the next in order. A message whose handle
+ * hasn't come is a protocol error. */
+bool t_jwl_conn_handle_queue(void)
+{
+    uint64_t h0, b0, h1, b1;
+    held_now(&h0, &b0);
+    struct pair p;
+    if (!pair_up(&p))
+        return false;
+    const uint32_t give[2] = { 3, 8u << 16 | JT_GIVE };   /* jt_all.give: 8 bytes, no words */
+    uint32_t two_gives[4] = { give[0], give[1], give[0], give[1] };
+    CHECK(raw_batch(&p, NULL, 0, 3, (const unsigned[]){ 1, 2, 3 }));   /* handles alone */
+    CHECK(raw_batch(&p, give, 2, 0, NULL));                           /* takes 1 and 2 */
+    CHECK(raw_batch(&p, give, 2, 1, (const unsigned[]){ 4 }));        /* takes 3 and 4 */
+    CHECK(raw_batch(&p, two_gives, 4, 3, (const unsigned[]){ 5, 6, 7 }));   /* 5 6, 7 and... */
+    CHECK(raw_batch(&p, NULL, 0, 1, (const unsigned[]){ 8 }));        /* ...8 */
+    struct jwl_msg m;
+    CHECK_ST(jwl_conn_next(p.sv, &m), OK);
+    CHECK(gave(&m, 1, 2));
+    CHECK_ST(jwl_conn_next(p.sv, &m), OK);
+    CHECK(gave(&m, 3, 4));
+    CHECK_ST(jwl_conn_next(p.sv, &m), OK);
+    CHECK(gave(&m, 5, 6));
+    /* the second give of that batch: 7 is there, 8 isn't yet (a socket's
+     * fds come with or before their bytes: a protocol error) */
+    CHECK_ST(jwl_conn_next(p.sv, &m), ERR_INVALID_ARGS);
+    CHECK_EQ(p.sv->error.code, JWL_ERROR_INVALID_METHOD);
+    pair_down(&p);
+    held_now(&h1, &b1);
+    CHECK_EQ(h1, h0);   /* 7 and 8, never taken, closed with the connection */
     CHECK_EQ(b1, b0);
     return true;
 }
@@ -516,9 +572,11 @@ bool t_jwl_conn_new_ids(void)
 
 /* A batch with a handle that the channel can't take now is held, and goes
  * later with a handle that still works: a write takes the handles it is
- * given whatever its status (M12's Q1), so the transport sends duplicates
- * and keeps the originals until one went (review W, W1). The client's
- * queue is filled by hand, from a duplicate of the compositor's end. */
+ * given whatever its status (M12's Q1), so the transport writes a batch
+ * with handles only when the channel has room, else holds it with them
+ * (review W, W1). The client's side, as the compositor's window keeps
+ * its own writes far below a full channel: the compositor's queue is
+ * filled by hand, from a duplicate of the client's end. */
 bool t_jwl_conn_held_handles(void)
 {
     uint64_t h0, b0, h1, b1;
@@ -527,32 +585,33 @@ bool t_jwl_conn_held_handles(void)
     if (!pair_up(&p))
         return false;
     handle_t fill;
-    CHECK_ST(jam_handle_duplicate(p.sv->ch, RIGHT_SAME, &fill), OK);
+    CHECK_ST(jam_handle_duplicate(p.cl->ch, RIGHT_SAME, &fill), OK);
     uint32_t junk = 0;
     unsigned queued = 0;
     while (jam_channel_write(fill, &junk, sizeof(junk), NULL, 0) == OK)
         queued++;
     CHECK_EQ(queued, CHANNEL_MAX_QUEUED);
-    union jwl_arg a[1];
+    union jwl_arg a[2];
     a[0].h = new_vmo();
-    CHECK(a[0].h != HANDLE_INVALID);
-    CHECK_ST(say(p.sv, 3, &jt_all, JT_EV_HANDLE, a), OK);
-    CHECK_ST(jwl_conn_flush(p.sv), OK);
-    CHECK(p.sv->held != NULL);   /* the channel was full: held, with its handle */
+    a[1].h = new_vmo();
+    CHECK(a[0].h != HANDLE_INVALID && a[1].h != HANDLE_INVALID);
+    CHECK_ST(say(p.cl, 3, &jt_all, JT_GIVE, a), OK);
+    CHECK_ST(jwl_conn_flush(p.cl), OK);
+    CHECK(p.cl->held != NULL);   /* the channel was full: held, with its handles */
     for (unsigned i = 0; i < queued; i++)
         CHECK_ST(jam_channel_read(&(struct channel_read_args){
-                     .h = p.cl->ch, .rd_cap = sizeof(junk),
+                     .h = p.sv->ch, .rd_cap = sizeof(junk),
                      .rd_bytes = (uint64_t)(uintptr_t)&junk }),
                  OK);
-    CHECK_ST(jwl_conn_flush(p.sv), OK);
-    CHECK(p.sv->held == NULL);
+    CHECK_ST(jwl_conn_flush(p.cl), OK);
+    CHECK(p.cl->held == NULL);
     struct jwl_msg m;
-    CHECK_ST(jwl_conn_next(p.cl, &m), OK);
-    CHECK(m.id == 3 && m.opcode == JT_EV_HANDLE && m.nhandles == 1);
+    CHECK_ST(jwl_conn_next(p.sv, &m), OK);
+    CHECK(m.id == 3 && m.opcode == JT_GIVE && m.nhandles == 2);
     uint64_t size = 0;
-    CHECK_ST(jam_vmo_get_size(m.args[0].h, &size), OK);   /* a working VMO */
+    CHECK_ST(jam_vmo_get_size(m.args[1].h, &size), OK);   /* a working VMO */
     CHECK_EQ(size, PAGE_SIZE);
-    CHECK_ST(jam_handle_close(m.args[0].h), OK);
+    jwl_msg_close_handles(&m);
     CHECK_ST(jam_handle_close(fill), OK);
     pair_down(&p);
     held_now(&h1, &b1);

@@ -473,6 +473,7 @@ bool t_jwl_conn_send_refusals(void);
 bool t_jwl_conn_new_ids(void);
 bool t_jwl_conn_held_handles(void);
 bool t_jwl_conn_held_merged(void);
+bool t_jwl_conn_handle_queue(void);
 bool t_jwl_fuzz_decode(void);
 bool t_jwl_fuzz_conn(void);
 

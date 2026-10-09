@@ -945,6 +945,7 @@ static const struct {
     { "jwl_conn_new_ids", t_jwl_conn_new_ids },
     { "jwl_conn_held_handles", t_jwl_conn_held_handles },
     { "jwl_conn_held_merged", t_jwl_conn_held_merged },
+    { "jwl_conn_handle_queue", t_jwl_conn_handle_queue },
     { "jwl_fuzz_decode", t_jwl_fuzz_decode },
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "jwlc_setup", t_jwlc_setup },

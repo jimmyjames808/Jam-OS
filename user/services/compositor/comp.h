@@ -459,10 +459,11 @@ void     conn_ready(uint64_t key);
 void     conn_serve_all(void);
 /* Flush every live client's events (after a paint answered callbacks). */
 void     conn_flush_all(void);
-/* Does any client still have messages its budget left (don't sleep), or
- * events a full channel held back (try again soon)? */
+/* Does any client still have messages its budget left (don't sleep)? */
 bool     conn_more(void);
-bool     conn_held(void);
+/* When to flush again for a client behind (events held back: the window,
+ * or a full channel), DEADLINE_NEVER while none is. */
+uint64_t conn_held_deadline(void);
 /* Every live client, for code that walks them (frame callbacks). */
 struct comp_client *conn_client_at(unsigned slot);
 
