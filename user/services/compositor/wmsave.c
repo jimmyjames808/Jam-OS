@@ -381,8 +381,11 @@ static void finish(void)
         screens_nth(i)->held = 0;
     printf("compositor: layout restored: %u windows in place, %u not back\n", mem.placed,
            mem.n - mem.placed);
-    for (struct wm_window *ww = wm_first(); ww; ww = ww->next)
-        ww->restoring = false;   /* one still to map is a new window */
+    for (struct wm_window *ww = wm_first(); ww; ww = ww->next) {
+        ww->restoring = false;   /* one still to map is a new window, */
+        if (!ww->win)
+            ww->screen = NULL;   /* on no screen yet: its remembered one may go now (C9) */
+    }
     wm_reflow();   /* the windows beside a place that went glide into it */
     screens_tidy();
 }

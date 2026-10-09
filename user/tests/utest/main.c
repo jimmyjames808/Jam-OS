@@ -998,6 +998,7 @@ static const struct {
     { "wm_save_full", t_wm_save_full },
     { "wm_save_bad", t_wm_save_bad },
     { "wm_save_big_min", t_wm_save_big_min },
+    { "wm_save_unmapped", t_wm_save_unmapped },
     { "wm_tile_float", t_wm_tile_float },
     { "wm_focus_dir", t_wm_focus_dir },
     { "wm_swap", t_wm_swap },

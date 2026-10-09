@@ -635,6 +635,7 @@ bool t_wm_save_late(void);
 bool t_wm_save_full(void);
 bool t_wm_save_bad(void);
 bool t_wm_save_big_min(void);
+bool t_wm_save_unmapped(void);
 bool t_wm_focus_dir(void);
 bool t_wm_swap(void);
 bool t_wm_reflow(void);

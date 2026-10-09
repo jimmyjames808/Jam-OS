@@ -28,7 +28,10 @@
  * t_wm_save_big_min: a client's limits past any buffer's size (10000 by
  * 10000) are held to COMP_BUFFER_SIDE_MAX, and the arrangement it is in
  * still comes back (review C4: the description saved them as sent and
- * the check refused it whole). */
+ * the check refused it whole).
+ * t_wm_save_unmapped: a window that presents its key but isn't mapped
+ * when the wait ends is on no screen (review C9: it kept its remembered
+ * screen, which the wait's end dropped), and maps as a new window. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -452,6 +455,44 @@ bool t_wm_save_big_min(void)
 {
     wm_test_start(COMP_TILING);
     bool ok = big_min_steps();
+    fk_close_all();
+    return ok;
+}
+
+/* ---- a window back too late to be mapped in its place ------------------------------------- */
+
+static bool unmapped_steps(void)
+{
+    CHECK(fk_open_keyed(&fks[0], 300, 200, 0, &key[0]));
+    screens_step(1);   /* a second screen, its own window */
+    CHECK(fk_open_keyed(&fks[1], 300, 200, 0, &key[1]));
+    screens_go(0);
+    CHECK(describe());
+    CHECK_EQ(d.nscreens, 2);
+    uint64_t t = now();
+    CHECK(restart(COMP_TILING, t));
+    CHECK(back(0));
+    /* 1 presents its key (its configure for the second screen) but draws nothing */
+    struct fk *f = &fks[1];
+    uint64_t got;
+    CHECK(fk_keyed(f, 300, 200, key[1], &got));
+    CHECK_EQ(got, key[1]);
+    CHECK(f->ww->screen == screens_nth(1));
+    /* the wait over: the second screen goes, empty; 1 is on none */
+    wm_save_tick(t + WM_SAVE_HOLD_NS);
+    CHECK(!wm_save_pending());
+    CHECK_EQ(screens_count(), 1);
+    CHECK(!f->ww->screen || screens_index(f->ww->screen) >= 0);
+    /* mapped now: a new window, on the screen shown */
+    CHECK(fk_draw(f));
+    CHECK(f->ww->screen == screens_cur());
+    return true;
+}
+
+bool t_wm_save_unmapped(void)
+{
+    wm_test_start(COMP_TILING);
+    bool ok = unmapped_steps();
     fk_close_all();
     return ok;
 }
