@@ -804,3 +804,5 @@ bool t_volumes_loop_answers(void);
 /* fat_hostile.c: fat against clients that misbehave (M12.1). */
 bool t_fat_unread_flood(void);
 bool t_fat_rename_into_alias(void);
+/* idlfuzz.c: every protocol's generated dispatch fed hostile messages (M12.1). */
+bool t_idl_fuzz(void);

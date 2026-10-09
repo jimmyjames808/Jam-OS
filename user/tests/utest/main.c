@@ -1121,6 +1121,7 @@ static const struct {
     { "volumes_loop_answers", t_volumes_loop_answers },
     { "fat_unread_flood", t_fat_unread_flood },
     { "fat_rename_into_alias", t_fat_rename_into_alias },
+    { "idl_fuzz", t_idl_fuzz },
 };
 
 int main(int argc, char **argv)
