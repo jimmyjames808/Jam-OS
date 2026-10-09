@@ -135,11 +135,12 @@ static bool t_basics(void)
     CHECK_ST(jam_object_wait_one(tm, SIG_SIGNALED, now() + NS_PER_S, &seen), OK);
 
     CHECK_ST(jam_port_create(&port), OK);
-    struct port_packet p = { .key = 7, .type = PORT_PACKET_USER }, out;
+    struct port_packet p = { .key = 7, .type = PORT_PACKET_USER, .status = ERR_CANCELED }, out;
     p.user.data[0] = 42;
     CHECK_ST(jam_port_queue(port, &p), OK);
     CHECK_ST(jam_port_wait(port, now(), &out), OK);
     CHECK(out.key == 7 && out.type == PORT_PACKET_USER && out.user.data[0] == 42);
+    CHECK_ST(out.status, OK);   /* the kernel's field, not the queuer's */
     CHECK_ST(jam_port_bind(port, e, 9, SIG_SIGNALED, PORT_BIND_ONCE), OK);
     CHECK_ST(jam_port_wait(port, now() + NS_PER_S, &out), OK);
     CHECK(out.key == 9 && out.type == PORT_PACKET_SIGNAL);

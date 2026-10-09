@@ -65,6 +65,11 @@
 13  handle_info       status    handle_t h, struct handle_info *out
 
 # waiting and signals -------------------------------------------------------
+# The wait rule: a wait holds the object it waits on, so another thread
+# closing the handle doesn't end it (object_wait_one, port_wait: it ends
+# at its deadline, a match, or the thread's kill, ERR_CANCELED). Only a
+# channel end's own waits (channel_call, channel_read's wait in
+# channel_reply_wait) end when that end closes (ERR_CANCELED).
 16  object_wait_one   status    handle_t h, signals_t mask, uint64_t deadline_ns, signals_t *observed
 # (Number 17 was object_signal, user bits on any object, until M12:
 # retired. An event's user bits are event_signal's.)
@@ -132,6 +137,8 @@
 40  port_create       status    handle_t *out
 41  port_bind         status    handle_t port, handle_t obj, uint64_t key, signals_t mask, uint32_t flags
 42  port_unbind       status    handle_t port, handle_t obj, uint64_t key
+# port_queue: a PORT_PACKET_USER packet with pkt's key and user.data; its
+# type and status are the kernel's (status OK: ERR_CANCELED is a binding's).
 43  port_queue        status    handle_t port, const struct port_packet *pkt
 44  port_wait         status    handle_t port, uint64_t deadline_ns, struct port_packet *out
 

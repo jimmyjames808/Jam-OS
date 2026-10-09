@@ -138,7 +138,7 @@ enum port_packet_type {
 struct port_packet {
     uint64_t key;                /* chosen by whoever bound/queued it */
     uint32_t type;               /* enum port_packet_type */
-    int32_t  status;             /* OK; ERR_CANCELED is reserved for binding teardown */
+    int32_t  status;             /* OK (port_queue's too); ERR_CANCELED: a binding's teardown */
     union {                      /* which one: `type` */
         struct {
             signals_t trigger;   /* the mask it was bound with */

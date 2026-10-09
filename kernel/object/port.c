@@ -408,6 +408,7 @@ status_t port_queue_user(struct port *p, const struct port_packet *pkt)
     e->job = job;
     e->pkt = *pkt;
     e->pkt.type = PORT_PACKET_USER;
+    e->pkt.status = OK;   /* the kernel's field: a queuer can't fake ERR_CANCELED */
     stat_add(&live_user_packets, 1);
     uint64_t f = spin_lock_irqsave(&p->base.lock);
     if (p->user_queued >= PORT_MAX_USER_PACKETS) {

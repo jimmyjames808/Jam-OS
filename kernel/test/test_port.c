@@ -328,7 +328,8 @@ KTEST(port_user_packets_fifo)
     enum { N = 100 };
     for (uint64_t i = 0; i < N; i++) {
         struct port_packet pkt = {
-            .key = 1000 + i, .type = PORT_PACKET_SIGNAL /* forced to USER */, .status = 5,
+            .key = 1000 + i, .type = PORT_PACKET_SIGNAL /* forced to USER */,
+            .status = ERR_CANCELED /* forced to OK */,
             .user = { { i, i * 3, ~i, 42 } },
         };
         KT_EQ(port_queue_user(p, &pkt), OK);
@@ -339,7 +340,7 @@ KTEST(port_user_packets_fifo)
         KT_EQ(port_wait(p, DEADLINE_NEVER, &pkt), OK);
         KT_EQ(pkt.key, 1000 + i);
         KT_EQ(pkt.type, PORT_PACKET_USER);
-        KT_EQ(pkt.status, 5);
+        KT_EQ(pkt.status, OK);   /* the kernel's: ERR_CANCELED is a binding's teardown */
         KT_ASSERT(pkt.user.data[0] == i && pkt.user.data[1] == i * 3 &&
                   pkt.user.data[2] == ~i && pkt.user.data[3] == 42);
     }
