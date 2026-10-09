@@ -860,6 +860,7 @@ static const struct {
     { "idl_serve_reply_wait", t_idl_serve_reply_wait },
     { "idl_serve_gone_client", t_idl_serve_gone_client },
     { "idl_within_times_out", t_idl_within_times_out },
+    { "idl_unread_bound", t_idl_unread_bound },
     { "idl_slot_take_run", t_idl_slot_take_run },
     { "idl_slot_idempotent", t_idl_slot_idempotent },
     { "idl_slot_reply_after", t_idl_slot_reply_after },

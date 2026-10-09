@@ -154,6 +154,10 @@ bool t_idl_txid_next(void);
 bool t_idl_serve_reply_wait(void);
 bool t_idl_serve_gone_client(void);
 bool t_idl_within_times_out(void);
+/* idlunread.c: the unread bound of the generated servers, and its child
+ * ("utest unread-serve|unread-loop": the server, in a job of its own). */
+bool t_idl_unread_bound(void);
+int unread_child(int argc, char **argv);
 /* idlslot.c: requests read into slots (<proto>_take_slot, _run_slot), a
  * reply that waits for the next system call (struct idl_reply) and the
  * `idempotent` keyword, on the test protocol idltest. */
