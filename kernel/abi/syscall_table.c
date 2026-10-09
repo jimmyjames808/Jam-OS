@@ -488,6 +488,34 @@ static int64_t call_random_get(const struct syscall_frame *f)
     return sysc_random_get(f->args[0], f->args[1]);
 }
 
+static int64_t call_pager_create(const struct syscall_frame *f)
+{
+    return sysc_pager_create((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3],
+                             f->args[4]);
+}
+
+static int64_t call_pager_create_vmo(const struct syscall_frame *f)
+{
+    return sysc_pager_create_vmo((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3],
+                                 f->args[4]);
+}
+
+static int64_t call_pager_next(const struct syscall_frame *f)
+{
+    return sysc_pager_next((handle_t)f->args[0], (uint32_t)f->args[1], f->args[2]);
+}
+
+static int64_t call_pager_supply(const struct syscall_frame *f)
+{
+    return sysc_pager_supply((handle_t)f->args[0], f->args[1], f->args[2], f->args[3], f->args[4]);
+}
+
+static int64_t call_pager_op(const struct syscall_frame *f)
+{
+    return sysc_pager_op((handle_t)f->args[0], f->args[1], (uint32_t)f->args[2], f->args[3],
+                         f->args[4], (int64_t)f->args[5]);
+}
+
 static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_debug_write] = call_debug_write,
     [SYS_process_exit] = call_process_exit,
@@ -578,6 +606,11 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_kexec_load] = call_kexec_load,
     [SYS_kexec_reboot] = call_kexec_reboot,
     [SYS_random_get] = call_random_get,
+    [SYS_pager_create] = call_pager_create,
+    [SYS_pager_create_vmo] = call_pager_create_vmo,
+    [SYS_pager_next] = call_pager_next,
+    [SYS_pager_supply] = call_pager_supply,
+    [SYS_pager_op] = call_pager_op,
 };
 
 /* i if i < n, else 0, computed without a branch the CPU could

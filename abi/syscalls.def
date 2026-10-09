@@ -446,3 +446,57 @@
 # ERR_INVALID_ARGS: buf not all writable (part of it may have been written). libos:
 # os_random.
 150 random_get        status    void *buf, uint64_t len
+
+# pagers (<jam/abi.h> has the constants and struct pager_request) -----------
+# A pager supplies the pages of the VMOs made from it (pager VMOs, each
+# under a key it chooses: fat's open file). An absent page touched (a
+# fault, a vmo_read) queues a request in the pager, or joins the one that
+# covers it already; the pager reads requests with pager_next and answers
+# with pager_supply (the pages) or pager_op (a failure). Requests stay in
+# the pager until answered, so a successor of a dead pager process takes
+# them again (PAGER_NEXT_AGAIN). A request not answered within the pager's
+# answer time fails ERR_TIMED_OUT. A pager VMO refuses vmo_write,
+# vmo_commit, vmo_decommit, vmo_set_size, vmo_make_exec, vmo_pin, writable
+# mappings and VMAR_KEPT_ONLY; vmo_read of an absent page waits for it
+# (ERR_IO if the pager fails it, is detached or doesn't answer in time;
+# ERR_CANCELED if the thread is killed). handle_info's related_koid of a
+# pager VMO is its pager's koid.
+# pager_create: a pager (RIGHT_ROOT_PAGER on root: volumes'), handle
+# PAGER_RIGHTS. max_pages: how many pages its VMOs may hold at once (> 0;
+# its budget); answer_ns: how long a request may wait for its answer
+# (PAGER_ANSWER_MIN_NS .. _MAX_NS, else ERR_OUT_OF_RANGE); flags 0. The
+# pager and its VMOs (structs, tables and pages) are charged to the
+# caller's job. Closing its last handle detaches every VMO it made.
+160 pager_create      status    handle_t root, uint64_t max_pages, uint64_t answer_ns, uint32_t flags, handle_t *out
+# A pager VMO of size bytes (rounded up to pages; VMO_MAX_SIZE at most,
+# ERR_OUT_OF_RANGE past it), every page absent, under key: handle
+# PAGER_VMO_RIGHTS. The pager holds no handle to it. RIGHT_WRITE on the
+# pager; ERR_ALREADY_EXISTS while key names a live VMO of the pager, or a
+# gone one whose PAGER_REQ_GONE has no answer yet; flags 0.
+161 pager_create_vmo  status    handle_t pager, uint64_t key, uint64_t size, uint32_t flags, handle_t *out
+# The oldest undelivered request into *out, now delivered: ERR_SHOULD_WAIT
+# if there is none (the pager is SIG_READABLE while there is). flags:
+# PAGER_NEXT_AGAIN puts every delivered request without an answer back
+# first. A read request is answered by pager_supply of all its pages, or
+# by pager_op FAIL or DETACH; a PAGER_REQ_GONE by pager_op DETACH of its
+# key, which frees the key. RIGHT_READ on the pager.
+162 pager_next        status    handle_t pager, uint32_t flags, struct pager_request *out
+# Fill the absent pages of [offset, offset + len) of key's VMO from buf
+# (offset and len page-aligned, len one page .. PAGER_SUPPLY_MAX: else
+# ERR_INVALID_ARGS / ERR_OUT_OF_RANGE); present pages are left as they
+# are (supplying twice is harmless). Every request now whole is answered.
+# ERR_NOT_FOUND: no live VMO has that key (detached, gone, never made);
+# ERR_OUT_OF_RANGE: past the VMO's size; ERR_NO_MEMORY: the job can't pay
+# for a page (the pages before it stay); ERR_INVALID_ARGS: buf unreadable.
+# RIGHT_WRITE on the pager.
+163 pager_supply      status    handle_t pager, uint64_t key, uint64_t offset, const void *buf, uint64_t len
+# PAGER_OP_FAIL: fail the requests of key's VMO that overlap [offset,
+# offset + len) (page-aligned, len > 0) with arg, ERR_IO or
+# ERR_OUT_OF_RANGE. PAGER_OP_DETACH (offset, len, arg 0): cut key's VMO
+# off for good: its requests, waiting and later, fail ERR_PEER_CLOSED, its
+# present pages are dropped (unmapped from every mapping), and the key is
+# free; or take a PAGER_REQ_GONE for key (the key is free). INVALIDATE and
+# SET_SIZE: ERR_NOT_SUPPORTED (not built yet). ERR_NOT_FOUND for an
+# unknown key; ERR_INVALID_ARGS for any other op or argument. RIGHT_WRITE
+# on the pager.
+164 pager_op          status    handle_t pager, uint64_t key, uint32_t op, uint64_t offset, uint64_t len, int64_t arg

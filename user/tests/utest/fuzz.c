@@ -176,7 +176,7 @@ static void fuzz_worker(void *arg)
            !__atomic_load_n(&fz_active[me], __ATOMIC_ACQUIRE))
         jam_futex_wait(&fz_active[me], 0, now() + 50 * NS_PER_MS, 0);
     for (;;) {
-        uint64_t nr = rnd(&s) % 160;
+        uint64_t nr = rnd(&s) % 170;
         if (excluded(nr))
             continue;
         uint64_t a[6];

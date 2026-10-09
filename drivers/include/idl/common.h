@@ -109,6 +109,7 @@ struct idl_rep_hdr {
 #define IDL_OBJ_KLOG       OBJ_KLOG
 #define IDL_OBJ_SERIAL     OBJ_SERIAL
 #define IDL_OBJ_SCREEN     OBJ_SCREEN
+#define IDL_OBJ_PAGER      OBJ_PAGER
 
 /* Client: the status of a reply of n bytes to a call that wants `want`
  * bytes back on success. A server that breaks the format (a positive

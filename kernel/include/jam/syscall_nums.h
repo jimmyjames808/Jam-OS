@@ -91,6 +91,11 @@
 #define SYS_kexec_load           140
 #define SYS_kexec_reboot         141
 #define SYS_random_get           150
+#define SYS_pager_create         160
+#define SYS_pager_create_vmo     161
+#define SYS_pager_next           162
+#define SYS_pager_supply         163
+#define SYS_pager_op             164
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 151
+#define SYSCALL_COUNT 165
