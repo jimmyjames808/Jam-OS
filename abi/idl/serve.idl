@@ -2,8 +2,7 @@
 # which serves files over HTTP/1.1 to any computer on the network. init
 # starts it in shell mode and keeps both ends of this channel, as the music
 # player's, publishing it as /svc/serve (a channel per opener); the shell's
-# `serve` command is its client (<serve.h> has the limits and the two
-# structs `share` uses).
+# `serve` command is its client (<serve.h> has the limits).
 # Format: see tools/genidl.py.
 #
 # Reconnect: init holds the channel across a restart of the server, so a
@@ -13,24 +12,10 @@
 
 protocol serve 31
 
-# Serve a file on `port` (SERVE_PORT_MIN and up: any port, the server has
-# the permission for those below 1024 too). `name` is the file's path
-# as the owner gave it (NUL-terminated): for `info`, the log and the
-# Content-Type, never opened by the server. Answers at once with a channel
-# `give`: the caller writes one message on it, struct serve_give with the
-# file's two handles (file_give: its `file` channel, open to read, and its
-# transfer buffer), and then reads one answer there, struct serve_answer:
-# OK once the server listens (it serves that file and nothing else, to
-# every path asked), else why not (ERR_ACCESS_DENIED: the server has no
-# listen permission; ERR_ALREADY_BOUND: another program has the port;
-# ERR_BAD_STATE: no network address yet (it waits 5 s for one);
-# netstack's other errors; ERR_INVALID_ARGS: a wrong message). The server
-# closes `give` after its answer, or if nothing comes on it in
-# SERVE_GIVE_WAIT. ERR_NO_RESOURCES: SERVE_SHARES files served (or
-# waiting for their file) already; ERR_ALREADY_EXISTS: that port is served
-# already; ERR_OUT_OF_RANGE: a port below SERVE_PORT_MIN; ERR_INVALID_ARGS:
-# no name.
-1  share  (u16 port, u8[128] name) -> (handle give)
+# 1 (share, answering a `give` channel on which the file's handles went in
+# a hand-written message): gone (the protocols review's finding 31), not
+# reused: 4.
+
 # What is served: the `index`-th file (0, 1, ...): its port, its name as
 # `share` was given it, its size, the clients connected now, and the
 # requests answered and file bytes sent since it was shared.
@@ -39,3 +24,20 @@ protocol serve 31
 # Stop serving the file on `port` (0: every file): its listener closed and
 # its clients cut off. Answers how many stopped (0: none was served there).
 3  stop  (u16 port) -> (u32 stopped)
+# Serve a file on `port` (SERVE_PORT_MIN and up: any port, the server has
+# the permission for those below 1024 too): `file` its `file` channel,
+# open to read, and `buffer` its transfer buffer (file_give's), `size`
+# its size in bytes as its opener saw it. `name` is the file's path as the
+# owner gave it: for `info`, the log and the Content-Type, never opened
+# by the server. Answered once the server listens (it serves that file and
+# nothing else, to every path asked), with the port: else why not
+# (ERR_ACCESS_DENIED: the server has no listen permission;
+# ERR_ALREADY_BOUND: another program has the port; ERR_BAD_STATE: no
+# network address yet (it waits 5 s for one); netstack's other errors;
+# ERR_INVALID_ARGS: a buffer that isn't one, or no name).
+# ERR_NO_RESOURCES: SERVE_SHARES files served (or being started) already;
+# ERR_ALREADY_EXISTS: that port is served already; ERR_OUT_OF_RANGE: a port
+# below SERVE_PORT_MIN. The handles are the server's whatever the answer
+# (it closes them if it doesn't serve the file). Only on a channel of the
+# caller's own (svc.connect's): the shared one refuses it.
+4  share  (u16 port, str[<=127] name, u64 size, handle<channel> file, handle<vmo> buffer) -> (u16 port) later
