@@ -10,7 +10,9 @@
  * replaces it (the first client hears its copy was cancelled); a fourth
  * client pastes from that raw owner, which never writes (the paste times
  * out after JWL_CLIP_WAIT_NS and nothing else waits), writes one byte over
- * JWL_CLIP_MAX (refused), or sends a handle (refused). */
+ * JWL_CLIP_MAX (refused), sends a handle (refused), or writes empty
+ * messages flat out (one dispatch reads a tick's worth of them, and the
+ * paste still ends at its deadline: M12.1 C2). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -262,7 +264,47 @@ static handle_t owner_end(struct sc *r, uint32_t src)
     return w;
 }
 
-/* E pastes from the raw owner: too slow, too much, a handle. */
+#define FLOOD 1000u   /* empty messages queued at once (the channel takes 1024) */
+
+/* E pastes from the raw owner, which writes empty messages flat out
+ * (M12.1 C2): they never bring the cap nearer, so before, the reader read
+ * until the queue was empty, as long as the owner kept it full, and never
+ * looked at its deadline. One dispatch now reads at most a tick's worth
+ * (the deadline is then "now"), and with the queue kept full the paste
+ * still ends at its deadline. */
+static bool empty_flood(struct sc *r, uint32_t src, struct cl *e)
+{
+    CHECK_ST(jwl_clip_paste(e->c), OK);
+    handle_t w = owner_end(r, src);
+    CHECK(w != HANDLE_INVALID);
+    uint64_t t0 = now();
+    for (unsigned i = 0; i < FLOOD; i++)
+        CHECK_ST(jam_channel_write(w, "", 0, NULL, 0), OK);
+    CHECK_ST(jwl_client_dispatch(e->c), OK);
+    struct handle_info hi;
+    CHECK_ST(jam_handle_info(w, &hi), OK);
+    if (hi.peer_queued < FLOOD - 64)
+        FAIL("one dispatch read %u of %u empty messages", FLOOD - hi.peer_queued, FLOOD);
+    CHECK_EQ(jwl_client_deadline(e->c), 0);
+    status_t end = ERR_SHOULD_WAIT;
+    while (end == ERR_SHOULD_WAIT && now() < t0 + JWL_CLIP_WAIT_NS + CT_WAIT) {
+        if (jam_handle_info(w, &hi) == OK)   /* kept full: the reader never sees it empty */
+            for (uint32_t q = hi.peer_queued; q < FLOOD; q++)
+                if (jam_channel_write(w, "", 0, NULL, 0) != OK)
+                    break;
+        (void)jwl_client_dispatch(e->c);
+        struct jwl_event ev;
+        while (jwl_client_next_event(e->c, &ev) == OK)
+            if (ev.type == JWL_EV_PASTE)
+                end = ev.clip.status;
+    }
+    CHECK_ST(end, ERR_TIMED_OUT);
+    CHECK(now() - t0 >= JWL_CLIP_WAIT_NS);
+    jam_handle_close(w);
+    return true;
+}
+
+/* E pastes from the raw owner: too slow, too much, a handle, a flood. */
 static bool hostile_owner(struct sc *r, uint32_t src, struct cl *e, char *big)
 {
     struct jwl_event ev;
@@ -295,7 +337,7 @@ static bool hostile_owner(struct sc *r, uint32_t src, struct cl *e, char *big)
     CHECK(next_of(e, JWL_EV_PASTE, CT_WAIT, &ev));
     CHECK_ST(ev.clip.status, ERR_INVALID_ARGS);
     CHECK(!jwl_clip_pasted(e->c, &(size_t){ 0 }));
-    return true;
+    return empty_flood(r, src, e);
 }
 
 bool t_jwlc_clip(void)
