@@ -157,7 +157,7 @@
 # processes or child jobs afterwards.
 80  job_kill          status    handle_t job
 
-# threads (M12 K4) ------------------------------------------------------------
+# threads: thread-local storage, futexes, yield -----------------------------
 # The calling thread's FS base (its thread-local storage pointer, musl's
 # __set_thread_area), from the return on; kept across every switch and
 # move to another CPU. GS stays 0. ERR_INVALID_ARGS at or past the user
