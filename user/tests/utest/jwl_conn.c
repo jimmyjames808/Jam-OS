@@ -295,8 +295,10 @@ bool t_jwl_conn_window(void)
     return true;
 }
 
-/* A client that never reads: the window, 64 KiB held, then no_memory, which
- * the client finds after everything else when it does read. */
+/* A client that never reads: the window, 64 KiB held, then no_memory. The
+ * server takes the window back before the error (channel_withdraw: what a
+ * client it drops hasn't read stays charged to it no longer), so the
+ * client finds the error alone when it does read. */
 bool t_jwl_conn_never_reads(void)
 {
     uint64_t h0, b0, h1, b1;
@@ -326,7 +328,7 @@ bool t_jwl_conn_never_reads(void)
         in_order &= m.args[0].u == got++;
         n++;
     }
-    CHECK(in_order && n == JWL_WINDOW * POKED_PER_BATCH);
+    CHECK(in_order && n == 0);   /* withdrawn */
     CHECK(m.id == JWL_DISPLAY_ID && m.opcode == 0);
     CHECK(m.args[0].o == JWL_DISPLAY_ID && m.args[1].u == JWL_ERROR_NO_MEMORY);
     CHECK(strstr(m.args[2].s, "too slowly") != NULL);

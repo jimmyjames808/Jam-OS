@@ -127,30 +127,33 @@ KTEST(chan_withdraw_rules)
     KT_EQ(n, 4);
     KT_EQ(channel_withdraw(a), 0);   /* nothing more */
 
-    /* A shared end (two handles): refused, nothing dropped. */
-    struct job *j = kt_fresh_job();
-    struct handle_table t;
-    handle_table_init(&t);
-    t.job = j;
-    handle_t h1, h2;
-    kobject_ref(CH(a));
-    kobject_ref(CH(a));
-    struct khandle k1 = khandle_from_new(CH(a), RIGHTS_BASIC | RIGHTS_IO);
-    struct khandle k2 = khandle_from_new(CH(a), RIGHTS_BASIC | RIGHTS_IO);
-    KT_EQ(handle_insert(&t, &k1, &h1), OK);
-    KT_EQ(handle_insert(&t, &k2, &h2), OK);
-    KT_EQ(channel_write(a, "x", 1, NULL, 0), OK);
-    KT_EQ(channel_withdraw(a), ERR_BAD_STATE);
-    KT_EQ(handle_close(&t, h2), OK);
-    KT_EQ(channel_withdraw(a), 1);   /* its sole holder again */
-    handle_table_destroy(&t);
-    kt_job_is_empty(j);
-    job_unref(j);
-
     KT_EQ(channel_write(a, "y", 1, NULL, 0), OK);
     kobject_unref(CH(b));   /* the peer closes: its queue went with it */
     KT_EQ(channel_withdraw(a), 0);
     kobject_unref(CH(a));
     kobject_unref(CH(d));
+
+    /* A shared end (two handles): refused, nothing dropped; its sole
+     * holder again, it may. (An end closes with its last handle.) */
+    struct channel *e, *g;
+    KT_EQ(channel_create(&e, &g), OK);
+    struct job *j = kt_fresh_job();
+    struct handle_table t;
+    handle_table_init(&t);
+    t.job = j;
+    handle_t h1, h2;
+    kobject_ref(CH(e));   /* the second handle's; the first takes ours */
+    struct khandle k1 = khandle_from_new(CH(e), RIGHTS_BASIC | RIGHTS_IO);
+    struct khandle k2 = khandle_from_new(CH(e), RIGHTS_BASIC | RIGHTS_IO);
+    KT_EQ(handle_insert(&t, &k1, &h1), OK);
+    KT_EQ(handle_insert(&t, &k2, &h2), OK);
+    KT_EQ(channel_write(e, "x", 1, NULL, 0), OK);
+    KT_EQ(channel_withdraw(e), ERR_BAD_STATE);
+    KT_EQ(handle_close(&t, h2), OK);
+    KT_EQ(channel_withdraw(e), 1);
+    handle_table_destroy(&t);   /* e's last handle: it closes */
+    kt_job_is_empty(j);
+    job_unref(j);
+    kobject_unref(CH(g));
     KT_GLOBAL_EQ(channel_live_count(), live);
 }
