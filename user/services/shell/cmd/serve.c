@@ -104,12 +104,11 @@ static status_t give_file(handle_t give, struct jfile *f, struct serve_answer *a
     struct serve_give g = { .magic = SERVE_GIVE_MAGIC, .size = f->size };
     handle_t hs[2];
     file_give(f, &hs[0], &hs[1]);
+    /* hs is gone whatever the write's status (a send's handles are always
+     * moved): never closed after it. */
     status_t st = jam_channel_write(give, &g, sizeof(g), hs, 2);
-    if (st != OK) {
-        jam_handle_close(hs[0]);
-        jam_handle_close(hs[1]);
+    if (st != OK)
         return st;
-    }
     signals_t seen;
     uint32_t n = 0, nh = 0;
     st = jam_object_wait_one(give, SIG_READABLE | SIG_PEER_CLOSED, now() + 2 * SOON, &seen);
