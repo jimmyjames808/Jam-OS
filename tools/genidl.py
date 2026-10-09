@@ -40,7 +40,8 @@ started again, in a paragraph that begins `Restart:` or `Reconnect:`
 supervision):`). Either the restart is not seen (a service that outlives
 its process, ARCHITECTURE.md "Services that outlive their process"), or
 it is ERR_PEER_CLOSED and the paragraph says what to open again and what
-is lost. A file without one is refused.
+is lost. A file without one is refused. The comment is copied to the top
+of the generated header (a comment may not hold `*/`).
 
 A client calls a method four ways:
     <proto>_<method>(ch, args..., &results...)    waits for ever
@@ -209,8 +210,9 @@ class Method:
 
 
 class Protocol:
-    def __init__(self, src, lineno, name, pid, methods):
+    def __init__(self, src, lineno, name, pid, methods, doc):
         self.src, self.lineno, self.name, self.pid, self.methods = src, lineno, name, pid, methods
+        self.doc = doc   # the comment above the protocol line, copied into the header
 
     def wire(self, m):
         return (self.pid << 16) | m.ordinal
@@ -264,18 +266,26 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
 def parse(src):
     name, pid, methods, doc = None, None, [], []
     plineno = 0
+    head = []   # the file's comment, above the protocol line: its paragraphs
     ordinals, names = set(), set()
     restart_rule = False
     for lineno, raw in enumerate(open(src), 1):
         line = raw.strip()
         if line.startswith("#"):
-            doc.append(line[1:].strip())
-            if name is None and RESTART_RULE.match(line[1:].strip()):
-                restart_rule = True
+            text = line[1:].strip()
+            if "*/" in text:
+                fail(src, lineno, "a comment can't hold '*/' (it is copied into C comments)")
+            doc.append(text)
+            if name is None:
+                head.append(text)
+                if RESTART_RULE.match(text):
+                    restart_rule = True
             continue
         line = line.split("#", 1)[0].strip()
         if not line:
             doc = []
+            if name is None and head and head[-1]:
+                head.append("")
             continue
         if line.startswith("protocol"):
             toks = line.split()
@@ -338,7 +348,9 @@ def parse(src):
         sys.exit(f"{src}: no 'protocol' line")
     if not methods:
         sys.exit(f"{src}: no methods")
-    return Protocol(src, plineno, name, pid, sorted(methods, key=lambda m: m.ordinal))
+    while head and not head[-1]:
+        head.pop()
+    return Protocol(src, plineno, name, pid, sorted(methods, key=lambda m: m.ordinal), head)
 
 
 class IdEntry:
@@ -1139,9 +1151,9 @@ def gen_dispatch_case(p, m):
 def gen_protocol(p):
     P, U = p.name, p.name.upper()
     src = os.path.relpath(p.src)
-    out = [f"/* {BANNER.format(src=src)}",
-           " *",
-           f" * Protocol `{P}` (id {p.pid}). Client: {P}_<method>(ch, args..., &results...)",
+    out = [f"/* {BANNER.format(src=src)}", " *"]
+    out += [f" * {l}" if l else " *" for l in p.doc] + [" *"] if p.doc else []
+    out += [f" * Protocol `{P}` (id {p.pid}). Client: {P}_<method>(ch, args..., &results...)",
            f" * (and {P}_<method>_until with a deadline, _within with a timeout), or",
            f" * {P}_<method>_send and {P}_<method>_result without waiting. Server:",
            f" * fill a struct {P}_ops and run {P}_serve(ch, &ops, ctx), or",
@@ -1435,6 +1447,9 @@ SELFTESTS = [
     ("a missing file", t_ok("1 a () -> ()\n"),
      "0 none -\n40 t abi/idl/t.idl\n41 u abi/idl/nothing.h\n", "doesn't exist"),
     ("no id 0", t_ok("1 a () -> ()\n"), "40 t abi/idl/t.idl\n", "id 0"),
+    ("a comment ending C's", t_ok("# a */ b\n1 a () -> ()\n"), None, "can't hold '*/'"),
+    ("no restart rule", {"t.idl": "# t.\n\nprotocol t 40\n1 a () -> ()\n"}, None,
+     "no restart rule"),
 ]
 
 
