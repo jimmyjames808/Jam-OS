@@ -42,9 +42,10 @@
 #define ASK_AGAIN    (500 * NS_PER_MS)    /* an answer this fresh is good enough */
 #define ASK_WAIT     (2 * NS_PER_S)       /* an answer this late is given up on */
 #define RATE_SPAN    (3 * NS_PER_S)       /* two summaries further apart give no rate */
-#define TXID_DESK    0xd5c00000u          /* | a count: audioctl.desk */
-#define TXID_MASTER  0xd5d00000u          /* | a count: audioctl.set_master */
-#define TXID_NET     0xd5e00000u          /* | a count: netctl.summary */
+/* Our own txids keep CHANNEL_TXID_KERNEL clear, as every writer's. */
+#define TXID_DESK    0x55c00000u          /* | a count: audioctl.desk */
+#define TXID_MASTER  0x55d00000u          /* | a count: audioctl.set_master */
+#define TXID_NET     0x55e00000u          /* | a count: netctl.summary */
 #define TXID_COUNT   0xffffu
 #define PRESSES_MAX  4u                   /* presses kept for a channel not waiting */
 #define OWNED_MAX    16u                  /* notices remembered with who posted them */

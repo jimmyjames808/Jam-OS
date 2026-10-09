@@ -220,6 +220,13 @@ struct process_info {
 #define CHANNEL_MAX_QUEUED  1024
 #define JOB_OBJECT_BYTES    1024
 
+/* The first 4 bytes of a message are its txid. channel_call stamps its own
+ * on the request, with this bit set (the rest a counter of the channel
+ * pair's), and takes the reply that echoes it. A program that picks its
+ * own txids (requests it sends with channel_write and doesn't wait for)
+ * keeps this bit clear, so no reply to them is ever taken for a call's. */
+#define CHANNEL_TXID_KERNEL 0x80000000u
+
 /* argument structs -----------------------------------------------------------
  * Calls with more than six arguments take a pointer to one of these. The
  * syscall dispatcher copies the struct into the kernel before the call, so

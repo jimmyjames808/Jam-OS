@@ -18,9 +18,12 @@
  * every message still queued on the closing endpoint.
  *
  * Transaction ids: the first 4 bytes of every message are a txid.
- * channel_call stamps a fresh non-zero txid on its request and takes the
- * reply whose first 4 bytes match it. Plain writes and reads do not care
- * what the txid is; servers echo it back in their reply.
+ * channel_call stamps a fresh txid on its request and takes the reply
+ * whose first 4 bytes match it: CHANNEL_TXID_KERNEL (bit 31) set, the rest
+ * from a counter of the pair's (unique on it until 2^31 calls). Plain
+ * writes and reads do not care what the txid is; servers echo it back in
+ * their reply. A writer that picks its own txids (a request it doesn't
+ * wait for) keeps bit 31 clear, so their replies never meet a call.
  *
  * Copies. A message's bytes are copied once on the way in (from the
  * writer's buffer straight into the message) and once on the way out

@@ -11,20 +11,21 @@
 
 #include "channel_internal.h"
 
-static uint32_t next_txid;
 /* Held by a send that carries a channel endpoint from its cycle check to
  * its queueing (check_carried). */
 static spinlock_t carry_lock = SPINLOCK_INIT("channel carry");
 
-/* Globally unique (until it wraps), so two endpoints calling each other
- * can't mistake one another's requests for replies. Never 0. */
-static uint32_t new_txid(void)
+/* A txid for a call on ch: CHANNEL_TXID_KERNEL with the next number of
+ * the pair's counter, so unique on the pair until 2^31 calls went over it.
+ * One counter for both ends, not one each: two ends calling each other at
+ * once would draw equal txids, and one end's request would be taken for
+ * the other's reply. Bit 31 keeps it apart from the txids writers choose
+ * themselves (requests sent without waiting keep it clear), so a reply
+ * to those never reaches a call waiting here. Never 0. */
+static uint32_t new_txid(struct channel *ch)
 {
-    uint32_t t;
-    do
-        t = __atomic_add_fetch(&next_txid, 1, __ATOMIC_RELAXED);
-    while (t == 0);
-    return t;
+    uint32_t n = __atomic_add_fetch(&ch->pair->next_txid, 1, __ATOMIC_RELAXED);
+    return CHANNEL_TXID_KERNEL | (n & ~CHANNEL_TXID_KERNEL);
 }
 
 static uint32_t msg_txid(struct chan_msg *m)
@@ -396,7 +397,7 @@ status_t channel_call_with(struct channel *ch, struct chan_call *c, uint64_t dea
     if ((!q->user && !q->addr) || q->len < 4 || (c->rep.len && !c->rep.user && !c->rep.addr) ||
         (c->rep_hcap && !c->rep_h))
         return ERR_INVALID_ARGS;
-    struct chan_waiter w = { .txid = new_txid(), .thread = current_thread() };
+    struct chan_waiter w = { .txid = new_txid(ch), .thread = current_thread() };
     if (!q->user)
         memcpy((void *)(uintptr_t)q->addr, &w.txid, 4);   /* kernel callers read it back */
     struct chan_msg *m;
