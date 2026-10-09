@@ -62,8 +62,35 @@ static lx_call *const calls[] = {
     [SYS_ftruncate] = lx_ftruncate,
     [SYS_getdents64] = lx_getdents64,
 
-    /* fcntl until B2's: stdfd.c */
+    /* pipes, dup and fcntl, memfd, eventfd: pipe.c, dup.c, memfd.c, eventfd.c */
+    [SYS_pipe] = lx_pipe,
+    [SYS_pipe2] = lx_pipe2,
+    [SYS_socketpair] = lx_socketpair,
+    [SYS_dup] = lx_dup,
+    [SYS_dup2] = lx_dup2,
+    [SYS_dup3] = lx_dup3,
     [SYS_fcntl] = lx_fcntl,
+    [SYS_memfd_create] = lx_memfd_create,
+    [SYS_eventfd] = lx_eventfd,
+    [SYS_eventfd2] = lx_eventfd2,
+
+    /* the one user: user.c */
+    [SYS_getuid] = lx_getuid,
+    [SYS_geteuid] = lx_geteuid,
+    [SYS_getgid] = lx_getgid,
+    [SYS_getegid] = lx_getegid,
+    [SYS_getresuid] = lx_getresuid,
+    [SYS_getresgid] = lx_getresgid,
+    [SYS_setuid] = lx_setuid,
+    [SYS_setgid] = lx_setgid,
+    [SYS_setreuid] = lx_setreuid,
+    [SYS_setregid] = lx_setregid,
+    [SYS_setresuid] = lx_setresuid,
+    [SYS_setresgid] = lx_setresgid,
+    [SYS_setfsuid] = lx_setfsuid,
+    [SYS_setfsgid] = lx_setfsgid,
+    [SYS_getgroups] = lx_getgroups,
+    [SYS_setgroups] = lx_setgroups,
 
     /* poll, select and epoll: poll.c, epoll.c */
     [SYS_poll] = lx_poll,

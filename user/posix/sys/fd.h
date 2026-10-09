@@ -39,11 +39,8 @@
  * there) and made into descriptions by fd_adopters (fd.c) once the C
  * library is up, before any constructor of the program runs.
  *
- * Until each B track lands, user/posix/sys/stdfd.c holds stand-ins: the
- * pipe and null kinds (B2's pipe.c and dev.c replace them, and their lines
- * in fd.c's fd_adopters), the log kind (descriptors 1 and 2 with no
- * starter's channel: it stays until /dev takes it) and fcntl's four
- * commands that need no other kind (B2's fcntl replaces them). */
+ * The kinds libc makes without a server (pipes, /dev, /etc, memfd,
+ * eventfd) and dup and fcntl are in kinds.h's files. */
 #pragma once
 
 #include <stdbool.h>
@@ -231,7 +228,8 @@ void            fd_given_drop(struct fd_given *g);
  * gives a description with one reference. */
 status_t fd_stage(const struct posixfds_fd *rec, const void *data, const handle_t *hs);
 void     fd_stage_reset(void);
-/* No hand-over: descriptors 0 to 2 as section 5 says (stdfd.c). */
+/* No hand-over: descriptors 0 to 2 as section 5 says (stdfd_default,
+ * dev.c). */
 void     fd_stage_default(void);
 
 typedef long fd_adopt_fn(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
