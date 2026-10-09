@@ -440,11 +440,17 @@ status_t standby_promote(handle_t ch, const struct standby_args *a)
     uint8_t *buf = NULL;
     uint32_t len = 0;
     status_t st = build_promotion(a, &buf, &len);
-    if (st == OK)
+    /* Consumed whatever happens. The first n are gone once the write is
+     * tried, whatever its status (a send's handles are always moved): never
+     * closed after it, as their values may already be another thread's new
+     * handles. Only what was never sent is closed here. */
+    unsigned sent = 0;
+    if (st == OK) {
         st = jam_channel_write_rights(ch, buf, len, hs, rs, n);
+        sent = n;
+    }
     free(buf);
-    /* Consumed whatever happens: a failed write left them with us. */
-    for (unsigned i = 0; st != OK && i < a->n; i++)
+    for (unsigned i = sent; i < a->n; i++)
         jam_handle_close(a->hs[i].h);
     return st;
 }

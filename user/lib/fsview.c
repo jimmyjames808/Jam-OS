@@ -146,7 +146,9 @@ status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
     uint32_t rn = fs_view_dispatch(&v, q, n, r, rhs, &rhn);
-    if (!rn || drv_channel_write(ch, r, rn, rhs, rhn) != OK)
-        idl_close_all(rhs, rhn);   /* not sent: still ours */
+    if (!rn)
+        idl_close_all(rhs, rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, r, rn, rhs, rhn);
     return OK;
 }

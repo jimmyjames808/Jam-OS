@@ -699,8 +699,10 @@ status_t ns_send_prepared(handle_t to, uint32_t kind, struct ns_out *o)
 {
     o->m.kind = kind;
     status_t st = jam_channel_write(to, &o->m, NS_MSG_SIZE(o->m.count), o->hs, o->m.count);
-    if (st == OK)
-        o->m.count = 0;   /* the handles went with it */
+    /* The handles are gone whatever the status (a send's handles are always
+     * moved): never closed after the write, as their values may already be
+     * another thread's new handles. */
+    o->m.count = 0;
     ns_prepared_drop(o);
     return st;
 }
@@ -746,12 +748,12 @@ status_t ns_send_one(handle_t to, const char *path, handle_t fs)
     memset(&m, 0, sizeof(m));
     m.kind = fs ? NS_MOUNT : NS_UNMOUNT;
     m.count = 1;
-    status_t st = path && kind_of(path) != BAD ? OK : ERR_INVALID_ARGS;
-    if (st == OK) {
-        memcpy(m.path[0], path, strlen(path) + 1);
-        st = jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, fs ? 1 : 0);
+    if (!path || kind_of(path) == BAD) {
+        if (fs)
+            jam_handle_close(fs);   /* never sent */
+        return ERR_INVALID_ARGS;
     }
-    if (st != OK && fs)
-        jam_handle_close(fs);
-    return st;
+    memcpy(m.path[0], path, strlen(path) + 1);
+    /* fs is gone whatever the write's status: never closed after it. */
+    return jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, fs ? 1 : 0);
 }
