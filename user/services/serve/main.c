@@ -37,8 +37,12 @@ JAM_WANTS("svc net listen low\n");
 struct netwait *serve_w;
 struct share shares[SERVE_SHARES];
 static handle_t ctl;                     /* init's shared channel (SR_USER + 0) */
+static uint32_t ctl_id;                  /* ... its entry in the wait set */
+static bool     ctl_held;                /* ... held back by the unread bound */
 static handle_t ctls[CTL_MAX];           /* our ends of the channels openers got (0: free) */
 static uint32_t ctl_ids[CTL_MAX];
+static bool     ctls_held[CTL_MAX];      /* held back by the unread bound (behind) */
+static struct idl_held held;             /* how many are held, and when to look again */
 
 void *serve_key(enum tag t, unsigned slot)
 {
@@ -175,35 +179,63 @@ static status_t on_connect(void *ctx, handle_t *out)
     return ERR_NO_RESOURCES;
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left serve's bound
+ * of answers unread? Then its entry (id) waits for its hang-up only
+ * (interest 0) and *flag is set, until a look finds them read (look_at).
+ * Its requests wait in the channel meanwhile, charged to the client. */
+static bool behind(handle_t ch, uint32_t id, bool *flag)
+{
+    if (!serve_unread_full(ch) || netwait_modify(serve_w, id, 0) != OK)
+        return false;
+    *flag = true;
+    idl_hold(&held);
+    return true;
+}
+
+/* Is a channel held back (flag) still behind? Else ready again. */
+static void look_at(handle_t ch, uint32_t id, bool *flag)
+{
+    if (!*flag)
+        return;
+    if (ch && serve_unread_full(ch))
+        idl_hold(&held);   /* still behind */
+    else if (!ch || netwait_modify(serve_w, id, NETWAIT_READ) == OK)
+        *flag = false;
+    else
+        idl_hold(&held);   /* try again next look */
+}
+
 /* Up to BUDGET requests from ch: ERR_SHOULD_WAIT once it is empty (or the
- * budget is spent: the entry stays ready, level-triggered), else the
- * read's status (ERR_PEER_CLOSED: its opener is gone). The shared
- * channel (svc.connect, and the methods without handles: dispatch) through
- * svc_serve_request; an opener's own with the generated server, which
- * takes `share`'s handles and its answer later. */
+ * budget is spent: the entry stays ready, level-triggered; or its client
+ * is behind: behind), else the read's status (ERR_PEER_CLOSED: its opener
+ * is gone). The shared channel (svc.connect, and the methods without
+ * handles: dispatch) through svc_serve_request; an opener's own with the
+ * generated server, which takes `share`'s handles and its answer later. */
 static status_t serve_some(handle_t ch)
 {
     status_t st = OK;
-    for (unsigned n = 0; n < BUDGET && st == OK; n++)
+    for (unsigned n = 0; n < BUDGET && st == OK && !behind(ch, ctl_id, &ctl_held); n++)
         st = svc_serve_request(ch, dispatch, on_connect, NULL);
     return st == OK ? ERR_SHOULD_WAIT : st;
 }
 
-static status_t serve_own(handle_t ch)
+static status_t serve_own(unsigned slot)
 {
     status_t st = OK;
-    for (unsigned n = 0; n < BUDGET && st == OK; n++)
-        st = serve_serve_one(ch, &ops, (void *)1);   /* ctx non-NULL: an opener's channel */
+    for (unsigned n = 0; n < BUDGET && st == OK &&
+                         !behind(ctls[slot], ctl_ids[slot], &ctls_held[slot]); n++)
+        st = serve_serve_one(ctls[slot], &ops, (void *)1);   /* ctx non-NULL: an opener's */
     return st == OK ? ERR_SHOULD_WAIT : st;
 }
 
 static void ctl_ready(unsigned slot)
 {
-    if (serve_own(ctls[slot]) == ERR_SHOULD_WAIT)
+    if (serve_own(slot) == ERR_SHOULD_WAIT)
         return;
     (void)netwait_remove(serve_w, ctl_ids[slot]);   /* in the set since on_connect */
     jam_handle_close(ctls[slot]);
     ctls[slot] = HANDLE_INVALID;
+    ctls_held[slot] = false;
 }
 
 /* ---- the loop -------------------------------------------------------------------------- */
@@ -239,11 +271,10 @@ static status_t setup(void)
     ctl = startup_handle(SR_USER + 0);
     if (!ctl)
         return ERR_NOT_FOUND;
-    uint32_t id;
     struct netwait_handle h = { ctl, SIG_READABLE, 0, SIG_PEER_CLOSED };
     status_t st = netwait_create(NETWAIT_MAX, &serve_w);
     if (st == OK)
-        st = netwait_add_handle(serve_w, &h, NETWAIT_READ, serve_key(T_SHARED, 0), &id);
+        st = netwait_add_handle(serve_w, &h, NETWAIT_READ, serve_key(T_SHARED, 0), &ctl_id);
     if (st == OK)
         st = listen_init();
     return st;
@@ -262,7 +293,12 @@ int main(int argc, char **argv)
     for (;;) {   /* each turn: what is ready, the listen worker's answers, the deadlines */
         struct netwait_ready r[BATCH];
         uint32_t n = 0;
-        uint64_t deadline = clients_expire(now());
+        if (idl_held_due(&held)) {   /* channels held back by the unread bound */
+            look_at(ctl, ctl_id, &ctl_held);
+            for (unsigned i = 0; i < CTL_MAX; i++)
+                look_at(ctls[i], ctl_ids[i], &ctls_held[i]);
+        }
+        uint64_t deadline = idl_held_deadline(&held, clients_expire(now()));
         st = netwait_wait(serve_w, deadline, r, BATCH, &n);
         if (st != OK && st != ERR_TIMED_OUT && st != ERR_CANCELED) {
             printf("serve: waiting: %s: ending\n", status_str(st));
