@@ -44,15 +44,25 @@ static lx_call *const calls[] = {
     [SYS_sysinfo] = lx_sysinfo,
     [SYS_sched_getaffinity] = lx_sched_getaffinity,
 
-    /* descriptors 0 to 2, until the descriptor table: stdfd.c */
+    /* the descriptor table: fd.c */
     [SYS_read] = lx_read,
     [SYS_write] = lx_write,
     [SYS_readv] = lx_readv,
     [SYS_writev] = lx_writev,
+    [SYS_pread64] = lx_pread64,
+    [SYS_pwrite64] = lx_pwrite64,
+    [SYS_preadv] = lx_preadv,
+    [SYS_pwritev] = lx_pwritev,
+    [SYS_lseek] = lx_lseek,
     [SYS_close] = lx_close,
     [SYS_fstat] = lx_fstat,
     [SYS_ioctl] = lx_ioctl,
-    [SYS_lseek] = lx_lseek,
+    [SYS_fsync] = lx_fsync,
+    [SYS_fdatasync] = lx_fdatasync,
+    [SYS_ftruncate] = lx_ftruncate,
+    [SYS_getdents64] = lx_getdents64,
+
+    /* fcntl until B2's: stdfd.c */
     [SYS_fcntl] = lx_fcntl,
 
     /* signals, until signals: nosig.c */
