@@ -61,12 +61,12 @@ static void tell_desktop(const struct vol *b, bool gave_up, bool first)
 /* ---- the process --------------------------------------------------------------------- */
 
 /* What b's instance answers on its `fs` channel by itself (fs.stat's
- * probe, disk.c): the port watches our client end. */
+ * probe, disk.c): the port watches the end we ask on (fs_asker). */
 static void watch_answers(struct vol *b)
 {
     if (b->client && !b->client_key) {
         uint64_t key = KEY_EV_OF(b - vols, b->gen);
-        if (jam_port_bind(port, b->client, key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
+        if (jam_port_bind(port, fs_asker(b), key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
             b->client_key = key;
         else
             say(false, "volumes: %s: can't watch its channel for answers", b->name);
@@ -135,13 +135,18 @@ status_t fs_spawn(struct vol *b)
 
 void fs_close_client(struct vol *b)
 {
-    call_fail(b->client);   /* an fs.sync a task waits for: no answer comes now */
-    if (b->client && b->client_key)
-        jam_port_unbind(port, b->client, b->client_key);
+    call_fail(fs_asker(b));   /* an fs.sync a task waits for: no answer comes now */
+    if (fs_asker(b) && b->client_key)
+        jam_port_unbind(port, fs_asker(b), b->client_key);
     b->client_key = 0;
     if (b->client)
         jam_handle_close(b->client);
     b->client = HANDLE_INVALID;
+    if (b->own)
+        jam_handle_close(b->own);
+    if (b->own_serve)
+        jam_handle_close(b->own_serve);
+    b->own = b->own_serve = HANDLE_INVALID;
 }
 
 void fs_kill(struct vol *b)

@@ -666,6 +666,7 @@ static const struct {
     { "disk_not_boot", t_disk_not_boot },
     { "disk_other", t_disk_other },
     { "disk_fs_restart", t_disk_fs_restart },
+    { "disk_own_channel", t_disk_own_channel },
     { "disk_vanishes", t_disk_vanishes },
     { "logd_writes_the_log", t_logd_writes_the_log },
     { "logd_without_data", t_logd_without_data },

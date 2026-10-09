@@ -533,6 +533,50 @@ bool t_disk_fs_restart(void)
     return detach(vm, &v);
 }
 
+/* volumes asks its filesystem services its own things (fs.sync, a
+ * restart's first-answer probe) on a channel of its own, never handed out:
+ * a client that floods the mount's shared `fs` channel and reads nothing,
+ * so that fat holds that channel back (the unread bound), holds none of
+ * them up, before or after the service is killed and restarted on the
+ * channels it kept. Before, volumes.sync waited its 5 s on the held
+ * channel and failed. */
+#define FLOOD 300u
+bool t_disk_own_channel(void)
+{
+    handle_t vm = volumes(), fl;
+    struct view v = { 0 };
+    uint32_t id = 0;
+    uint64_t koid = 0;
+    bool skip;
+    if (!vm)
+        return true;
+    if (!attach(vm, DM_TYPE_FAT32, ESP_BOOT, &id, &skip))
+        return skip;
+    if (!wait_mounts(vm, &v, true, true))
+        return false;
+    struct fatrun data = mount_of(&v, DATA);
+    CHECK_ST(jam_handle_duplicate(data.fs, RIGHT_SAME, &fl), OK);
+    for (uint32_t i = 0; i < FLOOD; i++)
+        CHECK_ST(fs_stat_send(fl, 0x100 + i, "/", 1), OK);
+    jam_sleep_until(now() + 300 * NS_PER_MS);
+    struct handle_info hi;
+    CHECK_ST(jam_handle_info(fl, &hi), OK);
+    printf("utest: disk_own_channel: %u answers unread, %u requests held at fat\n", hi.queued,
+           hi.peer_queued);
+    CHECK(hi.peer_queued > 0);   /* fat holds the shared channel back */
+    for (unsigned k = 0; k < 2; k++) {
+        uint64_t t0 = now();
+        CHECK_ST(volumes_sync_until(vm, now() + 20 * NS_PER_S), OK);
+        CHECK(now() - t0 < 2 * NS_PER_S);   /* not SYNC_WAIT's 5 s on a held channel */
+        if (k == 0)   /* the next instance gets volumes' own channel too */
+            CHECK_ST(volumes_kill_until(vm, now() + 30 * NS_PER_S, DATA, sizeof(DATA) - 1,
+                                        &koid), OK);
+    }
+    CHECK_ST(jam_handle_close(fl), OK);   /* fat drops its answers, serves on */
+    CHECK_ST(t_mkdir(&data, "/after"), OK);
+    return detach(vm, &v);
+}
+
 /* The disk goes away: its mounts go with it, and the services' channels
  * are dead. A second disk then mounts from scratch. */
 bool t_disk_vanishes(void)

@@ -77,6 +77,7 @@ bool t_disk_mounts(void);
 bool t_disk_not_boot(void);
 bool t_disk_other(void);
 bool t_disk_fs_restart(void);
+bool t_disk_own_channel(void);
 bool t_disk_vanishes(void);
 
 /* logd.c: bin/logd with the fat service over a RAM disk as its /data. */

@@ -377,12 +377,12 @@ void fs_answers(struct vol *b)
             (void)jam_port_queue(port, &p);   /* lost: the next answer's edge brings us back */
             return;
         }
-        status_t rs = idl_reply_read(b->client, buf, sizeof(buf), &msg);
+        status_t rs = idl_reply_read(fs_asker(b), buf, sizeof(buf), &msg);
         if (rs == ERR_INTERNAL)
             continue;   /* nothing we ask is answered that big: dropped */
         if (rs != OK)
             return;
-        if (call_offer(b->client, buf, &msg))
+        if (call_offer(fs_asker(b), buf, &msg))
             continue;
         idl_msg_drop(&msg);   /* fs.stat's answer carries none */
         uint32_t n = msg.n;
@@ -712,8 +712,8 @@ status_t disk_sync_all(void)
             o->test = d->test;
             snprintf(o->disk, sizeof(o->disk), "%s", disk_name(d));
             snprintf(o->path, sizeof(o->path), "%s", fs_mount_path(b));
-            call_begin(&o->c, b->client);   /* all sent at once, then waited for */
-            o->st = fs_sync_send(b->client, o->c.txid);
+            call_begin(&o->c, fs_asker(b));   /* all sent at once, then waited for */
+            o->st = fs_sync_send(fs_asker(b), o->c.txid);
             if (o->st != OK)
                 call_end(&o->c);
         }
