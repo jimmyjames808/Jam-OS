@@ -1242,7 +1242,7 @@ or `only sh_paste` alone):
 |---|---|
 | `comp_data_selection` | the compositor headless with test clients: set_selection refused (its source cancelled) with a serial that isn't one of the client's input events, or without the keyboard focus; only text types offered on; the focused client told the selection before `wl_keyboard.enter`, an unfocused one never; a receive passed on with a channel end the source can write and not read, the data reaching the reader; receives refused (the reader's end closed, the source told nothing) for a type not offered, a handle that isn't a channel, a reader without the focus, and past 32 since its focus came (a new data device's new offer too); the owner going clears the selection |
 | `comp_data_rules` | drag and drop refused (`start_drag` cancels its source; the source used again, a drag's source as the selection, `finish` on a selection's offer are protocol errors); a source that never writes holds up nobody (keys still routed, the reader's end closes when the source closes its own); a client that never destroys its offers is told "none" at the cap |
-| `jwlc_clip` | libjwl against the real compositor: a client copies and pastes its own text, then, its connection bound to a port as a program's is, 8 times more, leaving no message bytes on the job once the port is read (each transfer's channel unbound from the port as the paste ends); another, whose window then has the focus, pastes 300 KiB of it (several messages); a raw client's selection replaces it (the first hears `JWL_EV_COPY_CANCELLED`); a fourth pastes from that raw owner, which never writes (timed out after 2 s), writes one byte over 1 MiB, or sends a handle (both refused) |
+| `jwlc_clip` | libjwl against the real compositor: a client copies and pastes its own text, then, its connection bound to a port as a program's is, 8 times more, leaving no message bytes on the job once the port is read (each transfer's channel unbound from the port as the paste ends); another, whose window then has the focus, pastes 300 KiB of it (several messages); a raw client's selection replaces it (the first hears `JWL_EV_COPY_CANCELLED`); a fourth pastes from that raw owner, which never writes (timed out after 2 s), writes one byte over 1 MiB, or sends a handle (both refused), or writes empty messages flat out (one dispatch reads at most 64 of them, and the paste still ends at its deadline: M12.1's C2) |
 | `consel_drag` | the cell under a pixel (padding and edges clamped); a drag across lines, forwards and backwards, its cells and its text (trailing blanks dropped, lines joined by newlines, UTF-8); a press alone selects nothing until the drag reaches another cell |
 | `consel_word_line` | a double click takes a word (paths and options are words; blanks and other punctuation are runs of their own) and a drag after it goes on by words; a triple click takes a line, a drag after it by lines |
 | `consel_scrollback` | a range far back in the scrollback with a line no longer kept (skipped, its newline kept); a copy cut at its buffer; clicks counted within 500 ms on one cell, a fourth starting again |
@@ -1252,6 +1252,25 @@ or `only sh_paste` alone):
 
 End to end, `tools/clip-test.sh <outdir>` ([below](#area-scripts)):
 `clip.txt` on a plain boot with a USB keyboard and mouse.
+
+## The clients against a hostile compositor or peer
+
+M12.1's review of the desktop's clients
+([M12.1-REVIEW-CLIENTS.md](M12.1-REVIEW-CLIENTS.md)): libjwl's client
+side, the console's window mode and libfun's window, against a compositor
+that sends anything and a peer that floods. In utest (the `init` run;
+`run utest only jwlc_fuzz`, `only con_hostile` alone):
+
+| Test | What it checks |
+|---|---|
+| `jwl_bad_empty_run` | a run of batches with no message: 64 in a row and then a message are fine, a 65th in a row is refused at once (the compositor says `invalid_method`) with the batch after it unread, on both sides (C1: one `jwl_conn_next` read them all, so a client writing them flat out froze the compositor) |
+| `jwlc_keyboard_hostile` | a repeat rate of INT32_MAX is 1000 a second, a held key's next repeat 1 ms on (C4); a negative delay is none; a key code past every table types nothing |
+| `jwlc_held_retry` | a client whose channel is full holds its next request, and its deadline is then within 10 ms; the queue drained, the dispatch at that deadline writes it and it is answered (C5) |
+| `jwlc_connect_pending` | a connect function's "not yet" six times: the client is ready in about 300 ms, not after a pause that doubles each time (C13) |
+| `jwlc_fuzz_events` | a ready client with a drawn, focused window gets thousands of well-formed events with hostile values on every object it has but wl_display (words at their ends, random strings and arrays, objects of the right type or null, handles of every kind), the program taking its events and drawing between bursts, and the compositor dying twice: no crash, still ready, every handle and message byte back at the end |
+| `jwlc_fuzz_batches` | random and mutated raw batches onto a client's connection: each taken, or the connection dropped and made again; nothing crashes or leaks |
+| `fun_window_input` | (with the rest) the wheel at INT32_MIN notches twice is 128 notches the right way, a pointer past every edge is the window's corner (C6) |
+| `con_hostile_compositor` | bin/console as init starts a terminal, its /svc/wayland the test's: eight connections that get garbage at once (no batch, a wrong magic, a message to nothing, 65 empty batches, over 16 KiB, a header naming more handles than it brings, 29 handles, a delete_id of nothing), each dropped and made again, then the fake compositor with hostile values (sizes of 4000x3000, 1x1, 0x0 and negative, the pointer past every edge with a drag, the wheel at INT32_MIN, key codes past every table, every modifier bit, copy and paste with no clipboard, a repeat rate of INT32_MAX with a key held, a junk keymap, an output of negative size, 500 pings, frame callbacks held): it answers `console.size` throughout with a grid inside 480x180, and the close box ends it with 0 |
 
 ## The compositor's look
 
