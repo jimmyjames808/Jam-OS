@@ -14,6 +14,7 @@
 #include <idl/audioctl.h>
 #include <idl/block.h>
 #include <idl/compctl.h>
+#include <idl/conn_ctl.h>
 #include <idl/console.h>
 #include <idl/crasher.h>
 #include <idl/devmgr.h>
@@ -37,8 +38,10 @@
 #include <idl/nschan.h>
 #include <idl/null.h>
 #include <idl/serve.h>
+#include <idl/splashch.h>
 #include <idl/storage.h>
 #include <idl/svc.h>
+#include <idl/update.h>
 #include <idl/usb.h>
 #include <idl/usbbus.h>
 #include <idl/volumes.h>
@@ -367,9 +370,10 @@ static status_t idl_fz_block_map_buffer(void *ctx, uint32_t size, handle_t *out_
     *out_size = (uint32_t)0x5a5a5a5a5a5a5a5aull;
     return OK;
 }
-static status_t idl_fz_block_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t idl_fz_block_read(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint32_t count, uint32_t offset)
 {
     (void)ctx;
+    (void)idl_txn;
     (void)lba;
     (void)count;
     (void)offset;
@@ -377,9 +381,10 @@ static status_t idl_fz_block_read(void *ctx, uint64_t lba, uint32_t count, uint3
         return ERR_IO;
     return OK;
 }
-static status_t idl_fz_block_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t idl_fz_block_write(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint32_t count, uint32_t offset)
 {
     (void)ctx;
+    (void)idl_txn;
     (void)lba;
     (void)count;
     (void)offset;
@@ -387,9 +392,10 @@ static status_t idl_fz_block_write(void *ctx, uint64_t lba, uint32_t count, uint
         return ERR_IO;
     return OK;
 }
-static status_t idl_fz_block_sync(void *ctx)
+static status_t idl_fz_block_sync(void *ctx, struct idl_txn idl_txn)
 {
     (void)ctx;
+    (void)idl_txn;
     if (!idl_fuzz_full)
         return ERR_IO;
     return OK;
@@ -518,6 +524,29 @@ static const struct idl_fuzz_msg idl_fz_compctl_msgs[] = {
     { 0x00200005u, 9u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00200006u, 9u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x0020000au, 8u, 1, 1, 0, 0, { IDL_OBJ_CHANNEL }, 0, { { 0, 0, 0 } } },
+};
+
+/* ---- conn_ctl ---- */
+static status_t idl_fz_conn_ctl_resize(void *ctx, uint16_t cols, uint16_t rows)
+{
+    (void)ctx;
+    (void)cols;
+    (void)rows;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static const struct conn_ctl_ops idl_fz_conn_ctl_ops = {
+    .resize = idl_fz_conn_ctl_resize,
+};
+static uint32_t idl_fz_conn_ctl_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return conn_ctl_dispatch_on(HANDLE_INVALID, &idl_fz_conn_ctl_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_conn_ctl_msgs[] = {
+    { 0x002a0001u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- console ---- */
@@ -913,6 +942,21 @@ static status_t idl_fz_devmgrctl_kill_process(void *ctx, uint64_t koid)
         return ERR_IO;
     return OK;
 }
+static status_t idl_fz_devmgrctl_disk_storage(void *ctx, struct idl_txn idl_txn, uint8_t kind, uint32_t a, uint32_t b, uint32_t n, handle_t *out_storage)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)kind;
+    (void)a;
+    (void)b;
+    (void)n;
+    (void)out_storage;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_storage) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
 static const struct devmgrctl_ops idl_fz_devmgrctl_ops = {
     .kill = idl_fz_devmgrctl_kill,
     .rebind = idl_fz_devmgrctl_rebind,
@@ -926,6 +970,7 @@ static const struct devmgrctl_ops idl_fz_devmgrctl_ops = {
     .device_channel = idl_fz_devmgrctl_device_channel,
     .shutdown = idl_fz_devmgrctl_shutdown,
     .kill_process = idl_fz_devmgrctl_kill_process,
+    .disk_storage = idl_fz_devmgrctl_disk_storage,
 };
 static uint32_t idl_fz_devmgrctl_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -945,6 +990,7 @@ static const struct idl_fuzz_msg idl_fz_devmgrctl_msgs[] = {
     { 0x005b000au, 21u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x005b000bu, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x005b000cu, 16u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x005b000du, 21u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- dns ---- */
@@ -1997,11 +2043,12 @@ static const struct idl_fuzz_msg idl_fz_idltest_h_msgs[] = {
 };
 
 /* ---- initctl ---- */
-static status_t idl_fz_initctl_kill(void *ctx, struct idl_txn idl_txn, const uint8_t name[32], uint64_t *out_koid)
+static status_t idl_fz_initctl_kill(void *ctx, struct idl_txn idl_txn, const char *name, uint32_t name_len, uint64_t *out_koid)
 {
     (void)ctx;
     (void)idl_txn;
     (void)name;
+    (void)name_len;
     (void)out_koid;
     if (!idl_fuzz_full)
         return ERR_IO;
@@ -2023,11 +2070,12 @@ static status_t idl_fz_initctl_reboot(void *ctx)
         return ERR_IO;
     return OK;
 }
-static status_t idl_fz_initctl_mount(void *ctx, struct idl_txn idl_txn, const uint8_t path[16], uint8_t writable)
+static status_t idl_fz_initctl_mount(void *ctx, struct idl_txn idl_txn, const char *path, uint32_t path_len, uint8_t writable)
 {
     (void)ctx;
     (void)idl_txn;
     (void)path;
+    (void)path_len;
     (void)writable;
     if (!idl_fuzz_full)
         return ERR_IO;
@@ -2070,20 +2118,22 @@ static status_t idl_fz_initctl_update_offer(void *ctx, handle_t *out_offer)
         return ERR_NO_MEMORY;
     return OK;
 }
-static status_t idl_fz_initctl_terminal(void *ctx, const uint8_t command[128], uint8_t *out_number)
+static status_t idl_fz_initctl_terminal(void *ctx, const char *command, uint32_t command_len, uint8_t *out_number)
 {
     (void)ctx;
     (void)command;
+    (void)command_len;
     (void)out_number;
     if (!idl_fuzz_full)
         return ERR_IO;
     *out_number = (uint8_t)0x5a5a5a5a5a5a5a5aull;
     return OK;
 }
-static status_t idl_fz_initctl_launch(void *ctx, const uint8_t app[16], uint64_t *out_koid)
+static status_t idl_fz_initctl_launch(void *ctx, const char *app, uint32_t app_len, uint64_t *out_koid)
 {
     (void)ctx;
     (void)app;
+    (void)app_len;
     (void)out_koid;
     if (!idl_fuzz_full)
         return ERR_IO;
@@ -2109,16 +2159,16 @@ static uint32_t idl_fz_initctl_serve(const void *q, uint32_t n, const handle_t *
     return initctl_dispatch_on(HANDLE_INVALID, &idl_fz_initctl_ops, NULL, q, n, r, rhs, rhn);
 }
 static const struct idl_fuzz_msg idl_fz_initctl_msgs[] = {
-    { 0x00120001u, 40u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00120001u, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 31 } } },
     { 0x00120002u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00120003u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
-    { 0x00120004u, 25u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00120004u, 9u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 15 } } },
     { 0x00120005u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00120006u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00120007u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00120008u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
-    { 0x00120009u, 136u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
-    { 0x0012000au, 24u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00120009u, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 127 } } },
+    { 0x0012000au, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 15 } } },
 };
 
 /* ---- input ---- */
@@ -2285,6 +2335,27 @@ static uint32_t idl_fz_logctl_serve(const void *q, uint32_t n, const handle_t *h
 }
 static const struct idl_fuzz_msg idl_fz_logctl_msgs[] = {
     { 0x00130001u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+};
+
+/* ---- crashres ---- */
+static void idl_fz_crashres_result(void *ctx, int32_t status, const char *path, uint32_t path_len)
+{
+    (void)ctx;
+    (void)status;
+    (void)path;
+    (void)path_len;
+}
+static const struct crashres_ops idl_fz_crashres_ops = {
+    .result = idl_fz_crashres_result,
+};
+static uint32_t idl_fz_crashres_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return crashres_dispatch_on(HANDLE_INVALID, &idl_fz_crashres_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_crashres_msgs[] = {
+    { 0x00540001u, 12u, 1, 0, 0, 0, { 0 }, 1, { { 1, 1, 95 } } },
 };
 
 /* ---- music ---- */
@@ -3400,6 +3471,36 @@ static const struct idl_fuzz_msg idl_fz_serve_msgs[] = {
     { 0x001f0004u, 18u, 0, 2, 0, 0, { IDL_OBJ_CHANNEL, IDL_OBJ_VMO }, 1, { { 1, 1, 127 } } },
 };
 
+/* ---- splashch ---- */
+static void idl_fz_splashch_played(void *ctx)
+{
+    (void)ctx;
+}
+static void idl_fz_splashch_go(void *ctx)
+{
+    (void)ctx;
+}
+static const struct splashch_ops idl_fz_splashch_ops = {
+    .played = idl_fz_splashch_played,
+};
+static uint32_t idl_fz_splashch_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return splashch_dispatch_on(HANDLE_INVALID, &idl_fz_splashch_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct splashch_events idl_fz_splashch_events = {
+    .go = idl_fz_splashch_go,
+};
+static status_t idl_fz_splashch_event(const void *m, struct idl_msg *msg)
+{
+    return splashch_event_dispatch(&idl_fz_splashch_events, NULL, m, msg);
+}
+static const struct idl_fuzz_msg idl_fz_splashch_msgs[] = {
+    { 0x00530001u, 8u, 1, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00530002u, 8u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+};
+
 /* ---- storage ---- */
 static status_t idl_fz_storage_info(void *ctx, char *out_vendor, uint32_t *out_vendor_len, char *out_product, uint32_t *out_product_len, uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_scheme, uint32_t *out_partitions, uint32_t *out_mbr_id, uint8_t out_disk_guid[16])
 {
@@ -3464,10 +3565,68 @@ static status_t idl_fz_storage_open_partition(void *ctx, uint32_t index, uint8_t
         return ERR_NO_MEMORY;
     return OK;
 }
+static status_t idl_fz_storage_ident(void *ctx, char *out_model, uint32_t *out_model_len, char *out_serial, uint32_t *out_serial_len, char *out_firmware, uint32_t *out_firmware_len)
+{
+    (void)ctx;
+    (void)out_model;
+    (void)out_model_len;
+    (void)out_serial;
+    (void)out_serial_len;
+    (void)out_firmware;
+    (void)out_firmware_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    __builtin_memset(out_model, 'a', 40u * sizeof(*out_model));
+    *out_model_len = 40;
+    __builtin_memset(out_serial, 'a', 20u * sizeof(*out_serial));
+    *out_serial_len = 20;
+    __builtin_memset(out_firmware, 'a', 8u * sizeof(*out_firmware));
+    *out_firmware_len = 8;
+    return OK;
+}
+static status_t idl_fz_storage_digest(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)lba;
+    (void)count;
+    (void)out_sha256;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    __builtin_memset(out_sha256, 0x5a, 32);
+    return OK;
+}
+static status_t idl_fz_storage_health(void *ctx, struct idl_txn idl_txn, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)out_units_read;
+    (void)out_units_written;
+    (void)out_host_reads;
+    (void)out_host_writes;
+    (void)out_power_cycles;
+    (void)out_unsafe_shutdowns;
+    (void)out_percent_used;
+    (void)out_critical;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_units_read = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_units_written = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_host_reads = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_host_writes = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_power_cycles = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_unsafe_shutdowns = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_percent_used = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_critical = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
 static const struct storage_ops idl_fz_storage_ops = {
     .info = idl_fz_storage_info,
     .partition = idl_fz_storage_partition,
     .open_partition = idl_fz_storage_open_partition,
+    .ident = idl_fz_storage_ident,
+    .digest = idl_fz_storage_digest,
+    .health = idl_fz_storage_health,
 };
 static uint32_t idl_fz_storage_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -3479,6 +3638,9 @@ static const struct idl_fuzz_msg idl_fz_storage_msgs[] = {
     { 0x000e0001u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x000e0002u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x000e0003u, 13u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x000e0004u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x000e0005u, 24u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x000e0006u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- svc ---- */
@@ -3503,6 +3665,81 @@ static uint32_t idl_fz_svc_serve(const void *q, uint32_t n, const handle_t *hs,
 }
 static const struct idl_fuzz_msg idl_fz_svc_msgs[] = {
     { 0x00190001u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+};
+
+/* ---- update ---- */
+static status_t idl_fz_update_offer(void *ctx, struct idl_txn idl_txn, uint32_t flags, uint64_t kernel_bytes, uint64_t bootfs_bytes, uint64_t menu_bytes, const uint8_t *manifest, uint32_t manifest_len, const handle_t *files, uint32_t files_len, int32_t *out_verdict, uint32_t *out_why, uint32_t *out_file, uint32_t *out_check_ms, char *out_version, uint32_t *out_version_len, char *out_git, uint32_t *out_git_len, uint32_t *out_write_step, uint32_t *out_stick, uint32_t *out_write_ms, char *out_net, uint32_t *out_net_len, char *out_net_running, uint32_t *out_net_running_len, char *out_needs, uint32_t *out_needs_len, uint32_t *out_menu, int32_t *out_menu_status, char *out_menu_why, uint32_t *out_menu_why_len, uint32_t *out_already)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)flags;
+    (void)kernel_bytes;
+    (void)bootfs_bytes;
+    (void)menu_bytes;
+    (void)manifest;
+    (void)manifest_len;
+    (void)files;
+    (void)files_len;
+    (void)out_verdict;
+    (void)out_why;
+    (void)out_file;
+    (void)out_check_ms;
+    (void)out_version;
+    (void)out_version_len;
+    (void)out_git;
+    (void)out_git_len;
+    (void)out_write_step;
+    (void)out_stick;
+    (void)out_write_ms;
+    (void)out_net;
+    (void)out_net_len;
+    (void)out_net_running;
+    (void)out_net_running_len;
+    (void)out_needs;
+    (void)out_needs_len;
+    (void)out_menu;
+    (void)out_menu_status;
+    (void)out_menu_why;
+    (void)out_menu_why_len;
+    (void)out_already;
+    if (files)
+        idl_close_all(files, files_len);
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_verdict = (int32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_why = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_file = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_check_ms = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_version, 'a', 47u * sizeof(*out_version));
+    *out_version_len = 47;
+    __builtin_memset(out_git, 'a', 47u * sizeof(*out_git));
+    *out_git_len = 47;
+    *out_write_step = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_stick = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_write_ms = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_net, 'a', 15u * sizeof(*out_net));
+    *out_net_len = 15;
+    __builtin_memset(out_net_running, 'a', 15u * sizeof(*out_net_running));
+    *out_net_running_len = 15;
+    __builtin_memset(out_needs, 'a', 32u * sizeof(*out_needs));
+    *out_needs_len = 32;
+    *out_menu = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_menu_status = (int32_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_menu_why, 'a', 95u * sizeof(*out_menu_why));
+    *out_menu_why_len = 95;
+    *out_already = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
+static const struct update_ops idl_fz_update_ops = {
+    .offer = idl_fz_update_offer,
+};
+static uint32_t idl_fz_update_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    return update_dispatch_h(HANDLE_INVALID, &idl_fz_update_ops, NULL, q, n, hs, nh, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_update_msgs[] = {
+    { 0x00520001u, 36u, 0, 0, 3, IDL_OBJ_VMO, { 0 }, 1, { { 1, 0, 1024 } } },
 };
 
 /* ---- usb ---- */
@@ -4138,11 +4375,12 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "audioctl", 23, AUDIOCTL_REQ_MAX, AUDIOCTL_REP_MAX, AUDIOCTL_REP_HANDLES, idl_fz_audioctl_serve, NULL, idl_fz_audioctl_msgs, 6 },
     { "block", 15, BLOCK_REQ_MAX, BLOCK_REP_MAX, BLOCK_REP_HANDLES, idl_fz_block_serve, NULL, idl_fz_block_msgs, 5 },
     { "compctl", 32, COMPCTL_REQ_MAX, COMPCTL_REP_MAX, COMPCTL_REP_HANDLES, idl_fz_compctl_serve, NULL, idl_fz_compctl_msgs, 6 },
+    { "conn_ctl", 42, CONN_CTL_REQ_MAX, CONN_CTL_REP_MAX, CONN_CTL_REP_HANDLES, idl_fz_conn_ctl_serve, NULL, idl_fz_conn_ctl_msgs, 1 },
     { "console", 12, CONSOLE_REQ_MAX, CONSOLE_REP_MAX, CONSOLE_REP_HANDLES, idl_fz_console_serve, NULL, idl_fz_console_msgs, 7 },
     { "keys", 41, KEYS_REQ_MAX, KEYS_REP_MAX, KEYS_REP_HANDLES, idl_fz_keys_serve, idl_fz_keys_event, idl_fz_keys_msgs, 1 },
     { "crasher", 92, CRASHER_REQ_MAX, CRASHER_REP_MAX, CRASHER_REP_HANDLES, idl_fz_crasher_serve, NULL, idl_fz_crasher_msgs, 3 },
     { "devmgr", 90, DEVMGR_REQ_MAX, DEVMGR_REP_MAX, DEVMGR_REP_HANDLES, idl_fz_devmgr_serve, NULL, idl_fz_devmgr_msgs, 5 },
-    { "devmgrctl", 91, DEVMGRCTL_REQ_MAX, DEVMGRCTL_REP_MAX, DEVMGRCTL_REP_HANDLES, idl_fz_devmgrctl_serve, NULL, idl_fz_devmgrctl_msgs, 12 },
+    { "devmgrctl", 91, DEVMGRCTL_REQ_MAX, DEVMGRCTL_REP_MAX, DEVMGRCTL_REP_HANDLES, idl_fz_devmgrctl_serve, NULL, idl_fz_devmgrctl_msgs, 13 },
     { "dns", 30, DNS_REQ_MAX, DNS_REP_MAX, DNS_REP_HANDLES, idl_fz_dns_serve, NULL, idl_fz_dns_msgs, 1 },
     { "edu", 2, EDU_REQ_MAX, EDU_REP_MAX, EDU_REP_HANDLES, idl_fz_edu_serve, NULL, idl_fz_edu_msgs, 4 },
     { "file", 17, FILE_REQ_MAX, FILE_REP_MAX, FILE_REP_HANDLES, idl_fz_file_serve, NULL, idl_fz_file_msgs, 5 },
@@ -4159,6 +4397,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "jamcover", 26, JAMCOVER_REQ_MAX, JAMCOVER_REP_MAX, JAMCOVER_REP_HANDLES, idl_fz_jamcover_serve, NULL, idl_fz_jamcover_msgs, 1 },
     { "keepch", 80, KEEPCH_REQ_MAX, KEEPCH_REP_MAX, KEEPCH_REP_HANDLES, idl_fz_keepch_serve, idl_fz_keepch_event, idl_fz_keepch_msgs, 4 },
     { "logctl", 19, LOGCTL_REQ_MAX, LOGCTL_REP_MAX, LOGCTL_REP_HANDLES, idl_fz_logctl_serve, NULL, idl_fz_logctl_msgs, 1 },
+    { "crashres", 84, CRASHRES_REQ_MAX, CRASHRES_REP_MAX, CRASHRES_REP_HANDLES, idl_fz_crashres_serve, NULL, idl_fz_crashres_msgs, 1 },
     { "music", 24, MUSIC_REQ_MAX, MUSIC_REP_MAX, MUSIC_REP_HANDLES, idl_fz_music_serve, NULL, idl_fz_music_msgs, 11 },
     { "net", 29, NET_REQ_MAX, NET_REP_MAX, NET_REP_HANDLES, idl_fz_net_serve, NULL, idl_fz_net_msgs, 9 },
     { "net_socket", 60, NET_SOCKET_REQ_MAX, NET_SOCKET_REP_MAX, NET_SOCKET_REP_HANDLES, idl_fz_net_socket_serve, NULL, idl_fz_net_socket_msgs, 3 },
@@ -4171,8 +4410,10 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "nschan", 81, NSCHAN_REQ_MAX, NSCHAN_REP_MAX, NSCHAN_REP_HANDLES, idl_fz_nschan_serve, NULL, idl_fz_nschan_msgs, 3 },
     { "null", 1, NULL_REQ_MAX, NULL_REP_MAX, NULL_REP_HANDLES, idl_fz_null_serve, NULL, idl_fz_null_msgs, 4 },
     { "serve", 31, SERVE_REQ_MAX, SERVE_REP_MAX, SERVE_REP_HANDLES, idl_fz_serve_serve, NULL, idl_fz_serve_msgs, 3 },
-    { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 3 },
+    { "splashch", 83, SPLASHCH_REQ_MAX, SPLASHCH_REP_MAX, SPLASHCH_REP_HANDLES, idl_fz_splashch_serve, idl_fz_splashch_event, idl_fz_splashch_msgs, 2 },
+    { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 6 },
     { "svc", 25, SVC_REQ_MAX, SVC_REP_MAX, SVC_REP_HANDLES, idl_fz_svc_serve, NULL, idl_fz_svc_msgs, 1 },
+    { "update", 82, UPDATE_REQ_MAX, UPDATE_REP_MAX, UPDATE_REP_HANDLES, idl_fz_update_serve, NULL, idl_fz_update_msgs, 1 },
     { "usb", 10, USB_REQ_MAX, USB_REP_MAX, USB_REP_HANDLES, idl_fz_usb_serve, NULL, idl_fz_usb_msgs, 11 },
     { "usbbus", 13, USBBUS_REQ_MAX, USBBUS_REP_MAX, USBBUS_REP_HANDLES, idl_fz_usbbus_serve, NULL, idl_fz_usbbus_msgs, 5 },
     { "usbbus_events", 36, USBBUS_EVENTS_REQ_MAX, USBBUS_EVENTS_REP_MAX, USBBUS_EVENTS_REP_HANDLES, idl_fz_usbbus_events_serve, NULL, idl_fz_usbbus_events_msgs, 1 },

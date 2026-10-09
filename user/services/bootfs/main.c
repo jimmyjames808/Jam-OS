@@ -296,7 +296,7 @@ int main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    handle_t ch = startup_handle(SR_USER + 0);
+    handle_t ch = startup_handle(BOOTFS_SR_FS);
     status_t st = ch ? bootfs_default(&image) : ERR_BAD_HANDLE;
     if (st == OK)
         st = fsserver_init(&server);

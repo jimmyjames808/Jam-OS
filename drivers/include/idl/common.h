@@ -43,6 +43,7 @@
 #define IDL_ID_IDLTEST_H      0x0025u   /* abi/idl/idltest.idl */
 #define IDL_ID_NOTIFY         0x0028u   /* abi/idl/notify.idl */
 #define IDL_ID_KEYS           0x0029u   /* abi/idl/console.idl */
+#define IDL_ID_CONN_CTL       0x002au   /* abi/idl/conn_ctl.idl */
 #define IDL_ID_AUDIO_STREAM   0x0032u   /* abi/idl/audio.idl */
 #define IDL_ID_HDA_STREAM     0x0033u   /* abi/idl/hda.idl */
 #define IDL_ID_NET_SOCKET     0x003cu   /* abi/idl/net.idl */
@@ -55,12 +56,13 @@
 #define IDL_ID_MOUNTS         0x0049u   /* abi/idl/volumes.idl */
 #define IDL_ID_KEEPCH         0x0050u   /* abi/idl/keepch.idl */
 #define IDL_ID_NSCHAN         0x0051u   /* abi/idl/nschan.idl */
+#define IDL_ID_UPDATE         0x0052u   /* abi/idl/update.idl */
+#define IDL_ID_SPLASHCH       0x0053u   /* abi/idl/splashch.idl */
+#define IDL_ID_CRASHRES       0x0054u   /* abi/idl/logctl.idl */
 #define IDL_ID_DEVMGR         0x005au   /* abi/idl/devmgr.idl */
 #define IDL_ID_DEVMGRCTL      0x005bu   /* abi/idl/devmgr.idl */
 #define IDL_ID_CRASHER        0x005cu   /* abi/idl/crasher.idl */
-#define IDL_ID_UPDATE_ANSWER  0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
-#define IDL_ID_UPDATE_OFFER   0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */
 #define IDL_ID_STARTUP        0x534du   /* kernel/include/jam/startup.h: STARTUP_MAGIC "JAMS" */
 #define IDL_ID_POSIXFDS       0x5853u   /* user/include/posixfds.h: POSIXFDS_MAGIC "JPSX" (the POSIX hand-over) */
 

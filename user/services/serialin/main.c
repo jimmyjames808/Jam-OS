@@ -12,7 +12,7 @@
  *
  * Startup handles:
  *   SR_RESOURCE   the root resource with RIGHT_ROOT_SERIAL (serial_open)
- *   SR_USER + 0   the `input` channel to the compositor
+ *   SERIALIN_SR_INPUT   the `input` channel to the compositor
  *
  * Exits 0 when the other end closes the channel (it restarted: init
  * starts a new serialin for the new one), 1 if the port can't be opened. */
@@ -40,7 +40,7 @@ int main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    handle_t root = startup_handle(SR_RESOURCE), in = startup_handle(SR_USER + 0);
+    handle_t root = startup_handle(SR_RESOURCE), in = startup_handle(SERIALIN_SR_INPUT);
     handle_t serial, port;
     if (!in) {
         printf("serialin: no input channel\n");

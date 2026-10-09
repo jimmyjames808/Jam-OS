@@ -71,6 +71,13 @@ bool t_font_threads(void);
 /* "utest font-write": writes into a font, which must kill it. */
 int  font_write_child(void);
 
+/* nvme.c: drv/nvme's storage and block protocols on an NVMe drive (skipped
+ * without one). */
+bool t_nvme_storage(void);
+bool t_nvme_block(void);
+bool t_nvme_inflight(void);
+bool t_nvme_fence(void);
+
 /* disks.c: devmgr's disks and mounts against the mock usb-storage
  * (diskmock.c), with the fat service on its partitions. */
 bool t_disk_mounts(void);
@@ -85,6 +92,10 @@ bool t_logd_without_data(void);
 bool t_logd_data_goes_away(void);
 bool t_logd_kernel_log(void);
 bool t_logd_openers(void);
+bool t_logd_crash_result(void);
+/* chanwire.c: the wire of init's channels with the splash and with logd (P6b). */
+bool t_splashch_wire(void);
+bool t_crashres_wire(void);
 bool t_klog_lines(void);
 
 /* audio.c: <audio.h>'s conversions and resampler, <wav.h>'s parser. */
@@ -223,7 +234,7 @@ bool t_reply_wait_port(void);
 bool t_reply_wait_refusals(void);
 bool t_handles_always_moved(void);
 bool t_channel_no_handles(void);
-bool t_unread_charged_to_reader(void);
+bool t_unread_charged_to_writer(void);
 int  replywait_child(int argc, char **argv);
 /* keptvmo.c: VMO_KEEP_PAGES and VMAR_KEPT_ONLY, and their child modes
  * ("utest kept-..."). */
@@ -600,6 +611,11 @@ bool t_conwin_keys(void);
 bool t_conwin_pointer(void);
 bool t_conwin_pointer_shape(void);
 bool t_con_hostile_compositor(void);
+/* conconn.c: the console's connection back end (bin/console "conn"). */
+bool t_con_conn_shell(void);
+bool t_con_conn_log(void);
+bool t_con_conn_hostile(void);
+bool t_con_conn_backpressure(void);
 /* conpaint.c: the console's cells drawn (cellpaint.c, linked in). */
 bool t_conpaint_metrics(void);
 bool t_conpaint_cells(void);
@@ -796,6 +812,8 @@ bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
 bool t_update_build_net(void);
 bool t_update_signature(void);
+/* updoffer.c: the offer call of `update` between update_make_offer and update_answer_reply. */
+bool t_update_offer_call(void);
 bool t_updwire_golden(void);
 bool t_updwire_hostile(void);
 bool t_updfetch_clean(void);
@@ -850,3 +868,5 @@ bool t_idl_fuzz(void);
 /* idlfuzz.c: fat and volumes fed the same messages, live (M12.1). */
 bool t_fat_hostile(void);
 bool t_volumes_hostile(void);
+/* initctl.c: init's control channel with names as strings (P6b). */
+bool t_initctl_strings(void);

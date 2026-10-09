@@ -18,8 +18,8 @@
  *   build to the stick too; load, `update -m`: into memory only; check,
  *   `update -n`: checked, nothing loaded or written; force: a build whose
  *   network default differs from this one's is taken)
- *   SR_USER + 0   the offer channel (initctl.update_offer)
- *   SR_USER + 2   the shell's stop channel: Ctrl+C (or the shell gone)
+ *   UPDATE_SR_OFFER   the offer channel (initctl.update_offer)
+ *   PROGRAM_SR_STOP   the shell's stop channel: Ctrl+C (or the shell gone)
  * Its lines are the shell's, in plain words (the polish track: "Downloading
  * Jam OS 0.0.40 (12.3 MB)", "Type reboot to start it"); the detailed
  * ones (sizes, gits, times, init's verdict and the steps of its write)
@@ -36,8 +36,8 @@
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc net-sys\n");   /* the network's reserve (tools/checkwants.py: services only) */
 
-#define ROLE_OFFER  (SR_USER + 0)
-#define ROLE_STOP   (SR_USER + 2)
+#define ROLE_OFFER  UPDATE_SR_OFFER
+#define ROLE_STOP   PROGRAM_SR_STOP
 #define UP_WAIT     (10 * NS_PER_S)    /* for the network's address */
 #define ANSWER_WAIT (60 * NS_PER_S)    /* init copies and hashes the build */
 #define WRITE_WAIT  (300 * NS_PER_S)   /* ... and writes it to the stick (`write`) */
@@ -226,43 +226,24 @@ static status_t run_fetch(uint32_t host)
  * VMOs go, read-only); its answer into *a. */
 static status_t offer(handle_t ch, uint32_t flags, struct update_answer *a)
 {
-    struct update_offer *o = calloc(1, sizeof(*o));
-    if (!o)
-        return ERR_NO_MEMORY;
-    o->magic = UPDATE_OFFER_MAGIC;
-    o->flags = flags;
-    o->manifest_len = fetch.manifest_len;
-    memcpy(o->manifest, fetch.manifest, fetch.manifest_len);
+    uint64_t bytes[UPDATE_PARTS] = { 0 };
     handle_t hs[UPDATE_PARTS];
     unsigned nh = 0;
     status_t st = OK;
     for (; st == OK && nh < fetch.parts; nh++) {
-        o->bytes[nh] = fetch.size[nh];
+        bytes[nh] = fetch.size[nh];
         st = jam_handle_duplicate(fetch.vmo[nh], RIGHT_READ | RIGHT_TRANSFER, &hs[nh]);
         if (st != OK)
             break;
     }
-    if (st != OK)   /* a duplicate failed: the ones made were never sent */
+    if (st != OK) {   /* a duplicate failed: the ones made were never sent */
         for (unsigned i = 0; i < nh; i++)
             jam_handle_close(hs[i]);
-    else   /* moves the handles, whatever its status: never closed after it */
-        st = jam_channel_write(ch, o, sizeof(*o), hs, fetch.parts);
-    free(o);
-    signals_t seen;
-    if (st == OK)
-        st = jam_object_wait_one(ch, SIG_READABLE,
-                                 now() + (flags & UPDATE_OFFER_WRITE ? WRITE_WAIT : ANSWER_WAIT),
-                                 &seen);
-    uint32_t got = 0;
-    struct channel_read_args r = {
-        .h = ch, .rd_cap = sizeof(*a), .rd_bytes = (uint64_t)(uintptr_t)a,
-        .rd_actual = (uint64_t)(uintptr_t)&got,
-    };
-    if (st == OK)
-        st = jam_channel_read(&r);
-    if (st == OK && (got != sizeof(*a) || a->magic != UPDATE_ANSWER_MAGIC))
-        st = ERR_INTERNAL;
-    return st;
+        return st;
+    }
+    /* the call moves the handles, whatever its status: never closed after it */
+    return update_make_offer(ch, now() + (flags & UPDATE_OFFER_WRITE ? WRITE_WAIT : ANSWER_WAIT),
+                             flags, bytes, fetch.manifest, fetch.manifest_len, hs, fetch.parts, a);
 }
 
 /* What became of the boot menu (a stick write that carried one). */

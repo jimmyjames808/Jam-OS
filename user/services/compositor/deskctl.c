@@ -11,10 +11,10 @@
  *                The compositor itself never acts on a button: a Reboot
  *                button is the poster's (init's update notice), who holds
  *                the power to reboot.
- *   volume       SR_USER + 6: the mixer's desktop channel (audioctl.idl):
+ *   volume       COMP_SR_MIXER: the mixer's desktop channel (audioctl.idl):
  *                `desk` (the master volume, what plays, the output's name)
  *                and `set_master` only: no stream, no sound card.
- *   network      SR_USER + 7: netstack's read-only control channel
+ *   network      COMP_SR_NETINFO: netstack's read-only control channel
  *                (netctl.idl): `summary` (link, address, speed, the
  *                card, bytes in and out); the rates are worked out here
  *                from two summaries a second or so apart.
@@ -35,8 +35,6 @@
 #include "desk.h"
 #include "seat.h"
 
-#define MIXER_ROLE   6                    /* SR_USER + this: the mixer's desktop channel */
-#define NET_ROLE     7                    /* SR_USER + this: netstack's read-only channel */
 #define KEY_MIXER    (SEAT_KEY_DESK + 0)
 #define KEY_NET      (SEAT_KEY_DESK + 1)
 #define ASK_AGAIN    (500 * NS_PER_MS)    /* an answer this fresh is good enough */
@@ -497,9 +495,9 @@ bool ctl_network(struct desk_net *out)
 
 /* ---- the loop's side --------------------------------------------------------------------------- */
 
-static handle_t watch(unsigned role, uint64_t key)
+static handle_t watch(uint32_t role, uint64_t key)
 {
-    handle_t ch = startup_handle(SR_USER + role);
+    handle_t ch = startup_handle(role);
     if (ch && jam_port_bind(comp.port, ch, key, SIG_READABLE | SIG_PEER_CLOSED,
                             PORT_BIND_PERSISTENT) != OK)
         return HANDLE_INVALID;
@@ -508,8 +506,8 @@ static handle_t watch(unsigned role, uint64_t key)
 
 void deskctl_init(void)
 {
-    vol.ch = watch(MIXER_ROLE, KEY_MIXER);
-    net.ch = watch(NET_ROLE, KEY_NET);
+    vol.ch = watch(COMP_SR_MIXER, KEY_MIXER);
+    net.ch = watch(COMP_SR_NETINFO, KEY_NET);
     ask_volume(true);   /* so the popovers open with something to show */
     ask_net(true);
 }

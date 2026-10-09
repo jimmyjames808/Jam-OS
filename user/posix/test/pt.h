@@ -8,11 +8,13 @@
  * Files: main.c (sections, the child modes), start.c (argv, the
  * environment, the auxiliary vector, the hand-over: children started
  * with libjam's spawn), mem.c (mmap and friends, brk, malloc), thread.c
- * (pthreads, TLS, errno), files.c, files2.c and fileskid.c (files and
- * directories on /data and /boot: ptfiles.h). start.c and fileskid.c
- * are the only ones that include libjam (<jamos/libjam.h>; fileskid.c
- * through the layer's fd.h); mem.c the only one with Linux's call
- * numbers. */
+ * (pthreads, TLS, errno), pipe.c (pipes and socketpair, and the pipe
+ * bench), fds.c (dup and fcntl, memfd, eventfd, the one user, /dev and
+ * /etc), files.c, files2.c and fileskid.c (files and directories on
+ * /data and /boot: ptfiles.h). start.c, fds.c and fileskid.c are the ones
+ * that include libjam (<jamos/libjam.h>: children started with a
+ * hand-over; fileskid.c through the layer's fd.h); mem.c the only one
+ * with Linux's call numbers. */
 #pragma once
 
 #include <stdbool.h>
@@ -35,6 +37,8 @@ int  pt_failures(void);
 void pt_start(char **argv);
 void pt_mem(char **argv);
 void pt_thread(char **argv);
+void pt_pipe(char **argv);
+void pt_fds(char **argv);
 void pt_files(char **argv);
 
 /* The child modes start.c's checks start this program in (main.c runs
@@ -42,6 +46,7 @@ void pt_files(char **argv);
  * 0 if all of it was right. */
 int  pt_child_start(int argc, char **argv);
 int  pt_child_handover(void);
+int  pt_child_devetc(void);
 int  pt_child_files(void);
 int  pt_child_rofs(void);
 

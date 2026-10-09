@@ -36,7 +36,7 @@
  *   desktop, time=, top=, popover=, notify=, search[=]
  *                 the desktop: testdesk.c
  *   paint         paint the damage now; a line in the log and a struct
- *                 testscene_report on SR_USER + TESTSCENE_REPORT_ROLE (if given)
+ *                 testscene_report on COMP_SR_REPORT (if given)
  *   hold=MS       wait (a screenshot's time), saying so in the log
  *   bench         time whole frames (below): `compositor: bench:` lines
  * Every command is echoed to the log as it runs, so a test that only sees
@@ -498,7 +498,7 @@ static bool run_one(const char *c)
 
 int testscene_run(int argc, char **argv, int first)
 {
-    report = startup_handle(SR_USER + TESTSCENE_REPORT_ROLE);
+    report = startup_handle(COMP_SR_REPORT);
     printf("compositor: testscene: output %dx%d, %s\n", scene.width, scene.height,
            output.screen ? "the screen" : "headless");
     for (int i = first; i < argc; i++) {

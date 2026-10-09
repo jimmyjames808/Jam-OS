@@ -4,7 +4,7 @@
  * hda: the Intel HD Audio driver (drivers/hda), as devmgr binds it to the
  * board's HD Audio controller. Served on the driver's DR_SERVE channel,
  * which devmgr hands out only on the controller's device channel (init
- * gives it to the mixer, <devmgr.h> DEVMGR_DEVICE_CHANNEL) and its control
+ * gives it to the mixer, devmgrctl.device_channel) and its control
  * channel: the mixer is its client, and hdatest (a test, through the
  * control channel). Everyone else (the shell's `hda`)
  * gets a query channel (`query` below) through the mixer's
@@ -29,9 +29,9 @@
  * is never heard; where none can, the pin's output is the mute and goes
  * on and off with the stream.
  *
- * Reconnect (devmgr's supervision, user/include/devmgr.h): a call that
+ * Reconnect (devmgr's supervision, abi/idl/devmgr.idl): a call that
  * fails with ERR_PEER_CLOSED means the driver died; get the channel from
- * devmgr again (DEVMGR_GET_SERVICE) and retry. The driver keeps nothing
+ * devmgr again (devmgr.get_service, abi/idl/devmgr.idl) and retry. The driver keeps nothing
  * across a restart.
  *
  * Protocols `hda` (id 21) and `hda_stream` (id 51): one for each

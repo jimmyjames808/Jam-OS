@@ -98,8 +98,8 @@ static int to_file(const char *url, const struct http_url *u, const char *arg)
     }
     struct spawn_handle x[4];
     file_give(&f, &x[0].h, &x[1].h);   /* to bin/fetch: SR_USER + 0 and + 1 */
-    x[0].role = SR_USER + 0;
-    x[1].role = SR_USER + 1;
+    x[0].role = PROGRAM_SR_FILE;
+    x[1].role = PROGRAM_SR_BUF;
     const char *args[] = { "fetch", url, "file", NULL };
     sh_flush();
     return finish(sh_run_helper(FETCH_PATH, 3, args, x, 2), abs, part);
@@ -113,7 +113,7 @@ static int to_output(const char *url)
         sh_tty("fetch: no channel for the body (%s)\n", status_str(st));
         return 1;
     }
-    struct spawn_handle x[3] = { { SR_USER + 3, theirs } };
+    struct spawn_handle x[3] = { { PROGRAM_SR_BODY, theirs } };
     const char *args[] = { "fetch", url, "pipe", NULL };
     sh_flush();
     int code = sh_run_helper_out(FETCH_PATH, 3, args, x, 1, mine);

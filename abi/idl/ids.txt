@@ -47,6 +47,7 @@
 37      idltest_h       abi/idl/idltest.idl
 40      notify          abi/idl/notify.idl
 41      keys            abi/idl/console.idl
+42      conn_ctl        abi/idl/conn_ctl.idl
 50      audio_stream    abi/idl/audio.idl
 51      hda_stream      abi/idl/hda.idl
 # 60 to 69: the network's (M12 track P3)
@@ -59,15 +60,16 @@
 71      volesp          abi/idl/volumes.idl
 72      disks           abi/idl/volumes.idl
 73      mounts          abi/idl/volumes.idl
-# 80 to 89: libos's (M12 track P6a)
+# 80 to 89: libos's (M12 track P6a) and init's and logd's (P6b)
 80      keepch          abi/idl/keepch.idl
 81      nschan          abi/idl/nschan.idl
+82      update          abi/idl/update.idl
+83      splashch        abi/idl/splashch.idl
+84      crashres        abi/idl/logctl.idl
 # 90 to 99: devmgr's (M12 track D)
 90      devmgr          abi/idl/devmgr.idl
 91      devmgrctl       abi/idl/devmgr.idl
 92      crasher         abi/idl/crasher.idl
-0x4150  update_answer   user/include/update.h           # UPDATE_ANSWER_MAGIC "JUPA"
 0x4d4f  standby         user/include/roles.h            # STANDBY_MAGIC "PROM" (promotion)
-0x4f50  update_offer    user/include/update.h           # UPDATE_OFFER_MAGIC "JUPO"
 0x534d  startup         kernel/include/jam/startup.h    # STARTUP_MAGIC "JAMS"
 0x5853  posixfds        user/include/posixfds.h         # POSIXFDS_MAGIC "JPSX" (the POSIX hand-over)

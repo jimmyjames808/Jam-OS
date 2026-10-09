@@ -2,7 +2,7 @@
  * processes of their own"). init starts it in shell mode once netstack
  * runs, unless /data/etc/settings has a static `net.address` (that wins:
  * init says so in the log), with
- *   SR_USER + 0   a client end of netstack's control channel
+ *   DHCP_SR_NETCTL   a client end of netstack's control channel
  *                 (abi/idl/netctl.idl): the DHCP socket (dhcp_open), the
  *                 address (set_ipv4, set_dns, clear) and the link (info)
  * and nothing else: it parses what strangers on the network send (msg.c).
@@ -34,7 +34,7 @@
 #include <net.h>
 #include "dhcp.h"
 
-#define SR_NETCTL (SR_USER + 0)
+#define SR_NETCTL DHCP_SR_NETCTL
 #define KEY_SOCK  1u
 #define POLL      NS_PER_S          /* the link is looked at this often */
 #define CALL_WAIT (1 * NS_PER_S)    /* each call to netstack */
@@ -202,7 +202,7 @@ int main(int argc, char **argv)
     (void)argv;
     D.ctl = startup_handle(SR_NETCTL);
     if (!D.ctl) {
-        printf("dhcp: started without netctl (SR_USER + 0): ending\n");
+        printf("dhcp: started without netctl (DHCP_SR_NETCTL): ending\n");
         return 1;
     }
     status_t st = jam_port_create(&D.port);

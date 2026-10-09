@@ -11,7 +11,7 @@
  * framebuffer_take's ERR_NOT_FOUND: a machine with no GOP framebuffer) the
  * output is an image in memory, 0x00RRGGBB, so the protocol and the
  * painting still work and tests can look at the result: the starter's VMO
- * (SR_USER + 1) or one of our own.
+ * (COMP_SR_IMAGE) or one of our own.
  *
  * Rows are written with 16-byte stores, which the PC's framebuffer takes
  * at its full 10.8 GB/s from one or two threads (4-byte stores reach half
@@ -57,13 +57,13 @@ static status_t take_screen(handle_t root)
     return OK;
 }
 
-/* The headless image: the starter's VMO (SR_USER + 1) or one of our own,
+/* The headless image: the starter's VMO (COMP_SR_IMAGE) or one of our own,
  * mapped read-write. */
 static status_t headless_image(int32_t w, int32_t h)
 {
     uint64_t bytes = (uint64_t)w * (uint64_t)h * 4, size = 0, addr = 0;
     uint64_t mapped = (bytes + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-    handle_t vmo = startup_handle(SR_USER + 1);
+    handle_t vmo = startup_handle(COMP_SR_IMAGE);
     status_t st = OK;
     if (vmo == HANDLE_INVALID)
         st = jam_vmo_create(mapped, 0, &vmo);

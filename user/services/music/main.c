@@ -1,6 +1,6 @@
 /* music: the background music player (docs/history/A2-PLAN.md, "Music player").
  * init starts it in shell mode, like the mixer, with
- *   SR_USER + 0   the server end of the `music` channel (abi/idl/music.idl);
+ *   MUSIC_SR_CTL   the server end of the `music` channel (abi/idl/music.idl);
  *                 init keeps both ends, so a restarted player serves the
  *                 same channel, which init publishes as /svc/music
  *   SR_NS         every mount read-only, kept up to date by init as
@@ -339,13 +339,13 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
     struct player *p = &P;
-    p->ctl = startup_handle(SR_USER + 0);
+    p->ctl = startup_handle(MUSIC_SR_CTL);
     p->cur = -1;
     /* The bands are a nicety: without the memory `levels` answers zeros. */
     if ((p->spec = malloc(sizeof(*p->spec))) != NULL)
         spec_init(p->spec);
     if (!p->ctl) {
-        printf("music: started without its channel (SR_USER + 0): nothing to serve\n");
+        printf("music: started without its channel (MUSIC_SR_CTL): nothing to serve\n");
         return 1;
     }
     status_t st = jam_port_create(&port);

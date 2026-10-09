@@ -4,10 +4,10 @@
  * edu: QEMU's `edu` test device, as its driver (drivers/test/edu) serves it.
  * Format: see tools/genidl.py.
  *
- * Reconnect (devmgr's supervision, user/include/devmgr.h): devmgr restarts the
+ * Reconnect (devmgr's supervision, abi/idl/devmgr.idl): devmgr restarts the
  * edu driver when it dies. A call that fails with ERR_PEER_CLOSED means
  * the driver died: get the service channel from devmgr again
- * (DEVMGR_GET_SERVICE; while the restart is due it already hands out the
+ * (devmgr.get_service, abi/idl/devmgr.idl; while the restart is due it already hands out the
  * new channel, and calls on it wait for the new driver) and retry. The
  * driver keeps nothing across a restart: a dma_start transfer the old one
  * had running is gone (the kernel quarantined its pages).

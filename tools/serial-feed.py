@@ -29,7 +29,10 @@ the script, one command per line:
     shots <name> <n> <s>      n screenshots <s> seconds apart (made PNGs
                               after the last): <name>-01.png, -02 ...
     monitor <command>         a QEMU monitor command ($QEMU_MON), e.g.
-                              `monitor device_del kbd1`
+                              `monitor device_del kbd1`; a device_add is
+                              sent again until QEMU takes it (up to 10 s:
+                              it refuses a drive whose last device it
+                              hasn't freed yet)
     usbkeys <text>            <text> typed on QEMU's keyboards (monitor
                               `sendkey`, one key at a time: the USB keyboard
                               path); \r (or \n) is Enter; a-z 0-9 space
@@ -178,6 +181,9 @@ def monitor(command):
         mon_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         mon_sock.connect(path)
         mon_sock.settimeout(0.05)
+    if command.startswith("device_add "):
+        device_add(command)
+        return
     mon_sock.sendall(command.encode() + b"\n")
     reply = b""
     try:   # the monitor's echo and prompt: not piled up; an error is said
@@ -191,6 +197,59 @@ def monitor(command):
     for line in reply.decode(errors="replace").splitlines():
         if "Error" in line or "error" in line:
             print(f"serial-feed: monitor {command}: {line.strip()}", file=sys.stderr)
+
+
+def monitor_answer(command, timeout):
+    """Send a monitor command and read its whole answer, up to the prompt
+    after it (or the timeout): the answer's lines, the echo left out."""
+    try:   # what an earlier command's 50 ms read left behind
+        while mon_sock.recv(4096):
+            pass
+    except OSError:
+        pass
+    mon_sock.sendall(command.encode() + b"\n")
+    reply, end = b"", time.time() + timeout
+    while time.time() < end:
+        try:
+            got = mon_sock.recv(4096)
+        except OSError:
+            got = b"."   # no data yet
+        if not got:
+            break
+        if got != b".":
+            reply += got
+        nl = reply.find(b"\n")
+        if nl >= 0 and b"(qemu) " in reply[nl:]:
+            break
+    text = reply.decode(errors="replace").replace("\r", "")
+    return [l.strip() for l in text.split("\n")[1:] if l.strip() and "(qemu)" not in l]
+
+
+def device_add(command):
+    """A device_add, again until QEMU takes it (up to 10 s). QEMU frees a
+    device_del'd device's drive only once its RCU callbacks run, some 50 to
+    100 ms later (more on a loaded host): a device_add of the same drive
+    before then is refused ("Permission conflict on node ..."), and the
+    error comes after the RCU drain that a failed device_add does, past
+    the 50 ms read above, so it went unseen and the guest never got its
+    device (tools/screen-test.sh's "stick is back" waited for nothing;
+    tools/replug-test.sh counts it). The drain makes the next try work."""
+    t0, tries = time.time(), 0
+    while True:
+        tries += 1
+        errors = [l for l in monitor_answer(command, 30) if "rror" in l]
+        if not errors:
+            if tries > 1:
+                print(f"serial-feed: monitor {command}: QEMU refused it {tries - 1} time(s) "
+                      f"(the last device on that drive not yet freed), took it after "
+                      f"{int((time.time() - t0) * 1000)} ms", file=sys.stderr)
+            return
+        busy = any(w in errors[0] for w in ("Permission conflict", "Duplicate", "in use"))
+        if not busy or time.time() - t0 > 10:
+            print(f"serial-feed: monitor {command}: {errors[0]}"
+                  + (" (refused for 10 s)" if busy else ""), file=sys.stderr)
+            return
+        time.sleep(0.05)
 
 
 KEYNAMES = {" ": "spc", "\r": "ret", "\n": "ret", "-": "minus", ".": "dot", "/": "slash",

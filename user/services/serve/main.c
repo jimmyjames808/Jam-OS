@@ -1,6 +1,6 @@
 /* serve: the background file server (bin/serve). init starts it in shell
  * mode, like the music player, with
- *   SR_USER + 0   the server end of the `serve` channel (abi/idl/serve.idl);
+ *   SERVE_SR_CTL   the server end of the `serve` channel (abi/idl/serve.idl);
  *                 init keeps both ends, so a restarted server serves the
  *                 same channel, which init publishes as /svc/serve
  *   SR_NS         /svc/net-listen only: the network, with the permission
@@ -36,7 +36,7 @@ JAM_WANTS("svc net listen low\n");
 
 struct netwait *serve_w;
 struct share shares[SERVE_SHARES];
-static handle_t ctl;                     /* init's shared channel (SR_USER + 0) */
+static handle_t ctl;                     /* init's shared channel (SERVE_SR_CTL) */
 static handle_t ctls[CTL_MAX];           /* our ends of the channels openers got (0: free) */
 static uint32_t ctl_ids[CTL_MAX];
 
@@ -236,7 +236,7 @@ static bool ready(const struct netwait_ready *r)
 
 static status_t setup(void)
 {
-    ctl = startup_handle(SR_USER + 0);
+    ctl = startup_handle(SERVE_SR_CTL);
     if (!ctl)
         return ERR_NOT_FOUND;
     uint32_t id;

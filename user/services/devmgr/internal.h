@@ -97,9 +97,12 @@ struct binding {
     uint32_t            input_gen;  /* its current run got DR_INPUT from input channel number
                                      * input_gen (0: none) */
     char                name[32];   /* its process name: "hid-<path>:<if>" */
-    /* A disk's driver (a BIND_USB running STORAGE_DRIVER: disks.c). */
+    /* A disk's driver (a BIND_USB running STORAGE_DRIVER, a BIND_PCI running
+     * a PCI disk driver: disks.c). */
     bool                disk;       /* it is one: its channel is never handed out */
     uint32_t            disk_txid;  /* the svc.connect asked of it for volumes (0: none) */
+    uint32_t            test_txid;  /* the one asked for devmgrctl.disk_storage (0: none) */
+    struct idl_txn      test_txn;   /* that request, on a duplicate of its channel */
 };
 
 extern struct binding devs[MAX_DEVS];
@@ -237,9 +240,12 @@ const char *usb_hub_name(void);
 /* Could b's driver have ended because the compositor went away? */
 bool usb_input_gone(const struct binding *b);
 
-/* disks.c: the disks usb-storage serves, told to volumes (the DISKS
- * channel's `disks` events, abi/idl/volumes.idl). */
+/* disks.c: the disks usb-storage and the PCI disk drivers (drv/nvme)
+ * serve, told to volumes (the DISKS channel's `disks` events,
+ * abi/idl/volumes.idl). */
 #define STORAGE_DRIVER "drv/usb-storage"
+/* Is `path` (a PCI function's driver) a disk's? */
+bool     disks_pci_driver(const char *path);
 /* devmgrctl.set_volumes: ch (consumed) is the client end of a new DISKS
  * channel: every running disk's driver is asked for a `storage` channel
  * for it again. */
@@ -253,6 +259,12 @@ void     disks_started(struct binding *b);
 void     disks_events(struct binding *b);
 /* b (a disk's driver) won't run again: the device is gone (disks.gone). */
 void     disks_device_gone(struct binding *b);
+/* b's driver process is gone: a disk_storage asked of it is answered
+ * ERR_PEER_CLOSED. */
+void     disks_driver_ended(struct binding *b);
+/* devmgrctl.disk_storage for b: svc.connect asked of its driver, the
+ * answer to txn sent when it comes (IDL_LATER), or why not. */
+status_t disks_test_storage(struct binding *b, struct idl_txn txn);
 
 /* supervise.c. */
 /* b's driver process (start generation `gen`) terminated. */

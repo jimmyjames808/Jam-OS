@@ -237,6 +237,7 @@ bool t_devmgr_query_channel(void)
         devmgrctl_device_channel_until(q, now() + TENS, DEVMGR_KIND_PCI_BOUND, 0, 0, 0, &h),
         devmgrctl_shutdown_until(q, now() + TENS),
         devmgrctl_kill_process_until(q, now() + TENS, 1),
+        devmgrctl_disk_storage_until(q, now() + TENS, DEVMGR_KIND_PCI_BOUND, 0, 0, 0, &h),
         forged(q, DEVMGRCTL_PROTOCOL_ID),
     };
     for (unsigned i = 0; i < sizeof(ctl) / sizeof(ctl[0]); i++)

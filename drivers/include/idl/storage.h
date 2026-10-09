@@ -2,26 +2,31 @@
  * change the .idl and run `make idl`.
  *
  * storage: one disk, as its driver serves it: usb-storage
- * (drivers/usb-storage) on its DR_SERVE channel (devmgr's), and on a
+ * (drivers/usb-storage, a stick) and drv/nvme (drivers/nvme, an internal
+ * drive, read-only), each on its DR_SERVE channel (devmgr's), and on a
  * channel of volumes' own it makes when devmgr asks it (svc.connect,
- * abi/idl/svc.idl: volumes is the disk's one real client). The disk's
- * partitions are listed here, and each is opened as its own `block`
+ * abi/idl/svc.idl: volumes is the disk's one real client; a test with
+ * devmgr's control channel may get one too, devmgrctl.disk_storage). The
+ * disk's partitions are listed here, and each is opened as its own `block`
  * channel: nothing is ever given the whole disk, with one exception: a
  * disk with no partition table whose block 0 is a FAT boot sector (a
  * "superfloppy") is listed as one partition, of scheme 0, that covers it.
+ * What reads the disk whole is `digest`, which gives a hash, never the data.
  *
- * Shaped for GPT now, built for MBR alone: usb-storage reads an MBR and
- * nothing else, so a GPT disk shows its protective MBR (scheme 1, one
- * partition of type 0xEE, which volumes leaves alone), and every GUID and
- * name is zeros or empty. A GPT reader fills them in without changing the
- * protocol.
+ * usb-storage reads an MBR and nothing else, so a GPT disk shows its
+ * protective MBR (scheme 1, one partition of type 0xEE, which volumes leaves
+ * alone), and every GUID and name is zeros or empty. drv/nvme reads GPT and
+ * MBR with the partition library (<jam/parttable.h>): a GPT disk lists its
+ * GPT partitions, with their GUIDs and names. usb-storage answers the
+ * methods from `ident` on ERR_NOT_SUPPORTED.
  * Format: see tools/genidl.py.
  *
- * Restart: when the stick goes away, or usb-storage ends, the channel's
- * peer closes, and so does every `block` channel opened from it.
- * usb-storage keeps nothing across a restart: volumes finds the disk again
+ * Restart: when the stick goes away, or the driver ends, the channel's
+ * peer closes, and so does every `block` channel opened from it. Neither
+ * driver keeps anything across a restart: volumes finds the disk again
  * when devmgr hands it the restarted driver's channel (its partitions
- * listed and opened again).
+ * listed and opened again). A `digest` or `health` in progress is lost
+ * with the channel: ask again.
  *
  * Protocol `storage` (id 14). Client: storage_<method>(ch, args..., &results...)
  * (and storage_<method>_until with a deadline, _within with a timeout), or
@@ -38,12 +43,24 @@
 #define STORAGE_INFO             0x000e0001u
 #define STORAGE_PARTITION        0x000e0002u
 #define STORAGE_OPEN_PARTITION   0x000e0003u
+#define STORAGE_IDENT            0x000e0004u
+#define STORAGE_DIGEST           0x000e0005u
+#define STORAGE_HEALTH           0x000e0006u
 
 /* Constants (the .idl's `const` lines). */
 /* Partition schemes (info's `scheme`). */
 #define STORAGE_SCHEME_NONE 0u
 #define STORAGE_SCHEME_MBR 1u
 #define STORAGE_SCHEME_GPT 2u
+/* The SHA-256 of `count` blocks from `lba` of the whole disk (not a
+ * partition: the region list's GPT areas lie outside every partition),
+ * read in the driver: the data never leaves it. Reads only, on any disk.
+ * Answered once the last block is hashed; several are queued and run one
+ * after another. count 0: ERR_INVALID_ARGS; past the disk, or more than
+ * DIGEST_MAX bytes: ERR_OUT_OF_RANGE; DIGEST_QUEUE waiting already:
+ * ERR_NO_RESOURCES; a read failed: ERR_IO (or ERR_TIMED_OUT). */
+#define STORAGE_DIGEST_MAX 0x40000000u
+#define STORAGE_DIGEST_QUEUE 8u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct storage_info_req {
@@ -85,8 +102,43 @@ struct storage_open_partition_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
+struct storage_ident_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct storage_ident_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct storage_digest_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint64_t lba;
+    uint64_t count;
+} __attribute__((packed));
+struct storage_digest_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t sha256[32];
+} __attribute__((packed));
+struct storage_health_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct storage_health_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t units_read;
+    uint64_t units_written;
+    uint64_t host_reads;
+    uint64_t host_writes;
+    uint64_t power_cycles;
+    uint64_t unsafe_shutdowns;
+    uint8_t percent_used;
+    uint8_t critical;
+} __attribute__((packed));
 
-#define STORAGE_REQ_MAX 13u   /* bytes: the biggest request */
+#define STORAGE_REQ_MAX 24u   /* bytes: the biggest request */
 #define STORAGE_REP_MAX 175u   /* bytes: the biggest reply */
 #define STORAGE_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define STORAGE_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
@@ -276,7 +328,8 @@ static inline status_t storage_open_partition_call(handle_t ch, bool idl_within,
  * (ERR_ACCESS_DENIED); volumes opens the ESP that way, and every
  * partition of a disk that isn't the boot disk until `mount -w` asks.
  * Past the last partition: ERR_OUT_OF_RANGE; read_only past 1:
- * ERR_INVALID_ARGS. */
+ * ERR_INVALID_ARGS. drv/nvme (M12.7's stage 1) answers read_only 0
+ * ERR_ACCESS_DENIED on every disk. */
 static inline status_t storage_open_partition_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint8_t read_only, handle_t *out_block)
 {
     return storage_open_partition_call(ch, false, deadline_ns, index, read_only, out_block);
@@ -288,6 +341,165 @@ static inline status_t storage_open_partition_within(handle_t ch, uint64_t timeo
 static inline status_t storage_open_partition(handle_t ch, uint32_t index, uint8_t read_only, handle_t *out_block)
 {
     return storage_open_partition_call(ch, false, DEADLINE_NEVER, index, read_only, out_block);
+}
+
+/* storage_ident_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t storage_ident_call(handle_t ch, bool idl_within, uint64_t idl_t, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[82];
+    struct storage_ident_req *idl_q = (struct storage_ident_req *)idl_b0;
+    const struct storage_ident_rep *idl_r = (const struct storage_ident_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = STORAGE_IDENT;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 82, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 40, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 20, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 8, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_model) {
+        if (idl_l0)
+            __builtin_memcpy(out_model, idl_p0, idl_l0 * 1);
+        out_model[idl_l0] = 0;
+    }
+    if (idl_st == OK && out_model_len)
+        *out_model_len = idl_l0;
+    if (idl_st == OK && out_serial) {
+        if (idl_l1)
+            __builtin_memcpy(out_serial, idl_p1, idl_l1 * 1);
+        out_serial[idl_l1] = 0;
+    }
+    if (idl_st == OK && out_serial_len)
+        *out_serial_len = idl_l1;
+    if (idl_st == OK && out_firmware) {
+        if (idl_l2)
+            __builtin_memcpy(out_firmware, idl_p2, idl_l2 * 1);
+        out_firmware[idl_l2] = 0;
+    }
+    if (idl_st == OK && out_firmware_len)
+        *out_firmware_len = idl_l2;
+    return idl_st;
+}
+/* The drive's identity (NVMe Identify Controller): model, serial number and
+ * firmware revision (ASCII, trailing spaces trimmed, anything else '?'). */
+static inline status_t storage_ident_until(handle_t ch, uint64_t deadline_ns, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    return storage_ident_call(ch, false, deadline_ns, out_model, out_model_len, out_serial, out_serial_len, out_firmware, out_firmware_len);
+}
+static inline status_t storage_ident_within(handle_t ch, uint64_t timeout_ns, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    return storage_ident_call(ch, true, timeout_ns, out_model, out_model_len, out_serial, out_serial_len, out_firmware, out_firmware_len);
+}
+static inline status_t storage_ident(handle_t ch, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    return storage_ident_call(ch, false, DEADLINE_NEVER, out_model, out_model_len, out_serial, out_serial_len, out_firmware, out_firmware_len);
+}
+
+/* storage_digest_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t storage_digest_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    struct storage_digest_req idl_q;
+    struct storage_digest_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = STORAGE_DIGEST;
+    idl_q.lba = lba;
+    idl_q.count = count;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    for (uint32_t idl_i = 0; idl_st == OK && out_sha256 && idl_i < 32; idl_i++)
+        out_sha256[idl_i] = idl_r.sha256[idl_i];
+    return idl_st;
+}
+static inline status_t storage_digest_until(handle_t ch, uint64_t deadline_ns, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    return storage_digest_call(ch, false, deadline_ns, lba, count, out_sha256);
+}
+static inline status_t storage_digest_within(handle_t ch, uint64_t timeout_ns, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    return storage_digest_call(ch, true, timeout_ns, lba, count, out_sha256);
+}
+static inline status_t storage_digest(handle_t ch, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    return storage_digest_call(ch, false, DEADLINE_NEVER, lba, count, out_sha256);
+}
+
+/* storage_health_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t storage_health_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    struct storage_health_req idl_q;
+    struct storage_health_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = STORAGE_HEALTH;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_units_read)
+        *out_units_read = idl_r.units_read;
+    if (idl_st == OK && out_units_written)
+        *out_units_written = idl_r.units_written;
+    if (idl_st == OK && out_host_reads)
+        *out_host_reads = idl_r.host_reads;
+    if (idl_st == OK && out_host_writes)
+        *out_host_writes = idl_r.host_writes;
+    if (idl_st == OK && out_power_cycles)
+        *out_power_cycles = idl_r.power_cycles;
+    if (idl_st == OK && out_unsafe_shutdowns)
+        *out_unsafe_shutdowns = idl_r.unsafe_shutdowns;
+    if (idl_st == OK && out_percent_used)
+        *out_percent_used = idl_r.percent_used;
+    if (idl_st == OK && out_critical)
+        *out_critical = idl_r.critical;
+    return idl_st;
+}
+/* The drive's health log (NVMe's SMART / Health Information, log page 02h):
+ * data units read and written (thousands of 512-byte units), host read and
+ * write commands completed, power cycles, unsafe shutdowns, percentage of
+ * its life used, and the critical warning bits. "host write commands" not
+ * moving across a session is the drive's own witness that nothing was
+ * written. 128-bit counters are given as their low 64 bits. Asked of the
+ * drive each time (ERR_IO if it fails). */
+static inline status_t storage_health_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    return storage_health_call(ch, false, deadline_ns, out_units_read, out_units_written, out_host_reads, out_host_writes, out_power_cycles, out_unsafe_shutdowns, out_percent_used, out_critical);
+}
+static inline status_t storage_health_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    return storage_health_call(ch, true, timeout_ns, out_units_read, out_units_written, out_host_reads, out_host_writes, out_power_cycles, out_unsafe_shutdowns, out_percent_used, out_critical);
+}
+static inline status_t storage_health(handle_t ch, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    return storage_health_call(ch, false, DEADLINE_NEVER, out_units_read, out_units_written, out_host_reads, out_host_writes, out_power_cycles, out_unsafe_shutdowns, out_percent_used, out_critical);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -465,6 +677,160 @@ static inline status_t storage_open_partition_result(const void *idl_rep, struct
     return OK;
 }
 
+/* storage_ident without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then storage_ident_result. */
+static inline status_t storage_ident_send(handle_t ch, uint32_t idl_txid)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct storage_ident_req *idl_q = (struct storage_ident_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = STORAGE_IDENT;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to storage_ident_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t storage_ident_result(const void *idl_rep, struct idl_msg *idl_m, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    const struct storage_ident_rep *idl_r = (const struct storage_ident_rep *)idl_rep;
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 40, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 20, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 8, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_model) {
+        if (idl_l0)
+            __builtin_memcpy(out_model, idl_p0, idl_l0 * 1);
+        out_model[idl_l0] = 0;
+    }
+    if (out_model_len)
+        *out_model_len = idl_l0;
+    if (out_serial) {
+        if (idl_l1)
+            __builtin_memcpy(out_serial, idl_p1, idl_l1 * 1);
+        out_serial[idl_l1] = 0;
+    }
+    if (out_serial_len)
+        *out_serial_len = idl_l1;
+    if (out_firmware) {
+        if (idl_l2)
+            __builtin_memcpy(out_firmware, idl_p2, idl_l2 * 1);
+        out_firmware[idl_l2] = 0;
+    }
+    if (out_firmware_len)
+        *out_firmware_len = idl_l2;
+    return OK;
+}
+
+/* storage_digest without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then storage_digest_result. */
+static inline status_t storage_digest_send(handle_t ch, uint32_t idl_txid, uint64_t lba, uint64_t count)
+{
+    struct storage_digest_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = STORAGE_DIGEST;
+    idl_q.lba = lba;
+    idl_q.count = count;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to storage_digest_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t storage_digest_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_sha256[32])
+{
+    const struct storage_digest_rep *idl_r = (const struct storage_digest_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    for (uint32_t idl_i = 0; out_sha256 && idl_i < 32; idl_i++)
+        out_sha256[idl_i] = idl_r->sha256[idl_i];
+    return OK;
+}
+
+/* storage_health without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then storage_health_result. */
+static inline status_t storage_health_send(handle_t ch, uint32_t idl_txid)
+{
+    struct storage_health_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = STORAGE_HEALTH;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to storage_health_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t storage_health_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    const struct storage_health_rep *idl_r = (const struct storage_health_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_units_read)
+        *out_units_read = idl_r->units_read;
+    if (out_units_written)
+        *out_units_written = idl_r->units_written;
+    if (out_host_reads)
+        *out_host_reads = idl_r->host_reads;
+    if (out_host_writes)
+        *out_host_writes = idl_r->host_writes;
+    if (out_power_cycles)
+        *out_power_cycles = idl_r->power_cycles;
+    if (out_unsafe_shutdowns)
+        *out_unsafe_shutdowns = idl_r->unsafe_shutdowns;
+    if (out_percent_used)
+        *out_percent_used = idl_r->percent_used;
+    if (out_critical)
+        *out_critical = idl_r->critical;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -475,6 +841,9 @@ struct storage_ops {
     status_t (*info)(void *ctx, char *out_vendor, uint32_t *out_vendor_len, char *out_product, uint32_t *out_product_len, uint32_t *out_block_size, uint64_t *out_blocks, uint8_t *out_scheme, uint32_t *out_partitions, uint32_t *out_mbr_id, uint8_t out_disk_guid[16]);
     status_t (*partition)(void *ctx, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint8_t out_unique_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint64_t *out_attributes, char *out_name, uint32_t *out_name_len);
     status_t (*open_partition)(void *ctx, uint32_t index, uint8_t read_only, handle_t *out_block);
+    status_t (*ident)(void *ctx, char *out_model, uint32_t *out_model_len, char *out_serial, uint32_t *out_serial_len, char *out_firmware, uint32_t *out_firmware_len);
+    status_t (*digest)(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint64_t count, uint8_t out_sha256[32]);
+    status_t (*health)(void *ctx, struct idl_txn idl_txn, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical);
 };
 
 /* Answer the storage.info request kept in txn: idl_st and, if it is OK, the
@@ -562,6 +931,75 @@ static inline status_t storage_reply_open_partition(struct idl_txn idl_txn, stat
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
 }
 
+/* Answer the storage.ident request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t storage_reply_ident(struct idl_txn idl_txn, status_t idl_st, const char *model, uint32_t model_len, const char *serial, uint32_t serial_len, const char *firmware, uint32_t firmware_len)
+{
+    _Alignas(8) uint8_t idl_b0[82];
+    struct storage_ident_rep *idl_r = (struct storage_ident_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, model, model_len, 40, 1) ||
+                             !idl_str_ok(model, model_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, serial, serial_len, 20, 1) ||
+                             !idl_str_ok(serial, serial_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, firmware, firmware_len, 8, 1) ||
+                             !idl_str_ok(firmware, firmware_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the storage.digest request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t storage_reply_digest(struct idl_txn idl_txn, status_t idl_st, const uint8_t sha256[32])
+{
+    struct storage_digest_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_r.sha256[idl_i] = sha256[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the storage.health request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t storage_reply_health(struct idl_txn idl_txn, status_t idl_st, uint64_t units_read, uint64_t units_written, uint64_t host_reads, uint64_t host_writes, uint64_t power_cycles, uint64_t unsafe_shutdowns, uint8_t percent_used, uint8_t critical)
+{
+    struct storage_health_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.units_read = units_read;
+    idl_r.units_written = units_written;
+    idl_r.host_reads = host_reads;
+    idl_r.host_writes = host_writes;
+    idl_r.power_cycles = power_cycles;
+    idl_r.unsafe_shutdowns = unsafe_shutdowns;
+    idl_r.percent_used = percent_used;
+    idl_r.critical = critical;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (STORAGE_REP_MAX bytes) and the handles it carries
  * into rhs (STORAGE_REP_HANDLES slots; *rhn of them). Returns the reply's
@@ -575,7 +1013,6 @@ static inline uint32_t storage_dispatch_on(handle_t ch, const struct storage_ops
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -677,12 +1114,102 @@ static inline uint32_t storage_dispatch_on(handle_t ch, const struct storage_ops
         *rhn = 1;
         return sizeof(*idl_r);
     }
+    case STORAGE_IDENT: {
+        const struct storage_ident_req *idl_q = (const struct storage_ident_req *)req;
+        struct storage_ident_rep *idl_r = (struct storage_ident_rep *)rep;
+        char *out_model = (char *)((uint8_t *)rep + 10);
+        uint32_t out_model_len = 0;
+        char *out_serial = (char *)((uint8_t *)rep + 52);
+        uint32_t out_serial_len = 0;
+        char *out_firmware = (char *)((uint8_t *)rep + 74);
+        uint32_t out_firmware_len = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->ident) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->ident(ctx, out_model, &out_model_len, out_serial, &out_serial_len, out_firmware, &out_firmware_len);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_model_len > 40 || !idl_str_ok(out_model, out_model_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_serial_len > 20 || !idl_str_ok(out_serial, out_serial_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_firmware_len > 8 || !idl_str_ok(out_firmware, out_firmware_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 10, out_model_len, 1);
+        idl_place(rep, &idl_rn, 52, out_serial_len, 1);
+        idl_place(rep, &idl_rn, 74, out_firmware_len, 1);
+        return idl_rn;
+    }
+    case STORAGE_DIGEST: {
+        const struct storage_digest_req *idl_q = (const struct storage_digest_req *)req;
+        struct storage_digest_rep *idl_r = (struct storage_digest_rep *)rep;
+        uint8_t out_sha256[32];
+        for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+            out_sha256[idl_i] = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->digest) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->digest(ctx, idl_txn, idl_q->lba, idl_q->count, out_sha256);
+        /* IDL_LATER: the handler answers with storage_reply_digest. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+            idl_r->sha256[idl_i] = out_sha256[idl_i];
+        return sizeof(*idl_r);
+    }
+    case STORAGE_HEALTH: {
+        const struct storage_health_req *idl_q = (const struct storage_health_req *)req;
+        struct storage_health_rep *idl_r = (struct storage_health_rep *)rep;
+        uint64_t out_units_read = 0;
+        uint64_t out_units_written = 0;
+        uint64_t out_host_reads = 0;
+        uint64_t out_host_writes = 0;
+        uint64_t out_power_cycles = 0;
+        uint64_t out_unsafe_shutdowns = 0;
+        uint8_t out_percent_used = 0;
+        uint8_t out_critical = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->health) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->health(ctx, idl_txn, &out_units_read, &out_units_written, &out_host_reads, &out_host_writes, &out_power_cycles, &out_unsafe_shutdowns, &out_percent_used, &out_critical);
+        /* IDL_LATER: the handler answers with storage_reply_health. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->units_read = out_units_read;
+        idl_r->units_written = out_units_written;
+        idl_r->host_reads = out_host_reads;
+        idl_r->host_writes = out_host_writes;
+        idl_r->power_cycles = out_power_cycles;
+        idl_r->unsafe_shutdowns = out_unsafe_shutdowns;
+        idl_r->percent_used = out_percent_used;
+        idl_r->critical = out_critical;
+        return sizeof(*idl_r);
+    }
     }
     idl_h->status = ERR_NOT_SUPPORTED;
     return sizeof(*idl_h);
 }
 
-/* storage_dispatch_on without the channel (the protocol has no `later` method). */
+/* storage_dispatch_on without the channel (a `later` handler's txn then has none: use storage_dispatch_on). */
 static inline uint32_t storage_dispatch(const struct storage_ops *ops, void *ctx, const void *req, uint32_t n,
                                         void *rep, handle_t *rhs, uint32_t *rhn)
 {
@@ -732,6 +1259,8 @@ static inline bool storage_idempotent(uint32_t ordinal)
     switch (ordinal) {
     case STORAGE_INFO:
     case STORAGE_PARTITION:
+    case STORAGE_IDENT:
+    case STORAGE_HEALTH:
         return true;
     default:
         return false;

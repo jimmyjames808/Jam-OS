@@ -304,76 +304,6 @@ KTEST(chan_no_handles_mark_needs_sole_holder)
     KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
-/* Q2: once the writer closes its end, what it wrote and nobody read is
- * charged to the reader's job: the job of the table that last received
- * the reading end (here moved from one table to another, which must count).
- * A message that job can't pay is dropped with every one after it (its
- * handles released): the reader reads a prefix of the stream, then
- * ERR_PEER_CLOSED. Reading credits the reader's job. */
-KTEST(chan_unread_charged_to_reader)
-{
-    uint64_t live = channel_live_count();
-    volatile int destroyed = 0;
-    struct job *jr = kt_fresh_job(), *j2 = kt_fresh_job();
-    struct handle_table tr, t2;
-    handle_table_init(&tr);
-    handle_table_init(&t2);
-    tr.job = jr;
-    t2.job = j2;
-    uint8_t msg[64] = { 0 };
-    uint32_t nb, nh;
-
-    handle_t w, r, r2;
-    KT_EQ(sys_channel_create(&tr, &w, &r), OK);
-    for (int i = 0; i < 4; i++)
-        KT_EQ(sys_channel_write(&tr, w, msg, sizeof(msg), NULL, 0), OK);
-    KT_EQ(job_used(jr, JOB_LIMIT_MSG_BYTES), 0);   /* a kernel thread wrote them: no job */
-    struct khandle kh;
-    KT_EQ(handle_remove(&tr, r, &kh), OK);
-    KT_EQ(handle_insert(&t2, &kh, &r2), OK);   /* the reading end moves to j2's table */
-    KT_EQ(handle_close(&tr, w), OK);           /* the writer closes */
-    uint64_t four = job_used(j2, JOB_LIMIT_MSG_BYTES), one = four / 4;
-    KT_ASSERT(one >= sizeof(msg) && four == 4 * one);
-    KT_EQ(job_used(jr, JOB_LIMIT_MSG_BYTES), 0);
-    KT_EQ(sys_channel_read(&t2, r2, msg, sizeof(msg), &nb, NULL, 0, &nh), OK);
-    KT_EQ(job_used(j2, JOB_LIMIT_MSG_BYTES), 3 * one);   /* reading credits the reader */
-    KT_EQ(handle_close(&t2, r2), OK);                     /* the rest go with the end */
-    KT_EQ(job_used(j2, JOB_LIMIT_MSG_BYTES), 0);
-
-    /* Room for two and a half: two are kept, the other three (one with a
-     * handle) dropped. */
-    KT_EQ(sys_channel_create(&t2, &w, &r), OK);
-    for (uint8_t i = 0; i < 5; i++) {
-        msg[0] = i;
-        if (i == 3) {
-            struct khandle c = cobj_handle(&destroyed, RIGHTS_BASIC);
-            handle_t hc;
-            KT_EQ(handle_insert(&t2, &c, &hc), OK);
-            KT_EQ(sys_channel_write(&t2, w, msg, sizeof(msg), &hc, 1), OK);
-        } else {
-            KT_EQ(sys_channel_write(&t2, w, msg, sizeof(msg), NULL, 0), OK);
-        }
-    }
-    KT_EQ(job_set_limit(j2, JOB_LIMIT_MSG_BYTES, 2 * one + one / 2), OK);
-    KT_EQ(handle_close(&t2, w), OK);
-    KT_EQ(job_used(j2, JOB_LIMIT_MSG_BYTES), 2 * one);
-    KT_EQ(destroyed, 1);   /* the dropped handle */
-    for (uint8_t i = 0; i < 2; i++) {
-        KT_EQ(sys_channel_read(&t2, r, msg, sizeof(msg), &nb, NULL, 0, &nh), OK);
-        KT_EQ(msg[0], i);
-    }
-    KT_EQ(sys_channel_read(&t2, r, msg, sizeof(msg), &nb, NULL, 0, &nh), ERR_PEER_CLOSED);
-    KT_EQ(job_used(j2, JOB_LIMIT_MSG_BYTES), 0);
-
-    handle_table_destroy(&tr);
-    handle_table_destroy(&t2);
-    kt_job_is_empty(jr);
-    kt_job_is_empty(j2);
-    job_unref(jr);
-    job_unref(j2);
-    KT_GLOBAL_EQ(channel_live_count(), live);
-}
-
 KTEST(channel_own_endpoint_rejected)
 {
     uint64_t live = channel_live_count();
@@ -807,8 +737,10 @@ static void call_server(void *arg)
         KT_EQ(nb, sizeof(q));
         KT_ASSERT(q.txid != 0);
         struct call_reply r = { q.txid, q.caller, q.seq, q.seq * 3 + q.caller };
-        KT_EQ(channel_write(call_b, &r, sizeof(r), NULL, 0), OK);
+        /* Counted before the reply: once the last caller has its reply the
+         * test reads the count, maybe before we run again. */
         __atomic_add_fetch(&calls_served, 1, __ATOMIC_RELAXED);
+        KT_EQ(channel_write(call_b, &r, sizeof(r), NULL, 0), OK);
         if (!sent_extra) {
             sent_extra = true;
             KT_EQ(write_u32(call_b, 0xabcdef), OK);

@@ -1,0 +1,30 @@
+# splashch: the boot splash's channel with init (bin/splash, user/apps/splash;
+# init's side is user/services/init/splash.c). Named splashch so its stubs
+# (splashch_played) don't take the names of init's own splash_played and
+# splash_shell_ready.
+#
+# On a plain boot init starts the splash first, right after the console,
+# with a channel of its own (the splash's startup role SR_USER +
+# SPLASH_INIT_ROLE, <splash.h>); init holds the other end and is this
+# protocol's server. Events only, one each way, no handles:
+#   splash -> init   played: the animation is over (or a key skipped it);
+#                    its last frame stays on the screen. init starts the
+#                    shell now.
+#   init -> splash   go: the shell is ready (initctl.shell_ready): give the
+#                    screen back to the console.
+# A closed channel means the same as the message the other side would have
+# sent: init gone (the splash lets go), the splash gone (init starts the
+# shell). A message that breaks the format (a txid, extra bytes, an
+# ordinal of another protocol, a byte of the old one-word form) is dropped
+# by the generated reader and means nothing: it neither starts the shell
+# nor gives the screen back.
+#
+# Restart: none. The splash runs once per boot and is never started again:
+# its end, however it ends, counts as played.
+
+protocol splashch 83
+
+# To init: the splash is over.
+1  played  () event
+# To the splash: the shell is up; give the screen back.
+2  go      -> () event

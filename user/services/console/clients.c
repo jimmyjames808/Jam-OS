@@ -6,9 +6,9 @@
  * can only make channels of a lower level than its own. keys.c has what the levels mean for the
  * keys.
  *
- * Program output (console.write) is also written to COM1 as it is (the
- * kernel log goes there by itself), so a serial terminal, and the QEMU
- * tests, see the same session.
+ * Program output (console.write) goes to the back end (the window's also
+ * writes it to COM1 as it is, the kernel log goes there by itself, so a
+ * serial terminal, and the QEMU tests, see the same session).
  *
  * A client's DEC modes that are about its keys are its own: ESC [ ? 2004 h
  * (bracketed paste) brackets what is pasted to a key channel it opened,
@@ -23,30 +23,21 @@ static status_t op_write(void *ctx, const uint8_t *text, uint32_t length)
     /* Kernel lines logged before this write go above it: e.g. a ktest's
      * output before the shell's summary line. */
     klog_event();
-    bool was_alt = alt_on;
-    out_writer = ctx;   /* the modes it asks for are its own (term.c) */
-    for (unsigned i = 0; i < length; i++)
-        out_char(text[i]);
-    out_writer = NULL;
-    if (!was_alt || !alt_on)   /* the alternate screen isn't mirrored to COM1 */
-        (void)jam_serial_write(root, text, length);   /* the mirror is best effort */
-    dirty = true;
+    back->write(ctx, text, length);
     return OK;
 }
 
 static status_t op_size(void *ctx, uint16_t *c, uint16_t *r)
 {
     (void)ctx;
-    *c = (uint16_t)cols;
-    *r = (uint16_t)rows;
+    back->size(c, r);
     return OK;
 }
 
 static status_t op_clear(void *ctx)
 {
     (void)ctx;
-    clear_screen();
-    jam_serial_write(root, "\033[2J\033[H", 7);
+    back->clear();
     return OK;
 }
 
@@ -109,7 +100,8 @@ static status_t op_set_font(void *ctx, uint8_t font)
         return ERR_ACCESS_DENIED;
     if (font > 1)
         return ERR_INVALID_ARGS;
-    window_set_font(font == 1);
+    if (back->set_font)
+        back->set_font(font == 1);
     return OK;
 }
 
@@ -145,6 +137,10 @@ unsigned client_count(void)
  * binding (it fires on an edge) won't fire again: the main loop comes back
  * for them. */
 static uint32_t pending;
+/* Clients whose round stopped because the back end was congested, with
+ * requests maybe waiting: bit i is clients[i]; clients_resume moves them
+ * to pending. */
+static uint32_t deferred;
 _Static_assert(MAX_CLIENTS <= 32, "pending is a 32-bit mask");
 
 void client_event(unsigned i)
@@ -152,13 +148,19 @@ void client_event(unsigned i)
     if (i >= MAX_CLIENTS)
         return;
     pending &= ~(1u << i);
+    deferred &= ~(1u << i);
     if (!clients[i])
         return;
     uint64_t t0 = now();
     status_t st = OK;
-    for (unsigned n = 0; n < CLIENT_BUDGET && now() - t0 < CLIENT_BUDGET_NS; n++)
+    for (unsigned n = 0; n < CLIENT_BUDGET && now() - t0 < CLIENT_BUDGET_NS; n++) {
+        if (back->congested && back->congested()) {
+            deferred |= 1u << i;   /* its requests wait, so its writers do: no output is dropped */
+            return;
+        }
         if ((st = console_serve_one(clients[i], &console_ops, &client_info[i])) != OK)
             break;
+    }
     if (st == OK) {
         pending |= 1u << i;   /* the budget ran out first */
         return;
@@ -195,6 +197,12 @@ bool clients_show_all(void)
 bool clients_pending(void)
 {
     return pending != 0;
+}
+
+void clients_resume(void)
+{
+    pending |= deferred;
+    deferred = 0;
 }
 
 void clients_serve_pending(void)
