@@ -73,10 +73,18 @@ static status_t display_error(void *data, uint32_t self, uint32_t object, uint32
 {
     struct jwl_client *c = data;
     (void)self;
-    c->fatal = ERR_INVALID_ARGS;   /* we close it: read_all */
     c->info.error_object = object;
     c->info.error_code = code;
     snprintf(c->info.error_text, sizeof(c->info.error_text), "%s", text ? text : "");
+    if (code == JWL_ERROR_NO_MEMORY && text &&
+        !strncmp(text, JWL_SLOW_READER_TEXT, sizeof(JWL_SLOW_READER_TEXT) - 1)) {
+        /* The compositor's own cap on what a slow reader costs it (M12.1 C12): not
+         * ours to be ended for, and a new connection cures it. read_all loses the
+         * connection; jwlc_slow_drop logs it, once per back-off step. */
+        c->slow_drop = true;
+        return OK;
+    }
+    c->fatal = ERR_INVALID_ARGS;   /* we close it: read_all */
     jwlc_log(c, "the compositor says object %u broke the protocol (code %u): %s", object, code,
              c->info.error_text);
     return OK;

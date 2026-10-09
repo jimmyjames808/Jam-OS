@@ -20,7 +20,7 @@
  *                 abi/idl/compctl.idl), a new one each start; init keeps
  *                 the client end (admin) and makes the INPUT channels from
  *                 it: one for devmgr's HID drivers (services.c, and
- *                 DEVMGR_SET_CONSOLE after a restart: comp_restarted), and
+ *                 devmgrctl.set_input after a restart: comp_restarted), and
  *                 serialin's source;
  *               SR_USER + 3  a control channel of init's that answers it
  *                 only `reboot` (Ctrl+Alt+Del), `terminal` (Super+Enter,

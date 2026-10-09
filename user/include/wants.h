@@ -25,6 +25,13 @@
  *                             stick) or * (every mount)
  *     right <name>            klog, sysinfo, clock or debug: that power on
  *                             the root resource (WANT_RIGHT_*)
+ *     posix                   a POSIX program (on musl, docs/M13-PLAN.md):
+ *                             its starter gives it file descriptors (the
+ *                             hand-over, <posixfds.h>) and an 8 MiB stack;
+ *                             it grants nothing (the compiler wrapper adds it)
+ * `svc session` (/svc/session, init's sessions: a whole shell) is for a
+ * boot-image service, port or test only, and `allow` refuses it for a
+ * program on /data.
  * The macro puts the text in an ELF note (name "JamOS", type 1) in the
  * section .jamos.wants, which user/linker.ld keeps in the read-only
  * segment under a PT_NOTE program header. tools/checkwants.py checks every
@@ -62,6 +69,7 @@
 
 struct wants {
     bool     found;                     /* the file has a list */
+    bool     posix;                     /* the word `posix`: a POSIX program */
     unsigned n;                         /* entries of grant */
     char     grant[WANTS_MAX][24];      /* <os.h> "grants" strings: "/svc/music", "/data:r" */
     uint32_t rights;                    /* WANT_RIGHT_* */

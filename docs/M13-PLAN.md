@@ -1190,3 +1190,65 @@ option each time):
   `vmo_read` returns no byte count, so the simplest is "nothing promised
   in the buffer, read again" (a read has no side effects). The fault path
   (PK2) must stay uninterruptible: a fault has no `EINTR`.
+
+## A2 notes
+
+Track A2 (libjam and the hand-over) as built, with the choices the plan
+left open:
+
+- **libjam.a** (`build/uobj/libjam.a`, built by `make`) is libos's objects
+  less `user/lib/heap.c`, `user/lib/string.c`, `user/lib/stdio.c` (the
+  printf family, moved out of `user/lib/printf.c`) and
+  `user/lib/startmain.c` (environ and `libos_start`, which calls main). It
+  still holds dr_mp3, Monocypher and the driver API: a program that never
+  calls them doesn't link them. What it needs from a C library is exactly
+  malloc, calloc, free, memcpy, memmove, memset, memcmp, strlen, strnlen,
+  strcmp, strncmp, strchr, strrchr, strstr, printf, snprintf and
+  vsnprintf; under musl its own log lines therefore go to descriptor 1.
+  `user/lib/printf.c` keeps `status_str` alone for now, so K1's line there
+  merges cleanly; it becomes status.c (a rename) once K1 is merged.
+- **Startup**: `startup_read(ch, &argc, &argv)` (`<os.h>`) is the parser
+  both starts call: the environment follows `argv[argc]`. It uses no
+  heap, printf or thread-local storage, so the POSIX crt calls it before
+  musl runs; its two log lines are written with `debug_write` itself
+  (the same bytes as before: neither case has an `SR_STDOUT`).
+- **The link test** in `make check`: every object of libjam linked with
+  `tools/libjam-stub.c` (`--whole-archive`, `--fatal-warnings`: a C
+  library function libjam needs and the stub lacks, or one both define,
+  fails), and `tools/checklibjam.py`, which refuses a C library name
+  defined by libjam: from its own list of the C standard's and POSIX's
+  names, or, given musl's `libc.a` as a third argument, from musl's own.
+- **The hand-over** (`<posixfds.h>`, `user/lib/fdmsg.c`; "JPSX", 0x5853 in
+  `abi/idl/ids.txt`): a 64-byte header (version, `POSIXFDS_LAST`, a
+  sequence number, counts), the first message alone carrying the state
+  (umask, ppid, pgid, sid, the blocked and ignored signals) and the
+  current directory; then 24-byte records, each with its data padded to
+  8 bytes. Each kind has an exact number of handles of fixed object types
+  and a data shape (a path, a name, or the layer's own bytes): the table
+  is in fdmsg.c, for the B tracks to change before M14 freezes it. An
+  epoll descriptor is not a kind: B5 decides whether a child gets one.
+  Status flags are Linux's `O_*` values, from a fixed set; only a file or
+  a directory has an offset; SIGKILL and SIGSTOP in a mask are refused.
+  The starter writes the whole hand-over before `process_start` (spawn
+  does), so the reader never waits: nothing after the startup message is
+  "no hand-over" (`ERR_NOT_FOUND`), and anything queued after the last
+  message makes it malformed. The reader gives descriptors to a sink
+  only after their whole message passed its checks (the handles' object
+  types included), and on any fault resets the sink, closes the
+  message's handles and drains what is queued. One static 64 KiB buffer
+  under a lock serves both sides, so no message is too big to read and
+  drop.
+- **`spawn_args`**: `stack_size` (0: 128 KiB; rounded up to pages; at
+  most `SPAWN_STACK_MAX`, 1 GiB; committed as touched and charged to the
+  caller's job, as every VMO spawn makes) and `handover` (consumed
+  whatever happens, as the extras are).
+- **The list**: `posix` grants nothing and may appear once; it is not in
+  the text `allow` shows. `svc session` (`SVC_SESSION`) is accepted by
+  the build for programs under `user/services/`, user/ports/ and
+  `user/tests/` only; `allow`'s refusal for `/data` is X1's
+  (`user/services/shell/sh_allow.c`). Found, not changed: libos's list
+  parser takes a line with a trailing space ("posix ", "svc net ") that
+  `tools/checkwants.py` refuses.
+- **For A1**: `<os.h>` declares the C library's names itself and defines
+  `PAGE_SIZE`, which musl's `<limits.h>` also defines: a file that
+  includes both needs `#undef PAGE_SIZE` or a header of its own.

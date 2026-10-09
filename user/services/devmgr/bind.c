@@ -144,9 +144,10 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
      * ("netprobe"), and a network card's (class 02) the network mode when
      * there is one ("vlan=21", "vlan=none": without it the driver keeps
      * the network off); drv/hda, "vtdtest" when devmgr was (the IOMMU
-     * checks entry). */
+     * checks entry); drv/nvme, its function ("pci=02:00.0", for its log)
+     * and devmgr's "nvmetest=" word if any. */
     const char *name = b->kind == BIND_USB ? b->name : NULL;
-    char vlan[NETDEV_MODE_TEXT] = "";
+    char vlan[NETDEV_MODE_TEXT] = "", pci[16];
     const char *argv[5] = { name ? name : b->path };
     int argc = 1;
     if (b->kind == BIND_USB)
@@ -159,6 +160,11 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
         }
         if (vtdtest && b->path && !strcmp(b->path, "drv/hda"))
             add_arg(argv, &argc, "vtdtest");   /* its deliberate DMA faults */
+        if (b->path && !strcmp(b->path, "drv/nvme")) {
+            snprintf(pci, sizeof(pci), "pci=%02x:%02x.%x", b->info.bus, b->info.dev, b->info.fn);
+            add_arg(argv, &argc, pci);
+            add_arg(argv, &argc, nvmetest);   /* its test reads */
+        }
     }
     struct spawn_args a = {
         .path = b->path, .name = name, .argc = argc, .argv = argv,
@@ -296,27 +302,36 @@ bool stop_driver(struct binding *b, bool kill, bool excused)
     return ok;
 }
 
-status_t driver_view(struct binding *b, handle_t *hs, rights_t *rs, uint32_t *nh, uint32_t *mask)
+/* b's function opened for the views (ours, with RIGHT_MANAGE). */
+static status_t open_dev(struct binding *b)
 {
-    status_t st = OK;
-    *nh = 0;
+    if (b->dev)
+        return OK;
+    return jam_pci_device_open(pci_res, b->index, &b->dev);
+}
+
+status_t driver_function(struct binding *b, handle_t *out, uint32_t *mask)
+{
+    status_t st = open_dev(b);
+    if (st != OK)
+        return st;
+    if ((st = narrowed(b->dev, DEVMGR_DRV_DEV_RIGHTS, out)) != OK)
+        return st;
     *mask = 0;
-    if (!b->dev && (st = jam_pci_device_open(pci_res, b->index, &b->dev)) != OK)
+    for (unsigned i = 0; i < 6; i++)
+        if (is_mem_bar(&b->info, i))
+            *mask |= 1u << i;
+    return OK;
+}
+
+status_t driver_bar(struct binding *b, unsigned n, handle_t *out)
+{
+    if (n >= 6 || !is_mem_bar(&b->info, n))
+        return ERR_NOT_FOUND;
+    status_t st = open_dev(b);
+    if (st != OK)
         return st;
-    if ((st = narrowed(b->dev, DEVMGR_DRV_DEV_RIGHTS, &hs[0])) != OK)
-        return st;
-    rs[0] = DEVMGR_DRV_DEV_RIGHTS;
-    *nh = 1;
-    for (unsigned i = 0; i < 6; i++) {
-        if (!is_mem_bar(&b->info, i))
-            continue;
-        if ((st = bar_for_driver(b->dev, i, &hs[*nh])) != OK)
-            break;
-        rs[*nh] = DEVMGR_DRV_BAR_RIGHTS;
-        *mask |= 1u << i;
-        (*nh)++;
-    }
-    return st;
+    return bar_for_driver(b->dev, n, out);
 }
 
 unsigned mem_bars(const struct binding *b)

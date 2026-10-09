@@ -70,7 +70,8 @@ KTEST(kmag_refill_drain_accounting)
         uint64_t there = kmem_cached_objects(2, c);
         thread_join(thread_create_on("kt-free", free_it, NULL, PRIO_DEFAULT, &m));
         KT_EQ(kmem_cached_objects(2, c), there + 1);
-        KT_GLOBAL_EQ(kt_free_and_cached_pages(), free0);
+        KT_GLOBAL_EQ(kt_wait_free_and_cached(free0), free0);   /* (the helper's stack: reaped a little
+                                                                * after thread_join returns) */
         KT_EQ(kmem_cached_objects(2, c), 0);
     }
     kt_unpin_self();
@@ -121,5 +122,5 @@ KTEST(kmag_oom_drains_magazines)
     KT_ASSERT(obj);
     KT_EQ(left, 0);
     kmem_cache_free(c, obj);
-    KT_EQ(kt_free_and_cached_pages(), free0);
+    KT_EQ(kt_wait_free_and_cached(free0), free0);
 }

@@ -32,7 +32,7 @@
 #define CHECK_PROG "hdatest"
 #define CHECK_CUR  cur
 #include <check.h>
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/hda.h>
 #include <os.h>
 #include <wants.h>
@@ -93,14 +93,12 @@ static bool parse_ids(handle_t text, uint32_t len)
 static bool find_hda(void)
 {
     for (uint32_t n = 0; n < 32; n++) {
-        struct devmgr_rep r;
         handle_t ch, text;
-        uint32_t nh = 0, len = 0, codecs = 0;
-        status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &ch, 1, &nh,
-                                  soon());
+        uint32_t len = 0, codecs = 0;
+        status_t st = devmgr_get_service_until(dm, soon(), DEVMGR_KIND_PCI_BOUND, 0, 0, n, &ch);
         if (st == ERR_NOT_FOUND)
             break;
-        if (st != OK || nh != 1)
+        if (st != OK)
             continue;
         st = hda_dump_until(ch, now() + OPEN_WAIT, &text, &len, &codecs);
         if (st == OK) {
@@ -263,20 +261,21 @@ static bool t_close_stops(void)
 /* The dead driver's pins: back out of the quarantine, none written. */
 static bool quarantine_clean(void)
 {
-    struct devmgr_rep r = { 0 };
+    uint32_t state = 0, restarts = 0, backoff = 0, held = 0, written = 0;
     uint64_t end = now() + 10 * NS_PER_S;
     do {
-        CHECK_ST(devmgr_call(dm, DEVMGR_SUPERVISION, vid, did, 0, &r, NULL, 0, NULL, soon()), OK);
-        if (!r.d)
+        CHECK_ST(devmgr_supervision_until(dm, soon(), DEVMGR_KIND_PCI_IDS, vid, did, 0, &state,
+                                          &restarts, &backoff, &held, &written), OK);
+        if (!held)
             break;
         jam_sleep_until(now() + 100 * NS_PER_MS);
     } while (now() < end);
     printf("hdatest: kill: state %u, %u restart(s), quarantine %u page(s) held, %u written\n",
-           r.a, r.b, r.d, r.e);
-    CHECK_EQ(r.a, DEVMGR_SUP_RUNNING);
-    CHECK(r.b >= 1);
-    CHECK_EQ(r.d, 0);
-    CHECK_EQ(r.e, 0);
+           state, restarts, held, written);
+    CHECK_EQ(state, DEVMGR_SUP_RUNNING);
+    CHECK(restarts >= 1);
+    CHECK_EQ(held, 0);
+    CHECK_EQ(written, 0);
     return true;
 }
 
@@ -289,15 +288,13 @@ static bool t_kill(void)
     put(&o, 0, o.size / 4);
     CHECK_ST(hda_stream_start_until(o.ch, soon()), OK);
     CHECK_ST(hda_stream_wait_period_until(o.ch, soon(), 0, &frames, &off), OK);
-    struct devmgr_rep r;
-    CHECK_ST(devmgr_call(dm, DEVMGR_KILL, vid, did, 0, &r, NULL, 0, NULL, soon()), OK);
+    uint64_t koid;
+    CHECK_ST(devmgrctl_kill_until(dm, soon(), DEVMGR_KIND_PCI_IDS, vid, did, 0, &koid), OK);
     CHECK_ST(hda_stream_position_until(o.ch, soon(), &frames, &off), ERR_PEER_CLOSED);
     out_close(&o);   /* nothing written to the old ring: it is quarantined */
-    /* The channel the restart will serve (0xffff/0xffff finds running drivers only). */
+    /* The channel the restart will serve (KIND_PCI_BOUND counts running drivers only). */
     handle_t ch;
-    uint32_t nh = 0;
-    CHECK_ST(devmgr_call(dm, DEVMGR_GET_SERVICE, vid, did, 0, &r, &ch, 1, &nh, soon()), OK);
-    CHECK_EQ(nh, 1);
+    CHECK_ST(devmgr_get_service_until(dm, soon(), DEVMGR_KIND_PCI_IDS, vid, did, 0, &ch), OK);
     jam_handle_close(hda);
     hda = ch;
     CHECK_ST(out_open(&o), OK);

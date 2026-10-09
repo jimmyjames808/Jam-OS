@@ -57,4 +57,5 @@ status_t tcpsock_op_tcp(void *ctx, uint32_t address, uint16_t port, uint32_t tx_
                         handle_t *out_to_stack, handle_t *out_to_prog, uint16_t *out_port,
                         uint32_t *out_tx_bytes, uint32_t *out_rx_bytes);
 status_t tcpsock_op_listener(void *ctx, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
-                             uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port);
+                             uint32_t rx_bytes, uint32_t flags, handle_t *out_listener,
+                             uint16_t *out_port);

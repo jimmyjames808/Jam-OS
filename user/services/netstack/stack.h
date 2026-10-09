@@ -287,10 +287,13 @@ status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ct
 /* Listen on `port` (0: lwIP picks one) on any local address, backlog
  * half-open and not-yet-accepted connections at most (1..STACK_TCP_BACKLOG),
  * each announcing at most `window` (the largest its SYN allows, above).
- * ERR_ALREADY_BOUND: the port is taken; ERR_NO_RESOURCES: no listener free;
- * ERR_INVALID_ARGS: a bad backlog. */
-status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, void *lctx,
-                          struct stack_tcp_listen **out, uint16_t *out_port);
+ * `reuse` is SO_REUSEADDR: connections of the port in TIME_WAIT don't stop
+ * it, nor do open ones that came from a listener made with it too.
+ * ERR_ALREADY_BOUND: the port is taken (a listener on it, with or without
+ * `reuse`); ERR_NO_RESOURCES: no listener free; ERR_INVALID_ARGS: a bad
+ * backlog. */
+status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, bool reuse,
+                          void *lctx, struct stack_tcp_listen **out, uint16_t *out_port);
 /* Stop listening. Half-open connections are dropped; those already given
  * to hooks.accepted are the caller's. */
 void     stack_tcp_unlisten(struct stack_tcp_listen *l);
@@ -334,9 +337,17 @@ bool     stack_tcp_fin_acked(struct stack_tcp *t);
 void     stack_tcp_release(struct stack_tcp *t);
 /* Reset it now (a RST) and free it. No hook is called. */
 void     stack_tcp_abort(struct stack_tcp *t);
-/* Its peer's address and port, and its own port. */
+/* Its peer's address and port, and its own address and port. */
 void     stack_tcp_ends(struct stack_tcp *t, uint32_t *peer, uint16_t *peer_port,
-                        uint16_t *port);
+                        uint32_t *local, uint16_t *port);
+/* Nagle's algorithm off (nodelay: a small segment leaves at once, the
+ * default of every connection) or on (it waits while an earlier segment is
+ * unacked), and the keep-alive: off, or on with the seconds idle before the
+ * first probe, between probes and the probes unanswered before lwIP resets
+ * the connection (hooks.gone, ERR_TIMED_OUT). The seconds and the count are
+ * lwIP's real ones (stack_tcp_options' callers range-check them). */
+void     stack_tcp_options(struct stack_tcp *t, bool nodelay, bool keepalive,
+                           uint32_t idle_s, uint32_t intvl_s, uint32_t cnt);
 
 /* lwIP's TCP now: pcbs in use by state, segments queued, and drops (bad
  * checksum or header, no room, out of order or out of window). */

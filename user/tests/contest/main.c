@@ -14,9 +14,9 @@
  * which kills it. Exit code 0 when all hold. The other words are probes
  * the shell-test scripts run: `flood` (console writes flat out), `spew` and
  * `junk` (a program's output in a pipe), `cad` and `steal` (authority). */
-#include <devmgr.h>
 #include <idl/compctl.h>
 #include <idl/console.h>
+#include <idl/devmgr.h>
 #include <idl/input.h>
 #include <os.h>
 #include "contest.h"
@@ -81,7 +81,7 @@ static bool empty(handle_t k)
 }
 
 /* ---- probe `run contest steal`: a `run` program posing as the
- * compositor. If it could send devmgr DEVMGR_SET_CONSOLE, the USB class
+ * compositor. If it could send devmgr set_input, the USB class
  * drivers devmgr (re)starts afterwards would connect their keys to it
  * (tools/shell-tests/review-steal.txt checks that they don't: `run`
  * programs get no devmgr channel, and the query channel refuses it). */
@@ -115,20 +115,9 @@ static int steal(void)
     }
     if (jam_channel_create(&mine, &theirs) != OK)
         return 1;
-    struct devmgr_req q = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
-    struct devmgr_rep r;
-    uint32_t n = 0, got = 0;
-    struct channel_call_args a = {
-        .h = dm, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)&q,
-        .wr_handles = (uint64_t)(uintptr_t)&theirs, .wr_nhandles = 1, .rd_cap = sizeof(r),
-        .rd_bytes = (uint64_t)(uintptr_t)&r, .rd_actual = (uint64_t)(uintptr_t)&n,
-        .rd_hactual = (uint64_t)(uintptr_t)&got,
-        .deadline_ns = now() + 5000 * NS_PER_MS,
-    };
-    status_t st = jam_channel_call(&a);
-    printf("contest: steal: DEVMGR_SET_CONSOLE: %s, reply %d\n", status_str(st),
-           n >= DEVMGR_REP_HDR ? r.status : -1);
-    if (st == OK && n >= DEVMGR_REP_HDR && r.status == ERR_ACCESS_DENIED) {
+    status_t st = devmgrctl_set_input_until(dm, now() + 5000 * NS_PER_MS, theirs);   /* theirs goes */
+    printf("contest: steal: devmgrctl.set_input: %s\n", status_str(st));
+    if (st == ERR_ACCESS_DENIED) {
         printf("contest: steal: refused (a query channel)\n");
         return 0;
     }

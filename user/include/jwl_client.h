@@ -30,7 +30,13 @@
  * back on its screen, in its tile or floating box, minimised or not. A frame callback the dead compositor never answered
  * comes as a JWL_EV_FRAME once the window is back, so an animation goes on.
  * A connection the compositor ended with wl_display.error (this program
- * broke the protocol) is not made again: the client is dead.
+ * broke the protocol) is not made again: the client is dead. The one
+ * exception is the no_memory error of a client that reads too slowly
+ * (JWL_SLOW_READER_TEXT: a program busy for a while with events arriving,
+ * M12.1 C12): that is a lost connection like a closed channel, JWL_EV_
+ * DISCONNECTED with conn.why ERR_NO_MEMORY, and the client connects again
+ * after a pause that grows with each drop in a row (50 ms, doubling, up
+ * to JWL_SLOW_RECONNECT_MAX_MS), logging once per step, not per attempt.
  *
  * The loop. Nothing here blocks but jwl_client_connect, jwl_client_wait_event,
  * jwl_client_roundtrip and the connect step (below). A program with a loop
@@ -75,6 +81,8 @@
 #define JWL_SIZE_MAX         8192    /* a window's or buffer's width and height, at most */
 #define JWL_TEXT_MAX         256u    /* a title's or app id's bytes kept, with the NUL */
 #define JWL_RECONNECT_MAX_MS 1000u   /* the longest pause between two tries */
+#define JWL_SLOW_RECONNECT_MAX_MS 5000u   /* ... after being dropped as a slow reader again
+                                           * and again (each drop doubles the pause) */
 
 struct jwl_client;
 struct jwl_pool;

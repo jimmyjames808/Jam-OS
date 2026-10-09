@@ -457,12 +457,18 @@ bool smp_report(uint64_t window_ms, bool sleep)
     /* A sleeping thread may wake late on a busy machine: judge the counts
      * against the window it really got. */
     uint64_t expect = TICK_HZ * measured_us / 1000000;
+    /* Under a hypervisor (CPUID.1:ECX bit 31) a vCPU the host doesn't run
+     * for a while loses ticks: allow down to half there, never more than
+     * +10% anywhere (a loaded test machine failed the run on this). */
+    uint32_t a, b, cx, d;
+    cpuid(1, 0, &a, &b, &cx, &d);
+    uint64_t slack_low = (cx >> 31) & 1 ? expect / 2 : expect / 10;
     uint32_t p = 0, e = 0, bad = 0;
     bool smt = false;
     for (uint32_t i = 0; i < cpu_count; i++) {
         struct cpu *c = cpus[i];
         uint64_t n = after[i] - before[i];
-        bool ok = n + expect / 10 >= expect && n <= expect + expect / 10;
+        bool ok = n + slack_low >= expect && n <= expect + expect / 10;
         if (!ok)
             bad++;
         p += c->type == CORE_PERFORMANCE;

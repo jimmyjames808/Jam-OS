@@ -436,8 +436,9 @@ static uint64_t start_due(uint64_t t)
         if ((i == LOGD || i == NETLOG || i == SNTP) && !mounted(DATA_MOUNT))
             continue;   /* waits for /data (netlog, sntp: their settings): a mount's packet
                          * wakes the loop */
-        if ((i == MIXER || i == NETSTACK) && !services_devmgr_up() && !svcs[DEVMGR].given_up)
-            continue;   /* waits for devmgr (started just before it) */
+        if ((i == VOLUMES || i == MIXER || i == NETSTACK) && !services_devmgr_up() &&
+            !svcs[DEVMGR].given_up)
+            continue;   /* waits for devmgr's first binding pass (dm.c's answer wakes the loop) */
         if (i == SHELL && !splash_played() && t < splash_deadline()) {
             /* waits for the splash (its packet wakes the loop), at most until then */
             deadline = splash_deadline() < deadline ? splash_deadline() : deadline;
@@ -508,6 +509,9 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     for (;;) {
         uint64_t t = now(), deadline = start_due(t), net = net_due(t);
         uint64_t spare = spare_due(t);   /* after the starts: a promoted spare runs first */
+        uint64_t dm = dm_due(t);
+        if (dm < deadline)
+            deadline = dm;
         if (net < deadline)
             deadline = net;
         if (spare < deadline)
@@ -536,6 +540,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             update_event();
         } else if (pkt.key == KEY_NETCTL) {
             net_netctl_event();
+        } else if (pkt.key == KEY_DEVMGR) {
+            dm_event();
         } else if (pkt.key == KEY_SPARE) {
             spare_event();
         } else if (pkt.key == KEY_KEEP) {

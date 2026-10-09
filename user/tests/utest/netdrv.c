@@ -1,5 +1,5 @@
 /* utest: bin/netstack over a fake network driver. The test plays both
- * devmgr (netstack's device channel: GET_SERVICE) and the driver (the
+ * devmgr (netstack's device channel: get_service) and the driver (the
  * netdev channel: info and open; then the session's rings and events,
  * real VMOs and events with the rights netdev.open hands out), and calls
  * netstack's control channel as init does. Frames go into the rx ring and
@@ -18,7 +18,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/netctl.h>
 #include <idl/netdev.h>
 #include <jam/netdev.h>
@@ -129,19 +129,24 @@ static bool serve(handle_t ch)
     return true;
 }
 
-/* As devmgr: answer netstack's GET_SERVICE with a new driver channel. */
+/* As devmgr's device channel: netstack's get_service of its own device
+ * (KIND_SELF) is answered with a new driver channel (our end into fk.svc). */
+static status_t f_get_service(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                              handle_t *out_service)
+{
+    struct fake *f = ctx;
+    if (kind != DEVMGR_KIND_SELF || a || b || n)
+        return ERR_INVALID_ARGS;
+    return jam_channel_create(&f->svc, out_service);
+}
+
+static const struct devmgr_ops devmgr_ops = { .get_service = f_get_service };
+
 static bool serve_devmgr(void)
 {
     signals_t seen;
-    struct devmgr_req q;
-    uint32_t n = 0, nh = 0;
     CHECK_ST(jam_object_wait_one(fk.dev, SIG_READABLE, now() + WAIT, &seen), OK);
-    CHECK_ST(drv_channel_read(fk.dev, &q, sizeof(q), &n, NULL, 0, &nh), OK);
-    CHECK_EQ(q.ordinal, DEVMGR_GET_SERVICE);
-    handle_t theirs;
-    CHECK_ST(jam_channel_create(&fk.svc, &theirs), OK);
-    struct devmgr_rep r = { .txid = q.txid, .status = OK };
-    CHECK_ST(jam_channel_write(fk.dev, &r, sizeof(r), &theirs, 1), OK);
+    CHECK_ST(devmgr_serve_one(fk.dev, &devmgr_ops, &fk), OK);
     return true;
 }
 
@@ -319,6 +324,20 @@ static bool device(uint32_t *sessions, uint64_t *ring_errors, uint64_t *rx_bad)
     return true;
 }
 
+/* netctl.info says the link is `up` (within WAIT). */
+static bool link_is(bool up)
+{
+    uint32_t a, m, g, d1, d2;
+    uint8_t mac[6], device = 0, link = !up;
+    for (uint64_t end = now() + WAIT; link != up && now() < end;) {
+        CHECK_ST(netctl_info(fk.ctl, &a, &m, &g, &d1, &d2, mac, &device, &link), OK);
+        if (link != up)
+            jam_sleep_until(now() + NS_PER_MS);
+    }
+    CHECK_EQ(link, up);
+    return true;
+}
+
 bool t_netdrv_ping_and_link(void)
 {
     static uint8_t f[NETDEV_FRAME_MAX];
@@ -334,6 +353,10 @@ bool t_netdrv_ping_and_link(void)
     fk.changes++;
     CHECK_ST(jam_event_signal(fk.to_stack, 0, NETDEV_SIG_LINK), OK);
     CHECK(serve(fk.session));
+    /* The answer is read by netstack's loop a moment after we wrote it, and a frame in the
+     * rx ring by then is taken first (a ping answered just as the link went: right, and
+     * not what this checks): wait until it has the link down. */
+    CHECK(link_is(false));
     CHECK(drv_send(f, pkt_echo(f, pkt_peer_mac, PEER_IP, OUR_IP, 2, 8)));
     CHECK_ST(drv_recv(f, &n, QUIET), ERR_TIMED_OUT);
     fk.link = NETDEV_LINK_UP;
@@ -366,20 +389,6 @@ static unsigned klog_count(handle_t klog, uint64_t *pos, const char *what)
             n++;
         *pos = first + (uint64_t)(end + 1 - buf);
     }
-}
-
-/* netctl.info says the link is `up` (within WAIT). */
-static bool link_is(bool up)
-{
-    uint32_t a, m, g, d1, d2;
-    uint8_t mac[6], device = 0, link = !up;
-    for (uint64_t end = now() + WAIT; link != up && now() < end;) {
-        CHECK_ST(netctl_info(fk.ctl, &a, &m, &g, &d1, &d2, mac, &device, &link), OK);
-        if (link != up)
-            jam_sleep_until(now() + NS_PER_MS);
-    }
-    CHECK_EQ(link, up);
-    return true;
 }
 
 /* A flapping link: netstack logs the first changes and then one in 64, as

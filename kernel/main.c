@@ -290,6 +290,33 @@ static bool run_tests(void)
     return ok;
 }
 
+/* The boot word nvmetest=<words> as it is, when it is short and only
+ * lower-case letters and commas follow the '=' (drv/nvme parses them);
+ * else NULL. */
+static const char *nvme_test_word(void)
+{
+    static char word[48];
+    static const char key[] = "nvmetest=";
+    const char *line = cmdline_get();
+    for (const char *p = line; *p; p++) {
+        if ((p != line && p[-1] != ' ') || memcmp(p, key, sizeof(key) - 1))
+            continue;
+        size_t n = 0;
+        while (p[n] && p[n] != ' ' && n < sizeof(word) - 1) {
+            bool ok = n < sizeof(key) - 1 || (p[n] >= 'a' && p[n] <= 'z') || p[n] == ',';
+            if (!ok)
+                return NULL;
+            word[n] = p[n];
+            n++;
+        }
+        if (p[n] && p[n] != ' ')
+            return NULL;   /* too long */
+        word[n] = '\0';
+        return word;
+    }
+    return NULL;
+}
+
 /* init's option words (at most USERBOOT_MAX_WORDS, which has room for
  * every one below that can come at once, so none is ever dropped: `verbose`
  * never comes with "splash" or `splashhang`): "splash" (splash_boot);
@@ -307,7 +334,9 @@ static bool run_tests(void)
  * finishes, and init must start the shell anyway); `nospare` (init keeps
  * no warm spare of the mixer: a restart starts a process); `vtdtest`
  * (with `iommu=on`, the "IOMMU checks" test entry), which init passes on
- * to devmgr and devmgr to drv/hda: its deliberate DMA faults. */
+ * to devmgr and devmgr to drv/hda: its deliberate DMA faults;
+ * `nvmetest=<words>` (a test's), which init passes on to devmgr and
+ * devmgr to every drv/nvme: its test reads (nvme_test_word). */
 static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
 {
     unsigned n = 0;
@@ -336,6 +365,9 @@ static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
         words[n++] = "nospare";
     if (shell && cmdline_has("vtdtest"))
         words[n++] = "vtdtest";
+    const char *nvme = nvme_test_word();
+    if (nvme)
+        words[n++] = nvme;
     return n;
 }
 
@@ -363,14 +395,20 @@ static bool run_user_space(bool shell, bool nousb)
     unsigned nwords = init_words(shell, words);
     /* The regression run (init.cfg's programs, mode "init") gets the vlan=
      * word alone of the words, so its network drivers start as a plain boot's
-     * would; the others describe a plain boot's devices and look. */
-    const char *const run_words[1] = { vlan_word };
+     * would (and a test's nvmetest=); the others describe a plain boot's
+     * devices and look. */
+    const char *run_words[2];
+    unsigned nrun = 0;
+    if (boot_vlan)
+        run_words[nrun++] = vlan_word;
+    if (nvme_test_word())
+        run_words[nrun++] = nvme_test_word();
     bool ok = true;
     if (shell)
         ok &= userboot_run_init(0, mode, words, nwords);
     else if (cmdline_has("init"))
         ok &= userboot_run_init(cmdline_get_u64("init_timeout", 300, 300), "init", run_words,
-                                boot_vlan ? 1 : 0);
+                                nrun);
     if (cmdline_has("keytest"))
         ok &= userboot_run_init(90, "keytest", words, nwords);
     if (cmdline_has("comptest"))

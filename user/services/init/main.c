@@ -35,6 +35,7 @@
  * same way. init exits 0 if every program (and devmgr, volumes and the
  * bootfs server) exited 0. */
 #include <devmgr.h>
+#include <idl/devmgr.h>
 #include <os.h>
 #include <volumes.h>
 #include "init.h"
@@ -72,6 +73,7 @@ bool init_splashhang;
 bool init_verbose;
 bool init_nospare;
 bool init_vtdtest;
+const char *init_nvmetest;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -237,6 +239,8 @@ static bool start_devmgr(handle_t console)
             argv[argc++] = "hidboot";
         if (init_vlan)
             argv[argc++] = init_vlan;
+        if (init_nvmetest)
+            argv[argc++] = init_nvmetest;
         struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b },
                                     { SR_DEVMGR, qb }, { SR_CONSOLE, console } };
         struct spawn_args sa = {
@@ -260,14 +264,13 @@ static bool start_devmgr(handle_t console)
     devmgr_ch = a;
     devmgr_q = qa;
     /* Wait for its first binding pass. */
-    struct devmgr_rep r;
-    st = devmgr_call(devmgr_ch, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL,
-                     now() + 30 * NS_PER_S);
+    uint32_t bound, failed, skipped;
+    st = devmgr_status_until(devmgr_ch, now() + 30 * NS_PER_S, &bound, &failed, &skipped);
     if (st != OK) {
         init_say("init: devmgr doesn't answer (%s)", status_str(st));
         return false;
     }
-    printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped\n", r.a, r.b, r.c);
+    printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped\n", bound, failed, skipped);
     /* The device channels first, then /svc/devmgr: nobody can ask the
      * query channel for these drivers before init holds them. */
     (void)services_claim_class(devmgr_ch, DEVMGR_CLASS_HDA, devmgr_hda, INIT_MAX_CLAIMED);
@@ -277,8 +280,8 @@ static bool start_devmgr(handle_t console)
     if (jam_handle_duplicate(devmgr_q, RIGHT_SAME, &dq) == OK)
         (void)ns_svc_set(SVC_DEVMGR, dq, true);   /* per opener; without it the tests skip */
     if (jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &dc) == OK)
-        (void)ns_svc_set(SVC_DEVMGR_CTL, dc, false);
-    return r.b == 0;
+        (void)ns_svc_set(SVC_DEVMGR_CTL, dc, true);   /* per opener, as the query channel's */
+    return failed == 0;
 }
 
 /* volumes: started after devmgr, stopped before it. devmgr tells it of
@@ -551,6 +554,7 @@ int main(int argc, char **argv)
      * or "vlan=none", "bootdisk=0x<id>", "splashhang", "nospare" (no warm
      * spare mixer: spare.c; passed on to volumes: no warm spare fat),
      * "vtdtest" (passed on to devmgr: drv/hda's IOMMU fault checks),
+     * "nvmetest=<words>" (passed on to devmgr: drv/nvme's test reads),
      * "verbose" (the log on the first terminal's screen: terms.c). */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
@@ -566,6 +570,8 @@ int main(int argc, char **argv)
         init_splashhang |= !strcmp(argv[i], "splashhang");
         init_nospare |= !strcmp(argv[i], "nospare");
         init_vtdtest |= !strcmp(argv[i], "vtdtest");
+        if (!strncmp(argv[i], "nvmetest=", 9))
+            init_nvmetest = argv[i];
         init_verbose |= !strcmp(argv[i], "verbose");
     }
     /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain

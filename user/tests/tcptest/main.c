@@ -149,10 +149,22 @@ int main(int argc, char **argv)
         number(argv[4], 1ull << 40, &bytes) &&
         (argc == 5 || (number(argv[5], SOCKRING_MAX, &ring) && sockring_size_ok((uint32_t)ring))))
         return do_send(addr, (uint16_t)port, bytes, (uint32_t)ring);
+    uint64_t writes, size, nagle, hold;
+    if (argc == 7 && !strcmp(argv[1], "small") && ipv4_parse(argv[2], &addr, NULL) &&
+        number(argv[3], 65535, &port) && number(argv[4], 1000, &writes) &&
+        number(argv[5], 256, &size) && number(argv[6], 1, &nagle))
+        return tt_small(addr, (uint16_t)port, (uint32_t)writes, (uint32_t)size, nagle);
+    if (argc == 5 && !strcmp(argv[1], "keepalive") && ipv4_parse(argv[2], &addr, NULL) &&
+        number(argv[3], 65535, &port) && number(argv[4], 600, &hold))
+        return tt_keepalive(addr, (uint16_t)port, (uint32_t)hold);
+    if (argc == 4 && !strcmp(argv[1], "relisten") && number(argv[2], 65535, &port) &&
+        number(argv[3], 1ull << 30, &bytes))
+        return tt_relisten((uint16_t)port, bytes);
     if (argc == 5 && !strcmp(argv[1], "serve") && number(argv[2], 65535, &port) &&
         number(argv[3], 200, &n) && number(argv[4], 1ull << 40, &bytes))
         return tt_serve((uint16_t)port, (uint32_t)n, bytes);
     printf("usage: tcptest send <address> <port> <bytes> [<ring bytes>] | "
-           "serve <port> <conns> <bytes>\n");
+           "serve <port> <conns> <bytes> | small <address> <port> <writes> <size> <nagle 0|1> | "
+           "keepalive <address> <port> <seconds> | relisten <port> <bytes>\n");
     return 2;
 }

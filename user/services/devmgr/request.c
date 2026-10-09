@@ -1,12 +1,18 @@
-/* devmgr: the answers to its protocol's requests (<devmgr.h>): which
- * binding a request names (find), and what each method does with it.
- * chans.c reads the requests off devmgr's channels and decides what each
- * channel may ask; main.c owns the bindings and the loop. */
+/* devmgr: the answers to its protocols' requests (abi/idl/devmgr.idl):
+ * which binding an address names (find), and what each method does with
+ * it. chans.c reads the requests off devmgr's channels, decides which
+ * protocol and so which methods a channel may ask, and runs the generated
+ * dispatch over the tables at the bottom; main.c owns the bindings and the
+ * loop. Each handler's ctx is the `struct request_from` of the channel the
+ * request came on. */
 #include "internal.h"
 
 #define TEST_DRIVER_PATH "drv/crasher"
+/* The crash-test driver's software device has the PCI-style ids 0000:c4a5 (in logs). */
+#define TEST_VENDOR 0x0000u
+#define TEST_DEVICE 0xc4a5u
 
-/* DEVMGR_PCI_CLASS: the n-th PCI function of class `cls` that has a driver
+/* KIND_PCI_CLASS: the n-th PCI function of class `cls` that has a driver
  * (bound now or not), in enumeration order. */
 static struct binding *class_find(uint32_t cls, uint32_t n)
 {
@@ -20,53 +26,145 @@ static struct binding *class_find(uint32_t cls, uint32_t n)
     return NULL;
 }
 
-static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
+/* The n-th PCI binding for which hit(b) holds. */
+static struct binding *nth_pci(uint32_t n, bool (*hit)(const struct binding *, uint32_t, uint32_t),
+                               uint32_t a, uint32_t b2)
 {
-    uint32_t seen = 0;
-    /* GET_SERVICE 0xffff/0xffff: the instance-th function with a driver
-     * running (tests find usb-bus this way). GET_DRIVER and KILL
-     * 0xffff/0xffff: the instance-th function with a driver bound, running
-     * or not, so the numbering holds while one restarts (init's `kill`
-     * finds a PCI driver's process this way). */
-    bool any = q->vendor == 0xffff && q->device == 0xffff;
-    bool any_running = any && q->ordinal == DEVMGR_GET_SERVICE;
-    bool any_bound = any && (q->ordinal == DEVMGR_GET_DRIVER || q->ordinal == DEVMGR_KILL);
-    bool usb = q->vendor == DEVMGR_USB_IFACE;
-    if (q->vendor == DEVMGR_PCI_CLASS)
-        return class_find(q->instance, q->device);
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
-        if (usb || b->kind == BIND_USB) {
-            /* USB class drivers only by DEVMGR_USB_IFACE (id, interface) */
-            if (usb && b->kind == BIND_USB && b->path && b->usb_id == q->instance &&
-                b->usb_ifnum == q->device)
-                return b;
-            continue;
-        }
-        bool hit = any_running ? b->kind == BIND_PCI && b->proc != HANDLE_INVALID
-                   : any_bound ? b->kind == BIND_PCI && b->path
-                   : msix_wildcard && q->vendor == 0xffff && q->device == 0xffff
-                       ? b->kind == BIND_PCI && b->info.msix_vectors &&
-                             !(b->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY))
-                       : b->info.vendor == q->vendor && b->info.device == q->device;
-        if (hit && seen++ == q->instance)
+        if (b->kind == BIND_PCI && hit(b, a, b2) && n-- == 0)
             return b;
     }
     return NULL;
 }
 
+static bool hit_ids(const struct binding *b, uint32_t vendor, uint32_t device)
+{
+    return b->info.vendor == vendor && b->info.device == device;
+}
+
+static bool hit_running(const struct binding *b, uint32_t a, uint32_t c)
+{
+    (void)a;
+    (void)c;
+    return b->proc != HANDLE_INVALID;
+}
+
+static bool hit_bound(const struct binding *b, uint32_t a, uint32_t c)
+{
+    (void)a;
+    (void)c;
+    return b->path != NULL;
+}
+
+static bool hit_msix(const struct binding *b, uint32_t a, uint32_t c)
+{
+    (void)a;
+    (void)c;
+    return b->info.msix_vectors && !(b->info.flags & (PCI_INFO_BRIDGE | PCI_INFO_DISPLAY));
+}
+
+static bool hit_bdf(const struct binding *b, uint32_t bdf, uint32_t c)
+{
+    (void)c;
+    return b->info.segment == 0 && b->info.bus == (bdf >> 8) && b->info.dev == ((bdf >> 3) & 31u) &&
+           b->info.fn == (bdf & 7u);
+}
+
+/* The binding the address (kind, a, b, n) names, or NULL for none; the
+ * status is ERR_INVALID_ARGS for an address that isn't one (a bad kind, a
+ * field a kind says is 0), else OK. running_only: KIND_PCI_BOUND counts
+ * the functions whose driver runs now (get_service's numbering), not those
+ * with a driver bound (everyone else's). */
+static status_t find(uint8_t kind, uint32_t a, uint32_t b, uint32_t n, bool running_only,
+                     struct binding **out)
+{
+    struct binding *found = NULL;
+    switch (kind) {
+    case DEVMGR_KIND_PCI_IDS:
+        found = nth_pci(n, hit_ids, a, b);
+        break;
+    case DEVMGR_KIND_PCI_CLASS:
+        if (b)
+            return ERR_INVALID_ARGS;
+        found = class_find(a, n);
+        break;
+    case DEVMGR_KIND_PCI_BOUND:
+        if (a || b)
+            return ERR_INVALID_ARGS;
+        found = nth_pci(n, running_only ? hit_running : hit_bound, 0, 0);
+        break;
+    case DEVMGR_KIND_PCI_MSIX:
+        if (a || b)
+            return ERR_INVALID_ARGS;
+        found = nth_pci(n, hit_msix, 0, 0);
+        break;
+    case DEVMGR_KIND_PCI_BDF:
+        if (a > 0xffffu || b || n)
+            return ERR_INVALID_ARGS;
+        found = nth_pci(0, hit_bdf, a, 0);
+        break;
+    case DEVMGR_KIND_USB_IFACE:
+        if (b > 0xffu || n)
+            return ERR_INVALID_ARGS;
+        for (unsigned i = 0; i < ndevs && !found; i++)
+            if (devs[i].kind == BIND_USB && devs[i].path && devs[i].usb_id == a &&
+                devs[i].usb_ifnum == b)
+                found = &devs[i];
+        break;
+    case DEVMGR_KIND_TEST:
+        if (a || b || n)
+            return ERR_INVALID_ARGS;
+        for (unsigned i = 0; i < ndevs && !found; i++)
+            if (devs[i].kind == BIND_SOFT)
+                found = &devs[i];
+        break;
+    default:   /* KIND_SELF is the channel's, resolved before this */
+        return ERR_INVALID_ARGS;
+    }
+    *out = found;
+    return OK;
+}
+
 /* The crash-test driver's binding (a software device), made on first use. */
 static struct binding *test_binding(void)
 {
-    struct devmgr_req q = { 0, 0, DEVMGR_TEST_VENDOR, DEVMGR_TEST_DEVICE, 0 };
-    struct binding *b = find(&q, false);
-    if (b || ndevs == MAX_DEVS)
+    struct binding *b = NULL;
+    if (find(DEVMGR_KIND_TEST, 0, 0, 0, false, &b) != OK || b || ndevs == MAX_DEVS)
         return b;
     b = &devs[ndevs++];
     *b = (struct binding){ .kind = BIND_SOFT, .path = TEST_DRIVER_PATH, .test = true };
-    b->info.vendor = DEVMGR_TEST_VENDOR;
-    b->info.device = DEVMGR_TEST_DEVICE;
+    b->info.vendor = TEST_VENDOR;
+    b->info.device = TEST_DEVICE;
     return b;
+}
+
+/* The binding an address names, as the channel the request came on may
+ * see it: on a device channel KIND_SELF is the channel's own device and
+ * any other device is ERR_ACCESS_DENIED. *out is NULL for no such device. */
+static status_t named(const struct request_from *from, uint8_t kind, uint32_t a, uint32_t b,
+                      uint32_t n, bool running_only, struct binding **out)
+{
+    struct binding *bd = NULL;
+    if (kind == DEVMGR_KIND_SELF) {
+        if (from->lv != LEVEL_DEVICE || a || b || n)
+            return ERR_INVALID_ARGS;   /* only a device channel has a device of its own */
+        bd = &devs[from->dev];
+    } else {
+        status_t st = find(kind, a, b, n, running_only, &bd);
+        if (st != OK)
+            return st;
+    }
+    if (from->lv == LEVEL_DEVICE && bd != &devs[from->dev])
+        return ERR_ACCESS_DENIED;
+    *out = bd;
+    return OK;
+}
+
+/* A driver was started for b (and b isn't gone). */
+static bool known(const struct binding *b)
+{
+    return b && b->path && b->state != DEVMGR_SUP_NONE;
 }
 
 static status_t kill_request(struct binding *b)
@@ -95,16 +193,17 @@ static void unbind(struct binding *b)
     close_client(b);
 }
 
-/* RELEASE: b is left without a driver until REBIND. A disk's mounts go
+/* release: b is left without a driver until rebind. A disk's mounts go
  * with its driver: the caller asked volumes to stop them first
- * (volumes.release_disk). For a USB interface the caller gets the channel
- * the driver had (hs[0]). */
-static void release(struct binding *b, struct devmgr_rep *r, handle_t *hs, uint32_t *nh)
+ * (volumes.release_disk). For a USB interface, *usb (not NULL) gets the
+ * channel the driver had. */
+static status_t release(struct binding *b, handle_t *usb)
 {
     unbind(b);
     say(false, "devmgr: %s %s released: no driver until it is bound again", bdf(b), b->path);
-    if (b->kind == BIND_USB && (r->status = usb_channel(b, &hs[0])) == OK)
-        *nh = 1;
+    if (usb && b->kind == BIND_USB)
+        return usb_channel(b, usb);
+    return OK;
 }
 
 /* Bind b again from scratch, with a fresh restart history. */
@@ -116,15 +215,15 @@ static status_t rebind(struct binding *b)
     if (b->kind == BIND_USB && b->last == ERR_PEER_CLOSED) {
         usb_retire(b, "device gone");
     } else if (b->kind == BIND_USB && b->last == ERR_SHOULD_WAIT) {
-        b->state = DEVMGR_SUP_RESTARTING;   /* once the console is back */
+        b->state = DEVMGR_SUP_RESTARTING;   /* once the input is back */
         b->restart_at = DEADLINE_NEVER;
-        b->console_wait = true;
+        b->input_wait = true;
         b->last = OK;
     }
     return b->last;
 }
 
-/* TEST_DRIVER: start the crash-test driver unless it runs already. */
+/* test_driver: start the crash-test driver unless it runs already. */
 static status_t test_driver(void)
 {
     struct binding *t = test_binding();
@@ -135,176 +234,263 @@ static status_t test_driver(void)
     return OK;
 }
 
-/* GET_SERVICE: a duplicate of b's client end into hs[0]. known: a driver
- * was started for b. Never a disk's driver's: a disk's `storage` channel
- * opens every partition for writing, so it stays devmgr's own (and the
- * one it asks for volumes, volumes'). Never, on the query channel, a
- * device that has a device channel: its holder's (and the control
- * channel's). */
-static void get_service(const struct binding *b, bool known, enum level lv, struct devmgr_rep *r,
-                        handle_t *hs, uint32_t *nh)
-{
-    if (!known)
-        r->status = ERR_NOT_FOUND;
-    else if (b->disk || (lv == LEVEL_QUERY && chans_device_owned((uint32_t)(b - devs))))
-        r->status = ERR_ACCESS_DENIED;
-    else if ((b->state != DEVMGR_SUP_RUNNING && b->state != DEVMGR_SUP_RESTARTING) ||
-             !b->client)
-        r->status = ERR_BAD_STATE;
-    else if ((r->status = jam_handle_duplicate(b->client, RIGHT_SAME, &hs[0])) == OK)
-        *nh = 1;
-}
+/* ---- devmgr ------------------------------------------------------------------------- */
 
-/* GET_DRIVER: read-only views of b's process, job and function. */
-static void get_driver(const struct binding *b, bool known, struct devmgr_rep *r, handle_t *hs,
-                       uint32_t *nh)
+static status_t d_status(void *ctx, uint32_t *out_bound, uint32_t *out_failed,
+                         uint32_t *out_skipped)
 {
-    if (!known) {
-        r->status = ERR_NOT_FOUND;
-        return;
-    }
-    if (!b->proc) {
-        r->status = ERR_BAD_STATE;
-        return;
-    }
-    r->a = b->index;
-    const handle_t src[3] = { b->proc, b->job, b->dev };
-    const rights_t rights[3] = { RIGHTS_BASIC, RIGHTS_BASIC, RIGHTS_BASIC | RIGHT_READ };
-    uint32_t want = b->kind == BIND_PCI ? 3 : 2;   /* only a PCI binding has a function */
-    uint32_t got = 0;
-    while (got < want && (r->status = jam_handle_duplicate(src[got], rights[got], &hs[got])) == OK)
-        got++;
-    if (r->status != OK)   /* all or nothing: close what was duplicated */
-        while (got > 0)
-            jam_handle_close(hs[--got]);
-    *nh = got;
-}
-
-/* SUPERVISION: b's state, restarts, backoff, and its DMA quarantine. */
-static void supervision(const struct binding *b, struct devmgr_rep *r)
-{
-    if (!b) {
-        r->status = ERR_NOT_FOUND;
-        return;
-    }
-    r->a = b->state;
-    r->b = b->win.restarts;
-    r->c = b->win.backoff_ms;
-    if (b->kind == BIND_PCI) {
-        struct pci_dev_info now;
-        if (jam_pci_enum(pci_res, b->index, &now) == OK) {
-            r->d = now.dma_quarantined;
-            r->e = now.dma_changed;
-        }
-    }
-}
-
-/* DRIVER_VIEW: b's function and memory BARs with a driver's rights. */
-static void view(struct binding *b, struct devmgr_rep *r, handle_t *hs, rights_t *rs,
-                 uint32_t *nh)
-{
-    /* A PCI function's only: a USB or soft binding has no function (its
-     * index 0 would open PCI function 0, and a reused USB binding would
-     * then lose that RIGHT_MANAGE handle). */
-    if (!b || b->kind != BIND_PCI) {
-        r->status = ERR_NOT_FOUND;
-        return;
-    }
-    uint32_t mask = 0;
-    r->status = driver_view(b, hs, rs, nh, &mask);
-    r->a = mask;
-}
-
-/* DEVICE_CHANNEL: a channel scoped to b (a PCI function with a driver,
- * or the crash-test device) into hs[0]. */
-static void device_channel(const struct binding *b, struct devmgr_rep *r, handle_t *hs,
-                           uint32_t *nh)
-{
-    if (!b || !b->path)
-        r->status = ERR_NOT_FOUND;
-    else if (b->kind != BIND_PCI && b->kind != BIND_SOFT)
-        r->status = ERR_NOT_SUPPORTED;   /* USB bindings come and go */
-    else if ((r->status = chans_new_device((uint32_t)(b - devs), &hs[0])) == OK)
-        *nh = 1;
-}
-
-/* The binding q names, as the channel it came on may see it: on a device
- * channel all-zero device fields name the channel's own device, and any
- * other device is ERR_ACCESS_DENIED. */
-static status_t named(const struct devmgr_req *q, const struct request_from *from,
-                      struct binding **out)
-{
-    struct binding *b;
-    if (from->lv == LEVEL_DEVICE && !q->vendor && !q->device && !q->instance)
-        b = &devs[from->dev];
-    else
-        b = find(q, q->ordinal == DEVMGR_DRIVER_VIEW);
-    if (from->lv == LEVEL_DEVICE && b != &devs[from->dev])
-        return ERR_ACCESS_DENIED;
-    *out = b;
+    const struct request_from *from = ctx;
+    if (from->lv == LEVEL_DEVICE)
+        return ERR_ACCESS_DENIED;   /* a device channel is about its device alone */
+    *out_bound = nbound;
+    *out_failed = nfailed;
+    *out_skipped = nskipped;
     return OK;
 }
 
-void request_handle(const struct devmgr_req *q, const struct request_from *from,
-                    struct devmgr_rep *r, handle_t *hs, rights_t *rs, uint32_t *nh)
+/* get_service: a duplicate of b's client end. A driver was started for b.
+ * Never a disk's driver's: a disk's `storage` channel opens every
+ * partition for writing, so it stays devmgr's own (and the one it asks for
+ * volumes, volumes'). Never, on the query channel, a device that has a
+ * device channel: its holder's (and the control channel's). */
+static status_t d_get_service(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                              handle_t *out_service)
 {
-    *nh = 0;
-    for (uint32_t i = 0; i < DEVMGR_MAX_HANDLES; i++)
-        rs[i] = RIGHT_SAME;
-    r->status = OK;
-    if (q->ordinal == DEVMGR_STATUS) {
-        r->a = nbound;
-        r->b = nfailed;
-        r->c = nskipped;
-        return;
-    }
-    if (q->ordinal == DEVMGR_SHUTDOWN) {
-        shutdown_asked = true;   /* run() sees it once this reply is sent */
-        return;
-    }
-    if (q->ordinal == DEVMGR_TEST_DRIVER) {
-        r->status = test_driver();
-        return;
-    }
-    struct binding *b = NULL;
-    if ((r->status = named(q, from, &b)) != OK)
-        return;
-    bool known = b && b->path && b->state != DEVMGR_SUP_NONE;   /* a driver was started */
-    switch (q->ordinal) {
-    case DEVMGR_GET_SERVICE:
-        get_service(b, known, from->lv, r, hs, nh);
-        return;
-    case DEVMGR_DEVICE_CHANNEL:
-        device_channel(b, r, hs, nh);
-        return;
-    case DEVMGR_GET_DRIVER:
-        get_driver(b, known, r, hs, nh);
-        break;
-    case DEVMGR_KILL:
-        r->status = known ? kill_request(b) : ERR_NOT_FOUND;
-        return;
-    case DEVMGR_REBIND:
-        r->status = b && b->path ? rebind(b) : ERR_NOT_FOUND;
-        return;
-    case DEVMGR_RELEASE:
-        if (b && b->path)
-            release(b, r, hs, nh);
-        else
-            r->status = ERR_NOT_FOUND;
-        return;
-    case DEVMGR_SUPERVISION:
-        supervision(b, r);
-        return;
-    case DEVMGR_DRIVER_VIEW:
-        view(b, r, hs, rs, nh);
-        break;
-    default:
-        r->status = ERR_NOT_SUPPORTED;
-        return;
-    }
-    if (r->status != OK) {   /* hand out all or nothing */
-        for (uint32_t i = 0; i < *nh; i++)
-            jam_handle_close(hs[i]);
-        *nh = 0;
-    }
+    const struct request_from *from = ctx;
+    struct binding *bd = NULL;
+    status_t st = named(from, kind, a, b, n, true, &bd);
+    if (st != OK)
+        return st;
+    if (!known(bd))
+        return ERR_NOT_FOUND;
+    if (bd->disk || (from->lv == LEVEL_QUERY && chans_device_owned((uint32_t)(bd - devs))))
+        return ERR_ACCESS_DENIED;
+    if ((bd->state != DEVMGR_SUP_RUNNING && bd->state != DEVMGR_SUP_RESTARTING) || !bd->client)
+        return ERR_BAD_STATE;
+    return jam_handle_duplicate(bd->client, RIGHT_SAME, out_service);
 }
+
+/* get_driver: read-only views of b's process and job. */
+static status_t d_get_driver(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                             handle_t *out_process, handle_t *out_job, uint32_t *out_pci_index)
+{
+    struct binding *bd = NULL;
+    status_t st = named(ctx, kind, a, b, n, false, &bd);
+    if (st != OK)
+        return st;
+    if (!known(bd))
+        return ERR_NOT_FOUND;
+    if (!bd->proc)
+        return ERR_BAD_STATE;
+    if ((st = jam_handle_duplicate(bd->proc, RIGHTS_BASIC, out_process)) != OK)
+        return st;
+    if ((st = jam_handle_duplicate(bd->job, RIGHTS_BASIC, out_job)) != OK) {
+        jam_handle_close(*out_process);   /* all or nothing */
+        *out_process = HANDLE_INVALID;
+        return st;
+    }
+    *out_pci_index = bd->index;
+    return OK;
+}
+
+/* get_function: a read-only view of b's PCI function. */
+static status_t d_get_function(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                               handle_t *out_function)
+{
+    struct binding *bd = NULL;
+    status_t st = named(ctx, kind, a, b, n, false, &bd);
+    if (st != OK)
+        return st;
+    if (!known(bd))
+        return ERR_NOT_FOUND;
+    if (bd->kind != BIND_PCI)
+        return ERR_NOT_SUPPORTED;   /* only a PCI binding has a function */
+    if (!bd->proc)
+        return ERR_BAD_STATE;
+    return jam_handle_duplicate(bd->dev, RIGHTS_BASIC | RIGHT_READ, out_function);
+}
+
+/* supervision: b's state, restarts, backoff, and its DMA quarantine. */
+static status_t d_supervision(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                              uint32_t *out_state, uint32_t *out_restarts,
+                              uint32_t *out_backoff_ms, uint32_t *out_dma_quarantined,
+                              uint32_t *out_dma_changed)
+{
+    struct binding *bd = NULL;
+    status_t st = named(ctx, kind, a, b, n, false, &bd);
+    if (st != OK)
+        return st;
+    if (!bd)
+        return ERR_NOT_FOUND;
+    *out_state = bd->state;
+    *out_restarts = bd->win.restarts;
+    *out_backoff_ms = bd->win.backoff_ms;
+    *out_dma_quarantined = *out_dma_changed = 0;
+    if (bd->kind == BIND_PCI) {
+        struct pci_dev_info cur;
+        if (jam_pci_enum(pci_res, bd->index, &cur) == OK) {
+            *out_dma_quarantined = cur.dma_quarantined;
+            *out_dma_changed = cur.dma_changed;
+        }
+    }
+    return OK;
+}
+
+const struct devmgr_ops devmgr_ops = {
+    .status = d_status,
+    .get_service = d_get_service,
+    .get_driver = d_get_driver,
+    .get_function = d_get_function,
+    .supervision = d_supervision,
+};
+
+/* ---- devmgrctl: the control channel only (chans.c) ------------------------------------- */
+
+static status_t c_kill(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                       uint64_t *out_koid)
+{
+    struct binding *bd = NULL;
+    status_t st = named(ctx, kind, a, b, n, false, &bd);
+    if (st != OK)
+        return st;
+    if (!known(bd))
+        return ERR_NOT_FOUND;
+    struct process_info info;
+    *out_koid = bd->proc && jam_process_get_info(bd->proc, &info) == OK ? info.koid : 0;
+    return kill_request(bd);
+}
+
+/* kill_process: the driver whose process is `koid`, wherever it is bound. */
+static status_t c_kill_process(void *ctx, uint64_t koid)
+{
+    (void)ctx;
+    for (unsigned i = 0; i < ndevs; i++) {
+        struct binding *bd = &devs[i];
+        struct process_info info;
+        if (!known(bd) || !bd->proc || jam_process_get_info(bd->proc, &info) != OK ||
+            info.koid != koid)
+            continue;
+        return kill_request(bd);
+    }
+    return ERR_NOT_FOUND;
+}
+
+static status_t c_rebind(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n)
+{
+    struct binding *bd = NULL;
+    status_t st = named(ctx, kind, a, b, n, false, &bd);
+    if (st != OK)
+        return st;
+    return bd && bd->path ? rebind(bd) : ERR_NOT_FOUND;
+}
+
+static status_t c_release(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n)
+{
+    struct binding *bd = NULL;
+    status_t st = named(ctx, kind, a, b, n, false, &bd);
+    if (st != OK)
+        return st;
+    return bd && bd->path ? release(bd, NULL) : ERR_NOT_FOUND;
+}
+
+static status_t c_release_usb(void *ctx, uint32_t dev, uint32_t iface, handle_t *out_usb)
+{
+    struct binding *bd = NULL;
+    status_t st = named(ctx, DEVMGR_KIND_USB_IFACE, dev, iface, 0, false, &bd);
+    if (st != OK)
+        return st;
+    return bd && bd->path ? release(bd, out_usb) : ERR_NOT_FOUND;
+}
+
+/* The PCI binding an address names, for the driver's views. */
+static status_t pci_named(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                          struct binding **out)
+{
+    struct binding *bd = NULL;
+    status_t st = named(ctx, kind, a, b, n, false, &bd);
+    if (st != OK)
+        return st;
+    /* A PCI function's only: a USB or soft binding has no function (its
+     * index 0 would open PCI function 0, and a reused USB binding would
+     * then lose that RIGHT_MANAGE handle). */
+    if (!bd || bd->kind != BIND_PCI)
+        return ERR_NOT_FOUND;
+    *out = bd;
+    return OK;
+}
+
+static status_t c_driver_view(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                              handle_t *out_function, uint32_t *out_bar_mask)
+{
+    struct binding *bd = NULL;
+    status_t st = pci_named(ctx, kind, a, b, n, &bd);
+    if (st != OK)
+        return st;
+    return driver_function(bd, out_function, out_bar_mask);
+}
+
+static status_t c_driver_bar(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                             uint8_t bar, handle_t *out_bar)
+{
+    struct binding *bd = NULL;
+    status_t st = pci_named(ctx, kind, a, b, n, &bd);
+    if (st != OK)
+        return st;
+    return driver_bar(bd, bar, out_bar);
+}
+
+static status_t c_test_driver(void *ctx)
+{
+    (void)ctx;
+    return test_driver();
+}
+
+static status_t c_set_input(void *ctx, handle_t input)
+{
+    (void)ctx;
+    usb_new_input(input);   /* consumed */
+    return OK;
+}
+
+static status_t c_set_volumes(void *ctx, handle_t disks)
+{
+    (void)ctx;
+    disks_set_volumes(disks);   /* consumed */
+    return OK;
+}
+
+static status_t c_device_channel(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                                 handle_t *out_device)
+{
+    struct binding *bd = NULL;
+    status_t st = named(ctx, kind, a, b, n, false, &bd);
+    if (st != OK)
+        return st;
+    if (!bd || !bd->path)
+        return ERR_NOT_FOUND;
+    if (bd->kind != BIND_PCI && bd->kind != BIND_SOFT)
+        return ERR_NOT_SUPPORTED;   /* USB bindings come and go */
+    return chans_new_device((uint32_t)(bd - devs), out_device);
+}
+
+static status_t c_shutdown(void *ctx)
+{
+    (void)ctx;
+    shutdown_asked = true;   /* run() sees it once this reply is sent */
+    return OK;
+}
+
+const struct devmgrctl_ops devmgrctl_ops = {
+    .kill = c_kill,
+    .rebind = c_rebind,
+    .release = c_release,
+    .release_usb = c_release_usb,
+    .driver_view = c_driver_view,
+    .driver_bar = c_driver_bar,
+    .test_driver = c_test_driver,
+    .set_input = c_set_input,
+    .set_volumes = c_set_volumes,
+    .device_channel = c_device_channel,
+    .shutdown = c_shutdown,
+    .kill_process = c_kill_process,
+};

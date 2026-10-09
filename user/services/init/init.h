@@ -75,6 +75,10 @@ extern bool init_splashhang;
  * test entry): devmgr is started with it, so it passes it to drv/hda,
  * which runs its deliberate DMA faults before serving (M11 stage 5). */
 extern bool init_vtdtest;
+/* The option word "nvmetest=<words>" (main.c, a test's; NULL: none):
+ * devmgr is started with it and passes it on to every drv/nvme (its test
+ * reads: drivers/nvme/selftest.c). */
+extern const char *init_nvmetest;
 /* The option word "verbose" (main.c; the kernel's, from the boot entry
  * Developer > "Jam OS (text log, no splash)"): the first terminal shows
  * the log as it comes. Every other boot keeps it off every terminal's
@@ -169,6 +173,7 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MU
 #define KEY_KEEP     0x800u   /* the kept service wrote to its keeper (spare.c) */
 #define KEY_COMP     0x900u   /* the compositor's answer on init's compctl channel (comp.c) */
 #define KEY_APPS     0xa00u   /* + a slot: a desktop app's process ended (apps.c) */
+#define KEY_DEVMGR   0xb00u   /* devmgr's answers to init's calls that don't wait (dm.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -336,8 +341,8 @@ bool     comp_notice_run(const char *title, const char *body, char icon, uint8_t
                          const char *const *buttons, const char *cmd);
 
 /* services.c: devmgr's class drivers type into what ch leads to (consumed):
- * the first console's channel, or the compositor's INPUT channel
- * (DEVMGR_SET_CONSOLE); nothing if no devmgr runs. */
+ * the compositor's INPUT channel (devmgrctl.set_input, sent without waiting
+ * for the answer: dm.c); nothing if no devmgr runs. */
 void     services_devmgr_input(handle_t ch);
 /* services.c: a new compositor runs: devmgr gets an INPUT channel of it. */
 void     comp_restarted(void);
@@ -360,11 +365,14 @@ bool     services_console_up(void);
 /* What /data/etc/settings says for svc i (settings.c), if it runs: the
  * mixer's master volume, the music player's volume. */
 void     services_settings(unsigned i);
+/* devmgr runs and has answered `status` (its first binding pass is over, its
+ * device channels are claimed and its names published): what the services
+ * that need its drivers wait for. */
 bool     services_devmgr_up(void);
 /* services.c, for main.c's test mode too: devmgr (dm: its control
  * channel) tells its disks on the DISKS channel whose client end is
- * `disks` (consumed; <volumes.h>): DEVMGR_SET_VOLUMES. Said in the log if
- * it fails. */
+ * `disks` (consumed; <volumes.h>): devmgrctl.set_volumes, sent without
+ * waiting in shell mode (dm.c). Said in the log if it fails. */
 void     services_set_volumes(handle_t dm, handle_t disks);
 /* The mixer's shared audioctl channel, init's client end (0: none): the
  * one /svc/audioctl's openers connect through. */
@@ -372,7 +380,7 @@ handle_t services_audioctl(void);
 /* A duplicate of the mixer's desktop channel's client end (audioctl.idl:
  * desk and set_master only), for the compositor; HANDLE_INVALID if none. */
 handle_t services_audio_desk(void);
-/* devmgr's device channels (<devmgr.h> DEVMGR_DEVICE_CHANNEL, asked on its
+/* devmgr's device channels (devmgrctl.device_channel, asked on its
  * control channel devmgr_ctl) for every PCI function of class `cls` that
  * has a driver, at most `max`, into out[]: init gives them to the class's
  * user (the sound cards to the mixer), and while they exist the query
@@ -405,7 +413,7 @@ handle_t shell_console(void);
 void     shell_flush_log(uint64_t deadline);
 /* For a reboot (reboot.c), in this order: volumes syncs every writable
  * mount, stops its filesystem services and exits (volumes.stop), then
- * devmgr stops every driver in order and exits (DEVMGR_SHUTDOWN); each
+ * devmgr stops every driver in order and exits (devmgrctl.shutdown); each
  * waited for until deadline, and its job killed if it doesn't. Neither is
  * started again. OK, or what went wrong. */
 status_t shell_stop_volumes(uint64_t deadline);
@@ -452,6 +460,42 @@ void     kept_event(void);
 void     kept_given_up(unsigned i);
 /* The boot word `nospare` (main.c): no warm spares. */
 extern bool init_nospare;
+
+/* ---- dm.c: init's calls to devmgr that don't wait -------------------------------- */
+
+/* devmgr.status's answer: how many drivers its first binding pass bound,
+ * failed to bind and skipped. */
+struct dm_counts {
+    uint32_t bound, failed, skipped;
+};
+/* A call to devmgr is over: st is the answer's status, or ERR_TIMED_OUT (not
+ * answered in time) or ERR_PEER_CLOSED (devmgr ended). counts: status's
+ * answer, when OK, else NULL. */
+typedef void (*dm_done_fn)(void *arg, status_t st, const struct dm_counts *counts);
+/* Before the loop: the port the answers come to (KEY_DEVMGR). Without it
+ * (init's test mode, which has no loop) dm_set_input and dm_set_volumes
+ * wait for the answer. */
+void     dm_init(handle_t port);
+/* On devmgr's control channel dm (init's own end, never the namespace's),
+ * sent now and answered to the loop: devmgr.status (30 s), and
+ * devmgrctl.kill_process (wait ns: the driver whose process has this koid
+ * killed). done runs from the loop with the answer. ERR_NO_RESOURCES: too
+ * many calls waiting; or why the request could not be sent. */
+status_t dm_status(handle_t dm, dm_done_fn done, void *arg);
+status_t dm_kill_process(handle_t dm, uint64_t koid, uint64_t wait, dm_done_fn done, void *arg);
+/* devmgrctl.set_input and set_volumes with their channel end (consumed
+ * whatever happens): sent now; a failure is said in the log. */
+void     dm_set_input(handle_t dm, handle_t input);
+void     dm_set_volumes(handle_t dm, handle_t disks);
+/* KEY_DEVMGR: devmgr answered, or ended. */
+void     dm_event(void);
+/* At t: a call overdue ends with ERR_TIMED_OUT, unless its answer is
+ * already queued (taken first: the loop may have been busy past the
+ * deadline). The next time one is due, or DEADLINE_NEVER. */
+uint64_t dm_due(uint64_t t);
+/* devmgr (init's end of its control channel, dm) is about to be closed:
+ * every call waiting on it ends with ERR_PEER_CLOSED. */
+void     dm_gone(handle_t dm);
 
 /* ---- net.c: the network services ------------------------------------------------ */
 

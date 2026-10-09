@@ -28,9 +28,9 @@
  *             what its HID drivers type into (SR_CONSOLE): an INPUT-level
  *             compctl channel of the compositor's (none while the
  *             compositor restarts: it is sent once one runs,
- *             DEVMGR_SET_CONSOLE). init waits for its first
+ *             devmgrctl.set_input). init waits for its first
  *             binding pass (up to 30 s), then asks it for each HD Audio
- *             controller's device channel (<devmgr.h> DEVMGR_DEVICE_CHANNEL:
+ *             controller's device channel (devmgrctl.device_channel:
  *             only its holder, and the control channel, can reach that hda
  *             driver; init keeps them and gives the mixer duplicates), and
  *             only then publishes the two names, so no program
@@ -40,7 +40,7 @@
  *             the same way: each network card's goes to netstack (net.c),
  *             whose /svc/net (a channel per opener) init publishes here.
  *             Once volumes runs too, devmgr gets the client end of a new
- *             DISKS channel (DEVMGR_SET_VOLUMES, <volumes.h>), on which it
+ *             DISKS channel (devmgrctl.set_volumes, <volumes.h>), on which it
  *             hands volumes its disks
  *   volumes   bin/volumes, right after devmgr: the server ends of its
  *             control channel (VOLUMES_SR_CTL; init keeps the client end
@@ -100,7 +100,7 @@
  * back connected to it. The input sources (serialin's, the HID drivers')
  * are the compositor's: a new compositor gets a new compctl channel, so
  * serialin (its source closed) exits and comes back with a source of the
- * new one, and devmgr gets an INPUT channel of it (DEVMGR_SET_CONSOLE):
+ * new one, and devmgr gets an INPUT channel of it (devmgrctl.set_input):
  * its HID drivers, which end when their compositor goes, come back
  * connected to it. devmgr dying (killed, or a crash)
  * takes its whole job with it: every driver it started (usb-bus, each
@@ -117,6 +117,7 @@
  * disks again (a new DISKS channel to devmgr). */
 #include <devmgr.h>
 #include <idl/console.h>
+#include <idl/devmgr.h>
 #include <idl/logctl.h>
 #include <logwriters.h>
 #include <mixer.h>
@@ -133,6 +134,7 @@
 static handle_t root, port;
 static handle_t devmgr;     /* devmgr's control channel, client end (0: none running) */
 static handle_t devmgr_q;   /* its query channel, client end */
+static bool devmgr_ready;   /* it answered status: channels claimed, names published */
 static handle_t volumes;    /* volumes' control channel, client end (0: none running) */
 static handle_t volumes_esp; /* its ESP channel, client end: never handed on (update.c's) */
 /* Its device channels for the HD Audio controllers, the mixer's, and for
@@ -181,7 +183,7 @@ void services_settings(unsigned i)
 
 bool services_devmgr_up(void)
 {
-    return devmgr != HANDLE_INVALID;
+    return devmgr != HANDLE_INVALID && devmgr_ready;
 }
 
 handle_t services_root_with(rights_t rights)
@@ -261,8 +263,8 @@ unsigned services_claim_class(handle_t devmgr_ctl, uint32_t cls, handle_t *out, 
 {
     unsigned n = 0;
     while (n < max) {
-        status_t st = devmgr_device_channel(devmgr_ctl, DEVMGR_PCI_CLASS, (uint16_t)n, cls,
-                                            now() + 5 * NS_PER_S, &out[n]);
+        status_t st = devmgrctl_device_channel_until(devmgr_ctl, now() + 5 * NS_PER_S,
+                                                     DEVMGR_KIND_PCI_CLASS, cls, 0, n, &out[n]);
         if (st == ERR_NOT_FOUND)
             break;   /* no more of them */
         if (st != OK) {
@@ -282,6 +284,43 @@ unsigned services_net_devices(handle_t *out, unsigned max)
         if (devmgr_net[k] && jam_handle_duplicate(devmgr_net[k], RIGHT_SAME, &out[n]) == OK)
             n++;
     return n;
+}
+
+/* devmgr's first binding pass is over (or it did not answer): its drivers'
+ * device channels are claimed first, then /svc/devmgr published, so nobody
+ * can ask the query channel for the sound card or the network card before
+ * init holds them; and a new DISKS channel goes to volumes if one runs
+ * already (volumes itself starts only once devmgr is up). */
+static void devmgr_pass_done(void *arg, status_t st, const struct dm_counts *counts)
+{
+    (void)arg;
+    if (st == ERR_PEER_CLOSED || !devmgr)
+        return;   /* it ended meanwhile (services_closed): the next one is asked again */
+    if (st != OK)
+        init_say("init: devmgr doesn't answer (%s)", status_str(st));
+    else
+        printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped%s\n", counts->bound,
+               counts->failed, counts->skipped, nousb ? " (nousb: no USB drivers)" : "");
+    unsigned cards = services_claim_class(devmgr, DEVMGR_CLASS_HDA, devmgr_hda, INIT_MAX_CLAIMED);
+    if (cards > 1)
+        printf("init: %u HD Audio controllers: all of them the mixer's\n", cards);
+    unsigned nics = services_claim_class(devmgr, DEVMGR_CLASS_NET, devmgr_net, INIT_MAX_CLAIMED);
+    if (nics)
+        printf("init: %u network card(s): held for netstack\n", nics);
+    services_publish(SVC_DEVMGR, devmgr_q, true);   /* a channel per opener (svc.connect) */
+    services_publish(SVC_DEVMGR_CTL, devmgr, true); /* and init's own stays init's */
+    tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
+    /* devmgr was started again while volumes runs: a new DISKS channel
+     * (volumes forgets the old one's disks, and the new devmgr tells of
+     * them again). Else volumes' start makes it. */
+    handle_t dc, ds;
+    if (volumes && jam_channel_create(&dc, &ds) == OK) {
+        st = volumes_set_disks_until(volumes, now() + 5 * NS_PER_S, ds);   /* ds goes */
+        if (st != OK)
+            printf("init: volumes didn't take the new disks channel (%s)\n", status_str(st));
+        services_set_volumes(devmgr, dc);
+    }
+    devmgr_ready = true;
 }
 
 static status_t start_devmgr(void)
@@ -328,6 +367,8 @@ static status_t start_devmgr(void)
         argv[argc++] = "net";
     if (init_vlan)
         argv[argc++] = init_vlan;
+    if (init_nvmetest)
+        argv[argc++] = init_nvmetest;   /* drv/nvme's test reads */
     struct spawn_handle x[5] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb } };
     unsigned nx = 3;
     if (c)
@@ -344,32 +385,15 @@ static status_t start_devmgr(void)
     }
     devmgr = a;
     devmgr_q = qa;
-    /* Its first binding pass (usb-bus on the PC's controller). */
-    struct devmgr_rep r;
-    st = devmgr_call(devmgr, DEVMGR_STATUS, 0, 0, 0, &r, NULL, 0, NULL, now() + 30 * NS_PER_S);
-    if (st != OK)
-        init_say("init: devmgr doesn't answer (%s)", status_str(st));
-    else
-        printf("init: devmgr: %u driver(s) bound, %u failed, %u skipped%s\n", r.a, r.b, r.c,
-               nousb ? " (nousb: no USB drivers)" : "");
-    unsigned cards = services_claim_class(devmgr, DEVMGR_CLASS_HDA, devmgr_hda, INIT_MAX_CLAIMED);
-    if (cards > 1)
-        printf("init: %u HD Audio controllers: all of them the mixer's\n", cards);
-    unsigned nics = services_claim_class(devmgr, DEVMGR_CLASS_NET, devmgr_net, INIT_MAX_CLAIMED);
-    if (nics)
-        printf("init: %u network card(s): held for netstack\n", nics);
-    services_publish(SVC_DEVMGR, devmgr_q, true);   /* a channel per opener (svc.connect) */
-    services_publish(SVC_DEVMGR_CTL, devmgr, false);
-    tell_mounts();   /* a restart: the shell's /svc/devmgr is the dead one's */
-    /* devmgr was started again while volumes runs: a new DISKS channel
-     * (volumes forgets the old one's disks, and the new devmgr tells of
-     * them again). Else volumes' start makes it. */
-    handle_t dc, ds;
-    if (volumes && jam_channel_create(&dc, &ds) == OK) {
-        st = volumes_set_disks_until(volumes, now() + 5 * NS_PER_S, ds);   /* ds goes */
-        if (st != OK)
-            printf("init: volumes didn't take the new disks channel (%s)\n", status_str(st));
-        services_set_volumes(devmgr, dc);
+    devmgr_ready = false;
+    /* Its first binding pass (usb-bus on the PC's controller), asked without
+     * waiting: the rest of the start is devmgr_pass_done, when it answers.
+     * What needs devmgr's drivers (and volumes) waits for that
+     * (services_devmgr_up). */
+    st = dm_status(devmgr, devmgr_pass_done, NULL);
+    if (st != OK) {
+        init_say("init: can't ask devmgr for its first pass (%s)", status_str(st));
+        devmgr_pass_done(NULL, st, NULL);
     }
     return OK;
 }
@@ -438,19 +462,7 @@ static status_t start_volumes(void)
 
 void services_set_volumes(handle_t dm, handle_t disks)
 {
-    struct devmgr_req q = { 0, DEVMGR_SET_VOLUMES, 0, 0, 0 };
-    struct devmgr_rep r;
-    uint32_t n = 0, got = 0;
-    struct channel_call_args a = {
-        .h = dm, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)&q,
-        .wr_handles = (uint64_t)(uintptr_t)&disks, .wr_nhandles = 1, .rd_cap = sizeof(r),
-        .rd_bytes = (uint64_t)(uintptr_t)&r, .rd_actual = (uint64_t)(uintptr_t)&n,
-        .rd_hactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * NS_PER_S,
-    };
-    status_t st = jam_channel_call(&a);   /* disks goes with the request either way */
-    if (st != OK || n < DEVMGR_REP_HDR || r.status != OK)
-        printf("init: devmgr didn't take the disks channel (%s)\n",
-               status_str(st != OK ? st : r.status));
+    dm_set_volumes(dm, disks);   /* disks goes with the request either way */
 }
 
 void services_devmgr_input(handle_t c)
@@ -459,19 +471,7 @@ void services_devmgr_input(handle_t c)
         jam_handle_close(c);
         return;
     }
-    struct devmgr_req q = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
-    struct devmgr_rep r;
-    uint32_t n = 0, got = 0;
-    struct channel_call_args a = {
-        .h = devmgr, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)&q,
-        .wr_handles = (uint64_t)(uintptr_t)&c, .wr_nhandles = 1, .rd_cap = sizeof(r),
-        .rd_bytes = (uint64_t)(uintptr_t)&r, .rd_actual = (uint64_t)(uintptr_t)&n,
-        .rd_hactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 5 * NS_PER_S,
-    };
-    status_t st = jam_channel_call(&a);   /* c goes with the request either way */
-    if (st != OK || n < DEVMGR_REP_HDR || r.status != OK)
-        printf("init: devmgr didn't take the new input channel (%s)\n",
-               status_str(st != OK ? st : r.status));
+    dm_set_input(devmgr, c);   /* c goes with the request */
 }
 
 void comp_restarted(void)
@@ -550,8 +550,7 @@ status_t shell_stop_devmgr(uint64_t deadline)
     struct svc *s = &svcs[DEVMGR];
     if (!devmgr || !s->running || s->given_up)
         return OK;   /* none, or stopped already (a kexec that failed after it) */
-    struct devmgr_rep r;
-    status_t st = devmgr_call(devmgr, DEVMGR_SHUTDOWN, 0, 0, 0, &r, NULL, 0, NULL, deadline);
+    status_t st = devmgrctl_shutdown_until(devmgr, deadline);
     signals_t seen;
     if (st == OK)
         st = jam_object_wait_one(s->proc, SIG_TERMINATED, deadline, &seen);
@@ -696,6 +695,7 @@ void services_closed(unsigned i)
     if (i == COMPOSITOR)
         comp_closed();
     if (i == DEVMGR && devmgr) {
+        dm_gone(devmgr);            /* the calls waiting for it end */
         jam_handle_close(devmgr);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(devmgr_q);
         for (unsigned k = 0; k < INIT_MAX_CLAIMED; k++) {
@@ -707,6 +707,7 @@ void services_closed(unsigned i)
         memset(devmgr_hda, 0, sizeof(devmgr_hda));
         memset(devmgr_net, 0, sizeof(devmgr_net));
         devmgr = devmgr_q = HANDLE_INVALID;
+        devmgr_ready = false;
         services_publish(SVC_DEVMGR, HANDLE_INVALID, false);
         services_publish(SVC_DEVMGR_CTL, HANDLE_INVALID, false);
         net_devmgr_gone();
@@ -772,6 +773,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     terms_init(port, splash, shell_arg);
     apps_init(port);
     comp_init(port);
+    dm_init(port);
     make_audio_channels();
     net_init(port);
     if (jam_channel_create(&music_cli, &music_srv) != OK)

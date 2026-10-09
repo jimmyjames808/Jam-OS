@@ -597,6 +597,14 @@ static const struct {
     { "kept_vmo_client_and_compositor", t_kept_vmo_client_and_compositor },
     { "bad_pointers", t_bad_pointers },
     { "startup_message", t_startup_message },
+    { "posixfds_round_trip", t_posixfds_round_trip },
+    { "posixfds_many_handles", t_posixfds_many_handles },
+    { "posixfds_malformed", t_posixfds_malformed },
+    { "posixfds_fuzz", t_posixfds_fuzz },
+    { "posixfds_writer_refuses", t_posixfds_writer_refuses },
+    { "posixfds_spawn_child", t_posixfds_spawn_child },
+    { "spawn_stack_size", t_spawn_stack_size },
+    { "wants_posix", t_wants_posix },
     { "crash_kills_only_the_child", t_crash_kills_only_the_child },
     { "wx", t_wx },
     { "ping_pong", t_ping_pong },
@@ -626,6 +634,7 @@ static const struct {
     { "devmgr_query_refuses_hda", t_devmgr_query_refuses_hda },
     { "devmgr_device_channel", t_devmgr_device_channel },
     { "devmgr_openers", t_devmgr_openers },
+    { "devmgr_ctl_openers", t_devmgr_ctl_openers },
 
     { "edu_killed_mid_dma", t_edu_killed_mid_dma },
     { "driver_handle_limits", t_driver_handle_limits },
@@ -655,6 +664,8 @@ static const struct {
     { "supervised_restart", t_supervised_restart },
     { "supervised_backoff", t_supervised_backoff },
     { "supervised_give_up", t_supervised_give_up },
+    { "devmgr_addresses", t_devmgr_addresses },
+    { "devmgr_kill_process", t_devmgr_kill_process },
     { "disk_mounts", t_disk_mounts },
     { "disk_not_boot", t_disk_not_boot },
     { "disk_other", t_disk_other },
@@ -907,8 +918,13 @@ static const struct {
     { "nettcp_heap_shares", t_nettcp_heap_shares },
     { "nettcp_ooseq_sack", t_nettcp_ooseq_sack },
     { "nettcp_ooseq_bounds", t_nettcp_ooseq_bounds },
+    { "nettcp_nodelay", t_nettcp_nodelay },
+    { "nettcp_keepalive", t_nettcp_keepalive },
+    { "nettcp_reuse", t_nettcp_reuse },
     { "nettcp_limits", t_nettcp_limits },
     { "nettcp_bulk_rings", t_nettcp_bulk_rings },
+    { "nettcp_options", t_nettcp_options },
+    { "nettcp_reuse_api", t_nettcp_reuse_api },
     { "netctl_set_and_clear", t_netctl_set_and_clear },
     { "netctl_read_only", t_netctl_read_only },
     { "netctl_process", t_netctl_process },
@@ -981,6 +997,7 @@ static const struct {
     { "jwlc_reconnect", t_jwlc_reconnect },
     { "jwlc_connect_pending", t_jwlc_connect_pending },
     { "jwlc_protocol_error", t_jwlc_protocol_error },
+    { "jwlc_slow_reader", t_jwlc_slow_reader },
     { "jwlc_blocking", t_jwlc_blocking },
     { "jwlc_fuzz_events", t_jwlc_fuzz_events },
     { "jwlc_fuzz_batches", t_jwlc_fuzz_batches },
@@ -1133,6 +1150,11 @@ static const struct {
     { "volumes_release_disk", t_volumes_release_disk },
     { "volumes_new_channel", t_volumes_new_channel },
     { "volumes_loop_answers", t_volumes_loop_answers },
+    { "fat_unread_flood", t_fat_unread_flood },
+    { "fat_rename_into_alias", t_fat_rename_into_alias },
+    { "idl_fuzz", t_idl_fuzz },
+    { "fat_hostile", t_fat_hostile },
+    { "volumes_hostile", t_volumes_hostile },
 };
 
 int main(int argc, char **argv)
@@ -1142,7 +1164,8 @@ int main(int argc, char **argv)
     const char *only = argc == 3 && !strcmp(argv[1], "only") ? argv[2] : NULL;
     if (argc >= 2 && !only)
         return child_main(argc, argv);
-    unsigned n = 0, passed = 0;
+    unsigned n = 0, passed = 0, nfailed = 0;
+    unsigned failed[64];   /* the tests that failed (indexes into tests[]), the first 64 */
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
         if (only && strncmp(tests[i].name, only, strlen(only)))
             continue;
@@ -1152,8 +1175,28 @@ int main(int argc, char **argv)
         if (tests[i].fn()) {
             passed++;
             printf("utest: %s ok (%lu ms)\n", utest_cur, (unsigned long)((now() - t0) / NS_PER_MS));
+        } else if (nfailed < sizeof(failed) / sizeof(failed[0])) {
+            failed[nfailed++] = i;
         }
     }
+    /* The names of the failed tests, in the RESULTS box: a run's printed lines (the "FAILED at
+     * line" of each) are rate-limited by the kernel and a busy run drops some, but reports
+     * are not. As many names as fit in lines of up to 90 characters (a report is one line). */
+    char names[96];
+    int at = 0;
+    for (unsigned k = 0; k < nfailed; k++) {
+        const char *name = tests[failed[k]].name;
+        int need = (int)strlen(name) + 1;
+        if (at && at + need > 90) {
+            jam_debug_report(names, (uint64_t)at);
+            at = 0;
+        }
+        if (!at)
+            at = snprintf(names, sizeof(names), "utest: FAILED tests:");
+        at += snprintf(names + at, sizeof(names) - (size_t)at, " %s", name);
+    }
+    if (at)
+        jam_debug_report(names, (uint64_t)at);
     char line[96];
     int len = passed == n ? snprintf(line, sizeof(line), "utest: %u passed", passed)
                           : snprintf(line, sizeof(line), "utest: %u passed, %u FAILED", passed,

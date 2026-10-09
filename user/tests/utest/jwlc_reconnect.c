@@ -13,6 +13,14 @@
  *   jwlc_protocol_error  the compositor ends the connection with
  *                        wl_display.error: the client is dead (no second
  *                        connection), the error kept in its info;
+ *   jwlc_slow_reader     the client stops reading while the compositor sends
+ *                        keys, until the transport drops it (no_memory,
+ *                        "reads too slowly", M12.1 C12): the client reads
+ *                        what was held, hears DISCONNECTED (ERR_NO_MEMORY),
+ *                        is not dead, connects again and gets its window
+ *                        back with its title and pixels; dropped again and
+ *                        again it waits 50, 100, 200, 400 ms (and a
+ *                        compositor's other no_memory errors stay fatal);
  *   jwlc_blocking        the blocking calls (connect, roundtrip,
  *                        wait_event) with the fake on a thread of its own,
  *                        a ping answered during the setup; a connect with
@@ -176,6 +184,129 @@ bool t_jwlc_protocol_error(void)
     struct jwl_frame fr;
     CHECK_ST(jwl_window_begin(w, &fr), ERR_BAD_STATE);
     CHECK_ST(jwl_client_roundtrip(c, now() + NS_PER_S), ERR_INVALID_ARGS);
+    return fake_all_gone(&f, c, h0, b0);
+}
+
+/* Keys sent and flushed with nobody reading, until the transport drops the
+ * client (the window's batches, 64 KiB held, then the no_memory error). */
+static bool flood(struct fake *f)
+{
+    CHECK(f->conn && f->keyboard);
+    for (unsigned i = 0; i < 20000 && f->conn->status == OK; i++) {
+        (void)fake_key(f, 30, i & 1);
+        (void)jwl_conn_flush(f->conn);
+    }
+    CHECK(f->conn->status != OK);
+    CHECK_EQ(f->conn->error.code, JWL_ERROR_NO_MEMORY);
+    CHECK(!strncmp(f->conn->error.text, JWL_SLOW_READER_TEXT, strlen(JWL_SLOW_READER_TEXT)));
+    return true;
+}
+
+/* The client reads at last: the keys in the channel, then the error. Stops at its
+ * JWL_EV_DISCONNECTED (why in *why); the client must not die. */
+static bool read_until_dropped(struct jwl_client *c, unsigned *keys, status_t *why)
+{
+    struct jwl_event ev;
+    for (unsigned i = 0; i < 4000; i++) {
+        (void)jwl_client_dispatch(c);
+        status_t st = jwl_client_status(c);   /* OK, or ERR_SHOULD_WAIT while it connects again */
+        if (st != OK && st != ERR_SHOULD_WAIT)
+            FAIL("the slow reader's client ended: %d", (int)st);
+        while (jwl_client_next_event(c, &ev) == OK) {
+            if (ev.type == JWL_EV_KEY)
+                ++*keys;
+            if (ev.type == JWL_EV_DEAD)
+                FAIL("the slow reader was ended for good (%d)", (int)ev.conn.why);
+            if (ev.type == JWL_EV_DISCONNECTED) {
+                *why = ev.conn.why;
+                return true;
+            }
+        }
+    }
+    FAIL("no JWL_EV_DISCONNECTED after the compositor's no_memory");
+}
+
+/* Serve and dispatch until the client is on connection gen again (5 s). */
+static bool wait_generation(struct fake *f, struct jwl_client *c, uint32_t gen)
+{
+    uint64_t end = now() + 5 * NS_PER_S;
+    while (jwl_client_info(c)->generation < gen && now() < end) {
+        (void)fake_pump(f, c);
+        uint64_t d = jwl_client_deadline(c);
+        (void)jam_sleep_until(d < now() + 10 * NS_PER_MS ? d : now() + 10 * NS_PER_MS);
+    }
+    (void)fake_pump(f, c);
+    CHECK_EQ(jwl_client_info(c)->generation, gen);
+    return true;
+}
+
+/* M12.1 C12 (the owner's DQ1): a compositor's "reads too slowly" drop is
+ * a lost connection, not the end. */
+bool t_jwlc_slow_reader(void)
+{
+    uint64_t h0, b0;
+    fake_held(&h0, &b0);
+    struct fake f;
+    fake_init(&f);
+    struct jwl_client *c = fake_ready(&f);
+    CHECK(c);
+    struct jwl_pool *p;
+    struct jwl_buffer *b;
+    CHECK_ST(jwl_pool_create(c, 8192, &p), OK);
+    CHECK_ST(jwl_buffer_create(p, 4096, 16, 16, 64, JWL_WL_SHM_FORMAT_XRGB8888, &b), OK);
+    struct jwl_window_config wc = { .width = 32, .height = 32, .title = "slow" };
+    struct jwl_window *w;
+    struct fake_surface *s;
+    CHECK(fake_window(&f, c, &wc, 0, &w, &s));
+    unsigned slot;
+    CHECK(fake_draw(w, SHOWN, NULL, &slot));
+    CHECK_ST(fake_kb_enter(&f, s), OK);
+    CHECK(fake_pump(&f, c));
+    CHECK(s->pixel == SHOWN);
+    struct jwl_event ev;
+    while (jwl_client_next_event(c, &ev) == OK) {}
+
+    /* dropped four times in a row: 50, 100, 200, 400 ms before each try */
+    for (unsigned n = 0; n < 4; n++) {
+        CHECK(flood(&f));   /* the client is busy: it reads nothing meanwhile */
+        uint64_t t0 = now();
+        unsigned keys = 0;
+        status_t why = OK;
+        CHECK(read_until_dropped(c, &keys, &why));
+        CHECK_EQ(why, ERR_NO_MEMORY);
+        if (!keys)   /* the window's batches (the held ones are not sent) come first */
+            FAIL("drop %u: no key read before the drop", n + 1);
+        CHECK_EQ(jwl_client_info(c)->error_code, JWL_ERROR_NO_MEMORY);
+        CHECK(wait_generation(&f, c, n + 2));
+        uint64_t took = now() - t0, want = (50u << n) * NS_PER_MS;
+        if (took < want)
+            FAIL("drop %u: connected again after %lu ms, want at least %lu",
+                 n + 1, (unsigned long)(took / NS_PER_MS), (unsigned long)(want / NS_PER_MS));
+        CHECK_ST(jwl_client_status(c), OK);
+        CHECK_EQ(f.connects, n + 2);
+        s = fake_surface(&f, 0);   /* the window is back: title, buffer, pixels */
+        CHECK(s && !strcmp(s->title, "slow") && s->current && s->pixel == SHOWN);
+        bool reconnected = false, rebuilt = false;
+        while (jwl_client_next_event(c, &ev) == OK) {
+            reconnected |= ev.type == JWL_EV_RECONNECTED && ev.conn.generation == n + 2;
+            rebuilt |= ev.type == JWL_EV_CONFIGURE && ev.win == w && ev.configure.rebuilt;
+        }
+        CHECK(reconnected && rebuilt);
+        CHECK_ST(fake_kb_enter(&f, s), OK);   /* keys reach the program on this connection too */
+        CHECK(fake_pump(&f, c));
+        while (jwl_client_next_event(c, &ev) == OK) {}
+    }
+    CHECK(fake_draw(w, 0xff000002u, NULL, &slot));   /* and on it goes */
+    CHECK(fake_pump(&f, c));
+    CHECK(fake_surface(&f, 0)->pixel == 0xff000002u);
+
+    /* any other no_memory (a cap the program hit) is still the end */
+    CHECK_ST(jwl_conn_post_error(f.conn, JWL_DISPLAY_ID, JWL_ERROR_NO_MEMORY,
+                                 "too many regions (64)"), ERR_INVALID_ARGS);
+    (void)fake_pump(&f, c);
+    CHECK_ST(jwl_client_status(c), ERR_INVALID_ARGS);
+    jwl_buffer_destroy(b);
+    jwl_pool_destroy(p);
     return fake_all_gone(&f, c, h0, b0);
 }
 

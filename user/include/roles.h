@@ -29,7 +29,7 @@ enum {
     /* 14: SR_CRASHLOG, <jam/startup.h> */
     SR_DEVMGR_DEVICE = 15,  /* a devmgr channel scoped to one device (a client
                              * end, from init only: the mixer's, for the HD
-                             * Audio controller; <devmgr.h> DEVMGR_DEVICE_CHANNEL) */
+                             * Audio controller; devmgrctl.device_channel) */
     SR_STATE = 16,          /* a service's state VMO, made and kept by its
                              * supervisor, handed to each instance with read,
                              * write and map only (<svcstate.h>) */
@@ -39,6 +39,10 @@ enum {
                              * it before main for one struct standby_msg
                              * (below), which brings the handles and arguments
                              * the program then starts with */
+    SR_SIGNALS = 19,        /* a POSIX program's signal channel, its server end:
+                             * the starter keeps the client end and sends the
+                             * `signal` protocol's events on it (docs/M13-PLAN.md
+                             * section 6) */
 };
 
 /* The promotion message: the one message on SR_STANDBY, from the

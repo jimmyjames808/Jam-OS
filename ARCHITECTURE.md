@@ -1751,7 +1751,13 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   mapped on first use: freed blocks go on a free list kept in address
   order and merge with free neighbours (or go back to the end of the
   heap), and an allocation takes the lowest block that fits, so a
-  long-running program that frees what it allocates stops growing. **libfun** (`user/apps/fun/`): the
+  long-running program that frees what it allocates stops growing.
+  **libjam** (`build/uobj/libjam.a`) is libos without its C library
+  (malloc, the string functions, printf, environ and the call of main),
+  for POSIX programs on musl, and `<posixfds.h>` is the POSIX hand-over
+  a starter writes after a POSIX program's startup message: its file
+  descriptors and what exec keeps ([M13-PLAN](docs/M13-PLAN.md), sections
+  2 and 5). **libfun** (`user/apps/fun/`): the
   apps' screen, drawing (premultiplied alpha and anti-aliased shapes in
   `alpha.c`), text (UTF-8: the console font's ASCII and Latin-1 and
   Latin Extended-A glyphs, one box for any other character), smooth
