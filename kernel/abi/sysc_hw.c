@@ -14,6 +14,7 @@
  *   pci_bus_master_off     RIGHT_MANAGE on a RES_PCI_DEV (on is the
  *                          current dma_cap's)
  *   dma_cap_create         RIGHT_MANAGE on a RES_PCI_DEV (devmgr's copy)
+ *                          and on the job it charges (the driver's)
  *   dma_cap_bus_master     a dma_cap handle (any rights): its function's
  *                          current cap; on 0 or 1
  *   vmo_create_physical    RIGHT_MAP on a RES_ROOT / RES_MMIO
@@ -288,14 +289,24 @@ status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t 
     return insert_new(t, vmo_kobject(v), keep, out);
 }
 
-status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out)
+/* The cap and its IOMMU domain's table pages are charged to `job`, the
+ * driver's (D3: devmgr makes the driver's job first), not to t's: a
+ * driver's pins grow its domain, so its own limit bounds them. Only a job
+ * the caller manages: charging one is spending its limits. */
+status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t job, handle_t *out)
 {
-    struct kobject *obj, *cap;
+    struct kobject *obj, *jo, *cap;
     struct pci_dev *d;
     status_t st = get_dev(t, dev, RIGHT_MANAGE, &obj, &d);
     if (st != OK)
         return st;
-    st = dma_cap_create_for(d, t->job, &cap);
+    st = handle_get(t, job, OBJ_JOB, RIGHT_MANAGE, &jo, NULL);
+    if (st != OK) {
+        kobject_unref(obj);
+        return st;
+    }
+    st = dma_cap_create_for(d, job_from_kobject(jo), &cap);   /* references the job itself */
+    kobject_unref(jo);
     kobject_unref(obj);
     if (st != OK)
         return st;
@@ -431,11 +442,11 @@ int64_t sysc_vmo_create_physical(handle_t res, uint64_t offset, uint64_t size, u
     return st == OK ? sysc_put_handle(t, out, h) : st;
 }
 
-int64_t sysc_dma_cap_create(handle_t dev, uint64_t out)
+int64_t sysc_dma_cap_create(handle_t dev, handle_t job, uint64_t out)
 {
     SYSC_TABLE(t);
     handle_t h;
-    status_t st = sys_dma_cap_create(t, dev, &h);
+    status_t st = sys_dma_cap_create(t, dev, job, &h);
     return st == OK ? sysc_put_handle(t, out, h) : st;
 }
 

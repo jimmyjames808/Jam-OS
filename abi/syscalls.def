@@ -178,11 +178,12 @@
 # MMIO for processes: a physical VMO over [res.base + offset, + size) with
 # cache type VMO_CACHE_*; refused over RAM or an MSI-X table/PBA page.
 99  vmo_create_physical status  handle_t res, uint64_t offset, uint64_t size, uint32_t cache, handle_t *out
-# DMA: a capability bound to the function; vmo_pin writes one device
+# DMA: a capability bound to the function (dma_cap_create, 105 below);
+# vmo_pin writes one device
 # address per page to addrs[] and the pin's id to *pin_id. vmo_unpin needs
 # the cap the pin was made with (ERR_ACCESS_DENIED for any other): holding
 # the VMO isn't enough to take a page away from a device still using it.
-100 dma_cap_create    status    handle_t dev, handle_t *out
+# (Number 100 was dma_cap_create without its job until M12: retired.)
 101 vmo_pin           status    handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t *addrs, uint64_t *pin_id
 102 vmo_unpin         status    handle_t vmo, handle_t dma, uint64_t pin_id
 # vmo_create for a driver: flags VMO_CONTIGUOUS and VMO_DMA32 (either,
@@ -194,6 +195,14 @@
 # drivers don't). Nothing turns it on but the function's current dma_cap
 # (dma_cap_bus_master).
 104 pci_bus_master_off status   handle_t dev
+# A dma_cap for the function `dev` (RIGHT_MANAGE: devmgr's), charged to
+# `job` (RIGHT_MANAGE: a job the caller manages, the driver's own, made
+# first): the cap (one JOB_LIMIT_HANDLES unit) and, while the IOMMU
+# translates, its domain's table pages (JOB_LIMIT_PAGES), now and as pins
+# grow it. It becomes the function's current cap: bus mastering off until
+# its holder turns it on (dma_cap_bus_master), the device reaching only
+# what the cap pins.
+105 dma_cap_create    status    handle_t dev, handle_t job, handle_t *out
 
 # console services ----------------------------------------------------------
 # Rights are on a RES_ROOT handle: each call that takes the root needs its

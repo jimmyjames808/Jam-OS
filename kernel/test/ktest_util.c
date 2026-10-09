@@ -115,6 +115,15 @@ signals_t kt_signals_of(struct handle_table *t, handle_t h)
     return s;
 }
 
+handle_t kt_job_handle(struct handle_table *t, struct job *j)
+{
+    job_ref(j);
+    struct khandle kh = khandle_from_new(job_kobject(j), JOB_RIGHTS);
+    handle_t h = HANDLE_INVALID;
+    KT_EQ(handle_insert(t, &kh, &h), OK);
+    return h;
+}
+
 struct kobject *kt_pci_dev_res(struct pci_dev *d)
 {
     struct kobject *root = resource_root(), *pci, *dev;

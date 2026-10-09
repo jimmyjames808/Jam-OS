@@ -210,6 +210,9 @@ void kt_job_is_empty(struct job *j);
 signals_t kt_signals_of(struct handle_table *t, handle_t h);
 /* A RES_PCI_DEV resource for d (a new reference). */
 struct kobject *kt_pci_dev_res(struct pci_dev *d);
+/* A handle in t to job j (a reference of its own) with JOB_RIGHTS: what
+ * devmgr holds for a driver's job, e.g. for sys_dma_cap_create. */
+handle_t kt_job_handle(struct handle_table *t, struct job *j);
 
 /* QEMU's edu device (1234:11e8, hw/misc/edu.c): the tests' DMA engine.
  * One transfer copies up to 4 KiB between RAM (any bus address below

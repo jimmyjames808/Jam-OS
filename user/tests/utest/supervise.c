@@ -342,7 +342,7 @@ bool t_driver_handle_limits(void)
     CHECK_ST(jam_pci_config_write(dev, 0x10, 4, 0xffffffffu), ERR_ACCESS_DENIED);   /* BAR 0 */
     /* No RIGHT_MANAGE. */
     CHECK_ST(jam_pci_bus_master_off(dev), ERR_ACCESS_DENIED);
-    CHECK_ST(jam_dma_cap_create(dev, &x), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_dma_cap_create(dev, startup_handle(SR_JOB), &x), ERR_ACCESS_DENIED);
     CHECK_ST(jam_interrupt_create_msi(dev, 0, IRQ_MSIX, &x), ERR_ACCESS_DENIED);
     /* No other function: its handle is one function, and can't be sliced. */
     struct pci_dev_info info;

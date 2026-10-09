@@ -185,7 +185,8 @@ status_t sys_pci_bar_resource(struct handle_table *t, handle_t dev, uint32_t bar
 status_t sys_pci_bus_master_off(struct handle_table *t, handle_t dev);
 status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t offset,
                                  uint64_t size, uint32_t cache, handle_t *out);
-status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out);
+/* Charged to the job `job` names (RIGHT_MANAGE), not t's. */
+status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t job, handle_t *out);
 status_t sys_dma_cap_bus_master(struct handle_table *t, handle_t dma, uint32_t on);
 /* addrs: kernel array of at least len / PAGE_SIZE entries. */
 status_t sys_vmo_pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,

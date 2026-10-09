@@ -29,6 +29,13 @@
  *       A reader of the stats in the middle of a release (forced with the
  *       DBG_DMA_RELEASED hook) sees the batch either still held or already
  *       released (or freed), never gone from `pages` but not yet counted.
+ *   dma_cap_charges_driver_job
+ *       dma_cap_create charges the job it is given (the driver's, which
+ *       devmgr makes first), not its caller's: the cap, and with the IOMMU
+ *       its domain's table pages, the first ones and those a pin adds; the
+ *       caller pays only for its handle and its own VMO. Only a job the
+ *       caller manages may be named. Once the cap is gone the driver's job
+ *       is charged for nothing.
  *   m6r_pins_are_charged
  *       Every pin is a kernel allocation, so it is charged: otherwise a
  *       driver pins one page over and over and fills the kernel heap.
@@ -393,7 +400,7 @@ KTEST(m6r_pins_are_charged)
     handle_t dev, cap, vh;
     struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
     KT_EQ(handle_insert(&t, &kh, &dev), OK);
-    KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
+    KT_EQ(sys_dma_cap_create(&t, dev, kt_job_handle(&t, j), &cap), OK);
     KT_EQ(sys_vmo_create(&t, PG, 0, &vh), OK);
     KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
     uint64_t used = job_used(j, JOB_LIMIT_HANDLES);
@@ -426,6 +433,79 @@ KTEST(m6r_pins_are_charged)
     job_unref(j);
 }
 
+/* ---- the cap's charges go to the driver's job ----------------------------------- */
+
+KTEST(dma_cap_charges_driver_job)
+{
+    struct pci_dev *d = kt_edu();
+    if (!d)
+        return;
+    /* devmgr's job and its driver's. Siblings here, so neither's count
+     * includes the other's (devmgr's drivers are its children: there its
+     * own count includes theirs, and their own limits bound them). */
+    struct job *mgr = kt_fresh_job(), *drv = kt_fresh_job();
+    struct handle_table t;   /* devmgr's */
+    handle_table_init(&t);
+    t.job = mgr;
+    handle_t dev, jh, jown, cap, vh;
+    struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
+    KT_EQ(handle_insert(&t, &kh, &dev), OK);
+    jh = kt_job_handle(&t, drv);
+    KT_EQ(handle_duplicate(&t, jh, JOB_RIGHTS_OWN, &jown), OK);
+    KT_EQ(sys_vmo_create(&t, PG, 0, &vh), OK);   /* devmgr's buffer, for the pin below */
+    KT_EQ(sys_vmo_commit(&t, vh, 0, PG), OK);    /* paid for now, its tables too */
+    /* Only a job the caller manages pays: spending a job's limits is
+     * managing it. */
+    KT_EQ(sys_dma_cap_create(&t, dev, jown, &cap), ERR_ACCESS_DENIED);
+    KT_EQ(sys_dma_cap_create(&t, dev, dev, &cap), ERR_WRONG_TYPE);
+    KT_EQ(sys_dma_cap_create(&t, dev, HANDLE_INVALID, &cap), ERR_BAD_HANDLE);
+
+    uint64_t mp0 = job_used(mgr, JOB_LIMIT_PAGES), mh0 = job_used(mgr, JOB_LIMIT_HANDLES);
+    KT_EQ(sys_dma_cap_create(&t, dev, jh, &cap), OK);
+    struct kobject *capobj;
+    KT_EQ(handle_get(&t, cap, OBJ_DMA_CAP, 0, &capobj, NULL), OK);
+    bool tr = dma_cap_translated(capobj);
+    kobject_unref(capobj);
+    uint64_t dp1 = job_used(drv, JOB_LIMIT_PAGES), dh1 = job_used(drv, JOB_LIMIT_HANDLES);
+    uint64_t mp1 = job_used(mgr, JOB_LIMIT_PAGES), mh1 = job_used(mgr, JOB_LIMIT_HANDLES);
+    /* A pin: its page is the VMO's (devmgr's, paid for already), its new
+     * table pages the domain's (the driver's). */
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
+    uint64_t pa, id;
+    KT_EQ(sys_vmo_pin(&t, vh, cap, 0, PG, &pa, &id), OK);
+    uint64_t dp2 = job_used(drv, JOB_LIMIT_PAGES), mp2 = job_used(mgr, JOB_LIMIT_PAGES);
+    KT_EQ(sys_vmo_unpin(&t, vh, cap, id), OK);
+    KT_EQ(sys_dma_cap_bus_master(&t, cap, 0), OK);
+    KT_EQ(handle_close(&t, cap), OK);
+    dma_quarantine_flush(d);   /* its domain gone (a clean close: nothing quarantined) */
+    uint64_t dp3 = job_used(drv, JOB_LIMIT_PAGES), dh3 = job_used(drv, JOB_LIMIT_HANDLES);
+    kprintf("ktest %s: %s; the driver's job: %lu page(s) and %lu handle unit(s) for the cap, "
+            "%lu page(s) after a pin, %lu and %lu once it closed; the caller's: %lu page(s) "
+            "and %lu handle unit(s) more for the cap\n", ktest_current,
+            tr ? "translated" : "not translated", dp1, dh1, dp2, dp3, dh3, mp1 - mp0,
+            mh1 - mh0);
+    handle_table_destroy(&t);
+    dma_quarantine_flush(d);
+    kt_job_is_empty(drv);
+    kt_job_is_empty(mgr);
+    job_unref(drv);
+    job_unref(mgr);
+
+    KT_EQ(dh1, 1);                  /* the cap itself */
+    KT_EQ(mh1, mh0 + 1);            /* the caller: its handle's slot only */
+    KT_EQ(mp1, mp0);
+    KT_EQ(mp2, mp1);                /* the pinned page was the VMO's already */
+    if (tr) {
+        KT_ASSERT(dp1 >= 1);        /* the domain's top table */
+        KT_ASSERT(dp2 > dp1);       /* and the tables down to the pinned page */
+    } else {
+        KT_EQ(dp1, 0);              /* no domain, no tables */
+        KT_EQ(dp2, 0);
+    }
+    KT_EQ(dp3, 0);
+    KT_EQ(dh3, 0);
+}
+
 /* ---- unpin needs nothing but a writable VMO handle ------------------------------- */
 
 /* A client hands its buffer VMO (RIGHT_WRITE, as a block or network client
@@ -446,7 +526,7 @@ KTEST(m6r_unpin_by_other_holder)
     handle_t dev, cap, vc, vd;
     struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
     KT_EQ(handle_insert(&td, &kh, &dev), OK);
-    KT_EQ(sys_dma_cap_create(&td, dev, &cap), OK);
+    KT_EQ(sys_dma_cap_create(&td, dev, kt_job_handle(&td, j), &cap), OK);
     KT_EQ(sys_dma_cap_bus_master(&td, cap, 1), OK);
     KT_EQ(sys_vmo_create(&tc, PG, 0, &vc), OK);
     struct kobject *vo;
@@ -460,7 +540,7 @@ KTEST(m6r_unpin_by_other_holder)
     handle_t ccap, dev2;
     struct khandle kd = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
     KT_EQ(handle_insert(&tc, &kd, &dev2), OK);
-    KT_EQ(sys_dma_cap_create(&tc, dev2, &ccap), OK);
+    KT_EQ(sys_dma_cap_create(&tc, dev2, kt_job_handle(&tc, j), &ccap), OK);
     status_t un0 = sys_vmo_unpin(&tc, vc, HANDLE_INVALID, id);
     status_t un = sys_vmo_unpin(&tc, vc, ccap, id);
     status_t dc = sys_vmo_decommit(&tc, vc, 0, PG);

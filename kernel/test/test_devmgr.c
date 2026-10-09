@@ -265,6 +265,11 @@ KTEST(devmgr_driver_clean_exit)
     struct kobject *irq, *cap;
     KT_EQ(handle_table_find(process_handles(p), OBJ_INTERRUPT, &irq), OK);
     KT_EQ(handle_table_find(process_handles(p), OBJ_DMA_CAP, &cap), OK);
+    /* Not kept: the cap is charged to the driver's job until it is gone,
+     * and devmgr calls a driver whose job isn't empty unclean. (Its pins
+     * leave its list at the close anyway: the quarantine's count below is
+     * what says the driver unpinned.) */
+    kobject_unref(cap);
     uint32_t cpu;
     uint8_t vec;
     KT_ASSERT(interrupt_vector_of(irq, &cpu, &vec));
@@ -284,11 +289,9 @@ KTEST(devmgr_driver_clean_exit)
     KT_ASSERT(!bme(d));
     KT_ASSERT(!msi_on(d));
     KT_ASSERT(!interrupt_vector_of(irq, &cpu, &vec));
-    KT_EQ(dma_cap_pin_count(cap), 0);
     dma_quarantine_stats(d, &q);
     KT_EQ(q.pins, q0.pins);   /* a clean driver unpins: nothing quarantined */
     kobject_unref(irq);
-    kobject_unref(cap);
     dm_job_empty(&m);
     KT_GLOBAL_EQ(interrupt_live_count(), irqs);
 }

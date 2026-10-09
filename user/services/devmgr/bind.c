@@ -79,8 +79,10 @@ static void add(struct spawn_handle *x, rights_t *xr, unsigned *n, uint32_t role
     xr[(*n)++] = rights;
 }
 
-/* A PCI function's handles for its driver. */
-static status_t pci_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
+/* A PCI function's handles for its driver, whose job is `job` (its
+ * dma_cap and IOMMU tables are charged there). */
+static status_t pci_handles(struct binding *b, handle_t job, struct spawn_handle *x, rights_t *xr,
+                            unsigned *n)
 {
     handle_t h;
     status_t st = OK;
@@ -98,7 +100,7 @@ static status_t pci_handles(struct binding *b, struct spawn_handle *x, rights_t 
         if (st == OK)
             add(x, xr, n, DR_IRQ(0), h, DEVMGR_DRV_IRQ_RIGHTS);
     }
-    if (st == OK && (st = jam_dma_cap_create(b->dev, &h)) == OK)   /* bus mastering off now */
+    if (st == OK && (st = jam_dma_cap_create(b->dev, job, &h)) == OK)   /* bus mastering off now */
         add(x, xr, n, DR_DMA, h, DEVMGR_DRV_DMA_RIGHTS);
     return st;
 }
@@ -197,16 +199,17 @@ status_t start_driver(struct binding *b)
     rights_t xr[STARTUP_MAX_HANDLES];
     unsigned n = 0;
     handle_t job = HANDLE_INVALID, proc = HANDLE_INVALID;
-    status_t st = b->kind == BIND_PCI   ? pci_handles(b, x, xr, &n)
-                  : b->kind == BIND_USB ? usb_handles(b, x, xr, &n)
-                  : b->kind == BIND_FS  ? fs_handles(b, x, xr, &n)
-                                        : OK;
-    if (st == OK)
-        st = add_serve(b, x, xr, &n);
-    if (st == OK)
-        st = jam_job_create(startup_handle(SR_JOB), 0, &job);
+    /* The job first: the driver's dma_cap is charged to it. */
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     for (unsigned i = 0; st == OK && i < sizeof(limits) / sizeof(limits[0]); i++)
         st = jam_job_set_limit(job, limits[i].kind, limits[i].value);
+    if (st == OK)
+        st = b->kind == BIND_PCI   ? pci_handles(b, job, x, xr, &n)
+             : b->kind == BIND_USB ? usb_handles(b, x, xr, &n)
+             : b->kind == BIND_FS  ? fs_handles(b, x, xr, &n)
+                                   : OK;
+    if (st == OK)
+        st = add_serve(b, x, xr, &n);
     if (st == OK) {
         st = spawn_driver(b, job, x, xr, n, &proc);   /* consumes the extras either way */
         n = 0;

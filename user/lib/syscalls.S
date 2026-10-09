@@ -479,14 +479,6 @@ jam_vmo_create_physical:
     ret
     .size jam_vmo_create_physical, . - jam_vmo_create_physical
 
-    .globl jam_dma_cap_create
-    .type jam_dma_cap_create, @function
-jam_dma_cap_create:
-    mov $SYS_dma_cap_create, %eax
-    syscall
-    ret
-    .size jam_dma_cap_create, . - jam_dma_cap_create
-
     .globl jam_vmo_pin
     .type jam_vmo_pin, @function
 jam_vmo_pin:
@@ -520,6 +512,14 @@ jam_pci_bus_master_off:
     syscall
     ret
     .size jam_pci_bus_master_off, . - jam_pci_bus_master_off
+
+    .globl jam_dma_cap_create
+    .type jam_dma_cap_create, @function
+jam_dma_cap_create:
+    mov $SYS_dma_cap_create, %eax
+    syscall
+    ret
+    .size jam_dma_cap_create, . - jam_dma_cap_create
 
     .globl jam_klog_open
     .type jam_klog_open, @function

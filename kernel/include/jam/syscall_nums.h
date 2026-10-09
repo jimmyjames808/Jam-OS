@@ -59,11 +59,11 @@
 #define SYS_interrupt_create_msi 97
 #define SYS_interrupt_ack        98
 #define SYS_vmo_create_physical  99
-#define SYS_dma_cap_create       100
 #define SYS_vmo_pin              101
 #define SYS_vmo_unpin            102
 #define SYS_dma_vmo_create       103
 #define SYS_pci_bus_master_off   104
+#define SYS_dma_cap_create       105
 #define SYS_klog_open            110
 #define SYS_klog_read            111
 #define SYS_framebuffer_take     112

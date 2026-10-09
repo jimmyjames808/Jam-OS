@@ -236,7 +236,7 @@ KTEST(resource_sys_rights_and_charges)
     KT_EQ(sys_pci_config_write(&t, root, 0x3c, 1, 0), ERR_WRONG_TYPE);
     KT_EQ(sys_pci_bar_resource(&t, mmio, 0, &x), ERR_WRONG_TYPE);
     KT_EQ(sys_pci_bus_master_off(&t, pci), ERR_WRONG_TYPE);
-    KT_EQ(sys_dma_cap_create(&t, pci, &x), ERR_WRONG_TYPE);
+    KT_EQ(sys_dma_cap_create(&t, pci, HANDLE_INVALID, &x), ERR_WRONG_TYPE);
     KT_EQ(sys_vmo_create_physical(&t, pci, 0, PG, VMO_CACHE_UC, &x), ERR_WRONG_TYPE);
 
     /* Physical VMOs: never RAM, never kernel MMIO, inside the resource. */
@@ -761,11 +761,11 @@ KTEST(resource_dma_close_clears_bus_master)
     /* A driver's copy has no RIGHT_MANAGE: no bus mastering, no dma_cap. */
     KT_EQ(handle_duplicate(&t, dev, RES_RIGHTS & ~RIGHT_MANAGE, &drv), OK);
     KT_EQ(sys_pci_bus_master_off(&t, drv), ERR_ACCESS_DENIED);
-    KT_EQ(sys_dma_cap_create(&t, drv, &x), ERR_ACCESS_DENIED);
+    KT_EQ(sys_dma_cap_create(&t, drv, HANDLE_INVALID, &x), ERR_ACCESS_DENIED);
     /* Nor devmgr's: bus mastering goes on only through the dma_cap (no
      * call turns it on with the device's handle). */
 
-    KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
+    KT_EQ(sys_dma_cap_create(&t, dev, kt_job_handle(&t, j), &cap), OK);
     KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & CMD_BME));   /* a new cap starts with it off */
     KT_EQ(sys_dma_vmo_create(&t, cap, 2 * PG, VMO_CONTIGUOUS | VMO_DMA32, &vh), OK);
     uint64_t addrs[2], id;

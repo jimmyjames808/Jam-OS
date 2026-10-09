@@ -200,7 +200,7 @@ KTEST(dma_iommu_kill_mid_dma)
     handle_t dev, cap, vh;
     struct khandle kh = khandle_from_new(kt_pci_dev_res(d), RES_RIGHTS);
     KT_EQ(handle_insert(&t, &kh, &dev), OK);
-    KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
+    KT_EQ(sys_dma_cap_create(&t, dev, kt_job_handle(&t, j), &cap), OK);
     uint16_t dead_did = VTD_CTX_DID(vtd_fn_read(vtd_fn_of(d)).hi);   /* its domain's */
     KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
     KT_EQ(sys_dma_vmo_create(&t, cap, 2 * PG, VMO_CONTIGUOUS | VMO_DMA32, &vh), OK);

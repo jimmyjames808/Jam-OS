@@ -75,12 +75,12 @@ int64_t sysc_interrupt_create_msi(handle_t dev, uint32_t index, uint32_t flags, 
 int64_t sysc_interrupt_ack(handle_t irq);
 int64_t sysc_vmo_create_physical(handle_t res, uint64_t offset, uint64_t size, uint32_t cache,
                                  uint64_t out);
-int64_t sysc_dma_cap_create(handle_t dev, uint64_t out);
 int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t addrs,
                      uint64_t pin_id);
 int64_t sysc_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);
 int64_t sysc_dma_vmo_create(handle_t dma, uint64_t size, uint32_t flags, uint64_t out);
 int64_t sysc_pci_bus_master_off(handle_t dev);
+int64_t sysc_dma_cap_create(handle_t dev, handle_t job, uint64_t out);
 int64_t sysc_klog_open(handle_t root, uint64_t out);
 int64_t sysc_klog_read(handle_t reader, uint64_t pos, uint64_t buf, uint64_t cap, uint64_t first);
 int64_t sysc_framebuffer_take(handle_t root, uint64_t info, uint64_t vmo, uint64_t owner);
