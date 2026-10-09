@@ -48,7 +48,8 @@ struct pipe_end {
     handle_t ch;        /* the channel end */
     uint8_t *buf;       /* PIPE_SIZE bytes once a message didn't fit a read, else NULL */
     uint32_t at, have;  /* buf[at .. have): read from the channel, not by the program;
-                         * the description's lock */
+                         * changed under the description's lock, stored atomically
+                         * (pipe_ready reads them without it) */
 };
 
 static struct pipe_end *end_of(struct fd_desc *d)
@@ -71,7 +72,7 @@ static struct pipe_end *end_new(handle_t ch, const void *leftover, size_t len)
     p->ch = ch;
     if (len)
         memcpy(p->buf, leftover, len);
-    p->have = (uint32_t)len;
+    __atomic_store_n(&p->have, (uint32_t)len, __ATOMIC_RELAXED);
     return p;
 }
 
@@ -106,7 +107,7 @@ static long take_leftover(struct pipe_end *p, const struct iovec *iov, int iovcn
 {
     size_t k = p->have - p->at < n ? p->have - p->at : n;
     fd_iov_scatter(iov, iovcnt, 0, p->buf + p->at, k);
-    p->at += (uint32_t)k;
+    __atomic_store_n(&p->at, p->at + (uint32_t)k, __ATOMIC_RELAXED);
     return (long)k;
 }
 
@@ -126,8 +127,8 @@ static long next_message_locked(struct pipe_end *p, const struct iovec *iov, int
                 return -ENOMEM;
             st = read_msg(p->ch, p->buf, PIPE_SIZE, &got);
             if (st == OK && got) {
-                p->at = 0;
-                p->have = got;
+                __atomic_store_n(&p->at, 0, __ATOMIC_RELAXED);
+                __atomic_store_n(&p->have, got, __ATOMIC_RELAXED);
                 return take_leftover(p, iov, iovcnt, n);
             }
         }
@@ -258,8 +259,8 @@ static long pipe_ioctl(struct fd_desc *d, unsigned long req, long arg)
         r = -ENOMEM;
     uint32_t got;
     if (!r && p->at == p->have && read_msg(p->ch, p->buf, PIPE_SIZE, &got) == OK) {
-        p->at = 0;
-        p->have = got;
+        __atomic_store_n(&p->at, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&p->have, got, __ATOMIC_RELAXED);
     }
     if (!r)
         *(int *)(uintptr_t)arg = (int)(p->have - p->at);
@@ -299,7 +300,8 @@ static long pipe_give(struct fd_desc *d, struct fd_given *out)
         out->nhandles = 1;
         out->data = data;
         out->data_len = left;
-        p->at = p->have = 0;
+        __atomic_store_n(&p->at, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&p->have, 0, __ATOMIC_RELAXED);
     }
     lock_give(&d->lock);
     return r;
@@ -395,7 +397,7 @@ static long make_pair(const struct fd_ops *ops, const rights_t rights[2],
     long r = fd[1] < 0 ? fd[1] : d[0] && d[1] ? 0 : -ENOMEM;
     for (int i = 0; i < 2; i++) {
         if (!r) {
-            fd_set(fd[i], d[i], cloexec);
+            fd_place(fd[i], d[i], cloexec);
             fds[i] = (int)fd[i];
             continue;
         }

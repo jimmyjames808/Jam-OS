@@ -28,7 +28,20 @@ static const struct {
     { "poll", pt_poll },
     { "proc", pt_proc },
     { "tty", pt_tty },
+    { "files", pt_files },
+    { "files-many", pt_files_many },
 };
+
+/* The sections run only when named (long ones). */
+static const char *const asked_only[] = { "files-many" };
+
+static bool by_default(const char *name)
+{
+    for (unsigned i = 0; i < sizeof(asked_only) / sizeof(asked_only[0]); i++)
+        if (!strcmp(name, asked_only[i]))
+            return false;
+    return true;
+}
 
 static void run(unsigned i, char **argv)
 {
@@ -53,10 +66,14 @@ int main(int argc, char **argv)
         return pt_child_tty();
     if (argc >= 2 && !strcmp(argv[1], "--child-tty-handover"))
         return pt_child_tty_handover();
+    if (argc >= 2 && !strcmp(argv[1], "--child-files"))
+        return pt_child_files();
+    if (argc >= 2 && !strcmp(argv[1], "--child-rofs"))
+        return pt_child_rofs();
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {
-        bool asked = argc < 2;
+        bool asked = argc < 2 && by_default(sections[i].name);
         for (int a = 1; a < argc && !asked; a++)
             asked = !strcmp(argv[a], sections[i].name);
         if (asked)

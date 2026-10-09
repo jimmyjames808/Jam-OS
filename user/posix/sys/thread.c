@@ -171,9 +171,10 @@ int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
     return (int)tid;
 }
 
-unsigned __jam_unmapself_prepare(void)
+unsigned __jam_unmapself_prepare(void *base, unsigned long size)
 {
     forget_self();
+    mem_forget((uint64_t)(uintptr_t)base, size);
     return lx_self_vmar();
 }
 

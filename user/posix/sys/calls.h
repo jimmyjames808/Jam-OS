@@ -37,8 +37,18 @@ lx_call lx_uname, lx_getrandom, lx_sysinfo, lx_sched_getaffinity;
 
 /* The descriptor table: the calls that route to a descriptor's kind (fd.c). */
 lx_call lx_read, lx_write, lx_readv, lx_writev, lx_pread64, lx_pwrite64, lx_preadv,
-        lx_pwritev, lx_lseek, lx_close, lx_fstat, lx_ioctl, lx_fsync, lx_fdatasync,
-        lx_ftruncate, lx_getdents64;
+        lx_pwritev, lx_preadv2, lx_pwritev2, lx_lseek, lx_close, lx_fstat, lx_ioctl, lx_fsync,
+        lx_fdatasync, lx_ftruncate, lx_getdents64;
+
+/* Files, directories and what they are (file.c, dir.c, meta.c). */
+lx_call lx_open, lx_openat, lx_creat, lx_truncate;
+lx_call lx_mkdir, lx_mkdirat, lx_unlink, lx_unlinkat, lx_rmdir, lx_rename, lx_renameat,
+        lx_renameat2, lx_chdir, lx_fchdir, lx_getcwd;
+lx_call lx_stat, lx_lstat, lx_newfstatat, lx_statfs, lx_fstatfs, lx_access, lx_faccessat,
+        lx_faccessat2, lx_chmod, lx_fchmod, lx_fchmodat, lx_chown, lx_lchown, lx_fchown,
+        lx_fchownat, lx_utimensat, lx_link, lx_linkat, lx_symlink, lx_symlinkat, lx_readlink,
+        lx_readlinkat, lx_mknod, lx_mknodat, lx_umask, lx_sync, lx_syncfs, lx_fadvise64,
+        lx_fallocate;
 
 /* Pipes, dup and fcntl, memfd and eventfd (pipe.c, dup.c, memfd.c,
  * eventfd.c; /dev and /etc are dev.c's and etc.c's, reached through the

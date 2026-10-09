@@ -30,7 +30,7 @@
  * close doesn't interrupt a read in progress).
  *
  * **Who calls what.** A kind's file makes a description with fd_new and
- * installs it with fd_install (or fd_alloc and fd_set when the slot must
+ * installs it with fd_install (or fd_alloc and fd_place when the slot must
  * be reserved before a side effect: open with O_CREAT|O_EXCL, pipe2's two
  * ends). dup2 and dup3 use fd_replace. posix_spawn walks the table with
  * fd_next and asks each description what a child gets (fd_give). The
@@ -107,6 +107,9 @@ struct fd_ops {
      * is checked before (EBADF). [read: -EINVAL; write: -EINVAL] */
     long (*read)(struct fd_desc *d, const struct iovec *iov, int iovcnt, int64_t pos);
     long (*write)(struct fd_desc *d, const struct iovec *iov, int iovcnt, int64_t pos);
+    /* pwritev2 with RWF_NOAPPEND: write at pos (>= 0) even with O_APPEND
+     * (musl's pwrite asks so). [write's] */
+    long (*write_at)(struct fd_desc *d, const struct iovec *iov, int iovcnt, int64_t pos);
     /* lseek: the new offset. [-ESPIPE] */
     long (*seek)(struct fd_desc *d, int64_t off, int whence);
     /* fstat into *st (zeroed by the caller). [a character device, 0600] */
@@ -193,10 +196,10 @@ struct fd_desc *fd_get(long fd);
  * range). */
 long            fd_alloc(long min);
 /* Put d in a descriptor fd_alloc reserved (d's reference goes to it). */
-void            fd_set(long fd, struct fd_desc *d, bool cloexec);
+void            fd_place(long fd, struct fd_desc *d, bool cloexec);
 /* Give back a reserved descriptor unused. */
 void            fd_free(long fd);
-/* fd_alloc then fd_set: the descriptor, or -errno (d's reference is
+/* fd_alloc then fd_place: the descriptor, or -errno (d's reference is
  * dropped then). d's reference is consumed either way. */
 long            fd_install(struct fd_desc *d, long min, bool cloexec);
 /* Put d at fd, closing what was there (dup2, dup3, the hand-over): fd,

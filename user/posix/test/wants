@@ -1,2 +1,3 @@
 posix
+mount /data rw
 mount /boot r

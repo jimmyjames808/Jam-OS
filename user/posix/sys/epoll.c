@@ -47,12 +47,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 
-/* fd.h's fd_set (the table's call, which this file doesn't make) and
- * <sys/select.h>'s fd_set (a type, through <sys/epoll.h>'s <sys/types.h>)
- * can't meet: the call goes by another name here. */
-#define fd_set fd_set_call
 #include "ready.h"
-#undef fd_set
 
 #define EPOLL_KNOWN (EPOLLIN | EPOLLPRI | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDNORM |     \
                      EPOLLRDBAND | EPOLLWRNORM | EPOLLWRBAND | EPOLLMSG | EPOLLRDHUP |       \
