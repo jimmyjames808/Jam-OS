@@ -122,7 +122,7 @@ status_t sys_port_wait(struct handle_table *t, handle_t port, uint64_t deadline_
     status_t st = handle_get(t, port, OBJ_PORT, RIGHT_READ, &po, NULL);
     if (st != OK)
         return st;
-    st = port_wait(container_of(po, struct port, base), deadline_ns, out);
+    st = port_wait_interruptible(container_of(po, struct port, base), deadline_ns, out);
     kobject_unref(po);   /* may be the last reference if the handle closed meanwhile */
     return st;
 }
@@ -134,7 +134,7 @@ status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
     status_t st = handle_get(t, h, OBJ_NONE, RIGHT_WAIT, &obj, NULL);
     if (st != OK)
         return st;
-    st = object_wait_one(obj, mask, deadline_ns, observed);
+    st = object_wait_one_interruptible(obj, mask, deadline_ns, observed);
     kobject_unref(obj);
     return st;
 }

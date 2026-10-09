@@ -157,6 +157,14 @@ status_t nvme_read(struct nvme *c, struct nvme_io *io)
     return OK;
 }
 
+bool io_cancel(struct nvme *c, struct nvme_io *io)
+{
+    if (!io->waiting || io->sent || io->inflight)
+        return false;
+    wait_remove(c, io);
+    return true;
+}
+
 /* The PRPs of `len` bytes at byte `boff` of io's buffer, for slot index i. */
 static void prps(struct nvme *c, const struct nvme_io *io, uint64_t boff, uint32_t len, uint32_t i,
                  uint64_t *prp1, uint64_t *prp2)

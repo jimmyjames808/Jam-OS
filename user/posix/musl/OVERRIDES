@@ -1,0 +1,32 @@
+# The files of musl (third_party/musl, vendored unmodified) that the build
+# replaces with ours: musl's object for the upstream file is left out of
+# libc.a and ours is compiled in its place (a header: ours is found first
+# on the include path). docs/M13-PLAN.md section 1 says why each exists.
+#
+# One override per line: the upstream file (relative to third_party/musl),
+# the SHA-256 of the upstream file our file was written against, and our
+# file (relative to the top of the tree). tools/checkoverrides.py checks
+# every hash before musl is built, and `make check` runs it with its
+# self-test: a new musl release that changed one of these files stops the
+# build until someone has read upstream's change, brought ours up to date
+# and recorded the new hash here.
+#
+# Later tracks add theirs the same way (posix_spawn, pthread_cancel's
+# syscall_cp, lookup_name).
+
+# Every __syscallN a call to __jam_syscall (user/posix/sys/calls.c); no vDSO.
+arch/x86_64/syscall_arch.h 11982f6196c27975d0ab0c55e0810eaf8ff7abcf4d4166fc06917b30d025f306 user/posix/musl/arch/x86_64/syscall_arch.h
+# _start: the startup channel in rdi, not Linux's stack block.
+crt/crt1.c 012269a9166c76a4812d5b2437a43589ad1759999bd369d571527ef345615999 user/posix/crt/crt1.c
+# The thread pointer: thread_set_fs_base.
+src/thread/x86_64/__set_thread_area.s 9a6299228be5f8f467652263e8f98c1f9ab2e0937243589b8c5642f0ebe3236d user/posix/musl/src/thread/x86_64/__set_thread_area.c
+# A thread: thread_create and thread_start (user/posix/sys/thread.c).
+src/thread/x86_64/clone.s 1046d162ddd8d902a657b8774bc9c0e8f029c24ea6394055b4ffb0a5c39d39f1 user/posix/musl/src/thread/x86_64/clone.c
+# A detached thread's end: vmar_unmap of its own stack, then thread_exit.
+src/thread/x86_64/__unmapself.s dab063e96f4c9874892b39545e3ea02cd6f6e71532d84705422bd0a8ad62eb00 user/posix/musl/src/thread/x86_64/__unmapself.S
+# A cancellation point's call: __jam_syscall (no cancellation by signal yet).
+src/thread/x86_64/syscall_cp.s 3d84c844e6a26b934f80fd35e0c7d814b184e489fdd71cd95b176b8ed15be618 user/posix/musl/src/thread/x86_64/syscall_cp.S
+# vfork: ENOSYS (no fork of any kind).
+src/process/x86_64/vfork.s 4d5aad85cb686f9cf66e32f5889471614d7b564503cb2038d21aa6e442287fdd user/posix/musl/src/process/x86_64/vfork.c
+# The signal restorer: never used (signals are delivered in libc).
+src/signal/x86_64/restore.s 1aa9c1d8b1d809a64f5edcfcb518f9d95e8cf538ddeab74d6048e489e63b3ea1 user/posix/musl/src/signal/x86_64/restore.S

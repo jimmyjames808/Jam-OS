@@ -147,6 +147,9 @@ struct thread {
     /* Set once by thread_cancel, never cleared: every cancellable wait
      * returns ERR_CANCELED from then on. */
     bool              cancel_pending;
+    /* Set by thread_interrupt, cleared only by the thread itself when an
+     * interruptible wait it is in returns ERR_INTERRUPTED (wait.c). */
+    bool              interrupt_pending;
 
     /* A free message buffer of the channels' (kernel/object/channel.c: its
      * slot), or NULL. A small message for a reader that waits for it is
@@ -205,6 +208,30 @@ status_t thread_block_cancellable(spinlock_t *lock, uint64_t *irqflags, uint64_t
 status_t thread_block_cancellable_unlocked(spinlock_t *lock, uint64_t irqflags,
                                            uint64_t deadline_ns);
 status_t thread_sleep_cancellable(uint64_t ns);
+/* The interruptible forms (wait.c's header has the three kinds of wait):
+ * as the cancellable ones, but they also return ERR_INTERRUPTED once
+ * thread_interrupt has been called on this thread and no interruptible
+ * wait has taken that interrupt yet. They report it without taking it: a
+ * caller that then returns ERR_INTERRUPTED itself passes that status
+ * through thread_interrupt_consume; one whose condition came true
+ * meanwhile returns its result and leaves the interrupt for the next
+ * interruptible wait. */
+status_t thread_block_interruptible(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns);
+status_t thread_block_interruptible_unlocked(spinlock_t *lock, uint64_t irqflags,
+                                             uint64_t deadline_ns);
+/* sleep_until: OK at the deadline, ERR_CANCELED, or ERR_INTERRUPTED
+ * (taken). */
+status_t thread_sleep_until_interruptible(uint64_t deadline_ns);
+/* End t's current interruptible wait, or its next one at once if it is
+ * in none (latched: several before a wait end that one wait). Any other
+ * wait t is in sees a spurious wakeup. Any context but an interrupt
+ * handler's; t must stay allocated meanwhile. */
+void thread_interrupt(struct thread *t);
+/* Returns st; if st is ERR_INTERRUPTED, the current thread's interrupt is
+ * taken (cleared) first. */
+status_t thread_interrupt_consume(status_t st);
+/* Is an interrupt latched on t, not yet taken? (Tests.) */
+bool thread_interrupt_pending(const struct thread *t);
 /* Ask t to stop waiting: set its cancel flag (for good) and wake it. Its
  * cancellable waits return ERR_CANCELED; plain waits just see a spurious
  * wakeup and carry on. */
@@ -332,6 +359,9 @@ void waitqueue_wait_until(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqf
 /* Cancellable form of waitqueue_wait_until (DEADLINE_NEVER for none). */
 status_t waitqueue_wait_cancellable(struct waitqueue *wq, spinlock_t *lock, uint64_t *irqflags,
                                     uint64_t deadline_ns);
+/* Interruptible form (thread_block_interruptible's rules). */
+status_t waitqueue_wait_interruptible(struct waitqueue *wq, spinlock_t *lock,
+                                      uint64_t *irqflags, uint64_t deadline_ns);
 void waitqueue_wake_one(struct waitqueue *wq);
 void waitqueue_wake_all(struct waitqueue *wq);
 

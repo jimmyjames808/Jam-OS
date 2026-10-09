@@ -533,7 +533,7 @@ DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
 # object (checked by checkdriver.py with the rest of it).
 DRV_LIB_rtl8125 := netserver
 DRV_LIB_e1000e  := netserver
-DRV_LIB_nvme    := sha256
+DRV_LIB_nvme    := sha256 parttable parttable_gpt
 DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c)) \
                $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(DRV_LIB_$(1)))
 
@@ -780,6 +780,9 @@ clean:
 
 -include $(OBJS:.o=.d) $(USER_OBJS:.o=.d) $(FATFS_OBJS:.o=.d) $(LWIP_OBJS:.o=.d) \
          $(patsubst %.o,%.d,$(foreach d,$(DRIVERS),$(call DRV_OBJS,$(d))))
+
+# POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
+include user/posix/posix.mk
 
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real
 # build's flags for every file, from a dry run (tools/compdb.py).

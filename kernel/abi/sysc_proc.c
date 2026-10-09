@@ -4,7 +4,9 @@
  * Rights: creating a process in a job, or a child job, needs RIGHT_WRITE on
  * the job; starting, killing and making threads in a process needs
  * RIGHT_WRITE on it; starting a thread or changing its priority needs
- * RIGHT_WRITE on the thread; reading info needs RIGHT_INSPECT. Changing a
+ * RIGHT_WRITE on the thread; interrupting a thread's wait needs
+ * RIGHT_SIGNAL on it; reading info needs RIGHT_INSPECT. A thread's tid
+ * word is its own business: no handle. Changing a
  * job's limits needs RIGHT_MANAGE, which only the job's creator gets
  * (JOB_RIGHTS from job_create); the processes IN a job see it through
  * JOB_RIGHTS_OWN, without it, so a program can't lift its own limits. Killing
@@ -196,6 +198,36 @@ int64_t sysc_thread_set_priority(handle_t thread, int32_t prio)
     st = uthread_set_priority(uthread_from_kobject(to), prio);
     kobject_unref(to);
     return st;
+}
+
+int64_t sysc_thread_set_tid_word(uint64_t addr)
+{
+    return uthread_set_tid_word(addr);
+}
+
+int64_t sysc_thread_interrupt(handle_t thread)
+{
+    SYSC_TABLE(t);
+    struct kobject *to;
+    status_t st = handle_get(t, thread, OBJ_THREAD, RIGHT_SIGNAL, &to, NULL);
+    if (st != OK)
+        return st;
+    st = uthread_interrupt(uthread_from_kobject(to));
+    kobject_unref(to);
+    return st;
+}
+
+int64_t sysc_thread_get_info(handle_t thread, uint64_t out)
+{
+    SYSC_TABLE(t);
+    struct kobject *to;
+    status_t st = handle_get(t, thread, OBJ_THREAD, RIGHT_INSPECT, &to, NULL);
+    if (st != OK)
+        return st;
+    struct thread_info info;
+    uthread_get_info(uthread_from_kobject(to), &info);
+    kobject_unref(to);
+    return copy_to_user(out, &info, sizeof(info)) == OK ? OK : ERR_INVALID_ARGS;
 }
 
 /* ---- jobs ----------------------------------------------------------------------- */

@@ -6,8 +6,11 @@
  * window on the compositor's desktop (/svc/wayland), whose text it draws
  * into the window's buffers and mirrors to the serial port; the
  * compositor owns the screen and the input (M12's Q14: the full-screen
- * console, its input sources and its lent screen are gone). Format: see
- * tools/genidl.py.
+ * console, its input sources and its lent screen are gone). A console
+ * started with the argument "conn" is a terminal on a connection instead:
+ * its output goes out as bytes on a master channel, the keys come in on it,
+ * and its size comes on a conn_ctl channel (conn_ctl.idl, <termconn.h>); the
+ * methods below are the same. Format: see tools/genidl.py.
  *
  * Restart: if the channel's peer closes (the console restarted), clients
  * ask devmgr/init for the new one. The console keeps nothing across a

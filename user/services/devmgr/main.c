@@ -116,8 +116,11 @@ static const struct {
     /* QEMU's Intel 82574L, the network tests' card (QEMU_NET; the PC has
      * none). Like every network driver it gets the boot's vlan=. */
     { 0x8086, 0x10d3, ANY_CLASS, "drv/e1000e", NULL },
-    /* Any NVM Express controller (class 01 08 02): read only (docs/M12.7-PLAN.md). */
-    { 0xffff, 0xffff, 0x010802, "drv/nvme", NULL },
+    /* Any NVM Express controller (class 01 08 02): read only (docs/M12.7-PLAN.md).
+     * Only on a boot with an nvmetest= word until stage 1's PC check signs
+     * the driver off: the PC's one NVMe drive is Windows', and an everyday
+     * boot (the M12 sign-off's) leaves it alone. */
+    { 0xffff, 0xffff, 0x010802, "drv/nvme", "nvmetest" },
 };
 
 struct binding devs[MAX_DEVS];
@@ -176,7 +179,7 @@ const char *bdf(const struct binding *b)
 static bool pci_word_given(const char *word)
 {
     return (!strcmp(word, "netprobe") && netprobe) || (!strcmp(word, "netsend") && netsend) ||
-           (!strcmp(word, "net") && net);
+           (!strcmp(word, "net") && net) || (!strcmp(word, "nvmetest") && nvmetest);
 }
 
 /* The driver for function i (NULL: none). */

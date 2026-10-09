@@ -1108,6 +1108,7 @@ static inline status_t devmgr_serve(handle_t ch, const struct devmgr_ops *ops, v
 #define DEVMGRCTL_DEVICE_CHANNEL   0x005b000au
 #define DEVMGRCTL_SHUTDOWN         0x005b000bu
 #define DEVMGRCTL_KILL_PROCESS     0x005b000cu
+#define DEVMGRCTL_DISK_STORAGE     0x005b000du
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct devmgrctl_kill_req {
@@ -1233,6 +1234,18 @@ struct devmgrctl_kill_process_req {
     uint64_t koid;
 } __attribute__((packed));
 struct devmgrctl_kill_process_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct devmgrctl_disk_storage_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t kind;
+    uint32_t a;
+    uint32_t b;
+    uint32_t n;
+} __attribute__((packed));
+struct devmgrctl_disk_storage_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -1782,6 +1795,67 @@ static inline status_t devmgrctl_kill_process(handle_t ch, uint64_t koid)
     return devmgrctl_kill_process_call(ch, false, DEADLINE_NEVER, koid);
 }
 
+/* devmgrctl_disk_storage_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t devmgrctl_disk_storage_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t kind, uint32_t a, uint32_t b, uint32_t n, handle_t *out_storage)
+{
+    _Alignas(8) uint8_t idl_b0[21];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct devmgrctl_disk_storage_req *idl_q = (struct devmgrctl_disk_storage_req *)idl_b0;
+    const struct devmgrctl_disk_storage_rep *idl_r = (const struct devmgrctl_disk_storage_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = DEVMGRCTL_DISK_STORAGE;
+    idl_q->kind = kind;
+    idl_q->a = a;
+    idl_q->b = b;
+    idl_q->n = n;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_rh[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_storage)
+            *out_storage = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    (void)idl_o;
+    return idl_st;
+}
+/* A `storage` channel of the caller's own to a disk's driver (svc.connect
+ * asked of it, as for volumes' on the DISKS channel), for tests that drive
+ * a disk's protocols themselves (utest's NVMe cases). No more authority
+ * than set_volumes, which hands every disk to whoever holds this channel;
+ * the query channel never gets one. Answered when the driver has
+ * answered. ERR_NOT_SUPPORTED: not a disk's driver; ERR_BAD_STATE: its
+ * driver isn't running, or one is being asked of it for a test already;
+ * ERR_PEER_CLOSED: the driver ended before it answered. */
+static inline status_t devmgrctl_disk_storage_until(handle_t ch, uint64_t deadline_ns, uint8_t kind, uint32_t a, uint32_t b, uint32_t n, handle_t *out_storage)
+{
+    return devmgrctl_disk_storage_call(ch, false, deadline_ns, kind, a, b, n, out_storage);
+}
+static inline status_t devmgrctl_disk_storage_within(handle_t ch, uint64_t timeout_ns, uint8_t kind, uint32_t a, uint32_t b, uint32_t n, handle_t *out_storage)
+{
+    return devmgrctl_disk_storage_call(ch, true, timeout_ns, kind, a, b, n, out_storage);
+}
+static inline status_t devmgrctl_disk_storage(handle_t ch, uint8_t kind, uint32_t a, uint32_t b, uint32_t n, handle_t *out_storage)
+{
+    return devmgrctl_disk_storage_call(ch, false, DEADLINE_NEVER, kind, a, b, n, out_storage);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* devmgrctl_kill without waiting: the request, with the caller's txid (not 0).
@@ -2237,6 +2311,50 @@ static inline status_t devmgrctl_kill_process_result(const void *idl_rep, struct
     return OK;
 }
 
+/* devmgrctl_disk_storage without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then devmgrctl_disk_storage_result. */
+static inline status_t devmgrctl_disk_storage_send(handle_t ch, uint32_t idl_txid, uint8_t kind, uint32_t a, uint32_t b, uint32_t n)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[21];
+    struct devmgrctl_disk_storage_req *idl_q = (struct devmgrctl_disk_storage_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = DEVMGRCTL_DISK_STORAGE;
+    idl_q->kind = kind;
+    idl_q->a = a;
+    idl_q->b = b;
+    idl_q->n = n;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to devmgrctl_disk_storage_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t devmgrctl_disk_storage_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_storage)
+{
+    const struct devmgrctl_disk_storage_rep *idl_r = (const struct devmgrctl_disk_storage_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_m->hs[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_storage)
+        *out_storage = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -2256,6 +2374,7 @@ struct devmgrctl_ops {
     status_t (*device_channel)(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n, handle_t *out_device);
     status_t (*shutdown)(void *ctx);
     status_t (*kill_process)(void *ctx, uint64_t koid);
+    status_t (*disk_storage)(void *ctx, struct idl_txn idl_txn, uint8_t kind, uint32_t a, uint32_t b, uint32_t n, handle_t *out_storage);
 };
 
 /* Answer the devmgrctl.kill request kept in txn: idl_st and, if it is OK, the
@@ -2484,6 +2603,30 @@ static inline status_t devmgrctl_reply_kill_process(struct idl_txn idl_txn, stat
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
+/* Answer the devmgrctl.disk_storage request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t devmgrctl_reply_disk_storage(struct idl_txn idl_txn, status_t idl_st, handle_t storage)
+{
+    handle_t idl_hs[1] = { storage };
+    _Alignas(8) uint8_t idl_b0[8];
+    struct devmgrctl_disk_storage_rep *idl_r = (struct devmgrctl_disk_storage_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(storage != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
+    return idl_ws;
+}
+
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (DEVMGRCTL_REP_MAX bytes) and the handles it carries
  * into rhs (DEVMGRCTL_REP_HANDLES slots; *rhn of them). Returns the reply's
@@ -2500,7 +2643,6 @@ static inline uint32_t devmgrctl_dispatch_h(handle_t ch, const struct devmgrctl_
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    (void)ch;
     if (n < sizeof(uint32_t)) {
         idl_close_all(idl_hs, idl_nh);
         return 0;
@@ -2781,6 +2923,39 @@ static inline uint32_t devmgrctl_dispatch_h(handle_t ch, const struct devmgrctl_
             return sizeof(*idl_h);
         return sizeof(*idl_r);
     }
+    case DEVMGRCTL_DISK_STORAGE: {
+        const struct devmgrctl_disk_storage_req *idl_q = (const struct devmgrctl_disk_storage_req *)req;
+        struct devmgrctl_disk_storage_rep *idl_r = (struct devmgrctl_disk_storage_rep *)rep;
+        handle_t out_storage = HANDLE_INVALID;
+        if (n != sizeof(*idl_q) || idl_nh) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->disk_storage) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->disk_storage(ctx, idl_txn, idl_q->kind, idl_q->a, idl_q->b, idl_q->n, &out_storage);
+        /* IDL_LATER: the handler answers with devmgrctl_reply_disk_storage. */
+        if (idl_st == IDL_LATER) {
+            if (out_storage != HANDLE_INVALID)
+                drv_handle_close(out_storage);
+            return 0;
+        }
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_storage != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_storage != HANDLE_INVALID)
+                drv_handle_close(out_storage);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_storage;
+        *rhn = 1;
+        return sizeof(*idl_r);
+    }
     }
     idl_close_all(idl_hs, idl_nh);
     idl_h->status = ERR_NOT_SUPPORTED;
@@ -2796,7 +2971,7 @@ static inline uint32_t devmgrctl_dispatch_on(handle_t ch, const struct devmgrctl
     return devmgrctl_dispatch_h(ch, ops, ctx, req, n, NULL, 0, rep, rhs, rhn);
 }
 
-/* devmgrctl_dispatch_on without the channel (the protocol has no `later` method). */
+/* devmgrctl_dispatch_on without the channel (a `later` handler's txn then has none: use devmgrctl_dispatch_on). */
 static inline uint32_t devmgrctl_dispatch(const struct devmgrctl_ops *ops, void *ctx, const void *req, uint32_t n,
                                           void *rep, handle_t *rhs, uint32_t *rhn)
 {

@@ -84,6 +84,9 @@ void         pmm_free_page_phys(uint64_t pa);
  * drains the heap's per-CPU magazines first (heap.c), so call it from
  * thread context with no heap lock held. */
 void         pmm_stats(uint64_t *total_pages, uint64_t *free_pages);
+/* The pages the allocator manages (pmm_stats' total, without its drain:
+ * cheap enough for a call any program may make). */
+uint64_t     pmm_total_pages(void);
 uint64_t     pmm_max_pfn(void);
 /* Does [base, base + len) touch memory the boot memory map calls RAM
  * (usable, loader/ACPI reclaimable, ACPI NVS, kernel and modules) or bad

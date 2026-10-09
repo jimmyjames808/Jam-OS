@@ -320,6 +320,7 @@ comment saying why it is safe.
 | `ERR_BAD_STATE` | right call, wrong moment (already started, closed) |
 | `ERR_PEER_CLOSED` | the other end is gone: reconnect per the protocol |
 | `ERR_TIMED_OUT` / `ERR_CANCELED` | deadline passed / thread or wait cancelled |
+| `ERR_INTERRUPTED` | an interruptible wait ended by `thread_interrupt` (`EINTR`) |
 | `ERR_NOT_SUPPORTED` / `ERR_NOT_FOUND` | not implemented or not allowed by design / no such thing |
 
 - **Cleanup, the house style** (decided for Jam OS; Linux prefers goto

@@ -223,3 +223,12 @@ protocol devmgrctl 91
 # init's `kill <name>` finds the process by name in the kernel's list and
 # asks here, one call. ERR_NOT_FOUND: devmgr runs no such process.
 12 kill_process  (u64 koid) -> ()
+# A `storage` channel of the caller's own to a disk's driver (svc.connect
+# asked of it, as for volumes' on the DISKS channel), for tests that drive
+# a disk's protocols themselves (utest's NVMe cases). No more authority
+# than set_volumes, which hands every disk to whoever holds this channel;
+# the query channel never gets one. Answered when the driver has
+# answered. ERR_NOT_SUPPORTED: not a disk's driver; ERR_BAD_STATE: its
+# driver isn't running, or one is being asked of it for a test already;
+# ERR_PEER_CLOSED: the driver ended before it answered.
+13 disk_storage  (u8 kind, u32 a, u32 b, u32 n) -> (handle<channel> storage) later

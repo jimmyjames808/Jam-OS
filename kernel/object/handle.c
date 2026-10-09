@@ -5,13 +5,15 @@
  * Charges are taken before a slot is filled and credited when it goes back
  * on the free list; t->charged (under the lock) says how many are out, so
  * destroying the table credits exactly those. */
-#include <jam/channel.h>   /* channel_received */
+#include <jam/channel.h>   /* channel_get_info */
 #include <jam/handle.h>
 #include <jam/mm.h>
+#include <jam/pager.h>
 #include <jam/panic.h>
 #include <jam/pathstat.h>
 #include <jam/process.h>
 #include <jam/string.h>
+#include <jam/vmo.h>
 
 struct handle_slot {
     struct kobject *obj;        /* NULL: free or in transit */
@@ -248,30 +250,7 @@ static struct khandle reserve_slot_locked(struct handle_table *t, struct handle_
     return kh;
 }
 
-/* A channel end put into t: t's job is its reader's now (M12's Q2,
- * channel_received). ref: a reference of ours, dropped here. */
-static void channel_into(struct handle_table *t, struct kobject *ref, status_t st)
-{
-    if (!ref)
-        return;
-    if (st == OK)
-        channel_received(ref, t->job);
-    kobject_unref(ref);
-}
-
-static status_t insert_kh(struct handle_table *t, struct khandle *kh, handle_t *out);
-
 status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out)
-{
-    struct kobject *ch = kh->obj && kh->obj->type == OBJ_CHANNEL ? kh->obj : NULL;
-    if (ch)
-        kobject_ref(ch);   /* the insert gives kh's away */
-    status_t st = insert_kh(t, kh, out);
-    channel_into(t, ch, st);
-    return st;
-}
-
-static status_t insert_kh(struct handle_table *t, struct khandle *kh, handle_t *out)
 {
     if (!kh->obj)
         return ERR_INVALID_ARGS;
@@ -414,6 +393,9 @@ status_t handle_info(struct handle_table *t, handle_t h, struct handle_info *out
     case OBJ_PROCESS:
         out->related_koid = process_job_koid(process_from_kobject(obj));
         break;
+    case OBJ_VMO:
+        out->related_koid = vmo_pager_koid(vmo_from_kobject(obj));   /* 0 unless a pager's */
+        break;
     default:
         break;
     }
@@ -529,19 +511,7 @@ static struct handle_slot *intransit_slot(const struct handle_table *t, handle_t
     return NULL;
 }
 
-static status_t untake_kh(struct handle_table *t, handle_t h, struct khandle *kh, handle_t *out);
-
 status_t handle_untake(struct handle_table *t, handle_t h, struct khandle *kh, handle_t *out)
-{
-    struct kobject *ch = kh->obj && kh->obj->type == OBJ_CHANNEL ? kh->obj : NULL;
-    if (ch)
-        kobject_ref(ch);
-    status_t st = untake_kh(t, h, kh, out);
-    channel_into(t, ch, st);
-    return st;
-}
-
-static status_t untake_kh(struct handle_table *t, handle_t h, struct khandle *kh, handle_t *out)
 {
     if (!kh->obj)
         return ERR_INVALID_ARGS;

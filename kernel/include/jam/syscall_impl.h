@@ -67,10 +67,13 @@ int64_t sysc_thread_set_fs_base(uint64_t base);
 int64_t sysc_thread_yield(void);
 int64_t sysc_thread_start(handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg0,
                           uint64_t arg1, uint64_t fs_base);
+int64_t sysc_thread_set_tid_word(uint64_t addr);
 int64_t sysc_futex_wait(uint64_t addr, uint32_t expected, uint64_t deadline_ns, uint32_t flags);
 int64_t sysc_futex_wake(uint64_t addr, uint32_t count, uint32_t flags);
 int64_t sysc_futex_requeue(uint64_t addr, uint32_t wake, uint64_t addr2, uint32_t requeue,
                            uint32_t flags);
+int64_t sysc_thread_interrupt(handle_t thread);
+int64_t sysc_thread_get_info(handle_t thread, uint64_t out);
 int64_t sysc_resource_create(handle_t parent, uint32_t kind, uint64_t base, uint64_t size,
                              uint64_t out);
 int64_t sysc_pci_enum(handle_t pci, uint32_t index, uint64_t out);
@@ -106,6 +109,7 @@ int64_t sysc_proc_list(handle_t root, uint64_t out, uint32_t cap);
 int64_t sysc_rtc_read(handle_t root, uint64_t out);
 int64_t sysc_wallclock_get(uint64_t out);
 int64_t sysc_wallclock_set(handle_t root, uint64_t in);
+int64_t sysc_sys_public_info(uint64_t out);
 int64_t sysc_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, uint64_t cmdline,
                         uint64_t len, uint32_t flags);
 int64_t sysc_kexec_reboot(handle_t root);

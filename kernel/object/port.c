@@ -422,7 +422,8 @@ status_t port_queue_user(struct port *p, const struct port_packet *pkt)
     return OK;
 }
 
-status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out)
+static status_t wait_packet(struct port *p, uint64_t deadline_ns, struct port_packet *out,
+                            bool intr)
 {
     PATH_MARK(PATH_MK_WAIT_IN);
     uint64_t f = spin_lock_irqsave(&p->base.lock);
@@ -433,10 +434,13 @@ status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out
             spin_unlock_irqrestore(&p->base.lock, f);
             return ERR_TIMED_OUT;
         }
-        if (waitqueue_wait_cancellable(&p->waiters, &p->base.lock, &f, deadline_ns) != OK &&
-            list_empty(&p->queue)) {
+        status_t bs = intr ? waitqueue_wait_interruptible(&p->waiters, &p->base.lock, &f,
+                                                          deadline_ns)
+                           : waitqueue_wait_cancellable(&p->waiters, &p->base.lock, &f,
+                                                        deadline_ns);
+        if (bs != OK && list_empty(&p->queue)) {
             spin_unlock_irqrestore(&p->base.lock, f);
-            return ERR_CANCELED;
+            return thread_interrupt_consume(bs);   /* ERR_CANCELED or ERR_INTERRUPTED */
         }
     }
     struct port_qentry *e = list_first(&p->queue, struct port_qentry, node);
@@ -459,4 +463,15 @@ status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out
         user_packet_free(e);
     PATH_MARK(PATH_MK_WAIT_OUT);
     return OK;
+}
+
+status_t port_wait(struct port *p, uint64_t deadline_ns, struct port_packet *out)
+{
+    return wait_packet(p, deadline_ns, out, false);
+}
+
+status_t port_wait_interruptible(struct port *p, uint64_t deadline_ns,
+                                 struct port_packet *out)
+{
+    return wait_packet(p, deadline_ns, out, true);
 }
