@@ -79,6 +79,14 @@ jam_handle_replace:
     ret
     .size jam_handle_replace, . - jam_handle_replace
 
+    .globl jam_handle_info
+    .type jam_handle_info, @function
+jam_handle_info:
+    mov $SYS_handle_info, %eax
+    syscall
+    ret
+    .size jam_handle_info, . - jam_handle_info
+
     .globl jam_object_wait_one
     .type jam_object_wait_one, @function
 jam_object_wait_one:

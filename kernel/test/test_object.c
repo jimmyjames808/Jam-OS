@@ -297,3 +297,57 @@ KTEST(status_codes_named)
     KT_ASSERT(!strcmp(status_str(ERR_BUSY), "ERR_BUSY"));
     KT_ASSERT(!strcmp(status_str(ERR_BUSY - 1), "ERR_?"));
 }
+
+/* ---- handle_info --------------------------------------------------------------------- */
+
+static uint64_t koid_of(struct handle_table *t, handle_t h)
+{
+    struct kobject *o;
+    KT_EQ(handle_get(t, h, OBJ_NONE, 0, &o, NULL), OK);
+    uint64_t k = o->koid;
+    kobject_unref(o);
+    return k;
+}
+
+/* handle_info (M12's Q11): the type, the handle's rights, the koid, a
+ * channel end's peer and what waits on each side. */
+KTEST(handle_info_names_the_object)
+{
+    struct handle_table t;
+    handle_table_init(&t);
+    handle_t ev, weak, a, b;
+    struct handle_info i;
+    KT_EQ(sys_event_create(&t, &ev), OK);
+    KT_EQ(handle_info(&t, ev, &i), OK);
+    KT_EQ(i.type, OBJ_EVENT);
+    KT_EQ(i.koid, koid_of(&t, ev));
+    KT_EQ(i.related_koid, 0);
+    KT_EQ(i.queued + i.peer_queued + i.peer_queued_bytes + i.reserved, 0);
+    rights_t full = i.rights;
+    KT_EQ(handle_duplicate(&t, ev, RIGHT_WAIT, &weak), OK);
+    KT_EQ(handle_info(&t, weak, &i), OK);   /* no right needed */
+    KT_EQ(i.rights, RIGHT_WAIT);
+    KT_ASSERT(full != RIGHT_WAIT && (full & RIGHT_SIGNAL));
+
+    KT_EQ(sys_channel_create(&t, &a, &b), OK);
+    KT_EQ(sys_channel_write(&t, a, "abc", 3, NULL, 0), OK);
+    KT_EQ(sys_channel_write(&t, a, "defgh", 5, NULL, 0), OK);
+    KT_EQ(handle_info(&t, a, &i), OK);
+    KT_EQ(i.type, OBJ_CHANNEL);
+    KT_EQ(i.related_koid, koid_of(&t, b));
+    KT_EQ(i.queued, 0);
+    KT_EQ(i.peer_queued, 2);
+    KT_EQ(i.peer_queued_bytes, 8);
+    KT_EQ(handle_info(&t, b, &i), OK);
+    KT_EQ(i.related_koid, koid_of(&t, a));
+    KT_EQ(i.queued, 2);
+    KT_EQ(i.peer_queued, 0);
+    KT_EQ(handle_close(&t, b), OK);
+    KT_EQ(handle_info(&t, a, &i), OK);
+    KT_EQ(i.related_koid, 0);   /* the peer has gone */
+    KT_EQ(i.peer_queued, 0);
+
+    KT_EQ(handle_info(&t, b, &i), ERR_BAD_HANDLE);
+    KT_EQ(handle_info(&t, HANDLE_INVALID, &i), ERR_BAD_HANDLE);
+    handle_table_destroy(&t);
+}

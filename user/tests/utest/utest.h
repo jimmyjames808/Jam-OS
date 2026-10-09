@@ -749,3 +749,6 @@ bool t_mix_unity_is_exact(void);
 bool t_mix_volume_and_master(void);
 bool t_mix_dither(void);
 bool t_mix_limits(void);
+
+/* handles.c: M12 K3's calls (handle_info, ...). */
+bool t_handle_info(void);

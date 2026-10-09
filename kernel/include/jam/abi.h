@@ -70,6 +70,43 @@ typedef uint32_t rights_t;
  * with ERR_NO_RESOURCES). */
 #define HANDLE_TABLE_MAX 65536
 
+/* The kinds of kernel object a handle names (handle_info's type). */
+enum obj_type {
+    OBJ_NONE = 0,           /* none (the kernel's lookups: "any type") */
+    OBJ_EVENT = 1,
+    OBJ_TIMER = 2,
+    OBJ_CHANNEL = 3,        /* one end of a channel */
+    OBJ_PORT = 4,
+    OBJ_VMO = 5,
+    OBJ_DMA_CAP = 6,        /* permission to pin memory for device DMA */
+    OBJ_PROCESS = 7,
+    OBJ_THREAD = 8,
+    OBJ_INTERRUPT = 9,      /* a device interrupt vector */
+    OBJ_RESOURCE = 10,      /* authority over a piece of hardware */
+    OBJ_VMAR = 11,          /* a handle to an address space */
+    OBJ_JOB = 12,           /* resource limits for a group of processes */
+    OBJ_KLOG = 13,          /* a reader of the kernel log */
+    OBJ_SERIAL = 14,        /* COM1 input */
+    OBJ_SCREEN = 15,        /* ownership of the boot framebuffer */
+    OBJ_TYPE_COUNT,
+};
+
+/* handle_info: what a handle names, and what its holder could learn by
+ * trying calls on it (no right needed). */
+struct handle_info {
+    uint32_t type;              /* enum obj_type */
+    rights_t rights;            /* the handle's own rights */
+    uint64_t koid;              /* the object's id (never reused) */
+    uint64_t related_koid;      /* a channel end: its peer's (0 once the peer has
+                                 * closed); a thread: its process's; a process: its
+                                 * job's (0 once torn down); else 0 */
+    /* A channel end only (else 0): */
+    uint32_t queued;            /* messages waiting on it, to be read */
+    uint32_t peer_queued;       /* messages it wrote that wait, unread, at its peer */
+    uint64_t peer_queued_bytes; /* the bytes of those */
+    uint64_t reserved;          /* 0 */
+};
+
 /* signals ------------------------------------------------------------------ */
 
 typedef uint32_t signals_t;

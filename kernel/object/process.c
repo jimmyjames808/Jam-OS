@@ -249,6 +249,19 @@ const char *process_name(struct process *p)
     return p->name;
 }
 
+uint64_t process_job_koid(struct process *p)
+{
+    uint64_t f = plock(p);
+    uint64_t koid = p->job ? job_kobject(p->job)->koid : 0;
+    punlock(p, f);
+    return koid;
+}
+
+uint64_t uthread_process_koid(struct uthread *u)
+{
+    return u->proc->base.koid;
+}
+
 void process_get_info(struct process *p, struct process_info *out)
 {
     memset(out, 0, sizeof(*out));

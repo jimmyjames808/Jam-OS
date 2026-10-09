@@ -99,6 +99,16 @@ int64_t sysc_handle_replace(handle_t h, rights_t rights, uint64_t out)
     return st == OK ? sysc_put_handle(t, out, nh) : st;
 }
 
+int64_t sysc_handle_info(handle_t h, uint64_t out)
+{
+    SYSC_TABLE(t);
+    struct handle_info info;
+    status_t st = handle_info(t, h, &info);
+    if (st == OK && copy_to_user(out, &info, sizeof(info)) != OK)
+        return ERR_INVALID_ARGS;
+    return st;
+}
+
 /* ---- waiting and signals ------------------------------------------------------ */
 
 int64_t sysc_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns, uint64_t observed)

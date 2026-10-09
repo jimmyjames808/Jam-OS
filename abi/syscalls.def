@@ -48,6 +48,13 @@
 10  handle_close      status    handle_t h
 11  handle_duplicate  status    handle_t h, rights_t rights, handle_t *out
 12  handle_replace    status    handle_t h, rights_t rights, handle_t *out
+# What h names (struct handle_info, <jam/abi.h>): the object's type
+# (OBJ_*), the handle's rights, the object's koid, a related koid (a
+# channel end's peer, a thread's process, a process's job), and for a
+# channel end what waits on it and what it wrote that waits unread at its
+# peer. No right needed: it says only what trying calls would. ERR_BAD_HANDLE;
+# ERR_INVALID_ARGS for a bad out.
+13  handle_info       status    handle_t h, struct handle_info *out
 
 # waiting and signals -------------------------------------------------------
 16  object_wait_one   status    handle_t h, signals_t mask, uint64_t deadline_ns, signals_t *observed

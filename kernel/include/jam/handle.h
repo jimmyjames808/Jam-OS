@@ -66,6 +66,9 @@ status_t handle_remove(struct handle_table *t, handle_t h, struct khandle *out);
 /* New handle to the same object with rights that are a subset (or
  * RIGHT_SAME). Needs RIGHT_DUPLICATE. */
 status_t handle_duplicate(struct handle_table *t, handle_t h, rights_t rights, handle_t *out);
+/* What h names (struct handle_info, <jam/abi.h>; the handle_info system
+ * call). No right needed. */
+status_t handle_info(struct handle_table *t, handle_t h, struct handle_info *out);
 /* Take h out of the table as a khandle (for sending). Needs RIGHT_TRANSFER. */
 status_t handle_take(struct handle_table *t, handle_t h, struct khandle *out);
 /* Replace h with a new handle to the same object with fewer rights. */

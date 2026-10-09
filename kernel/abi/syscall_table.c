@@ -58,6 +58,11 @@ static int64_t call_handle_replace(const struct syscall_frame *f)
     return sysc_handle_replace((handle_t)f->args[0], (rights_t)f->args[1], f->args[2]);
 }
 
+static int64_t call_handle_info(const struct syscall_frame *f)
+{
+    return sysc_handle_info((handle_t)f->args[0], f->args[1]);
+}
+
 static int64_t call_object_wait_one(const struct syscall_frame *f)
 {
     return sysc_object_wait_one((handle_t)f->args[0], (signals_t)f->args[1], f->args[2],
@@ -493,6 +498,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_handle_close] = call_handle_close,
     [SYS_handle_duplicate] = call_handle_duplicate,
     [SYS_handle_replace] = call_handle_replace,
+    [SYS_handle_info] = call_handle_info,
     [SYS_object_wait_one] = call_object_wait_one,
     [SYS_channel_create] = call_channel_create,
     [SYS_channel_write] = call_channel_write,

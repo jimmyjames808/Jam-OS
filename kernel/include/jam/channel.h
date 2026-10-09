@@ -185,5 +185,11 @@ status_t channel_set_flags(struct channel *ch, uint32_t flags);
  * JOB_OBJECT_BYTES per carried handle): for debug_command "ps". */
 void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged);
 
+/* handle_info's channel fields: the peer's koid (0 once either end has
+ * closed), the messages queued on ch, and those ch wrote that wait on its
+ * peer, with their bytes (M12's Q11; the compositor's flow control). */
+void channel_get_info(struct channel *ch, uint64_t *peer_koid, uint32_t *queued,
+                      uint32_t *peer_queued, uint64_t *peer_bytes);
+
 /* Endpoints alive right now (for leak checks in tests). */
 uint64_t channel_live_count(void);

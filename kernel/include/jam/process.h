@@ -145,6 +145,10 @@ struct handle_table *process_handles(struct process *p);
  * NULL once the process is dead. */
 struct aspace *process_aspace(struct process *p);
 const char *process_name(struct process *p);
+/* handle_info's related koids: p's job's (0 once p is torn down), and
+ * ut's process's. */
+uint64_t process_job_koid(struct process *p);
+uint64_t uthread_process_koid(struct uthread *ut);
 void process_get_info(struct process *p, struct process_info *out);
 /* CPU time of all p's threads so far, in TSC cycles (the shell's ps, top). */
 uint64_t process_cpu_tsc(struct process *p);

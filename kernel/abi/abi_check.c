@@ -79,3 +79,8 @@ _Static_assert(PROCESS_NAME_MAX + 1 == sizeof(((struct proc_stat *)0)->name),
 _Static_assert(RIGHTS_GENERIC_CHECK == 0xfffu && (RIGHTS_ROOT & 0x8000ffffu) == 0 &&
                    RIGHTS_ROOT == 0x3ff0000u,
                "rights: the generic ones in bits 0-11, the powers from bit 16 in order");
+
+_Static_assert(sizeof(struct handle_info) == 48 && offsetof(struct handle_info, queued) == 24 &&
+                   offsetof(struct handle_info, peer_queued_bytes) == 32,
+               "handle_info layout");
+_Static_assert(OBJ_SCREEN == 15 && OBJ_TYPE_COUNT == 16, "the object types user code sees");

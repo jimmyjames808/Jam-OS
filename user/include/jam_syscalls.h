@@ -28,6 +28,7 @@ status_t jam_debug_report(const char *buf, uint64_t len);
 status_t jam_handle_close(handle_t h);
 status_t jam_handle_duplicate(handle_t h, rights_t rights, handle_t *out);
 status_t jam_handle_replace(handle_t h, rights_t rights, handle_t *out);
+status_t jam_handle_info(handle_t h, struct handle_info *out);
 status_t jam_object_wait_one(handle_t h, signals_t mask, uint64_t deadline_ns, signals_t *observed);
 status_t jam_channel_create(handle_t *a, handle_t *b);
 status_t jam_channel_write(handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, uint32_t nhandles);
