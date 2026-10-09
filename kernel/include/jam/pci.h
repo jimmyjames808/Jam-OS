@@ -160,3 +160,27 @@ uint16_t pci_acs_ctl_wanted(uint16_t cap, uint16_t ctl);
  * boot calls it (vtd_rid_mark) before translation goes on; with iommu=off
  * the ports stay as the firmware left them. ERR_NO_MEMORY: nothing done. */
 status_t pci_acs_enable(void);
+
+/* Can fns[i] reach a peer, or a peer it, without its requests going up to
+ * the root complex (where the IOMMU sees them), given every function's
+ * registers fns[0..n)? The isolation it needs on its way up:
+ *   - on a root bus (root-complex integrated, the chipset's): none;
+ *   - below a port, a multi-function device's every function (itself
+ *     included) has ACS with the bits it offers of SV RR CR UF on;
+ *   - at each switch on its way up, every downstream port has ACS with
+ *     all four on: the one above it, or its own requests go straight to
+ *     a peer, and every other one, or the device below that port reaches
+ *     it (root ports need none: the owner's decision B; their peers are
+ *     other root ports, through the root complex).
+ * The first gap found, with the function or port that has it in *where
+ * (requester id: bus 15:8, device 7:3, function 2:0). Pure. */
+enum pci_acs_gap {
+    PCI_ACS_ISOLATED = 0,
+    PCI_ACS_GAP_PORT,        /* the switch downstream port above it */
+    PCI_ACS_GAP_PEER_PORT,   /* another downstream port of a switch above it */
+    PCI_ACS_GAP_FUNCTION,    /* a function of its own multi-function device */
+};
+enum pci_acs_gap pci_acs_check(const struct pci_acs_fn *fns, uint32_t n, uint32_t i,
+                               uint16_t *where);
+/* The gap in words, for the log: "the switch port above it has no ACS on". */
+const char *pci_acs_gap_text(enum pci_acs_gap gap);

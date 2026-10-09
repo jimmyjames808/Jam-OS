@@ -1116,6 +1116,31 @@ firmware left on) is the only trace, and DMA works as before the IOMMU
   them in the RESULTS box, read from the PCI topology
   (`kernel/dev/vtd_rid.c`), and their DMA stays blocked. The PC has no
   such bridge.
+- **Peer to peer (ACS).** A request for another device's BAR can reach it
+  without going up to the root complex, so without the IOMMU: below a
+  PCIe switch, or between the functions of one multi-function device,
+  unless PCIe Access Control Services send it up. So the IOMMU's boot
+  first turns ACS on (source validation, request and completion
+  redirect, upstream forwarding: the bits each offers) at every root
+  port and switch downstream port that has it, and at every function of
+  a multi-function device that has it, a log line each
+  (`pci: ACS on at 00:1c.0 (root port): SV RR CR UF`; `pci: no ACS at
+  ...` for a port without it), as Linux does when its IOMMU is on
+  (`kernel/dev/pci_acs.c`; with `iommu=off` the ports stay as the
+  firmware left them). Then, as for shared requester ids, a function
+  whose way up still has a gap gets no `dma_cap` while the IOMMU
+  translates (`ERR_ACCESS_DENIED`; a `vtd:` log line at boot naming the
+  gap, another at the refusal): one below a switch whose downstream
+  ports don't all have ACS on (its own port's, or its device's requests
+  go straight to a peer; another's, or that port's device reaches it),
+  or one of a multi-function device below a port whose functions don't
+  all have it. Functions on a root bus (the chipset's) and devices alone
+  below a root port are never refused for it, ACS or not: the root
+  complex's own routing between root ports isn't treated as a gap (the
+  owner's decision B of the M12.1 kernel-devices review). On the PC every
+  device sits alone on its root port but the RTX: without ACS on its
+  functions, its HDMI audio (01:00.1) is refused, which no driver asks
+  for (the display, 01:00.0, never gets a cap anyway).
 - **Safe rebind with the IOMMU.** Making a cap turns the function's Bus
   Master Enable off and points its context entry at the new, empty domain
   in one step: whatever the previous driver left queued reaches nothing.

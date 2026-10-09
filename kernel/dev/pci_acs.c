@@ -20,7 +20,17 @@
  * Jam OS: pci_acs_enable runs from the IOMMU's boot (vtd_rid_mark), before
  * translation goes on; with iommu=off the ports stay as the firmware left
  * them (no IOMMU sees the redirected requests). It runs once per boot and
- * only sets bits, so a kexec'd kernel finds them on already. */
+ * only sets bits, so a kexec'd kernel finds them on already.
+ *
+ * What ACS can't fix, pci_acs_check finds: a function below a switch
+ * downstream port without it (on its way up, or beside it on the
+ * switch), or of a multi-function device below a port whose functions
+ * don't all have it. vtd_rid.c marks those at boot and the IOMMU gives
+ * them no domain, so no DMA capability (as it does for functions behind
+ * a PCIe-to-PCI bridge). Root-complex integrated functions and the ports
+ * themselves are never in question, nor is a function below a root port
+ * without ACS (the owner's decision B, 2026-10-09): Jam OS doesn't treat
+ * the root complex's routing between its root ports as a gap. */
 #include <jam/kprintf.h>
 #include <jam/mm.h>
 #include <jam/pci.h>
@@ -103,6 +113,78 @@ static uint32_t device_functions(const struct pci_acs_fn *fns, uint32_t n, uint3
     for (uint32_t j = 0; j < n; j++)
         k += same_device(&fns[i], &fns[j], up);
     return k;
+}
+
+/* ---- isolation, pure ---------------------------------------------------------------------- */
+
+/* A switch downstream port isolates the devices below it with all four on
+ * (PCIe 6.12.1.1: a downstream port with ACS implements them all). */
+static bool port_isolated(const struct pci_acs_fn *p)
+{
+    return p->acs && (p->acs_ctl & PCI_ACS_WANT) == PCI_ACS_WANT;
+}
+
+/* A function of a multi-function device with the bits it offers on (a
+ * function offers RR and CR exactly when it can reach its device's other
+ * functions, 6.12.1.2: what it doesn't offer it can't do). */
+static bool function_isolated(const struct pci_acs_fn *f)
+{
+    uint16_t offered = f->acs_cap & PCI_ACS_WANT;
+    return f->acs && (f->acs_ctl & offered) == offered;
+}
+
+enum pci_acs_gap pci_acs_check(const struct pci_acs_fn *fns, uint32_t n, uint32_t i,
+                               uint16_t *where)
+{
+    const struct pci_acs_fn *f = &fns[i];
+    const struct pci_acs_fn *up = bridge_above(fns, n, f->seg, bus_of(f));
+    if (!up)
+        return PCI_ACS_ISOLATED;   /* on a root bus: root-complex integrated, or a root port */
+    if (device_functions(fns, n, i, up) > 1)
+        for (uint32_t j = 0; j < n; j++)
+            if (same_device(f, &fns[j], up) && !function_isolated(&fns[j])) {
+                *where = fns[j].sid;
+                return PCI_ACS_GAP_FUNCTION;
+            }
+    /* Up to the root, one bridge at a time: each step goes to a lower bus
+     * number (bridge_above), so 256 steps reach a root bus. `via` is the
+     * bridge the walk came up through onto `bus`. */
+    const struct pci_acs_fn *via = NULL;
+    uint8_t bus = bus_of(f);
+    for (unsigned step = 0; step < 256 && up; step++) {
+        if (up->type == PCIE_TYPE_DOWNSTREAM && !port_isolated(up)) {
+            *where = up->sid;
+            return PCI_ACS_GAP_PORT;
+        }
+        if (up->type == PCIE_TYPE_UPSTREAM)   /* `bus` is a switch's own: its downstream ports */
+            for (uint32_t j = 0; j < n; j++) {
+                const struct pci_acs_fn *p = &fns[j];
+                if (p->seg == f->seg && bus_of(p) == bus && p->type == PCIE_TYPE_DOWNSTREAM &&
+                    !port_isolated(p)) {
+                    *where = p->sid;
+                    return p == via ? PCI_ACS_GAP_PORT : PCI_ACS_GAP_PEER_PORT;
+                }
+            }
+        via = up;
+        bus = bus_of(up);
+        up = bridge_above(fns, n, f->seg, bus);
+    }
+    if (up) {   /* can't happen (see above); refuse rather than guess */
+        *where = up->sid;
+        return PCI_ACS_GAP_PORT;
+    }
+    return PCI_ACS_ISOLATED;
+}
+
+const char *pci_acs_gap_text(enum pci_acs_gap gap)
+{
+    switch (gap) {
+    case PCI_ACS_ISOLATED:      return "isolated";
+    case PCI_ACS_GAP_PORT:      return "the switch port above it has no ACS on";
+    case PCI_ACS_GAP_PEER_PORT: return "another downstream port of its switch has no ACS on";
+    case PCI_ACS_GAP_FUNCTION:  return "a function of its multi-function device has no ACS on";
+    }
+    return "?";
 }
 
 /* ---- the boot ------------------------------------------------------------------------------ */

@@ -126,6 +126,10 @@ struct vtd_fn {
                                     * "vtd context" */
     bool             shared;       /* its requester id may be another function's
                                     * (vtd_rid.c): no domain for it; written at boot */
+    uint8_t          acs_gap;      /* enum pci_acs_gap: a peer may reach it, or it a
+                                    * peer, unseen (vtd_rid.c): no domain for it unless
+                                    * PCI_ACS_ISOLATED; written at boot */
+    uint16_t         acs_where;    /* the function or port with the gap (its sid) */
     struct vtd_dom  *home;         /* blocking, or its boot domain */
     struct vtd_dom  *cur;          /* what its entry names; "vtd context" */
 };
@@ -218,9 +222,10 @@ struct vtd_bridge {
  * ignored (unconfigured). Pure. */
 bool vtd_rid_shared(const struct vtd_bridge *br, uint32_t n, uint16_t seg, uint16_t sid);
 /* Turn ACS on where it applies (pci_acs_enable), then set every
- * function's `shared` from the PCI topology (config space), and put each
- * covered one that is in the RESULTS box. Boot, after the functions are
- * assigned to units. ERR_NO_MEMORY. */
+ * function's `shared` and `acs_gap` from the PCI topology (config space):
+ * each covered function that is shared goes in the RESULTS box, each that
+ * a driver could ask for (not a bridge, not the display) with a gap in
+ * the log. Boot, after the functions are assigned to units. ERR_NO_MEMORY. */
 status_t vtd_rid_mark(void);
 
 /* ---- the boot (vtd_boot.c) ---------------------------------------------------------------- */

@@ -93,7 +93,9 @@ void iommu_report(void);
  * RMRRs already mapped. Not attached. ERR_NOT_SUPPORTED (dev isn't
  * translated: no unit covers it, or iommu=off), ERR_ACCESS_DENIED (dev's
  * requester id is shared with other functions, behind a PCIe-to-PCI or
- * PCI bridge: its domain would be theirs too; logged),
+ * PCI bridge: its domain would be theirs too; or a peer could reach it,
+ * or it a peer, without the IOMMU: a switch port or a function of its
+ * multi-function device without ACS, pci_acs_check; logged),
  * ERR_NO_RESOURCES (no domain id left), ERR_NO_MEMORY. */
 status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_domain **out);
 
