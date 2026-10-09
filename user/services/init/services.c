@@ -5,12 +5,12 @@
  * Each service runs in a job of its own under init's (and, first, the
  * boot splash: splash.c):
  *   bootfs    bin/bootfs: the boot image as a mount, with the server end of
- *             its `fs` channel (SR_USER + 0); init mounts the client end at
+ *             its `fs` channel (BOOTFS_SR_FS); init mounts the client end at
  *             /boot in its own namespace, the one the shell is given
  *   console   bin/console, and the shell: terms.c
  *   splash    bin/splash, once, on a plain boot (argv "splash" from the
  *             kernel): a PROGRAM-level console channel (SR_CONSOLE), a
- *             channel of init's (SR_USER + 0, <splash.h>) and a namespace
+ *             channel of init's (SR_USER + SPLASH_INIT_ROLE, <splash.h>) and a namespace
  *             with /svc/audio and, with a compositor, /svc/wayland
  *             (shell.c's grants: it plays in a full-screen window that
  *             takes no keys, over the first terminal's). It plays the boot
@@ -19,7 +19,7 @@
  *             when the shell says it is ready (initctl.shell_ready)
  *   compositor  bin/compositor, first of all with a compositor: comp.c
  *   serialin  bin/serialin: root with RIGHT_ROOT_SERIAL (serial_open) and an `input`
- *             channel (SR_USER + 0) whose other end init gives the
+ *             channel (SERIALIN_SR_INPUT) whose other end init gives the
  *             compositor (compctl.add_source, on init's own channel)
  *   devmgr    bin/devmgr: RES_PCI sliced from the root (SR_RESOURCE), the
  *             server ends of its control and query channels
@@ -68,7 +68,7 @@
  *             (SR_KEEP), and is started from a warm spare when one waits
  *             (spare.c)
  *   music     bin/music, the background music player, after the mixer: the
- *             server end of the `music` channel (SR_USER + 0;
+ *             server end of the `music` channel (MUSIC_SR_CTL;
  *             abi/idl/music.idl) and a namespace of every mount
  *             read-only and /svc/audio (SR_NS, followed like the
  *             shell's). init makes the `music` channel once, keeps both
@@ -76,14 +76,14 @@
  *             channel, and publishes it as /svc/music (a channel per
  *             opener)
  *   serve     bin/serve, the file server, after netstack: the server end
- *             of the `serve` channel (SR_USER + 0; abi/idl/serve.idl), made
+ *             of the `serve` channel (SERVE_SR_CTL; abi/idl/serve.idl), made
  *             once and kept as the music player's, published as /svc/serve
  *             (a channel per opener), and a namespace of /svc/net and
  *             /svc/net-listen only (shell.c's grants: its list's `svc net
  *             listen`). It has no mount: the shell hands it each file
  *   logd      bin/logd, once /data is mounted: root with RIGHT_ROOT_KLOG
  *             (the kernel log), a namespace holding only /data (SR_NS) and the server
- *             end of a `logctl` channel (SR_USER + 2; init keeps the client
+ *             end of a `logctl` channel (LOGD_SR_CTL; init keeps the client
  *             end, publishes it as /svc/logd and asks for a flush before
  *             a reboot). It saves each
  *             boot's log as /data/logs/boot-NNNN.txt. On the boot after a
@@ -219,7 +219,7 @@ static status_t start_bootfs(void)
     status_t st = jam_channel_create(&a, &b);
     if (st != OK)
         return st;
-    struct spawn_handle x[] = { { SR_USER + 0, b } };
+    struct spawn_handle x[] = { { BOOTFS_SR_FS, b } };
     st = svc_start1(BOOTFS, x, 1);
     if (st == OK)
         st = ns_mount(BOOT_MOUNT, a);   /* consumes a */
@@ -254,7 +254,7 @@ static status_t start_serialin(void)
     if (st != OK)
         return st;
     struct spawn_handle x[] = {
-        { SR_RESOURCE, services_root_with(RIGHTS_BASIC | RIGHT_ROOT_SERIAL) }, { SR_USER + 0, src },
+        { SR_RESOURCE, services_root_with(RIGHTS_BASIC | RIGHT_ROOT_SERIAL) }, { SERIALIN_SR_INPUT, src },
     };
     return svc_start1(SERIALIN, x, 2);
 }
@@ -498,7 +498,7 @@ static status_t start_logd(void)
     if (st != OK)
         return st;
     struct spawn_handle x[4] = { { SR_RESOURCE, services_root_with(RIGHTS_BASIC | RIGHT_ROOT_KLOG) },
-                                 { SR_USER + 2, theirs } };
+                                 { LOGD_SR_CTL, theirs } };
     unsigned nx = 2 + lastboot_logd_handles(&x[2]);   /* after a panic: its log first */
     st = svc_start1(LOGD, x, nx);
     if (st != OK) {
@@ -642,7 +642,7 @@ static status_t start_music(void)
         svcs[MUSIC].given_up = true;
         return OK;
     }
-    struct spawn_handle x[] = { { SR_USER + 0, dup_of(music_srv) } };
+    struct spawn_handle x[] = { { MUSIC_SR_CTL, dup_of(music_srv) } };
     if (!x[0].h)
         return ERR_NO_RESOURCES;
     return svc_start1(MUSIC, x, 1);   /* no /svc/audio: it answers "no output" */
@@ -662,7 +662,7 @@ static status_t start_serve(void)
         svcs[SERVE].given_up = true;
         return OK;
     }
-    struct spawn_handle x[] = { { SR_USER + 0, dup_of(serve_srv) } };
+    struct spawn_handle x[] = { { SERVE_SR_CTL, dup_of(serve_srv) } };
     if (!x[0].h)
         return ERR_NO_RESOURCES;
     return svc_start1(SERVE, x, 1);

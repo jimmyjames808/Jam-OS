@@ -9,7 +9,7 @@
 JAM_WANTS("svc net listen\n"
           "svc dns\n");
 
-#define ROLE_STOP (SR_USER + 2)   /* the shell's stop channel (sh_run_helper): Ctrl+C */
+#define ROLE_STOP PROGRAM_SR_STOP   /* the shell's stop channel (sh_run_helper): Ctrl+C */
 
 /* Ctrl+C: the shell writes a byte on the stop channel. Every wait of the
  * test is bounded, but a run, its report and a listener's wait for the

@@ -548,10 +548,8 @@ static bool t_kill_mid_tone(const char *name, const char *who, const char *opt)
     struct mixer_stream_info e;
     CHECK(find_stream(name, 2000, &e));
     pause_ms(600);
-    uint8_t n[32] = { 0 };
-    memcpy(n, who, strlen(who));
     uint64_t koid = 0;
-    CHECK_ST(initctl_kill_until(initctl, soon(), n, &koid), OK);
+    CHECK_ST(initctl_kill_until(initctl, soon(), who, (uint32_t)strlen(who), &koid), OK);
     CHECK_EQ(finish(d), 0);
     return true;
 }

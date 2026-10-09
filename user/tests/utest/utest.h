@@ -92,6 +92,10 @@ bool t_logd_without_data(void);
 bool t_logd_data_goes_away(void);
 bool t_logd_kernel_log(void);
 bool t_logd_openers(void);
+bool t_logd_crash_result(void);
+/* chanwire.c: the wire of init's channels with the splash and with logd (P6b). */
+bool t_splashch_wire(void);
+bool t_crashres_wire(void);
 bool t_klog_lines(void);
 
 /* audio.c: <audio.h>'s conversions and resampler, <wav.h>'s parser. */
@@ -808,6 +812,8 @@ bool t_update_manifest_refusals(void);
 bool t_update_manifest_damage(void);
 bool t_update_build_net(void);
 bool t_update_signature(void);
+/* updoffer.c: the offer call of `update` between update_make_offer and update_answer_reply. */
+bool t_update_offer_call(void);
 bool t_updwire_golden(void);
 bool t_updwire_hostile(void);
 bool t_updfetch_clean(void);
@@ -862,3 +868,5 @@ bool t_idl_fuzz(void);
 /* idlfuzz.c: fat and volumes fed the same messages, live (M12.1). */
 bool t_fat_hostile(void);
 bool t_volumes_hostile(void);
+/* initctl.c: init's control channel with names as strings (P6b). */
+bool t_initctl_strings(void);

@@ -7,7 +7,7 @@
  *               root with RIGHT_ROOT_SCREEN (framebuffer_take) and
  *                 RIGHT_ROOT_REBOOT (Ctrl+Alt+Del's reset when init
  *                 can't reboot), none of the console's other powers;
- *               SR_USER + 0  the server end of /svc/wayland's shared
+ *               COMP_SR_WAYLAND  the server end of /svc/wayland's shared
  *                 channel, on which each opener's svc.connect makes its
  *                 own connection. init makes that channel once and keeps
  *                 both ends, so a restarted compositor serves the same
@@ -16,28 +16,28 @@
  *                 hands it to the programs whose list asks (`svc
  *                 wayland`), the splash's namespace has it, and each
  *                 console gets a duplicate (terms.c: window mode);
- *               SR_USER + 2  the server end of a compctl channel (ADMIN,
+ *               COMP_SR_ADMIN  the server end of a compctl channel (ADMIN,
  *                 abi/idl/compctl.idl), a new one each start; init keeps
  *                 the client end (admin) and makes the INPUT channels from
  *                 it: one for devmgr's HID drivers (services.c, and
  *                 devmgrctl.set_input after a restart: comp_restarted), and
  *                 serialin's source;
- *               SR_USER + 3  a control channel of init's that answers it
+ *               COMP_SR_INITCTL  a control channel of init's that answers it
  *                 only `reboot` (Ctrl+Alt+Del), `terminal` (Super+Enter,
  *                 the search box's "Run ... in a terminal") and `launch`
  *                 (the search box's apps: <deskapps.h>'s alone, apps.c),
  *                 ctl.c's CTL_COMPOSITOR;
- *               SR_USER + 5  the server end of /svc/notify's shared
+ *               COMP_SR_NOTIFY  the server end of /svc/notify's shared
  *                 channel, made once and kept (both ends) as /svc/wayland's:
  *                 its svc.connect makes a channel of the `notify` protocol
  *                 (abi/idl/notify.idl: post a notice, hear its buttons;
  *                 nothing else). init publishes the client end as
  *                 /svc/notify (the shell's `notify`), gives devmgr, volumes
  *                 and netstack a duplicate each, and connects for its own;
- *               SR_USER + 6  a duplicate of the mixer's desktop channel's
+ *               COMP_SR_MIXER  a duplicate of the mixer's desktop channel's
  *                 client end (services.c: audioctl's desk and set_master
  *                 only, the volume popover);
- *               SR_USER + 7  a duplicate of netstack's read-only control
+ *               COMP_SR_NETINFO  a duplicate of netstack's read-only control
  *                 channel's client end (net.c: netctl's info, stats, device
  *                 and summary only, the network popover);
  *               arguments `layout=floating|tiling` (/data/etc/settings'
@@ -454,17 +454,17 @@ static status_t comp_handles(struct spawn_handle *x, rights_t *r, unsigned *n, h
     status_t st = jam_channel_create(mine, &theirs);
     if (st != OK)
         return st;
-    x[(*n)++] = (struct spawn_handle){ SR_USER + 2, theirs };
+    x[(*n)++] = (struct spawn_handle){ COMP_SR_ADMIN, theirs };
     /* Without it Ctrl+Alt+Del resets the machine without the sync. */
     if (ctl_new(CTL_COMPOSITOR, port, KEY_CTL + CTL_COMPOSITOR, &ctl) == OK)
-        x[(*n)++] = (struct spawn_handle){ SR_USER + 3, ctl };
+        x[(*n)++] = (struct spawn_handle){ COMP_SR_INITCTL, ctl };
     /* Without these the desktop shows no notices, volume or network. */
     if (note_srv && jam_handle_duplicate(note_srv, RIGHT_SAME, &h) == OK)
-        x[(*n)++] = (struct spawn_handle){ SR_USER + 5, h };
+        x[(*n)++] = (struct spawn_handle){ COMP_SR_NOTIFY, h };
     if ((h = services_audio_desk()) != HANDLE_INVALID)
-        x[(*n)++] = (struct spawn_handle){ SR_USER + 6, h };
+        x[(*n)++] = (struct spawn_handle){ COMP_SR_MIXER, h };
     if ((h = net_info_channel()) != HANDLE_INVALID)
-        x[(*n)++] = (struct spawn_handle){ SR_USER + 7, h };
+        x[(*n)++] = (struct spawn_handle){ COMP_SR_NETINFO, h };
     /* Without it a restarted compositor puts the windows back as new ones. */
     st = state ? OK : svcstate_create(COMP_STATE_SIZE, &state);
     if (st == OK && svcstate_give(state, &h) == OK) {
@@ -483,7 +483,7 @@ status_t comp_start(void)
         return ERR_NO_RESOURCES;
     struct spawn_handle x[8] = {
         { SR_RESOURCE, services_root_with(RIGHTS_BASIC | RIGHT_ROOT_SCREEN | RIGHT_ROOT_REBOOT) },
-        { SR_USER + 0, srv },
+        { COMP_SR_WAYLAND, srv },
     };
     rights_t r[8];
     for (unsigned i = 0; i < 8; i++)

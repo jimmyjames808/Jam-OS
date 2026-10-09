@@ -5,8 +5,9 @@
  * The fetcher parses what the network sent and holds no power; init holds
  * the power (kexec_load, RIGHT_ROOT_KEXEC) and parses nothing from the
  * network but the manifest, with the strict parser. An offer arrives on a
- * channel init made (initctl.update_offer), as one struct update_offer
- * with the kernel's and the boot image's VMOs. First the signature: the
+ * channel init made (initctl.update_offer), as one call of the protocol
+ * `update` (abi/idl/update.idl) with the manifest and the kernel's and
+ * the boot image's VMOs. First the signature: the
  * manifest must be signed by the key in this build's own boot image
  * (UPDATE_KEY_FILE; a build without one refuses every offer), over
  * exactly the bytes before its signature line, before any size or hash in
@@ -51,9 +52,12 @@
  * job for the worker, started from the loop after kexec_load, on the same
  * stack once the first thread has ended; it ends the same way.
  *
- * One offer channel at a time; each takes one offer, gets one answer
- * (struct update_answer) and is closed. While a check runs, a new offer
- * channel is refused (ERR_BAD_STATE). */
+ * One offer channel at a time; each takes one offer, gets one answer (the
+ * call's results, struct update_answer) and is closed. While a check
+ * runs, a new offer channel is refused (ERR_BAD_STATE). The call is
+ * answered later, from the loop (update_answer_reply), so the offer is a
+ * `later` method whose handler returns at once. */
+#include <idl/update.h>
 #include <update.h>
 #include "init.h"
 
@@ -61,12 +65,17 @@
 #define WORKER_STACK (64u << 10)        /* the stick write's calls go deeper than the hash */
 #define WORKER_END   (2 * NS_PER_S)     /* its packet came: it ends within this */
 #define QUEUE_TRIES  100                /* a full port: tries 10 ms apart */
+#define ROUND        8                  /* messages served before the loop gets a turn */
 
 /* An offer being checked: the loop's until the worker starts, the
  * worker's until it sets `done` (RELEASE), the loop's again once it has
  * read `done` (ACQUIRE). */
 struct check {
-    struct update_offer   *o;                    /* the message (heap) */
+    struct idl_txn         txn;                  /* the offer call, to be answered */
+    uint32_t               flags;                /* the offer's UPDATE_OFFER_* */
+    uint64_t               bytes[UPDATE_PARTS];  /* each file's length as offered */
+    uint32_t               manifest_len;         /* bytes of manifest[] used */
+    uint8_t                manifest[UPDATE_MANIFEST_MAX];   /* as fetched, not parsed */
     handle_t               hs[UPDATE_PARTS];     /* the sender's VMOs, nh of them */
     uint32_t               nh;
     struct update_manifest m;                    /* parsed by the loop */
@@ -236,8 +245,7 @@ static status_t build_key(uint8_t key[UPDATE_KEY_BYTES])
  * used before this has passed. False (c->a filled in) if refused. */
 static bool check_manifest(struct check *c, const uint8_t key[UPDATE_KEY_BYTES])
 {
-    const struct update_offer *o = c->o;
-    status_t st = update_manifest_parse(o->manifest, o->manifest_len, &c->m);
+    status_t st = update_manifest_parse(c->manifest, c->manifest_len, &c->m);
     if (st == ERR_NOT_SUPPORTED) {   /* another format: no signature to check by */
         refuse(&c->a, UPDATE_NEEDS_NEWER, 0, st);
         memcpy(c->a.needs, c->m.needs, sizeof(c->a.needs));
@@ -252,7 +260,7 @@ static bool check_manifest(struct check *c, const uint8_t key[UPDATE_KEY_BYTES])
         return false;
     }
     uint64_t t0 = now();
-    st = update_manifest_verify(&c->m, o->manifest, key);
+    st = update_manifest_verify(&c->m, c->manifest, key);
     c->verify_us = (now() - t0) / 1000;
     if (st != OK) {
         refuse(&c->a, UPDATE_BAD_SIGNATURE, 0, st);
@@ -293,14 +301,13 @@ static bool flags_ok(uint32_t flags)
  * for a menu it doesn't name). False (c->a filled in) if not. */
 static bool files_match(struct check *c, uint32_t nh)
 {
-    const struct update_offer *o = c->o;
     c->parts = UPDATE_FILES + (c->m.has_menu ? 1 : 0);
-    if (nh != c->parts || (!c->m.has_menu && o->bytes[UPDATE_MENU])) {
+    if (nh != c->parts || (!c->m.has_menu && c->bytes[UPDATE_MENU])) {
         refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
         return false;
     }
     for (uint32_t f = 0; f < c->parts; f++) {
-        if (o->bytes[f] != c->m.file[f].size) {
+        if (c->bytes[f] != c->m.file[f].size) {
             refuse(&c->a, UPDATE_BAD_SIZE, f, ERR_INVALID_ARGS);
             return false;
         }
@@ -308,15 +315,13 @@ static bool files_match(struct check *c, uint32_t nh)
     return true;
 }
 
-/* The quick checks of an offer of n bytes with nh handles, in the loop:
- * false (c->a filled in) if refused. A build without a key refuses every
- * offer, whatever it holds. */
-static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
+/* The quick checks of an offer with nh handles, in the loop: false (c->a
+ * filled in) if refused. A build without a key refuses every offer,
+ * whatever it holds. (The form of the offer, its sizes and the VMOs' type,
+ * was checked by the generated server.) */
+static bool check_offer(struct check *c, uint32_t nh)
 {
-    const struct update_offer *o = c->o;
-    if (n != sizeof(*o) || nh < UPDATE_FILES || nh > UPDATE_PARTS || o->txid ||
-        o->magic != UPDATE_OFFER_MAGIC || !flags_ok(o->flags) ||
-        o->manifest_len > UPDATE_MANIFEST_MAX) {
+    if (nh < UPDATE_FILES || nh > UPDATE_PARTS || !flags_ok(c->flags)) {
         refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
         return false;
     }
@@ -333,7 +338,7 @@ static bool check_offer(struct check *c, uint32_t n, uint32_t nh)
     memcpy(c->a.net, c->m.net, sizeof(c->a.net));
     running_net(c->a.net_running);
     bool same = c->a.net_running[0] && !strcmp(c->a.net, c->a.net_running);
-    if (!same && !(o->flags & UPDATE_OFFER_FORCE)) {
+    if (!same && !(c->flags & UPDATE_OFFER_FORCE)) {
         refuse(&c->a, UPDATE_NET_CHANGE, 0, ERR_ACCESS_DENIED);
         return false;
     }
@@ -375,16 +380,15 @@ static void notice(const char *title, const char *version, const char *what)
 static void say(const struct check *c)
 {
     const struct update_answer *a = &c->a;
-    const struct update_offer *o = c->o;
     if (a->why == UPDATE_ACCEPTED) {
-        bool only = o->flags & UPDATE_OFFER_CHECK_ONLY, wrote = o->flags & UPDATE_OFFER_WRITE;
+        bool only = c->flags & UPDATE_OFFER_CHECK_ONLY, wrote = c->flags & UPDATE_OFFER_WRITE;
         char menu[32] = "";
         if (c->m.has_menu)
-            snprintf(menu, sizeof(menu), " + menu %lu", (unsigned long)o->bytes[UPDATE_MENU]);
+            snprintf(menu, sizeof(menu), " + menu %lu", (unsigned long)c->bytes[UPDATE_MENU]);
         printf("init: update: %s (%s) checked in %u ms (signature %lu us; kernel %lu + bootfs "
                "%lu%s bytes hashed in %lu ms off the loop) %s\n",
                a->version, a->git, a->check_ms, (unsigned long)c->verify_us,
-               (unsigned long)o->bytes[UPDATE_KERNEL], (unsigned long)o->bytes[UPDATE_BOOTFS],
+               (unsigned long)c->bytes[UPDATE_KERNEL], (unsigned long)c->bytes[UPDATE_BOOTFS],
                menu, (unsigned long)c->hash_ms,
                only                 ? "and not loaded (check only)"
                : wrote && a->already ? "and stored; the stick has it already"
@@ -435,14 +439,13 @@ static void answer(struct check *c)
     uint64_t ms = (now() - c->t0) / NS_PER_MS;
     c->a.check_ms = ms > UINT32_MAX ? UINT32_MAX : (uint32_t)ms;
     say(c);
-    (void)jam_channel_write(offer, &c->a, sizeof(c->a), NULL, 0);   /* a gone sender reads nothing */
+    (void)update_answer_reply(c->txn.ch, c->txn.txid, &c->a);   /* a gone sender reads nothing */
     for (uint32_t f = 0; f < UPDATE_PARTS; f++) {
         if (f < c->nh && c->hs[f])
             jam_handle_close(c->hs[f]);
         if (c->mine[f])
             jam_handle_close(c->mine[f]);
     }
-    free(c->o);
     free(c);
     drop_offer();   /* one offer per channel */
 }
@@ -454,8 +457,8 @@ static bool start_write(struct check *c)
 {
     struct esp_write *w = &c->w;
     *w = (struct esp_write){
-        .fail_at = (c->o->flags & UPDATE_OFFER_FAIL_MASK) >> UPDATE_OFFER_FAIL_SHIFT,
-        .stop_at = (c->o->flags & UPDATE_OFFER_STOP_MASK) >> UPDATE_OFFER_STOP_SHIFT,
+        .fail_at = (c->flags & UPDATE_OFFER_FAIL_MASK) >> UPDATE_OFFER_FAIL_SHIFT,
+        .stop_at = (c->flags & UPDATE_OFFER_STOP_MASK) >> UPDATE_OFFER_STOP_SHIFT,
     };
     for (uint32_t f = 0; f < UPDATE_FILES; f++) {
         w->vmo[f] = c->mine[f];
@@ -517,7 +520,7 @@ static void write_done(struct check *c)
  * answered when it is done), else the answer now. */
 static void finish(struct check *c)
 {
-    uint32_t flags = c->o->flags;
+    uint32_t flags = c->flags;
     if (c->a.why == UPDATE_ACCEPTED && !(flags & UPDATE_OFFER_CHECK_ONLY)) {
         status_t st = jam_kexec_load(shell_root(), c->mine[UPDATE_KERNEL],
                                      c->mine[UPDATE_BOOTFS], NULL, 0, 0);
@@ -552,32 +555,12 @@ static void worker_done(void)
         finish(c);
 }
 
-/* The offer message into o (a whole one, or what there was of it). */
-static status_t read_offer(struct update_offer *o, uint32_t *n, handle_t hs[UPDATE_PARTS + 1],
-                           uint32_t *nh)
-{
-    struct channel_read_args r = {
-        .h = offer, .rd_cap = sizeof(*o), .rd_bytes = (uint64_t)(uintptr_t)o,
-        .rd_actual = (uint64_t)(uintptr_t)n, .rd_handles = (uint64_t)(uintptr_t)hs,
-        .rd_hcap = UPDATE_PARTS + 1, .rd_hactual = (uint64_t)(uintptr_t)nh,
-    };
-    status_t st = jam_channel_read(&r);
-    if (st == ERR_BUFFER_TOO_SMALL)
-        *n = *nh = 0;   /* too big, or too many handles: left queued, refused */
-    return st == ERR_BUFFER_TOO_SMALL ? OK : st;
-}
-
-/* A new offer read: refused at once, or handed to the worker (or, if no
- * thread can start, hashed here after all). */
-static void start_check(struct check *c, const handle_t *hs, uint32_t n, uint32_t nh)
+/* A new offer: refused at once, or handed to the worker (or, if no thread
+ * can start, hashed here after all). */
+static void start_check(struct check *c)
 {
     c->t0 = now();
-    c->a.magic = UPDATE_ANSWER_MAGIC;
-    for (uint32_t i = UPDATE_PARTS; i < nh; i++)
-        jam_handle_close(hs[i]);   /* one too many: refused below */
-    for (uint32_t i = 0; i < UPDATE_PARTS && i < nh; i++)
-        c->hs[c->nh++] = hs[i];
-    if (!check_offer(c, n, nh)) {
+    if (!check_offer(c, c->nh)) {
         finish(c);
         return;
     }
@@ -590,6 +573,48 @@ static void start_check(struct check *c, const handle_t *hs, uint32_t n, uint32_
     finish(c);
 }
 
+/* update.offer: the offer is read into a check of its own (it owns the
+ * handles from here), which answers the call when it is done. */
+static status_t op_offer(void *ctx, struct idl_txn txn, uint32_t flags, uint64_t kernel_bytes,
+                         uint64_t bootfs_bytes, uint64_t menu_bytes, const uint8_t *manifest,
+                         uint32_t manifest_len, const handle_t *files, uint32_t files_len,
+                         int32_t *out_verdict, uint32_t *out_why, uint32_t *out_file,
+                         uint32_t *out_check_ms, char *out_version, uint32_t *out_version_len,
+                         char *out_git, uint32_t *out_git_len, uint32_t *out_write_step,
+                         uint32_t *out_stick, uint32_t *out_write_ms, char *out_net,
+                         uint32_t *out_net_len, char *out_net_running,
+                         uint32_t *out_net_running_len, char *out_needs, uint32_t *out_needs_len,
+                         uint32_t *out_menu, int32_t *out_menu_status, char *out_menu_why,
+                         uint32_t *out_menu_why_len, uint32_t *out_already)
+{
+    (void)ctx, (void)out_verdict, (void)out_why, (void)out_file, (void)out_check_ms;
+    (void)out_version, (void)out_version_len, (void)out_git, (void)out_git_len;
+    (void)out_write_step, (void)out_stick, (void)out_write_ms, (void)out_net, (void)out_net_len;
+    (void)out_net_running, (void)out_net_running_len, (void)out_needs, (void)out_needs_len;
+    (void)out_menu, (void)out_menu_status, (void)out_menu_why, (void)out_menu_why_len;
+    (void)out_already;   /* answered by update_answer_reply, later */
+    struct check *c = calloc(1, sizeof(*c));
+    if (!c || files_len > UPDATE_PARTS || manifest_len > UPDATE_MANIFEST_MAX) {
+        free(c);
+        for (uint32_t i = 0; i < files_len; i++)
+            jam_handle_close(files[i]);   /* the handler owns them */
+        return c ? ERR_INVALID_ARGS : ERR_NO_MEMORY;
+    }
+    c->txn = txn;
+    c->flags = flags;
+    c->bytes[UPDATE_KERNEL] = kernel_bytes;
+    c->bytes[UPDATE_BOOTFS] = bootfs_bytes;
+    c->bytes[UPDATE_MENU] = menu_bytes;
+    c->manifest_len = manifest_len;
+    memcpy(c->manifest, manifest, manifest_len);
+    for (uint32_t i = 0; i < files_len; i++)
+        c->hs[c->nh++] = files[i];
+    start_check(c);
+    return IDL_LATER;
+}
+
+static const struct update_ops ops = { .offer = op_offer };
+
 void update_event(void)
 {
     if (busy) {
@@ -597,20 +622,13 @@ void update_event(void)
             worker_done();
         return;   /* else: the sender's end closed or wrote again meanwhile; seen at the end */
     }
-    if (!offer)
-        return;
-    struct check *c = calloc(1, sizeof(*c));
-    struct update_offer *o = calloc(1, sizeof(*o));
-    handle_t hs[UPDATE_PARTS + 1];
-    uint32_t n = 0, nh = 0;
-    status_t st = c && o ? read_offer(o, &n, hs, &nh) : ERR_NO_MEMORY;
-    if (st == OK) {
-        c->o = o;
-        start_check(c, hs, n, nh);
-        return;
-    }
-    free(o);
-    free(c);
-    if (st != ERR_SHOULD_WAIT)
+    status_t st = OK;
+    for (unsigned n = 0; offer && !busy && st == OK && n < ROUND; n++)
+        st = update_serve_one(offer, &ops, NULL);
+    if (offer && !busy && st == OK) {   /* more may be queued: the binding fires on a new edge */
+        struct port_packet pkt = { .key = offer_key, .type = PORT_PACKET_USER };
+        (void)jam_port_queue(offer_port, &pkt);
+    } else if (offer && !busy && st != ERR_SHOULD_WAIT) {
         drop_offer();   /* the sender is gone (or we can't read): the channel ends here */
+    }
 }

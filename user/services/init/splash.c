@@ -3,10 +3,10 @@
  * On a plain boot (the kernel passes init the word "splash") bin/splash
  * is started right after the console, before everything else, and the
  * shell waits for it: the splash plays the boot animation while the other
- * services start, says SPLASH_PLAYED when it is over, and holds its last
+ * services start, says `played` when it is over, and holds its last
  * frame; init then starts the shell, and when the shell says it is ready
- * (initctl.shell_ready, ctl.c) init sends SPLASH_GO and the splash hands
- * the screen back to the console. The splash runs once: it is never
+ * (initctl.shell_ready, ctl.c) init sends `go` and the splash hands the
+ * screen back to the console. The splash runs once: it is never
  * started again, and its end (however it ends) counts as "played".
  *
  * No key skips it, so a splash that hangs would keep the shell away for
@@ -14,10 +14,12 @@
  * (the video's 8.5 s, its wait of up to 2 s for the sound, and a
  * margin), then init kills it, which gives the screen back to the
  * console, and starts the shell anyway (shell.c, splash_overdue). */
+#include <idl/splashch.h>
 #include <splash.h>
 #include "init.h"
 
 #define SPLASH_DEADLINE (20 * NS_PER_S)   /* from its start: then the shell starts anyway */
+#define ROUND           8                 /* messages read before the loop gets a turn */
 
 static handle_t ch;          /* our end of the splash's channel (0: none) */
 static handle_t ch_port;     /* the port it is bound on */
@@ -79,20 +81,28 @@ static void close_channel(void)
     ch = HANDLE_INVALID;
 }
 
+/* splashch.played: the animation is over. */
+static void on_played(void *ctx)
+{
+    (void)ctx;
+    if (!played)
+        printf("init: the splash has played: starting the shell\n");
+    played = true;
+}
+
+static const struct splashch_ops ops = { .played = on_played };
+
 void splash_event(void)
 {
-    uint32_t msg = 0, n = 0;
-    struct channel_read_args a = {
-        .h = ch, .rd_cap = sizeof(msg), .rd_bytes = (uint64_t)(uintptr_t)&msg,
-        .rd_actual = (uint64_t)(uintptr_t)&n,
-    };
-    status_t st = ch ? jam_channel_read(&a) : ERR_BAD_STATE;
-    if (st == OK && n == sizeof(msg) && msg == SPLASH_PLAYED) {
-        printf("init: the splash has played: starting the shell\n");
-        played = true;
-    } else if (st == ERR_PEER_CLOSED) {
+    status_t st = OK;
+    for (unsigned n = 0; ch && st == OK && n < ROUND; n++)
+        st = splashch_serve_one(ch, &ops, NULL);   /* a message that breaks the format means nothing */
+    if (st == ERR_PEER_CLOSED) {
         played = true;
         close_channel();
+    } else if (ch && st == OK) {   /* more may be queued: the binding fires on a new edge */
+        struct port_packet pkt = { .key = ch_key, .type = PORT_PACKET_USER };
+        (void)jam_port_queue(ch_port, &pkt);
     }
 }
 
@@ -106,7 +116,6 @@ void splash_shell_ready(void)
 {
     if (!ch)
         return;
-    uint32_t msg = SPLASH_GO;
-    (void)jam_channel_write(ch, &msg, sizeof(msg), NULL, 0);   /* it is gone: nothing to tell */
+    (void)splashch_go(ch);   /* it is gone: nothing to tell */
     close_channel();
 }

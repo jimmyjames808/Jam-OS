@@ -118,13 +118,16 @@ static bool terminal_asked(struct cs *t, uint32_t *txid)
 {
     signals_t seen;
     CHECK_ST(jam_object_wait_one(t->init, SIG_READABLE, now() + CT_WAIT, &seen), OK);
-    struct initctl_terminal_req q;
+    struct initctl_terminal_req q;   /* the header; the command's count and bytes follow */
+    uint8_t buf[sizeof(q) + 2 + 128];
     uint32_t n = 0;
-    struct channel_read_args r = { .h = t->init, .rd_cap = sizeof(q),
-                                   .rd_bytes = (uint64_t)(uintptr_t)&q,
+    struct channel_read_args r = { .h = t->init, .rd_cap = sizeof(buf),
+                                   .rd_bytes = (uint64_t)(uintptr_t)buf,
                                    .rd_actual = (uint64_t)(uintptr_t)&n };
     CHECK_ST(jam_channel_read(&r), OK);
-    CHECK(n == sizeof(q) && q.ordinal == INITCTL_TERMINAL);
+    CHECK(n >= sizeof(q) + 2);
+    memcpy(&q, buf, sizeof(q));
+    CHECK(q.ordinal == INITCTL_TERMINAL);
     *txid = q.txid;
     return true;
 }

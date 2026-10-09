@@ -66,10 +66,10 @@ static bool start_out(struct cs *t, bool desk, const char *layout, const char *m
         argv[argc++] = "nodesk";
     if (more)
         argv[argc++] = more;
-    struct spawn_handle x[] = { { SR_USER + 0, svc }, { SR_USER + 1, image },
-                                { SR_USER + 2, ctl }, { SR_USER + 3, init },
-                                { SR_USER + 5, note }, { SR_USER + 6, mix },
-                                { SR_USER + 7, net }, { SR_STDOUT, out } };
+    struct spawn_handle x[] = { { COMP_SR_WAYLAND, svc }, { COMP_SR_IMAGE, image },
+                                { COMP_SR_ADMIN, ctl }, { COMP_SR_INITCTL, init },
+                                { COMP_SR_NOTIFY, note }, { COMP_SR_MIXER, mix },
+                                { COMP_SR_NETINFO, net }, { SR_STDOUT, out } };
     struct spawn_args a = { .path = "bin/compositor", .argc = argc, .argv = argv,
                             .job = t->p.job,
                             .extra = x, .nextra = out != HANDLE_INVALID ? 8 : 7 };
