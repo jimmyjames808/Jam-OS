@@ -274,10 +274,10 @@ static handle_t owner_end(struct sc *r, uint32_t src)
  * still ends at its deadline. */
 static bool empty_flood(struct sc *r, uint32_t src, struct cl *e)
 {
+    uint64_t t0 = now();   /* before the paste, which sets its deadline (not after owner_end) */
     CHECK_ST(jwl_clip_paste(e->c), OK);
     handle_t w = owner_end(r, src);
     CHECK(w != HANDLE_INVALID);
-    uint64_t t0 = now();
     for (unsigned i = 0; i < FLOOD; i++)
         CHECK_ST(jam_channel_write(w, "", 0, NULL, 0), OK);
     CHECK_ST(jwl_client_dispatch(e->c), OK);
