@@ -278,7 +278,10 @@ recommendation for the rest unless unsure or very important") and was
 asked one, S3.
 
 - **Kernel (K-A to K-F)**: A, "the reader's job" is the job whose handle
-  table last received the reading end; B, the receives-no-handles mark
+  table last received the reading end; refined in K1 (2026-10-09, the owner's
+  call): only a table that receives the end as its *only* handle to it
+  becomes the reader (an end shared with many, as init's `/boot`, would
+  otherwise keep a dead program's job alive); B, the receives-no-handles mark
   is a one-way call on an end the caller holds, refused while handles
   are queued there; C, every handle in a send's list is consumed on every
   outcome, a refused list included (process_start's arg0, handle_replace
@@ -687,6 +690,11 @@ reviews raise (one at a time, as these), and marks every other finding
 "as proposed".
 
 ## Stage C: the fixes
+
+**Track names (2026-10-09):** the genidl track's two hand-backs are called
+**IDL1** (arrays, events, several protocols per file: wave C1) and **IDL2**
+(handle arguments: wave C2), not G1/G2, which are the graphics milestones.
+The reviews' "G" and "G2" mean these.
 
 Each track is about one agent-hour, starts from main, owns the files
 listed (an edit outside them stays minimal and is named in its report),

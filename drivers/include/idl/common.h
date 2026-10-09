@@ -306,8 +306,8 @@ struct idl_serve {
  * s->nh handles in s->hs. A request carrying more than s->hcap handles,
  * or too big for s->q, is answered ERR_INVALID_ARGS (idl_drain) and the
  * next one taken. A reply that can't
- * go out (the client is gone, or never called) is dropped and its
- * handles closed, as idl_reply_write's. Otherwise the wait's status:
+ * go out (the client is gone, or never called) is dropped (its handles
+ * gone all the same, as idl_reply_write's). Otherwise the wait's status:
  * ERR_PEER_CLOSED when the client is gone for good and nothing is
  * queued, ERR_CANCELED when the thread is being killed. */
 static inline status_t idl_serve_next(struct idl_serve *s)
@@ -339,8 +339,9 @@ static inline status_t idl_serve_next(struct idl_serve *s)
             idl_a.reply_status = (uint64_t)(uintptr_t)&idl_o.rs;
         }
         status_t idl_st = drv_channel_reply_wait(&idl_a);
-        if (idl_o.rs != OK)
-            idl_close_all(s->rhs, s->rhn);   /* not sent: they're still ours */
+        /* The reply's handles are gone whatever the status (a send's
+         * handles are always moved): never closed here, as their values
+         * may already be another thread's new handles. */
         s->rn = s->rhn = 0;
         if (idl_reply && idl_o.rs != 1 && idl_o.rs != OK && idl_o.rs != ERR_PEER_CLOSED)
             continue;   /* the reply failed and nothing was read: wait again */
@@ -422,7 +423,7 @@ struct idl_reply {
     handle_t    ch;      /* the request's channel; HANDLE_INVALID: nothing waits */
     const void *r;       /* the reply (a slot's reply area): rn bytes */
     uint32_t    rn;
-    uint32_t    nh;      /* handles in hs: moved once the reply is tried */
+    uint32_t    nh;      /* handles in hs: gone once the reply is tried */
     handle_t    hs[IDL_REP_HANDLES];
     uint64_t   *mark;    /* set to 1 by the kernel once it went out; NULL: none */
 };
@@ -446,14 +447,14 @@ static inline bool idl_reply_args(const struct idl_reply *rep, struct channel_re
 }
 
 /* After a channel_reply_wait that tried rep's reply (its status rs: 1 if
- * the kernel never got to it): nothing waits any more, and handles that
- * didn't go are closed (as idl_reply_write's: a client that is gone, or
- * whose queue is full, loses its reply). true: the reply failed and the
- * call ended there, nothing taken: make it again without the reply. */
+ * the kernel never got to it): nothing waits any more, and its handles
+ * are gone whatever rs says (a send's handles are always moved; a client
+ * that is gone, or whose queue is full, loses its reply). Never closed
+ * here: their values may already be another thread's new handles. true:
+ * the reply failed and the call ended there, nothing taken: make it again
+ * without the reply. */
 static inline bool idl_reply_tried(struct idl_reply *rep, status_t rs)
 {
-    if (rs != OK)
-        idl_close_all(rep->hs, rep->nh);
     rep->ch = HANDLE_INVALID;
     rep->nh = 0;
     return rs != 1 && rs != OK && rs != ERR_PEER_CLOSED;
@@ -560,17 +561,15 @@ struct idl_txn {
 #define IDL_LATER 1
 
 /* Server: write the reply rep (n bytes; its txid is set here) with nh
- * handles to txn. The handles are moved in every case: sent, or closed
- * when the write fails (ERR_PEER_CLOSED: the client is gone; a client
- * that gave up waiting still gets the reply, as a message of its own). */
+ * handles to txn. The handles are gone in every case, sent or not (a
+ * send's handles are always moved; ERR_PEER_CLOSED: the client is gone;
+ * a client that gave up waiting still gets the reply, as a message of
+ * its own): the caller never closes them after this. */
 static inline status_t idl_reply_write(struct idl_txn txn, void *rep, uint32_t n,
                                        handle_t *hs, uint32_t nh)
 {
     ((struct idl_rep_hdr *)rep)->txid = txn.txid;
-    status_t idl_st = drv_channel_write(txn.ch, rep, n, hs, nh);
-    if (idl_st != OK)
-        idl_close_all(hs, nh);
-    return idl_st;
+    return drv_channel_write(txn.ch, rep, n, hs, nh);
 }
 
 /* ---- asynchronous calls ------------------------------------------------ */

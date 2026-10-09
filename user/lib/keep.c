@@ -398,11 +398,12 @@ static status_t send_slots(struct keeper *k, struct batch *b, struct keep_slot *
     status_t st = dup_slots(b, s, n);
     if (st != OK)
         return st;
+    /* The duplicates are gone whatever the write's status (a send's handles
+     * are always moved): never closed after it, as their values may already
+     * be another thread's new handles. */
     st = jam_channel_write(k->ch, &b->msg, KEEP_RESTORE_SIZE(n), b->h, nh);
-    if (st != OK) {
-        close_all(b->h, nh);   /* a failed write leaves them in our table */
+    if (st != OK)
         return st;
-    }
     b->slots += n;
     b->handles += nh;
     return OK;

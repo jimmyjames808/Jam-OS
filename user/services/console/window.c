@@ -92,9 +92,10 @@ static void connector(void *arg)
             return;
         handle_t ch = HANDLE_INVALID;
         struct connect_answer a = { svc_connect_until(wl_svc, now() + CONNECT_WAIT, &ch), 0 };
-        if (jam_channel_write(ask_theirs, &a, sizeof(a), a.st == OK ? &ch : NULL,
-                              a.st == OK ? 1 : 0) != OK && a.st == OK)
-            jam_handle_close(ch);
+        /* ch is gone whatever the write's status (a send's handles are
+         * always moved): never closed after it. */
+        (void)jam_channel_write(ask_theirs, &a, sizeof(a), a.st == OK ? &ch : NULL,
+                                a.st == OK ? 1 : 0);
     }
 }
 
