@@ -191,7 +191,7 @@ static bool pixel_becomes(const struct cs *t, int32_t x, int32_t y, uint32_t wan
 {
     uint64_t until = now() + CT_WAIT;
     while (t->p.image[y * OUT_W + x] != want && now() < until)
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     if (t->p.image[y * OUT_W + x] != want)
         FAIL("pixel (%d, %d) is %06x, want %06x", x, y, t->p.image[y * OUT_W + x], want);
     return true;
@@ -214,7 +214,7 @@ static bool cursor_is(const struct cs *t, enum cursor_shape s, int32_t x, int32_
             return true;
         if (now() >= until)
             FAIL("the cursor at (%d, %d) isn't shape %d: %u pixels differ", x, y, s, bad);
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     }
 }
 

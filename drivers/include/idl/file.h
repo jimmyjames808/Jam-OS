@@ -8,7 +8,7 @@
  * channel closes the file (a written file's directory entry is updated
  * then, as by sync). Format: see tools/genidl.py.
  *
- * Restart: fat's restart is not seen: devmgr's keeper holds this channel
+ * Restart: fat's restart is not seen: volumes' keeper holds this channel
  * and the buffer VMO across fat's death, the successor carries on with
  * the file as the last answered request left it (an answered write is
  * never lost, synced or not), and the request in progress is finished
@@ -76,7 +76,9 @@ struct file_stat_rep {
     uint32_t txid;
     int32_t  status;
     uint64_t size;
+    uint8_t is_dir;
     uint64_t mtime;
+    uint64_t id;
 } __attribute__((packed));
 struct file_sync_req {
     uint32_t txid;
@@ -88,7 +90,9 @@ struct file_sync_rep {
 } __attribute__((packed));
 
 #define FILE_REQ_MAX 20u   /* bytes: the biggest request */
-#define FILE_REP_MAX 24u   /* bytes: the biggest reply */
+#define FILE_REP_MAX 33u   /* bytes: the biggest reply */
+#define FILE_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define FILE_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -192,7 +196,7 @@ static inline status_t file_truncate(handle_t ch, uint64_t size)
 
 /* file_stat_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t file_stat_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_size, uint64_t *out_mtime)
+static inline status_t file_stat_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
     struct file_stat_req idl_q;
     struct file_stat_rep idl_r;
@@ -205,21 +209,28 @@ static inline status_t file_stat_call(handle_t ch, bool idl_within, uint64_t idl
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     if (idl_st == OK && out_size)
         *out_size = idl_r.size;
+    if (idl_st == OK && out_is_dir)
+        *out_is_dir = idl_r.is_dir;
     if (idl_st == OK && out_mtime)
         *out_mtime = idl_r.mtime;
+    if (idl_st == OK && out_id)
+        *out_id = idl_r.id;
     return idl_st;
 }
-static inline status_t file_stat_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_size, uint64_t *out_mtime)
+/* The file's size now, 1 if a directory (always 0 until directory handles,
+ * M13), its modification time (that of the last sync or close after a
+ * write) and its id (fs.stat's). */
+static inline status_t file_stat_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
-    return file_stat_call(ch, false, deadline_ns, out_size, out_mtime);
+    return file_stat_call(ch, false, deadline_ns, out_size, out_is_dir, out_mtime, out_id);
 }
-static inline status_t file_stat_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_size, uint64_t *out_mtime)
+static inline status_t file_stat_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
-    return file_stat_call(ch, true, timeout_ns, out_size, out_mtime);
+    return file_stat_call(ch, true, timeout_ns, out_size, out_is_dir, out_mtime, out_id);
 }
-static inline status_t file_stat(handle_t ch, uint64_t *out_size, uint64_t *out_mtime)
+static inline status_t file_stat(handle_t ch, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
-    return file_stat_call(ch, false, DEADLINE_NEVER, out_size, out_mtime);
+    return file_stat_call(ch, false, DEADLINE_NEVER, out_size, out_is_dir, out_mtime, out_id);
 }
 
 /* file_sync_until and _within: idl_t is a deadline, or with idl_within a
@@ -364,7 +375,7 @@ static inline status_t file_stat_send(handle_t ch, uint32_t idl_txid)
 /* The status and results of a reply to file_stat_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t file_stat_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_size, uint64_t *out_mtime)
+static inline status_t file_stat_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
     const struct file_stat_rep *idl_r = (const struct file_stat_rep *)idl_rep;
     status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
@@ -377,8 +388,12 @@ static inline status_t file_stat_result(const void *idl_rep, struct idl_msg *idl
     idl_m->nh = 0;
     if (out_size)
         *out_size = idl_r->size;
+    if (out_is_dir)
+        *out_is_dir = idl_r->is_dir;
     if (out_mtime)
         *out_mtime = idl_r->mtime;
+    if (out_id)
+        *out_id = idl_r->id;
     return OK;
 }
 
@@ -422,7 +437,7 @@ struct file_ops {
     status_t (*read)(void *ctx, uint64_t offset, uint32_t length, uint32_t *out_actual);
     status_t (*write)(void *ctx, uint64_t offset, uint32_t length, uint32_t *out_actual);
     status_t (*truncate)(void *ctx, uint64_t size);
-    status_t (*stat)(void *ctx, uint64_t *out_size, uint64_t *out_mtime);
+    status_t (*stat)(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id);
     status_t (*sync)(void *ctx);
 };
 
@@ -477,7 +492,7 @@ static inline status_t file_reply_truncate(struct idl_txn idl_txn, status_t idl_
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t file_reply_stat(struct idl_txn idl_txn, status_t idl_st, uint64_t size, uint64_t mtime)
+static inline status_t file_reply_stat(struct idl_txn idl_txn, status_t idl_st, uint64_t size, uint8_t is_dir, uint64_t mtime, uint64_t id)
 {
     struct file_stat_rep idl_r;
     if (idl_st > 0)
@@ -486,7 +501,9 @@ static inline status_t file_reply_stat(struct idl_txn idl_txn, status_t idl_st, 
     if (idl_st != OK)
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     idl_r.size = size;
+    idl_r.is_dir = is_dir;
     idl_r.mtime = mtime;
+    idl_r.id = id;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
@@ -507,7 +524,7 @@ static inline status_t file_reply_sync(struct idl_txn idl_txn, status_t idl_st)
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (FILE_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (FILE_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -580,19 +597,23 @@ static inline uint32_t file_dispatch_on(handle_t ch, const struct file_ops *ops,
         const struct file_stat_req *idl_q = (const struct file_stat_req *)req;
         struct file_stat_rep *idl_r = (struct file_stat_rep *)rep;
         uint64_t out_size = 0;
+        uint8_t out_is_dir = 0;
         uint64_t out_mtime = 0;
+        uint64_t out_id = 0;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->stat) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->stat(ctx, &out_size, &out_mtime);
+        status_t idl_st = ops->stat(ctx, &out_size, &out_is_dir, &out_mtime, &out_id);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->size = out_size;
+        idl_r->is_dir = out_is_dir;
         idl_r->mtime = out_mtime;
+        idl_r->id = out_id;
         return sizeof(*idl_r);
     }
     case FILE_SYNC: {
@@ -641,7 +662,7 @@ static inline status_t file_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by file_take_slot, or found there by a
  * successor), which came on ch: as file_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (FILE_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

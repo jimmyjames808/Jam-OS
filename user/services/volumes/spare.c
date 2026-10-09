@@ -1,20 +1,20 @@
-/* devmgr: a filesystem service that outlives its process
- * (docs/M11.6-PLAN.md): for each filesystem binding (/data, /esp, each
+/* volumes: a filesystem service that outlives its process
+ * (docs/M11.6-PLAN.md): for each filesystem service (/data, /esp, each
  * /usbN) a keeper and a state VMO, and one warm spare fat for every mount.
  * init does the same for the mixer (user/services/init/spare.c); how a
  * spare, a keeper and a measured restart work is the supervision module's
- * (<supervise.h>, user/lib/supervise.c). What is fat's and devmgr's, and
+ * (<supervise.h>, user/lib/supervise.c). What is fat's and volumes', and
  * stays here:
  *
- * **What a binding keeps** (a struct sup_kept, made at its first start):
+ * **What a service keeps** (a struct sup_kept, made at its first start):
  *   - its `fs` channel, both ends (fsvc.c's fs_serve_end): each instance is
  *     handed a duplicate of the server end, so the mount stays listed while
  *     no instance runs, and calls on it wait in the channel for the next;
  *   - a state VMO (<svcstate.h>), FAT_STATE_SIZE bytes, handed to every
- *     instance as SR_STATE; devmgr never maps it. Its pages are committed
- *     only as fat uses them, and charged to devmgr's job;
+ *     instance as SR_STATE; volumes never maps it. Its pages are committed
+ *     only as fat uses them, and charged to volumes' job;
  *   - a keeper (<keep.h>): each instance gets a new keep channel (SR_KEEP).
- * All three go when the binding is retired (its disk gone, no volume),
+ * All three go when the service is retired (its disk gone, no volume),
  * given up on, or stopped in order (a remount: fsvc.c's fs_restart): then
  * the kept objects close and their clients see ERR_PEER_CLOSED.
  *
@@ -42,11 +42,11 @@
  * successor's writes.
  *
  * **Measured, every restart:** when the new instance runs, after the kill
- * (DEVMGR_KILL) or after its end was seen (a crash); and one cheap call on
+ * (VOLUMES_KILL) or after its end was seen (a crash); and one cheap call on
  * the kept `fs` channel (fs.statfs): kill to first answer, as a client
  * feels it.
  *
- * Everything here runs on devmgr's loop thread. */
+ * Everything here runs on volumes' loop thread. */
 #include <fatsvc.h>
 #include <fs_idl.h>
 #include <idl/storage.h>
@@ -58,33 +58,34 @@
 #define BLOCK_RETRY  (1 * NS_PER_S)      /* /data's channel in advance couldn't be opened */
 #define MAX_X        8                   /* handles a fat is given */
 
-/* The same limits bind.c gives every driver's job (16 MiB, 256 handles,
- * 16 threads, 1 MiB queued): the spare becomes one. */
-static const struct sup_limit spare_limits[] = {
+/* The limits devmgr gives every driver's job (16 MiB, 256 handles, 16
+ * threads, 1 MiB queued): a filesystem service's (supervise.c), and the
+ * spare's, which becomes one. */
+const struct sup_limit fat_limits[] = {
     { JOB_LIMIT_PAGES, 4096 },
     { JOB_LIMIT_HANDLES, 256 },
     { JOB_LIMIT_THREADS, 16 },
     { JOB_LIMIT_MSG_BYTES, 1u << 20 },
 };
+const unsigned fat_nlimits = sizeof(fat_limits) / sizeof(fat_limits[0]);
 
 static struct sup_spare spare;   /* the warm spare fat */
 
 /* /data's `block` channel, opened for the spare in advance. */
 static struct {
     handle_t block;       /* 0: none */
-    uint32_t block_for;   /* ... for this binding (devs index + 1) */
+    uint32_t block_for;   /* ... for this service (vols index + 1) */
     uint64_t block_try;   /* the next try to open it (uptime ns) */
 } adv;
 
 void spare_init(bool on)
 {
     const struct sup_spare_cfg cfg = { .path = FAT_PATH, .name = SPARE_NAME,
-                                       .limits = spare_limits,
-                                       .nlimits = sizeof(spare_limits) / sizeof(spare_limits[0]),
+                                       .limits = fat_limits, .nlimits = fat_nlimits,
                                        .port = port, .key = KEY_SPARE };
     sup_spare_init(&spare, &cfg, on);
     if (!on)
-        say(false, "devmgr: nospare: no warm spare %s; a restart starts a process", FAT_PATH);
+        say(false, "volumes: nospare: no warm spare %s; a restart starts a process", FAT_PATH);
 }
 
 bool spare_waits(void)
@@ -109,14 +110,14 @@ static void drop_block(void)
 }
 
 /* The boot disk's /data service (not a test disk's), if it runs. */
-static struct binding *data_binding(void)
+static struct vol *data_binding(void)
 {
     for (unsigned i = 0; i < MAX_DISKS; i++) {
         const struct disk *d = &disks[i];
         if (d->state != DISK_BOOT || d->test || !d->fs[PART_DATA])
             continue;
-        struct binding *b = &devs[d->fs[PART_DATA] - 1];
-        return b->state == DEVMGR_SUP_RUNNING && b->proc ? b : NULL;
+        struct vol *b = &vols[d->fs[PART_DATA] - 1];
+        return b->state == VOLUMES_SUP_RUNNING && b->proc ? b : NULL;
     }
     return NULL;
 }
@@ -125,26 +126,26 @@ static struct binding *data_binding(void)
  * that runs now. */
 static void prepare_block(uint64_t t)
 {
-    struct binding *b = data_binding();
-    uint32_t want = b ? (uint32_t)(b - devs) + 1 : 0;
+    struct vol *b = data_binding();
+    uint32_t want = b ? (uint32_t)(b - vols) + 1 : 0;
     if (adv.block && (adv.block_for != want || peer_closed(adv.block)))
         drop_block();
     if (adv.block || !b || t < adv.block_try)
         return;
-    status_t st = storage_open_partition_until(disk_ch(disk_of(b)), now() + CALL_WAIT, b->part,
+    status_t st = storage_open_partition_until(disk_of(b)->ch, now() + CALL_WAIT, b->part,
                                                false, &adv.block);
     if (st != OK) {
         adv.block = HANDLE_INVALID;
         adv.block_try = t + BLOCK_RETRY;
-        say(false, "devmgr: can't open /data's block channel for the spare (%s)", status_str(st));
+        say(false, "volumes: can't open /data's block channel for the spare (%s)", status_str(st));
         return;
     }
     adv.block_for = want;
 }
 
-bool fs_block_prepared(const struct binding *b, handle_t *out)
+bool fs_block_prepared(const struct vol *b, handle_t *out)
 {
-    if (!adv.block || adv.block_for != (uint32_t)(b - devs) + 1)
+    if (!adv.block || adv.block_for != (uint32_t)(b - vols) + 1)
         return false;
     handle_t h = adv.block;
     adv.block = HANDLE_INVALID;
@@ -188,12 +189,12 @@ void spare_stop(void)
 
 /* ---- the keeper and the state ---------------------------------------------------------- */
 
-void fs_kept_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
+void fs_kept_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
     if (!b->kept && (b->kept = calloc(1, sizeof(*b->kept))) != NULL)
         sup_kept_init(b->kept, port, FAT_STATE_SIZE, b->name);
     if (!b->kept) {
-        say(false, "devmgr: %s starts without its state and keeper (no memory)", b->name);
+        say(false, "volumes: %s starts without its state and keeper (no memory)", b->name);
         return;
     }
     *n = sup_kept_handles(b->kept, x, xr, *n);
@@ -201,23 +202,23 @@ void fs_kept_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
 
 /* b's instance has its keep channel's end: hand it what was kept, then
  * listen to it. */
-static void hand_over(struct binding *b)
+static void hand_over(struct vol *b)
 {
     if (b->kept)
-        sup_kept_hand_over(b->kept, KEY_KEEP_OF(b - devs, sup_kept_gen(b->kept)));
+        sup_kept_hand_over(b->kept, KEY_KEEP_OF(b - vols, sup_kept_gen(b->kept)));
 }
 
 void spare_keep_event(uint64_t key)
 {
     uint32_t i = KEY_INDEX(key);
-    if (i >= ndevs || !devs[i].kept || !sup_kept_listening(devs[i].kept, KEY_GEN(key)))
+    if (i >= nvols || !vols[i].kept || !sup_kept_listening(vols[i].kept, KEY_GEN(key)))
         return;   /* stale */
-    sup_kept_event(devs[i].kept);
+    sup_kept_event(vols[i].kept);
 }
 
-void fs_kept_release(struct binding *b)
+void fs_kept_release(struct vol *b)
 {
-    if (adv.block_for == (uint32_t)(b - devs) + 1)
+    if (adv.block_for == (uint32_t)(b - vols) + 1)
         drop_block();
     if (!b->kept)
         return;
@@ -228,12 +229,12 @@ void fs_kept_release(struct binding *b)
 
 /* ---- promotion ------------------------------------------------------------------------- */
 
-/* b runs as proc in job from now on: what start_driver does after its
+/* b runs as proc in job from now on: what fs_spawn does after its
  * spawn. */
-static status_t adopt(struct binding *b, handle_t proc, handle_t job)
+static status_t adopt(struct vol *b, handle_t proc, handle_t job)
 {
     b->gen++;
-    status_t st = jam_port_bind(port, proc, KEY_OF(b - devs, b->gen), SIG_TERMINATED,
+    status_t st = jam_port_bind(port, proc, KEY_OF(b - vols, b->gen), SIG_TERMINATED,
                                 PORT_BIND_ONCE);
     if (st != OK) {
         jam_job_kill(job);
@@ -244,10 +245,10 @@ static status_t adopt(struct binding *b, handle_t proc, handle_t job)
     b->job = job;
     b->proc = proc;
     b->killed = false;
-    b->state = DEVMGR_SUP_RUNNING;
+    b->state = VOLUMES_SUP_RUNNING;
     b->promoted++;
     if (b->client && !b->client_key) {   /* a new `fs` channel: its answers are watched */
-        uint64_t key = KEY_EV_OF(b - devs, b->gen);
+        uint64_t key = KEY_EV_OF(b - vols, b->gen);
         if (jam_port_bind(port, b->client, key, SIG_READABLE, PORT_BIND_PERSISTENT) == OK)
             b->client_key = key;
     }
@@ -258,7 +259,7 @@ static status_t adopt(struct binding *b, handle_t proc, handle_t job)
 /* Promote the spare to be b's service. ERR_NOT_FOUND: no spare waits, or
  * it couldn't be promoted (start a process instead); else OK or why b's
  * handles couldn't be made (ERR_PEER_CLOSED: its disk is gone). */
-static status_t promote(struct binding *b)
+static status_t promote(struct vol *b)
 {
     if (!sup_spare_ready(&spare))
         return ERR_NOT_FOUND;
@@ -301,7 +302,7 @@ static status_t probe_call(handle_t ch, uint64_t deadline)
 
 /* Say how long b's restart took to get it running (at `up`), after the
  * deliberate kill or the end seen, and measure its first answer. */
-static void restarted(struct binding *b, bool promoted, uint64_t up)
+static void restarted(struct vol *b, bool promoted, uint64_t up)
 {
     handle_t ch = HANDLE_INVALID;
     if (!b->client || jam_handle_duplicate(b->client, RIGHT_SAME, &ch) != OK)
@@ -309,12 +310,12 @@ static void restarted(struct binding *b, bool promoted, uint64_t up)
     sup_restarted(b->name, promoted, b->kill_at, b->ended_at, up, ch, probe_call);
 }
 
-status_t fs_run(struct binding *b, bool restart)
+status_t fs_run(struct vol *b, bool restart)
 {
     status_t st = restart ? promote(b) : ERR_NOT_FOUND;
     bool promoted = st == OK;
     if (st == ERR_NOT_FOUND)
-        st = start_driver(b);
+        st = fs_spawn(b);
     if (st != OK)
         return st;
     uint64_t up = now();

@@ -1,15 +1,15 @@
 # fat without a warm spare (the boot word `nospare`); use
 # tools/fat-spare-test.sh. No spare is started; `kill fat-data` starts a
 # new process (said with the time it took and the kill to the first
-# answer), on the channel devmgr kept, and the files are there.
-# devmgr's lines reach the serial port through the kernel log, the
+# answer), on the channel volumes kept, and the files are there.
+# volumes' lines reach the serial port through the kernel log, the
 # shell's through the console: their order isn't fixed, hence `seen`.
 # Each file is synced before the kill (fat-spare.txt says why).
 # (The markers are echoed as np-""1 so the typed line itself never matches.)
 wait 120 Jam OS shell
 wait {prompt}
 seen 60 init: /data mounted
-seen 60 devmgr: nospare: no warm spare
+seen 60 volumes: nospare: no warm spare
 send write /data/nospare-0.txt written before the kills; echo np-""1
 wait np-1
 wait {prompt}
@@ -18,7 +18,7 @@ wait shell: killed process
 wait written before the kills
 wait np-2
 wait {prompt}
-seen 10 devmgr: fat-data: new process started (no spare waited)
+seen 10 volumes: fat-data: new process started (no spare waited)
 send write /data/nospare-1.txt k-""1 && sync && kill fat-data && cat /data/nospare-1.txt; echo np-""3
 wait k-1
 wait np-3

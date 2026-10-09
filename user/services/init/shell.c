@@ -1,9 +1,9 @@
 /* init's shell mode: a plain boot ("Jam OS", or "shell" on
  * the command line) ends at a shell prompt on the screen.
  *
- * init starts and then supervises fifteen services, each in a job of its
+ * init starts and then supervises sixteen services, each in a job of its
  * own under init's: the bootfs server, the console, the boot splash,
- * serialin, devmgr, the mixer, the music player, netstack, the DHCP
+ * serialin, devmgr, volumes, the mixer, the music player, netstack, the DHCP
  * client, the resolver, logd, netlog, sntp, the file server and the shell;
  * the compositor first, unless the boot word `nocomp` says no (comp.c),
  * and then each terminal opened later, a console and a shell (terms.c). How each
@@ -11,7 +11,7 @@
  * net.c, the terminals' in terms.c); this file is the order, the
  * namespace they follow and the restarts.
  *
- * init's own namespace holds its mounts (/boot, and what devmgr mounts:
+ * init's own namespace holds its mounts (/boot, and what volumes mounts:
  * mounts.c) and the services it publishes under /svc (services.c). The
  * services that have a namespace get the part of it their grants name
  * (followers[], <os.h> "grants"): the shell all of it as it is, the music
@@ -28,8 +28,8 @@
  * clients wait for the console, logd, netlog and sntp for /data):
  *   - a new bootfs server is mounted at /boot again, and the shell is sent
  *     the new mount (until then /boot answers ERR_PEER_CLOSED).
- *   - a new console, a new devmgr: services.c (services_closed) says what
- *     their ends change for the others.
+ *   - a new console, a new devmgr, a new volumes: services.c
+ *     (services_closed) says what their ends change for the others.
  * Restarts back off from 100 ms to 5 s; one that ends more than 10 times
  * in a minute (from its first end) is given up on (a line in the log and
  * the RESULTS box), but for the compositor, and under `nocomp` the one
@@ -65,7 +65,8 @@ struct svc svcs[NSVC] = {
     [BOOTFS] = { BOOTFS_PATH }, [COMPOSITOR] = { "bin/compositor" },
     [CONSOLE] = { "bin/console" }, [SPLASH] = { "bin/splash" },
     [SERIALIN] = { "bin/serialin" },
-    [DEVMGR] = { "bin/devmgr" }, [MIXER] = { "bin/mixer" }, [MUSIC] = { "bin/music" },
+    [DEVMGR] = { "bin/devmgr" }, [VOLUMES] = { "bin/volumes" }, [MIXER] = { "bin/mixer" },
+    [MUSIC] = { "bin/music" },
     [NETSTACK] = { "bin/netstack" }, [DHCP] = { "bin/dhcp" }, [DNS] = { "bin/dns" },
     [LOGD] = { "bin/logd" }, [NETLOG] = { "bin/netlog" }, [SNTP] = { "bin/sntp" },
     [SERVE] = { "bin/serve" }, [SHELL] = { "bin/shell" },
@@ -271,6 +272,7 @@ static bool plain_name(unsigned i, char *buf, size_t n)
 {
     static const char *const names[TERMS] = {
         [BOOTFS] = "Boot files", [SERIALIN] = "Serial input", [DEVMGR] = "Device manager",
+        [VOLUMES] = "Storage",
         [MIXER] = "Sound", [MUSIC] = "Music player", [NETSTACK] = "Network",
         [DHCP] = "Network address (DHCP)", [DNS] = "Name lookup (DNS)", [LOGD] = "Log saving",
         [NETLOG] = "Network log", [SNTP] = "Clock sync", [SERVE] = "File server",
@@ -499,8 +501,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     settings_clock();   /* the defaults until /data's settings are read */
     lastboot_init(port, KEY_LASTBOOT);
     printf("init: shell mode%s: starting the bootfs server,%s the console,%s the serial input, "
-           "devmgr, the mixer, the music player, netstack, dhcp, dns, logd, netlog, sntp, the file "
-           "server and the shell\n",
+           "devmgr, volumes, the mixer, the music player, netstack, dhcp, dns, logd, netlog, sntp, "
+           "the file server and the shell\n",
            no_usb ? " (safe mode: nousb)" : "", comp_on() ? " the compositor," : "",
            splash ? " the boot splash," : "");
     for (;;) {

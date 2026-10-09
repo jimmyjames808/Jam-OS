@@ -309,6 +309,11 @@ const char *status_str(status_t s)
     case ERR_IO:               return "ERR_IO";
     case ERR_ALREADY_EXISTS:   return "ERR_ALREADY_EXISTS";
     case ERR_NO_SPACE:         return "ERR_NO_SPACE";
+    case ERR_NOT_DIR:          return "ERR_NOT_DIR";
+    case ERR_IS_DIR:           return "ERR_IS_DIR";
+    case ERR_NOT_EMPTY:        return "ERR_NOT_EMPTY";
+    case ERR_NAME_TOO_LONG:    return "ERR_NAME_TOO_LONG";
+    case ERR_BUSY:             return "ERR_BUSY";
     }
     return "?";
 }

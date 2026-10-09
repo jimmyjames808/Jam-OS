@@ -101,7 +101,7 @@ static void serve_loop(void *arg)
             (void)jam_object_wait_one(f->conn->ch, SIG_READABLE | SIG_PEER_CLOSED,
                                       now() + 5 * NS_PER_MS, &seen);
         else
-            (void)jam_nanosleep(now() + 2 * NS_PER_MS);
+            (void)jam_sleep_until(now() + 2 * NS_PER_MS);
     }
 }
 

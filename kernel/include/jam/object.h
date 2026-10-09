@@ -23,28 +23,10 @@
 #include <jam/spinlock.h>
 #include <jam/status.h>
 
-enum obj_type {
-    OBJ_NONE = 0,       /* "any type" in lookups */
-    OBJ_EVENT,
-    OBJ_TIMER,
-    OBJ_CHANNEL,
-    OBJ_PORT,
-    OBJ_VMO,
-    OBJ_DMA_CAP,        /* permission to pin memory for device DMA */
-    OBJ_PROCESS,
-    OBJ_THREAD,
-    OBJ_INTERRUPT,      /* a device interrupt vector */
-    OBJ_RESOURCE,       /* authority over a piece of hardware */
-    OBJ_VMAR,           /* a handle to an address space */
-    OBJ_JOB,            /* resource limits for a group of processes */
-    OBJ_KLOG,           /* a reader of the kernel log */
-    OBJ_SERIAL,         /* COM1 input */
-    OBJ_SCREEN,         /* ownership of the boot framebuffer */
-    OBJ_TYPE_COUNT,
-};
-
-/* signals_t and the common SIG_* bits are in <jam/abi.h> (user code needs
- * them too). Types document which ones they use. */
+/* enum obj_type (OBJ_*: OBJ_NONE is "any type" in lookups), signals_t and
+ * the common SIG_* bits are in <jam/abi.h> (user code needs them too:
+ * handle_info names a handle's type). Types document which signals they
+ * use. */
 
 struct kobject;
 
@@ -108,6 +90,10 @@ signals_t kobject_signals(struct kobject *obj);
 /* Register an observer. It fires immediately (under the lock) if
  * (signals & o->mask) != 0 already. */
 void kobject_observe(struct kobject *obj, struct observer *o);
+/* kobject_observe, but with `held` only while obj has a handle left
+ * (checked under its lock): false, and o not registered, once it has
+ * none (port bindings made through a handle: port_object_closed). */
+bool kobject_observe_if(struct kobject *obj, struct observer *o, bool held);
 
 /* Block until (signals & mask) != 0 or uptime_ns() >= deadline_ns
  * (DEADLINE_NEVER from sched.h for no limit). Returns OK, ERR_TIMED_OUT, or

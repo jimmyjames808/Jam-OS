@@ -552,7 +552,7 @@ bool sup_job_settle(void)
     uint64_t end = now() + JOB_RECHECK + JOB_POLL;
     while (sup_job_next_deadline() != DEADLINE_NEVER && now() < end) {
         sup_job_run_due();
-        jam_nanosleep(now() + JOB_POLL);
+        jam_sleep_until(now() + JOB_POLL);
     }
     sup_job_run_due();
     bool ok = recheck_failures == 0;

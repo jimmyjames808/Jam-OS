@@ -64,7 +64,7 @@ static status_t shell_mode(bool late, handle_t *fs)
     }
     if (late) {
         printf("ramfs: mounting " POINT " in %d s\n", LATE_S);
-        jam_nanosleep(now() + LATE_S * NS_PER_S);
+        jam_sleep_until(now() + LATE_S * NS_PER_S);
     }
     st = ns_send_one(ns, POINT, client);   /* consumes client */
     jam_handle_close(ns);

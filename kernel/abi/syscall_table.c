@@ -33,9 +33,9 @@ static int64_t call_clock_get(const struct syscall_frame *f)
     return sysc_clock_get();
 }
 
-static int64_t call_nanosleep(const struct syscall_frame *f)
+static int64_t call_sleep_until(const struct syscall_frame *f)
 {
-    return sysc_nanosleep(f->args[0]);
+    return sysc_sleep_until(f->args[0]);
 }
 
 static int64_t call_debug_report(const struct syscall_frame *f)
@@ -58,15 +58,15 @@ static int64_t call_handle_replace(const struct syscall_frame *f)
     return sysc_handle_replace((handle_t)f->args[0], (rights_t)f->args[1], f->args[2]);
 }
 
+static int64_t call_handle_info(const struct syscall_frame *f)
+{
+    return sysc_handle_info((handle_t)f->args[0], f->args[1]);
+}
+
 static int64_t call_object_wait_one(const struct syscall_frame *f)
 {
     return sysc_object_wait_one((handle_t)f->args[0], (signals_t)f->args[1], f->args[2],
                                 f->args[3]);
-}
-
-static int64_t call_object_signal(const struct syscall_frame *f)
-{
-    return sysc_object_signal((handle_t)f->args[0], (signals_t)f->args[1], (signals_t)f->args[2]);
 }
 
 static int64_t call_channel_create(const struct syscall_frame *f)
@@ -493,13 +493,13 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_process_exit] = call_process_exit,
     [SYS_thread_exit] = call_thread_exit,
     [SYS_clock_get] = call_clock_get,
-    [SYS_nanosleep] = call_nanosleep,
+    [SYS_sleep_until] = call_sleep_until,
     [SYS_debug_report] = call_debug_report,
     [SYS_handle_close] = call_handle_close,
     [SYS_handle_duplicate] = call_handle_duplicate,
     [SYS_handle_replace] = call_handle_replace,
+    [SYS_handle_info] = call_handle_info,
     [SYS_object_wait_one] = call_object_wait_one,
-    [SYS_object_signal] = call_object_signal,
     [SYS_channel_create] = call_channel_create,
     [SYS_channel_write] = call_channel_write,
     [SYS_channel_read] = call_channel_read,

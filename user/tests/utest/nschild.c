@@ -14,7 +14,7 @@ static bool wait_stat(const char *path, status_t want)
     for (uint64_t end = now() + 10 * NS_PER_S; now() < end;) {
         if (fs_stat(path, NULL, NULL, NULL) == want)
             return true;
-        jam_nanosleep(now() + 10 * NS_PER_MS);
+        jam_sleep_until(now() + 10 * NS_PER_MS);
     }
     return false;
 }
@@ -151,7 +151,7 @@ static int fs_hold(const char *path)
             st = file_write(&f, off, piece, sizeof(piece), &done);
         if (off == 0 && st == OK)
             printf("fs-hold: writing %s\n", path);
-        jam_nanosleep(now() + 5 * NS_PER_MS);
+        jam_sleep_until(now() + 5 * NS_PER_MS);
     }
     printf("fs-hold: %s: %s\n", path, status_str(st));
     return 1;

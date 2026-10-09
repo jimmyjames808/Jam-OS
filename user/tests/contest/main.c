@@ -189,7 +189,7 @@ static int steal(void)
             ;
         while (steal_src && input_serve_one(steal_src, &st_input, NULL) == OK)
             ;
-        jam_nanosleep(now() + 20 * NS_PER_MS);
+        jam_sleep_until(now() + 20 * NS_PER_MS);
     }
     printf("contest: steal: done\n");
     return 0;
@@ -323,7 +323,7 @@ int main(int argc, char **argv)
             return st == ERR_ACCESS_DENIED && !failed ? 0 : 1;
         printf("contest: cad: sending Ctrl+Alt+Del as an input source\n");
         CHECK(input_key(src, 0x4c, INPUT_KEY_DOWN, INPUT_MOD_LCTRL | INPUT_MOD_LALT, 0) == OK);
-        jam_nanosleep(now() + 2000 * NS_PER_MS);
+        jam_sleep_until(now() + 2000 * NS_PER_MS);
         printf("contest: cad: still here\n");
         return 1;
     }

@@ -336,13 +336,13 @@ static void driver_thread(void *arg)
     struct fake_driver *d = arg;
     static uint8_t buf[NETDEV_FRAME_MAX];
     /* Start late, so the test fills the tx ring and waits for room. */
-    (void)jam_nanosleep(now() + 20 * NS_PER_MS);
+    (void)jam_sleep_until(now() + 20 * NS_PER_MS);
     for (unsigned pass = 0; !__atomic_load_n(&d->stop, __ATOMIC_ACQUIRE); pass++) {
         (void)drv_event_signal(d->to_driver, NETDEV_SIG_TX, 0);
         netdev_awake(&d->tx);
         bool all = driver_pass(d, buf);
         if (!all || pass % 16 == 15)
-            (void)jam_nanosleep(now() + NS_PER_MS);   /* a slow moment: the tx ring fills */
+            (void)jam_sleep_until(now() + NS_PER_MS);   /* a slow moment: the tx ring fills */
         if (!all || !netdev_sleep(&d->tx))
             continue;
         signals_t seen = 0;

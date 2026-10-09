@@ -30,6 +30,7 @@
 #include <idl/fsctl.h>
 #include <os.h>
 #include <svcstate.h>
+#include "ffx.h"
 
 #define FAT_MAX_FILES  32          /* open files at once */
 #define FAT_DIR_CURSORS 8          /* directories being listed at once (dirs.c) */
@@ -40,6 +41,8 @@
  * filled with zeros, and nothing else is served meanwhile): grow in steps. */
 #define FAT_GROW_MAX   (16u << 20)
 #define FAT_VIEWS      32          /* views (fs.view) served at once */
+#define FAT_PATH_MAX   (FS_PATH_LEN + 1)   /* a resolved path and its NUL, bytes */
+#define FAT_ROOT_ID    1ull        /* the root's id (fs.stat): it has no entry (ffx.h) */
 
 /* Port keys: the fs channel, the block channel, open file `slot`
  * (FAT_KEY_FILE(slot, gen); gen tells a reused slot's packets apart) and
@@ -123,7 +126,8 @@ extern struct fat_vol vol;
  * (a test's RAM disk) fat makes one of its own and always starts fresh. */
 
 #define FAT_STATE_KIND 0x20746166u   /* "fat ": svcstate's kind */
-#define FAT_STATE_LAYOUT 3u          /* bump on any change to struct fat_state */
+#define FAT_STATE_LAYOUT 5u          /* bump on any change to struct fat_state, or to the
+                                      * fs and file requests its slots replay */
 #define FAT_HOLD_MAX  2304u   /* sectors held at most: a MiB of a file, the FAT sectors
                                * that chain it (on one-sector clusters, 16 per copy) */
 #define FAT_HOLD_RUNS 255u    /* runs of consecutive sectors held at most (run_of is a byte) */
@@ -136,9 +140,10 @@ extern struct fat_vol vol;
 #define FAT_OP_RUNS   96u     /* runs */
 #define FAT_UNDO_BYTES (32u << 10)   /* the undo copy's log: fs.sync over every open file */
 #define FAT_UNDO_SECTORS 32u  /* held sectors a request may overwrite in place, saved */
-/* A request slot's request area: the request message, then from
- * FAT_SLOT_DATA on its data (request.c: the bounce buffer). */
-#define FAT_SLOT_DATA 4096u
+/* A request slot's request area: the request message (fs.rename's two
+ * paths: over 8 KiB), then from FAT_SLOT_DATA on its data (request.c: the
+ * bounce buffer). */
+#define FAT_SLOT_DATA (12u << 10)
 
 /* The dirty flag (FAT[1]'s clean-shutdown bit) and what is on the medium:
  * disk.c's. */
@@ -160,8 +165,9 @@ struct fat_disk {
 struct fat_open {
     uint32_t refs;            /* slots of files[] that use it; 0: free */
     bool     unsynced;        /* written since its last f_sync */
-    char     path[FS_PATH_MAX];/* its resolved path: what makes two opens one file */
-    FIL      fil;             /* FatFs's file, opened to read (and to write, if its first
+    uint64_t place;           /* its directory entry's place (ffx.h): what makes two opens
+                               * one file, whatever path reached it (fileops.c) */
+    FIL      fil;            /* FatFs's file, opened to read (and to write, if its first
                                * open asked) */
 };
 
@@ -515,17 +521,16 @@ void     cache_stats(struct fat_cache_stats *out);
 
 /* ---- path.c ---------------------------------------------------------------------- */
 
-/* The IDL's 256-byte path field -> "/a/b" ("/" for the root): at most 255
- * bytes and NUL-terminated, "" or starting with '/'; "." and ".." resolved
- * (".." at the root stays there); every name one FAT and Windows accept
- * as a long name (no control characters, none of " * : < > ? \ |, not
- * ending in '.' or ' '). ERR_INVALID_ARGS otherwise. */
-status_t path_resolve(const uint8_t in[FS_PATH_MAX], char out[FS_PATH_MAX]);
+/* A path as the protocol carries it (len bytes, a str: UTF-8 without a
+ * NUL) -> "/a/b" ("/" for the root): "" or starting with '/'; "." and ".."
+ * resolved (".." at the root stays there); every name one FAT and Windows
+ * accept as a long name (no control characters, none of " * : < > ? \ |,
+ * not ending in '.' or ' ') and at most FF_MAX_LFN (255) UTF-16 units long
+ * (ERR_NAME_TOO_LONG). ERR_INVALID_ARGS otherwise. */
+status_t path_resolve(const char *in, uint32_t len, char out[FAT_PATH_MAX]);
 bool     path_is_root(const char *p);
 /* Is `p` below directory `dir` (compared without case, as FAT does)? */
 bool     path_inside(const char *p, const char *dir);
-/* Are two resolved paths the same, compared without case? */
-bool     path_same(const char *a, const char *b);
 /* A name or label read from the volume (NUL-terminated UTF-8), made safe to
  * show, in place: every control character (C0, DEL, and C1 as UTF-8)
  * becomes '?'. Another computer can write any name; one that holds them
@@ -534,6 +539,10 @@ bool     path_same(const char *a, const char *b);
 void     name_shown(char *s);
 /* The generic FRESULT -> ERR_* mapping (the methods refine FR_DENIED). */
 status_t fr_status(FRESULT r);
+/* fr_status for a call on path p (resolved), with FR_NO_PATH (no directory
+ * on the way) told apart: ERR_NOT_DIR when a name on the way is a file,
+ * else ERR_NOT_FOUND. */
+status_t fr_path_status(FRESULT r, const char *p);
 /* A FAT date and time (the clock's own zone) as seconds since 1970 counted
  * as if it were UTC; 0 for no date. */
 uint64_t fat_unix_time(WORD date, WORD time);
@@ -548,10 +557,11 @@ extern const struct fsctl_ops fat_ctl_ops;
 
 /* ---- dirs.c ---------------------------------------------------------------------- */
 
-/* Entry `index` of directory `path` (resolved) into *fi, as a walk from
- * its start would find it, from a cursor where one can go on.
- * ERR_NOT_FOUND: past the end; ERR_WRONG_TYPE: path is a file. */
-status_t dirs_read(const char *path, uint32_t index, FILINFO *fi);
+/* Entry `index` of directory `path` (resolved) into *fi and its entry's
+ * place into *place, as a walk from its start would find it, from a cursor
+ * where one can go on. ERR_NOT_FOUND: past the end, or no such directory;
+ * ERR_NOT_DIR: path, or a name on the way, is a file. */
+status_t dirs_read(const char *path, uint32_t index, FILINFO *fi, uint64_t *place);
 /* Close every cursor: before anything that adds, removes or renames an
  * entry. */
 void     dirs_forget(void);
@@ -604,10 +614,14 @@ void     files_close_all(void);
 /* Close the handles of every slot the state doesn't know (after an undo:
  * files an undone fs.open made). */
 void     files_drop_unknown(void);
-/* Is the file at `path` (resolved) open? Told by its directory entry, so
- * that an 8.3 alias of an open file's path is that file (FatFs's own lock
- * is off: ffport/ffconf.h). An open file can't be removed or renamed. */
+/* Is the file at `path` (resolved) open? Told by its directory entry's
+ * place, so that an 8.3 alias of an open file's path is that file (FatFs's
+ * own lock is off: ffport/ffconf.h). An open file can't be removed or
+ * renamed. */
 bool     files_is_open(const char *path);
+/* An adopted opens[] entry's place is its FIL's entry, in the window
+ * (adopt.c). */
+bool     files_place_ok(const struct fat_open *o);
 /* A successor's files, as views_take and the rest (adopt.c): files_adopt
  * closes (as operations) the files whose handles didn't come back. */
 bool     files_take(uint32_t i, const handle_t *hs, unsigned n);

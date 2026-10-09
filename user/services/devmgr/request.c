@@ -32,16 +32,10 @@ static struct binding *find(const struct devmgr_req *q, bool msix_wildcard)
     bool any_running = any && q->ordinal == DEVMGR_GET_SERVICE;
     bool any_bound = any && (q->ordinal == DEVMGR_GET_DRIVER || q->ordinal == DEVMGR_KILL);
     bool usb = q->vendor == DEVMGR_USB_IFACE;
-    if (q->vendor == DEVMGR_FS_SVC)
-        return fs_find(q->instance, q->device);
-    if (q->vendor == DEVMGR_FS_MOUNT)
-        return fs_find_mount(q->device, q->instance);
     if (q->vendor == DEVMGR_PCI_CLASS)
         return class_find(q->instance, q->device);
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
-        if (b->kind == BIND_FS)
-            continue;   /* filesystem services only by DEVMGR_FS_SVC */
         if (usb || b->kind == BIND_USB) {
             /* USB class drivers only by DEVMGR_USB_IFACE (id, interface) */
             if (usb && b->kind == BIND_USB && b->path && b->usb_id == q->instance &&
@@ -79,7 +73,6 @@ static status_t kill_request(struct binding *b)
 {
     if (b->state != DEVMGR_SUP_RUNNING)
         return OK;   /* nothing runs */
-    b->kill_at = now();   /* a filesystem service's restart is timed from here (spare.c) */
     kill_driver(b);
     signals_t seen;
     status_t st = jam_object_wait_one(b->proc, SIG_TERMINATED,
@@ -103,12 +96,13 @@ static void unbind(struct binding *b)
 }
 
 /* RELEASE: b is left without a driver until REBIND. A disk's filesystems
- * are synced first: they go with its driver. For a USB interface the
- * caller gets the channel the driver had (hs[0]). */
+ * are synced first (volumes', on the DISKS channel): they go with its
+ * driver. For a USB interface the caller gets the channel the driver had
+ * (hs[0]). */
 static void release(struct binding *b, struct devmgr_rep *r, handle_t *hs, uint32_t *nh)
 {
     if (b->disk)
-        disk_sync_all();
+        disks_sync();
     unbind(b);
     say(false, "devmgr: %s %s released: no driver until it is bound again", bdf(b), b->path);
     if (b->kind == BIND_USB && (r->status = usb_channel(b, &hs[0])) == OK)
@@ -144,11 +138,11 @@ static status_t test_driver(void)
 }
 
 /* GET_SERVICE: a duplicate of b's client end into hs[0]. known: a driver
- * was started for b. Never a disk's driver's or a filesystem service's: a
- * disk's `storage` channel opens every partition for writing, so it stays
- * devmgr's own, and a filesystem's channel is DEVMGR_MOUNTS's to hand out
- * (the control channel's alone). Never, on the query channel, a device
- * that has a device channel: its holder's (and the control channel's). */
+ * was started for b. Never a disk's driver's: a disk's `storage` channel
+ * opens every partition for writing, so it stays devmgr's own (and the
+ * one it asks for volumes, volumes'). Never, on the query channel, a
+ * device that has a device channel: its holder's (and the control
+ * channel's). */
 static void get_service(const struct binding *b, bool known, enum level lv, struct devmgr_rep *r,
                         handle_t *hs, uint32_t *nh)
 {
@@ -198,10 +192,6 @@ static void supervision(const struct binding *b, struct devmgr_rep *r)
     r->a = b->state;
     r->b = b->win.restarts;
     r->c = b->win.backoff_ms;
-    if (b->kind == BIND_FS) {
-        r->d = b->promoted;
-        r->e = spare_waits();
-    }
     if (b->kind == BIND_PCI) {
         struct pci_dev_info now;
         if (jam_pci_enum(pci_res, b->index, &now) == OK) {
@@ -235,7 +225,7 @@ static void device_channel(const struct binding *b, struct devmgr_rep *r, handle
     if (!b || !b->path)
         r->status = ERR_NOT_FOUND;
     else if (b->kind != BIND_PCI && b->kind != BIND_SOFT)
-        r->status = ERR_NOT_SUPPORTED;   /* USB and filesystem bindings come and go */
+        r->status = ERR_NOT_SUPPORTED;   /* USB bindings come and go */
     else if ((r->status = chans_new_device((uint32_t)(b - devs), &hs[0])) == OK)
         *nh = 1;
 }
@@ -278,21 +268,6 @@ void request_handle(const struct devmgr_req *q, const struct request_from *from,
         r->status = test_driver();
         return;
     }
-    if (q->ordinal == DEVMGR_REMOUNT) {
-        bool valid = q->vendor == DEVMGR_USB_MOUNT && !(q->instance & ~3u);
-        r->status = valid ? disk_remount(q->device, q->instance & DEVMGR_REMOUNT_TEST,
-                                         q->instance & DEVMGR_REMOUNT_WRITE)
-                          : ERR_INVALID_ARGS;
-        return;
-    }
-    if (q->ordinal == DEVMGR_ESP_WRITE) {   /* only on init's ESP channel (chans.c) */
-        bool writable = q->instance & DEVMGR_ESP_WRITABLE;
-        if (q->vendor || q->device || (q->instance & ~DEVMGR_ESP_WRITABLE))
-            r->status = ERR_INVALID_ARGS;
-        else if ((r->status = disk_esp_write(writable, &hs[0])) == OK && writable)
-            *nh = 1;
-        return;
-    }
     struct binding *b = NULL;
     if ((r->status = named(q, from, &b)) != OK)
         return;
@@ -311,11 +286,10 @@ void request_handle(const struct devmgr_req *q, const struct request_from *from,
         r->status = known ? kill_request(b) : ERR_NOT_FOUND;
         return;
     case DEVMGR_REBIND:
-        /* not a filesystem service: those come and go with their disk */
-        r->status = b && b->path && b->kind != BIND_FS ? rebind(b) : ERR_NOT_FOUND;
+        r->status = b && b->path ? rebind(b) : ERR_NOT_FOUND;
         return;
     case DEVMGR_RELEASE:
-        if (b && b->path && b->kind != BIND_FS)
+        if (b && b->path)
             release(b, r, hs, nh);
         else
             r->status = ERR_NOT_FOUND;

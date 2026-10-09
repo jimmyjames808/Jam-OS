@@ -5,10 +5,12 @@
  * Copying: a wl_data_source offering the text types below, given to
  * wl_data_device.set_selection with the serial of the last input event.
  * The text is kept here; each wl_data_source.send hands us the write end
- * of a reader's channel, into which the text goes at once, in messages of
- * at most JWL_CLIP_CHUNK bytes, without waiting (a reader whose channel
- * is full gets less, then the end); then the end is closed. `cancelled`
- * (replaced, refused) frees the source and the text.
+ * of a reader's channel, into which the text goes in messages of at most
+ * JWL_CLIP_CHUNK bytes, without waiting: what the channel refuses (full,
+ * or our job out of message bytes) waits in `sends` and is tried again at
+ * each dispatch, until it is all written or JWL_CLIP_WAIT_NS has passed;
+ * then the end is closed. `cancelled` (replaced, refused) frees the
+ * source, and the text once no transfer still writes it.
  *
  * Pasting: the compositor introduces offers (data_offer, then its types)
  * and names the selection's (selection, or 0 for none); every other offer
@@ -53,15 +55,63 @@ void jwlc_clip_bound(struct jwl_client *c)
         c->clip.device = id;
 }
 
-/* Our source and its text go. */
+static void text_unref(struct jwlc_text *t)
+{
+    if (t && !--t->refs)
+        free(t);
+}
+
+/* Our source goes, and its text with the last transfer writing it. */
 static void drop_source(struct jwl_client *c, bool destroy)
 {
     if (destroy && c->clip.source && c->conn)
         (void)jwl_wl_data_source_destroy(c->conn, c->clip.source);
     c->clip.source = 0;
-    free(c->clip.text);
+    text_unref(c->clip.text);
     c->clip.text = NULL;
-    c->clip.len = 0;
+}
+
+/* A transfer ends: its end closed (the reader's end of file), its entry free. */
+static void send_end(struct jwlc_send *s)
+{
+    jam_handle_close(s->fd);
+    s->fd = HANDLE_INVALID;
+    text_unref(s->text);
+    s->text = NULL;
+}
+
+/* What the reader's channel takes of s now: false once s is over (all
+ * written, or the reader gone), true while some waits for room. */
+static bool send_more(struct jwlc_send *s)
+{
+    while (s->at < s->text->len) {
+        size_t n = s->text->len - s->at < JWL_CLIP_CHUNK ? s->text->len - s->at : JWL_CLIP_CHUNK;
+        status_t st = jam_channel_write(s->fd, s->text->bytes + s->at, (uint32_t)n, NULL, 0);
+        if (st == ERR_SHOULD_WAIT || st == ERR_NO_MEMORY)
+            return true;   /* the reader's queue full, or our job: next dispatch */
+        if (st != OK)
+            return false;  /* the reader went */
+        s->at += n;
+    }
+    return false;
+}
+
+/* Each dispatch: waiting transfers go on, or end at their deadline. */
+static void sends_tick(struct jwl_client *c)
+{
+    uint64_t t = now();
+    for (unsigned i = 0; i < JWL_CLIP_SENDS; i++) {
+        struct jwlc_send *s = &c->clip.sends[i];
+        if (s->fd != HANDLE_INVALID && (!send_more(s) || t >= s->deadline))
+            send_end(s);
+    }
+}
+
+static void sends_free(struct jwl_client *c)
+{
+    for (unsigned i = 0; i < JWL_CLIP_SENDS; i++)
+        if (c->clip.sends[i].fd != HANDLE_INVALID)
+            send_end(&c->clip.sends[i]);
 }
 
 /* A paste ends with status; its text kept if OK. */
@@ -107,6 +157,7 @@ void jwlc_clip_lost(struct jwl_client *c)
 void jwlc_clip_free(struct jwl_client *c)
 {
     drop_source(c, false);
+    sends_free(c);
     paste_end(c, ERR_PEER_CLOSED);
     free(c->clip.pasted);
     c->clip.pasted = NULL;
@@ -126,10 +177,12 @@ status_t jwl_clip_copy(struct jwl_client *c, const char *text, size_t n)
         return ERR_OUT_OF_RANGE;
     if (!c->seat.input_serial)
         return ERR_BAD_STATE;
-    char *copy = malloc(n ? n : 1);
+    struct jwlc_text *copy = malloc(sizeof(*copy) + (n ? n : 1));
     if (!copy)
         return ERR_NO_MEMORY;
-    memcpy(copy, text, n);
+    copy->refs = 1;
+    copy->len = n;
+    memcpy(copy->bytes, text, n);
     drop_source(c, true);   /* ours before: replaced by this one */
     uint32_t id;
     status_t st = jwlc_make(c, &jwl_wl_data_source_interface, c->info.data_version, c, &id);
@@ -148,22 +201,35 @@ status_t jwl_clip_copy(struct jwl_client *c, const char *text, size_t n)
     }
     c->clip.source = id;
     c->clip.text = copy;
-    c->clip.len = n;
     return OK;
 }
 
-/* wl_data_source.send: the text into the reader's end fd, then the end. */
+/* wl_data_source.send: the text into the reader's end fd, what its channel
+ * has room for now; the rest waits in a free entry of sends (the oldest's
+ * reader given up for it when there is none), else the end. */
 static void send_text(struct jwl_client *c, uint32_t source, handle_t fd)
 {
-    if (source == c->clip.source && c->clip.text) {
-        for (size_t at = 0; at < c->clip.len;) {
-            size_t n = c->clip.len - at < JWL_CLIP_CHUNK ? c->clip.len - at : JWL_CLIP_CHUNK;
-            if (jam_channel_write(fd, c->clip.text + at, (uint32_t)n, NULL, 0) != OK)
-                break;   /* full, or the reader went: it gets what it got, then the end */
-            at += n;
-        }
+    if (source != c->clip.source || !c->clip.text) {
+        jam_handle_close(fd);   /* not ours now: nothing, then the end */
+        return;
     }
-    jam_handle_close(fd);
+    struct jwlc_send s = { .fd = fd, .text = c->clip.text,
+                           .deadline = now() + JWL_CLIP_WAIT_NS };
+    s.text->refs++;
+    if (!send_more(&s)) {
+        send_end(&s);
+        return;
+    }
+    struct jwlc_send *k = c->clip.sends;
+    unsigned i = 0;
+    while (i < JWL_CLIP_SENDS && k[i].fd != HANDLE_INVALID)
+        i++;
+    if (i == JWL_CLIP_SENDS) {
+        send_end(&k[0]);
+        i = 0;
+    }
+    memmove(&k[i], &k[i + 1], (JWL_CLIP_SENDS - 1 - i) * sizeof(k[0]));   /* oldest first */
+    k[JWL_CLIP_SENDS - 1] = s;
 }
 
 static status_t on_target(void *data, uint32_t self, const char *mime_type)
@@ -414,6 +480,7 @@ static status_t read_one(struct jwlc_clip *k)
 void jwlc_clip_tick(struct jwl_client *c)
 {
     struct jwlc_clip *k = &c->clip;
+    sends_tick(c);
     if (k->rx == HANDLE_INVALID)
         return;
     status_t st = OK;
@@ -429,10 +496,15 @@ void jwlc_clip_tick(struct jwl_client *c)
 
 uint64_t jwlc_clip_deadline(const struct jwl_client *c)
 {
+    uint64_t d = DEADLINE_NEVER;
+    for (unsigned i = 0; i < JWL_CLIP_SENDS; i++)
+        if (c->clip.sends[i].fd != HANDLE_INVALID)
+            d = now() + POLL_NS;   /* a waiting transfer: looked at this often */
     if (c->clip.rx == HANDLE_INVALID)
-        return DEADLINE_NEVER;
-    if (c->port != HANDLE_INVALID)
-        return c->clip.rx_deadline;
-    uint64_t poll = now() + POLL_NS;
-    return poll < c->clip.rx_deadline ? poll : c->clip.rx_deadline;
+        return d;
+    if (c->port == HANDLE_INVALID) {
+        uint64_t poll = now() + POLL_NS;
+        d = poll < d ? poll : d;
+    }
+    return c->clip.rx_deadline < d ? c->clip.rx_deadline : d;
 }

@@ -1,31 +1,31 @@
-/* init's mounts from devmgr: /data and /esp, and another stick's /usbN,
- * once devmgr's fat services serve them.
+/* init's mounts from volumes: /data and /esp, and another stick's /usbN,
+ * once volumes' fat services serve them.
  *
- * DEVMGR_MOUNTS (<devmgr.h>) answers when the set of mounts differs from
+ * VOLUMES_MOUNTS (<volumes.h>) answers when the set of mounts differs from
  * the generation the caller knows, or says ERR_TIMED_OUT after two
  * seconds: a call made to wait. So the asking is done by a thread of its
- * own, the watcher, in a loop: init's main loop never waits for devmgr.
+ * own, the watcher, in a loop: init's main loop never waits for volumes.
  * Each answer goes straight into init's namespace (libos's is safe to use
  * from two threads); the main loop only hears that something changed,
  * through its port.
  *
- * Mounts called /...-test are the test suite's mock disks (devmgr's
- * DEVMGR_TEST_DISK): init leaves them alone.
+ * Mounts called /...-test are the test suite's mock disks (volumes'
+ * VOLUMES_TEST_DISK): init leaves them alone.
  *
- * Stopping: the watcher's call ends when devmgr dies (ERR_PEER_CLOSED) or
+ * Stopping: the watcher's call ends when volumes dies (ERR_PEER_CLOSED) or
  * when the last handle of init's end is closed (mounts_unwatch closes the
  * watcher's duplicate). mounts_unwatch then waits for the thread before it
  * returns, so the closed handle's number is not reused under a watcher
  * that is still between two calls. */
-#include <devmgr.h>
 #include <os.h>
+#include <volumes.h>
 #include "init.h"
 
 #define WATCH_STACK (64u << 10)
-#define STOP_WAIT   (DEVMGR_MOUNTS_WAIT + 2 * NS_PER_S)   /* a call in flight ends within this */
+#define STOP_WAIT   (VOLUMES_MOUNTS_WAIT + 2 * NS_PER_S)   /* a call in flight ends within this */
 #define SYNC_WAIT   (2 * NS_PER_S)
 
-static handle_t ctl;      /* the watcher's end of devmgr's control channel */
+static handle_t ctl;      /* the watcher's end of volumes' control channel */
 static handle_t thread;   /* the watcher (0: none) */
 static handle_t port;     /* where a change is announced (0: nowhere) */
 static uint64_t port_key; /* ... with this key */
@@ -33,7 +33,7 @@ static bool stop;         /* set by mounts_unwatch before it closes ctl; read by
 static bool stuck;        /* a watcher didn't end in time: its stack can't be used again */
 /* What the watcher mounted. The watcher's while it runs; mounts_unwatch
  * reads it only after the thread has ended. */
-static char have[DEVMGR_MAX_MOUNTS][NS_NAME_MAX];
+static char have[VOLUMES_MAX_MOUNTS][NS_NAME_MAX];
 static unsigned nhave;
 static uint8_t watch_stack[WATCH_STACK];
 
@@ -44,7 +44,7 @@ static bool test_mount(const char *path)
     return n > 5 && n < NS_NAME_MAX && !strcmp(path + n - 5, "-test");
 }
 
-static bool listed(const struct devmgr_mounts_rep *rep, const char *path)
+static bool listed(const struct volumes_mounts_rep *rep, const char *path)
 {
     for (uint32_t i = 0; i < rep->count; i++)
         if (!strncmp(rep->mounts[i].path, path, NS_NAME_MAX))
@@ -55,9 +55,9 @@ static bool listed(const struct devmgr_mounts_rep *rep, const char *path)
 /* An answer into the namespace: the mounts it no longer lists go, the
  * ones it lists are mounted (again: a restarted service has a new
  * channel). hs: its handles, consumed. */
-static void apply(const struct devmgr_mounts_rep *rep, const handle_t *hs)
+static void apply(const struct volumes_mounts_rep *rep, const handle_t *hs)
 {
-    char had[DEVMGR_MAX_MOUNTS][NS_NAME_MAX];
+    char had[VOLUMES_MAX_MOUNTS][NS_NAME_MAX];
     unsigned nhad = nhave;
     memcpy(had, have, sizeof(had));
     for (unsigned i = 0; i < nhave; i++)
@@ -72,7 +72,7 @@ static void apply(const struct devmgr_mounts_rep *rep, const handle_t *hs)
             jam_handle_close(hs[i]);
             continue;
         }
-        /* /boot is init's own: devmgr can't put something else there. */
+        /* /boot is init's own: volumes can't put something else there. */
         status_t st = strcmp(path, BOOT_MOUNT) ? ns_mount(path, hs[i]) : ERR_ACCESS_DENIED;
         if (st == ERR_ACCESS_DENIED)
             jam_handle_close(hs[i]);
@@ -94,14 +94,14 @@ static void watcher(void *arg)
     (void)arg;
     uint32_t known = 0;
     while (!__atomic_load_n(&stop, __ATOMIC_ACQUIRE)) {
-        struct devmgr_mounts_rep rep;
-        handle_t hs[DEVMGR_MAX_MOUNTS];
-        status_t st = devmgr_mounts(ctl, known, &rep, hs);
+        struct volumes_mounts_rep rep;
+        handle_t hs[VOLUMES_MAX_MOUNTS];
+        status_t st = volumes_mounts(ctl, known, &rep, hs);
         if (st == ERR_TIMED_OUT)
             continue;   /* nothing changed: ask again */
         /* Gone (or going, or stopped by mounts_unwatch) needs no words. */
         if (st != OK && st != ERR_PEER_CLOSED && st != ERR_CANCELED && st != ERR_BAD_HANDLE)
-            printf("init: devmgr's mounts: %s: only " BOOT_MOUNT " from now on\n",
+            printf("init: volumes' mounts: %s: only " BOOT_MOUNT " from now on\n",
                    status_str(st));
         if (st != OK)
             return;
@@ -114,13 +114,13 @@ static void watcher(void *arg)
     }
 }
 
-status_t mounts_watch(handle_t devmgr_ctl, handle_t to_port, uint64_t key)
+status_t mounts_watch(handle_t volumes_ctl, handle_t to_port, uint64_t key)
 {
     if (thread || stuck) {
-        jam_handle_close(devmgr_ctl);
+        jam_handle_close(volumes_ctl);
         return ERR_BAD_STATE;
     }
-    ctl = devmgr_ctl;
+    ctl = volumes_ctl;
     port = to_port;
     port_key = key;
     __atomic_store_n(&stop, false, __ATOMIC_RELEASE);
@@ -144,7 +144,7 @@ void mounts_unwatch(void)
     jam_handle_close(thread);
     thread = HANDLE_INVALID;
     if (st != OK) {
-        init_say("init: the mounts watcher didn't end (%s): no more mounts from devmgr",
+        init_say("init: the mounts watcher didn't end (%s): no more mounts from volumes",
                  status_str(st));
         stuck = true;
         return;

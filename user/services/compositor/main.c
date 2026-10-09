@@ -58,7 +58,6 @@
 #define DEFAULT_W  1280
 #define DEFAULT_H  800
 #define MAX_SIDE   8192
-#define HELD_RETRY (10 * NS_PER_MS)   /* a client's full channel: try writing again after this */
 #define SVC_BUDGET 16u                /* connects per turn */
 
 struct comp comp;
@@ -201,11 +200,9 @@ static uint64_t next_deadline(void)
         return 0;
     uint64_t d = seat_deadline(), c = clock_deadline();
     d = c < d ? c : d;
-    if (conn_held()) {
-        uint64_t r = now() + HELD_RETRY;
-        d = r < d ? r : d;
-    }
-    uint64_t x = xdg_deadline();   /* a ping going late */
+    uint64_t x = conn_held_deadline();   /* a client behind: look at its queue again */
+    d = x < d ? x : d;
+    x = xdg_deadline();            /* a ping going late */
     d = x < d ? x : d;
     x = desk_deadline();           /* an animation's next frame, the clock's minute */
     d = x < d ? x : d;

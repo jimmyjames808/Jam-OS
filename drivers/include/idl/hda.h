@@ -163,6 +163,8 @@ struct hda_output_name_rep {
 
 #define HDA_REQ_MAX 14u   /* bytes: the biggest request */
 #define HDA_REP_MAX 1077u   /* bytes: the biggest reply */
+#define HDA_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define HDA_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1147,8 +1149,8 @@ static inline status_t hda_reply_dump(struct idl_txn idl_txn, status_t idl_st, h
 /* Answer the hda.info request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t hda_reply_info(struct idl_txn idl_txn, status_t idl_st, uint32_t codec, uint32_t pin, uint32_t dac, uint32_t pcm, uint32_t formats, uint32_t amp, uint32_t jack, const uint8_t *nodes, uint32_t nodes_len, const char *text, uint32_t text_len)
 {
     _Alignas(8) uint8_t idl_b0[287];
@@ -1259,8 +1261,8 @@ static inline status_t hda_reply_set_bits(struct idl_txn idl_txn, status_t idl_s
 /* Answer the hda.jacks request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t hda_reply_jacks(struct idl_txn idl_txn, status_t idl_st, uint32_t state, uint32_t changes, const uint8_t *pins, uint32_t pins_len, const uint8_t *states, uint32_t states_len, const char *text, uint32_t text_len)
 {
     _Alignas(8) uint8_t idl_b0[1077];
@@ -1309,8 +1311,8 @@ static inline status_t hda_reply_query(struct idl_txn idl_txn, status_t idl_st, 
 /* Answer the hda.output_name request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t hda_reply_output_name(struct idl_txn idl_txn, status_t idl_st, const char *name, uint32_t name_len)
 {
     _Alignas(8) uint8_t idl_b0[57];
@@ -1331,7 +1333,7 @@ static inline status_t hda_reply_output_name(struct idl_txn idl_txn, status_t id
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (HDA_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (HDA_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1622,7 +1624,7 @@ static inline status_t hda_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by hda_take_slot, or found there by a
  * successor), which came on ch: as hda_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (HDA_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -1758,6 +1760,8 @@ struct hda_stream_wait_period_rep {
 
 #define HDA_STREAM_REQ_MAX 16u   /* bytes: the biggest request */
 #define HDA_STREAM_REP_MAX 20u   /* bytes: the biggest reply */
+#define HDA_STREAM_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define HDA_STREAM_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2105,7 +2109,7 @@ static inline status_t hda_stream_reply_wait_period(struct idl_txn idl_txn, stat
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (HDA_STREAM_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (HDA_STREAM_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -2224,7 +2228,7 @@ static inline status_t hda_stream_take_slot(handle_t ch, const struct idl_slot *
 /* Run the request in slot (taken by hda_stream_take_slot, or found there by a
  * successor), which came on ch: as hda_stream_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (HDA_STREAM_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

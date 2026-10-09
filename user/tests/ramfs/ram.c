@@ -6,7 +6,7 @@
  *
  * Bounded: RAMFS_NODES nodes (ERR_NO_RESOURCES past them) and
  * RAMFS_CAPACITY bytes of file data (ERR_NO_SPACE). A file that is open
- * can't be removed (ERR_BAD_STATE), so an open file's node never goes.
+ * can't be removed (ERR_BUSY), so an open file's node never goes.
  * The errors are the fat service's, so what is tested here holds there. */
 #include "ramfs.h"
 
@@ -14,7 +14,7 @@ struct node {
     bool     used;                /* the slot holds a node */
     bool     dir;                 /* a directory */
     int      parent;              /* its directory's node (the root: itself) */
-    char     name[FS_PATH_MAX];   /* its name in that directory */
+    char     name[FS_NAME_MAX];   /* its name in that directory */
     uint8_t *data;                /* a file's bytes: malloc'd, NULL while cap is 0 */
     uint64_t size, cap;           /* bytes in the file; bytes allocated */
     unsigned opens;               /* open files on it */
@@ -61,18 +61,28 @@ static int walk(const char *rel)
     return at;
 }
 
-/* path cleaned into rel (FS_PATH_MAX bytes), then cut at its last name:
- * *dir is the directory it is in, *name the name. ERR_INVALID_ARGS: no NUL
- * in the field, or the root itself; ERR_NOT_FOUND: no such directory. */
-static status_t leaf_of(const uint8_t path[256], char *rel, int *dir, const char **name)
+/* A path as the protocol carries it (len bytes) cleaned into rel
+ * (FS_PATH_LEN + 1 bytes). */
+static status_t clean_path(const char *path, uint32_t len, char *rel)
 {
-    if (fs_path_clean(path, rel) != OK || !rel[0])
+    return fs_path_clean(path, len, rel) == OK ? OK : ERR_INVALID_ARGS;
+}
+
+/* path cleaned into rel (FS_PATH_LEN + 1 bytes), then cut at its last
+ * name: *dir is the directory it is in, *name the name. ERR_INVALID_ARGS:
+ * a NUL in it, the root itself, or a name too long to keep; ERR_NOT_FOUND:
+ * no such directory. */
+static status_t leaf_of(const char *path, uint32_t len, char *rel, int *dir, const char **name)
+{
+    if (clean_path(path, len, rel) != OK || !rel[0])
         return ERR_INVALID_ARGS;
     char *slash = NULL;
     for (char *p = rel; *p; p++)
         if (*p == '/')
             slash = p;
     *name = slash ? slash + 1 : rel;
+    if (strlen(*name) >= FS_NAME_MAX)
+        return ERR_INVALID_ARGS;
     if (slash)
         *slash = '\0';
     *dir = slash ? walk(rel) : 0;
@@ -126,36 +136,38 @@ static status_t resize(struct node *n, uint64_t size)
 /* ---- fs ---------------------------------------------------------------------------- */
 
 /* The file fs.open means: the one at the path, or a new one (FS_CREATE). */
-static status_t open_node(const uint8_t path[256], uint32_t flags, int *out)
+static status_t open_node(const char *path, uint32_t len, uint32_t flags, int *out)
 {
-    char rel[FS_PATH_MAX];
+    char rel[FS_PATH_LEN + 1];
     const char *name;
     int dir;
-    status_t st = leaf_of(path, rel, &dir, &name);
+    status_t st = leaf_of(path, len, rel, &dir, &name);
     if (st != OK)
         return st;
     int i = child(dir, name, strlen(name));
     if (i < 0 && !(flags & FS_CREATE))
         return ERR_NOT_FOUND;
+    if (i >= 0 && (flags & FS_CREATE) && (flags & FS_EXCL))
+        return ERR_ALREADY_EXISTS;
     if (i < 0)
         st = create(dir, name, false, &i);
     if (st == OK && nodes[i].dir)
-        st = ERR_WRONG_TYPE;
+        st = ERR_IS_DIR;
     if (st == OK && (flags & FS_TRUNCATE))
         st = resize(&nodes[i], 0);
     *out = i;
     return st;
 }
 
-static status_t op_open(void *ctx, const uint8_t path[256], uint32_t flags, handle_t *out_file,
-                        handle_t *out_buffer, uint64_t *out_size)
+static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
+                        handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
 {
     bool write = flags & FS_WRITE;
     if ((flags & ~FS_FLAGS) || !(flags & (FS_READ | FS_WRITE)) ||
-        (!write && (flags & (FS_CREATE | FS_TRUNCATE | FS_APPEND))))
+        (!write && (flags & (FS_CREATE | FS_TRUNCATE | FS_APPEND | FS_GATHER | FS_EXCL))))
         return ERR_INVALID_ARGS;
     int i;
-    status_t st = open_node(path, flags, &i);
+    status_t st = open_node(path, path_len, flags, &i);
     if (st != OK)
         return st;
     struct open *o = malloc(sizeof(*o));
@@ -181,12 +193,18 @@ void ramfs_closed(struct fsserver_file *f)
     free(o);
 }
 
-static status_t op_stat(void *ctx, const uint8_t path[256], uint64_t *out_size,
-                        uint8_t *out_is_dir, uint64_t *out_mtime)
+/* A node's id (fs.stat): its slot, + 1 (the root is 1). */
+static uint64_t id_of(int i)
+{
+    return (uint64_t)i + 1;
+}
+
+static status_t op_stat(void *ctx, const char *path, uint32_t path_len, uint64_t *out_size,
+                        uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
     (void)ctx;
-    char rel[FS_PATH_MAX];
-    if (fs_path_clean(path, rel) != OK)
+    char rel[FS_PATH_LEN + 1];
+    if (clean_path(path, path_len, rel) != OK)
         return ERR_INVALID_ARGS;
     int i = walk(rel);
     if (i < 0)
@@ -194,39 +212,53 @@ static status_t op_stat(void *ctx, const uint8_t path[256], uint64_t *out_size,
     *out_size = nodes[i].size;
     *out_is_dir = nodes[i].dir;
     *out_mtime = 0;   /* no clock here */
+    *out_id = id_of(i);
     return OK;
 }
 
-static status_t op_readdir(void *ctx, const uint8_t path[256], uint32_t index,
-                           uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+/* The cookie is the node slot to go on from (0: the first; a node is never
+ * slot 0, the root's). */
+static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint32_t cookie,
+                           uint32_t *out_next, uint16_t *out_count, uint8_t *out_entries,
+                           uint32_t *out_entries_len)
 {
     (void)ctx;
-    char rel[FS_PATH_MAX];
-    if (fs_path_clean(path, rel) != OK)
+    char rel[FS_PATH_LEN + 1];
+    if (clean_path(path, path_len, rel) != OK)
         return ERR_INVALID_ARGS;
     int dir = walk(rel);
     if (dir < 0)
         return ERR_NOT_FOUND;
     if (!nodes[dir].dir)
-        return ERR_WRONG_TYPE;
-    for (int i = 1; i < RAMFS_NODES; i++) {
-        if (!nodes[i].used || nodes[i].parent != dir || index-- != 0)
+        return ERR_NOT_DIR;
+    uint32_t len = 0;
+    uint16_t count = 0;
+    *out_next = 0;
+    for (int i = cookie > 1 ? (int)cookie : 1; i < RAMFS_NODES; i++) {
+        if (!nodes[i].used || nodes[i].parent != dir)
             continue;
-        memcpy(out_name, nodes[i].name, strlen(nodes[i].name) + 1);
-        *out_is_dir = nodes[i].dir;
-        *out_size = nodes[i].size;
-        return OK;
+        const struct fs_dirent d = {
+            .id = id_of(i), .size = nodes[i].size, .is_dir = nodes[i].dir,
+            .name_len = (uint32_t)strlen(nodes[i].name), .name = nodes[i].name,
+        };
+        if (!fs_dirent_put(out_entries, FS_READDIR_BYTES, &len, &d)) {
+            *out_next = (uint32_t)i;
+            break;
+        }
+        count++;
     }
-    return ERR_NOT_FOUND;
+    *out_count = count;
+    *out_entries_len = len;
+    return OK;
 }
 
-static status_t op_mkdir(void *ctx, const uint8_t path[256])
+static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len)
 {
     (void)ctx;
-    char rel[FS_PATH_MAX];
+    char rel[FS_PATH_LEN + 1];
     const char *name;
     int dir, i;
-    status_t st = leaf_of(path, rel, &dir, &name);
+    status_t st = leaf_of(path, path_len, rel, &dir, &name);
     if (st != OK)
         return st;
     if (child(dir, name, strlen(name)) >= 0)
@@ -242,19 +274,23 @@ static bool empty_dir(int dir)
     return true;
 }
 
-static status_t op_unlink(void *ctx, const uint8_t path[256])
+static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32_t flags)
 {
     (void)ctx;
-    char rel[FS_PATH_MAX];
-    if (fs_path_clean(path, rel) != OK)
+    char rel[FS_PATH_LEN + 1];
+    if ((flags & ~FS_UNLINK_DIR) || clean_path(path, path_len, rel) != OK)
         return ERR_INVALID_ARGS;
     int i = walk(rel);
     if (i < 0)
         return ERR_NOT_FOUND;
     if (i == 0)
         return ERR_ACCESS_DENIED;
-    if (nodes[i].opens || (nodes[i].dir && !empty_dir(i)))
-        return ERR_BAD_STATE;   /* open, or a directory with entries */
+    if (nodes[i].dir != !!(flags & FS_UNLINK_DIR))
+        return nodes[i].dir ? ERR_IS_DIR : ERR_NOT_DIR;
+    if (nodes[i].opens)
+        return ERR_BUSY;
+    if (nodes[i].dir && !empty_dir(i))
+        return ERR_NOT_EMPTY;
     stored -= nodes[i].size;
     free(nodes[i].data);
     memset(&nodes[i], 0, sizeof(nodes[i]));
@@ -274,24 +310,39 @@ static bool below(int i, int dir)
     return false;
 }
 
-static status_t op_rename(void *ctx, const uint8_t from[256], const uint8_t to[256])
+static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const char *to,
+                          uint32_t to_len, uint32_t flags)
 {
     (void)ctx;
-    char rel_from[FS_PATH_MAX], rel_to[FS_PATH_MAX];
+    char rel_from[FS_PATH_LEN + 1], rel_to[FS_PATH_LEN + 1];
     const char *name;
     int dir;
-    if (fs_path_clean(from, rel_from) != OK)
+    if (flags & ~FS_RENAME_REPLACE)
+        return ERR_INVALID_ARGS;
+    if (clean_path(from, from_len, rel_from) != OK)
         return ERR_INVALID_ARGS;
     int i = walk(rel_from);
     if (i < 0)
         return ERR_NOT_FOUND;
-    status_t st = leaf_of(to, rel_to, &dir, &name);
+    status_t st = leaf_of(to, to_len, rel_to, &dir, &name);
     if (st != OK)
         return st;
     if (i == 0 || below(dir, i))
         return ERR_INVALID_ARGS;   /* the root, or a directory into itself */
-    if (child(dir, name, strlen(name)) >= 0)
-        return ERR_ALREADY_EXISTS;
+    int t = child(dir, name, strlen(name));
+    if (t >= 0 && t != i) {   /* something else is there: it goes, or the rename doesn't */
+        if (!(flags & FS_RENAME_REPLACE))
+            return ERR_ALREADY_EXISTS;
+        if (nodes[t].dir != nodes[i].dir)
+            return nodes[t].dir ? ERR_IS_DIR : ERR_NOT_DIR;
+        if (nodes[t].opens)
+            return ERR_BUSY;
+        if (nodes[t].dir && !empty_dir(t))
+            return ERR_NOT_EMPTY;
+        stored -= nodes[t].size;
+        free(nodes[t].data);
+        memset(&nodes[t], 0, sizeof(nodes[t]));
+    }
     nodes[i].parent = dir;
     memcpy(nodes[i].name, name, strlen(name) + 1);
     return OK;
@@ -370,11 +421,15 @@ static status_t file_op_truncate(void *ctx, uint64_t size)
     return size > RAMFS_CAPACITY ? ERR_NO_SPACE : resize(n, size);
 }
 
-static status_t file_op_stat(void *ctx, uint64_t *out_size, uint64_t *out_mtime)
+static status_t file_op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir,
+                             uint64_t *out_mtime, uint64_t *out_id)
 {
     uint32_t flags;
-    *out_size = node_of(ctx, &flags)->size;
+    const struct node *n = node_of(ctx, &flags);
+    *out_size = n->size;
+    *out_is_dir = 0;
     *out_mtime = 0;
+    *out_id = id_of((int)(n - nodes));
     return OK;
 }
 

@@ -8,11 +8,12 @@
  * reply is u32 txid, i32 status, then the results only if status is OK.
  * Hand-written rather than an abi/idl file. Handle results are no longer
  * the reason (genidl has them, over drv_channel_call_h); what genidl
- * still can't express here: handle arguments (SET_CONSOLE, TEST_DISK; it
- * refuses them on purpose), a reply with a varying number of handles
- * (MOUNTS), and a reply held back until the mounts change (MOUNTS). The
- * protocol moves to IDL with the interface review (M12, docs/ROADMAP.md).
- * These calls use libos's jam_channel_call directly.
+ * still can't express here: handle arguments (SET_CONSOLE, SET_VOLUMES; it
+ * refuses them on purpose). The protocol moves to IDL with the interface
+ * review (M12, docs/ROADMAP.md). These calls use libos's jam_channel_call
+ * directly. The disks' filesystems and mounts were devmgr's until M12's
+ * storage split: they are volumes' now (<volumes.h>, the same wire for the
+ * methods that moved).
  *
  * Devices are named by vendor, device and instance (the n-th function with
  * those ids, from 0); 0xffff/0xffff in DRIVER_VIEW means "the first
@@ -39,18 +40,13 @@
  *     channel won't hand that device's service out;
  *   the CONTROL channel (/svc/devmgr-ctl; SR_DEVMGR_CTL): everything, every
  *     device's service included (the tests' hdatest takes hda's output
- *     this way): SET_CONSOLE, KILL, REBIND, RELEASE, DRIVER_VIEW (a
- *     driver's hardware handles), TEST_DRIVER, MOUNTS (the filesystems'
- *     channels), TEST_DISK, REMOUNT and DEVICE_CHANNEL too, but never
- *     ESP_WRITE. devmgr runs until every client end of its control
- *     channel is gone;
- *   the ESP channel (devmgr's server end is its startup role
- *     DEVMGR_SR_ESP): ESP_WRITE, the boot disk's ESP made writable, and
- *     nothing else; no other channel may ask for that.
+ *     this way): SET_CONSOLE, SET_VOLUMES, KILL, REBIND, RELEASE,
+ *     DRIVER_VIEW (a driver's hardware handles), TEST_DRIVER and
+ *     DEVICE_CHANNEL too. devmgr runs until every client end of its
+ *     control channel is gone.
  * Who holds what: init the control and query channels (it hands devmgr
- * new consoles, and makes the device channels), the ESP channel (made at
- * devmgr's start in shell mode and never handed on: only init writes the
- * ESP) and the sound cards'
+ * new consoles and DISKS channels, and makes the device channels) and the
+ * sound cards'
  * device channels, duplicates of which the mixer gets (SR_DEVMGR_DEVICE);
  * the programs
  * init runs from init.cfg (the test suites utest and usbtest) QUERY and
@@ -68,9 +64,7 @@
  * crash or give-up also makes devmgr's exit code 1). Each restart makes
  * the device's handles from scratch: a new dma_cap (Bus Master Enable
  * off until the new driver has quiesced the device), a new interrupt
- * object, the function woken to D0. Filesystem services follow the rule
- * of a service that outlives its process instead (below, "A filesystem
- * service gets").
+ * object, the function woken to D0.
  *
  * THE RECONNECT RULE for clients of any driver devmgr runs: when a call
  * on the service channel fails with ERR_PEER_CLOSED (the driver died),
@@ -112,9 +106,8 @@
  * (see the reconnect rule above). Vendor and device 0xffff name the
  * instance-th function that has a driver bound, whatever it is (a client
  * asks each in turn which protocol it serves: tests find usb-bus this way
- * on QEMU and on the PC). Don't read from the channel: messages a driver
- * writes by itself are devmgr's (usb-bus's interface_attached); only
- * channel_call it. */
+ * on QEMU and on the PC). The channel is for calls: a driver's own
+ * messages go on a channel of their own (usb-bus's DR_EVENTS). */
 #define DEVMGR_GET_SERVICE  0x00030002u
 /* (dev) -> 3 handles, read-only views of a bound driver: its process
  * (RIGHTS_BASIC: wait, info), its job (RIGHTS_BASIC: wait, job_get_info)
@@ -126,8 +119,7 @@
 #define DEVMGR_GET_DRIVER   0x00030003u
 /* (dev) -> (): kill the driver's job and answer once it is dead. That is
  * a death like any other: supervision restarts it (not counted as a
- * problem). A filesystem service's is a deliberate kill: not counted
- * toward giving up, and restarted at once (the warm spare promoted). */
+ * problem). */
 #define DEVMGR_KILL         0x00030004u
 /* (dev) -> (): kill the driver if it still runs, then bind the device
  * again from scratch (new interrupt object, dma_cap, channel), with a
@@ -140,8 +132,7 @@
 #define DEVMGR_DRIVER_VIEW  0x00030006u
 /* (dev) -> u32 state (DEVMGR_SUP_*), restarts (since boot), the last
  * backoff in ms, and for a PCI function its DMA quarantine: pages held now
- * and pages found written while held since boot (for a filesystem
- * service: see DEVMGR_FS_MOUNT). */
+ * and pages found written while held since boot. */
 #define DEVMGR_SUPERVISION  0x00030007u
 /* () -> (): start the crash-test driver (drv/crasher) as a supervised
  * driver of the software device DEVMGR_TEST_VENDOR:DEVMGR_TEST_DEVICE
@@ -158,96 +149,22 @@
  * new one after it restarted the compositor). */
 #define DEVMGR_SET_CONSOLE  0x00030009u
 
-/* Mounts (control channel only): the boot disk's data partition at /data
- * (read-write) and its ESP at /esp (read-only; while init has it writable,
- * ESP_WRITE, it is no mount at all), and each FAT partition of
- * any other disk at /usb0, /usb1, ... (read-only until DEVMGR_REMOUNT),
- * each served by a fat service devmgr started over usb-storage's `block`
- * channel for that partition (devmgr's storage side: disk.c, mounts.c).
- *
- * Request: a struct devmgr_req whose `instance` is `known`, the generation
- * the caller has (0: none). Reply: a struct devmgr_mounts_rep (all of it
- * when the status is OK) carrying `count` handles: each mount's `fs`
- * channel (abi/idl/fs.idl), in the order of mounts[]. They are duplicates
- * of devmgr's client end, to pass on as they are.
- *
- * devmgr answers at once when its generation differs from `known`;
- * otherwise as soon as it changes, or with ERR_TIMED_OUT after
- * DEVMGR_MOUNTS_WAIT, so a caller waits in a loop and a call never outlives
- * its caller by more than that. Give each call a deadline past
- * DEVMGR_MOUNTS_WAIT (devmgr_mounts() adds a second): a call that gives up
- * earlier leaves its answer, handles included, queued on the channel.
- * ERR_NO_RESOURCES: too many calls are waiting already.
- *
- * The generation changes whenever the list does: a mount appears, its disk
- * goes away (unplugged, or its usb-storage died), or it is remounted
- * (REMOUNT, ESP_WRITE: a new channel, calls on the old one fail
- * ERR_PEER_CLOSED). A fat service started again after a death is not a
- * change: devmgr keeps its channel while no instance runs (the mount stays
- * listed, and calls on it wait for the next instance), and the next
- * instance carries on with the views and files the dead one made.
- * /esp and /data are the disk Jam OS booted from:
- * partition 1 of type 0xEF holding boot/jamos.elf, partition 2 of type
- * 0x0C. Any other disk's FAT partitions (MBR types 01 04 06 0B 0C 0E EF,
- * or a disk with no table that is one FAT volume) take the lowest free
- * /usbN when they are found and give it back when the stick goes; a
- * partition with no FAT volume is never listed, and never written: only
- * the boot disk's blank data partition is ever formatted. A mount that
- * isn't listed has no service. A devmgr that init started again starts its generations
- * somewhere else (from the clock), so the old one's are never mistaken for
- * its own; asking a new devmgr with known 0 is still the simple rule. */
-#define DEVMGR_MOUNTS       0x0003000au
-#define DEVMGR_MAX_MOUNTS   8u
-#define DEVMGR_MOUNTS_WAIT  (2 * NS_PER_S)
-struct devmgr_mount {
-    char path[16];   /* "/data", "/esp": NUL-terminated */
-};
-struct devmgr_mounts_rep {
-    uint32_t txid;             /* the request's */
-    int32_t  status;           /* OK: the rest follows */
-    uint32_t generation;       /* never 0 */
-    uint32_t count;            /* mounts, and handles with the reply */
-    struct devmgr_mount mounts[DEVMGR_MAX_MOUNTS];
-} __attribute__((packed));
-/* (1 handle: a client end of a `storage` channel, abi/idl/storage.idl) ->
- * u32 id. A software disk for tests, which devmgr treats like a
- * usb-storage disk: the same questions, the same boot-disk check, the same
- * supervision of its filesystem services (bin/fat). One difference keeps
- * it apart from the real one: its mounts are /data-test and /esp-test, and
- * "the boot disk" is counted among test disks only, so a test never takes
- * /data away. It is gone once the channel's server end is closed.
- * ERR_NO_RESOURCES: too many disks. */
-#define DEVMGR_TEST_DISK    0x0003000bu
 /* (dev) -> (): stop the device's driver and leave the device without one
  * until DEVMGR_REBIND, for a test that drives the device itself (usbtest
- * and the disks). A disk's filesystems are synced first, then go with the
- * driver: its mounts are gone until the rebind. For a USB class driver the
+ * and the disks). A disk's filesystems are synced first (volumes is asked
+ * on the DISKS channel: <volumes.h> DISKS_SYNC), then go with the driver:
+ * its mounts are gone until the rebind. For a USB class driver the
  * reply carries 1 handle: a duplicate of the interface's `usb` channel the
  * driver had (usb-bus gives an interface's bulk endpoints to that channel
  * and no other). */
 #define DEVMGR_RELEASE      0x0003000cu
 
-/* (DEVMGR_USB_MOUNT, N, flags) -> (): the mount /usbN read-write (flags
- * DEVMGR_REMOUNT_WRITE) or read-only again (0); with DEVMGR_REMOUNT_TEST
- * a test disk's /usbN-test. Its fat service is synced and stopped, and
- * started again on a new `block` channel opened the new way (read-only:
- * usb-storage refuses every write on it), so the mount's channel is a new
- * one and files open on the old one fail ERR_PEER_CLOSED; it is listed
- * again once its volume is mounted (a new generation). Nothing is ever
- * formatted, in either mode. OK at once if it is that way already.
- * ERR_NOT_FOUND: no such mount (only /usbN can be asked for: /esp and
- * /data are what they are); ERR_BAD_STATE: its service isn't serving. */
-#define DEVMGR_REMOUNT      0x0003000du
-#define DEVMGR_USB_MOUNT    0xfffcu
-#define DEVMGR_REMOUNT_WRITE 1u
-#define DEVMGR_REMOUNT_TEST  2u
-
 /* () -> (), control channel only: stop, as when the last control client
- * leaves (filesystems synced and stopped clean, the USB class drivers,
- * then the bus drivers with their final halt and reset), and exit. The
- * answer comes first; the caller waits for devmgr's process to end. For a
- * kexec reboot, which must leave no device writing memory, while the
- * shell still holds copies of the control channel. */
+ * leaves (the USB class drivers, then the bus drivers with their final
+ * halt and reset), and exit. The answer comes first; the caller waits for
+ * devmgr's process to end. For a kexec reboot, which must leave no device
+ * writing memory, while the shell still holds copies of the control
+ * channel. (The filesystems are volumes': init stops it first.) */
 #define DEVMGR_SHUTDOWN     0x0003000eu
 
 /* (dev) -> 1 handle, control channel only: a new DEVICE channel scoped to
@@ -256,8 +173,8 @@ struct devmgr_mounts_rep {
  * names its own device; naming it by its ids works too. It lasts until
  * its clients are all gone (or devmgr ends: init makes a new one for a new
  * devmgr). ERR_NOT_FOUND: no such device, or no driver for it;
- * ERR_NOT_SUPPORTED: a USB interface or a filesystem service (only a PCI
- * function or the crash-test device can have one); ERR_BAD_STATE: it has
+ * ERR_NOT_SUPPORTED: a USB interface (only a PCI function or the
+ * crash-test device can have one); ERR_BAD_STATE: it has
  * one already; ERR_NO_RESOURCES: devmgr serves as many channels as it can. */
 #define DEVMGR_DEVICE_CHANNEL 0x0003000fu
 /* A PCI function named by its class rather than its ids: DEVMGR_PCI_CLASS
@@ -266,77 +183,19 @@ struct devmgr_mounts_rep {
  * devmgr's enumeration order), whatever its vendor. init finds the
  * devices it gives away this way. */
 #define DEVMGR_PCI_CLASS      0xfffbu
-/* (vendor, device 0; instance flags) -> with DEVMGR_ESP_WRITABLE, 1
- * handle: the boot disk's ESP made writable for init's stick write
- * (`update -w`, init's update.c). Asked on the ESP channel only (devmgr's
- * server end is its startup role DEVMGR_SR_ESP; init made it, holds the
- * client end and never hands it on); on any other channel, the control
- * channel included, it is ERR_ACCESS_DENIED, and the ESP channel may ask
- * nothing else. DEVMGR_ESP_WRITABLE: the ESP's filesystem service stops in
- * order and starts again on a `block` channel opened read-write; the
- * handle is a channel to it, the caller's alone: /esp leaves the mounts
- * (DEVMGR_MOUNTS) while it is writable, so no namespace ever gets it.
- * Flags 0: it stops in order (everything on the stick, the volume clean)
- * and starts read-only again, and /esp is a mount again (a new
- * generation). OK at once if it is that way already (writable: another
- * handle to the same channel). A crash meanwhile restarts it the way it
- * was; a pulled stick ends it (the stick's next mount is read-only).
- * ERR_NOT_FOUND: no boot disk with an ESP service; ERR_BAD_STATE: it
- * isn't serving; ERR_INVALID_ARGS: another flag, or a device named. */
-#define DEVMGR_ESP_WRITE      0x00030010u
-#define DEVMGR_ESP_WRITABLE   1u
-#define DEVMGR_SR_ESP         (SR_USER + 0)   /* devmgr's startup role: the ESP channel */
+/* (1 handle: the client end of a DISKS channel, <volumes.h>) -> (): what
+ * devmgr tells volumes its disks on. init makes the pair once both run,
+ * and again whenever either starts again; devmgr then asks every running
+ * disk's driver for a `storage` channel of volumes' own again, and hands
+ * each over (DISKS_ATTACH). Until the first, a disk waits. */
+#define DEVMGR_SET_VOLUMES    0x00030011u
 /* devmgr's startup role: a duplicate of /svc/notify's shared channel (not
- * under `nocomp`), for the desktop's notices of other sticks: "USB stick
- * added" (its size, where it is mounted), "USB stick removed" (<notice.h>). */
+ * under `nocomp`), for the desktop's notices of drivers that crash or
+ * are given up on (<notice.h>). SR_USER + 0 was the ESP channel's until
+ * the storage split. */
 #define DEVMGR_SR_NOTIFY      (SR_USER + 1)
 #define DEVMGR_CLASS_HDA      0x040300u   /* HD Audio (04 03 00): the mixer's */
 #define DEVMGR_CLASS_NET      0x020000u   /* Ethernet (02 00 00): netstack's (netdev.idl) */
-
-/* A disk's filesystem services are named by DEVMGR_FS_SVC as the vendor,
- * the partition (storage.idl's index, 0 to 3; DEVMGR_PART_* on the boot
- * disk) as the device and the
- * disk's id as the instance (a usb-storage disk: usb-bus's device id; a
- * test disk: TEST_DISK's result), for GET_DRIVER, KILL and SUPERVISION.
- * GET_SERVICE is refused (ERR_ACCESS_DENIED) for them and for a disk's
- * driver: a disk's channel is devmgr's own, and a filesystem's comes from
- * DEVMGR_MOUNTS. */
-#define DEVMGR_FS_SVC       0xfffdu
-#define DEVMGR_PART_ESP     0u   /* partition 1 of the boot disk: the ESP */
-#define DEVMGR_PART_DATA    1u   /* partition 2: the data partition */
-
-/* A filesystem service gets what <fatsvc.h> says and nothing else (no
- * devmgr channel, no namespace, no root resource: its file times are
- * fixed): FAT_SR_BLOCK, a `block` channel from storage.open_partition
- * (opened read-only for the ESP and for every /usbN not remounted),
- * FAT_SR_SERVE, its mount point as argv[1], and FAT_ARG_FORMAT as argv[2]
- * for the boot disk's data partition only; and SR_STATE (its state VMO)
- * and SR_KEEP (its keep channel), which outlive it (<fatsvc.h>). It is
- * supervised like a driver, but by the rule of a service that outlives
- * its process (docs/M11.6-PLAN.md, Q5): exit 0 is the end of it; a
- * deliberate kill (KILL) is not counted and is restarted at once; a crash
- * or any other exit is counted, the first in a minute restarted at once,
- * later ones with backoff (100 ms doubling to 5 s), and the 6th counted
- * death in a minute gives up. Each restart gets a new `block` channel and
- * the same `fs` channel. A restart is the warm spare, promoted: one fat
- * started with nothing but SR_STANDBY (process name "fat-spare"), waiting
- * for whichever mount needs it first; a new spare starts shortly after.
- * Without one (the boot word `nospare`, or none ready yet) a new process
- * is started. */
-
-/* A filesystem service named by its mount rather than its disk, for
- * GET_DRIVER, KILL and SUPERVISION (a promoted spare keeps its process
- * name, "fat-spare", so init's `kill fat-data` asks this way): vendor
- * DEVMGR_FS_MOUNT, device DEVMGR_MOUNT_ESP, DEVMGR_MOUNT_DATA (the boot
- * disk's /esp, /data) or DEVMGR_MOUNT_USB + N (/usbN), instance 0, or
- * DEVMGR_MOUNT_TEST for a test disk's (/esp-test, /data-test,
- * /usbN-test). For a filesystem service SUPERVISION's d is the restarts
- * that promoted the warm spare and e is 1 while a spare waits. */
-#define DEVMGR_FS_MOUNT     0xfffau
-#define DEVMGR_MOUNT_ESP    0u
-#define DEVMGR_MOUNT_DATA   1u
-#define DEVMGR_MOUNT_USB    0x100u
-#define DEVMGR_MOUNT_TEST   1u
 
 /* USB class drivers are named by DEVMGR_USB_IFACE as the vendor, the
  * interface number as the device and usb-bus's device id (usbbus.device's
@@ -447,38 +306,4 @@ static inline status_t devmgr_device_channel(handle_t ch, uint16_t vendor, uint1
     }
     *out = h;
     return OK;
-}
-
-/* One DEVMGR_MOUNTS call on the control channel ch. OK: *out holds the
- * generation and the mounts, and hs[i] (DEVMGR_MAX_MOUNTS slots) is
- * out->mounts[i]'s `fs` channel, the caller's to close. ERR_TIMED_OUT:
- * nothing changed from `known` within DEVMGR_MOUNTS_WAIT; ask again.
- * Blocks for DEVMGR_MOUNTS_WAIT plus a second at most. */
-static inline status_t devmgr_mounts(handle_t ch, uint32_t known, struct devmgr_mounts_rep *out,
-                                     handle_t *hs)
-{
-    struct devmgr_req q = { 0, DEVMGR_MOUNTS, 0, 0, known };
-    uint32_t n = 0, got = 0;
-    struct channel_call_args a = {
-        .h = ch,
-        .wr_len = sizeof(q),
-        .wr_bytes = (uint64_t)(uintptr_t)&q,
-        .rd_cap = sizeof(*out),
-        .rd_bytes = (uint64_t)(uintptr_t)out,
-        .rd_actual = (uint64_t)(uintptr_t)&n,
-        .rd_handles = (uint64_t)(uintptr_t)hs,
-        .rd_hcap = DEVMGR_MAX_MOUNTS,
-        .rd_hactual = (uint64_t)(uintptr_t)&got,
-        .deadline_ns = now() + DEVMGR_MOUNTS_WAIT + NS_PER_S,
-    };
-    status_t st = jam_channel_call(&a);
-    if (st != OK)
-        return st;
-    if (n >= DEVMGR_REP_HDR && out->status < 0 && !got)
-        return out->status;
-    if (n != sizeof(*out) || out->status != OK || out->count != got)
-        st = ERR_INTERNAL;   /* not devmgr's format: nothing of it is used */
-    for (uint32_t i = 0; st != OK && i < got; i++)
-        jam_handle_close(hs[i]);
-    return st;
 }

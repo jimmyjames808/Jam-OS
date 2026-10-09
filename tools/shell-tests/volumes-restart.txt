@@ -1,0 +1,65 @@
+# volumes started again, and what is under it (tools/volumes-restart-test.sh
+# checks the log and the stick afterwards). On the boot stick:
+#   `kill volumes`: its filesystem services go with its job, so /data and
+#     /esp leave the namespace and come back once the new volumes has been
+#     told of the disk again; logd carries on in its file;
+#   `kill devmgr`: its drivers go (usb-storage with them), so do the
+#     mounts, and they come back the same way;
+#   `kill usb-storage-1:0` (the boot stick's driver): devmgr restarts it,
+#     volumes mounts the disk again; no "Jam OS stick removed" notice (the
+#     stick never went).
+# volumes', devmgr's and init's lines reach the serial port through the
+# kernel log, the shell's through the console: their order isn't fixed,
+# hence `seen`. The text waited for is built from $T, so it never appears
+# in the typed line. QEMU_INPUT=this file, command line "shell".
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /esp mounted
+seen 60 init: /data mounted
+seen 30 logd: writing /data/logs/boot-0001.txt
+send T=v
+wait {prompt}
+send write /data/vr.txt before the kills-$T && sync && cat /data/vr.txt
+wait before the kills-v
+wait {prompt}
+
+# ---- volumes ------------------------------------------------------------------------------
+send kill volumes
+wait shell: killed process
+seen 30 init: volumes and its filesystems are gone
+seen 30 init: /data is gone
+wait 60 init: /data mounted
+wait 30 logd: writing /data/logs/boot-0001.txt
+send cat /data/vr.txt && ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && echo ok-$T-volumes
+wait before the kills-v
+wait ok-v-volumes
+wait {prompt}
+
+# ---- devmgr -------------------------------------------------------------------------------
+send kill devmgr
+wait shell: killed process
+seen 30 init: devmgr and its drivers are gone
+seen 30 init: /data is gone
+wait 60 init: /data mounted
+wait 30 logd: writing /data/logs/boot-0001.txt
+send cat /data/vr.txt && ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && echo ok-$T-devmgr
+wait before the kills-v
+wait ok-v-devmgr
+wait {prompt}
+
+# ---- the boot stick's driver --------------------------------------------------------------
+send kill usb-storage-1:0
+wait shell: killed process
+seen 30 init: /data is gone
+wait 60 init: /data mounted
+wait 30 logd: writing /data/logs/boot-0001.txt
+send cat /data/vr.txt && ls /esp/boot | grep -c ^jamos.elf$ | grep ^1$ && echo ok-$T-driver
+wait before the kills-v
+wait ok-v-driver
+wait {prompt}
+send write -a /data/vr.txt after the kills-$T && ls /data/logs; echo done-$T
+wait done-v
+wait {prompt}
+send reboot -f
+wait init: /data synced
+wait reboot: resetting

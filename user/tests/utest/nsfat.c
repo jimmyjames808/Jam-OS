@@ -68,7 +68,7 @@ static bool fat_tree(void)
     CHECK_ST(fs_readdir(FAT "/My Docs", 0, &e), OK);
     CHECK(!strcmp(e.name, "big file.bin") && !e.is_dir && e.size == BIG + 4);
     CHECK_ST(fs_readdir(FAT "/My Docs", 1, &e), ERR_NOT_FOUND);
-    CHECK_ST(fs_readdir(FAT "/My Docs/big file.bin", 0, &e), ERR_WRONG_TYPE);
+    CHECK_ST(fs_readdir(FAT "/My Docs/big file.bin", 0, &e), ERR_NOT_DIR);
     CHECK_ST(ns_put(FAT "/notes.txt", "lower case\n"), OK);
     bool notes = false, docs = false;
     for (uint32_t i = 0; fs_readdir(FAT, i, &e) == OK; i++) {
@@ -83,8 +83,8 @@ static bool fat_tree(void)
     /* ".." stops at the mount's root here too. */
     CHECK_ST(fs_stat(FAT "/My Docs/../../My Docs", NULL, &dir, NULL), OK);
     CHECK(dir);
-    CHECK_ST(file_open(FAT "/My Docs", FS_READ, &f), ERR_WRONG_TYPE);
-    CHECK_ST(fs_unlink(FAT "/My Docs"), ERR_BAD_STATE);   /* not empty */
+    CHECK_ST(file_open(FAT "/My Docs", FS_READ, &f), ERR_IS_DIR);
+    CHECK_ST(fs_unlink(FAT "/My Docs"), ERR_NOT_EMPTY);   /* not empty */
     CHECK_ST(fs_mkdir(FAT "/bad:name"), ERR_INVALID_ARGS);
     CHECK_ST(fs_sync(FAT), OK);
     CHECK_ST(fs_statfs(FAT "/My Docs", NULL, &free1, NULL, NULL), OK);

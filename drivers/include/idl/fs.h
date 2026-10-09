@@ -4,21 +4,28 @@
  * fs: one mounted filesystem, as a filesystem service serves it (fat for
  * /data and /esp, the bootfs server for /boot). libos's namespace sends a
  * path here with the mount point stripped: "/logs/boot-0001.txt" for
- * /data/logs/boot-0001.txt. Paths are '/'-separated UTF-8, NUL-terminated
- * in a 256-byte field (at most 255 bytes); "." and ".." are resolved by the
- * server and never leave the mount. Errors are ERR_* (the server maps its
- * own codes): ERR_NOT_FOUND, ERR_ALREADY_EXISTS, ERR_NO_SPACE (full),
- * ERR_ACCESS_DENIED (read-only), ERR_INVALID_ARGS (a bad name), ERR_IO.
+ * /data/logs/boot-0001.txt. Paths are '/'-separated UTF-8 of at most 4095
+ * bytes (str: the generated server refuses a longer one, or one that isn't
+ * UTF-8 or holds a NUL, with ERR_INVALID_ARGS); "." and ".." are resolved
+ * by the server and never leave the mount. Errors are ERR_* (the server
+ * maps its own codes): ERR_NOT_FOUND (nothing there), ERR_ALREADY_EXISTS,
+ * ERR_NOT_DIR (a directory was needed, or a name on the way is a file),
+ * ERR_IS_DIR (a file was needed), ERR_NOT_EMPTY, ERR_NAME_TOO_LONG (a name
+ * past what the filesystem holds: fat, 255 UTF-16 units), ERR_BUSY (an open
+ * file in the way), ERR_NO_SPACE (full), ERR_ACCESS_DENIED (read-only),
+ * ERR_INVALID_ARGS (a name the filesystem can't hold, a bad flag),
+ * ERR_NO_RESOURCES (too many open files or views), ERR_IO.
  * Format: see tools/genidl.py.
  *
  * Restart: fat's restart is not seen (ARCHITECTURE.md, "Services that
- * outlive their process"): devmgr keeps this channel and every view's
+ * outlive their process"): volumes keeps this channel and every view's
  * across fat's death, a call made meanwhile waits in the channel for the
  * successor, and the request in progress is finished exactly once (a
  * request in progress at two crashes is answered ERR_IO). ERR_PEER_CLOSED
  * means the mount itself went: its stick pulled, `mount -w` / `-r` (a
- * stop in order), devmgr gave up on the service (its sixth crash in a
- * minute), or /boot's server (which keeps no state) ended. Whoever gave
+ * stop in order), volumes gave up on the service (its sixth crash in a
+ * minute), volumes itself ended (every mount goes with it, and comes
+ * back fresh), or /boot's server (which keeps no state) ended. Whoever gave
  * the mount gives the new channel when there is one (init sends its
  * followers' namespaces the change, libos's ns_update), and every file
  * opened through the old one is closed.
@@ -46,11 +53,24 @@
 #define FS_STATFS           0x00100008u
 #define FS_VIEW             0x00100009u
 
+/* Constants (the .idl's `const` lines). */
+/* fs.unlink's flags: remove a directory (empty), not a file (unlinkat's
+ * AT_REMOVEDIR). */
+#define FS_UNLINK_DIR 1u
+/* fs.rename's flags: replace what is at `to` (POSIX rename). */
+#define FS_RENAME_REPLACE 1u
+/* The longest path (bytes, without a NUL) and name in a readdir record. */
+#define FS_PATH_LEN 4095u
+#define FS_NAME_LEN 765u
+/* readdir's records: their fixed part, and the most a batch holds (bytes,
+ * `entries`' size below). */
+#define FS_DIRENT_FIXED 28u
+#define FS_READDIR_BYTES 8192u
+
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct fs_open_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t path[256];
     uint32_t flags;
 } __attribute__((packed));
 struct fs_open_rep {
@@ -61,7 +81,6 @@ struct fs_open_rep {
 struct fs_stat_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t path[256];
 } __attribute__((packed));
 struct fs_stat_rep {
     uint32_t txid;
@@ -69,24 +88,22 @@ struct fs_stat_rep {
     uint64_t size;
     uint8_t is_dir;
     uint64_t mtime;
+    uint64_t id;
 } __attribute__((packed));
 struct fs_readdir_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t path[256];
-    uint32_t index;
+    uint32_t cookie;
 } __attribute__((packed));
 struct fs_readdir_rep {
     uint32_t txid;
     int32_t  status;
-    uint8_t name[256];
-    uint8_t is_dir;
-    uint64_t size;
+    uint32_t next;
+    uint16_t count;
 } __attribute__((packed));
 struct fs_mkdir_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t path[256];
 } __attribute__((packed));
 struct fs_mkdir_rep {
     uint32_t txid;
@@ -95,7 +112,7 @@ struct fs_mkdir_rep {
 struct fs_unlink_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t path[256];
+    uint32_t flags;
 } __attribute__((packed));
 struct fs_unlink_rep {
     uint32_t txid;
@@ -104,8 +121,7 @@ struct fs_unlink_rep {
 struct fs_rename_req {
     uint32_t txid;
     uint32_t ordinal;
-    uint8_t from[256];
-    uint8_t to[256];
+    uint32_t flags;
 } __attribute__((packed));
 struct fs_rename_rep {
     uint32_t txid;
@@ -141,35 +157,44 @@ struct fs_view_rep {
     int32_t  status;
 } __attribute__((packed));
 
-#define FS_REQ_MAX 520u   /* bytes: the biggest request */
-#define FS_REP_MAX 273u   /* bytes: the biggest reply */
+#define FS_REQ_MAX 8206u   /* bytes: the biggest request */
+#define FS_REP_MAX 8208u   /* bytes: the biggest reply */
+#define FS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define FS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
 /* fs_open_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t fs_open_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+static inline status_t fs_open_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
 {
-    struct fs_open_req idl_q;
-    struct fs_open_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = FS_OPEN;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    idl_q.flags = flags;
-    handle_t idl_rh[2];
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(4109) + 16);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(4109);
+    struct fs_open_req *idl_q = (struct fs_open_req *)idl_b0;
+    const struct fs_open_rep *idl_r = (const struct fs_open_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
     uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
-                               idl_rh, 2, &idl_got[1], idl_within, idl_t);
-    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
-    idl_n = idl_got[0];
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FS_OPEN;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_rh[2];
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && idl_rhn != 2)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 16, &idl_got[0], idl_rh, 2, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 2)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK)
-        idl_close_all(idl_rh, idl_rhn);
+        idl_close_all(idl_rh, idl_got[1]);
     if (idl_st == OK) {
         if (out_file)
             *out_file = idl_rh[0];
@@ -183,197 +208,278 @@ static inline status_t fs_open_call(handle_t ch, bool idl_within, uint64_t idl_t
             drv_handle_close(idl_rh[1]);
     }
     if (idl_st == OK && out_size)
-        *out_size = idl_r.size;
+        *out_size = idl_r->size;
+    (void)idl_o;
+    drv_free(idl_b0);
     return idl_st;
 }
-/* Open a file (not a directory). flags: FS_READ 1, FS_WRITE 2, FS_CREATE 4,
- * FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32 (<os.h>). `file` speaks the file protocol;
- * `buffer` is the VMO its reads and writes go through; `size` is the file's
- * size now. Closing `file` closes the file. */
-static inline status_t fs_open_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+/* Open a file (not a directory: ERR_IS_DIR). flags: FS_READ 1, FS_WRITE 2,
+ * FS_CREATE 4, FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32, FS_EXCL 64 (with
+ * FS_CREATE: ERR_ALREADY_EXISTS if it is there) (<os.h>). `file` speaks the
+ * file protocol; `buffer` is the VMO its reads and writes go through;
+ * `size` is the file's size now. Closing `file` closes the file. */
+static inline status_t fs_open_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
 {
-    return fs_open_call(ch, false, deadline_ns, path, flags, out_file, out_buffer, out_size);
+    return fs_open_call(ch, false, deadline_ns, path, path_len, flags, out_file, out_buffer, out_size);
 }
-static inline status_t fs_open_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+static inline status_t fs_open_within(handle_t ch, uint64_t timeout_ns, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
 {
-    return fs_open_call(ch, true, timeout_ns, path, flags, out_file, out_buffer, out_size);
+    return fs_open_call(ch, true, timeout_ns, path, path_len, flags, out_file, out_buffer, out_size);
 }
-static inline status_t fs_open(handle_t ch, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+static inline status_t fs_open(handle_t ch, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
 {
-    return fs_open_call(ch, false, DEADLINE_NEVER, path, flags, out_file, out_buffer, out_size);
+    return fs_open_call(ch, false, DEADLINE_NEVER, path, path_len, flags, out_file, out_buffer, out_size);
 }
 
 /* fs_stat_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t fs_stat_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
+static inline status_t fs_stat_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *path, uint32_t path_len, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
-    struct fs_stat_req idl_q;
-    struct fs_stat_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = FS_STAT;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(4105) + 33);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(4105);
+    struct fs_stat_req *idl_q = (struct fs_stat_req *)idl_b0;
+    const struct fs_stat_rep *idl_r = (const struct fs_stat_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FS_STAT;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 33, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
     if (idl_st == OK && out_size)
-        *out_size = idl_r.size;
+        *out_size = idl_r->size;
     if (idl_st == OK && out_is_dir)
-        *out_is_dir = idl_r.is_dir;
+        *out_is_dir = idl_r->is_dir;
     if (idl_st == OK && out_mtime)
-        *out_mtime = idl_r.mtime;
+        *out_mtime = idl_r->mtime;
+    if (idl_st == OK && out_id)
+        *out_id = idl_r->id;
+    (void)idl_o;
+    drv_free(idl_b0);
     return idl_st;
 }
 /* A file or directory: its size (0 for a directory), 1 if a directory,
- * the modification time (Unix seconds, 0 if unknown). */
-static inline status_t fs_stat_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
+ * the modification time (Unix seconds, 0 if unknown), and its id: the same
+ * for every path that reaches it while it stays where it is (fat: the
+ * place of its directory entry, so a rename gives it a new one; the root
+ * has its own). */
+static inline status_t fs_stat_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
-    return fs_stat_call(ch, false, deadline_ns, path, out_size, out_is_dir, out_mtime);
+    return fs_stat_call(ch, false, deadline_ns, path, path_len, out_size, out_is_dir, out_mtime, out_id);
 }
-static inline status_t fs_stat_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
+static inline status_t fs_stat_within(handle_t ch, uint64_t timeout_ns, const char *path, uint32_t path_len, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
-    return fs_stat_call(ch, true, timeout_ns, path, out_size, out_is_dir, out_mtime);
+    return fs_stat_call(ch, true, timeout_ns, path, path_len, out_size, out_is_dir, out_mtime, out_id);
 }
-static inline status_t fs_stat(handle_t ch, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
+static inline status_t fs_stat(handle_t ch, const char *path, uint32_t path_len, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
-    return fs_stat_call(ch, false, DEADLINE_NEVER, path, out_size, out_is_dir, out_mtime);
+    return fs_stat_call(ch, false, DEADLINE_NEVER, path, path_len, out_size, out_is_dir, out_mtime, out_id);
 }
 
 /* fs_readdir_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t fs_readdir_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+static inline status_t fs_readdir_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *path, uint32_t path_len, uint32_t cookie, uint32_t *out_next, uint16_t *out_count, uint8_t out_entries[8192], uint32_t *out_entries_len)
 {
-    struct fs_readdir_req idl_q;
-    struct fs_readdir_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = FS_READDIR;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    idl_q.index = index;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(4109) + 8208);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(4109);
+    struct fs_readdir_req *idl_q = (struct fs_readdir_req *)idl_b0;
+    const struct fs_readdir_rep *idl_r = (const struct fs_readdir_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FS_READDIR;
+    idl_q->cookie = cookie;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    for (uint32_t idl_i = 0; idl_st == OK && out_name && idl_i < 256; idl_i++)
-        out_name[idl_i] = idl_r.name[idl_i];
-    if (idl_st == OK && out_is_dir)
-        *out_is_dir = idl_r.is_dir;
-    if (idl_st == OK && out_size)
-        *out_size = idl_r.size;
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8208, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 8192, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_next)
+        *out_next = idl_r->next;
+    if (idl_st == OK && out_count)
+        *out_count = idl_r->count;
+    if (idl_st == OK && out_entries) {
+        if (idl_l0)
+            __builtin_memcpy(out_entries, idl_p0, idl_l0 * 1);
+    }
+    if (idl_st == OK && out_entries_len)
+        *out_entries_len = idl_l0;
+    drv_free(idl_b0);
     return idl_st;
 }
-/* Entry `index` (0-based) of directory `path`, "." and ".." left out.
- * Past the last: ERR_NOT_FOUND. Entries may shift if the directory changes
- * between calls. Asked in order (0, 1, 2, ...), a listing costs the service
- * one entry read per entry: fat keeps a cursor per directory being listed. */
-static inline status_t fs_readdir_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+/* Entries of directory `path` from `cookie` (0: the first), "." and ".."
+ * left out, as many as fit in `entries`: `count` records, each DIRENT_FIXED
+ * bytes of u64 id, u64 size (0 for a directory), u64 mtime, u16 name_len,
+ * u8 is_dir, u8 0 (little-endian, packed), then the name (UTF-8, no NUL,
+ * 1 to NAME_LEN bytes), the next record right after (<fs_idl.h> reads and
+ * writes them). `next` is the cookie to go on with; 0: that was the last. A
+ * cookie is the server's own (fat's and bootfs's: the index of the next
+ * entry); entries may shift if the directory changes between calls. */
+static inline status_t fs_readdir_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len, uint32_t cookie, uint32_t *out_next, uint16_t *out_count, uint8_t out_entries[8192], uint32_t *out_entries_len)
 {
-    return fs_readdir_call(ch, false, deadline_ns, path, index, out_name, out_is_dir, out_size);
+    return fs_readdir_call(ch, false, deadline_ns, path, path_len, cookie, out_next, out_count, out_entries, out_entries_len);
 }
-static inline status_t fs_readdir_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+static inline status_t fs_readdir_within(handle_t ch, uint64_t timeout_ns, const char *path, uint32_t path_len, uint32_t cookie, uint32_t *out_next, uint16_t *out_count, uint8_t out_entries[8192], uint32_t *out_entries_len)
 {
-    return fs_readdir_call(ch, true, timeout_ns, path, index, out_name, out_is_dir, out_size);
+    return fs_readdir_call(ch, true, timeout_ns, path, path_len, cookie, out_next, out_count, out_entries, out_entries_len);
 }
-static inline status_t fs_readdir(handle_t ch, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+static inline status_t fs_readdir(handle_t ch, const char *path, uint32_t path_len, uint32_t cookie, uint32_t *out_next, uint16_t *out_count, uint8_t out_entries[8192], uint32_t *out_entries_len)
 {
-    return fs_readdir_call(ch, false, DEADLINE_NEVER, path, index, out_name, out_is_dir, out_size);
+    return fs_readdir_call(ch, false, DEADLINE_NEVER, path, path_len, cookie, out_next, out_count, out_entries, out_entries_len);
 }
 
 /* fs_mkdir_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t fs_mkdir_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256])
+static inline status_t fs_mkdir_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *path, uint32_t path_len)
 {
-    struct fs_mkdir_req idl_q;
-    struct fs_mkdir_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = FS_MKDIR;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(4105) + 8);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(4105);
+    struct fs_mkdir_req *idl_q = (struct fs_mkdir_req *)idl_b0;
+    const struct fs_mkdir_rep *idl_r = (const struct fs_mkdir_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FS_MKDIR;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
+    drv_free(idl_b0);
     return idl_st;
 }
-static inline status_t fs_mkdir_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256])
+/* A new directory (ERR_ALREADY_EXISTS: something is there). */
+static inline status_t fs_mkdir_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len)
 {
-    return fs_mkdir_call(ch, false, deadline_ns, path);
+    return fs_mkdir_call(ch, false, deadline_ns, path, path_len);
 }
-static inline status_t fs_mkdir_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256])
+static inline status_t fs_mkdir_within(handle_t ch, uint64_t timeout_ns, const char *path, uint32_t path_len)
 {
-    return fs_mkdir_call(ch, true, timeout_ns, path);
+    return fs_mkdir_call(ch, true, timeout_ns, path, path_len);
 }
-static inline status_t fs_mkdir(handle_t ch, const uint8_t path[256])
+static inline status_t fs_mkdir(handle_t ch, const char *path, uint32_t path_len)
 {
-    return fs_mkdir_call(ch, false, DEADLINE_NEVER, path);
+    return fs_mkdir_call(ch, false, DEADLINE_NEVER, path, path_len);
 }
 
 /* fs_unlink_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t fs_unlink_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t path[256])
+static inline status_t fs_unlink_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *path, uint32_t path_len, uint32_t flags)
 {
-    struct fs_unlink_req idl_q;
-    struct fs_unlink_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = FS_UNLINK;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(4109) + 8);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(4109);
+    struct fs_unlink_req *idl_q = (struct fs_unlink_req *)idl_b0;
+    const struct fs_unlink_rep *idl_r = (const struct fs_unlink_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FS_UNLINK;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
+    drv_free(idl_b0);
     return idl_st;
 }
-/* Remove a file, or an empty directory. */
-static inline status_t fs_unlink_until(handle_t ch, uint64_t deadline_ns, const uint8_t path[256])
+/* Remove a file, or with FS_UNLINK_DIR an empty directory: ERR_IS_DIR,
+ * ERR_NOT_DIR for the other kind; ERR_NOT_EMPTY: a directory with entries;
+ * ERR_BUSY: an open file. The root: ERR_ACCESS_DENIED. */
+static inline status_t fs_unlink_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len, uint32_t flags)
 {
-    return fs_unlink_call(ch, false, deadline_ns, path);
+    return fs_unlink_call(ch, false, deadline_ns, path, path_len, flags);
 }
-static inline status_t fs_unlink_within(handle_t ch, uint64_t timeout_ns, const uint8_t path[256])
+static inline status_t fs_unlink_within(handle_t ch, uint64_t timeout_ns, const char *path, uint32_t path_len, uint32_t flags)
 {
-    return fs_unlink_call(ch, true, timeout_ns, path);
+    return fs_unlink_call(ch, true, timeout_ns, path, path_len, flags);
 }
-static inline status_t fs_unlink(handle_t ch, const uint8_t path[256])
+static inline status_t fs_unlink(handle_t ch, const char *path, uint32_t path_len, uint32_t flags)
 {
-    return fs_unlink_call(ch, false, DEADLINE_NEVER, path);
+    return fs_unlink_call(ch, false, DEADLINE_NEVER, path, path_len, flags);
 }
 
 /* fs_rename_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t fs_rename_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t from[256], const uint8_t to[256])
+static inline status_t fs_rename_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *from, uint32_t from_len, const char *to, uint32_t to_len, uint32_t flags)
 {
-    struct fs_rename_req idl_q;
-    struct fs_rename_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = FS_RENAME;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.from[idl_i] = from[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.to[idl_i] = to[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(8206) + 8);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(8206);
+    struct fs_rename_req *idl_q = (struct fs_rename_req *)idl_b0;
+    const struct fs_rename_rep *idl_r = (const struct fs_rename_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FS_RENAME;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, from, from_len, 4095, 1) ||
+                             !idl_str_ok(from, from_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, to, to_len, 4095, 1) ||
+                             !idl_str_ok(to, to_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
+    drv_free(idl_b0);
     return idl_st;
 }
-/* Rename or move within this filesystem. */
-static inline status_t fs_rename_until(handle_t ch, uint64_t deadline_ns, const uint8_t from[256], const uint8_t to[256])
+/* Rename or move within this filesystem. ERR_BUSY: `from` is an open file;
+ * ERR_INVALID_ARGS: a directory into itself, or the root. Something at
+ * `to` (but `from` itself under another name or case): ERR_ALREADY_EXISTS,
+ * or with FS_RENAME_REPLACE it goes (a file for a file, an empty directory
+ * for a directory: ERR_IS_DIR, ERR_NOT_DIR, ERR_NOT_EMPTY, ERR_BUSY). */
+static inline status_t fs_rename_until(handle_t ch, uint64_t deadline_ns, const char *from, uint32_t from_len, const char *to, uint32_t to_len, uint32_t flags)
 {
-    return fs_rename_call(ch, false, deadline_ns, from, to);
+    return fs_rename_call(ch, false, deadline_ns, from, from_len, to, to_len, flags);
 }
-static inline status_t fs_rename_within(handle_t ch, uint64_t timeout_ns, const uint8_t from[256], const uint8_t to[256])
+static inline status_t fs_rename_within(handle_t ch, uint64_t timeout_ns, const char *from, uint32_t from_len, const char *to, uint32_t to_len, uint32_t flags)
 {
-    return fs_rename_call(ch, true, timeout_ns, from, to);
+    return fs_rename_call(ch, true, timeout_ns, from, from_len, to, to_len, flags);
 }
-static inline status_t fs_rename(handle_t ch, const uint8_t from[256], const uint8_t to[256])
+static inline status_t fs_rename(handle_t ch, const char *from, uint32_t from_len, const char *to, uint32_t to_len, uint32_t flags)
 {
-    return fs_rename_call(ch, false, DEADLINE_NEVER, from, to);
+    return fs_rename_call(ch, false, DEADLINE_NEVER, from, from_len, to, to_len, flags);
 }
 
 /* fs_sync_until and _within: idl_t is a deadline, or with idl_within a
@@ -498,17 +604,26 @@ static inline status_t fs_view(handle_t ch, uint32_t flags, handle_t *out_fs)
 
 /* fs_open without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then fs_open_result. */
-static inline status_t fs_open_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256], uint32_t flags)
+static inline status_t fs_open_send(handle_t ch, uint32_t idl_txid, const char *path, uint32_t path_len, uint32_t flags)
 {
-    struct fs_open_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = FS_OPEN;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    idl_q.flags = flags;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(4109);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct fs_open_req *idl_q = (struct fs_open_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FS_OPEN;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
 }
 
 /* The status and results of a reply to fs_open_send (read with
@@ -540,22 +655,31 @@ static inline status_t fs_open_result(const void *idl_rep, struct idl_msg *idl_m
 
 /* fs_stat without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then fs_stat_result. */
-static inline status_t fs_stat_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256])
+static inline status_t fs_stat_send(handle_t ch, uint32_t idl_txid, const char *path, uint32_t path_len)
 {
-    struct fs_stat_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = FS_STAT;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(4105);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct fs_stat_req *idl_q = (struct fs_stat_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FS_STAT;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
 }
 
 /* The status and results of a reply to fs_stat_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t fs_stat_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime)
+static inline status_t fs_stat_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id)
 {
     const struct fs_stat_rep *idl_r = (const struct fs_stat_rep *)idl_rep;
     status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
@@ -572,31 +696,49 @@ static inline status_t fs_stat_result(const void *idl_rep, struct idl_msg *idl_m
         *out_is_dir = idl_r->is_dir;
     if (out_mtime)
         *out_mtime = idl_r->mtime;
+    if (out_id)
+        *out_id = idl_r->id;
     return OK;
 }
 
 /* fs_readdir without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then fs_readdir_result. */
-static inline status_t fs_readdir_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256], uint32_t index)
+static inline status_t fs_readdir_send(handle_t ch, uint32_t idl_txid, const char *path, uint32_t path_len, uint32_t cookie)
 {
-    struct fs_readdir_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = FS_READDIR;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    idl_q.index = index;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(4109);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct fs_readdir_req *idl_q = (struct fs_readdir_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FS_READDIR;
+    idl_q->cookie = cookie;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
 }
 
 /* The status and results of a reply to fs_readdir_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t fs_readdir_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size)
+static inline status_t fs_readdir_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_next, uint16_t *out_count, uint8_t out_entries[8192], uint32_t *out_entries_len)
 {
     const struct fs_readdir_rep *idl_r = (const struct fs_readdir_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 8192, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -604,27 +746,40 @@ static inline status_t fs_readdir_result(const void *idl_rep, struct idl_msg *id
         return idl_st;
     }
     idl_m->nh = 0;
-    for (uint32_t idl_i = 0; out_name && idl_i < 256; idl_i++)
-        out_name[idl_i] = idl_r->name[idl_i];
-    if (out_is_dir)
-        *out_is_dir = idl_r->is_dir;
-    if (out_size)
-        *out_size = idl_r->size;
+    if (out_next)
+        *out_next = idl_r->next;
+    if (out_count)
+        *out_count = idl_r->count;
+    if (out_entries) {
+        if (idl_l0)
+            __builtin_memcpy(out_entries, idl_p0, idl_l0 * 1);
+    }
+    if (out_entries_len)
+        *out_entries_len = idl_l0;
     return OK;
 }
 
 /* fs_mkdir without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then fs_mkdir_result. */
-static inline status_t fs_mkdir_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256])
+static inline status_t fs_mkdir_send(handle_t ch, uint32_t idl_txid, const char *path, uint32_t path_len)
 {
-    struct fs_mkdir_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = FS_MKDIR;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(4105);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct fs_mkdir_req *idl_q = (struct fs_mkdir_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FS_MKDIR;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
 }
 
 /* The status and results of a reply to fs_mkdir_send (read with
@@ -647,16 +802,26 @@ static inline status_t fs_mkdir_result(const void *idl_rep, struct idl_msg *idl_
 
 /* fs_unlink without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then fs_unlink_result. */
-static inline status_t fs_unlink_send(handle_t ch, uint32_t idl_txid, const uint8_t path[256])
+static inline status_t fs_unlink_send(handle_t ch, uint32_t idl_txid, const char *path, uint32_t path_len, uint32_t flags)
 {
-    struct fs_unlink_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = FS_UNLINK;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.path[idl_i] = path[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(4109);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct fs_unlink_req *idl_q = (struct fs_unlink_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FS_UNLINK;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
 }
 
 /* The status and results of a reply to fs_unlink_send (read with
@@ -679,18 +844,29 @@ static inline status_t fs_unlink_result(const void *idl_rep, struct idl_msg *idl
 
 /* fs_rename without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then fs_rename_result. */
-static inline status_t fs_rename_send(handle_t ch, uint32_t idl_txid, const uint8_t from[256], const uint8_t to[256])
+static inline status_t fs_rename_send(handle_t ch, uint32_t idl_txid, const char *from, uint32_t from_len, const char *to, uint32_t to_len, uint32_t flags)
 {
-    struct fs_rename_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = FS_RENAME;
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.from[idl_i] = from[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_q.to[idl_i] = to[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(8206);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct fs_rename_req *idl_q = (struct fs_rename_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FS_RENAME;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, from, from_len, 4095, 1) ||
+                             !idl_str_ok(from, from_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, to, to_len, 4095, 1) ||
+                             !idl_str_ok(to, to_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
 }
 
 /* The status and results of a reply to fs_rename_send (read with
@@ -819,12 +995,12 @@ static inline status_t fs_view_result(const void *idl_rep, struct idl_msg *idl_m
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with fs_reply_<method> (now, or later from anywhere). */
 struct fs_ops {
-    status_t (*open)(void *ctx, const uint8_t path[256], uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size);
-    status_t (*stat)(void *ctx, const uint8_t path[256], uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime);
-    status_t (*readdir)(void *ctx, const uint8_t path[256], uint32_t index, uint8_t out_name[256], uint8_t *out_is_dir, uint64_t *out_size);
-    status_t (*mkdir)(void *ctx, const uint8_t path[256]);
-    status_t (*unlink)(void *ctx, const uint8_t path[256]);
-    status_t (*rename)(void *ctx, const uint8_t from[256], const uint8_t to[256]);
+    status_t (*open)(void *ctx, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size);
+    status_t (*stat)(void *ctx, const char *path, uint32_t path_len, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id);
+    status_t (*readdir)(void *ctx, const char *path, uint32_t path_len, uint32_t cookie, uint32_t *out_next, uint16_t *out_count, uint8_t *out_entries, uint32_t *out_entries_len);
+    status_t (*mkdir)(void *ctx, const char *path, uint32_t path_len);
+    status_t (*unlink)(void *ctx, const char *path, uint32_t path_len, uint32_t flags);
+    status_t (*rename)(void *ctx, const char *from, uint32_t from_len, const char *to, uint32_t to_len, uint32_t flags);
     status_t (*sync)(void *ctx);
     status_t (*statfs)(void *ctx, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16]);
     status_t (*view)(void *ctx, uint32_t flags, handle_t *out_fs);
@@ -836,59 +1012,77 @@ struct fs_ops {
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t fs_reply_open(struct idl_txn idl_txn, status_t idl_st, handle_t file, handle_t buffer, uint64_t size)
 {
-    struct fs_open_rep idl_r;
     handle_t idl_hs[2] = { file, buffer };
+    _Alignas(8) uint8_t idl_b0[16];
+    struct fs_open_rep *idl_r = (struct fs_open_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
     if (idl_st == OK && !(file != HANDLE_INVALID && buffer != HANDLE_INVALID))
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
+    idl_r->size = size;
+    idl_r->status = idl_st;
     if (idl_st != OK) {
         if (idl_hs[0] != HANDLE_INVALID)
             drv_handle_close(idl_hs[0]);
         if (idl_hs[1] != HANDLE_INVALID)
             drv_handle_close(idl_hs[1]);
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+        idl_rn = sizeof(struct idl_rep_hdr);
     }
-    idl_r.size = size;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 2);
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 2 : 0);
+    return idl_ws;
 }
 
 /* Answer the fs.stat request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t fs_reply_stat(struct idl_txn idl_txn, status_t idl_st, uint64_t size, uint8_t is_dir, uint64_t mtime)
+static inline status_t fs_reply_stat(struct idl_txn idl_txn, status_t idl_st, uint64_t size, uint8_t is_dir, uint64_t mtime, uint64_t id)
 {
-    struct fs_stat_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[33];
+    struct fs_stat_rep *idl_r = (struct fs_stat_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.size = size;
-    idl_r.is_dir = is_dir;
-    idl_r.mtime = mtime;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->size = size;
+    idl_r->is_dir = is_dir;
+    idl_r->mtime = mtime;
+    idl_r->id = id;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the fs.readdir request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t fs_reply_readdir(struct idl_txn idl_txn, status_t idl_st, const uint8_t name[256], uint8_t is_dir, uint64_t size)
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t fs_reply_readdir(struct idl_txn idl_txn, status_t idl_st, uint32_t next, uint16_t count, const uint8_t *entries, uint32_t entries_len)
 {
-    struct fs_readdir_rep idl_r;
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(8208);
+    if (!idl_b0) {
+        struct idl_rep_hdr idl_h = { 0, ERR_NO_MEMORY };
+        return idl_reply_write(idl_txn, &idl_h, sizeof(idl_h), NULL, 0);
+    }
+    struct fs_readdir_rep *idl_r = (struct fs_readdir_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-        idl_r.name[idl_i] = name[idl_i];
-    idl_r.is_dir = is_dir;
-    idl_r.size = size;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->next = next;
+    idl_r->count = count;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_rn, entries, entries_len, 8192, 1))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_ws;
 }
 
 /* Answer the fs.mkdir request kept in txn: idl_st and, if it is OK, the
@@ -897,13 +1091,17 @@ static inline status_t fs_reply_readdir(struct idl_txn idl_txn, status_t idl_st,
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t fs_reply_mkdir(struct idl_txn idl_txn, status_t idl_st)
 {
-    struct fs_mkdir_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct fs_mkdir_rep *idl_r = (struct fs_mkdir_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the fs.unlink request kept in txn: idl_st and, if it is OK, the
@@ -912,13 +1110,17 @@ static inline status_t fs_reply_mkdir(struct idl_txn idl_txn, status_t idl_st)
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t fs_reply_unlink(struct idl_txn idl_txn, status_t idl_st)
 {
-    struct fs_unlink_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct fs_unlink_rep *idl_r = (struct fs_unlink_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the fs.rename request kept in txn: idl_st and, if it is OK, the
@@ -927,13 +1129,17 @@ static inline status_t fs_reply_unlink(struct idl_txn idl_txn, status_t idl_st)
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t fs_reply_rename(struct idl_txn idl_txn, status_t idl_st)
 {
-    struct fs_rename_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct fs_rename_rep *idl_r = (struct fs_rename_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the fs.sync request kept in txn: idl_st and, if it is OK, the
@@ -994,7 +1200,7 @@ static inline status_t fs_reply_view(struct idl_txn idl_txn, status_t idl_st, ha
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (FS_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (FS_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1019,13 +1225,23 @@ static inline uint32_t fs_dispatch_on(handle_t ch, const struct fs_ops *ops, voi
         handle_t out_file = HANDLE_INVALID;
         handle_t out_buffer = HANDLE_INVALID;
         uint64_t out_size = 0;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->open) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->open(ctx, idl_q->path, idl_q->flags, &out_file, &out_buffer, &out_size);
+        idl_st = ops->open(ctx, (const char *)idl_p0, idl_l0, idl_q->flags, &out_file, &out_buffer, &out_size);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status == OK && !(out_file != HANDLE_INVALID && out_buffer != HANDLE_INVALID))
             idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
@@ -1048,56 +1264,89 @@ static inline uint32_t fs_dispatch_on(handle_t ch, const struct fs_ops *ops, voi
         uint64_t out_size = 0;
         uint8_t out_is_dir = 0;
         uint64_t out_mtime = 0;
-        if (n != sizeof(*idl_q))
+        uint64_t out_id = 0;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->stat) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->stat(ctx, idl_q->path, &out_size, &out_is_dir, &out_mtime);
+        idl_st = ops->stat(ctx, (const char *)idl_p0, idl_l0, &out_size, &out_is_dir, &out_mtime, &out_id);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->size = out_size;
         idl_r->is_dir = out_is_dir;
         idl_r->mtime = out_mtime;
+        idl_r->id = out_id;
         return sizeof(*idl_r);
     }
     case FS_READDIR: {
         const struct fs_readdir_req *idl_q = (const struct fs_readdir_req *)req;
         struct fs_readdir_rep *idl_r = (struct fs_readdir_rep *)rep;
-        uint8_t out_name[256];
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            out_name[idl_i] = 0;
-        uint8_t out_is_dir = 0;
-        uint64_t out_size = 0;
-        if (n != sizeof(*idl_q))
+        uint32_t out_next = 0;
+        uint16_t out_count = 0;
+        uint8_t *out_entries = (uint8_t *)((uint8_t *)rep + 16);
+        uint32_t out_entries_len = 0;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->readdir) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->readdir(ctx, idl_q->path, idl_q->index, out_name, &out_is_dir, &out_size);
+        idl_st = ops->readdir(ctx, (const char *)idl_p0, idl_l0, idl_q->cookie, &out_next, &out_count, out_entries, &out_entries_len);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_entries_len > 8192))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
-        for (uint32_t idl_i = 0; idl_i < 256; idl_i++)
-            idl_r->name[idl_i] = out_name[idl_i];
-        idl_r->is_dir = out_is_dir;
-        idl_r->size = out_size;
-        return sizeof(*idl_r);
+        idl_r->next = out_next;
+        idl_r->count = out_count;
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 16, out_entries_len, 1);
+        return idl_rn;
     }
     case FS_MKDIR: {
         const struct fs_mkdir_req *idl_q = (const struct fs_mkdir_req *)req;
         struct fs_mkdir_rep *idl_r = (struct fs_mkdir_rep *)rep;
         (void)idl_r;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->mkdir) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->mkdir(ctx, idl_q->path);
+        idl_st = ops->mkdir(ctx, (const char *)idl_p0, idl_l0);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -1107,13 +1356,23 @@ static inline uint32_t fs_dispatch_on(handle_t ch, const struct fs_ops *ops, voi
         const struct fs_unlink_req *idl_q = (const struct fs_unlink_req *)req;
         struct fs_unlink_rep *idl_r = (struct fs_unlink_rep *)rep;
         (void)idl_r;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->unlink) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->unlink(ctx, idl_q->path);
+        idl_st = ops->unlink(ctx, (const char *)idl_p0, idl_l0, idl_q->flags);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -1123,13 +1382,29 @@ static inline uint32_t fs_dispatch_on(handle_t ch, const struct fs_ops *ops, voi
         const struct fs_rename_req *idl_q = (const struct fs_rename_req *)req;
         struct fs_rename_rep *idl_r = (struct fs_rename_rep *)rep;
         (void)idl_r;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        const void *idl_p1 = NULL;
+        uint32_t idl_l1 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p1, &idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->rename) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->rename(ctx, idl_q->from, idl_q->to);
+        idl_st = ops->rename(ctx, (const char *)idl_p0, idl_l0, (const char *)idl_p1, idl_l1, idl_q->flags);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -1230,7 +1505,7 @@ static inline status_t fs_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by fs_take_slot, or found there by a
  * successor), which came on ch: as fs_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (FS_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -1259,52 +1534,56 @@ static inline bool fs_idempotent(uint32_t ordinal)
 /* Take one message off ch and answer it. OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
- * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good;
+ * ERR_NO_MEMORY with the message still queued: no room for the buffers
+ * (taken from the heap for each message: FS_REQ_MAX + FS_REP_MAX pass
+ * IDL_STACK_MAX). */
 static inline status_t fs_serve_one(handle_t ch, const struct fs_ops *ops, void *ctx)
 {
-    _Alignas(8) uint8_t idl_q[FS_REQ_MAX];
-    _Alignas(8) uint8_t idl_r[FS_REP_MAX];
+    uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8(FS_REQ_MAX) + FS_REP_MAX);
+    if (!idl_q)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_r = idl_q + IDL_ROUND8(FS_REQ_MAX);
     handle_t idl_hs[IDL_READ_HANDLES];
     uint32_t idl_n = 0, idl_nh = 0;
-    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+    status_t idl_st = drv_channel_read(ch, idl_q, FS_REQ_MAX, &idl_n, idl_hs, IDL_READ_HANDLES,
                                        &idl_nh);
-    if (idl_st == ERR_BUFFER_TOO_SMALL)
-        return idl_drain(ch, idl_n, idl_nh);
-    if (idl_st != OK)
-        return idl_st;
-    if (idl_nh) {
+    if (idl_st == ERR_BUFFER_TOO_SMALL) {
+        idl_st = idl_drain(ch, idl_n, idl_nh);
+    } else if (idl_st == OK && idl_nh) {
         idl_close_all(idl_hs, idl_nh);
         idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
-        return OK;
+    } else if (idl_st == OK) {
+        handle_t idl_rhs[IDL_REP_HANDLES];
+        uint32_t idl_rhn = 0;
+        uint32_t idl_rn = fs_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+        if (!idl_rn)
+            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+        else   /* the reply's handles are gone whatever the write's status */
+            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
     }
-    handle_t idl_rhs[IDL_REP_HANDLES];
-    uint32_t idl_rhn = 0;
-    uint32_t idl_rn = fs_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
-    if (!idl_rn)
-        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
-    else   /* the reply's handles are gone whatever the write's status */
-        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
-    return OK;
+    drv_free(idl_q);
+    return idl_st;
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
  * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * (idl_serve_next). Its buffers come from the heap, once (ERR_NO_MEMORY
+ * if they can't): FS_REQ_MAX + FS_REP_MAX pass IDL_STACK_MAX. */
 static inline status_t fs_serve(handle_t ch, const struct fs_ops *ops, void *ctx)
 {
-    _Alignas(8) uint8_t idl_q[FS_REQ_MAX];
-    _Alignas(8) uint8_t idl_r[FS_REP_MAX];
+    uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8(FS_REQ_MAX) + FS_REP_MAX);
+    if (!idl_q)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_r = idl_q + IDL_ROUND8(FS_REQ_MAX);
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
-        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .ch = ch, .q = idl_q, .qcap = FS_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
     };
-    for (;;) {
-        status_t idl_st = idl_serve_next(&idl_s);
-        if (idl_st == ERR_PEER_CLOSED)
-            return OK;
-        if (idl_st != OK)
-            return idl_st;
+    status_t idl_st;
+    while ((idl_st = idl_serve_next(&idl_s)) == OK)
         idl_s.rn = fs_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
-    }
+    drv_free(idl_q);
+    return idl_st == ERR_PEER_CLOSED ? OK : idl_st;
 }

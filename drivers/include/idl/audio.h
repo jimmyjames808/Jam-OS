@@ -68,6 +68,8 @@ struct audio_open_output_rep {
 
 #define AUDIO_REQ_MAX 31u   /* bytes: the biggest request */
 #define AUDIO_REP_MAX 20u   /* bytes: the biggest reply */
+#define AUDIO_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define AUDIO_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -259,7 +261,7 @@ static inline status_t audio_reply_open_output(struct idl_txn idl_txn, status_t 
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (AUDIO_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (AUDIO_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -355,7 +357,7 @@ static inline status_t audio_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by audio_take_slot, or found there by a
  * successor), which came on ch: as audio_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (AUDIO_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -540,6 +542,8 @@ struct audio_stream_set_title_rep {
 
 #define AUDIO_STREAM_REQ_MAX 73u   /* bytes: the biggest request */
 #define AUDIO_STREAM_REP_MAX 36u   /* bytes: the biggest reply */
+#define AUDIO_STREAM_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define AUDIO_STREAM_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1270,7 +1274,7 @@ static inline status_t audio_stream_reply_set_title(struct idl_txn idl_txn, stat
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (AUDIO_STREAM_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (AUDIO_STREAM_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1480,7 +1484,7 @@ static inline status_t audio_stream_take_slot(handle_t ch, const struct idl_slot
 /* Run the request in slot (taken by audio_stream_take_slot, or found there by a
  * successor), which came on ch: as audio_stream_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (AUDIO_STREAM_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

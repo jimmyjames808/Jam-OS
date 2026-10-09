@@ -149,7 +149,7 @@ void fix_free(struct cx *x)
 void fix_tick(void)
 {
     uint64_t t = now(), d = stack_poll(), last = t + 300 * NS_PER_MS;
-    (void)jam_nanosleep(d < last ? d : last);   /* a test's own sleep: nothing to do if it fails */
+    (void)jam_sleep_until(d < last ? d : last);   /* a test's own sleep: nothing to do if it fails */
     stack_poll();
     ntcp_work();
 }

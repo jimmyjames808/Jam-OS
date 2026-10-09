@@ -13,7 +13,7 @@
 int64_t sysc_random_get(uint64_t buf, uint64_t len)
 {
     if (len > RANDOM_GET_MAX)
-        return ERR_INVALID_ARGS;
+        return ERR_OUT_OF_RANGE;
     if (len == 0)
         return OK;
     uint8_t bytes[RANDOM_GET_MAX];

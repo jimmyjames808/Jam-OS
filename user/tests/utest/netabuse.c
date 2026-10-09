@@ -49,7 +49,7 @@ static bool counters(struct net_counters *c)
         uint64_t end_ = now() + NETDRV_WAIT;                                    \
         status_t st_;                                                           \
         while ((st_ = (expr)) != OK && now() < end_)                            \
-            jam_nanosleep(now() + 10 * NS_PER_MS);                              \
+            jam_sleep_until(now() + 10 * NS_PER_MS);                              \
         CHECK_ST(st_, OK);                                                      \
     } while (0)
 
@@ -245,7 +245,7 @@ bool t_netsock_hostile(void)
     CHECK_ST(netdrv_recv(f, &n, NETDRV_WAIT), OK);   /* the echo request */
     jam_handle_close(o3);
     jam_handle_close(o2);
-    jam_nanosleep(now() + 50 * NS_PER_MS);
+    jam_sleep_until(now() + 50 * NS_PER_MS);
     CHECK(netdrv_send(f, pkt_echo_reply_to(f, f, 8 + 8)));   /* its reply, nobody's now */
     CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 9, OUR_IP, 6001, "x", 1)));
     const uint8_t *m;
@@ -368,7 +368,7 @@ bool t_netsock_busy_client(void)
     CHECK(opener(&b));
     CHECK_ST(thread_spawn("flooder", flood, &fl, stack, sizeof(stack), &th), OK);
     while (fl.written < 4 * 64)   /* well past a turn's budget: the flood is on */
-        jam_nanosleep(now() + NS_PER_MS);
+        jam_sleep_until(now() + NS_PER_MS);
     for (uint32_t i = 0; i < 5; i++) {
         uint64_t t0 = now();
         CHECK_ST(net_iface_until(b, now() + NETDRV_WAIT, &addr, &mask, &gw, &d1, &d2, mac, &device,
@@ -378,7 +378,7 @@ bool t_netsock_busy_client(void)
         CHECK(netdrv_ping(2 + i, false));   /* frames in and out go on too */
     }
     uint64_t before = fl.written;
-    jam_nanosleep(now() + 50 * NS_PER_MS);
+    jam_sleep_until(now() + 50 * NS_PER_MS);
     CHECK(fl.written > before);   /* still flooding: it was served meanwhile, not starved */
     fl.stop = true;
     signals_t seen;

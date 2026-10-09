@@ -571,7 +571,7 @@ static void boot_soak(const char *minutes)
     echo("soak (boot word): waiting up to 20 s for /data\n");
     sh_flush();
     for (int i = 0; i < 100 && fs_statfs("/data", NULL, NULL, NULL, NULL) != OK; i++)
-        jam_nanosleep(now() + 200 * NS_PER_MS);
+        jam_sleep_until(now() + 200 * NS_PER_MS);
     snprintf(line, sizeof(line), "soak %s halt", minutes);
     set_prompt();
     echo("%s%s\n", prompt, line);

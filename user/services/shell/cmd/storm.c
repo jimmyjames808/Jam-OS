@@ -137,7 +137,7 @@ static void kill_main(void *arg)
     for (unsigned k = 0;; k = (k + 1) % s->ntargets) {
         while (!stopping(s) && now() < next) {
             uint64_t t = now() + STOP_POLL;
-            (void)jam_nanosleep(t < next ? t : next);   /* woken early: the loop looks again */
+            (void)jam_sleep_until(t < next ? t : next);   /* woken early: the loop looks again */
         }
         if (stopping(s))
             break;

@@ -41,6 +41,7 @@
  *   sh_text.c      lines and counts for the text commands */
 #pragma once
 
+#include <openkeys.h>
 #include <os.h>
 #include <sha256.h>
 #include <wallclock.h>
@@ -374,7 +375,7 @@ bool sh_count_opt(int argc, char **argv, int *i, uint64_t *n);
 #define SH_DIR_MAX  256           /* entries ls and find read from one directory */
 #define SH_FILE_MAX (4u << 20)    /* the biggest file a command reads whole */
 struct sh_dirent {
-    char     name[FS_PATH_MAX];   /* the entry's name, without the directory */
+    char     name[FS_NAME_MAX];   /* the entry's name, without the directory */
     bool     dir;                 /* a directory */
     uint64_t size;                /* a file's bytes */
 };

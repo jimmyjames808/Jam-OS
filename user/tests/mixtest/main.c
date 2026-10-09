@@ -156,7 +156,7 @@ static int tone_main(int argc, char **argv)
     while (st == OK && t.at < t.frames) {
         if (pause && t.at == 300 * MIXER_RATE / 1000) {
             st = mixer_drain(&s, now() + LONG);   /* all of it taken and heard */
-            (void)jam_nanosleep(now() + 2 * NS_PER_S);
+            (void)jam_sleep_until(now() + 2 * NS_PER_S);
             if (st != OK)
                 break;
         }
@@ -229,7 +229,7 @@ static long finish(handle_t proc)
 
 static void pause_ms(uint64_t ms)
 {
-    (void)jam_nanosleep(now() + ms * NS_PER_MS);
+    (void)jam_sleep_until(now() + ms * NS_PER_MS);
 }
 
 /* The mixer's list now; *n entries into e. */

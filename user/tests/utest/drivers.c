@@ -300,7 +300,7 @@ static bool edu_from_query(handle_t q, status_t want)
     status_t st;
     while ((st = dm_one(q, DEVMGR_GET_SERVICE, EDU_VENDOR, EDU_DEVICE, 0, NULL)) != want &&
            now() < until)
-        (void)jam_nanosleep(now() + 20 * NS_PER_MS);
+        (void)jam_sleep_until(now() + 20 * NS_PER_MS);
     CHECK_ST(st, want);
     return true;
 }
@@ -409,7 +409,7 @@ static bool quarantine_released(handle_t dm, struct devmgr_rep *sup)
             return false;
         if (!sup->d || now() > until)
             return true;
-        jam_nanosleep(now() + 20 * NS_PER_MS);
+        jam_sleep_until(now() + 20 * NS_PER_MS);
     }
 }
 

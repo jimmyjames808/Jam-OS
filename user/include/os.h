@@ -18,6 +18,7 @@
 #include <jam/startup.h>
 #include <jam/status.h>
 #include <jam_syscalls.h>
+#include <roles.h>         /* the startup roles programs give each other */
 
 int main(int argc, char **argv);
 
@@ -28,7 +29,7 @@ int main(int argc, char **argv);
 #define NS_PER_S  1000000000ull
 
 /* Nanoseconds since boot: the clock deadlines (jam_object_wait_one,
- * jam_port_wait, jam_nanosleep, ...) are measured on. */
+ * jam_port_wait, jam_sleep_until, ...) are measured on. */
 static inline uint64_t now(void)
 {
     return (uint64_t)jam_clock_get();
@@ -192,8 +193,10 @@ void     lock_give(lock_t *l);
  * channel (abi/idl/fs.idl, file.idl), and the services (below: "/svc").
  * A mount point is "/" and one name
  * ("/boot", "/data"). The calls below take absolute paths of at most
- * FS_PATH_MAX - 1 bytes (longer, or not starting with '/':
- * ERR_INVALID_ARGS), find the mount by the path's first name and send the
+ * FS_PATH_MAX - 1 bytes (longer: ERR_NAME_TOO_LONG; not starting with
+ * '/': ERR_INVALID_ARGS; the `fs` protocol itself carries paths of up to 4095
+ * bytes, FS_PATH_LEN: libos's limit goes up to it when nothing shares it
+ * any more), find the mount by the path's first name and send the
  * rest to its `fs` service. Inside a mount "." and ".." are resolved here,
  * and ".." stops at the mount's root: "/data/../boot/x" is /data/boot/x,
  * never /boot/x. "/" itself is a directory that lists the mount points
@@ -242,13 +245,19 @@ void     lock_give(lock_t *l);
  * disk writes, which a stick does many times faster than sector-sized
  * ones. A stick pulled before the sync loses what waited. With FS_WRITE. */
 #define FS_GATHER   32u
-#define FS_FLAGS    63u   /* all of them: any other bit is ERR_INVALID_ARGS */
+#define FS_EXCL     64u   /* with FS_CREATE: ERR_ALREADY_EXISTS if it is there */
+#define FS_FLAGS    127u  /* all of them: any other bit is ERR_INVALID_ARGS */
+#define FS_NAME_MAX 766   /* a name in a directory, with its NUL (fs.idl's NAME_LEN + 1) */
 #define FS_CALL_TIMEOUT (60 * NS_PER_S)
 
 #define NS_NAME_MAX    16  /* an entry's path with its NUL: "/data", "/svc/devmgr-ctl" */
 #define NS_MAX_MOUNTS  8   /* mounts in one namespace */
-#define NS_MAX_SVCS    16  /* services in one namespace */
+/* Services in one namespace: init publishes 16 and volumes' one more (at
+ * 16 it was refused). NS_MAX_ENTRIES is at most 32: an ns_msg's
+ * `connect` is a 32-bit mask, a bit per entry. */
+#define NS_MAX_SVCS    24
 #define NS_MAX_ENTRIES (NS_MAX_MOUNTS + NS_MAX_SVCS)   /* entries in one ns_msg */
+_Static_assert(NS_MAX_ENTRIES <= 32, "an ns_msg's connect mask has 32 bits");
 #define NS_FIRST_WAIT  (5 * NS_PER_S)
 #define NS_MOUNT       1u
 #define NS_UNMOUNT     2u
@@ -319,6 +328,8 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 #define SVC_MUSIC      "music"       /* the music player, a channel per opener (music.idl) */
 #define SVC_DEVMGR     "devmgr"      /* devmgr's queries, a channel per opener (<devmgr.h>) */
 #define SVC_DEVMGR_CTL "devmgr-ctl"  /* devmgr's control channel: tests only */
+#define SVC_VOLUMES    "volumes"     /* volumes: the disks and their mounts, a channel per
+                                      * opener (<volumes.h>): tests only */
 #define SVC_INIT       "init"        /* init's control channel (initctl.idl): tests only */
 #define SVC_LOGD       "logd"        /* logd's control channel, a channel per opener (logctl.idl) */
 #define SVC_NET        "net"         /* netstack: UDP sockets and ping, a channel per opener (net.idl) */
@@ -380,12 +391,12 @@ status_t ns_svc_remove(const char *name);
  * send (each waits at most NS_VIEW_WAIT). */
 #define NS_VIEW_WAIT (2 * NS_PER_S)
 
-/* For fs services: a path inside a mount (fs.idl's 256-byte field, which
- * must hold a NUL) as the names it walks, joined by '/' with none leading
- * or trailing ("" for the mount's root): "/a/./b/../c" is "a/c", and ".."
- * at the root stays there. out has FS_PATH_MAX bytes. ERR_INVALID_ARGS: no
- * NUL in the field. */
-status_t fs_path_clean(const uint8_t path[FS_PATH_MAX], char out[FS_PATH_MAX]);
+/* For fs services: a path inside a mount (fs.idl's str: len bytes, no NUL)
+ * as the names it walks, joined by '/' with none leading or trailing (""
+ * for the mount's root): "/a/./b/../c" is "a/c", and ".." at the root
+ * stays there. out has room for len + 1 bytes (the result, NUL-terminated,
+ * is never longer). ERR_INVALID_ARGS: a NUL in the path. */
+status_t fs_path_clean(const char *path, uint32_t len, char *out);
 
 struct jfile {
     handle_t ch;          /* the file protocol channel */
@@ -397,9 +408,11 @@ struct jfile {
 };
 
 struct fs_entry {
-    char     name[FS_PATH_MAX];   /* NUL-terminated */
+    char     name[FS_NAME_MAX];   /* NUL-terminated */
     bool     is_dir;              /* a directory */
     uint64_t size;                /* bytes; 0 for a directory */
+    uint64_t mtime;               /* Unix seconds; 0 if unknown */
+    uint64_t id;                  /* fs.stat's id (fs.idl) */
 };
 
 /* Open a file (FS_* flags), not a directory. *out is ours until file_close. */
@@ -429,11 +442,15 @@ status_t file_adopt(handle_t ch, handle_t buf, uint32_t flags, struct jfile *out
  * (Unix seconds; 0 if unknown). Any of the outputs may be NULL. */
 status_t fs_stat(const char *path, uint64_t *size, bool *is_dir, uint64_t *mtime);
 /* Entry `index` of directory `path` ("." and ".." left out); past the last:
- * ERR_NOT_FOUND. */
+ * ERR_NOT_FOUND. The service answers entries in batches (fs.readdir): a
+ * listing asked in order (0, 1, 2, ...) costs a call per batch (libos keeps
+ * the last batch it was given); index 0 always asks afresh. */
 status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out);
 status_t fs_mkdir(const char *path);
+/* Remove a file, or an empty directory (C's remove()). */
 status_t fs_unlink(const char *path);
-/* Both on one mount, else ERR_NOT_SUPPORTED. */
+/* Both on one mount, else ERR_NOT_SUPPORTED. Something at `to`:
+ * ERR_ALREADY_EXISTS. */
 status_t fs_rename(const char *from, const char *to);
 /* Everything written to the mount holding path is on its medium. */
 status_t fs_sync(const char *path);

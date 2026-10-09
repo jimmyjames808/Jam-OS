@@ -172,6 +172,8 @@ struct music_start_rep {
 
 #define MUSIC_REQ_MAX 8203u   /* bytes: the biggest request */
 #define MUSIC_REP_MAX 8493u   /* bytes: the biggest reply */
+#define MUSIC_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define MUSIC_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1242,8 +1244,8 @@ static inline status_t music_reply_next(struct idl_txn idl_txn, status_t idl_st)
 /* Answer the music.status request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t music_reply_status(struct idl_txn idl_txn, status_t idl_st, uint8_t playing, uint32_t tracks, uint32_t bad, uint32_t started, uint64_t elapsed_ms, uint64_t length_ms, int32_t volume, const char *folder, uint32_t folder_len, const char *path, uint32_t path_len, const char *title, uint32_t title_len, const char *note, uint32_t note_len)
 {
     uint8_t *idl_b0 = (uint8_t *)drv_malloc(8493);
@@ -1443,7 +1445,7 @@ static inline status_t music_reply_start(struct idl_txn idl_txn, status_t idl_st
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (MUSIC_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (MUSIC_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1784,7 +1786,7 @@ static inline status_t music_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by music_take_slot, or found there by a
  * successor), which came on ch: as music_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (MUSIC_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
