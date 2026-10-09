@@ -5,7 +5,6 @@
 #pragma once
 
 #include <stdint.h>
-#include <idl/serve.h>   /* SERVE_NAME_MAX: a name's bytes */
 #include <os.h>
 
 #define SERVE_PORT_DEFAULT 8080u
@@ -14,6 +13,7 @@
 #define SERVE_SHARES       4u                   /* files served at once, each on its port */
 #define SERVE_CLIENTS      24u                  /* connections at once, all files together */
 #define SERVE_PER_SHARE    16u                  /* ... of them one file's */
+#define SERVE_NAME_MAX     128u                 /* a name's bytes with its NUL (serve.idl's) */
 #define SERVE_GIVE_WAIT    (5 * NS_PER_S)       /* for the file on `give` */
 #define SERVE_GIVE_MAGIC   0x45565253u          /* "SRVE" */
 

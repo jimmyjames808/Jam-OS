@@ -79,14 +79,13 @@ void serve_log(const char *fmt, ...)
 
 /* ---- the control channels ------------------------------------------------------------ */
 
-static status_t on_share(void *ctx, uint16_t port, const char *name, uint32_t name_len,
-                         handle_t *out_give)
+static status_t on_share(void *ctx, uint16_t port, const uint8_t name[128], handle_t *out_give)
 {
     (void)ctx;
     if (port < SERVE_PORT_MIN)
         return ERR_OUT_OF_RANGE;
-    if (!name_len)
-        return ERR_INVALID_ARGS;   /* the rest (length, text) the generated server checked */
+    if (!name[0] || strnlen((const char *)name, SERVE_NAME_MAX) == SERVE_NAME_MAX)
+        return ERR_INVALID_ARGS;
     int free_slot = -1;
     for (unsigned i = 0; i < SERVE_SHARES; i++) {
         if (shares[i].state != S_FREE && shares[i].port == port)
@@ -96,12 +95,11 @@ static status_t on_share(void *ctx, uint16_t port, const char *name, uint32_t na
     }
     if (free_slot < 0)
         return ERR_NO_RESOURCES;
-    return share_giving((unsigned)free_slot, port, name, name_len, out_give);
+    return share_giving((unsigned)free_slot, port, (const char *)name, out_give);
 }
 
-static status_t on_info(void *ctx, uint32_t index, uint16_t *port, char *name,
-                        uint32_t *name_len, uint64_t *size, uint32_t *nclients,
-                        uint64_t *requests, uint64_t *bytes)
+static status_t on_info(void *ctx, uint32_t index, uint16_t *port, uint8_t name[128],
+                        uint64_t *size, uint32_t *nclients, uint64_t *requests, uint64_t *bytes)
 {
     (void)ctx;
     for (unsigned i = 0; i < SERVE_SHARES; i++) {
@@ -109,8 +107,7 @@ static status_t on_info(void *ctx, uint32_t index, uint16_t *port, char *name,
         if (sh->state != S_SERVING || index--)
             continue;
         *port = sh->port;
-        *name_len = (uint32_t)strnlen(sh->name, SERVE_NAME_MAX);
-        memcpy(name, sh->name, *name_len);
+        memcpy(name, sh->name, SERVE_NAME_MAX);
         *size = sh->size;
         *nclients = sh->clients;
         *requests = sh->requests;

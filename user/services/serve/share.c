@@ -36,8 +36,7 @@ static void share_free(struct share *sh)
     memset(sh, 0, sizeof(*sh));
 }
 
-status_t share_giving(unsigned i, uint16_t port, const char *name, uint32_t name_len,
-                      handle_t *out_give)
+status_t share_giving(unsigned i, uint16_t port, const char *name, handle_t *out_give)
 {
     struct share *sh = &shares[i];
     handle_t theirs;
@@ -56,7 +55,7 @@ status_t share_giving(unsigned i, uint16_t port, const char *name, uint32_t name
     }
     sh->state = S_GIVING;
     sh->port = port;
-    memcpy(sh->name, name, name_len);   /* name_len <= SERVE_NAME_MAX; sh->name was zeroed */
+    memcpy(sh->name, name, strnlen(name, SERVE_NAME_MAX - 1));
     sh->type = http_content_type(sh->name);
     sh->give_until = now() + SERVE_GIVE_WAIT;
     *out_give = theirs;
