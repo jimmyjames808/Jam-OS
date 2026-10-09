@@ -33,6 +33,13 @@ const TINT_BLACKCURRANT 0
 const TINT_RASPBERRY    1
 const TINT_APRICOT      2
 
+# notify_wait's button when the notice was not pressed but pushed off the
+# screen: its card had buttons, and newer cards (from this channel or
+# others) took its place (at most five cards show; one with buttons goes
+# only when all five have). Never a real button (they are 0 to 2). The
+# notice is gone: whoever waited for an answer should act as for "Later".
+const DISMISSED         255
+
 # A notice on the desktop: a frosted card in the top right (docs/G1-PLAN.md
 # "The look"). `title` (not empty) and `body` (one line, "" for none) are
 # cut short on the card to fit. Up to three buttons: `button1` .. `button3`
@@ -41,12 +48,14 @@ const TINT_APRICOT      2
 # pressed, which is told to this channel (notify_wait); then the card goes.
 # Answers the notice's id (never 0). At most 3 cards with buttons from a
 # channel at once (and five cards on the screen: a new one pushes out the
-# oldest without buttons): ERR_NO_RESOURCES. ERR_NOT_SUPPORTED: the
-# compositor runs without a desktop (`nodesk`). A channel that closes
-# takes its cards with buttons with it.
+# oldest without buttons, else the oldest, and a pushed-out card's poster
+# is told: notify_wait answers its id with DISMISSED): ERR_NO_RESOURCES.
+# ERR_NOT_SUPPORTED: the compositor runs without a desktop (`nodesk`). A
+# channel that closes takes its cards with buttons with it.
 1  notify       (str[<=63] title, str[<=95] body, u8 icon, u8 tint, str[<=23] button1, str[<=23] button2, str[<=23] button3) -> (u32 id)
 # Answered when a button of a notice posted on this channel was pressed:
-# the notice's id and the button (0 the first). Presses not yet taken are
+# the notice's id and the button (0 the first; DISMISSED when its card was
+# pushed off the screen unpressed). Answers not yet taken are
 # kept, at most 4 (older ones are dropped: said in the log), and answered
 # at once in the order they came. One call waits per channel: a second
 # while one waits is ERR_BAD_STATE.

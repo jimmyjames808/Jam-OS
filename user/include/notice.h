@@ -14,13 +14,27 @@
  * route to its caller.) A notice that can't go is said once in the log
  * and forgotten: notices are news, not state. No buttons: a poster that
  * wants an answer calls notify.notify and notify_wait itself (the shell's
- * `notify`, init's notices). */
+ * `notify`, init's notices), and treats NOTICE_DISMISSED as a button that
+ * means "not now": its card was pushed off the screen by newer ones. */
 #pragma once
 
 #include <stdint.h>
 #include <os.h>
 
 #define NOTICE_CONNECT_WAIT (200 * NS_PER_MS)
+
+/* The "button" notify_wait answers for a card with buttons that was pushed
+ * off the screen unpressed (notify.idl's DISMISSED; never a real button).
+ * A caller that acts on a press (init's Reboot) must not take it for one;
+ * notice_pressed tells. */
+#define NOTICE_DISMISSED 255
+
+/* Was the button notify_wait answered a press of one of the card's buttons
+ * (not the card being dismissed)? */
+static inline bool notice_pressed(uint8_t button)
+{
+    return button != NOTICE_DISMISSED;
+}
 
 /* Tints of the notice's tile (notify.idl's TINT_*). */
 enum { NOTICE_BLACKCURRANT, NOTICE_RASPBERRY, NOTICE_APRICOT };

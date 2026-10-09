@@ -34,6 +34,11 @@
  * they show in the order they came, their 5 s counted from then; at most
  * NOTIFY_MAX held, the oldest plain one dropped; with no splash a notice
  * shows at once, and nothing wakes the loop while one is held.
+ * t_desk_notify_dismissed: a card with buttons pushed off the screen by
+ * newer ones (all NOTIFY_MAX with buttons: the oldest goes), shown or held
+ * through a splash, is answered to its poster as NOTIFY_DISMISSED (review
+ * C11/DQ3); a plain card pushed out, a card pressed or withdrawn first, and
+ * one that is not pushed out are not.
  * t_desk_overlay: a full-screen window whose client takes no keys (the
  * boot splash's) is a boot overlay: no screen of its own (nor a dot), on
  * none (no chip, no Alt+Tab row, never cycled to), over all of the output
@@ -50,6 +55,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <idl/notify.h>
 #include <keymap.h>
 #include "compwm.h"
 #include "utest.h"
@@ -643,6 +649,75 @@ bool t_desk_notify_held(void)
     }
     comp.splash_until = 0;
     anim_init(false);
+    fk_close_all();
+    return ok;
+}
+
+/* A card with buttons pushed out is told so; nothing else is. */
+static bool dismissed_steps(void)
+{
+    uint32_t base = fdesk.nanswered;
+    /* plain ones go first: nobody is told while there is one to push out */
+    uint32_t b1 = post("B1", 2);
+    uint32_t plain = post("Plain", 0);
+    for (unsigned i = 0; i < NOTIFY_MAX - 1; i++)
+        (void)post("More", 0);
+    CHECK(!notify_live(plain) && notify_live(b1));
+    CHECK_EQ(fdesk.nanswered, base);
+    /* withdrawn, it leaves unanswered (animations are off: at once) */
+    notify_card_withdraw(b1);
+    CHECK(!notify_live(b1));
+    CHECK_EQ(fdesk.nanswered, base);
+    while (notes.n)
+        notify_card_withdraw(notes.cards[0].id);
+    /* five cards, all with buttons: a sixth pushes out the oldest, which
+     * is told; the next, the next */
+    uint32_t ids[NOTIFY_MAX + 1];
+    for (unsigned i = 0; i < NOTIFY_MAX; i++)
+        CHECK((ids[i] = post("Buttons", 1 + i % 2)) != 0);
+    CHECK_EQ(notes.n, NOTIFY_MAX);
+    CHECK_EQ(fdesk.nanswered, base);
+    ids[NOTIFY_MAX] = post("One more", 1);
+    CHECK_EQ(notes.n, NOTIFY_MAX);
+    CHECK(!notify_live(ids[0]) && notify_live(ids[1]) && notify_live(ids[NOTIFY_MAX]));
+    CHECK_EQ(fdesk.nanswered, base + 1);
+    CHECK(fdesk.answered_id == ids[0] && fdesk.answered_button == NOTIFY_DISMISSED);
+    (void)post("Yet one more", 2);
+    CHECK(!notify_live(ids[1]));
+    CHECK_EQ(fdesk.nanswered, base + 2);
+    CHECK(fdesk.answered_id == ids[1] && fdesk.answered_button == NOTIFY_DISMISSED);
+    return true;
+}
+
+/* The same through a splash: the held ones are cut to NOTIFY_MAX. */
+static bool dismissed_held_steps(void)
+{
+    uint32_t base = fdesk.nanswered;
+    comp.splash_until = now() + 5 * NS_PER_S;
+    uint32_t first = post("Held 1", 1);
+    for (unsigned i = 1; i < NOTIFY_MAX; i++)
+        (void)post("Held", 1);
+    CHECK_EQ(notes.nheld, NOTIFY_MAX);
+    CHECK_EQ(fdesk.nanswered, base);
+    (void)post("Held more", 1);   /* every held one has buttons: the oldest goes, told */
+    CHECK_EQ(notes.nheld, NOTIFY_MAX);
+    CHECK(!notify_live(first));
+    CHECK_EQ(fdesk.nanswered, base + 1);
+    CHECK(fdesk.answered_id == first && fdesk.answered_button == NOTIFY_DISMISSED);
+    comp.splash_until = 0;
+    return true;
+}
+
+bool t_desk_notify_dismissed(void)
+{
+    desk_test_start(COMP_FLOATING);
+    bool ok = dismissed_steps();
+    fk_close_all();
+    if (ok) {
+        desk_test_start(COMP_FLOATING);
+        ok = dismissed_held_steps();
+    }
+    comp.splash_until = 0;
     fk_close_all();
     return ok;
 }

@@ -5,6 +5,7 @@
  * card away). Without -w the shell's own channel posts it (svc_get's: its
  * cards stay up while the shell runs). */
 #include <idl/notify.h>
+#include <notice.h>
 #include "sh.h"
 
 #define CALL_WAIT (2 * NS_PER_S)
@@ -126,6 +127,9 @@ SH_CMD(notify)
     jam_handle_close(ch);   /* its card goes with it, if still up */
     if (b < 0)
         return 1;
-    sh_say("notify: notice %u: %s\n", id, b < (int)nb ? label[b] : "?");
+    if (!notice_pressed((uint8_t)b))
+        sh_say("notify: notice %u: dismissed (pushed off the screen)\n", id);
+    else
+        sh_say("notify: notice %u: %s\n", id, b < (int)nb ? label[b] : "?");
     return 0;
 }

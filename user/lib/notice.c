@@ -3,6 +3,8 @@
 #include <idl/svc.h>
 #include <notice.h>
 
+_Static_assert(NOTICE_DISMISSED == NOTIFY_DISMISSED, "notice.h follows notify.idl");
+
 void notice_init(struct notice_box *b, handle_t svc)
 {
     *b = (struct notice_box){ .svc = svc };
