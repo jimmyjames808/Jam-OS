@@ -63,11 +63,12 @@ static void lat_high(void *arg)
     spin_unlock_irqrestore(&lat_lock, f);
 }
 
-/* Returns the worst wake-to-run latency in microseconds. */
-static uint64_t lat_measure(uint32_t high_cpu, uint32_t waker_cpu, int rounds)
+/* Returns how many of the rounds took 2 ms or more from wake to run (*worst_us: the worst). */
+static unsigned lat_measure(uint32_t high_cpu, uint32_t waker_cpu, int rounds, uint64_t *worst_us)
 {
     kt_pin_self(waker_cpu);
     uint64_t worst = 0, sum = 0;
+    unsigned slow = 0;
     for (int i = 0; i < rounds; i++) {
         thread_sleep_ms(3);   /* the high thread is blocked again */
         uint64_t seq = lat_ran_seq;
@@ -83,13 +84,16 @@ static uint64_t lat_measure(uint32_t high_cpu, uint32_t waker_cpu, int rounds)
         KT_ASSERT(lat_ran_seq != seq);
         uint64_t us = (lat_ran_tsc - t0) / (tsc_hz / 1000000);
         sum += us;
+        if (us >= 2000)
+            slow++;
         if (us > worst)
             worst = us;
     }
     kprintf("repro: high-prio thread on cpu %u woken from cpu %u: worst %lu us, avg %lu us\n",
             high_cpu, waker_cpu, worst, sum / rounds);
     (void)high_cpu;
-    return worst;
+    *worst_us = worst;
+    return slow;
 }
 
 KTEST(repro_local_wake_latency)
@@ -102,8 +106,9 @@ KTEST(repro_local_wake_latency)
     cpumask_one(&m, 1);
     struct thread *h = thread_create_on("repro-high", lat_high, NULL, 28, &m);
     thread_set_priority(current_thread(), PRIO_DEFAULT);
-    uint64_t remote = lat_measure(1, 2, 20);   /* IPI path */
-    uint64_t local = lat_measure(1, 1, 20);    /* same CPU: no IPI */
+    uint64_t worst;
+    unsigned remote = lat_measure(1, 2, 20, &worst);   /* IPI path */
+    unsigned local = lat_measure(1, 1, 20, &worst);    /* same CPU: no IPI */
     uint64_t f = spin_lock_irqsave(&lat_lock);
     lat_stop = 1;
     spin_unlock_irqrestore(&lat_lock, f);
@@ -114,8 +119,11 @@ KTEST(repro_local_wake_latency)
     /* spin_unlock_irqrestore re-checks need_resched once interrupts are
      * back on, so a higher-priority thread woken on the waker's own CPU
      * runs almost immediately instead of waiting up to a whole tick (10 ms,
-     * which is what this measures without that check). */
-    KT_IDLE_ASSERT(local < 2000);   /* a latency: idle only */
+     * which is what this measures without that check). Without it every
+     * round waits a share of a tick (most of them over 2 ms); a vCPU the
+     * host keeps off its core for a few ms (a loaded PC under KVM: a worst
+     * of 8.9 ms, the average 0.5 ms) spoils a round or two, not most. */
+    KT_IDLE_ASSERT(local <= 4);   /* a latency: idle only; at most 4 of 20 rounds over 2 ms */
 }
 
 /* ---- 2. finish_switch reads prev->state after releasing it ---------------- */
