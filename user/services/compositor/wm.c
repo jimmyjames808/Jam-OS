@@ -120,6 +120,7 @@ struct wm_window *wm_create(struct comp_surface *s, const struct wm_ops *ops, vo
 void wm_destroy(struct wm_window *ww)
 {
     wm_unmap(ww);
+    alttab_forget(ww);   /* a list open while Alt is held may show it */
     if (ww->prev)
         ww->prev->next = ww->next;
     else

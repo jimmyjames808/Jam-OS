@@ -346,6 +346,9 @@ extern struct alttab_state alttab;
 void     alttab_step(bool back);
 /* Alt let go (go: to the selected window) or Esc (not). */
 void     alttab_end(bool go);
+/* ww is going (wm_destroy): its row leaves the list, the selection
+ * following; a list left empty ends. */
+void     alttab_forget(const struct wm_window *ww);
 struct comp_box alttab_box(void);
 struct comp_box alttab_row_box(unsigned i);   /* empty: scrolled out */
 bool     alttab_press(int32_t x, int32_t y);

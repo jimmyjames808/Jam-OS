@@ -648,6 +648,7 @@ bool t_desk_strip(void);
 bool t_desk_anim(void);
 bool t_desk_cursors(void);
 bool t_desk_alttab(void);
+bool t_desk_alttab_gone(void);
 bool t_desk_search(void);
 bool t_desk_popover(void);
 bool t_desk_notify(void);

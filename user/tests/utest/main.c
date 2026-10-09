@@ -1010,6 +1010,7 @@ static const struct {
     { "desk_anim", t_desk_anim },
     { "desk_cursors", t_desk_cursors },
     { "desk_alttab", t_desk_alttab },
+    { "desk_alttab_gone", t_desk_alttab_gone },
     { "desk_search", t_desk_search },
     { "desk_popover", t_desk_popover },
     { "desk_notify", t_desk_notify },

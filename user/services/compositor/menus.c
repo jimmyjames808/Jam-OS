@@ -304,6 +304,30 @@ void alttab_end(bool go)
         screens_activate(ww);
 }
 
+void alttab_forget(const struct wm_window *ww)
+{
+    for (unsigned i = 0; alttab.active && i < alttab.n;) {
+        if (alttab.rows[i].ww != ww) {
+            i++;
+            continue;
+        }
+        if (alttab.shown)
+            desk_damage(alttab_box());   /* the list as it was: it shrinks */
+        struct alttab_row gone = alttab.rows[i];
+        memmove(&alttab.rows[i], &alttab.rows[i + 1], (alttab.n - i - 1) * sizeof(alttab.rows[0]));
+        alttab.n--;
+        /* its group's divider goes to the next row of the group, if any */
+        if (gone.first && i < alttab.n && alttab.rows[i].group == gone.group)
+            alttab.rows[i].first = true;
+        if (alttab.n)
+            alttab.rows[0].first = false;   /* the list's first row has none */
+        if (alttab.sel > i || (alttab.sel == i && i == alttab.n && i > 0))
+            alttab.sel--;
+        if (!alttab.n)
+            alttab.active = alttab.shown = false;
+    }
+}
+
 /* Row i's top within the list (its group's divider and label before it). */
 static int32_t row_y(unsigned i)
 {
