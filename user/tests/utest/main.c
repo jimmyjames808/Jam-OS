@@ -1075,6 +1075,7 @@ static const struct {
     { "comp_screen_on_top", t_comp_screen_on_top },
     { "wm_seat", t_wm_seat },
     { "wm_seat_cursors", t_wm_seat_cursors },
+    { "wm_seat_overlay_keys", t_wm_seat_overlay_keys },
     { "termkeys", t_termkeys },
     { "comp_paint_overlap", t_comp_paint_overlap },
     { "comp_paint_cull", t_comp_paint_cull },

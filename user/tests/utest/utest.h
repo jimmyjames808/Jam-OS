@@ -659,6 +659,7 @@ bool t_desk_overlay(void);
  * Super+Q, Super+F, Super+T on an xdg toplevel. */
 bool t_wm_seat(void);
 bool t_wm_seat_cursors(void);
+bool t_wm_seat_overlay_keys(void);
 bool t_xdg_toplevel(void);
 bool t_xdg_tiling(void);
 bool t_xdg_tile_resize(void);

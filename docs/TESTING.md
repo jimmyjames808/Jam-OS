@@ -1338,7 +1338,9 @@ With the real seat (`user/tests/utest/compwmseat.c`, bin/compositor
 headless), `wm_seat_cursors` checks the cursor drawn over a window's edges,
 corner and circles, and pixel for pixel over its surface, and a client
 asking for the text bar and the hand through wp-cursor-shape-v1 (a stale
-serial ignored, a shape there isn't an error). The other compositor tests
+serial ignored, a shape there isn't an error); `wm_seat_overlay_keys` a
+boot overlay whose client binds a keyboard after it mapped: a click on it
+reaches it, the keys stay where they were (M12.1 review C3). The other compositor tests
 that start it headless pass `nodesk` (`comptest.h`): the window manager
 alone, the whole output the windows'; `comp_screen_on_top` runs both ways
 (a boot overlay over a window that takes the keys: a click where the strip
