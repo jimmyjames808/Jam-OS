@@ -44,9 +44,10 @@
  * sends volumes the call (volumes_<method>_send) and answers the shell
  * when volumes' answer comes to the loop, or at its deadline (`laters`).
  * The answers come to the shell's channel's port key, as does a timer at
- * the earliest deadline, so ctl_serve takes them first. (The kill of a
- * name volumes doesn't know, and of everything devmgr runs, still waits
- * for devmgr: M12's track D.)
+ * the earliest deadline, so ctl_serve takes them first. The kill of a name
+ * volumes doesn't know, or that is no service of init's, goes to devmgr
+ * the same way (devmgrctl.kill_process, dm.c: devmgr's answer comes to
+ * the loop under its own key, KEY_DEVMGR, and finishes the request).
  *
  * shell_ready (the shell, once it is up) lets the boot splash give the
  * screen back (splash.c). kernel_load (the shell's `kernel load`) makes
@@ -98,25 +99,12 @@ static bool koid_named(const char *name, uint64_t *koid)
     return found;
 }
 
-/* Kill the process called name if devmgr runs it: a PCI function's
- * driver ("hda"), or for a USB device a class driver ("hid-6.1:0",
- * "usb-storage-1:0"). The kernel's process list says which process has the
- * name; devmgr finds it among its drivers (devmgrctl.kill_process).
- * (volumes' filesystem services are volumes.kill's: later_kill.) */
-static status_t kill_devmgr_process(const char *name, uint64_t *koid)
-{
-    handle_t dm = shell_devmgr();
-    if (!dm || !koid_named(name, koid))
-        return ERR_NOT_FOUND;
-    return devmgrctl_kill_process_until(dm, now() + KILL_WAIT, *koid);
-}
-
 /* ---- answered later: what waits for volumes -------------------------------------- */
 
-enum later_kind { LATER_KILL, LATER_SYNC, LATER_MOUNT };
+enum later_kind { LATER_KILL, LATER_SYNC, LATER_MOUNT, LATER_DEVMGR_KILL };
 
 /* A request of ours (initctl's) waiting for volumes' answer to the call it
- * made. */
+ * made (or devmgr's, for LATER_DEVMGR_KILL: dm.c reads that one). */
 struct later {
     bool            used;
     enum later_kind kind;
@@ -124,6 +112,7 @@ struct later {
     handle_t        vm;               /* the volumes channel the call went on (not ours) */
     uint32_t        txid;             /* the call's, on vm */
     uint64_t        t0, deadline;     /* sent; given up then */
+    uint64_t        koid;             /* LATER_DEVMGR_KILL: the process asked to be killed */
     char            what[NAME_MAX];   /* the name or path, for the log */
     uint8_t         writable;         /* LATER_MOUNT's */
 };
@@ -136,7 +125,7 @@ static uint64_t     later_key;        /* the port key the answers and the timer 
 /* l is over: answered (st, koid), said in the log as the request was. */
 static void later_finish(struct later *l, status_t st, uint64_t koid)
 {
-    if (l->kind == LATER_KILL) {
+    if (l->kind == LATER_KILL || l->kind == LATER_DEVMGR_KILL) {
         printf("init: kill %s: %s\n", l->what, status_str(st));
         (void)initctl_reply_kill(l->txn, st, koid);
     } else if (l->kind == LATER_SYNC) {
@@ -150,6 +139,35 @@ static void later_finish(struct later *l, status_t st, uint64_t koid)
     *l = (struct later){ 0 };
 }
 
+/* devmgr's answer to the kill l asked it for (dm.c): the request is answered. */
+static void devmgr_kill_done(void *arg, status_t st, const struct dm_counts *counts)
+{
+    struct later *l = arg;
+    (void)counts;
+    later_finish(l, st, st == OK ? l->koid : 0);
+}
+
+/* Ask devmgr to kill the process called l->what, if it runs one: the
+ * kernel's process list says which process has the name, devmgr finds the
+ * driver of it (devmgrctl.kill_process, answered to the loop: dm.c). l is
+ * then waiting for devmgr, not volumes. ERR_NOT_FOUND: no devmgr, or no
+ * such process (l is as it was). */
+static status_t later_devmgr_kill(struct later *l)
+{
+    handle_t dm = shell_devmgr();
+    uint64_t koid;
+    if (!dm || !koid_named(l->what, &koid))
+        return ERR_NOT_FOUND;
+    status_t st = dm_kill_process(dm, koid, KILL_WAIT, devmgr_kill_done, l);
+    if (st != OK)
+        return st == ERR_NO_RESOURCES ? st : ERR_NOT_FOUND;
+    l->kind = LATER_DEVMGR_KILL;
+    l->vm = HANDLE_INVALID;
+    l->koid = koid;
+    l->deadline = DEADLINE_NEVER;   /* dm.c times the call out */
+    return OK;
+}
+
 /* volumes' answer to l (rep, m) has come. */
 static void later_answer(struct later *l, const void *rep, struct idl_msg *m)
 {
@@ -157,8 +175,8 @@ static void later_answer(struct later *l, const void *rep, struct idl_msg *m)
     status_t st;
     if (l->kind == LATER_KILL) {
         st = volumes_kill_result(rep, m, &koid);
-        if (st == ERR_NOT_FOUND || st == ERR_INVALID_ARGS)
-            st = kill_devmgr_process(l->what, &koid);   /* not volumes': devmgr's, maybe */
+        if ((st == ERR_NOT_FOUND || st == ERR_INVALID_ARGS) && later_devmgr_kill(l) == OK)
+            return;   /* not volumes': devmgr's, maybe; its answer finishes l */
     } else if (l->kind == LATER_SYNC) {
         st = volumes_sync_result(rep, m);
     } else {
@@ -177,6 +195,8 @@ static void later_arm(void)
         struct later *l = &laters[i];
         if (!l->used)
             continue;
+        if (l->kind == LATER_DEVMGR_KILL)
+            continue;   /* dm.c's: it watches devmgr's channel and times the call out */
         first = l->deadline < first ? l->deadline : first;
         (void)jam_port_unbind(ctl_port, l->vm, later_key);   /* none: nothing to undo */
         (void)jam_port_bind(ctl_port, l->vm, later_key, SIG_READABLE | SIG_PEER_CLOSED,
@@ -226,7 +246,7 @@ static void later_poll(void)
         struct later *l = &laters[i];
         if (l->used && t >= l->deadline)
             later_finish(l, ERR_TIMED_OUT, 0);
-        else if (l->used && l->vm != shell_volumes())
+        else if (l->used && l->kind != LATER_DEVMGR_KILL && l->vm != shell_volumes())
             later_finish(l, ERR_PEER_CLOSED, 0);   /* volumes was started again meanwhile */
     }
     later_arm();
@@ -283,6 +303,24 @@ static status_t later_kill(struct idl_txn txn, const char *name)
     return later_sent(l, volumes_kill_send(vm, l->txid, name, (uint32_t)strlen(name)));
 }
 
+/* The kill of a name that is neither init's service nor a filesystem
+ * service: devmgr's driver, maybe, answered later (later_devmgr_kill).
+ * IDL_LATER, or why not (ERR_NOT_FOUND: devmgr runs no process called
+ * name). */
+static status_t later_devmgr_name(struct idl_txn txn, const char *name)
+{
+    struct later *l = later_new(LATER_KILL, txn, HANDLE_INVALID, name, KILL_WAIT);
+    if (!l)
+        return ERR_NO_RESOURCES;
+    status_t st = later_devmgr_kill(l);
+    if (st != OK) {
+        jam_handle_close(l->txn.ch);
+        *l = (struct later){ 0 };
+        return st;
+    }
+    return IDL_LATER;
+}
+
 /* ---- the protocol ---------------------------------------------------------------- */
 
 static status_t op_kill(void *ctx, struct idl_txn txn, const uint8_t name[32],
@@ -308,8 +346,11 @@ static status_t op_kill(void *ctx, struct idl_txn txn, const uint8_t name[32],
         if (st != ERR_NO_RESOURCES)
             st = ERR_NOT_FOUND;   /* volumes can't be asked: devmgr's, as any other name */
     }
-    if (st == ERR_NOT_FOUND)
-        st = kill_devmgr_process(who, out_koid);
+    if (st == ERR_NOT_FOUND) {
+        st = later_devmgr_name(txn, who);   /* a driver of devmgr's, answered later */
+        if (st == IDL_LATER)
+            return st;
+    }
     printf("init: kill %s: %s\n", who, status_str(st));
     return st;
 }
