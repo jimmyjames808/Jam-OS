@@ -9,8 +9,9 @@
  *   - eventfd: the counter, the semaphore mode, EAGAIN, a read woken by
  *     another thread's write;
  *   - the one user's ids;
- *   - /dev and /etc through a hand-over (a child given /dev/zero,
- *     /dev/full, /dev/urandom and /etc/passwd as descriptors), and through
+ *   - the hand-over's kinds: a child given /dev/zero, /dev/full,
+ *     /dev/urandom, /etc/passwd, a pipe with a leftover, an eventfd and a
+ *     memfd as descriptors; /dev and /etc through
  *     open, getpwnam and shm_open once open is built. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -176,18 +177,68 @@ int pt_child_devetc(void)
     struct stat st;
     CHECK(fstat(3, &st) == 0 && S_ISCHR(st.st_mode));
     CHECK(fstat(6, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == n);
+    CHECK(read(7, buf, 2) == 2 && !memcmp(buf, "le", 2));     /* the leftover first */
+    CHECK(read(7, buf, sizeof(buf)) == 2 && !memcmp(buf, "ft", 2));
+    CHECK(read(7, buf, sizeof(buf)) == 4 && !memcmp(buf, "over", 4));
+    CHECK(read(7, buf, sizeof(buf)) == 0);                     /* the writer closed */
+    eventfd_t v;
+    CHECK(eventfd_read(8, &v) == 0 && v == 5);                 /* the counter, copied */
+    CHECK(pread(9, buf, sizeof(buf), 0) == 6 && !memcmp(buf, "memfd!", 6));
+    CHECK(lseek(9, 0, SEEK_CUR) == 2 && fstat(9, &st) == 0 && st.st_size == 6);
     return pt_failures() ? 1 : 0;
+}
+
+/* The hand-over's data for an eventfd and a memfd, as the layer writes
+ * it (user/posix/sys/eventfd.c, memfd.c). */
+struct efd_wire {
+    uint64_t count;
+    uint32_t sem, reserved;
+};
+struct memfd_wire {
+    uint64_t size, off;
+    uint32_t seals, reserved;
+    char     name[250];
+};
+
+/* A pipe's read end with "left" read and not taken, and "over" queued
+ * behind it, its writer gone. */
+static handle_t leftover_pipe(void)
+{
+    handle_t r, w;
+    CHECK(jam_channel_create(&r, &w) == OK);
+    CHECK(jam_channel_write(w, "over", 4, NULL, 0) == OK);
+    jam_handle_close(w);
+    return r;
+}
+
+/* A kept VMO holding "memfd!". */
+static handle_t kept_vmo(void)
+{
+    handle_t v = HANDLE_INVALID;
+    CHECK(jam_vmo_create(4096, VMO_KEEP_PAGES, &v) == OK);
+    CHECK(jam_vmo_write(v, 0, "memfd!", 6) == OK);
+    return v;
 }
 
 static void check_devetc_handover(void)
 {
+    handle_t pipe_end = leftover_pipe(), ev = HANDLE_INVALID, vmo = kept_vmo();
+    CHECK(jam_event_create(&ev) == OK);
+    const struct efd_wire ew = { .count = 5 };
+    const struct memfd_wire mw = { .size = 6, .off = 2, .name = "handed" };
     const struct posixfds_desc fds[] = {
         { .fd = 3, .kind = POSIXFDS_DEV, .status = 0, .data = "zero", .data_len = 5 },
         { .fd = 4, .kind = POSIXFDS_DEV, .status = 1, .data = "full", .data_len = 5 },
         { .fd = 5, .kind = POSIXFDS_DEV, .status = 0, .data = "urandom", .data_len = 8 },
         { .fd = 6, .kind = POSIXFDS_ETC, .status = 0, .data = "/etc/passwd", .data_len = 12 },
+        { .fd = 7, .kind = POSIXFDS_PIPE, .status = 0, .data = "left", .data_len = 4,
+          .handles = &pipe_end },
+        { .fd = 8, .kind = POSIXFDS_EVENTFD, .status = 2, .data = &ew, .data_len = sizeof(ew),
+          .handles = &ev },
+        { .fd = 9, .kind = POSIXFDS_MEMFD, .status = 2, .data = &mw, .data_len = sizeof(mw),
+          .handles = &vmo },
     };
-    const struct posixfds_out ho = { .cwd = "/", .fds = fds, .nfds = 4 };
+    const struct posixfds_out ho = { .cwd = "/", .fds = fds, .nfds = 7 };
     const char *const argv[] = { "posixtest", "--child-devetc", NULL };
     struct spawn_args a = {
         .path = "bin/posixtest", .argc = 2, .argv = argv, .job = startup_handle(SR_JOB),

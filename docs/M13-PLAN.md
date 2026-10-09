@@ -1369,3 +1369,75 @@ need to know.
   `boot/init.cfg`. Its start section starts itself twice with libjam's
   `spawn`: once with a hard argv and environment, once with a
   hand-over (a pipe at 1, the null device at 0).
+
+## B2 notes
+
+Track B2 (pipes, dup, /dev and /etc) as built, with the choices the plan
+left open. The files: `user/posix/sys/kinds.h` (the kinds' header),
+pipe.c, dup.c, dev.c, etc.c, memfd.c (and memfd.h), eventfd.c and user.c.
+
+- **The stand-ins are gone.** B1's stdfd.c (its pipe, null and log
+  kinds and fcntl's four commands) is replaced: fd.c's `fd_adopters`
+  point at `pipe_adopt`, `dev_adopt`, `etc_adopt`, `memfd_adopt` and
+  `eventfd_adopt`, and the log kind and `stdfd_default` (descriptors 0 to
+  2 without a hand-over) are dev.c's.
+- **Paths.** /dev and /etc are reached through B1's path calls, which ask
+  kinds.h first: `dev_path`/`dev_open`/`dev_stat`/`dev_unlink`,
+  `etc_path`/`etc_open`/`etc_stat` (each open installs its descriptor
+  itself). Until B1's open calls them, posixtest checks those paths only
+  through a hand-over and says so. Listing /dev and /etc is not built
+  (they stat as directories). /dev/tty is ENXIO (no terminal yet: T2's)
+  and /dev/ptmx ENOENT (section 9).
+- **A pipe's leftover moves to a child** with the descriptor (A2's data
+  for the kind): the bytes are the description's, and the child is the
+  next reader in the usual case (a shell handing its input on). A
+  leftover bigger than a hand-over's data (`POSIXFDS_DATA_MAX`, 4 KiB)
+  refuses that descriptor's hand-over (ENOBUFS) rather than lose or
+  reorder bytes. A spawn that fails after asking loses them.
+- **Pipes**: `pipe2` takes `O_CLOEXEC` and `O_NONBLOCK` only (`O_DIRECT`,
+  packet mode, is EINVAL); `F_GETPIPE_SZ` is 64 KiB (a message), and
+  `F_SETPIPE_SZ` changes nothing and says 64 KiB. A message carrying
+  handles (none of ours do) has them closed. SIGPIPE is not sent until
+  signals exist (B4): EPIPE alone.
+- **socketpair** is `AF_UNIX`, `SOCK_STREAM` only (datagrams and
+  `SOCK_SEQPACKET`: EOPNOTSUPP); a handed-over end is the pipe kind with
+  `O_RDWR`, which the child takes as a socketpair end. `send`/`recv` on
+  it come with the socket calls (B6), which must route a socketpair end
+  to its read and write.
+- **fcntl**: `F_SETFL` changes `O_APPEND` and `O_NONBLOCK`; `O_ASYNC` is
+  EINVAL (no SIGIO is ever sent), `O_DIRECT` and `O_NOATIME` are ignored.
+  Record locks are checked (type, whence, the access mode) and always
+  granted, `F_GETLK` says `F_UNLCK`. `F_SETOWN` keeps nothing. Anything
+  unknown is EINVAL.
+- **memfd and shm_open** are kept VMOs (`VMO_KEEP_PAGES`). A kept VMO
+  never shrinks, so a smaller `ftruncate` keeps the pages and shrinks
+  the file in libc; growing over them again zeroes them. The size and
+  the seals are the process's own: a child starts with the parent's, and
+  each keeps its own after (they share the pages). Seals hold in this
+  process only; a process that must trust a size checks the VMO. A
+  read-only descriptor's VMO goes out without write or resize rights.
+  `shm_open`'s names are the process's own (no service holds them; at
+  most 64): another process sees an object only through a descriptor.
+  `MAP_SHARED` of a memfd: B1's mmap calls `memfd_vmo`.
+- **eventfd**: the counter is in the description (the plan's "a counter
+  in memory"), the event's user bits 24 (readable) and 25 (writable)
+  follow it, for the waits and for poll. A child gets a copy of the
+  counter and an event of its own, not the parent's: the hand-over's
+  kind has no shared memory for the counter, and a shared event over two
+  counters would say ready wrongly. Sharing it needs a VMO in the kind.
+- **The one user**: the set calls succeed for 1000 (and -1) and are
+  EPERM otherwise; `setgroups` is EPERM; `getgroups` is {1000}. musl's
+  set calls go through `__synccall`, which needs signals once the process
+  has a second thread (B4).
+- **/etc**: passwd, group, hosts (localhost, and 127.0.1.1 for `jamos`,
+  uname's nodename), services, resolv.conf (empty), shells. There is no
+  `host.name` setting yet (<settings.h>), so the name stays `jamos`.
+- **For poll (B5)**: each `fd_ops` table has a commented `.ready, .arm`
+  line. Pipe ends are ready to read with a leftover or the channel's
+  `SIG_READABLE`/`SIG_PEER_CLOSED`, to write on `SIG_WRITABLE`. Eventfd
+  uses its event's bits. /dev, /etc and memfd have none (always ready).
+- **For the review**: the layer's global names (`dev_open`,
+  `pipe_adopt`, `fd_new`, ...) share the program's namespace in libc.a:
+  a port that defines one of them fails to link. Hiding them (a prefix
+  reserved for the layer, or localizing them when libc.a is made) is a
+  question for the whole layer.
