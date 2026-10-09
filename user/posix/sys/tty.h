@@ -1,6 +1,6 @@
 /* The terminal descriptor (tty.c): a kind of the descriptor table (fd.h)
  * over the console's POSIX side (console.open_tty: the `tty` channel and
- * its two pipes; docs/M13-PLAN.md, "The terminal layer"). */
+ * its data channel; docs/M13-PLAN.md, "The terminal layer"). */
 #pragma once
 
 #include "fd.h"
@@ -15,13 +15,13 @@ long tty_open(handle_t con, uint32_t status, struct fd_desc **out);
 
 /* No hand-over, and the starter gave a console channel (SR_CONSOLE): its
  * terminal at 0 and 2, and at 1 too unless the starter gave SR_STDOUT
- * (stdfd.c's default takes 1 then). Returns the descriptors set, as bits
+ * (dev.c's stdfd_default takes 1 then). Returns the descriptors set, as bits
  * (1 << fd): 0 when there is no console or no terminal could be opened
  * (said in the log). */
 unsigned tty_stdfds(void);
 
-/* A hand-over's terminal (POSIXFDS_TTY: the tty channel, the input pipe,
- * the output pipe): fd.c's fd_adopters. */
+/* A hand-over's terminal (POSIXFDS_TTY: the tty channel, the data
+ * channel): fd.c's fd_adopters. */
 fd_adopt_fn tty_adopt;
 
 /* The process's terminal: the first terminal descriptor it got (the one

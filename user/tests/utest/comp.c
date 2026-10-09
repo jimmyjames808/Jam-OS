@@ -102,7 +102,7 @@ bool ct_start_state(struct ct_comp *p, int32_t w, int32_t h, const char *arg, ha
      * out (the 200x120 minimum and its new screens are compwm2.c's) */
     const char *argv[] = { "bin/compositor", "headless", size, "nodesk", "layout=floating",
                            "tilemin=1x1", arg };
-    struct spawn_handle x[3] = { { SR_USER + 0, server }, { SR_USER + 1, image } };
+    struct spawn_handle x[3] = { { COMP_SR_WAYLAND, server }, { COMP_SR_IMAGE, image } };
     rights_t r[3] = { RIGHT_SAME, RIGHT_SAME, SVCSTATE_SERVICE_RIGHTS };
     unsigned nx = 2;
     if (state != HANDLE_INVALID) {   /* as init gives it (comp.c's comp_handles) */

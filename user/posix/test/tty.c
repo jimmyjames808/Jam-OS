@@ -9,11 +9,12 @@
  *     client) and no hand-over, as the shell starts a program: 0 to 2 are
  *     the terminal; isatty, ttyname, tcgetattr's defaults, TIOCGWINSZ;
  *     a canonical read of a typed line (its echo shown); raw mode by
- *     tcsetattr (Ctrl+C is the byte 3); MIN 0 and TIME 2 (a read that
+ *     tcsetattr (Ctrl+C is the byte 3), poll for writing and for the
+ *     typing; MIN 0 and TIME 2 (a read that
  *     ends with nothing after 0.2 s); O_NONBLOCK's EAGAIN; canonical mode
  *     back after a drain (TCSADRAIN);
  *   - --child-tty-handover, given a terminal as descriptor 0 in a
- *     hand-over (POSIXFDS_TTY, the three handles this process got from
+ *     hand-over (POSIXFDS_TTY, the two handles this process got from
  *     console.open_tty): it writes through it.
  * Not here yet: a resize as SIGWINCH (the size event reaches libc, whose
  * signal thread is B4's: tty.h's tty_take_signals). */
@@ -23,6 +24,7 @@
 #include <fcntl.h>
 #include <idl/console.h>
 #include <jamos/libjam.h>
+#include <poll.h>
 #include <posixfds.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -87,7 +89,12 @@ static void child_raw(struct termios *saved)
     t.c_cc[VMIN] = 3;
     t.c_cc[VTIME] = 0;
     CHECK(tcsetattr(0, TCSANOW, &t) == 0);
+    struct pollfd p = { .fd = 1, .events = POLLOUT };
+    CHECK(poll(&p, 1, 1000) == 1 && (p.revents & POLLOUT));   /* the data channel has room */
+    p = (struct pollfd){ .fd = 0, .events = POLLIN };
+    CHECK(poll(&p, 1, 0) == 0);   /* nothing typed yet */
     say("ready-raw\n");
+    CHECK(poll(&p, 1, 10000) == 1 && (p.revents & POLLIN));   /* woken by the typing */
     unsigned char b[8];
     CHECK(read(0, b, sizeof(b)) == 3 && b[0] == 'q' && b[1] == 3 && b[2] == 'w');
     /* MIN 0, TIME 2: nothing typed, the read ends after 0.2 s with 0. */
@@ -234,8 +241,8 @@ static void drive_child(void)
 
 static void handover_child(void)
 {
-    handle_t hs[3];
-    CHECK(console_open_tty_within(con.admin, WAIT_NS, &hs[0], &hs[1], &hs[2]) == OK);
+    handle_t hs[2];
+    CHECK(console_open_tty_within(con.admin, WAIT_NS, &hs[0], &hs[1]) == OK);
     const struct posixfds_desc fds[] = {
         { .fd = 0, .kind = POSIXFDS_TTY, .status = O_RDWR, .handles = hs },
     };

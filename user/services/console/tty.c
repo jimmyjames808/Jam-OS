@@ -1,29 +1,32 @@
 /* console: POSIX clients, console.open_tty and the `tty` protocol
  * (console.h; abi/idl/console.idl; docs/M13-PLAN.md, "The terminal layer").
  *
- * A tty client is three channels: its `tty` channel (requests: the
- * settings, the size, drain and flush; events: the size, ISIG's signals),
- * an input pipe the console writes what is typed into, and an output pipe
- * it reads and shows. The terminal has one line discipline (<ldisc.h>,
- * `ld`) for all of them: its settings outlast the program that set them,
- * and what was typed and not read stays with the terminal.
+ * A tty client is two channels: its `tty` channel (requests: the
+ * settings, the size, drain and flush; events: the size, ISIG's signals)
+ * and its data channel, a pipe both ways as a socketpair is: the console
+ * writes what is typed into it, and reads and shows what the client
+ * writes. One channel, so the client's end alone says readable, writable
+ * and hung up (poll waits on one handle). The terminal has one line
+ * discipline (<ldisc.h>, `ld`) for all of them: its settings outlast the
+ * program that set them, and what was typed and not read stays with the
+ * terminal.
  *
  * Input. While a tty client has the focus (keys.c: the newest open_keys or
  * open_tty), what is typed goes through `ld` as bytes: a window's keys
- * through <keybytes.h>, a connection's bytes as they came (ttyin.c). The
- * records `ld` makes ready go to the newest tty's input pipe, one message
- * each. When a tty client goes, the messages it left in its pipe are read
- * back (through the console's own duplicate of the pipe's read end) and
+ * through <keybytes.h>, a connection's bytes as they came (connin.c). The
+ * records `ld` makes ready go to the newest tty's data channel, one
+ * message each. When a tty client goes, the messages it left unread are
+ * read back (through the console's own duplicate of the client's end) and
  * put back at the front of `ld`'s queue, for the next reader; when no tty
  * client is left, what `ld` holds is typed into the keys focus as keys
  * (<termkeys.h>), so a line typed ahead under a POSIX program reaches the
  * shell after it.
  *
- * Output. The output pipe's messages (at most TTY_OUT_MAX bytes) go
- * through `ld`'s output processing (OPOST) to the back end, as a client's
+ * Output. The client's messages (at most TTY_OUT_MAX bytes) go through
+ * `ld`'s output processing (OPOST) to the back end, as a client's
  * console.write would, in turns with a budget, and not while the back end
  * is congested. drain, and set_attr after a drain, are answered later:
- * once the pipe has been read empty.
+ * once its output has been read empty.
  *
  * Each tty has a struct client of its own (its level is its opener's), so
  * the modes its output asks for (bracketed paste, application cursor
@@ -37,10 +40,9 @@
 #define OUT_BUDGET    32                   /* output messages one turn reads, at most */
 #define OUT_BUDGET_NS (10 * NS_PER_MS)     /* ... or this long */
 #define REQ_BUDGET    32                   /* requests one turn serves */
-#define PUSH_RETRY_NS (5 * NS_PER_MS)      /* an input pipe was full: try again after this */
-#define UNREAD_MSGS   256                  /* messages read back from a pipe, at most */
-#define READ_RIGHTS   (RIGHT_READ | RIGHT_WAIT | RIGHT_TRANSFER | RIGHT_DUPLICATE)
-#define WRITE_RIGHTS  (RIGHT_WRITE | RIGHT_WAIT | RIGHT_TRANSFER | RIGHT_DUPLICATE)
+#define PUSH_RETRY_NS (5 * NS_PER_MS)      /* a data channel was full: try again after this */
+#define UNREAD_MSGS   256                  /* messages read back from a client, at most */
+#define DATA_RIGHTS   (RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT | RIGHT_TRANSFER | RIGHT_DUPLICATE)
 
 /* An answer waiting for the output to be shown. */
 struct tty_wait {
@@ -53,9 +55,8 @@ struct tty_wait {
 struct ttyc {
     bool     used;
     handle_t ch;                    /* the tty channel, our end: also its focus handle */
-    handle_t in_w;                  /* the input pipe's write end */
-    handle_t in_r;                  /* a duplicate of its read end: what is left unread */
-    handle_t out_r;                 /* the output pipe's read end (0: closed by the client) */
+    handle_t data;                  /* the data channel, our end: input written, output read */
+    handle_t peer;                  /* a duplicate of the client's end: input left unread */
     struct client cl;               /* its modes and level */
     bool     app_cursor;            /* DECCKM (ESC [ ? 1 h): cursor keys as ESC O x */
     uint8_t  dec[8];                /* the DEC mode sequence being scanned in its output */
@@ -69,7 +70,7 @@ static struct ldisc ld;
 static struct ttyc *echo_to;        /* whose input is being typed: the echo goes as its output */
 static uint32_t out_pending;        /* bit i: ttys[i]'s output had messages left after its turn */
 static uint32_t out_deferred;       /* ... or the back end was congested */
-static uint64_t push_retry_at;      /* an input pipe was full (0: no retry due) */
+static uint64_t push_retry_at;      /* a data channel was full (0: no retry due) */
 static bool refocus;                /* the focus changed: deliver at the next turn */
 static uint8_t msg[LD_REC_MAX];     /* one message, in or out */
 static uint8_t shown[2 * LD_REC_MAX];
@@ -141,14 +142,14 @@ static void answer_waits(struct ttyc *t)
     t->nwaits = 0;
 }
 
-/* Read one message off t's output pipe into msg: its length, -1 when
- * none is queued, -2 when the pipe can't be read any more (closed, or a
+/* Read one message of t's output into msg: its length, -1 when none is
+ * queued, -2 when it can't be read any more (closed, or a
  * message breaking its rules: the tty is hung up). */
 static long out_take(struct ttyc *t)
 {
     handle_t hs[CHANNEL_MAX_HANDLES];
     uint32_t n = 0, nh = 0;
-    status_t st = drv_channel_read(t->out_r, msg, TTY_OUT_MAX, &n, hs, CHANNEL_MAX_HANDLES, &nh);
+    status_t st = drv_channel_read(t->data, msg, TTY_OUT_MAX, &n, hs, CHANNEL_MAX_HANDLES, &nh);
     for (uint32_t i = 0; st == OK && i < nh; i++)
         jam_handle_close(hs[i]);   /* bytes only */
     if (st == ERR_SHOULD_WAIT)
@@ -162,19 +163,15 @@ static long out_take(struct ttyc *t)
     return (long)n;
 }
 
-/* The output pipe can't be read any more: its end goes, and nothing waits
- * for it to drain. A message past the limit hangs the whole tty up. */
-static void out_gone(struct ttyc *t, bool hang_up)
+/* The output can't be read any more (a message past the limit): the tty
+ * is hung up. */
+static void out_gone(struct ttyc *t)
 {
-    jam_port_unbind(port, t->out_r, KEY(K_TTY_OUT, slot_of(t)));
-    jam_handle_close(t->out_r);
-    t->out_r = HANDLE_INVALID;
     answer_waits(t);
-    if (hang_up)
-        ttys_hang_up(slot_of(t));
+    ttys_hang_up(slot_of(t));
 }
 
-/* One turn of t's output: messages shown until the pipe is empty (the
+/* One turn of t's output: messages shown until none is left (the
  * waits are answered), the budget runs out (pending) or the back end is
  * congested (deferred). */
 static void out_turn(struct ttyc *t)
@@ -182,11 +179,8 @@ static void out_turn(struct ttyc *t)
     uint32_t bit = 1u << slot_of(t);
     out_pending &= ~bit;
     out_deferred &= ~bit;
-    if (!t->used || !t->out_r) {
-        if (t->used)
-            answer_waits(t);
+    if (!t->used)
         return;
-    }
     uint64_t t0 = now();
     klog_event();   /* kernel lines logged before this output go above it */
     for (unsigned k = 0; k < OUT_BUDGET && now() - t0 < OUT_BUDGET_NS; k++) {
@@ -200,7 +194,7 @@ static void out_turn(struct ttyc *t)
             return;
         }
         if (n == -2) {
-            out_gone(t, true);
+            out_gone(t);
             return;
         }
         size_t m = ld_output(&ld, msg, (size_t)n, shown);
@@ -209,20 +203,20 @@ static void out_turn(struct ttyc *t)
     out_pending |= bit;
 }
 
-/* Throw away what t's output pipe holds. */
+/* Throw away the output t wrote and we haven't shown. */
 static void out_discard(struct ttyc *t)
 {
-    for (long n = 0; t->out_r && n != -1;) {
+    for (long n = 0; t->used && n != -1;) {
         n = out_take(t);
         if (n == -2)
-            out_gone(t, true);
+            out_gone(t);
     }
 }
 
 /* ---- input --------------------------------------------------------------------------- */
 
-/* Throw away what is queued in t's input pipe (our duplicate of its read
- * end); with keep, put it back into ld's queue for the next reader
+/* Throw away the input queued for t and not read (through our duplicate
+ * of its end); with keep, put it back into ld's queue for the next reader
  * instead. */
 static void in_drain(struct ttyc *t, bool keep)
 {
@@ -230,10 +224,10 @@ static void in_drain(struct ttyc *t, bool keep)
     static uint8_t held[LD_READY_MAX];
     unsigned n = 0;
     size_t used = 0;
-    for (unsigned k = 0; k < 1024 + 1; k++) {   /* the pipe's queue holds 1024 */
+    for (unsigned k = 0; k < 1024 + 1; k++) {   /* a channel's queue holds 1024 */
         handle_t hs[CHANNEL_MAX_HANDLES];
         uint32_t got = 0, nh = 0;
-        if (drv_channel_read(t->in_r, msg, sizeof(msg), &got, hs, CHANNEL_MAX_HANDLES, &nh) != OK)
+        if (drv_channel_read(t->peer, msg, sizeof(msg), &got, hs, CHANNEL_MAX_HANDLES, &nh) != OK)
             break;   /* empty: we only ever write messages that fit msg */
         for (uint32_t i = 0; i < nh; i++)
             jam_handle_close(hs[i]);
@@ -292,7 +286,7 @@ static void hand_to_keys(void)
     }
 }
 
-/* ld's ready records to the newest tty's input pipe, while it takes them;
+/* ld's ready records to the newest tty's data channel, while it takes them;
  * or, with no tty left, to the keys focus. */
 void ttys_deliver(void)
 {
@@ -307,7 +301,7 @@ void ttys_deliver(void)
     push_retry_at = 0;
     struct ttyc *t = &ttys[top];
     for (long n; (n = ld_peek(&ld, msg, sizeof(msg))) >= 0;) {
-        status_t st = jam_channel_write(t->in_w, msg, (uint32_t)n, NULL, 0);
+        status_t st = jam_channel_write(t->data, msg, (uint32_t)n, NULL, 0);
         if (st == ERR_SHOULD_WAIT || st == ERR_NO_MEMORY) {
             push_retry_at = now() + PUSH_RETRY_NS;   /* the reader is behind */
             return;
@@ -388,7 +382,7 @@ static status_t op_get_attr(void *ctx, uint32_t *iflag, uint32_t *oflag, uint32_
     return OK;
 }
 
-/* A wait for the output to drain: answered by out_turn once the pipe is
+/* A wait for the output to drain: answered by out_turn once it is
  * empty (it runs next turn: out_pending). */
 static status_t add_wait(struct ttyc *t, const struct tty_wait *w)
 {
@@ -452,35 +446,25 @@ void ttys_init(void)
     ld_init(&ld, echo_cb, NULL);
 }
 
-/* The two pipes: the input's write end and a duplicate of its read end
- * kept, the read end (read rights only) given; the output's read end kept,
- * its write end (write rights only) given. */
-static status_t make_pipes(struct ttyc *t, handle_t *in_give, handle_t *out_give)
+/* The data channel: our end kept, with a duplicate of the client's end
+ * (reading it takes back the input the client left unread); the client's
+ * end given with the rights of a socketpair's end. */
+static status_t make_data(struct ttyc *t, handle_t *give)
 {
-    handle_t in_r, out_w;
-    status_t st = jam_channel_create(&t->in_w, &in_r);
+    handle_t theirs;
+    status_t st = jam_channel_create(&t->data, &theirs);
     if (st != OK)
         return st;
-    if ((st = jam_channel_create(&t->out_r, &out_w)) != OK) {
-        jam_handle_close(t->in_w);
-        jam_handle_close(in_r);
-        return st;
-    }
-    st = jam_handle_duplicate(in_r, RIGHT_READ | RIGHT_WAIT, &t->in_r);
+    st = jam_handle_duplicate(theirs, RIGHT_READ | RIGHT_WAIT, &t->peer);
     if (st != OK)
-        jam_handle_close(in_r);
+        jam_handle_close(theirs);
     else
-        st = jam_handle_replace(in_r, READ_RIGHTS, in_give);   /* it closes in_r either way */
-    if (st == OK && (st = jam_handle_replace(out_w, WRITE_RIGHTS, out_give)) != OK)
-        jam_handle_close(*in_give);
-    else if (st != OK)
-        jam_handle_close(out_w);
+        st = jam_handle_replace(theirs, DATA_RIGHTS, give);   /* it closes theirs either way */
     if (st != OK) {
-        if (t->in_r)
-            jam_handle_close(t->in_r);
-        jam_handle_close(t->in_w);
-        jam_handle_close(t->out_r);
-        t->in_r = t->in_w = t->out_r = HANDLE_INVALID;
+        if (t->peer)
+            jam_handle_close(t->peer);
+        jam_handle_close(t->data);
+        t->peer = t->data = HANDLE_INVALID;
     }
     return st;
 }
@@ -490,21 +474,18 @@ static void slot_free(struct ttyc *t)
 {
     unsigned i = slot_of(t);
     jam_port_unbind(port, t->ch, KEY(K_TTY, i));
-    if (t->out_r) {
-        jam_port_unbind(port, t->out_r, KEY(K_TTY_OUT, i));
-        jam_handle_close(t->out_r);
-    }
+    jam_port_unbind(port, t->data, KEY(K_TTY_OUT, i));
     for (unsigned k = 0; k < t->nwaits; k++)   /* the client is gone: nobody to tell */
         (void)tty_reply_drain(t->waits[k].txn, ERR_PEER_CLOSED);
     jam_handle_close(t->ch);
-    jam_handle_close(t->in_w);
-    jam_handle_close(t->in_r);
+    jam_handle_close(t->data);
+    jam_handle_close(t->peer);
     out_pending &= ~(1u << i);
     out_deferred &= ~(1u << i);
     memset(t, 0, sizeof(*t));
 }
 
-status_t op_open_tty(void *ctx, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+status_t op_open_tty(void *ctx, handle_t *out_tty, handle_t *out_data)
 {
     const struct client *opener = ctx;
     unsigned i;
@@ -513,11 +494,11 @@ status_t op_open_tty(void *ctx, handle_t *out_tty, handle_t *out_input, handle_t
     if (i == MAX_TTYS)
         return ERR_NO_RESOURCES;
     struct ttyc *t = &ttys[i];
-    handle_t theirs, in_give, out_give;
+    handle_t theirs, data_give;
     status_t st = jam_channel_create(&t->ch, &theirs);
     if (st != OK)
         return st;
-    if ((st = make_pipes(t, &in_give, &out_give)) != OK) {
+    if ((st = make_data(t, &data_give)) != OK) {
         jam_handle_close(t->ch);
         jam_handle_close(theirs);
         t->ch = HANDLE_INVALID;
@@ -528,20 +509,17 @@ status_t op_open_tty(void *ctx, handle_t *out_tty, handle_t *out_input, handle_t
     st = jam_port_bind(port, t->ch, KEY(K_TTY, i), SIG_READABLE | SIG_PEER_CLOSED,
                        PORT_BIND_PERSISTENT);
     if (st == OK)
-        st = jam_port_bind(port, t->out_r, KEY(K_TTY_OUT, i), SIG_READABLE | SIG_PEER_CLOSED,
-                           PORT_BIND_PERSISTENT);
+        st = jam_port_bind(port, t->data, KEY(K_TTY_OUT, i), SIG_READABLE, PORT_BIND_PERSISTENT);
     if (st == OK)
         st = focus_push(t->ch, &t->cl, (int)i);
     if (st != OK) {
         slot_free(t);
         jam_handle_close(theirs);
-        jam_handle_close(in_give);
-        jam_handle_close(out_give);
+        jam_handle_close(data_give);
         return st;
     }
     *out_tty = theirs;
-    *out_input = in_give;
-    *out_output = out_give;
+    *out_data = data_give;
     ttys_deliver();   /* what the terminal held for a reader */
     return OK;
 }
@@ -596,7 +574,7 @@ uint64_t ttys_deadline(void)
 {
     if (out_pending || refocus)
         return 0;
-    /* What ld holds waits for a reader: the newest tty's pipe to take
+    /* What ld holds waits for a reader: the newest tty's channel to take
      * more (push_retry_at), or a focus to change. */
     if (!ld_ready(&ld) || focus_top_tty() < 0)
         return DEADLINE_NEVER;

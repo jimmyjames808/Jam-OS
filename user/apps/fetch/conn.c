@@ -8,7 +8,7 @@
 #include <ipv4.h>
 #include "fetch.h"
 
-#define ROLE_STOP (SR_USER + 2)
+#define ROLE_STOP PROGRAM_SR_STOP
 #define TAG_STOP  ((void *)1)
 #define TAG_SOCK  ((void *)2)
 #define TAG_DNS   ((void *)3)

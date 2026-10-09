@@ -3,14 +3,14 @@
  *
  * usbbus: the bus side of usb-bus (drivers/usb-bus), served on its
  * DR_SERVE channel: devmgr holds the other end and hands duplicates out
- * (DEVMGR_GET_SERVICE), so whoever holds it is trusted (tests, the shell's
+ * (devmgr.get_service), so whoever holds it is trusted (tests, the shell's
  * `usb` command). Class drivers never see it: they get one `usb`
  * interface channel each (usb.idl). What usb-bus tells devmgr by itself
  * (a new interface) goes on a channel of its own: `usbbus_events`, below.
  * Format: see tools/genidl.py.
  *
  * Restart: usb-bus keeps nothing across a restart. ERR_PEER_CLOSED: it
- * ended; get the channel from devmgr again (DEVMGR_GET_SERVICE, which
+ * ended; get the channel from devmgr again (devmgr.get_service, which
  * hands out the one the restart will serve). Every device is enumerated
  * again with a new id.
  *

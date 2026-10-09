@@ -8,7 +8,7 @@
  *
  * /svc/notify is a shared channel init makes once and keeps (both ends, as
  * /svc/wayland's), whose server end each compositor is started with
- * (SR_USER + 5). The svc protocol's connect on it (abi/idl/svc.idl)
+ * (COMP_SR_NOTIFY). The svc protocol's connect on it (abi/idl/svc.idl)
  * answers a new channel of this protocol, so whoever holds it may post
  * notices and nothing more: init publishes it for the programs whose list
  * asks (`svc notify`: the shell's `notify`), gives a duplicate to devmgr

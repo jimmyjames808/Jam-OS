@@ -55,9 +55,9 @@ struct cs {
     handle_t ctl;          /* compctl, ADMIN */
     handle_t init;         /* our end of the compositor's initctl channel */
     handle_t src;          /* an input source (keyboard and mouse) */
-    handle_t note;         /* /svc/notify's shared channel, the client end (SR_USER + 5) */
-    handle_t mix;          /* the server end of a fake mixer's desktop channel (SR_USER + 6) */
-    handle_t net;          /* ... and of a fake netstack's read-only one (SR_USER + 7) */
+    handle_t note;         /* /svc/notify's shared channel, the client end (COMP_SR_NOTIFY) */
+    handle_t mix;          /* the server end of a fake mixer's desktop channel (COMP_SR_MIXER) */
+    handle_t net;          /* ... and of a fake netstack's read-only one (COMP_SR_NETINFO) */
     int32_t x, y;          /* where the pointer is */
     uint8_t buttons;       /* held */
 };

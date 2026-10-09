@@ -37,7 +37,7 @@ static const struct {
     [POSIXFDS_PIPE] = { 1, DATA_ANY, false, { OBJ_CHANNEL } },
     [POSIXFDS_SOCKET] = { 4, DATA_ANY, false, { OBJ_CHANNEL, OBJ_VMO, OBJ_EVENT, OBJ_EVENT } },
     [POSIXFDS_LISTENER] = { 1, DATA_ANY, false, { OBJ_CHANNEL } },
-    [POSIXFDS_TTY] = { 3, DATA_ANY, false, { OBJ_CHANNEL, OBJ_CHANNEL, OBJ_CHANNEL } },
+    [POSIXFDS_TTY] = { 2, DATA_ANY, false, { OBJ_CHANNEL, OBJ_CHANNEL } },
     [POSIXFDS_PTY_MASTER] = { 2, DATA_ANY, false, { OBJ_CHANNEL, OBJ_CHANNEL } },
     [POSIXFDS_DEV] = { 0, DATA_NAME, false, { 0 } },
     [POSIXFDS_ETC] = { 0, DATA_PATH, false, { 0 } },

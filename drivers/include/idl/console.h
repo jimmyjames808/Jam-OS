@@ -396,22 +396,22 @@ static inline status_t console_write(handle_t ch, const uint8_t *text, uint32_t 
 
 /* console_open_tty_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t console_open_tty_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+static inline status_t console_open_tty_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_tty, handle_t *out_data)
 {
     struct console_open_tty_req idl_q;
     struct console_open_tty_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
     idl_q.ordinal = CONSOLE_OPEN_TTY;
-    handle_t idl_rh[3];
+    handle_t idl_rh[2];
     uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
     status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
-                               idl_rh, 3, &idl_got[1], idl_within, idl_t);
+                               idl_rh, 2, &idl_got[1], idl_within, idl_t);
     uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
     idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && idl_rhn != 3)
+    if (idl_st == OK && idl_rhn != 2)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK)
         idl_close_all(idl_rh, idl_rhn);
@@ -422,43 +422,38 @@ static inline status_t console_open_tty_call(handle_t ch, bool idl_within, uint6
             drv_handle_close(idl_rh[0]);
     }
     if (idl_st == OK) {
-        if (out_input)
-            *out_input = idl_rh[1];
+        if (out_data)
+            *out_data = idl_rh[1];
         else
             drv_handle_close(idl_rh[1]);
-    }
-    if (idl_st == OK) {
-        if (out_output)
-            *out_output = idl_rh[2];
-        else
-            drv_handle_close(idl_rh[2]);
     }
     return idl_st;
 }
 /* A terminal for a POSIX program (docs/M13-PLAN.md, "The terminal
- * layer"): `tty` a channel of the `tty` protocol (below), `input` the read
- * end of a pipe (a channel of byte messages) the console writes what is
- * typed into, after the terminal's line discipline (<ldisc.h>: in
- * canonical mode one line per message, an empty message the end of file),
- * `output` the write end of a pipe the console reads and shows (messages
- * of at most TTY_OUT_MAX bytes; a longer one, or one carrying handles,
- * ends the terminal's client). Like open_keys, it takes the focus: the
- * keys typed go to it as bytes (<keybytes.h>, or as they came over a
- * connection) until its `tty` channel closes, when what it left unread in
- * `input` goes back to the terminal for the next reader. All levels; at
+ * layer"): `tty` a channel of the `tty` protocol (below), and `data` a
+ * pipe both ways (a channel of byte messages, as a socketpair's end):
+ * the console writes what is typed into it, after the terminal's line
+ * discipline (<ldisc.h>: in canonical mode one line per message, an empty
+ * message the end of file), and reads and shows what the client writes
+ * (messages of at most TTY_OUT_MAX bytes; a longer one ends the client's
+ * terminal, and handles in one are closed). One channel, so its end alone
+ * says readable, writable and hung up. Like open_keys, it takes the focus:
+ * the keys typed go to it as bytes (<keybytes.h>, or as they came over a
+ * connection) until its `tty` channel closes, when what it left unread on
+ * `data` goes back to the terminal for the next reader. All levels; at
  * most 8 at once (ERR_NO_RESOURCES), and a PROGRAM client can't push out
  * the shell's focus (ERR_NO_RESOURCES when the focus stack is full). */
-static inline status_t console_open_tty_until(handle_t ch, uint64_t deadline_ns, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+static inline status_t console_open_tty_until(handle_t ch, uint64_t deadline_ns, handle_t *out_tty, handle_t *out_data)
 {
-    return console_open_tty_call(ch, false, deadline_ns, out_tty, out_input, out_output);
+    return console_open_tty_call(ch, false, deadline_ns, out_tty, out_data);
 }
-static inline status_t console_open_tty_within(handle_t ch, uint64_t timeout_ns, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+static inline status_t console_open_tty_within(handle_t ch, uint64_t timeout_ns, handle_t *out_tty, handle_t *out_data)
 {
-    return console_open_tty_call(ch, true, timeout_ns, out_tty, out_input, out_output);
+    return console_open_tty_call(ch, true, timeout_ns, out_tty, out_data);
 }
-static inline status_t console_open_tty(handle_t ch, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+static inline status_t console_open_tty(handle_t ch, handle_t *out_tty, handle_t *out_data)
 {
-    return console_open_tty_call(ch, false, DEADLINE_NEVER, out_tty, out_input, out_output);
+    return console_open_tty_call(ch, false, DEADLINE_NEVER, out_tty, out_data);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -709,11 +704,11 @@ static inline status_t console_open_tty_send(handle_t ch, uint32_t idl_txid)
 /* The status and results of a reply to console_open_tty_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t console_open_tty_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_tty, handle_t *out_input, handle_t *out_output)
+static inline status_t console_open_tty_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_tty, handle_t *out_data)
 {
     const struct console_open_tty_rep *idl_r = (const struct console_open_tty_rep *)idl_rep;
     status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 3)
+    if (idl_st == OK && idl_m->nh != 2)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
         idl_msg_drop(idl_m);
@@ -723,14 +718,10 @@ static inline status_t console_open_tty_result(const void *idl_rep, struct idl_m
         *out_tty = idl_m->hs[0];
     else
         drv_handle_close(idl_m->hs[0]);
-    if (out_input)
-        *out_input = idl_m->hs[1];
+    if (out_data)
+        *out_data = idl_m->hs[1];
     else
         drv_handle_close(idl_m->hs[1]);
-    if (out_output)
-        *out_output = idl_m->hs[2];
-    else
-        drv_handle_close(idl_m->hs[2]);
     idl_m->nh = 0;
     return OK;
 }
@@ -749,7 +740,7 @@ struct console_ops {
     status_t (*show_log)(void *ctx, uint8_t on, const uint8_t only[32]);
     status_t (*set_font)(void *ctx, uint8_t font);
     status_t (*write)(void *ctx, const uint8_t *text, uint32_t text_len);
-    status_t (*open_tty)(void *ctx, handle_t *out_tty, handle_t *out_input, handle_t *out_output);
+    status_t (*open_tty)(void *ctx, handle_t *out_tty, handle_t *out_data);
 };
 
 /* Answer the console.size request kept in txn: idl_st and, if it is OK, the
@@ -879,13 +870,13 @@ static inline status_t console_reply_write(struct idl_txn idl_txn, status_t idl_
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t console_reply_open_tty(struct idl_txn idl_txn, status_t idl_st, handle_t tty, handle_t input, handle_t output)
+static inline status_t console_reply_open_tty(struct idl_txn idl_txn, status_t idl_st, handle_t tty, handle_t data)
 {
     struct console_open_tty_rep idl_r;
-    handle_t idl_hs[3] = { tty, input, output };
+    handle_t idl_hs[2] = { tty, data };
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    if (idl_st == OK && !(tty != HANDLE_INVALID && input != HANDLE_INVALID && output != HANDLE_INVALID))
+    if (idl_st == OK && !(tty != HANDLE_INVALID && data != HANDLE_INVALID))
         idl_st = ERR_INTERNAL;
     idl_r.status = idl_st;
     if (idl_st != OK) {
@@ -893,11 +884,9 @@ static inline status_t console_reply_open_tty(struct idl_txn idl_txn, status_t i
             drv_handle_close(idl_hs[0]);
         if (idl_hs[1] != HANDLE_INVALID)
             drv_handle_close(idl_hs[1]);
-        if (idl_hs[2] != HANDLE_INVALID)
-            drv_handle_close(idl_hs[2]);
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     }
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 3);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 2);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -1062,31 +1051,27 @@ static inline uint32_t console_dispatch_on(handle_t ch, const struct console_ops
         const struct console_open_tty_req *idl_q = (const struct console_open_tty_req *)req;
         struct console_open_tty_rep *idl_r = (struct console_open_tty_rep *)rep;
         handle_t out_tty = HANDLE_INVALID;
-        handle_t out_input = HANDLE_INVALID;
-        handle_t out_output = HANDLE_INVALID;
+        handle_t out_data = HANDLE_INVALID;
         if (n != sizeof(*idl_q))
             return sizeof(*idl_h);
         if (!ops->open_tty) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->open_tty(ctx, &out_tty, &out_input, &out_output);
+        status_t idl_st = ops->open_tty(ctx, &out_tty, &out_data);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status == OK && !(out_tty != HANDLE_INVALID && out_input != HANDLE_INVALID && out_output != HANDLE_INVALID))
+        if (idl_h->status == OK && !(out_tty != HANDLE_INVALID && out_data != HANDLE_INVALID))
             idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
         if (idl_h->status != OK) {
             if (out_tty != HANDLE_INVALID)
                 drv_handle_close(out_tty);
-            if (out_input != HANDLE_INVALID)
-                drv_handle_close(out_input);
-            if (out_output != HANDLE_INVALID)
-                drv_handle_close(out_output);
+            if (out_data != HANDLE_INVALID)
+                drv_handle_close(out_data);
             return sizeof(*idl_h);
         }
         rhs[0] = out_tty;
-        rhs[1] = out_input;
-        rhs[2] = out_output;
-        *rhn = 3;
+        rhs[1] = out_data;
+        *rhn = 2;
         return sizeof(*idl_r);
     }
     }
@@ -1474,7 +1459,7 @@ static inline status_t keys_serve(handle_t ch, const struct keys_ops *ops, void 
  *
  * tty: the terminal's POSIX side, the channel console.open_tty answers
  * (docs/M13-PLAN.md, "The terminal layer"; libc's terminal descriptor,
- * user/posix/sys/tty.c, is this channel and the two pipes). The settings
+ * user/posix/sys/tty.c, is this channel and the data channel). The settings
  * are the terminal's (one line discipline per console, <ldisc.h>), not the
  * channel's: a set_attr holds for every client of the terminal, the next
  * program's too. They are Linux's struct termios field for field (bits,
@@ -1482,7 +1467,7 @@ static inline status_t keys_serve(handle_t ch, const struct keys_ops *ops, void 
  *
  * Reconnect: the channel lives as long as the console runs and some
  * process keeps it. If its peer closes (the console ended, the terminal
- * hung up), the terminal is gone: libc's reads of the input pipe see the
+ * hung up), the terminal is gone: libc's reads of the data channel see the
  * end of the file and its writes EPIPE; nothing is opened again. */
 
 #define TTY_PROTOCOL_ID 43u
@@ -1495,7 +1480,8 @@ static inline status_t keys_serve(handle_t ch, const struct keys_ops *ops, void 
 #define TTY_SIGNAL           0x002b0007u
 
 /* Constants (the .idl's `const` lines). */
-/* The most bytes in one message on the output pipe (console.write's). */
+/* The most bytes in one message of output on the data channel
+ * (console.write's). */
 #define TTY_OUT_MAX 2048u
 /* set_attr's `when` (Linux's TCSANOW, TCSADRAIN, TCSAFLUSH). */
 #define TTY_WHEN_NOW 0u
@@ -1655,11 +1641,11 @@ static inline status_t tty_set_attr_call(handle_t ch, bool idl_within, uint64_t 
     return idl_st;
 }
 /* New settings: at once (WHEN_NOW), after the output written so far is
- * shown (WHEN_DRAIN), or after that with the input not yet read thrown away
- * (WHEN_FLUSH):
- * the pipe's unread messages and the line being edited. Every bit is kept
- * (one that means nothing to the console changes nothing, as on a Linux
- * pseudo-terminal); `when` > 2: ERR_INVALID_ARGS. */
+ * shown (WHEN_DRAIN), or after that with the input not yet read thrown
+ * away (WHEN_FLUSH: the data channel's unread messages and the line being
+ * edited). Every bit is kept (one that means nothing to the console
+ * changes nothing, as on a Linux pseudo-terminal); `when` > 2:
+ * ERR_INVALID_ARGS. */
 static inline status_t tty_set_attr_until(handle_t ch, uint64_t deadline_ns, uint8_t when, uint32_t iflag, uint32_t oflag, uint32_t cflag, uint32_t lflag, const uint8_t cc[32], uint32_t ispeed, uint32_t ospeed)
 {
     return tty_set_attr_call(ch, false, deadline_ns, when, iflag, oflag, cflag, lflag, cc, ispeed, ospeed);

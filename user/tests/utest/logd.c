@@ -11,20 +11,19 @@
  * missing); syncs come at most four times a second; a flush asked for on
  * the control channel saves what was logged up to then; with /data refusing or gone
  * logd keeps running and tries again rarely; the control channel hands
- * each opener a channel of its own (svc.connect). */
+ * each opener a channel of its own (svc.connect); after a panic the
+ * panicked boot's log (SR_CRASHLOG) is saved as <name>-crash.txt and the
+ * result is told to init on its channel (the protocol `crashres`), with
+ * the status of a log that is none. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <crashlog.h>
 #include <idl/logctl.h>
 #include <idl/svc.h>
 #include <os.h>
 #include "fattest.h"
 #include "utest.h"
-
-/* logd's startup handles (user/services/logd/logd.h has the same numbers). */
-#define LOGD_SR_FS  (SR_USER + 0)
-#define LOGD_SR_LOG (SR_USER + 1)
-#define LOGD_SR_CTL (SR_USER + 2)
 
 #define DISK_SECTORS (16 * MIB_SECTORS)
 #define LOG1         "/logs/boot-0001.txt"   /* the first log on a blank /data */
@@ -52,8 +51,11 @@ static bool have_logd(void)
 }
 
 /* bin/logd with `fs` (duplicated) as its /data, and as its log a channel
- * (l->feed), or the kernel log read through `root` if that is given. */
-static bool logd_start(struct logd *l, handle_t fs, handle_t root)
+ * (l->feed), or the kernel log read through `root` if that is given; with
+ * crash and result, the panicked boot's log (a VMO, moved) and the server
+ * end of the channel for the result (moved) as init gives them. */
+static bool logd_start_after_panic(struct logd *l, handle_t fs, handle_t root, handle_t crash,
+                                   handle_t result)
 {
     handle_t dup, second, ctl;
     const char *argv[] = { "bin/logd" };
@@ -65,13 +67,23 @@ static bool logd_start(struct logd *l, handle_t fs, handle_t root)
     else
         CHECK_ST(jam_channel_create(&l->feed, &second), OK);
     CHECK_ST(new_job(&l->job), OK);
-    struct spawn_handle x[] = { { LOGD_SR_FS, dup }, { root ? SR_RESOURCE : LOGD_SR_LOG, second },
-                                { LOGD_SR_CTL, ctl } };
+    struct spawn_handle x[5] = { { LOGD_SR_FS, dup }, { root ? SR_RESOURCE : LOGD_SR_LOG, second },
+                                 { LOGD_SR_CTL, ctl } };
+    unsigned nx = 3;
+    if (crash)
+        x[nx++] = (struct spawn_handle){ SR_CRASHLOG, crash };
+    if (result)
+        x[nx++] = (struct spawn_handle){ LOGD_SR_CRASH_RESULT, result };
     struct spawn_args a = {
-        .path = "bin/logd", .argc = 1, .argv = argv, .job = l->job, .extra = x, .nextra = 3,
+        .path = "bin/logd", .argc = 1, .argv = argv, .job = l->job, .extra = x, .nextra = nx,
     };
     CHECK_ST(spawn(&a, &l->proc), OK);   /* consumes the extras */
     return true;
+}
+
+static bool logd_start(struct logd *l, handle_t fs, handle_t root)
+{
+    return logd_start_after_panic(l, fs, root, HANDLE_INVALID, HANDLE_INVALID);
 }
 
 /* Its log ends (the feed closes): logd exits 0 by itself and leaves its
@@ -460,4 +472,68 @@ bool t_klog_lines(void)
     CHECK_ST(jam_handle_close(klog), OK);
     CHECK_ST(jam_handle_close(rd), OK);
     return true;
+}
+
+/* A VMO holding a panicked boot's log, as the kernel hands it to init: the
+ * header (the boot "name", or a bad magic) and some text. */
+static bool crash_vmo(handle_t *out, const char *name, bool bad)
+{
+    static const char text[] = "[ 1.000] the boot that panicked\n[ 2.000] PANIC: a test\n";
+    struct crashlog_header h = {
+        .magic = bad ? 1 : CRASHLOG_MAGIC, .version = CRASHLOG_VERSION, .panics = 1,
+        .text_len = sizeof(text) - 1, .panic_at = 32, .message = "a test",
+    };
+    snprintf(h.name, sizeof(h.name), "%s", name);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, out), OK);
+    CHECK_ST(jam_vmo_write(*out, 0, &h, sizeof(h)), OK);
+    CHECK_ST(jam_vmo_write(*out, sizeof(h), text, sizeof(text) - 1), OK);
+    return true;
+}
+
+/* After a panic: init gives logd the panicked boot's log and a channel; logd
+ * saves the log as <name>-crash.txt and sends one `result` event (status OK
+ * and the path); a VMO that is no log is a result of ERR_INVALID_ARGS with no
+ * path, and the log's own file is made all the same. */
+bool t_logd_crash_result(void)
+{
+    struct fatrun fat;
+    struct logd l;
+    struct crashlog_result r;
+    handle_t vmo, mine, theirs;
+    signals_t seen;
+    if (!have_logd())
+        return true;
+    if (!ramdisk_create(&disk, DISK_SECTORS) || !fat_start(&fat, &disk, false))
+        return false;
+    CHECK(crash_vmo(&vmo, "boot-0007", false));
+    CHECK_ST(jam_channel_create(&mine, &theirs), OK);
+    if (!logd_start_after_panic(&l, fat.fs, HANDLE_INVALID, vmo, theirs))
+        return false;
+    CHECK_ST(jam_object_wait_one(mine, SIG_READABLE, now() + END_NS, &seen), OK);
+    CHECK_ST(crashlog_read_result(mine, &r), OK);
+    CHECK_ST(r.status, OK);
+    CHECK(r.have && strstr(r.path, "boot-0007-crash.txt"));
+    uint64_t size = 0;
+    CHECK_ST(t_stat(&fat, "/logs/boot-0007-crash.txt", &size, NULL, NULL), OK);
+    CHECK(size > 60);
+    /* one result, then logd let go of its end */
+    CHECK_ST(jam_object_wait_one(mine, SIG_PEER_CLOSED, now() + END_NS, &seen), OK);
+    CHECK_ST(crashlog_read_result(mine, &r), ERR_PEER_CLOSED);
+    CHECK_ST(jam_handle_close(mine), OK);
+    if (!logd_end(&l))
+        return false;
+    /* a VMO that is no panicked boot's log */
+    CHECK(crash_vmo(&vmo, "boot-0008", true));
+    CHECK_ST(jam_channel_create(&mine, &theirs), OK);
+    if (!logd_start_after_panic(&l, fat.fs, HANDLE_INVALID, vmo, theirs))
+        return false;
+    CHECK_ST(jam_object_wait_one(mine, SIG_READABLE, now() + END_NS, &seen), OK);
+    CHECK_ST(crashlog_read_result(mine, &r), OK);
+    CHECK_ST(r.status, ERR_INVALID_ARGS);
+    CHECK_EQ(r.path[0], 0);
+    CHECK_ST(t_stat(&fat, "/logs/boot-0008-crash.txt", NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK_ST(jam_handle_close(mine), OK);
+    if (!logd_end(&l))
+        return false;
+    return fat_stop(&fat) && ramdisk_destroy(&disk);
 }

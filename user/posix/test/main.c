@@ -23,6 +23,9 @@ static const struct {
     { "start", pt_start },
     { "mem", pt_mem },
     { "thread", pt_thread },
+    { "pipe", pt_pipe },
+    { "fds", pt_fds },
+    { "poll", pt_poll },
     { "tty", pt_tty },
 };
 
@@ -39,6 +42,10 @@ int main(int argc, char **argv)
         return pt_child_start(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-handover"))
         return pt_child_handover();
+    if (argc >= 2 && !strcmp(argv[1], "--child-devetc"))
+        return pt_child_devetc();
+    if (argc >= 2 && !strcmp(argv[1], "--child-poll"))
+        return pt_child_poll();
     if (argc >= 2 && !strcmp(argv[1], "--child-tty"))
         return pt_child_tty();
     if (argc >= 2 && !strcmp(argv[1], "--child-tty-handover"))

@@ -8,18 +8,18 @@
  *                 (output.c); without it, or with no framebuffer, headless.
  *                 init's also has RIGHT_ROOT_REBOOT: Ctrl+Alt+Del's reset
  *                 when init can't reboot (ctl.c).
- *   SR_USER + 0   the server end of /svc/wayland: the svc protocol's
+ *   COMP_SR_WAYLAND   the server end of /svc/wayland: the svc protocol's
  *                 connect makes each opener's connection (conn.c). init
  *                 keeps it, so a restarted compositor serves the same one.
- *   SR_USER + 1   optional, headless only: a VMO to compose into (at least
+ *   COMP_SR_IMAGE   optional, headless only: a VMO to compose into (at least
  *                 width * height * 4 bytes, read and written), for a test
  *                 or a screenshot to look at; without it the image is a
  *                 VMO of our own.
- *   SR_USER + 2   optional: compctl's ADMIN channel, its server end (init
+ *   COMP_SR_ADMIN   optional: compctl's ADMIN channel, its server end (init
  *                 holds the other; ctl.c).
- *   SR_USER + 3   optional: init's control channel, reboot and terminal
+ *   COMP_SR_INITCTL   optional: init's control channel, reboot and terminal
  *                 only (Ctrl+Alt+Del, Super+Enter; ctl.c).
- *   SR_USER + 4   optional, `testscene` only: a channel for its reports.
+ *   COMP_SR_REPORT   optional, `testscene` only: a channel for its reports.
  *   SR_STATE      optional: the state VMO init keeps (<compstate.h>,
  *                 <svcstate.h>): the arrangement, written as it changes, so
  *                 a restarted compositor puts the windows back where they
@@ -144,7 +144,7 @@ static void parse_args(int argc, char **argv, struct args *a)
 static status_t setup(int argc, char **argv, struct args *a)
 {
     parse_args(argc, argv, a);
-    comp.svc = startup_handle(SR_USER + 0);
+    comp.svc = startup_handle(COMP_SR_WAYLAND);
     comp.vmar = startup_handle(SR_SELF_VMAR);
     if (comp.svc == HANDLE_INVALID || comp.vmar == HANDLE_INVALID)
         return ERR_BAD_HANDLE;

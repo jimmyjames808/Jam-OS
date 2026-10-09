@@ -9,7 +9,7 @@
 #include <os.h>
 
 /* A compositor wltest started itself: `bin/compositor headless`, given
- * the server end of a channel as its /svc/wayland (SR_USER + 0), in a job
+ * the server end of a channel as its /svc/wayland (COMP_SR_WAYLAND), in a job
  * of its own. Started again by comp_connect when it has died, as init
  * restarts the real one. */
 struct comp_child {

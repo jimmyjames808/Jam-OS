@@ -517,9 +517,9 @@ status_t progs_init(handle_t port, handle_t shared, handle_t shared_sys, struct 
     dev_stats_done = chip_done;
     sock_hooks();
     if (!shared)
-        nstack_log("started without /svc/net's channel (SR_USER + 1): no program can use it");
+        nstack_log("started without /svc/net's channel (NETSTACK_SR_NET): no program can use it");
     if (!shared_sys)
-        nstack_log("started without /svc/net-sys's channel (SR_USER + 2): no reserve for "
+        nstack_log("started without /svc/net-sys's channel (NETSTACK_SR_NET_LISTEN): no reserve for "
                    "the network's services");
     status_t st = take_shared(CLASS_PROG, shared);
     return st == OK ? take_shared(CLASS_SYS, shared_sys) : st;

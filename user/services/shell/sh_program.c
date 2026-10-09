@@ -421,7 +421,7 @@ static status_t helper_setup(struct helper *h, struct spawn_handle *x, unsigned 
     if (st == OK && (st = jam_channel_create(&h->out_r, &out_w)) == OK)
         x[(*nx)++] = (struct spawn_handle){ SR_STDOUT, out_w };
     if (st == OK && (st = jam_channel_create(&h->stop_w, &stop_r)) == OK)
-        x[(*nx)++] = (struct spawn_handle){ SR_USER + 2, stop_r };
+        x[(*nx)++] = (struct spawn_handle){ PROGRAM_SR_STOP, stop_r };
     return st;
 }
 

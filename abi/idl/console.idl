@@ -66,19 +66,20 @@ protocol console 12
 # copied to COM1. All levels.
 11 write          (u8[<=2048] text) -> ()
 # A terminal for a POSIX program (docs/M13-PLAN.md, "The terminal
-# layer"): `tty` a channel of the `tty` protocol (below), `input` the read
-# end of a pipe (a channel of byte messages) the console writes what is
-# typed into, after the terminal's line discipline (<ldisc.h>: in
-# canonical mode one line per message, an empty message the end of file),
-# `output` the write end of a pipe the console reads and shows (messages
-# of at most TTY_OUT_MAX bytes; a longer one, or one carrying handles,
-# ends the terminal's client). Like open_keys, it takes the focus: the
-# keys typed go to it as bytes (<keybytes.h>, or as they came over a
-# connection) until its `tty` channel closes, when what it left unread in
-# `input` goes back to the terminal for the next reader. All levels; at
+# layer"): `tty` a channel of the `tty` protocol (below), and `data` a
+# pipe both ways (a channel of byte messages, as a socketpair's end):
+# the console writes what is typed into it, after the terminal's line
+# discipline (<ldisc.h>: in canonical mode one line per message, an empty
+# message the end of file), and reads and shows what the client writes
+# (messages of at most TTY_OUT_MAX bytes; a longer one ends the client's
+# terminal, and handles in one are closed). One channel, so its end alone
+# says readable, writable and hung up. Like open_keys, it takes the focus:
+# the keys typed go to it as bytes (<keybytes.h>, or as they came over a
+# connection) until its `tty` channel closes, when what it left unread on
+# `data` goes back to the terminal for the next reader. All levels; at
 # most 8 at once (ERR_NO_RESOURCES), and a PROGRAM client can't push out
 # the shell's focus (ERR_NO_RESOURCES when the focus stack is full).
-12 open_tty       () -> (handle tty, handle input, handle output)
+12 open_tty       () -> (handle tty, handle data)
 
 # keys: the channel console.open_keys answers (review W14, DQ1: events
 # from the console to its client, in the IDL; the struct a size told apart
@@ -104,7 +105,7 @@ protocol keys 41
 
 # tty: the terminal's POSIX side, the channel console.open_tty answers
 # (docs/M13-PLAN.md, "The terminal layer"; libc's terminal descriptor,
-# user/posix/sys/tty.c, is this channel and the two pipes). The settings
+# user/posix/sys/tty.c, is this channel and the data channel). The settings
 # are the terminal's (one line discipline per console, <ldisc.h>), not the
 # channel's: a set_attr holds for every client of the terminal, the next
 # program's too. They are Linux's struct termios field for field (bits,
@@ -112,12 +113,13 @@ protocol keys 41
 #
 # Reconnect: the channel lives as long as the console runs and some
 # process keeps it. If its peer closes (the console ended, the terminal
-# hung up), the terminal is gone: libc's reads of the input pipe see the
+# hung up), the terminal is gone: libc's reads of the data channel see the
 # end of the file and its writes EPIPE; nothing is opened again.
 
 protocol tty 43
 
-# The most bytes in one message on the output pipe (console.write's).
+# The most bytes in one message of output on the data channel
+# (console.write's).
 const OUT_MAX 2048
 # set_attr's `when` (Linux's TCSANOW, TCSADRAIN, TCSAFLUSH).
 const WHEN_NOW 0
@@ -134,11 +136,11 @@ const SIG_QUIT 2
 # The terminal's settings.
 1  get_attr  () -> (u32 iflag, u32 oflag, u32 cflag, u32 lflag, u8[32] cc, u32 ispeed, u32 ospeed)
 # New settings: at once (WHEN_NOW), after the output written so far is
-# shown (WHEN_DRAIN), or after that with the input not yet read thrown away
-# (WHEN_FLUSH):
-# the pipe's unread messages and the line being edited. Every bit is kept
-# (one that means nothing to the console changes nothing, as on a Linux
-# pseudo-terminal); `when` > 2: ERR_INVALID_ARGS.
+# shown (WHEN_DRAIN), or after that with the input not yet read thrown
+# away (WHEN_FLUSH: the data channel's unread messages and the line being
+# edited). Every bit is kept (one that means nothing to the console
+# changes nothing, as on a Linux pseudo-terminal); `when` > 2:
+# ERR_INVALID_ARGS.
 2  set_attr  (u8 when, u32 iflag, u32 oflag, u32 cflag, u32 lflag, u8[32] cc, u32 ispeed, u32 ospeed) -> () later
 # Answered once the output written before it has been shown.
 3  drain     () -> () later

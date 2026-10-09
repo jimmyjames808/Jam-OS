@@ -4,9 +4,9 @@
  * Four kinds of channel, all on the loop's port, each bound PERSISTENT
  * and served PROGS_BUDGET requests a turn with a flag saying more may be
  * queued (a binding fires on edges only):
- * - the shared channels (startup roles SR_USER + 1, /svc/net, here;
- *   SR_USER + 2, /svc/net-listen, and SR_USER + 4, /svc/net-low,
- *   listen.c's; SR_USER + 3, /svc/net-sys, here; init keeps their server
+ * - the shared channels (startup roles NETSTACK_SR_NET, /svc/net, here;
+ *   NETSTACK_SR_NET_LISTEN, /svc/net-listen, and NETSTACK_SR_NET_LOW, /svc/net-low,
+ *   listen.c's; NETSTACK_SR_NET_SYS, /svc/net-sys, here; init keeps their server
  *   ends across restarts and publishes the client ends): each answers
  *   svc.connect with an opener's channel (progs_connect), and iface and
  *   counts. What kind of opener a channel makes is the channel's (struct

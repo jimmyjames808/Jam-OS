@@ -2,7 +2,7 @@
  * `tty` protocol: user/services/console/tty.c), on a connection console
  * (conrig.h): this file is the remote terminal, typing into the master and
  * reading what it shows, and the POSIX client, speaking the protocol and
- * reading and writing its pipes the way libc's terminal descriptor does.
+ * reading and writing its data channel the way libc's terminal descriptor does.
  *
  * t_con_tty_canonical: a line typed is echoed and arrives as one message;
  * output's LF is shown as CR LF; erase; end of file as an empty message;
@@ -34,29 +34,28 @@
 #define MAX_TTYS_TEST 8   /* open_tty's clients at once (the console's MAX_TTYS) */
 
 struct tty_client {
-    handle_t ch, in, out;
+    handle_t ch, data;   /* the tty channel, the data channel */
 };
 
 static status_t open_tty(handle_t client, struct tty_client *t)
 {
-    return console_open_tty_within(client, CON_WAIT, &t->ch, &t->in, &t->out);
+    return console_open_tty_within(client, CON_WAIT, &t->ch, &t->data);
 }
 
 static void close_tty(struct tty_client *t)
 {
     jam_handle_close(t->ch);
-    jam_handle_close(t->in);
-    jam_handle_close(t->out);
+    jam_handle_close(t->data);
 }
 
 /* The next input message (waiting up to ms): its length, -1 if none came. */
 static long in_msg(const struct tty_client *t, char *buf, uint32_t cap, unsigned ms)
 {
     signals_t seen;
-    if (jam_object_wait_one(t->in, SIG_READABLE, now() + (uint64_t)ms * NS_PER_MS, &seen) != OK)
+    if (jam_object_wait_one(t->data, SIG_READABLE, now() + (uint64_t)ms * NS_PER_MS, &seen) != OK)
         return -1;
     uint32_t n = 0, nh = 0;
-    if (drv_channel_read(t->in, buf, cap, &n, NULL, 0, &nh) != OK)
+    if (drv_channel_read(t->data, buf, cap, &n, NULL, 0, &nh) != OK)
         return -1;
     return (long)n;
 }
@@ -72,7 +71,7 @@ static bool in_is(const struct tty_client *t, const char *want)
 
 static bool out_write(const struct tty_client *t, const char *s)
 {
-    CHECK_ST(jam_channel_write(t->out, s, (uint32_t)strlen(s), NULL, 0), OK);
+    CHECK_ST(jam_channel_write(t->data, s, (uint32_t)strlen(s), NULL, 0), OK);
     return true;
 }
 
@@ -209,13 +208,13 @@ static bool drain_and_flush(const struct tty_client *t)
     /* Input typed and not read, thrown away. */
     CHECK(rig_typed("zz", 2));
     signals_t seen;
-    CHECK_ST(jam_object_wait_one(t->in, SIG_READABLE, now() + CON_WAIT, &seen), OK);
+    CHECK_ST(jam_object_wait_one(t->data, SIG_READABLE, now() + CON_WAIT, &seen), OK);
     CHECK_ST(tty_flush_within(t->ch, CON_WAIT, TTY_QUEUE_IN), OK);
     char buf[8];
     CHECK_EQ(in_msg(t, buf, sizeof(buf), 100), -1);
     /* TCSAFLUSH: the same, after the drain. */
     CHECK(rig_typed("yy", 2));
-    CHECK_ST(jam_object_wait_one(t->in, SIG_READABLE, now() + CON_WAIT, &seen), OK);
+    CHECK_ST(jam_object_wait_one(t->data, SIG_READABLE, now() + CON_WAIT, &seen), OK);
     CHECK_ST(set(t, TTY_WHEN_FLUSH, &s), OK);
     CHECK_EQ(in_msg(t, buf, sizeof(buf), 100), -1);
     return true;
@@ -297,7 +296,7 @@ static bool shell_below(handle_t shell_keys, handle_t program)
     /* Typed ahead and not read, and half typed: the shell's once the tty goes. */
     CHECK(rig_typed("ls\rab", 5));
     signals_t seen;
-    CHECK_ST(jam_object_wait_one(t.in, SIG_READABLE, now() + CON_WAIT, &seen), OK);
+    CHECK_ST(jam_object_wait_one(t.data, SIG_READABLE, now() + CON_WAIT, &seen), OK);
     close_tty(&t);
     keys_until(shell_keys, &k, 5, STEP_MS);
     CHECK(k.n == 5 && !memcmp(k.text, "ls\nab", 5));
@@ -310,7 +309,7 @@ static bool hostile(handle_t program)
     CHECK_ST(open_tty(program, &t), OK);
     static char big[TTY_OUT_MAX + 1];
     memset(big, 'q', sizeof(big));
-    CHECK_ST(jam_channel_write(t.out, big, sizeof(big), NULL, 0), OK);
+    CHECK_ST(jam_channel_write(t.data, big, sizeof(big), NULL, 0), OK);
     signals_t seen;
     CHECK_ST(jam_object_wait_one(t.ch, SIG_PEER_CLOSED, now() + CON_WAIT, &seen), OK);
     close_tty(&t);

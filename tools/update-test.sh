@@ -14,7 +14,12 @@
 #      manifest with an extension line no build knows, signed (taken,
 #      check only), and the good build offered check only (accepted, not
 #      loaded), and the other-network one forced and check only (accepted,
-#      not loaded); then `reboot` (kexec): the stored kernel was
+#      not loaded); `run updtest wire`: the offer's wire by hand (a message
+#      of another protocol, a manifest past its cap, a count that is not the
+#      bytes there, a byte after or missing, four VMOs, a channel end for a
+#      file): refused by the generated server before init looks; four of
+#      them and then the good offer, check-only, on one channel: accepted;
+#      then `reboot` (kexec): the stored kernel was
 #      left alone, so the next boot is the stick's build (no
 #      /boot/update-marker.txt).
 #   2. `run updtest good`: the build accepted and stored, and init's
@@ -84,6 +89,9 @@ seen 60 init: /data mounted
 send run updtest bad
 wait 300 updtest: bad:
 wait {prompt}
+send run updtest wire
+wait 300 updtest: wire:
+wait {prompt}
 send reboot
 wait 30 init: kexec: /esp unchanged: the stored kernel, no files read
 wait 60 kexec: starting the stored kernel
@@ -121,6 +129,7 @@ QEMU_IMAGE="$stick" QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$out/update.tx
     fail "the script (see $out/update.log)"
 log="$out/update.log"
 grep -aq "updtest: bad: PASS" "$log" || fail "a damaged offer wasn't refused for its reason"
+grep -aq "updtest: wire: PASS" "$log" || fail "a malformed offer wasn't refused by its wire"
 [ "$(grep -ac "init: update: refused: " "$log")" -eq 20 ] ||
     fail "not 20 refusals logged by init"
 [ "$(grep -ac "init: update: refused: the signature isn't this build's key's" "$log")" -eq 4 ] ||

@@ -130,28 +130,22 @@ void lastboot_event(void)
     if (state != WAITING || !answer)
         return;
     struct crashlog_result r;
-    uint32_t n = 0, nh = 0;
-    struct channel_read_args a = {
-        .h = answer, .rd_cap = sizeof(r), .rd_bytes = (uint64_t)(uintptr_t)&r,
-        .rd_actual = (uint64_t)(uintptr_t)&n, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-    };
-    status_t st = jam_channel_read(&a);
+    status_t st = crashlog_read_result(answer, &r);
     if (st == ERR_SHOULD_WAIT) {
         (void)jam_port_bind(port, answer, key, SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_ONCE);
         return;
     }
-    if (st != OK || n != sizeof(r)) {   /* logd ended without a word: the next one tries */
+    if (st != OK) {   /* logd ended without a word: the next one tries */
         drop(&answer);
         return;
     }
     char why[160];
-    r.path[sizeof(r.path) - 1] = '\0';
     saved = r.status == OK;
     if (r.status == OK)
         snprintf(why, sizeof(why), "saved as %s", r.path);
     else
-        snprintf(why, sizeof(why), "not saved: %s%s%s", r.path[0] ? r.path : "",
-                 r.path[0] ? ": " : "", status_str(r.status));
+        snprintf(why, sizeof(why), "not saved: %s%s%s", r.path, r.path[0] ? ": " : "",
+                 status_str(r.status));
     done(why);
 }
 

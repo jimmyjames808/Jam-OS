@@ -26,7 +26,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include "fd.h"
-#include "stdfd.h"
+#include "kinds.h"
 #include "tty.h"
 
 /* The reserved mark: a slot fd_alloc gave out, not filled yet. */
@@ -39,6 +39,8 @@ static lock_t          table_lock;
 
 /* ---- descriptions ---------------------------------------------------------------- */
 
+static uint64_t serials;   /* the last description's serial: atomic */
+
 struct fd_desc *fd_new(const struct fd_ops *ops, uint32_t status, void *priv)
 {
     struct fd_desc *d = calloc(1, sizeof(*d));
@@ -48,6 +50,7 @@ struct fd_desc *fd_new(const struct fd_ops *ops, uint32_t status, void *priv)
     d->priv = priv;
     d->refs = 1;
     d->status = status;
+    d->serial = __atomic_add_fetch(&serials, 1, __ATOMIC_RELAXED);
     return d;
 }
 
@@ -60,6 +63,7 @@ void fd_put(struct fd_desc *d)
 {
     if (__atomic_sub_fetch(&d->refs, 1, __ATOMIC_ACQ_REL))
         return;
+    epoll_forget(d);
     if (d->ops->close)
         d->ops->close(d);
     free(d);
@@ -270,7 +274,7 @@ struct staged {
 
 static struct staged staged[FD_MAX];   /* before main: one thread */
 static unsigned      nstaged;
-static bool          stage_default;    /* no hand-over: stdfd's defaults */
+static bool          stage_default;    /* no hand-over: stdfd_default (dev.c) */
 static uint8_t      *stage_data;       /* mapped stage_vmo, made at the first data */
 static handle_t      stage_vmo;
 static uint64_t      stage_used;
@@ -349,8 +353,11 @@ void fd_stage_default(void)
 /* The hand-over's kinds, as this program takes them: one line per kind,
  * each the kind's own file's (fd.h). */
 fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
-    [POSIXFDS_PIPE] = stdfd_adopt_pipe,
-    [POSIXFDS_DEV] = stdfd_adopt_dev,
+    [POSIXFDS_PIPE] = pipe_adopt,
+    [POSIXFDS_DEV] = dev_adopt,
+    [POSIXFDS_ETC] = etc_adopt,
+    [POSIXFDS_MEMFD] = memfd_adopt,
+    [POSIXFDS_EVENTFD] = eventfd_adopt,
     [POSIXFDS_TTY] = tty_adopt,
 };
 

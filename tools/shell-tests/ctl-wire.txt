@@ -1,0 +1,36 @@
+# The wire of init's channels and logd's (M12 P6b), against the live
+# system and the processes themselves:
+#   initctl_strings   every malformed form of initctl's strings (kill's
+#                     name, mount's path, terminal's command, launch's app)
+#                     is refused by the live init, which keeps answering
+#                     (user/tests/utest/initctl.c)
+#   splashch_wire, crashres_wire
+#                     the splash's channel and logd's crash result channel
+#                     against messages built by hand (chanwire.c)
+#   logd_crash_result the real logd, given a panicked boot's log and a
+#                     result channel, saves it and sends the result
+#                     (logd.c)
+#   update_offer_call the offer call between the fetcher's and init's halves
+#                     (updoffer.c); init's own check of malformed offers is
+#                     `updtest wire` (tools/update-test.sh)
+# Run:
+#   QEMU_INPUT=tools/shell-tests/ctl-wire.txt tools/qemu-test.sh build/test ctl-wire shell
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+
+send utest only initctl_strings; echo wire-$T-$?
+wait 60 wire-x-0
+seen 5 utest: 1 passed
+send utest only splashch_wire; echo wire2-$T-$?
+wait 60 wire2-x-0
+send utest only crashres_wire; echo wire3-$T-$?
+wait 60 wire3-x-0
+send utest only logd_crash_result; echo wire4-$T-$?
+wait 60 wire4-x-0
+send utest only update_offer_call; echo wire5-$T-$?
+wait 60 wire5-x-0
+
+send reboot -f
+wait reboot: resetting

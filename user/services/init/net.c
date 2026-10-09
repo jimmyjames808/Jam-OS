@@ -2,7 +2,7 @@
  * the DHCP client, the resolver, netlog and the clock from the network.
  *
  *   netstack  bin/netstack, once devmgr runs: the server end of its
- *             control channel (SR_USER + 0, abi/idl/netctl.idl) and a
+ *             control channel (NETSTACK_SR_CTL, abi/idl/netctl.idl) and a
  *             duplicate of each network card's device channel
  *             (SR_DEVMGR_DEVICE; services.c claims them before it
  *             publishes /svc/devmgr, so netstack is the only program that
@@ -12,23 +12,23 @@
  *             the same channel; it is never published: init uses its
  *             client end for the static address, and the DHCP client
  *             gets a duplicate. Also the server end of
- *             /svc/net's shared channel (SR_USER + 1, abi/idl/net.idl),
+ *             /svc/net's shared channel (NETSTACK_SR_NET, abi/idl/net.idl),
  *             made once and kept the same way; services.c publishes its
  *             client end (a channel per opener). The same for
- *             /svc/net-listen's (SR_USER + 2): the same protocol, but its
+ *             /svc/net-listen's (NETSTACK_SR_NET_LISTEN): the same protocol, but its
  *             openers may also take the ports other programs can't (the
  *             listen permission, docs/M9.5-PLAN.md); init publishes it, and
  *             the shell gives it only to a program whose list says `svc net
- *             listen`; and /svc/net-low's (SR_USER + 4), whose
+ *             listen`; and /svc/net-low's (NETSTACK_SR_NET_LOW), whose
  *             openers may also listen on ports below 1024, which the shell
  *             gives only to a program whose list says `svc net listen low`
  *             (bin/serve; never one on /data). The server end of a
- *             second, read-only control channel (SR_USER + 5: info, stats,
+ *             second, read-only control channel (NETSTACK_SR_NETINFO: info, stats,
  *             device and summary only), made and kept the same way, whose
  *             client end only the compositor gets (the network popover);
- *             and a duplicate of /svc/notify's client end (SR_USER + 6, not
+ *             and a duplicate of /svc/notify's client end (NETSTACK_SR_NOTIFY, not
  *             without a compositor: "Connected", "Disconnected"). And /svc/net-sys's
- *             (SR_USER + 3): the same protocol for the network's own
+ *             (NETSTACK_SR_NET_SYS): the same protocol for the network's own
  *             services (dns, netlog, sntp, and
  *             bin/update through the shell), whose openers may use a
  *             reserve of netstack's openers, sockets and ring bytes that
@@ -37,14 +37,14 @@
  *             (its device channels close) and is started again with the
  *             new devmgr's.
  *   dhcp      bin/dhcp, once netstack runs: a duplicate of netctl's client
- *             end (SR_USER + 0) and nothing else. Only without a static
+ *             end (DHCP_SR_NETCTL) and nothing else. Only without a static
  *             address: it waits for /data's settings (DHCP_DATA_WAIT at
  *             most, for a machine without /data), and isn't started (or
  *             is stopped, if /data came after it) when they have one.
  *   dns       bin/dns, once netstack runs: the server end of /svc/dns's
- *             shared channel (SR_USER + 0, abi/idl/dns.idl), made once
+ *             shared channel (DNS_SR_DNS, abi/idl/dns.idl), made once
  *             and kept as /svc/net's is, the same for /svc/dns-sys's
- *             (SR_USER + 1: the network's own services, whose openers may
+ *             (DNS_SR_DNS_SYS: the network's own services, whose openers may
  *             use a reserve of the resolver's that programs can't take),
  *             and /svc/net-sys in its namespace (shell.c's grants). Both
  *             client ends are published here (a channel per opener); only
@@ -338,26 +338,26 @@ status_t net_start(void)
         svcs[NETSTACK].given_up = true;
         return OK;
     }
-    struct spawn_handle x[7 + INIT_MAX_CLAIMED] = { { SR_USER + 0, HANDLE_INVALID } };
+    struct spawn_handle x[7 + INIT_MAX_CLAIMED] = { { NETSTACK_SR_CTL, HANDLE_INVALID } };
     if (jam_handle_duplicate(ctl_srv, RIGHT_SAME, &x[0].h) != OK)
         return ERR_NO_RESOURCES;
     unsigned n = 1;
-    x[n] = (struct spawn_handle){ SR_USER + 1, HANDLE_INVALID };
+    x[n] = (struct spawn_handle){ NETSTACK_SR_NET, HANDLE_INVALID };
     if (net_srv && jam_handle_duplicate(net_srv, RIGHT_SAME, &x[n].h) == OK)
         n++;   /* without it netstack serves no program: said in its log */
-    x[n] = (struct spawn_handle){ SR_USER + 2, HANDLE_INVALID };
+    x[n] = (struct spawn_handle){ NETSTACK_SR_NET_LISTEN, HANDLE_INVALID };
     if (listen_srv && jam_handle_duplicate(listen_srv, RIGHT_SAME, &x[n].h) == OK)
         n++;   /* without it no program may listen */
-    x[n] = (struct spawn_handle){ SR_USER + 3, HANDLE_INVALID };
+    x[n] = (struct spawn_handle){ NETSTACK_SR_NET_SYS, HANDLE_INVALID };
     if (sys_srv && jam_handle_duplicate(sys_srv, RIGHT_SAME, &x[n].h) == OK)
         n++;   /* without it the services have no reserve: said in netstack's log */
-    x[n] = (struct spawn_handle){ SR_USER + 4, HANDLE_INVALID };
+    x[n] = (struct spawn_handle){ NETSTACK_SR_NET_LOW, HANDLE_INVALID };
     if (low_srv && jam_handle_duplicate(low_srv, RIGHT_SAME, &x[n].h) == OK)
         n++;   /* without it no program may listen below 1024 */
-    x[n] = (struct spawn_handle){ SR_USER + 5, HANDLE_INVALID };
+    x[n] = (struct spawn_handle){ NETSTACK_SR_NETINFO, HANDLE_INVALID };
     if (info_srv && jam_handle_duplicate(info_srv, RIGHT_SAME, &x[n].h) == OK)
         n++;   /* without it the desktop shows no network */
-    x[n] = (struct spawn_handle){ SR_USER + 6, comp_notify_client() };
+    x[n] = (struct spawn_handle){ NETSTACK_SR_NOTIFY, comp_notify_client() };
     if (x[n].h)
         n++;   /* without it (no compositor) the link's news is in the log only */
     handle_t cards[INIT_MAX_CLAIMED];
@@ -571,7 +571,7 @@ status_t net_dhcp_start(void)
         svcs[DHCP].given_up = true;
         return OK;
     }
-    struct spawn_handle x[] = { { SR_USER + 0, HANDLE_INVALID } };
+    struct spawn_handle x[] = { { DHCP_SR_NETCTL, HANDLE_INVALID } };
     if (jam_handle_duplicate(ctl_cli, RIGHT_SAME, &x[0].h) != OK)
         return ERR_NO_RESOURCES;
     return svc_start1(DHCP, x, 1);   /* consumes it */
@@ -583,7 +583,7 @@ status_t net_dns_start(void)
         svcs[DNS].given_up = true;
         return OK;
     }
-    struct spawn_handle x[] = { { SR_USER + 0, HANDLE_INVALID }, { SR_USER + 1, HANDLE_INVALID } };
+    struct spawn_handle x[] = { { DNS_SR_DNS, HANDLE_INVALID }, { DNS_SR_DNS_SYS, HANDLE_INVALID } };
     if (jam_handle_duplicate(dns_srv, RIGHT_SAME, &x[0].h) != OK)
         return ERR_NO_RESOURCES;
     unsigned n = 1;

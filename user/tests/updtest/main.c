@@ -37,6 +37,15 @@
  *                  UPDATE_OFFER_CHECK_ONLY: accepted, not loaded.
  *                  The script's `reboot` then shows the stored kernel
  *                  unchanged.
+ *   updtest wire   the offer's wire by hand (wire.c): a message of another
+ *                  protocol or of the older form, a manifest past 1024
+ *                  bytes, a count that is not the bytes there, a byte
+ *                  after or missing, four VMOs, a channel end for a file:
+ *                  each refused before init looks at it; no VMOs at all
+ *                  is an answer (BAD_OFFER); four malformed offers and
+ *                  then the good one (check-only) on the same channel:
+ *                  accepted; a second offer after the answer finds the
+ *                  channel closed.
  *   updtest nokey  on a build without an update key: the build offered,
  *                  plain, check-only and to be written to the stick,
  *                  refused for that alone.
@@ -155,52 +164,32 @@ static status_t load(struct build *b)
     return load_dir(b, DIR);
 }
 
-status_t offer(const struct build *b, unsigned handles, uint32_t magic, struct update_answer *a)
+status_t offer(const struct build *b, unsigned handles, struct update_answer *a)
 {
     handle_t ch;
     status_t st = initctl_update_offer_until(initctl, now() + 5 * NS_PER_S, &ch);
     if (st != OK)
         return st;
-    struct update_offer *o = calloc(1, sizeof(*o));
     handle_t hs[UPDATE_PARTS];
     unsigned nh = 0;
-    st = o ? OK : ERR_NO_MEMORY;
     for (; st == OK && nh < handles; nh++)
         if ((st = jam_handle_duplicate(b->vmo[nh], RIGHT_SAME, &hs[nh])) != OK)
             break;
-    if (st == OK) {
-        *o = (struct update_offer){ .magic = magic, .manifest_len = b->manifest_len,
-                                    .flags = b->flags };
-        memcpy(o->bytes, b->bytes, sizeof(o->bytes));
-        memcpy(o->manifest, b->manifest, b->manifest_len);
-        /* moves the handles, whatever its status: never closed after it */
-        st = jam_channel_write(ch, o, sizeof(*o), hs, handles);
-    } else {   /* a duplicate failed: the ones made were never sent */
+    if (st == OK)   /* moves the handles, whatever its status: never closed after it */
+        st = update_make_offer(ch, now() + ANSWER_WAIT, b->flags, b->bytes, b->manifest,
+                               b->manifest_len, hs, handles, a);
+    else   /* a duplicate failed: the ones made were never sent */
         for (unsigned i = 0; i < nh; i++)
             jam_handle_close(hs[i]);
-    }
-    free(o);
-    if (st == OK)
-        st = jam_object_wait_one(ch, SIG_READABLE, now() + ANSWER_WAIT, NULL);
-    uint32_t got = 0;
-    struct channel_read_args r = {
-        .h = ch, .rd_cap = sizeof(*a), .rd_bytes = (uint64_t)(uintptr_t)a,
-        .rd_actual = (uint64_t)(uintptr_t)&got,
-    };
-    if (st == OK)
-        st = jam_channel_read(&r);
-    if (st == OK && (got != sizeof(*a) || a->magic != UPDATE_ANSWER_MAGIC))
-        st = ERR_INTERNAL;
     jam_handle_close(ch);
     return st;
 }
 
-void expect(const char *name, const struct build *b, unsigned handles, uint32_t magic, uint32_t why,
-            uint32_t file)
+void expect(const char *name, const struct build *b, unsigned handles, uint32_t why, uint32_t file)
 {
     struct update_answer a;
     memset(&a, 0, sizeof(a));
-    status_t st = offer(b, handles, magic, &a);
+    status_t st = offer(b, handles, &a);
     bool ok = st == OK && a.why == why && (why == UPDATE_ACCEPTED) == (a.status == OK) &&
               (a.file == file || why == UPDATE_ACCEPTED);
     if (!ok)
@@ -236,7 +225,7 @@ static void changed(const char *name, const struct build *b, const struct change
         st = jam_vmo_write(v.vmo[c->f], c->flip, &ch, 1);
     v.bytes[c->f] = c->bytes;
     if (st == OK) {
-        expect(name, &v, 2, UPDATE_OFFER_MAGIC, why, c->f);
+        expect(name, &v, 2, why, c->f);
     } else {
         failures++;
         printf("updtest: %s: can't make its file (%s): FAILED\n", name, status_str(st));
@@ -269,7 +258,7 @@ static void bad_manifest(const struct build *b, const char *name, const void *te
     struct build v = *b;
     memcpy(v.manifest, text, len);
     v.manifest_len = (uint32_t)len;
-    expect(name, &v, 2, UPDATE_OFFER_MAGIC, why, 0);
+    expect(name, &v, 2, why, 0);
 }
 
 /* Where the manifest's signature line starts (after the last but one '\n'). */
@@ -322,7 +311,7 @@ static void wrong_signatures(const struct build *b, const struct build *nak)
         other.manifest_len = (uint32_t)n;
     }
     if (st == OK) {
-        expect("another key's signature", &other, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_SIGNATURE, 0);
+        expect("another key's signature", &other, 2, UPDATE_BAD_SIGNATURE, 0);
     } else {
         failures++;
         printf("updtest: another key's signature: no " DIR "manifest-otherkey (%s): FAILED\n",
@@ -357,9 +346,9 @@ static void other_net(const struct build *b)
         return;
     }
     v.flags = 0;
-    expect("another network default", &v, 2, UPDATE_OFFER_MAGIC, UPDATE_NET_CHANGE, 0);
+    expect("another network default", &v, 2, UPDATE_NET_CHANGE, 0);
     v.flags = UPDATE_OFFER_FORCE | UPDATE_OFFER_CHECK_ONLY;
-    expect("another network default, forced (check only)", &v, 2, UPDATE_OFFER_MAGIC,
+    expect("another network default, forced (check only)", &v, 2,
            UPDATE_ACCEPTED, 0);
 }
 
@@ -391,16 +380,16 @@ static void extension_lines(const struct build *b)
     struct build v;
     if (other_manifest(b, DIR "manifest-ext", &v) == OK) {
         v.flags = UPDATE_OFFER_CHECK_ONLY;
-        expect("an extension line (check only)", &v, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+        expect("an extension line (check only)", &v, 2, UPDATE_ACCEPTED, 0);
     }
     if (other_manifest(b, DIR "manifest-must", &v) != OK)
         return;
     v.flags = UPDATE_OFFER_CHECK_ONLY;
-    expect("a must-understand line", &v, 2, UPDATE_OFFER_MAGIC, UPDATE_NEEDS_NEWER, 0);
+    expect("a must-understand line", &v, 2, UPDATE_NEEDS_NEWER, 0);
     char *line = strstr((char *)v.manifest, "\n!");
     if (line)
         line[2] = line[2] == 'x' ? 'y' : 'x';   /* the line's first letter: signed */
-    expect("a must-understand line, changed after signing", &v, 2, UPDATE_OFFER_MAGIC,
+    expect("a must-understand line, changed after signing", &v, 2,
            line ? UPDATE_BAD_SIGNATURE : UPDATE_ACCEPTED, 0);
 }
 
@@ -440,7 +429,7 @@ static void expect_write(const char *name, struct build *b, uint32_t flags, uint
     struct update_answer a;
     memset(&a, 0, sizeof(a));
     b->flags = flags;
-    status_t st = offer(b, 2, UPDATE_OFFER_MAGIC, &a);
+    status_t st = offer(b, 2, &a);
     b->flags = 0;
     bool ok = st == OK && a.why == why && (why == UPDATE_ACCEPTED) == (a.status == OK) &&
               a.write_step == step && a.stick == stick;
@@ -467,11 +456,11 @@ static void write_failures(struct build *b)
         expect_write(at[i].name, b, UPDATE_OFFER_WRITE | UPDATE_OFFER_FAIL(at[i].step),
                      UPDATE_NOT_WRITTEN, at[i].step, UPDATE_STICK_OLD);
     b->flags = UPDATE_OFFER_WRITE | UPDATE_OFFER_CHECK_ONLY;
-    expect("write and check only", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    expect("write and check only", b, 2, UPDATE_BAD_OFFER, 0);
     b->flags = UPDATE_OFFER_FAIL(UPDATE_WRITE_NEW);
-    expect("a failure without a write", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    expect("a failure without a write", b, 2, UPDATE_BAD_OFFER, 0);
     b->flags = UPDATE_OFFER_WRITE | UPDATE_OFFER_FAIL(UPDATE_WRITE_DONE);
-    expect("a failure at no step", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    expect("a failure at no step", b, 2, UPDATE_BAD_OFFER, 0);
     b->flags = 0;
 }
 
@@ -579,7 +568,7 @@ static void write_stop(uint32_t n, const char *which)
     status_t st = load_dir(&x, which[0] == 'c' ? DIR "c/" : DIR);
     x.flags = UPDATE_OFFER_WRITE | (n ? UPDATE_OFFER_STOP(n) : 0);
     if (st == OK)
-        st = offer(&x, 2, UPDATE_OFFER_MAGIC, &a);
+        st = offer(&x, 2, &a);
     bool good = st == OK && a.why == (n ? UPDATE_NOT_WRITTEN : UPDATE_ACCEPTED);
     failures += !good;
     printf("updtest: %s written, stopped after change %u of the swap (0: none): %s (%s), %s: %s\n",
@@ -621,24 +610,23 @@ static void bad(struct build *b)
     bad_manifests(b);
     if (st == OK)
         wrong_signatures(b, &nak);
-    expect("bad magic", b, 2, UPDATE_OFFER_MAGIC ^ 1, UPDATE_BAD_OFFER, 0);
-    expect("one handle", b, 1, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    expect("one handle", b, 1, UPDATE_BAD_OFFER, 0);
     b->flags = 1u << 31;   /* no such flag (the bits above CHECK_ONLY are WRITE, FORCE) */
-    expect("unknown flag", b, 2, UPDATE_OFFER_MAGIC, UPDATE_BAD_OFFER, 0);
+    expect("unknown flag", b, 2, UPDATE_BAD_OFFER, 0);
     b->flags = UPDATE_OFFER_CHECK_ONLY;   /* passes, and is not loaded: */
-    expect("check only", b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+    expect("check only", b, 2, UPDATE_ACCEPTED, 0);
     b->flags = 0;
     other_net(b);
     extension_lines(b);
     if (st == OK)
-        expect("not a kernel", &nak, 2, UPDATE_OFFER_MAGIC, UPDATE_NOT_LOADED, 0);
+        expect("not a kernel", &nak, 2, UPDATE_NOT_LOADED, 0);
 }
 
 int main(int argc, char **argv)
 {
-    enum { GOOD, BAD, NOKEY, WRITEFAIL, WRITESTOP, ESPCHECK, MODES };
-    static const char *const modes[MODES] = { "good",      "bad",       "nokey",
-                                              "writefail", "writestop", "espcheck" };
+    enum { GOOD, BAD, NOKEY, WRITEFAIL, WRITESTOP, ESPCHECK, WIRE, MODES };
+    static const char *const modes[MODES] = { "good",      "bad",       "nokey", "writefail",
+                                              "writestop", "espcheck", "wire" };
     if (argc >= 2 && !strncmp(argv[1], "menu", 4))
         return menu_main(argc, argv);   /* menu.c */
     unsigned mode = 0;
@@ -648,7 +636,7 @@ int main(int argc, char **argv)
                      (unsigned)(argv[2][0] - '0') <= UPDATE_SWAP_OPS &&
                      (!strcmp(argv[3], "b") || !strcmp(argv[3], "c"));
     if (mode == MODES || (mode == WRITESTOP ? !stop_args : argc != 2)) {
-        printf("usage: updtest good|bad|nokey|writefail|espcheck | writestop <0-%u> b|c | "
+        printf("usage: updtest good|bad|nokey|writefail|espcheck|wire | writestop <0-%u> b|c | "
                "menuwrite <dir> [<0-%u>] | menubad <dir> | menucheck <old> <new>\n",
                UPDATE_SWAP_OPS, UPDATE_STOP_MAX);
         return 2;
@@ -667,13 +655,15 @@ int main(int argc, char **argv)
             return 1;
         }
         if (mode == GOOD) {
-            expect("the build", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_ACCEPTED, 0);
+            expect("the build", &b, 2, UPDATE_ACCEPTED, 0);
         } else if (mode == NOKEY) {
-            expect("no key", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+            expect("no key", &b, 2, UPDATE_NO_KEY, 0);
             b.flags = UPDATE_OFFER_CHECK_ONLY;
-            expect("no key, check only", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+            expect("no key, check only", &b, 2, UPDATE_NO_KEY, 0);
             b.flags = UPDATE_OFFER_WRITE;
-            expect("no key, written to the stick", &b, 2, UPDATE_OFFER_MAGIC, UPDATE_NO_KEY, 0);
+            expect("no key, written to the stick", &b, 2, UPDATE_NO_KEY, 0);
+        } else if (mode == WIRE) {
+            wire_cases(&b);   /* wire.c: malformed offers; one good one, check-only */
         } else if (mode == WRITEFAIL) {
             write_failures(&b);   /* each loads the build: the stored kernel is it afterwards */
         } else {

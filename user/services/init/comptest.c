@@ -43,7 +43,7 @@ static const char *const scene_args[] = {
 bool run_comptest(void)
 {
     handle_t job = HANDLE_INVALID, proc = HANDLE_INVALID, mine = HANDLE_INVALID;
-    struct spawn_handle x[2] = { { SR_RESOURCE, HANDLE_INVALID }, { SR_USER + 0, HANDLE_INVALID } };
+    struct spawn_handle x[2] = { { SR_RESOURCE, HANDLE_INVALID }, { COMP_SR_WAYLAND, HANDLE_INVALID } };
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st == OK)
         st = jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHTS_BASIC | RIGHT_ROOT_SCREEN,

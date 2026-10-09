@@ -547,7 +547,10 @@ Every driver and service is a userspace process from the start.
 - **Channel**: bidirectional endpoint pair; message = up to 64 KiB of bytes +
   up to 64 handles; sending a handle moves it. At most 1024 messages queue on
   one endpoint (then `ERR_SHOULD_WAIT`), and every message's memory is
-  charged to its sender's job until it is read or dropped. Cycle rule: you
+  charged to its sender's job until it is read or dropped (the reading end
+  closes), also after the sender has closed its end or its job has no
+  process left: a close never frees the sender's quota, so a backlog
+  can't be passed on to the reader and the quota filled again. Cycle rule: you
   can't send an endpoint of the channel you are writing to, its peer, or an
   endpoint whose own queue already holds an endpoint.
 - **`channel_call`**: write + wait for the reply whose first 4 bytes (the
@@ -1963,8 +1966,9 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   batches unread at a client, by the kernel's count (`handle_info`'s
   `peer_queued`); past that it holds up to 64 KiB, and a client still
   behind is disconnected ("too slow"). When it disconnects a client it
-  closes its end at once: what the client never read is the client's job's
-  from then on (M12's Q2).
+  closes its end at once and the slot is free, but what the client hasn't
+  read (those batches at most, and the error) stays charged to the
+  compositor's job until the client reads it or closes its end.
 - **A client can hurt only itself.** Every message is checked by libjwl's
   codec (sizes, strings, objects, new ids, versions) and every request by
   its handler; a broken one ends that connection alone (`wl_display.error`)
@@ -2168,7 +2172,9 @@ and libjwl uses (`user/lib/jwl_data.c`, `jwl_clip_*` in `<jwl_client.h>`).
   `wl_keyboard.enter`, and again when it changes), and only it may read
   it: at most 32 reads each time the user gives it the keys (counted per
   client, not per offer, since a client can make itself new offers), which
-  bounds what a reader can make the owner write and hold for it. Only text
+  bounds what a reader can make the owner write and hold for it (what the
+  owner wrote is charged to its job until the reader reads it or closes
+  its end, also after the owner has closed). Only text
   types go on
   (`text/plain;charset=utf-8`, `text/plain`, `UTF8_STRING`, `TEXT`). The
   selection goes when its owner does. `start_drag` cancels its source at

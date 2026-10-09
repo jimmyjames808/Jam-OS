@@ -104,10 +104,9 @@ static status_t probe(const struct target *t, uint64_t deadline)
 static void kill_one(struct storm *s, unsigned i)
 {
     const struct target *t = &s->t[i];
-    uint8_t name[NAME_MAX] = { 0 };
-    memcpy(name, t->name, strlen(t->name));
     uint64_t koid = 0, t0 = now();
-    status_t st = initctl_kill_until(s->ctl, t0 + KILL_WAIT, name, &koid);
+    status_t st = initctl_kill_until(s->ctl, t0 + KILL_WAIT, t->name,
+                                     (uint32_t)strlen(t->name), &koid);
     if (st != OK) {
         if (!s->refused++) {
             s->refused_st = st;

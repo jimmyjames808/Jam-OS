@@ -473,6 +473,21 @@ static status_t c_device_channel(void *ctx, uint8_t kind, uint32_t a, uint32_t b
     return chans_new_device((uint32_t)(bd - devs), out_device);
 }
 
+/* disk_storage: a `storage` channel of the caller's own to a disk's
+ * driver, answered when the driver has answered svc.connect (disks.c). */
+static status_t c_disk_storage(void *ctx, struct idl_txn txn, uint8_t kind, uint32_t a,
+                               uint32_t b, uint32_t n, handle_t *out_storage)
+{
+    (void)out_storage;
+    struct binding *bd = NULL;
+    status_t st = named(ctx, kind, a, b, n, false, &bd);
+    if (st != OK)
+        return st;
+    if (!known(bd))
+        return ERR_NOT_FOUND;
+    return disks_test_storage(bd, txn);
+}
+
 static status_t c_shutdown(void *ctx)
 {
     (void)ctx;
@@ -493,4 +508,5 @@ const struct devmgrctl_ops devmgrctl_ops = {
     .device_channel = c_device_channel,
     .shutdown = c_shutdown,
     .kill_process = c_kill_process,
+    .disk_storage = c_disk_storage,
 };

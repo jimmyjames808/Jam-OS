@@ -87,6 +87,10 @@
 # argument error (a size, a flag) closes them too. A caller that may try
 # again duplicates first.
 # process_start's arg0 follows the same rule.
+# A message is charged to the writer's job (JOB_LIMIT_MSG_BYTES: its bytes,
+# plus JOB_OBJECT_BYTES per handle; ERR_NO_MEMORY over the limit) until it
+# is read or dropped (the reading end closes), also after the writer has
+# closed its end: a close frees nothing of the writer's quota.
 20  channel_create    status    handle_t *a, handle_t *b
 21  channel_write     status    handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, uint32_t nhandles
 22  channel_read      status    @channel_read_args

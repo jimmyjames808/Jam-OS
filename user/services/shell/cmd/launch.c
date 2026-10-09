@@ -10,8 +10,7 @@
 
 SH_CMD(launch)
 {
-    uint8_t app[16] = { 0 };
-    if (argc != 2 || strlen(argv[1]) >= sizeof(app)) {
+    if (argc != 2 || strlen(argv[1]) > INITCTL_APP_MAX) {
         sh_tty("usage: launch <app>\n");
         return 2;
     }
@@ -19,9 +18,9 @@ SH_CMD(launch)
         sh_tty("launch: no init to ask (a shell run from a shell?)\n");
         return 1;
     }
-    memcpy(app, argv[1], strlen(argv[1]));
     uint64_t koid = 0;
-    status_t st = initctl_launch_until(sh_initctl(), now() + INIT_WAIT, app, &koid);
+    status_t st = initctl_launch_until(sh_initctl(), now() + INIT_WAIT, argv[1],
+                                       (uint32_t)strlen(argv[1]), &koid);
     if (st == ERR_NOT_FOUND) {
         sh_tty("launch: %s is not one of the desktop's apps\n", argv[1]);
         return 1;

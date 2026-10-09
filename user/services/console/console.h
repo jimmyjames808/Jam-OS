@@ -269,7 +269,7 @@ bool focus_to_shell(const struct input_key_event *ev, unsigned below);
 /* ---- tty.c: POSIX clients (console.open_tty, the `tty` protocol) ---------------- */
 
 void ttys_init(void);
-status_t op_open_tty(void *ctx, handle_t *out_tty, handle_t *out_input, handle_t *out_output);
+status_t op_open_tty(void *ctx, handle_t *out_tty, handle_t *out_data);
 /* A tty's packet: K_TTY (its requests, or its channel closed) or
  * K_TTY_OUT (its output). */
 void tty_event(uint32_t kind, uint32_t i);
@@ -280,8 +280,8 @@ void ttys_type(unsigned i, const uint8_t *p, size_t n);
 void ttys_key(unsigned i, const struct input_key_event *ev);
 /* tty i asked for bracketed paste. */
 bool ttys_bracketed(unsigned i);
-/* Throw away the input not read yet: the line discipline's, and tty i's
- * pipe's. */
+/* Throw away the input not read yet: the line discipline's, and what tty
+ * i's data channel holds for it. */
 void ttys_flush_in(unsigned i);
 /* tty i's focus entry was dropped: what it left unread goes back to the
  * terminal, and its slot is freed. */

@@ -1,16 +1,17 @@
 /* The terminal descriptor: a kind of the descriptor table (fd.h) over the
  * console's POSIX side (tty.h; docs/M13-PLAN.md, "The terminal layer").
  *
- * A terminal is three handles: the `tty` channel (abi/idl/console.idl:
- * the settings, the size, drain and flush; the size and signal events),
- * the input pipe (what is typed, after the console's line discipline: in
- * canonical mode one line per message, an empty message the end of the
- * file) and the output pipe (what the program writes, in messages of at
- * most TTY_OUT_MAX bytes).
+ * A terminal is two handles: the `tty` channel (abi/idl/console.idl: the
+ * settings, the size, drain and flush; the size and signal events) and the
+ * data channel, a pipe both ways: what is typed comes in on it, after the
+ * console's line discipline (in canonical mode one line per message, an
+ * empty message the end of the file), and what the program writes goes
+ * out on it, in messages of at most TTY_OUT_MAX bytes. Its one handle says
+ * readable, writable and hung up: poll's arm.
  *
- * read takes the input pipe's messages as a pipe's read does (what doesn't
- * fit waits in the description's buffer), but never past one message in
- * canonical mode, and by MIN and TIME otherwise (<ldisc.h>'s
+ * read takes the data channel's messages as a pipe's read does (what
+ * doesn't fit waits in the description's buffer), but never past one
+ * message in canonical mode, and by MIN and TIME otherwise (<ldisc.h>'s
  * ld_read_deadline: the settings are asked of the console at each read,
  * since another process on the terminal may have changed them). write
  * cuts the bytes into messages. tcgetattr, tcsetattr, tcdrain, tcflush
@@ -33,7 +34,8 @@
 #include <termios.h>
 #include "tty.h"
 
-#define TTY_BUF LD_REC_MAX   /* the longest message the console sends */
+#define TTY_BUF     LD_REC_MAX   /* the longest message the console sends */
+#define TTY_HANDLES 2            /* the tty channel, the data channel */
 
 _Static_assert(sizeof(((struct termios *)0)->c_cc) == LD_NCCS, "c_cc is the protocol's cc");
 _Static_assert(ICANON == LD_ICANON && ECHO == LD_ECHO && ISIG == LD_ISIG && ICRNL == LD_ICRNL &&
@@ -44,7 +46,7 @@ _Static_assert(TCSADRAIN - TCSANOW == TTY_WHEN_DRAIN && TCSAFLUSH - TCSANOW == T
                TCIOFLUSH == TTY_QUEUE_BOTH, "the protocol's constants are Linux's");
 
 struct tty {
-    handle_t ch, in, out;          /* the tty channel, the input pipe, the output pipe */
+    handle_t ch, data;             /* the tty channel, the data channel */
     uint32_t have, at;             /* buf[at .. have) read from the input and not taken */
     uint8_t  buf[TTY_BUF];
 };
@@ -62,7 +64,7 @@ static long fill(struct tty *t, uint64_t deadline, bool nonblock)
     for (;;) {
         uint32_t got = 0, nh = 0;
         handle_t hs[CHANNEL_MAX_HANDLES];
-        status_t st = drv_channel_read(t->in, t->buf, TTY_BUF, &got, hs, CHANNEL_MAX_HANDLES,
+        status_t st = drv_channel_read(t->data, t->buf, TTY_BUF, &got, hs, CHANNEL_MAX_HANDLES,
                                        &nh);
         for (uint32_t i = 0; st == OK && i < nh; i++)
             jam_handle_close(hs[i]);   /* bytes only */
@@ -78,7 +80,7 @@ static long fill(struct tty *t, uint64_t deadline, bool nonblock)
         if (nonblock || deadline <= now())
             return -EAGAIN;
         signals_t seen;
-        st = jam_object_wait_one(t->in, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
+        st = jam_object_wait_one(t->data, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
         if (st == ERR_TIMED_OUT)
             return -EAGAIN;
         if (st != OK)
@@ -137,12 +139,12 @@ static long write_one(struct fd_desc *d, const uint8_t *p, size_t n)
     size_t done = 0;
     while (done < n) {
         uint32_t k = n - done > TTY_OUT_MAX ? TTY_OUT_MAX : (uint32_t)(n - done);
-        status_t st = jam_channel_write(t->out, p + done, k, NULL, 0);
+        status_t st = jam_channel_write(t->data, p + done, k, NULL, 0);
         if (st == ERR_SHOULD_WAIT) {
             if (fd_status(d) & O_NONBLOCK)
                 return done ? (long)done : -EAGAIN;
             signals_t seen;
-            st = jam_object_wait_one(t->out, SIG_WRITABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
+            st = jam_object_wait_one(t->data, SIG_WRITABLE | SIG_PEER_CLOSED, DEADLINE_NEVER,
                                      &seen);
             if (st != OK)
                 return done ? (long)done : lx_err(st);
@@ -271,26 +273,24 @@ static long tty_stat(struct fd_desc *d, struct stat *st)
 static uint32_t tty_ready(struct fd_desc *d, uint32_t interest)
 {
     const struct tty *t = d->priv;
-    uint32_t r = interest & NETWAIT_WRITE;   /* the console takes output as it comes */
-    if (t->at < t->have)
-        r |= interest & NETWAIT_READ;
-    return r;
+    return t->at < t->have ? interest & NETWAIT_READ : 0;   /* bytes read and not taken */
 }
 
 static long tty_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
 {
     const struct tty *t = d->priv;
     *out = (struct fd_wait){ .kind = FD_WAIT_HANDLE };
-    out->h = (struct netwait_handle){ .h = t->in, .read = SIG_READABLE, .hup = SIG_PEER_CLOSED };
+    out->h = (struct netwait_handle){ .h = t->data, .read = SIG_READABLE, .write = SIG_WRITABLE,
+                                      .hup = SIG_PEER_CLOSED };
     return 0;
 }
 
 static long tty_give(struct fd_desc *d, struct fd_given *out)
 {
     const struct tty *t = d->priv;
-    handle_t hs[3] = { t->ch, t->in, t->out };
+    handle_t hs[TTY_HANDLES] = { t->ch, t->data };
     memset(out, 0, sizeof(*out));
-    for (unsigned i = 0; i < 3; i++) {
+    for (unsigned i = 0; i < TTY_HANDLES; i++) {
         status_t st = jam_handle_duplicate(hs[i], RIGHT_SAME, &out->handles[i]);
         if (st != OK) {
             for (unsigned k = 0; k < i; k++)
@@ -300,7 +300,7 @@ static long tty_give(struct fd_desc *d, struct fd_given *out)
     }
     out->kind = POSIXFDS_TTY;
     out->status = fd_status(d);
-    out->nhandles = 3;
+    out->nhandles = TTY_HANDLES;
     return 0;   /* no data: what we read and didn't take stays ours */
 }
 
@@ -308,8 +308,7 @@ static void tty_close(struct fd_desc *d)
 {
     struct tty *t = d->priv;
     jam_handle_close(t->ch);
-    jam_handle_close(t->in);
-    jam_handle_close(t->out);
+    jam_handle_close(t->data);
     free(t);
 }
 
@@ -320,20 +319,19 @@ static const struct fd_ops tty_ops = {
 
 /* ---- making one ---------------------------------------------------------------------------- */
 
-/* A description over the three handles (consumed). */
-static long tty_new(const handle_t hs[3], uint32_t status, struct fd_desc **out)
+/* A description over the two handles (consumed). */
+static long tty_new(const handle_t hs[TTY_HANDLES], uint32_t status, struct fd_desc **out)
 {
     struct tty *t = calloc(1, sizeof(*t));
     struct fd_desc *d = t ? fd_new(&tty_ops, status, t) : NULL;
     if (!d) {
         free(t);
-        for (unsigned i = 0; i < 3; i++)
+        for (unsigned i = 0; i < TTY_HANDLES; i++)
             jam_handle_close(hs[i]);
         return -ENOMEM;
     }
     t->ch = hs[0];
-    t->in = hs[1];
-    t->out = hs[2];
+    t->data = hs[1];
     lock_take(&ctty_lock);
     if (!ctty) {
         fd_ref(d);
@@ -346,8 +344,8 @@ static long tty_new(const handle_t hs[3], uint32_t status, struct fd_desc **out)
 
 long tty_open(handle_t con, uint32_t status, struct fd_desc **out)
 {
-    handle_t hs[3];
-    status_t st = console_open_tty(con, &hs[0], &hs[1], &hs[2]);
+    handle_t hs[TTY_HANDLES];
+    status_t st = console_open_tty(con, &hs[0], &hs[1]);
     if (st != OK)
         return lx_err(st);
     return tty_new(hs, status, out);

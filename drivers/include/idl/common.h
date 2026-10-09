@@ -57,12 +57,13 @@
 #define IDL_ID_MOUNTS         0x0049u   /* abi/idl/volumes.idl */
 #define IDL_ID_KEEPCH         0x0050u   /* abi/idl/keepch.idl */
 #define IDL_ID_NSCHAN         0x0051u   /* abi/idl/nschan.idl */
+#define IDL_ID_UPDATE         0x0052u   /* abi/idl/update.idl */
+#define IDL_ID_SPLASHCH       0x0053u   /* abi/idl/splashch.idl */
+#define IDL_ID_CRASHRES       0x0054u   /* abi/idl/logctl.idl */
 #define IDL_ID_DEVMGR         0x005au   /* abi/idl/devmgr.idl */
 #define IDL_ID_DEVMGRCTL      0x005bu   /* abi/idl/devmgr.idl */
 #define IDL_ID_CRASHER        0x005cu   /* abi/idl/crasher.idl */
-#define IDL_ID_UPDATE_ANSWER  0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
-#define IDL_ID_UPDATE_OFFER   0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */
 #define IDL_ID_STARTUP        0x534du   /* kernel/include/jam/startup.h: STARTUP_MAGIC "JAMS" */
 #define IDL_ID_POSIXFDS       0x5853u   /* user/include/posixfds.h: POSIXFDS_MAGIC "JPSX" (the POSIX hand-over) */
 

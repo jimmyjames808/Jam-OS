@@ -40,8 +40,20 @@ lx_call lx_read, lx_write, lx_readv, lx_writev, lx_pread64, lx_pwrite64, lx_prea
         lx_pwritev, lx_lseek, lx_close, lx_fstat, lx_ioctl, lx_fsync, lx_fdatasync,
         lx_ftruncate, lx_getdents64;
 
-/* fcntl's table-only commands until B2's fcntl (stdfd.c). */
-lx_call lx_fcntl;
+/* Pipes, dup and fcntl, memfd and eventfd (pipe.c, dup.c, memfd.c,
+ * eventfd.c; /dev and /etc are dev.c's and etc.c's, reached through the
+ * path calls). */
+lx_call lx_pipe, lx_pipe2, lx_socketpair, lx_dup, lx_dup2, lx_dup3, lx_fcntl, lx_memfd_create,
+        lx_eventfd, lx_eventfd2;
+
+/* The one user (user.c). */
+lx_call lx_getuid, lx_geteuid, lx_getgid, lx_getegid, lx_getresuid, lx_getresgid, lx_setuid,
+        lx_setgid, lx_setreuid, lx_setregid, lx_setresuid, lx_setresgid, lx_setfsuid,
+        lx_setfsgid, lx_getgroups, lx_setgroups;
+
+/* poll, select and epoll (poll.c, select.c, epoll.c). */
+lx_call lx_poll, lx_ppoll, lx_select, lx_pselect6, lx_epoll_create, lx_epoll_create1,
+        lx_epoll_ctl, lx_epoll_wait, lx_epoll_pwait;
 
 /* Signals before signals exist (nosig.c). */
 lx_call lx_rt_sigprocmask;

@@ -1,6 +1,6 @@
 /* wltest: a headless compositor of our own (wltest.h), started the way
  * init will start the real one: the server end of a channel as its
- * /svc/wayland (SR_USER + 0), which it serves with the svc protocol's
+ * /svc/wayland (COMP_SR_WAYLAND), which it serves with the svc protocol's
  * connect, one connection per opener. Used by `wltest --spawn` until init
  * publishes /svc/wayland, and by the scripted reconnect check, which kills
  * it and lets comp_connect start the next one. */
@@ -26,7 +26,7 @@ status_t comp_start(struct comp_child *k)
     char size[32];
     snprintf(size, sizeof(size), "size=%dx%d", k->w, k->h);
     const char *argv[] = { "bin/compositor", "headless", size, "layout=floating" };
-    struct spawn_handle x[] = { { SR_USER + 0, theirs } };
+    struct spawn_handle x[] = { { COMP_SR_WAYLAND, theirs } };
     struct spawn_args a = { .path = "bin/compositor", .argc = 4, .argv = argv, .job = k->job,
                             .extra = x, .nextra = 1 };
     st = spawn(&a, &k->proc);   /* theirs is consumed either way */

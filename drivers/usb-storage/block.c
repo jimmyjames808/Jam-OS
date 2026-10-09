@@ -282,8 +282,10 @@ static status_t drop(struct blk *b)
     return ERR_PEER_CLOSED;
 }
 
-static status_t b_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t b_read(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t count,
+                       uint32_t offset)
 {
+    (void)txn;   /* answered now: one request at a time */
     struct blk *b = ctx;
     if (client_gone(b))
         return drop(b);
@@ -291,8 +293,10 @@ static status_t b_read(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
     return st == OK ? transfer(b, false, lba, count, offset) : st;
 }
 
-static status_t b_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset)
+static status_t b_write(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t count,
+                        uint32_t offset)
 {
+    (void)txn;
     struct blk *b = ctx;
     if (client_gone(b))
         return drop(b);
@@ -302,8 +306,9 @@ static status_t b_write(void *ctx, uint64_t lba, uint32_t count, uint32_t offset
     return st == OK ? transfer(b, true, lba, count, offset) : st;
 }
 
-static status_t b_sync(void *ctx)
+static status_t b_sync(void *ctx, struct idl_txn txn)
 {
+    (void)txn;
     struct blk *b = ctx;
     if (client_gone(b))
         return drop(b);

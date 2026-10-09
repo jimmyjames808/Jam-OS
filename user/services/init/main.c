@@ -435,7 +435,7 @@ static bool start_bootfs(void)
         st = jam_channel_create(&mine, &theirs);
     if (st == OK) {
         const char *argv[] = { BOOTFS_PATH };
-        struct spawn_handle x = { SR_USER + 0, theirs };
+        struct spawn_handle x = { BOOTFS_SR_FS, theirs };
         struct spawn_args a = {
             .path = BOOTFS_PATH, .argc = 1, .argv = argv, .job = bootfs_job, .extra = &x,
             .nextra = 1,

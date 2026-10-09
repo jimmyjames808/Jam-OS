@@ -34,6 +34,7 @@
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc devmgr\n"
           "svc devmgr-ctl\n"
+          "svc init\n"
           "svc volumes\n"
           "svc wayland\n"
           "mount * rw\n"
@@ -437,12 +438,9 @@ static bool t_kill_in_channel_call(void)
     CHECK_EQ(ji.used[JOB_LIMIT_THREADS], 0);
     CHECK_EQ(ji.used[JOB_LIMIT_PAGES], 0);
     CHECK_EQ(ji.used[JOB_LIMIT_HANDLES], 0);
-    /* The request still sits on our end, but its writer has gone: it is
-     * charged to us, the reader, until we read it (M12's Q2). */
-    CHECK_EQ(ji.used[JOB_LIMIT_MSG_BYTES], 0);
-    struct job_info ours;
-    CHECK_ST(info_of(own_job(), &ours), OK);
-    CHECK(ours.used[JOB_LIMIT_MSG_BYTES] > before.used[JOB_LIMIT_MSG_BYTES]);
+    /* The request still sits on our end, charged to the dead child's job
+     * until we read it. */
+    CHECK(ji.used[JOB_LIMIT_MSG_BYTES] > 0);
     uint8_t buf[64];
     uint32_t nb = 0;
     struct channel_read_args r = {
@@ -484,12 +482,10 @@ static bool t_runaway_hits_job_limits(void)
     if (!run_child("handles", JOB_LIMIT_HANDLES, 16, &info))
         return false;
     CHECK_EQ(info.exit_code, 45);
-    /* 16 KiB: the child's job pays for its startup message too until it
-     * reads it, once spawn has closed the end it was written on (M12's Q2). */
-    if (!run_child("msgs", JOB_LIMIT_MSG_BYTES, 16384, &info))
+    if (!run_child("msgs", JOB_LIMIT_MSG_BYTES, 4096, &info))
         return false;
     CHECK_EQ(info.exit_code, 46);
-    if (!run_child("ports", JOB_LIMIT_MSG_BYTES, 16384, &info))
+    if (!run_child("ports", JOB_LIMIT_MSG_BYTES, 4096, &info))
         return false;
     CHECK_EQ(info.exit_code, 47);   /* port packets and bindings are charged too */
     return true;
@@ -617,7 +613,7 @@ static const struct {
     { "reply_wait_refusals", t_reply_wait_refusals },
     { "handles_always_moved", t_handles_always_moved },
     { "channel_no_handles", t_channel_no_handles },
-    { "unread_charged_to_reader", t_unread_charged_to_reader },
+    { "unread_charged_to_writer", t_unread_charged_to_writer },
     { "runaway_hits_job_limits", t_runaway_hits_job_limits },
     { "kernel_objects_are_charged", t_kernel_objects_are_charged },
     { "kill_spinning_and_unstarted", t_kill_spinning_and_unstarted },
@@ -666,6 +662,10 @@ static const struct {
     { "supervised_give_up", t_supervised_give_up },
     { "devmgr_addresses", t_devmgr_addresses },
     { "devmgr_kill_process", t_devmgr_kill_process },
+    { "nvme_storage", t_nvme_storage },
+    { "nvme_block", t_nvme_block },
+    { "nvme_inflight", t_nvme_inflight },
+    { "nvme_fence", t_nvme_fence },
     { "disk_mounts", t_disk_mounts },
     { "disk_not_boot", t_disk_not_boot },
     { "disk_other", t_disk_other },
@@ -676,6 +676,9 @@ static const struct {
     { "logd_data_goes_away", t_logd_data_goes_away },
     { "logd_kernel_log", t_logd_kernel_log },
     { "logd_openers", t_logd_openers },
+    { "logd_crash_result", t_logd_crash_result },
+    { "splashch_wire", t_splashch_wire },
+    { "crashres_wire", t_crashres_wire },
     { "klog_lines", t_klog_lines },
     { "fat_format", t_fat_format },
     { "fat_files", t_fat_files },
@@ -802,6 +805,7 @@ static const struct {
     { "update_manifest_damage", t_update_manifest_damage },
     { "update_build_net", t_update_build_net },
     { "update_signature", t_update_signature },
+    { "update_offer_call", t_update_offer_call },
     { "updwire_golden", t_updwire_golden },
     { "updwire_hostile", t_updwire_hostile },
     { "updfetch_clean", t_updfetch_clean },
@@ -851,6 +855,7 @@ static const struct {
     { "netwait_states", t_netwait_states },
     { "netwait_level", t_netwait_level },
     { "netwait_stress", t_netwait_stress },
+    { "netwait_edge", t_netwait_edge },
     { "settings_parse", t_settings_parse },
     { "settings_edit", t_settings_edit },
     { "settings_file", t_settings_file },
@@ -1166,6 +1171,7 @@ static const struct {
     { "idl_fuzz", t_idl_fuzz },
     { "fat_hostile", t_fat_hostile },
     { "volumes_hostile", t_volumes_hostile },
+    { "initctl_strings", t_initctl_strings },
 };
 
 int main(int argc, char **argv)
