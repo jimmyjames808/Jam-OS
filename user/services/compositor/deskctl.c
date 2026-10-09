@@ -206,7 +206,10 @@ void ctl_notify_answered(uint32_t id, uint32_t button)
     struct waiter *w = &waiters[owned[i].slot];
     if (w->gen != owned[i].gen)
         return;   /* its channel closed meanwhile */
-    printf("compositor: notice %u: button %u pressed\n", id, button);
+    if (button == NOTIFY_DISMISSED)
+        printf("compositor: notice %u: pushed off the screen: dismissed\n", id);
+    else
+        printf("compositor: notice %u: button %u pressed\n", id, button);
     if (w->waiting) {
         w->waiting = false;
         /* A failed write: its caller is gone, and the channel goes with it. */

@@ -34,7 +34,8 @@ struct tsock {
     struct sockmem    m;           /* its rings' memory */
     uint32_t          peer;        /* the peer's address and port, ... */
     uint16_t          peer_port;
-    uint16_t          port;        /* ... and ours */
+    uint32_t          local;       /* ... and ours (the address the connection runs on) */
+    uint16_t          port;
 };
 
 /* A program's listener. */
@@ -220,7 +221,7 @@ status_t tcpsock_op_tcp(void *ctx, uint32_t address, uint16_t port, uint32_t tx_
         return st;
     st = ntcp_connect(t->c, address, port);
     if (st == OK) {
-        stack_tcp_ends(t->c->t, &t->peer, &t->peer_port, &t->port);
+        stack_tcp_ends(t->c->t, &t->peer, &t->peer_port, &t->local, &t->port);
         st = hand_out(t, &k);
     }
     if (st != OK) {
@@ -241,9 +242,7 @@ static status_t ts_state(void *ctx, uint32_t *out_address, uint16_t *out_port,
                          uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued)
 {
     struct tsock *t = ctx;
-    struct stack_state st;
-    stack_get(&st);
-    *out_address = st.ip.address;
+    *out_address = t->local;
     *out_port = t->port;
     *out_peer = t->peer;
     *out_peer_port = t->peer_port;
@@ -251,7 +250,33 @@ static status_t ts_state(void *ctx, uint32_t *out_address, uint16_t *out_port,
     return OK;
 }
 
-static const struct net_stream_ops sock_ops = { .state = ts_state };
+/* lwIP keeps these in milliseconds in 32 bits and adds the idle time to
+ * count * interval: the largest of each, together, must fit. */
+_Static_assert((uint64_t)NET_STREAM_KEEP_MAX * 1000 * (NET_STREAM_KEEP_CNT_MAX + 1) <= UINT32_MAX,
+               "keep-alive times fit lwIP's 32-bit milliseconds");
+
+/* Linux's keep-alive defaults, which a 0 asks for. */
+#define KEEP_IDLE_DEFAULT  7200u
+#define KEEP_INTVL_DEFAULT 75u
+#define KEEP_CNT_DEFAULT   9u
+
+static status_t ts_set_options(void *ctx, uint32_t flags, uint32_t keep_idle,
+                               uint32_t keep_intvl, uint32_t keep_cnt)
+{
+    struct tsock *t = ctx;
+    if ((flags & ~(NET_STREAM_OPT_NODELAY | NET_STREAM_OPT_KEEPALIVE)) ||
+        keep_idle > NET_STREAM_KEEP_MAX || keep_intvl > NET_STREAM_KEEP_MAX ||
+        keep_cnt > NET_STREAM_KEEP_CNT_MAX)
+        return ERR_INVALID_ARGS;
+    if (t->c)
+        ntcp_conn_options(t->c, flags & NET_STREAM_OPT_NODELAY, flags & NET_STREAM_OPT_KEEPALIVE,
+                          keep_idle ? keep_idle : KEEP_IDLE_DEFAULT,
+                          keep_intvl ? keep_intvl : KEEP_INTVL_DEFAULT,
+                          keep_cnt ? keep_cnt : KEEP_CNT_DEFAULT);
+    return OK;
+}
+
+static const struct net_stream_ops sock_ops = { .state = ts_state, .set_options = ts_set_options };
 
 static void ts_serve(struct tsock *t)
 {
@@ -289,7 +314,7 @@ static status_t l_rings(struct ntcp_listener *nl, struct ntcp_conn *c)
     status_t st = ts_new(o, l->cls, tx, l->rx, c, &t);
     if (st != OK)
         return st;
-    stack_tcp_ends(c->t, &t->peer, &t->peer_port, &t->port);
+    stack_tcp_ends(c->t, &t->peer, &t->peer_port, &t->local, &t->port);
     t->on = l;
     return OK;
 }
@@ -419,18 +444,21 @@ static status_t l_new(struct opener *o, const struct ntcp_listen_req *req, struc
 }
 
 status_t tcpsock_op_listener(void *ctx, uint16_t port, uint32_t backlog, uint32_t tx_bytes,
-                             uint32_t rx_bytes, handle_t *out_listener, uint16_t *out_port)
+                             uint32_t rx_bytes, uint32_t flags, handle_t *out_listener,
+                             uint16_t *out_port)
 {
     struct opener *o = ctx;
     uint32_t tx = tx_bytes ? tx_bytes : NET_TCP_TX, rx = rx_bytes ? rx_bytes : NET_TCP_RX;
     if (!listen_may_accept(o, port))
         return ERR_ACCESS_DENIED;
-    if (!backlog || backlog > NET_BACKLOG_MAX || !sockring_size_ok(tx) || !sockring_size_ok(rx))
+    if (!backlog || backlog > NET_BACKLOG_MAX || !sockring_size_ok(tx) || !sockring_size_ok(rx) ||
+        (flags & ~NET_LISTEN_REUSE))
         return ERR_INVALID_ARGS;
     if (!listener_ok(o, backlog))
         return ERR_NO_RESOURCES;
     struct ntcp_listen_req req = { .port = port, .backlog = backlog, .rx_size = rx,
-                                   .rings = l_rings, .drop = l_drop };
+                                   .reuse = flags & NET_LISTEN_REUSE, .rings = l_rings,
+                                   .drop = l_drop };
     struct tlisten *l;
     status_t st = l_new(o, &req, &l, out_listener);
     if (st != OK)

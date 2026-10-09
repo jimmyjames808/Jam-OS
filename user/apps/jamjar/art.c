@@ -18,8 +18,9 @@
 #include "jamjar.h"
 
 #define ART_CACHE  64
-/* Half of libos's 16 MiB heap (HEAP_SIZE), which also holds the library
- * and the threads' stacks (stb_image has an arena of its own). At
+/* 8 MiB of libos's heap (HEAP_SIZE, 1 GiB since M12; it was 16 MiB when this
+ * was chosen), which also holds the library and the threads' stacks
+ * (stb_image has an arena of its own). At
  * 2560x1440 now playing's cover is 757 KB; a frame draws about 1 MB of
  * pictures, 3 MB with the roulette up. */
 #define ART_BUDGET (8u << 20)

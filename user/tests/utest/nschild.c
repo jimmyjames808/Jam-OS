@@ -3,6 +3,7 @@
  * fscat <path>", "utest fs-hold <path>" and "utest fs-put <path> <text>"
  * for the shell's scripts. Each returns 0, or a number that says which
  * check failed. */
+#include <idl/nschan.h>
 #include <os.h>
 #include "utest.h"
 
@@ -39,8 +40,7 @@ static int ns_mounts(const char *point, bool all)
     if (!saw || (!all && n != 1))
         return 43;
     /* Its SR_NS end can only be read: nothing can be sent back up it. */
-    struct ns_msg m = { .kind = NS_MOUNT };
-    if (jam_channel_write(startup_handle(SR_NS), &m, NS_MSG_SIZE(0), NULL, 0) != ERR_ACCESS_DENIED)
+    if (nschan_mount(startup_handle(SR_NS), NULL, 0, NULL, 0, NULL, 0) != ERR_ACCESS_DENIED)
         return 44;
     return 0;
 }

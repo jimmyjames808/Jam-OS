@@ -58,7 +58,8 @@
  * driver learns the mode; without it (or with one that isn't valid) the
  * drivers start without one and keep the network off. The argument
  * "vtdtest" (with "iommu=on", the IOMMU checks test entry) is passed on to
- * drv/hda, which runs its deliberate DMA faults before serving.
+ * drv/hda, which runs its deliberate DMA faults before serving. The
+ * argument "nvmetest=<words>" (a test's) is passed on to every drv/nvme.
  *
  * DEVMGR_SHUTDOWN (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
@@ -114,6 +115,8 @@ static const struct {
     /* QEMU's Intel 82574L, the network tests' card (QEMU_NET; the PC has
      * none). Like every network driver it gets the boot's vlan=. */
     { 0x8086, 0x10d3, ANY_CLASS, "drv/e1000e", NULL },
+    /* Any NVM Express controller (class 01 08 02): read only (docs/M12.7-PLAN.md). */
+    { 0xffff, 0xffff, 0x010802, "drv/nvme", NULL },
 };
 
 struct binding devs[MAX_DEVS];
@@ -124,6 +127,7 @@ unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
 bool vtdtest;
+const char *nvmetest;
 static bool netprobe, netsend, net;
 uint16_t net_vlan;
 uint64_t devmgr_started;
@@ -390,6 +394,8 @@ int main(int argc, char **argv)
         nousb |= !strcmp(argv[i], "nousb");
         hidboot |= !strcmp(argv[i], "hidboot");
         vtdtest |= !strcmp(argv[i], "vtdtest");
+        if (!strncmp(argv[i], "nvmetest=", 9))
+            nvmetest = argv[i];
         netprobe |= !strcmp(argv[i], "netprobe");
         netsend |= !strcmp(argv[i], "netsend");
         net |= !strcmp(argv[i], "net");

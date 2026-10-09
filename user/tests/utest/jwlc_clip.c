@@ -274,7 +274,7 @@ static handle_t owner_end(struct sc *r, uint32_t src)
  * still ends at its deadline. */
 static bool empty_flood(struct sc *r, uint32_t src, struct cl *e)
 {
-    uint64_t t0 = now();   /* before the paste: its deadline counts from the send */
+    uint64_t t0 = now();   /* before the paste: its deadline counts from there */
     CHECK_ST(jwl_clip_paste(e->c), OK);
     handle_t w = owner_end(r, src);
     CHECK(w != HANDLE_INVALID);

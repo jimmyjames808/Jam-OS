@@ -17,9 +17,11 @@ them.
                               round trip, so the guest's bytes in flight
                               can be seen (below). Several servers: a
                               comma-separated list.
-  --tcp-connect ADDR:PORT:CONNS:BYTES
+  --tcp-connect ADDR:PORT:CONNS:BYTES[,...]
                               CONNS connections to the guest's listener at
                               ADDR:PORT, all at once from ports 40000 and up
+                              (a comma-separated list of those takes the
+                              ports in order, the first list's from 40000)
                               (a SYN again each second until one is
                               answered): from port P, BYTES of stream P & 0xff
                               and a FIN sent, BYTES of stream (P + 1) & 0xff
@@ -30,7 +32,10 @@ a bad checksum), tcp_bytes_in, tcp_bytes_out, tcp_retransmits; and for
 each server port P, the most seen on its connections: tcp_P_window (the
 guest's window, scaled), tcp_P_in_flight (the guest's bytes past the last
 ACK we had sent: what it had in flight, at least), tcp_P_out_flight (ours
-not yet acked by the guest), tcp_P_scaled (connections that scaled).
+not yet acked by the guest), tcp_P_scaled (connections that scaled), tcp_P_segs
+(the guest's segments with data that arrived in order: how many pieces its bytes
+came in, which Nagle's algorithm changes) and tcp_P_probes (its keep-alive
+probes, each answered).
 
 The TCP is a test peer's, not a general one: in-order receiving (an
 out-of-order segment is dropped and answered with a duplicate ACK), every
@@ -224,6 +229,11 @@ class Conn:
 
     def take(self, flags, seq, data):
         if not data and not flags & F_FIN:
+            if not flags & (F_SYN | F_RST) and diff(seq, self.rcv_nxt) == -1:
+                # a keep-alive probe (RFC 9293 3.8.4): one byte before what we expect, no
+                # data. Counted, and answered, or the guest ends the connection.
+                self.tcp.count("tcp_%d_probes" % self.server_port)
+                self.ack()
             return
         if seq != self.rcv_nxt or self.peer_fin:
             self.ack()   # out of order, or a repeat: the ACK says where we are
@@ -233,6 +243,7 @@ class Conn:
                 self.fail("wrong bytes at %d" % self.got)
             self.got += len(data)
             self.tcp.count("tcp_bytes_in", len(data))
+            self.tcp.count("tcp_%d_segs" % self.server_port)
             self.rcv_nxt = (self.rcv_nxt + len(data)) & M32
             self.tcp.most(self.server_port, "in_flight", diff(self.rcv_nxt, self.acked_out))
         if flags & F_FIN:
@@ -264,7 +275,8 @@ class Tcp:
     def __init__(self, peer, np, serve=None, connect=None):
         self.peer, self.np = peer, np
         self.serve = {p: (n, d) for p, n, d in (serve or [])}
-        self.connect = connect
+        # one (addr, port, conns, bytes), or a list of them
+        self.connect = [connect] if connect and not isinstance(connect[0], tuple) else connect
         self.conns = {}                       # (their addr, their port, our port) -> Conn
         self.connect_started = False
         for k in ("tcp_ok", "tcp_bad", "tcp_bytes_in", "tcp_bytes_out", "tcp_retransmits"):
@@ -338,13 +350,14 @@ class Tcp:
         now = time.monotonic()
         if self.connect and not self.connect_started and self.peer.guest_mac is not None:
             self.connect_started = True
-            addr, port, n, nbytes = self.connect
-            for i in range(n):
-                p = CLIENT_PORT0 + i
-                c = Conn(self, (self.np.ip_bytes(self.np.PING_FROM), p), (addr, port),
-                         self.peer.guest_mac, ((p + 1) & 0xFF, p & 0xFF), nbytes, True)
-                c.last = 0.0   # its first SYN now
-                self.conns[(addr, port, p)] = c
+            p = CLIENT_PORT0   # each connection from a port of its own, the lists' in order
+            for addr, port, n, nbytes in self.connect:
+                for i in range(n):
+                    c = Conn(self, (self.np.ip_bytes(self.np.PING_FROM), p), (addr, port),
+                             self.peer.guest_mac, ((p + 1) & 0xFF, p & 0xFF), nbytes, True)
+                    c.last = 0.0   # its first SYN now
+                    self.conns[(addr, port, p)] = c
+                    p += 1
         for c in list(self.conns.values()):
             c.tick(now)
 

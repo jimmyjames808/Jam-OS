@@ -144,9 +144,10 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
      * ("netprobe"), and a network card's (class 02) the network mode when
      * there is one ("vlan=21", "vlan=none": without it the driver keeps
      * the network off); drv/hda, "vtdtest" when devmgr was (the IOMMU
-     * checks entry). */
+     * checks entry); drv/nvme, its function ("pci=02:00.0", for its log)
+     * and devmgr's "nvmetest=" word if any. */
     const char *name = b->kind == BIND_USB ? b->name : NULL;
-    char vlan[NETDEV_MODE_TEXT] = "";
+    char vlan[NETDEV_MODE_TEXT] = "", pci[16];
     const char *argv[5] = { name ? name : b->path };
     int argc = 1;
     if (b->kind == BIND_USB)
@@ -159,6 +160,11 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
         }
         if (vtdtest && b->path && !strcmp(b->path, "drv/hda"))
             add_arg(argv, &argc, "vtdtest");   /* its deliberate DMA faults */
+        if (b->path && !strcmp(b->path, "drv/nvme")) {
+            snprintf(pci, sizeof(pci), "pci=%02x:%02x.%x", b->info.bus, b->info.dev, b->info.fn);
+            add_arg(argv, &argc, pci);
+            add_arg(argv, &argc, nvmetest);   /* its test reads */
+        }
     }
     struct spawn_args a = {
         .path = b->path, .name = name, .argc = argc, .argv = argv,

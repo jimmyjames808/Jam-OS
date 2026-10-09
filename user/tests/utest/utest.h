@@ -252,6 +252,7 @@ bool t_ns_server_dies(void);
 bool t_ns_child_sees_only_its_mounts(void);
 bool t_ns_mounts_reach_a_running_child(void);
 bool t_ns_malformed_messages(void);
+bool t_ns_long_names(void);
 bool t_spawn_from_vmo(void);
 /* bin/ramfs, started and mounted at point (and the reverse: it must end
  * clean). */
@@ -298,6 +299,7 @@ bool ns_child_exits(handle_t proc, int64_t code);
 
 /* heap.c: libos's heap in a long-running program. */
 bool t_heap_reuses_freed_space(void);
+bool t_heap_large_alloc(void);
 
 /* nsnotice.c: namespace changes a running program never reads. */
 bool t_ns_changes_stay_bounded(void);
@@ -415,9 +417,15 @@ bool t_nettcp_heap_shares(void);
 /* nettcpooseq.c: segments past a hole kept (bounded), SACK. */
 bool t_nettcp_ooseq_sack(void);
 bool t_nettcp_ooseq_bounds(void);
+/* nettcpopts.c: a connection's options (Nagle, keep-alive), in-process. */
+bool t_nettcp_nodelay(void);
+bool t_nettcp_keepalive(void);
+bool t_nettcp_reuse(void);
 /* nettcpsock.c: programs' TCP calls on bin/netstack over the fake driver. */
 bool t_nettcp_limits(void);
 bool t_nettcp_bulk_rings(void);
+bool t_nettcp_options(void);
+bool t_nettcp_reuse_api(void);
 bool t_netctl_set_and_clear(void);
 bool t_netctl_read_only(void);
 bool t_netctl_process(void);
@@ -516,10 +524,12 @@ bool t_comp_super_enter(void);
 /* compplumb.c: the desktop's plumbing (D2b) */
 bool t_comp_notify(void);
 bool t_comp_notify_splash(void);
+bool t_comp_notify_dismissed(void);
 bool t_comp_notify_flood(void);
 bool t_comp_launch(void);
 bool t_comp_volume_net(void);
 bool t_comp_no_keyboard(void);
+bool t_comp_overlay_late(void);
 bool t_comp_early_keys(void);
 bool t_comp_screen_on_top(void);
 bool t_jwlc_reconnect(void);
@@ -670,7 +680,9 @@ bool t_desk_search(void);
 bool t_desk_popover(void);
 bool t_desk_notify(void);
 bool t_desk_notify_held(void);
+bool t_desk_notify_dismissed(void);
 bool t_desk_overlay(void);
+bool t_desk_overlay_first(void);
 /* compwmseat.c: the window manager with the real seat: drag, close box,
  * Super+Q, Super+F, Super+T on an xdg toplevel. */
 bool t_wm_seat(void);

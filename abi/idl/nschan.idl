@@ -1,0 +1,47 @@
+# nschan: the namespace channel (<os.h> "files", "services" and "grants"; user/lib/ns.c): how
+# a starter gives a program its mounts and services, at its start and later. The
+# program's end is its startup handle SR_NS; the starter writes to the other end
+# (spawn, init's ns_update, the shell's mount commands) and the program's libos reads,
+# before each lookup. Events only (one way, no reply); named nschan so the stubs
+# (nschan_mount) don't take the names of libos's ns_mount and ns_unmount, which are
+# a program's calls on its own namespace.
+#
+# An entry is a path of NAME_MAX bytes at most with its NUL: a mount point "/data" (an `fs`
+# channel), or "/svc/<name>" (a service's channel). `paths` holds the entries'
+# paths as records of NAME_MAX bytes each, NUL-terminated and, past the NUL,
+# zero-filled, in the order of the handles: its length is NAME_MAX times the
+# count. `connect` has one byte per entry, 1 if it is a service that hands out
+# a channel per opener (svc.connect, svc.idl), else 0; mounts are always 0.
+# Both lengths and the handle count must agree (at most MAX_ENTRIES, the
+# mounts and services a namespace holds), and a path that is neither a mount
+# point nor a service name, or a `connect` on a mount, is skipped and its handle
+# closed. The reader takes the events that break the format (wrong lengths, a
+# connect byte over 1, a txid) off the queue and closes their handles.
+#
+# Reconnect: a program whose starter ends keeps the namespace it has (its
+# lookups never see ERR_PEER_CLOSED from here); one whose starter keeps it
+# in step reads what the starter sends before its next lookup, and a starter
+# that follows a running program (init, for the shell and logd) sends `set`
+# after taking back what the program has not read (ns_update), so a program
+# that never looks never holds more than one message.
+
+protocol nschan 81
+
+# Mounts in one namespace.
+const MAX_MOUNTS    8
+# Services in one namespace.
+const MAX_SVCS      32
+# Entries in one message (MAX_MOUNTS + MAX_SVCS).
+const MAX_ENTRIES   40
+# Bytes of one entry's path, with its NUL.
+const NAME_MAX      32
+
+# Add these mounts and services, replacing the entries of the same paths.
+1  mount    (u8[<=1280] paths, u8[<=40] connect, handle[<=40] hs) event
+# Remove the entries of these paths (no handles; a path that is not there is
+# no error).
+2  unmount  (u8[<=1280] paths) event
+# Make the starter's entries exactly these: the starter's others go, then these
+# are added as `mount` does. The program's own entries (ns_mount, ns_svc_set)
+# stay, unless one of the same path replaces them.
+3  set      (u8[<=1280] paths, u8[<=40] connect, handle[<=40] hs) event

@@ -375,7 +375,7 @@ bool t_wm_seat_overlay_keys(void)
     static struct ct_client b;
     struct cs t;
     struct top w;
-    CHECK(cs_start(&t));
+    CHECK(cs_start_splash_plain(&t));   /* (an overlay only in the boot's wait: DQ1) */
     CHECK(cs_client(&t, &a));
     CHECK(ct_open(&t.p, &b));
     CHECK(ct_bind_all(&b));

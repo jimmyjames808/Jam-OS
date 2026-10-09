@@ -51,6 +51,12 @@
 #define NOTIFY_TINT_BLACKCURRANT 0u
 #define NOTIFY_TINT_RASPBERRY 1u
 #define NOTIFY_TINT_APRICOT 2u
+/* notify_wait's button when the notice was not pressed but pushed off the
+ * screen: its card had buttons, and newer cards (from this channel or
+ * others) took its place (at most five cards show; one with buttons goes
+ * only when all five have). Never a real button (they are 0 to 2). The
+ * notice is gone: whoever waited for an answer should act as for "Later". */
+#define NOTIFY_DISMISSED 255u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct notify_notify_req {
@@ -145,9 +151,10 @@ static inline status_t notify_notify_call(handle_t ch, bool idl_within, uint64_t
  * pressed, which is told to this channel (notify_wait); then the card goes.
  * Answers the notice's id (never 0). At most 3 cards with buttons from a
  * channel at once (and five cards on the screen: a new one pushes out the
- * oldest without buttons): ERR_NO_RESOURCES. ERR_NOT_SUPPORTED: the
- * compositor runs without a desktop (`nodesk`). A channel that closes
- * takes its cards with buttons with it. */
+ * oldest without buttons, else the oldest, and a pushed-out card's poster
+ * is told: notify_wait answers its id with DISMISSED): ERR_NO_RESOURCES.
+ * ERR_NOT_SUPPORTED: the compositor runs without a desktop (`nodesk`). A
+ * channel that closes takes its cards with buttons with it. */
 static inline status_t notify_notify_until(handle_t ch, uint64_t deadline_ns, const char *title, uint32_t title_len, const char *body, uint32_t body_len, uint8_t icon, uint8_t tint, const char *button1, uint32_t button1_len, const char *button2, uint32_t button2_len, const char *button3, uint32_t button3_len, uint32_t *out_id)
 {
     return notify_notify_call(ch, false, deadline_ns, title, title_len, body, body_len, icon, tint, button1, button1_len, button2, button2_len, button3, button3_len, out_id);
@@ -181,7 +188,8 @@ static inline status_t notify_notify_wait_call(handle_t ch, bool idl_within, uin
     return idl_st;
 }
 /* Answered when a button of a notice posted on this channel was pressed:
- * the notice's id and the button (0 the first). Presses not yet taken are
+ * the notice's id and the button (0 the first; DISMISSED when its card was
+ * pushed off the screen unpressed). Answers not yet taken are
  * kept, at most 4 (older ones are dropped: said in the log), and answered
  * at once in the order they came. One call waits per channel: a second
  * while one waits is ERR_BAD_STATE. */

@@ -18,7 +18,8 @@
 # (others: `tools/remote-test.sh env VAR=value <command>`). Each
 # checkout has a directory of its own there (~/work/<its name>), so several
 # checkouts (agents' worktrees) test at once; one checkout's builds take
-# turns (flock), its tests don't.
+# turns (flock). Commands run in one of JAMOS_REMOTE_SLOTS (6) slots on the
+# machine, and wait for a free one: more at once made timing tests fail.
 set -u
 [ $# -gt 0 ] || { echo "usage: tools/remote-test.sh <command> [args...]"; exit 2; }
 top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$(pwd)
@@ -37,7 +38,12 @@ name=$(basename "$top")
 dir=work/$name
 echo "remote-test: on $host in ~/$dir: $*" >&2
 ssh "${ssh_opts[@]}" "$host" "wsl --cd ~ mkdir -p $dir" < /dev/null
-rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude test.bin \
+# Several runs from one checkout copy it one at a time (lockf, the Mac's
+# flock): two rsyncs into one directory at once failed.
+mkdir -p build
+lock=()
+command -v lockf > /dev/null && lock=(lockf -k build/.remote-sync.lock)
+${lock[@]+"${lock[@]}"} rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude test.bin \
     --exclude compile_commands.json --rsync-path="wsl --cd ~ rsync" \
     -e "ssh ${ssh_opts[*]}" ./ "$host:$dir/" ||
     { echo "remote-test: copying to $host failed" >&2; exit 2; }
@@ -48,7 +54,18 @@ rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude 
         while IFS= read -r kv; do printf 'export %q\n' "$kv"; done
     echo 'flock ~/work/.build-$(basename "$PWD").lock sh -c "make -s -j16 && make -s -j16 image" > build-remote.log 2>&1 ||
         { tail -20 build-remote.log; echo "remote-test: the build failed"; exit 2; }'
-    printf '%q ' "$@"; echo
+    printf 'set -- '; printf '%q ' "$@"; echo
+    # One of JAMOS_REMOTE_SLOTS (6) slots at a time on the whole machine, so
+    # many checkouts' tests queue instead of loading it until timing tests fail.
+    echo 'n=${JAMOS_REMOTE_SLOTS:-6}; said=0
+while :; do
+    for i in $(seq 1 "$n"); do
+        flock -n -E 75 ~/work/.slot$i.lock "$@"; rc=$?
+        [ $rc = 75 ] || exit $rc
+    done
+    [ $said = 1 ] || { echo "remote-test: all $n slots busy: waiting" >&2; said=1; }
+    sleep 3
+done'
 } | ssh "${ssh_opts[@]}" "$host" "wsl -e bash -s"
 rc=$?
 for a in "$@"; do
