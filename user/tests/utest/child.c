@@ -227,6 +227,46 @@ static int fill_close(void)
     }
 }
 
+/* The giving-up server of kernel/test/test_chan_withdraw.c: each message
+ * on SR_USER brings our end of a client's connection. Write
+ * HANGUP_FILL 1 KiB messages on it (the client reads none), give up on the
+ * client as a server does (channel_withdraw: they are taken back), write
+ * one small error, close the end, then signal the event SR_USER + 1. 0
+ * once SR_USER's other end has closed; 52 if the withdraw didn't take back
+ * every one. */
+#define HANGUP_FILL 16u
+static int fill_hangup(void)
+{
+    handle_t ch = startup_handle(SR_USER), done = startup_handle(SR_USER + 1);
+    static uint8_t buf[1024];
+    for (;;) {
+        signals_t seen = 0;
+        if (jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER, &seen) != OK)
+            return 48;
+        handle_t end = HANDLE_INVALID;
+        uint32_t nb = 0, nh = 0;
+        struct channel_read_args a = {
+            .h = ch, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_handles = (uint64_t)(uintptr_t)&end,
+            .rd_hcap = 1, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        };
+        status_t st = jam_channel_read(&a);
+        if (st == ERR_PEER_CLOSED)
+            return 0;
+        if (st != OK || nh != 1)
+            return 49;
+        unsigned sent = 0;
+        for (unsigned i = 0; i < HANGUP_FILL; i++)
+            sent += jam_channel_write(end, buf, sizeof(buf), NULL, 0) == OK;
+        if (jam_channel_withdraw(end) != (int64_t)sent)
+            return 52;
+        (void)jam_channel_write(end, "bye", 3, NULL, 0);
+        jam_handle_close(end);
+        if (jam_event_signal(done, 0, SIG_SIGNALED) != OK)
+            return 50;
+    }
+}
+
 /* With a small job message-byte limit: port packets, then port bindings,
  * are charged to us too, so our job (not the port's per-port caps of 4096
  * each) stops us with ERR_NO_MEMORY. 47 if both were refused that way,
@@ -401,6 +441,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "msgs"))       return msgs();
     if (!strcmp(m, "write-exit")) return write_exit();
     if (!strcmp(m, "fill-close")) return fill_close();
+    if (!strcmp(m, "fill-hangup")) return fill_hangup();
     if (!strcmp(m, "ports"))      return ports();
     if (!strcmp(m, "orphan"))     return orphan();
     if (!strcmp(m, "main-exits")) return main_exits();

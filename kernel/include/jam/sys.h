@@ -35,6 +35,7 @@ status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void
                                   const rights_t *rights, uint32_t nhandles);
 /* Needs RIGHT_READ: channel_set_flags on the end h. */
 status_t sys_channel_set_flags(struct handle_table *t, handle_t h, uint32_t flags);
+int64_t  sys_channel_withdraw(struct handle_table *t, handle_t h);
 /* Needs RIGHT_READ. Received handles are inserted into t and their values
  * stored in handles[0 .. *actual_handles). If t has no room for them the
  * read fails (ERR_NO_RESOURCES) and the message stays queued: no handle is

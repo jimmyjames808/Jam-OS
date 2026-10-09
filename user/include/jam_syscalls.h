@@ -36,6 +36,7 @@ status_t jam_channel_read(const struct channel_read_args *args);
 status_t jam_channel_call(const struct channel_call_args *args);
 status_t jam_channel_reply_wait(const struct channel_reply_wait_args *args);
 status_t jam_channel_set_flags(handle_t h, uint32_t flags);
+int64_t jam_channel_withdraw(handle_t h);
 status_t jam_event_create(handle_t *out);
 status_t jam_event_signal(handle_t h, signals_t clear, signals_t set);
 status_t jam_timer_create(handle_t *out);

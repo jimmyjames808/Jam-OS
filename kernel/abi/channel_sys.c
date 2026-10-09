@@ -189,6 +189,17 @@ status_t sys_channel_set_flags(struct handle_table *t, handle_t h, uint32_t flag
     return st;
 }
 
+int64_t sys_channel_withdraw(struct handle_table *t, handle_t h)
+{
+    struct channel *ch;
+    status_t st = get_channel(t, h, RIGHT_WRITE, &ch);
+    if (st != OK)
+        return st;
+    int64_t n = channel_withdraw(ch);
+    kobject_unref((struct kobject *)ch);
+    return n;
+}
+
 status_t sys_channel_read_into(struct handle_table *t, handle_t h, const struct chan_bytes *b,
                                uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
                                uint32_t *actual_handles)

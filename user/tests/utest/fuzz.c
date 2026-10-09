@@ -14,8 +14,8 @@
  *       inside their calls.
  *   utest fuzz-chans <seed> <ms>   channel ends shared through a table of
  *       slots by FZ_THREADS threads that create, write (with handles,
- *       ends included), read, call, reply-and-wait, mark, bind, close and
- *       duplicate them at random, each racing the others' closes; exits
+ *       ends included), read, call, reply-and-wait, mark, withdraw, bind,
+ *       close and duplicate them at random, each racing the others' closes; exits
  *       after <ms> the same way (or is killed by the test first).
  *
  * The child holds no power: its startup handles are its own process,
@@ -280,7 +280,7 @@ static void chans_worker(void *arg)
         uint64_t r = rnd(&s);
         handle_t h = fc_peek(&s);   /* used without owning it: a racing close may end it */
         uint64_t soon = (uint64_t)now() + (r >> 40) % 2000000;
-        switch (r % 14) {
+        switch (r % 15) {
         case 0: case 1: {
             handle_t a, b;
             if (jam_channel_create(&a, &b) == OK) {
@@ -373,6 +373,9 @@ static void chans_worker(void *arg)
             jam_port_wait(fc_port, soon, &pkt);
             break;
         }
+        case 13:   /* what h wrote and its peer hasn't read, taken back */
+            jam_channel_withdraw(h);
+            break;
         default:
             jam_object_wait_one(h, SIG_READABLE, soon, NULL);
             break;

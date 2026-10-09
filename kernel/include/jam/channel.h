@@ -182,6 +182,14 @@ status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t dea
  * for an unknown bit. */
 status_t channel_set_flags(struct channel *ch, uint32_t flags);
 
+/* Drop every message ch wrote that waits unread at its peer (the peer's
+ * whole queue: everything on it came from ch), its charge refunded to its
+ * writer's job and its handles closed; the peer stops being readable and
+ * ch is writable again. Returns how many were dropped (0 once either end
+ * has closed). ERR_BAD_STATE if ch has more than one handle (only its sole
+ * holder may: a shared end's queue holds every holder's messages). */
+int64_t  channel_withdraw(struct channel *ch);
+
 /* The messages queued on ch now and what they are charged (bytes, plus
  * JOB_OBJECT_BYTES per carried handle): for debug_command "ps". */
 void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged);

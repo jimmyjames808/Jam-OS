@@ -145,6 +145,12 @@ int64_t sysc_channel_set_flags(handle_t h, uint32_t flags)
     return sys_channel_set_flags(t, h, flags);
 }
 
+int64_t sysc_channel_withdraw(handle_t h)
+{
+    SYSC_TABLE(t);
+    return sys_channel_withdraw(t, h);
+}
+
 int64_t sysc_channel_read(const struct channel_read_args *a)
 {
     SYSC_TABLE(t);

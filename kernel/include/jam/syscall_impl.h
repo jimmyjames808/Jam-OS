@@ -28,6 +28,7 @@ int64_t sysc_channel_read(const struct channel_read_args *args);
 int64_t sysc_channel_call(const struct channel_call_args *args);
 int64_t sysc_channel_reply_wait(const struct channel_reply_wait_args *args);
 int64_t sysc_channel_set_flags(handle_t h, uint32_t flags);
+int64_t sysc_channel_withdraw(handle_t h);
 int64_t sysc_event_create(uint64_t out);
 int64_t sysc_event_signal(handle_t h, signals_t clear, signals_t set);
 int64_t sysc_timer_create(uint64_t out);

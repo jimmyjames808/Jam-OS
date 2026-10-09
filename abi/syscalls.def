@@ -131,6 +131,17 @@
 # the mark stops handle-carrying replies to every holder of a shared end;
 # ERR_INVALID_ARGS for any other bit.
 25  channel_set_flags status    handle_t h, uint32_t flags
+# Withdraw what the end h wrote that its peer hasn't read (needs
+# RIGHT_WRITE): every message queued at the peer is dropped, its charge
+# refunded to its writer's job, the handles it carries closed; what a
+# reader has taken or been handed is not touched. For a server that gives
+# up on a client that doesn't read: withdraw, write one last small
+# message if it wants (an error), close, and nothing but that message
+# stays charged to it while the client keeps its end. Returns how many
+# were dropped (0 also once the peer has closed: its close dropped them).
+# ERR_BAD_STATE if h is not the end's only handle (on a shared end the
+# messages may be any holder's).
+26  channel_withdraw  i64       handle_t h
 
 # events and timers ---------------------------------------------------------
 30  event_create      status    handle_t *out

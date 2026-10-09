@@ -574,6 +574,43 @@ status_t channel_set_flags(struct channel *ch, uint32_t flags)
     return st;
 }
 
+int64_t channel_withdraw(struct channel *ch)
+{
+    /* As set_flags: the sole holder only, checked without a lock. */
+    if (kobject_handles(&ch->base) > 1)
+        return ERR_BAD_STATE;
+    struct list_node dead;
+    list_init(&dead);
+    uint32_t n = 0;
+    uint64_t f = spin_lock_irqsave(&ch->pair->lock);
+    struct channel *peer = ch->pair->ep[!ch->side];
+    if (peer && ch->pair->ep[ch->side] == ch) {   /* in the pair: the peer is alive */
+        spin_lock(&peer->base.lock);
+        if (!list_empty(&peer->queue)) {
+            dead.next = peer->queue.next;
+            dead.prev = peer->queue.prev;
+            dead.next->prev = &dead;
+            dead.prev->next = &dead;
+            list_init(&peer->queue);
+        }
+        n = chan_nqueued(peer);
+        __atomic_store_n(&peer->nqueued, 0, __ATOMIC_RELAXED);
+        kobject_signal_locked(&peer->base, SIG_READABLE, 0);
+        spin_unlock(&peer->base.lock);
+        spin_lock(&ch->base.lock);   /* one endpoint lock at a time */
+        kobject_signal_locked(&ch->base, 0, SIG_WRITABLE);   /* the peer's queue is empty */
+        spin_unlock(&ch->base.lock);
+    }
+    spin_unlock_irqrestore(&ch->pair->lock, f);
+    /* Unlocked: a message's handles may be the last ones to a channel. */
+    while (!list_empty(&dead)) {
+        struct chan_msg *m = list_first(&dead, struct chan_msg, node);
+        list_del(&m->node);
+        chan_msg_drop(m);
+    }
+    return n;
+}
+
 void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged)
 {
     uint64_t sum = 0;
