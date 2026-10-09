@@ -140,6 +140,8 @@ struct spawn_handle {
     handle_t h;      /* the handle (moved) */
 };
 
+struct posixfds_out;   /* <posixfds.h> */
+
 struct spawn_args {
     /* The program: a bootfs name ("bin/utest"), or an absolute path read
      * through our namespace ("/data/x"; see files below). With `vmo` set,
@@ -176,15 +178,31 @@ struct spawn_args {
     /* With ns_out: NULL, or where a duplicate of the child's own end goes
      * (RIGHT_READ only), for ns_update to take back what it hasn't read. */
     handle_t                  *ns_back_out;
+    /* Its first thread's stack: bytes of address space (rounded up to
+     * whole pages), committed as the child touches them, with a guard
+     * page below. 0: SPAWN_STACK_DEFAULT. More than SPAWN_STACK_MAX:
+     * ERR_OUT_OF_RANGE. Its pages are charged to the caller's job, as
+     * every VMO spawn makes is. */
+    uint64_t                   stack_size;
+    /* NULL, or the POSIX hand-over (<posixfds.h>) for a POSIX program:
+     * written on its startup channel right after the startup message,
+     * before it starts (posixfds_write). Its handles are consumed
+     * whatever happens, as the extras are. */
+    const struct posixfds_out *handover;
 };
+
+#define SPAWN_STACK_DEFAULT (128ull << 10)   /* a native program's */
+#define SPAWN_STACK_MAX     (1ull << 30)     /* 1 GiB of address space */
 
 /* Load a program (spawn_args.path) into a new process and start it. Its
  * startup message has argv, SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB (a
  * duplicate of a->job with JOB_RIGHTS_OWN: the child can't change its own
  * limits), BOOTFS (a duplicate of ours), NS (when a->ns is set) and the
- * extras, which are consumed whatever happens. *proc gets the process
- * handle. ERR_OUT_OF_RANGE: too many extras (STARTUP_MAX_HANDLES - 6 fit
- * next to a namespace, one more without). */
+ * extras, which are consumed whatever happens (and so are the
+ * hand-over's). *proc gets the process handle. ERR_OUT_OF_RANGE: too many
+ * extras (STARTUP_MAX_HANDLES - 6 fit next to a namespace, one more
+ * without), or a stack bigger than SPAWN_STACK_MAX. A hand-over refused
+ * by posixfds_write fails the spawn with its error. */
 status_t spawn(const struct spawn_args *a, handle_t *proc);
 /* Drivers: the startup role that hands a driver process a handle with
  * driver role `r` (DR_* in <jam/driver.h>). user/lib/driver_crt.c turns

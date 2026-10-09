@@ -9,7 +9,8 @@
  * mapped into that vmar (read-only and executable ones straight from the
  * program's VMO, writable ones copied into a fresh VMO), then a stack with
  * a guard page below it, a thread, and a startup message on a new channel
- * whose other end process_start hands to the program in rdi.
+ * whose other end process_start hands to the program in rdi (and after
+ * it, for a POSIX program, the hand-over messages: <posixfds.h>).
  *
  * Code is mapped executable only from a VMO handle with RIGHT_EXEC, and
  * only the bootfs image's has it (the kernel gives it to no VMO a process
@@ -25,9 +26,9 @@
  * checks here only keep this code from reading outside the file. Nothing
  * here uses malloc, so spawning doesn't grow the caller's heap. */
 #include <os.h>
+#include <posixfds.h>
 #include "ns.h"
 
-#define STACK_PAGES 32   /* 128 KiB */
 #define STACK_TOP   0x00007ff000000000ull
 #define MAX_SEGS    8
 #define MSG_MAX     2048
@@ -135,10 +136,11 @@ static status_t load_elf(handle_t vmar, const struct image *img, uint64_t *entry
     return loads ? OK : ERR_INVALID_ARGS;
 }
 
-/* A stack with a no-access guard page below it; *top is 16-aligned. */
-static status_t make_stack(handle_t vmar, uint64_t *top)
+/* A stack of `bytes` (whole pages, at most SPAWN_STACK_MAX) with a
+ * no-access guard page below it; *top is 16-aligned. */
+static status_t make_stack(handle_t vmar, uint64_t bytes, uint64_t *top)
 {
-    uint64_t size = (STACK_PAGES + 1) * PAGE_SIZE, base = STACK_TOP - size, addr = base;
+    uint64_t size = bytes + PAGE_SIZE, base = STACK_TOP - size, addr = base;
     handle_t v;
     status_t st = jam_vmo_create(size, 0, &v);
     if (st != OK)
@@ -151,10 +153,13 @@ static status_t make_stack(handle_t vmar, uint64_t *top)
     return st;
 }
 
+/* The caller's handles a spawn that never got as far as sending them
+ * closes: the extras and the hand-over's. */
 static void close_extras(const struct spawn_args *a)
 {
     for (unsigned i = 0; i < a->nextra; i++)
         jam_handle_close(a->extra[i].h);
+    posixfds_discard(a->handover);
 }
 
 /* The process name: a->name, or the last part of the path. */
@@ -274,12 +279,21 @@ static void release_image(struct image *img)
         jam_handle_close(img->vmo);
 }
 
+/* The stack's size spawn_args asks for, in whole pages; 0 if too big. */
+static uint64_t stack_bytes(const struct spawn_args *a)
+{
+    if (!a->stack_size)
+        return SPAWN_STACK_DEFAULT;
+    return a->stack_size > SPAWN_STACK_MAX ? 0 : up(a->stack_size);
+}
+
 /* The program into c's address space, its stack and its thread. */
-static status_t load_child(const struct image *img, const char *name, struct child *c)
+static status_t load_child(const struct spawn_args *a, const struct image *img, const char *name,
+                           struct child *c)
 {
     status_t st = load_elf(c->vmar, img, &c->entry);
     if (st == OK)
-        st = make_stack(c->vmar, &c->stack);
+        st = make_stack(c->vmar, stack_bytes(a), &c->stack);
     if (st == OK)
         st = jam_thread_create(c->proc, name, name_len(name), 0, &c->thread);
     return st;
@@ -329,15 +343,21 @@ static status_t gather_handles(const struct spawn_args *a, struct child *c,
 }
 
 /* The message (len bytes of msg, the handles in hs) on a new channel,
- * then the thread starts with the other end. A write or a start takes the
- * handles it was given whatever its status (sent, or closed). */
-static status_t start_child(struct child *c, const uint8_t *msg, size_t len, struct handout *hs)
+ * then the hand-over (consumed whatever happens), then the thread starts
+ * with the other end. A write or a start takes the handles it was given
+ * whatever its status (sent, or closed). */
+static status_t start_child(struct child *c, const uint8_t *msg, size_t len, struct handout *hs,
+                            const struct posixfds_out *handover)
 {
     status_t st = jam_channel_create(&c->ch[0], &c->ch[1]);
     if (st == OK) {   /* the extras with the rights the caller chose */
         st = jam_channel_write_rights(c->ch[0], msg, (uint32_t)len, hs->h, hs->rights, hs->n);
         hs->n = 0;   /* in the message now, or closed */
     }
+    if (handover && st == OK)
+        st = posixfds_write(c->ch[0], handover);   /* all of it before the child runs */
+    else if (handover)
+        posixfds_discard(handover);
     if (st == OK) {
         st = jam_process_start(c->proc, c->thread, c->entry, c->stack, c->ch[1], 0);
         c->ch[1] = HANDLE_INVALID;   /* the child's now, or closed */
@@ -350,11 +370,13 @@ static status_t start_child(struct child *c, const uint8_t *msg, size_t len, str
 static status_t make_child(const struct spawn_args *a, const struct image *img, const char *name,
                            uint8_t *msg, size_t len, struct child *c, struct ns_out *nso)
 {
-    status_t st = load_child(img, name, c);
+    status_t st = load_child(a, img, name, c);
     struct handout hs = { .n = 0 };
     st = gather_handles(a, c, (struct startup_msg *)msg, &hs, st);
     if (st == OK)
-        st = start_child(c, msg, len, &hs);
+        st = start_child(c, msg, len, &hs, a->handover);
+    else
+        posixfds_discard(a->handover);
     /* A message that never reached the child dies with ch[1], handles and
      * all. */
     for (unsigned i = 0; i < hs.n; i++)
@@ -389,7 +411,8 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
 {
     struct image img;
     status_t st = find_image(a, &img);
-    if (st == OK && a->nextra > STARTUP_MAX_HANDLES - 5u - (a->ns ? 1u : 0u))
+    if (st == OK && (a->nextra > STARTUP_MAX_HANDLES - 5u - (a->ns ? 1u : 0u) ||
+                     !stack_bytes(a)))
         st = ERR_OUT_OF_RANGE;
     const char *name = child_name(a);
     _Alignas(8) uint8_t msg[MSG_MAX];   /* the startup message, built on the stack */
