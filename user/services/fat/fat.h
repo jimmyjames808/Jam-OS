@@ -50,6 +50,7 @@
 #define FAT_KEY_FS          1ull
 #define FAT_KEY_BLOCK       2ull
 #define FAT_KEY_CTL         3ull
+#define FAT_KEY_OWN         4ull
 #define FAT_KEY_FILE_BIT    (1ull << 62)
 #define FAT_KEY_FILE(s, g)  (FAT_KEY_FILE_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define FAT_KEY_VIEW_BIT    (1ull << 61)
@@ -62,6 +63,7 @@
  * `slot` (with the low 16 bits of its generation). */
 #define FAT_CHAN_FS         1u
 #define FAT_CHAN_CTL        2u
+#define FAT_CHAN_OWN        3u
 #define FAT_CHAN_FILE(s, g) (1u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
 #define FAT_CHAN_VIEW(s, g) (2u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
 
@@ -92,6 +94,7 @@ struct fat_vol {
     handle_t    rtc_root;     /* SR_RESOURCE or HANDLE_INVALID */
     handle_t    keep;         /* SR_KEEP: the keep channel (keeper.c), or HANDLE_INVALID */
     handle_t    serve;        /* the fs channel (FAT_SR_SERVE) */
+    handle_t    own;          /* the spawner's own fs channel (FAT_SR_OWN), or HANDLE_INVALID */
     handle_t    ctl;          /* this instance's fsctl channel, or HANDLE_INVALID */
     struct idl_held held;     /* channels held back by the unread bound (request.c's note) */
     /* How the last instance ended, from argv (FAT_ARG_KILLED, FAT_ARG_CRASHED):

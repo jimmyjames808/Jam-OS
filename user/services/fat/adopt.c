@@ -257,6 +257,10 @@ static bool chan_of(unsigned slot, struct fat_chan *c)
         *c = (struct fat_chan){ .ch = vol.serve, .id = FAT_CHAN_FS, .proto = FAT_PROTO_FS };
         return true;
     }
+    if (id == FAT_CHAN_OWN) {   /* kept by the spawner too, if this instance got it */
+        *c = (struct fat_chan){ .ch = vol.own, .id = FAT_CHAN_OWN, .proto = FAT_PROTO_FS };
+        return vol.own != HANDLE_INVALID;
+    }
     uint32_t kind = id >> 30, i = id & 0xff, gen = id >> 8 & 0xffff;
     if (kind == 1)
         return files_chan(i, gen, c);

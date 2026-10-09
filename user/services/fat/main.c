@@ -131,6 +131,55 @@ static status_t arm_fs(handle_t serve)
                          PORT_BIND_ONCE);
 }
 
+/* The same for the spawner's own fs channel (FAT_SR_OWN), if any. */
+static status_t arm_own(void)
+{
+    return vol.own ? jam_port_bind(vol.port, vol.own, FAT_KEY_OWN, SIG_READABLE | SIG_PEER_CLOSED,
+                                   PORT_BIND_ONCE)
+                   : OK;
+}
+
+static bool own_held;   /* its client left too much unread (fs_unread_full) */
+
+/* A packet for the own fs channel: one request served. Its client going
+ * ends nothing but its serving. */
+static void own_event(void)
+{
+    if (!vol.own)
+        return;   /* a packet from before it closed */
+    if (fs_unread_full(vol.own)) {
+        own_held = true;
+        idl_hold(&vol.held);
+        return;
+    }
+    const struct fat_chan c = { .ch = vol.own, .id = FAT_CHAN_OWN, .proto = FAT_PROTO_FS };
+    files_reap();
+    status_t st = serve_one(&c);
+    if (st == OK || st == ERR_SHOULD_WAIT)
+        st = arm_own();
+    if (st != OK) {   /* ERR_PEER_CLOSED: the spawner let it go */
+        jam_handle_close(vol.own);
+        vol.own = HANDLE_INVALID;
+    }
+}
+
+/* A look at the own channel held back (idl_held_due): armed again once
+ * its client has read. */
+static void own_unheld(void)
+{
+    if (!own_held)
+        return;
+    if (vol.own && fs_unread_full(vol.own)) {
+        idl_hold(&vol.held);
+        return;
+    }
+    own_held = false;
+    if (arm_own() != OK) {
+        jam_handle_close(vol.own);
+        vol.own = HANDLE_INVALID;
+    }
+}
+
 static bool stopping;   /* fsctl.stop was answered: nothing more is served */
 
 /* fsctl.stop: everything closed and on the medium; run() then ends. */
@@ -178,6 +227,8 @@ static status_t run(handle_t serve, handle_t ctl)
      * means nothing (the fs channel's clients decide when fat ends). */
     if (st == OK && ctl)
         st = jam_port_bind(vol.port, ctl, FAT_KEY_CTL, SIG_READABLE, PORT_BIND_PERSISTENT);
+    if (st == OK)
+        st = arm_own();
     bool fs_held = false;   /* the fs channel's clients left too much unread (fs_unread_full) */
     while (st == OK && !vol.disk_gone && !stopping) {
         struct port_packet pkt;
@@ -192,6 +243,7 @@ static status_t run(handle_t serve, handle_t ctl)
                 if (st != OK)
                     break;
             }
+            own_unheld();
             views_unheld();
             files_unheld();
         }
@@ -210,6 +262,8 @@ static status_t run(handle_t serve, handle_t ctl)
                 ;
         } else if (pkt.key == FAT_KEY_BLOCK) {
             vol.disk_gone = true;
+        } else if (pkt.key == FAT_KEY_OWN) {
+            own_event();
         } else if (pkt.key & FAT_KEY_FILE_BIT) {
             files_event(pkt.key);
         } else if (pkt.key & FAT_KEY_VIEW_BIT) {
@@ -257,6 +311,7 @@ int main(int argc, char **argv)
     }
     vol.serve = serve;
     vol.ctl = startup_handle(FAT_SR_CTL);
+    vol.own = startup_handle(FAT_SR_OWN);
     vol.keep = startup_handle(SR_KEEP);
     vol.rtc_root = startup_handle(SR_RESOURCE);
     vol.at[FAT_AT_MAIN] = now();
