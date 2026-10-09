@@ -66,6 +66,7 @@ struct ctl {
     uint8_t  level;       /* L_* */
     bool     ready;       /* a port packet came */
     bool     more;        /* its budget ran out with requests left */
+    bool     held;        /* left unread: its client is behind (the unread bound) */
     bool     waiting;     /* a layout_wait is kept in wait, for the layout to leave wait_for */
     uint8_t  wait_for;    /* ... the layout its caller knows */
     struct idl_txn wait;
@@ -75,6 +76,11 @@ static struct ctl ctls[CTL_ALL];   /* [0, CTL_MAX): ADMIN and INPUT; then NOTIFY
 static uint32_t next_gen;
 static handle_t note_svc;         /* /svc/notify's shared channel, our end (0: none) */
 static bool note_ready;           /* ... a port packet came */
+static bool note_held;            /* ... left unread: its clients are behind */
+/* The unread bound (tools/genidl.py, "The unread bound"): a channel whose
+ * client has its protocol's bound of answers unread is not read (held) and
+ * counted here; ctl_serve makes the held ones ready again when it says so. */
+static struct idl_held held;
 static bool rebooting;            /* Ctrl+Alt+Del asked for it: input is dropped */
 static uint64_t reboot_at;        /* when the compositor resets the machine itself */
 static bool watching;             /* init's control channel is bound to our port */
@@ -340,10 +346,26 @@ static const struct compctl_ops ctl_ops = {
 
 /* ---- serving ------------------------------------------------------------------------ */
 
+/* Is ch's client behind (full: its protocol's unread_full)? Then it is
+ * held (*flag) and counted, and nothing is read from it now. */
+static bool behind(bool full, bool *flag)
+{
+    if (!full)
+        return false;
+    *flag = true;
+    idl_hold(&held);
+    return true;
+}
+
 static void serve_ctl(struct ctl *c)
 {
     c->more = false;
     for (unsigned n = 0; n < SEAT_BUDGET; n++) {
+        if (behind(c->level == L_NOTIFY ? notify_unread_full(c->ch) : compctl_unread_full(c->ch),
+                   &c->held)) {
+            c->ready = false;
+            return;
+        }
         status_t st = c->level == L_NOTIFY ? notify_serve_one(c->ch, &note_ops, c)
                                            : compctl_serve_one(c->ch, &ctl_ops, c);
         if (st == ERR_SHOULD_WAIT) {
@@ -394,6 +416,8 @@ static void serve_note_svc(void)
 {
     note_ready = false;
     for (unsigned n = 0; n < SEAT_BUDGET; n++) {
+        if (behind(notify_unread_full(note_svc), &note_held))
+            return;
         status_t st = svc_serve_request(note_svc, svc_only, note_connect, NULL);
         if (st == ERR_SHOULD_WAIT)
             return;
@@ -428,6 +452,14 @@ void ctl_packet(uint64_t key)
 
 void ctl_serve(void)
 {
+    if (idl_held_due(&held)) {   /* the held ones: serving them looks again */
+        for (unsigned i = 0; i < CTL_ALL; i++) {
+            ctls[i].ready |= ctls[i].held;
+            ctls[i].held = false;
+        }
+        note_ready |= note_held && note_svc != HANDLE_INVALID;
+        note_held = false;
+    }
     for (unsigned i = 0; i < CTL_ALL; i++)
         if (ctls[i].ch != HANDLE_INVALID && (ctls[i].ready || ctls[i].more))
             serve_ctl(&ctls[i]);
@@ -446,7 +478,7 @@ bool ctl_more(void)
 
 uint64_t ctl_deadline(void)
 {
-    uint64_t d = deskctl_deadline();
+    uint64_t d = idl_held_deadline(&held, deskctl_deadline());
     return rebooting && reboot_at < d ? reboot_at : d;
 }
 
