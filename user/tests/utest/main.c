@@ -1120,6 +1120,7 @@ static const struct {
     { "volumes_new_channel", t_volumes_new_channel },
     { "volumes_loop_answers", t_volumes_loop_answers },
     { "fat_unread_flood", t_fat_unread_flood },
+    { "fat_rename_into_alias", t_fat_rename_into_alias },
 };
 
 int main(int argc, char **argv)

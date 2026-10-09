@@ -803,3 +803,4 @@ bool t_volumes_new_channel(void);
 bool t_volumes_loop_answers(void);
 /* fat_hostile.c: fat against clients that misbehave (M12.1). */
 bool t_fat_unread_flood(void);
+bool t_fat_rename_into_alias(void);

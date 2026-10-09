@@ -218,6 +218,27 @@ static status_t make_way(const char *pf, const char *pt)
     return fr_status(fr);
 }
 
+/* Is `to` (resolved) inside the directory whose entry is at place_dir:
+ * does any directory on its way have that entry? Told by the entries, not
+ * the names: FatFs finds a directory by its 8.3 alias ("LONGDI~1") or any
+ * case of its name as well, and a path string can't say. to is cut at
+ * each '/' in turn and put back. */
+static bool inside_entry(char *to, uint64_t place_dir)
+{
+    for (size_t i = 1; to[i]; i++) {
+        if (to[i] != '/')
+            continue;
+        FILINFO fi;
+        uint64_t place = 0;
+        to[i] = '\0';
+        FRESULT fr = ffx_stat(to, &fi, &place);
+        to[i] = '/';
+        if (fr == FR_OK && place == place_dir)
+            return true;
+    }
+    return false;
+}
+
 static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const char *to,
                           uint32_t to_len, uint32_t flags)
 {
@@ -231,11 +252,19 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
     if (st != OK)
         return st;
     /* FatFs would move a directory into itself and lose it: a loop no
-     * path reaches. */
-    bool from_dir = false;
-    if (path_is_root(pf) || path_is_root(pt) ||
-        (path_inside(pt, pf) && kind_of(pf, &from_dir) == FR_OK && from_dir))
-        return ERR_INVALID_ARGS;   /* (a file "into itself": FatFs finds no path) */
+     * path reaches. Into itself by any of its names (its 8.3 alias, another
+     * case): by its entry. */
+    if (path_is_root(pf) || path_is_root(pt))
+        return ERR_INVALID_ARGS;
+    FILINFO ff;
+    uint64_t place_f = 0;
+    if (path_inside(pt, pf) ||
+        (ffx_stat(pf, &ff, &place_f) == FR_OK && (ff.fattrib & AM_DIR) &&
+         inside_entry(pt, place_f))) {
+        bool from_dir = false;
+        if (kind_of(pf, &from_dir) == FR_OK && from_dir)
+            return ERR_INVALID_ARGS;   /* (a file "into itself": FatFs finds no path) */
+    }
     if (files_is_open(pf))
         return ERR_BUSY;   /* fat's lock (fileops.c) */
     dirs_forget();

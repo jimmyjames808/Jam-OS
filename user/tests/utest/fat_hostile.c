@@ -1,5 +1,6 @@
 /* utest: fat (user/services/fat) against clients that misbehave, over a RAM
- * disk: one that never reads its answers (fat_unread_flood). */
+ * disk: one that never reads its answers (fat_unread_flood), one that moves
+ * a directory into itself by another of its names (fat_rename_into_alias). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -91,5 +92,41 @@ bool t_fat_unread_flood(void)
         got++;
     }
     CHECK_ST(jam_handle_close(v), OK);
+    return fat_stop(&r);
+}
+
+/* A directory moved into itself by its 8.3 alias ("LONGDI~1") or another
+ * case of its name: FatFs finds it by either, and would move its entry
+ * into its own clusters, losing it and all under it. Refused by entry
+ * (ERR_INVALID_ARGS), and a move elsewhere still works. Before the fix only
+ * the name as given was compared. */
+bool t_fat_rename_into_alias(void)
+{
+    struct fatrun r;
+    uint64_t id = 0, alias = 0;
+    if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
+        return false;
+    CHECK_ST(t_mkdir(&r, "/LongDirectoryName"), OK);
+    CHECK_ST(t_mkdir(&r, "/LongDirectoryName/inner"), OK);
+    CHECK(put_file(&r, "/LongDirectoryName/inner/f.txt", "kept"));
+    CHECK_ST(t_stat_id(&r, "/LongDirectoryName", &id), OK);
+    CHECK_ST(t_stat_id(&r, "/LONGDI~1", &alias), OK);   /* the alias FatFs made */
+    CHECK_EQ(alias, id);
+    CHECK_ST(t_rename(&r, "/LongDirectoryName", "/LONGDI~1/moved"), ERR_INVALID_ARGS);
+    CHECK_ST(t_rename(&r, "/LongDirectoryName", "/longdi~1/inner/moved"), ERR_INVALID_ARGS);
+    CHECK_ST(t_rename(&r, "/LONGDI~1", "/LongDirectoryName/inner/moved"), ERR_INVALID_ARGS);
+    CHECK_ST(t_rename(&r, "/LongDirectoryName", "/LONGDIRECTORYNAME/moved"), ERR_INVALID_ARGS);
+    CHECK(file_is(&r, "/LongDirectoryName/inner/f.txt", "kept"));
+    /* A file "into" an alias of itself: FatFs finds no directory there. */
+    CHECK(put_file(&r, "/LongFileNameHere.txt", "f"));
+    CHECK(t_rename(&r, "/LongFileNameHere.txt", "/LONGFI~1.TXT/x") != OK);
+    CHECK(file_is(&r, "/LongFileNameHere.txt", "f"));
+    /* Elsewhere: fine. */
+    CHECK_ST(t_mkdir(&r, "/Other"), OK);
+    CHECK_ST(t_rename(&r, "/LONGDI~1", "/OTHER/moved"), OK);
+    CHECK(file_is(&r, "/Other/moved/inner/f.txt", "kept"));
+    unsigned n = 0;
+    CHECK(dir_count(&r, "/", NULL, &n, NULL));
+    CHECK_EQ(n, 2);   /* /Other and the file: nothing lost, nothing left behind */
     return fat_stop(&r);
 }
