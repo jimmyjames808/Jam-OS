@@ -25,6 +25,7 @@
 #include "jwlc.h"
 
 #define HEAD_MAX 128u   /* bytes of the keymap read: its first line */
+#define RATE_MAX 1000    /* repeats a second, at most (more: one every dispatch, a spin) */
 
 static void queue_simple(struct jwl_client *c, uint32_t type, struct jwl_window *w)
 {
@@ -231,7 +232,7 @@ static status_t kb_repeat_info(void *data, uint32_t self, int32_t rate, int32_t 
 {
     struct jwl_client *c = data;
     (void)self;
-    c->info.repeat_rate = rate > 0 ? rate : 0;
+    c->info.repeat_rate = rate <= 0 ? 0 : rate > RATE_MAX ? RATE_MAX : rate;
     c->info.repeat_delay = delay > 0 ? delay : 0;
     if (!c->info.repeat_rate)
         c->seat.repeat_code = 0;

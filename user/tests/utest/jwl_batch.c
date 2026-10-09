@@ -138,8 +138,76 @@ bool t_jwl_bad_batches(void)
     return true;
 }
 
+/* A run of batches with no message (M12.1 C1): 64 in a row, then a
+ * message, are fine; a 65th in a row is refused at once, with nothing
+ * after it read, on both sides. Before, one jwl_conn_next read them all
+ * however many came, and a client writing them flat out held the
+ * compositor's loop in that one call. */
+bool t_jwl_bad_empty_run(void)
+{
+    uint32_t empty[4] = { JWL_MAGIC, 0, 0, 0 };
+    for (unsigned side = 0; side < 2; side++) {
+        handle_t a, b;
+        CHECK_ST(jam_channel_create(&a, &b), OK);
+        struct jwl_conn *c;
+        struct jwl_conn_config cfg = { .ch = b, .side = side ? JWL_CLIENT : JWL_SERVER,
+                                       .display = &jt_display, .known = jt_known,
+                                       .nknown = JT_NKNOWN };
+        CHECK_ST(jwl_conn_create(&cfg, &c), OK);
+        for (unsigned round = 0; round < 2; round++) {
+            struct jt_wr w = { .b = raw };
+            header(&w, JWL_MAGIC, 0, 0, 0);
+            if (!side) {   /* a request the compositor takes: get_registry, a new id each */
+                jt_begin(&w, JWL_DISPLAY_ID, 1);
+                jt_w32(&w, 2 + round);
+                jt_end(&w);
+            } else {       /* an event a client takes: an error naming the display */
+                jt_begin(&w, JWL_DISPLAY_ID, 0);
+                jt_w32(&w, JWL_DISPLAY_ID);
+                jt_w32(&w, 0);
+                jt_w32(&w, 4);
+                jt_w32(&w, 0x0079782f);   /* "/xy" and its NUL */
+                jt_end(&w);
+            }
+            for (unsigned i = 0; i < JWL_EMPTY_RUN; i++)
+                CHECK_ST(jam_channel_write(a, empty, sizeof(empty), NULL, 0), OK);
+            CHECK_ST(jam_channel_write(a, raw, (uint32_t)w.n, NULL, 0), OK);
+            struct jwl_msg m;
+            CHECK_ST(jwl_conn_next(c, &m), OK);   /* the run ends with a message: fine */
+            CHECK_EQ(m.opcode, side ? 0 : 1);
+            CHECK_ST(jwl_conn_next(c, &m), ERR_SHOULD_WAIT);
+        }
+        for (unsigned i = 0; i < JWL_EMPTY_RUN + 2; i++)
+            CHECK_ST(jam_channel_write(a, empty, sizeof(empty), NULL, 0), OK);
+        struct jwl_msg m;
+        CHECK_ST(jwl_conn_next(c, &m), ERR_INVALID_ARGS);
+        CHECK_EQ(c->error.code, JWL_ERROR_INVALID_METHOD);
+        CHECK_EQ(c->stats.batches_in, 3 * (JWL_EMPTY_RUN + 1));
+        uint32_t nb = 0, nh = 0;
+        struct channel_read_args r = { .h = b, .rd_cap = sizeof(raw),
+                                       .rd_bytes = (uint64_t)(uintptr_t)raw,
+                                       .rd_actual = (uint64_t)(uintptr_t)&nb,
+                                       .rd_hactual = (uint64_t)(uintptr_t)&nh };
+        CHECK_ST(jam_channel_read(&r), OK);   /* the last one: never read */
+        CHECK_EQ(nb, sizeof(empty));
+        CHECK_ST(jam_channel_read(&r), ERR_SHOULD_WAIT);
+        if (!side) {   /* the compositor said why */
+            r.h = a;
+            CHECK_ST(jam_channel_read(&r), OK);
+            uint32_t ew[8];
+            memcpy(ew, raw, sizeof(ew));
+            CHECK(nb >= 40 && ew[0] == JWL_MAGIC && ew[4] == JWL_DISPLAY_ID);
+            CHECK(ew[6] == JWL_DISPLAY_ID && ew[7] == JWL_ERROR_INVALID_METHOD);
+        }
+        jwl_conn_destroy(c);
+        jam_handle_close(a);
+    }
+    return true;
+}
+
 /* A client and a compositor that breaks the transport: the client stops,
- * keeps the reason, and sends nothing. Empty batches are fine both ways. */
+ * keeps the reason, and sends nothing. An empty batch is fine both ways
+ * (a run of them is not: t_jwl_bad_empty_run). */
 bool t_jwl_bad_compositor(void)
 {
     struct jt_wr w = { .b = raw };

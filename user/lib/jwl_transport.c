@@ -5,7 +5,10 @@
  * batches brought and no message took yet, at most JWL_HANDLES_QUEUED),
  * its header checked (magic, reserved words, the handle count it claims
  * against the handles it carries), then its messages decoded one per
- * jwl_conn_next, each 'h' argument taking the queue's next handle.
+ * jwl_conn_next, each 'h' argument taking the queue's next handle. A run
+ * of batches with no message is bounded (JWL_EMPTY_RUN), so one
+ * jwl_conn_next reads a bounded number of batches whatever the peer
+ * writes.
  *
  * Sending: jwl_send (what the generated stubs call) checks the message
  * against the object it is sent on, its objects and its new ids against
@@ -235,7 +238,14 @@ static status_t read_batch(struct jwl_conn *c)
     }
     memcpy(c->in_h + left, h, nh * sizeof(handle_t));
     c->in_nh += nh;
-    return check_header(c, nh);
+    st = check_header(c, nh);
+    if (st != OK)
+        return st;
+    /* a run of batches with nothing to decode is bounded (<jwl.h>) */
+    c->empty_run = nb > JWL_HEADER_BYTES ? 0 : c->empty_run + 1;
+    if (c->empty_run > JWL_EMPTY_RUN)
+        return broken_batch(c, "with no message, more than 64 in a row");
+    return OK;
 }
 
 /* A message the transport takes itself: the compositor's delete_id, on a

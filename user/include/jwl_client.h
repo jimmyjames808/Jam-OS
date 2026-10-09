@@ -44,7 +44,7 @@
  * JWL_SERVICE, a call that can wait up to svc_open's 5 s while a
  * restarted compositor comes up; a loop that serves others gives its own
  * that doesn't (one that answers ERR_SHOULD_WAIT until it has a channel is
- * asked again at the next pause).
+ * asked again every 50 ms).
  *
  * Threads: a client and everything made from it belong to one thread. */
 #pragma once
@@ -85,8 +85,8 @@ struct jwl_window;
 
 struct jwl_client_config {
     /* A new connection's channel end into *out (the client owns it). NULL:
-     * svc_open(JWL_SERVICE). ERR_SHOULD_WAIT: not yet, ask again at the
-     * next pause; any other error: the same. */
+     * svc_open(JWL_SERVICE). ERR_SHOULD_WAIT: not yet, asked again 50 ms
+     * later; any other error: again after a pause that grows to a second. */
     status_t (*connect)(void *ctx, handle_t *out);
     void     *connect_ctx;
     bool      no_reconnect;   /* a lost connection stays lost: the client is dead */
@@ -115,7 +115,7 @@ struct jwl_client_info {
     int32_t  output_scale;        /* 1 until told */
     uint32_t seat_caps;           /* JWL_WL_SEAT_CAPABILITY_* */
     const struct keymap *keymap;  /* the keyboard's layout (keymap_of_xkb), NULL: no keyboard */
-    int32_t  repeat_rate;         /* keys per second, 0: no repeat */
+    int32_t  repeat_rate;         /* keys per second (at most 1000), 0: no repeat */
     int32_t  repeat_delay;        /* ms before the first repeat */
     uint32_t error_object;        /* wl_display.error that ended it: object, code, text */
     uint32_t error_code;
@@ -154,6 +154,7 @@ handle_t jwl_client_channel(const struct jwl_client *c);
  * key means "call jwl_client_dispatch". Errors: port_bind's. */
 status_t jwl_client_bind_port(struct jwl_client *c, handle_t port, uint64_t key);
 /* When dispatch has work of its own to do (a key repeat, a reconnect,
+ * a paste, requests held because the channel was full,
  * messages it left unread): an absolute deadline, DEADLINE_NEVER for
  * none, 0 for now. */
 uint64_t jwl_client_deadline(const struct jwl_client *c);
