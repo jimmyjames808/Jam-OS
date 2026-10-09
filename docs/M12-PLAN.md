@@ -1,11 +1,12 @@
 # M12 plan: the interface review
 
-Status (2026-10-07): a plan, nothing built. Written against main e323fefd,
-with G1 built and merged and its PC sign-off still to come. **Waiting for
-the owner's answers to the questions below before any agent starts.** M12
-is wave 3 of [PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-3-m12-alone): it
-runs alone, after waves 1 and 2 changed the interfaces, and nothing else
-may change them while it runs.
+Status (2026-10-09): every code track is merged ([Built](#built)) and the
+docs are joined. The regression on the PC and the sign-off (All tests and
+`soak 10`) are still to come. Written (2026-10-07) against main e323fefd,
+with G1 built and merged and its PC sign-off still to come, and the owner's
+answers recorded below before any agent started. M12 is wave 3 of
+[PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-3-m12-alone): it ran alone,
+after waves 1 and 2 changed the interfaces.
 
 Goal ([roadmap](ROADMAP.md#later)): **the system calls and the service
 protocols reviewed and reshaped while changing them is cheap, before
@@ -273,7 +274,7 @@ recommendation.
 
 ### The reviews' questions, answered (2026-10-07)
 
-Stage B: the four reviews (docs/M12-REVIEW-KERNEL.md, -PROTOCOLS.md,
+Stage B: the four reviews (docs/history/M12-REVIEW-KERNEL.md, -PROTOCOLS.md,
 -WAYLAND.md, -STORAGE.md) raised 20 questions the answers above left
 open. The owner took the reviews' recommendations for all of them ("your
 recommendation for the rest unless unsure or very important") and was
@@ -723,13 +724,34 @@ four agents test in QEMU at once.
 | **P3. Network** | net's socket protocol (Q5), counts and addresses as arrays, the timeouts (Q19), netctl, netdev, dns, serve | `abi/idl/net.idl`, `abi/idl/netctl.idl`, `abi/idl/netdev.idl`, `abi/idl/dns.idl`, `abi/idl/serve.idl`, `user/services/netstack/`, the network drivers' shared server, dns, dhcp, sntp, serve, netlog, update's fetcher, the shell's network commands | G |
 | **P4. USB** | usb's descriptors as arrays, the bulk timeouts, usbbus's attach as an event | `abi/idl/usb.idl`, `abi/idl/usbbus.idl`, `drivers/usb-bus/`, hid's and usb-storage's `usb` calls, devmgr's `user/services/devmgr/usb.c`, usbtest | G |
 | **P5. Files** | Q8: `fs` and `file` (paths as strings, batched `readdir`, exclusive create, `is_dir`), Q9's codes from fat, fat's lock by directory entry; fat's state layout version | `abi/idl/fs.idl`, `abi/idl/file.idl`, `user/services/fat/` (but its block client and control), libos's file calls and views, the bootfs server, the shell's file commands | G |
-| **P6. init and the rest** | initctl's names as strings, logctl, svc, the keep protocol and the namespace's messages into IDL (with Q1 and Q4), the startup roles' review, the namespace's caps (item 26), Q16's heap | `abi/idl/initctl.idl`, `abi/idl/logctl.idl`, `abi/idl/svc.idl`, `user/include/keep.h`, `user/lib/keep.c`, libos's namespace and heap, `user/services/init/` (but what S2 and D own), logd | G, K3, after D |
+| **P6. init and the rest** (done: P6a and P6b, [Built](#built); findings 44 to 51 of [the protocols review](history/M12-REVIEW-PROTOCOLS.md)) | initctl's names as strings, logctl, svc, the keep protocol and the namespace's messages into IDL (with Q1 and Q4), the startup roles' review, the namespace's caps (item 26), Q16's heap | `abi/idl/initctl.idl`, `abi/idl/logctl.idl`, `abi/idl/svc.idl`, `user/include/keep.h`, `user/lib/keep.c`, libos's namespace and heap, `user/services/init/` (but what S2 and D own), logd | G, K3, after D |
 | **S1. volumes, the move** (a refactor: no protocol or behaviour change) | Q6: disks, filesystem services, mounts, fat's spares and keepers move from devmgr into the new service; devmgr hands it each `storage` channel; one libos supervision module for devmgr, init and volumes; init starts volumes after devmgr. Every storage test passes unchanged | the new service's directory, `user/services/devmgr/disk.c`, `user/services/devmgr/disk.h`, `user/services/devmgr/fsvc.c`, `user/services/devmgr/mounts.c`, `user/services/devmgr/spare.c`, `user/services/devmgr/supervise.c`, `user/services/devmgr/main.c`, `user/services/devmgr/request.c`, `user/services/devmgr/internal.h`, `user/services/init/spare.c`, init's start order, the Makefile's lines | the answers (not G: today's protocols) |
 | **S2. volumes, the protocol** | the new service's protocol in IDL (mounts as a `later` method with a varying number of handles, remount, the ESP write, test disks with a handle argument), Q7's shape of `storage` and `block`, `fsctl`; init's and the shell's callers; init's `mount` no longer waits inside a request | the new service's IDL file and server, `abi/idl/storage.idl`, `abi/idl/block.idl`, `abi/idl/fsctl.idl`, `drivers/usb-storage/`, fat's block client and control, `user/services/init/mounts.c`, `user/services/init/espwrite.c`, init's `mount` in `user/services/init/ctl.c`, `user/services/shell/sh_allow.c`, the disk utests | S1, G |
 | **D. devmgr in IDL** | devmgr's protocol as an IDL file with a real device address (item 18) and its own id; `SET_CONSOLE` as a handle argument; every caller; init's `kill` no longer waits inside a request; `user/include/devmgr.h` keeps only what isn't the protocol | the new devmgr IDL file, `user/include/devmgr.h`, devmgr's request handling, its callers (init, the mixer, netstack, the shell's `devices` and `usb`, `drivers/test/crasher/crasher.c`, utest, usbtest, hdatest, nettest, contest) | S2 (both edit devmgr and init) |
 | **J. The join** | the docs: ARCHITECTURE ("The system call ABI", "IPC", the protocol list, the storage service, the drivers and services table), CODING-GUIDE (the IDL recipe: arrays, events, handle arguments), TESTING (new tests), `abi/syscalls.def`'s comments; the four review files to docs/history; the area tests once on the merged result | the docs | all above |
 
+## Built
+
+Every track above is merged on main (the merge commits):
+
+| Track | Merged |
+|---|---|
+| K1 | fec98b25 (the channel structs and limits), feb87974 (handles always moved, the receives-no-handles mark); the owner changed Q2 afterwards, the writer keeps paying: 1e8cc572, a56ffa24 |
+| K2 | 4cab18bf |
+| K3 | e4b8ed14 |
+| K4 | 36a4902c |
+| IDL1, IDL2 | 203cdf62, 00c37605; the close-after-send sweep 5cbf3703 |
+| P1 | 281ab6d8 (P1a: the compositor's transport), e09c90fb (P1b: input, compctl, the console) |
+| P2, P3, P4, P5 | 7ef8cc0a, db993a50, 69434b27, 0e611cf1 |
+| P6 | 1ceb1506 (P6a: keep and the namespace in IDL, longer names, the 1 GiB heap), 0c2b3962 (P6b: initctl's strings, init's note as the shell's `note=` argument, `update.offer`, `splashch`, `crashres`, the startup roles named in `<roles.h>`) |
+| S1 | 4b019482 (S1a: the supervision module), a9115cd7 (S1b: volumes) |
+| S2 | ae859bee (S2a: the storage protocols, `volumes`), 62b9d31b (S2b: no waits) |
+| D | ffa302fd (devmgr 90, devmgrctl 91, crasher 92) |
+| J | the docs: [ARCHITECTURE.md](../ARCHITECTURE.md), [CODING-GUIDE.md](../CODING-GUIDE.md), [TESTING.md](TESTING.md), `abi/syscalls.def`'s comments; the four reviews in `docs/history/` |
+
 ## Order and parallel work
+
+All of it is done, in this order:
 
 1. **Stage A**: K, P, W and S reviews together (docs only, no QEMU).
 2. **Stage B**: the owner's answers.
@@ -739,7 +761,7 @@ four agents test in QEMU at once.
    too). Four at a time in QEMU.
 5. **Wave C3**: S2 (after S1 and G), then D (after S2), then P6 (after
    D and K3).
-6. **J**, then the main session's full Mac regression, then the PC.
+6. **J**, then the main session's full regression, then the PC.
 
 Merge order: K1 before K3 and before G's handle arguments; S1 before S2
 before D before P6; each P track whenever it reports.

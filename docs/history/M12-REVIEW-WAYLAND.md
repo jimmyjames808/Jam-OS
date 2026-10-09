@@ -1,9 +1,9 @@
 # M12 review W: the compositor's protocol
 
-Stage A of [M12-PLAN.md](M12-PLAN.md#stage-a-the-reviews-findings-first),
+Stage A of [M12-PLAN.md](../M12-PLAN.md#stage-a-the-reviews-findings-first),
 review W, at main 56aa8904: docs only, nothing built or run. Read: G1's
 "Interface changes for M12 to review" and its "As built" notes
-([G1-PLAN.md](G1-PLAN.md#interface-changes-for-m12-to-review)); the JWL1
+([G1-PLAN.md](../G1-PLAN.md#interface-changes-for-m12-to-review)); the JWL1
 transport and libjwl, both sides (`user/include/jwl.h`,
 `user/lib/jwl_transport.c`, `user/lib/jwl_client.c`, `user/lib/jwl_seat.c`,
 `user/lib/jwl_data.c`, `user/lib/jwl_events.c`); the globals and versions

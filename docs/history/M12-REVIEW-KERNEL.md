@@ -1,7 +1,7 @@
 # M12 review K: the system calls
 
 Stage A's review of the system call interface, for
-[M12-PLAN.md](M12-PLAN.md#stage-a-the-reviews-findings-first). Docs only:
+[M12-PLAN.md](../M12-PLAN.md#stage-a-the-reviews-findings-first). Docs only:
 no code changed, no QEMU run. Read at main 56aa8904.
 
 Read in full: `abi/syscalls.def`; the kernel headers user code sees
@@ -87,7 +87,7 @@ question E first.
 
 Every system call musl's x86-64 port makes (from its `arch/x86_64` system
 call list and the calls its `src/` uses), grouped by the need it serves,
-with the needs of M13's row ([ROADMAP.md](ROADMAP.md#later)). Marks:
+with the needs of M13's row ([ROADMAP.md](../ROADMAP.md#later)). Marks:
 **have it** (which call), **M12 adds** (the shape), **M12.5 / M13 adds**
 (the shape), **user space** (libc and a service, no system call), **not
 planned** (musl gets `ENOSYS` and copes). M13 replaces musl's system call
