@@ -8,7 +8,7 @@
  * channel closes the file (a written file's directory entry is updated
  * then, as by sync). Format: see tools/genidl.py.
  *
- * Restart: fat's restart is not seen: devmgr's keeper holds this channel
+ * Restart: fat's restart is not seen: volumes' keeper holds this channel
  * and the buffer VMO across fat's death, the successor carries on with
  * the file as the last answered request left it (an answered write is
  * never lost, synced or not), and the request in progress is finished

@@ -34,6 +34,7 @@
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc devmgr\n"
           "svc devmgr-ctl\n"
+          "svc volumes\n"
           "svc wayland\n"
           "mount * rw\n"
           "right klog\n"

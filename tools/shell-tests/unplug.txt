@@ -2,7 +2,7 @@
 # monitor: device_del / device_add of the boot stick, id "stick"). /esp and
 # /data go away and nothing hangs; /boot and the shell carry on; after the
 # replug the mounts are back in the running shell, what was synced is
-# there, and logd carries on in its file. On the desktop devmgr's notices
+# there, and logd carries on in its file. On the desktop volumes' notices
 # say so in plain words: "Jam OS stick removed", then "Jam OS stick is
 # back" (the compositor's log line of each).
 # QEMU_INPUT=this file, command line "shell".

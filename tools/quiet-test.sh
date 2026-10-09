@@ -32,7 +32,7 @@ for b in boot splash verbose; do
         ok=0
         continue
     fi
-    for line in "usb-bus: 1 device" "init: the shell is up" "devmgr: disk 1 partition 2"; do
+    for line in "usb-bus: 1 device" "init: the shell is up" "volumes: disk 1 partition 2"; do
         grep -aq "$line" "$out/quiet-$b-run.log" ||
             { echo "quiet-test: $b: \"$line\" is not in the serial log"; ok=0; }
     done

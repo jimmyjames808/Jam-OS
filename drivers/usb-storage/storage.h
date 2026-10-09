@@ -116,3 +116,4 @@ void blk_close_all(void);
 #define KEY_SERVE 1ull
 #define KEY_USB   2ull
 #define KEY_BLK   (1ull << 32)   /* | gen << 8 (16 bits) | index (8 bits) */
+#define KEY_CONN  (1ull << 40)   /* | gen << 8 (16 bits) | slot (8 bits): a connect's channel */
