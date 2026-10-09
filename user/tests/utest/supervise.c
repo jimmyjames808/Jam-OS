@@ -26,8 +26,8 @@ static status_t crasher_ping(handle_t ch, uint64_t deadline, uint64_t *started)
     } __attribute__((packed)) rep;
     uint32_t n = 0;
     struct channel_call_args a = {
-        .h = ch, .wn = sizeof(q), .wbytes = (uint64_t)(uintptr_t)q, .rcap = sizeof(rep),
-        .rbytes = (uint64_t)(uintptr_t)&rep, .ractual = (uint64_t)(uintptr_t)&n,
+        .h = ch, .wr_len = sizeof(q), .wr_bytes = (uint64_t)(uintptr_t)q, .rd_cap = sizeof(rep),
+        .rd_bytes = (uint64_t)(uintptr_t)&rep, .rd_actual = (uint64_t)(uintptr_t)&n,
         .deadline_ns = deadline,
     };
     status_t st = jam_channel_call(&a);

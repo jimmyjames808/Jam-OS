@@ -182,8 +182,8 @@ status_t offer(const struct build *b, unsigned handles, uint32_t magic, struct u
         st = jam_object_wait_one(ch, SIG_READABLE, now() + ANSWER_WAIT, NULL);
     uint32_t got = 0;
     struct channel_read_args r = {
-        .h = ch, .bytes_cap = sizeof(*a), .bytes = (uint64_t)(uintptr_t)a,
-        .actual_bytes = (uint64_t)(uintptr_t)&got,
+        .h = ch, .rd_cap = sizeof(*a), .rd_bytes = (uint64_t)(uintptr_t)a,
+        .rd_actual = (uint64_t)(uintptr_t)&got,
     };
     if (st == OK)
         st = jam_channel_read(&r);

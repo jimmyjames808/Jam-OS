@@ -46,8 +46,8 @@ static uint32_t next_msg(handle_t k, union msg *m)
         return 0;
     uint32_t n = 0;
     struct channel_read_args a = {
-        .h = k, .bytes_cap = sizeof(*m), .bytes = (uint64_t)(uintptr_t)m,
-        .actual_bytes = (uint64_t)(uintptr_t)&n,
+        .h = k, .rd_cap = sizeof(*m), .rd_bytes = (uint64_t)(uintptr_t)m,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
     };
     return jam_channel_read(&a) == OK ? n : 0;
 }

@@ -393,10 +393,10 @@ static status_t read_one(struct jwlc_clip *k)
     uint32_t sizes[2] = { 0, 0 };
     handle_t h[4];
     struct channel_read_args a = {
-        .h = k->rx, .bytes_cap = (uint32_t)(k->cap - k->got - 1),
-        .bytes = (uint64_t)(uintptr_t)(k->buf + k->got),
-        .actual_bytes = (uint64_t)(uintptr_t)&sizes[0], .handles = (uint64_t)(uintptr_t)h,
-        .handles_cap = 4, .actual_handles = (uint64_t)(uintptr_t)&sizes[1],
+        .h = k->rx, .rd_cap = (uint32_t)(k->cap - k->got - 1),
+        .rd_bytes = (uint64_t)(uintptr_t)(k->buf + k->got),
+        .rd_actual = (uint64_t)(uintptr_t)&sizes[0], .rd_handles = (uint64_t)(uintptr_t)h,
+        .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&sizes[1],
     };
     status_t st = jam_channel_read(&a);
     if (st == ERR_BUFFER_TOO_SMALL)

@@ -75,9 +75,9 @@ const char *sh_boot_note(void)
         uint32_t n = 0, nh = 0;
         handle_t h[2] = { HANDLE_INVALID, HANDLE_INVALID };
         struct channel_read_args a = {
-            .h = from_init, .bytes_cap = sizeof(m), .bytes = (uint64_t)(uintptr_t)&m,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)h,
-            .handles_cap = 2, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = from_init, .rd_cap = sizeof(m), .rd_bytes = (uint64_t)(uintptr_t)&m,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)h,
+            .rd_hcap = 2, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         if (jam_channel_read(&a) != OK)
             break;   /* nothing new (or init's end is gone) */

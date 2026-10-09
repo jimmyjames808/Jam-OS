@@ -18,9 +18,9 @@ static status_t call_within(handle_t h, uint32_t flags, uint64_t timeout_ns)
 {
     uint32_t req[2] = { 0, 77 }, rep[2] = { 0 }, ra = 0;
     struct channel_call_args a = {
-        .h = h, .wn = sizeof(req), .wbytes = (uint64_t)(uintptr_t)req,
-        .rcap = sizeof(rep), .rbytes = (uint64_t)(uintptr_t)rep,
-        .ractual = (uint64_t)(uintptr_t)&ra, .flags = flags, .deadline_ns = timeout_ns,
+        .h = h, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)req,
+        .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+        .rd_actual = (uint64_t)(uintptr_t)&ra, .flags = flags, .deadline_ns = timeout_ns,
     };
     status_t st = jam_channel_call(&a);
     if (st == OK && (ra != sizeof(rep) || rep[1] != 77))
@@ -38,8 +38,8 @@ static void slow_server(void *arg)
     jam_nanosleep(now() + SLOW_NS);
     uint32_t req[2], n = 0;
     struct channel_read_args r = {
-        .h = h, .bytes_cap = sizeof(req), .bytes = (uint64_t)(uintptr_t)req,
-        .actual_bytes = (uint64_t)(uintptr_t)&n,
+        .h = h, .rd_cap = sizeof(req), .rd_bytes = (uint64_t)(uintptr_t)req,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
     };
     if (jam_channel_read(&r) == OK && n == sizeof(req))
         (void)jam_channel_write(h, req, n, NULL, 0);   /* a lost reply fails the caller */
@@ -67,13 +67,13 @@ static bool drain(handle_t h, unsigned want)
     for (unsigned i = 0; i < want; i++) {
         uint32_t req[2], n = 0;
         struct channel_read_args r = {
-            .h = h, .bytes_cap = sizeof(req), .bytes = (uint64_t)(uintptr_t)req,
-            .actual_bytes = (uint64_t)(uintptr_t)&n,
+            .h = h, .rd_cap = sizeof(req), .rd_bytes = (uint64_t)(uintptr_t)req,
+            .rd_actual = (uint64_t)(uintptr_t)&n,
         };
         CHECK_ST(jam_channel_read(&r), OK);
     }
     uint32_t n = 0;
-    struct channel_read_args r = { .h = h, .actual_bytes = (uint64_t)(uintptr_t)&n };
+    struct channel_read_args r = { .h = h, .rd_actual = (uint64_t)(uintptr_t)&n };
     CHECK_ST(jam_channel_read(&r), ERR_SHOULD_WAIT);
     return true;
 }

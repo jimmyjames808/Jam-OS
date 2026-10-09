@@ -76,8 +76,8 @@ static status_t next_msg(uint64_t deadline, struct input_key_event *ev, enum msg
         union input_msg m;
         uint32_t n = 0;
         struct channel_read_args a = {
-            .h = scr.keys, .bytes_cap = sizeof(m), .bytes = (uint64_t)(uintptr_t)&m,
-            .actual_bytes = (uint64_t)(uintptr_t)&n,
+            .h = scr.keys, .rd_cap = sizeof(m), .rd_bytes = (uint64_t)(uintptr_t)&m,
+            .rd_actual = (uint64_t)(uintptr_t)&n,
         };
         status_t st = jam_channel_read(&a);
         if (st == OK && n == sizeof(m.key)) {

@@ -855,9 +855,9 @@ static status_t read_answer(const struct pch *p, uint64_t deadline)
         return st == ERR_TIMED_OUT ? ERR_SHOULD_WAIT : st;
     struct block_read_rep r;
     uint32_t n = 0;
-    struct channel_read_args a = { .h = p->ch, .bytes_cap = sizeof(r),
-                                   .bytes = (uint64_t)(uintptr_t)&r,
-                                   .actual_bytes = (uint64_t)(uintptr_t)&n };
+    struct channel_read_args a = { .h = p->ch, .rd_cap = sizeof(r),
+                                   .rd_bytes = (uint64_t)(uintptr_t)&r,
+                                   .rd_actual = (uint64_t)(uintptr_t)&n };
     st = jam_channel_read(&a);
     return st == OK ? idl_rep_status(&r, n, sizeof(r)) : st;
 }

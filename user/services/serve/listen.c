@@ -19,8 +19,8 @@ static void worker(void *arg)
         signals_t seen;
         uint32_t slot, n = 0, nh = 0;
         struct channel_read_args a = {
-            .h = ask_r, .bytes_cap = sizeof(slot), .bytes = (uint64_t)(uintptr_t)&slot,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = ask_r, .rd_cap = sizeof(slot), .rd_bytes = (uint64_t)(uintptr_t)&slot,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_SHOULD_WAIT) {

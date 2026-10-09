@@ -32,15 +32,10 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <jam/abi.h>   /* CHANNEL_MAX_BYTES, CHANNEL_MAX_HANDLES, CHANNEL_MAX_QUEUED */
 #include <jam/handle.h>
 #include <jam/object.h>
 #include <jam/status.h>
-
-#define CHANNEL_MAX_BYTES   65536
-#define CHANNEL_MAX_HANDLES 64
-/* Messages waiting on one endpoint; a write beyond that fails with
- * ERR_SHOULD_WAIT. */
-#define CHANNEL_MAX_QUEUED  1024
 
 struct channel;   /* embeds struct kobject first, type OBJ_CHANNEL */
 

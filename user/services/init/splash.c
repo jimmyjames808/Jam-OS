@@ -83,8 +83,8 @@ void splash_event(void)
 {
     uint32_t msg = 0, n = 0;
     struct channel_read_args a = {
-        .h = ch, .bytes_cap = sizeof(msg), .bytes = (uint64_t)(uintptr_t)&msg,
-        .actual_bytes = (uint64_t)(uintptr_t)&n,
+        .h = ch, .rd_cap = sizeof(msg), .rd_bytes = (uint64_t)(uintptr_t)&msg,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
     };
     status_t st = ch ? jam_channel_read(&a) : ERR_BAD_STATE;
     if (st == OK && n == sizeof(msg) && msg == SPLASH_PLAYED) {

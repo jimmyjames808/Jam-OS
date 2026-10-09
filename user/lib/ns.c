@@ -186,9 +186,9 @@ static bool drop(handle_t ch, uint32_t n, uint32_t nh)
     handle_t *hs = malloc((nh ? nh : 1) * sizeof(handle_t));
     uint32_t n2 = 0, nh2 = 0;
     struct channel_read_args a = {
-        .h = ch, .bytes_cap = n, .bytes = (uint64_t)(uintptr_t)bytes,
-        .actual_bytes = (uint64_t)(uintptr_t)&n2, .handles = (uint64_t)(uintptr_t)hs,
-        .handles_cap = nh, .actual_handles = (uint64_t)(uintptr_t)&nh2,
+        .h = ch, .rd_cap = n, .rd_bytes = (uint64_t)(uintptr_t)bytes,
+        .rd_actual = (uint64_t)(uintptr_t)&n2, .rd_handles = (uint64_t)(uintptr_t)hs,
+        .rd_hcap = nh, .rd_hactual = (uint64_t)(uintptr_t)&nh2,
     };
     bool ok = bytes && hs && jam_channel_read(&a) == OK;
     for (uint32_t i = 0; ok && i < nh2; i++)
@@ -204,9 +204,9 @@ static bool drop(handle_t ch, uint32_t n, uint32_t nh)
 static status_t read_msg(handle_t ch, struct ns_msg *m, handle_t *hs, uint32_t *n, uint32_t *nh)
 {
     struct channel_read_args a = {
-        .h = ch, .bytes_cap = sizeof(*m), .bytes = (uint64_t)(uintptr_t)m,
-        .actual_bytes = (uint64_t)(uintptr_t)n, .handles = (uint64_t)(uintptr_t)hs,
-        .handles_cap = NS_MAX_ENTRIES, .actual_handles = (uint64_t)(uintptr_t)nh,
+        .h = ch, .rd_cap = sizeof(*m), .rd_bytes = (uint64_t)(uintptr_t)m,
+        .rd_actual = (uint64_t)(uintptr_t)n, .rd_handles = (uint64_t)(uintptr_t)hs,
+        .rd_hcap = NS_MAX_ENTRIES, .rd_hactual = (uint64_t)(uintptr_t)nh,
     };
     status_t st = jam_channel_read(&a);
     if (st == ERR_BUFFER_TOO_SMALL && drop(ch, *n, *nh)) {

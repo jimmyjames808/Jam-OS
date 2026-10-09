@@ -133,8 +133,8 @@ bool sh_get_key(struct input_key_event *ev, uint64_t deadline)
     for (;;) {
         uint32_t n = 0;
         struct channel_read_args a = {
-            .h = keys, .bytes_cap = sizeof(*ev), .bytes = (uint64_t)(uintptr_t)ev,
-            .actual_bytes = (uint64_t)(uintptr_t)&n,
+            .h = keys, .rd_cap = sizeof(*ev), .rd_bytes = (uint64_t)(uintptr_t)ev,
+            .rd_actual = (uint64_t)(uintptr_t)&n,
         };
         status_t st = jam_channel_read(&a);
         if (st == OK) {

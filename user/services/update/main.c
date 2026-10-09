@@ -254,8 +254,8 @@ static status_t offer(handle_t ch, uint32_t flags, struct update_answer *a)
                                  &seen);
     uint32_t got = 0;
     struct channel_read_args r = {
-        .h = ch, .bytes_cap = sizeof(*a), .bytes = (uint64_t)(uintptr_t)a,
-        .actual_bytes = (uint64_t)(uintptr_t)&got,
+        .h = ch, .rd_cap = sizeof(*a), .rd_bytes = (uint64_t)(uintptr_t)a,
+        .rd_actual = (uint64_t)(uintptr_t)&got,
     };
     if (st == OK)
         st = jam_channel_read(&r);

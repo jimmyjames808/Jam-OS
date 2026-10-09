@@ -511,8 +511,8 @@ void out_serve(struct mixer *m)
         struct hda_wait_period_rep r;
         uint32_t n = 0, nh = 0;
         struct channel_read_args a = {
-            .h = w->ch, .bytes_cap = sizeof(r), .bytes = (uint64_t)(uintptr_t)&r,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = w->ch, .rd_cap = sizeof(r), .rd_bytes = (uint64_t)(uintptr_t)&r,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_SHOULD_WAIT)

@@ -296,9 +296,9 @@ static bool init_asked(struct cs *t, void *q, uint32_t want, uint32_t ordinal)
     signals_t seen;
     CHECK_ST(jam_object_wait_one(t->init, SIG_READABLE, now() + CT_WAIT, &seen), OK);
     uint32_t n = 0;
-    struct channel_read_args r = { .h = t->init, .bytes_cap = want,
-                                   .bytes = (uint64_t)(uintptr_t)q,
-                                   .actual_bytes = (uint64_t)(uintptr_t)&n };
+    struct channel_read_args r = { .h = t->init, .rd_cap = want,
+                                   .rd_bytes = (uint64_t)(uintptr_t)q,
+                                   .rd_actual = (uint64_t)(uintptr_t)&n };
     CHECK_ST(jam_channel_read(&r), OK);
     CHECK_EQ(n, want);
     CHECK_EQ(((const struct idl_req_hdr *)q)->ordinal, ordinal);
@@ -430,8 +430,8 @@ static status_t asked(handle_t ch, uint64_t wait, void *q, uint32_t cap, uint32_
     status_t st = jam_object_wait_one(ch, SIG_READABLE, now() + wait, &seen);
     if (st != OK)
         return st;
-    struct channel_read_args r = { .h = ch, .bytes_cap = cap, .bytes = (uint64_t)(uintptr_t)q,
-                                   .actual_bytes = (uint64_t)(uintptr_t)n };
+    struct channel_read_args r = { .h = ch, .rd_cap = cap, .rd_bytes = (uint64_t)(uintptr_t)q,
+                                   .rd_actual = (uint64_t)(uintptr_t)n };
     return jam_channel_read(&r);
 }
 

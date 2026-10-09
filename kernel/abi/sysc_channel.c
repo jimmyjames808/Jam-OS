@@ -109,22 +109,22 @@ int64_t sysc_channel_read(const struct channel_read_args *a)
     SYSC_TABLE(t);
     if (a->reserved)
         return ERR_INVALID_ARGS;
-    uint32_t bcap = a->bytes_cap < CHANNEL_MAX_BYTES ? a->bytes_cap : CHANNEL_MAX_BYTES;
-    uint32_t hcap = a->handles_cap < CHANNEL_MAX_HANDLES ? a->handles_cap : CHANNEL_MAX_HANDLES;
-    struct chan_bytes b = chan_ubytes(a->bytes, bcap);
+    uint32_t bcap = a->rd_cap < CHANNEL_MAX_BYTES ? a->rd_cap : CHANNEL_MAX_BYTES;
+    uint32_t hcap = a->rd_hcap < CHANNEL_MAX_HANDLES ? a->rd_hcap : CHANNEL_MAX_HANDLES;
+    struct chan_bytes b = chan_ubytes(a->rd_bytes, bcap);
     handle_t hs[CHANNEL_MAX_HANDLES];
     uint32_t nb = 0, nh = 0;
     status_t st = sys_channel_read_into(t, a->h, &b, &nb, hs, hcap, &nh);
     if (st == OK) {
         /* The bytes are in place already: the length goes last, so a
          * reader that finds it set finds the whole message (svcstate). */
-        if (copy_out(a->handles, hs, nh * sizeof(handle_t)) != OK ||
-            put_sizes(a->actual_bytes, nb, a->actual_handles, nh) != OK) {
+        if (copy_out(a->rd_handles, hs, nh * sizeof(handle_t)) != OK ||
+            put_sizes(a->rd_actual, nb, a->rd_hactual, nh) != OK) {
             close_all(t, hs, nh);   /* the message is gone; its handles must not leak */
             st = ERR_INVALID_ARGS;
         }
     } else if (st == ERR_BUFFER_TOO_SMALL) {
-        if (put_sizes(a->actual_bytes, nb, a->actual_handles, nh) != OK)
+        if (put_sizes(a->rd_actual, nb, a->rd_hactual, nh) != OK)
             st = ERR_INVALID_ARGS;   /* the message stays queued */
     }
     return st;
@@ -145,29 +145,29 @@ int64_t sysc_channel_call(const struct channel_call_args *a)
     SYSC_TABLE(t);
     if (a->flags & ~CHANNEL_CALL_TIMEOUT)
         return ERR_INVALID_ARGS;
-    if (a->wn < 4)
+    if (a->wr_len < 4)
         return ERR_INVALID_ARGS;
-    if (a->wn > CHANNEL_MAX_BYTES || a->whn > CHANNEL_MAX_HANDLES)
+    if (a->wr_len > CHANNEL_MAX_BYTES || a->wr_nhandles > CHANNEL_MAX_HANDLES)
         return ERR_OUT_OF_RANGE;
-    uint32_t rcap = a->rcap < CHANNEL_MAX_BYTES ? a->rcap : CHANNEL_MAX_BYTES;
-    uint32_t rhcap = a->rhcap < CHANNEL_MAX_HANDLES ? a->rhcap : CHANNEL_MAX_HANDLES;
+    uint32_t rcap = a->rd_cap < CHANNEL_MAX_BYTES ? a->rd_cap : CHANNEL_MAX_BYTES;
+    uint32_t rhcap = a->rd_hcap < CHANNEL_MAX_HANDLES ? a->rd_hcap : CHANNEL_MAX_HANDLES;
 
     handle_t wh[CHANNEL_MAX_HANDLES], rh[CHANNEL_MAX_HANDLES];
-    if (copy_in(wh, a->wh, a->whn * sizeof(handle_t)) != OK)
+    if (copy_in(wh, a->wr_handles, a->wr_nhandles * sizeof(handle_t)) != OK)
         return ERR_INVALID_ARGS;
-    struct chan_bytes w = chan_ubytes(a->wbytes, a->wn), r = chan_ubytes(a->rbytes, rcap);
+    struct chan_bytes w = chan_ubytes(a->wr_bytes, a->wr_len), r = chan_ubytes(a->rd_bytes, rcap);
     uint32_t nb = 0, nh = 0;
-    status_t st = sys_channel_call_from(t, a->h, &w, wh, a->whn, &r, &nb, rh, rhcap, &nh,
+    status_t st = sys_channel_call_from(t, a->h, &w, wh, a->wr_nhandles, &r, &nb, rh, rhcap, &nh,
                                         deadline_of(a->deadline_ns,
                                                     a->flags & CHANNEL_CALL_TIMEOUT));
     if (st == OK) {
-        if (copy_out(a->rh, rh, nh * sizeof(handle_t)) != OK ||
-            put_sizes(a->ractual, nb, a->rhactual, nh) != OK) {
+        if (copy_out(a->rd_handles, rh, nh * sizeof(handle_t)) != OK ||
+            put_sizes(a->rd_actual, nb, a->rd_hactual, nh) != OK) {
             close_all(t, rh, nh);
             st = ERR_INVALID_ARGS;
         }
     } else if (st == ERR_BUFFER_TOO_SMALL) {
-        if (put_sizes(a->ractual, nb, a->rhactual, nh) != OK)
+        if (put_sizes(a->rd_actual, nb, a->rd_hactual, nh) != OK)
             st = ERR_INVALID_ARGS;
     }
     return st;
@@ -186,11 +186,11 @@ static status_t reply_wait_out(struct handle_table *t, const struct channel_repl
     if (st == OK && rw->is_port)
         cst = copy_to_user(a->packet, &rw->pkt, sizeof(rw->pkt));
     else
-        cst = copy_out(a->handles, rw->req_h, nh * sizeof(handle_t));
+        cst = copy_out(a->rd_handles, rw->req_h, nh * sizeof(handle_t));
     const struct out_word w[3] = {
         { rw->replied ? a->reply_status : 0, (uint32_t)rw->reply_st },
-        { sizes ? a->actual_bytes : 0, rw->req_nb },
-        { sizes ? a->actual_handles : 0, rw->req_nh },
+        { sizes ? a->rd_actual : 0, rw->req_nb },
+        { sizes ? a->rd_hactual : 0, rw->req_nh },
     };
     if (cst != OK || put_words(w, 3) != OK) {
         /* What left its queue is lost (as sysc_channel_read's, and a
@@ -205,7 +205,8 @@ static status_t reply_wait_out(struct handle_table *t, const struct channel_repl
 static bool reply_fields_ok(const struct channel_reply_wait_args *a)
 {
     return a->h != HANDLE_INVALID ||
-           !(a->rn || a->rbytes || a->rh || a->rhn || a->mark || a->reply_status);
+           !(a->wr_len || a->wr_bytes || a->wr_handles || a->wr_nhandles || a->mark ||
+             a->reply_status);
 }
 
 int64_t sysc_channel_reply_wait(const struct channel_reply_wait_args *a)
@@ -213,21 +214,22 @@ int64_t sysc_channel_reply_wait(const struct channel_reply_wait_args *a)
     SYSC_TABLE(t);
     if (a->reserved || (a->flags & ~CHANNEL_REPLY_WAIT_TIMEOUT) || !reply_fields_ok(a))
         return ERR_INVALID_ARGS;
-    if (a->rn > CHANNEL_MAX_BYTES || a->rhn > CHANNEL_MAX_HANDLES)
+    if (a->wr_len > CHANNEL_MAX_BYTES || a->wr_nhandles > CHANNEL_MAX_HANDLES)
         return ERR_OUT_OF_RANGE;
     handle_t rh[CHANNEL_MAX_HANDLES], hs[CHANNEL_MAX_HANDLES];
-    if (copy_in(rh, a->rh, a->rhn * sizeof(handle_t)) != OK)
+    if (copy_in(rh, a->wr_handles, a->wr_nhandles * sizeof(handle_t)) != OK)
         return ERR_INVALID_ARGS;
     struct chan_reply_wait rw = {
-        .h = a->h, .reply = chan_ubytes(a->rbytes, a->rn), .reply_h = rh, .reply_nh = a->rhn,
+        .h = a->h, .reply = chan_ubytes(a->wr_bytes, a->wr_len), .reply_h = rh,
+        .reply_nh = a->wr_nhandles,
         .wait = a->wait,
         .mark = chan_ubytes(a->mark, a->mark ? sizeof(uint64_t) : 0),
-        .req = chan_ubytes(a->bytes, a->bytes_cap < CHANNEL_MAX_BYTES ? a->bytes_cap
+        .req = chan_ubytes(a->rd_bytes, a->rd_cap < CHANNEL_MAX_BYTES ? a->rd_cap
                                                                        : CHANNEL_MAX_BYTES),
         .req_h = hs,
-        .req_hcap = a->handles_cap < CHANNEL_MAX_HANDLES ? a->handles_cap : CHANNEL_MAX_HANDLES,
-        .want_request = a->bytes || a->bytes_cap || a->handles || a->handles_cap ||
-                        a->actual_bytes || a->actual_handles,
+        .req_hcap = a->rd_hcap < CHANNEL_MAX_HANDLES ? a->rd_hcap : CHANNEL_MAX_HANDLES,
+        .want_request = a->rd_bytes || a->rd_cap || a->rd_handles || a->rd_hcap ||
+                        a->rd_actual || a->rd_hactual,
         .want_packet = a->packet != 0,
         .deadline_ns = deadline_of(a->deadline_ns, a->flags & CHANNEL_REPLY_WAIT_TIMEOUT),
     };

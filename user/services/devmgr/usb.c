@@ -78,9 +78,9 @@ void discard(handle_t h, uint32_t n, uint32_t nh)
     handle_t *bh = malloc((nh ? nh : 1) * sizeof(handle_t));
     uint32_t n2 = 0, nh2 = 0;
     struct channel_read_args a = {
-        .h = h, .bytes_cap = n, .bytes = (uint64_t)(uintptr_t)big,
-        .actual_bytes = (uint64_t)(uintptr_t)&n2, .handles = (uint64_t)(uintptr_t)bh,
-        .handles_cap = nh, .actual_handles = (uint64_t)(uintptr_t)&nh2,
+        .h = h, .rd_cap = n, .rd_bytes = (uint64_t)(uintptr_t)big,
+        .rd_actual = (uint64_t)(uintptr_t)&n2, .rd_handles = (uint64_t)(uintptr_t)bh,
+        .rd_hcap = nh, .rd_hactual = (uint64_t)(uintptr_t)&nh2,
     };
     if (big && bh && jam_channel_read(&a) == OK)
         for (uint32_t i = 0; i < nh2; i++)
@@ -97,9 +97,9 @@ static void drain(handle_t h)
         handle_t hs[4];
         uint32_t n = 0, nh = 0;
         struct channel_read_args a = {
-            .h = h, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)hs,
-            .handles_cap = 4, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = h, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_BUFFER_TOO_SMALL) {
@@ -332,9 +332,9 @@ void usb_driver_events(struct binding *b)
         handle_t hs[4];
         uint32_t n = 0, nh = 0;
         struct channel_read_args a = {
-            .h = b->client, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)hs,
-            .handles_cap = 4, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = b->client, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_BUFFER_TOO_SMALL) {

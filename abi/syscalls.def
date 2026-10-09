@@ -57,11 +57,11 @@
 23  channel_call      status    @channel_call_args
 # A server's reply and its wait for the next request, in one call (struct
 # channel_reply_wait_args, <jam/abi.h>). First the reply: a channel_write
-# of rbytes and rh on h (HANDLE_INVALID: none, a server's first call),
+# of wr_bytes and wr_handles on h (HANDLE_INVALID: none, a server's first call),
 # which goes to the channel_call waiting for its txid on the peer,
 # whichever thread or process holding h sends it. Once it went out, 1
 # goes into *mark (8 bytes), before anything else. Then the request: with `wait` a channel end, its next
-# message read straight into bytes and handles (the sizes as channel_read
+# message read straight into rd_bytes and rd_handles (the sizes as channel_read
 # gives them), waiting for one if none is queued; with a port, its next
 # packet into *packet (the server reads the channel it names). Needs
 # RIGHT_WRITE on h and RIGHT_READ on wait (one lookup when they are the

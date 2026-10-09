@@ -81,9 +81,9 @@ static status_t serve(const struct chan *c)
         handle_t in[4];
         uint32_t n = 0, nh = 0;
         struct channel_read_args a = {
-            .h = ch, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)in,
-            .handles_cap = 4, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = ch, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)in,
+            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_BUFFER_TOO_SMALL) {

@@ -162,12 +162,12 @@ status_t drv_channel_read(handle_t h, void *bytes, uint32_t cap, uint32_t *actua
 {
     struct channel_read_args a = {
         .h = h,
-        .bytes_cap = cap,
-        .bytes = (uint64_t)(uintptr_t)bytes,
-        .actual_bytes = (uint64_t)(uintptr_t)actual,
-        .handles = (uint64_t)(uintptr_t)hs,
-        .handles_cap = hcap,
-        .actual_handles = (uint64_t)(uintptr_t)hactual,
+        .rd_cap = cap,
+        .rd_bytes = (uint64_t)(uintptr_t)bytes,
+        .rd_actual = (uint64_t)(uintptr_t)actual,
+        .rd_handles = (uint64_t)(uintptr_t)hs,
+        .rd_hcap = hcap,
+        .rd_hactual = (uint64_t)(uintptr_t)hactual,
     };
     return jam_channel_read(&a);
 }
@@ -177,11 +177,11 @@ status_t drv_channel_call(handle_t h, void *wbytes, uint32_t wn, void *rbytes, u
 {
     struct channel_call_args a = {
         .h = h,
-        .wn = wn,
-        .wbytes = (uint64_t)(uintptr_t)wbytes,
-        .rcap = rcap,
-        .rbytes = (uint64_t)(uintptr_t)rbytes,
-        .ractual = (uint64_t)(uintptr_t)ractual,
+        .wr_len = wn,
+        .wr_bytes = (uint64_t)(uintptr_t)wbytes,
+        .rd_cap = rcap,
+        .rd_bytes = (uint64_t)(uintptr_t)rbytes,
+        .rd_actual = (uint64_t)(uintptr_t)ractual,
         .deadline_ns = deadline_ns,
     };
     return jam_channel_call(&a);
@@ -193,14 +193,14 @@ status_t drv_channel_call_h(handle_t h, void *wbytes, uint32_t wn, void *rbytes,
 {
     struct channel_call_args a = {
         .h = h,
-        .wn = wn,
-        .wbytes = (uint64_t)(uintptr_t)wbytes,
-        .rcap = rcap,
-        .rbytes = (uint64_t)(uintptr_t)rbytes,
-        .ractual = (uint64_t)(uintptr_t)ractual,
-        .rh = (uint64_t)(uintptr_t)rh,
-        .rhcap = rhcap,
-        .rhactual = (uint64_t)(uintptr_t)rhactual,
+        .wr_len = wn,
+        .wr_bytes = (uint64_t)(uintptr_t)wbytes,
+        .rd_cap = rcap,
+        .rd_bytes = (uint64_t)(uintptr_t)rbytes,
+        .rd_actual = (uint64_t)(uintptr_t)ractual,
+        .rd_handles = (uint64_t)(uintptr_t)rh,
+        .rd_hcap = rhcap,
+        .rd_hactual = (uint64_t)(uintptr_t)rhactual,
         .deadline_ns = deadline_ns,
     };
     return jam_channel_call(&a);
@@ -212,14 +212,14 @@ status_t drv_channel_call_within(handle_t h, void *wbytes, uint32_t wn, void *rb
 {
     struct channel_call_args a = {
         .h = h,
-        .wn = wn,
-        .wbytes = (uint64_t)(uintptr_t)wbytes,
-        .rcap = rcap,
-        .rbytes = (uint64_t)(uintptr_t)rbytes,
-        .ractual = (uint64_t)(uintptr_t)ractual,
-        .rh = (uint64_t)(uintptr_t)rh,
-        .rhcap = rhcap,
-        .rhactual = (uint64_t)(uintptr_t)rhactual,
+        .wr_len = wn,
+        .wr_bytes = (uint64_t)(uintptr_t)wbytes,
+        .rd_cap = rcap,
+        .rd_bytes = (uint64_t)(uintptr_t)rbytes,
+        .rd_actual = (uint64_t)(uintptr_t)ractual,
+        .rd_handles = (uint64_t)(uintptr_t)rh,
+        .rd_hcap = rhcap,
+        .rd_hactual = (uint64_t)(uintptr_t)rhactual,
         .flags = CHANNEL_CALL_TIMEOUT,
         .deadline_ns = timeout_ns,
     };

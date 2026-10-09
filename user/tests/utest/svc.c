@@ -23,8 +23,8 @@ static bool passes(handle_t to, handle_t from)
     uint32_t n = 0;
     CHECK_ST(jam_channel_write(to, &b, 1, NULL, 0), OK);
     struct channel_read_args a = {
-        .h = from, .bytes_cap = 1, .bytes = (uint64_t)(uintptr_t)&got,
-        .actual_bytes = (uint64_t)(uintptr_t)&n,
+        .h = from, .rd_cap = 1, .rd_bytes = (uint64_t)(uintptr_t)&got,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
     };
     CHECK_ST(jam_channel_read(&a), OK);
     CHECK_EQ(got, 0x5a);

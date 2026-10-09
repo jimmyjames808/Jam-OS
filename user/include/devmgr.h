@@ -407,14 +407,14 @@ static inline status_t devmgr_call(handle_t ch, uint32_t ordinal, uint16_t vendo
     uint32_t n = 0, got = 0;
     struct channel_call_args a = {
         .h = ch,
-        .wn = sizeof(q),
-        .wbytes = (uint64_t)(uintptr_t)&q,
-        .rcap = sizeof(*rep),
-        .rbytes = (uint64_t)(uintptr_t)rep,
-        .ractual = (uint64_t)(uintptr_t)&n,
-        .rh = (uint64_t)(uintptr_t)hs,
-        .rhcap = hs ? hcap : 0,
-        .rhactual = (uint64_t)(uintptr_t)&got,
+        .wr_len = sizeof(q),
+        .wr_bytes = (uint64_t)(uintptr_t)&q,
+        .rd_cap = sizeof(*rep),
+        .rd_bytes = (uint64_t)(uintptr_t)rep,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
+        .rd_handles = (uint64_t)(uintptr_t)hs,
+        .rd_hcap = hs ? hcap : 0,
+        .rd_hactual = (uint64_t)(uintptr_t)&got,
         .deadline_ns = deadline_ns,
     };
     status_t st = jam_channel_call(&a);
@@ -461,14 +461,14 @@ static inline status_t devmgr_mounts(handle_t ch, uint32_t known, struct devmgr_
     uint32_t n = 0, got = 0;
     struct channel_call_args a = {
         .h = ch,
-        .wn = sizeof(q),
-        .wbytes = (uint64_t)(uintptr_t)&q,
-        .rcap = sizeof(*out),
-        .rbytes = (uint64_t)(uintptr_t)out,
-        .ractual = (uint64_t)(uintptr_t)&n,
-        .rh = (uint64_t)(uintptr_t)hs,
-        .rhcap = DEVMGR_MAX_MOUNTS,
-        .rhactual = (uint64_t)(uintptr_t)&got,
+        .wr_len = sizeof(q),
+        .wr_bytes = (uint64_t)(uintptr_t)&q,
+        .rd_cap = sizeof(*out),
+        .rd_bytes = (uint64_t)(uintptr_t)out,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
+        .rd_handles = (uint64_t)(uintptr_t)hs,
+        .rd_hcap = DEVMGR_MAX_MOUNTS,
+        .rd_hactual = (uint64_t)(uintptr_t)&got,
         .deadline_ns = now() + DEVMGR_MOUNTS_WAIT + NS_PER_S,
     };
     status_t st = jam_channel_call(&a);
