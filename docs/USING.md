@@ -18,13 +18,10 @@ the test commands are in [TESTING.md](TESTING.md).
 - A quiet boot: the first terminal starts at the shell's banner and
   prompt on every boot but the Developer folder's text-log entry
   (`verbose`); the log stays in `log`, `dmesg`, `/data/logs`, the serial
-  port and netlog, and what matters to a user comes as a notice. Without
-  the compositor (`nocomp`) the full-screen console is just as quiet and
-  shows those notices as short yellow lines.
+  port and netlog, and what matters to a user comes as a notice.
 - The boot menu: "Jam OS" (the desktop), "Jam OS (previous build)" (the
-  stick's build before the last `update` or `make flash`), "Jam OS (no
-  compositor)" (`nocomp`: the full-screen console, until G1 is signed off
-  on the PC), and a "Developer" folder with the test and network-test
+  stick's build before the last `update` or `make flash`: the way back
+  from a bad build), and a "Developer" folder with the test and network-test
   entries, the text log, safe mode and "Jam OS (no IOMMU)"
   ([TESTING.md](TESTING.md#the-boot-menu)).
 
@@ -105,9 +102,9 @@ desktop shows its wallpaper and top bar, and Super+Enter or the search
 box opens one. At most 16 are open at once; each is a console and a
 shell, a few MiB (more for a big window). The terminals' text is
 JetBrains Mono (`terminal.font =
-bitmap` in the settings gives the 8x16 bitmap font instead). The boot
-entry "Jam OS (no compositor)" (the boot word `nocomp`) is the way back
-to the full-screen console until G1 is signed off on the PC.
+bitmap` in the settings gives the 8x16 bitmap font instead). The desktop
+is the only way Jam OS draws: if a build misbehaves, "Jam OS (previous
+build)" boots the one before it.
 
 ## The shell
 

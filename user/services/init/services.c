@@ -664,7 +664,7 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     nousb = no_usb;
     terms_init(port, splash, shell_arg);
     apps_init(port);
-    comp_init(port, !init_nocomp);
+    comp_init(port);
     make_audio_channels();
     net_init(port);
     if (jam_channel_create(&music_cli, &music_srv) != OK)

@@ -282,12 +282,13 @@ status_t apps_launch(const char *cmd, uint64_t *koid);
 /* KEY_APPS + i: app i's process ended (its job goes), or an old packet. */
 void     apps_event(unsigned i);
 
-/* ---- comp.c: the compositor (not with the boot word `nocomp`) ----------------------- */
+/* ---- comp.c: the compositor -------------------------------------------------------- */
 
-/* Set up once before the loop (port: the loop's): on (no `nocomp`, and
- * bin/compositor in bootfs): /svc/wayland's channel made and published;
- * off: the compositor is not started this boot. */
-void     comp_init(handle_t port, bool on);
+/* Set up once before the loop (port: the loop's): with bin/compositor in
+ * bootfs, /svc/wayland's channel made and published; without it (or no
+ * channel) the compositor is not started this boot, and nothing draws the
+ * screen (the terminals' text goes to the serial port). */
+void     comp_init(handle_t port);
 /* A compositor draws the screen this boot. */
 bool     comp_on(void);
 /* One runs now (its compctl channel is init's). */
@@ -326,8 +327,6 @@ void     comp_notice(const char *title, const char *body, char icon, uint8_t tin
  * compositor, or it refused: said in the log). */
 bool     comp_notice_run(const char *title, const char *body, char icon, uint8_t tint,
                          const char *const *buttons, const char *cmd);
-/* The boot word `nocomp` (main.c). */
-extern bool init_nocomp;
 
 /* services.c: devmgr's class drivers type into what ch leads to (consumed):
  * the first console's channel, or the compositor's INPUT channel

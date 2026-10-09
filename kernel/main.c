@@ -307,8 +307,7 @@ static bool run_tests(void)
  * finishes, and init must start the shell anyway); `nospare` (init keeps
  * no warm spare of the mixer: a restart starts a process); `vtdtest`
  * (with `iommu=on`, the "IOMMU checks" test entry), which init passes on
- * to devmgr and devmgr to drv/hda: its deliberate DMA faults; `nocomp` (no
- * compositor: the console draws the screen, one terminal). */
+ * to devmgr and devmgr to drv/hda: its deliberate DMA faults. */
 static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
 {
     unsigned n = 0;
@@ -316,8 +315,6 @@ static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
         words[n++] = "splash";
     else if (shell && cmdline_has("verbose"))
         words[n++] = "verbose";
-    if (shell && cmdline_has("nocomp"))
-        words[n++] = "nocomp";
     if (cmdline_has("hidboot"))
         words[n++] = "hidboot";
     if (cmdline_has("netprobe"))

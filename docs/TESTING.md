@@ -316,7 +316,6 @@ holds them all side by side.
 |---|---|---|
 | Jam OS | (empty) | the boot splash ([AS-PLAN.md](history/AS-PLAN.md)): the screen dark from the kernel's start, the logo animation with its sound (played to the end, full screen; what is typed meanwhile reaches the shell), then the desktop: the shell in a terminal window on the wallpaper; meanwhile init starts the bootfs server (`/boot`), the compositor, the console (the first terminal), serialin, devmgr (with the USB and PCI drivers; it mounts the stick's `/esp` and `/data`), the mixer, the music player, netstack, dhcp (without `net.address`), dns, logd and netlog (with `net.host`). devmgr binds the PC's network chip as the netdev service on the kernel's VLAN (21), so the shell has `net`, `ping`, `host` and `update`; QEMU's e1000e, when there is one, is bound the same way. "Jam OS (no network)" (below) keeps both off. `reboot` and a panic look like switching the PC on: the splash background at once, then the next boot's splash; after a panic the shell's first line says what it was and where its log went |
 | Jam OS (previous build) | (empty) | the everyday boot of the build the stick had before the last `update` (`-w`) or `make flash` (`/esp/boot/prev-jamos.elf` and `/esp/boot/prev-bootfs.img`; `tools/qemu-test.sh` boots them with `QEMU_BOOT_PREV=1`); a stick that has had neither has no such files, and Limine says it can't open them |
-| Jam OS (no compositor) | `nocomp` | the everyday boot as it was before G1: no compositor, the console draws the whole screen and takes the keys (one terminal, no Super+Enter or `term`), programs borrow the screen. The way back if the compositor misbehaves on the PC ([G1-PLAN.md](G1-PLAN.md#q4-what-the-console-becomes-and-a-way-back)); a reboot keeps the word |
 | Developer / Jam OS (text log, no splash) | `verbose` | the same with the kernel's text log on the screen instead of the splash, and in the first terminal as it comes (every other boot is quiet: the first terminal starts at the shell's banner and prompt, the log off every terminal's screen but for the commands whose output it is: [ARCHITECTURE.md](../ARCHITECTURE.md#debugging)) |
 | Developer / Jam OS (no IOMMU) | `iommu=off` | the everyday boot with the IOMMU off: no DMA translation or interrupt remapping (the IOMMU is on by default since the PC's sign-off, 2026-10-07): the escape hatch if a device ever misbehaves with it |
 | Developer / Jam OS (safe mode: no USB drivers, serial input only) | `nousb` | the same, but devmgr leaves USB alone: input only over serial |
@@ -355,15 +354,6 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   starts the shell anyway (`tools/splash-test.sh`).
 - `pcilist` (the PCI device report), `keytest` (keys to the log for 30 s),
   `memmap`, `init_timeout=<s>` (how long the `init` run may take).
-- `nocomp`: a plain boot without the compositor (the menu's "Jam OS (no
-  compositor)"; `user/services/init/comp.c`): the console owns the screen
-  and the input as before G1, one terminal. Without it (every plain boot)
-  init starts the compositor before the console, every console runs in
-  window mode (a terminal window), the keyboards, the mouse and serialin
-  are the compositor's input, programs that ask get `/svc/wayland` and
-  open windows, and `term` and Super+Enter open more terminals. A reboot
-  keeps it. The scripts that look at the console's own screen
-  (`screen-test.sh`, `mouse.txt`, most of `splash-test.sh`) add it.
 - `comptest`: init starts only the compositor, on the screen, running its
   test scene (`user/services/init/comptest.c`): three steps of windows and
   two of the desktop held 4 s each, then its `compositor: bench:` lines;

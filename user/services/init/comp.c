@@ -1,7 +1,7 @@
 /* init's shell mode: the compositor (docs/G1-PLAN.md), which draws the
- * screen on every plain boot; with the boot word `nocomp` (the boot
- * menu's "Jam OS (no compositor)") it isn't started, and the console owns
- * the screen and the input as it always did.
+ * screen on every plain boot: the desktop is the only way Jam OS draws
+ * (M12's Q14: the boot word `nocomp` and the full-screen console are
+ * gone).
  *
  *   compositor  bin/compositor, first (before the console), with
  *               root with RIGHT_ROOT_SCREEN (framebuffer_take) and
@@ -443,22 +443,23 @@ void comp_closed(void)
     admin = HANDLE_INVALID;
 }
 
-void comp_init(handle_t loop_port, bool on)
+void comp_init(handle_t loop_port)
 {
     const struct bootfs_view *fs;
     const void *data;
     uint64_t size;
     port = loop_port;
-    if (on && (bootfs_default(&fs) != OK ||
-               bootfs_lookup(fs, svcs[COMPOSITOR].path, &data, &size) != OK)) {
-        printf("init: no %s in bootfs: the console draws the screen\n", svcs[COMPOSITOR].path);
+    bool on = true;
+    if (bootfs_default(&fs) != OK ||
+        bootfs_lookup(fs, svcs[COMPOSITOR].path, &data, &size) != OK) {
+        printf("init: no %s in bootfs: nothing draws the screen\n", svcs[COMPOSITOR].path);
         on = false;
     }
     if (!on || jam_channel_create(&wl_cli, &wl_srv) != OK) {
         wl_cli = wl_srv = HANDLE_INVALID;
         svcs[COMPOSITOR].given_up = true;   /* not on this boot */
         if (on)
-            printf("init: no channel for /svc/wayland: the console draws the screen\n");
+            printf("init: no channel for /svc/wayland: nothing draws the screen\n");
         return;
     }
     kept_end_mark(wl_srv);
