@@ -175,6 +175,20 @@ bool t_conwin_keys(void)
     CHECK(key_of_wayland(c, JWL_KEY_REPEATED, KEYMAP_MOD_ALT | KEYMAP_MOD_SUPER | KEYMAP_MOD_CAPS |
                                                   KEYMAP_MOD_NUM, 'c', &ev));
     CHECK(ev.state == INPUT_KEY_REPEAT && ev.mods == (INPUT_MOD_LALT | INPUT_MOD_LGUI));
+    /* The keypad: with Num Lock on a digit; off (no character) the key
+     * printed on it, as hid made it before M12 (Q15: Num Lock is the
+     * compositor's); KP5 off stays KP5. */
+    uint32_t kp8 = keymap_evdev_of_hid(0x60), kp5 = keymap_evdev_of_hid(0x5d);
+    CHECK(key_of_wayland(kp8, JWL_KEY_PRESSED, KEYMAP_MOD_NUM, '8', &ev));
+    CHECK(ev.usage == 0x60 && ev.codepoint == '8');
+    CHECK(key_of_wayland(kp8, JWL_KEY_PRESSED, 0, 0, &ev));
+    CHECK(ev.usage == 0x52 && ev.codepoint == 0);   /* Up */
+    CHECK(key_of_wayland(kp5, JWL_KEY_PRESSED, 0, 0, &ev));
+    CHECK(ev.usage == 0x5d);
+    CHECK_EQ(keymap_hid_keypad_nav(0x59), 0x4d);   /* KP1: End */
+    CHECK_EQ(keymap_hid_keypad_nav(0x63), 0x4c);   /* KP.: Delete */
+    CHECK_EQ(keymap_hid_keypad_nav(0x58), 0);      /* keypad Enter */
+    CHECK_EQ(keymap_hid_keypad_nav(0x64), 0);
     CHECK(!key_of_wayland(c, 7, 0, 0, &ev));        /* no such state */
     CHECK(!key_of_wayland(0, JWL_KEY_PRESSED, 0, 0, &ev));
     CHECK(!key_of_wayland(100000, JWL_KEY_PRESSED, 0, 0, &ev));

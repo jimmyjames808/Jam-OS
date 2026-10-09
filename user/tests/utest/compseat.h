@@ -87,6 +87,9 @@ uint32_t cs_window(struct sc *c, int32_t x, int32_t y, int32_t w, int32_t h);
 /* The fake source: a key (usage, INPUT_KEY_*, modifier byte), a key
  * pressed and released, a mouse report (the buttons held: t->buttons),
  * the left button, the pointer to (x, y) in 1:1 steps. */
+/* The compositor has taken every event the source sent (a call on the
+ * ADMIN channel: the loop serves the sources before it). */
+bool cs_flush(struct cs *t);
 bool cs_key(struct cs *t, uint16_t usage, uint8_t state, uint8_t mods);
 bool cs_tap(struct cs *t, uint16_t usage, uint8_t mods);
 bool cs_mouse(struct cs *t, int16_t dx, int16_t dy, int8_t wheel);

@@ -84,24 +84,13 @@ static bool empty(handle_t k)
  * programs get no devmgr channel, and the query channel refuses it). */
 static handle_t steal_src;
 
-static status_t st_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
+static void st_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods)
 {
     (void)ctx;
     if (state == INPUT_KEY_DOWN)
-        printf("contest: steal: got key usage %#x mods %#x cp %u\n", usage, mods, cp);
-    return OK;
+        printf("contest: steal: got key usage %#x mods %#x\n", usage, mods);
 }
-static status_t st_mouse(void *ctx, int16_t dx, int16_t dy, int8_t w, uint8_t b)
-{
-    (void)ctx, (void)dx, (void)dy, (void)w, (void)b;
-    return OK;
-}
-static status_t st_text(void *ctx, uint16_t n, const uint8_t bytes[64])
-{
-    (void)ctx, (void)n, (void)bytes;
-    return OK;
-}
-static const struct input_ops st_input = { .key = st_key, .mouse = st_mouse, .text = st_text };
+static const struct input_ops st_input = { .key = st_key };
 
 static status_t sc_connect_input(void *ctx, handle_t *out)
 {

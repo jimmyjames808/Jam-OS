@@ -768,3 +768,8 @@ bool t_mix_limits(void);
 bool t_handle_info(void);
 bool t_length_limits(void);
 bool t_replace_consumes(void);
+
+/* M12 P1b: input as events (hid.c, compseat.c). */
+bool t_hid_leds(void);
+bool t_hid_queue_full(void);
+bool t_comp_seat_leds(void);

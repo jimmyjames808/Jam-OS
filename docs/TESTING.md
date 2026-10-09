@@ -1195,6 +1195,24 @@ log has "init: the terminals' font: bitmap, as the settings say" and
 `desktop.txt` (`tools/mouse-test.sh`) and `screen-test.sh` take
 screenshots of the windows.
 
+## Input as events (M12's review W6, W7)
+
+`input` (abi/idl/input.idl) is events both ways: hid sends a key's usage
+and modifiers (no character, no repeats), keeps what the compositor's full
+queue refuses, and lights what the compositor says. The utests (hid's
+against the mock compositor of `user/tests/utest/hidmock.c`; the
+compositor's headless on the seat's harness):
+
+| Test | What it checks |
+|---|---|
+| `hid_typing`, `hid_modifiers`, `hid_rollover`, `hid_composite`, `hid_unplug_and_console_gone` | the usages and the modifier byte of each event, the keypad and the lock keys as themselves, the lights dark at start and untouched by the lock keys |
+| `hid_repeat` | a key held 1.4 s, Shift pressed meanwhile: its DOWN and UP and Shift's, no REPEAT |
+| `hid_leds` | `input.leds` lights the keyboard (SET_REPORT with that byte), the same lights again send nothing, only the three LED bits go |
+| `hid_queue_full` | the mock compositor stops reading while 1200 key events are typed: hid keeps what the queue refuses and, once it reads again, every event arrives in order |
+| `keymap_matches_hid` | every key hid sends is its own usage, with Shift or not, and the keymap has an evdev code for it |
+| `comp_seat_leds` | a keyboard source is sent its lights after its ready (Num Lock on), every keyboard again when Caps, Num or Scroll Lock changes them (whichever keyboard pressed it), a mouse none; a state that is neither UP nor DOWN is no key |
+| `conwin_keys` | (with the rest) a keypad key with Num Lock off (no character) is the key printed on it, as hid made it before |
+
 ## Clients the compositor loses
 
 bin/compositor headless in a job of the test's own

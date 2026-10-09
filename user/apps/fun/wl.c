@@ -416,11 +416,14 @@ static bool take_size(void)
 
 /* ---- the app's events -------------------------------------------------------------------- */
 
-/* A key as the console sends it (<jam/abi.h>). */
+/* A key as a struct fun_key: its HID usage (a keypad key with Num Lock
+ * off as the key printed on it), the left modifiers, the character. */
 static void key_of(const struct jwl_event *e, struct fun_key *out)
 {
     uint32_t m = e->key.mods;
     out->usage = (uint16_t)keymap_hid_of_evdev(e->key.code);
+    if (!e->key.cp && keymap_hid_keypad_nav(out->usage))
+        out->usage = (uint16_t)keymap_hid_keypad_nav(out->usage);
     out->state = e->key.state == JWL_KEY_RELEASED   ? INPUT_KEY_UP
                  : e->key.state == JWL_KEY_REPEATED ? INPUT_KEY_REPEAT
                                                     : INPUT_KEY_DOWN;

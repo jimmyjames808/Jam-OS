@@ -86,6 +86,8 @@ bool key_of_wayland(uint32_t code, uint32_t state, uint32_t mods, uint32_t cp,
                                             : 0xff;
     if (s == 0xff)
         return false;
+    if (!cp && keymap_hid_keypad_nav(usage))
+        usage = keymap_hid_keypad_nav(usage);   /* Num Lock off: the key printed on it */
     *out = (struct input_key_event){ (uint16_t)usage, s, hid_mods(mods), cp };
     return true;
 }

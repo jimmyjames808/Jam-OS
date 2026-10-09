@@ -2,22 +2,32 @@
  * change the .idl and run `make idl`.
  *
  * input: an input source (a HID driver, the serial port) feeding the
- * console. The console serves it on each channel console.connect_input
- * hands out; the source calls it. Format: see tools/genidl.py.
+ * compositor (user/services/compositor/sources.c). The compositor serves
+ * it on each channel compctl.connect_input hands out; the source sends its
+ * events on it, and the compositor sends a keyboard its lights. Every
+ * message is an event (M12's Q4): nothing waits for the other side, and
+ * the queue's limit is the flow control: a source keeps what the full
+ * queue refuses and sends it later (hid never drops a key event; mouse
+ * movement may merge). Format: see tools/genidl.py.
  *
- * Restart: if the channel's peer closes (the console restarted), a HID
+ * Restart: if the channel's peer closes (the compositor restarted), a HID
  * driver exits 0 and devmgr rebinds it, which connects it to the new
- * console. Keys sent to the old console and not yet taken are lost.
+ * compositor (serialin exits 0 and init starts it again). Events sent to
+ * the old compositor and not yet taken are lost, and so are the keys
+ * held down there; the new compositor sends each keyboard its lights again
+ * once it says it is ready.
  *
  * usage: the HID Keyboard/Keypad page (0x07) usage id (4 = a ... 0x39 =
- * Caps Lock, 0x4c = Delete, 0x50..0x52 arrows, 0xe0..0xe7 modifiers).
- * state: INPUT_KEY_UP / DOWN / REPEAT; mods: INPUT_MOD_* (the HID boot
- * report's modifier byte); codepoint: the character in the US layout with
- * Shift, Caps Lock and Num Lock applied (Ctrl, Alt and GUI are NOT: Ctrl+C
- * is usage 0x06, codepoint 'c', a CTRL bit in mods), Enter '\n', Tab
- * '\t', Backspace '\b', Escape 0x1b; 0 for keys that type nothing
- * (arrows, F-keys, modifiers, locks). Ctrl+Alt+Del is just usage 0x4c DOWN
- * with CTRL and ALT set: the console decides. The constants are below.
+ * Caps Lock, 0x4c = Delete, 0x50..0x52 arrows, 0x59..0x63 the keypad's
+ * digits, 0xe0..0xe7 modifiers), as the keyboard reports it: no character
+ * (M12's Q15: the layout is libos's keymap, <keymap.h>, which the
+ * compositor's clients decode with), no repeats (Wayland clients repeat
+ * keys themselves, at the rate wl_keyboard.repeat_info says), the keypad's
+ * keys as themselves whatever Num Lock says. state: INPUT_KEY_UP or DOWN;
+ * mods: INPUT_MOD_* (the HID boot report's modifier byte). Ctrl+Alt+Del is
+ * just usage 0x4c DOWN with CTRL and ALT set: the compositor decides. The
+ * lock keys are sent as keys: the compositor keeps the locks and lights
+ * them (leds). The constants are below.
  *
  * Protocol `input` (id 11). Client: input_<method>(ch, args..., &results...)
  * (and input_<method>_until with a deadline, _within with a timeout), or
@@ -31,13 +41,15 @@
 #include <idl/common.h>
 
 #define INPUT_PROTOCOL_ID 11u
-#define INPUT_KEY              0x000b0001u
-#define INPUT_MOUSE            0x000b0002u
-#define INPUT_TEXT             0x000b0003u
-#define INPUT_READY            0x000b0004u
+#define INPUT_KEY              0x000b0005u
+#define INPUT_MOUSE            0x000b0006u
+#define INPUT_TEXT             0x000b0007u
+#define INPUT_READY            0x000b0008u
+#define INPUT_LEDS             0x000b0009u
 
 /* Constants (the .idl's `const` lines). */
-/* key's state. */
+/* key's state (KEY_REPEAT: never on this protocol; the console's key
+ * channels, <openkeys.h>, carry it). */
 #define INPUT_KEY_UP 0u
 #define INPUT_KEY_DOWN 1u
 #define INPUT_KEY_REPEAT 2u
@@ -61,21 +73,20 @@
 #define INPUT_BTN_LEFT (1u << 0)
 #define INPUT_BTN_RIGHT (1u << 1)
 #define INPUT_BTN_MIDDLE (1u << 2)
+/* leds' bits: the boot keyboard's output report (HID LED page 1..3). */
+#define INPUT_LED_NUM (1u << 0)
+#define INPUT_LED_CAPS (1u << 1)
+#define INPUT_LED_SCROLL (1u << 2)
 
 /* Messages (packed: no padding bytes ever cross the channel). */
-struct input_key_req {
+struct input_key_msg {   /* an event: txid 0 */
     uint32_t txid;
     uint32_t ordinal;
     uint16_t usage;
     uint8_t state;
     uint8_t mods;
-    uint32_t codepoint;
 } __attribute__((packed));
-struct input_key_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
-struct input_mouse_req {
+struct input_mouse_msg {   /* an event: txid 0 */
     uint32_t txid;
     uint32_t ordinal;
     int16_t dx;
@@ -83,308 +94,201 @@ struct input_mouse_req {
     int8_t wheel;
     uint8_t buttons;
 } __attribute__((packed));
-struct input_mouse_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
-struct input_text_req {
+struct input_text_msg {   /* an event: txid 0 */
     uint32_t txid;
     uint32_t ordinal;
-    uint16_t length;
-    uint8_t bytes[64];
 } __attribute__((packed));
-struct input_text_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
-struct input_ready_req {
+struct input_ready_msg {   /* an event: txid 0 */
     uint32_t txid;
     uint32_t ordinal;
     uint8_t kind;
     uint16_t vendor;
     uint16_t product;
 } __attribute__((packed));
-struct input_ready_rep {
+struct input_leds_msg {   /* an event: txid 0 */
     uint32_t txid;
-    int32_t  status;
+    uint32_t ordinal;
+    uint8_t leds;
 } __attribute__((packed));
 
-#define INPUT_REQ_MAX 74u   /* bytes: the biggest request */
-#define INPUT_REP_MAX 8u   /* bytes: the biggest reply */
+#define INPUT_REQ_MAX 74u   /* bytes: the biggest message to the server */
+#define INPUT_REP_MAX 9u   /* bytes: the biggest message to the client */
 #define INPUT_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define INPUT_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
-/* input_key_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t input_key_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
-{
-    struct input_key_req idl_q;
-    struct input_key_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INPUT_KEY;
-    idl_q.usage = usage;
-    idl_q.state = state;
-    idl_q.mods = mods;
-    idl_q.codepoint = codepoint;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-static inline status_t input_key_until(handle_t ch, uint64_t deadline_ns, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
-{
-    return input_key_call(ch, false, deadline_ns, usage, state, mods, codepoint);
-}
-static inline status_t input_key_within(handle_t ch, uint64_t timeout_ns, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
-{
-    return input_key_call(ch, true, timeout_ns, usage, state, mods, codepoint);
-}
-static inline status_t input_key(handle_t ch, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
-{
-    return input_key_call(ch, false, DEADLINE_NEVER, usage, state, mods, codepoint);
-}
-
-/* input_mouse_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t input_mouse_call(handle_t ch, bool idl_within, uint64_t idl_t, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
-{
-    struct input_mouse_req idl_q;
-    struct input_mouse_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INPUT_MOUSE;
-    idl_q.dx = dx;
-    idl_q.dy = dy;
-    idl_q.wheel = wheel;
-    idl_q.buttons = buttons;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-/* buttons: bit 0 left, 1 right, 2 middle. */
-static inline status_t input_mouse_until(handle_t ch, uint64_t deadline_ns, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
-{
-    return input_mouse_call(ch, false, deadline_ns, dx, dy, wheel, buttons);
-}
-static inline status_t input_mouse_within(handle_t ch, uint64_t timeout_ns, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
-{
-    return input_mouse_call(ch, true, timeout_ns, dx, dy, wheel, buttons);
-}
-static inline status_t input_mouse(handle_t ch, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
-{
-    return input_mouse_call(ch, false, DEADLINE_NEVER, dx, dy, wheel, buttons);
-}
-
-/* input_text_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t input_text_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t length, const uint8_t bytes[64])
-{
-    struct input_text_req idl_q;
-    struct input_text_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INPUT_TEXT;
-    idl_q.length = length;
-    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
-        idl_q.bytes[idl_i] = bytes[idl_i];
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-/* Raw bytes from a terminal (the serial source): printable text and VT100
- * escape sequences (arrows: ESC [ A..D), CR or LF for Enter, 0x7f or 0x08
- * for Backspace. */
-static inline status_t input_text_until(handle_t ch, uint64_t deadline_ns, uint16_t length, const uint8_t bytes[64])
-{
-    return input_text_call(ch, false, deadline_ns, length, bytes);
-}
-static inline status_t input_text_within(handle_t ch, uint64_t timeout_ns, uint16_t length, const uint8_t bytes[64])
-{
-    return input_text_call(ch, true, timeout_ns, length, bytes);
-}
-static inline status_t input_text(handle_t ch, uint16_t length, const uint8_t bytes[64])
-{
-    return input_text_call(ch, false, DEADLINE_NEVER, length, bytes);
-}
-
-/* input_ready_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t input_ready_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t kind, uint16_t vendor, uint16_t product)
-{
-    struct input_ready_req idl_q;
-    struct input_ready_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = INPUT_READY;
-    idl_q.kind = kind;
-    idl_q.vendor = vendor;
-    idl_q.product = product;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-/* The source is ready: a keyboard (INPUT_READY_KEYBOARD) or a mouse
- * (INPUT_READY_MOUSE), its USB vendor and product id; its reports flow
- * from now on. hid calls it once per start; the console logs each with
- * the time since the kernel started, so the boot log says when the first
- * keyboard and mouse could be used. */
-static inline status_t input_ready_until(handle_t ch, uint64_t deadline_ns, uint8_t kind, uint16_t vendor, uint16_t product)
-{
-    return input_ready_call(ch, false, deadline_ns, kind, vendor, product);
-}
-static inline status_t input_ready_within(handle_t ch, uint64_t timeout_ns, uint8_t kind, uint16_t vendor, uint16_t product)
-{
-    return input_ready_call(ch, true, timeout_ns, kind, vendor, product);
-}
-static inline status_t input_ready(handle_t ch, uint8_t kind, uint16_t vendor, uint16_t product)
-{
-    return input_ready_call(ch, false, DEADLINE_NEVER, kind, vendor, product);
-}
-
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
-/* input_key without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then input_key_result. */
-static inline status_t input_key_send(handle_t ch, uint32_t idl_txid, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
+/* ---- events (one way, txid 0, never answered) -------------------------- */
+
+/* A key pressed or let go (UP or DOWN only: anything else is dropped). */
+/* The event input.key, to the server: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t input_key(handle_t ch, uint16_t usage, uint8_t state, uint8_t mods)
 {
-    struct input_key_req idl_q;
-    if (!idl_txid)
+    _Alignas(8) uint8_t idl_b0[12];
+    struct input_key_msg *idl_q = (struct input_key_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = INPUT_KEY;
+    idl_q->usage = usage;
+    idl_q->state = state;
+    idl_q->mods = mods;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The mouse: counts moved since the last report (+x right, +y down), the
+ * wheel's notches (+ away from the user), the buttons held now (BTN_*).
+ * A source may merge reports whose buttons are the same. */
+/* The event input.mouse, to the server: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t input_mouse(handle_t ch, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
+{
+    _Alignas(8) uint8_t idl_b0[14];
+    struct input_mouse_msg *idl_q = (struct input_mouse_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = INPUT_MOUSE;
+    idl_q->dx = dx;
+    idl_q->dy = dy;
+    idl_q->wheel = wheel;
+    idl_q->buttons = buttons;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* Raw bytes from a terminal (the serial source): printable text and VT100
+ * escape sequences (arrows: ESC [ A..D), CR or LF for Enter, 0x7f or 0x08
+ * for Backspace; typed as the keys that make them. */
+/* The event input.text, to the server: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t input_text(handle_t ch, const uint8_t *bytes, uint32_t bytes_len)
+{
+    _Alignas(8) uint8_t idl_b0[74];
+    struct input_text_msg *idl_q = (struct input_text_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = INPUT_TEXT;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, bytes, bytes_len, 64, 1))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The source is ready: a keyboard (READY_KEYBOARD) or a mouse
+ * (READY_MOUSE), its USB vendor and product id; its reports flow from now
+ * on. hid sends it once per start; the compositor logs each with the time
+ * since the kernel started, so the boot log says when the first keyboard
+ * and mouse could be used, and sends a keyboard its lights. */
+/* The event input.ready, to the server: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t input_ready(handle_t ch, uint8_t kind, uint16_t vendor, uint16_t product)
+{
+    _Alignas(8) uint8_t idl_b0[13];
+    struct input_ready_msg *idl_q = (struct input_ready_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = INPUT_READY;
+    idl_q->kind = kind;
+    idl_q->vendor = vendor;
+    idl_q->product = product;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* To the source: the keyboard's lights (LED_*), the locks as the
+ * compositor keeps them: after the source's ready (a keyboard), and to
+ * every keyboard whenever a lock key changes one. A keyboard starts dark
+ * and lights what it is told. */
+/* The event input.leds, to the client: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t input_leds(handle_t ch, uint8_t leds)
+{
+    _Alignas(8) uint8_t idl_b0[9];
+    struct input_leds_msg *idl_q = (struct input_leds_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = INPUT_LEDS;
+    idl_q->leds = leds;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The client's handlers of the events from the server: a NULL one drops
+ * its event (handles closed). A handler owns the handles it is given;
+ * its arrays point into the message (copy what it keeps). */
+struct input_events {
+    void (*leds)(void *ctx, uint8_t leds);
+};
+
+/* Client: run the event read with idl_reply_read into msg and *m (an
+ * event has txid 0, a reply any other): OK, its handler ran with its
+ * handles; otherwise it is dropped, its handles closed:
+ * ERR_NOT_SUPPORTED (no such event, or no handler), ERR_INVALID_ARGS
+ * (it breaks the format, or isn't an event). */
+static inline status_t input_event_dispatch(const struct input_events *idl_tab, void *ctx,
+                                            const void *idl_m, struct idl_msg *m)
+{
+    uint32_t idl_n = m->n, idl_nh = m->nh;
+    const handle_t *idl_hs = m->hs;
+    m->nh = 0;   /* each path below takes them */
+    if (idl_n < sizeof(struct idl_req_hdr) || ((const struct idl_req_hdr *)idl_m)->txid) {
+        idl_close_all(idl_hs, idl_nh);
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = INPUT_KEY;
-    idl_q.usage = usage;
-    idl_q.state = state;
-    idl_q.mods = mods;
-    idl_q.codepoint = codepoint;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to input_key_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t input_key_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct input_key_rep *idl_r = (const struct input_key_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
     }
-    idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
-}
-
-/* input_mouse without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then input_mouse_result. */
-static inline status_t input_mouse_send(handle_t ch, uint32_t idl_txid, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
-{
-    struct input_mouse_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = INPUT_MOUSE;
-    idl_q.dx = dx;
-    idl_q.dy = dy;
-    idl_q.wheel = wheel;
-    idl_q.buttons = buttons;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to input_mouse_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t input_mouse_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct input_mouse_rep *idl_r = (const struct input_mouse_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
+    switch (((const struct idl_req_hdr *)idl_m)->ordinal) {
+    case INPUT_LEDS: {
+        const struct input_leds_msg *idl_e = (const struct input_leds_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->leds)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->leds(ctx, idl_e->leds);
+        return OK;
     }
-    idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
-}
-
-/* input_text without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then input_text_result. */
-static inline status_t input_text_send(handle_t ch, uint32_t idl_txid, uint16_t length, const uint8_t bytes[64])
-{
-    struct input_text_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = INPUT_TEXT;
-    idl_q.length = length;
-    for (uint32_t idl_i = 0; idl_i < 64; idl_i++)
-        idl_q.bytes[idl_i] = bytes[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to input_text_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t input_text_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct input_text_rep *idl_r = (const struct input_text_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
     }
-    idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
+    idl_close_all(idl_hs, idl_nh);
+    return ERR_NOT_SUPPORTED;
 }
 
-/* input_ready without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then input_ready_result. */
-static inline status_t input_ready_send(handle_t ch, uint32_t idl_txid, uint8_t kind, uint16_t vendor, uint16_t product)
+/* Client: read the next message on ch and run it as an event of the
+ * server's (input_event_dispatch's results). ERR_SHOULD_WAIT: nothing is
+ * queued; ERR_PEER_CLOSED: the server is gone; ERR_INTERNAL: a message
+ * that is no event (a reply to a call that gave up), dropped. For a
+ * channel whose replies come with idl_reply_read, call
+ * input_event_dispatch for the messages with txid 0 instead. */
+static inline status_t input_read_event(handle_t ch, const struct input_events *idl_tab, void *ctx)
 {
-    struct input_ready_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = INPUT_READY;
-    idl_q.kind = kind;
-    idl_q.vendor = vendor;
-    idl_q.product = product;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to input_ready_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t input_ready_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct input_ready_rep *idl_r = (const struct input_ready_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
+    _Alignas(8) uint8_t idl_b[INPUT_REP_MAX];
+    struct idl_msg idl_m;
+    status_t idl_st = idl_reply_read(ch, idl_b, INPUT_REP_MAX, &idl_m);
+    if (idl_st == OK && idl_m.txid) {
+        idl_msg_drop(&idl_m);
         idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
+    } else if (idl_st == OK) {
+        idl_st = input_event_dispatch(idl_tab, ctx, idl_b, &idl_m);
     }
-    idl_m->nh = 0;
-    (void)idl_r;
-    return OK;
+    return idl_st;
 }
 
 /* ---- server ---------------------------------------------------------- */
@@ -392,79 +296,106 @@ static inline status_t input_ready_result(const void *idl_rep, struct idl_msg *i
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
  * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
  * also gets the request's txn, and may return IDL_LATER and answer it
- * with input_reply_<method> (now, or later from anywhere). */
+ * with input_reply_<method> (now, or later from anywhere). An event's
+ * handler returns nothing (nothing is answered; a NULL one drops it),
+ * owns the handles it is given, and its arrays point into the message. */
 struct input_ops {
-    status_t (*key)(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint);
-    status_t (*mouse)(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons);
-    status_t (*text)(void *ctx, uint16_t length, const uint8_t bytes[64]);
-    status_t (*ready)(void *ctx, uint8_t kind, uint16_t vendor, uint16_t product);
+    void (*key)(void *ctx, uint16_t usage, uint8_t state, uint8_t mods);
+    void (*mouse)(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons);
+    void (*text)(void *ctx, const uint8_t *bytes, uint32_t bytes_len);
+    void (*ready)(void *ctx, uint8_t kind, uint16_t vendor, uint16_t product);
 };
 
-/* Answer the input.key request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t input_reply_key(struct idl_txn idl_txn, status_t idl_st)
+/* Run the event (txid 0) of n bytes at m with nh handles in hs: OK, or
+ * ERR_NOT_SUPPORTED (no such event, or no handler) or ERR_INVALID_ARGS
+ * (it breaks the event's format), its handles closed. */
+static inline status_t input_event_in(const struct input_ops *idl_tab, void *ctx,
+                                      const void *idl_m, uint32_t idl_n, const handle_t *idl_hs, uint32_t idl_nh)
 {
-    struct input_key_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the input.mouse request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t input_reply_mouse(struct idl_txn idl_txn, status_t idl_st)
-{
-    struct input_mouse_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the input.text request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t input_reply_text(struct idl_txn idl_txn, status_t idl_st)
-{
-    struct input_text_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
-}
-
-/* Answer the input.ready request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t input_reply_ready(struct idl_txn idl_txn, status_t idl_st)
-{
-    struct input_ready_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    switch (((const struct idl_req_hdr *)idl_m)->ordinal) {
+    case INPUT_KEY: {
+        const struct input_key_msg *idl_e = (const struct input_key_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->key)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->key(ctx, idl_e->usage, idl_e->state, idl_e->mods);
+        return OK;
+    }
+    case INPUT_MOUSE: {
+        const struct input_mouse_msg *idl_e = (const struct input_mouse_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->mouse)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->mouse(ctx, idl_e->dx, idl_e->dy, idl_e->wheel, idl_e->buttons);
+        return OK;
+    }
+    case INPUT_TEXT: {
+        const struct input_text_msg *idl_e = (const struct input_text_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 64, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->text)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->text(ctx, (const uint8_t *)idl_p0, idl_l0);
+        return OK;
+    }
+    case INPUT_READY: {
+        const struct input_ready_msg *idl_e = (const struct input_ready_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->ready)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->ready(ctx, idl_e->kind, idl_e->vendor, idl_e->product);
+        return OK;
+    }
+    }
+    idl_close_all(idl_hs, idl_nh);
+    return ERR_NOT_SUPPORTED;
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (INPUT_REP_MAX bytes) and the handles it carries
  * into rhs (INPUT_REP_HANDLES slots; *rhn of them). Returns the reply's
- * length: 0 means no reply (the request has no txid, or a `later`
- * handler answers it itself). No I/O; the caller sends the reply with the
+ * length: 0 means no reply (the message has no txid, a `later` handler
+ * answers it itself, or it is an event: txid 0, never answered; one no
+ * handler takes is dropped). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
 static inline uint32_t input_dispatch_on(handle_t ch, const struct input_ops *ops, void *ctx,
                                          const void *req, uint32_t n, void *rep, handle_t *rhs,
@@ -474,77 +405,20 @@ static inline uint32_t input_dispatch_on(handle_t ch, const struct input_ops *op
     *rhn = 0;
     (void)rhs;
     (void)ch;
-    if (n < sizeof(uint32_t))
+    if (n < sizeof(struct idl_req_hdr) || !((const struct idl_req_hdr *)req)->txid) {
+        /* txid 0: an event (or no txid): never answered */
+        if (n >= sizeof(struct idl_req_hdr))
+            (void)input_event_in(ops, ctx, req, n, NULL, 0);
         return 0;
+    }
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
-    if (n < sizeof(struct idl_req_hdr))
-        return sizeof(*idl_h);
     switch (((const struct idl_req_hdr *)req)->ordinal) {
-    case INPUT_KEY: {
-        const struct input_key_req *idl_q = (const struct input_key_req *)req;
-        struct input_key_rep *idl_r = (struct input_key_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->key) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->key(ctx, idl_q->usage, idl_q->state, idl_q->mods, idl_q->codepoint);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
-    case INPUT_MOUSE: {
-        const struct input_mouse_req *idl_q = (const struct input_mouse_req *)req;
-        struct input_mouse_rep *idl_r = (struct input_mouse_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->mouse) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->mouse(ctx, idl_q->dx, idl_q->dy, idl_q->wheel, idl_q->buttons);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
-    case INPUT_TEXT: {
-        const struct input_text_req *idl_q = (const struct input_text_req *)req;
-        struct input_text_rep *idl_r = (struct input_text_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->text) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->text(ctx, idl_q->length, idl_q->bytes);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
-    case INPUT_READY: {
-        const struct input_ready_req *idl_q = (const struct input_ready_req *)req;
-        struct input_ready_rep *idl_r = (struct input_ready_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->ready) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->ready(ctx, idl_q->kind, idl_q->vendor, idl_q->product);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
-        return sizeof(*idl_r);
-    }
+    case INPUT_KEY:
+    case INPUT_MOUSE:
+    case INPUT_TEXT:
+    case INPUT_READY:
+        return sizeof(*idl_h);   /* an event with a txid */
     }
     idl_h->status = ERR_NOT_SUPPORTED;
     return sizeof(*idl_h);

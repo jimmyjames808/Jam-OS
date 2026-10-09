@@ -7,10 +7,10 @@
  * Handles (roles from <jam/driver.h>):
  *   DR_USB    the `usb` channel for this one interface (abi/idl/usb.idl);
  *             usb-bus closes it when the device is unplugged
- *   DR_INPUT  an `input` channel to the console (abi/idl/input.idl).
+ *   DR_INPUT  an `input` channel to the compositor (abi/idl/input.idl).
  *             Optional: without it every key DOWN (and mouse button change)
  *             goes to the log instead, a bring-up aid for a PC run that
- *             has usb-bus but no console yet
+ *             has usb-bus but no compositor yet
  *
  * Args (from devmgr, <jam/driver.h> drv_has_arg): "hidboot" keeps every
  * mouse in the boot protocol (the boot word of that name); "selftest" (no
@@ -23,8 +23,9 @@
  * only behave once it has been, as Windows and Linux always read it; its
  * top-level collections are logged). Then:
  *   - subclass 1 (boot), protocol 1 keyboard: SET_PROTOCOL(boot),
- *     SET_IDLE(0) (report only on change) and the LED byte (Num Lock on),
- *     then open_interrupt_in and serve reports. A failed SET_PROTOCOL or
+ *     SET_IDLE(0) (report only on change) and the LED byte (dark: the
+ *     compositor sends the lights, input.leds), then open_interrupt_in and
+ *     serve reports. A failed SET_PROTOCOL or
  *     SET_IDLE is logged and ignored (many devices stall SET_IDLE; a
  *     device that refuses SET_PROTOCOL was already in boot mode or can't
  *     leave it);
@@ -44,15 +45,23 @@
  *
  * Reports arrive as one message each on the channel open_interrupt_in
  * returns. The loop waits on a port for that channel (readable or closed),
- * DR_USB closed and DR_INPUT closed, with the next key repeat as deadline.
- * The keyboard layer is keyboard.c, the mouse layer mouse.c (input.mouse,
- * sent only when something changed); the descriptors are walked in
- * desc.c.
+ * DR_USB closed, and DR_INPUT readable (the compositor's input.leds) or
+ * closed, and writable while events wait for room. The keyboard layer is
+ * keyboard.c, the mouse layer mouse.c (input.mouse, sent only when
+ * something changed); the descriptors are walked in desc.c.
+ *
+ * Events out (input.idl's, all one-way: M12's review W6): written without
+ * waiting. One the compositor's full queue refuses (ERR_SHOULD_WAIT) is
+ * kept in outq, in order, with every later one, and they go when DR_INPUT
+ * is writable again; nothing waits on the compositor, and no key event is
+ * dropped unless OUTQ_MAX are waiting (said in the log). A mouse event
+ * kept merges with the last kept one if their buttons are the same (only
+ * the movement and the wheel add up).
  *
  * Ending (the reconnect rule of input.idl and usb.idl): DR_USB closed =
  * "device gone", exit 0 (devmgr binds a new hid when the interface comes
- * back); DR_INPUT closed = "console gone", exit 0 (devmgr restarts it
- * connected to the new console). The reports channel closing while DR_USB
+ * back); DR_INPUT closed = "compositor gone", exit 0 (devmgr restarts it
+ * connected to the new compositor). The reports channel closing while DR_USB
  * stays open is NOT the device going: usb-bus stopped polling the endpoint
  * (20 errors in a row) but the interface is still there, so exit 5 and
  * devmgr restarts hid, which opens the endpoint again (an exit 0 there
@@ -63,15 +72,12 @@
  * descriptors or endpoint couldn't be used; 4: out of memory; 5: reports
  * lost with the device still there; 6: the self-test ("selftest") failed.
  *
- * Every call is bounded: USB requests USB_TIMEOUT, input calls
- * INPUT_TIMEOUT (a late console costs that event, logged, not the
- * driver). */
+ * Every USB request is bounded (USB_TIMEOUT); input events never wait. */
 #include <idl/input.h>
 #include <idl/usb.h>
 #include "hid.h"
 
 #define USB_TIMEOUT   (2000 * NS_PER_MS)
-#define INPUT_TIMEOUT (2000 * NS_PER_MS)
 #define REPORTS_GRACE (50 * NS_PER_MS)
 
 #define REQ_OUT_CLASS_IFACE 0x21   /* host to device, class, interface */
@@ -84,7 +90,8 @@
 
 #define K_REPORTS 1
 #define K_USB     2
-#define K_INPUT   3
+#define K_INPUT   3   /* DR_INPUT readable (leds) or closed */
+#define K_ROOM    4   /* DR_INPUT writable: outq may go */
 
 
 /* The "ready" and final lines go to the RESULTS box when devmgr started
@@ -136,11 +143,9 @@ static uint64_t deadline(uint64_t d)
 
 /* ---- events out ------------------------------------------------------------ */
 
-static void input_result(struct hid *h, status_t st, const char *what)
+static void input_failed(struct hid *h, status_t st, const char *what)
 {
-    if (st == OK) {
-        h->events++;
-    } else if (st == ERR_PEER_CLOSED) {
+    if (st == ERR_PEER_CLOSED) {
         h->stop = STOP_CONSOLE_GONE;
     } else if (log_nth(++h->input_errors)) {
         drv_log("hid %04x:%04x if %u: input.%s failed (%s; %lu so far): event dropped",
@@ -149,7 +154,102 @@ static void input_result(struct hid *h, status_t st, const char *what)
     }
 }
 
-void hid_key(struct hid *h, uint16_t usage, uint8_t state, uint8_t mods, uint32_t codepoint)
+/* Write one event now: OK, ERR_SHOULD_WAIT (the queue is full), or why
+ * not. */
+static status_t write_ev(struct hid *h, const struct out_ev *e)
+{
+    switch (e->kind) {
+    case OUT_KEY:
+        return input_key(h->input, e->x, e->a, e->b);
+    case OUT_MOUSE:
+        return input_mouse(h->input, (int16_t)e->x, (int16_t)e->y, (int8_t)e->b, e->a);
+    default:
+        return input_ready(h->input, e->a, e->x, e->y);
+    }
+}
+
+static const char *ev_name(const struct out_ev *e)
+{
+    return e->kind == OUT_KEY ? "key" : e->kind == OUT_MOUSE ? "mouse" : "ready";
+}
+
+/* Watch DR_INPUT for room, once. */
+static void arm_room(struct hid *h)
+{
+    if (h->write_armed || h->port == HANDLE_INVALID)
+        return;
+    status_t st = drv_port_bind(h->port, h->input, K_ROOM, SIG_WRITABLE | SIG_PEER_CLOSED,
+                                PORT_BIND_ONCE);
+    h->write_armed = st == OK;
+    if (st != OK && log_nth(++h->input_errors))
+        drv_log("hid %04x:%04x if %u: can't wait for room on the input channel (%s)",
+                h->vendor, h->product, h->iface, status_str(st));
+}
+
+/* The events kept, in order, until the queue is full again. */
+static void flush_outq(struct hid *h)
+{
+    while (h->outq_n && !h->stop) {
+        struct out_ev *e = &h->outq[h->outq_head];
+        status_t st = write_ev(h, e);
+        if (st == ERR_SHOULD_WAIT) {
+            arm_room(h);
+            return;
+        }
+        if (st == OK)
+            h->events++;
+        else
+            input_failed(h, st, ev_name(e));
+        h->outq_head = (h->outq_head + 1) % OUTQ_MAX;
+        h->outq_n--;
+    }
+}
+
+/* Send e now if nothing waits and there is room; else keep it (a mouse
+ * event merged into the last kept one when it can be). */
+static void send_ev(struct hid *h, const struct out_ev *e)
+{
+    if (h->stop)
+        return;
+    if (!h->outq_n) {
+        status_t st = write_ev(h, e);
+        if (st == OK) {
+            h->events++;
+            return;
+        }
+        if (st != ERR_SHOULD_WAIT) {
+            input_failed(h, st, ev_name(e));
+            return;
+        }
+    }
+    h->waited++;
+    if (h->outq_n && e->kind == OUT_MOUSE) {
+        struct out_ev *last = &h->outq[(h->outq_head + h->outq_n - 1) % OUTQ_MAX];
+        if (last->kind == OUT_MOUSE && last->a == e->a) {
+            int32_t dx = (int16_t)last->x + (int16_t)e->x, dy = (int16_t)last->y + (int16_t)e->y;
+            int32_t w = (int8_t)last->b + (int8_t)e->b;
+            dx = dx > INT16_MAX ? INT16_MAX : dx < INT16_MIN ? INT16_MIN : dx;
+            dy = dy > INT16_MAX ? INT16_MAX : dy < INT16_MIN ? INT16_MIN : dy;
+            w = w > INT8_MAX ? INT8_MAX : w < INT8_MIN ? INT8_MIN : w;
+            last->x = (uint16_t)(int16_t)dx;
+            last->y = (uint16_t)(int16_t)dy;
+            last->b = (uint8_t)(int8_t)w;
+            return;
+        }
+    }
+    if (h->outq_n == OUTQ_MAX) {
+        if (log_nth(++h->input_errors))
+            drv_log("hid %04x:%04x if %u: %u events wait for the compositor: input.%s dropped "
+                    "(%lu so far)", h->vendor, h->product, h->iface, OUTQ_MAX, ev_name(e),
+                    (unsigned long)h->input_errors);
+        return;
+    }
+    h->outq[(h->outq_head + h->outq_n) % OUTQ_MAX] = *e;
+    h->outq_n++;
+    arm_room(h);
+}
+
+void hid_key(struct hid *h, uint16_t usage, uint8_t state, uint8_t mods)
 {
     if (h->stop)
         return;
@@ -157,13 +257,12 @@ void hid_key(struct hid *h, uint16_t usage, uint8_t state, uint8_t mods, uint32_
         h->keys_down++;
     if (h->input == HANDLE_INVALID) {
         if (state == INPUT_KEY_DOWN)
-            drv_log("hid %04x:%04x if %u: key 0x%02x down, mods 0x%02x, codepoint 0x%x", h->vendor,
-                    h->product, h->iface, usage, mods, codepoint);
+            drv_log("hid %04x:%04x if %u: key 0x%02x down, mods 0x%02x", h->vendor, h->product,
+                    h->iface, usage, mods);
         h->events++;
         return;
     }
-    input_result(h, input_key_until(h->input, deadline(INPUT_TIMEOUT), usage, state, mods,
-                                    codepoint), "key");
+    send_ev(h, &(struct out_ev){ .kind = OUT_KEY, .a = state, .b = mods, .x = usage });
 }
 
 void hid_set_leds(struct hid *h, uint8_t leds)
@@ -186,8 +285,8 @@ void hid_mouse(struct hid *h, int16_t dx, int16_t dy, int8_t wheel, uint8_t butt
         h->events++;
         return;
     }
-    input_result(h, input_mouse_until(h->input, deadline(INPUT_TIMEOUT), dx, dy, wheel, buttons),
-                 "mouse");
+    send_ev(h, &(struct out_ev){ .kind = OUT_MOUSE, .a = buttons, .b = (uint8_t)wheel,
+                                 .x = (uint16_t)dx, .y = (uint16_t)dy });
 }
 
 /* ---- start ------------------------------------------------------------------ */
@@ -348,18 +447,15 @@ static const char *kind_name(const struct hid *h)
     return h->report_mode ? "report mouse" : "boot mouse";
 }
 
-/* Tell the console that this keyboard or mouse works from now on (it logs
- * when). A console that doesn't know the call is fine: it is only for the
- * log. */
+/* Tell the compositor that this keyboard or mouse works from now on (it
+ * logs when, and sends a keyboard its lights). */
 static void tell_ready(struct hid *h)
 {
     if (h->input == HANDLE_INVALID)
         return;
     uint8_t kind = h->kind == HID_KEYBOARD ? INPUT_READY_KEYBOARD : INPUT_READY_MOUSE;
-    status_t st = input_ready_until(h->input, deadline(INPUT_TIMEOUT), kind, h->vendor,
-                                    h->product);
-    if (st != OK && st != ERR_NOT_SUPPORTED)
-        input_result(h, st, "ready");
+    send_ev(h, &(struct out_ev){ .kind = OUT_READY, .a = kind, .x = h->vendor,
+                                 .y = h->product });
 }
 
 /* 0..: the driver ends with that code; -1: serve reports. */
@@ -407,7 +503,7 @@ static void take_report(struct hid *h, const uint8_t *r, uint32_t n)
 {
     h->nreports++;
     if (h->kind == HID_KEYBOARD)
-        kbd_report(h, r, n, drv_clock_ns());
+        kbd_report(h, r, n);
     else
         mouse_report(h, r, n);
 }
@@ -460,6 +556,26 @@ static void drain(struct hid *h)
     }
 }
 
+/* The compositor's events on DR_INPUT (the lights), or its end gone. */
+static void on_leds(void *ctx, uint8_t leds)
+{
+    kbd_leds(ctx, leds);
+}
+
+static const struct input_events input_events = { .leds = on_leds };
+
+static void input_news(struct hid *h)
+{
+    for (unsigned n = 0; n < 64 && !h->stop; n++) {   /* bounded: the reports come first */
+        status_t st = input_read_event(h->input, &input_events, h);
+        if (st == ERR_SHOULD_WAIT)
+            return;
+        if (st == ERR_PEER_CLOSED)
+            h->stop = STOP_CONSOLE_GONE;
+        /* anything else (a message that is no event of ours): dropped */
+    }
+}
+
 static int run(struct hid *h)
 {
     status_t st = drv_port_create(&h->port);
@@ -469,28 +585,36 @@ static int run(struct hid *h)
     if (st == OK)
         st = drv_port_bind(h->port, h->usb, K_USB, SIG_PEER_CLOSED, PORT_BIND_ONCE);
     if (st == OK && h->input != HANDLE_INVALID)
-        st = drv_port_bind(h->port, h->input, K_INPUT, SIG_PEER_CLOSED, PORT_BIND_ONCE);
+        st = drv_port_bind(h->port, h->input, K_INPUT, SIG_READABLE | SIG_PEER_CLOSED,
+                           PORT_BIND_PERSISTENT);
     if (st != OK) {
         drv_log("hid %04x:%04x if %u: port: %s", h->vendor, h->product, h->iface,
                 status_str(st));
         return 1;
     }
+    if (h->input != HANDLE_INVALID) {
+        input_news(h);   /* what came before the binding raised no edge */
+        if (h->outq_n)
+            arm_room(h);   /* ready (setup) may be waiting already */
+    }
     while (!h->stop) {
         struct port_packet pkt;
-        st = drv_port_wait(h->port, kbd_repeat_deadline(h), &pkt);
-        if (st == OK) {
-            if (pkt.key == K_REPORTS)
-                drain(h);
-            else if (pkt.key == K_USB)
-                h->stop = STOP_DEVICE_GONE;
-            else if (pkt.key == K_INPUT)
-                h->stop = STOP_CONSOLE_GONE;
-        } else if (st != ERR_TIMED_OUT) {
+        st = drv_port_wait(h->port, DEADLINE_NEVER, &pkt);
+        if (st != OK) {
             drv_log("hid %04x:%04x if %u: port wait: %s", h->vendor, h->product, h->iface,
                     status_str(st));
             return 1;
         }
-        kbd_repeat(h, drv_clock_ns());
+        if (pkt.key == K_REPORTS) {
+            drain(h);
+        } else if (pkt.key == K_USB) {
+            h->stop = STOP_DEVICE_GONE;
+        } else if (pkt.key == K_INPUT) {
+            input_news(h);
+        } else if (pkt.key == K_ROOM) {
+            h->write_armed = false;
+            flush_outq(h);
+        }
     }
     return 0;
 }

@@ -92,9 +92,11 @@ void     seat_input_serial(struct comp_client *cl, uint32_t serial);
 /* keyboard.c */
 status_t keyboard_init(void);
 status_t keyboard_create(struct comp_client *cl, uint32_t id, uint32_t version);
-/* A key from source src (input.key): usage, INPUT_KEY_*, hid's modifier
- * byte. */
+/* A key from source src (input.key): usage, INPUT_KEY_UP or DOWN, hid's
+ * modifier byte. */
 void     keyboard_key(unsigned src, uint16_t usage, uint8_t state, uint8_t mods);
+/* The keyboards' lights for the locks on now (INPUT_LED_*). */
+uint8_t  keyboard_leds(void);
 /* A terminal's bytes from source src (input.text) as the key presses that
  * type them. */
 void     keyboard_text(unsigned src, struct termkeys *t, const uint8_t *bytes, unsigned n);
@@ -130,6 +132,8 @@ void     focus_window_gone(struct comp_window *w);
 
 /* sources.c */
 status_t sources_connect(handle_t *out);
+/* The locks changed: every keyboard source is sent its lights (input.leds). */
+void     sources_leds(uint8_t leds);
 void     sources_packet(unsigned slot);
 void     sources_serve(void);
 bool     sources_more(void);
