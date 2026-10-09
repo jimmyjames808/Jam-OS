@@ -41,6 +41,7 @@
  *   sh_text.c      lines and counts for the text commands */
 #pragma once
 
+#include <openkeys.h>
 #include <os.h>
 #include <sha256.h>
 #include <wallclock.h>

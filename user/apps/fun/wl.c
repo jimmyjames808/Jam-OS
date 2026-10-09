@@ -418,7 +418,7 @@ static bool take_size(void)
 
 /* ---- the app's events -------------------------------------------------------------------- */
 
-/* A key as the console sends it (<jam/abi.h>). */
+/* A key as the console sends it (<openkeys.h>). */
 static void key_of(const struct jwl_event *e, struct input_key_event *out)
 {
     uint32_t m = e->key.mods;

@@ -50,6 +50,7 @@
  * arrow drawn over the app's frame. */
 #pragma once
 
+#include <openkeys.h>
 #include <os.h>
 
 /* ---- colours: 0xRRGGBB ------------------------------------------------------------ */

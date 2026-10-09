@@ -18,6 +18,7 @@
 #include <jam/startup.h>
 #include <jam/status.h>
 #include <jam_syscalls.h>
+#include <roles.h>         /* the startup roles programs give each other */
 
 int main(int argc, char **argv);
 

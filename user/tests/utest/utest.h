@@ -14,6 +14,7 @@
 #pragma once
 
 #include <devmgr.h>
+#include <openkeys.h>
 #include <os.h>
 
 #define CMD_BME         0x04    /* PCI command register: Bus Master Enable */
