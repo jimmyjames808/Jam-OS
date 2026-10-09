@@ -107,6 +107,9 @@ struct fd_ops {
      * is checked before (EBADF). [read: -EINVAL; write: -EINVAL] */
     long (*read)(struct fd_desc *d, const struct iovec *iov, int iovcnt, int64_t pos);
     long (*write)(struct fd_desc *d, const struct iovec *iov, int iovcnt, int64_t pos);
+    /* pwritev2 with RWF_NOAPPEND: write at pos (>= 0) even with O_APPEND
+     * (musl's pwrite asks so). [write's] */
+    long (*write_at)(struct fd_desc *d, const struct iovec *iov, int iovcnt, int64_t pos);
     /* lseek: the new offset. [-ESPIPE] */
     long (*seek)(struct fd_desc *d, int64_t off, int whence);
     /* fstat into *st (zeroed by the caller). [a character device, 0600] */

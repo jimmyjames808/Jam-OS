@@ -254,7 +254,9 @@ static void exclusive(void)
 }
 
 /* Two descriptions of one file with O_APPEND, written in turn: every
- * write lands at the end, in order, and each offset follows the end. */
+ * write lands at the end, in order, and each description's offset is
+ * just past its own last write (write(2): O_APPEND moves the offset to
+ * the end before each write). */
 static void append_two(void)
 {
     int a = open(PT_DIR "/app", O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
@@ -269,15 +271,17 @@ static void append_two(void)
         memcpy(want + n, line, (size_t)k);
         n += (size_t)k;
     }
-    CHECK(lseek(a, 0, SEEK_CUR) == (off_t)n && lseek(b, 0, SEEK_CUR) == (off_t)n);
-    CHECK(pwrite(a, "Z", 1, 0) == 1);   /* Linux: pwrite with O_APPEND appends (pwrite(2) BUGS) */
-    want[n++] = 'Z';
+    CHECK(lseek(a, 0, SEEK_CUR) == (off_t)n - 4 && lseek(b, 0, SEEK_CUR) == (off_t)n);
+    /* musl's pwrite is pwritev2 with RWF_NOAPPEND (pwritev2(2), Linux 6.9):
+     * it writes where it is told, O_APPEND or not, as POSIX says */
+    CHECK(pwrite(a, "Z", 1, 0) == 1 && lseek(a, 0, SEEK_CUR) == (off_t)n - 4);
+    want[0] = 'Z';
     close(a);
     close(b);
     char got[2100];
     int fd = open(PT_DIR "/app", O_RDONLY);
     CHECK(fd >= 0 && read(fd, got, sizeof(got)) == (ssize_t)n && !memcmp(got, want, n));
-    CHECK(fcntl(fd, F_GETFL) == O_RDONLY);
+    CHECK(fcntl(fd, F_GETFL) == (O_RDONLY | O_LARGEFILE));   /* musl's open adds it, as Linux */
     close(fd);
     /* F_SETFL turning O_APPEND on for a description opened without it */
     fd = open(PT_DIR "/app", O_WRONLY);

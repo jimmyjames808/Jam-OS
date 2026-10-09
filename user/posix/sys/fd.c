@@ -474,16 +474,28 @@ void fd_iov_gather(const struct iovec *iov, int iovcnt, size_t skip, void *dst, 
 
 /* read, readv, pread64, preadv and the writes: through the kind's read or
  * write with pos (FD_AT_OFFSET, or >= 0). */
-static long rw(long fd, const struct iovec *iov, long iovcnt, int64_t pos, bool write)
+/* How a read or write goes: at the description's offset, or at pos
+ * (positional: pread, preadv, preadv2 with an offset); a write with
+ * RWF_NOAPPEND at pos even with O_APPEND. */
+enum rw_how { RW_READ = 0, RW_WRITE = 1, RW_AT = 2, RW_NOAPPEND = 4 };
+
+static long rw(long fd, const struct iovec *iov, long iovcnt, int64_t pos, unsigned how)
 {
     struct fd_desc *d = fd_get(fd);
     if (!d)
         return -EBADF;
+    bool write = how & RW_WRITE;
     long r = fd_iov_total(iov, (int)(iovcnt > INT_MAX ? -1 : iovcnt));
+    if (!(how & RW_AT))
+        pos = FD_AT_OFFSET;
     if (r >= 0 && !(write ? fd_can_write(d) : fd_can_read(d)))
         r = -EBADF;
-    else if (r >= 0 && pos != FD_AT_OFFSET && pos < 0)
-        r = d->ops->seek ? -EINVAL : -ESPIPE;
+    else if (r >= 0 && (how & RW_AT) && !d->ops->seek)
+        r = -ESPIPE;   /* pread(2): checked before the offset */
+    else if (r >= 0 && (how & RW_AT) && pos < 0)
+        r = -EINVAL;
+    else if (r >= 0 && write && (how & RW_NOAPPEND) && d->ops->write_at)
+        r = d->ops->write_at(d, iov, (int)iovcnt, pos);
     else if (r >= 0 && write)
         r = d->ops->write ? d->ops->write(d, iov, (int)iovcnt, pos) : -EINVAL;
     else if (r >= 0)
@@ -503,46 +515,79 @@ static struct iovec one(long buf, long len)
 long lx_read(long fd, long buf, long len, long d, long e, long f)
 {
     struct iovec v = one(buf, len);
-    return rw(fd, &v, 1, FD_AT_OFFSET, false);
+    return rw(fd, &v, 1, 0, RW_READ);
 }
 
 long lx_write(long fd, long buf, long len, long d, long e, long f)
 {
     struct iovec v = one(buf, len);
-    return rw(fd, &v, 1, FD_AT_OFFSET, true);
+    return rw(fd, &v, 1, 0, RW_WRITE);
 }
 
 long lx_pread64(long fd, long buf, long len, long pos, long e, long f)
 {
     struct iovec v = one(buf, len);
-    return rw(fd, &v, 1, pos, false);
+    return rw(fd, &v, 1, pos, RW_READ | RW_AT);
 }
 
 long lx_pwrite64(long fd, long buf, long len, long pos, long e, long f)
 {
     struct iovec v = one(buf, len);
-    return rw(fd, &v, 1, pos, true);
+    return rw(fd, &v, 1, pos, RW_WRITE | RW_AT);
 }
 
 long lx_readv(long fd, long iov, long n, long d, long e, long f)
 {
-    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, FD_AT_OFFSET, false);
+    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, 0, RW_READ);
 }
 
 long lx_writev(long fd, long iov, long n, long d, long e, long f)
 {
-    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, FD_AT_OFFSET, true);
+    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, 0, RW_WRITE);
 }
 
 /* On x86-64 the offset is one register (pos_l); Linux ignores pos_h. */
 long lx_preadv(long fd, long iov, long n, long pos_l, long pos_h, long f)
 {
-    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, pos_l, false);
+    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, pos_l, RW_READ | RW_AT);
 }
 
 long lx_pwritev(long fd, long iov, long n, long pos_l, long pos_h, long f)
 {
-    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, pos_l, true);
+    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, pos_l, RW_WRITE | RW_AT);
+}
+
+/* preadv2 and pwritev2 (musl's pwrite is pwritev2 with RWF_NOAPPEND, so
+ * that it writes where it is told even with O_APPEND, as POSIX says): an
+ * offset of -1 is the description's own. RWF_HIPRI is a hint, taken;
+ * RWF_DSYNC and RWF_SYNC make the write synced as O_DSYNC would; the rest
+ * (RWF_NOWAIT, RWF_APPEND, anything unknown) is EOPNOTSUPP. */
+static long rw2(long fd, long iov, long n, long pos, long flags, bool write)
+{
+    long known = RWF_HIPRI | (write ? RWF_DSYNC | RWF_SYNC | RWF_NOAPPEND : 0);
+    if (flags & ~known)
+        return -EOPNOTSUPP;
+    if (pos < -1)
+        return -EINVAL;
+    unsigned how = (write ? RW_WRITE : RW_READ) | (pos == -1 ? 0 : RW_AT) |
+                   (flags & RWF_NOAPPEND ? RW_NOAPPEND : 0);
+    long r = rw(fd, (const struct iovec *)(uintptr_t)iov, n, pos, how);
+    if (r > 0 && (flags & (RWF_DSYNC | RWF_SYNC))) {
+        long s = lx_fsync(fd, 0, 0, 0, 0, 0);
+        if (s < 0)
+            r = s;
+    }
+    return r;
+}
+
+long lx_preadv2(long fd, long iov, long n, long pos_l, long pos_h, long flags)
+{
+    return rw2(fd, iov, n, pos_l, flags, false);
+}
+
+long lx_pwritev2(long fd, long iov, long n, long pos_l, long pos_h, long flags)
+{
+    return rw2(fd, iov, n, pos_l, flags, true);
 }
 
 long lx_lseek(long fd, long off, long whence, long d, long e, long f)

@@ -96,6 +96,32 @@ void path_fill_stat(const struct path *p, const struct path_info *i, struct stat
 void path_cwd(char out[PATH_BYTES]);
 void path_cwd_set(const char *abs);
 
+/* ---- fobj.c: a file's one open in this process -------------------------------- */
+
+/* Every description of one file in this process shares this (fobj.c says
+ * why: fat's one writable open). */
+struct fobj {
+    struct fobj *next;               /* fobj.c's list; its lock */
+    unsigned     refs;               /* the descriptions using it; fobj.c's lock */
+    char         mount[NS_NAME_MAX]; /* its mount ("/data"; "" if not known: never shared) */
+    uint64_t     id;                 /* fs.stat's id there */
+    lock_t       lock;               /* jf and size: held across each transfer */
+    struct jfile jf;                 /* the open: FS_READ, or FS_READ | FS_WRITE; jf.ch 0
+                                      * if it was lost (EIO) */
+    uint64_t     size;               /* the file's size, kept by our writes when jf may write */
+};
+
+/* The object for an open of p with ff (FS_READ, FS_WRITE, FS_CREATE,
+ * FS_EXCL, FS_TRUNCATE): a new open, or ours shared (opened again to
+ * write if it must), one reference to it in *out. -errno, -EISDIR for a
+ * directory, -EBUSY if another process holds a writable open. */
+long fobj_open(const struct path *p, uint32_t ff, struct fobj **out);
+/* The object for an open another process gave us (consumed) of path
+ * (NULL: not known) with ff. */
+long fobj_adopt(handle_t ch, handle_t buf, uint32_t ff, const char *path, struct fobj **out);
+/* Drop a reference; the last closes the open. */
+void fobj_put(struct fobj *o);
+
 /* ---- file.c ----------------------------------------------------------------------- */
 
 /* The kind's adopter (fd_adopters' POSIXFDS_FILE line). */

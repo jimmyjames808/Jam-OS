@@ -18,7 +18,8 @@
 #include <unistd.h>
 #include "ptfiles.h"
 
-#define MANY      10000   /* files in one directory */
+#define MANY      10000   /* files in one directory: files-many */
+#define FEW       300     /* ... in the files section: still several readdir batches */
 #define MAP_BYTES 10000   /* the mapped file's size: two pages and part of a third */
 
 /* Remove path and everything under it (opendir and readdir as any
@@ -99,15 +100,15 @@ static int list_rest(DIR *d, unsigned char *seen, int *dots)
     return n;
 }
 
-/* 10,000 files in one directory: made, listed (every name once, "." and
+/* count files in one directory: made, listed (every name once, "." and
  * ".." too), a listing taken up again with seekdir, removed. */
-static void many_files(void)
+static void many_files(int count)
 {
     static unsigned char seen[MANY];
     CHECK(mkdir(PT_DIR "/many", 0755) == 0);
     char name[64];
     uint64_t t0 = ms_now();
-    for (int i = 0; i < MANY; i++) {
+    for (int i = 0; i < count; i++) {
         snprintf(name, sizeof(name), PT_DIR "/many/f%05d", i);
         int fd = open(name, O_WRONLY | O_CREAT | O_EXCL, 0644);
         if (fd < 0) {
@@ -124,10 +125,10 @@ static void many_files(void)
         return;
     int dots = 0;
     memset(seen, 0, sizeof(seen));
-    CHECK(list_rest(d, seen, &dots) == MANY && dots == 2);
+    CHECK(list_rest(d, seen, &dots) == count && dots == 2);
     /* telldir and seekdir halfway, then the same name again */
     rewinddir(d);
-    for (int i = 0; i < MANY / 2; i++)
+    for (int i = 0; i < count / 2; i++)
         CHECK(readdir(d) != NULL);
     long at = telldir(d);
     struct dirent *e = readdir(d);
@@ -140,13 +141,13 @@ static void many_files(void)
     closedir(d);
     uint64_t t2 = ms_now();
     int gone = 0;
-    for (int i = 0; i < MANY; i++) {
+    for (int i = 0; i < count; i++) {
         snprintf(name, sizeof(name), PT_DIR "/many/f%05d", i);
         gone += unlink(name) == 0;
     }
-    CHECK(gone == MANY && rmdir(PT_DIR "/many") == 0);
+    CHECK(gone == count && rmdir(PT_DIR "/many") == 0);
     printf("posixtest: %d files made in %llu ms, listed in %llu ms, removed in %llu ms\n",
-           MANY, (unsigned long long)(t1 - t0), (unsigned long long)(t2 - t1),
+           count, (unsigned long long)(t1 - t0), (unsigned long long)(t2 - t1),
            (unsigned long long)(ms_now() - t2));
 }
 
@@ -257,7 +258,10 @@ static void map_private(void)
     m[0] = 0xEE;
     unsigned char c = 0;
     CHECK(pread(fd, &c, 1, 0) == 1 && c == data[0]);   /* the file never sees it */
+    errno = 0;
     CHECK(munmap(m, 3 * 4096) == 0);
+    if (errno)
+        printf("posixtest: munmap: %s\n", strerror(errno));
     m = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 4096);
     CHECK(m != MAP_FAILED && !memcmp(m, data + 4096, 4096));
     if (m != MAP_FAILED)
@@ -265,9 +269,24 @@ static void map_private(void)
     close(fd);
 }
 
+/* The files-many section, asked for by name (tools/shell-tests/posix-files.txt):
+ * 10,000 files in one directory. On QEMU's USB stick each file takes
+ * about 8 ms to make and 6.5 to remove (fat writes each through), too
+ * long for the init run. */
+void pt_files_many(char **argv)
+{
+    (void)argv;
+    if (!pt_files_start()) {
+        CHECK(!"no /data to test on");
+        return;
+    }
+    many_files(MANY);
+    pt_files_end();
+}
+
 void pt_files2(void)
 {
-    many_files();
+    many_files(FEW);
     current_dir();
     at_calls();
     stats();

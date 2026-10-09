@@ -42,6 +42,7 @@ void pt_pipe(char **argv);
 void pt_fds(char **argv);
 void pt_poll(char **argv);
 void pt_files(char **argv);
+void pt_files_many(char **argv);   /* only when asked for by name */
 
 /* The child modes start.c's checks start this program in (main.c runs
  * them instead of the sections): each checks what it was given and exits

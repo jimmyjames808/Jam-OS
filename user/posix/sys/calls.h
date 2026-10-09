@@ -37,8 +37,8 @@ lx_call lx_uname, lx_getrandom, lx_sysinfo, lx_sched_getaffinity;
 
 /* The descriptor table: the calls that route to a descriptor's kind (fd.c). */
 lx_call lx_read, lx_write, lx_readv, lx_writev, lx_pread64, lx_pwrite64, lx_preadv,
-        lx_pwritev, lx_lseek, lx_close, lx_fstat, lx_ioctl, lx_fsync, lx_fdatasync,
-        lx_ftruncate, lx_getdents64;
+        lx_pwritev, lx_preadv2, lx_pwritev2, lx_lseek, lx_close, lx_fstat, lx_ioctl, lx_fsync,
+        lx_fdatasync, lx_ftruncate, lx_getdents64;
 
 /* Files, directories and what they are (file.c, dir.c, meta.c). */
 lx_call lx_open, lx_openat, lx_creat, lx_truncate;

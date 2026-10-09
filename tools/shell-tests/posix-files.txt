@@ -1,0 +1,14 @@
+# posixtest's files-many section from the shell: 10,000 files made in one
+# directory of /data (the stick's FAT volume), listed (each name once,
+# "." and ".." too, telldir and seekdir halfway), removed, the directory
+# gone. Too long for the init run (about 2.5 minutes in QEMU: fat writes
+# each file's entry through), so it has this script.
+# QEMU_INPUT=this file, command line "shell", QEMU_TIMEOUT=600.
+wait 120 Jam OS shell
+wait {prompt}
+send posixtest files-many
+wait 500 posixtest: files-many: ok
+wait 10 posixtest: PASS
+wait {prompt}
+send reboot -f
+wait reboot: resetting

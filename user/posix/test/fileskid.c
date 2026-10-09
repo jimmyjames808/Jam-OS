@@ -1,10 +1,10 @@
 /* posixtest's files section, the children:
  *
- *   - a child given three descriptors by a hand-over (a file read up to
- *     offset 4, an O_APPEND file, a directory) and a current directory:
- *     it gets its own open of each file at the parent's offset (M13 Q5),
- *     and the offsets move apart after; its appends and the parent's
- *     land in order;
+ *   - a child given a file read up to offset 4 and a directory by a
+ *     hand-over, and a current directory: it gets its own open of the
+ *     file at the parent's offset (M13 Q5), and the offsets move apart
+ *     after. A file the parent holds open for writing can't be given
+ *     (fat lets a file have one writable open: fd_give is EBUSY);
  *   - a child given /data as a read-only view: every change is EROFS,
  *     mkdir of what is there EEXIST, reading works.
  *
@@ -13,7 +13,6 @@
  * file is the test's one user of the layer's insides) and sent by
  * libjam's spawn. */
 #include <stdio.h>
-#include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -26,10 +25,21 @@
 #define CHILD_WAIT_NS (60 * NS_PER_S)
 #define GIVE_MAX      8
 
+/* Print what the child wrote to the pipe out (its 1 and 2), now it is
+ * gone. */
+static void echo_child(int out)
+{
+    char buf[512];
+    ssize_t n;
+    while ((n = read(out, buf, sizeof(buf))) > 0)
+        fwrite(buf, 1, (size_t)n, stdout);
+    close(out);
+}
+
 /* Start this program in mode with descriptors want[i] of ours as
  * at[i] in the child, the current directory cwd, and the namespace ns;
- * its exit code, or -1. Our descriptors 1 and 2 go along as its 1 and 2
- * when they can (so its failures print). */
+ * its exit code, or -1. Its 1 and 2 are a pipe whose bytes we print
+ * after (so its failures show). */
 static int run_child(const char *mode, const int *want, const int *at, unsigned n,
                      const char *cwd, const char *const *ns)
 {
@@ -39,12 +49,14 @@ static int run_child(const char *mode, const int *want, const int *at, unsigned 
     int from[GIVE_MAX], to[GIVE_MAX];
     for (unsigned i = 0; i < n; i++)
         from[k] = want[i], to[k++] = at[i];
-    from[k] = 1, to[k++] = 1;
-    from[k] = 2, to[k++] = 2;
+    int out[2];
+    CHECK(pipe2(out, O_CLOEXEC) == 0);
+    from[k] = out[1], to[k++] = 1;
+    from[k] = out[1], to[k++] = 2;
     unsigned nfds = 0;
     for (unsigned i = 0; i < k; i++) {
         if (fd_give(from[i], &g[nfds]) < 0) {
-            CHECK(i >= n);   /* ours must go; 1 and 2 only if they can */
+            CHECK(!"fd_give");
             continue;
         }
         fds[nfds] = (struct posixfds_desc){
@@ -65,13 +77,19 @@ static int run_child(const char *mode, const int *want, const int *at, unsigned 
     status_t st = spawn(&a, &proc);   /* the hand-over's handles are spawn's, whatever happens */
     for (unsigned i = 0; i < nfds; i++)
         free(g[i].data);
+    close(out[1]);
     CHECK(st == OK);
-    if (st != OK)
+    if (st != OK) {
+        close(out[0]);
         return -1;
+    }
     struct process_info info;
     st = spawn_wait(proc, CHILD_WAIT_NS, &info);
     CHECK(st == OK);
+    if (st != OK)
+        (void)jam_process_kill(proc);   /* stuck: ended, so its end of the pipe closes */
     jam_handle_close(proc);
+    echo_child(out[0]);
     return st == OK && !info.killed ? (int)info.exit_code : -1;
 }
 
@@ -91,9 +109,11 @@ static void handed_files(void)
     char buf[16];
     CHECK(f >= 0 && app >= 0 && dir >= 0 && read(f, buf, 4) == 4);
     CHECK(write(app, "P1", 2) == 2);
-    const int want[] = { f, app, dir }, at[] = { 3, 4, 5 };
+    struct fd_given g;
+    CHECK(fd_give(app, &g) == -EBUSY);   /* our writable open is the file's one */
+    const int want[] = { f, dir }, at[] = { 3, 5 };
     const char *const ns[] = { "*", NULL };
-    CHECK(run_child("--child-files", want, at, 3, PT_DIR "/d", ns) == 0);
+    CHECK(run_child("--child-files", want, at, 2, PT_DIR "/d", ns) == 0);
     CHECK(lseek(f, 0, SEEK_CUR) == 4);   /* the child moved its own offset only */
     CHECK(read(f, buf, 2) == 2 && !memcmp(buf, "45", 2));
     CHECK(write(app, "P2", 2) == 2);
@@ -102,7 +122,7 @@ static void handed_files(void)
     close(dir);
     int r = open(PT_DIR "/app2", O_RDONLY);
     memset(buf, 0, sizeof(buf));
-    CHECK(r >= 0 && read(r, buf, sizeof(buf)) == 6 && !strcmp(buf, "P1C1P2"));
+    CHECK(r >= 0 && read(r, buf, sizeof(buf)) == 4 && !strcmp(buf, "P1P2"));
     close(r);
 }
 
@@ -111,8 +131,10 @@ int pt_child_files(void)
     char buf[16] = { 0 }, cwd[PATH_MAX];
     CHECK(read(3, buf, sizeof(buf)) == 6 && !strcmp(buf, "456789"));
     CHECK(lseek(3, 0, SEEK_CUR) == 10);
-    CHECK((fcntl(4, F_GETFL) & O_APPEND) && write(4, "C1", 2) == 2);
+    CHECK(fcntl(3, F_GETFL) == (O_RDONLY | O_LARGEFILE));
     struct stat st;
+    errno = 0;
+    CHECK(fstat(4, &st) == -1 && errno == EBADF);
     CHECK(fstat(5, &st) == 0 && S_ISDIR(st.st_mode));
     int fd = openat(5, "hand", O_RDONLY);
     CHECK(fd >= 0 && fd != 3 && fd != 4 && fd != 5);
