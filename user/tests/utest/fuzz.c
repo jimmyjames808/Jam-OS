@@ -4,7 +4,8 @@
  * once the child is dead its job is back to zero on every count.
  *
  *   utest fuzz-calls <seed> <ms>   random system calls with random
- *       arguments (numbers, handles from a pool of its own objects and
+ *       arguments (numbers, handles from a pool of its own objects (a
+ *       quarter of its own threads among them: thread_interrupt) and
  *       stale or made-up values, good and bad pointers, structs of random
  *       fields), from FZ_THREADS threads at a time: a call with a far
  *       deadline may block its thread for good, so a parked thread takes
@@ -443,7 +444,13 @@ static int run(int argc, char **argv, void (*worker)(void *), bool calls)
         if (thread_spawn("fz", worker, calls ? (void *)&fz_args[i] : (void *)(uintptr_t)fz_args[i].seed,
                          fz_stacks[i], sizeof(fz_stacks[i]), &th) != OK)
             return 2;
-        jam_handle_close(th);
+        /* Every fourth thread's handle goes into the pool: the calls on
+         * threads (thread_interrupt in the middle of their waits, info,
+         * priority, a second start) reach live ones. */
+        if (calls && i % 4 == 0)
+            fz_pool[(i * 7) % FZ_POOL] = th;
+        else
+            jam_handle_close(th);
     }
     uint64_t end = (uint64_t)now() + ms * NS_PER_MS;
     if (calls) {

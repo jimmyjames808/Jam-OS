@@ -70,6 +70,8 @@
 # at its deadline, a match, or the thread's kill, ERR_CANCELED). Only a
 # channel end's own waits (channel_call, channel_read's wait in
 # channel_reply_wait) end when that end closes (ERR_CANCELED).
+# thread_interrupt (88) ends object_wait_one, port_wait, futex_wait and
+# sleep_until with ERR_INTERRUPTED, and no other wait.
 16  object_wait_one   status    handle_t h, signals_t mask, uint64_t deadline_ns, signals_t *observed
 # (Number 17 was object_signal, user bits on any object, until M12:
 # retired. An event's user bits are event_signal's.)
@@ -244,6 +246,32 @@
 # the others to wait on addr2 (a futex_wake there wakes them): how many it
 # woke and moved together (musl's condition variables).
 87  futex_requeue     i64       const uint32_t *addr, uint32_t wake, const uint32_t *addr2, uint32_t requeue, uint32_t flags
+
+# threads and processes for POSIX: ids, the tid word, interrupts, CPU time
+# (and, numbered with the system information, what any program may know).
+# Ids: process_info.pid, thread_info.tid (<jam/abi.h>, IDS_MAX).
+# The calling thread's tid word (Linux's set_tid_address, musl's
+# pthread_join): when the thread ends while its process runs, after its
+# last instruction in user mode, the kernel stores 0 at addr and wakes
+# every futex_wait on it, so a joiner may unmap the thread's stack the
+# moment it sees 0. addr 0: none. Returns the thread's tid.
+# ERR_INVALID_ARGS for an address that isn't 4-aligned or in user space
+# (not checked further: a store that faults is skipped, with no wake).
+84  thread_set_tid_word i64     uint32_t *addr
+# End the thread's current interruptible wait (object_wait_one, port_wait,
+# futex_wait, sleep_until) with ERR_INTERRUPTED; one not in such a wait
+# ends its next one at once. Latched, not counted: any number before a
+# wait takes it end that one wait. A wait whose condition is met returns
+# its result and leaves the interrupt for the next. No other call is ever
+# ended by it (channel_call, channel_reply_wait, ...). Needs RIGHT_SIGNAL
+# on the thread; ERR_BAD_STATE if it hasn't started or has left.
+88  thread_interrupt  status    handle_t thread
+# A thread's tid, its process's koid and pid, state, CPU time and
+# priority (struct thread_info); needs RIGHT_INSPECT.
+89  thread_get_info   status    handle_t thread, struct thread_info *out
+# struct sys_public_info: the version, the machine, the CPUs online, the
+# memory and the page size (uname, sysconf). No handle or right needed.
+136 sys_public_info   status    struct sys_public_info *out
 
 # hardware ------------------------------------------------------------------
 # Resources (RES_* in <jam/abi.h>): a slice must lie inside its parent,

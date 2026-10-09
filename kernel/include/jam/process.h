@@ -46,7 +46,8 @@ struct process;
 struct uthread;
 
 #define PROCESS_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
-#define THREAD_RIGHTS  (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
+/* A thread's RIGHT_SIGNAL is thread_interrupt's. */
+#define THREAD_RIGHTS  (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_SIGNAL)
 /* JOB_RIGHTS / JOB_RIGHTS_OWN: <jam/abi.h> */
 
 /* ---- jobs ------------------------------------------------------------------ */
@@ -210,5 +211,20 @@ status_t uthread_start(struct uthread *ut, uint64_t entry, uint64_t stack, uint6
 /* prio 0..PRIO_MAX (the syscall layer caps user callers). */
 status_t uthread_set_priority(struct uthread *ut, int prio);
 /* The current user thread leaves for good (thread_exit, process_exit, a
- * kill, a fatal fault). Interrupts on, nothing held. */
+ * kill, a fatal fault). Interrupts on, nothing held. If its process is
+ * still running and it set a tid word, 0 is stored there and every
+ * futex waiter on it woken first (uthread_set_tid_word). */
 _Noreturn void uthread_exit_current(void);
+
+/* thread_get_info's answer for ut (alive, dead or not started). */
+void uthread_get_info(struct uthread *ut, struct thread_info *out);
+/* thread_interrupt: end ut's current interruptible wait, or latch it for
+ * its next (wait.c). ERR_BAD_STATE if ut hasn't started or has left. */
+status_t uthread_interrupt(struct uthread *ut);
+/* thread_set_tid_word for the current user thread: the word (a user
+ * address, 4-aligned; 0: none) its end clears and wakes; its tid.
+ * ERR_INVALID_ARGS for an unaligned or non-user address; ERR_BAD_STATE
+ * from a kernel thread. */
+int64_t uthread_set_tid_word(uint64_t addr);
+/* p's small id (fixed for its life). */
+uint32_t process_pid(struct process *p);

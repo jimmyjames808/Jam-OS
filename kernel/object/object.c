@@ -224,8 +224,8 @@ static void one_waiter_fire(struct observer *o, signals_t current)
     }
 }
 
-status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_ns,
-                         signals_t *observed)
+static status_t wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_ns,
+                         signals_t *observed, bool intr)
 {
     struct one_waiter w = {
         .obs = { .mask = mask, .fire = one_waiter_fire },
@@ -242,8 +242,10 @@ status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_
                 st = ERR_TIMED_OUT;
                 break;
             }
-            if (thread_block_cancellable(&obj->lock, &f, deadline_ns) != OK && !w.hit) {
-                st = ERR_CANCELED;
+            status_t bs = intr ? thread_block_interruptible(&obj->lock, &f, deadline_ns)
+                               : thread_block_cancellable(&obj->lock, &f, deadline_ns);
+            if (bs != OK && !w.hit) {
+                st = bs;   /* ERR_CANCELED, or ERR_INTERRUPTED */
                 break;
             }
         }
@@ -253,7 +255,19 @@ status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_
         *observed = obj->signals;
     spin_unlock_irqrestore(&obj->lock, f);
     PATH_MARK(PATH_MK_WAIT_OUT);
-    return st;
+    return thread_interrupt_consume(st);
+}
+
+status_t object_wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_ns,
+                         signals_t *observed)
+{
+    return wait_one(obj, mask, deadline_ns, observed, false);
+}
+
+status_t object_wait_one_interruptible(struct kobject *obj, signals_t mask,
+                                       uint64_t deadline_ns, signals_t *observed)
+{
+    return wait_one(obj, mask, deadline_ns, observed, true);
 }
 
 /* ---- names ------------------------------------------------------------ */
