@@ -103,6 +103,7 @@ const char *startup_role_name(uint32_t role)
     case SR_STATE:        return "state";
     case SR_KEEP:         return "keep";
     case SR_STANDBY:      return "standby";
+    case SR_SIGNALS:      return "signals";
     }
     return role >= SR_USER ? "user" : "?";
 }

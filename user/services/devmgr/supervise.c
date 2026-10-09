@@ -4,12 +4,12 @@
  *     one-shot driver, like hid on an interface that is not a boot
  *     keyboard or mouse). Not restarted; its job must be empty.
  *   - anything else -- a crash (the kernel killed it), a kill by anyone
- *     (DEVMGR_KILL included), an exit with an error: restarted. The rest
+ *     (devmgrctl.kill included), an exit with an error: restarted. The rest
  *     of its job is killed first. Backoff: 100 ms after the first death,
  *     doubling with every restart in the last 60 s, at most 5 s. The death
  *     after 5 restarts within 60 s gives up: no more restarts, a log line
  *     and a RESULTS line. A real driver's crash, error exit or give-up is
- *     a problem (devmgr exits 1 at the end); a DEVMGR_KILL, and anything
+ *     a problem (devmgr exits 1 at the end); a devmgrctl.kill, and anything
  *     the crash-test driver does, is expected. (The filesystem services of
  *     the disks are volumes', supervised there by the rule of a service
  *     that outlives its process: user/services/volumes/supervise.c.)
@@ -20,7 +20,7 @@
  * has died, devmgr makes the channel the restarted driver will serve and
  * GET_SERVICE hands it out: clients that saw ERR_PEER_CLOSED reconnect at
  * once and their calls wait in the channel until the new driver reads
- * them (the reconnect rule, <devmgr.h>).
+ * them (the reconnect rule, abi/idl/devmgr.idl).
  *
  * On the desktop (devmgr_notices, <notice.h>) a real driver's first crash
  * in its window and its give-up are notices in plain words ("Sound
@@ -117,7 +117,7 @@ void sup_died(struct binding *b, uint32_t gen)
     kill_driver(b);   /* whatever else its job started */
     if (b->kind == BIND_USB) {
         /* A USB class driver (usb.c): its interface gone = the end of it,
-         * however it ended; exit 0 because the console went = reconnect. */
+         * however it ended; exit 0 because the compositor went = reconnect. */
         if (usb_gone(b)) {
             /* A disk's filesystem services (volumes') map buffers its
              * driver made, which stay charged to the driver's job until
@@ -129,13 +129,13 @@ void sup_died(struct binding *b, uint32_t gen)
             usb_retire(b, clean ? "ended, device gone" : "device gone, did not end cleanly");
             return;
         }
-        if (!info.killed && info.exit_code == 0 && !b->killed && usb_console_gone(b)) {
+        if (!info.killed && info.exit_code == 0 && !b->killed && usb_input_gone(b)) {
             forget_driver(b);
             b->state = DEVMGR_SUP_RESTARTING;
-            b->console_wait = true;
-            /* Try at once: if the console is still down, usb_handles says
-             * ERR_SHOULD_WAIT and sup_run_due parks it for SET_CONSOLE. (A
-             * SET_CONSOLE may well have come before this death.) */
+            b->input_wait = true;
+            /* Try at once: if the compositor is still down, usb_handles says
+             * ERR_SHOULD_WAIT and sup_run_due parks it for set_input. (A
+             * set_input may well have come before this death.) */
             b->restart_at = now();
             b->input_gen = 0;
             say(false, "devmgr: %s %s: its %s went away: reconnecting", bdf(b), b->path,
@@ -183,13 +183,13 @@ void sup_run_due(void)
         uint64_t t = now();
         if (b->state != DEVMGR_SUP_RESTARTING || b->restart_at > t)
             continue;
-        bool reconnect = b->console_wait;   /* not a restart: the console came back */
+        bool reconnect = b->input_wait;   /* not a restart: the compositor came back */
         if (!reconnect)
             sup_window_started(&b->win, t, true);
         b->killed = false;   /* if this start fails, that is no deliberate kill */
         b->last = start_driver(b);
         if (b->last == OK) {
-            b->console_wait = false;
+            b->input_wait = false;
             if (reconnect)
                 say(false, "devmgr: %s %s started again (the %s is back)", bdf(b), b->path,
                     usb_hub_name());
@@ -199,7 +199,7 @@ void sup_run_due(void)
             continue;
         }
         if (b->kind == BIND_USB && b->last == ERR_SHOULD_WAIT) {
-            b->console_wait = true;   /* the console is restarting: DEVMGR_SET_CONSOLE */
+            b->input_wait = true;   /* the compositor is restarting: devmgrctl.set_input */
             b->restart_at = DEADLINE_NEVER;
             continue;
         }
@@ -207,7 +207,7 @@ void sup_run_due(void)
             usb_retire(b, "device gone before its restart");
             continue;
         }
-        b->console_wait = false;
+        b->input_wait = false;
         char why[48];
         snprintf(why, sizeof(why), "could not be restarted (%s)", status_str(b->last));
         if (!excused(b))

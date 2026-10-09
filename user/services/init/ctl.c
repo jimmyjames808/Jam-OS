@@ -14,18 +14,16 @@
  * image.
  *
  * kill <name> reaches the processes init has authority over: its own
- * services (shell.c: their jobs are init's), through devmgr's KILL what
- * devmgr runs for a USB device, a class driver per interface ("hid-6.1:0",
- * "usb-storage-1:0"), and through volumes.kill a filesystem service per
- * mount ("fat-data" is /data's, "fat-usb0-test" /usb0-test's), whatever
- * its process is called now (a restarted one is volumes' warm spare
- * promoted, which keeps the name "fat-spare", and `kill fat-spare` names
- * the first of those: volumes knows which). For devmgr's, the kernel's process
- * list says which process has the name; devmgr's bindings on each USB
- * device are then asked for theirs (GET_DRIVER) until one matches, and
- * that one is killed. devmgr's PCI drivers ("usb-bus", "hda") are found
- * the same way among the functions with a driver bound (GET_DRIVER
- * 0xffff/0xffff); devmgr restarts them like any driver that dies.
+ * services (shell.c: their jobs are init's), through devmgrctl.kill_process
+ * what devmgr runs (a PCI function's driver, "usb-bus" or "hda", and for a
+ * USB device a class driver per interface, "hid-6.1:0", "usb-storage-1:0"),
+ * and through volumes.kill a filesystem service per mount ("fat-data" is
+ * /data's, "fat-usb0-test" /usb0-test's), whatever its process is called
+ * now (a restarted one is volumes' warm spare promoted, which keeps the
+ * name "fat-spare", and `kill fat-spare` names the first of those: volumes
+ * knows which). For devmgr's, the kernel's process list says which process
+ * has the name and devmgr finds the binding that runs it; it restarts a
+ * driver that dies, like any.
  *
  * reboot is a kexec into a fresh copy of the system: the kernel's stored
  * one, or the files on /esp if they changed (reboot.c); if that can't be
@@ -46,28 +44,24 @@
  * sends volumes the call (volumes_<method>_send) and answers the shell
  * when volumes' answer comes to the loop, or at its deadline (`laters`).
  * The answers come to the shell's channel's port key, as does a timer at
- * the earliest deadline, so ctl_serve takes them first. (The kill of a
- * name volumes doesn't know, and of everything devmgr runs, still waits
- * for devmgr: M12's track D.)
+ * the earliest deadline, so ctl_serve takes them first. The kill of a name
+ * volumes doesn't know, or that is no service of init's, goes to devmgr
+ * the same way (devmgrctl.kill_process, dm.c: devmgr's answer comes to
+ * the loop under its own key, KEY_DEVMGR, and finishes the request).
  *
  * shell_ready (the shell, once it is up) lets the boot splash give the
  * screen back (splash.c). kernel_load (the shell's `kernel load`) makes
  * /esp's kernel and boot image the stored copy now (reboot.c);
  * update_offer hands out a channel for a fetched build (update.c). */
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/initctl.h>
-#include <idl/usbbus.h>
 #include <os.h>
 #include <volumes.h>
 #include "init.h"
 
 #define NAME_MAX    32                /* initctl.kill's name field */
 #define MAX_PROCS   512               /* processes read from the kernel's list */
-#define MAX_PCI_DRIVERS 64            /* bound PCI functions looked through */
-#define MAX_DEVICES 128               /* USB devices looked at */
-#define MAX_IFACES  8                 /* interface numbers tried on each */
 #define MOUNT_WAIT  (25 * NS_PER_S)   /* volumes.remount: its service's stop, then a start */
-#define CALL_WAIT   (5 * NS_PER_S)    /* a devmgr, volumes or usb-bus call */
 #define KILL_WAIT   (15 * NS_PER_S)   /* a KILL: devmgr or volumes waits for it to die */
 #define SYNC_WAIT   (6 * NS_PER_S)    /* volumes.sync: it gives each mount 5 s */
 #define ROUND       16                /* requests answered before the main loop gets a turn */
@@ -88,27 +82,6 @@ static handle_t ctl_port;
 
 /* ---- kill: what devmgr runs for a USB device, and volumes for a mount --------------- */
 
-/* usb-bus: the driver devmgr bound that answers usbbus.status. */
-static handle_t find_usb_bus(handle_t dm)
-{
-    for (uint32_t n = 0; n < 16; n++) {
-        struct devmgr_rep r;
-        handle_t h = HANDLE_INVALID;
-        uint32_t nh = 0;
-        status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, &h, 1, &nh,
-                                  now() + CALL_WAIT);
-        if (st == ERR_NOT_FOUND)
-            break;
-        if (st != OK || nh != 1)
-            continue;
-        if (usbbus_status_until(h, now() + CALL_WAIT, NULL, NULL, NULL, NULL, NULL, NULL,
-                                NULL) == OK)
-            return h;
-        jam_handle_close(h);
-    }
-    return HANDLE_INVALID;
-}
-
 /* The koid of the first process called name in the kernel's list. */
 static bool koid_named(const char *name, uint64_t *koid)
 {
@@ -126,92 +99,12 @@ static bool koid_named(const char *name, uint64_t *koid)
     return found;
 }
 
-/* The koid of the process devmgr runs for this binding, asked on ch. */
-static status_t binding_koid(handle_t ch, uint16_t vendor, uint16_t device, uint32_t id,
-                             uint64_t *koid)
-{
-    struct devmgr_rep r;
-    handle_t hs[3];
-    uint32_t nh = 0;
-    status_t st = devmgr_call(ch, DEVMGR_GET_DRIVER, vendor, device, id, &r, hs, 3, &nh,
-                              now() + CALL_WAIT);
-    struct process_info info;
-    if (st == OK)
-        st = nh ? jam_process_get_info(hs[0], &info) : ERR_INTERNAL;
-    for (uint32_t i = 0; i < nh; i++)
-        jam_handle_close(hs[i]);
-    if (st == OK)
-        *koid = info.koid;
-    return st;
-}
-
-/* What devmgr runs for USB device `id`: a class driver per interface.
- * Kill the one whose process is `koid`. ERR_NOT_FOUND: none is. */
-static status_t kill_on_device(handle_t dm, uint32_t id, uint64_t koid)
-{
-    for (uint16_t n = 0; n < MAX_IFACES; n++) {
-        uint64_t have = 0;
-        if (binding_koid(dm, DEVMGR_USB_IFACE, n, id, &have) != OK || have != koid)
-            continue;
-        struct devmgr_rep r;
-        return devmgr_call(dm, DEVMGR_KILL, DEVMGR_USB_IFACE, n, id, &r, NULL, 0, NULL,
-                           now() + KILL_WAIT);
-    }
-    return ERR_NOT_FOUND;
-}
-
-/* devmgr's PCI drivers: kill the one whose process is `koid`.
- * ERR_NOT_FOUND: none is. */
-static status_t kill_pci_driver(handle_t dm, uint64_t koid)
-{
-    for (uint32_t n = 0; n < MAX_PCI_DRIVERS; n++) {
-        uint64_t have = 0;
-        status_t st = binding_koid(dm, 0xffff, 0xffff, n, &have);
-        if (st == ERR_NOT_FOUND)
-            break;   /* past the last bound function */
-        if (st != OK || have != koid)
-            continue;
-        struct devmgr_rep r;
-        return devmgr_call(dm, DEVMGR_KILL, 0xffff, 0xffff, n, &r, NULL, 0, NULL,
-                           now() + KILL_WAIT);
-    }
-    return ERR_NOT_FOUND;
-}
-
-/* Kill the process called name if devmgr runs it: a PCI function's
- * driver ("hda"), or for a USB device a class driver ("hid-6.1:0",
- * "usb-storage-1:0"). (volumes' filesystem services are volumes.kill's:
- * later_kill.) */
-static status_t kill_devmgr_process(const char *name, uint64_t *koid)
-{
-    handle_t dm = shell_devmgr();
-    if (!dm || !koid_named(name, koid))
-        return ERR_NOT_FOUND;
-    status_t st = kill_pci_driver(dm, *koid);
-    if (st != ERR_NOT_FOUND)
-        return st;
-    handle_t bus = find_usb_bus(dm);
-    if (!bus)
-        return ERR_NOT_FOUND;
-    for (uint32_t i = 0; i < MAX_DEVICES && st == ERR_NOT_FOUND; i++) {
-        uint32_t id = 0;
-        if (usbbus_device_until(bus, now() + CALL_WAIT, i, &id, NULL, NULL, NULL, NULL, NULL,
-                                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                                NULL) != OK)
-            break;   /* past the last device, or usb-bus is gone */
-        st = kill_on_device(dm, id, *koid);
-    }
-    jam_handle_close(bus);
-    return st;
-}
-
 /* ---- answered later: what waits for volumes -------------------------------------- */
 
-enum later_kind { LATER_KILL, LATER_SYNC, LATER_MOUNT };
+enum later_kind { LATER_KILL, LATER_SYNC, LATER_MOUNT, LATER_DEVMGR_KILL };
 
 /* A request of ours (initctl's) waiting for volumes' answer to the call it
- * made. */
+ * made (or devmgr's, for LATER_DEVMGR_KILL: dm.c reads that one). */
 struct later {
     bool            used;
     enum later_kind kind;
@@ -219,6 +112,7 @@ struct later {
     handle_t        vm;               /* the volumes channel the call went on (not ours) */
     uint32_t        txid;             /* the call's, on vm */
     uint64_t        t0, deadline;     /* sent; given up then */
+    uint64_t        koid;             /* LATER_DEVMGR_KILL: the process asked to be killed */
     char            what[NAME_MAX];   /* the name or path, for the log */
     uint8_t         writable;         /* LATER_MOUNT's */
 };
@@ -231,7 +125,7 @@ static uint64_t     later_key;        /* the port key the answers and the timer 
 /* l is over: answered (st, koid), said in the log as the request was. */
 static void later_finish(struct later *l, status_t st, uint64_t koid)
 {
-    if (l->kind == LATER_KILL) {
+    if (l->kind == LATER_KILL || l->kind == LATER_DEVMGR_KILL) {
         printf("init: kill %s: %s\n", l->what, status_str(st));
         (void)initctl_reply_kill(l->txn, st, koid);
     } else if (l->kind == LATER_SYNC) {
@@ -245,6 +139,35 @@ static void later_finish(struct later *l, status_t st, uint64_t koid)
     *l = (struct later){ 0 };
 }
 
+/* devmgr's answer to the kill l asked it for (dm.c): the request is answered. */
+static void devmgr_kill_done(void *arg, status_t st, const struct dm_counts *counts)
+{
+    struct later *l = arg;
+    (void)counts;
+    later_finish(l, st, st == OK ? l->koid : 0);
+}
+
+/* Ask devmgr to kill the process called l->what, if it runs one: the
+ * kernel's process list says which process has the name, devmgr finds the
+ * driver of it (devmgrctl.kill_process, answered to the loop: dm.c). l is
+ * then waiting for devmgr, not volumes. ERR_NOT_FOUND: no devmgr, or no
+ * such process (l is as it was). */
+static status_t later_devmgr_kill(struct later *l)
+{
+    handle_t dm = shell_devmgr();
+    uint64_t koid;
+    if (!dm || !koid_named(l->what, &koid))
+        return ERR_NOT_FOUND;
+    status_t st = dm_kill_process(dm, koid, KILL_WAIT, devmgr_kill_done, l);
+    if (st != OK)
+        return st == ERR_NO_RESOURCES ? st : ERR_NOT_FOUND;
+    l->kind = LATER_DEVMGR_KILL;
+    l->vm = HANDLE_INVALID;
+    l->koid = koid;
+    l->deadline = DEADLINE_NEVER;   /* dm.c times the call out */
+    return OK;
+}
+
 /* volumes' answer to l (rep, m) has come. */
 static void later_answer(struct later *l, const void *rep, struct idl_msg *m)
 {
@@ -252,8 +175,8 @@ static void later_answer(struct later *l, const void *rep, struct idl_msg *m)
     status_t st;
     if (l->kind == LATER_KILL) {
         st = volumes_kill_result(rep, m, &koid);
-        if (st == ERR_NOT_FOUND || st == ERR_INVALID_ARGS)
-            st = kill_devmgr_process(l->what, &koid);   /* not volumes': devmgr's, maybe */
+        if ((st == ERR_NOT_FOUND || st == ERR_INVALID_ARGS) && later_devmgr_kill(l) == OK)
+            return;   /* not volumes': devmgr's, maybe; its answer finishes l */
     } else if (l->kind == LATER_SYNC) {
         st = volumes_sync_result(rep, m);
     } else {
@@ -272,6 +195,8 @@ static void later_arm(void)
         struct later *l = &laters[i];
         if (!l->used)
             continue;
+        if (l->kind == LATER_DEVMGR_KILL)
+            continue;   /* dm.c's: it watches devmgr's channel and times the call out */
         first = l->deadline < first ? l->deadline : first;
         (void)jam_port_unbind(ctl_port, l->vm, later_key);   /* none: nothing to undo */
         (void)jam_port_bind(ctl_port, l->vm, later_key, SIG_READABLE | SIG_PEER_CLOSED,
@@ -321,7 +246,7 @@ static void later_poll(void)
         struct later *l = &laters[i];
         if (l->used && t >= l->deadline)
             later_finish(l, ERR_TIMED_OUT, 0);
-        else if (l->used && l->vm != shell_volumes())
+        else if (l->used && l->kind != LATER_DEVMGR_KILL && l->vm != shell_volumes())
             later_finish(l, ERR_PEER_CLOSED, 0);   /* volumes was started again meanwhile */
     }
     later_arm();
@@ -378,6 +303,24 @@ static status_t later_kill(struct idl_txn txn, const char *name)
     return later_sent(l, volumes_kill_send(vm, l->txid, name, (uint32_t)strlen(name)));
 }
 
+/* The kill of a name that is neither init's service nor a filesystem
+ * service: devmgr's driver, maybe, answered later (later_devmgr_kill).
+ * IDL_LATER, or why not (ERR_NOT_FOUND: devmgr runs no process called
+ * name). */
+static status_t later_devmgr_name(struct idl_txn txn, const char *name)
+{
+    struct later *l = later_new(LATER_KILL, txn, HANDLE_INVALID, name, KILL_WAIT);
+    if (!l)
+        return ERR_NO_RESOURCES;
+    status_t st = later_devmgr_kill(l);
+    if (st != OK) {
+        jam_handle_close(l->txn.ch);
+        *l = (struct later){ 0 };
+        return st;
+    }
+    return IDL_LATER;
+}
+
 /* ---- the protocol ---------------------------------------------------------------- */
 
 static status_t op_kill(void *ctx, struct idl_txn txn, const uint8_t name[32],
@@ -403,8 +346,11 @@ static status_t op_kill(void *ctx, struct idl_txn txn, const uint8_t name[32],
         if (st != ERR_NO_RESOURCES)
             st = ERR_NOT_FOUND;   /* volumes can't be asked: devmgr's, as any other name */
     }
-    if (st == ERR_NOT_FOUND)
-        st = kill_devmgr_process(who, out_koid);
+    if (st == ERR_NOT_FOUND) {
+        st = later_devmgr_name(txn, who);   /* a driver of devmgr's, answered later */
+        if (st == IDL_LATER)
+            return st;
+    }
     printf("init: kill %s: %s\n", who, status_str(st));
     return st;
 }

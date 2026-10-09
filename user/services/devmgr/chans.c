@@ -1,22 +1,28 @@
 /* devmgr: its channels. init gives it the server ends of a control channel
  * (SR_DEVMGR_CTL) and a query channel (SR_DEVMGR), and asks the control
- * channel for device channels (DEVMGR_DEVICE_CHANNEL), each scoped to one
- * device and made here. A query channel also answers the svc protocol's
- * connect (abi/idl/svc.idl) with a new query channel of the caller's own,
- * so each opener of /svc/devmgr has one and a reply that comes after its
- * caller gave up waits on that caller's channel, not a shared one. Every
- * channel is watched on devmgr's port, read here and answered by
- * request.c. What a channel may ask is decided by which channel it is
- * (its level, and a device channel's device), never by who sent the
- * request (<devmgr.h> "Trust").
+ * channel for device channels (devmgrctl.device_channel), each scoped to
+ * one device and made here. A query or a control channel also answers the
+ * svc protocol's connect (abi/idl/svc.idl) with a new channel of its own
+ * level for the caller, so each opener of /svc/devmgr and /svc/devmgr-ctl
+ * has one and a reply that comes after its caller gave up waits on that
+ * caller's channel, not a shared one. Every channel is watched on devmgr's
+ * port, read here and answered by request.c's handlers (the generated
+ * dispatch, <idl/devmgr.h>). What a channel may ask is decided by which
+ * channel it is (its level, and a device channel's device), never by who
+ * sent the request (abi/idl/devmgr.idl, the opening paragraphs).
  *
  * The table is bounded (MAX_CHANS): a device channel or a connect asked for
- * past it is ERR_NO_RESOURCES. A query or device channel whose clients are
- * all gone is dropped, and its slot is free again; devmgr lives as long as
- * the clients of slot 0 do (the control channel, or without one the query
- * channel). */
+ * past it is ERR_NO_RESOURCES. A query, control or device channel whose
+ * clients are all gone is dropped, and its slot is free again; devmgr lives
+ * as long as the clients of slot 0 do (the control channel init started it
+ * with, or without one the query channel). */
 #include <idl/svc.h>
 #include "internal.h"
+
+/* The biggest request and reply of the protocols the channels speak. */
+#define REQ_MAX (DEVMGR_REQ_MAX > DEVMGRCTL_REQ_MAX ? DEVMGR_REQ_MAX : DEVMGRCTL_REQ_MAX)
+#define REP_MAX (DEVMGR_REP_MAX > DEVMGRCTL_REP_MAX ? DEVMGR_REP_MAX : DEVMGRCTL_REP_MAX)
+_Static_assert(SVC_REQ_MAX <= REQ_MAX && SVC_REP_MAX <= REP_MAX, "a connect fits");
 
 #define MAX_CHANS 32   /* the control and query channels, the openers', device channels */
 #define SLOT_LIFE 0    /* the channel devmgr lives by */
@@ -31,43 +37,50 @@ struct chan {
 
 static struct chan chans[MAX_CHANS];
 
-/* What the query channel may ask; the control channel may ask everything. */
-static bool query_ok(uint32_t ordinal)
-{
-    return ordinal == DEVMGR_STATUS || ordinal == DEVMGR_GET_SERVICE ||
-           ordinal == DEVMGR_GET_DRIVER || ordinal == DEVMGR_SUPERVISION;
-}
-
-/* What a device channel may ask (about its device alone: request.c). */
-static bool device_ok(uint32_t ordinal)
-{
-    return ordinal == DEVMGR_GET_SERVICE || ordinal == DEVMGR_GET_DRIVER ||
-           ordinal == DEVMGR_SUPERVISION;
-}
-
-static bool allowed(const struct chan *c, uint32_t ordinal)
-{
-    return c->lv == LEVEL_CONTROL || (c->lv == LEVEL_QUERY && query_ok(ordinal)) ||
-           (c->lv == LEVEL_DEVICE && device_ok(ordinal));
-}
-
 static status_t add(enum level lv, uint32_t dev, handle_t *out);
 
-/* svc.connect on c: a query channel of the caller's own, if c is a query
- * channel (no other kind hands them out). */
-static void on_connect(const struct chan *c, uint32_t txid)
+/* svc.connect on a channel: a channel of the caller's own, of the same
+ * level (a query channel's opener gets a query channel, a control
+ * channel's a control one). A device channel is one holder's:
+ * ERR_NOT_SUPPORTED. */
+static status_t s_connect(void *ctx, handle_t *out)
 {
-    struct svc_connect_rep r = { .txid = txid, .status = ERR_NOT_SUPPORTED };
-    handle_t h = HANDLE_INVALID;
-    if (c->lv == LEVEL_QUERY)
-        r.status = add(LEVEL_QUERY, NO_DEVICE, &h);
-    uint32_t nh = r.status == OK ? 1 : 0;
-    if (!nh && h)
-        jam_handle_close(h);   /* never sent */
-    /* h is gone whatever the write's status (a send's handles are always
-     * moved): a caller that is gone takes the new channel's only client with
-     * it, and h is never closed after the write. */
-    (void)jam_channel_write(c->h, &r, sizeof(r), &h, nh);
+    const struct chan *c = ctx;
+    if (c->lv == LEVEL_DEVICE)
+        return ERR_NOT_SUPPORTED;
+    return add(c->lv, NO_DEVICE, out);
+}
+
+static const struct svc_ops svc_ops = { .connect = s_connect };
+
+/* One request q (n bytes, nh handles in hs, which go to the dispatch) on
+ * c: the reply into r and rhs. Returns its length (0: none). What a
+ * channel may ask is its level's: `devmgr` on every channel (a device
+ * channel's own checks are request.c's), `devmgrctl` on the control channel
+ * alone; on any other it is ERR_ACCESS_DENIED, with the handles closed. */
+static uint32_t dispatch(const struct chan *c, const void *q, uint32_t n, const handle_t *hs,
+                         uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    const struct idl_req_hdr *h = (const struct idl_req_hdr *)q;
+    struct request_from from = { c->lv, c->lv == LEVEL_DEVICE ? c->dev : NO_DEVICE };
+    uint32_t id = n >= sizeof(*h) ? h->ordinal >> 16 : 0;
+    *rhn = 0;
+    if (id == DEVMGRCTL_PROTOCOL_ID) {
+        if (c->lv != LEVEL_CONTROL) {
+            idl_close_all(hs, nh);
+            idl_reply_status(c->h, q, n, ERR_ACCESS_DENIED);
+            return 0;
+        }
+        return devmgrctl_dispatch_h(c->h, &devmgrctl_ops, &from, q, n, hs, nh, r, rhs, rhn);
+    }
+    if (nh) {   /* the other protocols carry no handles */
+        idl_close_all(hs, nh);
+        idl_reply_status(c->h, q, n, ERR_INVALID_ARGS);
+        return 0;
+    }
+    if (id == SVC_PROTOCOL_ID)
+        return svc_dispatch_on(c->h, &svc_ops, (void *)c, q, n, r, rhs, rhn);
+    return devmgr_dispatch_on(c->h, &devmgr_ops, &from, q, n, r, rhs, rhn);
 }
 
 /* Answer everything queued on c. Returns ERR_SHOULD_WAIT once the queue is
@@ -77,57 +90,25 @@ static status_t serve(const struct chan *c)
 {
     handle_t ch = c->h;
     for (;;) {
-        _Alignas(8) uint8_t buf[64];
-        handle_t in[4];
-        uint32_t n = 0, nh = 0;
-        struct channel_read_args a = {
-            .h = ch, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
-            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)in,
-            .rd_hcap = 4, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-        };
-        status_t st = jam_channel_read(&a);
+        _Alignas(8) uint8_t q[REQ_MAX], r[REP_MAX];
+        handle_t hs[DEVMGRCTL_REQ_HANDLES], rhs[DEVMGRCTL_REP_HANDLES];
+        uint32_t n = 0, nh = 0, rhn = 0;
+        status_t st = jam_channel_read(&(struct channel_read_args){
+            .h = ch, .rd_cap = sizeof(q), .rd_bytes = (uint64_t)(uintptr_t)q,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = DEVMGRCTL_REQ_HANDLES, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        });
         if (st == ERR_BUFFER_TOO_SMALL) {
             discard(ch, n, nh);   /* nothing of ours is that big */
             continue;
         }
         if (st != OK)
             return st;
-        /* Only SET_CONSOLE and SET_VOLUMES carry a handle (one), and only
-         * on control. */
-        const struct devmgr_req *q = (const struct devmgr_req *)buf;
-        bool denied = n >= 8 && !allowed(c, q->ordinal);
-        bool whole = !denied && n == sizeof(*q);
-        bool takes_handle = whole && nh == 1 && (q->ordinal == DEVMGR_SET_CONSOLE ||
-                                                 q->ordinal == DEVMGR_SET_VOLUMES);
-        if (!takes_handle)
-            for (uint32_t i = 0; i < nh; i++)
-                jam_handle_close(in[i]);
-        if (n < 4)
-            continue;   /* no txid: nobody to answer */
-        if (n == sizeof(struct svc_connect_req) && !nh && q->ordinal == SVC_CONNECT) {
-            on_connect(c, q->txid);
-            continue;
-        }
-        struct devmgr_rep r = { .txid = q->txid, .status = ERR_INVALID_ARGS };
-        handle_t hs[DEVMGR_MAX_HANDLES];
-        rights_t rs[DEVMGR_MAX_HANDLES];
-        uint32_t nout = 0;
-        if (denied) {
-            r.status = ERR_ACCESS_DENIED;
-        } else if (takes_handle && q->ordinal == DEVMGR_SET_CONSOLE) {
-            usb_new_console(in[0]);
-            r.status = OK;
-        } else if (takes_handle) {
-            disks_set_volumes(in[0]);
-            r.status = OK;
-        } else if (whole && !nh) {
-            struct request_from from = { c->lv, c->lv == LEVEL_DEVICE ? c->dev : NO_DEVICE };
-            request_handle(q, &from, &r, hs, rs, &nout);
-        }
-        uint32_t rn = r.status == OK ? sizeof(r) : DEVMGR_REP_HDR;
-        /* hs is gone whatever the write's status (a send's handles are
-         * always moved; the client may be gone): never closed after it. */
-        (void)jam_channel_write_rights(ch, &r, rn, hs, rs, nout);
+        uint32_t rn = dispatch(c, q, n, hs, nh, r, rhs, &rhn);
+        if (rn)
+            (void)jam_channel_write(ch, r, rn, rhs, rhn);   /* the handles go either way */
+        else
+            idl_close_all(rhs, rhn);
         sup_run_due();   /* a long burst of requests mustn't hold up a restart */
     }
 }

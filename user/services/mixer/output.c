@@ -46,7 +46,7 @@
  * on through the OUT_LEAD periods written ahead, and the successor maps
  * the same ring and carries on (adopt.c). Closing the output tells the
  * keeper to drop them, or the driver would never see its stream closed. */
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/hda.h>
 #include <mixmath.h>
 #include "internal.h"
@@ -58,25 +58,12 @@
 #define RETRY_NS     (500 * NS_PER_MS)
 #define TXID_BASE    0x6d780000u             /* our wait_period txids ("mx"), never 0 */
 
-/* Card i's driver channel: GET_SERVICE on its device channel (all device
- * fields 0: its own device, <devmgr.h> DEVMGR_DEVICE_CHANNEL). The
- * caller's. */
+/* Card i's driver channel: get_service on its device channel (KIND_SELF:
+ * its own device, devmgrctl.device_channel). The caller's. */
 static status_t driver_channel(const struct mixer *m, unsigned i, handle_t *out)
 {
-    struct devmgr_rep r;
-    handle_t ch = HANDLE_INVALID;
-    uint32_t nh = 0;
-    status_t st = devmgr_call(m->cards[i], DEVMGR_GET_SERVICE, 0, 0, 0, &r, &ch, 1, &nh,
-                              now() + FIND_WAIT);
-    if (st == OK && nh != 1)
-        st = ERR_INTERNAL;
-    if (st != OK) {
-        if (nh)
-            jam_handle_close(ch);
-        return st;
-    }
-    *out = ch;
-    return OK;
+    return devmgr_get_service_until(m->cards[i], now() + FIND_WAIT, DEVMGR_KIND_SELF, 0, 0, 0,
+                                    out);
 }
 
 /* The first card whose driver has a path to a jack, into m->own_out.svc. */

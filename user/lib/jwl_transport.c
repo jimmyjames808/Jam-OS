@@ -347,7 +347,7 @@ static status_t overflow(struct jwl_conn *c)
     if (c->side == JWL_CLIENT)
         return die(c, ERR_NO_MEMORY);
     return jwl_conn_post_error(c, JWL_DISPLAY_ID, JWL_ERROR_NO_MEMORY,
-                               "the client reads too slowly: 64 KiB of events held");
+                               JWL_SLOW_READER_TEXT ": 64 KiB of events held");
 }
 
 /* The last held block, grown to room for want bytes (it fits a batch):

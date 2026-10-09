@@ -45,26 +45,29 @@
 #define PASS_ON    (RIGHT_DUPLICATE | RIGHT_TRANSFER)
 #define CHAN_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_SIGNAL)
 
-/* devmgr's protocol, as user/include/devmgr.h defines it (the kernel can't
- * include user headers): u32 txid, u32 ordinal, u16 vendor, u16 device,
- * u32 instance -> u32 txid, i32 status, u32 a..e (+ handles). */
-#define DM_STATUS      0x00030001u
-#define DM_GET_DRIVER  0x00030003u
-#define DM_REBIND      0x00030005u
+/* devmgr's protocols, as abi/idl/devmgr.idl defines them (the kernel can't
+ * include user headers): a request is u32 txid, u32 ordinal = (id << 16) |
+ * method, then the arguments; devmgr (id 90) status takes none, get_driver
+ * and devmgrctl (id 91) rebind take an address (u8 kind, u32 a, u32 b, u32
+ * n); a reply is u32 txid, i32 status, the results (+ handles). */
+#define DM_STATUS      0x005a0001u
+#define DM_GET_DRIVER  0x005a0003u
+#define DM_REBIND      0x005b0002u
+#define DM_KIND_PCI_IDS 1u
 #define DM_MAX_HANDLES 8u
 /* devmgr's control channel's startup role, as user/include/roles.h has it. */
 #define SR_DEVMGR_CTL  10
 
 struct dm_req {
     uint32_t txid, ordinal;    /* channel txid; DM_* request */
-    uint16_t vendor, device;   /* the device's PCI ids */
-    uint32_t instance;         /* which instance of it */
+    uint8_t  kind;             /* the address: DM_KIND_PCI_IDS, ... */
+    uint32_t a, b, n;          /* the PCI ids, which instance of them */
 } __attribute__((packed));
 
 struct dm_rep {
     uint32_t txid;            /* the request's txid */
     int32_t  status;          /* OK or ERR_* */
-    uint32_t a, b, c, d, e;   /* the reply's values, by request */
+    uint32_t a, b, c;         /* the reply's values, by request */
 } __attribute__((packed));
 
 /* A devmgr of our own. */
@@ -101,11 +104,10 @@ static bool msi_on(struct pci_dev *d)
 static status_t dm_call(const struct dm *m, uint32_t op, struct dm_rep *r, struct khandle *hs,
                         uint32_t *nh)
 {
-    struct dm_req q = { 0, op, op == DM_STATUS ? 0 : EDU_VENDOR, op == DM_STATUS ? 0 : EDU_DEVICE,
-                        0 };
-    uint32_t n = 0, got = 0;
+    struct dm_req q = { 0, op, DM_KIND_PCI_IDS, EDU_VENDOR, EDU_DEVICE, 0 };
+    uint32_t qn = op == DM_STATUS ? 8 : sizeof(q), n = 0, got = 0;
     *r = (struct dm_rep){ 0 };
-    status_t st = channel_call(m->ctl, &q, sizeof(q), NULL, 0, r, sizeof(*r), &n, hs,
+    status_t st = channel_call(m->ctl, &q, qn, NULL, 0, r, sizeof(*r), &n, hs,
                                hs ? DM_MAX_HANDLES : 0, &got, uptime_ns() + 30 * NS_PER_S);
     if (nh)
         *nh = got;
@@ -186,7 +188,7 @@ static struct process *dm_driver(const struct dm *m, struct pci_dev *d)
     uint32_t nh = 0;
     wait_driver_up(d);
     KT_EQ(dm_call(m, DM_GET_DRIVER, &(struct dm_rep){ 0 }, hs, &nh), OK);
-    KT_EQ(nh, 3);   /* process, job, function */
+    KT_EQ(nh, 2);   /* process, job */
     struct process *p = process_from_kobject(hs[0].obj);
     KT_ASSERT(p != NULL);
     kobject_ref(process_kobject(p));

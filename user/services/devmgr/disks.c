@@ -13,7 +13,7 @@
  * that merely ended is no news (volumes sees its `storage` channel close,
  * and the next start is announced again with the same id).
  *
- * The DISKS channel's client end comes from init (DEVMGR_SET_VOLUMES):
+ * The DISKS channel's client end comes from init (devmgrctl.set_volumes):
  * once both devmgr and volumes run, and again whenever either starts
  * again. A new one is told every disk again; until there is one, a disk
  * waits (nothing is asked of its driver). */

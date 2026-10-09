@@ -1,6 +1,6 @@
 /* usb (lsusb): the USB devices usb-bus found, with their interfaces and
  * the hubs they are behind. */
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/usbbus.h>
 #include "sh.h"
 
@@ -16,21 +16,19 @@ static handle_t find_usb_bus(void)
 {
     handle_t dm;
     for (uint32_t n = 0; (dm = sh_devmgr()) && n < 16; n++) {
-        struct devmgr_rep r;
-        handle_t hs[1];
-        uint32_t nh = 0;
-        status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, 0xffff, 0xffff, n, &r, hs, 1, &nh,
-                                  now() + 5 * NS_PER_S);
+        handle_t svc = HANDLE_INVALID;
+        status_t st = devmgr_get_service_until(dm, now() + 5 * NS_PER_S, DEVMGR_KIND_PCI_BOUND, 0,
+                                               0, n, &svc);
         if (st == ERR_NOT_FOUND)
             break;
-        if (st != OK || nh != 1)
+        if (st != OK)
             continue;
         uint32_t d, h, i, hid, p, g;
         uint8_t settled;
-        if (usbbus_status_until(hs[0], now() + 2 * NS_PER_S, &d, &h, &i, &hid, &p,
+        if (usbbus_status_until(svc, now() + 2 * NS_PER_S, &d, &h, &i, &hid, &p,
                                 &g, &settled) == OK)
-            return hs[0];
-        jam_handle_close(hs[0]);
+            return svc;
+        jam_handle_close(svc);
     }
     return HANDLE_INVALID;
 }

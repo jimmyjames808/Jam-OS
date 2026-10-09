@@ -3,7 +3,7 @@
 #define CHECK_PROG "nettest"
 #define CHECK_CUR  cur
 #include <check.h>
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/netdev.h>
 #include <wants.h>
 #include "nettest.h"
@@ -119,13 +119,8 @@ void tx_kick(struct sess *s)
 /* The card's service, from devmgr's control channel. */
 static status_t find_nic(void)
 {
-    struct devmgr_rep r;
-    uint32_t nh = 0;
-    status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, E1K_VENDOR, E1K_DEVICE, 0, &r, &nic, 1,
-                              &nh, soon());
-    if (st == OK && nh != 1)
-        st = ERR_INTERNAL;
-    return st;
+    return devmgr_get_service_until(dm, soon(), DEVMGR_KIND_PCI_IDS, E1K_VENDOR, E1K_DEVICE, 0,
+                                    &nic);
 }
 
 static void run(const char *name, bool (*fn)(void))
@@ -142,18 +137,17 @@ static void run(const char *name, bool (*fn)(void))
 
 bool t_off(void)
 {
-    struct devmgr_rep r;
-    uint32_t nh = 0;
-    handle_t h = 0;
-    status_t st = devmgr_call(dm, DEVMGR_GET_SERVICE, E1K_VENDOR, E1K_DEVICE, 0, &r, &h, 1, &nh,
-                              soon());
-    if (nh)
+    handle_t h = HANDLE_INVALID;
+    status_t st = devmgr_get_service_until(dm, soon(), DEVMGR_KIND_PCI_IDS, E1K_VENDOR,
+                                           E1K_DEVICE, 0, &h);
+    if (st == OK)
         jam_handle_close(h);
     CHECK_ST(st, ERR_BAD_STATE);   /* bound, but the driver finished: no VLAN */
-    CHECK_ST(devmgr_call(dm, DEVMGR_SUPERVISION, E1K_VENDOR, E1K_DEVICE, 0, &r, NULL, 0, NULL,
-                         soon()), OK);
-    CHECK_EQ(r.a, DEVMGR_SUP_FINISHED);
-    CHECK_EQ(r.b, 0);   /* never restarted */
+    uint32_t state, restarts;
+    CHECK_ST(devmgr_supervision_until(dm, soon(), DEVMGR_KIND_PCI_IDS, E1K_VENDOR, E1K_DEVICE, 0,
+                                      &state, &restarts, NULL, NULL, NULL), OK);
+    CHECK_EQ(state, DEVMGR_SUP_FINISHED);
+    CHECK_EQ(restarts, 0);   /* never restarted */
     return true;
 }
 

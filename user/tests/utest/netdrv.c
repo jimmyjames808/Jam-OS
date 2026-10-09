@@ -1,5 +1,5 @@
 /* utest: bin/netstack over a fake network driver. The test plays both
- * devmgr (netstack's device channel: GET_SERVICE) and the driver (the
+ * devmgr (netstack's device channel: get_service) and the driver (the
  * netdev channel: info and open; then the session's rings and events,
  * real VMOs and events with the rights netdev.open hands out), and calls
  * netstack's control channel as init does. Frames go into the rx ring and
@@ -18,7 +18,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <idl/netctl.h>
 #include <idl/netdev.h>
 #include <jam/netdev.h>
@@ -129,19 +129,24 @@ static bool serve(handle_t ch)
     return true;
 }
 
-/* As devmgr: answer netstack's GET_SERVICE with a new driver channel. */
+/* As devmgr's device channel: netstack's get_service of its own device
+ * (KIND_SELF) is answered with a new driver channel (our end into fk.svc). */
+static status_t f_get_service(void *ctx, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                              handle_t *out_service)
+{
+    struct fake *f = ctx;
+    if (kind != DEVMGR_KIND_SELF || a || b || n)
+        return ERR_INVALID_ARGS;
+    return jam_channel_create(&f->svc, out_service);
+}
+
+static const struct devmgr_ops devmgr_ops = { .get_service = f_get_service };
+
 static bool serve_devmgr(void)
 {
     signals_t seen;
-    struct devmgr_req q;
-    uint32_t n = 0, nh = 0;
     CHECK_ST(jam_object_wait_one(fk.dev, SIG_READABLE, now() + WAIT, &seen), OK);
-    CHECK_ST(drv_channel_read(fk.dev, &q, sizeof(q), &n, NULL, 0, &nh), OK);
-    CHECK_EQ(q.ordinal, DEVMGR_GET_SERVICE);
-    handle_t theirs;
-    CHECK_ST(jam_channel_create(&fk.svc, &theirs), OK);
-    struct devmgr_rep r = { .txid = q.txid, .status = OK };
-    CHECK_ST(jam_channel_write(fk.dev, &r, sizeof(r), &theirs, 1), OK);
+    CHECK_ST(devmgr_serve_one(fk.dev, &devmgr_ops, &fk), OK);
     return true;
 }
 

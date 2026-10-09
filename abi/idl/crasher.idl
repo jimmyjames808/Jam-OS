@@ -1,0 +1,24 @@
+# crasher: the crash-test driver's protocol (drivers/test/crasher), served
+# on its DR_SERVE channel, for the supervision tests (user/tests/utest/
+# supervise.c): a driver that dies on command. devmgr starts it on request
+# (devmgrctl.test_driver) as a supervised driver of a software device
+# (devmgr's KIND_TEST); utest crashes it and checks that devmgr restarts it
+# with the right backoff, that clients reconnect, and that devmgr gives up
+# after too many deaths. It returns 0 when its client closes the channel.
+#
+# Reconnect: the driver keeps nothing across a restart. ERR_PEER_CLOSED: it
+# died (it was told to, or it was killed); ask devmgr for the channel again
+# (devmgr.get_service of KIND_TEST), which hands out the one the restart
+# will serve.
+# Format: see tools/genidl.py.
+
+protocol crasher 92
+
+# When this instance of the driver started (the driver's clock, uptime in
+# ns), so a client sees a restart and how long it took.
+1  ping   () -> (u64 started_ns)
+# The driver faults (a write to the null page); the kernel kills it, like any
+# crashing driver. No answer.
+2  crash  () event
+# The driver exits with `code`. No answer.
+3  exit   (u32 code) event

@@ -13,7 +13,7 @@
  * bench entry spawns (bench.c). */
 #pragma once
 
-#include <devmgr.h>
+#include <idl/devmgr.h>
 #include <openkeys.h>
 #include <os.h>
 
@@ -26,6 +26,18 @@ int bench_child(int argc, char **argv);
 /* "utest fuzz-calls|fuzz-chans <seed> <ms>": a hostile child for the
  * kernel's fuzz tests (fuzz.c, kernel/test/test_fuzz.c). */
 int fuzz_child(int argc, char **argv);
+/* "utest posix-<what>": a child of the POSIX hand-over's tests (posixfds.c). */
+int posixfds_child(int argc, char **argv);
+/* posixfds.c, posixfds_bad.c: the POSIX hand-over (<posixfds.h>) and
+ * spawn's stack_size. */
+bool t_posixfds_round_trip(void);
+bool t_posixfds_many_handles(void);
+bool t_posixfds_spawn_child(void);
+bool t_spawn_stack_size(void);
+bool t_posixfds_malformed(void);
+bool t_posixfds_fuzz(void);
+bool t_posixfds_writer_refuses(void);
+bool t_wants_posix(void);
 
 /* hid.c: the HID driver process against a mock usb-bus and console. */
 bool t_hid_typing(void);
@@ -228,10 +240,13 @@ bool t_job_kill_reaps_orphans(void);
 /* drivers.c */
 /* devmgr's control channel, or 0 (with a line saying the test is skipped). */
 handle_t devmgr(void);
-status_t dm_call(handle_t dm, uint32_t op, uint16_t vendor, uint16_t device,
-                 struct devmgr_rep *r, handle_t *hs, uint32_t *nh);
-/* devmgr's supervision view of a device into *r. */
-bool supervision(handle_t dm, uint16_t vendor, uint16_t device, struct devmgr_rep *r);
+/* devmgr's supervision view of the device (kind, a, b, n) (devmgr.supervision's
+ * results). */
+struct dm_sup {
+    uint32_t state, restarts, backoff_ms, held, changed;
+};
+bool supervision(handle_t dm, uint8_t kind, uint32_t a, uint32_t b, uint32_t n,
+                 struct dm_sup *s);
 bool t_driver_processes(void);
 bool t_driver_killed(void);
 bool t_startup_message(void);
@@ -240,6 +255,9 @@ bool t_devmgr_query_channel(void);
 bool t_devmgr_query_refuses_hda(void);
 bool t_devmgr_device_channel(void);
 bool t_devmgr_openers(void);
+bool t_devmgr_ctl_openers(void);
+bool t_devmgr_addresses(void);
+bool t_devmgr_kill_process(void);
 bool t_edu_killed_mid_dma(void);
 
 /* ns.c: the file namespace, against the bootfs server and bin/ramfs. */
@@ -535,6 +553,7 @@ bool t_comp_screen_on_top(void);
 bool t_jwlc_reconnect(void);
 bool t_jwlc_connect_pending(void);
 bool t_jwlc_protocol_error(void);
+bool t_jwlc_slow_reader(void);
 bool t_jwlc_blocking(void);
 /* funwin.c: libfun's window (gfx_open on a compositor), over the same fake. */
 bool t_fun_window_present(void);

@@ -21,7 +21,7 @@
  *   DR_INPUT  a new source's channel, whose other end goes to the
  *             compositor (compctl.add_source, an event) on its INPUT
  *             channel, which init gives us (SR_CONSOLE, and
- *             DEVMGR_SET_CONSOLE again when the compositor restarts).
+ *             devmgrctl.set_input again when the compositor restarts).
  *             Without one hid logs each key DOWN (keytest, init + utest).
  * Both arrive without RIGHT_DUPLICATE / RIGHT_TRANSFER.
  *
@@ -35,8 +35,8 @@
  * How a hid ends decides what happens:
  *   - its interface is gone (unplugged, or its usb-bus died): the binding
  *     is freed, whatever the exit code; the next attach binds a new one;
- *   - exit 0 after the console it was connected to went away: restarted
- *     (not counted as a restart) as soon as there is a new console;
+ *   - exit 0 after the compositor it was connected to went away: restarted
+ *     (not counted as a restart) as soon as there is a new input channel;
  *   - exit 0 otherwise: finished (a non-boot interface it skipped);
  *   - a crash, a kill, an error exit: restarted with backoff
  *     (supervise.c), given up on after 5 in a minute. */
@@ -70,8 +70,8 @@ static struct bus_events {
 } bev[MAX_BUS_EVENTS];
 
 static struct usb_if usb_ifs[MAX_USB_IFS];
-static handle_t console;       /* our client end of the console (0: none) */
-static uint32_t console_gen;   /* bumped with every console we are given */
+static handle_t input_ch;      /* our client end of the compositor's INPUT channel (0: none) */
+static uint32_t input_gen_now;   /* bumped with every input channel we are given */
 
 static const char *if_path(const struct usb_if *u)
 {
@@ -180,9 +180,9 @@ bool usb_gone(const struct binding *b)
     return b->usb_if < 0 || closed(usb_ifs[b->usb_if].ch);
 }
 
-bool usb_console_gone(const struct binding *b)
+bool usb_input_gone(const struct binding *b)
 {
-    return b->input_gen && (b->input_gen != console_gen || closed(console));
+    return b->input_gen && (b->input_gen != input_gen_now || closed(input_ch));
 }
 
 void usb_retire(struct binding *b, const char *why)
@@ -193,7 +193,7 @@ void usb_retire(struct binding *b, const char *why)
         usb_ifs[b->usb_if].bind = -1;
     b->usb_if = -1;
     b->state = DEVMGR_SUP_NONE;
-    b->console_wait = false;
+    b->input_wait = false;
     b->input_gen = 0;
     disks_device_gone(b);   /* a disk's driver: volumes forgets the disk */
     b->disk = false;
@@ -207,8 +207,8 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
     struct usb_if *u = &usb_ifs[b->usb_if];
     b->input_gen = 0;
     handle_t in = HANDLE_INVALID;
-    if (console && !b->disk) {   /* a disk's driver has nothing to type */
-        if (closed(console))
+    if (input_ch && !b->disk) {   /* a disk's driver has nothing to type */
+        if (closed(input_ch))
             return ERR_SHOULD_WAIT;   /* the compositor is restarting: wait for the new one */
         /* The source's channel: our end goes to the compositor
          * (compctl.add_source, an event: nothing waits, nothing comes
@@ -217,7 +217,7 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
         status_t st = jam_channel_create(&mine, &theirs);
         if (st != OK)
             return st;
-        st = compctl_add_source(console, mine);   /* mine is gone either way */
+        st = compctl_add_source(input_ch, mine);   /* mine is gone either way */
         if (st != OK) {
             jam_handle_close(theirs);
             return st == ERR_PEER_CLOSED || st == ERR_SHOULD_WAIT ? ERR_SHOULD_WAIT : st;
@@ -240,7 +240,7 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
     if (in) {
         x[*n] = (struct spawn_handle){ SR_DRIVER(DR_INPUT), in };
         xr[(*n)++] = DEVMGR_DRV_CHAN_RIGHTS;
-        b->input_gen = console_gen;
+        b->input_gen = input_gen_now;
     }
     return OK;
 }
@@ -277,7 +277,7 @@ static void bind_interface(unsigned slot, const char *path)
     if (b->last == ERR_SHOULD_WAIT) {
         b->state = DEVMGR_SUP_RESTARTING;
         b->restart_at = DEADLINE_NEVER;
-        b->console_wait = true;
+        b->input_wait = true;
         say(false, "devmgr: %s %s: waits for the %s", bdf(b), path, usb_hub_name());
         return;
     }
@@ -290,7 +290,7 @@ static void bind_interface(unsigned slot, const char *path)
     }
     say(true, "devmgr: usb %04x:%04x if%u -> %s (%s, port %s)%s", m->vendor, m->product,
         m->interface_number, path, what(m), if_path(u),
-        b->input_gen || b->disk ? "" : ", no console: to the log");
+        b->input_gen || b->disk ? "" : ", no input channel: to the log");
 }
 
 static void attached(struct binding *bus, const struct if_info *m, handle_t ch)
@@ -325,7 +325,7 @@ static void attached(struct binding *bus, const struct if_info *m, handle_t ch)
 
 /* Only a usb-bus reports interfaces: it alone gets an events channel, so
  * no other driver can have a class driver started on a channel it serves
- * itself -- with a console input source (a compromised driver could type
+ * itself -- with an input source (a compromised driver could type
  * into the shell). */
 static bool is_usb_bus(const struct binding *b)
 {
@@ -449,21 +449,21 @@ const char *usb_hub_name(void)
     return "compositor";
 }
 
-void usb_new_console(handle_t ch)
+void usb_new_input(handle_t ch)
 {
-    if (console)
-        jam_handle_close(console);
-    console = ch;
-    console_gen++;
+    if (input_ch)
+        jam_handle_close(input_ch);
+    input_ch = ch;
+    input_gen_now++;
     unsigned waiting = 0;
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
         if (b->kind == BIND_USB && b->path && b->state == DEVMGR_SUP_RESTARTING &&
-            b->console_wait) {
+            b->input_wait) {
             b->restart_at = now();
             waiting++;
         }
     }
     say(false, "devmgr: a %s%s; %u class driver(s) reconnect to it", usb_hub_name(),
-        console_gen > 1 ? " again" : "", waiting);
+        input_gen_now > 1 ? " again" : "", waiting);
 }

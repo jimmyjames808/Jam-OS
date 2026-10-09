@@ -21,7 +21,6 @@
  * it starts and never changed after, and the device slots' `busy`, which
  * it clears (released) once it has answered (never the numbers: the
  * loop's thread owns them). */
-#include <devmgr.h>
 #include <idl/audioctl.h>
 #include "internal.h"
 
