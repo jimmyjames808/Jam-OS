@@ -442,10 +442,13 @@ static status_t drain(struct jwl_conn *c)
 }
 
 /* Compositor: how many of its batches the client hasn't read, from the
- * kernel (once a flush that has something to write: they go by it). */
+ * kernel, once a flush that has something to write (they go by it) or
+ * while the window is closed (jwl_conn_backlogged: what waits to be sent,
+ * pointer motion, waits for it to open). */
 static status_t look(struct jwl_conn *c)
 {
-    if (c->side == JWL_CLIENT || (!c->held && c->out_len == JWL_HEADER_BYTES))
+    if (c->side == JWL_CLIENT ||
+        (!c->held && c->out_len == JWL_HEADER_BYTES && window_open(c)))
         return OK;
     struct handle_info info;
     status_t st = jam_handle_info(c->ch, &info);

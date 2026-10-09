@@ -461,8 +461,8 @@ void     conn_serve_all(void);
 void     conn_flush_all(void);
 /* Does any client still have messages its budget left (don't sleep)? */
 bool     conn_more(void);
-/* When to flush again for a client behind (events held back: the window,
- * or a full channel), DEADLINE_NEVER while none is. */
+/* When to flush again for a client behind (its window full, or events
+ * held back), DEADLINE_NEVER while none is. */
 uint64_t conn_held_deadline(void);
 /* Every live client, for code that walks them (frame callbacks). */
 struct comp_client *conn_client_at(unsigned slot);

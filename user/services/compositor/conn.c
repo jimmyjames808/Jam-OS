@@ -35,7 +35,8 @@
 #include "comp.h"
 
 #define LOG_PER_S 10u   /* disconnect lines a second at most (a client may reconnect in a loop) */
-/* A client behind (batches held): nothing says when it reads, so its queue
+/* A client behind (its window full, or batches held): nothing says when
+ * it reads, so its queue
  * is looked at again after HELD_LOOK_MIN, the wait doubling while nothing
  * held goes, up to HELD_LOOK_MAX (a client stuck for good costs a few
  * looks a second; one that catches up waits at most that). */
@@ -299,14 +300,15 @@ void conn_flush_all(void)
         struct comp_client *cl = clients[i];
         if (!cl || !cl->conn)
             continue;
-        bool held = cl->conn->held != NULL;
+        bool was = jwl_conn_backlogged(cl->conn);
         uint64_t out = cl->conn->stats.batches_out;
         if (jwl_conn_flush(cl->conn) != OK) {
             client_die(cl);
             continue;
         }
-        moved |= held && cl->conn->stats.batches_out != out;
-        behind |= cl->conn->held != NULL;
+        bool is = jwl_conn_backlogged(cl->conn);
+        moved |= was && (!is || cl->conn->stats.batches_out != out);
+        behind |= is;
     }
     uint64_t t = now();
     if (!behind || moved || held_look == DEADLINE_NEVER) {

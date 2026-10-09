@@ -276,6 +276,16 @@ bool t_jwl_conn_window(void)
     CHECK_ST(jwl_conn_flush(p.sv), OK);
     CHECK_EQ(drain(&p, &got, &in_order), POKED_PER_BATCH);
     CHECK(in_order && got == sent && !jwl_conn_backlogged(p.sv));
+    /* the window full with nothing held: backlogged (the compositor holds
+     * pointer motion back) until a flush with nothing to send sees the
+     * client has read */
+    CHECK_ST(poke(&p, JWL_WINDOW * POKED_PER_BATCH, &sent), OK);
+    CHECK_ST(jwl_conn_flush(p.sv), OK);
+    CHECK(jwl_conn_backlogged(p.sv) && !p.sv->held);
+    CHECK_EQ(drain(&p, &got, &in_order), JWL_WINDOW * POKED_PER_BATCH);
+    CHECK_ST(jwl_conn_flush(p.sv), OK);
+    CHECK(!jwl_conn_backlogged(p.sv));
+    CHECK(in_order && got == sent);
     CHECK_EQ(p.cl->stats.batches_out, out);
     CHECK(in_order);
     pair_down(&p);
