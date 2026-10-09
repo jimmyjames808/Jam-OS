@@ -1,0 +1,59 @@
+/* Processes in the Linux call layer (docs/M13-PLAN.md section 5): what
+ * proc.c (the ids, process groups and sessions, the table of children
+ * and the waits) and spawn.c (posix_spawn, the hand-over, execve) share,
+ * and what the signal track hooks into.
+ *
+ * A pid is the kernel's small id (process_info.pid). Process groups and
+ * sessions are bookkeeping in libc over this process and its children:
+ * the only processes a program can reach are the ones it started. */
+#pragma once
+
+#include "layer.h"
+
+/* <posixfds.h> includes <os.h> itself: after layer.h, which includes
+ * <os.h> the way musl's headers need (<jamos/libjam.h>). */
+#include <posixfds.h>
+
+/* A process ended by a signal's default action exits with this plus the
+ * signal's number (1 to 64): a code outside 0 to 255, so a program's own
+ * exit(130) stays an exit. waitpid reports such a code as WIFSIGNALED
+ * with that WTERMSIG; a process the kernel killed (process_kill, a fault,
+ * PROCESS_KILLED_CODE) is WTERMSIG SIGKILL. */
+#define LX_EXIT_SIGNAL 0x10000
+
+/* Our own ids: the pid (the kernel's), the parent's (from the hand-over;
+ * 1 without one) and our process group and session (the hand-over's; our
+ * own pid without one, or where it says 0). */
+int32_t lx_pid(void);
+int32_t lx_pgid(void);
+int32_t lx_sid(void);
+
+/* A child posix_spawn started: proc (moved into the table, closed when
+ * the child is reaped), its pid, process group and session. 0, or -errno
+ * (-EAGAIN: the table is full; the child is then killed and proc closed). */
+long    lx_child_add(handle_t proc, int32_t pid, int32_t pgid, int32_t sid);
+/* pgid names a process group a child may be put in: ours, or one of our
+ * children's in our session. */
+bool    lx_group_exists(int32_t pgid);
+
+/* Wait for the child pid (a pid we started) to end and reap it; the code
+ * to exit with to end as it did into *code (its exit code, or
+ * LX_EXIT_SIGNAL plus the signal that ended it). 0, or -errno. execve's
+ * wait. */
+long    lx_child_wait(int32_t pid, int64_t *code);
+/* The child execve is waiting for (B4's signal thread forwards every
+ * signal to it), or 0. */
+int32_t lx_exec_child(void);
+
+/* The hook for SIGCHLD (the signal track's): called once for each child
+ * whose end this process has noticed, with the table's lock not held. A
+ * child's end is noticed when a thread of ours takes its packet from the
+ * children's port (proc.c's notice): today in a wait; the signal thread
+ * takes the port over (lx_child_port) to notice ends while nobody waits. */
+void    lx_sigchld_hook(int32_t pid);
+/* The port every child is bound to (SIG_TERMINATED, PORT_BIND_ONCE, keyed
+ * by the child's serial number), or HANDLE_INVALID before the first
+ * child; and the step that takes one packet of it (for a thread that
+ * waits on it itself): the child's end noticed, the waits woken. */
+handle_t lx_child_port(void);
+void     lx_child_packet(const struct port_packet *pkt);

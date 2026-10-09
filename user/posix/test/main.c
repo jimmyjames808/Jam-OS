@@ -26,6 +26,7 @@ static const struct {
     { "pipe", pt_pipe },
     { "fds", pt_fds },
     { "poll", pt_poll },
+    { "proc", pt_proc },
 };
 
 static void run(unsigned i, char **argv)
@@ -45,6 +46,8 @@ int main(int argc, char **argv)
         return pt_child_devetc();
     if (argc >= 2 && !strcmp(argv[1], "--child-poll"))
         return pt_child_poll();
+    if (argc >= 2 && !strcmp(argv[1], "--child-proc"))
+        return pt_child_proc(argc, argv);
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

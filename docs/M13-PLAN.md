@@ -1596,3 +1596,108 @@ the cache in `user/posix/sys/poll.c`'s header; epoll's rules in
   then hold two entries).
 - **B3 (spawn)**: an epoll descriptor's `give` is ENOTSUP: leave it out
   of a child's hand-over.
+
+## B3 notes
+
+Track B3 (processes) as built, with the choices the plan left open (the
+safest reasonable option each time):
+
+- **Files.** `user/posix/sys/proc.c` (ids, groups, sessions, the child
+  table, `wait4`/`waitid`), `user/posix/sys/spawn.c` (`posix_spawn`'s
+  request, the program, the state, `execve`), `user/posix/sys/spawnfd.c`
+  (the copy of the descriptor table and the file actions; split from
+  spawn.c to keep each file one job), `user/posix/sys/proc.h` and
+  `user/posix/sys/spawn.h`; the override of `src/process/posix_spawn.c`
+  (thin: it reads musl's attributes and file actions into
+  `struct jam_spawn_req`, `user/posix/sys/glue.h`); the extension
+  `posix_spawnattr_setgrants_np` in `user/posix/include/jamos/spawn.h`
+  (the list kept in `posix_spawnattr_t`'s spare bytes; NULL, the default,
+  is everything the parent has).
+- **The table copy** holds a reference to each description (B1's
+  `fd_next`), not descriptor numbers: another thread's close mid-spawn
+  changes nothing. File actions apply to the copy; an open action opens
+  in the parent with `O_CLOEXEC` and keeps only the reference; nothing is
+  exported (`ops->give`) until every action worked. A description in two
+  slots (a `dup2`) becomes two descriptions in the child (the hand-over
+  can't say "the same"). A kind without `give` (the log, epoll) is left
+  out, as `FD_CLOEXEC` would.
+- **The program.** `/boot/<x>` is the boot image's `<x>`; `/bin/<x>` and
+  `/usr/bin/<x>` are the boot image's `bin/<x>` and `usr/bin/<x>` (there
+  is no other `/bin`; musl's `system`, `popen` and default `PATH` name
+  `/bin/sh` and `/bin`). Any other path: `ENOENT` if missing, else
+  `EACCES` (no program from a file system until M12.5's loader), checked
+  with `fs_stat` before spawn reads anything. `posix_spawnp` searches the
+  caller's `PATH` (musl's default without one).
+- **Ids.** In the hand-over, `pgid` and `sid` 0 mean "the child's own
+  pid" (nobody knows it before `process_create`). Without a hand-over a
+  program's parent is 1 and it leads a group and a session of its own
+  (so its `setsid` is `EPERM`, as a session leader's). `setpgid` accepts
+  a group of our session that exists (ours, or a child's), or the
+  target's own pid; a session leader can't change group. A child is told
+  its group and session once, at the start: a later `setpgid(child, g)`
+  changes our table, not what the child's `getpgid(0)` says.
+- **Waits.** One port with every child bound (`SIG_TERMINATED`,
+  `PORT_BIND_ONCE`, keyed by a serial number, never a pid). One waiting
+  thread at a time blocks on the port; the others sleep on a futex word
+  bumped whenever an end is noticed or the reader leaves; a non-reader
+  that notices an end (a `WNOHANG` drain, the signal thread) queues a
+  key-0 packet so the reader looks again. At most 4,096 children unreaped
+  at once (`PORT_MAX_BINDINGS`): `posix_spawn` is `EAGAIN` past it (the
+  child is killed). `WUNTRACED`/`WCONTINUED`/`WSTOPPED` are accepted and
+  never report (no stops). `rusage` gives the child's CPU time as user
+  time.
+- **Exit status.** A code `LX_EXIT_SIGNAL` (0x10000) plus N is
+  `WIFSIGNALED` with `WTERMSIG` N (B4 exits that way for a signal's
+  default action); killed by the kernel is SIGKILL.
+- **For B4.** `lx_sigchld_hook(pid)` in proc.c is the one place a
+  child's end is noticed (called once per child, no lock held): today it
+  does nothing, and an end is only noticed by a wait. B4's signal thread
+  should wait on `lx_child_port()` too and hand each packet to
+  `lx_child_packet()`, which notices the end, wakes the waits (and the
+  blocked reader) and calls the hook. `lx_exec_child()` is the pid
+  `execve` is waiting for, to forward every signal to. The child's
+  signal channel (`SR_SIGNALS`) is not made yet: spawn.c's `start` is
+  where B4 adds it (an extra handle) and the table (`lx_child_add`) where
+  it keeps the parent's end.
+- **execve** closes all of our descriptors after the spawn (a pipe end
+  held by the waiting caller would hide its end of file), then waits and
+  exits with the child's status; other threads of the caller keep
+  running until then. The child gets our parent's pid, group and session.
+  `execve` returns `-1` and `errno` (and nothing changes) if the program
+  can't be started.
+- **Scheduling attributes** (`POSIX_SPAWN_SETSCHEDPARAM`,
+  `SETSCHEDULER`): `ENOSYS` (musl's setters are `ENOSYS` already).
+  `POSIX_SPAWN_RESETIDS` and `USEVFORK` do nothing (one user; no vfork).
+- **Not done here, waiting for B1:** the umask (`spawnfd_umask` gives the
+  hand-over's, or 022) and the current directory (`getcwd`, else the
+  hand-over's, else `/`) until B1's file.c and dir.c keep them;
+  `addchdir` checks its directory with libjam's `fs_stat`.
+- **/bin/sh until a POSIX shell** (`user/posix/progs/sh/`, bootfs
+  `bin/sh`): `sh -c` of one simple command only (words, quotes,
+  backslashes; anything else, `|`, `;`, `$`, globs, ..., is refused with
+  exit 2), run with `execvp`; 127 not found, 126 not runnable. It exists
+  so `system` and `popen` work; the native shell's builtins still win
+  over it. posixtest's `ls` is a tiny one at bootfs `test/ls`
+  (`user/posix/progs/ls/`, libjam's `fs_readdir`), not on any `PATH` but
+  the test's own, so sbase's `ls` is never shadowed.
+- **posixtest's list** gains `mount /boot r`: its children list `/boot`.
+- **A hand-over cut short.** posix_spawn writes all of it before
+  `process_start`, so a parent killed mid-spawn leaves no child, or one
+  with everything; the test kills a spawning parent at random times in
+  its own job and checks every process in that job ends, and feeds the
+  reader a first message without its last to check it gives up at once
+  with every handle closed.
+- **Found, not changed:** B1's `fd.h` declares `fd_set`, which is also
+  `<sys/select.h>`'s type (included by `<sys/wait.h>` and
+  `<sys/time.h>`): a layer file can't include both (spawn.c avoids
+  `<sys/wait.h>` for that).
+- **Found, not changed (kernel):** killing a process while it loops
+  libjam's `spawn` of short-lived children panics the kernel about 60 ms
+  later at 2 CPUs (3 runs of 3; 0 of 4 at 4 and 8 CPUs): a page fault
+  in `thread_reap` (`kernel/sched/thread.c`), in its inlined `stack_put`
+  writing below a `stack_top` of 0, so a thread reaped twice or after it
+  was freed and reused. No POSIX code is needed for it (the native
+  `spawn` loop alone does it; the same loop without the kill, or killing
+  a loop that only creates processes and threads it never starts, does
+  not). posixtest's hand-over check (the parent killed mid-spawn) is what
+  reaches it: `QEMU_SMP=2 tools/qemu-test.sh build/test init init`.

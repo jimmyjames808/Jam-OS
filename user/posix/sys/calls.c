@@ -103,6 +103,18 @@ static lx_call *const calls[] = {
     [SYS_epoll_wait] = lx_epoll_wait,
     [SYS_epoll_pwait] = lx_epoll_pwait,
 
+    /* processes: proc.c, spawn.c (fork, vfork and clone without CLONE_VM
+     * have no entry: -ENOSYS) */
+    [SYS_getpid] = lx_getpid,
+    [SYS_getppid] = lx_getppid,
+    [SYS_getpgid] = lx_getpgid,
+    [SYS_setpgid] = lx_setpgid,
+    [SYS_getsid] = lx_getsid,
+    [SYS_setsid] = lx_setsid,
+    [SYS_wait4] = lx_wait4,
+    [SYS_waitid] = lx_waitid,
+    [SYS_execve] = lx_execve,
+
     /* signals, until signals: nosig.c */
     [SYS_rt_sigprocmask] = lx_rt_sigprocmask,
 };

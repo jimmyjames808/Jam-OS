@@ -55,5 +55,9 @@ lx_call lx_getuid, lx_geteuid, lx_getgid, lx_getegid, lx_getresuid, lx_getresgid
 lx_call lx_poll, lx_ppoll, lx_select, lx_pselect6, lx_epoll_create, lx_epoll_create1,
         lx_epoll_ctl, lx_epoll_wait, lx_epoll_pwait;
 
+/* Processes (proc.c: ids, groups, sessions, waits; spawn.c: execve). */
+lx_call lx_getpid, lx_getppid, lx_getpgid, lx_setpgid, lx_getsid, lx_setsid, lx_wait4,
+        lx_waitid, lx_execve;
+
 /* Signals before signals exist (nosig.c). */
 lx_call lx_rt_sigprocmask;
