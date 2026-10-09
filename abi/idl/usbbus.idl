@@ -23,7 +23,7 @@ protocol usbbus 13
 1  status        () -> (u32 devices, u32 hubs, u32 interfaces, u32 hid_interfaces, u32 problems, u32 generation, u8 settled)
 # The same, answered once the bus has settled or after timeout_ms
 # (settled 0 then). The only method whose reply can come later.
-2  wait_settled  (u32 timeout_ms) -> (u32 devices, u32 hubs, u32 interfaces, u32 hid_interfaces, u32 problems, u32 generation, u8 settled)
+2  wait_settled  (u32 timeout_ms) -> (u32 devices, u32 hubs, u32 interfaces, u32 hid_interfaces, u32 problems, u32 generation, u8 settled) later
 # The index-th device (0 .. devices - 1; ERR_OUT_OF_RANGE after). parent_id
 # 0: on a root port. tt_slot / tt_port: the Transaction Translator a
 # full/low-speed device behind a high-speed hub uses (0: none).

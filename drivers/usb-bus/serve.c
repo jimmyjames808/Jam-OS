@@ -46,7 +46,7 @@ static struct chan chans[MAX_CHANS];
 /* wait_settled requests waiting for their answer. */
 static struct {
     bool used;           /* taken */
-    uint32_t txid;       /* the request's, for the reply */
+    struct idl_txn txn;  /* the request's, for the reply */
     uint64_t deadline;   /* answer by then, settled or not */
 } waiters[MAX_WAITERS];
 static bool serve_closed;   /* DR_SERVE's peer is gone (or there was none) */
@@ -334,8 +334,29 @@ static status_t b_open_interface(void *ctx, uint32_t id, uint8_t num, handle_t *
     return iface_channel(d, num, out, NULL);
 }
 
+/* Answered by reply_waiter, once the bus has settled or at the deadline. */
+static status_t b_wait_settled(void *ctx, struct idl_txn txn, uint32_t timeout_ms,
+                               uint32_t *devices, uint32_t *hubs, uint32_t *ifaces,
+                               uint32_t *hid, uint32_t *problems, uint32_t *generation,
+                               uint8_t *is_settled)
+{
+    (void)ctx, (void)devices, (void)hubs, (void)ifaces, (void)hid, (void)problems;
+    (void)generation, (void)is_settled;
+    int i = 0;
+    while (i < MAX_WAITERS && waiters[i].used)
+        i++;
+    if (i == MAX_WAITERS)
+        return ERR_NO_RESOURCES;
+    waiters[i].used = true;
+    waiters[i].txn = txn;
+    uint32_t ms = timeout_ms > 60000 ? 60000 : timeout_ms;
+    waiters[i].deadline = drv_clock_ns() + (uint64_t)ms * NS_PER_MS;
+    return IDL_LATER;
+}
+
 static const struct usbbus_ops bus_ops = {
     .status = b_status,
+    .wait_settled = b_wait_settled,
     .device = b_device,
     .interface = b_interface,
     .open_interface = b_open_interface,
@@ -343,70 +364,24 @@ static const struct usbbus_ops bus_ops = {
 
 static void reply_waiter(int i)
 {
-    struct usbbus_wait_settled_rep r;
-    r.txid = waiters[i].txid;
-    r.status = OK;
     uint32_t n, nh, ni, nhid, np;
     usb_counts(&n, &nh, &ni, &nhid, &np);
-    r.devices = n;
-    r.hubs = nh;
-    r.interfaces = ni;
-    r.hid_interfaces = nhid;
-    r.problems = np;
-    r.generation = g_generation;
-    r.settled = settled();
-    (void)drv_channel_write(g_hc.serve, &r, sizeof(r), NULL, 0);   /* devmgr gone: no one waits */
+    /* devmgr gone: no one waits */
+    (void)usbbus_reply_wait_settled(waiters[i].txn, OK, n, nh, ni, nhid, np, g_generation,
+                                    settled());
     waiters[i].used = false;
 }
 
-/* Everything queued on DR_SERVE. wait_settled is kept for later; the rest
- * go through the generated dispatch. */
+/* Everything queued on DR_SERVE (a wait_settled is kept for later). */
 static void serve_bus(struct hc *h)
 {
     for (int guard = 0; guard < 64; guard++) {
-        _Alignas(8) uint8_t q[USBBUS_REQ_MAX + 8];
-        _Alignas(8) uint8_t r[USBBUS_REP_MAX];
-        handle_t hs[IDL_READ_HANDLES];
-        uint32_t n = 0, nh = 0;
-        status_t st = drv_channel_read(h->serve, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
-        if (st == ERR_BUFFER_TOO_SMALL) {
-            (void)idl_drain(h->serve, n, nh);   /* the next read says what is left */
+        status_t st = usbbus_serve_one(h->serve, &bus_ops, NULL);
+        if (st == OK)
             continue;
-        }
-        if (st == ERR_PEER_CLOSED) {
+        if (st == ERR_PEER_CLOSED)
             serve_closed = true;
-            return;
-        }
-        if (st != OK)
-            return;
-        if (nh) {
-            idl_close_all(hs, nh);
-            idl_reply_status(h->serve, q, n, ERR_INVALID_ARGS);
-            continue;
-        }
-        const struct idl_req_hdr *hdr = (const void *)q;
-        if (n == sizeof(struct usbbus_wait_settled_req) && hdr->ordinal == USBBUS_WAIT_SETTLED) {
-            const struct usbbus_wait_settled_req *w = (const void *)q;
-            int i = 0;
-            while (i < MAX_WAITERS && waiters[i].used)
-                i++;
-            if (i == MAX_WAITERS) {
-                idl_reply_status(h->serve, q, n, ERR_NO_RESOURCES);
-                continue;
-            }
-            waiters[i].used = true;
-            waiters[i].txid = w->txid;
-            uint32_t ms = w->timeout_ms > 60000 ? 60000 : w->timeout_ms;
-            waiters[i].deadline = drv_clock_ns() + (uint64_t)ms * NS_PER_MS;
-            continue;
-        }
-        handle_t rhs[IDL_REP_HANDLES];
-        uint32_t rhn = 0;
-        uint32_t rn = usbbus_dispatch(&bus_ops, NULL, q, n, r, rhs, &rhn);
-        if (!rn)
-            idl_close_all(rhs, rhn);   /* no reply: never sent */
-        else   /* the reply's handles are gone whatever the write's status */
-            (void)drv_channel_write(h->serve, r, rn, rhs, rhn);
+        return;
     }
     /* 64 taken and maybe more queued: the binding is edge-triggered and the
      * channel stays readable, so no packet will say so. Come back. */

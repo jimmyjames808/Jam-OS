@@ -867,7 +867,7 @@ static inline status_t usbbus_interface_attached_result(const void *idl_rep, str
  * with usbbus_reply_<method> (now, or later from anywhere). */
 struct usbbus_ops {
     status_t (*status)(void *ctx, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled);
-    status_t (*wait_settled)(void *ctx, uint32_t timeout_ms, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled);
+    status_t (*wait_settled)(void *ctx, struct idl_txn idl_txn, uint32_t timeout_ms, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled);
     status_t (*device)(void *ctx, uint32_t index, uint32_t *out_id, uint32_t *out_parent_id, uint16_t *out_vendor, uint16_t *out_product, uint16_t *out_bcd_usb, uint8_t *out_speed, uint8_t *out_address, uint8_t *out_slot, uint8_t *out_root_port, uint8_t *out_port, uint8_t *out_level, uint32_t *out_route, uint8_t *out_tt_slot, uint8_t *out_tt_port, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_num_configs, uint8_t *out_configuration, uint8_t *out_num_interfaces, uint16_t *out_max_packet0, uint8_t *out_hub_ports, char *out_path, uint32_t *out_path_len, char *out_product_name, uint32_t *out_product_name_len, char *out_serial, uint32_t *out_serial_len);
     status_t (*interface)(void *ctx, uint32_t id, uint8_t index, uint8_t *out_number, uint8_t *out_alt_setting, uint8_t *out_num_alt_settings, uint8_t *out_class_code, uint8_t *out_subclass, uint8_t *out_protocol, uint8_t *out_endpoints, uint32_t *out_endpoints_len);
     status_t (*open_interface)(void *ctx, uint32_t id, uint8_t interface_number, handle_t *out_channel);
@@ -1046,7 +1046,6 @@ static inline uint32_t usbbus_dispatch_on(handle_t ch, const struct usbbus_ops *
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -1099,7 +1098,11 @@ static inline uint32_t usbbus_dispatch_on(handle_t ch, const struct usbbus_ops *
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->wait_settled(ctx, idl_q->timeout_ms, &out_devices, &out_hubs, &out_interfaces, &out_hid_interfaces, &out_problems, &out_generation, &out_settled);
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->wait_settled(ctx, idl_txn, idl_q->timeout_ms, &out_devices, &out_hubs, &out_interfaces, &out_hid_interfaces, &out_problems, &out_generation, &out_settled);
+        /* IDL_LATER: the handler answers with usbbus_reply_wait_settled. */
+        if (idl_st == IDL_LATER)
+            return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -1264,7 +1267,7 @@ static inline uint32_t usbbus_dispatch_on(handle_t ch, const struct usbbus_ops *
     return sizeof(*idl_h);
 }
 
-/* usbbus_dispatch_on without the channel (the protocol has no `later` method). */
+/* usbbus_dispatch_on without the channel (a `later` handler's txn then has none: use usbbus_dispatch_on). */
 static inline uint32_t usbbus_dispatch(const struct usbbus_ops *ops, void *ctx, const void *req, uint32_t n,
                                        void *rep, handle_t *rhs, uint32_t *rhn)
 {
