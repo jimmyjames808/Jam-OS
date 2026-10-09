@@ -549,7 +549,8 @@ $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 # rejects what it must (tools/checkdriver-tests/: a kernel include, a
 # kmalloc call, a call into another driver, ...) and accepts a clean one,
 # the Markdown docs still match the tree (tools/checkdocs.py), and the
-# RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh).
+# RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh), and
+# the NVMe driver has no way to write (tools/checknvme.py).
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
@@ -563,6 +564,7 @@ check: all
 	python3 tools/sortincludes.py
 	sh tools/checkaudio.sh
 	sh tools/checknotx.sh
+	python3 tools/checknvme.py
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
 	python3 tools/checkwants.py --selftest
