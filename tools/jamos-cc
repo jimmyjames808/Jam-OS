@@ -1,0 +1,87 @@
+#!/bin/sh
+# jamos-cc: compile and link C programs for Jam OS's POSIX layer (musl),
+# on the Mac, with the cross compiler the kernel is built with
+# (docs/M13-PLAN.md section 14). Use it like cc:
+#
+#     tools/jamos-cc -O2 -o hello hello.c
+#     CC=tools/jamos-cc ./configure --host=x86_64-linux-musl
+#
+# Every compile sees only the sysroot's headers (musl's, and Jam OS's
+# extensions in jamos/) before the compiler's own (stdarg.h's builtins,
+# the intrinsics), and __jamos__ is defined. A link is static and
+# whole-program: crt1.o and crti.o, the objects, libc.a (musl, the Linux
+# call layer and libjam), libgcc, crtn.o, by user/posix/posix.ld, with
+# unused sections dropped, plus the program's list (<wants.h>) as its ELF
+# note: by default the one word `posix` (a POSIX program: the shell gives
+# it descriptors and an 8 MiB stack). --jamos-wants=FILE takes the list's
+# text from FILE instead.
+#
+# Environment: JAMOS_SYSROOT (default: build/sysroot beside this script),
+# CROSS (default x86_64-elf-), as the Makefile's.
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+sysroot=${JAMOS_SYSROOT:-$here/../build/sysroot}
+cc=${CROSS:-x86_64-elf-}gcc
+gccinc=$("$cc" -print-file-name=include)
+libgcc=$("$cc" -print-libgcc-file-name)
+
+if [ ! -f "$sysroot/lib/libc.a" ]; then
+    echo "jamos-cc: no sysroot at $sysroot (run make first)" >&2
+    exit 1
+fi
+
+# Sort the arguments: our own option out, and whether this links.
+link=1
+wants=
+for a in "$@"; do
+    case $a in
+    -c|-S|-E|-M|-MM) link=0 ;;
+    esac
+done
+n=$#
+i=0
+while [ $i -lt $n ]; do
+    a=$1
+    shift
+    i=$((i + 1))
+    case $a in
+    --jamos-wants=*) wants=${a#--jamos-wants=} ;;
+    *) set -- "$@" "$a" ;;
+    esac
+done
+
+compile_flags="-nostdinc -isystem $sysroot/include -isystem $gccinc -D__jamos__=1 -fno-pie"
+if [ $link = 0 ]; then
+    # shellcheck disable=SC2086 # the flags are words on purpose
+    exec "$cc" $compile_flags "$@"
+fi
+
+# The program's list as an ELF note, the way <wants.h>'s JAM_WANTS lays it
+# out: name "JamOS" padded to 8, type 1, the text with its NUL padded to 4.
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/jamos-cc.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+if [ -n "$wants" ]; then
+    cp "$wants" "$tmp/wants.txt"
+else
+    printf 'posix\n' > "$tmp/wants.txt"
+fi
+size=$(wc -c < "$tmp/wants.txt" | tr -d ' ')
+{
+    printf '\t.section .jamos.wants, "a"\n\t.balign 4\n'
+    printf '\t.long 6, %d, 1\n' $((size + 1))
+    printf '\t.ascii "JamOS\\0\\0\\0"\n'
+    od -An -v -tu1 "$tmp/wants.txt" |
+        awk 'NF { printf "\t.byte "; for (i = 1; i <= NF; i++) printf "%s%s", $i, (i < NF ? ", " : "\n") }'
+    printf '\t.byte 0\n\t.balign 4\n'
+    printf '\t.section .note.GNU-stack, "", @progbits\n'
+} > "$tmp/wants.s"
+"$cc" -c "$tmp/wants.s" -o "$tmp/wants.o"
+
+# Not exec: the trap removes the note's files once the link is done.
+# shellcheck disable=SC2086
+"$cc" $compile_flags -static -nostdlib \
+    -Wl,-T,"$sysroot/lib/posix.ld" -Wl,--gc-sections -Wl,-z,max-page-size=0x1000 \
+    -Wl,-z,noexecstack \
+    "$sysroot/lib/crt1.o" "$sysroot/lib/crti.o" "$@" "$tmp/wants.o" \
+    -L"$sysroot/lib" -lc "$libgcc" "$sysroot/lib/crtn.o"

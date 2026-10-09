@@ -781,6 +781,9 @@ clean:
 -include $(OBJS:.o=.d) $(USER_OBJS:.o=.d) $(FATFS_OBJS:.o=.d) $(LWIP_OBJS:.o=.d) \
          $(patsubst %.o,%.d,$(foreach d,$(DRIVERS),$(call DRV_OBJS,$(d))))
 
+# POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
+include user/posix/posix.mk
+
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real
 # build's flags for every file, from a dry run (tools/compdb.py).
 compdb:
