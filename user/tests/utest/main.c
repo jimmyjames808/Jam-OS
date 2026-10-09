@@ -34,6 +34,7 @@
 /* What it is given when the shell runs it (<wants.h>). */
 JAM_WANTS("svc devmgr\n"
           "svc devmgr-ctl\n"
+          "svc volumes\n"
           "svc wayland\n"
           "mount * rw\n"
           "right klog\n"
@@ -857,6 +858,17 @@ static const struct {
     { "idl_scalar_arrays", t_idl_scalar_arrays },
     { "idl_events_to_server", t_idl_events_to_server },
     { "idl_events_to_client", t_idl_events_to_client },
+    { "idl_handle_args", t_idl_handle_args },
+    { "idl_handle_args_fail", t_idl_handle_args_fail },
+    { "idl_handle_lists", t_idl_handle_lists },
+    { "idl_handle_lists_async", t_idl_handle_lists_async },
+    { "idl_handle_server_refuses", t_idl_handle_server_refuses },
+    { "idl_handle_slot", t_idl_handle_slot },
+    { "idl_handle_later", t_idl_handle_later },
+    { "idl_handle_results_refused", t_idl_handle_results_refused },
+    { "idl_handle_typed", t_idl_handle_typed },
+    { "idl_events_handle_lists", t_idl_events_handle_lists },
+    { "idl_txid_mixing", t_idl_txid_mixing },
     { "keep_put_drop_restore", t_keep_put_drop_restore },
     { "keep_restore_batches", t_keep_restore_batches },
     { "keep_unknown_slots", t_keep_unknown_slots },
@@ -944,6 +956,8 @@ static const struct {
     { "jwl_conn_send_refusals", t_jwl_conn_send_refusals },
     { "jwl_conn_new_ids", t_jwl_conn_new_ids },
     { "jwl_conn_held_handles", t_jwl_conn_held_handles },
+    { "jwl_conn_held_merged", t_jwl_conn_held_merged },
+    { "jwl_conn_handle_queue", t_jwl_conn_handle_queue },
     { "jwl_fuzz_decode", t_jwl_fuzz_decode },
     { "jwl_fuzz_conn", t_jwl_fuzz_conn },
     { "jwlc_setup", t_jwlc_setup },

@@ -252,8 +252,12 @@ void     lock_give(lock_t *l);
 
 #define NS_NAME_MAX    16  /* an entry's path with its NUL: "/data", "/svc/devmgr-ctl" */
 #define NS_MAX_MOUNTS  8   /* mounts in one namespace */
-#define NS_MAX_SVCS    16  /* services in one namespace */
+/* Services in one namespace: init publishes 16 and volumes' one more (at
+ * 16 it was refused). NS_MAX_ENTRIES is at most 32: an ns_msg's
+ * `connect` is a 32-bit mask, a bit per entry. */
+#define NS_MAX_SVCS    24
 #define NS_MAX_ENTRIES (NS_MAX_MOUNTS + NS_MAX_SVCS)   /* entries in one ns_msg */
+_Static_assert(NS_MAX_ENTRIES <= 32, "an ns_msg's connect mask has 32 bits");
 #define NS_FIRST_WAIT  (5 * NS_PER_S)
 #define NS_MOUNT       1u
 #define NS_UNMOUNT     2u
@@ -324,6 +328,8 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
 #define SVC_MUSIC      "music"       /* the music player, a channel per opener (music.idl) */
 #define SVC_DEVMGR     "devmgr"      /* devmgr's queries, a channel per opener (<devmgr.h>) */
 #define SVC_DEVMGR_CTL "devmgr-ctl"  /* devmgr's control channel: tests only */
+#define SVC_VOLUMES    "volumes"     /* volumes: the disks and their mounts, a channel per
+                                      * opener (<volumes.h>): tests only */
 #define SVC_INIT       "init"        /* init's control channel (initctl.idl): tests only */
 #define SVC_LOGD       "logd"        /* logd's control channel, a channel per opener (logctl.idl) */
 #define SVC_NET        "net"         /* netstack: UDP sockets and ping, a channel per opener (net.idl) */

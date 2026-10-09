@@ -5,10 +5,10 @@
  * thread, never in init's loop: it takes seconds of the stick's time.
  *
  * Who may write the ESP: nobody but init, and init only here. /esp is
- * read-only below the filesystem (devmgr opens its partition read-only),
- * for every program and for init too. devmgr opens it read-write only when
- * asked on the ESP channel (DEVMGR_ESP_WRITE), whose one client end init
- * made when it started devmgr and gives to nobody (services.c). While it
+ * read-only below the filesystem (volumes opens its partition read-only),
+ * for every program and for init too. volumes opens it read-write only
+ * when asked on the ESP channel (VOLUMES_ESP_WRITE), whose one client end
+ * init made when it started volumes and gives to nobody (services.c). While it
  * is writable /esp is no mount at all, so the writable channel exists only
  * here: it is never put in a namespace. At the end, failed or not, it is
  * made read-only again (its service stops in order: everything on the
@@ -69,14 +69,14 @@
  * stick that stops answering ends in "not written" well inside the 300 s
  * bin/update waits. Each step and file logs its time as it goes (esp_say(),
  * a long file every SAY_EVERY), so a slow stick shows in the log. */
-#include <devmgr.h>
 #include <fs_idl.h>
 #include <update.h>
+#include <volumes.h>
 #include "espwrite.h"
 #include "init.h"
 
 #define CHUNK      ESP_CHUNK
-#define ESP_WAIT   (30 * NS_PER_S)    /* devmgr's ESP_WRITE: a stop in order, then a start */
+#define ESP_WAIT   (30 * NS_PER_S)    /* volumes' ESP_WRITE: a stop in order, then a start */
 #define WRITE_LIMIT   (120 * NS_PER_S)   /* the steps, all of them */
 #define SLACK      (1u << 20)         /* room kept spare per file: clusters, directory */
 #define SAY_EVERY  (2 * NS_PER_S)     /* a long file's progress: a line at most this often */
@@ -465,7 +465,7 @@ static status_t room(struct writer *w)
             need += n + SLACK;
     }
     if (st == OK && ro)
-        st = ERR_ACCESS_DENIED;   /* devmgr said writable, the volume says not */
+        st = ERR_ACCESS_DENIED;   /* volumes said writable, the volume says not */
     if (st == OK && free_bytes < need)
         st = ERR_NO_SPACE;
     esp_say("%lu KiB free, %lu KiB needed", (unsigned long)(free_bytes >> 10),
@@ -649,13 +649,13 @@ static void note_files(struct writer *w)
     }
 }
 
-/* devmgr's ESP_WRITE: writable (*fs: the channel) or read-only again. */
+/* volumes' ESP_WRITE: writable (*fs: the channel) or read-only again. */
 static status_t esp_mode(handle_t esp, bool writable, handle_t *fs)
 {
-    struct devmgr_rep r;
+    struct volumes_rep r;
     handle_t h = HANDLE_INVALID;
     uint32_t nh = 0;
-    status_t st = devmgr_call(esp, DEVMGR_ESP_WRITE, 0, 0, writable ? DEVMGR_ESP_WRITABLE : 0,
+    status_t st = volumes_call(esp, VOLUMES_ESP_WRITE, 0, 0, writable ? VOLUMES_ESP_WRITABLE : 0,
                               &r, &h, 1, &nh, now() + ESP_WAIT);
     if (st == OK && writable && nh != 1)
         st = ERR_INTERNAL;
@@ -677,7 +677,7 @@ void esp_write_build(struct esp_write *j)
     j->menu = j->menu_vmo ? UPDATE_MENU_SKIPPED : UPDATE_MENU_NONE;   /* until the menu's turn */
     j->menu_status = OK;
     j->menu_why[0] = '\0';
-    esp_say("asking devmgr for the ESP read-write ...");
+    esp_say("asking volumes for the ESP read-write ...");
     j->st = j->esp ? esp_mode(j->esp, true, &w.fs) : ERR_NOT_FOUND;
     esp_say("the ESP is %s (%s) in %lu ms", j->st == OK ? "writable" : "not writable",
             status_str(j->st), esp_ms_since(t0));

@@ -133,6 +133,8 @@ struct usbbus_open_interface_rep {
 
 #define USBBUS_REQ_MAX 13u   /* bytes: the biggest request */
 #define USBBUS_REP_MAX 134u   /* bytes: the biggest reply */
+#define USBBUS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define USBBUS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -823,8 +825,8 @@ static inline status_t usbbus_reply_wait_settled(struct idl_txn idl_txn, status_
 /* Answer the usbbus.device request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t usbbus_reply_device(struct idl_txn idl_txn, status_t idl_st, uint32_t id, uint32_t parent_id, uint16_t vendor, uint16_t product, uint16_t bcd_usb, uint8_t speed, uint8_t address, uint8_t slot, uint8_t root_port, uint8_t port, uint8_t level, uint32_t route, uint8_t tt_slot, uint8_t tt_port, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t num_configs, uint8_t configuration, uint8_t num_interfaces, uint16_t max_packet0, uint8_t hub_ports, const char *path, uint32_t path_len, const char *product_name, uint32_t product_name_len, const char *serial, uint32_t serial_len)
 {
     _Alignas(8) uint8_t idl_b0[134];
@@ -874,8 +876,8 @@ static inline status_t usbbus_reply_device(struct idl_txn idl_txn, status_t idl_
 /* Answer the usbbus.interface request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t usbbus_reply_interface(struct idl_txn idl_txn, status_t idl_st, uint8_t number, uint8_t alt_setting, uint8_t num_alt_settings, uint8_t class_code, uint8_t subclass, uint8_t protocol, const uint8_t *endpoints, uint32_t endpoints_len)
 {
     _Alignas(8) uint8_t idl_b0[24];
@@ -922,7 +924,7 @@ static inline status_t usbbus_reply_open_interface(struct idl_txn idl_txn, statu
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (USBBUS_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (USBBUS_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1163,7 +1165,7 @@ static inline status_t usbbus_take_slot(handle_t ch, const struct idl_slot *slot
 /* Run the request in slot (taken by usbbus_take_slot, or found there by a
  * successor), which came on ch: as usbbus_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (USBBUS_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
@@ -1276,6 +1278,8 @@ struct usbbus_events_interface_attached_msg {   /* an event: txid 0 */
 
 #define USBBUS_EVENTS_REQ_MAX 46u   /* bytes: the biggest message to the server */
 #define USBBUS_EVENTS_REP_MAX 8u   /* bytes: the biggest message to the client */
+#define USBBUS_EVENTS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define USBBUS_EVENTS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1296,7 +1300,6 @@ struct usbbus_events_interface_attached_msg {   /* an event: txid 0 */
  * write that failed (the caller never closes them after this). */
 static inline status_t usbbus_events_interface_attached(handle_t ch, uint32_t id, uint16_t vendor, uint16_t product, uint8_t interface_number, uint8_t class_code, uint8_t subclass, uint8_t protocol, uint8_t speed, const char *path, uint32_t path_len, handle_t usb)
 {
-    handle_t idl_hs[1] = { usb };
     _Alignas(8) uint8_t idl_b0[46];
     struct usbbus_events_interface_attached_msg *idl_q = (struct usbbus_events_interface_attached_msg *)idl_b0;
     uint32_t idl_qn = sizeof(*idl_q);
@@ -1314,10 +1317,15 @@ static inline status_t usbbus_events_interface_attached(handle_t ch, uint32_t id
     if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 23, 1) ||
                              !idl_str_ok(path, path_len)))
         idl_st = ERR_INVALID_ARGS;
-    if (idl_st != OK)
-        idl_close_all(idl_hs, 1);   /* never sent */
-    else
-        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, 1);
+    handle_t idl_hs[1];
+    uint32_t idl_hn = 0;
+    if (idl_st == OK) {
+        idl_hs[idl_hn++] = usb;
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, idl_hn);
+    } else {   /* never sent: the handles are still ours */
+        if (usb != HANDLE_INVALID)
+            drv_handle_close(usb);
+    }
     return idl_st;
 }
 
@@ -1370,13 +1378,13 @@ static inline status_t usbbus_events_event_in(const struct usbbus_events_ops *id
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (USBBUS_EVENTS_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (USBBUS_EVENTS_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the message has no txid, a `later` handler
  * answers it itself, or it is an event: txid 0, never answered; one no
  * handler takes is dropped). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it.
- * The idl_nh handles at idl_hs (an event's) are taken in every case:
- * given to its handler, or closed. */
+ * The idl_nh handles at idl_hs (an event's, or a call's arguments) are taken
+ * in every case: given to the handler, or closed. */
 static inline uint32_t usbbus_events_dispatch_h(handle_t ch, const struct usbbus_events_ops *ops, void *ctx,
                                                 const void *req, uint32_t n, const handle_t *idl_hs, uint32_t idl_nh,
                                                 void *rep, handle_t *rhs, uint32_t *rhn)
@@ -1410,7 +1418,7 @@ static inline uint32_t usbbus_events_dispatch_h(handle_t ch, const struct usbbus
 }
 
 /* usbbus_events_dispatch_h without handles (a loop of your own that reads none:
- * an event that carries some is then dropped). */
+ * an event or call that takes some is then refused). */
 static inline uint32_t usbbus_events_dispatch_on(handle_t ch, const struct usbbus_events_ops *ops, void *ctx,
                                                  const void *req, uint32_t n, void *rep, handle_t *rhs,
                                                  uint32_t *rhn)
@@ -1443,9 +1451,9 @@ static inline status_t usbbus_events_take_slot(handle_t ch, const struct idl_slo
 /* Run the message in slot (taken by usbbus_events_take_slot, or found there by a
  * successor), which came on ch: as usbbus_events_dispatch_h, its reply built in
  * slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). The handles it carried
- * (*slot->nh in slot->hs) are taken: given to an event's handler or
- * closed, *slot->nh 0 after. Returns the reply's length: 0 means no reply
+ * (USBBUS_EVENTS_REP_HANDLES slots; *rhn of them). The handles it carried
+ * (*slot->nh in slot->hs) are taken: given to a handler or closed,
+ * *slot->nh 0 after. Returns the reply's length: 0 means no reply
  * (no txid, an event, or a `later` handler answers it itself). No I/O;
  * the caller sends the reply with the handles, or closes them if it
  * never sends it. */

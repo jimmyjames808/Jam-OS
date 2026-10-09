@@ -1,6 +1,6 @@
 #!/bin/sh
-# devmgr's warm spare fat and the restart rule of a filesystem service
-# (user/services/devmgr/spare.c, docs/M11.6-PLAN.md "The warm spare",
+# volumes' warm spare fat and the restart rule of a filesystem service
+# (user/services/volumes/spare.c, docs/M11.6-PLAN.md "The warm spare",
 # "Supervision") in QEMU, on the boot stick's /data and /esp. Two boots:
 #   1. tools/shell-tests/fat-spare.txt: a spare waits from the boot; fat-data
 #      is killed again and again while files are written and read through
@@ -12,7 +12,7 @@
 #      spare; each kill starts a new process, on the same kept channel.
 # The log is checked for each step, then the numbers are printed: the
 # spare's memory (its job's, from `ps`), and the restart and kill-to-first-
-# answer times (devmgr's lines; median and worst) with and without a spare.
+# answer times (volumes' lines; median and worst) with and without a spare.
 # QEMU_SMP passes through. Usage: tools/fat-spare-test.sh <outdir>; exit 0
 # on PASS.
 set -eu
@@ -44,13 +44,13 @@ never() {   # never <text> <log>
 
 # Boot 1: 9 kills one by one, all promoted, then 10 in a row (each either
 # promoted or a new process: 19 restarts of fat-data), and fat-esp's.
-need 19 "devmgr: fat-data bin/fat was killed (KILL): not counted, restarted at once" "$log"
-need 9 "devmgr: fat-data: spare promoted" "$log"
-need 1 "devmgr: fat-esp: spare promoted" "$log"
-need 10 "devmgr: a warm spare bin/fat waits" "$log"
-need 1 "devmgr: fat-data: kill to first answer" "$log"
-spared=$(count "devmgr: fat-data: spare promoted" "$log")
-fresh=$(count "devmgr: fat-data: new process started" "$log")
+need 19 "volumes: fat-data bin/fat was killed (KILL): not counted, restarted at once" "$log"
+need 9 "volumes: fat-data: spare promoted" "$log"
+need 1 "volumes: fat-esp: spare promoted" "$log"
+need 10 "volumes: a warm spare bin/fat waits" "$log"
+need 1 "volumes: fat-data: kill to first answer" "$log"
+spared=$(count "volumes: fat-data: spare promoted" "$log")
+fresh=$(count "volumes: fat-data: new process started" "$log")
 [ $((spared + fresh)) -ge 19 ] ||
     { echo "fat-spare: fatspare.log: $spared promoted + $fresh started, wanted 19 restarts"; ok=0; }
 never "giving up" "$log"
@@ -60,10 +60,10 @@ never "couldn't be promoted" "$log"
 never "a spare given no usable promotion" "$log"
 never "could not be restarted" "$log"
 # Boot 2: no spare at all; each kill a new process.
-need 1 "devmgr: nospare: no warm spare" "$nolog"
-need 5 "devmgr: fat-data: new process started (no spare waited)" "$nolog"
-need 5 "devmgr: fat-data: kill to first answer" "$nolog"
-never "devmgr: a warm spare" "$nolog"
+need 1 "volumes: nospare: no warm spare" "$nolog"
+need 5 "volumes: fat-data: new process started (no spare waited)" "$nolog"
+need 5 "volumes: fat-data: kill to first answer" "$nolog"
+never "volumes: a warm spare" "$nolog"
 never "spare promoted" "$nolog"
 never "giving up" "$nolog"
 never "init: /data is gone" "$out/fatnospare.run.log"

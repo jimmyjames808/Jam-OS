@@ -414,12 +414,17 @@ void    *jwl_window_user(const struct jwl_window *w);
  * channel is read as it comes (bound to the client's port), at most
  * JWL_CLIP_MAX bytes and for at most JWL_CLIP_WAIT_NS; more, a message
  * carrying handles, or the time running out drops the transfer. The
- * owner writes without waiting: a reader whose channel is full gets the
- * end at once. */
+ * owner writes without waiting: what a reader's full channel (or the
+ * owner's own job) refuses is kept, with the end, and tried again at
+ * each dispatch until JWL_CLIP_WAIT_NS from the send, then the end is
+ * closed (by then the reader has given up: a short paste never looks
+ * whole). At most JWL_CLIP_SENDS transfers wait so; one more gives up
+ * the oldest. */
 
 #define JWL_CLIP_MAX     (1u << 20)          /* bytes of text a paste takes, at most */
 #define JWL_CLIP_WAIT_NS (2 * NS_PER_S)      /* how long a paste waits for its text */
 #define JWL_CLIP_CHUNK   65536u              /* bytes a transfer's message carries, at most */
+#define JWL_CLIP_SENDS   4u                  /* the owner's transfers waiting for room, at most */
 
 /* Offer text (n bytes, UTF-8, copied) as the selection, with the serial of
  * the last input event the client got (a key or button press, the

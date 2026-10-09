@@ -291,13 +291,13 @@ bool t_jwl_fuzz_decode(void)
 
 /* ---- the transport ----------------------------------------------------------------- */
 
-/* One batch (a JWL1 header unless mutated, then b[0..n)) with nh fresh
+/* One batch (a JWL2 header unless mutated, then b[0..n)) with nh fresh
  * VMOs into a fresh compositor connection: it takes every message or dies
  * with the error it wrote. */
 static bool feed_conn(const uint8_t *b, size_t n, unsigned nh, uint32_t *seed, struct tally *t)
 {
     static uint8_t raw[JWL_BATCH_MAX];
-    uint32_t hdr[4] = { JWL_MAGIC, 0, nh, 0 };
+    uint32_t hdr[4] = { JWL_MAGIC, nh, 0, 0 };
     if (jt_rng(seed) % 16 == 0)
         hdr[jt_rng(seed) % 4] ^= 1u << (jt_rng(seed) % 32);
     if (n > sizeof(raw) - 16)

@@ -6,7 +6,7 @@
 #
 # Restart: usb-storage keeps nothing across a restart. ERR_PEER_CLOSED:
 # the stick is gone, or usb-storage ended: the client (a filesystem
-# service) ends too; devmgr starts a new one on a new channel when the
+# service) ends too; volumes starts a new one on a new channel when the
 # disk is back. The other way round: a request from a client that has
 # gone is never started (the fence, drivers/usb-storage/block.c), so
 # nothing a dead filesystem service left queued lands after its

@@ -1,12 +1,12 @@
-/* devmgr: the filesystem services on the disks' partitions (disk.c has
+/* volumes: the filesystem services on the disks' partitions (disk.c has
  * the disks and the steps that decide what each is): starting one on a
  * partition, its handles and its mount path, the /usbN services of disks
  * that aren't the boot disk (one started at a time, so the numbers follow
  * the order the volumes were found in), a service that ended,
- * DEVMGR_REMOUNT, and DEVMGR_ESP_WRITE (the boot disk's ESP read-write
+ * VOLUMES_REMOUNT, and VOLUMES_ESP_WRITE (the boot disk's ESP read-write
  * for init alone: the same stop and restart, and no mount meanwhile).
  *
- * A service's `fs` channel is devmgr's, both ends, from its first start
+ * A service's `fs` channel is volumes', both ends, from its first start
  * until it is retired, given up on or stopped in order (a remount): each
  * instance is handed a duplicate of the server end (fs_serve_end), so a
  * restart after a death (spare.c) is the same channel and the same mount.
@@ -17,7 +17,7 @@
 #include <idl/storage.h>
 #include "disk.h"
 
-const char *fs_mount_path(const struct binding *b)
+const char *fs_mount_path(const struct vol *b)
 {
     static char usb[16];
     const struct disk *d = disk_of(b);
@@ -31,83 +31,88 @@ const char *fs_mount_path(const struct binding *b)
     return test ? "/data-test" : "/data";
 }
 
-void fs_ctl_close(struct binding *b)
+void fs_ctl_close(struct vol *b)
 {
     if (b->ctl)
         jam_handle_close(b->ctl);
     b->ctl = HANDLE_INVALID;
 }
 
-void fs_retire(struct binding *b)
+void fs_retire(struct vol *b)
 {
     fs_ctl_close(b);
     fs_kept_release(b);
     struct disk *d = disk_of(b);
-    if (d && d->fs[b->part] == (uint32_t)(b - devs) + 1)
+    if (d && d->fs[b->part] == (uint32_t)(b - vols) + 1)
         d->fs[b->part] = 0;
     sup_reset(b);
-    close_client(b);
-    b->state = DEVMGR_SUP_NONE;
+    fs_close_client(b);
+    b->state = VOLUMES_SUP_NONE;
     b->disk = 0;
     b->path = NULL;   /* a free slot now */
 }
 
-struct binding *fs_find(uint32_t id, uint32_t part)
+struct vol *fs_find(uint32_t id, uint32_t part)
 {
     for (unsigned i = 0; i < MAX_DISKS; i++)
         if (disks[i].state != DISK_FREE && disks[i].id == id && part < MAX_PARTS &&
             disks[i].fs[part])
-            return &devs[disks[i].fs[part] - 1];
+            return &vols[disks[i].fs[part] - 1];
     return NULL;
 }
 
-struct binding *fs_find_mount(uint32_t which, uint32_t flags)
+struct vol *fs_find_mount(uint32_t which, uint32_t flags)
 {
-    bool test = flags & DEVMGR_MOUNT_TEST;
-    if (flags & ~DEVMGR_MOUNT_TEST)
+    bool test = flags & VOLUMES_MOUNT_TEST;
+    if (flags & ~VOLUMES_MOUNT_TEST)
         return NULL;
-    for (unsigned i = 0; i < ndevs; i++) {
-        struct binding *b = &devs[i];
-        if (b->kind != BIND_FS || !b->path || b->test != test)
+    for (unsigned i = 0; i < nvols; i++) {
+        struct vol *b = &vols[i];
+        if (!b->path || b->test != test)
             continue;
-        bool hit = which >= DEVMGR_MOUNT_USB ? b->other && b->usbn == which - DEVMGR_MOUNT_USB
-                   : which == DEVMGR_MOUNT_ESP ? !b->other && b->part == PART_ESP
-                   : which == DEVMGR_MOUNT_DATA && !b->other && b->part == PART_DATA;
+        bool hit = which >= VOLUMES_MOUNT_USB ? b->other && b->usbn == which - VOLUMES_MOUNT_USB
+                   : which == VOLUMES_MOUNT_ESP ? !b->other && b->part == PART_ESP
+                   : which == VOLUMES_MOUNT_DATA && !b->other && b->part == PART_DATA;
         if (hit)
             return b;
     }
     return NULL;
 }
 
-bool fs_channel_kept(const struct binding *b)
+bool fs_channel_kept(const struct vol *b)
 {
-    return b->kind == BIND_FS && b->client && b->serve;
+    return b->client && b->serve;
 }
 
-status_t fs_serve_end(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
+status_t fs_new_channel(struct vol *b, handle_t *client, handle_t *serve)
+{
+    (void)b;
+    status_t st = jam_channel_create(client, serve);
+    if (st != OK)
+        return st;
+    st = jam_channel_set_flags(*serve, CHANNEL_NO_HANDLES);
+    if (st != OK) {
+        jam_handle_close(*client);
+        jam_handle_close(*serve);
+    }
+    return st;
+}
+
+status_t fs_serve_end(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
     if (!fs_channel_kept(b)) {
         /* The first start, or the last one failed after its client end
-         * went (start_driver closes it): a new channel. */
+         * went (fs_spawn closes it): a new channel. */
         handle_t client, serve;
-        status_t st = jam_channel_create(&client, &serve);
+        status_t st = fs_new_channel(b, &client, &serve);   /* marked: receives no handles */
         if (st != OK)
             return st;
-        /* fat's end receives no handles (no fs request carries one), so
-         * its queue can't hold a channel end and it can always be handed
-         * to the next instance (M12's D2). */
-        st = jam_channel_set_flags(serve, CHANNEL_NO_HANDLES);
-        if (st != OK) {
-            jam_handle_close(client);
-            jam_handle_close(serve);
-            return st;
-        }
-        close_client(b);
+        fs_close_client(b);
         if (b->serve)
             jam_handle_close(b->serve);
         b->client = client;
         b->serve = serve;
-        b->chan_gen++;   /* a new mount for DEVMGR_MOUNTS */
+        b->chan_gen++;   /* a new mount for VOLUMES_MOUNTS */
     }
     handle_t h;
     status_t st = jam_handle_duplicate(b->serve, RIGHT_SAME, &h);
@@ -118,7 +123,7 @@ status_t fs_serve_end(struct binding *b, struct spawn_handle *x, rights_t *xr, u
     return OK;
 }
 
-status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
+status_t fs_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
     const struct disk *d = disk_of(b);
     if (!d || d->state == DISK_FREE || d->state == DISK_DOWN)
@@ -130,19 +135,19 @@ status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, uns
     bool read_only = !b->other && b->part == PART_DATA ? false : !b->rw;
     status_t st = OK;
     if (!fs_block_prepared(b, &blk))
-        st = storage_open_partition_until(disk_ch(d), now() + CALL_WAIT, b->part, read_only,
+        st = storage_open_partition_until(d->ch, now() + CALL_WAIT, b->part, read_only,
                                           &blk);
     if (st != OK)
         return st;
     x[*n] = (struct spawn_handle){ FAT_SR_BLOCK, blk };
-    xr[(*n)++] = DEVMGR_DRV_CHAN_RIGHTS;   /* not to be passed on */
+    xr[(*n)++] = FAT_CHAN_RIGHTS;   /* not to be passed on */
     /* Its control channel: ours alone, a new one for every start. Without
      * one the service can still be synced and killed. */
     handle_t theirs;
     fs_ctl_close(b);
     if (jam_channel_create(&b->ctl, &theirs) == OK) {
         x[*n] = (struct spawn_handle){ FAT_SR_CTL, theirs };
-        xr[(*n)++] = DEVMGR_DRV_CHAN_RIGHTS;
+        xr[(*n)++] = FAT_CHAN_RIGHTS;
     } else {
         b->ctl = HANDLE_INVALID;
     }
@@ -150,14 +155,14 @@ status_t fs_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, uns
     return OK;
 }
 
-const char *fs_format_arg(const struct binding *b)
+const char *fs_format_arg(const struct vol *b)
 {
     const struct disk *d = disk_of(b);
     bool boot_data = d && d->state == DISK_BOOT && !b->other && b->part == PART_DATA;
     return boot_data ? FAT_ARG_FORMAT : NULL;
 }
 
-const char *fs_end_arg(const struct binding *b)
+const char *fs_end_arg(const struct vol *b)
 {
     if (!b->ended_at)
         return NULL;
@@ -170,37 +175,37 @@ static int usb_number(bool test)
 {
     for (unsigned n = 0; n < MAX_USB_MOUNTS; n++) {
         bool used = false;
-        for (unsigned i = 0; i < ndevs && !used; i++)
-            used = devs[i].kind == BIND_FS && devs[i].path && devs[i].other &&
-                   devs[i].test == test && devs[i].usbn == n;
+        for (unsigned i = 0; i < nvols && !used; i++)
+            used = vols[i].path && vols[i].other &&
+                   vols[i].test == test && vols[i].usbn == n;
         if (!used)
             return (int)n;
     }
     return -1;
 }
 
-/* A free BIND_FS binding (or a new one) for partition `part` of d; `other`:
+/* A free slot (or a new one) for partition `part` of d; `other`:
  * d is not the boot disk, and the service gets a /usbN. */
-static struct binding *fs_binding(struct disk *d, unsigned part, bool other)
+static struct vol *fs_slot(struct disk *d, unsigned part, bool other)
 {
-    struct binding *b = NULL;
+    struct vol *b = NULL;
     int usbn = other ? usb_number(d->test) : 0;
     if (usbn < 0)
         return NULL;
-    for (unsigned i = 0; i < ndevs && !b; i++)
-        if (devs[i].kind == BIND_FS && !devs[i].path && !devs[i].proc &&
-            devs[i].state == DEVMGR_SUP_NONE)
-            b = &devs[i];
-    if (!b && ndevs < MAX_DEVS)
-        b = &devs[ndevs++];
+    for (unsigned i = 0; i < nvols && !b; i++)
+        if (!vols[i].path && !vols[i].proc &&
+            vols[i].state == VOLUMES_SUP_NONE)
+            b = &vols[i];
+    if (!b && nvols < MAX_VOLS)
+        b = &vols[nvols++];
     if (!b)
         return NULL;
     uint32_t gen = b->gen;   /* kept across uses: stale port packets stay stale */
-    *b = (struct binding){ .kind = BIND_FS, .path = FAT_PATH, .test = d->test, .gen = gen,
-                           .usb_if = -1, .disk = (uint32_t)(d - disks) + 1,
-                           .part = (uint8_t)part, .other = other, .usbn = (uint8_t)usbn };
+    *b = (struct vol){ .path = FAT_PATH, .test = d->test, .gen = gen,
+                       .disk = (uint32_t)(d - disks) + 1, .part = (uint8_t)part,
+                       .other = other, .usbn = (uint8_t)usbn };
     snprintf(b->name, sizeof(b->name), "fat-%s", fs_mount_path(b) + 1);
-    d->fs[part] = (uint32_t)(b - devs) + 1;
+    d->fs[part] = (uint32_t)(b - vols) + 1;
     return b;
 }
 
@@ -208,17 +213,17 @@ static struct binding *fs_binding(struct disk *d, unsigned part, bool other)
 status_t fs_start(struct disk *d, unsigned part, bool other)
 {
     if (!in_bootfs(FAT_PATH)) {
-        say(false, "devmgr: %s: %s is not in bootfs: no filesystem", disk_name(d), FAT_PATH);
+        say(false, "volumes: %s: %s is not in bootfs: no filesystem", disk_name(d), FAT_PATH);
         return ERR_NOT_FOUND;
     }
-    struct binding *b = fs_binding(d, part, other);
+    struct vol *b = fs_slot(d, part, other);
     if (!b) {
-        say(false, "devmgr: %s partition %u: no room for another mount", disk_name(d), part + 1);
+        say(false, "volumes: %s partition %u: no room for another mount", disk_name(d), part + 1);
         return ERR_NO_RESOURCES;
     }
     b->last = fs_run(b, false);
     status_t st = b->last;
-    say(false, "devmgr: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1, FAT_PATH,
+    say(false, "volumes: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1, FAT_PATH,
         fs_mount_path(b), other || part == PART_ESP ? ", read-only" : "", status_str(st));
     if (st != OK)
         fs_retire(b);
@@ -231,7 +236,7 @@ status_t fs_start(struct disk *d, unsigned part, bool other)
  * once, not once per service. */
 /* The desktop's notice of another stick mounted: once a mount, not again
  * when `mount -w` or a crash restarts its service; a test disk's never. */
-void disk_told_added(struct disk *d, const struct binding *b)
+void disk_told_added(struct disk *d, const struct vol *b)
 {
     unsigned bit = 1u << b->part;
     if (d->test || b->part >= MAX_PARTS || (d->told & bit))
@@ -246,23 +251,23 @@ void disk_told_added(struct disk *d, const struct binding *b)
     else
         snprintf(body, sizeof(body), "%lu MB at %s, %s", (unsigned long)d->mib, d->at[b->part],
                  b->rw ? "read-write" : "read-only");
-    notice_post(&devmgr_notices, "USB stick added", body, 'U', NOTICE_APRICOT);
+    notice_post(&notices, "USB stick added", body, 'U', NOTICE_APRICOT);
 }
 
 /* The desktop's notice of the boot disk gone (pulled out: /data and /esp
  * with it) or back (came: it is the boot disk again after one went). Not
- * at a reboot, never a test disk's. */
+ * at a reboot, nor when devmgr ended (quiet), never a test disk's. */
 void disk_told_boot(const struct disk *d, bool came)
 {
     static bool gone;   /* the boot disk went and hasn't come back */
-    if (d->test || shutdown_asked || came != gone)
+    if (d->test || stopping || quiet || came != gone)
         return;
     gone = !came;
     if (came)
-        notice_post(&devmgr_notices, "Jam OS stick is back", "Your files are saved again.", 'U',
+        notice_post(&notices, "Jam OS stick is back", "Your files are saved again.", 'U',
                     NOTICE_APRICOT);
     else
-        notice_post(&devmgr_notices, "Jam OS stick removed",
+        notice_post(&notices, "Jam OS stick removed",
                     "Nothing is saved until it's back.", 'U', NOTICE_RASPBERRY);
 }
 
@@ -276,8 +281,8 @@ static void told_removed(struct disk *d)
             o += (size_t)snprintf(body + o, o < sizeof(body) ? sizeof(body) - o : 0, "%s%s",
                                   o ? " and " : "", d->at[part]);
     d->told = 0;
-    if (o && !shutdown_asked)   /* every driver stopped for a reboot: no news */
-        notice_post(&devmgr_notices, "USB stick removed", body, 'U', NOTICE_BLACKCURRANT);
+    if (o && !stopping && !quiet)   /* a reboot, or devmgr ended: no news */
+        notice_post(&notices, "USB stick removed", body, 'U', NOTICE_BLACKCURRANT);
 }
 
 void drop_services(struct disk *d, enum disk_state state)
@@ -297,9 +302,9 @@ void drop_services(struct disk *d, enum disk_state state)
     for (unsigned part = 0; part < MAX_PARTS; part++) {
         if (!d->fs[part])
             continue;
-        struct binding *b = &devs[d->fs[part] - 1];
+        struct vol *b = &vols[d->fs[part] - 1];
         if (b->proc)
-            stop_driver(b, true, true);
+            fs_stop(b, true, true);
         fs_retire(b);
     }
     mounts_update();
@@ -319,10 +324,10 @@ static bool fat_type(uint8_t type)
  * where a partition turned out to hold none. */
 void others_pump(void)
 {
-    for (unsigned i = 0; i < ndevs; i++) {
-        const struct binding *b = &devs[i];
-        bool alive = b->state == DEVMGR_SUP_RUNNING || b->state == DEVMGR_SUP_RESTARTING;
-        if (b->kind == BIND_FS && b->path && b->other && !b->ready && alive)
+    for (unsigned i = 0; i < nvols; i++) {
+        const struct vol *b = &vols[i];
+        bool alive = b->state == VOLUMES_SUP_RUNNING || b->state == VOLUMES_SUP_RESTARTING;
+        if (b->path && b->other && !b->ready && alive)
             return;
     }
     for (unsigned i = 0; i < MAX_DISKS; i++) {
@@ -347,25 +352,26 @@ void mount_others(struct disk *d)
         if (fat_type(d->type[i]))
             d->want |= (uint8_t)(1u << i);
         else
-            say(false, "devmgr: %s partition %u: type %02x is not FAT: left alone", disk_name(d),
+            say(false, "volumes: %s partition %u: type %02x is not FAT: left alone", disk_name(d),
                 i + 1, d->type[i]);
     }
     if (!d->want)
-        say(false, "devmgr: %s: no FAT partition to mount: left alone", disk_name(d));
+        say(false, "volumes: %s: no FAT partition to mount: left alone", disk_name(d));
     others_pump();
 }
 
 /* An fs.stat of `path` written to b's service without waiting for the
  * answer (fs_answers takes it). Returns its transaction id. */
-uint32_t ask_stat(const struct binding *b, const char *path, status_t *st)
+uint32_t ask_stat(const struct vol *b, const char *path, status_t *st)
 {
-    if (++txids == 0)
+    txids = (txids + 1) & ~CHANNEL_TXID_KERNEL;
+    if (txids == 0)
         txids++;
     *st = fs_stat_send(b->client, txids, path, (uint32_t)strlen(path));
     return txids;
 }
 
-bool fs_check_ended(struct binding *b, bool no_volume)
+bool fs_check_ended(struct vol *b, bool no_volume)
 {
     struct disk *d = disk_of(b);
     if (!d)
@@ -376,10 +382,10 @@ bool fs_check_ended(struct binding *b, bool no_volume)
     }
     if (!b->other || !no_volume)
         return false;
-    say(false, "devmgr: %s partition %u (type %02x) holds no FAT volume %s can read: left alone, "
+    say(false, "volumes: %s partition %u (type %02x) holds no FAT volume %s can read: left alone, "
         "nothing written to it", disk_name(d), b->part + 1, d->type[b->part], FAT_PATH);
     problems += !sup_job_empty(b->job, b->path);
-    forget_driver(b);
+    fs_forget(b);
     fs_retire(b);
     return true;
 }
@@ -387,7 +393,7 @@ bool fs_check_ended(struct binding *b, bool no_volume)
 /* b's running service stopped in order and started again on a `block`
  * channel opened read-write or read-only (its slot freed if it can't
  * start). */
-static status_t fs_restart(struct binding *b, bool writable)
+static status_t fs_restart(struct vol *b, bool writable)
 {
     uint64_t t0 = now();
     char path[16];
@@ -397,10 +403,10 @@ static status_t fs_restart(struct binding *b, bool writable)
      * fails instead of being lost. Only one that doesn't answer is killed. */
     status_t stopped = b->ctl ? fsctl_stop_until(b->ctl, now() + SYNC_WAIT) : ERR_NOT_SUPPORTED;
     if (stopped != OK)
-        say(false, "devmgr: %s: its filesystem service did not stop in order (%s): killed%s",
+        say(false, "volumes: %s: its filesystem service did not stop in order (%s): killed%s",
             path, status_str(stopped), b->rw ? "; what it had not synced is lost" : "");
-    stop_driver(b, stopped != OK, true);
-    b->state = DEVMGR_SUP_NONE;
+    fs_stop(b, stopped != OK, true);
+    b->state = VOLUMES_SUP_NONE;
     sup_reset(b);
     /* Stopped in order: it kept nothing, and the next one starts fresh on a
      * new `fs` channel (the old one's clients see ERR_PEER_CLOSED). */
@@ -408,7 +414,7 @@ static status_t fs_restart(struct binding *b, bool writable)
     b->rw = writable;
     b->last = fs_run(b, false);   /* a new `block` channel, opened the new way */
     status_t st = b->last;
-    say(false, "devmgr: %s: its filesystem service started again, %s (%s), %lu ms after "
+    say(false, "volumes: %s: its filesystem service started again, %s (%s), %lu ms after "
         "the remount was asked for", path, writable ? "read-write" : "read-only",
         status_str(st), (unsigned long)((now() - t0) / NS_PER_MS));
     if (st != OK) {
@@ -420,14 +426,13 @@ static status_t fs_restart(struct binding *b, bool writable)
 
 status_t disk_remount(unsigned n, bool test, bool writable)
 {
-    struct binding *b = NULL;
-    for (unsigned i = 0; i < ndevs && !b; i++)
-        if (devs[i].kind == BIND_FS && devs[i].path && devs[i].other && devs[i].test == test &&
-            devs[i].usbn == n)
-            b = &devs[i];
+    struct vol *b = NULL;
+    for (unsigned i = 0; i < nvols && !b; i++)
+        if (vols[i].path && vols[i].other && vols[i].test == test && vols[i].usbn == n)
+            b = &vols[i];
     if (!b)
         return ERR_NOT_FOUND;
-    if (b->state != DEVMGR_SUP_RUNNING || !b->proc || !b->ready)
+    if (b->state != VOLUMES_SUP_RUNNING || !b->proc || !b->ready)
         return ERR_BAD_STATE;   /* not mounted (yet, or no longer) */
     if (b->rw == writable)
         return OK;
@@ -436,13 +441,13 @@ status_t disk_remount(unsigned n, bool test, bool writable)
 
 status_t disk_esp_write(bool writable, handle_t *out)
 {
-    struct binding *b = NULL;
+    struct vol *b = NULL;
     for (unsigned i = 0; i < MAX_DISKS && !b; i++)
         if (disks[i].state == DISK_BOOT && !disks[i].test && disks[i].fs[PART_ESP])
-            b = &devs[disks[i].fs[PART_ESP] - 1];
+            b = &vols[disks[i].fs[PART_ESP] - 1];
     if (!b)
         return ERR_NOT_FOUND;
-    if (b->state != DEVMGR_SUP_RUNNING || !b->proc || !b->client)
+    if (b->state != VOLUMES_SUP_RUNNING || !b->proc || !b->client)
         return ERR_BAD_STATE;   /* stopped, or restarting after a crash */
     status_t st = b->rw == writable ? OK : fs_restart(b, writable);
     if (st == OK && writable)

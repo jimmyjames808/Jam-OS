@@ -3,13 +3,13 @@
  *
  * fsctl: a filesystem service's control channel, served by fat
  * (user/services/fat) to whoever started it with one (<fatsvc.h>:
- * FAT_SR_CTL): devmgr, which keeps the client end to itself. What it allows
+ * FAT_SR_CTL): volumes, which keeps the client end to itself. What it allows
  * is not for a filesystem's clients, so it is not part of `fs`.
  * Format: see tools/genidl.py.
  *
- * Restart: this channel is not kept: devmgr makes a new one for each
+ * Restart: this channel is not kept: volumes makes a new one for each
  * instance, a successor too, so after ERR_PEER_CLOSED the instance is gone
- * and the next has a new channel. A stop in order also ends what devmgr
+ * and the next has a new channel. A stop in order also ends what volumes
  * keeps for the mount (the `fs` channel, the state, the keeper's handles),
  * so the next start is a fresh one.
  *
@@ -53,6 +53,8 @@ struct fsctl_stats_rep {
 
 #define FSCTL_REQ_MAX 8u   /* bytes: the biggest request */
 #define FSCTL_REP_MAX 48u   /* bytes: the biggest reply */
+#define FSCTL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define FSCTL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -252,7 +254,7 @@ static inline status_t fsctl_reply_stats(struct idl_txn idl_txn, status_t idl_st
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (FSCTL_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (FSCTL_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -342,7 +344,7 @@ static inline status_t fsctl_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by fsctl_take_slot, or found there by a
  * successor), which came on ch: as fsctl_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (FSCTL_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,

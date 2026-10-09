@@ -1,12 +1,12 @@
 #!/bin/sh
 # The boot disk is the one the machine booted from, by its MBR disk id
-# (devmgr's disk.c): a plain boot with a second Jam OS stick on qemu-xhci
+# (volumes' disk.c): a plain boot with a second Jam OS stick on qemu-xhci
 # port 2, a copy of the image with another disk id and other-stick.txt on
 # its data partition (tools/shell-tests/bootdisk.txt). Checked: the
 # kernel's "boot disk: MBR disk id" line names the boot stick's id; /data
 # is the boot stick's (no other-stick.txt in `ls /data`) and the other
 # stick's data partition is /usb1; after a `reboot` (kexec) the next
-# kernel has the id from the kernel before and devmgr chooses the same.
+# kernel has the id from the kernel before and volumes chooses the same.
 # QEMU_SMP passes through. Usage: tools/bootdisk-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1 name=bootdisk

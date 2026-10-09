@@ -18,13 +18,14 @@
  * Format: see tools/genidl.py.
  *
  * Restart: fat's restart is not seen (ARCHITECTURE.md, "Services that
- * outlive their process"): devmgr keeps this channel and every view's
+ * outlive their process"): volumes keeps this channel and every view's
  * across fat's death, a call made meanwhile waits in the channel for the
  * successor, and the request in progress is finished exactly once (a
  * request in progress at two crashes is answered ERR_IO). ERR_PEER_CLOSED
  * means the mount itself went: its stick pulled, `mount -w` / `-r` (a
- * stop in order), devmgr gave up on the service (its sixth crash in a
- * minute), or /boot's server (which keeps no state) ended. Whoever gave
+ * stop in order), volumes gave up on the service (its sixth crash in a
+ * minute), volumes itself ended (every mount goes with it, and comes
+ * back fresh), or /boot's server (which keeps no state) ended. Whoever gave
  * the mount gives the new channel when there is one (init sends its
  * followers' namespaces the change, libos's ns_update), and every file
  * opened through the old one is closed.
@@ -158,6 +159,8 @@ struct fs_view_rep {
 
 #define FS_REQ_MAX 8206u   /* bytes: the biggest request */
 #define FS_REP_MAX 8208u   /* bytes: the biggest reply */
+#define FS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define FS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1056,8 +1059,8 @@ static inline status_t fs_reply_stat(struct idl_txn idl_txn, status_t idl_st, ui
 /* Answer the fs.readdir request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID, or a varying result past its N (or a str that isn't
- * one). Returns the write's status (idl_reply_write). */
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
 static inline status_t fs_reply_readdir(struct idl_txn idl_txn, status_t idl_st, uint32_t next, uint16_t count, const uint8_t *entries, uint32_t entries_len)
 {
     uint8_t *idl_b0 = (uint8_t *)drv_malloc(8208);
@@ -1197,7 +1200,7 @@ static inline status_t fs_reply_view(struct idl_txn idl_txn, status_t idl_st, ha
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (FS_REP_MAX bytes) and the handles it carries
- * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * into rhs (FS_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
  * handles, or closes them if it never sends it. */
@@ -1502,7 +1505,7 @@ static inline status_t fs_take_slot(handle_t ch, const struct idl_slot *slot,
 /* Run the request in slot (taken by fs_take_slot, or found there by a
  * successor), which came on ch: as fs_dispatch_on, its reply built
  * in slot->r and the handles that reply carries put into rhs
- * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * (FS_REP_HANDLES slots; *rhn of them). A request that carried handles is
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
