@@ -1008,6 +1008,7 @@ static const struct {
     { "desk_room", t_desk_room },
     { "desk_strip", t_desk_strip },
     { "desk_anim", t_desk_anim },
+    { "desk_anim_big", t_desk_anim_big },
     { "desk_cursors", t_desk_cursors },
     { "desk_alttab", t_desk_alttab },
     { "desk_alttab_gone", t_desk_alttab_gone },

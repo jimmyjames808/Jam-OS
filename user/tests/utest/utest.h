@@ -646,6 +646,7 @@ bool t_desk_minimise(void);
 bool t_desk_room(void);
 bool t_desk_strip(void);
 bool t_desk_anim(void);
+bool t_desk_anim_big(void);
 bool t_desk_cursors(void);
 bool t_desk_alttab(void);
 bool t_desk_alttab_gone(void);
