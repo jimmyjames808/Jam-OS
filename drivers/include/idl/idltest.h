@@ -244,7 +244,7 @@ static inline status_t idltest_make_vmo_call(handle_t ch, bool idl_within, uint6
     uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
     status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
                                idl_rh, 1, &idl_got[1], idl_within, idl_t);
-    uint32_t idl_rhn = idl_got[1];
+    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
     idl_n = idl_got[0];
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
@@ -1225,7 +1225,7 @@ static inline status_t idltest_reply_sums(struct idl_txn idl_txn, status_t idl_s
  * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
- * handles, or closes them if it can't. */
+ * handles, or closes them if it never sends it. */
 static inline uint32_t idltest_dispatch_on(handle_t ch, const struct idltest_ops *ops, void *ctx,
                                            const void *req, uint32_t n, void *rep, handle_t *rhs,
                                            uint32_t *rhn)
@@ -1533,7 +1533,7 @@ static inline status_t idltest_take_slot(handle_t ch, const struct idl_slot *slo
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
- * or closes them if it can't. */
+ * or closes them if it never sends it. */
 static inline uint32_t idltest_run_slot(handle_t ch, const struct idl_slot *slot,
                                         const struct idltest_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
 {
@@ -1583,8 +1583,10 @@ static inline status_t idltest_serve_one(handle_t ch, const struct idltest_ops *
     handle_t idl_rhs[IDL_REP_HANDLES];
     uint32_t idl_rhn = 0;
     uint32_t idl_rn = idltest_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
-    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
-        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
     return OK;
 }
 
@@ -1999,7 +2001,7 @@ static inline status_t idltest_two_reply_big_later(struct idl_txn idl_txn, statu
  * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
- * handles, or closes them if it can't. */
+ * handles, or closes them if it never sends it. */
 static inline uint32_t idltest_two_dispatch_on(handle_t ch, const struct idltest_two_ops *ops, void *ctx,
                                                const void *req, uint32_t n, void *rep, handle_t *rhs,
                                                uint32_t *rhn)
@@ -2105,7 +2107,7 @@ static inline status_t idltest_two_take_slot(handle_t ch, const struct idl_slot 
  * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
  * reply's length: 0 means no reply (no txid, or a `later` handler
  * answers it itself). No I/O; the caller sends the reply with the handles,
- * or closes them if it can't. */
+ * or closes them if it never sends it. */
 static inline uint32_t idltest_two_run_slot(handle_t ch, const struct idl_slot *slot,
                                             const struct idltest_two_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
 {
@@ -2153,8 +2155,10 @@ static inline status_t idltest_two_serve_one(handle_t ch, const struct idltest_t
         handle_t idl_rhs[IDL_REP_HANDLES];
         uint32_t idl_rhn = 0;
         uint32_t idl_rn = idltest_two_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
-        if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
-            idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
+        if (!idl_rn)
+            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+        else   /* the reply's handles are gone whatever the write's status */
+            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
     }
     drv_free(idl_q);
     return idl_st;
@@ -2327,7 +2331,8 @@ static inline status_t idltest_ev_note(handle_t ch, uint32_t key, const char *te
 
 /* The event idltest_ev.give, to the server: written on ch, never answered.
  * ERR_SHOULD_WAIT: the peer's queue is full (its flow control).
- * The handles are moved in every case: sent, or closed. */
+ * The handles are gone in every case: sent, closed, or lost with a
+ * write that failed (the caller never closes them after this). */
 static inline status_t idltest_ev_give(handle_t ch, uint32_t key, handle_t obj)
 {
     handle_t idl_hs[1] = { obj };
@@ -2338,10 +2343,10 @@ static inline status_t idltest_ev_give(handle_t ch, uint32_t key, handle_t obj)
     idl_q->txid = 0;   /* an event */
     idl_q->ordinal = IDLTEST_EV_GIVE;
     idl_q->key = key;
-    if (idl_st == OK)
-        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, 1);
     if (idl_st != OK)
-        idl_close_all(idl_hs, 1);
+        idl_close_all(idl_hs, 1);   /* never sent */
+    else
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, 1);
     return idl_st;
 }
 
@@ -2366,7 +2371,8 @@ static inline status_t idltest_ev_ring(handle_t ch, uint32_t key, const uint8_t 
 
 /* The event idltest_ev.gift, to the client: written on ch, never answered.
  * ERR_SHOULD_WAIT: the peer's queue is full (its flow control).
- * The handles are moved in every case: sent, or closed. */
+ * The handles are gone in every case: sent, closed, or lost with a
+ * write that failed (the caller never closes them after this). */
 static inline status_t idltest_ev_gift(handle_t ch, uint32_t key, handle_t a, handle_t b)
 {
     handle_t idl_hs[2] = { a, b };
@@ -2377,10 +2383,10 @@ static inline status_t idltest_ev_gift(handle_t ch, uint32_t key, handle_t a, ha
     idl_q->txid = 0;   /* an event */
     idl_q->ordinal = IDLTEST_EV_GIFT;
     idl_q->key = key;
-    if (idl_st == OK)
-        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, 2);
     if (idl_st != OK)
-        idl_close_all(idl_hs, 2);
+        idl_close_all(idl_hs, 2);   /* never sent */
+    else
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_hs, 2);
     return idl_st;
 }
 
@@ -2560,7 +2566,7 @@ static inline status_t idltest_ev_event_in(const struct idltest_ev_ops *idl_tab,
  * length: 0 means no reply (the message has no txid, a `later` handler
  * answers it itself, or it is an event: txid 0, never answered; one no
  * handler takes is dropped). No I/O; the caller sends the reply with the
- * handles, or closes them if it can't.
+ * handles, or closes them if it never sends it.
  * The idl_nh handles at idl_hs (an event's) are taken in every case:
  * given to its handler, or closed. */
 static inline uint32_t idltest_ev_dispatch_h(handle_t ch, const struct idltest_ev_ops *ops, void *ctx,
@@ -2654,7 +2660,7 @@ static inline status_t idltest_ev_take_slot(handle_t ch, const struct idl_slot *
  * closed, *slot->nh 0 after. Returns the reply's length: 0 means no reply
  * (no txid, an event, or a `later` handler answers it itself). No I/O;
  * the caller sends the reply with the handles, or closes them if it
- * can't. */
+ * never sends it. */
 static inline uint32_t idltest_ev_run_slot(handle_t ch, const struct idl_slot *slot,
                                            const struct idltest_ev_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
 {
@@ -2695,8 +2701,10 @@ static inline status_t idltest_ev_serve_one(handle_t ch, const struct idltest_ev
         uint32_t idl_rhn = 0;
         uint32_t idl_rn = idltest_ev_dispatch_h(ch, ops, ctx, idl_q, idl_n, idl_hs, idl_nh, idl_r,
                                          idl_rhs, &idl_rhn);
-        if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
-            idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
+        if (!idl_rn)
+            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+        else   /* the reply's handles are gone whatever the write's status */
+            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
     }
     return idl_st;
 }

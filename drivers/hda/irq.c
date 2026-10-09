@@ -290,8 +290,10 @@ static status_t serve_one(struct loop *l, handle_t ch, enum chan_kind kind)
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
     uint32_t rn = hda_dispatch(ops, ctx, q, n, r, rhs, &rhn);
-    if (!rn || drv_channel_write(ch, r, rn, rhs, rhn) != OK)
-        idl_close_all(rhs, rhn);   /* not sent: they're still ours */
+    if (!rn)
+        idl_close_all(rhs, rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, r, rn, rhs, rhn);
     return OK;
 }
 

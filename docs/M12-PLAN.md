@@ -688,6 +688,11 @@ reviews raise (one at a time, as these), and marks every other finding
 
 ## Stage C: the fixes
 
+**Track names (2026-10-09):** the genidl track's two hand-backs are called
+**IDL1** (arrays, events, several protocols per file: wave C1) and **IDL2**
+(handle arguments: wave C2), not G1/G2, which are the graphics milestones.
+The reviews' "G" and "G2" mean these.
+
 Each track is about one agent-hour, starts from main, owns the files
 listed (an edit outside them stays minimal and is named in its report),
 fixes its findings one commit each with a test that fails without it (or

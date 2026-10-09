@@ -47,8 +47,10 @@ static void answer(struct mixer *m, handle_t ch, uint32_t txid, uint32_t index)
     if (st == OK && !h)
         st = ERR_INTERNAL;
     struct audioctl_device_rep r = { .txid = txid, .status = st };
-    if (jam_channel_write(ch, &r, sizeof(r), &h, st == OK ? 1 : 0) != OK && st == OK)
-        jam_handle_close(h);   /* the caller is gone */
+    /* h is gone whatever the write's status (a send's handles are always
+     * moved; the caller may be gone): never closed after it, as its value
+     * may already be another thread's new handle. */
+    (void)jam_channel_write(ch, &r, sizeof(r), &h, st == OK ? 1 : 0);
 }
 
 static void thread_main(void *arg)
@@ -104,12 +106,12 @@ static bool hand(struct mixer *m, unsigned i, handle_t ch)
     struct device_slot *d = &m->saved->dev[i];
     struct device_req q = { d->txid, d->index, i };
     handle_t dup = HANDLE_INVALID;
+    /* dup goes with the write whatever its status (a send's handles are
+     * always moved): never closed after it. */
     bool sent = jam_handle_duplicate(ch, RIGHT_SAME, &dup) == OK &&
-                jam_channel_write(to_thread, &q, sizeof(q), &dup, 1) == OK;   /* dup goes too */
+                jam_channel_write(to_thread, &q, sizeof(q), &dup, 1) == OK;
     if (sent)
         return true;
-    if (dup)
-        jam_handle_close(dup);
     __atomic_store_n(&d->busy, 0, __ATOMIC_RELEASE);
     return false;
 }

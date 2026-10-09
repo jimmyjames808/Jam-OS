@@ -242,10 +242,11 @@ static status_t offer(handle_t ch, uint32_t flags, struct update_answer *a)
         if (st != OK)
             break;
     }
-    if (st == OK)
-        st = jam_channel_write(ch, o, sizeof(*o), hs, fetch.parts);   /* moves the handles */
-    for (unsigned i = 0; st != OK && i < nh; i++)
-        jam_handle_close(hs[i]);
+    if (st != OK)   /* a duplicate failed: the ones made were never sent */
+        for (unsigned i = 0; i < nh; i++)
+            jam_handle_close(hs[i]);
+    else   /* moves the handles, whatever its status: never closed after it */
+        st = jam_channel_write(ch, o, sizeof(*o), hs, fetch.parts);
     free(o);
     signals_t seen;
     if (st == OK)

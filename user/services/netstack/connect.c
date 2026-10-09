@@ -91,9 +91,10 @@ static void thread_main(void *arg)
         handle_t hs[DEV_HANDLES] = { 0 };
         find(d, &f, hs);
         uint32_t nhs = f.st == OK ? DEV_HANDLES : 0;
-        if (jam_channel_write(thread_end, &f, sizeof(f), hs, nhs) != OK)
-            for (unsigned k = 0; k < nhs; k++)
-                jam_handle_close(hs[k]);   /* not sent: still ours */
+        /* hs is gone whatever the write's status (a send's handles are
+         * always moved): never closed after it, as their values may already
+         * be another thread's new handles. */
+        (void)jam_channel_write(thread_end, &f, sizeof(f), hs, nhs);
     }
     jam_handle_close(thread_end);
 }

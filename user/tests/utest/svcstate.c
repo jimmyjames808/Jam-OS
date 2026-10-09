@@ -47,9 +47,7 @@ static status_t service_handle(handle_t state, handle_t *out)
         return st;
     }
     rights_t r = SVCSTATE_SERVICE_RIGHTS;
-    st = jam_channel_write_rights(a, "", 0, &give, &r, 1);
-    if (st != OK)
-        jam_handle_close(give);
+    st = jam_channel_write_rights(a, "", 0, &give, &r, 1);   /* give goes, whatever st */
     uint32_t nb = 0, nh = 0;
     struct channel_read_args rd = {
         .h = b, .rd_handles = (uint64_t)(uintptr_t)out, .rd_hcap = 1,

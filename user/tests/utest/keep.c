@@ -264,10 +264,9 @@ static status_t raw(handle_t ch, const void *m, uint32_t nb, const handle_t *hs,
         else if (jam_event_create(&ev[i]) != OK)
             return ERR_NO_RESOURCES;
     }
-    status_t st = jam_channel_write(ch, m, nb, ev, nh);
-    for (unsigned i = 0; st != OK && i < nh; i++)
-        jam_handle_close(ev[i]);
-    return st;
+    /* ev is gone whatever the write's status (a send's handles are always
+     * moved): never closed after it. */
+    return jam_channel_write(ch, m, nb, ev, nh);
 }
 
 /* The keeper refuses (and counts) the message queued on its end, keeps

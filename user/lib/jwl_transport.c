@@ -289,14 +289,19 @@ static bool room_now(struct jwl_conn *c)
     return seen & (SIG_WRITABLE | SIG_PEER_CLOSED);   /* a closed peer: the write says so */
 }
 
-/* Write one batch (buf has room for the header at its start). OK: its
- * handles went with it. ERR_SHOULD_WAIT: the channel or our job can't
- * take it now (it stays ours, handles too); anything else kills the
- * connection. A batch with handles that the write refuses all the same
- * (our job out of message bytes) kills it too: its handles are gone. */
+/* Write one batch (buf has room for the header at its start), with the
+ * *hn handles at h (its owner's count: zeroed once they are handed to the
+ * kernel). OK: its handles went with it. ERR_SHOULD_WAIT: the channel or
+ * our job can't take it now (it stays ours, handles too); anything else
+ * kills the connection. A batch with handles that the write refuses all
+ * the same (our job out of message bytes) kills it too: its handles are
+ * gone with the write (a send's handles are always moved), so its count is
+ * zeroed before die() and they are never closed again (their values may
+ * already be another thread's new handles). */
 static status_t write_batch(struct jwl_conn *c, uint8_t *buf, uint32_t len, const handle_t *h,
-                            uint32_t nh)
+                            uint32_t *hn)
 {
+    uint32_t nh = hn ? *hn : 0;
     wr32(buf, JWL_MAGIC);
     wr32(buf + 4, c->side == JWL_CLIENT ? c->nread : 0);
     wr32(buf + 8, nh);
@@ -306,6 +311,8 @@ static status_t write_batch(struct jwl_conn *c, uint8_t *buf, uint32_t len, cons
     status_t st = jam_channel_write(c->ch, buf, len, h, nh);
     if ((st == ERR_SHOULD_WAIT || st == ERR_NO_MEMORY) && !nh)
         return ERR_SHOULD_WAIT;
+    if (hn)
+        *hn = 0;   /* gone whatever the status: sent, or closed by the kernel */
     if (st != OK)
         return die(c, st);
     if (c->side == JWL_CLIENT)
@@ -357,7 +364,7 @@ static status_t seal(struct jwl_conn *c)
         return OK;
     status_t st = ERR_SHOULD_WAIT;
     if (!c->held && window_open(c))
-        st = write_batch(c, c->out, c->out_len, c->out_h, c->out_nh);
+        st = write_batch(c, c->out, c->out_len, c->out_h, &c->out_nh);
     if (st == ERR_SHOULD_WAIT)
         return hold(c);
     if (st == OK) {
@@ -372,7 +379,7 @@ static status_t drain(struct jwl_conn *c)
 {
     while (c->held && window_open(c)) {
         struct jwl_held *b = c->held;
-        status_t st = write_batch(c, b->bytes, b->len, b->h, b->nh);
+        status_t st = write_batch(c, b->bytes, b->len, b->h, &b->nh);
         if (st == ERR_SHOULD_WAIT)
             return OK;
         if (st != OK)
