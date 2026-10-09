@@ -1,0 +1,53 @@
+# update: one offer of a fetched build to init (<update.h>, docs/M9-PLAN.md
+# "update: a new build from the Mac"), on the offer channel init makes for
+# it (initctl.update_offer). Served by init (user/services/init/update.c),
+# called once by the fetcher (bin/update, user/services/update) or a test
+# program (user/tests/updtest); the manifest and the network protocol
+# (<updwire.h>) are not this protocol and do not change.
+#
+# The caller sends `offer` with the manifest as fetched, the kernel's and
+# the boot image's VMOs, and the boot menu's when the manifest names one;
+# init checks the manifest's signature with the update key in its own boot
+# image, copies the files into VMOs only it holds, checks each length and
+# SHA-256 against the manifest (which it parses itself: nothing the caller
+# says about it is trusted), makes the copies the kernel's stored copy
+# (kexec_load) and, if asked, writes them to the stick's ESP. The answer
+# comes when that is done, seconds later for a stick write: an offer is a
+# `later` call, and the caller waits as long as a stick write takes. Any
+# refusal leaves the stored kernel as it was. One offer a channel: init
+# closes the channel after the answer. While an offer is being checked a
+# new offer channel is refused (initctl.update_offer: ERR_BAD_STATE).
+#
+# What init refuses before it looks at the manifest is the generated
+# server's: a request of the wrong size, a manifest past 1024 bytes, more
+# than three handles or one that is no VMO is answered at once with
+# ERR_INVALID_ARGS or ERR_WRONG_TYPE and its handles closed. The rest,
+# every check of the offer itself, is an answer with `verdict` and `why`
+# (enum update_why): the number of VMOs against the manifest's files,
+# flags that do not go together, the signature, sizes and hashes.
+#
+# Restart: none. The channel belongs to one offer. If init ends before it
+# answers (ERR_PEER_CLOSED) the build was not loaded and nothing was
+# written; the caller says so and the owner runs `update` again.
+
+protocol update 82
+
+# Offer the build. flags: UPDATE_OFFER_* (<update.h>). A manifest is at most
+# UPDATE_MANIFEST_MAX (1024) bytes, and an offer carries UPDATE_FILES (2) or
+# UPDATE_PARTS (3) VMOs. kernel_bytes,
+# bootfs_bytes and menu_bytes: each file's length as fetched (its VMO may
+# be longer: page-rounded); menu_bytes is 0 when the manifest names no
+# menu. manifest: the bytes as fetched, not parsed. files: the VMOs, the
+# kernel's, then the boot image's, then the boot menu's if there is one
+# (read access is enough); init checks their number against the manifest.
+# The answer: verdict is OK only when why is UPDATE_ACCEPTED; why (enum
+# update_why) says which check refused it, file
+# (UPDATE_KERNEL, UPDATE_BOOTFS or UPDATE_MENU) which file a size, VMO or
+# hash refusal is about; check_ms the
+# copy and the check; version, git: the manifest's, if it parsed and was
+# signed ("" if not); write_step, stick, write_ms, menu, menu_status,
+# menu_why and already: an UPDATE_OFFER_WRITE offer's stick write (enum
+# update_write_step, update_stick, update_menu); net: the manifest's
+# network default, net_running the running build's; needs: for
+# UPDATE_NEEDS_NEWER the line or format that wants a newer build.
+1  offer  (u32 flags, u64 kernel_bytes, u64 bootfs_bytes, u64 menu_bytes, u8[<=1024] manifest, handle<vmo>[<=3] files) -> (i32 verdict, u32 why, u32 file, u32 check_ms, str[<=47] version, str[<=47] git, u32 write_step, u32 stick, u32 write_ms, str[<=15] net, str[<=15] net_running, str[<=32] needs, u32 menu, i32 menu_status, str[<=95] menu_why, u32 already) later

@@ -2,22 +2,29 @@
  * change the .idl and run `make idl`.
  *
  * logctl: logd's control channel, served by logd (user/services/logd) to
- * whoever started it with one (startup role SR_USER + 2): init, which asks
+ * whoever started it with one (startup role LOGD_SR_CTL): init, which asks
  * for a flush on the way to a reboot so the log's last lines are saved,
  * and publishes it as /svc/logd. That channel also answers the svc
  * protocol's connect (abi/idl/svc.idl) with a channel of the opener's own.
  * Format: see tools/genidl.py.
  *
+ * Two kinds of channel, so two protocols in the file (the M12 plan's Q5):
+ * `logctl`, below, and `crashres` (the end of the file), the one-shot
+ * channel on which logd tells init what became of the panicked boot's log.
+ *
  * Restart: after ERR_PEER_CLOSED logd is gone: there is nothing to flush,
  * and the next logd comes with a new channel (open /svc/logd again).
  *
- * Protocol `logctl` (id 19). Client: logctl_<method>(ch, args..., &results...)
- * (and logctl_<method>_until with a deadline, _within with a timeout), or
- * logctl_<method>_send and logctl_<method>_result without waiting. Server:
- * fill a struct logctl_ops and run logctl_serve(ch, &ops, ctx), or
- * logctl_serve_one / logctl_dispatch_on for a loop of your own, or
- * logctl_take_slot / logctl_run_slot for requests read into slots that outlive
- * the server; logctl_reply_<method> answers a request later. */
+ * Protocols `logctl` (id 19) and `crashres` (id 84): one for each
+ * kind of channel, so a message of one protocol sent on a channel of
+ * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
+ * Client: <proto>_<method>(ch, args..., &results...)
+ * (and <proto>_<method>_until with a deadline, _within with a timeout), or
+ * <proto>_<method>_send and <proto>_<method>_result without waiting. Server:
+ * fill a struct <proto>_ops and run <proto>_serve(ch, &ops, ctx), or
+ * <proto>_serve_one / <proto>_dispatch_on for a loop of your own, or
+ * <proto>_take_slot / <proto>_run_slot for requests read into slots that outlive
+ * the server; <proto>_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -273,5 +280,252 @@ static inline status_t logctl_serve(handle_t ch, const struct logctl_ops *ops, v
         if (idl_st != OK)
             return idl_st;
         idl_s.rn = logctl_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
+    }
+}
+
+
+/* ==== protocol `crashres` (id 84) ===========================================
+ *
+ * crashres: what became of the log of a boot that panicked (<crashlog.h>,
+ * user/services/init/lastboot.c). init starts logd with the panicked
+ * kernel's log (SR_CRASHLOG) and the server end of this channel (startup
+ * role LOGD_SR_CRASH_RESULT); logd saves the log as
+ * /data/logs/<name>-crash.txt before it opens this boot's own log, then
+ * sends one `result` event and closes its end; init is the server and makes
+ * the shell's one-line note from the header and the result. Events only,
+ * to init, no handles. A message that breaks the format (a txid, a status
+ * past the error codes, a path that is not printable ASCII) is dropped by
+ * init's reader and means nothing.
+ *
+ * Reconnect: the channel belongs to one logd. A logd that ends without
+ * sending (init sees ERR_PEER_CLOSED) leaves init waiting for the next
+ * one's, which init starts with a new channel and the same log; init gives
+ * up when none has answered in time (lastboot.c). */
+
+#define CRASHRES_PROTOCOL_ID 84u
+#define CRASHRES_RESULT           0x00540001u
+
+/* Constants (the .idl's `const` lines). */
+/* Longest path in a result, with no NUL. */
+#define CRASHRES_PATH_MAX 95u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct crashres_result_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    int32_t status;
+} __attribute__((packed));
+
+#define CRASHRES_REQ_MAX 109u   /* bytes: the biggest message to the server */
+#define CRASHRES_REP_MAX 8u   /* bytes: the biggest message to the client */
+#define CRASHRES_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define CRASHRES_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* ---- events (one way, txid 0, never answered) -------------------------- */
+
+/* The panicked boot's log is saved (status OK) at `path`, or it is not
+ * (status: why) and `path` is the file tried, or "" if none. */
+/* The event crashres.result, to the server: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t crashres_result(handle_t ch, int32_t status, const char *path, uint32_t path_len)
+{
+    _Alignas(8) uint8_t idl_b0[109];
+    struct crashres_result_msg *idl_q = (struct crashres_result_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = CRASHRES_RESULT;
+    idl_q->status = status;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 95, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with crashres_reply_<method> (now, or later from anywhere). An event's
+ * handler returns nothing (nothing is answered; a NULL one drops it),
+ * owns the handles it is given, and its arrays point into the message. */
+struct crashres_ops {
+    void (*result)(void *ctx, int32_t status, const char *path, uint32_t path_len);
+};
+
+/* Run the event (txid 0) of n bytes at m with nh handles in hs: OK, or
+ * ERR_NOT_SUPPORTED (no such event, or no handler) or ERR_INVALID_ARGS
+ * (it breaks the event's format), its handles closed. */
+static inline status_t crashres_event_in(const struct crashres_ops *idl_tab, void *ctx,
+                                         const void *idl_m, uint32_t idl_n, const handle_t *idl_hs, uint32_t idl_nh)
+{
+    switch (((const struct idl_req_hdr *)idl_m)->ordinal) {
+    case CRASHRES_RESULT: {
+        const struct crashres_result_msg *idl_e = (const struct crashres_result_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 95, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->result)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->result(ctx, idl_e->status, (const char *)idl_p0, idl_l0);
+        return OK;
+    }
+    }
+    idl_close_all(idl_hs, idl_nh);
+    return ERR_NOT_SUPPORTED;
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (CRASHRES_REP_MAX bytes) and the handles it carries
+ * into rhs (CRASHRES_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the message has no txid, a `later` handler
+ * answers it itself, or it is an event: txid 0, never answered; one no
+ * handler takes is dropped). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it. */
+static inline uint32_t crashres_dispatch_on(handle_t ch, const struct crashres_ops *ops, void *ctx,
+                                            const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                            uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    (void)ch;
+    if (n < sizeof(struct idl_req_hdr) || !((const struct idl_req_hdr *)req)->txid) {
+        /* txid 0: an event (or no txid): never answered */
+        if (n >= sizeof(struct idl_req_hdr))
+            (void)crashres_event_in(ops, ctx, req, n, NULL, 0);
+        return 0;
+    }
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    case CRASHRES_RESULT:
+        return sizeof(*idl_h);   /* an event with a txid */
+    }
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* crashres_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t crashres_dispatch(const struct crashres_ops *ops, void *ctx, const void *req, uint32_t n,
+                                         void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return crashres_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t crashres_take_slot(handle_t ch, const struct idl_slot *slot,
+                                          struct idl_reply *rep)
+{
+    if (slot->qcap < CRASHRES_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by crashres_take_slot, or found there by a
+ * successor), which came on ch: as crashres_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (CRASHRES_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it never sends it. */
+static inline uint32_t crashres_run_slot(handle_t ch, const struct idl_slot *slot,
+                                         const struct crashres_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return crashres_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
+static inline bool crashres_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
+}
+
+/* Take one message off ch and answer it. OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t crashres_serve_one(handle_t ch, const struct crashres_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[CRASHRES_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[CRASHRES_REP_MAX];
+    handle_t idl_hs[IDL_READ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, idl_n, idl_nh);
+    if (idl_st != OK)
+        return idl_st;
+    if (idl_nh) {
+        idl_close_all(idl_hs, idl_nh);
+        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = crashres_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
+    return OK;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
+static inline status_t crashres_serve(handle_t ch, const struct crashres_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[CRASHRES_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[CRASHRES_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
+    for (;;) {
+        status_t idl_st = idl_serve_next(&idl_s);
+        if (idl_st == ERR_PEER_CLOSED)
+            return OK;
+        if (idl_st != OK)
+            return idl_st;
+        idl_s.rn = crashres_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }
