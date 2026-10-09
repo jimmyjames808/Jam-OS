@@ -56,8 +56,8 @@ bool t_ns_changes_stay_bounded(void)
     signals_t seen;
     CHECK_ST(jam_object_wait_one(mine, SIG_READABLE, now() + 10 * NS_PER_S, &seen), OK);
     struct channel_read_args ra = {
-        .h = mine, .bytes_cap = sizeof(word), .bytes = (uint64_t)(uintptr_t)&word,
-        .actual_bytes = (uint64_t)(uintptr_t)&n,
+        .h = mine, .rd_cap = sizeof(word), .rd_bytes = (uint64_t)(uintptr_t)&word,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
     };
     CHECK_ST(jam_channel_read(&ra), OK);
     CHECK_ST(info_of(own_job(), &before), OK);

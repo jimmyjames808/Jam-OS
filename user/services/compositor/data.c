@@ -404,9 +404,9 @@ static bool is_channel(handle_t h)
 {
     uint8_t none;
     uint32_t got[2] = { 0, 0 };
-    struct channel_read_args a = { .h = h, .bytes_cap = 0, .bytes = (uint64_t)(uintptr_t)&none,
-                                   .actual_bytes = (uint64_t)(uintptr_t)&got[0],
-                                   .actual_handles = (uint64_t)(uintptr_t)&got[1] };
+    struct channel_read_args a = { .h = h, .rd_cap = 0, .rd_bytes = (uint64_t)(uintptr_t)&none,
+                                   .rd_actual = (uint64_t)(uintptr_t)&got[0],
+                                   .rd_hactual = (uint64_t)(uintptr_t)&got[1] };
     status_t st = jam_channel_read(&a);
     return st == ERR_SHOULD_WAIT || st == ERR_BUFFER_TOO_SMALL || st == OK;
 }

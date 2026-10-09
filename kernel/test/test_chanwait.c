@@ -210,6 +210,26 @@ KTEST(chanwait_ends)
     kobject_unref((struct kobject *)b);
 }
 
+/* The reader's own end closing under it (its last handle closed by
+ * another thread) ends the wait with ERR_CANCELED, as it ends a
+ * channel_call's (m45_call_canceled_by_own_close): not ERR_BAD_STATE. */
+KTEST(chanwait_canceled_by_own_close)
+{
+    struct channel *a, *b;
+    KT_EQ(channel_create(&a, &b), OK);
+    kobject_ref((struct kobject *)b);   /* the reader's, while it waits */
+    struct khandle kh = khandle_from_new((struct kobject *)b, RIGHTS_BASIC);
+    struct reader rd = { 0 };
+    struct thread *t = reader_start(&rd, b);
+    uint64_t t0 = uptime_ns();
+    khandle_release(&kh);   /* b's last handle: it closes */
+    thread_join(t);
+    KT_EQ(rd.st, ERR_CANCELED);
+    KT_ASSERT(uptime_ns() - t0 < NS_PER_S);   /* at once, not at the deadline */
+    kobject_unref((struct kobject *)b);
+    kobject_unref((struct kobject *)a);
+}
+
 /* A reader woken before its message is published (the writer is held
  * between its wake and the store: DBG_CHANNEL_HANDED), and cancelled too,
  * takes the endpoint's lock and finds the message there: it is delivered,

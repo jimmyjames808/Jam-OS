@@ -16,7 +16,6 @@
 #include <devmgr.h>
 #include <os.h>
 
-#define CHANNEL_MSG_MAX 65536   /* CHANNEL_MAX_BYTES in the kernel */
 #define CMD_BME         0x04    /* PCI command register: Bus Master Enable */
 
 /* "utest <mode> ...": run one child mode, return its exit code. */

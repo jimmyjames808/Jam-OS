@@ -150,17 +150,17 @@ static inline status_t idl_serve_next(struct idl_serve *s)
         struct channel_reply_wait_args idl_a = {
             .h = idl_reply ? s->ch : HANDLE_INVALID,
             .wait = s->ch,
-            .bytes = (uint64_t)(uintptr_t)s->q,
-            .bytes_cap = s->qcap,
-            .actual_bytes = (uint64_t)(uintptr_t)&idl_o.n,
-            .actual_handles = (uint64_t)(uintptr_t)&idl_o.nh,
+            .rd_bytes = (uint64_t)(uintptr_t)s->q,
+            .rd_cap = s->qcap,
+            .rd_actual = (uint64_t)(uintptr_t)&idl_o.n,
+            .rd_hactual = (uint64_t)(uintptr_t)&idl_o.nh,
             .deadline_ns = DEADLINE_NEVER,
         };
         if (idl_reply) {
-            idl_a.rbytes = (uint64_t)(uintptr_t)s->r;
-            idl_a.rn = s->rn;
-            idl_a.rh = (uint64_t)(uintptr_t)s->rhs;
-            idl_a.rhn = s->rhn;
+            idl_a.wr_bytes = (uint64_t)(uintptr_t)s->r;
+            idl_a.wr_len = s->rn;
+            idl_a.wr_handles = (uint64_t)(uintptr_t)s->rhs;
+            idl_a.wr_nhandles = s->rhn;
             idl_a.reply_status = (uint64_t)(uintptr_t)&idl_o.rs;
         }
         status_t idl_st = drv_channel_reply_wait(&idl_a);
@@ -260,10 +260,10 @@ static inline bool idl_reply_args(const struct idl_reply *rep, struct channel_re
     if (!rep || rep->ch == HANDLE_INVALID)
         return false;
     a->h = rep->ch;
-    a->rbytes = (uint64_t)(uintptr_t)rep->r;
-    a->rn = rep->rn;
-    a->rh = (uint64_t)(uintptr_t)rep->hs;
-    a->rhn = rep->nh;
+    a->wr_bytes = (uint64_t)(uintptr_t)rep->r;
+    a->wr_len = rep->rn;
+    a->wr_handles = (uint64_t)(uintptr_t)rep->hs;
+    a->wr_nhandles = rep->nh;
     a->reply_status = (uint64_t)(uintptr_t)rs;
     a->mark = (uint64_t)(uintptr_t)rep->mark;
     return true;
@@ -297,12 +297,12 @@ static inline status_t idl_take_after(handle_t ch, const struct idl_slot *slot,
         *slot->nh = 0;
         struct channel_reply_wait_args idl_a = {
             .wait = ch,
-            .bytes = (uint64_t)(uintptr_t)slot->q,
-            .bytes_cap = slot->qcap,
-            .handles = (uint64_t)(uintptr_t)slot->hs,
-            .handles_cap = slot->hcap,
-            .actual_bytes = (uint64_t)(uintptr_t)slot->n,
-            .actual_handles = (uint64_t)(uintptr_t)slot->nh,
+            .rd_bytes = (uint64_t)(uintptr_t)slot->q,
+            .rd_cap = slot->qcap,
+            .rd_handles = (uint64_t)(uintptr_t)slot->hs,
+            .rd_hcap = slot->hcap,
+            .rd_actual = (uint64_t)(uintptr_t)slot->n,
+            .rd_hactual = (uint64_t)(uintptr_t)slot->nh,
             .flags = CHANNEL_REPLY_WAIT_TIMEOUT,
             .deadline_ns = 0,
         };

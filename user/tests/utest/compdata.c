@@ -168,9 +168,9 @@ static bool sent_through(struct dc *a, uint32_t src, handle_t mine, const char *
     CHECK(w != HANDLE_INVALID);
     uint8_t buf[64];
     uint32_t got = 0;
-    struct channel_read_args r = { .h = w, .bytes_cap = sizeof(buf),
-                                   .bytes = (uint64_t)(uintptr_t)buf,
-                                   .actual_bytes = (uint64_t)(uintptr_t)&got };
+    struct channel_read_args r = { .h = w, .rd_cap = sizeof(buf),
+                                   .rd_bytes = (uint64_t)(uintptr_t)buf,
+                                   .rd_actual = (uint64_t)(uintptr_t)&got };
     CHECK_ST(jam_channel_read(&r), ERR_ACCESS_DENIED);   /* write only */
     CHECK_ST(jam_channel_write(w, msg, (uint32_t)strlen(msg), NULL, 0), OK);
     jam_handle_close(w);

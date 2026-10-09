@@ -120,9 +120,9 @@ static status_t call_once(handle_t ch)
     uint64_t req[2] = { 0, 42 }, rep[2];
     uint32_t n = 0;
     struct channel_call_args a = {
-        .h = ch, .wn = sizeof(req), .wbytes = (uint64_t)(uintptr_t)req,
-        .rcap = sizeof(rep), .rbytes = (uint64_t)(uintptr_t)rep,
-        .ractual = (uint64_t)(uintptr_t)&n,
+        .h = ch, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)req,
+        .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+        .rd_actual = (uint64_t)(uintptr_t)&n,
         .deadline_ns = call_deadline ? now() + FS_CALL_TIMEOUT : DEADLINE_NEVER,
     };
     return jam_channel_call(&a);
@@ -172,8 +172,8 @@ static int echo_on(handle_t ch)
     for (;;) {
         uint32_t nb = 0;
         struct channel_read_args a = {
-            .h = ch, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-            .actual_bytes = (uint64_t)(uintptr_t)&nb,
+            .h = ch, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .rd_actual = (uint64_t)(uintptr_t)&nb,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_SHOULD_WAIT) {
@@ -203,8 +203,8 @@ static int b_rwecho(void)
     uint8_t buf[256];
     uint32_t nb = 0;
     struct channel_reply_wait_args a = {
-        .h = HANDLE_INVALID, .wait = ch, .bytes = (uint64_t)(uintptr_t)buf,
-        .bytes_cap = sizeof(buf), .actual_bytes = (uint64_t)(uintptr_t)&nb,
+        .h = HANDLE_INVALID, .wait = ch, .rd_bytes = (uint64_t)(uintptr_t)buf,
+        .rd_cap = sizeof(buf), .rd_actual = (uint64_t)(uintptr_t)&nb,
         .deadline_ns = DEADLINE_NEVER,
     };
     for (;;) {
@@ -212,8 +212,8 @@ static int b_rwecho(void)
         if (st != OK)
             return st == ERR_PEER_CLOSED ? 0 : 3;
         a.h = ch;   /* from now on, answer the request just taken */
-        a.rbytes = (uint64_t)(uintptr_t)buf;
-        a.rn = nb;
+        a.wr_bytes = (uint64_t)(uintptr_t)buf;
+        a.wr_len = nb;
     }
 }
 

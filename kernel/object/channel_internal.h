@@ -20,6 +20,7 @@ struct chan_pair {
      * read without it by writers as a hint: whether a small message should
      * be built in a slot. */
     uint32_t          waiting[2];
+    uint32_t          next_txid;   /* the last call's number (new_txid): atomic */
 };
 
 /* The size of a message slot (struct thread's msg_slot): one allocation

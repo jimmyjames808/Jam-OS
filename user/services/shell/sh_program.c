@@ -43,9 +43,9 @@ static void drop(handle_t out, uint32_t n, uint32_t nh)
     handle_t *hs = malloc((nh ? nh : 1) * sizeof(handle_t));
     uint32_t n2 = 0, nh2 = 0;
     struct channel_read_args a = {
-        .h = out, .bytes_cap = n, .bytes = (uint64_t)(uintptr_t)big,
-        .actual_bytes = (uint64_t)(uintptr_t)&n2, .handles = (uint64_t)(uintptr_t)hs,
-        .handles_cap = nh, .actual_handles = (uint64_t)(uintptr_t)&nh2,
+        .h = out, .rd_cap = n, .rd_bytes = (uint64_t)(uintptr_t)big,
+        .rd_actual = (uint64_t)(uintptr_t)&n2, .rd_handles = (uint64_t)(uintptr_t)hs,
+        .rd_hcap = nh, .rd_hactual = (uint64_t)(uintptr_t)&nh2,
     };
     if (big && hs && jam_channel_read(&a) == OK)
         for (uint32_t i = 0; i < nh2; i++)
@@ -72,9 +72,9 @@ bool sh_copy_output(handle_t out, bool past_ctrl_c, sh_put_fn put)
         handle_t hs[DRAIN_HANDLES];
         uint32_t n = 0, nh = 0;
         struct channel_read_args a = {
-            .h = out, .bytes_cap = sizeof(buf), .bytes = (uint64_t)(uintptr_t)buf,
-            .actual_bytes = (uint64_t)(uintptr_t)&n, .handles = (uint64_t)(uintptr_t)hs,
-            .handles_cap = DRAIN_HANDLES, .actual_handles = (uint64_t)(uintptr_t)&nh,
+            .h = out, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = DRAIN_HANDLES, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_BUFFER_TOO_SMALL) {

@@ -200,10 +200,10 @@ bool t_devmgr_query_channel(void)
     struct devmgr_req qr = { 0, DEVMGR_SET_CONSOLE, 0, 0, 0 };
     uint32_t n = 0, got = 0;
     struct channel_call_args ca = {
-        .h = q, .wn = sizeof(qr), .wbytes = (uint64_t)(uintptr_t)&qr,
-        .wh = (uint64_t)(uintptr_t)&b, .whn = 1, .rcap = sizeof(r),
-        .rbytes = (uint64_t)(uintptr_t)&r, .ractual = (uint64_t)(uintptr_t)&n,
-        .rhactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 10 * NS_PER_S,
+        .h = q, .wr_len = sizeof(qr), .wr_bytes = (uint64_t)(uintptr_t)&qr,
+        .wr_handles = (uint64_t)(uintptr_t)&b, .wr_nhandles = 1, .rd_cap = sizeof(r),
+        .rd_bytes = (uint64_t)(uintptr_t)&r, .rd_actual = (uint64_t)(uintptr_t)&n,
+        .rd_hactual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 10 * NS_PER_S,
     };
     CHECK_ST(jam_channel_call(&ca), OK);
     CHECK(n >= DEVMGR_REP_HDR);

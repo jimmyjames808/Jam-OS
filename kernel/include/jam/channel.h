@@ -18,9 +18,12 @@
  * every message still queued on the closing endpoint.
  *
  * Transaction ids: the first 4 bytes of every message are a txid.
- * channel_call stamps a fresh non-zero txid on its request and takes the
- * reply whose first 4 bytes match it. Plain writes and reads do not care
- * what the txid is; servers echo it back in their reply.
+ * channel_call stamps a fresh txid on its request and takes the reply
+ * whose first 4 bytes match it: CHANNEL_TXID_KERNEL (bit 31) set, the rest
+ * from a counter of the pair's (unique on it until 2^31 calls). Plain
+ * writes and reads do not care what the txid is; servers echo it back in
+ * their reply. A writer that picks its own txids (a request it doesn't
+ * wait for) keeps bit 31 clear, so their replies never meet a call.
  *
  * Copies. A message's bytes are copied once on the way in (from the
  * writer's buffer straight into the message) and once on the way out
@@ -32,15 +35,10 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <jam/abi.h>   /* CHANNEL_MAX_BYTES, CHANNEL_MAX_HANDLES, CHANNEL_MAX_QUEUED */
 #include <jam/handle.h>
 #include <jam/object.h>
 #include <jam/status.h>
-
-#define CHANNEL_MAX_BYTES   65536
-#define CHANNEL_MAX_HANDLES 64
-/* Messages waiting on one endpoint; a write beyond that fails with
- * ERR_SHOULD_WAIT. */
-#define CHANNEL_MAX_QUEUED  1024
 
 struct channel;   /* embeds struct kobject first, type OBJ_CHANNEL */
 
@@ -152,8 +150,9 @@ struct chan_read {
 
 /* channel_read_into, waiting for a message if none is queued: until one
  * comes, deadline_ns passes (ERR_TIMED_OUT), the peer closes with nothing
- * queued (ERR_PEER_CLOSED), ch itself closes (ERR_BAD_STATE) or the thread
- * is cancelled (ERR_CANCELED). The queue is looked at before blocking, so
+ * queued (ERR_PEER_CLOSED), or ch itself closes (its last handle closed
+ * by another thread) or the thread is cancelled (ERR_CANCELED, for both:
+ * as channel_call's). The queue is looked at before blocking, so
  * no read ever comes back empty-handed for a message that is there. While
  * it waits the thread is listed on ch with its free message slot on
  * offer, and a writer hands it the next message that fits r directly

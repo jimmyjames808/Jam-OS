@@ -132,8 +132,8 @@ void lastboot_event(void)
     struct crashlog_result r;
     uint32_t n = 0, nh = 0;
     struct channel_read_args a = {
-        .h = answer, .bytes_cap = sizeof(r), .bytes = (uint64_t)(uintptr_t)&r,
-        .actual_bytes = (uint64_t)(uintptr_t)&n, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = answer, .rd_cap = sizeof(r), .rd_bytes = (uint64_t)(uintptr_t)&r,
+        .rd_actual = (uint64_t)(uintptr_t)&n, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     status_t st = jam_channel_read(&a);
     if (st == ERR_SHOULD_WAIT) {

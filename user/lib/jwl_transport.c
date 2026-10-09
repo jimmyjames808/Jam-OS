@@ -203,12 +203,12 @@ static status_t read_batch(struct jwl_conn *c)
     uint32_t nb = 0, nh = 0;
     struct channel_read_args a = {
         .h = c->ch,
-        .bytes_cap = JWL_BATCH_MAX,
-        .bytes = (uint64_t)(uintptr_t)c->in,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb,
-        .handles = (uint64_t)(uintptr_t)c->in_h,
-        .handles_cap = JWL_BATCH_HANDLES,
-        .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .rd_cap = JWL_BATCH_MAX,
+        .rd_bytes = (uint64_t)(uintptr_t)c->in,
+        .rd_actual = (uint64_t)(uintptr_t)&nb,
+        .rd_handles = (uint64_t)(uintptr_t)c->in_h,
+        .rd_hcap = JWL_BATCH_HANDLES,
+        .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     status_t st = jam_channel_read(&a);
     if (st == ERR_SHOULD_WAIT)

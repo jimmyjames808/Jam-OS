@@ -269,8 +269,8 @@ static void echo_main(void *arg)
         uint8_t msg[CALL_BYTES];
         uint32_t n = 0;
         struct channel_read_args a = {
-            .h = call_server, .bytes_cap = sizeof(msg), .bytes = (uint64_t)(uintptr_t)msg,
-            .actual_bytes = (uint64_t)(uintptr_t)&n,
+            .h = call_server, .rd_cap = sizeof(msg), .rd_bytes = (uint64_t)(uintptr_t)msg,
+            .rd_actual = (uint64_t)(uintptr_t)&n,
         };
         if (jam_channel_read(&a) == OK)
             jam_channel_write(call_server, msg, n, NULL, 0);
@@ -287,9 +287,9 @@ static void calls_main(void *arg)
         for (unsigned i = 0; i < CALL_BYTES / 8; i++)
             req[i] = rnd(&seed);
         struct channel_call_args a = {
-            .h = call_client, .wn = sizeof(req), .wbytes = (uint64_t)(uintptr_t)req,
-            .rcap = sizeof(rep), .rbytes = (uint64_t)(uintptr_t)rep,
-            .ractual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 30 * NS_PER_S,
+            .h = call_client, .wr_len = sizeof(req), .wr_bytes = (uint64_t)(uintptr_t)req,
+            .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)rep,
+            .rd_actual = (uint64_t)(uintptr_t)&got, .deadline_ns = now() + 30 * NS_PER_S,
         };
         status_t st = jam_channel_call(&a);
         if (st != OK)

@@ -318,8 +318,8 @@ static bool focus_requests(unsigned i)
         struct input_want w;
         uint32_t got = 0;
         struct channel_read_args a = {
-            .h = focus[i], .bytes_cap = sizeof(w), .bytes = (uint64_t)(uintptr_t)&w,
-            .actual_bytes = (uint64_t)(uintptr_t)&got,
+            .h = focus[i], .rd_cap = sizeof(w), .rd_bytes = (uint64_t)(uintptr_t)&w,
+            .rd_actual = (uint64_t)(uintptr_t)&got,
         };
         status_t st = jam_channel_read(&a);
         if (st == ERR_SHOULD_WAIT)

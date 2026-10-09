@@ -693,6 +693,113 @@ KTEST(channel_call_timeout)
     kobject_unref(CH(b));
 }
 
+/* The txid a call on ch stamps (it sends, then times out at once), read
+ * back off the peer. */
+static uint32_t stamped_txid(struct channel *ch, struct channel *peer)
+{
+    struct call_req q = { 0, 7, 0 }, got = { 0, 0, 0 };
+    struct call_reply r;
+    uint32_t nb = 0;
+    KT_EQ(channel_call(ch, &q, sizeof(q), NULL, 0, &r, sizeof(r), &nb, NULL, 0, NULL, 0),
+          ERR_TIMED_OUT);
+    KT_EQ(channel_read(peer, &got, sizeof(got), &nb, NULL, 0, NULL), OK);
+    KT_EQ(got.txid, q.txid);   /* written back for a kernel caller */
+    return got.txid;
+}
+
+/* D1: a call's txid has CHANNEL_TXID_KERNEL set and comes from a counter
+ * of its channel pair's, one for both ends: calls from either end draw the
+ * next number, and a new pair starts its own count (no global counter
+ * whose wrap a busy system would reach). */
+KTEST(chan_txid_per_pair)
+{
+    struct channel *a, *b, *c, *d;
+    KT_EQ(channel_create(&a, &b), OK);
+    uint32_t t1 = stamped_txid(a, b), t2 = stamped_txid(b, a), t3 = stamped_txid(a, b);
+    KT_EQ(t1, CHANNEL_TXID_KERNEL | 1);
+    KT_EQ(t2, CHANNEL_TXID_KERNEL | 2);   /* the other end: the same counter */
+    KT_EQ(t3, CHANNEL_TXID_KERNEL | 3);
+    KT_EQ(channel_create(&c, &d), OK);
+    KT_EQ(stamped_txid(d, c), CHANNEL_TXID_KERNEL | 1);   /* a pair of its own */
+    KT_EQ(stamped_txid(a, b), CHANNEL_TXID_KERNEL | 4);
+    kobject_unref(CH(a));
+    kobject_unref(CH(b));
+    kobject_unref(CH(c));
+    kobject_unref(CH(d));
+}
+
+/* Two ends calling each other at once, each with a server reading its own
+ * end: every request reaches the other end's server and every reply its
+ * own caller. With a counter per end both would draw the same txids, and
+ * one end's request would be taken for the other's reply. */
+enum { XCALLS = 2000, XQUIT = 0xffffffffu };
+
+struct xmsg {
+    uint32_t txid, val, who;   /* who: the server that answered (0: a request) */
+};
+
+struct xend {
+    struct channel *ep;    /* this side's end: the server reads it, the caller calls on it */
+    uint32_t        who;   /* this side's server's number */
+    uint32_t        bad;   /* the caller's wrong replies */
+};
+
+static void xserver(void *arg)
+{
+    struct xend *e = arg;
+    for (;;) {
+        struct xmsg m;
+        struct chan_read r = { .buf = chan_kbytes(&m, sizeof(m)) };
+        if (channel_read_wait(e->ep, &r, DEADLINE_NEVER) != OK || r.nb != sizeof(m))
+            return;
+        if (m.val == XQUIT)
+            return;
+        m.val += 1;
+        m.who = e->who;
+        if (channel_write(e->ep, &m, sizeof(m), NULL, 0) != OK)
+            return;
+    }
+}
+
+static void xcaller(void *arg)
+{
+    struct xend *e = arg;
+    for (uint32_t k = 0; k < XCALLS; k++) {
+        struct xmsg q = { 0, 2 * k + e->who, 0 }, r = { 0, 0, 0 };
+        uint32_t nb = 0;
+        status_t st = channel_call(e->ep, &q, sizeof(q), NULL, 0, &r, sizeof(r), &nb, NULL, 0,
+                                   NULL, uptime_ns() + kt_patience_ms(10000) * NS_PER_MS);
+        /* The reply comes from the other side's server (who 2 for side 1). */
+        if (st != OK || nb != sizeof(r) || r.txid != q.txid || r.val != q.val + 1 ||
+            r.who != 3 - e->who || !(q.txid & CHANNEL_TXID_KERNEL))
+            e->bad++;
+    }
+}
+
+KTEST(chan_txid_both_ends_call)
+{
+    uint64_t live = channel_live_count();
+    struct channel *a, *b;
+    KT_EQ(channel_create(&a, &b), OK);
+    struct xend ea = { a, 1, 0 }, eb = { b, 2, 0 };
+    struct thread *srv[2] = { thread_create("xserver a", xserver, &ea, PRIO_DEFAULT),
+                              thread_create("xserver b", xserver, &eb, PRIO_DEFAULT) };
+    struct thread *cl[2] = { thread_create("xcaller a", xcaller, &ea, PRIO_DEFAULT),
+                             thread_create("xcaller b", xcaller, &eb, PRIO_DEFAULT) };
+    thread_join(cl[0]);
+    thread_join(cl[1]);
+    KT_EQ(ea.bad, 0);
+    KT_EQ(eb.bad, 0);
+    struct xmsg quit = { 0, XQUIT, 0 };
+    KT_EQ(channel_write(b, &quit, sizeof(quit), NULL, 0), OK);   /* to a's server */
+    KT_EQ(channel_write(a, &quit, sizeof(quit), NULL, 0), OK);   /* to b's server */
+    thread_join(srv[0]);
+    thread_join(srv[1]);
+    kobject_unref(CH(a));
+    kobject_unref(CH(b));
+    KT_GLOBAL_EQ(channel_live_count(), live);
+}
+
 /* Replies with 32 bytes and a handle, too much for the caller's buffer. */
 static volatile int big_reply_destroyed;
 

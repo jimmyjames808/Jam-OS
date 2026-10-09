@@ -109,12 +109,12 @@ static status_t read_message(handle_t ch, uint32_t *nbytes, uint32_t *nhandles)
 {
     struct channel_read_args a = {
         .h = ch,
-        .bytes_cap = sizeof(msg_buf),
-        .bytes = (uint64_t)(uintptr_t)msg_buf,
-        .actual_bytes = (uint64_t)(uintptr_t)nbytes,
-        .handles = (uint64_t)(uintptr_t)msg_handles,
-        .handles_cap = STARTUP_MAX_HANDLES,
-        .actual_handles = (uint64_t)(uintptr_t)nhandles,
+        .rd_cap = sizeof(msg_buf),
+        .rd_bytes = (uint64_t)(uintptr_t)msg_buf,
+        .rd_actual = (uint64_t)(uintptr_t)nbytes,
+        .rd_handles = (uint64_t)(uintptr_t)msg_handles,
+        .rd_hcap = STARTUP_MAX_HANDLES,
+        .rd_hactual = (uint64_t)(uintptr_t)nhandles,
     };
     status_t st = jam_channel_read(&a);
     if (st == ERR_SHOULD_WAIT) {
@@ -215,12 +215,12 @@ static int await_promotion(handle_t ch, unsigned at)
     uint32_t nbytes = 0, nhandles = 0;
     struct channel_read_args a = {
         .h = ch,
-        .bytes_cap = sizeof(msg_buf),
-        .bytes = (uint64_t)(uintptr_t)msg_buf,
-        .actual_bytes = (uint64_t)(uintptr_t)&nbytes,
-        .handles = (uint64_t)(uintptr_t)&msg_handles[msg_nhandles],
-        .handles_cap = STANDBY_MAX_HANDLES,
-        .actual_handles = (uint64_t)(uintptr_t)&nhandles,
+        .rd_cap = sizeof(msg_buf),
+        .rd_bytes = (uint64_t)(uintptr_t)msg_buf,
+        .rd_actual = (uint64_t)(uintptr_t)&nbytes,
+        .rd_handles = (uint64_t)(uintptr_t)&msg_handles[msg_nhandles],
+        .rd_hcap = STANDBY_MAX_HANDLES,
+        .rd_hactual = (uint64_t)(uintptr_t)&nhandles,
     };
     status_t st;
     for (;;) {

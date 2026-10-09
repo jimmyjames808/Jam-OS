@@ -52,8 +52,8 @@ static status_t service_handle(handle_t state, handle_t *out)
         jam_handle_close(give);
     uint32_t nb = 0, nh = 0;
     struct channel_read_args rd = {
-        .h = b, .handles = (uint64_t)(uintptr_t)out, .handles_cap = 1,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = b, .rd_handles = (uint64_t)(uintptr_t)out, .rd_hcap = 1,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     if (st == OK)
         st = jam_channel_read(&rd);
@@ -168,8 +168,8 @@ static bool answered(handle_t cli, uint32_t txid, uint32_t value)
 {
     uint32_t r[2] = { 0 }, nb = 0, nh = 0;
     struct channel_read_args a = {
-        .h = cli, .bytes_cap = sizeof(r), .bytes = (uint64_t)(uintptr_t)r,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = cli, .rd_cap = sizeof(r), .rd_bytes = (uint64_t)(uintptr_t)r,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     CHECK_ST(jam_channel_read(&a), OK);
     CHECK(nb == 8 && r[0] == txid && r[1] == value);
@@ -235,8 +235,8 @@ bool t_svcstate_slots(void)
     uint8_t big[600];
     uint32_t nb = 0, nh = 0;
     struct channel_read_args a = {
-        .h = srv, .bytes_cap = sizeof(big), .bytes = (uint64_t)(uintptr_t)big,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = srv, .rd_cap = sizeof(big), .rd_bytes = (uint64_t)(uintptr_t)big,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     CHECK_ST(jam_channel_read(&a), OK);   /* the service throws it away */
     CHECK_ST(jam_channel_write(cli, "ab", 2, NULL, 0), OK);   /* no txid */
@@ -510,8 +510,8 @@ bool t_svcstate_standby(void)
     struct promoted_report rep = { 0 };
     uint32_t nb = 0, nh = 0;
     struct channel_read_args a = {
-        .h = mine, .bytes_cap = sizeof(rep), .bytes = (uint64_t)(uintptr_t)&rep,
-        .actual_bytes = (uint64_t)(uintptr_t)&nb, .actual_handles = (uint64_t)(uintptr_t)&nh,
+        .h = mine, .rd_cap = sizeof(rep), .rd_bytes = (uint64_t)(uintptr_t)&rep,
+        .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_hactual = (uint64_t)(uintptr_t)&nh,
     };
     signals_t seen;
     CHECK_ST(jam_object_wait_one(mine, SIG_READABLE, now() + SPARE_WAIT, &seen), OK);
@@ -612,8 +612,8 @@ static int chanread(void)
     for (uint32_t k = 0; k < CR_ENTRIES;) {
         uint8_t *e = (uint8_t *)(uintptr_t)(addr + PAGE_SIZE + (uint64_t)k * CR_STRIDE);
         struct channel_read_args a = {
-            .h = ch, .bytes_cap = CR_MSG_MAX, .bytes = (uint64_t)(uintptr_t)(e + CR_DATA),
-            .actual_bytes = (uint64_t)(uintptr_t)e,
+            .h = ch, .rd_cap = CR_MSG_MAX, .rd_bytes = (uint64_t)(uintptr_t)(e + CR_DATA),
+            .rd_actual = (uint64_t)(uintptr_t)e,
         };
         status_t st = jam_channel_read(&a);
         if (st == OK) {

@@ -15,8 +15,6 @@
 #include <os.h>
 
 #define LOG_REFUSALS 8      /* refusals logged per keeper; the rest are only counted */
-#define DRAIN_MAX    1024   /* a channel end holds at most this many messages */
-#define CHANNEL_MAX_HANDLES 64   /* handles one channel message carries at most */
 
 static void close_all(const handle_t *hs, unsigned n)
 {
@@ -31,12 +29,12 @@ static status_t read_msg(handle_t ch, void *buf, uint32_t cap, handle_t *hs, uin
     *nb = *nh = 0;
     struct channel_read_args a = {
         .h = ch,
-        .bytes_cap = cap,
-        .bytes = (uint64_t)(uintptr_t)buf,
-        .actual_bytes = (uint64_t)(uintptr_t)nb,
-        .handles = (uint64_t)(uintptr_t)hs,
-        .handles_cap = hcap,
-        .actual_handles = (uint64_t)(uintptr_t)nh,
+        .rd_cap = cap,
+        .rd_bytes = (uint64_t)(uintptr_t)buf,
+        .rd_actual = (uint64_t)(uintptr_t)nb,
+        .rd_handles = (uint64_t)(uintptr_t)hs,
+        .rd_hcap = hcap,
+        .rd_hactual = (uint64_t)(uintptr_t)nh,
     };
     return jam_channel_read(&a);
 }
@@ -356,7 +354,7 @@ status_t keeper_take(struct keeper *k)
 
 void keeper_drain(struct keeper *k)
 {
-    for (unsigned i = 0; i < DRAIN_MAX && keeper_take(k) == OK; i++)
+    for (unsigned i = 0; i < CHANNEL_MAX_QUEUED && keeper_take(k) == OK; i++)
         ;
 }
 

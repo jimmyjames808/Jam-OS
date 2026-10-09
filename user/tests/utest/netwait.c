@@ -317,8 +317,8 @@ static bool states_handles(struct netwait *w, handle_t a, handle_t *b, handle_t 
     CHECK_ST(jam_channel_write(*b, "x", 1, NULL, 0), OK);
     CHECK_EQ(one(w), NETWAIT_READ);
     CHECK_EQ(one(w), NETWAIT_READ);                    /* level: until it is read */
-    struct channel_read_args r = { .h = a, .bytes_cap = 1, .bytes = (uint64_t)(uintptr_t)&byte,
-                                   .actual_bytes = (uint64_t)(uintptr_t)&len };
+    struct channel_read_args r = { .h = a, .rd_cap = 1, .rd_bytes = (uint64_t)(uintptr_t)&byte,
+                                   .rd_actual = (uint64_t)(uintptr_t)&len };
     CHECK_ST(jam_channel_read(&r), OK);
     CHECK_EQ(one(w), 0);
     CHECK_ST(netwait_modify(w, ida, 0), OK);
