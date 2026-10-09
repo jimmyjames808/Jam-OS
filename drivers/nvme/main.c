@@ -118,7 +118,9 @@ static status_t run(struct nvme *c)
             break;
         if (!serve_work(c))
             break;   /* DR_SERVE closed */
+        blk_due(c);
         uint64_t now = drv_clock_ns(), d = queue_next_deadline(c);
+        d = d < blk_next_due() ? d : blk_next_due();
         if (c->admin.busy || c->io.busy || c->wait_head)
             d = d < now + POLL_BUSY ? d : now + POLL_BUSY;
         if (c->irq == HANDLE_INVALID)
@@ -161,7 +163,7 @@ int driver_main(const struct driver_start *s)
         st = serve_start(c);
     if (st == OK) {
         report(c);
-        if (c->test && !selftest_start(c))
+        if ((c->test & NVME_TEST_SELFTEST) && !selftest_start(c))
             drv_report("%s: selftest: FAILED to start", c->name);
         st = run(c);
     }

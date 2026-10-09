@@ -48,6 +48,7 @@
 #define BLK_BUF     (64u << 10)                /* the buffer when the client leaves it to us */
 #define BLK_BUF_MAX (1u << 20)                 /* the largest (block.info's buffer_max) */
 #define BLK_PAGES   (BLK_BUF_MAX / NVME_PAGE)
+#define BLK_SLOW_STEP (20 * NS_PER_MS)          /* NVME_TEST_SLOW: between a channel's answers */
 
 struct blk;
 
@@ -58,6 +59,9 @@ struct blk_req {
     struct blk    *b;          /* its channel */
     bool           used;       /* held or out */
     bool           held;       /* waits for its partition to drain: not given to nvme_read */
+    bool           late;       /* NVME_TEST_SLOW: done, answered at `due` (counts as out) */
+    status_t       st;         /* a late one's status */
+    uint64_t       due;
 };
 
 /* An open block channel. */
@@ -74,6 +78,7 @@ struct blk {
     bool     pinned;
     uint32_t busy;             /* requests used */
     uint32_t dropped;          /* requests of a gone client never started */
+    uint64_t next_due;         /* NVME_TEST_SLOW: its next answer, not before */
     uint64_t pages[BLK_PAGES]; /* the buffer's pages, as the device reaches them */
     struct blk_req reqs[BLK_DEPTH];
 };
@@ -122,7 +127,7 @@ static void blk_free(struct nvme *c, struct blk *b)
 
 static void req_free(struct blk_req *r)
 {
-    r->used = r->held = false;
+    r->used = r->held = r->late = false;
     r->b->busy--;
 }
 
@@ -141,7 +146,7 @@ static void blk_gone(struct nvme *c, struct blk *b)
         struct blk_req *r = &b->reqs[i];
         if (!r->used)
             continue;
-        if (r->held || io_cancel(c, &r->io)) {
+        if (r->held || (!r->late && io_cancel(c, &r->io))) {
             req_free(r);
             never++;
         } else {
@@ -173,10 +178,9 @@ static bool part_quiet(struct nvme *c, uint8_t part, const struct blk *self)
     return draining[part] == 0;
 }
 
-/* A read's last command completed (or the driver is stopping). */
-static void req_done(struct nvme *c, struct nvme_io *io, status_t st)
+/* Read r is over (with st): answered, or (its client gone) forgotten. */
+static void req_finish(struct nvme *c, struct blk_req *r, status_t st)
 {
-    struct blk_req *r = io->ctx;
     struct blk *b = r->b;
     struct idl_txn txn = r->txn;
     req_free(r);
@@ -191,6 +195,45 @@ static void req_done(struct nvme *c, struct nvme_io *io, status_t st)
         blk_free(c, b);
     if (!draining[part])
         part_resume(c, part);
+}
+
+/* A read's last command completed (or the driver is stopping). */
+static void req_done(struct nvme *c, struct nvme_io *io, status_t st)
+{
+    struct blk_req *r = io->ctx;
+    struct blk *b = r->b;
+    if ((c->test & NVME_TEST_SLOW) && !c->stopping) {
+        uint64_t now = drv_clock_ns();
+        r->late = true;
+        r->st = st;
+        r->due = b->next_due > now ? b->next_due : now;
+        b->next_due = r->due + BLK_SLOW_STEP;
+        return;
+    }
+    req_finish(c, r, st);
+}
+
+void blk_due(struct nvme *c)
+{
+    uint64_t now = drv_clock_ns();
+    for (unsigned i = 0; i < BLK_MAX; i++)
+        for (unsigned k = 0; k < BLK_DEPTH && blks[i].ch != HANDLE_INVALID; k++) {
+            struct blk_req *r = &blks[i].reqs[k];
+            if (r->used && r->late && r->due <= now)
+                req_finish(c, r, r->st);
+        }
+}
+
+uint64_t blk_next_due(void)
+{
+    uint64_t d = DEADLINE_NEVER;
+    for (unsigned i = 0; i < BLK_MAX; i++)
+        for (unsigned k = 0; k < BLK_DEPTH && blks[i].ch != HANDLE_INVALID; k++) {
+            const struct blk_req *r = &blks[i].reqs[k];
+            if (r->used && r->late && r->due < d)
+                d = r->due;
+        }
+    return d;
 }
 
 /* r (held, or just read) goes out. Its answer comes to req_done, unless

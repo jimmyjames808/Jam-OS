@@ -173,6 +173,10 @@ struct nvme {
 #define NVME_TEST_LOOP     (1u << 1)   /* ... again and again (a kill lands mid-read) */
 #define NVME_TEST_RESET    (1u << 2)   /* reset the controller with the reads in flight */
 #define NVME_TEST_ABORT    (1u << 3)   /* the first read times out at once: Abort */
+/* A block channel's answers come at least BLK_SLOW_STEP apart, as from a
+ * slow drive (block.c): a client that leaves then has reads out, which
+ * the drain rule waits for (utest's nvme_fence). */
+#define NVME_TEST_SLOW     (1u << 4)
 
 /* A read of `blocks` blocks at `lba` into a buffer whose pages the
  * device reaches at pages[0..npages), starting `offset` bytes in (a
@@ -362,12 +366,16 @@ void     blk_packet(uint64_t key);
 /* Serve what the channels have queued; true if any was looked at. */
 bool     blk_serve(struct nvme *c);
 bool     blk_ready(void);
+/* NVME_TEST_SLOW: answer the reads whose time has come; the next such
+ * time (DEADLINE_NEVER: none). */
+void     blk_due(struct nvme *c);
+uint64_t blk_next_due(void);
 /* Every channel closed and its buffer unpinned (bus mastering off). */
 void     blk_close_all(struct nvme *c);
 
 /* ---- selftest.c ---------------------------------------------------------------------- */
 
-/* Parse the test words (nvmetest=selftest,loop,reset,abort). */
+/* Parse the test words (nvmetest=selftest,loop,reset,abort,slow). */
 uint32_t selftest_words(const struct driver_start *s);
 /* Start the test reads (c->test says which); then each call after the
  * loop's work moves them on. false: the test can't run. */
