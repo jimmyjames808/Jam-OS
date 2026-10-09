@@ -451,8 +451,9 @@ status_t net_start(void);
 void     net_settings(void);
 /* KEY_NETCTL: netstack answered (the next call goes, or a failure is said). */
 void     net_netctl_event(void);
-/* At t: a netctl answer overdue is said and given up on. The next time
- * one is due, or DEADLINE_NEVER. */
+/* At t: a netctl answer overdue is said and given up on, unless it is
+ * already queued (taken first: the loop may have been busy past the
+ * deadline). The next time one is due, or DEADLINE_NEVER. */
 uint64_t net_due(uint64_t t);
 /* Service i's end came to the loop (after services_closed's own work). */
 void     net_ended(unsigned i);

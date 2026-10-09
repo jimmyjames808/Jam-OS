@@ -347,10 +347,20 @@ uint64_t net_due(uint64_t t)
 {
     if (!addr.txid)
         return DEADLINE_NEVER;
-    if (t < addr.deadline)
-        return addr.deadline;
-    addr_failed(ERR_TIMED_OUT);
-    return DEADLINE_NEVER;
+    if (t >= addr.deadline) {
+        /* The loop may have been busy past the deadline with netstack's
+         * answer already queued (its key not yet taken from the port):
+         * read the queued answers before calling the call timed out. The
+         * next call, if one goes, has a deadline of its own. */
+        net_netctl_event();
+        if (!addr.txid)
+            return DEADLINE_NEVER;
+        if (t >= addr.deadline) {
+            addr_failed(ERR_TIMED_OUT);
+            return DEADLINE_NEVER;
+        }
+    }
+    return addr.deadline;
 }
 
 void net_ended(unsigned i)
