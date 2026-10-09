@@ -2,8 +2,8 @@
  * the cells' size in each (cells.h says how they look).
  *
  * No state of the console's and no system calls but font_open's: the
- * full-screen console (screen.c, cell_bits) and the window (winpaint.c)
- * draw with it, and utest checks it (user/tests/utest/conpaint.c). */
+ * window (winpaint.c) draws with it, and utest checks it
+ * (user/tests/utest/conpaint.c). */
 #include <fun.h>
 #include "cells.h"
 

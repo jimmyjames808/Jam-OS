@@ -5,7 +5,7 @@
  * own under init's: the bootfs server, the console, the boot splash,
  * serialin, devmgr, volumes, the mixer, the music player, netstack, the DHCP
  * client, the resolver, logd, netlog, sntp, the file server and the shell;
- * the compositor first, unless the boot word `nocomp` says no (comp.c),
+ * the compositor first, unless none is in bootfs (comp.c),
  * and then each terminal opened later, a console and a shell (terms.c). How each
  * one is started and what it is given is in services.c (the network's in
  * net.c, the terminals' in terms.c); this file is the order, the
@@ -32,14 +32,14 @@
  *     (services_closed) says what their ends change for the others.
  * Restarts back off from 100 ms to 5 s; one that ends more than 10 times
  * in a minute (from its first end) is given up on (a line in the log and
- * the RESULTS box), but for the compositor, and under `nocomp` the one
+ * the RESULTS box), but for the compositor, and without a compositor the one
  * terminal's console and shell: without them nobody can use the machine
  * until a reset, so they are started again for good, every 5 s at worst
  * (said once a minute). With a compositor every terminal is equal, the
  * first included: one given up on closes (terms.c), as one does whose
  * window is closed or whose shell ends with `exit`, and Super+Enter or
  * the search box opens another. The console's clients (the
- * shell; serialin, under `nocomp`) end when it does, often before init
+ * shell; serialin, without a compositor) end when it does, often before init
  * has seen the console's own end: an end of theirs while the console is
  * gone doesn't count, and they start again at once with the new console;
  * serialin goes with the compositor the same way.
@@ -252,7 +252,7 @@ status_t shell_kill_service(const char *name, uint64_t *koid)
 }
 
 /* Svc i is one of a console's clients (a shell, its terminal's) or of
- * the input's hub (serialin: the compositor's, or under `nocomp` the
+ * the input's hub (serialin: the compositor's, or without a compositor the
  * first console's) and that has ended (its end may still be on its way
  * to us): i went with it, no fault of its own. */
 static bool went_with_console(unsigned i)

@@ -189,8 +189,8 @@
  * disk's driver for a `storage` channel of volumes' own again, and hands
  * each over (disks.attach). Until the first, a disk waits. */
 #define DEVMGR_SET_VOLUMES    0x00030011u
-/* devmgr's startup role: a duplicate of /svc/notify's shared channel (not
- * under `nocomp`), for the desktop's notices of drivers that crash or
+/* devmgr's startup role: a duplicate of /svc/notify's shared channel, for
+ * the desktop's notices of drivers that crash or
  * are given up on (<notice.h>). SR_USER + 0 was the ESP channel's until
  * the storage split. */
 #define DEVMGR_SR_NOTIFY      (SR_USER + 1)

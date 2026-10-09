@@ -484,6 +484,45 @@ static status_t fake_restore(const void *m1, uint32_t n1, unsigned h1, const voi
 
 /* A successor refuses a malformed restore (and closes what it carried),
  * and gives up at its deadline or when the keeper goes. */
+/* A keeper that listens to a running service stops after a bound; if
+ * messages are left it says so, for its loop to come back to (a binding
+ * fires on an edge only, and the mixer under churn writes as fast as init
+ * reads: before this, it found the queue full until its next restart). */
+bool t_keep_drain_bounded(void)
+{
+    uint64_t before = handles_used();
+    handle_t svc;
+    keeper_init(&k);
+    CHECK_ST(keeper_attach(&k, &svc), OK);
+    enum { N = 10 };
+    for (uint32_t i = 0; i < N; i++) {
+        handle_t e;
+        CHECK_ST(jam_event_create(&e), OK);
+        CHECK_ST(keep_put(svc, i, &e, 1), OK);
+        jam_handle_close(e);
+    }
+    CHECK(keeper_drain_upto(&k, 4));    /* 6 left */
+    CHECK_EQ(k.puts, 4u);
+    CHECK(keeper_drain_upto(&k, 4));    /* 2 left */
+    CHECK_EQ(k.puts, 8u);
+    CHECK(!keeper_drain_upto(&k, 4));   /* the last two: empty */
+    CHECK_EQ(k.puts, 10u);
+    CHECK(!keeper_drain_upto(&k, 4));   /* nothing */
+    CHECK(!keeper_drain(&k));
+    for (uint32_t i = 0; i < 4; i++) {  /* exactly the bound queued: not "more" */
+        handle_t e;
+        CHECK_ST(jam_event_create(&e), OK);
+        CHECK_ST(keep_put(svc, 20 + i, &e, 1), OK);
+        jam_handle_close(e);
+    }
+    CHECK(!keeper_drain_upto(&k, 4));
+    CHECK_EQ(k.puts, 14u);
+    keeper_release(&k);
+    jam_handle_close(svc);
+    CHECK_EQ(handles_used(), before);
+    return true;
+}
+
 bool t_keep_restore_refusals(void)
 {
     uint64_t before = handles_used();

@@ -43,21 +43,20 @@ static int list(handle_t ch)
     char a[IPV4_TEXT_MAX], size[24];
     unsigned i = 0;
     for (;; i++) {   /* at most SERVE_SHARES answers before ERR_NOT_FOUND */
-        uint8_t name[SERVE_NAME_MAX];
+        char name[SERVE_NAME_MAX];
         uint16_t port = 0;
         uint64_t bytes = 0, requests = 0, sz = 0;
-        uint32_t n = 0;
-        status_t st = serve_info_until(ch, now() + SOON, i, &port, name, &sz, &n, &requests,
-                                       &bytes);
+        uint32_t n = 0, name_len = 0;
+        status_t st = serve_info_until(ch, now() + SOON, i, &port, name, &name_len, &sz, &n,
+                                       &requests, &bytes);
         if (st == ERR_NOT_FOUND)
             break;
         if (st != OK) {
             sh_tty("serve: the server doesn't answer (%s)\n", status_str(st));
             return 1;
         }
-        name[SERVE_NAME_MAX - 1] = 0;
         sh_say("serve: port %u: %s (%s): %u client%s now, %lu request%s, %lu bytes sent\n"
-               "  http://%s:%u/\n", port, (char *)name, sh_human(sz, size, sizeof(size)), n,
+               "  http://%s:%u/\n", port, name, sh_human(sz, size, sizeof(size)), n,
                n == 1 ? "" : "s", (unsigned long)requests, requests == 1 ? "" : "s",
                (unsigned long)bytes, address(a), port);
     }
@@ -98,59 +97,28 @@ static bool open_file(const char *arg, char abs[SH_PATH_MAX], struct jfile *f)
     return st == OK;
 }
 
-/* Hand f over on give and read the server's answer. */
-static status_t give_file(handle_t give, struct jfile *f, struct serve_answer *ans)
-{
-    struct serve_give g = { .magic = SERVE_GIVE_MAGIC, .size = f->size };
-    handle_t hs[2];
-    file_give(f, &hs[0], &hs[1]);
-    /* hs is gone whatever the write's status (a send's handles are always
-     * moved): never closed after it. */
-    status_t st = jam_channel_write(give, &g, sizeof(g), hs, 2);
-    if (st != OK)
-        return st;
-    signals_t seen;
-    uint32_t n = 0, nh = 0;
-    st = jam_object_wait_one(give, SIG_READABLE | SIG_PEER_CLOSED, now() + 2 * SOON, &seen);
-    struct channel_read_args a = {
-        .h = give, .rd_cap = sizeof(*ans), .rd_bytes = (uint64_t)(uintptr_t)ans,
-        .rd_actual = (uint64_t)(uintptr_t)&n, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-    };
-    if (st == OK)
-        st = jam_channel_read(&a);
-    if (st == OK && n != sizeof(*ans))
-        st = ERR_INTERNAL;
-    return st;
-}
-
 static int start(handle_t ch, const char *arg, uint16_t port)
 {
     char abs[SH_PATH_MAX], a[IPV4_TEXT_MAX], size[24];
     struct jfile f;
     if (!open_file(arg, abs, &f))
         return 1;
-    uint8_t name[SERVE_NAME_MAX] = { 0 };
     size_t n = strlen(abs), from = n >= SERVE_NAME_MAX ? n - (SERVE_NAME_MAX - 1) : 0;
-    memcpy(name, abs + from, n - from);   /* a long path keeps its end */
-    handle_t give = HANDLE_INVALID;
+    while (from < n && ((unsigned char)abs[from] & 0xc0) == 0x80)
+        from++;   /* a long path keeps its end, from a character's start */
     uint64_t bytes = f.size;
-    struct serve_answer ans = { 0 };
-    status_t st = serve_share_until(ch, now() + SOON, port, name, &give);
-    if (st == OK)
-        st = give_file(give, &f, &ans);   /* f is given away, whatever happens */
-    else
-        file_close(&f);
-    if (give)
-        jam_handle_close(give);
-    if (st == OK)
-        st = ans.status;
+    handle_t file, buf;
+    file_give(&f, &file, &buf);   /* the server's now, whatever its answer */
+    uint16_t served = 0;
+    status_t st = serve_share_until(ch, now() + 3 * SOON, port, abs + from, (uint32_t)(n - from),
+                                    bytes, file, buf, &served);
     if (st != OK) {
         sh_tty("serve: %s on port %u: %s\n", abs, port, why(st));
         return 1;
     }
     sh_say("serve: serving %s (%s) on port %u, in the background (serve stop %u ends it)\n"
            "  on the Mac: curl http://%s:%u/ -o %s\n", abs, sh_human(bytes, size, sizeof(size)),
-           ans.port, ans.port, address(a), ans.port, sh_basename(abs));
+           served, served, address(a), served, sh_basename(abs));
     return 0;
 }
 

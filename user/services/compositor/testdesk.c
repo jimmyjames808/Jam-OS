@@ -175,7 +175,7 @@ static bool cmd_notify(const char *arg)
                                 .colour = LOOK_JAM_APRICOT, .nbuttons = n - 2 };
     for (unsigned i = 2; i < n; i++)
         spec.buttons[i - 2] = f[i];
-    return notify_post(&spec) != 0;
+    return notify_card_post(&spec) != 0;
 }
 
 static bool cmd_popover(const char *arg)
@@ -239,9 +239,9 @@ static void desktop_off(void)
     pop_close();
     search_close();
     while (notes.nheld)
-        notify_withdraw(notes.held[0].id);
+        notify_card_withdraw(notes.held[0].id);
     while (notes.n)
-        notify_withdraw(notes.cards[0].id);   /* no animations: at once */
+        notify_card_withdraw(notes.cards[0].id);   /* no animations: at once */
     desk_init(false, false);
     cursor.shape = CURSOR_ARROW;
     cursor_moved(cursor.x, cursor.y);

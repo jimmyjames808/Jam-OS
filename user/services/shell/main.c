@@ -4,11 +4,12 @@
  *
  * Talks to the console (abi/idl/console.idl): writes through
  * console.write, and reads keys from the channel console.open_keys gives
- * (struct input_key_event; keys from a serial terminal come with usage 0
- * and the character, or with the usage of the special key). It does its
+ * (the `keys` protocol's key events, kept as struct input_key_event; keys
+ * pasted come with usage 0 and the character). It does its
  * own line editing: left/right/home/end, backspace/delete, Ctrl+A/E/U,
  * Ctrl+C (cancel the line, or kill what `run` started), Ctrl+L (clear),
- * up/down for the history. The line is redrawn with \r and ESC [ K, which
+ * up/down for the history (sh_history.c): with text on the line only the
+ * lines that start with it, newest first, Down back to the text typed. The line is redrawn with \r and ESC [ K, which
  * the console and serial terminals both understand; a line longer than the
  * row scrolls sideways in it (scroll). It asks the terminal
  * for bracketed paste (ESC [ ? 2004 h) and takes pasted text onto the line
@@ -40,8 +41,7 @@ JAM_WANTS("mount * rw\n"
           "svc net\n"
           "svc dns\n");
 
-#define LINE_MAX  240
-#define HIST      32
+#define LINE_MAX  SH_LINE_MAX
 #define C_JAM     "\033[33m"   /* "jam": yellow, the palette's nearest to apricot */
 #define C_DIR     "\033[94m"   /* the directory: bright blue, its nearest to blackcurrant */
 #define C_PLAIN   "\033[0m"
@@ -64,7 +64,7 @@ void sh_flush(void)
 {
     if (!on)
         return;
-    status_t st = console_write(con, (uint16_t)on, obuf);
+    status_t st = console_write(con, obuf, on);
     on = 0;
     if (st == ERR_PEER_CLOSED)
         jam_process_exit(2);
@@ -128,19 +128,22 @@ enum {
     U_KP_ENTER = 0x58,
 };
 
+static void got_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
+{
+    *(struct input_key_event *)ctx = (struct input_key_event){ usage, state, mods, cp };
+}
+
 bool sh_get_key(struct input_key_event *ev, uint64_t deadline)
 {
+    static const struct keys_events events = { .key = got_key };
     for (;;) {
-        uint32_t n = 0;
-        struct channel_read_args a = {
-            .h = keys, .rd_cap = sizeof(*ev), .rd_bytes = (uint64_t)(uintptr_t)ev,
-            .rd_actual = (uint64_t)(uintptr_t)&n,
-        };
-        status_t st = jam_channel_read(&a);
-        if (st == OK) {
-            if (n == sizeof(*ev) && ev->state != INPUT_KEY_UP)
+        ev->state = INPUT_KEY_UP;   /* what a message that is no key leaves */
+        status_t st = keys_read_event(keys, &events, ev);
+        if (st == OK || st == ERR_INTERNAL || st == ERR_INVALID_ARGS || st == ERR_NOT_SUPPORTED ||
+            st == ERR_BUFFER_TOO_SMALL) {
+            if (st == OK && ev->state != INPUT_KEY_UP)
                 return true;
-            continue;
+            continue;   /* a release, or a message that is no key event: skipped */
         }
         if (st == ERR_PEER_CLOSED)
             jam_process_exit(2);
@@ -165,9 +168,6 @@ bool sh_is_ctrl(const struct input_key_event *ev, char letter)
 }
 
 /* ---- the line editor --------------------------------------------------------- */
-
-static char hist[HIST][LINE_MAX + 1];
-static unsigned nhist;   /* entries ever added */
 
 /* The console's current line is one screen row, and the console can't go
  * back up into the rows above it (a row is committed to the scrollback
@@ -225,8 +225,8 @@ struct edit {
     char     line[LINE_MAX + 1];   /* the line being edited */
     unsigned len, pos;             /* its length; the cursor */
     unsigned first;                /* the first character shown (> 0: scrolled, '<' shown) */
-    unsigned back;                 /* 0 = the new line, n = the n-th newest in the history */
-    char     saved[LINE_MAX + 1];  /* the new line while browsing the history */
+    int      back;                 /* -1 = the line typed, else the history line shown */
+    char     saved[LINE_MAX + 1];  /* the line typed while browsing the history: the prefix */
 };
 
 /* What the row shows of a line from its character `first` on. */
@@ -301,19 +301,24 @@ static void end_line(const struct edit *e, const char *tail)
     echo("%s\r\n", tail);
 }
 
-/* Up or down in the history; true if the line changed. */
+/* Up or down in the history; true if the line changed. Up goes back
+ * through the lines that start with what was typed (all of them for an
+ * empty line), newest first; Down forward, and past the newest back to
+ * what was typed. */
 static bool browse(struct edit *e, bool up)
 {
-    unsigned have = nhist < HIST ? nhist : HIST;
-    unsigned nb = up ? (e->back < have ? e->back + 1 : e->back) : (e->back ? e->back - 1 : 0);
-    if (nb == e->back)
-        return false;
-    if (e->back == 0) {
+    if (e->back < 0) {
         memcpy(e->saved, e->line, e->len);
         e->saved[e->len] = '\0';
     }
+    int from = e->back < 0 ? (int)sh_history_count() : e->back;
+    if (!up && e->back < 0)
+        return false;   /* nothing newer than what is typed */
+    int nb = sh_history_find(e->saved, from, up);
+    if (nb < 0 && up)
+        return false;   /* no older line that starts so */
     e->back = nb;
-    const char *src = e->back ? hist[(nhist - e->back) % HIST] : e->saved;
+    const char *src = nb < 0 ? e->saved : sh_history_at((unsigned)nb);
     size_t n = strlen(src);
     e->len = e->pos = n < LINE_MAX ? (unsigned)n : LINE_MAX;
     memcpy(e->line, src, e->len);
@@ -339,9 +344,11 @@ static bool edit_key(struct edit *e, const struct input_key_event *ev)
 {
     uint32_t cp = ev->codepoint;
     uint16_t u = ev->usage;
+    if (u != U_UP && u != U_DOWN && u != U_LEFT && u != U_RIGHT)
+        e->back = -1;   /* the line as it is now is what Up looks for next */
     if (sh_is_ctrl(ev, 'c')) {
         end_line(e, "^C");
-        e->len = e->pos = e->back = 0;
+        e->len = e->pos = 0;
         echo("%s", prompt);
         return false;
     }
@@ -500,7 +507,8 @@ static bool paste_or_keys(struct edit *e, const struct input_key_event *esc)
 static void read_line(char *buf)
 {
     static bool asked;
-    struct edit e = { .len = 0 };
+    struct edit e = { .len = 0, .back = -1 };
+    sh_history_prompt();   /* the shared history, once /data is there */
     sh_jobs_report();   /* the background programs that ended */
     set_prompt();       /* the directory may have changed */
     (void)resized(false);   /* and the width, while the last command ran */
@@ -540,28 +548,6 @@ static void read_line(char *buf)
     }
 }
 
-static void remember(const char *line)
-{
-    if (!line[0])
-        return;
-    if (nhist && !strcmp(hist[(nhist - 1) % HIST], line))
-        return;
-    size_t n = strnlen(line, LINE_MAX);
-    memcpy(hist[nhist % HIST], line, n);
-    hist[nhist % HIST][n] = '\0';
-    nhist++;
-}
-
-unsigned sh_history_count(void)
-{
-    return nhist;
-}
-
-const char *sh_history_at(unsigned i)
-{
-    return i < nhist && nhist - i <= HIST ? hist[i % HIST] : NULL;
-}
-
 /* The boot word soak=<minutes> (init passes it to the boot's first shell):
  * wait for the stick's /data, so the file load has something to write to,
  * then run the soak test as if typed, halting on the first failure. */
@@ -588,15 +574,18 @@ static void run_first(const char *line)
     snprintf(copy, sizeof(copy), "%s", line);
     set_prompt();
     echo("%s%s\n", prompt, copy);
-    remember(copy);
+    sh_history_add(copy);
     sh_line(copy);
     sh_flush();
 }
 
 /* init's arguments, in any order: "term=<n>" (with a compositor: terminal
  * n's shell, which `exit` closes), "soak=<minutes>" (the boot word's soak
- * test) and "run=<line>" (initctl.terminal's command). */
+ * test), "run=<line>" (initctl.terminal's command) and "restarted" (the
+ * shell before this one crashed or was killed: said, so a restart isn't a
+ * mystery). */
 static const char *soak_arg, *run_arg;
+static bool restarted;
 
 static void take_args(int argc, char **argv)
 {
@@ -608,6 +597,8 @@ static void take_args(int argc, char **argv)
             soak_arg = a + 5;
         else if (!strncmp(a, "run=", 4) && a[4])
             run_arg = a + 4;
+        else if (!strcmp(a, "restarted"))
+            restarted = true;
     }
 }
 
@@ -632,6 +623,8 @@ int main(int argc, char **argv)
     const char *note = sh_boot_note();   /* after a panic: what happened to that boot */
     if (note[0])
         echo("\033[93m%s\033[0m\n", note);
+    if (restarted)
+        echo("\033[93mthe shell restarted after a crash: its history is kept\033[0m\n");
     sh_flush();
     /* Up: the boot splash, if one holds the screen, gives it back now.
      * Without init's channel (a shell run from a shell) there is none. */
@@ -644,7 +637,7 @@ int main(int argc, char **argv)
     for (;;) {
         char line[LINE_MAX + 1];
         read_line(line);
-        remember(line);
+        sh_history_add(line);
         sh_line(line);
         sh_flush();
     }

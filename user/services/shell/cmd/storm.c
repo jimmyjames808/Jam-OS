@@ -95,10 +95,10 @@ static status_t probe(const struct target *t, uint64_t deadline)
         uint8_t ro = 0, label[16];
         return fs_statfs_until(t->ch, deadline, &total, &free_bytes, &ro, label);
     }
-    uint32_t count = 0;
+    uint32_t len = 0;
     int32_t master = 0;
     uint8_t list[640];
-    return audioctl_streams_until(t->ch, deadline, &count, &master, list);
+    return audioctl_streams_until(t->ch, deadline, &master, list, &len);
 }
 
 static void kill_one(struct storm *s, unsigned i)

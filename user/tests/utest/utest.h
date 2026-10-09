@@ -114,6 +114,7 @@ bool t_keep_put_drop_restore(void);
 bool t_keep_restore_batches(void);
 bool t_keep_unknown_slots(void);
 bool t_keep_refusals(void);
+bool t_keep_drain_bounded(void);
 bool t_keep_restore_refusals(void);
 
 /* svcstate.c: the state VMO (<svcstate.h>), warm spares, and the
@@ -435,10 +436,11 @@ bool t_netsock_hostile(void);
 bool t_netsock_slow_reader(void);
 bool t_netsock_busy_client(void);
 bool t_netsock_len_lies(void);
+bool t_netsock_short_counts(void);
 bool t_netsock_dhcp(void);
 /* netrings.c: sockets' rings against netstack: the fair shares, a hostile
  * program's rings, real UDP sockets in a wait set; and libos against a
- * netstack that lies (netsock_len_lies). */
+ * netstack that lies (netsock_len_lies, netsock_short_counts). */
 bool t_netsock_shares(void);
 bool t_netsock_hostile_rings(void);
 bool t_netwait_udp(void);
@@ -519,8 +521,8 @@ bool t_fun_window_present(void);
 bool t_fun_window_input(void);
 bool t_fun_window_reconnect(void);
 bool t_fun_window_resize(void);
-/* funscreen.c: libfun's borrowed screen against a fake console. */
-bool t_fun_screen_close_frees(void);
+/* funscreen.c: libfun without a compositor: no window, no screen borrowed. */
+bool t_fun_no_window(void);
 
 /* comp.c, comp_bad.c: bin/compositor headless, driven by Wayland clients
  * over real channels (comptest.h). */
@@ -770,6 +772,11 @@ bool t_mix_limits(void);
 bool t_handle_info(void);
 bool t_length_limits(void);
 bool t_replace_consumes(void);
+
+/* M12 P1b: input as events (hid.c, compseat.c). */
+bool t_hid_leds(void);
+bool t_hid_queue_full(void);
+bool t_comp_seat_leds(void);
 /* fat.c: an open file is known by its directory entry (P5). */
 bool t_fat_open_moved(void);
 /* volwatch.c: volumes' watches and release_disk (S2a). */

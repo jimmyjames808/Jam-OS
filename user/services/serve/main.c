@@ -79,27 +79,37 @@ void serve_log(const char *fmt, ...)
 
 /* ---- the control channels ------------------------------------------------------------ */
 
-static status_t on_share(void *ctx, uint16_t port, const uint8_t name[128], handle_t *out_give)
+static status_t on_share(void *ctx, struct idl_txn txn, uint16_t port, const char *name,
+                         uint32_t name_len, uint64_t size, handle_t file, handle_t buffer,
+                         uint16_t *out_port)
 {
-    (void)ctx;
-    if (port < SERVE_PORT_MIN)
-        return ERR_OUT_OF_RANGE;
-    if (!name[0] || strnlen((const char *)name, SERVE_NAME_MAX) == SERVE_NAME_MAX)
-        return ERR_INVALID_ARGS;
+    (void)out_port;   /* answered later, by share_listened */
+    status_t st = OK;
+    if (!ctx)
+        st = ERR_NOT_SUPPORTED;   /* the shared channel: no call answered later there */
+    else if (port < SERVE_PORT_MIN)
+        st = ERR_OUT_OF_RANGE;
+    else if (!name_len)
+        st = ERR_INVALID_ARGS;
     int free_slot = -1;
-    for (unsigned i = 0; i < SERVE_SHARES; i++) {
+    for (unsigned i = 0; st == OK && i < SERVE_SHARES; i++) {
         if (shares[i].state != S_FREE && shares[i].port == port)
-            return ERR_ALREADY_EXISTS;
+            st = ERR_ALREADY_EXISTS;
         if (shares[i].state == S_FREE && free_slot < 0)
             free_slot = (int)i;
     }
-    if (free_slot < 0)
-        return ERR_NO_RESOURCES;
-    return share_giving((unsigned)free_slot, port, (const char *)name, out_give);
+    if (st == OK && free_slot < 0)
+        st = ERR_NO_RESOURCES;
+    if (st != OK) {   /* the handles are ours to close */
+        jam_handle_close(file);
+        jam_handle_close(buffer);
+        return st;
+    }
+    return share_start((unsigned)free_slot, txn, port, name, name_len, size, file, buffer);
 }
 
-static status_t on_info(void *ctx, uint32_t index, uint16_t *port, uint8_t name[128],
-                        uint64_t *size, uint32_t *nclients, uint64_t *requests, uint64_t *bytes)
+static status_t on_info(void *ctx, uint32_t index, uint16_t *port, char *name,
+                        uint32_t *name_len, uint64_t *size, uint32_t *nclients, uint64_t *requests, uint64_t *bytes)
 {
     (void)ctx;
     for (unsigned i = 0; i < SERVE_SHARES; i++) {
@@ -107,7 +117,8 @@ static status_t on_info(void *ctx, uint32_t index, uint16_t *port, uint8_t name[
         if (sh->state != S_SERVING || index--)
             continue;
         *port = sh->port;
-        memcpy(name, sh->name, SERVE_NAME_MAX);
+        *name_len = (uint32_t)strnlen(sh->name, SERVE_NAME_MAX - 1);
+        memcpy(name, sh->name, *name_len);
         *size = sh->size;
         *nclients = sh->clients;
         *requests = sh->requests;
@@ -166,7 +177,10 @@ static status_t on_connect(void *ctx, handle_t *out)
 
 /* Up to BUDGET requests from ch: ERR_SHOULD_WAIT once it is empty (or the
  * budget is spent: the entry stays ready, level-triggered), else the
- * read's status (ERR_PEER_CLOSED: its opener is gone). */
+ * read's status (ERR_PEER_CLOSED: its opener is gone). The shared
+ * channel (svc.connect, and the methods without handles: dispatch) through
+ * svc_serve_request; an opener's own with the generated server, which
+ * takes `share`'s handles and its answer later. */
 static status_t serve_some(handle_t ch)
 {
     status_t st = OK;
@@ -175,9 +189,17 @@ static status_t serve_some(handle_t ch)
     return st == OK ? ERR_SHOULD_WAIT : st;
 }
 
+static status_t serve_own(handle_t ch)
+{
+    status_t st = OK;
+    for (unsigned n = 0; n < BUDGET && st == OK; n++)
+        st = serve_serve_one(ch, &ops, (void *)1);   /* ctx non-NULL: an opener's channel */
+    return st == OK ? ERR_SHOULD_WAIT : st;
+}
+
 static void ctl_ready(unsigned slot)
 {
-    if (serve_some(ctls[slot]) == ERR_SHOULD_WAIT)
+    if (serve_own(ctls[slot]) == ERR_SHOULD_WAIT)
         return;
     (void)netwait_remove(serve_w, ctl_ids[slot]);   /* in the set since on_connect */
     jam_handle_close(ctls[slot]);
@@ -195,9 +217,6 @@ static bool ready(const struct netwait_ready *r)
         return serve_some(ctl) == ERR_SHOULD_WAIT;
     case T_CTL:
         ctl_ready(slot);
-        break;
-    case T_GIVE:
-        share_give_ready(slot);
         break;
     case T_LISTENER:
         if (r->ready & NETWAIT_HUP)
@@ -243,7 +262,7 @@ int main(int argc, char **argv)
     for (;;) {   /* each turn: what is ready, the listen worker's answers, the deadlines */
         struct netwait_ready r[BATCH];
         uint32_t n = 0;
-        uint64_t deadline = shares_expire(clients_expire(now()));
+        uint64_t deadline = clients_expire(now());
         st = netwait_wait(serve_w, deadline, r, BATCH, &n);
         if (st != OK && st != ERR_TIMED_OUT && st != ERR_CANCELED) {
             printf("serve: waiting: %s: ending\n", status_str(st));

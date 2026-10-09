@@ -6,7 +6,10 @@
 #include <idl/svc.h>
 #include <os.h>
 
-#define MSG_MAX 8192   /* an IDL message's most bytes (tools/genidl.py) */
+/* An IDL message's most bytes: tools/genidl.py's MSG_MAX. A dispatch writes
+ * its reply with no size given, up to its protocol's REP_MAX, which can be
+ * this much: the buffers are this big, on the heap (32 KiB is too much stack). */
+#define MSG_MAX 16384
 
 /* svc_dispatch's ops: connect, with the caller's function and context. */
 struct conn {
@@ -22,13 +25,31 @@ static status_t on_connect(void *ctx, handle_t *out)
 
 static const struct svc_ops svc_ops = { .connect = on_connect };
 
+static status_t serve(handle_t ch, uint8_t *q, uint8_t *r, svc_dispatch_fn dispatch,
+                      status_t (*connect)(void *, handle_t *), void *ctx);
+
 status_t svc_serve_request(handle_t ch, svc_dispatch_fn dispatch,
                            status_t (*connect)(void *, handle_t *), void *ctx)
 {
-    _Alignas(8) uint8_t q[MSG_MAX], r[MSG_MAX];   /* 16 KiB of the stack */
+    uint64_t *qbuf = malloc(MSG_MAX), *rbuf = malloc(MSG_MAX);   /* 8-byte aligned */
+    if (!qbuf || !rbuf) {
+        free(qbuf);
+        free(rbuf);
+        return ERR_NO_MEMORY;
+    }
+    uint8_t *q = (uint8_t *)qbuf, *r = (uint8_t *)rbuf;
+    status_t st = serve(ch, q, r, dispatch, connect, ctx);
+    free(qbuf);
+    free(rbuf);
+    return st;
+}
+
+static status_t serve(handle_t ch, uint8_t *q, uint8_t *r, svc_dispatch_fn dispatch,
+                      status_t (*connect)(void *, handle_t *), void *ctx)
+{
     handle_t hs[IDL_READ_HANDLES];
     uint32_t n = 0, nh = 0;
-    status_t st = drv_channel_read(ch, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
+    status_t st = drv_channel_read(ch, q, MSG_MAX, &n, hs, IDL_READ_HANDLES, &nh);
     if (st == ERR_BUFFER_TOO_SMALL)
         return idl_drain(ch, n, nh);
     if (st != OK)

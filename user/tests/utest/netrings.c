@@ -23,7 +23,11 @@
  *   netsock_len_lies       libos's net_sock_take over a hand-made netstack
  *                          whose rx records say more bytes than a datagram
  *                          holds: skipped (counted), never read past
- *                          d->data; a good one after them is taken */
+ *                          d->data; a good one after them is taken
+ *   netsock_short_counts   libos's net_get_counters and
+ *                          net_get_chip_counters over a hand-made netstack
+ *                          whose counts are shorter than the structs: the
+ *                          rest reads as zeros */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -414,7 +418,7 @@ bool t_netwait_udp(void)
 /* ---- a netstack that lies -------------------------------------------------------------- */
 
 /* The hand-made netstack: one socket's rings, served by a thread for the
- * one sock_rings call net_sock_adopt makes. */
+ * one net_socket.rings call net_sock_adopt makes. */
 static struct {
     handle_t far, vmo, to_stack, to_prog;
     uint8_t *map;
@@ -452,11 +456,11 @@ static status_t l_rings(void *ctx, uint32_t tx, uint32_t rx, handle_t *out_ring,
 static void l_serve(void *arg)
 {
     (void)arg;
-    static const struct net_ops ops = { .sock_rings = l_rings };
+    static const struct net_socket_ops ops = { .rings = l_rings };
     signals_t seen;
     L.st = jam_object_wait_one(L.far, SIG_READABLE, now() + NETDRV_WAIT, &seen);
     if (L.st == OK)
-        L.st = net_serve_one(L.far, &ops, NULL);
+        L.st = net_socket_serve_one(L.far, &ops, NULL);
 }
 
 /* A record of len bytes (the header saying `say`) into the rx ring. */
@@ -498,5 +502,72 @@ bool t_netsock_len_lies(void)
     handle_t hs[] = { L.far, L.vmo, L.to_stack, L.to_prog };
     for (unsigned i = 0; i < 4; i++)
         jam_handle_close(hs[i]);
+    return true;
+}
+
+/* ---- counts shorter than the structs ----------------------------------------------------- */
+
+#define SHORT_COUNTS 16u   /* the bytes the hand-made netstack answers: two u64s */
+
+static status_t s_counts(void *ctx, uint8_t *out, uint32_t *out_len)
+{
+    (void)ctx;
+    uint64_t v[2] = { 7, 9 };
+    memcpy(out, v, sizeof(v));
+    *out_len = SHORT_COUNTS;
+    return OK;
+}
+
+static status_t s_chip_counts(void *ctx, struct idl_txn txn, uint8_t *out, uint32_t *out_len)
+{
+    (void)ctx, (void)txn;
+    uint64_t v = 5;
+    memcpy(out, &v, sizeof(v));
+    *out_len = sizeof(v);
+    return OK;   /* answered at once, as a later method may */
+}
+
+static void s_serve(void *arg)
+{
+    (void)arg;
+    static const struct net_ops ops = { .counts = s_counts, .chip_counts = s_chip_counts };
+    for (unsigned i = 0; i < 2; i++) {
+        signals_t seen;
+        L.st = jam_object_wait_one(L.far, SIG_READABLE, now() + NETDRV_WAIT, &seen);
+        if (L.st == OK)
+            L.st = net_serve_one(L.far, &ops, NULL);
+        if (L.st != OK)
+            return;
+    }
+}
+
+bool t_netsock_short_counts(void)
+{
+    static uint8_t stack[16384] __attribute__((aligned(16)));
+    handle_t near, th;
+    struct net_counters c;
+    uint8_t chip[NETDEV_STATS_SIZE];
+    L = (typeof(L)){ 0 };
+    CHECK_ST(jam_channel_create(&near, &L.far), OK);
+    CHECK_ST(thread_spawn("short", s_serve, NULL, stack, sizeof(stack), &th), OK);
+    memset(&c, 0xff, sizeof(c));   /* what the answer doesn't carry must be overwritten */
+    memset(chip, 0xff, sizeof(chip));
+    status_t st1 = net_get_counters(near, &c);
+    status_t st2 = net_get_chip_counters(near, chip);
+    CHECK(wait_threads(&th, 1));
+    CHECK_ST(L.st, OK);
+    CHECK_ST(st1, OK);
+    CHECK_ST(st2, OK);
+    CHECK(c.rx_frames == 7 && c.rx_refused == 9);
+    const uint8_t *rest = (const uint8_t *)&c + SHORT_COUNTS;
+    for (unsigned i = 0; i < sizeof(c) - SHORT_COUNTS; i++)
+        CHECK_EQ(rest[i], 0);
+    uint64_t first;
+    memcpy(&first, chip, sizeof(first));
+    CHECK_EQ(first, 5);
+    for (unsigned i = sizeof(first); i < sizeof(chip); i++)
+        CHECK_EQ(chip[i], 0);
+    jam_handle_close(near);
+    jam_handle_close(L.far);
     return true;
 }

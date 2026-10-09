@@ -27,7 +27,7 @@
  *             device and summary only), made and kept the same way, whose
  *             client end only the compositor gets (the network popover);
  *             and a duplicate of /svc/notify's client end (SR_USER + 6, not
- *             under `nocomp`: "Connected", "Disconnected"). And /svc/net-sys's
+ *             without a compositor: "Connected", "Disconnected"). And /svc/net-sys's
  *             (SR_USER + 3): the same protocol for the network's own
  *             services (dns, netlog, sntp, and
  *             bin/update through the shell), whose openers may use a
@@ -212,7 +212,7 @@ status_t net_start(void)
         n++;   /* without it the desktop shows no network */
     x[n] = (struct spawn_handle){ SR_USER + 6, comp_notify_client() };
     if (x[n].h)
-        n++;   /* without it (`nocomp`) the link's news is in the log only */
+        n++;   /* without it (no compositor) the link's news is in the log only */
     handle_t cards[INIT_MAX_CLAIMED];
     unsigned nc = services_net_devices(cards, INIT_MAX_CLAIMED);
     for (unsigned k = 0; k < nc; k++)
@@ -347,10 +347,20 @@ uint64_t net_due(uint64_t t)
 {
     if (!addr.txid)
         return DEADLINE_NEVER;
-    if (t < addr.deadline)
-        return addr.deadline;
-    addr_failed(ERR_TIMED_OUT);
-    return DEADLINE_NEVER;
+    if (t >= addr.deadline) {
+        /* The loop may have been busy past the deadline with netstack's
+         * answer already queued (its key not yet taken from the port):
+         * read the queued answers before calling the call timed out. The
+         * next call, if one goes, has a deadline of its own. */
+        net_netctl_event();
+        if (!addr.txid)
+            return DEADLINE_NEVER;
+        if (t >= addr.deadline) {
+            addr_failed(ERR_TIMED_OUT);
+            return DEADLINE_NEVER;
+        }
+    }
+    return addr.deadline;
 }
 
 void net_ended(unsigned i)

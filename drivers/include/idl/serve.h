@@ -5,8 +5,7 @@
  * which serves files over HTTP/1.1 to any computer on the network. init
  * starts it in shell mode and keeps both ends of this channel, as the music
  * player's, publishing it as /svc/serve (a channel per opener); the shell's
- * `serve` command is its client (<serve.h> has the limits and the two
- * structs `share` uses).
+ * `serve` command is its client (<serve.h> has the limits).
  * Format: see tools/genidl.py.
  *
  * Reconnect: init holds the channel across a restart of the server, so a
@@ -26,21 +25,11 @@
 #include <idl/common.h>
 
 #define SERVE_PROTOCOL_ID 31u
-#define SERVE_SHARE            0x001f0001u
 #define SERVE_INFO             0x001f0002u
 #define SERVE_STOP             0x001f0003u
+#define SERVE_SHARE            0x001f0004u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
-struct serve_share_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint16_t port;
-    uint8_t name[128];
-} __attribute__((packed));
-struct serve_share_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
 struct serve_info_req {
     uint32_t txid;
     uint32_t ordinal;
@@ -50,7 +39,6 @@ struct serve_info_rep {
     uint32_t txid;
     int32_t  status;
     uint16_t port;
-    uint8_t name[128];
     uint64_t size;
     uint32_t clients;
     uint64_t requests;
@@ -66,119 +54,86 @@ struct serve_stop_rep {
     int32_t  status;
     uint32_t stopped;
 } __attribute__((packed));
+struct serve_share_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint16_t port;
+    uint64_t size;
+} __attribute__((packed));
+struct serve_share_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint16_t port;
+} __attribute__((packed));
 
-#define SERVE_REQ_MAX 138u   /* bytes: the biggest request */
-#define SERVE_REP_MAX 166u   /* bytes: the biggest reply */
+#define SERVE_REQ_MAX 147u   /* bytes: the biggest request */
+#define SERVE_REP_MAX 167u   /* bytes: the biggest reply */
 #define SERVE_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define SERVE_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 
 /* ---- client ---------------------------------------------------------- */
 
-/* serve_share_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t serve_share_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t port, const uint8_t name[128], handle_t *out_give)
-{
-    struct serve_share_req idl_q;
-    struct serve_share_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = SERVE_SHARE;
-    idl_q.port = port;
-    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-        idl_q.name[idl_i] = name[idl_i];
-    handle_t idl_rh[1];
-    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
-                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
-    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
-    idl_n = idl_got[0];
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && idl_rhn != 1)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK)
-        idl_close_all(idl_rh, idl_rhn);
-    if (idl_st == OK) {
-        if (out_give)
-            *out_give = idl_rh[0];
-        else
-            drv_handle_close(idl_rh[0]);
-    }
-    return idl_st;
-}
-/* Serve a file on `port` (SERVE_PORT_MIN and up: any port, the server has
- * the permission for those below 1024 too). `name` is the file's path
- * as the owner gave it (NUL-terminated): for `info`, the log and the
- * Content-Type, never opened by the server. Answers at once with a channel
- * `give`: the caller writes one message on it, struct serve_give with the
- * file's two handles (file_give: its `file` channel, open to read, and its
- * transfer buffer), and then reads one answer there, struct serve_answer:
- * OK once the server listens (it serves that file and nothing else, to
- * every path asked), else why not (ERR_ACCESS_DENIED: the server has no
- * listen permission; ERR_ALREADY_BOUND: another program has the port;
- * ERR_BAD_STATE: no network address yet (it waits 5 s for one);
- * netstack's other errors; ERR_INVALID_ARGS: a wrong message). The server
- * closes `give` after its answer, or if nothing comes on it in
- * SERVE_GIVE_WAIT. ERR_NO_RESOURCES: SERVE_SHARES files served (or
- * waiting for their file) already; ERR_ALREADY_EXISTS: that port is served
- * already; ERR_OUT_OF_RANGE: a port below SERVE_PORT_MIN; ERR_INVALID_ARGS:
- * no name. */
-static inline status_t serve_share_until(handle_t ch, uint64_t deadline_ns, uint16_t port, const uint8_t name[128], handle_t *out_give)
-{
-    return serve_share_call(ch, false, deadline_ns, port, name, out_give);
-}
-static inline status_t serve_share_within(handle_t ch, uint64_t timeout_ns, uint16_t port, const uint8_t name[128], handle_t *out_give)
-{
-    return serve_share_call(ch, true, timeout_ns, port, name, out_give);
-}
-static inline status_t serve_share(handle_t ch, uint16_t port, const uint8_t name[128], handle_t *out_give)
-{
-    return serve_share_call(ch, false, DEADLINE_NEVER, port, name, out_give);
-}
-
 /* serve_info_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t serve_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
+static inline status_t serve_info_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t index, uint16_t *out_port, char out_name[127 + 1], uint32_t *out_name_len, uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
 {
-    struct serve_info_req idl_q;
-    struct serve_info_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = SERVE_INFO;
-    idl_q.index = index;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[167];
+    struct serve_info_req *idl_q = (struct serve_info_req *)idl_b0;
+    const struct serve_info_rep *idl_r = (const struct serve_info_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = SERVE_INFO;
+    idl_q->index = index;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 167, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 127, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && out_port)
-        *out_port = idl_r.port;
-    for (uint32_t idl_i = 0; idl_st == OK && out_name && idl_i < 128; idl_i++)
-        out_name[idl_i] = idl_r.name[idl_i];
+        *out_port = idl_r->port;
     if (idl_st == OK && out_size)
-        *out_size = idl_r.size;
+        *out_size = idl_r->size;
     if (idl_st == OK && out_clients)
-        *out_clients = idl_r.clients;
+        *out_clients = idl_r->clients;
     if (idl_st == OK && out_requests)
-        *out_requests = idl_r.requests;
+        *out_requests = idl_r->requests;
     if (idl_st == OK && out_bytes)
-        *out_bytes = idl_r.bytes;
+        *out_bytes = idl_r->bytes;
+    if (idl_st == OK && out_name) {
+        if (idl_l0)
+            __builtin_memcpy(out_name, idl_p0, idl_l0 * 1);
+        out_name[idl_l0] = 0;
+    }
+    if (idl_st == OK && out_name_len)
+        *out_name_len = idl_l0;
     return idl_st;
 }
 /* What is served: the `index`-th file (0, 1, ...): its port, its name as
  * `share` was given it, its size, the clients connected now, and the
  * requests answered and file bytes sent since it was shared.
  * ERR_NOT_FOUND: past the last. */
-static inline status_t serve_info_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
+static inline status_t serve_info_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint16_t *out_port, char out_name[127 + 1], uint32_t *out_name_len, uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
 {
-    return serve_info_call(ch, false, deadline_ns, index, out_port, out_name, out_size, out_clients, out_requests, out_bytes);
+    return serve_info_call(ch, false, deadline_ns, index, out_port, out_name, out_name_len, out_size, out_clients, out_requests, out_bytes);
 }
-static inline status_t serve_info_within(handle_t ch, uint64_t timeout_ns, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
+static inline status_t serve_info_within(handle_t ch, uint64_t timeout_ns, uint32_t index, uint16_t *out_port, char out_name[127 + 1], uint32_t *out_name_len, uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
 {
-    return serve_info_call(ch, true, timeout_ns, index, out_port, out_name, out_size, out_clients, out_requests, out_bytes);
+    return serve_info_call(ch, true, timeout_ns, index, out_port, out_name, out_name_len, out_size, out_clients, out_requests, out_bytes);
 }
-static inline status_t serve_info(handle_t ch, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
+static inline status_t serve_info(handle_t ch, uint32_t index, uint16_t *out_port, char out_name[127 + 1], uint32_t *out_name_len, uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
 {
-    return serve_info_call(ch, false, DEADLINE_NEVER, index, out_port, out_name, out_size, out_clients, out_requests, out_bytes);
+    return serve_info_call(ch, false, DEADLINE_NEVER, index, out_port, out_name, out_name_len, out_size, out_clients, out_requests, out_bytes);
 }
 
 /* serve_stop_until and _within: idl_t is a deadline, or with idl_within a
@@ -214,64 +169,109 @@ static inline status_t serve_stop(handle_t ch, uint16_t port, uint32_t *out_stop
     return serve_stop_call(ch, false, DEADLINE_NEVER, port, out_stopped);
 }
 
-/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
-
-/* serve_share without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then serve_share_result. */
-static inline status_t serve_share_send(handle_t ch, uint32_t idl_txid, uint16_t port, const uint8_t name[128])
+/* serve_share_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t serve_share_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t port, const char *name, uint32_t name_len, uint64_t size, handle_t file, handle_t buffer, uint16_t *out_port)
 {
-    struct serve_share_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = SERVE_SHARE;
-    idl_q.port = port;
-    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-        idl_q.name[idl_i] = name[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to serve_share_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t serve_share_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_give)
-{
-    const struct serve_share_rep *idl_r = (const struct serve_share_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 1)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
+    _Alignas(8) uint8_t idl_b0[147];
+    _Alignas(8) uint8_t idl_b1[10];
+    struct serve_share_req *idl_q = (struct serve_share_req *)idl_b0;
+    const struct serve_share_rep *idl_r = (const struct serve_share_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = SERVE_SHARE;
+    idl_q->port = port;
+    idl_q->size = size;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, name, name_len, 127, 1) ||
+                             !idl_str_ok(name, name_len)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_wh[2];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = file;
+        idl_wh[idl_wn++] = buffer;
+        idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 10, &idl_got[0], NULL, 0, &idl_got[1],
+                            idl_within, idl_t);
+    } else {   /* never sent: the handles are still ours */
+        if (file != HANDLE_INVALID)
+            drv_handle_close(file);
+        if (buffer != HANDLE_INVALID)
+            drv_handle_close(buffer);
     }
-    if (out_give)
-        *out_give = idl_m->hs[0];
-    else
-        drv_handle_close(idl_m->hs[0]);
-    idl_m->nh = 0;
-    return OK;
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && out_port)
+        *out_port = idl_r->port;
+    (void)idl_o;
+    return idl_st;
 }
+/* Serve a file on `port` (SERVE_PORT_MIN and up: any port, the server has
+ * the permission for those below 1024 too): `file` its `file` channel,
+ * open to read, and `buffer` its transfer buffer (file_give's), `size`
+ * its size in bytes as its opener saw it. `name` is the file's path as the
+ * owner gave it: for `info`, the log and the Content-Type, never opened
+ * by the server. Answered once the server listens (it serves that file and
+ * nothing else, to every path asked), with the port: else why not
+ * (ERR_ACCESS_DENIED: the server has no listen permission;
+ * ERR_ALREADY_BOUND: another program has the port; ERR_BAD_STATE: no
+ * network address yet (it waits 5 s for one); netstack's other errors;
+ * ERR_INVALID_ARGS: a buffer that isn't one, or no name).
+ * ERR_NO_RESOURCES: SERVE_SHARES files served (or being started) already;
+ * ERR_ALREADY_EXISTS: that port is served already; ERR_OUT_OF_RANGE: a port
+ * below SERVE_PORT_MIN. The handles are the server's whatever the answer
+ * (it closes them if it doesn't serve the file). Only on a channel of the
+ * caller's own (svc.connect's): the shared one refuses it. */
+static inline status_t serve_share_until(handle_t ch, uint64_t deadline_ns, uint16_t port, const char *name, uint32_t name_len, uint64_t size, handle_t file, handle_t buffer, uint16_t *out_port)
+{
+    return serve_share_call(ch, false, deadline_ns, port, name, name_len, size, file, buffer, out_port);
+}
+static inline status_t serve_share_within(handle_t ch, uint64_t timeout_ns, uint16_t port, const char *name, uint32_t name_len, uint64_t size, handle_t file, handle_t buffer, uint16_t *out_port)
+{
+    return serve_share_call(ch, true, timeout_ns, port, name, name_len, size, file, buffer, out_port);
+}
+static inline status_t serve_share(handle_t ch, uint16_t port, const char *name, uint32_t name_len, uint64_t size, handle_t file, handle_t buffer, uint16_t *out_port)
+{
+    return serve_share_call(ch, false, DEADLINE_NEVER, port, name, name_len, size, file, buffer, out_port);
+}
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* serve_info without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then serve_info_result. */
 static inline status_t serve_info_send(handle_t ch, uint32_t idl_txid, uint32_t index)
 {
-    struct serve_info_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = SERVE_INFO;
-    idl_q.index = index;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[12];
+    struct serve_info_req *idl_q = (struct serve_info_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = SERVE_INFO;
+    idl_q->index = index;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to serve_info_send (read with
  * idl_reply_read). The reply's handles are taken in every case: moved to
  * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t serve_info_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
+static inline status_t serve_info_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_port, char out_name[127 + 1], uint32_t *out_name_len, uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes)
 {
     const struct serve_info_rep *idl_r = (const struct serve_info_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 127, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
     if (idl_st == OK && idl_m->nh != 0)
         idl_st = ERR_INTERNAL;
     if (idl_st != OK) {
@@ -281,8 +281,6 @@ static inline status_t serve_info_result(const void *idl_rep, struct idl_msg *id
     idl_m->nh = 0;
     if (out_port)
         *out_port = idl_r->port;
-    for (uint32_t idl_i = 0; out_name && idl_i < 128; idl_i++)
-        out_name[idl_i] = idl_r->name[idl_i];
     if (out_size)
         *out_size = idl_r->size;
     if (out_clients)
@@ -291,6 +289,13 @@ static inline status_t serve_info_result(const void *idl_rep, struct idl_msg *id
         *out_requests = idl_r->requests;
     if (out_bytes)
         *out_bytes = idl_r->bytes;
+    if (out_name) {
+        if (idl_l0)
+            __builtin_memcpy(out_name, idl_p0, idl_l0 * 1);
+        out_name[idl_l0] = 0;
+    }
+    if (out_name_len)
+        *out_name_len = idl_l0;
     return OK;
 }
 
@@ -326,6 +331,56 @@ static inline status_t serve_stop_result(const void *idl_rep, struct idl_msg *id
     return OK;
 }
 
+/* serve_share without waiting: the request, with the caller's txid (not 0).
+ * The handles it is given are gone whatever the status (sent, or closed).
+ * The reply comes on ch: idl_reply_read, then serve_share_result. */
+static inline status_t serve_share_send(handle_t ch, uint32_t idl_txid, uint16_t port, const char *name, uint32_t name_len, uint64_t size, handle_t file, handle_t buffer)
+{
+    _Alignas(8) uint8_t idl_b0[147];
+    struct serve_share_req *idl_q = (struct serve_share_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = idl_txid ? OK : ERR_INVALID_ARGS;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = SERVE_SHARE;
+    idl_q->port = port;
+    idl_q->size = size;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, name, name_len, 127, 1) ||
+                             !idl_str_ok(name, name_len)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_wh[2];
+    uint32_t idl_wn = 0;
+    if (idl_st == OK) {
+        idl_wh[idl_wn++] = file;
+        idl_wh[idl_wn++] = buffer;
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
+    } else {   /* never sent: the handles are still ours */
+        if (file != HANDLE_INVALID)
+            drv_handle_close(file);
+        if (buffer != HANDLE_INVALID)
+            drv_handle_close(buffer);
+    }
+    return idl_st;
+}
+
+/* The status and results of a reply to serve_share_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t serve_share_result(const void *idl_rep, struct idl_msg *idl_m, uint16_t *out_port)
+{
+    const struct serve_share_rep *idl_r = (const struct serve_share_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_port)
+        *out_port = idl_r->port;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -333,52 +388,37 @@ static inline status_t serve_stop_result(const void *idl_rep, struct idl_msg *id
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with serve_reply_<method> (now, or later from anywhere). */
 struct serve_ops {
-    status_t (*share)(void *ctx, uint16_t port, const uint8_t name[128], handle_t *out_give);
-    status_t (*info)(void *ctx, uint32_t index, uint16_t *out_port, uint8_t out_name[128], uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes);
+    status_t (*info)(void *ctx, uint32_t index, uint16_t *out_port, char *out_name, uint32_t *out_name_len, uint64_t *out_size, uint32_t *out_clients, uint64_t *out_requests, uint64_t *out_bytes);
     status_t (*stop)(void *ctx, uint16_t port, uint32_t *out_stopped);
+    status_t (*share)(void *ctx, struct idl_txn idl_txn, uint16_t port, const char *name, uint32_t name_len, uint64_t size, handle_t file, handle_t buffer, uint16_t *out_port);
 };
-
-/* Answer the serve.share request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t serve_reply_share(struct idl_txn idl_txn, status_t idl_st, handle_t give)
-{
-    struct serve_share_rep idl_r;
-    handle_t idl_hs[1] = { give };
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st == OK && !(give != HANDLE_INVALID))
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK) {
-        if (idl_hs[0] != HANDLE_INVALID)
-            drv_handle_close(idl_hs[0]);
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    }
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
-}
 
 /* Answer the serve.info request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t serve_reply_info(struct idl_txn idl_txn, status_t idl_st, uint16_t port, const uint8_t name[128], uint64_t size, uint32_t clients, uint64_t requests, uint64_t bytes)
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t serve_reply_info(struct idl_txn idl_txn, status_t idl_st, uint16_t port, const char *name, uint32_t name_len, uint64_t size, uint32_t clients, uint64_t requests, uint64_t bytes)
 {
-    struct serve_info_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[167];
+    struct serve_info_rep *idl_r = (struct serve_info_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    idl_r.port = port;
-    for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-        idl_r.name[idl_i] = name[idl_i];
-    idl_r.size = size;
-    idl_r.clients = clients;
-    idl_r.requests = requests;
-    idl_r.bytes = bytes;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->port = port;
+    idl_r->size = size;
+    idl_r->clients = clients;
+    idl_r->requests = requests;
+    idl_r->bytes = bytes;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, name, name_len, 127, 1) ||
+                             !idl_str_ok(name, name_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Answer the serve.stop request kept in txn: idl_st and, if it is OK, the
@@ -397,87 +437,97 @@ static inline status_t serve_reply_stop(struct idl_txn idl_txn, status_t idl_st,
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
+/* Answer the serve.share request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t serve_reply_share(struct idl_txn idl_txn, status_t idl_st, uint16_t port)
+{
+    _Alignas(8) uint8_t idl_b0[10];
+    struct serve_share_rep *idl_r = (struct serve_share_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->port = port;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
 /* Decode the request of n bytes at req, which came on ch, call its handler,
  * encode the reply into rep (SERVE_REP_MAX bytes) and the handles it carries
  * into rhs (SERVE_REP_HANDLES slots; *rhn of them). Returns the reply's
  * length: 0 means no reply (the request has no txid, or a `later`
  * handler answers it itself). No I/O; the caller sends the reply with the
- * handles, or closes them if it never sends it. */
-static inline uint32_t serve_dispatch_on(handle_t ch, const struct serve_ops *ops, void *ctx,
-                                         const void *req, uint32_t n, void *rep, handle_t *rhs,
-                                         uint32_t *rhn)
+ * handles, or closes them if it never sends it.
+ * The idl_nh handles at idl_hs (the call's arguments) are taken in every
+ * case: given to its handler, or closed (the handler owns them, whatever it
+ * returns). */
+static inline uint32_t serve_dispatch_h(handle_t ch, const struct serve_ops *ops, void *ctx,
+                                        const void *req, uint32_t n, const handle_t *idl_hs, uint32_t idl_nh,
+                                        void *rep, handle_t *rhs, uint32_t *rhn)
 {
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    (void)ch;
-    if (n < sizeof(uint32_t))
+    if (n < sizeof(uint32_t)) {
+        idl_close_all(idl_hs, idl_nh);
         return 0;
+    }
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
     idl_h->status = ERR_INVALID_ARGS;
-    if (n < sizeof(struct idl_req_hdr))
+    if (n < sizeof(struct idl_req_hdr)) {
+        idl_close_all(idl_hs, idl_nh);
         return sizeof(*idl_h);
-    switch (((const struct idl_req_hdr *)req)->ordinal) {
-    case SERVE_SHARE: {
-        const struct serve_share_req *idl_q = (const struct serve_share_req *)req;
-        struct serve_share_rep *idl_r = (struct serve_share_rep *)rep;
-        handle_t out_give = HANDLE_INVALID;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->share) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->share(ctx, idl_q->port, idl_q->name, &out_give);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status == OK && !(out_give != HANDLE_INVALID))
-            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
-        if (idl_h->status != OK) {
-            if (out_give != HANDLE_INVALID)
-                drv_handle_close(out_give);
-            return sizeof(*idl_h);
-        }
-        rhs[0] = out_give;
-        *rhn = 1;
-        return sizeof(*idl_r);
     }
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
     case SERVE_INFO: {
         const struct serve_info_req *idl_q = (const struct serve_info_req *)req;
         struct serve_info_rep *idl_r = (struct serve_info_rep *)rep;
         uint16_t out_port = 0;
-        uint8_t out_name[128];
-        for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-            out_name[idl_i] = 0;
+        char *out_name = (char *)((uint8_t *)rep + 40);
+        uint32_t out_name_len = 0;
         uint64_t out_size = 0;
         uint32_t out_clients = 0;
         uint64_t out_requests = 0;
         uint64_t out_bytes = 0;
-        if (n != sizeof(*idl_q))
+        if (n != sizeof(*idl_q) || idl_nh) {
+            idl_close_all(idl_hs, idl_nh);
             return sizeof(*idl_h);
+        }
         if (!ops->info) {
+            idl_close_all(idl_hs, idl_nh);
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->info(ctx, idl_q->index, &out_port, out_name, &out_size, &out_clients, &out_requests, &out_bytes);
+        status_t idl_st = ops->info(ctx, idl_q->index, &out_port, out_name, &out_name_len, &out_size, &out_clients, &out_requests, &out_bytes);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_name_len > 127 || !idl_str_ok(out_name, out_name_len)))
+            idl_h->status = ERR_INTERNAL;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->port = out_port;
-        for (uint32_t idl_i = 0; idl_i < 128; idl_i++)
-            idl_r->name[idl_i] = out_name[idl_i];
         idl_r->size = out_size;
         idl_r->clients = out_clients;
         idl_r->requests = out_requests;
         idl_r->bytes = out_bytes;
-        return sizeof(*idl_r);
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 40, out_name_len, 1);
+        return idl_rn;
     }
     case SERVE_STOP: {
         const struct serve_stop_req *idl_q = (const struct serve_stop_req *)req;
         struct serve_stop_rep *idl_r = (struct serve_stop_rep *)rep;
         uint32_t out_stopped = 0;
-        if (n != sizeof(*idl_q))
+        if (n != sizeof(*idl_q) || idl_nh) {
+            idl_close_all(idl_hs, idl_nh);
             return sizeof(*idl_h);
+        }
         if (!ops->stop) {
+            idl_close_all(idl_hs, idl_nh);
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
@@ -488,12 +538,63 @@ static inline uint32_t serve_dispatch_on(handle_t ch, const struct serve_ops *op
         idl_r->stopped = out_stopped;
         return sizeof(*idl_r);
     }
+    case SERVE_SHARE: {
+        const struct serve_share_req *idl_q = (const struct serve_share_req *)req;
+        struct serve_share_rep *idl_r = (struct serve_share_rep *)rep;
+        uint16_t out_port = 0;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 127, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 2)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->share) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        if (!(idl_handle_is(idl_hs[0], IDL_OBJ_CHANNEL) && idl_handle_is(idl_hs[1], IDL_OBJ_VMO))) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_WRONG_TYPE;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        idl_st = ops->share(ctx, idl_txn, idl_q->port, (const char *)idl_p0, idl_l0, idl_q->size, idl_hs[0], idl_hs[1], &out_port);
+        /* IDL_LATER: the handler answers with serve_reply_share. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->port = out_port;
+        return sizeof(*idl_r);
     }
+    }
+    idl_close_all(idl_hs, idl_nh);
     idl_h->status = ERR_NOT_SUPPORTED;
     return sizeof(*idl_h);
 }
 
-/* serve_dispatch_on without the channel (the protocol has no `later` method). */
+/* serve_dispatch_h without handles (a loop of your own that reads none:
+ * an event or call that takes some is then refused). */
+static inline uint32_t serve_dispatch_on(handle_t ch, const struct serve_ops *ops, void *ctx,
+                                         const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                         uint32_t *rhn)
+{
+    return serve_dispatch_h(ch, ops, ctx, req, n, NULL, 0, rep, rhs, rhn);
+}
+
+/* serve_dispatch_on without the channel (a `later` handler's txn then has none: use serve_dispatch_on). */
 static inline uint32_t serve_dispatch(const struct serve_ops *ops, void *ctx, const void *req, uint32_t n,
                                       void *rep, handle_t *rhs, uint32_t *rhn)
 {
@@ -515,21 +616,22 @@ static inline status_t serve_take_slot(handle_t ch, const struct idl_slot *slot,
     return idl_take(ch, slot);
 }
 
-/* Run the request in slot (taken by serve_take_slot, or found there by a
- * successor), which came on ch: as serve_dispatch_on, its reply built
- * in slot->r and the handles that reply carries put into rhs
- * (SERVE_REP_HANDLES slots; *rhn of them). A request that carried handles is
- * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
- * reply's length: 0 means no reply (no txid, or a `later` handler
- * answers it itself). No I/O; the caller sends the reply with the handles,
- * or closes them if it never sends it. */
+/* Run the message in slot (taken by serve_take_slot, or found there by a
+ * successor), which came on ch: as serve_dispatch_h, its reply built in
+ * slot->r and the handles that reply carries put into rhs
+ * (SERVE_REP_HANDLES slots; *rhn of them). The handles it carried
+ * (*slot->nh in slot->hs) are taken: given to a handler or closed,
+ * *slot->nh 0 after. Returns the reply's length: 0 means no reply
+ * (no txid, an event, or a `later` handler answers it itself). No I/O;
+ * the caller sends the reply with the handles, or closes them if it
+ * never sends it. */
 static inline uint32_t serve_run_slot(handle_t ch, const struct idl_slot *slot,
                                       const struct serve_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
 {
-    *rhn = 0;
-    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
-        return idl_refuse(slot);
-    return serve_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+    uint32_t idl_nh = *slot->nh;
+    *slot->nh = 0;
+    return serve_dispatch_h(ch, ops, ctx, slot->q, *slot->n, slot->hs, idl_nh, slot->r,
+                          rhs, rhn);
 }
 
 /* Is the method with this wire ordinal idempotent (its keyword in the
@@ -554,25 +656,21 @@ static inline status_t serve_serve_one(handle_t ch, const struct serve_ops *ops,
     _Alignas(8) uint8_t idl_r[SERVE_REP_MAX];
     handle_t idl_hs[IDL_READ_HANDLES];
     uint32_t idl_n = 0, idl_nh = 0;
-    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+    status_t idl_st = drv_channel_read(ch, idl_q, SERVE_REQ_MAX, &idl_n, idl_hs, IDL_READ_HANDLES,
                                        &idl_nh);
-    if (idl_st == ERR_BUFFER_TOO_SMALL)
-        return idl_drain(ch, idl_n, idl_nh);
-    if (idl_st != OK)
-        return idl_st;
-    if (idl_nh) {
-        idl_close_all(idl_hs, idl_nh);
-        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
-        return OK;
+    if (idl_st == ERR_BUFFER_TOO_SMALL) {
+        idl_st = idl_drain(ch, idl_n, idl_nh);
+    } else if (idl_st == OK) {
+        handle_t idl_rhs[IDL_REP_HANDLES];
+        uint32_t idl_rhn = 0;
+        uint32_t idl_rn = serve_dispatch_h(ch, ops, ctx, idl_q, idl_n, idl_hs, idl_nh, idl_r,
+                                         idl_rhs, &idl_rhn);
+        if (!idl_rn)
+            idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+        else   /* the reply's handles are gone whatever the write's status */
+            (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
     }
-    handle_t idl_rhs[IDL_REP_HANDLES];
-    uint32_t idl_rhn = 0;
-    uint32_t idl_rn = serve_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
-    if (!idl_rn)
-        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
-    else   /* the reply's handles are gone whatever the write's status */
-        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
-    return OK;
+    return idl_st;
 }
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
@@ -583,16 +681,14 @@ static inline status_t serve_serve(handle_t ch, const struct serve_ops *ops, voi
 {
     _Alignas(8) uint8_t idl_q[SERVE_REQ_MAX];
     _Alignas(8) uint8_t idl_r[SERVE_REP_MAX];
-    handle_t idl_rhs[IDL_REP_HANDLES];
+    handle_t idl_rhs[IDL_REP_HANDLES], idl_hs[IDL_READ_HANDLES];
     struct idl_serve idl_s = {
-        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .ch = ch, .q = idl_q, .qcap = SERVE_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
+        .hs = idl_hs, .hcap = IDL_READ_HANDLES,
     };
-    for (;;) {
-        status_t idl_st = idl_serve_next(&idl_s);
-        if (idl_st == ERR_PEER_CLOSED)
-            return OK;
-        if (idl_st != OK)
-            return idl_st;
-        idl_s.rn = serve_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
-    }
+    status_t idl_st;
+    while ((idl_st = idl_serve_next(&idl_s)) == OK)
+        idl_s.rn = serve_dispatch_h(ch, ops, ctx, idl_q, idl_s.n, idl_hs, idl_s.nh, idl_r,
+                                  idl_rhs, &idl_s.rhn);
+    return idl_st == ERR_PEER_CLOSED ? OK : idl_st;
 }

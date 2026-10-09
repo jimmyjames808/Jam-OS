@@ -9,8 +9,6 @@
 
 #define MARGIN NS_PER_S   /* the call waits this much past the resolver's timeout */
 
-_Static_assert(sizeof(((struct dns_resolve_req *)0)->name) == DNS_TEXT_MAX, "dns.idl's name");
-
 handle_t dns_svc(void)
 {
     handle_t h = svc_get(SVC_DNS_SYS);
@@ -20,21 +18,19 @@ handle_t dns_svc(void)
 status_t dns_lookup_on(handle_t dns, const char *name, uint64_t deadline,
                        struct dns_answer *out)
 {
-    uint8_t field[DNS_TEXT_MAX] = { 0 };
-    size_t len = strnlen(name, DNS_TEXT_MAX);
-    if (len == DNS_TEXT_MAX)
+    size_t len = strnlen(name, DNS_NAME_MAX + 1);
+    if (!len || len > DNS_NAME_MAX)
         return ERR_INVALID_ARGS;
-    memcpy(field, name, len);
     uint64_t t = now();
     if (deadline <= t)
         return ERR_TIMED_OUT;
     uint64_t ms = (deadline - t + NS_PER_MS - 1) / NS_PER_MS;
     if (ms > DNS_TIMEOUT_MAX)
         ms = DNS_TIMEOUT_MAX;
-    uint8_t n = 0;
+    uint32_t n = 0;
     uint32_t a[DNS_ADDRS_MAX] = { 0 }, ttl = 0;
-    status_t st = dns_resolve_until(dns, t + ms * NS_PER_MS + MARGIN, field, (uint32_t)ms, &n,
-                                    &a[0], &a[1], &a[2], &a[3], &ttl);
+    status_t st = dns_resolve_until(dns, t + ms * NS_PER_MS + MARGIN, name, (uint32_t)len,
+                                    (uint32_t)ms, a, &n, &ttl);
     if (st != OK)
         return st;
     if (!n || n > DNS_ADDRS_MAX)

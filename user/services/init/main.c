@@ -6,8 +6,7 @@
  * whose shell starts the soak test) it starts and supervises the bootfs
  * server, the compositor, the console, serial input, devmgr and the shell
  * (shell.c) and never exits; an option word "splash" after it plays the
- * boot splash first (splash.c), and "nocomp" leaves the compositor out
- * (comp.c). The option word "hidboot" (with any mode) is passed
+ * boot splash first (splash.c). The option word "hidboot" (with any mode) is passed
  * on to devmgr, which passes it to every hid: mice stay in the boot
  * protocol; so is "netprobe", "netsend" or "net" in shell mode (devmgr
  * binds the RTL8125's driver for its listen-only probe, its ARP send test
@@ -73,7 +72,6 @@ bool init_splashhang;
 bool init_verbose;
 bool init_nospare;
 bool init_vtdtest;
-bool init_nocomp;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -553,9 +551,7 @@ int main(int argc, char **argv)
      * or "vlan=none", "bootdisk=0x<id>", "splashhang", "nospare" (no warm
      * spare mixer: spare.c; passed on to volumes: no warm spare fat),
      * "vtdtest" (passed on to devmgr: drv/hda's IOMMU fault checks),
-     * "nocomp" (no compositor: the console draws the screen and takes
-     * the input, one terminal; comp.c), "verbose" (the log on the first
-     * terminal's screen: terms.c). */
+     * "verbose" (the log on the first terminal's screen: terms.c). */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
         splash |= !strcmp(argv[i], "splash");
@@ -570,7 +566,6 @@ int main(int argc, char **argv)
         init_splashhang |= !strcmp(argv[i], "splashhang");
         init_nospare |= !strcmp(argv[i], "nospare");
         init_vtdtest |= !strcmp(argv[i], "vtdtest");
-        init_nocomp |= !strcmp(argv[i], "nocomp");
         init_verbose |= !strcmp(argv[i], "verbose");
     }
     /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain

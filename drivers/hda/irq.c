@@ -6,8 +6,9 @@
  *               open_output and query are refused, so its holder (the
  *               shell's `hda`, through the mixer) can't take the stream.
  *               The key carries the slot and a generation
- *   KEY_STREAM  the open stream's channel (open_output's `stream`):
- *               start, stop, position, wait_period; its peer closing
+ *   KEY_STREAM  the open stream's channel (open_output's `stream`), a
+ *               protocol of its own (hda_stream): start, stop, position,
+ *               wait_period; its peer closing
  *               closes the stream. The key carries a generation, so a
  *               packet for a channel already closed is ignored.
  *   KEY_IRQ     the controller's MSI (DR_IRQ(0)), bound PERSISTENT: acked,
@@ -35,6 +36,7 @@
 #include <idl/hda.h>
 #include "hda.h"
 
+#define MAX2(a, b) ((a) > (b) ? (a) : (b))
 #define KEY_SERVE  1u
 #define KEY_IRQ    2u
 #define KEY_STREAM 3u          /* | generation << 8 */
@@ -44,8 +46,8 @@
 
 /* Which channel a message came on: what it may ask. */
 enum chan_kind {
-    CH_SERVE,    /* DR_SERVE: everything but the stream's methods */
-    CH_STREAM,   /* the stream channel: start, stop, position, wait_period */
+    CH_SERVE,    /* DR_SERVE: the `hda` protocol */
+    CH_STREAM,   /* the stream channel: `hda_stream` (start, stop, position, wait_period) */
     CH_QUERY,    /* a query channel: DR_SERVE's but open_output and query */
 };
 
@@ -194,7 +196,7 @@ static void query_close(struct loop *l, struct query_ch *q)
 }
 
 static const struct hda_ops serve_ops = { .open_output = do_open_output, .query = do_query };
-static const struct hda_ops stream_ops = {
+static const struct hda_stream_ops stream_ops = {
     .start = do_start,
     .stop = do_stop,
     .position = do_position,
@@ -204,7 +206,7 @@ static const struct hda_ops stream_ops = {
 
 static void wait_reply(struct loop *l, status_t st)
 {
-    struct hda_wait_period_rep r = { .txid = l->wait_txid, .status = st };
+    struct hda_stream_wait_period_rep r = { .txid = l->wait_txid, .status = st };
     uint32_t n = sizeof(struct idl_rep_hdr);
     if (st == OK) {
         r.frames = l->st.played / l->st.frame_bytes;
@@ -231,7 +233,7 @@ static void wait_check(struct loop *l)
     }
 }
 
-static void wait_begin(struct loop *l, const struct hda_wait_period_req *q)
+static void wait_begin(struct loop *l, const struct hda_stream_wait_period_req *q)
 {
     uint64_t pf = PERIOD_FRAMES;
     if (l->waiting || !l->st.running) {
@@ -256,8 +258,8 @@ static void wait_begin(struct loop *l, const struct hda_wait_period_req *q)
 static status_t serve_one(struct loop *l, handle_t ch, enum chan_kind kind)
 {
     bool stream = kind == CH_STREAM;
-    _Alignas(8) uint8_t q[HDA_REQ_MAX + 8];
-    _Alignas(8) uint8_t r[HDA_REP_MAX];
+    _Alignas(8) uint8_t q[MAX2(HDA_REQ_MAX, HDA_STREAM_REQ_MAX) + 8];
+    _Alignas(8) uint8_t r[MAX2(HDA_REP_MAX, HDA_STREAM_REP_MAX)];
     handle_t hs[IDL_READ_HANDLES];
     uint32_t n = 0, nh = 0;
     status_t st = drv_channel_read(ch, q, sizeof(q), &n, hs, IDL_READ_HANDLES, &nh);
@@ -271,25 +273,31 @@ static status_t serve_one(struct loop *l, handle_t ch, enum chan_kind kind)
         return OK;
     }
     const struct idl_req_hdr *hdr = (const void *)q;
-    if (stream && n == sizeof(struct hda_wait_period_req) && hdr->ordinal == HDA_WAIT_PERIOD) {
+    if (stream && n == sizeof(struct hda_stream_wait_period_req) &&
+        hdr->ordinal == HDA_STREAM_WAIT_PERIOD) {
         wait_begin(l, (const void *)q);
         return OK;
     }
-    const struct hda_ops *ops = stream ? &stream_ops : l->ops;
-    void *ctx = stream ? (void *)l : l->ctx;
-    bool ours = n >= sizeof(*hdr) && (hdr->ordinal == HDA_OPEN_OUTPUT ||
-                                      hdr->ordinal == HDA_QUERY);
-    if (ours && kind == CH_QUERY) {
-        idl_reply_status(ch, q, n, ERR_ACCESS_DENIED);   /* never the stream */
-        return OK;
-    }
-    if (ours && kind == CH_SERVE) {
-        ops = &serve_ops;
-        ctx = l;
-    }
     handle_t rhs[IDL_REP_HANDLES];
     uint32_t rhn = 0;
-    uint32_t rn = hda_dispatch(ops, ctx, q, n, r, rhs, &rhn);
+    uint32_t rn;
+    if (stream) {   /* hda_stream: a message of `hda` is ERR_NOT_SUPPORTED there */
+        rn = hda_stream_dispatch(&stream_ops, l, q, n, r, rhs, &rhn);
+    } else {
+        const struct hda_ops *ops = l->ops;
+        void *ctx = l->ctx;
+        bool ours = n >= sizeof(*hdr) && (hdr->ordinal == HDA_OPEN_OUTPUT ||
+                                          hdr->ordinal == HDA_QUERY);
+        if (ours && kind == CH_QUERY) {
+            idl_reply_status(ch, q, n, ERR_ACCESS_DENIED);   /* never the stream */
+            return OK;
+        }
+        if (ours && kind == CH_SERVE) {
+            ops = &serve_ops;
+            ctx = l;
+        }
+        rn = hda_dispatch(ops, ctx, q, n, r, rhs, &rhn);
+    }
     if (!rn)
         idl_close_all(rhs, rhn);   /* no reply: never sent */
     else   /* the reply's handles are gone whatever the write's status */

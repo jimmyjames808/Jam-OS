@@ -240,7 +240,7 @@ status_t net_tcp_accept_send(struct net_listener *l)
     if (l->asked)
         return OK;
     l->txid = idl_txid_next(&l->last_txid);
-    status_t st = net_accept_send(l->ch, l->txid, NET_WAIT_FOREVER);
+    status_t st = net_listener_accept_send(l->ch, l->txid, NET_WAIT_FOREVER);
     l->asked = st == OK;
     return st;
 }
@@ -248,7 +248,7 @@ status_t net_tcp_accept_send(struct net_listener *l)
 status_t net_tcp_accept_take(struct net_listener *l, struct net_sock *out, uint32_t *peer,
                              uint16_t *peer_port)
 {
-    uint8_t rep[NET_REP_MAX];
+    _Alignas(8) uint8_t rep[NET_LISTENER_REP_MAX];
     struct idl_msg m;
     *out = (struct net_sock){ 0 };
     if (!l->asked)
@@ -266,7 +266,7 @@ status_t net_tcp_accept_take(struct net_listener *l, struct net_sock *out, uint3
     handle_t ch = HANDLE_INVALID, hs[3] = { 0 };
     uint32_t addr = 0, tx = 0, rx = 0;
     uint16_t port = 0;
-    st = net_accept_result(rep, &m, &ch, &hs[0], &hs[1], &hs[2], &addr, &port, &tx, &rx);
+    st = net_listener_accept_result(rep, &m, &ch, &hs[0], &hs[1], &hs[2], &addr, &port, &tx, &rx);
     if (st == OK)
         st = net_sock_attach(out, ch, l->port, hs, SOCKRING_STREAM, tx, rx);
     if (st == OK && peer)

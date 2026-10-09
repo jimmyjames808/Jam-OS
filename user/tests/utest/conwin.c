@@ -133,7 +133,7 @@ bool t_conwin_view(void)
     /* The scrollback keeps SCROLLBACK lines: no further back than those. */
     v = (struct view){ 10000, 0, 10, true };
     CHECK(view_back_max(&v) == (uint32_t)(10000 - 9 - (10000 - SCROLLBACK)));
-    /* The full-screen console (nocomp): the current line on the bottom row,
+    /* The full-screen console (no compositor): the current line on the bottom row,
      * as it always was, the rows above it blank at the start. */
     v = (struct view){ 0, 0, 10, false };
     CHECK(view_base(&v) == -9 && cursor_row(&v, 0) == 9 && view_back_max(&v) == 0);
@@ -175,14 +175,23 @@ bool t_conwin_keys(void)
     CHECK(key_of_wayland(c, JWL_KEY_REPEATED, KEYMAP_MOD_ALT | KEYMAP_MOD_SUPER | KEYMAP_MOD_CAPS |
                                                   KEYMAP_MOD_NUM, 'c', &ev));
     CHECK(ev.state == INPUT_KEY_REPEAT && ev.mods == (INPUT_MOD_LALT | INPUT_MOD_LGUI));
+    /* The keypad: with Num Lock on a digit; off (no character) the key
+     * printed on it, as hid made it before M12 (Q15: Num Lock is the
+     * compositor's); KP5 off stays KP5. */
+    uint32_t kp8 = keymap_evdev_of_hid(0x60), kp5 = keymap_evdev_of_hid(0x5d);
+    CHECK(key_of_wayland(kp8, JWL_KEY_PRESSED, KEYMAP_MOD_NUM, '8', &ev));
+    CHECK(ev.usage == 0x60 && ev.codepoint == '8');
+    CHECK(key_of_wayland(kp8, JWL_KEY_PRESSED, 0, 0, &ev));
+    CHECK(ev.usage == 0x52 && ev.codepoint == 0);   /* Up */
+    CHECK(key_of_wayland(kp5, JWL_KEY_PRESSED, 0, 0, &ev));
+    CHECK(ev.usage == 0x5d);
+    CHECK_EQ(keymap_hid_keypad_nav(0x59), 0x4d);   /* KP1: End */
+    CHECK_EQ(keymap_hid_keypad_nav(0x63), 0x4c);   /* KP.: Delete */
+    CHECK_EQ(keymap_hid_keypad_nav(0x58), 0);      /* keypad Enter */
+    CHECK_EQ(keymap_hid_keypad_nav(0x64), 0);
     CHECK(!key_of_wayland(c, 7, 0, 0, &ev));        /* no such state */
     CHECK(!key_of_wayland(0, JWL_KEY_PRESSED, 0, 0, &ev));
     CHECK(!key_of_wayland(100000, JWL_KEY_PRESSED, 0, 0, &ev));
-    /* Super+Enter asks for a terminal; Enter alone, or released, doesn't. */
-    uint32_t enter = keymap_evdev_of_hid(0x28);
-    CHECK(key_of_wayland(enter, JWL_KEY_PRESSED, KEYMAP_MOD_SUPER, '\n', &ev) && asks_terminal(&ev));
-    CHECK(key_of_wayland(enter, JWL_KEY_PRESSED, 0, '\n', &ev) && !asks_terminal(&ev));
-    CHECK(key_of_wayland(enter, JWL_KEY_RELEASED, KEYMAP_MOD_SUPER, 0, &ev) && !asks_terminal(&ev));
     return true;
 }
 
@@ -214,13 +223,12 @@ bool t_conwin_pointer_shape(void)
 bool t_conwin_pointer(void)
 {
     struct pointer_track p = { 0 };
-    struct input_mouse_event m;
+    struct con_mouse m;
     struct jwl_event e = pointer_ev(JWL_EV_POINTER_ENTER, 100, 50);
     CHECK(!mouse_of_wayland(&p, &e, &m));   /* coming in is no movement */
     e = pointer_ev(JWL_EV_POINTER_MOTION, 103, 46);
     CHECK(mouse_of_wayland(&p, &e, &m));
-    CHECK(m.kind == INPUT_EVENT_MOUSE && m.dx == 3 && m.dy == -4 && !m.buttons && !m.wheel);
-    CHECK(!m.reserved);
+    CHECK(m.dx == 3 && m.dy == -4 && !m.buttons && !m.wheel);
     e = pointer_ev(JWL_EV_POINTER_MOTION, 103, 46);
     CHECK(!mouse_of_wayland(&p, &e, &m));   /* no movement, no report */
     e = (struct jwl_event){ .type = JWL_EV_POINTER_BUTTON };

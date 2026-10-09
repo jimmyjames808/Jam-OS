@@ -63,7 +63,19 @@ void sess_close(struct sess *s)
 bool get_stats(handle_t ch, struct netdev_stats *out)
 {
     uint8_t b[NETDEV_STATS_SIZE];
-    CHECK_ST(netdev_stats_until(ch, soon(), b), OK);
+    uint32_t n = 0;
+    CHECK_ST(netdev_stats_until(ch, soon(), b, &n), OK);
+    CHECK_EQ(n, NETDEV_STATS_SIZE);
+    memcpy(out, b, sizeof(*out));
+    return true;
+}
+
+bool get_session_stats(handle_t ch, struct netdev_stats *out)
+{
+    uint8_t b[NETDEV_STATS_SIZE];
+    uint32_t n = 0;
+    CHECK_ST(netdev_session_stats_until(ch, soon(), b, &n), OK);
+    CHECK_EQ(n, NETDEV_STATS_SIZE);
     memcpy(out, b, sizeof(*out));
     return true;
 }
@@ -72,11 +84,11 @@ bool wait_link(void)
 {
     uint64_t end = now() + LINK_WAIT;
     for (;;) {
-        uint8_t chip[16];
+        char chip[16 + 1];
         uint16_t vlan, mtu;
-        uint32_t link = 0, speed, changes;
-        CHECK_ST(netdev_info_until(nic, soon(), mac, &vlan, &mtu, &link, &speed, &changes, chip),
-                 OK);
+        uint32_t link = 0, speed, changes, chip_len;
+        CHECK_ST(netdev_info_until(nic, soon(), mac, &vlan, &mtu, &link, &speed, &changes, chip,
+                                   &chip_len), OK);
         if (link & NETDEV_LINK_UP)
             return true;
         if (now() > end)

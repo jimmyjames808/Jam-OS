@@ -14,7 +14,7 @@
 #define MARGIN    NS_PER_S          /* the call waits this much past netstack's timeout */
 #define CALL_WAIT (5 * NS_PER_S)    /* a call netstack answers at once */
 
-_Static_assert(sizeof(struct net_counters) == NET_COUNTERS_SIZE, "net.counts' u8[256]");
+_Static_assert(sizeof(struct net_counters) == NET_COUNTERS_SIZE, "net.counts' u8[<=256]");
 
 handle_t net_svc(void)
 {
@@ -28,7 +28,9 @@ status_t net_svc_open(handle_t *out)
     return st == ERR_NOT_FOUND ? svc_open(SVC_NET, out) : st;
 }
 
-/* The time from now to deadline in ms, rounded up, as a timeout_ms. */
+/* The time from now to deadline in ms, rounded up, as a timeout_ms: at most
+ * NET_TIMEOUT_MAX (a longer wait asks again), NET_WAIT_FOREVER for no
+ * deadline, 0 for one already past. */
 static uint32_t timeout_of(uint64_t deadline)
 {
     if (deadline == DEADLINE_NEVER)
@@ -37,7 +39,7 @@ static uint32_t timeout_of(uint64_t deadline)
     if (deadline <= t)
         return 0;
     uint64_t ms = (deadline - t + NS_PER_MS - 1) / NS_PER_MS;
-    return ms >= NET_WAIT_FOREVER ? NET_WAIT_FOREVER - 1 : (uint32_t)ms;
+    return ms > NET_TIMEOUT_MAX ? NET_TIMEOUT_MAX : (uint32_t)ms;
 }
 
 /* The call's own deadline: MARGIN past netstack's (a deadline already
@@ -77,21 +79,46 @@ status_t net_wait_up(handle_t net, uint64_t deadline, struct net_info *out)
         uint32_t ms = timeout_of(deadline), v;
         if (!ms)
             return ERR_TIMED_OUT;
-        st = net_wait_change_until(net, call_deadline(deadline), i.version, ms, &v);
+        /* netstack answers by its timeout, the call a little later: a
+         * deadline past TIMEOUT_MAX is waited for in turns. */
+        uint64_t until = ms == NET_WAIT_FOREVER ? DEADLINE_NEVER
+                                                : now() + (uint64_t)ms * NS_PER_MS;
+        st = net_wait_change_until(net, call_deadline(until), i.version, ms, &v);
+        if (st == ERR_TIMED_OUT && ms == NET_TIMEOUT_MAX && now() < deadline)
+            continue;   /* its timeout, not ours: look again, wait again */
         if (st != OK)
             return st;
     }
     return ERR_TIMED_OUT;
 }
 
+/* A counts array of n bytes in a buffer of cap: the bytes the answer did
+ * not carry read as zeros. */
+static void counts_pad(uint8_t *buf, uint32_t n, uint32_t cap)
+{
+    if (n < cap)
+        memset(buf + n, 0, cap - n);
+}
+
 status_t net_get_counters(handle_t net, struct net_counters *out)
 {
-    return net_counts_until(net, now() + CALL_WAIT, (uint8_t *)out);
+    uint8_t b[NET_COUNTERS_SIZE];
+    uint32_t n = 0;
+    status_t st = net_counts_until(net, now() + CALL_WAIT, b, &n);
+    if (st != OK)
+        return st;
+    counts_pad(b, n, sizeof(b));
+    memcpy(out, b, sizeof(*out));
+    return OK;
 }
 
 status_t net_get_chip_counters(handle_t net, void *out)
 {
-    return net_chip_counts_until(net, now() + CALL_WAIT, out);
+    uint32_t n = 0;
+    status_t st = net_chip_counts_until(net, now() + CALL_WAIT, out, &n);
+    if (st == OK)
+        counts_pad(out, n, NETDEV_STATS_SIZE);
+    return st;
 }
 
 status_t net_sock_attach(struct net_sock *s, handle_t ch, uint16_t port, const handle_t hs[3],
@@ -149,7 +176,7 @@ status_t net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port)
 {
     handle_t hs[3] = { 0 };
     uint32_t tx = 0, rx = 0;
-    status_t st = net_sock_rings_until(ch, now() + CALL_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &tx,
+    status_t st = net_socket_rings_until(ch, now() + CALL_WAIT, 0, 0, &hs[0], &hs[1], &hs[2], &tx,
                                        &rx);
     if (st != OK) {
         jam_handle_close(ch);
@@ -174,7 +201,7 @@ void net_close(struct net_sock *s)
 
 status_t net_connect(struct net_sock *s, uint32_t addr, uint16_t port)
 {
-    return net_sock_connect_until(s->ch, now() + CALL_WAIT, addr, port);
+    return net_socket_connect_until(s->ch, now() + CALL_WAIT, addr, port);
 }
 
 status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint64_t deadline,
@@ -185,8 +212,8 @@ status_t net_ping(handle_t net, uint32_t addr, uint16_t seq, uint16_t size, uint
     uint16_t got = 0;
     if (!ms)
         return ERR_TIMED_OUT;
-    if (ms > NET_ECHO_TIMEOUT_MAX)
-        ms = NET_ECHO_TIMEOUT_MAX;
+    if (ms > NET_TIMEOUT_MAX)
+        ms = NET_TIMEOUT_MAX;
     status_t st = net_echo_until(net, now() + (uint64_t)ms * NS_PER_MS + MARGIN, addr, seq, size,
                                  ms, &rtt, &t, &got);
     if (st == OK && rtt_us)

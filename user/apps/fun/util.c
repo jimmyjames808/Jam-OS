@@ -86,7 +86,7 @@ status_t big_seal(void *p, uint64_t bytes)
 
 void say(const char *fmt, ...)
 {
-    char buf[2048];   /* console_write sends a whole 2048-byte buffer */
+    char buf[2048];   /* console_write takes at most 2048 bytes */
     va_list ap;
     va_start(ap, fmt);
     int n = vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -96,7 +96,7 @@ void say(const char *fmt, ...)
     if ((size_t)n >= sizeof(buf))
         n = sizeof(buf) - 1;
     handle_t con = startup_handle(SR_CONSOLE);
-    if (!con || console_write(con, (uint16_t)n, (const uint8_t *)buf) != OK)
+    if (!con || console_write(con, (const uint8_t *)buf, (uint32_t)n) != OK)
         printf("%s", buf);
 }
 

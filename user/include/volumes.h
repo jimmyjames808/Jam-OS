@@ -24,8 +24,8 @@
 #include <os.h>
 
 /* volumes' startup roles: the server ends of its control, ESP and DISKS
- * channels, and a duplicate of /svc/notify's shared channel (not under
- * `nocomp`), for the desktop's notices of sticks: "USB stick added",
+ * channels, and a duplicate of /svc/notify's shared channel (none without
+ * a compositor), for the desktop's notices of sticks: "USB stick added",
  * "USB stick removed", "Jam OS stick removed" and "... is back"
  * (<notice.h>). Its fats' jobs are children of its own (SR_JOB). Its
  * words: "bootdisk=0x<id>" and "nospare" (user/services/volumes/main.c). */

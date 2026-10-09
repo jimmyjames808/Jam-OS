@@ -49,6 +49,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <idl/net.h>   /* NET_WAIT_FOREVER and NET_TIMEOUT_MAX (the protocol's timeouts) */
 #include <os.h>
 #include <sockring.h>
 
@@ -62,8 +63,6 @@
 #define NET_LATER_MAX          64u     /* ... of all openers together */
 #define NET_PROG_LATER         48u     /* ... of them ordinary openers' */
 #define NET_PROG_RING_BYTES    (16u << 20)  /* ring bytes of ordinary openers' sockets */
-#define NET_WAIT_FOREVER       0xffffffffu   /* a timeout_ms that never passes */
-#define NET_ECHO_TIMEOUT_MAX   60000u  /* ms: the longest echo timeout */
 #define NET_PORT_LOW           1024u   /* ports below: only on /svc/net-low; up to ... */
 #define NET_PORT_EPHEMERAL     49152u  /* ... here only on /svc/net-listen; port 0: from here */
 #define NET_PORT_DHCP_SERVER   67u
@@ -110,7 +109,7 @@ struct net_info {
     uint32_t version;                  /* changes to the address and DNS servers (wait_change) */
 };
 
-/* netstack's counts (net.counts' u8[256], little-endian): since it started. */
+/* netstack's counts (net.counts' u8[<=256], little-endian): since it started. */
 struct net_counters {
     /* frames, and what lwIP did with them */
     uint64_t rx_frames;        /* frames from the card */
@@ -206,7 +205,8 @@ status_t net_info(handle_t net, struct net_info *out);
  * deadline: ERR_TIMED_OUT. *out (may be NULL): the interface then. */
 status_t net_wait_up(handle_t net, uint64_t deadline, struct net_info *out);
 /* netstack's counts; the card's own (struct netdev_stats, <jam/netdev.h>:
- * NETDEV_STATS_SIZE bytes into out). */
+ * NETDEV_STATS_SIZE bytes into out). Bytes the answer did not carry read as
+ * zeros. */
 status_t net_get_counters(handle_t net, struct net_counters *out);
 status_t net_get_chip_counters(handle_t net, void *out);
 
@@ -227,7 +227,7 @@ status_t net_udp_open_rings(handle_t net, uint16_t port, uint32_t tx_bytes, uint
 status_t net_udp_open_async(handle_t net, uint32_t txid, uint16_t port);
 status_t net_udp_opened(const void *rep, struct idl_msg *m, struct net_sock *out);
 /* A socket whose channel came from elsewhere (netctl's dhcp_open), on
- * port: asks for its rings (net.sock_rings, blocking) and maps them. On a
+ * port: asks for its rings (net_socket.rings, blocking) and maps them. On a
  * failure the channel is closed and *s is empty. */
 status_t net_sock_adopt(struct net_sock *s, handle_t ch, uint16_t port);
 /* Unbind it (net_sock_bind), unmap its rings and close everything
@@ -255,7 +255,7 @@ status_t net_send(struct net_sock *s, const void *data, size_t len);
  * ERR_TIMED_OUT then; ERR_PEER_CLOSED: netstack is gone. */
 status_t net_recvfrom(struct net_sock *s, struct net_dgram *d, uint64_t deadline);
 /* One ping: an echo request of size data bytes, sequence seq, answered by
- * the deadline (at most NET_ECHO_TIMEOUT_MAX ms from now). *rtt_us and
+ * the deadline (at most NET_TIMEOUT_MAX ms from now). *rtt_us and
  * *ttl (may be NULL): the round trip and the reply's TTL. ERR_TIMED_OUT:
  * no answer; ERR_NOT_FOUND: unreachable, said a router; ERR_BAD_STATE: no
  * address or no link. */

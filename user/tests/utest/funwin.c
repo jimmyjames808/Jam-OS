@@ -81,7 +81,7 @@ static bool open_on(struct fake *f, int w, int h, struct fake_surface **s)
     fake_thread_stop(f, th);
     fake_serve(f);   /* the first present's commit, if the thread missed it */
     CHECK_ST(st, OK);
-    CHECK(scr.windowed && scr.w == w && scr.h == h);
+    CHECK(scr.open && scr.w == w && scr.h == h);
     *s = fake_surface(f, 0);
     CHECK(*s && (*s)->toplevel && !strcmp((*s)->title, "funwin"));
     return true;

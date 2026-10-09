@@ -169,7 +169,8 @@ static status_t op_stats(void *ctx, uint64_t *out_rx_frames, uint64_t *out_rx_re
 
 static status_t op_device(void *ctx, uint8_t *out_session, uint16_t *out_vlan,
                           uint32_t *out_speed, uint32_t *out_sessions, uint64_t *out_ring_errors,
-                          uint64_t *out_rx_bad, uint64_t *out_tx_full, uint8_t out_chip[16])
+                          uint64_t *out_rx_bad, uint64_t *out_tx_full, char *out_chip,
+                          uint32_t *out_chip_len)
 {
     (void)ctx;
     struct dev_report r = { 0 };
@@ -182,7 +183,8 @@ static status_t op_device(void *ctx, uint8_t *out_session, uint16_t *out_vlan,
     *out_ring_errors = r.ring_errors;
     *out_rx_bad = r.rx_bad;
     *out_tx_full = r.tx_full;
-    memcpy(out_chip, r.chip, sizeof(r.chip));
+    *out_chip_len = (uint32_t)strnlen(r.chip, sizeof(r.chip));
+    memcpy(out_chip, r.chip, *out_chip_len);
     return OK;
 }
 
@@ -195,7 +197,7 @@ static status_t op_dhcp_open(void *ctx, handle_t *out_socket)
 
 static status_t op_summary(void *ctx, uint8_t *out_link, uint32_t *out_address,
                            uint32_t *out_mask, uint32_t *out_speed, uint64_t *out_rx_bytes,
-                           uint64_t *out_tx_bytes, uint8_t out_chip[16])
+                           uint64_t *out_tx_bytes, char *out_chip, uint32_t *out_chip_len)
 {
     (void)ctx;   /* both channels */
     struct stack_state s;
@@ -211,7 +213,8 @@ static status_t op_summary(void *ctx, uint8_t *out_link, uint32_t *out_address,
     *out_speed = s.link ? r.speed : 0;
     *out_rx_bytes = c.rx_bytes;
     *out_tx_bytes = c.tx_bytes;
-    memcpy(out_chip, r.chip, sizeof(r.chip));
+    *out_chip_len = (uint32_t)strnlen(r.chip, sizeof(r.chip));
+    memcpy(out_chip, r.chip, *out_chip_len);
     return OK;
 }
 

@@ -8,6 +8,12 @@
 # `audioctl.device`: every method but open_output.
 # Format: see tools/genidl.py.
 #
+# Two kinds of channel, so two protocols in the file (the M12 plan's Q5):
+# `hda`, the driver's own (and its query channels), and `hda_stream`, the
+# output stream's. A driver's channel can't be sent the stream's methods,
+# nor a stream's the driver's: either answers the other's
+# ERR_NOT_SUPPORTED.
+#
 # The driver reads the controller and every codec's widget graph, picks
 # the path from a DAC to the headphones and sets it up muted, with the
 # pin's output off, and serves one output stream on that path's DAC. The
@@ -40,17 +46,17 @@ protocol hda 21
 # minus 1, 14:8 steps, 6:0 the step that is 0 dB; 0: it has none). jack:
 # the path's pin as `jacks` tracks it: 0 unknown (not a jack with presence
 # detection, or not read yet), 1 unplugged, 2 plugged in. nodes: the path's node ids
-# from the DAC to the pin, `count` of them. text: what is set on each
-# node, read back from the codec, as one line (NUL-terminated).
-2  info  ()  -> (u32 codec, u32 pin, u32 dac, u32 pcm, u32 formats, u32 amp, u32 jack, u32 count, u8[8] nodes, u8[240] text)
+# from the DAC to the pin (none without a path). text: what is set on each
+# node, read back from the codec, as one line (ASCII, up to 239 bytes).
+2  info  ()  -> (u32 codec, u32 pin, u32 dac, u32 pcm, u32 formats, u32 amp, u32 jack, u8[<=8] nodes, str[<=239] text)
 
 # ---- the output stream (docs/history/A1-PLAN.md) ----
 # One output stream, 48 kHz, 2 channels: rate 48000, channels 2, bits 16,
 # 20, 24 or 32, as the DAC takes them (info's `pcm`, bits 17-20; anything
 # else: ERR_NOT_SUPPORTED); a second open while one is open:
-# ERR_BAD_STATE. Results: `stream`, a new channel that speaks this
-# protocol for start/stop/position/wait_period (they are refused on the
-# driver's own channel, which devmgr shares among clients); `ring`, the
+# ERR_BAD_STATE. Results: `stream`, a new channel that speaks `hda_stream`
+# below (start, stop, position, wait_period: the driver's own channel,
+# which devmgr shares among clients, never does); `ring`, the
 # sample ring as a VMO to map (read, write, map: nothing else), `size`
 # bytes (16384 frames, 341 ms: 65536 at 16-bit, 131072 otherwise) in
 # `period`-byte periods (2048 frames, 42.7 ms). Frames are left, right:
@@ -63,28 +69,10 @@ protocol hda 21
 # [frames, frames + size / 4) (from the last position it was given) and
 # one that stops writing plays silence within one ring. Write a period or
 # more ahead: the controller fetches a little ahead of the position.
-# Reconnect: when the driver dies, `stream` reports ERR_PEER_CLOSED and
-# the stream is gone; get the service again and open a new one.
+# When the driver dies, `stream` reports ERR_PEER_CLOSED and the stream is
+# gone; get the service again and open a new one.
 3  open_output  (u32 rate, u8 channels, u8 bits) -> (handle stream, handle ring, u32 size, u32 period)
-# On the stream channel: the path is unmuted at the gain (get_gain), then
-# the DMA engine runs (RUN set) from where it was. If a step of the
-# unmuting fails, the path is muted again, the stream stays stopped and
-# start fails with that step's status (the log names the step).
-4  start  ()  -> ()
-# On the stream channel: the DMA engine stops (RUN clear, waited for),
-# then the path is muted again (every amp on it muted; the pin's output
-# off too where no amp can mute); the position stays. A wait_period in progress is answered
-# ERR_BAD_STATE.
-5  stop  ()  -> ()
-# On the stream channel: frames played since the open, and the play
-# position as a byte offset into the ring.
-6  position  ()  -> (u64 frames, u32 offset)
-# On the stream channel: answers once the period holding frame `after`
-# has played (frames >= the next multiple of period / 4 above `after`),
-# with position's results. ERR_BAD_STATE if the stream is stopped (or is
-# stopped meanwhile), ERR_TIMED_OUT if it makes no progress for four
-# periods (the DMA engine stalled).
-7  wait_period  (u64 after)  -> (u64 frames, u32 offset)
+# (Ordinals 4 to 7 were the stream's methods, now hda_stream's: not reused.)
 
 # ---- the gain (docs/history/A1-PLAN.md, stage 3) ----
 # The path's volume: the output amp of the first node on the path that
@@ -110,18 +98,18 @@ protocol hda 21
 
 # ---- the jacks (docs/history/A1-PLAN.md, stage 4) ----
 # Every pin the codecs describe as a jack with presence detection, as the
-# driver tracks it (debounced; not read anew for this call). count: how
-# many (at most 16); pins and states: each one's node and state, in the
-# driver's order (its unsolicited response tag is its index + 1): 0
-# unknown, 1 unplugged, 2 plugged in. state and changes: the path's pin
-# (info's jack) and how often it changed since the driver started. text:
-# a line on how changes are found (unsolicited responses or polling),
-# then a line per jack ("pin 1b headphones (front): plugged in, ..."),
-# each ending in \n, NUL-terminated.
-11  jacks  ()  -> (u32 count, u32 state, u32 changes, u8[16] pins, u8[16] states, u8[1024] text)
+# driver tracks it (debounced; not read anew for this call). pins and
+# states: each one's node and state, in the driver's order (its
+# unsolicited response tag is its index + 1), at most 16 of each and as many
+# states as pins: 0 unknown, 1 unplugged, 2 plugged in. state and changes:
+# the path's pin (info's jack) and how often it changed since the driver
+# started. text: a line on how changes are found (unsolicited responses or
+# polling), then a line per jack ("pin 1b headphones (front): plugged in,
+# ..."), each ending in \n (ASCII, up to 1023 bytes).
+11  jacks  ()  -> (u32 state, u32 changes, u8[<=16] pins, u8[<=16] states, str[<=1023] text)
 
 # ---- query channels ----
-# A new channel the driver serves with every method above but open_output
+# A new channel the driver serves with every method of `hda` but open_output
 # and query (ERR_ACCESS_DENIED on it): the dump, info, the gain, the bits
 # and the jacks, so its holder can look and turn the gain but never take
 # the one output stream. Closing it is the end of it; it does not keep the
@@ -133,4 +121,33 @@ protocol hda 21
 # and what the path's pin is, e.g. "ALC897 headphones" (a Realtek codec:
 # "ALC" and its device id), "QEMU line-out" (QEMU's codecs), else
 # "Codec 1234:5678 line-out" ("" with no path). Also on a query channel.
-13  output_name  ()  -> (u8[48] name)
+13  output_name  ()  -> (str[<=47] name)
+
+# hda_stream: the output stream's own channel, the `stream` that open_output
+# gave. Served by the driver, one at a time; closing it stops the stream and
+# releases it.
+#
+# Reconnect: when the driver dies, the channel reports ERR_PEER_CLOSED and
+# the stream is gone; get the service again (hda's rule) and open a new one.
+
+protocol hda_stream 51
+
+# The path is unmuted at the gain (hda.get_gain), then the DMA engine runs
+# (RUN set) from where it was. If a step of the unmuting fails, the path is
+# muted again, the stream stays stopped and start fails with that step's
+# status (the log names the step).
+1  start  ()  -> ()
+# The DMA engine stops (RUN clear, waited for), then the path is muted
+# again (every amp on it muted; the pin's output off too where no amp can
+# mute); the position stays. A wait_period in progress is answered
+# ERR_BAD_STATE.
+2  stop  ()  -> ()
+# Frames played since the open, and the play position as a byte offset into
+# the ring.
+3  position  ()  -> (u64 frames, u32 offset)
+# Answers once the period holding frame `after` has played (frames >= the
+# next multiple of period / 4 above `after`), with position's results.
+# ERR_BAD_STATE if the stream is stopped (or is stopped meanwhile),
+# ERR_TIMED_OUT if it makes no progress for four periods (the DMA engine
+# stalled).
+4  wait_period  (u64 after)  -> (u64 frames, u32 offset)

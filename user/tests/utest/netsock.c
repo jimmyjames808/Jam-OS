@@ -6,7 +6,7 @@
  *
  * Covered: a UDP datagram both ways through a socket (ports, bytes,
  * checksums), a sock_recv answered later when the datagram comes, timeouts,
- * sock_connect's filter, the destinations a program can't send to; ping
+ * net_socket.connect's filter, the destinations a program can't send to; ping
  * (the request's bytes, the reply's round trip and TTL, another opener's
  * echo id not answered, an unreachable, a timeout); iface and wait_change;
  * the limits (sockets per opener and in all, openers, requests in flight);
@@ -222,9 +222,10 @@ bool t_netsock_udp(void)
     CHECK_EQ(s.send_errors, 0);   /* the blocking form reported each refusal itself */
     CHECK_ST(netdrv_recv(f, &(uint32_t){ 0 }, NETDRV_QUIET), ERR_TIMED_OUT);   /* none left */
     uint16_t port, peer_port;
-    uint32_t peer, queued, dropped;
-    CHECK_ST(net_sock_state(s.ch, &port, &peer, &peer_port, &queued, &dropped), OK);
-    CHECK(port == 5000 && peer == PEER_IP && peer_port == 40000 && !queued && !dropped);
+    uint32_t addr, peer, queued, dropped;
+    CHECK_ST(net_socket_state(s.ch, &addr, &port, &peer, &peer_port, &queued, &dropped), OK);
+    CHECK(addr == OUR_IP && port == 5000 && peer == PEER_IP && peer_port == 40000 && !queued &&
+          !dropped);
     net_close(&s);
     net_close(&e);
     jam_handle_close(port_h);
@@ -320,6 +321,8 @@ bool t_netsock_ping(void)
              ERR_INVALID_ARGS);   /* the subnet's broadcast (M9-REVIEW item 4) */
     CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, PEER_IP, 1, 0, 0, NULL, NULL, NULL),
              ERR_INVALID_ARGS);
+    CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, PEER_IP, 1, 0, NET_TIMEOUT_MAX + 1, NULL,
+                            NULL, NULL), ERR_INVALID_ARGS);   /* the timeout rule: 1..TIMEOUT_MAX */
     CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, PEER_IP, 1, NET_DGRAM_MAX + 1, 100, NULL,
                             NULL, NULL), ERR_INVALID_ARGS);
     CHECK(blocking_ping(o2, true, OK));
@@ -367,18 +370,31 @@ bool t_netsock_iface(void)
     /* The card's own counts: netstack asks the driver, then answers. */
     uint32_t t3 = idl_txid_next(&txc);
     uint8_t counts[NETDEV_STATS_SIZE];
+    uint32_t counts_len = 0;
     CHECK_ST(net_chip_counts_send(o, t3), OK);
     CHECK(netdrv_serve_session());
     CHECK_ST(jam_object_wait_one(o, SIG_READABLE, now() + NETDRV_WAIT, &seen), OK);
     CHECK_ST(idl_reply_read(o, rep, sizeof(rep), &m), OK);
     CHECK_EQ(m.txid, t3);
-    CHECK_ST(net_chip_counts_result(rep, &m, counts), OK);
+    CHECK_ST(net_chip_counts_result(rep, &m, counts, &counts_len), OK);
+    CHECK_EQ(counts_len, NETDEV_STATS_SIZE);
     CHECK_EQ(((struct netdev_stats *)counts)->rx_frames, 42);
     jam_handle_close(o);
     CHECK(opener(&o));   /* a fresh channel for blocking calls */
     CHECK_ST(net_wait_change_until(o, now() + NETDRV_WAIT, i.version, 100, &v), OK);
     CHECK_ST(net_info(o, &i), OK);
     CHECK_EQ(i.dns[0], GW_IP);
+    /* The timeout rule: 1..NET_TIMEOUT_MAX, or NET_WAIT_FOREVER; anything
+     * else is refused at once, a stale version or not. */
+    static const uint32_t bad[] = { 0, NET_TIMEOUT_MAX + 1, NET_WAIT_FOREVER - 1 };
+    for (unsigned k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
+        CHECK_ST(net_wait_change_until(o, now() + NETDRV_WAIT, i.version, bad[k], &v),
+                 ERR_INVALID_ARGS);
+        CHECK_ST(net_wait_change_until(o, now() + NETDRV_WAIT, i.version - 1, bad[k], &v),
+                 ERR_INVALID_ARGS);
+    }
+    CHECK_ST(net_wait_change_until(o, now() + NETDRV_WAIT, i.version - 1, NET_TIMEOUT_MAX, &v),
+             OK);   /* the largest timeout is allowed (a changed version answers at once) */
     /* Cleared: no address, and net_wait_up waits for one. */
     CHECK_ST(netctl_clear(netdrv_ctl()), OK);
     CHECK_ST(net_wait_up(o, now() + 200 * NS_PER_MS, &i), ERR_TIMED_OUT);

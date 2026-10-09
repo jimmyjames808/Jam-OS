@@ -21,9 +21,9 @@ static status_t wait_answer(handle_t ch, uint32_t txid, struct dns_answer *out)
         struct idl_msg m;
         status_t st = idl_reply_read(ch, rep, sizeof(rep), &m);
         if (st == OK && m.txid == txid) {
-            uint8_t n = 0;
+            uint32_t n = 0;
             uint32_t a[DNS_ADDRS_MAX] = { 0 }, ttl = 0;
-            st = dns_resolve_result(rep, &m, &n, &a[0], &a[1], &a[2], &a[3], &ttl);
+            st = dns_resolve_result(rep, &m, a, &n, &ttl);
             if (st == OK && (!n || n > DNS_ADDRS_MAX))
                 st = ERR_INTERNAL;
             if (st == OK) {
@@ -59,17 +59,15 @@ status_t sh_lookup(const char *name, struct dns_answer *out)
         *out = (struct dns_answer){ .addr = { literal }, .n = 1 };
         return OK;   /* an address needs no resolver */
     }
-    uint8_t field[DNS_TEXT_MAX] = { 0 };
-    size_t len = strnlen(name, DNS_TEXT_MAX);
-    if (len == DNS_TEXT_MAX)
+    size_t len = strnlen(name, DNS_NAME_MAX + 1);
+    if (!len || len > DNS_NAME_MAX)
         return ERR_INVALID_ARGS;
-    memcpy(field, name, len);
     handle_t ch;
     status_t st = svc_open(SVC_DNS, &ch);
     if (st != OK)
         return st == ERR_NOT_FOUND ? ERR_PEER_CLOSED : st;   /* no resolver */
     uint32_t last = 0, txid = idl_txid_next(&last);
-    st = dns_resolve_send(ch, txid, field, TIMEOUT);
+    st = dns_resolve_send(ch, txid, name, (uint32_t)len, TIMEOUT);
     if (st == OK)
         st = wait_answer(ch, txid, out);
     jam_handle_close(ch);

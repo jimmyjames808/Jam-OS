@@ -22,7 +22,8 @@
  * sh_input.
  *
  * The other files (sh_core.h has what only the machinery shares):
- *   main.c         console output, keys, the line editor, history
+ *   main.c         console output, keys, the line editor
+ *   sh_history.c   the history, kept in /data/etc/history
  *   sh_io.c        output, pipes, input, Ctrl+C
  *   sh_parse.c     words (quotes, $), cutting a line at ; && || |
  *   sh_exec.c      running lines, pipelines and commands
@@ -137,8 +138,23 @@ handle_t    sh_console(void);
  * count once (the outermost's `only`); on a console that shows the log
  * anyway it changes nothing. */
 void        sh_show_log(bool on, const char *only);
-unsigned    sh_history_count(void);            /* lines ever remembered */
-const char *sh_history_at(unsigned i);         /* i-th of the last 32, NULL if gone */
+/* The longest line the line editor takes. */
+#define SH_LINE_MAX 240
+
+/* ---- the history (sh_history.c: kept in /data/etc/history) ------------------------- */
+
+/* Remember a line run (not one that starts with a space): the newest, a
+ * repeat moved there; appended to the file. */
+void        sh_history_add(const char *line);
+/* At each prompt: the file read once /data is there. */
+void        sh_history_prompt(void);
+/* `history -c`: none, the file too. */
+void        sh_history_clear(void);
+unsigned    sh_history_count(void);            /* lines kept (HIST_KEEP at most) */
+const char *sh_history_at(unsigned i);         /* the i-th, oldest first; NULL past them */
+/* The line before (up) or after `from` (an index; nhist or -1 to start)
+ * that starts with prefix: its index, or -1. */
+int         sh_history_find(const char *prefix, int from, bool up);
 
 /* ---- handles from init (sh_handles.c) ---------------------------------------------- */
 
@@ -419,8 +435,8 @@ bool        sh_is_mount(const char *abs);
 const char *sh_why(status_t st);
 
 /* Which terminal this shell runs in (init's argument "term=<n>", given to
- * every terminal's shell with a compositor: `exit` closes it), or 0: none
- * (the one full-screen console under `nocomp`, or a shell run by a shell). */
+ * every terminal's shell: `exit` closes it), or 0: none (a shell run by a
+ * shell, or one init started without a compositor). */
 extern unsigned sh_term_no;
 
 /* ---- the commands (cmd/<name>.c) --------------------------------------------------- */

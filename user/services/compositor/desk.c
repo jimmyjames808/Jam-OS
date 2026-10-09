@@ -307,7 +307,7 @@ uint32_t desk_terminals_full(void)
     snprintf(body, sizeof(body), "%u is the most. Close one first.", TERMINALS_MAX);
     struct notify_spec n = { .title = "No more terminals", .body = body, .letter = 'T',
                              .colour = LOOK_JAM_RASPBERRY };   /* the search box's Terminal tile */
-    uint32_t id = notify_post(&n);
+    uint32_t id = notify_card_post(&n);
     if (id) {
         printf("compositor: notice %u: %s: %s\n", id, n.title, body);
         dk.full_note = id;

@@ -1,5 +1,5 @@
 /* wltest's libfun modes (wltest.h): the mouse as an app sees it, and an
- * app that hangs or crashes holding the screen.
+ * app that hangs or crashes holding its window.
  *
  *     wltest --mouse [noaccel] [nomouse]
  *     wltest --hang-test
@@ -7,13 +7,10 @@
  *     wltest --selftest
  *
  * These go through libfun (<fun.h>), as the apps do, not libjwl alone:
- * gfx_open opens a window when there is a compositor, and otherwise (the
- * `nocomp` boot) borrows the screen and the keys from the console, and
- * gfx_mouse_open asks for the mouse. So the same mode tests the mouse
- * through the compositor's seat and, under `nocomp`, the path that has no
- * compositor at all: usb-bus -> drv/hid -> console -> the key channel of
- * the client that asked -> libfun's pointer (mouse.c: the position from
- * relative counts, acceleration, the buttons' edges, the wheel).
+ * gfx_open opens a window, and gfx_mouse_open asks for the mouse. So the
+ * mode tests the mouse through the compositor's seat: usb-bus -> drv/hid
+ * -> the compositor -> the window -> libfun (mouse.c: the buttons'
+ * edges, the wheel, the pointer over the window).
  *
  * --mouse logs everything the mouse does, one "wltest: mouse: " line each
  * (the serial log shows them: tools/shell-tests/mouse.txt and apps.txt
@@ -26,10 +23,10 @@
  * must send nothing a key reader could misread. Every key is logged; q or
  * Esc quits, with the totals.
  *
- * --hang-test borrows the screen and reads no keys until it is killed
+ * --hang-test opens a window and reads no keys until it is killed
  * (Ctrl+C: the shell kills its job); --crash-test dies of a page fault
- * holding it. Either way the console (or the compositor) must take the
- * screen back by itself (tools/shell-tests/apps.txt).
+ * holding one. Either way the compositor must take the window away by
+ * itself (tools/shell-tests/apps.txt).
  *
  * --selftest checks libfun's pointer arithmetic (mouse.c's struct
  * pointer) by itself, with no mouse: where it starts, a count a pixel
@@ -151,18 +148,17 @@ int wl_fun_mouse(int argc, char **argv)
     if (st == OK && want && (st = gfx_mouse_open(!has_arg(argc, argv, "noaccel"))) != OK)
         gfx_close();
     if (st != OK) {
-        say("wltest: mouse: can't open a window or borrow the screen%s (%s)\n",
+        say("wltest: mouse: can't open a window%s (%s)\n",
             want ? " and the mouse" : "", status_str(st));
         return 1;
     }
     struct mouse m;
     gfx_mouse(&m);
     if (want)
-        say("wltest: mouse: ready, %dx%d (%s), pointer at %d,%d\n", scr.w, scr.h,
-            scr.windowed ? "a window" : "the screen", m.x, m.y);
+        say("wltest: mouse: ready, %dx%d (a window), pointer at %d,%d\n", scr.w, scr.h, m.x,
+            m.y);
     else
-        say("wltest: mouse: ready, %dx%d (%s), the mouse not asked for\n", scr.w, scr.h,
-            scr.windowed ? "a window" : "the screen");
+        say("wltest: mouse: ready, %dx%d (a window), the mouse not asked for\n", scr.w, scr.h);
     draw(&m);
     for (bool quit = false; !quit;) {
         int k = gfx_key(DEADLINE_NEVER);
@@ -188,7 +184,7 @@ int wl_fun_mouse(int argc, char **argv)
     return 0;
 }
 
-/* Borrow the screen (or open a window) and draw a card that says why. */
+/* Open a window and draw a card in it that says why. */
 static bool hold_screen(uint32_t top, uint32_t bottom, const char *what)
 {
     gfx_title("wltest");
@@ -203,7 +199,7 @@ static bool hold_screen(uint32_t top, uint32_t bottom, const char *what)
 
 int wl_fun_crash(void)
 {
-    if (!hold_screen(0x700010, 0x100008, "wltest --crash-test: dying with the screen borrowed"))
+    if (!hold_screen(0x700010, 0x100008, "wltest --crash-test: dying with a window open"))
         return 1;
     jam_sleep_until(now() + 500 * NS_PER_MS);
     say("wltest: crash test: faulting now\n");
@@ -215,7 +211,7 @@ int wl_fun_crash(void)
 int wl_fun_hang(void)
 {
     if (!hold_screen(0x001060, 0x000818,
-                     "wltest --hang-test: holding the screen until killed (Ctrl+C)"))
+                     "wltest --hang-test: holding a window until killed (Ctrl+C)"))
         return 1;
     say("wltest: hang test: holding the screen\n");
     for (;;)

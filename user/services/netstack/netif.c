@@ -218,7 +218,7 @@ static void ask_link(struct dev *d)
     if (d->info_out)
         return;
     d->info_txid = idl_txid_next(&d->last_txid);
-    d->info_out = netdev_info_send(d->session, d->info_txid) == OK;
+    d->info_out = netdev_session_info_send(d->session, d->info_txid) == OK;
 }
 
 void (*dev_stats_done)(status_t st, const uint8_t *counts);
@@ -252,7 +252,7 @@ status_t dev_ask_stats(struct dev *d)
         return OK;   /* its answer goes to every asker; a lost one's is never taken */
     d->stats_at = now();
     d->stats_txid = idl_txid_next(&d->last_txid);
-    status_t st = netdev_stats_send(d->session, d->stats_txid);
+    status_t st = netdev_session_stats_send(d->session, d->stats_txid);
     d->stats_out = st == OK;
     return st;
 }
@@ -261,8 +261,11 @@ status_t dev_ask_stats(struct dev *d)
 static void stats_reply(struct dev *d, const void *rep, struct idl_msg *m)
 {
     uint8_t counts[NETDEV_STATS_SIZE];
+    uint32_t n = 0;
     d->stats_out = false;
-    status_t st = netdev_stats_result(rep, m, counts);
+    status_t st = netdev_session_stats_result(rep, m, counts, &n);
+    if (st == OK && n < sizeof(counts))
+        memset(counts + n, 0, sizeof(counts) - n);   /* a shorter answer: the rest is 0 */
     if (dev_stats_done)
         dev_stats_done(st, st == OK ? counts : NULL);
 }
@@ -271,7 +274,7 @@ static void stats_reply(struct dev *d, const void *rep, struct idl_msg *m)
 static void session_event(struct dev *d)
 {
     for (unsigned guard = 0; guard < 8; guard++) {
-        _Alignas(8) uint8_t rep[NETDEV_REP_MAX];
+        _Alignas(8) uint8_t rep[NETDEV_SESSION_REP_MAX];
         struct idl_msg m;
         status_t st = idl_reply_read(d->session, rep, sizeof(rep), &m);
         if (st == ERR_SHOULD_WAIT)
@@ -289,10 +292,12 @@ static void session_event(struct dev *d)
             continue;
         }
         d->info_out = false;
-        uint8_t mac[6], chip[16];
+        uint8_t mac[6];
+        char chip[16 + 1];
         uint16_t vlan, mtu;
-        uint32_t link, speed, changes;
-        if (netdev_info_result(rep, &m, mac, &vlan, &mtu, &link, &speed, &changes, chip) == OK) {
+        uint32_t link, speed, changes, chip_len;
+        if (netdev_session_info_result(rep, &m, mac, &vlan, &mtu, &link, &speed, &changes, chip,
+                                       &chip_len) == OK) {
             d->changes = changes;
             set_link(d, link, speed);
         }

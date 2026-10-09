@@ -2,8 +2,8 @@
  * what desk.c's hooks (comp.h) reach through the channels init gives the
  * compositor, each as narrow as its feature:
  *
- *   notices      compctl's notify, notify_wait and withdraw (ctl.c checks
- *                the channel's level: NOTIFY or ADMIN), here: a card per
+ *   notices      notify.idl's notify, post, notify_wait and withdraw (ctl.c
+ *                serves /svc/notify's channels), here: a card per
  *                notice (notify.c), whose button presses go back to the
  *                channel that posted it (notify_wait, answered later, or
  *                kept for the next one). A channel that closes takes its
@@ -30,8 +30,8 @@
  * does. The volume popover's percent is the master volume on a dB scale:
  * 100% is 0 dB, each percent below 0.6 dB less (1% -59.4 dB), 0% silence. */
 #include <idl/audioctl.h>
-#include <idl/compctl.h>
 #include <idl/netctl.h>
+#include <idl/notify.h>
 #include "desk.h"
 #include "seat.h"
 
@@ -55,7 +55,7 @@
 
 /* ---- notices -------------------------------------------------------------------------------- */
 
-/* Each compctl channel's (by ctl.c's slot): its wait and the presses it
+/* Each notify channel's (by ctl.c's slot): its wait and the presses it
  * hasn't taken. */
 struct waiter {
     uint32_t gen;                  /* the channel these are for (0: none yet) */
@@ -81,15 +81,13 @@ static struct waiter *waiter(unsigned slot, uint32_t gen)
     return w;
 }
 
-/* s (cap bytes) ends with a NUL and holds no control character; with
- * need, not empty either. */
-static bool text_ok(const uint8_t *s, size_t cap, bool need)
+/* s holds no control character; with need, it isn't empty either. */
+static bool text_ok(const char *s, bool need)
 {
-    size_t n = strnlen((const char *)s, cap);
-    if (n == cap || (need && !n))
+    if (need && !s[0])
         return false;
-    for (size_t i = 0; i < n; i++)
-        if (s[i] < 0x20 || s[i] == 0x7f)
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        if (*p < 0x20 || *p == 0x7f)
             return false;
     return true;
 }
@@ -119,32 +117,31 @@ static void own(uint32_t id, unsigned slot, uint32_t gen, bool buttons)
     owned[at].buttons = buttons;
 }
 
-status_t deskctl_notify(unsigned slot, uint32_t gen, const uint8_t title[64],
-                        const uint8_t body[96], uint8_t icon, uint8_t tint,
-                        const uint8_t buttons[72], uint32_t *out_id)
+status_t deskctl_notify(unsigned slot, uint32_t gen, const struct deskctl_note *note,
+                        uint32_t *out_id)
 {
     static const uint32_t tints[3] = { LOOK_JAM_BLACKCURRANT, LOOK_JAM_RASPBERRY,
                                        LOOK_JAM_APRICOT };
-    if (!text_ok(title, 64, true) || !text_ok(body, 96, false) || tint > 2 ||
+    uint8_t icon = note->icon, tint = note->tint;
+    if (!text_ok(note->title, true) || !text_ok(note->body, false) || tint > 2 ||
         (icon && !(icon >= 'A' && icon <= 'Z') && !(icon >= '0' && icon <= '9')))
         return ERR_INVALID_ARGS;
     struct notify_spec n = {
-        .title = (const char *)title, .body = (const char *)body, .letter = (char)icon,
-        .colour = tints[tint],
+        .title = note->title, .body = note->body, .letter = (char)icon, .colour = tints[tint],
     };
-    for (unsigned b = 0; b < NOTIFY_BUTTONS_MAX; b++) {
-        const uint8_t *label = buttons + 24 * b;
+    for (unsigned b = 0; b < 3 && b < NOTIFY_BUTTONS_MAX; b++) {
+        const char *label = note->buttons[b];
         if (!label[0])
             break;
-        if (!text_ok(label, 24, true))
+        if (!text_ok(label, true))
             return ERR_INVALID_ARGS;
-        n.buttons[n.nbuttons++] = (const char *)label;
+        n.buttons[n.nbuttons++] = label;
     }
     if (n.nbuttons && button_cards(slot, gen) >= BUTTON_CARDS)
         return ERR_NO_RESOURCES;
     if (!desk_on())
         return ERR_NOT_SUPPORTED;
-    uint32_t id = notify_post(&n);
+    uint32_t id = notify_card_post(&n);
     if (!id)
         return ERR_NOT_SUPPORTED;
     (void)waiter(slot, gen);
@@ -178,7 +175,7 @@ status_t deskctl_withdraw(unsigned slot, uint32_t gen, uint32_t id)
         if (id && owned[i].id == id && owned[i].slot == slot && owned[i].gen == gen &&
             notify_live(id)) {
             owned[i].id = 0;
-            notify_withdraw(id);
+            notify_card_withdraw(id);
             return OK;
         }
     return ERR_NOT_FOUND;
@@ -189,7 +186,7 @@ void deskctl_closed(unsigned slot, uint32_t gen)
     for (unsigned i = 0; i < OWNED_MAX; i++)
         if (owned[i].id && owned[i].slot == slot && owned[i].gen == gen) {
             if (owned[i].buttons)
-                notify_withdraw(owned[i].id);   /* nobody is left to act on its buttons */
+                notify_card_withdraw(owned[i].id);   /* nobody is left to act on its buttons */
             owned[i].id = 0;
         }
     waiters[slot] = (struct waiter){ 0 };
@@ -211,7 +208,7 @@ void ctl_notify_answered(uint32_t id, uint32_t button)
     if (w->waiting) {
         w->waiting = false;
         /* A failed write: its caller is gone, and the channel goes with it. */
-        (void)compctl_reply_notify_wait(w->txn, OK, id, (uint8_t)button);
+        (void)notify_reply_notify_wait(w->txn, OK, id, (uint8_t)button);
         return;
     }
     if (w->nq == PRESSES_MAX) {
@@ -323,9 +320,12 @@ static void volume_event(void)
             return;
         }
         if (m.txid && m.txid == vol.desk.txid) {
-            uint8_t playing = 0, title[64], output[48];
+            uint8_t playing = 0;
+            char title[64], output[48];
+            uint32_t title_len = 0, output_len = 0;
             int32_t master = 0;
-            st = audioctl_desk_result(rep, &m, &master, &playing, title, output);
+            st = audioctl_desk_result(rep, &m, &master, &playing, title, &title_len, output,
+                                      &output_len);
             vol.desk.txid = 0;
             vol.desk.answered = now();
             if (st != OK)
@@ -334,8 +334,8 @@ static void volume_event(void)
             if (!vol.master.txid && !vol.want)
                 vol.master_cb = master;   /* else ours is newer */
             vol.playing = playing == 1;
-            snprintf(vol.title, sizeof(vol.title), "%.*s", 63, (const char *)title);
-            snprintf(vol.output, sizeof(vol.output), "%.*s", 47, (const char *)output);
+            snprintf(vol.title, sizeof(vol.title), "%.*s", 63, title);
+            snprintf(vol.output, sizeof(vol.output), "%.*s", 47, output);
             if (pop.kind == POP_VOLUME && !pop.dragging)
                 pop_refresh(now());
         } else if (m.txid && m.txid == vol.master.txid) {
@@ -420,7 +420,7 @@ static uint64_t rate(uint64_t now_count, uint64_t then_count, uint64_t dt)
 
 /* An answer to our summary into net.now. */
 static void take_summary(uint8_t link, uint32_t addr, uint32_t speed, uint64_t rx,
-                         uint64_t tx, const uint8_t chip[16])
+                         uint64_t tx, const char *chip)
 {
     uint64_t t = now(), dt = t - net.at;
     struct desk_net *d = &net.now;
@@ -431,7 +431,7 @@ static void take_summary(uint8_t link, uint32_t addr, uint32_t speed, uint64_t r
                  (addr >> 16) & 0xff, (addr >> 8) & 0xff, addr & 0xff);
     else
         d->address[0] = '\0';
-    snprintf(d->nic, sizeof(d->nic), "%.*s", 15, (const char *)chip);
+    snprintf(d->nic, sizeof(d->nic), "%.*s", 15, chip);
     d->mbps = link == 1 ? speed : 0;
     if (!net.known || d->up != net.said.up || strcmp(d->address, net.said.address) ||
         strcmp(d->nic, net.said.nic) || d->mbps != net.said.mbps) {
@@ -465,10 +465,12 @@ static void net_event(void)
             idl_msg_drop(&m);
             continue;
         }
-        uint8_t link = 0, chip[16];
-        uint32_t addr = 0, mask = 0, speed = 0;
+        uint8_t link = 0;
+        char chip[16 + 1];
+        uint32_t addr = 0, mask = 0, speed = 0, chip_len = 0;
         uint64_t rx = 0, tx = 0;
-        st = netctl_summary_result(rep, &m, &link, &addr, &mask, &speed, &rx, &tx, chip);
+        st = netctl_summary_result(rep, &m, &link, &addr, &mask, &speed, &rx, &tx, chip,
+                                   &chip_len);
         net.sum.txid = 0;
         net.sum.answered = now();
         if (st != OK)

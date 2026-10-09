@@ -29,7 +29,7 @@
  * tools/shell-tests/g1-hostile.txt). Its job isn't ours to read, so the
  * handle counts are left out; the check is that it serves a healthy client
  * after each one and the desktop's windows stay. On a boot without a
- * compositor (nocomp) they say so and pass. */
+ * compositor (no compositor) they say so and pass. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -79,7 +79,7 @@ static bool live(struct ct_comp *p)
         jam_handle_close(ch);
         return true;
     }
-    printf("utest: %s: no /svc/wayland (a nocomp boot): nothing to try\n", utest_cur);
+    printf("utest: %s: no /svc/wayland (a boot without the compositor): nothing to try\n", utest_cur);
     return false;
 }
 

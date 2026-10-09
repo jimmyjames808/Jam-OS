@@ -24,7 +24,7 @@
 # Open /svc/volumes again (init has the next one's control channel); the
 # next volumes mounts what devmgr hands it, and a new watch lists it.
 
-protocol volumes 38
+protocol volumes 70
 
 # A mount's service (supervision's `state`).
 const SUP_NONE       0
@@ -101,7 +101,7 @@ const SUP_FINISHED   4
 # Reconnect: ERR_PEER_CLOSED: volumes ended; the ESP is read-only again
 # with the next volumes, and init has a new ESP channel for it.
 
-protocol volesp 39
+protocol volesp 71
 
 # The ESP's service stops in order and starts again on a `block` channel
 # opened read-write; `fs` is a channel to it, the caller's alone. Called
@@ -125,7 +125,7 @@ protocol volesp 39
 # waits for the next: devmgr announces every disk again on a new channel;
 # volumes forgets every disk the old one announced, without notices.
 
-protocol disks 40
+protocol disks 72
 
 # Buses (attach's `bus`).
 const BUS_USB 1
@@ -159,7 +159,7 @@ const BUS_NVME 2
 # Reconnect: ERR_PEER_CLOSED: volumes ended (every mount went with it), or
 # this watcher fell MOUNTS_UNREAD_MAX events behind; watch again.
 
-protocol mounts 41
+protocol mounts 73
 
 # `mounted`'s flags.
 const READ_ONLY 1

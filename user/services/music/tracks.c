@@ -97,7 +97,7 @@ status_t tracks_scan_begin(struct tracks *t, const char *folder)
     if (st != OK)
         return st;
     if (!is_dir)
-        return ERR_WRONG_TYPE;
+        return ERR_NOT_DIR;
     t->path = malloc(MAX_TRACKS * sizeof(*t->path));
     struct scan *sc = t->scan = calloc(1, sizeof(*sc));
     if (!t->path || !sc) {

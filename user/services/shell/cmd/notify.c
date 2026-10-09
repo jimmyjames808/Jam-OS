@@ -1,16 +1,27 @@
-/* notify: a notice on the desktop (abi/idl/compctl.idl's notify, through
- * /svc/notify: a NOTIFY channel, which can post notices and nothing
- * else). With buttons (-b, up to three), the card stays until one is
- * pressed; -w waits here for that and says which (Ctrl+C stops waiting
- * and takes the card away). Without -w the shell's own channel posts it
- * (svc_get's: its cards stay up while the shell runs). Under `nocomp`
- * there is no desktop and no /svc/notify. */
-#include <idl/compctl.h>
+/* notify: a notice on the desktop (abi/idl/notify.idl's notify, through
+ * /svc/notify: a channel that can post notices and nothing else). With
+ * buttons (-b, up to three), the card stays until one is pressed; -w
+ * waits here for that and says which (Ctrl+C stops waiting and takes the
+ * card away). Without -w the shell's own channel posts it (svc_get's: its
+ * cards stay up while the shell runs). */
+#include <idl/notify.h>
 #include "sh.h"
 
 #define CALL_WAIT (2 * NS_PER_S)
 #define WAIT_TXID 0x6e770001u
 #define BUTTONS   3
+
+/* s cut to at most n bytes, at a character's start (notify.idl's texts
+ * are whole UTF-8). */
+static uint32_t cut(const char *s, uint32_t n)
+{
+    uint32_t len = (uint32_t)strlen(s);
+    if (len <= n)
+        return len;
+    while (n && ((unsigned char)s[n] & 0xc0) == 0x80)
+        n--;
+    return n;
+}
 
 static void usage(void)
 {
@@ -21,7 +32,7 @@ static void usage(void)
  * -1 (Ctrl+C, or the compositor went: said). */
 static int wait_press(handle_t ch, uint32_t id)
 {
-    status_t st = compctl_notify_wait_send(ch, WAIT_TXID);
+    status_t st = notify_notify_wait_send(ch, WAIT_TXID);
     while (st == OK) {
         signals_t seen = 0;
         (void)jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, now() + 100 * NS_PER_MS,
@@ -30,7 +41,7 @@ static int wait_press(handle_t ch, uint32_t id)
             sh_tty("^C: notify: not waiting any more\n");
             return -1;
         }
-        uint8_t rep[COMPCTL_REP_MAX];
+        uint8_t rep[NOTIFY_REP_MAX];
         struct idl_msg m;
         st = idl_reply_read(ch, rep, sizeof(rep), &m);
         if (st == ERR_SHOULD_WAIT) {
@@ -45,11 +56,11 @@ static int wait_press(handle_t ch, uint32_t id)
         }
         uint32_t got = 0;
         uint8_t button = 0;
-        st = compctl_notify_wait_result(rep, &m, &got, &button);
+        st = notify_notify_wait_result(rep, &m, &got, &button);
         if (st == OK && got == id)
             return button;
         if (st == OK)
-            st = compctl_notify_wait_send(ch, WAIT_TXID);   /* not ours: wait on */
+            st = notify_notify_wait_send(ch, WAIT_TXID);   /* not ours: wait on */
     }
     sh_tty("notify: %s\n", sh_why(st));
     return -1;
@@ -57,8 +68,7 @@ static int wait_press(handle_t ch, uint32_t id)
 
 SH_CMD(notify)
 {
-    uint8_t buttons[24 * BUTTONS] = { 0 };
-    const char *label[BUTTONS];
+    const char *label[BUTTONS] = { "", "", "" };
     unsigned nb = 0;
     bool wait = false;
     int i = 1;
@@ -67,9 +77,7 @@ SH_CMD(notify)
             wait = true;
         } else if (!strcmp(argv[i], "-b") && i + 1 < argc && nb < BUTTONS &&
                    strlen(argv[i + 1]) < 24 && argv[i + 1][0]) {
-            label[nb] = argv[++i];
-            memcpy(buttons + 24 * nb, label[nb], strlen(label[nb]));
-            nb++;
+            label[nb++] = argv[++i];
         } else {
             usage();
             return 2;
@@ -81,10 +89,11 @@ SH_CMD(notify)
             sh_tty("notify: -w waits for a button: give one with -b\n");
         return 2;
     }
-    uint8_t title[64] = { 0 }, body[96] = { 0 };
-    snprintf((char *)title, sizeof(title), "%s", argv[i++]);
+    const char *title = argv[i++];
+    char body[512] = "";
     for (size_t o = 0; i < argc && o + 1 < sizeof(body); i++)
-        o += (size_t)snprintf((char *)body + o, sizeof(body) - o, "%s%s", o ? " " : "", argv[i]);
+        o += (size_t)snprintf(body + o, sizeof(body) - o, "%s%s", o ? " " : "", argv[i]);
+    uint32_t tn = cut(title, 63), bn = cut(body, 95);   /* the card cuts them further */
     handle_t ch = HANDLE_INVALID;
     status_t st = wait ? svc_open(SVC_NOTIFY, &ch) : OK;
     if (!wait)
@@ -95,9 +104,14 @@ SH_CMD(notify)
         return 1;
     }
     uint32_t id = 0;
-    st = compctl_notify_until(ch, now() + CALL_WAIT, title, body, 0, 0, buttons, &id);
-    if (st == ERR_PEER_CLOSED && !wait && (ch = svc_get(SVC_NOTIFY)) != HANDLE_INVALID)
-        st = compctl_notify_until(ch, now() + CALL_WAIT, title, body, 0, 0, buttons, &id);
+    for (int tries = 0; tries < 2; tries++) {
+        st = notify_notify_until(ch, now() + CALL_WAIT, title, tn, body, bn,
+                                 0, 0, label[0], (uint32_t)strlen(label[0]), label[1],
+                                 (uint32_t)strlen(label[1]), label[2],
+                                 (uint32_t)strlen(label[2]), &id);
+        if (st != ERR_PEER_CLOSED || wait || (ch = svc_get(SVC_NOTIFY)) == HANDLE_INVALID)
+            break;
+    }
     if (st != OK) {
         sh_tty("notify: %s\n", st == ERR_INVALID_ARGS ? "a control character, or no title"
                                : sh_why(st));

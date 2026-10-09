@@ -397,7 +397,7 @@ unsigned pop_calendar(const struct civil *c, uint8_t cells[42]);
 #define NOTIFY_BUTTONS_MAX  3u
 #define NOTIFY_TEXT_MAX     96u
 
-/* A notification to post (comp.h: notify_post). */
+/* A notification to post (comp.h: notify_card_post). */
 struct notify_spec {
     const char *title, *body;      /* body may be NULL */
     char letter;                   /* the tile's letter (0: an "i") */
@@ -431,9 +431,9 @@ extern struct notify_state notes;
 
 /* A notice's id (0: the desktop is off); held, not shown, while the boot
  * splash is up. */
-uint32_t notify_post(const struct notify_spec *n);
+uint32_t notify_card_post(const struct notify_spec *n);
 /* Gone: a card fades out, a held notice is dropped unseen. */
-void     notify_withdraw(uint32_t id);
+void     notify_card_withdraw(uint32_t id);
 /* Is notice id held or shown (and not leaving)? */
 bool     notify_live(uint32_t id);
 /* The cards' places and fades at t; when the next change is due. */

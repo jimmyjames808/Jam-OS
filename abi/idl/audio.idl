@@ -8,8 +8,12 @@
 # the plan is docs/history/A2-PLAN.md.
 # Format: see tools/genidl.py.
 #
-# The stream methods are named stream_* so the generated audio_stream_*
-# calls stay clear of the client library's audio_* (<audio.h>).
+# Two kinds of channel, so two protocols in the file (the M12 plan's Q5):
+# `audio`, the opener's, makes a stream; `audio_stream`, the stream's, plays
+# it. A server of one answers a message of the other ERR_NOT_SUPPORTED, and
+# a stream's channel can't be sent open_output at all. (The client library's
+# own calls are <audio.h>'s audio_open and the like; the generated
+# audio_stream_* calls are the stream protocol's.)
 #
 # Restart: the mixer's restart is not seen (ARCHITECTURE.md, "Services
 # that outlive their process"): init keeps the shared channel, and init's
@@ -29,11 +33,11 @@ protocol audio 22 kept
 
 # On /svc/audio: a new stream, stopped, with an empty ring. Only rate 48000,
 # channels 2, bits 16 (anything else: ERR_NOT_SUPPORTED; the client
-# library converts). name: a label for `vol` (NUL-padded, printable ASCII;
-# anything else is replaced by '?'). Results: `stream`, a channel of its own
-# that speaks the methods below (closing it ends the stream; refused on
-# /svc/audio); `ring`, the VMO to map (read, write, map) with <mixer.h>'s
-# header page and then `frames` frames of samples (left, right:
+# library converts). name: a label for `vol` (up to 15 bytes of UTF-8; the
+# mixer keeps printable ASCII and replaces anything else by '?'). Results:
+# `stream`, a channel of its own that speaks `audio_stream` below (closing
+# it ends the stream); `ring`, the VMO to map (read, write, map) with
+# <mixer.h>'s header page and then `frames` frames of samples (left, right:
 # little-endian s16); `event`, its wake-ups (wait, signal: the SPACE and
 # DATA bits of <mixer.h>); `id`, the stream's number for `vol`; `lead`,
 # how many frames ahead of what is heard the mixer takes samples (a
@@ -41,36 +45,47 @@ protocol audio 22 kept
 # ERR_NO_RESOURCES: 16 streams are open already, or this opener's channel
 # holds MIXER_STREAMS_PER_CLIENT (4) of them. ERR_NOT_FOUND: there is
 # no audio output (no hda driver with a path to a jack).
-1  open_output  (u32 rate, u8 channels, u8 bits, u8[16] name) -> (handle stream, handle ring, handle event, u32 id, u32 frames, u32 lead)
+1  open_output  (u32 rate, u8 channels, u8 bits, str[<=15] name) -> (handle stream, handle ring, handle event, u32 id, u32 frames, u32 lead)
 
-# On a stream channel: from the next period the mixer mixes, it takes the
+# audio_stream: a stream's own channel, the `stream` that open_output gave.
+# Served by the mixer, one per stream; closing it ends the stream.
+#
+# Restart: the mixer's restart is not seen, as audio's: the stream's
+# channel, ring and event are kept, and the successor carries on playing
+# from the last committed period (a request in progress is finished once).
+# After ERR_PEER_CLOSED (init gave up on the mixer, or a successor started
+# fresh) the stream is gone: open /svc/audio again and make a new one.
+
+protocol audio_stream 50 kept
+
+# From the next period the mixer mixes, it takes the
 # stream's frames as they come (from `read` up to `write`); one with too
 # few gives silence for the rest of that period (an underrun, counted).
-2  stream_start  ()  -> ()
-# On a stream channel: the mixer stops taking frames (what it took is
+1  start  ()  -> ()
+# The mixer stops taking frames (what it took is
 # still heard, at most `lead` frames of it); those in the ring stay for a
-# later start. A stream_drain in progress is answered ERR_BAD_STATE.
-3  stream_stop  ()  -> ()
-# On a stream channel: answers once every frame written before the call
+# later start. A drain in progress is answered ERR_BAD_STATE.
+2  stop  ()  -> ()
+# Answers once every frame written before the call
 # (the header's `write` then) has been heard, with that count.
 # ERR_BAD_STATE: the stream is stopped (or is stopped meanwhile), or a
 # drain is already waiting.
-4  stream_drain  ()  -> (u64 frames)
-# On a stream channel: frames written (the header's `write`, as the mixer
+3  drain  ()  -> (u64 frames)
+# Frames written (the header's `write`, as the mixer
 # reads it now), taken by the mixer, and heard: estimated from the
 # driver's play position, so it moves smoothly within a period.
-5  stream_position  ()  -> (u64 written, u64 consumed, u64 played)
-# On a stream channel: this stream's volume in centibels (tenths of a dB),
+4  position  ()  -> (u64 written, u64 consumed, u64 played)
+# This stream's volume in centibels (tenths of a dB),
 # clamped to [-960, 0]: 0 is the samples as written, -960 (-96 dB) and
 # below is silence. Answers the volume set. Applies from the next period
 # mixed.
-6  stream_set_volume  (i32 centibels)  -> (i32 centibels)
-# On a stream channel: the levels it is heard at, in centibels: its own
+5  set_volume  (i32 centibels)  -> (i32 centibels)
+# The levels it is heard at, in centibels: its own
 # volume, the mixer's master volume, and the device's gain below the
 # mixer (the hda driver's get_gain: `hda gain`; 0 if the driver has no
 # gain or can't be asked now). Heard at their sum, below full scale.
-7  stream_levels  ()  -> (i32 volume, i32 master, i32 device)
-# On a stream channel: how its playing has gone, for `play -s` (the owner
+6  levels  ()  -> (i32 volume, i32 master, i32 device)
+# How its playing has gone, for `play -s` (the owner
 # judging the sound on real hardware): `underruns`, periods it had too
 # few frames for (it wrote too slowly); `late`, periods the mixer itself
 # was late for while it played (scheduled too late: the device may have
@@ -79,9 +94,9 @@ protocol audio 22 kept
 # 0xffffffff: no period ended yet); `limited`, periods the mixer's
 # limiter turned down to keep the sum inside full scale; `bits`, the
 # output's sample size now (0: the output is closed); `played`, its
-# frames heard (estimated, as stream_position).
-8  stream_stats  ()  -> (u32 underruns, u32 late, u32 min_lead, u32 limited, u32 bits, u64 played)
-# On a stream channel: what plays on it, for the desktop (audioctl.desk):
-# "Artist - Title" (NUL-terminated UTF-8, a control character replaced by
+# frames heard (estimated, as position).
+7  stats  ()  -> (u32 underruns, u32 late, u32 min_lead, u32 limited, u32 bits, u64 played)
+# What plays on it, for the desktop (audioctl.desk):
+# "Artist - Title" (UTF-8 up to 63 bytes, a control character replaced by
 # '?'; "" clears it). Kept until changed or the stream closes.
-9  stream_set_title  (u8[64] title)  -> ()
+8  set_title  (str[<=63] title)  -> ()

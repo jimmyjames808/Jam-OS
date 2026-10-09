@@ -316,13 +316,15 @@ bool t_comp_seat_reserved(void)
 static bool two_keyboards(struct cs *t, struct sc *a)
 {
     handle_t kb2;
-    CHECK_ST(compctl_connect_input_within(t->ctl, CT_WAIT, &kb2), OK);
+    CHECK(cs_add_source(t->ctl, &kb2));
     ct_clear(&a->k);
     CHECK(cs_key(t, U_A, INPUT_KEY_DOWN, 0));
-    CHECK_ST(input_key_within(kb2, CT_WAIT, U_A, INPUT_KEY_DOWN, 0, 0), OK);
+    CHECK_ST(input_key(kb2, U_A, INPUT_KEY_DOWN, 0), OK);
+    CHECK(cs_flush(t));
     CHECK(cs_key(t, U_A, INPUT_KEY_UP, 0));
-    CHECK_ST(input_key_within(kb2, CT_WAIT, U_A, INPUT_KEY_UP, 0, 0), OK);
-    CHECK_ST(input_key_within(kb2, CT_WAIT, U_X, INPUT_KEY_DOWN, 0, 0), OK);
+    CHECK_ST(input_key(kb2, U_A, INPUT_KEY_UP, 0), OK);
+    CHECK_ST(input_key(kb2, U_X, INPUT_KEY_DOWN, 0), OK);
+    CHECK(cs_flush(t));
     jam_handle_close(kb2);
     CHECK(cs_sync(a, NULL));
     uint32_t want[] = { DOWN(KEY_A), UP(KEY_A), DOWN(KEY_X), UP(KEY_X) };
@@ -348,7 +350,8 @@ bool t_comp_seat_text(void)
     static const char text[] = "aB\x03\x1b[A\r";
     uint8_t bytes[64] = { 0 };
     memcpy(bytes, text, sizeof(text) - 1);
-    CHECK_ST(input_text_within(t.src, CT_WAIT, sizeof(text) - 1, bytes), OK);
+    CHECK_ST(input_text(t.src, bytes, sizeof(text) - 1), OK);
+    CHECK(cs_flush(&t));
     CHECK(cs_sync(&a, NULL));
     const uint32_t want[] = {
         DOWN(KEY_A), UP(KEY_A),
@@ -365,7 +368,8 @@ bool t_comp_seat_text(void)
     CHECK(cs_sync(&a, NULL));
     ct_clear(&a.k);
     bytes[0] = 'a';
-    CHECK_ST(input_text_within(t.src, CT_WAIT, 1, bytes), OK);
+    CHECK_ST(input_text(t.src, bytes, 1), OK);
+    CHECK(cs_flush(&t));
     CHECK(cs_sync(&a, NULL));
     const uint32_t caps[] = { DOWN(KEY_LEFTSHIFT), DOWN(KEY_A), UP(KEY_A), UP(KEY_LEFTSHIFT) };
     CHECK(keys_are(&a.k, caps, 4));

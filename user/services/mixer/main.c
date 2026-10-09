@@ -72,8 +72,12 @@ static void packet(struct mixer *m, const struct port_packet *p)
 
 static bool anything_pending(const struct mixer *m)
 {
-    if (m->svc_pending || m->ctl_pending || m->desk_pending || m->own_out.pending ||
-        clients_pending(m))
+    if (m->own_out.pending)
+        return true;
+    /* While the keeper's queue is full the channels whose requests may need
+     * a put wait (serve_audio, serve_control): keep_tick wakes us. */
+    if (!m->keep_blocked &&
+        (m->svc_pending || m->ctl_pending || m->desk_pending || clients_pending(m)))
         return true;
     for (unsigned i = 0; i < MIXER_MAX_STREAMS; i++)
         if (m->nums->s[i].used && m->own_s[i].pending)
@@ -153,7 +157,7 @@ int main(int argc, char **argv)
            "while one plays\n", MIXER_MAX_STREAMS, RING_FRAMES);
     for (;;) {
         serve_all(m);
-        uint64_t deadline = out_tick(m);
+        uint64_t deadline = keep_tick(m, out_tick(m));
         if (anything_pending(m))
             continue;
         state_commit(m);

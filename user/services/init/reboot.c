@@ -32,10 +32,8 @@
  * call; `reboot -f` goes straight there). A board whose firmware hangs
  * after a reset that caught a device mid-transfer (a USB stick half way
  * through a command, a NIC writing a ring) is what the stopped drivers
- * are for. The screen shows only the splash background: with a
- * compositor init blanks it first (compctl.blank: the console, a window,
- * can't); under `nocomp` the shell or the console blanked it
- * (console.blank) before asking for the reboot. */
+ * are for. The screen shows only the splash background: init blanks it
+ * first (compctl.blank). */
 #include <devmgr.h>
 #include <idl/console.h>
 #include <os.h>
@@ -156,8 +154,8 @@ void reboot_keep_written(const uint64_t size[UPDATE_FILES], const uint64_t mtime
 }
 
 /* The stick's files didn't load (why): the stored copy is started
- * instead. Said in the log and, for NOTICE_SHOW, on the screen the shell
- * (or the console, for Ctrl+Alt+Del) blanked before asking. */
+ * instead. Said in the log and, for NOTICE_SHOW, in a terminal's window,
+ * the screen unblanked meanwhile. */
 static void say_stored_instead(status_t why)
 {
     char line[160];
@@ -168,18 +166,14 @@ static void say_stored_instead(status_t why)
     handle_t c = terms_any_console();   /* every terminal may be closed: then the log only */
     if (!c)
         return;
-    uint8_t text[2048] = { 0 };
-    memcpy(text, line, (size_t)n);
     uint64_t deadline = now() + NS_PER_S;
     comp_blank(false);   /* the terminal's window shows it */
-    if (console_blank_until(c, deadline, 0) != OK ||
-        console_write_until(c, deadline, (uint16_t)n, text) != OK) {
+    if (console_write_until(c, deadline, (const uint8_t *)line, (uint32_t)n) != OK) {
         comp_blank(true);
         return;
     }
     jam_sleep_until(now() + NOTICE_SHOW);
-    (void)console_blank_until(c, now() + NS_PER_S, 1);   /* dark again until the next splash */
-    comp_blank(true);
+    comp_blank(true);   /* dark again until the next splash */
 }
 
 /* What every restart does before the reset or the jump: /data synced,
@@ -209,7 +203,7 @@ static uint64_t stop_everything(const char *how, uint64_t *vol_ms)
 
 status_t init_reboot_kexec(void)
 {
-    comp_blank(true);   /* with a compositor (the console's blank can't: no screen of its own) */
+    comp_blank(true);   /* the compositor's screen: the splash background until the next boot */
     if (esp_changed()) {
         uint64_t kb, bb;
         uint32_t ms;

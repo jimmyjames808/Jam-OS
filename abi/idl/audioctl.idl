@@ -24,12 +24,12 @@
 
 protocol audioctl 23 kept
 
-# Every stream open now, in the order opened: `count` entries of struct
-# mixer_stream_info (<mixer.h>, 40 bytes each) at the start of `list`,
-# the rest zero; `master`, the master volume in centibels.
-1  streams  ()  -> (u32 count, i32 master, u8[640] list)
+# Every stream open now, in the order opened: `list` holds a struct
+# mixer_stream_info (<mixer.h>, 40 bytes each) for each, so its length
+# divided by 40 is how many; `master`, the master volume in centibels.
+1  streams  ()  -> (i32 master, u8[<=640] list)
 # Stream `id`'s volume in centibels, clamped to [-960, 0] (-960 and below:
-# silence), as audio.set_volume on its own channel. Answers the volume
+# silence), as audio_stream.set_volume on its own channel. Answers the volume
 # set. ERR_NOT_FOUND: no such stream.
 2  set_volume  (u32 id, i32 centibels)  -> (i32 centibels)
 # The master volume, applied after the streams are summed, the same way.
@@ -45,11 +45,11 @@ protocol audioctl 23 kept
 # What the desktop shows (the volume popover; also on the desktop's
 # channel): `master`, the master volume in centibels; `playing` 1 while a
 # stream plays (started, and its frames coming), else 0; `title`, the
-# newest playing stream's title (audio.stream_set_title: the music
+# newest playing stream's title (audio_stream.set_title: the music
 # player's "Artist - Title"), or its name if it set none ("" when nothing
 # plays); `output`, the output's name as the driver gives it
 # (hda.output_name: "ALC897 headphones"; "" without a driver).
-5  desk  ()  -> (i32 master, u8 playing, u8[64] title, u8[48] output)
+5  desk  ()  -> (i32 master, u8 playing, str[<=63] title, str[<=47] output)
 # A channel of the caller's own with the desktop channel's authority (desk
 # and set_master only; closing it is the end of it), as a test or a
 # program that hands on less than it holds would want: a full audioctl

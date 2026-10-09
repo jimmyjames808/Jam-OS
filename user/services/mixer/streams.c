@@ -15,7 +15,8 @@
  * position says how many of its frames have been heard.
  *
  * Each request is read into a request slot of the state (req_take) and
- * run there with the protocol's generated run (audio_run_slot, audioctl_run_slot),
+ * run there with the protocol's generated run (audio_run_slot,
+ * audio_stream_run_slot, audioctl_run_slot),
  * answered from the slot's reply area after a commit (req_answer); a
  * successor runs the one in progress again with the same code (run_audio,
  * run_control). A drain answered later is answered before the commit that
@@ -130,11 +131,13 @@ void stream_drop(struct mixer *m, struct stream *s, const char *why)
 
 /* ---- the service channel: open_output --------------------------------------------- */
 
-static void set_name(struct stream *s, const uint8_t name[16])
+/* The label: printable ASCII, anything else (UTF-8 included) a '?' for
+ * each byte. */
+static void set_name(struct stream *s, const char *name, uint32_t len)
 {
     unsigned i = 0;
-    for (; i < sizeof(s->name) - 1 && name[i]; i++)
-        s->name[i] = name[i] >= 0x20 && name[i] < 0x7f ? (char)name[i] : '?';
+    for (; i < sizeof(s->name) - 1 && i < len; i++)
+        s->name[i] = name[i] >= 0x20 && name[i] < 0x7f ? name[i] : '?';
     s->name[i] = 0;
 }
 
@@ -208,7 +211,8 @@ static struct stream *free_slot(struct mixer *m, const struct opener *o)
 }
 
 static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8_t bits,
-                               const uint8_t name[16], handle_t *out_stream, handle_t *out_ring,
+                               const char *name, uint32_t name_len, handle_t *out_stream,
+                               handle_t *out_ring,
                                handle_t *out_event, uint32_t *out_id, uint32_t *out_frames,
                                uint32_t *out_lead)
 {
@@ -257,7 +261,7 @@ static status_t do_open_output(void *ctx, uint32_t rate, uint8_t channels, uint8
     s->owner_gen = o->gen;
     s->gain = MIX_UNITY;
     s->min_lead = UINT32_MAX;
-    set_name(s, name);
+    set_name(s, name, name_len);
     *out_stream = theirs;
     *out_ring = ring;
     *out_event = event;
@@ -357,27 +361,24 @@ static status_t do_stats(void *ctx, uint32_t *out_underruns, uint32_t *out_late,
     return OK;
 }
 
-static status_t do_stream_title(void *ctx, const uint8_t title[64])
+static status_t do_stream_title(void *ctx, const char *title, uint32_t len)
 {
     struct call *c = ctx;
     char *t = c->s->title;
-    size_t n = strnlen((const char *)title, 64);
-    if (n == 64)
-        n = 63;
-    for (size_t i = 0; i < n; i++)
-        t[i] = title[i] < ' ' || title[i] == 0x7f ? '?' : (char)title[i];
-    t[n] = '\0';
+    for (uint32_t i = 0; i < len; i++)   /* len <= 63: the protocol's */
+        t[i] = (uint8_t)title[i] < ' ' || title[i] == 0x7f ? '?' : title[i];
+    t[len] = '\0';
     return OK;
 }
 
-static const struct audio_ops stream_ops = {
-    .stream_set_title = do_stream_title,
-    .stream_start = do_start,
-    .stream_stop = do_stop,
-    .stream_position = do_position,
-    .stream_set_volume = do_stream_volume,
-    .stream_levels = do_levels,
-    .stream_stats = do_stats,
+static const struct audio_stream_ops stream_ops = {
+    .set_title = do_stream_title,
+    .start = do_start,
+    .stop = do_stop,
+    .position = do_position,
+    .set_volume = do_stream_volume,
+    .levels = do_levels,
+    .stats = do_stats,
 };
 
 /* stream_drain (the request in slot): answered from drain_check once the
@@ -420,8 +421,8 @@ void run_audio(struct mixer *m, unsigned slot, handle_t ch, uint32_t owner, stru
     struct idl_slot is;
     svcstate_slot(&m->state, slot, &is);
     m->cur_slot = slot;
-    uint32_t rn = audio_run_slot(ch, &is, s ? &stream_ops : &svc_ops, s ? (void *)&c : (void *)&o,
-                            rhs, &rhn);
+    uint32_t rn = s ? audio_stream_run_slot(ch, &is, &stream_ops, &c, rhs, &rhn)
+                    : audio_run_slot(ch, &is, &svc_ops, &o, rhs, &rhn);
     req_answer(m, slot, ch, rn, rhs, rhn);
 }
 
@@ -431,7 +432,7 @@ static status_t serve_one(struct mixer *m, handle_t ch, uint32_t key, uint32_t o
                           struct stream *s)
 {
     unsigned slot;
-    status_t st = req_take(m, ch, key, false, &slot);
+    status_t st = req_take(m, ch, key, s ? PROTO_STREAM : PROTO_AUDIO, &slot);
     if (st == OK && slot != REQ_NONE)
         run_audio(m, slot, ch, owner, s);
     return st;
@@ -442,6 +443,8 @@ status_t serve_audio(struct mixer *m, handle_t ch, uint32_t owner)
     uint32_t gen = owner ? m->nums->c[owner - 1].gen : 0;
     uint32_t key = owner ? (KEY_CLIENT + owner - 1) | gen << 8 : KEY_SVC;
     for (int i = 0; i < BUDGET; i++) {
+        if (!keep_gate(m))   /* an open_output needs a put: left queued, keep_tick wakes us */
+            return OK;
         status_t st = serve_one(m, ch, key, owner, NULL);
         if (st != OK)
             return st;
@@ -493,7 +496,7 @@ void stream_event(struct mixer *m, struct stream *s)
 
 /* ---- the control channel ---------------------------------------------------------- */
 
-static status_t do_streams(void *ctx, uint32_t *out_count, int32_t *out_master, uint8_t list[640])
+static status_t do_streams(void *ctx, int32_t *out_master, uint8_t *list, uint32_t *out_list_len)
 {
     struct mixer *m = ctx;
     uint64_t pos = out_position(m);
@@ -518,7 +521,7 @@ static status_t do_streams(void *ctx, uint32_t *out_count, int32_t *out_master, 
         memcpy(list + n * sizeof(e), &e, sizeof(e));
         last = best->id;
     }
-    *out_count = n;
+    *out_list_len = n * sizeof(struct mixer_stream_info);
     *out_master = m->nums->master;
     return OK;
 }
@@ -550,8 +553,8 @@ static status_t do_set_master(void *ctx, int32_t cb, int32_t *out)
 /* What the desktop shows: the newest stream playing (and its frames
  * coming), its title or name; the output's name, asked of the driver the
  * first time (the driver answers at once: it made the name at its start). */
-static status_t do_desk(void *ctx, int32_t *out_master, uint8_t *out_playing,
-                        uint8_t title[64], uint8_t output[48])
+static status_t do_desk(void *ctx, int32_t *out_master, uint8_t *out_playing, char *title,
+                        uint32_t *title_len, char *output, uint32_t *output_len)
 {
     struct mixer *m = ctx;
     const struct stream *best = NULL;
@@ -562,9 +565,12 @@ static status_t do_desk(void *ctx, int32_t *out_master, uint8_t *out_playing,
     }
     *out_master = m->nums->master;
     *out_playing = best != NULL;
-    if (best)
-        snprintf((char *)title, 64, "%s", best->title[0] ? best->title : best->name);
-    memcpy(output, out_name(m), sizeof(m->out_name));
+    *title_len = 0;
+    if (best) {
+        const char *t = best->title[0] ? best->title : best->name;
+        *title_len = (uint32_t)snprintf(title, 64, "%s", t);   /* 63 bytes at most */
+    }
+    *output_len = (uint32_t)snprintf(output, 48, "%s", out_name(m));
     return OK;
 }
 
@@ -626,7 +632,7 @@ void run_control(struct mixer *m, unsigned slot, handle_t ch, uint32_t key)
 static status_t ctl_serve_one(struct mixer *m, handle_t ch, uint32_t key)
 {
     unsigned slot;
-    status_t st = req_take(m, ch, key, true, &slot);
+    status_t st = req_take(m, ch, key, PROTO_CTL, &slot);
     if (st == OK && slot != REQ_NONE)
         run_control(m, slot, ch, key);
     return st;
@@ -635,6 +641,8 @@ static status_t ctl_serve_one(struct mixer *m, handle_t ch, uint32_t key)
 status_t serve_control(struct mixer *m, handle_t ch, uint32_t key)
 {
     for (int i = 0; i < BUDGET; i++) {
+        if (!keep_gate(m))   /* a connect needs a put: left queued, keep_tick wakes us */
+            return OK;
         status_t st = ctl_serve_one(m, ch, key);
         if (st != OK)
             return st;

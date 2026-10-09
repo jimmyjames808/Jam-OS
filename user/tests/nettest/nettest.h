@@ -65,7 +65,8 @@ static inline uint64_t soon(void) { return now() + NT_SOON; }
 /* main.c */
 status_t sess_open(struct sess *s);
 void     sess_close(struct sess *s);
-bool     get_stats(handle_t ch, struct netdev_stats *out);
+bool     get_stats(handle_t ch, struct netdev_stats *out);   /* the driver's channel: netdev */
+bool     get_session_stats(handle_t ch, struct netdev_stats *out);   /* a session's */
 bool     wait_link(void);
 /* A test frame into buf: broadcast, from our address, NT_ETHERTYPE, then
  * the text `tag` and seq; len bytes (at least 14). */

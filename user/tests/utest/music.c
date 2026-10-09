@@ -101,7 +101,7 @@ bool t_music_scan(void)
     struct tracks t = { .count = 0 };
     unsigned s = 0;
     if (ok) {
-        CHECK_ST(tracks_scan_begin(&t, M "/lib/Loose.Mp3"), ERR_WRONG_TYPE);
+        CHECK_ST(tracks_scan_begin(&t, M "/lib/Loose.Mp3"), ERR_NOT_DIR);
         CHECK_ST(tracks_scan_begin(&t, M "/lib/nothere"), ERR_NOT_FOUND);
         CHECK(scan(M "/lib/Empty", 1, &t, &s));
         CHECK_EQ(t.count, 0);

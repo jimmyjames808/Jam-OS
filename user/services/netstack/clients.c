@@ -91,7 +91,7 @@ static void later_answer(struct later *l, status_t st, uint32_t rtt_us, uint8_t 
     else if (l->kind == LATER_ECHO)
         (void)net_reply_echo(l->txn, st, rtt_us, ttl, size);
     else if (l->kind == LATER_CHIP)
-        (void)net_reply_chip_counts(l->txn, st, counts ? counts : zero);
+        (void)net_reply_chip_counts(l->txn, st, counts ? counts : zero, NETDEV_STATS_SIZE);
     later_done(l);   /* a reply that can't be written: its opener is going */
 }
 
@@ -184,7 +184,7 @@ static status_t op_iface(void *ctx, uint32_t *out_address, uint32_t *out_mask,
     return OK;
 }
 
-static status_t op_counts(void *ctx, uint8_t out_counts[256])
+static status_t op_counts(void *ctx, uint8_t *out_counts, uint32_t *out_counts_len)
 {
     (void)ctx;
     struct stack_counts s;
@@ -223,12 +223,15 @@ static status_t op_counts(void *ctx, uint8_t out_counts[256])
     c.ring_bytes = rb > UINT32_MAX ? UINT32_MAX : (uint32_t)rb;
     tcpsock_counts(&c);
     memcpy(out_counts, &c, sizeof(c));
+    *out_counts_len = sizeof(c);
     return OK;
 }
 
 static status_t op_wait_change(void *ctx, struct idl_txn txn, uint32_t version,
                                uint32_t timeout_ms, uint32_t *out_version)
 {
+    if (timeout_ms != NET_WAIT_FOREVER && (!timeout_ms || timeout_ms > NET_TIMEOUT_MAX))
+        return ERR_INVALID_ARGS;
     if (version != pg.version) {
         *out_version = pg.version;
         return OK;
@@ -242,9 +245,10 @@ static status_t op_wait_change(void *ctx, struct idl_txn txn, uint32_t version,
     return IDL_LATER;
 }
 
-static status_t op_chip_counts(void *ctx, struct idl_txn txn, uint8_t out_counts[256])
+static status_t op_chip_counts(void *ctx, struct idl_txn txn, uint8_t *out_counts,
+                               uint32_t *out_counts_len)
 {
-    (void)out_counts;
+    (void)out_counts, (void)out_counts_len;   /* answered with the txn */
     if (!pg.dev)
         return ERR_NOT_FOUND;
     struct later *l = later_new(ctx, LATER_CHIP, txn, now() + CHIP_WAIT);
@@ -307,7 +311,7 @@ static status_t op_echo(void *ctx, struct idl_txn txn, uint32_t address, uint16_
     (void)out_size;
     struct opener *o = ctx;
     if (!ctl_unicast(address) || size > NET_DGRAM_MAX || !timeout_ms ||
-        timeout_ms > NET_ECHO_TIMEOUT_MAX)
+        timeout_ms > NET_TIMEOUT_MAX)
         return ERR_INVALID_ARGS;
     for (unsigned i = 0; i < LATER_MAX; i++)
         if (pg.l[i].kind == LATER_ECHO && pg.l[i].opener == (unsigned)(o - pg.o) &&

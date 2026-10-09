@@ -1,7 +1,7 @@
 /* init's shell mode: the compositor (docs/G1-PLAN.md), which draws the
- * screen on every plain boot; with the boot word `nocomp` (the boot
- * menu's "Jam OS (no compositor)") it isn't started, and the console owns
- * the screen and the input as it always did.
+ * screen on every plain boot: the desktop is the only way Jam OS draws
+ * (M12's Q14: the boot word `nocomp` and the full-screen console are
+ * gone).
  *
  *   compositor  bin/compositor, first (before the console), with
  *               root with RIGHT_ROOT_SCREEN (framebuffer_take) and
@@ -29,10 +29,11 @@
  *                 ctl.c's CTL_COMPOSITOR;
  *               SR_USER + 5  the server end of /svc/notify's shared
  *                 channel, made once and kept (both ends) as /svc/wayland's:
- *                 its svc.connect makes a compctl NOTIFY channel (post a
- *                 notice, hear its buttons; nothing else). init publishes the
- *                 client end as /svc/notify (the shell's `notify`) and gives
- *                 devmgr and netstack a duplicate each (sticks; the network);
+ *                 its svc.connect makes a channel of the `notify` protocol
+ *                 (abi/idl/notify.idl: post a notice, hear its buttons;
+ *                 nothing else). init publishes the client end as
+ *                 /svc/notify (the shell's `notify`), gives devmgr, volumes
+ *                 and netstack a duplicate each, and connects for its own;
  *               SR_USER + 6  a duplicate of the mixer's desktop channel's
  *                 client end (services.c: audioctl's desk and set_master
  *                 only, the volume popover);
@@ -66,9 +67,13 @@
  * again. A switch before /data is there is saved when /data comes (and the
  * settings' layout is then not applied over it).
  *
- * init's own notices (comp_notice: update.c's "Update written") go on its
- * ADMIN channel, without waiting; a compctl.notify_wait is kept waiting
- * there once one has buttons. A press of the Reboot button of a notice
+ * init's own notices (comp_notice: update.c's "Update written") go on a
+ * notify channel of its own (review W9: the notices are no longer
+ * compctl's), connected on /svc/notify at the first notice after each
+ * compositor start (a call, bounded by CALL_WAIT: the shared channel's
+ * answers are the kernel's to route), then written without waiting; a
+ * notify.notify_wait is kept waiting there once one has buttons. Its
+ * answers come on the port with the ADMIN channel's (KEY_COMP). A press of the Reboot button of a notice
  * posted with `reboot` is init's to act on: it reboots as initctl.reboot
  * does; one of the first button of a notice posted by comp_notice_run
  * opens a terminal running its command (lastboot.c's Details: `crashlog`),
@@ -78,6 +83,8 @@
  * compositor has none of the old one's notices. */
 #include <compstate.h>
 #include <idl/compctl.h>
+#include <idl/notify.h>
+#include <idl/svc.h>
 #include <settings.h>
 #include <svcstate.h>
 #include "init.h"
@@ -100,6 +107,7 @@ static uint8_t layout = LAYOUT_TILING;   /* the layout as init knows it (compctl
 static bool unsaved;              /* the user switched it before /data was there */
 static bool started_once;         /* a compositor has started this boot */
 static handle_t note_srv, note_cli;   /* /svc/notify's shared channel (0: no compositor) */
+static handle_t note_ch;          /* init's own notify channel (0: not connected) */
 static uint32_t note_count;       /* our notices' transaction ids */
 static uint32_t reboot_txid;      /* the last notice with a Reboot button, until answered */
 static uint32_t reboot_id;        /* ... its id (0: none up) */
@@ -135,7 +143,19 @@ status_t comp_input_channel(handle_t *out)
 
 status_t comp_source(handle_t *out)
 {
-    return admin ? compctl_connect_input_until(admin, now() + CALL_WAIT, out) : ERR_BAD_STATE;
+    if (!admin)
+        return ERR_BAD_STATE;
+    handle_t mine, theirs;
+    status_t st = jam_channel_create(&mine, &theirs);
+    if (st != OK)
+        return st;
+    st = compctl_add_source(admin, mine);   /* an event: mine is gone either way */
+    if (st != OK) {
+        jam_handle_close(theirs);
+        return st;
+    }
+    *out = theirs;
+    return OK;
 }
 
 void comp_blank(bool on)
@@ -220,26 +240,66 @@ handle_t comp_notify_client(void)
     return d;
 }
 
+/* Our notify channel, connected if it isn't (a call on the shared
+ * /svc/notify, bounded): false if there is none (said in the log). */
+static bool note_channel(void)
+{
+    if (note_ch)
+        return true;
+    if (!admin || !note_cli)
+        return false;   /* no compositor (or none yet): the log has it */
+    handle_t ch = HANDLE_INVALID;
+    status_t st = svc_connect_until(note_cli, now() + CALL_WAIT, &ch);
+    if (st == OK && jam_port_bind(port, ch, KEY_COMP, SIG_READABLE | SIG_PEER_CLOSED,
+                                  PORT_BIND_PERSISTENT) != OK) {
+        jam_handle_close(ch);
+        st = ERR_NO_RESOURCES;
+    }
+    if (st != OK) {
+        printf("init: no channel for the desktop's notices (%s)\n", status_str(st));
+        return false;
+    }
+    note_ch = ch;
+    note_waiting = false;
+    return true;
+}
+
+/* The notify channel gone (the compositor ended): its notices with it. */
+static void note_closed(void)
+{
+    if (!note_ch)
+        return;
+    (void)jam_port_unbind(port, note_ch, KEY_COMP);
+    jam_handle_close(note_ch);
+    note_ch = HANDLE_INVALID;
+    note_waiting = false;
+}
+
 /* Post a notice; its transaction id (0: not posted, said in the log). */
 static uint32_t post(const char *title, const char *body, char icon, uint8_t tint,
                      const char *const *buttons)
 {
-    if (!admin)
-        return 0;   /* no compositor (or none yet): the log has it */
-    uint8_t t[64] = { 0 }, b[96] = { 0 }, btn[72] = { 0 };
-    snprintf((char *)t, sizeof(t), "%s", title);
-    snprintf((char *)b, sizeof(b), "%s", body ? body : "");
+    if (!note_channel())
+        return 0;
+    const char *b[3] = { "", "", "" };
     for (unsigned i = 0; buttons && i < 3 && buttons[i]; i++)
-        snprintf((char *)btn + 24 * i, 24, "%s", buttons[i]);
+        b[i] = buttons[i];
+    if (!body)
+        body = "";
     note_count = (note_count + 1) & NOTE_COUNT;
     uint32_t txid = NOTE_TXID | note_count;
-    status_t st = compctl_notify_send(admin, txid, t, b, (uint8_t)icon, tint, btn);
+    status_t st = notify_notify_send(note_ch, txid, title, (uint32_t)strlen(title), body,
+                                     (uint32_t)strlen(body), (uint8_t)icon, tint, b[0],
+                                     (uint32_t)strlen(b[0]), b[1], (uint32_t)strlen(b[1]), b[2],
+                                     (uint32_t)strlen(b[2]));
+    if (st == ERR_PEER_CLOSED)
+        note_closed();
     if (st != OK) {
         printf("init: the notice \"%s\" isn't shown (%s)\n", title, status_str(st));
         return 0;
     }
-    if (btn[0] && !note_waiting)
-        note_waiting = compctl_notify_wait_send(admin, NOTE_WAIT) == OK;
+    if (b[0][0] && !note_waiting)
+        note_waiting = notify_notify_wait_send(note_ch, NOTE_WAIT) == OK;
     return txid;
 }
 
@@ -288,10 +348,10 @@ static void note_answer(const uint8_t *rep, struct idl_msg *m)
     if (m->txid == NOTE_WAIT) {
         uint32_t id = 0;
         uint8_t button = 0;
-        status_t st = compctl_notify_wait_result(rep, m, &id, &button);
+        status_t st = notify_notify_wait_result(rep, m, &id, &button);
         note_waiting = false;
         if (st == OK)
-            note_waiting = compctl_notify_wait_send(admin, NOTE_WAIT) == OK;
+            note_waiting = notify_notify_wait_send(note_ch, NOTE_WAIT) == OK;
         else
             printf("init: the compositor's notify_wait: %s\n", status_str(st));
         if (st == OK)
@@ -299,7 +359,7 @@ static void note_answer(const uint8_t *rep, struct idl_msg *m)
         return;
     }
     uint32_t id = 0;
-    status_t st = compctl_notify_result(rep, m, &id);
+    status_t st = notify_notify_result(rep, m, &id);
     if (st != OK)
         printf("init: a notice isn't shown (%s)\n", status_str(st));
     else if (m->txid == reboot_txid)
@@ -308,8 +368,29 @@ static void note_answer(const uint8_t *rep, struct idl_msg *m)
         run_id = id;
 }
 
+/* The answers to our notices on our notify channel. */
+static void note_event(void)
+{
+    for (unsigned n = 0; note_ch && n < 8; n++) {   /* bounded: a few calls of ours wait */
+        uint8_t rep[NOTIFY_REP_MAX];
+        struct idl_msg m;
+        status_t st = idl_reply_read(note_ch, rep, sizeof(rep), &m);
+        if (st == ERR_SHOULD_WAIT)
+            return;
+        if (st != OK && st != ERR_INTERNAL) {   /* the compositor is gone */
+            note_closed();
+            return;
+        }
+        if (m.txid == NOTE_WAIT || (m.txid & ~NOTE_COUNT) == NOTE_TXID)
+            note_answer(rep, &m);
+        else
+            idl_msg_drop(&m);
+    }
+}
+
 void comp_event(void)
 {
+    note_event();
     for (unsigned n = 0; admin && n < 8; n++) {   /* bounded: a few calls of ours wait */
         uint8_t rep[COMPCTL_REP_MAX];
         struct idl_msg m;
@@ -319,10 +400,6 @@ void comp_event(void)
         if (st != OK && st != ERR_INTERNAL) {   /* the compositor is gone: comp_closed */
             (void)jam_port_unbind(port, admin, KEY_COMP);
             return;
-        }
-        if (m.txid == NOTE_WAIT || (m.txid & ~NOTE_COUNT) == NOTE_TXID) {
-            note_answer(rep, &m);
-            continue;
         }
         if (m.txid != LAYOUT_TXID) {
             idl_msg_drop(&m);   /* a late answer to a call that gave up */
@@ -423,7 +500,7 @@ status_t comp_start(void)
         return st;
     }
     admin = mine;
-    note_waiting = false;   /* the old compositor's notices went with it */
+    note_closed();   /* the old compositor's notices went with it */
     reboot_id = reboot_txid = 0;
     if (jam_port_bind(port, admin, KEY_COMP, SIG_READABLE | SIG_PEER_CLOSED,
                       PORT_BIND_PERSISTENT) == OK)
@@ -441,24 +518,26 @@ void comp_closed(void)
     (void)jam_port_unbind(port, admin, KEY_COMP);
     jam_handle_close(admin);   /* its INPUT channels went with it */
     admin = HANDLE_INVALID;
+    note_closed();
 }
 
-void comp_init(handle_t loop_port, bool on)
+void comp_init(handle_t loop_port)
 {
     const struct bootfs_view *fs;
     const void *data;
     uint64_t size;
     port = loop_port;
-    if (on && (bootfs_default(&fs) != OK ||
-               bootfs_lookup(fs, svcs[COMPOSITOR].path, &data, &size) != OK)) {
-        printf("init: no %s in bootfs: the console draws the screen\n", svcs[COMPOSITOR].path);
+    bool on = true;
+    if (bootfs_default(&fs) != OK ||
+        bootfs_lookup(fs, svcs[COMPOSITOR].path, &data, &size) != OK) {
+        printf("init: no %s in bootfs: nothing draws the screen\n", svcs[COMPOSITOR].path);
         on = false;
     }
     if (!on || jam_channel_create(&wl_cli, &wl_srv) != OK) {
         wl_cli = wl_srv = HANDLE_INVALID;
         svcs[COMPOSITOR].given_up = true;   /* not on this boot */
         if (on)
-            printf("init: no channel for /svc/wayland: the console draws the screen\n");
+            printf("init: no channel for /svc/wayland: nothing draws the screen\n");
         return;
     }
     kept_end_mark(wl_srv);
@@ -467,7 +546,7 @@ void comp_init(handle_t loop_port, bool on)
         note_cli = note_srv = HANDLE_INVALID;   /* no notices: the log has them */
     } else {
         kept_end_mark(note_srv);
-        services_publish(SVC_NOTIFY, note_cli, true);   /* a NOTIFY channel per opener */
+        services_publish(SVC_NOTIFY, note_cli, true);   /* a notify channel per opener */
     }
     printf("init: the compositor draws the screen: each terminal is a window\n");
 }

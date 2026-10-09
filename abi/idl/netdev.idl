@@ -5,6 +5,11 @@
 # alone, <devmgr.h> DEVMGR_CLASS_NET) and its control channel (a test
 # program under user/tests/). Format: see tools/genidl.py.
 #
+# Two kinds of channel speak it, a protocol each: the driver's own
+# channel (`netdev`: info, stats and open) and a session's (`netdev_session`,
+# below: info and stats), so `open` on a session channel is not a method
+# there at all (ERR_NOT_SUPPORTED, from the generated server).
+#
 # Control only: frames never travel in calls. `open` hands out two ring
 # VMOs and two events; their layout, the wake bits, the trust rules and
 # the rights are in <jam/netdev.h>, with the ring code both sides use.
@@ -31,16 +36,19 @@ protocol netdev 27
 # full duplex). speed: Mb/s, 0 while down. changes: link changes since
 # the driver started (each also signals NETDEV_SIG_LINK on the session's
 # to_stack event): compare with the count you saw last. chip: its name
-# (printable ASCII, NUL-padded), e.g. "RTL8125B", "82574L".
-1  info  ()  -> (u8[6] mac, u16 vlan, u16 mtu, u32 link, u32 speed, u32 changes, u8[16] chip)
+# (printable ASCII, at most 16 bytes), e.g. "RTL8125B", "82574L".
+1  info  ()  -> (u8[6] mac, u16 vlan, u16 mtu, u32 link, u32 speed, u32 changes, str[<=16] chip)
 
 # The counts, as <jam/netdev.h>'s struct netdev_stats (little-endian, its
 # reserved fields 0): the driver's since it started, and the chip's own.
-2  stats  ()  -> (u8[256] counts)
+# `counts` is that struct's bytes, NETDEV_STATS_SIZE of them; a client that
+# is given fewer (a driver built before the struct grew) reads the rest as
+# zeros.
+2  stats  ()  -> (u8[<=256] counts)
 
 # A session: the rings and events of <jam/netdev.h>. Results: `session`,
 # a channel of its own (closing it ends the session; info and stats work
-# on it too, open is refused there with ERR_NOT_SUPPORTED); `tx` and `rx`,
+# on it too, as netdev_session's); `tx` and `rx`,
 # the two ring VMOs (NETDEV_RING_BYTES each, NETDEV_RING_RIGHTS: map them
 # read-write and check their headers, netdev_end_attach); `to_driver`
 # (NETDEV_TO_DRIVER_RIGHTS: signal NETDEV_SIG_TX on it) and `to_stack`
@@ -50,3 +58,17 @@ protocol netdev 27
 # first: a session whose opener has gone is ended then, so a restarted
 # netstack can open at once). ERR_NO_MEMORY: no memory for the rings.
 3  open  ()  -> (handle session, handle tx, handle rx, handle to_driver, handle to_stack)
+
+# netdev_session: a session's channel, the one `open` hands out. It answers
+# info and stats as the driver's channel does and nothing else; closing it
+# ends the session.
+#
+# Reconnect: when the session channel closes (ERR_PEER_CLOSED), the driver
+# ended the session or died: as netdev's rule above.
+
+protocol netdev_session 63
+
+# As netdev.info.
+1  info  ()  -> (u8[6] mac, u16 vlan, u16 mtu, u32 link, u32 speed, u32 changes, str[<=16] chip)
+# As netdev.stats.
+2  stats  ()  -> (u8[<=256] counts)

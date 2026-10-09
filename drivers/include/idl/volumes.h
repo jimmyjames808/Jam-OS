@@ -27,7 +27,7 @@
  * Open /svc/volumes again (init has the next one's control channel); the
  * next volumes mounts what devmgr hands it, and a new watch lists it.
  *
- * Protocols `volumes` (id 38), `volesp` (id 39), `disks` (id 40) and `mounts` (id 41): one for each
+ * Protocols `volumes` (id 70), `volesp` (id 71), `disks` (id 72) and `mounts` (id 73): one for each
  * kind of channel, so a message of one protocol sent on a channel of
  * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
  * Client: <proto>_<method>(ch, args..., &results...)
@@ -41,16 +41,16 @@
 
 #include <idl/common.h>
 
-#define VOLUMES_PROTOCOL_ID 38u
-#define VOLUMES_WATCH            0x00260001u
-#define VOLUMES_REMOUNT          0x00260002u
-#define VOLUMES_KILL             0x00260003u
-#define VOLUMES_SUPERVISION      0x00260004u
-#define VOLUMES_TEST_DISK        0x00260005u
-#define VOLUMES_RELEASE_DISK     0x00260006u
-#define VOLUMES_SYNC             0x00260007u
-#define VOLUMES_STOP             0x00260008u
-#define VOLUMES_SET_DISKS        0x00260009u
+#define VOLUMES_PROTOCOL_ID 70u
+#define VOLUMES_WATCH            0x00460001u
+#define VOLUMES_REMOUNT          0x00460002u
+#define VOLUMES_KILL             0x00460003u
+#define VOLUMES_SUPERVISION      0x00460004u
+#define VOLUMES_TEST_DISK        0x00460005u
+#define VOLUMES_RELEASE_DISK     0x00460006u
+#define VOLUMES_SYNC             0x00460007u
+#define VOLUMES_STOP             0x00460008u
+#define VOLUMES_SET_DISKS        0x00460009u
 
 /* Constants (the .idl's `const` lines). */
 /* A mount's service (supervision's `state`). */
@@ -1463,7 +1463,7 @@ static inline status_t volumes_serve(handle_t ch, const struct volumes_ops *ops,
 }
 
 
-/* ==== protocol `volesp` (id 39) =============================================
+/* ==== protocol `volesp` (id 71) =============================================
  *
  * volesp: the boot disk's ESP made writable, for init's stick write
  * (`update -w`, user/services/init/espwrite.c) alone: init made this
@@ -1475,9 +1475,9 @@ static inline status_t volumes_serve(handle_t ch, const struct volumes_ops *ops,
  * Reconnect: ERR_PEER_CLOSED: volumes ended; the ESP is read-only again
  * with the next volumes, and init has a new ESP channel for it. */
 
-#define VOLESP_PROTOCOL_ID 39u
-#define VOLESP_OPEN_WRITABLE    0x00270001u
-#define VOLESP_CLOSE_WRITABLE   0x00270002u
+#define VOLESP_PROTOCOL_ID 71u
+#define VOLESP_OPEN_WRITABLE    0x00470001u
+#define VOLESP_CLOSE_WRITABLE   0x00470002u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct volesp_open_writable_req {
@@ -1892,7 +1892,7 @@ static inline status_t volesp_serve(handle_t ch, const struct volesp_ops *ops, v
 }
 
 
-/* ==== protocol `disks` (id 40) ==============================================
+/* ==== protocol `disks` (id 72) ==============================================
  *
  * disks: the disks devmgr's drivers serve, told to volumes (devmgr's
  * user/services/devmgr/disks.c sends, volumes serves). init makes a new
@@ -1904,9 +1904,9 @@ static inline status_t volesp_serve(handle_t ch, const struct volesp_ops *ops, v
  * waits for the next: devmgr announces every disk again on a new channel;
  * volumes forgets every disk the old one announced, without notices. */
 
-#define DISKS_PROTOCOL_ID 40u
-#define DISKS_ATTACH           0x00280001u
-#define DISKS_GONE             0x00280002u
+#define DISKS_PROTOCOL_ID 72u
+#define DISKS_ATTACH           0x00480001u
+#define DISKS_GONE             0x00480002u
 
 /* Constants (the .idl's `const` lines). */
 /* Buses (attach's `bus`). */
@@ -2200,7 +2200,7 @@ static inline status_t disks_serve(handle_t ch, const struct disks_ops *ops, voi
 }
 
 
-/* ==== protocol `mounts` (id 41) =============================================
+/* ==== protocol `mounts` (id 73) =============================================
  *
  * mounts: what volumes sends on a watch channel (volumes.watch). The
  * events of one change all carry its generation, and `settled` ends it;
@@ -2218,10 +2218,10 @@ static inline status_t disks_serve(handle_t ch, const struct disks_ops *ops, voi
  * Reconnect: ERR_PEER_CLOSED: volumes ended (every mount went with it), or
  * this watcher fell MOUNTS_UNREAD_MAX events behind; watch again. */
 
-#define MOUNTS_PROTOCOL_ID 41u
-#define MOUNTS_MOUNTED          0x00290001u
-#define MOUNTS_UNMOUNTED        0x00290002u
-#define MOUNTS_SETTLED          0x00290003u
+#define MOUNTS_PROTOCOL_ID 73u
+#define MOUNTS_MOUNTED          0x00490001u
+#define MOUNTS_UNMOUNTED        0x00490002u
+#define MOUNTS_SETTLED          0x00490003u
 
 /* Constants (the .idl's `const` lines). */
 /* `mounted`'s flags. */

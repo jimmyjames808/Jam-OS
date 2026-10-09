@@ -22,24 +22,17 @@
 # volume, the jam and a track row; quits, and the music must still be
 # playing (`music status`). Screenshots: <outdir>/jamjar-*.png.
 # The boot is the default one, the compositor's (jamjar a window: the
-# script finds where and clicks in it); JAMJAR_NOCOMP=1 boots `nocomp`
-# instead (jamjar borrows the console's screen; the same script, its runs
-# named jamjar-nocomp, jamjar-hd-nocomp).
+# script finds where and clicks in it).
 # QEMU_SMP passes through. Usage: tools/jamjar-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1
 mkdir -p "$out"
 name=jamjar
 script=tools/shell-tests/jamjar.txt
-words=shell
 if [ "${JAMJAR_HD:-}" = 1 ]; then
     name=jamjar-hd
     script=tools/shell-tests/jamjar-hd.txt
     QEMU_EXTRA_VGA="-vga none -device VGA,xres=2560,yres=1440,vgamem_mb=64"
-fi
-if [ "${JAMJAR_NOCOMP:-}" = 1 ]; then
-    name=$name-nocomp
-    words="shell nocomp"
 fi
 wav="$out/$name.wav"
 stick="$out/$name-stick.img"
@@ -228,7 +221,7 @@ ok=1
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_IMAGE="$stick" \
     QEMU_EXTRA="${QEMU_EXTRA:-} ${QEMU_EXTRA_VGA:-} $devs" \
     QEMU_USB="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3" \
-    QEMU_INPUT=$script tools/qemu-test.sh "$out" "$name" $words > "$out/$name.out" 2>&1 ||
+    QEMU_INPUT=$script tools/qemu-test.sh "$out" "$name" shell > "$out/$name.out" 2>&1 ||
     { echo "jamjar: the script failed"; grep "serial-feed: .*no '" "$out/$name.out" || true; ok=0; }
 rm -f "$stick"
 log="$out/$name.log"
