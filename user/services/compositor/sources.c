@@ -100,25 +100,6 @@ void sources_leds(uint8_t leds)
             (void)input_leds(sources[i].ch, leds);   /* a full queue: its keyboard isn't reading */
 }
 
-status_t sources_add(handle_t mine)
-{
-    unsigned i = 0;
-    while (i < SOURCES_MAX && sources[i].ch != HANDLE_INVALID)
-        i++;
-    if (i == SOURCES_MAX) {
-        jam_handle_close(mine);
-        return ERR_NO_RESOURCES;
-    }
-    status_t st = jam_port_bind(comp.port, mine, SEAT_KEY_SRC + i, SIG_READABLE | SIG_PEER_CLOSED,
-                                PORT_BIND_PERSISTENT);
-    if (st != OK) {
-        jam_handle_close(mine);
-        return st;
-    }
-    sources[i] = (struct source){ .ch = mine, .slot = i, .ready = true };
-    nsources++;
-    return OK;
-}
 
 static void source_gone(struct source *s, status_t why)
 {
@@ -152,6 +133,29 @@ static void serve_source(struct source *s)
         }
     }
     s->more = true;
+}
+
+status_t sources_add(handle_t mine)
+{
+    unsigned i = 0;
+    while (i < SOURCES_MAX && sources[i].ch != HANDLE_INVALID)
+        i++;
+    if (i == SOURCES_MAX) {
+        jam_handle_close(mine);
+        return ERR_NO_RESOURCES;
+    }
+    status_t st = jam_port_bind(comp.port, mine, SEAT_KEY_SRC + i, SIG_READABLE | SIG_PEER_CLOSED,
+                                PORT_BIND_PERSISTENT);
+    if (st != OK) {
+        jam_handle_close(mine);
+        return st;
+    }
+    sources[i] = (struct source){ .ch = mine, .slot = i, .ready = true };
+    nsources++;
+    /* What it sent already goes before anything later on the channel that
+     * added it (a test's stats call, init's next request). */
+    serve_source(&sources[i]);
+    return OK;
 }
 
 void sources_serve(void)

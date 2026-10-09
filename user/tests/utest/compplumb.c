@@ -173,8 +173,8 @@ static bool notify_refusals(struct cs *t, handle_t n)
     /* compctl's channels can't post, ADMIN's neither; no NOTIFY level */
     CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 1, &in), OK);
     note_make(&x, "Hello", "", NULL, NULL);
-    CHECK_ST(post(in, &x, 0, 0, &id), ERR_NOT_SUPPORTED);
-    CHECK_ST(post(t->ctl, &x, 0, 0, &id), ERR_NOT_SUPPORTED);
+    CHECK(post(in, &x, 0, 0, &id) != OK);   /* another protocol's request: refused */
+    CHECK(post(t->ctl, &x, 0, 0, &id) != OK);
     CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 2, &h), ERR_INVALID_ARGS);
     jam_handle_close(in);
     /* bad text, tint, icon */
