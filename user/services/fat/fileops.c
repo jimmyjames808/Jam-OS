@@ -68,6 +68,10 @@ static struct {
     bool     armed;   /* ch is bound to the port (ONCE) ... */
     uint32_t gen;     /* ... with this generation in its key */
 } fh[FAT_MAX_FILES];
+/* Bit i: slot i's client has left too many answers unread (unread_full):
+ * it is not armed until it has read them (files_unheld). */
+static uint32_t held;
+_Static_assert(FAT_MAX_FILES <= 32, "held is a word");
 
 static unsigned slot_of(const struct fat_file *f)
 {
@@ -329,6 +333,7 @@ const struct file_ops fat_file_ops = {
 /* Slot i's channel goes, and its binding. */
 static void close_channel(unsigned i)
 {
+    held &= ~(1u << i);
     if (fh[i].ch != HANDLE_INVALID) {
         if (fh[i].armed)
             (void)jam_port_unbind(vol.port, fh[i].ch, FAT_KEY_FILE(i, fh[i].gen));
@@ -560,12 +565,33 @@ void files_event(uint64_t key)
     if (!f->used || f->gen != FAT_KEY_GEN(key))
         return;   /* a packet of a file closed since */
     fh[slot].armed = false;
+    if (unread_full(fh[slot].ch)) {
+        held |= 1u << slot;   /* it reads its answers first: files_unheld looks again */
+        return;
+    }
     const struct fat_chan c = chan_of(f);
     status_t st = serve_one(&c);   /* one per turn: main.c's loop */
     if (st == OK || st == ERR_SHOULD_WAIT)
         st = arm(f);   /* fires at once if more is queued */
     if (st != OK)
         close_op(f);   /* the client closed it (ERR_PEER_CLOSED), or we can't go on */
+}
+
+bool files_held(void)
+{
+    return held != 0;
+}
+
+void files_unheld(void)
+{
+    for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
+        struct fat_file *f = &kept->files[i];
+        if (!(held & (1u << i)) || (f->used && unread_full(fh[i].ch)))
+            continue;
+        held &= ~(1u << i);
+        if (f->used && arm(f) != OK)   /* fires at once: its requests are queued */
+            close_op(f);
+    }
 }
 
 /* ---- a successor's files (adopt.c) ------------------------------------------------- */

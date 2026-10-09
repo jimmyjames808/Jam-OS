@@ -1142,6 +1142,11 @@ static const struct {
     { "volumes_release_disk", t_volumes_release_disk },
     { "volumes_new_channel", t_volumes_new_channel },
     { "volumes_loop_answers", t_volumes_loop_answers },
+    { "fat_unread_flood", t_fat_unread_flood },
+    { "fat_rename_into_alias", t_fat_rename_into_alias },
+    { "idl_fuzz", t_idl_fuzz },
+    { "fat_hostile", t_fat_hostile },
+    { "volumes_hostile", t_volumes_hostile },
 };
 
 int main(int argc, char **argv)
