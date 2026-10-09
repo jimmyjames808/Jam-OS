@@ -17,3 +17,13 @@ protocol idltest 33
 3  release  (u32 key)              -> (u32 woken)
 # A VMO of `size` bytes, answered when `release` names `key`.
 4  make_vmo (u32 key, u32 size)    -> (handle vmo, u32 size_back) later
+
+# idltest_two: a second protocol in the file (a protocol for each kind of
+# channel): its methods' ordinals are its own, and a server of either
+# protocol refuses the other's messages. utest only (idlproto.c).
+#
+# Reconnect: as idltest's.
+
+protocol idltest_two 34
+
+1  echo     (u32 value)            -> (u32 value)

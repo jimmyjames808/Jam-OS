@@ -10,13 +10,16 @@
  * Reconnect: a test server keeps nothing; a client whose call fails with
  * ERR_PEER_CLOSED has lost the server for good.
  *
- * Protocol `idltest` (id 33). Client: idltest_<method>(ch, args..., &results...)
- * (and idltest_<method>_until with a deadline, _within with a timeout), or
- * idltest_<method>_send and idltest_<method>_result without waiting. Server:
- * fill a struct idltest_ops and run idltest_serve(ch, &ops, ctx), or
- * idltest_serve_one / idltest_dispatch_on for a loop of your own, or
- * idltest_take_slot / idltest_run_slot for requests read into slots that outlive
- * the server; idltest_reply_<method> answers a request later. */
+ * Protocols `idltest` (id 33) and `idltest_two` (id 34): one for each
+ * kind of channel, so a message of one protocol sent on a channel of
+ * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
+ * Client: <proto>_<method>(ch, args..., &results...)
+ * (and <proto>_<method>_until with a deadline, _within with a timeout), or
+ * <proto>_<method>_send and <proto>_<method>_result without waiting. Server:
+ * fill a struct <proto>_ops and run <proto>_serve(ch, &ops, ctx), or
+ * <proto>_serve_one / <proto>_dispatch_on for a loop of your own, or
+ * <proto>_take_slot / <proto>_run_slot for requests read into slots that outlive
+ * the server; <proto>_reply_<method> answers a request later. */
 #pragma once
 
 #include <idl/common.h>
@@ -658,5 +661,269 @@ static inline status_t idltest_serve(handle_t ch, const struct idltest_ops *ops,
         if (idl_st != OK)
             return idl_st;
         idl_s.rn = idltest_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
+    }
+}
+
+
+/* ==== protocol `idltest_two` (id 34) ========================================
+ *
+ * idltest_two: a second protocol in the file (a protocol for each kind of
+ * channel): its methods' ordinals are its own, and a server of either
+ * protocol refuses the other's messages. utest only (idlproto.c).
+ *
+ * Reconnect: as idltest's. */
+
+#define IDLTEST_TWO_PROTOCOL_ID 34u
+#define IDLTEST_TWO_ECHO             0x00220001u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct idltest_two_echo_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t value;
+} __attribute__((packed));
+struct idltest_two_echo_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t value;
+} __attribute__((packed));
+
+#define IDLTEST_TWO_REQ_MAX 12u   /* bytes: the biggest request */
+#define IDLTEST_TWO_REP_MAX 12u   /* bytes: the biggest reply */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* idltest_two_echo_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t idltest_two_echo_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t value, uint32_t *out_value)
+{
+    struct idltest_two_echo_req idl_q;
+    struct idltest_two_echo_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = IDLTEST_TWO_ECHO;
+    idl_q.value = value;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_value)
+        *out_value = idl_r.value;
+    return idl_st;
+}
+static inline status_t idltest_two_echo_until(handle_t ch, uint64_t deadline_ns, uint32_t value, uint32_t *out_value)
+{
+    return idltest_two_echo_call(ch, false, deadline_ns, value, out_value);
+}
+static inline status_t idltest_two_echo_within(handle_t ch, uint64_t timeout_ns, uint32_t value, uint32_t *out_value)
+{
+    return idltest_two_echo_call(ch, true, timeout_ns, value, out_value);
+}
+static inline status_t idltest_two_echo(handle_t ch, uint32_t value, uint32_t *out_value)
+{
+    return idltest_two_echo_call(ch, false, DEADLINE_NEVER, value, out_value);
+}
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* idltest_two_echo without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then idltest_two_echo_result. */
+static inline status_t idltest_two_echo_send(handle_t ch, uint32_t idl_txid, uint32_t value)
+{
+    struct idltest_two_echo_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = IDLTEST_TWO_ECHO;
+    idl_q.value = value;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to idltest_two_echo_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t idltest_two_echo_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_value)
+{
+    const struct idltest_two_echo_rep *idl_r = (const struct idltest_two_echo_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_value)
+        *out_value = idl_r->value;
+    return OK;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with idltest_two_reply_<method> (now, or later from anywhere). */
+struct idltest_two_ops {
+    status_t (*echo)(void *ctx, uint32_t value, uint32_t *out_value);
+};
+
+/* Answer the idltest_two.echo request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t idltest_two_reply_echo(struct idl_txn idl_txn, status_t idl_st, uint32_t value)
+{
+    struct idltest_two_echo_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.value = value;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (IDLTEST_TWO_REP_MAX bytes) and the handles it carries
+ * into rhs (IDL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it can't. */
+static inline uint32_t idltest_two_dispatch_on(handle_t ch, const struct idltest_two_ops *ops, void *ctx,
+                                               const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                               uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    (void)ch;
+    if (n < sizeof(uint32_t))
+        return 0;
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    if (n < sizeof(struct idl_req_hdr))
+        return sizeof(*idl_h);
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    case IDLTEST_TWO_ECHO: {
+        const struct idltest_two_echo_req *idl_q = (const struct idltest_two_echo_req *)req;
+        struct idltest_two_echo_rep *idl_r = (struct idltest_two_echo_rep *)rep;
+        uint32_t out_value = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->echo) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->echo(ctx, idl_q->value, &out_value);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->value = out_value;
+        return sizeof(*idl_r);
+    }
+    }
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* idltest_two_dispatch_on without the channel (the protocol has no `later` method). */
+static inline uint32_t idltest_two_dispatch(const struct idltest_two_ops *ops, void *ctx, const void *req, uint32_t n,
+                                            void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return idltest_two_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t idltest_two_take_slot(handle_t ch, const struct idl_slot *slot,
+                                             struct idl_reply *rep)
+{
+    if (slot->qcap < IDLTEST_TWO_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by idltest_two_take_slot, or found there by a
+ * successor), which came on ch: as idltest_two_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (IDL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it can't. */
+static inline uint32_t idltest_two_run_slot(handle_t ch, const struct idl_slot *slot,
+                                            const struct idltest_two_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return idltest_two_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. */
+static inline bool idltest_two_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
+}
+
+/* Take one message off ch and answer it. OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t idltest_two_serve_one(handle_t ch, const struct idltest_two_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[IDLTEST_TWO_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[IDLTEST_TWO_REP_MAX];
+    handle_t idl_hs[IDL_READ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, idl_n, idl_nh);
+    if (idl_st != OK)
+        return idl_st;
+    if (idl_nh) {
+        idl_close_all(idl_hs, idl_nh);
+        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = idltest_two_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn || drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn) != OK)
+        idl_close_all(idl_rhs, idl_rhn);   /* not sent: they're still ours */
+    return OK;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request
+ * (idl_serve_next). */
+static inline status_t idltest_two_serve(handle_t ch, const struct idltest_two_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[IDLTEST_TWO_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[IDLTEST_TWO_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+    };
+    for (;;) {
+        status_t idl_st = idl_serve_next(&idl_s);
+        if (idl_st == ERR_PEER_CLOSED)
+            return OK;
+        if (idl_st != OK)
+            return idl_st;
+        idl_s.rn = idltest_two_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

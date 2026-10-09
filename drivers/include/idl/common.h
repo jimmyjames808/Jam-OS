@@ -38,6 +38,7 @@
 #define IDL_ID_SERVE         0x001fu   /* abi/idl/serve.idl */
 #define IDL_ID_COMPCTL       0x0020u   /* abi/idl/compctl.idl */
 #define IDL_ID_IDLTEST       0x0021u   /* abi/idl/idltest.idl */
+#define IDL_ID_IDLTEST_TWO   0x0022u   /* abi/idl/idltest.idl */
 #define IDL_ID_UPDATE_ANSWER 0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY       0x4d4fu   /* kernel/include/jam/startup.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER  0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */

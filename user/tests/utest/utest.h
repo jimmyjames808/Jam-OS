@@ -143,6 +143,8 @@ bool t_idl_within_times_out(void);
 bool t_idl_slot_take_run(void);
 bool t_idl_slot_idempotent(void);
 bool t_idl_slot_reply_after(void);
+/* idlproto.c: several protocols in one .idl file (idltest, idltest_two). */
+bool t_idl_wrong_protocol(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;

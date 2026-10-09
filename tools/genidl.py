@@ -43,6 +43,15 @@ it is ERR_PEER_CLOSED and the paragraph says what to open again and what
 is lost. A file without one is refused. The comment is copied to the top
 of the generated header (a comment may not hold `*/`).
 
+A file may hold several protocols, one for each kind of channel of one
+service (an opener's and a stream's): each `protocol` line starts one,
+and the methods after it are its own. The first is named after the file
+(audio.idl: `audio`, then `audio_stream`); each later one states its own
+restart rule in the comment above its line. One header holds them all
+(<idl/audio.h>). Each has its own id and ordinals, so a server of one
+answers another's request ERR_NOT_SUPPORTED. No two protocols anywhere
+may define the same C name (`a` with a method `b_c`, `a_b` with `c`).
+
 A client calls a method four ways:
     <proto>_<method>(ch, args..., &results...)    waits for ever
     <proto>_<method>_until(ch, deadline_ns, ...)  until a deadline
@@ -263,12 +272,59 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
     return fields
 
 
+def tidy(lines):
+    """A comment's lines without blank ones at either end."""
+    while lines and not lines[0]:
+        lines = lines[1:]
+    while lines and not lines[-1]:
+        lines = lines[:-1]
+    return lines
+
+
+def parse_method(src, lineno, line, p, doc):
+    """A method line of protocol p."""
+    m = re.match(r"(\d+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(.*?\))\s*->\s*(\(.*?\))"
+                 r"((?:\s+[a-z]+)*)$", line)
+    if not m:
+        fail(src, lineno, "want '<ordinal> <method> (<args>) -> (<results>) [later] "
+                          "[idempotent]'")
+    ordinal, mname = int(m.group(1)), m.group(2)
+    words = m.group(5).split()
+    for w in words:
+        if w not in KEYWORDS:
+            fail(src, lineno, f"unknown keyword '{w}' (want {' or '.join(KEYWORDS)})")
+        if words.count(w) > 1:
+            fail(src, lineno, f"'{w}' twice")
+    if mname in C_KEYWORDS:
+        fail(src, lineno, f"bad method name '{mname}'")
+    if not 1 <= ordinal <= 65535:
+        fail(src, lineno, f"ordinal {ordinal} not in 1..65535")
+    if any(x.ordinal == ordinal for x in p.methods):
+        fail(src, lineno, f"ordinal {ordinal} used twice")
+    if any(x.name == mname for x in p.methods):
+        fail(src, lineno, f"method '{mname}' defined twice")
+    if mname in RESERVED_METHODS or mname.startswith("reply_") or \
+            any(mname.endswith(x) for x in ("_until", "_within", "_call", "_send",
+                                            "_result")):
+        fail(src, lineno, f"method name '{mname}' is reserved "
+                          f"({', '.join(RESERVED_METHODS)}, reply_*, *_until, *_within, "
+                          "*_call, *_send, *_result)")
+    args = parse_fields(src, lineno, m.group(3), f"{mname} arguments")
+    results = parse_fields(src, lineno, m.group(4), f"{mname} results", allow_handles=True)
+    if sum(1 for f in results if f.handle) > REP_HANDLES_MAX:
+        fail(src, lineno, f"{mname}: more than {REP_HANDLES_MAX} handle results")
+    for size, what in ((wire_size(args), "request"), (wire_size(results), "reply")):
+        if size > MSG_MAX:
+            fail(src, lineno, f"{mname}: {what} is {size} bytes (max {MSG_MAX})")
+    p.methods.append(Method(ordinal, mname, args, results, doc, "later" in words,
+                            "idempotent" in words))
+
+
 def parse(src):
-    name, pid, methods, doc = None, None, [], []
-    plineno = 0
-    head = []   # the file's comment, above the protocol line: its paragraphs
-    ordinals, names = set(), set()
-    restart_rule = False
+    """The protocols of one .idl file, in the order it defines them."""
+    protos, p = [], None
+    doc = []       # comment lines right above a statement (none: a blank line between)
+    above = []     # every comment line since the last statement, paragraphs apart
     for lineno, raw in enumerate(open(src), 1):
         line = raw.strip()
         if line.startswith("#"):
@@ -276,81 +332,51 @@ def parse(src):
             if "*/" in text:
                 fail(src, lineno, "a comment can't hold '*/' (it is copied into C comments)")
             doc.append(text)
-            if name is None:
-                head.append(text)
-                if RESTART_RULE.match(text):
-                    restart_rule = True
+            above.append(text)
             continue
         line = line.split("#", 1)[0].strip()
         if not line:
             doc = []
-            if name is None and head and head[-1]:
-                head.append("")
+            if above and above[-1]:
+                above.append("")
             continue
         if line.startswith("protocol"):
             toks = line.split()
-            if name is not None:
-                fail(src, lineno, "a second 'protocol' line")
             if len(toks) != 3 or not IDENT.match(toks[1]) or toks[1] in C_KEYWORDS or \
                     not toks[2].isdigit():
                 fail(src, lineno, "want 'protocol <name> <id>'")
-            name, pid, plineno = toks[1], int(toks[2]), lineno
+            name, pid = toks[1], int(toks[2])
             if not 1 <= pid <= 65535:
                 fail(src, lineno, f"protocol id {pid} not in 1..65535")
-            if os.path.basename(src) != name + ".idl":
-                fail(src, lineno, f"protocol '{name}' must live in {name}.idl")
-            if not restart_rule:
-                fail(src, lineno, "the comment above 'protocol' states no restart rule "
+            base = os.path.basename(src)
+            if not protos and base != name + ".idl":
+                fail(src, lineno, f"the first protocol of {base} must be '{base[:-4]}' "
+                                  f"('{name}' lives in {name}.idl, or after its first)")
+            for q in protos:
+                if q.name == name or q.pid == pid:
+                    fail(src, lineno, f"protocol '{name}' {pid}: '{q.name}' {q.pid} is in "
+                                      "this file already")
+            if not any(RESTART_RULE.match(l) for l in above):
+                where = "the file's comment" if not protos else "the comment above it"
+                fail(src, lineno, f"protocol '{name}': {where} states no restart rule "
                                   "(a paragraph beginning 'Restart:' or 'Reconnect:')")
-            doc = []
+            if p is not None and not p.methods:
+                fail(src, lineno, f"protocol '{p.name}' has no methods")
+            p = Protocol(src, lineno, name, pid, [], tidy(above))
+            protos.append(p)
+            doc, above = [], []
             continue
-        if name is None:
+        if p is None:
             fail(src, lineno, "the first statement must be 'protocol <name> <id>'")
-        m = re.match(r"(\d+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(.*?\))\s*->\s*(\(.*?\))"
-                     r"((?:\s+[a-z]+)*)$", line)
-        if not m:
-            fail(src, lineno, "want '<ordinal> <method> (<args>) -> (<results>) [later] "
-                              "[idempotent]'")
-        ordinal, mname = int(m.group(1)), m.group(2)
-        words = m.group(5).split()
-        for w in words:
-            if w not in KEYWORDS:
-                fail(src, lineno, f"unknown keyword '{w}' (want {' or '.join(KEYWORDS)})")
-            if words.count(w) > 1:
-                fail(src, lineno, f"'{w}' twice")
-        if mname in C_KEYWORDS:
-            fail(src, lineno, f"bad method name '{mname}'")
-        if not 1 <= ordinal <= 65535:
-            fail(src, lineno, f"ordinal {ordinal} not in 1..65535")
-        if ordinal in ordinals:
-            fail(src, lineno, f"ordinal {ordinal} used twice")
-        if mname in names:
-            fail(src, lineno, f"method '{mname}' defined twice")
-        if mname in RESERVED_METHODS or mname.startswith("reply_") or \
-                any(mname.endswith(x) for x in ("_until", "_within", "_call", "_send",
-                                                "_result")):
-            fail(src, lineno, f"method name '{mname}' is reserved "
-                              f"({', '.join(RESERVED_METHODS)}, reply_*, *_until, *_within, "
-                              "*_call, *_send, *_result)")
-        ordinals.add(ordinal)
-        names.add(mname)
-        args = parse_fields(src, lineno, m.group(3), f"{mname} arguments")
-        results = parse_fields(src, lineno, m.group(4), f"{mname} results", allow_handles=True)
-        if sum(1 for f in results if f.handle) > REP_HANDLES_MAX:
-            fail(src, lineno, f"{mname}: more than {REP_HANDLES_MAX} handle results")
-        for size, what in ((wire_size(args), "request"), (wire_size(results), "reply")):
-            if size > MSG_MAX:
-                fail(src, lineno, f"{mname}: {what} is {size} bytes (max {MSG_MAX})")
-        methods.append(Method(ordinal, mname, args, results, doc, "later" in words,
-                              "idempotent" in words))
-        doc = []
-    if name is None:
+        parse_method(src, lineno, line, p, doc)
+        doc, above = [], []
+    if not protos:
         sys.exit(f"{src}: no 'protocol' line")
-    if not methods:
-        sys.exit(f"{src}: no methods")
-    while head and not head[-1]:
-        head.pop()
-    return Protocol(src, plineno, name, pid, sorted(methods, key=lambda m: m.ordinal), head)
+    if not p.methods:
+        sys.exit(f"{src}: protocol '{p.name}' has no methods")
+    for q in protos:
+        q.methods.sort(key=lambda m: m.ordinal)
+    return protos
 
 
 class IdEntry:
@@ -1148,20 +1174,49 @@ def gen_dispatch_case(p, m):
     return out
 
 
+def intro(P):
+    """What a header's top comment says of protocol P's functions."""
+    return [f" * Client: {P}_<method>(ch, args..., &results...)",
+            f" * (and {P}_<method>_until with a deadline, _within with a timeout), or",
+            f" * {P}_<method>_send and {P}_<method>_result without waiting. Server:",
+            f" * fill a struct {P}_ops and run {P}_serve(ch, &ops, ctx), or",
+            f" * {P}_serve_one / {P}_dispatch_on for a loop of your own, or",
+            f" * {P}_take_slot / {P}_run_slot for requests read into slots that outlive",
+            f" * the server; {P}_reply_<method> answers a request later."]
+
+
+def gen_file(protos):
+    """The header of one .idl file: its protocols, in its order."""
+    first = protos[0]
+    out = [f"/* {BANNER.format(src=os.path.relpath(first.src))}", " *"]
+    out += ([f" * {l}" if l else " *" for l in first.doc] + [" *"]) if first.doc else []
+    if len(protos) == 1:
+        lines = intro(first.name)
+        lines[0] = f" * Protocol `{first.name}` (id {first.pid}). " + lines[0][3:]
+    else:
+        names = ", ".join(f"`{p.name}` (id {p.pid})" for p in protos[:-1])
+        last = protos[-1]
+        lines = [f" * Protocols {names} and `{last.name}` (id {last.pid}): one for each",
+                 " * kind of channel, so a message of one protocol sent on a channel of",
+                 " * another is refused (ERR_NOT_SUPPORTED). For each <proto>:"]
+        lines += intro("<proto>")
+    lines[-1] += " */"
+    out += lines + ["#pragma once", "", "#include <idl/common.h>", ""]
+    for i, p in enumerate(protos):
+        if i:
+            rule = f"/* ==== protocol `{p.name}` (id {p.pid}) "
+            out += ["", rule + "=" * max(4, 79 - len(rule)), " *"]
+            out += [f" * {l}" if l else " *" for l in p.doc]
+            out[-1] += " */"
+            out.append("")
+        out += gen_protocol(p)
+    return "\n".join(out)
+
+
 def gen_protocol(p):
+    """Protocol p's part of its header: from its id to its server loop."""
     P, U = p.name, p.name.upper()
-    src = os.path.relpath(p.src)
-    out = [f"/* {BANNER.format(src=src)}", " *"]
-    out += [f" * {l}" if l else " *" for l in p.doc] + [" *"] if p.doc else []
-    out += [f" * Protocol `{P}` (id {p.pid}). Client: {P}_<method>(ch, args..., &results...)",
-           f" * (and {P}_<method>_until with a deadline, _within with a timeout), or",
-           f" * {P}_<method>_send and {P}_<method>_result without waiting. Server:",
-           f" * fill a struct {P}_ops and run {P}_serve(ch, &ops, ctx), or",
-           f" * {P}_serve_one / {P}_dispatch_on for a loop of your own, or",
-           f" * {P}_take_slot / {P}_run_slot for requests read into slots that outlive",
-           f" * the server; {P}_reply_<method> answers a request later. */",
-           "#pragma once", "", "#include <idl/common.h>", "",
-           f"#define {U}_PROTOCOL_ID {p.pid}u"]
+    out = [f"#define {U}_PROTOCOL_ID {p.pid}u"]
     for m in p.methods:
         out.append(f"#define {U}_{m.name.upper():<16} 0x{p.wire(m):08x}u")
     out.append("")
@@ -1361,12 +1416,45 @@ def gen_protocol(p):
         "}",
         "",
     ]
-    return "\n".join(out)
+    return out
+
+
+def c_names(p):
+    """Every name protocol p's header defines at file scope."""
+    P, U = p.name, p.name.upper()
+    names = [f"{P}_{x}" for x in ("ops", "dispatch_on", "dispatch", "take_slot", "run_slot",
+                                  "idempotent", "serve_one", "serve")]
+    names += [f"{U}_{x}" for x in ("PROTOCOL_ID", "REQ_MAX", "REP_MAX")]
+    for m in p.methods:
+        names += [f"{P}_{m.name}{x}" for x in ("", "_until", "_within", "_call", "_send",
+                                               "_result", "_req", "_rep")]
+        names += [f"{P}_reply_{m.name}", f"{U}_{m.name.upper()}"]
+    return names
+
+
+def check_c_names(protos):
+    """No two protocols define the same C name (protocol `a` with a method
+    `b_c` and protocol `a_b` with a method `c` would)."""
+    seen = {}
+    for p in protos:
+        for n in c_names(p):
+            if n in seen:
+                q = seen[n]
+                fail(p.src, p.lineno, f"protocol '{p.name}' defines {n} twice" if q is p else
+                     f"protocol '{p.name}' and '{q.name}' ({q.src}) both define {n}")
+            seen[n] = p
 
 
 def outputs_for(idl_dir, out_dir, ids_file):
     """{path: text} of every generated file, from the .idl files in idl_dir."""
-    protos = [parse(f) for f in sorted(glob.glob(os.path.join(idl_dir, "*.idl")))]
+    files = [parse(f) for f in sorted(glob.glob(os.path.join(idl_dir, "*.idl")))]
+    protos = [p for f in files for p in f]
+    names = {}
+    for p in protos:
+        if p.name in names:
+            fail(p.src, p.lineno, f"protocol '{p.name}' is also defined in {names[p.name]}")
+        names[p.name] = p.src
+    check_c_names(protos)
     ids = {}
     for p in protos:
         if p.pid in ids:
@@ -1375,10 +1463,10 @@ def outputs_for(idl_dir, out_dir, ids_file):
     entries = parse_ids(ids_file)
     check_ids(ids_file, entries, protos)
     outputs = {os.path.join(out_dir, "common.h"): gen_common(entries)}
-    for p in protos:
-        if p.name == "common":
-            sys.exit(f"{p.src}: 'common' is reserved")
-        outputs[os.path.join(out_dir, p.name + ".h")] = gen_protocol(p)
+    for f in files:
+        if f[0].name == "common":
+            sys.exit(f"{f[0].src}: 'common' is reserved")
+        outputs[os.path.join(out_dir, f[0].name + ".h")] = gen_file(f)
     return outputs
 
 
@@ -1450,6 +1538,27 @@ SELFTESTS = [
     ("a comment ending C's", t_ok("# a */ b\n1 a () -> ()\n"), None, "can't hold '*/'"),
     ("no restart rule", {"t.idl": "# t.\n\nprotocol t 40\n1 a () -> ()\n"}, None,
      "no restart rule"),
+    ("two protocols in a file", {"t.idl": f"{RULE}protocol t 40\n1 a () -> ()\n\n"
+                                          f"{RULE}protocol t_b 41\n1 a () -> ()\n"}, None, None),
+    ("the second without a restart rule", {"t.idl": f"{RULE}protocol t 40\n1 a () -> ()\n"
+                                                    "# b.\nprotocol t_b 41\n1 a () -> ()\n"},
+     None, "the comment above it states no restart rule"),
+    ("a file not named after its first", {"t.idl": f"{RULE}protocol u 40\n1 a () -> ()\n"},
+     None, "must be 't'"),
+    ("a protocol twice in a file", {"t.idl": f"{RULE}protocol t 40\n1 a () -> ()\n"
+                                             f"{RULE}protocol t 41\n1 a () -> ()\n"},
+     None, "in this file already"),
+    ("a protocol in two files", {"t.idl": f"{RULE}protocol t 40\n1 a () -> ()\n"
+                                          f"{RULE}protocol u 41\n1 a () -> ()\n",
+                                 "u.idl": f"{RULE}protocol u 42\n1 a () -> ()\n"},
+     None, "also defined in"),
+    ("a protocol without methods", {"t.idl": f"{RULE}protocol t 40\n"
+                                             f"{RULE}protocol t_b 41\n1 a () -> ()\n"},
+     None, "has no methods"),
+    ("two protocols' C names", {"t.idl": f"{RULE}protocol t 40\n1 b_c () -> ()\n"
+                                         f"{RULE}protocol t_b 41\n1 c () -> ()\n"},
+     None, "both define t_b_c"),
+    ("a method's macro twice", t_ok("1 req_max () -> ()\n"), None, "defines T_REQ_MAX twice"),
 ]
 
 
