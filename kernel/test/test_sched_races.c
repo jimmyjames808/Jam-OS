@@ -214,7 +214,14 @@ static void ab_sched_hook(void *arg)
     uint32_t me = this_cpu()->index;   /* rq lock held: IRQs off */
     if (ab_phase == 1 && me == 1) {
         ab_phase = 2;     /* on cpu 1, blocked, on_cpu still set */
-        udelay(3000);
+        /* Hold the window open until the stale waker is inside it (phase 3, set by its hook
+         * in thread_wake: it sees on_cpu set only in here). Not a fixed delay: a vCPU the host
+         * keeps off its core for more than 3 ms (a loaded PC under KVM: 9 of 12 QEMUs at once)
+         * let the window close before the waker came, and the test then waited for phase 3
+         * for ever. */
+        uint64_t end = rdtsc() + tsc_hz;
+        while (ab_phase == 2 && rdtsc() < end)
+            cpu_relax();
     } else if (ab_phase == 4 && me == 3) {
         ab_phase = 5;     /* on cpu 3 inside schedule(), already read T_BLOCKED */
         udelay(5000);
@@ -270,7 +277,17 @@ KTEST(repro_wake_stale_cpu)
     ab_phase = 1;
     cpumask_one(&m, 1);
     ab_target = thread_create_on("repro-aba", ab_victim, NULL, RACE_PRIO, &m);
-    KT_ASSERT(wait_for(&ab_phase, 3, 2000));   /* stale waker read t->cpu = 1 */
+    if (!wait_for(&ab_phase, 3, 2000)) {   /* stale waker read t->cpu = 1 */
+        struct thread *v = ab_target, *w = ab_stale_waker;
+        kprintf("repro: phase %d stuck: victim state %d on_cpu %d cpu %u; waker state %d on_cpu %d "
+                "cpu %u\n", ab_phase, thread_state(v), __atomic_load_n(&v->on_cpu, __ATOMIC_RELAXED),
+                thread_cpu(v), thread_state(w), __atomic_load_n(&w->on_cpu, __ATOMIC_RELAXED),
+                thread_cpu(w));
+        for (uint32_t i = 0; i < cpu_count; i++)
+            kprintf("repro:   cpu %u runs \"%s\" (idle now %d)\n", i, cpus[i]->current->name,
+                    cpus[i]->idle_now);
+        KT_ASSERT(ab_phase == 3);
+    }
     while (__atomic_load_n(&ab_target->on_cpu, __ATOMIC_RELAXED))
         cpu_relax();
     cpumask_one(&m, 3);
