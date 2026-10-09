@@ -76,6 +76,9 @@ wait 30 init: terminal 2 opens
 wait 30 Jam OS shell
 wait 10 {prompt}
 sleep 1
+# (its own variables: T again)
+send T=x
+wait {prompt}
 type echo hq
 type \e[A
 sleep 0.3
