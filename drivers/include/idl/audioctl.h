@@ -37,6 +37,7 @@
 #include <idl/common.h>
 
 #define AUDIOCTL_PROTOCOL_ID 23u
+#define AUDIOCTL_KEPT 1u   /* its restart is not seen; nothing to its server carries handles */
 #define AUDIOCTL_STREAMS          0x00170001u
 #define AUDIOCTL_SET_VOLUME       0x00170002u
 #define AUDIOCTL_SET_MASTER       0x00170003u

@@ -22,7 +22,7 @@
 # the shared channel init holds; a fresh mixer knows none of the old
 # one's streams.
 
-protocol audioctl 23
+protocol audioctl 23 kept
 
 # Every stream open now, in the order opened: `count` entries of struct
 # mixer_stream_info (<mixer.h>, 40 bytes each) at the start of `list`,

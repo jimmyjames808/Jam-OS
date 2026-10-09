@@ -29,6 +29,7 @@
 #include <idl/common.h>
 
 #define FILE_PROTOCOL_ID 17u
+#define FILE_KEPT 1u   /* its restart is not seen; nothing to its server carries handles */
 #define FILE_READ             0x00110001u
 #define FILE_WRITE            0x00110002u
 #define FILE_TRUNCATE         0x00110003u

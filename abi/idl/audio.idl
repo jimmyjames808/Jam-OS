@@ -25,7 +25,7 @@
 # does), whose connect waits (bounded by the caller's deadline) on the
 # shared channel for the next mixer, and open a new stream.
 
-protocol audio 22
+protocol audio 22 kept
 
 # On /svc/audio: a new stream, stopped, with an empty ring. Only rate 48000,
 # channels 2, bits 16 (anything else: ERR_NOT_SUPPORTED; the client

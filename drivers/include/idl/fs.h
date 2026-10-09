@@ -35,6 +35,7 @@
 #include <idl/common.h>
 
 #define FS_PROTOCOL_ID 16u
+#define FS_KEPT 1u   /* its restart is not seen; nothing to its server carries handles */
 #define FS_OPEN             0x00100001u
 #define FS_STAT             0x00100002u
 #define FS_READDIR          0x00100003u

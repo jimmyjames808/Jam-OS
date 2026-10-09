@@ -20,7 +20,7 @@ implements drv_*).
 The language, one statement per line, `#` starts a comment (comment lines
 right above a method are copied into the header):
 
-    protocol <name> <id>
+    protocol <name> <id> [kept]
     <ordinal> <method> (<type> <arg>, ...) -> (<type> <result>, ...) [later] [idempotent]
     <ordinal> <event> (<type> <field>, ...) event         to the server
     <ordinal> <event> -> (<type> <field>, ...) event      to the client
@@ -116,6 +116,15 @@ its process, ARCHITECTURE.md "Services that outlive their process"), or
 it is ERR_PEER_CLOSED and the paragraph says what to open again and what
 is lost. A file without one is refused. The comment is copied to the top
 of the generated header (a comment may not hold `*/`).
+
+`kept` marks a protocol whose server outlives its process (its restart
+rule says the restart "is not seen": the server reads requests into slots
+of its state, and a successor runs the one in progress again,
+<proto>_take_slot and _run_slot). genidl insists the two agree: a kept
+protocol's rule says so, and a protocol whose rule says so is kept. A
+dead instance's handles die with it, so nothing to a kept protocol's
+server may carry handles (an event's, and handle arguments when they
+come). The header has <PROTO>_KEPT.
 
 A file may hold several protocols, one for each kind of channel of one
 service (an opener's and a stream's): each `protocol` line starts one,
@@ -474,6 +483,7 @@ class Protocol:
         self.src, self.lineno, self.name, self.pid, self.methods = src, lineno, name, pid, methods
         self.doc = doc   # the comment above the protocol line, copied into the header
         self.consts = []   # (NAME, its C value, the comment above it)
+        self.kept = False  # `kept`: its restart is not seen (requests replayed from slots)
 
     def wire(self, m):
         return (self.pid << 16) | m.ordinal
@@ -536,6 +546,25 @@ def parse_fields(src, lineno, text, what, allow_handles=False):
     return fields
 
 
+# A restart rule saying the server's restart is not seen: a `kept` protocol's.
+NOT_SEEN = re.compile(r"restart is\s+not\s+seen")
+
+
+def restart_paragraphs(lines):
+    """The paragraphs of a comment that state a restart rule, each as one
+    line."""
+    out, cur = [], None
+    for l in lines + [""]:
+        if RESTART_RULE.match(l):
+            cur = [l]
+        elif cur is not None and l:
+            cur.append(l)
+        elif cur is not None:
+            out.append(" ".join(cur))
+            cur = None
+    return out
+
+
 def tidy(lines):
     """A comment's lines without blank ones at either end."""
     while lines and not lines[0]:
@@ -584,6 +613,10 @@ def parse_method(src, lineno, line, p, doc):
         way = "in" if m.group(3) is not None else "out"
         fields = parse_fields(src, lineno, m.group(3) or m.group(4), f"{mname} fields",
                               allow_handles=True)
+        if way == "in" and p.kept and any(f.handle for f in fields):
+            fail(src, lineno, f"{mname}: '{p.name}' is kept: its requests are replayed from "
+                              "slots by a successor, which can't have a dead instance's "
+                              "handles, so nothing to its server carries any")
         if sum(1 for f in fields if f.handle) > EVENT_HANDLES_MAX:
             fail(src, lineno, f"{mname}: more than {EVENT_HANDLES_MAX} handles")
         if method_max(fields) > MSG_MAX:
@@ -657,9 +690,10 @@ def parse(src):
             continue
         if line.startswith("protocol"):
             toks = line.split()
-            if len(toks) != 3 or not IDENT.match(toks[1]) or toks[1] in C_KEYWORDS or \
+            kept = toks[3:] == ["kept"]
+            if len(toks) != 3 + kept or not IDENT.match(toks[1]) or toks[1] in C_KEYWORDS or \
                     not toks[2].isdigit():
-                fail(src, lineno, "want 'protocol <name> <id>'")
+                fail(src, lineno, "want 'protocol <name> <id> [kept]'")
             name, pid = toks[1], int(toks[2])
             if not 1 <= pid <= 65535:
                 fail(src, lineno, f"protocol id {pid} not in 1..65535")
@@ -675,9 +709,17 @@ def parse(src):
                 where = "the file's comment" if not protos else "the comment above it"
                 fail(src, lineno, f"protocol '{name}': {where} states no restart rule "
                                   "(a paragraph beginning 'Restart:' or 'Reconnect:')")
+            unseen = NOT_SEEN.search(" ".join(restart_paragraphs(above)))
+            if kept and not unseen:
+                fail(src, lineno, f"protocol '{name}' is kept, but its restart rule doesn't "
+                                  "say the restart is not seen ('... restart is not seen')")
+            if unseen and not kept:
+                fail(src, lineno, f"protocol '{name}': its restart rule says the restart is not "
+                                  "seen, so mark it kept ('protocol <name> <id> kept')")
             if p is not None and not p.methods:
                 fail(src, lineno, f"protocol '{p.name}' has no methods")
             p = Protocol(src, lineno, name, pid, [], tidy(above))
+            p.kept = kept
             protos.append(p)
             doc, above = [], []
             continue
@@ -2041,6 +2083,9 @@ def gen_protocol(p):
     outs = [m for m in p.methods if m.event == "out"]
     hin = takes_handles(p)
     out = [f"#define {U}_PROTOCOL_ID {p.pid}u"]
+    if p.kept:
+        out.append(f"#define {U}_KEPT 1u   /* its restart is not seen; nothing to its server "
+                   "carries handles */")
     for m in p.methods:
         out.append(f"#define {U}_{m.name.upper():<16} 0x{p.wire(m):08x}u")
     out.append("")
@@ -2498,6 +2543,8 @@ def c_names(p):
                                   "idempotent", "serve_one", "serve")]
     names += [f"{U}_{x}" for x in ("PROTOCOL_ID", "REQ_MAX", "REP_MAX")]
     names += [f"{U}_{c[0]}" for c in p.consts]
+    if p.kept:
+        names.append(f"{U}_KEPT")
     if any(m.event == "in" for m in p.methods):
         names.append(f"{P}_event_in")
     if takes_handles(p):
@@ -2687,6 +2734,18 @@ SELFTESTS = [
     ("a const before a protocol", {"t.idl": f"{RULE}const A 1\nprotocol t 40\n1 a () -> ()\n"},
      None, "the first statement"),
     ("a const's macro and a method's", t_ok("const A 1\n1 a () -> ()\n"), None, "defines T_A twice"),
+    ("kept", {"t.idl": "# Restart: the server's restart is not\n# seen: kept.\n\n"
+                       "protocol t 40 kept\n1 a () -> ()\n2 b (u32 x) event\n"
+                       "3 c -> (handle h) event\n"}, None, None),
+    ("kept, with a handle to its server", {"t.idl": "# Restart: the restart is not seen.\n\n"
+                                                     "protocol t 40 kept\n1 a (handle h) event\n"},
+     None, "is kept"),
+    ("kept, but its rule says otherwise", {"t.idl": f"{RULE}protocol t 40 kept\n1 a () -> ()\n"},
+     None, "doesn't say the restart is not seen"),
+    ("not seen, but not kept", {"t.idl": "# Restart: its restart is not seen.\n\n"
+                                         "protocol t 40\n1 a () -> ()\n"}, None, "mark it kept"),
+    ("another word", {"t.idl": f"{RULE}protocol t 40 kep\n1 a () -> ()\n"}, None,
+     "want 'protocol <name> <id> [kept]'"),
 ]
 
 

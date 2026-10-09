@@ -40,6 +40,7 @@
 #include <idl/common.h>
 
 #define AUDIO_PROTOCOL_ID 22u
+#define AUDIO_KEPT 1u   /* its restart is not seen; nothing to its server carries handles */
 #define AUDIO_OPEN_OUTPUT      0x00160001u
 #define AUDIO_STREAM_START     0x00160002u
 #define AUDIO_STREAM_STOP      0x00160003u
