@@ -71,7 +71,8 @@ status_t stdfd_take(const struct posixfds_fd *rec, const void *data, const handl
     if (f->kind == SF_PIPE) {
         f->ch = hs[0];
         f->have = rec->data_len < sizeof(f->buf) ? rec->data_len : sizeof(f->buf);
-        memcpy(f->buf, data, f->have);   /* what the starter read and didn't take */
+        if (f->have)   /* what the starter read and didn't take */
+            memcpy(f->buf, data, f->have);
     }
     return OK;
 }
