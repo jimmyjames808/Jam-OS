@@ -32,6 +32,10 @@
  *       A cap closed while the unit confirms no invalidation (its queue
  *       off) keeps its pinned pages held, not released after a time; once
  *       the unit confirms again, the next try frees them.
+ *   dma_iommu_unpin_races_device
+ *       The device's queued write races the driver's unpin, at delays on
+ *       both sides of it: once the unpin has returned the page never
+ *       changes again.
  *   dma_iommu_failed_map_unconfirmed_keeps_pages
  *       A pin that fails after mapping part of itself, while the unit
  *       confirms nothing: the undo's invalidation failed, so the pin's
@@ -408,6 +412,68 @@ KTEST(dma_iommu_unconfirmed_close_keeps_pages)
     KT_EQ(q2.pins, q0.pins);
     KT_EQ(q2.freed, q0.freed + 1);       /* freed once the domain was confirmed gone */
     KT_EQ(q2.released, q0.released);
+}
+
+/* ---- a device racing an unpin -------------------------------------------------------------- */
+
+/* The device has a write to the page queued (edu runs a transfer about
+ * 100 ms after it is told) while the driver unpins it, at delays from
+ * well before to well after the write: whatever the order, once vmo_unpin
+ * has returned the page never changes again (the write either landed
+ * before the unpin's invalidation completed, or is blocked and recorded).
+ * Both outcomes are counted; the second is the one that matters. */
+KTEST(dma_iommu_unpin_races_device)
+{
+    struct pci_dev *d = edu_translated();
+    if (!d)
+        return;
+    volatile uint8_t *r = kt_edu_regs(d);
+    KT_ASSERT(kt_edu_idle(r));
+    static const unsigned delay_ms[] = { 0, 20, 50, 80, 90, 95, 98, 100, 102, 105, 110, 130, 160 };
+    const unsigned n = sizeof(delay_ms) / sizeof(delay_ms[0]);
+    struct vmo *src, *v;
+    KT_EQ(vmo_create(PG, VMO_CONTIGUOUS | VMO_DMA32, &src), OK);
+    KT_EQ(vmo_create(PG, 0, &v), OK);
+    KT_EQ(vmo_commit(v, 0, PG), OK);
+    vmo_fill(src, 0, 0xa5);
+    struct kobject *cap;
+    KT_EQ(dma_cap_create_for(d, NULL, &cap), OK);
+    KT_EQ(dma_cap_bus_master(cap, true), OK);
+    uint64_t spa, sid;
+    KT_EQ(vmo_pin(src, cap, 0, PG, &spa, 1, &sid), OK);
+    KT_ASSERT(kt_edu_dma(r, spa, 0, LEN, false));   /* 0xa5 in edu's buffer from here on */
+
+    unsigned landed = 0, blocked = 0, changed_after = 0;
+    bool idle = true;
+    for (unsigned i = 0; i < n; i++) {
+        vmo_fill(v, 0, 0);
+        uint64_t pa, id;
+        KT_EQ(vmo_pin(v, cap, 0, PG, &pa, 1, &id), OK);
+        kt_edu_dma_start(r, 0, pa, LEN, true);
+        if (delay_ms[i])
+            thread_sleep_ms(delay_ms[i]);
+        KT_EQ(vmo_unpin(v, cap, id), OK);
+        bool at_unpin = vmo_is(v, 0, 0xa5);   /* landed before the unpin returned? */
+        idle = kt_edu_idle(r) && idle;
+        thread_sleep_ms(2);
+        bool later = vmo_is(v, 0, 0xa5);
+        landed += at_unpin;
+        blocked += !at_unpin;
+        changed_after += at_unpin != later;
+    }
+    KT_EQ(vmo_unpin(src, cap, sid), OK);
+    KT_EQ(dma_cap_bus_master(cap, false), OK);
+    kobject_unref(cap);
+    dma_quarantine_flush(d);
+    kobject_unref(vmo_kobject(src));
+    kobject_unref(vmo_kobject(v));
+    kprintf("ktest %s: %u transfer(s) landed before the unpin returned, %u blocked after it; "
+            "%u page(s) CHANGED after the unpin returned\n", ktest_current, landed, blocked,
+            changed_after);
+    KT_ASSERT(idle);
+    KT_EQ(changed_after, 0);
+    KT_EQ(landed + blocked, n);
+    KT_IDLE_ASSERT(blocked >= 1);   /* the 0 ms unpin comes ~100 ms before the transfer */
 }
 
 /* ---- a failed map the unit doesn't confirm undone ---------------------------------------- */

@@ -211,6 +211,9 @@ dma_on() {
         "ktest: dma_stale_write_after_rebind" "the IOMMU translating; 2 page(s) freed at once" \
         "ktest: dma_iommu_unconfirmed_close_keeps_pages ok" \
         "ktest: dma_iommu_failed_map_unconfirmed_keeps_pages ok" \
+        "ktest: dma_iommu_unpin_races_device     ok" "ktest: dma_pin_fuzz                     ok" \
+        "ktest: dma_pin_races_close              ok" "the function back home 24 time(s)" \
+        "0 page(s) CHANGED after the unpin returned" \
         "run complete: no problems"
     if problems "$1"; then
         echo "$1: a VT-d problem reported (above)"
