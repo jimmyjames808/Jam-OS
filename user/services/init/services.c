@@ -409,7 +409,7 @@ static status_t start_volumes(void)
     struct spawn_handle x[4] = { { VOLUMES_SR_CTL, b }, { VOLUMES_SR_ESP, eb },
                                  { VOLUMES_SR_DISKS, ds } };
     unsigned nx = 3;
-    /* Without it (`nocomp`) a stick's news is the console's notices alone. */
+    /* Without it (no compositor) a stick's news is the console's notices alone. */
     x[nx] = (struct spawn_handle){ VOLUMES_SR_NOTIFY, comp_notify_client() };
     if (x[nx].h)
         nx++;

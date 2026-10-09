@@ -118,6 +118,12 @@ build)" boots the one before it.
   cursor in view, with `<` or `>` where text is cut off; Enter shows it
   whole. The arrows, Home and End, Backspace and Delete, Ctrl+A/E/U, Tab
   completion, the history (up and down) and a paste all work on it.
+- The history is every terminal's, kept in `/data/etc/history` (the last
+  500 lines; a new terminal starts with them, and they outlive a reboot
+  or a shell's crash). With text on the line, Up recalls only the lines
+  that start with it, Down goes forward and back to what was typed; on an
+  empty line Up steps through them all. A line typed with a leading space
+  isn't kept; `history` lists them, `history -c` forgets them.
 - Programs in the background: `run prog args &` (or `prog &`) gives the
   prompt back at once; `jobs` lists them, `kill %2` ends one, and the next
   prompt says when one ends (`[2] done: utest (exit 0)`). Such a program

@@ -238,7 +238,7 @@ bool     terms_console_up(unsigned i);
 /* A terminal other than the first is open (or closing). */
 bool     terms_extra_open(void);
 /* The console of the first terminal that has one running (0: none: every
- * terminal is closed, or the first is restarting under `nocomp`). */
+ * terminal is closed, or the first is restarting without a compositor). */
 handle_t terms_any_console(void);
 /* Service i ended: the console's or the shell's ends that init kept go. */
 void     terms_closed(unsigned i);
@@ -247,11 +247,11 @@ void     terms_closed(unsigned i);
  * compositor every terminal, the first too) or is closing: it is not
  * started again. */
 bool     terms_ended(unsigned i, bool killed, int64_t code);
-/* Service i is given up on: its terminal closes (with a compositor; under
- * `nocomp` the one console and its shell are never given up). */
+/* Service i is given up on: its terminal closes (with a compositor;
+ * without one the one console and its shell are never given up). */
 void     terms_given_up(unsigned i);
 /* Is service i one init starts again however often it ends: the
- * compositor, and under `nocomp` the one terminal's console and shell
+ * compositor, and without a compositor the one terminal's console and shell
  * (shell.c's count_end). */
 bool     terms_never_given_up(unsigned i);
 /* initctl.terminal: open another terminal; *number: its number (the
@@ -345,7 +345,7 @@ status_t services_start(unsigned i);
 void     services_closed(unsigned i);
 /* Service i is given up on: calls waiting for it fail now. */
 void     services_given_up(unsigned i);
-/* The services but the first ones may start: under `nocomp` the console
+/* The services but the first ones may start: without a compositor the console
  * runs (the input's hub and the screen); with a compositor the first
  * terminal's console has started once this boot (the order at boot only:
  * every terminal may be closed later). A devmgr runs. */

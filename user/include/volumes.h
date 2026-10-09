@@ -196,8 +196,8 @@ struct volumes_mounts_rep {
 #define VOLUMES_SUP_FINISHED   4u   /* exited 0 by itself */
 
 /* volumes' startup roles: the server ends of its control, ESP and DISKS
- * channels, and a duplicate of /svc/notify's shared channel (not under
- * `nocomp`), for the desktop's notices of sticks: "USB stick added",
+ * channels, and a duplicate of /svc/notify's shared channel (none without
+ * a compositor), for the desktop's notices of sticks: "USB stick added",
  * "USB stick removed", "Jam OS stick removed" and "... is back"
  * (<notice.h>). Its fats' jobs are children of its own (SR_JOB). */
 #define VOLUMES_SR_CTL    (SR_USER + 0)

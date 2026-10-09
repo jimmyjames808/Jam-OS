@@ -133,7 +133,7 @@ bool t_conwin_view(void)
     /* The scrollback keeps SCROLLBACK lines: no further back than those. */
     v = (struct view){ 10000, 0, 10, true };
     CHECK(view_back_max(&v) == (uint32_t)(10000 - 9 - (10000 - SCROLLBACK)));
-    /* The full-screen console (nocomp): the current line on the bottom row,
+    /* The full-screen console (no compositor): the current line on the bottom row,
      * as it always was, the rows above it blank at the start. */
     v = (struct view){ 0, 0, 10, false };
     CHECK(view_base(&v) == -9 && cursor_row(&v, 0) == 9 && view_back_max(&v) == 0);
