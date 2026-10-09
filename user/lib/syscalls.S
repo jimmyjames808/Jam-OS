@@ -744,4 +744,48 @@ jam_random_get:
     ret
     .size jam_random_get, . - jam_random_get
 
+    .globl jam_pager_create
+    .type jam_pager_create, @function
+jam_pager_create:
+    mov %rcx, %r10
+    mov $SYS_pager_create, %eax
+    syscall
+    ret
+    .size jam_pager_create, . - jam_pager_create
+
+    .globl jam_pager_create_vmo
+    .type jam_pager_create_vmo, @function
+jam_pager_create_vmo:
+    mov %rcx, %r10
+    mov $SYS_pager_create_vmo, %eax
+    syscall
+    ret
+    .size jam_pager_create_vmo, . - jam_pager_create_vmo
+
+    .globl jam_pager_next
+    .type jam_pager_next, @function
+jam_pager_next:
+    mov $SYS_pager_next, %eax
+    syscall
+    ret
+    .size jam_pager_next, . - jam_pager_next
+
+    .globl jam_pager_supply
+    .type jam_pager_supply, @function
+jam_pager_supply:
+    mov %rcx, %r10
+    mov $SYS_pager_supply, %eax
+    syscall
+    ret
+    .size jam_pager_supply, . - jam_pager_supply
+
+    .globl jam_pager_op
+    .type jam_pager_op, @function
+jam_pager_op:
+    mov %rcx, %r10
+    mov $SYS_pager_op, %eax
+    syscall
+    ret
+    .size jam_pager_op, . - jam_pager_op
+
     .section .note.GNU-stack, "", @progbits
