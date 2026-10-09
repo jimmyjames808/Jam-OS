@@ -71,3 +71,11 @@ _Static_assert(KEXEC_CMDLINE_MAX + 1 == KEXEC_CMDLINE && KLOG_NAME_MAX + 1 <= KE
                "kexec_load's and klog_name's limits are what kexec keeps");
 _Static_assert(PROCESS_NAME_MAX + 1 == sizeof(((struct proc_stat *)0)->name),
                "proc_stat.name holds a whole name and its NUL");
+
+/* The rights' word: generic rights in bits 0-15, powers in 16-30. */
+#define RIGHTS_GENERIC_CHECK (RIGHT_READ | RIGHT_WRITE | RIGHT_EXEC | RIGHT_MAP | RIGHT_DUPLICATE | \
+                              RIGHT_TRANSFER | RIGHT_SIGNAL | RIGHT_WAIT | RIGHT_INSPECT |         \
+                              RIGHT_MANAGE | RIGHT_SLICE | RIGHT_RESIZE)
+_Static_assert(RIGHTS_GENERIC_CHECK == 0xfffu && (RIGHTS_ROOT & 0x8000ffffu) == 0 &&
+                   RIGHTS_ROOT == 0x3ff0000u,
+               "rights: the generic ones in bits 0-11, the powers from bit 16 in order");

@@ -20,6 +20,8 @@ typedef uint32_t handle_t;
 #define HANDLE_INVALID 0u
 
 typedef uint32_t rights_t;
+/* The generic rights, bits 0 .. 15 (11 used); the root's powers, bits
+ * 16 .. 30; RIGHT_SAME, bit 31. */
 #define RIGHT_READ      (1u << 0)
 #define RIGHT_WRITE     (1u << 1)
 #define RIGHT_EXEC      (1u << 2)
@@ -34,20 +36,20 @@ typedef uint32_t rights_t;
 /* VMOs: change the size or decommit pages (with RIGHT_WRITE). A service
  * that maps a buffer it shares hands the other side a handle without it,
  * so the buffer can't shrink under the mapping. */
-#define RIGHT_RESIZE    (1u << 19)
+#define RIGHT_RESIZE    (1u << 11)
 /* Powers over the whole system, on the root resource (RES_ROOT) only: each
  * call that needs one checks for it alone, so a program is given exactly
  * the powers it uses (a slice never has them). */
-#define RIGHT_ROOT_KLOG    (1u << 11)  /* klog_open: read the kernel log */
-#define RIGHT_ROOT_SERIAL  (1u << 12)  /* serial_open: the serial port's input */
-#define RIGHT_ROOT_SYSINFO (1u << 13)  /* sys_info, cpu_stat, proc_list */
-#define RIGHT_ROOT_CLOCK   (1u << 14)  /* rtc_read: the real-time clock */
-#define RIGHT_ROOT_REBOOT  (1u << 15)  /* reboot, kexec_reboot */
-#define RIGHT_ROOT_KEXEC   (1u << 16)  /* kexec_load: replace the stored kernel */
-#define RIGHT_ROOT_DEBUG   (1u << 17)  /* debug_command: the kernel's tests and debug commands */
-#define RIGHT_ROOT_VMEX    (1u << 18)  /* vmo_make_exec: run code from a VMO a process made */
-#define RIGHT_ROOT_SCREEN  (1u << 20)  /* framebuffer_take: the screen */
-#define RIGHT_ROOT_SERIAL_OUT (1u << 21)  /* serial_write: the serial port's output */
+#define RIGHT_ROOT_KLOG    (1u << 16)  /* klog_open: read the kernel log */
+#define RIGHT_ROOT_SERIAL  (1u << 17)  /* serial_open: the serial port's input */
+#define RIGHT_ROOT_SYSINFO (1u << 18)  /* sys_info, cpu_stat, proc_list */
+#define RIGHT_ROOT_CLOCK   (1u << 19)  /* rtc_read: the real-time clock */
+#define RIGHT_ROOT_REBOOT  (1u << 20)  /* reboot, kexec_reboot */
+#define RIGHT_ROOT_KEXEC   (1u << 21)  /* kexec_load: replace the stored kernel */
+#define RIGHT_ROOT_DEBUG   (1u << 22)  /* debug_command: the kernel's tests and debug commands */
+#define RIGHT_ROOT_VMEX    (1u << 23)  /* vmo_make_exec: run code from a VMO a process made */
+#define RIGHT_ROOT_SCREEN  (1u << 24)  /* framebuffer_take: the screen */
+#define RIGHT_ROOT_SERIAL_OUT (1u << 25)  /* serial_write: the serial port's output */
 #define RIGHTS_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SERIAL | RIGHT_ROOT_SYSINFO | \
                      RIGHT_ROOT_CLOCK | RIGHT_ROOT_REBOOT | RIGHT_ROOT_KEXEC |   \
                      RIGHT_ROOT_DEBUG | RIGHT_ROOT_VMEX | RIGHT_ROOT_SCREEN |    \
