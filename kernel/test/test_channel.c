@@ -265,6 +265,45 @@ KTEST(chan_no_handles_mark)
     KT_GLOBAL_EQ(channel_live_count(), live);
 }
 
+/* M12.1 (kernel core, finding 1): the mark is the end's and never comes
+ * off, so only the end's sole holder may set it. An end with two handles
+ * (a /svc end every program holds a duplicate of) is refused, a handle in
+ * a message counting as one; once the end is back to one handle, its
+ * holder marks it. A holder of a shared copy could otherwise stop every
+ * handle-carrying reply (svc.connect's) to all the others. */
+KTEST(chan_no_handles_mark_needs_sole_holder)
+{
+    uint64_t live = channel_live_count();
+    struct channel *a, *b, *c0, *c1;
+    KT_EQ(channel_create(&a, &b), OK);
+    KT_EQ(channel_create(&c0, &c1), OK);
+    struct khandle mine = khandle_from_new(CH(b), RIGHTS_BASIC | RIGHTS_IO);
+    kobject_ref(CH(b));   /* each handle has a reference of its own */
+    struct khandle theirs = khandle_from_new(CH(b), RIGHTS_BASIC | RIGHTS_IO);
+    KT_EQ(channel_set_flags(b, CHANNEL_NO_HANDLES), ERR_BAD_STATE);
+    /* The shared end still takes a reply with a handle. */
+    struct khandle kc = khandle_from_new(CH(c1), RIGHTS_BASIC | RIGHTS_IO);
+    KT_EQ(channel_write(a, "c", 1, &kc, 1), OK);
+    struct khandle got;
+    uint8_t buf[8];
+    uint32_t nb, nh;
+    KT_EQ(channel_read(b, buf, sizeof(buf), &nb, &got, 1, &nh), OK);
+    khandle_release(&got);
+    /* The other copy in transit, in a message on another channel: still two. */
+    struct channel *s0, *s1;
+    KT_EQ(channel_create(&s0, &s1), OK);
+    KT_EQ(channel_write(s0, "b", 1, &theirs, 1), OK);
+    KT_EQ(channel_set_flags(b, CHANNEL_NO_HANDLES), ERR_BAD_STATE);
+    kobject_unref(CH(s1));   /* drops the message and the handle in it */
+    kobject_unref(CH(s0));
+    KT_EQ(kobject_handles(CH(b)), 1);
+    KT_EQ(channel_set_flags(b, CHANNEL_NO_HANDLES), OK);   /* the sole holder */
+    khandle_release(&mine);
+    kobject_unref(CH(a));
+    kobject_unref(CH(c0));
+    KT_GLOBAL_EQ(channel_live_count(), live);
+}
+
 /* Q2: once the writer closes its end, what it wrote and nobody read is
  * charged to the reader's job: the job of the table that last received
  * the reading end (here moved from one table to another, which must count).

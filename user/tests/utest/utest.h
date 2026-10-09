@@ -23,6 +23,9 @@
 int child_main(int argc, char **argv);
 /* "utest bench-<what> ...": one user-side benchmark (see bench.c). */
 int bench_child(int argc, char **argv);
+/* "utest fuzz-calls|fuzz-chans <seed> <ms>": a hostile child for the
+ * kernel's fuzz tests (fuzz.c, kernel/test/test_fuzz.c). */
+int fuzz_child(int argc, char **argv);
 
 /* hid.c: the HID driver process against a mock usb-bus and console. */
 bool t_hid_typing(void);

@@ -180,3 +180,56 @@ KTEST(vmo_make_exec_races_writer)
     put(mx_vmo);
     handle_table_destroy(&t);
 }
+
+/* ---- vmo_make_exec against a duplicate of its new handle ------------------- */
+
+/* M12.1 (kernel core, finding 4): a sibling thread duplicates every handle
+ * in the table at the moment make_exec checks "one handle" (the hook).
+ * Whatever the call answers, no handle that may execute can name a VMO
+ * that isn't sealed: the new handle must not exist before the check and
+ * the seal (it did: a duplicate of it kept RIGHT_EXEC on an unsealed VMO
+ * while the call failed). */
+static struct handle_table *dx_table;
+static handle_t dx_dups[64];
+static unsigned dx_ndups;
+
+static void dx_hook(void *arg)
+{
+    if (arg != mx_vmo)
+        return;
+    /* Every value a fresh 16-slot table can hand out (slot + 1 above the
+     * 15 generation bits, generations 0-3). */
+    for (uint32_t slot = 1; slot <= 16; slot++)
+        for (uint32_t gen = 0; gen < 4 && dx_ndups < 64; gen++)
+            if (handle_duplicate(dx_table, slot << 15 | gen, RIGHT_SAME, &dx_dups[dx_ndups]) ==
+                OK)
+                dx_ndups++;
+}
+
+KTEST(vmo_make_exec_dup_never_unsealed)
+{
+    struct handle_table t;
+    handle_t h, root, x = HANDLE_INVALID;
+    mx_setup(&t, &h, &root);
+    dx_table = &t;
+    dx_ndups = 0;
+    __atomic_store_n(&dbg_hooks[DBG_VMO_EXEC_CHECK], dx_hook, __ATOMIC_RELEASE);
+    status_t st = sys_vmo_make_exec(&t, h, root, &x);
+    __atomic_store_n(&dbg_hooks[DBG_VMO_EXEC_CHECK], NULL, __ATOMIC_RELEASE);
+    /* A write fails on a sealed VMO and only there (it is writable). */
+    bool sealed = vmo_write(mx_vmo, 0, "z", 1) == ERR_BAD_STATE;
+    kprintf("vmo_make_exec_dup_never_unsealed: make_exec %s, %u duplicate(s), %s\n",
+            status_str(st), dx_ndups, sealed ? "sealed" : "not sealed");
+    for (unsigned i = 0; i < dx_ndups; i++) {
+        struct kobject *o;
+        rights_t r;
+        KT_EQ(handle_get(&t, dx_dups[i], OBJ_NONE, 0, &o, &r), OK);
+        if (o == vmo_kobject(mx_vmo) && (r & RIGHT_EXEC))
+            KT_ASSERT(sealed);
+        kobject_unref(o);
+    }
+    if (st == OK)
+        KT_ASSERT(sealed);
+    put(mx_vmo);
+    handle_table_destroy(&t);
+}

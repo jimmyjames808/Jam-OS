@@ -254,6 +254,14 @@ bool t_thread_fs_base(void)
     CHECK_ST(jam_thread_set_fs_base(USER_TOP_ADDR), ERR_INVALID_ARGS);
     CHECK_ST(jam_thread_set_fs_base(0xffff800000000000ull), ERR_INVALID_ARGS);
     CHECK_EQ(fs_word0(), fs_words[2]);   /* unchanged */
+    /* A selector loaded into FS by user code (SS's: a descriptor with base
+     * 0, on every CPU vendor) makes the base 0 behind the kernel's back;
+     * thread_set_fs_base with the value it had must load it again (M12.1
+     * kernel core, finding 3: the call skipped the write as a switch
+     * does, and the next %fs:0 read address 0). */
+    __asm__ volatile("movw %%ss, %%ax\n\tmovw %%ax, %%fs" ::: "rax", "memory");
+    CHECK_ST(jam_thread_set_fs_base((uint64_t)(uintptr_t)&fs_words[2]), OK);
+    CHECK_EQ(fs_word0(), fs_words[2]);
     CHECK_ST(jam_thread_set_fs_base(0), OK);   /* as libos runs */
     return true;
 }

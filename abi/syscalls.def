@@ -120,7 +120,10 @@
 # queue never holds a channel end and the end can always be sent on (a
 # kept server end: devmgr's fs channel, init's /svc ends). One-way: a mark
 # never comes off. ERR_BAD_STATE if a message carrying handles is queued
-# there already; ERR_INVALID_ARGS for any other bit.
+# there already, or if h is not the end's only handle (a duplicate
+# anywhere, or one in a message): only its sole holder may mark it, since
+# the mark stops handle-carrying replies to every holder of a shared end;
+# ERR_INVALID_ARGS for any other bit.
 25  channel_set_flags status    handle_t h, uint32_t flags
 
 # events and timers ---------------------------------------------------------
