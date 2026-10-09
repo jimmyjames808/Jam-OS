@@ -231,6 +231,13 @@ static unsigned drain(struct pair *p, uint32_t *seq, bool *in_order)
     return n;
 }
 
+/* n full batches held: their bytes and each block's bookkeeping (the
+ * block's header and the heap's, under 128 bytes). */
+static bool held_full(uint32_t bytes, unsigned n)
+{
+    return bytes > n * JWL_BATCH_MAX && bytes <= n * (JWL_BATCH_MAX + 128);
+}
+
 /* A client that reads late: the window fills, batches are held, and once
  * it reads and acknowledges every event arrives, in order. */
 bool t_jwl_conn_window(void)
@@ -246,7 +253,7 @@ bool t_jwl_conn_window(void)
     CHECK_ST(jwl_conn_flush(p.sv), OK);
     CHECK_EQ(p.sv->stats.batches_out, JWL_WINDOW);
     CHECK(jwl_conn_backlogged(p.sv));
-    CHECK_EQ(p.sv->held_bytes, 2 * JWL_BATCH_MAX);
+    CHECK(held_full(p.sv->held_bytes, 2));
     CHECK_EQ(drain(&p, &got, &in_order), JWL_WINDOW * POKED_PER_BATCH);
     uint64_t out = p.cl->stats.batches_out;
     CHECK_ST(jwl_conn_flush(p.cl), OK);   /* nothing to say: an acknowledgement alone */
@@ -258,7 +265,7 @@ bool t_jwl_conn_window(void)
     CHECK(!jwl_conn_backlogged(p.sv) && p.sv->held_bytes == 0);
     CHECK_EQ(drain(&p, &got, &in_order), 2 * POKED_PER_BATCH);
     CHECK(in_order && got == sent);
-    CHECK_EQ(p.sv->stats.held_peak, 2 * JWL_BATCH_MAX);
+    CHECK(held_full(p.sv->stats.held_peak, 2));
     /* an acknowledgement goes when half the window is read, not before;
      * a request first, so the count told is the count read */
     union jwl_arg a = { .u = 1 };
@@ -326,6 +333,49 @@ bool t_jwl_conn_never_reads(void)
     CHECK_ST(jwl_conn_next(p.cl, &m), ERR_PEER_CLOSED);
     CHECK_ST(jwl_conn_flush(p.cl), ERR_PEER_CLOSED);
     jwl_conn_destroy(p.cl);
+    held_now(&h1, &b1);
+    CHECK_EQ(h1, h0);
+    CHECK_EQ(b1, b0);
+    return true;
+}
+
+#define TINY_TURNS 2000u   /* one 12-byte event a turn: 23 KiB held past the window */
+
+/* A client that falls behind while the compositor sends one tiny batch a
+ * turn: the held batches merge into blocks of up to a batch (review W,
+ * W2: one block each took the heap about 160 bytes for 28 of the batch's,
+ * three times the bound and more, uncounted). Caught up, the client reads
+ * the window's batches and a few merged blocks, every event in order. */
+bool t_jwl_conn_held_merged(void)
+{
+    uint64_t h0, b0, h1, b1;
+    held_now(&h0, &b0);
+    struct pair p;
+    if (!pair_up(&p))
+        return false;
+    uint32_t sent = 0, got = 0;
+    bool in_order = true;
+    for (unsigned i = 0; i < TINY_TURNS; i++) {
+        CHECK_ST(poke(&p, 1, &sent), OK);
+        CHECK_ST(jwl_conn_flush(p.sv), OK);
+    }
+    CHECK_EQ(p.sv->stats.batches_out, JWL_WINDOW);
+    uint32_t held = (TINY_TURNS - JWL_WINDOW) * 12;   /* the events' bytes */
+    CHECK(p.sv->held_bytes > held && p.sv->held_bytes <= JWL_HELD_MAX);
+    CHECK(p.sv->held_bytes <= held + 3 * JWL_BATCH_MAX / 2);   /* doubling's room at most */
+    uint64_t in0 = p.cl->stats.batches_in;
+    for (unsigned turn = 0; got < sent && turn < 16; turn++) {
+        (void)drain(&p, &got, &in_order);
+        CHECK_ST(jwl_conn_flush(p.cl), OK);   /* the acknowledgement */
+        struct jwl_msg m;
+        CHECK_ST(jwl_conn_next(p.sv, &m), ERR_SHOULD_WAIT);
+        CHECK_ST(jwl_conn_flush(p.sv), OK);
+    }
+    CHECK(in_order && got == sent && p.sv->held_bytes == 0);
+    uint64_t batches = p.cl->stats.batches_in - in0;
+    if (batches > JWL_WINDOW + 3)
+        FAIL("%lu batches read: the held ones weren't merged", (unsigned long)batches);
+    pair_down(&p);
     held_now(&h1, &b1);
     CHECK_EQ(h1, h0);
     CHECK_EQ(b1, b0);

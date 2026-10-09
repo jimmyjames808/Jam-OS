@@ -102,7 +102,7 @@ bool     jwl_interface_same(const struct jwl_interface *a, const struct jwl_inte
 #define JWL_BATCH_MAX      16384u       /* a batch's bytes, its header included */
 #define JWL_BATCH_HANDLES  16u          /* handles one batch carries */
 #define JWL_WINDOW         32u          /* batches the compositor sends ahead of the acks */
-#define JWL_HELD_MAX       65536u       /* bytes of batches held back past the window */
+#define JWL_HELD_MAX       65536u       /* heap bytes of batches held back past the window */
 #define JWL_OBJECTS_MAX    4096u        /* ids in each side's range on one connection */
 #define JWL_MAGIC          0x314c574au  /* "JWL1" as bytes: the transport's version */
 
@@ -315,8 +315,9 @@ status_t jwl_sig_parse(const char *s, struct jwl_sig *out);
  * Flow control. A message queued on a channel is charged to its sender's
  * job until it is read, so the compositor sends at most JWL_WINDOW
  * batches a client hasn't acknowledged. Past that it keeps batches in its
- * own memory, up to JWL_HELD_MAX bytes, and then disconnects the client
- * (wl_display.error, no_memory). A client acknowledges in the header of
+ * own memory, merged into blocks of up to a batch each, up to JWL_HELD_MAX
+ * bytes of its heap (the blocks' bookkeeping counted), and then
+ * disconnects the client (wl_display.error, no_memory). A client acknowledges in the header of
  * everything it sends, and jwl_conn_flush sends a batch with no messages
  * when half the window is read and nothing else went out: so a client
  * must call jwl_conn_flush after reading, every turn of its loop.
@@ -342,7 +343,7 @@ struct jwl_conn_stats {
     uint64_t batches_in, batches_out;   /* channel messages read and written */
     uint64_t msgs_in, msgs_out;         /* Wayland messages decoded and encoded */
     uint64_t dropped;                   /* messages to zombies dropped */
-    uint32_t held_peak;                 /* most bytes held back at once */
+    uint32_t held_peak;                 /* most held_bytes at once */
 };
 
 struct jwl_conn {
@@ -367,7 +368,7 @@ struct jwl_conn {
     uint32_t nsent;                     /* compositor: batches written (mod 2^32) */
     uint32_t peer_acked;                /* compositor: the client's last ack */
     struct jwl_held *held, *held_tail;  /* sealed batches not written yet, oldest first */
-    uint32_t held_bytes;
+    uint32_t held_bytes;                /* the heap's bytes they take (at most JWL_HELD_MAX) */
     struct jwl_conn_stats stats;
 };
 

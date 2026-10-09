@@ -20,8 +20,9 @@
  * delete_id). A batch goes when it is full or at
  * jwl_conn_flush. The compositor writes at most JWL_WINDOW batches past
  * the client's last acknowledgement; the rest wait in c->held, in order,
- * up to JWL_HELD_MAX bytes, and past that the client is disconnected with
- * no_memory. A client's batches have no window (they are charged to the
+ * merged into blocks of up to a batch each, up to JWL_HELD_MAX bytes of
+ * the heap's (the blocks' bookkeeping counted), and past that the client
+ * is disconnected with no_memory. A client's batches have no window (they are charged to the
  * client's own job), but a channel that is full holds them the same way.
  *
  * Dying: the first error that ends a connection is kept in c->status and
@@ -32,13 +33,24 @@
 #include <jwl.h>
 #include <os.h>
 
-/* A sealed batch not written yet. */
+/* Sealed batches not written yet, merged: a run of whole messages, up to
+ * a batch's bytes and handles, that goes as one batch. Its room grows as
+ * messages join it (doubling, up to JWL_BATCH_MAX), so a client held back
+ * behind one tiny batch a turn costs a few blocks, not one each. */
 struct jwl_held {
     struct jwl_held *next;
-    uint32_t len, nh;                   /* bytes (the header's room included), handles */
+    uint32_t len, cap, nh;              /* bytes (the header's room included), room, handles */
     handle_t h[JWL_BATCH_HANDLES];
     uint8_t  bytes[];
 };
+
+#define HEAP_BLOCK 16u   /* libos's heap: a block's header, sizes rounded to 16 (heap.c) */
+
+/* What a held block of cap bytes takes from the heap, as held_bytes counts. */
+static uint32_t held_cost(uint32_t cap)
+{
+    return ((uint32_t)sizeof(struct jwl_held) + cap + 15u) / 16u * 16u + HEAP_BLOCK;
+}
 
 static uint32_t rd32(const uint8_t *p)
 {
@@ -331,28 +343,67 @@ static status_t overflow(struct jwl_conn *c)
                                "the client reads too slowly: 64 KiB of events held");
 }
 
-/* The batch being filled joins the held ones. */
+/* The last held block, grown to room for want bytes (it fits a batch):
+ * NULL when the heap or JWL_HELD_MAX won't have it (it stays as it was). */
+static struct jwl_held *grow_tail(struct jwl_conn *c, uint32_t want)
+{
+    struct jwl_held *t = c->held_tail;
+    if (want <= t->cap)
+        return t;
+    uint32_t cap = t->cap * 2 > JWL_BATCH_MAX ? JWL_BATCH_MAX : t->cap * 2;
+    if (cap < want)
+        cap = want;
+    uint32_t bytes = c->held_bytes - held_cost(t->cap) + held_cost(cap);
+    struct jwl_held *n = bytes <= JWL_HELD_MAX ? malloc(sizeof(*n) + cap) : NULL;
+    if (!n)
+        return NULL;
+    memcpy(n, t, sizeof(*t) + t->len);
+    n->cap = cap;
+    struct jwl_held **link = &c->held;   /* the blocks are few: see JWL_HELD_MAX */
+    while (*link != t)
+        link = &(*link)->next;
+    *link = n;
+    c->held_tail = n;
+    c->held_bytes = bytes;
+    free(t);
+    return n;
+}
+
+/* The batch being filled joins the held ones: its messages appended to
+ * the last held block while the bytes and handles fit a batch, else a
+ * block of its own. held_bytes counts what the heap gives the blocks. */
 static status_t hold(struct jwl_conn *c)
 {
-    if (c->out_len > JWL_HELD_MAX - c->held_bytes)
-        return overflow(c);
-    struct jwl_held *b = malloc(sizeof(*b) + c->out_len);
-    if (!b)
-        return overflow(c);
-    b->next = NULL;
-    b->len = c->out_len;
-    b->nh = c->out_nh;
-    memcpy(b->h, c->out_h, c->out_nh * sizeof(handle_t));
-    memcpy(b->bytes, c->out, c->out_len);
-    if (c->held_tail)
-        c->held_tail->next = b;
-    else
-        c->held = b;
-    c->held_tail = b;
-    c->held_bytes += b->len;
+    uint32_t add = c->out_len - JWL_HEADER_BYTES;   /* its messages, without its header */
+    struct jwl_held *t = c->held_tail;
+    if (t && t->len + add <= JWL_BATCH_MAX && t->nh + c->out_nh <= JWL_BATCH_HANDLES) {
+        t = grow_tail(c, t->len + add);
+        if (!t)
+            return overflow(c);
+        memcpy(t->bytes + t->len, c->out + JWL_HEADER_BYTES, add);
+        t->len += add;
+    } else {
+        if (held_cost(c->out_len) > JWL_HELD_MAX - c->held_bytes)
+            return overflow(c);
+        t = malloc(sizeof(*t) + c->out_len);
+        if (!t)
+            return overflow(c);
+        t->next = NULL;
+        t->len = t->cap = c->out_len;
+        t->nh = 0;
+        memcpy(t->bytes, c->out, c->out_len);
+        if (c->held_tail)
+            c->held_tail->next = t;
+        else
+            c->held = t;
+        c->held_tail = t;
+        c->held_bytes += held_cost(t->cap);
+    }
+    memcpy(t->h + t->nh, c->out_h, c->out_nh * sizeof(handle_t));
+    t->nh += c->out_nh;
     if (c->held_bytes > c->stats.held_peak)
         c->stats.held_peak = c->held_bytes;
-    c->out_len = JWL_HEADER_BYTES;   /* its handles are the held batch's now */
+    c->out_len = JWL_HEADER_BYTES;   /* its handles are the held block's now */
     c->out_nh = 0;
     return OK;
 }
@@ -387,7 +438,7 @@ static status_t drain(struct jwl_conn *c)
         c->held = b->next;
         if (!c->held)
             c->held_tail = NULL;
-        c->held_bytes -= b->len;
+        c->held_bytes -= held_cost(b->cap);
         free(b);
     }
     return OK;
