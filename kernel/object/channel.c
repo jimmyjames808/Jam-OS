@@ -539,6 +539,25 @@ status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t dea
     return st;
 }
 
+status_t channel_set_flags(struct channel *ch, uint32_t flags)
+{
+    if (flags & ~CHANNEL_NO_HANDLES)
+        return ERR_INVALID_ARGS;
+    if (!flags)
+        return OK;
+    status_t st = OK;
+    /* Under our lock, as the writer's check (hand_over_locked): a message
+     * with handles is either queued before this looks, or refused after. */
+    uint64_t f = spin_lock_irqsave(&ch->base.lock);
+    for (struct list_node *n = ch->queue.next; n != &ch->queue && st == OK; n = n->next)
+        if (container_of(n, struct chan_msg, node)->nhandles)
+            st = ERR_BAD_STATE;
+    if (st == OK)
+        ch->no_handles = true;
+    spin_unlock_irqrestore(&ch->base.lock, f);
+    return st;
+}
+
 void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged)
 {
     uint64_t sum = 0;

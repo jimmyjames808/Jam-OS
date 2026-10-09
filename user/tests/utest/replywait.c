@@ -554,6 +554,35 @@ bool t_handles_always_moved(void)
     return true;
 }
 
+/* D2 from user space: channel_set_flags needs RIGHT_READ on the end, and a
+ * send refused by the mark closes its handles as every refused send does. */
+bool t_channel_no_handles(void)
+{
+    struct job_info before, after;
+    CHECK_ST(info_of(own_job(), &before), OK);
+    handle_t a, b, wo, e;
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(jam_handle_duplicate(b, RIGHT_WRITE | RIGHT_WAIT, &wo), OK);
+    CHECK_ST(jam_channel_set_flags(wo, CHANNEL_NO_HANDLES), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_channel_set_flags(b, 1u << 9), ERR_INVALID_ARGS);
+    CHECK_ST(jam_channel_set_flags(b, CHANNEL_NO_HANDLES), OK);
+    CHECK_ST(jam_event_create(&e), OK);
+    CHECK_ST(jam_channel_write(a, "abcd", 4, &e, 1), ERR_NOT_SUPPORTED);
+    CHECK(gone(e));
+    CHECK_ST(jam_channel_write(a, "abcd", 4, NULL, 0), OK);   /* plain ones still go */
+    uint8_t buf[8];
+    CHECK_ST(jam_channel_read(&(struct channel_read_args){
+                 .h = b, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf }),
+             OK);
+    CHECK_ST(jam_handle_close(wo), OK);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(b), OK);
+    CHECK_ST(info_of(own_job(), &after), OK);
+    CHECK_EQ(after.used[JOB_LIMIT_HANDLES], before.used[JOB_LIMIT_HANDLES]);
+    CHECK_EQ(after.used[JOB_LIMIT_MSG_BYTES], before.used[JOB_LIMIT_MSG_BYTES]);
+    return true;
+}
+
 /* ---- the kernel's chanread_reply_wait_kill_loses_nothing ---------------------- */
 
 /* The log VMO's layout: kernel/test/test_chanrw.c's RW_*. */

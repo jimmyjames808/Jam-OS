@@ -179,6 +179,7 @@ bool t_reply_wait_second_process(void);
 bool t_reply_wait_port(void);
 bool t_reply_wait_refusals(void);
 bool t_handles_always_moved(void);
+bool t_channel_no_handles(void);
 int  replywait_child(int argc, char **argv);
 /* keptvmo.c: VMO_KEEP_PAGES and VMAR_KEPT_ONLY, and their child modes
  * ("utest kept-..."). */

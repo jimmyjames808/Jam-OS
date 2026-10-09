@@ -167,6 +167,8 @@ static void hand_to_locked(struct channel *peer, struct chan_waiter *w, struct c
 static status_t hand_over_locked(struct channel *ch, struct channel *peer, struct chan_msg *m,
                                  bool *filled, bool *must_queue)
 {
+    if (m->nhandles && peer->no_handles)
+        return ERR_NOT_SUPPORTED;   /* channel_set_flags: it receives no handles */
     uint32_t txid = msg_txid(m);
     struct chan_waiter *w = txid ? find_caller_locked(peer, txid) : NULL;
     if (w) {

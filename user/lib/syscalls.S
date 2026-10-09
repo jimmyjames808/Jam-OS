@@ -137,6 +137,14 @@ jam_channel_reply_wait:
     ret
     .size jam_channel_reply_wait, . - jam_channel_reply_wait
 
+    .globl jam_channel_set_flags
+    .type jam_channel_set_flags, @function
+jam_channel_set_flags:
+    mov $SYS_channel_set_flags, %eax
+    syscall
+    ret
+    .size jam_channel_set_flags, . - jam_channel_set_flags
+
     .globl jam_event_create
     .type jam_event_create, @function
 jam_event_create:

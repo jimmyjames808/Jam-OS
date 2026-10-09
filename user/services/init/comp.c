@@ -461,10 +461,13 @@ void comp_init(handle_t loop_port, bool on)
             printf("init: no channel for /svc/wayland: the console draws the screen\n");
         return;
     }
+    kept_end_mark(wl_srv);
     services_publish(SVC_WAYLAND, wl_cli, true);   /* a connection per opener (svc.connect) */
-    if (jam_channel_create(&note_cli, &note_srv) != OK)
+    if (jam_channel_create(&note_cli, &note_srv) != OK) {
         note_cli = note_srv = HANDLE_INVALID;   /* no notices: the log has them */
-    else
+    } else {
+        kept_end_mark(note_srv);
         services_publish(SVC_NOTIFY, note_cli, true);   /* a NOTIFY channel per opener */
+    }
     printf("init: the compositor draws the screen: each terminal is a window\n");
 }

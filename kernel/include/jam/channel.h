@@ -166,6 +166,13 @@ struct chan_read {
  * (as channel_read_into). */
 status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t deadline_ns);
 
+/* Set flags on ch (CHANNEL_NO_HANDLES, <jam/abi.h>; one-way: a flag never
+ * comes off): from then on a message carrying handles to ch is refused
+ * with ERR_NOT_SUPPORTED, as the cycle rule refuses one (the khandles
+ * untouched). ERR_BAD_STATE if one is queued on ch already;
+ * ERR_INVALID_ARGS for an unknown bit. */
+status_t channel_set_flags(struct channel *ch, uint32_t flags);
+
 /* The messages queued on ch now and what they are charged (bytes, plus
  * JOB_OBJECT_BYTES per carried handle): for debug_command "ps". */
 void channel_queued(struct channel *ch, uint32_t *msgs, uint64_t *charged);

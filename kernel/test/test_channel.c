@@ -190,6 +190,80 @@ KTEST(channel_limits_and_args)
     kobject_unref(CH(b));   /* frees 1024 queued messages */
 }
 
+/* D2: an end marked CHANNEL_NO_HANDLES refuses every message carrying
+ * handles (a write, a call's request, one for a reader waiting there),
+ * takes plain ones, and can be sent on whatever its writers try: its queue
+ * never holds a channel end. The mark is refused while a message with
+ * handles is queued, and never comes off. */
+static void no_handles_reader(void *arg)
+{
+    struct channel *ch = arg;
+    uint8_t buf[16];
+    struct khandle h[1];
+    struct chan_read r = { .buf = chan_kbytes(buf, sizeof(buf)), .h = h, .hcap = 1 };
+    status_t st = channel_read_wait(ch, &r, uptime_ns() + kt_patience_ms(10000) * NS_PER_MS);
+    KT_EQ(st, OK);
+    KT_EQ(r.nh, 0);   /* the plain message, not the refused one */
+}
+
+KTEST(chan_no_handles_mark)
+{
+    uint64_t live = channel_live_count();
+    volatile int destroyed = 0;
+    struct channel *a, *b;
+    KT_EQ(channel_create(&a, &b), OK);
+    KT_EQ(channel_set_flags(b, 1u << 7), ERR_INVALID_ARGS);
+    struct khandle kh = cobj_handle(&destroyed, RIGHTS_BASIC);
+    KT_EQ(channel_write(a, "abcd", 4, &kh, 1), OK);   /* queued on b, with a handle */
+    KT_EQ(channel_set_flags(b, CHANNEL_NO_HANDLES), ERR_BAD_STATE);
+    struct khandle got;
+    uint8_t buf[16];
+    uint32_t nb, nh;
+    KT_EQ(channel_read(b, buf, sizeof(buf), &nb, &got, 1, &nh), OK);
+    khandle_release(&got);
+    KT_EQ(channel_set_flags(b, CHANNEL_NO_HANDLES), OK);
+    KT_EQ(channel_set_flags(b, CHANNEL_NO_HANDLES), OK);   /* again: no change */
+    KT_EQ(channel_set_flags(b, 0), OK);                    /* nothing comes off */
+
+    kh = cobj_handle(&destroyed, RIGHTS_BASIC);
+    KT_EQ(channel_write(a, "abcd", 4, &kh, 1), ERR_NOT_SUPPORTED);
+    KT_ASSERT(kh.obj != NULL);   /* the object layer leaves it (the sys layer closes it) */
+    uint32_t q[2] = { 0, 1 }, rep[2];
+    KT_EQ(channel_call(a, q, sizeof(q), &kh, 1, rep, sizeof(rep), &nb, NULL, 0, NULL, 0),
+          ERR_NOT_SUPPORTED);
+    KT_ASSERT(!(kobject_signals(CH(b)) & SIG_READABLE));   /* nothing queued */
+    /* A reader waiting on b isn't handed one either; it gets the plain one. */
+    struct thread *t = thread_create("no-handles reader", no_handles_reader, b, PRIO_DEFAULT);
+    thread_sleep_ms(5);
+    KT_EQ(channel_write(a, "abcd", 4, &kh, 1), ERR_NOT_SUPPORTED);
+    KT_EQ(write_u32(a, 7), OK);
+    thread_join(t);
+    /* The other direction is not marked. */
+    KT_EQ(channel_write(b, "abcd", 4, &kh, 1), OK);
+    KT_EQ(channel_read(a, buf, sizeof(buf), &nb, &got, 1, &nh), OK);
+    khandle_release(&got);
+
+    /* What the mark is for: a writer can't put a channel end in b's queue,
+     * so b can always be sent on (the cycle rule refuses an end whose
+     * queue holds one). */
+    struct channel *c0, *c1, *s0, *s1;
+    KT_EQ(channel_create(&c0, &c1), OK);
+    KT_EQ(channel_create(&s0, &s1), OK);
+    struct khandle kc = khandle_from_new(CH(c1), RIGHTS_BASIC | RIGHTS_IO);
+    KT_EQ(channel_write(a, "c", 1, &kc, 1), ERR_NOT_SUPPORTED);
+    khandle_release(&kc);
+    kobject_ref(CH(b));   /* the message takes a handle of b's: ours stays */
+    struct khandle kb = khandle_from_new(CH(b), RIGHTS_BASIC | RIGHTS_IO);
+    KT_EQ(channel_write(s0, "b", 1, &kb, 1), OK);
+    kobject_unref(CH(c0));
+    kobject_unref(CH(s0));
+    kobject_unref(CH(s1));   /* drops the message, and b's handle in it */
+    kobject_unref(CH(a));
+    kobject_unref(CH(b));
+    KT_EQ(destroyed, 2);
+    KT_GLOBAL_EQ(channel_live_count(), live);
+}
+
 KTEST(channel_own_endpoint_rejected)
 {
     uint64_t live = channel_live_count();

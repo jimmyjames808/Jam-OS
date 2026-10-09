@@ -83,6 +83,7 @@ struct channel {
     struct list_node  callers;       /* chan_waiter */
     bool              closed;        /* we left the pair */
     bool              peer_closed;   /* the peer left the pair */
+    bool              no_handles;    /* CHANNEL_NO_HANDLES: refuses messages with handles */
 };
 
 /* The message handed to w, or NULL. Writers store it last, with release

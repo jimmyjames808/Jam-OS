@@ -88,6 +88,14 @@
 # request, as channel_read's. A fault writing the mark ends the call
 # after the reply (ERR_INVALID_ARGS), nothing read.
 24  channel_reply_wait status   @channel_reply_wait_args
+# Mark the end h (needs RIGHT_READ): CHANNEL_NO_HANDLES, it receives no
+# handles from now on. A message carrying handles to it is refused
+# (ERR_NOT_SUPPORTED, its handles closed as every refused send's), so its
+# queue never holds a channel end and the end can always be sent on (a
+# kept server end: devmgr's fs channel, init's /svc ends). One-way: a mark
+# never comes off. ERR_BAD_STATE if a message carrying handles is queued
+# there already; ERR_INVALID_ARGS for any other bit.
+25  channel_set_flags status    handle_t h, uint32_t flags
 
 # events and timers ---------------------------------------------------------
 30  event_create      status    handle_t *out

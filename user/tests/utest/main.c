@@ -580,6 +580,7 @@ static const struct {
     { "reply_wait_port", t_reply_wait_port },
     { "reply_wait_refusals", t_reply_wait_refusals },
     { "handles_always_moved", t_handles_always_moved },
+    { "channel_no_handles", t_channel_no_handles },
     { "runaway_hits_job_limits", t_runaway_hits_job_limits },
     { "kernel_objects_are_charged", t_kernel_objects_are_charged },
     { "kill_spinning_and_unstarted", t_kill_spinning_and_unstarted },

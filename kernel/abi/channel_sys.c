@@ -176,6 +176,17 @@ status_t sys_channel_write_rights(struct handle_table *t, handle_t h, const void
     return sys_channel_write_rights_from(t, h, &b, handles, rights, nhandles);
 }
 
+status_t sys_channel_set_flags(struct handle_table *t, handle_t h, uint32_t flags)
+{
+    struct channel *ch;
+    status_t st = get_channel(t, h, RIGHT_READ, &ch);
+    if (st != OK)
+        return st;
+    st = channel_set_flags(ch, flags);
+    kobject_unref((struct kobject *)ch);
+    return st;
+}
+
 status_t sys_channel_read_into(struct handle_table *t, handle_t h, const struct chan_bytes *b,
                                uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
                                uint32_t *actual_handles)
