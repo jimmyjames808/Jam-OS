@@ -398,10 +398,10 @@ static bool keep_malformed(handle_t svc)
     CHECK_ST(raw(svc, big, sizeof(big), NULL, 3), OK);   /* too big: thrown away whole */
     CHECK(refused_one());
     /* A drop of a slot that was never kept is no error: handled, not refused. */
-    uint32_t refused = k.refused;
+    uint32_t refused = k.refused, drops = k.drops;
     CHECK_ST(keep_drop(svc, 77), OK);
     CHECK_ST(keeper_take(&k), OK);
-    CHECK(k.refused == refused && k.drops == 0);
+    CHECK(k.refused == refused && k.drops == drops);
     return true;
 }
 
