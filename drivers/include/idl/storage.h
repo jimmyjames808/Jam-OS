@@ -2,7 +2,9 @@
  * change the .idl and run `make idl`.
  *
  * storage: one USB mass-storage disk, as usb-storage (drivers/usb-storage)
- * serves it to devmgr on its DR_SERVE channel. The disk's partitions are
+ * serves it on its DR_SERVE channel (devmgr's), and on a channel of
+ * volumes' own it makes when devmgr asks it (svc.connect, abi/idl/svc.idl:
+ * volumes is the disk's one real client). The disk's partitions are
  * listed here, and each is opened as its own `block` channel: nothing is
  * ever given the whole disk, with one exception: a disk with no partition
  * table whose block 0 is a FAT boot sector (a "superfloppy") is listed as
@@ -11,8 +13,9 @@
  *
  * Restart: when the stick goes away, or usb-storage ends, the channel's
  * peer closes, and so does every `block` channel opened from it.
- * usb-storage keeps nothing across a restart: devmgr finds the disk again
- * as a new one (its partitions listed and opened again).
+ * usb-storage keeps nothing across a restart: volumes finds the disk again
+ * when devmgr hands it the restarted driver's channel (its partitions
+ * listed and opened again).
  *
  * Protocol `storage` (id 14). Client: storage_<method>(ch, args..., &results...)
  * (and storage_<method>_until with a deadline, _within with a timeout), or
@@ -195,7 +198,7 @@ static inline status_t storage_open_partition_call(handle_t ch, bool idl_within,
 }
 /* A `block` channel limited to partition `index`: every request outside
  * its blocks fails ERR_OUT_OF_RANGE. `read_only` 1 makes it refuse writes
- * (ERR_ACCESS_DENIED); devmgr opens the ESP that way, and every
+ * (ERR_ACCESS_DENIED); volumes opens the ESP that way, and every
  * partition of a disk that isn't the boot disk until `mount -w` asks. */
 static inline status_t storage_open_partition_until(handle_t ch, uint64_t deadline_ns, uint8_t index, uint8_t read_only, handle_t *out_block)
 {
@@ -228,7 +231,7 @@ static inline status_t storage_disk_id_call(handle_t ch, bool idl_within, uint64
     return idl_st;
 }
 /* The disk's MBR disk id (bytes 440-443 of block 0, little-endian): what
- * the boot loader names the disk it booted from by (devmgr's boot disk).
+ * the boot loader names the disk it booted from by (volumes' boot disk).
  * 0 when the disk has no partition table, or its id is 0. */
 static inline status_t storage_disk_id_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_mbr_id)
 {
