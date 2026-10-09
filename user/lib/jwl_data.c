@@ -341,8 +341,11 @@ static status_t on_selection(void *data, uint32_t self, uint32_t id)
     if (o) {
         next = *o;
         o->id = 0;
+    } else if (id && id == c->clip.selection.id) {
+        next = c->clip.selection;   /* the same offer again: it stays (M12.1 C7) */
     }
-    destroy_offer(c, c->clip.selection.id);
+    if (c->clip.selection.id != next.id)
+        destroy_offer(c, c->clip.selection.id);
     for (unsigned i = 0; i < JWLC_OFFERS; i++) {
         destroy_offer(c, c->clip.offers[i].id);
         c->clip.offers[i].id = 0;
