@@ -20,7 +20,7 @@
 # followers' namespaces the change, libos's ns_update), and every file
 # opened through the old one is closed.
 
-protocol fs 16
+protocol fs 16 kept
 
 # Open a file (not a directory). flags: FS_READ 1, FS_WRITE 2, FS_CREATE 4,
 # FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32 (<os.h>). `file` speaks the file protocol;

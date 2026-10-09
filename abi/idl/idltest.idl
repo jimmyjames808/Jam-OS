@@ -7,7 +7,7 @@
 # Reconnect: a test server keeps nothing; a client whose call fails with
 # ERR_PEER_CLOSED has lost the server for good.
 
-protocol idltest 3
+protocol idltest 33
 
 1  echo     (u32 value)            -> (u32 value) idempotent
 # Answered when `release` names the key (or at once if it was released
@@ -17,3 +17,60 @@ protocol idltest 3
 3  release  (u32 key)              -> (u32 woken)
 # A VMO of `size` bytes, answered when `release` names `key`.
 4  make_vmo (u32 key, u32 size)    -> (handle vmo, u32 size_back) later
+
+# ---- arrays of varying length (idlarray.c) ----
+# data reversed, and tag + 1.
+5  bytes    (u32 tag, u8[<=64] data) -> (u8[<=64] data, u32 tag)
+# "<word>, <name>".
+6  greet    (str[<=16] name, str[<=8] word) -> (str[<=32] text)
+# Answered later with idltest_reply_later_text (by the test).
+7  later_text (u32 key)            -> (str[<=16] name, u8[<=4] extra) later
+# A handler that breaks its results' rules: how 1, a text of 9 bytes; 2, a
+# text that isn't UTF-8; 3, data of 5 bytes; 4, a NUL in the text; else
+# "ok" and 4 bytes.
+8  broken   (u32 how)              -> (str[<=8] text, u8[<=4] data)
+# Arrays of wider scalars, each aligned to its element's size on the wire:
+# total the sum of a, b and c, tag back, b back, and c negated.
+# ERR_BAD_STATE if the handler is given a misaligned array.
+9  sums     (u8 tag, u16[<=8] a, u32[<=4] b, u64[<=2] c) -> (u64 total, u8 tag, u32[<=4] b, i64[<=2] c)
+
+# idltest_two: a second protocol in the file (a protocol for each kind of
+# channel): its methods' ordinals are its own, and a server of either
+# protocol refuses the other's messages. utest only (idlproto.c).
+#
+# Reconnect: as idltest's.
+
+protocol idltest_two 34
+
+# Checked by idlproto.c (idl_consts).
+const LIMIT    64
+const HUGE     0x100000000
+const BELOW    -2
+# A flag, shifted.
+const FLAG_C   1 << 3
+
+1  echo     (u32 value)            -> (u32 value)
+# Messages past the old 8 KiB limit and buffers past IDL_STACK_MAX, which
+# the generated code takes from the heap: sum[i] = a[i] + b[i] + c[i] (mod
+# 256), total the sum of every byte of the three.
+2  big      (u8[4096] a, u8[4096] b, u8[4096] c) -> (u8[4096] sum, u32 total)
+# A big reply answered later: data[i] = key + i (mod 256), when `release_big`
+# says so.
+3  big_later   (u32 key)           -> (u8[4096] data) later
+
+# idltest_ev: events (one way, txid 0, never answered) both ways in one
+# protocol, carrying arrays and handles, beside a call. utest only
+# (idlevent.c).
+#
+# Reconnect: as idltest's.
+
+protocol idltest_ev 35
+
+# A call beside the events: the notes and gifts the server has taken.
+1  count    ()                    -> (u32 notes, u32 gifts)
+# To the server: a note, and a handle given.
+2  note     (u32 key, str[<=16] text) event
+3  give     (u32 key, handle obj) event
+# To the client: a ring, and two handles given.
+4  ring     -> (u32 key, u8[<=8] data) event
+5  gift     -> (u32 key, handle a, handle b) event

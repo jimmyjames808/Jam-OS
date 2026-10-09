@@ -156,7 +156,7 @@ IDL_SRCS := $(wildcard abi/idl/*.idl)
 IDL_GEN  := drivers/include/idl/common.h $(IDL_SRCS:abi/idl/%.idl=drivers/include/idl/%.h)
 IDL_OK   := $(BUILD)/idl.ok
 
-$(IDL_OK): $(IDL_SRCS) tools/genidl.py $(wildcard $(IDL_GEN))
+$(IDL_OK): $(IDL_SRCS) abi/idl/ids.txt tools/genidl.py $(wildcard $(IDL_GEN))
 	@mkdir -p $(BUILD)
 	python3 tools/genidl.py check
 	@touch $@
@@ -540,8 +540,8 @@ $(BUILD)/drv/$(1).bootfs: $(BUILD)/drv/$(1)
 endef
 $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 
-# `make check`: the generated code is current (and the Wayland generator
-# passes its own tests, tools/genwl-tests/), the driver check still
+# `make check`: the generated code is current (and the IDL and Wayland
+# generators pass their own tests: genidl's selftest, tools/genwl-tests/), the driver check still
 # rejects what it must (tools/checkdriver-tests/: a kernel include, a
 # kmalloc call, a call into another driver, ...) and accepts a clean one,
 # the Markdown docs still match the tree (tools/checkdocs.py), and the
@@ -549,6 +549,7 @@ $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
+	CC="$(CC)" python3 tools/genidl.py selftest
 	python3 tools/genwl.py check
 	HOSTCC="$(HOSTCC)" python3 tools/genwl.py selftest
 	python3 tools/genkeymap.py check

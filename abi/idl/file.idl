@@ -14,7 +14,7 @@
 # fresh (said in the log); the file is closed, and is opened again
 # through the mount's `fs` channel.
 
-protocol file 17
+protocol file 17 kept
 
 # Read up to `length` bytes (<= the buffer's size) at `offset` into the
 # buffer; `actual` < length only at the end of the file.

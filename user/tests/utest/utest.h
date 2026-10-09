@@ -131,6 +131,7 @@ bool t_idl_answer_later(void);
 bool t_idl_later_blocking_clients(void);
 bool t_idl_later_handles(void);
 bool t_idl_async_through_port(void);
+bool t_idl_txid_next(void);
 /* idlserve.c: the generated server loop (on channel_reply_wait) and the
  * generated clients' timeouts (_within), on the test protocol null. */
 bool t_idl_serve_reply_wait(void);
@@ -142,6 +143,17 @@ bool t_idl_within_times_out(void);
 bool t_idl_slot_take_run(void);
 bool t_idl_slot_idempotent(void);
 bool t_idl_slot_reply_after(void);
+/* idlproto.c: several protocols in one .idl file (idltest, idltest_two). */
+bool t_idl_wrong_protocol(void);
+bool t_idl_big_messages(void);
+bool t_idl_consts(void);
+/* idlarray.c: arrays of varying length (u8[<=N], str[<=N]) on idltest. */
+bool t_idl_var_arrays(void);
+bool t_idl_var_refused(void);
+bool t_idl_scalar_arrays(void);
+/* idlevent.c: events both ways, with arrays and handles (idltest_ev). */
+bool t_idl_events_to_server(void);
+bool t_idl_events_to_client(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
