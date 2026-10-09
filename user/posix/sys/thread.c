@@ -111,7 +111,7 @@ static _Noreturn void clone_entry(struct clone_start *s)
     struct clone_start c = *s;
     int64_t tid = kp_set_tid_word((uint32_t *)c.clear_tid);
     if (tid <= 0)
-        jam_thread_exit();   /* can't be: the parent made sure the kernel has the call */
+        jam_thread_exit();   /* only for a bad word: musl's is a global, always good */
     self_tid = (uint32_t)tid;
     if (c.set_tid)
         *c.set_tid = (int)tid;
@@ -147,8 +147,6 @@ int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
         return -ENOSYS;   /* a process: no fork of any kind */
     if (flags & ~(CLONE_OK | 0xff))   /* the low byte: the exit signal, unused */
         return -EINVAL;
-    if (!kp_threads())
-        return -EAGAIN;   /* nothing could tell a joiner this thread is gone */
     handle_t h;
     status_t st = jam_thread_create(lx_self_process(), "pthread", 7, 0, &h);
     if (st != OK)

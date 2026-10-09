@@ -8,14 +8,9 @@
  *   - pthread_join of 1,000 threads, each joined as soon as it returns, so
  *     its stack is unmapped at once (the kernel clears the tid word only
  *     after the thread has left it), and 100 detached threads, which unmap
- *     their own stacks; the job's pages come back.
- *
- * It needs the kernel's tid word (thread_set_tid_word): built for a
- * kernel without it, the section says it is waiting for it and checks
- * only that pthread_create fails cleanly. */
+ *     their own stacks; the job's pages come back. */
 #include <stdio.h>
 #include <errno.h>
-#include <jam/syscall_nums.h>
 #include <pthread.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -35,11 +30,13 @@ static __thread char tls_buf[256] = "image";      /* .tdata */
 static __thread long tls_zero[64];                /* .tbss */
 
 static pthread_barrier_t barrier;
+static pid_t main_tid;   /* the first thread's id */
 
 static void *tls_worker(void *arg)
 {
     long me = (long)arg;
-    bool ok = tls_int == 1234 && !strcmp(tls_buf, "image") && !tls_zero[63];
+    bool ok = tls_int == 1234 && !strcmp(tls_buf, "image") && !tls_zero[63] &&
+              gettid() > 0 && gettid() != main_tid;
     tls_int = (int)me;
     snprintf(tls_buf, sizeof(tls_buf), "thread %ld", me);
     tls_zero[63] = me;
@@ -53,6 +50,7 @@ static void *tls_worker(void *arg)
 static void check_tls(void)
 {
     pthread_t t[TLS_THREADS];
+    main_tid = gettid();
     CHECK(pthread_barrier_init(&barrier, NULL, TLS_THREADS) == 0);
     for (long i = 0; i < TLS_THREADS; i++)
         CHECK(pthread_create(&t[i], NULL, tls_worker, (void *)(i + 1)) == 0);
@@ -169,12 +167,6 @@ static void check_joins(void)
 
 void pt_thread(char **argv __attribute__((unused)))
 {
-#ifndef SYS_thread_set_tid_word
-    printf("posixtest: thread: waiting for the kernel's tid word (thread_set_tid_word)\n");
-    pthread_t t;
-    CHECK(pthread_create(&t, NULL, quick, NULL) == EAGAIN);
-    return;
-#endif
     check_tls();
     check_errno();
     check_mutex();

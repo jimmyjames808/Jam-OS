@@ -17,15 +17,6 @@
 #include "calls.h"
 #include "glue.h"
 
-/* ERR_INTERRUPTED (-26): a wait ended by thread_interrupt. Defined by the
- * kernel's <jam/status.h> once it has thread_interrupt; the number is the
- * plan's either way. */
-#ifdef ERR_INTERRUPTED
-#define LX_ERR_INTERRUPTED ERR_INTERRUPTED
-#else
-#define LX_ERR_INTERRUPTED (-26)
-#endif
-
 /* -errno for a status (errno.c): the default meaning of each ERR_*. */
 long lx_err(status_t st);
 
@@ -42,13 +33,9 @@ const struct posixfds_state *lx_handover(const char **cwd);
 
 /* ---- the kernel's calls for POSIX (kposix.c) ------------------------------
  * Small thread ids, a thread's tid word, CPU time and the figures any
- * process may read are new kernel calls (docs/M13-PLAN.md, "The new and
- * changed interfaces"). kposix.c is the one file that calls them; built
- * against a kernel without them, it says so (kp_threads false,
- * ERR_NOT_SUPPORTED) and the layer makes no thread but the first. */
+ * process may read (docs/M13-PLAN.md, "The new and changed interfaces").
+ * kposix.c is the one file that calls them. */
 
-/* The kernel clears a thread's tid word at its end: threads can be made. */
-bool     kp_threads(void);
 /* thread_set_tid_word: at this thread's end, after its last user access,
  * the kernel stores 0 at *word and wakes it (NULL: nothing). This
  * thread's id (> 0), or an ERR_*. */

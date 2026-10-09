@@ -158,6 +158,11 @@ static void check_time(void)
     CHECK(clock_settime(CLOCK_REALTIME, &real) == -1 && errno == EPERM);
     struct timespec bad = { 0, 1000000000L };
     CHECK(nanosleep(&bad, NULL) == -1 && errno == EINVAL);
+    struct timespec cpu;   /* the kernel's CPU times: some, after the sleep's setup */
+    CHECK(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &cpu) == 0 && (cpu.tv_sec || cpu.tv_nsec));
+    CHECK(clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu) == 0 && (cpu.tv_sec || cpu.tv_nsec));
+    CHECK(clock() > 0);
+    CHECK(gettid() > 0 && gettid() < (1 << 22));   /* the kernel's small id */
     time_t t = time(NULL);
     struct tm tm;
     CHECK(localtime_r(&t, &tm) != NULL);

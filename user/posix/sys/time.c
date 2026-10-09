@@ -138,7 +138,7 @@ long lx_clock_nanosleep(long clk, long flags, long req, long rem, long e, long f
     status_t st = jam_sleep_until(deadline);
     if (st == OK)
         return 0;
-    if (st == LX_ERR_INTERRUPTED && rem && !(flags & TIMER_ABSTIME)) {
+    if (st == ERR_INTERRUPTED && rem && !(flags & TIMER_ABSTIME)) {
         uint64_t t = now();
         to_timespec(deadline > t ? (int64_t)(deadline - t) : 0, (struct timespec *)(uintptr_t)rem);
     }

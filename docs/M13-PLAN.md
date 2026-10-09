@@ -1320,15 +1320,10 @@ need to know.
 
 **Choices**
 - The kernel's POSIX calls (thread_set_tid_word, thread_get_info, the
-  CPU times, sys_public_info) are used only in
-  `user/posix/sys/kposix.c`, each behind `#ifdef SYS_<call>`. The field
-  names it uses (`thread_info.tid` and `.cpu_ns`, `process_info.cpu_ns`,
-  `sys_public_info.version`, `.cpus_online`, `.total_pages`,
-  `.page_size`) are A1's reading of the plan's table: if K1 chose others,
-  that file is the one to change. Without thread_set_tid_word the layer
-  makes no thread but the first (`pthread_create` is `EAGAIN`: nothing
-  could release musl's thread list lock), the first thread's id is 1,
-  and posixtest's thread section says it is waiting.
+  CPU times, sys_public_info) are made only in
+  `user/posix/sys/kposix.c`: a change to their shapes is a change to that
+  file. Without sys_public_info's figures (a call that fails), `uname`
+  says "unknown" and `sysconf` one CPU.
 - Thread handles: `clone` keeps each new thread's handle in a table by
   its id (8,192 threads alive at once at most: `EAGAIN` past it), and the
   thread closes its own on its way out (`exit`, or `__unmapself` for a
