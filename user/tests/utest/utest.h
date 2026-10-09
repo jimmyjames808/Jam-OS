@@ -537,6 +537,7 @@ bool t_comp_never_reads(void);
 /* Clients lost every way, round after round: nothing stays charged to the compositor. */
 bool t_comp_lost_clients(void);
 bool t_comp_fuzz(void);
+bool t_comp_chaos(void);
 /* The same against the desktop's compositor (/svc/wayland): `utest only comp_live`. */
 bool t_comp_live_bad_requests(void);
 bool t_comp_live_caps(void);

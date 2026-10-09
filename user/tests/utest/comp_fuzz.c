@@ -20,7 +20,19 @@
  * before. t_comp_live_fuzz: fewer rounds against the desktop's own
  * (/svc/wayland), which must keep serving (G1-PLAN's X1; g1-hostile.txt
  * runs `utest only comp_live`). The rounds are seeded: a failure prints
- * the round, and FUZZ_SEED + round makes it again. */
+ * the round, and FUZZ_SEED + round makes it again.
+ *
+ * t_comp_chaos: the desktop on (compseat.h's harness: a fake keyboard and
+ * mouse), three clients speaking proper Wayland through libjwl, and a
+ * seeded mix of what a user and careless programs do at once: toplevels
+ * made, drawn at their configure's size or any, unmapped, destroyed in
+ * order and out of it (a wl_surface before its toplevel: the client is
+ * disconnected and comes back), limits from 0 to INT32_MAX, full screen,
+ * maximised, minimised, titles, frame callbacks, buffers destroyed while
+ * shown, pools grown, clients closed mid-way; meanwhile the user holds Alt
+ * and Tabs, tiles and floats, moves windows between screens, opens the
+ * search box, clicks and drags anywhere. The compositor must answer every
+ * client throughout, and end with its job empty. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -31,7 +43,7 @@
 #include <jwl/wayland.h>
 #include <jwl/xdg_shell.h>
 #include <os.h>
-#include "comptest.h"
+#include "compseat.h"
 #include "utest.h"
 
 #define FUZZ_SEED        0x4a4d3132u   /* "JM12" */
@@ -416,4 +428,327 @@ bool t_comp_live_fuzz(void)
     }
     jam_handle_close(ch);
     return fuzz(&p, FUZZ_LIVE_ROUNDS);
+}
+
+/* ---- chaos: proper clients and a user, at once --------------------------------------------- */
+
+#define CHAOS_SEED    0x43484153u   /* "CHAS" */
+#define CHAOS_STEPS   2400u
+#define CHAOS_CLIENTS 3u
+#define CHAOS_TOPS    4u
+#define CHAOS_POOL    (2u << 20)   /* each client's pool: a 724x724 buffer at most */
+
+struct ctop {
+    uint32_t s, xs, top, buf;      /* 0: none */
+    uint32_t serial;               /* the newest configure's, 0: none yet */
+    int32_t cw, ch;                /* its size */
+};
+
+struct cclient {
+    struct sc c;
+    uint32_t wm, pool;
+    uint32_t pool_size;
+    struct ctop t[CHAOS_TOPS];
+    bool open;
+};
+
+struct chaos {
+    struct cs cs;
+    struct cclient cl[CHAOS_CLIENTS];
+    uint32_t r;
+    unsigned reconnects, drawn;
+};
+
+static uint32_t crnd(struct chaos *x)
+{
+    uint32_t v = x->r;
+    v ^= v << 13;
+    v ^= v >> 17;
+    v ^= v << 5;
+    return x->r = v;
+}
+
+static uint32_t cbelow(struct chaos *x, uint32_t n)
+{
+    return crnd(x) % n;
+}
+
+static bool cl_open(struct chaos *x, struct cclient *c)
+{
+    memset(c, 0, sizeof(*c));
+    CHECK(cs_client(&x->cs, &c->c));
+    struct ct_client *k = &c->c.k;
+    CHECK((c->wm = ct_new(k, &jwl_xdg_wm_base_interface, 1)) != 0);
+    CHECK_ST(jwl_wl_registry_bind(k->c, k->registry, 5, "xdg_wm_base", 1, c->wm), OK);
+    c->pool_size = CHAOS_POOL;
+    CHECK((c->pool = ct_pool(k, c->pool_size, NULL)) != 0);
+    CHECK_ST(ct_roundtrip(k), OK);
+    c->open = true;
+    return true;
+}
+
+/* The configures its toplevels got since the last look. */
+static void cl_configures(struct cclient *c)
+{
+    struct ct_client *k = &c->c.k;
+    for (unsigned i = 0; i < k->nev; i++) {
+        const struct ct_event *e = &k->ev[i];
+        for (unsigned j = 0; j < CHAOS_TOPS; j++) {
+            struct ctop *t = &c->t[j];
+            if (!t->top)
+                continue;
+            if (e->iface == &jwl_xdg_surface_interface && e->id == t->xs)
+                t->serial = e->u[0];
+            if (e->iface == &jwl_xdg_toplevel_interface && e->id == t->top &&
+                e->op == JWL_XDG_TOPLEVEL_EV_CONFIGURE) {
+                t->cw = (int32_t)e->u[0];
+                t->ch = (int32_t)e->u[1];
+            }
+        }
+    }
+    ct_clear(k);
+}
+
+static const int32_t limits_of[] = { 0, 0, 50, 300, 900, 10000, INT32_MAX };
+
+static void top_new(struct chaos *x, struct cclient *c, struct ctop *t)
+{
+    struct ct_client *k = &c->c.k;
+    struct jwl_conn *j = k->c;
+    *t = (struct ctop){ 0 };
+    t->s = ct_new(k, &jwl_wl_surface_interface, 4);
+    t->xs = ct_new(k, &jwl_xdg_surface_interface, 1);
+    t->top = ct_new(k, &jwl_xdg_toplevel_interface, 1);
+    if (!t->s || !t->xs || !t->top)
+        return;
+    (void)jwl_wl_compositor_create_surface(j, k->compositor, t->s);
+    (void)jwl_xdg_wm_base_get_xdg_surface(j, c->wm, t->xs, t->s);
+    (void)jwl_xdg_surface_get_toplevel(j, t->xs, t->top);
+    static const char *const titles[] = { "Terminal", "Jamjar", "",
+                                          "a title long enough to be cut short anywhere it is "
+                                          "drawn, with \xc3\xa9 in it" };
+    (void)jwl_xdg_toplevel_set_title(j, t->top, titles[cbelow(x, 4)]);
+    if (cbelow(x, 5) == 0)
+        (void)jwl_xdg_toplevel_set_fullscreen(j, t->top, 0);
+    if (cbelow(x, 5) == 0)
+        (void)jwl_xdg_toplevel_set_maximized(j, t->top);
+    (void)jwl_wl_surface_commit(j, t->s);   /* the initial commit */
+}
+
+/* A buffer for t at its configure's size (or any, now and then), acked and shown. */
+static void top_draw(struct chaos *x, struct cclient *c, struct ctop *t)
+{
+    struct ct_client *k = &c->c.k;
+    struct jwl_conn *j = k->c;
+    if (!t->serial)
+        return;
+    (void)jwl_xdg_surface_ack_configure(j, t->xs, t->serial);
+    int32_t w = t->cw > 0 && cbelow(x, 4) ? t->cw : 1 + (int32_t)cbelow(x, 700);
+    int32_t h = t->ch > 0 && cbelow(x, 4) ? t->ch : 1 + (int32_t)cbelow(x, 700);
+    while ((uint64_t)w * (uint64_t)h * 4 > c->pool_size) {
+        w = w / 2 + 1;
+        h = h / 2 + 1;
+    }
+    uint32_t b = ct_new(k, &jwl_wl_buffer_interface, 1);
+    if (!b)
+        return;
+    (void)jwl_wl_shm_pool_create_buffer(j, c->pool, b, 0, w, h, w * 4,
+                                        cbelow(x, 2) ? JWL_WL_SHM_FORMAT_XRGB8888
+                                                     : JWL_WL_SHM_FORMAT_ARGB8888);
+    (void)jwl_wl_surface_attach(j, t->s, b, 0, 0);
+    (void)jwl_wl_surface_damage_buffer(j, t->s, 0, 0, w, h);
+    if (cbelow(x, 3) == 0) {
+        uint32_t cb = ct_new(k, &jwl_wl_callback_interface, 4);
+        if (cb)
+            (void)jwl_wl_surface_frame(j, t->s, cb);
+    }
+    (void)jwl_wl_surface_commit(j, t->s);
+    if (t->buf && cbelow(x, 2))
+        (void)jwl_wl_buffer_destroy(j, t->buf);   /* the old one, shown until now */
+    else if (cbelow(x, 4) == 0)
+        (void)jwl_wl_buffer_destroy(j, b);        /* the new one, while it is shown */
+    t->buf = b;
+    x->drawn++;
+}
+
+/* t gone: in order (toplevel, xdg_surface, wl_surface), or the wl_surface
+ * first (a protocol error: the client is disconnected). */
+static void top_destroy(struct chaos *x, struct cclient *c, struct ctop *t)
+{
+    struct jwl_conn *j = c->c.k.c;
+    if (cbelow(x, 6) == 0) {
+        (void)jwl_wl_surface_destroy(j, t->s);
+    } else {
+        (void)jwl_xdg_toplevel_destroy(j, t->top);
+        (void)jwl_xdg_surface_destroy(j, t->xs);
+        (void)jwl_wl_surface_destroy(j, t->s);
+    }
+    *t = (struct ctop){ 0 };
+}
+
+/* One thing a client does to one of its toplevels. */
+static void client_step(struct chaos *x, struct cclient *c)
+{
+    struct ctop *t = &c->t[cbelow(x, CHAOS_TOPS)];
+    struct jwl_conn *j = c->c.k.c;
+    if (!t->top) {
+        top_new(x, c, t);
+        return;
+    }
+    switch (cbelow(x, 12)) {
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+        top_draw(x, c, t);
+        break;
+    case 4:   /* unmapped: a commit with no buffer */
+        (void)jwl_wl_surface_attach(j, t->s, 0, 0, 0);
+        (void)jwl_wl_surface_commit(j, t->s);
+        t->serial = 0;   /* a new initial configure comes */
+        break;
+    case 5:
+        top_destroy(x, c, t);
+        break;
+    case 6: {
+        int32_t a = limits_of[cbelow(x, 7)], b = limits_of[cbelow(x, 7)];
+        int32_t mx = limits_of[cbelow(x, 7)], my = limits_of[cbelow(x, 7)];
+        (void)jwl_xdg_toplevel_set_min_size(j, t->top, a, b);
+        (void)jwl_xdg_toplevel_set_max_size(j, t->top, mx && mx < a ? a : mx,
+                                            my && my < b ? b : my);
+        (void)jwl_wl_surface_commit(j, t->s);
+        break;
+    }
+    case 7:
+        if (cbelow(x, 2))
+            (void)jwl_xdg_toplevel_set_fullscreen(j, t->top, 0);
+        else
+            (void)jwl_xdg_toplevel_unset_fullscreen(j, t->top);
+        break;
+    case 8:
+        if (cbelow(x, 2))
+            (void)jwl_xdg_toplevel_set_maximized(j, t->top);
+        else
+            (void)jwl_xdg_toplevel_unset_maximized(j, t->top);
+        break;
+    case 9:
+        (void)jwl_xdg_toplevel_set_minimized(j, t->top);
+        (void)jwl_xdg_toplevel_set_title(j, t->top, cbelow(x, 2) ? "Jamjar" : "Terminal 2");
+        break;
+    case 10:
+        if (c->pool_size < 4 * CHAOS_POOL) {   /* the pool grows under its buffers */
+            c->pool_size += PAGE_SIZE * (1 + cbelow(x, 64));
+            (void)jwl_wl_shm_pool_resize(j, c->pool, (int32_t)c->pool_size);
+        }
+        break;
+    default:   /* now and then the client goes, windows and all */
+        if (cbelow(x, 4)) {
+            top_draw(x, c, t);
+            break;
+        }
+        ct_close(&c->c.k);
+        c->open = false;
+        break;
+    }
+}
+
+/* One thing the user does: keys with modifiers held (Alt+Tab's list stays
+ * up while Alt is), modifiers let go, the mouse moved, buttons. */
+static bool user_step(struct chaos *x)
+{
+    struct cs *t = &x->cs;
+    static const uint16_t keys[] = {
+        U_TAB, U_TAB, U_TAB, 0x29 /* Esc */, 0x0b /* H */, 0x0e /* K */, 0x4f /* Right */,
+        0x50 /* Left */, 0x14 /* Q */, 0x10 /* M */, U_F, U_T, 0x1e /* 1 */, 0x1f /* 2 */, U_A,
+        0x28 /* Enter */, U_LGUI /* Super alone: the search box */,
+    };
+    static const uint8_t mods[] = {
+        INPUT_MOD_LALT, INPUT_MOD_LALT | INPUT_MOD_LSHIFT, INPUT_MOD_LGUI,
+        INPUT_MOD_LGUI | INPUT_MOD_LSHIFT, INPUT_MOD_LGUI | INPUT_MOD_LCTRL,
+        INPUT_MOD_LGUI | INPUT_MOD_LALT, 0,
+    };
+    switch (cbelow(x, 6)) {
+    case 0:
+    case 1: {
+        uint16_t u = keys[cbelow(x, sizeof(keys) / sizeof(keys[0]))];
+        uint8_t m = mods[cbelow(x, sizeof(mods) / sizeof(mods[0]))];
+        CHECK_ST(input_key(t->src, u, INPUT_KEY_DOWN, m), OK);
+        CHECK_ST(input_key(t->src, u, INPUT_KEY_UP, m), OK);
+        break;
+    }
+    case 2:
+        CHECK_ST(input_key(t->src, cbelow(x, 2) ? U_LALT : U_LGUI, INPUT_KEY_UP, 0), OK);
+        break;
+    case 3:
+    case 4: {
+        int16_t dx = (int16_t)((int32_t)cbelow(x, 121) - 60);
+        int16_t dy = (int16_t)((int32_t)cbelow(x, 121) - 60);
+        CHECK_ST(input_mouse(t->src, dx, dy, (int8_t)((int32_t)cbelow(x, 3) - 1), t->buttons), OK);
+        break;
+    }
+    default:
+        t->buttons = cbelow(x, 2) ? (uint8_t)(1u << cbelow(x, 2)) : 0;
+        CHECK_ST(input_mouse(t->src, 0, 0, 0, t->buttons), OK);
+        break;
+    }
+    return true;
+}
+
+static bool chaos_steps(struct chaos *x)
+{
+    for (unsigned i = 0; i < CHAOS_CLIENTS; i++)
+        CHECK(cl_open(x, &x->cl[i]));
+    for (unsigned step = 0; step < CHAOS_STEPS; step++) {
+        if (cbelow(x, 3) == 0) {
+            if (!user_step(x))
+                FAIL("step %u: the input source", step);
+            if (step % 8 == 0)
+                CHECK(cs_flush(&x->cs));
+            continue;
+        }
+        struct cclient *c = &x->cl[cbelow(x, CHAOS_CLIENTS)];
+        if (!c->open) {
+            x->reconnects++;
+            if (!cl_open(x, c))
+                FAIL("step %u: a client couldn't connect again", step);
+            continue;
+        }
+        client_step(x, c);
+        if (!c->open)
+            continue;
+        status_t st = ct_roundtrip(&c->c.k);
+        if (st == ERR_INVALID_ARGS) {   /* disconnected for what it did (a wl_surface
+                                         * before its toplevel): it comes back */
+            ct_close(&c->c.k);
+            c->open = false;
+            continue;
+        }
+        if (st != OK)
+            FAIL("step %u: a client's round trip: %s", step, status_str(st));
+        cl_configures(c);
+    }
+    CHECK_ST(input_key(x->cs.src, U_LALT, INPUT_KEY_UP, 0), OK);
+    x->cs.buttons = 0;
+    CHECK_ST(input_mouse(x->cs.src, 0, 0, 0, 0), OK);
+    CHECK(cs_flush(&x->cs));
+    for (unsigned i = 0; i < CHAOS_CLIENTS; i++)
+        if (x->cl[i].open)
+            CHECK_ST(ct_roundtrip(&x->cl[i].c.k), OK);
+    printf("utest: %s: %u steps, %u buffers shown, %u reconnects\n", utest_cur, CHAOS_STEPS,
+           x->drawn, x->reconnects);
+    return true;
+}
+
+bool t_comp_chaos(void)
+{
+    static struct chaos x;
+    memset(&x, 0, sizeof(x));
+    x.r = CHAOS_SEED;
+    CHECK(cs_start_desk(&x.cs));
+    bool ok = chaos_steps(&x);
+    for (unsigned i = 0; i < CHAOS_CLIENTS; i++)
+        if (x.cl[i].open)
+            ct_close(&x.cl[i].c.k);
+    CHECK(cs_stop(&x.cs));
+    return ok;
 }
