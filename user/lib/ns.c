@@ -155,7 +155,7 @@ static void apply_locked(const struct ns_msg *m, uint32_t n, const handle_t *hs,
 {
     bool mounting = m->kind == NS_MOUNT || m->kind == NS_SET;
     bool ok = n >= NS_MSG_SIZE(0) && m->count <= NS_MAX_ENTRIES && n == NS_MSG_SIZE(m->count) &&
-              !(m->connect >> m->count) &&
+              !((uint64_t)m->connect >> m->count) &&   /* count may be 32 */
               ((mounting && nh == m->count) || (m->kind == NS_UNMOUNT && !nh && !m->connect));
     if (!ok) {
         for (uint32_t i = 0; i < nh; i++)

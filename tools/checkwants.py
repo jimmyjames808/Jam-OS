@@ -19,7 +19,7 @@ same rules: printable ASCII lines, each one of
     right <name>          klog sysinfo clock debug
 
 and, the build's own policy, the services that kill drivers and services
-(devmgr-ctl, init) and the file server's (serve: with it a program could
+(devmgr-ctl, init), the disks' and mounts' (volumes) and the file server's (serve: with it a program could
 put any file it can read on the network without the listen permission)
 only for a program whose source is under user/tests/,
 and netstack's and the resolver's reserves for the network's own services
@@ -37,7 +37,7 @@ import sys
 OS_H = "user/include/os.h"
 POINTS = {"/boot", "/esp", "/data", "/usb*", "*"}
 RIGHTS = {"klog", "sysinfo", "clock", "debug"}
-TESTS_ONLY = {"devmgr-ctl", "init", "serve"}
+TESTS_ONLY = {"devmgr-ctl", "init", "serve", "volumes"}
 SERVICES_ONLY = {"net-sys", "dns-sys", "notify"}
 LISTEN = {"net-listen", "net-low"}   # given only as `svc net listen [low]` (<wants.h>)
 TEXT_MAX = 1024
@@ -121,11 +121,12 @@ def selftest():
     """check_text on lists it must take and lists it must refuse; 0 on PASS."""
     svcs = services()
     take = [b"svc net\n", b"svc net listen\n", b"svc net listen\nsvc dns\nmount /data rw\n",
-            b"right clock\n", b"svc init\n"]
+            b"right clock\n", b"svc init\n", b"svc volumes\n"]
     take_services = [b"svc net listen low\n", b"svc net-sys\n"]
     refuse = [b"svc net-listen\n", b"svc dns listen\n", b"svc net listen now\n",
               b"svc net Listen\n", b"svc nope\n", b"right listen\n", b"svc init\n",
-              b"svc net-sys\n", b"svc dns-sys\n", b"svc serve\n", b"svc net listen low\n",
+              b"svc net-sys\n", b"svc dns-sys\n", b"svc serve\n", b"svc volumes\n",
+              b"svc net listen low\n",
               b"svc net-low\n", b"svc net listen lower\n", b"svc net listen low now\n",
               b"mount /data rw\n" * 21 + b"svc net listen\nsvc net listen\n"]   # 25 wants
     fails = []
