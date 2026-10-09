@@ -163,17 +163,6 @@ bool terms_extra_open(void)
     return false;
 }
 
-/* devmgr takes a new console (after the console restarted, under
- * `nocomp`: with a compositor the keys are its): its HID drivers come
- * back connected to it. */
-static void tell_devmgr(void)
-{
-    handle_t c = HANDLE_INVALID;
-    if (shell_devmgr() && !comp_on() &&
-        jam_handle_duplicate(terms[0].cons, RIGHT_SAME, &c) == OK)
-        services_devmgr_input(c);
-}
-
 /* Terminal k's console's handles (x has room for 5), how many. */
 static unsigned console_handles(unsigned k, handle_t b, struct spawn_handle *x)
 {
@@ -232,8 +221,6 @@ static status_t start_console(unsigned k)
     if (terms[k].cons)
         jam_handle_close(terms[k].cons);
     terms[k].cons = a;
-    if (!k)
-        tell_devmgr();   /* a restart: devmgr reconnects its HID drivers */
     return OK;
 }
 

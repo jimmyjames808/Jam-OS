@@ -178,11 +178,6 @@ bool t_conwin_keys(void)
     CHECK(!key_of_wayland(c, 7, 0, 0, &ev));        /* no such state */
     CHECK(!key_of_wayland(0, JWL_KEY_PRESSED, 0, 0, &ev));
     CHECK(!key_of_wayland(100000, JWL_KEY_PRESSED, 0, 0, &ev));
-    /* Super+Enter asks for a terminal; Enter alone, or released, doesn't. */
-    uint32_t enter = keymap_evdev_of_hid(0x28);
-    CHECK(key_of_wayland(enter, JWL_KEY_PRESSED, KEYMAP_MOD_SUPER, '\n', &ev) && asks_terminal(&ev));
-    CHECK(key_of_wayland(enter, JWL_KEY_PRESSED, 0, '\n', &ev) && !asks_terminal(&ev));
-    CHECK(key_of_wayland(enter, JWL_KEY_RELEASED, KEYMAP_MOD_SUPER, 0, &ev) && !asks_terminal(&ev));
     return true;
 }
 

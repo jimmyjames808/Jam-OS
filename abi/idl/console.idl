@@ -1,12 +1,14 @@
 # console: the console process (user/services/console) serves this to
-# programs (the shell), devmgr and init. It owns the screen after boot (the
-# kernel draws until the console takes the framebuffer, and again while it
-# is gone; a panic always draws). Format: see tools/genidl.py.
+# programs (the shell), devmgr and init. Each console is a terminal: a
+# window on the compositor's desktop (/svc/wayland), whose text it draws
+# into the window's buffers and mirrors to the serial port; the
+# compositor owns the screen and the input (M12's Q14: the full-screen
+# console, its input sources and its lent screen are gone). Format: see
+# tools/genidl.py.
 #
 # Restart: if the channel's peer closes (the console restarted), clients
 # ask devmgr/init for the new one. The console keeps nothing across a
-# restart: what was on the screen, a lent screen and input connections
-# are made again.
+# restart: what was in the window and the key channels are made again.
 
 protocol console 12
 
@@ -19,43 +21,26 @@ protocol console 12
 # channel gives focus back). Each message is one struct input_key_event
 # (<jam/abi.h>).
 4  open_keys      () -> (handle keys)
-# A new input source: the console serves the `input` protocol on its end;
-# the caller (devmgr, for a HID driver; or the serial source) gets the
-# other end and hands it to the source, which calls `input` on it. ADMIN
-# channels only (see new_client). ERR_NOT_SUPPORTED in window mode: the
-# input sources are the compositor's (compctl.connect_input), and the
-# console's keys come to its window.
-5  connect_input  () -> (handle source)
-# Lend the screen to a program that draws on it itself (libfun's gfx_open):
-# the framebuffer as a write-combining VMO (READ | WRITE | MAP, not
-# duplicable) with its geometry (<jam/abi.h> struct fb_info's fields), and
-# a lease channel. The console stops drawing (it keeps its text, the kernel
-# log and the serial mirror going) until the lease's peer closes: the
-# borrower closing it, or dying; then it redraws the whole screen. One
-# lease at a time: ERR_BAD_STATE while lent, ERR_NOT_FOUND with no screen.
-6  lend_screen    () -> (u32 width, u32 height, u32 pitch, u8 red_shift, u8 green_shift, u8 blue_shift, u64 size, handle screen, handle lease)
+# 5 (connect_input) and 6 (lend_screen): gone with the full-screen console
+# (M12's Q14); not reused.
+
 # A new client channel with less authority. Levels: 0 ADMIN
-# (the channels init hands the console at start: init's, and devmgr's
-# copy), 1 SHELL (no connect_input), 2 PROGRAM (write, size, clear,
-# open_keys, lend_screen: what the shell gives a program it runs; the
-# shell kills the program's job when it ends, so the channel lives only
-# while the program is in the foreground). A caller may only make a level
-# above its own: ERR_ACCESS_DENIED otherwise, ERR_INVALID_ARGS for a level
-# > 2. connect_input needs ADMIN (every input source is devmgr's or
-# init's, so Ctrl+Alt+Del only comes from real input). While a PROGRAM
-# client has the focus, Ctrl+C also goes to the SHELL or ADMIN client
-# below it (the shell that ran it kills it): a program can't trap the keys.
+# (the channels init hands the console at start: init's), 1 SHELL (the
+# shell's), 2 PROGRAM (write, size, clear, open_keys: what the shell gives
+# a program it runs; the shell kills the program's job when it ends, so
+# the channel lives only while the program is in the foreground). A
+# caller may only make a level above its own: ERR_ACCESS_DENIED
+# otherwise, ERR_INVALID_ARGS for a level > 2. While a PROGRAM client has
+# the focus, Ctrl+C also goes to the SHELL or ADMIN client below it (the
+# shell that ran it kills it): a program can't trap the keys.
 7  new_client     (u8 level) -> (handle client)
-# Blank the screen (on 1): fill it with the boot splash's background and
-# draw nothing more (the text, the kernel log and the serial mirror keep
-# going), or draw again (on 0). For a reboot by kexec: the screen stays
-# that colour until the next boot's splash. ADMIN and SHELL channels
-# only: ERR_ACCESS_DENIED for a PROGRAM one.
-8  blank          (u8 on) -> ()
+# 8 (blank): gone with the full-screen console (the compositor blanks the
+# screen: compctl.blank); not reused.
+
 # Ask for the kernel log on the screen (on 1), or stop asking (on 0). A
 # console started with the argument "nolog" (init's, on a plain boot with
-# the splash) keeps the log off the screen but for a few notices, and
-# shows it only while some channel asks: the shell asks while a command
+# the splash) keeps the log off the screen, and shows it only while some
+# channel asks: the shell asks while a command
 # whose output is the log runs (the kernel's commands, `ktest`, `ps -k`,
 # ...; the test programs; a program it runs). `only` (NUL-padded) names a
 # process: then just its lines ("[name] ...") and the kernel's own are
@@ -67,8 +52,7 @@ protocol console 12
 # The terminal window's font (the settings' terminal.font, which init
 # reads when /data comes and sends to every terminal's console): font 0
 # smooth (JetBrains Mono, the default), 1 the 8x16 bitmap. The window
-# keeps its size; its grid is made again in the new cells. The
-# full-screen console (no compositor) always draws the bitmap: OK, and
-# nothing changes. ADMIN channels only: ERR_ACCESS_DENIED otherwise;
-# ERR_INVALID_ARGS for a font > 1.
+# keeps its size; its grid is made again in the new cells. A console with
+# no window (no compositor) has nothing to change: OK. ADMIN channels
+# only: ERR_ACCESS_DENIED otherwise; ERR_INVALID_ARGS for a font > 1.
 10 set_font       (u8 font) -> ()

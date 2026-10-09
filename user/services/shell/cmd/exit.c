@@ -1,9 +1,8 @@
 /* exit: end this shell, and with it its terminal (and every program it
  * started with &): init closes the terminal when its shell ends with
- * code 0, the first terminal like any other. Without a compositor
- * (`nocomp`) the full-screen console is the one terminal: init would
- * only start its shell again, so exit says so and does nothing there
- * (init gives such a shell no "term=": sh_term_no 0). */
+ * code 0, the first terminal like any other. A shell init gave no
+ * "term=" (sh_term_no 0: started without a compositor) would only be
+ * started again, so exit says so and does nothing there. */
 #include "sh.h"
 
 SH_CMD(exit)

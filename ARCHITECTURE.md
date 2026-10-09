@@ -179,16 +179,14 @@ Every driver and service is a userspace process from the start.
   draws as always); init gets the argument `splash`, starts the console
   quiet and then `bin/splash` before every other service, and starts the
   shell only once the animation has played, or 20 s after the splash's
-  start, whichever comes first: a splash that hangs is killed then (the
-  console gets the screen back) and the log says so. The splash borrows the screen
-  like any app (but not the keys), starts the video and its sound together
-  once the mixer is up (2 s at most, then silently), plays to the end,
-  holds the last frame at least 0.5 s and until the shell calls
-  `initctl.shell_ready`, and fades into the console's text. No key skips
-  it: what is typed meanwhile waits in the console (keys typed before
-  anyone listens go to the first to open the keys) and reaches the shell
-  once it is up. `run splash` from the shell takes the keys, and there a
-  key skips it.
+  start, whichever comes first: a splash that hangs is killed then (its
+  window goes) and the log says so. The splash opens a full-screen window
+  like any app (but takes no keys), starts the video and its sound
+  together once the mixer is up (2 s at most, then silently), plays to the
+  end, holds the last frame at least 0.5 s and until the shell calls
+  `initctl.shell_ready`, and fades out. No key skips it: what is typed
+  meanwhile reaches the shell once it is up (below). `run splash` from the
+  shell takes the keys, and there a key skips it.
 - **The desktop** ([docs/G1-PLAN.md](docs/G1-PLAN.md), as built: I1): on
   every plain boot init starts the compositor first, before the console;
   it takes the screen and fills it with the splash's background, and
@@ -200,11 +198,11 @@ Every driver and service is a userspace process from the start.
   keys: what is typed meanwhile reaches the shell once it is up, and keys
   typed while no window has the keys (a terminal's window comes a moment
   after its prompt) wait in the compositor, up to 5 s, for the next one.
-  The boot word `nocomp` (the menu's "Jam OS (no compositor)", kept by a
-  reboot) starts no compositor: the console owns
-  the screen and the input as before G1. Under the compositor the
-  keyboards and the mouse (devmgr's HID drivers) and serialin are the
-  compositor's input sources; Ctrl+Alt+Del and Super+Enter (another
+  The desktop is the only way Jam OS draws (M12's Q14: the boot word
+  `nocomp` and the full-screen console that owned the screen and the
+  input before G1 are gone; the previous build is the way back from a bad
+  one). The keyboards and the mouse (devmgr's HID drivers) and serialin
+  are the compositor's input sources; Ctrl+Alt+Del and Super+Enter (another
   terminal) are its keys, which it asks init for; Super+T switches
   floating and tiling (tiling unless the settings say otherwise), and init
   saves the choice as `display.layout`.
@@ -1748,7 +1746,7 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   (`user/services/init/comp.c`: the screen, a reset for Ctrl+Alt+Del when
   init can't reboot, compctl's ADMIN channel, from which init makes
   devmgr's INPUT channel and serialin's source, and a control channel of
-  init's that answers it `reboot` and `terminal`; not with `nocomp`), the
+  init's that answers it `reboot` and `terminal`), the
   console (the first terminal; with the compositor it gets
   `/svc/wayland` and no screen), the boot splash (once; the shell waits
   for it), serialin, devmgr, the
@@ -1758,8 +1756,7 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   after netstack) and the shell, restarting
   any that die (killing devmgr takes its drivers with its job), backing
   off up to 5 s; one that dies more than 10 times in a minute is given up
-  on, except the compositor, and under `nocomp` the one console and its
-  shell, which nobody could do without (with the compositor every
+  on, except the compositor, which nobody could do without (every
   terminal is equal: one given up on closes, as does one whose window is
   closed or whose shell exits, the first included, and Super+Enter or the
   search box opens another, the lowest number free, at most 16 at once,
@@ -1777,7 +1774,7 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   `net-sys`, the same for the network's services
   ([Networking](#networking)), `dns`, the resolver, `dns-sys`, the same
   for the network's services, `serve`, the file server, and `wayland`,
-  the compositor (not with `nocomp`), each a channel per opener). The services it starts
+  the compositor, each a channel per opener). The services it starts
   that have a namespace get the part of it their grants name: the shell
   all of it as it is, the music player every mount read-only and the
   mixer, logd `/data` with its top-level `etc` guarded, the splash the
@@ -1898,8 +1895,6 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   The compositor (`user/services/compositor/`, started by init on every
   plain boot: [The desktop](#boot)) owns it; the kernel takes it back on a
   panic, from anyone, and draws its log while the compositor is dead.
-  Booted with `nocomp`, the console owns it instead and can lend it to
-  one program (`console.lend_screen`), which is how the apps draw then.
 - Apps draw into their own surface VMOs and send damage rectangles over a
   channel; input goes to the compositor, which routes it to the focused
   client. Rendering is in software (28 cores and AVX are plenty for 2D at
@@ -1941,8 +1936,8 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
 ### Smooth text
 
 The compositor's title bars and top bar use anti-aliased proportional
-text, and the terminal windows a monospace one; the apps (and the
-full-screen console, `nocomp`) keep the 8x16 font. libfun has it
+text, and the terminal windows a monospace one; the apps keep the 8x16
+font. libfun has it
 (`<fun.h>` "smooth text"): Inter Regular and Medium
 (`third_party/inter/`, SIL OFL 1.1), cut to printable ASCII, Latin-1
 and nine punctuation marks by `tools/subsetfont.py`, which also turns
@@ -1997,11 +1992,10 @@ extra glyphs.
 
 ### The terminal windows
 
-Each terminal is a console (`user/services/console/`) in window mode: the
+Each terminal is a console (`user/services/console/`) in a window: the
 text model (the scrollback, the current line, the alternate screen), the
-escapes and the kernel log are the full-screen console's; only the
-drawing differs (`window.c`, `winpaint.c`, `cellpaint.c`, `cells.h`). A
-window makes no notices (the desktop's cards are the news), and every
+escapes and the kernel log, drawn into the window (`window.c`,
+`winpaint.c`, `cellpaint.c`, `cells.h`). A window makes no notices (the desktop's cards are the news), and every
 terminal closes the same way, the first too: its close circle or Super+Q
 (the console ends with code 0) or `exit` (the shell, given `term=<n>`,
 ends with 0), and init closes the terminal (`user/services/init/terms.c`).
@@ -2024,7 +2018,7 @@ ends with 0), and init closes the terminal (`user/services/init/terms.c`).
   1.32-em line. `terminal.font = bitmap` in the settings draws the 8x16
   bitmap instead (init passes `font=bitmap` to each terminal's console,
   and `console.set_font` to the running ones when `/data` comes, which is
-  after the first starts); the full-screen console (`nocomp`) always does.
+  after the first starts).
 - **Padding.** 10 pixels of the terminal's background inside the window
   on every side (`WIN_PAD`); the grid is what fits inside it, the rest of
   a size that isn't whole cells is background too. The compositor's
@@ -2034,8 +2028,7 @@ ends with 0), and init closes the terminal (`user/services/init/terms.c`).
   the text fills downward; the screen scrolls only once the current line
   reaches the bottom row; a clear (`ESC [ 2 J`) starts the screen again at
   the top, the lines before it still there to scroll back to; any size
-  keeps the current line on the screen (`view.c`). The full-screen console
-  keeps the current line on the bottom row, as it always has.
+  keeps the current line on the screen (`view.c`).
 - **Cost.** The damaged rows only, as before: a frame walks the grid
   against the buffer's shadow and draws the cells that differ. Measured in
   QEMU (TCG, 2026-10-06) on a 2560x1440 output with the window full
@@ -2152,8 +2145,7 @@ each request goes out without waiting and its answer comes to the port
   Jam OS started it again"), the log keeping the details. A notice
   posted while the boot splash is up waits (5 at most) and shows when the
   splash is over, its 5 s counted from then. Without a
-  compositor (`nocomp`) nothing is posted: the services' log lines, and
-  the console's notices made from them, are as before.
+  compositor nothing is posted: the services' log lines are all there is.
 - **Volume and network.** The mixer serves its desktop channel as it does
   `audioctl`, refusing every method but `desk` and `set_master`; the
   music player names its stream's track (`audio.stream_set_title`), which
@@ -2841,22 +2833,11 @@ decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 
   crash, the first in its minute, and giving one up; devmgr: a driver's,
   the Jam OS stick pulled out and back, its data partition not opening,
   other sticks; netstack: connected or not), and no terminal shows the
-  log or depends on the first one. Under `nocomp` the full-screen console
-  is the only screen, so a few things the log says still get a line of
-  their own there, in yellow and sentence case
-  (`user/services/console/notices.c`): another stick plugged
-  in or pulled out, the Jam OS stick pulled out and back, `/data` full or
-  not mounted, a service or driver that crashed and is being started
-  again or was given up on. Only lines the kernel marks as its own or as
-  init's, devmgr's or logd's real process count (`klog_lines`; init keeps
-  those three koids in a page the console reads, `<logwriters.h>`), so a
-  program that starts a process called "init" makes no notice. Each is
-  announced once things have settled
-  (a remount says nothing), never twice within 30 s, at most four in
-  10 s. `verbose` shows the whole log as it comes; `nosplash` and the
-  safe mode show the kernel's text log until the compositor or the
-  console takes the screen, then the quiet terminal; the boot tests draw
-  it from the kernel.
+  log or depends on the first one (the full-screen console's yellow
+  notice lines went with it: M12's Q14). `verbose` shows the whole log as
+  it comes; `nosplash` and the safe mode show the kernel's text log until
+  the compositor takes the screen, then the quiet terminal; the boot
+  tests draw it from the kernel.
 - A panic's lines: message, decoded exception (page-fault cause, NULL and stack
   overflow hints), all registers and control registers, symbolised backtrace
   with repeated frames collapsed, the code, the build, and the log tail,

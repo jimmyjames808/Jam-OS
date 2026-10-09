@@ -5,9 +5,10 @@
  * splash.c), with a PROGRAM-level console channel (SR_CONSOLE), init's
  * channel (SR_USER + SPLASH_INIT_ROLE, <splash.h>) and a namespace with
  * the mixer's `audio` channel (/svc/audio, its list's one want). It:
- *   1. borrows the screen, and not the keys (gfx_open_screen: the screen
- *      stays the kernel's dark background, the video's own; what is typed
- *      meanwhile waits in the console for the shell);
+ *   1. opens a full-screen window that takes no keys (gfx_open_screen:
+ *      the compositor shows only the splash's background until it maps;
+ *      what is typed meanwhile goes to the first terminal's window, for
+ *      the shell);
  *   2. plays bootfs's splash.mpg (video.c, draw.c, sound.c): shows its
  *      first frame (dark, like the screen already is) and holds it until
  *      the sound's stream is open, at most SOUND_WAIT, so picture and
@@ -21,17 +22,17 @@
  *      frame until init says SPLASH_GO (the shell is up) or closes the
  *      channel, at most HOLD_MAX, and in any case for LINGER after an
  *      animation that played to its end (the logo stays a moment);
- *   5. fades the picture into the console's background and gives the
- *      screen back: the console draws its text.
+ *   5. fades the picture into the background and closes its window: the
+ *      desktop and the first terminal show.
  * Without init's channel (`run splash` from the shell) it takes the keys
  * too: a key skips the rest (the sound fades out), and it holds the last
  * frame for a second or until a key.
  *
  * `run splash --selftest`: selftest.c; `run splash --alpha`: demo.c.
- * `--hang` (init, on the test word `splashhang`): borrow the screen and
+ * `--hang` (init, on the test word `splashhang`): open the window and
  * never finish, so init's deadline for the splash is tested.
  * Anything that goes wrong on the way
- * ends it early (the console then draws at once); a panic draws over it
+ * ends it early (the desktop then shows at once); a panic draws over it
  * whatever it is doing (the kernel's). */
 #include <wants.h>
 #include "splash_int.h"

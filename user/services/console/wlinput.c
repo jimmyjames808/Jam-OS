@@ -130,12 +130,6 @@ bool paste_key(const char *text, size_t n, size_t *at, struct input_key_event *o
     return false;
 }
 
-bool asks_terminal(const struct input_key_event *ev)
-{
-    return ev->state == INPUT_KEY_DOWN && (ev->mods & (INPUT_MOD_LGUI | INPUT_MOD_RGUI)) &&
-           (ev->usage == 0x28 || ev->usage == 0x58);   /* Enter, keypad Enter */
-}
-
 /* An evdev button (BTN_LEFT 0x110 ...) as the boot report's button bit. */
 static uint8_t button_bit(uint32_t button)
 {

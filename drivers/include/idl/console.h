@@ -2,14 +2,16 @@
  * change the .idl and run `make idl`.
  *
  * console: the console process (user/services/console) serves this to
- * programs (the shell), devmgr and init. It owns the screen after boot (the
- * kernel draws until the console takes the framebuffer, and again while it
- * is gone; a panic always draws). Format: see tools/genidl.py.
+ * programs (the shell), devmgr and init. Each console is a terminal: a
+ * window on the compositor's desktop (/svc/wayland), whose text it draws
+ * into the window's buffers and mirrors to the serial port; the
+ * compositor owns the screen and the input (M12's Q14: the full-screen
+ * console, its input sources and its lent screen are gone). Format: see
+ * tools/genidl.py.
  *
  * Restart: if the channel's peer closes (the console restarted), clients
  * ask devmgr/init for the new one. The console keeps nothing across a
- * restart: what was on the screen, a lent screen and input connections
- * are made again.
+ * restart: what was in the window and the key channels are made again.
  *
  * Protocol `console` (id 12). Client: console_<method>(ch, args..., &results...)
  * (and console_<method>_until with a deadline, _within with a timeout), or
@@ -27,10 +29,7 @@
 #define CONSOLE_SIZE             0x000c0002u
 #define CONSOLE_CLEAR            0x000c0003u
 #define CONSOLE_OPEN_KEYS        0x000c0004u
-#define CONSOLE_CONNECT_INPUT    0x000c0005u
-#define CONSOLE_LEND_SCREEN      0x000c0006u
 #define CONSOLE_NEW_CLIENT       0x000c0007u
-#define CONSOLE_BLANK            0x000c0008u
 #define CONSOLE_SHOW_LOG         0x000c0009u
 #define CONSOLE_SET_FONT         0x000c000au
 
@@ -71,44 +70,12 @@ struct console_open_keys_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
-struct console_connect_input_req {
-    uint32_t txid;
-    uint32_t ordinal;
-} __attribute__((packed));
-struct console_connect_input_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
-struct console_lend_screen_req {
-    uint32_t txid;
-    uint32_t ordinal;
-} __attribute__((packed));
-struct console_lend_screen_rep {
-    uint32_t txid;
-    int32_t  status;
-    uint32_t width;
-    uint32_t height;
-    uint32_t pitch;
-    uint8_t red_shift;
-    uint8_t green_shift;
-    uint8_t blue_shift;
-    uint64_t size;
-} __attribute__((packed));
 struct console_new_client_req {
     uint32_t txid;
     uint32_t ordinal;
     uint8_t level;
 } __attribute__((packed));
 struct console_new_client_rep {
-    uint32_t txid;
-    int32_t  status;
-} __attribute__((packed));
-struct console_blank_req {
-    uint32_t txid;
-    uint32_t ordinal;
-    uint8_t on;
-} __attribute__((packed));
-struct console_blank_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -133,7 +100,7 @@ struct console_set_font_rep {
 } __attribute__((packed));
 
 #define CONSOLE_REQ_MAX 2058u   /* bytes: the biggest request */
-#define CONSOLE_REP_MAX 31u   /* bytes: the biggest reply */
+#define CONSOLE_REP_MAX 12u   /* bytes: the biggest reply */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -275,123 +242,6 @@ static inline status_t console_open_keys(handle_t ch, handle_t *out_keys)
     return console_open_keys_call(ch, false, DEADLINE_NEVER, out_keys);
 }
 
-/* console_connect_input_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t console_connect_input_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_source)
-{
-    struct console_connect_input_req idl_q;
-    struct console_connect_input_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = CONSOLE_CONNECT_INPUT;
-    handle_t idl_rh[1];
-    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
-                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
-    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
-    idl_n = idl_got[0];
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && idl_rhn != 1)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK)
-        idl_close_all(idl_rh, idl_rhn);
-    if (idl_st == OK) {
-        if (out_source)
-            *out_source = idl_rh[0];
-        else
-            drv_handle_close(idl_rh[0]);
-    }
-    return idl_st;
-}
-/* A new input source: the console serves the `input` protocol on its end;
- * the caller (devmgr, for a HID driver; or the serial source) gets the
- * other end and hands it to the source, which calls `input` on it. ADMIN
- * channels only (see new_client). ERR_NOT_SUPPORTED in window mode: the
- * input sources are the compositor's (compctl.connect_input), and the
- * console's keys come to its window. */
-static inline status_t console_connect_input_until(handle_t ch, uint64_t deadline_ns, handle_t *out_source)
-{
-    return console_connect_input_call(ch, false, deadline_ns, out_source);
-}
-static inline status_t console_connect_input_within(handle_t ch, uint64_t timeout_ns, handle_t *out_source)
-{
-    return console_connect_input_call(ch, true, timeout_ns, out_source);
-}
-static inline status_t console_connect_input(handle_t ch, handle_t *out_source)
-{
-    return console_connect_input_call(ch, false, DEADLINE_NEVER, out_source);
-}
-
-/* console_lend_screen_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t console_lend_screen_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
-{
-    struct console_lend_screen_req idl_q;
-    struct console_lend_screen_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = CONSOLE_LEND_SCREEN;
-    handle_t idl_rh[2];
-    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
-                               idl_rh, 2, &idl_got[1], idl_within, idl_t);
-    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
-    idl_n = idl_got[0];
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    if (idl_st == OK && idl_rhn != 2)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK)
-        idl_close_all(idl_rh, idl_rhn);
-    if (idl_st == OK) {
-        if (out_screen)
-            *out_screen = idl_rh[0];
-        else
-            drv_handle_close(idl_rh[0]);
-    }
-    if (idl_st == OK) {
-        if (out_lease)
-            *out_lease = idl_rh[1];
-        else
-            drv_handle_close(idl_rh[1]);
-    }
-    if (idl_st == OK && out_width)
-        *out_width = idl_r.width;
-    if (idl_st == OK && out_height)
-        *out_height = idl_r.height;
-    if (idl_st == OK && out_pitch)
-        *out_pitch = idl_r.pitch;
-    if (idl_st == OK && out_red_shift)
-        *out_red_shift = idl_r.red_shift;
-    if (idl_st == OK && out_green_shift)
-        *out_green_shift = idl_r.green_shift;
-    if (idl_st == OK && out_blue_shift)
-        *out_blue_shift = idl_r.blue_shift;
-    if (idl_st == OK && out_size)
-        *out_size = idl_r.size;
-    return idl_st;
-}
-/* Lend the screen to a program that draws on it itself (libfun's gfx_open):
- * the framebuffer as a write-combining VMO (READ | WRITE | MAP, not
- * duplicable) with its geometry (<jam/abi.h> struct fb_info's fields), and
- * a lease channel. The console stops drawing (it keeps its text, the kernel
- * log and the serial mirror going) until the lease's peer closes: the
- * borrower closing it, or dying; then it redraws the whole screen. One
- * lease at a time: ERR_BAD_STATE while lent, ERR_NOT_FOUND with no screen. */
-static inline status_t console_lend_screen_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
-{
-    return console_lend_screen_call(ch, false, deadline_ns, out_width, out_height, out_pitch, out_red_shift, out_green_shift, out_blue_shift, out_size, out_screen, out_lease);
-}
-static inline status_t console_lend_screen_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
-{
-    return console_lend_screen_call(ch, true, timeout_ns, out_width, out_height, out_pitch, out_red_shift, out_green_shift, out_blue_shift, out_size, out_screen, out_lease);
-}
-static inline status_t console_lend_screen(handle_t ch, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
-{
-    return console_lend_screen_call(ch, false, DEADLINE_NEVER, out_width, out_height, out_pitch, out_red_shift, out_green_shift, out_blue_shift, out_size, out_screen, out_lease);
-}
-
 /* console_new_client_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
 static inline status_t console_new_client_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t level, handle_t *out_client)
@@ -423,16 +273,14 @@ static inline status_t console_new_client_call(handle_t ch, bool idl_within, uin
     return idl_st;
 }
 /* A new client channel with less authority. Levels: 0 ADMIN
- * (the channels init hands the console at start: init's, and devmgr's
- * copy), 1 SHELL (no connect_input), 2 PROGRAM (write, size, clear,
- * open_keys, lend_screen: what the shell gives a program it runs; the
- * shell kills the program's job when it ends, so the channel lives only
- * while the program is in the foreground). A caller may only make a level
- * above its own: ERR_ACCESS_DENIED otherwise, ERR_INVALID_ARGS for a level
- * > 2. connect_input needs ADMIN (every input source is devmgr's or
- * init's, so Ctrl+Alt+Del only comes from real input). While a PROGRAM
- * client has the focus, Ctrl+C also goes to the SHELL or ADMIN client
- * below it (the shell that ran it kills it): a program can't trap the keys. */
+ * (the channels init hands the console at start: init's), 1 SHELL (the
+ * shell's), 2 PROGRAM (write, size, clear, open_keys: what the shell gives
+ * a program it runs; the shell kills the program's job when it ends, so
+ * the channel lives only while the program is in the foreground). A
+ * caller may only make a level above its own: ERR_ACCESS_DENIED
+ * otherwise, ERR_INVALID_ARGS for a level > 2. While a PROGRAM client has
+ * the focus, Ctrl+C also goes to the SHELL or ADMIN client below it (the
+ * shell that ran it kills it): a program can't trap the keys. */
 static inline status_t console_new_client_until(handle_t ch, uint64_t deadline_ns, uint8_t level, handle_t *out_client)
 {
     return console_new_client_call(ch, false, deadline_ns, level, out_client);
@@ -444,40 +292,6 @@ static inline status_t console_new_client_within(handle_t ch, uint64_t timeout_n
 static inline status_t console_new_client(handle_t ch, uint8_t level, handle_t *out_client)
 {
     return console_new_client_call(ch, false, DEADLINE_NEVER, level, out_client);
-}
-
-/* console_blank_until and _within: idl_t is a deadline, or with idl_within a
- * timeout from when the call starts (the kernel's clock). */
-static inline status_t console_blank_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t on)
-{
-    struct console_blank_req idl_q;
-    struct console_blank_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = CONSOLE_BLANK;
-    idl_q.on = on;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
-    if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
-    return idl_st;
-}
-/* Blank the screen (on 1): fill it with the boot splash's background and
- * draw nothing more (the text, the kernel log and the serial mirror keep
- * going), or draw again (on 0). For a reboot by kexec: the screen stays
- * that colour until the next boot's splash. ADMIN and SHELL channels
- * only: ERR_ACCESS_DENIED for a PROGRAM one. */
-static inline status_t console_blank_until(handle_t ch, uint64_t deadline_ns, uint8_t on)
-{
-    return console_blank_call(ch, false, deadline_ns, on);
-}
-static inline status_t console_blank_within(handle_t ch, uint64_t timeout_ns, uint8_t on)
-{
-    return console_blank_call(ch, true, timeout_ns, on);
-}
-static inline status_t console_blank(handle_t ch, uint8_t on)
-{
-    return console_blank_call(ch, false, DEADLINE_NEVER, on);
 }
 
 /* console_show_log_until and _within: idl_t is a deadline, or with idl_within a
@@ -500,8 +314,8 @@ static inline status_t console_show_log_call(handle_t ch, bool idl_within, uint6
 }
 /* Ask for the kernel log on the screen (on 1), or stop asking (on 0). A
  * console started with the argument "nolog" (init's, on a plain boot with
- * the splash) keeps the log off the screen but for a few notices, and
- * shows it only while some channel asks: the shell asks while a command
+ * the splash) keeps the log off the screen, and shows it only while some
+ * channel asks: the shell asks while a command
  * whose output is the log runs (the kernel's commands, `ktest`, `ps -k`,
  * ...; the test programs; a program it runs). `only` (NUL-padded) names a
  * process: then just its lines ("[name] ...") and the kernel's own are
@@ -541,10 +355,9 @@ static inline status_t console_set_font_call(handle_t ch, bool idl_within, uint6
 /* The terminal window's font (the settings' terminal.font, which init
  * reads when /data comes and sends to every terminal's console): font 0
  * smooth (JetBrains Mono, the default), 1 the 8x16 bitmap. The window
- * keeps its size; its grid is made again in the new cells. The
- * full-screen console (no compositor) always draws the bitmap: OK, and
- * nothing changes. ADMIN channels only: ERR_ACCESS_DENIED otherwise;
- * ERR_INVALID_ARGS for a font > 1. */
+ * keeps its size; its grid is made again in the new cells. A console with
+ * no window (no compositor) has nothing to change: OK. ADMIN channels
+ * only: ERR_ACCESS_DENIED otherwise; ERR_INVALID_ARGS for a font > 1. */
 static inline status_t console_set_font_until(handle_t ch, uint64_t deadline_ns, uint8_t font)
 {
     return console_set_font_call(ch, false, deadline_ns, font);
@@ -689,90 +502,6 @@ static inline status_t console_open_keys_result(const void *idl_rep, struct idl_
     return OK;
 }
 
-/* console_connect_input without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then console_connect_input_result. */
-static inline status_t console_connect_input_send(handle_t ch, uint32_t idl_txid)
-{
-    struct console_connect_input_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = CONSOLE_CONNECT_INPUT;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to console_connect_input_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t console_connect_input_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_source)
-{
-    const struct console_connect_input_rep *idl_r = (const struct console_connect_input_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 1)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    if (out_source)
-        *out_source = idl_m->hs[0];
-    else
-        drv_handle_close(idl_m->hs[0]);
-    idl_m->nh = 0;
-    return OK;
-}
-
-/* console_lend_screen without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then console_lend_screen_result. */
-static inline status_t console_lend_screen_send(handle_t ch, uint32_t idl_txid)
-{
-    struct console_lend_screen_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = CONSOLE_LEND_SCREEN;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to console_lend_screen_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t console_lend_screen_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease)
-{
-    const struct console_lend_screen_rep *idl_r = (const struct console_lend_screen_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 2)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    if (out_screen)
-        *out_screen = idl_m->hs[0];
-    else
-        drv_handle_close(idl_m->hs[0]);
-    if (out_lease)
-        *out_lease = idl_m->hs[1];
-    else
-        drv_handle_close(idl_m->hs[1]);
-    idl_m->nh = 0;
-    if (out_width)
-        *out_width = idl_r->width;
-    if (out_height)
-        *out_height = idl_r->height;
-    if (out_pitch)
-        *out_pitch = idl_r->pitch;
-    if (out_red_shift)
-        *out_red_shift = idl_r->red_shift;
-    if (out_green_shift)
-        *out_green_shift = idl_r->green_shift;
-    if (out_blue_shift)
-        *out_blue_shift = idl_r->blue_shift;
-    if (out_size)
-        *out_size = idl_r->size;
-    return OK;
-}
-
 /* console_new_client without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then console_new_client_result. */
 static inline status_t console_new_client_send(handle_t ch, uint32_t idl_txid, uint8_t level)
@@ -804,37 +533,6 @@ static inline status_t console_new_client_result(const void *idl_rep, struct idl
     else
         drv_handle_close(idl_m->hs[0]);
     idl_m->nh = 0;
-    return OK;
-}
-
-/* console_blank without waiting: the request, with the caller's txid (not 0).
- * The reply comes on ch: idl_reply_read, then console_blank_result. */
-static inline status_t console_blank_send(handle_t ch, uint32_t idl_txid, uint8_t on)
-{
-    struct console_blank_req idl_q;
-    if (!idl_txid)
-        return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = CONSOLE_BLANK;
-    idl_q.on = on;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
-}
-
-/* The status and results of a reply to console_blank_send (read with
- * idl_reply_read). The reply's handles are taken in every case: moved to
- * the results, or closed (on a failure, or for a NULL result). */
-static inline status_t console_blank_result(const void *idl_rep, struct idl_msg *idl_m)
-{
-    const struct console_blank_rep *idl_r = (const struct console_blank_rep *)idl_rep;
-    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
-    if (idl_st == OK && idl_m->nh != 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st != OK) {
-        idl_msg_drop(idl_m);
-        return idl_st;
-    }
-    idl_m->nh = 0;
-    (void)idl_r;
     return OK;
 }
 
@@ -913,10 +611,7 @@ struct console_ops {
     status_t (*size)(void *ctx, uint16_t *out_cols, uint16_t *out_rows);
     status_t (*clear)(void *ctx);
     status_t (*open_keys)(void *ctx, handle_t *out_keys);
-    status_t (*connect_input)(void *ctx, handle_t *out_source);
-    status_t (*lend_screen)(void *ctx, uint32_t *out_width, uint32_t *out_height, uint32_t *out_pitch, uint8_t *out_red_shift, uint8_t *out_green_shift, uint8_t *out_blue_shift, uint64_t *out_size, handle_t *out_screen, handle_t *out_lease);
     status_t (*new_client)(void *ctx, uint8_t level, handle_t *out_client);
-    status_t (*blank)(void *ctx, uint8_t on);
     status_t (*show_log)(void *ctx, uint8_t on, const uint8_t only[32]);
     status_t (*set_font)(void *ctx, uint8_t font);
 };
@@ -989,57 +684,6 @@ static inline status_t console_reply_open_keys(struct idl_txn idl_txn, status_t 
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
 }
 
-/* Answer the console.connect_input request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t console_reply_connect_input(struct idl_txn idl_txn, status_t idl_st, handle_t source)
-{
-    struct console_connect_input_rep idl_r;
-    handle_t idl_hs[1] = { source };
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st == OK && !(source != HANDLE_INVALID))
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK) {
-        if (idl_hs[0] != HANDLE_INVALID)
-            drv_handle_close(idl_hs[0]);
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    }
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
-}
-
-/* Answer the console.lend_screen request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t console_reply_lend_screen(struct idl_txn idl_txn, status_t idl_st, uint32_t width, uint32_t height, uint32_t pitch, uint8_t red_shift, uint8_t green_shift, uint8_t blue_shift, uint64_t size, handle_t screen, handle_t lease)
-{
-    struct console_lend_screen_rep idl_r;
-    handle_t idl_hs[2] = { screen, lease };
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    if (idl_st == OK && !(screen != HANDLE_INVALID && lease != HANDLE_INVALID))
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK) {
-        if (idl_hs[0] != HANDLE_INVALID)
-            drv_handle_close(idl_hs[0]);
-        if (idl_hs[1] != HANDLE_INVALID)
-            drv_handle_close(idl_hs[1]);
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    }
-    idl_r.width = width;
-    idl_r.height = height;
-    idl_r.pitch = pitch;
-    idl_r.red_shift = red_shift;
-    idl_r.green_shift = green_shift;
-    idl_r.blue_shift = blue_shift;
-    idl_r.size = size;
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 2);
-}
-
 /* Answer the console.new_client request kept in txn: idl_st and, if it is OK, the
  * results (handles are moved in every case: sent, or closed). A positive
  * status is ERR_INTERNAL, and so is OK with a handle result left
@@ -1059,21 +703,6 @@ static inline status_t console_reply_new_client(struct idl_txn idl_txn, status_t
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     }
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
-}
-
-/* Answer the console.blank request kept in txn: idl_st and, if it is OK, the
- * results (handles are moved in every case: sent, or closed). A positive
- * status is ERR_INTERNAL, and so is OK with a handle result left
- * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
-static inline status_t console_reply_blank(struct idl_txn idl_txn, status_t idl_st)
-{
-    struct console_blank_rep idl_r;
-    if (idl_st > 0)
-        idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Answer the console.show_log request kept in txn: idl_st and, if it is OK, the
@@ -1201,70 +830,6 @@ static inline uint32_t console_dispatch_on(handle_t ch, const struct console_ops
         *rhn = 1;
         return sizeof(*idl_r);
     }
-    case CONSOLE_CONNECT_INPUT: {
-        const struct console_connect_input_req *idl_q = (const struct console_connect_input_req *)req;
-        struct console_connect_input_rep *idl_r = (struct console_connect_input_rep *)rep;
-        handle_t out_source = HANDLE_INVALID;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->connect_input) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->connect_input(ctx, &out_source);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status == OK && !(out_source != HANDLE_INVALID))
-            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
-        if (idl_h->status != OK) {
-            if (out_source != HANDLE_INVALID)
-                drv_handle_close(out_source);
-            return sizeof(*idl_h);
-        }
-        rhs[0] = out_source;
-        *rhn = 1;
-        return sizeof(*idl_r);
-    }
-    case CONSOLE_LEND_SCREEN: {
-        const struct console_lend_screen_req *idl_q = (const struct console_lend_screen_req *)req;
-        struct console_lend_screen_rep *idl_r = (struct console_lend_screen_rep *)rep;
-        uint32_t out_width = 0;
-        uint32_t out_height = 0;
-        uint32_t out_pitch = 0;
-        uint8_t out_red_shift = 0;
-        uint8_t out_green_shift = 0;
-        uint8_t out_blue_shift = 0;
-        uint64_t out_size = 0;
-        handle_t out_screen = HANDLE_INVALID;
-        handle_t out_lease = HANDLE_INVALID;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->lend_screen) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->lend_screen(ctx, &out_width, &out_height, &out_pitch, &out_red_shift, &out_green_shift, &out_blue_shift, &out_size, &out_screen, &out_lease);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status == OK && !(out_screen != HANDLE_INVALID && out_lease != HANDLE_INVALID))
-            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
-        if (idl_h->status != OK) {
-            if (out_screen != HANDLE_INVALID)
-                drv_handle_close(out_screen);
-            if (out_lease != HANDLE_INVALID)
-                drv_handle_close(out_lease);
-            return sizeof(*idl_h);
-        }
-        rhs[0] = out_screen;
-        rhs[1] = out_lease;
-        *rhn = 2;
-        idl_r->width = out_width;
-        idl_r->height = out_height;
-        idl_r->pitch = out_pitch;
-        idl_r->red_shift = out_red_shift;
-        idl_r->green_shift = out_green_shift;
-        idl_r->blue_shift = out_blue_shift;
-        idl_r->size = out_size;
-        return sizeof(*idl_r);
-    }
     case CONSOLE_NEW_CLIENT: {
         const struct console_new_client_req *idl_q = (const struct console_new_client_req *)req;
         struct console_new_client_rep *idl_r = (struct console_new_client_rep *)rep;
@@ -1286,22 +851,6 @@ static inline uint32_t console_dispatch_on(handle_t ch, const struct console_ops
         }
         rhs[0] = out_client;
         *rhn = 1;
-        return sizeof(*idl_r);
-    }
-    case CONSOLE_BLANK: {
-        const struct console_blank_req *idl_q = (const struct console_blank_req *)req;
-        struct console_blank_rep *idl_r = (struct console_blank_rep *)rep;
-        (void)idl_r;
-        if (n != sizeof(*idl_q))
-            return sizeof(*idl_h);
-        if (!ops->blank) {
-            idl_h->status = ERR_NOT_SUPPORTED;
-            return sizeof(*idl_h);
-        }
-        status_t idl_st = ops->blank(ctx, idl_q->on);
-        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
-        if (idl_h->status != OK)
-            return sizeof(*idl_h);
         return sizeof(*idl_r);
     }
     case CONSOLE_SHOW_LOG: {

@@ -24,9 +24,8 @@
  * the app's (keys, the pointer, the close box, the end) waits in the
  * stash, in order, until gfx_key takes it; so a present never loses a
  * key. Keys arrive as evdev codes with what they type (libjwl decodes
- * them with the keymap): they become the console's struct
- * input_key_event (the HID usage, the character, INPUT_MOD_*), so
- * key_decode and the apps see the same keys either way. The close box is
+ * them with the keymap): they become a struct fun_key (the HID usage, the
+ * character, INPUT_MOD_*) for key_decode and the apps. The close box is
  * an Escape press: KEY_QUIT. */
 #include <jwl_client.h>
 #include <keymap.h>
@@ -36,7 +35,7 @@
 #define CONFIGURE_WAIT (5 * NS_PER_S)   /* the window's first configure, at most */
 #define FRAME_WAIT     (1200 * NS_PER_MS) /* a frame callback (a hidden window: once a second) */
 #define STASH_MAX      256u             /* the app's events read meanwhile; more are dropped */
-#define MIN_W          320              /* scr's smallest size, as on a borrowed screen */
+#define MIN_W          320              /* scr's smallest size */
 #define MIN_H          200
 #define BIG_W          1600             /* the default window on a big screen ... */
 #define BIG_H          1000
@@ -225,7 +224,6 @@ static status_t make_screen(int w, int h, uint32_t bg)
     scr.h = h;
     scr.ui = ui_for(w, h);   /* by its own size: the apps' layouts are made that way */
     scr.bg = bg;
-    scr.windowed = true;
     scr.open = true;
     if (bg)
         fill(&scr.s, 0, 0, w, h, bg);
@@ -260,7 +258,7 @@ status_t wl_open(uint32_t bg, bool keys, bool full)
     wl.first = HANDLE_INVALID;
     stash_head = stash_len = 0;
     if (!connect_fn && svc_open(JWL_SERVICE, &wl.first) != OK)
-        return ERR_NOT_FOUND;   /* not in our namespace: the borrowed screen */
+        return ERR_NOT_FOUND;   /* not in our namespace: no compositor */
     struct jwl_client_config cfg = {
         .connect = connect_fn ? connect_fn : connect_svc, .connect_ctx = connect_ctx,
         .name = title ? title : "libfun", .no_keyboard = !keys,
@@ -419,7 +417,7 @@ static bool take_size(void)
 /* ---- the app's events -------------------------------------------------------------------- */
 
 /* A key as the console sends it (<jam/abi.h>). */
-static void key_of(const struct jwl_event *e, struct input_key_event *out)
+static void key_of(const struct jwl_event *e, struct fun_key *out)
 {
     uint32_t m = e->key.mods;
     out->usage = (uint16_t)keymap_hid_of_evdev(e->key.code);
@@ -468,7 +466,7 @@ static enum msg_kind pointer(const struct jwl_event *e)
 
 /* One of the app's events for keys.c: true with *ev or the mouse's news
  * and *kind, false for one it doesn't see. */
-static bool app_event(const struct jwl_event *e, struct input_key_event *ev, enum msg_kind *kind)
+static bool app_event(const struct jwl_event *e, struct fun_key *ev, enum msg_kind *kind)
 {
     switch (e->type) {
     case JWL_EV_KEY:
@@ -476,7 +474,7 @@ static bool app_event(const struct jwl_event *e, struct input_key_event *ev, enu
         *kind = MSG_KEY;
         return true;
     case JWL_EV_CLOSE:   /* the close box: as Escape */
-        *ev = (struct input_key_event){ HID_ESCAPE, INPUT_KEY_DOWN, 0, 0x1b };
+        *ev = (struct fun_key){ HID_ESCAPE, INPUT_KEY_DOWN, 0, 0x1b };
         *kind = MSG_KEY;
         return true;
     case JWL_EV_POINTER_ENTER:
@@ -492,7 +490,7 @@ static bool app_event(const struct jwl_event *e, struct input_key_event *ev, enu
     }
 }
 
-status_t wl_next(uint64_t deadline, struct input_key_event *ev, enum msg_kind *kind)
+status_t wl_next(uint64_t deadline, struct fun_key *ev, enum msg_kind *kind)
 {
     if (!wl.keys)
         return ERR_BAD_HANDLE;

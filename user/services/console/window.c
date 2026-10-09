@@ -1,12 +1,12 @@
 /* console: the window mode (console.h): the terminal as a Wayland client
  * of the compositor, through libjwl (<jwl_client.h>).
  *
- * init hands a console the client end of /svc/wayland (WAYLAND_ROLE) when
- * a compositor owns the screen; without one the console takes the
- * framebuffer as it always did (screen.c). In window mode:
- *   - the text model, the kernel log and its notices, the console
- *     protocol and the copy to COM1 are as ever; only the drawing moves:
- *     winpaint.c draws the cell grid into the window's buffers;
+ * init hands a console the client end of /svc/wayland (WAYLAND_ROLE): the
+ * compositor owns the screen (without one the console has no screen and
+ * the text goes to COM1 alone). In the window:
+ *   - the text model, the kernel log, the console protocol and the copy
+ *     to COM1 are the console's; winpaint.c draws the cell grid into the
+ *     window's buffers;
  *   - the window opens centred (the compositor places it) at a size that
  *     leaves the desktop around it (term_grid); it is resizable, and every
  *     size the compositor gives it re-grids the text (text_regrid): lines
@@ -17,9 +17,9 @@
  *     console.set_font asks for it, WIN_PAD pixels in from each edge; the
  *     text fills the window from the top (view.c);
  *   - keys come from wl_keyboard while the window has the focus, into the
- *     same focus stack as a keyboard driver's (keys.c), so Ctrl+C reaches
- *     the shell below a program as before; Super+Enter asks init for
- *     another terminal instead (keys.c, terminal_ask); the pointer's
+ *     focus stack (keys.c), so Ctrl+C reaches the shell below a program;
+ *     Ctrl+Alt+Del and Super+Enter are the compositor's and never come
+ *     here; the pointer's
  *     movement, buttons and wheel become the mouse reports a program that
  *     asked for the mouse gets, or the wheel scrolls back;
  *   - copy and paste: the mouse selects the text, Super+C (or
@@ -207,7 +207,7 @@ static void key(const struct jwl_event *ev)
         return;
     if (clip_key(&k))
         return;   /* copy or paste (clip.c) */
-    key_event(k.usage, k.state, k.mods, k.codepoint, false);
+    key_event(k.usage, k.state, k.mods, k.codepoint);
 }
 
 /* ---- the clipboard ---------------------------------------------------------------- */

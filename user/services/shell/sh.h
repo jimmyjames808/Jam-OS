@@ -418,8 +418,8 @@ bool        sh_is_mount(const char *abs);
 const char *sh_why(status_t st);
 
 /* Which terminal this shell runs in (init's argument "term=<n>", given to
- * every terminal's shell with a compositor: `exit` closes it), or 0: none
- * (the one full-screen console under `nocomp`, or a shell run by a shell). */
+ * every terminal's shell: `exit` closes it), or 0: none (a shell run by a
+ * shell, or one init started without a compositor). */
 extern unsigned sh_term_no;
 
 /* ---- the commands (cmd/<name>.c) --------------------------------------------------- */

@@ -9,8 +9,7 @@
  * tools/shell-tests/apps.txt runs both; wlapps (tools/shell-tests/wlapps.txt)
  * shows it as a window, and `fullscreen` as a full-screen one.
  *
- * Real pixels at the window's size (or the screen's, borrowed from the
- * console under `nocomp`).
+ * Real pixels at the window's size.
  * The screen is cut into 16 x 16 tiles; tiles are handed to the pool's
  * threads (one per CPU) through an atomic counter, the middle of the
  * screen first. Rendering is progressive: a first pass computes one pixel
@@ -425,7 +424,7 @@ static int play(int argc, char **argv)
     pool_start((uint32_t)arg_num(argc, argv, "threads", 0));
     status_t st = has_arg(argc, argv, "fullscreen") ? gfx_open_fullscreen(0) : gfx_open();
     if (st != OK) {
-        say("fractal: can't open a window or borrow the screen (%s)\n", status_str(st));
+        say("fractal: can't open a window (%s)\n", status_str(st));
         return 1;
     }
     if (!view_alloc(scr.w, scr.h)) {

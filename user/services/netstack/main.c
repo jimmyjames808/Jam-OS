@@ -25,8 +25,8 @@
  *                     (netctl.idl: info, stats, device and summary only),
  *                     kept by init as the other one is; its client end is
  *                     the compositor's (the network popover)
- *   SR_USER + 6       a duplicate of /svc/notify's shared channel (not
- *                     under `nocomp`): the desktop's "Connected" (the link
+ *   SR_USER + 6       a duplicate of /svc/notify's shared channel: the
+ *                     desktop's "Connected" (the link
  *                     up with an address) and "Disconnected" (<notice.h>)
  *
  * This file is the loop: one port, and lwIP's timers, the programs'

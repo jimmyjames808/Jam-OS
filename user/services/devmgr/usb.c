@@ -15,11 +15,10 @@
  *             (usb-bus lets a new reader open an endpoint whose old report
  *             channel is dead). Replies to a dead hid's calls that were
  *             still queued are drained before the next start;
- *   DR_INPUT  with a console (SR_CONSOLE, or DEVMGR_SET_CONSOLE after a
- *             console restart): a new source from console.connect_input;
- *             with the argument "comp", from compctl.connect_input on the
- *             compositor's INPUT channel, which init gives us the same way
- *             (and again when the compositor restarts).
+ *   DR_INPUT  a new source from compctl.connect_input on the
+ *             compositor's INPUT channel, which init gives us
+ *             (SR_CONSOLE, and DEVMGR_SET_CONSOLE again when the
+ *             compositor restarts).
  *             Without one hid logs each key DOWN (keytest, init + utest).
  * Both arrive without RIGHT_DUPLICATE / RIGHT_TRANSFER.
  *
@@ -38,11 +37,10 @@
  *   - a crash, a kill, an error exit: restarted with backoff
  *     (supervise.c), given up on after 5 in a minute. */
 #include <idl/compctl.h>
-#include <idl/console.h>
 #include <idl/usbbus.h>
 #include "internal.h"
 
-#define CONNECT_WAIT (2 * NS_PER_S)   /* console.connect_input, compctl.connect_input */
+#define CONNECT_WAIT (2 * NS_PER_S)   /* compctl.connect_input */
 
 struct usb_if {
     handle_t ch;        /* our end of the interface's `usb` channel; 0: a free slot */
@@ -200,8 +198,7 @@ status_t usb_handles(struct binding *b, struct spawn_handle *x, rights_t *xr, un
          * console's MAX_SOURCES slots until we take it off (and close it). */
         drain(console);
         handle_t src;
-        status_t st = comp_input ? compctl_connect_input_until(console, now() + CONNECT_WAIT, &src)
-                                 : console_connect_input_until(console, now() + CONNECT_WAIT, &src);
+        status_t st = compctl_connect_input_until(console, now() + CONNECT_WAIT, &src);
         if (st == ERR_PEER_CLOSED)
             return ERR_SHOULD_WAIT;
         if (st != OK)
@@ -388,7 +385,7 @@ void usb_bus_gone(struct binding *b)
 
 const char *usb_hub_name(void)
 {
-    return comp_input ? "compositor" : "console";
+    return "compositor";
 }
 
 void usb_new_console(handle_t ch)

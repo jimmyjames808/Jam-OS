@@ -85,8 +85,8 @@ static const struct sh_cmd cmds[] = {
     C(term, C_PROGRAMS, "term [command]",
       "open another terminal: a window of its own with a shell of its own (as\n"
       "  Super+Enter does); with a command, its shell runs it first, as if typed,\n"
-      "  and stays. Needs the compositor (not a nocomp boot); at most 16 terminals\n"
-      "  in all. Close one with its window's close box or exit"),
+      "  and stays. At most 16 terminals in all. Close one with its window's\n"
+      "  close box or exit"),
     C(launch, C_PROGRAMS, "launch <app>",
       "start one of the desktop's apps as its search box does (jamjar): init starts\n"
       "  only those, from the boot image, with what each one's list asks for and a\n"
@@ -95,12 +95,11 @@ static const struct sh_cmd cmds[] = {
       "a notice on the desktop: a card in the top right that fades after 5 s, or\n"
       "  with buttons (-b, up to 3) stays until one is pressed. -w: wait for it and\n"
       "  say which (Ctrl+C stops waiting). During the boot splash it waits and shows\n"
-      "  when the splash is over. Needs the compositor (not a nocomp boot).\n"
+      "  when the splash is over.\n"
       "  Example: notify -b Yes -b No -w Tea? Kettle is on"),
     C(exit, C_PROGRAMS, "exit",
       "end this shell and close its terminal (any of them; Super+Enter opens\n"
-      "  another). The programs it started with & end with it. Without the\n"
-      "  desktop (a nocomp boot) the one terminal stays"),
+      "  another). The programs it started with & end with it"),
     C(devices, C_HARDWARE, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_HARDWARE, "usb", "USB devices from usb-bus (alias lsusb)"),
     C(hda, C_HARDWARE, "hda [gain [dB] | bits [n] | jacks]",

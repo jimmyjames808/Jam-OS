@@ -1,10 +1,9 @@
 /* console: its clients, and the console protocol (console.h).
  *
- * Each client channel has a level (console.idl new_client): ADMIN (init's,
- * and the copy devmgr gets), SHELL (the shell's: no connect_input), PROGRAM
- * (what the shell hands a program it runs: write, size, clear, open_keys,
- * lend_screen; not blank, not show_log). A client can only make channels
- * of a lower level than its own. keys.c has what the levels mean for the
+ * Each client channel has a level (console.idl new_client): ADMIN (init's),
+ * SHELL (the shell's: no set_font), PROGRAM (what the shell hands a
+ * program it runs: write, size, clear, open_keys; not show_log). A client
+ * can only make channels of a lower level than its own. keys.c has what the levels mean for the
  * keys.
  *
  * Program output (console.write) is also written to COM1 as it is (the
@@ -90,17 +89,6 @@ static status_t op_new_client(void *ctx, uint8_t level, handle_t *out)
     return OK;
 }
 
-static status_t op_blank(void *ctx, uint8_t on)
-{
-    const struct client *c = ctx;
-    if (c->level == L_PROGRAM)
-        return ERR_ACCESS_DENIED;
-    if (on > 1)
-        return ERR_INVALID_ARGS;
-    screen_blank(on);
-    return OK;
-}
-
 /* A client asks for the kernel log on the screen, or stops asking. */
 static status_t op_show_log(void *ctx, uint8_t on, const uint8_t only[32])
 {
@@ -128,8 +116,8 @@ static status_t op_set_font(void *ctx, uint8_t font)
 }
 
 static const struct console_ops console_ops = {
-    op_write, op_size, op_clear, op_open_keys, op_connect_input, op_lend_screen, op_new_client,
-    op_blank, op_show_log, op_set_font,
+    .write = op_write, .size = op_size, .clear = op_clear, .open_keys = op_open_keys,
+    .new_client = op_new_client, .show_log = op_show_log, .set_font = op_set_font,
 };
 
 void clients_init(void)

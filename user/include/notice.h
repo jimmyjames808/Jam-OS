@@ -3,8 +3,8 @@
  * sticks, netstack's link).
  *
  * The service is started with a duplicate of /svc/notify's shared channel
- * (none under `nocomp`: then nothing is posted, and the service's own log
- * lines are all there is, as before the desktop). notice_post makes its
+ * (none without a compositor: then nothing is posted, and the service's
+ * own log lines are all there is). notice_post makes its
  * NOTIFY channel on first use (svc.connect, waiting at most
  * NOTICE_CONNECT_WAIT: the compositor answers at once unless it is being
  * started again), and again after the compositor's restart closed the old

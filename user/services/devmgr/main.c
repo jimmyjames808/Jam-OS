@@ -45,7 +45,7 @@
  *
  * The argument "nousb" (init passes it on for the safe mode boot entry)
  * leaves USB host controllers (class 0c03xx) without a driver: no USB at
- * all, the console's input is the serial port alone. The argument
+ * all, the compositor's input is the serial port alone. The argument
  * "hidboot" (the boot word) is passed on to every drv/hid, which then
  * keeps mice in the boot protocol. A match-table row that names a word
  * binds only when devmgr was given that word, and its driver is started
@@ -67,9 +67,8 @@
  *
  * USB interfaces usb-bus reports get class drivers (usb.c: class 3 ->
  * drv/hid, each in a job of its own, supervised the same way), connected
- * to the console when there is one (SR_CONSOLE, then DEVMGR_SET_CONSOLE),
- * or with the argument "comp" (init's, when the compositor draws the
- * screen) to the compositor: those channels are then compctl's.
+ * to the compositor through the compctl INPUT channel init gives
+ * (SR_CONSOLE, then DEVMGR_SET_CONSOLE after a compositor restart).
  *
  * A mass-storage interface's driver makes a disk (disk.c): devmgr asks it
  * for its partitions and, if it is the disk Jam OS booted from, starts a
@@ -125,7 +124,6 @@ struct notice_box devmgr_notices;
 unsigned nbound, nfailed, nskipped;
 static bool nousb;
 bool hidboot;
-bool comp_input;
 bool vtdtest;
 static bool netprobe, netsend, net;
 uint32_t boot_mbr_id;
@@ -432,7 +430,6 @@ int main(int argc, char **argv)
         netprobe |= !strcmp(argv[i], "netprobe");
         netsend |= !strcmp(argv[i], "netsend");
         net |= !strcmp(argv[i], "net");
-        comp_input |= !strcmp(argv[i], "comp");
         if (!strncmp(argv[i], "bootdisk=", 9))
             boot_mbr_id = hex32(argv[i] + 9);
     }

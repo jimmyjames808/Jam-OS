@@ -1,19 +1,17 @@
-/* fbbench: what the compositor will depend on, measured on the screen
- * itself (docs/G1-PLAN.md, track P0): the framebuffer's write-combining
- * stores at several thread counts and store widths and in tiles, a copy
- * from RAM to it, RAM to RAM, the premultiplied blend per megapixel
- * (scalar, SSE2, AVX2), vmo_read's rate (Q2's fallback), and whole frames
- * as the compositor will paint them, Q2's two ways. The numbers decide the
- * compositor's tile size and replace the plan's estimates.
+/* fbbench: what the compositor and libfun's programs depend on, measured
+ * (docs/G1-PLAN.md, track P0): libfun's present into a full-screen window
+ * (through the compositor, frame by frame), RAM to RAM, the premultiplied
+ * blend per megapixel (scalar, SSE2, AVX2) and vmo_read's rate (Q2's
+ * fallback). The framebuffer's own lines went with the screen the console
+ * lent (M12's Q14): the compositor's `stats` has its paint times.
  *
  * Run it from the shell: `fbbench [-q]` (-q: a tenth of the samples, for
- * QEMU, whose numbers mean nothing). It borrows the screen from the
- * console (console.lend_screen, as libfun's programs do) and draws test
- * patterns on it while it measures (about half a minute on the PC), then
- * gives it back and prints its lines, bench's format, to the terminal and
+ * QEMU, whose numbers mean nothing). It opens a full-screen window (libfun,
+ * as the apps do) and draws test patterns in it while it measures, then
+ * closes it and prints its lines, bench's format, to the terminal and
  * into the kernel log: `grep 'fbbench:'` finds them in the stick's log
- * (or the netlog on the Mac). With no screen to borrow it says why and
- * measures what needs none (RAM, blend, vmo_read).
+ * (or the netlog on the Mac). With no window it says why and measures
+ * what needs none (RAM, blend, vmo_read).
  *
  * Every sample is one whole piece of work (the screen, a window, a text
  * line), so a line's median is that piece's cost. Threads are not pinned
@@ -23,7 +21,6 @@
  *
  * Exit 0 if every line was measured, 1 if one failed (the line says so),
  * 2 for a usage error. */
-#include <idl/console.h>
 #include "fbbench.h"
 
 #define SAMPLES     64
@@ -35,44 +32,19 @@
 struct bench B;
 uint32_t *tile_buf[CREW_MAX];
 
-static handle_t lease = HANDLE_INVALID;   /* the screen's lease, while we have it */
-
-/* Borrow the screen; false with why (B.fb stays NULL). */
-static bool borrow(char *why, size_t n)
+/* A full-screen window (libfun); false with why (B.windowed stays false). */
+static bool open_window(char *why, size_t n)
 {
-    handle_t con = startup_handle(SR_CONSOLE), vmo;
-    uint32_t w, h, pitch;
-    uint8_t rs, gs, bs;
-    uint64_t size;
-    if (!con) {
-        snprintf(why, n, "no console");
-        return false;
-    }
-    status_t st = console_lend_screen(con, &w, &h, &pitch, &rs, &gs, &bs, &size, &vmo, &lease);
+    gfx_title("fbbench");
+    status_t st = gfx_open_fullscreen(0);
     if (st != OK) {
-        snprintf(why, n, "the console didn't lend it: %s", status_str(st));
+        snprintf(why, n, "no window: %s", status_str(st));
         return false;
     }
-    uint64_t addr = 0, len = (size + 4095) & ~4095ull;
-    if (w < 320 || h < 200 || w > 8192 || h > 8192 || pitch < w * 4 || pitch % 4 ||
-        size < (uint64_t)pitch * h)
-        st = ERR_NOT_SUPPORTED;
-    else
-        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, len, VMAR_READ | VMAR_WRITE,
-                          &addr);
-    jam_handle_close(vmo);   /* the mapping keeps it */
-    if (st != OK) {
-        snprintf(why, n, "%ux%u pitch %u: %s", w, h, pitch, status_str(st));
-        jam_handle_close(lease);
-        lease = HANDLE_INVALID;
-        return false;
-    }
-    B.fb = (uint32_t *)(uintptr_t)addr;
-    B.fbpitch = pitch / 4;
-    B.w = (int)w;
-    B.h = (int)h;
-    out_text("fbbench: screen %ux%u, pitch %u bytes, red at bit %u, green %u, blue %u%s\n", w, h,
-             pitch, rs, gs, bs, rs == 16 && gs == 8 && bs == 0 ? " (xrgb, as libfun draws)" : "");
+    B.windowed = true;
+    B.w = scr.w;
+    B.h = scr.h;
+    out_text("fbbench: a full-screen window, %dx%d\n", B.w, B.h);
     return true;
 }
 
@@ -145,6 +117,7 @@ int main(int argc, char **argv)
     } else if (argc != 1)
         return usage();
     B.ncpu = fun_cpu_count();
+    pool_start(0);   /* libfun's present runs on its pool */
     B.avx2 = fun_has_avx2();
     status_t pr = jam_thread_set_priority(startup_handle(SR_SELF_THREAD), THREAD_PRIO_USER_MAX);
     char why[160];
@@ -152,10 +125,10 @@ int main(int argc, char **argv)
         printf("fbbench: kernels: FAILED: %s\n", why);
         return 1;
     }
-    printf("fbbench: kernels agree with px_over; borrowing the screen to measure (test "
-           "patterns on it until the lines print)\n");
+    printf("fbbench: kernels agree with px_over; a full-screen window to measure (test "
+           "patterns in it until the lines print)\n");
     timing_init();
-    if (!borrow(why, sizeof(why))) {
+    if (!open_window(why, sizeof(why))) {
         out_text("fbbench: no screen (%s): measuring what needs none\n", why);
         B.w = NO_SCREEN_W;
         B.h = NO_SCREEN_H;
@@ -165,17 +138,16 @@ int main(int argc, char **argv)
     bool ok = buffers();
     if (ok) {
         header();
-        ok &= lines_fb();
+        ok &= lines_window();
         lines_ram();
         lines_blend();
         ok &= lines_vmo();
-        ok &= lines_frames();
     } else {
         out_text("fbbench: FAILED: no memory for the buffers (%lu bytes each)\n",
                  (unsigned long)B.frame);
     }
-    if (lease != HANDLE_INVALID)
-        jam_handle_close(lease);   /* the console redraws its text */
+    if (B.windowed)
+        gfx_close();
     out_flush();
     printf("fbbench: %s\n", ok ? "done" : "done, with failures");
     return ok ? 0 : 1;

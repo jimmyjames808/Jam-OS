@@ -86,7 +86,7 @@ status_t big_seal(void *p, uint64_t bytes)
 
 void say(const char *fmt, ...)
 {
-    char buf[2048];   /* console_write sends a whole 2048-byte buffer */
+    char buf[2048];   /* console_write takes at most 2048 bytes */
     va_list ap;
     va_start(ap, fmt);
     int n = vsnprintf(buf, sizeof(buf), fmt, ap);

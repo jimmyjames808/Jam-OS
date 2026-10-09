@@ -715,8 +715,7 @@ protocol's restart rule says what clients do after `ERR_PEER_CLOSED`.
    started in `user/services/init/shell.c`, each with its handles.
 4. Big ones split by job from the start, with an internal header.
 5. An app that draws uses the apps library: `gfx_open` opens a window on
-   the compositor (its list asks for `svc wayland`), or under `nocomp`
-   borrows the screen from the console (`console.lend_screen`).
+   the compositor (its list asks for `svc wayland`).
 
 ---
 

@@ -4,8 +4,8 @@
  * like, would clash with libfun's). console.h includes it.
  *
  * Two fonts draw the cells:
- *   - the 8x16 bitmap (Spleen, <font.h>): the full-screen console's
- *     always (`nocomp`), and a window's with `terminal.font = bitmap`;
+ *   - the 8x16 bitmap (Spleen, <font.h>): a window's with
+ *     `terminal.font = bitmap`;
  *   - the smooth one (the default in a window): JetBrains Mono through
  *     libfun's smooth text (<fun.h>), Regular and Bold, at TERM_PX pixels
  *     to the em. Its cells are the face's advance rounded to whole pixels
