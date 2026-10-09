@@ -82,7 +82,9 @@ status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struc
  * charges nothing. */
 status_t vmo_set_job(struct vmo *v, struct job *job);
 
-/* Uncommitted pages read as zeros and stay uncommitted. */
+/* Uncommitted pages read as zeros and stay uncommitted; a pager VMO's
+ * absent page is waited for (<jam/pager.h>: ERR_IO if its pager fails it,
+ * ERR_CANCELED if the thread is killed), so call it with no lock held. */
 status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len);
 /* Commits pages as needed. ERR_BAD_STATE if v is sealed (vmo_seal), as
  * for vmo_set_size, vmo_commit and vmo_decommit. */

@@ -8,10 +8,12 @@
 #include <jam/channel.h>   /* channel_received */
 #include <jam/handle.h>
 #include <jam/mm.h>
+#include <jam/pager.h>
 #include <jam/panic.h>
 #include <jam/pathstat.h>
 #include <jam/process.h>
 #include <jam/string.h>
+#include <jam/vmo.h>
 
 struct handle_slot {
     struct kobject *obj;        /* NULL: free or in transit */
@@ -413,6 +415,9 @@ status_t handle_info(struct handle_table *t, handle_t h, struct handle_info *out
         break;
     case OBJ_PROCESS:
         out->related_koid = process_job_koid(process_from_kobject(obj));
+        break;
+    case OBJ_VMO:
+        out->related_koid = vmo_pager_koid(vmo_from_kobject(obj));   /* 0 unless a pager's */
         break;
     default:
         break;
