@@ -6,9 +6,11 @@
  *      environment, the handles by role.
  *   2. The POSIX hand-over that may follow it (<posixfds.h>,
  *      posixfds_read): the descriptors and the state exec keeps. Without
- *      one, descriptors 0 to 2 are the defaults (stdfd_default); a
- *      malformed one leaves the program with no descriptors and a line in
- *      the log.
+ *      one, descriptors 0 to 2 are the defaults; a malformed one leaves
+ *      the program with no descriptors and a line in the log. Both are
+ *      only recorded here (fd_stage, fd_stage_default): the descriptor
+ *      table makes them descriptors once musl is up, before the
+ *      program's constructors (user/posix/sys/fd.c).
  *   3. Linux's block, on this function's stack (which lives as long as
  *      the program: __libc_start_main never returns): argc, argv, NULL,
  *      the environment (with TZ added from the system's zone if the
@@ -68,13 +70,13 @@ static status_t sink_fd(void *ctx, const struct posixfds_fd *rec, const void *da
                         const handle_t *hs)
 {
     (void)ctx;
-    return stdfd_take(rec, data, hs);
+    return fd_stage(rec, data, hs);
 }
 
 static void sink_reset(void *ctx)
 {
     (void)ctx;
-    stdfd_reset();
+    fd_stage_reset();
 }
 
 /* "posix: <what> (<status>)\n" in the log, without printf. */
@@ -91,7 +93,7 @@ static void take_handover(void)
     const struct posixfds_sink sink = { NULL, sink_fd, sink_reset };
     status_t st = posixfds_read(startup_channel(), &sink, &ho_state, ho_cwd);
     if (st == ERR_NOT_FOUND) {
-        stdfd_default();
+        fd_stage_default();
         return;
     }
     if (st != OK) {
