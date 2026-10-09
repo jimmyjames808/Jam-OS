@@ -482,7 +482,8 @@ $(foreach p,$(USER_PROGS),$(eval $(call USER_PROG,$(p))))
 # functions over a network frame's bytes, and <jam/netdev.h>, the netdev
 # rings' layout and index code; and <jam/netserver.h>, the netdev server
 # whose code, drivers/lib/netserver.c, a network driver links into its own
-# object: DRV_LIB_<name> below), the generated <idl/*.h>
+# object: DRV_LIB_<name> below; and <jam/sha256.h>, drivers/lib/sha256.c,
+# the same way), the generated <idl/*.h>
 # and the compiler's freestanding headers
 # (stdint/stddef/stdbool/stdarg): -nostdinc drops every other include path,
 # and DRV_INC holds copies of just those files. -fno-builtin: no call is
@@ -498,7 +499,8 @@ DRV_SURFACE := drivers/include/jam/driver.h drivers/include/jam/task.h kernel/in
 DRV_INC     := $(BUILD)/driver-include
 DRV_HDRS    := $(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h $(DRV_INC)/jam/abi.h \
                $(DRV_INC)/jam/status.h $(DRV_INC)/jam/netframe.h $(DRV_INC)/jam/netdev.h \
-               $(DRV_INC)/jam/netserver.h $(IDL_GEN:drivers/include/%=$(DRV_INC)/%)
+               $(DRV_INC)/jam/netserver.h $(DRV_INC)/jam/sha256.h \
+               $(IDL_GEN:drivers/include/%=$(DRV_INC)/%)
 DRV_ISOLATE := -nostdinc -isystem $(shell $(CC) -print-file-name=include) -I$(DRV_INC) -fno-builtin
 DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
 # DRV_LIB_<name>: the drivers/lib/ files driver <name> links into its own
@@ -509,7 +511,7 @@ DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRI
                $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(DRV_LIB_$(1)))
 
 $(DRV_INC)/jam/driver.h $(DRV_INC)/jam/task.h $(DRV_INC)/jam/netframe.h $(DRV_INC)/jam/netdev.h \
-        $(DRV_INC)/jam/netserver.h: \
+        $(DRV_INC)/jam/netserver.h $(DRV_INC)/jam/sha256.h: \
         $(DRV_INC)/jam/%.h: drivers/include/jam/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@
