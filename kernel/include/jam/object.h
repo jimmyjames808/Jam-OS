@@ -90,6 +90,10 @@ signals_t kobject_signals(struct kobject *obj);
 /* Register an observer. It fires immediately (under the lock) if
  * (signals & o->mask) != 0 already. */
 void kobject_observe(struct kobject *obj, struct observer *o);
+/* kobject_observe, but with `held` only while obj has a handle left
+ * (checked under its lock): false, and o not registered, once it has
+ * none (port bindings made through a handle: port_object_closed). */
+bool kobject_observe_if(struct kobject *obj, struct observer *o, bool held);
 
 /* Block until (signals & mask) != 0 or uptime_ns() >= deadline_ns
  * (DEADLINE_NEVER from sched.h for no limit). Returns OK, ERR_TIMED_OUT, or

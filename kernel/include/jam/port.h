@@ -22,7 +22,8 @@
  * Bindings do not hold a reference on the port: destroying the port (last
  * reference) detaches every binding from its object first, then frees the
  * queue. A binding holds a reference on the watched object until it is
- * unbound, or, for PORT_BIND_ONCE, until its packet is dequeued. */
+ * unbound, the object's last handle closes (port_object_closed), or, for
+ * PORT_BIND_ONCE, its packet is dequeued. */
 #pragma once
 
 #include <stdint.h>
@@ -58,6 +59,15 @@ status_t port_create(struct port **out);
  * are ERR_INVALID_ARGS. */
 status_t port_bind(struct port *p, struct kobject *obj, uint64_t key, signals_t mask,
                    uint32_t flags);
+/* port_bind for a binding made through a handle (port_bind system call):
+ * ERR_BAD_HANDLE once obj has no handle left, so port_object_closed never
+ * misses one. */
+status_t port_bind_held(struct port *p, struct kobject *obj, uint64_t key, signals_t mask,
+                        uint32_t flags);
+/* obj's last handle has gone (kobject_handle_drop; no lock held): every
+ * binding watching it ends, as port_unbind would end it, since nothing can
+ * unbind it any more (M12's question E). A packet it queued stays. */
+void port_object_closed(struct kobject *obj);
 /* Remove every live binding for (obj, key): ERR_NOT_FOUND if there were
  * none (a ONCE binding that already fired is gone). Queued packets stay. */
 status_t port_unbind(struct port *p, struct kobject *obj, uint64_t key);

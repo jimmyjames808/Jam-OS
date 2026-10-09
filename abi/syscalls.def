@@ -124,6 +124,11 @@
 34  timer_cancel      status    handle_t h
 
 # ports ---------------------------------------------------------------------
+# A binding (port_bind) lasts until port_unbind, the port's end, its
+# packet read (PORT_BIND_ONCE), or the moment its object has no handle
+# left anywhere (in any table or message): nothing could unbind it then.
+# A packet it queued stays. While other handles to the object exist, the
+# binding is its binder's to unbind.
 40  port_create       status    handle_t *out
 41  port_bind         status    handle_t port, handle_t obj, uint64_t key, signals_t mask, uint32_t flags
 42  port_unbind       status    handle_t port, handle_t obj, uint64_t key

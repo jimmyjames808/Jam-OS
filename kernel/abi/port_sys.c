@@ -82,7 +82,7 @@ status_t sys_port_bind(struct handle_table *t, handle_t port, handle_t obj, uint
         return st;
     st = handle_get(t, obj, OBJ_NONE, RIGHT_WAIT, &o, NULL);
     if (st == OK) {
-        st = port_bind(container_of(po, struct port, base), o, key, mask, flags);
+        st = port_bind_held(container_of(po, struct port, base), o, key, mask, flags);
         kobject_unref(o);
     }
     kobject_unref(po);
