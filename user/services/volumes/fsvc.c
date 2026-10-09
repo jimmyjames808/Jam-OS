@@ -364,16 +364,11 @@ void mount_others(struct disk *d)
  * answer (fs_answers takes it). Returns its transaction id. */
 uint32_t ask_stat(const struct vol *b, const char *path, status_t *st)
 {
-    struct fs_stat_req q;
-    memset(&q, 0, sizeof(q));
     txids = (txids + 1) & ~CHANNEL_TXID_KERNEL;
     if (txids == 0)
         txids++;
-    q.txid = txids;
-    q.ordinal = FS_STAT;
-    memcpy(q.path, path, strlen(path) + 1);
-    *st = jam_channel_write(b->client, &q, sizeof(q), NULL, 0);
-    return q.txid;
+    *st = fs_stat_send(b->client, txids, path, (uint32_t)strlen(path));
+    return txids;
 }
 
 bool fs_check_ended(struct vol *b, bool no_volume)

@@ -1093,6 +1093,7 @@ static const struct {
     { "handle_info", t_handle_info },
     { "length_limits", t_length_limits },
     { "replace_consumes", t_replace_consumes },
+    { "fat_open_moved", t_fat_open_moved },
 };
 
 int main(int argc, char **argv)

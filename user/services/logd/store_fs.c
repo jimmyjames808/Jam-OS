@@ -15,32 +15,20 @@ static uint64_t deadline(void)
     return now() + CALL_WAIT;
 }
 
-/* A path as the protocol carries it: FS_PATH_MAX bytes, NUL-padded. */
-static void wire_path(uint8_t out[FS_PATH_MAX], const char *path)
-{
-    memset(out, 0, FS_PATH_MAX);
-    memcpy(out, path, strnlen(path, FS_PATH_MAX - 1));
-}
-
 static status_t direct_mkdir(const char *path)
 {
-    uint8_t p[FS_PATH_MAX];
-    wire_path(p, path);
-    return fs_mkdir_until(fs, deadline(), p);
+    return fs_mkdir_until(fs, deadline(), path, (uint32_t)strlen(path));
 }
 
 static status_t direct_stat(const char *path)
 {
-    uint8_t p[FS_PATH_MAX];
-    wire_path(p, path);
-    return fs_stat_until(fs, deadline(), p, NULL, NULL, NULL);
+    return fs_stat_until(fs, deadline(), path, (uint32_t)strlen(path), NULL, NULL, NULL, NULL);
 }
 
 static status_t direct_open(const char *path, uint32_t flags, uint64_t *size)
 {
-    uint8_t p[FS_PATH_MAX];
-    wire_path(p, path);
-    return fs_open_until(fs, deadline(), p, flags, &file, &buffer, size);
+    return fs_open_until(fs, deadline(), path, (uint32_t)strlen(path), flags, &file, &buffer,
+                         size);
 }
 
 static status_t direct_write(uint64_t offset, const void *data, uint32_t n)

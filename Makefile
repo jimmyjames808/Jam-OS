@@ -392,9 +392,10 @@ $(CURSOR_OBJ): PROG_CFLAGS := -iquote user/services/compositor -I$(LIBFUN_DIR)
 EXTRA_OBJS_compositor := $(CURSOR_OBJ)
 EXTRA_OBJS_netstack   := $(LWIP_OBJS)
 EXTRA_CFLAGS_netstack := $(LWIP_INC)
-EXTRA_OBJS_fat   := $(FATFS_OBJS)
+# fat compiles ff.c itself, inside user/services/fat/ffx.c (its additions).
+EXTRA_OBJS_fat   := $(FATFS_STAGE)/ffunicode.o
 EXTRA_CFLAGS_fat := $(FATFS_INC)
-EXTRA_DEPS_fat   := $(FATFS_HDRS)
+EXTRA_DEPS_fat   := $(FATFS_HDRS) $(FATFS_STAGE)/ff.c
 # The boot splash: pl_mpeg (third_party/pl_mpeg, vendored unmodified, one
 # header) and the <string.h>/<stdlib.h> it includes, which are libos's
 # (user/apps/splash/port).

@@ -143,7 +143,7 @@ bool t_ns_boot_mount(void)
     }
     CHECK(saw_bin && saw_cfg && n >= 2 && n < 16);
     CHECK_ST(fs_readdir("/boot", n, &e), ERR_NOT_FOUND);
-    CHECK_ST(fs_readdir("/boot/init.cfg", 0, &e), ERR_WRONG_TYPE);
+    CHECK_ST(fs_readdir("/boot/init.cfg", 0, &e), ERR_NOT_DIR);
     /* "/" lists the mount points */
     CHECK_ST(fs_stat("/", &size, &dir, NULL), OK);
     CHECK(dir);
@@ -198,8 +198,8 @@ bool t_ns_boot_read_only(void)
     CHECK_ST(file_open("/boot/init.cfg", FS_READ | 0x100, &g), ERR_INVALID_ARGS);
     CHECK_ST(file_open("/boot/init.cfg", FS_READ | FS_CREATE, &g), ERR_INVALID_ARGS);
     CHECK_ST(file_open("/boot/init.cfg", 0, &g), ERR_INVALID_ARGS);
-    CHECK_ST(file_open("/boot/bin", FS_READ, &g), ERR_WRONG_TYPE);   /* a directory */
-    CHECK_ST(file_open("/", FS_READ, &g), ERR_WRONG_TYPE);
+    CHECK_ST(file_open("/boot/bin", FS_READ, &g), ERR_IS_DIR);   /* a directory */
+    CHECK_ST(file_open("/", FS_READ, &g), ERR_IS_DIR);
     CHECK_ST(fs_mkdir("/boot/d"), ERR_ACCESS_DENIED);
     CHECK_ST(fs_unlink("/boot/init.cfg"), ERR_ACCESS_DENIED);
     CHECK_ST(fs_rename("/boot/init.cfg", "/boot/x"), ERR_ACCESS_DENIED);
@@ -225,12 +225,12 @@ bool t_ns_path_rules(void)
     memset(path, 'a', sizeof(path));
     memcpy(path, "/boot/", 6);
     path[FS_PATH_MAX] = '\0';
-    CHECK_ST(fs_stat(path, NULL, NULL, NULL), ERR_INVALID_ARGS);   /* FS_PATH_MAX bytes */
+    CHECK_ST(fs_stat(path, NULL, NULL, NULL), ERR_NAME_TOO_LONG);  /* FS_PATH_MAX bytes */
     path[FS_PATH_MAX - 1] = '\0';
     CHECK_ST(fs_stat(path, NULL, NULL, NULL), ERR_NOT_FOUND);      /* one less: fine */
     struct jfile f;
     path[FS_PATH_MAX - 1] = 'a';
-    CHECK_ST(file_open(path, FS_READ, &f), ERR_INVALID_ARGS);
+    CHECK_ST(file_open(path, FS_READ, &f), ERR_NAME_TOO_LONG);
     /* Under no mount. */
     CHECK_ST(fs_stat("/nomount/x", NULL, NULL, NULL), ERR_NOT_FOUND);
     CHECK_ST(fs_stat("/boo", NULL, NULL, NULL), ERR_NOT_FOUND);
@@ -255,20 +255,16 @@ bool t_ns_path_rules(void)
     CHECK_ST(fs_unlink("/"), ERR_ACCESS_DENIED);
     CHECK_ST(fs_sync("/"), ERR_INVALID_ARGS);
     /* fs_path_clean, as the services use it. */
-    uint8_t in[FS_PATH_MAX];
-    char out[FS_PATH_MAX];
-    memset(in, 0, sizeof(in));
-    memcpy(in, "/a/./b//../c/", 13);
-    CHECK_ST(fs_path_clean(in, out), OK);
+    char out[32];
+    CHECK_ST(fs_path_clean("/a/./b//../c/", 13, out), OK);
     CHECK(!strcmp(out, "a/c"));
-    memcpy(in, "../../x\0", 8);
-    CHECK_ST(fs_path_clean(in, out), OK);
+    CHECK_ST(fs_path_clean("../../x", 7, out), OK);
     CHECK(!strcmp(out, "x"));
-    memcpy(in, "/\0", 2);
-    CHECK_ST(fs_path_clean(in, out), OK);
+    CHECK_ST(fs_path_clean("/", 1, out), OK);
     CHECK(!out[0]);
-    memset(in, 'a', sizeof(in));   /* no NUL in the field */
-    CHECK_ST(fs_path_clean(in, out), ERR_INVALID_ARGS);
+    CHECK_ST(fs_path_clean("/a/bcd", 4, out), OK);   /* its length, not a NUL, ends it */
+    CHECK(!strcmp(out, "a/b"));
+    CHECK_ST(fs_path_clean("/a\0b", 4, out), ERR_INVALID_ARGS);   /* a NUL inside */
     return true;
 }
 
@@ -331,7 +327,7 @@ static bool ram_files(void)
     file_close(&f);
     CHECK_ST(ns_put(RAM "/docs/a.txt", "new\n"), OK);        /* FS_TRUNCATE */
     CHECK(ns_holds(RAM "/docs/a.txt", "new\n"));
-    CHECK_ST(file_open(RAM "/docs", FS_READ, &f), ERR_WRONG_TYPE);
+    CHECK_ST(file_open(RAM "/docs", FS_READ, &f), ERR_IS_DIR);
     return true;
 }
 
@@ -352,7 +348,7 @@ static bool ram_tree(void)
     CHECK_ST(fs_rename(RAM "/b.txt", RAM "/docs/big.bin"), ERR_ALREADY_EXISTS);
     CHECK_ST(fs_rename(RAM "/nosuch", RAM "/x"), ERR_NOT_FOUND);
     CHECK_ST(fs_rename(RAM "/b.txt", "/boot/b.txt"), ERR_NOT_SUPPORTED);   /* two mounts */
-    CHECK_ST(fs_unlink(RAM "/docs"), ERR_BAD_STATE);                       /* not empty */
+    CHECK_ST(fs_unlink(RAM "/docs"), ERR_NOT_EMPTY);                       /* not empty */
     CHECK_ST(fs_unlink(RAM "/nosuch"), ERR_NOT_FOUND);
     /* ".." can't reach above the mount from inside it either. */
     CHECK_ST(fs_stat(RAM "/docs/../../b.txt", NULL, NULL, NULL), OK);
@@ -384,7 +380,7 @@ static bool ram_tree(void)
         opened++;
     CHECK_ST(st, ERR_NO_RESOURCES);
     CHECK(opened >= 16 && opened < 80);
-    CHECK_ST(fs_unlink(RAM "/b.txt"), ERR_BAD_STATE);   /* open */
+    CHECK_ST(fs_unlink(RAM "/b.txt"), ERR_BUSY);   /* open */
     for (unsigned i = 0; i < opened; i++)
         file_close(&many[i]);
     CHECK_ST(file_open(RAM "/b.txt", FS_READ, &many[0]), OK);

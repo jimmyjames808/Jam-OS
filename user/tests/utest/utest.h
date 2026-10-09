@@ -770,3 +770,5 @@ bool t_mix_limits(void);
 bool t_handle_info(void);
 bool t_length_limits(void);
 bool t_replace_consumes(void);
+/* fat.c: an open file is known by its directory entry (P5). */
+bool t_fat_open_moved(void);

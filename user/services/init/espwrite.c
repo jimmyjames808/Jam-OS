@@ -133,11 +133,12 @@ static void say_progress(struct writer *w, const char *path, const char *suffix,
             (unsigned long)(off >> 10), (unsigned long)(size >> 10), what, esp_ms_since(t0));
 }
 
-/* fs.idl's path field for path, with suffix (".new" or ""). */
-static void field(uint8_t out[FS_PATH_MAX], const char *path, const char *suffix)
+/* path with suffix (".new" or "") into out (FS_PATH_MAX bytes): its length,
+ * as fs.idl's str takes it. */
+static uint32_t field(char out[FS_PATH_MAX], const char *path, const char *suffix)
 {
-    memset(out, 0, FS_PATH_MAX);
-    snprintf((char *)out, FS_PATH_MAX, "%s%s", path, suffix);
+    snprintf(out, FS_PATH_MAX, "%s%s", path, suffix);
+    return (uint32_t)strlen(out);
 }
 
 status_t esp_inject(struct writer *w, uint32_t step)
@@ -152,20 +153,19 @@ status_t esp_inject(struct writer *w, uint32_t step)
 
 status_t esp_unlink(struct writer *w, const char *path, const char *suffix)
 {
-    uint8_t p[FS_PATH_MAX];
-    field(p, path, suffix);
-    status_t st = fs_unlink_until(w->fs, esp_until(w), p);
+    char p[FS_PATH_MAX];
+    uint32_t n = field(p, path, suffix);
+    status_t st = fs_unlink_until(w->fs, esp_until(w), p, n, 0);
     return st == ERR_NOT_FOUND ? OK : st;
 }
 
 status_t esp_rename(struct writer *w, const char *path, const char *suffix, const char *to,
                     const char *to_suffix)
 {
-    uint8_t from[FS_PATH_MAX], dst[FS_PATH_MAX];
-    field(from, path, suffix);
-    field(dst, to, to_suffix);
+    char from[FS_PATH_MAX], dst[FS_PATH_MAX];
+    uint32_t n = field(from, path, suffix), dn = field(dst, to, to_suffix);
     uint64_t t0 = now();
-    status_t st = fs_rename_until(w->fs, esp_until(w), from, dst);
+    status_t st = fs_rename_until(w->fs, esp_until(w), from, n, dst, dn, 0);
     esp_say("%s%s renamed %s%s in %lu ms (%s)", path + 1, suffix, to + 1, to_suffix,
             esp_ms_since(t0), status_str(st));
     return st;
@@ -182,11 +182,11 @@ status_t esp_sync(struct writer *w)
 status_t esp_open(struct writer *w, const char *path, const char *suffix, uint32_t flags,
                   struct jfile *f)
 {
-    uint8_t p[FS_PATH_MAX];
+    char p[FS_PATH_MAX];
     handle_t ch, buf;
     uint64_t size;
-    field(p, path, suffix);
-    status_t st = fs_open_until(w->fs, esp_until(w), p, flags, &ch, &buf, &size);
+    uint32_t n = field(p, path, suffix);
+    status_t st = fs_open_until(w->fs, esp_until(w), p, n, flags, &ch, &buf, &size);
     return st == OK ? file_adopt(ch, buf, flags, f) : st;
 }
 
@@ -243,7 +243,7 @@ status_t esp_hash(struct writer *w, const char *path, const char *suffix, uint64
     }
     uint64_t now_size = 0;
     if (st == OK)
-        st = file_stat_until(f.ch, esp_until(w), &now_size, NULL);
+        st = file_stat_until(f.ch, esp_until(w), &now_size, NULL, NULL, NULL);
     if (st == OK && now_size != size)
         st = ERR_IO;   /* longer than it was written */
     file_close(&f);
@@ -332,10 +332,11 @@ static status_t copy_file(struct writer *w, const char *src, const char *dst)
 
 status_t esp_size_of(struct writer *w, const char *path, const char *suffix, uint64_t *size)
 {
-    uint8_t p[FS_PATH_MAX], dir = 0;
+    char p[FS_PATH_MAX];
+    uint8_t dir = 0;
     uint64_t mtime;
-    field(p, path, suffix);
-    status_t st = fs_stat_until(w->fs, esp_until(w), p, size, &dir, &mtime);
+    uint32_t n = field(p, path, suffix);
+    status_t st = fs_stat_until(w->fs, esp_until(w), p, n, size, &dir, &mtime, NULL);
     return st == OK && dir ? ERR_WRONG_TYPE : st;
 }
 
@@ -640,10 +641,11 @@ static void note_files(struct writer *w)
     struct esp_write *j = w->job;
     j->noted = true;
     for (unsigned f = 0; f < UPDATE_FILES && j->noted; f++) {
-        uint8_t p[FS_PATH_MAX], dir = 0;
-        field(p, cur[f], "");
-        j->noted = fs_stat_until(w->fs, esp_until(w), p, &j->file_size[f], &dir,
-                                 &j->mtime[f]) == OK && !dir;
+        char p[FS_PATH_MAX];
+        uint8_t dir = 0;
+        uint32_t n = field(p, cur[f], "");
+        j->noted = fs_stat_until(w->fs, esp_until(w), p, n, &j->file_size[f], &dir,
+                                 &j->mtime[f], NULL) == OK && !dir;
     }
 }
 

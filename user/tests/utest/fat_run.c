@@ -14,11 +14,10 @@ static uint64_t deadline(void)
     return now() + FAT_CALL_NS;
 }
 
-/* A C string as the protocols' 256-byte path field (cut if too long). */
-static void path_field(const char *s, uint8_t out[FS_PATH_MAX])
+/* A C string's length, as the protocols' str takes it. */
+static uint32_t len_of(const char *s)
 {
-    memset(out, 0, FS_PATH_MAX);
-    memcpy(out, s, strnlen(s, FS_PATH_MAX - 1));
+    return (uint32_t)strlen(s);
 }
 
 static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool format)
@@ -77,11 +76,10 @@ bool fat_stop(struct fatrun *r)
 
 status_t t_open(const struct fatrun *r, const char *path, uint32_t flags, struct tfile *f)
 {
-    uint8_t p[FS_PATH_MAX];
     handle_t vmo = HANDLE_INVALID;
     uint64_t addr = 0;
-    path_field(path, p);
-    status_t st = fs_open_until(r->fs, deadline(), p, flags, &f->ch, &vmo, &f->size);
+    status_t st = fs_open_until(r->fs, deadline(), path, len_of(path), flags, &f->ch, &vmo,
+                                &f->size);
     if (st != OK)
         return st;
     st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, FAT_BUF, VMAR_READ | VMAR_WRITE,
@@ -122,45 +120,129 @@ status_t t_write(struct tfile *f, uint64_t off, const void *src, uint32_t n, uin
 status_t t_stat(const struct fatrun *r, const char *path, uint64_t *size, bool *is_dir,
                 uint64_t *mtime)
 {
-    uint8_t p[FS_PATH_MAX], dir = 0;
-    path_field(path, p);
-    status_t st = fs_stat_until(r->fs, deadline(), p, size, &dir, mtime);
+    uint8_t dir = 0;
+    status_t st = fs_stat_until(r->fs, deadline(), path, len_of(path), size, &dir, mtime, NULL);
     if (st == OK && is_dir)
         *is_dir = dir != 0;
     return st;
 }
+
+status_t t_stat_id(const struct fatrun *r, const char *path, uint64_t *id)
+{
+    return fs_stat_until(r->fs, deadline(), path, len_of(path), NULL, NULL, NULL, id);
+}
+
+status_t t_batch(const struct fatrun *r, const char *path, uint32_t cookie, struct tbatch *b)
+{
+    return fs_readdir_until(r->fs, deadline(), path, len_of(path), cookie, &b->next, &b->count,
+                            b->entries, &b->len);
+}
+
+/* Record k of b (count of them) into *e: false if the batch is malformed. */
+static bool batch_at(const struct tbatch *b, uint32_t k, struct fs_dirent *e)
+{
+    uint32_t at = 0;
+    for (uint32_t i = 0; i <= k; i++)
+        if (!fs_dirent_get(b->entries, b->len, &at, e))
+            return false;
+    return true;
+}
+
+/* The first entry at cookie, as name (FS_NAME_MAX bytes). */
+static status_t first_at(const struct tbatch *b, char *name, bool *is_dir, uint64_t *id)
+{
+    struct fs_dirent e;
+    if (!b->count)
+        return ERR_NOT_FOUND;
+    if (!batch_at(b, 0, &e))
+        return ERR_INTERNAL;
+    memcpy(name, e.name, e.name_len);
+    name[e.name_len] = '\0';
+    if (is_dir)
+        *is_dir = e.is_dir;
+    if (id)
+        *id = e.id;
+    return OK;
+}
+
+status_t t_readdir_at(const struct fatrun *r, const char *path, uint32_t cookie, char *name,
+                      bool *is_dir)
+{
+    static struct tbatch b;
+    status_t st = t_batch(r, path, cookie, &b);
+    return st == OK ? first_at(&b, name, is_dir, NULL) : st;
+}
+
+/* The batch t_readdir last fetched: of `path`, entries first .. first +
+ * count - 1. */
+static struct {
+    char         path[FS_PATH_MAX];
+    uint32_t     first;
+    struct tbatch b;
+} cache;
 
 status_t t_readdir(const struct fatrun *r, const char *path, uint32_t index, char *name,
                    bool *is_dir)
 {
-    uint8_t p[FS_PATH_MAX], dir = 0;
-    path_field(path, p);
-    status_t st = fs_readdir_until(r->fs, deadline(), p, index, (uint8_t *)name, &dir, NULL);
-    if (st == OK && is_dir)
-        *is_dir = dir != 0;
-    return st;
+    status_t st = OK;
+    if (!index || index < cache.first || strcmp(cache.path, path)) {
+        snprintf(cache.path, sizeof(cache.path), "%s", path);
+        cache.first = 0;
+        st = t_batch(r, path, 0, &cache.b);
+    }
+    while (st == OK && index >= cache.first + cache.b.count) {
+        if (!cache.b.next)
+            st = ERR_NOT_FOUND;
+        else if (!cache.b.count)
+            st = ERR_INTERNAL;   /* an empty batch that isn't the last */
+        else {
+            cache.first += cache.b.count;
+            st = t_batch(r, path, cache.b.next, &cache.b);
+        }
+    }
+    if (st != OK) {
+        if (st != ERR_NOT_FOUND)
+            cache.path[0] = '\0';
+        return st;
+    }
+    struct fs_dirent e;
+    if (!batch_at(&cache.b, index - cache.first, &e))
+        return ERR_INTERNAL;
+    memcpy(name, e.name, e.name_len);
+    name[e.name_len] = '\0';
+    if (is_dir)
+        *is_dir = e.is_dir;
+    return OK;
 }
 
 status_t t_mkdir(const struct fatrun *r, const char *path)
 {
-    uint8_t p[FS_PATH_MAX];
-    path_field(path, p);
-    return fs_mkdir_until(r->fs, deadline(), p);
+    return fs_mkdir_until(r->fs, deadline(), path, len_of(path));
 }
 
 status_t t_unlink(const struct fatrun *r, const char *path)
 {
-    uint8_t p[FS_PATH_MAX];
-    path_field(path, p);
-    return fs_unlink_until(r->fs, deadline(), p);
+    bool dir = false;
+    status_t st = t_stat(r, path, NULL, &dir, NULL);
+    if (st == ERR_INVALID_ARGS)
+        return st;
+    return t_unlink_flags(r, path, st == OK && dir ? FS_UNLINK_DIR : 0);
+}
+
+status_t t_unlink_flags(const struct fatrun *r, const char *path, uint32_t flags)
+{
+    return fs_unlink_until(r->fs, deadline(), path, len_of(path), flags);
 }
 
 status_t t_rename(const struct fatrun *r, const char *from, const char *to)
 {
-    uint8_t pf[FS_PATH_MAX], pt[FS_PATH_MAX];
-    path_field(from, pf);
-    path_field(to, pt);
-    return fs_rename_until(r->fs, deadline(), pf, pt);
+    return t_rename_flags(r, from, to, 0);
+}
+
+status_t t_rename_flags(const struct fatrun *r, const char *from, const char *to,
+                        uint32_t flags)
+{
+    return fs_rename_until(r->fs, deadline(), from, len_of(from), to, len_of(to), flags);
 }
 
 status_t t_sync(const struct fatrun *r)
@@ -204,7 +286,7 @@ bool file_is(const struct fatrun *r, const char *path, const char *text)
 bool dir_count(const struct fatrun *r, const char *path, const char *name, unsigned *count,
                bool *found)
 {
-    char got[FS_PATH_MAX];
+    char got[FS_NAME_MAX];
     unsigned n = 0;
     status_t st;
     if (found)
