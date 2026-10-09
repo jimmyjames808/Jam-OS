@@ -122,9 +122,9 @@ bool clip_pointer(const struct jwl_event *ev)
         ptr_x = ev->pointer.x >> 8;
         ptr_y = ev->pointer.y >> 8;
     }
-    if (alt_on || focus_wants_mouse()) {
+    if (alt_on) {
         dragging = false;
-        return false;   /* the program's */
+        return false;   /* a full-screen program's screen: nothing to select */
     }
     if (ev->type == JWL_EV_POINTER_BUTTON)
         return button(ev);

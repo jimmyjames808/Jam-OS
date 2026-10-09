@@ -1,7 +1,7 @@
 /* splash: what its files share (user/apps/splash).
  *
- *   main.c     the flow: borrow the screen, play, tell init, hold the last
- *              frame, fade out, give the screen back; keys skip
+ *   main.c     the flow: a full-screen window, play, tell init, hold the
+ *              last frame, fade out, close the window; keys skip
  *   video.c    the video: pl_mpeg's frames and their place on the screen
  *              (1:1 on the PC's 2560x1440, scaled down on smaller screens)
  *   draw.c     a frame's YCbCr into the screen's pixels: up, box or bilinear
@@ -37,7 +37,7 @@ struct video_layout {
 };
 
 /* The decoder over the file's bytes (read only; they must stay mapped),
- * laid out for the borrowed screen (scr). ERR_NOT_SUPPORTED: not an MPEG
+ * laid out for the full-screen window (scr). ERR_NOT_SUPPORTED: not an MPEG
  * program stream with a video of a sane, even size. */
 status_t video_open(const uint8_t *mpg, size_t len);
 /* The next frame in order, or NULL at the end. */

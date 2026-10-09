@@ -244,31 +244,36 @@ static struct ev *record(struct mock *m, uint8_t kind)
     return e;
 }
 
-static status_t m_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp)
+static void m_key(void *ctx, uint16_t usage, uint8_t state, uint8_t mods)
 {
     struct ev *e = record(ctx, EV_KEY);
     if (!e)
-        return ERR_NO_RESOURCES;
+        return;
     e->usage = usage;
     e->state = state;
     e->mods = mods;
-    e->cp = cp;
-    return OK;
 }
 
-static status_t m_mouse(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
+static void m_mouse(void *ctx, int16_t dx, int16_t dy, int8_t wheel, uint8_t buttons)
 {
     struct ev *e = record(ctx, EV_MOUSE);
     if (!e)
-        return ERR_NO_RESOURCES;
+        return;
     e->dx = dx;
     e->dy = dy;
     e->wheel = wheel;
     e->buttons = buttons;
-    return OK;
 }
 
-static const struct input_ops mock_input_ops = { .key = m_key, .mouse = m_mouse };
+static void m_ready(void *ctx, uint8_t kind, uint16_t vendor, uint16_t product)
+{
+    struct mock *m = ctx;
+    (void)vendor, (void)product;
+    m->readies += kind == INPUT_READY_KEYBOARD || kind == INPUT_READY_MOUSE;
+}
+
+static const struct input_ops mock_input_ops = { .key = m_key, .mouse = m_mouse,
+                                                 .ready = m_ready };
 
 static void serve_all(struct mock *m)
 {
@@ -279,7 +284,7 @@ static void serve_all(struct mock *m)
         if (st == ERR_PEER_CLOSED)
             m->usb_closed_by_peer = true;
     }
-    if (m->input && !m->input_closed_by_peer) {
+    if (m->input && !m->input_closed_by_peer && !m->hold_input) {
         while ((st = input_serve_one(m->input, &mock_input_ops, m)) == OK)
             ;
         if (st == ERR_PEER_CLOSED)

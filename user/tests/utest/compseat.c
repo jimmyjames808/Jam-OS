@@ -23,6 +23,24 @@
 #include "compseat.h"
 #include "utest.h"
 
+bool cs_add_source(handle_t ctl, handle_t *out)
+{
+    handle_t mine, theirs;
+    CHECK_ST(jam_channel_create(&mine, &theirs), OK);
+    CHECK_ST(compctl_add_source(ctl, mine), OK);
+    *out = theirs;
+    return true;
+}
+
+bool cs_refused(handle_t src, bool refused)
+{
+    signals_t seen = 0;
+    status_t st = jam_object_wait_one(src, SIG_PEER_CLOSED,
+                                      now() + (refused ? CT_WAIT : 100 * NS_PER_MS), &seen);
+    CHECK(refused ? st == OK && (seen & SIG_PEER_CLOSED) : st == ERR_TIMED_OUT);
+    return true;
+}
+
 /* The compositor with the desktop or not, layout= (NULL: none, its
  * default) and one more argument (NULL: none). */
 static bool start(struct cs *t, bool desk, const char *layout, const char *more)
@@ -55,9 +73,10 @@ static bool start(struct cs *t, bool desk, const char *layout, const char *more)
                             .job = t->p.job,
                             .extra = x, .nextra = 7 };
     CHECK_ST(spawn(&a, &t->p.proc), OK);
-    CHECK_ST(compctl_connect_input_within(t->ctl, CT_WAIT, &t->src), OK);
-    CHECK_ST(input_ready_within(t->src, CT_WAIT, INPUT_READY_KEYBOARD, 0x1234, 1), OK);
-    CHECK_ST(input_ready_within(t->src, CT_WAIT, INPUT_READY_MOUSE, 0x1234, 2), OK);
+    CHECK(cs_add_source(t->ctl, &t->src));
+    CHECK_ST(input_ready(t->src, INPUT_READY_KEYBOARD, 0x1234, 1), OK);
+    CHECK_ST(input_ready(t->src, INPUT_READY_MOUSE, 0x1234, 2), OK);
+    CHECK(cs_flush(t));
     t->x = OUT_W / 2;   /* where the pointer starts */
     t->y = OUT_H / 2;
     return true;
@@ -131,10 +150,20 @@ uint32_t cs_window(struct sc *c, int32_t x, int32_t y, int32_t w, int32_t h)
 
 /* ---- the fake source ---------------------------------------------------------------- */
 
+bool cs_flush(struct cs *t)
+{
+    uint64_t u[11];
+    uint32_t v[4];
+    CHECK_ST(compctl_stats_within(t->ctl, CT_WAIT, &u[0], &u[1], &u[2], &u[3], &v[0], &v[1],
+                                  &v[2], &u[4], &u[5], &u[6], &u[7], &u[8], &v[3], &u[9], &u[10]),
+             OK);
+    return true;
+}
+
 bool cs_key(struct cs *t, uint16_t usage, uint8_t state, uint8_t mods)
 {
-    CHECK_ST(input_key_within(t->src, CT_WAIT, usage, state, mods, 0), OK);
-    return true;
+    CHECK_ST(input_key(t->src, usage, state, mods), OK);
+    return cs_flush(t);
 }
 
 /* A key pressed and released with mods. */
@@ -145,8 +174,8 @@ bool cs_tap(struct cs *t, uint16_t usage, uint8_t mods)
 
 bool cs_mouse(struct cs *t, int16_t dx, int16_t dy, int8_t wheel)
 {
-    CHECK_ST(input_mouse_within(t->src, CT_WAIT, dx, dy, wheel, t->buttons), OK);
-    return true;
+    CHECK_ST(input_mouse(t->src, dx, dy, wheel, t->buttons), OK);
+    return cs_flush(t);
 }
 
 bool cs_button(struct cs *t, bool down)
@@ -305,16 +334,17 @@ static bool ctl_levels(struct cs *t)
     CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 3, &h), ERR_INVALID_ARGS);
     CHECK_ST(compctl_new_client_within(t->ctl, CT_WAIT, 0, &h), ERR_ACCESS_DENIED);
     CHECK_ST(compctl_new_client_within(in, CT_WAIT, 1, &h), ERR_ACCESS_DENIED);
-    CHECK_ST(compctl_new_client_within(in, CT_WAIT, 2, &h), ERR_ACCESS_DENIED);   /* ADMIN's */
+    CHECK_ST(compctl_new_client_within(in, CT_WAIT, 2, &h), ERR_INVALID_ARGS);   /* none now */
     CHECK_ST(compctl_blank_within(in, CT_WAIT, 1), ERR_ACCESS_DENIED);
     uint64_t u[11];
     uint32_t v[4];
     CHECK_ST(compctl_stats_within(in, CT_WAIT, &u[0], &u[1], &u[2], &u[3], &v[0], &v[1], &v[2],
                                   &u[4], &u[5], &u[6], &u[7], &u[8], &v[3], &u[9], &u[10]),
              ERR_ACCESS_DENIED);
-    CHECK_ST(compctl_connect_input_within(in, CT_WAIT, &h), OK);
-    CHECK_ST(input_ready_within(h, CT_WAIT, INPUT_READY_MOUSE, 1, 2), OK);
-    CHECK_ST(input_ready_within(h, CT_WAIT, 7, 1, 2), ERR_INVALID_ARGS);
+    CHECK(cs_add_source(in, &h));   /* an INPUT channel may add a source */
+    CHECK_ST(input_ready(h, INPUT_READY_MOUSE, 1, 2), OK);
+    CHECK_ST(input_ready(h, 7, 1, 2), OK);   /* not a kind: dropped, nothing answered */
+    CHECK(cs_flush(t));
     jam_handle_close(h);
     jam_handle_close(in);
     CHECK_ST(compctl_blank_within(t->ctl, CT_WAIT, 2), ERR_INVALID_ARGS);
@@ -328,21 +358,29 @@ bool t_comp_seat_ctl(void)
     struct cs t;
     CHECK(cs_start(&t));
     CHECK(ctl_levels(&t));
-    /* 16 sources at once (the test's own is one of them) */
+    /* 16 sources at once (the test's own is one of them): a 17th's end is
+     * closed by the compositor (add_source is an event: no answer) */
     handle_t more[16];
+    for (unsigned i = 0; i < 16; i++)
+        CHECK(cs_add_source(t.ctl, &more[i]));
+    CHECK(cs_flush(&t));
     for (unsigned i = 0; i < 15; i++)
-        CHECK_ST(compctl_connect_input_within(t.ctl, CT_WAIT, &more[i]), OK);
-    CHECK_ST(compctl_connect_input_within(t.ctl, CT_WAIT, &more[15]), ERR_NO_RESOURCES);
+        CHECK(cs_refused(more[i], false));
+    CHECK(cs_refused(more[15], true));
+    jam_handle_close(more[15]);
     for (unsigned i = 0; i < 15; i++)
         jam_handle_close(more[i]);
     /* a source going lets its slot be used again */
     uint64_t until = now() + CT_WAIT;
-    status_t st;
-    while ((st = compctl_connect_input_within(t.ctl, CT_WAIT, &more[0])) == ERR_NO_RESOURCES &&
-           now() < until)
-        jam_sleep_until(now() + NS_PER_MS);
-    CHECK_ST(st, OK);
-    jam_handle_close(more[0]);
+    bool taken = false;
+    while (!taken && now() < until) {
+        CHECK(cs_add_source(t.ctl, &more[0]));
+        CHECK(cs_flush(&t));
+        taken = jam_object_wait_one(more[0], SIG_PEER_CLOSED, now() + 20 * NS_PER_MS, NULL) ==
+                ERR_TIMED_OUT;
+        jam_handle_close(more[0]);
+    }
+    CHECK(taken);
     CHECK(cs_stop(&t));
     return true;
 }
@@ -385,5 +423,59 @@ bool t_termkeys(void)
     /* a long parameter list is cut, not overflowed */
     CHECK_EQ(decode("\x1b[1111111111111111111111~z", k), 1);
     CHECK(k[0] == 'z');
+    return true;
+}
+
+/* ---- the lights ------------------------------------------------------------------------ */
+
+static void got_leds(void *ctx, uint8_t leds)
+{
+    *(int *)ctx = leds;
+}
+
+/* The lights last sent to source h (-1: none came). */
+static int lights(handle_t h)
+{
+    static const struct input_events ev = { .leds = got_leds };
+    int leds = -1;
+    while (input_read_event(h, &ev, &leds) == OK)
+        ;
+    return leds;
+}
+
+/* The locks are the compositor's (review W7): a keyboard source is sent
+ * its lights once it says it is one (Num Lock on at start), and every
+ * keyboard again whenever a lock key changes them, Scroll Lock's too; a
+ * source that is only a mouse is sent none; a key state other than UP or
+ * DOWN (the old REPEAT) is no key: no lock changes with it. */
+bool t_comp_seat_leds(void)
+{
+    struct cs t;
+    CHECK(cs_start(&t));   /* its source said keyboard, then mouse */
+    CHECK_EQ(lights(t.src), INPUT_LED_NUM);
+    handle_t kb2, mouse;
+    CHECK(cs_add_source(t.ctl, &kb2));
+    CHECK(cs_add_source(t.ctl, &mouse));
+    CHECK_ST(input_ready(mouse, INPUT_READY_MOUSE, 1, 2), OK);
+    CHECK_ST(input_ready(kb2, INPUT_READY_KEYBOARD, 1, 3), OK);
+    CHECK(cs_flush(&t));
+    CHECK_EQ(lights(kb2), INPUT_LED_NUM);
+    CHECK(cs_tap(&t, U_CAPS, 0));
+    CHECK_EQ(lights(t.src), INPUT_LED_NUM | INPUT_LED_CAPS);
+    CHECK_EQ(lights(kb2), INPUT_LED_NUM | INPUT_LED_CAPS);
+    CHECK_ST(input_key(kb2, 0x47, INPUT_KEY_DOWN, 0), OK);   /* Scroll Lock, on the other */
+    CHECK_ST(input_key(kb2, 0x47, INPUT_KEY_UP, 0), OK);
+    CHECK(cs_flush(&t));
+    CHECK_EQ(lights(t.src), INPUT_LED_NUM | INPUT_LED_CAPS | INPUT_LED_SCROLL);
+    CHECK(cs_tap(&t, 0x53, 0));   /* Num Lock off */
+    CHECK_EQ(lights(kb2), INPUT_LED_CAPS | INPUT_LED_SCROLL);
+    CHECK_ST(input_key(t.src, U_CAPS, INPUT_KEY_REPEAT, 0), OK);   /* not a source's state */
+    CHECK(cs_flush(&t));
+    CHECK_EQ(lights(t.src), INPUT_LED_CAPS | INPUT_LED_SCROLL);    /* the last two taps' */
+    CHECK_EQ(lights(t.src), -1);                                  /* and nothing new */
+    CHECK_EQ(lights(mouse), -1);
+    jam_handle_close(kb2);
+    jam_handle_close(mouse);
+    CHECK(cs_stop(&t));
     return true;
 }

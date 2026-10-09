@@ -1,21 +1,16 @@
-/* libfun: the console's key channel (fun.h): key events decoded, and the
- * mouse reports that share the channel handed to mouse.c. In a window the
- * same messages come from the compositor instead (wl.c's wl_next), with
- * one more: the window's new size (KEY_RESIZE).
- *
- * The channel's messages are told apart by size (<openkeys.h>): a key is a
- * struct input_key_event; a mouse report, which only comes after
- * gfx_mouse_open asked for it, a struct input_mouse_event. gfx_key is the
- * one place an app waits for both: a mouse report comes back from it as
- * KEY_MOUSE. Movement is merged (every report already queued is folded in
- * before KEY_MOUSE is returned), but a report that changes a button or the
- * wheel ends the merge, so gfx_mouse shows each press and release with the
- * position it happened at. */
+/* libfun: keys (fun.h): key events decoded, and the mouse's news, both
+ * from the window (wl.c's wl_next): a key, the pointer, the window's new
+ * size (KEY_RESIZE). gfx_key is the one place an app waits for all of
+ * them: the mouse's news comes back from it as KEY_MOUSE. Movement is
+ * merged (every report already queued is folded in before KEY_MOUSE is
+ * returned), but a report that changes a button or the wheel ends the
+ * merge, so gfx_mouse shows each press and release with the position it
+ * happened at. */
 #include "internal.h"
 
 /* ---- keys ---------------------------------------------------------------------------- */
 
-int key_decode(const struct input_key_event *ev)
+int key_decode(const struct fun_key *ev)
 {
     if (ev->state == INPUT_KEY_UP)
         return KEY_NONE;
@@ -51,59 +46,22 @@ int key_decode(const struct input_key_event *ev)
     return KEY_NONE;
 }
 
-/* ---- the channel's messages ------------------------------------------------------------ */
+/* ---- the window's messages ------------------------------------------------------------ */
 
-union input_msg {
-    struct input_key_event   key;     /* by its size */
-    struct input_mouse_event mouse;   /* by its size, and kind INPUT_EVENT_MOUSE */
-};
-
-static struct input_key_event held;   /* a key read while mouse news waited to be told */
+static struct fun_key held;   /* a key read while mouse news waited to be told */
 static bool have_held;
 static bool mouse_news;               /* reports folded in since the last KEY_MOUSE */
 static bool resize_news;              /* a new size gfx_key_event read, not told yet */
 
 /* The next message before deadline (0: only what is queued). OK: *kind
- * says what it was; a key is in *ev, a mouse report went to mouse.c.
- * ERR_TIMED_OUT when none came; another error when the channel broke. */
-static status_t next_msg(uint64_t deadline, struct input_key_event *ev, enum msg_kind *kind)
+ * says what it was; a key is in *ev, the mouse's news went to mouse.c.
+ * ERR_TIMED_OUT when none came; another error when the window broke. */
+static status_t next_msg(uint64_t deadline, struct fun_key *ev, enum msg_kind *kind)
 {
-    if (scr.windowed)
-        return wl_next(deadline, ev, kind);
-    if (!scr.keys)
-        return ERR_BAD_HANDLE;
-    for (;;) {
-        union input_msg m;
-        uint32_t n = 0;
-        struct channel_read_args a = {
-            .h = scr.keys, .rd_cap = sizeof(m), .rd_bytes = (uint64_t)(uintptr_t)&m,
-            .rd_actual = (uint64_t)(uintptr_t)&n,
-        };
-        status_t st = jam_channel_read(&a);
-        if (st == OK && n == sizeof(m.key)) {
-            *ev = m.key;
-            *kind = MSG_KEY;
-            return OK;
-        }
-        if (st == OK && n == sizeof(m.mouse) && m.mouse.kind == INPUT_EVENT_MOUSE) {
-            *kind = mouse_report(&m.mouse) ? MSG_BUTTON : MSG_MOVE;
-            return OK;
-        }
-        if (st == OK)
-            continue;   /* a size this library doesn't know: skipped */
-        if (st != ERR_SHOULD_WAIT)
-            return st;   /* the console went away */
-        if (!deadline)
-            return ERR_TIMED_OUT;
-        pool_rest();   /* the app waits: no worker spins meanwhile */
-        signals_t seen;
-        st = jam_object_wait_one(scr.keys, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
-        if (st != OK)
-            return st;
-    }
+    return scr.open ? wl_next(deadline, ev, kind) : ERR_BAD_HANDLE;
 }
 
-status_t gfx_key_event(uint64_t deadline, struct input_key_event *ev)
+status_t gfx_key_event(uint64_t deadline, struct fun_key *ev)
 {
     if (have_held) {
         *ev = held;
@@ -136,7 +94,7 @@ int gfx_key(uint64_t deadline)
         return KEY_RESIZE;
     }
     for (;;) {
-        struct input_key_event ev;
+        struct fun_key ev;
         enum msg_kind kind = MSG_KEY;
         if (have_held) {
             ev = held;

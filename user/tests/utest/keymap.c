@@ -202,10 +202,7 @@ bool t_keymap_xkb_text(void)
 /* ---- against the hid driver ---------------------------------------------------- */
 
 #define LSHIFT 0x02
-#define U_CAPS 0x39
-#define U_SCRL 0x47
-#define U_NUM  0x53
-#define U_LAST 0x67   /* the keypad's =: the last usage hid gives a character */
+#define U_LAST 0x67   /* the keypad's =: the last usage of the US layout's keys */
 
 static bool report(struct mock *m, uint8_t mods, uint8_t key)
 {
@@ -214,72 +211,33 @@ static bool report(struct mock *m, uint8_t mods, uint8_t key)
     return true;
 }
 
-/* A lock key pressed and let go; its two events wait to be read. */
-static bool toggle(struct mock *m, uint8_t key)
-{
-    unsigned want = m->nev + 2;
-    if (!report(m, 0, key) || !report(m, 0, 0))
-        return false;
-    if (!mock_pump(m, now() + 10 * NS_PER_S, mock_have_events, want))
-        FAIL("the lock key %#x: %u events, want %u", key, m->nev, want);
-    return true;
-}
-
-/* mock_pump's condition: at least n events that are not REPEATs (a slow
- * run may add some; they are skipped). */
-static bool have_events(struct mock *m, unsigned n)
-{
-    unsigned k = 0;
-    for (unsigned i = 0; i < m->nev; i++)
-        k += m->ev[i].kind != EV_KEY || m->ev[i].state != INPUT_KEY_REPEAT;
-    return k >= n;
-}
-
-static bool tested(uint32_t u)
-{
-    return u != U_CAPS && u != U_SCRL && u != U_NUM;
-}
-
-/* hid's key for a keypad key with Num Lock off is the key printed on it:
- * our keysym KP_Home .. KP_End is Home .. End's + 0x45; KP_Insert,
- * KP_Delete are Insert's and Delete's. */
-static uint32_t nav_of(uint32_t kp_sym)
-{
-    if (kp_sym >= 0xff95 && kp_sym <= 0xff9c)
-        return kp_sym - 0x45;
-    return kp_sym == 0xff9e ? 0xff63 : kp_sym == 0xff9f ? 0xffff : 0;
-}
-
-/* One state: every key typed with these modifiers and locks; each DOWN
- * hid sends must carry the table's character. */
-static bool pass(struct mock *m, bool shift, uint32_t locks)
+/* Every key typed, with Shift or not (and the lock keys among them, which
+ * are keys like any other to hid): each DOWN hid sends is the key's own
+ * usage, whatever the modifiers and the locks (M12's Q15: the layout is
+ * the keymap's, not hid's; the keypad as itself), and the keymap has an
+ * evdev code for each, so the compositor's clients can decode it. */
+static bool pass(struct mock *m, bool shift)
 {
     m->nev = 0;
     unsigned want = shift ? 2 : 0;   /* Shift's own down and up */
     for (uint32_t u = 0x04; u <= U_LAST; u++) {
-        if (!tested(u))
-            continue;
         if (!report(m, shift ? LSHIFT : 0, (uint8_t)u) || !report(m, shift ? LSHIFT : 0, 0))
             return false;
         want += 2;
     }
     if (!report(m, 0, 0))
         return false;
-    if (!mock_pump(m, now() + 20 * NS_PER_S, have_events, want))
+    if (!mock_pump(m, now() + 20 * NS_PER_S, mock_have_events, want))
         FAIL("%u events, want %u", m->nev, want);
-    uint32_t mods = (shift ? KEYMAP_MOD_SHIFT : 0) | locks;
     uint32_t u = 0x04;
     for (unsigned i = 0; i < m->nev; i++) {
         const struct ev *e = &m->ev[i];
         if (e->kind != EV_KEY || e->state != INPUT_KEY_DOWN || e->usage >= 0xe0)
             continue;
-        while (!tested(u))
-            u++;
-        uint32_t cp = us_cp(u, mods), sym = us_sym(u, mods);
-        if (e->cp != cp)
-            FAIL("usage %#x mods %#x: hid types %#x, the table %#x", u, mods, e->cp, cp);
-        if (e->usage != u && nav_of(sym) != us_sym(e->usage, 0))
-            FAIL("usage %#x: hid sends it as %#x, the table says keysym %#x", u, e->usage, sym);
+        if (e->usage != u)
+            FAIL("usage %#x: hid sends it as %#x", u, e->usage);
+        if (!keymap_evdev_of_hid(u) && u != 0x32)   /* non-US #: no key of its own in evdev */
+            FAIL("usage %#x: no evdev code in the keymap", u);
         u++;
     }
     if (u != U_LAST + 1)
@@ -293,16 +251,8 @@ bool t_keymap_matches_hid(void)
     static struct mock m;
     if (!mock_start(&m, &dev_kbd, 0, true, true))
         return false;
-    /* hid starts with Num Lock on and Caps Lock off. */
-    static const struct { uint8_t key; uint32_t locks; } states[] = {
-        { 0, NUM }, { U_CAPS, NUM | CAPS }, { U_NUM, CAPS }, { U_CAPS, 0 },
-    };
-    for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
-        if (states[i].key && !toggle(&m, states[i].key))
-            return false;
-        if (!pass(&m, false, states[i].locks) || !pass(&m, true, states[i].locks))
-            return false;
-    }
+    if (!pass(&m, false) || !pass(&m, true))
+        return false;
     mock_unplug(&m, true, true);
     return mock_finish(&m, 0);
 }

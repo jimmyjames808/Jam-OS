@@ -974,7 +974,7 @@ static const struct {
     { "fun_window_present", t_fun_window_present },
     { "fun_window_input", t_fun_window_input },
     { "fun_window_reconnect", t_fun_window_reconnect },
-    { "fun_screen_close_frees", t_fun_screen_close_frees },
+    { "fun_no_window", t_fun_no_window },
     { "fun_window_resize", t_fun_window_resize },
     { "comp_globals", t_comp_globals },
     { "comp_surface", t_comp_surface },
@@ -1094,6 +1094,9 @@ static const struct {
     { "handle_info", t_handle_info },
     { "length_limits", t_length_limits },
     { "replace_consumes", t_replace_consumes },
+    { "hid_leds", t_hid_leds },
+    { "hid_queue_full", t_hid_queue_full },
+    { "comp_seat_leds", t_comp_seat_leds },
     { "fat_open_moved", t_fat_open_moved },
 };
 

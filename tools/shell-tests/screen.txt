@@ -1,18 +1,19 @@
-# The screen on a plain boot (tools/screen-test.sh; QEMU_SPLASH=1, so the
-# console gets "nolog"): after the splash, the shell's banner and prompt
-# and no kernel log; the log on the screen while a command whose output it
-# is runs; and the notices: another stick plugged in and pulled out (a
-# remount in between says nothing), the boot stick pulled out and back;
-# none from processes that only borrow the names init, devmgr and logd
-# (`utest impostor`: tools/screen-test.sh checks the log for them).
-wait 120 console: the screen is back
+# The screen on a plain boot, the desktop's (tools/screen-test.sh;
+# QEMU_SPLASH=1, so the first terminal's console gets "nolog"): after the
+# splash, the shell's banner and prompt in the first terminal's window and
+# no kernel log in it; the log there while a command whose output it is
+# runs; and the desktop's notices (devmgr's, through /svc/notify): another
+# stick plugged in and pulled out (a remount in between says nothing), the
+# boot stick pulled out and back. (Before M12's Q14 this was the
+# full-screen console's own screen, booted with `nocomp`.)
+wait 120 init: bin/splash exited with code 0
 seen 60 {prompt}
 sleep 2
 shot screen-boot
 
 # ---- another stick -----------------------------------------------------------------
 monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
-wait 60 console: notice: A stick is at /usb0 (read-only
+wait 60 compositor: notice {a}: USB stick added:
 sleep 1
 shot screen-stick
 send ls /usb0
@@ -27,7 +28,7 @@ sleep 5
 send echo remount-quiet
 wait remount-quiet
 monitor device_del sa
-wait 30 console: notice: The stick at /usb0 was pulled out
+wait 30 compositor: notice {b}: USB stick removed: /usb0
 
 # ---- the log while a command runs ----------------------------------------------------
 send ktest utf8
@@ -38,27 +39,12 @@ shot screen-ktest
 send clear
 wait {prompt}
 
-# ---- impostors: lines in init's, devmgr's and logd's names, other writers ------------
-send run utest impostor
-wait impostor: 3 lines written as init, devmgr and logd
-wait {prompt}
-sleep 4
-send echo impostors-done
-wait impostors-done
-wait {prompt}
-send clear
-wait {prompt}
-
 # ---- the boot stick ----------------------------------------------------------------
 monitor device_del stick
-wait 30 console: notice: The Jam OS stick was pulled out
+wait 30 compositor: notice {c}: Jam OS stick removed
 monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick
-wait 60 console: notice: The Jam OS stick is back
+wait 60 compositor: notice {d}: Jam OS stick is back
 sleep 1
 shot screen-back
-send run console selftest
-wait 60 console: selftest
-wait run: bin/console exited
-wait {prompt}
 send reboot -f
 wait reboot: resetting

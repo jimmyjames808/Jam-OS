@@ -1,11 +1,10 @@
 # Programs as windows (user/tests/wlapps, tools/wlapps-test.sh): jamjar,
 # the test programs wltest and fractal. From the shell, `run wlapps`
 # starts a headless compositor of its own and the programs on it, each
-# with only /svc/wayland in its namespace and no console (so a program
-# that got no window can't borrow the screen instead), checks
-# that they run and that the composition has their pixels, prints its
-# verdict, and then shows the composition on the borrowed screen while
-# the screenshot is taken. Without a window manager in the compositor
+# with only /svc/wayland in its namespace and no console, checks that
+# they run and that the composition has their pixels, prints its
+# verdict, and then shows the composition in a full-screen window of the
+# system's compositor while the screenshot is taken. Without a window manager in the compositor
 # (no xdg_wm_base) each verdict is SKIP and nothing is shown.
 wait 120 Jam OS shell
 wait {prompt}

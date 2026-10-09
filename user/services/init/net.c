@@ -27,7 +27,7 @@
  *             device and summary only), made and kept the same way, whose
  *             client end only the compositor gets (the network popover);
  *             and a duplicate of /svc/notify's client end (SR_USER + 6, not
- *             under `nocomp`: "Connected", "Disconnected"). And /svc/net-sys's
+ *             without a compositor: "Connected", "Disconnected"). And /svc/net-sys's
  *             (SR_USER + 3): the same protocol for the network's own
  *             services (dns, netlog, sntp, and
  *             bin/update through the shell), whose openers may use a
@@ -212,7 +212,7 @@ status_t net_start(void)
         n++;   /* without it the desktop shows no network */
     x[n] = (struct spawn_handle){ SR_USER + 6, comp_notify_client() };
     if (x[n].h)
-        n++;   /* without it (`nocomp`) the link's news is in the log only */
+        n++;   /* without it (no compositor) the link's news is in the log only */
     handle_t cards[INIT_MAX_CLAIMED];
     unsigned nc = services_net_devices(cards, INIT_MAX_CLAIMED);
     for (unsigned k = 0; k < nc; k++)

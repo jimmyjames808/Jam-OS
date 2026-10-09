@@ -1,16 +1,14 @@
-/* fbbench: what the compositor will depend on, measured on the real
- * framebuffer (docs/G1-PLAN.md, track P0). Its files: main.c (the screen
- * borrowed, the buffers, the order of the lines), timing.c (the TSC, the
- * samples and the output lines), crew.c (a set of worker threads of a
- * chosen size), kernels.c (the store, copy and blend loops being
- * compared), lines.c (each line's work).
+/* fbbench: what the compositor and libfun depend on, measured
+ * (docs/G1-PLAN.md, track P0). Its files: main.c (the window, the
+ * buffers, the order of the lines), timing.c (the TSC, the samples and the
+ * output lines), crew.c (a set of worker threads of a chosen size),
+ * kernels.c (the store, copy and blend loops being compared), lines.c
+ * (each line's work).
  *
  * Every whole-screen line is cut into bands of BAND rows, the compositor's
  * tile height, and the bands are handed out one at a time to the crew's
  * threads, as libfun's present and the compositor's paint do. Pixels are
- * 32 bits; the framebuffer's rows are `pitch` bytes apart; nothing ever
- * reads the framebuffer (reads of write-combining memory are very slow,
- * and the compositor never does them). */
+ * 32 bits. */
 #pragma once
 
 #include <fun.h>
@@ -20,9 +18,8 @@
 
 /* The screen and the buffers the lines use. */
 struct bench {
-    uint32_t *fb;        /* the framebuffer, write-combining; NULL: no screen */
-    uint32_t  fbpitch;   /* its pixels from one row to the next */
-    int       w, h;      /* screen pixels (2560x1440 when there is no screen) */
+    bool      windowed;  /* a full-screen window (libfun's scr) is open */
+    int       w, h;      /* its pixels (2560x1440 when there is no window) */
     uint64_t  frame;     /* w * h * 4: bytes of one full-screen buffer */
     uint32_t *win;       /* a client's full-screen buffer, premultiplied argb */
     uint32_t *opaque;    /* another, xrgb: an opaque window, the background */
@@ -109,8 +106,7 @@ void     pattern_argb(uint32_t *px, uint64_t n, uint64_t seed);
 /* ---- lines.c ------------------------------------------------------------------------- */
 
 /* Each section's lines (main.c runs them in this order). */
-bool     lines_fb(void);       /* framebuffer writes: threads, store widths, tiles, present */
+bool     lines_window(void);   /* libfun's present into a full-screen window */
 void     lines_ram(void);      /* RAM to RAM copies */
 void     lines_blend(void);    /* the blend per megapixel */
 bool     lines_vmo(void);      /* vmo_read's rate */
-bool     lines_frames(void);   /* whole frames the compositor will paint */

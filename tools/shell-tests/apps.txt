@@ -1,23 +1,25 @@
-# Programs that draw with libfun on the screen they borrow, from the
-# shell: run by tools/apps-test.sh (QEMU_USB = a usb-kbd on xhci port 2
-# and a usb-mouse on port 3; the command line "shell nocomp", so they
-# borrow the console's screen: tools/shell-tests/wlapps.txt has them as
-# windows). The self-tests of the test programs fractal (user/tests/fractal:
-# its maths, the parallel render, libfun's pool) and wltest (libfun's
-# pointer); then fractal explored through the serial terminal (arrows arrive as ESC [ A..D,
-# letters as themselves) with screenshots (<name>.png next to the log),
-# its benchmark, quit with q, and the shell prompt must come back: the
-# console redraws its text screen when the lease closes. wltest's mouse
-# mode (user/tests/wltest/fun.c) before the mouse stirs and with one click;
-# then a program killed (Ctrl+C: the shell kills its job) and one that
-# crashes (a page fault) with the screen still borrowed. Nothing here
-# depends on the screen's size, so the same script runs at 1280x800 and at
-# 2560x1440 (APPS_HD=1): the one mouse click is at the pointer's starting
-# place, the middle of the screen. tools/shell-tests/mouse.txt drives the
-# mouse further.
+# Programs that draw with libfun in windows, from the shell: run by
+# tools/apps-test.sh (QEMU_USB = a usb-kbd on xhci port 2 and a usb-mouse
+# on port 3; the command line "shell": the desktop; Super+1 through
+# QEMU's monitor). The self-tests of the
+# test programs fractal (user/tests/fractal: its maths, the parallel
+# render, libfun's pool) and wltest (libfun's pointer); then fractal
+# explored through the serial terminal (arrows arrive as ESC [ A..D,
+# letters as themselves; its window takes the keys as it maps) with
+# screenshots (<name>.png next to the log), its benchmark, quit with q, and
+# the shell prompt must come back. wltest's mouse mode before the mouse
+# stirs and with one click in its window; then a program killed (a click
+# on the terminal, whose shell then has the keys, and Ctrl+C: the shell
+# kills its job) and one that crashes (a page fault) with its window up:
+# the compositor takes each window away. A program's window (libfun's
+# default: maximised at 1280x800, 1600x1000 above) takes the keys; the
+# clicks are placed by the screen's size (the compositor's "ready" line),
+# so the same script runs at 1280x800 and at 2560x1440 (APPS_HD=1).
+# tools/shell-tests/mouse.txt drives the mouse further.
 wait 120 Jam OS shell
 wait {prompt}
 seen 30 report mouse ready
+seen 60 compositor: ready, on the screen {sw}x{sh}, painting
 send run fractal --selftest
 wait 240 fractal: selftest PASSED
 wait run: bin/fractal exited with code 0
@@ -48,13 +50,14 @@ type q
 wait 30 renders on
 wait run: bin/fractal exited with code 0
 wait {prompt}
-# wltest's mouse mode: before the mouse stirs, then one click where the
-# pointer starts
+# wltest's mouse mode: before the mouse stirs, then one click in its window
 send run wltest --mouse noaccel
 wait run: bin/wltest started
 wait 30 wltest: mouse: ready
 sleep 1
 shot apps-wltest-no-mouse
+pointer {sw}-300 400
+sleep 0.3
 monitor mouse_button 1
 sleep 0.2
 monitor mouse_button 0
@@ -73,20 +76,30 @@ sleep 3
 type \x03
 wait 30 run: bin/fractal
 wait {prompt}
-# Killed with the screen borrowed: a program that reads no keys, Ctrl+C
-# (the shell kills its job; the lease closes with it)
+# Killed with its window up: a program that reads no keys has them all
+# the same (its window took them; at 1280x800 a maximised window on a
+# screen of its own), so Super+1 back to the first screen and a click on
+# the first terminal give them to the shell, and Ctrl+C there kills its
+# job: the window goes
 send run wltest --hang-test
 wait 30 wltest: hang test: holding the screen
 sleep 1
 shot apps-hang
+monitor sendkey meta_l-1
+sleep 1
+pointer 300 400
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.3
 type \x03
 wait 30 run: bin/wltest was killed
 wait {prompt}
-# ... and a crash: a program that dies (page fault) holding the screen
+# ... and a crash: a program that dies (page fault) with its window up
 send run wltest --crash-test
 wait 30 run: bin/wltest was killed
 wait {prompt}
-# the shell is back in charge of the keys and the screen
+# the shell is back in charge of the keys, and the windows are gone
 send help
 wait Commands:
 wait {prompt}

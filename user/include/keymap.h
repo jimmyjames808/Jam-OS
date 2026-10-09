@@ -85,6 +85,12 @@ extern const uint8_t keymap_hid_by_evdev[KEYMAP_CODES];
 uint32_t keymap_evdev_of_hid(uint32_t usage);
 /* The HID usage of evdev code `code`, 0 if none. */
 uint32_t keymap_hid_of_evdev(uint32_t code);
+/* The navigation key printed on keypad key `usage` (KP1 End, KP2 Down,
+ * KP3 PgDn, KP4 Left, KP6 Right, KP7 Home, KP8 Up, KP9 PgUp, KP0 Insert,
+ * KP. Delete), what it is with Num Lock off (it types nothing then); 0
+ * for any other usage, KP5 too. For a program that reads HID usages (the
+ * console's keys, libfun's): before M12, hid applied Num Lock itself. */
+uint32_t keymap_hid_keypad_nav(uint32_t usage);
 /* KEYMAP_MOD_* for hid's modifier byte (INPUT_MOD_*: left and right
  * Ctrl, Shift, Alt, GUI); the lock bits are the caller's to add. */
 uint32_t keymap_mods_of_hid(uint8_t hid_mods);

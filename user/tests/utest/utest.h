@@ -520,8 +520,8 @@ bool t_fun_window_present(void);
 bool t_fun_window_input(void);
 bool t_fun_window_reconnect(void);
 bool t_fun_window_resize(void);
-/* funscreen.c: libfun's borrowed screen against a fake console. */
-bool t_fun_screen_close_frees(void);
+/* funscreen.c: libfun without a compositor: no window, no screen borrowed. */
+bool t_fun_no_window(void);
 
 /* comp.c, comp_bad.c: bin/compositor headless, driven by Wayland clients
  * over real channels (comptest.h). */
@@ -771,5 +771,10 @@ bool t_mix_limits(void);
 bool t_handle_info(void);
 bool t_length_limits(void);
 bool t_replace_consumes(void);
+
+/* M12 P1b: input as events (hid.c, compseat.c). */
+bool t_hid_leds(void);
+bool t_hid_queue_full(void);
+bool t_comp_seat_leds(void);
 /* fat.c: an open file is known by its directory entry (P5). */
 bool t_fat_open_moved(void);

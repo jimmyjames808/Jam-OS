@@ -238,7 +238,7 @@ bool     terms_console_up(unsigned i);
 /* A terminal other than the first is open (or closing). */
 bool     terms_extra_open(void);
 /* The console of the first terminal that has one running (0: none: every
- * terminal is closed, or the first is restarting under `nocomp`). */
+ * terminal is closed, or the first is restarting without a compositor). */
 handle_t terms_any_console(void);
 /* Service i ended: the console's or the shell's ends that init kept go. */
 void     terms_closed(unsigned i);
@@ -247,11 +247,11 @@ void     terms_closed(unsigned i);
  * compositor every terminal, the first too) or is closing: it is not
  * started again. */
 bool     terms_ended(unsigned i, bool killed, int64_t code);
-/* Service i is given up on: its terminal closes (with a compositor; under
- * `nocomp` the one console and its shell are never given up). */
+/* Service i is given up on: its terminal closes (with a compositor;
+ * without one the one console and its shell are never given up). */
 void     terms_given_up(unsigned i);
 /* Is service i one init starts again however often it ends: the
- * compositor, and under `nocomp` the one terminal's console and shell
+ * compositor, and without a compositor the one terminal's console and shell
  * (shell.c's count_end). */
 bool     terms_never_given_up(unsigned i);
 /* initctl.terminal: open another terminal; *number: its number (the
@@ -282,12 +282,13 @@ status_t apps_launch(const char *cmd, uint64_t *koid);
 /* KEY_APPS + i: app i's process ended (its job goes), or an old packet. */
 void     apps_event(unsigned i);
 
-/* ---- comp.c: the compositor (not with the boot word `nocomp`) ----------------------- */
+/* ---- comp.c: the compositor -------------------------------------------------------- */
 
-/* Set up once before the loop (port: the loop's): on (no `nocomp`, and
- * bin/compositor in bootfs): /svc/wayland's channel made and published;
- * off: the compositor is not started this boot. */
-void     comp_init(handle_t port, bool on);
+/* Set up once before the loop (port: the loop's): with bin/compositor in
+ * bootfs, /svc/wayland's channel made and published; without it (or no
+ * channel) the compositor is not started this boot, and nothing draws the
+ * screen (the terminals' text goes to the serial port). */
+void     comp_init(handle_t port);
 /* A compositor draws the screen this boot. */
 bool     comp_on(void);
 /* One runs now (its compctl channel is init's). */
@@ -326,8 +327,6 @@ void     comp_notice(const char *title, const char *body, char icon, uint8_t tin
  * compositor, or it refused: said in the log). */
 bool     comp_notice_run(const char *title, const char *body, char icon, uint8_t tint,
                          const char *const *buttons, const char *cmd);
-/* The boot word `nocomp` (main.c). */
-extern bool init_nocomp;
 
 /* services.c: devmgr's class drivers type into what ch leads to (consumed):
  * the first console's channel, or the compositor's INPUT channel
@@ -346,7 +345,7 @@ status_t services_start(unsigned i);
 void     services_closed(unsigned i);
 /* Service i is given up on: calls waiting for it fail now. */
 void     services_given_up(unsigned i);
-/* The services but the first ones may start: under `nocomp` the console
+/* The services but the first ones may start: without a compositor the console
  * runs (the input's hub and the screen); with a compositor the first
  * terminal's console has started once this boot (the order at boot only:
  * every terminal may be closed later). A devmgr runs. */

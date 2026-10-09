@@ -42,6 +42,8 @@
 #define IDL_ID_IDLTEST_EV    0x0023u   /* abi/idl/idltest.idl */
 #define IDL_ID_USBBUS_EVENTS 0x0024u   /* abi/idl/usbbus.idl */
 #define IDL_ID_IDLTEST_H     0x0025u   /* abi/idl/idltest.idl */
+#define IDL_ID_NOTIFY        0x0028u   /* abi/idl/notify.idl */
+#define IDL_ID_KEYS          0x0029u   /* abi/idl/console.idl */
 #define IDL_ID_AUDIO_STREAM  0x0032u   /* abi/idl/audio.idl */
 #define IDL_ID_HDA_STREAM    0x0033u   /* abi/idl/hda.idl */
 #define IDL_ID_UPDATE_ANSWER 0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */

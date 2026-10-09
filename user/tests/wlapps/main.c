@@ -1,5 +1,6 @@
 /* wlapps: programs as windows on a compositor of our own, headless, and a
- * picture of the result on the screen (tools/shell-tests/wlapps.txt).
+ * picture of the result on the screen (tools/shell-tests/wlapps.txt), in
+ * a full-screen window of the system's compositor.
  *
  *     run wlapps [size=WxH] [win=WxH] [settle=S] [hold=S] [tile] <prog>[:<arg>]...
  *
@@ -9,15 +10,16 @@
  * with <arg> as its one argument if given: `fractal:fullscreen`) in a job
  * of their own with only that service in their namespace and
  * $FUN_WINDOW=<win> (default 600x380), so libfun opens each a window of
- * that size (wltest's own window keeps its size). No console either: an app that
- * can't open a window can't fall back to borrowing the screen, it ends.
+ * that size (wltest's own window keeps its size). An app that can't open
+ * a window ends.
  * After `settle` seconds (default 5) every app must still run and the
  * image must have the apps' pixels in it: more than a tenth of each
  * window's area changed from the compositor's first picture (the
- * wallpaper, taken before the apps start). Then it borrows the
- * real screen (its own namespace without the compositor again) and shows
- * the image there for `hold` seconds (default 4), for QEMU's screendump,
- * and ends the apps and the compositor.
+ * wallpaper, taken before the apps start). Then it shows the image in a
+ * full-screen window of the system's compositor (/svc/wayland as the
+ * shell gave it: a connection opened before ours replaced it) for `hold`
+ * seconds (default 4), for QEMU's screendump, and ends the apps and the
+ * compositor.
  *
  * `tile` asks the compositor to tile the windows side by side (its
  * `layout=tiling`: the window manager's tiling mode, where a window that
@@ -31,6 +33,11 @@
 #include <fun.h>
 #include <jwl_client.h>
 #include <os.h>
+#include <wants.h>
+
+/* What it is given when the shell runs it (<wants.h>): the system's
+ * compositor, to show the picture on. */
+JAM_WANTS("svc wayland\n");
 
 #define MAX_APPS   4
 #define CONNECT_NS (5 * NS_PER_S)
@@ -223,12 +230,29 @@ static uint64_t drawn(const struct opts *o, const struct comp *k)
     return n;
 }
 
-/* The image on the real screen, centred, for `hold` seconds. */
+/* A connection to the system's compositor, opened before ours replaced
+ * /svc/wayland (HANDLE_INVALID: none); libfun's connect takes it once. */
+static handle_t system_wl = HANDLE_INVALID;
+
+static status_t connect_system(void *ctx, handle_t *out)
+{
+    (void)ctx;
+    *out = system_wl;
+    system_wl = HANDLE_INVALID;
+    return *out != HANDLE_INVALID ? OK : ERR_NOT_FOUND;
+}
+
+/* The image on the real screen (a full-screen window of the system's
+ * compositor), centred, for `hold` seconds. */
 static void show(const struct opts *o, const uint32_t *px)
 {
-    (void)ns_svc_remove(JWL_SERVICE);   /* our own libfun borrows the screen */
-    if (gfx_open_on(0) != OK) {
-        printf("wlapps: can't borrow the screen to show the picture\n");
+    gfx_connect_with(connect_system, NULL);
+    gfx_title("wlapps");
+    status_t st = gfx_open_fullscreen(0);
+    gfx_connect_with(NULL, NULL);
+    if (st != OK) {
+        printf("wlapps: no window on the system's compositor to show the picture (%s)\n",
+               status_str(st));
         return;
     }
     struct surf img = { (uint32_t *)px, o->w, o->h, o->w };
@@ -266,6 +290,8 @@ int main(int argc, char **argv)
         return 2;
     }
     pool_start(0);
+    if (svc_open(SVC_WAYLAND, &system_wl) != OK)
+        system_wl = HANDLE_INVALID;   /* the picture isn't shown: said in show() */
     struct comp k = { .proc = HANDLE_INVALID };
     status_t st = start_compositor(&o, &k);
     if (st == OK)

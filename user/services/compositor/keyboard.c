@@ -13,14 +13,17 @@
  * Keys held: each source's presses, with the source, so a keyboard that is
  * unplugged lets go of what it held. A press a client never sees (a
  * reserved key, focus.c) is remembered too, so its release is dropped as
- * well. hid's own REPEAT events are dropped: Wayland clients repeat keys
- * themselves, from repeat_info (hid's own rate: 30 a second after 500 ms).
+ * well. Sources send no repeats: Wayland clients repeat keys themselves,
+ * from repeat_info (30 a second after 500 ms).
  *
  * Modifiers: Shift, Ctrl, Alt and Super from the modifier bytes the
  * sources send (any source's counts), Caps Lock and Num Lock as locked
- * modifiers that follow the lock keys seen (Num Lock starts on, as hid's
- * does), in XKB's bits for the generated keymap (KEYMAP_MOD_*), sent as
- * wl_keyboard.modifiers whenever they change and after every enter.
+ * modifiers that follow the lock keys seen (Num Lock starts on), in XKB's
+ * bits for the generated keymap (KEYMAP_MOD_*), sent as
+ * wl_keyboard.modifiers whenever they change and after every enter. The
+ * locks are the compositor's alone (review W7): every keyboard's lights
+ * follow them (input.leds, sources.c), Scroll Lock's too, which only
+ * lights.
  *
  * Keys typed while no window has the keys are kept, at most EARLY_MAX key
  * events with the modifiers each was typed with, and handed to the next
@@ -38,9 +41,10 @@
 #include <keymap.h>
 #include "seat.h"
 
-#define REPEAT_RATE   30    /* keys a second: hid's */
-#define REPEAT_DELAY  500   /* ms before the first repeat: hid's */
+#define REPEAT_RATE   30    /* keys a second, for clients (repeat_info) */
+#define REPEAT_DELAY  500   /* ms before the first repeat */
 #define U_CAPS_LOCK   0x39
+#define U_SCROLL_LOCK 0x47
 #define U_NUM_LOCK    0x53
 #define U_LCTRL       0xe0
 #define U_LSHIFT      0xe1
@@ -59,6 +63,7 @@ static struct held held[KEYS_HELD_MAX];
 static unsigned nheld;
 static uint8_t src_mods[SOURCES_MAX];          /* each source's last modifier byte */
 static uint32_t locked = KEYMAP_MOD_NUM;       /* KEYMAP_MOD_CAPS / _NUM on */
+static bool scroll_lock;                       /* Scroll Lock: a light, no modifier */
 static uint32_t sent_depressed, sent_locked;   /* what the focused client was last told */
 
 /* A key event typed while no window had the keys, the modifiers then, and
@@ -85,6 +90,13 @@ status_t keyboard_init(void)
     if (st == OK)
         st = jam_vmo_write(keymap_vmo, 0, keymap_us.xkb, keymap_us.xkb_size);
     return st;
+}
+
+uint8_t keyboard_leds(void)
+{
+    return (uint8_t)(((locked & KEYMAP_MOD_NUM) ? INPUT_LED_NUM : 0) |
+                     ((locked & KEYMAP_MOD_CAPS) ? INPUT_LED_CAPS : 0) |
+                     (scroll_lock ? INPUT_LED_SCROLL : 0));
 }
 
 uint32_t keyboard_mods(uint8_t hid_mods)
@@ -302,6 +314,10 @@ static void press(unsigned src, uint16_t usage, uint8_t mods)
         locked ^= KEYMAP_MOD_CAPS;
     if (usage == U_NUM_LOCK)
         locked ^= KEYMAP_MOD_NUM;
+    if (usage == U_SCROLL_LOCK)
+        scroll_lock = !scroll_lock;
+    if (usage == U_CAPS_LOCK || usage == U_NUM_LOCK || usage == U_SCROLL_LOCK)
+        sources_leds(keyboard_leds());
     bool shown = !hidden && code && !code_held(code);
     held[nheld++] = (struct held){ .usage = (uint8_t)usage, .src = (uint8_t)src,
                                    .hidden = hidden, .code = code };
@@ -319,8 +335,8 @@ static void release_at(unsigned i)
 
 void keyboard_key(unsigned src, uint16_t usage, uint8_t state, uint8_t mods)
 {
-    if (src >= SOURCES_MAX || state == INPUT_KEY_REPEAT)
-        return;   /* clients repeat keys themselves */
+    if (src >= SOURCES_MAX)
+        return;
     if (state == INPUT_KEY_DOWN)
         press(src, usage, mods);
     else if (state == INPUT_KEY_UP) {

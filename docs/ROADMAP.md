@@ -210,17 +210,13 @@ ones below are the design questions M8 left open
   compositor counts refusals: `refused` in its stats), raise it to 256
   (fixed tables of a few KB, Alt+Tab's list ~128 KB) and give the refusal
   a notice like "No more terminals" (the owner, 2026-10-07).
-- **The shell's history across restarts** (the owner, 2026-10-08): kept
-  in `/data/etc/history`, the last ~500 commands, each terminal appending
-  as it runs a command and a new terminal starting with the shared list;
-  a command typed with a leading space is not saved, repeats are stored
-  once; `history -c` clears it. **Up and Down match what is typed**: with
-  text on the line, Up steps back only through commands starting with it
-  (newest first), Down forward and back to the typed text; an empty line
-  steps through everything as now. And a short line when a shell is
-  restarted after a crash ("the shell restarted after a crash: its
-  history is kept"), so a restart isn't a mystery. For M12's shell and
-  console work (track P1b), or a small agent before it.
+- **The shell's history across restarts** (the owner, 2026-10-08): done
+  in M12's track P1b (`user/services/shell/sh_history.c`,
+  `tools/shell-tests/history.txt`): `/data/etc/history`, the last 500
+  lines, shared by the terminals; Up and Down match the typed text; a
+  leading space keeps a line out; `history -c`; and the line a shell
+  started again after a crash says. Left: two shells appending at the same
+  moment can lose one line.
 - **GPT sticks** are not read (their partitions are not mounted); M12
   shapes the storage protocol for GPT and M12.7 parses it.
 - The mouse wheel works on the PC (2026-10-01: hid drives a mouse whose
