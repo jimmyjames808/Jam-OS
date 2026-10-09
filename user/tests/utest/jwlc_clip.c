@@ -3,7 +3,10 @@
  *
  * t_jwlc_clip: a client copies text and pastes its own selection; copies
  * 300 KiB and another client, whose window then takes the focus, pastes
- * it (more than one message of the transfer); a raw client's selection
+ * it (more than one message of the transfer); a raw client pastes it
+ * through a channel it filled itself but for two messages, and still gets
+ * all of it before the end (the owner keeps what was refused and tries
+ * again: review W, W17); that raw client's selection
  * replaces it (the first client hears its copy was cancelled); a fourth
  * client pastes from that raw owner, which never writes (the paste times
  * out after JWL_CLIP_WAIT_NS and nothing else waits), writes one byte over
@@ -159,20 +162,82 @@ static bool copy_and_paste(struct cs *t, struct cl *a, struct cl *b, char *big)
     return paste_is(b, OK, big, BIG);
 }
 
-/* A raw client takes the selection (A's copy cancelled). */
-static bool raw_owner(struct cs *t, struct sc *r, struct cl *a, uint32_t *src)
+/* A raw client with a data device and a window, which takes the focus:
+ * told A's selection. */
+static bool raw_client(struct cs *t, struct sc *r, uint32_t *mgr, uint32_t *dev)
 {
     CHECK(cs_client(t, r));
     struct ct_client *k = &r->k;
     if (k->kept != HANDLE_INVALID)   /* the keymap's */
         jam_handle_close(k->kept);
     k->kept = HANDLE_INVALID;
-    uint32_t mgr = ct_new(k, &jwl_wl_data_device_manager_interface, 3);
-    uint32_t dev = ct_new(k, &jwl_wl_data_device_interface, 3);
-    CHECK(mgr && dev);
-    CHECK_ST(jwl_wl_registry_bind(k->c, k->registry, 7, "wl_data_device_manager", 3, mgr), OK);
-    CHECK_ST(jwl_wl_data_device_manager_get_data_device(k->c, mgr, dev, r->seat), OK);
+    *mgr = ct_new(k, &jwl_wl_data_device_manager_interface, 3);
+    *dev = ct_new(k, &jwl_wl_data_device_interface, 3);
+    CHECK(*mgr && *dev);
+    CHECK_ST(jwl_wl_registry_bind(k->c, k->registry, 7, "wl_data_device_manager", 3, *mgr), OK);
+    CHECK_ST(jwl_wl_data_device_manager_get_data_device(k->c, *mgr, *dev, r->seat), OK);
     CHECK(cs_window(r, 10, 10, 20, 20));
+    CHECK(ct_await(k, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER, r->kb, CT_WAIT));
+    return true;
+}
+
+#define JUNK (CHANNEL_MAX_QUEUED - 2u)   /* the reader's queue: room for two messages */
+
+/* R pastes A's BIG text through a channel whose queue it filled itself
+ * first, but for two messages: A's writes are refused after two of the
+ * five, A keeps the rest and tries again at each dispatch while R reads,
+ * and the text arrives whole before the end (until W17, A closed at the
+ * first refusal and the paste looked whole at 128 KiB). */
+static bool full_reader(struct sc *r, uint32_t dev, const char *big)
+{
+    static char got[BIG], chunk[JWL_CLIP_CHUNK];
+    struct ct_client *k = &r->k;
+    const struct ct_event *e = ct_await(k, &jwl_wl_data_device_interface,
+                                        JWL_WL_DATA_DEVICE_EV_SELECTION, dev, CT_WAIT);
+    CHECK(e && e->u[0]);
+    handle_t rx, tx;
+    CHECK_ST(jam_channel_create(&rx, &tx), OK);
+    uint32_t junk = 0;
+    for (unsigned i = 0; i < JUNK; i++)
+        CHECK_ST(jam_channel_write(tx, &junk, sizeof(junk), NULL, 0), OK);
+    CHECK_ST(jwl_wl_data_offer_receive(k->c, e->u[0], TEXT_TYPE, tx), OK);
+    CHECK_ST(jwl_conn_flush(k->c), OK);
+    size_t n = 0;
+    unsigned junks = 0;
+    uint64_t deadline = now() + CT_WAIT;
+    status_t st = OK;
+    while (now() < deadline) {
+        pump_all();
+        uint32_t nb = 0;
+        st = jam_channel_read(&(struct channel_read_args){
+            .h = rx, .rd_cap = sizeof(chunk), .rd_bytes = (uint64_t)(uintptr_t)chunk,
+            .rd_actual = (uint64_t)(uintptr_t)&nb });
+        if (st == ERR_SHOULD_WAIT) {
+            jam_sleep_until(now() + NS_PER_MS);
+            continue;
+        }
+        if (st != OK)
+            break;
+        if (junks < JUNK) {
+            CHECK_EQ(nb, sizeof(junk));
+            junks++;
+            continue;
+        }
+        CHECK(n + nb <= BIG);
+        memcpy(got + n, chunk, nb);
+        n += nb;
+    }
+    CHECK_ST(st, ERR_PEER_CLOSED);
+    jam_handle_close(rx);
+    if (n != BIG || memcmp(got, big, BIG))
+        FAIL("the paste ended at %lu bytes of %u", (unsigned long)n, BIG);
+    return true;
+}
+
+/* The raw client takes the selection (A's copy cancelled). */
+static bool raw_owner(struct sc *r, uint32_t mgr, uint32_t dev, struct cl *a, uint32_t *src)
+{
+    struct ct_client *k = &r->k;
     const struct ct_event *e = ct_await(k, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER,
                                         r->kb, CT_WAIT);
     CHECK(e);
@@ -242,8 +307,10 @@ bool t_jwlc_clip(void)
     memset(all, 0, sizeof(all));
     CHECK(cs_start(&t));
     CHECK(copy_and_paste(&t, &a, &b, big));
-    uint32_t src;
-    CHECK(raw_owner(&t, &r, &a, &src));
+    uint32_t mgr, dev, src;
+    CHECK(raw_client(&t, &r, &mgr, &dev));
+    CHECK(full_reader(&r, dev, big));
+    CHECK(raw_owner(&r, mgr, dev, &a, &src));
     CHECK(client_window(&t, &e, 2));
     CHECK(hostile_owner(&r, src, &e, big));
     for (unsigned i = 0; i < 3; i++)

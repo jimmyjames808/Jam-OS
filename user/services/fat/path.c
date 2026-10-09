@@ -6,6 +6,19 @@
  * codes become ERR_* and FAT timestamps Unix seconds. */
 #include "fat.h"
 
+/* A name's length as FAT keeps it: UTF-16 units (one per character, two
+ * past U+FFFF: a 4-byte UTF-8 sequence). The name is UTF-8 (fs.idl's str). */
+static size_t utf16_units(const char *name, size_t len)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if ((c & 0xc0) != 0x80)
+            n += c >= 0xf0 ? 2 : 1;
+    }
+    return n;
+}
+
 static bool name_ok(const char *name, size_t len)
 {
     if (len == 0 || name[len - 1] == '.' || name[len - 1] == ' ')
@@ -31,11 +44,11 @@ static size_t pop(const char *out, size_t len)
     return len > 0 ? len - 1 : 0;
 }
 
-status_t path_resolve(const uint8_t in[FS_PATH_MAX], char out[FS_PATH_MAX])
+status_t path_resolve(const char *in, uint32_t in_len, char out[FAT_PATH_MAX])
 {
-    const char *s = (const char *)in;
-    size_t n = strnlen(s, FS_PATH_MAX);
-    if (n == FS_PATH_MAX || (n > 0 && s[0] != '/'))
+    const char *s = in;
+    size_t n = in_len;
+    if (n >= FAT_PATH_MAX || strnlen(s, n) != n || (n > 0 && s[0] != '/'))
         return ERR_INVALID_ARGS;
     size_t len = 0;   /* out holds "/a/b" without a NUL; "" is the root */
     for (size_t i = 0; i < n;) {
@@ -51,6 +64,8 @@ status_t path_resolve(const uint8_t in[FS_PATH_MAX], char out[FS_PATH_MAX])
             len = pop(out, len);
             continue;
         }
+        if (utf16_units(s + start, seg) > FF_MAX_LFN)
+            return ERR_NAME_TOO_LONG;
         if (!name_ok(s + start, seg))
             return ERR_INVALID_ARGS;
         /* Never longer than the input: each kept name costs "/name". */
@@ -95,14 +110,6 @@ bool path_inside(const char *p, const char *dir)
     return *p == '/';
 }
 
-bool path_same(const char *a, const char *b)
-{
-    while (*a && *b)
-        if (next_folded(&a) != next_folded(&b))
-            return false;
-    return !*a && !*b;
-}
-
 void name_shown(char *s)
 {
     size_t o = 0;
@@ -135,12 +142,34 @@ status_t fr_status(FRESULT r)
     case FR_NO_FILESYSTEM:       return ERR_IO;
     case FR_MKFS_ABORTED:        return ERR_IO;
     case FR_TIMEOUT:             return ERR_TIMED_OUT;
-    case FR_LOCKED:              return ERR_BAD_STATE;     /* the file is open */
+    case FR_LOCKED:              return ERR_BUSY;          /* the file is open */
     case FR_NOT_ENOUGH_CORE:     return ERR_NO_MEMORY;
     case FR_TOO_MANY_OPEN_FILES: return ERR_NO_RESOURCES;
     case FR_INVALID_PARAMETER:   return ERR_INVALID_ARGS;
     }
     return ERR_INTERNAL;
+}
+
+status_t fr_path_status(FRESULT r, const char *p)
+{
+    if (r != FR_NO_PATH)
+        return fr_status(r);
+    /* FatFs found no directory on the way: a name missing, or a file. */
+    char prefix[FAT_PATH_MAX];
+    size_t n = strnlen(p, FAT_PATH_MAX - 1);
+    for (size_t i = 1; i < n; i++) {
+        if (p[i] != '/')
+            continue;
+        FILINFO fi;
+        memcpy(prefix, p, i);
+        prefix[i] = '\0';
+        FRESULT fr = f_stat(prefix, &fi);
+        if (fr != FR_OK)
+            return fr == FR_NO_FILE || fr == FR_NO_PATH ? ERR_NOT_FOUND : fr_status(fr);
+        if (!(fi.fattrib & AM_DIR))
+            return ERR_NOT_DIR;
+    }
+    return ERR_NOT_FOUND;
 }
 
 /* Days from 1970-01-01 to y-m-d in the Gregorian calendar (Howard

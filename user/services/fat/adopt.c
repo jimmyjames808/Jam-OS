@@ -121,10 +121,12 @@ static const char *check_files(void)
     }
     for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
         const struct fat_open *o = &kept->opens[i];
-        if (o->refs != refs[i] || strnlen(o->path, sizeof(o->path)) == sizeof(o->path))
+        if (o->refs != refs[i])
             return "open files that don't add up";
         if (o->refs && !fil_ok(&o->fil))
             return "an open file of another volume";
+        if (o->refs && !files_place_ok(o))
+            return "an open file whose entry is elsewhere";
     }
     return NULL;
 }
