@@ -1,4 +1,7 @@
-/* gptcheck's own declarations (tools/gptcheck.c has the model). */
+/* gptcheck's own declarations, shared by its two files: gptcheck.c (the
+ * disk, the checks every table must pass, the second reading, the cases,
+ * main) and gptmutate.c (the mutations, and each header rule broken in
+ * turn). */
 #pragma once
 
 #include <stdbool.h>
@@ -28,6 +31,19 @@ struct img {
     uint32_t buf_size;       /* the buffer it was given */
 };
 
+/* Where the image's GPT structures are, from the image as made. */
+struct geo {
+    bool     gpt;
+    uint64_t hdr[2];         /* byte offsets of the primary and backup header */
+    uint64_t arr[2];         /* and of their entry arrays */
+    uint32_t count, size;    /* the arrays' entries and their size */
+};
+
+/* What the mutated runs gave, counted. */
+struct tally {
+    uint64_t runs, gpt, mbr, none, listed, failed;
+};
+
 extern uint64_t rng;          /* the seeded generator's state */
 extern const char *where;     /* what is being checked, for failures */
 
@@ -39,6 +55,12 @@ void read_bytes(struct img *m, uint64_t off, uint64_t len, uint8_t *dst);
 void read_blocks(struct img *m, uint64_t lba, uint64_t count, uint8_t *dst);
 /* pt_read on m with two buffer sizes: every check passed, the same table. */
 status_t read_checked(struct img *m, struct pt_table *t);
+
+/* gptmutate.c: where m's GPT is; one run of `ops` mutations, counted;
+ * each header rule broken alone on m[0] and m[1] (the Windows-like disks). */
+void find_geo(const struct img *m, struct geo *g);
+void mutated_run(struct img *m, const struct geo *g, int ops, struct tally *y);
+unsigned check_edits(struct img *m, const struct geo *g);
 
 static inline void put64(uint8_t *p, uint64_t v)
 {

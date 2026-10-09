@@ -2,16 +2,27 @@
  * drivers/lib/parttable*.c, the same files) on the Mac, built with ASan
  * and UBSan. `make check` runs it on tools/mkgpt.py's cases.
  *
- *     gptcheck <dir> [--seed S]
+ *     gptcheck <dir> [--mutations N] [--fuzz N] [--seed S]
  *
- * <dir> holds mkgpt.py --cases's images and their .expect files. Each
- * image's table is checked against this file's expectations (scheme,
- * both headers' verdicts, hybrid, blank, the kind) and against its
- * .expect (every listed partition, exactly: mkgpt.py's own reading of the
- * rules, in Python), with the caller's buffer at several sizes, which
- * must all give the same table. The run fails (exit 1, a line saying
- * what) on the first mistake.
- * After every read: the library asked only for blocks
+ * <dir> holds mkgpt.py --cases's images and their .expect files. Four
+ * parts, each failing the run (exit 1, a line saying what) on the first
+ * mistake:
+ *   - the cases: each image's table against this file's expectations
+ *     (scheme, both headers' verdicts, hybrid, blank, the kind) and
+ *     against its .expect (every listed partition, exactly: mkgpt.py's own
+ *     reading of the rules, in Python), with the caller's buffer at
+ *     several sizes, which must all give the same table;
+ *   - each header rule broken alone (gptmutate.c's edits), on either
+ *     header of the Windows-like disk at 512 and 4096 bytes a block, every
+ *     CRC made right after, so that rule alone must refuse the header;
+ *   - mutations (gptmutate.c): N per case (default 150), seeded and so the
+ *     same every run: fields of the MBR, the headers and the entries set
+ *     to edge values, CRCs mostly made right afterwards so the checks
+ *     behind them are reached, the disk's size and block size changed,
+ *     reads failed;
+ *   - the fuzz pass: N (default 5000) runs of up to 8 mutations at once
+ *     on random cases, from --seed (a long pass: --fuzz 1000000).
+ * After every read, mutated or not: the library asked only for blocks
  * inside the disk and no more than the buffer held (exactly that big, so
  * ASan sees a byte past it), the table it made lists partitions inside
  * the disk (past block 0 unless it is the whole-disk case, inside GPT's
@@ -34,6 +45,7 @@
 #include "parttable_int.h"
 
 static struct img imgs[64];
+static struct geo geos[64];
 static int nimgs;
 uint64_t rng = 0x9e3779b97f4a7c15ull;
 const char *where = "";   /* what is being checked, for failures */
@@ -612,16 +624,47 @@ static void check_units(void)
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        fprintf(stderr, "usage: gptcheck <dir> [--seed S]\n");
+        fprintf(stderr, "usage: gptcheck <dir> [--mutations N] [--fuzz N] [--seed S]\n");
         return 2;
     }
-    if (argc == 4 && !strcmp(argv[2], "--seed"))
-        rng = strtoull(argv[3], NULL, 0) | 1;
+    long mutations = 150, fuzz = 5000;
+    for (int i = 2; i + 1 < argc; i += 2) {
+        if (!strcmp(argv[i], "--mutations"))
+            mutations = strtol(argv[i + 1], NULL, 0);
+        else if (!strcmp(argv[i], "--fuzz"))
+            fuzz = strtol(argv[i + 1], NULL, 0);
+        else if (!strcmp(argv[i], "--seed"))
+            rng = strtoull(argv[i + 1], NULL, 0) | 1;
+    }
     check_units();
     for (unsigned i = 0; i < NWANTS; i++) {
         load(&imgs[nimgs], argv[1], wants[i].name);
+        find_geo(&imgs[nimgs], &geos[nimgs]);
         check_case(argv[1], &imgs[nimgs++], &wants[i]);
     }
     printf("gptcheck: %u cases ok\n", (unsigned)NWANTS);
+    unsigned edits = check_edits(imgs, geos);   /* imgs[0] and [1] are the Windows-like ones */
+    printf("gptcheck: %u header rules, each broken alone on both block sizes and headers, ok\n",
+           edits);
+    struct tally y = { 0 };
+    for (int i = 0; i < nimgs; i++) {
+        where = imgs[i].name;
+        for (long k = 0; k < mutations; k++)
+            mutated_run(&imgs[i], &geos[i], 1 + (int)below(3), &y);
+    }
+    printf("gptcheck: %llu mutated tables ok (GPT %llu, MBR %llu, none %llu; partitions listed "
+           "%llu; read failed %llu)\n", (unsigned long long)y.runs, (unsigned long long)y.gpt,
+           (unsigned long long)y.mbr, (unsigned long long)y.none, (unsigned long long)y.listed,
+           (unsigned long long)y.failed);
+    y = (struct tally){ 0 };
+    for (long k = 0; k < fuzz; k++) {
+        int i = (int)below((uint64_t)nimgs);
+        where = imgs[i].name;
+        mutated_run(&imgs[i], &geos[i], 1 + (int)below(8), &y);
+    }
+    printf("gptcheck: fuzz: %llu runs ok (GPT %llu, MBR %llu, none %llu; partitions listed "
+           "%llu; read failed %llu)\n", (unsigned long long)y.runs, (unsigned long long)y.gpt,
+           (unsigned long long)y.mbr, (unsigned long long)y.none, (unsigned long long)y.listed,
+           (unsigned long long)y.failed);
     return 0;
 }

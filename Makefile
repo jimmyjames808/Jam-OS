@@ -563,7 +563,7 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # the Markdown docs still match the tree (tools/checkdocs.py), the
 # RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh),
 # and the partition table library keeps to the driver rules and passes
-# tools/gptcheck.c (its cases).
+# tools/gptcheck.c (its cases, mutations and a short fuzz pass).
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
@@ -720,8 +720,8 @@ $(FONT_CHECK): $(FONT_TOOL_DEPS)
 	    -o $@ $(FONT_TOOL_SRCS)
 # gptcheck (tools/gptcheck.c): the partition table library (the same
 # files a disk driver links) with ASan and UBSan, against tools/mkgpt.py's
-# images; `make check` runs it.
-GPT_SRCS := tools/gptcheck.c drivers/lib/parttable.c drivers/lib/parttable_gpt.c
+# images and thousands of mutated tables; `make check` runs it.
+GPT_SRCS := tools/gptcheck.c tools/gptmutate.c drivers/lib/parttable.c drivers/lib/parttable_gpt.c
 $(GPT_CHECK): $(GPT_SRCS) tools/gptcheck.h drivers/include/jam/parttable.h \
               drivers/lib/parttable_int.h kernel/include/jam/status.h
 	@mkdir -p $(dir $@)
