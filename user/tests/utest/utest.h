@@ -37,6 +37,7 @@ bool t_spawn_stack_size(void);
 bool t_posixfds_malformed(void);
 bool t_posixfds_fuzz(void);
 bool t_posixfds_writer_refuses(void);
+bool t_wants_posix(void);
 
 /* hid.c: the HID driver process against a mock usb-bus and console. */
 bool t_hid_typing(void);

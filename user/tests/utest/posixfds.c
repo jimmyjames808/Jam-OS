@@ -13,6 +13,7 @@
 #include <check.h>
 #include <os.h>
 #include <posixfds.h>
+#include <wants.h>
 #include "pfdtest.h"
 #include "utest.h"
 
@@ -395,5 +396,28 @@ bool t_spawn_stack_size(void)
     struct posixfds_out out = { .cwd = "/", .fds = &d, .nfds = 1 };
     CHECK_ST(spawn_posix("posix-stack", SPAWN_STACK_MAX + 1, &out, &info), ERR_OUT_OF_RANGE);
     CHECK_EQ(pfd_handles(), before);
+    return true;
+}
+
+/* The list's word `posix` (<wants.h>): once, alone on its line, granting
+ * nothing; `svc session` parses as any service (the build and `allow`
+ * decide who may have it). */
+bool t_wants_posix(void)
+{
+    static struct wants w;
+    const char *good = "posix\nsvc net\n";
+    CHECK_ST(wants_parse(good, strlen(good), &w), OK);
+    CHECK(w.posix);
+    CHECK_EQ(w.n, 1u);
+    CHECK(!strcmp(w.grant[0], "/svc/net"));
+    CHECK_ST(wants_parse("svc net\n", 8, &w), OK);
+    CHECK(!w.posix);
+    static const char *const bad[] = { "posix\nposix\n", "posix now\n", "Posix\n", " posix\n" };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        CHECK_ST(wants_parse(bad[i], strlen(bad[i]), &w), ERR_INVALID_ARGS);
+        CHECK(!w.posix);
+    }
+    CHECK_ST(wants_parse("svc session\n", 12, &w), OK);
+    CHECK(!strcmp(w.grant[0], "/svc/" SVC_SESSION));
     return true;
 }
