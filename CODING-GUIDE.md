@@ -87,7 +87,7 @@ syscall path returns an error.
 | Syscall glue (`sysc_*`, `sys_*`) | `kernel/abi/` |
 | Kernel tests | `kernel/test/test_<subject>.c` (left out by `make KTESTS=0`; checks that must ship in every kernel go in `kernel/debug/`) |
 | Drivers | `drivers/<name>/` (test drivers in `drivers/test/<name>/`); either way `drv/<name>` in bootfs |
-| System services (bootfs, compositor, console, devmgr, dhcp, dns, fat, init, logd, mixer, music, netstack, serialin, serve, shell, sntp, update) | `user/services/<name>/` |
+| System services (bootfs, compositor, console, devmgr, dhcp, dns, fat, init, logd, mixer, music, netstack, serialin, serve, shell, sntp, update, volumes) | `user/services/<name>/` |
 | Apps (jamjar, jamcover, splash, play, fetch, speed) | `user/apps/<name>/`; the apps library (libfun) is `user/apps/fun/` |
 | Test programs (utest, usbtest, hdatest, mixtest, mixramp, nettest, dnstest, tcptest, contest, ramfs, soakload, wantdebug, wantlisten, nolisten, perop, updtest, fractal, wltest, wlapps, fbbench) | `user/tests/<name>/` |
 | Shared user code | `user/lib/` (libos, headers in `user/include/`), libfun (`<fun.h>`) |
@@ -114,9 +114,9 @@ The Makefile finds programs and drivers by directory: no list to edit.
 | `kernel/debug/` | klog, panic, symbols, lock checker, RESULTS box, self-, crash and stress tests |
 | `kernel/test/` | in-kernel tests and the benchmark |
 | `kernel/include/jam/` | kernel headers |
-| `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `rtl8125/` (the PC's Realtek RTL8125B network chip), `e1000e/` (QEMU's Intel 82574L network card, for the network tests), `lib/` (code several drivers link: the netdev server, `netserver.c`), `test/` (test drivers), `include/` (`<jam/driver.h>`, `<jam/task.h>`, generated IDL headers) |
+| `drivers/` | `usb-bus/` (xHCI + hubs), `hid/` (keyboard, mouse), `usb-storage/` (USB sticks: partitions as `block` channels), `hda/` (Intel HD Audio: codec path, one output stream, `beep`), `nvme/` (an NVMe drive, read-only), `rtl8125/` (the PC's Realtek RTL8125B network chip), `e1000e/` (QEMU's Intel 82574L network card, for the network tests), `lib/` (code several drivers link: the netdev server, `netserver.c`, the partition-table reader, `parttable*.c`, and SHA-256), `test/` (test drivers), `include/` (`<jam/driver.h>`, `<jam/task.h>`, generated IDL headers) |
 | `user/lib/` | libos: startup, syscall wrappers, printf, heap, spawn, the file namespace and `/svc`, a program's list (`<wants.h>`), the driver API, cooperative tasks (`<jam/task.h>`), sound output (`<audio.h>`), WAV headers (`<wav.h>`) and MP3 decoding (`<mp3.h>`, on dr_mp3), settings (`<settings.h>`), the calendar and time zones (`<wallclock.h>`), UTF-8, SHA-256 and IPv4 addresses as text (`<ipv4.h>`) |
-| `user/services/` | init, compositor (the desktop: the Wayland compositor, its window manager, the top bar, search, popovers and notices), console (the terminals), devmgr, serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), dhcp (the DHCP client), dns (the resolver, `/svc/dns`), netlog (the log to the Mac), sntp (the clock from the network), serve (the file server behind `serve`), update (`update`'s fetcher: the build the Mac serves, offered to init) |
+| `user/services/` | init, compositor (the desktop: the Wayland compositor, its window manager, the top bar, search, popovers and notices), console (the terminals), devmgr (the drivers), volumes (the disks, their filesystem services and the mounts), serialin, shell, bootfs (the boot image as `/boot`), fat (the FAT filesystem, on FatFs), logd (the boot log files), mixer (every program's sound into the one output), music (the background music player), netstack (the network stack, on lwIP, on the network card's rings), dhcp (the DHCP client), dns (the resolver, `/svc/dns`), netlog (the log to the Mac), sntp (the clock from the network), serve (the file server behind `serve`), update (`update`'s fetcher: the build the Mac serves, offered to init) |
 | `user/apps/` | jamjar (the music player's window), splash (the boot splash), play (the shell's `play`: one file decoded and played), jamcover (jamjar's cover decoder), fetch and speed (the shell's `fetch` and `speed`), and `fun/` (the apps library) |
 | `user/tests/` | utest, usbtest, hdatest (the HD Audio stream's checks), mixtest (the mixer's checks), mixramp (a ramp played while the mixer is killed again and again), nettest (a network driver as a hostile netstack sees it), dnstest (the resolver and the slow-peer rule), contest, ramfs (a RAM filesystem for the file tests), soakload (the soak test's user-space load), wantdebug (a list asking for `right debug`, for the allow test), wantlisten (a list asking for `svc net listen`, the same), fractal (a Mandelbrot explorer drawn by every CPU with vector maths: its benchmark and self-test), wltest (a test window: the compositor's checks, and the mouse as an app sees it), wlapps (programs as windows on a compositor of its own), fbbench (the drawing code's speed), tcptest (TCP streams, for the network tests), nolisten (a list with the network but not the listen permission), perop (the per-operation lines of the benchmark), updtest (init's update check fed from files) |
 | `abi/` | `syscalls.def` (the syscall table) and `idl/` (the protocols) |
@@ -316,11 +316,13 @@ comment saying why it is safe.
 | `ERR_NO_MEMORY` | an allocation or a page/message-byte job limit failed |
 | `ERR_NO_RESOURCES` | a table, queue or handle/thread limit is full |
 | `ERR_SHOULD_WAIT` | would block (non-blocking call) |
-| `ERR_OUT_OF_RANGE` | a value outside what the object supports |
+| `ERR_OUT_OF_RANGE` | a value outside what the object supports; a length past a call's limit (`<jam/abi.h>`): nothing cut, nothing done |
 | `ERR_BAD_STATE` | right call, wrong moment (already started, closed) |
 | `ERR_PEER_CLOSED` | the other end is gone: reconnect per the protocol |
 | `ERR_TIMED_OUT` / `ERR_CANCELED` | deadline passed / thread or wait cancelled |
 | `ERR_INTERRUPTED` | an interruptible wait ended by `thread_interrupt` (`EINTR`) |
+| `ERR_NOT_DIR` / `ERR_IS_DIR` / `ERR_NOT_EMPTY` / `ERR_NAME_TOO_LONG` / `ERR_BUSY` | a filesystem's answers, one POSIX errno each |
+| `ERR_IO` / `ERR_NO_SPACE` / `ERR_ALREADY_EXISTS` | the device failed the request / the medium is full / the name is taken |
 | `ERR_NOT_SUPPORTED` / `ERR_NOT_FOUND` | not implemented or not allowed by design / no such thing |
 
 - **Cleanup, the house style** (decided for Jam OS; Linux prefers goto
@@ -436,8 +438,8 @@ fractions. User programs may use floating point and SIMD freely.
   blocking calls where nobody else is waiting: a program, a shell
   command, a thread that serves nothing.
 - *Why:* every other client waits behind the call, and a server that
-  hangs holds up everyone who asks the loop anything (one `kill` can hold
-  devmgr's loop for its 15 s wait today).
+  hangs holds up everyone who asks the loop anything (a `kill` that waited
+  for its process to die would stop every other request for as long).
   The model and the tools: [ARCHITECTURE.md](ARCHITECTURE.md#how-a-service-waits).
 
 ### Recursion and the stack
@@ -517,7 +519,11 @@ fractions. User programs may use floating point and SIMD freely.
 ### Add a syscall
 
 1. Add a line to `abi/syscalls.def` in the right group, with a comment
-   saying what it does. Pick an unused number; never reuse or renumber one.
+   saying what it does, which rights it needs and which errors it gives.
+   Pick an unused number; never reuse or renumber one (a retired call's
+   number stays unused). Follow the calls' shared rules: a length past a
+   limit in `<jam/abi.h>` is `ERR_OUT_OF_RANGE`; a wait takes a deadline;
+   handles a call is given are moved whatever the status.
    Pointer arguments become user addresses; more than six arguments: pass
    `@<struct>` and define the struct in `jam/abi.h` (no implicit padding,
    `_Static_assert` in `abi_check.c`).
@@ -537,40 +543,87 @@ fractions. User programs may use floating point and SIMD freely.
 
 ### Add an IDL protocol or method
 
-1. New protocol: `abi/idl/<name>.idl` with a unique protocol id and a
-   header comment saying who serves it, who calls it, and **its restart
-   rule**, in a paragraph that begins `Restart:` or `Reconnect:`
+1. **New protocol**: `abi/idl/<name>.idl`, with a free id in
+   `abi/idl/ids.txt` first (a line `<id> <name> <file>`; the registry also
+   lists the hand-written protocols, and `genidl` refuses a protocol that
+   isn't in it and an id or a name listed twice). The file starts with a
+   header comment saying who serves the protocol, who calls it, and **its
+   restart rule**, in a paragraph that begins `Restart:` or `Reconnect:`
    (`genidl` refuses a file without one): either a restart of the server
    is not seen ([a service that outlives its
-   process](#a-service-that-outlives-its-process)), or what a client does
-   after `ERR_PEER_CLOSED` and what it loses.
-2. New method: the next ordinal; never renumber or change an existing
+   process](#a-service-that-outlives-its-process): mark the protocol
+   `kept`, and `genidl` checks the rule agrees and that nothing sent to a
+   kept server carries a handle), or what a client does after
+   `ERR_PEER_CLOSED` and what it loses. One file may hold several
+   protocols, one for each kind of channel of a service (`audio`, then
+   `audio_stream`): each `protocol <name> <id>` line starts one, with its
+   own restart rule in the comment above it, so a method sent to the wrong
+   kind of channel is `ERR_NOT_SUPPORTED`, not taken for another's.
+2. **New method**: the next ordinal; never renumber or change an existing
    method's arguments (add a new method instead). Comment lines above a
-   method are copied into the generated header.
-3. Handles: `handle` (one), `handle<vmo>` (one of that object type,
-   checked by the generated server before the handler runs:
-   `ERR_WRONG_TYPE`), `handle[<=N]` (up to N, N <= 64: a pointer and a
-   count in C), as arguments, results or event fields. A send's handles
-   are always moved, whatever the status: never close them after the
-   call; a handler owns the handles it is given. Bulk data goes through a
-   shared VMO, not large arrays (a message is at most 16 KiB).
-4. `make idl`; commit `drivers/include/idl/<name>.h`. Never edit it.
-5. Server: fill a `static const struct <name>_ops`, call `<name>_serve`
+   method are copied into the generated header. A `const NAME value` line
+   keeps a protocol's flags, limits and states with its methods
+   (`<PROTO>_<NAME>` in the header).
+3. **Types of arguments, results and fields**:
+   - scalars (`u8` to `i64`) and `u8[N]`, a fixed byte array (N at most
+     4096): for a thing that really has that size (an address, a GUID).
+   - **Arrays that vary**, `u8[<=N]` to `i64[<=N]` and `str[<=N]` (UTF-8, no
+     NUL): anything with a length, text, descriptors or lists, in place of a
+     fixed array with a count beside it. In C each is a pointer and a length
+     in elements. The generated server refuses an array past its N, padding
+     that isn't zero and a `str` that isn't well-formed (`ERR_INVALID_ARGS`)
+     before a handler runs. A handler's argument points into the request and
+     its result into the reply: copy what it keeps. Records stay byte arrays
+     of a C struct.
+   - **Handles**: `handle` (one), `handle<vmo>` (one of that object type,
+     checked by the generated server with `handle_info` before the handler
+     runs: `ERR_WRONG_TYPE`; `handle<type>[<=N]` for a list of one type),
+     `handle[<=N]` (up to N, N <= 64: a pointer and a count in C; at most
+     one list a message, and it is the last handle field), as arguments,
+     results or event fields. A send's handles are always moved, whatever
+     the status: never close them after the call. A handler owns the
+     handles it is given and closes or keeps them, whatever it returns; in
+     a reply it fills the `out_` handle, and the server closes what it
+     filled if the status is an error.
+   - A request or reply is at most 16 KiB. Bulk data goes through a shared
+     VMO, not large arrays.
+4. **Events**: `<n> name (fields) event` goes to the server and
+   `<n> name -> (fields) event` to the client; one-way, never answered, in
+   either direction of one protocol. Use one for a notification or a stream
+   (a stick attached, a mount changed, a key) where nobody needs an
+   answer. The sender's stub returns `ERR_SHOULD_WAIT` when the peer's queue
+   is full, which is the flow control: decide what a full queue means (the
+   mounts watcher is dropped, and watches again). A server's handler owns an
+   event's handles like a call's; a client reads events with
+   `<name>_read_event`, or `idl_reply_read` and `<name>_event_dispatch` from
+   a port loop.
+5. `make idl`; commit `drivers/include/idl/<name>.h` (and `common.h` and
+   `fuzz.h` when they change). Never edit them: `make check` fails on a
+   stale one and runs `genidl`'s own tests. A change to the language itself
+   gets a case in `abi/idl/idltest.idl` and a utest.
+6. **Server**: fill a `static const struct <name>_ops`, call `<name>_serve`
    (it answers each request in the `channel_reply_wait` that waits for
    the next: one system call per request), or `<name>_serve_one` in a
-   loop of your own. A method the server may
-   answer after its handler returned is marked `later`: its handler gets
-   the request's `struct idl_txn` and may return `IDL_LATER`, then answers
-   with `<name>_reply_<method>`. A service whose requests must outlive
+   loop of your own. A method the server may answer after its handler
+   returned is marked `later`: its handler gets the request's
+   `struct idl_txn` and may return `IDL_LATER`, then answers with
+   `<name>_reply_<method>`. A service whose requests must outlive
    it reads each into a slot of its state (`<name>_take_slot`, which also
    sends the last reply, then `<name>_run_slot`; `<svcstate.h>`). A method
    that can run twice with the same result is marked `idempotent`
-   (`<name>_idempotent`). Client: `<name>_<method>`, `_until` with a
-   deadline, or `_within` with a timeout (the kernel starts it from its
-   own clock, so no `clock_get` first: prefer it for a time limit); from a loop that serves others,
-   `<name>_<method>_send` and `<name>_<method>_result`
+   (`<name>_idempotent`).
+7. **Client**: `<name>_<method>`, `_until` with a deadline, or `_within`
+   with a timeout (the kernel starts it from its own clock, so no
+   `clock_get` first: prefer it for a time limit); from a loop that serves
+   others, `<name>_<method>_send` (with an `idl_txid_next` txid) and
+   `<name>_<method>_result`
    ([a loop that serves never blocks](#a-loop-that-serves-never-blocks)).
-6. Test both ends (a utest with a mock peer, as `user/tests/utest/hid.c` does).
+   A timeout argument in a method is only for a wait the server bounds and
+   the caller's deadline can't (an echo in flight, a connection awaited);
+   everything else takes the call's deadline.
+8. Test both ends (a utest with a mock peer, as `user/tests/utest/hid.c`
+   does). The generated servers are fuzzed from `fuzz.h` by `idl_fuzz`
+   without any work of yours.
 
 ### A service that outlives its process
 
@@ -596,7 +649,7 @@ protocol's restart rule says what clients do after `ERR_PEER_CLOSED`.
    each instance how the last one ended (killed or crashed). It drops the
    state and calls `keeper_release` when the binding retires, is given up
    on or is stopped in order. All of it is `user/lib/supervise.c`
-   (`<supervise.h>`); devmgr's and init's `spare.c` are its two users to
+   (`<supervise.h>`); volumes' and init's `spare.c` are its two users to
    follow.
 3. **The service** calls `svcstate_open` before anything else (the state
    at the fixed address, so pointers inside it stay valid), with its own
@@ -612,8 +665,10 @@ protocol's restart rule says what clients do after `ERR_PEER_CLOSED`.
    happen before its commit unless doing it again gives the same result;
    fat holds its writes until the commit, the mixer writes a period over
    the same place again.
-5. **Order with the keeper**: `keep_put` before the state records the
-   slot and before the reply that hands the client its end; `keep_drop`
+5. **Order with the keeper** (the `keepch` protocol, through libos's
+   `keep_put`, `keep_drop` and `keep_restore`): `keep_put` before the
+   state records the slot and before the reply that hands the client its
+   end; `keep_drop`
    after the state has forgotten it for good (after the commit of the
    operation that closed it, since an undo would bring it back).
 6. **The successor** (`svcstate_pending`): put back what an uncommitted
