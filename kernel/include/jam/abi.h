@@ -151,7 +151,7 @@ struct port_packet {
 #define VMAR_WRITE (1u << 1)
 #define VMAR_EXEC  (1u << 2)   /* never together with VMAR_WRITE */
 #define VMAR_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
-/* vmar_map only: map a VMO_KEEP_PAGES VMO (ERR_WRONG_TYPE for any other
+/* vmar_map only: map a VMO_KEEP_PAGES VMO (ERR_NOT_SUPPORTED for any other
  * VMO) read-only (VMAR_READ, maybe VMAR_FIXED; ERR_INVALID_ARGS for any
  * other permission), with every page-table entry filled before the call
  * returns, so no access through the mapping ever faults, whatever the

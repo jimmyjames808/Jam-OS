@@ -126,11 +126,11 @@
 
 # address spaces (flags: VMAR_READ/WRITE/EXEC/FIXED) --------------------------
 # vmar_map also takes VMAR_KEPT_ONLY (bit 4): only a VMO_KEEP_PAGES VMO
-# (ERR_WRONG_TYPE otherwise), only VMAR_READ (ERR_INVALID_ARGS for write or
-# exec), and every page-table entry is filled before the call returns, the
-# tables charged to the mapper's job then (ERR_NO_MEMORY, nothing mapped),
-# so no access through the mapping ever faults, whatever the VMO's other
-# holders do. vmar_protect refuses to change such a mapping
+# (ERR_NOT_SUPPORTED for another VMO), only VMAR_READ (ERR_INVALID_ARGS
+# for write or exec), and every page-table entry is filled before the call
+# returns, the tables charged to the mapper's job then (ERR_NO_MEMORY,
+# nothing mapped), so no access through the mapping ever faults, whatever
+# the VMO's other holders do. vmar_protect refuses to change such a mapping
 # (ERR_ACCESS_DENIED); a VMO grown later is mapped again for its new pages.
 60  vmar_map          status    handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t *addr
 61  vmar_unmap        status    handle_t vmar, uint64_t addr, uint64_t len

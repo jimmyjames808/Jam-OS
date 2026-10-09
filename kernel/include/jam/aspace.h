@@ -55,7 +55,7 @@ void     aspace_unref(struct aspace *as);
  * overlaps an existing mapping. No permissions at all is allowed (a guard:
  * every access faults with ERR_ACCESS_DENIED). With ASPACE_KEPT_ONLY:
  * ERR_INVALID_ARGS unless the permissions are ASPACE_READ alone,
- * ERR_WRONG_TYPE unless vmo is kept (vmo_is_kept), and every entry is
+ * ERR_NOT_SUPPORTED unless vmo is kept (vmo_is_kept), and every entry is
  * installed before this returns (ERR_NO_MEMORY if the job refuses a page
  * table: nothing is left mapped); the CAN bits are ignored, and
  * aspace_protect refuses any change to it (ERR_ACCESS_DENIED). */

@@ -141,7 +141,7 @@ static bool kept_map_refusals(void)
     CHECK_ST(jam_event_create(&ev), OK);
     CHECK_ST(jam_handle_duplicate(kv, RIGHTS_BASIC | RIGHT_READ, &nomap), OK);
     const uint32_t r = VMAR_READ | VMAR_KEPT_ONLY;
-    CHECK_ST(jam_vmar_map(vmar, pv, 0, PG, r, &addr), ERR_WRONG_TYPE);       /* not kept */
+    CHECK_ST(jam_vmar_map(vmar, pv, 0, PG, r, &addr), ERR_NOT_SUPPORTED);    /* not kept */
     CHECK_ST(jam_vmar_map(vmar, ev, 0, PG, r, &addr), ERR_WRONG_TYPE);       /* not a VMO */
     CHECK_ST(jam_vmar_map(vmar, nomap, 0, PG, r, &addr), ERR_ACCESS_DENIED); /* no RIGHT_MAP */
     CHECK_ST(jam_vmar_map(vmar, kv, 0, PG, r | VMAR_WRITE, &addr), ERR_INVALID_ARGS);
