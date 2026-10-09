@@ -260,3 +260,6 @@ The rest:
 - HDMI/DisplayPort audio through the RTX.
 - Filesystems other than FAT32 (NVMe itself is M12.7, on FAT32 and GPT).
 - User accounts: single user; handles are the only authority.
+- Running Linux binaries unchanged (a Linux system-call personality, as
+  WSL1 or FreeBSD's Linux layer): the owner, 2026-10-09. Programs are
+  ported from source onto the POSIX layer instead.
