@@ -108,3 +108,8 @@ status_t jam_wallclock_set(handle_t root, const struct wall_clock *in);
 status_t jam_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, const char *cmdline, uint64_t len, uint32_t flags);
 status_t jam_kexec_reboot(handle_t root);
 status_t jam_random_get(void *buf, uint64_t len);
+status_t jam_pager_create(handle_t root, uint64_t max_pages, uint64_t answer_ns, uint32_t flags, handle_t *out);
+status_t jam_pager_create_vmo(handle_t pager, uint64_t key, uint64_t size, uint32_t flags, handle_t *out);
+status_t jam_pager_next(handle_t pager, uint32_t flags, struct pager_request *out);
+status_t jam_pager_supply(handle_t pager, uint64_t key, uint64_t offset, const void *buf, uint64_t len);
+status_t jam_pager_op(handle_t pager, uint64_t key, uint32_t op, uint64_t offset, uint64_t len, int64_t arg);

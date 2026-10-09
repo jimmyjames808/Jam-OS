@@ -124,7 +124,8 @@ status_t wm_commit(struct wm_window *ww, uint32_t states);
 void wm_unmap(struct wm_window *ww);
 void wm_set_title(struct wm_window *ww, const char *title);   /* cut to WM_TEXT_MAX */
 void wm_set_app_id(struct wm_window *ww, const char *app_id);
-/* The client's limits (checked by the caller: 0 or more, max >= min where both are set). */
+/* The client's limits (checked by the caller: 0 or more, max >= min where both are set),
+ * each held to COMP_BUFFER_SIDE_MAX. */
 void wm_set_limits(struct wm_window *ww, int32_t min_w, int32_t min_h, int32_t max_w,
                    int32_t max_h);
 /* Can the user change ww's size: a limit that pins neither side. */

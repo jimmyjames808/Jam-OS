@@ -21,12 +21,16 @@
  * dispatch's deadline), into a buffer that grows to JWL_CLIP_MAX at most,
  * until the end (the owner closed: done), JWL_CLIP_WAIT_NS (timed out),
  * too much, or a message with handles (both refused). Nothing here
- * waits. */
+ * waits, and a dispatch reads at most READS_PER_TICK of the transfer's
+ * messages: an owner writing empty messages flat out (they never bring
+ * the cap nearer) can't hold the program in one dispatch past its
+ * deadline (M12.1 C2); the deadline is "now" while some may be left. */
 #include <jwl_client.h>
 #include <os.h>
 #include "jwlc.h"
 
 #define POLL_NS (10 * NS_PER_MS)   /* a paste with no port to wake us: looked at this often */
+#define READS_PER_TICK 64u         /* a transfer's messages one dispatch reads, at most */
 
 /* The text types, the best first (the compositor's own list). */
 static const char *const types[] = {
@@ -126,6 +130,7 @@ static void paste_end(struct jwl_client *c, status_t status)
         (void)jam_port_unbind(c->port, k->rx, c->port_key);
     jam_handle_close(k->rx);
     k->rx = HANDLE_INVALID;
+    k->rx_more = false;
     uint32_t size = 0;
     if (status == OK) {
         k->buf[k->got] = '\0';
@@ -336,8 +341,11 @@ static status_t on_selection(void *data, uint32_t self, uint32_t id)
     if (o) {
         next = *o;
         o->id = 0;
+    } else if (id && id == c->clip.selection.id) {
+        next = c->clip.selection;   /* the same offer again: it stays (M12.1 C7) */
     }
-    destroy_offer(c, c->clip.selection.id);
+    if (c->clip.selection.id != next.id)
+        destroy_offer(c, c->clip.selection.id);
     for (unsigned i = 0; i < JWLC_OFFERS; i++) {
         destroy_offer(c, c->clip.offers[i].id);
         c->clip.offers[i].id = 0;
@@ -484,12 +492,12 @@ void jwlc_clip_tick(struct jwl_client *c)
     if (k->rx == HANDLE_INVALID)
         return;
     status_t st = OK;
-    /* bounded: each message read grows got, which is capped */
-    while (st == OK)
+    for (unsigned n = 0; st == OK && n < READS_PER_TICK; n++)
         st = read_one(k);
-    if (st == ERR_SHOULD_WAIT && now() >= k->rx_deadline)
+    k->rx_more = st == OK;   /* the budget ran out first: more may be waiting */
+    if ((st == OK || st == ERR_SHOULD_WAIT) && now() >= k->rx_deadline)
         st = ERR_TIMED_OUT;
-    if (st == ERR_SHOULD_WAIT)
+    if (st == OK || st == ERR_SHOULD_WAIT)
         return;
     paste_end(c, st == ERR_PEER_CLOSED ? OK : st);
 }
@@ -502,6 +510,8 @@ uint64_t jwlc_clip_deadline(const struct jwl_client *c)
             d = now() + POLL_NS;   /* a waiting transfer: looked at this often */
     if (c->clip.rx == HANDLE_INVALID)
         return d;
+    if (c->clip.rx_more)
+        return 0;   /* messages left unread for the budget: the next dispatch now */
     if (c->port == HANDLE_INVALID) {
         uint64_t poll = now() + POLL_NS;
         d = poll < d ? poll : d;

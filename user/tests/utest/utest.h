@@ -23,6 +23,9 @@
 int child_main(int argc, char **argv);
 /* "utest bench-<what> ...": one user-side benchmark (see bench.c). */
 int bench_child(int argc, char **argv);
+/* "utest fuzz-calls|fuzz-chans <seed> <ms>": a hostile child for the
+ * kernel's fuzz tests (fuzz.c, kernel/test/test_fuzz.c). */
+int fuzz_child(int argc, char **argv);
 
 /* hid.c: the HID driver process against a mock usb-bus and console. */
 bool t_hid_typing(void);
@@ -249,6 +252,7 @@ bool t_ns_server_dies(void);
 bool t_ns_child_sees_only_its_mounts(void);
 bool t_ns_mounts_reach_a_running_child(void);
 bool t_ns_malformed_messages(void);
+bool t_ns_long_names(void);
 bool t_spawn_from_vmo(void);
 /* bin/ramfs, started and mounted at point (and the reverse: it must end
  * clean). */
@@ -295,6 +299,7 @@ bool ns_child_exits(handle_t proc, int64_t code);
 
 /* heap.c: libos's heap in a long-running program. */
 bool t_heap_reuses_freed_space(void);
+bool t_heap_large_alloc(void);
 
 /* nsnotice.c: namespace changes a running program never reads. */
 bool t_ns_changes_stay_bounded(void);
@@ -481,6 +486,7 @@ bool t_jwl_bad_bind(void);
 bool t_jwl_bad_events(void);
 bool t_jwl_bad_batches(void);
 bool t_jwl_bad_compositor(void);
+bool t_jwl_bad_empty_run(void);
 bool t_jwl_conn_messages(void);
 bool t_jwl_conn_batches(void);
 bool t_jwl_conn_window(void);
@@ -499,7 +505,11 @@ bool t_jwl_fuzz_conn(void);
 bool t_jwlc_setup(void);
 bool t_jwlc_window(void);
 bool t_jwlc_window_sizes(void);
+bool t_jwlc_held_retry(void);
+bool t_jwlc_fuzz_events(void);
+bool t_jwlc_fuzz_batches(void);
 bool t_jwlc_keyboard(void);
+bool t_jwlc_keyboard_hostile(void);
 bool t_jwlc_key_burst(void);
 bool t_jwlc_pointer(void);
 bool t_jwlc_no_keyboard(void);
@@ -508,12 +518,16 @@ bool t_comp_super_enter(void);
 /* compplumb.c: the desktop's plumbing (D2b) */
 bool t_comp_notify(void);
 bool t_comp_notify_splash(void);
+bool t_comp_notify_dismissed(void);
+bool t_comp_notify_flood(void);
 bool t_comp_launch(void);
 bool t_comp_volume_net(void);
 bool t_comp_no_keyboard(void);
+bool t_comp_overlay_late(void);
 bool t_comp_early_keys(void);
 bool t_comp_screen_on_top(void);
 bool t_jwlc_reconnect(void);
+bool t_jwlc_connect_pending(void);
 bool t_jwlc_protocol_error(void);
 bool t_jwlc_blocking(void);
 /* funwin.c: libfun's window (gfx_open on a compositor), over the same fake. */
@@ -535,11 +549,14 @@ bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
 /* Clients lost every way, round after round: nothing stays charged to the compositor. */
 bool t_comp_lost_clients(void);
+bool t_comp_fuzz(void);
+bool t_comp_chaos(void);
 /* The same against the desktop's compositor (/svc/wayland): `utest only comp_live`. */
 bool t_comp_live_bad_requests(void);
 bool t_comp_live_caps(void);
 bool t_comp_live_client_crash(void);
 bool t_comp_live_never_reads(void);
+bool t_comp_live_fuzz(void);
 bool t_comp_regions(void);
 /* conwin.c: the console's window mode: its grid and padding, the view,
  * terminal.font, keys and pointer (wlinput.c, view.c, linked in). */
@@ -550,6 +567,7 @@ bool t_conwin_font_setting(void);
 bool t_conwin_keys(void);
 bool t_conwin_pointer(void);
 bool t_conwin_pointer_shape(void);
+bool t_con_hostile_compositor(void);
 /* conpaint.c: the console's cells drawn (cellpaint.c, linked in). */
 bool t_conpaint_metrics(void);
 bool t_conpaint_cells(void);
@@ -633,6 +651,8 @@ bool t_wm_save_restore(void);
 bool t_wm_save_late(void);
 bool t_wm_save_full(void);
 bool t_wm_save_bad(void);
+bool t_wm_save_big_min(void);
+bool t_wm_save_unmapped(void);
 bool t_wm_focus_dir(void);
 bool t_wm_swap(void);
 bool t_wm_reflow(void);
@@ -646,17 +666,22 @@ bool t_desk_minimise(void);
 bool t_desk_room(void);
 bool t_desk_strip(void);
 bool t_desk_anim(void);
+bool t_desk_anim_big(void);
 bool t_desk_cursors(void);
 bool t_desk_alttab(void);
+bool t_desk_alttab_gone(void);
 bool t_desk_search(void);
 bool t_desk_popover(void);
 bool t_desk_notify(void);
 bool t_desk_notify_held(void);
+bool t_desk_notify_dismissed(void);
 bool t_desk_overlay(void);
+bool t_desk_overlay_first(void);
 /* compwmseat.c: the window manager with the real seat: drag, close box,
  * Super+Q, Super+F, Super+T on an xdg toplevel. */
 bool t_wm_seat(void);
 bool t_wm_seat_cursors(void);
+bool t_wm_seat_overlay_keys(void);
 bool t_xdg_toplevel(void);
 bool t_xdg_tiling(void);
 bool t_xdg_tile_resize(void);
@@ -779,3 +804,9 @@ bool t_hid_queue_full(void);
 bool t_comp_seat_leds(void);
 /* fat.c: an open file is known by its directory entry (P5). */
 bool t_fat_open_moved(void);
+/* volwatch.c: volumes' watches and release_disk (S2a). */
+bool t_volumes_watch(void);
+bool t_volumes_release_disk(void);
+bool t_volumes_new_channel(void);
+/* volwatch.c: volumes answers while a remount waits (S2b). */
+bool t_volumes_loop_answers(void);

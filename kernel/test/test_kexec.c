@@ -285,6 +285,13 @@ KTEST(kexec_next_cmdline_words)
     KT_ASSERT(!strcmp(buf, "shell bootdisk=3792991605"));
     kexec_next_cmdline("", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, ""));
+    /* The firmware reset's starting method is the machine's; reset=none
+     * (try none: a test aid) is not, so a reboot after the kdump test can
+     * reset again (review KDEV finding 3). */
+    kexec_next_cmdline("shell reset=cf9 iommu=off", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "shell reset=cf9 iommu=off"));
+    kexec_next_cmdline("shell reset=none panichold=3000", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "shell"));
     /* Cut to fit, still terminated. */
     kexec_next_cmdline("verbose nosplash", buf, 10);
     KT_ASSERT(strlen(buf) < 10);

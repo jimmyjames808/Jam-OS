@@ -42,8 +42,9 @@ bool cs_refused(handle_t src, bool refused)
 }
 
 /* The compositor with the desktop or not, layout= (NULL: none, its
- * default) and one more argument (NULL: none). */
-static bool start(struct cs *t, bool desk, const char *layout, const char *more)
+ * default), one more argument (NULL: none), and its log (SR_STDOUT, a
+ * channel end, consumed; HANDLE_INVALID: none, the kernel's log). */
+static bool start_out(struct cs *t, bool desk, const char *layout, const char *more, handle_t out)
 {
     memset(t, 0, sizeof(*t));
     handle_t svc, ctl, init, image, note, mix, net;
@@ -68,10 +69,10 @@ static bool start(struct cs *t, bool desk, const char *layout, const char *more)
     struct spawn_handle x[] = { { SR_USER + 0, svc }, { SR_USER + 1, image },
                                 { SR_USER + 2, ctl }, { SR_USER + 3, init },
                                 { SR_USER + 5, note }, { SR_USER + 6, mix },
-                                { SR_USER + 7, net } };
+                                { SR_USER + 7, net }, { SR_STDOUT, out } };
     struct spawn_args a = { .path = "bin/compositor", .argc = argc, .argv = argv,
                             .job = t->p.job,
-                            .extra = x, .nextra = 7 };
+                            .extra = x, .nextra = out != HANDLE_INVALID ? 8 : 7 };
     CHECK_ST(spawn(&a, &t->p.proc), OK);
     CHECK(cs_add_source(t->ctl, &t->src));
     CHECK_ST(input_ready(t->src, INPUT_READY_KEYBOARD, 0x1234, 1), OK);
@@ -80,6 +81,16 @@ static bool start(struct cs *t, bool desk, const char *layout, const char *more)
     t->x = OUT_W / 2;   /* where the pointer starts */
     t->y = OUT_H / 2;
     return true;
+}
+
+static bool start(struct cs *t, bool desk, const char *layout, const char *more)
+{
+    return start_out(t, desk, layout, more, HANDLE_INVALID);
+}
+
+bool cs_start_out(struct cs *t, handle_t out)
+{
+    return start_out(t, true, "layout=floating", NULL, out);
 }
 
 bool cs_start(struct cs *t)
@@ -95,6 +106,11 @@ bool cs_start_desk(struct cs *t)
 bool cs_start_splash(struct cs *t)
 {
     return start(t, true, "layout=floating", "splash");
+}
+
+bool cs_start_splash_plain(struct cs *t)
+{
+    return start(t, false, "layout=floating", "splash");
 }
 
 bool cs_start_default(struct cs *t)

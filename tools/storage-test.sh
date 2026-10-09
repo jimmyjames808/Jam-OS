@@ -56,7 +56,8 @@ QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2 \
     tools/qemu-test.sh "$out" "$name" init || true
 log="$out/$name.log"
 ok=1
-grep -q "usbtest: 19 passed, 6 skipped" "$log" || ok=0
+grep -q "usbtest: 20 passed, 6 skipped" "$log" || ok=0
+grep -q "usbtest: block_in_flight ok" "$log" || { echo "$name: block_in_flight did not pass"; ok=0; }
 grep -q "run complete: no problems" "$log" || ok=0
 for t in bulk stall bind esp range write fence stop disk2 apart unplug timeout; do
     grep -q "usbtest: storage_$t ok" "$log" || { echo "$name: storage_$t did not pass"; ok=0; }

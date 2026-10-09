@@ -102,6 +102,53 @@ bool t_jwlc_reconnect(void)
     return fake_all_gone(&f, c, h0, b0);
 }
 
+/* A connect function that says "not yet" (a thread of the program's
+ * waiting for the compositor, as the console's connector does) this many
+ * times before it connects. */
+struct pending_connect {
+    struct fake *f;
+    unsigned waits;
+};
+
+static status_t connect_later(void *ctx, handle_t *out)
+{
+    struct pending_connect *p = ctx;
+    if (p->waits) {
+        p->waits--;
+        return ERR_SHOULD_WAIT;
+    }
+    return fake_connect(p->f, out);
+}
+
+/* "Not yet" is no failure (M12.1 C13): the client asks again every 50 ms,
+ * so six of them cost about 300 ms (before, the pause doubled each time:
+ * the answer could wait up to a second after it came, 2.5 s here). */
+bool t_jwlc_connect_pending(void)
+{
+    uint64_t h0, b0;
+    fake_held(&h0, &b0);
+    struct fake f;
+    fake_init(&f);
+    struct pending_connect pc = { &f, 6 };
+    struct jwl_client_config cfg = fake_config(&f);
+    cfg.connect = connect_later;
+    cfg.connect_ctx = &pc;
+    uint64_t t0 = now();
+    struct jwl_client *c;
+    CHECK_ST(jwl_client_create(&cfg, &c), OK);
+    while (jwl_client_status(c) != OK && now() < t0 + 3 * NS_PER_S) {
+        uint64_t d = jwl_client_deadline(c);
+        (void)jam_sleep_until(d < t0 + 3 * NS_PER_S ? d : t0 + 3 * NS_PER_S);
+        (void)fake_pump(&f, c);
+    }
+    CHECK_ST(jwl_client_status(c), OK);
+    CHECK_EQ(pc.waits, 0);
+    uint64_t took = now() - t0;
+    if (took > NS_PER_S)
+        FAIL("ready %lu ms after six \"not yet\"s, want about 300", (unsigned long)(took / NS_PER_MS));
+    return fake_all_gone(&f, c, h0, b0);
+}
+
 bool t_jwlc_protocol_error(void)
 {
     uint64_t h0, b0;

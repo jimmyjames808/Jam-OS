@@ -18,6 +18,15 @@
  * unseen), and a click where its button would be answers nothing; when
  * the wait ends with no splash (5 s) the held card shows and its press
  * answers the notify_wait sent during the splash.
+ * t_comp_notify_flood: a program posts notices flat out (FLOOD posts, and
+ * as many refused) while the compositor's log is a channel nobody reads
+ * (review C5): its lines about them stay within their budget (a few a
+ * second), so it never waits on the log, and it answers the poster's next
+ * call and a client's round trip.
+ * t_comp_notify_dismissed: two channels post three cards with buttons each:
+ * the fifth card shows nothing more than five, and the sixth pushes out the
+ * first channel's oldest, which that channel's notify_wait answers as
+ * NOTIFY_DISMISSED (review C11/DQ3), once; the other cards stay up.
  * t_comp_launch: the search box's rows reach init: an app as
  * initctl.launch with its command name ("jamjar"), what is typed as
  * initctl.terminal's command; the cursor is busy from Enter until init
@@ -144,6 +153,44 @@ bool t_comp_notify_splash(void)
     CHECK_ST(press_answer(n, &got, &b), OK);
     CHECK(got == held && b == 0);
     jam_handle_close(n);
+    CHECK(cs_stop(&t));
+    return true;
+}
+
+/* ---- t_comp_notify_dismissed --------------------------------------------------------- */
+
+bool t_comp_notify_dismissed(void)
+{
+    struct cs t;
+    handle_t a, b;
+    struct note x;
+    uint32_t ida[3], idb[3], got = 0;
+    uint8_t btn = 0;
+    signals_t seen;
+    CHECK(cs_start_desk(&t));
+    CHECK_ST(svc_connect_within(t.note, CT_WAIT, &a), OK);
+    CHECK_ST(svc_connect_within(t.note, CT_WAIT, &b), OK);
+    note_make(&x, "Update written", "", "Reboot", "Later");
+    CHECK_ST(notify_notify_wait_send(a, WAIT_TX), OK);
+    for (unsigned i = 0; i < 3; i++)
+        CHECK_ST(post(a, &x, 'U', 2, &ida[i]), OK);
+    /* five cards up: a's three and b's first two; nobody told */
+    CHECK_ST(post(b, &x, 'B', 1, &idb[0]), OK);
+    CHECK_ST(post(b, &x, 'B', 1, &idb[1]), OK);
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + SHORT, &seen), ERR_TIMED_OUT);
+    /* a sixth, all with buttons: a's oldest goes, and a is told */
+    CHECK_ST(post(b, &x, 'B', 1, &idb[2]), OK);
+    CHECK_ST(press_answer(a, &got, &btn), OK);
+    CHECK(got == ida[0] && btn == NOTIFY_DISMISSED);
+    /* once: no more answers, and its other cards are still up (withdrawn
+     * by a: they were there) */
+    CHECK_ST(notify_notify_wait_send(a, WAIT_TX), OK);
+    CHECK_ST(jam_object_wait_one(a, SIG_READABLE, now() + SHORT, &seen), ERR_TIMED_OUT);
+    CHECK_ST(notify_withdraw_within(a, CT_WAIT, ida[0]), ERR_NOT_FOUND);
+    CHECK_ST(notify_withdraw_within(a, CT_WAIT, ida[1]), OK);
+    CHECK_ST(notify_withdraw_within(a, CT_WAIT, ida[2]), OK);
+    jam_handle_close(a);
+    jam_handle_close(b);
     CHECK(cs_stop(&t));
     return true;
 }
@@ -287,6 +334,78 @@ bool t_comp_notify(void)
     CHECK_ST(svc_connect_within(t.note, CT_WAIT, &n), OK);
     CHECK_ST(post(n, &x, 0, 0, &id), ERR_NOT_SUPPORTED);
     jam_handle_close(n);
+    CHECK(cs_stop(&t));
+    return true;
+}
+
+/* ---- t_comp_notify_flood ------------------------------------------------------------- */
+
+#define FLOOD 2500u   /* posts, and as many refused: past the log channel's 1,024 messages */
+
+/* One notify.post on ch, waiting while its queue is full. */
+static bool post_one(handle_t ch, const char *title, uint8_t tint)
+{
+    uint64_t until = now() + CT_WAIT;
+    for (;;) {
+        status_t st = notify_post(ch, title, (uint32_t)strlen(title), "flood", 5, 'F', tint);
+        if (st != ERR_SHOULD_WAIT) {
+            CHECK_ST(st, OK);
+            return true;
+        }
+        signals_t seen;
+        CHECK_ST(jam_object_wait_one(ch, SIG_WRITABLE, until, &seen), OK);
+    }
+}
+
+/* The lines on the log channel out, each message one printf's, that have
+ * text in them; and every message on it. */
+static unsigned log_lines(handle_t out, const char *text, unsigned *all)
+{
+    unsigned n = 0;
+    *all = 0;
+    for (;;) {
+        static char line[4096 + 1];   /* a printf writes at most 4096 bytes a message */
+        uint32_t got = 0;
+        struct channel_read_args r = { .h = out, .rd_cap = sizeof(line) - 1,
+                                       .rd_bytes = (uint64_t)(uintptr_t)line,
+                                       .rd_actual = (uint64_t)(uintptr_t)&got };
+        if (jam_channel_read(&r) != OK)
+            return n;
+        line[got] = 0;
+        (*all)++;
+        n += strstr(line, text) != NULL;
+    }
+}
+
+bool t_comp_notify_flood(void)
+{
+    struct cs t;
+    static struct sc a;
+    handle_t out, theirs, n;
+    CHECK_ST(jam_channel_create(&out, &theirs), OK);
+    CHECK(cs_start_out(&t, theirs));
+    CHECK(cs_client(&t, &a));
+    CHECK_ST(svc_connect_within(t.note, CT_WAIT, &n), OK);
+    uint64_t t0 = now();
+    for (unsigned i = 0; i < FLOOD; i++) {
+        CHECK(post_one(n, "Flood", 0));
+        CHECK(post_one(n, "Refused", 7));   /* a tint there isn't */
+    }
+    /* each post before it taken: the compositor never stopped for its log */
+    struct note x;
+    uint32_t id = 0;
+    note_make(&x, "Last", "", NULL, NULL);
+    CHECK_ST(post(n, &x, 0, 0, &id), OK);
+    CHECK_ST(ct_roundtrip(&a.k), OK);
+    uint64_t secs = (now() - t0) / NS_PER_S + 1;
+    unsigned all = 0, said = log_lines(out, "compositor: notice ", &all);
+    printf("utest: %u notices in %lu s: %u notice lines, %u log lines in all\n", 2 * FLOOD + 1,
+           (unsigned long)secs, said, all);
+    CHECK(said <= (secs + 1) * COMP_LOG_PER_S + 1);
+    CHECK(all < CHANNEL_MAX_QUEUED);
+    jam_handle_close(n);
+    ct_close(&a.k);
+    jam_handle_close(out);
     CHECK(cs_stop(&t));
     return true;
 }

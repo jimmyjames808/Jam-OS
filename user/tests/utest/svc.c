@@ -50,7 +50,7 @@ bool t_svc_publish_and_open(void)
     CHECK_ST(jam_channel_create(&junk, &junk2), OK);
     CHECK_ST(ns_svc_set("T-A", junk, false), ERR_INVALID_ARGS);
     CHECK_ST(jam_channel_create(&junk, &junk2), OK);
-    CHECK_ST(ns_svc_set("much-too-long", junk, false), ERR_INVALID_ARGS);
+    CHECK_ST(ns_svc_set("abcdefghijklmnopqrstuvwxy", junk, false), ERR_INVALID_ARGS);
     CHECK_ST(jam_channel_create(&junk, &junk2), OK);
     CHECK_ST(ns_svc_set("", junk, false), ERR_INVALID_ARGS);
     CHECK_ST(jam_handle_close(junk2), OK);

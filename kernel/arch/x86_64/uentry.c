@@ -110,9 +110,16 @@ status_t thread_set_fs_base(uint64_t base)
     struct thread *t = current_thread();
     if (!t->ustate)
         return ERR_BAD_STATE;   /* a kernel thread: it has no ring 3 */
+    /* Written whatever this CPU last loaded: fs_load's skip trusts that
+     * whatever the thread did to FS since is its own doing, but this call
+     * is how it undoes that (a selector it loaded into FS made the base 0
+     * behind c->fs_base's back). No hot path. */
     irq_disable();
+    struct cpu *c = this_cpu();
     t->fs_base = base;
-    fs_load(this_cpu(), t);
+    wrmsr(MSR_FS_BASE, base);
+    c->fs_base = base;
+    c->fs_tid = t->id;
     irq_enable();
     return OK;
 }

@@ -13,8 +13,11 @@
                              * FAT boot sector and the one partition is the whole disk
                              * (storage.idl) */
 #define MAX_BLKS   8        /* `block` channels open at once */
+#define QUEUE_DEPTH 1       /* block requests worked on at once (block.idl's queue_depth) */
 #define MAX_SILENT 3        /* commands in a row without an answer: the driver gives up */
-#define BLOCK_BUF  65536u   /* a block channel's buffer (block.idl: 64 KiB) */
+#define BLOCK_BUF  65536u   /* a block channel's buffer when the client leaves it to us */
+#define BLOCK_BUF_MAX (256u << 10)   /* the largest one we make (block.idl's buffer_max) */
+#define BUF_PAGE   4096u    /* buffers are whole pages */
 #define XFER_TAIL  4096u    /* the end of the bulk buffer, kept for the CBW, CSW and sense */
 
 static inline uint32_t be32(const uint8_t *p)
@@ -58,6 +61,7 @@ struct disk {
     uint64_t blocks;          /* blocks on the medium */
     struct part parts[MAX_PARTS];      /* its partitions, in table order */
     uint8_t  nparts;          /* entries in parts[] */
+    uint8_t  scheme;          /* STORAGE_SCHEME_*: none, or an MBR (GPT isn't read) */
     uint32_t mbr_id;          /* the partition table's disk id (block 0, 440), 0: none */
 };
 

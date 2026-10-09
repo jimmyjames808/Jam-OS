@@ -37,6 +37,9 @@
  * both screens' windows and ends with every offset 0 and the old screen's
  * windows unmapped; a key or click mid-way jumps to the end; each frame
  * damages only the boxes it touches.
+ * t_desk_anim_big: a window whose frame is bigger than the output (a
+ * client's buffer may be 8192x8192) opens and closes with no snapshot
+ * (review C2); one that fits still animates.
  * t_desk_cursors: the cursor set's pictures at known pixels (all fill well
  * inside, nothing far outside, the outline along an edge), their hot
  * spots, busy's arc turning a turn a second; the resize arrows on each edge
@@ -661,6 +664,38 @@ bool t_desk_anim(void)
     desk_test_start(COMP_FLOATING);
     anim_init(true);
     bool ok = anim_picture_steps() && anim_slide_steps();
+    anim_init(false);
+    fk_close_all();
+    return ok;
+}
+
+/* A window bigger than the output: no picture, no animation; a small one
+ * still has its own. */
+static bool anim_big_steps(void)
+{
+    unsigned snaps = fdesk.snaps;
+    CHECK(fk_open(&fks[0], OUT_W + 120, OUT_H + 100, false));
+    CHECK_EQ(anim_running(), ANIM_NONE);
+    CHECK_EQ(fdesk.snaps, snaps);
+    CHECK(mapped(0) && !(win(0)->flags & COMP_WIN_ANIMATED));
+    struct comp_box f = window_frame(win(0));
+    CHECK(!anim_picturable(f));
+    wm_destroy(fks[0].ww);   /* closing: no picture either */
+    fks[0].ww = NULL;
+    CHECK_EQ(anim_running(), ANIM_NONE);
+    CHECK_EQ(fdesk.snaps, snaps);
+    CHECK(fk_open(&fks[1], 320, 200, false));
+    CHECK_EQ(anim_running(), ANIM_OPEN);
+    CHECK_EQ(fdesk.snaps, snaps + 1);
+    anim_finish();
+    return true;
+}
+
+bool t_desk_anim_big(void)
+{
+    desk_test_start(COMP_FLOATING);
+    anim_init(true);
+    bool ok = anim_big_steps();
     anim_init(false);
     fk_close_all();
     return ok;

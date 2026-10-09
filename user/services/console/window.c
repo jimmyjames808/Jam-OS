@@ -133,15 +133,19 @@ static status_t wl_connect(void *ctx, handle_t *out)
 /* ---- the window ------------------------------------------------------------------ */
 
 /* The grid becomes c x r: the text (text_regrid) and the window's copies
- * of it (winpaint.c). false: no memory for it; it stays as it was. */
+ * of it (winpaint.c, which makes them again at the next render if there
+ * is no memory for them now). false: no memory for the text; it stays as
+ * it was. */
 static bool regrid(uint32_t c, uint32_t r)
 {
     if (c == cols && r == rows)
         return true;
-    if (!text_regrid(c, r) || !paint_regrid()) {
+    if (!text_regrid(c, r)) {
         printf("console: no memory for a %ux%u grid: it stays %ux%u\n", c, r, cols, rows);
         return false;
     }
+    if (!paint_regrid())
+        printf("console: no memory for the window's copies of the grid: drawn once there is\n");
     printf("console: the terminal is %ux%u cells\n", cols, rows);
     return true;
 }

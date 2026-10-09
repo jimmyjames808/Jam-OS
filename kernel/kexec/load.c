@@ -42,6 +42,10 @@ static const char *const kept_words[] = {
 /* ... and key=value words. */
 static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=", "reset=",
                                          "iommu=" };
+/* ... but not these: test aids that only look like a kept key's value
+ * (reset=none tries no reset at all, so a machine that kept it would never
+ * reset after an unrecoverable panic). */
+static const char *const dropped_words[] = { "reset=none" };
 
 /* A `vlan` word, well-formed or not ("vlan", "vlan=", "vlan=off",
  * "vlan=none", "vlan=21"): all are kept, and first, so a reboot, a panic
@@ -59,6 +63,9 @@ static bool vlan_word(const char *w, size_t n)
 
 static bool kept(const char *w, size_t n)
 {
+    for (size_t i = 0; i < sizeof(dropped_words) / sizeof(dropped_words[0]); i++)
+        if (strlen(dropped_words[i]) == n && !memcmp(w, dropped_words[i], n))
+            return false;
     for (size_t i = 0; i < sizeof(kept_words) / sizeof(kept_words[0]); i++)
         if (strlen(kept_words[i]) == n && !memcmp(w, kept_words[i], n))
             return true;

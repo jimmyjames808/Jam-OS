@@ -12,8 +12,7 @@
  * refuses them on purpose). The protocol moves to IDL with the interface
  * review (M12, docs/ROADMAP.md). These calls use libos's jam_channel_call
  * directly. The disks' filesystems and mounts were devmgr's until M12's
- * storage split: they are volumes' now (<volumes.h>, the same wire for the
- * methods that moved).
+ * storage split: they are volumes' now (abi/idl/volumes.idl).
  *
  * Devices are named by vendor, device and instance (the n-th function with
  * those ids, from 0); 0xffff/0xffff in DRIVER_VIEW means "the first
@@ -151,9 +150,9 @@
 
 /* (dev) -> (): stop the device's driver and leave the device without one
  * until DEVMGR_REBIND, for a test that drives the device itself (usbtest
- * and the disks). A disk's filesystems are synced first (volumes is asked
- * on the DISKS channel: <volumes.h> DISKS_SYNC), then go with the driver:
- * its mounts are gone until the rebind. For a USB class driver the
+ * and the disks). devmgr touches no filesystem: a disk's mounts go with
+ * its driver, so a test lets volumes stop them in order first
+ * (volumes.release_disk). For a USB class driver the
  * reply carries 1 handle: a duplicate of the interface's `usb` channel the
  * driver had (usb-bus gives an interface's bulk endpoints to that channel
  * and no other). */
@@ -183,11 +182,12 @@
  * devmgr's enumeration order), whatever its vendor. init finds the
  * devices it gives away this way. */
 #define DEVMGR_PCI_CLASS      0xfffbu
-/* (1 handle: the client end of a DISKS channel, <volumes.h>) -> (): what
+/* (1 handle: the client end of a DISKS channel, abi/idl/volumes.idl's
+ * `disks`) -> (): what
  * devmgr tells volumes its disks on. init makes the pair once both run,
  * and again whenever either starts again; devmgr then asks every running
  * disk's driver for a `storage` channel of volumes' own again, and hands
- * each over (DISKS_ATTACH). Until the first, a disk waits. */
+ * each over (disks.attach). Until the first, a disk waits. */
 #define DEVMGR_SET_VOLUMES    0x00030011u
 /* devmgr's startup role: a duplicate of /svc/notify's shared channel, for
  * the desktop's notices of drivers that crash or

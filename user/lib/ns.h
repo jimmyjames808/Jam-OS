@@ -17,13 +17,17 @@
  * or more; ERR_NOT_FOUND: under no mount (or no such service). */
 status_t ns_resolve(const char *path, uint8_t rel[FS_PATH_MAX], handle_t *fs, unsigned *mount);
 
+/* What ns_send_prepared sends: nschan's `mount` or `set` (abi/idl/nschan.idl). */
+#define NS_MOUNT 1u
+#define NS_SET   3u
+
 /* A namespace message made ahead of its sending (spawn: the views are
  * asked for before the program starts, so it never waits for them). */
 struct ns_out;
 /* What grants name (<os.h> "grants"; NULL: nothing), views made, into a
  * new *out. */
 status_t ns_prepare(const char *const *grants, struct ns_out **out);
-/* Send it on `to` as a `kind` message (NS_MOUNT or NS_SET); o is freed
+/* Send it on `to` as a `kind` event (NS_MOUNT or NS_SET); o is freed
  * and its handles sent or closed, whatever happens. */
 status_t ns_send_prepared(handle_t to, uint32_t kind, struct ns_out *o);
 /* Free one that won't be sent, closing its handles. */

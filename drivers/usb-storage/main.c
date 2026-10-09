@@ -154,16 +154,16 @@ static int open_pipes(struct disk *k)
 
 /* ---- the RESULTS line ----------------------------------------------------------------- */
 
-/* s (n space-padded bytes) as a string: printable ASCII, trimmed. */
-static void text(char *out, const uint8_t *s, unsigned n)
+/* s (n space-padded bytes of INQUIRY's) as a string: ASCII, anything
+ * else '?', trailing spaces and NULs trimmed. Returns its length. */
+static uint32_t text(char *out, const uint8_t *s, unsigned n)
 {
-    unsigned len = 0;
-    for (unsigned i = 0; i < n; i++) {
-        out[i] = s[i] >= 0x20 && s[i] < 0x7f ? (char)s[i] : ' ';
-        if (out[i] != ' ')
-            len = i + 1;
-    }
-    out[len] = 0;
+    while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == 0))
+        n--;
+    for (unsigned i = 0; i < n; i++)
+        out[i] = s[i] >= 0x20 && s[i] < 0x7f ? (char)s[i] : '?';
+    out[n] = 0;
+    return n;
 }
 
 /* One RESULTS line for the disk (the box cuts long lines, so sizes are in
@@ -193,49 +193,59 @@ static void report(const struct disk *k, unsigned luns)
 
 /* ---- the storage protocol (DR_SERVE) --------------------------------------------------- */
 
-static status_t s_info(void *ctx, uint8_t vendor[8], uint8_t product[16], uint32_t *block_size,
-                       uint64_t *blocks, uint8_t *partitions)
+/* The disk. Only an MBR is read: no GPT disk GUID, ever (storage.idl). */
+static status_t s_info(void *ctx, char *vendor, uint32_t *vendor_len, char *product,
+                       uint32_t *product_len, uint32_t *block_size, uint64_t *blocks,
+                       uint8_t *scheme, uint32_t *partitions, uint32_t *mbr_id,
+                       uint8_t disk_guid[16])
 {
     const struct disk *k = ctx;
-    __builtin_memcpy(vendor, k->vendor, 8);
-    __builtin_memcpy(product, k->product, 16);
+    char v[9], p[17];
+    *vendor_len = text(v, k->vendor, 8);
+    *product_len = text(p, k->product, 16);
+    __builtin_memcpy(vendor, v, *vendor_len);
+    __builtin_memcpy(product, p, *product_len);
     *block_size = k->block_size;
     *blocks = k->blocks;
+    *scheme = k->scheme;
     *partitions = k->nparts;
+    *mbr_id = k->mbr_id;
+    __builtin_memset(disk_guid, 0, 16);
     return OK;
 }
 
-static status_t s_partition(void *ctx, uint8_t index, uint8_t *type, uint64_t *start,
-                            uint64_t *blocks)
+/* An MBR partition: its type byte, extent; no GUIDs, attributes or name. */
+static status_t s_partition(void *ctx, uint32_t index, uint8_t *mbr_type, uint8_t type_guid[16],
+                            uint8_t unique_guid[16], uint64_t *start, uint64_t *blocks,
+                            uint64_t *attributes, char *name, uint32_t *name_len)
 {
     const struct disk *k = ctx;
+    (void)name;
     if (index >= k->nparts)
         return ERR_OUT_OF_RANGE;
-    *type = k->parts[index].type;
+    *mbr_type = k->parts[index].type;
+    __builtin_memset(type_guid, 0, 16);
+    __builtin_memset(unique_guid, 0, 16);
     *start = k->parts[index].start;
     *blocks = k->parts[index].blocks;
+    *attributes = 0;
+    *name_len = 0;
     return OK;
 }
 
-static status_t s_open_partition(void *ctx, uint8_t index, uint8_t read_only, handle_t *block)
+static status_t s_open_partition(void *ctx, uint32_t index, uint8_t read_only, handle_t *block)
 {
     if (read_only > 1)
         return ERR_INVALID_ARGS;
-    return blk_open(ctx, port, index, read_only, block);
-}
-
-static status_t s_disk_id(void *ctx, uint32_t *mbr_id)
-{
-    const struct disk *k = ctx;
-    *mbr_id = k->mbr_id;
-    return OK;
+    if (index >= MAX_PARTS)
+        return ERR_OUT_OF_RANGE;
+    return blk_open(ctx, port, (uint8_t)index, read_only, block);
 }
 
 static const struct storage_ops storage_ops = {
     .info = s_info,
     .partition = s_partition,
     .open_partition = s_open_partition,
-    .disk_id = s_disk_id,
 };
 
 /* ---- svc.connect: a `storage` channel of the caller's own ------------------------------ */

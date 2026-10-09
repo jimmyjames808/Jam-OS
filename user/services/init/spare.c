@@ -17,7 +17,7 @@
  * A mixer that reads neither SR_STATE nor SR_KEEP (one that doesn't
  * adopt state yet) starts fresh as before and costs nothing more: the
  * state's pages are committed only by svcstate_open, and the keeper's
- * restore is one KEEP_DONE (it holds nothing) on an end that closes with
+ * restore is one done event (it holds nothing) on an end that closes with
  * the process.
  *
  * **Measured, every restart:** when the new instance runs (promoted, or a

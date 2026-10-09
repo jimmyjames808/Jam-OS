@@ -77,10 +77,12 @@ _Static_assert(PROCESS_NAME_MAX + 1 == sizeof(((struct proc_stat *)0)->name),
                               RIGHT_TRANSFER | RIGHT_SIGNAL | RIGHT_WAIT | RIGHT_INSPECT |         \
                               RIGHT_MANAGE | RIGHT_SLICE | RIGHT_RESIZE)
 _Static_assert(RIGHTS_GENERIC_CHECK == 0xfffu && (RIGHTS_ROOT & 0x8000ffffu) == 0 &&
-                   RIGHTS_ROOT == 0x3ff0000u,
+                   RIGHTS_ROOT == 0x7ff0000u,
                "rights: the generic ones in bits 0-11, the powers from bit 16 in order");
 
 _Static_assert(sizeof(struct handle_info) == 48 && offsetof(struct handle_info, queued) == 24 &&
                    offsetof(struct handle_info, peer_queued_bytes) == 32,
                "handle_info layout");
-_Static_assert(OBJ_SCREEN == 15 && OBJ_TYPE_COUNT == 16, "the object types user code sees");
+_Static_assert(OBJ_PAGER == 16 && OBJ_TYPE_COUNT == 17, "the object types user code sees");
+_Static_assert(sizeof(struct pager_request) == 32 && offsetof(struct pager_request, kind) == 24,
+               "pager_request layout");

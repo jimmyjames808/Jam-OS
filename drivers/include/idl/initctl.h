@@ -166,7 +166,9 @@ static inline status_t initctl_kill_call(handle_t ch, bool idl_within, uint64_t 
  * "usb-storage-1:0") or a disk's filesystem service ("fat-data",
  * "fat-usb0"); devmgr
  * restarts it. ERR_NOT_FOUND: no such process; ERR_INVALID_ARGS: not a
- * name; ERR_ACCESS_DENIED: "init" itself. */
+ * name; ERR_ACCESS_DENIED: "init" itself. A filesystem service's is
+ * answered later, once volumes has killed it (volumes.kill): init serves
+ * its other channels meanwhile. */
 static inline status_t initctl_kill_until(handle_t ch, uint64_t deadline_ns, const uint8_t name[32], uint64_t *out_koid)
 {
     return initctl_kill_call(ch, false, deadline_ns, name, out_koid);
@@ -195,8 +197,10 @@ static inline status_t initctl_sync_call(handle_t ch, bool idl_within, uint64_t 
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
-/* Everything written to /data, and to every /usbN, is on its stick
- * (fs.sync), waiting at most 2 s in all. OK also when there is no /data. */
+/* Everything written to /data, and to every writable /usbN, is on its
+ * stick (volumes.sync: fs.sync each, at once, each given 5 s); answered
+ * later, when volumes has answered or after 6 s (ERR_TIMED_OUT). OK also
+ * when there is no /data. */
 static inline status_t initctl_sync_until(handle_t ch, uint64_t deadline_ns)
 {
     return initctl_sync_call(ch, false, deadline_ns);
@@ -265,10 +269,11 @@ static inline status_t initctl_mount_call(handle_t ch, bool idl_within, uint64_t
     return idl_st;
 }
 /* Make the mount `path` ("/usb0"; NUL-terminated) writable (1) or read-only
- * again (0): devmgr restarts its filesystem service on a `block` channel
- * opened that way (DEVMGR_REMOUNT), so the mount goes and comes back, and
- * files open on it fail ERR_PEER_CLOSED. Answers once devmgr has started
- * the service again; the mount is back a moment later. Only another
+ * again (0): volumes restarts its filesystem service on a `block` channel
+ * opened that way (volumes.remount), so the mount goes and comes back, and
+ * files open on it fail ERR_PEER_CLOSED. Answered later, once volumes has
+ * started the service again (init serves its other channels meanwhile;
+ * ERR_TIMED_OUT after 25 s); the mount is back a moment later. Only another
  * stick's mounts (/usbN) can be changed: anything else, /boot, /esp and
  * /data included, is ERR_ACCESS_DENIED. ERR_NOT_FOUND: no such mount;
  * ERR_BAD_STATE: its service isn't serving; ERR_INVALID_ARGS: not a path. */
@@ -873,10 +878,10 @@ static inline status_t initctl_launch_result(const void *idl_rep, struct idl_msg
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with initctl_reply_<method> (now, or later from anywhere). */
 struct initctl_ops {
-    status_t (*kill)(void *ctx, const uint8_t name[32], uint64_t *out_koid);
-    status_t (*sync)(void *ctx);
+    status_t (*kill)(void *ctx, struct idl_txn idl_txn, const uint8_t name[32], uint64_t *out_koid);
+    status_t (*sync)(void *ctx, struct idl_txn idl_txn);
     status_t (*reboot)(void *ctx);
-    status_t (*mount)(void *ctx, const uint8_t path[16], uint8_t writable);
+    status_t (*mount)(void *ctx, struct idl_txn idl_txn, const uint8_t path[16], uint8_t writable);
     status_t (*shell_ready)(void *ctx);
     status_t (*reboot_firmware)(void *ctx);
     status_t (*kernel_load)(void *ctx, uint64_t *out_kernel_bytes, uint64_t *out_bootfs_bytes, uint32_t *out_read_ms);
@@ -1060,7 +1065,6 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
     struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
     *rhn = 0;
     (void)rhs;
-    (void)ch;
     if (n < sizeof(uint32_t))
         return 0;
     idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
@@ -1078,7 +1082,11 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->kill(ctx, idl_q->name, &out_koid);
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->kill(ctx, idl_txn, idl_q->name, &out_koid);
+        /* IDL_LATER: the handler answers with initctl_reply_kill. */
+        if (idl_st == IDL_LATER)
+            return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -1095,7 +1103,11 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->sync(ctx);
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->sync(ctx, idl_txn);
+        /* IDL_LATER: the handler answers with initctl_reply_sync. */
+        if (idl_st == IDL_LATER)
+            return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -1127,7 +1139,11 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        status_t idl_st = ops->mount(ctx, idl_q->path, idl_q->writable);
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->mount(ctx, idl_txn, idl_q->path, idl_q->writable);
+        /* IDL_LATER: the handler answers with initctl_reply_mount. */
+        if (idl_st == IDL_LATER)
+            return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
@@ -1248,7 +1264,7 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
     return sizeof(*idl_h);
 }
 
-/* initctl_dispatch_on without the channel (the protocol has no `later` method). */
+/* initctl_dispatch_on without the channel (a `later` handler's txn then has none: use initctl_dispatch_on). */
 static inline uint32_t initctl_dispatch(const struct initctl_ops *ops, void *ctx, const void *req, uint32_t n,
                                         void *rep, handle_t *rhs, uint32_t *rhn)
 {

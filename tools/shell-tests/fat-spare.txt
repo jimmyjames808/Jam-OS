@@ -8,7 +8,8 @@
 # (the shell's /data is the channel volumes kept), and the files are there.
 # Then fat-esp once, and a burst of ten kills in a row, faster than a new
 # spare starts (some start a process instead); nothing is given up on (a
-# deliberate kill doesn't count).
+# deliberate kill doesn't count). Last, `kill fat-spare` finds a service
+# whose process is a promoted spare by that name.
 # volumes' lines reach the serial port through the kernel log, the
 # shell's through the console: their order isn't fixed, hence `seen`.
 # A `sleep 1` before each kill gives the next spare time to start. Each
@@ -85,6 +86,13 @@ send sleep 3; grep -c "fat-data: spare promoted" /data/logs/boot-0001.txt | grep
 wait ok-logd
 wait fs-16
 wait {prompt}
+# `kill fat-spare`: the first service whose process is a promoted spare (it
+# keeps that name; fat-esp's is one since its kill), found by volumes
+send sleep 1; kill fat-spare && ls /esp/boot | grep -c jamos.elf | grep ^1$ && echo ok-""spare; echo fs-""18
+wait ok-spare
+wait fs-18
+wait {prompt}
+seen 10 init: kill fat-spare: OK
 send ps; echo fs-""17
 wait fs-17
 wait {prompt}

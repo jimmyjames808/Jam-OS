@@ -521,9 +521,11 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
         if (pkt.key < NSVC && pkt.type == PORT_PACKET_SIGNAL && svcs[pkt.key].running) {
             ended((unsigned)pkt.key);
         } else if (pkt.key == KEY_MOUNTS) {
-            tell_mounts();
-            data_came();
-            reboot_note_esp();   /* the first /esp: its files as the stored kernel's */
+            if (mounts_event()) {   /* a change is whole */
+                tell_mounts();
+                data_came();
+                reboot_note_esp();   /* the first /esp: its files as the stored kernel's */
+            }
         } else if (pkt.key == KEY_LASTBOOT) {
             lastboot_event();
         } else if (pkt.key >= KEY_CTL && pkt.key < KEY_CTL + CTL_COUNT) {

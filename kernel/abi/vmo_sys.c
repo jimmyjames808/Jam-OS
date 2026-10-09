@@ -5,6 +5,7 @@
  * else's mapping of it. A VMO_KEEP_PAGES VMO refuses decommit and shrink
  * whatever the handle's rights (vmo.c), so the same holds for every handle
  * to it, its creator's included. */
+#include <jam/dbghook.h>
 #include <jam/handle.h>
 #include <jam/resource.h>
 #include <jam/sys.h>
@@ -128,14 +129,18 @@ status_t sys_vmo_commit(struct handle_table *t, handle_t h, uint64_t offset, uin
     return st;
 }
 
-/* The handle is swapped for one that may execute and not write (nor
- * resize), then the VMO is checked: it must be its one handle, and
- * vmo_seal must succeed (nothing maps or pins it, no write is running).
- * Checked after the swap, so a duplicate made meanwhile by another thread
- * counts as a second handle (refused) instead of slipping past with
- * RIGHT_WRITE. The seal covers a call that took its reference before the
- * swap (a vmo_write or a writable vmar_map from another thread, past its
- * handle_get): the VMO itself refuses it from then on. */
+/* The handle is taken out of the table, then the VMO is checked while
+ * its one handle is out: it must be that one (no duplicate anywhere: one
+ * made by another thread before the removal counts, and none can be made
+ * from h after it), and vmo_seal must succeed (nothing maps or pins it,
+ * no write is running). Only then does the handle go back, as one that
+ * may execute and not write (nor resize): a duplicate a sibling thread
+ * makes of it is of a sealed VMO (M12.1 kernel core, finding 4: with the
+ * check after the insert, a duplicate made in between kept RIGHT_EXEC on
+ * a VMO the failed call never sealed). The seal covers a call that took
+ * its reference before the removal (a vmo_write or a writable vmar_map
+ * from another thread, past its handle_get): the VMO itself refuses it
+ * from then on. */
 status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, handle_t *out)
 {
     /* h is gone whatever the status (M12's K-C, as a send's handles). */
@@ -147,18 +152,16 @@ status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, ha
         handle_close(t, h);   /* a bad value names nothing */
         return st;
     }
-    struct khandle kh;
+    struct khandle kh = { NULL, 0 };
     st = handle_remove(t, h, &kh);
+    DBG_HOOK(DBG_VMO_EXEC_CHECK, v);
+    if (st == OK && (kobject_handles(vmo_kobject(v)) != 1 || vmo_seal(v) != OK))
+        st = ERR_BAD_STATE;
     if (st == OK) {
         kh.rights = (kh.rights & ~(RIGHT_WRITE | RIGHT_RESIZE)) | RIGHT_EXEC;
         st = handle_insert(t, &kh, out);
-        if (st != OK)
-            khandle_release(&kh);
     }
-    if (st == OK && (kobject_handles(vmo_kobject(v)) != 1 || vmo_seal(v) != OK)) {
-        handle_close(t, *out);
-        st = ERR_BAD_STATE;
-    }
+    khandle_release(&kh);   /* a no-op once inserted; else h is closed */
     vmo_put(v);
     return st;
 }

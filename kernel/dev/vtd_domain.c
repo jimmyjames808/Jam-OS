@@ -235,13 +235,19 @@ static void undo_runs(struct vtd_dom *d, const uint64_t *pages, size_t n,
     }
 }
 
-/* Finish g; a failure is logged (its table pages stay with the domain). */
+/* Finish g; a failure is logged (its table pages stay with the domain) and
+ * said as ERR_TIMED_OUT or ERR_IO whatever the queue answered (ERR_BAD_STATE
+ * when it is off): the unit didn't confirm, so the caller keeps the pages
+ * (vmo.c's pin_keep keeps them on those two). */
 static status_t finish(struct vtd_dom *d, struct vtd_pt_gather *g)
 {
     status_t st = vtd_pt_gather_finish(&d->pt, g);
-    if (st != OK)
+    if (st != OK) {
         kprintf("vtd: unit %u domain %u (%s): an invalidation failed (%d): %u table pages "
                 "kept\n", d->ud.unit->index, d->ud.did, d->what, st, d->pt.pending);
+        if (st != ERR_TIMED_OUT)
+            st = ERR_IO;
+    }
     return st;
 }
 
@@ -285,10 +291,12 @@ static status_t dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n, bool
          * new mappings: all or nothing, so they go again. */
         undo_runs(d, pages, n, &g);
         (void)finish(d, &g);
-        st = fst;
     }
     mutex_unlock(&d->lock);
-    return st;
+    /* An unconfirmed invalidation wins over the map's own error: leaves
+     * mapped before the error were present for a moment, so the unit may
+     * hold them, and the pages must not go (the caller keeps them). */
+    return fst != OK ? fst : st;
 }
 
 status_t vtd_dom_map(struct vtd_dom *d, const uint64_t *pages, size_t n)
@@ -309,7 +317,7 @@ status_t vtd_dom_map_range(struct vtd_dom *d, uint64_t pa, uint64_t pages)
     status_t st = vtd_pt_map(&d->pt, pa, pages, &g);
     status_t fst = finish(d, &g);
     mutex_unlock(&d->lock);
-    return st != OK ? st : fst;
+    return fst != OK ? fst : st;   /* as dom_map: the unconfirmed invalidation first */
 }
 
 status_t vtd_dom_unmap(struct vtd_dom *d, const uint64_t *pages, size_t n)
@@ -535,6 +543,13 @@ status_t iommu_domain_create(struct pci_dev *dev, struct job *job, struct iommu_
         kprintf("vtd: unit %u: no domain for %02x:%02x.%x: its requester id is shared with "
                 "other functions (behind a PCIe-to-PCI or PCI bridge)\n", f->ctl->unit->index,
                 f->sid >> 8, (f->sid >> 3) & 0x1f, f->sid & 7);
+        return ERR_ACCESS_DENIED;
+    }
+    if (f->acs_gap) {   /* vtd_rid.c, pci_acs.c */
+        kprintf("vtd: unit %u: no domain for %02x:%02x.%x: %s (%02x:%02x.%x)\n",
+                f->ctl->unit->index, f->sid >> 8, (f->sid >> 3) & 0x1f, f->sid & 7,
+                pci_acs_gap_text(f->acs_gap), f->acs_where >> 8, (f->acs_where >> 3) & 0x1f,
+                f->acs_where & 7);
         return ERR_ACCESS_DENIED;
     }
     struct iommu_domain *id = kzalloc(sizeof(*id));

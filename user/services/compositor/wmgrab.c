@@ -315,7 +315,8 @@ static void lift(struct wm_window *ww, int32_t x, int32_t y)
         return;
     struct comp_window *w = ww->win;
     grab.frame = window_frame(w);
-    if (anim_snapshot(w, &wm_marks.lift) == OK) {   /* none: it stays drawn where it is */
+    /* no picture: it stays drawn where it is */
+    if (anim_picturable(grab.frame) && anim_snapshot(w, &wm_marks.lift) == OK) {
         w->flags |= COMP_WIN_ANIMATED;
         window_damage(w);
         ghost_set(grab.frame);

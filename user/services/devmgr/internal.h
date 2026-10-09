@@ -230,8 +230,8 @@ const char *usb_hub_name(void);
 /* Could b's driver have ended because the console went away? */
 bool usb_console_gone(const struct binding *b);
 
-/* disks.c: the disks usb-storage serves, told to volumes (<volumes.h>,
- * the DISKS channel). */
+/* disks.c: the disks usb-storage serves, told to volumes (the DISKS
+ * channel's `disks` events, abi/idl/volumes.idl). */
 #define STORAGE_DRIVER "drv/usb-storage"
 /* DEVMGR_SET_VOLUMES: ch (consumed) is the client end of a new DISKS
  * channel: every running disk's driver is asked for a `storage` channel
@@ -239,16 +239,13 @@ bool usb_console_gone(const struct binding *b);
 void     disks_set_volumes(handle_t ch);
 /* b (a disk's driver) started: a `storage` channel of volumes' own is
  * asked of it without waiting (svc.connect), and handed to volumes
- * (DISKS_ATTACH) when it comes (disks_events). */
+ * (disks.attach) when it comes (disks_events). */
 void     disks_started(struct binding *b);
 /* b (a disk's driver) has something to read on its channel: the answer to
  * that svc.connect. */
 void     disks_events(struct binding *b);
-/* b (a disk's driver) won't run again: the device is gone (DISKS_GONE). */
-void     disks_gone(struct binding *b);
-/* Before a disk's driver is stopped on purpose (DEVMGR_RELEASE): volumes
- * syncs every writable mount (DISKS_SYNC), and answers once it has. */
-void     disks_sync(void);
+/* b (a disk's driver) won't run again: the device is gone (disks.gone). */
+void     disks_device_gone(struct binding *b);
 
 /* supervise.c. */
 /* b's driver process (start generation `gen`) terminated. */

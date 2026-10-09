@@ -23,11 +23,15 @@ protocol initctl 18
 # "usb-storage-1:0") or a disk's filesystem service ("fat-data",
 # "fat-usb0"); devmgr
 # restarts it. ERR_NOT_FOUND: no such process; ERR_INVALID_ARGS: not a
-# name; ERR_ACCESS_DENIED: "init" itself.
-1  kill  (u8[32] name) -> (u64 koid)
-# Everything written to /data, and to every /usbN, is on its stick
-# (fs.sync), waiting at most 2 s in all. OK also when there is no /data.
-2  sync  () -> ()
+# name; ERR_ACCESS_DENIED: "init" itself. A filesystem service's is
+# answered later, once volumes has killed it (volumes.kill): init serves
+# its other channels meanwhile.
+1  kill  (u8[32] name) -> (u64 koid) later
+# Everything written to /data, and to every writable /usbN, is on its
+# stick (volumes.sync: fs.sync each, at once, each given 5 s); answered
+# later, when volumes has answered or after 6 s (ERR_TIMED_OUT). OK also
+# when there is no /data.
+2  sync  () -> () later
 # Restart: by kexec into a fresh copy of the system (the kernel's stored
 # copy, or /esp's boot/jamos.elf and boot/bootfs.img if they changed since
 # this boot noted them; everything synced, devmgr's drivers stopped, then
@@ -38,14 +42,15 @@ protocol initctl 18
 # (console.blank).
 3  reboot  () -> ()
 # Make the mount `path` ("/usb0"; NUL-terminated) writable (1) or read-only
-# again (0): devmgr restarts its filesystem service on a `block` channel
-# opened that way (DEVMGR_REMOUNT), so the mount goes and comes back, and
-# files open on it fail ERR_PEER_CLOSED. Answers once devmgr has started
-# the service again; the mount is back a moment later. Only another
+# again (0): volumes restarts its filesystem service on a `block` channel
+# opened that way (volumes.remount), so the mount goes and comes back, and
+# files open on it fail ERR_PEER_CLOSED. Answered later, once volumes has
+# started the service again (init serves its other channels meanwhile;
+# ERR_TIMED_OUT after 25 s); the mount is back a moment later. Only another
 # stick's mounts (/usbN) can be changed: anything else, /boot, /esp and
 # /data included, is ERR_ACCESS_DENIED. ERR_NOT_FOUND: no such mount;
 # ERR_BAD_STATE: its service isn't serving; ERR_INVALID_ARGS: not a path.
-4  mount  (u8[16] path, u8 writable) -> ()
+4  mount  (u8[16] path, u8 writable) -> () later
 # The shell is up: it has written its banner and reads its keys. init
 # tells the boot splash (bin/splash) to hand the screen back to the
 # console; nothing to do if no splash is waiting (a later shell's call).

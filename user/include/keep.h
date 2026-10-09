@@ -9,24 +9,23 @@
  * its supervisor, the keeper, which hands them all back to the next
  * instance. Clients' handles never change, so clients never notice.
  *
- * The protocol is written by hand, like the namespace's NS_SET, because
- * it carries handles in one-way messages (no txid, no reply), which the
- * IDL doesn't do. One channel, both directions: the service's end is its
- * startup handle SR_KEEP, the keeper holds the other.
+ * The messages are the IDL protocol keepch (abi/idl/keepch.idl, id 80):
+ * events both ways, with handles, no txid and no reply. One channel: the
+ * service's end is its startup handle SR_KEEP, the keeper holds the other.
  *
- *   service -> keeper:   KEEP_PUT (a slot and its handles), KEEP_DROP (a slot)
- *   keeper -> successor: KEEP_RESTORE (whole slots, up to KEEP_BATCH handles
- *                        a message), then one KEEP_DONE
+ *   service -> keeper:   put (a slot and its handles), drop (a slot)
+ *   keeper -> successor: restore (whole slots, up to KEEP_BATCH handles
+ *                        a message), then one done
  *
  * A slot is a number the service chooses (an index into its own tables)
  * naming up to KEEP_SLOT_HANDLES handles that come and go together.
  *
- * **Order makes it safe without a reply.** The service sends KEEP_PUT
+ * **Order makes it safe without a reply.** The service sends a put
  * before it records the slot in its state (and before it answers the
- * client), and KEEP_DROP after it has forgotten the slot. A death between
+ * client), and a drop after it has forgotten the slot. A death between
  * the two leaves the keeper holding a slot the state doesn't know: the
  * successor closes those handles (keep_restore asks it slot by slot, and
- * sends KEEP_DROP for the ones it refuses). A slot the state knows but the
+ * sends a drop for the ones it refuses). A slot the state knows but the
  * keeper didn't return (it refused the put) is dropped from the state by
  * the successor.
  *
@@ -39,7 +38,10 @@
  * slots and KEEP_MAX_HANDLES handles per service. A put that breaks a rule
  * is refused whole: its handles are closed and counted. The service isn't
  * told (there is no reply); its slot is simply not restored. The kept
- * handles live in the keeper's handle table, charged to its job.
+ * handles live in the keeper's handle table, charged to its job. A message
+ * that breaks the protocol's format (a drop with a handle, a put of more
+ * than KEEP_SLOT_HANDLES, a txid) is refused by the generated server, its
+ * handles closed, and counted as refused too.
  *
  * Telling the type apart: handle_info names it (and the handle's rights),
  * whatever the handle's other rights and state. utest's keep_refusals
@@ -49,39 +51,13 @@
  * each used by one thread at a time. */
 #pragma once
 
+#include <idl/keepch.h>
 #include <os.h>
 
-#define KEEP_MAX_SLOTS    256u   /* slots a keeper holds for one service */
-#define KEEP_MAX_HANDLES  256u   /* handles a keeper holds for one service, all slots together */
-#define KEEP_SLOT_HANDLES 4u     /* handles in one slot */
-#define KEEP_BATCH        64u    /* handles in one KEEP_RESTORE (a channel message's most) */
-
-#define KEEP_PUT     1u   /* service -> keeper: slot, count; carries the count handles */
-#define KEEP_DROP    2u   /* service -> keeper: slot; no handles */
-#define KEEP_RESTORE 3u   /* keeper -> successor: struct keep_restore */
-#define KEEP_DONE    4u   /* keeper -> successor: slot = slots restored, count = handles */
-
-/* KEEP_PUT, KEEP_DROP and KEEP_DONE. */
-struct keep_msg {
-    uint32_t txid;    /* 0: not a call */
-    uint32_t kind;    /* KEEP_PUT, KEEP_DROP or KEEP_DONE */
-    uint32_t slot;    /* the slot; KEEP_DONE: how many slots the restore had */
-    uint32_t count;   /* KEEP_PUT: handles carried; KEEP_DROP: 0; KEEP_DONE: handles restored */
-};
-
-/* One KEEP_RESTORE: whole slots, their handles in order, slot[0]'s first.
- * Sent only as long as the slots it uses: KEEP_RESTORE_SIZE(nslots). */
-struct keep_restore {
-    uint32_t txid;       /* 0 */
-    uint32_t kind;       /* KEEP_RESTORE */
-    uint32_t nslots;     /* entries of slot[] used, 1 to KEEP_BATCH */
-    uint32_t reserved;   /* 0 */
-    struct {
-        uint32_t slot;   /* the service's slot number */
-        uint32_t count;  /* its handles, 1 to KEEP_SLOT_HANDLES */
-    } slot[KEEP_BATCH];
-};
-#define KEEP_RESTORE_SIZE(nslots) (16u + (nslots) * 8u)
+#define KEEP_MAX_SLOTS    KEEPCH_MAX_SLOTS      /* slots a keeper holds for one service (256) */
+#define KEEP_MAX_HANDLES  KEEPCH_MAX_HANDLES    /* handles a keeper holds for one service, all slots (256) */
+#define KEEP_SLOT_HANDLES KEEPCH_SLOT_HANDLES   /* handles in one slot (4) */
+#define KEEP_BATCH        KEEPCH_BATCH          /* handles in one restore event (64) */
 
 /* ---- the service's side --------------------------------------------------------- */
 
@@ -109,13 +85,13 @@ struct keep_restored {
     uint32_t handles;   /* handles in the slots it kept */
 };
 
-/* The successor's side: read the keeper's KEEP_RESTORE messages on keep
- * up to its KEEP_DONE (waiting until deadline_ns), handing each slot to
+/* The successor's side: read the keeper's restore events on keep
+ * up to its done (waiting until deadline_ns), handing each slot to
  * take(). *out (may be NULL) says what came. Every handle comes with a
  * slot that is either taken or closed, also on an error. ERR_INVALID_ARGS:
  * a malformed message (its handles closed; slots taken before it are the
  * caller's: a service that sees an error starts fresh and closes them);
- * ERR_TIMED_OUT, ERR_PEER_CLOSED: no KEEP_DONE came. */
+ * ERR_TIMED_OUT, ERR_PEER_CLOSED: no done came. */
 status_t keep_restore(handle_t keep, uint64_t deadline_ns, keep_take_fn take, void *ctx,
                       struct keep_restored *out);
 
@@ -133,10 +109,11 @@ struct keeper {
     unsigned         nhandles;    /* handles held, all slots */
     struct keep_slot slot[KEEP_MAX_SLOTS];
     /* Counted since keeper_init. */
-    uint32_t         puts;        /* KEEP_PUTs kept */
-    uint32_t         drops;       /* KEEP_DROPs of a slot we held */
-    uint32_t         replaced;    /* KEEP_PUTs of a slot we already held (the old one closed) */
+    uint32_t         puts;        /* puts kept */
+    uint32_t         drops;       /* drops of a slot we held */
+    uint32_t         replaced;    /* puts of a slot we already held (the old one closed) */
     uint32_t         refused;     /* messages refused (handles closed) */
+    uint32_t         handled;     /* messages the protocol's handlers ran for (put, drop) */
     uint32_t         lost;        /* slots dropped because they couldn't be restored */
 };
 
@@ -163,8 +140,8 @@ status_t keeper_take(struct keeper *k);
  * `max`. */
 bool     keeper_drain(struct keeper *k);
 bool     keeper_drain_upto(struct keeper *k, unsigned max);
-/* Hand the successor duplicates of every slot on k->ch (KEEP_RESTORE
- * batches, then KEEP_DONE), after keeper_attach and after the service end
+/* Hand the successor duplicates of every slot on k->ch (restore
+ * batches, then done), after keeper_attach and after the service end
  * was sent to it (the kernel won't send a channel end whose queue holds
  * channel ends). A slot whose handles can't be sent is closed and counted
  * as lost, not retried. ERR_BAD_STATE: no channel; other errors (out of

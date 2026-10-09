@@ -28,6 +28,7 @@ enum disk_state {
     DISK_DOWN,    /* its driver isn't running (its restart is due): its `storage` channel
                    * closed, and the disk waits for devmgr's next ATTACH or its GONE */
     DISK_INFO,    /* storage.info asked, no answer yet */
+    DISK_PARTS,   /* storage.partition asked for partition part_next, no answer yet */
     DISK_HELD,    /* a Jam OS disk, but not the one the machine booted from (its MBR
                    * disk id): it waits a while for that one to come */
     DISK_ESP,     /* the ESP's service asked for BOOT_FILE, no answer yet */
@@ -42,10 +43,16 @@ struct disk {
     uint32_t        id;         /* usb-bus's device id (DISKS_ATTACH's), or TEST_ID | n */
     handle_t        ch;         /* our end of its `storage` channel (0: DISK_DOWN) */
     uint16_t        gen;        /* bumped at every use of the slot: in its port key */
-    uint32_t        txid;       /* DISK_INFO, DISK_ESP: the request not answered yet */
-    uint64_t        deadline;   /* DISK_INFO, DISK_ESP: when it is given up on; DISK_HELD:
-                                 * when it is looked at anyway */
-    uint32_t        mbr_id;     /* its MBR disk id (storage.disk_id), 0: none or unknown */
+    uint32_t        txid;       /* DISK_INFO, DISK_PARTS, DISK_ESP: the request not answered
+                                 * yet */
+    uint64_t        deadline;   /* DISK_INFO, DISK_PARTS, DISK_ESP: when it is given up on;
+                                 * DISK_HELD: when it is looked at anyway */
+    /* What storage.info said (DISK_PARTS asks the partitions one at a time). */
+    char            vendor[9], product[17];   /* trimmed ASCII */
+    uint32_t        block_size, partitions;
+    uint64_t        blocks;
+    uint8_t         part_next;  /* DISK_PARTS: the partition asked for */
+    uint32_t        mbr_id;     /* its MBR disk id (storage.info), 0: none or unknown */
     uint8_t         nparts;     /* partitions it lists (at most MAX_PARTS are looked at) */
     uint8_t         type[MAX_PARTS];   /* their MBR types */
     uint32_t        fs[MAX_PARTS];     /* vols index + 1 of each partition's service; 0: none */
@@ -54,6 +61,8 @@ struct disk {
     char            at[MAX_PARTS][16];   /* ... where it was mounted ("/usb0") */
     uint8_t         want;       /* DISK_OTHER: bit n: partition n waits for its service */
     bool            boot_down;  /* DISK_DOWN: it was the boot disk when its driver stopped */
+    bool            releasing;  /* volumes.release_disk's task stops its services: none
+                                 * starts or restarts meanwhile */
 };
 
 extern struct disk disks[MAX_DISKS];
@@ -62,14 +71,17 @@ extern uint32_t txids;   /* the last transaction id written without waiting */
 /* disk.c */
 const char *disk_name(const struct disk *d);      /* "disk 7", "test disk 2" (static buffer) */
 struct disk *disk_of(const struct vol *b);    /* b's disk, or NULL */
-/* The next message queued on h into buf (cap bytes): OK and *n, or
- * jam_channel_read's status once nothing is left. */
-status_t    next_msg(handle_t h, void *buf, uint32_t cap, uint32_t *n);
 void        leave_alone(struct disk *d, const char *why);   /* its driver doesn't answer */
 void        not_boot(struct disk *d, const char *why);      /* step 4 */
 
 /* fsvc.c */
-status_t    fs_start(struct disk *d, unsigned part, bool other);
+/* Start the filesystem service on partition `part` of d (other: d is not
+ * the boot disk, the service gets a /usbN). The start itself runs as a
+ * task (it waits for a `block` channel); `done` is told how it went, in
+ * that task, unless d moved on meanwhile (the service was retired). An
+ * error returned here: nothing started, `done` is not called. */
+status_t    fs_start(struct disk *d, unsigned part, bool other,
+                     void (*done)(struct disk *d, unsigned part, status_t st));
 /* d moves to `state` (one with nothing mounted) and its services go. */
 void        drop_services(struct disk *d, enum disk_state state);
 /* b, another stick's partition d holds, is mounted now: the desktop's

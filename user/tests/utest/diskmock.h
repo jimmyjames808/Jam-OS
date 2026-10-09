@@ -2,7 +2,7 @@
  * stick (an MBR, an ESP, a data partition), served through the `storage`
  * protocol and one `block` channel per opened partition by a thread of
  * utest, the way usb-storage serves the real one. disks.c hands its
- * `storage` channel to volumes (VOLUMES_TEST_DISK).
+ * `storage` channel to volumes (volumes.test_disk).
  *
  * It differs from ramdisk.h's RAM disk in being a whole disk: a partition
  * table, several `block` channels at once and one after another, and the
@@ -46,6 +46,11 @@ struct diskmock {
     uint32_t        closed[2];            /* `block` channels whose client went, per partition */
     uint32_t        reads, writes, syncs; /* block requests answered OK */
     uint32_t        refused;              /* block requests refused (range, read-only) */
+    uint32_t        refuse_opens;         /* the test's: refuse this many open_partition calls
+                                           * to come (ERR_NO_RESOURCES), as a full driver would */
+    uint32_t        hold_sync_ms;         /* the test's: each block.sync answered this late (the
+                                           * mock's thread waits: nothing of this disk answers) */
+    uint32_t        held;                 /* block.sync requests held so */
     uint8_t         stack[16384] __attribute__((aligned(16)));   /* the thread's */
 };
 
