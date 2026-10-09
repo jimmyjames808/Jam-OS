@@ -69,6 +69,10 @@ send kill devmgr
 wait shell: killed process
 seen 30 init: devmgr and its drivers are gone
 wait 60 init: devmgr:
+# (init prints that line before it publishes the new devmgr to the shell: `devices` asked
+# then says "not running (restarting?)". /data comes back once the disks reach volumes
+# through the new devmgr, which is after the publish)
+wait 60 init: /data mounted
 send devices
 wait devmgr:
 wait bound
