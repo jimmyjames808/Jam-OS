@@ -286,6 +286,11 @@ static int64_t call_thread_start(const struct syscall_frame *f)
                              f->args[5]);
 }
 
+static int64_t call_thread_set_tid_word(const struct syscall_frame *f)
+{
+    return sysc_thread_set_tid_word(f->args[0]);
+}
+
 static int64_t call_futex_wait(const struct syscall_frame *f)
 {
     return sysc_futex_wait(f->args[0], (uint32_t)f->args[1], f->args[2], (uint32_t)f->args[3]);
@@ -300,6 +305,16 @@ static int64_t call_futex_requeue(const struct syscall_frame *f)
 {
     return sysc_futex_requeue(f->args[0], (uint32_t)f->args[1], f->args[2], (uint32_t)f->args[3],
                               (uint32_t)f->args[4]);
+}
+
+static int64_t call_thread_interrupt(const struct syscall_frame *f)
+{
+    return sysc_thread_interrupt((handle_t)f->args[0]);
+}
+
+static int64_t call_thread_get_info(const struct syscall_frame *f)
+{
+    return sysc_thread_get_info((handle_t)f->args[0], f->args[1]);
 }
 
 static int64_t call_resource_create(const struct syscall_frame *f)
@@ -472,6 +487,11 @@ static int64_t call_wallclock_set(const struct syscall_frame *f)
     return sysc_wallclock_set((handle_t)f->args[0], f->args[1]);
 }
 
+static int64_t call_sys_public_info(const struct syscall_frame *f)
+{
+    return sysc_sys_public_info(f->args[0]);
+}
+
 static int64_t call_kexec_load(const struct syscall_frame *f)
 {
     return sysc_kexec_load((handle_t)f->args[0], (handle_t)f->args[1], (handle_t)f->args[2],
@@ -568,9 +588,12 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_thread_set_fs_base] = call_thread_set_fs_base,
     [SYS_thread_yield] = call_thread_yield,
     [SYS_thread_start] = call_thread_start,
+    [SYS_thread_set_tid_word] = call_thread_set_tid_word,
     [SYS_futex_wait] = call_futex_wait,
     [SYS_futex_wake] = call_futex_wake,
     [SYS_futex_requeue] = call_futex_requeue,
+    [SYS_thread_interrupt] = call_thread_interrupt,
+    [SYS_thread_get_info] = call_thread_get_info,
     [SYS_resource_create] = call_resource_create,
     [SYS_pci_enum] = call_pci_enum,
     [SYS_pci_device_open] = call_pci_device_open,
@@ -603,6 +626,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_rtc_read] = call_rtc_read,
     [SYS_wallclock_get] = call_wallclock_get,
     [SYS_wallclock_set] = call_wallclock_set,
+    [SYS_sys_public_info] = call_sys_public_info,
     [SYS_kexec_load] = call_kexec_load,
     [SYS_kexec_reboot] = call_kexec_reboot,
     [SYS_random_get] = call_random_get,

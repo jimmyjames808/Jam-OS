@@ -11,7 +11,7 @@ that a bug fix comes with a test is in
 |---|---|---|
 | Build | `make`, `make KTESTS=0`, `make check` | every commit |
 | Kernel tests | `QEMU_SMP=4 tools/qemu-test.sh build/test kt ktest`, again with `QEMU_SMP=8` (the full run takes ~25-30 s) | every kernel change |
-| User regression | `tools/qemu-test.sh build/test init init` (utest, then usbtest: ~30 s) | every change to syscalls, libos, services, drivers |
+| User regression | `tools/qemu-test.sh build/test init init` (utest, usbtest, then posixtest, the POSIX layer's test: ~30 s) | every change to syscalls, libos, services, drivers |
 | Shell scripts | [below](#shell-scripts) | shell, console, input |
 | Area scripts | [below](#area-scripts) | the area you touched |
 | Soak | `tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each) | every change to a kernel test, a service or a driver, and anything that keeps state from one run to the next |
@@ -338,7 +338,7 @@ holds them all side by side.
 | Developer / Benchmark | `bench` | about 10 s; results go to [BENCH.md](BENCH.md) |
 | Developer / IOMMU checks | `iommu=on vtdtest` | a plain boot with the IOMMU on in which drv/hda provokes its faults on purpose before it serves (`drivers/hda/vtdtest.c`): its command ring pointed at a page it doesn't hold pinned (a read the IOMMU blocks: a `vtd: fault:` line naming 00:1f.3), then its response ring at the interrupt window 0xfee00000 (a write blocked with fault 25h, no interrupt), then the rings back and sound as usual. `hda: vtdtest:` lines say what happened; if the controller could read the page anyway (no translation), it says so and provokes nothing. `iommu` in the shell shows the units, domains and fault counts |
 | Developer / Compositor test scene | `comptest` | the compositor alone on the screen with its test scene (below, `comptest`): windows in the desktop's look held about 4 s each, then the RESULTS box with its `compositor: bench:` paint times |
-| Developer / init + utest + usbtest | `init` | the user-space regression run: init runs `boot/init.cfg` (utest, then usbtest) and the RESULTS box says whether init's root job ended with nothing charged |
+| Developer / init + utest + usbtest | `init` | the user-space regression run: init runs `boot/init.cfg` (utest, usbtest, then posixtest) and the RESULTS box says whether init's root job ended with nothing charged |
 | Developer / Timer fallback | `nodeadline selftest` | the periodic LAPIC timer instead of TSC-deadline |
 
 Other boot words (for `tools/qemu-test.sh`, not in the menu):

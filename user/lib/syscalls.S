@@ -426,6 +426,14 @@ jam_thread_start:
     ret
     .size jam_thread_start, . - jam_thread_start
 
+    .globl jam_thread_set_tid_word
+    .type jam_thread_set_tid_word, @function
+jam_thread_set_tid_word:
+    mov $SYS_thread_set_tid_word, %eax
+    syscall
+    ret
+    .size jam_thread_set_tid_word, . - jam_thread_set_tid_word
+
     .globl jam_futex_wait
     .type jam_futex_wait, @function
 jam_futex_wait:
@@ -451,6 +459,22 @@ jam_futex_requeue:
     syscall
     ret
     .size jam_futex_requeue, . - jam_futex_requeue
+
+    .globl jam_thread_interrupt
+    .type jam_thread_interrupt, @function
+jam_thread_interrupt:
+    mov $SYS_thread_interrupt, %eax
+    syscall
+    ret
+    .size jam_thread_interrupt, . - jam_thread_interrupt
+
+    .globl jam_thread_get_info
+    .type jam_thread_get_info, @function
+jam_thread_get_info:
+    mov $SYS_thread_get_info, %eax
+    syscall
+    ret
+    .size jam_thread_get_info, . - jam_thread_get_info
 
     .globl jam_resource_create
     .type jam_resource_create, @function
@@ -718,6 +742,14 @@ jam_wallclock_set:
     syscall
     ret
     .size jam_wallclock_set, . - jam_wallclock_set
+
+    .globl jam_sys_public_info
+    .type jam_sys_public_info, @function
+jam_sys_public_info:
+    mov $SYS_sys_public_info, %eax
+    syscall
+    ret
+    .size jam_sys_public_info, . - jam_sys_public_info
 
     .globl jam_kexec_load
     .type jam_kexec_load, @function

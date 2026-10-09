@@ -45,9 +45,20 @@
  *   - A NEW process whose last handle closes can never be started: it is
  *     marked dying under the lock (on_zero_handles can't sleep, so it can't
  *     tear down); what it owns is freed by the next process_kill (a
- *     job_kill), or else when its last reference goes. */
+ *     job_kill), or else when its last reference goes.
+ *   - Ids: a process's pid and a uthread's tid are taken when the object is
+ *     made and given back when it is destroyed (<jam/idspace.h>), not when
+ *     it dies: whoever still holds a handle to a dead one (a parent that
+ *     hasn't reaped its child) never sees its id name another.
+ *   - The tid word (thread_set_tid_word): the thread itself stores 0 there
+ *     and wakes its futex on its way out, in uthread_exit_current, before
+ *     it leaves the address space but after its last instruction in user
+ *     mode, so a joiner woken by it may unmap the thread's stack (and the
+ *     word) at once: nothing of the thread's touches user memory again. */
 #include <jam/aspace.h>
 #include <jam/dbghook.h>
+#include <jam/futex.h>
+#include <jam/idspace.h>
 #include <jam/irq.h>
 #include <jam/klog.h>
 #include <jam/kprintf.h>
@@ -58,6 +69,7 @@
 #include <jam/string.h>
 #include <jam/time.h>
 #include <jam/uentry.h>
+#include <jam/usercopy.h>
 #include <jam/utf8.h>
 
 enum ut_state { UT_NEW, UT_STARTING, UT_RUNNING, UT_DEAD };
@@ -84,6 +96,7 @@ struct process {
     int64_t             exit_code;               /* (L) */
     uint32_t            nthreads;                /* (L) started threads that haven't left */
     uint64_t            cpu_done;                /* (L) CPU time (TSC) of the threads that left */
+    uint32_t            pid;                     /* its small id (pid_space), fixed */
     struct list_node    threads;                 /* (L) struct uthread, every one not destroyed */
     char                name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
     /* debug_write ("process output" lock): the current, unfinished line and
@@ -103,6 +116,9 @@ struct uthread {
     struct thread    *t;             /* (process lock) once started; our join reference */
     int               state;                     /* (process lock) enum ut_state */
     int               prio;                      /* priority its thread starts at */
+    uint32_t          tid;                       /* its small id (tid_space), fixed */
+    uint64_t          tid_word;   /* user address its thread clears at its end, 0: none;
+                                   * written and read only by its own thread */
     uint64_t          entry, stack, arg0, arg1, fs_base;  /* thread_start's arguments */
     char              name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
 };
@@ -158,6 +174,7 @@ static void process_destroy(struct kobject *obj)
     if (p->obj_charged)
         job_uncharge(p->job, JOB_LIMIT_HANDLES, 1);
     job_unref(p->job);
+    idspace_free(&pid_space, p->pid);
     kfree(p);
 }
 
@@ -192,7 +209,9 @@ status_t process_create(struct job *job, const char *name, struct process **out)
         job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         return ERR_NO_MEMORY;
     }
-    st = aspace_create_charged(job, &p->as);
+    st = idspace_alloc(&pid_space, &p->pid);
+    if (st == OK && (st = aspace_create_charged(job, &p->as)) != OK)
+        idspace_free(&pid_space, p->pid);
     if (st != OK) {
         kfree(p);
         job_uncharge(job, JOB_LIMIT_HANDLES, 1);
@@ -217,6 +236,7 @@ status_t process_create(struct job *job, const char *name, struct process **out)
         aspace_unref(p->as);
         job_uncharge(job, JOB_LIMIT_HANDLES, 1);
         job_unref(job);
+        idspace_free(&pid_space, p->pid);
         kfree(p);   /* nobody else has seen it */
         return st;
     }
@@ -262,6 +282,11 @@ uint64_t uthread_process_koid(struct uthread *u)
     return u->proc->base.koid;
 }
 
+uint32_t process_pid(struct process *p)
+{
+    return p->pid;
+}
+
 void process_get_info(struct process *p, struct process_info *out)
 {
     memset(out, 0, sizeof(*out));
@@ -272,6 +297,8 @@ void process_get_info(struct process *p, struct process_info *out)
     out->threads = p->nthreads;
     punlock(p, f);
     out->koid = p->base.koid;
+    out->pid = p->pid;
+    out->cpu_ns = tsc_to_ns(process_cpu_tsc(p));
 }
 
 uint64_t process_cpu_tsc(struct process *p)
@@ -515,6 +542,7 @@ static void uthread_destroy(struct kobject *obj)
     if (u->t)
         thread_detach(u->t);
     kobject_unref(&p->base);
+    idspace_free(&tid_space, u->tid);
     kfree(u);
 }
 
@@ -528,6 +556,10 @@ status_t uthread_create(struct process *p, const char *name, struct uthread **ou
     struct uthread *u = kzalloc(sizeof(*u));
     if (!u)
         return ERR_NO_MEMORY;
+    if (idspace_alloc(&tid_space, &u->tid) != OK) {
+        kfree(u);
+        return ERR_NO_RESOURCES;
+    }
     kobject_init(&u->base, OBJ_THREAD, &uthread_ops, "thread", 0);
     copy_name(u->name, sizeof(u->name), name);
     u->prio = PRIO_DEFAULT;
@@ -541,6 +573,7 @@ status_t uthread_create(struct process *p, const char *name, struct uthread **ou
     }
     punlock(p, f);
     if (dying) {
+        idspace_free(&tid_space, u->tid);
         kfree(u);
         return ERR_BAD_STATE;
     }
@@ -589,6 +622,25 @@ static bool thread_left(struct process *p)
     return finish;
 }
 
+/* The thread's tid word (top): 0 stored, then every waiter on it woken,
+ * while the address space is still ours. A store that faults (the word
+ * unmapped meanwhile) is skipped and nobody is woken: nothing could have
+ * seen it change. A thread leaving a dying process leaves its word alone:
+ * no thread of the process is left to wait on it. */
+static void clear_tid_word(struct uthread *u, struct process *p)
+{
+    uint64_t addr = u->tid_word;
+    if (!addr || !current_thread()->aspace)
+        return;
+    u->tid_word = 0;
+    uint64_t f = plock(p);
+    bool running = p->state == PROCESS_RUNNING;
+    punlock(p, f);
+    uint32_t zero = 0;
+    if (running && copy_to_user(addr, &zero, sizeof(zero)) == OK)
+        (void)futex_wake(addr, UINT32_MAX, 0);   /* how many it woke: nobody's business */
+}
+
 _Noreturn void uthread_exit_current(void)
 {
     struct thread *t = current_thread();
@@ -596,6 +648,7 @@ _Noreturn void uthread_exit_current(void)
     struct process *p = u->proc;
     if (!irqs_enabled())
         panic("uthread_exit_current with interrupts off");
+    clear_tid_word(u, p);
 
     /* Leave the address space first, so once we count ourselves out below
      * no CPU has it loaded on our behalf and our reference is gone. */
@@ -770,4 +823,45 @@ status_t process_start(struct process *p, struct uthread *u, uint64_t entry, uin
     if (finish)
         process_finish(p);
     return st;
+}
+
+/* ---- what POSIX needs of a thread ------------------------------------------------ */
+
+void uthread_get_info(struct uthread *u, struct thread_info *out)
+{
+    memset(out, 0, sizeof(*out));
+    struct process *p = u->proc;
+    uint64_t f = plock(p);
+    out->state = u->state == UT_NEW    ? THREAD_NEW
+               : u->state == UT_DEAD   ? THREAD_DEAD
+                                       : THREAD_RUNNING;
+    out->priority = u->prio;
+    struct thread *t = u->t;   /* our join reference keeps it, dead or alive */
+    punlock(p, f);
+    out->koid = u->base.koid;
+    out->process_koid = p->base.koid;
+    out->tid = u->tid;
+    out->pid = p->pid;
+    out->cpu_ns = t ? tsc_to_ns(thread_cpu_tsc(t)) : 0;
+}
+
+status_t uthread_interrupt(struct uthread *u)
+{
+    uint64_t f = plock(u->proc);
+    struct thread *t = u->state != UT_DEAD ? u->t : NULL;
+    if (t)
+        thread_interrupt(t);   /* our join reference keeps t; the lock orders it with the exit */
+    punlock(u->proc, f);
+    return t ? OK : ERR_BAD_STATE;
+}
+
+int64_t uthread_set_tid_word(uint64_t addr)
+{
+    struct uthread *u = current_thread()->uthread;
+    if (!u)
+        return ERR_BAD_STATE;   /* a kernel thread: it has no tid */
+    if (addr && ((addr & 3) || !user_range_ok(addr, sizeof(uint32_t))))
+        return ERR_INVALID_ARGS;
+    u->tid_word = addr;
+    return u->tid;
 }
