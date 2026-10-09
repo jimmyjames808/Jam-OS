@@ -252,6 +252,7 @@ bool t_ns_server_dies(void);
 bool t_ns_child_sees_only_its_mounts(void);
 bool t_ns_mounts_reach_a_running_child(void);
 bool t_ns_malformed_messages(void);
+bool t_ns_long_names(void);
 bool t_spawn_from_vmo(void);
 /* bin/ramfs, started and mounted at point (and the reverse: it must end
  * clean). */
@@ -298,6 +299,7 @@ bool ns_child_exits(handle_t proc, int64_t code);
 
 /* heap.c: libos's heap in a long-running program. */
 bool t_heap_reuses_freed_space(void);
+bool t_heap_large_alloc(void);
 
 /* nsnotice.c: namespace changes a running program never reads. */
 bool t_ns_changes_stay_bounded(void);
