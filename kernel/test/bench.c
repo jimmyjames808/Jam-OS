@@ -56,6 +56,7 @@
 #include <jam/kprintf.h>
 #include <jam/lapic.h>
 #include <jam/mm.h>
+#include <jam/panic.h>
 #include <jam/pathstat.h>
 #include <jam/pci.h>
 #include <jam/pcid.h>
@@ -514,10 +515,27 @@ static void kmalloc_all_cpus(void)
 
 static volatile bool yield_done, partner_running;
 static uint64_t yield_switches;
+/* The two threads take user state first (an FPU area, inside a system call
+ * as a user thread that yields is), so each switch also does what
+ * arch_thread_switch does for user threads. */
+static bool yield_user;
+
+static void yield_setup(void)
+{
+    if (!yield_user)
+        return;
+    struct thread *t = current_thread();
+    if (fpu_ustate_alloc(t) != OK)
+        panic("bench: no FPU area");
+    irq_disable();
+    t->in_syscall = true;   /* as a user thread is, inside thread_yield's call */
+    irq_enable();
+}
 
 static void yield_partner(void *arg)
 {
     (void)arg;
+    yield_setup();
     partner_running = true;
     while (!yield_done)
         thread_yield();
@@ -526,6 +544,7 @@ static void yield_partner(void *arg)
 static void yield_timer(void *arg)
 {
     (void)arg;
+    yield_setup();
     while (!partner_running)
         thread_yield();
     uint64_t until;
@@ -546,8 +565,9 @@ static void yield_timer(void *arg)
     yield_done = true;
 }
 
-static void context_switch(void)
+static void context_switch(bool user, const char *what)
 {
+    yield_user = user;
     yield_done = partner_running = false;
     yield_switches = 0;
     struct thread *b = spawn_on(cpu_p, yield_partner, NULL);
@@ -560,7 +580,7 @@ static void context_switch(void)
                yield_switches, expect);
         return;
     }
-    result("context switch (yield between 2 threads, P)", samples, SAMPLES);
+    result(what, samples, SAMPLES);
 }
 
 /* ---- ping-pong: cache line, and block/wake ------------------------------ */
@@ -1417,7 +1437,8 @@ static void local_benches(void)
     }
     kfree(keeper);
 
-    context_switch();
+    context_switch(false, "context switch (yield between 2 threads, P)");
+    context_switch(true, "context switch, 2 threads with user state (P)");
     wakeup(cpu_p);
     chan_call(cpu_p);
 }
