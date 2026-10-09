@@ -2,11 +2,12 @@
  * behind each (<os.h> "files", "services" and "grants" have the model and
  * SR_NS's encoding).
  *
- * The table starts empty. Entries come from whoever started us, as ns_msg
- * messages on the SR_NS channel (taken here before every lookup, so a
- * mount sent to a running program is there for its next call), and from
+ * The table starts empty. Entries come from whoever started us, as the
+ * IDL events of nschan (abi/idl/nschan.idl: mount, unmount, set) on the
+ * SR_NS channel (taken here before every lookup, so a mount sent to a
+ * running program is there for its next call), and from
  * ns_mount and ns_svc_set (init publishes its own). Each entry remembers
- * which of the two it came from: an NS_SET replaces only the starter's.
+ * which of the two it came from: a `set` replaces only the starter's.
  * A path "/name" is a mount (an `fs` channel), "/svc/name" a service.
  *
  * ns_update is the starter's side: it takes back what the program hasn't
@@ -21,6 +22,7 @@
  * own lock and never calls out under it. */
 #include <fs_idl.h>
 #include <fsview.h>
+#include <idl/nschan.h>
 #include <idl/svc.h>
 #include <os.h>
 #include "ns.h"
@@ -29,6 +31,11 @@
 #define BACK_MAX 1024 /* messages ns_update takes back: a channel end holds no more */
 #define SVC_DIR  "/svc/"
 #define SVC_WAIT (5 * NS_PER_S)   /* svc.connect */
+
+/* os.h's limits are nschan.idl's. */
+_Static_assert(NS_NAME_MAX == NSCHAN_NAME_MAX && NS_MAX_MOUNTS == NSCHAN_MAX_MOUNTS &&
+               NS_MAX_SVCS == NSCHAN_MAX_SVCS && NS_MAX_ENTRIES == NSCHAN_MAX_ENTRIES,
+               "os.h's namespace limits are nschan.idl's");
 
 enum kind { BAD, MOUNT, SERVICE };
 
@@ -129,108 +136,113 @@ static status_t remove_locked(const char *path)
     return ERR_NOT_FOUND;
 }
 
-/* path is one of m's (checked, n bytes long) paths. */
-static bool in_msg(const struct ns_msg *m, const char *path)
+/* The entries of one nschan event, checked: count records of NS_NAME_MAX
+ * bytes, and a connect byte (0 or 1) for each, NULL for an unmount. */
+struct ev {
+    const uint8_t *paths;
+    const uint8_t *connect;
+    uint32_t       count;
+};
+
+static const char *ev_path(const struct ev *e, uint32_t i)
 {
-    for (uint32_t i = 0; i < m->count; i++)
-        if (!strncmp(m->path[i], path, NS_NAME_MAX))
+    return (const char *)e->paths + (size_t)i * NS_NAME_MAX;
+}
+
+/* path is one of e's paths. */
+static bool in_ev(const struct ev *e, const char *path)
+{
+    for (uint32_t i = 0; i < e->count; i++)
+        if (!strncmp(ev_path(e, i), path, NS_NAME_MAX))
             return true;
     return false;
 }
 
-/* NS_SET: the starter's entries that m doesn't list go (its handles then
- * go in as an NS_MOUNT's). */
-static void set_locked(const struct ns_msg *m)
+/* `set`: the starter's entries that e doesn't list go (its handles then
+ * go in as a `mount`'s). */
+static void set_locked(const struct ev *e)
 {
     for (unsigned i = 0; i < nents;) {
-        if (ents[i].given && !in_msg(m, ents[i].path))
+        if (ents[i].given && !in_ev(e, ents[i].path))
             (void)remove_locked(ents[i].path);   /* the next one moves to i */
         else
             i++;
     }
 }
 
-/* One message from the starter: n bytes, nh handles (all consumed). */
-static void apply_locked(const struct ns_msg *m, uint32_t n, const handle_t *hs, uint32_t nh)
+enum { EV_MOUNT, EV_UNMOUNT, EV_SET };
+
+/* One event from the starter (all its handles consumed). The generated
+ * reader has checked the arrays against their maximum; here the lengths
+ * must agree with each other and the handles, or nothing is applied. */
+static void apply_locked(unsigned kind, const uint8_t *paths, uint32_t paths_len,
+                         const uint8_t *connect, uint32_t connect_len, const handle_t *hs,
+                         uint32_t nh)
 {
-    bool mounting = m->kind == NS_MOUNT || m->kind == NS_SET;
-    bool ok = n >= NS_MSG_SIZE(0) && m->count <= NS_MAX_ENTRIES && n == NS_MSG_SIZE(m->count) &&
-              !((uint64_t)m->connect >> m->count) &&   /* count may be 32 */
-              ((mounting && nh == m->count) || (m->kind == NS_UNMOUNT && !nh && !m->connect));
+    bool mounting = kind != EV_UNMOUNT;
+    struct ev e = { paths, connect, paths_len / NS_NAME_MAX };
+    bool ok = paths_len % NS_NAME_MAX == 0 && e.count <= NS_MAX_ENTRIES &&
+              (mounting ? connect_len == e.count && nh == e.count : !nh);
+    for (uint32_t i = 0; ok && mounting && i < e.count; i++)
+        ok = connect[i] <= 1;
     if (!ok) {
         for (uint32_t i = 0; i < nh; i++)
             jam_handle_close(hs[i]);
         return;
     }
-    if (m->kind == NS_SET)
-        set_locked(m);
-    for (uint32_t i = 0; i < m->count; i++) {
-        enum kind k = kind_of(m->path[i]);
-        bool connect = m->connect >> i & 1;
-        bool valid = k != BAD && (k == SERVICE || !connect);
+    if (kind == EV_SET)
+        set_locked(&e);
+    for (uint32_t i = 0; i < e.count; i++) {
+        const char *path = ev_path(&e, i);
+        enum kind k = kind_of(path);
+        bool conn = mounting && connect[i];
+        bool valid = k != BAD && (k == SERVICE || !conn);
         if (mounting && !valid)
             jam_handle_close(hs[i]);
         else if (mounting)
-            (void)put_locked(m->path[i], k, hs[i], true, connect);   /* a full table closes it */
+            (void)put_locked(path, k, hs[i], true, conn);   /* a full table closes it */
         else if (valid)
-            (void)remove_locked(m->path[i]);                         /* not there: nothing to do */
+            (void)remove_locked(path);                      /* not there: nothing to do */
     }
 }
 
-/* Take a message no ns_msg can be (n bytes, nh handles) off ch and close
- * its handles: left queued it would block every later one. false if it
- * can't be taken (out of memory). */
-static bool drop(handle_t ch, uint32_t n, uint32_t nh)
+/* nschan's handlers; the table is locked by whoever reads (the events carry
+ * no context). */
+static void on_mount(void *ctx, const uint8_t *paths, uint32_t paths_len, const uint8_t *connect,
+                     uint32_t connect_len, const handle_t *hs, uint32_t nh)
 {
-    uint8_t *bytes = malloc(n ? n : 1);
-    handle_t *hs = malloc((nh ? nh : 1) * sizeof(handle_t));
-    uint32_t n2 = 0, nh2 = 0;
-    struct channel_read_args a = {
-        .h = ch, .rd_cap = n, .rd_bytes = (uint64_t)(uintptr_t)bytes,
-        .rd_actual = (uint64_t)(uintptr_t)&n2, .rd_handles = (uint64_t)(uintptr_t)hs,
-        .rd_hcap = nh, .rd_hactual = (uint64_t)(uintptr_t)&nh2,
-    };
-    bool ok = bytes && hs && jam_channel_read(&a) == OK;
-    for (uint32_t i = 0; ok && i < nh2; i++)
-        jam_handle_close(hs[i]);
-    free(hs);
-    free(bytes);
-    return ok;
+    (void)ctx;
+    apply_locked(EV_MOUNT, paths, paths_len, connect, connect_len, hs, nh);
 }
 
-/* Read one ns_msg off ch into *m and hs (NS_MAX_ENTRIES of them):
- * channel_read's status; one too big for any ns_msg is taken off and
- * dropped (OK with *nh = 0 and *n = 0, which no check passes). */
-static status_t read_msg(handle_t ch, struct ns_msg *m, handle_t *hs, uint32_t *n, uint32_t *nh)
+static void on_unmount(void *ctx, const uint8_t *paths, uint32_t paths_len)
 {
-    struct channel_read_args a = {
-        .h = ch, .rd_cap = sizeof(*m), .rd_bytes = (uint64_t)(uintptr_t)m,
-        .rd_actual = (uint64_t)(uintptr_t)n, .rd_handles = (uint64_t)(uintptr_t)hs,
-        .rd_hcap = NS_MAX_ENTRIES, .rd_hactual = (uint64_t)(uintptr_t)nh,
-    };
-    status_t st = jam_channel_read(&a);
-    if (st == ERR_BUFFER_TOO_SMALL && drop(ch, *n, *nh)) {
-        *n = *nh = 0;
-        return OK;
-    }
-    return st;
+    (void)ctx;
+    apply_locked(EV_UNMOUNT, paths, paths_len, NULL, 0, NULL, 0);
+}
+
+static void on_set(void *ctx, const uint8_t *paths, uint32_t paths_len, const uint8_t *connect,
+                   uint32_t connect_len, const handle_t *hs, uint32_t nh)
+{
+    (void)ctx;
+    apply_locked(EV_SET, paths, paths_len, connect, connect_len, hs, nh);
 }
 
 /* What the starter has sent so far (TAKE_MAX messages at most) into the
- * table; how many messages were taken. */
+ * table; how many messages were taken. The generated reader drops, with
+ * their handles closed, the events that break the format and the ones too
+ * big for any: they count as taken. */
 static unsigned take_some_locked(handle_t ch)
 {
+    static const struct nschan_ops ops = { .mount = on_mount, .unmount = on_unmount,
+                                           .set = on_set };
     unsigned taken = 0;
     for (; taken < TAKE_MAX; taken++) {
-        struct ns_msg m;
-        handle_t hs[NS_MAX_ENTRIES];
-        uint32_t n = 0, nh = 0;
-        status_t st = read_msg(ch, &m, hs, &n, &nh);
+        status_t st = nschan_serve_one(ch, &ops, NULL);
         if (st == ERR_PEER_CLOSED)
             starter_gone = true;
         if (st != OK)
             break;
-        apply_locked(&m, n, hs, nh);
     }
     return taken;
 }
@@ -621,12 +633,14 @@ static bool grant_takes(const struct grant *g, const struct entry *e, enum kind 
 /* What goes out: our entries that a grant takes, each with a duplicate of
  * its channel (to be turned into a view) and the flags of its view. */
 struct ns_out {
-    struct ns_msg m;
-    handle_t      hs[NS_MAX_ENTRIES];
-    uint32_t      view[NS_MAX_ENTRIES];
+    uint32_t count;                              /* entries used */
+    uint8_t  paths[NS_MAX_ENTRIES][NS_NAME_MAX]; /* nschan's `paths`: count records */
+    uint8_t  connect[NS_MAX_ENTRIES];            /* ... and its `connect` */
+    handle_t hs[NS_MAX_ENTRIES];
+    uint32_t view[NS_MAX_ENTRIES];
 };
 
-/* The entries grants take, duplicated into o (o->m.count of them). */
+/* The entries grants take, duplicated into o (o->count of them). */
 static status_t gather(const char *const *grants, struct ns_out *o)
 {
     status_t st = OK;
@@ -640,14 +654,14 @@ static status_t gather(const char *const *grants, struct ns_out *o)
             take = parse_grant(grants[j], &g) && grant_takes(&g, &ents[i], k);
         if (!take)
             continue;
-        uint32_t c = o->m.count;
+        uint32_t c = o->count;
         st = jam_handle_duplicate(ents[i].h, RIGHT_SAME, &o->hs[c]);
         if (st != OK)
             break;
-        memcpy(o->m.path[c], ents[i].path, NS_NAME_MAX);
+        memcpy(o->paths[c], ents[i].path, NS_NAME_MAX);
         o->view[c] = k == MOUNT ? g.view : 0;
-        o->m.connect |= (uint32_t)ents[i].connect << c;
-        o->m.count++;
+        o->connect[c] = ents[i].connect;
+        o->count++;
     }
     ns_unlock();
     return st;
@@ -657,8 +671,8 @@ static status_t gather(const char *const *grants, struct ns_out *o)
  * one whose service won't make it is left out. */
 static void make_views(struct ns_out *o)
 {
-    uint32_t keep = 0, connect = 0;
-    for (uint32_t i = 0; i < o->m.count; i++) {
+    uint32_t keep = 0;
+    for (uint32_t i = 0; i < o->count; i++) {
         handle_t h = o->hs[i];
         if (o->view[i]) {
             handle_t v = HANDLE_INVALID;
@@ -668,12 +682,11 @@ static void make_views(struct ns_out *o)
                 continue;   /* fail closed: no view, no mount */
             h = v;
         }
-        memcpy(o->m.path[keep], o->m.path[i], NS_NAME_MAX);
-        connect |= (o->m.connect >> i & 1) << keep;
+        memcpy(o->paths[keep], o->paths[i], NS_NAME_MAX);
+        o->connect[keep] = o->connect[i];
         o->hs[keep++] = h;
     }
-    o->m.count = keep;
-    o->m.connect = connect;
+    o->count = keep;
 }
 
 status_t ns_prepare(const char *const *grants, struct ns_out **out)
@@ -693,24 +706,27 @@ status_t ns_prepare(const char *const *grants, struct ns_out **out)
 
 void ns_prepared_drop(struct ns_out *o)
 {
-    for (uint32_t i = 0; o && i < o->m.count; i++)
+    for (uint32_t i = 0; o && i < o->count; i++)
         jam_handle_close(o->hs[i]);
     free(o);
 }
 
 status_t ns_send_prepared(handle_t to, uint32_t kind, struct ns_out *o)
 {
-    o->m.kind = kind;
-    status_t st = jam_channel_write(to, &o->m, NS_MSG_SIZE(o->m.count), o->hs, o->m.count);
+    uint32_t n = o->count;
+    status_t st = kind == NS_SET ? nschan_set(to, o->paths[0], n * NS_NAME_MAX, o->connect, n,
+                                              o->hs, n)
+                                 : nschan_mount(to, o->paths[0], n * NS_NAME_MAX, o->connect, n,
+                                                o->hs, n);
     /* The handles are gone whatever the status (a send's handles are always
      * moved): never closed after the write, as their values may already be
      * another thread's new handles. */
-    o->m.count = 0;
+    o->count = 0;
     ns_prepared_drop(o);
     return st;
 }
 
-/* A `kind` message (NS_MOUNT or NS_SET) of what grants name, on to. */
+/* A `kind` event (NS_MOUNT or NS_SET) of what grants name, on to. */
 static status_t send_ours(handle_t to, uint32_t kind, const char *const *grants)
 {
     struct ns_out *o;
@@ -724,18 +740,14 @@ status_t ns_send(handle_t to, const char *const *grants)
 }
 
 /* Read every message still waiting on back (the program's end) and close
- * the handles they carry: they are ours, and out of date. */
+ * the handles they carry: they are ours, and out of date. (A reader with no
+ * handlers drops each event and closes its handles.) */
 static void take_back(handle_t back)
 {
-    for (unsigned i = 0; i < BACK_MAX; i++) {
-        struct ns_msg m;
-        handle_t hs[NS_MAX_ENTRIES];
-        uint32_t n = 0, nh = 0;
-        if (read_msg(back, &m, hs, &n, &nh) != OK)
+    static const struct nschan_ops none = { 0 };
+    for (unsigned i = 0; i < BACK_MAX; i++)
+        if (nschan_serve_one(back, &none, NULL) != OK)
             return;   /* empty (or the program's end is gone) */
-        for (uint32_t k = 0; k < nh; k++)
-            jam_handle_close(hs[k]);
-    }
 }
 
 status_t ns_update(handle_t to, handle_t back, const char *const *grants)
@@ -747,16 +759,15 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants)
 
 status_t ns_send_one(handle_t to, const char *path, handle_t fs)
 {
-    struct ns_msg m;
-    memset(&m, 0, sizeof(m));
-    m.kind = fs ? NS_MOUNT : NS_UNMOUNT;
-    m.count = 1;
     if (!path || kind_of(path) == BAD) {
         if (fs)
             jam_handle_close(fs);   /* never sent */
         return ERR_INVALID_ARGS;
     }
-    memcpy(m.path[0], path, strlen(path) + 1);
+    uint8_t rec[NS_NAME_MAX] = { 0 }, connect = 0;
+    memcpy(rec, path, strlen(path) + 1);
     /* fs is gone whatever the write's status: never closed after it. */
-    return jam_channel_write(to, &m, NS_MSG_SIZE(1), &fs, fs ? 1 : 0);
+    if (fs)
+        return nschan_mount(to, rec, sizeof(rec), &connect, 1, &fs, 1);
+    return nschan_unmount(to, rec, sizeof(rec));
 }

@@ -249,6 +249,7 @@ bool t_ns_server_dies(void);
 bool t_ns_child_sees_only_its_mounts(void);
 bool t_ns_mounts_reach_a_running_child(void);
 bool t_ns_malformed_messages(void);
+bool t_ns_long_names(void);
 bool t_spawn_from_vmo(void);
 /* bin/ramfs, started and mounted at point (and the reverse: it must end
  * clean). */

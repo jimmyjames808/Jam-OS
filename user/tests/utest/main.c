@@ -693,6 +693,7 @@ static const struct {
     { "ns_child_sees_only_its_mounts", t_ns_child_sees_only_its_mounts },
     { "ns_mounts_reach_a_running_child", t_ns_mounts_reach_a_running_child },
     { "ns_malformed_messages", t_ns_malformed_messages },
+    { "ns_long_names", t_ns_long_names },
     { "svc_publish_and_open", t_svc_publish_and_open },
     { "svc_connect", t_svc_connect },
     { "svc_child_gets_its_grants", t_svc_child_gets_its_grants },
