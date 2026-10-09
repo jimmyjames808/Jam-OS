@@ -50,7 +50,6 @@
 
 bool window_mode;
 unsigned term_no = 1;
-bool closing;
 bool font_bitmap;
 struct cell_look look = { GW, GH, 0, NULL, NULL };
 
@@ -211,7 +210,7 @@ static void key(const struct jwl_event *ev)
         return;
     if (clip_key(&k))
         return;   /* copy or paste (clip.c) */
-    key_event(k.usage, k.state, k.mods, k.codepoint);
+    win_key(k.usage, k.state, k.mods, k.codepoint);
 }
 
 /* ---- the clipboard ---------------------------------------------------------------- */
@@ -244,12 +243,17 @@ static void pasted(const struct jwl_event *ev)
         return;
     }
     bool bracketed = nfocus && focus_client[nfocus - 1] && focus_client[nfocus - 1]->bracketed;
-    if (paste_start(text, n))
+    if (paste_start(text, n)) {
+        if (view_back) {   /* as typing does: back to the bottom */
+            view_back = 0;
+            dirty = true;
+        }
         printf("console: terminal %u: pasted %lu bytes%s\n", term_no, (unsigned long)n,
                bracketed ? " (bracketed)" : "");
-    else
+    } else {
         printf("console: terminal %u: a paste is still being typed (or nobody reads keys): "
                "this one dropped\n", term_no);
+    }
 }
 
 /* The text bar while the pointer is over the text, the arrow over the

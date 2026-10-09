@@ -58,10 +58,6 @@ bool paste_start(const char *text, size_t n)
     paste.phase = paste.bracketed ? P_OPEN : P_TEXT;
     paste.mark = 0;
     paste.retry_at = 0;
-    if (view_back) {   /* as typing does: back to the bottom */
-        view_back = 0;
-        dirty = true;
-    }
     return true;
 }
 

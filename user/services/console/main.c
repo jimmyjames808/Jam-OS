@@ -6,8 +6,10 @@
  * compositor owns the screen and the input: the keys come to the window
  * (M12's Q14: the full-screen console that took the framebuffer and the
  * input sources under the boot word `nocomp` is gone). Without a
- * compositor (none in bootfs) the text goes to COM1 alone. The parts are
- * listed in console.h.
+ * compositor (none in bootfs) the text goes to COM1 alone. This file is
+ * the front end: the kernel log, startup and the event loop around the
+ * back end (console.h's struct backend; here, the window's: winback.c).
+ * The parts are listed in console.h.
  *
  * Arguments: "nolog" (init, on every boot but a `verbose` one's first
  * terminal: the quiet boot): the kernel log stays off the screen, except
@@ -55,6 +57,8 @@
 #define CATCH_UP_DRAWN (256u << 10)
 
 handle_t root, port;
+bool closing;
+const struct backend *back = &win_backend;
 
 /* ---- the kernel log ------------------------------------------------------------- */
 
@@ -96,7 +100,7 @@ static void klog_line(const char *s, size_t n)
     bool shown = (!log_off || clients_show_line(name, nl)) &&
                  (!catching_up || partial_at >= draw_from);
     if (shown)
-        kernel_line(s, n);
+        back->log_line(s, n);
     drawn_lines += shown && catching_up;
 }
 
@@ -133,7 +137,7 @@ void klog_event(void)
                              (unsigned long)(first - klog_pos));
             npartial = 0;
             if (!log_off || clients_show_all())
-                kernel_line(gap, (size_t)m);
+                back->log_line(gap, (size_t)m);
         }
         klog_pos = first + (uint64_t)n;
         klog_take(klog_buf, n, first);
@@ -152,29 +156,10 @@ static void port_event(const struct port_packet *pkt)
     case K_CLIENT:
         client_event(i);
         break;
-    case K_ALT:
-        alt_owner_event(i);
-        break;
-    case K_WL:
-        window_event();
+    default:
+        back->event(kind, i);   /* the back end's own (K_ALT, K_WL, ...) */
         break;
     }
-}
-
-/* The screen: the window, with /svc/wayland's channel from init; the
- * text model at its size. false: out of memory. *screen: something shows
- * the text (without a compositor nothing does: COM1 only). */
-static bool start_screen(bool *screen)
-{
-    handle_t wayland = startup_handle(SR_USER + WAYLAND_ROLE);
-    cols = WIN_COLS;   /* until the output is known (window.c regrids) */
-    rows = WIN_ROWS;
-    *screen = false;
-    if (wayland)
-        *screen = window_init(wayland, term_no);
-    else
-        printf("console: no compositor (no /svc/wayland): no screen, COM1 only\n");
-    return text_init() && paint_regrid();
 }
 
 /* Read the kernel log written before we started: its last part drawn. */
@@ -205,16 +190,15 @@ static void read_boot_log(void)
            (unsigned long)(end >> 10), draw_from ? "; `dmesg` shows the rest" : "");
 }
 
-/* The loop: returns only when our window was closed (0) or the port
+/* The loop: returns only when the terminal is gone (0) or the port
  * failed (1). */
 static int serve(void)
 {
-    uint64_t last = 0;
     while (!closing) {
         /* A client with requests left over: take what else is queued (a
          * key, another client) without sleeping, then give it another round. */
-        uint64_t deadline = clients_pending() ? 0 : dirty ? last + RENDER_NS : DEADLINE_NEVER;
-        uint64_t more[2] = { window_deadline(), paste_deadline() };
+        uint64_t deadline = clients_pending() ? 0 : DEADLINE_NEVER;
+        uint64_t more[2] = { back->deadline(), paste_deadline() };
         for (unsigned i = 0; i < 2; i++)
             deadline = more[i] < deadline ? more[i] : deadline;
         struct port_packet pkt;
@@ -225,15 +209,11 @@ static int serve(void)
             printf("console: port_wait: %s\n", status_str(st));
             return 1;
         }
-        if (window_mode && st == ERR_TIMED_OUT)
-            window_event();   /* its own work: a key repeat, a reconnect's try */
+        if (st == ERR_TIMED_OUT)
+            back->tick();
         clients_serve_pending();
         paste_pump();   /* a paste's keys, as fast as the focus reads them */
-        uint64_t t = now();
-        if (dirty && t >= last + RENDER_NS) {
-            render();
-            last = t;
-        }
+        back->flush();
     }
     return 0;
 }
@@ -261,15 +241,11 @@ int main(int argc, char **argv)
     if (st != OK)
         return 1;
     clients_init();
-    bool screen = false;
-    if (!start_screen(&screen)) {
-        printf("console: out of memory\n");
+    if (!back->init())
         return 1;
-    }
     read_boot_log();
-    printf("console: %ux%u cells%s, %u client channel(s)%s\n", cols, rows,
-           screen ? "" : " (no screen)", client_count(),
-           log_off ? "; the kernel log off the screen" : "");
-    render();
+    back->banner(client_count(), log_off);
+    if (back->ready)
+        back->ready();
     return serve();
 }

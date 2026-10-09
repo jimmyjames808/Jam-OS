@@ -1,5 +1,21 @@
 /* console: what its parts share (main.c says what the console does).
  *
+ * The console is a front end and a back end. The front end is the
+ * `console` protocol's side: the clients and their levels, the focus of
+ * key channels, the kernel log's lines, the event loop. The back end is
+ * where the terminal is: it takes the program output and the log lines,
+ * and it is where the keys come from. There are two (struct backend):
+ * the window (a text model drawn into a Wayland window, and COM1) and
+ * the connection (bytes on a channel to a remote terminal).
+ *
+ * Front end:
+ *   keys.c     the focus stack of key channels, and the keys sent to it
+ *   paste.c    pasted text typed into the focus
+ *   clients.c  the console protocol's clients and their levels
+ *   main.c     the kernel log, startup and the event loop
+ *
+ * Window back end (winback.c is its struct backend):
+ *   winback.c  the back end's calls, and the window's scrollback keys
  *   text.c     the text model (scrollback, the current line) and the
  *              alternate screen's grid
  *   term.c     program output as a small terminal: escapes, UTF-8
@@ -10,11 +26,7 @@
  *   cellpaint.c a cell drawn in the 8x16 bitmap or the smooth font (cells.h)
  *   view.c     which lines of the text the screen shows
  *   select.c   the mouse's selection: its geometry and its text
- *   clip.c     ... in the window: the mouse and the keys that copy and paste
- *   keys.c     the keys, and the focus stack of key channels
- *   paste.c    pasted text typed into the focus
- *   clients.c  the console protocol's clients and their levels
- *   main.c     the kernel log, startup and the event loop */
+ *   clip.c     ... in the window: the mouse and the keys that copy and paste */
 #pragma once
 
 #include <stdarg.h>
@@ -65,13 +77,57 @@ struct client {
     char    log_only[LOG_ONLY_MAX];  /* ... only this process's lines ("": all of them) */
 };
 
-/* Port keys: the kind in the high half, an index in the low. */
+/* Port keys: the kind in the high half, an index in the low. K_KLOG and
+ * K_CLIENT are the front end's; the others go to the back end's event. */
 enum { K_KLOG = 1, K_CLIENT, K_ALT, K_WL };
 #define KEY(kind, i) ((uint64_t)(kind) << 32 | (i))
+
+/* ---- the back end ---------------------------------------------------------------- */
+
+/* Where the terminal is. The front end calls these, all on the console's
+ * one thread, from the event loop; a hook may be NULL where it says so. */
+struct backend {
+    /* Set up (the console's port exists, the clients are bound): false
+     * after saying why, and the console ends. */
+    bool (*init)(void);
+    /* The startup line (the clients bound, whether the kernel log is off
+     * the screen). */
+    void (*banner)(unsigned clients, bool log_off);
+    /* The first frame, once the boot log is in (NULL: none). */
+    void (*ready)(void);
+    /* Program output (console.write) of client c, as it was written. */
+    void (*write)(struct client *c, const uint8_t *text, uint32_t length);
+    /* A kernel log line some client asked for (without its newline). */
+    void (*log_line)(const char *s, size_t n);
+    /* The terminal's size in cells. */
+    void (*size)(uint16_t *c, uint16_t *r);
+    /* console.clear. */
+    void (*clear)(void);
+    /* terminal.font for the window (true: the bitmap; NULL: nothing to change). */
+    void (*set_font)(bool bitmap);
+    /* Focus channel h was dropped from the focus stack (NULL: nothing to do). */
+    void (*focus_dropped)(handle_t h);
+    /* A port packet with one of the back end's keys (K_ALT, K_WL, ...). */
+    void (*event)(uint32_t kind, uint32_t i);
+    /* When the back end next needs the loop (DEADLINE_NEVER: it waits for
+     * a port packet). */
+    uint64_t (*deadline)(void);
+    /* The loop's wait timed out: the back end's own work (a key repeat, a
+     * reconnect's try), before the clients are served. */
+    void (*tick)(void);
+    /* After the clients: draw what changed, send what is queued. */
+    void (*flush)(void);
+    /* The back end can take no more output now (a full queue): the front
+     * end serves no client's request until it can (NULL: never). */
+    bool (*congested)(void);
+};
+extern const struct backend win_backend;
+extern const struct backend *back;   /* the one this console runs */
 
 /* main.c */
 extern handle_t root;              /* SR_RESOURCE */
 extern handle_t port;              /* everything we wait for */
+extern bool closing;               /* the terminal is gone (window closed, hung up): main ends with 0 */
 /* Kernel log lines logged so far go into the scrollback (those that are
  * shown: console.show_log). */
 void klog_event(void);
@@ -180,12 +236,11 @@ extern unsigned nfocus;
 /* Drop focus i (its client is gone, or it was pushed out). */
 void focus_drop(unsigned i);
 status_t op_open_keys(void *ctx, handle_t *out);
-/* A key from the window: the scrollback's keys, or to the focus. */
-void key_event(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp);
-/* A mouse report from the window (con_mouse: wlinput.c): the wheel
- * scrolls back. */
-struct con_mouse;
-void mouse_event(const struct con_mouse *ev);
+/* A key typed into the terminal, whatever the back end it came from: to
+ * the newest focus a PROGRAM or SHELL or ADMIN client opened (and, for
+ * Ctrl+C from a program's, the shell below it too). Typed before anyone
+ * listened, it waits for the first. */
+void focus_key(const struct input_key_event *ev);
 
 /* ---- paste.c: pasted text typed into the focus ------------------------------------ */
 
@@ -206,8 +261,7 @@ void paste_stop(void);
 
 extern bool window_mode;           /* a compositor draws the screen: we draw into a window */
 extern unsigned term_no;           /* this terminal's number (1: the first, the system's) */
-extern bool closing;               /* our window was closed: main ends with 0 */
-extern bool font_bitmap;           /* terminal.font = bitmap (argument, set_font) */
+extern bool font_bitmap;          /* terminal.font = bitmap (argument, set_font) */
 /* Window mode on /svc/wayland's shared channel svc, as terminal `term`:
  * connect (without waiting: the window opens once the compositor
  * answers). false: it can't (said); the text then goes to COM1 only. */
@@ -260,6 +314,11 @@ struct con_mouse {
     int8_t  wheel;
     uint8_t buttons;
 };
+/* winback.c: a key from the window: the scrollback's keys (Shift+PageUp
+ * and PageDown), or to the focus. */
+void win_key(uint16_t usage, uint8_t state, uint8_t mods, uint32_t cp);
+/* A mouse report from the window: the wheel scrolls back. */
+void mouse_event(const struct con_mouse *ev);
 /* What mouse_of_wayland keeps between pointer events. */
 struct pointer_track {
     int32_t x, y;        /* the last position, surface coordinates, fixed 24.8 */

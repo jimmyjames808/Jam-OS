@@ -6,9 +6,9 @@
  * can only make channels of a lower level than its own. keys.c has what the levels mean for the
  * keys.
  *
- * Program output (console.write) is also written to COM1 as it is (the
- * kernel log goes there by itself), so a serial terminal, and the QEMU
- * tests, see the same session.
+ * Program output (console.write) goes to the back end (the window's also
+ * writes it to COM1 as it is, the kernel log goes there by itself, so a
+ * serial terminal, and the QEMU tests, see the same session).
  *
  * A client's DEC modes that are about its keys are its own: ESC [ ? 2004 h
  * (bracketed paste) brackets what is pasted to a key channel it opened,
@@ -23,30 +23,21 @@ static status_t op_write(void *ctx, const uint8_t *text, uint32_t length)
     /* Kernel lines logged before this write go above it: e.g. a ktest's
      * output before the shell's summary line. */
     klog_event();
-    bool was_alt = alt_on;
-    out_writer = ctx;   /* the modes it asks for are its own (term.c) */
-    for (unsigned i = 0; i < length; i++)
-        out_char(text[i]);
-    out_writer = NULL;
-    if (!was_alt || !alt_on)   /* the alternate screen isn't mirrored to COM1 */
-        (void)jam_serial_write(root, text, length);   /* the mirror is best effort */
-    dirty = true;
+    back->write(ctx, text, length);
     return OK;
 }
 
 static status_t op_size(void *ctx, uint16_t *c, uint16_t *r)
 {
     (void)ctx;
-    *c = (uint16_t)cols;
-    *r = (uint16_t)rows;
+    back->size(c, r);
     return OK;
 }
 
 static status_t op_clear(void *ctx)
 {
     (void)ctx;
-    clear_screen();
-    jam_serial_write(root, "\033[2J\033[H", 7);
+    back->clear();
     return OK;
 }
 
@@ -109,7 +100,8 @@ static status_t op_set_font(void *ctx, uint8_t font)
         return ERR_ACCESS_DENIED;
     if (font > 1)
         return ERR_INVALID_ARGS;
-    window_set_font(font == 1);
+    if (back->set_font)
+        back->set_font(font == 1);
     return OK;
 }
 
