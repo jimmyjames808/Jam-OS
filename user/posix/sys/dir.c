@@ -15,7 +15,9 @@
  *     2 + (cookie << 16 | k)  entry k of the batch asked for with cookie
  * (a batch holds at most FS_READDIR_BYTES / (FS_DIRENT_FIXED + 1) < 2^16
  * entries). The last batch asked for is kept with the description, so a
- * listing read in order asks the service once per batch. "/" lists the
+ * listing read in order asks the service once per batch; one started
+ * again (from ".", or after any lseek: rewinddir, seekdir) asks afresh,
+ * so it sees the directory as it is now. "/" lists the
  * mounts and "svc", "/svc" the services (libjam's fs_readdir, by index:
  * 2 + index).
  *
@@ -195,6 +197,10 @@ static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
     if (!e)
         return -ENOMEM;
     lock_take(&d->lock);
+    if (d->offset < POS_ENTRIES) {   /* a listing from the start: asked afresh */
+        struct dir *x = d->priv;
+        x->bvalid = false;
+    }
     size_t used = 0;
     long r;
     while ((r = entry_at(d, d->offset, e)) > 0) {
@@ -234,8 +240,11 @@ static long dir_seek(struct fd_desc *d, int64_t off, int whence)
         to = off;
     else if (whence == SEEK_CUR && __builtin_add_overflow(d->offset, off, &to))
         to = -1;
-    if (to >= 0)
+    if (to >= 0) {
+        struct dir *x = d->priv;
         d->offset = to;
+        x->bvalid = false;   /* asked afresh (rewinddir after a change sees it) */
+    }
     lock_give(&d->lock);
     return to >= 0 ? to : -EINVAL;
 }

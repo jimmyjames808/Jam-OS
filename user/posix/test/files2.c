@@ -138,6 +138,15 @@ static void many_files(int count)
     seekdir(d, at);
     e = readdir(d);
     CHECK(e && !strcmp(e->d_name, first));
+    /* rewinddir after a change lists the directory as it is now (POSIX:
+     * rewinddir "shall also cause the directory stream to refer to the
+     * current state of the directory") */
+    snprintf(name, sizeof(name), PT_DIR "/many/f%05d", 0);
+    CHECK(unlink(name) == 0);
+    rewinddir(d);
+    dots = 0;
+    memset(seen, 0, sizeof(seen));
+    CHECK(list_rest(d, seen, &dots) == count - 1 && !seen[0]);
     closedir(d);
     uint64_t t2 = ms_now();
     int gone = 0;
@@ -145,7 +154,7 @@ static void many_files(int count)
         snprintf(name, sizeof(name), PT_DIR "/many/f%05d", i);
         gone += unlink(name) == 0;
     }
-    CHECK(gone == count && rmdir(PT_DIR "/many") == 0);
+    CHECK(gone == count - 1 && rmdir(PT_DIR "/many") == 0);
     printf("posixtest: %d files made in %llu ms, listed in %llu ms, removed in %llu ms\n",
            count, (unsigned long long)(t1 - t0), (unsigned long long)(t2 - t1),
            (unsigned long long)(ms_now() - t2));
